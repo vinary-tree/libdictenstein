@@ -1,0 +1,113 @@
+# Rust
+/target/
+**/*.rs.bk
+*.pdb
+
+# Cargo
+Cargo.lock
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Testing
+*.profraw
+*.profdata
+*.proptest-regressions
+
+# Profiling artifacts
+perf.data
+perf.data.old
+flamegraph.svg
+flamegraph_*.svg
+flamegraphs/
+perf.data*
+perf-*.data*
+
+# Benchmark results and logs
+*_results.log
+*_results.txt
+*_bench.log
+*_run.log
+*_optimized.log
+*_optimized.txt
+baseline_*.txt
+backend_comparison_*.txt
+fuzzy_map_*.txt
+hierarchical_scope_*.txt
+query_iterator_*.txt
+bench_results_*.txt
+eviction_wrapper_bench_*.txt
+rayon_eval_*.txt
+batch*_*.txt
+*_analysis.md
+fuzzy_multimap_*.txt
+fuzzy_multimap_*.md
+docs/research/artrie/perf-reports/*.txt
+
+# Analysis scripts (temporary/development)
+analyze_*.py
+extract_*.sh
+profile_*.sh
+benchmark_*.sh
+
+# LaTeX artifacts (documentation generation)
+*.aux
+*.log
+*.out
+*.toc
+*.tex
+*latex*.py
+generate_latex_doc.py
+liblevenshtein-rust-doc.pdf
+
+# Test corpora (downloaded on-demand, not committed)
+data/corpora/*.txt
+data/corpora/*.dat
+data/corpora/*.zip
+data/corpora/birkbeck/
+data/generated/
+
+rocq/**/.lia.cache
+rocq/**/*.vo
+rocq/**/*.vok
+rocq/**/*.vos
+rocq/**/*.glob
+rocq/**/Makefile
+rocq/**/Makefile.conf
+rocq/**/.Makefile.d
+
+# Rocq/Coq verification artifacts
+docs/verification/**/.lia.cache
+docs/verification/**/*.vo
+docs/verification/**/*.vok
+docs/verification/**/*.vos
+docs/verification/**/*.glob
+docs/verification/**/.*.aux
+docs/verification/**/html/
+docs/verification/**/extracted/
+docs/verification/**/Makefile
+docs/verification/**/Makefile.conf
+docs/verification/**/Makefile.coq
+docs/verification/**/Makefile.coq.conf
+docs/verification/**/.Makefile.coq.d
+docs/verification/**/.Makefile.d
+
+# Profiling artifacts
+*.perf.data
+*.perf.data.old
+perf.data*
+flamegraph.svg
+.lia.cache
+
+*.bak
+# Generated optimization artifacts
+docs/optimization/*.txt
+perf.data*

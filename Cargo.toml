@@ -1,0 +1,62 @@
+[package]
+name = "libdictenstein"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.70"
+authors = ["Dylon Edwards <dylon.devo@gmail.com>"]
+license = "Apache-2.0"
+repository = "https://github.com/f1r3fly-io/libdictenstein"
+description = "High-performance dictionary backends (trie, DAWG, double-array trie, suffix automaton, persistent ART) for fuzzy string matching"
+keywords = ["trie", "dawg", "dictionary", "fuzzy-search", "automata"]
+categories = ["algorithms", "data-structures", "text-processing"]
+readme = "README.md"
+
+[dependencies]
+# SmallVec for stack-allocated vectors (performance optimization)
+smallvec = { version = "1.13", features = ["serde"] }
+# Fast non-cryptographic hashing for internal use
+rustc-hash = "1.1"
+# Lock-free atomic Arc swapping for DynamicDawgU64
+arc-swap = "1.7"
+# Error handling
+thiserror = "2.0"
+# Faster RwLock for DynamicDawg
+parking_lot = { version = "0.12", optional = true }
+# Serialization support (optional)
+serde = { version = "1.0", features = ["derive", "rc"], optional = true }
+bincode = { version = "1.3", optional = true }
+
+# PathMap as an optional dictionary backend
+pathmap = { version = "0.2.0-alpha0", optional = true }
+
+# Memory-mapped I/O for persistent data structures
+memmap2 = { version = "0.9", optional = true }
+
+[dev-dependencies]
+criterion = "0.5"
+tempfile = "3.8"
+proptest = "1.4"
+
+[features]
+default = ["parking_lot"]
+pathmap-backend = ["pathmap"]
+serialization = ["serde", "bincode"]
+# Persistent Adaptive Radix Trie (disk-based dictionary)
+persistent-artrie = ["memmap2", "parking_lot", "serde", "bincode"]
+# SIMD optimization with AVX2/SSE4.1 intrinsics
+simd = []
+# SCDAWG optimization experiments
+scdawg-bloom = []  # 64-bit bloom filter for edge lookup fast-reject
+scdawg-simd = []   # SIMD edge lookup for small edge counts
+
+[lib]
+name = "libdictenstein"
+path = "src/lib.rs"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+
+[profile.bench]
+inherits = "release"
