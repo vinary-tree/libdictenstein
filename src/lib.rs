@@ -58,6 +58,9 @@ pub mod suffix_automaton_zipper;
 pub mod value;
 pub mod zipper;
 
+#[cfg(feature = "serialization")]
+pub mod serialization;
+
 // Re-export core types at crate root
 pub use char_unit::CharUnit;
 pub use iterator::{DictionaryIterator, DictionaryTermIterator};

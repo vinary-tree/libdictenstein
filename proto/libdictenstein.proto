@@ -1,0 +1,133 @@
+syntax = "proto3";
+
+package libdictenstein.proto;
+
+option java_package = "com.github.libdictenstein.proto";
+option java_outer_classname = "LibDictensteinProtos";
+
+// Dictionary V1: Original format for backward compatibility
+//
+// This format is compatible with all dictionary implementations
+// for cross-language dictionary interchange.
+message Dictionary {
+    // Edge represents a transition between nodes labeled with a character.
+    message Edge {
+        uint64 source_id = 1;  // Source node ID
+        uint32 label = 2;       // Character/byte label (UTF-8)
+        uint64 target_id = 3;   // Target node ID
+    }
+
+    // List of all node IDs in the graph.
+    repeated uint64 node_id = 1;
+
+    // List of final/terminal node IDs (valid term endings).
+    repeated uint64 final_node_id = 2;
+
+    // List of all edges in the graph.
+    repeated Edge edge = 3;
+
+    // Root node ID (typically 0)
+    uint64 root_id = 4;
+
+    // Number of terms in the dictionary
+    uint64 size = 5;
+}
+
+// Dictionary V2: Optimized format
+//
+// Improvements over V1:
+// 1. Removed redundant node_id field (IDs are sequential 0..n-1)
+// 2. Packed edge format: [src0, lbl0, tgt0, src1, lbl1, tgt1, ...]
+// 3. Delta-encoded final node IDs for better compression
+// 4. More compact representation overall
+//
+// Space savings: ~40-60% compared to V1 for typical dictionaries
+message DictionaryV2 {
+    // Delta-encoded final node IDs
+    // Actual IDs computed as: cumulative sum of deltas
+    // Example: deltas=[5,3,2] → IDs=[5,8,10]
+    repeated uint64 final_node_delta = 1 [packed=true];
+
+    // Packed edges: triplets of (source_id, label, target_id)
+    // Access pattern: edge i = (edges[i*3], edges[i*3+1], edges[i*3+2])
+    repeated uint64 edge_data = 2 [packed=true];
+
+    // Root node ID (typically 0)
+    uint64 root_id = 3;
+
+    // Number of terms in the dictionary
+    uint64 size = 4;
+
+    // Number of edges (for validation)
+    // edge_data.length should equal edge_count * 3
+    uint64 edge_count = 5;
+}
+
+// Dictionary V3: Double-Array Trie (DAT) format
+//
+// Optimized format specifically for Double-Array Trie structures.
+// Directly serializes the BASE, CHECK, IS_FINAL, and edge list arrays.
+//
+// Benefits:
+// - Zero-copy deserialization into DAT structure
+// - No graph traversal required
+// - Preserves all DAT optimizations (edge lists, cache locality)
+// - Smallest format for DAT (direct array serialization)
+message DoubleArrayTrie {
+    // BASE array: offsets for computing next state
+    // Size: number of states in the trie
+    repeated sint32 base = 1 [packed=true];
+
+    // CHECK array: parent state verification
+    // Size: same as BASE array
+    repeated sint32 check = 2 [packed=true];
+
+    // IS_FINAL bitset: marks final states (valid term endings)
+    // Packed as bytes, 8 states per byte
+    // Size: ceil(num_states / 8)
+    bytes is_final = 3;
+
+    // Edge lists per state: which bytes have valid transitions
+    // Format: [state0_edge_count, edge0, edge1, ..., state1_edge_count, ...]
+    // Each edge is a single byte (u8)
+    bytes edge_data = 4;
+
+    // Free list: indices of deleted/unused states
+    repeated uint64 free_list = 5 [packed=true];
+
+    // Number of terms in the dictionary
+    uint64 term_count = 6;
+
+    // Rebuild threshold (0.0 to 1.0)
+    double rebuild_threshold = 7;
+}
+
+// Dictionary V4: Suffix Automaton format
+//
+// Optimized format specifically for Suffix Automaton structures.
+// Stores the original source texts rather than the automaton structure,
+// since suffix automata can be efficiently rebuilt from source texts.
+//
+// Benefits:
+// - Much smaller than serializing full graph structure
+// - Simple and reliable reconstruction
+// - Preserves source text metadata
+// - Fast deserialization (online construction is O(n))
+message SuffixAutomaton {
+    // Original source texts that were indexed
+    // The automaton is rebuilt from these texts on deserialization
+    repeated string source_texts = 1;
+
+    // Number of indexed strings (for validation)
+    uint64 string_count = 2;
+}
+
+// Container message supporting all formats
+message DictionaryContainer {
+    oneof format {
+        Dictionary v1 = 1;
+        DictionaryV2 v2 = 2;
+        DoubleArrayTrie dat = 3;
+        SuffixAutomaton suffix = 4;
+    }
+}
