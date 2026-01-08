@@ -128,6 +128,14 @@ impl NodeType {
     }
 }
 
+impl TryFrom<u8> for NodeType {
+    type Error = ();
+
+    fn try_from(value: u8) -> Result<Self, Self::Error> {
+        NodeType::from_u8(value).ok_or(())
+    }
+}
+
 
 /// A swizzled pointer that can represent either a memory address or a disk location.
 ///
@@ -375,6 +383,49 @@ impl SwizzledPtr {
     pub fn from_raw(raw: u64) -> Self {
         Self(AtomicU64::new(raw))
     }
+
+    /// Convert to ArenaSlot for relative encoding.
+    ///
+    /// This extracts the logical (arena_id, slot_id) from a disk reference
+    /// where block_id maps to arena_id (arena N = block N+1) and offset
+    /// is used to store slot_id.
+    ///
+    /// Returns None if the pointer is swizzled (in memory) or null.
+    ///
+    /// # Mapping
+    ///
+    /// - arena_id = block_id - 1 (block 0 is header, arenas start at block 1)
+    /// - slot_id = offset field (repurposed for slot-based addressing)
+    #[cfg(feature = "persistent-artrie")]
+    pub fn as_arena_slot(&self) -> Option<super::arena_manager::ArenaSlot> {
+        let loc = self.disk_location()?;
+        // Arena N is stored in Block N+1
+        let arena_id = loc.block_id.checked_sub(1)?;
+        Some(super::arena_manager::ArenaSlot::new(arena_id, loc.offset))
+    }
+
+    /// Create a SwizzledPtr from an ArenaSlot.
+    ///
+    /// This creates a disk reference from a logical (arena_id, slot_id) pair.
+    ///
+    /// # Mapping
+    ///
+    /// - block_id = arena_id + 1 (arena N is stored in block N+1)
+    /// - offset = slot_id (slot-based addressing)
+    ///
+    /// # Panics
+    ///
+    /// Panics in debug mode if arena_id + 1 exceeds MAX_BLOCK_ID or
+    /// slot_id exceeds MAX_OFFSET.
+    #[cfg(feature = "persistent-artrie")]
+    pub fn from_arena_slot(
+        slot: super::arena_manager::ArenaSlot,
+        node_type: NodeType,
+    ) -> Self {
+        // Arena N is stored in Block N+1
+        let block_id = slot.arena_id.saturating_add(1);
+        Self::on_disk(block_id, slot.slot_id, node_type)
+    }
 }
 
 impl Clone for SwizzledPtr {
@@ -524,6 +575,68 @@ mod tests {
             let ptr = SwizzledPtr::on_disk(123, 456, node_type);
             let loc = ptr.disk_location().expect("should decode");
             assert_eq!(loc.node_type, node_type);
+        }
+    }
+
+    #[cfg(feature = "persistent-artrie")]
+    mod arena_slot_tests {
+        use super::*;
+        use crate::persistent_artrie::arena_manager::ArenaSlot;
+
+        #[test]
+        fn test_from_arena_slot() {
+            // Arena 0 should map to block 1
+            let slot = ArenaSlot::new(0, 100);
+            let ptr = SwizzledPtr::from_arena_slot(slot, NodeType::Node4);
+
+            assert!(ptr.is_on_disk());
+            let loc = ptr.disk_location().expect("should have disk location");
+            assert_eq!(loc.block_id, 1); // arena 0 -> block 1
+            assert_eq!(loc.offset, 100);
+            assert_eq!(loc.node_type, NodeType::Node4);
+        }
+
+        #[test]
+        fn test_as_arena_slot() {
+            // Block 5 should map to arena 4
+            let ptr = SwizzledPtr::on_disk(5, 200, NodeType::Node16);
+
+            let slot = ptr.as_arena_slot().expect("should convert to arena slot");
+            assert_eq!(slot.arena_id, 4); // block 5 -> arena 4
+            assert_eq!(slot.slot_id, 200);
+        }
+
+        #[test]
+        fn test_arena_slot_roundtrip() {
+            let original = ArenaSlot::new(42, 12345);
+            let ptr = SwizzledPtr::from_arena_slot(original, NodeType::Node48);
+            let recovered = ptr.as_arena_slot().expect("should convert back");
+
+            assert_eq!(recovered.arena_id, original.arena_id);
+            assert_eq!(recovered.slot_id, original.slot_id);
+        }
+
+        #[test]
+        fn test_as_arena_slot_returns_none_for_memory() {
+            let data: u64 = 42;
+            let ptr = SwizzledPtr::in_memory(&data);
+
+            assert!(ptr.as_arena_slot().is_none());
+        }
+
+        #[test]
+        fn test_as_arena_slot_returns_none_for_null() {
+            let ptr = SwizzledPtr::null();
+
+            assert!(ptr.as_arena_slot().is_none());
+        }
+
+        #[test]
+        fn test_as_arena_slot_returns_none_for_block_zero() {
+            // Block 0 is the header, arena_id would be -1 which is invalid
+            let ptr = SwizzledPtr::on_disk(0, 100, NodeType::Node4);
+
+            assert!(ptr.as_arena_slot().is_none());
         }
     }
 }

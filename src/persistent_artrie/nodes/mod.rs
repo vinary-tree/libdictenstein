@@ -544,6 +544,95 @@ impl std::fmt::Display for AddChildError {
 
 impl std::error::Error for AddChildError {}
 
+// =============================================================================
+// Sequential Sibling Storage Support
+// =============================================================================
+
+/// Child storage mode for serialization
+///
+/// This enum specifies how children should be encoded when serializing a node.
+/// It supports two modes:
+///
+/// 1. **Direct**: Each child pointer is encoded individually (legacy mode or
+///    when children are in different arenas)
+/// 2. **Sequential**: Children are stored contiguously in the same arena, so
+///    we only need to store `(first_slot, count)` instead of N pointers
+///
+/// Sequential mode provides significant space savings:
+/// - Node4 with 3 children: 24 bytes → 3 bytes (88% reduction)
+/// - Node16 with 10 children: 80 bytes → 3 bytes (96% reduction)
+/// - Node256 with 100 children: 800 bytes → 4 bytes (99.5% reduction)
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ChildStorage {
+    /// Individual pointers for each child
+    ///
+    /// Used when:
+    /// - Children are in different arenas (cross-arena references)
+    /// - Backward compatibility with older format
+    /// - Node modifications during runtime
+    Direct,
+
+    /// Sequential sibling storage
+    ///
+    /// When children are allocated contiguously, we only store:
+    /// - `first_slot`: The slot ID of the first child
+    /// - `arena_id`: The arena containing all children
+    /// - `count`: Number of children (from header.num_children)
+    ///
+    /// Children can be reconstructed as: first_slot, first_slot+1, ..., first_slot+(count-1)
+    Sequential {
+        /// Arena containing all children
+        arena_id: u32,
+        /// Slot ID of the first child
+        first_slot: u32,
+    },
+}
+
+impl ChildStorage {
+    /// Check if this is direct (individual pointer) storage
+    #[inline]
+    pub fn is_direct(&self) -> bool {
+        matches!(self, ChildStorage::Direct)
+    }
+
+    /// Check if this is sequential (contiguous) storage
+    #[inline]
+    pub fn is_sequential(&self) -> bool {
+        matches!(self, ChildStorage::Sequential { .. })
+    }
+
+    /// Get the first slot for sequential storage
+    ///
+    /// Returns `None` if this is direct storage.
+    pub fn first_slot(&self) -> Option<u32> {
+        match self {
+            ChildStorage::Sequential { first_slot, .. } => Some(*first_slot),
+            ChildStorage::Direct => None,
+        }
+    }
+
+    /// Get the arena ID for sequential storage
+    ///
+    /// Returns `None` if this is direct storage.
+    pub fn arena_id(&self) -> Option<u32> {
+        match self {
+            ChildStorage::Sequential { arena_id, .. } => Some(*arena_id),
+            ChildStorage::Direct => None,
+        }
+    }
+
+    /// Create a sequential storage reference
+    pub fn sequential(arena_id: u32, first_slot: u32) -> Self {
+        ChildStorage::Sequential { arena_id, first_slot }
+    }
+}
+
+impl Default for ChildStorage {
+    fn default() -> Self {
+        ChildStorage::Direct
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -609,5 +698,46 @@ mod tests {
     #[should_panic(expected = "prefix too long")]
     fn test_prefix_too_long() {
         CompressedPrefix::from_bytes(b"this is way too long for the prefix");
+    }
+
+    // =========================================================================
+    // ChildStorage Tests
+    // =========================================================================
+
+    #[test]
+    fn test_child_storage_direct() {
+        let storage = ChildStorage::Direct;
+        assert!(storage.is_direct());
+        assert!(!storage.is_sequential());
+        assert_eq!(storage.first_slot(), None);
+        assert_eq!(storage.arena_id(), None);
+    }
+
+    #[test]
+    fn test_child_storage_sequential() {
+        let storage = ChildStorage::sequential(5, 100);
+        assert!(!storage.is_direct());
+        assert!(storage.is_sequential());
+        assert_eq!(storage.arena_id(), Some(5));
+        assert_eq!(storage.first_slot(), Some(100));
+    }
+
+    #[test]
+    fn test_child_storage_default() {
+        let storage = ChildStorage::default();
+        assert!(storage.is_direct());
+    }
+
+    #[test]
+    fn test_child_storage_equality() {
+        let s1 = ChildStorage::sequential(1, 10);
+        let s2 = ChildStorage::sequential(1, 10);
+        let s3 = ChildStorage::sequential(1, 20);
+        let s4 = ChildStorage::Direct;
+
+        assert_eq!(s1, s2);
+        assert_ne!(s1, s3);
+        assert_ne!(s1, s4);
+        assert_eq!(s4, ChildStorage::Direct);
     }
 }

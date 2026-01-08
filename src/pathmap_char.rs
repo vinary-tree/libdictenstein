@@ -66,11 +66,8 @@ use crate::sync_compat::RwLock;
 ///
 /// assert!(dict.contains("café"));
 /// assert!(dict.contains("中文"));
-///
-/// // Fuzzy matching with correct character-level distances
-/// let transducer = Transducer::new(dict, Algorithm::Standard);
-/// let results: Vec<_> = transducer.query("", 1).collect();
-/// // Empty query at distance 1 finds single-character terms like "🎉"
+/// assert!(dict.contains("🎉"));
+/// assert!(!dict.contains("hello"));
 /// ```
 #[derive(Clone, Debug)]
 pub struct PathMapDictionaryChar<V: DictionaryValue = ()> {

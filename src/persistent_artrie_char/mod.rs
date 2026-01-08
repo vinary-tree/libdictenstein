@@ -35,6 +35,34 @@ pub mod nodes;
 // Serialization for char nodes
 pub mod serialization_char;
 
+// Arena allocation for space-efficient disk storage
+#[cfg(feature = "persistent-artrie")]
+pub mod arena;
+
+// Arena manager for managing multiple arenas
+#[cfg(feature = "persistent-artrie")]
+pub mod arena_manager;
+
+// Compact variable-width encoding for space-efficient serialization
+#[cfg(feature = "persistent-artrie")]
+pub mod compact_encoding;
+
+// Traversal context for block caching
+#[cfg(feature = "persistent-artrie")]
+pub mod traversal_context;
+
+// Dirty tracking for incremental checkpoints
+#[cfg(feature = "persistent-artrie")]
+pub mod dirty_tracker;
+
+// Hash-based deduplication for space efficiency
+#[cfg(feature = "persistent-artrie")]
+pub mod dedup;
+
+// Relative offset encoding for space-efficient child pointers
+#[cfg(feature = "persistent-artrie")]
+pub mod relative_encoding;
+
 // Disk-backed implementation
 #[cfg(feature = "persistent-artrie")]
 pub mod dict_impl_char;
@@ -54,6 +82,51 @@ pub use serialization_char::{
     char_from_bytes, char_serialized_size, char_to_bytes, deserialize_char_node,
     serialize_char_node, CHAR_FORMAT_VERSION, CHAR_NODE_MAGIC, CHAR_SERIALIZED_HEADER_SIZE,
     SerializedCharNodeHeader,
+};
+
+// Re-export compact serialization (under feature flag)
+#[cfg(feature = "persistent-artrie")]
+pub use serialization_char::{
+    char_from_bytes_compact, char_to_bytes_compact, char_compact_serialized_size,
+};
+
+// Re-export compact encoding utilities (under feature flag)
+#[cfg(feature = "persistent-artrie")]
+pub use compact_encoding::{
+    CompactHeader, DecodedCompactNode, determine_key_width, determine_ptr_width,
+    COMPACT_NODE_TYPE_N4, COMPACT_NODE_TYPE_N16, COMPACT_NODE_TYPE_N48, COMPACT_NODE_TYPE_BUCKET,
+};
+
+// Re-export arena types (under feature flag)
+#[cfg(feature = "persistent-artrie")]
+pub use arena::{
+    ArenaHeader, CharNodeArena, CharNodeArenaV2, SlotEntry, VarintSlotEntry,
+    ARENA_MAGIC, ARENA_MAGIC_V2, ARENA_VERSION, ARENA_VERSION_V2,
+    FLAG_VARINT_DIRECTORY, HEADER_SIZE, MIN_FREE_SPACE, SLOT_SIZE,
+};
+
+// Re-export arena manager types (under feature flag)
+#[cfg(feature = "persistent-artrie")]
+pub use arena_manager::{ArenaManager, ArenaSlot, ArenaStats, ReservedSlots};
+
+// Re-export traversal context types (under feature flag)
+#[cfg(feature = "persistent-artrie")]
+pub use traversal_context::{LightweightTraversalContext, TraversalContext, TraversalStats};
+
+// Re-export dirty tracker types (under feature flag)
+#[cfg(feature = "persistent-artrie")]
+pub use dirty_tracker::{BatchDirtyTracker, DirtyTracker, DirtyTrackerStats};
+
+// Re-export deduplication types (under feature flag)
+#[cfg(feature = "persistent-artrie")]
+pub use dedup::{BatchDeduplicator, DeduplicatingArenaManager, DeduplicatorStats, NodeDeduplicator};
+
+// Re-export relative encoding types (under feature flag)
+#[cfg(feature = "persistent-artrie")]
+pub use relative_encoding::{
+    encode_child_pointer, decode_child_pointer, encode_children, decode_children,
+    encode_sequential_siblings, decode_sequential_siblings, encoded_size, is_same_arena,
+    FLAG_CROSS_ARENA, FLAG_RELATIVE_OFFSETS, FLAG_SEQUENTIAL_SIBLINGS, CROSS_ARENA_SIZE,
 };
 
 use crate::value::DictionaryValue;

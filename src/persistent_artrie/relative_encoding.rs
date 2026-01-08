@@ -1,0 +1,492 @@
+//! Relative offset encoding for space-efficient child pointer storage.
+//!
+//! This module provides encoding utilities that minimize storage overhead by:
+//! 1. Using relative offsets for same-arena child pointers
+//! 2. Falling back to full encoding for cross-arena pointers
+//!
+//! ## Encoding Scheme
+//!
+//! Child pointers use a flag bit to distinguish encoding modes:
+//!
+//! - **Bit 0 = 0**: Same-arena relative offset (remaining bits = varint delta)
+//! - **Bit 0 = 1**: Cross-arena full pointer (remaining bytes = arena_id:slot_id)
+//!
+//! ### Same-Arena Relative Offset
+//!
+//! When parent and child are in the same arena:
+//! - Post-order serialization guarantees: `child_slot_id < parent_slot_id`
+//! - Store `delta = parent_slot_id - child_slot_id` (always positive)
+//! - Encode as varint: `(delta << 1) | 0` (flag bit = 0)
+//!
+//! Typical deltas are small (1-100), encoding to 1-2 bytes vs 8 bytes fixed.
+//!
+//! ### Cross-Arena Full Pointer
+//!
+//! When parent and child are in different arenas:
+//! - Store full (arena_id, slot_id) pair
+//! - Encode as: `0x01 | arena_id (4 bytes) | slot_id (4 bytes)`
+//!
+//! ## Example
+//!
+//! ```rust,ignore
+//! use libdictenstein::persistent_artrie::arena_manager::ArenaSlot;
+//! use libdictenstein::persistent_artrie::relative_encoding::*;
+//!
+//! let parent = ArenaSlot::new(0, 100);
+//! let child = ArenaSlot::new(0, 95);  // Same arena, delta = 5
+//!
+//! let mut buf = Vec::new();
+//! encode_child_pointer(parent, child, &mut buf);
+//!
+//! // Encoded as 1 byte: (5 << 1) | 0 = 10
+//! assert_eq!(buf.len(), 1);
+//!
+//! let (decoded, len) = decode_child_pointer(&buf, parent);
+//! assert_eq!(decoded.arena_id, 0);
+//! assert_eq!(decoded.slot_id, 95);
+//! ```
+
+use super::arena_manager::ArenaSlot;
+use super::compact_encoding::{write_varint_to_vec, read_varint_from_slice};
+
+/// Flag bit indicating cross-arena encoding (bit 0 = 1)
+pub const FLAG_CROSS_ARENA: u8 = 0x01;
+
+/// Minimum size for cross-arena encoding: 1 byte flag + 4 bytes arena_id + 4 bytes slot_id
+pub const CROSS_ARENA_SIZE: usize = 9;
+
+// =============================================================================
+// Header Flags for Relative Mode
+// =============================================================================
+
+/// Header flag indicating that child pointers use relative offset encoding
+pub const FLAG_RELATIVE_OFFSETS: u8 = 0x80;
+
+/// Header flag indicating sequential sibling storage
+pub const FLAG_SEQUENTIAL_SIBLINGS: u8 = 0x40;
+
+// =============================================================================
+// Encoding Functions
+// =============================================================================
+
+/// Encode a child pointer relative to the parent.
+///
+/// If parent and child are in the same arena, encodes as a relative offset.
+/// Otherwise, encodes using full (arena_id, slot_id) pair.
+///
+/// # Arguments
+/// * `parent` - Parent's arena slot (used for relative offset calculation)
+/// * `child` - Child's arena slot to encode
+/// * `out` - Output buffer to append encoded bytes
+///
+/// # Returns
+/// Number of bytes written to `out`
+pub fn encode_child_pointer(parent: ArenaSlot, child: ArenaSlot, out: &mut Vec<u8>) -> usize {
+    if parent.arena_id == child.arena_id {
+        // Same arena: use relative offset (varint)
+        // Post-order serialization guarantees parent.slot_id > child.slot_id
+        let delta = parent.slot_id.saturating_sub(child.slot_id);
+        encode_relative(delta, out)
+    } else {
+        // Cross arena: use full encoding
+        encode_full(child, out)
+    }
+}
+
+/// Encode a relative offset (same-arena pointer).
+///
+/// Encodes `delta` as a varint with flag bit = 0 (indicating same-arena).
+/// The value stored is `(delta << 1)` where bit 0 is always 0.
+///
+/// # Arguments
+/// * `delta` - The offset difference: `parent.slot_id - child.slot_id`
+/// * `out` - Output buffer to append encoded bytes
+///
+/// # Returns
+/// Number of bytes written
+#[inline]
+pub fn encode_relative(delta: u32, out: &mut Vec<u8>) -> usize {
+    // Shift left 1 bit, flag bit = 0 (same arena)
+    let value = (delta as u64) << 1;
+    let start_len = out.len();
+    write_varint_to_vec(value, out);
+    out.len() - start_len
+}
+
+/// Encode a full (arena_id, slot_id) pair (cross-arena pointer).
+///
+/// Format: `FLAG_CROSS_ARENA | arena_id (4 bytes LE) | slot_id (4 bytes LE)`
+///
+/// # Arguments
+/// * `slot` - The arena slot to encode
+/// * `out` - Output buffer to append encoded bytes
+///
+/// # Returns
+/// Number of bytes written (always 9)
+#[inline]
+pub fn encode_full(slot: ArenaSlot, out: &mut Vec<u8>) -> usize {
+    out.push(FLAG_CROSS_ARENA);
+    out.extend_from_slice(&slot.arena_id.to_le_bytes());
+    out.extend_from_slice(&slot.slot_id.to_le_bytes());
+    CROSS_ARENA_SIZE
+}
+
+// =============================================================================
+// Decoding Functions
+// =============================================================================
+
+/// Decode a child pointer that was encoded relative to the parent.
+///
+/// # Arguments
+/// * `data` - Encoded bytes to decode from
+/// * `parent` - Parent's arena slot (used to reconstruct absolute slot for relative encoding)
+///
+/// # Returns
+/// Tuple of (decoded ArenaSlot, bytes consumed)
+pub fn decode_child_pointer(data: &[u8], parent: ArenaSlot) -> (ArenaSlot, usize) {
+    let first = data[0];
+
+    if first & FLAG_CROSS_ARENA != 0 && first == FLAG_CROSS_ARENA {
+        // Cross arena: full encoding (flag byte followed by arena_id and slot_id)
+        decode_full(data)
+    } else {
+        // Same arena: relative offset (varint with bit 0 = 0)
+        let (delta, len) = decode_relative(data);
+        let child_slot = parent.slot_id.saturating_sub(delta);
+        (ArenaSlot::new(parent.arena_id, child_slot), len)
+    }
+}
+
+/// Decode a relative offset (same-arena pointer).
+///
+/// # Arguments
+/// * `data` - Encoded varint bytes
+///
+/// # Returns
+/// Tuple of (delta value, bytes consumed)
+#[inline]
+pub fn decode_relative(data: &[u8]) -> (u32, usize) {
+    let (value, len) = read_varint_from_slice(data);
+    // The stored value is (delta << 1), so shift right to get delta
+    ((value >> 1) as u32, len)
+}
+
+/// Decode a full (arena_id, slot_id) pair (cross-arena pointer).
+///
+/// # Arguments
+/// * `data` - Encoded bytes (must start with FLAG_CROSS_ARENA)
+///
+/// # Returns
+/// Tuple of (decoded ArenaSlot, bytes consumed = 9)
+#[inline]
+pub fn decode_full(data: &[u8]) -> (ArenaSlot, usize) {
+    debug_assert!(data[0] == FLAG_CROSS_ARENA);
+
+    let arena_id = u32::from_le_bytes([data[1], data[2], data[3], data[4]]);
+    let slot_id = u32::from_le_bytes([data[5], data[6], data[7], data[8]]);
+
+    (ArenaSlot::new(arena_id, slot_id), CROSS_ARENA_SIZE)
+}
+
+// =============================================================================
+// Utility Functions
+// =============================================================================
+
+/// Check if a child pointer would use relative encoding.
+///
+/// Returns `true` if parent and child are in the same arena.
+#[inline]
+pub fn is_same_arena(parent: ArenaSlot, child: ArenaSlot) -> bool {
+    parent.arena_id == child.arena_id
+}
+
+/// Calculate the encoded size of a child pointer.
+///
+/// # Arguments
+/// * `parent` - Parent's arena slot
+/// * `child` - Child's arena slot
+///
+/// # Returns
+/// Number of bytes required to encode the pointer
+pub fn encoded_size(parent: ArenaSlot, child: ArenaSlot) -> usize {
+    if parent.arena_id == child.arena_id {
+        // Same arena: varint size of (delta << 1)
+        let delta = parent.slot_id.saturating_sub(child.slot_id);
+        let value = (delta as u64) << 1;
+        super::compact_encoding::varint_size(value)
+    } else {
+        // Cross arena: fixed 9 bytes
+        CROSS_ARENA_SIZE
+    }
+}
+
+/// Encode multiple child pointers.
+///
+/// # Arguments
+/// * `parent` - Parent's arena slot
+/// * `children` - Child arena slots to encode
+/// * `out` - Output buffer to append encoded bytes
+///
+/// # Returns
+/// Total number of bytes written
+pub fn encode_children(parent: ArenaSlot, children: &[ArenaSlot], out: &mut Vec<u8>) -> usize {
+    let mut total = 0;
+    for &child in children {
+        total += encode_child_pointer(parent, child, out);
+    }
+    total
+}
+
+/// Decode multiple child pointers.
+///
+/// # Arguments
+/// * `data` - Encoded bytes
+/// * `parent` - Parent's arena slot
+/// * `count` - Number of children to decode
+///
+/// # Returns
+/// Tuple of (decoded ArenaSlots, total bytes consumed)
+pub fn decode_children(data: &[u8], parent: ArenaSlot, count: usize) -> (Vec<ArenaSlot>, usize) {
+    let mut children = Vec::with_capacity(count);
+    let mut offset = 0;
+
+    for _ in 0..count {
+        let (child, len) = decode_child_pointer(&data[offset..], parent);
+        children.push(child);
+        offset += len;
+    }
+
+    (children, offset)
+}
+
+// =============================================================================
+// Sequential Siblings Support
+// =============================================================================
+
+/// Encode a sequential sibling reference (first_slot + count).
+///
+/// When children are allocated consecutively in the same arena:
+/// - Store only the first child's slot reference
+/// - Count is stored separately in the node header
+///
+/// Uses relative encoding if same arena as parent.
+///
+/// # Arguments
+/// * `parent` - Parent's arena slot
+/// * `first_child` - First child's arena slot
+/// * `out` - Output buffer to append encoded bytes
+///
+/// # Returns
+/// Number of bytes written
+pub fn encode_sequential_siblings(
+    parent: ArenaSlot,
+    first_child: ArenaSlot,
+    out: &mut Vec<u8>,
+) -> usize {
+    // Encode the first child slot using relative or full encoding
+    encode_child_pointer(parent, first_child, out)
+}
+
+/// Decode a sequential sibling reference and reconstruct all child slots.
+///
+/// # Arguments
+/// * `data` - Encoded bytes
+/// * `parent` - Parent's arena slot
+/// * `count` - Number of sequential children
+///
+/// # Returns
+/// Tuple of (decoded child ArenaSlots, bytes consumed for first_slot encoding)
+pub fn decode_sequential_siblings(
+    data: &[u8],
+    parent: ArenaSlot,
+    count: usize,
+) -> (Vec<ArenaSlot>, usize) {
+    // Decode first child slot
+    let (first_child, bytes_consumed) = decode_child_pointer(data, parent);
+
+    // Reconstruct all child slots (consecutive slot IDs)
+    let mut children = Vec::with_capacity(count);
+    for i in 0..count {
+        children.push(ArenaSlot::new(first_child.arena_id, first_child.slot_id + i as u32));
+    }
+
+    (children, bytes_consumed)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_same_arena_relative_encoding() {
+        let parent = ArenaSlot::new(0, 100);
+        let child = ArenaSlot::new(0, 95);  // Delta = 5
+
+        let mut buf = Vec::new();
+        let len = encode_child_pointer(parent, child, &mut buf);
+
+        // (5 << 1) = 10, fits in single byte
+        assert_eq!(len, 1);
+        assert_eq!(buf.len(), 1);
+        assert_eq!(buf[0], 10);  // 5 << 1 = 10
+
+        let (decoded, consumed) = decode_child_pointer(&buf, parent);
+        assert_eq!(consumed, 1);
+        assert_eq!(decoded.arena_id, 0);
+        assert_eq!(decoded.slot_id, 95);
+    }
+
+    #[test]
+    fn test_cross_arena_full_encoding() {
+        let parent = ArenaSlot::new(0, 100);
+        let child = ArenaSlot::new(1, 50);  // Different arena
+
+        let mut buf = Vec::new();
+        let len = encode_child_pointer(parent, child, &mut buf);
+
+        // Cross-arena: 1 + 4 + 4 = 9 bytes
+        assert_eq!(len, CROSS_ARENA_SIZE);
+        assert_eq!(buf.len(), CROSS_ARENA_SIZE);
+        assert_eq!(buf[0], FLAG_CROSS_ARENA);
+
+        let (decoded, consumed) = decode_child_pointer(&buf, parent);
+        assert_eq!(consumed, CROSS_ARENA_SIZE);
+        assert_eq!(decoded.arena_id, 1);
+        assert_eq!(decoded.slot_id, 50);
+    }
+
+    #[test]
+    fn test_zero_delta() {
+        let parent = ArenaSlot::new(0, 100);
+        let child = ArenaSlot::new(0, 100);  // Same slot (edge case)
+
+        let mut buf = Vec::new();
+        let len = encode_child_pointer(parent, child, &mut buf);
+
+        // Delta = 0, (0 << 1) = 0, single byte
+        assert_eq!(len, 1);
+        assert_eq!(buf[0], 0);
+
+        let (decoded, _) = decode_child_pointer(&buf, parent);
+        assert_eq!(decoded.slot_id, 100);
+    }
+
+    #[test]
+    fn test_large_delta() {
+        let parent = ArenaSlot::new(0, 100000);
+        let child = ArenaSlot::new(0, 0);  // Delta = 100000
+
+        let mut buf = Vec::new();
+        let len = encode_child_pointer(parent, child, &mut buf);
+
+        // (100000 << 1) = 200000, needs 3-4 bytes varint
+        assert!(len > 1 && len < CROSS_ARENA_SIZE);
+
+        let (decoded, _) = decode_child_pointer(&buf, parent);
+        assert_eq!(decoded.arena_id, 0);
+        assert_eq!(decoded.slot_id, 0);
+    }
+
+    #[test]
+    fn test_encoded_size() {
+        let parent = ArenaSlot::new(0, 100);
+        let child_same = ArenaSlot::new(0, 95);
+        let child_cross = ArenaSlot::new(1, 50);
+
+        // Same arena: small delta = 1 byte
+        assert_eq!(encoded_size(parent, child_same), 1);
+
+        // Cross arena: always 9 bytes
+        assert_eq!(encoded_size(parent, child_cross), CROSS_ARENA_SIZE);
+    }
+
+    #[test]
+    fn test_encode_decode_children() {
+        let parent = ArenaSlot::new(0, 100);
+        let children = vec![
+            ArenaSlot::new(0, 90),  // Same arena
+            ArenaSlot::new(0, 80),  // Same arena
+            ArenaSlot::new(1, 50),  // Different arena
+        ];
+
+        let mut buf = Vec::new();
+        let total_len = encode_children(parent, &children, &mut buf);
+
+        let (decoded, consumed) = decode_children(&buf, parent, children.len());
+
+        assert_eq!(consumed, total_len);
+        assert_eq!(decoded.len(), 3);
+        assert_eq!(decoded[0], children[0]);
+        assert_eq!(decoded[1], children[1]);
+        assert_eq!(decoded[2], children[2]);
+    }
+
+    #[test]
+    fn test_sequential_siblings() {
+        let parent = ArenaSlot::new(0, 100);
+        let first_child = ArenaSlot::new(0, 80);
+        let count = 4;
+
+        let mut buf = Vec::new();
+        let len = encode_sequential_siblings(parent, first_child, &mut buf);
+
+        // Should encode just the first child (relative)
+        assert!(len < CROSS_ARENA_SIZE);
+
+        let (children, consumed) = decode_sequential_siblings(&buf, parent, count);
+
+        assert_eq!(consumed, len);
+        assert_eq!(children.len(), count);
+        assert_eq!(children[0], ArenaSlot::new(0, 80));
+        assert_eq!(children[1], ArenaSlot::new(0, 81));
+        assert_eq!(children[2], ArenaSlot::new(0, 82));
+        assert_eq!(children[3], ArenaSlot::new(0, 83));
+    }
+
+    #[test]
+    fn test_sequential_siblings_cross_arena() {
+        let parent = ArenaSlot::new(0, 100);
+        let first_child = ArenaSlot::new(1, 0);  // Different arena
+        let count = 3;
+
+        let mut buf = Vec::new();
+        let len = encode_sequential_siblings(parent, first_child, &mut buf);
+
+        // Cross arena = full encoding
+        assert_eq!(len, CROSS_ARENA_SIZE);
+
+        let (children, _) = decode_sequential_siblings(&buf, parent, count);
+
+        assert_eq!(children.len(), count);
+        assert_eq!(children[0], ArenaSlot::new(1, 0));
+        assert_eq!(children[1], ArenaSlot::new(1, 1));
+        assert_eq!(children[2], ArenaSlot::new(1, 2));
+    }
+
+    #[test]
+    fn test_space_savings() {
+        // Compare space usage: relative vs fixed
+        let parent = ArenaSlot::new(0, 1000);
+
+        // Typical case: children allocated just before parent
+        let children: Vec<ArenaSlot> = (990..1000)
+            .rev()
+            .map(|s| ArenaSlot::new(0, s))
+            .collect();
+
+        let mut buf = Vec::new();
+        let relative_size = encode_children(parent, &children, &mut buf);
+
+        // Fixed encoding would be 8 bytes per child = 80 bytes
+        let fixed_size = children.len() * 8;
+
+        // Relative should be much smaller (1-2 bytes per child for small deltas)
+        assert!(relative_size < fixed_size);
+        println!(
+            "Space savings: {} bytes relative vs {} bytes fixed ({:.1}% reduction)",
+            relative_size,
+            fixed_size,
+            (1.0 - relative_size as f64 / fixed_size as f64) * 100.0
+        );
+    }
+}

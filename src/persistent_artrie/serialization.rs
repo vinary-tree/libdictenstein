@@ -59,10 +59,17 @@
 //! ```
 
 use super::error::{PersistentARTrieError, Result};
-use super::nodes::flags;
 use super::nodes::{CompressedPrefix, Node, Node16, Node256, Node4, Node48, NodeHeader, MAX_PREFIX_LEN};
-use super::swizzled_ptr::SwizzledPtr;
+use super::swizzled_ptr::{NodeType, SwizzledPtr};
 use std::io::{Read, Write};
+
+// Relative encoding support (feature-gated)
+#[cfg(feature = "persistent-artrie")]
+use super::arena_manager::ArenaSlot;
+#[cfg(feature = "persistent-artrie")]
+use super::relative_encoding::{
+    encode_children, decode_children, encode_sequential_siblings, decode_sequential_siblings,
+};
 
 /// Helper to convert io::Error to PersistentARTrieError for serialization operations
 fn io_err(e: std::io::Error) -> PersistentARTrieError {
@@ -75,8 +82,20 @@ pub const NODE_MAGIC: [u8; 4] = *b"ART\0";
 /// Current serialization format version
 pub const FORMAT_VERSION: u8 = 1;
 
+/// Format version 2: Supports relative offset encoding
+pub const FORMAT_VERSION_V2: u8 = 2;
+
 /// Serialized header size in bytes
 pub const SERIALIZED_HEADER_SIZE: usize = 16;
+
+/// Header flags for encoding modes
+#[cfg(feature = "persistent-artrie")]
+pub mod encoding_flags {
+    /// Children use relative offset encoding (vs fixed 8-byte pointers)
+    pub const RELATIVE_OFFSETS: u8 = 0x80;
+    /// Children are stored sequentially (store first_child + count)
+    pub const SEQUENTIAL_SIBLINGS: u8 = 0x40;
+}
 
 /// Node type discriminants for serialization
 pub mod node_types {
@@ -98,8 +117,8 @@ pub struct SerializedNodeHeader {
     pub node_type: u8,
     /// Node flags (is_final, is_dirty, is_leaf)
     pub flags: u8,
-    /// Reserved for future use
-    pub reserved: u8,
+    /// Encoding flags (v2+): RELATIVE_OFFSETS, SEQUENTIAL_SIBLINGS
+    pub encoding_flags: u8,
     /// Number of children
     pub num_children: u16,
     /// Compressed prefix length
@@ -111,19 +130,51 @@ pub struct SerializedNodeHeader {
 }
 
 impl SerializedNodeHeader {
-    /// Create a header from a NodeHeader
+    /// Create a header from a NodeHeader (v1 format, fixed pointers)
     pub fn from_node_header(header: &NodeHeader, data_size: u32) -> Self {
         Self {
             magic: NODE_MAGIC,
             version: FORMAT_VERSION,
             node_type: header.node_type,
             flags: header.flags,
-            reserved: 0,
+            encoding_flags: 0,
             num_children: header.num_children,
             prefix_len: header.prefix_len,
             _padding: 0,
             data_size,
         }
+    }
+
+    /// Create a header from a NodeHeader with encoding flags (v2 format)
+    #[cfg(feature = "persistent-artrie")]
+    pub fn from_node_header_v2(
+        header: &NodeHeader,
+        data_size: u32,
+        encoding_flags: u8,
+    ) -> Self {
+        Self {
+            magic: NODE_MAGIC,
+            version: FORMAT_VERSION_V2,
+            node_type: header.node_type,
+            flags: header.flags,
+            encoding_flags,
+            num_children: header.num_children,
+            prefix_len: header.prefix_len,
+            _padding: 0,
+            data_size,
+        }
+    }
+
+    /// Check if this header uses relative offset encoding
+    #[cfg(feature = "persistent-artrie")]
+    pub fn uses_relative_offsets(&self) -> bool {
+        self.version >= FORMAT_VERSION_V2 && (self.encoding_flags & encoding_flags::RELATIVE_OFFSETS) != 0
+    }
+
+    /// Check if this header uses sequential sibling storage
+    #[cfg(feature = "persistent-artrie")]
+    pub fn uses_sequential_siblings(&self) -> bool {
+        self.version >= FORMAT_VERSION_V2 && (self.encoding_flags & encoding_flags::SEQUENTIAL_SIBLINGS) != 0
     }
 
     /// Convert to a NodeHeader
@@ -153,9 +204,9 @@ impl SerializedNodeHeader {
                 ]),
             });
         }
-        if self.version > FORMAT_VERSION {
+        if self.version > FORMAT_VERSION_V2 {
             return Err(PersistentARTrieError::UnsupportedVersion {
-                max_supported: FORMAT_VERSION as u32,
+                max_supported: FORMAT_VERSION_V2 as u32,
                 found: self.version as u32,
             });
         }
@@ -184,7 +235,7 @@ impl SerializedNodeHeader {
         bytes[4] = self.version;
         bytes[5] = self.node_type;
         bytes[6] = self.flags;
-        bytes[7] = self.reserved;
+        bytes[7] = self.encoding_flags;
         bytes[8..10].copy_from_slice(&self.num_children.to_le_bytes());
         bytes[10] = self.prefix_len;
         bytes[11] = self._padding;
@@ -199,7 +250,7 @@ impl SerializedNodeHeader {
             version: bytes[4],
             node_type: bytes[5],
             flags: bytes[6],
-            reserved: bytes[7],
+            encoding_flags: bytes[7],
             num_children: u16::from_le_bytes([bytes[8], bytes[9]]),
             prefix_len: bytes[10],
             _padding: bytes[11],
@@ -495,10 +546,553 @@ pub fn from_bytes(bytes: &[u8]) -> Result<Node> {
     deserialize_node(&mut reader)
 }
 
+// =============================================================================
+// V2 Serialization with Relative Offset Encoding
+// =============================================================================
+
+#[cfg(feature = "persistent-artrie")]
+pub mod v2 {
+    use super::*;
+
+    /// Context for relative encoding during serialization
+    #[derive(Debug, Clone)]
+    pub struct SerializationContext {
+        /// Parent's arena slot (used for relative offset calculation)
+        pub parent_slot: ArenaSlot,
+        /// Whether to use relative offsets (vs fixed 8-byte pointers)
+        pub use_relative: bool,
+        /// Whether children are stored sequentially
+        pub use_sequential: bool,
+        /// First child slot (for sequential mode)
+        pub first_child_slot: Option<ArenaSlot>,
+    }
+
+    impl SerializationContext {
+        /// Create a context for relative encoding
+        pub fn new(parent_slot: ArenaSlot) -> Self {
+            Self {
+                parent_slot,
+                use_relative: true,
+                use_sequential: false,
+                first_child_slot: None,
+            }
+        }
+
+        /// Create a context for sequential sibling storage
+        pub fn sequential(parent_slot: ArenaSlot, first_child_slot: ArenaSlot) -> Self {
+            Self {
+                parent_slot,
+                use_relative: true,
+                use_sequential: true,
+                first_child_slot: Some(first_child_slot),
+            }
+        }
+
+        /// Get the encoding flags for the header
+        pub fn encoding_flags(&self) -> u8 {
+            let mut flags = 0u8;
+            if self.use_relative {
+                flags |= encoding_flags::RELATIVE_OFFSETS;
+            }
+            if self.use_sequential {
+                flags |= encoding_flags::SEQUENTIAL_SIBLINGS;
+            }
+            flags
+        }
+    }
+
+    /// Context for deserialization
+    #[derive(Debug, Clone)]
+    pub struct DeserializationContext {
+        /// Parent's arena slot (used to reconstruct absolute slots from relative offsets)
+        pub parent_slot: ArenaSlot,
+    }
+
+    impl DeserializationContext {
+        pub fn new(parent_slot: ArenaSlot) -> Self {
+            Self { parent_slot }
+        }
+    }
+
+    /// Collect child slots from a node for relative encoding
+    ///
+    /// Returns only valid child slots (filters out null and in-memory pointers).
+    pub fn collect_child_slots(node: &Node) -> Vec<ArenaSlot> {
+        let mut slots = Vec::new();
+        match node {
+            Node::N4(n) => {
+                for i in 0..n.header.num_children as usize {
+                    if let Some(slot) = n.children[i].as_arena_slot() {
+                        slots.push(slot);
+                    }
+                }
+            }
+            Node::N16(n) => {
+                for i in 0..n.header.num_children as usize {
+                    if let Some(slot) = n.children[i].as_arena_slot() {
+                        slots.push(slot);
+                    }
+                }
+            }
+            Node::N48(n) => {
+                for i in 0..48 {
+                    if let Some(slot) = n.children[i].as_arena_slot() {
+                        slots.push(slot);
+                    }
+                }
+            }
+            Node::N256(n) => {
+                for child in &n.children {
+                    if let Some(slot) = child.as_arena_slot() {
+                        slots.push(slot);
+                    }
+                }
+            }
+        }
+        slots
+    }
+
+    /// Collect child slots and node types from a node for relative encoding with type preservation.
+    ///
+    /// Returns (ArenaSlot, NodeType) pairs for valid child pointers.
+    pub fn collect_child_slots_and_types(node: &Node) -> Vec<(ArenaSlot, NodeType)> {
+        let mut result = Vec::new();
+        match node {
+            Node::N4(n) => {
+                for i in 0..n.header.num_children as usize {
+                    if let (Some(slot), Some(node_type)) = (
+                        n.children[i].as_arena_slot(),
+                        n.children[i].disk_location().map(|loc| loc.node_type),
+                    ) {
+                        result.push((slot, node_type));
+                    }
+                }
+            }
+            Node::N16(n) => {
+                for i in 0..n.header.num_children as usize {
+                    if let (Some(slot), Some(node_type)) = (
+                        n.children[i].as_arena_slot(),
+                        n.children[i].disk_location().map(|loc| loc.node_type),
+                    ) {
+                        result.push((slot, node_type));
+                    }
+                }
+            }
+            Node::N48(n) => {
+                for i in 0..48 {
+                    if let (Some(slot), Some(node_type)) = (
+                        n.children[i].as_arena_slot(),
+                        n.children[i].disk_location().map(|loc| loc.node_type),
+                    ) {
+                        result.push((slot, node_type));
+                    }
+                }
+            }
+            Node::N256(n) => {
+                for child in &n.children {
+                    if let (Some(slot), Some(node_type)) = (
+                        child.as_arena_slot(),
+                        child.disk_location().map(|loc| loc.node_type),
+                    ) {
+                        result.push((slot, node_type));
+                    }
+                }
+            }
+        }
+        result
+    }
+
+    /// Estimate the serialized size with relative encoding
+    pub fn estimate_serialized_size_v2(
+        node: &Node,
+        ctx: &SerializationContext,
+    ) -> usize {
+        let header_size = SERIALIZED_HEADER_SIZE;
+        let prefix_size = if node.header().prefix_len > 0 { MAX_PREFIX_LEN } else { 0 };
+
+        let num_children = node.header().num_children as usize;
+
+        let (children_size, node_types_size) = if ctx.use_sequential {
+            // Sequential: just first_child reference + count is in header
+            let encoded_size = if let Some(first_child) = ctx.first_child_slot {
+                super::super::relative_encoding::encoded_size(ctx.parent_slot, first_child)
+            } else {
+                0
+            };
+            // Add 1 byte per child for node type
+            (encoded_size, num_children)
+        } else if ctx.use_relative {
+            // Relative: sum of encoded sizes for each child
+            let child_slots = collect_child_slots(node);
+            let encoded_size: usize = child_slots.iter()
+                .map(|&child| super::super::relative_encoding::encoded_size(ctx.parent_slot, child))
+                .sum();
+            // Add 1 byte per child for node type
+            (encoded_size, num_children)
+        } else {
+            // Fixed: 8 bytes per child (no separate node types needed - they're in the SwizzledPtr)
+            (num_children * 8, 0)
+        };
+
+        let keys_size = match node {
+            Node::N4(_) => 4,
+            Node::N16(_) => 16,
+            Node::N48(_) => 256, // index array
+            Node::N256(_) => 32, // bitmap only
+        };
+
+        header_size + prefix_size + keys_size + children_size + node_types_size
+    }
+
+    /// Serialize a node with relative encoding to a byte vector
+    pub fn serialize_node_v2(
+        node: &Node,
+        ctx: &SerializationContext,
+    ) -> Result<Vec<u8>> {
+        let estimated_size = estimate_serialized_size_v2(node, ctx);
+        let mut buffer = Vec::with_capacity(estimated_size);
+
+        // Collect child slots and their node types (needed for type preservation)
+        let child_slots_and_types = collect_child_slots_and_types(node);
+        let child_slots: Vec<ArenaSlot> = child_slots_and_types.iter().map(|(s, _)| *s).collect();
+
+        // Encode children with relative offsets
+        let mut children_buf = Vec::new();
+        if ctx.use_sequential {
+            if let Some(first_child) = ctx.first_child_slot {
+                encode_sequential_siblings(ctx.parent_slot, first_child, &mut children_buf);
+            }
+        } else {
+            encode_children(ctx.parent_slot, &child_slots, &mut children_buf);
+        }
+
+        // Calculate data size (keys + encoded children + node types)
+        let prefix_size = if node.header().prefix_len > 0 { MAX_PREFIX_LEN } else { 0 };
+        let keys_size = match node {
+            Node::N4(_) => 4,
+            Node::N16(_) => 16,
+            Node::N48(_) => 256,
+            Node::N256(_) => 32,
+        };
+        // Add 1 byte per child for node type when using relative/sequential encoding
+        let node_types_size = if ctx.use_sequential || !child_slots.is_empty() {
+            child_slots_and_types.len()
+        } else {
+            0
+        };
+        let data_size = prefix_size + keys_size + children_buf.len() + node_types_size;
+
+        // Build header
+        let header = SerializedNodeHeader::from_node_header_v2(
+            node.header(),
+            data_size as u32,
+            ctx.encoding_flags(),
+        );
+
+        // Write header
+        buffer.extend_from_slice(&header.to_bytes());
+
+        // Write prefix if present
+        if node.header().prefix_len > 0 {
+            buffer.extend_from_slice(&node.prefix().bytes);
+        }
+
+        // Write keys and encoded children
+        match node {
+            Node::N4(n) => {
+                buffer.extend_from_slice(&n.keys);
+            }
+            Node::N16(n) => {
+                buffer.extend_from_slice(&n.keys);
+            }
+            Node::N48(n) => {
+                buffer.extend_from_slice(&n.index);
+            }
+            Node::N256(n) => {
+                // Write bitmap
+                let mut bitmap = [0u64; 4];
+                for (i, child) in n.children.iter().enumerate() {
+                    if !child.is_null() {
+                        bitmap[i / 64] |= 1u64 << (i % 64);
+                    }
+                }
+                for word in &bitmap {
+                    buffer.extend_from_slice(&word.to_le_bytes());
+                }
+            }
+        }
+
+        // Write encoded children
+        buffer.extend_from_slice(&children_buf);
+
+        // Write node types for each child (1 byte each) - required for relative/sequential encoding
+        // This allows us to reconstruct the correct SwizzledPtr with proper node type during deserialization
+        for (_, node_type) in &child_slots_and_types {
+            buffer.push(*node_type as u8);
+        }
+
+        Ok(buffer)
+    }
+
+    /// Deserialize a node with v2 encoding (handles both relative and fixed)
+    pub fn deserialize_node_v2(
+        data: &[u8],
+        ctx: &DeserializationContext,
+    ) -> Result<Node> {
+        let mut reader = std::io::Cursor::new(data);
+
+        // Read header
+        let mut header_bytes = [0u8; SERIALIZED_HEADER_SIZE];
+        reader.read_exact(&mut header_bytes).map_err(io_err)?;
+        let header = SerializedNodeHeader::from_bytes(&header_bytes);
+        header.validate()?;
+
+        // Read prefix if present
+        let prefix = if header.prefix_len > 0 {
+            let mut prefix_bytes = [0u8; MAX_PREFIX_LEN];
+            reader.read_exact(&mut prefix_bytes).map_err(io_err)?;
+            CompressedPrefix { bytes: prefix_bytes }
+        } else {
+            CompressedPrefix::empty()
+        };
+
+        let remaining = &data[reader.position() as usize..];
+
+        // Decode based on node type and encoding flags
+        match header.node_type {
+            node_types::NODE4 => {
+                deserialize_node4_v2(&header, prefix, remaining, ctx)
+            }
+            node_types::NODE16 => {
+                deserialize_node16_v2(&header, prefix, remaining, ctx)
+            }
+            node_types::NODE48 => {
+                deserialize_node48_v2(&header, prefix, remaining, ctx)
+            }
+            node_types::NODE256 => {
+                deserialize_node256_v2(&header, prefix, remaining, ctx)
+            }
+            _ => Err(PersistentARTrieError::corrupted(format!(
+                "invalid node type: {}",
+                header.node_type
+            ))),
+        }
+    }
+
+    fn deserialize_node4_v2(
+        header: &SerializedNodeHeader,
+        prefix: CompressedPrefix,
+        data: &[u8],
+        ctx: &DeserializationContext,
+    ) -> Result<Node> {
+        let mut node = Node4::new();
+        node.header = header.to_node_header();
+        node.prefix = prefix;
+
+        // Read keys
+        node.keys.copy_from_slice(&data[..4]);
+
+        let num_children = header.num_children as usize;
+
+        // Decode children based on encoding mode
+        if header.uses_sequential_siblings() {
+            let (children, bytes_consumed) = decode_sequential_siblings(&data[4..], ctx.parent_slot, num_children);
+            // Read node types after encoded children
+            let types_start = 4 + bytes_consumed;
+            for (i, slot) in children.into_iter().enumerate() {
+                let node_type = NodeType::try_from(data[types_start + i])
+                    .unwrap_or(NodeType::Node4);
+                node.children[i] = SwizzledPtr::from_arena_slot(slot, node_type);
+            }
+        } else if header.uses_relative_offsets() {
+            let (children, bytes_consumed) = decode_children(&data[4..], ctx.parent_slot, num_children);
+            // Read node types after encoded children
+            let types_start = 4 + bytes_consumed;
+            for (i, slot) in children.into_iter().enumerate() {
+                let node_type = NodeType::try_from(data[types_start + i])
+                    .unwrap_or(NodeType::Node4);
+                node.children[i] = SwizzledPtr::from_arena_slot(slot, node_type);
+            }
+        } else {
+            // Fixed 8-byte pointers (node type is in the pointer itself)
+            for i in 0..num_children {
+                let offset = 4 + i * 8;
+                let raw = u64::from_le_bytes(data[offset..offset + 8].try_into().unwrap());
+                node.children[i] = SwizzledPtr::from_raw(raw);
+            }
+        }
+
+        Ok(Node::N4(Box::new(node)))
+    }
+
+    fn deserialize_node16_v2(
+        header: &SerializedNodeHeader,
+        prefix: CompressedPrefix,
+        data: &[u8],
+        ctx: &DeserializationContext,
+    ) -> Result<Node> {
+        let mut node = Node16::new();
+        node.header = header.to_node_header();
+        node.prefix = prefix;
+
+        // Read keys
+        node.keys.copy_from_slice(&data[..16]);
+
+        let num_children = header.num_children as usize;
+
+        // Decode children based on encoding mode
+        if header.uses_sequential_siblings() {
+            let (children, bytes_consumed) = decode_sequential_siblings(&data[16..], ctx.parent_slot, num_children);
+            // Read node types after encoded children
+            let types_start = 16 + bytes_consumed;
+            for (i, slot) in children.into_iter().enumerate() {
+                let node_type = NodeType::try_from(data[types_start + i])
+                    .unwrap_or(NodeType::Node4);
+                node.children[i] = SwizzledPtr::from_arena_slot(slot, node_type);
+            }
+        } else if header.uses_relative_offsets() {
+            let (children, bytes_consumed) = decode_children(&data[16..], ctx.parent_slot, num_children);
+            // Read node types after encoded children
+            let types_start = 16 + bytes_consumed;
+            for (i, slot) in children.into_iter().enumerate() {
+                let node_type = NodeType::try_from(data[types_start + i])
+                    .unwrap_or(NodeType::Node4);
+                node.children[i] = SwizzledPtr::from_arena_slot(slot, node_type);
+            }
+        } else {
+            // Fixed 8-byte pointers (node type is in the pointer itself)
+            for i in 0..num_children {
+                let offset = 16 + i * 8;
+                let raw = u64::from_le_bytes(data[offset..offset + 8].try_into().unwrap());
+                node.children[i] = SwizzledPtr::from_raw(raw);
+            }
+        }
+
+        Ok(Node::N16(Box::new(node)))
+    }
+
+    fn deserialize_node48_v2(
+        header: &SerializedNodeHeader,
+        prefix: CompressedPrefix,
+        data: &[u8],
+        ctx: &DeserializationContext,
+    ) -> Result<Node> {
+        let mut node = Node48::new();
+        node.header = header.to_node_header();
+        node.prefix = prefix;
+
+        // Read index array
+        node.index.copy_from_slice(&data[..256]);
+
+        let num_children = header.num_children as usize;
+
+        // Decode children based on encoding mode
+        if header.uses_sequential_siblings() {
+            let (children, bytes_consumed) = decode_sequential_siblings(&data[256..], ctx.parent_slot, num_children);
+            // Read node types after encoded children
+            let types_start = 256 + bytes_consumed;
+            for (i, slot) in children.into_iter().enumerate() {
+                let node_type = NodeType::try_from(data[types_start + i])
+                    .unwrap_or(NodeType::Node4);
+                node.children[i] = SwizzledPtr::from_arena_slot(slot, node_type);
+            }
+        } else if header.uses_relative_offsets() {
+            let (children, bytes_consumed) = decode_children(&data[256..], ctx.parent_slot, num_children);
+            // Read node types after encoded children
+            let types_start = 256 + bytes_consumed;
+            for (i, slot) in children.into_iter().enumerate() {
+                let node_type = NodeType::try_from(data[types_start + i])
+                    .unwrap_or(NodeType::Node4);
+                node.children[i] = SwizzledPtr::from_arena_slot(slot, node_type);
+            }
+        } else {
+            // Fixed 8-byte pointers (node type is in the pointer itself)
+            for i in 0..num_children {
+                let offset = 256 + i * 8;
+                let raw = u64::from_le_bytes(data[offset..offset + 8].try_into().unwrap());
+                node.children[i] = SwizzledPtr::from_raw(raw);
+            }
+        }
+
+        Ok(Node::N48(Box::new(node)))
+    }
+
+    fn deserialize_node256_v2(
+        header: &SerializedNodeHeader,
+        prefix: CompressedPrefix,
+        data: &[u8],
+        ctx: &DeserializationContext,
+    ) -> Result<Node> {
+        let mut node = Node256::new();
+        node.header = header.to_node_header();
+        node.prefix = prefix;
+
+        // Read bitmap
+        let mut bitmap = [0u64; 4];
+        for (i, word) in bitmap.iter_mut().enumerate() {
+            let offset = i * 8;
+            *word = u64::from_le_bytes(data[offset..offset + 8].try_into().unwrap());
+        }
+
+        let num_children = header.num_children as usize;
+        let children_start = 32; // After bitmap
+
+        // Decode children based on encoding mode
+        if header.uses_sequential_siblings() {
+            let (children, bytes_consumed) = decode_sequential_siblings(&data[children_start..], ctx.parent_slot, num_children);
+            // Read node types after encoded children
+            let types_start = children_start + bytes_consumed;
+            let mut child_idx = 0;
+            for i in 0..256 {
+                if bitmap[i / 64] & (1u64 << (i % 64)) != 0 {
+                    let node_type = NodeType::try_from(data[types_start + child_idx])
+                        .unwrap_or(NodeType::Node4);
+                    node.children[i] = SwizzledPtr::from_arena_slot(children[child_idx], node_type);
+                    child_idx += 1;
+                }
+            }
+        } else if header.uses_relative_offsets() {
+            let (children, bytes_consumed) = decode_children(&data[children_start..], ctx.parent_slot, num_children);
+            // Read node types after encoded children
+            let types_start = children_start + bytes_consumed;
+            let mut child_idx = 0;
+            for i in 0..256 {
+                if bitmap[i / 64] & (1u64 << (i % 64)) != 0 {
+                    let node_type = NodeType::try_from(data[types_start + child_idx])
+                        .unwrap_or(NodeType::Node4);
+                    node.children[i] = SwizzledPtr::from_arena_slot(children[child_idx], node_type);
+                    child_idx += 1;
+                }
+            }
+        } else {
+            // Fixed 8-byte pointers (node type is in the pointer itself)
+            let mut child_idx = 0;
+            for i in 0..256 {
+                if bitmap[i / 64] & (1u64 << (i % 64)) != 0 {
+                    let offset = children_start + child_idx * 8;
+                    let raw = u64::from_le_bytes(data[offset..offset + 8].try_into().unwrap());
+                    node.children[i] = SwizzledPtr::from_raw(raw);
+                    child_idx += 1;
+                }
+            }
+        }
+
+        Ok(Node::N256(Box::new(node)))
+    }
+}
+
+// Re-export v2 types for convenience
+#[cfg(feature = "persistent-artrie")]
+pub use v2::{
+    SerializationContext, DeserializationContext,
+    serialize_node_v2, deserialize_node_v2,
+    estimate_serialized_size_v2, collect_child_slots,
+};
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::persistent_artrie::nodes::ArtNode;
+    use crate::persistent_artrie::nodes::{ArtNode, flags};
     use crate::persistent_artrie::NodeType;
 
     #[test]
@@ -508,7 +1102,7 @@ mod tests {
             version: FORMAT_VERSION,
             node_type: node_types::NODE4,
             flags: flags::IS_FINAL,
-            reserved: 0,
+            encoding_flags: 0,
             num_children: 3,
             prefix_len: 5,
             _padding: 0,
@@ -534,7 +1128,7 @@ mod tests {
             version: FORMAT_VERSION,
             node_type: node_types::NODE4,
             flags: 0,
-            reserved: 0,
+            encoding_flags: 0,
             num_children: 0,
             prefix_len: 0,
             _padding: 0,

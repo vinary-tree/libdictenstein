@@ -1205,14 +1205,35 @@ impl<V: DictionaryValue> MutableMappedDictionary for SuffixAutomatonChar<V> {
         SuffixAutomatonChar::update_or_insert(self, term, default_value, update_fn)
     }
 
-    fn union_with<F>(&self, _other: &Self, _merge_fn: F) -> usize
+    fn union_with<F>(&self, other: &Self, merge_fn: F) -> usize
     where
         F: Fn(&Self::Value, &Self::Value) -> Self::Value,
         Self::Value: Clone,
     {
-        // TODO: Implement union_with for SuffixAutomatonChar
-        // Requires iteration support over suffix automaton entries
-        unimplemented!("union_with for SuffixAutomatonChar not yet implemented")
+        let mut processed = 0;
+
+        // Iterate over the original source texts, not all suffixes
+        // SuffixAutomatonChar stores values at ALL suffix positions, so iter_chars()
+        // would yield duplicates. We only want to merge the complete strings.
+        for term in other.source_texts() {
+            if term.is_empty() {
+                continue; // Skip empty strings (removed entries)
+            }
+
+            if let Some(other_value) = other.get_value(&term) {
+                processed += 1;
+                // Compute the new value: merge if exists, otherwise use other_value
+                let new_value = if let Some(self_value) = self.get_value(&term) {
+                    merge_fn(&self_value, &other_value)
+                } else {
+                    other_value.clone()
+                };
+                // Use update_or_insert to ensure value is set correctly
+                let new_value_clone = new_value.clone();
+                self.update_or_insert(&term, new_value, move |v| *v = new_value_clone);
+            }
+        }
+        processed
     }
 }
 
@@ -1508,5 +1529,108 @@ mod tests {
         assert!(dict.contains("🌟"));
         assert!(dict.contains("中文"));
         assert!(dict.contains("test"));
+    }
+
+    #[test]
+    fn test_union_with_both_empty() {
+        let dict1: SuffixAutomatonChar<u32> = SuffixAutomatonChar::new();
+        let dict2: SuffixAutomatonChar<u32> = SuffixAutomatonChar::new();
+
+        let processed = dict1.union_with(&dict2, |a, b| a + b);
+        assert_eq!(processed, 0);
+        assert_eq!(dict1.string_count(), 0);
+    }
+
+    #[test]
+    fn test_union_with_self_empty() {
+        let dict1: SuffixAutomatonChar<u32> = SuffixAutomatonChar::new();
+        let dict2: SuffixAutomatonChar<u32> = SuffixAutomatonChar::new();
+        dict2.insert_with_value("hello", 10);
+        dict2.insert_with_value("world", 20);
+
+        let processed = dict1.union_with(&dict2, |a, b| a + b);
+        assert!(processed > 0);
+        assert_eq!(dict1.get_value("hello"), Some(10));
+        assert_eq!(dict1.get_value("world"), Some(20));
+    }
+
+    #[test]
+    fn test_union_with_other_empty() {
+        let dict1: SuffixAutomatonChar<u32> = SuffixAutomatonChar::new();
+        dict1.insert_with_value("hello", 10);
+        let dict2: SuffixAutomatonChar<u32> = SuffixAutomatonChar::new();
+
+        let processed = dict1.union_with(&dict2, |a, b| a + b);
+        assert_eq!(processed, 0);
+        assert_eq!(dict1.get_value("hello"), Some(10));
+    }
+
+    #[test]
+    fn test_union_with_no_conflicts() {
+        let dict1: SuffixAutomatonChar<u32> = SuffixAutomatonChar::new();
+        dict1.insert_with_value("hello", 10);
+        let dict2: SuffixAutomatonChar<u32> = SuffixAutomatonChar::new();
+        dict2.insert_with_value("world", 20);
+
+        let processed = dict1.union_with(&dict2, |a, b| a + b);
+        assert!(processed > 0);
+        assert_eq!(dict1.get_value("hello"), Some(10));
+        assert_eq!(dict1.get_value("world"), Some(20));
+    }
+
+    #[test]
+    fn test_union_with_conflicts_sum() {
+        let dict1: SuffixAutomatonChar<u32> = SuffixAutomatonChar::new();
+        dict1.insert_with_value("hello", 10);
+        let dict2: SuffixAutomatonChar<u32> = SuffixAutomatonChar::new();
+        dict2.insert_with_value("hello", 20);
+
+        let processed = dict1.union_with(&dict2, |a, b| a + b);
+        assert!(processed > 0);
+        assert_eq!(dict1.get_value("hello"), Some(30));
+    }
+
+    #[test]
+    fn test_union_with_conflicts_max() {
+        let dict1: SuffixAutomatonChar<u32> = SuffixAutomatonChar::new();
+        dict1.insert_with_value("hello", 10);
+        let dict2: SuffixAutomatonChar<u32> = SuffixAutomatonChar::new();
+        dict2.insert_with_value("hello", 20);
+
+        let processed = dict1.union_with(&dict2, |a, b| *a.max(b));
+        assert!(processed > 0);
+        assert_eq!(dict1.get_value("hello"), Some(20));
+    }
+
+    #[test]
+    fn test_union_with_partial_conflicts() {
+        let dict1: SuffixAutomatonChar<u32> = SuffixAutomatonChar::new();
+        dict1.insert_with_value("apple", 1);
+        dict1.insert_with_value("banana", 2);
+        let dict2: SuffixAutomatonChar<u32> = SuffixAutomatonChar::new();
+        dict2.insert_with_value("banana", 3);
+        dict2.insert_with_value("cherry", 4);
+
+        let processed = dict1.union_with(&dict2, |a, b| a + b);
+        assert!(processed > 0);
+        assert_eq!(dict1.get_value("apple"), Some(1));
+        assert_eq!(dict1.get_value("banana"), Some(5));
+        assert_eq!(dict1.get_value("cherry"), Some(4));
+    }
+
+    #[test]
+    fn test_union_with_unicode() {
+        let dict1: SuffixAutomatonChar<u32> = SuffixAutomatonChar::new();
+        dict1.insert_with_value("café", 10);
+        dict1.insert_with_value("中文", 20);
+        let dict2: SuffixAutomatonChar<u32> = SuffixAutomatonChar::new();
+        dict2.insert_with_value("中文", 30);
+        dict2.insert_with_value("日本語", 40);
+
+        let processed = dict1.union_with(&dict2, |a, b| a + b);
+        assert!(processed > 0);
+        assert_eq!(dict1.get_value("café"), Some(10));
+        assert_eq!(dict1.get_value("中文"), Some(50));
+        assert_eq!(dict1.get_value("日本語"), Some(40));
     }
 }

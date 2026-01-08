@@ -51,6 +51,8 @@ use crate::persistent_artrie::wal::{WalReader, WalRecord, WalWriter};
 use crate::persistent_artrie::concurrency::{
     EpochManager, OptimisticVersion, RetryStats, EpochGuard, OptimisticReadGuard,
 };
+#[cfg(feature = "persistent-artrie")]
+use super::arena_manager::ArenaManager;
 use crate::value::DictionaryValue;
 
 // Import CharNode types for adaptive radix structure
@@ -494,6 +496,10 @@ pub struct DiskBackedCharTrieInner<V: DictionaryValue> {
     pub next_lsn: u64,
     #[cfg(feature = "persistent-artrie")]
     pub file_path: Option<PathBuf>,
+    /// Arena manager for space-efficient node storage
+    /// Packs multiple nodes into 256KB blocks instead of one node per block
+    #[cfg(feature = "persistent-artrie")]
+    pub arena_manager: Option<Arc<RwLock<ArenaManager>>>,
 
     // Concurrency infrastructure
     #[cfg(feature = "persistent-artrie")]
@@ -537,6 +543,8 @@ impl<V: DictionaryValue> DiskBackedCharTrieInner<V> {
             #[cfg(feature = "persistent-artrie")]
             file_path: None,
             #[cfg(feature = "persistent-artrie")]
+            arena_manager: None,
+            #[cfg(feature = "persistent-artrie")]
             version: OptimisticVersion::new(),
             #[cfg(feature = "persistent-artrie")]
             epoch_manager: EpochManager::new(),
@@ -564,6 +572,10 @@ impl<V: DictionaryValue> DiskBackedCharTrieInner<V> {
             .map_err(|e| PersistentARTrieError::WalError { reason: format!("{:?}", e) })?;
         let wal_writer = Arc::new(RwLock::new(wal_writer));
 
+        // Create arena manager for space-efficient node storage
+        let arena_manager = ArenaManager::with_buffer_manager(Arc::clone(&buffer_manager));
+        let arena_manager = Arc::new(RwLock::new(arena_manager));
+
         Ok(Self {
             root: CharTrieRoot::Empty,
             len: 0,
@@ -572,6 +584,7 @@ impl<V: DictionaryValue> DiskBackedCharTrieInner<V> {
             wal_writer: Some(wal_writer),
             next_lsn: 1,
             file_path: Some(path.to_path_buf()),
+            arena_manager: Some(arena_manager),
             version: OptimisticVersion::new(),
             epoch_manager: EpochManager::new(),
             retry_stats: RetryStats::new(),
@@ -634,6 +647,10 @@ impl<V: DictionaryValue> DiskBackedCharTrieInner<V> {
 
         let wal_writer = Arc::new(RwLock::new(wal_writer));
 
+        // Create arena manager for space-efficient node storage
+        let arena_manager = ArenaManager::with_buffer_manager(Arc::clone(&buffer_manager));
+        let arena_manager = Arc::new(RwLock::new(arena_manager));
+
         let mut inner = Self {
             root: CharTrieRoot::Empty,
             len: 0, // Will be updated from disk or WAL replay
@@ -642,6 +659,7 @@ impl<V: DictionaryValue> DiskBackedCharTrieInner<V> {
             wal_writer: Some(wal_writer),
             next_lsn,
             file_path: Some(path.to_path_buf()),
+            arena_manager: Some(arena_manager),
             version: OptimisticVersion::new(),
             epoch_manager: EpochManager::new(),
             retry_stats: RetryStats::new(),
@@ -732,6 +750,11 @@ impl<V: DictionaryValue> DiskBackedCharTrieInner<V> {
     }
 
     /// Load root from disk given the root descriptor pointer
+    ///
+    /// This function:
+    /// 1. Reads the root descriptor block
+    /// 2. Loads arena block IDs and populates the arena manager
+    /// 3. Loads the root node (which can now read from arenas)
     #[cfg(feature = "persistent-artrie")]
     fn load_root_from_disk(
         &self,
@@ -756,23 +779,64 @@ impl<V: DictionaryValue> DiskBackedCharTrieInner<V> {
         let page_guard = bm.fetch_page(disk_loc.block_id)?;
         let page_data = page_guard.data();
 
-        // Parse root descriptor
+        // Parse root descriptor (fixed 18 bytes)
         // Format:
         //   0: type (1 byte)
         //   1: is_final (1 byte)
         //   2-5: term_count (4 bytes, little endian)
-        //   6-9: reserved (4 bytes)
+        //   6-9: arena_count (4 bytes, little endian)
         //   10-17: root_ptr (8 bytes, little endian)
         let root_type = page_data[0];
         let _is_final = page_data[1] != 0;
         let term_count = u32::from_le_bytes([page_data[2], page_data[3], page_data[4], page_data[5]]) as usize;
+        let arena_count = u32::from_le_bytes([page_data[6], page_data[7], page_data[8], page_data[9]]);
         let root_ptr = u64::from_le_bytes([
             page_data[10], page_data[11], page_data[12], page_data[13],
             page_data[14], page_data[15], page_data[16], page_data[17],
         ]);
 
+        // Derive arena block IDs from sequential allocation
+        // Block 0 = file header, Blocks 1..=arena_count = arenas
+        let arena_block_ids: Vec<u32> = (1..=arena_count).collect();
+
         drop(page_guard);
         drop(bm);
+
+        // Load arenas into the arena manager
+        if arena_count > 0 {
+            if let Some(ref arena_manager) = self.arena_manager {
+                #[cfg(feature = "parking_lot")]
+                {
+                    let mut am = arena_manager.write();
+                    // Clear the initial empty arena
+                    am.clear_for_loading();
+                    // Load each arena from disk
+                    for block_id in arena_block_ids {
+                        am.load_arena(block_id)?;
+                    }
+                    // Set active arena to the last one for new allocations
+                    let count = am.arena_count();
+                    am.set_active_arena(count.saturating_sub(1));
+                }
+                #[cfg(not(feature = "parking_lot"))]
+                {
+                    let mut am = arena_manager.write().map_err(|_| {
+                        PersistentARTrieError::LockPoisoned {
+                            resource: "arena_manager".to_string(),
+                        }
+                    })?;
+                    // Clear the initial empty arena
+                    am.clear_for_loading();
+                    // Load each arena from disk
+                    for block_id in arena_block_ids {
+                        am.load_arena(block_id)?;
+                    }
+                    // Set active arena to the last one for new allocations
+                    let count = am.arena_count();
+                    am.set_active_arena(count.saturating_sub(1));
+                }
+            }
+        }
 
         match root_type {
             ROOT_TYPE_EMPTY => {
@@ -794,8 +858,10 @@ impl<V: DictionaryValue> DiskBackedCharTrieInner<V> {
 
     /// Load a CharTrieNodeInner from disk
     ///
-    /// Uses the CharNode deserialization format from serialization_char.rs,
-    /// followed by value deserialization.
+    /// Uses arena allocation for space-efficient reading. Nodes are packed
+    /// into 256KB arena blocks, with SwizzledPtr encoding:
+    /// - block_id = arena_id
+    /// - offset = slot_id
     ///
     /// Disk format:
     /// ```text
@@ -806,49 +872,61 @@ impl<V: DictionaryValue> DiskBackedCharTrieInner<V> {
     #[cfg(feature = "persistent-artrie")]
     fn load_char_node_from_disk(
         &self,
-        buffer_manager: &Arc<RwLock<BufferManager>>,
+        _buffer_manager: &Arc<RwLock<BufferManager>>,
         node_ptr: &crate::persistent_artrie::swizzled_ptr::SwizzledPtr,
     ) -> Result<CharTrieNodeInner<V>> {
-        use super::serialization_char::{deserialize_char_node, char_serialized_size};
+        use super::arena_manager::ArenaSlot;
+        use super::serialization_char::{deserialize_char_node_v2, DeserializationContext};
         use crate::persistent_artrie::swizzled_ptr::SwizzledPtr;
         use std::io::Cursor;
 
-        // Read the node block
-        #[cfg(feature = "parking_lot")]
-        let bm = buffer_manager.read();
-        #[cfg(not(feature = "parking_lot"))]
-        let bm = buffer_manager.read().map_err(|_| {
-            PersistentARTrieError::LockPoisoned {
-                resource: "buffer_manager".to_string(),
-            }
+        let arena_manager = self.arena_manager.as_ref().ok_or_else(|| {
+            PersistentARTrieError::internal("No arena manager for disk reading")
         })?;
 
+        // Get arena slot from the disk location
+        // block_id = arena_id + 1 (block 0 is file header)
+        // offset = slot_id
         let disk_loc = node_ptr.disk_location().ok_or_else(|| {
             PersistentARTrieError::internal("Node pointer is swizzled or null")
         })?;
-        let page_guard = bm.fetch_page(disk_loc.block_id)?;
-        let page_data = page_guard.data();
+        let arena_id = disk_loc.block_id.checked_sub(1).ok_or_else(|| {
+            PersistentARTrieError::internal("Invalid block_id 0 for arena node")
+        })?;
+        let slot = ArenaSlot::new(arena_id, disk_loc.offset);
 
-        // Deserialize the CharNode using proper format
-        let mut cursor = Cursor::new(page_data);
-        let char_node = deserialize_char_node(&mut cursor)?;
+        // Read from arena
+        #[cfg(feature = "parking_lot")]
+        let am = arena_manager.read();
+        #[cfg(not(feature = "parking_lot"))]
+        let am = arena_manager.read().map_err(|_| {
+            PersistentARTrieError::LockPoisoned {
+                resource: "arena_manager".to_string(),
+            }
+        })?;
 
-        // Calculate where value data starts (after CharNode serialized data)
-        let node_size = char_serialized_size(&char_node);
-        let offset = node_size;
+        let node_data = am.read(slot)?;
+
+        // Deserialize the CharNode using v2 format with context
+        let deser_ctx = DeserializationContext::new(slot);
+        let mut cursor = Cursor::new(node_data);
+        let char_node = deserialize_char_node_v2(&mut cursor, &deser_ctx)?;
+
+        // Use cursor position to find where value data starts (v2 format is variable size)
+        let offset = cursor.position() as usize;
 
         // Read value_len and value_bytes
         let value_len = u32::from_le_bytes([
-            page_data[offset],
-            page_data[offset + 1],
-            page_data[offset + 2],
-            page_data[offset + 3],
+            node_data[offset],
+            node_data[offset + 1],
+            node_data[offset + 2],
+            node_data[offset + 3],
         ]) as usize;
 
         let value: Option<V> = if value_len > 0 {
             let value_start = offset + 4;
             let value_end = value_start + value_len;
-            let value_bytes = &page_data[value_start..value_end];
+            let value_bytes = &node_data[value_start..value_end];
             Some(bincode::deserialize(value_bytes).map_err(|e| {
                 PersistentARTrieError::internal(&format!("Failed to deserialize value: {}", e))
             })?)
@@ -862,9 +940,8 @@ impl<V: DictionaryValue> DiskBackedCharTrieInner<V> {
             .map(|(key, ptr)| (key, ptr.clone()))
             .collect();
 
-        // Drop the page lock before recursive calls
-        drop(page_guard);
-        drop(bm);
+        // Drop the arena lock before recursive calls
+        drop(am);
 
         // Create the result node with proper node type from disk
         let is_final = char_node.is_final();
@@ -875,7 +952,7 @@ impl<V: DictionaryValue> DiskBackedCharTrieInner<V> {
         // Recursively load children and add them
         for (char_val, child_ptr) in child_data {
             if let Some(c) = char::from_u32(char_val) {
-                let child_node = self.load_char_node_from_disk(buffer_manager, &child_ptr)?;
+                let child_node = self.load_char_node_from_disk(_buffer_manager, &child_ptr)?;
                 result.insert_child(c, child_node);
             }
         }
@@ -889,6 +966,11 @@ impl<V: DictionaryValue> DiskBackedCharTrieInner<V> {
     /// children. Instead, it stores the on-disk SwizzledPtrs directly, allowing
     /// children to be loaded on-demand when accessed.
     ///
+    /// Uses arena allocation for space-efficient reading. Nodes are packed
+    /// into 256KB arena blocks, with SwizzledPtr encoding:
+    /// - block_id = arena_id
+    /// - offset = slot_id
+    ///
     /// This is the preferred loading method for large tries where loading
     /// everything upfront would be too expensive.
     ///
@@ -901,49 +983,61 @@ impl<V: DictionaryValue> DiskBackedCharTrieInner<V> {
     #[cfg(feature = "persistent-artrie")]
     fn load_char_node_from_disk_lazy(
         &self,
-        buffer_manager: &Arc<RwLock<BufferManager>>,
+        _buffer_manager: &Arc<RwLock<BufferManager>>,
         node_ptr: &crate::persistent_artrie::swizzled_ptr::SwizzledPtr,
     ) -> Result<CharTrieNodeInner<V>> {
-        use super::serialization_char::{deserialize_char_node, char_serialized_size};
+        use super::arena_manager::ArenaSlot;
+        use super::serialization_char::{deserialize_char_node_v2, DeserializationContext};
         use crate::persistent_artrie::swizzled_ptr::SwizzledPtr;
         use std::io::Cursor;
 
-        // Read the node block
-        #[cfg(feature = "parking_lot")]
-        let bm = buffer_manager.read();
-        #[cfg(not(feature = "parking_lot"))]
-        let bm = buffer_manager.read().map_err(|_| {
-            PersistentARTrieError::LockPoisoned {
-                resource: "buffer_manager".to_string(),
-            }
+        let arena_manager = self.arena_manager.as_ref().ok_or_else(|| {
+            PersistentARTrieError::internal("No arena manager for disk reading")
         })?;
 
+        // Get arena slot from the disk location
+        // block_id = arena_id + 1 (block 0 is file header)
+        // offset = slot_id
         let disk_loc = node_ptr.disk_location().ok_or_else(|| {
             PersistentARTrieError::internal("Node pointer is swizzled or null")
         })?;
-        let page_guard = bm.fetch_page(disk_loc.block_id)?;
-        let page_data = page_guard.data();
+        let arena_id = disk_loc.block_id.checked_sub(1).ok_or_else(|| {
+            PersistentARTrieError::internal("Invalid block_id 0 for arena node")
+        })?;
+        let slot = ArenaSlot::new(arena_id, disk_loc.offset);
 
-        // Deserialize the CharNode using proper format
-        let mut cursor = Cursor::new(page_data);
-        let char_node = deserialize_char_node(&mut cursor)?;
+        // Read from arena
+        #[cfg(feature = "parking_lot")]
+        let am = arena_manager.read();
+        #[cfg(not(feature = "parking_lot"))]
+        let am = arena_manager.read().map_err(|_| {
+            PersistentARTrieError::LockPoisoned {
+                resource: "arena_manager".to_string(),
+            }
+        })?;
 
-        // Calculate where value data starts (after CharNode serialized data)
-        let node_size = char_serialized_size(&char_node);
-        let offset = node_size;
+        let node_data = am.read(slot)?;
+
+        // Deserialize the CharNode using v2 format with context
+        let deser_ctx = DeserializationContext::new(slot);
+        let mut cursor = Cursor::new(node_data);
+        let char_node = deserialize_char_node_v2(&mut cursor, &deser_ctx)?;
+
+        // Use cursor position to find where value data starts (v2 format is variable size)
+        let offset = cursor.position() as usize;
 
         // Read value_len and value_bytes
         let value_len = u32::from_le_bytes([
-            page_data[offset],
-            page_data[offset + 1],
-            page_data[offset + 2],
-            page_data[offset + 3],
+            node_data[offset],
+            node_data[offset + 1],
+            node_data[offset + 2],
+            node_data[offset + 3],
         ]) as usize;
 
         let value: Option<V> = if value_len > 0 {
             let value_start = offset + 4;
             let value_end = value_start + value_len;
-            let value_bytes = &page_data[value_start..value_end];
+            let value_bytes = &node_data[value_start..value_end];
             Some(bincode::deserialize(value_bytes).map_err(|e| {
                 PersistentARTrieError::internal(&format!("Failed to deserialize value: {}", e))
             })?)
@@ -959,8 +1053,7 @@ impl<V: DictionaryValue> DiskBackedCharTrieInner<V> {
             })
             .collect();
 
-        drop(page_guard);
-        drop(bm);
+        drop(am);
 
         // Create the node
         let is_final = char_node.is_final();
@@ -1681,6 +1774,11 @@ impl<V: DictionaryValue> DiskBackedCharTrieInner<V> {
                     .write()
                     .sync()
                     .map_err(|e| PersistentARTrieError::WalError { reason: format!("{:?}", e) })?;
+                // Truncate WAL after successful checkpoint - all operations are now persisted
+                wal_writer
+                    .write()
+                    .truncate()
+                    .map_err(|e| PersistentARTrieError::WalError { reason: format!("{:?}", e) })?;
             }
             #[cfg(not(feature = "parking_lot"))]
             {
@@ -1693,6 +1791,12 @@ impl<V: DictionaryValue> DiskBackedCharTrieInner<V> {
                     .write()
                     .expect("WAL lock")
                     .sync()
+                    .map_err(|e| PersistentARTrieError::WalError { reason: format!("{:?}", e) })?;
+                // Truncate WAL after successful checkpoint - all operations are now persisted
+                wal_writer
+                    .write()
+                    .expect("WAL lock")
+                    .truncate()
                     .map_err(|e| PersistentARTrieError::WalError { reason: format!("{:?}", e) })?;
             }
         }
@@ -1727,18 +1831,54 @@ impl<V: DictionaryValue> DiskBackedCharTrieInner<V> {
             }
         };
 
-        // Create root descriptor block
+        // Flush arenas to disk FIRST to get their block_ids
+        // (writes dirty arenas to buffer manager)
+        if let Some(ref arena_manager) = self.arena_manager {
+            #[cfg(feature = "parking_lot")]
+            arena_manager.write().flush()?;
+            #[cfg(not(feature = "parking_lot"))]
+            arena_manager
+                .write()
+                .map_err(|_| PersistentARTrieError::LockPoisoned {
+                    resource: "arena_manager".to_string(),
+                })?
+                .flush()?;
+        }
+
+        // Get arena count after flushing (block IDs are derived from sequential allocation)
+        let arena_count: u32 = if let Some(ref arena_manager) = self.arena_manager {
+            #[cfg(feature = "parking_lot")]
+            {
+                arena_manager.read().arena_count() as u32
+            }
+            #[cfg(not(feature = "parking_lot"))]
+            {
+                arena_manager
+                    .read()
+                    .map_err(|_| PersistentARTrieError::LockPoisoned {
+                        resource: "arena_manager".to_string(),
+                    })?
+                    .arena_count() as u32
+            }
+        } else {
+            0
+        };
+
+        // Create root descriptor block (fixed 18 bytes)
         // Format:
         //   0: type (1 byte)
         //   1: is_final (1 byte)
         //   2-5: term_count (4 bytes, little endian)
-        //   6-9: reserved (4 bytes)
+        //   6-9: arena_count (4 bytes, little endian)
         //   10-17: root_ptr (8 bytes, little endian)
+        //
+        // Note: Arena block IDs are NOT stored - they are derived from sequential allocation:
+        // Block 0 = file header, Blocks 1..=arena_count = arenas
         let mut descriptor = vec![0u8; 18];
         descriptor[0] = root_type;
         descriptor[1] = if is_final { 1 } else { 0 };
         descriptor[2..6].copy_from_slice(&(self.len as u32).to_le_bytes());
-        // bytes 6-9 are reserved (zeros)
+        descriptor[6..10].copy_from_slice(&arena_count.to_le_bytes());
         descriptor[10..18].copy_from_slice(&root_ptr.to_le_bytes());
 
         // Allocate a block for the descriptor and write it
@@ -1762,18 +1902,88 @@ impl<V: DictionaryValue> DiskBackedCharTrieInner<V> {
         dm.set_root_ptr(root_descriptor_ptr.to_raw())?;
         dm.set_entry_count(self.len as u64)?;
 
+        // Must drop page_guard first, then buffer_manager lock
+        drop(page_guard);
+        drop(bm);
+
+        // Re-acquire buffer manager lock for final flush
+        #[cfg(feature = "parking_lot")]
+        let bm = buffer_manager.write();
+        #[cfg(not(feature = "parking_lot"))]
+        let bm = buffer_manager.write().map_err(|_| {
+            PersistentARTrieError::LockPoisoned {
+                resource: "buffer_manager".to_string(),
+            }
+        })?;
+
         // Flush all pages to ensure durability
         bm.flush_all()?;
-        dm.sync()?;
+        bm.disk_manager().sync()?;
 
         self.dirty = false;
         Ok(())
     }
 
+    /// Check if serialized children are consecutive in the same arena.
+    ///
+    /// For sequential sibling storage optimization: if all children are in the same arena
+    /// and have consecutive slot IDs, we can store just `(first_slot, count)` instead of
+    /// N separate pointers.
+    ///
+    /// # Arguments
+    /// * `child_ptrs` - Child (key, SwizzledPtr) pairs from serialization
+    /// * `parent_arena_id` - Arena ID where parent will be allocated
+    ///
+    /// # Returns
+    /// `Some(first_child_slot)` if children are consecutive in same arena as parent,
+    /// `None` otherwise.
+    #[cfg(feature = "persistent-artrie")]
+    fn check_sequential_char_children(
+        child_ptrs: &[(u32, SwizzledPtr)],
+        parent_arena_id: u32,
+    ) -> Option<super::arena_manager::ArenaSlot> {
+        use super::arena_manager::ArenaSlot;
+
+        if child_ptrs.len() < 2 {
+            // Need at least 2 children for sequential optimization to be worthwhile
+            return None;
+        }
+
+        // Collect arena slots from SwizzledPtrs
+        let mut slots: Vec<ArenaSlot> = Vec::with_capacity(child_ptrs.len());
+        for (_, ptr) in child_ptrs {
+            // Get disk location from SwizzledPtr
+            let loc = match ptr.disk_location() {
+                Some(loc) => loc,
+                None => return None, // All children must be on disk
+            };
+            let arena_id = loc.block_id;
+            let slot_id = loc.offset;
+            if arena_id != parent_arena_id {
+                // All children must be in the same arena as parent
+                return None;
+            }
+            slots.push(ArenaSlot::new(arena_id, slot_id));
+        }
+
+        // Sort by slot ID
+        slots.sort_by_key(|s| s.slot_id);
+
+        // Check if consecutive
+        let first = slots[0];
+        for (i, slot) in slots.iter().enumerate() {
+            if slot.slot_id != first.slot_id + i as u32 {
+                return None;
+            }
+        }
+
+        Some(first)
+    }
+
     /// Serialize a CharTrieNodeInner to disk and return its SwizzledPtr
     ///
-    /// Uses the proper CharNode serialization format from serialization_char.rs,
-    /// followed by value serialization.
+    /// Uses arena allocation for space-efficient storage. Multiple nodes are
+    /// packed into each 256KB arena block instead of wasting one block per node.
     ///
     /// Node format on disk:
     /// ```text
@@ -1781,13 +1991,30 @@ impl<V: DictionaryValue> DiskBackedCharTrieInner<V> {
     /// [value_len: u32]
     /// [value_bytes if value_len > 0]
     /// ```
+    ///
+    /// The SwizzledPtr uses:
+    /// - arena_id as block_id (23 bits, up to 8M arenas)
+    /// - slot_id as offset (22 bits, up to 4M slots per arena)
     #[cfg(feature = "persistent-artrie")]
     fn serialize_char_node_to_disk(&self, node: &CharTrieNodeInner<V>) -> Result<SwizzledPtr> {
-        use super::serialization_char::serialize_char_node;
+        use super::relative_encoding::SerializationContext;
+        use super::serialization_char::serialize_char_node_v2;
 
-        let buffer_manager = self.buffer_manager.as_ref().ok_or_else(|| {
-            PersistentARTrieError::internal("No buffer manager for disk serialization")
+        let arena_manager = self.arena_manager.as_ref().ok_or_else(|| {
+            PersistentARTrieError::internal("No arena manager for disk serialization")
         })?;
+
+        // Get the predicted parent slot for sequential sibling check
+        #[cfg(feature = "parking_lot")]
+        let parent_arena_id = arena_manager.read().next_slot().arena_id;
+        #[cfg(not(feature = "parking_lot"))]
+        let parent_arena_id = arena_manager
+            .read()
+            .map_err(|_| PersistentARTrieError::LockPoisoned {
+                resource: "arena_manager".to_string(),
+            })?
+            .next_slot()
+            .arena_id;
 
         // First, recursively serialize all children and collect their disk pointers
         let mut child_disk_ptrs: Vec<(u32, SwizzledPtr)> = Vec::with_capacity(node.num_children());
@@ -1796,12 +2023,46 @@ impl<V: DictionaryValue> DiskBackedCharTrieInner<V> {
             child_disk_ptrs.push((c as u32, ptr));
         }
 
+        // Check if children are consecutive (enables sequential sibling storage)
+        // Create serialization context that determines encoding mode:
+        // - Sequential: children stored as (first_slot, count) instead of N pointers
+        // - Relative: child offsets encoded relative to parent (1-2 bytes vs 8 bytes)
+        let ctx = if let Some(first_child) =
+            Self::check_sequential_char_children(&child_disk_ptrs, parent_arena_id)
+        {
+            // Children are consecutive in same arena: use sequential sibling encoding
+            #[cfg(feature = "parking_lot")]
+            let parent_slot = arena_manager.read().next_slot();
+            #[cfg(not(feature = "parking_lot"))]
+            let parent_slot = arena_manager
+                .read()
+                .map_err(|_| PersistentARTrieError::LockPoisoned {
+                    resource: "arena_manager".to_string(),
+                })?
+                .next_slot();
+
+            SerializationContext::sequential(parent_slot, first_child)
+        } else {
+            // Children are not consecutive: use relative encoding only
+            #[cfg(feature = "parking_lot")]
+            let parent_slot = arena_manager.read().next_slot();
+            #[cfg(not(feature = "parking_lot"))]
+            let parent_slot = arena_manager
+                .read()
+                .map_err(|_| PersistentARTrieError::LockPoisoned {
+                    resource: "arena_manager".to_string(),
+                })?
+                .next_slot();
+
+            SerializationContext::new(parent_slot)
+        };
+
         // Build a CharNode with disk pointers for serialization
         let disk_node = self.build_disk_char_node(&node.node, &child_disk_ptrs);
 
-        // Serialize the CharNode to a buffer
+        // Serialize the CharNode to a buffer using v2 format with relative offsets
         let mut node_buffer = Vec::new();
-        serialize_char_node(&disk_node, &mut node_buffer)?;
+        serialize_char_node_v2(&disk_node, &mut node_buffer, &ctx)?;
 
         // Serialize the value using bincode
         let value_bytes: Vec<u8> = if let Some(ref value) = node.value {
@@ -1812,49 +2073,30 @@ impl<V: DictionaryValue> DiskBackedCharTrieInner<V> {
             Vec::new()
         };
 
-        // Calculate total size needed
+        // Build complete serialized data:
+        // [node_buffer] + [value_len: u32] + [value_bytes]
         let total_size = node_buffer.len() + 4 + value_bytes.len();
+        let mut data = Vec::with_capacity(total_size);
+        data.extend_from_slice(&node_buffer);
+        data.extend_from_slice(&(value_bytes.len() as u32).to_le_bytes());
+        data.extend_from_slice(&value_bytes);
 
-        // Allocate a page and write the data
+        // Allocate in arena (space-efficient: packs many nodes per 256KB block)
         #[cfg(feature = "parking_lot")]
-        let bm = buffer_manager.write();
+        let slot = arena_manager.write().allocate(&data)?;
         #[cfg(not(feature = "parking_lot"))]
-        let bm = buffer_manager.write().map_err(|_| {
-            PersistentARTrieError::LockPoisoned {
-                resource: "buffer_manager".to_string(),
-            }
-        })?;
+        let slot = arena_manager
+            .write()
+            .map_err(|_| PersistentARTrieError::LockPoisoned {
+                resource: "arena_manager".to_string(),
+            })?
+            .allocate(&data)?;
 
-        let mut page_guard = bm.new_page()?;
-        let block_id = page_guard.block_id();
-        let page_data = page_guard.data_mut();
-
-        // Check if data fits in the page
-        if total_size > page_data.len() {
-            return Err(PersistentARTrieError::internal(&format!(
-                "Node data ({} bytes) exceeds page size ({} bytes)",
-                total_size,
-                page_data.len()
-            )));
-        }
-
-        // Write CharNode serialized data
-        let mut offset = 0;
-        page_data[offset..offset + node_buffer.len()].copy_from_slice(&node_buffer);
-        offset += node_buffer.len();
-
-        // Write value length
-        page_data[offset..offset + 4].copy_from_slice(&(value_bytes.len() as u32).to_le_bytes());
-        offset += 4;
-
-        // Write value bytes
-        if !value_bytes.is_empty() {
-            page_data[offset..offset + value_bytes.len()].copy_from_slice(&value_bytes);
-        }
-
-        // Return pointer with correct node type
+        // Return pointer using arena addressing:
+        // - block_id = arena_id + 1 (block 0 is file header, arena N is in block N+1)
+        // - offset = slot_id
         let node_type = self.char_node_to_node_type(&disk_node);
-        Ok(SwizzledPtr::on_disk(block_id, 0, node_type))
+        Ok(SwizzledPtr::on_disk(slot.arena_id + 1, slot.slot_id, node_type))
     }
 
     /// Build a CharNode with disk SwizzledPtrs for serialization

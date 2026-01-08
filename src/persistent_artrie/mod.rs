@@ -84,6 +84,17 @@ pub mod disk_manager;
 #[cfg(feature = "persistent-artrie")]
 pub mod buffer_manager;
 
+// Arena allocation for efficient node storage
+#[cfg(feature = "persistent-artrie")]
+pub mod arena;
+
+#[cfg(feature = "persistent-artrie")]
+pub mod arena_manager;
+
+// Compact variable-width encoding
+#[cfg(feature = "persistent-artrie")]
+pub mod compact_encoding;
+
 // ART node types
 pub mod nodes;
 
@@ -124,6 +135,22 @@ pub mod prefetch;
 #[cfg(feature = "persistent-artrie")]
 pub mod concurrency;
 
+// Traversal context for block caching
+#[cfg(feature = "persistent-artrie")]
+pub mod traversal_context;
+
+// Dirty tracking for incremental checkpoints
+#[cfg(feature = "persistent-artrie")]
+pub mod dirty_tracker;
+
+// Hash-based deduplication for space efficiency
+#[cfg(feature = "persistent-artrie")]
+pub mod dedup;
+
+// Relative offset encoding for space-efficient child pointers
+#[cfg(feature = "persistent-artrie")]
+pub mod relative_encoding;
+
 // Re-exports for convenience
 pub use error::{PersistentARTrieError, Result, SwizzleError};
 pub use path_compression::{PrefixMatchResult, SplitPrefix};
@@ -152,6 +179,24 @@ pub use buffer_manager::{BufferManager, BufferPoolStats, PageReadGuard, PageWrit
 #[cfg(feature = "persistent-artrie")]
 pub use disk_manager::{DiskManager, FileHeader, BLOCK_SIZE, MAX_BLOCK_COUNT};
 
+// Arena types
+#[cfg(feature = "persistent-artrie")]
+pub use arena::{
+    ArenaHeader, ByteNodeArena, ByteNodeArenaV2, SlotEntry, VarintSlotEntry,
+    ARENA_MAGIC, ARENA_MAGIC_V2, ARENA_VERSION, ARENA_VERSION_V2,
+    FLAG_VARINT_DIRECTORY, HEADER_SIZE, MIN_FREE_SPACE, SLOT_SIZE,
+};
+
+#[cfg(feature = "persistent-artrie")]
+pub use arena_manager::{ArenaManager, ArenaSlot, ArenaStats, ReservedSlots};
+
+// Compact encoding types
+#[cfg(feature = "persistent-artrie")]
+pub use compact_encoding::{
+    CompactHeader, DecodedCompactByteNode, COMPACT_HEADER_SIZE, VARINT_LEN_BIAS, VARINT_MAX_SINGLE_BYTE,
+    compact_node_types, determine_ptr_width, read_varint_from_slice, write_varint_to_vec, varint_size,
+};
+
 // WAL types
 #[cfg(feature = "persistent-artrie")]
 pub use wal::{GroupCommit, Lsn, WalHeader, WalReader, WalRecord, WalRecordType, WalWriter};
@@ -175,6 +220,32 @@ pub use prefetch::{
 pub use concurrency::{
     EpochGuard, EpochManager, LockCoupling, OptimisticCell, OptimisticReadGuard, OptimisticVersion,
     RetryStats, WriteGuard,
+};
+
+// Traversal context types
+#[cfg(feature = "persistent-artrie")]
+pub use traversal_context::{
+    LightweightTraversalContext, TraversalContext, TraversalStats,
+};
+
+// Dirty tracker types
+#[cfg(feature = "persistent-artrie")]
+pub use dirty_tracker::{
+    BatchDirtyTracker, DirtyTracker, DirtyTrackerStats,
+};
+
+// Deduplication types
+#[cfg(feature = "persistent-artrie")]
+pub use dedup::{
+    BatchDeduplicator, DeduplicatingArenaManager, DeduplicatorStats, NodeDeduplicator,
+};
+
+// Relative encoding types
+#[cfg(feature = "persistent-artrie")]
+pub use relative_encoding::{
+    encode_child_pointer, decode_child_pointer, encode_children, decode_children,
+    encode_sequential_siblings, decode_sequential_siblings, encoded_size, is_same_arena,
+    FLAG_CROSS_ARENA, FLAG_RELATIVE_OFFSETS, FLAG_SEQUENTIAL_SIBLINGS, CROSS_ARENA_SIZE,
 };
 
 /// Maximum key length supported (64KB - 1)

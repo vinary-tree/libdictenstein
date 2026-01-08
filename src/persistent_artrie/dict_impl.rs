@@ -16,7 +16,8 @@
 //! Read operations can proceed in parallel, while writes are serialized.
 
 use std::path::Path;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
+use crate::sync_compat::RwLock;
 
 use crate::{Dictionary, MappedDictionary, SyncStrategy};
 use crate::value::DictionaryValue;
@@ -27,8 +28,10 @@ use super::nodes::{ArtNode, Node, Node4, AddChildError};
 use super::swizzled_ptr::{DiskLocation, NodeType, SwizzledPtr};
 use super::transitions::{bucket_to_art_node, ChildNode};
 #[cfg(feature = "persistent-artrie")]
-use super::serialization;
+use super::serialization::{self, v2::{SerializationContext, DeserializationContext}};
 
+#[cfg(feature = "persistent-artrie")]
+use super::arena_manager::{ArenaManager, ArenaSlot};
 #[cfg(feature = "persistent-artrie")]
 use super::buffer_manager::BufferManager;
 #[cfg(feature = "persistent-artrie")]
@@ -86,6 +89,10 @@ pub(crate) struct PersistentARTrieInner<V: DictionaryValue> {
     /// Prefetcher for DFS traversal optimization
     #[cfg(feature = "persistent-artrie")]
     pub(crate) prefetcher: super::prefetch::Prefetcher,
+    /// Arena manager for space-efficient node storage
+    /// Packs multiple nodes into 256KB blocks instead of one node per block
+    #[cfg(feature = "persistent-artrie")]
+    pub(crate) arena_manager: Option<Arc<RwLock<ArenaManager>>>,
 }
 
 /// The root of the trie can be either a bucket or an ART node
@@ -124,6 +131,8 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
                 next_lsn: 0,
                 #[cfg(feature = "persistent-artrie")]
                 prefetcher: super::prefetch::Prefetcher::disabled(),
+                #[cfg(feature = "persistent-artrie")]
+                arena_manager: None,
             })),
         }
     }
@@ -175,6 +184,10 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
         let wal_writer = WalWriter::create(&wal_path)?;
         let wal_writer = Arc::new(RwLock::new(wal_writer));
 
+        // Create arena manager for space-efficient node storage
+        let arena_manager = ArenaManager::with_buffer_manager(Arc::clone(&buffer_manager));
+        let arena_manager = Arc::new(RwLock::new(arena_manager));
+
         Ok(Self {
             inner: Arc::new(RwLock::new(PersistentARTrieInner {
                 root: TrieRoot::Bucket(StringBucket::with_values()),
@@ -184,6 +197,7 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
                 wal_writer: Some(wal_writer),
                 next_lsn: 1, // Start at 1, 0 reserved for "no LSN"
                 prefetcher: super::prefetch::Prefetcher::new(),
+                arena_manager: Some(arena_manager),
             })),
         })
     }
@@ -204,7 +218,7 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
     /// ```
     #[cfg(feature = "persistent-artrie")]
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self> {
-        use super::disk_manager::DiskManager;
+        use super::disk_manager::{DiskManager, BLOCK_SIZE};
         use super::buffer_manager::BufferManager;
         use super::wal::WalWriter;
         use super::recovery::RecoveryManager;
@@ -227,12 +241,52 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
         // Open disk manager
         let disk_manager = DiskManager::open(path)?;
 
-        // Try to load the trie from disk (if a root descriptor exists)
+        // Get root pointer to check if trie exists
         let root_ptr = disk_manager.root_ptr()?;
-        let entry_count = disk_manager.entry_count()?;
+        let _entry_count = disk_manager.entry_count()?;
+
+        // Read arena_count from root descriptor (needed to load arenas before loading nodes)
+        let arena_count = if root_ptr != 0 {
+            let ptr = SwizzledPtr::from_raw(root_ptr);
+            if let Some(location) = ptr.disk_location() {
+                let mut descriptor_buf = [0u8; BLOCK_SIZE];
+                disk_manager.read_block(location.block_id, &mut descriptor_buf)?;
+                // arena_count is at bytes 6-9 in the root descriptor
+                u32::from_le_bytes([
+                    descriptor_buf[6],
+                    descriptor_buf[7],
+                    descriptor_buf[8],
+                    descriptor_buf[9],
+                ])
+            } else {
+                0
+            }
+        } else {
+            0
+        };
+
+        // Create buffer manager (takes ownership of disk_manager)
+        let buffer_manager = BufferManager::new(disk_manager, DEFAULT_BUFFER_POOL_SIZE);
+        let buffer_manager = Arc::new(RwLock::new(buffer_manager));
+
+        // Create arena manager for space-efficient node storage
+        let arena_manager = ArenaManager::with_buffer_manager(Arc::clone(&buffer_manager));
+        let arena_manager = Arc::new(RwLock::new(arena_manager));
+
+        // Load arenas into ArenaManager (arenas are at blocks 1..=arena_count)
+        if arena_count > 0 {
+            let mut am = arena_manager.write();
+            am.clear_for_loading();
+            for block_id in 1..=arena_count {
+                am.load_arena(block_id)?;
+            }
+            let count = am.arena_count();
+            am.set_active_arena(count.saturating_sub(1));
+        }
+
+        // Now load trie from disk using the arena manager
         let (loaded_root, loaded_term_count) = if root_ptr != 0 {
-            // Load root descriptor from disk
-            match Self::load_root_from_disk(&disk_manager, root_ptr) {
+            match Self::load_root_from_disk_with_arena(&buffer_manager, &arena_manager, root_ptr) {
                 Ok((root, count)) => (Some(root), count),
                 Err(e) => {
                     eprintln!("Warning: Failed to load trie from disk: {:?}", e);
@@ -242,10 +296,6 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
         } else {
             (None, 0)
         };
-
-        // Create buffer manager (takes ownership of disk_manager)
-        let buffer_manager = BufferManager::new(disk_manager, DEFAULT_BUFFER_POOL_SIZE);
-        let buffer_manager = Arc::new(RwLock::new(buffer_manager));
 
         // Recover from WAL if it exists
         let wal_path = path.with_extension("wal");
@@ -291,13 +341,14 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
                 wal_writer: Some(wal_writer.clone()),
                 next_lsn,
                 prefetcher: super::prefetch::Prefetcher::new(),
+                arena_manager: Some(arena_manager),
             })),
         };
 
         // Replay recovered operations
         // If we loaded from disk, only replay operations AFTER the checkpoint
         {
-            let mut inner = dict.inner.write().expect("lock poisoned");
+            let mut inner = dict.inner.write();
 
             // Determine the LSN threshold for skipping
             // Operations with LSN <= threshold are already in the on-disk state
@@ -403,10 +454,9 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
             // If we loaded from disk AND replayed no operations, we can truncate the WAL
             // (all operations were already persisted to disk before the checkpoint)
             if was_loaded_from_disk && replayed_count == 0 {
-                if let Ok(wal) = wal_writer.write() {
-                    if let Err(e) = wal.truncate() {
-                        eprintln!("Warning: Failed to truncate WAL after recovery: {:?}", e);
-                    }
+                let wal = wal_writer.write();
+                if let Err(e) = wal.truncate() {
+                    eprintln!("Warning: Failed to truncate WAL after recovery: {:?}", e);
                 }
             }
         }
@@ -449,7 +499,7 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
         //   0: type (1 byte)
         //   1: is_final (1 byte)
         //   2-5: term_count (4 bytes, little endian)
-        //   6-9: value_len (4 bytes, little endian)
+        //   6-9: arena_count (4 bytes, little endian)
         //   10-17: root_ptr (8 bytes, little endian)
         //   18+: value bytes (if any)
         let root_type = descriptor_buf[0];
@@ -460,7 +510,7 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
             descriptor_buf[4],
             descriptor_buf[5],
         ]);
-        let value_len = u32::from_le_bytes([
+        let arena_count = u32::from_le_bytes([
             descriptor_buf[6],
             descriptor_buf[7],
             descriptor_buf[8],
@@ -477,7 +527,7 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
             descriptor_buf[17],
         ]);
 
-        let _ = value_len; // Value deserialization not yet implemented
+        let _ = arena_count; // Arena count stored for recovery
         let _ = is_final;  // Used for ArtNode but we simplified
 
         match root_type {
@@ -504,13 +554,9 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
                 // Load the node and its children recursively
                 let (node, children) = Self::load_art_node_with_children(disk_manager, &node_ptr)?;
 
-                // Deserialize the root value if present
-                let root_value: Option<V> = if value_len > 0 {
-                    let value_bytes = &descriptor_buf[18..18 + value_len as usize];
-                    bincode::deserialize(value_bytes).ok()
-                } else {
-                    None
-                };
+                // Value deserialization not yet implemented with arena storage
+                // (value_len no longer in descriptor - using arena_count instead)
+                let root_value: Option<V> = None;
 
                 Ok((
                     TrieRoot::ArtNode {
@@ -635,33 +681,277 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
         }
     }
 
+    /// Load the root of the trie from disk using arena-based storage.
+    ///
+    /// This version uses ArenaManager to read data from arena slots instead
+    /// of reading full blocks directly from disk. The SwizzledPtr encodes:
+    /// - block_id = arena_id
+    /// - offset = slot_id
+    ///
+    /// # Returns
+    /// Tuple of (TrieRoot, term_count) on success.
+    #[cfg(feature = "persistent-artrie")]
+    fn load_root_from_disk_with_arena(
+        buffer_manager: &Arc<RwLock<BufferManager>>,
+        arena_manager: &Arc<RwLock<ArenaManager>>,
+        root_ptr: u64,
+    ) -> Result<(TrieRoot<V>, u64)> {
+        use super::disk_manager::BLOCK_SIZE;
+
+        // Decode the SwizzledPtr to get block_id
+        let ptr = SwizzledPtr::from_raw(root_ptr);
+        if ptr.is_null() || ptr.is_swizzled() {
+            return Err(PersistentARTrieError::corrupted(
+                "Invalid root pointer: null or already swizzled",
+            ));
+        }
+
+        let location = ptr.disk_location().ok_or_else(|| {
+            PersistentARTrieError::corrupted("Could not decode disk location from root pointer")
+        })?;
+
+        // Read the descriptor block through buffer manager
+        let bm = buffer_manager.read();
+        let page = bm.fetch_page(location.block_id)?;
+        let descriptor_buf = page.data();
+
+        // Parse root descriptor
+        // Format:
+        //   0: type (1 byte)
+        //   1: is_final (1 byte)
+        //   2-5: term_count (4 bytes, little endian)
+        //   6-9: arena_count (4 bytes, little endian)
+        //   10-17: root_ptr (8 bytes, little endian)
+        //   18+: value bytes (if any)
+        let root_type = descriptor_buf[0];
+        let is_final = descriptor_buf[1] != 0;
+        let term_count = u32::from_le_bytes([
+            descriptor_buf[2],
+            descriptor_buf[3],
+            descriptor_buf[4],
+            descriptor_buf[5],
+        ]);
+        let data_ptr = u64::from_le_bytes([
+            descriptor_buf[10],
+            descriptor_buf[11],
+            descriptor_buf[12],
+            descriptor_buf[13],
+            descriptor_buf[14],
+            descriptor_buf[15],
+            descriptor_buf[16],
+            descriptor_buf[17],
+        ]);
+
+        drop(page);
+        drop(bm);
+
+        match root_type {
+            ROOT_TYPE_BUCKET => {
+                // Load bucket from arena
+                let bucket_ptr = SwizzledPtr::from_raw(data_ptr);
+                let bucket_loc = bucket_ptr.disk_location().ok_or_else(|| {
+                    PersistentARTrieError::corrupted("Invalid bucket pointer in root descriptor")
+                })?;
+
+                // Get arena slot from the disk location
+                // block_id = arena_id + 1 (block 0 is file header)
+                // offset = slot_id
+                let arena_id = bucket_loc.block_id.checked_sub(1).ok_or_else(|| {
+                    PersistentARTrieError::corrupted("Invalid block_id 0 for arena bucket")
+                })?;
+                let slot = ArenaSlot::new(arena_id, bucket_loc.offset);
+                let am = arena_manager.read();
+                let bucket_data = am.read(slot)?;
+
+                let bucket = StringBucket::from_bytes(bucket_data).map_err(|e| {
+                    PersistentARTrieError::corrupted(format!("Failed to load bucket: {:?}", e))
+                })?;
+
+                Ok((TrieRoot::Bucket(bucket), term_count as u64))
+            }
+            ROOT_TYPE_ART_NODE => {
+                // Load the ART node from arena
+                let node_ptr = SwizzledPtr::from_raw(data_ptr);
+
+                // Load the node and its children recursively
+                let (node, children) = Self::load_art_node_with_children_from_arena(arena_manager, &node_ptr)?;
+
+                // Value deserialization not yet implemented with arena storage
+                let root_value: Option<V> = None;
+
+                Ok((
+                    TrieRoot::ArtNode {
+                        node,
+                        children,
+                        is_final,
+                        value: root_value,
+                    },
+                    term_count as u64,
+                ))
+            }
+            ROOT_TYPE_EMPTY | _ => {
+                // Empty or unknown type
+                Ok((TrieRoot::Bucket(StringBucket::with_values()), 0))
+            }
+        }
+    }
+
+    /// Load an ART node from arena and recursively load all its children.
+    ///
+    /// This version uses ArenaManager to read data from arena slots.
+    ///
+    /// # Returns
+    /// Tuple of (Node, Vec<(u8, ChildNode)>) representing the node and its children.
+    #[cfg(feature = "persistent-artrie")]
+    fn load_art_node_with_children_from_arena(
+        arena_manager: &Arc<RwLock<ArenaManager>>,
+        node_ptr: &SwizzledPtr,
+    ) -> Result<(Node, Vec<(u8, ChildNode)>)> {
+        // Get arena slot from the disk location
+        // block_id = arena_id + 1 (block 0 is file header)
+        // offset = slot_id
+        let disk_loc = node_ptr.disk_location().ok_or_else(|| {
+            PersistentARTrieError::corrupted("Invalid node pointer: cannot get disk location")
+        })?;
+        let arena_id = disk_loc.block_id.checked_sub(1).ok_or_else(|| {
+            PersistentARTrieError::corrupted("Invalid block_id 0 for arena node")
+        })?;
+        let slot = ArenaSlot::new(arena_id, disk_loc.offset);
+        let am = arena_manager.read();
+        let node_data = am.read(slot)?;
+
+        // Deserialize the node using v2 format with relative offset support
+        // The slot is the "parent slot" for decoding relative child offsets
+        let ctx = DeserializationContext::new(slot);
+        let node = serialization::v2::deserialize_node_v2(node_data, &ctx).map_err(|e| {
+            PersistentARTrieError::corrupted(format!("Failed to deserialize ART node: {:?}", e))
+        })?;
+
+        // Collect child pointers before dropping the arena lock
+        let child_data: Vec<(u8, SwizzledPtr)> = node
+            .iter_children()
+            .filter(|(_, ptr)| !ptr.is_null())
+            .map(|(key, ptr)| (key, ptr.clone()))
+            .collect();
+
+        // Drop arena lock before recursive calls
+        drop(am);
+
+        // Load all children recursively
+        let mut children = Vec::new();
+        for (key, child_ptr) in child_data {
+            let child = Self::load_child_from_disk_with_arena(arena_manager, &child_ptr)?;
+            children.push((key, child));
+        }
+
+        Ok((node, children))
+    }
+
+    /// Load a child node (bucket or ART node) from arena.
+    ///
+    /// This version uses ArenaManager to read data from arena slots.
+    #[cfg(feature = "persistent-artrie")]
+    fn load_child_from_disk_with_arena(
+        arena_manager: &Arc<RwLock<ArenaManager>>,
+        child_ptr: &SwizzledPtr,
+    ) -> Result<ChildNode> {
+        // Get arena slot from the disk location
+        // block_id = arena_id + 1 (block 0 is file header)
+        // offset = slot_id
+        let disk_loc = child_ptr.disk_location().ok_or_else(|| {
+            PersistentARTrieError::corrupted("Invalid child pointer: cannot get disk location")
+        })?;
+        let arena_id = disk_loc.block_id.checked_sub(1).ok_or_else(|| {
+            PersistentARTrieError::corrupted("Invalid block_id 0 for arena node")
+        })?;
+        let slot = ArenaSlot::new(arena_id, disk_loc.offset);
+
+        // Determine child type from the DiskLocation's node_type
+        let node_type = disk_loc.node_type;
+
+        // Read data from arena
+        let am = arena_manager.read();
+        let data = am.read(slot)?;
+
+        match node_type {
+            NodeType::Bucket => {
+                let bucket = StringBucket::from_bytes(data).map_err(|e| {
+                    PersistentARTrieError::corrupted(format!("Failed to load child bucket: {:?}", e))
+                })?;
+
+                Ok(ChildNode::Bucket(bucket))
+            }
+            NodeType::Node4 | NodeType::Node16 | NodeType::Node48 | NodeType::Node256 => {
+                // Deserialize the node using v2 format with relative offset support
+                // The slot is the "parent slot" for decoding relative child offsets
+                let ctx = DeserializationContext::new(slot);
+                let node = serialization::v2::deserialize_node_v2(data, &ctx).map_err(|e| {
+                    PersistentARTrieError::corrupted(format!("Failed to deserialize child ART node: {:?}", e))
+                })?;
+
+                // Check if node is final (has IS_FINAL flag set)
+                let is_final = node.header().is_final();
+
+                // Collect child pointers before dropping the arena lock
+                let child_data: Vec<(u8, SwizzledPtr)> = node
+                    .iter_children()
+                    .filter(|(_, ptr)| !ptr.is_null())
+                    .map(|(key, ptr)| (key, ptr.clone()))
+                    .collect();
+
+                // Drop arena lock before recursive calls
+                drop(am);
+
+                // Load children recursively
+                let mut children = Vec::new();
+                for (key, grandchild_ptr) in child_data {
+                    let grandchild = Self::load_child_from_disk_with_arena(arena_manager, &grandchild_ptr)?;
+                    children.push((key, grandchild));
+                }
+
+                Ok(ChildNode::ArtNode {
+                    node,
+                    is_final,
+                    value: None, // Value serialization for nested nodes is future work
+                    children,
+                })
+            }
+            // Char-level nodes should never appear in byte-level trie
+            NodeType::CharNode4 | NodeType::CharNode16 | NodeType::CharNode48 | NodeType::CharBucket => {
+                Err(PersistentARTrieError::corrupted(
+                    "Char-level node type encountered in byte-level PersistentARTrie"
+                ))
+            }
+        }
+    }
+
     /// Insert a term into the dictionary (without value)
     pub fn insert(&mut self, term: &str) -> bool {
-        let mut inner = self.inner.write().expect("lock poisoned");
+        let mut inner = self.inner.write();
         inner.insert_impl(term.as_bytes(), None)
     }
 
     /// Insert a term with an associated value
     pub fn insert_with_value(&mut self, term: &str, value: V) -> bool {
-        let mut inner = self.inner.write().expect("lock poisoned");
+        let mut inner = self.inner.write();
         inner.insert_impl(term.as_bytes(), Some(value))
     }
 
     /// Remove a term from the dictionary
     pub fn remove(&mut self, term: &str) -> bool {
-        let mut inner = self.inner.write().expect("lock poisoned");
+        let mut inner = self.inner.write();
         inner.remove_impl(term.as_bytes())
     }
 
     /// Check if the dictionary is dirty (has uncommitted changes)
     pub fn is_dirty(&self) -> bool {
-        let inner = self.inner.read().expect("lock poisoned");
+        let inner = self.inner.read();
         inner.dirty
     }
 
     /// Mark the dictionary as clean (after flushing to disk)
     pub fn mark_clean(&mut self) {
-        let mut inner = self.inner.write().expect("lock poisoned");
+        let mut inner = self.inner.write();
         inner.dirty = false;
     }
 
@@ -679,17 +969,17 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
     /// ```
     #[cfg(feature = "persistent-artrie")]
     pub fn sync(&self) -> Result<()> {
-        let inner = self.inner.read().expect("lock poisoned");
+        let inner = self.inner.read();
 
         // Sync WAL to disk
         if let Some(ref wal_writer) = inner.wal_writer {
-            let wal = wal_writer.write().expect("WAL lock poisoned");
+            let wal = wal_writer.write();
             wal.sync()?;
         }
 
         // Flush all dirty pages from buffer manager
         if let Some(ref buffer_manager) = inner.buffer_manager {
-            buffer_manager.read().expect("buffer lock poisoned").flush_all()?;
+            buffer_manager.read().flush_all()?;
         }
 
         Ok(())
@@ -718,15 +1008,15 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
 
         // First, persist all in-memory data to disk
         {
-            let mut inner = self.inner.write().expect("lock poisoned");
+            let mut inner = self.inner.write();
             inner.persist_to_disk()?;
         }
 
         // Then write the checkpoint record to WAL
-        let inner = self.inner.read().expect("lock poisoned");
+        let inner = self.inner.read();
 
         if let Some(ref wal_writer) = inner.wal_writer {
-            let wal = wal_writer.write().expect("WAL lock poisoned");
+            let wal = wal_writer.write();
 
             // Get current LSN as checkpoint
             let checkpoint_lsn = inner.next_lsn.saturating_sub(1);
@@ -742,6 +1032,9 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
 
             wal.append(record)?;
             wal.sync()?;
+
+            // Truncate WAL after successful checkpoint - all operations are now persisted
+            wal.truncate()?;
         }
 
         Ok(())
@@ -764,13 +1057,13 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
     /// ```
     #[cfg(feature = "persistent-artrie")]
     pub fn prefetch_stats(&self) -> super::prefetch::PrefetchStatsSnapshot {
-        let inner = self.inner.read().expect("lock poisoned");
+        let inner = self.inner.read();
         inner.prefetcher.stats().snapshot()
     }
 
     /// Get a snapshot node for traversal
     fn get_root_node(&self) -> PersistentARTrieNode<V> {
-        let inner = self.inner.read().expect("lock poisoned");
+        let inner = self.inner.read();
         match &inner.root {
             TrieRoot::Bucket(bucket) => PersistentARTrieNode::new_bucket(bucket.clone()),
             TrieRoot::ArtNode {
@@ -825,7 +1118,7 @@ impl<V: DictionaryValue> PersistentARTrieInner<V> {
                     term: term.to_vec(),
                     value: serialized_value,
                 };
-                if let Err(e) = wal_writer.write().expect("WAL lock poisoned").append(record) {
+                if let Err(e) = wal_writer.write().append(record) {
                     // Log error but don't fail the insert - data is in memory
                     eprintln!("Warning: Failed to log insert to WAL: {:?}", e);
                 }
@@ -1066,7 +1359,7 @@ impl<V: DictionaryValue> PersistentARTrieInner<V> {
                 let record = WalRecord::Remove {
                     term: term.to_vec(),
                 };
-                if let Err(e) = wal_writer.write().expect("WAL lock poisoned").append(record) {
+                if let Err(e) = wal_writer.write().append(record) {
                     // Log error but don't fail the remove - data is in memory
                     eprintln!("Warning: Failed to log remove to WAL: {:?}", e);
                 }
@@ -1343,8 +1636,14 @@ impl<V: DictionaryValue> PersistentARTrieInner<V> {
                 }
                 None
             }
-            ChildNode::DiskRef { .. } => {
-                // TODO: Load from disk and get value
+            ChildNode::DiskRef { ptr } => {
+                // Lazy load from disk and get value
+                if let Some(disk_location) = ptr.disk_location() {
+                    #[cfg(feature = "persistent-artrie")]
+                    if let Ok(resolved) = self.resolve_disk_ref(&disk_location) {
+                        return self.get_value_in_child(&resolved, remaining);
+                    }
+                }
                 None
             }
         }
@@ -1428,11 +1727,7 @@ impl<V: DictionaryValue> PersistentARTrieInner<V> {
         })?;
 
         // Fetch the page containing the node
-        let bm = buffer_manager.read().map_err(|_| {
-            PersistentARTrieError::LockPoisoned {
-                resource: "buffer_manager".to_string(),
-            }
-        })?;
+        let bm = buffer_manager.read();
 
         let page_guard = bm.fetch_page(disk_location.block_id)?;
         let page_data = page_guard.data();
@@ -1502,6 +1797,56 @@ impl<V: DictionaryValue> PersistentARTrieInner<V> {
         }
     }
 
+    /// Check if child slots are consecutive in the same arena.
+    ///
+    /// For sequential sibling storage to work, all children must:
+    /// 1. Be in the same arena as the parent will be
+    /// 2. Have consecutive slot IDs (first, first+1, first+2, ...)
+    ///
+    /// # Arguments
+    /// * `node` - The node whose children to check
+    /// * `parent_arena_id` - The arena ID where the parent will be allocated
+    ///
+    /// # Returns
+    /// `Some(first_child_slot)` if children are consecutive, `None` otherwise.
+    #[cfg(feature = "persistent-artrie")]
+    fn check_sequential_children(node: &Node, parent_arena_id: u32) -> Option<ArenaSlot> {
+        // Collect all non-null children
+        let mut child_slots: Vec<ArenaSlot> = Vec::new();
+
+        for (_key, child_ptr) in node.iter_children() {
+            if let Some(slot) = child_ptr.as_arena_slot() {
+                child_slots.push(slot);
+            } else if !child_ptr.is_null() {
+                // Child is in memory or other format, can't use sequential
+                return None;
+            }
+        }
+
+        // Need at least 2 children for sequential to provide benefit
+        if child_slots.len() < 2 {
+            return None;
+        }
+
+        // All children must be in the same arena as the parent
+        if child_slots.iter().any(|slot| slot.arena_id != parent_arena_id) {
+            return None;
+        }
+
+        // Sort by slot ID to check if consecutive
+        child_slots.sort_by_key(|slot| slot.slot_id);
+
+        // Check if consecutive
+        let first = child_slots[0];
+        for (i, slot) in child_slots.iter().enumerate() {
+            if slot.slot_id != first.slot_id + i as u32 {
+                return None; // Not consecutive
+            }
+        }
+
+        Some(first)
+    }
+
     /// Serialize a bucket to disk and return a SwizzledPtr to its location.
     ///
     /// This allocates a new page via the BufferManager, writes the bucket data,
@@ -1512,37 +1857,27 @@ impl<V: DictionaryValue> PersistentARTrieInner<V> {
     ///
     /// # Returns
     /// A SwizzledPtr pointing to the bucket on disk.
+    ///
+    /// The SwizzledPtr uses:
+    /// - arena_id as block_id (23 bits, up to 8M arenas)
+    /// - slot_id as offset (22 bits, up to 4M slots per arena)
     #[cfg(feature = "persistent-artrie")]
     fn serialize_bucket_to_disk(&self, bucket: &StringBucket) -> Result<SwizzledPtr> {
-        use super::BUCKET_PAGE_SIZE;
-
-        // Get buffer manager
-        let buffer_manager = self.buffer_manager.as_ref().ok_or_else(|| {
-            PersistentARTrieError::internal("No buffer manager for disk serialization")
+        // Get arena manager
+        let arena_manager = self.arena_manager.as_ref().ok_or_else(|| {
+            PersistentARTrieError::internal("No arena manager for disk serialization")
         })?;
 
-        let bm = buffer_manager.write().map_err(|_| {
-            PersistentARTrieError::LockPoisoned {
-                resource: "buffer_manager".to_string(),
-            }
-        })?;
-
-        // Allocate a new page
-        let mut page_guard = bm.new_page()?;
-        let block_id = page_guard.block_id();
-
-        // Write bucket data to the page
+        // Get bucket bytes (8KB)
         let bucket_bytes = bucket.as_bytes();
-        let page_data = page_guard.data_mut();
 
-        // Copy bucket data (bucket is exactly BUCKET_PAGE_SIZE = 8KB)
-        // Pages are BLOCK_SIZE = 256KB, so bucket fits at offset 0
-        page_data[..BUCKET_PAGE_SIZE].copy_from_slice(bucket_bytes);
+        // Allocate in arena (space-efficient: packs buckets and nodes together)
+        let slot = arena_manager.write().allocate(bucket_bytes)?;
 
-        // Create SwizzledPtr pointing to this bucket
-        let ptr = SwizzledPtr::on_disk(block_id, 0, NodeType::Bucket);
-
-        Ok(ptr)
+        // Return pointer using arena addressing:
+        // - block_id = arena_id + 1 (block 0 is file header, arena N is block N+1)
+        // - offset = slot_id
+        Ok(SwizzledPtr::from_arena_slot(slot, NodeType::Bucket))
     }
 
     /// Serialize an ART node to disk and return a SwizzledPtr to its location.
@@ -1555,29 +1890,67 @@ impl<V: DictionaryValue> PersistentARTrieInner<V> {
     ///
     /// # Returns
     /// A SwizzledPtr pointing to the node on disk.
+    ///
+    /// The SwizzledPtr uses:
+    /// - arena_id as block_id (23 bits, up to 8M arenas)
+    /// - slot_id as offset (22 bits, up to 4M slots per arena)
+    ///
+    /// # Encoding Strategy
+    ///
+    /// Uses v2 serialization with relative offset encoding for child pointers.
+    /// When children are in the same arena as the parent, their pointers are
+    /// encoded as relative offsets (parent_slot - child_slot), which typically
+    /// fit in 1-2 bytes instead of 8 bytes for absolute pointers.
+    ///
+    /// If the parent would overflow to a new arena (breaking same-arena locality),
+    /// falls back to v1 serialization with absolute pointers.
     #[cfg(feature = "persistent-artrie")]
     fn serialize_node_to_disk(&self, node: &Node) -> Result<SwizzledPtr> {
-        // Get buffer manager
-        let buffer_manager = self.buffer_manager.as_ref().ok_or_else(|| {
-            PersistentARTrieError::internal("No buffer manager for disk serialization")
+        // Get arena manager
+        let arena_manager = self.arena_manager.as_ref().ok_or_else(|| {
+            PersistentARTrieError::internal("No arena manager for disk serialization")
         })?;
 
-        let bm = buffer_manager.write().map_err(|_| {
-            PersistentARTrieError::LockPoisoned {
-                resource: "buffer_manager".to_string(),
-            }
-        })?;
+        let mut am = arena_manager.write();
 
-        // Serialize the node to bytes
-        let node_bytes = serialization::to_bytes(node)?;
+        // Estimate serialized size to check for arena overflow
+        // We need a temporary context to estimate size - use current arena
+        let temp_slot = am.next_slot();
+        let temp_ctx = SerializationContext::new(temp_slot);
+        let estimated_size = serialization::v2::estimate_serialized_size_v2(node, &temp_ctx);
 
-        // Allocate a new page
-        let mut page_guard = bm.new_page()?;
-        let block_id = page_guard.block_id();
+        // Predict the actual parent slot accounting for possible arena overflow
+        let parent_slot = if am.can_fit(estimated_size) {
+            // Node will fit in current arena
+            am.next_slot()
+        } else {
+            // Node will overflow to new arena - predict slot 0 in new arena
+            ArenaSlot::new(am.arena_count() as u32, 0)
+        };
 
-        // Write node data to the page
-        let page_data = page_guard.data_mut();
-        page_data[..node_bytes.len()].copy_from_slice(&node_bytes);
+        // Create serialization context with predicted parent slot for relative encoding
+        // Check if children are consecutive (enables sequential sibling storage)
+        let ctx = if let Some(first_child) = Self::check_sequential_children(node, parent_slot.arena_id) {
+            // Children are consecutive in same arena: use sequential sibling encoding
+            // This stores only (first_child_slot, count) instead of N separate pointers
+            SerializationContext::sequential(parent_slot, first_child)
+        } else {
+            // Children are not consecutive: use relative encoding only
+            SerializationContext::new(parent_slot)
+        };
+
+        // Serialize the node to bytes using v2 format with relative offsets
+        let node_bytes = serialization::v2::serialize_node_v2(node, &ctx)?;
+
+        // Allocate in arena (space-efficient: packs many nodes per 256KB block)
+        let slot = am.allocate(&node_bytes)?;
+
+        // Verify we got the slot we predicted
+        debug_assert_eq!(
+            slot, parent_slot,
+            "Slot mismatch: predicted {:?}, got {:?}",
+            parent_slot, slot
+        );
 
         // Determine node type for SwizzledPtr
         let node_type = match node {
@@ -1587,10 +1960,10 @@ impl<V: DictionaryValue> PersistentARTrieInner<V> {
             Node::N256(_) => NodeType::Node256,
         };
 
-        // Create SwizzledPtr pointing to this node
-        let ptr = SwizzledPtr::on_disk(block_id, 0, node_type);
-
-        Ok(ptr)
+        // Return pointer using arena addressing:
+        // - block_id = arena_id + 1 (block 0 is file header, arena N is block N+1)
+        // - offset = slot_id
+        Ok(SwizzledPtr::from_arena_slot(slot, node_type))
     }
 
     /// Persist all modified nodes in the trie to disk.
@@ -1613,7 +1986,7 @@ impl<V: DictionaryValue> PersistentARTrieInner<V> {
     #[cfg(feature = "persistent-artrie")]
     pub fn persist_to_disk(&mut self) -> Result<()> {
 
-        // Get buffer manager
+        // Get buffer manager and arena manager
         let buffer_manager = self.buffer_manager.as_ref().ok_or_else(|| {
             PersistentARTrieError::internal("No buffer manager for disk serialization")
         })?;
@@ -1658,30 +2031,39 @@ impl<V: DictionaryValue> PersistentARTrieInner<V> {
             }
         };
 
+        // Flush arenas to disk before creating root descriptor
+        // This ensures all nodes are persisted before we record the root pointer
+        if let Some(ref arena_manager) = self.arena_manager {
+            arena_manager.write().flush()?;
+        }
+
+        // Get arena count for the root descriptor
+        let arena_count: u32 = if let Some(ref arena_manager) = self.arena_manager {
+            arena_manager.read().arena_count() as u32
+        } else {
+            0
+        };
+
         // Create root descriptor block
         // Format:
         //   0: type (1 byte)
         //   1: is_final (1 byte)
         //   2-5: term_count (4 bytes, little endian)
-        //   6-9: value_len (4 bytes, little endian)
+        //   6-9: arena_count (4 bytes, little endian)
         //   10-17: root_ptr (8 bytes, little endian)
         //   18+: value bytes (if any)
         let mut descriptor = vec![0u8; 18 + value_bytes.len()];
         descriptor[0] = root_type;
         descriptor[1] = if is_final { 1 } else { 0 };
         descriptor[2..6].copy_from_slice(&(term_count as u32).to_le_bytes());
-        descriptor[6..10].copy_from_slice(&(value_bytes.len() as u32).to_le_bytes());
+        descriptor[6..10].copy_from_slice(&arena_count.to_le_bytes());
         descriptor[10..18].copy_from_slice(&root_ptr.to_le_bytes());
         if !value_bytes.is_empty() {
             descriptor[18..].copy_from_slice(&value_bytes);
         }
 
         // Allocate a block for the descriptor and write it
-        let bm = buffer_manager.write().map_err(|_| {
-            PersistentARTrieError::LockPoisoned {
-                resource: "buffer_manager".to_string(),
-            }
-        })?;
+        let bm = buffer_manager.write();
 
         let mut page_guard = bm.new_page()?;
         let block_id = page_guard.block_id();
@@ -1762,12 +2144,12 @@ impl<V: DictionaryValue> Dictionary for PersistentARTrie<V> {
     }
 
     fn contains(&self, term: &str) -> bool {
-        let inner = self.inner.read().expect("lock poisoned");
+        let inner = self.inner.read();
         inner.contains_impl(term.as_bytes())
     }
 
     fn len(&self) -> Option<usize> {
-        let inner = self.inner.read().expect("lock poisoned");
+        let inner = self.inner.read();
         Some(inner.term_count)
     }
 
@@ -1780,14 +2162,14 @@ impl<V: DictionaryValue> MappedDictionary for PersistentARTrie<V> {
     type Value = V;
 
     fn get_value(&self, term: &str) -> Option<Self::Value> {
-        let inner = self.inner.read().expect("lock poisoned");
+        let inner = self.inner.read();
         inner.get_value_impl(term.as_bytes())
     }
 }
 
 impl<V: DictionaryValue> std::fmt::Debug for PersistentARTrie<V> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let inner = self.inner.read().expect("lock poisoned");
+        let inner = self.inner.read();
         f.debug_struct("PersistentARTrie")
             .field("term_count", &inner.term_count)
             .field("dirty", &inner.dirty)
@@ -2194,7 +2576,7 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
     /// }
     /// ```
     pub fn iter(&self) -> TermIterator<V> {
-        let inner = self.inner.read().expect("lock poisoned");
+        let inner = self.inner.read();
         TermIterator::new(&inner.root)
     }
 
@@ -2216,7 +2598,7 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
     /// }
     /// ```
     pub fn iter_with_values(&self) -> TermValueIterator<V> {
-        let inner = self.inner.read().expect("lock poisoned");
+        let inner = self.inner.read();
         TermValueIterator::new(&inner.root)
     }
 
@@ -2294,7 +2676,7 @@ impl<V: DictionaryValue + serde::Serialize + serde::de::DeserializeOwned> Persis
     /// See [`increment`](Self::increment) for details.
     #[cfg(feature = "persistent-artrie")]
     pub fn increment_bytes(&self, term: &[u8], delta: i64) -> super::error::Result<i64> {
-        let mut inner = self.inner.write().expect("lock poisoned");
+        let mut inner = self.inner.write();
 
         // Read current value (if exists)
         let current: i64 = match inner.get_value_impl(term) {
@@ -2336,7 +2718,7 @@ impl<V: DictionaryValue + serde::Serialize + serde::de::DeserializeOwned> Persis
                 delta,
                 result: new_value,
             };
-            wal_writer.write().expect("WAL lock").append(record)?;
+            wal_writer.write().append(record)?;
         }
 
         Ok(new_value)
@@ -2379,7 +2761,7 @@ impl<V: DictionaryValue + serde::Serialize + serde::de::DeserializeOwned> Persis
     /// See [`upsert`](Self::upsert) for details.
     #[cfg(feature = "persistent-artrie")]
     pub fn upsert_bytes(&self, term: &[u8], value: V) -> super::error::Result<bool> {
-        let mut inner = self.inner.write().expect("lock poisoned");
+        let mut inner = self.inner.write();
 
         // Check if term exists
         let existed = inner.contains_impl(term);
@@ -2398,7 +2780,7 @@ impl<V: DictionaryValue + serde::Serialize + serde::de::DeserializeOwned> Persis
                 term: term.to_vec(),
                 value: value_bytes,
             };
-            wal_writer.write().expect("WAL lock").append(record)?;
+            wal_writer.write().append(record)?;
         }
 
         Ok(!existed)
@@ -2455,7 +2837,7 @@ impl<V: DictionaryValue + serde::Serialize + serde::de::DeserializeOwned> Persis
         expected: Option<V>,
         new_value: V,
     ) -> super::error::Result<bool> {
-        let mut inner = self.inner.write().expect("lock poisoned");
+        let mut inner = self.inner.write();
 
         // Read current value
         let current = inner.get_value_impl(term);
@@ -2491,7 +2873,7 @@ impl<V: DictionaryValue + serde::Serialize + serde::de::DeserializeOwned> Persis
                 new_value: new_value_bytes,
                 success: matches,
             };
-            wal_writer.write().expect("WAL lock").append(record)?;
+            wal_writer.write().append(record)?;
         }
 
         Ok(matches)
@@ -2544,7 +2926,7 @@ impl<V: DictionaryValue + serde::Serialize + serde::de::DeserializeOwned> Persis
     /// See [`get_or_insert`](Self::get_or_insert) for details.
     #[cfg(feature = "persistent-artrie")]
     pub fn get_or_insert_bytes(&self, term: &[u8], default: V) -> super::error::Result<V> {
-        let mut inner = self.inner.write().expect("lock poisoned");
+        let mut inner = self.inner.write();
 
         // Check if term exists
         if let Some(v) = inner.get_value_impl(term) {
@@ -2564,7 +2946,7 @@ impl<V: DictionaryValue + serde::Serialize + serde::de::DeserializeOwned> Persis
                 term: term.to_vec(),
                 value: value_bytes,
             };
-            wal_writer.write().expect("WAL lock").append(record)?;
+            wal_writer.write().append(record)?;
         }
 
         Ok(default)
@@ -2579,20 +2961,17 @@ impl<V: DictionaryValue + serde::Serialize + serde::de::DeserializeOwned> Persis
 #[cfg(feature = "persistent-artrie")]
 impl<V: DictionaryValue> Drop for PersistentARTrie<V> {
     fn drop(&mut self) {
-        // Best-effort sync on close
-        if let Ok(inner) = self.inner.read() {
-            // Sync WAL
-            if let Some(ref wal_writer) = inner.wal_writer {
-                if let Ok(wal) = wal_writer.write() {
-                    let _ = wal.sync();
-                }
-            }
-            // Flush buffer manager dirty pages
-            if let Some(ref buffer_manager) = inner.buffer_manager {
-                if let Ok(bm) = buffer_manager.read() {
-                    let _ = bm.flush_all();
-                }
-            }
+        // Best-effort sync on close (sync_compat RwLock panics on poison)
+        let inner = self.inner.read();
+        // Sync WAL
+        if let Some(ref wal_writer) = inner.wal_writer {
+            let wal = wal_writer.write();
+            let _ = wal.sync();
+        }
+        // Flush buffer manager dirty pages
+        if let Some(ref buffer_manager) = inner.buffer_manager {
+            let bm = buffer_manager.read();
+            let _ = bm.flush_all();
         }
     }
 }
@@ -3118,6 +3497,136 @@ mod tests {
             // get_or_insert returns existing value, ignores default
             let value = dict.get_or_insert("key", 42).expect("get_or_insert");
             assert_eq!(value, 100, "Should return existing value, not default");
+        }
+    }
+
+    #[cfg(feature = "persistent-artrie")]
+    mod sequential_siblings_tests {
+        use super::*;
+        use crate::persistent_artrie::arena_manager::ArenaSlot;
+        use crate::persistent_artrie::nodes::{Node, Node4, ChildStorage};
+        use crate::persistent_artrie::swizzled_ptr::SwizzledPtr;
+
+        #[test]
+        fn test_check_sequential_children_empty() {
+            // Node with no children - should return None
+            let node = Node::N4(Box::new(Node4::new()));
+            let result = PersistentARTrieInner::<()>::check_sequential_children(&node, 0);
+            assert!(result.is_none());
+        }
+
+        #[test]
+        fn test_check_sequential_children_single_child() {
+            // Single child - not enough for sequential optimization
+            // Note: block_id=1 maps to arena_id=0 (arena N = block N+1)
+            let mut n4 = Node4::new();
+            let child_ptr = SwizzledPtr::on_disk(1, 10, crate::persistent_artrie::swizzled_ptr::NodeType::Node4);
+            let _ = n4.add_child(b'a', child_ptr);
+            let node = Node::N4(Box::new(n4));
+
+            let result = PersistentARTrieInner::<()>::check_sequential_children(&node, 0);
+            assert!(result.is_none(), "Single child should not use sequential");
+        }
+
+        #[test]
+        fn test_check_sequential_children_consecutive() {
+            // Two children with consecutive slot IDs in same arena
+            // Note: block_id=1 maps to arena_id=0 (arena N = block N+1)
+            let mut n4 = Node4::new();
+            let ptr1 = SwizzledPtr::on_disk(1, 10, crate::persistent_artrie::swizzled_ptr::NodeType::Node4);
+            let ptr2 = SwizzledPtr::on_disk(1, 11, crate::persistent_artrie::swizzled_ptr::NodeType::Node4);
+            let _ = n4.add_child(b'a', ptr1);
+            let _ = n4.add_child(b'b', ptr2);
+            let node = Node::N4(Box::new(n4));
+
+            let result = PersistentARTrieInner::<()>::check_sequential_children(&node, 0);
+            assert!(result.is_some(), "Consecutive children should use sequential");
+
+            let first = result.unwrap();
+            assert_eq!(first.arena_id, 0);
+            assert_eq!(first.slot_id, 10);
+        }
+
+        #[test]
+        fn test_check_sequential_children_not_consecutive() {
+            // Two children with gap in slot IDs
+            // Note: block_id=1 maps to arena_id=0 (arena N = block N+1)
+            let mut n4 = Node4::new();
+            let ptr1 = SwizzledPtr::on_disk(1, 10, crate::persistent_artrie::swizzled_ptr::NodeType::Node4);
+            let ptr2 = SwizzledPtr::on_disk(1, 15, crate::persistent_artrie::swizzled_ptr::NodeType::Node4); // Gap!
+            let _ = n4.add_child(b'a', ptr1);
+            let _ = n4.add_child(b'b', ptr2);
+            let node = Node::N4(Box::new(n4));
+
+            let result = PersistentARTrieInner::<()>::check_sequential_children(&node, 0);
+            assert!(result.is_none(), "Non-consecutive slots should not use sequential");
+        }
+
+        #[test]
+        fn test_check_sequential_children_different_arenas() {
+            // Two children in different arenas
+            // block_id=1 maps to arena_id=0, block_id=2 maps to arena_id=1
+            let mut n4 = Node4::new();
+            let ptr1 = SwizzledPtr::on_disk(1, 10, crate::persistent_artrie::swizzled_ptr::NodeType::Node4);
+            let ptr2 = SwizzledPtr::on_disk(2, 11, crate::persistent_artrie::swizzled_ptr::NodeType::Node4); // Different arena!
+            let _ = n4.add_child(b'a', ptr1);
+            let _ = n4.add_child(b'b', ptr2);
+            let node = Node::N4(Box::new(n4));
+
+            let result = PersistentARTrieInner::<()>::check_sequential_children(&node, 0);
+            assert!(result.is_none(), "Cross-arena children should not use sequential");
+        }
+
+        #[test]
+        fn test_check_sequential_children_wrong_parent_arena() {
+            // Children consecutive but parent will be in different arena
+            // block_id=1 maps to arena_id=0 (arena N = block N+1)
+            let mut n4 = Node4::new();
+            let ptr1 = SwizzledPtr::on_disk(1, 10, crate::persistent_artrie::swizzled_ptr::NodeType::Node4);
+            let ptr2 = SwizzledPtr::on_disk(1, 11, crate::persistent_artrie::swizzled_ptr::NodeType::Node4);
+            let _ = n4.add_child(b'a', ptr1);
+            let _ = n4.add_child(b'b', ptr2);
+            let node = Node::N4(Box::new(n4));
+
+            // Parent will be in arena 1, but children are in arena 0
+            let result = PersistentARTrieInner::<()>::check_sequential_children(&node, 1);
+            assert!(result.is_none(), "Children must be in same arena as parent");
+        }
+
+        #[test]
+        fn test_check_sequential_children_three_consecutive() {
+            // Three children with consecutive slot IDs
+            // Note: block_id=1 maps to arena_id=0 (arena N = block N+1)
+            let mut n4 = Node4::new();
+            let ptr1 = SwizzledPtr::on_disk(1, 100, crate::persistent_artrie::swizzled_ptr::NodeType::Node4);
+            let ptr2 = SwizzledPtr::on_disk(1, 101, crate::persistent_artrie::swizzled_ptr::NodeType::Node4);
+            let ptr3 = SwizzledPtr::on_disk(1, 102, crate::persistent_artrie::swizzled_ptr::NodeType::Node4);
+            let _ = n4.add_child(b'a', ptr1);
+            let _ = n4.add_child(b'b', ptr2);
+            let _ = n4.add_child(b'c', ptr3);
+            let node = Node::N4(Box::new(n4));
+
+            let result = PersistentARTrieInner::<()>::check_sequential_children(&node, 0);
+            assert!(result.is_some());
+
+            let first = result.unwrap();
+            assert_eq!(first.arena_id, 0);
+            assert_eq!(first.slot_id, 100);
+        }
+
+        #[test]
+        fn test_child_storage_enum() {
+            // Test ChildStorage enum basic operations
+            let direct = ChildStorage::Direct;
+            assert!(direct.is_direct());
+            assert!(!direct.is_sequential());
+            assert!(direct.first_slot().is_none());
+
+            let sequential = ChildStorage::sequential(5, 100);
+            assert!(!sequential.is_direct());
+            assert!(sequential.is_sequential());
+            assert_eq!(sequential.arena_id(), Some(5));
+            assert_eq!(sequential.first_slot(), Some(100));
         }
     }
 }

@@ -3,7 +3,8 @@
 //! This module provides a zipper implementation for PersistentARTrie that uses
 //! node-based navigation with lock-per-operation pattern for thread safety.
 
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
+use crate::sync_compat::RwLock;
 
 use crate::value::DictionaryValue;
 use crate::zipper::{DictZipper, ValuedDictZipper};
@@ -101,12 +102,12 @@ impl<V: DictionaryValue> DictZipper for PersistentARTrieZipper<V> {
     type Unit = u8;
 
     fn is_final(&self) -> bool {
-        let inner = self.inner.read().expect("lock poisoned");
+        let inner = self.inner.read();
         self.is_final_at_path(&inner, &self.path)
     }
 
     fn descend(&self, label: Self::Unit) -> Option<Self> {
-        let inner = self.inner.read().expect("lock poisoned");
+        let inner = self.inner.read();
 
         // Check if the path + label leads to a valid position
         let mut new_path = self.path.clone();
@@ -129,7 +130,7 @@ impl<V: DictionaryValue> DictZipper for PersistentARTrieZipper<V> {
     fn children(&self) -> impl Iterator<Item = (Self::Unit, Self)> {
         // Collect children to avoid holding lock during iteration
         let children: Vec<u8> = {
-            let inner = self.inner.read().expect("lock poisoned");
+            let inner = self.inner.read();
             self.get_children_at_path(&inner, &self.path)
         };
 
