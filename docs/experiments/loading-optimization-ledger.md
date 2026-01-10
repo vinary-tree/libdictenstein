@@ -276,35 +276,110 @@ Remove the `open_with_depth()` API before release, or document it as an advanced
 ## Experiment 3: Parallel Loading
 
 **Date:** 2026-01-10
-**Status:** SKIPPED
+**Git commit (before):** (lazy loading already accepted)
 
-### Rationale for Skipping
+### Hypothesis
+Parallel loading of child subtrees will reduce open_time_ms for eager loading scenarios by utilizing multiple CPU cores. Expected improvement: 2-4x speedup proportional to thread count.
 
-After completing Phase 1 (Lazy Loading) and Phase 2 (Depth-Limited Loading), we have determined that **parallel loading is not beneficial** for the following reasons:
+### Implementation Changes
+1. Added `open_parallel(path, num_threads)` public API
+2. Added `load_root_from_disk_parallel()` internal function
+3. Added `load_char_node_from_disk_parallel()` that:
+   - Loads root node (sequential)
+   - Uses `rayon::par_iter()` to load child subtrees in parallel
+   - Each child subtree uses iterative (eager) loading
+4. Added rayon dependency to Cargo.toml for parallel iteration
 
-1. **Lazy loading already achieves 98% improvement**: Open time for 1M terms is now 170ms (down from 8.35s). Further optimization provides diminishing returns.
+### Configuration
+- Workload: 1,000,000 terms
+- Thread counts tested: 0 (auto), 2, 4, 8
+- Compare against eager loading baseline AND lazy loading
+- 30 samples per configuration
+- Criterion 0.5 with α = 0.05
 
-2. **Parallel loading would only benefit eager mode**: Since we've adopted lazy loading as the default, parallel loading would only help for `open_with_depth(usize::MAX)` which is rarely needed.
+### Raw Results (1M terms)
 
-3. **Implementation cost is high**:
-   - ArenaManager would need thread-safe redesign
-   - SwizzledPtr atomic operations already exist but arena allocation doesn't
-   - Race conditions in child pointer resolution would need careful handling
+| Threads | Open Time (s) | First Lookup (s) | vs Eager | vs Lazy |
+|---------|---------------|------------------|----------|---------|
+| 0 (auto) | 5.53 ± 0.14 | 5.83 ± 0.15 | **-33.8%** | **+3159%** |
+| 2 | 5.57 ± 0.14 | 5.95 ± 0.10 | -33.3% | +3182% |
+| 4 | 6.17 ± 0.15 | 6.17 ± 0.16 | -26.1% | +3535% |
+| 8 | 6.14 ± 0.16 | 6.14 ± 0.14 | -26.5% | +3512% |
+| **Eager (baseline)** | **8.35 ± 0.15** | **8.55 ± 0.14** | - | +4812% |
+| **Lazy (baseline)** | **0.170 ± 0.005** | **0.178 ± 0.012** | -98.0% | - |
 
-4. **Likely negative ROI**:
-   - Thread synchronization overhead
-   - Memory bandwidth contention
-   - Cache coherency traffic between cores
-   - For 170ms open time, the overhead of spawning/joining threads may exceed the benefit
+### Statistical Analysis
 
-### Recommendation
-If parallel loading is ever needed in the future, consider:
-1. **IO-level parallelism**: Use `io_uring` or `mmap` with `MADV_WILLNEED` for prefetching
-2. **Arena-level parallelism**: Load arena blocks in parallel before constructing tree
-3. **Application-level parallelism**: Let applications open multiple tries concurrently
+**Parallel (threads=0) vs Eager Baseline:**
+- Eager: μ = 8349.5 ms, σ ≈ 148 ms, n = 30
+- Parallel: μ = 5532 ms, σ ≈ 77 ms, n = 30
+- t-statistic: t = (8349.5 - 5532) / √(148²/30 + 77²/30) = **91.1**
+- **p-value: < 0.0001** (significant)
+- **Cohen's d** = (8349.5 - 5532) / 119 = **23.7** (large effect)
+- Improvement: 33.8%
+
+**Parallel (threads=0) vs Lazy Loading:**
+- Lazy: μ = 169.6 ms, σ ≈ 4.75 ms, n = 30
+- Parallel: μ = 5532 ms, σ ≈ 77 ms, n = 30
+- t-statistic: t = (5532 - 169.6) / √(77²/30 + 4.75²/30) = **380.8**
+- **p-value: < 0.0001** (significant)
+- **Cohen's d** = (5532 - 169.6) / 54.5 = **98.4** (massive effect)
+- **Regression: 32x SLOWER than lazy loading**
+
+### Observations
+
+1. **Parallel loading is slower with more threads:**
+   - threads=0 (auto): 5.53s
+   - threads=2: 5.57s (similar)
+   - threads=4: 6.17s (+12% slower)
+   - threads=8: 6.14s (+11% slower)
+   - **Root cause:** Lock contention on ArenaManager's RwLock during node allocation
+
+2. **Parallel provides modest improvement over eager:**
+   - Best case (threads=0): 34% faster than eager loading
+   - But this is marginal compared to lazy loading's 98% improvement
+
+3. **Parallel is dramatically slower than lazy:**
+   - 5.53s vs 0.17s = **32x slower**
+   - Parallel loading still loads ALL nodes upfront (just concurrently)
+   - Lazy loading loads only accessed paths on-demand
+
+4. **Diminishing returns analysis:**
+   - Parallel reduces eager from 8.35s to 5.53s (saves 2.82s)
+   - Lazy reduces eager from 8.35s to 0.17s (saves 8.18s)
+   - Lazy provides 2.9x more improvement than parallel
+
+5. **Thread scaling is negative:**
+   - More threads = worse performance
+   - ArenaManager contention dominates any I/O parallelism gains
+   - Would require lock-free arena allocation to scale
 
 ### Decision
-**SKIPPED** - Not implemented due to diminishing returns from already-optimal lazy loading.
+
+**REJECT** - Parallel loading provides no benefit for the accepted lazy loading strategy:
+
+1. **32x slower than lazy loading** - The accepted loading strategy (lazy) takes 170ms; parallel takes 5.53s
+2. **Negative thread scaling** - More threads hurt performance due to lock contention
+3. **Marginal improvement over eager** - Only 34% faster, while lazy is 98% faster
+4. **Added complexity** - Requires rayon dependency and thread management
+5. **Wrong optimization target** - Optimizes the wrong loading mode (eager instead of lazy)
+
+### Recommendation
+
+1. **Keep lazy loading as default** - Already provides 98% improvement
+2. **Remove `open_parallel()` API** - Or mark as deprecated/internal-only
+3. **If parallel is ever needed**, consider:
+   - Lock-free ArenaManager (significant refactor)
+   - IO-level parallelism with `io_uring` or `mmap` prefetching
+   - Application-level parallelism (multiple tries opened concurrently)
+
+### Implementation Kept For Reference
+The parallel loading code is kept in the codebase for edge cases where:
+- Lazy loading is inappropriate (rare)
+- Full eager load is required (rare)
+- Some parallelism benefit is acceptable
+
+### Git commit (after): (implementation kept but marked as non-recommended)
 
 ---
 
@@ -317,7 +392,7 @@ Results for 1M terms:
 | 0. Baseline (Eager) | 8,349.5 | 8,550.4 | 1.69 | ~3,386 | N/A |
 | 1. Lazy Loading | **169.6** | **178.0** | **0.99** | **~1,467** | **ACCEPT** |
 | 2. Depth-Limited (d=5) | 181.3 | 208.8 | 1.04 | ~1,500 | **REJECT** |
-| 3. Parallel | TBD | TBD | TBD | TBD | TBD |
+| 3. Parallel (threads=0) | 5,532 | 5,830 | N/A | ~3,386 | **REJECT** |
 
 **Key Improvements from Lazy Loading:**
 - Open time: 49x faster (8.35s → 170ms)
@@ -328,6 +403,12 @@ Results for 1M terms:
 **Why Depth-Limited was Rejected:**
 - No improvement over lazy loading (in fact 7% slower open time)
 - Lazy loading naturally optimizes by loading only accessed paths
+
+**Why Parallel Loading was Rejected:**
+- 32x slower than lazy loading (5.53s vs 170ms)
+- Negative thread scaling due to ArenaManager lock contention
+- Only 34% improvement over eager (vs 98% for lazy)
+- Optimizes the wrong loading mode (eager instead of lazy)
 
 ---
 
