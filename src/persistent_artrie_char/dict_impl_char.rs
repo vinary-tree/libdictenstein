@@ -844,7 +844,8 @@ impl<V: DictionaryValue> DiskBackedCharTrieInner<V> {
             }
             ROOT_TYPE_NODE => {
                 let root_swizzled = SwizzledPtr::from_raw(root_ptr);
-                let node = self.load_char_node_from_disk(buffer_manager, &root_swizzled)?;
+                // Use iterative loading to avoid stack overflow for deep tries
+                let node = self.load_char_node_from_disk_iterative(buffer_manager, &root_swizzled)?;
                 Ok((CharTrieRoot::Node(Box::new(node)), term_count))
             }
             _ => {
@@ -1069,6 +1070,193 @@ impl<V: DictionaryValue> DiskBackedCharTrieInner<V> {
         }
 
         Ok(result)
+    }
+
+    /// Load a single CharTrieNodeInner's data from disk WITHOUT loading children.
+    ///
+    /// This is a helper for iterative loading. Returns the node (without children
+    /// connected) and the list of child pointers that need to be loaded.
+    ///
+    /// The returned node has `is_final`, `value`, and an empty child set.
+    /// Children must be connected by the caller after loading.
+    #[cfg(feature = "persistent-artrie")]
+    fn load_single_node_data(
+        &self,
+        node_ptr: &crate::persistent_artrie::swizzled_ptr::SwizzledPtr,
+    ) -> Result<(CharTrieNodeInner<V>, Vec<(char, crate::persistent_artrie::swizzled_ptr::SwizzledPtr)>)> {
+        use super::arena_manager::ArenaSlot;
+        use super::serialization_char::{deserialize_char_node_v2, DeserializationContext};
+        use crate::persistent_artrie::swizzled_ptr::SwizzledPtr;
+        use std::io::Cursor;
+
+        let arena_manager = self.arena_manager.as_ref().ok_or_else(|| {
+            PersistentARTrieError::internal("No arena manager for disk reading")
+        })?;
+
+        // Get arena slot from the disk location
+        // block_id = arena_id + 1 (block 0 is file header)
+        // offset = slot_id
+        let disk_loc = node_ptr.disk_location().ok_or_else(|| {
+            PersistentARTrieError::internal("Node pointer is swizzled or null")
+        })?;
+        let arena_id = disk_loc.block_id.checked_sub(1).ok_or_else(|| {
+            PersistentARTrieError::internal("Invalid block_id 0 for arena node")
+        })?;
+        let slot = ArenaSlot::new(arena_id, disk_loc.offset);
+
+        // Read from arena
+        #[cfg(feature = "parking_lot")]
+        let am = arena_manager.read();
+        #[cfg(not(feature = "parking_lot"))]
+        let am = arena_manager.read().map_err(|_| {
+            PersistentARTrieError::LockPoisoned {
+                resource: "arena_manager".to_string(),
+            }
+        })?;
+
+        let node_data = am.read(slot)?;
+
+        // Deserialize the CharNode using v2 format with context
+        let deser_ctx = DeserializationContext::new(slot);
+        let mut cursor = Cursor::new(node_data);
+        let char_node = deserialize_char_node_v2(&mut cursor, &deser_ctx)?;
+
+        // Use cursor position to find where value data starts (v2 format is variable size)
+        let offset = cursor.position() as usize;
+
+        // Read value_len and value_bytes
+        let value_len = u32::from_le_bytes([
+            node_data[offset],
+            node_data[offset + 1],
+            node_data[offset + 2],
+            node_data[offset + 3],
+        ]) as usize;
+
+        let value: Option<V> = if value_len > 0 {
+            let value_start = offset + 4;
+            let value_end = value_start + value_len;
+            let value_bytes = &node_data[value_start..value_end];
+            Some(bincode::deserialize(value_bytes).map_err(|e| {
+                PersistentARTrieError::internal(&format!("Failed to deserialize value: {}", e))
+            })?)
+        } else {
+            None
+        };
+
+        // Collect child pointers from the CharNode
+        let child_entries: Vec<(char, SwizzledPtr)> = char_node
+            .iter_children()
+            .filter_map(|(key, ptr)| {
+                char::from_u32(key).map(|c| (c, ptr.clone()))
+            })
+            .collect();
+
+        drop(am);
+
+        // Create the result node with proper node type from disk (NO children connected)
+        let is_final = char_node.is_final();
+        let mut result = CharTrieNodeInner::new();
+        result.set_final(is_final);
+        result.value = value;
+
+        Ok((result, child_entries))
+    }
+
+    /// Load a CharTrieNodeInner from disk using iterative (non-recursive) traversal.
+    ///
+    /// This avoids stack overflow for deep tries by using an explicit work stack
+    /// instead of recursive function calls. Uses a two-phase algorithm:
+    ///
+    /// 1. **Phase 1**: Load all nodes into a vector (without connecting children)
+    /// 2. **Phase 2**: Connect children to parents in reverse order (bottom-up)
+    ///
+    /// This maintains identical semantics to `load_char_node_from_disk` but can
+    /// handle arbitrarily deep tries without stack overflow.
+    #[cfg(feature = "persistent-artrie")]
+    fn load_char_node_from_disk_iterative(
+        &self,
+        _buffer_manager: &Arc<RwLock<BufferManager>>,
+        root_ptr: &crate::persistent_artrie::swizzled_ptr::SwizzledPtr,
+    ) -> Result<CharTrieNodeInner<V>> {
+        use crate::persistent_artrie::swizzled_ptr::SwizzledPtr;
+        use std::collections::HashMap;
+
+        /// Information about a loaded node before children are connected
+        struct LoadedNodeInfo<V: DictionaryValue> {
+            /// The node with is_final and value set, but NO children
+            node: CharTrieNodeInner<V>,
+            /// Child entries that need to be loaded and connected
+            child_entries: Vec<(char, SwizzledPtr)>,
+        }
+
+        // Stack for DFS traversal (avoids recursion)
+        let mut work_stack: Vec<SwizzledPtr> = vec![root_ptr.clone()];
+
+        // Results vector - nodes are stored in DFS pre-order
+        let mut loaded_nodes: Vec<LoadedNodeInfo<V>> = Vec::new();
+
+        // Map from disk pointer raw value to result index (for parent-child linking)
+        let mut ptr_to_idx: HashMap<u64, usize> = HashMap::new();
+
+        // Phase 1: Load all nodes without connecting children
+        while let Some(node_ptr) = work_stack.pop() {
+            // Skip if already loaded (handles potential shared subtrees)
+            let ptr_raw = node_ptr.to_raw();
+            if ptr_to_idx.contains_key(&ptr_raw) {
+                continue;
+            }
+
+            // Load this node's data from disk (single I/O)
+            let (node, child_entries) = self.load_single_node_data(&node_ptr)?;
+
+            // Reserve result index
+            let result_idx = loaded_nodes.len();
+            ptr_to_idx.insert(ptr_raw, result_idx);
+
+            // Store child entries for Phase 2
+            let child_ptrs: Vec<SwizzledPtr> = child_entries.iter()
+                .map(|(_, ptr)| ptr.clone())
+                .collect();
+
+            loaded_nodes.push(LoadedNodeInfo { node, child_entries });
+
+            // Push children onto stack (reverse order for correct DFS ordering)
+            // This ensures children are processed in the order they appear
+            for child_ptr in child_ptrs.into_iter().rev() {
+                work_stack.push(child_ptr);
+            }
+        }
+
+        // Handle empty tree case
+        if loaded_nodes.is_empty() {
+            return Err(PersistentARTrieError::internal("No nodes loaded from disk"));
+        }
+
+        // Phase 2: Connect children to parents (bottom-up)
+        // Process in reverse order so children are fully built before parents connect to them
+        for idx in (0..loaded_nodes.len()).rev() {
+            // Take child_entries out to avoid borrowing issues
+            let child_entries = std::mem::take(&mut loaded_nodes[idx].child_entries);
+
+            for (char_key, child_ptr) in child_entries {
+                let child_idx = *ptr_to_idx.get(&child_ptr.to_raw())
+                    .ok_or_else(|| PersistentARTrieError::internal(
+                        "Child pointer not found in loaded nodes map"
+                    ))?;
+
+                // Take ownership of the child node (replace with empty placeholder)
+                let child_node = std::mem::replace(
+                    &mut loaded_nodes[child_idx].node,
+                    CharTrieNodeInner::new()
+                );
+
+                // Connect child to parent
+                loaded_nodes[idx].node.insert_child(char_key, child_node);
+            }
+        }
+
+        // Root is at index 0 (first node pushed/processed)
+        Ok(std::mem::replace(&mut loaded_nodes[0].node, CharTrieNodeInner::new()))
     }
 
     /// Resolve a SwizzledPtr to a reference to a CharTrieNodeInner
@@ -2023,48 +2211,44 @@ impl<V: DictionaryValue> DiskBackedCharTrieInner<V> {
             child_disk_ptrs.push((c as u32, ptr));
         }
 
+        // Get the predicted parent slot for encoding children
+        #[cfg(feature = "parking_lot")]
+        let parent_slot = arena_manager.read().next_slot();
+        #[cfg(not(feature = "parking_lot"))]
+        let parent_slot = arena_manager
+            .read()
+            .map_err(|_| PersistentARTrieError::LockPoisoned {
+                resource: "arena_manager".to_string(),
+            })?
+            .next_slot();
+
         // Check if children are consecutive (enables sequential sibling storage)
         // Create serialization context that determines encoding mode:
         // - Sequential: children stored as (first_slot, count) instead of N pointers
         // - Relative: child offsets encoded relative to parent (1-2 bytes vs 8 bytes)
-        let ctx = if let Some(first_child) =
+        // - Full: absolute (arena_id, slot_id) for each child (9 bytes per child)
+        //
+        // IMPORTANT: If parent_slot.slot_id is small (especially 0), children serialized
+        // in the previous arena(s) would have "negative" relative offsets, causing
+        // decode underflow. Use full encoding to avoid this.
+        let ctx = if parent_slot.slot_id < child_disk_ptrs.len() as u32 {
+            // Parent slot is near the start of an arena - children likely in previous arena
+            // Use full encoding to avoid relative offset underflow during decode
+            SerializationContext::full_encoding(parent_slot)
+        } else if let Some(first_child) =
             Self::check_sequential_char_children(&child_disk_ptrs, parent_arena_id)
         {
             // Children are consecutive in same arena: use sequential sibling encoding
-            #[cfg(feature = "parking_lot")]
-            let parent_slot = arena_manager.read().next_slot();
-            #[cfg(not(feature = "parking_lot"))]
-            let parent_slot = arena_manager
-                .read()
-                .map_err(|_| PersistentARTrieError::LockPoisoned {
-                    resource: "arena_manager".to_string(),
-                })?
-                .next_slot();
-
             SerializationContext::sequential(parent_slot, first_child)
         } else {
             // Children are not consecutive: use relative encoding only
-            #[cfg(feature = "parking_lot")]
-            let parent_slot = arena_manager.read().next_slot();
-            #[cfg(not(feature = "parking_lot"))]
-            let parent_slot = arena_manager
-                .read()
-                .map_err(|_| PersistentARTrieError::LockPoisoned {
-                    resource: "arena_manager".to_string(),
-                })?
-                .next_slot();
-
             SerializationContext::new(parent_slot)
         };
 
         // Build a CharNode with disk pointers for serialization
         let disk_node = self.build_disk_char_node(&node.node, &child_disk_ptrs);
 
-        // Serialize the CharNode to a buffer using v2 format with relative offsets
-        let mut node_buffer = Vec::new();
-        serialize_char_node_v2(&disk_node, &mut node_buffer, &ctx)?;
-
-        // Serialize the value using bincode
+        // Serialize the value using bincode (needed regardless of encoding)
         let value_bytes: Vec<u8> = if let Some(ref value) = node.value {
             bincode::serialize(value).map_err(|e| {
                 PersistentARTrieError::internal(&format!("Failed to serialize value: {}", e))
@@ -2073,13 +2257,22 @@ impl<V: DictionaryValue> DiskBackedCharTrieInner<V> {
             Vec::new()
         };
 
+        // Serialize the CharNode to a buffer using v2 format with relative offsets
+        let mut node_buffer = Vec::new();
+        serialize_char_node_v2(&disk_node, &mut node_buffer, &ctx)?;
+
         // Build complete serialized data:
         // [node_buffer] + [value_len: u32] + [value_bytes]
-        let total_size = node_buffer.len() + 4 + value_bytes.len();
-        let mut data = Vec::with_capacity(total_size);
-        data.extend_from_slice(&node_buffer);
-        data.extend_from_slice(&(value_bytes.len() as u32).to_le_bytes());
-        data.extend_from_slice(&value_bytes);
+        let build_data = |node_buf: &[u8], value_buf: &[u8]| -> Vec<u8> {
+            let total_size = node_buf.len() + 4 + value_buf.len();
+            let mut data = Vec::with_capacity(total_size);
+            data.extend_from_slice(node_buf);
+            data.extend_from_slice(&(value_buf.len() as u32).to_le_bytes());
+            data.extend_from_slice(value_buf);
+            data
+        };
+
+        let data = build_data(&node_buffer, &value_bytes);
 
         // Allocate in arena (space-efficient: packs many nodes per 256KB block)
         #[cfg(feature = "parking_lot")]
@@ -2092,11 +2285,55 @@ impl<V: DictionaryValue> DiskBackedCharTrieInner<V> {
             })?
             .allocate(&data)?;
 
+        // Check if arena overflow caused slot mismatch
+        // If so, re-serialize using the actual slot to prevent relative encoding underflow
+        let final_slot = if slot != ctx.parent_slot {
+            // Arena overflow detected - need to re-serialize with correct parent slot
+            // This happens when the predicted slot was in arena N, but allocation
+            // went to arena N+1 due to arena being full
+            //
+            // Children are now likely in a different arena than the parent, requiring
+            // cross-arena encoding (9 bytes per child) instead of relative encoding.
+            let corrected_ctx = SerializationContext::new(slot);
+            let mut corrected_buffer = Vec::new();
+            serialize_char_node_v2(&disk_node, &mut corrected_buffer, &corrected_ctx)?;
+            let corrected_data = build_data(&corrected_buffer, &value_bytes);
+
+            if corrected_data.len() == data.len() {
+                // Same size - can update in-place
+                #[cfg(feature = "parking_lot")]
+                arena_manager.write().update(slot, &corrected_data)?;
+                #[cfg(not(feature = "parking_lot"))]
+                arena_manager
+                    .write()
+                    .map_err(|_| PersistentARTrieError::LockPoisoned {
+                        resource: "arena_manager".to_string(),
+                    })?
+                    .update(slot, &corrected_data)?;
+                slot
+            } else {
+                // Different size (cross-arena encoding is larger) - allocate new slot
+                // The original slot becomes wasted space (acceptable for rare overflow cases)
+                #[cfg(feature = "parking_lot")]
+                let new_slot = arena_manager.write().allocate(&corrected_data)?;
+                #[cfg(not(feature = "parking_lot"))]
+                let new_slot = arena_manager
+                    .write()
+                    .map_err(|_| PersistentARTrieError::LockPoisoned {
+                        resource: "arena_manager".to_string(),
+                    })?
+                    .allocate(&corrected_data)?;
+                new_slot
+            }
+        } else {
+            slot
+        };
+
         // Return pointer using arena addressing:
         // - block_id = arena_id + 1 (block 0 is file header, arena N is in block N+1)
         // - offset = slot_id
         let node_type = self.char_node_to_node_type(&disk_node);
-        Ok(SwizzledPtr::on_disk(slot.arena_id + 1, slot.slot_id, node_type))
+        Ok(SwizzledPtr::on_disk(final_slot.arena_id + 1, final_slot.slot_id, node_type))
     }
 
     /// Build a CharNode with disk SwizzledPtrs for serialization

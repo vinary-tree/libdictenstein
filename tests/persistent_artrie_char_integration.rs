@@ -17,6 +17,7 @@
 #![cfg(feature = "persistent-artrie")]
 
 use libdictenstein::persistent_artrie_char::{
+    DiskBackedCharTrieInner,
     PersistentARTrieChar, PersistentARTrieCharZipper,
 };
 use libdictenstein::zipper::DictZipper;
@@ -604,4 +605,149 @@ fn test_unicode_whitespace() {
     assert!(trie.contains("hello\u{2003}world"));
     assert!(trie.contains("hello\u{3000}world"));
     assert_eq!(trie.len(), 4);
+}
+
+// =============================================================================
+// Test: Deep Trie Loading (Stack Overflow Prevention)
+// =============================================================================
+
+/// Test that loading deep tries doesn't cause stack overflow.
+///
+/// This test creates tries with very long strings (which create deep trie structures)
+/// and verifies that the iterative loading algorithm handles them correctly.
+///
+/// Before the fix, recursive loading would stack overflow for tries with depth > ~1000.
+/// The iterative algorithm should handle arbitrarily deep tries.
+#[test]
+fn test_deep_trie_no_stack_overflow() {
+    let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
+    let path = temp_dir.path().join("deep_trie_char");
+
+    // Create trie with very long strings to create deep structure
+    // Each character adds one level of depth
+    let num_strings = 10usize;
+    let string_length = 500usize; // Deeper than default stack limit for many recursive calls
+
+    {
+        let mut trie = DiskBackedCharTrieInner::<u64>::create(&path)
+            .expect("Failed to create trie");
+
+        for i in 0..num_strings {
+            // Generate a long string with varying characters
+            let long_key: String = (0..string_length)
+                .map(|j| {
+                    let ch = (b'a' + ((i + j) % 26) as u8) as char;
+                    ch
+                })
+                .collect();
+
+            // Use upsert which takes a value
+            trie.upsert(&long_key, i as u64).expect("Failed to insert");
+        }
+
+        // Verify all strings present before checkpoint
+        println!("=== Before checkpoint ===");
+        println!("Trie len: {}", trie.len);
+        for i in 0..num_strings {
+            let long_key: String = (0..string_length)
+                .map(|j| {
+                    let ch = (b'a' + ((i + j) % 26) as u8) as char;
+                    ch
+                })
+                .collect();
+            let present = trie.contains(&long_key);
+            println!("String {} present: {}", i, present);
+        }
+
+        trie.checkpoint().expect("Failed to checkpoint");
+    }
+
+    // Reopen - this would stack overflow with recursive loading for deep tries
+    let reopened = DiskBackedCharTrieInner::<u64>::open(&path)
+        .expect("Failed to reopen trie - possible stack overflow in recursive loading");
+
+    println!("=== After reopen ===");
+    println!("Reopened len: {}", reopened.len);
+
+    // First check all strings without asserting
+    for i in 0..num_strings {
+        let long_key: String = (0..string_length)
+            .map(|j| {
+                let ch = (b'a' + ((i + j) % 26) as u8) as char;
+                ch
+            })
+            .collect();
+        let present = reopened.contains(&long_key);
+        println!("String {} present after reopen: {} (first char: '{}')", i, present, long_key.chars().next().unwrap());
+
+        // Debug: for string 9, try to trace the issue
+        if i == 9 && !present {
+            println!("DEBUG: Tracing string 9 lookup failure");
+            // Check using get() which will trace the path
+            let value = reopened.get(&long_key);
+            println!("DEBUG: get() for string 9 returned: {:?}", value.is_some());
+        }
+    }
+
+    assert_eq!(reopened.len, num_strings, "All strings should be present after reopen");
+
+    // Verify we can still look up the strings
+    for i in 0..num_strings {
+        let long_key: String = (0..string_length)
+            .map(|j| {
+                let ch = (b'a' + ((i + j) % 26) as u8) as char;
+                ch
+            })
+            .collect();
+
+        assert!(
+            reopened.contains(&long_key),
+            "String {} should be present after reopen",
+            i
+        );
+
+        // Verify the value via get()
+        if let Some(value) = reopened.get(&long_key) {
+            assert_eq!(*value, i as u64, "Value for string {} should match", i);
+        }
+    }
+}
+
+/// Test deep trie with Unicode characters.
+///
+/// This test uses multi-byte UTF-8 characters which still create deep tries
+/// but exercise the character-level handling.
+#[test]
+fn test_deep_unicode_trie_no_stack_overflow() {
+    let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
+    let path = temp_dir.path().join("deep_unicode_trie");
+
+    let num_strings = 5usize;
+    let string_length = 300usize; // Fewer characters but still deep
+
+    {
+        let mut trie = DiskBackedCharTrieInner::<u64>::create(&path)
+            .expect("Failed to create trie");
+
+        for i in 0..num_strings {
+            // Generate a long Unicode string with CJK characters
+            let long_key: String = (0..string_length)
+                .map(|j| {
+                    // Use a range of CJK characters (U+4E00 to U+9FFF)
+                    let codepoint = 0x4E00 + ((i * 17 + j * 13) % 0x51FF) as u32;
+                    char::from_u32(codepoint).unwrap_or('中')
+                })
+                .collect();
+
+            trie.upsert(&long_key, i as u64).expect("Failed to insert");
+        }
+
+        trie.checkpoint().expect("Failed to checkpoint");
+    }
+
+    // Reopen
+    let reopened = DiskBackedCharTrieInner::<u64>::open(&path)
+        .expect("Failed to reopen Unicode trie");
+
+    assert_eq!(reopened.len, num_strings);
 }

@@ -98,6 +98,21 @@ impl SerializationContext {
         }
     }
 
+    /// Create a context that forces full (absolute) encoding for all children.
+    ///
+    /// This is used when arena overflow is detected during serialization.
+    /// Since the predicted parent slot may be in a different arena than the
+    /// actual allocation, relative offsets would be invalid. Full encoding
+    /// stores absolute (arena_id, slot_id) pairs for each child.
+    pub fn full_encoding(parent_slot: ArenaSlot) -> Self {
+        Self {
+            parent_slot,
+            use_relative: false,
+            use_sequential: false,
+            first_child_slot: None,
+        }
+    }
+
     /// Create a context for sequential sibling storage.
     ///
     /// When children are consecutive in the same arena, stores only the first child slot

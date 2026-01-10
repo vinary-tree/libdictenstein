@@ -42,6 +42,21 @@ use super::wal::{Lsn, WalWriter};
 #[cfg(feature = "persistent-artrie")]
 const ART_NODE_BUFFER_SIZE: usize = 4096;
 
+/// Result of loading a single child node's data without loading its children.
+///
+/// Used by `load_single_child_data` for iterative loading.
+#[cfg(feature = "persistent-artrie")]
+enum SingleChildData {
+    /// A bucket leaf node (complete, no children)
+    Bucket(StringBucket),
+    /// An ART node with child pointers (children not yet loaded)
+    ArtNodePartial {
+        node: Node,
+        is_final: bool,
+        child_ptrs: Vec<(u8, SwizzledPtr)>,
+    },
+}
+
 /// A Persistent Adaptive Radix Trie dictionary.
 ///
 /// This dictionary stores terms in a hybrid structure combining:
@@ -773,8 +788,9 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
                 // Load the ART node from arena
                 let node_ptr = SwizzledPtr::from_raw(data_ptr);
 
-                // Load the node and its children recursively
-                let (node, children) = Self::load_art_node_with_children_from_arena(arena_manager, &node_ptr)?;
+                // Load the node and its children using iterative loading
+                // (avoids stack overflow for deep tries)
+                let (node, children) = Self::load_art_node_with_children_from_arena_iterative(arena_manager, &node_ptr)?;
 
                 // Value deserialization not yet implemented with arena storage
                 let root_value: Option<V> = None;
@@ -922,6 +938,266 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
                     "Char-level node type encountered in byte-level PersistentARTrie"
                 ))
             }
+        }
+    }
+
+    /// Load a single ART node's data from arena WITHOUT loading children.
+    ///
+    /// This is a helper for iterative loading. Returns the node info and
+    /// the list of child pointers that need to be loaded.
+    #[cfg(feature = "persistent-artrie")]
+    fn load_single_art_node_data(
+        arena_manager: &Arc<RwLock<ArenaManager>>,
+        node_ptr: &SwizzledPtr,
+    ) -> Result<(Node, bool, Vec<(u8, SwizzledPtr)>)> {
+        let disk_loc = node_ptr.disk_location().ok_or_else(|| {
+            PersistentARTrieError::corrupted("Invalid node pointer: cannot get disk location")
+        })?;
+        let arena_id = disk_loc.block_id.checked_sub(1).ok_or_else(|| {
+            PersistentARTrieError::corrupted("Invalid block_id 0 for arena node")
+        })?;
+        let slot = ArenaSlot::new(arena_id, disk_loc.offset);
+        let am = arena_manager.read();
+        let node_data = am.read(slot)?;
+
+        // Deserialize the node using v2 format with relative offset support
+        let ctx = DeserializationContext::new(slot);
+        let node = serialization::v2::deserialize_node_v2(node_data, &ctx).map_err(|e| {
+            PersistentARTrieError::corrupted(format!("Failed to deserialize ART node: {:?}", e))
+        })?;
+
+        let is_final = node.header().is_final();
+
+        // Collect child pointers before dropping the arena lock
+        let child_data: Vec<(u8, SwizzledPtr)> = node
+            .iter_children()
+            .filter(|(_, ptr)| !ptr.is_null())
+            .map(|(key, ptr)| (key, ptr.clone()))
+            .collect();
+
+        drop(am);
+
+        Ok((node, is_final, child_data))
+    }
+
+    /// Load a single child node's data from arena WITHOUT loading its children.
+    ///
+    /// Returns either a complete Bucket (no children) or the components needed
+    /// to build an ArtNode (node, is_final, child pointers).
+    #[cfg(feature = "persistent-artrie")]
+    fn load_single_child_data(
+        arena_manager: &Arc<RwLock<ArenaManager>>,
+        child_ptr: &SwizzledPtr,
+    ) -> Result<SingleChildData> {
+        let disk_loc = child_ptr.disk_location().ok_or_else(|| {
+            PersistentARTrieError::corrupted("Invalid child pointer: cannot get disk location")
+        })?;
+        let arena_id = disk_loc.block_id.checked_sub(1).ok_or_else(|| {
+            PersistentARTrieError::corrupted("Invalid block_id 0 for arena node")
+        })?;
+        let slot = ArenaSlot::new(arena_id, disk_loc.offset);
+        let node_type = disk_loc.node_type;
+
+        let am = arena_manager.read();
+        let data = am.read(slot)?;
+
+        match node_type {
+            NodeType::Bucket => {
+                let bucket = StringBucket::from_bytes(data).map_err(|e| {
+                    PersistentARTrieError::corrupted(format!("Failed to load child bucket: {:?}", e))
+                })?;
+                Ok(SingleChildData::Bucket(bucket))
+            }
+            NodeType::Node4 | NodeType::Node16 | NodeType::Node48 | NodeType::Node256 => {
+                let ctx = DeserializationContext::new(slot);
+                let node = serialization::v2::deserialize_node_v2(data, &ctx).map_err(|e| {
+                    PersistentARTrieError::corrupted(format!("Failed to deserialize child ART node: {:?}", e))
+                })?;
+
+                let is_final = node.header().is_final();
+
+                let child_data: Vec<(u8, SwizzledPtr)> = node
+                    .iter_children()
+                    .filter(|(_, ptr)| !ptr.is_null())
+                    .map(|(key, ptr)| (key, ptr.clone()))
+                    .collect();
+
+                drop(am);
+
+                Ok(SingleChildData::ArtNodePartial {
+                    node,
+                    is_final,
+                    child_ptrs: child_data,
+                })
+            }
+            NodeType::CharNode4 | NodeType::CharNode16 | NodeType::CharNode48 | NodeType::CharBucket => {
+                Err(PersistentARTrieError::corrupted(
+                    "Char-level node type encountered in byte-level PersistentARTrie"
+                ))
+            }
+        }
+    }
+
+    /// Load an ART node and all its children using iterative (non-recursive) traversal.
+    ///
+    /// This avoids stack overflow for deep tries by using an explicit work stack.
+    /// Uses a two-phase algorithm:
+    ///
+    /// 1. **Phase 1**: Load all nodes into a vector (without connecting children)
+    /// 2. **Phase 2**: Connect children to parents in reverse order (bottom-up)
+    #[cfg(feature = "persistent-artrie")]
+    fn load_art_node_with_children_from_arena_iterative(
+        arena_manager: &Arc<RwLock<ArenaManager>>,
+        root_node_ptr: &SwizzledPtr,
+    ) -> Result<(Node, Vec<(u8, ChildNode)>)> {
+        use std::collections::HashMap;
+
+        /// Work item for iterative loading
+        enum WorkItem {
+            /// Load from the root ART node
+            RootNode(SwizzledPtr),
+            /// Load a child node
+            Child(SwizzledPtr),
+        }
+
+        /// Loaded node info before children are connected
+        enum LoadedInfo {
+            /// The root node
+            RootNode {
+                node: Node,
+                is_final: bool,
+                child_ptrs: Vec<(u8, SwizzledPtr)>,
+            },
+            /// A bucket child (complete, no children to connect)
+            Bucket(StringBucket),
+            /// An ART child node (needs children connected)
+            ArtNodePartial {
+                node: Node,
+                is_final: bool,
+                child_ptrs: Vec<(u8, SwizzledPtr)>,
+            },
+        }
+
+        // Stack for DFS traversal
+        let mut work_stack: Vec<WorkItem> = vec![WorkItem::RootNode(root_node_ptr.clone())];
+
+        // Results vector - nodes stored in DFS pre-order
+        let mut loaded_nodes: Vec<LoadedInfo> = Vec::new();
+
+        // Map from disk pointer raw value to result index
+        let mut ptr_to_idx: HashMap<u64, usize> = HashMap::new();
+
+        // Phase 1: Load all nodes without connecting children
+        while let Some(work_item) = work_stack.pop() {
+            let (ptr_raw, loaded_info, child_ptrs_to_push) = match work_item {
+                WorkItem::RootNode(ptr) => {
+                    let ptr_raw = ptr.to_raw();
+                    if ptr_to_idx.contains_key(&ptr_raw) {
+                        continue;
+                    }
+
+                    let (node, is_final, child_ptrs) = Self::load_single_art_node_data(arena_manager, &ptr)?;
+                    let ptrs_to_push: Vec<SwizzledPtr> = child_ptrs.iter().map(|(_, p)| p.clone()).collect();
+                    (ptr_raw, LoadedInfo::RootNode { node, is_final, child_ptrs }, ptrs_to_push)
+                }
+                WorkItem::Child(ptr) => {
+                    let ptr_raw = ptr.to_raw();
+                    if ptr_to_idx.contains_key(&ptr_raw) {
+                        continue;
+                    }
+
+                    match Self::load_single_child_data(arena_manager, &ptr)? {
+                        SingleChildData::Bucket(bucket) => {
+                            (ptr_raw, LoadedInfo::Bucket(bucket), vec![])
+                        }
+                        SingleChildData::ArtNodePartial { node, is_final, child_ptrs } => {
+                            let ptrs_to_push: Vec<SwizzledPtr> = child_ptrs.iter().map(|(_, p)| p.clone()).collect();
+                            (ptr_raw, LoadedInfo::ArtNodePartial { node, is_final, child_ptrs }, ptrs_to_push)
+                        }
+                    }
+                }
+            };
+
+            let result_idx = loaded_nodes.len();
+            ptr_to_idx.insert(ptr_raw, result_idx);
+            loaded_nodes.push(loaded_info);
+
+            // Push children in reverse order for correct DFS ordering
+            for child_ptr in child_ptrs_to_push.into_iter().rev() {
+                work_stack.push(WorkItem::Child(child_ptr));
+            }
+        }
+
+        if loaded_nodes.is_empty() {
+            return Err(PersistentARTrieError::corrupted("No nodes loaded from disk"));
+        }
+
+        // Phase 2: Build ChildNode structures bottom-up
+        // We need to convert LoadedInfo into final ChildNode structures
+        // Process in reverse order so children are ready before parents need them
+
+        // Store built ChildNode results (indexed same as loaded_nodes)
+        let mut built_children: Vec<Option<ChildNode>> = vec![None; loaded_nodes.len()];
+
+        for idx in (0..loaded_nodes.len()).rev() {
+            let child_node = match &mut loaded_nodes[idx] {
+                LoadedInfo::RootNode { .. } => {
+                    // Root is handled separately
+                    continue;
+                }
+                LoadedInfo::Bucket(bucket) => {
+                    ChildNode::Bucket(std::mem::take(bucket))
+                }
+                LoadedInfo::ArtNodePartial { node, is_final, child_ptrs } => {
+                    // Collect built children
+                    let mut children: Vec<(u8, ChildNode)> = Vec::with_capacity(child_ptrs.len());
+                    for (key, child_ptr) in child_ptrs.drain(..) {
+                        let child_idx = *ptr_to_idx.get(&child_ptr.to_raw())
+                            .ok_or_else(|| PersistentARTrieError::corrupted(
+                                "Child pointer not found in loaded nodes map"
+                            ))?;
+                        let child = built_children[child_idx].take()
+                            .ok_or_else(|| PersistentARTrieError::corrupted(
+                                "Child not yet built (ordering error)"
+                            ))?;
+                        children.push((key, child));
+                    }
+
+                    // Take ownership of node
+                    let node_taken = std::mem::replace(node, Node::new_node4());
+
+                    ChildNode::ArtNode {
+                        node: node_taken,
+                        is_final: *is_final,
+                        value: None,
+                        children,
+                    }
+                }
+            };
+
+            built_children[idx] = Some(child_node);
+        }
+
+        // Extract root node info and build its children
+        match &mut loaded_nodes[0] {
+            LoadedInfo::RootNode { node, is_final: _, child_ptrs } => {
+                let mut children: Vec<(u8, ChildNode)> = Vec::with_capacity(child_ptrs.len());
+                for (key, child_ptr) in child_ptrs.drain(..) {
+                    let child_idx = *ptr_to_idx.get(&child_ptr.to_raw())
+                        .ok_or_else(|| PersistentARTrieError::corrupted(
+                            "Root child pointer not found in loaded nodes map"
+                        ))?;
+                    let child = built_children[child_idx].take()
+                        .ok_or_else(|| PersistentARTrieError::corrupted(
+                            "Root child not yet built"
+                        ))?;
+                    children.push((key, child));
+                }
+
+                let root_node = std::mem::replace(node, Node::new_node4());
+                Ok((root_node, children))
+            }
+            _ => Err(PersistentARTrieError::corrupted("First loaded node is not root"))
         }
     }
 

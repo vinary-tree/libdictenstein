@@ -184,6 +184,23 @@ impl ArenaManager {
         self.arenas[arena_id].read(slot.slot_id)
     }
 
+    /// Update data at the specified arena slot
+    ///
+    /// The new data must be exactly the same size as the original allocation.
+    /// This is used for correcting relative encoding after arena overflow detection.
+    pub fn update(&mut self, slot: ArenaSlot, new_data: &[u8]) -> Result<()> {
+        let arena_id = slot.arena_id as usize;
+        if arena_id >= self.arenas.len() {
+            return Err(PersistentARTrieError::corrupted(&format!(
+                "Invalid arena ID {} (have {} arenas)",
+                arena_id,
+                self.arenas.len()
+            )));
+        }
+
+        self.arenas[arena_id].update(slot.slot_id, new_data)
+    }
+
     /// Get the number of arenas
     pub fn arena_count(&self) -> usize {
         self.arenas.len()

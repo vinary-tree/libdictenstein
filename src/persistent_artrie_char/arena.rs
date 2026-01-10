@@ -334,6 +334,46 @@ impl CharNodeArena {
         Ok(&self.data[start..end])
     }
 
+    /// Update data at the specified slot
+    ///
+    /// The new data must be exactly the same size as the original allocation.
+    /// This is used for correcting relative encoding after arena overflow detection.
+    pub fn update(&mut self, slot_id: u32, new_data: &[u8]) -> Result<()> {
+        if slot_id >= self.header.node_count {
+            return Err(PersistentARTrieError::corrupted(&format!(
+                "Invalid slot ID {} (arena has {} nodes)",
+                slot_id, self.header.node_count
+            )));
+        }
+
+        // Directory grows downward, so slot N is at:
+        // block_end - (N + 1) * SLOT_SIZE
+        let slot_offset = self.data.len() - ((slot_id as usize + 1) * SLOT_SIZE);
+        let slot = SlotEntry::from_bytes(&self.data[slot_offset..slot_offset + SLOT_SIZE]);
+
+        let start = slot.offset as usize;
+        let original_len = slot.len as usize;
+
+        if new_data.len() != original_len {
+            return Err(PersistentARTrieError::internal(&format!(
+                "Update size mismatch: original={}, new={}",
+                original_len, new_data.len()
+            )));
+        }
+
+        let end = start + original_len;
+        if end > self.data.len() {
+            return Err(PersistentARTrieError::corrupted(&format!(
+                "Slot {} points outside arena: offset={}, len={}",
+                slot_id, slot.offset, slot.len
+            )));
+        }
+
+        self.data[start..end].copy_from_slice(new_data);
+        self.dirty = true;
+        Ok(())
+    }
+
     /// Get the number of nodes in this arena
     pub fn node_count(&self) -> u32 {
         self.header.node_count

@@ -259,11 +259,6 @@ pub struct DoubleArrayTrieBuilder<V: DictionaryValue = ()> {
     /// Number of terms inserted
     term_count: usize,
 
-    /// Next available state index
-    /// TODO: Reserved for future incremental construction support
-    #[allow(dead_code)]
-    next_state: usize,
-
     /// Rebuild threshold
     rebuild_threshold: f64,
 }
@@ -285,7 +280,6 @@ impl<V: DictionaryValue> DoubleArrayTrieBuilder<V> {
             values,
             free_list: Vec::new(),
             term_count: 0,
-            next_state: 2,          // Next available state
             rebuild_threshold: 0.2, // Rebuild when 20% deleted
         }
     }
