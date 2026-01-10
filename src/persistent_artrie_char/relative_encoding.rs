@@ -103,11 +103,16 @@ impl SerializationContext {
     /// This is used when arena overflow is detected during serialization.
     /// Since the predicted parent slot may be in a different arena than the
     /// actual allocation, relative offsets would be invalid. Full encoding
-    /// stores absolute (arena_id, slot_id) pairs for each child.
+    /// stores absolute (arena_id, slot_id) pairs for each child (9 bytes each).
+    ///
+    /// Note: This still uses the variable-width encoding format (FLAG_RELATIVE_OFFSETS
+    /// is set), but all children will use cross-arena encoding since they're in
+    /// different arenas than the parent.
     pub fn full_encoding(parent_slot: ArenaSlot) -> Self {
         Self {
             parent_slot,
-            use_relative: false,
+            // Still use relative encoding format - it handles cross-arena with 9-byte encoding
+            use_relative: true,
             use_sequential: false,
             first_child_slot: None,
         }

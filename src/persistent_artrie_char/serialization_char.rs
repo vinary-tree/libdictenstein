@@ -1232,9 +1232,11 @@ fn deserialize_charnode4_v2<R: Read>(
     // Read children based on encoding flags
     let num_children = header.num_children as usize;
 
+    let prefix_size = header_prefix_size(header);
+
     if uses_sequential {
         // Read first_child reference and reconstruct sequential children
-        let remaining_data = read_remaining_data(reader, header.data_size as usize, 4 * 4)?;
+        let remaining_data = read_remaining_data(reader, header.data_size as usize, 4 * 4, prefix_size)?;
         let (children, bytes_consumed) = decode_sequential_siblings(
             &remaining_data,
             ctx.parent_slot,
@@ -1255,7 +1257,7 @@ fn deserialize_charnode4_v2<R: Read>(
         }
     } else if uses_relative {
         // Read relative-encoded children
-        let remaining_data = read_remaining_data(reader, header.data_size as usize, 4 * 4)?;
+        let remaining_data = read_remaining_data(reader, header.data_size as usize, 4 * 4, prefix_size)?;
         let (children, bytes_consumed) = decode_children(
             &remaining_data,
             ctx.parent_slot,
@@ -1312,9 +1314,10 @@ fn deserialize_charnode16_v2<R: Read>(
     }
 
     let num_children = header.num_children as usize;
+    let prefix_size = header_prefix_size(header);
 
     if uses_sequential {
-        let remaining_data = read_remaining_data(reader, header.data_size as usize, 16 * 4)?;
+        let remaining_data = read_remaining_data(reader, header.data_size as usize, 16 * 4, prefix_size)?;
         let (children, bytes_consumed) = decode_sequential_siblings(
             &remaining_data,
             ctx.parent_slot,
@@ -1333,7 +1336,7 @@ fn deserialize_charnode16_v2<R: Read>(
             node.value_ptr = SwizzledPtr::from_raw(value_raw);
         }
     } else if uses_relative {
-        let remaining_data = read_remaining_data(reader, header.data_size as usize, 16 * 4)?;
+        let remaining_data = read_remaining_data(reader, header.data_size as usize, 16 * 4, prefix_size)?;
         let (children, bytes_consumed) = decode_children(
             &remaining_data,
             ctx.parent_slot,
@@ -1387,9 +1390,10 @@ fn deserialize_charnode48_v2<R: Read>(
     }
 
     let num_children = header.num_children as usize;
+    let prefix_size = header_prefix_size(header);
 
     if uses_sequential {
-        let remaining_data = read_remaining_data(reader, header.data_size as usize, 48 * 4)?;
+        let remaining_data = read_remaining_data(reader, header.data_size as usize, 48 * 4, prefix_size)?;
         let (children, bytes_consumed) = decode_sequential_siblings(
             &remaining_data,
             ctx.parent_slot,
@@ -1408,7 +1412,7 @@ fn deserialize_charnode48_v2<R: Read>(
             node.value_ptr = SwizzledPtr::from_raw(value_raw);
         }
     } else if uses_relative {
-        let remaining_data = read_remaining_data(reader, header.data_size as usize, 48 * 4)?;
+        let remaining_data = read_remaining_data(reader, header.data_size as usize, 48 * 4, prefix_size)?;
         let (children, bytes_consumed) = decode_children(
             &remaining_data,
             ctx.parent_slot,
@@ -1464,6 +1468,8 @@ fn deserialize_charbucket_v2<R: Read>(
     reader.read_exact(&mut value_bytes).map_err(io_err)?;
     node.value_ptr = SwizzledPtr::from_raw(u64::from_le_bytes(value_bytes));
 
+    let prefix_size = header_prefix_size(header);
+
     if uses_sequential || uses_relative {
         // Read keys first
         let mut keys = Vec::with_capacity(num_entries);
@@ -1474,7 +1480,12 @@ fn deserialize_charbucket_v2<R: Read>(
         }
 
         // Read remaining data for children
-        let remaining_size = header.data_size as usize - 4 - 8 - (num_entries * 4);
+        // data_size includes prefix, but prefix was already read before this function was called
+        let remaining_size = (header.data_size as usize)
+            .saturating_sub(prefix_size)  // prefix already read
+            .saturating_sub(4)            // num_entries
+            .saturating_sub(8)            // value_ptr
+            .saturating_sub(num_entries * 4); // keys
         let mut remaining_data = vec![0u8; remaining_size];
         reader.read_exact(&mut remaining_data).map_err(io_err)?;
 
@@ -1515,17 +1526,35 @@ fn deserialize_charbucket_v2<R: Read>(
     Ok(CharNode::Bucket(Box::new(node)))
 }
 
-/// Read remaining data from a reader after keys have been read
+/// Read remaining data from a reader after prefix and keys have been read
+///
+/// # Arguments
+/// * `reader` - Input reader positioned after prefix and keys
+/// * `data_size` - Total data size from header (includes prefix + keys + children + value_ptr)
+/// * `keys_size` - Size of keys already read
+/// * `prefix_size` - Size of prefix already read (24 bytes if prefix_len > 0, else 0)
 #[cfg(feature = "persistent-artrie")]
 fn read_remaining_data<R: Read>(
     reader: &mut R,
     data_size: usize,
     keys_size: usize,
+    prefix_size: usize,
 ) -> Result<Vec<u8>> {
-    let remaining_size = data_size.saturating_sub(keys_size);
+    let remaining_size = data_size.saturating_sub(keys_size).saturating_sub(prefix_size);
     let mut data = vec![0u8; remaining_size];
     reader.read_exact(&mut data).map_err(io_err)?;
     Ok(data)
+}
+
+/// Calculate the serialized prefix size from header
+#[cfg(feature = "persistent-artrie")]
+#[inline]
+fn header_prefix_size(header: &SerializedCharNodeHeader) -> usize {
+    if header.prefix_len > 0 {
+        CHAR_MAX_PREFIX_LEN * 4 // 6 chars × 4 bytes = 24 bytes
+    } else {
+        0
+    }
 }
 
 /// Convert an ArenaSlot back to a SwizzledPtr

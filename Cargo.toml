@@ -87,3 +87,8 @@ required-features = ["persistent-artrie"]
 name = "persistent_artrie_char_benchmarks"
 harness = false
 required-features = ["persistent-artrie"]
+
+[[bench]]
+name = "loading_experiments"
+harness = false
+required-features = ["persistent-artrie"]

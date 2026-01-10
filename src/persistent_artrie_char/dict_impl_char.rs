@@ -844,8 +844,8 @@ impl<V: DictionaryValue> DiskBackedCharTrieInner<V> {
             }
             ROOT_TYPE_NODE => {
                 let root_swizzled = SwizzledPtr::from_raw(root_ptr);
-                // Use iterative loading to avoid stack overflow for deep tries
-                let node = self.load_char_node_from_disk_iterative(buffer_manager, &root_swizzled)?;
+                // Use lazy loading - only load root node, children loaded on-demand
+                let node = self.load_char_node_from_disk_lazy(buffer_manager, &root_swizzled)?;
                 Ok((CharTrieRoot::Node(Box::new(node)), term_count))
             }
             _ => {
@@ -1259,6 +1259,105 @@ impl<V: DictionaryValue> DiskBackedCharTrieInner<V> {
         Ok(std::mem::replace(&mut loaded_nodes[0].node, CharTrieNodeInner::new()))
     }
 
+    /// Get a child of a node with lazy loading support.
+    ///
+    /// If the child pointer is already swizzled (in-memory), returns the node directly.
+    /// If on disk, loads the node lazily and atomically swizzles the pointer.
+    ///
+    /// Returns `Ok(None)` if the child doesn't exist.
+    /// Returns `Err` if an I/O error occurs during lazy loading.
+    #[cfg(feature = "persistent-artrie")]
+    fn get_child_lazy(&self, node: &CharTrieNodeInner<V>, c: char) -> Result<Option<&CharTrieNodeInner<V>>> {
+        match node.node.find_child(c as u32) {
+            Some(ptr) => {
+                if ptr.is_null() {
+                    Ok(None)
+                } else {
+                    Ok(Some(self.resolve_swizzled_ptr(ptr)?))
+                }
+            }
+            None => Ok(None),
+        }
+    }
+
+    /// Get a mutable child reference of a node with lazy loading support.
+    ///
+    /// If the child pointer is already swizzled (in-memory), returns the node directly.
+    /// If on disk, loads the node lazily and atomically swizzles the pointer.
+    ///
+    /// Returns `Ok(None)` if the child doesn't exist.
+    /// Returns `Err` if an I/O error occurs during lazy loading.
+    #[cfg(feature = "persistent-artrie")]
+    fn get_child_mut_lazy(&self, node: &CharTrieNodeInner<V>, c: char) -> Result<Option<&mut CharTrieNodeInner<V>>> {
+        match node.node.find_child(c as u32) {
+            Some(ptr) => {
+                if ptr.is_null() {
+                    Ok(None)
+                } else {
+                    Ok(Some(self.resolve_swizzled_ptr_mut(ptr)?))
+                }
+            }
+            None => Ok(None),
+        }
+    }
+
+    /// Get or create a child with lazy loading support.
+    ///
+    /// If the child exists (in memory or on disk), returns a raw pointer to it.
+    /// If on disk, loads the node lazily first.
+    /// If the child doesn't exist, creates a new one.
+    ///
+    /// Returns `Err` if an I/O error occurs during lazy loading.
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure `node` is part of this trie's structure.
+    /// The returned pointer is valid as long as the trie exists.
+    #[cfg(feature = "persistent-artrie")]
+    fn get_or_create_child_lazy_ptr(
+        &self,
+        node: &mut CharTrieNodeInner<V>,
+        c: char,
+    ) -> Result<*mut CharTrieNodeInner<V>> {
+        let key = c as u32;
+
+        // Check if child already exists
+        if let Some(ptr) = node.node.find_child(key) {
+            if !ptr.is_null() {
+                // Child exists - ensure it's swizzled (load if on disk)
+                let child_ref = self.resolve_swizzled_ptr_mut(ptr)?;
+                return Ok(child_ref as *mut CharTrieNodeInner<V>);
+            }
+        }
+
+        // Child doesn't exist - create new one
+        let new_child = Box::new(CharTrieNodeInner::new());
+        let ptr = Box::into_raw(new_child);
+        let swizzled = SwizzledPtr::in_memory(ptr);
+
+        // Add to node, handling potential growth
+        match node.node.add_child_growing(key, swizzled) {
+            Ok(Some(grown)) => {
+                node.node = grown;
+            }
+            Ok(None) => {
+                // No growth needed
+            }
+            Err(_) => {
+                // Key already exists (shouldn't happen, but handle gracefully)
+                unsafe { drop(Box::from_raw(ptr)); }
+                // Try to get the existing child
+                if let Some(existing_ptr) = node.node.find_child(key) {
+                    let child_ref = self.resolve_swizzled_ptr_mut(existing_ptr)?;
+                    return Ok(child_ref as *mut CharTrieNodeInner<V>);
+                }
+                return Err(PersistentARTrieError::internal("Failed to add or find child"));
+            }
+        }
+
+        Ok(ptr)
+    }
+
     /// Resolve a SwizzledPtr to a reference to a CharTrieNodeInner
     ///
     /// If the pointer is already swizzled (in-memory), returns the existing node.
@@ -1369,6 +1468,44 @@ impl<V: DictionaryValue> DiskBackedCharTrieInner<V> {
     }
 
     /// Insert a term (internal, no WAL logging)
+    #[cfg(feature = "persistent-artrie")]
+    fn insert_impl_no_wal(&mut self, term: &str) -> bool {
+        // Ensure we have a root node
+        if matches!(self.root, CharTrieRoot::Empty) {
+            self.root = CharTrieRoot::Node(Box::new(CharTrieNodeInner::new()));
+        }
+
+        // Navigate to the insertion point using raw pointer for traversal
+        // This is safe because we maintain exclusive access through &mut self
+        let root = match &mut self.root {
+            CharTrieRoot::Node(node) => node.as_mut() as *mut CharTrieNodeInner<V>,
+            CharTrieRoot::Empty => unreachable!(),
+        };
+
+        let mut current = root;
+        for c in term.chars() {
+            // Safety: current is valid and we have exclusive access through &mut self
+            let node = unsafe { &mut *current };
+            current = self.get_or_create_child_lazy_ptr(node, c)
+                .expect("I/O error during lazy loading in insert");
+        }
+
+        // Safety: current is valid
+        let node = unsafe { &mut *current };
+
+        // Check if already final
+        if node.is_final() {
+            return false;
+        }
+
+        // Mark as final
+        node.set_final(true);
+        self.len += 1;
+        self.dirty = true;
+        true
+    }
+
+    #[cfg(not(feature = "persistent-artrie"))]
     fn insert_impl_no_wal(&mut self, term: &str) -> bool {
         // Ensure we have a root node
         if matches!(self.root, CharTrieRoot::Empty) {
@@ -1399,6 +1536,47 @@ impl<V: DictionaryValue> DiskBackedCharTrieInner<V> {
     }
 
     /// Insert a term with value (internal, no WAL logging)
+    #[cfg(feature = "persistent-artrie")]
+    fn insert_impl_no_wal_with_value(&mut self, term: &str, value: V) -> bool {
+        // Ensure we have a root node
+        if matches!(self.root, CharTrieRoot::Empty) {
+            self.root = CharTrieRoot::Node(Box::new(CharTrieNodeInner::new()));
+        }
+
+        // Navigate to the insertion point using raw pointer for traversal
+        let root = match &mut self.root {
+            CharTrieRoot::Node(node) => node.as_mut() as *mut CharTrieNodeInner<V>,
+            CharTrieRoot::Empty => unreachable!(),
+        };
+
+        let mut current = root;
+        for c in term.chars() {
+            // Safety: current is valid and we have exclusive access through &mut self
+            let node = unsafe { &mut *current };
+            current = self.get_or_create_child_lazy_ptr(node, c)
+                .expect("I/O error during lazy loading in insert");
+        }
+
+        // Safety: current is valid
+        let node = unsafe { &mut *current };
+
+        // Check if already final
+        if node.is_final() {
+            // Update value if already exists
+            node.value = Some(value);
+            return false;
+        }
+
+        // Mark as final with value
+        node.set_final(true);
+        node.value = Some(value);
+        self.len += 1;
+        self.dirty = true;
+        true
+    }
+
+    /// Insert a term with value (internal, no WAL logging)
+    #[cfg(not(feature = "persistent-artrie"))]
     fn insert_impl_no_wal_with_value(&mut self, term: &str, value: V) -> bool {
         // Ensure we have a root node
         if matches!(self.root, CharTrieRoot::Empty) {
@@ -1432,6 +1610,44 @@ impl<V: DictionaryValue> DiskBackedCharTrieInner<V> {
     }
 
     /// Remove a term (internal, no WAL logging)
+    #[cfg(feature = "persistent-artrie")]
+    fn remove_impl_no_wal(&mut self, term: &str) -> bool {
+        let root = match &mut self.root {
+            CharTrieRoot::Node(node) => node.as_mut() as *mut CharTrieNodeInner<V>,
+            CharTrieRoot::Empty => return false,
+        };
+
+        // Navigate to the node using raw pointer for traversal
+        let chars: Vec<char> = term.chars().collect();
+        let mut current = root;
+        for &c in &chars {
+            // Safety: current is valid and we have exclusive access through &mut self
+            let node = unsafe { &*current };
+            match self.get_child_mut_lazy(node, c) {
+                Ok(Some(child)) => current = child as *mut CharTrieNodeInner<V>,
+                Ok(None) => return false, // Term not found
+                Err(_) => return false, // I/O error during lazy load
+            }
+        }
+
+        // Safety: current is valid
+        let node = unsafe { &mut *current };
+
+        // Check if this node is final
+        if !node.is_final() {
+            return false;
+        }
+
+        // Mark as not final
+        node.set_final(false);
+        node.value = None;
+        self.len -= 1;
+        self.dirty = true;
+        true
+    }
+
+    /// Remove a term (internal, no WAL logging)
+    #[cfg(not(feature = "persistent-artrie"))]
     fn remove_impl_no_wal(&mut self, term: &str) -> bool {
         let root = match &mut self.root {
             CharTrieRoot::Node(node) => node.as_mut(),
@@ -1462,42 +1678,112 @@ impl<V: DictionaryValue> DiskBackedCharTrieInner<V> {
     }
 
     /// Check if a term exists in the trie
+    ///
+    /// For persistent tries with lazy loading, this will load nodes on-demand.
+    /// I/O errors during lazy loading will cause a panic. Use `try_contains()`
+    /// for explicit error handling.
     pub fn contains(&self, term: &str) -> bool {
+        #[cfg(feature = "persistent-artrie")]
+        {
+            self.try_contains(term)
+                .expect("I/O error during lazy loading in contains()")
+        }
+        #[cfg(not(feature = "persistent-artrie"))]
+        {
+            let root = match &self.root {
+                CharTrieRoot::Node(node) => node.as_ref(),
+                CharTrieRoot::Empty => return false,
+            };
+
+            let mut current = root;
+            for c in term.chars() {
+                match current.get_child(c) {
+                    Some(child) => current = child,
+                    None => return false,
+                }
+            }
+
+            current.is_final()
+        }
+    }
+
+    /// Check if a term exists in the trie with explicit error handling.
+    ///
+    /// This version returns a `Result` for lazy loading I/O errors.
+    #[cfg(feature = "persistent-artrie")]
+    pub fn try_contains(&self, term: &str) -> Result<bool> {
         let root = match &self.root {
             CharTrieRoot::Node(node) => node.as_ref(),
-            CharTrieRoot::Empty => return false,
+            CharTrieRoot::Empty => return Ok(false),
         };
 
         let mut current = root;
         for c in term.chars() {
-            match current.get_child(c) {
+            match self.get_child_lazy(current, c)? {
                 Some(child) => current = child,
-                None => return false,
+                None => return Ok(false),
             }
         }
 
-        current.is_final()
+        Ok(current.is_final())
     }
 
     /// Get a value by term
+    ///
+    /// For persistent tries with lazy loading, this will load nodes on-demand.
+    /// I/O errors during lazy loading will cause a panic. Use `try_get()`
+    /// for explicit error handling.
     pub fn get(&self, term: &str) -> Option<&V> {
+        #[cfg(feature = "persistent-artrie")]
+        {
+            self.try_get(term)
+                .expect("I/O error during lazy loading in get()")
+        }
+        #[cfg(not(feature = "persistent-artrie"))]
+        {
+            let root = match &self.root {
+                CharTrieRoot::Node(node) => node.as_ref(),
+                CharTrieRoot::Empty => return None,
+            };
+
+            let mut current = root;
+            for c in term.chars() {
+                match current.get_child(c) {
+                    Some(child) => current = child,
+                    None => return None,
+                }
+            }
+
+            if current.is_final() {
+                current.value.as_ref()
+            } else {
+                None
+            }
+        }
+    }
+
+    /// Get a value by term with explicit error handling.
+    ///
+    /// This version returns a `Result` for lazy loading I/O errors.
+    #[cfg(feature = "persistent-artrie")]
+    pub fn try_get(&self, term: &str) -> Result<Option<&V>> {
         let root = match &self.root {
             CharTrieRoot::Node(node) => node.as_ref(),
-            CharTrieRoot::Empty => return None,
+            CharTrieRoot::Empty => return Ok(None),
         };
 
         let mut current = root;
         for c in term.chars() {
-            match current.get_child(c) {
+            match self.get_child_lazy(current, c)? {
                 Some(child) => current = child,
-                None => return None,
+                None => return Ok(None),
             }
         }
 
         if current.is_final() {
-            current.value.as_ref()
+            Ok(current.value.as_ref())
         } else {
-            None
+            Ok(None)
         }
     }
 
