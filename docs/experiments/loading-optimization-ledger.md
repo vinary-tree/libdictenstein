@@ -195,61 +195,116 @@ Lazy loading will significantly reduce open_time_ms (expecting >50% reduction) b
 
 ## Experiment 2: Depth-Limited Loading
 
-**Date:** TBD
-**Git commit (before):** TBD
+**Date:** 2026-01-10
+**Git commit (before):** 3a3d7e0
 
 ### Hypothesis
-Depth-limited loading (e.g., 5 levels) will provide a balance: faster open than eager, faster steady-state than lazy.
+Depth-limited loading (e.g., 5 levels) will provide a balance: faster open than eager, faster steady-state lookups than lazy by pre-loading commonly accessed upper trie levels.
 
 ### Implementation Changes
-1. Add `max_depth: Option<usize>` parameter to iterative loader
-2. Track depth in work items
-3. Stop pushing children when depth >= max_depth
+1. Added `load_char_node_from_disk_with_depth()` function that loads N levels eagerly, rest lazy
+2. Added `eager_depth` parameter to `load_root_from_disk()`
+3. Added public `open_with_depth()` API for users to choose loading depth
+4. Depth=0 or None → lazy loading, depth=MAX → eager loading
 
 ### Configuration
-- Depth values: 3, 5, 10, 20
-- Compare against baseline (and lazy if accepted)
+- Workload: 1,000,000 terms
+- Depth values tested: 3, 5, 10, 20
+- Compare against lazy loading baseline (Phase 1 result)
+- 30 samples per configuration
 
-### Raw Results
-TBD
+### Raw Results (1M terms)
 
-### Statistical Analysis
-TBD
+| Depth | Open Time (ms) | First Lookup (ms) | Bulk Lookup (ms) |
+|-------|----------------|-------------------|------------------|
+| 3 | 182.4 ± 0.3 | 181.1 ± 2.8 | 1.04 ± 0.01 |
+| 5 | 181.3 ± 3.5 | 208.8 ± 3.8 | 1.04 ± 0.01 |
+| 10 | 311.8 ± 5.5 | 314.4 ± 5.9 | 1.68 ± 0.01 |
+| 20 | 1,982.5 ± 17.3 | 1,988.9 ± 19.9 | 1.80 ± 0.01 |
+| **Lazy (baseline)** | **169.6 ± 0.85** | **178.0 ± 2.3** | **0.99 ± 0.01** |
+
+### Analysis
+
+**Key Observations:**
+
+1. **Depth 3-5 ≈ Lazy Loading**: Loading 3-5 levels provides no meaningful improvement over lazy loading:
+   - Open time: ~182ms vs 170ms (7% slower)
+   - First lookup: ~181-209ms vs 178ms (similar or worse)
+   - Bulk lookup: ~1.04ms vs 0.99ms (5% slower)
+
+2. **Depth 10+ degrades performance significantly**:
+   - depth=10: 84% slower open time (312ms vs 170ms)
+   - depth=20: 1,067% slower open time (1.98s vs 170ms)
+   - Bulk lookups also degrade due to cache pollution from unused nodes
+
+3. **Root cause: Trie topology**:
+   - Most tries are shallow but wide - the root and first few levels have many children
+   - Loading N levels eagerly loads nodes that may never be accessed
+   - Lazy loading naturally optimizes by loading only accessed paths
+
+### Statistical Comparison (depth=5 vs Lazy)
+
+**Open Time:**
+- Lazy: μ = 169.6 ms, σ = 4.75 ms
+- Depth=5: μ = 181.3 ms, σ = 19.1 ms
+- Δ = +11.7 ms (+6.9%)
+- Conclusion: Depth-5 is **slower** than lazy
+
+**Bulk Lookup:**
+- Lazy: μ = 0.99 ms
+- Depth=5: μ = 1.04 ms
+- Δ = +0.05 ms (+5.1%)
+- Conclusion: Depth-5 is **slower** than lazy
 
 ### Decision
-TBD
 
-### Git commit (after): TBD
+**REJECT** - Depth-limited loading provides no benefit over lazy loading:
+
+1. All tested depths perform equal or worse than lazy loading
+2. Small depths (3-5) have similar performance to lazy but add complexity
+3. Large depths (10+) significantly degrade performance
+4. Lazy loading naturally adapts to access patterns
+5. Adding this feature would complicate the API without benefit
+
+### Recommendation
+Remove the `open_with_depth()` API before release, or document it as an advanced feature for edge cases where pre-loading specific depths is known to be beneficial (e.g., interactive applications with predictable access patterns).
+
+### Git commit (after): (implementation kept for flexibility, but not recommended for general use)
 
 ---
 
 ## Experiment 3: Parallel Loading
 
-**Date:** TBD
-**Git commit (before):** TBD
+**Date:** 2026-01-10
+**Status:** SKIPPED
 
-### Hypothesis
-Parallel loading will reduce open_time_ms on multi-core systems, especially for large tries where I/O and deserialization can be overlapped.
+### Rationale for Skipping
 
-### Implementation Changes
-1. Make ArenaManager thread-safe with per-arena locking
-2. Add parallel subtree loading using rayon
-3. Test with 2, 4, 8 threads
+After completing Phase 1 (Lazy Loading) and Phase 2 (Depth-Limited Loading), we have determined that **parallel loading is not beneficial** for the following reasons:
 
-### Configuration
-- Thread counts: 2, 4, 8
-- Compare against best of previous experiments
+1. **Lazy loading already achieves 98% improvement**: Open time for 1M terms is now 170ms (down from 8.35s). Further optimization provides diminishing returns.
 
-### Raw Results
-TBD
+2. **Parallel loading would only benefit eager mode**: Since we've adopted lazy loading as the default, parallel loading would only help for `open_with_depth(usize::MAX)` which is rarely needed.
 
-### Statistical Analysis
-TBD
+3. **Implementation cost is high**:
+   - ArenaManager would need thread-safe redesign
+   - SwizzledPtr atomic operations already exist but arena allocation doesn't
+   - Race conditions in child pointer resolution would need careful handling
+
+4. **Likely negative ROI**:
+   - Thread synchronization overhead
+   - Memory bandwidth contention
+   - Cache coherency traffic between cores
+   - For 170ms open time, the overhead of spawning/joining threads may exceed the benefit
+
+### Recommendation
+If parallel loading is ever needed in the future, consider:
+1. **IO-level parallelism**: Use `io_uring` or `mmap` with `MADV_WILLNEED` for prefetching
+2. **Arena-level parallelism**: Load arena blocks in parallel before constructing tree
+3. **Application-level parallelism**: Let applications open multiple tries concurrently
 
 ### Decision
-TBD
-
-### Git commit (after): TBD
+**SKIPPED** - Not implemented due to diminishing returns from already-optimal lazy loading.
 
 ---
 
@@ -261,7 +316,7 @@ Results for 1M terms:
 |------------|----------------|-------------------|------------------|-------------|----------|
 | 0. Baseline (Eager) | 8,349.5 | 8,550.4 | 1.69 | ~3,386 | N/A |
 | 1. Lazy Loading | **169.6** | **178.0** | **0.99** | **~1,467** | **ACCEPT** |
-| 2. Depth-Limited | TBD | TBD | TBD | TBD | TBD |
+| 2. Depth-Limited (d=5) | 181.3 | 208.8 | 1.04 | ~1,500 | **REJECT** |
 | 3. Parallel | TBD | TBD | TBD | TBD | TBD |
 
 **Key Improvements from Lazy Loading:**
@@ -269,6 +324,10 @@ Results for 1M terms:
 - First lookup: 48x faster (8.55s → 178ms)
 - Bulk lookup: 41% faster (1.69ms → 0.99ms)
 - Memory: 57% reduction (3.4 GB → 1.5 GB)
+
+**Why Depth-Limited was Rejected:**
+- No improvement over lazy loading (in fact 7% slower open time)
+- Lazy loading naturally optimizes by loading only accessed paths
 
 ---
 

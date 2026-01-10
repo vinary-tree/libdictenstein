@@ -353,6 +353,116 @@ fn collect_raw_timings() {
 }
 
 // ============================================================================
+// Benchmark: Depth-Limited Open Time
+// ============================================================================
+
+fn bench_open_time_depth(c: &mut Criterion) {
+    let mut group = c.benchmark_group("open_time_depth");
+    group.sample_size(30);
+    group.warm_up_time(Duration::from_secs(1));
+
+    // Only test with 1M terms to see the effect of depth
+    let size = 1_000_000usize;
+    let dataset = TestDataset::new(size, 10_000);
+
+    // Test different depths: 3, 5, 10, 20
+    for depth in [3usize, 5, 10, 20] {
+        group.bench_with_input(
+            BenchmarkId::new("depth", depth),
+            &(&dataset, depth),
+            |b, (dataset, depth)| {
+                b.iter(|| {
+                    let trie = DiskBackedCharTrieInner::<u64>::open_with_depth(
+                        &dataset.trie_path,
+                        Some(*depth),
+                    ).expect("Failed to open trie");
+                    black_box(trie)
+                });
+            },
+        );
+    }
+
+    group.finish();
+}
+
+// ============================================================================
+// Benchmark: Depth-Limited First Lookup
+// ============================================================================
+
+fn bench_first_lookup_depth(c: &mut Criterion) {
+    let mut group = c.benchmark_group("first_lookup_depth");
+    group.sample_size(30);
+    group.warm_up_time(Duration::from_secs(1));
+
+    // Only test with 1M terms
+    let size = 1_000_000usize;
+    let dataset = TestDataset::new(size, 10_000);
+    let first_term = dataset.terms.first().cloned().unwrap_or_default();
+
+    // Test different depths
+    for depth in [3usize, 5, 10, 20] {
+        group.bench_with_input(
+            BenchmarkId::new("depth", depth),
+            &(&dataset, &first_term, depth),
+            |b, (dataset, term, depth)| {
+                b.iter(|| {
+                    let trie = DiskBackedCharTrieInner::<u64>::open_with_depth(
+                        &dataset.trie_path,
+                        Some(*depth),
+                    ).expect("Failed to open trie");
+                    let result = trie.contains(term);
+                    black_box(result)
+                });
+            },
+        );
+    }
+
+    group.finish();
+}
+
+// ============================================================================
+// Benchmark: Depth-Limited Bulk Lookup
+// ============================================================================
+
+fn bench_bulk_lookup_depth(c: &mut Criterion) {
+    let mut group = c.benchmark_group("bulk_lookup_depth");
+    group.sample_size(30);
+    group.warm_up_time(Duration::from_secs(1));
+
+    // Only test with 1M terms
+    let size = 1_000_000usize;
+    let dataset = TestDataset::new(size, 10_000);
+
+    // Test different depths
+    for depth in [3usize, 5, 10, 20] {
+        // Open trie once for steady-state measurement
+        let trie = DiskBackedCharTrieInner::<u64>::open_with_depth(
+            &dataset.trie_path,
+            Some(depth),
+        ).expect("Failed to open trie");
+
+        group.throughput(Throughput::Elements(dataset.queries.len() as u64));
+        group.bench_with_input(
+            BenchmarkId::new("depth", depth),
+            &(&trie, &dataset.queries),
+            |b, (trie, queries)| {
+                b.iter(|| {
+                    let mut hits = 0u64;
+                    for query in queries.iter() {
+                        if trie.contains(query) {
+                            hits += 1;
+                        }
+                    }
+                    black_box(hits)
+                });
+            },
+        );
+    }
+
+    group.finish();
+}
+
+// ============================================================================
 // Criterion Groups
 // ============================================================================
 
@@ -365,7 +475,16 @@ criterion_group!(
     targets = bench_open_time_eager, bench_first_lookup_eager, bench_bulk_lookup_eager, bench_memory_usage
 );
 
-criterion_main!(eager_loading);
+criterion_group!(
+    name = depth_loading;
+    config = Criterion::default()
+        .significance_level(0.05)
+        .noise_threshold(0.02)
+        .sample_size(30);
+    targets = bench_open_time_depth, bench_first_lookup_depth, bench_bulk_lookup_depth
+);
+
+criterion_main!(eager_loading, depth_loading);
 
 // ============================================================================
 // Manual Run Mode (for raw data collection)

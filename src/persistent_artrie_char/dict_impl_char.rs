@@ -667,10 +667,11 @@ impl<V: DictionaryValue> DiskBackedCharTrieInner<V> {
         };
 
         // Try to load root from disk if root_ptr != 0
+        // Default: lazy loading (eager_depth = None)
         let mut loaded_from_disk = false;
         if root_ptr != 0 {
             let root_swizzled = SwizzledPtr::from_raw(root_ptr);
-            match inner.load_root_from_disk(&buffer_manager, &root_swizzled) {
+            match inner.load_root_from_disk(&buffer_manager, &root_swizzled, None) {
                 Ok((root, len)) => {
                     inner.root = root;
                     inner.len = len;
@@ -749,17 +750,197 @@ impl<V: DictionaryValue> DiskBackedCharTrieInner<V> {
         Ok(inner)
     }
 
+    /// Open an existing disk-backed trie with a specific loading depth.
+    ///
+    /// This allows control over the trade-off between open time and lookup latency:
+    /// - `eager_depth = None` (or `Some(0)`): Lazy loading - fastest open, first lookups
+    ///   load nodes on-demand
+    /// - `eager_depth = Some(5)`: Load 5 levels eagerly - moderate open time, fast
+    ///   lookups for common prefixes
+    /// - `eager_depth = Some(usize::MAX)`: Fully eager - slowest open, fastest lookups
+    ///
+    /// # Arguments
+    /// * `path` - Path to the trie directory
+    /// * `eager_depth` - Number of levels to load eagerly. `None` means lazy loading.
+    ///
+    /// # Example
+    /// ```ignore
+    /// // Lazy loading (default behavior)
+    /// let trie = DiskBackedCharTrieInner::<u64>::open_with_depth("my_trie", None)?;
+    ///
+    /// // Load first 5 levels eagerly
+    /// let trie = DiskBackedCharTrieInner::<u64>::open_with_depth("my_trie", Some(5))?;
+    ///
+    /// // Fully eager loading
+    /// let trie = DiskBackedCharTrieInner::<u64>::open_with_depth("my_trie", Some(usize::MAX))?;
+    /// ```
+    #[cfg(feature = "persistent-artrie")]
+    pub fn open_with_depth<P: AsRef<Path>>(path: P, eager_depth: Option<usize>) -> Result<Self> {
+        use crate::persistent_artrie::swizzled_ptr::SwizzledPtr;
+
+        let path = path.as_ref();
+
+        // Open disk manager
+        let disk_manager = DiskManager::open(path)?;
+
+        // Read root pointer and entry count from header
+        let root_ptr = disk_manager.root_ptr()?;
+        let entry_count = disk_manager.entry_count()?;
+
+        // Create buffer manager (takes ownership of disk_manager)
+        let buffer_manager = BufferManager::new(disk_manager, DEFAULT_CHAR_BUFFER_POOL_SIZE);
+        let buffer_manager = Arc::new(RwLock::new(buffer_manager));
+
+        // Open or create WAL file
+        let wal_path = path.with_extension("wal");
+        let (wal_writer, recovered_ops, next_lsn, checkpoint_lsn) = if wal_path.exists() {
+            // Recover from WAL
+            let mut reader = WalReader::new(&wal_path)
+                .map_err(|e| PersistentARTrieError::WalError { reason: format!("{:?}", e) })?;
+
+            let mut records = Vec::new();
+            let mut max_lsn = 0u64;
+            let mut checkpoint_lsn = 0u64;
+            while let Some(result) = reader.next_record() {
+                match result {
+                    Ok((lsn, record)) => {
+                        max_lsn = max_lsn.max(lsn);
+                        // Track the latest checkpoint LSN
+                        if let WalRecord::Checkpoint { checkpoint_lsn: cp_lsn, .. } = &record {
+                            checkpoint_lsn = checkpoint_lsn.max(*cp_lsn);
+                        }
+                        records.push((lsn, record));
+                    }
+                    Err(_) => break, // Stop on error
+                }
+            }
+
+            let next_lsn = max_lsn + 1;
+            let writer = WalWriter::open(&wal_path)
+                .map_err(|e| PersistentARTrieError::WalError { reason: format!("{:?}", e) })?;
+
+            (writer, records, next_lsn, checkpoint_lsn)
+        } else {
+            let writer = WalWriter::create(&wal_path)
+                .map_err(|e| PersistentARTrieError::WalError { reason: format!("{:?}", e) })?;
+            (writer, Vec::new(), 1, 0)
+        };
+
+        let wal_writer = Arc::new(RwLock::new(wal_writer));
+
+        // Create arena manager for space-efficient node storage
+        let arena_manager = ArenaManager::with_buffer_manager(Arc::clone(&buffer_manager));
+        let arena_manager = Arc::new(RwLock::new(arena_manager));
+
+        let mut inner = Self {
+            root: CharTrieRoot::Empty,
+            len: 0, // Will be updated from disk or WAL replay
+            dirty: false,
+            buffer_manager: Some(buffer_manager.clone()),
+            wal_writer: Some(wal_writer),
+            next_lsn,
+            file_path: Some(path.to_path_buf()),
+            arena_manager: Some(arena_manager),
+            version: OptimisticVersion::new(),
+            epoch_manager: EpochManager::new(),
+            retry_stats: RetryStats::new(),
+            _phantom: std::marker::PhantomData,
+        };
+
+        // Try to load root from disk if root_ptr != 0
+        let mut loaded_from_disk = false;
+        if root_ptr != 0 {
+            let root_swizzled = SwizzledPtr::from_raw(root_ptr);
+            match inner.load_root_from_disk(&buffer_manager, &root_swizzled, eager_depth) {
+                Ok((root, len)) => {
+                    inner.root = root;
+                    inner.len = len;
+                    loaded_from_disk = true;
+                }
+                Err(e) => {
+                    eprintln!("Warning: Failed to load root from disk: {:?}", e);
+                    // Fall back to WAL replay
+                }
+            }
+        }
+
+        // Replay WAL records that came after the checkpoint
+        // Skip records with LSN <= checkpoint_lsn (already persisted to disk)
+        for (lsn, record) in recovered_ops {
+            // Skip if we loaded from disk and this record is from before checkpoint
+            if loaded_from_disk && checkpoint_lsn > 0 && lsn <= checkpoint_lsn {
+                continue;
+            }
+
+            match record {
+                WalRecord::Insert { term, .. } => {
+                    let term_str = String::from_utf8_lossy(&term);
+                    inner.insert_impl_no_wal(&term_str);
+                }
+                WalRecord::Remove { term } => {
+                    let term_str = String::from_utf8_lossy(&term);
+                    inner.remove_impl_no_wal(&term_str);
+                }
+                WalRecord::Checkpoint { .. } => {
+                    // Skip checkpoint records during replay
+                }
+                WalRecord::BeginTx { .. }
+                | WalRecord::CommitTx { .. }
+                | WalRecord::AbortTx { .. } => {
+                    // Transaction control records - skip for now
+                }
+                WalRecord::Increment { term, result, .. } => {
+                    // Replay increment: set the term to the result value
+                    let term_str = String::from_utf8_lossy(&term);
+                    if let Ok(value_bytes) = bincode::serialize(&result) {
+                        if let Ok(v) = bincode::deserialize::<V>(&value_bytes) {
+                            inner.insert_impl_no_wal_with_value(&term_str, v);
+                        }
+                    }
+                }
+                WalRecord::Upsert { term, value } => {
+                    // Replay upsert: deserialize and insert the value
+                    let term_str = String::from_utf8_lossy(&term);
+                    if let Ok(v) = bincode::deserialize::<V>(&value) {
+                        inner.insert_impl_no_wal_with_value(&term_str, v);
+                    }
+                }
+                WalRecord::CompareAndSwap { term, new_value, success, .. } => {
+                    // Only replay if the CAS was successful
+                    if success {
+                        let term_str = String::from_utf8_lossy(&term);
+                        if let Ok(v) = bincode::deserialize::<V>(&new_value) {
+                            inner.insert_impl_no_wal_with_value(&term_str, v);
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(inner)
+    }
+
     /// Load root from disk given the root descriptor pointer
     ///
     /// This function:
     /// 1. Reads the root descriptor block
     /// 2. Loads arena block IDs and populates the arena manager
     /// 3. Loads the root node (which can now read from arenas)
+    ///
+    /// # Arguments
+    /// * `buffer_manager` - The buffer manager for disk I/O
+    /// * `root_desc_ptr` - Pointer to the root descriptor block
+    /// * `eager_depth` - Controls loading strategy:
+    ///   - `None`: Fully lazy loading (only root node loaded)
+    ///   - `Some(0)`: Same as None (lazy loading)
+    ///   - `Some(n)`: Load n levels eagerly, rest lazy
+    ///   - `Some(usize::MAX)`: Fully eager loading (all levels)
     #[cfg(feature = "persistent-artrie")]
     fn load_root_from_disk(
         &self,
         buffer_manager: &Arc<RwLock<BufferManager>>,
         root_desc_ptr: &crate::persistent_artrie::swizzled_ptr::SwizzledPtr,
+        eager_depth: Option<usize>,
     ) -> Result<(CharTrieRoot<V>, usize)> {
         use crate::persistent_artrie::swizzled_ptr::SwizzledPtr;
 
@@ -844,8 +1025,21 @@ impl<V: DictionaryValue> DiskBackedCharTrieInner<V> {
             }
             ROOT_TYPE_NODE => {
                 let root_swizzled = SwizzledPtr::from_raw(root_ptr);
-                // Use lazy loading - only load root node, children loaded on-demand
-                let node = self.load_char_node_from_disk_lazy(buffer_manager, &root_swizzled)?;
+                // Choose loading strategy based on eager_depth
+                let node = match eager_depth {
+                    None | Some(0) => {
+                        // Fully lazy: only load root node, children on-demand
+                        self.load_char_node_from_disk_lazy(buffer_manager, &root_swizzled)?
+                    }
+                    Some(depth) if depth >= usize::MAX / 2 => {
+                        // Fully eager: load all levels
+                        self.load_char_node_from_disk_iterative(buffer_manager, &root_swizzled)?
+                    }
+                    Some(depth) => {
+                        // Depth-limited: load `depth` levels, rest lazy
+                        self.load_char_node_from_disk_with_depth(buffer_manager, &root_swizzled, Some(depth))?
+                    }
+                };
                 Ok((CharTrieRoot::Node(Box::new(node)), term_count))
             }
             _ => {
@@ -1256,6 +1450,144 @@ impl<V: DictionaryValue> DiskBackedCharTrieInner<V> {
         }
 
         // Root is at index 0 (first node pushed/processed)
+        Ok(std::mem::replace(&mut loaded_nodes[0].node, CharTrieNodeInner::new()))
+    }
+
+    /// Load a CharTrieNodeInner with depth-limited eager loading.
+    ///
+    /// Loads the first `max_depth` levels of the trie eagerly (all at once),
+    /// while keeping nodes beyond that depth as disk pointers for lazy loading.
+    ///
+    /// This provides a balance between:
+    /// - Fully eager loading (fast lookups, slow open, high memory)
+    /// - Fully lazy loading (fast open, slower first lookups)
+    ///
+    /// # Arguments
+    /// * `buffer_manager` - The buffer manager for disk I/O
+    /// * `root_ptr` - The root node's disk pointer
+    /// * `max_depth` - Maximum depth to load eagerly. Nodes at this depth have
+    ///   their children stored as disk pointers. `None` means fully eager.
+    ///
+    /// # Example Depths
+    /// - `Some(0)`: Only root loaded, all children lazy (same as lazy loading)
+    /// - `Some(3)`: Root + 2 levels loaded, 4th level and beyond lazy
+    /// - `Some(10)`: First 10 levels loaded eagerly
+    /// - `None`: All levels loaded (same as full iterative loading)
+    #[cfg(feature = "persistent-artrie")]
+    fn load_char_node_from_disk_with_depth(
+        &self,
+        _buffer_manager: &Arc<RwLock<BufferManager>>,
+        root_ptr: &crate::persistent_artrie::swizzled_ptr::SwizzledPtr,
+        max_depth: Option<usize>,
+    ) -> Result<CharTrieNodeInner<V>> {
+        use crate::persistent_artrie::swizzled_ptr::SwizzledPtr;
+        use std::collections::HashMap;
+
+        // If max_depth is 0, just do lazy loading (only load root)
+        if max_depth == Some(0) {
+            return self.load_char_node_from_disk_lazy(_buffer_manager, root_ptr);
+        }
+
+        /// Work item with depth tracking
+        struct WorkItem {
+            ptr: SwizzledPtr,
+            depth: usize,
+        }
+
+        /// Information about a loaded node before children are connected
+        struct LoadedNodeInfo<V: DictionaryValue> {
+            node: CharTrieNodeInner<V>,
+            /// Children to load eagerly (within depth limit)
+            eager_children: Vec<(char, SwizzledPtr)>,
+            /// Children to keep as disk pointers (beyond depth limit)
+            lazy_children: Vec<(char, SwizzledPtr)>,
+        }
+
+        // Stack for DFS traversal with depth tracking
+        let mut work_stack: Vec<WorkItem> = vec![WorkItem {
+            ptr: root_ptr.clone(),
+            depth: 0,
+        }];
+
+        // Results vector - nodes are stored in DFS pre-order
+        let mut loaded_nodes: Vec<LoadedNodeInfo<V>> = Vec::new();
+
+        // Map from disk pointer raw value to result index
+        let mut ptr_to_idx: HashMap<u64, usize> = HashMap::new();
+
+        // Phase 1: Load nodes up to depth limit
+        while let Some(work_item) = work_stack.pop() {
+            let ptr_raw = work_item.ptr.to_raw();
+            if ptr_to_idx.contains_key(&ptr_raw) {
+                continue;
+            }
+
+            // Load this node's data from disk
+            let (node, child_entries) = self.load_single_node_data(&work_item.ptr)?;
+
+            // Reserve result index
+            let result_idx = loaded_nodes.len();
+            ptr_to_idx.insert(ptr_raw, result_idx);
+
+            // Determine which children to load eagerly vs lazily
+            let at_depth_limit = max_depth.map_or(false, |max| work_item.depth >= max.saturating_sub(1));
+
+            let (eager_children, lazy_children): (Vec<_>, Vec<_>) = if at_depth_limit {
+                // At depth limit: all children become lazy
+                (Vec::new(), child_entries)
+            } else {
+                // Within limit: all children loaded eagerly
+                (child_entries, Vec::new())
+            };
+
+            // Push eager children to work stack (reverse order for correct DFS)
+            for (_, child_ptr) in eager_children.iter().rev() {
+                work_stack.push(WorkItem {
+                    ptr: child_ptr.clone(),
+                    depth: work_item.depth + 1,
+                });
+            }
+
+            loaded_nodes.push(LoadedNodeInfo {
+                node,
+                eager_children,
+                lazy_children,
+            });
+        }
+
+        // Handle empty tree case
+        if loaded_nodes.is_empty() {
+            return Err(PersistentARTrieError::internal("No nodes loaded from disk"));
+        }
+
+        // Phase 2: Connect children (bottom-up)
+        for idx in (0..loaded_nodes.len()).rev() {
+            // First, insert lazy children as disk pointers
+            let lazy_children = std::mem::take(&mut loaded_nodes[idx].lazy_children);
+            for (char_key, child_ptr) in lazy_children {
+                loaded_nodes[idx].node.insert_child_ptr(char_key, child_ptr);
+            }
+
+            // Then, connect eager children (already loaded)
+            let eager_children = std::mem::take(&mut loaded_nodes[idx].eager_children);
+            for (char_key, child_ptr) in eager_children {
+                let child_idx = *ptr_to_idx.get(&child_ptr.to_raw())
+                    .ok_or_else(|| PersistentARTrieError::internal(
+                        "Child pointer not found in loaded nodes map"
+                    ))?;
+
+                // Take ownership of the child node
+                let child_node = std::mem::replace(
+                    &mut loaded_nodes[child_idx].node,
+                    CharTrieNodeInner::new()
+                );
+
+                // Connect child to parent
+                loaded_nodes[idx].node.insert_child(char_key, child_node);
+            }
+        }
+
+        // Root is at index 0
         Ok(std::mem::replace(&mut loaded_nodes[0].node, CharTrieNodeInner::new()))
     }
 
