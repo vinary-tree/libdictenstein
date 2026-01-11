@@ -65,7 +65,7 @@ pub mod serialization;
 pub use char_unit::CharUnit;
 pub use iterator::{DictionaryIterator, DictionaryTermIterator};
 #[cfg(feature = "persistent-artrie")]
-pub use persistent_artrie::{PersistentARTrie, PersistentARTrieZipper};
+pub use persistent_artrie::{PersistentARTrie, PersistentARTrieZipper, WalConfig, RecoveryReport, RecoveryMode};
 #[cfg(feature = "persistent-artrie")]
 pub use persistent_artrie_char::{PersistentARTrieChar, PersistentARTrieCharNode, PersistentARTrieCharZipper};
 pub use substring::{BidirectionalDictionaryNode, ExtensionResult, SubstringDictionary, SubstringMatch};

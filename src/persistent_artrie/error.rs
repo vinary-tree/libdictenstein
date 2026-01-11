@@ -157,11 +157,44 @@ pub enum PersistentARTrieError {
         reason: String,
     },
 
+    /// Checkpoint verification failed
+    ///
+    /// Returned when re-reading data after checkpoint fails verification.
+    /// The WAL should NOT be truncated when this error occurs, allowing
+    /// recovery on the next open.
+    #[error("Checkpoint verification failed: {reason}")]
+    CheckpointVerificationFailed {
+        /// Description of verification failure
+        reason: String,
+    },
+
     /// Recovery error during startup
     #[error("Recovery error: {reason}")]
     RecoveryError {
         /// Description of recovery error
         reason: String,
+    },
+
+    /// Arena checksum mismatch (for char arena V3+)
+    #[error("Arena checksum mismatch in arena {arena_id}: expected {expected:#x}, found {found:#x}")]
+    ArenaChecksumMismatch {
+        /// Arena block ID
+        arena_id: u32,
+        /// Expected checksum
+        expected: u32,
+        /// Actual checksum found
+        found: u32,
+    },
+
+    /// Arena is truncated (incomplete write)
+    #[error("Arena {arena_id} is truncated: expected at least {expected} bytes, found {actual}")]
+    TruncatedArena {
+        /// Arena block ID
+        arena_id: u32,
+        /// Expected minimum size
+        expected: usize,
+        /// Actual size found
+        actual: usize,
     },
 
     /// Operation not supported in read-only mode
@@ -278,6 +311,9 @@ impl PersistentARTrieError {
             Self::CorruptedFile { .. }
                 | Self::ChecksumMismatch { .. }
                 | Self::InvalidMagic { .. }
+                | Self::ArenaChecksumMismatch { .. }
+                | Self::TruncatedArena { .. }
+                | Self::CheckpointVerificationFailed { .. }
         )
     }
 

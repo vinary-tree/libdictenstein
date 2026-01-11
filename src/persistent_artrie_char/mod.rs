@@ -63,6 +63,10 @@ pub mod dedup;
 #[cfg(feature = "persistent-artrie")]
 pub mod relative_encoding;
 
+// Crash recovery for corrupted files
+#[cfg(feature = "persistent-artrie")]
+pub mod recovery;
+
 // Disk-backed implementation
 #[cfg(feature = "persistent-artrie")]
 pub mod dict_impl_char;
@@ -127,6 +131,13 @@ pub use relative_encoding::{
     encode_child_pointer, decode_child_pointer, encode_children, decode_children,
     encode_sequential_siblings, decode_sequential_siblings, encoded_size, is_same_arena,
     FLAG_CROSS_ARENA, FLAG_RELATIVE_OFFSETS, FLAG_SEQUENTIAL_SIBLINGS, CROSS_ARENA_SIZE,
+};
+
+// Re-export recovery types (under feature flag)
+#[cfg(feature = "persistent-artrie")]
+pub use recovery::{
+    CorruptionInfo, CorruptionType, RecoveredOperation, RecoveryManager,
+    RecoveryMode, RecoveryPolicy, RecoveryReport, detect_corruption,
 };
 
 use crate::value::DictionaryValue;
@@ -547,6 +558,172 @@ impl<V: DictionaryValue> PersistentARTrieChar<V> {
     pub fn iter_chars_with_values(&self) -> impl Iterator<Item = (Vec<char>, V)> + '_ {
         self.iter_with_values()
             .map(|(s, v)| (s.chars().collect(), v))
+    }
+
+    /// Iterate over all terms with the given prefix.
+    ///
+    /// Returns `None` if the prefix path doesn't exist in the trie.
+    /// Returns `Some(iterator)` that yields all terms starting with the prefix.
+    ///
+    /// Uses the zipper-based `PrefixZipper` trait for O(k) navigation to the prefix,
+    /// followed by O(m) iteration over matching terms.
+    ///
+    /// # Arguments
+    ///
+    /// * `prefix` - The string prefix to search for
+    ///
+    /// # Returns
+    ///
+    /// * `Some(impl Iterator<Item = String>)` - Iterator over matching terms
+    /// * `None` - If no terms with this prefix exist
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// use libdictenstein::persistent_artrie_char::PersistentARTrieChar;
+    ///
+    /// let trie: PersistentARTrieChar<()> = PersistentARTrieChar::new();
+    /// trie.insert("apple");
+    /// trie.insert("application");
+    /// trie.insert("banana");
+    ///
+    /// if let Some(iter) = trie.iter_prefix("app") {
+    ///     for term in iter {
+    ///         println!("{}", term);
+    ///     }
+    ///     // Prints: "apple" and "application"
+    /// }
+    /// ```
+    pub fn iter_prefix(&self, prefix: &str) -> Option<impl Iterator<Item = String> + '_> {
+        use crate::prefix_zipper::PrefixZipper;
+
+        let prefix_chars: Vec<char> = prefix.chars().collect();
+        let zipper = PersistentARTrieCharZipper::new(self);
+        let prefix_iter = zipper.with_prefix(&prefix_chars)?;
+        Some(prefix_iter.map(|(path, _)| path.iter().collect()))
+    }
+
+    /// Iterate over all (term, value) pairs with the given prefix.
+    ///
+    /// Returns `None` if the prefix path doesn't exist in the trie.
+    /// Returns `Some(iterator)` that yields all (term, value) pairs where term starts with prefix.
+    ///
+    /// # Arguments
+    ///
+    /// * `prefix` - The string prefix to search for
+    ///
+    /// # Returns
+    ///
+    /// * `Some(impl Iterator<Item = (String, V)>)` - Iterator over matching (term, value) pairs
+    /// * `None` - If no terms with this prefix exist
+    pub fn iter_prefix_with_values(&self, prefix: &str) -> Option<impl Iterator<Item = (String, V)> + '_> {
+        use crate::prefix_zipper::ValuedPrefixZipper;
+
+        let prefix_chars: Vec<char> = prefix.chars().collect();
+        let zipper = PersistentARTrieCharZipper::new(self);
+        let prefix_iter = zipper.with_prefix_values(&prefix_chars)?;
+        Some(prefix_iter.map(|(path, value)| (path.iter().collect(), value)))
+    }
+
+    /// Remove all terms with the given prefix (batched for memory efficiency).
+    ///
+    /// Returns the number of terms removed. Uses batched processing to limit
+    /// memory usage to O(batch_size) regardless of how many terms match the prefix.
+    ///
+    /// # Arguments
+    ///
+    /// * `prefix` - The string prefix of terms to remove
+    ///
+    /// # Returns
+    ///
+    /// The number of terms that were removed.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// use libdictenstein::persistent_artrie_char::PersistentARTrieChar;
+    ///
+    /// let trie: PersistentARTrieChar<()> = PersistentARTrieChar::new();
+    /// trie.insert("apple");
+    /// trie.insert("application");
+    /// trie.insert("banana");
+    ///
+    /// let count = trie.remove_prefix("app");
+    /// assert_eq!(count, 2); // Removed "apple", "application"
+    /// assert!(trie.contains("banana"));
+    /// ```
+    pub fn remove_prefix(&self, prefix: &str) -> usize {
+        self.remove_prefix_batched(prefix, 1024)
+    }
+
+    /// Remove all terms with the given prefix using a custom batch size.
+    ///
+    /// # Arguments
+    ///
+    /// * `prefix` - The string prefix of terms to remove
+    /// * `batch_size` - Maximum number of terms to collect per iteration
+    ///
+    /// # Returns
+    ///
+    /// The number of terms that were removed.
+    pub fn remove_prefix_batched(&self, prefix: &str, batch_size: usize) -> usize {
+        let batch_size = batch_size.max(1);
+        let mut total_removed = 0;
+
+        loop {
+            // Collect a batch of terms to remove
+            let batch: Vec<String> = self
+                .iter_prefix(prefix)
+                .map(|iter| iter.take(batch_size).collect())
+                .unwrap_or_default();
+
+            if batch.is_empty() {
+                break;
+            }
+
+            // Remove the batch
+            #[cfg(feature = "parking_lot")]
+            let mut guard = self.inner.write();
+            #[cfg(not(feature = "parking_lot"))]
+            let mut guard = self.inner.write().expect("lock poisoned");
+
+            // Track removals in this batch separately to avoid borrow conflict
+            let mut batch_removed = 0;
+            {
+                let root = Arc::make_mut(&mut guard.root);
+                for term in batch {
+                    let chars: Vec<char> = term.chars().collect();
+                    if Self::remove_chars_impl_static(root, chars.into_iter()) {
+                        batch_removed += 1;
+                    }
+                }
+            }
+            // Now update the length after the root borrow is released
+            guard.len -= batch_removed;
+            total_removed += batch_removed;
+        }
+
+        total_removed
+    }
+
+    /// Static helper for remove_chars_impl that doesn't require Self reference
+    fn remove_chars_impl_static(node: &mut CharTrieNode<V>, mut chars: impl Iterator<Item = char>) -> bool {
+        match chars.next() {
+            None => {
+                let was_final = node.is_final;
+                node.is_final = false;
+                node.value = None;
+                was_final
+            }
+            Some(c) => {
+                if let Some(child) = node.children.get_mut(&c) {
+                    let child = Arc::make_mut(child);
+                    Self::remove_chars_impl_static(child, chars)
+                } else {
+                    false
+                }
+            }
+        }
     }
 }
 

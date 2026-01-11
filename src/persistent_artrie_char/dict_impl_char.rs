@@ -46,7 +46,7 @@ use crate::persistent_artrie::disk_manager::DiskManager;
 #[cfg(feature = "persistent-artrie")]
 use crate::persistent_artrie::error::{PersistentARTrieError, Result};
 #[cfg(feature = "persistent-artrie")]
-use crate::persistent_artrie::wal::{WalReader, WalRecord, WalWriter};
+use crate::persistent_artrie::wal::{WalConfig, WalReader, WalRecord, WalWriter};
 #[cfg(feature = "persistent-artrie")]
 use crate::persistent_artrie::concurrency::{
     EpochManager, OptimisticVersion, RetryStats, EpochGuard, OptimisticReadGuard,
@@ -66,16 +66,37 @@ pub const CHAR_TRIE_MAGIC: [u8; 4] = *b"ARTC";
 /// File header size in bytes
 pub const CHAR_FILE_HEADER_SIZE: usize = 64;
 
+/// Header format version 1 (original, no checksum)
+pub const CHAR_HEADER_VERSION_V1: u8 = 1;
+
+/// Header format version 2 (with checksum for crash recovery)
+pub const CHAR_HEADER_VERSION_V2: u8 = 2;
+
 /// Default buffer pool size (number of pages)
 pub const DEFAULT_CHAR_BUFFER_POOL_SIZE: usize = 256;
 
 /// File header for disk-backed char trie
+///
+/// # Layout (64 bytes total)
+///
+/// ```text
+/// Offset  Size  Field
+/// ------  ----  -----
+///   0       4   magic ("ARTC")
+///   4       1   version (1 = no checksum, 2 = with checksum)
+///   5       3   reserved
+///   8       8   root_ptr (block ID of root node)
+///  16       8   entry_count
+///  24       8   checkpoint_lsn
+///  32       4   header_checksum (V2+: CRC32 of bytes 0-31)
+///  36      28   padding
+/// ```
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct CharTrieFileHeader {
     /// Magic bytes "ARTC"
     pub magic: [u8; 4],
-    /// Format version
+    /// Format version (1 = no checksum, 2 = with checksum)
     pub version: u8,
     /// Reserved bytes
     pub _reserved: [u8; 3],
@@ -85,25 +106,82 @@ pub struct CharTrieFileHeader {
     pub entry_count: u64,
     /// Checkpoint LSN (for WAL truncation)
     pub checkpoint_lsn: u64,
+    /// CRC32 checksum of bytes 0-31 (V2+ only, 0 for V1)
+    pub header_checksum: u32,
     /// Padding to 64 bytes
-    pub _padding: [u8; 32],
+    pub _padding: [u8; 28],
 }
 
 impl CharTrieFileHeader {
-    /// Create a new file header
+    /// Create a new file header (V2 format with checksum)
     pub fn new() -> Self {
         Self {
             magic: CHAR_TRIE_MAGIC,
-            version: 1,
+            version: CHAR_HEADER_VERSION_V2,
             _reserved: [0; 3],
             root_ptr: 0,
             entry_count: 0,
             checkpoint_lsn: 0,
-            _padding: [0; 32],
+            header_checksum: 0,
+            _padding: [0; 28],
         }
     }
 
-    /// Serialize to bytes
+    /// Create a V1 header (for backward compatibility testing)
+    #[cfg(test)]
+    pub fn new_v1() -> Self {
+        Self {
+            magic: CHAR_TRIE_MAGIC,
+            version: CHAR_HEADER_VERSION_V1,
+            _reserved: [0; 3],
+            root_ptr: 0,
+            entry_count: 0,
+            checkpoint_lsn: 0,
+            header_checksum: 0,
+            _padding: [0; 28],
+        }
+    }
+
+    /// Check if this header version supports checksums
+    pub fn has_checksum(&self) -> bool {
+        self.version >= CHAR_HEADER_VERSION_V2
+    }
+
+    /// Compute the header checksum (CRC32 of bytes 0-31)
+    pub fn compute_checksum(&self) -> u32 {
+        let mut bytes = [0u8; 32];
+        bytes[0..4].copy_from_slice(&self.magic);
+        bytes[4] = self.version;
+        bytes[5..8].copy_from_slice(&self._reserved);
+        bytes[8..16].copy_from_slice(&self.root_ptr.to_le_bytes());
+        bytes[16..24].copy_from_slice(&self.entry_count.to_le_bytes());
+        bytes[24..32].copy_from_slice(&self.checkpoint_lsn.to_le_bytes());
+        crc32_header(&bytes)
+    }
+
+    /// Update the checksum to match current header values
+    pub fn finalize_checksum(&mut self) {
+        if self.has_checksum() {
+            self.header_checksum = self.compute_checksum();
+        }
+    }
+
+    /// Verify the header checksum
+    ///
+    /// Returns true if:
+    /// - V1 header (no checksum, always valid)
+    /// - V2+ header with matching checksum
+    pub fn verify_checksum(&self) -> bool {
+        if !self.has_checksum() {
+            // V1 headers don't have checksums, consider valid
+            return true;
+        }
+        self.header_checksum == self.compute_checksum()
+    }
+
+    /// Serialize to bytes (does NOT auto-finalize checksum)
+    ///
+    /// Call `finalize_checksum()` before serializing to ensure checksum is valid.
     pub fn to_bytes(&self) -> [u8; CHAR_FILE_HEADER_SIZE] {
         let mut bytes = [0u8; CHAR_FILE_HEADER_SIZE];
         bytes[0..4].copy_from_slice(&self.magic);
@@ -112,8 +190,15 @@ impl CharTrieFileHeader {
         bytes[8..16].copy_from_slice(&self.root_ptr.to_le_bytes());
         bytes[16..24].copy_from_slice(&self.entry_count.to_le_bytes());
         bytes[24..32].copy_from_slice(&self.checkpoint_lsn.to_le_bytes());
-        bytes[32..64].copy_from_slice(&self._padding);
+        bytes[32..36].copy_from_slice(&self.header_checksum.to_le_bytes());
+        bytes[36..64].copy_from_slice(&self._padding);
         bytes
+    }
+
+    /// Serialize to bytes with checksum finalization
+    pub fn to_bytes_with_checksum(&mut self) -> [u8; CHAR_FILE_HEADER_SIZE] {
+        self.finalize_checksum();
+        self.to_bytes()
     }
 
     /// Deserialize from bytes
@@ -134,15 +219,36 @@ impl CharTrieFileHeader {
                 bytes[24], bytes[25], bytes[26], bytes[27],
                 bytes[28], bytes[29], bytes[30], bytes[31],
             ]),
+            header_checksum: u32::from_le_bytes([
+                bytes[32], bytes[33], bytes[34], bytes[35],
+            ]),
             _padding: {
-                let mut arr = [0u8; 32];
-                arr.copy_from_slice(&bytes[32..64]);
+                let mut arr = [0u8; 28];
+                arr.copy_from_slice(&bytes[36..64]);
                 arr
             },
         }
     }
 
-    /// Validate the header
+    /// Deserialize from bytes and verify checksum
+    ///
+    /// Returns `Err` if checksum verification fails (V2+ only).
+    #[cfg(feature = "persistent-artrie")]
+    pub fn from_bytes_verified(bytes: &[u8; CHAR_FILE_HEADER_SIZE]) -> Result<Self> {
+        let header = Self::from_bytes(bytes);
+        if header.has_checksum() && !header.verify_checksum() {
+            return Err(PersistentARTrieError::CorruptedFile {
+                reason: format!(
+                    "Header checksum mismatch: stored={:#x}, computed={:#x}",
+                    header.header_checksum,
+                    header.compute_checksum()
+                ),
+            });
+        }
+        Ok(header)
+    }
+
+    /// Validate the header (magic + version + checksum)
     #[cfg(feature = "persistent-artrie")]
     pub fn validate(&self) -> Result<()> {
         if self.magic != CHAR_TRIE_MAGIC {
@@ -157,8 +263,41 @@ impl CharTrieFileHeader {
             ]);
             return Err(PersistentARTrieError::InvalidMagic { expected, found });
         }
+        if self.has_checksum() && !self.verify_checksum() {
+            return Err(PersistentARTrieError::CorruptedFile {
+                reason: format!(
+                    "Header checksum mismatch: stored={:#x}, computed={:#x}",
+                    self.header_checksum,
+                    self.compute_checksum()
+                ),
+            });
+        }
         Ok(())
     }
+
+    /// Upgrade V1 header to V2 format with checksum
+    pub fn upgrade_to_v2(&mut self) {
+        if self.version < CHAR_HEADER_VERSION_V2 {
+            self.version = CHAR_HEADER_VERSION_V2;
+            self.finalize_checksum();
+        }
+    }
+}
+
+/// CRC32 checksum (IEEE polynomial) for header integrity verification
+fn crc32_header(data: &[u8]) -> u32 {
+    let mut crc: u32 = 0xFFFFFFFF;
+    for byte in data {
+        crc ^= *byte as u32;
+        for _ in 0..8 {
+            if crc & 1 != 0 {
+                crc = (crc >> 1) ^ 0xEDB88320;
+            } else {
+                crc >>= 1;
+            }
+        }
+    }
+    !crc
 }
 
 impl Default for CharTrieFileHeader {
@@ -493,6 +632,9 @@ pub struct DiskBackedCharTrieInner<V: DictionaryValue> {
     #[cfg(feature = "persistent-artrie")]
     pub wal_writer: Option<Arc<RwLock<WalWriter>>>,
     #[cfg(feature = "persistent-artrie")]
+    /// WAL configuration (archive mode, segment limits, etc.)
+    pub wal_config: WalConfig,
+    #[cfg(feature = "persistent-artrie")]
     pub next_lsn: u64,
     #[cfg(feature = "persistent-artrie")]
     pub file_path: Option<PathBuf>,
@@ -539,6 +681,8 @@ impl<V: DictionaryValue> DiskBackedCharTrieInner<V> {
             #[cfg(feature = "persistent-artrie")]
             wal_writer: None,
             #[cfg(feature = "persistent-artrie")]
+            wal_config: WalConfig::default(),
+            #[cfg(feature = "persistent-artrie")]
             next_lsn: 1,
             #[cfg(feature = "persistent-artrie")]
             file_path: None,
@@ -582,6 +726,56 @@ impl<V: DictionaryValue> DiskBackedCharTrieInner<V> {
             dirty: false,
             buffer_manager: Some(buffer_manager),
             wal_writer: Some(wal_writer),
+            wal_config: WalConfig::default(),
+            next_lsn: 1,
+            file_path: Some(path.to_path_buf()),
+            arena_manager: Some(arena_manager),
+            version: OptimisticVersion::new(),
+            epoch_manager: EpochManager::new(),
+            retry_stats: RetryStats::new(),
+            _phantom: std::marker::PhantomData,
+        })
+    }
+
+    /// Create a new disk-backed trie with custom WAL configuration
+    #[cfg(feature = "persistent-artrie")]
+    pub fn create_with_config<P: AsRef<Path>>(path: P, wal_config: WalConfig) -> Result<Self> {
+        let path = path.as_ref();
+
+        // Create disk manager
+        let disk_manager = DiskManager::create(path)?;
+
+        // Create buffer manager (takes ownership of disk_manager)
+        let buffer_manager = BufferManager::new(disk_manager, DEFAULT_CHAR_BUFFER_POOL_SIZE);
+        let buffer_manager = Arc::new(RwLock::new(buffer_manager));
+
+        // Create WAL file
+        let wal_path = path.with_extension("wal");
+        let wal_writer = WalWriter::create(&wal_path)
+            .map_err(|e| PersistentARTrieError::WalError { reason: format!("{:?}", e) })?;
+        let wal_writer = Arc::new(RwLock::new(wal_writer));
+
+        // Create archive directory if archive mode is enabled
+        if wal_config.archive_enabled {
+            let archive_dir = path.parent().unwrap_or(Path::new(".")).join(&wal_config.archive_dir);
+            if !archive_dir.exists() {
+                std::fs::create_dir_all(&archive_dir).map_err(|e| {
+                    PersistentARTrieError::io_error("create archive directory", archive_dir.display().to_string(), e)
+                })?;
+            }
+        }
+
+        // Create arena manager for space-efficient node storage
+        let arena_manager = ArenaManager::with_buffer_manager(Arc::clone(&buffer_manager));
+        let arena_manager = Arc::new(RwLock::new(arena_manager));
+
+        Ok(Self {
+            root: CharTrieRoot::Empty,
+            len: 0,
+            dirty: false,
+            buffer_manager: Some(buffer_manager),
+            wal_writer: Some(wal_writer),
+            wal_config,
             next_lsn: 1,
             file_path: Some(path.to_path_buf()),
             arena_manager: Some(arena_manager),
@@ -657,6 +851,7 @@ impl<V: DictionaryValue> DiskBackedCharTrieInner<V> {
             dirty: false,
             buffer_manager: Some(buffer_manager.clone()),
             wal_writer: Some(wal_writer),
+            wal_config: WalConfig::default(),
             next_lsn,
             file_path: Some(path.to_path_buf()),
             arena_manager: Some(arena_manager),
@@ -838,6 +1033,7 @@ impl<V: DictionaryValue> DiskBackedCharTrieInner<V> {
             dirty: false,
             buffer_manager: Some(buffer_manager.clone()),
             wal_writer: Some(wal_writer),
+            wal_config: WalConfig::default(),
             next_lsn,
             file_path: Some(path.to_path_buf()),
             arena_manager: Some(arena_manager),
@@ -918,6 +1114,225 @@ impl<V: DictionaryValue> DiskBackedCharTrieInner<V> {
         }
 
         Ok(inner)
+    }
+
+    /// Open an existing disk-backed trie with custom WAL configuration
+    ///
+    /// This allows specifying WAL archive settings for crash recovery.
+    #[cfg(feature = "persistent-artrie")]
+    pub fn open_with_config<P: AsRef<Path>>(path: P, wal_config: WalConfig) -> Result<Self> {
+        let mut trie = Self::open(path.as_ref())?;
+
+        // Create archive directory if archive mode is enabled
+        if wal_config.archive_enabled {
+            if let Some(ref file_path) = trie.file_path {
+                let archive_dir = file_path.parent().unwrap_or(Path::new(".")).join(&wal_config.archive_dir);
+                if !archive_dir.exists() {
+                    std::fs::create_dir_all(&archive_dir).map_err(|e| {
+                        PersistentARTrieError::io_error("create archive directory", archive_dir.display().to_string(), e)
+                    })?;
+                }
+            }
+        }
+
+        trie.wal_config = wal_config;
+        Ok(trie)
+    }
+
+    /// Open an existing disk-backed trie with automatic corruption detection and recovery.
+    ///
+    /// This is the recommended way to open a trie that may have been corrupted
+    /// by a crash (OOM kill, power failure, etc.).
+    ///
+    /// # Recovery Process
+    ///
+    /// 1. **Check if file exists** - If not, create a new trie
+    /// 2. **Detect corruption** - Check header checksum, arena checksums
+    /// 3. **If corrupted** - Rebuild from WAL archive segments
+    /// 4. **Return trie with recovery report**
+    ///
+    /// # Arguments
+    ///
+    /// * `path` - Path to the trie data file
+    ///
+    /// # Returns
+    ///
+    /// Tuple of (trie, recovery_report) indicating what recovery was performed.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// use libdictenstein::persistent_artrie_char::DiskBackedCharTrieInner;
+    ///
+    /// let (trie, report) = DiskBackedCharTrieInner::<()>::open_with_recovery("words.artc")?;
+    ///
+    /// if !report.mode.is_normal() {
+    ///     eprintln!("Recovered from crash: {} records replayed", report.records_replayed);
+    /// }
+    /// ```
+    #[cfg(feature = "persistent-artrie")]
+    pub fn open_with_recovery<P: AsRef<Path>>(path: P) -> Result<(Self, crate::persistent_artrie::recovery::RecoveryReport)> {
+        Self::open_with_recovery_config(path, WalConfig::default())
+    }
+
+    /// Open with recovery and custom WAL configuration.
+    ///
+    /// Same as `open_with_recovery()` but allows specifying custom WAL settings.
+    ///
+    /// # Arguments
+    ///
+    /// * `path` - Path to the trie data file
+    /// * `config` - WAL configuration for archive mode, segment limits, etc.
+    ///
+    /// # Returns
+    ///
+    /// Tuple of (trie, recovery_report) indicating what recovery was performed.
+    #[cfg(feature = "persistent-artrie")]
+    pub fn open_with_recovery_config<P: AsRef<Path>>(
+        path: P,
+        config: WalConfig,
+    ) -> Result<(Self, crate::persistent_artrie::recovery::RecoveryReport)> {
+        use crate::persistent_artrie::recovery::{
+            detect_corruption, find_wal_archive_segments, RecoveryReport,
+        };
+        use std::time::Instant;
+
+        let path = path.as_ref();
+        let start_time = Instant::now();
+
+        // Check if file exists
+        if !path.exists() {
+            // No file - create new and return CreatedNew report
+            let trie = Self::create_with_config(path, config)?;
+            return Ok((trie, RecoveryReport::created_new()));
+        }
+
+        // Check for corruption
+        match detect_corruption(path, true) {
+            Ok(None) => {
+                // No corruption detected - open normally
+                let trie = Self::open_with_config(path, config)?;
+                Ok((trie, RecoveryReport::normal()))
+            }
+            Ok(Some(corruption)) => {
+                // Corruption detected - attempt recovery from WAL archives
+                let corruption_reason = corruption.to_string();
+
+                // Find archive directory
+                let archive_dir = path.parent().unwrap_or(Path::new(".")).join(&config.archive_dir);
+
+                // Find WAL archive segments
+                let segments = find_wal_archive_segments(&archive_dir);
+
+                if segments.is_empty() {
+                    // No archive segments - can't recover
+                    return Err(PersistentARTrieError::RecoveryError {
+                        reason: format!(
+                            "Corruption detected ({}) but no WAL archive segments found in {:?}",
+                            corruption_reason, archive_dir
+                        ),
+                    });
+                }
+
+                // Remove corrupted file
+                let _ = std::fs::remove_file(path);
+
+                // Also remove current WAL (we'll rebuild from archives)
+                let wal_path = path.with_extension("wal");
+                let _ = std::fs::remove_file(&wal_path);
+
+                // Create fresh trie
+                let mut trie = Self::create_with_config(path, config.clone())?;
+
+                // Rebuild from WAL archive segments
+                let mut records_replayed: u64 = 0;
+                let mut terms_recovered: u64 = 0;
+                let mut segments_used = Vec::new();
+
+                for segment_path in &segments {
+                    // Create reader for this segment
+                    use crate::persistent_artrie::wal::WalReader;
+
+                    let reader = match WalReader::new(segment_path) {
+                        Ok(r) => r,
+                        Err(_) => continue, // Skip unreadable segments
+                    };
+
+                    segments_used.push(segment_path.clone());
+
+                    for result in reader.iter() {
+                        let (_lsn, record) = match result {
+                            Ok(r) => r,
+                            Err(_) => continue, // Skip corrupted records
+                        };
+
+                        records_replayed += 1;
+
+                        // Apply the record to the trie
+                        use crate::persistent_artrie::wal::WalRecord;
+                        match record {
+                            WalRecord::Insert { term, value } => {
+                                let term_str = String::from_utf8_lossy(&term);
+                                if let Some(value_bytes) = value {
+                                    if let Ok(v) = bincode::deserialize::<V>(&value_bytes) {
+                                        trie.insert_impl_no_wal_with_value(&term_str, v);
+                                        terms_recovered += 1;
+                                    }
+                                } else {
+                                    trie.insert_impl_no_wal(&term_str);
+                                    terms_recovered += 1;
+                                }
+                            }
+                            WalRecord::Increment { term, delta, result: val } => {
+                                // For increment, store the final result
+                                let term_str = String::from_utf8_lossy(&term);
+                                let value_bytes = bincode::serialize(&val).unwrap_or_default();
+                                if let Ok(v) = bincode::deserialize::<V>(&value_bytes) {
+                                    trie.insert_impl_no_wal_with_value(&term_str, v);
+                                    terms_recovered += 1;
+                                }
+                            }
+                            WalRecord::Upsert { term, value } => {
+                                let term_str = String::from_utf8_lossy(&term);
+                                if let Ok(v) = bincode::deserialize::<V>(&value) {
+                                    trie.insert_impl_no_wal_with_value(&term_str, v);
+                                    terms_recovered += 1;
+                                }
+                            }
+                            WalRecord::CompareAndSwap { term, new_value, success, .. } => {
+                                if success {
+                                    let term_str = String::from_utf8_lossy(&term);
+                                    if let Ok(v) = bincode::deserialize::<V>(&new_value) {
+                                        trie.insert_impl_no_wal_with_value(&term_str, v);
+                                        terms_recovered += 1;
+                                    }
+                                }
+                            }
+                            _ => {} // Skip transaction/checkpoint records
+                        }
+                    }
+                }
+
+                let duration_ms = start_time.elapsed().as_millis() as u64;
+
+                let report = RecoveryReport::rebuild_from_wal(
+                    path.to_path_buf(),
+                    corruption_reason,
+                    records_replayed,
+                    terms_recovered,
+                    segments_used,
+                    duration_ms,
+                );
+
+                Ok((trie, report))
+            }
+            Err(e) => {
+                // I/O error during corruption check
+                Err(PersistentARTrieError::InternalError {
+                    message: format!("Error during corruption check: {}", e),
+                })
+            }
+        }
     }
 
     /// Load root from disk given the root descriptor pointer
@@ -2307,6 +2722,231 @@ impl<V: DictionaryValue> DiskBackedCharTrieInner<V> {
         Ok(result)
     }
 
+    // ========================================================================
+    // Prefix Operations
+    // ========================================================================
+
+    /// Navigate to the node at the given prefix path.
+    ///
+    /// Returns `Ok(Some(node))` if the prefix exists, `Ok(None)` if it doesn't.
+    /// Returns `Err` if an I/O error occurs during lazy loading.
+    #[cfg(feature = "persistent-artrie")]
+    fn navigate_to_prefix(&self, prefix: &str) -> Result<Option<&CharTrieNodeInner<V>>> {
+        let root = match &self.root {
+            CharTrieRoot::Node(node) => node.as_ref(),
+            CharTrieRoot::Empty => return Ok(None),
+        };
+
+        let mut current = root;
+        for c in prefix.chars() {
+            match self.get_child_lazy(current, c)? {
+                Some(child) => current = child,
+                None => return Ok(None),
+            }
+        }
+
+        Ok(Some(current))
+    }
+
+    /// Collect all terms under a node via DFS traversal.
+    ///
+    /// This method eagerly collects terms. For memory efficiency when dealing
+    /// with large subtrees, use `iter_prefix` with batched processing instead.
+    #[cfg(feature = "persistent-artrie")]
+    fn collect_terms_under_node(
+        &self,
+        node: &CharTrieNodeInner<V>,
+        prefix: String,
+        terms: &mut Vec<String>,
+    ) -> Result<()> {
+        // If this node is a final state, add the current prefix as a term
+        if node.is_final() {
+            terms.push(prefix.clone());
+        }
+
+        // Recursively traverse children
+        for (c, child) in node.iter_children() {
+            let mut child_prefix = prefix.clone();
+            child_prefix.push(c);
+            self.collect_terms_under_node(child, child_prefix, terms)?;
+        }
+
+        Ok(())
+    }
+
+    /// Collect terms under a node with a limit for batched processing.
+    ///
+    /// Stops collecting after `limit` terms have been found.
+    #[cfg(feature = "persistent-artrie")]
+    fn collect_terms_under_node_limited(
+        &self,
+        node: &CharTrieNodeInner<V>,
+        prefix: String,
+        terms: &mut Vec<String>,
+        limit: usize,
+    ) -> Result<bool> {
+        if terms.len() >= limit {
+            return Ok(true); // Signal that we're full
+        }
+
+        // If this node is a final state, add the current prefix as a term
+        if node.is_final() {
+            terms.push(prefix.clone());
+            if terms.len() >= limit {
+                return Ok(true);
+            }
+        }
+
+        // Recursively traverse children
+        for (c, child) in node.iter_children() {
+            let mut child_prefix = prefix.clone();
+            child_prefix.push(c);
+            if self.collect_terms_under_node_limited(child, child_prefix, terms, limit)? {
+                return Ok(true);
+            }
+        }
+
+        Ok(false)
+    }
+
+    /// Collect terms with values under a node.
+    #[cfg(feature = "persistent-artrie")]
+    fn collect_terms_with_values_under_node(
+        &self,
+        node: &CharTrieNodeInner<V>,
+        prefix: String,
+        terms: &mut Vec<(String, V)>,
+    ) -> Result<()>
+    where
+        V: Clone,
+    {
+        // If this node is a final state with a value, add it
+        if node.is_final() {
+            if let Some(value) = &node.value {
+                terms.push((prefix.clone(), value.clone()));
+            }
+        }
+
+        // Recursively traverse children
+        for (c, child) in node.iter_children() {
+            let mut child_prefix = prefix.clone();
+            child_prefix.push(c);
+            self.collect_terms_with_values_under_node(child, child_prefix, terms)?;
+        }
+
+        Ok(())
+    }
+
+    /// Iterate over all terms with the given prefix.
+    ///
+    /// Returns `Ok(None)` if the prefix path doesn't exist in the trie.
+    /// Returns `Ok(Some(vec))` with all terms starting with the prefix.
+    ///
+    /// # Note
+    ///
+    /// This method collects all matching terms into a `Vec`. For very large
+    /// subtrees, consider using `remove_prefix_batched` which processes
+    /// terms in smaller batches.
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// let trie = DiskBackedCharTrieInner::open("data.artrie")?;
+    /// if let Some(terms) = trie.iter_prefix("app")? {
+    ///     for term in terms {
+    ///         println!("{}", term);
+    ///     }
+    /// }
+    /// ```
+    #[cfg(feature = "persistent-artrie")]
+    pub fn iter_prefix(&self, prefix: &str) -> Result<Option<Vec<String>>> {
+        let node = match self.navigate_to_prefix(prefix)? {
+            Some(n) => n,
+            None => return Ok(None),
+        };
+
+        let mut terms = Vec::new();
+        self.collect_terms_under_node(node, prefix.to_string(), &mut terms)?;
+        Ok(Some(terms))
+    }
+
+    /// Iterate over all (term, value) pairs with the given prefix.
+    ///
+    /// Returns `Ok(None)` if the prefix path doesn't exist in the trie.
+    /// Returns `Ok(Some(vec))` with all (term, value) pairs for terms starting with the prefix.
+    #[cfg(feature = "persistent-artrie")]
+    pub fn iter_prefix_with_values(&self, prefix: &str) -> Result<Option<Vec<(String, V)>>>
+    where
+        V: Clone,
+    {
+        let node = match self.navigate_to_prefix(prefix)? {
+            Some(n) => n,
+            None => return Ok(None),
+        };
+
+        let mut terms = Vec::new();
+        self.collect_terms_with_values_under_node(node, prefix.to_string(), &mut terms)?;
+        Ok(Some(terms))
+    }
+
+    /// Remove all terms with the given prefix.
+    ///
+    /// Uses a default batch size of 1024 to limit memory usage.
+    /// Each removal is logged to WAL individually for crash recovery safety.
+    ///
+    /// # Returns
+    ///
+    /// The number of terms removed.
+    #[cfg(feature = "persistent-artrie")]
+    pub fn remove_prefix(&mut self, prefix: &str) -> Result<usize> {
+        self.remove_prefix_batched(prefix, 1024)
+    }
+
+    /// Remove all terms with the given prefix using a custom batch size.
+    ///
+    /// Processes removals in batches to limit memory usage when dealing
+    /// with large subtrees. Each removal is logged to WAL individually.
+    ///
+    /// # Arguments
+    ///
+    /// * `prefix` - The prefix to match
+    /// * `batch_size` - Maximum terms to collect and remove per batch
+    ///
+    /// # Returns
+    ///
+    /// The number of terms removed.
+    #[cfg(feature = "persistent-artrie")]
+    pub fn remove_prefix_batched(&mut self, prefix: &str, batch_size: usize) -> Result<usize> {
+        let batch_size = batch_size.max(1);
+        let mut total_removed = 0;
+
+        loop {
+            // Collect a batch of terms matching the prefix
+            let batch: Vec<String> = {
+                let node = match self.navigate_to_prefix(prefix)? {
+                    Some(n) => n,
+                    None => break, // Prefix no longer exists
+                };
+
+                let mut terms = Vec::with_capacity(batch_size);
+                self.collect_terms_under_node_limited(node, prefix.to_string(), &mut terms, batch_size)?;
+                terms
+            };
+
+            if batch.is_empty() {
+                break;
+            }
+
+            // Remove each term in the batch (with WAL logging)
+            for term in batch {
+                if self.remove(&term)? {
+                    total_removed += 1;
+                }
+            }
+        }
+
+        Ok(total_removed)
+    }
+
     /// Sync changes to disk
     #[cfg(feature = "persistent-artrie")]
     pub fn sync(&mut self) -> Result<()> {
@@ -2553,14 +3193,30 @@ impl<V: DictionaryValue> DiskBackedCharTrieInner<V> {
     }
 
     /// Checkpoint: persist trie to disk and truncate WAL
+    ///
+    /// This is the verified checkpoint sequence that ensures data integrity
+    /// before truncating the WAL:
+    ///
+    /// 1. persist_to_disk() - serialize and sync data
+    /// 2. verify_checkpoint() - read back and verify header checksum
+    /// 3. WAL checkpoint record - mark checkpoint in WAL
+    /// 4. WAL sync - ensure checkpoint record is durable
+    /// 5. WAL truncate - only after verification passes
+    ///
+    /// If verification fails at step 2, the WAL is NOT truncated,
+    /// allowing recovery from the existing WAL on next open.
     #[cfg(feature = "persistent-artrie")]
     pub fn checkpoint(&mut self) -> Result<()> {
         use std::time::{SystemTime, UNIX_EPOCH};
 
-        // First, persist trie to disk
+        // Step 1: Persist trie to disk
         self.persist_to_disk()?;
 
-        // Write checkpoint record to WAL
+        // Step 2: Verify checkpoint - re-read header and verify checksum
+        // This ensures the sync() actually succeeded and data is durable
+        self.verify_checkpoint()?;
+
+        // Steps 3-5: WAL operations (only after verification passes)
         if let Some(ref wal_writer) = self.wal_writer {
             let timestamp = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
@@ -2572,42 +3228,103 @@ impl<V: DictionaryValue> DiskBackedCharTrieInner<V> {
             };
             #[cfg(feature = "parking_lot")]
             {
+                // Step 3: Write checkpoint record
                 wal_writer
                     .write()
                     .append(record)
                     .map_err(|e| PersistentARTrieError::WalError { reason: format!("{:?}", e) })?;
+                // Step 4: Sync WAL
                 wal_writer
                     .write()
                     .sync()
                     .map_err(|e| PersistentARTrieError::WalError { reason: format!("{:?}", e) })?;
-                // Truncate WAL after successful checkpoint - all operations are now persisted
-                wal_writer
-                    .write()
-                    .truncate()
-                    .map_err(|e| PersistentARTrieError::WalError { reason: format!("{:?}", e) })?;
+                // Step 5: Archive or truncate WAL (only after all verification passes)
+                if self.wal_config.archive_enabled {
+                    // rotate_to_archive handles archive dir creation and pruning internally
+                    wal_writer
+                        .write()
+                        .rotate_to_archive(&self.wal_config)
+                        .map_err(|e| PersistentARTrieError::WalError { reason: format!("{:?}", e) })?;
+                } else {
+                    wal_writer
+                        .write()
+                        .truncate()
+                        .map_err(|e| PersistentARTrieError::WalError { reason: format!("{:?}", e) })?;
+                }
             }
             #[cfg(not(feature = "parking_lot"))]
             {
+                // Step 3: Write checkpoint record
                 wal_writer
                     .write()
                     .expect("WAL lock")
                     .append(record)
                     .map_err(|e| PersistentARTrieError::WalError { reason: format!("{:?}", e) })?;
+                // Step 4: Sync WAL
                 wal_writer
                     .write()
                     .expect("WAL lock")
                     .sync()
                     .map_err(|e| PersistentARTrieError::WalError { reason: format!("{:?}", e) })?;
-                // Truncate WAL after successful checkpoint - all operations are now persisted
-                wal_writer
-                    .write()
-                    .expect("WAL lock")
-                    .truncate()
-                    .map_err(|e| PersistentARTrieError::WalError { reason: format!("{:?}", e) })?;
+                // Step 5: Archive or truncate WAL (only after all verification passes)
+                if self.wal_config.archive_enabled {
+                    // rotate_to_archive handles archive dir creation and pruning internally
+                    wal_writer
+                        .write()
+                        .expect("WAL lock")
+                        .rotate_to_archive(&self.wal_config)
+                        .map_err(|e| PersistentARTrieError::WalError { reason: format!("{:?}", e) })?;
+                } else {
+                    wal_writer
+                        .write()
+                        .expect("WAL lock")
+                        .truncate()
+                        .map_err(|e| PersistentARTrieError::WalError { reason: format!("{:?}", e) })?;
+                }
             }
         }
 
         self.dirty = false;
+        Ok(())
+    }
+
+    /// Verify checkpoint data integrity after persist_to_disk()
+    ///
+    /// Re-reads the file header from disk and verifies its checksum.
+    /// This ensures the fsync() actually succeeded and data is durable.
+    ///
+    /// Returns an error if verification fails - the WAL should NOT be
+    /// truncated in this case.
+    #[cfg(feature = "persistent-artrie")]
+    fn verify_checkpoint(&self) -> Result<()> {
+        let buffer_manager = self.buffer_manager.as_ref().ok_or_else(|| {
+            PersistentARTrieError::internal("No buffer manager for checkpoint verification")
+        })?;
+
+        // Re-read header from disk and verify checksum
+        #[cfg(feature = "parking_lot")]
+        let bm = buffer_manager.read();
+        #[cfg(not(feature = "parking_lot"))]
+        let bm = buffer_manager.read().map_err(|_| {
+            PersistentARTrieError::LockPoisoned {
+                resource: "buffer_manager".to_string(),
+            }
+        })?;
+
+        let dm = bm.disk_manager();
+
+        // Read header and verify checksum
+        let header = dm.read_header()?;
+        if !header.verify_checksum() {
+            return Err(PersistentARTrieError::CheckpointVerificationFailed {
+                reason: format!(
+                    "Header checksum mismatch after sync: stored={:#x}, computed={:#x}",
+                    header.checksum,
+                    header.compute_checksum()
+                ),
+            });
+        }
+
         Ok(())
     }
 
@@ -3027,34 +3744,125 @@ mod tests {
 
     #[test]
     fn test_file_header_roundtrip() {
-        let header = CharTrieFileHeader {
+        let mut header = CharTrieFileHeader {
             magic: CHAR_TRIE_MAGIC,
-            version: 1,
+            version: CHAR_HEADER_VERSION_V2,
             _reserved: [0; 3],
             root_ptr: 12345,
             entry_count: 67890,
             checkpoint_lsn: 111,
-            _padding: [0; 32],
+            header_checksum: 0,
+            _padding: [0; 28],
+        };
+        header.finalize_checksum();
+
+        let bytes = header.to_bytes();
+        let restored = CharTrieFileHeader::from_bytes(&bytes);
+
+        assert_eq!(restored.magic, CHAR_TRIE_MAGIC);
+        assert_eq!(restored.version, CHAR_HEADER_VERSION_V2);
+        assert_eq!(restored.root_ptr, 12345);
+        assert_eq!(restored.entry_count, 67890);
+        assert_eq!(restored.checkpoint_lsn, 111);
+        assert!(restored.verify_checksum());
+    }
+
+    #[test]
+    fn test_file_header_v1_roundtrip() {
+        // V1 headers have no checksum
+        let header = CharTrieFileHeader {
+            magic: CHAR_TRIE_MAGIC,
+            version: CHAR_HEADER_VERSION_V1,
+            _reserved: [0; 3],
+            root_ptr: 12345,
+            entry_count: 67890,
+            checkpoint_lsn: 111,
+            header_checksum: 0,
+            _padding: [0; 28],
         };
 
         let bytes = header.to_bytes();
         let restored = CharTrieFileHeader::from_bytes(&bytes);
 
         assert_eq!(restored.magic, CHAR_TRIE_MAGIC);
-        assert_eq!(restored.version, 1);
+        assert_eq!(restored.version, CHAR_HEADER_VERSION_V1);
         assert_eq!(restored.root_ptr, 12345);
-        assert_eq!(restored.entry_count, 67890);
-        assert_eq!(restored.checkpoint_lsn, 111);
+        assert!(!restored.has_checksum());
+        assert!(restored.verify_checksum()); // V1 always valid
+    }
+
+    #[test]
+    fn test_file_header_checksum() {
+        let mut header = CharTrieFileHeader::new();
+        header.root_ptr = 12345;
+        header.entry_count = 67890;
+
+        // Before finalize, checksum is 0
+        assert_eq!(header.header_checksum, 0);
+        assert!(!header.verify_checksum()); // Checksum doesn't match
+
+        // After finalize, checksum is valid
+        header.finalize_checksum();
+        assert_ne!(header.header_checksum, 0);
+        assert!(header.verify_checksum());
+
+        // Modify a field and checksum becomes invalid
+        header.root_ptr = 99999;
+        assert!(!header.verify_checksum());
+
+        // Finalize again to fix
+        header.finalize_checksum();
+        assert!(header.verify_checksum());
     }
 
     #[cfg(feature = "persistent-artrie")]
     #[test]
     fn test_file_header_validation() {
         let mut header = CharTrieFileHeader::new();
+        header.finalize_checksum();
         assert!(header.validate().is_ok());
 
+        // Invalid magic
         header.magic = *b"XXXX";
         assert!(header.validate().is_err());
+
+        // Restore magic, corrupt checksum
+        header.magic = CHAR_TRIE_MAGIC;
+        header.header_checksum = 0xDEADBEEF;
+        assert!(header.validate().is_err());
+    }
+
+    #[cfg(feature = "persistent-artrie")]
+    #[test]
+    fn test_file_header_from_bytes_verified() {
+        let mut header = CharTrieFileHeader::new();
+        header.root_ptr = 12345;
+        header.finalize_checksum();
+
+        let bytes = header.to_bytes();
+
+        // Valid bytes should succeed
+        let restored = CharTrieFileHeader::from_bytes_verified(&bytes);
+        assert!(restored.is_ok());
+
+        // Corrupt bytes should fail
+        let mut corrupted = bytes;
+        corrupted[8] = 0xFF; // Corrupt root_ptr
+        let result = CharTrieFileHeader::from_bytes_verified(&corrupted);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_file_header_upgrade_to_v2() {
+        let mut header = CharTrieFileHeader::new_v1();
+        assert!(!header.has_checksum());
+
+        header.root_ptr = 12345;
+        header.upgrade_to_v2();
+
+        assert!(header.has_checksum());
+        assert!(header.verify_checksum());
+        assert_eq!(header.version, CHAR_HEADER_VERSION_V2);
     }
 
     #[test]

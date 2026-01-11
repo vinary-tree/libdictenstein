@@ -51,6 +51,9 @@ pub const ARENA_VERSION: u16 = 1;
 /// Arena format version 2 with varint directory
 pub const ARENA_VERSION_V2: u16 = 2;
 
+/// Arena format version 3 with data checksums for crash recovery
+pub const ARENA_VERSION_V3: u16 = 3;
+
 /// Header size in bytes
 pub const HEADER_SIZE: usize = 64;
 
@@ -63,7 +66,51 @@ pub const MIN_FREE_SPACE: usize = 64;
 /// Flag indicating varint directory format
 pub const FLAG_VARINT_DIRECTORY: u16 = 0x0001;
 
+/// Result of arena checksum validation
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ArenaValidation {
+    /// Arena checksums are valid (or V1/V2 arena without checksums)
+    Valid,
+    /// Arena header checksum mismatch
+    HeaderChecksumMismatch { stored: u32, computed: u32 },
+    /// Arena data checksum mismatch
+    DataChecksumMismatch { stored: u32, computed: u32 },
+    /// Arena magic number is invalid
+    InvalidMagic,
+    /// Arena data is truncated
+    Truncated { expected_min: usize, actual: usize },
+}
+
+impl ArenaValidation {
+    /// Returns true if the arena is valid
+    pub fn is_valid(&self) -> bool {
+        matches!(self, ArenaValidation::Valid)
+    }
+
+    /// Returns true if the arena is corrupted (checksum mismatch or invalid magic)
+    pub fn is_corrupted(&self) -> bool {
+        matches!(
+            self,
+            ArenaValidation::HeaderChecksumMismatch { .. }
+                | ArenaValidation::DataChecksumMismatch { .. }
+                | ArenaValidation::InvalidMagic
+                | ArenaValidation::Truncated { .. }
+        )
+    }
+}
+
 /// Arena header structure (64 bytes)
+///
+/// Layout:
+/// - bytes 0-7: magic (u64)
+/// - bytes 8-9: version (u16)
+/// - bytes 10-11: flags (u16)
+/// - bytes 12-15: node_count (u32)
+/// - bytes 16-19: free_offset (u32)
+/// - bytes 20-23: directory_start (u32)
+/// - bytes 24-27: header_checksum (u32) - CRC32 of bytes 0-23
+/// - bytes 28-31: data_checksum (u32) - CRC32 of data area (HEADER_SIZE to free_offset)
+/// - bytes 32-63: reserved (32 bytes)
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct ArenaHeader {
@@ -79,15 +126,33 @@ pub struct ArenaHeader {
     pub free_offset: u32,
     /// Offset where directory starts (grows downward from block end)
     pub directory_start: u32,
-    /// CRC32 checksum of arena data
-    pub checksum: u32,
+    /// CRC32 checksum of header fields (bytes 0-23)
+    pub header_checksum: u32,
+    /// CRC32 checksum of data area (bytes HEADER_SIZE to free_offset)
+    /// V3+ only - zero for older versions
+    pub data_checksum: u32,
     /// Reserved for future use
-    pub reserved: [u8; 28],
+    pub reserved: [u8; 24],
 }
 
 impl ArenaHeader {
-    /// Create a new arena header
+    /// Create a new arena header (V3 format with checksums)
     pub fn new(block_size: usize) -> Self {
+        Self {
+            magic: ARENA_MAGIC,
+            version: ARENA_VERSION_V3,
+            flags: 0,
+            node_count: 0,
+            free_offset: HEADER_SIZE as u32,
+            directory_start: block_size as u32,
+            header_checksum: 0,
+            data_checksum: 0,
+            reserved: [0u8; 24],
+        }
+    }
+
+    /// Create a new V1 arena header (for backward compatibility)
+    pub fn new_v1(block_size: usize) -> Self {
         Self {
             magic: ARENA_MAGIC,
             version: ARENA_VERSION,
@@ -95,8 +160,9 @@ impl ArenaHeader {
             node_count: 0,
             free_offset: HEADER_SIZE as u32,
             directory_start: block_size as u32,
-            checksum: 0,
-            reserved: [0u8; 28],
+            header_checksum: 0,
+            data_checksum: 0,
+            reserved: [0u8; 24],
         }
     }
 
@@ -117,7 +183,7 @@ impl ArenaHeader {
         }
 
         let version = u16::from_le_bytes(bytes[8..10].try_into().expect("2 bytes"));
-        if version != ARENA_VERSION && version != ARENA_VERSION_V2 {
+        if version != ARENA_VERSION && version != ARENA_VERSION_V2 && version != ARENA_VERSION_V3 {
             return Err(PersistentARTrieError::corrupted(&format!(
                 "Unsupported arena version: {}",
                 version
@@ -128,10 +194,22 @@ impl ArenaHeader {
         let node_count = u32::from_le_bytes(bytes[12..16].try_into().expect("4 bytes"));
         let free_offset = u32::from_le_bytes(bytes[16..20].try_into().expect("4 bytes"));
         let directory_start = u32::from_le_bytes(bytes[20..24].try_into().expect("4 bytes"));
-        let checksum = u32::from_le_bytes(bytes[24..28].try_into().expect("4 bytes"));
+        let header_checksum = u32::from_le_bytes(bytes[24..28].try_into().expect("4 bytes"));
 
-        let mut reserved = [0u8; 28];
-        reserved.copy_from_slice(&bytes[28..56]);
+        // V3+ has data_checksum, older versions have it as part of reserved (read as 0)
+        let data_checksum = if version >= ARENA_VERSION_V3 {
+            u32::from_le_bytes(bytes[28..32].try_into().expect("4 bytes"))
+        } else {
+            0
+        };
+
+        let mut reserved = [0u8; 24];
+        if version >= ARENA_VERSION_V3 {
+            reserved.copy_from_slice(&bytes[32..56]);
+        } else {
+            // V1/V2: reserved starts at 28, copy what fits
+            reserved[..24].copy_from_slice(&bytes[32..56]);
+        }
 
         Ok(Self {
             magic,
@@ -140,7 +218,8 @@ impl ArenaHeader {
             node_count,
             free_offset,
             directory_start,
-            checksum,
+            header_checksum,
+            data_checksum,
             reserved,
         })
     }
@@ -153,8 +232,11 @@ impl ArenaHeader {
         out[12..16].copy_from_slice(&self.node_count.to_le_bytes());
         out[16..20].copy_from_slice(&self.free_offset.to_le_bytes());
         out[20..24].copy_from_slice(&self.directory_start.to_le_bytes());
-        out[24..28].copy_from_slice(&self.checksum.to_le_bytes());
-        out[28..56].copy_from_slice(&self.reserved);
+        out[24..28].copy_from_slice(&self.header_checksum.to_le_bytes());
+        out[28..32].copy_from_slice(&self.data_checksum.to_le_bytes());
+        out[32..56].copy_from_slice(&self.reserved);
+        // Zero out padding (bytes 56-63)
+        out[56..64].fill(0);
     }
 
     /// Calculate available space for allocation
@@ -165,6 +247,71 @@ impl ArenaHeader {
             (self.directory_start - self.free_offset) as usize
         }
     }
+
+    /// Check if this header version supports data checksums
+    pub fn has_data_checksum(&self) -> bool {
+        self.version >= ARENA_VERSION_V3
+    }
+
+    /// Compute the header checksum (CRC32 of bytes 0-23)
+    pub fn compute_header_checksum(&self) -> u32 {
+        let mut buf = [0u8; 24];
+        buf[0..8].copy_from_slice(&self.magic.to_le_bytes());
+        buf[8..10].copy_from_slice(&self.version.to_le_bytes());
+        buf[10..12].copy_from_slice(&self.flags.to_le_bytes());
+        buf[12..16].copy_from_slice(&self.node_count.to_le_bytes());
+        buf[16..20].copy_from_slice(&self.free_offset.to_le_bytes());
+        buf[20..24].copy_from_slice(&self.directory_start.to_le_bytes());
+        crc32(&buf)
+    }
+
+    /// Verify the header checksum
+    pub fn verify_header_checksum(&self) -> bool {
+        self.header_checksum == self.compute_header_checksum()
+    }
+
+    /// Compute the data checksum (CRC32 of bytes HEADER_SIZE to free_offset)
+    pub fn compute_data_checksum(&self, data: &[u8]) -> u32 {
+        let start = HEADER_SIZE;
+        let end = self.free_offset as usize;
+        if end <= start || end > data.len() {
+            return 0;
+        }
+        crc32(&data[start..end])
+    }
+
+    /// Verify the data checksum
+    pub fn verify_data_checksum(&self, data: &[u8]) -> bool {
+        if !self.has_data_checksum() {
+            // V1/V2 don't have data checksums, skip verification
+            return true;
+        }
+        self.data_checksum == self.compute_data_checksum(data)
+    }
+
+    /// Update both checksums based on the provided data buffer
+    pub fn update_checksums(&mut self, data: &[u8]) {
+        self.header_checksum = self.compute_header_checksum();
+        if self.version >= ARENA_VERSION_V3 {
+            self.data_checksum = self.compute_data_checksum(data);
+        }
+    }
+}
+
+/// CRC32 checksum (IEEE polynomial) for data integrity verification
+fn crc32(data: &[u8]) -> u32 {
+    let mut crc: u32 = 0xFFFFFFFF;
+    for byte in data {
+        crc ^= *byte as u32;
+        for _ in 0..8 {
+            if crc & 1 != 0 {
+                crc = (crc >> 1) ^ 0xEDB88320;
+            } else {
+                crc >>= 1;
+            }
+        }
+    }
+    !crc
 }
 
 /// Slot entry in the directory (8 bytes)
@@ -198,6 +345,7 @@ impl SlotEntry {
 ///
 /// This arena uses bump allocation for data (grows upward) and
 /// a directory of slots (grows downward) to track allocations.
+#[derive(Debug)]
 pub struct CharNodeArena {
     /// The raw data buffer (typically BLOCK_SIZE = 256KB)
     data: Vec<u8>,
@@ -233,15 +381,47 @@ impl CharNodeArena {
     }
 
     /// Load an arena from raw bytes
+    ///
+    /// For V3+ arenas, this verifies both header and data checksums.
+    /// Returns an error if checksums don't match (corruption detected).
     pub fn from_bytes(bytes: &[u8], block_id: u32) -> Result<Self> {
+        Self::from_bytes_impl(bytes, block_id, true)
+    }
+
+    /// Load an arena from raw bytes without checksum verification
+    ///
+    /// Use this for recovery scenarios where you want to load potentially
+    /// corrupted arenas.
+    pub fn from_bytes_unchecked(bytes: &[u8], block_id: u32) -> Result<Self> {
+        Self::from_bytes_impl(bytes, block_id, false)
+    }
+
+    fn from_bytes_impl(bytes: &[u8], block_id: u32, verify_checksums: bool) -> Result<Self> {
         if bytes.len() < HEADER_SIZE {
             return Err(PersistentARTrieError::corrupted("Arena data too small"));
         }
 
         let header = ArenaHeader::from_bytes(bytes)?;
-        let data = bytes.to_vec();
 
-        // Calculate max_data_offset from the header
+        // Verify checksums for V3+ arenas
+        if verify_checksums && header.has_data_checksum() {
+            if !header.verify_header_checksum() {
+                return Err(PersistentARTrieError::corrupted(&format!(
+                    "Arena header checksum mismatch: stored={:#x}, computed={:#x}",
+                    header.header_checksum,
+                    header.compute_header_checksum()
+                )));
+            }
+            if !header.verify_data_checksum(bytes) {
+                return Err(PersistentARTrieError::corrupted(&format!(
+                    "Arena data checksum mismatch: stored={:#x}, computed={:#x}",
+                    header.data_checksum,
+                    header.compute_data_checksum(bytes)
+                )));
+            }
+        }
+
+        let data = bytes.to_vec();
         let max_data_offset = header.free_offset;
 
         Ok(Self {
@@ -251,6 +431,45 @@ impl CharNodeArena {
             dirty: false,
             max_data_offset,
         })
+    }
+
+    /// Validate the arena's checksums without loading
+    ///
+    /// Returns Ok(true) if checksums are valid, Ok(false) if invalid,
+    /// or Err if the arena cannot be parsed at all.
+    pub fn validate_checksums(bytes: &[u8]) -> Result<ArenaValidation> {
+        if bytes.len() < HEADER_SIZE {
+            return Ok(ArenaValidation::Truncated {
+                expected_min: HEADER_SIZE,
+                actual: bytes.len(),
+            });
+        }
+
+        let header = match ArenaHeader::from_bytes(bytes) {
+            Ok(h) => h,
+            Err(_) => return Ok(ArenaValidation::InvalidMagic),
+        };
+
+        // V1/V2 arenas don't have checksums
+        if !header.has_data_checksum() {
+            return Ok(ArenaValidation::Valid);
+        }
+
+        if !header.verify_header_checksum() {
+            return Ok(ArenaValidation::HeaderChecksumMismatch {
+                stored: header.header_checksum,
+                computed: header.compute_header_checksum(),
+            });
+        }
+
+        if !header.verify_data_checksum(bytes) {
+            return Ok(ArenaValidation::DataChecksumMismatch {
+                stored: header.data_checksum,
+                computed: header.compute_data_checksum(bytes),
+            });
+        }
+
+        Ok(ArenaValidation::Valid)
     }
 
     /// Get the raw bytes of this arena
@@ -415,6 +634,37 @@ impl CharNodeArena {
     /// Get the current free offset (next allocation position)
     pub fn free_offset(&self) -> u32 {
         self.header.free_offset
+    }
+
+    /// Finalize the arena for persistence by computing and storing checksums
+    ///
+    /// Call this before writing the arena to disk to ensure checksums are up-to-date.
+    /// For V3+ arenas, this computes both header and data checksums.
+    pub fn finalize_checksums(&mut self) {
+        if self.header.version >= ARENA_VERSION_V3 {
+            // Compute data checksum first (before header checksum changes)
+            self.header.data_checksum = self.header.compute_data_checksum(&self.data);
+            // Compute header checksum
+            self.header.header_checksum = self.header.compute_header_checksum();
+            // Write updated header to data buffer
+            self.header.to_bytes(&mut self.data[0..HEADER_SIZE]);
+        }
+    }
+
+    /// Get the arena's header (read-only)
+    pub fn header(&self) -> &ArenaHeader {
+        &self.header
+    }
+
+    /// Upgrade arena to V3 format with checksums
+    ///
+    /// This allows converting V1/V2 arenas to V3 format to enable checksum protection.
+    pub fn upgrade_to_v3(&mut self) {
+        if self.header.version < ARENA_VERSION_V3 {
+            self.header.version = ARENA_VERSION_V3;
+            self.finalize_checksums();
+            self.dirty = true;
+        }
     }
 }
 
@@ -717,6 +967,9 @@ mod tests {
         let slot1 = arena.allocate(data1).unwrap();
         let slot2 = arena.allocate(data2).unwrap();
 
+        // Finalize checksums before serialization (V3 requirement)
+        arena.finalize_checksums();
+
         // Serialize and deserialize
         let bytes = arena.as_bytes().to_vec();
         let loaded = CharNodeArena::from_bytes(&bytes, 0).expect("load should succeed");
@@ -855,5 +1108,162 @@ mod tests {
         assert_eq!(read1.len, entry1.len);
         assert_eq!(read2.offset, entry2.offset);
         assert_eq!(read2.len, entry2.len);
+    }
+
+    // ==========================================================================
+    // V3 Arena Checksum Tests
+    // ==========================================================================
+
+    #[test]
+    fn test_crc32_known_values() {
+        // Test CRC32 against known values
+        let data = b"hello world";
+        let crc = crc32(data);
+        assert_eq!(crc, 0x0D4A1185); // Known CRC32 IEEE value
+    }
+
+    #[test]
+    fn test_arena_v3_creation_has_checksums() {
+        let arena = CharNodeArena::new(4096);
+        assert_eq!(arena.header().version, ARENA_VERSION_V3);
+        assert!(arena.header().has_data_checksum());
+    }
+
+    #[test]
+    fn test_arena_checksum_finalize_and_verify() {
+        let mut arena = CharNodeArena::new(4096);
+
+        // Allocate some data
+        arena.allocate(b"hello world").unwrap();
+        arena.allocate(b"test data 123").unwrap();
+
+        // Finalize checksums
+        arena.finalize_checksums();
+
+        // Verify checksums are valid
+        let bytes = arena.as_bytes();
+        let header = ArenaHeader::from_bytes(bytes).unwrap();
+        assert!(header.verify_header_checksum());
+        assert!(header.verify_data_checksum(bytes));
+    }
+
+    #[test]
+    fn test_arena_checksum_detects_header_corruption() {
+        let mut arena = CharNodeArena::new(4096);
+        arena.allocate(b"test data").unwrap();
+        arena.finalize_checksums();
+
+        // Corrupt the header (change node_count)
+        let mut bytes = arena.as_bytes().to_vec();
+        bytes[12] = 0xFF; // Corrupt node_count
+
+        // Verify detection
+        let validation = CharNodeArena::validate_checksums(&bytes).unwrap();
+        assert!(matches!(validation, ArenaValidation::HeaderChecksumMismatch { .. }));
+    }
+
+    #[test]
+    fn test_arena_checksum_detects_data_corruption() {
+        let mut arena = CharNodeArena::new(4096);
+        arena.allocate(b"test data").unwrap();
+        arena.finalize_checksums();
+
+        // Corrupt the data area
+        let mut bytes = arena.as_bytes().to_vec();
+        bytes[HEADER_SIZE + 5] ^= 0xFF; // Flip some bits in data
+
+        // Verify detection
+        let validation = CharNodeArena::validate_checksums(&bytes).unwrap();
+        assert!(matches!(validation, ArenaValidation::DataChecksumMismatch { .. }));
+    }
+
+    #[test]
+    fn test_arena_from_bytes_rejects_corrupted() {
+        let mut arena = CharNodeArena::new(4096);
+        arena.allocate(b"test data").unwrap();
+        arena.finalize_checksums();
+
+        // Corrupt the data
+        let mut bytes = arena.as_bytes().to_vec();
+        bytes[HEADER_SIZE + 2] ^= 0xFF;
+
+        // from_bytes should fail
+        let result = CharNodeArena::from_bytes(&bytes, 0);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("checksum"));
+    }
+
+    #[test]
+    fn test_arena_from_bytes_unchecked_allows_corrupted() {
+        let mut arena = CharNodeArena::new(4096);
+        arena.allocate(b"test data").unwrap();
+        arena.finalize_checksums();
+
+        // Corrupt the data
+        let mut bytes = arena.as_bytes().to_vec();
+        bytes[HEADER_SIZE + 2] ^= 0xFF;
+
+        // from_bytes_unchecked should succeed (for recovery)
+        let result = CharNodeArena::from_bytes_unchecked(&bytes, 0);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_arena_serialization_with_checksums() {
+        let mut arena = CharNodeArena::new(4096);
+
+        let data1 = b"test data 1";
+        let data2 = b"test data 2 longer";
+        let slot1 = arena.allocate(data1).unwrap();
+        let slot2 = arena.allocate(data2).unwrap();
+
+        // Finalize checksums before serialization
+        arena.finalize_checksums();
+
+        // Serialize and deserialize
+        let bytes = arena.as_bytes().to_vec();
+        let loaded = CharNodeArena::from_bytes(&bytes, 0).expect("load should succeed");
+
+        assert_eq!(loaded.node_count(), 2);
+        assert_eq!(loaded.read(slot1).unwrap(), data1);
+        assert_eq!(loaded.read(slot2).unwrap(), data2);
+    }
+
+    #[test]
+    fn test_arena_upgrade_to_v3() {
+        // Create a V1-style arena header manually
+        let mut arena = CharNodeArena::new(4096);
+
+        // Downgrade to V1 for testing
+        arena.header.version = ARENA_VERSION;
+        arena.header.header_checksum = 0;
+        arena.header.data_checksum = 0;
+        arena.header.to_bytes(&mut arena.data[0..HEADER_SIZE]);
+
+        assert!(!arena.header().has_data_checksum());
+
+        // Upgrade to V3
+        arena.upgrade_to_v3();
+
+        assert_eq!(arena.header().version, ARENA_VERSION_V3);
+        assert!(arena.header().has_data_checksum());
+        assert!(arena.header().verify_header_checksum());
+    }
+
+    #[test]
+    fn test_arena_validation_truncated() {
+        let bytes = vec![0u8; 32]; // Too small for header
+        let validation = CharNodeArena::validate_checksums(&bytes).unwrap();
+        assert!(matches!(validation, ArenaValidation::Truncated { expected_min: 64, actual: 32 }));
+    }
+
+    #[test]
+    fn test_arena_validation_invalid_magic() {
+        let mut bytes = vec![0u8; 4096];
+        // Write invalid magic
+        bytes[0..8].copy_from_slice(&[0xFF; 8]);
+
+        let validation = CharNodeArena::validate_checksums(&bytes).unwrap();
+        assert!(matches!(validation, ArenaValidation::InvalidMagic));
     }
 }

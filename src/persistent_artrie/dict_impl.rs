@@ -479,6 +479,197 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
         Ok(dict)
     }
 
+    /// Open an existing persistent dictionary with automatic corruption detection and recovery.
+    ///
+    /// This is the recommended way to open a trie that may have been corrupted
+    /// by a crash (OOM kill, power failure, etc.).
+    ///
+    /// # Recovery Process
+    ///
+    /// 1. **Check if file exists** - If not, create a new trie
+    /// 2. **Detect corruption** - Check header checksum, arena checksums
+    /// 3. **If corrupted** - Rebuild from WAL archive segments
+    /// 4. **Return trie with recovery report**
+    ///
+    /// # Arguments
+    ///
+    /// * `path` - Path to the dictionary file
+    ///
+    /// # Returns
+    ///
+    /// Tuple of (trie, recovery_report) indicating what recovery was performed.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// use libdictenstein::persistent_artrie::PersistentARTrie;
+    ///
+    /// let (dict, report) = PersistentARTrie::<i64>::open_with_recovery("data.part")?;
+    ///
+    /// if !report.mode.is_normal() {
+    ///     eprintln!("Recovered from crash: {} records replayed", report.records_replayed);
+    /// }
+    /// ```
+    #[cfg(feature = "persistent-artrie")]
+    pub fn open_with_recovery<P: AsRef<Path>>(path: P) -> Result<(Self, super::recovery::RecoveryReport)> {
+        use super::wal::WalConfig;
+        Self::open_with_recovery_config(path, WalConfig::default())
+    }
+
+    /// Open with recovery and custom WAL configuration.
+    ///
+    /// Same as `open_with_recovery()` but allows specifying custom WAL settings.
+    ///
+    /// # Arguments
+    ///
+    /// * `path` - Path to the dictionary file
+    /// * `config` - WAL configuration for archive mode, segment limits, etc.
+    ///
+    /// # Returns
+    ///
+    /// Tuple of (trie, recovery_report) indicating what recovery was performed.
+    #[cfg(feature = "persistent-artrie")]
+    pub fn open_with_recovery_config<P: AsRef<Path>>(
+        path: P,
+        config: super::wal::WalConfig,
+    ) -> Result<(Self, super::recovery::RecoveryReport)> {
+        use super::recovery::{
+            detect_corruption, find_wal_archive_segments, RecoveryReport,
+        };
+        use super::wal::{WalReader, WalRecord};
+        use std::time::Instant;
+
+        let path = path.as_ref();
+        let start_time = Instant::now();
+
+        // Check if file exists
+        if !path.exists() {
+            // No file - create new and return CreatedNew report
+            let trie = Self::create(path)?;
+            return Ok((trie, RecoveryReport::created_new()));
+        }
+
+        // Check for corruption
+        match detect_corruption(path, true) {
+            Ok(None) => {
+                // No corruption detected - open normally
+                let trie = Self::open(path)?;
+                Ok((trie, RecoveryReport::normal()))
+            }
+            Ok(Some(corruption)) => {
+                // Corruption detected - attempt recovery from WAL archives
+                let corruption_reason = corruption.to_string();
+
+                // Find archive directory
+                let archive_dir = path.parent().unwrap_or(Path::new(".")).join(&config.archive_dir);
+
+                // Find WAL archive segments
+                let segments = find_wal_archive_segments(&archive_dir);
+
+                if segments.is_empty() {
+                    // No archive segments - can't recover
+                    return Err(PersistentARTrieError::RecoveryError {
+                        reason: format!(
+                            "Corruption detected ({}) but no WAL archive segments found in {:?}",
+                            corruption_reason, archive_dir
+                        ),
+                    });
+                }
+
+                // Remove corrupted file
+                let _ = std::fs::remove_file(path);
+
+                // Also remove current WAL (we'll rebuild from archives)
+                let wal_path = path.with_extension("wal");
+                let _ = std::fs::remove_file(&wal_path);
+
+                // Create fresh trie
+                let trie = Self::create(path)?;
+
+                // Rebuild from WAL archive segments
+                let mut records_replayed: u64 = 0;
+                let mut terms_recovered: u64 = 0;
+                let mut segments_used = Vec::new();
+
+                for segment_path in &segments {
+                    let reader = match WalReader::new(segment_path) {
+                        Ok(r) => r,
+                        Err(_) => continue, // Skip unreadable segments
+                    };
+
+                    segments_used.push(segment_path.clone());
+
+                    for result in reader.iter() {
+                        let (_lsn, record) = match result {
+                            Ok(r) => r,
+                            Err(_) => continue, // Skip corrupted records
+                        };
+
+                        records_replayed += 1;
+
+                        // Apply the record to the trie
+                        match record {
+                            WalRecord::Insert { term, value } => {
+                                // Deserialize value if present
+                                let deserialized: Option<V> = value.and_then(|bytes| {
+                                    bincode::deserialize(&bytes).ok()
+                                });
+                                let mut inner = trie.inner.write();
+                                inner.insert_impl_no_wal(&term, deserialized);
+                                terms_recovered += 1;
+                            }
+                            WalRecord::Increment { term, delta: _, result: val } => {
+                                // For increment, store the final result
+                                let value_bytes = val.to_le_bytes();
+                                if let Ok(v) = bincode::deserialize::<V>(&value_bytes) {
+                                    let mut inner = trie.inner.write();
+                                    inner.upsert_impl_no_wal(&term, v);
+                                    terms_recovered += 1;
+                                }
+                            }
+                            WalRecord::Upsert { term, value } => {
+                                if let Ok(v) = bincode::deserialize::<V>(&value) {
+                                    let mut inner = trie.inner.write();
+                                    inner.upsert_impl_no_wal(&term, v);
+                                    terms_recovered += 1;
+                                }
+                            }
+                            WalRecord::CompareAndSwap { term, new_value, success, .. } => {
+                                if success {
+                                    if let Ok(v) = bincode::deserialize::<V>(&new_value) {
+                                        let mut inner = trie.inner.write();
+                                        inner.upsert_impl_no_wal(&term, v);
+                                        terms_recovered += 1;
+                                    }
+                                }
+                            }
+                            _ => {} // Skip transaction/checkpoint records
+                        }
+                    }
+                }
+
+                let duration_ms = start_time.elapsed().as_millis() as u64;
+
+                let report = RecoveryReport::rebuild_from_wal(
+                    path.to_path_buf(),
+                    corruption_reason,
+                    records_replayed,
+                    terms_recovered,
+                    segments_used,
+                    duration_ms,
+                );
+
+                Ok((trie, report))
+            }
+            Err(e) => {
+                // I/O error during corruption check
+                Err(PersistentARTrieError::InternalError {
+                    message: format!("Error during corruption check: {}", e),
+                })
+            }
+        }
+    }
+
     /// Load the trie root from disk.
     ///
     /// Reads the root descriptor block and deserializes the trie structure.
@@ -1217,6 +1408,103 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
     pub fn remove(&mut self, term: &str) -> bool {
         let mut inner = self.inner.write();
         inner.remove_impl(term.as_bytes())
+    }
+
+    /// Remove all terms with the given prefix (batched for memory efficiency).
+    ///
+    /// Returns the number of terms removed. Each removal is logged to WAL
+    /// individually for crash recovery safety (no batch WAL record type).
+    ///
+    /// This method processes removals in batches to limit memory usage to
+    /// O(batch_size) regardless of how many terms match the prefix. This is
+    /// important for large tries (e.g., language models) where a prefix might
+    /// match millions of terms.
+    ///
+    /// # Arguments
+    ///
+    /// * `prefix` - The byte prefix of terms to remove
+    ///
+    /// # Returns
+    ///
+    /// The number of terms that were removed.
+    ///
+    /// # Memory Usage
+    ///
+    /// Uses O(1024) memory by default via batched processing. For custom
+    /// batch sizes, use `remove_prefix_batched()`.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// use libdictenstein::persistent_artrie::PersistentARTrie;
+    ///
+    /// let mut dict: PersistentARTrie<()> = PersistentARTrie::new();
+    /// dict.insert("app");
+    /// dict.insert("apple");
+    /// dict.insert("application");
+    /// dict.insert("banana");
+    ///
+    /// let count = dict.remove_prefix(b"app");
+    /// assert_eq!(count, 3); // Removed "app", "apple", "application"
+    /// assert!(!dict.contains("apple"));
+    /// assert!(dict.contains("banana"));
+    /// ```
+    pub fn remove_prefix(&mut self, prefix: &[u8]) -> usize {
+        // Use default batch size of 1024 for good balance of memory and efficiency
+        self.remove_prefix_batched(prefix, 1024)
+    }
+
+    /// Remove all terms with the given prefix using a custom batch size.
+    ///
+    /// This method allows fine-tuning the memory/efficiency trade-off:
+    /// - Smaller batch_size = less memory, more iterations
+    /// - Larger batch_size = more memory, fewer iterations
+    ///
+    /// # Arguments
+    ///
+    /// * `prefix` - The byte prefix of terms to remove
+    /// * `batch_size` - Maximum number of terms to collect per iteration
+    ///
+    /// # Returns
+    ///
+    /// The number of terms that were removed.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// use libdictenstein::persistent_artrie::PersistentARTrie;
+    ///
+    /// let mut dict: PersistentARTrie<()> = PersistentARTrie::new();
+    /// // ... insert many terms with prefix "old_" ...
+    ///
+    /// // Use small batch size for memory-constrained environments
+    /// let count = dict.remove_prefix_batched(b"old_", 100);
+    /// ```
+    pub fn remove_prefix_batched(&mut self, prefix: &[u8], batch_size: usize) -> usize {
+        let batch_size = batch_size.max(1); // Ensure at least 1
+        let mut total_removed = 0;
+
+        loop {
+            // Collect a batch of terms to remove
+            let batch: Vec<Vec<u8>> = self
+                .iter_prefix(prefix)
+                .map(|iter| iter.take(batch_size).collect())
+                .unwrap_or_default();
+
+            if batch.is_empty() {
+                break;
+            }
+
+            // Remove the batch
+            let mut inner = self.inner.write();
+            for term in batch {
+                if inner.remove_impl(&term) {
+                    total_removed += 1;
+                }
+            }
+        }
+
+        total_removed
     }
 
     /// Check if the dictionary is dirty (has uncommitted changes)
@@ -2899,6 +3187,92 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
     pub fn iter_strings(&self) -> impl Iterator<Item = String> + '_ {
         self.iter()
             .filter_map(|bytes| String::from_utf8(bytes).ok())
+    }
+
+    /// Iterate over all terms with the given prefix.
+    ///
+    /// Returns `None` if the prefix path doesn't exist in the trie.
+    /// Returns `Some(iterator)` that yields all terms starting with the prefix.
+    ///
+    /// Uses the zipper-based `PrefixZipper` trait for O(k) navigation to the prefix,
+    /// followed by O(m) iteration over matching terms.
+    ///
+    /// # Arguments
+    ///
+    /// * `prefix` - The byte prefix to search for
+    ///
+    /// # Returns
+    ///
+    /// * `Some(impl Iterator<Item = Vec<u8>>)` - Iterator over matching terms
+    /// * `None` - If no terms with this prefix exist
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// use libdictenstein::persistent_artrie::PersistentARTrie;
+    ///
+    /// let mut dict: PersistentARTrie<()> = PersistentARTrie::new();
+    /// dict.insert("apple");
+    /// dict.insert("application");
+    /// dict.insert("banana");
+    ///
+    /// if let Some(iter) = dict.iter_prefix(b"app") {
+    ///     for term in iter {
+    ///         println!("{}", String::from_utf8_lossy(&term));
+    ///     }
+    ///     // Prints: "apple" and "application"
+    /// }
+    /// ```
+    pub fn iter_prefix(&self, prefix: &[u8]) -> Option<impl Iterator<Item = Vec<u8>> + '_> {
+        use crate::prefix_zipper::PrefixZipper;
+        use super::zipper::PersistentARTrieZipper;
+
+        let zipper = PersistentARTrieZipper::new_from_dict(self);
+        let prefix_iter = zipper.with_prefix(prefix)?;
+        Some(prefix_iter.map(|(path, _)| path))
+    }
+
+    /// Iterate over all (term, value) pairs with the given prefix.
+    ///
+    /// Returns `None` if the prefix path doesn't exist in the trie.
+    /// Returns `Some(iterator)` that yields all (term, value) pairs where term starts with prefix.
+    ///
+    /// # Arguments
+    ///
+    /// * `prefix` - The byte prefix to search for
+    ///
+    /// # Returns
+    ///
+    /// * `Some(impl Iterator<Item = (Vec<u8>, V)>)` - Iterator over matching (term, value) pairs
+    /// * `None` - If no terms with this prefix exist
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// use libdictenstein::persistent_artrie::PersistentARTrie;
+    ///
+    /// let mut dict: PersistentARTrie<i32> = PersistentARTrie::new();
+    /// dict.insert_with_value("apple", 1);
+    /// dict.insert_with_value("application", 2);
+    /// dict.insert_with_value("banana", 3);
+    ///
+    /// if let Some(iter) = dict.iter_prefix_with_values(b"app") {
+    ///     for (term, value) in iter {
+    ///         println!("{}: {}", String::from_utf8_lossy(&term), value);
+    ///     }
+    ///     // Prints: "apple: 1" and "application: 2"
+    /// }
+    /// ```
+    pub fn iter_prefix_with_values(&self, prefix: &[u8]) -> Option<impl Iterator<Item = (Vec<u8>, V)> + '_>
+    where
+        V: Clone,
+    {
+        use crate::prefix_zipper::ValuedPrefixZipper;
+        use super::zipper::PersistentARTrieZipper;
+
+        let zipper = PersistentARTrieZipper::new_from_dict(self);
+        let prefix_iter = zipper.with_prefix_values(prefix)?;
+        Some(prefix_iter)
     }
 }
 

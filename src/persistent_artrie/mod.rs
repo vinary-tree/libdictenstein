@@ -199,13 +199,14 @@ pub use compact_encoding::{
 
 // WAL types
 #[cfg(feature = "persistent-artrie")]
-pub use wal::{GroupCommit, Lsn, WalHeader, WalReader, WalRecord, WalRecordType, WalWriter};
+pub use wal::{GroupCommit, Lsn, WalConfig, WalHeader, WalReader, WalRecord, WalRecordType, WalWriter};
 
 // Recovery types
 #[cfg(feature = "persistent-artrie")]
 pub use recovery::{
-    IncrementalRecovery, RecoveredOperation, RecoveredState, RecoveryError, RecoveryManager,
-    RecoveryStats,
+    CorruptionType, IncrementalRecovery, RecoveredOperation, RecoveredState, RecoveryError,
+    RecoveryManager, RecoveryMode, RecoveryReport, RecoveryStats,
+    detect_corruption, find_wal_archive_segments, rebuild_from_wal_segments,
 };
 
 // Prefetch types

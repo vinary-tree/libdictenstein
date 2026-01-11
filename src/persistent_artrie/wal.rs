@@ -51,7 +51,7 @@
 //! }
 //! ```
 
-use std::fs::{File, OpenOptions};
+use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -59,6 +59,77 @@ use std::sync::{Arc, Mutex};
 
 /// Log Sequence Number - monotonically increasing identifier for log records.
 pub type Lsn = u64;
+
+/// WAL configuration for archive mode and segment management.
+///
+/// Archive mode provides crash recovery by preserving WAL segments instead
+/// of truncating them. This allows rebuilding the entire dataset from
+/// archived segments if the base file is corrupted.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// let config = WalConfig {
+///     archive_enabled: true,
+///     archive_dir: PathBuf::from("./wal_archive"),
+///     max_segments: 10,
+///     max_archive_bytes: 10 * 1024 * 1024 * 1024, // 10 GB
+/// };
+/// ```
+#[derive(Debug, Clone)]
+pub struct WalConfig {
+    /// Enable archive mode (rename WAL instead of truncate)
+    ///
+    /// When enabled, checkpoint rotates the WAL to archive instead of
+    /// truncating it. This preserves all operations for potential recovery.
+    pub archive_enabled: bool,
+
+    /// Directory for archived WAL segments
+    ///
+    /// Default: "{data_dir}/wal_archive"
+    pub archive_dir: PathBuf,
+
+    /// Maximum number of archived segments to keep
+    ///
+    /// Older segments are pruned when this limit is exceeded.
+    /// Default: 10
+    pub max_segments: usize,
+
+    /// Maximum total bytes in archived segments
+    ///
+    /// Older segments are pruned when this limit is exceeded.
+    /// Default: 10 GB
+    pub max_archive_bytes: u64,
+}
+
+impl Default for WalConfig {
+    fn default() -> Self {
+        Self {
+            archive_enabled: true,
+            archive_dir: PathBuf::from("wal_archive"),
+            max_segments: 10,
+            max_archive_bytes: 10 * 1024 * 1024 * 1024, // 10 GB
+        }
+    }
+}
+
+impl WalConfig {
+    /// Create a new configuration with archive mode disabled
+    pub fn no_archive() -> Self {
+        Self {
+            archive_enabled: false,
+            ..Default::default()
+        }
+    }
+
+    /// Create a new configuration with custom archive directory
+    pub fn with_archive_dir(archive_dir: impl Into<PathBuf>) -> Self {
+        Self {
+            archive_dir: archive_dir.into(),
+            ..Default::default()
+        }
+    }
+}
 
 /// CRC32 for record integrity verification.
 fn crc32(data: &[u8]) -> u32 {
@@ -820,6 +891,187 @@ impl WalWriter {
 
         Ok(())
     }
+
+    /// Rotate WAL to archive directory - O(1) filesystem rename operation.
+    ///
+    /// This is the zero-cost archive operation:
+    /// 1. Sync and close the current WAL
+    /// 2. Rename to archive directory (O(1) - just updates directory entry)
+    /// 3. Create a fresh WAL file
+    ///
+    /// Returns the path to the archived segment.
+    ///
+    /// # Arguments
+    /// * `config` - WAL configuration with archive settings
+    ///
+    /// # Errors
+    /// Returns `WalError` if:
+    /// - Archive directory cannot be created
+    /// - Rename operation fails
+    /// - New WAL file cannot be created
+    pub fn rotate_to_archive(&self, config: &WalConfig) -> Result<PathBuf, WalError> {
+        // Ensure all data is synced
+        self.sync()?;
+
+        // Create archive directory if it doesn't exist
+        let archive_dir = if config.archive_dir.is_absolute() {
+            config.archive_dir.clone()
+        } else {
+            // Make relative to WAL parent directory
+            self.path
+                .parent()
+                .unwrap_or(Path::new("."))
+                .join(&config.archive_dir)
+        };
+        fs::create_dir_all(&archive_dir).map_err(|e| WalError::Io(e))?;
+
+        // Generate archive filename with timestamp for uniqueness
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis();
+        let segment_name = format!("wal_{}.segment", timestamp);
+        let archive_path = archive_dir.join(&segment_name);
+
+        // Lock file for exclusive access during rotation
+        let mut file = self.file.lock().expect("WAL lock poisoned");
+
+        // Flush any pending writes
+        file.flush()?;
+        file.get_ref().sync_all()?;
+
+        // Drop the file handle so we can rename
+        drop(file);
+
+        // Rename current WAL to archive (O(1) operation)
+        fs::rename(&self.path, &archive_path).map_err(|e| WalError::Io(e))?;
+
+        // Create fresh WAL file
+        let new_file = OpenOptions::new()
+            .create(true)
+            .write(true)
+            .read(true)
+            .open(&self.path)?;
+
+        let mut writer = BufWriter::new(new_file);
+
+        // Write fresh header
+        let header = WalHeader::new();
+        writer.write_all(&header.to_bytes())?;
+        writer.flush()?;
+
+        // Update internal state
+        *self.file.lock().expect("WAL lock poisoned") = writer;
+        self.next_lsn.store(1, Ordering::SeqCst);
+        self.synced_lsn.store(0, Ordering::SeqCst);
+        *self.header.lock().expect("header lock poisoned") = header;
+
+        // Prune old segments if needed (fire and forget - don't fail rotation)
+        let _ = Self::prune_segments_if_needed(&archive_dir, config);
+
+        Ok(archive_path)
+    }
+
+    /// Collect all WAL segments (archived + active) in chronological order.
+    ///
+    /// Returns a sorted list of paths to WAL segments, oldest first.
+    /// The active WAL (if it exists and has records) is included last.
+    pub fn collect_wal_segments(&self, config: &WalConfig) -> Result<Vec<PathBuf>, WalError> {
+        let mut segments = Vec::new();
+
+        // Collect archived segments
+        let archive_dir = if config.archive_dir.is_absolute() {
+            config.archive_dir.clone()
+        } else {
+            self.path
+                .parent()
+                .unwrap_or(Path::new("."))
+                .join(&config.archive_dir)
+        };
+
+        if archive_dir.exists() {
+            for entry in fs::read_dir(&archive_dir).map_err(|e| WalError::Io(e))? {
+                let entry = entry.map_err(|e| WalError::Io(e))?;
+                let path = entry.path();
+                if path.extension().map_or(false, |ext| ext == "segment") {
+                    segments.push(path);
+                }
+            }
+        }
+
+        // Sort by filename (timestamp-based naming ensures chronological order)
+        segments.sort();
+
+        // Add active WAL if it exists and has records
+        if self.path.exists() {
+            // Check if active WAL has any records beyond the header
+            let metadata = fs::metadata(&self.path).map_err(|e| WalError::Io(e))?;
+            if metadata.len() > WalHeader::SIZE as u64 {
+                segments.push(self.path.clone());
+            }
+        }
+
+        Ok(segments)
+    }
+
+    /// Prune old WAL segments to stay within limits.
+    ///
+    /// Removes oldest segments when either:
+    /// - Number of segments exceeds `max_segments`
+    /// - Total size exceeds `max_archive_bytes`
+    fn prune_segments_if_needed(archive_dir: &Path, config: &WalConfig) -> Result<(), WalError> {
+        if !archive_dir.exists() {
+            return Ok(());
+        }
+
+        // Collect all segments with their sizes
+        let mut segments: Vec<(PathBuf, u64)> = Vec::new();
+        for entry in fs::read_dir(archive_dir).map_err(|e| WalError::Io(e))? {
+            let entry = entry.map_err(|e| WalError::Io(e))?;
+            let path = entry.path();
+            if path.extension().map_or(false, |ext| ext == "segment") {
+                let size = fs::metadata(&path).map_or(0, |m| m.len());
+                segments.push((path, size));
+            }
+        }
+
+        // Sort by name (oldest first)
+        segments.sort_by(|a, b| a.0.cmp(&b.0));
+
+        // Calculate total size
+        let total_size: u64 = segments.iter().map(|(_, size)| size).sum();
+
+        // Prune if over limits
+        let mut current_size = total_size;
+        let mut to_remove = Vec::new();
+
+        for (i, (path, size)) in segments.iter().enumerate() {
+            let remaining_count = segments.len() - i;
+
+            // Keep at least one segment for safety
+            if remaining_count <= 1 {
+                break;
+            }
+
+            // Check if we're over limits
+            let over_count = remaining_count > config.max_segments;
+            let over_size = current_size > config.max_archive_bytes;
+
+            if over_count || over_size {
+                to_remove.push(path.clone());
+                current_size = current_size.saturating_sub(*size);
+            } else {
+                break;
+            }
+        }
+
+        // Remove old segments
+        for path in to_remove {
+            let _ = fs::remove_file(path); // Ignore errors - best effort
+        }
+
+        Ok(())
+    }
 }
 
 /// WAL reader for recovery.
@@ -1186,5 +1438,195 @@ mod tests {
         let (lsn, rec) = records[0].as_ref().expect("record");
         assert_eq!(*lsn, 1);
         assert!(matches!(rec, WalRecord::Insert { term, .. } if term == b"new_record"));
+    }
+
+    #[test]
+    fn test_wal_archive_rotation() {
+        let dir = tempdir().expect("create temp dir");
+        let wal_path = dir.path().join("test.wal");
+        let archive_dir = dir.path().join("wal_archive");
+
+        let config = WalConfig {
+            archive_enabled: true,
+            archive_dir: archive_dir.clone(),
+            max_segments: 10,
+            max_archive_bytes: 10 << 30, // 10 GB
+        };
+
+        // Create WAL and write records
+        let wal = WalWriter::create(&wal_path).expect("create WAL");
+        wal.append(WalRecord::Insert {
+            term: b"record1".to_vec(),
+            value: Some(b"value1".to_vec()),
+        })
+        .expect("append");
+        wal.append(WalRecord::Insert {
+            term: b"record2".to_vec(),
+            value: None,
+        })
+        .expect("append");
+        wal.checkpoint(2).expect("checkpoint");
+        wal.sync().expect("sync");
+
+        // Rotate to archive
+        let archive_path = wal.rotate_to_archive(&config).expect("rotate");
+
+        // Verify archive segment was created
+        assert!(archive_path.exists(), "Archive segment should exist");
+        assert!(
+            archive_path.extension().map_or(false, |ext| ext == "segment"),
+            "Archive should have .segment extension"
+        );
+
+        // Verify active WAL was recreated and is empty
+        assert!(wal_path.exists(), "Active WAL should exist");
+        let reader = WalReader::new(&wal_path).expect("open active WAL");
+        let records: Vec<_> = reader.iter().collect();
+        assert_eq!(records.len(), 0, "Active WAL should be empty after rotation");
+
+        // Verify archived segment contains the records
+        let reader = WalReader::new(&archive_path).expect("open archive");
+        let records: Vec<_> = reader.iter().collect();
+        assert_eq!(records.len(), 3, "Archive should have 3 records (2 inserts + 1 checkpoint)");
+    }
+
+    #[test]
+    fn test_wal_collect_segments() {
+        let dir = tempdir().expect("create temp dir");
+        let wal_path = dir.path().join("test.wal");
+        let archive_dir = dir.path().join("wal_archive");
+
+        let config = WalConfig {
+            archive_enabled: true,
+            archive_dir: archive_dir.clone(),
+            max_segments: 10,
+            max_archive_bytes: 10 << 30,
+        };
+
+        // Create WAL
+        let wal = WalWriter::create(&wal_path).expect("create WAL");
+
+        // Initially should have no segments (active WAL is empty)
+        let segments = wal.collect_wal_segments(&config).expect("collect");
+        assert_eq!(segments.len(), 0, "No segments when WAL is empty");
+
+        // Add records and rotate multiple times
+        for i in 0..3 {
+            wal.append(WalRecord::Insert {
+                term: format!("term{}", i).into_bytes(),
+                value: None,
+            })
+            .expect("append");
+            wal.checkpoint(i as u64 + 1).expect("checkpoint");
+            wal.sync().expect("sync");
+            wal.rotate_to_archive(&config).expect("rotate");
+            // Small delay to ensure unique timestamps for segment naming
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+
+        // Add one more record to active WAL
+        wal.append(WalRecord::Insert {
+            term: b"active_term".to_vec(),
+            value: None,
+        })
+        .expect("append");
+        wal.sync().expect("sync");
+
+        // Collect segments
+        let segments = wal.collect_wal_segments(&config).expect("collect");
+        assert_eq!(segments.len(), 4, "Should have 3 archived + 1 active");
+
+        // Verify segments are in chronological order
+        for i in 0..3 {
+            let ext = segments[i].extension().unwrap_or_default();
+            assert_eq!(ext, "segment", "Archived segments should come first");
+        }
+        assert_eq!(
+            segments[3], wal_path,
+            "Active WAL should be last"
+        );
+    }
+
+    #[test]
+    fn test_wal_archive_pruning_by_count() {
+        let dir = tempdir().expect("create temp dir");
+        let wal_path = dir.path().join("test.wal");
+        let archive_dir = dir.path().join("wal_archive");
+
+        let config = WalConfig {
+            archive_enabled: true,
+            archive_dir: archive_dir.clone(),
+            max_segments: 3, // Only keep 3 segments
+            max_archive_bytes: u64::MAX,
+        };
+
+        // Create WAL and rotate many times
+        let wal = WalWriter::create(&wal_path).expect("create WAL");
+
+        for i in 0..6 {
+            wal.append(WalRecord::Insert {
+                term: format!("term{}", i).into_bytes(),
+                value: None,
+            })
+            .expect("append");
+            wal.sync().expect("sync");
+            wal.rotate_to_archive(&config).expect("rotate");
+            // Small delay to ensure unique timestamps for segment naming
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+
+        // Count segments in archive
+        let segments: Vec<_> = std::fs::read_dir(&archive_dir)
+            .expect("read archive dir")
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().extension().map_or(false, |ext| ext == "segment"))
+            .collect();
+
+        // Should have pruned down to max_segments (3)
+        assert!(
+            segments.len() <= config.max_segments,
+            "Should have at most {} segments, found {}",
+            config.max_segments,
+            segments.len()
+        );
+    }
+
+    #[test]
+    fn test_wal_archive_disabled() {
+        let dir = tempdir().expect("create temp dir");
+        let wal_path = dir.path().join("test.wal");
+        let archive_dir = dir.path().join("wal_archive");
+
+        let config = WalConfig {
+            archive_enabled: false, // Disabled
+            archive_dir: archive_dir.clone(),
+            max_segments: 10,
+            max_archive_bytes: 10 << 30,
+        };
+
+        // Create WAL and write records
+        let wal = WalWriter::create(&wal_path).expect("create WAL");
+        wal.append(WalRecord::Insert {
+            term: b"test".to_vec(),
+            value: None,
+        })
+        .expect("append");
+        wal.sync().expect("sync");
+
+        // Collect segments should still work (returns active WAL only)
+        let segments = wal.collect_wal_segments(&config).expect("collect");
+        assert_eq!(segments.len(), 1);
+        assert_eq!(segments[0], wal_path);
+
+        // Archive dir should not exist
+        assert!(!archive_dir.exists(), "Archive dir should not be created when disabled");
+    }
+
+    #[test]
+    fn test_wal_config_default() {
+        let config = WalConfig::default();
+        assert!(config.archive_enabled);
+        assert_eq!(config.max_segments, 10);
+        assert_eq!(config.max_archive_bytes, 10 << 30); // 10 GB
     }
 }

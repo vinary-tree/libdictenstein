@@ -263,6 +263,9 @@ impl ArenaManager {
                     expected_block_id
                 };
 
+                // Finalize checksums before writing to disk (V3+ arenas)
+                arena.finalize_checksums();
+
                 // Write arena data to the block
                 let mut page = bm_guard.fetch_page_mut(block_id)?;
                 let page_data = page.data_mut();
