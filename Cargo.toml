@@ -115,3 +115,8 @@ required-features = ["group-commit"]
 name = "memory_pressure_benchmarks"
 harness = false
 required-features = ["persistent-artrie"]
+
+[[bench]]
+name = "adaptive_pool_benchmarks"
+harness = false
+required-features = ["persistent-artrie"]

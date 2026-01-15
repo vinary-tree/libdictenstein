@@ -163,6 +163,10 @@ pub mod relative_encoding;
 #[cfg(feature = "persistent-artrie")]
 pub mod memory_monitor;
 
+// Adaptive buffer pool sizing
+#[cfg(feature = "persistent-artrie")]
+pub mod adaptive_pool;
+
 // Re-exports for convenience
 pub use error::{PersistentARTrieError, Result, SwizzleError};
 pub use path_compression::{PrefixMatchResult, SplitPrefix};
@@ -280,6 +284,12 @@ pub use relative_encoding::{
 pub use memory_monitor::{
     MemoryMonitorStats, MemoryPressureConfig, MemoryPressureLevel, MemoryPressureMonitor,
     MemoryStats, PressureCallback, PsiMetrics,
+};
+
+// Adaptive buffer pool sizing types
+#[cfg(feature = "persistent-artrie")]
+pub use adaptive_pool::{
+    AdaptivePoolConfig, AdaptivePoolController, AdaptivePoolStats, CacheStats,
 };
 
 /// Maximum key length supported (64KB - 1)

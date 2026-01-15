@@ -235,8 +235,10 @@ pub struct BufferManager {
     buffer_pool: Vec<[u8; BLOCK_SIZE]>,
     /// Clock hand for eviction
     clock_hand: AtomicUsize,
-    /// Number of frames in the pool
+    /// Maximum number of frames in the pool (allocated capacity)
     pool_size: usize,
+    /// Currently active pool size (can be <= pool_size for adaptive sizing)
+    active_pool_size: AtomicUsize,
 }
 
 impl BufferManager {
@@ -258,6 +260,39 @@ impl BufferManager {
             buffer_pool,
             clock_hand: AtomicUsize::new(0),
             pool_size,
+            active_pool_size: AtomicUsize::new(pool_size),
+        }
+    }
+
+    /// Create a new buffer manager with adaptive sizing support.
+    ///
+    /// Pre-allocates `max_pool_size` frames but starts with only `initial_size` active.
+    /// Use `grow_pool()` and `shrink_pool()` to adjust the active pool size.
+    ///
+    /// # Arguments
+    /// * `disk_manager` - The disk manager for I/O operations
+    /// * `initial_size` - Initial number of active frames
+    /// * `max_pool_size` - Maximum number of frames (pre-allocated)
+    pub fn new_with_max_capacity(
+        disk_manager: DiskManager,
+        initial_size: usize,
+        max_pool_size: usize,
+    ) -> Self {
+        let frames: Vec<FrameMetadata> = (0..max_pool_size)
+            .map(|_| FrameMetadata::new())
+            .collect();
+        let buffer_pool: Vec<[u8; BLOCK_SIZE]> = (0..max_pool_size)
+            .map(|_| [0u8; BLOCK_SIZE])
+            .collect();
+
+        Self {
+            disk_manager,
+            page_table: RwLock::new(HashMap::with_capacity(max_pool_size)),
+            frames,
+            buffer_pool,
+            clock_hand: AtomicUsize::new(0),
+            pool_size: max_pool_size,
+            active_pool_size: AtomicUsize::new(initial_size.min(max_pool_size)),
         }
     }
 
@@ -461,8 +496,10 @@ impl BufferManager {
 
     /// Get a free frame using the Clock algorithm
     fn get_free_frame(&self) -> Result<FrameId> {
-        // First pass: look for a free frame
-        for frame_id in 0..self.pool_size {
+        let active_size = self.active_pool_size.load(Ordering::Acquire);
+
+        // First pass: look for a free frame within active pool
+        for frame_id in 0..active_size {
             if self.frames[frame_id].is_free() {
                 return Ok(frame_id);
             }
@@ -470,10 +507,10 @@ impl BufferManager {
 
         // No free frames, need to evict using Clock algorithm
         let mut attempts = 0;
-        let max_attempts = self.pool_size * 2; // Two full sweeps
+        let max_attempts = active_size * 2; // Two full sweeps
 
         while attempts < max_attempts {
-            let frame_id = self.clock_hand.fetch_add(1, Ordering::Relaxed) % self.pool_size;
+            let frame_id = self.clock_hand.fetch_add(1, Ordering::Relaxed) % active_size;
             let frame = &self.frames[frame_id];
 
             // Skip pinned frames
@@ -520,7 +557,7 @@ impl BufferManager {
         // All frames are pinned
         Err(PersistentARTrieError::BufferPoolExhausted {
             pinned_pages: self.count_pinned(),
-            total_pages: self.pool_size,
+            total_pages: active_size,
         })
     }
 
@@ -529,13 +566,150 @@ impl BufferManager {
         self.frames.iter().filter(|f| f.is_pinned()).count()
     }
 
+    /// Get the current active pool size.
+    ///
+    /// This is the number of frames currently available for use.
+    /// May be less than `max_pool_size()` if using adaptive sizing.
+    pub fn pool_size(&self) -> usize {
+        self.active_pool_size.load(Ordering::Relaxed)
+    }
+
+    /// Get the maximum pool size (allocated capacity).
+    ///
+    /// This is the total number of pre-allocated frames.
+    /// The active pool size can grow up to this limit.
+    pub fn max_pool_size(&self) -> usize {
+        self.pool_size
+    }
+
+    /// Grow the buffer pool by activating more pre-allocated frames.
+    ///
+    /// # Arguments
+    /// * `additional_frames` - Number of frames to activate
+    ///
+    /// # Returns
+    /// Ok(new_size) on success, Err if would exceed max capacity.
+    ///
+    /// # Note
+    /// This only works if the BufferManager was created with
+    /// `new_with_max_capacity()`. Growing beyond the pre-allocated
+    /// capacity is not supported.
+    pub fn grow_pool(&self, additional_frames: usize) -> Result<usize> {
+        loop {
+            let current = self.active_pool_size.load(Ordering::Acquire);
+            let new_size = current.saturating_add(additional_frames);
+
+            // Cannot exceed pre-allocated capacity
+            if new_size > self.pool_size {
+                return Err(PersistentARTrieError::InternalError {
+                    message: format!(
+                        "Cannot grow pool beyond max capacity {} (current: {}, requested: +{})",
+                        self.pool_size, current, additional_frames
+                    ),
+                });
+            }
+
+            // Try to update atomically
+            match self.active_pool_size.compare_exchange(
+                current,
+                new_size,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => return Ok(new_size),
+                Err(_) => continue, // Retry
+            }
+        }
+    }
+
+    /// Shrink the buffer pool by deactivating frames.
+    ///
+    /// # Arguments
+    /// * `frames_to_remove` - Number of frames to deactivate
+    ///
+    /// # Returns
+    /// Ok(new_size) on success, Err if not enough frames or frames in use.
+    ///
+    /// # Note
+    /// Frames that are pinned or contain data must be flushed first.
+    /// This method will evict unpinned frames in the shrink range.
+    pub fn shrink_pool(&self, frames_to_remove: usize) -> Result<usize> {
+        loop {
+            let current = self.active_pool_size.load(Ordering::Acquire);
+
+            // Minimum pool size of 1
+            let new_size = current.saturating_sub(frames_to_remove).max(1);
+
+            if new_size == current {
+                return Ok(current); // Nothing to shrink
+            }
+
+            // Check that frames in the shrink range are not pinned
+            for frame_id in new_size..current {
+                let frame = &self.frames[frame_id];
+                if frame.is_pinned() {
+                    return Err(PersistentARTrieError::InternalError {
+                        message: format!(
+                            "Cannot shrink pool: frame {} is pinned",
+                            frame_id
+                        ),
+                    });
+                }
+
+                // Flush dirty frames before shrinking
+                if frame.is_dirty() {
+                    if let Some(block_id) = frame.get_block_id() {
+                        self.disk_manager.write_block(block_id, &self.buffer_pool[frame_id])?;
+                        frame.clear_dirty();
+                    }
+                }
+
+                // Evict the frame
+                if let Some(block_id) = frame.get_block_id() {
+                    #[cfg(feature = "parking_lot")]
+                    {
+                        self.page_table.write().remove(&block_id);
+                    }
+                    #[cfg(not(feature = "parking_lot"))]
+                    {
+                        if let Ok(mut guard) = self.page_table.write() {
+                            guard.remove(&block_id);
+                        }
+                    }
+                    frame.set_block_id(None);
+                }
+            }
+
+            // Try to update atomically
+            match self.active_pool_size.compare_exchange(
+                current,
+                new_size,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => {
+                    // Reset clock hand if it's beyond new size
+                    let clock = self.clock_hand.load(Ordering::Relaxed);
+                    if clock >= new_size {
+                        self.clock_hand.store(0, Ordering::Relaxed);
+                    }
+                    return Ok(new_size);
+                }
+                Err(_) => continue, // Retry
+            }
+        }
+    }
+
     /// Get statistics about the buffer pool
     pub fn stats(&self) -> BufferPoolStats {
+        let active_size = self.active_pool_size.load(Ordering::Relaxed);
         let mut free = 0;
         let mut pinned = 0;
         let mut dirty = 0;
 
-        for frame in &self.frames {
+        // Only count frames within active pool
+        for frame_id in 0..active_size {
+            let frame = &self.frames[frame_id];
             if frame.is_free() {
                 free += 1;
             } else {
@@ -549,11 +723,12 @@ impl BufferManager {
         }
 
         BufferPoolStats {
-            total_frames: self.pool_size,
+            total_frames: active_size,
+            max_frames: self.pool_size,
             free_frames: free,
             pinned_frames: pinned,
             dirty_frames: dirty,
-            used_frames: self.pool_size - free,
+            used_frames: active_size - free,
         }
     }
 
@@ -566,8 +741,10 @@ impl BufferManager {
 /// Statistics about the buffer pool
 #[derive(Debug, Clone, Copy)]
 pub struct BufferPoolStats {
-    /// Total number of frames in the pool
+    /// Total number of active frames in the pool
     pub total_frames: usize,
+    /// Maximum number of frames (allocated capacity)
+    pub max_frames: usize,
     /// Number of free (unallocated) frames
     pub free_frames: usize,
     /// Number of pinned frames (cannot be evicted)
