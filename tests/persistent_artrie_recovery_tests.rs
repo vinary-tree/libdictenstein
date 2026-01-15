@@ -1858,4 +1858,785 @@ mod phase_21_char_prefix_operations {
             assert_eq!(matches.len(), 2, "Should find 2 terms with prefix 'app' after reopen");
         }
     }
+
+    // =========================================================================
+    // Arena-aware iteration tests
+    // =========================================================================
+
+    #[test]
+    fn test_disk_char_iter_prefix_with_arena() {
+        use libdictenstein::persistent_artrie_char::dict_impl_char::PrefixTermWithArena;
+        use std::collections::HashMap;
+
+        let dir = tempdir().expect("Failed to create temp dir");
+        let path = dir.path().join("test.artrie");
+
+        let mut trie = DiskBackedCharTrieInner::<()>::create(&path)
+            .expect("Failed to create trie");
+
+        // Insert terms that will share arenas (terms with common prefixes)
+        trie.insert("apple").expect("insert failed");
+        trie.insert("application").expect("insert failed");
+        trie.insert("apply").expect("insert failed");
+        trie.insert("banana").expect("insert failed");
+        trie.sync().expect("sync failed");
+
+        // Get terms with arena info
+        let terms = trie.iter_prefix_with_arena("app")
+            .expect("I/O error")
+            .expect("prefix exists");
+
+        assert_eq!(terms.len(), 3, "Should find 3 terms with prefix 'app'");
+
+        // Verify we get the expected terms
+        let term_strings: Vec<_> = terms.iter().map(|t| t.term.clone()).collect();
+        assert!(term_strings.contains(&"apple".to_string()));
+        assert!(term_strings.contains(&"application".to_string()));
+        assert!(term_strings.contains(&"apply".to_string()));
+
+        // Arena info should be populated for disk-backed nodes
+        // (Note: some nodes may still be in-memory if not yet persisted to disk)
+    }
+
+    #[test]
+    fn test_disk_char_iter_prefix_with_arena_grouping() {
+        use std::collections::HashMap;
+
+        let dir = tempdir().expect("Failed to create temp dir");
+        let path = dir.path().join("test.artrie");
+
+        let mut trie = DiskBackedCharTrieInner::<()>::create(&path)
+            .expect("Failed to create trie");
+
+        // Insert many terms with common prefix
+        for i in 0..50 {
+            trie.insert(&format!("prefix_{:03}", i)).expect("insert failed");
+        }
+        trie.insert("other").expect("insert failed");
+        trie.sync().expect("sync failed");
+
+        // Get terms with arena info
+        let terms = trie.iter_prefix_with_arena("prefix_")
+            .expect("I/O error")
+            .expect("prefix exists");
+
+        assert_eq!(terms.len(), 50, "Should find 50 terms with prefix 'prefix_'");
+
+        // Group by arena to verify structure
+        let mut by_arena: HashMap<Option<u32>, Vec<String>> = HashMap::new();
+        for item in &terms {
+            by_arena.entry(item.arena_id)
+                .or_default()
+                .push(item.term.clone());
+        }
+
+        // Verify we got all terms grouped
+        let total: usize = by_arena.values().map(|v| v.len()).sum();
+        assert_eq!(total, 50, "All 50 terms should be grouped");
+
+        // Log arena distribution for debugging
+        println!("Arena distribution: {} arenas", by_arena.len());
+        for (arena, terms) in &by_arena {
+            println!("  Arena {:?}: {} terms", arena, terms.len());
+        }
+    }
+
+    #[test]
+    fn test_disk_char_remove_prefix_arena_batched() {
+        let dir = tempdir().expect("Failed to create temp dir");
+        let path = dir.path().join("test.artrie");
+
+        let mut trie = DiskBackedCharTrieInner::<()>::create(&path)
+            .expect("Failed to create trie");
+
+        // Insert many terms
+        for i in 0..100 {
+            trie.insert(&format!("test_{:03}", i)).expect("insert failed");
+        }
+        trie.insert("keep_me").expect("insert failed");
+        trie.sync().expect("sync failed");
+
+        // Remove with small batch size (forces multiple batches with arena grouping)
+        let removed = trie.remove_prefix_batched("test_", 10)
+            .expect("remove failed");
+        assert_eq!(removed, 100, "Should remove all 100 terms");
+
+        // Verify all terms removed
+        assert!(!trie.contains("test_000"));
+        assert!(!trie.contains("test_050"));
+        assert!(!trie.contains("test_099"));
+
+        // Verify unrelated term remains
+        assert!(trie.contains("keep_me"));
+    }
+
+    #[test]
+    fn test_disk_char_iter_prefix_with_arena_not_found() {
+        let dir = tempdir().expect("Failed to create temp dir");
+        let path = dir.path().join("test.artrie");
+
+        let mut trie = DiskBackedCharTrieInner::<()>::create(&path)
+            .expect("Failed to create trie");
+
+        trie.insert("apple").expect("insert failed");
+        trie.sync().expect("sync failed");
+
+        // Non-existent prefix should return None
+        let result = trie.iter_prefix_with_arena("xyz")
+            .expect("I/O error");
+        assert!(result.is_none(), "Non-existent prefix should return None");
+    }
+
+    #[test]
+    fn test_disk_char_iter_prefix_with_arena_unicode() {
+        let dir = tempdir().expect("Failed to create temp dir");
+        let path = dir.path().join("test.artrie");
+
+        let mut trie = DiskBackedCharTrieInner::<()>::create(&path)
+            .expect("Failed to create trie");
+
+        trie.insert("日本語").expect("insert failed");
+        trie.insert("日本人").expect("insert failed");
+        trie.insert("日曜日").expect("insert failed");
+        trie.insert("月曜日").expect("insert failed");
+        trie.sync().expect("sync failed");
+
+        // Get terms with arena info for Unicode prefix
+        let terms = trie.iter_prefix_with_arena("日本")
+            .expect("I/O error")
+            .expect("prefix exists");
+
+        assert_eq!(terms.len(), 2, "Should find 2 terms with prefix '日本'");
+
+        let term_strings: Vec<_> = terms.iter().map(|t| t.term.clone()).collect();
+        assert!(term_strings.contains(&"日本語".to_string()));
+        assert!(term_strings.contains(&"日本人".to_string()));
+    }
+}
+
+// =============================================================================
+// Phase 22: Merge Operations Tests
+// =============================================================================
+// Tests for merge_from(), merge_replace(), SharedCharTrie::union_with(),
+// and iter_prefix_with_values_and_arena()
+
+mod phase_22_merge_operations {
+    use libdictenstein::persistent_artrie::PersistentARTrie;
+    use libdictenstein::persistent_artrie_char::{DiskBackedCharTrieInner, SharedCharTrie};
+    use libdictenstein::MutableMappedDictionary;
+    use tempfile::tempdir;
+
+    // =========================================================================
+    // DiskBackedCharTrieInner merge_from() tests
+    // =========================================================================
+
+    #[test]
+    fn test_char_trie_merge_from_basic() {
+        let dir = tempdir().expect("create temp dir");
+        let path1 = dir.path().join("trie1.artrie");
+        let path2 = dir.path().join("trie2.artrie");
+
+        // Create first trie with some terms
+        let mut trie1 = DiskBackedCharTrieInner::<i64>::create(&path1)
+            .expect("create trie1");
+        trie1.upsert("apple", 5).expect("upsert failed");
+        trie1.upsert("banana", 3).expect("upsert failed");
+
+        // Create second trie with overlapping and new terms
+        let mut trie2 = DiskBackedCharTrieInner::<i64>::create(&path2)
+            .expect("create trie2");
+        trie2.upsert("apple", 7).expect("upsert failed");  // Overlap
+        trie2.upsert("cherry", 2).expect("upsert failed"); // New
+
+        // Merge trie2 into trie1 with sum function
+        let processed = trie1.merge_from(&trie2, |a, b| a + b)
+            .expect("merge failed");
+
+        assert_eq!(processed, 2, "Should process 2 terms from trie2");
+
+        // Verify merged values
+        assert_eq!(trie1.get("apple"), Some(&12), "apple should be 5 + 7 = 12");
+        assert_eq!(trie1.get("banana"), Some(&3), "banana should remain 3");
+        assert_eq!(trie1.get("cherry"), Some(&2), "cherry should be added with value 2");
+    }
+
+    #[test]
+    fn test_char_trie_merge_from_all_new() {
+        let dir = tempdir().expect("create temp dir");
+        let path1 = dir.path().join("trie1.artrie");
+        let path2 = dir.path().join("trie2.artrie");
+
+        // Create first trie
+        let mut trie1 = DiskBackedCharTrieInner::<i64>::create(&path1)
+            .expect("create trie1");
+        trie1.upsert("apple", 1).expect("upsert failed");
+
+        // Create second trie with completely different terms
+        let mut trie2 = DiskBackedCharTrieInner::<i64>::create(&path2)
+            .expect("create trie2");
+        trie2.upsert("banana", 2).expect("upsert failed");
+        trie2.upsert("cherry", 3).expect("upsert failed");
+        trie2.upsert("date", 4).expect("upsert failed");
+
+        // Merge - no overlaps, so merge_fn never called
+        let processed = trie1.merge_from(&trie2, |a, b| a + b)
+            .expect("merge failed");
+
+        assert_eq!(processed, 3, "Should process 3 terms");
+        assert_eq!(trie1.len, 4, "trie1 should have 4 terms total");
+        assert_eq!(trie1.get("apple"), Some(&1));
+        assert_eq!(trie1.get("banana"), Some(&2));
+        assert_eq!(trie1.get("cherry"), Some(&3));
+        assert_eq!(trie1.get("date"), Some(&4));
+    }
+
+    #[test]
+    fn test_char_trie_merge_from_all_overlapping() {
+        let dir = tempdir().expect("create temp dir");
+        let path1 = dir.path().join("trie1.artrie");
+        let path2 = dir.path().join("trie2.artrie");
+
+        // Create first trie
+        let mut trie1 = DiskBackedCharTrieInner::<i64>::create(&path1)
+            .expect("create trie1");
+        trie1.upsert("apple", 10).expect("upsert failed");
+        trie1.upsert("banana", 20).expect("upsert failed");
+
+        // Create second trie with same terms
+        let mut trie2 = DiskBackedCharTrieInner::<i64>::create(&path2)
+            .expect("create trie2");
+        trie2.upsert("apple", 5).expect("upsert failed");
+        trie2.upsert("banana", 10).expect("upsert failed");
+
+        // Merge with sum
+        let processed = trie1.merge_from(&trie2, |a, b| a + b)
+            .expect("merge failed");
+
+        assert_eq!(processed, 2, "Should process 2 terms");
+        assert_eq!(trie1.len, 2, "trie1 should still have 2 terms");
+        assert_eq!(trie1.get("apple"), Some(&15), "apple should be 10 + 5 = 15");
+        assert_eq!(trie1.get("banana"), Some(&30), "banana should be 20 + 10 = 30");
+    }
+
+    #[test]
+    fn test_char_trie_merge_from_empty_source() {
+        let dir = tempdir().expect("create temp dir");
+        let path1 = dir.path().join("trie1.artrie");
+        let path2 = dir.path().join("trie2.artrie");
+
+        // Create first trie with terms
+        let mut trie1 = DiskBackedCharTrieInner::<i64>::create(&path1)
+            .expect("create trie1");
+        trie1.upsert("apple", 5).expect("upsert failed");
+
+        // Create empty second trie
+        let trie2 = DiskBackedCharTrieInner::<i64>::create(&path2)
+            .expect("create trie2");
+
+        // Merge empty trie
+        let processed = trie1.merge_from(&trie2, |a, b| a + b)
+            .expect("merge failed");
+
+        assert_eq!(processed, 0, "Should process 0 terms from empty trie");
+        assert_eq!(trie1.len, 1, "trie1 should still have 1 term");
+        assert_eq!(trie1.get("apple"), Some(&5), "apple should remain 5");
+    }
+
+    #[test]
+    fn test_char_trie_merge_replace() {
+        let dir = tempdir().expect("create temp dir");
+        let path1 = dir.path().join("trie1.artrie");
+        let path2 = dir.path().join("trie2.artrie");
+
+        // Create first trie
+        let mut trie1 = DiskBackedCharTrieInner::<i64>::create(&path1)
+            .expect("create trie1");
+        trie1.upsert("apple", 100).expect("upsert failed");
+        trie1.upsert("banana", 200).expect("upsert failed");
+
+        // Create second trie with overlapping term
+        let mut trie2 = DiskBackedCharTrieInner::<i64>::create(&path2)
+            .expect("create trie2");
+        trie2.upsert("apple", 999).expect("upsert failed"); // Will replace
+        trie2.upsert("cherry", 300).expect("upsert failed"); // New
+
+        // Merge with replace semantics (right value wins)
+        let processed = trie1.merge_replace(&trie2)
+            .expect("merge failed");
+
+        assert_eq!(processed, 2, "Should process 2 terms");
+        assert_eq!(trie1.get("apple"), Some(&999), "apple should be replaced with 999");
+        assert_eq!(trie1.get("banana"), Some(&200), "banana should remain 200");
+        assert_eq!(trie1.get("cherry"), Some(&300), "cherry should be added");
+    }
+
+    #[test]
+    fn test_char_trie_merge_from_unicode() {
+        let dir = tempdir().expect("create temp dir");
+        let path1 = dir.path().join("trie1.artrie");
+        let path2 = dir.path().join("trie2.artrie");
+
+        // Create first trie with Unicode terms
+        let mut trie1 = DiskBackedCharTrieInner::<i64>::create(&path1)
+            .expect("create trie1");
+        trie1.upsert("日本語", 10).expect("upsert failed");
+        trie1.upsert("中文", 20).expect("upsert failed");
+
+        // Create second trie
+        let mut trie2 = DiskBackedCharTrieInner::<i64>::create(&path2)
+            .expect("create trie2");
+        trie2.upsert("日本語", 5).expect("upsert failed");  // Overlap
+        trie2.upsert("한국어", 15).expect("upsert failed");   // New
+
+        // Merge with sum
+        let processed = trie1.merge_from(&trie2, |a, b| a + b)
+            .expect("merge failed");
+
+        assert_eq!(processed, 2, "Should process 2 terms");
+        assert_eq!(trie1.get("日本語"), Some(&15), "日本語 should be 10 + 5 = 15");
+        assert_eq!(trie1.get("中文"), Some(&20), "中文 should remain 20");
+        assert_eq!(trie1.get("한국어"), Some(&15), "한국어 should be added with value 15");
+    }
+
+    #[test]
+    fn test_char_trie_merge_with_persistence() {
+        let dir = tempdir().expect("create temp dir");
+        let path1 = dir.path().join("trie1.artrie");
+        let path2 = dir.path().join("trie2.artrie");
+
+        // Create and merge
+        {
+            let mut trie1 = DiskBackedCharTrieInner::<i64>::create(&path1)
+                .expect("create trie1");
+            trie1.upsert("apple", 5).expect("upsert failed");
+            trie1.sync().expect("sync failed");
+
+            let mut trie2 = DiskBackedCharTrieInner::<i64>::create(&path2)
+                .expect("create trie2");
+            trie2.upsert("apple", 7).expect("upsert failed");
+            trie2.upsert("banana", 3).expect("upsert failed");
+            trie2.sync().expect("sync failed");
+
+            // Merge
+            trie1.merge_from(&trie2, |a, b| a + b).expect("merge failed");
+            trie1.sync().expect("sync failed");
+        }
+
+        // Reopen and verify merge persisted
+        {
+            let (trie1, _report) = DiskBackedCharTrieInner::<i64>::open_with_recovery(&path1)
+                .expect("open trie1");
+
+            assert_eq!(trie1.get("apple"), Some(&12), "Merged apple should persist");
+            assert_eq!(trie1.get("banana"), Some(&3), "Merged banana should persist");
+        }
+    }
+
+    // =========================================================================
+    // iter_prefix_with_values_and_arena() tests
+    // =========================================================================
+
+    #[test]
+    fn test_iter_prefix_with_values_and_arena() {
+        let dir = tempdir().expect("create temp dir");
+        let path = dir.path().join("test.artrie");
+
+        let mut trie = DiskBackedCharTrieInner::<i64>::create(&path)
+            .expect("create trie");
+        trie.upsert("apple", 1).expect("upsert failed");
+        trie.upsert("application", 2).expect("upsert failed");
+        trie.upsert("apply", 3).expect("upsert failed");
+        trie.upsert("banana", 4).expect("upsert failed");
+        trie.sync().expect("sync failed");
+
+        // Get prefix with values and arena info
+        let result = trie.iter_prefix_with_values_and_arena("app")
+            .expect("I/O error")
+            .expect("prefix exists");
+
+        assert_eq!(result.len(), 3, "Should find 3 terms with prefix 'app'");
+
+        // Verify terms and values
+        let mut found = std::collections::HashMap::new();
+        for item in &result {
+            found.insert(item.term.clone(), item.value);
+        }
+
+        assert_eq!(found.get("apple"), Some(&1));
+        assert_eq!(found.get("application"), Some(&2));
+        assert_eq!(found.get("apply"), Some(&3));
+    }
+
+    #[test]
+    fn test_iter_prefix_with_values_and_arena_grouping() {
+        let dir = tempdir().expect("create temp dir");
+        let path = dir.path().join("test.artrie");
+
+        let mut trie = DiskBackedCharTrieInner::<i64>::create(&path)
+            .expect("create trie");
+
+        // Insert many terms
+        for i in 0..50 {
+            trie.upsert(&format!("prefix_{:03}", i), i as i64)
+                .expect("upsert failed");
+        }
+        trie.sync().expect("sync failed");
+
+        // Get terms with arena info
+        let result = trie.iter_prefix_with_values_and_arena("prefix_")
+            .expect("I/O error")
+            .expect("prefix exists");
+
+        assert_eq!(result.len(), 50, "Should find 50 terms");
+
+        // Group by arena
+        let mut by_arena: std::collections::HashMap<Option<u32>, Vec<(String, i64)>> =
+            std::collections::HashMap::new();
+        for item in &result {
+            by_arena.entry(item.arena_id)
+                .or_default()
+                .push((item.term.clone(), item.value));
+        }
+
+        // Verify total count
+        let total: usize = by_arena.values().map(|v| v.len()).sum();
+        assert_eq!(total, 50, "All 50 terms should be in arena groups");
+
+        // Log for debugging
+        println!("Arena distribution (with values): {} arenas", by_arena.len());
+        for (arena, terms) in &by_arena {
+            println!("  Arena {:?}: {} terms", arena, terms.len());
+        }
+    }
+
+    #[test]
+    fn test_iter_prefix_with_values_and_arena_not_found() {
+        let dir = tempdir().expect("create temp dir");
+        let path = dir.path().join("test.artrie");
+
+        let mut trie = DiskBackedCharTrieInner::<i64>::create(&path)
+            .expect("create trie");
+        trie.upsert("apple", 1).expect("upsert failed");
+
+        // Non-existent prefix
+        let result = trie.iter_prefix_with_values_and_arena("xyz")
+            .expect("I/O error");
+        assert!(result.is_none(), "Non-existent prefix should return None");
+    }
+
+    // =========================================================================
+    // SharedCharTrie tests
+    // =========================================================================
+
+    #[test]
+    fn test_shared_char_trie_basic() {
+        let dir = tempdir().expect("create temp dir");
+        let path = dir.path().join("shared.artrie");
+
+        let trie = SharedCharTrie::<i64>::create(&path)
+            .expect("create shared trie");
+
+        // Basic operations
+        assert!(trie.upsert("apple", 5).expect("upsert failed"));  // New term
+        assert!(!trie.upsert("apple", 10).expect("upsert failed")); // Update
+
+        assert_eq!(trie.get("apple"), Some(10));
+        assert!(trie.contains("apple"));
+        assert!(!trie.contains("banana"));
+        assert_eq!(trie.len(), 1);
+    }
+
+    #[test]
+    fn test_shared_char_trie_union_with() {
+        let dir = tempdir().expect("create temp dir");
+        let path1 = dir.path().join("trie1.artrie");
+        let path2 = dir.path().join("trie2.artrie");
+
+        // Create first shared trie
+        let trie1 = SharedCharTrie::<i64>::create(&path1)
+            .expect("create trie1");
+        trie1.upsert("apple", 5).expect("upsert failed");
+        trie1.upsert("banana", 3).expect("upsert failed");
+
+        // Create second shared trie
+        let trie2 = SharedCharTrie::<i64>::create(&path2)
+            .expect("create trie2");
+        trie2.upsert("apple", 7).expect("upsert failed");  // Overlap
+        trie2.upsert("cherry", 2).expect("upsert failed"); // New
+
+        // Union with sum function
+        let processed = trie1.union_with(&trie2, |a, b| a + b)
+            .expect("union failed");
+
+        assert_eq!(processed, 2, "Should process 2 terms from trie2");
+
+        // Verify merged values
+        assert_eq!(trie1.get("apple"), Some(12), "apple should be 5 + 7 = 12");
+        assert_eq!(trie1.get("banana"), Some(3), "banana should remain 3");
+        assert_eq!(trie1.get("cherry"), Some(2), "cherry should be added");
+    }
+
+    #[test]
+    fn test_shared_char_trie_union_replace() {
+        let dir = tempdir().expect("create temp dir");
+        let path1 = dir.path().join("trie1.artrie");
+        let path2 = dir.path().join("trie2.artrie");
+
+        let trie1 = SharedCharTrie::<i64>::create(&path1)
+            .expect("create trie1");
+        trie1.upsert("apple", 100).expect("upsert failed");
+
+        let trie2 = SharedCharTrie::<i64>::create(&path2)
+            .expect("create trie2");
+        trie2.upsert("apple", 999).expect("upsert failed");
+
+        // Union with replace semantics
+        let processed = trie1.union_replace(&trie2)
+            .expect("union failed");
+
+        assert_eq!(processed, 1, "Should process 1 term");
+        assert_eq!(trie1.get("apple"), Some(999), "apple should be replaced with 999");
+    }
+
+    #[test]
+    fn test_shared_char_trie_increment() {
+        let dir = tempdir().expect("create temp dir");
+        let path = dir.path().join("shared.artrie");
+
+        let trie = SharedCharTrie::<i64>::create(&path)
+            .expect("create shared trie");
+
+        // Increment creates new entry
+        let count1 = trie.increment("counter", 1).expect("increment failed");
+        assert_eq!(count1, 1);
+
+        // Subsequent increments add to existing
+        let count2 = trie.increment("counter", 1).expect("increment failed");
+        assert_eq!(count2, 2);
+
+        let count3 = trie.increment("counter", 10).expect("increment failed");
+        assert_eq!(count3, 12);
+    }
+
+    #[test]
+    fn test_shared_char_trie_thread_safety() {
+        use std::sync::Arc;
+        use std::thread;
+
+        let dir = tempdir().expect("create temp dir");
+        let path = dir.path().join("shared.artrie");
+
+        let trie = Arc::new(SharedCharTrie::<i64>::create(&path)
+            .expect("create shared trie"));
+
+        // Spawn multiple threads incrementing the same key
+        let mut handles = vec![];
+        for _ in 0..4 {
+            let trie_clone = Arc::clone(&trie);
+            handles.push(thread::spawn(move || {
+                for _ in 0..100 {
+                    trie_clone.increment("counter", 1).expect("increment failed");
+                }
+            }));
+        }
+
+        // Wait for all threads
+        for handle in handles {
+            handle.join().expect("thread join failed");
+        }
+
+        // 4 threads * 100 increments = 400
+        assert_eq!(trie.get("counter"), Some(400), "counter should be 400");
+    }
+
+    // =========================================================================
+    // Parallel merge pattern tests (simulating Google Books import)
+    // =========================================================================
+
+    #[test]
+    fn test_parallel_merge_pattern() {
+        use std::sync::Arc;
+        use std::thread;
+
+        let dir = tempdir().expect("create temp dir");
+
+        // Simulate 4 workers each processing a partition
+        let num_workers = 4;
+        let terms_per_worker = 50;
+
+        // Create worker tries in parallel
+        let handles: Vec<_> = (0..num_workers)
+            .map(|worker_id| {
+                let worker_path = dir.path().join(format!("worker_{}.artrie", worker_id));
+                thread::spawn(move || {
+                    let mut trie = DiskBackedCharTrieInner::<i64>::create(&worker_path)
+                        .expect("create worker trie");
+
+                    // Each worker inserts unique terms
+                    for i in 0..terms_per_worker {
+                        let term = format!("worker{}term{}", worker_id, i);
+                        trie.upsert(&term, 1).expect("upsert failed");
+                    }
+                    trie.sync().expect("sync failed");
+
+                    worker_path
+                })
+            })
+            .collect();
+
+        // Wait for all workers
+        let worker_paths: Vec<_> = handles
+            .into_iter()
+            .map(|h| h.join().expect("worker join failed"))
+            .collect();
+
+        // Create main trie and merge all workers
+        let main_path = dir.path().join("main.artrie");
+        let mut main_trie = DiskBackedCharTrieInner::<i64>::create(&main_path)
+            .expect("create main trie");
+
+        for worker_path in &worker_paths {
+            let (worker_trie, _report) = DiskBackedCharTrieInner::<i64>::open_with_recovery(worker_path)
+                .expect("open worker trie");
+
+            main_trie.merge_from(&worker_trie, |a, b| a + b)
+                .expect("merge failed");
+        }
+
+        // Verify all terms are present
+        let expected_count = num_workers * terms_per_worker;
+        assert_eq!(main_trie.len, expected_count, "Main trie should have all terms");
+
+        // Spot check some terms
+        assert!(main_trie.contains("worker0term0"));
+        assert!(main_trie.contains("worker1term25"));
+        assert!(main_trie.contains("worker3term49"));
+    }
+
+    #[test]
+    fn test_parallel_merge_with_overlaps() {
+        use std::thread;
+
+        let dir = tempdir().expect("create temp dir");
+
+        // Create 4 worker tries with overlapping terms (simulating same n-gram in different partitions)
+        let worker_paths: Vec<_> = (0..4)
+            .map(|worker_id| {
+                let path = dir.path().join(format!("worker_{}.artrie", worker_id));
+                let mut trie = DiskBackedCharTrieInner::<i64>::create(&path)
+                    .expect("create worker trie");
+
+                // All workers see the same n-grams (like "the|quick|brown")
+                for i in 0..10 {
+                    let term = format!("common_ngram_{}", i);
+                    trie.upsert(&term, 1).expect("upsert failed");
+                }
+
+                // Plus some unique terms
+                for i in 0..5 {
+                    let term = format!("worker{}_unique_{}", worker_id, i);
+                    trie.upsert(&term, 1).expect("upsert failed");
+                }
+
+                trie.sync().expect("sync failed");
+                path
+            })
+            .collect();
+
+        // Merge all into main
+        let main_path = dir.path().join("main.artrie");
+        let mut main_trie = DiskBackedCharTrieInner::<i64>::create(&main_path)
+            .expect("create main trie");
+
+        for worker_path in &worker_paths {
+            let (worker_trie, _report) = DiskBackedCharTrieInner::<i64>::open_with_recovery(worker_path)
+                .expect("open worker trie");
+
+            main_trie.merge_from(&worker_trie, |a, b| a + b)
+                .expect("merge failed");
+        }
+
+        // Common n-grams should have count = 4 (one from each worker)
+        for i in 0..10 {
+            let term = format!("common_ngram_{}", i);
+            assert_eq!(main_trie.get(&term), Some(&4),
+                "common n-gram '{}' should have count 4", term);
+        }
+
+        // Unique terms should have count = 1
+        for worker_id in 0..4 {
+            for i in 0..5 {
+                let term = format!("worker{}_unique_{}", worker_id, i);
+                assert_eq!(main_trie.get(&term), Some(&1),
+                    "unique term '{}' should have count 1", term);
+            }
+        }
+
+        // Total: 10 common + 4*5 unique = 30 terms
+        assert_eq!(main_trie.len, 30, "Main trie should have 30 terms");
+    }
+
+    // =========================================================================
+    // PersistentARTrie (byte-based) MutableMappedDictionary tests
+    // =========================================================================
+
+    #[test]
+    fn test_persistent_artrie_mutable_mapped_dictionary() {
+        let dir = tempdir().expect("create temp dir");
+        let path = dir.path().join("test.artrie");
+
+        let trie1: PersistentARTrie<i64> = PersistentARTrie::create(&path)
+            .expect("create trie");
+
+        // Test insert_with_value via trait
+        assert!(trie1.insert_with_value("apple", 5));
+        assert!(!trie1.insert_with_value("apple", 10)); // Update returns false
+
+        use libdictenstein::MappedDictionary;
+        assert_eq!(trie1.get_value("apple"), Some(10));
+    }
+
+    #[test]
+    fn test_persistent_artrie_union_with() {
+        let dir = tempdir().expect("create temp dir");
+        let path1 = dir.path().join("trie1.artrie");
+        let path2 = dir.path().join("trie2.artrie");
+
+        let trie1: PersistentARTrie<i64> = PersistentARTrie::create(&path1)
+            .expect("create trie1");
+        trie1.insert_with_value("apple", 5);
+        trie1.insert_with_value("banana", 3);
+
+        let trie2: PersistentARTrie<i64> = PersistentARTrie::create(&path2)
+            .expect("create trie2");
+        trie2.insert_with_value("apple", 7);
+        trie2.insert_with_value("cherry", 2);
+
+        // Union with sum
+        let processed = trie1.union_with(&trie2, |a, b| a + b);
+        assert_eq!(processed, 2, "Should process 2 terms");
+
+        use libdictenstein::MappedDictionary;
+        assert_eq!(trie1.get_value("apple"), Some(12), "apple should be 5 + 7 = 12");
+        assert_eq!(trie1.get_value("banana"), Some(3), "banana should remain 3");
+        assert_eq!(trie1.get_value("cherry"), Some(2), "cherry should be added");
+    }
+
+    #[test]
+    fn test_persistent_artrie_update_or_insert() {
+        let dir = tempdir().expect("create temp dir");
+        let path = dir.path().join("test.artrie");
+
+        let trie: PersistentARTrie<i64> = PersistentARTrie::create(&path)
+            .expect("create trie");
+
+        // Insert via update_or_insert (term doesn't exist)
+        assert!(trie.update_or_insert("counter", 1, |v| *v += 1));
+
+        // Update via update_or_insert (term exists)
+        assert!(!trie.update_or_insert("counter", 100, |v| *v += 1));
+
+        use libdictenstein::MappedDictionary;
+        assert_eq!(trie.get_value("counter"), Some(2), "counter should be 1 + 1 = 2");
+    }
 }

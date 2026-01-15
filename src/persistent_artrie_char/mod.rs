@@ -73,7 +73,9 @@ pub mod dict_impl_char;
 
 // Re-export disk-backed types
 #[cfg(feature = "persistent-artrie")]
-pub use dict_impl_char::DiskBackedCharTrieInner;
+pub use dict_impl_char::{
+    DiskBackedCharTrieInner, PrefixTermWithArena, PrefixTermWithValueAndArena, SharedCharTrie,
+};
 
 // Re-export node types
 pub use nodes::{

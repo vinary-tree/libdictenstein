@@ -306,6 +306,35 @@ impl Default for CharTrieFileHeader {
     }
 }
 
+/// A term with its arena location for page-aware batching.
+///
+/// Used by `iter_prefix_with_arena()` to enable I/O-efficient batch operations
+/// by grouping terms that reside in the same disk arena/page.
+#[cfg(feature = "persistent-artrie")]
+#[derive(Debug, Clone)]
+pub struct PrefixTermWithArena {
+    /// The term string
+    pub term: String,
+    /// The arena ID where this term's node resides (None for in-memory nodes)
+    pub arena_id: Option<u32>,
+}
+
+/// A term with its value and arena location for page-aware merge operations.
+///
+/// Used by `iter_prefix_with_values_and_arena()` to enable I/O-efficient batch
+/// operations by grouping terms that reside in the same disk arena/page.
+/// This is the same pattern used by `remove_prefix_batched()`.
+#[cfg(feature = "persistent-artrie")]
+#[derive(Debug, Clone)]
+pub struct PrefixTermWithValueAndArena<V> {
+    /// The term string
+    pub term: String,
+    /// The value associated with this term
+    pub value: V,
+    /// The arena ID where this term's node resides (None for in-memory nodes)
+    pub arena_id: Option<u32>,
+}
+
 /// A trie node for the disk-backed char trie (CharNode-based implementation)
 ///
 /// Uses adaptive CharNode types (CharNode4/16/48/CharBucket) for efficient
@@ -2748,6 +2777,49 @@ impl<V: DictionaryValue> DiskBackedCharTrieInner<V> {
         Ok(Some(current))
     }
 
+    /// Navigate to the node at a given prefix, also returning arena info.
+    ///
+    /// This variant of `navigate_to_prefix` also tracks the arena ID from the
+    /// SwizzledPtr that points to the final node. This is used for page-aware
+    /// batch operations.
+    ///
+    /// # Returns
+    ///
+    /// - `Ok(Some((node, arena_id)))` - The node at the prefix and its arena location
+    /// - `Ok(None)` - The prefix path doesn't exist
+    /// - `Err` - An I/O error occurred during lazy loading
+    #[cfg(feature = "persistent-artrie")]
+    fn navigate_to_prefix_with_arena(
+        &self,
+        prefix: &str,
+    ) -> Result<Option<(&CharTrieNodeInner<V>, Option<u32>)>> {
+        let root = match &self.root {
+            CharTrieRoot::Node(node) => node.as_ref(),
+            CharTrieRoot::Empty => return Ok(None),
+        };
+
+        let mut current = root;
+        let mut current_arena: Option<u32> = None; // Root has no incoming pointer
+
+        for c in prefix.chars() {
+            // Get the SwizzledPtr to extract arena info
+            match current.node.find_child(c as u32) {
+                Some(ptr) => {
+                    if ptr.is_null() {
+                        return Ok(None);
+                    }
+                    // Extract arena from the pointer leading to this child
+                    current_arena = ptr.as_arena_slot().map(|slot| slot.arena_id);
+                    // Resolve to get the actual node reference
+                    current = self.resolve_swizzled_ptr(ptr)?;
+                }
+                None => return Ok(None),
+            }
+        }
+
+        Ok(Some((current, current_arena)))
+    }
+
     /// Collect all terms under a node via DFS traversal.
     ///
     /// This method eagerly collects terms. For memory efficiency when dealing
@@ -2837,6 +2909,150 @@ impl<V: DictionaryValue> DiskBackedCharTrieInner<V> {
         Ok(())
     }
 
+    /// Collect terms with arena information for page-aware batch operations.
+    ///
+    /// This method traverses the subtree and collects terms along with their
+    /// disk arena location (extracted from parent SwizzledPtrs). This enables
+    /// grouping removals by arena for improved I/O locality.
+    ///
+    /// # Arguments
+    ///
+    /// * `node` - The subtree root to collect from
+    /// * `prefix` - The prefix string leading to this node
+    /// * `current_arena` - Arena ID from the parent's SwizzledPtr to this node
+    /// * `terms` - Output vector for collected terms with arena info
+    /// * `limit` - Maximum number of terms to collect
+    ///
+    /// # Returns
+    ///
+    /// `Ok(true)` if the limit was reached, `Ok(false)` otherwise.
+    #[cfg(feature = "persistent-artrie")]
+    fn collect_terms_with_arena(
+        &self,
+        node: &CharTrieNodeInner<V>,
+        prefix: String,
+        current_arena: Option<u32>,
+        terms: &mut Vec<PrefixTermWithArena>,
+        limit: usize,
+    ) -> Result<bool> {
+        if terms.len() >= limit {
+            return Ok(true);
+        }
+
+        // If this node is a final state, record the term with its arena location
+        if node.is_final() {
+            terms.push(PrefixTermWithArena {
+                term: prefix.clone(),
+                arena_id: current_arena,
+            });
+            if terms.len() >= limit {
+                return Ok(true);
+            }
+        }
+
+        // Traverse children, extracting arena from each child's SwizzledPtr
+        for (key, child_ptr) in node.node.iter_children() {
+            if child_ptr.is_null() {
+                continue;
+            }
+
+            // Extract arena from the SwizzledPtr pointing to this child
+            let child_arena = child_ptr.as_arena_slot().map(|slot| slot.arena_id);
+
+            // Build the child prefix
+            let mut child_prefix = prefix.clone();
+            child_prefix.push(char::from_u32(key).unwrap_or('\u{FFFD}'));
+
+            // Resolve the pointer to get the child node
+            let child = self.resolve_swizzled_ptr(child_ptr)?;
+
+            // Recurse with the child's arena info
+            if self.collect_terms_with_arena(child, child_prefix, child_arena, terms, limit)? {
+                return Ok(true);
+            }
+        }
+
+        Ok(false)
+    }
+
+    /// Collect terms with their values and arena locations under the given node.
+    ///
+    /// This method performs a DFS traversal, recording each final node's term,
+    /// value, and the arena where it resides. Used for page-locality optimized
+    /// merge operations.
+    ///
+    /// # Arguments
+    ///
+    /// * `node` - The node to start collection from
+    /// * `prefix` - The prefix string accumulated so far
+    /// * `current_arena` - The arena ID where the current node resides
+    /// * `terms` - Output vector to collect terms with values and arena info
+    /// * `limit` - Maximum number of terms to collect
+    ///
+    /// # Returns
+    ///
+    /// `Ok(true)` if the limit was reached, `Ok(false)` otherwise.
+    #[cfg(feature = "persistent-artrie")]
+    fn collect_terms_with_values_and_arena(
+        &self,
+        node: &CharTrieNodeInner<V>,
+        prefix: String,
+        current_arena: Option<u32>,
+        terms: &mut Vec<PrefixTermWithValueAndArena<V>>,
+        limit: usize,
+    ) -> Result<bool>
+    where
+        V: Clone,
+    {
+        if terms.len() >= limit {
+            return Ok(true);
+        }
+
+        // If this node is a final state with a value, record it with arena location
+        if node.is_final() {
+            if let Some(value) = &node.value {
+                terms.push(PrefixTermWithValueAndArena {
+                    term: prefix.clone(),
+                    value: value.clone(),
+                    arena_id: current_arena,
+                });
+                if terms.len() >= limit {
+                    return Ok(true);
+                }
+            }
+        }
+
+        // Traverse children, extracting arena from each child's SwizzledPtr
+        for (key, child_ptr) in node.node.iter_children() {
+            if child_ptr.is_null() {
+                continue;
+            }
+
+            // Extract arena from the SwizzledPtr pointing to this child
+            let child_arena = child_ptr.as_arena_slot().map(|slot| slot.arena_id);
+
+            // Build the child prefix
+            let mut child_prefix = prefix.clone();
+            child_prefix.push(char::from_u32(key).unwrap_or('\u{FFFD}'));
+
+            // Resolve the pointer to get the child node
+            let child = self.resolve_swizzled_ptr(child_ptr)?;
+
+            // Recurse with the child's arena info
+            if self.collect_terms_with_values_and_arena(
+                child,
+                child_prefix,
+                child_arena,
+                terms,
+                limit,
+            )? {
+                return Ok(true);
+            }
+        }
+
+        Ok(false)
+    }
+
     /// Iterate over all terms with the given prefix.
     ///
     /// Returns `Ok(None)` if the prefix path doesn't exist in the trie.
@@ -2888,6 +3104,97 @@ impl<V: DictionaryValue> DiskBackedCharTrieInner<V> {
         Ok(Some(terms))
     }
 
+    /// Iterate over all terms with the given prefix, including arena information.
+    ///
+    /// Returns terms along with their disk arena location, enabling page-aware
+    /// batch operations that group I/O by arena for improved cache locality.
+    ///
+    /// # Returns
+    ///
+    /// - `Ok(None)` - The prefix path doesn't exist in the trie
+    /// - `Ok(Some(vec))` - Vector of `PrefixTermWithArena` for matching terms
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// let trie = DiskBackedCharTrieInner::open("data.artrie")?;
+    /// if let Some(terms) = trie.iter_prefix_with_arena("app")? {
+    ///     // Group by arena for I/O-efficient processing
+    ///     let mut by_arena: HashMap<Option<u32>, Vec<String>> = HashMap::new();
+    ///     for item in terms {
+    ///         by_arena.entry(item.arena_id)
+    ///             .or_default()
+    ///             .push(item.term);
+    ///     }
+    /// }
+    /// ```
+    #[cfg(feature = "persistent-artrie")]
+    pub fn iter_prefix_with_arena(&self, prefix: &str) -> Result<Option<Vec<PrefixTermWithArena>>> {
+        let (node, prefix_arena) = match self.navigate_to_prefix_with_arena(prefix)? {
+            Some(pair) => pair,
+            None => return Ok(None),
+        };
+
+        let mut terms = Vec::new();
+        self.collect_terms_with_arena(node, prefix.to_string(), prefix_arena, &mut terms, usize::MAX)?;
+        Ok(Some(terms))
+    }
+
+    /// Iterate over all terms with values and arena locations for the given prefix.
+    ///
+    /// Returns terms along with their values and disk arena location, enabling
+    /// page-aware merge operations that group I/O by arena for improved cache locality.
+    /// This is the same pattern used by `remove_prefix_batched()`.
+    ///
+    /// # Returns
+    ///
+    /// - `Ok(None)` - The prefix path doesn't exist in the trie
+    /// - `Ok(Some(vec))` - Vector of `PrefixTermWithValueAndArena<V>` for matching terms
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// let trie = DiskBackedCharTrieInner::<i64>::open("data.artrie")?;
+    /// if let Some(terms) = trie.iter_prefix_with_values_and_arena("")? {
+    ///     // Group by arena for I/O-efficient merge processing
+    ///     let mut by_arena: HashMap<Option<u32>, Vec<(String, i64)>> = HashMap::new();
+    ///     for item in terms {
+    ///         by_arena.entry(item.arena_id)
+    ///             .or_default()
+    ///             .push((item.term, item.value));
+    ///     }
+    ///     // Process each arena's terms together for page locality
+    ///     for (arena_id, terms) in by_arena {
+    ///         for (term, value) in terms {
+    ///             // Merge logic here
+    ///         }
+    ///     }
+    /// }
+    /// ```
+    #[cfg(feature = "persistent-artrie")]
+    pub fn iter_prefix_with_values_and_arena(
+        &self,
+        prefix: &str,
+    ) -> Result<Option<Vec<PrefixTermWithValueAndArena<V>>>>
+    where
+        V: Clone,
+    {
+        let (node, prefix_arena) = match self.navigate_to_prefix_with_arena(prefix)? {
+            Some(pair) => pair,
+            None => return Ok(None),
+        };
+
+        let mut terms = Vec::new();
+        self.collect_terms_with_values_and_arena(
+            node,
+            prefix.to_string(),
+            prefix_arena,
+            &mut terms,
+            usize::MAX,
+        )?;
+        Ok(Some(terms))
+    }
+
     /// Remove all terms with the given prefix.
     ///
     /// Uses a default batch size of 1024 to limit memory usage.
@@ -2901,34 +3208,43 @@ impl<V: DictionaryValue> DiskBackedCharTrieInner<V> {
         self.remove_prefix_batched(prefix, 1024)
     }
 
-    /// Remove all terms with the given prefix using a custom batch size.
+    /// Remove all terms with the given prefix using page-aware batching.
     ///
-    /// Processes removals in batches to limit memory usage when dealing
-    /// with large subtrees. Each removal is logged to WAL individually.
+    /// This method groups terms by their disk arena before removal, improving
+    /// cache locality and reducing page faults for large prefix subtrees.
+    /// Arenas are processed in sorted order for sequential I/O patterns.
     ///
     /// # Arguments
     ///
     /// * `prefix` - The prefix to match
-    /// * `batch_size` - Maximum terms to collect and remove per batch
+    /// * `batch_size` - Maximum terms to collect per batch
     ///
     /// # Returns
     ///
     /// The number of terms removed.
     #[cfg(feature = "persistent-artrie")]
     pub fn remove_prefix_batched(&mut self, prefix: &str, batch_size: usize) -> Result<usize> {
+        use std::collections::HashMap;
+
         let batch_size = batch_size.max(1);
         let mut total_removed = 0;
 
         loop {
-            // Collect a batch of terms matching the prefix
-            let batch: Vec<String> = {
-                let node = match self.navigate_to_prefix(prefix)? {
-                    Some(n) => n,
+            // Collect a batch of terms WITH arena information
+            let batch: Vec<PrefixTermWithArena> = {
+                let (node, prefix_arena) = match self.navigate_to_prefix_with_arena(prefix)? {
+                    Some(pair) => pair,
                     None => break, // Prefix no longer exists
                 };
 
                 let mut terms = Vec::with_capacity(batch_size);
-                self.collect_terms_under_node_limited(node, prefix.to_string(), &mut terms, batch_size)?;
+                self.collect_terms_with_arena(
+                    node,
+                    prefix.to_string(),
+                    prefix_arena,
+                    &mut terms,
+                    batch_size,
+                )?;
                 terms
             };
 
@@ -2936,15 +3252,128 @@ impl<V: DictionaryValue> DiskBackedCharTrieInner<V> {
                 break;
             }
 
-            // Remove each term in the batch (with WAL logging)
-            for term in batch {
-                if self.remove(&term)? {
-                    total_removed += 1;
+            // GROUP BY ARENA for cache locality
+            let mut arena_groups: HashMap<Option<u32>, Vec<String>> = HashMap::new();
+            for item in batch {
+                arena_groups
+                    .entry(item.arena_id)
+                    .or_insert_with(Vec::new)
+                    .push(item.term);
+            }
+
+            // Process each arena's terms together (cache-friendly order)
+            // Sort by arena_id to process pages sequentially
+            let mut arena_ids: Vec<_> = arena_groups.keys().copied().collect();
+            arena_ids.sort();
+
+            for arena_id in arena_ids {
+                if let Some(terms) = arena_groups.remove(&arena_id) {
+                    for term in terms {
+                        if self.remove(&term)? {
+                            total_removed += 1;
+                        }
+                    }
                 }
             }
         }
 
         Ok(total_removed)
+    }
+
+    /// Merge another trie into this one using a custom merge function.
+    ///
+    /// This method iterates over all terms in `other` and merges them into `self`:
+    /// - If a term exists in both tries, applies `merge_fn` to combine values
+    /// - If a term only exists in `other`, it's inserted with its value
+    ///
+    /// Uses page-locality optimization: terms from `other` are grouped by their
+    /// disk arena location before processing, minimizing page faults when reading
+    /// from the source trie. This follows the same pattern as `remove_prefix_batched()`.
+    ///
+    /// # Arguments
+    ///
+    /// * `other` - The source trie to merge from
+    /// * `merge_fn` - Function to combine values when a term exists in both tries
+    ///
+    /// # Returns
+    ///
+    /// The number of terms processed from `other`.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// // Merge n-gram counts from worker trie into main trie
+    /// let processed = main_trie.merge_from(&worker_trie, |self_count, other_count| {
+    ///     self_count + other_count  // Sum the counts
+    /// })?;
+    /// ```
+    #[cfg(feature = "persistent-artrie")]
+    pub fn merge_from<F>(&mut self, other: &Self, merge_fn: F) -> Result<usize>
+    where
+        F: Fn(&V, &V) -> V,
+        V: Clone,
+    {
+        use std::collections::HashMap;
+
+        let mut processed = 0;
+
+        // Collect all terms with arena info for page-locality optimization
+        let terms_with_arena = match other.iter_prefix_with_values_and_arena("")? {
+            Some(terms) => terms,
+            None => return Ok(0), // Empty trie
+        };
+
+        // GROUP BY ARENA for read cache locality on the source trie
+        let mut arena_groups: HashMap<Option<u32>, Vec<(String, V)>> = HashMap::new();
+        for item in terms_with_arena {
+            arena_groups
+                .entry(item.arena_id)
+                .or_insert_with(Vec::new)
+                .push((item.term, item.value));
+        }
+
+        // Sort arena IDs for sequential I/O (None = in-memory first)
+        let mut arena_ids: Vec<_> = arena_groups.keys().copied().collect();
+        arena_ids.sort();
+
+        // Process each arena's terms together (page-locality aware)
+        for arena_id in arena_ids {
+            if let Some(terms) = arena_groups.remove(&arena_id) {
+                for (term, other_value) in terms {
+                    processed += 1;
+
+                    // Check if term exists in self and merge values
+                    let merged_value = if let Some(self_value) = self.get(&term) {
+                        merge_fn(self_value, &other_value)
+                    } else {
+                        other_value
+                    };
+
+                    // Upsert the merged value
+                    self.upsert(&term, merged_value)?;
+                }
+            }
+        }
+
+        Ok(processed)
+    }
+
+    /// Merge another trie into this one, replacing existing values.
+    ///
+    /// This is equivalent to `merge_from(other, |_, other_val| other_val.clone())`.
+    /// Terms from `other` overwrite terms in `self` if they exist.
+    ///
+    /// Uses page-locality optimization for efficient I/O.
+    ///
+    /// # Returns
+    ///
+    /// The number of terms processed from `other`.
+    #[cfg(feature = "persistent-artrie")]
+    pub fn merge_replace(&mut self, other: &Self) -> Result<usize>
+    where
+        V: Clone,
+    {
+        self.merge_from(other, |_, other_val| other_val.clone())
     }
 
     /// Sync changes to disk
@@ -3735,6 +4164,246 @@ const ROOT_TYPE_NODE: u8 = 1;
 impl<V: DictionaryValue> Default for DiskBackedCharTrieInner<V> {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+// ============================================================================
+// SharedCharTrie: Thread-safe wrapper for concurrent access
+// ============================================================================
+
+/// Thread-safe wrapper for `DiskBackedCharTrieInner` that enables concurrent read/write access.
+///
+/// This wrapper uses `Arc<RwLock<...>>` internally to allow multiple readers or exclusive
+/// writers. Use this type when you need to share a trie across threads or perform
+/// concurrent merge operations.
+///
+/// # Thread Safety
+///
+/// - Multiple readers can access the trie concurrently
+/// - Writers get exclusive access
+/// - The `merge_from` and `union_with` operations acquire appropriate locks
+///
+/// # Example
+///
+/// ```rust,ignore
+/// use std::sync::Arc;
+/// use std::thread;
+///
+/// let trie = SharedCharTrie::<i64>::create("shared.artrie")?;
+///
+/// // Clone for multiple threads
+/// let trie_clone = trie.clone();
+///
+/// // Concurrent reads
+/// let handle = thread::spawn(move || {
+///     trie_clone.get("key")
+/// });
+///
+/// // Or merge from another trie
+/// trie.union_with(&other_trie, |a, b| a + b)?;
+/// ```
+#[cfg(feature = "persistent-artrie")]
+pub struct SharedCharTrie<V: DictionaryValue> {
+    #[cfg(feature = "parking_lot")]
+    inner: std::sync::Arc<parking_lot::RwLock<DiskBackedCharTrieInner<V>>>,
+    #[cfg(not(feature = "parking_lot"))]
+    inner: std::sync::Arc<std::sync::RwLock<DiskBackedCharTrieInner<V>>>,
+}
+
+#[cfg(feature = "persistent-artrie")]
+impl<V: DictionaryValue> Clone for SharedCharTrie<V> {
+    fn clone(&self) -> Self {
+        Self {
+            inner: std::sync::Arc::clone(&self.inner),
+        }
+    }
+}
+
+#[cfg(feature = "persistent-artrie")]
+impl<V: DictionaryValue> SharedCharTrie<V> {
+    /// Create a new shared trie at the given path.
+    pub fn create(path: impl AsRef<std::path::Path>) -> Result<Self> {
+        let trie = DiskBackedCharTrieInner::create(path)?;
+        Ok(Self {
+            inner: std::sync::Arc::new(Self::new_lock(trie)),
+        })
+    }
+
+    /// Open an existing shared trie with automatic recovery.
+    pub fn open(path: impl AsRef<std::path::Path>) -> Result<Self> {
+        let (trie, _report) = DiskBackedCharTrieInner::open_with_recovery(path)?;
+        Ok(Self {
+            inner: std::sync::Arc::new(Self::new_lock(trie)),
+        })
+    }
+
+    /// Wrap an existing `DiskBackedCharTrieInner` in a shared wrapper.
+    pub fn from_inner(trie: DiskBackedCharTrieInner<V>) -> Self {
+        Self {
+            inner: std::sync::Arc::new(Self::new_lock(trie)),
+        }
+    }
+
+    #[cfg(feature = "parking_lot")]
+    fn new_lock(trie: DiskBackedCharTrieInner<V>) -> parking_lot::RwLock<DiskBackedCharTrieInner<V>> {
+        parking_lot::RwLock::new(trie)
+    }
+
+    #[cfg(not(feature = "parking_lot"))]
+    fn new_lock(trie: DiskBackedCharTrieInner<V>) -> std::sync::RwLock<DiskBackedCharTrieInner<V>> {
+        std::sync::RwLock::new(trie)
+    }
+
+    /// Get a value by key (read lock).
+    pub fn get(&self, key: &str) -> Option<V>
+    where
+        V: Clone,
+    {
+        #[cfg(feature = "parking_lot")]
+        let guard = self.inner.read();
+        #[cfg(not(feature = "parking_lot"))]
+        let guard = self.inner.read().expect("lock poisoned");
+
+        guard.get(key).cloned()
+    }
+
+    /// Check if a key exists (read lock).
+    pub fn contains(&self, key: &str) -> bool {
+        #[cfg(feature = "parking_lot")]
+        let guard = self.inner.read();
+        #[cfg(not(feature = "parking_lot"))]
+        let guard = self.inner.read().expect("lock poisoned");
+
+        guard.contains(key)
+    }
+
+    /// Get the number of entries (read lock).
+    pub fn len(&self) -> usize {
+        #[cfg(feature = "parking_lot")]
+        let guard = self.inner.read();
+        #[cfg(not(feature = "parking_lot"))]
+        let guard = self.inner.read().expect("lock poisoned");
+
+        guard.len
+    }
+
+    /// Check if the trie is empty (read lock).
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Insert or update a key-value pair (write lock).
+    pub fn upsert(&self, key: &str, value: V) -> Result<bool> {
+        #[cfg(feature = "parking_lot")]
+        let mut guard = self.inner.write();
+        #[cfg(not(feature = "parking_lot"))]
+        let mut guard = self.inner.write().expect("lock poisoned");
+
+        guard.upsert(key, value)
+    }
+
+    /// Remove a key (write lock).
+    pub fn remove(&self, key: &str) -> Result<bool> {
+        #[cfg(feature = "parking_lot")]
+        let mut guard = self.inner.write();
+        #[cfg(not(feature = "parking_lot"))]
+        let mut guard = self.inner.write().expect("lock poisoned");
+
+        guard.remove(key)
+    }
+
+    /// Merge another shared trie into this one using a merge function.
+    ///
+    /// Acquires read lock on `other` and write lock on `self`.
+    /// Uses page-locality optimization for efficient I/O.
+    ///
+    /// # Arguments
+    ///
+    /// * `other` - The source trie to merge from
+    /// * `merge_fn` - Function to combine values when a term exists in both tries
+    ///
+    /// # Returns
+    ///
+    /// The number of terms processed from `other`.
+    pub fn union_with<F>(&self, other: &Self, merge_fn: F) -> Result<usize>
+    where
+        F: Fn(&V, &V) -> V,
+        V: Clone,
+    {
+        // Lock order: other (read) first, then self (write)
+        // This prevents deadlock when two threads try to merge in opposite directions
+        #[cfg(feature = "parking_lot")]
+        let other_guard = other.inner.read();
+        #[cfg(not(feature = "parking_lot"))]
+        let other_guard = other.inner.read().expect("lock poisoned");
+
+        #[cfg(feature = "parking_lot")]
+        let mut self_guard = self.inner.write();
+        #[cfg(not(feature = "parking_lot"))]
+        let mut self_guard = self.inner.write().expect("lock poisoned");
+
+        self_guard.merge_from(&*other_guard, merge_fn)
+    }
+
+    /// Merge another shared trie, replacing values on conflict.
+    ///
+    /// This is equivalent to `union_with(other, |_, other_val| other_val.clone())`.
+    pub fn union_replace(&self, other: &Self) -> Result<usize>
+    where
+        V: Clone,
+    {
+        self.union_with(other, |_, other_val| other_val.clone())
+    }
+
+    /// Sync changes to disk (write lock).
+    pub fn sync(&self) -> Result<()> {
+        #[cfg(feature = "parking_lot")]
+        let mut guard = self.inner.write();
+        #[cfg(not(feature = "parking_lot"))]
+        let mut guard = self.inner.write().expect("lock poisoned");
+
+        guard.sync()
+    }
+
+    /// Checkpoint to disk (write lock).
+    pub fn checkpoint(&self) -> Result<()> {
+        #[cfg(feature = "parking_lot")]
+        let mut guard = self.inner.write();
+        #[cfg(not(feature = "parking_lot"))]
+        let mut guard = self.inner.write().expect("lock poisoned");
+
+        guard.checkpoint()
+    }
+
+    /// Atomic increment operation (write lock).
+    ///
+    /// Atomically increments the value for a key by the given delta.
+    /// If the key doesn't exist, it's initialized to the delta.
+    ///
+    /// Note: This method works with i64 values regardless of the generic type V.
+    /// The underlying implementation uses bincode serialization to convert between
+    /// V and i64.
+    pub fn increment(&self, key: &str, delta: i64) -> Result<i64> {
+        #[cfg(feature = "parking_lot")]
+        let mut guard = self.inner.write();
+        #[cfg(not(feature = "parking_lot"))]
+        let mut guard = self.inner.write().expect("lock poisoned");
+
+        guard.increment(key, delta)
+    }
+}
+
+#[cfg(feature = "persistent-artrie")]
+impl<V: DictionaryValue + std::fmt::Debug> std::fmt::Debug for SharedCharTrie<V> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        #[cfg(feature = "parking_lot")]
+        let guard = self.inner.read();
+        #[cfg(not(feature = "parking_lot"))]
+        let guard = self.inner.read().expect("lock poisoned");
+
+        f.debug_struct("SharedCharTrie")
+            .field("len", &guard.len)
+            .finish()
     }
 }
 

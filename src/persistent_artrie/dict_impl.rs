@@ -19,7 +19,7 @@ use std::path::Path;
 use std::sync::Arc;
 use crate::sync_compat::RwLock;
 
-use crate::{Dictionary, MappedDictionary, SyncStrategy};
+use crate::{Dictionary, MappedDictionary, MutableMappedDictionary, SyncStrategy};
 use crate::value::DictionaryValue;
 use super::bucket::StringBucket;
 use super::error::{PersistentARTrieError, Result};
@@ -2728,6 +2728,77 @@ impl<V: DictionaryValue> MappedDictionary for PersistentARTrie<V> {
     fn get_value(&self, term: &str) -> Option<Self::Value> {
         let inner = self.inner.read();
         inner.get_value_impl(term.as_bytes())
+    }
+}
+
+impl<V: DictionaryValue + Clone> MutableMappedDictionary for PersistentARTrie<V> {
+    /// Insert or update a term with an associated value.
+    ///
+    /// Uses interior mutability to acquire write lock on the inner state.
+    fn insert_with_value(&self, term: &str, value: Self::Value) -> bool {
+        let mut inner = self.inner.write();
+        inner.insert_impl(term.as_bytes(), Some(value))
+    }
+
+    /// Merge another trie into this one using a custom merge function.
+    ///
+    /// Iterates through all terms in `other` and merges them into `self`:
+    /// - If a term exists in both tries, applies `merge_fn` to combine values
+    /// - If a term only exists in `other`, it's inserted with its value
+    ///
+    /// # Arguments
+    ///
+    /// * `other` - The source trie to merge from
+    /// * `merge_fn` - Function to combine values when a term exists in both tries
+    ///
+    /// # Returns
+    ///
+    /// The number of terms processed from `other`.
+    fn union_with<F>(&self, other: &Self, merge_fn: F) -> usize
+    where
+        F: Fn(&Self::Value, &Self::Value) -> Self::Value,
+        Self::Value: Clone,
+    {
+        let mut processed = 0;
+
+        // Iterate all terms with values from other
+        for (term_bytes, value_opt) in other.iter_with_values() {
+            if let Some(other_value) = value_opt {
+                if let Ok(term) = std::str::from_utf8(&term_bytes) {
+                    processed += 1;
+
+                    // Check if term exists in self and merge values
+                    let merged_value = if let Some(self_value) = self.get_value(term) {
+                        merge_fn(&self_value, &other_value)
+                    } else {
+                        other_value
+                    };
+
+                    // Insert the merged value
+                    self.insert_with_value(term, merged_value);
+                }
+            }
+        }
+
+        processed
+    }
+
+    /// Update an existing term's value or insert a new term with a default value.
+    ///
+    /// This method is useful for incrementally modifying values without replacing them.
+    fn update_or_insert<F>(&self, term: &str, default_value: Self::Value, update_fn: F) -> bool
+    where
+        F: FnOnce(&mut Self::Value),
+    {
+        if let Some(existing) = self.get_value(term) {
+            let mut value = existing;
+            update_fn(&mut value);
+            self.insert_with_value(term, value);
+            false // Term existed
+        } else {
+            self.insert_with_value(term, default_value);
+            true // New term
+        }
     }
 }
 
