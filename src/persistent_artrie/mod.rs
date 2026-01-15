@@ -127,6 +127,14 @@ pub mod wal;
 #[cfg(feature = "persistent-artrie")]
 pub mod recovery;
 
+// Epoch-based automatic checkpointing
+#[cfg(feature = "persistent-artrie")]
+pub mod epoch;
+
+// Group commit for WAL batching (opt-in feature for slower storage)
+#[cfg(feature = "group-commit")]
+pub mod group_commit;
+
 // Prefetching for DFS traversal
 #[cfg(feature = "persistent-artrie")]
 pub mod prefetch;
@@ -205,12 +213,22 @@ pub use compact_encoding::{
 #[cfg(feature = "persistent-artrie")]
 pub use wal::{GroupCommit, Lsn, WalConfig, WalHeader, WalReader, WalRecord, WalRecordType, WalWriter};
 
+// Group commit types (opt-in feature for slower storage)
+#[cfg(feature = "group-commit")]
+pub use group_commit::{GroupCommitConfig, GroupCommitCoordinator, GroupCommitStats};
+
 // Recovery types
 #[cfg(feature = "persistent-artrie")]
 pub use recovery::{
     CorruptionType, IncrementalRecovery, RecoveredOperation, RecoveredState, RecoveryError,
     RecoveryManager, RecoveryMode, RecoveryReport, RecoveryStats,
     detect_corruption, find_wal_archive_segments, rebuild_from_wal_segments,
+};
+
+// Epoch-based checkpointing types
+#[cfg(feature = "persistent-artrie")]
+pub use epoch::{
+    CheckpointManager, CheckpointMeta, EpochConfig, EpochId, EpochMetadata, EpochState, EpochStats,
 };
 
 // Prefetch types

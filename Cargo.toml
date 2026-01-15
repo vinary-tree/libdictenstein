@@ -39,6 +39,9 @@ pathmap = { version = "0.2.0-alpha0", optional = true }
 # Memory-mapped I/O for persistent data structures
 memmap2 = { version = "0.9", optional = true }
 
+# Lock-free MPMC channels for group commit
+crossbeam-channel = { version = "0.5", optional = true }
+
 [build-dependencies]
 prost-build = { version = "0.13", optional = true }
 
@@ -55,6 +58,8 @@ compression = ["flate2"]
 protobuf = ["prost", "prost-build"]
 # Persistent Adaptive Radix Trie (disk-based dictionary)
 persistent-artrie = ["memmap2", "parking_lot", "serde", "bincode"]
+# Group commit for WAL batching (REJECTED: causes regression on NVMe, useful for slower storage)
+group-commit = ["persistent-artrie", "crossbeam-channel"]
 # SIMD optimization with AVX2/SSE4.1 intrinsics
 simd = []
 # SCDAWG optimization experiments
@@ -92,3 +97,13 @@ required-features = ["persistent-artrie"]
 name = "loading_experiments"
 harness = false
 required-features = ["persistent-artrie"]
+
+[[bench]]
+name = "epoch_benchmarks"
+harness = false
+required-features = ["persistent-artrie"]
+
+[[bench]]
+name = "group_commit_benchmarks"
+harness = false
+required-features = ["group-commit"]

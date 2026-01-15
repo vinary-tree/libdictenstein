@@ -228,6 +228,14 @@ pub enum PersistentARTrieError {
         /// Description of the error
         message: String,
     },
+
+    /// Group commit channel was closed
+    #[error("Group commit channel closed")]
+    GroupCommitChannelClosed,
+
+    /// WAL error (simplified string variant for group commit)
+    #[error("WAL error: {0}")]
+    Wal(String),
 }
 
 /// Errors specific to pointer swizzling operations

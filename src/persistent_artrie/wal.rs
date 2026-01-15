@@ -356,6 +356,15 @@ impl WalRecord {
         buf
     }
 
+    /// Calculate the serialized size of this record in bytes.
+    ///
+    /// This is used by group commit for batch size tracking.
+    pub fn serialized_size(&self) -> usize {
+        // Header: CRC32 (4) + Length (4) + LSN (8) + Type (1) = 17 bytes
+        const RECORD_HEADER_SIZE: usize = 17;
+        RECORD_HEADER_SIZE + self.serialize_payload().len()
+    }
+
     /// Deserialize a record from type and payload.
     pub fn deserialize(record_type: WalRecordType, payload: &[u8]) -> Result<Self, WalError> {
         match record_type {
@@ -801,6 +810,13 @@ impl WalWriter {
     /// Get the path to the WAL file.
     pub fn path(&self) -> &Path {
         &self.path
+    }
+
+    /// Allocate a new LSN without writing a record.
+    ///
+    /// This is used by group commit to pre-allocate LSNs before batching writes.
+    pub fn allocate_lsn(&self) -> Lsn {
+        self.next_lsn.fetch_add(1, Ordering::SeqCst)
     }
 
     /// Write a checkpoint record and update the header.
