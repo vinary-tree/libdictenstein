@@ -171,6 +171,10 @@ pub use node_impl::PersistentARTrieNode;
 // Dictionary types
 pub use dict_impl::{PersistentARTrie, TermIterator, TermValueIterator};
 
+// Arena-aware iteration types
+#[cfg(feature = "persistent-artrie")]
+pub use dict_impl::{PrefixTermWithArena, PrefixTermWithValueAndArena};
+
 // Zipper types
 pub use zipper::PersistentARTrieZipper;
 

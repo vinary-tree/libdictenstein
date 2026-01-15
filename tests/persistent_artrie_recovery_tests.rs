@@ -2640,3 +2640,217 @@ mod phase_22_merge_operations {
         assert_eq!(trie.get_value("counter"), Some(2), "counter should be 1 + 1 = 2");
     }
 }
+
+// ===========================================================================
+// Phase 22: Byte-oriented arena-aware iteration tests
+// ===========================================================================
+
+mod phase_22_byte_arena_aware_iteration {
+    use super::*;
+    use libdictenstein::persistent_artrie::{PersistentARTrie, PrefixTermWithArena};
+    use libdictenstein::{Dictionary, MappedDictionary};
+    use std::collections::HashMap;
+
+    #[test]
+    fn test_iter_prefix_with_arena_basic() {
+        let dir = tempdir().expect("create temp dir");
+        let path = dir.path().join("test.artrie");
+
+        let mut trie: PersistentARTrie<i32> = PersistentARTrie::create(&path)
+            .expect("create trie");
+
+        // Insert terms with common prefix
+        trie.insert("apple");
+        trie.insert("application");
+        trie.insert("apply");
+        trie.insert("banana");
+
+        // Get terms with arena info
+        let terms = trie.iter_prefix_with_arena(b"app")
+            .expect("I/O error")
+            .expect("prefix exists");
+
+        assert_eq!(terms.len(), 3, "Should find 3 terms with prefix 'app'");
+
+        // Verify we get the expected terms
+        let term_strings: Vec<String> = terms.iter()
+            .filter_map(|t| String::from_utf8(t.term.clone()).ok())
+            .collect();
+        assert!(term_strings.contains(&"apple".to_string()));
+        assert!(term_strings.contains(&"application".to_string()));
+        assert!(term_strings.contains(&"apply".to_string()));
+    }
+
+    #[test]
+    fn test_iter_prefix_with_arena_empty_prefix() {
+        let dir = tempdir().expect("create temp dir");
+        let path = dir.path().join("test.artrie");
+
+        let mut trie: PersistentARTrie<()> = PersistentARTrie::create(&path)
+            .expect("create trie");
+
+        // Insert some terms
+        trie.insert("hello");
+        trie.insert("world");
+        trie.insert("test");
+
+        // Empty prefix should return all terms
+        let terms = trie.iter_prefix_with_arena(b"")
+            .expect("I/O error")
+            .expect("prefix exists");
+
+        assert_eq!(terms.len(), 3, "Should find 3 terms with empty prefix");
+    }
+
+    #[test]
+    fn test_iter_prefix_with_arena_no_match() {
+        let dir = tempdir().expect("create temp dir");
+        let path = dir.path().join("test.artrie");
+
+        let mut trie: PersistentARTrie<()> = PersistentARTrie::create(&path)
+            .expect("create trie");
+
+        trie.insert("apple");
+        trie.insert("banana");
+
+        // Non-existent prefix should return None
+        let result = trie.iter_prefix_with_arena(b"xyz")
+            .expect("I/O error");
+
+        assert!(result.is_none(), "Should return None for non-existent prefix");
+    }
+
+    #[test]
+    fn test_iter_prefix_with_values_and_arena() {
+        let dir = tempdir().expect("create temp dir");
+        let path = dir.path().join("test.artrie");
+
+        let mut trie: PersistentARTrie<i32> = PersistentARTrie::create(&path)
+            .expect("create trie");
+
+        // Insert terms with values
+        use libdictenstein::MutableMappedDictionary;
+        trie.insert_with_value("apple", 1);
+        trie.insert_with_value("application", 2);
+        trie.insert_with_value("banana", 3);
+
+        // Get terms with values and arena info
+        let terms = trie.iter_prefix_with_values_and_arena(b"app")
+            .expect("I/O error")
+            .expect("prefix exists");
+
+        assert_eq!(terms.len(), 2, "Should find 2 terms with prefix 'app' that have values");
+
+        // Verify values
+        let values: HashMap<String, i32> = terms.iter()
+            .filter_map(|t| {
+                String::from_utf8(t.term.clone()).ok().map(|s| (s, t.value))
+            })
+            .collect();
+
+        assert_eq!(values.get("apple"), Some(&1));
+        assert_eq!(values.get("application"), Some(&2));
+    }
+
+    #[test]
+    fn test_merge_from_basic() {
+        let dir1 = tempdir().expect("create temp dir 1");
+        let dir2 = tempdir().expect("create temp dir 2");
+        let path1 = dir1.path().join("trie1.artrie");
+        let path2 = dir2.path().join("trie2.artrie");
+
+        let mut trie1: PersistentARTrie<i64> = PersistentARTrie::create(&path1)
+            .expect("create trie1");
+        let mut trie2: PersistentARTrie<i64> = PersistentARTrie::create(&path2)
+            .expect("create trie2");
+
+        // Insert into trie1
+        use libdictenstein::MutableMappedDictionary;
+        trie1.insert_with_value("apple", 1);
+        trie1.insert_with_value("banana", 2);
+
+        // Insert into trie2
+        trie2.insert_with_value("cherry", 3);
+        trie2.insert_with_value("apple", 10); // Conflict
+
+        // Merge trie2 into trie1 with sum on conflict
+        let processed = trie1.merge_from(&trie2, |a, b| a + b)
+            .expect("merge should succeed");
+
+        assert_eq!(processed, 2, "Should process 2 terms from trie2");
+        assert_eq!(trie1.get_value("apple"), Some(11), "apple: 1 + 10 = 11");
+        assert_eq!(trie1.get_value("banana"), Some(2), "banana unchanged");
+        assert_eq!(trie1.get_value("cherry"), Some(3), "cherry added");
+    }
+
+    #[test]
+    fn test_merge_replace() {
+        let dir1 = tempdir().expect("create temp dir 1");
+        let dir2 = tempdir().expect("create temp dir 2");
+        let path1 = dir1.path().join("trie1.artrie");
+        let path2 = dir2.path().join("trie2.artrie");
+
+        let mut trie1: PersistentARTrie<i64> = PersistentARTrie::create(&path1)
+            .expect("create trie1");
+        let mut trie2: PersistentARTrie<i64> = PersistentARTrie::create(&path2)
+            .expect("create trie2");
+
+        // Insert into trie1
+        use libdictenstein::MutableMappedDictionary;
+        trie1.insert_with_value("apple", 1);
+        trie1.insert_with_value("banana", 2);
+
+        // Insert into trie2
+        trie2.insert_with_value("apple", 100); // Should replace
+        trie2.insert_with_value("cherry", 3);
+
+        // Merge with replace semantics
+        let processed = trie1.merge_replace(&trie2)
+            .expect("merge should succeed");
+
+        assert_eq!(processed, 2, "Should process 2 terms from trie2");
+        assert_eq!(trie1.get_value("apple"), Some(100), "apple replaced with 100");
+        assert_eq!(trie1.get_value("banana"), Some(2), "banana unchanged");
+        assert_eq!(trie1.get_value("cherry"), Some(3), "cherry added");
+    }
+
+    #[test]
+    fn test_arena_grouping() {
+        let dir = tempdir().expect("create temp dir");
+        let path = dir.path().join("test.artrie");
+
+        let mut trie: PersistentARTrie<()> = PersistentARTrie::create(&path)
+            .expect("create trie");
+
+        // Insert many terms with common prefix
+        for i in 0..50 {
+            trie.insert(&format!("prefix_{:03}", i));
+        }
+        trie.insert("other");
+
+        // Get terms with arena info
+        let terms = trie.iter_prefix_with_arena(b"prefix_")
+            .expect("I/O error")
+            .expect("prefix exists");
+
+        assert_eq!(terms.len(), 50, "Should find 50 terms with prefix 'prefix_'");
+
+        // Group by arena to verify structure
+        let mut by_arena: HashMap<Option<u32>, Vec<Vec<u8>>> = HashMap::new();
+        for item in &terms {
+            by_arena.entry(item.arena_id)
+                .or_default()
+                .push(item.term.clone());
+        }
+
+        // Verify we got all terms grouped
+        let total: usize = by_arena.values().map(|v| v.len()).sum();
+        assert_eq!(total, 50, "All 50 terms should be grouped");
+
+        // Log arena distribution for debugging
+        println!("Arena distribution: {} arenas", by_arena.len());
+        for (arena, terms) in &by_arena {
+            println!("  Arena {:?}: {} terms", arena, terms.len());
+        }
+    }
+}
