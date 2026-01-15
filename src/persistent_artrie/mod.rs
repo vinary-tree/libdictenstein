@@ -195,6 +195,10 @@ pub use dict_impl::{PersistentARTrie, TermIterator, TermValueIterator};
 #[cfg(feature = "persistent-artrie")]
 pub use dict_impl::{PrefixTermWithArena, PrefixTermWithValueAndArena};
 
+// Per-document transaction types
+#[cfg(feature = "persistent-artrie")]
+pub use dict_impl::{DocumentTransaction, TransactionState};
+
 // Zipper types
 pub use zipper::PersistentARTrieZipper;
 

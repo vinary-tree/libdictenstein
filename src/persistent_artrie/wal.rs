@@ -170,6 +170,11 @@ pub enum WalRecordType {
     Upsert = 8,
     /// Atomic compare-and-swap operation
     CompareAndSwap = 9,
+    /// Batch insert - multiple terms in a single WAL record
+    ///
+    /// This reduces WAL header overhead from 17 bytes per insert to
+    /// 17 bytes + 4 bytes (count) for an entire batch.
+    BatchInsert = 10,
 }
 
 impl TryFrom<u8> for WalRecordType {
@@ -186,6 +191,7 @@ impl TryFrom<u8> for WalRecordType {
             7 => Ok(WalRecordType::Increment),
             8 => Ok(WalRecordType::Upsert),
             9 => Ok(WalRecordType::CompareAndSwap),
+            10 => Ok(WalRecordType::BatchInsert),
             _ => Err(WalError::InvalidRecordType(value)),
         }
     }
@@ -262,6 +268,30 @@ pub enum WalRecord {
         /// Whether the swap succeeded
         success: bool,
     },
+    /// Batch insert - multiple terms in a single WAL record.
+    ///
+    /// This record type batches multiple inserts into a single WAL record,
+    /// reducing header overhead from 17 bytes per insert to ~21 bytes for
+    /// the entire batch (17-byte header + 4-byte count).
+    ///
+    /// # Wire Format
+    ///
+    /// ```text
+    /// +----------+----------------------------------------------------+
+    /// | Count    | Entry[0] | Entry[1] | ... | Entry[count-1]         |
+    /// | (4 bytes)| (varies) | (varies) | ... | (varies)               |
+    /// +----------+----------------------------------------------------+
+    ///
+    /// Entry Format (same as Insert payload):
+    /// +----------+----------+----------+----------+----------+
+    /// | term_len | term     | has_val  | [val_len | value]   |
+    /// | (4 bytes)| (varies) | (1 byte) | [4 bytes | varies]  |
+    /// +----------+----------+----------+----------+----------+
+    /// ```
+    BatchInsert {
+        /// The entries in this batch (term, optional value)
+        entries: Vec<(Vec<u8>, Option<Vec<u8>>)>,
+    },
 }
 
 impl WalRecord {
@@ -277,6 +307,7 @@ impl WalRecord {
             WalRecord::Increment { .. } => WalRecordType::Increment,
             WalRecord::Upsert { .. } => WalRecordType::Upsert,
             WalRecord::CompareAndSwap { .. } => WalRecordType::CompareAndSwap,
+            WalRecord::BatchInsert { .. } => WalRecordType::BatchInsert,
         }
     }
 
@@ -350,6 +381,22 @@ impl WalRecord {
                 buf.extend_from_slice(&(new_value.len() as u32).to_le_bytes());
                 buf.extend_from_slice(new_value);
                 buf.push(if *success { 1 } else { 0 });
+            }
+            WalRecord::BatchInsert { entries } => {
+                // Count (4 bytes) + entries (each entry same as Insert payload)
+                buf.extend_from_slice(&(entries.len() as u32).to_le_bytes());
+                for (term, value) in entries {
+                    // Same format as Insert payload
+                    buf.extend_from_slice(&(term.len() as u32).to_le_bytes());
+                    buf.extend_from_slice(term);
+                    if let Some(v) = value {
+                        buf.push(1); // has_value = true
+                        buf.extend_from_slice(&(v.len() as u32).to_le_bytes());
+                        buf.extend_from_slice(v);
+                    } else {
+                        buf.push(0); // has_value = false
+                    }
+                }
             }
         }
 
@@ -539,6 +586,66 @@ impl WalRecord {
                     new_value,
                     success,
                 })
+            }
+            WalRecordType::BatchInsert => {
+                // Count (4 bytes) + entries
+                if payload.len() < 4 {
+                    return Err(WalError::CorruptedRecord("BatchInsert payload too short".into()));
+                }
+                let count = u32::from_le_bytes(payload[0..4].try_into().unwrap()) as usize;
+                let mut offset = 4;
+                let mut entries = Vec::with_capacity(count);
+
+                for i in 0..count {
+                    // Parse each entry (same format as Insert)
+                    if payload.len() < offset + 4 {
+                        return Err(WalError::CorruptedRecord(
+                            format!("BatchInsert entry {} term_len truncated", i),
+                        ));
+                    }
+                    let term_len = u32::from_le_bytes(
+                        payload[offset..offset + 4].try_into().unwrap(),
+                    ) as usize;
+                    offset += 4;
+
+                    if payload.len() < offset + term_len + 1 {
+                        return Err(WalError::CorruptedRecord(
+                            format!("BatchInsert entry {} term truncated", i),
+                        ));
+                    }
+                    let term = payload[offset..offset + term_len].to_vec();
+                    offset += term_len;
+
+                    let has_value = payload[offset] != 0;
+                    offset += 1;
+
+                    let value = if has_value {
+                        if payload.len() < offset + 4 {
+                            return Err(WalError::CorruptedRecord(
+                                format!("BatchInsert entry {} value_len truncated", i),
+                            ));
+                        }
+                        let value_len = u32::from_le_bytes(
+                            payload[offset..offset + 4].try_into().unwrap(),
+                        ) as usize;
+                        offset += 4;
+
+                        if payload.len() < offset + value_len {
+                            return Err(WalError::CorruptedRecord(
+                                format!("BatchInsert entry {} value truncated", i),
+                            ));
+                        }
+                        let v = payload[offset..offset + value_len].to_vec();
+                        offset += value_len;
+                        Some(v)
+                    } else {
+                        None
+                    };
+
+                    entries.push((term, value));
+                }
+
+                Ok(WalRecord::BatchInsert { entries })
             }
         }
     }
@@ -795,6 +902,67 @@ impl WalWriter {
         self.synced_lsn.store(current_lsn, Ordering::SeqCst);
 
         Ok(current_lsn)
+    }
+
+    /// Append a batch of inserts as a single WAL record.
+    ///
+    /// This reduces WAL overhead by batching multiple inserts into a single
+    /// record with a single CRC, single LSN, and single header (17 bytes + 4
+    /// for count vs. 17 bytes per individual insert).
+    ///
+    /// # Arguments
+    ///
+    /// * `entries` - Slice of (term, optional_value) tuples to insert
+    ///
+    /// # Returns
+    ///
+    /// The LSN assigned to this batch record.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// let entries = vec![
+    ///     (b"apple".to_vec(), None),
+    ///     (b"banana".to_vec(), Some(vec![1, 2, 3])),
+    ///     (b"cherry".to_vec(), None),
+    /// ];
+    /// let lsn = wal.append_batch(&entries)?;
+    /// wal.sync()?;
+    /// ```
+    ///
+    /// # Performance
+    ///
+    /// For 100 inserts:
+    /// - Individual inserts: 100 * 17 = 1700 bytes header overhead
+    /// - Batch insert: 17 + 4 = 21 bytes header overhead
+    /// - Savings: ~99% header overhead reduction
+    pub fn append_batch(&self, entries: &[(Vec<u8>, Option<Vec<u8>>)]) -> Result<Lsn, WalError> {
+        if entries.is_empty() {
+            // Empty batch - still log for consistency, but no-op
+            return self.append(WalRecord::BatchInsert {
+                entries: Vec::new(),
+            });
+        }
+
+        let record = WalRecord::BatchInsert {
+            entries: entries.to_vec(),
+        };
+        self.append(record)
+    }
+
+    /// Append a batch of inserts and sync in a single operation.
+    ///
+    /// This is a convenience method that combines `append_batch()` and `sync()`.
+    ///
+    /// # Returns
+    ///
+    /// The LSN that is now durable.
+    pub fn append_batch_and_sync(
+        &self,
+        entries: &[(Vec<u8>, Option<Vec<u8>>)],
+    ) -> Result<Lsn, WalError> {
+        self.append_batch(entries)?;
+        self.sync()
     }
 
     /// Get the current (next) LSN.
@@ -1644,5 +1812,110 @@ mod tests {
         assert!(config.archive_enabled);
         assert_eq!(config.max_segments, 10);
         assert_eq!(config.max_archive_bytes, 10 << 30); // 10 GB
+    }
+
+    #[test]
+    fn test_batch_insert_serialize_deserialize() {
+        // Test empty batch
+        let record = WalRecord::BatchInsert { entries: vec![] };
+        let buf = record.serialize_payload();
+        let deserialized = WalRecord::deserialize(WalRecordType::BatchInsert, &buf)
+            .expect("deserialize");
+        match deserialized {
+            WalRecord::BatchInsert { entries } => {
+                assert_eq!(entries.len(), 0);
+            }
+            _ => panic!("Expected BatchInsert"),
+        }
+
+        // Test batch with multiple entries
+        let entries = vec![
+            (b"hello".to_vec(), Some(b"world".to_vec())),
+            (b"foo".to_vec(), None),
+            (b"bar".to_vec(), Some(b"baz".to_vec())),
+        ];
+        let record = WalRecord::BatchInsert { entries: entries.clone() };
+        let buf = record.serialize_payload();
+        let deserialized = WalRecord::deserialize(WalRecordType::BatchInsert, &buf)
+            .expect("deserialize");
+        match deserialized {
+            WalRecord::BatchInsert { entries: deserialized_entries } => {
+                assert_eq!(deserialized_entries.len(), 3);
+                assert_eq!(deserialized_entries[0].0, b"hello");
+                assert_eq!(deserialized_entries[0].1.as_ref().map(|v| v.as_slice()), Some(b"world".as_slice()));
+                assert_eq!(deserialized_entries[1].0, b"foo");
+                assert!(deserialized_entries[1].1.is_none());
+                assert_eq!(deserialized_entries[2].0, b"bar");
+                assert_eq!(deserialized_entries[2].1.as_ref().map(|v| v.as_slice()), Some(b"baz".as_slice()));
+            }
+            _ => panic!("Expected BatchInsert"),
+        }
+    }
+
+    #[test]
+    fn test_wal_append_batch() {
+        let dir = tempdir().expect("create temp dir");
+        let wal_path = dir.path().join("test.wal");
+
+        // Create WAL and append a batch
+        {
+            let wal = WalWriter::create(&wal_path).expect("create WAL");
+            let entries = vec![
+                (b"term1".to_vec(), Some(b"value1".to_vec())),
+                (b"term2".to_vec(), None),
+                (b"term3".to_vec(), Some(b"value3".to_vec())),
+            ];
+            let lsn = wal.append_batch(&entries).expect("append_batch");
+            assert_eq!(lsn, 1);
+            wal.sync().expect("sync");
+        }
+
+        // Verify the batch can be read back
+        let reader = WalReader::new(&wal_path).expect("open WAL");
+        let records: Vec<_> = reader.iter().collect();
+        assert_eq!(records.len(), 1);
+        let (lsn, record) = records[0].as_ref().expect("record");
+        assert_eq!(*lsn, 1);
+        match record {
+            WalRecord::BatchInsert { entries } => {
+                assert_eq!(entries.len(), 3);
+                assert_eq!(entries[0].0, b"term1");
+                assert_eq!(entries[1].0, b"term2");
+                assert_eq!(entries[2].0, b"term3");
+            }
+            _ => panic!("Expected BatchInsert"),
+        }
+    }
+
+    #[test]
+    fn test_wal_append_batch_empty() {
+        let dir = tempdir().expect("create temp dir");
+        let wal_path = dir.path().join("test.wal");
+
+        // Create WAL and append an empty batch
+        let wal = WalWriter::create(&wal_path).expect("create WAL");
+        let lsn = wal.append_batch(&[]).expect("append_batch empty");
+        assert_eq!(lsn, 1);
+        wal.sync().expect("sync");
+
+        // Verify empty batch can be read
+        let reader = WalReader::new(&wal_path).expect("open WAL");
+        let records: Vec<_> = reader.iter().collect();
+        assert_eq!(records.len(), 1);
+        let (_, record) = records[0].as_ref().expect("record");
+        match record {
+            WalRecord::BatchInsert { entries } => {
+                assert_eq!(entries.len(), 0);
+            }
+            _ => panic!("Expected BatchInsert"),
+        }
+    }
+
+    #[test]
+    fn test_batch_insert_record_type() {
+        let record = WalRecord::BatchInsert {
+            entries: vec![(b"test".to_vec(), None)],
+        };
+        assert_eq!(record.record_type(), WalRecordType::BatchInsert);
     }
 }

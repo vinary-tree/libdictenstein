@@ -45,6 +45,9 @@ crossbeam-channel = { version = "0.5", optional = true }
 # Cross-platform system information (memory, CPU, etc.)
 sysinfo = { version = "0.37", optional = true }
 
+# Parallel processing for merge operations
+rayon = { version = "1.10", optional = true }
+
 [build-dependencies]
 prost-build = { version = "0.13", optional = true }
 
@@ -63,6 +66,8 @@ protobuf = ["prost", "prost-build"]
 persistent-artrie = ["memmap2", "parking_lot", "serde", "bincode", "sysinfo"]
 # Group commit for WAL batching (REJECTED: causes regression on NVMe, useful for slower storage)
 group-commit = ["persistent-artrie", "crossbeam-channel"]
+# Parallel merge using rayon for multi-core acceleration
+parallel-merge = ["persistent-artrie", "rayon"]
 # SIMD optimization with AVX2/SSE4.1 intrinsics
 simd = []
 # SCDAWG optimization experiments
@@ -123,5 +128,25 @@ required-features = ["persistent-artrie"]
 
 [[bench]]
 name = "per_node_log_benchmarks"
+harness = false
+required-features = ["persistent-artrie"]
+
+[[bench]]
+name = "batch_wal_benchmarks"
+harness = false
+required-features = ["persistent-artrie"]
+
+[[bench]]
+name = "write_locality_benchmarks"
+harness = false
+required-features = ["persistent-artrie"]
+
+[[bench]]
+name = "parallel_merge_benchmarks"
+harness = false
+required-features = ["parallel-merge"]
+
+[[bench]]
+name = "transaction_benchmarks"
 harness = false
 required-features = ["persistent-artrie"]

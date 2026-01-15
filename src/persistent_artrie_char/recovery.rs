@@ -467,7 +467,7 @@ impl RecoveryManager {
                         continue;
                     }
 
-                    if let Some(op) = self.record_to_operation(lsn, record) {
+                    for op in self.record_to_operations(lsn, record) {
                         apply_fn(op)?;
                         replayed += 1;
                     }
@@ -527,7 +527,7 @@ impl RecoveryManager {
             for result in reader.iter() {
                 match result {
                     Ok((lsn, record)) => {
-                        if let Some(op) = self.record_to_operation(lsn, record) {
+                        for op in self.record_to_operations(lsn, record) {
                             apply_fn(op)?;
                             replayed += 1;
                         }
@@ -572,15 +572,23 @@ impl RecoveryManager {
         }
     }
 
-    /// Convert a WAL record to a recovery operation.
-    fn record_to_operation(&self, lsn: Lsn, record: WalRecord) -> Option<RecoveredOperation> {
+    /// Convert a WAL record to recovery operations.
+    ///
+    /// Returns a vector because BatchInsert records contain multiple operations.
+    fn record_to_operations(&self, lsn: Lsn, record: WalRecord) -> Vec<RecoveredOperation> {
         match record {
-            WalRecord::Insert { term, value } => Some(RecoveredOperation::Insert { lsn, term, value }),
-            WalRecord::Remove { term } => Some(RecoveredOperation::Remove { lsn, term }),
-            WalRecord::Increment { term, delta, result } => {
-                Some(RecoveredOperation::Increment { lsn, term, delta, result })
+            WalRecord::Insert { term, value } => {
+                vec![RecoveredOperation::Insert { lsn, term, value }]
             }
-            WalRecord::Upsert { term, value } => Some(RecoveredOperation::Upsert { lsn, term, value }),
+            WalRecord::Remove { term } => {
+                vec![RecoveredOperation::Remove { lsn, term }]
+            }
+            WalRecord::Increment { term, delta, result } => {
+                vec![RecoveredOperation::Increment { lsn, term, delta, result }]
+            }
+            WalRecord::Upsert { term, value } => {
+                vec![RecoveredOperation::Upsert { lsn, term, value }]
+            }
             WalRecord::CompareAndSwap {
                 term,
                 new_value,
@@ -588,21 +596,27 @@ impl RecoveryManager {
                 ..
             } => {
                 if success {
-                    Some(RecoveredOperation::CompareAndSwap {
+                    vec![RecoveredOperation::CompareAndSwap {
                         lsn,
                         term,
                         new_value,
                         success,
-                    })
+                    }]
                 } else {
-                    None // Failed CAS operations don't need replay
+                    vec![] // Failed CAS operations don't need replay
                 }
+            }
+            WalRecord::BatchInsert { entries } => {
+                entries
+                    .into_iter()
+                    .map(|(term, value)| RecoveredOperation::Insert { lsn, term, value })
+                    .collect()
             }
             // Skip transaction and checkpoint records
             WalRecord::BeginTx { .. }
             | WalRecord::CommitTx { .. }
             | WalRecord::AbortTx { .. }
-            | WalRecord::Checkpoint { .. } => None,
+            | WalRecord::Checkpoint { .. } => vec![],
         }
     }
 }

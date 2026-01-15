@@ -634,6 +634,20 @@ impl RecoveryManager {
                         }
                     }
                 }
+                WalRecord::BatchInsert { entries } => {
+                    // Expand batch into individual insert operations
+                    for (term, value) in entries {
+                        let op = RecoveredOperation::Insert { lsn, term, value };
+                        if let Some(tx_id) = current_tx {
+                            // Part of a transaction - buffer until commit
+                            pending_tx_ops.entry(tx_id).or_default().push(op);
+                        } else {
+                            // Not in a transaction - implicitly committed
+                            operations.push(op);
+                            stats.insert_operations += 1;
+                        }
+                    }
+                }
             }
         }
 
@@ -830,6 +844,20 @@ impl IncrementalRecovery {
                     }
                 } else {
                     Ok(None)
+                }
+            }
+            WalRecord::BatchInsert { entries } => {
+                // Expand batch into individual insert operations
+                let ops: Vec<RecoveredOperation> = entries
+                    .into_iter()
+                    .map(|(term, value)| RecoveredOperation::Insert { lsn, term, value })
+                    .collect();
+
+                if self.current_tx.is_some() {
+                    self.pending_ops.extend(ops);
+                    Ok(None)
+                } else {
+                    Ok(Some(ops))
                 }
             }
         }
@@ -1138,38 +1166,54 @@ where
             records_replayed += 1;
 
             // Convert WalRecord to RecoveredOperation and apply
-            let op = match record {
+            match record {
                 super::wal::WalRecord::Insert { term, value } => {
-                    Some(RecoveredOperation::Insert { lsn: 0, term, value })
+                    let op = RecoveredOperation::Insert { lsn: 0, term, value };
+                    if apply_fn(op).is_ok() {
+                        terms_recovered += 1;
+                    }
                 }
                 super::wal::WalRecord::Remove { term } => {
-                    Some(RecoveredOperation::Remove { lsn: 0, term })
+                    let op = RecoveredOperation::Remove { lsn: 0, term };
+                    if apply_fn(op).is_ok() {
+                        terms_recovered += 1;
+                    }
                 }
                 super::wal::WalRecord::Increment { term, delta, result } => {
-                    Some(RecoveredOperation::Increment { lsn: 0, term, delta, result })
+                    let op = RecoveredOperation::Increment { lsn: 0, term, delta, result };
+                    if apply_fn(op).is_ok() {
+                        terms_recovered += 1;
+                    }
                 }
                 super::wal::WalRecord::Upsert { term, value } => {
-                    Some(RecoveredOperation::Upsert { lsn: 0, term, value })
+                    let op = RecoveredOperation::Upsert { lsn: 0, term, value };
+                    if apply_fn(op).is_ok() {
+                        terms_recovered += 1;
+                    }
                 }
                 super::wal::WalRecord::CompareAndSwap { term, new_value, success, .. } => {
                     if success {
-                        Some(RecoveredOperation::CompareAndSwap {
+                        let op = RecoveredOperation::CompareAndSwap {
                             lsn: 0,
                             term,
                             new_value,
                             success,
-                        })
-                    } else {
-                        None
+                        };
+                        if apply_fn(op).is_ok() {
+                            terms_recovered += 1;
+                        }
                     }
                 }
-                _ => None, // Skip transaction/checkpoint records
-            };
-
-            if let Some(op) = op {
-                if apply_fn(op).is_ok() {
-                    terms_recovered += 1;
+                super::wal::WalRecord::BatchInsert { entries } => {
+                    // Expand batch and apply each entry
+                    for (term, value) in entries {
+                        let op = RecoveredOperation::Insert { lsn: 0, term, value };
+                        if apply_fn(op).is_ok() {
+                            terms_recovered += 1;
+                        }
+                    }
                 }
+                _ => {} // Skip transaction/checkpoint records
             }
         }
     }

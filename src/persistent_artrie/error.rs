@@ -204,6 +204,10 @@ pub enum PersistentARTrieError {
         operation: String,
     },
 
+    /// Invalid operation (e.g., operating on a committed/aborted transaction)
+    #[error("Invalid operation: {0}")]
+    InvalidOperation(String),
+
     /// Concurrent modification detected (for optimistic locking)
     #[error("Concurrent modification detected on block {block_id}")]
     ConcurrentModification {

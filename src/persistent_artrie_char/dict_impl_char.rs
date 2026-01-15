@@ -961,6 +961,19 @@ impl<V: DictionaryValue> DiskBackedCharTrieInner<V> {
                         }
                     }
                 }
+                WalRecord::BatchInsert { entries } => {
+                    // Replay batch insert: expand into individual inserts
+                    for (term, value_opt) in entries {
+                        let term_str = String::from_utf8_lossy(&term);
+                        if let Some(value_bytes) = value_opt {
+                            if let Ok(v) = bincode::deserialize::<V>(&value_bytes) {
+                                inner.insert_impl_no_wal_with_value(&term_str, v);
+                            }
+                        } else {
+                            inner.insert_impl_no_wal(&term_str);
+                        }
+                    }
+                }
             }
         }
 
@@ -1136,6 +1149,19 @@ impl<V: DictionaryValue> DiskBackedCharTrieInner<V> {
                         let term_str = String::from_utf8_lossy(&term);
                         if let Ok(v) = bincode::deserialize::<V>(&new_value) {
                             inner.insert_impl_no_wal_with_value(&term_str, v);
+                        }
+                    }
+                }
+                WalRecord::BatchInsert { entries } => {
+                    // Replay batch insert: expand into individual inserts
+                    for (term, value_opt) in entries {
+                        let term_str = String::from_utf8_lossy(&term);
+                        if let Some(value_bytes) = value_opt {
+                            if let Ok(v) = bincode::deserialize::<V>(&value_bytes) {
+                                inner.insert_impl_no_wal_with_value(&term_str, v);
+                            }
+                        } else {
+                            inner.insert_impl_no_wal(&term_str);
                         }
                     }
                 }

@@ -379,17 +379,42 @@ impl ChildNode {
     /// Recursively insert a key into this child node.
     ///
     /// This handles all child types:
-    /// - `Bucket`: directly insert into the bucket
+    /// - `Bucket`: directly insert into the bucket, converting to ART node if full
     /// - `ArtNode`: recursively descend through nested ART structure
     /// - `DiskRef`: not supported for mutation (returns false)
     ///
     /// Returns `true` if the key was newly inserted, `false` if it already existed
     /// or if insertion failed.
     pub fn insert_key(&mut self, remaining: &[u8]) -> bool {
-        match self {
-            ChildNode::Bucket(bucket) => {
-                bucket.insert_key(remaining).unwrap_or(false)
+        // Handle bucket case with potential overflow conversion
+        if let ChildNode::Bucket(bucket) = self {
+            match bucket.insert_key(remaining) {
+                Ok(inserted) => return inserted,
+                Err(BucketError::BucketFull) => {
+                    // Bucket is full, convert to ART node
+                    if let Ok(result) = bucket_to_art_node(bucket) {
+                        let new_children: Vec<(u8, ChildNode)> = result
+                            .children
+                            .into_iter()
+                            .map(|(b, bucket)| (b, ChildNode::Bucket(bucket)))
+                            .collect();
+                        *self = ChildNode::ArtNode {
+                            node: result.node,
+                            is_final: result.is_final,
+                            value: result.final_value,
+                            children: new_children,
+                        };
+                        // Retry insert with the new ART node (recursive call)
+                        return self.insert_key(remaining);
+                    }
+                    return false;
+                }
+                Err(_) => return false,
             }
+        }
+
+        match self {
+            ChildNode::Bucket(_) => unreachable!("handled above"),
             ChildNode::ArtNode {
                 is_final,
                 value: _,
@@ -418,6 +443,94 @@ impl ChildNode {
                     // No matching child, create new bucket
                     let mut new_bucket = StringBucket::with_values();
                     let _ = new_bucket.insert_key(rest);
+                    children.push((first, ChildNode::Bucket(new_bucket)));
+                    true
+                }
+            }
+            ChildNode::DiskRef { .. } => {
+                // Cannot insert into disk ref without loading first
+                false
+            }
+        }
+    }
+
+    /// Recursively insert a key with an optional value into this child node.
+    ///
+    /// This handles all child types:
+    /// - `Bucket`: directly insert into the bucket, converting to ART node if full
+    /// - `ArtNode`: recursively descend through nested ART structure
+    /// - `DiskRef`: not supported for mutation (returns false)
+    ///
+    /// Returns `true` if the key was newly inserted, `false` if it already existed
+    /// or if insertion failed.
+    pub fn insert_with_value(&mut self, remaining: &[u8], value: Option<&[u8]>) -> bool {
+        // Handle bucket case with potential overflow conversion
+        if let ChildNode::Bucket(bucket) = self {
+            let insert_result = if let Some(val) = value {
+                bucket.insert(remaining, val)
+            } else {
+                bucket.insert_key(remaining)
+            };
+            match insert_result {
+                Ok(inserted) => return inserted,
+                Err(BucketError::BucketFull) => {
+                    // Bucket is full, convert to ART node
+                    if let Ok(result) = bucket_to_art_node(bucket) {
+                        let new_children: Vec<(u8, ChildNode)> = result
+                            .children
+                            .into_iter()
+                            .map(|(b, bucket)| (b, ChildNode::Bucket(bucket)))
+                            .collect();
+                        *self = ChildNode::ArtNode {
+                            node: result.node,
+                            is_final: result.is_final,
+                            value: result.final_value,
+                            children: new_children,
+                        };
+                        // Retry insert with the new ART node (recursive call)
+                        return self.insert_with_value(remaining, value);
+                    }
+                    return false;
+                }
+                Err(_) => return false,
+            }
+        }
+
+        match self {
+            ChildNode::Bucket(_) => unreachable!("handled above"),
+            ChildNode::ArtNode {
+                is_final,
+                value: node_value,
+                children,
+                ..
+            } => {
+                if remaining.is_empty() {
+                    // Insert at this node (make it final)
+                    if *is_final {
+                        false // Already exists
+                    } else {
+                        *is_final = true;
+                        *node_value = value.map(|v| v.to_vec());
+                        true
+                    }
+                } else {
+                    let first = remaining[0];
+                    let rest = &remaining[1..];
+
+                    // Find child with matching byte
+                    for (b, child) in children.iter_mut() {
+                        if *b == first {
+                            return child.insert_with_value(rest, value);
+                        }
+                    }
+
+                    // No matching child, create new bucket
+                    let mut new_bucket = StringBucket::with_values();
+                    if let Some(val) = value {
+                        let _ = new_bucket.insert(rest, val);
+                    } else {
+                        let _ = new_bucket.insert_key(rest);
+                    }
                     children.push((first, ChildNode::Bucket(new_bucket)));
                     true
                 }
