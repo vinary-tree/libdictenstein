@@ -159,6 +159,10 @@ pub mod dedup;
 #[cfg(feature = "persistent-artrie")]
 pub mod relative_encoding;
 
+// Memory pressure monitoring for proactive eviction
+#[cfg(feature = "persistent-artrie")]
+pub mod memory_monitor;
+
 // Re-exports for convenience
 pub use error::{PersistentARTrieError, Result, SwizzleError};
 pub use path_compression::{PrefixMatchResult, SplitPrefix};
@@ -269,6 +273,13 @@ pub use relative_encoding::{
     encode_child_pointer, decode_child_pointer, encode_children, decode_children,
     encode_sequential_siblings, decode_sequential_siblings, encoded_size, is_same_arena,
     FLAG_CROSS_ARENA, FLAG_RELATIVE_OFFSETS, FLAG_SEQUENTIAL_SIBLINGS, CROSS_ARENA_SIZE,
+};
+
+// Memory pressure monitoring types
+#[cfg(feature = "persistent-artrie")]
+pub use memory_monitor::{
+    MemoryMonitorStats, MemoryPressureConfig, MemoryPressureLevel, MemoryPressureMonitor,
+    MemoryStats, PressureCallback, PsiMetrics,
 };
 
 /// Maximum key length supported (64KB - 1)
