@@ -120,3 +120,8 @@ required-features = ["persistent-artrie"]
 name = "adaptive_pool_benchmarks"
 harness = false
 required-features = ["persistent-artrie"]
+
+[[bench]]
+name = "per_node_log_benchmarks"
+harness = false
+required-features = ["persistent-artrie"]

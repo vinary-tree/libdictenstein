@@ -167,6 +167,10 @@ pub mod memory_monitor;
 #[cfg(feature = "persistent-artrie")]
 pub mod adaptive_pool;
 
+// Per-node logging for near-instant recovery
+#[cfg(feature = "persistent-artrie")]
+pub mod per_node_log;
+
 // Re-exports for convenience
 pub use error::{PersistentARTrieError, Result, SwizzleError};
 pub use path_compression::{PrefixMatchResult, SplitPrefix};
@@ -290,6 +294,13 @@ pub use memory_monitor::{
 #[cfg(feature = "persistent-artrie")]
 pub use adaptive_pool::{
     AdaptivePoolConfig, AdaptivePoolController, AdaptivePoolStats, CacheStats,
+};
+
+// Per-node logging types
+#[cfg(feature = "persistent-artrie")]
+pub use per_node_log::{
+    DirtyNodeTracker, InlineLog, NodeId, NodeLogEntry, NodeRecoveryResult,
+    PageId, PerNodeLogConfig, PerNodeLogStats, PerNodeLogStatsAtomic, RecoveryResult,
 };
 
 /// Maximum key length supported (64KB - 1)
