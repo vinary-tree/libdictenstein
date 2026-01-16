@@ -918,6 +918,7 @@ impl<V: DictionaryValue> SubstringDictionary for Scdawg<V> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use log::debug;
 
     #[test]
     fn test_scdawg_empty() {
@@ -1046,9 +1047,9 @@ mod tests {
         let inner = scdawg.inner.read();
 
         // Print all nodes with term_ends
-        eprintln!("\nNode structure for 'abab':");
+        debug!("Node structure for 'abab':");
         for (i, node) in inner.nodes.iter().enumerate() {
-            eprintln!(
+            debug!(
                 "Node {}: length={}, term_ends={:?}, edges={:?}",
                 i,
                 node.length,
@@ -1062,14 +1063,14 @@ mod tests {
 
         // Navigate to "ab" and check what we find
         let ab_node = inner.find_substring_fast("ab").unwrap();
-        eprintln!("\nNode for 'ab': {}", ab_node);
-        eprintln!("term_ends at 'ab': {:?}", inner.nodes[ab_node].term_ends);
-        eprintln!("children of 'ab': {:?}", inner.nodes[ab_node].forward_edges);
+        debug!("Node for 'ab': {}", ab_node);
+        debug!("term_ends at 'ab': {:?}", inner.nodes[ab_node].term_ends);
+        debug!("children of 'ab': {:?}", inner.nodes[ab_node].forward_edges);
 
         // Try counting manually
         let mut results = Vec::new();
         inner.collect_term_positions(ab_node, 2, &mut results);
-        eprintln!("\nCollected positions: {:?}", results);
+        debug!("Collected positions: {:?}", results);
     }
 
     #[test]
@@ -1141,7 +1142,7 @@ mod tests {
         let locs = scdawg.locations("cat");
 
         // Debug: print what we found
-        eprintln!("\nLocations of 'cat': {:?}", locs);
+        debug!("Locations of 'cat': {:?}", locs);
 
         // "cat" appears at:
         // - "cat" position 0

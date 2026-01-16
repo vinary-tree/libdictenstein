@@ -36,6 +36,7 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use super::wal::{Lsn, WalError, WalReader, WalRecord};
+use log::warn;
 
 /// Error types for recovery operations.
 #[derive(Debug)]
@@ -464,7 +465,7 @@ impl RecoveryManager {
                 Err(e) => {
                     stats.corrupted_records += 1;
                     // Log corruption but continue - we want to recover as much as possible
-                    eprintln!("Warning: Corrupted record during analysis: {:?}", e);
+                    warn!("Corrupted record during analysis: {:?}", e);
                     continue;
                 }
             };

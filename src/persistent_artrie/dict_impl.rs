@@ -18,6 +18,7 @@
 use std::path::Path;
 use std::sync::Arc;
 use crate::sync_compat::RwLock;
+use log::warn;
 
 use smallvec::SmallVec;
 
@@ -476,7 +477,7 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
             match Self::load_root_from_disk_with_arena(&buffer_manager, &arena_manager, root_ptr) {
                 Ok((root, count)) => (Some(root), count),
                 Err(e) => {
-                    eprintln!("Warning: Failed to load trie from disk: {:?}", e);
+                    warn!("Failed to load trie from disk: {:?}", e);
                     (None, 0)
                 }
             }
@@ -495,7 +496,7 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
                     (state.into_operations(), lsn, cp_lsn)
                 }
                 Err(e) => {
-                    eprintln!("Warning: WAL recovery error: {:?}", e);
+                    warn!("WAL recovery error: {:?}", e);
                     (Vec::new(), 1, None)
                 }
             }
@@ -560,7 +561,7 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
                             match bincode::deserialize(&bytes) {
                                 Ok(v) => Some(v),
                                 Err(e) => {
-                                    eprintln!("Warning: Failed to deserialize value from WAL: {:?}", e);
+                                    warn!("Failed to deserialize value from WAL: {:?}", e);
                                     None
                                 }
                             }
@@ -643,7 +644,7 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
             if was_loaded_from_disk && replayed_count == 0 {
                 let wal = wal_writer.write();
                 if let Err(e) = wal.truncate() {
-                    eprintln!("Warning: Failed to truncate WAL after recovery: {:?}", e);
+                    warn!("Failed to truncate WAL after recovery: {:?}", e);
                 }
             }
         }
@@ -1627,7 +1628,7 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
                 .collect();
 
             if let Err(e) = wal_writer.write().append_batch(&wal_entries) {
-                eprintln!("Warning: Failed to log batch insert to WAL: {:?}", e);
+                warn!("Failed to log batch insert to WAL: {:?}", e);
             }
         }
 
@@ -1675,7 +1676,7 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
                 .collect();
 
             if let Err(e) = wal_writer.write().append_batch(&wal_entries) {
-                eprintln!("Warning: Failed to log batch insert to WAL: {:?}", e);
+                warn!("Failed to log batch insert to WAL: {:?}", e);
             }
         }
 
@@ -2019,7 +2020,7 @@ impl<V: DictionaryValue> PersistentARTrieInner<V> {
                     match bincode::serialize(&v) {
                         Ok(bytes) => Some(bytes),
                         Err(e) => {
-                            eprintln!("Warning: Failed to serialize value for WAL: {:?}", e);
+                            warn!("Failed to serialize value for WAL: {:?}", e);
                             None
                         }
                     }
@@ -2031,7 +2032,7 @@ impl<V: DictionaryValue> PersistentARTrieInner<V> {
                 };
                 if let Err(e) = wal_writer.write().append(record) {
                     // Log error but don't fail the insert - data is in memory
-                    eprintln!("Warning: Failed to log insert to WAL: {:?}", e);
+                    warn!("Failed to log insert to WAL: {:?}", e);
                 }
             }
         }
@@ -2175,7 +2176,7 @@ impl<V: DictionaryValue> PersistentARTrieInner<V> {
                 };
                 if let Err(e) = wal_writer.write().append(record) {
                     // Log error but don't fail the remove - data is in memory
-                    eprintln!("Warning: Failed to log remove to WAL: {:?}", e);
+                    warn!("Failed to log remove to WAL: {:?}", e);
                 }
             }
         }

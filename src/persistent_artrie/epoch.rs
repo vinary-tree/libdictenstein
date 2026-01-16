@@ -49,6 +49,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use super::wal::{Lsn, WalWriter};
 use super::Result;
 use super::PersistentARTrieError;
+use log::warn;
 
 /// Unique identifier for an epoch.
 pub type EpochId = u64;
@@ -762,7 +763,7 @@ impl CheckpointManager {
         match CheckpointMeta::deserialize(&data) {
             Ok(meta) => Ok(Some(meta)),
             Err(e) => {
-                eprintln!("Warning: Failed to load checkpoint metadata: {}", e);
+                warn!("Failed to load checkpoint metadata: {}", e);
                 Ok(None)
             }
         }

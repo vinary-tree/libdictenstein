@@ -902,7 +902,7 @@ impl<V: DictionaryValue> DiskBackedCharTrieInner<V> {
                     loaded_from_disk = true;
                 }
                 Err(e) => {
-                    eprintln!("Warning: Failed to load root from disk: {:?}", e);
+                    log::warn!("Failed to load root from disk: {:?}", e);
                     // Fall back to WAL replay
                 }
             }
@@ -1096,7 +1096,7 @@ impl<V: DictionaryValue> DiskBackedCharTrieInner<V> {
                     loaded_from_disk = true;
                 }
                 Err(e) => {
-                    eprintln!("Warning: Failed to load root from disk: {:?}", e);
+                    log::warn!("Failed to load root from disk: {:?}", e);
                     // Fall back to WAL replay
                 }
             }

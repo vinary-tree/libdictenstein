@@ -18,6 +18,7 @@ use criterion::{
 use libdictenstein::persistent_artrie_char::DiskBackedCharTrieInner;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
+use log::info;
 use tempfile::TempDir;
 
 // ============================================================================
@@ -271,7 +272,7 @@ fn bench_memory_usage(c: &mut Criterion) {
                         let rss = get_rss_bytes();
 
                         // Use RSS as a proxy metric (logged in results)
-                        eprintln!("RSS for {} terms: {} MB", size, rss / (1024 * 1024));
+                        info!("RSS for {} terms: {} MB", size, rss / (1024 * 1024));
 
                         total_duration += elapsed;
                     }

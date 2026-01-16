@@ -12,6 +12,8 @@ categories = ["algorithms", "data-structures", "text-processing"]
 readme = "README.md"
 
 [dependencies]
+# Logging facade
+log = "0.4"
 # SmallVec for stack-allocated vectors (performance optimization)
 smallvec = { version = "1.13", features = ["serde"] }
 # Fast non-cryptographic hashing for internal use

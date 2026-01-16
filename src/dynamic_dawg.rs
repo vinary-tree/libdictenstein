@@ -1887,6 +1887,7 @@ impl<V: DictionaryValue> crate::MutableMappedDictionary for DynamicDawg<V> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use log::debug;
 
     #[test]
     fn test_dynamic_dawg_insert() {
@@ -2048,8 +2049,8 @@ mod tests {
         // Both produce correct results; compact() uses more CPU but yields better compression.
         // Choose based on use case: minimize() for real-time, compact() for batch processing.
         if dawg1.node_count() != dawg2.node_count() {
-            eprintln!(
-                "Note: minimize() produced {} nodes, compact() produced {} nodes (expected difference)",
+            debug!(
+                "minimize() produced {} nodes, compact() produced {} nodes (expected difference)",
                 dawg1.node_count(),
                 dawg2.node_count()
             );

@@ -17,6 +17,7 @@ use libdictenstein::persistent_artrie::{
 };
 use std::time::Duration;
 use tempfile::tempdir;
+use log::info;
 
 /// Number of operations per benchmark iteration
 const OPS_PER_ITER: u64 = 1000;
@@ -211,7 +212,7 @@ fn bench_wal_bounding(c: &mut Criterion) {
                     }
 
                     // Print observed WAL size for verification
-                    eprintln!("Max WAL size observed: {} KB", max_wal_size_observed / 1024);
+                    info!("Max WAL size observed: {} KB", max_wal_size_observed / 1024);
                     total_duration
                 });
             },
