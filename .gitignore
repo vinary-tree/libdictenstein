@@ -111,3 +111,17 @@ flamegraph.svg
 # Generated optimization artifacts
 docs/optimization/*.txt
 perf.data*
+
+# Formal Verification - TLA+
+formal-verification/tla+/states/
+
+# Formal Verification - Rocq/Coq
+formal-verification/rocq/.depend
+formal-verification/rocq/.lia.cache
+formal-verification/rocq/**/*.vo
+formal-verification/rocq/**/*.vok
+formal-verification/rocq/**/*.vos
+formal-verification/rocq/**/*.glob
+
+# ThreadSanitizer suppressions (generated)
+tsan-suppressions.txt
