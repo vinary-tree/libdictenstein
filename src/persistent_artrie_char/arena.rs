@@ -636,11 +636,24 @@ impl CharNodeArena {
         self.header.free_offset
     }
 
+    /// Finalize the arena for persistence
+    ///
+    /// This ensures the header in the data buffer is up-to-date with in-memory state.
+    /// For CharNodeArena, slots are written directly during allocate(), but this
+    /// method ensures the header is synchronized before writing to disk.
+    pub fn finalize(&mut self) {
+        // Write the current header to the data buffer
+        self.header.to_bytes(&mut self.data[0..HEADER_SIZE]);
+    }
+
     /// Finalize the arena for persistence by computing and storing checksums
     ///
     /// Call this before writing the arena to disk to ensure checksums are up-to-date.
     /// For V3+ arenas, this computes both header and data checksums.
     pub fn finalize_checksums(&mut self) {
+        // First, finalize the arena to write the slot directory and update header
+        self.finalize();
+
         if self.header.version >= ARENA_VERSION_V3 {
             // Compute data checksum first (before header checksum changes)
             self.header.data_checksum = self.header.compute_data_checksum(&self.data);

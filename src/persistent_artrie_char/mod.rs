@@ -28,6 +28,43 @@
 //! - Dictionary contains non-ASCII Unicode characters
 //! - Edit distance must be measured in characters, not bytes
 //! - Correctness is more important than maximum performance
+//!
+//! # ACID Guarantees
+//!
+//! This implementation provides the same ACID properties as [`super::persistent_artrie`]:
+//!
+//! ## Atomicity
+//!
+//! - **Single Operations**: Individual insert/remove operations are atomic
+//! - **Document Transactions**: Multi-term transactions via [`CharDocumentTransaction`] provide
+//!   all-or-nothing semantics
+//! - **WAL Logging**: Operations are logged to WAL before application
+//!
+//! ## Consistency
+//!
+//! - **Trie Invariants**: Character-level ART structure invariants are maintained
+//! - **CRC32 Checksums**: WAL records include CRC32 checksums
+//! - **Recovery Validation**: Crash recovery validates and replays valid records
+//!
+//! ## Isolation
+//!
+//! | Isolation Level | Dirty Read | Non-Repeatable Read | Phantom Read |
+//! |-----------------|------------|---------------------|--------------|
+//! | RwLock (default)| No         | No                  | No           |
+//! | MVCC-Lite       | No         | No                  | Possible*    |
+//!
+//! *Epoch-based snapshots allow concurrent reads/writes with potential phantoms.
+//!
+//! ## Durability
+//!
+//! Durability is controlled by [`DurabilityPolicy`]:
+//!
+//! | Policy      | fsync Behavior      | Guarantee    | Use Case                        |
+//! |-------------|---------------------|--------------|----------------------------------|
+//! | `Immediate` | Every CommitTx      | Full         | ACID compliance (default)       |
+//! | `GroupCommit`| Batched by coordinator| Full      | High-throughput workloads       |
+//! | `Periodic`  | At checkpoints only | Bounded loss | Performance-critical            |
+//! | `None`      | Never               | None         | Testing only                    |
 
 // ART node types for char keys
 pub mod nodes;
@@ -67,6 +104,10 @@ pub mod relative_encoding;
 #[cfg(feature = "persistent-artrie")]
 pub mod recovery;
 
+// Per-node logging for near-instant recovery (char-specific adaptation)
+#[cfg(feature = "persistent-artrie")]
+pub mod per_node_log_char;
+
 // Disk-backed implementation
 #[cfg(feature = "persistent-artrie")]
 pub mod dict_impl_char;
@@ -75,6 +116,10 @@ pub mod dict_impl_char;
 #[cfg(feature = "persistent-artrie")]
 pub use dict_impl_char::{
     DiskBackedCharTrieInner, PrefixTermWithArena, PrefixTermWithValueAndArena, SharedCharTrie,
+    // Enhanced recovery types
+    EnhancedRecoveryMode, EnhancedRecoveryStats,
+    // Transaction types
+    CharDocumentTransaction, DurabilityPolicy, TransactionState,
 };
 
 // Re-export node types
@@ -115,6 +160,15 @@ pub use arena::{
 #[cfg(feature = "persistent-artrie")]
 pub use arena_manager::{ArenaManager, ArenaSlot, ArenaStats, ReservedSlots};
 
+// Re-export per-node logging types (under feature flag)
+#[cfg(feature = "persistent-artrie")]
+pub use per_node_log_char::{
+    CharNodeLogEntry, CharInlineLog, CharInlineLogIter, CharLogWriter, CharLogIterExt,
+    // Re-export node-agnostic types from the base module
+    DirtyNodeTracker, NodeId, PageId, PerNodeLogConfig,
+    PerNodeLogStats, PerNodeLogStatsAtomic,
+};
+
 // Re-export traversal context types (under feature flag)
 #[cfg(feature = "persistent-artrie")]
 pub use traversal_context::{LightweightTraversalContext, TraversalContext, TraversalStats};
@@ -140,6 +194,9 @@ pub use relative_encoding::{
 pub use recovery::{
     CorruptionInfo, CorruptionType, RecoveredOperation, RecoveryManager,
     RecoveryMode, RecoveryPolicy, RecoveryReport, detect_corruption,
+    // Re-exported from 1-byte implementation (node-agnostic)
+    IncrementalRecovery, RecoveredState, RecoveryError, RecoveryStats,
+    find_wal_archive_segments, rebuild_from_wal_segments,
 };
 
 use crate::value::DictionaryValue;

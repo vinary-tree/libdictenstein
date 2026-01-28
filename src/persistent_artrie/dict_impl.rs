@@ -179,6 +179,15 @@ pub(crate) struct PersistentARTrieInner<V: DictionaryValue> {
     /// Packs multiple nodes into 256KB blocks instead of one node per block
     #[cfg(feature = "persistent-artrie")]
     pub(crate) arena_manager: Option<Arc<RwLock<ArenaManager>>>,
+    /// Durability policy for WAL synchronization
+    #[cfg(feature = "persistent-artrie")]
+    pub(crate) durability_policy: DurabilityPolicy,
+    /// Epoch manager for MVCC-Lite snapshot isolation
+    #[cfg(feature = "persistent-artrie")]
+    pub(crate) epoch_manager: super::concurrency::EpochManager,
+    /// Atomic statistics for monitoring
+    #[cfg(feature = "persistent-artrie")]
+    pub(crate) stats: Arc<super::concurrency::TrieStats>,
 }
 
 /// A term with its arena location for page-aware batching.
@@ -219,6 +228,50 @@ pub enum TransactionState {
     Committed,
     /// Transaction has been aborted
     Aborted,
+}
+
+/// Configurable durability policy for WAL synchronization.
+///
+/// This enum controls when fsync is called after WAL writes, providing a
+/// trade-off between durability guarantees and performance.
+///
+/// # ACID Durability Guarantees
+///
+/// | Policy      | Guarantee | fsync Frequency | Use Case |
+/// |-------------|-----------|-----------------|----------|
+/// | Immediate   | Full      | Every CommitTx  | ACID compliance (default) |
+/// | GroupCommit | Full      | Batched         | High throughput with group-commit feature |
+/// | Periodic    | Bounded   | Checkpoint only | Performance-critical, accepts bounded loss |
+/// | None        | None      | Never           | Testing only - data loss on crash |
+#[cfg(feature = "persistent-artrie")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DurabilityPolicy {
+    /// fsync after every CommitTx (full ACID durability).
+    ///
+    /// This is the default policy providing the strongest durability guarantee.
+    /// Every committed transaction is immediately durable on disk.
+    #[default]
+    Immediate,
+
+    /// fsync is handled by group commit coordinator.
+    ///
+    /// This policy delegates sync responsibility to the group commit system,
+    /// which batches multiple commits into a single fsync for better throughput.
+    /// Requires the `group-commit` feature to be effective.
+    GroupCommit,
+
+    /// fsync only at checkpoint boundaries.
+    ///
+    /// Provides better performance but accepts bounded data loss (up to one
+    /// checkpoint interval) on crash. Suitable for applications that can
+    /// tolerate some data loss for performance.
+    Periodic,
+
+    /// No fsync - for testing only.
+    ///
+    /// **WARNING**: This policy provides no durability guarantee. Data may be
+    /// lost on any system failure. Use only for testing or ephemeral data.
+    None,
 }
 
 /// A document transaction for per-document atomicity.
@@ -321,6 +374,12 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
                 prefetcher: super::prefetch::Prefetcher::disabled(),
                 #[cfg(feature = "persistent-artrie")]
                 arena_manager: None,
+                #[cfg(feature = "persistent-artrie")]
+                durability_policy: DurabilityPolicy::default(),
+                #[cfg(feature = "persistent-artrie")]
+                epoch_manager: super::concurrency::EpochManager::new(),
+                #[cfg(feature = "persistent-artrie")]
+                stats: Arc::new(super::concurrency::TrieStats::new()),
             })),
         }
     }
@@ -386,6 +445,9 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
                 next_lsn: 1, // Start at 1, 0 reserved for "no LSN"
                 prefetcher: super::prefetch::Prefetcher::new(),
                 arena_manager: Some(arena_manager),
+                durability_policy: DurabilityPolicy::default(),
+                epoch_manager: super::concurrency::EpochManager::new(),
+                stats: Arc::new(super::concurrency::TrieStats::new()),
             })),
         })
     }
@@ -504,12 +566,11 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
             (Vec::new(), 1, None)
         };
 
-        // Open WAL writer (append mode)
-        let wal_writer = if wal_path.exists() {
-            WalWriter::open(&wal_path)?
-        } else {
-            WalWriter::create(&wal_path)?
-        };
+        // Open WAL writer using TOCTOU-safe pattern
+        // Matches formal model's `open_or_create_safe` in FileSystem.v:
+        // - Uses mkdir_all (idempotent) to ensure parent exists
+        // - Uses atomic open/create operations to avoid races
+        let wal_writer = WalWriter::open_or_create(&wal_path)?;
         let wal_writer = Arc::new(RwLock::new(wal_writer));
 
         // Create the dictionary with storage layer
@@ -530,6 +591,9 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
                 next_lsn,
                 prefetcher: super::prefetch::Prefetcher::new(),
                 arena_manager: Some(arena_manager),
+                durability_policy: DurabilityPolicy::default(),
+                epoch_manager: super::concurrency::EpochManager::new(),
+                stats: Arc::new(super::concurrency::TrieStats::new()),
             })),
         };
 
@@ -1895,6 +1959,69 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
         }
 
         Ok(())
+    }
+
+    /// Get the current durability policy.
+    ///
+    /// The durability policy controls when fsync is called after WAL writes.
+    /// See [`DurabilityPolicy`] for available options and their trade-offs.
+    #[cfg(feature = "persistent-artrie")]
+    pub fn durability_policy(&self) -> DurabilityPolicy {
+        self.inner.read().durability_policy
+    }
+
+    /// Set the durability policy for this trie.
+    ///
+    /// The durability policy controls when fsync is called after WAL writes,
+    /// providing a trade-off between durability and performance.
+    ///
+    /// # Arguments
+    ///
+    /// * `policy` - The new durability policy
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// use libdictenstein::persistent_artrie::{PersistentARTrie, DurabilityPolicy};
+    ///
+    /// let mut dict: PersistentARTrie<()> = PersistentARTrie::create("words.part")?;
+    ///
+    /// // Use periodic sync for better performance (accepts bounded data loss)
+    /// dict.set_durability_policy(DurabilityPolicy::Periodic);
+    /// ```
+    #[cfg(feature = "persistent-artrie")]
+    pub fn set_durability_policy(&mut self, policy: DurabilityPolicy) {
+        self.inner.write().durability_policy = policy;
+    }
+
+    /// Get a snapshot of the trie statistics.
+    ///
+    /// Returns atomic counters for reads, writes, cache hits/misses, etc.
+    /// Useful for monitoring and debugging.
+    #[cfg(feature = "persistent-artrie")]
+    pub fn stats(&self) -> super::concurrency::TrieStatsSnapshot {
+        self.inner.read().stats.snapshot()
+    }
+
+    /// Get a reference to the stats tracker for direct recording.
+    #[cfg(feature = "persistent-artrie")]
+    pub fn stats_tracker(&self) -> Arc<super::concurrency::TrieStats> {
+        Arc::clone(&self.inner.read().stats)
+    }
+
+    /// Advance the MVCC epoch.
+    ///
+    /// This should be called periodically by a background thread to
+    /// enable garbage collection of old versions.
+    #[cfg(feature = "persistent-artrie")]
+    pub fn advance_epoch(&self) -> u64 {
+        self.inner.read().epoch_manager.advance()
+    }
+
+    /// Get the current MVCC epoch.
+    #[cfg(feature = "persistent-artrie")]
+    pub fn current_epoch(&self) -> u64 {
+        self.inner.read().epoch_manager.current_epoch()
     }
 
     /// Create a checkpoint to allow WAL truncation.
@@ -5021,12 +5148,16 @@ impl<V: DictionaryValue + serde::Serialize + serde::de::DeserializeOwned> Persis
         let count = tx.shadow_terms.len();
 
         if count == 0 {
-            // Empty transaction - just log commit
+            // Empty transaction - just log commit and sync based on durability policy
             tx.state = TransactionState::Committed;
             let inner = self.inner.read();
             if let Some(ref wal) = inner.wal_writer {
                 let wal_guard = wal.read();
                 wal_guard.append(super::wal::WalRecord::CommitTx { tx_id: tx.tx_id })?;
+                // Sync WAL based on durability policy (ACID Durability)
+                if inner.durability_policy == DurabilityPolicy::Immediate {
+                    wal_guard.sync()?;
+                }
             }
             return Ok(0);
         }
@@ -5044,12 +5175,16 @@ impl<V: DictionaryValue + serde::Serialize + serde::de::DeserializeOwned> Persis
         // Use insert_batch which handles WAL logging internally
         let inserted = self.insert_batch(&entries);
 
-        // Log CommitTx
+        // Log CommitTx and sync based on durability policy
         {
             let inner = self.inner.read();
             if let Some(ref wal) = inner.wal_writer {
                 let wal_guard = wal.read();
                 wal_guard.append(super::wal::WalRecord::CommitTx { tx_id: tx.tx_id })?;
+                // Sync WAL based on durability policy (ACID Durability)
+                if inner.durability_policy == DurabilityPolicy::Immediate {
+                    wal_guard.sync()?;
+                }
             }
         }
 

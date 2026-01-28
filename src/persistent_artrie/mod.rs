@@ -73,6 +73,52 @@
 //!   (Leis et al., ICDE 2013)
 //! - [Persistent Storage of ART in DuckDB](https://duckdb.org/2022/07/27/art-storage)
 //!   (DuckDB, 2022)
+//!
+//! # ACID Guarantees
+//!
+//! This implementation provides ACID properties for reliable persistent storage:
+//!
+//! ## Atomicity
+//!
+//! - **Single Operations**: Individual insert/remove operations are atomic
+//! - **Document Transactions**: Multi-term transactions via [`DocumentTransaction`] provide
+//!   all-or-nothing semantics - either all terms are committed or none are
+//! - **WAL Logging**: Operations are logged to WAL before application, ensuring atomicity
+//!   across crashes
+//!
+//! ## Consistency
+//!
+//! - **Trie Invariants**: ART structure invariants (node types, child counts, path compression)
+//!   are maintained after every operation
+//! - **CRC32 Checksums**: WAL records include CRC32 checksums for integrity verification
+//! - **Recovery Validation**: Crash recovery validates checksums and replays only valid records
+//!
+//! ## Isolation
+//!
+//! The implementation uses read-write locks for thread safety:
+//!
+//! | Isolation Level | Dirty Read | Non-Repeatable Read | Phantom Read |
+//! |-----------------|------------|---------------------|--------------|
+//! | RwLock (default)| No         | No                  | No           |
+//! | MVCC-Lite       | No         | No                  | Possible*    |
+//!
+//! *MVCC-Lite uses epoch-based snapshots for reads, allowing concurrent writes.
+//! Phantoms are possible if new terms are inserted between snapshot creation and read.
+//!
+//! ## Durability
+//!
+//! Durability is controlled by [`DurabilityPolicy`]:
+//!
+//! | Policy      | fsync Behavior      | Guarantee    | Use Case                        |
+//! |-------------|---------------------|--------------|----------------------------------|
+//! | `Immediate` | Every CommitTx      | Full         | ACID compliance (default)       |
+//! | `GroupCommit`| Batched by coordinator| Full      | High-throughput workloads       |
+//! | `Periodic`  | At checkpoints only | Bounded loss | Performance-critical            |
+//! | `None`      | Never               | None         | Testing only                    |
+//!
+//! The default `Immediate` policy ensures that committed transactions are immediately
+//! durable on disk. The `GroupCommit` policy batches fsync calls for better throughput
+//! while maintaining full durability. `Periodic` trades some durability for performance.
 
 // Core modules (storage foundation)
 pub mod error;
@@ -197,7 +243,7 @@ pub use dict_impl::{PrefixTermWithArena, PrefixTermWithValueAndArena};
 
 // Per-document transaction types
 #[cfg(feature = "persistent-artrie")]
-pub use dict_impl::{DocumentTransaction, TransactionState};
+pub use dict_impl::{DocumentTransaction, DurabilityPolicy, TransactionState};
 
 // Zipper types
 pub use zipper::PersistentARTrieZipper;
@@ -257,8 +303,8 @@ pub use prefetch::{
 // Concurrency types
 #[cfg(feature = "persistent-artrie")]
 pub use concurrency::{
-    EpochGuard, EpochManager, LockCoupling, OptimisticCell, OptimisticReadGuard, OptimisticVersion,
-    RetryStats, WriteGuard,
+    EpochGuard, EpochManager, LockCoupling, MvccReadContext, OptimisticCell, OptimisticReadGuard,
+    OptimisticVersion, RetryStats, TrieStats, TrieStatsSnapshot, WriteGuard,
 };
 
 // Traversal context types

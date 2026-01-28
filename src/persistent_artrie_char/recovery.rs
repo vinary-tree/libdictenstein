@@ -45,6 +45,12 @@ use crate::persistent_artrie::disk_manager::BLOCK_SIZE;
 use crate::persistent_artrie::error::{PersistentARTrieError, Result};
 use crate::persistent_artrie::wal::{Lsn, WalConfig, WalReader, WalRecord, WalWriter};
 
+// Re-export node-agnostic recovery types from the 1-byte implementation
+pub use crate::persistent_artrie::recovery::{
+    IncrementalRecovery, RecoveredState, RecoveryError, RecoveryStats,
+    find_wal_archive_segments, rebuild_from_wal_segments,
+};
+
 /// Helper to convert io::Error to PersistentARTrieError
 fn io_err(operation: &str, path: &Path, e: std::io::Error) -> PersistentARTrieError {
     PersistentARTrieError::IoError {

@@ -666,6 +666,9 @@ pub enum WalError {
     AlreadyExists,
     /// WAL file not found
     NotFound,
+    /// Parent directory does not exist.
+    /// Distinguishes from general NotFound for semantic matching with formal model.
+    ParentNotFound(PathBuf),
 }
 
 impl std::fmt::Display for WalError {
@@ -677,6 +680,9 @@ impl std::fmt::Display for WalError {
             WalError::UnexpectedEof => write!(f, "Unexpected end of WAL file"),
             WalError::AlreadyExists => write!(f, "WAL file already exists"),
             WalError::NotFound => write!(f, "WAL file not found"),
+            WalError::ParentNotFound(path) => {
+                write!(f, "Parent directory not found: {}", path.display())
+            }
         }
     }
 }
@@ -685,7 +691,12 @@ impl std::error::Error for WalError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             WalError::Io(e) => Some(e),
-            _ => None,
+            WalError::InvalidRecordType(_)
+            | WalError::CorruptedRecord(_)
+            | WalError::UnexpectedEof
+            | WalError::AlreadyExists
+            | WalError::NotFound
+            | WalError::ParentNotFound(_) => None,
         }
     }
 }
@@ -790,17 +801,47 @@ impl WalWriter {
     const RECORD_HEADER_SIZE: usize = 17;
 
     /// Create a new WAL file.
+    ///
+    /// Uses atomic exclusive creation (`O_CREAT | O_EXCL` via `create_new(true)`)
+    /// to eliminate TOCTOU race conditions. This matches the formal model's
+    /// `open_create` operation in `FileSystem.v`.
+    ///
+    /// # Errors
+    ///
+    /// - `WalError::AlreadyExists` - File already exists (atomic check)
+    /// - `WalError::ParentNotFound` - Parent directory doesn't exist
+    /// - `WalError::Io` - Other I/O errors
     pub fn create(path: impl AsRef<Path>) -> Result<Self, WalError> {
         let path = path.as_ref().to_path_buf();
-        if path.exists() {
-            return Err(WalError::AlreadyExists);
+
+        // Ensure parent directory exists (idempotent, matches formal mkdir_all)
+        if let Some(parent) = path.parent() {
+            if !parent.as_os_str().is_empty() {
+                std::fs::create_dir_all(parent).map_err(|e| {
+                    if e.kind() == io::ErrorKind::NotFound {
+                        // Parent's parent doesn't exist
+                        WalError::ParentNotFound(parent.to_path_buf())
+                    } else {
+                        WalError::Io(e)
+                    }
+                })?;
+            }
         }
 
-        let file = OpenOptions::new()
-            .create(true)
+        // Atomic exclusive creation - eliminates TOCTOU race
+        // create_new(true) = O_CREAT | O_EXCL (fails atomically if file exists)
+        let file = match OpenOptions::new()
+            .create_new(true) // Atomic: create only if doesn't exist
             .write(true)
             .read(true)
-            .open(&path)?;
+            .open(&path)
+        {
+            Ok(f) => f,
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
+                return Err(WalError::AlreadyExists);
+            }
+            Err(e) => return Err(WalError::Io(e)),
+        };
 
         let mut writer = BufWriter::new(file);
 
@@ -819,13 +860,27 @@ impl WalWriter {
     }
 
     /// Open an existing WAL file for appending.
+    ///
+    /// Eliminates TOCTOU race by letting the filesystem handle existence check
+    /// atomically during open. This matches the formal model's `open_existing`
+    /// operation in `FileSystem.v`.
+    ///
+    /// # Errors
+    ///
+    /// - `WalError::NotFound` - File doesn't exist (atomic check)
+    /// - `WalError::Io` - Other I/O errors
     pub fn open(path: impl AsRef<Path>) -> Result<Self, WalError> {
         let path = path.as_ref().to_path_buf();
-        if !path.exists() {
-            return Err(WalError::NotFound);
-        }
 
-        let file = OpenOptions::new().read(true).write(true).open(&path)?;
+        // Direct open - let filesystem handle existence atomically
+        // No exists() pre-check to avoid TOCTOU race
+        let file = match OpenOptions::new().read(true).write(true).open(&path) {
+            Ok(f) => f,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                return Err(WalError::NotFound);
+            }
+            Err(e) => return Err(WalError::Io(e)),
+        };
 
         // Read header
         let mut reader = BufReader::new(&file);
@@ -854,6 +909,58 @@ impl WalWriter {
             synced_lsn: AtomicU64::new(last_lsn),
             header: Mutex::new(header),
         })
+    }
+
+    /// TOCTOU-safe open or create.
+    ///
+    /// Matches the formal model's `open_or_create_safe` operation in `FileSystem.v`:
+    /// 1. Ensure parent directory exists (mkdir_all - idempotent)
+    /// 2. Try open existing, fall back to create if not found
+    ///
+    /// This handles both TOCTOU races:
+    /// - File deleted between check and open: create succeeds
+    /// - File created between check and create: open succeeds on retry
+    ///
+    /// # Errors
+    ///
+    /// - `WalError::ParentNotFound` - Parent's parent directory doesn't exist
+    /// - `WalError::Io` - Other I/O errors
+    pub fn open_or_create(path: impl AsRef<Path>) -> Result<Self, WalError> {
+        let path = path.as_ref().to_path_buf();
+
+        // Step 1: Ensure parent directory exists (matches formal mkdir_all)
+        if let Some(parent) = path.parent() {
+            if !parent.as_os_str().is_empty() {
+                std::fs::create_dir_all(parent).map_err(|e| {
+                    if e.kind() == io::ErrorKind::NotFound {
+                        WalError::ParentNotFound(parent.to_path_buf())
+                    } else {
+                        WalError::Io(e)
+                    }
+                })?;
+            }
+        }
+
+        // Step 2: Try atomic open, fall back to atomic create
+        // This handles both TOCTOU races:
+        // - File deleted between check and open: create succeeds
+        // - File created between check and create: open succeeds on retry
+        match Self::open(&path) {
+            Ok(writer) => Ok(writer),
+            Err(WalError::NotFound) => {
+                // File doesn't exist, try to create
+                match Self::create(&path) {
+                    Ok(writer) => Ok(writer),
+                    Err(WalError::AlreadyExists) => {
+                        // Another process created it between our open and create attempts
+                        // Retry open - this handles the creation TOCTOU race
+                        Self::open(&path)
+                    }
+                    Err(e) => Err(e),
+                }
+            }
+            Err(e) => Err(e),
+        }
     }
 
     /// Append a record to the WAL.
@@ -1917,5 +2024,292 @@ mod tests {
             entries: vec![(b"test".to_vec(), None)],
         };
         assert_eq!(record.record_type(), WalRecordType::BatchInsert);
+    }
+
+    // =========================================================================
+    // TOCTOU Safety Tests
+    //
+    // These tests verify that the WAL implementation correctly handles
+    // concurrent access patterns that could expose TOCTOU vulnerabilities.
+    // =========================================================================
+
+    /// Test that open_or_create handles concurrent access correctly.
+    /// Multiple threads race to open/create the same WAL file.
+    ///
+    /// Note: This test verifies TOCTOU safety (no panics, no race-related failures),
+    /// not that all threads get a valid WalWriter. Some threads may fail to open
+    /// the file because another thread holds it with write access - this is
+    /// expected behavior for exclusive file access.
+    #[test]
+    fn test_open_or_create_toctou_safety() {
+        use std::sync::{Arc, Barrier};
+        use std::thread;
+
+        let temp_dir = tempdir().expect("create temp dir");
+        let wal_path = temp_dir.path().join("concurrent.wal");
+
+        let num_threads = 10;
+        let barrier = Arc::new(Barrier::new(num_threads));
+        let path = Arc::new(wal_path.clone());
+
+        let handles: Vec<_> = (0..num_threads)
+            .map(|_| {
+                let barrier = Arc::clone(&barrier);
+                let path = Arc::clone(&path);
+                thread::spawn(move || {
+                    barrier.wait();
+                    // All threads race to open_or_create
+                    WalWriter::open_or_create(path.as_ref())
+                })
+            })
+            .collect();
+
+        let results: Vec<_> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+
+        // At least one thread should succeed (the one that created the file)
+        let successes = results.iter().filter(|r| r.is_ok()).count();
+        assert!(
+            successes >= 1,
+            "At least one thread should succeed"
+        );
+
+        // All threads should either succeed or fail with an expected error (Io)
+        // No thread should fail with NotFound or AlreadyExists (those are TOCTOU symptoms)
+        let toctou_failures = results.iter().filter(|r| {
+            matches!(r, Err(WalError::NotFound) | Err(WalError::AlreadyExists))
+        }).count();
+        assert_eq!(
+            toctou_failures, 0,
+            "No threads should fail with TOCTOU-related errors (NotFound/AlreadyExists)"
+        );
+
+        // Verify the file was created
+        assert!(wal_path.exists(), "WAL file should exist after concurrent access");
+    }
+
+    /// Test that concurrent create with exclusive mode fails correctly for losers.
+    #[test]
+    fn test_create_exclusive_concurrent() {
+        use std::sync::{Arc, Barrier};
+        use std::thread;
+
+        let temp_dir = tempdir().expect("create temp dir");
+        let wal_path = temp_dir.path().join("exclusive.wal");
+
+        let num_threads = 10;
+        let barrier = Arc::new(Barrier::new(num_threads));
+        let path = Arc::new(wal_path);
+
+        let handles: Vec<_> = (0..num_threads)
+            .map(|_| {
+                let barrier = Arc::clone(&barrier);
+                let path = Arc::clone(&path);
+                thread::spawn(move || {
+                    barrier.wait();
+                    WalWriter::create(path.as_ref())
+                })
+            })
+            .collect();
+
+        let results: Vec<_> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+
+        // Exactly one should succeed, rest should get AlreadyExists
+        let successes = results.iter().filter(|r| r.is_ok()).count();
+        let already_exists = results
+            .iter()
+            .filter(|r| matches!(r, Err(WalError::AlreadyExists)))
+            .count();
+
+        assert_eq!(successes, 1, "Exactly one thread should create the file");
+        assert_eq!(
+            already_exists,
+            num_threads - 1,
+            "All other threads should get AlreadyExists"
+        );
+    }
+
+    /// Test that open fails correctly when file is deleted during operation.
+    ///
+    /// This test exercises the race between opening a file and deleting it.
+    /// The TOCTOU-safe implementation should handle this gracefully without panics.
+    #[test]
+    fn test_open_handles_concurrent_delete() {
+        use std::sync::{Arc, Barrier};
+        use std::thread;
+
+        let temp_dir = tempdir().expect("create temp dir");
+        let wal_path = temp_dir.path().join("delete_race.wal");
+
+        // Create the file first
+        let wal = WalWriter::create(&wal_path).expect("create WAL");
+        wal.sync().expect("sync");
+        drop(wal);
+
+        let barrier = Arc::new(Barrier::new(2));
+        let path = Arc::new(wal_path.clone());
+
+        // Thread 1: Tries to open
+        let open_barrier = Arc::clone(&barrier);
+        let open_path = Arc::clone(&path);
+        let open_handle = thread::spawn(move || {
+            open_barrier.wait();
+            WalWriter::open(open_path.as_ref())
+        });
+
+        // Thread 2: Deletes the file
+        let delete_barrier = Arc::clone(&barrier);
+        let delete_path = Arc::clone(&path);
+        let delete_handle = thread::spawn(move || {
+            delete_barrier.wait();
+            std::fs::remove_file(delete_path.as_ref())
+        });
+
+        let open_result = open_handle.join().unwrap();
+        let delete_result = delete_handle.join().unwrap();
+
+        // This test verifies we don't panic or get unexpected errors.
+        // Valid outcomes for open:
+        // - Ok: open completed before delete
+        // - NotFound: delete completed before open
+        // - Io: delete happened during open (file partially read)
+        let open_valid = match &open_result {
+            Ok(_) => true,
+            Err(WalError::NotFound) => true,
+            Err(WalError::Io(_)) => true, // I/O error during read is valid
+            Err(WalError::CorruptedRecord(_)) => true, // File deleted mid-read
+            Err(WalError::UnexpectedEof) => true, // File deleted mid-read
+            _ => false,
+        };
+
+        // Valid outcomes for delete:
+        // - Ok: delete succeeded
+        // - NotFound: file was already gone (shouldn't happen in this test, but valid)
+        let delete_ok = delete_result.is_ok();
+        let delete_not_found = delete_result
+            .as_ref()
+            .err()
+            .map_or(false, |e| e.kind() == std::io::ErrorKind::NotFound);
+
+        assert!(
+            open_valid,
+            "Open should succeed or fail with expected error (NotFound, Io, etc.)"
+        );
+        assert!(
+            delete_ok || delete_not_found,
+            "Delete should succeed or fail with NotFound"
+        );
+    }
+
+    /// Test that open_or_create works correctly when file doesn't exist.
+    #[test]
+    fn test_open_or_create_creates_new() {
+        let temp_dir = tempdir().expect("create temp dir");
+        let wal_path = temp_dir.path().join("new.wal");
+
+        // File shouldn't exist
+        assert!(!wal_path.exists());
+
+        let wal = WalWriter::open_or_create(&wal_path).expect("open_or_create");
+
+        // File should now exist
+        assert!(wal_path.exists());
+
+        // Should be able to write records
+        let lsn = wal
+            .append(WalRecord::Insert {
+                term: b"test".to_vec(),
+                value: None,
+            })
+            .expect("append");
+        assert_eq!(lsn, 1);
+    }
+
+    /// Test that open_or_create works correctly when file already exists.
+    #[test]
+    fn test_open_or_create_opens_existing() {
+        let temp_dir = tempdir().expect("create temp dir");
+        let wal_path = temp_dir.path().join("existing.wal");
+
+        // Create file first
+        {
+            let wal = WalWriter::create(&wal_path).expect("create");
+            wal.append(WalRecord::Insert {
+                term: b"first".to_vec(),
+                value: None,
+            })
+            .expect("append");
+            wal.sync().expect("sync");
+        }
+
+        // Open with open_or_create
+        let wal = WalWriter::open_or_create(&wal_path).expect("open_or_create");
+
+        // Should continue from existing LSN
+        assert_eq!(wal.current_lsn(), 2);
+
+        // Can append more
+        let lsn = wal
+            .append(WalRecord::Insert {
+                term: b"second".to_vec(),
+                value: None,
+            })
+            .expect("append");
+        assert_eq!(lsn, 2);
+    }
+
+    /// Test that create returns AlreadyExists for existing file (atomic check).
+    #[test]
+    fn test_create_already_exists() {
+        let temp_dir = tempdir().expect("create temp dir");
+        let wal_path = temp_dir.path().join("already_exists.wal");
+
+        // Create first
+        let _wal = WalWriter::create(&wal_path).expect("create");
+
+        // Second create should fail
+        let result = WalWriter::create(&wal_path);
+        assert!(
+            matches!(result, Err(WalError::AlreadyExists)),
+            "Expected AlreadyExists error"
+        );
+    }
+
+    /// Test that open returns NotFound for non-existent file (atomic check).
+    #[test]
+    fn test_open_not_found() {
+        let temp_dir = tempdir().expect("create temp dir");
+        let wal_path = temp_dir.path().join("nonexistent.wal");
+
+        let result = WalWriter::open(&wal_path);
+        assert!(
+            matches!(result, Err(WalError::NotFound)),
+            "Expected NotFound error"
+        );
+    }
+
+    /// Test that create handles missing parent directory gracefully.
+    #[test]
+    fn test_create_creates_parent_dirs() {
+        let temp_dir = tempdir().expect("create temp dir");
+        let wal_path = temp_dir.path().join("nested/dirs/test.wal");
+
+        // Parent dirs don't exist
+        assert!(!wal_path.parent().unwrap().exists());
+
+        // create should create them
+        let wal = WalWriter::create(&wal_path).expect("create with nested dirs");
+
+        // Verify file and dirs exist
+        assert!(wal_path.exists());
+        assert!(wal_path.parent().unwrap().exists());
+
+        // Can write records
+        let lsn = wal
+            .append(WalRecord::Insert {
+                term: b"test".to_vec(),
+                value: None,
+            })
+            .expect("append");
+        assert_eq!(lsn, 1);
     }
 }

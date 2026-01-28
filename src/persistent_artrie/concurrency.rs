@@ -310,6 +310,131 @@ impl<'a> Drop for EpochGuard<'a> {
     }
 }
 
+/// MVCC-Lite read context for snapshot isolation.
+///
+/// Provides a lightweight form of Multi-Version Concurrency Control (MVCC)
+/// using epoch-based snapshots. When created, it captures the current epoch
+/// and tracks observed node versions. At validation time, it verifies that
+/// all observed nodes still have the same versions.
+///
+/// # Isolation Guarantees
+///
+/// | Property         | Guarantee                                      |
+/// |------------------|------------------------------------------------|
+/// | Dirty Read       | Prevented (epoch snapshot)                     |
+/// | Non-Repeatable   | Prevented (version validation)                 |
+/// | Phantom Read     | Possible (new insertions not tracked)          |
+///
+/// # Example
+///
+/// ```rust,ignore
+/// use libdictenstein::persistent_artrie::concurrency::{EpochManager, MvccReadContext};
+///
+/// let epoch_manager = EpochManager::new();
+///
+/// // Create a read context for snapshot isolation
+/// let mut ctx = MvccReadContext::new(&epoch_manager);
+///
+/// // Perform reads, observing node versions
+/// ctx.observe_node(node_id, node_version);
+///
+/// // Validate that no observed nodes were modified
+/// if ctx.validate(|id| get_node_version(id)) {
+///     // Read was consistent
+/// } else {
+///     // A concurrent write occurred - retry
+/// }
+/// ```
+pub struct MvccReadContext<'a> {
+    /// Reference to the epoch manager
+    epoch_manager: &'a EpochManager,
+    /// Snapshot epoch captured at context creation
+    snapshot_epoch: u64,
+    /// Observed node versions: (node_id, version) pairs
+    node_versions: Vec<(usize, u64)>,
+}
+
+impl<'a> MvccReadContext<'a> {
+    /// Create a new MVCC read context.
+    ///
+    /// Captures the current epoch as a snapshot point and registers
+    /// with the epoch manager as an active reader.
+    pub fn new(epoch_manager: &'a EpochManager) -> Self {
+        let snapshot_epoch = epoch_manager.enter_read();
+        MvccReadContext {
+            epoch_manager,
+            snapshot_epoch,
+            node_versions: Vec::with_capacity(16), // Pre-allocate for typical path length
+        }
+    }
+
+    /// Record an observed node and its version.
+    ///
+    /// This should be called for each node accessed during the read operation.
+    /// At validation time, we verify these versions haven't changed.
+    #[inline]
+    pub fn observe_node(&mut self, node_id: usize, version: u64) {
+        self.node_versions.push((node_id, version));
+    }
+
+    /// Get the snapshot epoch.
+    pub fn epoch(&self) -> u64 {
+        self.snapshot_epoch
+    }
+
+    /// Get the number of observed nodes.
+    pub fn observed_count(&self) -> usize {
+        self.node_versions.len()
+    }
+
+    /// Validate that no observed nodes were modified.
+    ///
+    /// Takes a function that retrieves the current version for a node ID.
+    /// Returns true if all observed versions match current versions.
+    ///
+    /// # Arguments
+    ///
+    /// * `get_version` - Function that returns the current version for a node ID
+    pub fn validate<F>(&self, get_version: F) -> bool
+    where
+        F: Fn(usize) -> Option<u64>,
+    {
+        for &(node_id, expected_version) in &self.node_versions {
+            match get_version(node_id) {
+                Some(current_version) if current_version == expected_version => continue,
+                _ => return false, // Version changed or node deleted
+            }
+        }
+        true
+    }
+
+    /// Validate with a mutable closure (for caching lookups).
+    pub fn validate_mut<F>(&self, mut get_version: F) -> bool
+    where
+        F: FnMut(usize) -> Option<u64>,
+    {
+        for &(node_id, expected_version) in &self.node_versions {
+            match get_version(node_id) {
+                Some(current_version) if current_version == expected_version => continue,
+                _ => return false,
+            }
+        }
+        true
+    }
+
+    /// Clear observed nodes for reuse.
+    pub fn reset(&mut self) {
+        self.node_versions.clear();
+        // Note: We keep the same epoch - this is for retrying within the same read
+    }
+}
+
+impl<'a> Drop for MvccReadContext<'a> {
+    fn drop(&mut self) {
+        self.epoch_manager.exit_read();
+    }
+}
+
 /// Retry statistics for optimistic operations.
 #[derive(Debug, Default)]
 pub struct RetryStats {
@@ -383,6 +508,165 @@ pub struct RetryStatsSnapshot {
     pub retries: u64,
     /// Maximum retries in single operation
     pub max_retries: u64,
+}
+
+/// Atomic statistics for trie operations.
+///
+/// Provides thread-safe counters for monitoring trie performance and behavior.
+/// All counters use relaxed ordering for minimal overhead, as exact counts
+/// aren't required - approximate trends are sufficient for monitoring.
+#[derive(Debug, Default)]
+pub struct TrieStats {
+    /// Number of read operations (get, contains, prefix iterations)
+    pub reads: AtomicU64,
+    /// Number of write operations (insert, remove)
+    pub writes: AtomicU64,
+    /// Number of read retries due to concurrent modifications
+    pub read_retries: AtomicU64,
+    /// Number of buffer cache hits
+    pub cache_hits: AtomicU64,
+    /// Number of buffer cache misses (disk reads)
+    pub cache_misses: AtomicU64,
+    /// Number of WAL writes
+    pub wal_writes: AtomicU64,
+    /// Number of WAL syncs (fsync calls)
+    pub wal_syncs: AtomicU64,
+}
+
+impl TrieStats {
+    /// Create new statistics counters (all zeroed).
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Record a read operation.
+    #[inline]
+    pub fn record_read(&self) {
+        self.reads.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Record a write operation.
+    #[inline]
+    pub fn record_write(&self) {
+        self.writes.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Record a read retry.
+    #[inline]
+    pub fn record_read_retry(&self) {
+        self.read_retries.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Record a cache hit.
+    #[inline]
+    pub fn record_cache_hit(&self) {
+        self.cache_hits.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Record a cache miss.
+    #[inline]
+    pub fn record_cache_miss(&self) {
+        self.cache_misses.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Record a WAL write.
+    #[inline]
+    pub fn record_wal_write(&self) {
+        self.wal_writes.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Record a WAL sync.
+    #[inline]
+    pub fn record_wal_sync(&self) {
+        self.wal_syncs.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Get the cache hit ratio (0.0 to 1.0).
+    pub fn cache_hit_ratio(&self) -> f64 {
+        let hits = self.cache_hits.load(Ordering::Relaxed);
+        let misses = self.cache_misses.load(Ordering::Relaxed);
+        let total = hits + misses;
+        if total == 0 {
+            0.0
+        } else {
+            hits as f64 / total as f64
+        }
+    }
+
+    /// Get the read retry ratio (0.0 to 1.0).
+    pub fn read_retry_ratio(&self) -> f64 {
+        let reads = self.reads.load(Ordering::Relaxed);
+        let retries = self.read_retries.load(Ordering::Relaxed);
+        if reads == 0 {
+            0.0
+        } else {
+            retries as f64 / reads as f64
+        }
+    }
+
+    /// Get a snapshot of the stats.
+    pub fn snapshot(&self) -> TrieStatsSnapshot {
+        TrieStatsSnapshot {
+            reads: self.reads.load(Ordering::Relaxed),
+            writes: self.writes.load(Ordering::Relaxed),
+            read_retries: self.read_retries.load(Ordering::Relaxed),
+            cache_hits: self.cache_hits.load(Ordering::Relaxed),
+            cache_misses: self.cache_misses.load(Ordering::Relaxed),
+            wal_writes: self.wal_writes.load(Ordering::Relaxed),
+            wal_syncs: self.wal_syncs.load(Ordering::Relaxed),
+        }
+    }
+
+    /// Reset all counters to zero.
+    pub fn reset(&self) {
+        self.reads.store(0, Ordering::Relaxed);
+        self.writes.store(0, Ordering::Relaxed);
+        self.read_retries.store(0, Ordering::Relaxed);
+        self.cache_hits.store(0, Ordering::Relaxed);
+        self.cache_misses.store(0, Ordering::Relaxed);
+        self.wal_writes.store(0, Ordering::Relaxed);
+        self.wal_syncs.store(0, Ordering::Relaxed);
+    }
+}
+
+/// Immutable snapshot of trie stats.
+#[derive(Debug, Clone, Copy)]
+pub struct TrieStatsSnapshot {
+    /// Number of read operations
+    pub reads: u64,
+    /// Number of write operations
+    pub writes: u64,
+    /// Number of read retries
+    pub read_retries: u64,
+    /// Number of cache hits
+    pub cache_hits: u64,
+    /// Number of cache misses
+    pub cache_misses: u64,
+    /// Number of WAL writes
+    pub wal_writes: u64,
+    /// Number of WAL syncs
+    pub wal_syncs: u64,
+}
+
+impl TrieStatsSnapshot {
+    /// Get the cache hit ratio (0.0 to 1.0).
+    pub fn cache_hit_ratio(&self) -> f64 {
+        let total = self.cache_hits + self.cache_misses;
+        if total == 0 {
+            0.0
+        } else {
+            self.cache_hits as f64 / total as f64
+        }
+    }
+
+    /// Get the read retry ratio (0.0 to 1.0).
+    pub fn read_retry_ratio(&self) -> f64 {
+        if self.reads == 0 {
+            0.0
+        } else {
+            self.read_retries as f64 / self.reads as f64
+        }
+    }
 }
 
 /// Thread-safe optimistic data wrapper.

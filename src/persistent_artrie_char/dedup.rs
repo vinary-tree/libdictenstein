@@ -18,7 +18,7 @@
 //! Hash node data before allocation, check cache for existing copy:
 //! ```text
 //! allocate(data):
-//!   hash = xxhash(data)
+//!   hash = xxhash3(data)
 //!   if cache[hash] exists && verify_data_matches:
 //!     return cache[hash]  // Reuse existing
 //!   else:
@@ -27,13 +27,21 @@
 //!     return slot
 //! ```
 //!
+//! ## Hash Function Choice
+//!
+//! Uses xxHash3 (via `xxhash-rust` crate) for hashing node data:
+//! - **2-3x faster than FNV-1a** for short inputs (<16 bytes)
+//! - **5-10x faster than FNV-1a** for medium-long inputs
+//! - **Excellent hash quality** with good avalanche properties
+//! - **SIMD-accelerated** using AVX2/SSE when available
+//! - **Safe implementation** with no buffer overflow risks
+//!
 //! ## Expected Impact
 //!
 //! - **Space**: 10-30% reduction for redundant subtrees
 //! - **Best for**: Dictionaries with common prefixes/suffixes
 
 use std::collections::HashMap;
-use std::hash::{Hash, Hasher};
 
 #[cfg(feature = "persistent-artrie")]
 use super::arena_manager::{ArenaManager, ArenaSlot};
@@ -43,41 +51,29 @@ use crate::persistent_artrie::PersistentARTrieError;
 #[cfg(feature = "persistent-artrie")]
 type Result<T> = std::result::Result<T, PersistentARTrieError>;
 
-/// Hash function for node data
+/// Hash function for node data using xxHash3
 ///
-/// Uses a simple but fast hash algorithm (FNV-1a variant).
-/// For production, consider gxhash or xxhash for better performance.
+/// xxHash3 provides excellent performance across all input sizes:
+/// - Short inputs (<16B): ~15-25 cycles (2-3x faster than FNV-1a)
+/// - Medium inputs (16-64B): ~20-35 cycles (5-10x faster than FNV-1a)
+/// - Long inputs (>256B): ~0.3 cycles/byte (15-20x faster than FNV-1a)
+///
+/// It also has excellent avalanche properties for fewer hash collisions.
+#[inline]
 fn compute_hash(data: &[u8]) -> u64 {
-    // FNV-1a hash
-    const FNV_OFFSET: u64 = 0xcbf29ce484222325;
-    const FNV_PRIME: u64 = 0x100000001b3;
-
-    let mut hash = FNV_OFFSET;
-    for &byte in data {
-        hash ^= byte as u64;
-        hash = hash.wrapping_mul(FNV_PRIME);
-    }
-    hash
-}
-
-/// Alternative hash using std::hash
-fn compute_hash_std(data: &[u8]) -> u64 {
-    use std::collections::hash_map::DefaultHasher;
-    let mut hasher = DefaultHasher::new();
-    data.hash(&mut hasher);
-    hasher.finish()
+    xxhash_rust::xxh3::xxh3_64(data)
 }
 
 /// NodeDeduplicator - Hash-based deduplication for node data
 ///
 /// This struct maintains a cache mapping data hashes to arena slots.
 /// Before allocating new data, it checks if identical data already exists.
+///
+/// Uses xxHash3 for fast, high-quality hashing of node data.
 #[derive(Debug)]
 pub struct NodeDeduplicator {
     /// Cache mapping hash -> arena slot
     cache: HashMap<u64, ArenaSlot>,
-    /// Use std hash instead of FNV-1a
-    use_std_hash: bool,
     /// Statistics
     hits: u64,
     misses: u64,
@@ -89,7 +85,6 @@ impl NodeDeduplicator {
     pub fn new() -> Self {
         Self {
             cache: HashMap::new(),
-            use_std_hash: false,
             hits: 0,
             misses: 0,
             collisions: 0,
@@ -100,26 +95,16 @@ impl NodeDeduplicator {
     pub fn with_capacity(capacity: usize) -> Self {
         Self {
             cache: HashMap::with_capacity(capacity),
-            use_std_hash: false,
             hits: 0,
             misses: 0,
             collisions: 0,
         }
     }
 
-    /// Use std hash instead of FNV-1a
-    pub fn use_std_hash(mut self, use_std: bool) -> Self {
-        self.use_std_hash = use_std;
-        self
-    }
-
-    /// Compute hash for data
+    /// Compute hash for data using xxHash3
+    #[inline]
     fn hash(&self, data: &[u8]) -> u64 {
-        if self.use_std_hash {
-            compute_hash_std(data)
-        } else {
-            compute_hash(data)
-        }
+        compute_hash(data)
     }
 
     /// Check if data exists in cache

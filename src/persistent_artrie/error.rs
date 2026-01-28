@@ -362,6 +362,14 @@ impl From<super::wal::WalError> for PersistentARTrieError {
                 path: String::new(),
                 source: io::Error::new(io::ErrorKind::NotFound, "WAL file not found"),
             },
+            WalError::ParentNotFound(path) => Self::IoError {
+                operation: "WAL create parent directory".to_string(),
+                path: path.display().to_string(),
+                source: io::Error::new(
+                    io::ErrorKind::NotFound,
+                    format!("Parent directory not found: {}", path.display()),
+                ),
+            },
         }
     }
 }

@@ -133,6 +133,76 @@ The formal specifications model the key components of the Rust implementation:
 | `NodeTypes.v` | `src/persistent_artrie/nodes/*.rs` |
 | `Bucket.v` | `src/persistent_artrie/bucket.rs` |
 
+### Filesystem Operations Correspondence
+
+This section documents the mapping between formal filesystem operations and Rust methods,
+specifically addressing TOCTOU (Time-of-Check to Time-of-Use) safety.
+
+#### Formal Model (FileSystem.v)
+
+The formal model defines safe filesystem operations that avoid TOCTOU races:
+
+```coq
+(* Idempotent directory creation *)
+Definition mkdir_all (fs : FileSystem) (path : Path) := ...
+
+(* Atomic exclusive file creation *)
+Definition open_create (fs : FileSystem) (path : Path) := ...
+
+(* Atomic file open (existing only) *)
+Definition open_existing (fs : FileSystem) (path : Path) := ...
+
+(* TOCTOU-safe open or create pattern *)
+Definition open_or_create_safe (fs : FileSystem) (path : Path) :=
+  let fs' := mkdir_all fs (parent_dir path) in  (* 1. Ensure parent *)
+  match open_existing fs' path with             (* 2. Try open *)
+  | Ok f => Ok f
+  | NotFound => open_create fs' path            (* 3. Fall back to create *)
+  | err => err
+  end.
+```
+
+#### Rust Implementation Mapping
+
+| Formal Operation | Rust Implementation | Atomicity Guarantee |
+|------------------|---------------------|---------------------|
+| `mkdir_all` | `std::fs::create_dir_all()` | POSIX idempotent |
+| `open_create` | `WalWriter::create()` with `create_new(true)` | `O_CREAT \| O_EXCL` |
+| `open_existing` | `WalWriter::open()` without pre-check | Direct `open()` |
+| `open_or_create_safe` | `WalWriter::open_or_create()` | mkdir_all + atomic fallback |
+
+#### Error Type Mapping
+
+| Formal Error | Rust Error | Notes |
+|--------------|------------|-------|
+| `FsError::Ok` | `Ok(...)` | Success case |
+| `FsError::NotFound` | `WalError::NotFound` | File doesn't exist |
+| `FsError::ParentNotFound` | `WalError::ParentNotFound` | Parent directory missing |
+| `FsError::AlreadyExists` | `WalError::AlreadyExists` | Exclusive create failed |
+
+#### TOCTOU Safety Proofs
+
+The following theorems in `FileSystemSafety.v` establish TOCTOU safety:
+
+1. **`open_or_create_safe_no_parent_error`**: Safe pattern never returns `ParentNotFound`
+2. **`open_or_create_safe_always_ok`**: Safe pattern always succeeds (given sufficient permissions)
+3. **`mkdir_all_idempotent`**: Directory creation is idempotent
+4. **`vulnerable_can_fail_parent_not_found`**: Demonstrates that check-then-act patterns ARE vulnerable
+
+The Rust implementation MUST use the safe patterns to satisfy these proofs:
+
+```rust
+// WRONG (vulnerable to TOCTOU):
+if path.exists() {                    // RACE: check
+    File::open(path)?                 // RACE: act - file may be deleted
+} else {
+    File::create(path)?               // RACE: act - file may be created
+}
+
+// CORRECT (matches formal model):
+WalWriter::open_or_create(path)?      // Atomic pattern with proper fallback
+```
+
 ## Abstractions
 
 The following details are abstracted in the specifications:

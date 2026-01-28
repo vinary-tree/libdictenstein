@@ -152,6 +152,21 @@ impl NodeHeader {
     pub fn increment_version(&mut self) {
         self.version = self.version.wrapping_add(1);
     }
+
+    /// Check if version matches expected value (for optimistic validation)
+    ///
+    /// Returns true if the version matches, false otherwise.
+    /// Used by MVCC-Lite to validate that a node hasn't been modified.
+    #[inline]
+    pub fn check_version(&self, expected: u64) -> bool {
+        self.version == expected
+    }
+
+    /// Get the current version number
+    #[inline]
+    pub fn version(&self) -> u64 {
+        self.version
+    }
 }
 
 impl Default for NodeHeader {

@@ -402,9 +402,14 @@ pub fn decode_sequential_siblings(
     let (first_child, bytes_consumed) = decode_child_pointer(data, parent);
 
     // Reconstruct all child slots (consecutive slot IDs)
+    // Use checked_add to prevent u32 overflow (defense in depth).
     let mut children = Vec::with_capacity(count);
     for i in 0..count {
-        children.push(ArenaSlot::new(first_child.arena_id, first_child.slot_id + i as u32));
+        let slot_id = first_child
+            .slot_id
+            .checked_add(i as u32)
+            .unwrap_or(first_child.slot_id); // Fallback to first_child on overflow
+        children.push(ArenaSlot::new(first_child.arena_id, slot_id));
     }
 
     (children, bytes_consumed)

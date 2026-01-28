@@ -98,6 +98,10 @@ impl From<WalError> for RecoveryError {
             }
             WalError::AlreadyExists => RecoveryError::RecoveryFailed("WAL already exists".into()),
             WalError::NotFound => RecoveryError::NoCheckpoint,
+            WalError::ParentNotFound(path) => RecoveryError::RecoveryFailed(format!(
+                "Parent directory not found: {}",
+                path.display()
+            )),
         }
     }
 }
