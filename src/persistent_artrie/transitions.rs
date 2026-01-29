@@ -381,10 +381,19 @@ impl ChildNode {
     /// This handles all child types:
     /// - `Bucket`: directly insert into the bucket, converting to ART node if full
     /// - `ArtNode`: recursively descend through nested ART structure
-    /// - `DiskRef`: not supported for mutation (returns false)
+    /// - `DiskRef`: **NOT SUPPORTED** - returns `false` without loading
     ///
-    /// Returns `true` if the key was newly inserted, `false` if it already existed
-    /// or if insertion failed.
+    /// # DiskRef Limitation
+    ///
+    /// This method cannot resolve `DiskRef` nodes because it lacks access to the
+    /// `BufferManager` required for disk I/O. For operations on potentially disk-backed
+    /// tries, use `PersistentARTrieInner::insert()` which properly resolves `DiskRef`
+    /// nodes before mutation via `resolve_child_for_mutation()`.
+    ///
+    /// # Returns
+    ///
+    /// * `true` if the key was newly inserted
+    /// * `false` if it already existed, insertion failed, or the node is a `DiskRef`
     pub fn insert_key(&mut self, remaining: &[u8]) -> bool {
         // Handle bucket case with potential overflow conversion
         if let ChildNode::Bucket(bucket) = self {
@@ -459,10 +468,19 @@ impl ChildNode {
     /// This handles all child types:
     /// - `Bucket`: directly insert into the bucket, converting to ART node if full
     /// - `ArtNode`: recursively descend through nested ART structure
-    /// - `DiskRef`: not supported for mutation (returns false)
+    /// - `DiskRef`: **NOT SUPPORTED** - returns `false` without loading
     ///
-    /// Returns `true` if the key was newly inserted, `false` if it already existed
-    /// or if insertion failed.
+    /// # DiskRef Limitation
+    ///
+    /// This method cannot resolve `DiskRef` nodes because it lacks access to the
+    /// `BufferManager` required for disk I/O. For operations on potentially disk-backed
+    /// tries, use `PersistentARTrieInner::insert()` which properly resolves `DiskRef`
+    /// nodes before mutation via `resolve_child_for_mutation()`.
+    ///
+    /// # Returns
+    ///
+    /// * `true` if the key was newly inserted
+    /// * `false` if it already existed, insertion failed, or the node is a `DiskRef`
     pub fn insert_with_value(&mut self, remaining: &[u8], value: Option<&[u8]>) -> bool {
         // Handle bucket case with potential overflow conversion
         if let ChildNode::Bucket(bucket) = self {
@@ -547,10 +565,19 @@ impl ChildNode {
     /// This handles all child types:
     /// - `Bucket`: directly remove from the bucket
     /// - `ArtNode`: recursively descend through nested ART structure
-    /// - `DiskRef`: not supported for mutation (returns false)
+    /// - `DiskRef`: **NOT SUPPORTED** - returns `false` without loading
     ///
-    /// Returns `true` if the key was removed, `false` if it didn't exist
-    /// or if removal failed.
+    /// # DiskRef Limitation
+    ///
+    /// This method cannot resolve `DiskRef` nodes because it lacks access to the
+    /// `BufferManager` required for disk I/O. For operations on potentially disk-backed
+    /// tries, use `PersistentARTrieInner::remove()` which properly resolves `DiskRef`
+    /// nodes before mutation via `resolve_child_for_mutation()`.
+    ///
+    /// # Returns
+    ///
+    /// * `true` if the key was removed
+    /// * `false` if it didn't exist, removal failed, or the node is a `DiskRef`
     pub fn remove_key(&mut self, remaining: &[u8]) -> bool {
         match self {
             ChildNode::Bucket(bucket) => {
@@ -596,7 +623,19 @@ impl ChildNode {
     /// This handles all child types:
     /// - `Bucket`: directly check in the bucket
     /// - `ArtNode`: recursively descend through nested ART structure
-    /// - `DiskRef`: not supported (returns false)
+    /// - `DiskRef`: **NOT SUPPORTED** - returns `false` without loading
+    ///
+    /// # DiskRef Limitation
+    ///
+    /// This method cannot resolve `DiskRef` nodes because it lacks access to the
+    /// `BufferManager` required for disk I/O. For operations on potentially disk-backed
+    /// tries, use `PersistentARTrieInner::contains()` which properly resolves `DiskRef`
+    /// nodes via `contains_in_child_with_depth()`.
+    ///
+    /// # Returns
+    ///
+    /// * `true` if the key exists in the trie
+    /// * `false` if it doesn't exist, or the node is a `DiskRef`
     pub fn contains_key(&self, remaining: &[u8]) -> bool {
         match self {
             ChildNode::Bucket(bucket) => {

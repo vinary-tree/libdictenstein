@@ -128,6 +128,115 @@ enum SingleChildData {
     },
 }
 
+/// Resolve a DiskRef child in place, replacing it with the loaded node.
+///
+/// This is a free function that can be called without holding a borrow on
+/// `PersistentARTrieInner`, which is necessary when mutating children while
+/// also needing access to the buffer manager.
+///
+/// # Arguments
+/// * `child` - Mutable reference to the child node to resolve
+/// * `buffer_manager` - Optional reference to the buffer manager for disk I/O
+///
+/// # Returns
+/// * `true` if the child is now in memory (either already was, or successfully resolved)
+/// * `false` if the child was a DiskRef that failed to resolve
+#[cfg(feature = "persistent-artrie")]
+fn resolve_child_for_mutation_with_bm(
+    child: &mut ChildNode,
+    buffer_manager: Option<&Arc<RwLock<BufferManager>>>,
+) -> bool {
+    // Early return if not a DiskRef - nothing to resolve
+    let ChildNode::DiskRef { ptr } = child else {
+        return true; // Already in memory
+    };
+
+    let Some(disk_location) = ptr.disk_location() else {
+        warn!("DiskRef has no valid disk location");
+        return false;
+    };
+
+    // Get buffer manager (required for disk I/O)
+    let Some(bm_arc) = buffer_manager else {
+        warn!("No buffer manager available for resolving DiskRef");
+        return false;
+    };
+
+    // Resolve the node from disk
+    // We need to fully construct the resolved ChildNode before the page guard is dropped
+    let resolved: ChildNode = {
+        let bm = bm_arc.read();
+        let page_guard = match bm.fetch_page(disk_location.block_id) {
+            Ok(pg) => pg,
+            Err(e) => {
+                warn!(
+                    "Failed to fetch page for DiskRef at block {}: {}",
+                    disk_location.block_id, e
+                );
+                return false;
+            }
+        };
+
+        let page_data = page_guard.data();
+        let offset = disk_location.offset as usize;
+        let node_data = &page_data[offset..];
+
+        match disk_location.node_type {
+            NodeType::Bucket => {
+                // Deserialize bucket
+                // For now, return an empty bucket - full bucket serialization
+                // will be implemented in Phase 7.4
+                ChildNode::Bucket(StringBucket::new())
+            }
+            NodeType::Node4 | NodeType::Node16 | NodeType::Node48 | NodeType::Node256 => {
+                // Deserialize ART node
+                match serialization::from_bytes(node_data) {
+                    Ok(node) => {
+                        let is_final = node.header().is_final();
+                        ChildNode::ArtNode {
+                            node,
+                            is_final,
+                            value: None,
+                            children: Vec::new(),
+                        }
+                    }
+                    Err(e) => {
+                        warn!(
+                            "Failed to deserialize ART node at block {}, offset {}: {}",
+                            disk_location.block_id, disk_location.offset, e
+                        );
+                        return false;
+                    }
+                }
+            }
+            // Char-level nodes should never appear in byte-level trie
+            NodeType::CharNode4 | NodeType::CharNode16 | NodeType::CharNode48 | NodeType::CharBucket => {
+                warn!(
+                    "Char-level node type encountered in byte-level PersistentARTrie at block {}, offset {}",
+                    disk_location.block_id, disk_location.offset
+                );
+                return false;
+            }
+        }
+    }; // page_guard dropped here, resolved is fully owned
+
+    *child = resolved;
+    true
+}
+
+/// Resolve a DiskRef child in place (non-persistent fallback).
+///
+/// Without the persistent-artrie feature, DiskRef nodes should never exist.
+/// This returns false for DiskRef (indicating an error state) and true for
+/// all other node types.
+#[cfg(not(feature = "persistent-artrie"))]
+fn resolve_child_for_mutation_with_bm(
+    child: &mut ChildNode,
+    _buffer_manager: Option<()>,
+) -> bool {
+    !matches!(child, ChildNode::DiskRef { .. })
+}
+
 /// A Persistent Adaptive Radix Trie dictionary.
 ///
 /// This dictionary stores terms in a hybrid structure combining:
@@ -2250,6 +2359,13 @@ impl<V: DictionaryValue> PersistentARTrieInner<V> {
 
     /// Core insert implementation without WAL logging.
     fn insert_impl_core(&mut self, term: &[u8], value: Option<V>) -> bool {
+        // Clone buffer manager reference before mutable borrow of self.root
+        // This is needed to resolve DiskRef nodes during mutation
+        #[cfg(feature = "persistent-artrie")]
+        let buffer_manager = self.buffer_manager.clone();
+        #[cfg(not(feature = "persistent-artrie"))]
+        let buffer_manager: Option<()> = None;
+
         let inserted = match &mut self.root {
             TrieRoot::Bucket(bucket) => {
                 // Clone value here in case we need to retry after bucket conversion
@@ -2323,18 +2439,14 @@ impl<V: DictionaryValue> PersistentARTrieInner<V> {
                     let child_idx = children.iter().position(|(b, _)| *b == first_byte);
 
                     if let Some(idx) = child_idx {
-                        // Insert into existing child using the recursive method
-                        // that handles bucket overflow properly
-                        if children[idx].1.is_disk_ref() {
-                            // Cannot insert into disk ref without loading first
-                            // This should be resolved before insert
-                            false
-                        } else {
-                            // Use insert_with_value which handles bucket overflow recursively
-                            children[idx]
-                                .1
-                                .insert_with_value(remaining, serialized_value.as_deref())
+                        // Resolve DiskRef if needed before mutation
+                        if !resolve_child_for_mutation_with_bm(&mut children[idx].1, buffer_manager.as_ref()) {
+                            return false; // Resolution failed (logged in resolve_child_for_mutation_with_bm)
                         }
+                        // Use insert_with_value which handles bucket overflow recursively
+                        children[idx]
+                            .1
+                            .insert_with_value(remaining, serialized_value.as_deref())
                     } else {
                         // Create new child bucket
                         let mut bucket = StringBucket::with_values();
@@ -2394,6 +2506,13 @@ impl<V: DictionaryValue> PersistentARTrieInner<V> {
 
     /// Core remove implementation without WAL logging.
     fn remove_impl_core(&mut self, term: &[u8]) -> bool {
+        // Clone buffer manager reference before mutable borrow of self.root
+        // This is needed to resolve DiskRef nodes during mutation
+        #[cfg(feature = "persistent-artrie")]
+        let buffer_manager = self.buffer_manager.clone();
+        #[cfg(not(feature = "persistent-artrie"))]
+        let buffer_manager: Option<()> = None;
+
         let removed = match &mut self.root {
             TrieRoot::Bucket(bucket) => bucket.remove(term).is_some(),
             TrieRoot::ArtNode {
@@ -2417,6 +2536,10 @@ impl<V: DictionaryValue> PersistentARTrieInner<V> {
                     let child_idx = children.iter().position(|(b, _)| *b == first_byte);
 
                     if let Some(idx) = child_idx {
+                        // Resolve DiskRef if needed before mutation
+                        if !resolve_child_for_mutation_with_bm(&mut children[idx].1, buffer_manager.as_ref()) {
+                            return false; // Resolution failed (logged in resolve_child_for_mutation_with_bm)
+                        }
                         match &mut children[idx].1 {
                             ChildNode::Bucket(bucket) => bucket.remove(remaining).is_some(),
                             ChildNode::ArtNode {
@@ -2449,8 +2572,8 @@ impl<V: DictionaryValue> PersistentARTrieInner<V> {
                                 }
                             }
                             ChildNode::DiskRef { .. } => {
-                                // Cannot remove from disk ref without loading first
-                                false
+                                // DiskRef should have been resolved above
+                                unreachable!("DiskRef should have been resolved by resolve_child_for_mutation_with_bm")
                             }
                         }
                     } else {
@@ -2809,7 +2932,7 @@ impl<V: DictionaryValue> PersistentARTrieInner<V> {
     /// # Returns
     /// The resolved ChildNode, or an error if loading failed.
     #[cfg(feature = "persistent-artrie")]
-    fn resolve_disk_ref(&self, disk_location: &DiskLocation) -> Result<ChildNode> {
+    pub(super) fn resolve_disk_ref(&self, disk_location: &DiskLocation) -> Result<ChildNode> {
         // Get buffer manager (required for disk I/O)
         let buffer_manager = self.buffer_manager.as_ref().ok_or_else(|| {
             PersistentARTrieError::internal("No buffer manager available for disk I/O")
@@ -2884,6 +3007,32 @@ impl<V: DictionaryValue> PersistentARTrieInner<V> {
             }
             _ => None, // Already in memory
         }
+    }
+
+    /// Resolve a DiskRef child in place, replacing it with the loaded node.
+    ///
+    /// This is a wrapper method that extracts the buffer manager and calls
+    /// the free function `resolve_child_for_mutation_with_bm`.
+    ///
+    /// # Arguments
+    /// * `child` - Mutable reference to the child node to resolve
+    ///
+    /// # Returns
+    /// * `true` if the child is now in memory (either already was, or successfully resolved)
+    /// * `false` if the child was a DiskRef that failed to resolve
+    #[cfg(feature = "persistent-artrie")]
+    fn resolve_child_for_mutation(&self, child: &mut ChildNode) -> bool {
+        resolve_child_for_mutation_with_bm(child, self.buffer_manager.as_ref())
+    }
+
+    /// Resolve a DiskRef child in place (non-persistent fallback).
+    ///
+    /// Without the persistent-artrie feature, DiskRef nodes should never exist.
+    /// This returns false for DiskRef (indicating an error state) and true for
+    /// all other node types.
+    #[cfg(not(feature = "persistent-artrie"))]
+    fn resolve_child_for_mutation(&self, child: &mut ChildNode) -> bool {
+        !matches!(child, ChildNode::DiskRef { .. })
     }
 
     /// Check if child slots are consecutive in the same arena.
@@ -3399,10 +3548,21 @@ impl<V: DictionaryValue> PersistentARTrieInner<V> {
                 }
             }
             ChildNode::DiskRef { ptr } => {
-                // For disk references, we record any final state with the arena info
-                // Note: Full lazy loading would require resolving the pointer
-                // For now, we skip disk refs (they should be loaded before iteration)
-                let _ = ptr;
+                // Resolve the disk reference and recurse into it
+                if let Some(disk_location) = ptr.disk_location() {
+                    let child_arena = ptr.as_arena_slot().map(|s| s.arena_id);
+                    if let Ok(resolved) = self.resolve_disk_ref(&disk_location) {
+                        if self.collect_terms_with_arena(
+                            &resolved,
+                            prefix,
+                            child_arena,
+                            terms,
+                            limit,
+                        )? {
+                            return Ok(true);
+                        }
+                    }
+                }
             }
         }
 
@@ -3502,8 +3662,21 @@ impl<V: DictionaryValue> PersistentARTrieInner<V> {
                 }
             }
             ChildNode::DiskRef { ptr } => {
-                // Skip disk refs - they should be loaded before iteration
-                let _ = ptr;
+                // Resolve the disk reference and recurse into it
+                if let Some(disk_location) = ptr.disk_location() {
+                    let child_arena = ptr.as_arena_slot().map(|s| s.arena_id);
+                    if let Ok(resolved) = self.resolve_disk_ref(&disk_location) {
+                        if self.collect_terms_with_values_and_arena(
+                            &resolved,
+                            prefix.clone(),
+                            child_arena,
+                            terms,
+                            limit,
+                        )? {
+                            return Ok(true);
+                        }
+                    }
+                }
             }
         }
 

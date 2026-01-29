@@ -3,6 +3,7 @@
 //! This module provides a zipper implementation for PersistentARTrie that uses
 //! node-based navigation with lock-per-operation pattern for thread safety.
 
+use std::borrow::Cow;
 use std::sync::Arc;
 use crate::sync_compat::RwLock;
 
@@ -152,7 +153,7 @@ impl<V: DictionaryValue> DictZipper for PersistentARTrieZipper<V> {
 }
 
 impl<V: DictionaryValue> PersistentARTrieZipper<V> {
-    /// Check if a path exists in the trie
+    /// Check if a path exists in the trie, resolving DiskRefs as needed.
     fn has_path(&self, inner: &PersistentARTrieInner<V>, path: &[u8]) -> bool {
         match &inner.root {
             TrieRoot::Bucket(bucket) => {
@@ -168,24 +169,7 @@ impl<V: DictionaryValue> PersistentARTrieZipper<V> {
 
                     for (b, child) in children {
                         if *b == first_byte {
-                            return match child {
-                                ChildNode::Bucket(bucket) => {
-                                    self.bucket_has_path(bucket, remaining)
-                                }
-                                ChildNode::ArtNode { children: nested_children, .. } => {
-                                    // Recursive check for nested ART nodes
-                                    if remaining.is_empty() {
-                                        true
-                                    } else {
-                                        let next_byte = remaining[0];
-                                        nested_children.iter().any(|(b, _)| *b == next_byte)
-                                    }
-                                }
-                                ChildNode::DiskRef { .. } => {
-                                    // Disk-backed nodes require lazy loading (not supported in zipper yet)
-                                    false
-                                }
-                            };
+                            return self.has_path_in_child(inner, child, remaining);
                         }
                     }
                     false
@@ -213,13 +197,13 @@ impl<V: DictionaryValue> PersistentARTrieZipper<V> {
         false
     }
 
-    /// Check if position is final
+    /// Check if position is final, resolving DiskRefs as needed.
     fn is_final_at_path(&self, inner: &PersistentARTrieInner<V>, path: &[u8]) -> bool {
         match &inner.root {
-            TrieRoot::Bucket(bucket) => {
-                bucket.contains(path)
-            }
-            TrieRoot::ArtNode { children, is_final, .. } => {
+            TrieRoot::Bucket(bucket) => bucket.contains(path),
+            TrieRoot::ArtNode {
+                children, is_final, ..
+            } => {
                 if path.is_empty() {
                     return *is_final;
                 }
@@ -229,36 +213,7 @@ impl<V: DictionaryValue> PersistentARTrieZipper<V> {
 
                 for (b, child) in children {
                     if *b == first_byte {
-                        return match child {
-                            ChildNode::Bucket(bucket) => {
-                                bucket.contains(remaining)
-                            }
-                            ChildNode::ArtNode { is_final: child_final, children: nested_children, .. } => {
-                                if remaining.is_empty() {
-                                    *child_final
-                                } else {
-                                    // Recursive check for nested ART nodes
-                                    let next_byte = remaining[0];
-                                    let next_remaining = &remaining[1..];
-                                    for (nb, nc) in nested_children {
-                                        if *nb == next_byte {
-                                            return match nc {
-                                                ChildNode::Bucket(b) => b.contains(next_remaining),
-                                                ChildNode::ArtNode { is_final: nf, .. } => {
-                                                    next_remaining.is_empty() && *nf
-                                                }
-                                                ChildNode::DiskRef { .. } => false,
-                                            };
-                                        }
-                                    }
-                                    false
-                                }
-                            }
-                            ChildNode::DiskRef { .. } => {
-                                // Disk-backed nodes require lazy loading (not supported in zipper yet)
-                                false
-                            }
-                        };
+                        return self.is_final_in_child(inner, child, remaining);
                     }
                 }
                 false
@@ -266,12 +221,10 @@ impl<V: DictionaryValue> PersistentARTrieZipper<V> {
         }
     }
 
-    /// Get all children (edge labels) at current path
+    /// Get all children (edge labels) at current path, resolving DiskRefs as needed.
     fn get_children_at_path(&self, inner: &PersistentARTrieInner<V>, path: &[u8]) -> Vec<u8> {
         match &inner.root {
-            TrieRoot::Bucket(bucket) => {
-                self.get_bucket_children(bucket, path)
-            }
+            TrieRoot::Bucket(bucket) => self.get_bucket_children(bucket, path),
             TrieRoot::ArtNode { children, .. } => {
                 if path.is_empty() {
                     // At root, return all first-level children
@@ -282,24 +235,7 @@ impl<V: DictionaryValue> PersistentARTrieZipper<V> {
 
                     for (b, child) in children {
                         if *b == first_byte {
-                            return match child {
-                                ChildNode::Bucket(bucket) => {
-                                    self.get_bucket_children(bucket, remaining)
-                                }
-                                ChildNode::ArtNode { children: nested_children, .. } => {
-                                    if remaining.is_empty() {
-                                        // At this node, return its direct children
-                                        nested_children.iter().map(|(b, _)| *b).collect()
-                                    } else {
-                                        // Need to go deeper (limited recursive support)
-                                        Vec::new()
-                                    }
-                                }
-                                ChildNode::DiskRef { .. } => {
-                                    // Disk-backed nodes require lazy loading (not supported in zipper yet)
-                                    Vec::new()
-                                }
-                            };
+                            return self.get_children_in_child(inner, child, remaining);
                         }
                     }
                     Vec::new()
@@ -327,6 +263,172 @@ impl<V: DictionaryValue> PersistentARTrieZipper<V> {
         }
 
         children
+    }
+
+    /// Resolve a DiskRef child to its actual node content.
+    ///
+    /// Returns `Cow::Borrowed` for already-loaded nodes (no allocation),
+    /// and `Cow::Owned` for newly resolved disk refs.
+    ///
+    /// # Arguments
+    ///
+    /// * `inner` - The trie inner structure containing the buffer manager
+    /// * `child` - The child node to potentially resolve
+    ///
+    /// # Returns
+    ///
+    /// `Some(Cow::Borrowed(child))` for in-memory nodes,
+    /// `Some(Cow::Owned(resolved))` for successfully resolved disk refs,
+    /// `None` for failed disk ref resolution.
+    #[cfg(feature = "persistent-artrie")]
+    fn resolve_child<'a>(
+        inner: &PersistentARTrieInner<V>,
+        child: &'a ChildNode,
+    ) -> Option<Cow<'a, ChildNode>> {
+        match child {
+            ChildNode::DiskRef { ptr } => {
+                if let Some(disk_location) = ptr.disk_location() {
+                    match inner.resolve_disk_ref(&disk_location) {
+                        Ok(resolved) => Some(Cow::Owned(resolved)),
+                        Err(e) => {
+                            log::warn!(
+                                "Failed to resolve disk ref at block {}, offset {}: {}",
+                                disk_location.block_id,
+                                disk_location.offset,
+                                e
+                            );
+                            None
+                        }
+                    }
+                } else {
+                    None
+                }
+            }
+            _ => Some(Cow::Borrowed(child)),
+        }
+    }
+
+    /// Resolve a DiskRef child to its actual node content (non-persistent variant).
+    ///
+    /// Without the persistent-artrie feature, DiskRef nodes cannot be resolved
+    /// and return None.
+    #[cfg(not(feature = "persistent-artrie"))]
+    fn resolve_child<'a>(
+        _inner: &PersistentARTrieInner<V>,
+        child: &'a ChildNode,
+    ) -> Option<Cow<'a, ChildNode>> {
+        match child {
+            ChildNode::DiskRef { .. } => None,
+            _ => Some(Cow::Borrowed(child)),
+        }
+    }
+
+    /// Check if a path exists within a child node, resolving DiskRefs as needed.
+    fn has_path_in_child(
+        &self,
+        inner: &PersistentARTrieInner<V>,
+        child: &ChildNode,
+        remaining: &[u8],
+    ) -> bool {
+        let resolved = match Self::resolve_child(inner, child) {
+            Some(cow) => cow,
+            None => return false,
+        };
+
+        match &*resolved {
+            ChildNode::Bucket(bucket) => self.bucket_has_path(bucket, remaining),
+            ChildNode::ArtNode { children, .. } => {
+                if remaining.is_empty() {
+                    true
+                } else {
+                    let next_byte = remaining[0];
+                    let next_remaining = &remaining[1..];
+                    for (b, nc) in children {
+                        if *b == next_byte {
+                            return self.has_path_in_child(inner, nc, next_remaining);
+                        }
+                    }
+                    false
+                }
+            }
+            ChildNode::DiskRef { .. } => {
+                // Should not reach here after resolution, but handle gracefully
+                false
+            }
+        }
+    }
+
+    /// Check if a path leads to a final state within a child node, resolving DiskRefs as needed.
+    fn is_final_in_child(
+        &self,
+        inner: &PersistentARTrieInner<V>,
+        child: &ChildNode,
+        remaining: &[u8],
+    ) -> bool {
+        let resolved = match Self::resolve_child(inner, child) {
+            Some(cow) => cow,
+            None => return false,
+        };
+
+        match &*resolved {
+            ChildNode::Bucket(bucket) => bucket.contains(remaining),
+            ChildNode::ArtNode {
+                is_final, children, ..
+            } => {
+                if remaining.is_empty() {
+                    *is_final
+                } else {
+                    let next_byte = remaining[0];
+                    let next_remaining = &remaining[1..];
+                    for (b, nc) in children {
+                        if *b == next_byte {
+                            return self.is_final_in_child(inner, nc, next_remaining);
+                        }
+                    }
+                    false
+                }
+            }
+            ChildNode::DiskRef { .. } => {
+                // Should not reach here after resolution, but handle gracefully
+                false
+            }
+        }
+    }
+
+    /// Get children at a path within a child node, resolving DiskRefs as needed.
+    fn get_children_in_child(
+        &self,
+        inner: &PersistentARTrieInner<V>,
+        child: &ChildNode,
+        path: &[u8],
+    ) -> Vec<u8> {
+        let resolved = match Self::resolve_child(inner, child) {
+            Some(cow) => cow,
+            None => return Vec::new(),
+        };
+
+        match &*resolved {
+            ChildNode::Bucket(bucket) => self.get_bucket_children(bucket, path),
+            ChildNode::ArtNode { children, .. } => {
+                if path.is_empty() {
+                    // At this node, return its direct children
+                    children.iter().map(|(b, _)| *b).collect()
+                } else {
+                    let next_byte = path[0];
+                    let next_path = &path[1..];
+                    for (b, nc) in children {
+                        if *b == next_byte {
+                            return self.get_children_in_child(inner, nc, next_path);
+                        }
+                    }
+                    Vec::new()
+                }
+            }
+            ChildNode::DiskRef { .. } => {
+                // Should not reach here after resolution, but handle gracefully
+                Vec::new()
+            }
+        }
     }
 }
 
@@ -428,5 +530,132 @@ mod tests {
 
         assert_eq!(zipper1.path(), zipper2.path());
         assert_eq!(zipper1.is_final(), zipper2.is_final());
+    }
+
+    #[test]
+    fn test_resolve_child_returns_borrowed_for_bucket() {
+        use std::borrow::Cow;
+
+        let mut dict: PersistentARTrie<()> = PersistentARTrie::new();
+        dict.insert("test");
+
+        let inner = dict.inner.read();
+        let bucket = super::StringBucket::new();
+        let child = ChildNode::Bucket(bucket);
+
+        let resolved = PersistentARTrieZipper::<()>::resolve_child(&inner, &child);
+        assert!(resolved.is_some());
+
+        // Should return borrowed (no clone needed for in-memory nodes)
+        if let Some(cow) = resolved {
+            assert!(matches!(cow, Cow::Borrowed(_)));
+        }
+    }
+
+    #[test]
+    fn test_resolve_child_returns_borrowed_for_art_node() {
+        use std::borrow::Cow;
+        use super::super::nodes::{Node, Node4};
+
+        let mut dict: PersistentARTrie<()> = PersistentARTrie::new();
+        dict.insert("test");
+
+        let inner = dict.inner.read();
+        let node = Node::N4(Box::new(Node4::new()));
+        let child = ChildNode::art_node(node, false, None);
+
+        let resolved = PersistentARTrieZipper::<()>::resolve_child(&inner, &child);
+        assert!(resolved.is_some());
+
+        // Should return borrowed (no clone needed for in-memory nodes)
+        if let Some(cow) = resolved {
+            assert!(matches!(cow, Cow::Borrowed(_)));
+        }
+    }
+
+    #[test]
+    fn test_resolve_child_returns_none_for_disk_ref_without_manager() {
+        use super::super::swizzled_ptr::SwizzledPtr;
+
+        let mut dict: PersistentARTrie<()> = PersistentARTrie::new();
+        dict.insert("test");
+
+        let inner = dict.inner.read();
+        let ptr = SwizzledPtr::null();
+        let child = ChildNode::disk_ref(ptr);
+
+        // Without a buffer manager, DiskRef resolution should return None
+        let resolved = PersistentARTrieZipper::<()>::resolve_child(&inner, &child);
+        assert!(resolved.is_none());
+    }
+
+    #[test]
+    fn test_deep_navigation_with_many_terms() {
+        // Test that navigation works correctly through deeply nested ART structures
+        let mut dict: PersistentARTrie<()> = PersistentARTrie::new();
+
+        // Insert terms that will create nested ART nodes
+        for i in 0..100 {
+            let term = format!("prefix_{:03}_suffix", i);
+            dict.insert(&term);
+        }
+
+        let zipper = PersistentARTrieZipper::new_from_dict(&dict);
+
+        // Navigate through "prefix_050_suffix"
+        let mut current = zipper;
+        for byte in b"prefix_050_suffix" {
+            current = current.descend(*byte).expect("should be able to descend");
+        }
+        assert!(current.is_final());
+    }
+
+    #[test]
+    fn test_children_with_many_terms() {
+        // Test that children() correctly returns all child edges
+        let mut dict: PersistentARTrie<()> = PersistentARTrie::new();
+
+        // Insert terms with different first bytes
+        dict.insert("apple");
+        dict.insert("banana");
+        dict.insert("cherry");
+        dict.insert("date");
+        dict.insert("elderberry");
+
+        let zipper = PersistentARTrieZipper::new_from_dict(&dict);
+        let children: Vec<u8> = zipper.children().map(|(b, _)| b).collect();
+
+        assert_eq!(children.len(), 5);
+        assert!(children.contains(&b'a'));
+        assert!(children.contains(&b'b'));
+        assert!(children.contains(&b'c'));
+        assert!(children.contains(&b'd'));
+        assert!(children.contains(&b'e'));
+    }
+
+    #[test]
+    fn test_recursive_has_path_through_nested_art() {
+        // Ensure has_path works through multiple levels of ART nodes
+        let mut dict: PersistentARTrie<()> = PersistentARTrie::new();
+
+        // Create terms that will generate nested ART structure
+        for prefix in &["aa", "ab", "ac", "ad"] {
+            for suffix in &["1", "2", "3", "4"] {
+                let term = format!("{}{}", prefix, suffix);
+                dict.insert(&term);
+            }
+        }
+
+        let zipper = PersistentARTrieZipper::new_from_dict(&dict);
+
+        // Test descending through paths that exist
+        let a = zipper.descend(b'a').expect("should have 'a'");
+        let ab = a.descend(b'b').expect("should have 'b'");
+        let ab3 = ab.descend(b'3').expect("should have '3'");
+        assert!(ab3.is_final());
+
+        // Test descending through paths that don't exist
+        let aa = a.descend(b'a').expect("should have 'a'");
+        assert!(aa.descend(b'x').is_none());
     }
 }

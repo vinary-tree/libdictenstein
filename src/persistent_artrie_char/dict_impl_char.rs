@@ -3332,6 +3332,9 @@ impl<V: DictionaryValue> DiskBackedCharTrieInner<V> {
     ///
     /// This method eagerly collects terms. For memory efficiency when dealing
     /// with large subtrees, use `iter_prefix` with batched processing instead.
+    ///
+    /// Note: This method properly resolves DiskRef children via `resolve_swizzled_ptr`,
+    /// ensuring all terms are collected even after checkpoint.
     #[cfg(feature = "persistent-artrie")]
     fn collect_terms_under_node(
         &self,
@@ -3344,10 +3347,18 @@ impl<V: DictionaryValue> DiskBackedCharTrieInner<V> {
             terms.push(prefix.clone());
         }
 
-        // Recursively traverse children
-        for (c, child) in node.iter_children() {
+        // Recursively traverse children, resolving disk refs as needed
+        for (key, child_ptr) in node.node.iter_children() {
+            if child_ptr.is_null() {
+                continue;
+            }
+
+            let c = char::from_u32(key).unwrap_or('\u{FFFD}');
             let mut child_prefix = prefix.clone();
             child_prefix.push(c);
+
+            // Resolve the child node (handles both in-memory and disk-backed)
+            let child = self.resolve_swizzled_ptr(child_ptr)?;
             self.collect_terms_under_node(child, child_prefix, terms)?;
         }
 
@@ -3357,6 +3368,9 @@ impl<V: DictionaryValue> DiskBackedCharTrieInner<V> {
     /// Collect terms under a node with a limit for batched processing.
     ///
     /// Stops collecting after `limit` terms have been found.
+    ///
+    /// Note: This method properly resolves DiskRef children via `resolve_swizzled_ptr`,
+    /// ensuring all terms are collected even after checkpoint.
     #[cfg(feature = "persistent-artrie")]
     fn collect_terms_under_node_limited(
         &self,
@@ -3377,10 +3391,18 @@ impl<V: DictionaryValue> DiskBackedCharTrieInner<V> {
             }
         }
 
-        // Recursively traverse children
-        for (c, child) in node.iter_children() {
+        // Recursively traverse children, resolving disk refs as needed
+        for (key, child_ptr) in node.node.iter_children() {
+            if child_ptr.is_null() {
+                continue;
+            }
+
+            let c = char::from_u32(key).unwrap_or('\u{FFFD}');
             let mut child_prefix = prefix.clone();
             child_prefix.push(c);
+
+            // Resolve the child node (handles both in-memory and disk-backed)
+            let child = self.resolve_swizzled_ptr(child_ptr)?;
             if self.collect_terms_under_node_limited(child, child_prefix, terms, limit)? {
                 return Ok(true);
             }
@@ -3390,6 +3412,9 @@ impl<V: DictionaryValue> DiskBackedCharTrieInner<V> {
     }
 
     /// Collect terms with values under a node.
+    ///
+    /// Note: This method properly resolves DiskRef children via `resolve_swizzled_ptr`,
+    /// ensuring all terms are collected even after checkpoint.
     #[cfg(feature = "persistent-artrie")]
     fn collect_terms_with_values_under_node(
         &self,
@@ -3407,10 +3432,18 @@ impl<V: DictionaryValue> DiskBackedCharTrieInner<V> {
             }
         }
 
-        // Recursively traverse children
-        for (c, child) in node.iter_children() {
+        // Recursively traverse children, resolving disk refs as needed
+        for (key, child_ptr) in node.node.iter_children() {
+            if child_ptr.is_null() {
+                continue;
+            }
+
+            let c = char::from_u32(key).unwrap_or('\u{FFFD}');
             let mut child_prefix = prefix.clone();
             child_prefix.push(c);
+
+            // Resolve the child node (handles both in-memory and disk-backed)
+            let child = self.resolve_swizzled_ptr(child_ptr)?;
             self.collect_terms_with_values_under_node(child, child_prefix, terms)?;
         }
 
@@ -5816,10 +5849,27 @@ impl<V: DictionaryValue> DiskBackedCharTrieInner<V> {
             .arena_id;
 
         // First, recursively serialize all children and collect their disk pointers
+        // Note: We handle both in-memory children (need serialization) and disk-backed
+        // children (already have a disk pointer, just reuse it).
         let mut child_disk_ptrs: Vec<(u32, SwizzledPtr)> = Vec::with_capacity(node.num_children());
-        for (c, child) in node.iter_children() {
-            let ptr = self.serialize_char_node_to_disk(child)?;
-            child_disk_ptrs.push((c as u32, ptr));
+        for (key, child_ptr) in node.node.iter_children() {
+            if child_ptr.is_null() {
+                continue;
+            }
+
+            // Check if the child is already on disk (DiskRef) - just reuse its pointer
+            if child_ptr.disk_location().is_some() {
+                // Clone the SwizzledPtr to preserve its disk location
+                child_disk_ptrs.push((key, child_ptr.clone()));
+            } else if let Some(child_raw) = child_ptr.as_ptr::<CharTrieNodeInner<V>>() {
+                // Child is in memory - serialize it recursively
+                // Safety: ptr was created via Box::into_raw() from CharTrieNodeInner<V>
+                let child = unsafe { &*child_raw };
+                let ptr = self.serialize_char_node_to_disk(child)?;
+                child_disk_ptrs.push((key, ptr));
+            }
+            // If neither disk_location nor as_ptr succeeds, skip this child
+            // (should not happen in normal operation)
         }
 
         // Get the predicted parent slot and arena node count for encoding children
