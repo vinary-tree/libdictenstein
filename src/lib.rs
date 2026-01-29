@@ -35,6 +35,7 @@ pub mod dynamic_dawg_char_zipper;
 pub mod dynamic_dawg_u64;
 pub mod dynamic_dawg_u64_zipper;
 pub mod dynamic_dawg_zipper;
+pub mod excluding_prefix_zipper;
 pub mod factory;
 pub mod iterator;
 #[cfg(feature = "pathmap-backend")]
@@ -49,6 +50,7 @@ pub mod persistent_artrie;
 pub mod persistent_artrie_char;
 pub mod prefix_zipper;
 pub mod scdawg;
+pub mod union_zipper;
 pub mod scdawg_char;
 pub mod substring;
 pub mod suffix_automaton;

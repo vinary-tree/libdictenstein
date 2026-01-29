@@ -38,6 +38,9 @@ prost = { version = "0.13", optional = true }
 # PathMap as an optional dictionary backend
 pathmap = { version = "0.2.0-alpha0", optional = true }
 
+# WFST semiring integration for Lattice trait
+lling-llang = { path = "../lling-llang", optional = true }
+
 # Memory-mapped I/O for persistent data structures
 memmap2 = { version = "0.9", optional = true }
 
@@ -60,6 +63,7 @@ prost-build = { version = "0.13", optional = true }
 criterion = "0.5"
 tempfile = "3.8"
 proptest = "1.4"
+ordered-float = "4.6"  # For lling-llang semiring tests
 
 [features]
 default = ["parking_lot"]
@@ -75,6 +79,8 @@ group-commit = ["persistent-artrie", "crossbeam-channel"]
 parallel-merge = ["persistent-artrie", "rayon"]
 # SIMD optimization with AVX2/SSE4.1 intrinsics
 simd = []
+# lling-llang WFST semiring integration (IdempotentSemiring -> Lattice)
+lling-llang = ["dep:lling-llang"]
 # SCDAWG optimization experiments
 scdawg-bloom = []  # 64-bit bloom filter for edge lookup fast-reject
 scdawg-simd = []   # SIMD edge lookup for small edge counts
@@ -154,4 +160,49 @@ required-features = ["parallel-merge"]
 [[bench]]
 name = "transaction_benchmarks"
 harness = false
+required-features = ["persistent-artrie"]
+
+# Examples requiring persistent-artrie feature
+[[example]]
+name = "test_bench"
+required-features = ["persistent-artrie"]
+
+[[example]]
+name = "test_bench_large"
+required-features = ["persistent-artrie"]
+
+[[example]]
+name = "bench_disk_io"
+required-features = ["persistent-artrie"]
+
+[[example]]
+name = "wal_size_test"
+required-features = ["persistent-artrie"]
+
+[[example]]
+name = "wal_debug"
+required-features = ["persistent-artrie"]
+
+[[example]]
+name = "wal_compare"
+required-features = ["persistent-artrie"]
+
+[[example]]
+name = "wal_flush_debug"
+required-features = ["persistent-artrie"]
+
+[[example]]
+name = "insert_trace"
+required-features = ["persistent-artrie"]
+
+[[example]]
+name = "prefix_diversity_test"
+required-features = ["persistent-artrie"]
+
+[[example]]
+name = "streaming_merge_test"
+required-features = ["persistent-artrie"]
+
+[[example]]
+name = "batched_merge_comparison"
 required-features = ["persistent-artrie"]
