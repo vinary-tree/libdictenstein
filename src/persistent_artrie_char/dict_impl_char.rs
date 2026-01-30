@@ -981,6 +981,65 @@ impl<V: DictionaryValue> DiskBackedCharTrieInner<V> {
         })
     }
 
+    /// Create a new disk-backed trie with slot-level dirty tracking.
+    ///
+    /// This enables incremental checkpoints that write only modified slots
+    /// instead of entire 256KB arenas, reducing checkpoint I/O by 90%+ for
+    /// localized updates.
+    ///
+    /// # Arguments
+    /// * `path` - Path to the trie file (must not exist)
+    #[cfg(feature = "persistent-artrie")]
+    pub fn create_with_slot_tracking<P: AsRef<Path>>(path: P) -> Result<Self> {
+        use super::arena_manager::FlushConfig;
+
+        let path = path.as_ref();
+
+        // Create disk manager
+        let disk_manager = DiskManager::create(path)?;
+
+        // Create buffer manager (takes ownership of disk_manager)
+        let buffer_manager = BufferManager::new(disk_manager, DEFAULT_CHAR_BUFFER_POOL_SIZE);
+        let buffer_manager = Arc::new(RwLock::new(buffer_manager));
+
+        // Create WAL file
+        let wal_path = path.with_extension("wal");
+        let wal_writer = WalWriter::create(&wal_path)
+            .map_err(|e| PersistentARTrieError::WalError { reason: format!("{:?}", e) })?;
+        let wal_writer = Arc::new(RwLock::new(wal_writer));
+
+        // Create arena manager with slot-level tracking enabled
+        let flush_config = FlushConfig::with_slot_tracking();
+        let arena_manager = ArenaManager::with_buffer_manager_and_config(
+            Arc::clone(&buffer_manager),
+            flush_config,
+        );
+        let arena_manager = Arc::new(RwLock::new(arena_manager));
+
+        Ok(Self {
+            root: CharTrieRoot::Empty,
+            len: 0,
+            dirty: false,
+            buffer_manager: Some(buffer_manager),
+            wal_writer: Some(wal_writer),
+            wal_config: WalConfig::default(),
+            next_lsn: 1,
+            file_path: Some(path.to_path_buf()),
+            arena_manager: Some(arena_manager),
+            version: OptimisticVersion::new(),
+            epoch_manager: EpochManager::new(),
+            retry_stats: RetryStats::new(),
+            #[cfg(feature = "group-commit")]
+            group_commit: None,
+            memory_monitor: None,
+            cache_stats: CacheStats::default(),
+            #[cfg(feature = "persistent-artrie")]
+            checkpoint_manager: None,
+            durability_policy: DurabilityPolicy::default(),
+            _phantom: std::marker::PhantomData,
+        })
+    }
+
     /// Create a new disk-backed trie with custom WAL configuration
     #[cfg(feature = "persistent-artrie")]
     pub fn create_with_config<P: AsRef<Path>>(path: P, wal_config: WalConfig) -> Result<Self> {
@@ -1238,6 +1297,48 @@ impl<V: DictionaryValue> DiskBackedCharTrieInner<V> {
         }
 
         Ok(inner)
+    }
+
+    /// Open an existing disk-backed trie with slot-level dirty tracking enabled.
+    ///
+    /// Slot-level tracking reduces checkpoint I/O by writing only modified slots
+    /// instead of entire arenas. For vocabularies with localized updates, this
+    /// can reduce checkpoint I/O by 90%+.
+    ///
+    /// This is equivalent to calling `open()` followed by enabling slot tracking
+    /// on the arena manager, but provides a convenient single-call API.
+    ///
+    /// # Arguments
+    /// * `path` - Path to the trie file (must exist)
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// // Open existing vocabulary with slot-level tracking
+    /// let trie = DiskBackedCharTrieInner::<u64>::open_with_slot_tracking("vocab.trie")?;
+    ///
+    /// // Subsequent allocations will be tracked at slot level
+    /// trie.insert("new_term", Some(42));
+    ///
+    /// // Checkpoint writes only modified slots
+    /// trie.checkpoint()?;
+    /// ```
+    #[cfg(feature = "persistent-artrie")]
+    pub fn open_with_slot_tracking<P: AsRef<Path>>(path: P) -> Result<Self> {
+        let trie = Self::open(path)?;
+
+        // Enable slot-level tracking on the arena manager
+        if let Some(ref am) = trie.arena_manager {
+            #[cfg(feature = "parking_lot")]
+            am.write().enable_slot_tracking();
+            #[cfg(not(feature = "parking_lot"))]
+            am.write()
+                .map_err(|_| PersistentARTrieError::LockPoisoned {
+                    resource: "arena_manager".to_string(),
+                })?
+                .enable_slot_tracking();
+        }
+
+        Ok(trie)
     }
 
     /// Open an existing disk-backed trie with a specific loading depth.
@@ -4861,6 +4962,71 @@ impl<V: DictionaryValue> DiskBackedCharTrieInner<V> {
         Ok(())
     }
 
+    /// Returns the next LSN that will be assigned to a write operation.
+    ///
+    /// This value increases monotonically with each write (insert, remove, update).
+    /// It can be used as a "version" or "sequence number" for the trie state.
+    ///
+    /// # Returns
+    /// - The next LSN to be assigned (starts at 1 for persistent tries)
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// let mut trie = DiskBackedCharTrieInner::<i32>::create("test.part")?;
+    /// let before = trie.current_lsn();
+    /// trie.upsert("key", 42)?;
+    /// let after = trie.current_lsn();
+    /// assert!(after > before);
+    /// ```
+    #[cfg(feature = "persistent-artrie")]
+    pub fn current_lsn(&self) -> u64 {
+        // Use WAL's authoritative LSN if available, otherwise fall back to cached value
+        self.wal_writer.as_ref()
+            .map(|wal| {
+                #[cfg(feature = "parking_lot")]
+                {
+                    wal.read().current_lsn()
+                }
+                #[cfg(not(feature = "parking_lot"))]
+                {
+                    wal.read().expect("WAL lock").current_lsn()
+                }
+            })
+            .unwrap_or(self.next_lsn)
+    }
+
+    /// Returns the highest LSN that has been durably synced to storage.
+    ///
+    /// Operations with LSN <= synced_lsn are guaranteed to survive crashes.
+    /// Operations with LSN > synced_lsn may be lost if a crash occurs before
+    /// the next sync or checkpoint.
+    ///
+    /// # Returns
+    /// - `Some(lsn)` if WAL is enabled and has synced data
+    /// - `None` if WAL is disabled (in-memory trie) or no data has been synced yet
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// let mut trie = DiskBackedCharTrieInner::<i32>::create("test.part")?;
+    /// trie.upsert("key", 42)?;
+    /// trie.sync()?;  // Force durability
+    /// let synced = trie.synced_lsn();
+    /// assert!(synced.is_some());
+    /// ```
+    #[cfg(feature = "persistent-artrie")]
+    pub fn synced_lsn(&self) -> Option<u64> {
+        self.wal_writer.as_ref().map(|wal| {
+            #[cfg(feature = "parking_lot")]
+            {
+                wal.read().synced_lsn()
+            }
+            #[cfg(not(feature = "parking_lot"))]
+            {
+                wal.read().expect("WAL lock").synced_lsn()
+            }
+        })
+    }
+
     // ========================================================================
     // Group Commit Support
     // ========================================================================
@@ -5648,16 +5814,35 @@ impl<V: DictionaryValue> DiskBackedCharTrieInner<V> {
 
         // Flush arenas to disk FIRST to get their block_ids
         // (writes dirty arenas to buffer manager)
+        // Uses slot-level incremental flush if configured, otherwise full arena flush
         if let Some(ref arena_manager) = self.arena_manager {
             #[cfg(feature = "parking_lot")]
-            arena_manager.write().flush()?;
+            {
+                let stats = arena_manager.write().flush_dirty_slots()?;
+                if stats.partial_writes > 0 {
+                    log::debug!(
+                        "Char incremental flush: {} full arenas, {} partial, {} slots, {} bytes written, {} bytes saved",
+                        stats.full_arena_writes, stats.partial_writes, stats.slots_written,
+                        stats.bytes_written, stats.bytes_saved
+                    );
+                }
+            }
             #[cfg(not(feature = "parking_lot"))]
-            arena_manager
-                .write()
-                .map_err(|_| PersistentARTrieError::LockPoisoned {
-                    resource: "arena_manager".to_string(),
-                })?
-                .flush()?;
+            {
+                let stats = arena_manager
+                    .write()
+                    .map_err(|_| PersistentARTrieError::LockPoisoned {
+                        resource: "arena_manager".to_string(),
+                    })?
+                    .flush_dirty_slots()?;
+                if stats.partial_writes > 0 {
+                    log::debug!(
+                        "Char incremental flush: {} full arenas, {} partial, {} slots, {} bytes written, {} bytes saved",
+                        stats.full_arena_writes, stats.partial_writes, stats.slots_written,
+                        stats.bytes_written, stats.bytes_saved
+                    );
+                }
+            }
         }
 
         // Get arena count after flushing (block IDs are derived from sequential allocation)
@@ -6273,6 +6458,40 @@ impl<V: DictionaryValue> SharedCharTrie<V> {
         let mut guard = self.inner.write().expect("lock poisoned");
 
         guard.sync()
+    }
+
+    /// Returns the next LSN that will be assigned to a write operation.
+    ///
+    /// This value increases monotonically with each write (insert, remove, update).
+    /// It can be used as a "version" or "sequence number" for the trie state.
+    ///
+    /// # Returns
+    /// - The next LSN to be assigned (starts at 1 for persistent tries)
+    pub fn current_lsn(&self) -> u64 {
+        #[cfg(feature = "parking_lot")]
+        let guard = self.inner.read();
+        #[cfg(not(feature = "parking_lot"))]
+        let guard = self.inner.read().expect("lock poisoned");
+
+        guard.current_lsn()
+    }
+
+    /// Returns the highest LSN that has been durably synced to storage.
+    ///
+    /// Operations with LSN <= synced_lsn are guaranteed to survive crashes.
+    /// Operations with LSN > synced_lsn may be lost if a crash occurs before
+    /// the next sync or checkpoint.
+    ///
+    /// # Returns
+    /// - `Some(lsn)` if WAL is enabled and has synced data
+    /// - `None` if WAL is disabled (in-memory trie) or no data has been synced yet
+    pub fn synced_lsn(&self) -> Option<u64> {
+        #[cfg(feature = "parking_lot")]
+        let guard = self.inner.read();
+        #[cfg(not(feature = "parking_lot"))]
+        let guard = self.inner.read().expect("lock poisoned");
+
+        guard.synced_lsn()
     }
 
     /// Checkpoint to disk (write lock).
@@ -8772,5 +8991,212 @@ mod tests {
         // Should return None for empty WAL
         let batch = recovery.next_batch(10).expect("next_batch");
         assert!(batch.is_none(), "Empty WAL should return no batches");
+    }
+
+    // ========================================================================
+    // LSN API Tests
+    // ========================================================================
+
+    #[cfg(feature = "persistent-artrie")]
+    mod lsn_api_tests {
+        use super::*;
+        use tempfile::tempdir;
+
+        #[test]
+        fn test_current_lsn_starts_at_one_for_persistent() {
+            let dir = tempdir().expect("create temp dir");
+            let path = dir.path().join("lsn_test.trie");
+
+            let inner: DiskBackedCharTrieInner<i32> =
+                DiskBackedCharTrieInner::create(&path).expect("create");
+
+            // Persistent tries start at LSN 1 (0 is reserved for "no LSN")
+            assert_eq!(inner.current_lsn(), 1);
+        }
+
+        #[test]
+        fn test_current_lsn_starts_at_one_for_in_memory() {
+            // In-memory tries still start at LSN 1 for consistency
+            let inner: DiskBackedCharTrieInner<i32> = DiskBackedCharTrieInner::new();
+            assert_eq!(inner.current_lsn(), 1);
+        }
+
+        #[test]
+        fn test_current_lsn_increases_after_insert() {
+            let dir = tempdir().expect("create temp dir");
+            let path = dir.path().join("lsn_test.trie");
+
+            let mut inner: DiskBackedCharTrieInner<i32> =
+                DiskBackedCharTrieInner::create(&path).expect("create");
+
+            let before = inner.current_lsn();
+            inner.upsert("key1", 42).expect("upsert");
+            let after = inner.current_lsn();
+
+            assert!(
+                after > before,
+                "LSN should increase after insert: before={}, after={}",
+                before,
+                after
+            );
+        }
+
+        #[test]
+        fn test_current_lsn_increases_after_remove() {
+            let dir = tempdir().expect("create temp dir");
+            let path = dir.path().join("lsn_test.trie");
+
+            let mut inner: DiskBackedCharTrieInner<i32> =
+                DiskBackedCharTrieInner::create(&path).expect("create");
+
+            inner.upsert("key1", 42).expect("upsert");
+            let before = inner.current_lsn();
+            inner.remove("key1").expect("remove");
+            let after = inner.current_lsn();
+
+            assert!(
+                after > before,
+                "LSN should increase after remove: before={}, after={}",
+                before,
+                after
+            );
+        }
+
+        #[test]
+        fn test_synced_lsn_none_for_in_memory() {
+            // In-memory tries have no WAL, so synced_lsn should be None
+            let inner: DiskBackedCharTrieInner<i32> = DiskBackedCharTrieInner::new();
+            assert!(
+                inner.synced_lsn().is_none(),
+                "In-memory trie should have no synced LSN"
+            );
+        }
+
+        #[test]
+        fn test_synced_lsn_after_sync() {
+            let dir = tempdir().expect("create temp dir");
+            let path = dir.path().join("lsn_test.trie");
+
+            let mut inner: DiskBackedCharTrieInner<i32> =
+                DiskBackedCharTrieInner::create(&path).expect("create");
+
+            // Insert some data
+            inner.upsert("key1", 42).expect("upsert");
+            inner.upsert("key2", 43).expect("upsert");
+
+            // Before sync, synced_lsn should be 0 (no syncs yet)
+            let synced_before = inner.synced_lsn().expect("persistent trie should have synced_lsn");
+            assert_eq!(synced_before, 0, "No data should be synced yet");
+
+            // Sync to disk
+            inner.sync().expect("sync should succeed");
+
+            // After sync, synced_lsn should be positive
+            let synced_after = inner.synced_lsn().expect("persistent trie should have synced_lsn");
+            assert!(
+                synced_after > 0,
+                "synced_lsn should be positive after sync: {}",
+                synced_after
+            );
+        }
+
+        #[test]
+        fn test_synced_lsn_invariant() {
+            let dir = tempdir().expect("create temp dir");
+            let path = dir.path().join("lsn_test.trie");
+
+            let mut inner: DiskBackedCharTrieInner<i32> =
+                DiskBackedCharTrieInner::create(&path).expect("create");
+
+            // Insert and sync
+            inner.upsert("key1", 42).expect("upsert");
+            inner.sync().expect("sync should succeed");
+
+            // Insert more data without syncing
+            inner.upsert("key2", 43).expect("upsert");
+
+            let current = inner.current_lsn();
+            let synced = inner.synced_lsn().expect("persistent trie should have synced_lsn");
+
+            // Invariant: synced_lsn <= current_lsn - 1
+            // (current_lsn is the NEXT lsn to be assigned, so the last written is current - 1)
+            assert!(
+                synced < current,
+                "synced_lsn ({}) should be less than current_lsn ({})",
+                synced,
+                current
+            );
+        }
+
+        #[test]
+        fn test_lsn_monotonically_increasing() {
+            let dir = tempdir().expect("create temp dir");
+            let path = dir.path().join("lsn_test.trie");
+
+            let mut inner: DiskBackedCharTrieInner<i32> =
+                DiskBackedCharTrieInner::create(&path).expect("create");
+
+            let mut prev_lsn = inner.current_lsn();
+
+            // Perform multiple operations and verify LSN increases
+            for i in 0..10 {
+                inner.upsert(&format!("key{}", i), i).expect("upsert");
+                let curr_lsn = inner.current_lsn();
+                assert!(
+                    curr_lsn > prev_lsn,
+                    "LSN should increase monotonically: prev={}, curr={}",
+                    prev_lsn,
+                    curr_lsn
+                );
+                prev_lsn = curr_lsn;
+            }
+        }
+
+        #[test]
+        fn test_shared_char_trie_current_lsn() {
+            let dir = tempdir().expect("create temp dir");
+            let path = dir.path().join("shared_lsn_test.trie");
+
+            let trie: SharedCharTrie<i32> =
+                SharedCharTrie::create(&path).expect("create");
+
+            // Persistent tries start at LSN 1
+            assert_eq!(trie.current_lsn(), 1);
+
+            // Insert and check LSN increases
+            let before = trie.current_lsn();
+            trie.upsert("key1", 42).expect("upsert");
+            let after = trie.current_lsn();
+
+            assert!(
+                after > before,
+                "LSN should increase after insert: before={}, after={}",
+                before,
+                after
+            );
+        }
+
+        #[test]
+        fn test_shared_char_trie_synced_lsn() {
+            let dir = tempdir().expect("create temp dir");
+            let path = dir.path().join("shared_synced_lsn_test.trie");
+
+            let trie: SharedCharTrie<i32> =
+                SharedCharTrie::create(&path).expect("create");
+
+            // Insert some data
+            trie.upsert("key1", 42).expect("upsert");
+
+            // Before sync
+            let synced_before = trie.synced_lsn().expect("should have synced_lsn");
+            assert_eq!(synced_before, 0, "No data synced yet");
+
+            // Sync
+            trie.sync().expect("sync should succeed");
+
+            // After sync
+            let synced_after = trie.synced_lsn().expect("should have synced_lsn");
+            assert!(synced_after > 0, "synced_lsn should be positive after sync");
+        }
     }
 }

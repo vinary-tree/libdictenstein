@@ -23,6 +23,7 @@
 //! [SuffixAutomaton]: suffix_automaton::SuffixAutomaton
 //! [SuffixAutomatonChar]: suffix_automaton_char::SuffixAutomatonChar
 
+pub mod bijective;
 pub mod char_unit;
 pub mod sync_compat;
 pub mod double_array_trie;
@@ -64,10 +65,13 @@ pub mod zipper;
 pub mod serialization;
 
 // Re-export core types at crate root
+pub use bijective::{BijectiveDictionary, BijectiveMap, IndexedVocabulary, InsertError};
 pub use char_unit::CharUnit;
 pub use iterator::{DictionaryIterator, DictionaryTermIterator};
 #[cfg(feature = "persistent-artrie")]
 pub use persistent_artrie::{PersistentARTrie, PersistentARTrieZipper, WalConfig, RecoveryReport, RecoveryMode};
+#[cfg(feature = "persistent-artrie")]
+pub use persistent_artrie::wal::Lsn;
 #[cfg(feature = "persistent-artrie")]
 pub use persistent_artrie_char::{PersistentARTrieChar, PersistentARTrieCharNode, PersistentARTrieCharZipper};
 pub use substring::{BidirectionalDictionaryNode, ExtensionResult, SubstringDictionary, SubstringMatch};
@@ -316,6 +320,7 @@ pub mod prelude {
         CharUnit, Dictionary, DictionaryNode, DictionaryValue,
         MappedDictionary, MappedDictionaryNode, MutableMappedDictionary,
         SyncStrategy, DictZipper, ValuedDictZipper,
+        BijectiveDictionary, BijectiveMap, IndexedVocabulary, InsertError,
     };
 
     // Re-export common dictionary types

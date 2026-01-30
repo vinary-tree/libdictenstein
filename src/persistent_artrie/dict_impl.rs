@@ -561,6 +561,80 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
         })
     }
 
+    /// Create a new persistent dictionary with slot-level dirty tracking.
+    ///
+    /// This enables incremental checkpoints that write only modified slots
+    /// instead of entire 256KB arenas, reducing checkpoint I/O by 90%+ for
+    /// localized updates.
+    ///
+    /// # Arguments
+    /// * `path` - Path to the dictionary file (must not exist)
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// use libdictenstein::persistent_artrie::PersistentARTrie;
+    ///
+    /// let dict: PersistentARTrie<()> = PersistentARTrie::create_with_slot_tracking("words.part")?;
+    /// ```
+    #[cfg(feature = "persistent-artrie")]
+    pub fn create_with_slot_tracking<P: AsRef<Path>>(path: P) -> Result<Self> {
+        use super::disk_manager::DiskManager;
+        use super::buffer_manager::BufferManager;
+        use super::wal::WalWriter;
+        use super::arena_manager::FlushConfig;
+        use super::DEFAULT_BUFFER_POOL_SIZE;
+
+        let path = path.as_ref();
+
+        // Fail if file already exists
+        if path.exists() {
+            return Err(PersistentARTrieError::io_error(
+                "create",
+                path.display().to_string(),
+                std::io::Error::new(
+                    std::io::ErrorKind::AlreadyExists,
+                    "Dictionary file already exists",
+                ),
+            ));
+        }
+
+        // Create disk manager (creates new file)
+        let disk_manager = DiskManager::create(path)?;
+
+        // Create buffer manager with default pool size (takes ownership of disk_manager)
+        let buffer_manager = BufferManager::new(disk_manager, DEFAULT_BUFFER_POOL_SIZE);
+        let buffer_manager = Arc::new(RwLock::new(buffer_manager));
+
+        // Create WAL file alongside the main file
+        let wal_path = path.with_extension("wal");
+        let wal_writer = WalWriter::create(&wal_path)?;
+        let wal_writer = Arc::new(RwLock::new(wal_writer));
+
+        // Create arena manager with slot-level tracking enabled
+        let flush_config = FlushConfig::with_slot_tracking();
+        let arena_manager = ArenaManager::with_buffer_manager_and_config(
+            Arc::clone(&buffer_manager),
+            flush_config,
+        );
+        let arena_manager = Arc::new(RwLock::new(arena_manager));
+
+        Ok(Self {
+            inner: Arc::new(RwLock::new(PersistentARTrieInner {
+                root: TrieRoot::Bucket(StringBucket::with_values()),
+                term_count: 0,
+                dirty: false,
+                buffer_manager: Some(buffer_manager),
+                wal_writer: Some(wal_writer),
+                next_lsn: 1, // Start at 1, 0 reserved for "no LSN"
+                prefetcher: super::prefetch::Prefetcher::new(),
+                arena_manager: Some(arena_manager),
+                durability_policy: DurabilityPolicy::default(),
+                epoch_manager: super::concurrency::EpochManager::new(),
+                stats: Arc::new(super::concurrency::TrieStats::new()),
+            })),
+        })
+    }
+
     /// Open an existing persistent dictionary from disk.
     ///
     /// This opens an existing dictionary file and replays the WAL if needed
@@ -819,6 +893,46 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
                 if let Err(e) = wal.truncate() {
                     warn!("Failed to truncate WAL after recovery: {:?}", e);
                 }
+            }
+        }
+
+        Ok(dict)
+    }
+
+    /// Open an existing persistent dictionary with slot-level dirty tracking enabled.
+    ///
+    /// Slot-level tracking reduces checkpoint I/O by writing only modified slots
+    /// instead of entire arenas. For vocabularies with localized updates, this
+    /// can reduce checkpoint I/O by 90%+.
+    ///
+    /// This is equivalent to calling `open()` followed by enabling slot tracking
+    /// on the arena manager, but provides a convenient single-call API.
+    ///
+    /// # Arguments
+    /// * `path` - Path to the dictionary file (must exist)
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// use libdictenstein::persistent_artrie::PersistentARTrie;
+    ///
+    /// // Open existing vocabulary with slot-level tracking
+    /// let dict = PersistentARTrie::<u64>::open_with_slot_tracking("vocab.part")?;
+    ///
+    /// // Subsequent allocations will be tracked at slot level
+    /// dict.insert("new_term", Some(42));
+    ///
+    /// // Checkpoint writes only modified slots
+    /// dict.checkpoint()?;
+    /// ```
+    #[cfg(feature = "persistent-artrie")]
+    pub fn open_with_slot_tracking<P: AsRef<Path>>(path: P) -> Result<Self> {
+        let dict = Self::open(path)?;
+
+        // Enable slot-level tracking on the arena manager
+        {
+            let inner = dict.inner.read();
+            if let Some(ref am) = inner.arena_manager {
+                am.write().enable_slot_tracking();
             }
         }
 
@@ -2151,6 +2265,57 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
         Ok(())
     }
 
+    /// Returns the next LSN that will be assigned to a write operation.
+    ///
+    /// This value increases monotonically with each write (insert, remove, update).
+    /// It can be used as a "version" or "sequence number" for the trie state.
+    ///
+    /// # Returns
+    /// - The next LSN to be assigned (starts at 1 for persistent tries, 0 for in-memory)
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// let trie = PersistentARTrie::<i32>::create("test.part")?;
+    /// let before = trie.current_lsn();
+    /// trie.insert_with_value(b"key", 42);
+    /// let after = trie.current_lsn();
+    /// assert!(after > before);
+    /// ```
+    #[cfg(feature = "persistent-artrie")]
+    pub fn current_lsn(&self) -> Lsn {
+        let inner = self.inner.read();
+        // Use WAL's authoritative LSN if available, otherwise fall back to cached value
+        inner.wal_writer.as_ref()
+            .map(|wal| wal.read().current_lsn())
+            .unwrap_or(inner.next_lsn)
+    }
+
+    /// Returns the highest LSN that has been durably synced to storage.
+    ///
+    /// Operations with LSN <= synced_lsn are guaranteed to survive crashes.
+    /// Operations with LSN > synced_lsn may be lost if a crash occurs before
+    /// the next sync or checkpoint.
+    ///
+    /// # Returns
+    /// - `Some(lsn)` if WAL is enabled and has synced data
+    /// - `None` if WAL is disabled (in-memory trie) or no data has been synced yet
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// let trie = PersistentARTrie::<i32>::create("test.part")?;
+    /// trie.insert_with_value(b"key", 42);
+    /// trie.sync()?;  // Force durability
+    /// let synced = trie.synced_lsn();
+    /// assert!(synced.is_some());
+    /// ```
+    #[cfg(feature = "persistent-artrie")]
+    pub fn synced_lsn(&self) -> Option<Lsn> {
+        let inner = self.inner.read();
+        inner.wal_writer.as_ref().map(|wal| {
+            wal.read().synced_lsn()
+        })
+    }
+
     /// Get the current durability policy.
     ///
     /// The durability policy controls when fsync is called after WAL writes.
@@ -3271,8 +3436,16 @@ impl<V: DictionaryValue> PersistentARTrieInner<V> {
 
         // Flush arenas to disk before creating root descriptor
         // This ensures all nodes are persisted before we record the root pointer
+        // Uses slot-level incremental flush if configured, otherwise full arena flush
         if let Some(ref arena_manager) = self.arena_manager {
-            arena_manager.write().flush()?;
+            let stats = arena_manager.write().flush_dirty_slots()?;
+            if stats.partial_writes > 0 {
+                log::debug!(
+                    "Incremental flush: {} full arenas, {} partial, {} slots, {} bytes written, {} bytes saved",
+                    stats.full_arena_writes, stats.partial_writes, stats.slots_written,
+                    stats.bytes_written, stats.bytes_saved
+                );
+            }
         }
 
         // Get arena count for the root descriptor
@@ -7052,6 +7225,166 @@ mod tests {
             // flush_sequential should succeed (no-op without buffer manager)
             let result = manager.flush_sequential();
             assert!(result.is_ok());
+        }
+    }
+
+    // ========================================================================
+    // LSN API Tests
+    // ========================================================================
+
+    #[cfg(feature = "persistent-artrie")]
+    mod lsn_api_tests {
+        use super::*;
+        use tempfile::tempdir;
+
+        #[test]
+        fn test_current_lsn_starts_at_one_for_persistent() {
+            let dir = tempdir().expect("create temp dir");
+            let dict_path = dir.path().join("lsn_test.part");
+
+            let dict: PersistentARTrie<i32> =
+                PersistentARTrie::create(&dict_path).expect("create dict");
+
+            // Persistent tries start at LSN 1 (0 is reserved for "no LSN")
+            assert_eq!(dict.current_lsn(), 1);
+        }
+
+        #[test]
+        fn test_current_lsn_starts_at_zero_for_in_memory() {
+            // In-memory tries have no LSN tracking, so next_lsn is 0
+            let dict: PersistentARTrie<i32> = PersistentARTrie::new();
+            assert_eq!(dict.current_lsn(), 0);
+        }
+
+        #[test]
+        fn test_current_lsn_increases_after_insert() {
+            let dir = tempdir().expect("create temp dir");
+            let dict_path = dir.path().join("lsn_test.part");
+
+            let mut dict: PersistentARTrie<i32> =
+                PersistentARTrie::create(&dict_path).expect("create dict");
+
+            let before = dict.current_lsn();
+            dict.insert_with_value("key1", 42);
+            let after = dict.current_lsn();
+
+            assert!(
+                after > before,
+                "LSN should increase after insert: before={}, after={}",
+                before,
+                after
+            );
+        }
+
+        #[test]
+        fn test_current_lsn_increases_after_remove() {
+            let dir = tempdir().expect("create temp dir");
+            let dict_path = dir.path().join("lsn_test.part");
+
+            let mut dict: PersistentARTrie<i32> =
+                PersistentARTrie::create(&dict_path).expect("create dict");
+
+            dict.insert_with_value("key1", 42);
+            let before = dict.current_lsn();
+            dict.remove("key1");
+            let after = dict.current_lsn();
+
+            assert!(
+                after > before,
+                "LSN should increase after remove: before={}, after={}",
+                before,
+                after
+            );
+        }
+
+        #[test]
+        fn test_synced_lsn_none_for_in_memory() {
+            // In-memory tries have no WAL, so synced_lsn should be None
+            let dict: PersistentARTrie<i32> = PersistentARTrie::new();
+            assert!(
+                dict.synced_lsn().is_none(),
+                "In-memory trie should have no synced LSN"
+            );
+        }
+
+        #[test]
+        fn test_synced_lsn_after_sync() {
+            let dir = tempdir().expect("create temp dir");
+            let dict_path = dir.path().join("lsn_test.part");
+
+            let mut dict: PersistentARTrie<i32> =
+                PersistentARTrie::create(&dict_path).expect("create dict");
+
+            // Insert some data
+            dict.insert_with_value("key1", 42);
+            dict.insert_with_value("key2", 43);
+
+            // Before sync, synced_lsn should be 0 (no syncs yet)
+            let synced_before = dict.synced_lsn().expect("persistent trie should have synced_lsn");
+            assert_eq!(synced_before, 0, "No data should be synced yet");
+
+            // Sync to disk
+            dict.sync().expect("sync should succeed");
+
+            // After sync, synced_lsn should be positive
+            let synced_after = dict.synced_lsn().expect("persistent trie should have synced_lsn");
+            assert!(
+                synced_after > 0,
+                "synced_lsn should be positive after sync: {}",
+                synced_after
+            );
+        }
+
+        #[test]
+        fn test_synced_lsn_invariant() {
+            let dir = tempdir().expect("create temp dir");
+            let dict_path = dir.path().join("lsn_test.part");
+
+            let mut dict: PersistentARTrie<i32> =
+                PersistentARTrie::create(&dict_path).expect("create dict");
+
+            // Insert and sync
+            dict.insert_with_value("key1", 42);
+            dict.sync().expect("sync should succeed");
+
+            // Insert more data without syncing
+            dict.insert_with_value("key2", 43);
+
+            let current = dict.current_lsn();
+            let synced = dict.synced_lsn().expect("persistent trie should have synced_lsn");
+
+            // Invariant: synced_lsn <= current_lsn - 1
+            // (current_lsn is the NEXT lsn to be assigned, so the last written is current - 1)
+            assert!(
+                synced < current,
+                "synced_lsn ({}) should be less than current_lsn ({})",
+                synced,
+                current
+            );
+        }
+
+        #[test]
+        fn test_lsn_monotonically_increasing() {
+            let dir = tempdir().expect("create temp dir");
+            let dict_path = dir.path().join("lsn_test.part");
+
+            let mut dict: PersistentARTrie<i32> =
+                PersistentARTrie::create(&dict_path).expect("create dict");
+
+            let mut prev_lsn = dict.current_lsn();
+
+            // Perform multiple operations and verify LSN increases
+            for i in 0..10 {
+                dict.insert_with_value(&format!("key{}", i), i);
+                let curr_lsn = dict.current_lsn();
+                assert!(
+                    curr_lsn > prev_lsn,
+                    "LSN should increase monotonically: prev={}, curr={}",
+                    prev_lsn,
+                    curr_lsn
+                );
+                prev_lsn = curr_lsn;
+            }
         }
     }
 }

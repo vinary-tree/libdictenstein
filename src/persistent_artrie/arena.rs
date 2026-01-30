@@ -374,6 +374,80 @@ impl ByteNodeArena {
     pub fn free_offset(&self) -> u32 {
         self.header.free_offset
     }
+
+    // =========================================================================
+    // Slot-Level Query Methods (for incremental checkpointing)
+    // =========================================================================
+
+    /// Get the data range for a specific slot.
+    ///
+    /// Returns `(offset_in_arena, length)` for the slot's data.
+    /// Used for partial writes during incremental checkpoints.
+    pub fn slot_data_range(&self, slot_id: u32) -> Result<(usize, usize)> {
+        if slot_id >= self.header.node_count {
+            return Err(PersistentARTrieError::corrupted(&format!(
+                "Invalid slot ID {} (arena has {} nodes)",
+                slot_id, self.header.node_count
+            )));
+        }
+
+        // Directory grows downward, so slot N is at:
+        // block_end - (N + 1) * SLOT_SIZE
+        let slot_offset = self.data.len() - ((slot_id as usize + 1) * SLOT_SIZE);
+        let slot = SlotEntry::from_bytes(&self.data[slot_offset..slot_offset + SLOT_SIZE]);
+        Ok((slot.offset as usize, slot.len as usize))
+    }
+
+    /// Get raw bytes for a specific slot's data.
+    ///
+    /// Returns the actual data bytes stored at the slot.
+    pub fn slot_bytes(&self, slot_id: u32) -> Result<&[u8]> {
+        let (offset, len) = self.slot_data_range(slot_id)?;
+        if offset + len > self.data.len() {
+            return Err(PersistentARTrieError::corrupted(&format!(
+                "Slot {} points outside arena: offset={}, len={}",
+                slot_id, offset, len
+            )));
+        }
+        Ok(&self.data[offset..offset + len])
+    }
+
+    /// Get the slot directory entry range.
+    ///
+    /// Returns `(offset_in_arena, SLOT_SIZE)` for the slot's directory entry.
+    pub fn slot_directory_entry_range(&self, slot_id: u32) -> Result<(usize, usize)> {
+        if slot_id >= self.header.node_count {
+            return Err(PersistentARTrieError::corrupted(&format!(
+                "Invalid slot ID {} (arena has {} nodes)",
+                slot_id, self.header.node_count
+            )));
+        }
+        let slot_offset = self.data.len() - ((slot_id as usize + 1) * SLOT_SIZE);
+        Ok((slot_offset, SLOT_SIZE))
+    }
+
+    /// Get the header region range.
+    ///
+    /// Returns `(0, HEADER_SIZE)` - the arena header location.
+    #[inline]
+    pub fn header_range(&self) -> (usize, usize) {
+        (0, HEADER_SIZE)
+    }
+
+    /// Get the directory region range.
+    ///
+    /// Returns `(directory_start, directory_length)` - the entire slot directory.
+    #[inline]
+    pub fn directory_range(&self) -> (usize, usize) {
+        let start = self.header.directory_start as usize;
+        (start, self.data.len() - start)
+    }
+
+    /// Get the total number of slots in this arena.
+    #[inline]
+    pub fn slot_count(&self) -> u32 {
+        self.header.node_count
+    }
 }
 
 // =============================================================================
@@ -654,6 +728,61 @@ impl ByteNodeArenaV2 {
         let varint_size: usize = self.slots.iter().map(|s| s.encoded_size()).sum();
         (fixed_size, varint_size)
     }
+
+    // =========================================================================
+    // Slot-Level Query Methods (for incremental checkpointing)
+    // =========================================================================
+
+    /// Get the data range for a specific slot.
+    ///
+    /// Returns `(offset_in_arena, length)` for the slot's data.
+    pub fn slot_data_range(&self, slot_id: u32) -> Result<(usize, usize)> {
+        let slot = self.slots.get(slot_id as usize).ok_or_else(|| {
+            PersistentARTrieError::corrupted(&format!(
+                "Invalid slot ID {} (arena has {} nodes)",
+                slot_id,
+                self.slots.len()
+            ))
+        })?;
+        Ok((slot.offset as usize, slot.len as usize))
+    }
+
+    /// Get raw bytes for a specific slot's data.
+    pub fn slot_bytes(&self, slot_id: u32) -> Result<&[u8]> {
+        let (offset, len) = self.slot_data_range(slot_id)?;
+        if offset + len > self.data.len() {
+            return Err(PersistentARTrieError::corrupted(&format!(
+                "Slot {} points outside arena: offset={}, len={}",
+                slot_id, offset, len
+            )));
+        }
+        Ok(&self.data[offset..offset + len])
+    }
+
+    /// Get the header region range.
+    #[inline]
+    pub fn header_range(&self) -> (usize, usize) {
+        (0, HEADER_SIZE)
+    }
+
+    /// Get the directory region range.
+    ///
+    /// For V2 arenas, the directory is a varint-encoded stream that must
+    /// be written as a whole. Returns the full directory range.
+    #[inline]
+    pub fn directory_range(&self) -> (usize, usize) {
+        let start = self.header.directory_start as usize;
+        // V2 directory extends from directory_start to end of data area
+        // (not to end of buffer, since varint directory is variable-length)
+        let dir_len: usize = self.slots.iter().map(|s| s.encoded_size()).sum();
+        (start, dir_len)
+    }
+
+    /// Get the total number of slots in this arena.
+    #[inline]
+    pub fn slot_count(&self) -> u32 {
+        self.slots.len() as u32
+    }
 }
 
 #[cfg(test)]
@@ -824,5 +953,132 @@ mod tests {
             assert_eq!(decoded.len, len);
             assert_eq!(consumed, buf.len());
         }
+    }
+
+    // =========================================================================
+    // Slot-Level Query Tests (for incremental checkpointing)
+    // =========================================================================
+
+    #[test]
+    fn test_slot_data_range() {
+        let mut arena = ByteNodeArena::new(4096);
+
+        let data1 = b"hello world";
+        let slot1 = arena.allocate(data1).expect("allocation should succeed");
+
+        let data2 = b"goodbye world";
+        let slot2 = arena.allocate(data2).expect("allocation should succeed");
+
+        // Check slot 0 range
+        let (offset1, len1) = arena.slot_data_range(slot1).expect("should get range");
+        assert_eq!(len1, data1.len());
+        assert_eq!(&arena.as_bytes()[offset1..offset1 + len1], data1);
+
+        // Check slot 1 range
+        let (offset2, len2) = arena.slot_data_range(slot2).expect("should get range");
+        assert_eq!(len2, data2.len());
+        assert_eq!(&arena.as_bytes()[offset2..offset2 + len2], data2);
+    }
+
+    #[test]
+    fn test_slot_bytes() {
+        let mut arena = ByteNodeArena::new(4096);
+
+        let data = b"test data for slot";
+        let slot = arena.allocate(data).expect("allocation should succeed");
+
+        let bytes = arena.slot_bytes(slot).expect("should get bytes");
+        assert_eq!(bytes, data);
+    }
+
+    #[test]
+    fn test_slot_directory_entry_range() {
+        let mut arena = ByteNodeArena::new(4096);
+
+        let slot = arena.allocate(b"data").expect("allocation should succeed");
+
+        let (offset, len) = arena.slot_directory_entry_range(slot).expect("should get range");
+        assert_eq!(len, SLOT_SIZE); // 8 bytes per entry
+        assert!(offset > 0);
+        assert!(offset < arena.size());
+    }
+
+    #[test]
+    fn test_header_range() {
+        let arena = ByteNodeArena::new(4096);
+        let (offset, len) = arena.header_range();
+        assert_eq!(offset, 0);
+        assert_eq!(len, HEADER_SIZE);
+    }
+
+    #[test]
+    fn test_directory_range() {
+        let mut arena = ByteNodeArena::new(4096);
+
+        // Empty arena - directory is at the end
+        let (start1, len1) = arena.directory_range();
+        assert_eq!(start1, 4096); // Initially at end
+        assert_eq!(len1, 0);
+
+        // After allocation - directory grows downward
+        arena.allocate(b"data").expect("allocation should succeed");
+        let (start2, _len2) = arena.directory_range();
+        assert!(start2 < 4096); // Moved down
+    }
+
+    #[test]
+    fn test_slot_count() {
+        let mut arena = ByteNodeArena::new(4096);
+
+        assert_eq!(arena.slot_count(), 0);
+
+        arena.allocate(b"data1").expect("allocation should succeed");
+        assert_eq!(arena.slot_count(), 1);
+
+        arena.allocate(b"data2").expect("allocation should succeed");
+        assert_eq!(arena.slot_count(), 2);
+    }
+
+    #[test]
+    fn test_invalid_slot_id_errors() {
+        let arena = ByteNodeArena::new(4096);
+
+        // Empty arena should error on slot 0
+        assert!(arena.slot_data_range(0).is_err());
+        assert!(arena.slot_bytes(0).is_err());
+        assert!(arena.slot_directory_entry_range(0).is_err());
+    }
+
+    #[test]
+    fn test_v2_slot_data_range() {
+        let mut arena = ByteNodeArenaV2::new(4096);
+
+        let data1 = b"hello world";
+        let slot1 = arena.allocate(data1).expect("allocation should succeed");
+
+        let (offset, len) = arena.slot_data_range(slot1).expect("should get range");
+        assert_eq!(len, data1.len());
+        assert!(offset >= HEADER_SIZE);
+    }
+
+    #[test]
+    fn test_v2_slot_bytes() {
+        let mut arena = ByteNodeArenaV2::new(4096);
+
+        let data = b"test data for v2";
+        let slot = arena.allocate(data).expect("allocation should succeed");
+
+        let bytes = arena.slot_bytes(slot).expect("should get bytes");
+        assert_eq!(bytes, data);
+    }
+
+    #[test]
+    fn test_v2_slot_count() {
+        let mut arena = ByteNodeArenaV2::new(4096);
+
+        assert_eq!(arena.slot_count(), 0);
+
+        arena.allocate(b"data").expect("allocation should succeed");
+        assert_eq!(arena.slot_count(), 1);
     }
 }

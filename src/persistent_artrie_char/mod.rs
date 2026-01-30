@@ -158,7 +158,7 @@ pub use arena::{
 
 // Re-export arena manager types (under feature flag)
 #[cfg(feature = "persistent-artrie")]
-pub use arena_manager::{ArenaManager, ArenaSlot, ArenaStats, ReservedSlots};
+pub use arena_manager::{ArenaManager, ArenaSlot, ArenaStats, FlushConfig, FlushStats, ReservedSlots};
 
 // Re-export per-node logging types (under feature flag)
 #[cfg(feature = "persistent-artrie")]

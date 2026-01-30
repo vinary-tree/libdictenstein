@@ -262,7 +262,7 @@ pub use arena::{
 };
 
 #[cfg(feature = "persistent-artrie")]
-pub use arena_manager::{ArenaManager, ArenaSlot, ArenaStats, ReservedSlots};
+pub use arena_manager::{ArenaManager, ArenaSlot, ArenaStats, FlushConfig, FlushStats, ReservedSlots};
 
 // Compact encoding types
 #[cfg(feature = "persistent-artrie")]

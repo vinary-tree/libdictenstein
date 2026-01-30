@@ -330,6 +330,85 @@ impl<V: DictionaryValue> DoubleArrayTrieChar<V> {
         }
     }
 
+    /// Create a character-level DAT from a pre-sorted iterator of (term, value) pairs.
+    ///
+    /// This is an optimized constructor that bypasses the O(n log n) sorting step,
+    /// making it O(n * d) where n = number of terms and d = average term length.
+    ///
+    /// # Preconditions
+    ///
+    /// The input **must** be in lexicographic order. If duplicates are present,
+    /// the last value wins (consistent with `from_terms_with_values`).
+    ///
+    /// # Performance
+    ///
+    /// This method streams directly into the DAT builder without collecting all
+    /// terms into an intermediate vector, reducing memory usage from O(n * d)
+    /// to O(d + DAT).
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use libdictenstein::double_array_trie_char::DoubleArrayTrieChar;
+    ///
+    /// // Terms must be pre-sorted lexicographically
+    /// let sorted_terms = vec![
+    ///     ("apple", 1),
+    ///     ("banana", 2),
+    ///     ("café", 3),
+    /// ];
+    /// let dict = DoubleArrayTrieChar::from_sorted_terms_with_values(sorted_terms);
+    /// ```
+    pub fn from_sorted_terms_with_values<I, S>(terms: I) -> Self
+    where
+        I: IntoIterator<Item = (S, V)>,
+        S: AsRef<str>,
+    {
+        let mut builder = DATBuilderChar::new();
+        let mut num_terms = 0usize;
+        let mut prev_chars: Option<Vec<char>> = None;
+
+        for (s, v) in terms {
+            let chars: Vec<char> = s.as_ref().chars().collect();
+            let is_duplicate = prev_chars.as_ref().is_some_and(|prev| prev == &chars);
+
+            builder.insert(&chars, Some(v));
+
+            if !is_duplicate {
+                num_terms += 1;
+            }
+            prev_chars = Some(chars);
+        }
+
+        if num_terms == 0 {
+            return Self {
+                shared: DATSharedChar {
+                    base: Arc::new(vec![0]),
+                    check: Arc::new(vec![0]),
+                    is_final: Arc::new(vec![false]),
+                    edges: Arc::new(vec![vec![]]),
+                    values: Arc::new(vec![None]),
+                },
+                free_list: Arc::new(Vec::new()),
+                num_terms: 0,
+            };
+        }
+
+        let (base, check, is_final, edges, values) = builder.build();
+
+        Self {
+            shared: DATSharedChar {
+                base: Arc::new(base),
+                check: Arc::new(check),
+                is_final: Arc::new(is_final),
+                edges: Arc::new(edges),
+                values: Arc::new(values),
+            },
+            free_list: Arc::new(Vec::new()),
+            num_terms,
+        }
+    }
+
     /// Get the value associated with a term.
     ///
     /// Returns `None` if the term doesn't exist or has no value.
@@ -760,6 +839,58 @@ impl<V: DictionaryValue> MappedDictionary for DoubleArrayTrieChar<V> {
     }
 }
 
+// =============================================================================
+// Conversion from PersistentARTrieChar
+// =============================================================================
+
+#[cfg(feature = "persistent-artrie")]
+use crate::persistent_artrie_char::PersistentARTrieChar;
+
+/// Convert a `PersistentARTrieChar` reference to a `DoubleArrayTrieChar`.
+///
+/// This conversion leverages the fact that `PersistentARTrieChar::iter_with_values()`
+/// yields terms in lexicographic order (due to `BTreeMap` children), allowing us
+/// to bypass the O(n log n) sorting step.
+///
+/// # Performance
+///
+/// - Time: O(n * d) where n = number of terms, d = average term length
+/// - Space: O(d + DAT size) - streams terms without collecting all into memory
+///
+/// This is more efficient than calling `from_terms_with_values()` which would
+/// collect all terms, sort them, then build.
+///
+/// # Example
+///
+/// ```ignore
+/// use libdictenstein::persistent_artrie_char::PersistentARTrieChar;
+/// use libdictenstein::double_array_trie_char::DoubleArrayTrieChar;
+///
+/// let pat: PersistentARTrieChar<i32> = PersistentARTrieChar::new();
+/// pat.insert_with_value("apple", 1);
+/// pat.insert_with_value("banana", 2);
+///
+/// // Efficient conversion without sorting
+/// let dat: DoubleArrayTrieChar<i32> = DoubleArrayTrieChar::from(&pat);
+/// ```
+#[cfg(feature = "persistent-artrie")]
+impl<V: DictionaryValue> From<&PersistentARTrieChar<V>> for DoubleArrayTrieChar<V> {
+    fn from(source: &PersistentARTrieChar<V>) -> Self {
+        DoubleArrayTrieChar::from_sorted_terms_with_values(source.iter_with_values())
+    }
+}
+
+/// Convert a `PersistentARTrieChar` (by value) to a `DoubleArrayTrieChar`.
+///
+/// This is a convenience wrapper that delegates to the reference implementation.
+/// See [`From<&PersistentARTrieChar<V>>`] for performance details.
+#[cfg(feature = "persistent-artrie")]
+impl<V: DictionaryValue> From<PersistentARTrieChar<V>> for DoubleArrayTrieChar<V> {
+    fn from(source: PersistentARTrieChar<V>) -> Self {
+        DoubleArrayTrieChar::from(&source)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -924,5 +1055,235 @@ mod tests {
         assert_eq!(dict.get_value("café"), Some("coffee".to_string()));
         assert_eq!(dict.get_value("中文"), Some("Chinese".to_string()));
         assert_eq!(dict.get_value("🎉"), Some("party".to_string()));
+    }
+
+    // =========================================================================
+    // Tests for from_sorted_terms_with_values
+    // =========================================================================
+
+    #[test]
+    fn test_from_sorted_empty() {
+        let terms: Vec<(&str, i32)> = vec![];
+        let dict = DoubleArrayTrieChar::from_sorted_terms_with_values(terms);
+        assert_eq!(dict.len(), Some(0));
+        assert!(!dict.contains("anything"));
+    }
+
+    #[test]
+    fn test_from_sorted_basic_terms() {
+        // Terms must be in lexicographic order
+        let sorted_terms = vec![("apple", 1), ("banana", 2), ("cherry", 3)];
+        let dict = DoubleArrayTrieChar::from_sorted_terms_with_values(sorted_terms);
+
+        assert_eq!(dict.len(), Some(3));
+        assert_eq!(dict.get_value("apple"), Some(1));
+        assert_eq!(dict.get_value("banana"), Some(2));
+        assert_eq!(dict.get_value("cherry"), Some(3));
+        assert_eq!(dict.get_value("missing"), None);
+    }
+
+    #[test]
+    fn test_from_sorted_unicode() {
+        // Unicode terms in lexicographic order
+        // Note: lexicographic order for Unicode is by code points
+        let sorted_terms = vec![("café", 10), ("naïve", 20), ("résumé", 30)];
+        let dict = DoubleArrayTrieChar::from_sorted_terms_with_values(sorted_terms);
+
+        assert_eq!(dict.len(), Some(3));
+        assert_eq!(dict.get_value("café"), Some(10));
+        assert_eq!(dict.get_value("naïve"), Some(20));
+        assert_eq!(dict.get_value("résumé"), Some(30));
+    }
+
+    #[test]
+    fn test_from_sorted_cjk() {
+        // CJK characters
+        let sorted_terms = vec![("中文", 100), ("日本語", 200), ("한국어", 300)];
+        let dict = DoubleArrayTrieChar::from_sorted_terms_with_values(sorted_terms);
+
+        assert_eq!(dict.len(), Some(3));
+        assert_eq!(dict.get_value("中文"), Some(100));
+        assert_eq!(dict.get_value("日本語"), Some(200));
+        assert_eq!(dict.get_value("한국어"), Some(300));
+    }
+
+    #[test]
+    fn test_from_sorted_duplicates_last_wins() {
+        // When duplicates exist in sorted input, last value should win
+        let sorted_terms = vec![
+            ("apple", 1),
+            ("apple", 2), // duplicate - should override
+            ("banana", 3),
+        ];
+        let dict = DoubleArrayTrieChar::from_sorted_terms_with_values(sorted_terms);
+
+        assert_eq!(dict.len(), Some(2)); // Only 2 unique terms
+        assert_eq!(dict.get_value("apple"), Some(2)); // Last value wins
+        assert_eq!(dict.get_value("banana"), Some(3));
+    }
+
+    #[test]
+    fn test_from_sorted_single_term() {
+        let sorted_terms = vec![("singleton", 42)];
+        let dict = DoubleArrayTrieChar::from_sorted_terms_with_values(sorted_terms);
+
+        assert_eq!(dict.len(), Some(1));
+        assert_eq!(dict.get_value("singleton"), Some(42));
+    }
+
+    #[test]
+    fn test_from_sorted_empty_string() {
+        // Empty string should be handled correctly
+        let sorted_terms = vec![("", 0), ("a", 1), ("ab", 2)];
+        let dict = DoubleArrayTrieChar::from_sorted_terms_with_values(sorted_terms);
+
+        assert_eq!(dict.len(), Some(3));
+        assert_eq!(dict.get_value(""), Some(0));
+        assert_eq!(dict.get_value("a"), Some(1));
+        assert_eq!(dict.get_value("ab"), Some(2));
+    }
+
+    #[test]
+    fn test_from_sorted_prefix_terms() {
+        // Terms where some are prefixes of others
+        let sorted_terms = vec![("a", 1), ("ab", 2), ("abc", 3), ("abd", 4), ("b", 5)];
+        let dict = DoubleArrayTrieChar::from_sorted_terms_with_values(sorted_terms);
+
+        assert_eq!(dict.len(), Some(5));
+        assert_eq!(dict.get_value("a"), Some(1));
+        assert_eq!(dict.get_value("ab"), Some(2));
+        assert_eq!(dict.get_value("abc"), Some(3));
+        assert_eq!(dict.get_value("abd"), Some(4));
+        assert_eq!(dict.get_value("b"), Some(5));
+    }
+
+    #[test]
+    fn test_from_sorted_matches_from_terms() {
+        // Verify that from_sorted_terms_with_values produces the same result
+        // as from_terms_with_values when given pre-sorted input
+        let unsorted_terms = vec![
+            ("cherry", 3),
+            ("apple", 1),
+            ("banana", 2),
+            ("date", 4),
+        ];
+        let sorted_terms = vec![
+            ("apple", 1),
+            ("banana", 2),
+            ("cherry", 3),
+            ("date", 4),
+        ];
+
+        let dict1 = DoubleArrayTrieChar::from_terms_with_values(unsorted_terms);
+        let dict2 = DoubleArrayTrieChar::from_sorted_terms_with_values(sorted_terms);
+
+        // Both should have the same terms and values
+        assert_eq!(dict1.len(), dict2.len());
+        for term in ["apple", "banana", "cherry", "date"] {
+            assert_eq!(dict1.get_value(term), dict2.get_value(term));
+        }
+    }
+}
+
+// =============================================================================
+// Feature-gated tests for PersistentARTrieChar conversion
+// =============================================================================
+
+#[cfg(all(test, feature = "persistent-artrie"))]
+mod persistent_artrie_conversion_tests {
+    use super::*;
+    use crate::persistent_artrie_char::PersistentARTrieChar;
+
+    #[test]
+    fn test_from_persistent_artrie_empty() {
+        let pat: PersistentARTrieChar<i32> = PersistentARTrieChar::new();
+        let dat: DoubleArrayTrieChar<i32> = DoubleArrayTrieChar::from(&pat);
+
+        assert_eq!(dat.len(), Some(0));
+    }
+
+    #[test]
+    fn test_from_persistent_artrie_basic() {
+        let pat: PersistentARTrieChar<i32> = PersistentARTrieChar::new();
+        pat.insert_with_value("apple", 1);
+        pat.insert_with_value("banana", 2);
+        pat.insert_with_value("cherry", 3);
+
+        let dat: DoubleArrayTrieChar<i32> = DoubleArrayTrieChar::from(&pat);
+
+        assert_eq!(dat.len(), Some(3));
+        assert_eq!(dat.get_value("apple"), Some(1));
+        assert_eq!(dat.get_value("banana"), Some(2));
+        assert_eq!(dat.get_value("cherry"), Some(3));
+        assert_eq!(dat.get_value("missing"), None);
+    }
+
+    #[test]
+    fn test_from_persistent_artrie_unicode() {
+        let pat: PersistentARTrieChar<i32> = PersistentARTrieChar::new();
+        pat.insert_with_value("café", 10);
+        pat.insert_with_value("日本語", 20);
+        pat.insert_with_value("🎉", 30);
+
+        let dat: DoubleArrayTrieChar<i32> = DoubleArrayTrieChar::from(&pat);
+
+        assert_eq!(dat.len(), Some(3));
+        assert_eq!(dat.get_value("café"), Some(10));
+        assert_eq!(dat.get_value("日本語"), Some(20));
+        assert_eq!(dat.get_value("🎉"), Some(30));
+    }
+
+    #[test]
+    fn test_from_persistent_artrie_by_value() {
+        let pat: PersistentARTrieChar<i32> = PersistentARTrieChar::new();
+        pat.insert_with_value("test", 42);
+
+        // Test conversion by value (not reference)
+        let dat: DoubleArrayTrieChar<i32> = DoubleArrayTrieChar::from(pat);
+
+        assert_eq!(dat.len(), Some(1));
+        assert_eq!(dat.get_value("test"), Some(42));
+    }
+
+    #[test]
+    fn test_from_persistent_artrie_roundtrip_values() {
+        // Verify all values survive the conversion
+        let pat: PersistentARTrieChar<String> = PersistentARTrieChar::new();
+        let terms = vec![
+            ("alpha", "A"),
+            ("beta", "B"),
+            ("gamma", "G"),
+            ("delta", "D"),
+            ("epsilon", "E"),
+        ];
+        for (term, value) in &terms {
+            pat.insert_with_value(term, value.to_string());
+        }
+
+        let dat: DoubleArrayTrieChar<String> = DoubleArrayTrieChar::from(&pat);
+
+        assert_eq!(dat.len(), Some(terms.len()));
+        for (term, value) in &terms {
+            assert_eq!(dat.get_value(term), Some(value.to_string()));
+        }
+    }
+
+    #[test]
+    fn test_from_persistent_artrie_iteration_order() {
+        // Verify the DAT can be iterated and contains all original terms
+        let pat: PersistentARTrieChar<i32> = PersistentARTrieChar::new();
+        pat.insert_with_value("cat", 1);
+        pat.insert_with_value("car", 2);
+        pat.insert_with_value("cart", 3);
+        pat.insert_with_value("card", 4);
+
+        let dat: DoubleArrayTrieChar<i32> = DoubleArrayTrieChar::from(&pat);
+
+        let dat_terms: std::collections::HashSet<_> = dat.iter().map(|(s, _)| s).collect();
+        assert_eq!(dat_terms.len(), 4);
+        assert!(dat_terms.contains("cat"));
+        assert!(dat_terms.contains("car"));
+        assert!(dat_terms.contains("cart"));
+        assert!(dat_terms.contains("card"));
     }
 }

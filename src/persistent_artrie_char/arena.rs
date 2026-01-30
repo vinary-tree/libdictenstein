@@ -679,6 +679,80 @@ impl CharNodeArena {
             self.dirty = true;
         }
     }
+
+    // =========================================================================
+    // Slot-Level Query Methods (for incremental checkpointing)
+    // =========================================================================
+
+    /// Get the data range for a specific slot.
+    ///
+    /// Returns `(offset_in_arena, length)` for the slot's data.
+    /// Used for partial writes during incremental checkpoints.
+    pub fn slot_data_range(&self, slot_id: u32) -> Result<(usize, usize)> {
+        if slot_id >= self.header.node_count {
+            return Err(PersistentARTrieError::corrupted(&format!(
+                "Invalid slot ID {} (arena has {} nodes)",
+                slot_id, self.header.node_count
+            )));
+        }
+
+        // Directory grows downward, so slot N is at:
+        // block_end - (N + 1) * SLOT_SIZE
+        let slot_offset = self.data.len() - ((slot_id as usize + 1) * SLOT_SIZE);
+        let slot = SlotEntry::from_bytes(&self.data[slot_offset..slot_offset + SLOT_SIZE]);
+        Ok((slot.offset as usize, slot.len as usize))
+    }
+
+    /// Get raw bytes for a specific slot's data.
+    ///
+    /// Returns the actual data bytes stored at the slot.
+    pub fn slot_bytes(&self, slot_id: u32) -> Result<&[u8]> {
+        let (offset, len) = self.slot_data_range(slot_id)?;
+        if offset + len > self.data.len() {
+            return Err(PersistentARTrieError::corrupted(&format!(
+                "Slot {} points outside arena: offset={}, len={}",
+                slot_id, offset, len
+            )));
+        }
+        Ok(&self.data[offset..offset + len])
+    }
+
+    /// Get the slot directory entry range.
+    ///
+    /// Returns `(offset_in_arena, SLOT_SIZE)` for the slot's directory entry.
+    pub fn slot_directory_entry_range(&self, slot_id: u32) -> Result<(usize, usize)> {
+        if slot_id >= self.header.node_count {
+            return Err(PersistentARTrieError::corrupted(&format!(
+                "Invalid slot ID {} (arena has {} nodes)",
+                slot_id, self.header.node_count
+            )));
+        }
+        let slot_offset = self.data.len() - ((slot_id as usize + 1) * SLOT_SIZE);
+        Ok((slot_offset, SLOT_SIZE))
+    }
+
+    /// Get the header region range.
+    ///
+    /// Returns `(0, HEADER_SIZE)` - the arena header location.
+    #[inline]
+    pub fn header_range(&self) -> (usize, usize) {
+        (0, HEADER_SIZE)
+    }
+
+    /// Get the directory region range.
+    ///
+    /// Returns `(directory_start, directory_length)` - the entire slot directory.
+    #[inline]
+    pub fn directory_range(&self) -> (usize, usize) {
+        let start = self.header.directory_start as usize;
+        (start, self.data.len() - start)
+    }
+
+    /// Get the total number of slots in this arena.
+    #[inline]
+    pub fn slot_count(&self) -> u32 {
+        self.header.node_count
+    }
 }
 
 // =============================================================================
@@ -929,6 +1003,59 @@ impl CharNodeArenaV2 {
         let fixed_size = self.slots.len() * SLOT_SIZE;
         let varint_size: usize = self.slots.iter().map(|s| s.encoded_size()).sum();
         (fixed_size, varint_size)
+    }
+
+    // =========================================================================
+    // Slot-Level Query Methods (for incremental checkpointing)
+    // =========================================================================
+
+    /// Get the data range for a specific slot.
+    ///
+    /// Returns `(offset_in_arena, length)` for the slot's data.
+    pub fn slot_data_range(&self, slot_id: u32) -> Result<(usize, usize)> {
+        let slot = self.slots.get(slot_id as usize).ok_or_else(|| {
+            PersistentARTrieError::corrupted(&format!(
+                "Invalid slot ID {} (arena has {} nodes)",
+                slot_id,
+                self.slots.len()
+            ))
+        })?;
+        Ok((slot.offset as usize, slot.len as usize))
+    }
+
+    /// Get raw bytes for a specific slot's data.
+    pub fn slot_bytes(&self, slot_id: u32) -> Result<&[u8]> {
+        let (offset, len) = self.slot_data_range(slot_id)?;
+        if offset + len > self.data.len() {
+            return Err(PersistentARTrieError::corrupted(&format!(
+                "Slot {} points outside arena: offset={}, len={}",
+                slot_id, offset, len
+            )));
+        }
+        Ok(&self.data[offset..offset + len])
+    }
+
+    /// Get the header region range.
+    #[inline]
+    pub fn header_range(&self) -> (usize, usize) {
+        (0, HEADER_SIZE)
+    }
+
+    /// Get the directory region range.
+    ///
+    /// For V2 arenas, the directory is a varint-encoded stream that must
+    /// be written as a whole. Returns the full directory range.
+    #[inline]
+    pub fn directory_range(&self) -> (usize, usize) {
+        let start = self.header.directory_start as usize;
+        let dir_len: usize = self.slots.iter().map(|s| s.encoded_size()).sum();
+        (start, dir_len)
+    }
+
+    /// Get the total number of slots in this arena.
+    #[inline]
+    pub fn slot_count(&self) -> u32 {
+        self.slots.len() as u32
     }
 }
 
