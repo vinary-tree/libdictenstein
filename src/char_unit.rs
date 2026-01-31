@@ -28,7 +28,7 @@
 /// let dict_chars: DoubleArrayTrieChar = DoubleArrayTrieChar::from_terms(vec!["café"]);
 /// ```
 pub trait CharUnit:
-    Copy + Clone + Eq + PartialEq + std::hash::Hash + std::fmt::Debug + Send + Sync + 'static
+    Copy + Clone + Eq + PartialEq + Ord + std::hash::Hash + std::fmt::Debug + Send + Sync + 'static
 {
     /// Convert from a string slice to a vector of units.
     ///
@@ -47,6 +47,18 @@ pub trait CharUnit:
     /// For `u8`, iterates over bytes.
     /// For `char`, iterates over Unicode scalar values.
     fn iter_str(s: &str) -> Box<dyn Iterator<Item = Self> + '_>;
+
+    /// Hash this unit to a u64 value.
+    ///
+    /// Used for consistent hashing in node signature computation and
+    /// other internal algorithms. Uses FxHash for performance.
+    fn hash_to_u64(&self) -> u64 {
+        use rustc_hash::FxHasher;
+        use std::hash::Hasher;
+        let mut hasher = FxHasher::default();
+        self.hash(&mut hasher);
+        hasher.finish()
+    }
 }
 
 /// Byte-level implementation (existing behavior).

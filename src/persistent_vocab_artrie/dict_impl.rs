@@ -312,6 +312,10 @@ impl PersistentVocabARTrie {
         // Open existing
         let mut trie = Self::open(&path)?;
 
+        // Reset entry_count to 0 since the trie root is empty (we only loaded metadata)
+        // The actual entries will be reconstructed via WAL replay
+        trie.entry_count = 0;
+
         // Check for WAL file and replay if needed
         let wal_path = path.with_extension("vocab.wal");
         let mut records_replayed = 0;

@@ -24,7 +24,10 @@
 //! [SuffixAutomatonChar]: suffix_automaton_char::SuffixAutomatonChar
 
 pub mod bijective;
+pub mod bloom_filter;
 pub mod char_unit;
+pub mod dawg_core;
+pub mod node_signature;
 pub mod sync_compat;
 
 pub mod difference_zipper;
@@ -79,8 +82,11 @@ pub mod serialization;
 
 // Re-export core types at crate root
 pub use bijective::{BijectiveDictionary, BijectiveMap, InsertError};
+pub use bloom_filter::BloomFilter;
 pub use char_unit::CharUnit;
+pub use dawg_core::{DawgCore, DawgNode};
 pub use iterator::{DictionaryIterator, DictionaryTermIterator};
+pub use node_signature::NodeSignature;
 pub use substring::{BidirectionalDictionaryNode, ExtensionResult, SubstringDictionary, SubstringMatch};
 pub use value::DictionaryValue;
 pub use zipper::{DictZipper, ValuedDictZipper};
@@ -267,6 +273,106 @@ pub trait MappedDictionaryNode: DictionaryNode {
     fn value(&self) -> Option<Self::Value>;
 }
 
+/// Trait for dictionaries supporting term insertion and removal.
+///
+/// This trait extends [`Dictionary`] with mutation capabilities. It is separate
+/// from [`MutableMappedDictionary`] which focuses on value-associated mutations.
+///
+/// # Default Implementations
+///
+/// The trait provides default implementations for batch operations (`extend`,
+/// `remove_many`) built on top of the required `insert` and `remove` methods.
+pub trait MutableDictionary: Dictionary {
+    /// Insert a term into the dictionary.
+    ///
+    /// Returns `true` if the term was newly inserted, `false` if it already existed.
+    fn insert(&self, term: &str) -> bool;
+
+    /// Remove a term from the dictionary.
+    ///
+    /// Returns `true` if the term was present and removed, `false` otherwise.
+    fn remove(&self, term: &str) -> bool;
+
+    /// Batch insert multiple terms.
+    ///
+    /// Returns the number of new terms added (not counting duplicates).
+    ///
+    /// The default implementation calls `insert` for each term. Implementations
+    /// may override this for better performance.
+    fn extend<I, S>(&self, terms: I) -> usize
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        terms
+            .into_iter()
+            .filter(|term| self.insert(term.as_ref()))
+            .count()
+    }
+
+    /// Batch remove multiple terms.
+    ///
+    /// Returns the number of terms removed.
+    ///
+    /// The default implementation calls `remove` for each term. Implementations
+    /// may override this for better performance.
+    fn remove_many<I, S>(&self, terms: I) -> usize
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        terms
+            .into_iter()
+            .filter(|term| self.remove(term.as_ref()))
+            .count()
+    }
+}
+
+/// Trait for dictionaries supporting compaction and minimization.
+///
+/// Dictionaries that support dynamic modifications (insertions and deletions)
+/// may accumulate internal fragmentation or redundant structure over time.
+/// This trait provides methods to restore optimal structure.
+///
+/// # Compaction vs Minimization
+///
+/// - **`compact()`**: Full rebuild - extracts all terms, sorts them, and reconstructs
+///   the structure from scratch. Achieves perfect minimality but is O(n log n + m).
+///
+/// - **`minimize()`**: Incremental optimization - merges equivalent nodes without
+///   full rebuild. Faster for localized changes but may not achieve perfect minimality.
+pub trait CompactableDictionary: MutableDictionary {
+    /// Check if compaction would be beneficial.
+    ///
+    /// Returns `true` if deletions have occurred or the structure has degraded
+    /// significantly from optimal.
+    fn needs_compaction(&self) -> bool;
+
+    /// Compact the dictionary to restore optimal structure.
+    ///
+    /// This performs a full rebuild, extracting all terms, sorting them for
+    /// optimal prefix sharing, and reconstructing the dictionary.
+    ///
+    /// Returns the number of nodes/elements removed or optimized away.
+    fn compact(&self) -> usize;
+
+    /// Minimize the dictionary using incremental optimization.
+    ///
+    /// Unlike `compact()`, this method:
+    /// - Makes no assumptions about insertion order
+    /// - Only examines affected nodes and their neighbors
+    /// - Preserves existing structure where possible
+    /// - Is faster than `compact()` for localized updates
+    ///
+    /// Returns the number of nodes merged.
+    ///
+    /// The default implementation delegates to `compact()`. Dictionaries
+    /// with more efficient incremental algorithms should override this.
+    fn minimize(&self) -> usize {
+        self.compact()
+    }
+}
+
 /// Extension trait for dictionaries that support inserting values.
 ///
 /// This trait enables mutation of mapped dictionaries, allowing terms to be
@@ -338,6 +444,7 @@ pub mod prelude {
     pub use crate::{
         CharUnit, Dictionary, DictionaryNode, DictionaryValue,
         MappedDictionary, MappedDictionaryNode, MutableMappedDictionary,
+        MutableDictionary, CompactableDictionary,
         SyncStrategy, DictZipper, ValuedDictZipper,
         BijectiveDictionary, BijectiveMap, InsertError,
     };

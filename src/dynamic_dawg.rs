@@ -1825,6 +1825,53 @@ impl<V: DictionaryValue> MappedDictionary for DynamicDawg<V> {
     }
 }
 
+impl<V: DictionaryValue> crate::MutableDictionary for DynamicDawg<V> {
+    fn insert(&self, term: &str) -> bool {
+        // Delegate to the inherent method
+        Self::insert(self, term)
+    }
+
+    fn remove(&self, term: &str) -> bool {
+        // Delegate to the inherent method
+        Self::remove(self, term)
+    }
+
+    fn extend<I, S>(&self, terms: I) -> usize
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        // Delegate to the inherent method (which also compacts)
+        Self::extend(self, terms)
+    }
+
+    fn remove_many<I, S>(&self, terms: I) -> usize
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        // Delegate to the inherent method (which also compacts)
+        Self::remove_many(self, terms)
+    }
+}
+
+impl<V: DictionaryValue> crate::CompactableDictionary for DynamicDawg<V> {
+    fn needs_compaction(&self) -> bool {
+        // Delegate to the inherent method
+        Self::needs_compaction(self)
+    }
+
+    fn compact(&self) -> usize {
+        // Delegate to the inherent method
+        Self::compact(self)
+    }
+
+    fn minimize(&self) -> usize {
+        // Delegate to the inherent method
+        Self::minimize(self)
+    }
+}
+
 impl<V: DictionaryValue> crate::MutableMappedDictionary for DynamicDawg<V> {
     fn insert_with_value(&self, term: &str, value: Self::Value) -> bool {
         // Delegate to the inherent method

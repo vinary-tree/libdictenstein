@@ -105,9 +105,6 @@ impl<V: DictionaryValue> PersistentARTrieZipper<V> {
         Self::new(trie)
     }
 
-    // Note: new_from_dict has been removed. Use new_from_shared() instead,
-    // or wrap your PersistentARTrie in Arc<RwLock<...>> first.
-
     /// Get the current path from root.
     ///
     /// Returns the sequence of edge labels from root to current position.

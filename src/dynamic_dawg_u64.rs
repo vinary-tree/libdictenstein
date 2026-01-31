@@ -945,6 +945,35 @@ impl<V: DictionaryValue> DictionaryNode for DynamicDawgU64Node<V> {
     }
 }
 
+impl<V: DictionaryValue> crate::MutableDictionary for DynamicDawgU64<V> {
+    fn insert(&self, term: &str) -> bool {
+        // Delegate to the inherent method
+        Self::insert(self, term)
+    }
+
+    fn remove(&self, term: &str) -> bool {
+        // Delegate to the inherent method
+        Self::remove(self, term)
+    }
+}
+
+impl<V: DictionaryValue> crate::CompactableDictionary for DynamicDawgU64<V> {
+    fn needs_compaction(&self) -> bool {
+        // Delegate to the inherent method
+        Self::needs_compaction(self)
+    }
+
+    fn compact(&self) -> usize {
+        // Delegate to the inherent method
+        Self::compact(self)
+    }
+
+    fn minimize(&self) -> usize {
+        // Delegate to the inherent method
+        Self::minimize(self)
+    }
+}
+
 impl<V: DictionaryValue> Dictionary for DynamicDawgU64<V> {
     type Node = DynamicDawgU64Node<V>;
 
