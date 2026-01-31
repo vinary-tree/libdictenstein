@@ -26,6 +26,8 @@
 pub mod bijective;
 pub mod char_unit;
 pub mod sync_compat;
+
+pub mod difference_zipper;
 pub mod double_array_trie;
 pub mod double_array_trie_char;
 pub mod double_array_trie_char_zipper;
@@ -38,6 +40,7 @@ pub mod dynamic_dawg_u64_zipper;
 pub mod dynamic_dawg_zipper;
 pub mod excluding_prefix_zipper;
 pub mod factory;
+pub mod intersection_zipper;
 pub mod iterator;
 #[cfg(feature = "pathmap-backend")]
 pub mod pathmap;
@@ -45,20 +48,30 @@ pub mod pathmap;
 pub mod pathmap_char;
 #[cfg(feature = "pathmap-backend")]
 pub mod pathmap_zipper;
+
+// === Persistent ARTrie modules (feature-gated at module level) ===
+// These modules are gated here; internal code does NOT need feature gates.
+#[cfg(feature = "persistent-artrie")]
+pub mod artrie_trait;
 #[cfg(feature = "persistent-artrie")]
 pub mod persistent_artrie;
 #[cfg(feature = "persistent-artrie")]
 pub mod persistent_artrie_char;
+#[cfg(feature = "persistent-artrie")]
+pub mod persistent_vocab_artrie;
+
 pub mod prefix_zipper;
 pub mod scdawg;
-pub mod union_zipper;
 pub mod scdawg_char;
 pub mod substring;
 pub mod suffix_automaton;
 pub mod suffix_automaton_char;
 pub mod suffix_automaton_char_zipper;
 pub mod suffix_automaton_zipper;
+pub mod symmetric_difference_zipper;
+pub mod union_zipper;
 pub mod value;
+pub mod value_diff_zipper;
 pub mod zipper;
 
 #[cfg(feature = "serialization")]
@@ -68,15 +81,21 @@ pub mod serialization;
 pub use bijective::{BijectiveDictionary, BijectiveMap, IndexedVocabulary, InsertError};
 pub use char_unit::CharUnit;
 pub use iterator::{DictionaryIterator, DictionaryTermIterator};
+pub use substring::{BidirectionalDictionaryNode, ExtensionResult, SubstringDictionary, SubstringMatch};
+pub use value::DictionaryValue;
+pub use zipper::{DictZipper, ValuedDictZipper};
+
+// Re-export persistent ARTrie types (only available with feature)
+#[cfg(feature = "persistent-artrie")]
+pub use artrie_trait::{ARTrie, ARTrieAtomicOps};
 #[cfg(feature = "persistent-artrie")]
 pub use persistent_artrie::{PersistentARTrie, PersistentARTrieZipper, WalConfig, RecoveryReport, RecoveryMode};
 #[cfg(feature = "persistent-artrie")]
 pub use persistent_artrie::wal::Lsn;
 #[cfg(feature = "persistent-artrie")]
 pub use persistent_artrie_char::{PersistentARTrieChar, PersistentARTrieCharNode, PersistentARTrieCharZipper};
-pub use substring::{BidirectionalDictionaryNode, ExtensionResult, SubstringDictionary, SubstringMatch};
-pub use value::DictionaryValue;
-pub use zipper::{DictZipper, ValuedDictZipper};
+#[cfg(feature = "persistent-artrie")]
+pub use persistent_vocab_artrie::{PersistentVocabARTrie, IndexedVocabularyPersistent};
 
 /// Synchronization strategy for dictionary operations.
 ///

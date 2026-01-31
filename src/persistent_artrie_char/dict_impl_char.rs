@@ -39,37 +39,27 @@ use std::sync::RwLock;
 // SwizzledPtr is used unconditionally for in-memory CharNode children
 use crate::persistent_artrie::swizzled_ptr::SwizzledPtr;
 
-#[cfg(feature = "persistent-artrie")]
 use crate::persistent_artrie::buffer_manager::BufferManager;
-#[cfg(feature = "persistent-artrie")]
 use crate::persistent_artrie::disk_manager::DiskManager;
-#[cfg(feature = "persistent-artrie")]
 use crate::persistent_artrie::error::{PersistentARTrieError, Result};
-#[cfg(feature = "persistent-artrie")]
 use crate::persistent_artrie::wal::{WalConfig, WalError, WalReader, WalRecord, WalWriter};
-#[cfg(feature = "persistent-artrie")]
 use crate::persistent_artrie::concurrency::{
     EpochManager, OptimisticVersion, RetryStats, EpochGuard, OptimisticReadGuard,
 };
-#[cfg(all(feature = "persistent-artrie", feature = "group-commit"))]
+#[cfg(feature = "group-commit")]
 use crate::persistent_artrie::group_commit::{GroupCommitConfig, GroupCommitCoordinator};
-#[cfg(feature = "persistent-artrie")]
 use crate::persistent_artrie::memory_monitor::{
     MemoryPressureConfig, MemoryPressureLevel, MemoryPressureMonitor, MemoryStats,
 };
-#[cfg(feature = "persistent-artrie")]
 use crate::persistent_artrie::adaptive_pool::CacheStats;
-#[cfg(feature = "persistent-artrie")]
 use crate::persistent_artrie::epoch::{
     CheckpointManager, EpochConfig, EpochId, EpochMetadata, EpochStats,
 };
-#[cfg(feature = "persistent-artrie")]
 use super::arena_manager::ArenaManager;
 use crate::value::DictionaryValue;
 
 // Import CharNode types for adaptive radix structure
 use super::nodes::CharNode;
-#[cfg(feature = "persistent-artrie")]
 use crate::persistent_artrie::NodeType;
 
 /// Magic bytes for char trie file
@@ -325,7 +315,6 @@ impl CharTrieFileHeader {
     /// Deserialize from bytes and verify checksum
     ///
     /// Returns `Err` if checksum verification fails (V2+ only).
-    #[cfg(feature = "persistent-artrie")]
     pub fn from_bytes_verified(bytes: &[u8; CHAR_FILE_HEADER_SIZE]) -> Result<Self> {
         let header = Self::from_bytes(bytes);
         if header.has_checksum() && !header.verify_checksum() {
@@ -341,7 +330,6 @@ impl CharTrieFileHeader {
     }
 
     /// Validate the header (magic + version + checksum)
-    #[cfg(feature = "persistent-artrie")]
     pub fn validate(&self) -> Result<()> {
         if self.magic != CHAR_TRIE_MAGIC {
             // Convert [u8; 4] to u64 for the error type
@@ -402,7 +390,6 @@ impl Default for CharTrieFileHeader {
 ///
 /// Used by `iter_prefix_with_arena()` to enable I/O-efficient batch operations
 /// by grouping terms that reside in the same disk arena/page.
-#[cfg(feature = "persistent-artrie")]
 #[derive(Debug, Clone)]
 pub struct PrefixTermWithArena {
     /// The term string
@@ -416,7 +403,6 @@ pub struct PrefixTermWithArena {
 /// Used by `iter_prefix_with_values_and_arena()` to enable I/O-efficient batch
 /// operations by grouping terms that reside in the same disk arena/page.
 /// This is the same pattern used by `remove_prefix_batched()`.
-#[cfg(feature = "persistent-artrie")]
 #[derive(Debug, Clone)]
 pub struct PrefixTermWithValueAndArena<V> {
     /// The term string
@@ -430,13 +416,11 @@ pub struct PrefixTermWithValueAndArena<V> {
 /// Transaction state for document transactions.
 ///
 /// Re-exported from `persistent_artrie` for API consistency.
-#[cfg(feature = "persistent-artrie")]
 pub use crate::persistent_artrie::TransactionState;
 
 /// Durability policy for WAL synchronization.
 ///
 /// Re-exported from `persistent_artrie` for API consistency.
-#[cfg(feature = "persistent-artrie")]
 pub use crate::persistent_artrie::DurabilityPolicy;
 
 /// A document transaction for per-document atomicity in the character trie.
@@ -471,7 +455,6 @@ pub use crate::persistent_artrie::DurabilityPolicy;
 /// let count = trie.commit_document(tx)?;
 /// assert_eq!(count, 3);
 /// ```
-#[cfg(feature = "persistent-artrie")]
 #[derive(Debug)]
 pub struct CharDocumentTransaction<V: DictionaryValue> {
     /// Unique transaction identifier
@@ -484,7 +467,6 @@ pub struct CharDocumentTransaction<V: DictionaryValue> {
     pub state: TransactionState,
 }
 
-#[cfg(feature = "persistent-artrie")]
 impl<V: DictionaryValue> CharDocumentTransaction<V> {
     /// Returns the number of buffered terms in this transaction.
     pub fn len(&self) -> usize {
@@ -828,55 +810,42 @@ pub struct DiskBackedCharTrieInner<V: DictionaryValue> {
     pub dirty: bool,
 
     // Storage infrastructure (optional - None for in-memory mode)
-    #[cfg(feature = "persistent-artrie")]
     pub buffer_manager: Option<Arc<RwLock<BufferManager>>>,
-    #[cfg(feature = "persistent-artrie")]
     pub wal_writer: Option<Arc<RwLock<WalWriter>>>,
-    #[cfg(feature = "persistent-artrie")]
     /// WAL configuration (archive mode, segment limits, etc.)
     pub wal_config: WalConfig,
-    #[cfg(feature = "persistent-artrie")]
     pub next_lsn: u64,
-    #[cfg(feature = "persistent-artrie")]
     pub file_path: Option<PathBuf>,
     /// Arena manager for space-efficient node storage
     /// Packs multiple nodes into 256KB blocks instead of one node per block
-    #[cfg(feature = "persistent-artrie")]
     pub arena_manager: Option<Arc<RwLock<ArenaManager>>>,
 
     // Concurrency infrastructure
-    #[cfg(feature = "persistent-artrie")]
     /// Version for optimistic concurrency control
     pub version: OptimisticVersion,
-    #[cfg(feature = "persistent-artrie")]
     /// Epoch manager for safe memory reclamation
     pub epoch_manager: EpochManager,
-    #[cfg(feature = "persistent-artrie")]
     /// Retry statistics for monitoring
     pub retry_stats: RetryStats,
 
     // Group commit infrastructure (optional - for high-throughput write batching)
-    #[cfg(all(feature = "persistent-artrie", feature = "group-commit"))]
+    #[cfg(feature = "group-commit")]
     /// Group commit coordinator for WAL write batching.
     /// When enabled, WAL writes are batched for better throughput.
     pub group_commit: Option<Arc<GroupCommitCoordinator>>,
 
     // Performance infrastructure
-    #[cfg(feature = "persistent-artrie")]
     /// Memory pressure monitor for adaptive memory management.
     /// When enabled, automatically adjusts buffer pool size based on system memory pressure.
     pub memory_monitor: Option<Arc<MemoryPressureMonitor>>,
-    #[cfg(feature = "persistent-artrie")]
     /// Cache statistics for monitoring buffer pool performance.
     pub cache_stats: CacheStats,
-    #[cfg(feature = "persistent-artrie")]
     /// Epoch-based checkpoint manager for automatic checkpointing.
     ///
     /// When enabled, the checkpoint manager tracks operation counts and WAL size,
     /// triggering automatic checkpoints based on configurable thresholds.
     /// This provides bounded WAL size and faster recovery.
     pub checkpoint_manager: Option<Arc<CheckpointManager>>,
-    #[cfg(feature = "persistent-artrie")]
     /// Durability policy for WAL synchronization.
     /// Controls when fsync is called after WAL writes.
     pub durability_policy: DurabilityPolicy,
@@ -903,40 +872,26 @@ impl<V: DictionaryValue> DiskBackedCharTrieInner<V> {
             root: CharTrieRoot::Empty,
             len: 0,
             dirty: false,
-            #[cfg(feature = "persistent-artrie")]
             buffer_manager: None,
-            #[cfg(feature = "persistent-artrie")]
             wal_writer: None,
-            #[cfg(feature = "persistent-artrie")]
             wal_config: WalConfig::default(),
-            #[cfg(feature = "persistent-artrie")]
             next_lsn: 1,
-            #[cfg(feature = "persistent-artrie")]
             file_path: None,
-            #[cfg(feature = "persistent-artrie")]
             arena_manager: None,
-            #[cfg(feature = "persistent-artrie")]
             version: OptimisticVersion::new(),
-            #[cfg(feature = "persistent-artrie")]
             epoch_manager: EpochManager::new(),
-            #[cfg(feature = "persistent-artrie")]
             retry_stats: RetryStats::new(),
-            #[cfg(all(feature = "persistent-artrie", feature = "group-commit"))]
+            #[cfg(feature = "group-commit")]
             group_commit: None,
-            #[cfg(feature = "persistent-artrie")]
             memory_monitor: None,
-            #[cfg(feature = "persistent-artrie")]
             cache_stats: CacheStats::default(),
-            #[cfg(feature = "persistent-artrie")]
             checkpoint_manager: None,
-            #[cfg(feature = "persistent-artrie")]
             durability_policy: DurabilityPolicy::default(),
             _phantom: std::marker::PhantomData,
         }
     }
 
     /// Create a new disk-backed trie at the given path
-    #[cfg(feature = "persistent-artrie")]
     pub fn create<P: AsRef<Path>>(path: P) -> Result<Self> {
         let path = path.as_ref();
 
@@ -974,7 +929,6 @@ impl<V: DictionaryValue> DiskBackedCharTrieInner<V> {
             group_commit: None,
             memory_monitor: None,
             cache_stats: CacheStats::default(),
-            #[cfg(feature = "persistent-artrie")]
             checkpoint_manager: None,
             durability_policy: DurabilityPolicy::default(),
             _phantom: std::marker::PhantomData,
@@ -989,7 +943,6 @@ impl<V: DictionaryValue> DiskBackedCharTrieInner<V> {
     ///
     /// # Arguments
     /// * `path` - Path to the trie file (must not exist)
-    #[cfg(feature = "persistent-artrie")]
     pub fn create_with_slot_tracking<P: AsRef<Path>>(path: P) -> Result<Self> {
         use super::arena_manager::FlushConfig;
 
@@ -1033,7 +986,6 @@ impl<V: DictionaryValue> DiskBackedCharTrieInner<V> {
             group_commit: None,
             memory_monitor: None,
             cache_stats: CacheStats::default(),
-            #[cfg(feature = "persistent-artrie")]
             checkpoint_manager: None,
             durability_policy: DurabilityPolicy::default(),
             _phantom: std::marker::PhantomData,
@@ -1041,7 +993,6 @@ impl<V: DictionaryValue> DiskBackedCharTrieInner<V> {
     }
 
     /// Create a new disk-backed trie with custom WAL configuration
-    #[cfg(feature = "persistent-artrie")]
     pub fn create_with_config<P: AsRef<Path>>(path: P, wal_config: WalConfig) -> Result<Self> {
         let path = path.as_ref();
 
@@ -1089,7 +1040,6 @@ impl<V: DictionaryValue> DiskBackedCharTrieInner<V> {
             group_commit: None,
             memory_monitor: None,
             cache_stats: CacheStats::default(),
-            #[cfg(feature = "persistent-artrie")]
             checkpoint_manager: None,
             durability_policy: DurabilityPolicy::default(),
             _phantom: std::marker::PhantomData,
@@ -1097,7 +1047,6 @@ impl<V: DictionaryValue> DiskBackedCharTrieInner<V> {
     }
 
     /// Open an existing disk-backed trie
-    #[cfg(feature = "persistent-artrie")]
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self> {
         use crate::persistent_artrie::swizzled_ptr::SwizzledPtr;
 
@@ -1180,7 +1129,6 @@ impl<V: DictionaryValue> DiskBackedCharTrieInner<V> {
             group_commit: None,
             memory_monitor: None,
             cache_stats: CacheStats::default(),
-            #[cfg(feature = "persistent-artrie")]
             checkpoint_manager: None,
             durability_policy: DurabilityPolicy::default(),
             _phantom: std::marker::PhantomData,
@@ -1322,7 +1270,6 @@ impl<V: DictionaryValue> DiskBackedCharTrieInner<V> {
     /// // Checkpoint writes only modified slots
     /// trie.checkpoint()?;
     /// ```
-    #[cfg(feature = "persistent-artrie")]
     pub fn open_with_slot_tracking<P: AsRef<Path>>(path: P) -> Result<Self> {
         let trie = Self::open(path)?;
 
@@ -1365,7 +1312,6 @@ impl<V: DictionaryValue> DiskBackedCharTrieInner<V> {
     /// // Fully eager loading
     /// let trie = DiskBackedCharTrieInner::<u64>::open_with_depth("my_trie", Some(usize::MAX))?;
     /// ```
-    #[cfg(feature = "persistent-artrie")]
     pub fn open_with_depth<P: AsRef<Path>>(path: P, eager_depth: Option<usize>) -> Result<Self> {
         use crate::persistent_artrie::swizzled_ptr::SwizzledPtr;
 
@@ -1448,7 +1394,6 @@ impl<V: DictionaryValue> DiskBackedCharTrieInner<V> {
             group_commit: None,
             memory_monitor: None,
             cache_stats: CacheStats::default(),
-            #[cfg(feature = "persistent-artrie")]
             checkpoint_manager: None,
             durability_policy: DurabilityPolicy::default(),
             _phantom: std::marker::PhantomData,
@@ -1543,7 +1488,6 @@ impl<V: DictionaryValue> DiskBackedCharTrieInner<V> {
     /// Open an existing disk-backed trie with custom WAL configuration
     ///
     /// This allows specifying WAL archive settings for crash recovery.
-    #[cfg(feature = "persistent-artrie")]
     pub fn open_with_config<P: AsRef<Path>>(path: P, wal_config: WalConfig) -> Result<Self> {
         let mut trie = Self::open(path.as_ref())?;
 
@@ -1594,7 +1538,6 @@ impl<V: DictionaryValue> DiskBackedCharTrieInner<V> {
     ///     eprintln!("Recovered from crash: {} records replayed", report.records_replayed);
     /// }
     /// ```
-    #[cfg(feature = "persistent-artrie")]
     pub fn open_with_recovery<P: AsRef<Path>>(path: P) -> Result<(Self, crate::persistent_artrie::recovery::RecoveryReport)> {
         Self::open_with_recovery_config(path, WalConfig::default())
     }
@@ -1611,7 +1554,6 @@ impl<V: DictionaryValue> DiskBackedCharTrieInner<V> {
     /// # Returns
     ///
     /// Tuple of (trie, recovery_report) indicating what recovery was performed.
-    #[cfg(feature = "persistent-artrie")]
     pub fn open_with_recovery_config<P: AsRef<Path>>(
         path: P,
         config: WalConfig,
@@ -1792,7 +1734,6 @@ impl<V: DictionaryValue> DiskBackedCharTrieInner<V> {
     /// println!("Recovery took {} ms", stats.duration_ms);
     /// println!("Recovered {} records", stats.records_replayed);
     /// ```
-    #[cfg(feature = "persistent-artrie")]
     pub fn open_with_full_recovery<P: AsRef<Path>>(
         path: P,
         _epoch_config: Option<crate::persistent_artrie::epoch::EpochConfig>,
@@ -1892,7 +1833,6 @@ impl<V: DictionaryValue> DiskBackedCharTrieInner<V> {
     ///     println!("Processed {} operations so far", total);
     /// }
     /// ```
-    #[cfg(feature = "persistent-artrie")]
     pub fn incremental_recovery<P: AsRef<Path>>(
         wal_path: P,
     ) -> Result<super::recovery::IncrementalRecovery> {
@@ -1914,7 +1854,6 @@ impl<V: DictionaryValue> DiskBackedCharTrieInner<V> {
     /// # Returns
     ///
     /// Tuple of (trie, stats) with recovery information.
-    #[cfg(feature = "persistent-artrie")]
     pub fn recover_from_archives<P: AsRef<Path>>(
         path: P,
         archive_dir: P,
@@ -2020,7 +1959,6 @@ impl<V: DictionaryValue> DiskBackedCharTrieInner<V> {
     ///   - `Some(0)`: Same as None (lazy loading)
     ///   - `Some(n)`: Load n levels eagerly, rest lazy
     ///   - `Some(usize::MAX)`: Fully eager loading (all levels)
-    #[cfg(feature = "persistent-artrie")]
     fn load_root_from_disk(
         &self,
         buffer_manager: &Arc<RwLock<BufferManager>>,
@@ -2149,7 +2087,6 @@ impl<V: DictionaryValue> DiskBackedCharTrieInner<V> {
     /// [value_len: u32]
     /// [value_bytes if value_len > 0]
     /// ```
-    #[cfg(feature = "persistent-artrie")]
     fn load_char_node_from_disk(
         &self,
         _buffer_manager: &Arc<RwLock<BufferManager>>,
@@ -2260,7 +2197,6 @@ impl<V: DictionaryValue> DiskBackedCharTrieInner<V> {
     /// [value_len: u32]
     /// [value_bytes if value_len > 0]
     /// ```
-    #[cfg(feature = "persistent-artrie")]
     fn load_char_node_from_disk_lazy(
         &self,
         _buffer_manager: &Arc<RwLock<BufferManager>>,
@@ -2358,7 +2294,6 @@ impl<V: DictionaryValue> DiskBackedCharTrieInner<V> {
     ///
     /// The returned node has `is_final`, `value`, and an empty child set.
     /// Children must be connected by the caller after loading.
-    #[cfg(feature = "persistent-artrie")]
     fn load_single_node_data(
         &self,
         node_ptr: &crate::persistent_artrie::swizzled_ptr::SwizzledPtr,
@@ -2451,7 +2386,6 @@ impl<V: DictionaryValue> DiskBackedCharTrieInner<V> {
     ///
     /// This maintains identical semantics to `load_char_node_from_disk` but can
     /// handle arbitrarily deep tries without stack overflow.
-    #[cfg(feature = "persistent-artrie")]
     fn load_char_node_from_disk_iterative(
         &self,
         _buffer_manager: &Arc<RwLock<BufferManager>>,
@@ -2558,7 +2492,6 @@ impl<V: DictionaryValue> DiskBackedCharTrieInner<V> {
     /// - `Some(3)`: Root + 2 levels loaded, 4th level and beyond lazy
     /// - `Some(10)`: First 10 levels loaded eagerly
     /// - `None`: All levels loaded (same as full iterative loading)
-    #[cfg(feature = "persistent-artrie")]
     fn load_char_node_from_disk_with_depth(
         &self,
         _buffer_manager: &Arc<RwLock<BufferManager>>,
@@ -2683,7 +2616,6 @@ impl<V: DictionaryValue> DiskBackedCharTrieInner<V> {
     ///
     /// Returns `Ok(None)` if the child doesn't exist.
     /// Returns `Err` if an I/O error occurs during lazy loading.
-    #[cfg(feature = "persistent-artrie")]
     fn get_child_lazy(&self, node: &CharTrieNodeInner<V>, c: char) -> Result<Option<&CharTrieNodeInner<V>>> {
         match node.node.find_child(c as u32) {
             Some(ptr) => {
@@ -2704,7 +2636,6 @@ impl<V: DictionaryValue> DiskBackedCharTrieInner<V> {
     ///
     /// Returns `Ok(None)` if the child doesn't exist.
     /// Returns `Err` if an I/O error occurs during lazy loading.
-    #[cfg(feature = "persistent-artrie")]
     fn get_child_mut_lazy(&self, node: &CharTrieNodeInner<V>, c: char) -> Result<Option<&mut CharTrieNodeInner<V>>> {
         match node.node.find_child(c as u32) {
             Some(ptr) => {
@@ -2730,7 +2661,6 @@ impl<V: DictionaryValue> DiskBackedCharTrieInner<V> {
     ///
     /// The caller must ensure `node` is part of this trie's structure.
     /// The returned pointer is valid as long as the trie exists.
-    #[cfg(feature = "persistent-artrie")]
     fn get_or_create_child_lazy_ptr(
         &self,
         node: &mut CharTrieNodeInner<V>,
@@ -2787,7 +2717,6 @@ impl<V: DictionaryValue> DiskBackedCharTrieInner<V> {
     ///
     /// The returned reference is valid as long as the node is not evicted from
     /// memory. In the current implementation, nodes are never evicted.
-    #[cfg(feature = "persistent-artrie")]
     fn resolve_swizzled_ptr(&self, ptr: &SwizzledPtr) -> Result<&CharTrieNodeInner<V>> {
         use crate::persistent_artrie::error::SwizzleError;
 
@@ -2839,7 +2768,6 @@ impl<V: DictionaryValue> DiskBackedCharTrieInner<V> {
     /// # Safety
     ///
     /// The caller must ensure exclusive access to the node.
-    #[cfg(feature = "persistent-artrie")]
     fn resolve_swizzled_ptr_mut(&self, ptr: &SwizzledPtr) -> Result<&mut CharTrieNodeInner<V>> {
         use crate::persistent_artrie::error::SwizzleError;
 
@@ -2885,7 +2813,6 @@ impl<V: DictionaryValue> DiskBackedCharTrieInner<V> {
     }
 
     /// Insert a term (internal, no WAL logging)
-    #[cfg(feature = "persistent-artrie")]
     fn insert_impl_no_wal(&mut self, term: &str) -> bool {
         // Ensure we have a root node
         if matches!(self.root, CharTrieRoot::Empty) {
@@ -2922,38 +2849,8 @@ impl<V: DictionaryValue> DiskBackedCharTrieInner<V> {
         true
     }
 
-    #[cfg(not(feature = "persistent-artrie"))]
-    fn insert_impl_no_wal(&mut self, term: &str) -> bool {
-        // Ensure we have a root node
-        if matches!(self.root, CharTrieRoot::Empty) {
-            self.root = CharTrieRoot::Node(Box::new(CharTrieNodeInner::new()));
-        }
-
-        // Navigate to the insertion point
-        let root = match &mut self.root {
-            CharTrieRoot::Node(node) => node.as_mut(),
-            CharTrieRoot::Empty => unreachable!(),
-        };
-
-        let mut current = root;
-        for c in term.chars() {
-            current = current.get_or_create_child(c);
-        }
-
-        // Check if already final
-        if current.is_final() {
-            return false;
-        }
-
-        // Mark as final
-        current.set_final(true);
-        self.len += 1;
-        self.dirty = true;
-        true
-    }
 
     /// Insert a term with value (internal, no WAL logging)
-    #[cfg(feature = "persistent-artrie")]
     fn insert_impl_no_wal_with_value(&mut self, term: &str, value: V) -> bool {
         // Ensure we have a root node
         if matches!(self.root, CharTrieRoot::Empty) {
@@ -2993,41 +2890,8 @@ impl<V: DictionaryValue> DiskBackedCharTrieInner<V> {
     }
 
     /// Insert a term with value (internal, no WAL logging)
-    #[cfg(not(feature = "persistent-artrie"))]
-    fn insert_impl_no_wal_with_value(&mut self, term: &str, value: V) -> bool {
-        // Ensure we have a root node
-        if matches!(self.root, CharTrieRoot::Empty) {
-            self.root = CharTrieRoot::Node(Box::new(CharTrieNodeInner::new()));
-        }
-
-        // Navigate to the insertion point
-        let root = match &mut self.root {
-            CharTrieRoot::Node(node) => node.as_mut(),
-            CharTrieRoot::Empty => unreachable!(),
-        };
-
-        let mut current = root;
-        for c in term.chars() {
-            current = current.get_or_create_child(c);
-        }
-
-        // Check if already final
-        if current.is_final() {
-            // Update value if already exists
-            current.value = Some(value);
-            return false;
-        }
-
-        // Mark as final with value
-        current.set_final(true);
-        current.value = Some(value);
-        self.len += 1;
-        self.dirty = true;
-        true
-    }
 
     /// Remove a term (internal, no WAL logging)
-    #[cfg(feature = "persistent-artrie")]
     fn remove_impl_no_wal(&mut self, term: &str) -> bool {
         let root = match &mut self.root {
             CharTrieRoot::Node(node) => node.as_mut() as *mut CharTrieNodeInner<V>,
@@ -3064,35 +2928,6 @@ impl<V: DictionaryValue> DiskBackedCharTrieInner<V> {
     }
 
     /// Remove a term (internal, no WAL logging)
-    #[cfg(not(feature = "persistent-artrie"))]
-    fn remove_impl_no_wal(&mut self, term: &str) -> bool {
-        let root = match &mut self.root {
-            CharTrieRoot::Node(node) => node.as_mut(),
-            CharTrieRoot::Empty => return false,
-        };
-
-        // Navigate to the node
-        let chars: Vec<char> = term.chars().collect();
-        let mut current = root;
-        for &c in &chars {
-            match current.get_child_mut(c) {
-                Some(child) => current = child,
-                None => return false, // Term not found
-            }
-        }
-
-        // Check if this node is final
-        if !current.is_final() {
-            return false;
-        }
-
-        // Mark as not final
-        current.set_final(false);
-        current.value = None;
-        self.len -= 1;
-        self.dirty = true;
-        true
-    }
 
     /// Check if a term exists in the trie
     ///
@@ -3100,34 +2935,15 @@ impl<V: DictionaryValue> DiskBackedCharTrieInner<V> {
     /// I/O errors during lazy loading will cause a panic. Use `try_contains()`
     /// for explicit error handling.
     pub fn contains(&self, term: &str) -> bool {
-        #[cfg(feature = "persistent-artrie")]
         {
             self.try_contains(term)
                 .expect("I/O error during lazy loading in contains()")
-        }
-        #[cfg(not(feature = "persistent-artrie"))]
-        {
-            let root = match &self.root {
-                CharTrieRoot::Node(node) => node.as_ref(),
-                CharTrieRoot::Empty => return false,
-            };
-
-            let mut current = root;
-            for c in term.chars() {
-                match current.get_child(c) {
-                    Some(child) => current = child,
-                    None => return false,
-                }
-            }
-
-            current.is_final()
         }
     }
 
     /// Check if a term exists in the trie with explicit error handling.
     ///
     /// This version returns a `Result` for lazy loading I/O errors.
-    #[cfg(feature = "persistent-artrie")]
     pub fn try_contains(&self, term: &str) -> Result<bool> {
         let root = match &self.root {
             CharTrieRoot::Node(node) => node.as_ref(),
@@ -3151,38 +2967,15 @@ impl<V: DictionaryValue> DiskBackedCharTrieInner<V> {
     /// I/O errors during lazy loading will cause a panic. Use `try_get()`
     /// for explicit error handling.
     pub fn get(&self, term: &str) -> Option<&V> {
-        #[cfg(feature = "persistent-artrie")]
         {
             self.try_get(term)
                 .expect("I/O error during lazy loading in get()")
-        }
-        #[cfg(not(feature = "persistent-artrie"))]
-        {
-            let root = match &self.root {
-                CharTrieRoot::Node(node) => node.as_ref(),
-                CharTrieRoot::Empty => return None,
-            };
-
-            let mut current = root;
-            for c in term.chars() {
-                match current.get_child(c) {
-                    Some(child) => current = child,
-                    None => return None,
-                }
-            }
-
-            if current.is_final() {
-                current.value.as_ref()
-            } else {
-                None
-            }
         }
     }
 
     /// Get a value by term with explicit error handling.
     ///
     /// This version returns a `Result` for lazy loading I/O errors.
-    #[cfg(feature = "persistent-artrie")]
     pub fn try_get(&self, term: &str) -> Result<Option<&V>> {
         let root = match &self.root {
             CharTrieRoot::Node(node) => node.as_ref(),
@@ -3210,7 +3003,6 @@ impl<V: DictionaryValue> DiskBackedCharTrieInner<V> {
     ///
     /// Returns `Some(result)` if the read was consistent, `None` if a concurrent
     /// write occurred and the read should be retried.
-    #[cfg(feature = "persistent-artrie")]
     pub fn try_contains_optimistic(&self, term: &str) -> Option<bool> {
         // Record the version before reading
         let guard = OptimisticReadGuard::new(&self.version);
@@ -3230,7 +3022,6 @@ impl<V: DictionaryValue> DiskBackedCharTrieInner<V> {
     ///
     /// Retries up to `max_retries` times if concurrent writes occur.
     /// Returns the result if successful within retry limit.
-    #[cfg(feature = "persistent-artrie")]
     pub fn contains_optimistic(&self, term: &str, max_retries: usize) -> Option<bool> {
         let mut retries = 0u64;
         for _ in 0..max_retries {
@@ -3248,7 +3039,6 @@ impl<V: DictionaryValue> DiskBackedCharTrieInner<V> {
     ///
     /// Returns `Some(result)` if the read was consistent, `None` if retry needed.
     /// Note: Returns Option<Option<V>> - outer Option for consistency, inner for value.
-    #[cfg(feature = "persistent-artrie")]
     pub fn try_get_optimistic(&self, term: &str) -> Option<Option<V>> {
         let guard = OptimisticReadGuard::new(&self.version);
 
@@ -3263,7 +3053,6 @@ impl<V: DictionaryValue> DiskBackedCharTrieInner<V> {
     }
 
     /// Optimistic get with automatic retry.
-    #[cfg(feature = "persistent-artrie")]
     pub fn get_optimistic(&self, term: &str, max_retries: usize) -> Option<Option<V>> {
         let mut retries = 0u64;
         for _ in 0..max_retries {
@@ -3281,43 +3070,36 @@ impl<V: DictionaryValue> DiskBackedCharTrieInner<V> {
     ///
     /// Returns an EpochGuard that must be held while reading. This ensures
     /// memory accessed during the read won't be reclaimed until the guard is dropped.
-    #[cfg(feature = "persistent-artrie")]
     pub fn enter_epoch(&self) -> EpochGuard<'_> {
         EpochGuard::new(&self.epoch_manager)
     }
 
     /// Get the current read epoch.
-    #[cfg(feature = "persistent-artrie")]
     pub fn current_epoch(&self) -> u64 {
         self.epoch_manager.current_epoch()
     }
 
     /// Advance the epoch (should be called periodically by a background task).
-    #[cfg(feature = "persistent-artrie")]
     pub fn advance_epoch(&self) -> u64 {
         self.epoch_manager.advance()
     }
 
     /// Get the number of active readers.
-    #[cfg(feature = "persistent-artrie")]
     pub fn active_readers(&self) -> usize {
         self.epoch_manager.active_reader_count()
     }
 
     /// Get retry statistics snapshot.
-    #[cfg(feature = "persistent-artrie")]
     pub fn retry_stats_snapshot(&self) -> crate::persistent_artrie::concurrency::RetryStatsSnapshot {
         self.retry_stats.snapshot()
     }
 
     /// Check if the trie is currently being written to.
-    #[cfg(feature = "persistent-artrie")]
     pub fn is_write_locked(&self) -> bool {
         !self.version.is_stable()
     }
 
     /// Get the current version (for debugging/monitoring).
-    #[cfg(feature = "persistent-artrie")]
     pub fn current_version(&self) -> u64 {
         self.version.get()
     }
@@ -3325,7 +3107,6 @@ impl<V: DictionaryValue> DiskBackedCharTrieInner<V> {
     // ==================== End Optimistic Concurrency Methods ====================
 
     /// Insert a term with WAL logging
-    #[cfg(feature = "persistent-artrie")]
     pub fn insert(&mut self, term: &str) -> Result<bool> {
         // Log to WAL first (routes through group commit if enabled)
         let record = WalRecord::Insert {
@@ -3344,7 +3125,6 @@ impl<V: DictionaryValue> DiskBackedCharTrieInner<V> {
     }
 
     /// Remove a term with WAL logging
-    #[cfg(feature = "persistent-artrie")]
     pub fn remove(&mut self, term: &str) -> Result<bool> {
         // Log to WAL first (routes through group commit if enabled)
         let record = WalRecord::Remove {
@@ -3368,7 +3148,6 @@ impl<V: DictionaryValue> DiskBackedCharTrieInner<V> {
     ///
     /// Returns `Ok(Some(node))` if the prefix exists, `Ok(None)` if it doesn't.
     /// Returns `Err` if an I/O error occurs during lazy loading.
-    #[cfg(feature = "persistent-artrie")]
     fn navigate_to_prefix(&self, prefix: &str) -> Result<Option<&CharTrieNodeInner<V>>> {
         let root = match &self.root {
             CharTrieRoot::Node(node) => node.as_ref(),
@@ -3397,7 +3176,6 @@ impl<V: DictionaryValue> DiskBackedCharTrieInner<V> {
     /// - `Ok(Some((node, arena_id)))` - The node at the prefix and its arena location
     /// - `Ok(None)` - The prefix path doesn't exist
     /// - `Err` - An I/O error occurred during lazy loading
-    #[cfg(feature = "persistent-artrie")]
     fn navigate_to_prefix_with_arena(
         &self,
         prefix: &str,
@@ -3436,7 +3214,6 @@ impl<V: DictionaryValue> DiskBackedCharTrieInner<V> {
     ///
     /// Note: This method properly resolves DiskRef children via `resolve_swizzled_ptr`,
     /// ensuring all terms are collected even after checkpoint.
-    #[cfg(feature = "persistent-artrie")]
     fn collect_terms_under_node(
         &self,
         node: &CharTrieNodeInner<V>,
@@ -3472,7 +3249,6 @@ impl<V: DictionaryValue> DiskBackedCharTrieInner<V> {
     ///
     /// Note: This method properly resolves DiskRef children via `resolve_swizzled_ptr`,
     /// ensuring all terms are collected even after checkpoint.
-    #[cfg(feature = "persistent-artrie")]
     fn collect_terms_under_node_limited(
         &self,
         node: &CharTrieNodeInner<V>,
@@ -3516,7 +3292,6 @@ impl<V: DictionaryValue> DiskBackedCharTrieInner<V> {
     ///
     /// Note: This method properly resolves DiskRef children via `resolve_swizzled_ptr`,
     /// ensuring all terms are collected even after checkpoint.
-    #[cfg(feature = "persistent-artrie")]
     fn collect_terms_with_values_under_node(
         &self,
         node: &CharTrieNodeInner<V>,
@@ -3568,7 +3343,6 @@ impl<V: DictionaryValue> DiskBackedCharTrieInner<V> {
     /// # Returns
     ///
     /// `Ok(true)` if the limit was reached, `Ok(false)` otherwise.
-    #[cfg(feature = "persistent-artrie")]
     fn collect_terms_with_arena(
         &self,
         node: &CharTrieNodeInner<V>,
@@ -3634,7 +3408,6 @@ impl<V: DictionaryValue> DiskBackedCharTrieInner<V> {
     /// # Returns
     ///
     /// `Ok(true)` if the limit was reached, `Ok(false)` otherwise.
-    #[cfg(feature = "persistent-artrie")]
     fn collect_terms_with_values_and_arena(
         &self,
         node: &CharTrieNodeInner<V>,
@@ -3715,7 +3488,6 @@ impl<V: DictionaryValue> DiskBackedCharTrieInner<V> {
     ///     }
     /// }
     /// ```
-    #[cfg(feature = "persistent-artrie")]
     pub fn iter_prefix(&self, prefix: &str) -> Result<Option<Vec<String>>> {
         let node = match self.navigate_to_prefix(prefix)? {
             Some(n) => n,
@@ -3731,7 +3503,6 @@ impl<V: DictionaryValue> DiskBackedCharTrieInner<V> {
     ///
     /// Returns `Ok(None)` if the prefix path doesn't exist in the trie.
     /// Returns `Ok(Some(vec))` with all (term, value) pairs for terms starting with the prefix.
-    #[cfg(feature = "persistent-artrie")]
     pub fn iter_prefix_with_values(&self, prefix: &str) -> Result<Option<Vec<(String, V)>>>
     where
         V: Clone,
@@ -3770,7 +3541,6 @@ impl<V: DictionaryValue> DiskBackedCharTrieInner<V> {
     ///     }
     /// }
     /// ```
-    #[cfg(feature = "persistent-artrie")]
     pub fn iter_prefix_with_arena(&self, prefix: &str) -> Result<Option<Vec<PrefixTermWithArena>>> {
         let (node, prefix_arena) = match self.navigate_to_prefix_with_arena(prefix)? {
             Some(pair) => pair,
@@ -3813,7 +3583,6 @@ impl<V: DictionaryValue> DiskBackedCharTrieInner<V> {
     ///     }
     /// }
     /// ```
-    #[cfg(feature = "persistent-artrie")]
     pub fn iter_prefix_with_values_and_arena(
         &self,
         prefix: &str,
@@ -3845,7 +3614,6 @@ impl<V: DictionaryValue> DiskBackedCharTrieInner<V> {
     /// # Returns
     ///
     /// The number of terms removed.
-    #[cfg(feature = "persistent-artrie")]
     pub fn remove_prefix(&mut self, prefix: &str) -> Result<usize> {
         self.remove_prefix_batched(prefix, 1024)
     }
@@ -3864,7 +3632,6 @@ impl<V: DictionaryValue> DiskBackedCharTrieInner<V> {
     /// # Returns
     ///
     /// The number of terms removed.
-    #[cfg(feature = "persistent-artrie")]
     pub fn remove_prefix_batched(&mut self, prefix: &str, batch_size: usize) -> Result<usize> {
         use std::collections::HashMap;
 
@@ -3949,7 +3716,6 @@ impl<V: DictionaryValue> DiskBackedCharTrieInner<V> {
     ///     self_count + other_count  // Sum the counts
     /// })?;
     /// ```
-    #[cfg(feature = "persistent-artrie")]
     pub fn merge_from<F>(&mut self, other: &Self, merge_fn: F) -> Result<usize>
     where
         F: Fn(&V, &V) -> V,
@@ -4010,7 +3776,6 @@ impl<V: DictionaryValue> DiskBackedCharTrieInner<V> {
     /// # Returns
     ///
     /// The number of terms processed from `other`.
-    #[cfg(feature = "persistent-artrie")]
     pub fn merge_replace(&mut self, other: &Self) -> Result<usize>
     where
         V: Clone,
@@ -4041,7 +3806,6 @@ impl<V: DictionaryValue> DiskBackedCharTrieInner<V> {
     /// from the source trie (where n is the number of terms in the source).
     /// For truly memory-bounded operation with very large source tries, consider
     /// using cursor-based iteration (not yet implemented for char tries).
-    #[cfg(feature = "persistent-artrie")]
     pub fn merge_from_batched<F>(
         &mut self,
         other: &Self,
@@ -4075,7 +3839,6 @@ impl<V: DictionaryValue> DiskBackedCharTrieInner<V> {
     /// # Returns
     ///
     /// The total number of terms processed from `other`.
-    #[cfg(feature = "persistent-artrie")]
     pub fn merge_from_batched_grouped<F>(
         &mut self,
         other: &Self,
@@ -4101,7 +3864,6 @@ impl<V: DictionaryValue> DiskBackedCharTrieInner<V> {
     /// # Returns
     ///
     /// The total number of terms processed from `other`.
-    #[cfg(feature = "persistent-artrie")]
     fn merge_from_batched_with_options<F>(
         &mut self,
         other: &Self,
@@ -4348,7 +4110,6 @@ impl<V: DictionaryValue> DiskBackedCharTrieInner<V> {
     /// trie.tx_insert(&mut tx, "world", Some(42));
     /// let count = trie.commit_document(tx)?;
     /// ```
-    #[cfg(feature = "persistent-artrie")]
     pub fn begin_document(&self, document_id: &str) -> Result<CharDocumentTransaction<V>> {
         // Generate a unique transaction ID
         let tx_id = {
@@ -4385,7 +4146,6 @@ impl<V: DictionaryValue> DiskBackedCharTrieInner<V> {
     /// # Panics
     ///
     /// Panics if the transaction is not in Active state.
-    #[cfg(feature = "persistent-artrie")]
     pub fn tx_insert(&self, tx: &mut CharDocumentTransaction<V>, term: &str, value: Option<V>) {
         assert!(
             tx.is_active(),
@@ -4418,7 +4178,6 @@ impl<V: DictionaryValue> DiskBackedCharTrieInner<V> {
     /// # Panics
     ///
     /// Panics if the transaction is not in Active state.
-    #[cfg(feature = "persistent-artrie")]
     pub fn tx_insert_chars(&self, tx: &mut CharDocumentTransaction<V>, chars: &[char], value: Option<V>) {
         assert!(
             tx.is_active(),
@@ -4449,7 +4208,6 @@ impl<V: DictionaryValue> DiskBackedCharTrieInner<V> {
     /// # Panics
     ///
     /// Panics if the transaction is not in Active state.
-    #[cfg(feature = "persistent-artrie")]
     pub fn tx_insert_bytes(&self, tx: &mut CharDocumentTransaction<V>, term_bytes: &[u8], value: Option<V>) {
         assert!(
             tx.is_active(),
@@ -4483,7 +4241,6 @@ impl<V: DictionaryValue> DiskBackedCharTrieInner<V> {
     /// Returns an error if:
     /// - The transaction is not in Active state
     /// - WAL write fails
-    #[cfg(feature = "persistent-artrie")]
     pub fn commit_document(&mut self, mut tx: CharDocumentTransaction<V>) -> Result<usize>
     where
         V: Clone,
@@ -4563,7 +4320,6 @@ impl<V: DictionaryValue> DiskBackedCharTrieInner<V> {
     /// Returns an error if:
     /// - The transaction is not in Active state
     /// - WAL write fails
-    #[cfg(feature = "persistent-artrie")]
     pub fn abort_document(&self, mut tx: CharDocumentTransaction<V>) -> Result<()> {
         if tx.state != TransactionState::Active {
             return Err(PersistentARTrieError::InvalidOperation(format!(
@@ -4612,7 +4368,6 @@ impl<V: DictionaryValue> DiskBackedCharTrieInner<V> {
     /// ];
     /// let count = trie.insert_batch(&entries)?;
     /// ```
-    #[cfg(feature = "persistent-artrie")]
     pub fn insert_batch(&mut self, entries: &[(String, Option<V>)]) -> usize {
         if entries.is_empty() {
             return 0;
@@ -4674,7 +4429,6 @@ impl<V: DictionaryValue> DiskBackedCharTrieInner<V> {
     /// ];
     /// let count = trie.insert_batch_chars(&entries)?;
     /// ```
-    #[cfg(feature = "persistent-artrie")]
     pub fn insert_batch_chars(&mut self, entries: &[(&[char], Option<V>)]) -> usize {
         if entries.is_empty() {
             return 0;
@@ -4704,7 +4458,6 @@ impl<V: DictionaryValue> DiskBackedCharTrieInner<V> {
     /// # Returns
     ///
     /// The number of terms that were newly inserted.
-    #[cfg(feature = "persistent-artrie")]
     pub fn insert_batch_bytes(&mut self, entries: &[(&[u8], Option<V>)]) -> usize {
         if entries.is_empty() {
             return 0;
@@ -4759,7 +4512,6 @@ impl<V: DictionaryValue> DiskBackedCharTrieInner<V> {
     /// # Returns
     ///
     /// The number of terms that were newly inserted.
-    #[cfg(feature = "persistent-artrie")]
     pub fn insert_batch_sorted(&mut self, mut entries: Vec<(String, Option<V>)>) -> usize {
         if entries.is_empty() {
             return 0;
@@ -4787,7 +4539,6 @@ impl<V: DictionaryValue> DiskBackedCharTrieInner<V> {
     /// # Returns
     ///
     /// The number of terms that were newly inserted.
-    #[cfg(feature = "persistent-artrie")]
     pub fn insert_batch_chars_sorted(&mut self, mut entries: Vec<(Vec<char>, Option<V>)>) -> usize {
         if entries.is_empty() {
             return 0;
@@ -4819,7 +4570,6 @@ impl<V: DictionaryValue> DiskBackedCharTrieInner<V> {
     /// # Returns
     ///
     /// The number of terms that were newly inserted.
-    #[cfg(feature = "persistent-artrie")]
     pub fn insert_batch_bytes_sorted(&mut self, mut entries: Vec<(Vec<u8>, Option<V>)>) -> usize {
         if entries.is_empty() {
             return 0;
@@ -4856,7 +4606,6 @@ impl<V: DictionaryValue> DiskBackedCharTrieInner<V> {
     /// # Returns
     ///
     /// The number of terms that were newly inserted.
-    #[cfg(feature = "persistent-artrie")]
     pub fn insert_batch_grouped(&mut self, mut entries: Vec<(String, Option<V>)>) -> usize {
         if entries.is_empty() {
             return 0;
@@ -4885,7 +4634,6 @@ impl<V: DictionaryValue> DiskBackedCharTrieInner<V> {
     /// # Returns
     ///
     /// The number of terms that were newly inserted.
-    #[cfg(feature = "persistent-artrie")]
     pub fn insert_batch_chars_grouped(&mut self, mut entries: Vec<(Vec<char>, Option<V>)>) -> usize {
         if entries.is_empty() {
             return 0;
@@ -4918,7 +4666,6 @@ impl<V: DictionaryValue> DiskBackedCharTrieInner<V> {
     /// # Returns
     ///
     /// The number of terms that were newly inserted.
-    #[cfg(feature = "persistent-artrie")]
     pub fn insert_batch_bytes_grouped(&mut self, mut entries: Vec<(Vec<u8>, Option<V>)>) -> usize {
         if entries.is_empty() {
             return 0;
@@ -4940,7 +4687,6 @@ impl<V: DictionaryValue> DiskBackedCharTrieInner<V> {
     }
 
     /// Sync changes to disk
-    #[cfg(feature = "persistent-artrie")]
     pub fn sync(&mut self) -> Result<()> {
         if let Some(ref wal_writer) = self.wal_writer {
             #[cfg(feature = "parking_lot")]
@@ -4978,7 +4724,6 @@ impl<V: DictionaryValue> DiskBackedCharTrieInner<V> {
     /// let after = trie.current_lsn();
     /// assert!(after > before);
     /// ```
-    #[cfg(feature = "persistent-artrie")]
     pub fn current_lsn(&self) -> u64 {
         // Use WAL's authoritative LSN if available, otherwise fall back to cached value
         self.wal_writer.as_ref()
@@ -5013,7 +4758,6 @@ impl<V: DictionaryValue> DiskBackedCharTrieInner<V> {
     /// let synced = trie.synced_lsn();
     /// assert!(synced.is_some());
     /// ```
-    #[cfg(feature = "persistent-artrie")]
     pub fn synced_lsn(&self) -> Option<u64> {
         self.wal_writer.as_ref().map(|wal| {
             #[cfg(feature = "parking_lot")]
@@ -5060,7 +4804,7 @@ impl<V: DictionaryValue> DiskBackedCharTrieInner<V> {
     /// // Or use a throughput-optimized config
     /// trie.enable_group_commit(GroupCommitConfig::high_throughput())?;
     /// ```
-    #[cfg(all(feature = "persistent-artrie", feature = "group-commit"))]
+    #[cfg(feature = "group-commit")]
     pub fn enable_group_commit(&mut self, config: GroupCommitConfig) -> Result<()> {
         if self.group_commit.is_some() {
             return Err(PersistentARTrieError::InvalidOperation(
@@ -5084,7 +4828,7 @@ impl<V: DictionaryValue> DiskBackedCharTrieInner<V> {
     ///
     /// This flushes any pending writes and shuts down the group commit coordinator.
     /// After this call, all WAL writes will be performed directly.
-    #[cfg(all(feature = "persistent-artrie", feature = "group-commit"))]
+    #[cfg(feature = "group-commit")]
     pub fn disable_group_commit(&mut self) -> Result<()> {
         if self.group_commit.is_none() {
             return Ok(()); // Already disabled
@@ -5096,7 +4840,7 @@ impl<V: DictionaryValue> DiskBackedCharTrieInner<V> {
     }
 
     /// Check if group commit is enabled.
-    #[cfg(all(feature = "persistent-artrie", feature = "group-commit"))]
+    #[cfg(feature = "group-commit")]
     pub fn is_group_commit_enabled(&self) -> bool {
         self.group_commit.is_some()
     }
@@ -5104,7 +4848,7 @@ impl<V: DictionaryValue> DiskBackedCharTrieInner<V> {
     /// Get group commit statistics.
     ///
     /// Returns None if group commit is not enabled.
-    #[cfg(all(feature = "persistent-artrie", feature = "group-commit"))]
+    #[cfg(feature = "group-commit")]
     pub fn group_commit_stats(&self) -> Option<crate::persistent_artrie::group_commit::GroupCommitStats> {
         self.group_commit.as_ref().map(|gc| gc.stats())
     }
@@ -5134,7 +4878,6 @@ impl<V: DictionaryValue> DiskBackedCharTrieInner<V> {
     ///     }
     /// )?;
     /// ```
-    #[cfg(feature = "persistent-artrie")]
     pub fn enable_memory_monitor<F>(&mut self, config: MemoryPressureConfig, callback: F) -> Result<()>
     where
         F: Fn(MemoryPressureLevel, &MemoryStats) + Send + Sync + 'static,
@@ -5148,7 +4891,6 @@ impl<V: DictionaryValue> DiskBackedCharTrieInner<V> {
     ///
     /// Use this when you only want to query memory stats periodically
     /// without receiving pressure change notifications.
-    #[cfg(feature = "persistent-artrie")]
     pub fn enable_memory_monitor_default(&mut self) -> Result<()> {
         self.enable_memory_monitor(MemoryPressureConfig::default(), |_level, _stats| {})
     }
@@ -5156,25 +4898,21 @@ impl<V: DictionaryValue> DiskBackedCharTrieInner<V> {
     /// Disables memory pressure monitoring.
     ///
     /// The monitor thread is stopped when the Arc is dropped.
-    #[cfg(feature = "persistent-artrie")]
     pub fn disable_memory_monitor(&mut self) {
         self.memory_monitor = None;
     }
 
     /// Returns whether memory monitoring is enabled.
-    #[cfg(feature = "persistent-artrie")]
     pub fn has_memory_monitor(&self) -> bool {
         self.memory_monitor.is_some()
     }
 
     /// Returns current memory statistics if monitoring is enabled.
-    #[cfg(feature = "persistent-artrie")]
     pub fn memory_stats(&self) -> Option<MemoryStats> {
         self.memory_monitor.as_ref().map(|m| m.current_stats())
     }
 
     /// Returns current memory pressure level if monitoring is enabled.
-    #[cfg(feature = "persistent-artrie")]
     pub fn memory_pressure_level(&self) -> Option<MemoryPressureLevel> {
         self.memory_monitor.as_ref().map(|m| m.current_level())
     }
@@ -5184,7 +4922,6 @@ impl<V: DictionaryValue> DiskBackedCharTrieInner<V> {
     /// Records a cache hit.
     ///
     /// Call this when a node lookup finds the node in cache.
-    #[cfg(feature = "persistent-artrie")]
     pub fn record_cache_hit(&self) {
         self.cache_stats.record_hit();
     }
@@ -5192,7 +4929,6 @@ impl<V: DictionaryValue> DiskBackedCharTrieInner<V> {
     /// Records a cache miss.
     ///
     /// Call this when a node lookup requires loading from disk.
-    #[cfg(feature = "persistent-artrie")]
     pub fn record_cache_miss(&self) {
         self.cache_stats.record_miss();
     }
@@ -5200,7 +4936,6 @@ impl<V: DictionaryValue> DiskBackedCharTrieInner<V> {
     /// Returns the current cache hit rate (0.0 to 1.0).
     ///
     /// Returns 1.0 if no cache accesses have been recorded.
-    #[cfg(feature = "persistent-artrie")]
     pub fn cache_hit_rate(&self) -> f64 {
         self.cache_stats.hit_rate()
     }
@@ -5208,13 +4943,11 @@ impl<V: DictionaryValue> DiskBackedCharTrieInner<V> {
     /// Returns cache hit/miss counts.
     ///
     /// Returns `(hits, misses)`.
-    #[cfg(feature = "persistent-artrie")]
     pub fn cache_counts(&self) -> (u64, u64) {
         self.cache_stats.counts()
     }
 
     /// Returns the total number of cache accesses (hits + misses).
-    #[cfg(feature = "persistent-artrie")]
     pub fn cache_total_accesses(&self) -> u64 {
         self.cache_stats.total_accesses()
     }
@@ -5225,13 +4958,11 @@ impl<V: DictionaryValue> DiskBackedCharTrieInner<V> {
     ///
     /// Use this for periodic reporting where you want to measure
     /// hit rates over fixed time intervals.
-    #[cfg(feature = "persistent-artrie")]
     pub fn cache_stats_and_reset(&self) -> (f64, u64, u64) {
         self.cache_stats.get_and_reset()
     }
 
     /// Returns a reference to the underlying cache statistics.
-    #[cfg(feature = "persistent-artrie")]
     pub fn get_cache_stats(&self) -> &CacheStats {
         &self.cache_stats
     }
@@ -5272,7 +5003,6 @@ impl<V: DictionaryValue> DiskBackedCharTrieInner<V> {
     /// };
     /// trie.enable_epoch_checkpointing(config)?;
     /// ```
-    #[cfg(feature = "persistent-artrie")]
     pub fn enable_epoch_checkpointing(&mut self, config: EpochConfig) -> Result<()> {
         // Create epoch subdirectory based on the trie's file path
         let epoch_dir = if let Some(ref path) = self.file_path {
@@ -5289,7 +5019,6 @@ impl<V: DictionaryValue> DiskBackedCharTrieInner<V> {
     }
 
     /// Enables epoch-based checkpointing with default configuration.
-    #[cfg(feature = "persistent-artrie")]
     pub fn enable_epoch_checkpointing_default(&mut self) -> Result<()> {
         self.enable_epoch_checkpointing(EpochConfig::default())
     }
@@ -5298,7 +5027,6 @@ impl<V: DictionaryValue> DiskBackedCharTrieInner<V> {
     ///
     /// Uses longer epochs and higher operation limits, suitable for
     /// batch processing workloads.
-    #[cfg(feature = "persistent-artrie")]
     pub fn enable_epoch_checkpointing_high_throughput(&mut self) -> Result<()> {
         self.enable_epoch_checkpointing(EpochConfig::high_throughput())
     }
@@ -5307,7 +5035,6 @@ impl<V: DictionaryValue> DiskBackedCharTrieInner<V> {
     ///
     /// Uses shorter epochs for faster recovery, suitable for
     /// real-time applications.
-    #[cfg(feature = "persistent-artrie")]
     pub fn enable_epoch_checkpointing_low_latency(&mut self) -> Result<()> {
         self.enable_epoch_checkpointing(EpochConfig::low_latency())
     }
@@ -5316,13 +5043,11 @@ impl<V: DictionaryValue> DiskBackedCharTrieInner<V> {
     ///
     /// The checkpoint manager is stopped and dropped. Any pending
     /// checkpoint operations complete before this returns.
-    #[cfg(feature = "persistent-artrie")]
     pub fn disable_epoch_checkpointing(&mut self) {
         self.checkpoint_manager = None;
     }
 
     /// Returns whether epoch-based checkpointing is enabled.
-    #[cfg(feature = "persistent-artrie")]
     pub fn has_epoch_checkpointing(&self) -> bool {
         self.checkpoint_manager.is_some()
     }
@@ -5335,13 +5060,11 @@ impl<V: DictionaryValue> DiskBackedCharTrieInner<V> {
     ///
     /// # Returns
     /// The current epoch ID, or None if checkpointing is not enabled.
-    #[cfg(feature = "persistent-artrie")]
     pub fn record_epoch_operation(&self, wal_bytes: usize) -> Option<EpochId> {
         self.checkpoint_manager.as_ref().map(|cm| cm.record_operation(wal_bytes))
     }
 
     /// Returns the current epoch ID.
-    #[cfg(feature = "persistent-artrie")]
     pub fn current_epoch_id(&self) -> Option<EpochId> {
         self.checkpoint_manager.as_ref().map(|cm| cm.current_epoch_id())
     }
@@ -5354,31 +5077,26 @@ impl<V: DictionaryValue> DiskBackedCharTrieInner<V> {
     /// # Returns
     /// * `Some(epoch_id)` - The epoch ID that was checkpointed
     /// * `None` - Checkpoint manager not enabled
-    #[cfg(feature = "persistent-artrie")]
     pub fn force_epoch_checkpoint(&self) -> Option<Result<EpochId>> {
         self.checkpoint_manager.as_ref().map(|cm| cm.force_checkpoint())
     }
 
     /// Returns the last durable (fully checkpointed) epoch ID.
-    #[cfg(feature = "persistent-artrie")]
     pub fn last_durable_epoch(&self) -> Option<EpochId> {
         self.checkpoint_manager.as_ref().and_then(|cm| cm.last_durable_epoch())
     }
 
     /// Returns epoch statistics.
-    #[cfg(feature = "persistent-artrie")]
     pub fn epoch_stats(&self) -> Option<EpochStats> {
         self.checkpoint_manager.as_ref().map(|cm| cm.stats())
     }
 
     /// Returns metadata for recent epochs.
-    #[cfg(feature = "persistent-artrie")]
     pub fn epoch_metadata(&self) -> Option<Vec<EpochMetadata>> {
         self.checkpoint_manager.as_ref().map(|cm| cm.epoch_metadata())
     }
 
     /// Returns the configuration for epoch checkpointing.
-    #[cfg(feature = "persistent-artrie")]
     pub fn epoch_config(&self) -> Option<&EpochConfig> {
         self.checkpoint_manager.as_ref().map(|cm| cm.config())
     }
@@ -5387,7 +5105,6 @@ impl<V: DictionaryValue> DiskBackedCharTrieInner<V> {
     ///
     /// The durability policy controls when fsync is called after WAL writes.
     /// See [`DurabilityPolicy`] for available options and their trade-offs.
-    #[cfg(feature = "persistent-artrie")]
     pub fn durability_policy(&self) -> DurabilityPolicy {
         self.durability_policy
     }
@@ -5411,7 +5128,6 @@ impl<V: DictionaryValue> DiskBackedCharTrieInner<V> {
     /// // Use periodic sync for better performance (accepts bounded data loss)
     /// trie.set_durability_policy(DurabilityPolicy::Periodic);
     /// ```
-    #[cfg(feature = "persistent-artrie")]
     pub fn set_durability_policy(&mut self, policy: DurabilityPolicy) {
         self.durability_policy = policy;
     }
@@ -5423,7 +5139,6 @@ impl<V: DictionaryValue> DiskBackedCharTrieInner<V> {
     /// When group commit is enabled, the record is submitted to the group commit
     /// coordinator which batches writes and reduces fsync overhead. Otherwise,
     /// the record is written directly to the WAL.
-    #[cfg(feature = "persistent-artrie")]
     fn append_to_wal(&self, record: WalRecord) -> Result<()> {
         // Check if group commit is enabled first
         #[cfg(feature = "group-commit")]
@@ -5458,7 +5173,6 @@ impl<V: DictionaryValue> DiskBackedCharTrieInner<V> {
     ///
     /// Only syncs when durability_policy is Immediate. GroupCommit and Periodic
     /// policies handle syncing through their respective mechanisms.
-    #[cfg(feature = "persistent-artrie")]
     fn sync_wal(&self) -> Result<()> {
         // Only sync for Immediate policy
         if self.durability_policy != DurabilityPolicy::Immediate {
@@ -5504,7 +5218,6 @@ impl<V: DictionaryValue> DiskBackedCharTrieInner<V> {
     /// # Returns
     ///
     /// The new value after incrementing.
-    #[cfg(feature = "persistent-artrie")]
     pub fn increment(&mut self, term: &str, delta: i64) -> Result<i64> {
         // Get current value
         let current: i64 = if let Some(v) = self.get(term) {
@@ -5551,7 +5264,6 @@ impl<V: DictionaryValue> DiskBackedCharTrieInner<V> {
     /// # Returns
     ///
     /// `true` if a new term was inserted, `false` if an existing term was updated.
-    #[cfg(feature = "persistent-artrie")]
     pub fn upsert(&mut self, term: &str, value: V) -> Result<bool> {
         let existed = self.contains(term);
 
@@ -5578,7 +5290,6 @@ impl<V: DictionaryValue> DiskBackedCharTrieInner<V> {
     /// # Returns
     ///
     /// `true` if the swap succeeded, `false` if the current value didn't match expected.
-    #[cfg(feature = "persistent-artrie")]
     pub fn compare_and_swap(&mut self, term: &str, expected: Option<V>, new_value: V) -> Result<bool> {
         let current = self.get(term).cloned();
 
@@ -5620,7 +5331,6 @@ impl<V: DictionaryValue> DiskBackedCharTrieInner<V> {
     /// Get the current value and increment atomically (fetch-and-add).
     ///
     /// Returns the value *before* the increment.
-    #[cfg(feature = "persistent-artrie")]
     pub fn fetch_add(&mut self, term: &str, delta: i64) -> Result<i64> {
         let new_value = self.increment(term, delta)?;
         Ok(new_value - delta)
@@ -5630,7 +5340,6 @@ impl<V: DictionaryValue> DiskBackedCharTrieInner<V> {
     ///
     /// If the term exists, returns its current value.
     /// If not, inserts the default value and returns it.
-    #[cfg(feature = "persistent-artrie")]
     pub fn get_or_insert(&mut self, term: &str, default: V) -> Result<V> {
         if let Some(v) = self.get(term).cloned() {
             return Ok(v);
@@ -5663,7 +5372,6 @@ impl<V: DictionaryValue> DiskBackedCharTrieInner<V> {
     ///
     /// If verification fails at step 2, the WAL is NOT truncated,
     /// allowing recovery from the existing WAL on next open.
-    #[cfg(feature = "persistent-artrie")]
     pub fn checkpoint(&mut self) -> Result<()> {
         use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -5753,7 +5461,6 @@ impl<V: DictionaryValue> DiskBackedCharTrieInner<V> {
     ///
     /// Returns an error if verification fails - the WAL should NOT be
     /// truncated in this case.
-    #[cfg(feature = "persistent-artrie")]
     fn verify_checkpoint(&self) -> Result<()> {
         let buffer_manager = self.buffer_manager.as_ref().ok_or_else(|| {
             PersistentARTrieError::internal("No buffer manager for checkpoint verification")
@@ -5790,7 +5497,6 @@ impl<V: DictionaryValue> DiskBackedCharTrieInner<V> {
     ///
     /// This serializes the trie structure and writes it to the data file,
     /// updating the file header with the root pointer.
-    #[cfg(feature = "persistent-artrie")]
     pub fn persist_to_disk(&mut self) -> Result<()> {
         use crate::persistent_artrie::swizzled_ptr::SwizzledPtr;
         use crate::persistent_artrie::NodeType;
@@ -5937,7 +5643,6 @@ impl<V: DictionaryValue> DiskBackedCharTrieInner<V> {
     /// # Returns
     /// `Some(first_child_slot)` if children are consecutive in same arena as parent,
     /// `None` otherwise.
-    #[cfg(feature = "persistent-artrie")]
     fn check_sequential_char_children(
         child_ptrs: &[(u32, SwizzledPtr)],
         parent_arena_id: u32,
@@ -6012,7 +5717,6 @@ impl<V: DictionaryValue> DiskBackedCharTrieInner<V> {
     /// The SwizzledPtr uses:
     /// - arena_id as block_id (23 bits, up to 8M arenas)
     /// - slot_id as offset (22 bits, up to 4M slots per arena)
-    #[cfg(feature = "persistent-artrie")]
     fn serialize_char_node_to_disk(&self, node: &CharTrieNodeInner<V>) -> Result<SwizzledPtr> {
         use super::relative_encoding::SerializationContext;
         use super::serialization_char::serialize_char_node_v2;
@@ -6199,7 +5903,6 @@ impl<V: DictionaryValue> DiskBackedCharTrieInner<V> {
     ///
     /// Creates a new CharNode of the same type as the original, but with
     /// children pointing to disk locations instead of in-memory nodes.
-    #[cfg(feature = "persistent-artrie")]
     fn build_disk_char_node(
         &self,
         original: &CharNode,
@@ -6241,7 +5944,6 @@ impl<V: DictionaryValue> DiskBackedCharTrieInner<V> {
     }
 
     /// Map CharNode type to NodeType for SwizzledPtr
-    #[cfg(feature = "persistent-artrie")]
     fn char_node_to_node_type(&self, node: &CharNode) -> NodeType {
         match node {
             CharNode::N4(_) => NodeType::CharNode4,
@@ -6297,7 +5999,6 @@ impl<V: DictionaryValue> Default for DiskBackedCharTrieInner<V> {
 /// // Or merge from another trie
 /// trie.union_with(&other_trie, |a, b| a + b)?;
 /// ```
-#[cfg(feature = "persistent-artrie")]
 pub struct SharedCharTrie<V: DictionaryValue> {
     #[cfg(feature = "parking_lot")]
     inner: std::sync::Arc<parking_lot::RwLock<DiskBackedCharTrieInner<V>>>,
@@ -6305,7 +6006,6 @@ pub struct SharedCharTrie<V: DictionaryValue> {
     inner: std::sync::Arc<std::sync::RwLock<DiskBackedCharTrieInner<V>>>,
 }
 
-#[cfg(feature = "persistent-artrie")]
 impl<V: DictionaryValue> Clone for SharedCharTrie<V> {
     fn clone(&self) -> Self {
         Self {
@@ -6314,7 +6014,6 @@ impl<V: DictionaryValue> Clone for SharedCharTrie<V> {
     }
 }
 
-#[cfg(feature = "persistent-artrie")]
 impl<V: DictionaryValue> SharedCharTrie<V> {
     /// Create a new shared trie at the given path.
     pub fn create(path: impl AsRef<std::path::Path>) -> Result<Self> {
@@ -6522,7 +6221,6 @@ impl<V: DictionaryValue> SharedCharTrie<V> {
     }
 }
 
-#[cfg(feature = "persistent-artrie")]
 impl<V: DictionaryValue + std::fmt::Debug> std::fmt::Debug for SharedCharTrie<V> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         #[cfg(feature = "parking_lot")]
@@ -6613,7 +6311,6 @@ mod tests {
         assert!(header.verify_checksum());
     }
 
-    #[cfg(feature = "persistent-artrie")]
     #[test]
     fn test_file_header_validation() {
         let mut header = CharTrieFileHeader::new();
@@ -6630,7 +6327,6 @@ mod tests {
         assert!(header.validate().is_err());
     }
 
-    #[cfg(feature = "persistent-artrie")]
     #[test]
     fn test_file_header_from_bytes_verified() {
         let mut header = CharTrieFileHeader::new();
@@ -6671,7 +6367,6 @@ mod tests {
         assert!(matches!(inner.root, CharTrieRoot::Empty));
     }
 
-    #[cfg(feature = "persistent-artrie")]
     #[test]
     fn test_create_and_open() {
         use tempfile::tempdir;
@@ -6856,7 +6551,6 @@ mod tests {
         assert_eq!(inner.len, 1);
     }
 
-    #[cfg(feature = "persistent-artrie")]
     #[test]
     fn test_wal_recovery_with_values() {
         use tempfile::tempdir;
@@ -6886,7 +6580,6 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "persistent-artrie")]
     #[test]
     fn test_wal_recovery_mixed_operations() {
         use tempfile::tempdir;
@@ -6918,7 +6611,6 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "persistent-artrie")]
     #[test]
     fn test_checkpoint_and_disk_loading() {
         use tempfile::tempdir;
@@ -6980,7 +6672,6 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "persistent-artrie")]
     #[test]
     fn test_checkpoint_with_unicode() {
         use tempfile::tempdir;
@@ -7011,7 +6702,6 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "persistent-artrie")]
     #[test]
     fn test_checkpoint_then_more_inserts() {
         use tempfile::tempdir;
@@ -7045,7 +6735,6 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "persistent-artrie")]
     #[test]
     fn test_checkpoint_empty_trie() {
         use tempfile::tempdir;
@@ -7069,7 +6758,6 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "persistent-artrie")]
     #[test]
     fn test_multiple_checkpoints() {
         use tempfile::tempdir;
@@ -7103,7 +6791,6 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "persistent-artrie")]
     #[test]
     fn test_deep_trie_checkpoint() {
         use tempfile::tempdir;
@@ -7145,7 +6832,6 @@ mod tests {
 
     // ==================== Phase C6: Atomic Operations with WAL ====================
 
-    #[cfg(feature = "persistent-artrie")]
     #[test]
     fn test_increment_with_wal() {
         use tempfile::tempdir;
@@ -7181,7 +6867,6 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "persistent-artrie")]
     #[test]
     fn test_upsert_with_wal() {
         use tempfile::tempdir;
@@ -7220,7 +6905,6 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "persistent-artrie")]
     #[test]
     fn test_compare_and_swap_with_wal() {
         use tempfile::tempdir;
@@ -7257,7 +6941,6 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "persistent-artrie")]
     #[test]
     fn test_fetch_add_with_wal() {
         use tempfile::tempdir;
@@ -7293,7 +6976,6 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "persistent-artrie")]
     #[test]
     fn test_get_or_insert_with_wal() {
         use tempfile::tempdir;
@@ -7331,7 +7013,6 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "persistent-artrie")]
     #[test]
     fn test_atomic_ops_recovery() {
         use tempfile::tempdir;
@@ -7365,7 +7046,6 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "persistent-artrie")]
     #[test]
     fn test_atomic_ops_with_checkpoint() {
         use tempfile::tempdir;
@@ -7395,7 +7075,6 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "persistent-artrie")]
     #[test]
     fn test_unicode_atomic_ops() {
         use tempfile::tempdir;
@@ -7428,7 +7107,6 @@ mod tests {
 
     // ==================== Phase C7: Concurrency Tests ====================
 
-    #[cfg(feature = "persistent-artrie")]
     #[test]
     fn test_optimistic_contains() {
         use tempfile::tempdir;
@@ -7453,7 +7131,6 @@ mod tests {
         assert_eq!(result, Some(false));
     }
 
-    #[cfg(feature = "persistent-artrie")]
     #[test]
     fn test_optimistic_get() {
         use tempfile::tempdir;
@@ -7477,7 +7154,6 @@ mod tests {
         assert_eq!(result.unwrap(), None);
     }
 
-    #[cfg(feature = "persistent-artrie")]
     #[test]
     fn test_version_tracking() {
         use tempfile::tempdir;
@@ -7503,7 +7179,6 @@ mod tests {
         assert!(!inner.is_write_locked());
     }
 
-    #[cfg(feature = "persistent-artrie")]
     #[test]
     fn test_epoch_management() {
         use tempfile::tempdir;
@@ -7542,7 +7217,6 @@ mod tests {
         assert_eq!(inner.current_epoch(), 1);
     }
 
-    #[cfg(feature = "persistent-artrie")]
     #[test]
     fn test_retry_stats() {
         use tempfile::tempdir;
@@ -7566,7 +7240,6 @@ mod tests {
         assert_eq!(stats.retries, 0);
     }
 
-    #[cfg(feature = "persistent-artrie")]
     #[test]
     fn test_concurrent_readers() {
         use std::sync::Arc;
@@ -7614,7 +7287,6 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "persistent-artrie")]
     #[test]
     fn test_try_contains_optimistic() {
         use tempfile::tempdir;
@@ -7635,7 +7307,6 @@ mod tests {
         assert_eq!(result, Some(false));
     }
 
-    #[cfg(feature = "persistent-artrie")]
     #[test]
     fn test_unicode_optimistic() {
         use tempfile::tempdir;
@@ -7661,7 +7332,6 @@ mod tests {
     // Document Transaction Tests
     // ========================================================================
 
-    #[cfg(feature = "persistent-artrie")]
     #[test]
     fn test_document_transaction_basic() {
         use tempfile::tempdir;
@@ -7701,7 +7371,6 @@ mod tests {
         assert_eq!(inner.len, 3);
     }
 
-    #[cfg(feature = "persistent-artrie")]
     #[test]
     fn test_document_transaction_abort() {
         use tempfile::tempdir;
@@ -7732,7 +7401,6 @@ mod tests {
         assert_eq!(inner.len, 1);
     }
 
-    #[cfg(feature = "persistent-artrie")]
     #[test]
     fn test_document_transaction_unicode() {
         use tempfile::tempdir;
@@ -7765,7 +7433,6 @@ mod tests {
         assert!(inner.contains("π∑∫"));
     }
 
-    #[cfg(feature = "persistent-artrie")]
     #[test]
     fn test_document_transaction_empty() {
         use tempfile::tempdir;
@@ -7784,7 +7451,6 @@ mod tests {
         assert_eq!(inner.len, 0);
     }
 
-    #[cfg(feature = "persistent-artrie")]
     #[test]
     fn test_document_transaction_recovery() {
         use tempfile::tempdir;
@@ -7822,7 +7488,6 @@ mod tests {
     // Rust's ownership system already prevents reuse after commit_document() consumes tx.
     // The compiler prevents this error at compile time.
 
-    #[cfg(feature = "persistent-artrie")]
     #[test]
     fn test_document_transaction_commit_twice_error() {
         use tempfile::tempdir;
@@ -7843,7 +7508,6 @@ mod tests {
         inner.commit_document(tx2).expect("commit empty");
     }
 
-    #[cfg(feature = "persistent-artrie")]
     #[test]
     fn test_document_transaction_multiple_sequential() {
         use tempfile::tempdir;
@@ -7880,7 +7544,6 @@ mod tests {
         assert_eq!(inner.len, 4);
     }
 
-    #[cfg(feature = "persistent-artrie")]
     #[test]
     fn test_document_transaction_tx_insert_bytes() {
         use tempfile::tempdir;
@@ -7910,7 +7573,6 @@ mod tests {
     // Batch Insert Tests
     // ========================================================================
 
-    #[cfg(feature = "persistent-artrie")]
     #[test]
     fn test_insert_batch_basic() {
         use tempfile::tempdir;
@@ -7938,7 +7600,6 @@ mod tests {
         assert!(inner.contains("bar"));
     }
 
-    #[cfg(feature = "persistent-artrie")]
     #[test]
     fn test_insert_batch_unicode() {
         use tempfile::tempdir;
@@ -7965,7 +7626,6 @@ mod tests {
         assert!(inner.contains("🎉🎊🎋"));
     }
 
-    #[cfg(feature = "persistent-artrie")]
     #[test]
     fn test_insert_batch_chars() {
         use tempfile::tempdir;
@@ -7990,7 +7650,6 @@ mod tests {
         assert!(inner.contains("π∑∫"));
     }
 
-    #[cfg(feature = "persistent-artrie")]
     #[test]
     fn test_insert_batch_sorted() {
         use tempfile::tempdir;
@@ -8018,7 +7677,6 @@ mod tests {
         assert!(inner.contains("zebra"));
     }
 
-    #[cfg(feature = "persistent-artrie")]
     #[test]
     fn test_insert_batch_chars_sorted() {
         use tempfile::tempdir;
@@ -8043,7 +7701,6 @@ mod tests {
         assert!(inner.contains("zebra"));
     }
 
-    #[cfg(feature = "persistent-artrie")]
     #[test]
     fn test_insert_batch_bytes() {
         use tempfile::tempdir;
@@ -8068,7 +7725,6 @@ mod tests {
         assert!(inner.contains("日本語"));
     }
 
-    #[cfg(feature = "persistent-artrie")]
     #[test]
     fn test_insert_batch_bytes_sorted() {
         use tempfile::tempdir;
@@ -8093,7 +7749,6 @@ mod tests {
         assert!(inner.contains("zebra"));
     }
 
-    #[cfg(feature = "persistent-artrie")]
     #[test]
     fn test_insert_batch_empty() {
         use tempfile::tempdir;
@@ -8111,7 +7766,6 @@ mod tests {
         assert_eq!(inner.len, 0);
     }
 
-    #[cfg(feature = "persistent-artrie")]
     #[test]
     fn test_insert_batch_duplicates() {
         use tempfile::tempdir;
@@ -8142,7 +7796,6 @@ mod tests {
         assert_eq!(inner.len, 3); // apple, banana, cherry
     }
 
-    #[cfg(feature = "persistent-artrie")]
     #[test]
     fn test_insert_batch_recovery() {
         use tempfile::tempdir;
@@ -8176,7 +7829,6 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "persistent-artrie")]
     #[test]
     fn test_insert_batch_large() {
         use tempfile::tempdir;
@@ -8206,7 +7858,6 @@ mod tests {
     // Batch/Parallel Merge Tests
     // ========================================================================
 
-    #[cfg(feature = "persistent-artrie")]
     #[test]
     fn test_merge_from_batched_basic() {
         use tempfile::tempdir;
@@ -8240,7 +7891,6 @@ mod tests {
         assert_eq!(dst.len, 4);
     }
 
-    #[cfg(feature = "persistent-artrie")]
     #[test]
     fn test_merge_from_batched_unicode() {
         use tempfile::tempdir;
@@ -8271,7 +7921,6 @@ mod tests {
         assert!(dst.contains("한글"));
     }
 
-    #[cfg(feature = "persistent-artrie")]
     #[test]
     fn test_merge_from_batched_empty() {
         use tempfile::tempdir;
@@ -8295,7 +7944,7 @@ mod tests {
         assert_eq!(dst.len, 1);
     }
 
-    #[cfg(all(feature = "persistent-artrie", feature = "parallel-merge"))]
+    #[cfg(feature = "parallel-merge")]
     #[test]
     fn test_merge_from_parallel_basic() {
         use tempfile::tempdir;
@@ -8329,7 +7978,7 @@ mod tests {
         }
     }
 
-    #[cfg(all(feature = "persistent-artrie", feature = "parallel-merge"))]
+    #[cfg(feature = "parallel-merge")]
     #[test]
     fn test_merge_from_batched_parallel_basic() {
         use tempfile::tempdir;
@@ -8356,7 +8005,7 @@ mod tests {
         assert_eq!(dst.len, 50);
     }
 
-    #[cfg(all(feature = "persistent-artrie", feature = "parallel-merge"))]
+    #[cfg(feature = "parallel-merge")]
     #[test]
     fn test_merge_from_parallel_unicode() {
         use tempfile::tempdir;
@@ -8394,7 +8043,7 @@ mod tests {
 
     // ==================== Phase 4: Group Commit Tests ====================
 
-    #[cfg(all(feature = "persistent-artrie", feature = "group-commit"))]
+    #[cfg(feature = "group-commit")]
     #[test]
     fn test_group_commit_enable_disable() {
         use tempfile::tempdir;
@@ -8429,7 +8078,7 @@ mod tests {
         trie.disable_group_commit().expect("disable again");
     }
 
-    #[cfg(all(feature = "persistent-artrie", feature = "group-commit"))]
+    #[cfg(feature = "group-commit")]
     #[test]
     fn test_group_commit_with_inserts() {
         use tempfile::tempdir;
@@ -8476,7 +8125,7 @@ mod tests {
         assert!(trie.contains("after_disable"));
     }
 
-    #[cfg(all(feature = "persistent-artrie", feature = "group-commit"))]
+    #[cfg(feature = "group-commit")]
     #[test]
     fn test_group_commit_with_unicode() {
         use tempfile::tempdir;
@@ -8504,7 +8153,7 @@ mod tests {
         assert!(trie.contains("🎉🎊🎋"));
     }
 
-    #[cfg(all(feature = "persistent-artrie", feature = "group-commit"))]
+    #[cfg(feature = "group-commit")]
     #[test]
     fn test_group_commit_high_throughput_config() {
         use tempfile::tempdir;
@@ -8539,7 +8188,7 @@ mod tests {
         assert!(stats.records_committed >= 100, "should have committed at least 100 records");
     }
 
-    #[cfg(all(feature = "persistent-artrie", feature = "group-commit"))]
+    #[cfg(feature = "group-commit")]
     #[test]
     fn test_group_commit_recovery() {
         use tempfile::tempdir;
@@ -8577,7 +8226,7 @@ mod tests {
         }
     }
 
-    #[cfg(all(feature = "persistent-artrie", feature = "group-commit"))]
+    #[cfg(feature = "group-commit")]
     #[test]
     fn test_group_commit_stats_tracking() {
         use tempfile::tempdir;
@@ -8616,7 +8265,6 @@ mod tests {
 
     // ==================== Performance Infrastructure Tests ====================
 
-    #[cfg(feature = "persistent-artrie")]
     #[test]
     fn test_cache_stats_basic() {
         use tempfile::tempdir;
@@ -8653,7 +8301,6 @@ mod tests {
         assert!((hit_rate - 0.75).abs() < 0.001, "Hit rate should be 0.75, got {}", hit_rate);
     }
 
-    #[cfg(feature = "persistent-artrie")]
     #[test]
     fn test_cache_stats_and_reset() {
         use tempfile::tempdir;
@@ -8681,7 +8328,6 @@ mod tests {
         assert_eq!(misses, 0);
     }
 
-    #[cfg(feature = "persistent-artrie")]
     #[test]
     fn test_memory_monitor_enable_disable() {
         use tempfile::tempdir;
@@ -8730,7 +8376,6 @@ mod tests {
         assert!(trie.memory_stats().is_none());
     }
 
-    #[cfg(feature = "persistent-artrie")]
     #[test]
     fn test_memory_monitor_default() {
         use tempfile::tempdir;
@@ -8755,7 +8400,6 @@ mod tests {
 
     // ==================== Epoch Checkpointing Tests ====================
 
-    #[cfg(feature = "persistent-artrie")]
     #[test]
     fn test_epoch_checkpointing_enable_disable() {
         use tempfile::tempdir;
@@ -8790,7 +8434,6 @@ mod tests {
         assert!(trie.current_epoch_id().is_none());
     }
 
-    #[cfg(feature = "persistent-artrie")]
     #[test]
     fn test_epoch_checkpointing_record_operations() {
         use tempfile::tempdir;
@@ -8824,7 +8467,6 @@ mod tests {
         assert_eq!(current_epoch_meta.wal_size_bytes, 1000, "Should have recorded 1000 WAL bytes");
     }
 
-    #[cfg(feature = "persistent-artrie")]
     #[test]
     fn test_epoch_checkpointing_high_throughput_config() {
         use tempfile::tempdir;
@@ -8845,7 +8487,6 @@ mod tests {
         assert!(config.max_ops_per_epoch > 10_000, "High-throughput should have high ops limit");
     }
 
-    #[cfg(feature = "persistent-artrie")]
     #[test]
     fn test_epoch_checkpointing_low_latency_config() {
         use tempfile::tempdir;
@@ -8867,7 +8508,6 @@ mod tests {
         assert!(config.epoch_duration.as_millis() < 1000, "Low-latency should have short epoch duration");
     }
 
-    #[cfg(feature = "persistent-artrie")]
     #[test]
     fn test_epoch_metadata() {
         use tempfile::tempdir;
@@ -8997,7 +8637,6 @@ mod tests {
     // LSN API Tests
     // ========================================================================
 
-    #[cfg(feature = "persistent-artrie")]
     mod lsn_api_tests {
         use super::*;
         use tempfile::tempdir;

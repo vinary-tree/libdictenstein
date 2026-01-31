@@ -124,21 +124,16 @@
 pub mod error;
 pub mod swizzled_ptr;
 
-#[cfg(feature = "persistent-artrie")]
 pub mod disk_manager;
 
-#[cfg(feature = "persistent-artrie")]
 pub mod buffer_manager;
 
 // Arena allocation for efficient node storage
-#[cfg(feature = "persistent-artrie")]
 pub mod arena;
 
-#[cfg(feature = "persistent-artrie")]
 pub mod arena_manager;
 
 // Compact variable-width encoding
-#[cfg(feature = "persistent-artrie")]
 pub mod compact_encoding;
 
 // ART node types
@@ -166,15 +161,12 @@ pub mod dict_impl;
 pub mod zipper;
 
 // Write-ahead log for crash recovery
-#[cfg(feature = "persistent-artrie")]
 pub mod wal;
 
 // Crash recovery
-#[cfg(feature = "persistent-artrie")]
 pub mod recovery;
 
 // Epoch-based automatic checkpointing
-#[cfg(feature = "persistent-artrie")]
 pub mod epoch;
 
 // Group commit for WAL batching (opt-in feature for slower storage)
@@ -182,39 +174,30 @@ pub mod epoch;
 pub mod group_commit;
 
 // Prefetching for DFS traversal
-#[cfg(feature = "persistent-artrie")]
 pub mod prefetch;
 
 // Concurrency controls - optimistic lock coupling
-#[cfg(feature = "persistent-artrie")]
 pub mod concurrency;
 
 // Traversal context for block caching
-#[cfg(feature = "persistent-artrie")]
 pub mod traversal_context;
 
 // Dirty tracking for incremental checkpoints
-#[cfg(feature = "persistent-artrie")]
 pub mod dirty_tracker;
 
 // Hash-based deduplication for space efficiency
-#[cfg(feature = "persistent-artrie")]
 pub mod dedup;
 
 // Relative offset encoding for space-efficient child pointers
-#[cfg(feature = "persistent-artrie")]
 pub mod relative_encoding;
 
 // Memory pressure monitoring for proactive eviction
-#[cfg(feature = "persistent-artrie")]
 pub mod memory_monitor;
 
 // Adaptive buffer pool sizing
-#[cfg(feature = "persistent-artrie")]
 pub mod adaptive_pool;
 
 // Per-node logging for near-instant recovery
-#[cfg(feature = "persistent-artrie")]
 pub mod per_node_log;
 
 // Re-exports for convenience
@@ -238,41 +221,33 @@ pub use node_impl::PersistentARTrieNode;
 pub use dict_impl::{PersistentARTrie, TermIterator, TermValueIterator};
 
 // Arena-aware iteration types
-#[cfg(feature = "persistent-artrie")]
 pub use dict_impl::{PrefixTermWithArena, PrefixTermWithValueAndArena};
 
 // Per-document transaction types
-#[cfg(feature = "persistent-artrie")]
 pub use dict_impl::{DocumentTransaction, DurabilityPolicy, TransactionState};
 
 // Zipper types
 pub use zipper::PersistentARTrieZipper;
 
-#[cfg(feature = "persistent-artrie")]
 pub use buffer_manager::{BufferManager, BufferPoolStats, PageReadGuard, PageWriteGuard};
-#[cfg(feature = "persistent-artrie")]
 pub use disk_manager::{DiskManager, FileHeader, BLOCK_SIZE, MAX_BLOCK_COUNT};
 
 // Arena types
-#[cfg(feature = "persistent-artrie")]
 pub use arena::{
     ArenaHeader, ByteNodeArena, ByteNodeArenaV2, SlotEntry, VarintSlotEntry,
     ARENA_MAGIC, ARENA_MAGIC_V2, ARENA_VERSION, ARENA_VERSION_V2,
     FLAG_VARINT_DIRECTORY, HEADER_SIZE, MIN_FREE_SPACE, SLOT_SIZE,
 };
 
-#[cfg(feature = "persistent-artrie")]
 pub use arena_manager::{ArenaManager, ArenaSlot, ArenaStats, FlushConfig, FlushStats, ReservedSlots};
 
 // Compact encoding types
-#[cfg(feature = "persistent-artrie")]
 pub use compact_encoding::{
     CompactHeader, DecodedCompactByteNode, COMPACT_HEADER_SIZE, VARINT_LEN_BIAS, VARINT_MAX_SINGLE_BYTE,
     compact_node_types, determine_ptr_width, read_varint_from_slice, write_varint_to_vec, varint_size,
 };
 
 // WAL types
-#[cfg(feature = "persistent-artrie")]
 pub use wal::{GroupCommit, Lsn, WalConfig, WalHeader, WalReader, WalRecord, WalRecordType, WalWriter};
 
 // Group commit types (opt-in feature for slower storage)
@@ -280,7 +255,6 @@ pub use wal::{GroupCommit, Lsn, WalConfig, WalHeader, WalReader, WalRecord, WalR
 pub use group_commit::{GroupCommitConfig, GroupCommitCoordinator, GroupCommitStats};
 
 // Recovery types
-#[cfg(feature = "persistent-artrie")]
 pub use recovery::{
     CorruptionType, IncrementalRecovery, RecoveredOperation, RecoveredState, RecoveryError,
     RecoveryManager, RecoveryMode, RecoveryReport, RecoveryStats,
@@ -288,45 +262,38 @@ pub use recovery::{
 };
 
 // Epoch-based checkpointing types
-#[cfg(feature = "persistent-artrie")]
 pub use epoch::{
     CheckpointManager, CheckpointMeta, EpochConfig, EpochId, EpochMetadata, EpochState, EpochStats,
 };
 
 // Prefetch types
-#[cfg(feature = "persistent-artrie")]
 pub use prefetch::{
     AdaptivePrefetcher, PrefetchHint, PrefetchRequest, PrefetchStats, PrefetchStatsSnapshot,
     PrefetchStrategy, Prefetcher,
 };
 
 // Concurrency types
-#[cfg(feature = "persistent-artrie")]
 pub use concurrency::{
     EpochGuard, EpochManager, LockCoupling, MvccReadContext, OptimisticCell, OptimisticReadGuard,
     OptimisticVersion, RetryStats, TrieStats, TrieStatsSnapshot, WriteGuard,
 };
 
 // Traversal context types
-#[cfg(feature = "persistent-artrie")]
 pub use traversal_context::{
     LightweightTraversalContext, TraversalContext, TraversalStats,
 };
 
 // Dirty tracker types
-#[cfg(feature = "persistent-artrie")]
 pub use dirty_tracker::{
     BatchDirtyTracker, DirtyTracker, DirtyTrackerStats,
 };
 
 // Deduplication types
-#[cfg(feature = "persistent-artrie")]
 pub use dedup::{
     BatchDeduplicator, DeduplicatingArenaManager, DeduplicatorStats, NodeDeduplicator,
 };
 
 // Relative encoding types
-#[cfg(feature = "persistent-artrie")]
 pub use relative_encoding::{
     encode_child_pointer, decode_child_pointer, encode_children, decode_children,
     encode_sequential_siblings, decode_sequential_siblings, encoded_size, is_same_arena,
@@ -334,20 +301,17 @@ pub use relative_encoding::{
 };
 
 // Memory pressure monitoring types
-#[cfg(feature = "persistent-artrie")]
 pub use memory_monitor::{
     MemoryMonitorStats, MemoryPressureConfig, MemoryPressureLevel, MemoryPressureMonitor,
     MemoryStats, PressureCallback, PsiMetrics,
 };
 
 // Adaptive buffer pool sizing types
-#[cfg(feature = "persistent-artrie")]
 pub use adaptive_pool::{
     AdaptivePoolConfig, AdaptivePoolController, AdaptivePoolStats, CacheStats,
 };
 
 // Per-node logging types
-#[cfg(feature = "persistent-artrie")]
 pub use per_node_log::{
     DirtyNodeTracker, InlineLog, NodeId, NodeLogEntry, NodeRecoveryResult,
     PageId, PerNodeLogConfig, PerNodeLogStats, PerNodeLogStatsAtomic, RecoveryResult,

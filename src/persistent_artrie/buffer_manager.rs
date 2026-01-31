@@ -755,7 +755,7 @@ pub struct BufferPoolStats {
     pub used_frames: usize,
 }
 
-#[cfg(all(test, feature = "persistent-artrie"))]
+#[cfg(test)]
 mod tests {
     use super::*;
     use tempfile::tempdir;

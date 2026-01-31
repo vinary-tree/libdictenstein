@@ -72,17 +72,14 @@ use super::nodes::{
     CharNodeHeader, CHAR_MAX_PREFIX_LEN,
 };
 
-#[cfg(feature = "persistent-artrie")]
 use super::compact_encoding::{
     decode_compact_node, encode_compact_node, determine_key_width, determine_ptr_width,
     CompactHeader, DecodedCompactNode, COMPACT_NODE_TYPE_BUCKET, COMPACT_NODE_TYPE_N16,
     COMPACT_NODE_TYPE_N4, COMPACT_NODE_TYPE_N48,
 };
 
-#[cfg(feature = "persistent-artrie")]
 use super::arena_manager::ArenaSlot;
 
-#[cfg(feature = "persistent-artrie")]
 use super::relative_encoding::{
     SerializationContext, encode_child_pointer, encode_sequential_siblings,
     decode_children, decode_sequential_siblings,
@@ -616,7 +613,6 @@ pub fn char_from_bytes(bytes: &[u8]) -> Result<CharNode> {
 ///
 /// # Returns
 /// A vector of bytes containing the compact-encoded node
-#[cfg(feature = "persistent-artrie")]
 pub fn char_to_bytes_compact(node: &CharNode, max_ptr_value: u64) -> Vec<u8> {
     // Extract data from node
     let (keys, children, prefix_chars, value_ptr, node_type, flags) = extract_node_data(node);
@@ -654,7 +650,6 @@ pub fn char_to_bytes_compact(node: &CharNode, max_ptr_value: u64) -> Vec<u8> {
 ///
 /// # Returns
 /// The deserialized CharNode
-#[cfg(feature = "persistent-artrie")]
 pub fn char_from_bytes_compact(bytes: &[u8]) -> Result<CharNode> {
     let decoded = decode_compact_node(bytes);
     reconstruct_node_from_decoded(decoded)
@@ -664,7 +659,6 @@ pub fn char_from_bytes_compact(bytes: &[u8]) -> Result<CharNode> {
 ///
 /// This estimates the size without actually serializing, useful for
 /// pre-allocating buffers or checking if a node fits in an arena slot.
-#[cfg(feature = "persistent-artrie")]
 pub fn char_compact_serialized_size(node: &CharNode, max_ptr_value: u64) -> usize {
     let (keys, children, prefix_chars, value_ptr, _node_type, _flags) = extract_node_data(node);
 
@@ -688,7 +682,6 @@ pub fn char_compact_serialized_size(node: &CharNode, max_ptr_value: u64) -> usiz
 }
 
 /// Extract data from a CharNode into arrays suitable for compact encoding
-#[cfg(feature = "persistent-artrie")]
 fn extract_node_data(node: &CharNode) -> (Vec<u32>, Vec<u64>, Vec<u32>, Option<u64>, u8, u8) {
     match node {
         CharNode::N4(n) => {
@@ -754,7 +747,6 @@ fn extract_node_data(node: &CharNode) -> (Vec<u32>, Vec<u64>, Vec<u32>, Option<u
 }
 
 /// Reconstruct a CharNode from decoded compact data
-#[cfg(feature = "persistent-artrie")]
 fn reconstruct_node_from_decoded(decoded: DecodedCompactNode) -> Result<CharNode> {
     let prefix = CharCompressedPrefix::from_chars(&decoded.prefix);
 
@@ -865,7 +857,6 @@ fn reconstruct_node_from_decoded(decoded: DecodedCompactNode) -> Result<CharNode
 ///
 /// # Returns
 /// Vector of ArenaSlots for all non-null children (sorted by key for determinism)
-#[cfg(feature = "persistent-artrie")]
 pub fn collect_char_child_slots(node: &CharNode) -> Vec<ArenaSlot> {
     let mut slots = Vec::new();
 
@@ -918,7 +909,6 @@ pub fn collect_char_child_slots(node: &CharNode) -> Vec<ArenaSlot> {
 ///
 /// The SwizzledPtr uses the byte version's ArenaSlot internally,
 /// so we extract the fields and create a char ArenaSlot.
-#[cfg(feature = "persistent-artrie")]
 fn ptr_to_arena_slot(ptr: &SwizzledPtr) -> Option<ArenaSlot> {
     // Get disk location from SwizzledPtr
     let loc = ptr.disk_location()?;
@@ -935,7 +925,6 @@ fn ptr_to_arena_slot(ptr: &SwizzledPtr) -> Option<ArenaSlot> {
 ///
 /// # Returns
 /// Size in bytes of the type-specific data (excluding header and prefix)
-#[cfg(feature = "persistent-artrie")]
 fn char_node_data_size_v2(node: &CharNode, ctx: &SerializationContext) -> usize {
     let child_slots = collect_char_child_slots(node);
     let num_children = child_slots.len();
@@ -989,7 +978,6 @@ fn char_node_data_size_v2(node: &CharNode, ctx: &SerializationContext) -> usize 
 ///
 /// # Returns
 /// Number of bytes written
-#[cfg(feature = "persistent-artrie")]
 pub fn serialize_char_node_v2<W: Write>(
     node: &CharNode,
     writer: &mut W,
@@ -1039,7 +1027,6 @@ pub fn serialize_char_node_v2<W: Write>(
     Ok(CHAR_SERIALIZED_HEADER_SIZE + data_size)
 }
 
-#[cfg(feature = "persistent-artrie")]
 fn serialize_charnode4_v2<W: Write>(
     node: &CharNode4,
     writer: &mut W,
@@ -1060,7 +1047,6 @@ fn serialize_charnode4_v2<W: Write>(
     Ok(())
 }
 
-#[cfg(feature = "persistent-artrie")]
 fn serialize_charnode16_v2<W: Write>(
     node: &CharNode16,
     writer: &mut W,
@@ -1081,7 +1067,6 @@ fn serialize_charnode16_v2<W: Write>(
     Ok(())
 }
 
-#[cfg(feature = "persistent-artrie")]
 fn serialize_charnode48_v2<W: Write>(
     node: &CharNode48,
     writer: &mut W,
@@ -1102,7 +1087,6 @@ fn serialize_charnode48_v2<W: Write>(
     Ok(())
 }
 
-#[cfg(feature = "persistent-artrie")]
 fn serialize_charbucket_v2<W: Write>(
     node: &CharBucket,
     writer: &mut W,
@@ -1134,14 +1118,12 @@ fn serialize_charbucket_v2<W: Write>(
 // =============================================================================
 
 /// Context for v2 deserialization with relative offset decoding
-#[cfg(feature = "persistent-artrie")]
 #[derive(Debug, Clone)]
 pub struct DeserializationContext {
     /// Parent's arena slot (used for relative offset reconstruction)
     pub parent_slot: ArenaSlot,
 }
 
-#[cfg(feature = "persistent-artrie")]
 impl DeserializationContext {
     /// Create a new deserialization context
     pub fn new(parent_slot: ArenaSlot) -> Self {
@@ -1160,7 +1142,6 @@ impl DeserializationContext {
 ///
 /// # Returns
 /// The deserialized CharNode
-#[cfg(feature = "persistent-artrie")]
 pub fn deserialize_char_node_v2<R: Read>(
     reader: &mut R,
     ctx: &DeserializationContext,
@@ -1209,7 +1190,6 @@ pub fn deserialize_char_node_v2<R: Read>(
     }
 }
 
-#[cfg(feature = "persistent-artrie")]
 fn deserialize_charnode4_v2<R: Read>(
     reader: &mut R,
     header: &SerializedCharNodeHeader,
@@ -1293,7 +1273,6 @@ fn deserialize_charnode4_v2<R: Read>(
     Ok(CharNode::N4(Box::new(node)))
 }
 
-#[cfg(feature = "persistent-artrie")]
 fn deserialize_charnode16_v2<R: Read>(
     reader: &mut R,
     header: &SerializedCharNodeHeader,
@@ -1369,7 +1348,6 @@ fn deserialize_charnode16_v2<R: Read>(
     Ok(CharNode::N16(Box::new(node)))
 }
 
-#[cfg(feature = "persistent-artrie")]
 fn deserialize_charnode48_v2<R: Read>(
     reader: &mut R,
     header: &SerializedCharNodeHeader,
@@ -1445,7 +1423,6 @@ fn deserialize_charnode48_v2<R: Read>(
     Ok(CharNode::N48(Box::new(node)))
 }
 
-#[cfg(feature = "persistent-artrie")]
 fn deserialize_charbucket_v2<R: Read>(
     reader: &mut R,
     header: &SerializedCharNodeHeader,
@@ -1533,7 +1510,6 @@ fn deserialize_charbucket_v2<R: Read>(
 /// * `data_size` - Total data size from header (includes prefix + keys + children + value_ptr)
 /// * `keys_size` - Size of keys already read
 /// * `prefix_size` - Size of prefix already read (24 bytes if prefix_len > 0, else 0)
-#[cfg(feature = "persistent-artrie")]
 fn read_remaining_data<R: Read>(
     reader: &mut R,
     data_size: usize,
@@ -1547,7 +1523,6 @@ fn read_remaining_data<R: Read>(
 }
 
 /// Calculate the serialized prefix size from header
-#[cfg(feature = "persistent-artrie")]
 #[inline]
 fn header_prefix_size(header: &SerializedCharNodeHeader) -> usize {
     if header.prefix_len > 0 {
@@ -1560,7 +1535,6 @@ fn header_prefix_size(header: &SerializedCharNodeHeader) -> usize {
 /// Convert an ArenaSlot back to a SwizzledPtr
 ///
 /// Creates a disk-based SwizzledPtr from arena coordinates.
-#[cfg(feature = "persistent-artrie")]
 fn arena_slot_to_ptr(slot: ArenaSlot) -> SwizzledPtr {
     use crate::persistent_artrie::NodeType;
     // Arena N is stored in Block N+1
@@ -1855,7 +1829,6 @@ mod tests {
 
     // === Compact Encoding Tests ===
 
-    #[cfg(feature = "persistent-artrie")]
     mod compact_tests {
         use super::*;
 
@@ -2091,7 +2064,6 @@ mod tests {
     // V2 Serialization Tests (Relative Offsets and Sequential Siblings)
     // =============================================================================
 
-    #[cfg(feature = "persistent-artrie")]
     mod v2_tests {
         use super::*;
 

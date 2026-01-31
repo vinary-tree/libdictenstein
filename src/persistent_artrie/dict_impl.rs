@@ -30,14 +30,10 @@ use super::node_impl::PersistentARTrieNode;
 use super::nodes::{ArtNode, Node, Node4, AddChildError};
 use super::swizzled_ptr::{DiskLocation, NodeType, SwizzledPtr};
 use super::transitions::{bucket_to_art_node, ChildNode};
-#[cfg(feature = "persistent-artrie")]
 use super::serialization::{self, v2::{SerializationContext, DeserializationContext}};
 
-#[cfg(feature = "persistent-artrie")]
 use super::arena_manager::{ArenaManager, ArenaSlot};
-#[cfg(feature = "persistent-artrie")]
 use super::buffer_manager::BufferManager;
-#[cfg(feature = "persistent-artrie")]
 use super::wal::{Lsn, WalWriter};
 
 #[cfg(feature = "parallel-merge")]
@@ -45,7 +41,7 @@ use rayon::prelude::*;
 
 /// SIMD-accelerated lexicographic comparison of byte slices.
 /// Returns Ordering::Less if a < b, Ordering::Equal if a == b, Ordering::Greater if a > b.
-#[cfg(all(target_arch = "x86_64", target_feature = "sse4.2", feature = "persistent-artrie"))]
+#[cfg(all(target_arch = "x86_64", target_feature = "sse4.2"))]
 #[inline]
 fn simd_cmp_bytes(a: &[u8], b: &[u8]) -> std::cmp::Ordering {
     use std::arch::x86_64::*;
@@ -88,21 +84,19 @@ fn simd_cmp_bytes(a: &[u8], b: &[u8]) -> std::cmp::Ordering {
 }
 
 /// Fallback scalar lexicographic comparison.
-#[cfg(not(all(target_arch = "x86_64", target_feature = "sse4.2", feature = "persistent-artrie")))]
+#[cfg(not(all(target_arch = "x86_64", target_feature = "sse4.2")))]
 #[inline]
 fn simd_cmp_bytes(a: &[u8], b: &[u8]) -> std::cmp::Ordering {
     a.cmp(b)
 }
 
 /// Check if a <= b using SIMD-accelerated comparison.
-#[cfg(feature = "persistent-artrie")]
 #[inline]
 fn bytes_le(a: &[u8], b: &[u8]) -> bool {
     matches!(simd_cmp_bytes(a, b), std::cmp::Ordering::Less | std::cmp::Ordering::Equal)
 }
 
 /// Check if a > b using SIMD-accelerated comparison.
-#[cfg(feature = "persistent-artrie")]
 #[inline]
 fn bytes_gt(a: &[u8], b: &[u8]) -> bool {
     matches!(simd_cmp_bytes(a, b), std::cmp::Ordering::Greater)
@@ -110,13 +104,11 @@ fn bytes_gt(a: &[u8], b: &[u8]) -> bool {
 
 /// Maximum buffer size for reading serialized ART nodes (4KB should be ample).
 /// Largest node is Node256 at ~2KB, so 4KB provides good margin.
-#[cfg(feature = "persistent-artrie")]
 const ART_NODE_BUFFER_SIZE: usize = 4096;
 
 /// Result of loading a single child node's data without loading its children.
 ///
 /// Used by `load_single_child_data` for iterative loading.
-#[cfg(feature = "persistent-artrie")]
 enum SingleChildData {
     /// A bucket leaf node (complete, no children)
     Bucket(StringBucket),
@@ -141,7 +133,6 @@ enum SingleChildData {
 /// # Returns
 /// * `true` if the child is now in memory (either already was, or successfully resolved)
 /// * `false` if the child was a DiskRef that failed to resolve
-#[cfg(feature = "persistent-artrie")]
 fn resolve_child_for_mutation_with_bm(
     child: &mut ChildNode,
     buffer_manager: Option<&Arc<RwLock<BufferManager>>>,
@@ -229,13 +220,6 @@ fn resolve_child_for_mutation_with_bm(
 /// Without the persistent-artrie feature, DiskRef nodes should never exist.
 /// This returns false for DiskRef (indicating an error state) and true for
 /// all other node types.
-#[cfg(not(feature = "persistent-artrie"))]
-fn resolve_child_for_mutation_with_bm(
-    child: &mut ChildNode,
-    _buffer_manager: Option<()>,
-) -> bool {
-    !matches!(child, ChildNode::DiskRef { .. })
-}
 
 /// A Persistent Adaptive Radix Trie dictionary.
 ///
@@ -273,29 +257,21 @@ pub(crate) struct PersistentARTrieInner<V: DictionaryValue> {
     // === Storage Layer (only active with persistent-artrie feature) ===
     // Note: DiskManager is owned by BufferManager and accessible via buffer_manager.disk_manager()
     /// Buffer manager with Clock-evicted page cache (owns DiskManager)
-    #[cfg(feature = "persistent-artrie")]
     pub(crate) buffer_manager: Option<Arc<RwLock<BufferManager>>>,
     /// Write-ahead log writer for durability
-    #[cfg(feature = "persistent-artrie")]
     pub(crate) wal_writer: Option<Arc<RwLock<WalWriter>>>,
     /// Next log sequence number to assign
-    #[cfg(feature = "persistent-artrie")]
     pub(crate) next_lsn: Lsn,
     /// Prefetcher for DFS traversal optimization
-    #[cfg(feature = "persistent-artrie")]
     pub(crate) prefetcher: super::prefetch::Prefetcher,
     /// Arena manager for space-efficient node storage
     /// Packs multiple nodes into 256KB blocks instead of one node per block
-    #[cfg(feature = "persistent-artrie")]
     pub(crate) arena_manager: Option<Arc<RwLock<ArenaManager>>>,
     /// Durability policy for WAL synchronization
-    #[cfg(feature = "persistent-artrie")]
     pub(crate) durability_policy: DurabilityPolicy,
     /// Epoch manager for MVCC-Lite snapshot isolation
-    #[cfg(feature = "persistent-artrie")]
     pub(crate) epoch_manager: super::concurrency::EpochManager,
     /// Atomic statistics for monitoring
-    #[cfg(feature = "persistent-artrie")]
     pub(crate) stats: Arc<super::concurrency::TrieStats>,
 }
 
@@ -303,7 +279,6 @@ pub(crate) struct PersistentARTrieInner<V: DictionaryValue> {
 ///
 /// Used by `iter_prefix_with_arena()` to enable I/O-efficient batch operations
 /// by grouping terms that reside in the same disk arena/page.
-#[cfg(feature = "persistent-artrie")]
 #[derive(Debug, Clone)]
 pub struct PrefixTermWithArena {
     /// The term bytes
@@ -316,7 +291,6 @@ pub struct PrefixTermWithArena {
 ///
 /// Used by `iter_prefix_with_values_and_arena()` to enable I/O-efficient batch
 /// operations by grouping terms that reside in the same disk arena/page.
-#[cfg(feature = "persistent-artrie")]
 #[derive(Debug, Clone)]
 pub struct PrefixTermWithValueAndArena<V> {
     /// The term bytes
@@ -328,7 +302,6 @@ pub struct PrefixTermWithValueAndArena<V> {
 }
 
 /// State of a document transaction.
-#[cfg(feature = "persistent-artrie")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TransactionState {
     /// Transaction is active and accepting operations
@@ -352,7 +325,6 @@ pub enum TransactionState {
 /// | GroupCommit | Full      | Batched         | High throughput with group-commit feature |
 /// | Periodic    | Bounded   | Checkpoint only | Performance-critical, accepts bounded loss |
 /// | None        | None      | Never           | Testing only - data loss on crash |
-#[cfg(feature = "persistent-artrie")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum DurabilityPolicy {
     /// fsync after every CommitTx (full ACID durability).
@@ -410,7 +382,6 @@ pub enum DurabilityPolicy {
 /// // On failure: discard all buffered terms
 /// // trie.abort_document(tx)?;
 /// ```
-#[cfg(feature = "persistent-artrie")]
 pub struct DocumentTransaction<V: DictionaryValue> {
     /// Unique transaction identifier
     pub tx_id: u64,
@@ -422,7 +393,6 @@ pub struct DocumentTransaction<V: DictionaryValue> {
     pub state: TransactionState,
 }
 
-#[cfg(feature = "persistent-artrie")]
 impl<V: DictionaryValue> DocumentTransaction<V> {
     /// Returns the number of buffered terms in this transaction.
     pub fn len(&self) -> usize {
@@ -465,29 +435,30 @@ pub(crate) enum TrieRoot<V: DictionaryValue> {
 impl<V: DictionaryValue> PersistentARTrie<V> {
     /// Create a new empty in-memory dictionary.
     ///
-    /// This creates a purely in-memory dictionary without disk persistence.
-    /// For disk-backed persistence, use `create()` or `open()`.
+    /// # Deprecated
+    ///
+    /// This method is deprecated because "Persistent" types are designed for
+    /// disk-backed storage. Use `create()` or `open()` for disk persistence.
+    /// For in-memory tries, use the optimized implementations instead:
+    /// - [`DoubleArrayTrie`](crate::double_array_trie::DoubleArrayTrie) (fastest reads, insert-only)
+    /// - [`DynamicDawg`](crate::dynamic_dawg::DynamicDawg) (insert + remove, SIMD optimized)
+    #[deprecated(
+        since = "0.2.0",
+        note = "Use `create()` or `open()` for disk persistence. For in-memory tries, use DoubleArrayTrie or DynamicDawg instead."
+    )]
     pub fn new() -> Self {
         Self {
             inner: Arc::new(RwLock::new(PersistentARTrieInner {
                 root: TrieRoot::Bucket(StringBucket::with_values()),
                 term_count: 0,
                 dirty: false,
-                #[cfg(feature = "persistent-artrie")]
                 buffer_manager: None,
-                #[cfg(feature = "persistent-artrie")]
                 wal_writer: None,
-                #[cfg(feature = "persistent-artrie")]
                 next_lsn: 0,
-                #[cfg(feature = "persistent-artrie")]
                 prefetcher: super::prefetch::Prefetcher::disabled(),
-                #[cfg(feature = "persistent-artrie")]
                 arena_manager: None,
-                #[cfg(feature = "persistent-artrie")]
                 durability_policy: DurabilityPolicy::default(),
-                #[cfg(feature = "persistent-artrie")]
                 epoch_manager: super::concurrency::EpochManager::new(),
-                #[cfg(feature = "persistent-artrie")]
                 stats: Arc::new(super::concurrency::TrieStats::new()),
             })),
         }
@@ -507,7 +478,6 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
     ///
     /// let dict: PersistentARTrie<()> = PersistentARTrie::create("words.part")?;
     /// ```
-    #[cfg(feature = "persistent-artrie")]
     pub fn create<P: AsRef<Path>>(path: P) -> Result<Self> {
         use super::disk_manager::DiskManager;
         use super::buffer_manager::BufferManager;
@@ -576,7 +546,6 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
     ///
     /// let dict: PersistentARTrie<()> = PersistentARTrie::create_with_slot_tracking("words.part")?;
     /// ```
-    #[cfg(feature = "persistent-artrie")]
     pub fn create_with_slot_tracking<P: AsRef<Path>>(path: P) -> Result<Self> {
         use super::disk_manager::DiskManager;
         use super::buffer_manager::BufferManager;
@@ -649,7 +618,6 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
     ///
     /// let dict: PersistentARTrie<()> = PersistentARTrie::open("words.part")?;
     /// ```
-    #[cfg(feature = "persistent-artrie")]
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self> {
         use super::disk_manager::{DiskManager, BLOCK_SIZE};
         use super::buffer_manager::BufferManager;
@@ -924,7 +892,6 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
     /// // Checkpoint writes only modified slots
     /// dict.checkpoint()?;
     /// ```
-    #[cfg(feature = "persistent-artrie")]
     pub fn open_with_slot_tracking<P: AsRef<Path>>(path: P) -> Result<Self> {
         let dict = Self::open(path)?;
 
@@ -970,7 +937,6 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
     ///     eprintln!("Recovered from crash: {} records replayed", report.records_replayed);
     /// }
     /// ```
-    #[cfg(feature = "persistent-artrie")]
     pub fn open_with_recovery<P: AsRef<Path>>(path: P) -> Result<(Self, super::recovery::RecoveryReport)> {
         use super::wal::WalConfig;
         Self::open_with_recovery_config(path, WalConfig::default())
@@ -988,7 +954,6 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
     /// # Returns
     ///
     /// Tuple of (trie, recovery_report) indicating what recovery was performed.
-    #[cfg(feature = "persistent-artrie")]
     pub fn open_with_recovery_config<P: AsRef<Path>>(
         path: P,
         config: super::wal::WalConfig,
@@ -1136,7 +1101,6 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
     ///
     /// # Returns
     /// Tuple of (TrieRoot, term_count) on success.
-    #[cfg(feature = "persistent-artrie")]
     fn load_root_from_disk(
         disk_manager: &super::disk_manager::DiskManager,
         root_ptr: u64,
@@ -1248,7 +1212,6 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
     ///
     /// # Returns
     /// Tuple of (Node, Vec<(u8, ChildNode)>) representing the node and its children.
-    #[cfg(feature = "persistent-artrie")]
     fn load_art_node_with_children(
         disk_manager: &super::disk_manager::DiskManager,
         node_ptr: &SwizzledPtr,
@@ -1283,7 +1246,6 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
     ///
     /// This method examines the SwizzledPtr's node type to determine whether
     /// the child is a bucket or an ART node, and loads it appropriately.
-    #[cfg(feature = "persistent-artrie")]
     fn load_child_from_disk(
         disk_manager: &super::disk_manager::DiskManager,
         child_ptr: &SwizzledPtr,
@@ -1356,7 +1318,6 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
     ///
     /// # Returns
     /// Tuple of (TrieRoot, term_count) on success.
-    #[cfg(feature = "persistent-artrie")]
     fn load_root_from_disk_with_arena(
         buffer_manager: &Arc<RwLock<BufferManager>>,
         arena_manager: &Arc<RwLock<ArenaManager>>,
@@ -1469,7 +1430,6 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
     ///
     /// # Returns
     /// Tuple of (Node, Vec<(u8, ChildNode)>) representing the node and its children.
-    #[cfg(feature = "persistent-artrie")]
     fn load_art_node_with_children_from_arena(
         arena_manager: &Arc<RwLock<ArenaManager>>,
         node_ptr: &SwizzledPtr,
@@ -1517,7 +1477,6 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
     /// Load a child node (bucket or ART node) from arena.
     ///
     /// This version uses ArenaManager to read data from arena slots.
-    #[cfg(feature = "persistent-artrie")]
     fn load_child_from_disk_with_arena(
         arena_manager: &Arc<RwLock<ArenaManager>>,
         child_ptr: &SwizzledPtr,
@@ -1596,7 +1555,6 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
     ///
     /// This is a helper for iterative loading. Returns the node info and
     /// the list of child pointers that need to be loaded.
-    #[cfg(feature = "persistent-artrie")]
     fn load_single_art_node_data(
         arena_manager: &Arc<RwLock<ArenaManager>>,
         node_ptr: &SwizzledPtr,
@@ -1635,7 +1593,6 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
     ///
     /// Returns either a complete Bucket (no children) or the components needed
     /// to build an ArtNode (node, is_final, child pointers).
-    #[cfg(feature = "persistent-artrie")]
     fn load_single_child_data(
         arena_manager: &Arc<RwLock<ArenaManager>>,
         child_ptr: &SwizzledPtr,
@@ -1696,7 +1653,6 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
     ///
     /// 1. **Phase 1**: Load all nodes into a vector (without connecting children)
     /// 2. **Phase 2**: Connect children to parents in reverse order (bottom-up)
-    #[cfg(feature = "persistent-artrie")]
     fn load_art_node_with_children_from_arena_iterative(
         arena_manager: &Arc<RwLock<ArenaManager>>,
         root_node_ptr: &SwizzledPtr,
@@ -1892,7 +1848,6 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
     /// let inserted = dict.insert_batch(&entries);
     /// println!("Inserted {} new terms", inserted);
     /// ```
-    #[cfg(feature = "persistent-artrie")]
     pub fn insert_batch(&mut self, entries: &[(String, Option<V>)]) -> usize {
         if entries.is_empty() {
             return 0;
@@ -1942,7 +1897,6 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
     /// # Returns
     ///
     /// The number of terms that were newly inserted.
-    #[cfg(feature = "persistent-artrie")]
     pub fn insert_batch_bytes(&mut self, entries: &[(&[u8], Option<V>)]) -> usize {
         if entries.is_empty() {
             return 0;
@@ -1993,7 +1947,6 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
     /// # Returns
     ///
     /// The number of terms that were newly inserted.
-    #[cfg(feature = "persistent-artrie")]
     pub fn insert_batch_sorted(&mut self, mut entries: Vec<(String, Option<V>)>) -> usize {
         if entries.is_empty() {
             return 0;
@@ -2022,7 +1975,6 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
     /// # Returns
     ///
     /// The number of terms that were newly inserted.
-    #[cfg(feature = "persistent-artrie")]
     pub fn insert_batch_bytes_sorted(&mut self, mut entries: Vec<(Vec<u8>, Option<V>)>) -> usize {
         if entries.is_empty() {
             return 0;
@@ -2070,7 +2022,6 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
     ///
     /// This provides arena locality without the overhead of tracking actual arena
     /// assignments, which would require traversal for each term.
-    #[cfg(feature = "persistent-artrie")]
     pub fn insert_batch_arena_grouped(&mut self, mut entries: Vec<(Vec<u8>, Option<V>)>) -> usize {
         if entries.is_empty() {
             return 0;
@@ -2103,7 +2054,6 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
     /// # Returns
     ///
     /// The number of terms that were newly inserted.
-    #[cfg(feature = "persistent-artrie")]
     pub fn insert_batch_grouped(&mut self, mut entries: Vec<(String, Option<V>)>) -> usize {
         if entries.is_empty() {
             return 0;
@@ -2247,7 +2197,6 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
     /// dict.insert("world");
     /// dict.sync()?; // Ensure both inserts are durable
     /// ```
-    #[cfg(feature = "persistent-artrie")]
     pub fn sync(&self) -> Result<()> {
         let inner = self.inner.read();
 
@@ -2281,7 +2230,6 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
     /// let after = trie.current_lsn();
     /// assert!(after > before);
     /// ```
-    #[cfg(feature = "persistent-artrie")]
     pub fn current_lsn(&self) -> Lsn {
         let inner = self.inner.read();
         // Use WAL's authoritative LSN if available, otherwise fall back to cached value
@@ -2308,7 +2256,6 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
     /// let synced = trie.synced_lsn();
     /// assert!(synced.is_some());
     /// ```
-    #[cfg(feature = "persistent-artrie")]
     pub fn synced_lsn(&self) -> Option<Lsn> {
         let inner = self.inner.read();
         inner.wal_writer.as_ref().map(|wal| {
@@ -2320,7 +2267,6 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
     ///
     /// The durability policy controls when fsync is called after WAL writes.
     /// See [`DurabilityPolicy`] for available options and their trade-offs.
-    #[cfg(feature = "persistent-artrie")]
     pub fn durability_policy(&self) -> DurabilityPolicy {
         self.inner.read().durability_policy
     }
@@ -2344,7 +2290,6 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
     /// // Use periodic sync for better performance (accepts bounded data loss)
     /// dict.set_durability_policy(DurabilityPolicy::Periodic);
     /// ```
-    #[cfg(feature = "persistent-artrie")]
     pub fn set_durability_policy(&mut self, policy: DurabilityPolicy) {
         self.inner.write().durability_policy = policy;
     }
@@ -2353,13 +2298,11 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
     ///
     /// Returns atomic counters for reads, writes, cache hits/misses, etc.
     /// Useful for monitoring and debugging.
-    #[cfg(feature = "persistent-artrie")]
     pub fn stats(&self) -> super::concurrency::TrieStatsSnapshot {
         self.inner.read().stats.snapshot()
     }
 
     /// Get a reference to the stats tracker for direct recording.
-    #[cfg(feature = "persistent-artrie")]
     pub fn stats_tracker(&self) -> Arc<super::concurrency::TrieStats> {
         Arc::clone(&self.inner.read().stats)
     }
@@ -2368,13 +2311,11 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
     ///
     /// This should be called periodically by a background thread to
     /// enable garbage collection of old versions.
-    #[cfg(feature = "persistent-artrie")]
     pub fn advance_epoch(&self) -> u64 {
         self.inner.read().epoch_manager.advance()
     }
 
     /// Get the current MVCC epoch.
-    #[cfg(feature = "persistent-artrie")]
     pub fn current_epoch(&self) -> u64 {
         self.inner.read().epoch_manager.current_epoch()
     }
@@ -2396,7 +2337,6 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
     /// After a checkpoint, recovery only needs to replay WAL records with
     /// LSN > checkpoint_lsn, as earlier operations are already in the
     /// persistent trie structure.
-    #[cfg(feature = "persistent-artrie")]
     pub fn checkpoint(&mut self) -> Result<()> {
         use super::wal::WalRecord;
 
@@ -2449,7 +2389,6 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
     /// let stats = dict.prefetch_stats();
     /// println!("Prefetch hit rate: {:.1}%", stats.hit_rate() * 100.0);
     /// ```
-    #[cfg(feature = "persistent-artrie")]
     pub fn prefetch_stats(&self) -> super::prefetch::PrefetchStatsSnapshot {
         let inner = self.inner.read();
         inner.prefetcher.stats().snapshot()
@@ -2475,6 +2414,7 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
 }
 
 impl<V: DictionaryValue> Default for PersistentARTrie<V> {
+    #[allow(deprecated)]
     fn default() -> Self {
         Self::new()
     }
@@ -2484,7 +2424,6 @@ impl<V: DictionaryValue> PersistentARTrieInner<V> {
     /// Insert implementation with WAL logging (for persistent mode).
     fn insert_impl(&mut self, term: &[u8], value: Option<V>) -> bool {
         // Clone value for WAL logging if needed (before move into core)
-        #[cfg(feature = "persistent-artrie")]
         let value_for_wal = value.clone();
 
         // Perform the actual insert
@@ -2492,7 +2431,6 @@ impl<V: DictionaryValue> PersistentARTrieInner<V> {
 
         // Log to WAL if insert was successful OR if we're updating an existing term's value
         // We need to log value updates even when the term already exists (inserted = false)
-        #[cfg(feature = "persistent-artrie")]
         if inserted || value_for_wal.is_some() {
             if let Some(ref wal_writer) = self.wal_writer {
                 use super::wal::WalRecord;
@@ -2526,10 +2464,7 @@ impl<V: DictionaryValue> PersistentARTrieInner<V> {
     fn insert_impl_core(&mut self, term: &[u8], value: Option<V>) -> bool {
         // Clone buffer manager reference before mutable borrow of self.root
         // This is needed to resolve DiskRef nodes during mutation
-        #[cfg(feature = "persistent-artrie")]
         let buffer_manager = self.buffer_manager.clone();
-        #[cfg(not(feature = "persistent-artrie"))]
-        let buffer_manager: Option<()> = None;
 
         let inserted = match &mut self.root {
             TrieRoot::Bucket(bucket) => {
@@ -2537,13 +2472,10 @@ impl<V: DictionaryValue> PersistentARTrieInner<V> {
                 let value_for_retry = value.clone();
 
                 // Serialize value for bucket storage
-                #[cfg(feature = "persistent-artrie")]
                 let serialized_value: Option<Vec<u8>> = value.and_then(|v| {
                     bincode::serialize(&v).ok()
                 });
 
-                #[cfg(not(feature = "persistent-artrie"))]
-                let serialized_value: Option<Vec<u8>> = None;
 
                 let result = if let Some(ref val_bytes) = serialized_value {
                     bucket.insert(term, val_bytes)
@@ -2575,13 +2507,10 @@ impl<V: DictionaryValue> PersistentARTrieInner<V> {
                 value: root_value,
             } => {
                 // Serialize value for bucket storage (same as root bucket case)
-                #[cfg(feature = "persistent-artrie")]
                 let serialized_value: Option<Vec<u8>> = value.clone().and_then(|v| {
                     bincode::serialize(&v).ok()
                 });
 
-                #[cfg(not(feature = "persistent-artrie"))]
-                let serialized_value: Option<Vec<u8>> = None;
 
                 if term.is_empty() {
                     // Inserting empty string
@@ -2652,7 +2581,6 @@ impl<V: DictionaryValue> PersistentARTrieInner<V> {
         let removed = self.remove_impl_core(term);
 
         // Log to WAL if remove was successful and we have a WAL writer
-        #[cfg(feature = "persistent-artrie")]
         if removed {
             if let Some(ref wal_writer) = self.wal_writer {
                 use super::wal::WalRecord;
@@ -2673,10 +2601,7 @@ impl<V: DictionaryValue> PersistentARTrieInner<V> {
     fn remove_impl_core(&mut self, term: &[u8]) -> bool {
         // Clone buffer manager reference before mutable borrow of self.root
         // This is needed to resolve DiskRef nodes during mutation
-        #[cfg(feature = "persistent-artrie")]
         let buffer_manager = self.buffer_manager.clone();
-        #[cfg(not(feature = "persistent-artrie"))]
-        let buffer_manager: Option<()> = None;
 
         let removed = match &mut self.root {
             TrieRoot::Bucket(bucket) => bucket.remove(term).is_some(),
@@ -2783,7 +2708,6 @@ impl<V: DictionaryValue> PersistentARTrieInner<V> {
     ///
     /// This is used during WAL recovery to avoid re-logging operations
     /// that are already in the WAL.
-    #[cfg(feature = "persistent-artrie")]
     fn insert_impl_no_wal(&mut self, term: &[u8], value: Option<V>) -> bool {
         // Call core implementation directly to skip WAL logging
         self.insert_impl_core(term, value)
@@ -2793,7 +2717,6 @@ impl<V: DictionaryValue> PersistentARTrieInner<V> {
     ///
     /// This is used during WAL recovery to avoid re-logging operations
     /// that are already in the WAL.
-    #[cfg(feature = "persistent-artrie")]
     fn remove_impl_no_wal(&mut self, term: &[u8]) -> bool {
         // Call core implementation directly to skip WAL logging
         self.remove_impl_core(term)
@@ -2803,7 +2726,6 @@ impl<V: DictionaryValue> PersistentARTrieInner<V> {
     ///
     /// This updates the value if the term exists, or inserts if it doesn't.
     /// Used during WAL recovery to replay Upsert, Increment, and CAS operations.
-    #[cfg(feature = "persistent-artrie")]
     fn upsert_impl_no_wal(&mut self, term: &[u8], value: V) {
         // First remove existing entry (if any) to allow update
         self.remove_impl_core(term);
@@ -2834,7 +2756,6 @@ impl<V: DictionaryValue> PersistentARTrieInner<V> {
                 let remaining = &term[1..];
 
                 // Prefetch DiskRef children at the root level (depth 0)
-                #[cfg(feature = "persistent-artrie")]
                 self.prefetch_disk_refs_bounded(children, 0);
 
                 // Find child with matching first byte
@@ -2854,7 +2775,6 @@ impl<V: DictionaryValue> PersistentARTrieInner<V> {
     /// `None` if the term doesn't exist or has no value.
     ///
     /// Uses multi-level prefetching for better I/O performance on disk-resident tries.
-    #[cfg(feature = "persistent-artrie")]
     fn get_value_impl(&self, term: &[u8]) -> Option<V> {
         match &self.root {
             TrieRoot::Bucket(bucket) => {
@@ -2907,7 +2827,6 @@ impl<V: DictionaryValue> PersistentARTrieInner<V> {
     }
 
     /// Get value from a child node.
-    #[cfg(feature = "persistent-artrie")]
     fn get_value_in_child(&self, child: &ChildNode, remaining: &[u8]) -> Option<V> {
         self.get_value_in_child_with_depth(child, remaining, 0)
     }
@@ -2919,7 +2838,6 @@ impl<V: DictionaryValue> PersistentARTrieInner<V> {
     /// * `child` - The child node to search
     /// * `remaining` - The remaining term bytes to match
     /// * `depth` - Current traversal depth (increments with each level)
-    #[cfg(feature = "persistent-artrie")]
     fn get_value_in_child_with_depth(&self, child: &ChildNode, remaining: &[u8], depth: u16) -> Option<V> {
         match child {
             ChildNode::Bucket(bucket) => {
@@ -3014,7 +2932,6 @@ impl<V: DictionaryValue> PersistentARTrieInner<V> {
                 let rest = &remaining[1..];
 
                 // Multi-level prefetch with depth bounds
-                #[cfg(feature = "persistent-artrie")]
                 self.prefetch_disk_refs_bounded(children, depth);
 
                 // Recursively search in children with incremented depth
@@ -3028,7 +2945,6 @@ impl<V: DictionaryValue> PersistentARTrieInner<V> {
             ChildNode::DiskRef { ptr } => {
                 // Lazy load from disk
                 if let Some(disk_location) = ptr.disk_location() {
-                    #[cfg(feature = "persistent-artrie")]
                     if let Ok(resolved) = self.resolve_disk_ref(&disk_location) {
                         return self.contains_in_child_with_depth(&resolved, remaining, depth);
                     }
@@ -3042,7 +2958,6 @@ impl<V: DictionaryValue> PersistentARTrieInner<V> {
     ///
     /// This hints the prefetcher to start loading disk-resident children
     /// in the background while we process the current node.
-    #[cfg(feature = "persistent-artrie")]
     fn prefetch_disk_refs(&self, children: &[(u8, ChildNode)]) {
         self.prefetch_disk_refs_bounded(children, 0);
     }
@@ -3064,7 +2979,6 @@ impl<V: DictionaryValue> PersistentARTrieInner<V> {
     ///
     /// * `children` - The children to potentially prefetch
     /// * `depth` - Current traversal depth (0 = root level)
-    #[cfg(feature = "persistent-artrie")]
     fn prefetch_disk_refs_bounded(&self, children: &[(u8, ChildNode)], depth: u16) {
         // Collect SwizzledPtr references for disk-resident children
         let disk_children: Vec<(u8, super::swizzled_ptr::SwizzledPtr)> = children
@@ -3096,7 +3010,6 @@ impl<V: DictionaryValue> PersistentARTrieInner<V> {
     ///
     /// # Returns
     /// The resolved ChildNode, or an error if loading failed.
-    #[cfg(feature = "persistent-artrie")]
     pub(super) fn resolve_disk_ref(&self, disk_location: &DiskLocation) -> Result<ChildNode> {
         // Get buffer manager (required for disk I/O)
         let buffer_manager = self.buffer_manager.as_ref().ok_or_else(|| {
@@ -3144,21 +3057,11 @@ impl<V: DictionaryValue> PersistentARTrieInner<V> {
     /// Check if a child needs lazy loading and resolve it if necessary.
     ///
     /// This is a no-op without the persistent-artrie feature.
-    #[cfg(not(feature = "persistent-artrie"))]
-    #[inline]
-    fn resolve_child_if_needed(&self, child: &ChildNode) -> Option<ChildNode> {
-        // Without persistent-artrie, DiskRef variants should never exist
-        match child {
-            ChildNode::DiskRef { .. } => None, // Should never happen
-            _ => None, // No resolution needed for in-memory nodes
-        }
-    }
 
     /// Check if a child needs lazy loading and resolve it if necessary.
     ///
     /// Returns Some(resolved_child) if the child was a DiskRef that was successfully
     /// resolved, or None if no resolution was needed (already in memory).
-    #[cfg(feature = "persistent-artrie")]
     fn resolve_child_if_needed(&self, child: &ChildNode) -> Option<ChildNode> {
         match child {
             ChildNode::DiskRef { ptr } => {
@@ -3185,7 +3088,6 @@ impl<V: DictionaryValue> PersistentARTrieInner<V> {
     /// # Returns
     /// * `true` if the child is now in memory (either already was, or successfully resolved)
     /// * `false` if the child was a DiskRef that failed to resolve
-    #[cfg(feature = "persistent-artrie")]
     fn resolve_child_for_mutation(&self, child: &mut ChildNode) -> bool {
         resolve_child_for_mutation_with_bm(child, self.buffer_manager.as_ref())
     }
@@ -3195,10 +3097,6 @@ impl<V: DictionaryValue> PersistentARTrieInner<V> {
     /// Without the persistent-artrie feature, DiskRef nodes should never exist.
     /// This returns false for DiskRef (indicating an error state) and true for
     /// all other node types.
-    #[cfg(not(feature = "persistent-artrie"))]
-    fn resolve_child_for_mutation(&self, child: &mut ChildNode) -> bool {
-        !matches!(child, ChildNode::DiskRef { .. })
-    }
 
     /// Check if child slots are consecutive in the same arena.
     ///
@@ -3212,7 +3110,6 @@ impl<V: DictionaryValue> PersistentARTrieInner<V> {
     ///
     /// # Returns
     /// `Some(first_child_slot)` if children are consecutive, `None` otherwise.
-    #[cfg(feature = "persistent-artrie")]
     fn check_sequential_children(node: &Node, parent_arena_id: u32) -> Option<ArenaSlot> {
         // Collect all non-null children
         let mut child_slots: Vec<ArenaSlot> = Vec::new();
@@ -3264,7 +3161,6 @@ impl<V: DictionaryValue> PersistentARTrieInner<V> {
     /// The SwizzledPtr uses:
     /// - arena_id as block_id (23 bits, up to 8M arenas)
     /// - slot_id as offset (22 bits, up to 4M slots per arena)
-    #[cfg(feature = "persistent-artrie")]
     fn serialize_bucket_to_disk(&self, bucket: &StringBucket) -> Result<SwizzledPtr> {
         // Get arena manager
         let arena_manager = self.arena_manager.as_ref().ok_or_else(|| {
@@ -3307,7 +3203,6 @@ impl<V: DictionaryValue> PersistentARTrieInner<V> {
     ///
     /// If the parent would overflow to a new arena (breaking same-arena locality),
     /// falls back to v1 serialization with absolute pointers.
-    #[cfg(feature = "persistent-artrie")]
     fn serialize_node_to_disk(&self, node: &Node) -> Result<SwizzledPtr> {
         // Get arena manager
         let arena_manager = self.arena_manager.as_ref().ok_or_else(|| {
@@ -3386,7 +3281,6 @@ impl<V: DictionaryValue> PersistentARTrieInner<V> {
     /// # Returns
     ///
     /// `Ok(())` on success, or an error if serialization fails.
-    #[cfg(feature = "persistent-artrie")]
     pub fn persist_to_disk(&mut self) -> Result<()> {
 
         // Get buffer manager and arena manager
@@ -3496,7 +3390,6 @@ impl<V: DictionaryValue> PersistentARTrieInner<V> {
     }
 
     /// Serialize a ChildNode to disk and return its SwizzledPtr.
-    #[cfg(feature = "persistent-artrie")]
     fn serialize_child_to_disk(&self, child: &ChildNode) -> Result<SwizzledPtr> {
         match child {
             ChildNode::Bucket(bucket) => self.serialize_bucket_to_disk(bucket),
@@ -3556,7 +3449,6 @@ impl<V: DictionaryValue> PersistentARTrieInner<V> {
     /// - `Ok(Some((child, arena_id)))` - The child at the prefix and its arena location
     /// - `Ok(None)` - The prefix path doesn't exist
     /// - `Err` - An I/O error occurred during lazy loading
-    #[cfg(feature = "persistent-artrie")]
     fn navigate_to_prefix_with_arena(
         &self,
         prefix: &[u8],
@@ -3650,7 +3542,6 @@ impl<V: DictionaryValue> PersistentARTrieInner<V> {
     /// # Returns
     ///
     /// `Ok(true)` if the limit was reached, `Ok(false)` otherwise.
-    #[cfg(feature = "persistent-artrie")]
     fn collect_terms_with_arena(
         &self,
         child: &ChildNode,
@@ -3747,7 +3638,6 @@ impl<V: DictionaryValue> PersistentARTrieInner<V> {
     /// This method performs a DFS traversal, recording each final node's term,
     /// value, and the arena where it resides. Used for page-locality optimized
     /// merge operations.
-    #[cfg(feature = "persistent-artrie")]
     fn collect_terms_with_values_and_arena(
         &self,
         child: &ChildNode,
@@ -3870,7 +3760,6 @@ impl<V: DictionaryValue> PersistentARTrieInner<V> {
     /// - `Ok(Some(vec))` - Vector of terms with arena info
     /// - `Ok(None)` - The prefix path doesn't exist
     /// - `Err` - An I/O error occurred
-    #[cfg(feature = "persistent-artrie")]
     pub fn iter_prefix_with_arena(
         &self,
         prefix: &[u8],
@@ -4020,7 +3909,6 @@ impl<V: DictionaryValue> PersistentARTrieInner<V> {
     ///
     /// Returns all (term, value, arena_id) tuples matching the prefix.
     /// This enables page-locality optimized merge operations.
-    #[cfg(feature = "persistent-artrie")]
     pub fn iter_prefix_with_values_and_arena(
         &self,
         prefix: &[u8],
@@ -4197,7 +4085,6 @@ impl<V: DictionaryValue> PersistentARTrieInner<V> {
     /// # Returns
     ///
     /// The number of terms processed from `other`.
-    #[cfg(feature = "persistent-artrie")]
     pub fn merge_from<F>(&mut self, other: &Self, merge_fn: F) -> Result<usize>
     where
         F: Fn(&V, &V) -> V,
@@ -4252,7 +4139,6 @@ impl<V: DictionaryValue> PersistentARTrieInner<V> {
     /// # Returns
     ///
     /// The number of terms processed from `other`.
-    #[cfg(feature = "persistent-artrie")]
     pub fn merge_replace(&mut self, other: &Self) -> Result<usize>
     where
         V: Clone,
@@ -4279,7 +4165,6 @@ impl<V: DictionaryValue> PersistentARTrieInner<V> {
     ///
     /// Peak memory is bounded by approximately `batch_size * (avg_term_len + avg_value_size)`.
     /// For 10,000 terms with 28-byte average terms and 100-byte values, this is ~1.3MB.
-    #[cfg(feature = "persistent-artrie")]
     pub fn merge_from_batched<F>(
         &mut self,
         other: &Self,
@@ -4313,7 +4198,6 @@ impl<V: DictionaryValue> PersistentARTrieInner<V> {
     /// # Returns
     ///
     /// The total number of terms processed from `other`.
-    #[cfg(feature = "persistent-artrie")]
     pub fn merge_from_batched_grouped<F>(
         &mut self,
         other: &Self,
@@ -4339,7 +4223,6 @@ impl<V: DictionaryValue> PersistentARTrieInner<V> {
     /// # Returns
     ///
     /// The total number of terms processed from `other`.
-    #[cfg(feature = "persistent-artrie")]
     fn merge_from_batched_with_options<F>(
         &mut self,
         other: &Self,
@@ -4422,7 +4305,6 @@ impl<V: DictionaryValue> PersistentARTrieInner<V> {
     ///
     /// A vector of terms (sorted lexicographically) starting after the cursor,
     /// up to the specified limit.
-    #[cfg(feature = "persistent-artrie")]
     pub fn iter_prefix_from_cursor(
         &self,
         prefix: &[u8],
@@ -4446,7 +4328,6 @@ impl<V: DictionaryValue> PersistentARTrieInner<V> {
     }
 
     /// Helper to collect terms from a cursor position.
-    #[cfg(feature = "persistent-artrie")]
     fn collect_terms_from_cursor(
         &self,
         prefix: &[u8],
@@ -4556,7 +4437,6 @@ impl<V: DictionaryValue> PersistentARTrieInner<V> {
     }
 
     /// Collect terms from a child node with cursor filtering.
-    #[cfg(feature = "persistent-artrie")]
     fn collect_terms_with_cursor_and_arena(
         &self,
         child: &ChildNode,
@@ -4874,10 +4754,7 @@ impl<V: DictionaryValue> TermIterator<V> {
                 ..
             } => {
                 // Serialize value if present
-                #[cfg(feature = "persistent-artrie")]
                 let value_bytes = value.as_ref().and_then(|v| bincode::serialize(v).ok());
-                #[cfg(not(feature = "persistent-artrie"))]
-                let value_bytes: Option<Vec<u8>> = None;
                 let _ = value; // Silence unused warning
 
                 stack.push(IterState::ArtNode {
@@ -5033,10 +4910,7 @@ impl<V: DictionaryValue> TermValueIterator<V> {
                 children,
                 ..
             } => {
-                #[cfg(feature = "persistent-artrie")]
                 let value_bytes = value.as_ref().and_then(|v| bincode::serialize(v).ok());
-                #[cfg(not(feature = "persistent-artrie"))]
-                let value_bytes: Option<Vec<u8>> = None;
                 let _ = value;
 
                 stack.push(IterState::ArtNode {
@@ -5076,12 +4950,9 @@ impl<V: DictionaryValue> Iterator for TermValueIterator<V> {
                         term.extend_from_slice(suffix);
 
                         // Deserialize value if present
-                        #[cfg(feature = "persistent-artrie")]
                         let value: Option<V> = value_bytes
                             .as_ref()
                             .and_then(|bytes| bincode::deserialize(bytes).ok());
-                        #[cfg(not(feature = "persistent-artrie"))]
-                        let value: Option<V> = None;
                         let _ = value_bytes;
 
                         *index += 1;
@@ -5101,12 +4972,9 @@ impl<V: DictionaryValue> Iterator for TermValueIterator<V> {
                     if *is_final && !*yielded_final {
                         *yielded_final = true;
 
-                        #[cfg(feature = "persistent-artrie")]
                         let value: Option<V> = value_bytes
                             .as_ref()
                             .and_then(|bytes| bincode::deserialize(bytes).ok());
-                        #[cfg(not(feature = "persistent-artrie"))]
-                        let value: Option<V> = None;
                         let _ = value_bytes;
 
                         return Some((prefix.clone(), value));
@@ -5333,7 +5201,6 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
     /// - `Ok(Some(vec))` - Vector of terms with arena info
     /// - `Ok(None)` - The prefix path doesn't exist
     /// - `Err` - An I/O error occurred
-    #[cfg(feature = "persistent-artrie")]
     pub fn iter_prefix_with_arena(
         &self,
         prefix: &[u8],
@@ -5356,7 +5223,6 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
     /// - `Ok(Some(vec))` - Vector of terms with values and arena info
     /// - `Ok(None)` - The prefix path doesn't exist
     /// - `Err` - An I/O error occurred
-    #[cfg(feature = "persistent-artrie")]
     pub fn iter_prefix_with_values_and_arena(
         &self,
         prefix: &[u8],
@@ -5382,7 +5248,6 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
     /// # Returns
     ///
     /// The number of terms processed from `other`.
-    #[cfg(feature = "persistent-artrie")]
     pub fn merge_from<F>(&self, other: &Self, merge_fn: F) -> Result<usize>
     where
         F: Fn(&V, &V) -> V,
@@ -5405,7 +5270,6 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
     /// # Returns
     ///
     /// The number of terms processed from `other`.
-    #[cfg(feature = "persistent-artrie")]
     pub fn merge_replace(&self, other: &Self) -> Result<usize>
     where
         V: Clone,
@@ -5432,7 +5296,6 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
     ///
     /// Peak memory is bounded by approximately `batch_size * (avg_term_len + avg_value_size)`.
     /// For 10,000 terms with 28-byte average terms and 100-byte values, this is ~1.3MB.
-    #[cfg(feature = "persistent-artrie")]
     pub fn merge_from_batched<F>(
         &self,
         other: &Self,
@@ -5468,7 +5331,6 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
     /// # Returns
     ///
     /// The total number of terms processed from `other`.
-    #[cfg(feature = "persistent-artrie")]
     pub fn merge_from_batched_grouped<F>(
         &self,
         other: &Self,
@@ -5499,7 +5361,6 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
     ///
     /// A vector of terms (sorted lexicographically) starting after the cursor,
     /// up to the specified limit.
-    #[cfg(feature = "persistent-artrie")]
     pub fn iter_prefix_from_cursor(
         &self,
         prefix: &[u8],
@@ -5650,7 +5511,6 @@ impl<V: DictionaryValue + serde::Serialize + serde::de::DeserializeOwned> Persis
     /// trie.tx_insert(&mut tx, "term1", Some(1));
     /// trie.commit_document(tx)?;
     /// ```
-    #[cfg(feature = "persistent-artrie")]
     pub fn begin_document(&self, document_id: &str) -> Result<DocumentTransaction<V>> {
         // Generate a unique transaction ID
         let tx_id = {
@@ -5694,7 +5554,6 @@ impl<V: DictionaryValue + serde::Serialize + serde::de::DeserializeOwned> Persis
     /// # Panics
     ///
     /// Panics if the transaction is not in Active state.
-    #[cfg(feature = "persistent-artrie")]
     pub fn tx_insert(&self, tx: &mut DocumentTransaction<V>, term: &str, value: Option<V>) {
         self.tx_insert_bytes(tx, term.as_bytes(), value);
     }
@@ -5702,7 +5561,6 @@ impl<V: DictionaryValue + serde::Serialize + serde::de::DeserializeOwned> Persis
     /// Buffer a term (as bytes) in a document transaction.
     ///
     /// See [`tx_insert`](Self::tx_insert) for details.
-    #[cfg(feature = "persistent-artrie")]
     pub fn tx_insert_bytes(&self, tx: &mut DocumentTransaction<V>, term: &[u8], value: Option<V>) {
         assert!(
             tx.state == TransactionState::Active,
@@ -5733,7 +5591,6 @@ impl<V: DictionaryValue + serde::Serialize + serde::de::DeserializeOwned> Persis
     /// # Returns
     ///
     /// The number of terms successfully inserted.
-    #[cfg(feature = "persistent-artrie")]
     pub fn commit_document(&mut self, mut tx: DocumentTransaction<V>) -> Result<usize>
     where
         V: Clone,
@@ -5804,7 +5661,6 @@ impl<V: DictionaryValue + serde::Serialize + serde::de::DeserializeOwned> Persis
     /// # Arguments
     ///
     /// * `tx` - The transaction to abort (consumed)
-    #[cfg(feature = "persistent-artrie")]
     pub fn abort_document(&self, mut tx: DocumentTransaction<V>) -> Result<()> {
         if tx.state != TransactionState::Active {
             return Err(PersistentARTrieError::InvalidOperation(format!(
@@ -5874,7 +5730,6 @@ impl<V: DictionaryValue + serde::Serialize + serde::de::DeserializeOwned> Persis
     /// assert_eq!(dict.increment("counter", 5)?, 6);
     /// assert_eq!(dict.increment("counter", -2)?, 4);
     /// ```
-    #[cfg(feature = "persistent-artrie")]
     pub fn increment(&self, term: &str, delta: i64) -> super::error::Result<i64> {
         self.increment_bytes(term.as_bytes(), delta)
     }
@@ -5882,7 +5737,6 @@ impl<V: DictionaryValue + serde::Serialize + serde::de::DeserializeOwned> Persis
     /// Atomically increment a value by term bytes.
     ///
     /// See [`increment`](Self::increment) for details.
-    #[cfg(feature = "persistent-artrie")]
     pub fn increment_bytes(&self, term: &[u8], delta: i64) -> super::error::Result<i64> {
         let mut inner = self.inner.write();
 
@@ -5959,7 +5813,6 @@ impl<V: DictionaryValue + serde::Serialize + serde::de::DeserializeOwned> Persis
     /// // Update existing term
     /// assert!(!dict.upsert("greeting", "hi".to_string())?);
     /// ```
-    #[cfg(feature = "persistent-artrie")]
     pub fn upsert(&self, term: &str, value: V) -> super::error::Result<bool> {
         self.upsert_bytes(term.as_bytes(), value)
     }
@@ -5967,7 +5820,6 @@ impl<V: DictionaryValue + serde::Serialize + serde::de::DeserializeOwned> Persis
     /// Atomically upsert by term bytes.
     ///
     /// See [`upsert`](Self::upsert) for details.
-    #[cfg(feature = "persistent-artrie")]
     pub fn upsert_bytes(&self, term: &[u8], value: V) -> super::error::Result<bool> {
         let mut inner = self.inner.write();
 
@@ -6025,7 +5877,6 @@ impl<V: DictionaryValue + serde::Serialize + serde::de::DeserializeOwned> Persis
     /// // CAS fails when expected doesn't match
     /// assert!(!dict.compare_and_swap("counter", Some(0), 2)?);
     /// ```
-    #[cfg(feature = "persistent-artrie")]
     pub fn compare_and_swap(
         &self,
         term: &str,
@@ -6038,7 +5889,6 @@ impl<V: DictionaryValue + serde::Serialize + serde::de::DeserializeOwned> Persis
     /// Atomically compare and swap by term bytes.
     ///
     /// See [`compare_and_swap`](Self::compare_and_swap) for details.
-    #[cfg(feature = "persistent-artrie")]
     pub fn compare_and_swap_bytes(
         &self,
         term: &[u8],
@@ -6100,7 +5950,6 @@ impl<V: DictionaryValue + serde::Serialize + serde::de::DeserializeOwned> Persis
     /// let old = dict.fetch_add("counter", 3)?; // old = 5, new value = 8
     /// assert_eq!(old, 5);
     /// ```
-    #[cfg(feature = "persistent-artrie")]
     pub fn fetch_add(&self, term: &str, delta: i64) -> super::error::Result<i64> {
         let new_value = self.increment(term, delta)?;
         Ok(new_value - delta) // Return the old value
@@ -6124,7 +5973,6 @@ impl<V: DictionaryValue + serde::Serialize + serde::de::DeserializeOwned> Persis
     /// let v = dict.get_or_insert("key", 100)?;
     /// assert_eq!(v, 42);
     /// ```
-    #[cfg(feature = "persistent-artrie")]
     pub fn get_or_insert(&self, term: &str, default: V) -> super::error::Result<V> {
         self.get_or_insert_bytes(term.as_bytes(), default)
     }
@@ -6132,7 +5980,6 @@ impl<V: DictionaryValue + serde::Serialize + serde::de::DeserializeOwned> Persis
     /// Get or insert by term bytes.
     ///
     /// See [`get_or_insert`](Self::get_or_insert) for details.
-    #[cfg(feature = "persistent-artrie")]
     pub fn get_or_insert_bytes(&self, term: &[u8], default: V) -> super::error::Result<V> {
         let mut inner = self.inner.write();
 
@@ -6161,12 +6008,154 @@ impl<V: DictionaryValue + serde::Serialize + serde::de::DeserializeOwned> Persis
     }
 }
 
+// ============================================================================
+// ARTrie Trait Implementation
+// ============================================================================
+
+impl<V: DictionaryValue> crate::artrie_trait::ARTrie for PersistentARTrie<V> {
+    type Unit = u8;
+    type Value = V;
+
+    fn create<P: AsRef<Path>>(path: P) -> Result<Self> {
+        PersistentARTrie::create(path)
+    }
+
+    fn create_with_slot_tracking<P: AsRef<Path>>(path: P) -> Result<Self> {
+        PersistentARTrie::create_with_slot_tracking(path)
+    }
+
+    fn open<P: AsRef<Path>>(path: P) -> Result<Self> {
+        PersistentARTrie::open(path)
+    }
+
+    fn open_with_slot_tracking<P: AsRef<Path>>(path: P) -> Result<Self> {
+        PersistentARTrie::open_with_slot_tracking(path)
+    }
+
+    fn open_with_recovery<P: AsRef<Path>>(path: P) -> Result<(Self, super::recovery::RecoveryReport)> {
+        PersistentARTrie::open_with_recovery(path)
+    }
+
+    fn insert(&self, term: &str) -> bool
+    where
+        Self::Value: Default,
+    {
+        let mut inner = self.inner.write();
+        inner.insert_impl(term.as_bytes(), Some(V::default()))
+    }
+
+    fn insert_with_value(&self, term: &str, value: Self::Value) -> bool {
+        let mut inner = self.inner.write();
+        inner.insert_impl(term.as_bytes(), Some(value))
+    }
+
+    fn contains(&self, term: &str) -> bool {
+        let inner = self.inner.read();
+        inner.contains_impl(term.as_bytes())
+    }
+
+    fn get_value(&self, term: &str) -> Option<Self::Value> {
+        let inner = self.inner.read();
+        inner.get_value_impl(term.as_bytes())
+    }
+
+    fn remove(&self, term: &str) -> bool {
+        let mut inner = self.inner.write();
+        inner.remove_impl(term.as_bytes())
+    }
+
+    fn len(&self) -> usize {
+        let inner = self.inner.read();
+        inner.term_count
+    }
+
+    fn checkpoint(&self) -> Result<()> {
+        use super::wal::WalRecord;
+
+        // First, persist all in-memory data to disk
+        {
+            let mut inner = self.inner.write();
+            inner.persist_to_disk()?;
+        }
+
+        // Then write the checkpoint record to WAL
+        let inner = self.inner.read();
+
+        if let Some(ref wal_writer) = inner.wal_writer {
+            let wal = wal_writer.write();
+
+            // Get current LSN as checkpoint
+            let checkpoint_lsn = inner.next_lsn.saturating_sub(1);
+            let timestamp = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+
+            let record = WalRecord::Checkpoint {
+                checkpoint_lsn,
+                timestamp,
+            };
+
+            wal.append(record)?;
+            wal.sync()?;
+
+            // Truncate WAL after successful checkpoint - all operations are now persisted
+            wal.truncate()?;
+        }
+
+        Ok(())
+    }
+
+    fn is_dirty(&self) -> bool {
+        let inner = self.inner.read();
+        inner.dirty
+    }
+
+    fn remove_prefix(&self, prefix: &str) -> usize {
+        // Use batched removal for memory efficiency
+        let prefix_bytes = prefix.as_bytes();
+        let batch_size = 1024;
+        let mut total_removed = 0;
+
+        loop {
+            // Collect a batch of terms to remove using the byte-level inherent method
+            let batch: Vec<Vec<u8>> = PersistentARTrie::iter_prefix(self, prefix_bytes)
+                .map(|iter| iter.take(batch_size).collect())
+                .unwrap_or_default();
+
+            if batch.is_empty() {
+                break;
+            }
+
+            // Remove the batch
+            let mut inner = self.inner.write();
+            for term in batch {
+                if inner.remove_impl(&term) {
+                    total_removed += 1;
+                }
+            }
+        }
+
+        total_removed
+    }
+
+    fn iter_prefix(&self, prefix: &str) -> Option<Box<dyn Iterator<Item = String> + '_>> {
+        use crate::prefix_zipper::PrefixZipper;
+        use super::zipper::PersistentARTrieZipper;
+
+        let zipper = PersistentARTrieZipper::new_from_dict(self);
+        let prefix_iter = zipper.with_prefix(prefix.as_bytes())?;
+        Some(Box::new(prefix_iter.map(|(path, _)| {
+            String::from_utf8_lossy(&path).into_owned()
+        })))
+    }
+}
+
 /// Drop implementation for clean shutdown.
 ///
 /// Attempts a best-effort sync on drop to ensure data durability.
 /// This is not guaranteed to succeed (e.g., if locks are poisoned),
 /// but provides a safety net for normal program termination.
-#[cfg(feature = "persistent-artrie")]
 impl<V: DictionaryValue> Drop for PersistentARTrie<V> {
     fn drop(&mut self) {
         // Best-effort sync on close (sync_compat RwLock panics on poison)
@@ -6392,7 +6381,6 @@ mod tests {
         assert_eq!(dict2.len(), Some(1));
     }
 
-    #[cfg(feature = "persistent-artrie")]
     mod persistent_tests {
         use super::*;
         use tempfile::TempDir;
@@ -6523,7 +6511,6 @@ mod tests {
 
     // === Atomic Operations Tests ===
 
-    #[cfg(feature = "persistent-artrie")]
     mod atomic_ops_tests {
         use super::*;
         use tempfile::tempdir;
@@ -6854,7 +6841,6 @@ mod tests {
         // These are compile-time guarantees, not runtime checks.
     }
 
-    #[cfg(feature = "persistent-artrie")]
     mod sequential_siblings_tests {
         use super::*;
         use crate::persistent_artrie::arena_manager::ArenaSlot;
@@ -6988,7 +6974,6 @@ mod tests {
     // Arena-Aware and Disk-Paging Optimization Tests
     // ========================================================================
 
-    #[cfg(feature = "persistent-artrie")]
     mod optimization_tests {
         use super::*;
 
@@ -7232,7 +7217,6 @@ mod tests {
     // LSN API Tests
     // ========================================================================
 
-    #[cfg(feature = "persistent-artrie")]
     mod lsn_api_tests {
         use super::*;
         use tempfile::tempdir;

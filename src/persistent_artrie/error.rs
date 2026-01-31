@@ -335,7 +335,6 @@ impl PersistentARTrieError {
     }
 }
 
-#[cfg(feature = "persistent-artrie")]
 impl From<super::wal::WalError> for PersistentARTrieError {
     fn from(err: super::wal::WalError) -> Self {
         use super::wal::WalError;
@@ -374,7 +373,6 @@ impl From<super::wal::WalError> for PersistentARTrieError {
     }
 }
 
-#[cfg(feature = "persistent-artrie")]
 impl From<super::recovery::RecoveryError> for PersistentARTrieError {
     fn from(err: super::recovery::RecoveryError) -> Self {
         Self::InternalError {

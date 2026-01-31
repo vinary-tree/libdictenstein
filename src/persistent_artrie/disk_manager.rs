@@ -46,7 +46,6 @@ use std::io::{Seek, SeekFrom, Write as IoWrite};
 use std::path::Path;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
-#[cfg(feature = "persistent-artrie")]
 use memmap2::{MmapMut, MmapOptions};
 
 #[cfg(feature = "parking_lot")]
@@ -236,7 +235,6 @@ pub struct DiskManager {
     /// The underlying file
     file: File,
     /// Memory-mapped region (optional, for read-heavy workloads)
-    #[cfg(feature = "persistent-artrie")]
     mmap: Option<RwLock<MmapMut>>,
     /// Current file size in bytes
     file_size: AtomicU64,
@@ -268,7 +266,6 @@ impl DiskManager {
     ///   modifying the file between check and initialize
     /// - `create(true)` is appropriate (vs `create_new(true)`) because this
     ///   method intentionally supports both creation and opening existing files
-    #[cfg(feature = "persistent-artrie")]
     pub fn create<P: AsRef<Path>>(path: P) -> Result<Self> {
         let path_str = path.as_ref().to_string_lossy().to_string();
 
@@ -346,7 +343,6 @@ impl DiskManager {
     }
 
     /// Open an existing disk manager (file must exist)
-    #[cfg(feature = "persistent-artrie")]
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self> {
         let path_str = path.as_ref().to_string_lossy().to_string();
 
@@ -449,7 +445,6 @@ impl DiskManager {
     }
 
     /// Read the file header
-    #[cfg(feature = "persistent-artrie")]
     pub fn read_header(&self) -> Result<FileHeader> {
         let mmap_guard = self.mmap.as_ref().ok_or_else(|| {
             PersistentARTrieError::CorruptedFile {
@@ -482,7 +477,6 @@ impl DiskManager {
     }
 
     /// Write the file header
-    #[cfg(feature = "persistent-artrie")]
     pub fn write_header(&self, header: &FileHeader) -> Result<()> {
         let mmap_guard = self.mmap.as_ref().ok_or_else(|| {
             PersistentARTrieError::CorruptedFile {
@@ -512,7 +506,6 @@ impl DiskManager {
     /// # Returns
     /// * `Ok(block_id)` - The ID of the allocated block
     /// * `Err(PersistentARTrieError)` - Allocation failed
-    #[cfg(feature = "persistent-artrie")]
     pub fn allocate_block(&self) -> Result<u32> {
         // Try to get a block from the free list first
         let header = self.read_header()?;
@@ -575,7 +568,6 @@ impl DiskManager {
     }
 
     /// Free a block, adding it to the free list
-    #[cfg(feature = "persistent-artrie")]
     pub fn free_block(&self, block_id: u32) -> Result<()> {
         if block_id == 0 {
             return Err(PersistentARTrieError::InvalidBlockId {
@@ -615,7 +607,6 @@ impl DiskManager {
     }
 
     /// Read the next pointer from a free block
-    #[cfg(feature = "persistent-artrie")]
     fn read_free_block_next(&self, block_id: u32) -> Result<u64> {
         let offset = block_id as usize * BLOCK_SIZE;
 
@@ -651,7 +642,6 @@ impl DiskManager {
     }
 
     /// Write the next pointer to a free block
-    #[cfg(feature = "persistent-artrie")]
     fn write_free_block_next(&self, block_id: u32, next: u64) -> Result<()> {
         let offset = block_id as usize * BLOCK_SIZE;
 
@@ -683,7 +673,6 @@ impl DiskManager {
     }
 
     /// Remap the file after extending
-    #[cfg(feature = "persistent-artrie")]
     fn remap(&self, new_size: u64) -> Result<()> {
         let mmap_guard = self.mmap.as_ref().ok_or_else(|| {
             PersistentARTrieError::CorruptedFile {
@@ -720,7 +709,6 @@ impl DiskManager {
     /// # Arguments
     /// * `block_id` - The block to read
     /// * `buffer` - Buffer to read into (must be BLOCK_SIZE bytes)
-    #[cfg(feature = "persistent-artrie")]
     pub fn read_block(&self, block_id: u32, buffer: &mut [u8; BLOCK_SIZE]) -> Result<()> {
         let offset = block_id as usize * BLOCK_SIZE;
 
@@ -760,7 +748,6 @@ impl DiskManager {
     /// # Arguments
     /// * `block_id` - The block to write
     /// * `buffer` - Buffer to write from (must be BLOCK_SIZE bytes)
-    #[cfg(feature = "persistent-artrie")]
     pub fn write_block(&self, block_id: u32, buffer: &[u8; BLOCK_SIZE]) -> Result<()> {
         let offset = block_id as usize * BLOCK_SIZE;
 
@@ -801,7 +788,6 @@ impl DiskManager {
     /// * `block_id` - The block to read from
     /// * `offset_in_block` - Offset within the block
     /// * `buffer` - Buffer to read into
-    #[cfg(feature = "persistent-artrie")]
     pub fn read_bytes(&self, block_id: u32, offset_in_block: usize, buffer: &mut [u8]) -> Result<()> {
         let file_offset = block_id as usize * BLOCK_SIZE + offset_in_block;
 
@@ -841,7 +827,6 @@ impl DiskManager {
     /// * `block_id` - The block to write to
     /// * `offset_in_block` - Offset within the block
     /// * `buffer` - Buffer to write from
-    #[cfg(feature = "persistent-artrie")]
     pub fn write_bytes(&self, block_id: u32, offset_in_block: usize, buffer: &[u8]) -> Result<()> {
         let file_offset = block_id as usize * BLOCK_SIZE + offset_in_block;
 
@@ -876,7 +861,6 @@ impl DiskManager {
     }
 
     /// Flush all changes to disk
-    #[cfg(feature = "persistent-artrie")]
     pub fn sync(&self) -> Result<()> {
         if let Some(mmap_guard) = &self.mmap {
             #[cfg(feature = "parking_lot")]
@@ -909,21 +893,18 @@ impl DiskManager {
     }
 
     /// Get the current block count
-    #[cfg(feature = "persistent-artrie")]
     pub fn block_count(&self) -> Result<u32> {
         let header = self.read_header()?;
         Ok(header.block_count.load(Ordering::SeqCst))
     }
 
     /// Get the entry count
-    #[cfg(feature = "persistent-artrie")]
     pub fn entry_count(&self) -> Result<u64> {
         let header = self.read_header()?;
         Ok(header.entry_count.load(Ordering::SeqCst))
     }
 
     /// Update the entry count
-    #[cfg(feature = "persistent-artrie")]
     pub fn set_entry_count(&self, count: u64) -> Result<()> {
         let header = self.read_header()?;
         header.entry_count.store(count, Ordering::SeqCst);
@@ -936,14 +917,12 @@ impl DiskManager {
     }
 
     /// Get the root pointer
-    #[cfg(feature = "persistent-artrie")]
     pub fn root_ptr(&self) -> Result<u64> {
         let header = self.read_header()?;
         Ok(header.root_ptr.load(Ordering::SeqCst))
     }
 
     /// Set the root pointer
-    #[cfg(feature = "persistent-artrie")]
     pub fn set_root_ptr(&self, ptr: u64) -> Result<()> {
         let header = self.read_header()?;
         header.root_ptr.store(ptr, Ordering::SeqCst);
@@ -960,7 +939,6 @@ impl DiskManager {
     /// # Safety
     /// The caller must ensure the returned pointer is not used after the mmap is remapped
     /// or the DiskManager is dropped.
-    #[cfg(feature = "persistent-artrie")]
     pub unsafe fn raw_ptr(&self, block_id: u32, offset_in_block: usize) -> Result<*const u8> {
         let file_offset = block_id as usize * BLOCK_SIZE + offset_in_block;
 
@@ -994,7 +972,7 @@ impl DiskManager {
     }
 }
 
-#[cfg(all(test, feature = "persistent-artrie"))]
+#[cfg(test)]
 mod tests {
     use super::*;
     use tempfile::tempdir;

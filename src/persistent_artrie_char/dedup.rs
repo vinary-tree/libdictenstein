@@ -43,12 +43,9 @@
 
 use std::collections::HashMap;
 
-#[cfg(feature = "persistent-artrie")]
 use super::arena_manager::{ArenaManager, ArenaSlot};
-#[cfg(feature = "persistent-artrie")]
 use crate::persistent_artrie::PersistentARTrieError;
 
-#[cfg(feature = "persistent-artrie")]
 type Result<T> = std::result::Result<T, PersistentARTrieError>;
 
 /// Hash function for node data using xxHash3
@@ -215,7 +212,6 @@ impl DeduplicatorStats {
 ///
 /// This wraps an ArenaManager to provide transparent deduplication.
 /// When allocating, it first checks the dedup cache.
-#[cfg(feature = "persistent-artrie")]
 #[derive(Debug)]
 pub struct DeduplicatingArenaManager {
     /// The underlying arena manager
@@ -226,7 +222,6 @@ pub struct DeduplicatingArenaManager {
     verify_on_hit: bool,
 }
 
-#[cfg(feature = "persistent-artrie")]
 impl DeduplicatingArenaManager {
     /// Create a new deduplicating arena manager
     pub fn new(arena_manager: ArenaManager) -> Self {

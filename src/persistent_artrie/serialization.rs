@@ -64,9 +64,7 @@ use super::swizzled_ptr::{NodeType, SwizzledPtr};
 use std::io::{Read, Write};
 
 // Relative encoding support (feature-gated)
-#[cfg(feature = "persistent-artrie")]
 use super::arena_manager::ArenaSlot;
-#[cfg(feature = "persistent-artrie")]
 use super::relative_encoding::{
     encode_children, decode_children, encode_sequential_siblings, decode_sequential_siblings,
 };
@@ -89,7 +87,6 @@ pub const FORMAT_VERSION_V2: u8 = 2;
 pub const SERIALIZED_HEADER_SIZE: usize = 16;
 
 /// Header flags for encoding modes
-#[cfg(feature = "persistent-artrie")]
 pub mod encoding_flags {
     /// Children use relative offset encoding (vs fixed 8-byte pointers)
     pub const RELATIVE_OFFSETS: u8 = 0x80;
@@ -146,7 +143,6 @@ impl SerializedNodeHeader {
     }
 
     /// Create a header from a NodeHeader with encoding flags (v2 format)
-    #[cfg(feature = "persistent-artrie")]
     pub fn from_node_header_v2(
         header: &NodeHeader,
         data_size: u32,
@@ -166,13 +162,11 @@ impl SerializedNodeHeader {
     }
 
     /// Check if this header uses relative offset encoding
-    #[cfg(feature = "persistent-artrie")]
     pub fn uses_relative_offsets(&self) -> bool {
         self.version >= FORMAT_VERSION_V2 && (self.encoding_flags & encoding_flags::RELATIVE_OFFSETS) != 0
     }
 
     /// Check if this header uses sequential sibling storage
-    #[cfg(feature = "persistent-artrie")]
     pub fn uses_sequential_siblings(&self) -> bool {
         self.version >= FORMAT_VERSION_V2 && (self.encoding_flags & encoding_flags::SEQUENTIAL_SIBLINGS) != 0
     }
@@ -550,7 +544,6 @@ pub fn from_bytes(bytes: &[u8]) -> Result<Node> {
 // V2 Serialization with Relative Offset Encoding
 // =============================================================================
 
-#[cfg(feature = "persistent-artrie")]
 pub mod v2 {
     use super::*;
 
@@ -1082,7 +1075,6 @@ pub mod v2 {
 }
 
 // Re-export v2 types for convenience
-#[cfg(feature = "persistent-artrie")]
 pub use v2::{
     SerializationContext, DeserializationContext,
     serialize_node_v2, deserialize_node_v2,

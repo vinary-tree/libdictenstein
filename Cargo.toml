@@ -56,6 +56,9 @@ rayon = { version = "1.10", optional = true }
 # Fast non-cryptographic hashing for node deduplication
 xxhash-rust = { version = "0.8", features = ["xxh3"], optional = true }
 
+# LRU cache for reverse lookups in vocabulary trie
+lru = { version = "0.12", optional = true }
+
 [build-dependencies]
 prost-build = { version = "0.13", optional = true }
 
@@ -72,7 +75,7 @@ serialization = ["serde", "bincode", "serde_json"]
 compression = ["flate2"]
 protobuf = ["prost", "prost-build"]
 # Persistent Adaptive Radix Trie (disk-based dictionary)
-persistent-artrie = ["memmap2", "parking_lot", "serde", "bincode", "sysinfo", "xxhash-rust"]
+persistent-artrie = ["memmap2", "parking_lot", "serde", "bincode", "sysinfo", "xxhash-rust", "lru"]
 # Group commit for WAL batching (REJECTED: causes regression on NVMe, useful for slower storage)
 group-commit = ["persistent-artrie", "crossbeam-channel"]
 # Parallel merge using rayon for multi-core acceleration

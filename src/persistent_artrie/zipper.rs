@@ -280,7 +280,6 @@ impl<V: DictionaryValue> PersistentARTrieZipper<V> {
     /// `Some(Cow::Borrowed(child))` for in-memory nodes,
     /// `Some(Cow::Owned(resolved))` for successfully resolved disk refs,
     /// `None` for failed disk ref resolution.
-    #[cfg(feature = "persistent-artrie")]
     fn resolve_child<'a>(
         inner: &PersistentARTrieInner<V>,
         child: &'a ChildNode,
@@ -312,16 +311,6 @@ impl<V: DictionaryValue> PersistentARTrieZipper<V> {
     ///
     /// Without the persistent-artrie feature, DiskRef nodes cannot be resolved
     /// and return None.
-    #[cfg(not(feature = "persistent-artrie"))]
-    fn resolve_child<'a>(
-        _inner: &PersistentARTrieInner<V>,
-        child: &'a ChildNode,
-    ) -> Option<Cow<'a, ChildNode>> {
-        match child {
-            ChildNode::DiskRef { .. } => None,
-            _ => Some(Cow::Borrowed(child)),
-        }
-    }
 
     /// Check if a path exists within a child node, resolving DiskRefs as needed.
     fn has_path_in_child(
