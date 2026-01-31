@@ -10,8 +10,11 @@
 //! # Key Types
 //!
 //! - [`BijectiveDictionary`]: Trait extending `MappedDictionary` with reverse lookup capability
-//! - [`IndexedVocabulary`]: Optimized for sequential `u64` indices starting at a configurable value
 //! - [`BijectiveMap`]: Generic bijective map for arbitrary hashable value types
+//!
+//! For vocabulary use cases with sequential `u64` indices, use
+//! [`PersistentVocabARTrie`](crate::persistent_vocab_artrie::PersistentVocabARTrie) which provides
+//! correct persistent bidirectional lookups via parent pointers and LRU caching.
 //!
 //! # Design
 //!
@@ -23,31 +26,9 @@
 //! ```
 //!
 //! **Duplicate handling**: Inserting a duplicate term or value causes a panic to preserve
-//! the bijection invariant. Use `get_or_insert` for idempotent insertions.
+//! the bijection invariant. Use `try_insert` for non-panicking insertion.
 //!
 //! # Examples
-//!
-//! ## IndexedVocabulary (Recommended for Embeddings)
-//!
-//! ```rust
-//! use libdictenstein::bijective::IndexedVocabulary;
-//!
-//! // Create vocabulary with auto-incrementing indices starting at 0
-//! let vocab = IndexedVocabulary::from_terms(["apple", "banana", "cherry"]);
-//!
-//! // Forward lookup: O(k) where k = term length
-//! assert_eq!(vocab.get_index("apple"), Some(0));
-//! assert_eq!(vocab.get_index("banana"), Some(1));
-//!
-//! // Reverse lookup: O(1)
-//! assert_eq!(vocab.get_term(0), Some("apple"));
-//! assert_eq!(vocab.get_term(1), Some("banana"));
-//!
-//! // Custom start index (e.g., reserve 0 for special tokens)
-//! let vocab = IndexedVocabulary::from_terms_with_start(["apple", "banana"], 1);
-//! assert_eq!(vocab.get_index("apple"), Some(1));
-//! assert_eq!(vocab.start_index(), 1);
-//! ```
 //!
 //! ## BijectiveMap (Generic Values)
 //!
@@ -67,19 +48,14 @@
 //!
 //! # Thread Safety
 //!
-//! Both `IndexedVocabulary` and `BijectiveMap` are thread-safe:
+//! `BijectiveMap` is thread-safe:
 //! - Multiple concurrent reads are allowed
-//! - Writes use atomic operations or locks for synchronization
+//! - Writes use locks for synchronization
 //! - The bijection invariant is maintained across concurrent operations
 
 mod bijective_map;
-mod indexed_vocab;
 
 pub use bijective_map::{BijectiveMap, InsertError};
-pub use indexed_vocab::{IndexedVocabulary, IndexedVocabularyDAT, IndexedVocabularyDAWG};
-
-#[cfg(feature = "persistent-artrie")]
-pub use indexed_vocab::IndexedVocabularyART;
 
 use crate::value::DictionaryValue;
 use crate::MappedDictionary;
@@ -111,19 +87,16 @@ use crate::MappedDictionary;
 /// # Examples
 ///
 /// ```rust
-/// use libdictenstein::bijective::{BijectiveDictionary, IndexedVocabulary};
+/// use libdictenstein::bijective::{BijectiveDictionary, BijectiveMap};
 ///
-/// let vocab = IndexedVocabulary::from_terms(["hello", "world"]);
+/// let bimap = BijectiveMap::from_pairs([("hello", 0u64), ("world", 1u64)]);
 ///
 /// // Forward lookup via MappedDictionary trait
 /// use libdictenstein::MappedDictionary;
-/// assert_eq!(vocab.get_value("hello"), Some(0u64));
-///
-/// // Reverse lookup via inherent method (takes value directly)
-/// assert_eq!(vocab.get_term(0u64), Some("hello"));
+/// assert_eq!(bimap.get_value("hello"), Some(0u64));
 ///
 /// // Reverse lookup via BijectiveDictionary trait (takes reference)
-/// assert_eq!(BijectiveDictionary::get_term(&vocab, &0u64), Some("hello"));
+/// assert_eq!(BijectiveDictionary::get_term(&bimap, &0u64), Some("hello"));
 /// ```
 pub trait BijectiveDictionary: MappedDictionary
 where
@@ -135,23 +108,22 @@ where
     ///
     /// # Performance
     ///
-    /// Implementation-dependent. For `IndexedVocabulary<u64>`, this is O(1).
-    /// For `BijectiveMap<V>`, this is O(1) average via hash lookup.
+    /// Implementation-dependent. For `BijectiveMap<V>`, this is O(1) average via hash lookup.
     ///
     /// # Examples
     ///
     /// ```rust
-    /// use libdictenstein::bijective::{BijectiveDictionary, IndexedVocabulary};
+    /// use libdictenstein::bijective::{BijectiveDictionary, BijectiveMap};
     ///
-    /// let vocab = IndexedVocabulary::from_terms(["cat", "dog"]);
+    /// let bimap = BijectiveMap::from_pairs([("cat", 0), ("dog", 1)]);
     ///
-    /// // Use the inherent method (takes value directly)
-    /// assert_eq!(vocab.get_term(0), Some("cat"));
-    /// assert_eq!(vocab.get_term(1), Some("dog"));
-    /// assert_eq!(vocab.get_term(999), None);  // No term at this index
+    /// // Use the inherent method (returns owned String)
+    /// assert_eq!(bimap.get_term(&0), Some("cat".to_string()));
+    /// assert_eq!(bimap.get_term(&1), Some("dog".to_string()));
+    /// assert_eq!(bimap.get_term(&999), None);  // No term at this value
     ///
-    /// // Or use the trait method explicitly (takes reference)
-    /// assert_eq!(BijectiveDictionary::get_term(&vocab, &0), Some("cat"));
+    /// // Or use the trait method explicitly (returns &str)
+    /// assert_eq!(BijectiveDictionary::get_term(&bimap, &0), Some("cat"));
     /// ```
     fn get_term(&self, value: &Self::Value) -> Option<&str>;
 
@@ -162,17 +134,17 @@ where
     /// # Examples
     ///
     /// ```rust
-    /// use libdictenstein::bijective::{BijectiveDictionary, IndexedVocabulary};
+    /// use libdictenstein::bijective::{BijectiveDictionary, BijectiveMap};
     ///
-    /// let vocab = IndexedVocabulary::from_terms(["hello"]);
+    /// let bimap = BijectiveMap::from_pairs([("hello", 42)]);
     ///
-    /// // Use inherent method (takes value directly)
-    /// assert!(vocab.contains_index(0));
-    /// assert!(!vocab.contains_index(999));
+    /// // Use inherent method
+    /// assert!(bimap.contains_value(&42));
+    /// assert!(!bimap.contains_value(&999));
     ///
-    /// // Or use trait method (takes reference)
-    /// assert!(BijectiveDictionary::contains_value(&vocab, &0));
-    /// assert!(!BijectiveDictionary::contains_value(&vocab, &999));
+    /// // Or use trait method
+    /// assert!(BijectiveDictionary::contains_value(&bimap, &42));
+    /// assert!(!BijectiveDictionary::contains_value(&bimap, &999));
     /// ```
     fn contains_value(&self, value: &Self::Value) -> bool {
         self.get_term(value).is_some()

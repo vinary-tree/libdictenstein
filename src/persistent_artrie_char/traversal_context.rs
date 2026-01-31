@@ -37,10 +37,7 @@ use crate::persistent_artrie::PersistentARTrieError;
 use std::collections::HashMap;
 use std::ptr::NonNull;
 
-#[cfg(feature = "parking_lot")]
 use parking_lot::RwLock;
-#[cfg(not(feature = "parking_lot"))]
-use std::sync::RwLock;
 
 use std::sync::Arc;
 
@@ -127,14 +124,7 @@ impl TraversalContext {
         if self.cached_pages.len() >= self.max_cached {
             // For now, just don't cache new pages when full
             // The page will be fetched but not cached
-            #[cfg(feature = "parking_lot")]
             let bm = self.buffer_manager.read();
-            #[cfg(not(feature = "parking_lot"))]
-            let bm = self.buffer_manager.read().map_err(|_| {
-                PersistentARTrieError::LockPoisoned {
-                    resource: "buffer_manager".to_string(),
-                }
-            })?;
 
             let page = bm.fetch_page(block_id)?;
             let _data = page.data();
@@ -148,14 +138,7 @@ impl TraversalContext {
         }
 
         // Fetch and cache the page
-        #[cfg(feature = "parking_lot")]
         let bm = self.buffer_manager.read();
-        #[cfg(not(feature = "parking_lot"))]
-        let bm = self.buffer_manager.read().map_err(|_| {
-            PersistentARTrieError::LockPoisoned {
-                resource: "buffer_manager".to_string(),
-            }
-        })?;
 
         let page = bm.fetch_page(block_id)?;
         let data_ptr = page.data() as *const [u8; BLOCK_SIZE];
@@ -274,14 +257,7 @@ impl LightweightTraversalContext {
     /// and releases the pin immediately. Use this for occasional accesses
     /// where caching overhead isn't worth it.
     pub fn read_page_copy(&self, block_id: u32) -> Result<Box<[u8; BLOCK_SIZE]>> {
-        #[cfg(feature = "parking_lot")]
         let bm = self.buffer_manager.read();
-        #[cfg(not(feature = "parking_lot"))]
-        let bm = self.buffer_manager.read().map_err(|_| {
-            PersistentARTrieError::LockPoisoned {
-                resource: "buffer_manager".to_string(),
-            }
-        })?;
 
         let page = bm.fetch_page(block_id)?;
         let mut copy = Box::new([0u8; BLOCK_SIZE]);
@@ -337,10 +313,7 @@ mod tests {
 
         // Allocate a page and write some data
         {
-            #[cfg(feature = "parking_lot")]
             let bm_guard = bm.write();
-            #[cfg(not(feature = "parking_lot"))]
-            let bm_guard = bm.write().expect("lock");
 
             let mut page = bm_guard.new_page().expect("new page");
             let data = page.data_mut();

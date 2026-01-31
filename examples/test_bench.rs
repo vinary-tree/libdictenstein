@@ -1,6 +1,6 @@
 //! Simple test to verify create/open cycle works correctly
 
-use libdictenstein::persistent_artrie_char::DiskBackedCharTrieInner;
+use libdictenstein::persistent_artrie_char::PersistentARTrieChar;
 use tempfile::TempDir;
 
 fn main() {
@@ -11,7 +11,7 @@ fn main() {
     
     // Create and populate trie
     {
-        let mut trie = DiskBackedCharTrieInner::<u64>::create(&trie_path)
+        let mut trie = PersistentARTrieChar::<u64>::create(&trie_path)
             .expect("Failed to create trie");
         
         for i in 0..1000 {
@@ -27,7 +27,7 @@ fn main() {
     // Open multiple times
     for attempt in 1..=10 {
         println!("\nAttempt {}: Opening trie...", attempt);
-        match DiskBackedCharTrieInner::<u64>::open(&trie_path) {
+        match PersistentARTrieChar::<u64>::open(&trie_path) {
             Ok(trie) => {
                 let found = trie.contains("term00050");
                 println!("  Open succeeded! contains(term00050) = {}", found);

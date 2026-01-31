@@ -48,10 +48,7 @@ use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 use memmap2::{MmapMut, MmapOptions};
 
-#[cfg(feature = "parking_lot")]
-use crate::sync_compat::RwLock;
-#[cfg(not(feature = "parking_lot"))]
-use std::sync::RwLock;
+use parking_lot::RwLock;
 
 use super::error::{PersistentARTrieError, Result};
 
@@ -452,14 +449,7 @@ impl DiskManager {
             }
         })?;
 
-        #[cfg(feature = "parking_lot")]
         let mmap = mmap_guard.read();
-        #[cfg(not(feature = "parking_lot"))]
-        let mmap = mmap_guard.read().map_err(|_| {
-            PersistentARTrieError::LockPoisoned {
-                resource: "mmap read lock".to_string(),
-            }
-        })?;
 
         if mmap.len() < 64 {
             return Err(PersistentARTrieError::CorruptedFile {
@@ -484,14 +474,7 @@ impl DiskManager {
             }
         })?;
 
-        #[cfg(feature = "parking_lot")]
         let mut mmap = mmap_guard.write();
-        #[cfg(not(feature = "parking_lot"))]
-        let mut mmap = mmap_guard.write().map_err(|_| {
-            PersistentARTrieError::LockPoisoned {
-                resource: "mmap write lock".to_string(),
-            }
-        })?;
 
         let bytes = header.to_bytes();
         mmap[0..64].copy_from_slice(&bytes);
@@ -616,14 +599,7 @@ impl DiskManager {
             }
         })?;
 
-        #[cfg(feature = "parking_lot")]
         let mmap = mmap_guard.read();
-        #[cfg(not(feature = "parking_lot"))]
-        let mmap = mmap_guard.read().map_err(|_| {
-            PersistentARTrieError::LockPoisoned {
-                resource: "mmap read lock".to_string(),
-            }
-        })?;
 
         if offset + 8 > mmap.len() {
             return Err(PersistentARTrieError::InvalidBlockId {
@@ -651,14 +627,7 @@ impl DiskManager {
             }
         })?;
 
-        #[cfg(feature = "parking_lot")]
         let mut mmap = mmap_guard.write();
-        #[cfg(not(feature = "parking_lot"))]
-        let mut mmap = mmap_guard.write().map_err(|_| {
-            PersistentARTrieError::LockPoisoned {
-                resource: "mmap write lock".to_string(),
-            }
-        })?;
 
         if offset + 8 > mmap.len() {
             return Err(PersistentARTrieError::InvalidBlockId {
@@ -680,14 +649,7 @@ impl DiskManager {
             }
         })?;
 
-        #[cfg(feature = "parking_lot")]
         let mut mmap = mmap_guard.write();
-        #[cfg(not(feature = "parking_lot"))]
-        let mut mmap = mmap_guard.write().map_err(|_| {
-            PersistentARTrieError::LockPoisoned {
-                resource: "mmap write lock".to_string(),
-            }
-        })?;
 
         // Create new mmap
         let new_mmap = unsafe {
@@ -718,14 +680,7 @@ impl DiskManager {
             }
         })?;
 
-        #[cfg(feature = "parking_lot")]
         let mmap = mmap_guard.read();
-        #[cfg(not(feature = "parking_lot"))]
-        let mmap = mmap_guard.read().map_err(|_| {
-            PersistentARTrieError::LockPoisoned {
-                resource: "mmap read lock".to_string(),
-            }
-        })?;
 
         if offset + BLOCK_SIZE > mmap.len() {
             return Err(PersistentARTrieError::InvalidBlockId {
@@ -757,14 +712,7 @@ impl DiskManager {
             }
         })?;
 
-        #[cfg(feature = "parking_lot")]
         let mut mmap = mmap_guard.write();
-        #[cfg(not(feature = "parking_lot"))]
-        let mut mmap = mmap_guard.write().map_err(|_| {
-            PersistentARTrieError::LockPoisoned {
-                resource: "mmap write lock".to_string(),
-            }
-        })?;
 
         if offset + BLOCK_SIZE > mmap.len() {
             return Err(PersistentARTrieError::InvalidBlockId {
@@ -797,14 +745,7 @@ impl DiskManager {
             }
         })?;
 
-        #[cfg(feature = "parking_lot")]
         let mmap = mmap_guard.read();
-        #[cfg(not(feature = "parking_lot"))]
-        let mmap = mmap_guard.read().map_err(|_| {
-            PersistentARTrieError::LockPoisoned {
-                resource: "mmap read lock".to_string(),
-            }
-        })?;
 
         let end_offset = file_offset + buffer.len();
         if end_offset > mmap.len() {
@@ -836,14 +777,7 @@ impl DiskManager {
             }
         })?;
 
-        #[cfg(feature = "parking_lot")]
         let mut mmap = mmap_guard.write();
-        #[cfg(not(feature = "parking_lot"))]
-        let mut mmap = mmap_guard.write().map_err(|_| {
-            PersistentARTrieError::LockPoisoned {
-                resource: "mmap write lock".to_string(),
-            }
-        })?;
 
         let end_offset = file_offset + buffer.len();
         if end_offset > mmap.len() {
@@ -863,15 +797,7 @@ impl DiskManager {
     /// Flush all changes to disk
     pub fn sync(&self) -> Result<()> {
         if let Some(mmap_guard) = &self.mmap {
-            #[cfg(feature = "parking_lot")]
             let mmap = mmap_guard.read();
-            #[cfg(not(feature = "parking_lot"))]
-            let mmap = mmap_guard.read().map_err(|_| {
-                PersistentARTrieError::LockPoisoned {
-                    resource: "mmap read lock".to_string(),
-                }
-            })?;
-
             mmap.flush().map_err(|e| PersistentARTrieError::MmapError {
                 operation: "flush mmap".to_string(),
                 source: e,
@@ -948,14 +874,7 @@ impl DiskManager {
             }
         })?;
 
-        #[cfg(feature = "parking_lot")]
         let mmap = mmap_guard.read();
-        #[cfg(not(feature = "parking_lot"))]
-        let mmap = mmap_guard.read().map_err(|_| {
-            PersistentARTrieError::LockPoisoned {
-                resource: "mmap read lock".to_string(),
-            }
-        })?;
 
         if file_offset >= mmap.len() {
             return Err(PersistentARTrieError::InvalidBlockId {

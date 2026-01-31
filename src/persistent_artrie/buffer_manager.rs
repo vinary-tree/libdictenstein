@@ -46,10 +46,7 @@
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 
-#[cfg(feature = "parking_lot")]
-use crate::sync_compat::RwLock;
-#[cfg(not(feature = "parking_lot"))]
-use std::sync::RwLock;
+use parking_lot::RwLock;
 
 use super::disk_manager::{DiskManager, BLOCK_SIZE};
 use super::error::{PersistentARTrieError, Result};
@@ -60,8 +57,8 @@ pub type FrameId = usize;
 /// Metadata for a single buffer frame
 #[derive(Debug)]
 pub struct FrameMetadata {
-    /// Block ID stored in this frame (None if frame is free)
-    block_id: RwLock<Option<u32>>,
+    /// Block ID stored in this frame (u32::MAX = None/free)
+    block_id: AtomicU32,
     /// Number of active pins (frame cannot be evicted while > 0)
     pin_count: AtomicU32,
     /// Whether the page has been modified since last write-back
@@ -71,10 +68,13 @@ pub struct FrameMetadata {
 }
 
 impl FrameMetadata {
+    /// Sentinel value indicating no block is assigned (frame is free)
+    const NONE_BLOCK: u32 = u32::MAX;
+
     /// Create a new free frame
     fn new() -> Self {
         Self {
-            block_id: RwLock::new(None),
+            block_id: AtomicU32::new(Self::NONE_BLOCK),
             pin_count: AtomicU32::new(0),
             dirty: AtomicBool::new(false),
             reference_bit: AtomicBool::new(false),
@@ -82,17 +82,8 @@ impl FrameMetadata {
     }
 
     /// Check if this frame is free (no block assigned)
-    #[cfg(feature = "parking_lot")]
     fn is_free(&self) -> bool {
-        self.block_id.read().is_none()
-    }
-
-    #[cfg(not(feature = "parking_lot"))]
-    fn is_free(&self) -> bool {
-        self.block_id
-            .read()
-            .map(|guard| guard.is_none())
-            .unwrap_or(true)
+        self.block_id.load(Ordering::Acquire) == Self::NONE_BLOCK
     }
 
     /// Check if this frame is pinned
@@ -128,27 +119,17 @@ impl FrameMetadata {
     }
 
     /// Get the block ID
-    #[cfg(feature = "parking_lot")]
     fn get_block_id(&self) -> Option<u32> {
-        *self.block_id.read()
-    }
-
-    #[cfg(not(feature = "parking_lot"))]
-    fn get_block_id(&self) -> Option<u32> {
-        self.block_id.read().ok().and_then(|guard| *guard)
+        match self.block_id.load(Ordering::Acquire) {
+            Self::NONE_BLOCK => None,
+            id => Some(id),
+        }
     }
 
     /// Set the block ID
-    #[cfg(feature = "parking_lot")]
     fn set_block_id(&self, block_id: Option<u32>) {
-        *self.block_id.write() = block_id;
-    }
-
-    #[cfg(not(feature = "parking_lot"))]
-    fn set_block_id(&self, block_id: Option<u32>) {
-        if let Ok(mut guard) = self.block_id.write() {
-            *guard = block_id;
-        }
+        let val = block_id.unwrap_or(Self::NONE_BLOCK);
+        self.block_id.store(val, Ordering::Release);
     }
 }
 
@@ -365,16 +346,7 @@ impl BufferManager {
         }
 
         // Update page table
-        #[cfg(feature = "parking_lot")]
-        {
-            self.page_table.write().insert(block_id, frame_id);
-        }
-        #[cfg(not(feature = "parking_lot"))]
-        {
-            if let Ok(mut guard) = self.page_table.write() {
-                guard.insert(block_id, frame_id);
-            }
-        }
+        self.page_table.write().insert(block_id, frame_id);
 
         Ok(PageWriteGuard {
             buffer_manager: self,
@@ -403,16 +375,7 @@ impl BufferManager {
             frame.reference_bit.store(false, Ordering::Release);
 
             // Remove from page table
-            #[cfg(feature = "parking_lot")]
-            {
-                self.page_table.write().remove(&block_id);
-            }
-            #[cfg(not(feature = "parking_lot"))]
-            {
-                if let Ok(mut guard) = self.page_table.write() {
-                    guard.remove(&block_id);
-                }
-            }
+            self.page_table.write().remove(&block_id);
         }
 
         // Free the block on disk
@@ -448,17 +411,8 @@ impl BufferManager {
     }
 
     /// Look up a frame by block ID
-    #[cfg(feature = "parking_lot")]
     fn lookup_frame(&self, block_id: u32) -> Option<FrameId> {
         self.page_table.read().get(&block_id).copied()
-    }
-
-    #[cfg(not(feature = "parking_lot"))]
-    fn lookup_frame(&self, block_id: u32) -> Option<FrameId> {
-        self.page_table
-            .read()
-            .ok()
-            .and_then(|guard| guard.get(&block_id).copied())
     }
 
     /// Load a page from disk into a frame
@@ -480,16 +434,7 @@ impl BufferManager {
         self.frames[frame_id].reference_bit.store(true, Ordering::Release);
 
         // Update page table
-        #[cfg(feature = "parking_lot")]
-        {
-            self.page_table.write().insert(block_id, frame_id);
-        }
-        #[cfg(not(feature = "parking_lot"))]
-        {
-            if let Ok(mut guard) = self.page_table.write() {
-                guard.insert(block_id, frame_id);
-            }
-        }
+        self.page_table.write().insert(block_id, frame_id);
 
         Ok(frame_id)
     }
@@ -536,16 +481,7 @@ impl BufferManager {
                 }
 
                 // Remove from page table
-                #[cfg(feature = "parking_lot")]
-                {
-                    self.page_table.write().remove(&old_block_id);
-                }
-                #[cfg(not(feature = "parking_lot"))]
-                {
-                    if let Ok(mut guard) = self.page_table.write() {
-                        guard.remove(&old_block_id);
-                    }
-                }
+                self.page_table.write().remove(&old_block_id);
 
                 // Clear the frame
                 frame.set_block_id(None);
@@ -666,16 +602,7 @@ impl BufferManager {
 
                 // Evict the frame
                 if let Some(block_id) = frame.get_block_id() {
-                    #[cfg(feature = "parking_lot")]
-                    {
-                        self.page_table.write().remove(&block_id);
-                    }
-                    #[cfg(not(feature = "parking_lot"))]
-                    {
-                        if let Ok(mut guard) = self.page_table.write() {
-                            guard.remove(&block_id);
-                        }
-                    }
+                    self.page_table.write().remove(&block_id);
                     frame.set_block_id(None);
                 }
             }

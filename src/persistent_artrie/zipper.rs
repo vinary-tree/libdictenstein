@@ -10,7 +10,8 @@ use crate::sync_compat::RwLock;
 use crate::value::DictionaryValue;
 use crate::zipper::{DictZipper, ValuedDictZipper};
 use super::bucket::StringBucket;
-use super::dict_impl::{PersistentARTrie, PersistentARTrieInner, TrieRoot};
+use super::dict_impl::{PersistentARTrie, TrieRoot};
+use super::SharedARTrie;
 use super::transitions::ChildNode;
 
 /// Zipper for Persistent ART dictionaries.
@@ -46,7 +47,7 @@ use super::transitions::ChildNode;
 /// dict.insert("cat");
 /// dict.insert("catch");
 ///
-/// let zipper = PersistentARTrieZipper::new_from_dict(&dict);
+/// let zipper = make_zipper(dict);
 ///
 /// // Navigate through "cat"
 /// if let Some(c) = zipper.descend(b'c') {
@@ -61,8 +62,8 @@ use super::transitions::ChildNode;
 /// ```
 #[derive(Clone)]
 pub struct PersistentARTrieZipper<V: DictionaryValue = ()> {
-    /// Shared reference to trie inner structure
-    inner: Arc<RwLock<PersistentARTrieInner<V>>>,
+    /// Shared reference to trie (thread-safe wrapper)
+    trie: SharedARTrie<V>,
 
     /// Path from root to current position
     path: Vec<u8>,
@@ -78,18 +79,34 @@ impl<V: DictionaryValue> PersistentARTrieZipper<V> {
     /// # Examples
     ///
     /// ```rust,ignore
-    /// use libdictenstein::persistent_artrie::PersistentARTrie;
+    /// use libdictenstein::persistent_artrie::{PersistentARTrie, SharedARTrie};
     /// use libdictenstein::persistent_artrie::zipper::PersistentARTrieZipper;
+    /// use std::sync::Arc;
+    /// use parking_lot::RwLock;
     ///
     /// let dict: PersistentARTrie<()> = PersistentARTrie::new();
-    /// let zipper = PersistentARTrieZipper::new_from_dict(&dict);
+    /// let shared: SharedARTrie<()> = Arc::new(RwLock::new(dict));
+    /// let zipper = PersistentARTrieZipper::new(shared);
     /// ```
-    pub fn new_from_dict(dict: &PersistentARTrie<V>) -> Self {
+    /// Create a new zipper from a shared trie reference.
+    ///
+    /// The zipper provides read-only navigation through the trie.
+    /// For thread-safe concurrent access, wrap the trie in `SharedARTrie`
+    /// (i.e., `Arc<RwLock<PersistentARTrie<V>>>`).
+    pub fn new(trie: SharedARTrie<V>) -> Self {
         PersistentARTrieZipper {
-            inner: dict.inner.clone(),
+            trie,
             path: Vec::new(),
         }
     }
+
+    /// Create a new zipper from a shared trie reference (alias for `new`).
+    pub fn new_from_shared(trie: SharedARTrie<V>) -> Self {
+        Self::new(trie)
+    }
+
+    // Note: new_from_dict has been removed. Use new_from_shared() instead,
+    // or wrap your PersistentARTrie in Arc<RwLock<...>> first.
 
     /// Get the current path from root.
     ///
@@ -103,20 +120,20 @@ impl<V: DictionaryValue> DictZipper for PersistentARTrieZipper<V> {
     type Unit = u8;
 
     fn is_final(&self) -> bool {
-        let inner = self.inner.read();
-        self.is_final_at_path(&inner, &self.path)
+        let guard = self.trie.read();
+        self.is_final_at_path(&guard, &self.path)
     }
 
     fn descend(&self, label: Self::Unit) -> Option<Self> {
-        let inner = self.inner.read();
+        let guard = self.trie.read();
 
         // Check if the path + label leads to a valid position
         let mut new_path = self.path.clone();
         new_path.push(label);
 
-        if self.has_path(&inner, &new_path) {
+        if self.has_path(&guard, &new_path) {
             Some(PersistentARTrieZipper {
-                inner: self.inner.clone(),
+                trie: self.trie.clone(),
                 path: new_path,
             })
         } else {
@@ -131,12 +148,12 @@ impl<V: DictionaryValue> DictZipper for PersistentARTrieZipper<V> {
     fn children(&self) -> impl Iterator<Item = (Self::Unit, Self)> {
         // Collect children to avoid holding lock during iteration
         let children: Vec<u8> = {
-            let inner = self.inner.read();
-            self.get_children_at_path(&inner, &self.path)
+            let guard = self.trie.read();
+            self.get_children_at_path(&guard, &self.path)
         };
 
         // Create iterator from collected children
-        let inner = self.inner.clone();
+        let trie_clone = self.trie.clone();
         let base_path = self.path.clone();
         children.into_iter().map(move |label| {
             let mut new_path = base_path.clone();
@@ -144,7 +161,7 @@ impl<V: DictionaryValue> DictZipper for PersistentARTrieZipper<V> {
             (
                 label,
                 PersistentARTrieZipper {
-                    inner: inner.clone(),
+                    trie: trie_clone.clone(),
                     path: new_path,
                 },
             )
@@ -154,7 +171,7 @@ impl<V: DictionaryValue> DictZipper for PersistentARTrieZipper<V> {
 
 impl<V: DictionaryValue> PersistentARTrieZipper<V> {
     /// Check if a path exists in the trie, resolving DiskRefs as needed.
-    fn has_path(&self, inner: &PersistentARTrieInner<V>, path: &[u8]) -> bool {
+    fn has_path(&self, inner: &PersistentARTrie<V>, path: &[u8]) -> bool {
         match &inner.root {
             TrieRoot::Bucket(bucket) => {
                 // For bucket root, check if any entry starts with or equals this path
@@ -198,7 +215,7 @@ impl<V: DictionaryValue> PersistentARTrieZipper<V> {
     }
 
     /// Check if position is final, resolving DiskRefs as needed.
-    fn is_final_at_path(&self, inner: &PersistentARTrieInner<V>, path: &[u8]) -> bool {
+    fn is_final_at_path(&self, inner: &PersistentARTrie<V>, path: &[u8]) -> bool {
         match &inner.root {
             TrieRoot::Bucket(bucket) => bucket.contains(path),
             TrieRoot::ArtNode {
@@ -222,7 +239,7 @@ impl<V: DictionaryValue> PersistentARTrieZipper<V> {
     }
 
     /// Get all children (edge labels) at current path, resolving DiskRefs as needed.
-    fn get_children_at_path(&self, inner: &PersistentARTrieInner<V>, path: &[u8]) -> Vec<u8> {
+    fn get_children_at_path(&self, inner: &PersistentARTrie<V>, path: &[u8]) -> Vec<u8> {
         match &inner.root {
             TrieRoot::Bucket(bucket) => self.get_bucket_children(bucket, path),
             TrieRoot::ArtNode { children, .. } => {
@@ -281,7 +298,7 @@ impl<V: DictionaryValue> PersistentARTrieZipper<V> {
     /// `Some(Cow::Owned(resolved))` for successfully resolved disk refs,
     /// `None` for failed disk ref resolution.
     fn resolve_child<'a>(
-        inner: &PersistentARTrieInner<V>,
+        inner: &PersistentARTrie<V>,
         child: &'a ChildNode,
     ) -> Option<Cow<'a, ChildNode>> {
         match child {
@@ -315,7 +332,7 @@ impl<V: DictionaryValue> PersistentARTrieZipper<V> {
     /// Check if a path exists within a child node, resolving DiskRefs as needed.
     fn has_path_in_child(
         &self,
-        inner: &PersistentARTrieInner<V>,
+        inner: &PersistentARTrie<V>,
         child: &ChildNode,
         remaining: &[u8],
     ) -> bool {
@@ -350,7 +367,7 @@ impl<V: DictionaryValue> PersistentARTrieZipper<V> {
     /// Check if a path leads to a final state within a child node, resolving DiskRefs as needed.
     fn is_final_in_child(
         &self,
-        inner: &PersistentARTrieInner<V>,
+        inner: &PersistentARTrie<V>,
         child: &ChildNode,
         remaining: &[u8],
     ) -> bool {
@@ -387,7 +404,7 @@ impl<V: DictionaryValue> PersistentARTrieZipper<V> {
     /// Get children at a path within a child node, resolving DiskRefs as needed.
     fn get_children_in_child(
         &self,
-        inner: &PersistentARTrieInner<V>,
+        inner: &PersistentARTrie<V>,
         child: &ChildNode,
         path: &[u8],
     ) -> Vec<u8> {
@@ -436,12 +453,18 @@ impl<V: DictionaryValue> ValuedDictZipper for PersistentARTrieZipper<V> {
 mod tests {
     use super::*;
 
+    /// Helper function to create a zipper from a dict for tests.
+    fn make_zipper<V: DictionaryValue>(dict: PersistentARTrie<V>) -> PersistentARTrieZipper<V> {
+        let shared: SharedARTrie<V> = Arc::new(RwLock::new(dict));
+        PersistentARTrieZipper::new(shared)
+    }
+
     #[test]
     fn test_root_zipper_not_final() {
         let mut dict: PersistentARTrie<()> = PersistentARTrie::new();
         dict.insert("test");
 
-        let zipper = PersistentARTrieZipper::new_from_dict(&dict);
+        let zipper = make_zipper(dict);
         assert!(!zipper.is_final());
     }
 
@@ -450,7 +473,7 @@ mod tests {
         let mut dict: PersistentARTrie<()> = PersistentARTrie::new();
         dict.insert("cat");
 
-        let zipper = PersistentARTrieZipper::new_from_dict(&dict);
+        let zipper = make_zipper(dict);
 
         let c = zipper.descend(b'c').expect("should have 'c'");
         let a = c.descend(b'a').expect("should have 'a'");
@@ -464,7 +487,7 @@ mod tests {
         let mut dict: PersistentARTrie<()> = PersistentARTrie::new();
         dict.insert("cat");
 
-        let zipper = PersistentARTrieZipper::new_from_dict(&dict);
+        let zipper = make_zipper(dict);
 
         assert!(zipper.descend(b'x').is_none());
     }
@@ -476,7 +499,7 @@ mod tests {
         dict.insert("car");
         dict.insert("can");
 
-        let zipper = PersistentARTrieZipper::new_from_dict(&dict);
+        let zipper = make_zipper(dict);
 
         // Root should have 'c' as child
         let children: Vec<_> = zipper.children().collect();
@@ -489,7 +512,7 @@ mod tests {
         let mut dict: PersistentARTrie<()> = PersistentARTrie::new();
         dict.insert("cat");
 
-        let zipper = PersistentARTrieZipper::new_from_dict(&dict);
+        let zipper = make_zipper(dict);
         assert!(zipper.path().is_empty());
 
         let c = zipper.descend(b'c').unwrap();
@@ -505,7 +528,7 @@ mod tests {
         dict.insert("");
         dict.insert("test");
 
-        let zipper = PersistentARTrieZipper::new_from_dict(&dict);
+        let zipper = make_zipper(dict);
         assert!(zipper.is_final()); // Empty string makes root final
     }
 
@@ -514,7 +537,7 @@ mod tests {
         let mut dict: PersistentARTrie<()> = PersistentARTrie::new();
         dict.insert("test");
 
-        let zipper1 = PersistentARTrieZipper::new_from_dict(&dict);
+        let zipper1 = make_zipper(dict);
         let zipper2 = zipper1.clone();
 
         assert_eq!(zipper1.path(), zipper2.path());
@@ -528,11 +551,10 @@ mod tests {
         let mut dict: PersistentARTrie<()> = PersistentARTrie::new();
         dict.insert("test");
 
-        let inner = dict.inner.read();
         let bucket = super::StringBucket::new();
         let child = ChildNode::Bucket(bucket);
 
-        let resolved = PersistentARTrieZipper::<()>::resolve_child(&inner, &child);
+        let resolved = PersistentARTrieZipper::<()>::resolve_child(&dict, &child);
         assert!(resolved.is_some());
 
         // Should return borrowed (no clone needed for in-memory nodes)
@@ -549,11 +571,10 @@ mod tests {
         let mut dict: PersistentARTrie<()> = PersistentARTrie::new();
         dict.insert("test");
 
-        let inner = dict.inner.read();
         let node = Node::N4(Box::new(Node4::new()));
         let child = ChildNode::art_node(node, false, None);
 
-        let resolved = PersistentARTrieZipper::<()>::resolve_child(&inner, &child);
+        let resolved = PersistentARTrieZipper::<()>::resolve_child(&dict, &child);
         assert!(resolved.is_some());
 
         // Should return borrowed (no clone needed for in-memory nodes)
@@ -569,12 +590,11 @@ mod tests {
         let mut dict: PersistentARTrie<()> = PersistentARTrie::new();
         dict.insert("test");
 
-        let inner = dict.inner.read();
         let ptr = SwizzledPtr::null();
         let child = ChildNode::disk_ref(ptr);
 
         // Without a buffer manager, DiskRef resolution should return None
-        let resolved = PersistentARTrieZipper::<()>::resolve_child(&inner, &child);
+        let resolved = PersistentARTrieZipper::<()>::resolve_child(&dict, &child);
         assert!(resolved.is_none());
     }
 
@@ -589,7 +609,7 @@ mod tests {
             dict.insert(&term);
         }
 
-        let zipper = PersistentARTrieZipper::new_from_dict(&dict);
+        let zipper = make_zipper(dict);
 
         // Navigate through "prefix_050_suffix"
         let mut current = zipper;
@@ -611,7 +631,7 @@ mod tests {
         dict.insert("date");
         dict.insert("elderberry");
 
-        let zipper = PersistentARTrieZipper::new_from_dict(&dict);
+        let zipper = make_zipper(dict);
         let children: Vec<u8> = zipper.children().map(|(b, _)| b).collect();
 
         assert_eq!(children.len(), 5);
@@ -635,7 +655,7 @@ mod tests {
             }
         }
 
-        let zipper = PersistentARTrieZipper::new_from_dict(&dict);
+        let zipper = make_zipper(dict);
 
         // Test descending through paths that exist
         let a = zipper.descend(b'a').expect("should have 'a'");

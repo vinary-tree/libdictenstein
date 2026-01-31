@@ -18,10 +18,7 @@ use super::dirty_tracker::DirtyTracker;
 use super::disk_manager::BLOCK_SIZE;
 use super::PersistentARTrieError;
 
-#[cfg(feature = "parking_lot")]
 use parking_lot::RwLock;
-#[cfg(not(feature = "parking_lot"))]
-use std::sync::RwLock;
 
 use std::sync::Arc;
 
@@ -396,12 +393,7 @@ impl ArenaManager {
             None => return Ok(()), // No disk backing, nothing to flush
         };
 
-        #[cfg(feature = "parking_lot")]
         let bm_guard = bm.write();
-        #[cfg(not(feature = "parking_lot"))]
-        let bm_guard = bm.write().map_err(|_| PersistentARTrieError::LockPoisoned {
-            resource: "buffer_manager".to_string(),
-        })?;
 
         for (arena_index, arena) in self.arenas.iter_mut().enumerate() {
             if arena.is_dirty() {
@@ -482,12 +474,7 @@ impl ArenaManager {
         // Sort for sequential access (already sorted by index, but explicit for clarity)
         dirty_indices.sort_unstable();
 
-        #[cfg(feature = "parking_lot")]
         let bm_guard = bm.write();
-        #[cfg(not(feature = "parking_lot"))]
-        let bm_guard = bm.write().map_err(|_| PersistentARTrieError::LockPoisoned {
-            resource: "buffer_manager".to_string(),
-        })?;
 
         for arena_index in dirty_indices {
             let arena = &mut self.arenas[arena_index];
@@ -534,13 +521,7 @@ impl ArenaManager {
         self.flush()?;
 
         if let Some(bm) = &self.buffer_manager {
-            #[cfg(feature = "parking_lot")]
             let bm_guard = bm.write();
-            #[cfg(not(feature = "parking_lot"))]
-            let bm_guard = bm.write().map_err(|_| PersistentARTrieError::LockPoisoned {
-                resource: "buffer_manager".to_string(),
-            })?;
-
             bm_guard.disk_manager().sync()?;
         }
 
@@ -588,12 +569,7 @@ impl ArenaManager {
             return Ok(FlushStats::default());
         }
 
-        #[cfg(feature = "parking_lot")]
         let bm_guard = bm.write();
-        #[cfg(not(feature = "parking_lot"))]
-        let bm_guard = bm.write().map_err(|_| PersistentARTrieError::LockPoisoned {
-            resource: "buffer_manager".to_string(),
-        })?;
 
         let mut stats = FlushStats::default();
         let threshold = self.flush_config.full_arena_threshold;
@@ -772,12 +748,7 @@ impl ArenaManager {
             PersistentARTrieError::internal("No buffer manager for loading arena")
         })?;
 
-        #[cfg(feature = "parking_lot")]
         let bm_guard = bm.read();
-        #[cfg(not(feature = "parking_lot"))]
-        let bm_guard = bm.read().map_err(|_| PersistentARTrieError::LockPoisoned {
-            resource: "buffer_manager".to_string(),
-        })?;
 
         let page = bm_guard.fetch_page(block_id)?;
         let arena = ByteNodeArena::from_bytes(page.data(), block_id)?;

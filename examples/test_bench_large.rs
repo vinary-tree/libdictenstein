@@ -1,6 +1,6 @@
 //! Test create/open cycle with 1M terms
 
-use libdictenstein::persistent_artrie_char::DiskBackedCharTrieInner;
+use libdictenstein::persistent_artrie_char::PersistentARTrieChar;
 use tempfile::TempDir;
 use std::time::Instant;
 
@@ -12,7 +12,7 @@ fn main() {
     
     // Create and populate trie
     {
-        let mut trie = DiskBackedCharTrieInner::<u64>::create(&trie_path)
+        let mut trie = PersistentARTrieChar::<u64>::create(&trie_path)
             .expect("Failed to create trie");
         
         let start = Instant::now();
@@ -36,7 +36,7 @@ fn main() {
     for attempt in 1..=5 {
         println!("\nAttempt {}: Opening trie...", attempt);
         let start = Instant::now();
-        match DiskBackedCharTrieInner::<u64>::open(&trie_path) {
+        match PersistentARTrieChar::<u64>::open(&trie_path) {
             Ok(trie) => {
                 let elapsed = start.elapsed();
                 let found = trie.contains("term00050");

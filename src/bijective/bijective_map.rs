@@ -3,9 +3,9 @@
 //! This module provides [`BijectiveMap`], a bidirectional dictionary that maps
 //! terms to arbitrary hashable values while maintaining the bijection invariant.
 //!
-//! Unlike [`IndexedVocabulary`](super::IndexedVocabulary) which is optimized for
-//! sequential `u64` indices, `BijectiveMap` supports any value type that implements
-//! `DictionaryValue + Eq + Hash`.
+//! `BijectiveMap` supports any value type that implements `DictionaryValue + Eq + Hash`.
+//! For vocabulary use cases with sequential `u64` indices, use
+//! [`PersistentVocabARTrie`](crate::persistent_vocab_artrie::PersistentVocabARTrie).
 //!
 //! # Use Cases
 //!

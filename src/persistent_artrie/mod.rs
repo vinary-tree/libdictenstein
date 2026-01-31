@@ -220,6 +220,16 @@ pub use node_impl::PersistentARTrieNode;
 // Dictionary types
 pub use dict_impl::{PersistentARTrie, TermIterator, TermValueIterator};
 
+// Parallel merge extension trait
+#[cfg(feature = "parallel-merge")]
+pub use dict_impl::SharedARTrieParallelExt;
+
+/// Thread-safe wrapper for `PersistentARTrie`.
+///
+/// This type alias provides `Arc<RwLock<...>>` semantics for concurrent access
+/// to the disk-backed byte-level trie.
+pub type SharedARTrie<V> = std::sync::Arc<parking_lot::RwLock<PersistentARTrie<V>>>;
+
 // Arena-aware iteration types
 pub use dict_impl::{PrefixTermWithArena, PrefixTermWithValueAndArena};
 

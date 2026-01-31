@@ -967,7 +967,7 @@ impl WalWriter {
     ///
     /// Returns the LSN assigned to the record.
     pub fn append(&self, record: WalRecord) -> Result<Lsn, WalError> {
-        let lsn = self.next_lsn.fetch_add(1, Ordering::SeqCst);
+        let lsn = self.next_lsn.fetch_add(1, Ordering::AcqRel);
         let payload = record.serialize_payload();
         let record_type = record.record_type() as u8;
 
@@ -1005,8 +1005,8 @@ impl WalWriter {
         file.flush()?;
         file.get_ref().sync_all()?;
 
-        let current_lsn = self.next_lsn.load(Ordering::SeqCst) - 1;
-        self.synced_lsn.store(current_lsn, Ordering::SeqCst);
+        let current_lsn = self.next_lsn.load(Ordering::Acquire) - 1;
+        self.synced_lsn.store(current_lsn, Ordering::Release);
 
         Ok(current_lsn)
     }
@@ -1074,12 +1074,12 @@ impl WalWriter {
 
     /// Get the current (next) LSN.
     pub fn current_lsn(&self) -> Lsn {
-        self.next_lsn.load(Ordering::SeqCst)
+        self.next_lsn.load(Ordering::Acquire)
     }
 
     /// Get the last synced LSN.
     pub fn synced_lsn(&self) -> Lsn {
-        self.synced_lsn.load(Ordering::SeqCst)
+        self.synced_lsn.load(Ordering::Acquire)
     }
 
     /// Get the path to the WAL file.
@@ -1091,7 +1091,7 @@ impl WalWriter {
     ///
     /// This is used by group commit to pre-allocate LSNs before batching writes.
     pub fn allocate_lsn(&self) -> Lsn {
-        self.next_lsn.fetch_add(1, Ordering::SeqCst)
+        self.next_lsn.fetch_add(1, Ordering::AcqRel)
     }
 
     /// Write a checkpoint record and update the header.
@@ -1162,8 +1162,8 @@ impl WalWriter {
         file.seek(SeekFrom::Start(WalHeader::SIZE as u64))?;
 
         // Reset LSN counters
-        self.next_lsn.store(1, Ordering::SeqCst);
-        self.synced_lsn.store(0, Ordering::SeqCst);
+        self.next_lsn.store(1, Ordering::Release);
+        self.synced_lsn.store(0, Ordering::Release);
 
         // Reset checkpoint LSN in header
         {
@@ -1253,8 +1253,8 @@ impl WalWriter {
 
         // Update internal state
         *self.file.lock().expect("WAL lock poisoned") = writer;
-        self.next_lsn.store(1, Ordering::SeqCst);
-        self.synced_lsn.store(0, Ordering::SeqCst);
+        self.next_lsn.store(1, Ordering::Release);
+        self.synced_lsn.store(0, Ordering::Release);
         *self.header.lock().expect("header lock poisoned") = header;
 
         // Prune old segments if needed (fire and forget - don't fail rotation)

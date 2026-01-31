@@ -8,7 +8,7 @@ fn main() {
     // Create source trie
     let dir1 = tempdir().expect("create temp dir");
     let path1 = dir1.path().join("source.artrie");
-    let source: PersistentARTrie<i64> = PersistentARTrie::create(&path1).expect("create source");
+    let mut source: PersistentARTrie<i64> = PersistentARTrie::create(&path1).expect("create source");
 
     // Insert terms with values
     for i in 0..1000 {
@@ -20,7 +20,7 @@ fn main() {
     // Create target trie
     let dir2 = tempdir().expect("create temp dir");
     let path2 = dir2.path().join("target.artrie");
-    let target: PersistentARTrie<i64> = PersistentARTrie::create(&path2).expect("create target");
+    let mut target: PersistentARTrie<i64> = PersistentARTrie::create(&path2).expect("create target");
 
     // Add some overlapping terms with different values
     for i in 500..1500 {
@@ -32,7 +32,7 @@ fn main() {
     // Test 1: Regular merge (loads all at once)
     let dir3 = tempdir().expect("create temp dir");
     let path3 = dir3.path().join("regular.artrie");
-    let regular: PersistentARTrie<i64> = PersistentARTrie::create(&path3).expect("create regular");
+    let mut regular: PersistentARTrie<i64> = PersistentARTrie::create(&path3).expect("create regular");
 
     for i in 500..1500 {
         regular.insert_with_value(&format!("term_{:08}", i), (i * 10) as i64);
@@ -45,7 +45,7 @@ fn main() {
     // Test 2: Batched merge with batch_size=100
     let dir4 = tempdir().expect("create temp dir");
     let path4 = dir4.path().join("batched.artrie");
-    let batched: PersistentARTrie<i64> = PersistentARTrie::create(&path4).expect("create batched");
+    let mut batched: PersistentARTrie<i64> = PersistentARTrie::create(&path4).expect("create batched");
 
     for i in 500..1500 {
         batched.insert_with_value(&format!("term_{:08}", i), (i * 10) as i64);

@@ -123,7 +123,7 @@ enum SingleChildData {
 /// Resolve a DiskRef child in place, replacing it with the loaded node.
 ///
 /// This is a free function that can be called without holding a borrow on
-/// `PersistentARTrieInner`, which is necessary when mutating children while
+/// `PersistentARTrie`, which is necessary when mutating children while
 /// also needing access to the buffer manager.
 ///
 /// # Arguments
@@ -227,6 +227,11 @@ fn resolve_child_for_mutation_with_bm(
 /// - **ART nodes** for efficient internal node traversal (Node4/16/48/256)
 /// - **String buckets** for efficient leaf storage (multiple terms per bucket)
 ///
+/// # Thread Safety
+///
+/// `PersistentARTrie` itself is not thread-safe. For concurrent access, wrap it in
+/// `Arc<RwLock<PersistentARTrie<V>>>` or use the [`SharedARTrie`] type alias.
+///
 /// # Example
 ///
 /// ```rust,ignore
@@ -239,14 +244,7 @@ fn resolve_child_for_mutation_with_bm(
 /// assert!(dict.contains("hello"));
 /// assert!(!dict.contains("hi"));
 /// ```
-#[derive(Clone)]
 pub struct PersistentARTrie<V: DictionaryValue = ()> {
-    /// Inner state protected by read-write lock
-    pub(crate) inner: Arc<RwLock<PersistentARTrieInner<V>>>,
-}
-
-/// Inner state of the Persistent ART
-pub(crate) struct PersistentARTrieInner<V: DictionaryValue> {
     /// Root node of the trie (starts as a bucket, grows to ART)
     pub(crate) root: TrieRoot<V>,
     /// Number of terms in the dictionary
@@ -274,6 +272,12 @@ pub(crate) struct PersistentARTrieInner<V: DictionaryValue> {
     /// Atomic statistics for monitoring
     pub(crate) stats: Arc<super::concurrency::TrieStats>,
 }
+
+/// Thread-safe wrapper for `PersistentARTrie`.
+///
+/// This type alias provides the same thread-safety model as the previous
+/// `PersistentARTrie` implementation (which internally used `Arc<RwLock<...>>`).
+///
 
 /// A term with its arena location for page-aware batching.
 ///
@@ -448,19 +452,17 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
     )]
     pub fn new() -> Self {
         Self {
-            inner: Arc::new(RwLock::new(PersistentARTrieInner {
-                root: TrieRoot::Bucket(StringBucket::with_values()),
-                term_count: 0,
-                dirty: false,
-                buffer_manager: None,
-                wal_writer: None,
-                next_lsn: 0,
-                prefetcher: super::prefetch::Prefetcher::disabled(),
-                arena_manager: None,
-                durability_policy: DurabilityPolicy::default(),
-                epoch_manager: super::concurrency::EpochManager::new(),
-                stats: Arc::new(super::concurrency::TrieStats::new()),
-            })),
+            root: TrieRoot::Bucket(StringBucket::with_values()),
+            term_count: 0,
+            dirty: false,
+            buffer_manager: None,
+            wal_writer: None,
+            next_lsn: 0,
+            prefetcher: super::prefetch::Prefetcher::disabled(),
+            arena_manager: None,
+            durability_policy: DurabilityPolicy::default(),
+            epoch_manager: super::concurrency::EpochManager::new(),
+            stats: Arc::new(super::concurrency::TrieStats::new()),
         }
     }
 
@@ -515,19 +517,17 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
         let arena_manager = Arc::new(RwLock::new(arena_manager));
 
         Ok(Self {
-            inner: Arc::new(RwLock::new(PersistentARTrieInner {
-                root: TrieRoot::Bucket(StringBucket::with_values()),
-                term_count: 0,
-                dirty: false,
-                buffer_manager: Some(buffer_manager),
-                wal_writer: Some(wal_writer),
-                next_lsn: 1, // Start at 1, 0 reserved for "no LSN"
-                prefetcher: super::prefetch::Prefetcher::new(),
-                arena_manager: Some(arena_manager),
-                durability_policy: DurabilityPolicy::default(),
-                epoch_manager: super::concurrency::EpochManager::new(),
-                stats: Arc::new(super::concurrency::TrieStats::new()),
-            })),
+            root: TrieRoot::Bucket(StringBucket::with_values()),
+            term_count: 0,
+            dirty: false,
+            buffer_manager: Some(buffer_manager),
+            wal_writer: Some(wal_writer),
+            next_lsn: 1, // Start at 1, 0 reserved for "no LSN"
+            prefetcher: super::prefetch::Prefetcher::new(),
+            arena_manager: Some(arena_manager),
+            durability_policy: DurabilityPolicy::default(),
+            epoch_manager: super::concurrency::EpochManager::new(),
+            stats: Arc::new(super::concurrency::TrieStats::new()),
         })
     }
 
@@ -588,19 +588,17 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
         let arena_manager = Arc::new(RwLock::new(arena_manager));
 
         Ok(Self {
-            inner: Arc::new(RwLock::new(PersistentARTrieInner {
-                root: TrieRoot::Bucket(StringBucket::with_values()),
-                term_count: 0,
-                dirty: false,
-                buffer_manager: Some(buffer_manager),
-                wal_writer: Some(wal_writer),
-                next_lsn: 1, // Start at 1, 0 reserved for "no LSN"
-                prefetcher: super::prefetch::Prefetcher::new(),
-                arena_manager: Some(arena_manager),
-                durability_policy: DurabilityPolicy::default(),
-                epoch_manager: super::concurrency::EpochManager::new(),
-                stats: Arc::new(super::concurrency::TrieStats::new()),
-            })),
+            root: TrieRoot::Bucket(StringBucket::with_values()),
+            term_count: 0,
+            dirty: false,
+            buffer_manager: Some(buffer_manager),
+            wal_writer: Some(wal_writer),
+            next_lsn: 1, // Start at 1, 0 reserved for "no LSN"
+            prefetcher: super::prefetch::Prefetcher::new(),
+            arena_manager: Some(arena_manager),
+            durability_policy: DurabilityPolicy::default(),
+            epoch_manager: super::concurrency::EpochManager::new(),
+            stats: Arc::new(super::concurrency::TrieStats::new()),
         })
     }
 
@@ -732,135 +730,129 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
             None => (TrieRoot::Bucket(StringBucket::with_values()), 0),
         };
 
-        let dict = Self {
-            inner: Arc::new(RwLock::new(PersistentARTrieInner {
-                root: initial_root,
-                term_count: initial_term_count,
-                dirty: false,
-                buffer_manager: Some(buffer_manager),
-                wal_writer: Some(wal_writer.clone()),
-                next_lsn,
-                prefetcher: super::prefetch::Prefetcher::new(),
-                arena_manager: Some(arena_manager),
-                durability_policy: DurabilityPolicy::default(),
-                epoch_manager: super::concurrency::EpochManager::new(),
-                stats: Arc::new(super::concurrency::TrieStats::new()),
-            })),
+        let mut dict = Self {
+            root: initial_root,
+            term_count: initial_term_count,
+            dirty: false,
+            buffer_manager: Some(buffer_manager),
+            wal_writer: Some(wal_writer.clone()),
+            next_lsn,
+            prefetcher: super::prefetch::Prefetcher::new(),
+            arena_manager: Some(arena_manager),
+            durability_policy: DurabilityPolicy::default(),
+            epoch_manager: super::concurrency::EpochManager::new(),
+            stats: Arc::new(super::concurrency::TrieStats::new()),
         };
 
         // Replay recovered operations
         // If we loaded from disk, only replay operations AFTER the checkpoint
-        {
-            let mut inner = dict.inner.write();
+        // Determine the LSN threshold for skipping
+        // Operations with LSN <= threshold are already in the on-disk state
+        let skip_threshold = if was_loaded_from_disk {
+            checkpoint_lsn
+        } else {
+            None
+        };
 
-            // Determine the LSN threshold for skipping
-            // Operations with LSN <= threshold are already in the on-disk state
-            let skip_threshold = if was_loaded_from_disk {
-                checkpoint_lsn
-            } else {
-                None
-            };
-
-            let mut replayed_count = 0;
-            for op in recovered_ops.into_iter() {
-                match op {
-                    super::recovery::RecoveredOperation::Insert { lsn, term, value } => {
-                        // Skip if this operation is already reflected in disk state
-                        if let Some(threshold) = skip_threshold {
-                            if lsn <= threshold {
-                                continue;
-                            }
+        let mut replayed_count = 0;
+        for op in recovered_ops.into_iter() {
+            match op {
+                super::recovery::RecoveredOperation::Insert { lsn, term, value } => {
+                    // Skip if this operation is already reflected in disk state
+                    if let Some(threshold) = skip_threshold {
+                        if lsn <= threshold {
+                            continue;
                         }
-                        // Deserialize value from WAL if present
-                        let deserialized_value: Option<V> = value.and_then(|bytes| {
-                            match bincode::deserialize(&bytes) {
-                                Ok(v) => Some(v),
-                                Err(e) => {
-                                    warn!("Failed to deserialize value from WAL: {:?}", e);
-                                    None
-                                }
-                            }
-                        });
-                        // Replay insert without re-logging to WAL
-                        inner.insert_impl_no_wal(&term, deserialized_value);
-                        replayed_count += 1;
                     }
-                    super::recovery::RecoveredOperation::Remove { lsn, term } => {
-                        // Skip if this operation is already reflected in disk state
-                        if let Some(threshold) = skip_threshold {
-                            if lsn <= threshold {
-                                continue;
+                    // Deserialize value from WAL if present
+                    let deserialized_value: Option<V> = value.and_then(|bytes| {
+                        match bincode::deserialize(&bytes) {
+                            Ok(v) => Some(v),
+                            Err(e) => {
+                                warn!("Failed to deserialize value from WAL: {:?}", e);
+                                None
                             }
                         }
-                        // Replay remove without re-logging to WAL
-                        inner.remove_impl_no_wal(&term);
-                        replayed_count += 1;
+                    });
+                    // Replay insert without re-logging to WAL
+                    dict.insert_impl_no_wal(&term, deserialized_value);
+                    replayed_count += 1;
+                }
+                super::recovery::RecoveredOperation::Remove { lsn, term } => {
+                    // Skip if this operation is already reflected in disk state
+                    if let Some(threshold) = skip_threshold {
+                        if lsn <= threshold {
+                            continue;
+                        }
                     }
-                    super::recovery::RecoveredOperation::Increment {
-                        lsn,
-                        term,
-                        delta: _,
-                        result,
-                    } => {
-                        // Skip if this operation is already reflected in disk state
-                        if let Some(threshold) = skip_threshold {
-                            if lsn <= threshold {
-                                continue;
-                            }
+                    // Replay remove without re-logging to WAL
+                    dict.remove_impl_no_wal(&term);
+                    replayed_count += 1;
+                }
+                super::recovery::RecoveredOperation::Increment {
+                    lsn,
+                    term,
+                    delta: _,
+                    result,
+                } => {
+                    // Skip if this operation is already reflected in disk state
+                    if let Some(threshold) = skip_threshold {
+                        if lsn <= threshold {
+                            continue;
                         }
-                        // For increment recovery, we set the final result value directly
-                        // (this is idempotent even if replayed multiple times)
-                        let value_bytes = result.to_le_bytes().to_vec();
-                        if let Ok(value) = bincode::deserialize(&value_bytes) {
-                            inner.upsert_impl_no_wal(&term, value);
-                        }
-                        replayed_count += 1;
                     }
-                    super::recovery::RecoveredOperation::Upsert { lsn, term, value } => {
-                        // Skip if this operation is already reflected in disk state
-                        if let Some(threshold) = skip_threshold {
-                            if lsn <= threshold {
-                                continue;
-                            }
-                        }
-                        // Deserialize and apply value
-                        if let Ok(v) = bincode::deserialize(&value) {
-                            inner.upsert_impl_no_wal(&term, v);
-                        }
-                        replayed_count += 1;
+                    // For increment recovery, we set the final result value directly
+                    // (this is idempotent even if replayed multiple times)
+                    let value_bytes = result.to_le_bytes().to_vec();
+                    if let Ok(value) = bincode::deserialize(&value_bytes) {
+                        dict.upsert_impl_no_wal(&term, value);
                     }
-                    super::recovery::RecoveredOperation::CompareAndSwap {
-                        lsn,
-                        term,
-                        new_value,
-                        success,
-                    } => {
-                        // Skip if this operation is already reflected in disk state
-                        if let Some(threshold) = skip_threshold {
-                            if lsn <= threshold {
-                                continue;
-                            }
+                    replayed_count += 1;
+                }
+                super::recovery::RecoveredOperation::Upsert { lsn, term, value } => {
+                    // Skip if this operation is already reflected in disk state
+                    if let Some(threshold) = skip_threshold {
+                        if lsn <= threshold {
+                            continue;
                         }
-                        // Only apply if the CAS succeeded
-                        if success {
-                            if let Ok(v) = bincode::deserialize(&new_value) {
-                                inner.upsert_impl_no_wal(&term, v);
-                            }
-                        }
-                        replayed_count += 1;
                     }
+                    // Deserialize and apply value
+                    if let Ok(v) = bincode::deserialize(&value) {
+                        dict.upsert_impl_no_wal(&term, v);
+                    }
+                    replayed_count += 1;
+                }
+                super::recovery::RecoveredOperation::CompareAndSwap {
+                    lsn,
+                    term,
+                    new_value,
+                    success,
+                } => {
+                    // Skip if this operation is already reflected in disk state
+                    if let Some(threshold) = skip_threshold {
+                        if lsn <= threshold {
+                            continue;
+                        }
+                    }
+                    // Only apply if the CAS succeeded
+                    if success {
+                        if let Ok(v) = bincode::deserialize(&new_value) {
+                            dict.upsert_impl_no_wal(&term, v);
+                        }
+                    }
+                    replayed_count += 1;
                 }
             }
-            // Mark clean after recovery replay
-            inner.dirty = false;
+        }
+        // Mark clean after recovery replay
+        dict.dirty = false;
 
-            // If we loaded from disk AND replayed no operations, we can truncate the WAL
-            // (all operations were already persisted to disk before the checkpoint)
-            if was_loaded_from_disk && replayed_count == 0 {
-                let wal = wal_writer.write();
-                if let Err(e) = wal.truncate() {
-                    warn!("Failed to truncate WAL after recovery: {:?}", e);
-                }
+        // If we loaded from disk AND replayed no operations, we can truncate the WAL
+        // (all operations were already persisted to disk before the checkpoint)
+        if was_loaded_from_disk && replayed_count == 0 {
+            let wal = wal_writer.write();
+            if let Err(e) = wal.truncate() {
+                warn!("Failed to truncate WAL after recovery: {:?}", e);
             }
         }
 
@@ -893,14 +885,11 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
     /// dict.checkpoint()?;
     /// ```
     pub fn open_with_slot_tracking<P: AsRef<Path>>(path: P) -> Result<Self> {
-        let dict = Self::open(path)?;
+        let mut dict = Self::open(path)?;
 
         // Enable slot-level tracking on the arena manager
-        {
-            let inner = dict.inner.read();
-            if let Some(ref am) = inner.arena_manager {
-                am.write().enable_slot_tracking();
-            }
+        if let Some(ref am) = dict.arena_manager {
+            am.write().enable_slot_tracking();
         }
 
         Ok(dict)
@@ -1009,7 +998,7 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
                 let _ = std::fs::remove_file(&wal_path);
 
                 // Create fresh trie
-                let trie = Self::create(path)?;
+                let mut trie = Self::create(path)?;
 
                 // Rebuild from WAL archive segments
                 let mut records_replayed: u64 = 0;
@@ -1039,31 +1028,27 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
                                 let deserialized: Option<V> = value.and_then(|bytes| {
                                     bincode::deserialize(&bytes).ok()
                                 });
-                                let mut inner = trie.inner.write();
-                                inner.insert_impl_no_wal(&term, deserialized);
+                                trie.insert_impl_no_wal(&term, deserialized);
                                 terms_recovered += 1;
                             }
                             WalRecord::Increment { term, delta: _, result: val } => {
                                 // For increment, store the final result
                                 let value_bytes = val.to_le_bytes();
                                 if let Ok(v) = bincode::deserialize::<V>(&value_bytes) {
-                                    let mut inner = trie.inner.write();
-                                    inner.upsert_impl_no_wal(&term, v);
+                                    trie.upsert_impl_no_wal(&term, v);
                                     terms_recovered += 1;
                                 }
                             }
                             WalRecord::Upsert { term, value } => {
                                 if let Ok(v) = bincode::deserialize::<V>(&value) {
-                                    let mut inner = trie.inner.write();
-                                    inner.upsert_impl_no_wal(&term, v);
+                                    trie.upsert_impl_no_wal(&term, v);
                                     terms_recovered += 1;
                                 }
                             }
                             WalRecord::CompareAndSwap { term, new_value, success, .. } => {
                                 if success {
                                     if let Ok(v) = bincode::deserialize::<V>(&new_value) {
-                                        let mut inner = trie.inner.write();
-                                        inner.upsert_impl_no_wal(&term, v);
+                                        trie.upsert_impl_no_wal(&term, v);
                                         terms_recovered += 1;
                                     }
                                 }
@@ -1810,14 +1795,12 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
 
     /// Insert a term into the dictionary (without value)
     pub fn insert(&mut self, term: &str) -> bool {
-        let mut inner = self.inner.write();
-        inner.insert_impl(term.as_bytes(), None)
+        self.insert_impl(term.as_bytes(), None)
     }
 
     /// Insert a term with an associated value
     pub fn insert_with_value(&mut self, term: &str, value: V) -> bool {
-        let mut inner = self.inner.write();
-        inner.insert_impl(term.as_bytes(), Some(value))
+        self.insert_impl(term.as_bytes(), Some(value))
     }
 
     /// Insert multiple terms in a single batch operation.
@@ -1853,10 +1836,8 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
             return 0;
         }
 
-        let mut inner = self.inner.write();
-
         // First, log all entries as a single batch WAL record
-        if let Some(ref wal_writer) = inner.wal_writer {
+        if let Some(ref wal_writer) = self.wal_writer {
             // Serialize all entries for WAL
             let wal_entries: Vec<(Vec<u8>, Option<Vec<u8>>)> = entries
                 .iter()
@@ -1877,7 +1858,7 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
         // Then insert each entry without individual WAL logging
         let mut inserted_count = 0;
         for (term, value) in entries {
-            if inner.insert_impl_core(term.as_bytes(), value.clone()) {
+            if self.insert_impl_core(term.as_bytes(), value.clone()) {
                 inserted_count += 1;
             }
         }
@@ -1902,10 +1883,8 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
             return 0;
         }
 
-        let mut inner = self.inner.write();
-
         // First, log all entries as a single batch WAL record
-        if let Some(ref wal_writer) = inner.wal_writer {
+        if let Some(ref wal_writer) = self.wal_writer {
             let wal_entries: Vec<(Vec<u8>, Option<Vec<u8>>)> = entries
                 .iter()
                 .map(|(term, value)| {
@@ -1924,7 +1903,7 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
         // Then insert each entry without individual WAL logging
         let mut inserted_count = 0;
         for (term, value) in entries {
-            if inner.insert_impl_core(term, value.clone()) {
+            if self.insert_impl_core(term, value.clone()) {
                 inserted_count += 1;
             }
         }
@@ -2072,8 +2051,7 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
 
     /// Remove a term from the dictionary
     pub fn remove(&mut self, term: &str) -> bool {
-        let mut inner = self.inner.write();
-        inner.remove_impl(term.as_bytes())
+        self.remove_impl(term.as_bytes())
     }
 
     /// Remove all terms with the given prefix (batched for memory efficiency).
@@ -2162,9 +2140,8 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
             }
 
             // Remove the batch
-            let mut inner = self.inner.write();
             for term in batch {
-                if inner.remove_impl(&term) {
+                if self.remove_impl(&term) {
                     total_removed += 1;
                 }
             }
@@ -2175,14 +2152,12 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
 
     /// Check if the dictionary is dirty (has uncommitted changes)
     pub fn is_dirty(&self) -> bool {
-        let inner = self.inner.read();
-        inner.dirty
+        self.dirty
     }
 
     /// Mark the dictionary as clean (after flushing to disk)
     pub fn mark_clean(&mut self) {
-        let mut inner = self.inner.write();
-        inner.dirty = false;
+        self.dirty = false;
     }
 
     /// Flush all buffered data to disk for durability.
@@ -2198,16 +2173,14 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
     /// dict.sync()?; // Ensure both inserts are durable
     /// ```
     pub fn sync(&self) -> Result<()> {
-        let inner = self.inner.read();
-
         // Sync WAL to disk
-        if let Some(ref wal_writer) = inner.wal_writer {
+        if let Some(ref wal_writer) = self.wal_writer {
             let wal = wal_writer.write();
             wal.sync()?;
         }
 
         // Flush all dirty pages from buffer manager
-        if let Some(ref buffer_manager) = inner.buffer_manager {
+        if let Some(ref buffer_manager) = self.buffer_manager {
             buffer_manager.read().flush_all()?;
         }
 
@@ -2231,11 +2204,10 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
     /// assert!(after > before);
     /// ```
     pub fn current_lsn(&self) -> Lsn {
-        let inner = self.inner.read();
         // Use WAL's authoritative LSN if available, otherwise fall back to cached value
-        inner.wal_writer.as_ref()
+        self.wal_writer.as_ref()
             .map(|wal| wal.read().current_lsn())
-            .unwrap_or(inner.next_lsn)
+            .unwrap_or(self.next_lsn)
     }
 
     /// Returns the highest LSN that has been durably synced to storage.
@@ -2257,8 +2229,7 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
     /// assert!(synced.is_some());
     /// ```
     pub fn synced_lsn(&self) -> Option<Lsn> {
-        let inner = self.inner.read();
-        inner.wal_writer.as_ref().map(|wal| {
+        self.wal_writer.as_ref().map(|wal| {
             wal.read().synced_lsn()
         })
     }
@@ -2268,7 +2239,7 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
     /// The durability policy controls when fsync is called after WAL writes.
     /// See [`DurabilityPolicy`] for available options and their trade-offs.
     pub fn durability_policy(&self) -> DurabilityPolicy {
-        self.inner.read().durability_policy
+        self.durability_policy
     }
 
     /// Set the durability policy for this trie.
@@ -2291,7 +2262,7 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
     /// dict.set_durability_policy(DurabilityPolicy::Periodic);
     /// ```
     pub fn set_durability_policy(&mut self, policy: DurabilityPolicy) {
-        self.inner.write().durability_policy = policy;
+        self.durability_policy = policy;
     }
 
     /// Get a snapshot of the trie statistics.
@@ -2299,12 +2270,12 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
     /// Returns atomic counters for reads, writes, cache hits/misses, etc.
     /// Useful for monitoring and debugging.
     pub fn stats(&self) -> super::concurrency::TrieStatsSnapshot {
-        self.inner.read().stats.snapshot()
+        self.stats.snapshot()
     }
 
     /// Get a reference to the stats tracker for direct recording.
     pub fn stats_tracker(&self) -> Arc<super::concurrency::TrieStats> {
-        Arc::clone(&self.inner.read().stats)
+        Arc::clone(&self.stats)
     }
 
     /// Advance the MVCC epoch.
@@ -2312,12 +2283,12 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
     /// This should be called periodically by a background thread to
     /// enable garbage collection of old versions.
     pub fn advance_epoch(&self) -> u64 {
-        self.inner.read().epoch_manager.advance()
+        self.epoch_manager.advance()
     }
 
     /// Get the current MVCC epoch.
     pub fn current_epoch(&self) -> u64 {
-        self.inner.read().epoch_manager.current_epoch()
+        self.epoch_manager.current_epoch()
     }
 
     /// Create a checkpoint to allow WAL truncation.
@@ -2341,19 +2312,14 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
         use super::wal::WalRecord;
 
         // First, persist all in-memory data to disk
-        {
-            let mut inner = self.inner.write();
-            inner.persist_to_disk()?;
-        }
+        self.persist_to_disk()?;
 
         // Then write the checkpoint record to WAL
-        let inner = self.inner.read();
-
-        if let Some(ref wal_writer) = inner.wal_writer {
+        if let Some(ref wal_writer) = self.wal_writer {
             let wal = wal_writer.write();
 
             // Get current LSN as checkpoint
-            let checkpoint_lsn = inner.next_lsn.saturating_sub(1);
+            let checkpoint_lsn = self.next_lsn.saturating_sub(1);
             let timestamp = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
@@ -2390,14 +2356,12 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
     /// println!("Prefetch hit rate: {:.1}%", stats.hit_rate() * 100.0);
     /// ```
     pub fn prefetch_stats(&self) -> super::prefetch::PrefetchStatsSnapshot {
-        let inner = self.inner.read();
-        inner.prefetcher.stats().snapshot()
+        self.prefetcher.stats().snapshot()
     }
 
     /// Get a snapshot node for traversal
     fn get_root_node(&self) -> PersistentARTrieNode<V> {
-        let inner = self.inner.read();
-        match &inner.root {
+        match &self.root {
             TrieRoot::Bucket(bucket) => PersistentARTrieNode::new_bucket(bucket.clone()),
             TrieRoot::ArtNode {
                 node,
@@ -2420,7 +2384,10 @@ impl<V: DictionaryValue> Default for PersistentARTrie<V> {
     }
 }
 
-impl<V: DictionaryValue> PersistentARTrieInner<V> {
+// === Internal Implementation Methods ===
+// These methods were previously on PersistentARTrie and are now on PersistentARTrie directly.
+
+impl<V: DictionaryValue> PersistentARTrie<V> {
     /// Insert implementation with WAL logging (for persistent mode).
     fn insert_impl(&mut self, term: &[u8], value: Option<V>) -> bool {
         // Clone value for WAL logging if needed (before move into core)
@@ -4561,13 +4528,11 @@ impl<V: DictionaryValue> Dictionary for PersistentARTrie<V> {
     }
 
     fn contains(&self, term: &str) -> bool {
-        let inner = self.inner.read();
-        inner.contains_impl(term.as_bytes())
+        self.contains_impl(term.as_bytes())
     }
 
     fn len(&self) -> Option<usize> {
-        let inner = self.inner.read();
-        Some(inner.term_count)
+        Some(self.term_count)
     }
 
     fn sync_strategy(&self) -> SyncStrategy {
@@ -4579,88 +4544,16 @@ impl<V: DictionaryValue> MappedDictionary for PersistentARTrie<V> {
     type Value = V;
 
     fn get_value(&self, term: &str) -> Option<Self::Value> {
-        let inner = self.inner.read();
-        inner.get_value_impl(term.as_bytes())
+        self.get_value_impl(term.as_bytes())
     }
 }
 
-impl<V: DictionaryValue + Clone> MutableMappedDictionary for PersistentARTrie<V> {
-    /// Insert or update a term with an associated value.
-    ///
-    /// Uses interior mutability to acquire write lock on the inner state.
-    fn insert_with_value(&self, term: &str, value: Self::Value) -> bool {
-        let mut inner = self.inner.write();
-        inner.insert_impl(term.as_bytes(), Some(value))
-    }
-
-    /// Merge another trie into this one using a custom merge function.
-    ///
-    /// Iterates through all terms in `other` and merges them into `self`:
-    /// - If a term exists in both tries, applies `merge_fn` to combine values
-    /// - If a term only exists in `other`, it's inserted with its value
-    ///
-    /// # Arguments
-    ///
-    /// * `other` - The source trie to merge from
-    /// * `merge_fn` - Function to combine values when a term exists in both tries
-    ///
-    /// # Returns
-    ///
-    /// The number of terms processed from `other`.
-    fn union_with<F>(&self, other: &Self, merge_fn: F) -> usize
-    where
-        F: Fn(&Self::Value, &Self::Value) -> Self::Value,
-        Self::Value: Clone,
-    {
-        let mut processed = 0;
-
-        // Iterate all terms with values from other
-        for (term_bytes, value_opt) in other.iter_with_values() {
-            if let Some(other_value) = value_opt {
-                if let Ok(term) = std::str::from_utf8(&term_bytes) {
-                    processed += 1;
-
-                    // Check if term exists in self and merge values
-                    let merged_value = if let Some(self_value) = self.get_value(term) {
-                        merge_fn(&self_value, &other_value)
-                    } else {
-                        other_value
-                    };
-
-                    // Insert the merged value
-                    self.insert_with_value(term, merged_value);
-                }
-            }
-        }
-
-        processed
-    }
-
-    /// Update an existing term's value or insert a new term with a default value.
-    ///
-    /// This method is useful for incrementally modifying values without replacing them.
-    fn update_or_insert<F>(&self, term: &str, default_value: Self::Value, update_fn: F) -> bool
-    where
-        F: FnOnce(&mut Self::Value),
-    {
-        if let Some(existing) = self.get_value(term) {
-            let mut value = existing;
-            update_fn(&mut value);
-            self.insert_with_value(term, value);
-            false // Term existed
-        } else {
-            self.insert_with_value(term, default_value);
-            true // New term
-        }
-    }
-}
 
 impl<V: DictionaryValue> std::fmt::Debug for PersistentARTrie<V> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let inner = self.inner.read();
         f.debug_struct("PersistentARTrie")
-            .field("term_count", &inner.term_count)
-            .field("dirty", &inner.dirty)
+            .field("term_count", &self.term_count)
+            .field("dirty", &self.dirty)
             .finish()
     }
 }
@@ -5052,8 +4945,7 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
     /// }
     /// ```
     pub fn iter(&self) -> TermIterator<V> {
-        let inner = self.inner.read();
-        TermIterator::new(&inner.root)
+        TermIterator::new(&self.root)
     }
 
     /// Iterate over all terms with their values.
@@ -5074,8 +4966,7 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
     /// }
     /// ```
     pub fn iter_with_values(&self) -> TermValueIterator<V> {
-        let inner = self.inner.read();
-        TermValueIterator::new(&inner.root)
+        TermValueIterator::new(&self.root)
     }
 
     /// Iterate over all terms as strings.
@@ -5136,12 +5027,14 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
     /// }
     /// ```
     pub fn iter_prefix(&self, prefix: &[u8]) -> Option<impl Iterator<Item = Vec<u8>> + '_> {
-        use crate::prefix_zipper::PrefixZipper;
-        use super::zipper::PersistentARTrieZipper;
+        // Direct iteration without zipper for the flattened struct design
+        self.iter_prefix_direct(prefix)
+    }
 
-        let zipper = PersistentARTrieZipper::new_from_dict(self);
-        let prefix_iter = zipper.with_prefix(prefix)?;
-        Some(prefix_iter.map(|(path, _)| path))
+    /// Direct prefix iteration implementation (non-zipper based).
+    fn iter_prefix_direct(&self, prefix: &[u8]) -> Option<impl Iterator<Item = Vec<u8>> + '_> {
+        let terms = self.iter_prefix_with_arena(prefix).ok()??;
+        Some(terms.into_iter().map(|t| t.term))
     }
 
     /// Iterate over all (term, value) pairs with the given prefix.
@@ -5179,201 +5072,34 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
     where
         V: Clone,
     {
-        use crate::prefix_zipper::ValuedPrefixZipper;
-        use super::zipper::PersistentARTrieZipper;
-
-        let zipper = PersistentARTrieZipper::new_from_dict(self);
-        let prefix_iter = zipper.with_prefix_values(prefix)?;
-        Some(prefix_iter)
+        // Direct iteration without zipper for the flattened struct design
+        let terms = self.iter_prefix_with_values_and_arena(prefix).ok()??;
+        Some(terms.into_iter().map(|t| (t.term, t.value)))
     }
 
-    /// Iterate over all terms with the given prefix, including arena locations.
-    ///
-    /// Returns all terms matching the prefix along with their disk arena IDs.
-    /// This enables page-aware batch operations by grouping terms by arena.
-    ///
-    /// # Arguments
-    ///
-    /// * `prefix` - The byte prefix to search for
-    ///
-    /// # Returns
-    ///
-    /// - `Ok(Some(vec))` - Vector of terms with arena info
-    /// - `Ok(None)` - The prefix path doesn't exist
-    /// - `Err` - An I/O error occurred
-    pub fn iter_prefix_with_arena(
-        &self,
-        prefix: &[u8],
-    ) -> Result<Option<Vec<PrefixTermWithArena>>> {
-        let inner = self.inner.read();
-        inner.iter_prefix_with_arena(prefix)
-    }
+}
 
-    /// Iterate over all terms with values and arena locations for the given prefix.
-    ///
-    /// Returns all (term, value, arena_id) tuples matching the prefix.
-    /// This enables page-locality optimized merge operations.
-    ///
-    /// # Arguments
-    ///
-    /// * `prefix` - The byte prefix to search for
-    ///
-    /// # Returns
-    ///
-    /// - `Ok(Some(vec))` - Vector of terms with values and arena info
-    /// - `Ok(None)` - The prefix path doesn't exist
-    /// - `Err` - An I/O error occurred
-    pub fn iter_prefix_with_values_and_arena(
-        &self,
-        prefix: &[u8],
-    ) -> Result<Option<Vec<PrefixTermWithValueAndArena<V>>>>
-    where
-        V: Clone,
-    {
-        let inner = self.inner.read();
-        inner.iter_prefix_with_values_and_arena(prefix)
-    }
-
-    /// Merge another trie into this one using a custom merge function.
-    ///
-    /// Uses arena-aware iteration for improved I/O locality. Groups terms by
-    /// their disk arena before processing, processing arena groups in sorted
-    /// order for sequential I/O patterns.
-    ///
-    /// # Arguments
-    ///
-    /// * `other` - The source trie to merge from
-    /// * `merge_fn` - Function to combine values when a term exists in both tries
-    ///
-    /// # Returns
-    ///
-    /// The number of terms processed from `other`.
-    pub fn merge_from<F>(&self, other: &Self, merge_fn: F) -> Result<usize>
-    where
-        F: Fn(&V, &V) -> V,
-        V: Clone,
-    {
-        let mut inner = self.inner.write();
-        let other_inner = other.inner.read();
-        inner.merge_from(&other_inner, merge_fn)
-    }
-
-    /// Merge another trie into this one, replacing values on conflict.
-    ///
-    /// This is a convenience method equivalent to:
-    /// `merge_from(other, |_, other_val| other_val.clone())`
-    ///
-    /// # Arguments
-    ///
-    /// * `other` - The source trie to merge from
-    ///
-    /// # Returns
-    ///
-    /// The number of terms processed from `other`.
-    pub fn merge_replace(&self, other: &Self) -> Result<usize>
-    where
-        V: Clone,
-    {
-        self.merge_from(other, |_, other_val| other_val.clone())
-    }
-
-    /// Merge another trie into this one with memory-bounded batching.
-    ///
-    /// This method processes the source trie in batches to bound peak memory usage.
-    /// Each batch is processed and then discarded before loading the next batch.
-    ///
-    /// # Arguments
-    ///
-    /// * `other` - The source trie to merge from
-    /// * `merge_fn` - Function to merge values when a term exists in both tries
-    /// * `batch_size` - Maximum number of terms to process per batch (default: 10,000)
-    ///
-    /// # Returns
-    ///
-    /// The total number of terms processed from `other`.
-    ///
-    /// # Memory Usage
-    ///
-    /// Peak memory is bounded by approximately `batch_size * (avg_term_len + avg_value_size)`.
-    /// For 10,000 terms with 28-byte average terms and 100-byte values, this is ~1.3MB.
-    pub fn merge_from_batched<F>(
-        &self,
-        other: &Self,
-        merge_fn: F,
-        batch_size: usize,
-    ) -> Result<usize>
-    where
-        F: Fn(&V, &V) -> V,
-        V: Clone,
-    {
-        let mut inner = self.inner.write();
-        let other_inner = other.inner.read();
-        inner.merge_from_batched(&other_inner, merge_fn, batch_size)
-    }
-
-    /// Merge terms from another trie in batches, sorted by arena ID for sequential I/O.
-    ///
-    /// This is an optimized version of `merge_from_batched` that sorts each batch
-    /// by arena ID before processing. This optimization improves I/O performance
-    /// when merging disk-resident tries by ensuring sequential disk access patterns.
-    ///
-    /// # Performance
-    ///
-    /// Expected improvement: 10-20% faster merge for disk-resident tries due to
-    /// sequential I/O patterns. For in-memory tries, there is no significant difference.
-    ///
-    /// # Arguments
-    ///
-    /// * `other` - The source trie to merge from
-    /// * `merge_fn` - Function to merge values when a term exists in both tries
-    /// * `batch_size` - Number of terms to process per batch (0 uses default 5,000)
-    ///
-    /// # Returns
-    ///
-    /// The total number of terms processed from `other`.
-    pub fn merge_from_batched_grouped<F>(
-        &self,
-        other: &Self,
-        merge_fn: F,
-        batch_size: usize,
-    ) -> Result<usize>
-    where
-        F: Fn(&V, &V) -> V,
-        V: Clone,
-    {
-        let mut inner = self.inner.write();
-        let other_inner = other.inner.read();
-        inner.merge_from_batched_grouped(&other_inner, merge_fn, batch_size)
-    }
-
-    /// Iterate terms with values starting from a cursor position.
-    ///
-    /// This method enables memory-bounded iteration by returning terms in batches.
-    /// The cursor allows resuming iteration from where the previous batch ended.
-    ///
-    /// # Arguments
-    ///
-    /// * `prefix` - Only return terms starting with this prefix
-    /// * `cursor` - If Some, skip terms <= cursor (exclusive lower bound)
-    /// * `limit` - Maximum number of terms to return
-    ///
-    /// # Returns
-    ///
-    /// A vector of terms (sorted lexicographically) starting after the cursor,
-    /// up to the specified limit.
-    pub fn iter_prefix_from_cursor(
-        &self,
-        prefix: &[u8],
-        cursor: Option<&[u8]>,
-        limit: usize,
-    ) -> Result<Vec<PrefixTermWithValueAndArena<V>>>
-    where
-        V: Clone,
-    {
-        let inner = self.inner.read();
-        inner.iter_prefix_from_cursor(prefix, cursor, limit)
-    }
-
+/// Extension trait for parallel merge operations on [`SharedARTrie`].
+///
+/// These methods require the `parallel-merge` feature and use rayon for
+/// parallel processing. They are implemented as an extension trait because
+/// `SharedARTrie` is a type alias for `Arc<RwLock<PersistentARTrie<V>>>`,
+/// and Rust doesn't allow inherent `impl` blocks on type aliases that resolve
+/// to external types.
+///
+/// # Usage
+///
+/// ```rust,ignore
+/// use libdictenstein::persistent_artrie::{SharedARTrie, SharedARTrieParallelExt};
+///
+/// let trie1: SharedARTrie<u32> = /* ... */;
+/// let trie2: SharedARTrie<u32> = /* ... */;
+///
+/// // Import the trait to use the method
+/// let count = trie1.merge_from_parallel(&trie2, |a, b| a + b)?;
+/// ```
+#[cfg(feature = "parallel-merge")]
+pub trait SharedARTrieParallelExt<V: DictionaryValue> {
     /// Merge all terms from another trie using parallel processing.
     ///
     /// This method uses rayon to parallelize the merge computation across multiple
@@ -5397,16 +5123,23 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
     /// # Returns
     ///
     /// The number of terms processed from the source trie.
-    #[cfg(feature = "parallel-merge")]
-    pub fn merge_from_parallel<F>(
+    fn merge_from_parallel<F>(&self, other: &Self, merge_fn: F) -> Result<usize>
+    where
+        F: Fn(&V, &V) -> V + Sync + Send;
+}
+
+#[cfg(feature = "parallel-merge")]
+impl<V: DictionaryValue + Clone + Send + Sync> SharedARTrieParallelExt<V> for SharedARTrie<V> {
+    fn merge_from_parallel<F>(
         &self,
         other: &Self,
         merge_fn: F,
     ) -> Result<usize>
     where
         F: Fn(&V, &V) -> V + Sync + Send,
-        V: Clone + Send + Sync,
     {
+        use rayon::prelude::*;
+
         // Partition by first byte (0-255) for parallel processing
         // This naturally distributes work across the trie structure
         let partitions: Vec<Vec<(Vec<u8>, V)>> = (0u8..=255u8)
@@ -5414,7 +5147,7 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
             .map(|prefix_byte| {
                 // Read all terms starting with this byte from source
                 let prefix = [prefix_byte];
-                let other_inner = other.inner.read();
+                let other_guard = other.read();
 
                 // Collect all terms with this prefix from source
                 let mut partition_terms = Vec::new();
@@ -5422,7 +5155,7 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
                 let batch_size = 10_000;
 
                 loop {
-                    let batch = match other_inner.iter_prefix_from_cursor(
+                    let batch = match other_guard.iter_prefix_from_cursor(
                         &prefix,
                         cursor.as_deref(),
                         batch_size,
@@ -5442,9 +5175,9 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
                     for term_info in batch {
                         // We need to check if term exists in self
                         // This read is safe since we're just reading
-                        let self_inner = self.inner.read();
-                        let existing_value = self_inner.get_value_impl(&term_info.term);
-                        drop(self_inner);
+                        let self_guard = self.read();
+                        let existing_value = self_guard.get_value_impl(&term_info.term);
+                        drop(self_guard);
 
                         let merged_value = if let Some(ref self_value) = existing_value {
                             merge_fn(self_value, &term_info.value)
@@ -5468,11 +5201,11 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
 
         // Sequential write phase - batch insert all partitions
         let mut total_processed = 0;
-        let mut inner = self.inner.write();
+        let mut guard = self.write();
 
         for partition in partitions {
             for (term, value) in partition {
-                inner.insert_impl(&term, Some(value));
+                guard.insert_impl(&term, Some(value));
                 total_processed += 1;
             }
         }
@@ -5514,8 +5247,7 @@ impl<V: DictionaryValue + serde::Serialize + serde::de::DeserializeOwned> Persis
     pub fn begin_document(&self, document_id: &str) -> Result<DocumentTransaction<V>> {
         // Generate a unique transaction ID
         let tx_id = {
-            let inner = self.inner.read();
-            let base = inner.next_lsn as u64;
+            let base = self.next_lsn as u64;
             // Combine LSN with a random component for uniqueness
             base ^ (std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -5525,8 +5257,7 @@ impl<V: DictionaryValue + serde::Serialize + serde::de::DeserializeOwned> Persis
 
         // Log BeginTx to WAL
         {
-            let inner = self.inner.read();
-            if let Some(ref wal) = inner.wal_writer {
+            if let Some(ref wal) = self.wal_writer {
                 let wal_guard = wal.read();
                 wal_guard.append(super::wal::WalRecord::BeginTx { tx_id })?;
             }
@@ -5611,12 +5342,11 @@ impl<V: DictionaryValue + serde::Serialize + serde::de::DeserializeOwned> Persis
         if count == 0 {
             // Empty transaction - just log commit and sync based on durability policy
             tx.state = TransactionState::Committed;
-            let inner = self.inner.read();
-            if let Some(ref wal) = inner.wal_writer {
+            if let Some(ref wal) = self.wal_writer {
                 let wal_guard = wal.read();
                 wal_guard.append(super::wal::WalRecord::CommitTx { tx_id: tx.tx_id })?;
                 // Sync WAL based on durability policy (ACID Durability)
-                if inner.durability_policy == DurabilityPolicy::Immediate {
+                if self.durability_policy == DurabilityPolicy::Immediate {
                     wal_guard.sync()?;
                 }
             }
@@ -5638,12 +5368,11 @@ impl<V: DictionaryValue + serde::Serialize + serde::de::DeserializeOwned> Persis
 
         // Log CommitTx and sync based on durability policy
         {
-            let inner = self.inner.read();
-            if let Some(ref wal) = inner.wal_writer {
+            if let Some(ref wal) = self.wal_writer {
                 let wal_guard = wal.read();
                 wal_guard.append(super::wal::WalRecord::CommitTx { tx_id: tx.tx_id })?;
                 // Sync WAL based on durability policy (ACID Durability)
-                if inner.durability_policy == DurabilityPolicy::Immediate {
+                if self.durability_policy == DurabilityPolicy::Immediate {
                     wal_guard.sync()?;
                 }
             }
@@ -5675,8 +5404,7 @@ impl<V: DictionaryValue + serde::Serialize + serde::de::DeserializeOwned> Persis
 
         // Log AbortTx to WAL
         {
-            let inner = self.inner.read();
-            if let Some(ref wal) = inner.wal_writer {
+            if let Some(ref wal) = self.wal_writer {
                 let wal_guard = wal.read();
                 wal_guard.append(super::wal::WalRecord::AbortTx { tx_id: tx.tx_id })?;
             }
@@ -5730,18 +5458,16 @@ impl<V: DictionaryValue + serde::Serialize + serde::de::DeserializeOwned> Persis
     /// assert_eq!(dict.increment("counter", 5)?, 6);
     /// assert_eq!(dict.increment("counter", -2)?, 4);
     /// ```
-    pub fn increment(&self, term: &str, delta: i64) -> super::error::Result<i64> {
+    pub fn increment(&mut self, term: &str, delta: i64) -> super::error::Result<i64> {
         self.increment_bytes(term.as_bytes(), delta)
     }
 
     /// Atomically increment a value by term bytes.
     ///
     /// See [`increment`](Self::increment) for details.
-    pub fn increment_bytes(&self, term: &[u8], delta: i64) -> super::error::Result<i64> {
-        let mut inner = self.inner.write();
-
+    pub fn increment_bytes(&mut self, term: &[u8], delta: i64) -> super::error::Result<i64> {
         // Read current value (if exists)
-        let current: i64 = match inner.get_value_impl(term) {
+        let current: i64 = match self.get_value_impl(term) {
             Some(v) => {
                 // Try to interpret the value as i64
                 let bytes = bincode::serialize(&v)
@@ -5770,11 +5496,11 @@ impl<V: DictionaryValue + serde::Serialize + serde::de::DeserializeOwned> Persis
             ))?;
 
         // Update the value
-        inner.remove_impl_core(term);
-        inner.insert_impl_core(term, Some(v));
+        self.remove_impl_core(term);
+        self.insert_impl_core(term, Some(v));
 
         // Log to WAL
-        if let Some(ref wal_writer) = inner.wal_writer {
+        if let Some(ref wal_writer) = self.wal_writer {
             let record = super::wal::WalRecord::Increment {
                 term: term.to_vec(),
                 delta,
@@ -5813,29 +5539,27 @@ impl<V: DictionaryValue + serde::Serialize + serde::de::DeserializeOwned> Persis
     /// // Update existing term
     /// assert!(!dict.upsert("greeting", "hi".to_string())?);
     /// ```
-    pub fn upsert(&self, term: &str, value: V) -> super::error::Result<bool> {
+    pub fn upsert(&mut self, term: &str, value: V) -> super::error::Result<bool> {
         self.upsert_bytes(term.as_bytes(), value)
     }
 
     /// Atomically upsert by term bytes.
     ///
     /// See [`upsert`](Self::upsert) for details.
-    pub fn upsert_bytes(&self, term: &[u8], value: V) -> super::error::Result<bool> {
-        let mut inner = self.inner.write();
-
+    pub fn upsert_bytes(&mut self, term: &[u8], value: V) -> super::error::Result<bool> {
         // Check if term exists
-        let existed = inner.contains_impl(term);
+        let existed = self.contains_impl(term);
 
         // Remove existing entry (if any) and insert new value
-        inner.remove_impl_core(term);
-        inner.insert_impl_core(term, Some(value.clone()));
+        self.remove_impl_core(term);
+        self.insert_impl_core(term, Some(value.clone()));
 
         // Serialize value for WAL
         let value_bytes = bincode::serialize(&value)
             .map_err(|e| super::error::PersistentARTrieError::internal(format!("Serialization error: {}", e)))?;
 
         // Log to WAL
-        if let Some(ref wal_writer) = inner.wal_writer {
+        if let Some(ref wal_writer) = self.wal_writer {
             let record = super::wal::WalRecord::Upsert {
                 term: term.to_vec(),
                 value: value_bytes,
@@ -5878,7 +5602,7 @@ impl<V: DictionaryValue + serde::Serialize + serde::de::DeserializeOwned> Persis
     /// assert!(!dict.compare_and_swap("counter", Some(0), 2)?);
     /// ```
     pub fn compare_and_swap(
-        &self,
+        &mut self,
         term: &str,
         expected: Option<V>,
         new_value: V,
@@ -5890,15 +5614,13 @@ impl<V: DictionaryValue + serde::Serialize + serde::de::DeserializeOwned> Persis
     ///
     /// See [`compare_and_swap`](Self::compare_and_swap) for details.
     pub fn compare_and_swap_bytes(
-        &self,
+        &mut self,
         term: &[u8],
         expected: Option<V>,
         new_value: V,
     ) -> super::error::Result<bool> {
-        let mut inner = self.inner.write();
-
         // Read current value
-        let current = inner.get_value_impl(term);
+        let current = self.get_value_impl(term);
 
         // Check if current matches expected
         let matches = match (&current, &expected) {
@@ -5919,12 +5641,12 @@ impl<V: DictionaryValue + serde::Serialize + serde::de::DeserializeOwned> Persis
 
         if matches {
             // Perform the swap
-            inner.remove_impl_core(term);
-            inner.insert_impl_core(term, Some(new_value));
+            self.remove_impl_core(term);
+            self.insert_impl_core(term, Some(new_value));
         }
 
         // Log to WAL (always log, including success status for idempotency)
-        if let Some(ref wal_writer) = inner.wal_writer {
+        if let Some(ref wal_writer) = self.wal_writer {
             let record = super::wal::WalRecord::CompareAndSwap {
                 term: term.to_vec(),
                 expected: expected_bytes,
@@ -5950,7 +5672,7 @@ impl<V: DictionaryValue + serde::Serialize + serde::de::DeserializeOwned> Persis
     /// let old = dict.fetch_add("counter", 3)?; // old = 5, new value = 8
     /// assert_eq!(old, 5);
     /// ```
-    pub fn fetch_add(&self, term: &str, delta: i64) -> super::error::Result<i64> {
+    pub fn fetch_add(&mut self, term: &str, delta: i64) -> super::error::Result<i64> {
         let new_value = self.increment(term, delta)?;
         Ok(new_value - delta) // Return the old value
     }
@@ -5973,30 +5695,28 @@ impl<V: DictionaryValue + serde::Serialize + serde::de::DeserializeOwned> Persis
     /// let v = dict.get_or_insert("key", 100)?;
     /// assert_eq!(v, 42);
     /// ```
-    pub fn get_or_insert(&self, term: &str, default: V) -> super::error::Result<V> {
+    pub fn get_or_insert(&mut self, term: &str, default: V) -> super::error::Result<V> {
         self.get_or_insert_bytes(term.as_bytes(), default)
     }
 
     /// Get or insert by term bytes.
     ///
     /// See [`get_or_insert`](Self::get_or_insert) for details.
-    pub fn get_or_insert_bytes(&self, term: &[u8], default: V) -> super::error::Result<V> {
-        let mut inner = self.inner.write();
-
+    pub fn get_or_insert_bytes(&mut self, term: &[u8], default: V) -> super::error::Result<V> {
         // Check if term exists
-        if let Some(v) = inner.get_value_impl(term) {
+        if let Some(v) = self.get_value_impl(term) {
             return Ok(v);
         }
 
         // Insert default value
-        inner.insert_impl_core(term, Some(default.clone()));
+        self.insert_impl_core(term, Some(default.clone()));
 
         // Serialize for WAL
         let value_bytes = bincode::serialize(&default)
             .map_err(|e| super::error::PersistentARTrieError::internal(format!("Serialization error: {}", e)))?;
 
         // Log to WAL
-        if let Some(ref wal_writer) = inner.wal_writer {
+        if let Some(ref wal_writer) = self.wal_writer {
             let record = super::wal::WalRecord::Upsert {
                 term: term.to_vec(),
                 value: value_bytes,
@@ -6012,61 +5732,63 @@ impl<V: DictionaryValue + serde::Serialize + serde::de::DeserializeOwned> Persis
 // ARTrie Trait Implementation
 // ============================================================================
 
-impl<V: DictionaryValue> crate::artrie_trait::ARTrie for PersistentARTrie<V> {
+use super::SharedARTrie;
+
+impl<V: DictionaryValue> crate::artrie_trait::ARTrie for SharedARTrie<V> {
     type Unit = u8;
     type Value = V;
 
     fn create<P: AsRef<Path>>(path: P) -> Result<Self> {
-        PersistentARTrie::create(path)
+        PersistentARTrie::create(path).map(|t| Arc::new(RwLock::new(t)))
     }
 
     fn create_with_slot_tracking<P: AsRef<Path>>(path: P) -> Result<Self> {
-        PersistentARTrie::create_with_slot_tracking(path)
+        PersistentARTrie::create_with_slot_tracking(path).map(|t| Arc::new(RwLock::new(t)))
     }
 
     fn open<P: AsRef<Path>>(path: P) -> Result<Self> {
-        PersistentARTrie::open(path)
+        PersistentARTrie::open(path).map(|t| Arc::new(RwLock::new(t)))
     }
 
     fn open_with_slot_tracking<P: AsRef<Path>>(path: P) -> Result<Self> {
-        PersistentARTrie::open_with_slot_tracking(path)
+        PersistentARTrie::open_with_slot_tracking(path).map(|t| Arc::new(RwLock::new(t)))
     }
 
     fn open_with_recovery<P: AsRef<Path>>(path: P) -> Result<(Self, super::recovery::RecoveryReport)> {
-        PersistentARTrie::open_with_recovery(path)
+        PersistentARTrie::open_with_recovery(path).map(|(t, r)| (Arc::new(RwLock::new(t)), r))
     }
 
     fn insert(&self, term: &str) -> bool
     where
         Self::Value: Default,
     {
-        let mut inner = self.inner.write();
-        inner.insert_impl(term.as_bytes(), Some(V::default()))
+        let mut guard = self.write();
+        guard.insert_impl(term.as_bytes(), Some(V::default()))
     }
 
     fn insert_with_value(&self, term: &str, value: Self::Value) -> bool {
-        let mut inner = self.inner.write();
-        inner.insert_impl(term.as_bytes(), Some(value))
+        let mut guard = self.write();
+        guard.insert_impl(term.as_bytes(), Some(value))
     }
 
     fn contains(&self, term: &str) -> bool {
-        let inner = self.inner.read();
-        inner.contains_impl(term.as_bytes())
+        let guard = self.read();
+        guard.contains_impl(term.as_bytes())
     }
 
     fn get_value(&self, term: &str) -> Option<Self::Value> {
-        let inner = self.inner.read();
-        inner.get_value_impl(term.as_bytes())
+        let guard = self.read();
+        guard.get_value_impl(term.as_bytes())
     }
 
     fn remove(&self, term: &str) -> bool {
-        let mut inner = self.inner.write();
-        inner.remove_impl(term.as_bytes())
+        let mut guard = self.write();
+        guard.remove_impl(term.as_bytes())
     }
 
     fn len(&self) -> usize {
-        let inner = self.inner.read();
-        inner.term_count
+        let guard = self.read();
+        guard.term_count
     }
 
     fn checkpoint(&self) -> Result<()> {
@@ -6074,18 +5796,18 @@ impl<V: DictionaryValue> crate::artrie_trait::ARTrie for PersistentARTrie<V> {
 
         // First, persist all in-memory data to disk
         {
-            let mut inner = self.inner.write();
-            inner.persist_to_disk()?;
+            let mut guard = self.write();
+            guard.persist_to_disk()?;
         }
 
         // Then write the checkpoint record to WAL
-        let inner = self.inner.read();
+        let guard = self.read();
 
-        if let Some(ref wal_writer) = inner.wal_writer {
-            let wal = wal_writer.write();
+        if let Some(ref wal_writer) = guard.wal_writer {
+            let mut wal = wal_writer.write();
 
             // Get current LSN as checkpoint
-            let checkpoint_lsn = inner.next_lsn.saturating_sub(1);
+            let checkpoint_lsn = guard.next_lsn.saturating_sub(1);
             let timestamp = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
@@ -6107,8 +5829,8 @@ impl<V: DictionaryValue> crate::artrie_trait::ARTrie for PersistentARTrie<V> {
     }
 
     fn is_dirty(&self) -> bool {
-        let inner = self.inner.read();
-        inner.dirty
+        let guard = self.read();
+        guard.dirty
     }
 
     fn remove_prefix(&self, prefix: &str) -> usize {
@@ -6118,19 +5840,22 @@ impl<V: DictionaryValue> crate::artrie_trait::ARTrie for PersistentARTrie<V> {
         let mut total_removed = 0;
 
         loop {
-            // Collect a batch of terms to remove using the byte-level inherent method
-            let batch: Vec<Vec<u8>> = PersistentARTrie::iter_prefix(self, prefix_bytes)
-                .map(|iter| iter.take(batch_size).collect())
-                .unwrap_or_default();
+            // Collect a batch of terms to remove
+            let batch: Vec<Vec<u8>> = {
+                let guard = self.read();
+                guard.iter_prefix(prefix_bytes)
+                    .map(|iter| iter.take(batch_size).collect())
+                    .unwrap_or_default()
+            };
 
             if batch.is_empty() {
                 break;
             }
 
             // Remove the batch
-            let mut inner = self.inner.write();
+            let mut guard = self.write();
             for term in batch {
-                if inner.remove_impl(&term) {
+                if guard.remove_impl(&term) {
                     total_removed += 1;
                 }
             }
@@ -6140,14 +5865,42 @@ impl<V: DictionaryValue> crate::artrie_trait::ARTrie for PersistentARTrie<V> {
     }
 
     fn iter_prefix(&self, prefix: &str) -> Option<Box<dyn Iterator<Item = String> + '_>> {
-        use crate::prefix_zipper::PrefixZipper;
-        use super::zipper::PersistentARTrieZipper;
-
-        let zipper = PersistentARTrieZipper::new_from_dict(self);
-        let prefix_iter = zipper.with_prefix(prefix.as_bytes())?;
-        Some(Box::new(prefix_iter.map(|(path, _)| {
-            String::from_utf8_lossy(&path).into_owned()
+        let guard = self.read();
+        // Use direct iteration without zipper
+        let terms = guard.iter_prefix_with_arena(prefix.as_bytes()).ok()??;
+        Some(Box::new(terms.into_iter().map(|t| {
+            String::from_utf8_lossy(&t.term).into_owned()
         })))
+    }
+
+    fn sync(&self) -> Result<()> {
+        let guard = self.read();
+        guard.sync()
+    }
+
+    fn current_lsn(&self) -> u64 {
+        let guard = self.read();
+        guard.current_lsn()
+    }
+
+    fn synced_lsn(&self) -> Option<u64> {
+        let guard = self.read();
+        guard.synced_lsn()
+    }
+
+    fn durability_policy(&self) -> DurabilityPolicy {
+        let guard = self.read();
+        guard.durability_policy()
+    }
+
+    fn upsert(&self, term: &str, value: Self::Value) -> Result<bool> {
+        let mut guard = self.write();
+        guard.upsert(term, value)
+    }
+
+    fn increment(&self, term: &str, delta: i64) -> Result<i64> {
+        let mut guard = self.write();
+        guard.increment(term, delta)
     }
 }
 
@@ -6158,15 +5911,14 @@ impl<V: DictionaryValue> crate::artrie_trait::ARTrie for PersistentARTrie<V> {
 /// but provides a safety net for normal program termination.
 impl<V: DictionaryValue> Drop for PersistentARTrie<V> {
     fn drop(&mut self) {
-        // Best-effort sync on close (sync_compat RwLock panics on poison)
-        let inner = self.inner.read();
+        // Best-effort sync on close
         // Sync WAL
-        if let Some(ref wal_writer) = inner.wal_writer {
+        if let Some(ref wal_writer) = self.wal_writer {
             let wal = wal_writer.write();
             let _ = wal.sync();
         }
         // Flush buffer manager dirty pages
-        if let Some(ref buffer_manager) = inner.buffer_manager {
+        if let Some(ref buffer_manager) = self.buffer_manager {
             let bm = buffer_manager.read();
             let _ = bm.flush_all();
         }
@@ -6369,17 +6121,8 @@ mod tests {
         assert_eq!(terms.len(), 3);
     }
 
-    #[test]
-    fn test_clone() {
-        let mut dict1: PersistentARTrie = PersistentARTrie::new();
-        dict1.insert("test");
-
-        let dict2 = dict1.clone();
-
-        // Both should see the same data (Arc sharing)
-        assert!(dict2.contains("test"));
-        assert_eq!(dict2.len(), Some(1));
-    }
+    // Note: test_clone was removed because PersistentARTrie no longer implements Clone
+    // after the flattening refactor. For shared access, use SharedARTrie (Arc<RwLock<...>>).
 
     mod persistent_tests {
         use super::*;
@@ -6520,7 +6263,7 @@ mod tests {
             let dir = tempdir().expect("create temp dir");
             let dict_path = dir.path().join("atomic_test.part");
 
-            let dict: PersistentARTrie<i64> =
+            let mut dict: PersistentARTrie<i64> =
                 PersistentARTrie::create(&dict_path).expect("create dict");
 
             // First increment creates the entry with the delta value
@@ -6536,7 +6279,7 @@ mod tests {
             let dir = tempdir().expect("create temp dir");
             let dict_path = dir.path().join("atomic_test.part");
 
-            let dict: PersistentARTrie<i64> =
+            let mut dict: PersistentARTrie<i64> =
                 PersistentARTrie::create(&dict_path).expect("create dict");
 
             // Insert initial value
@@ -6556,7 +6299,7 @@ mod tests {
             let dir = tempdir().expect("create temp dir");
             let dict_path = dir.path().join("atomic_test.part");
 
-            let dict: PersistentARTrie<String> =
+            let mut dict: PersistentARTrie<String> =
                 PersistentARTrie::create(&dict_path).expect("create dict");
 
             // Insert new term
@@ -6573,7 +6316,7 @@ mod tests {
             let dir = tempdir().expect("create temp dir");
             let dict_path = dir.path().join("atomic_test.part");
 
-            let dict: PersistentARTrie<String> =
+            let mut dict: PersistentARTrie<String> =
                 PersistentARTrie::create(&dict_path).expect("create dict");
 
             // Insert initial value
@@ -6593,7 +6336,7 @@ mod tests {
             let dir = tempdir().expect("create temp dir");
             let dict_path = dir.path().join("atomic_test.part");
 
-            let dict: PersistentARTrie<i32> =
+            let mut dict: PersistentARTrie<i32> =
                 PersistentARTrie::create(&dict_path).expect("create dict");
 
             // Insert initial value
@@ -6612,7 +6355,7 @@ mod tests {
             let dir = tempdir().expect("create temp dir");
             let dict_path = dir.path().join("atomic_test.part");
 
-            let dict: PersistentARTrie<i32> =
+            let mut dict: PersistentARTrie<i32> =
                 PersistentARTrie::create(&dict_path).expect("create dict");
 
             // Insert initial value
@@ -6631,7 +6374,7 @@ mod tests {
             let dir = tempdir().expect("create temp dir");
             let dict_path = dir.path().join("atomic_test.part");
 
-            let dict: PersistentARTrie<i32> =
+            let mut dict: PersistentARTrie<i32> =
                 PersistentARTrie::create(&dict_path).expect("create dict");
 
             // CAS with None expected succeeds when term doesn't exist
@@ -6647,7 +6390,7 @@ mod tests {
             let dir = tempdir().expect("create temp dir");
             let dict_path = dir.path().join("atomic_test.part");
 
-            let dict: PersistentARTrie<i64> =
+            let mut dict: PersistentARTrie<i64> =
                 PersistentARTrie::create(&dict_path).expect("create dict");
 
             // Insert initial value
@@ -6667,7 +6410,7 @@ mod tests {
             let dir = tempdir().expect("create temp dir");
             let dict_path = dir.path().join("atomic_test.part");
 
-            let dict: PersistentARTrie<i32> =
+            let mut dict: PersistentARTrie<i32> =
                 PersistentARTrie::create(&dict_path).expect("create dict");
 
             // get_or_insert on new key returns default
@@ -6683,7 +6426,7 @@ mod tests {
             let dir = tempdir().expect("create temp dir");
             let dict_path = dir.path().join("atomic_test.part");
 
-            let dict: PersistentARTrie<i32> =
+            let mut dict: PersistentARTrie<i32> =
                 PersistentARTrie::create(&dict_path).expect("create dict");
 
             // Insert initial value
@@ -6851,7 +6594,7 @@ mod tests {
         fn test_check_sequential_children_empty() {
             // Node with no children - should return None
             let node = Node::N4(Box::new(Node4::new()));
-            let result = PersistentARTrieInner::<()>::check_sequential_children(&node, 0);
+            let result = PersistentARTrie::<()>::check_sequential_children(&node, 0);
             assert!(result.is_none());
         }
 
@@ -6864,7 +6607,7 @@ mod tests {
             let _ = n4.add_child(b'a', child_ptr);
             let node = Node::N4(Box::new(n4));
 
-            let result = PersistentARTrieInner::<()>::check_sequential_children(&node, 0);
+            let result = PersistentARTrie::<()>::check_sequential_children(&node, 0);
             assert!(result.is_none(), "Single child should not use sequential");
         }
 
@@ -6879,7 +6622,7 @@ mod tests {
             let _ = n4.add_child(b'b', ptr2);
             let node = Node::N4(Box::new(n4));
 
-            let result = PersistentARTrieInner::<()>::check_sequential_children(&node, 0);
+            let result = PersistentARTrie::<()>::check_sequential_children(&node, 0);
             assert!(result.is_some(), "Consecutive children should use sequential");
 
             let first = result.unwrap();
@@ -6898,7 +6641,7 @@ mod tests {
             let _ = n4.add_child(b'b', ptr2);
             let node = Node::N4(Box::new(n4));
 
-            let result = PersistentARTrieInner::<()>::check_sequential_children(&node, 0);
+            let result = PersistentARTrie::<()>::check_sequential_children(&node, 0);
             assert!(result.is_none(), "Non-consecutive slots should not use sequential");
         }
 
@@ -6913,7 +6656,7 @@ mod tests {
             let _ = n4.add_child(b'b', ptr2);
             let node = Node::N4(Box::new(n4));
 
-            let result = PersistentARTrieInner::<()>::check_sequential_children(&node, 0);
+            let result = PersistentARTrie::<()>::check_sequential_children(&node, 0);
             assert!(result.is_none(), "Cross-arena children should not use sequential");
         }
 
@@ -6929,7 +6672,7 @@ mod tests {
             let node = Node::N4(Box::new(n4));
 
             // Parent will be in arena 1, but children are in arena 0
-            let result = PersistentARTrieInner::<()>::check_sequential_children(&node, 1);
+            let result = PersistentARTrie::<()>::check_sequential_children(&node, 1);
             assert!(result.is_none(), "Children must be in same arena as parent");
         }
 
@@ -6946,7 +6689,7 @@ mod tests {
             let _ = n4.add_child(b'c', ptr3);
             let node = Node::N4(Box::new(n4));
 
-            let result = PersistentARTrieInner::<()>::check_sequential_children(&node, 0);
+            let result = PersistentARTrie::<()>::check_sequential_children(&node, 0);
             assert!(result.is_some());
 
             let first = result.unwrap();

@@ -78,7 +78,7 @@ pub mod zipper;
 pub mod serialization;
 
 // Re-export core types at crate root
-pub use bijective::{BijectiveDictionary, BijectiveMap, IndexedVocabulary, InsertError};
+pub use bijective::{BijectiveDictionary, BijectiveMap, InsertError};
 pub use char_unit::CharUnit;
 pub use iterator::{DictionaryIterator, DictionaryTermIterator};
 pub use substring::{BidirectionalDictionaryNode, ExtensionResult, SubstringDictionary, SubstringMatch};
@@ -339,7 +339,7 @@ pub mod prelude {
         CharUnit, Dictionary, DictionaryNode, DictionaryValue,
         MappedDictionary, MappedDictionaryNode, MutableMappedDictionary,
         SyncStrategy, DictZipper, ValuedDictZipper,
-        BijectiveDictionary, BijectiveMap, IndexedVocabulary, InsertError,
+        BijectiveDictionary, BijectiveMap, InsertError,
     };
 
     // Re-export common dictionary types

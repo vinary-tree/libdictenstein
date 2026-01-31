@@ -164,7 +164,7 @@ impl DirtyTracker {
     pub fn checkpoint_complete(&mut self) {
         self.dirty_arenas.clear();
         self.dirty_slots.clear();
-        self.epoch.fetch_add(1, Ordering::SeqCst);
+        self.epoch.fetch_add(1, Ordering::AcqRel);
         self.checkpoint_count += 1;
     }
 
@@ -180,7 +180,7 @@ impl DirtyTracker {
 
     /// Get the current epoch number
     pub fn epoch(&self) -> u64 {
-        self.epoch.load(Ordering::SeqCst)
+        self.epoch.load(Ordering::Acquire)
     }
 
     /// Get statistics

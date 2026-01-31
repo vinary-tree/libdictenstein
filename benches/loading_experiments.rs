@@ -15,7 +15,7 @@ use criterion::{
     black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput,
     measurement::WallTime,
 };
-use libdictenstein::persistent_artrie_char::DiskBackedCharTrieInner;
+use libdictenstein::persistent_artrie_char::PersistentARTrieChar;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 use log::info;
@@ -101,7 +101,7 @@ impl TestDataset {
 
         // Create and persist the trie
         {
-            let mut trie = DiskBackedCharTrieInner::<u64>::create(&trie_path)
+            let mut trie = PersistentARTrieChar::<u64>::create(&trie_path)
                 .expect("Failed to create trie");
 
             for (i, term) in terms.iter().enumerate() {
@@ -139,7 +139,7 @@ fn bench_open_time_eager(c: &mut Criterion) {
             |b, dataset| {
                 b.iter(|| {
                     // Drop caches would require sudo, so we just measure multiple times
-                    let trie = DiskBackedCharTrieInner::<u64>::open(&dataset.trie_path)
+                    let trie = PersistentARTrieChar::<u64>::open(&dataset.trie_path)
                         .expect("Failed to open trie");
                     black_box(trie)
                 });
@@ -168,7 +168,7 @@ fn bench_first_lookup_eager(c: &mut Criterion) {
             &(&dataset, &first_term),
             |b, (dataset, term)| {
                 b.iter(|| {
-                    let trie = DiskBackedCharTrieInner::<u64>::open(&dataset.trie_path)
+                    let trie = PersistentARTrieChar::<u64>::open(&dataset.trie_path)
                         .expect("Failed to open trie");
                     let result = trie.contains(term);
                     black_box(result)
@@ -193,7 +193,7 @@ fn bench_bulk_lookup_eager(c: &mut Criterion) {
         let dataset = TestDataset::new(size, 10_000);
 
         // Open trie once for steady-state measurement
-        let trie = DiskBackedCharTrieInner::<u64>::open(&dataset.trie_path)
+        let trie = PersistentARTrieChar::<u64>::open(&dataset.trie_path)
             .expect("Failed to open trie");
 
         group.throughput(Throughput::Elements(dataset.queries.len() as u64));
@@ -264,7 +264,7 @@ fn bench_memory_usage(c: &mut Criterion) {
                     for _ in 0..iters {
                         // Force GC-like behavior by dropping any previous allocations
                         let start = Instant::now();
-                        let _trie = DiskBackedCharTrieInner::<u64>::open(&dataset.trie_path)
+                        let _trie = PersistentARTrieChar::<u64>::open(&dataset.trie_path)
                             .expect("Failed to open trie");
                         let elapsed = start.elapsed();
 
@@ -302,7 +302,7 @@ fn collect_raw_timings() {
 
         // Warm-up runs (discarded)
         for _ in 0..3 {
-            let _trie = DiskBackedCharTrieInner::<u64>::open(&dataset.trie_path)
+            let _trie = PersistentARTrieChar::<u64>::open(&dataset.trie_path)
                 .expect("Failed to open trie");
         }
 
@@ -314,7 +314,7 @@ fn collect_raw_timings() {
         for _ in 0..30 {
             // Open time
             let start = Instant::now();
-            let trie = DiskBackedCharTrieInner::<u64>::open(&dataset.trie_path)
+            let trie = PersistentARTrieChar::<u64>::open(&dataset.trie_path)
                 .expect("Failed to open trie");
             let open_elapsed = start.elapsed();
             open_times.push(open_elapsed.as_secs_f64() * 1000.0); // ms
@@ -373,7 +373,7 @@ fn bench_open_time_depth(c: &mut Criterion) {
             &(&dataset, depth),
             |b, (dataset, depth)| {
                 b.iter(|| {
-                    let trie = DiskBackedCharTrieInner::<u64>::open_with_depth(
+                    let trie = PersistentARTrieChar::<u64>::open_with_depth(
                         &dataset.trie_path,
                         Some(*depth),
                     ).expect("Failed to open trie");
@@ -407,7 +407,7 @@ fn bench_first_lookup_depth(c: &mut Criterion) {
             &(&dataset, &first_term, depth),
             |b, (dataset, term, depth)| {
                 b.iter(|| {
-                    let trie = DiskBackedCharTrieInner::<u64>::open_with_depth(
+                    let trie = PersistentARTrieChar::<u64>::open_with_depth(
                         &dataset.trie_path,
                         Some(*depth),
                     ).expect("Failed to open trie");
@@ -437,7 +437,7 @@ fn bench_bulk_lookup_depth(c: &mut Criterion) {
     // Test different depths
     for depth in [3usize, 5, 10, 20] {
         // Open trie once for steady-state measurement
-        let trie = DiskBackedCharTrieInner::<u64>::open_with_depth(
+        let trie = PersistentARTrieChar::<u64>::open_with_depth(
             &dataset.trie_path,
             Some(depth),
         ).expect("Failed to open trie");

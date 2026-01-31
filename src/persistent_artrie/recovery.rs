@@ -997,7 +997,7 @@ pub fn detect_corruption<P: AsRef<Path>>(
 
     // Check magic - two formats supported:
     //
-    // 1. DiskManager format (used by PersistentARTrie and DiskBackedCharTrieInner):
+    // 1. DiskManager format (used by PersistentARTrie and PersistentARTrieChar):
     //    - u64 magic at bytes 0-7: 0x5041_5254_0001_0000 ("PART" + version in big-endian parts)
     //    - In little-endian storage: [00 00 01 00 54 52 41 50]
     //    - Bytes 4-7 contain "PART" (0x50415254)

@@ -324,6 +324,94 @@ pub trait ARTrie: Clone + Send + Sync {
     /// * `Some(impl Iterator<Item = String>)` - Iterator over matching terms
     /// * `None` - If no terms with this prefix exist
     fn iter_prefix(&self, prefix: &str) -> Option<Box<dyn Iterator<Item = String> + '_>>;
+
+    // === Durability Operations ===
+
+    /// Flush in-memory changes to disk.
+    ///
+    /// This ensures all buffered writes are durably persisted. Unlike `checkpoint()`,
+    /// this does not truncate the WAL.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// use libdictenstein::ARTrie;
+    /// use libdictenstein::persistent_artrie::PersistentARTrie;
+    ///
+    /// let trie = PersistentARTrie::<()>::create("words.part")?;
+    /// trie.insert("hello");
+    /// trie.sync()?; // Ensure durably persisted
+    /// ```
+    fn sync(&self) -> Result<()>;
+
+    /// Get the current Log Sequence Number (LSN).
+    ///
+    /// The LSN monotonically increases with each write operation and is used
+    /// for crash recovery. Higher LSN means more recent data.
+    fn current_lsn(&self) -> u64;
+
+    /// Get the last synced LSN.
+    ///
+    /// Returns `Some(lsn)` if data has been synced to disk, `None` if no sync
+    /// has occurred yet.
+    fn synced_lsn(&self) -> Option<u64>;
+
+    /// Get the current durability policy.
+    ///
+    /// The policy determines when writes are durably persisted:
+    /// - `Immediate`: Every write is immediately synced
+    /// - `Periodic(interval)`: Syncs at regular intervals
+    /// - `Manual`: Only syncs on explicit `sync()` calls
+    fn durability_policy(&self) -> crate::persistent_artrie::dict_impl::DurabilityPolicy;
+
+    // === Atomic Update Operations ===
+
+    /// Insert or update a term's value.
+    ///
+    /// If the term exists, its value is updated. If it doesn't exist, it's inserted.
+    ///
+    /// # Returns
+    ///
+    /// `Ok(true)` if a new term was inserted, `Ok(false)` if an existing term was updated.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// use libdictenstein::ARTrie;
+    /// use libdictenstein::persistent_artrie_char::PersistentARTrieChar;
+    ///
+    /// let mut trie = PersistentARTrieChar::<i64>::create("counts.artc")?;
+    /// trie.upsert("hello", 1)?;   // New term: returns Ok(true)
+    /// trie.upsert("hello", 10)?;  // Update: returns Ok(false)
+    /// ```
+    fn upsert(&self, term: &str, value: Self::Value) -> Result<bool>;
+
+    /// Atomically increment a numeric value.
+    ///
+    /// If the term doesn't exist, it's created with the delta as its initial value.
+    /// Requires the value type to be convertible to/from i64.
+    ///
+    /// # Arguments
+    ///
+    /// * `term` - The term whose value to increment
+    /// * `delta` - The amount to add (can be negative for decrement)
+    ///
+    /// # Returns
+    ///
+    /// The new value after incrementing.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// use libdictenstein::ARTrie;
+    /// use libdictenstein::persistent_artrie_char::PersistentARTrieChar;
+    ///
+    /// let mut trie = PersistentARTrieChar::<i64>::create("counts.artc")?;
+    /// let new_val = trie.increment("count", 1)?;  // Creates "count" = 1
+    /// let new_val = trie.increment("count", 5)?;  // Updates to 6
+    /// let new_val = trie.increment("count", -2)?; // Updates to 4
+    /// ```
+    fn increment(&self, term: &str, delta: i64) -> Result<i64>;
 }
 
 // === Atomic Operations Extension (requires serde) ===

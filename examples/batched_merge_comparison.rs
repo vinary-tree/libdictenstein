@@ -14,7 +14,7 @@ fn main() {
     // Create source trie
     let source_dir = tempdir().expect("create temp dir");
     let source_path = source_dir.path().join("source.artrie");
-    let source: PersistentARTrie<i64> = PersistentARTrie::create(&source_path).expect("create source");
+    let mut source: PersistentARTrie<i64> = PersistentARTrie::create(&source_path).expect("create source");
 
     for i in 0..size {
         source.insert_with_value(&format!("term_{:08}", i), i as i64);
@@ -26,7 +26,7 @@ fn main() {
     {
         let target_dir = tempdir().expect("create temp dir");
         let target_path = target_dir.path().join("target.artrie");
-        let target: PersistentARTrie<i64> = PersistentARTrie::create(&target_path).expect("create target");
+        let mut target: PersistentARTrie<i64> = PersistentARTrie::create(&target_path).expect("create target");
 
         // Add 50% overlap
         for i in (size / 2)..(size + size / 2) {
@@ -48,7 +48,7 @@ fn main() {
     {
         let target_dir = tempdir().expect("create temp dir");
         let target_path = target_dir.path().join("target.artrie");
-        let target: PersistentARTrie<i64> = PersistentARTrie::create(&target_path).expect("create target");
+        let mut target: PersistentARTrie<i64> = PersistentARTrie::create(&target_path).expect("create target");
 
         for i in (size / 2)..(size + size / 2) {
             target.insert_with_value(&format!("term_{:08}", i), (i * 10) as i64);
@@ -69,7 +69,7 @@ fn main() {
     {
         let target_dir = tempdir().expect("create temp dir");
         let target_path = target_dir.path().join("target.artrie");
-        let target: PersistentARTrie<i64> = PersistentARTrie::create(&target_path).expect("create target");
+        let mut target: PersistentARTrie<i64> = PersistentARTrie::create(&target_path).expect("create target");
 
         for i in (size / 2)..(size + size / 2) {
             target.insert_with_value(&format!("term_{:08}", i), (i * 10) as i64);

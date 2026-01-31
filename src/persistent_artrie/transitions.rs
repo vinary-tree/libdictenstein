@@ -387,7 +387,7 @@ impl ChildNode {
     ///
     /// This method cannot resolve `DiskRef` nodes because it lacks access to the
     /// `BufferManager` required for disk I/O. For operations on potentially disk-backed
-    /// tries, use `PersistentARTrieInner::insert()` which properly resolves `DiskRef`
+    /// tries, use `PersistentARTrie::insert()` which properly resolves `DiskRef`
     /// nodes before mutation via `resolve_child_for_mutation()`.
     ///
     /// # Returns
@@ -474,7 +474,7 @@ impl ChildNode {
     ///
     /// This method cannot resolve `DiskRef` nodes because it lacks access to the
     /// `BufferManager` required for disk I/O. For operations on potentially disk-backed
-    /// tries, use `PersistentARTrieInner::insert()` which properly resolves `DiskRef`
+    /// tries, use `PersistentARTrie::insert()` which properly resolves `DiskRef`
     /// nodes before mutation via `resolve_child_for_mutation()`.
     ///
     /// # Returns
@@ -571,7 +571,7 @@ impl ChildNode {
     ///
     /// This method cannot resolve `DiskRef` nodes because it lacks access to the
     /// `BufferManager` required for disk I/O. For operations on potentially disk-backed
-    /// tries, use `PersistentARTrieInner::remove()` which properly resolves `DiskRef`
+    /// tries, use `PersistentARTrie::remove()` which properly resolves `DiskRef`
     /// nodes before mutation via `resolve_child_for_mutation()`.
     ///
     /// # Returns
@@ -629,7 +629,7 @@ impl ChildNode {
     ///
     /// This method cannot resolve `DiskRef` nodes because it lacks access to the
     /// `BufferManager` required for disk I/O. For operations on potentially disk-backed
-    /// tries, use `PersistentARTrieInner::contains()` which properly resolves `DiskRef`
+    /// tries, use `PersistentARTrie::contains()` which properly resolves `DiskRef`
     /// nodes via `contains_in_child_with_depth()`.
     ///
     /// # Returns

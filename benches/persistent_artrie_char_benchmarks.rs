@@ -16,7 +16,7 @@ use libdictenstein::{
     persistent_artrie_char::PersistentARTrieChar, DictionaryNode,
 };
 #[cfg(feature = "persistent-artrie")]
-use libdictenstein::persistent_artrie_char::DiskBackedCharTrieInner;
+use libdictenstein::persistent_artrie_char::PersistentARTrieChar;
 use std::hint::black_box as bb;
 
 /// Generate realistic Unicode dictionary terms for benchmarking
@@ -471,7 +471,7 @@ fn bench_char_memory_efficiency(c: &mut Criterion) {
 // Disk I/O Benchmarks (requires persistent-artrie feature)
 // ============================================================================
 
-/// Benchmark DiskBackedCharTrieInner with disk persistence enabled
+/// Benchmark PersistentARTrieChar with disk persistence enabled
 #[cfg(feature = "persistent-artrie")]
 fn bench_char_disk_io(c: &mut Criterion) {
     use std::time::Instant;
@@ -497,7 +497,7 @@ fn bench_char_disk_io(c: &mut Criterion) {
 
                         let start = Instant::now();
                         let mut dict =
-                            DiskBackedCharTrieInner::<()>::create(&path).expect("create dict");
+                            PersistentARTrieChar::<()>::create(&path).expect("create dict");
                         for term in &terms {
                             let _ = dict.insert(bb(term));
                         }
@@ -519,7 +519,7 @@ fn bench_char_disk_io(c: &mut Criterion) {
                 let dir = tempdir().unwrap();
                 let path = dir.path().join("bench.chartrie");
                 {
-                    let mut dict = DiskBackedCharTrieInner::<()>::create(&path).expect("create dict");
+                    let mut dict = PersistentARTrieChar::<()>::create(&path).expect("create dict");
                     for term in &terms {
                         let _ = dict.insert(term);
                     }
@@ -530,7 +530,7 @@ fn bench_char_disk_io(c: &mut Criterion) {
                     let mut total = std::time::Duration::ZERO;
                     for _ in 0..iters {
                         let start = Instant::now();
-                        let dict = DiskBackedCharTrieInner::<()>::open(&path).expect("open dict");
+                        let dict = PersistentARTrieChar::<()>::open(&path).expect("open dict");
                         black_box(dict.len);
                         total += start.elapsed();
                     }
@@ -546,7 +546,7 @@ fn bench_char_disk_io(c: &mut Criterion) {
             |b, _| {
                 let dir = tempdir().unwrap();
                 let path = dir.path().join("bench.chartrie");
-                let mut dict = DiskBackedCharTrieInner::<()>::create(&path).expect("create dict");
+                let mut dict = PersistentARTrieChar::<()>::create(&path).expect("create dict");
                 for term in &terms {
                     let _ = dict.insert(term);
                 }
@@ -591,7 +591,7 @@ fn bench_char_disk_io_cjk(c: &mut Criterion) {
                 let path = dir.path().join("bench.chartrie");
 
                 let start = Instant::now();
-                let mut dict = DiskBackedCharTrieInner::<()>::create(&path).expect("create dict");
+                let mut dict = PersistentARTrieChar::<()>::create(&path).expect("create dict");
                 for term in &terms {
                     let _ = dict.insert(bb(term));
                 }
@@ -624,7 +624,7 @@ fn bench_char_atomic_ops(c: &mut Criterion) {
     group.bench_function("increment", |b| {
         let dir = tempdir().unwrap();
         let path = dir.path().join("atomic.chartrie");
-        let mut dict = DiskBackedCharTrieInner::<i64>::create(&path).expect("create dict");
+        let mut dict = PersistentARTrieChar::<i64>::create(&path).expect("create dict");
 
         // Pre-populate
         for term in &terms {
@@ -642,7 +642,7 @@ fn bench_char_atomic_ops(c: &mut Criterion) {
     group.bench_function("upsert", |b| {
         let dir = tempdir().unwrap();
         let path = dir.path().join("upsert.chartrie");
-        let mut dict = DiskBackedCharTrieInner::<i64>::create(&path).expect("create dict");
+        let mut dict = PersistentARTrieChar::<i64>::create(&path).expect("create dict");
 
         b.iter(|| {
             for (i, term) in terms.iter().enumerate() {

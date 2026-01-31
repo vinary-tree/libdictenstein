@@ -27,10 +27,7 @@ use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-#[cfg(feature = "parking_lot")]
 use parking_lot::RwLock;
-#[cfg(not(feature = "parking_lot"))]
-use std::sync::RwLock;
 
 use super::buffer_manager::BufferManager;
 use super::memory_monitor::{MemoryPressureLevel, MemoryPressureMonitor};
@@ -449,15 +446,8 @@ impl AdaptivePoolController {
 
     /// Get controller statistics.
     pub fn stats(&self) -> AdaptivePoolStats {
-        #[cfg(feature = "parking_lot")]
         let (last_hit_rate, last_pressure) = {
             (*self.last_hit_rate.read(), *self.last_pressure.read())
-        };
-        #[cfg(not(feature = "parking_lot"))]
-        let (last_hit_rate, last_pressure) = {
-            let hit_rate = self.last_hit_rate.read().map(|g| *g).unwrap_or(1.0);
-            let pressure = self.last_pressure.read().map(|g| *g).unwrap_or(MemoryPressureLevel::Normal);
-            (hit_rate, pressure)
         };
 
         AdaptivePoolStats {

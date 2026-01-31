@@ -34,10 +34,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use lru::LruCache;
 
-#[cfg(feature = "parking_lot")]
 use parking_lot::Mutex;
-#[cfg(not(feature = "parking_lot"))]
-use std::sync::Mutex;
 
 use super::types::DEFAULT_REVERSE_CACHE_SIZE;
 
@@ -109,10 +106,7 @@ impl VocabReverseCache {
     ///
     /// `Some(term)` if the index is in the cache, `None` otherwise.
     pub fn get(&self, index: u64) -> Option<String> {
-        #[cfg(feature = "parking_lot")]
         let mut cache = self.cache.lock();
-        #[cfg(not(feature = "parking_lot"))]
-        let mut cache = self.cache.lock().expect("lock poisoned");
 
         match cache.get(&index) {
             Some(term) => {
@@ -131,10 +125,7 @@ impl VocabReverseCache {
     /// This is useful for checking if an entry exists without affecting
     /// the cache eviction order.
     pub fn peek(&self, index: u64) -> Option<String> {
-        #[cfg(feature = "parking_lot")]
         let cache = self.cache.lock();
-        #[cfg(not(feature = "parking_lot"))]
-        let cache = self.cache.lock().expect("lock poisoned");
 
         cache.peek(&index).cloned()
     }
@@ -147,10 +138,7 @@ impl VocabReverseCache {
     ///
     /// O(1) - hash insert + potential eviction
     pub fn put(&self, index: u64, term: String) {
-        #[cfg(feature = "parking_lot")]
         let mut cache = self.cache.lock();
-        #[cfg(not(feature = "parking_lot"))]
-        let mut cache = self.cache.lock().expect("lock poisoned");
 
         cache.put(index, term);
     }
@@ -158,10 +146,7 @@ impl VocabReverseCache {
     /// Check if an index is in the cache without updating LRU position.
     #[inline]
     pub fn contains(&self, index: u64) -> bool {
-        #[cfg(feature = "parking_lot")]
         let cache = self.cache.lock();
-        #[cfg(not(feature = "parking_lot"))]
-        let cache = self.cache.lock().expect("lock poisoned");
 
         cache.contains(&index)
     }
@@ -170,20 +155,14 @@ impl VocabReverseCache {
     ///
     /// Returns the removed term if it was present.
     pub fn remove(&self, index: u64) -> Option<String> {
-        #[cfg(feature = "parking_lot")]
         let mut cache = self.cache.lock();
-        #[cfg(not(feature = "parking_lot"))]
-        let mut cache = self.cache.lock().expect("lock poisoned");
 
         cache.pop(&index)
     }
 
     /// Clear all entries from the cache.
     pub fn clear(&self) {
-        #[cfg(feature = "parking_lot")]
         let mut cache = self.cache.lock();
-        #[cfg(not(feature = "parking_lot"))]
-        let mut cache = self.cache.lock().expect("lock poisoned");
 
         cache.clear();
         self.hits.store(0, Ordering::Relaxed);
@@ -192,10 +171,7 @@ impl VocabReverseCache {
 
     /// Get the current number of cached entries.
     pub fn len(&self) -> usize {
-        #[cfg(feature = "parking_lot")]
         let cache = self.cache.lock();
-        #[cfg(not(feature = "parking_lot"))]
-        let cache = self.cache.lock().expect("lock poisoned");
 
         cache.len()
     }

@@ -8,8 +8,8 @@
 //!
 //! # Architecture Notes
 //!
-//! PersistentARTrie uses `Arc<RwLock>` internally for thread-safety:
-//! - Clone creates a shallow copy (same underlying data)
+//! PersistentARTrie uses `SharedARTrie` (Arc<RwLock<...>>) for thread-safety:
+//! - Arc::clone creates a shared reference to the same underlying data
 //! - Multiple clones can be passed to different threads
 //! - RwLock ensures read/write safety
 //!
@@ -21,8 +21,9 @@
 
 #![cfg(feature = "persistent-artrie")]
 
-use libdictenstein::persistent_artrie::PersistentARTrie;
+use libdictenstein::persistent_artrie::{PersistentARTrie, SharedARTrie};
 use libdictenstein::Dictionary;
+use parking_lot::RwLock;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Barrier};
 use std::thread;
@@ -38,6 +39,11 @@ const OPS_PER_THREAD: usize = 100;
 /// Generate diverse terms for concurrent tests.
 fn generate_terms(count: usize, prefix: &str) -> Vec<String> {
     (0..count).map(|i| format!("{}{:05}", prefix, i)).collect()
+}
+
+/// Helper to create a SharedARTrie from a PersistentARTrie
+fn make_shared<V: libdictenstein::DictionaryValue>(trie: PersistentARTrie<V>) -> SharedARTrie<V> {
+    Arc::new(RwLock::new(trie))
 }
 
 // =============================================================================
@@ -60,6 +66,9 @@ fn test_concurrent_readers() {
     }
     dict.sync().expect("sync");
 
+    // Wrap in SharedARTrie for thread-safe access
+    let shared_dict = make_shared(dict);
+
     // Use a barrier to synchronize thread starts
     let barrier = Arc::new(Barrier::new(NUM_READERS));
     let terms_arc = Arc::new(terms);
@@ -67,7 +76,7 @@ fn test_concurrent_readers() {
 
     let handles: Vec<_> = (0..NUM_READERS)
         .map(|_| {
-            let dict_clone = dict.clone();
+            let dict_clone = Arc::clone(&shared_dict);
             let barrier_clone = barrier.clone();
             let terms_clone = terms_arc.clone();
             let success = success_count.clone();
@@ -78,8 +87,9 @@ fn test_concurrent_readers() {
 
                 // Perform concurrent reads
                 let mut local_success = 0;
+                let dict_guard = dict_clone.read();
                 for term in terms_clone.iter() {
-                    if dict_clone.contains(term) {
+                    if dict_guard.contains(term) {
                         local_success += 1;
                     }
                 }
@@ -123,6 +133,9 @@ fn test_single_writer_multiple_readers() {
     }
     dict.sync().expect("sync");
 
+    // Wrap in SharedARTrie for thread-safe access
+    let shared_dict = make_shared(dict);
+
     let stop_flag = Arc::new(AtomicBool::new(false));
     let read_count = Arc::new(AtomicUsize::new(0));
     let terms_arc = Arc::new(initial_terms.clone());
@@ -130,18 +143,20 @@ fn test_single_writer_multiple_readers() {
     // Spawn reader threads
     let reader_handles: Vec<_> = (0..NUM_READERS)
         .map(|_| {
-            let dict_clone = dict.clone();
+            let dict_clone = Arc::clone(&shared_dict);
             let stop = stop_flag.clone();
             let count = read_count.clone();
             let terms = terms_arc.clone();
 
             thread::spawn(move || {
                 while !stop.load(Ordering::Relaxed) {
+                    let dict_guard = dict_clone.read();
                     for term in terms.iter() {
                         // Read operations should succeed even during writes
-                        let _ = dict_clone.contains(term);
+                        let _ = dict_guard.contains(term);
                         count.fetch_add(1, Ordering::Relaxed);
                     }
+                    drop(dict_guard);
                     thread::yield_now();
                 }
             })
@@ -150,10 +165,12 @@ fn test_single_writer_multiple_readers() {
 
     // Writer thread: insert new terms
     let new_terms: Vec<String> = generate_terms(50, "new_");
-    let mut writer_dict = dict.clone();
+    let writer_dict = Arc::clone(&shared_dict);
     let writer_handle = thread::spawn(move || {
         for (i, term) in new_terms.iter().enumerate() {
-            let _ = writer_dict.insert_with_value(term, (i + 1000) as i32);
+            let mut dict_guard = writer_dict.write();
+            let _ = dict_guard.insert_with_value(term, (i + 1000) as i32);
+            drop(dict_guard);
             thread::sleep(Duration::from_micros(100));
         }
     });
@@ -174,8 +191,9 @@ fn test_single_writer_multiple_readers() {
     assert!(reads > 0, "Readers should have performed reads");
 
     // Verify all terms are present after writes complete
+    let dict_guard = shared_dict.read();
     for term in initial_terms.iter() {
-        assert!(dict.contains(term), "Initial term should exist: {}", term);
+        assert!(dict_guard.contains(term), "Initial term should exist: {}", term);
     }
 }
 
@@ -198,6 +216,9 @@ fn test_reader_during_checkpoint() {
     }
     dict.sync().expect("sync");
 
+    // Wrap in SharedARTrie for thread-safe access
+    let shared_dict = make_shared(dict);
+
     let stop_flag = Arc::new(AtomicBool::new(false));
     let read_errors = Arc::new(AtomicUsize::new(0));
     let terms_arc = Arc::new(terms.clone());
@@ -205,15 +226,16 @@ fn test_reader_during_checkpoint() {
     // Spawn reader threads that continuously read during checkpoint
     let reader_handles: Vec<_> = (0..NUM_READERS)
         .map(|_| {
-            let dict_clone = dict.clone();
+            let dict_clone = Arc::clone(&shared_dict);
             let stop = stop_flag.clone();
             let errors = read_errors.clone();
             let terms = terms_arc.clone();
 
             thread::spawn(move || {
                 while !stop.load(Ordering::Relaxed) {
+                    let dict_guard = dict_clone.read();
                     for term in terms.iter() {
-                        if !dict_clone.contains(term) {
+                        if !dict_guard.contains(term) {
                             // Term should always be found (snapshot isolation)
                             errors.fetch_add(1, Ordering::Relaxed);
                         }
@@ -225,7 +247,9 @@ fn test_reader_during_checkpoint() {
 
     // Perform checkpoints while readers are active
     for _ in 0..3 {
-        dict.checkpoint().expect("checkpoint");
+        let mut dict_guard = shared_dict.write();
+        dict_guard.checkpoint().expect("checkpoint");
+        drop(dict_guard);
         thread::sleep(Duration::from_millis(10));
     }
 
@@ -268,13 +292,16 @@ fn test_concurrent_value_lookups() {
     }
     dict.sync().expect("sync");
 
+    // Wrap in SharedARTrie for thread-safe access
+    let shared_dict = make_shared(dict);
+
     let barrier = Arc::new(Barrier::new(NUM_READERS));
     let terms_arc = Arc::new(terms);
     let value_mismatches = Arc::new(AtomicUsize::new(0));
 
     let handles: Vec<_> = (0..NUM_READERS)
         .map(|_| {
-            let dict_clone = dict.clone();
+            let dict_clone = Arc::clone(&shared_dict);
             let barrier_clone = barrier.clone();
             let terms_clone = terms_arc.clone();
             let mismatches = value_mismatches.clone();
@@ -282,8 +309,9 @@ fn test_concurrent_value_lookups() {
             thread::spawn(move || {
                 barrier_clone.wait();
 
+                let dict_guard = dict_clone.read();
                 for (term, expected) in terms_clone.iter() {
-                    if let Some(actual) = dict_clone.get_value(term) {
+                    if let Some(actual) = dict_guard.get_value(term) {
                         if actual != *expected {
                             mismatches.fetch_add(1, Ordering::Relaxed);
                         }
@@ -315,13 +343,16 @@ fn test_writer_contention() {
     let dict: PersistentARTrie<i32> =
         PersistentARTrie::create(&dict_path).expect("create dict");
 
+    // Wrap in SharedARTrie for thread-safe access
+    let shared_dict = make_shared(dict);
+
     let barrier = Arc::new(Barrier::new(4));
     let successful_inserts = Arc::new(AtomicUsize::new(0));
 
     // Spawn 4 writer threads, each trying to insert different terms
     let handles: Vec<_> = (0..4)
         .map(|thread_id| {
-            let mut dict_clone = dict.clone();
+            let dict_clone = Arc::clone(&shared_dict);
             let barrier_clone = barrier.clone();
             let inserts = successful_inserts.clone();
 
@@ -332,7 +363,8 @@ fn test_writer_contention() {
                 let prefix = format!("t{}_", thread_id);
                 for i in 0..25 {
                     let term = format!("{}{:03}", prefix, i);
-                    if dict_clone.insert_with_value(&term, (thread_id * 100 + i) as i32) {
+                    let mut dict_guard = dict_clone.write();
+                    if dict_guard.insert_with_value(&term, (thread_id * 100 + i) as i32) {
                         inserts.fetch_add(1, Ordering::Relaxed);
                     }
                 }
@@ -349,10 +381,11 @@ fn test_writer_contention() {
     assert_eq!(total, 100, "All inserts should succeed");
 
     // Verify all terms are present
+    let dict_guard = shared_dict.read();
     for thread_id in 0..4 {
         for i in 0..25 {
             let term = format!("t{}_{:03}", thread_id, i);
-            assert!(dict.contains(&term), "Term should exist: {}", term);
+            assert!(dict_guard.contains(&term), "Term should exist: {}", term);
         }
     }
 }
@@ -375,13 +408,16 @@ fn test_read_write_interleaving() {
         let _ = dict.insert_with_value(term, i as i32);
     }
 
+    // Wrap in SharedARTrie for thread-safe access
+    let shared_dict = make_shared(dict);
+
     let operations = Arc::new(AtomicUsize::new(0));
     let stop_flag = Arc::new(AtomicBool::new(false));
 
     // Spawn interleaved reader/writer threads
     let handles: Vec<_> = (0..4)
         .map(|thread_id| {
-            let mut dict_clone = dict.clone();
+            let dict_clone = Arc::clone(&shared_dict);
             let ops = operations.clone();
             let stop = stop_flag.clone();
             let terms = initial_terms.clone();
@@ -393,12 +429,14 @@ fn test_read_write_interleaving() {
                     // Alternate between reads and writes
                     if local_ops % 2 == 0 {
                         // Read operation
+                        let dict_guard = dict_clone.read();
                         let term = &terms[local_ops % terms.len()];
-                        let _ = dict_clone.contains(term);
+                        let _ = dict_guard.contains(term);
                     } else {
                         // Write operation
+                        let mut dict_guard = dict_clone.write();
                         let term = format!("new_t{}_{:04}", thread_id, local_ops);
-                        let _ = dict_clone.insert_with_value(&term, local_ops as i32);
+                        let _ = dict_guard.insert_with_value(&term, local_ops as i32);
                     }
 
                     local_ops += 1;
@@ -421,8 +459,9 @@ fn test_read_write_interleaving() {
     assert!(total_ops > 0, "Operations should have been performed");
 
     // Original terms should still exist
+    let dict_guard = shared_dict.read();
     for term in &initial_terms {
-        assert!(dict.contains(term), "Original term should exist: {}", term);
+        assert!(dict_guard.contains(term), "Original term should exist: {}", term);
     }
 }
 
@@ -445,18 +484,22 @@ fn test_many_short_lived_threads() {
     }
     dict.sync().expect("sync");
 
+    // Wrap in SharedARTrie for thread-safe access
+    let shared_dict = make_shared(dict);
+
     let success_count = Arc::new(AtomicUsize::new(0));
 
     // Spawn many short-lived threads
     let handles: Vec<_> = (0..50)
         .map(|i| {
-            let dict_clone = dict.clone();
+            let dict_clone = Arc::clone(&shared_dict);
             let success = success_count.clone();
 
             thread::spawn(move || {
                 // Each thread does a few operations then exits
+                let dict_guard = dict_clone.read();
                 let term = format!("base{:03}", i % 50);
-                if dict_clone.contains(&term) {
+                if dict_guard.contains(&term) {
                     success.fetch_add(1, Ordering::Relaxed);
                 }
             })
@@ -493,11 +536,11 @@ fn test_concurrent_opens_same_path() {
 }
 
 // =============================================================================
-// Test: Clone Shares State
+// Test: SharedARTrie Shares State
 // =============================================================================
 
 #[test]
-fn test_clone_shares_state() {
+fn test_shared_artrie_shares_state() {
     let temp_dir = TempDir::new().expect("create temp dir");
     let dict_path = temp_dir.path().join("shared_state.part");
 
@@ -507,19 +550,30 @@ fn test_clone_shares_state() {
     // Insert via original handle
     let _ = dict.insert_with_value("hello", 42);
 
+    // Wrap in SharedARTrie
+    let shared_dict = make_shared(dict);
+
     // Clone should see the insert
-    let dict_clone = dict.clone();
-    assert!(
-        dict_clone.contains("hello"),
-        "Clone should see original insert"
-    );
+    let dict_clone = Arc::clone(&shared_dict);
+    {
+        let dict_guard = dict_clone.read();
+        assert!(
+            dict_guard.contains("hello"),
+            "Clone should see original insert"
+        );
+    }
 
     // Insert via clone
-    let mut dict_clone2 = dict.clone();
-    let _ = dict_clone2.insert_with_value("world", 100);
+    {
+        let mut dict_guard = dict_clone.write();
+        let _ = dict_guard.insert_with_value("world", 100);
+    }
 
     // Original should see clone's insert
-    assert!(dict.contains("world"), "Original should see clone's insert");
+    {
+        let dict_guard = shared_dict.read();
+        assert!(dict_guard.contains("world"), "Original should see clone's insert");
+    }
 }
 
 // =============================================================================
@@ -539,13 +593,16 @@ fn test_sync_from_multiple_threads() {
         let _ = dict.insert_with_value(&format!("sync{:03}", i), i);
     }
 
+    // Wrap in SharedARTrie for thread-safe access
+    let shared_dict = make_shared(dict);
+
     let barrier = Arc::new(Barrier::new(4));
     let sync_errors = Arc::new(AtomicUsize::new(0));
 
     // Multiple threads calling sync concurrently
     let handles: Vec<_> = (0..4)
         .map(|_| {
-            let dict_clone = dict.clone();
+            let dict_clone = Arc::clone(&shared_dict);
             let barrier_clone = barrier.clone();
             let errors = sync_errors.clone();
 
@@ -554,7 +611,8 @@ fn test_sync_from_multiple_threads() {
 
                 // Multiple sync calls should be safe
                 for _ in 0..5 {
-                    if dict_clone.sync().is_err() {
+                    let dict_guard = dict_clone.read();
+                    if dict_guard.sync().is_err() {
                         errors.fetch_add(1, Ordering::Relaxed);
                     }
                 }
