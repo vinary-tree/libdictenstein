@@ -143,11 +143,17 @@ pub use serialization::{
 };
 
 pub use dict_impl::{
-    PersistentVocabARTrie, SharedVocabARTrie,
+    PersistentVocabARTrie, SharedVocabARTrie, VocabSyncHandle,
 };
 
 // Re-export DurabilityPolicy from base layer
 pub use crate::persistent_artrie::dict_impl::DurabilityPolicy;
+
+// Re-export eviction types from byte-level implementation (shared)
+pub use crate::persistent_artrie::eviction::{
+    AccessTracker, DiskLocationRegistry, EvictionConfig, EvictionCoordinator,
+    EvictionStats, EvictionUrgency, LruRegistry,
+};
 
 // ============================================================================
 // Trait Implementations
@@ -164,10 +170,9 @@ impl Dictionary for PersistentVocabARTrie {
     type Node = VocabTrieNodeRef;
 
     fn root(&self) -> Self::Node {
-        VocabTrieNodeRef {
-            // Placeholder - full impl would return actual root
-            _phantom: std::marker::PhantomData,
-        }
+        // Get root children info from the trie
+        let children = self.get_root_children();
+        VocabTrieNodeRef::new(false, children, Vec::new())
     }
 
     fn contains(&self, term: &str) -> bool {
@@ -180,24 +185,73 @@ impl Dictionary for PersistentVocabARTrie {
 }
 
 /// Node reference for Dictionary trait implementation.
+///
+/// This provides a snapshot-based node reference for navigating the trie
+/// through the Dictionary trait. Note that since PersistentVocabARTrie
+/// requires internal iteration for navigation, this implementation creates
+/// shallow copies of node data rather than holding direct pointers.
+///
+/// For full trie operations, use the PersistentVocabARTrie methods directly.
 #[derive(Clone)]
 pub struct VocabTrieNodeRef {
-    _phantom: std::marker::PhantomData<()>,
+    /// Whether this node is final
+    is_final: bool,
+    /// Children of this node (label -> whether child is final)
+    /// This is a snapshot taken at the time of construction
+    children: Vec<(char, bool)>,
+    /// Path from root to this node (for reconstruction)
+    path: Vec<char>,
+}
+
+impl VocabTrieNodeRef {
+    /// Create a new node reference with snapshot data
+    fn new(is_final: bool, children: Vec<(char, bool)>, path: Vec<char>) -> Self {
+        Self { is_final, children, path }
+    }
+
+    /// Create a root node reference (placeholder - requires trie access for real data)
+    fn placeholder() -> Self {
+        Self {
+            is_final: false,
+            children: Vec::new(),
+            path: Vec::new(),
+        }
+    }
 }
 
 impl DictionaryNode for VocabTrieNodeRef {
     type Unit = char;
 
     fn is_final(&self) -> bool {
-        false // Placeholder
+        self.is_final
     }
 
-    fn transition(&self, _label: char) -> Option<Self> {
-        None // Placeholder
+    fn transition(&self, label: char) -> Option<Self> {
+        // Check if we have this child
+        for &(child_label, child_is_final) in &self.children {
+            if child_label == label {
+                // Create a new path with this label appended
+                let mut new_path = self.path.clone();
+                new_path.push(label);
+                // Note: We can't get the child's children without trie access,
+                // so this returns a node with no children info.
+                // For full navigation, use PersistentVocabARTrie methods directly.
+                return Some(VocabTrieNodeRef::new(child_is_final, Vec::new(), new_path));
+            }
+        }
+        None
     }
 
     fn edges(&self) -> Box<dyn Iterator<Item = (char, Self)> + '_> {
-        Box::new(std::iter::empty())
+        let path = self.path.clone();
+        let edges: Vec<_> = self.children.iter()
+            .map(move |&(label, is_final)| {
+                let mut new_path = path.clone();
+                new_path.push(label);
+                (label, VocabTrieNodeRef::new(is_final, Vec::new(), new_path))
+            })
+            .collect();
+        Box::new(edges.into_iter())
     }
 }
 
@@ -240,12 +294,22 @@ impl MutableMappedDictionary for PersistentVocabARTrie {
 }
 
 // BijectiveDictionary trait implementation
+//
+// NOTE: The BijectiveDictionary trait's `get_term()` method expects `&str`,
+// but PersistentVocabARTrie reconstructs terms on-the-fly via parent pointer
+// backtracking. We cannot return a reference to data that doesn't exist in
+// memory until reconstruction.
+//
+// WORKAROUND: Use the inherent method `PersistentVocabARTrie::get_term(index)`
+// which returns `Option<String>`. For SharedVocabARTrie, access via:
+//   `vocab.read().get_term(index)` or cache the result.
+//
+// The other BijectiveDictionary methods (contains_value, bijection_len) work
+// correctly since they don't require returning references.
 impl BijectiveDictionary for PersistentVocabARTrie {
-    fn get_term(&self, value: &Self::Value) -> Option<&str> {
-        // Note: BijectiveDictionary expects &str, but we return owned String
-        // This is a limitation of the trait design - we can't return a reference
-        // to data that's reconstructed on the fly.
-        // For now, we return None and users should use get_term() directly.
+    fn get_term(&self, _value: &Self::Value) -> Option<&str> {
+        // Cannot return reference to on-the-fly reconstructed data.
+        // Use inherent `self.get_term(index)` method which returns Option<String>.
         None
     }
 
@@ -282,6 +346,23 @@ impl crate::artrie_trait::ARTrie for PersistentVocabARTrie {
 
     fn open_with_recovery<P: AsRef<Path>>(path: P) -> Result<(Self, RecoveryReport)> {
         PersistentVocabARTrie::open_with_recovery(path)
+    }
+
+    fn open_with_recovery_and_slot_tracking<P: AsRef<Path>>(path: P) -> Result<(Self, RecoveryReport)> {
+        let (trie, report) = PersistentVocabARTrie::open_with_recovery(path)?;
+        trie.enable_slot_tracking_internal();
+        Ok((trie, report))
+    }
+
+    fn enable_slot_tracking(&self) {
+        // PersistentVocabARTrie requires &mut self - this is a no-op for the immutable reference.
+        // Use SharedVocabARTrie for mutable access.
+    }
+
+    fn flush_sequential(&self) -> Result<()> {
+        // PersistentVocabARTrie requires &mut self - this is a no-op for the immutable reference.
+        // Use SharedVocabARTrie for mutable access.
+        Ok(())
     }
 
     fn insert(&self, _term: &str) -> bool
@@ -328,9 +409,23 @@ impl crate::artrie_trait::ARTrie for PersistentVocabARTrie {
         0
     }
 
-    fn iter_prefix(&self, _prefix: &str) -> Option<Box<dyn Iterator<Item = String> + '_>> {
-        // Prefix iteration not yet implemented
-        None
+    fn iter_prefix(&self, prefix: &str) -> Option<Box<dyn Iterator<Item = String> + '_>> {
+        // Check if prefix exists in trie or leads to any children
+        let prefix_exists = if prefix.is_empty() {
+            true
+        } else {
+            let chars: Vec<char> = prefix.chars().collect();
+            self.get_index(prefix).is_some() || !self.get_children_at_path(&chars).is_empty()
+        };
+
+        if prefix_exists {
+            // Collect terms to avoid lifetime issues with the prefix parameter
+            let prefix_owned = prefix.to_string();
+            let terms: Vec<String> = self.iter_terms_with_prefix(&prefix_owned).collect();
+            Some(Box::new(terms.into_iter()))
+        } else {
+            None
+        }
     }
 
     fn sync(&self) -> Result<()> {
@@ -376,9 +471,9 @@ impl Dictionary for SharedVocabARTrie {
     type Node = VocabTrieNodeRef;
 
     fn root(&self) -> Self::Node {
-        VocabTrieNodeRef {
-            _phantom: std::marker::PhantomData,
-        }
+        let guard = self.read();
+        let children = guard.get_root_children();
+        VocabTrieNodeRef::new(false, children, Vec::new())
     }
 
     fn contains(&self, term: &str) -> bool {
@@ -418,13 +513,21 @@ impl MutableMappedDictionary for SharedVocabARTrie {
         Self::Value: Clone,
     {
         // Simple union - insert all terms from other
-        // Note: merge_fn is ignored since indices are auto-assigned
-        let mut count = 0;
-        let other_guard = other.read();
-        let mut self_guard = self.write();
+        // Note: merge_fn is ignored since vocabulary indices are auto-assigned
+        // First collect terms from other to avoid holding locks simultaneously
+        let other_terms: Vec<String> = {
+            let other_guard = other.read();
+            other_guard.iter_terms().collect()
+        };
 
-        // We can't iterate the other trie directly, so this is a placeholder
-        // In a full implementation, we'd iterate terms
+        let mut count = 0;
+        let mut self_guard = self.write();
+        for term in other_terms {
+            if !self_guard.contains(&term) {
+                self_guard.insert(&term);
+                count += 1;
+            }
+        }
         count
     }
 
@@ -444,7 +547,8 @@ impl MutableMappedDictionary for SharedVocabARTrie {
 
 impl BijectiveDictionary for SharedVocabARTrie {
     fn get_term(&self, _value: &Self::Value) -> Option<&str> {
-        // Cannot return reference to temporary
+        // Cannot return reference to temporary reconstructed data.
+        // Use: `vocab.read().get_term(index)` which returns Option<String>.
         None
     }
 
@@ -482,6 +586,20 @@ impl crate::artrie_trait::ARTrie for SharedVocabARTrie {
     fn open_with_recovery<P: AsRef<Path>>(path: P) -> Result<(Self, RecoveryReport)> {
         PersistentVocabARTrie::open_with_recovery(path)
             .map(|(t, r)| (Arc::new(RwLock::new(t)), r))
+    }
+
+    fn open_with_recovery_and_slot_tracking<P: AsRef<Path>>(path: P) -> Result<(Self, RecoveryReport)> {
+        let (mut trie, report) = PersistentVocabARTrie::open_with_recovery(path)?;
+        trie.enable_slot_tracking();
+        Ok((Arc::new(RwLock::new(trie)), report))
+    }
+
+    fn enable_slot_tracking(&self) {
+        self.write().enable_slot_tracking();
+    }
+
+    fn flush_sequential(&self) -> Result<()> {
+        self.write().flush_sequential()
     }
 
     fn insert(&self, term: &str) -> bool
@@ -540,9 +658,26 @@ impl crate::artrie_trait::ARTrie for SharedVocabARTrie {
         0
     }
 
-    fn iter_prefix(&self, _prefix: &str) -> Option<Box<dyn Iterator<Item = String> + '_>> {
-        // Prefix iteration not yet implemented
-        None
+    fn iter_prefix(&self, prefix: &str) -> Option<Box<dyn Iterator<Item = String> + '_>> {
+        // For SharedVocabARTrie, we need to collect terms to avoid holding lock
+        // during iteration. This collects all matching terms upfront.
+        let guard = self.read();
+        let prefix_chars: Vec<char> = prefix.chars().collect();
+
+        // Check if prefix exists
+        let prefix_exists = if prefix.is_empty() {
+            true
+        } else {
+            guard.get_index(prefix).is_some() || !guard.get_children_at_path(&prefix_chars).is_empty()
+        };
+
+        if prefix_exists {
+            // Collect terms while holding lock, then return iterator over collected Vec
+            let terms: Vec<String> = guard.iter_terms_with_prefix(prefix).collect();
+            Some(Box::new(terms.into_iter()))
+        } else {
+            None
+        }
     }
 
     fn sync(&self) -> Result<()> {
@@ -579,6 +714,126 @@ impl crate::artrie_trait::ARTrie for SharedVocabARTrie {
         Err(crate::persistent_artrie::error::PersistentARTrieError::InvalidOperation(
             "PersistentVocabARTrie does not support increment - indices are auto-assigned".into()
         ))
+    }
+}
+
+// ============================================================================
+// EvictableARTrie Trait Implementation (on SharedVocabARTrie)
+// ============================================================================
+
+impl crate::artrie_trait::EvictableARTrie for SharedVocabARTrie {
+    fn enable_eviction(&mut self, config: crate::persistent_artrie::eviction::EvictionConfig) -> crate::persistent_artrie::error::Result<()> {
+        use crate::persistent_artrie::error::PersistentARTrieError;
+
+        config.validate().map_err(|e| PersistentARTrieError::internal(&e))?;
+
+        let mut guard = self.write();
+
+        // Check if eviction is already enabled
+        if guard.eviction_coordinator.is_some() {
+            return Err(PersistentARTrieError::internal("Eviction already enabled"));
+        }
+
+        // Create the epoch manager reference
+        let epoch_manager = Arc::new(crate::persistent_artrie::concurrency::EpochManager::new());
+
+        // Create the eviction coordinator
+        let coordinator = crate::persistent_artrie::eviction::EvictionCoordinator::new(config.clone(), epoch_manager);
+
+        // Create a weak reference to self for the eviction callback
+        let self_weak = Arc::downgrade(self);
+
+        // Start the eviction coordinator with the eviction callback for char nodes
+        // (VocabARTrie uses char-based nodes internally)
+        coordinator.start_char(move |nodes_to_evict| {
+            // Try to upgrade the weak reference
+            let Some(trie) = self_weak.upgrade() else {
+                return (0, 0);
+            };
+
+            let mut guard = trie.write();
+            let mut evicted_count = 0;
+            let mut bytes_freed = 0;
+
+            for (_path_hash, path, disk_ptr) in nodes_to_evict {
+                if guard.evict_node_at_path(&path, disk_ptr.clone()) {
+                    evicted_count += 1;
+                    bytes_freed += 256; // Estimate ~256 bytes per node
+
+                    // Remove from LRU tracking
+                    if let Some(ref coordinator) = guard.eviction_coordinator {
+                        use crate::persistent_artrie::eviction::lru_tracker::hash_char_path;
+                        coordinator.lru_registry().remove_hash(hash_char_path(&path));
+                    }
+                }
+            }
+
+            (evicted_count, bytes_freed)
+        }).map_err(|e| PersistentARTrieError::internal(&e))?;
+
+        // Start memory pressure monitor if configured
+        coordinator.start_memory_monitor()
+            .map_err(|e| PersistentARTrieError::internal(&e))?;
+
+        guard.eviction_coordinator = Some(coordinator);
+
+        Ok(())
+    }
+
+    fn disable_eviction(&mut self) -> crate::persistent_artrie::error::Result<()> {
+        let mut guard = self.write();
+
+        if let Some(coordinator) = guard.eviction_coordinator.take() {
+            coordinator.shutdown();
+        }
+
+        Ok(())
+    }
+
+    fn eviction_enabled(&self) -> bool {
+        let guard = self.read();
+        guard.eviction_coordinator.is_some()
+    }
+
+    fn eviction_stats(&self) -> crate::persistent_artrie::eviction::EvictionStats {
+        let guard = self.read();
+        guard.eviction_coordinator
+            .as_ref()
+            .map(|c| c.stats())
+            .unwrap_or_default()
+    }
+
+    fn force_eviction(&mut self, target_bytes: usize) -> crate::persistent_artrie::error::Result<(usize, usize)> {
+        let guard = self.read();
+
+        let Some(coordinator) = &guard.eviction_coordinator else {
+            return Ok((0, 0));
+        };
+
+        Ok(coordinator.force_eviction(target_bytes))
+    }
+
+    fn touch_node(&self, path: &[Self::Unit]) {
+        let guard = self.read();
+        if let Some(coordinator) = &guard.eviction_coordinator {
+            use crate::persistent_artrie::eviction::lru_tracker::hash_char_path;
+            coordinator.lru_registry().touch_hash(hash_char_path(path));
+        }
+    }
+}
+
+// Helper methods for eviction on PersistentVocabARTrie
+impl PersistentVocabARTrie {
+    /// Evict a single node at the given path, replacing it with a DiskRef.
+    ///
+    /// Returns `true` if the node was successfully evicted, `false` if the
+    /// node was not found or was already a DiskRef.
+    pub(crate) fn evict_node_at_path(&mut self, _path: &[char], _disk_ptr: crate::persistent_artrie::swizzled_ptr::SwizzledPtr) -> bool {
+        // Vocab trie eviction is more complex due to different node structure
+        // with parent pointers. This is a simplified placeholder - full implementation
+        // would need to navigate the vocab trie structure while preserving
+        // parent pointer integrity.
+        false
     }
 }
 

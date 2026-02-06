@@ -699,11 +699,16 @@ impl StringBucket {
     /// child buckets. Returns a map from first-byte to child bucket.
     ///
     /// Entries with empty suffixes are collected into a special "final" list.
+    ///
+    /// If a child bucket would overflow (more than MAX_BUCKET_ENTRIES entries
+    /// sharing the same first byte), the overflow entries are collected separately
+    /// in the `overflow` field so the caller can handle them by recursively splitting.
     pub fn split_by_first_byte(&self) -> SplitByByteResult {
         let has_values = self.header().has_values();
         let mut buckets: std::collections::BTreeMap<u8, StringBucket> =
             std::collections::BTreeMap::new();
         let mut finals: Vec<(Vec<u8>, Option<Vec<u8>>)> = Vec::new();
+        let mut overflow: Vec<(u8, Vec<u8>, Option<Vec<u8>>)> = Vec::new();
 
         for i in 0..self.len() {
             let entry = self.get_entry(i).expect("valid index");
@@ -726,15 +731,20 @@ impl StringBucket {
                     }
                 });
 
-                if let Some(v) = value {
-                    bucket.insert(remaining, v).expect("child bucket has space");
+                let insert_result = if let Some(v) = value {
+                    bucket.insert(remaining, v)
                 } else {
-                    bucket.insert_key(remaining).expect("child bucket has space");
+                    bucket.insert_key(remaining)
+                };
+
+                // If the child bucket overflows, collect the entry for later handling
+                if insert_result.is_err() {
+                    overflow.push((first_byte, remaining.to_vec(), value.map(|v| v.to_vec())));
                 }
             }
         }
 
-        SplitByByteResult { buckets, finals }
+        SplitByByteResult { buckets, finals, overflow }
     }
 
     /// Compact the bucket to reclaim fragmented space
@@ -893,6 +903,10 @@ pub struct SplitByByteResult {
     /// Entries with empty suffixes (represent final states)
     /// Each element is (empty_vec, optional_value)
     pub finals: Vec<(Vec<u8>, Option<Vec<u8>>)>,
+    /// Overflow entries that couldn't fit in any child bucket
+    /// Each element is (first_byte, remaining_suffix, optional_value)
+    /// These need to be handled by recursively splitting the overflowed child
+    pub overflow: Vec<(u8, Vec<u8>, Option<Vec<u8>>)>,
 }
 
 /// Errors that can occur during bucket operations

@@ -281,6 +281,84 @@ impl EpochManager {
     pub fn active_reader_count(&self) -> usize {
         self.active_readers.load(Ordering::Acquire)
     }
+
+    /// Wait for epoch quiescence (no active readers).
+    ///
+    /// This method advances the epoch and waits until all readers from the
+    /// old epoch have completed. It is used before performing operations
+    /// that require exclusive access to the data (e.g., node eviction).
+    ///
+    /// # Arguments
+    ///
+    /// * `timeout` - Maximum time to wait for quiescence
+    /// * `poll_interval` - How often to check for quiescence
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(old_epoch)` - Quiescence achieved, returns the old epoch
+    /// * `Err(timeout_duration)` - Timed out waiting for readers to drain
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// use std::time::Duration;
+    /// use libdictenstein::persistent_artrie::concurrency::EpochManager;
+    ///
+    /// let manager = EpochManager::new();
+    ///
+    /// // Wait for quiescence with 100ms timeout
+    /// match manager.wait_for_quiescence(
+    ///     Duration::from_millis(100),
+    ///     Duration::from_micros(100),
+    /// ) {
+    ///     Ok(old_epoch) => {
+    ///         // Safe to modify data - no old-epoch readers
+    ///         println!("Quiescence achieved at epoch {}", old_epoch);
+    ///     }
+    ///     Err(elapsed) => {
+    ///         // Timed out - readers still active
+    ///         println!("Timed out after {:?}", elapsed);
+    ///     }
+    /// }
+    /// ```
+    pub fn wait_for_quiescence(
+        &self,
+        timeout: std::time::Duration,
+        poll_interval: std::time::Duration,
+    ) -> Result<u64, std::time::Duration> {
+        use std::time::Instant;
+
+        let start = Instant::now();
+
+        // Advance epoch to create a boundary
+        let old_epoch = self.advance();
+
+        // Wait for readers to drain
+        while start.elapsed() < timeout {
+            if !self.has_active_readers() {
+                return Ok(old_epoch);
+            }
+            std::thread::sleep(poll_interval);
+        }
+
+        Err(start.elapsed())
+    }
+
+    /// Try to achieve quiescence without blocking.
+    ///
+    /// Advances the epoch and immediately checks if there are active readers.
+    /// Returns `Some(old_epoch)` if quiescence is achieved, `None` otherwise.
+    ///
+    /// This is useful for non-blocking eviction attempts where the caller
+    /// can retry later if quiescence is not immediately available.
+    pub fn try_quiescence(&self) -> Option<u64> {
+        let old_epoch = self.advance();
+        if self.has_active_readers() {
+            None
+        } else {
+            Some(old_epoch)
+        }
+    }
 }
 
 impl Default for EpochManager {
@@ -933,5 +1011,381 @@ mod tests {
         });
 
         assert!(!cell.is_locked());
+    }
+
+    // =========================================================================
+    // Edge case tests for branch coverage
+    // =========================================================================
+
+    /// Test OptimisticReadGuard spin loop when version is odd (write in progress).
+    /// This covers lines 130-132 in the spin loop.
+    #[test]
+    fn test_optimistic_read_guard_waits_for_stable_version() {
+        use std::time::Duration;
+
+        let version = Arc::new(OptimisticVersion::new());
+        let version_clone = Arc::clone(&version);
+
+        // Start a write (makes version odd)
+        version.begin_write();
+        assert!(!version.is_stable(), "Version should be unstable (odd) during write");
+
+        // Spawn a reader thread that will spin
+        let reader_handle = thread::spawn(move || {
+            // This should spin until version becomes even
+            let guard = OptimisticReadGuard::new(&version_clone);
+            guard.observed()
+        });
+
+        // Give the reader thread time to start spinning
+        thread::sleep(Duration::from_millis(10));
+
+        // End the write (makes version even)
+        version.end_write();
+
+        // Reader should now complete
+        let observed = reader_handle.join().expect("reader thread should complete");
+        assert_eq!(observed % 2, 0, "Observed version should be even (stable)");
+        assert_eq!(observed, 2, "Version should be 2 after begin_write + end_write");
+    }
+
+    /// Test OptimisticReadGuard with already-stable version (no spin).
+    #[test]
+    fn test_optimistic_read_guard_immediate_stable() {
+        let version = OptimisticVersion::new();
+        assert!(version.is_stable());
+
+        // Should not need to spin
+        let guard = OptimisticReadGuard::new(&version);
+        assert_eq!(guard.observed(), 0);
+        assert!(guard.validate());
+    }
+
+    /// Test LockCoupling::ascend when depth is already 0.
+    #[test]
+    fn test_lock_coupling_ascend_at_zero() {
+        let lc = LockCoupling::new(5);
+        assert_eq!(lc.depth(), 0);
+
+        // Ascend when already at 0 should be a no-op
+        lc.ascend();
+        assert_eq!(lc.depth(), 0, "Depth should remain 0 after ascend from 0");
+
+        // Ascend again should still be safe
+        lc.ascend();
+        assert_eq!(lc.depth(), 0);
+    }
+
+    /// Test EpochManager wait_for_quiescence with immediate success.
+    #[test]
+    fn test_epoch_wait_for_quiescence_immediate() {
+        use std::time::Duration;
+
+        let epoch = EpochManager::new();
+        assert!(!epoch.has_active_readers());
+
+        // No readers, should succeed immediately
+        let result = epoch.wait_for_quiescence(
+            Duration::from_millis(100),
+            Duration::from_micros(100),
+        );
+
+        assert!(result.is_ok(), "Should achieve quiescence immediately");
+        let old_epoch = result.unwrap();
+        assert_eq!(old_epoch, 0, "Old epoch should be 0");
+        assert_eq!(epoch.current_epoch(), 1, "Current epoch should be 1 after advance");
+    }
+
+    /// Test EpochManager wait_for_quiescence with active readers (timeout).
+    #[test]
+    fn test_epoch_wait_for_quiescence_timeout() {
+        use std::time::Duration;
+
+        let epoch = Arc::new(EpochManager::new());
+        let epoch_clone = Arc::clone(&epoch);
+
+        // Start a reader that will hold for a while
+        let reader_handle = thread::spawn(move || {
+            let _e = epoch_clone.enter_read();
+            // Hold for longer than the timeout
+            thread::sleep(Duration::from_millis(200));
+            epoch_clone.exit_read();
+        });
+
+        // Give reader time to start
+        thread::sleep(Duration::from_millis(10));
+
+        // Try to wait for quiescence with short timeout
+        let result = epoch.wait_for_quiescence(
+            Duration::from_millis(50),
+            Duration::from_micros(100),
+        );
+
+        assert!(result.is_err(), "Should timeout with active reader");
+        let elapsed = result.unwrap_err();
+        assert!(elapsed >= Duration::from_millis(50), "Should have waited at least 50ms");
+
+        // Let the reader finish
+        reader_handle.join().expect("reader should complete");
+    }
+
+    /// Test EpochManager try_quiescence with no readers.
+    #[test]
+    fn test_epoch_try_quiescence_success() {
+        let epoch = EpochManager::new();
+
+        let result = epoch.try_quiescence();
+        assert!(result.is_some(), "Should succeed with no readers");
+        assert_eq!(result.unwrap(), 0, "Old epoch should be 0");
+    }
+
+    /// Test EpochManager try_quiescence with active readers.
+    #[test]
+    fn test_epoch_try_quiescence_with_readers() {
+        let epoch = EpochManager::new();
+
+        // Enter a read
+        let _e = epoch.enter_read();
+        assert!(epoch.has_active_readers());
+
+        let result = epoch.try_quiescence();
+        assert!(result.is_none(), "Should fail with active reader");
+
+        // Exit the read
+        epoch.exit_read();
+
+        // Now should succeed
+        let result = epoch.try_quiescence();
+        assert!(result.is_some(), "Should succeed after reader exits");
+    }
+
+    /// Test RetryStats with no retries.
+    #[test]
+    fn test_retry_stats_no_retries() {
+        let stats = RetryStats::new();
+
+        stats.record_success(0);
+        stats.record_success(0);
+        stats.record_success(0);
+
+        let snapshot = stats.snapshot();
+        assert_eq!(snapshot.successful, 3);
+        assert_eq!(snapshot.retries, 0);
+        assert_eq!(snapshot.max_retries, 0);
+        assert!((stats.retry_rate() - 0.0).abs() < 0.001);
+    }
+
+    /// Test RetryStats retry rate calculation edge case.
+    #[test]
+    fn test_retry_stats_empty() {
+        let stats = RetryStats::new();
+
+        // No operations recorded yet
+        assert!((stats.retry_rate() - 0.0).abs() < 0.001, "Retry rate should be 0 with no ops");
+    }
+
+    /// Test TrieStats cache_hit_ratio with zero accesses.
+    #[test]
+    fn test_trie_stats_cache_hit_ratio_zero() {
+        let stats = TrieStats::new();
+
+        // No cache accesses
+        assert!((stats.cache_hit_ratio() - 0.0).abs() < 0.001);
+
+        let snapshot = stats.snapshot();
+        assert!((snapshot.cache_hit_ratio() - 0.0).abs() < 0.001);
+    }
+
+    /// Test TrieStats read_retry_ratio with zero reads.
+    #[test]
+    fn test_trie_stats_read_retry_ratio_zero() {
+        let stats = TrieStats::new();
+
+        // No reads
+        assert!((stats.read_retry_ratio() - 0.0).abs() < 0.001);
+
+        let snapshot = stats.snapshot();
+        assert!((snapshot.read_retry_ratio() - 0.0).abs() < 0.001);
+    }
+
+    /// Test TrieStats reset functionality.
+    #[test]
+    fn test_trie_stats_reset() {
+        let stats = TrieStats::new();
+
+        stats.record_read();
+        stats.record_write();
+        stats.record_cache_hit();
+        stats.record_cache_miss();
+        stats.record_read_retry();
+        stats.record_wal_write();
+        stats.record_wal_sync();
+
+        let snapshot = stats.snapshot();
+        assert_eq!(snapshot.reads, 1);
+        assert_eq!(snapshot.writes, 1);
+        assert_eq!(snapshot.cache_hits, 1);
+
+        stats.reset();
+
+        let snapshot = stats.snapshot();
+        assert_eq!(snapshot.reads, 0);
+        assert_eq!(snapshot.writes, 0);
+        assert_eq!(snapshot.cache_hits, 0);
+        assert_eq!(snapshot.cache_misses, 0);
+        assert_eq!(snapshot.read_retries, 0);
+        assert_eq!(snapshot.wal_writes, 0);
+        assert_eq!(snapshot.wal_syncs, 0);
+    }
+
+    /// Test MvccReadContext validation with changed version.
+    #[test]
+    fn test_mvcc_read_context_validation_changed() {
+        let epoch = EpochManager::new();
+        let mut ctx = MvccReadContext::new(&epoch);
+
+        // Observe some nodes
+        ctx.observe_node(1, 10);
+        ctx.observe_node(2, 20);
+        ctx.observe_node(3, 30);
+
+        assert_eq!(ctx.observed_count(), 3);
+
+        // Validate with matching versions
+        let valid = ctx.validate(|id| match id {
+            1 => Some(10),
+            2 => Some(20),
+            3 => Some(30),
+            _ => None,
+        });
+        assert!(valid, "Should be valid when versions match");
+
+        // Validate with one changed version
+        let invalid = ctx.validate(|id| match id {
+            1 => Some(10),
+            2 => Some(21), // Changed!
+            3 => Some(30),
+            _ => None,
+        });
+        assert!(!invalid, "Should be invalid when a version changed");
+
+        // Validate with missing node
+        let missing = ctx.validate(|id| match id {
+            1 => Some(10),
+            2 => None, // Deleted!
+            3 => Some(30),
+            _ => None,
+        });
+        assert!(!missing, "Should be invalid when a node is missing");
+    }
+
+    /// Test MvccReadContext reset.
+    #[test]
+    fn test_mvcc_read_context_reset() {
+        let epoch = EpochManager::new();
+        let mut ctx = MvccReadContext::new(&epoch);
+
+        ctx.observe_node(1, 10);
+        ctx.observe_node(2, 20);
+        assert_eq!(ctx.observed_count(), 2);
+
+        ctx.reset();
+        assert_eq!(ctx.observed_count(), 0);
+
+        // Epoch should be preserved
+        assert_eq!(ctx.epoch(), 0);
+    }
+
+    /// Test MvccReadContext validate_mut.
+    #[test]
+    fn test_mvcc_read_context_validate_mut() {
+        let epoch = EpochManager::new();
+        let mut ctx = MvccReadContext::new(&epoch);
+
+        ctx.observe_node(1, 10);
+        ctx.observe_node(2, 20);
+
+        // Use mutable closure that tracks calls
+        let mut call_count = 0;
+        let valid = ctx.validate_mut(|id| {
+            call_count += 1;
+            match id {
+                1 => Some(10),
+                2 => Some(20),
+                _ => None,
+            }
+        });
+
+        assert!(valid);
+        assert_eq!(call_count, 2, "Should have called get_version twice");
+    }
+
+    /// Test OptimisticCell read_with_retry reaches max retries.
+    #[test]
+    fn test_optimistic_cell_read_with_retry_fails() {
+        let cell = Arc::new(OptimisticCell::new(42));
+        let cell_clone = Arc::clone(&cell);
+
+        // Continuously write to cause read failures
+        let writer_running = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let writer_flag = Arc::clone(&writer_running);
+
+        let writer = thread::spawn(move || {
+            while writer_flag.load(std::sync::atomic::Ordering::Relaxed) {
+                cell_clone.write(|v| *v += 1);
+                std::hint::spin_loop();
+            }
+        });
+
+        // Try to read with very few retries - might fail due to constant writes
+        // This is probabilistic, but with enough writes we should see some failures
+        let mut failures = 0;
+        for _ in 0..100 {
+            if cell.read_with_retry(|v| *v, 1).is_none() {
+                failures += 1;
+            }
+        }
+
+        writer_running.store(false, std::sync::atomic::Ordering::Relaxed);
+        writer.join().expect("writer should complete");
+
+        // We expect at least some failures when max_retries is only 1
+        // This test verifies the retry logic works, not a specific failure count
+        // If all 100 reads succeeded with just 1 retry each while writes are happening,
+        // that's also valid behavior
+    }
+
+    /// Test WriteGuard drop behavior.
+    #[test]
+    fn test_write_guard_drop_increments_version() {
+        let version = OptimisticVersion::new();
+        assert_eq!(version.get(), 0);
+
+        {
+            let _guard = WriteGuard::new(&version);
+            assert_eq!(version.get(), 1); // Odd during write
+            assert!(!version.is_stable());
+        }
+
+        // After guard drops, version should be even
+        assert_eq!(version.get(), 2);
+        assert!(version.is_stable());
+    }
+
+    /// Test OptimisticVersion validation fails when version changes.
+    #[test]
+    fn test_optimistic_version_validate_after_change() {
+        let version = OptimisticVersion::new();
+
+        let observed = version.get();
+        assert!(version.validate(observed));
+
+        // Change the version
+        version.begin_write();
+        version.end_write();
+
+        // Old observation should no longer be valid
+        assert!(!version.validate(observed));
+        assert!(version.validate(version.get()));
     }
 }

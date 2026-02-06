@@ -711,4 +711,109 @@ mod tests {
         assert_eq!(config.max_shrink_step, 8);
         assert!(config.enabled);
     }
+
+    // =========================================================================
+    // Edge case tests for branch coverage
+    // =========================================================================
+
+    /// Test CacheStats::get_and_reset with zero accesses (line 207-208).
+    /// When total accesses is 0, hit_rate should return 1.0.
+    #[test]
+    fn test_cache_stats_get_and_reset_zero_accesses() {
+        let stats = CacheStats::new();
+
+        // Test get_and_reset with zero accesses
+        let (rate, hits, misses) = stats.get_and_reset();
+        assert_eq!(rate, 1.0, "Hit rate should be 1.0 when no accesses");
+        assert_eq!(hits, 0);
+        assert_eq!(misses, 0);
+    }
+
+    /// Test CacheStats::hit_rate with zero accesses (line 222-223).
+    /// When total accesses is 0, hit_rate should return 1.0.
+    #[test]
+    fn test_cache_stats_hit_rate_zero_accesses() {
+        let stats = CacheStats::new();
+
+        // Test hit_rate with zero accesses
+        assert_eq!(stats.hit_rate(), 1.0, "Hit rate should be 1.0 when no accesses");
+        assert_eq!(stats.total_accesses(), 0);
+    }
+
+    /// Test PID controller with dt == 0 (line 290-294).
+    /// When dt is 0, the derivative term should be 0.
+    #[test]
+    fn test_pid_controller_zero_dt() {
+        let mut pid = PidController::new(0.5, 0.1, 0.05);
+
+        // Test with dt == 0.0 - derivative term should be 0
+        let output = pid.compute(0.1, 0.0);
+
+        // With dt == 0:
+        // P term = 0.5 * 0.1 = 0.05
+        // I term = 0.1 * (0.1 * 0.0) = 0.0 (integral is 0)
+        // D term = 0.0 (because dt == 0)
+        // Total = 0.05
+        assert!(
+            (output - 0.05).abs() < 0.01,
+            "Output should be ~0.05 with dt=0 (no D term): got {}",
+            output
+        );
+    }
+
+    /// Test PID controller with positive dt (line 290-294).
+    /// When dt > 0, the derivative term should be computed.
+    #[test]
+    fn test_pid_controller_positive_dt() {
+        let mut pid = PidController::new(0.5, 0.1, 0.05);
+
+        // First call to establish prev_error
+        let _output1 = pid.compute(0.1, 1.0);
+
+        // Second call with same error - derivative should be ~0
+        let output2 = pid.compute(0.1, 1.0);
+
+        // P = 0.5 * 0.1 = 0.05
+        // I = 0.1 * (0.1 + 0.1) = 0.02 (integral accumulated)
+        // D = 0.05 * (0.1 - 0.1) / 1.0 = 0 (same error, no change)
+        assert!(
+            output2.abs() < 0.1,
+            "Output with constant error should be small: got {}",
+            output2
+        );
+    }
+
+    /// Test PID controller derivative term with changing error.
+    #[test]
+    fn test_pid_controller_derivative_term() {
+        // Use only D-term controller to isolate derivative behavior
+        let mut pid = PidController::new(0.0, 0.0, 1.0);
+
+        // First call establishes prev_error = 0.0
+        let output1 = pid.compute(0.1, 1.0);
+        // D = 1.0 * (0.1 - 0.0) / 1.0 = 0.1
+        assert!(
+            (output1 - 0.1).abs() < 0.001,
+            "First D output should be 0.1: got {}",
+            output1
+        );
+
+        // Second call with larger error
+        let output2 = pid.compute(0.2, 1.0);
+        // D = 1.0 * (0.2 - 0.1) / 1.0 = 0.1
+        assert!(
+            (output2 - 0.1).abs() < 0.001,
+            "Second D output should be 0.1: got {}",
+            output2
+        );
+
+        // Third call with same error (derivative should be 0)
+        let output3 = pid.compute(0.2, 1.0);
+        // D = 1.0 * (0.2 - 0.2) / 1.0 = 0.0
+        assert!(
+            output3.abs() < 0.001,
+            "Third D output should be ~0: got {}",
+            output3
+        );
+    }
 }

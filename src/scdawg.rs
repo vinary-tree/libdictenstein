@@ -58,6 +58,8 @@ const NIL: usize = usize::MAX;
 
 /// End marker base for multi-string support.
 /// Each term gets a unique end marker: END_MARKER_BASE + term_index.
+/// Reserved for future use with generalized suffix automaton (Option 2).
+#[allow(dead_code)]
 const END_MARKER_BASE: u8 = 0x01; // Use low bytes as end markers
 
 // ============================================================================
@@ -166,6 +168,7 @@ impl<V: DictionaryValue> ScdawgNode<V> {
 
     /// Check if this is the root node.
     #[inline]
+    #[allow(dead_code)]
     fn is_root(&self) -> bool {
         self.parent == NIL && self.length == 0
     }
@@ -500,6 +503,7 @@ impl<V: DictionaryValue> ScdawgInner<V> {
     }
 
     /// Iterate over all terms.
+    #[allow(dead_code)]
     fn iter_terms(&self) -> impl Iterator<Item = &String> {
         self.terms.iter()
     }

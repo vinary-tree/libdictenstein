@@ -48,8 +48,8 @@ pub const ART_TO_BUCKET_THRESHOLD: usize = 32;
 pub struct BucketToArtResult {
     /// The new ART node
     pub node: Node,
-    /// Child buckets keyed by their edge byte
-    pub children: Vec<(u8, StringBucket)>,
+    /// Child nodes keyed by their edge byte (can be buckets or nested ART nodes)
+    pub children: Vec<(u8, ChildNode)>,
     /// Whether this node is final (had an empty suffix in the bucket)
     pub is_final: bool,
     /// Value associated with the final state (if any)
@@ -116,14 +116,16 @@ pub fn should_convert_bucket_to_art(bucket: &StringBucket) -> bool {
     result.buckets.len() >= BUCKET_TO_ART_THRESHOLD
 }
 
-/// Convert a bucket to an ART node with child buckets
+/// Convert a bucket to an ART node with child buckets or nested ART nodes.
 ///
 /// This splits the bucket by first byte and creates an ART node (Node4 initially)
-/// with edges to child buckets.
+/// with edges to child buckets. If a child bucket would overflow (more than
+/// MAX_BUCKET_ENTRIES share the same first byte), the overflow entries are
+/// recursively inserted into the child, converting it to an ART node if needed.
 pub fn bucket_to_art_node(bucket: &StringBucket) -> Result<BucketToArtResult, TransitionError> {
     let split_result = bucket.split_by_first_byte();
 
-    if split_result.buckets.is_empty() && split_result.finals.is_empty() {
+    if split_result.buckets.is_empty() && split_result.finals.is_empty() && split_result.overflow.is_empty() {
         return Err(TransitionError::BucketNotReady("bucket is empty".to_string()));
     }
 
@@ -141,16 +143,49 @@ pub fn bucket_to_art_node(bucket: &StringBucket) -> Result<BucketToArtResult, Tr
 
     node.header.set_final(is_final);
 
-    // Collect children
-    let mut children: Vec<(u8, StringBucket)> = Vec::new();
+    // Collect children - start with buckets
+    let mut children: Vec<(u8, ChildNode)> = Vec::new();
 
-    // Collect children first
+    // Collect children first as buckets
     for (byte, child_bucket) in split_result.buckets {
-        children.push((byte, child_bucket));
+        children.push((byte, ChildNode::Bucket(child_bucket)));
+    }
+
+    // Handle overflow entries by inserting them into the appropriate child
+    // This may cause child buckets to convert to ART nodes recursively
+    for (first_byte, remaining, value) in split_result.overflow {
+        // Find the child for this first byte
+        let child_idx = children.iter().position(|(b, _)| *b == first_byte);
+
+        if let Some(idx) = child_idx {
+            // Insert into existing child (may trigger bucket-to-ART conversion)
+            let inserted = if let Some(ref v) = value {
+                children[idx].1.insert_with_value(&remaining, Some(v.as_slice()))
+            } else {
+                children[idx].1.insert_key(&remaining)
+            };
+            // We don't need to check `inserted` since overflow entries are
+            // guaranteed to be new (they weren't already in the bucket)
+            let _ = inserted;
+        } else {
+            // This shouldn't happen - overflow entries should have a corresponding bucket
+            // But handle it gracefully by creating a new bucket
+            let mut new_bucket = if has_values {
+                StringBucket::with_values()
+            } else {
+                StringBucket::new()
+            };
+            if let Some(ref v) = value {
+                let _ = new_bucket.insert(&remaining, v);
+            } else {
+                let _ = new_bucket.insert_key(&remaining);
+            }
+            children.push((first_byte, ChildNode::Bucket(new_bucket)));
+        }
     }
 
     // Now build the appropriate node type based on child count
-    let node = if children.len() <= 4 {
+    let result_node = if children.len() <= 4 {
         // Node4 can hold all children
         for (byte, _) in &children {
             let ptr = SwizzledPtr::null();
@@ -187,7 +222,7 @@ pub fn bucket_to_art_node(bucket: &StringBucket) -> Result<BucketToArtResult, Tr
     };
 
     Ok(BucketToArtResult {
-        node,
+        node: result_node,
         children,
         is_final,
         final_value,
@@ -332,6 +367,68 @@ impl ChildNode {
         }
     }
 
+    /// Check if this child node or any of its descendants need persistence
+    ///
+    /// Returns true if:
+    /// - This is a Bucket (buckets are always serialized in full)
+    /// - This is an ArtNode with IS_DIRTY or HAS_DIRTY_DESCENDANTS flag set
+    /// - This is a DiskRef (already on disk, returns false)
+    ///
+    /// This is used by `persist_to_disk()` to skip clean subtrees entirely.
+    #[inline]
+    pub fn needs_persistence(&self) -> bool {
+        match self {
+            ChildNode::Bucket(_) => {
+                // Buckets don't have per-node dirty flags; they're always
+                // serialized if encountered during persistence traversal.
+                // The parent ART node's dirty flags determine whether we
+                // traverse into this bucket.
+                true
+            }
+            ChildNode::ArtNode { node, .. } => {
+                node.header().needs_persistence()
+            }
+            ChildNode::DiskRef { .. } => {
+                // Already on disk and clean - no persistence needed
+                false
+            }
+        }
+    }
+
+    /// Mark this child node as having dirty descendants
+    ///
+    /// For ArtNode, sets the HAS_DIRTY_DESCENDANTS flag on the node header.
+    /// For Bucket and DiskRef, this is a no-op (buckets don't track dirty
+    /// descendants, and DiskRef should be resolved before mutation).
+    #[inline]
+    pub fn mark_has_dirty_descendants(&mut self) {
+        if let ChildNode::ArtNode { node, .. } = self {
+            node.header_mut().set_has_dirty_descendants(true);
+        }
+    }
+
+    /// Clear dirty flags on this child node
+    ///
+    /// For ArtNode, clears both IS_DIRTY and HAS_DIRTY_DESCENDANTS flags.
+    /// For Bucket and DiskRef, this is a no-op.
+    #[inline]
+    pub fn clear_dirty_flags(&mut self) {
+        if let ChildNode::ArtNode { node, .. } = self {
+            node.header_mut().clear_dirty_flags();
+        }
+    }
+
+    /// Mark this child node itself as dirty
+    ///
+    /// For ArtNode, sets the IS_DIRTY flag on the node header.
+    /// For Bucket and DiskRef, this is a no-op.
+    #[inline]
+    pub fn mark_dirty(&mut self) {
+        if let ChildNode::ArtNode { node, .. } = self {
+            node.header_mut().set_dirty(true);
+        }
+    }
+
     /// Get as bucket reference
     pub fn as_bucket(&self) -> Option<&StringBucket> {
         match self {
@@ -402,16 +499,12 @@ impl ChildNode {
                 Err(BucketError::BucketFull) => {
                     // Bucket is full, convert to ART node
                     if let Ok(result) = bucket_to_art_node(bucket) {
-                        let new_children: Vec<(u8, ChildNode)> = result
-                            .children
-                            .into_iter()
-                            .map(|(b, bucket)| (b, ChildNode::Bucket(bucket)))
-                            .collect();
+                        // bucket_to_art_node now returns ChildNode directly
                         *self = ChildNode::ArtNode {
                             node: result.node,
                             is_final: result.is_final,
                             value: result.final_value,
-                            children: new_children,
+                            children: result.children,
                         };
                         // Retry insert with the new ART node (recursive call)
                         return self.insert_key(remaining);
@@ -494,16 +587,12 @@ impl ChildNode {
                 Err(BucketError::BucketFull) => {
                     // Bucket is full, convert to ART node
                     if let Ok(result) = bucket_to_art_node(bucket) {
-                        let new_children: Vec<(u8, ChildNode)> = result
-                            .children
-                            .into_iter()
-                            .map(|(b, bucket)| (b, ChildNode::Bucket(bucket)))
-                            .collect();
+                        // bucket_to_art_node now returns ChildNode directly
                         *self = ChildNode::ArtNode {
                             node: result.node,
                             is_final: result.is_final,
                             value: result.final_value,
-                            children: new_children,
+                            children: result.children,
                         };
                         // Retry insert with the new ART node (recursive call)
                         return self.insert_with_value(remaining, value);
@@ -704,16 +793,16 @@ mod tests {
         // Should not be final
         assert!(!result.is_final);
 
-        // Check children
+        // Check children - now ChildNode instead of StringBucket
         let a_child = result.children.iter().find(|(b, _)| *b == b'a');
         assert!(a_child.is_some());
-        let (_, a_bucket) = a_child.unwrap();
-        assert!(a_bucket.contains(b"pple"));
+        let (_, a_child_node) = a_child.unwrap();
+        assert!(a_child_node.contains_key(b"pple"));
 
         let b_child = result.children.iter().find(|(b, _)| *b == b'b');
         assert!(b_child.is_some());
-        let (_, b_bucket) = b_child.unwrap();
-        assert!(b_bucket.contains(b"anana"));
+        let (_, b_child_node) = b_child.unwrap();
+        assert!(b_child_node.contains_key(b"anana"));
     }
 
     #[test]
@@ -795,11 +884,13 @@ mod tests {
         // Convert to ART
         let art_result = bucket_to_art_node(&original).unwrap();
 
-        // Convert back to bucket
+        // Convert back to bucket - extract StringBucket from ChildNode
         let children: Vec<(u8, &StringBucket)> = art_result
             .children
             .iter()
-            .map(|(b, bucket)| (*b, bucket))
+            .filter_map(|(b, child)| {
+                child.as_bucket().map(|bucket| (*b, bucket))
+            })
             .collect();
 
         let bucket_result =
@@ -959,5 +1050,104 @@ mod tests {
         assert!(!child.insert_key(b"test"));
         assert!(!child.remove_key(b"test"));
         assert!(!child.contains_key(b"test"));
+    }
+
+    #[test]
+    fn test_child_node_needs_persistence_bucket() {
+        let bucket = StringBucket::new();
+        let child = ChildNode::bucket(bucket);
+
+        // Buckets always report needs_persistence as true (no per-entry dirty tracking)
+        assert!(child.needs_persistence());
+    }
+
+    #[test]
+    fn test_child_node_needs_persistence_art_node() {
+        let node = Node::N4(Box::new(Node4::new()));
+        let mut child = ChildNode::art_node_with_children(node, false, None, Vec::new());
+
+        // Fresh ART node has no dirty flags
+        assert!(!child.needs_persistence());
+
+        // Mark as dirty
+        child.mark_dirty();
+        assert!(child.needs_persistence());
+
+        // Clear dirty flags
+        child.clear_dirty_flags();
+        assert!(!child.needs_persistence());
+
+        // Mark as having dirty descendants
+        child.mark_has_dirty_descendants();
+        assert!(child.needs_persistence());
+
+        // Clear dirty flags
+        child.clear_dirty_flags();
+        assert!(!child.needs_persistence());
+    }
+
+    #[test]
+    fn test_child_node_needs_persistence_disk_ref() {
+        let ptr = SwizzledPtr::null();
+        let child = ChildNode::disk_ref(ptr);
+
+        // DiskRef is already on disk, doesn't need persistence
+        assert!(!child.needs_persistence());
+    }
+
+    #[test]
+    fn test_child_node_dirty_flag_methods() {
+        let node = Node::N4(Box::new(Node4::new()));
+        let mut child = ChildNode::art_node_with_children(node, false, None, Vec::new());
+
+        // Test mark_dirty
+        child.mark_dirty();
+        if let ChildNode::ArtNode { node, .. } = &child {
+            assert!(node.header().is_dirty());
+        }
+
+        // Test mark_has_dirty_descendants
+        child.clear_dirty_flags();
+        child.mark_has_dirty_descendants();
+        if let ChildNode::ArtNode { node, .. } = &child {
+            assert!(node.header().has_dirty_descendants());
+            assert!(!node.header().is_dirty());
+        }
+
+        // Test clear_dirty_flags clears both
+        child.mark_dirty();
+        child.clear_dirty_flags();
+        if let ChildNode::ArtNode { node, .. } = &child {
+            assert!(!node.header().is_dirty());
+            assert!(!node.header().has_dirty_descendants());
+        }
+    }
+
+    #[test]
+    fn test_child_node_dirty_methods_on_bucket() {
+        let bucket = StringBucket::new();
+        let mut child = ChildNode::bucket(bucket);
+
+        // These should be no-ops for buckets (no panic)
+        child.mark_dirty();
+        child.mark_has_dirty_descendants();
+        child.clear_dirty_flags();
+
+        // Bucket should still be a bucket
+        assert!(child.is_bucket());
+    }
+
+    #[test]
+    fn test_child_node_dirty_methods_on_disk_ref() {
+        let ptr = SwizzledPtr::null();
+        let mut child = ChildNode::disk_ref(ptr);
+
+        // These should be no-ops for disk refs (no panic)
+        child.mark_dirty();
+        child.mark_has_dirty_descendants();
+        child.clear_dirty_flags();
+
+        // DiskRef should still be a DiskRef
+        assert!(child.is_disk_ref());
     }
 }

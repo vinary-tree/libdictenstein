@@ -60,6 +60,7 @@
 
 use super::error::{PersistentARTrieError, Result};
 use super::nodes::{CompressedPrefix, Node, Node16, Node256, Node4, Node48, NodeHeader, MAX_PREFIX_LEN};
+use super::nodes::node48::NO_CHILD;
 use super::swizzled_ptr::{NodeType, SwizzledPtr};
 use std::io::{Read, Write};
 
@@ -979,31 +980,46 @@ pub mod v2 {
 
         let num_children = header.num_children as usize;
 
+        // Build a sorted list of used slots from the index array.
+        // During serialization, children are collected in slot order (0..48),
+        // so we must place them back at their original slot positions.
+        let mut used_slots: Vec<u8> = Vec::with_capacity(num_children);
+        for key in 0..256usize {
+            let slot = node.index[key];
+            if slot != NO_CHILD && !used_slots.contains(&slot) {
+                used_slots.push(slot);
+            }
+        }
+        used_slots.sort_unstable();
+
         // Decode children based on encoding mode
         if header.uses_sequential_siblings() {
             let (children, bytes_consumed) = decode_sequential_siblings(&data[256..], ctx.parent_slot, num_children);
             // Read node types after encoded children
             let types_start = 256 + bytes_consumed;
-            for (i, slot) in children.into_iter().enumerate() {
+            for (i, child_slot) in children.into_iter().enumerate() {
+                let actual_slot = used_slots[i] as usize;
                 let node_type = NodeType::try_from(data[types_start + i])
                     .unwrap_or(NodeType::Node4);
-                node.children[i] = SwizzledPtr::from_arena_slot(slot, node_type);
+                node.children[actual_slot] = SwizzledPtr::from_arena_slot(child_slot, node_type);
             }
         } else if header.uses_relative_offsets() {
             let (children, bytes_consumed) = decode_children(&data[256..], ctx.parent_slot, num_children);
             // Read node types after encoded children
             let types_start = 256 + bytes_consumed;
-            for (i, slot) in children.into_iter().enumerate() {
+            for (i, child_slot) in children.into_iter().enumerate() {
+                let actual_slot = used_slots[i] as usize;
                 let node_type = NodeType::try_from(data[types_start + i])
                     .unwrap_or(NodeType::Node4);
-                node.children[i] = SwizzledPtr::from_arena_slot(slot, node_type);
+                node.children[actual_slot] = SwizzledPtr::from_arena_slot(child_slot, node_type);
             }
         } else {
             // Fixed 8-byte pointers (node type is in the pointer itself)
             for i in 0..num_children {
+                let actual_slot = used_slots[i] as usize;
                 let offset = 256 + i * 8;
                 let raw = u64::from_le_bytes(data[offset..offset + 8].try_into().unwrap());
-                node.children[i] = SwizzledPtr::from_raw(raw);
+                node.children[actual_slot] = SwizzledPtr::from_raw(raw);
             }
         }
 
@@ -1343,6 +1359,235 @@ mod tests {
             let bytes = to_bytes(&node).expect("serialize");
             let restored = from_bytes(&bytes).expect("deserialize");
             assert_eq!(restored.header().num_children, 0);
+        }
+    }
+
+    // =========================================================================
+    // Serialization Error Path Tests
+    //
+    // These tests verify that deserialization handles truncated and invalid
+    // data correctly, returning appropriate errors.
+    // =========================================================================
+
+    #[test]
+    fn test_deserialize_truncated_header() {
+        // Data too short for header (header is 16 bytes)
+        let truncated = vec![0u8; 10];
+        let result = from_bytes(&truncated);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_deserialize_invalid_magic() {
+        // Valid length but invalid magic bytes
+        let mut data = vec![0u8; 32];
+        // Set invalid magic (first 4 bytes)
+        data[0..4].copy_from_slice(b"BAD!");
+
+        let result = from_bytes(&data);
+        assert!(matches!(
+            result,
+            Err(PersistentARTrieError::InvalidMagic { .. })
+        ));
+    }
+
+    #[test]
+    fn test_deserialize_unsupported_version() {
+        // Create valid header with future version
+        let mut header = SerializedNodeHeader {
+            magic: NODE_MAGIC,
+            version: 255, // Future version
+            node_type: node_types::NODE4,
+            flags: 0,
+            encoding_flags: 0,
+            num_children: 0,
+            prefix_len: 0,
+            _padding: 0,
+            data_size: 0,
+        };
+        let bytes = header.to_bytes();
+        let result = from_bytes(&bytes);
+        assert!(matches!(
+            result,
+            Err(PersistentARTrieError::UnsupportedVersion { .. })
+        ));
+    }
+
+    #[test]
+    fn test_deserialize_invalid_node_type() {
+        // Valid header but invalid node type
+        let mut header = SerializedNodeHeader {
+            magic: NODE_MAGIC,
+            version: FORMAT_VERSION,
+            node_type: 99, // Invalid type
+            flags: 0,
+            encoding_flags: 0,
+            num_children: 0,
+            prefix_len: 0,
+            _padding: 0,
+            data_size: 0,
+        };
+        let bytes = header.to_bytes();
+        let result = from_bytes(&bytes);
+        assert!(matches!(
+            result,
+            Err(PersistentARTrieError::CorruptedFile { .. })
+        ));
+    }
+
+    #[test]
+    fn test_deserialize_truncated_prefix() {
+        // Header claims prefix_len=8 but data is truncated
+        let mut header = SerializedNodeHeader {
+            magic: NODE_MAGIC,
+            version: FORMAT_VERSION,
+            node_type: node_types::NODE4,
+            flags: 0,
+            encoding_flags: 0,
+            num_children: 0,
+            prefix_len: 8,
+            _padding: 0,
+            data_size: 50,
+        };
+        let header_bytes = header.to_bytes();
+
+        // Only include header + 4 bytes of prefix (claims 8)
+        let mut data = Vec::new();
+        data.extend_from_slice(&header_bytes);
+        data.extend_from_slice(&[0u8; 4]); // Truncated prefix
+
+        let result = from_bytes(&data);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_deserialize_truncated_children_node4() {
+        // Header claims 2 children but data is truncated
+        let node4 = Node::N4(Box::new(Node4::new()));
+        let mut bytes = to_bytes(&node4).expect("serialize");
+
+        // Corrupt header to claim more children exist
+        let header_arr: [u8; SERIALIZED_HEADER_SIZE] = bytes[0..SERIALIZED_HEADER_SIZE]
+            .try_into()
+            .expect("header slice should be 16 bytes");
+        let mut header = SerializedNodeHeader::from_bytes(&header_arr);
+        header.num_children = 4;
+        bytes[0..SERIALIZED_HEADER_SIZE].copy_from_slice(&header.to_bytes());
+
+        // Truncate the data
+        bytes.truncate(20);
+
+        let result = from_bytes(&bytes);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_deserialize_empty_data() {
+        let result = from_bytes(&[]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_serialize_roundtrip_with_max_prefix() {
+        let mut node4 = Node4::new();
+        // MAX_PREFIX_LEN is 8 for byte nodes
+        node4.prefix = CompressedPrefix::from_bytes(b"12345678");
+        node4.header.prefix_len = 8;
+        node4.header.set_final(true);
+
+        let node = Node::N4(Box::new(node4));
+        let bytes = to_bytes(&node).expect("serialize");
+        let restored = from_bytes(&bytes).expect("deserialize");
+
+        assert_eq!(restored.header().prefix_len, 8);
+        assert!(restored.header().is_final());
+    }
+
+    #[test]
+    fn test_deserialize_invalid_prefix_len() {
+        // prefix_len > MAX_PREFIX_LEN (8)
+        let mut header = SerializedNodeHeader {
+            magic: NODE_MAGIC,
+            version: FORMAT_VERSION,
+            node_type: node_types::NODE4,
+            flags: 0,
+            encoding_flags: 0,
+            num_children: 0,
+            prefix_len: 20, // Too long
+            _padding: 0,
+            data_size: 50,
+        };
+        let bytes = header.to_bytes();
+        let result = from_bytes(&bytes);
+        assert!(matches!(
+            result,
+            Err(PersistentARTrieError::CorruptedFile { .. })
+        ));
+    }
+
+    #[test]
+    fn test_serialize_all_node_types() {
+        // Test that all node types can be serialized and deserialized
+        let nodes: Vec<Node> = vec![
+            Node::N4(Box::new(Node4::new())),
+            Node::N16(Box::new(Node16::new())),
+            Node::N48(Box::new(Node48::new())),
+            Node::N256(Box::new(Node256::new())),
+        ];
+
+        for node in nodes {
+            let bytes = to_bytes(&node).expect("serialize");
+            assert!(!bytes.is_empty());
+            let restored = from_bytes(&bytes).expect("deserialize");
+            assert_eq!(restored.header().num_children, node.header().num_children);
+        }
+    }
+
+    #[test]
+    fn test_node_type_constants() {
+        // Verify node type constants match the defined values
+        assert_eq!(node_types::NODE4, 4);
+        assert_eq!(node_types::NODE16, 16);
+        assert_eq!(node_types::NODE48, 48);
+        assert_eq!(node_types::NODE256, 0); // Uses 0 to match in-memory representation
+    }
+
+    #[test]
+    fn test_header_size() {
+        // Verify header size is as expected (16 bytes)
+        assert_eq!(SERIALIZED_HEADER_SIZE, 16);
+        let header = SerializedNodeHeader {
+            magic: NODE_MAGIC,
+            version: 1,
+            node_type: node_types::NODE4,
+            flags: 0,
+            encoding_flags: 0,
+            num_children: 0,
+            prefix_len: 0,
+            _padding: 0,
+            data_size: 0,
+        };
+        assert_eq!(header.to_bytes().len(), SERIALIZED_HEADER_SIZE);
+    }
+
+    #[test]
+    fn test_all_flag_combinations() {
+        // Test serialization with various flag combinations
+        let flag_combinations = [0u8, flags::IS_FINAL, flags::IS_DIRTY, flags::IS_FINAL | flags::IS_DIRTY];
+
+        for flags_val in flag_combinations {
+            let mut node4 = Node4::new();
+            node4.header.flags = flags_val;
+
+            let node = Node::N4(Box::new(node4));
+            let bytes = to_bytes(&node).expect("serialize");
+            let restored = from_bytes(&bytes).expect("deserialize");
+
+            // IS_DIRTY should not be preserved in serialization (it's runtime state)
+            // Only IS_FINAL should be preserved
+            if flags_val & flags::IS_FINAL != 0 {
+                assert!(restored.header().is_final());
+            }
         }
     }
 }

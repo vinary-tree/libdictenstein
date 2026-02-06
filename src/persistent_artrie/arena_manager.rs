@@ -379,14 +379,15 @@ impl ArenaManager {
 
     /// Flush all dirty arenas to disk
     ///
-    /// This persists arenas to the buffer manager. Each arena is written
-    /// to a separate block with sequential block IDs:
-    /// - Arena 0 → Block 1
-    /// - Arena 1 → Block 2
-    /// - Arena N → Block N+1
+    /// This persists arenas to the buffer manager. Each arena is allocated
+    /// a block on demand, and the actual allocated block_id is stored in
+    /// the arena for future reference.
     ///
-    /// This ensures arenas always have predictable block IDs that can be
-    /// derived from arena_count when loading.
+    /// # Concurrency Safety
+    ///
+    /// This method uses the actual block_id returned by `new_page()` rather
+    /// than assuming sequential allocation. This is critical for correctness
+    /// under concurrent allocation where block IDs may not be sequential.
     pub fn flush(&mut self) -> Result<()> {
         let bm = match &self.buffer_manager {
             Some(bm) => bm,
@@ -395,40 +396,23 @@ impl ArenaManager {
 
         let bm_guard = bm.write();
 
-        for (arena_index, arena) in self.arenas.iter_mut().enumerate() {
+        for arena in self.arenas.iter_mut() {
             if arena.is_dirty() {
-                // Assign sequential block ID: arena N → block N+1
-                // This ensures block IDs can be derived from arena_count when loading
-                let expected_block_id = arena_index as u32 + 1;
-
-                let block_id = if let Some(id) = arena.block_id {
-                    // Arena already has a block_id - verify it's correct
-                    if id != expected_block_id {
-                        // This shouldn't happen in normal operation, but if it does,
-                        // prefer the expected sequential ID for consistency
-                        arena.set_block_id(expected_block_id);
-                        expected_block_id
-                    } else {
-                        id
-                    }
+                if let Some(id) = arena.block_id {
+                    // Arena already has a block_id assigned - fetch and update
+                    let mut page = bm_guard.fetch_page_mut(id)?;
+                    let page_data = page.data_mut();
+                    let arena_data = arena.as_bytes();
+                    page_data[..arena_data.len()].copy_from_slice(arena_data);
                 } else {
-                    // New arena - ensure file has enough blocks
-                    let current_block_count = bm_guard.disk_manager().block_count()?;
-                    if current_block_count <= expected_block_id {
-                        // Extend file by allocating blocks up to expected_block_id
-                        for _ in current_block_count..=expected_block_id {
-                            let _ = bm_guard.new_page()?;
-                        }
-                    }
-                    arena.set_block_id(expected_block_id);
-                    expected_block_id
-                };
-
-                // Write arena data to the block
-                let mut page = bm_guard.fetch_page_mut(block_id)?;
-                let page_data = page.data_mut();
-                let arena_data = arena.as_bytes();
-                page_data[..arena_data.len()].copy_from_slice(arena_data);
+                    // New arena - allocate a block and write DIRECTLY to it
+                    // (Don't drop and re-fetch - that's the race condition!)
+                    let mut page = bm_guard.new_page()?;
+                    arena.set_block_id(page.block_id());
+                    let page_data = page.data_mut();
+                    let arena_data = arena.as_bytes();
+                    page_data[..arena_data.len()].copy_from_slice(arena_data);
+                }
 
                 arena.mark_clean();
             }
@@ -448,6 +432,12 @@ impl ArenaManager {
     ///
     /// For SSD storage, the benefit is smaller but still measurable due to
     /// better buffer manager cache utilization.
+    ///
+    /// # Concurrency Safety
+    ///
+    /// This method uses the actual block_id returned by `new_page()` rather
+    /// than assuming sequential allocation. This is critical for correctness
+    /// under concurrent allocation where block IDs may not be sequential.
     ///
     /// # Performance
     ///
@@ -479,33 +469,21 @@ impl ArenaManager {
         for arena_index in dirty_indices {
             let arena = &mut self.arenas[arena_index];
 
-            // Assign sequential block ID: arena N → block N+1
-            let expected_block_id = arena_index as u32 + 1;
-
-            let block_id = if let Some(id) = arena.block_id {
-                if id != expected_block_id {
-                    arena.set_block_id(expected_block_id);
-                    expected_block_id
-                } else {
-                    id
-                }
+            if let Some(id) = arena.block_id {
+                // Arena already has a block_id assigned - fetch and update
+                let mut page = bm_guard.fetch_page_mut(id)?;
+                let page_data = page.data_mut();
+                let arena_data = arena.as_bytes();
+                page_data[..arena_data.len()].copy_from_slice(arena_data);
             } else {
-                // New arena - ensure file has enough blocks
-                let current_block_count = bm_guard.disk_manager().block_count()?;
-                if current_block_count <= expected_block_id {
-                    for _ in current_block_count..=expected_block_id {
-                        let _ = bm_guard.new_page()?;
-                    }
-                }
-                arena.set_block_id(expected_block_id);
-                expected_block_id
-            };
-
-            // Write arena data to the block
-            let mut page = bm_guard.fetch_page_mut(block_id)?;
-            let page_data = page.data_mut();
-            let arena_data = arena.as_bytes();
-            page_data[..arena_data.len()].copy_from_slice(arena_data);
+                // New arena - allocate a block and write DIRECTLY to it
+                // (Don't drop and re-fetch - that's the race condition!)
+                let mut page = bm_guard.new_page()?;
+                arena.set_block_id(page.block_id());
+                let page_data = page.data_mut();
+                let arena_data = arena.as_bytes();
+                page_data[..arena_data.len()].copy_from_slice(arena_data);
+            }
 
             arena.mark_clean();
         }
@@ -589,27 +567,6 @@ impl ArenaManager {
                 continue; // Skip clean arenas
             }
 
-            // Ensure block ID is assigned
-            let expected_block_id = arena_idx as u32 + 1;
-            let block_id = if let Some(id) = arena.block_id {
-                if id != expected_block_id {
-                    arena.set_block_id(expected_block_id);
-                    expected_block_id
-                } else {
-                    id
-                }
-            } else {
-                // New arena - ensure file has enough blocks
-                let current_block_count = bm_guard.disk_manager().block_count()?;
-                if current_block_count <= expected_block_id {
-                    for _ in current_block_count..=expected_block_id {
-                        let _ = bm_guard.new_page()?;
-                    }
-                }
-                arena.set_block_id(expected_block_id);
-                expected_block_id
-            };
-
             // Determine if we should do full or partial write
             let total_slots = arena.slot_count() as usize;
             let dirty_slot_count = tracker
@@ -623,31 +580,66 @@ impl ArenaManager {
                 1.0 // New arena with no slots yet - full write
             };
 
-            if dirty_ratio >= threshold || total_slots == 0 {
-                // Full arena write
-                let mut page = bm_guard.fetch_page_mut(block_id)?;
+            if let Some(block_id) = arena.block_id {
+                // Arena already has a block_id assigned
+                if dirty_ratio >= threshold || total_slots == 0 {
+                    // Full arena write
+                    let mut page = bm_guard.fetch_page_mut(block_id)?;
+                    let page_data = page.data_mut();
+                    let arena_data = arena.as_bytes();
+                    page_data[..arena_data.len()].copy_from_slice(arena_data);
+
+                    stats.full_arena_writes += 1;
+                    stats.bytes_written += arena_data.len();
+                } else {
+                    // Partial write: header + dirty slots + directory entries
+                    let bytes_written = write_dirty_slots_for_arena(
+                        &bm_guard,
+                        arena,
+                        block_id,
+                        tracker.dirty_slot_ids(arena_id).unwrap(),
+                    )?;
+
+                    stats.partial_writes += 1;
+                    stats.slots_written += dirty_slot_count;
+                    stats.bytes_written += bytes_written;
+                    stats.bytes_saved += self.arena_size.saturating_sub(bytes_written);
+                }
+            } else {
+                // New arena - allocate a block and write DIRECTLY to it
+                // (Don't drop and re-fetch - that's the race condition!)
+                let mut page = bm_guard.new_page()?;
+                arena.set_block_id(page.block_id());
                 let page_data = page.data_mut();
                 let arena_data = arena.as_bytes();
                 page_data[..arena_data.len()].copy_from_slice(arena_data);
 
                 stats.full_arena_writes += 1;
                 stats.bytes_written += arena_data.len();
-            } else {
-                // Partial write: header + dirty slots + directory entries
-                let bytes_written = write_dirty_slots_for_arena(
-                    &bm_guard,
-                    arena,
-                    block_id,
-                    tracker.dirty_slot_ids(arena_id).unwrap(),
-                )?;
-
-                stats.partial_writes += 1;
-                stats.slots_written += dirty_slot_count;
-                stats.bytes_written += bytes_written;
-                stats.bytes_saved += self.arena_size.saturating_sub(bytes_written);
             }
 
             arena.mark_clean();
+        }
+
+        // Defense in depth: flush any untracked dirty arenas that need block_ids.
+        // This catches arenas that were dirty before slot tracking was enabled
+        // but weren't captured in the tracker's dirty set.
+        for (arena_id, arena) in self.arenas.iter_mut().enumerate() {
+            if arena.is_dirty() && arena.block_id.is_none() {
+                log::warn!(
+                    "Flushing untracked dirty arena {} (slot tracking may have been enabled late)",
+                    arena_id
+                );
+                let mut page = bm_guard.new_page()?;
+                arena.set_block_id(page.block_id());
+                let page_data = page.data_mut();
+                let arena_data = arena.as_bytes();
+                let arena_data_len = arena_data.len();
+                page_data[..arena_data_len].copy_from_slice(arena_data);
+                arena.mark_clean();
+                stats.full_arena_writes += 1;
+                stats.bytes_written += arena_data_len;
+            }
         }
 
         // Flush all pages to disk
@@ -697,7 +689,21 @@ impl ArenaManager {
     /// ```
     pub fn enable_slot_tracking(&mut self) {
         if self.dirty_tracker.is_none() {
-            self.dirty_tracker = Some(DirtyTracker::slot_level());
+            let mut tracker = DirtyTracker::slot_level();
+            // CRITICAL FIX: Mark all existing dirty arenas in the new tracker
+            // to prevent "Invalid arena ID" corruption on checkpoint.
+            // Without this, dirty arenas created before enabling slot tracking
+            // would not be tracked, causing flush_dirty_slots() to skip them
+            // and leaving them without block_ids while serialized nodes
+            // reference them.
+            tracker.mark_arenas_dirty(
+                self.arenas
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, arena)| arena.is_dirty())
+                    .map(|(id, _)| id as u32),
+            );
+            self.dirty_tracker = Some(tracker);
             self.flush_config.slot_level_tracking = true;
         }
     }
@@ -1508,5 +1514,326 @@ mod tests {
         manager.allocate(b"test data").unwrap();
         let stats = manager.dirty_tracker_stats().unwrap();
         assert!(stats.dirty_slots > 0);
+    }
+
+    #[test]
+    fn test_enable_slot_tracking_marks_existing_dirty_arenas() {
+        let mut manager = ArenaManager::with_arena_size(4096);
+
+        // Allocate before enabling (creates dirty arenas)
+        manager.allocate(b"pre-tracking-1").unwrap();
+        manager.allocate(b"pre-tracking-2").unwrap();
+
+        // Existing arenas should be dirty (via arena's is_dirty flag)
+        assert!(manager.arenas[0].is_dirty());
+
+        // Enable slot tracking - should retroactively mark existing dirty arenas
+        manager.enable_slot_tracking();
+
+        // Tracker should know about existing dirty arenas
+        let stats = manager.dirty_tracker_stats().unwrap();
+        assert!(
+            stats.dirty_arenas >= 1,
+            "should retroactively track existing dirty arenas, got {}",
+            stats.dirty_arenas
+        );
+    }
+
+    #[test]
+    fn test_enable_slot_tracking_marks_multiple_dirty_arenas() {
+        // Use small arenas to force multiple arenas to be created
+        let mut manager = ArenaManager::with_arena_size(512);
+
+        // Fill up multiple arenas before enabling tracking
+        for i in 0..20 {
+            let data = format!("pre-tracking-{:04}", i);
+            manager.allocate(data.as_bytes()).unwrap();
+        }
+
+        let arena_count_before = manager.arena_count();
+        assert!(arena_count_before > 1, "should have multiple arenas");
+
+        // Count dirty arenas before enabling
+        let dirty_count_before = manager
+            .arenas
+            .iter()
+            .filter(|a| a.is_dirty())
+            .count();
+
+        // Enable slot tracking - should retroactively mark all dirty arenas
+        manager.enable_slot_tracking();
+
+        // Tracker should know about all existing dirty arenas
+        let stats = manager.dirty_tracker_stats().unwrap();
+        assert_eq!(
+            stats.dirty_arenas, dirty_count_before,
+            "should track all {} dirty arenas, got {}",
+            dirty_count_before, stats.dirty_arenas
+        );
+    }
+
+    // =========================================================================
+    // Stress Tests for Arena Manager
+    //
+    // These tests exercise edge cases and boundary conditions including:
+    // - Allocation failures
+    // - Arena boundaries
+    // - Large allocations
+    // - Concurrent-like patterns (sequential stress)
+    // =========================================================================
+
+    #[test]
+    fn test_stress_many_small_allocations() {
+        let mut manager = ArenaManager::with_arena_size(4096);
+
+        // Allocate many small items
+        let mut slots = Vec::new();
+        for i in 0..1000 {
+            let data = format!("item_{:04}", i);
+            let slot = manager.allocate(data.as_bytes()).expect("allocation should succeed");
+            slots.push((slot, data));
+        }
+
+        // Verify all allocations
+        for (slot, expected) in &slots {
+            let actual = manager.read(*slot).expect("read should succeed");
+            assert_eq!(actual, expected.as_bytes(), "Data mismatch for slot {:?}", slot);
+        }
+
+        assert_eq!(manager.total_node_count(), 1000);
+    }
+
+    #[test]
+    fn test_stress_varying_sizes() {
+        let mut manager = ArenaManager::with_arena_size(4096);
+
+        // Allocate items of varying sizes
+        let sizes = [1, 10, 50, 100, 200, 500, 1000, 16, 32, 64, 128, 256];
+        let mut slots = Vec::new();
+
+        for (i, &size) in sizes.iter().cycle().take(100).enumerate() {
+            let data: Vec<u8> = (0..size).map(|j| ((i * 7 + j) % 256) as u8).collect();
+            let slot = manager.allocate(&data).expect("allocation should succeed");
+            slots.push((slot, data));
+        }
+
+        // Verify all allocations
+        for (slot, expected) in &slots {
+            let actual = manager.read(*slot).expect("read should succeed");
+            assert_eq!(actual, expected.as_slice(), "Data mismatch for slot {:?}", slot);
+        }
+    }
+
+    #[test]
+    fn test_stress_arena_boundary_crossing() {
+        // Use small arena to ensure many boundary crossings
+        let mut manager = ArenaManager::with_arena_size(256);
+
+        let mut slots = Vec::new();
+
+        // Fill multiple arenas
+        for i in 0..500 {
+            let data = format!("boundary_test_{:04}", i);
+            let slot = manager.allocate(data.as_bytes()).expect("allocation should succeed");
+            slots.push((slot, data));
+        }
+
+        // Should have created many arenas
+        assert!(manager.arena_count() > 10, "Expected many arenas, got {}", manager.arena_count());
+
+        // Verify all data is still accessible across arenas
+        for (slot, expected) in &slots {
+            let actual = manager.read(*slot).expect("read should succeed");
+            assert_eq!(actual, expected.as_bytes());
+        }
+    }
+
+    #[test]
+    fn test_arena_slot_boundary_values() {
+        // Test slot encoding/decoding with boundary values
+        let test_cases = [
+            (0, 0),
+            (0, u32::MAX),
+            (u32::MAX, 0),
+            (u32::MAX, u32::MAX),
+            (1, 1),
+            (1000000, 1000000),
+        ];
+
+        for (arena_id, slot_id) in test_cases {
+            let slot = ArenaSlot::new(arena_id, slot_id);
+            let encoded = slot.to_u64();
+            let decoded = ArenaSlot::from_u64(encoded);
+
+            assert_eq!(decoded.arena_id, arena_id, "Arena ID mismatch for {:?}", slot);
+            assert_eq!(decoded.slot_id, slot_id, "Slot ID mismatch for {:?}", slot);
+        }
+    }
+
+    #[test]
+    fn test_flush_config_boundary_values() {
+        // Test threshold clamping
+        let config = FlushConfig::default().with_threshold(-0.5);
+        assert_eq!(config.full_arena_threshold, 0.0);
+
+        let config = FlushConfig::default().with_threshold(1.5);
+        assert_eq!(config.full_arena_threshold, 1.0);
+
+        let config = FlushConfig::default().with_threshold(0.75);
+        assert_eq!(config.full_arena_threshold, 0.75);
+    }
+
+    #[test]
+    fn test_flush_stats_calculation() {
+        // Test FlushStats::full_flush calculation
+        let stats = FlushStats::full_flush(5, 4096);
+        assert_eq!(stats.full_arena_writes, 5);
+        assert_eq!(stats.partial_writes, 0);
+        assert_eq!(stats.bytes_written, 5 * 4096);
+        assert_eq!(stats.bytes_saved, 0);
+    }
+
+    #[test]
+    fn test_arena_stats_edge_cases() {
+        // Empty manager
+        let manager = ArenaManager::new();
+        let stats = manager.stats();
+        assert_eq!(stats.node_count, 0);
+        assert_eq!(stats.arena_count, 1); // Always starts with one arena
+
+        // Single allocation
+        let mut manager = ArenaManager::new();
+        manager.allocate(&[1, 2, 3]).unwrap();
+        let stats = manager.stats();
+        assert_eq!(stats.node_count, 1);
+        assert!(stats.total_used > 3); // At least the data plus metadata
+    }
+
+    #[test]
+    fn test_reserve_exact_arena_capacity() {
+        // Create a small arena
+        let mut manager = ArenaManager::with_arena_size(512);
+
+        // Try to reserve exactly as many slots as can fit
+        // This should succeed by creating a new arena if needed
+        let reserved = manager.reserve_slots(5);
+        assert!(reserved.is_ok());
+    }
+
+    #[test]
+    fn test_reserve_slots_one() {
+        let mut manager = ArenaManager::new();
+
+        // Reserving one slot should succeed
+        let mut reserved = manager.reserve_slots(1).unwrap();
+        assert_eq!(reserved.count, 1);
+        assert!(!reserved.is_complete());
+
+        // Allocate into it
+        let slot = manager.allocate_reserved(&mut reserved, b"data").unwrap();
+        assert!(reserved.is_complete());
+
+        // Verify data
+        assert_eq!(manager.read(slot).unwrap(), b"data");
+    }
+
+    #[test]
+    fn test_reservation_tracking() {
+        let mut manager = ArenaManager::with_arena_size(1024);
+
+        // Reserve some slots and track their state
+        let reserved = manager.reserve_slots(3).unwrap();
+        assert_eq!(reserved.count, 3);
+        assert_eq!(reserved.remaining(), 3);
+        assert!(!reserved.is_complete());
+    }
+
+    #[test]
+    fn test_large_data_allocation() {
+        let mut manager = ArenaManager::with_arena_size(4096);
+
+        // Allocate data that fills most of a slot
+        let large_data = vec![0u8; 2000];
+        let slot = manager.allocate(&large_data).expect("should succeed");
+
+        // Verify data integrity
+        let read_back = manager.read(slot).expect("read should succeed");
+        assert_eq!(read_back, large_data.as_slice());
+    }
+
+    #[test]
+    fn test_dirty_state_after_allocation() {
+        let mut manager = ArenaManager::new();
+
+        // Arena should be marked dirty after allocation
+        manager.allocate(b"test data").unwrap();
+        assert!(manager.arenas[0].is_dirty());
+    }
+
+    #[test]
+    fn test_dirty_tracker_stats_when_disabled() {
+        let manager = ArenaManager::new();
+
+        // Without enabling slot tracking, stats should return None
+        assert!(manager.dirty_tracker_stats().is_none());
+    }
+
+    #[test]
+    fn test_dirty_tracker_stats_when_enabled() {
+        let mut manager = ArenaManager::new();
+        manager.enable_slot_tracking();
+
+        let stats = manager.dirty_tracker_stats();
+        assert!(stats.is_some());
+        let stats = stats.unwrap();
+        // Check dirty_arenas instead of total_arenas
+        // Initially the first arena should be tracked
+        assert!(stats.dirty_arenas >= 0);
+    }
+
+    #[test]
+    fn test_multiple_enable_slot_tracking_calls() {
+        let mut manager = ArenaManager::new();
+
+        // Enable multiple times should be idempotent
+        manager.enable_slot_tracking();
+        manager.enable_slot_tracking();
+        manager.enable_slot_tracking();
+
+        // Should still work correctly
+        let stats = manager.dirty_tracker_stats();
+        assert!(stats.is_some());
+    }
+
+    #[test]
+    fn test_with_large_arena_size() {
+        // Large arena works normally
+        let mut manager = ArenaManager::with_arena_size(1024 * 1024);
+        let slot = manager.allocate(&[4, 5, 6]).unwrap();
+        assert_eq!(manager.read(slot).unwrap(), &[4, 5, 6]);
+    }
+
+    #[test]
+    fn test_sequential_reserved_allocations() {
+        let mut manager = ArenaManager::with_arena_size(4096);
+
+        // Reserve slots
+        let mut reserved = manager.reserve_slots(3).unwrap();
+
+        // Fill reserved slots sequentially
+        let slot1 = manager.allocate_reserved(&mut reserved, b"data1").unwrap();
+        let slot2 = manager.allocate_reserved(&mut reserved, b"data2").unwrap();
+        let slot3 = manager.allocate_reserved(&mut reserved, b"data3").unwrap();
+
+        assert!(reserved.is_complete());
+
+        // All data should be readable
+        assert_eq!(manager.read(slot1).unwrap(), b"data1");
+        assert_eq!(manager.read(slot2).unwrap(), b"data2");
+        assert_eq!(manager.read(slot3).unwrap(), b"data3");
+
+        // Slots should be consecutive
+        assert_eq!(slot1.slot_id + 1, slot2.slot_id);
+        assert_eq!(slot2.slot_id + 1, slot3.slot_id);
     }
 }

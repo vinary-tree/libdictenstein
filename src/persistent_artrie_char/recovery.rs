@@ -618,6 +618,17 @@ impl RecoveryManager {
                     .map(|(term, value)| RecoveredOperation::Insert { lsn, term, value })
                     .collect()
             }
+            WalRecord::BatchIncrement { entries } => {
+                entries
+                    .into_iter()
+                    .map(|(term, delta)| RecoveredOperation::Increment {
+                        lsn,
+                        term,
+                        delta,
+                        result: 0, // Result is recomputed during apply
+                    })
+                    .collect()
+            }
             // Skip transaction and checkpoint records
             WalRecord::BeginTx { .. }
             | WalRecord::CommitTx { .. }

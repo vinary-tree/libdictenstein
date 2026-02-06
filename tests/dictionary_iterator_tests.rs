@@ -10,7 +10,7 @@ use std::collections::HashSet;
 // ============================================================================
 
 mod double_array_trie_tests {
-    use super::*;
+    use std::collections::HashSet;
     use libdictenstein::double_array_trie::DoubleArrayTrie;
 
     #[test]
@@ -86,7 +86,6 @@ mod double_array_trie_tests {
 // ============================================================================
 
 mod dynamic_dawg_tests {
-    use super::*;
     use libdictenstein::dynamic_dawg::DynamicDawg;
 
     #[test]
@@ -138,7 +137,6 @@ mod dynamic_dawg_tests {
 // ============================================================================
 
 mod double_array_trie_char_tests {
-    use super::*;
     use libdictenstein::double_array_trie_char::DoubleArrayTrieChar;
 
     #[test]
@@ -188,7 +186,6 @@ mod double_array_trie_char_tests {
 // ============================================================================
 
 mod dynamic_dawg_char_tests {
-    use super::*;
     use libdictenstein::dynamic_dawg_char::DynamicDawgChar;
 
     #[test]
@@ -283,7 +280,7 @@ mod suffix_automaton_char_tests {
 
 #[cfg(feature = "pathmap-backend")]
 mod pathmap_tests {
-    use super::*;
+    use std::collections::HashSet;
     use libdictenstein::pathmap::PathMapDictionary;
 
     #[test]

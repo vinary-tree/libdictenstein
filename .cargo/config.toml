@@ -22,3 +22,12 @@ rustflags = ["-C", "target-cpu=native"]
 # ✅ cargo run                    (works automatically)
 #
 # The RUSTFLAGS environment variable will override this configuration if set.
+
+# Coverage profile for accurate branch coverage with cargo-llvm-cov
+[profile.coverage]
+inherits = "dev"
+opt-level = 0
+debug = true
+codegen-units = 1
+lto = false
+incremental = false

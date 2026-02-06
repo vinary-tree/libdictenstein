@@ -98,6 +98,26 @@
 //! | **Dynamic** | Yes (DynamicDawg) | Yes |
 //! | **Example** | "test" → "testing" | "test" → "contest" |
 //!
+//! # Important: Removal Semantics
+//!
+//! Unlike prefix-based dictionaries (DynamicDawgChar, DoubleArrayTrieChar), the
+//! `remove()` method in SuffixAutomatonChar only removes metadata tracking which
+//! terms were explicitly indexed. It does **NOT** remove paths from the automaton
+//! graph structure.
+//!
+//! This means `contains(term)` may still return `true` after `remove(term)` if:
+//!
+//! - The term shares paths with other indexed terms in the automaton
+//! - The term's state nodes are still reachable via other indexed terms
+//!
+//! This behavior is intentional and stems from the fundamental design of suffix
+//! automata, where states represent equivalence classes of substrings with the
+//! same set of ending positions. Fully removing a term would require rebuilding
+//! significant portions of the automaton.
+//!
+//! **Recommendation**: Use `iter()` to enumerate explicitly indexed terms, or
+//! track indexed terms externally if precise removal semantics are required.
+//!
 //! # References
 //!
 //! - Blumer et al. (1985): "The smallest automaton recognizing the subwords of a text"

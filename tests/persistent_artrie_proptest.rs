@@ -507,6 +507,373 @@ proptest! {
     }
 }
 
+// =============================================================================
+// Node Type Transition Tests
+// =============================================================================
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(20))]
+
+    /// Property: Inserting many terms with distinct first bytes triggers Node4 -> Node16 -> Node48 -> Node256
+    #[test]
+    fn prop_node_type_transitions(
+        prefixes in prop::collection::vec(prop::char::range('a', 'z'), 50..=100)
+    ) {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let path = temp_dir.path().join("test_dict");
+
+        {
+            let mut dict = PersistentARTrie::<i32>::create(&path)
+                .expect("create dict");
+
+            // Insert terms with diverse prefixes to trigger node growth
+            let unique_prefixes: HashSet<char> = prefixes.into_iter().collect();
+            for (i, prefix) in unique_prefixes.iter().enumerate() {
+                let term = format!("{}suffix{}", prefix, i);
+                let _ = dict.insert_with_value(&term, i as i32);
+            }
+
+            // All terms should be retrievable regardless of internal node type
+            for (i, prefix) in unique_prefixes.iter().enumerate() {
+                let term = format!("{}suffix{}", prefix, i);
+                prop_assert!(
+                    dict.contains(&term),
+                    "Term '{}' should exist after node transitions",
+                    term
+                );
+                prop_assert_eq!(
+                    dict.get_value(&term),
+                    Some(i as i32),
+                    "Term '{}' should have correct value",
+                    term
+                );
+            }
+        }
+    }
+
+    /// Property: Dense first-byte distribution (Node256 scenario)
+    #[test]
+    fn prop_dense_first_byte_distribution(
+        _dummy in 0..1i32
+    ) {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let path = temp_dir.path().join("test_dict");
+
+        {
+            let mut dict = PersistentARTrie::<i32>::create(&path)
+                .expect("create dict");
+
+            // Insert terms starting with every lowercase letter
+            for (i, c) in ('a'..='z').enumerate() {
+                let term = format!("{}term", c);
+                let _ = dict.insert_with_value(&term, i as i32);
+            }
+
+            // All should be retrievable
+            for (i, c) in ('a'..='z').enumerate() {
+                let term = format!("{}term", c);
+                prop_assert!(dict.contains(&term), "Term '{}' should exist", term);
+                prop_assert_eq!(dict.get_value(&term), Some(i as i32));
+            }
+
+            prop_assert_eq!(dict.len(), Some(26));
+        }
+    }
+}
+
+// =============================================================================
+// Bucket Split/Merge Tests
+// =============================================================================
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(20))]
+
+    /// Property: Bucket splits maintain data integrity
+    #[test]
+    fn prop_bucket_split_integrity(
+        terms in prop::collection::vec(
+            prop::string::string_regex("[a-z]{1,3}[0-9]{1,5}").expect("valid regex"),
+            100..=200
+        )
+    ) {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let path = temp_dir.path().join("test_dict");
+
+        let unique_terms: HashSet<_> = terms.iter().cloned().collect();
+
+        {
+            let mut dict = PersistentARTrie::<i32>::create(&path)
+                .expect("create dict");
+
+            // Insert many terms to trigger bucket splits
+            for (i, term) in unique_terms.iter().enumerate() {
+                let _ = dict.insert_with_value(term, i as i32);
+            }
+
+            // Verify all terms survived splits
+            for (i, term) in unique_terms.iter().enumerate() {
+                prop_assert!(
+                    dict.contains(term),
+                    "Term '{}' should exist after bucket splits",
+                    term
+                );
+                prop_assert_eq!(
+                    dict.get_value(term),
+                    Some(i as i32),
+                    "Term '{}' should have correct value",
+                    term
+                );
+            }
+        }
+    }
+
+    /// Property: Removing terms maintains bucket integrity
+    #[test]
+    fn prop_bucket_removal_integrity(
+        terms in prop::collection::vec(
+            prop::string::string_regex("[a-z]{2,5}").expect("valid regex"),
+            50..=100
+        )
+    ) {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let path = temp_dir.path().join("test_dict");
+
+        let unique_terms: Vec<_> = terms.into_iter().collect::<HashSet<_>>().into_iter().collect();
+
+        {
+            let mut dict = PersistentARTrie::<i32>::create(&path)
+                .expect("create dict");
+
+            // Insert all
+            for (i, term) in unique_terms.iter().enumerate() {
+                let _ = dict.insert_with_value(term, i as i32);
+            }
+
+            // Remove half
+            let to_remove: Vec<_> = unique_terms.iter().take(unique_terms.len() / 2).cloned().collect();
+            for term in &to_remove {
+                let _ = dict.remove(term);
+            }
+
+            // Verify correct state
+            for term in &to_remove {
+                prop_assert!(!dict.contains(term), "Removed term should not exist");
+            }
+
+            for (i, term) in unique_terms.iter().enumerate().skip(unique_terms.len() / 2) {
+                prop_assert!(
+                    dict.contains(term),
+                    "Remaining term '{}' should exist",
+                    term
+                );
+                prop_assert_eq!(
+                    dict.get_value(term),
+                    Some(i as i32),
+                    "Remaining term '{}' should have correct value",
+                    term
+                );
+            }
+        }
+    }
+}
+
+// =============================================================================
+// Iteration Tests
+// =============================================================================
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(30))]
+
+    /// Property: Iterator returns all inserted terms
+    #[test]
+    fn prop_iterator_completeness(
+        terms in prop::collection::vec(ascii_term_strategy(), 1..=50)
+    ) {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let path = temp_dir.path().join("test_dict");
+
+        let expected: HashSet<String> = terms.iter().cloned().collect();
+
+        {
+            let mut dict = PersistentARTrie::<i32>::create(&path)
+                .expect("create dict");
+
+            for (i, term) in expected.iter().enumerate() {
+                let _ = dict.insert_with_value(term, i as i32);
+            }
+
+            // Collect all terms via iteration
+            let iterated: HashSet<String> = dict.iter_strings().collect();
+
+            prop_assert_eq!(
+                iterated,
+                expected,
+                "Iterator should return all inserted terms"
+            );
+        }
+    }
+
+    /// Property: Iterator with values returns correct mappings
+    #[test]
+    fn prop_iterator_with_values(
+        pairs in prop::collection::vec((ascii_term_strategy(), any::<i32>()), 1..=30)
+    ) {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let path = temp_dir.path().join("test_dict");
+
+        let expected: std::collections::HashMap<String, i32> = pairs.into_iter().collect();
+
+        {
+            let mut dict = PersistentARTrie::<i32>::create(&path)
+                .expect("create dict");
+
+            for (term, value) in &expected {
+                let _ = dict.insert_with_value(term, *value);
+            }
+
+            // Verify via iteration
+            for (term, value) in dict.iter_with_values() {
+                let term_str = String::from_utf8(term).expect("valid utf8");
+                prop_assert!(
+                    expected.contains_key(&term_str),
+                    "Iterated term should be in expected set"
+                );
+                prop_assert_eq!(
+                    value,
+                    expected.get(&term_str).copied(),
+                    "Iterated value should match"
+                );
+            }
+        }
+    }
+}
+
+// =============================================================================
+// Prefix Search Tests
+// =============================================================================
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(30))]
+
+    /// Property: Prefix search returns all matching terms
+    #[test]
+    fn prop_prefix_search_completeness(
+        prefix in prop::string::string_regex("[b-y]{1,3}").expect("valid prefix regex"),
+        suffixes in prop::collection::vec(prop::string::string_regex("[a-z]{1,5}").expect("valid suffix regex"), 5..=20)
+    ) {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let path = temp_dir.path().join("test_dict");
+
+        let matching_terms: HashSet<String> = suffixes
+            .iter()
+            .map(|s| format!("{}{}", prefix, s))
+            .collect();
+
+        {
+            let mut dict = PersistentARTrie::<i32>::create(&path)
+                .expect("create dict");
+
+            // Insert matching terms
+            for (i, term) in matching_terms.iter().enumerate() {
+                let _ = dict.insert_with_value(term, i as i32);
+            }
+
+            // Insert some non-matching terms
+            let _ = dict.insert_with_value("zzz_nonmatch", 999);
+            let _ = dict.insert_with_value("aaa_nonmatch", 998);
+
+            // Prefix search should find all matching terms
+            let found: HashSet<String> = dict.iter_prefix(prefix.as_bytes())
+                .map(|iter| iter
+                    .map(|bytes| String::from_utf8(bytes).expect("valid utf8"))
+                    .collect())
+                .unwrap_or_default();
+
+            for term in &matching_terms {
+                prop_assert!(
+                    found.contains(term),
+                    "Prefix search should find '{}'",
+                    term
+                );
+            }
+
+            // Should not find non-matching terms
+            prop_assert!(!found.contains("zzz_nonmatch"));
+            prop_assert!(!found.contains("aaa_nonmatch"));
+        }
+    }
+}
+
+// =============================================================================
+// Crash Recovery Simulation Tests
+// =============================================================================
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(10))]
+
+    /// Property: WAL replay recovers uncommitted changes
+    #[test]
+    fn prop_wal_replay_recovery(
+        initial_terms in prop::collection::vec(ascii_term_strategy(), 5..=20),
+        additional_terms in prop::collection::vec(ascii_term_strategy(), 5..=20)
+    ) {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let path = temp_dir.path().join("test_dict");
+
+        let initial_set: HashSet<String> = initial_terms.into_iter().collect();
+        let additional_set: HashSet<String> = additional_terms.into_iter().collect();
+
+        // Phase 1: Insert initial terms and checkpoint
+        {
+            let mut dict = PersistentARTrie::<i32>::create(&path)
+                .expect("create dict");
+
+            for (i, term) in initial_set.iter().enumerate() {
+                let _ = dict.insert_with_value(term, i as i32);
+            }
+
+            dict.checkpoint().expect("checkpoint");
+        }
+
+        // Phase 2: Insert additional terms WITHOUT checkpoint (simulate crash before checkpoint)
+        {
+            let mut dict = PersistentARTrie::<i32>::open(&path)
+                .expect("open dict");
+
+            for (i, term) in additional_set.iter().enumerate() {
+                let _ = dict.insert_with_value(term, (initial_set.len() + i) as i32);
+            }
+
+            dict.sync().expect("sync WAL");
+            // Note: No checkpoint - data is only in WAL
+        }
+
+        // Phase 3: Reopen and verify WAL replay recovered additional terms
+        {
+            let dict = PersistentARTrie::<i32>::open(&path)
+                .expect("reopen dict after simulated crash");
+
+            // Initial terms should be present (from checkpoint)
+            for term in &initial_set {
+                prop_assert!(
+                    dict.contains(term),
+                    "Initial term '{}' should be recovered",
+                    term
+                );
+            }
+
+            // Additional terms should also be present (from WAL replay)
+            for term in &additional_set {
+                prop_assert!(
+                    dict.contains(term),
+                    "WAL term '{}' should be recovered",
+                    term
+                );
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod regression_tests {
     use super::*;

@@ -43,8 +43,11 @@
 //! use libdictenstein::persistent_artrie::group_commit::{
 //!     GroupCommitConfig, GroupCommitCoordinator,
 //! };
+//! use libdictenstein::persistent_artrie::wal::{AsyncWalConfig, AsyncWalWriter, WalConfig};
 //!
-//! let wal = Arc::new(WalWriter::create("data.wal")?);
+//! let async_config = AsyncWalConfig::default();
+//! let archive_config = WalConfig::default();
+//! let wal = Arc::new(AsyncWalWriter::create("data.wal", async_config, archive_config)?);
 //! let config = GroupCommitConfig::default();
 //! let coordinator = GroupCommitCoordinator::new(wal, config)?;
 //!
@@ -67,7 +70,7 @@ use std::time::{Duration, Instant};
 use crossbeam_channel::{bounded, Receiver, Sender};
 use parking_lot::RwLock;
 
-use super::wal::{Lsn, WalRecord, WalWriter};
+use super::wal::{AsyncWalConfig, AsyncWalWriter, Lsn, WalConfig, WalRecord};
 use super::error::PersistentARTrieError;
 
 /// Result type for group commit operations.
@@ -355,7 +358,9 @@ impl AdaptiveController {
 /// # Example
 ///
 /// ```rust,ignore
-/// let wal = Arc::new(WalWriter::open(path)?);
+/// let async_config = AsyncWalConfig::default();
+/// let archive_config = WalConfig::default();
+/// let wal = Arc::new(AsyncWalWriter::open(path, async_config, archive_config)?);
 /// let config = GroupCommitConfig::default();
 /// let coordinator = GroupCommitCoordinator::new(wal, config)?;
 ///
@@ -363,8 +368,8 @@ impl AdaptiveController {
 /// let lsn = coordinator.append_with_sync(record)?;
 /// ```
 pub struct GroupCommitCoordinator {
-    /// The underlying WAL writer.
-    wal: Arc<RwLock<WalWriter>>,
+    /// The underlying async WAL writer.
+    wal: Arc<AsyncWalWriter>,
 
     /// Configuration (kept for potential future use).
     #[allow(dead_code)]
@@ -391,7 +396,7 @@ pub struct GroupCommitCoordinator {
 
 impl GroupCommitCoordinator {
     /// Create a new group commit coordinator.
-    pub fn new(wal: Arc<RwLock<WalWriter>>, config: GroupCommitConfig) -> Result<Self> {
+    pub fn new(wal: Arc<AsyncWalWriter>, config: GroupCommitConfig) -> Result<Self> {
         let (submit_tx, submit_rx) = bounded(config.max_batch_size * 4);
         let shutdown = Arc::new(AtomicBool::new(false));
         let synced_lsn = Arc::new(AtomicU64::new(0));
@@ -456,10 +461,7 @@ impl GroupCommitCoordinator {
         let serialized_size = record.serialized_size();
 
         // Allocate LSN
-        let lsn = {
-            let wal = self.wal.read();
-            wal.allocate_lsn()
-        };
+        let lsn = self.wal.allocate_lsn();
 
         // Create response channel
         let (response_tx, response_rx) = oneshot_channel();
@@ -500,10 +502,7 @@ impl GroupCommitCoordinator {
     ///
     /// The LSN assigned to this record.
     pub fn append_async(&self, record: WalRecord) -> Result<Lsn> {
-        let lsn = {
-            let wal = self.wal.read();
-            wal.allocate_lsn()
-        };
+        let lsn = self.wal.allocate_lsn();
 
         // Create a response channel but don't wait on it
         let (response_tx, _response_rx) = oneshot_channel();
@@ -533,10 +532,7 @@ impl GroupCommitCoordinator {
 
     /// Force an immediate sync of all pending records.
     pub fn flush(&self) {
-        let current_lsn = {
-            let wal = self.wal.read();
-            wal.current_lsn().saturating_sub(1)
-        };
+        let current_lsn = self.wal.current_lsn().saturating_sub(1);
         if current_lsn > 0 {
             self.wait_for_lsn(current_lsn);
         }
@@ -555,7 +551,7 @@ impl GroupCommitCoordinator {
     /// The background commit loop.
     fn commit_loop(
         submit_rx: Receiver<PendingWrite>,
-        wal: Arc<RwLock<WalWriter>>,
+        wal: Arc<AsyncWalWriter>,
         shutdown: Arc<AtomicBool>,
         synced_lsn: Arc<AtomicU64>,
         stats: Arc<RwLock<GroupCommitStats>>,
@@ -633,7 +629,7 @@ impl GroupCommitCoordinator {
     /// Flush a batch of pending writes.
     fn flush_batch(
         batch: &mut Vec<PendingWrite>,
-        wal: &Arc<RwLock<WalWriter>>,
+        wal: &Arc<AsyncWalWriter>,
         synced_lsn: &Arc<AtomicU64>,
         stats: &Arc<RwLock<GroupCommitStats>>,
     ) {
@@ -645,18 +641,18 @@ impl GroupCommitCoordinator {
         let mut max_lsn: Lsn = 0;
         let mut total_bytes: usize = 0;
 
-        // Write all records to WAL (under write lock)
+        // Write all records to WAL (AsyncWalWriter handles internal synchronization)
         let write_result: std::result::Result<(), PersistentARTrieError> = (|| {
-            let wal_guard = wal.write();
-
             for pending in batch.iter() {
-                wal_guard.append(pending.record.clone())?;
+                wal.append(pending.record.clone())
+                    .map_err(|e| PersistentARTrieError::Wal(format!("{}", e)))?;
                 max_lsn = max_lsn.max(pending.lsn);
                 total_bytes += pending.serialized_size;
             }
 
             // Single fsync for entire batch
-            wal_guard.sync()?;
+            wal.sync()
+                .map_err(|e| PersistentARTrieError::Wal(format!("{}", e)))?;
             Ok(())
         })();
 
@@ -816,8 +812,14 @@ mod tests {
         let dir = tempdir().expect("create temp dir");
         let wal_path = dir.path().join("test.wal");
 
-        let wal = WalWriter::create(&wal_path).expect("create WAL");
-        let wal = Arc::new(RwLock::new(wal));
+        let async_config = AsyncWalConfig::with_pending_dir(dir.path().join("pending"));
+        let archive_config = WalConfig {
+            archive_dir: dir.path().join("archive"),
+            ..Default::default()
+        };
+        let wal = AsyncWalWriter::create(&wal_path, async_config, archive_config)
+            .expect("create WAL");
+        let wal = Arc::new(wal);
 
         let config = GroupCommitConfig {
             max_batch_size: 10,
@@ -853,8 +855,14 @@ mod tests {
         let dir = tempdir().expect("create temp dir");
         let wal_path = dir.path().join("test.wal");
 
-        let wal = WalWriter::create(&wal_path).expect("create WAL");
-        let wal = Arc::new(RwLock::new(wal));
+        let async_config = AsyncWalConfig::with_pending_dir(dir.path().join("pending"));
+        let archive_config = WalConfig {
+            archive_dir: dir.path().join("archive"),
+            ..Default::default()
+        };
+        let wal = AsyncWalWriter::create(&wal_path, async_config, archive_config)
+            .expect("create WAL");
+        let wal = Arc::new(wal);
 
         let config = GroupCommitConfig {
             max_batch_size: 100,

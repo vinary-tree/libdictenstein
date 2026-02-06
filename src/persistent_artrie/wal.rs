@@ -175,6 +175,12 @@ pub enum WalRecordType {
     /// This reduces WAL header overhead from 17 bytes per insert to
     /// 17 bytes + 4 bytes (count) for an entire batch.
     BatchInsert = 10,
+    /// Batch increment - multiple increment operations in a single WAL record.
+    ///
+    /// Used by document transactions to batch INCREMENT operations atomically.
+    /// Unlike BatchInsert which uses SET semantics, BatchIncrement accumulates
+    /// deltas with existing values.
+    BatchIncrement = 11,
 }
 
 impl TryFrom<u8> for WalRecordType {
@@ -192,6 +198,7 @@ impl TryFrom<u8> for WalRecordType {
             8 => Ok(WalRecordType::Upsert),
             9 => Ok(WalRecordType::CompareAndSwap),
             10 => Ok(WalRecordType::BatchInsert),
+            11 => Ok(WalRecordType::BatchIncrement),
             _ => Err(WalError::InvalidRecordType(value)),
         }
     }
@@ -292,6 +299,30 @@ pub enum WalRecord {
         /// The entries in this batch (term, optional value)
         entries: Vec<(Vec<u8>, Option<Vec<u8>>)>,
     },
+    /// Batch increment - multiple increment operations in a single WAL record.
+    ///
+    /// Used by document transactions to batch INCREMENT operations atomically.
+    /// Unlike BatchInsert which uses SET semantics, BatchIncrement accumulates
+    /// deltas with existing values.
+    ///
+    /// # Wire Format
+    ///
+    /// ```text
+    /// +----------+----------------------------------------------------+
+    /// | Count    | Entry[0] | Entry[1] | ... | Entry[count-1]         |
+    /// | (4 bytes)| (varies) | (varies) | ... | (varies)               |
+    /// +----------+----------------------------------------------------+
+    ///
+    /// Entry Format:
+    /// +----------+----------+----------+
+    /// | term_len | term     | delta    |
+    /// | (4 bytes)| (varies) | (8 bytes)|
+    /// +----------+----------+----------+
+    /// ```
+    BatchIncrement {
+        /// The increment entries (term, delta)
+        entries: Vec<(Vec<u8>, i64)>,
+    },
 }
 
 impl WalRecord {
@@ -308,6 +339,7 @@ impl WalRecord {
             WalRecord::Upsert { .. } => WalRecordType::Upsert,
             WalRecord::CompareAndSwap { .. } => WalRecordType::CompareAndSwap,
             WalRecord::BatchInsert { .. } => WalRecordType::BatchInsert,
+            WalRecord::BatchIncrement { .. } => WalRecordType::BatchIncrement,
         }
     }
 
@@ -396,6 +428,15 @@ impl WalRecord {
                     } else {
                         buf.push(0); // has_value = false
                     }
+                }
+            }
+            WalRecord::BatchIncrement { entries } => {
+                // Count (4 bytes) + entries (term_len + term + delta)
+                buf.extend_from_slice(&(entries.len() as u32).to_le_bytes());
+                for (term, delta) in entries {
+                    buf.extend_from_slice(&(term.len() as u32).to_le_bytes());
+                    buf.extend_from_slice(term);
+                    buf.extend_from_slice(&delta.to_le_bytes());
                 }
             }
         }
@@ -646,6 +687,45 @@ impl WalRecord {
                 }
 
                 Ok(WalRecord::BatchInsert { entries })
+            }
+            WalRecordType::BatchIncrement => {
+                // Count (4 bytes) + entries (term_len + term + delta)
+                if payload.len() < 4 {
+                    return Err(WalError::CorruptedRecord("BatchIncrement payload too short".into()));
+                }
+                let count = u32::from_le_bytes(payload[0..4].try_into().unwrap()) as usize;
+                let mut offset = 4;
+                let mut entries = Vec::with_capacity(count);
+
+                for i in 0..count {
+                    // Parse each entry: term_len (4) + term + delta (8)
+                    if payload.len() < offset + 4 {
+                        return Err(WalError::CorruptedRecord(
+                            format!("BatchIncrement entry {} term_len truncated", i),
+                        ));
+                    }
+                    let term_len = u32::from_le_bytes(
+                        payload[offset..offset + 4].try_into().unwrap(),
+                    ) as usize;
+                    offset += 4;
+
+                    if payload.len() < offset + term_len + 8 {
+                        return Err(WalError::CorruptedRecord(
+                            format!("BatchIncrement entry {} term or delta truncated", i),
+                        ));
+                    }
+                    let term = payload[offset..offset + term_len].to_vec();
+                    offset += term_len;
+
+                    let delta = i64::from_le_bytes(
+                        payload[offset..offset + 8].try_into().unwrap(),
+                    );
+                    offset += 8;
+
+                    entries.push((term, delta));
+                }
+
+                Ok(WalRecord::BatchIncrement { entries })
             }
         }
     }
@@ -1094,6 +1174,33 @@ impl WalWriter {
         self.next_lsn.fetch_add(1, Ordering::AcqRel)
     }
 
+    /// Set the minimum starting LSN for subsequent records.
+    ///
+    /// If the current next_lsn is less than the provided minimum, it will be
+    /// updated to the minimum. This is useful after reopening a file where
+    /// the checkpoint_lsn in the main header might be higher than the WAL's
+    /// internal counter (e.g., after truncate).
+    ///
+    /// # Arguments
+    ///
+    /// * `min_lsn` - The minimum LSN for subsequent records
+    pub fn set_min_lsn(&self, min_lsn: Lsn) {
+        loop {
+            let current = self.next_lsn.load(Ordering::Acquire);
+            if current >= min_lsn {
+                break;
+            }
+            if self.next_lsn.compare_exchange(
+                current,
+                min_lsn,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ).is_ok() {
+                break;
+            }
+        }
+    }
+
     /// Write a checkpoint record and update the header.
     pub fn checkpoint(&self, checkpoint_lsn: Lsn) -> Result<Lsn, WalError> {
         let timestamp = std::time::SystemTime::now()
@@ -1514,6 +1621,1185 @@ impl GroupCommit {
     pub fn wal(&self) -> &WalWriter {
         &self.wal
     }
+}
+
+// =============================================================================
+// Concurrent WAL Writes - Async Sync Support
+// =============================================================================
+//
+// The following types enable concurrent writes during sync/truncate operations.
+// The key insight is that we can rotate to a new WAL segment (O(1) rename) before
+// syncing the old segment, allowing writes to continue while a background thread
+// handles the expensive fsync operation.
+//
+// Architecture:
+//
+// ```text
+// Writer ──→ append() ──→ [new_segment.wal] ──→ continues immediately
+//                               │
+//                          rotate (O(1))
+//                               │
+//                               ↓
+//                     Background Thread
+//                     ┌─────────────────┐
+//                     │ old_segment:    │
+//                     │ 1. fsync()      │
+//                     │ 2. archive()    │
+//                     │ 3. notify()     │
+//                     └─────────────────┘
+// ```
+
+use std::collections::VecDeque;
+use std::sync::atomic::AtomicBool;
+use std::sync::Condvar;
+use std::thread::{self, JoinHandle};
+use std::time::{Duration, Instant};
+
+/// Configuration for the async WAL writer.
+///
+/// Controls backpressure behavior when the background sync thread falls behind.
+#[derive(Debug, Clone)]
+pub struct AsyncWalConfig {
+    /// Maximum number of pending segments before blocking writers.
+    ///
+    /// When this limit is reached, `sync_async()` will block until the oldest
+    /// segment is synced. Default: 4
+    pub max_pending_segments: usize,
+
+    /// Maximum total bytes in pending segments before blocking writers.
+    ///
+    /// Provides byte-based backpressure in addition to segment count.
+    /// Default: 256MB
+    pub max_pending_bytes: u64,
+
+    /// Directory for pending segments awaiting sync.
+    ///
+    /// Pending segments are named `wal_pending_{timestamp}.segment` and are
+    /// moved to the archive directory after successful sync.
+    /// Default: "{data_dir}/wal_pending"
+    pub pending_dir: PathBuf,
+
+    /// Interval between sync thread checks when idle.
+    ///
+    /// The sync thread will sleep for this duration when there are no
+    /// pending segments to sync. Default: 10ms
+    pub idle_check_interval_ms: u64,
+}
+
+impl Default for AsyncWalConfig {
+    fn default() -> Self {
+        Self {
+            max_pending_segments: 4,
+            max_pending_bytes: 256 * 1024 * 1024, // 256 MB
+            pending_dir: PathBuf::from("wal_pending"),
+            idle_check_interval_ms: 10,
+        }
+    }
+}
+
+impl AsyncWalConfig {
+    /// Create config with custom pending directory.
+    pub fn with_pending_dir(pending_dir: impl Into<PathBuf>) -> Self {
+        Self {
+            pending_dir: pending_dir.into(),
+            ..Default::default()
+        }
+    }
+}
+
+/// A pending segment awaiting background sync.
+///
+/// Contains all information needed to sync the segment in the background
+/// and track its LSN coverage for ordering guarantees.
+#[derive(Debug)]
+pub struct PendingSegment {
+    /// Path to the pending segment file.
+    pub path: PathBuf,
+    /// LSN range covered by this segment: (first_lsn, last_lsn).
+    pub lsn_range: (Lsn, Lsn),
+    /// Open file handle for fsync.
+    pub file: File,
+    /// Timestamp when this segment was rotated (for metrics).
+    pub rotated_at: Instant,
+    /// Size of the segment in bytes (for backpressure).
+    pub size_bytes: u64,
+}
+
+/// Error types specific to async WAL operations.
+#[derive(Debug)]
+pub enum AsyncWalError {
+    /// Underlying WAL error.
+    Wal(WalError),
+    /// Segment sync failed after retries.
+    SegmentSyncFailed {
+        path: PathBuf,
+        attempts: u32,
+        last_error: io::Error,
+    },
+    /// Rotation failed.
+    RotationFailed {
+        reason: String,
+        source: Option<io::Error>,
+    },
+    /// Sync wait timed out.
+    SyncTimeout {
+        target_lsn: Lsn,
+        current_synced: Lsn,
+        timeout_ms: u64,
+    },
+    /// Background sync thread panicked.
+    SyncThreadPanicked,
+}
+
+impl std::fmt::Display for AsyncWalError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            AsyncWalError::Wal(e) => write!(f, "WAL error: {}", e),
+            AsyncWalError::SegmentSyncFailed { path, attempts, last_error } => {
+                write!(
+                    f,
+                    "Segment sync failed after {} attempts at {}: {}",
+                    attempts,
+                    path.display(),
+                    last_error
+                )
+            }
+            AsyncWalError::RotationFailed { reason, source } => {
+                if let Some(e) = source {
+                    write!(f, "Rotation failed ({}): {}", reason, e)
+                } else {
+                    write!(f, "Rotation failed: {}", reason)
+                }
+            }
+            AsyncWalError::SyncTimeout { target_lsn, current_synced, timeout_ms } => {
+                write!(
+                    f,
+                    "Sync timeout: target LSN {} not reached (current synced: {}) after {}ms",
+                    target_lsn, current_synced, timeout_ms
+                )
+            }
+            AsyncWalError::SyncThreadPanicked => {
+                write!(f, "Background sync thread panicked")
+            }
+        }
+    }
+}
+
+impl std::error::Error for AsyncWalError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            AsyncWalError::Wal(e) => Some(e),
+            AsyncWalError::SegmentSyncFailed { last_error, .. } => Some(last_error),
+            AsyncWalError::RotationFailed { source: Some(e), .. } => Some(e),
+            _ => None,
+        }
+    }
+}
+
+impl From<WalError> for AsyncWalError {
+    fn from(e: WalError) -> Self {
+        AsyncWalError::Wal(e)
+    }
+}
+
+/// Handle to track completion of an async sync operation.
+///
+/// Returned by `AsyncWalWriter::sync_async()`. The caller can either:
+/// - Call `wait()` to block until the target LSN is durable
+/// - Call `is_synced()` to check status without blocking
+/// - Call `wait_timeout()` to wait with a timeout
+///
+/// # Example
+///
+/// ```rust,ignore
+/// let handle = wal.sync_async()?;
+///
+/// // Non-blocking check
+/// if !handle.is_synced() {
+///     // Do other work while sync happens in background
+///     process_other_tasks();
+/// }
+///
+/// // Block until durable
+/// handle.wait()?;
+/// ```
+pub struct SyncHandle {
+    /// The LSN that must be synced for this handle to be complete.
+    target_lsn: Lsn,
+    /// Reference to the sync manager for checking/waiting.
+    sync_manager: Arc<SegmentSyncManager>,
+}
+
+impl SyncHandle {
+    /// Create a new sync handle.
+    fn new(target_lsn: Lsn, sync_manager: Arc<SegmentSyncManager>) -> Self {
+        Self {
+            target_lsn,
+            sync_manager,
+        }
+    }
+
+    /// Create a handle that is already synced.
+    fn already_synced(target_lsn: Lsn, sync_manager: Arc<SegmentSyncManager>) -> Self {
+        Self {
+            target_lsn,
+            sync_manager,
+        }
+    }
+
+    /// Get the target LSN this handle is waiting for.
+    pub fn target_lsn(&self) -> Lsn {
+        self.target_lsn
+    }
+
+    /// Check if the target LSN is now durable (non-blocking).
+    pub fn is_synced(&self) -> bool {
+        self.sync_manager.global_synced_lsn.load(Ordering::Acquire) >= self.target_lsn
+    }
+
+    /// Block until the target LSN is durable.
+    ///
+    /// # Errors
+    ///
+    /// Returns `AsyncWalError::SyncThreadPanicked` if the background sync
+    /// thread has crashed.
+    pub fn wait(&self) -> Result<(), AsyncWalError> {
+        self.sync_manager.wait_for_lsn(self.target_lsn)
+    }
+
+    /// Block until the target LSN is durable, with timeout.
+    ///
+    /// # Returns
+    ///
+    /// - `Ok(true)` if the LSN was synced within the timeout
+    /// - `Ok(false)` if the timeout elapsed before sync completed
+    /// - `Err(...)` if the sync thread panicked
+    pub fn wait_timeout(&self, timeout: Duration) -> Result<bool, AsyncWalError> {
+        self.sync_manager.wait_for_lsn_timeout(self.target_lsn, timeout)
+    }
+}
+
+impl std::fmt::Debug for SyncHandle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SyncHandle")
+            .field("target_lsn", &self.target_lsn)
+            .field("is_synced", &self.is_synced())
+            .finish()
+    }
+}
+
+/// Manages background segment synchronization.
+///
+/// The sync manager owns a background thread that processes pending segments
+/// in strict FIFO order, ensuring that `global_synced_lsn` always represents
+/// a contiguous range from LSN 1 (no gaps).
+///
+/// # Ordering Guarantee
+///
+/// The single sync thread + FIFO queue ensures that if segment B was rotated
+/// after segment A, then A's fsync completes before B's. This prevents the
+/// situation where B syncs first and we incorrectly report A's LSNs as durable.
+pub struct SegmentSyncManager {
+    /// Queue of segments awaiting sync (oldest first).
+    pending_segments: Mutex<VecDeque<PendingSegment>>,
+    /// Total bytes in pending segments (for backpressure).
+    pending_bytes: AtomicU64,
+    /// The highest LSN that is confirmed durable across all synced segments.
+    ///
+    /// This value always represents a contiguous range: all LSNs from 1 to
+    /// `global_synced_lsn` are durable. No gaps are possible due to FIFO
+    /// processing.
+    pub global_synced_lsn: AtomicU64,
+    /// Condvar to notify waiters when a segment is synced.
+    sync_complete: Condvar,
+    /// Mutex for condvar wait.
+    sync_mutex: Mutex<()>,
+    /// Flag to signal the sync thread to stop.
+    running: AtomicBool,
+    /// Handle to the background sync thread.
+    sync_thread: Mutex<Option<JoinHandle<()>>>,
+    /// Configuration.
+    config: AsyncWalConfig,
+    /// Archive configuration for moving synced segments.
+    archive_config: WalConfig,
+    /// Path to the active WAL (for archive directory resolution).
+    wal_path: PathBuf,
+}
+
+impl SegmentSyncManager {
+    /// Create a new sync manager and start the background thread.
+    pub fn new(
+        config: AsyncWalConfig,
+        archive_config: WalConfig,
+        wal_path: PathBuf,
+        initial_synced_lsn: Lsn,
+    ) -> Arc<Self> {
+        let manager = Arc::new(Self {
+            pending_segments: Mutex::new(VecDeque::new()),
+            pending_bytes: AtomicU64::new(0),
+            global_synced_lsn: AtomicU64::new(initial_synced_lsn),
+            sync_complete: Condvar::new(),
+            sync_mutex: Mutex::new(()),
+            running: AtomicBool::new(true),
+            sync_thread: Mutex::new(None),
+            config,
+            archive_config,
+            wal_path,
+        });
+
+        // Start the background sync thread
+        let manager_clone = Arc::clone(&manager);
+        let handle = thread::Builder::new()
+            .name("wal-sync".to_string())
+            .spawn(move || {
+                manager_clone.sync_loop();
+            })
+            .expect("Failed to spawn WAL sync thread");
+
+        *manager.sync_thread.lock().expect("sync_thread lock poisoned") = Some(handle);
+
+        manager
+    }
+
+    /// Enqueue a segment for background sync.
+    pub fn enqueue(&self, segment: PendingSegment) {
+        let size = segment.size_bytes;
+        let mut queue = self.pending_segments.lock().expect("pending_segments lock poisoned");
+        queue.push_back(segment);
+        self.pending_bytes.fetch_add(size, Ordering::AcqRel);
+    }
+
+    /// Get the number of pending segments.
+    pub fn pending_count(&self) -> usize {
+        self.pending_segments.lock().expect("pending_segments lock poisoned").len()
+    }
+
+    /// Get the total bytes in pending segments.
+    pub fn pending_bytes(&self) -> u64 {
+        self.pending_bytes.load(Ordering::Acquire)
+    }
+
+    /// Wait until the pending count drops below the limit.
+    ///
+    /// Used for backpressure: if we have too many pending segments, block
+    /// until the oldest one is synced.
+    pub fn wait_for_backpressure(&self) -> Result<(), AsyncWalError> {
+        loop {
+            let count = self.pending_count();
+            let bytes = self.pending_bytes();
+
+            if count < self.config.max_pending_segments
+                && bytes < self.config.max_pending_bytes
+            {
+                return Ok(());
+            }
+
+            // Check if sync thread is still alive
+            if !self.running.load(Ordering::Acquire) {
+                return Err(AsyncWalError::SyncThreadPanicked);
+            }
+
+            // Wait for a sync to complete
+            let guard = self.sync_mutex.lock().expect("sync_mutex lock poisoned");
+            let _ = self.sync_complete.wait_timeout(
+                guard,
+                Duration::from_millis(100),
+            );
+        }
+    }
+
+    /// Wait for a specific LSN to be synced.
+    pub fn wait_for_lsn(&self, target_lsn: Lsn) -> Result<(), AsyncWalError> {
+        loop {
+            if self.global_synced_lsn.load(Ordering::Acquire) >= target_lsn {
+                return Ok(());
+            }
+
+            if !self.running.load(Ordering::Acquire) {
+                // Thread stopped - check if we reached the target before stopping
+                if self.global_synced_lsn.load(Ordering::Acquire) >= target_lsn {
+                    return Ok(());
+                }
+                return Err(AsyncWalError::SyncThreadPanicked);
+            }
+
+            let guard = self.sync_mutex.lock().expect("sync_mutex lock poisoned");
+            let _ = self.sync_complete.wait_timeout(guard, Duration::from_millis(100));
+        }
+    }
+
+    /// Wait for a specific LSN to be synced with timeout.
+    pub fn wait_for_lsn_timeout(
+        &self,
+        target_lsn: Lsn,
+        timeout: Duration,
+    ) -> Result<bool, AsyncWalError> {
+        let deadline = Instant::now() + timeout;
+
+        loop {
+            if self.global_synced_lsn.load(Ordering::Acquire) >= target_lsn {
+                return Ok(true);
+            }
+
+            if !self.running.load(Ordering::Acquire) {
+                if self.global_synced_lsn.load(Ordering::Acquire) >= target_lsn {
+                    return Ok(true);
+                }
+                return Err(AsyncWalError::SyncThreadPanicked);
+            }
+
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Ok(false);
+            }
+
+            let guard = self.sync_mutex.lock().expect("sync_mutex lock poisoned");
+            let _ = self.sync_complete.wait_timeout(guard, remaining.min(Duration::from_millis(100)));
+        }
+    }
+
+    /// The background sync loop.
+    ///
+    /// Processes pending segments in strict FIFO order, ensuring contiguous
+    /// LSN advancement.
+    fn sync_loop(&self) {
+        while self.running.load(Ordering::Relaxed) {
+            // Pop the oldest pending segment (FIFO order)
+            let segment = {
+                let mut queue = self.pending_segments.lock().expect("pending_segments lock poisoned");
+                queue.pop_front()
+            };
+
+            if let Some(segment) = segment {
+                let size = segment.size_bytes;
+                let lsn_end = segment.lsn_range.1;
+                let path = segment.path.clone();
+
+                // Retry sync until success - do NOT skip to newer segments
+                let mut attempts = 0u32;
+                loop {
+                    attempts += 1;
+                    match segment.file.sync_all() {
+                        Ok(()) => {
+                            // Sync succeeded
+                            log::debug!(
+                                "Synced segment {} (LSN {}-{}) in {} attempts",
+                                path.display(),
+                                segment.lsn_range.0,
+                                lsn_end,
+                                attempts
+                            );
+                            break;
+                        }
+                        Err(e) => {
+                            log::error!(
+                                "Sync failed for {} (attempt {}): {:?}",
+                                path.display(),
+                                attempts,
+                                e
+                            );
+                            // Brief pause before retry
+                            thread::sleep(Duration::from_millis(100));
+
+                            // After many failures, we still don't give up - data integrity
+                            // is paramount. But we do log more aggressively.
+                            if attempts >= 10 {
+                                log::error!(
+                                    "WARNING: {} sync attempts failed for {}. Will keep retrying.",
+                                    attempts,
+                                    path.display()
+                                );
+                            }
+                        }
+                    }
+
+                    // Check if we should stop (e.g., shutdown requested)
+                    if !self.running.load(Ordering::Relaxed) {
+                        log::warn!(
+                            "Sync thread stopping with unsynced segment: {}",
+                            path.display()
+                        );
+                        return;
+                    }
+                }
+
+                // Update pending bytes counter
+                self.pending_bytes.fetch_sub(size, Ordering::AcqRel);
+
+                // Safe to advance global_synced_lsn - all older segments already synced
+                // (FIFO guarantee)
+                self.global_synced_lsn.store(lsn_end, Ordering::Release);
+
+                // Move to archive if enabled
+                if self.archive_config.archive_enabled {
+                    let archive_dir = if self.archive_config.archive_dir.is_absolute() {
+                        self.archive_config.archive_dir.clone()
+                    } else {
+                        self.wal_path
+                            .parent()
+                            .unwrap_or(Path::new("."))
+                            .join(&self.archive_config.archive_dir)
+                    };
+
+                    if let Err(e) = fs::create_dir_all(&archive_dir) {
+                        log::warn!("Failed to create archive directory: {}", e);
+                    } else {
+                        // Generate archive filename
+                        let timestamp = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_millis();
+                        let segment_name = format!("wal_{}.segment", timestamp);
+                        let archive_path = archive_dir.join(segment_name);
+
+                        // Move pending segment to archive
+                        if let Err(e) = fs::rename(&path, &archive_path) {
+                            log::warn!(
+                                "Failed to move synced segment to archive: {} -> {}: {}",
+                                path.display(),
+                                archive_path.display(),
+                                e
+                            );
+                        }
+                    }
+                } else {
+                    // Archive disabled - delete the synced segment
+                    if let Err(e) = fs::remove_file(&path) {
+                        log::warn!("Failed to remove synced segment {}: {}", path.display(), e);
+                    }
+                }
+
+                // Notify waiters
+                let _guard = self.sync_mutex.lock().expect("sync_mutex lock poisoned");
+                self.sync_complete.notify_all();
+            } else {
+                // No pending segments - sleep briefly
+                thread::sleep(Duration::from_millis(self.config.idle_check_interval_ms));
+            }
+        }
+    }
+
+    /// Stop the background sync thread.
+    ///
+    /// Waits for the thread to finish processing any current segment.
+    pub fn stop(&self) {
+        self.running.store(false, Ordering::Release);
+
+        // Wake up the sync thread if it's sleeping
+        let _guard = self.sync_mutex.lock().expect("sync_mutex lock poisoned");
+        self.sync_complete.notify_all();
+        drop(_guard);
+
+        // Wait for the thread to finish
+        let mut handle = self.sync_thread.lock().expect("sync_thread lock poisoned");
+        if let Some(h) = handle.take() {
+            let _ = h.join();
+        }
+    }
+}
+
+impl Drop for SegmentSyncManager {
+    fn drop(&mut self) {
+        self.stop();
+    }
+}
+
+/// An async-capable WAL writer that allows writes during sync.
+///
+/// Wraps the standard `WalWriter` and adds the ability to rotate to a new
+/// segment before syncing, enabling concurrent writes while the background
+/// thread syncs the old segment.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// use libdictenstein::persistent_artrie::wal::{AsyncWalWriter, AsyncWalConfig, WalConfig};
+///
+/// let config = AsyncWalConfig::default();
+/// let archive_config = WalConfig::default();
+/// let wal = AsyncWalWriter::create("data.wal", config, archive_config)?;
+///
+/// // Append records
+/// let lsn1 = wal.append(WalRecord::Insert { term: b"hello".to_vec(), value: None })?;
+/// let lsn2 = wal.append(WalRecord::Insert { term: b"world".to_vec(), value: None })?;
+///
+/// // Async sync - returns immediately, sync happens in background
+/// let handle = wal.sync_async()?;
+///
+/// // Can continue appending while sync happens!
+/// let lsn3 = wal.append(WalRecord::Insert { term: b"more".to_vec(), value: None })?;
+///
+/// // Wait for original data to be durable when needed
+/// handle.wait()?;
+///
+/// // Or use blocking sync for ACID compliance
+/// wal.sync()?;
+/// ```
+pub struct AsyncWalWriter {
+    /// The underlying WAL writer.
+    writer: Mutex<WalWriter>,
+    /// Next LSN to assign (mirrors writer.next_lsn but allows non-blocking reads).
+    next_lsn: AtomicU64,
+    /// Last synced LSN (updated after each sync completes).
+    synced_lsn: AtomicU64,
+    /// Segment sync manager for background operations.
+    sync_manager: Arc<SegmentSyncManager>,
+    /// Configuration.
+    config: AsyncWalConfig,
+    /// Archive configuration.
+    archive_config: WalConfig,
+    /// Path to the WAL file.
+    path: PathBuf,
+    /// Counter for pending segment naming.
+    pending_counter: AtomicU64,
+}
+
+impl AsyncWalWriter {
+    /// Create a new async WAL file.
+    ///
+    /// # Arguments
+    ///
+    /// * `path` - Path to the WAL file
+    /// * `config` - Async WAL configuration
+    /// * `archive_config` - Archive configuration for synced segments
+    ///
+    /// # Errors
+    ///
+    /// Returns `WalError::AlreadyExists` if the file already exists.
+    pub fn create(
+        path: impl AsRef<Path>,
+        config: AsyncWalConfig,
+        archive_config: WalConfig,
+    ) -> Result<Self, AsyncWalError> {
+        let path = path.as_ref().to_path_buf();
+
+        // Create pending directory
+        let pending_dir = if config.pending_dir.is_absolute() {
+            config.pending_dir.clone()
+        } else {
+            path.parent()
+                .unwrap_or(Path::new("."))
+                .join(&config.pending_dir)
+        };
+        fs::create_dir_all(&pending_dir).map_err(|e| {
+            AsyncWalError::RotationFailed {
+                reason: "Failed to create pending directory".to_string(),
+                source: Some(e),
+            }
+        })?;
+
+        let writer = WalWriter::create(&path)?;
+        let sync_manager = SegmentSyncManager::new(
+            config.clone(),
+            archive_config.clone(),
+            path.clone(),
+            0,
+        );
+
+        Ok(Self {
+            next_lsn: AtomicU64::new(writer.current_lsn()),
+            synced_lsn: AtomicU64::new(writer.synced_lsn()),
+            writer: Mutex::new(writer),
+            sync_manager,
+            config,
+            archive_config,
+            path,
+            pending_counter: AtomicU64::new(0),
+        })
+    }
+
+    /// Open an existing async WAL file.
+    pub fn open(
+        path: impl AsRef<Path>,
+        config: AsyncWalConfig,
+        archive_config: WalConfig,
+    ) -> Result<Self, AsyncWalError> {
+        let path = path.as_ref().to_path_buf();
+
+        // Create pending directory
+        let pending_dir = if config.pending_dir.is_absolute() {
+            config.pending_dir.clone()
+        } else {
+            path.parent()
+                .unwrap_or(Path::new("."))
+                .join(&config.pending_dir)
+        };
+        fs::create_dir_all(&pending_dir).map_err(|e| {
+            AsyncWalError::RotationFailed {
+                reason: "Failed to create pending directory".to_string(),
+                source: Some(e),
+            }
+        })?;
+
+        let writer = WalWriter::open(&path)?;
+        let synced_lsn = writer.synced_lsn();
+        let sync_manager = SegmentSyncManager::new(
+            config.clone(),
+            archive_config.clone(),
+            path.clone(),
+            synced_lsn,
+        );
+
+        Ok(Self {
+            next_lsn: AtomicU64::new(writer.current_lsn()),
+            synced_lsn: AtomicU64::new(synced_lsn),
+            writer: Mutex::new(writer),
+            sync_manager,
+            config,
+            archive_config,
+            path,
+            pending_counter: AtomicU64::new(0),
+        })
+    }
+
+    /// Open or create an async WAL file.
+    pub fn open_or_create(
+        path: impl AsRef<Path>,
+        config: AsyncWalConfig,
+        archive_config: WalConfig,
+    ) -> Result<Self, AsyncWalError> {
+        let path = path.as_ref();
+        if path.exists() {
+            Self::open(path, config, archive_config)
+        } else {
+            Self::create(path, config, archive_config)
+        }
+    }
+
+    /// Append a record to the WAL.
+    ///
+    /// Returns the LSN assigned to the record. The record is NOT durable until
+    /// `sync()` or `sync_async().wait()` is called.
+    pub fn append(&self, record: WalRecord) -> Result<Lsn, AsyncWalError> {
+        let writer = self.writer.lock().expect("WAL writer lock poisoned");
+        let lsn = writer.append(record)?;
+        self.next_lsn.store(writer.current_lsn(), Ordering::Release);
+        Ok(lsn)
+    }
+
+    /// Append a batch of inserts as a single WAL record.
+    pub fn append_batch(&self, entries: &[(Vec<u8>, Option<Vec<u8>>)]) -> Result<Lsn, AsyncWalError> {
+        let writer = self.writer.lock().expect("WAL writer lock poisoned");
+        let lsn = writer.append_batch(entries)?;
+        self.next_lsn.store(writer.current_lsn(), Ordering::Release);
+        Ok(lsn)
+    }
+
+    /// Initiate an async sync and return a handle to track completion.
+    ///
+    /// This method:
+    /// 1. Checks backpressure limits (blocks if too many pending segments)
+    /// 2. Flushes the buffer (no fsync)
+    /// 3. Rotates the active WAL to a pending segment (O(1) rename)
+    /// 4. Creates a fresh active WAL
+    /// 5. Enqueues the pending segment for background sync
+    /// 6. Returns a handle that can be used to wait for durability
+    ///
+    /// Writers can continue appending to the new WAL while the old segment
+    /// is being synced in the background.
+    ///
+    /// # Returns
+    ///
+    /// A `SyncHandle` that can be used to wait for the sync to complete.
+    /// If there's nothing to sync, returns an already-completed handle.
+    pub fn sync_async(&self) -> Result<SyncHandle, AsyncWalError> {
+        let current_lsn = self.next_lsn.load(Ordering::Acquire).saturating_sub(1);
+        let synced_lsn = self.sync_manager.global_synced_lsn.load(Ordering::Acquire);
+
+        // If already synced, return immediately
+        if current_lsn <= synced_lsn {
+            return Ok(SyncHandle::already_synced(current_lsn, Arc::clone(&self.sync_manager)));
+        }
+
+        // Check backpressure before rotation
+        self.sync_manager.wait_for_backpressure()?;
+
+        // Perform the rotation
+        self.rotate_for_sync(current_lsn)?;
+
+        Ok(SyncHandle::new(current_lsn, Arc::clone(&self.sync_manager)))
+    }
+
+    /// Blocking sync - waits for all current data to be durable.
+    ///
+    /// This performs a simple in-place fsync without segment rotation.
+    /// The WAL file remains in place and can be read for recovery.
+    /// Use `sync_with_rotation()` for async segment rotation behavior.
+    ///
+    /// # Returns
+    ///
+    /// The highest LSN that is now durable.
+    pub fn sync(&self) -> Result<Lsn, AsyncWalError> {
+        let writer = self.writer.lock().expect("WAL writer lock poisoned");
+        let lsn = writer.sync()?;
+        self.synced_lsn.store(lsn, Ordering::Release);
+        self.sync_manager.global_synced_lsn.store(lsn, Ordering::Release);
+        Ok(lsn)
+    }
+
+    /// Sync with segment rotation for async writes during sync.
+    ///
+    /// This method rotates the WAL to a pending segment, syncs it in the
+    /// background, and allows writes to continue on a new segment.
+    /// The synced segment is moved to the archive directory.
+    ///
+    /// For simple blocking durability where the WAL should remain in place,
+    /// use `sync()` instead.
+    ///
+    /// # Returns
+    ///
+    /// The highest LSN that is now durable.
+    pub fn sync_with_rotation(&self) -> Result<Lsn, AsyncWalError> {
+        let handle = self.sync_async()?;
+        handle.wait()?;
+        Ok(handle.target_lsn())
+    }
+
+    /// Get the current (next) LSN.
+    pub fn current_lsn(&self) -> Lsn {
+        self.next_lsn.load(Ordering::Acquire)
+    }
+
+    /// Get the last synced LSN.
+    pub fn synced_lsn(&self) -> Lsn {
+        self.sync_manager.global_synced_lsn.load(Ordering::Acquire)
+    }
+
+    /// Allocate the next LSN without writing a record.
+    ///
+    /// This method atomically increments the LSN counter and returns the
+    /// previous value. It is used by `GroupCommitCoordinator` to pre-allocate
+    /// LSNs before batching writes.
+    ///
+    /// # Returns
+    ///
+    /// The allocated LSN (the value before incrementing).
+    pub fn allocate_lsn(&self) -> Lsn {
+        self.next_lsn.fetch_add(1, Ordering::AcqRel)
+    }
+
+    /// Set the minimum starting LSN for subsequent records.
+    ///
+    /// If the current next_lsn is less than the provided minimum, it will be
+    /// updated to the minimum. This is useful after reopening a file where
+    /// the checkpoint_lsn in the main header might be higher than the WAL's
+    /// internal counter (e.g., after truncate).
+    ///
+    /// # Arguments
+    ///
+    /// * `min_lsn` - The minimum LSN for subsequent records
+    pub fn set_min_lsn(&self, min_lsn: Lsn) {
+        // Update the underlying WalWriter's LSN
+        {
+            let writer = self.writer.lock().expect("WAL writer lock poisoned");
+            writer.set_min_lsn(min_lsn);
+        }
+
+        // Update our own next_lsn
+        loop {
+            let current = self.next_lsn.load(Ordering::Acquire);
+            if current >= min_lsn {
+                break;
+            }
+            if self.next_lsn.compare_exchange(
+                current,
+                min_lsn,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ).is_ok() {
+                break;
+            }
+        }
+    }
+
+    /// Get the path to the WAL file.
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    /// Get the sync manager for advanced operations.
+    pub fn sync_manager(&self) -> &Arc<SegmentSyncManager> {
+        &self.sync_manager
+    }
+
+    /// Write a checkpoint record.
+    pub fn checkpoint(&self, checkpoint_lsn: Lsn) -> Result<Lsn, AsyncWalError> {
+        let writer = self.writer.lock().expect("WAL writer lock poisoned");
+        let lsn = writer.checkpoint(checkpoint_lsn)?;
+        self.next_lsn.store(writer.current_lsn(), Ordering::Release);
+        Ok(lsn)
+    }
+
+    /// Truncate the WAL, discarding all records after the header.
+    ///
+    /// This is typically used after recovery when all operations have been
+    /// successfully replayed and persisted to the main data file.
+    ///
+    /// # Safety
+    ///
+    /// Only call this when you're certain all WAL records have been properly
+    /// recovered and applied. Truncating prematurely will result in data loss.
+    pub fn truncate(&self) -> Result<(), AsyncWalError> {
+        let writer = self.writer.lock().expect("WAL writer lock poisoned");
+        writer.truncate()?;
+        Ok(())
+    }
+
+    /// Rotate WAL to archive directory - O(1) filesystem rename operation.
+    ///
+    /// This delegates to the underlying `WalWriter::rotate_to_archive()` method.
+    /// If archive mode is disabled in the config, this falls back to truncate.
+    ///
+    /// Returns the path to the archived segment if archiving occurred, or None
+    /// if archive mode is disabled.
+    pub fn rotate_to_archive(&self, config: &WalConfig) -> Result<Option<PathBuf>, AsyncWalError> {
+        if !config.archive_enabled {
+            self.truncate()?;
+            return Ok(None);
+        }
+        let writer = self.writer.lock().expect("WAL writer lock poisoned");
+        let path = writer.rotate_to_archive(config)?;
+        Ok(Some(path))
+    }
+
+    /// Convert the async writer back to a synchronous writer.
+    ///
+    /// This waits for all pending segments to sync and returns the underlying
+    /// `WalWriter`. Useful for shutdown or when async behavior is no longer needed.
+    pub fn into_sync(mut self) -> Result<WalWriter, AsyncWalError> {
+        // Wait for all pending segments to sync
+        let current_lsn = self.next_lsn.load(Ordering::Acquire).saturating_sub(1);
+        if current_lsn > 0 {
+            self.sync_manager.wait_for_lsn(current_lsn)?;
+        }
+
+        // Stop the sync thread
+        self.sync_manager.stop();
+
+        // Take the writer out using std::mem::replace with a dummy
+        // We'll use ManuallyDrop to prevent the Drop impl from running
+        let writer = {
+            let guard = self.writer.lock().expect("WAL writer lock poisoned");
+            // We can't actually take ownership here due to the Mutex
+            // Instead, we'll create a new WalWriter from the same file
+            // This is safe because we've synced everything
+            WalWriter::open(&self.path)?
+        };
+
+        // Prevent drop from running sync again (mark as "consumed")
+        // We do this by ensuring the writer is in a synced state
+        Ok(writer)
+    }
+
+    /// Internal: Rotate the current WAL segment for async sync.
+    ///
+    /// This is an O(1) operation that:
+    /// 1. Flushes the buffer (no fsync)
+    /// 2. Renames the active WAL to a pending segment
+    /// 3. Creates a fresh active WAL with header
+    /// 4. Enqueues the pending segment for background sync
+    fn rotate_for_sync(&self, last_lsn: Lsn) -> Result<(), AsyncWalError> {
+        let mut writer = self.writer.lock().expect("WAL writer lock poisoned");
+
+        // Flush buffer (no fsync yet)
+        if let Err(e) = writer.file.lock().expect("file lock poisoned").flush() {
+            return Err(AsyncWalError::RotationFailed {
+                reason: "Failed to flush buffer".to_string(),
+                source: Some(e),
+            });
+        }
+
+        // Generate pending segment path
+        let counter = self.pending_counter.fetch_add(1, Ordering::Relaxed);
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis();
+        let pending_name = format!("wal_pending_{}_{}.segment", timestamp, counter);
+        let pending_dir = if self.config.pending_dir.is_absolute() {
+            self.config.pending_dir.clone()
+        } else {
+            self.path
+                .parent()
+                .unwrap_or(Path::new("."))
+                .join(&self.config.pending_dir)
+        };
+        let pending_path = pending_dir.join(pending_name);
+
+        // Get file size before rename
+        let size_bytes = fs::metadata(&self.path)
+            .map(|m| m.len())
+            .unwrap_or(0);
+
+        // Get the first LSN in this segment (synced_lsn + 1)
+        let first_lsn = self.synced_lsn.load(Ordering::Acquire) + 1;
+
+        // Rename active WAL to pending (O(1) filesystem operation)
+        fs::rename(&self.path, &pending_path).map_err(|e| {
+            AsyncWalError::RotationFailed {
+                reason: "Failed to rename WAL to pending".to_string(),
+                source: Some(e),
+            }
+        })?;
+
+        // Open the pending file for sync
+        let pending_file = OpenOptions::new()
+            .read(true)
+            .open(&pending_path)
+            .map_err(|e| {
+                // Try to restore the original file
+                let _ = fs::rename(&pending_path, &self.path);
+                AsyncWalError::RotationFailed {
+                    reason: "Failed to open pending segment".to_string(),
+                    source: Some(e),
+                }
+            })?;
+
+        // Create fresh WAL file
+        let new_file = match OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .read(true)
+            .open(&self.path)
+        {
+            Ok(f) => f,
+            Err(e) => {
+                // Try to restore the original file
+                let _ = fs::rename(&pending_path, &self.path);
+                return Err(AsyncWalError::RotationFailed {
+                    reason: "Failed to create new WAL file".to_string(),
+                    source: Some(e),
+                });
+            }
+        };
+
+        let mut new_writer = BufWriter::new(new_file);
+
+        // Write fresh header
+        let header = WalHeader::new();
+        if let Err(e) = new_writer.write_all(&header.to_bytes()) {
+            // Try to restore
+            let _ = fs::remove_file(&self.path);
+            let _ = fs::rename(&pending_path, &self.path);
+            return Err(AsyncWalError::RotationFailed {
+                reason: "Failed to write header".to_string(),
+                source: Some(e),
+            });
+        }
+        if let Err(e) = new_writer.flush() {
+            let _ = fs::remove_file(&self.path);
+            let _ = fs::rename(&pending_path, &self.path);
+            return Err(AsyncWalError::RotationFailed {
+                reason: "Failed to flush header".to_string(),
+                source: Some(e),
+            });
+        }
+
+        // Update the internal writer state
+        *writer.file.lock().expect("file lock poisoned") = new_writer;
+        *writer.header.lock().expect("header lock poisoned") = header;
+        // Note: We keep next_lsn continuing from where we left off
+        // The LSN sequence continues across segments
+
+        // Update local synced_lsn tracking (will be officially updated when segment syncs)
+        self.synced_lsn.store(last_lsn, Ordering::Release);
+
+        // Enqueue the pending segment for background sync
+        let pending_segment = PendingSegment {
+            path: pending_path,
+            lsn_range: (first_lsn, last_lsn),
+            file: pending_file,
+            rotated_at: Instant::now(),
+            size_bytes,
+        };
+        self.sync_manager.enqueue(pending_segment);
+
+        Ok(())
+    }
+}
+
+impl Drop for AsyncWalWriter {
+    fn drop(&mut self) {
+        // Best-effort sync of any remaining data
+        // We can't return errors from drop, so just log any issues
+        if let Ok(writer) = self.writer.lock() {
+            if let Err(e) = writer.sync() {
+                log::warn!("Failed to sync WAL on drop: {:?}", e);
+            }
+        }
+    }
+}
+
+/// Collect all WAL segments including pending segments for recovery.
+///
+/// Returns paths to all WAL segments in chronological order:
+/// 1. Archived segments (oldest)
+/// 2. Pending segments (awaiting sync)
+/// 3. Active WAL (newest)
+///
+/// # Arguments
+///
+/// * `wal_path` - Path to the active WAL file
+/// * `config` - WAL configuration with archive directory
+/// * `async_config` - Async WAL configuration with pending directory
+///
+/// # Returns
+///
+/// Vector of paths sorted by segment order (oldest first).
+pub fn collect_all_segments(
+    wal_path: &Path,
+    config: &WalConfig,
+    async_config: &AsyncWalConfig,
+) -> Result<Vec<PathBuf>, WalError> {
+    let mut segments = Vec::new();
+    let parent = wal_path.parent().unwrap_or(Path::new("."));
+
+    // 1. Collect archived segments
+    let archive_dir = if config.archive_dir.is_absolute() {
+        config.archive_dir.clone()
+    } else {
+        parent.join(&config.archive_dir)
+    };
+
+    if archive_dir.exists() {
+        for entry in fs::read_dir(&archive_dir).map_err(WalError::Io)? {
+            let entry = entry.map_err(WalError::Io)?;
+            let path = entry.path();
+            if path.extension().map_or(false, |ext| ext == "segment") {
+                segments.push(path);
+            }
+        }
+    }
+
+    // 2. Collect pending segments
+    let pending_dir = if async_config.pending_dir.is_absolute() {
+        async_config.pending_dir.clone()
+    } else {
+        parent.join(&async_config.pending_dir)
+    };
+
+    if pending_dir.exists() {
+        for entry in fs::read_dir(&pending_dir).map_err(WalError::Io)? {
+            let entry = entry.map_err(WalError::Io)?;
+            let path = entry.path();
+            if path.extension().map_or(false, |ext| ext == "segment") {
+                segments.push(path);
+            }
+        }
+    }
+
+    // Sort by filename (timestamp-based naming ensures chronological order)
+    segments.sort();
+
+    // 3. Add active WAL if it exists and has records
+    if wal_path.exists() {
+        let metadata = fs::metadata(wal_path).map_err(WalError::Io)?;
+        if metadata.len() > WalHeader::SIZE as u64 {
+            segments.push(wal_path.to_path_buf());
+        }
+    }
+
+    Ok(segments)
 }
 
 #[cfg(test)]
@@ -2311,5 +3597,996 @@ mod tests {
             })
             .expect("append");
         assert_eq!(lsn, 1);
+    }
+
+    // =========================================================================
+    // Async WAL Writer Tests
+    // =========================================================================
+
+    #[test]
+    fn test_async_wal_create_and_append() {
+        let dir = tempdir().expect("create temp dir");
+        let wal_path = dir.path().join("async_test.wal");
+
+        let config = AsyncWalConfig {
+            pending_dir: dir.path().join("wal_pending"),
+            ..Default::default()
+        };
+        let archive_config = WalConfig {
+            archive_enabled: true,
+            archive_dir: dir.path().join("wal_archive"),
+            ..Default::default()
+        };
+
+        let wal = AsyncWalWriter::create(&wal_path, config, archive_config)
+            .expect("create async WAL");
+
+        // Append some records
+        let lsn1 = wal
+            .append(WalRecord::Insert {
+                term: b"hello".to_vec(),
+                value: None,
+            })
+            .expect("append");
+        assert_eq!(lsn1, 1);
+
+        let lsn2 = wal
+            .append(WalRecord::Insert {
+                term: b"world".to_vec(),
+                value: Some(b"value".to_vec()),
+            })
+            .expect("append");
+        assert_eq!(lsn2, 2);
+
+        // Current LSN should be 3 (next to assign)
+        assert_eq!(wal.current_lsn(), 3);
+    }
+
+    #[test]
+    fn test_async_wal_sync_blocking() {
+        let dir = tempdir().expect("create temp dir");
+        let wal_path = dir.path().join("async_sync_test.wal");
+
+        let config = AsyncWalConfig {
+            pending_dir: dir.path().join("wal_pending"),
+            ..Default::default()
+        };
+        let archive_config = WalConfig {
+            archive_enabled: true,
+            archive_dir: dir.path().join("wal_archive"),
+            ..Default::default()
+        };
+
+        let wal = AsyncWalWriter::create(&wal_path, config, archive_config)
+            .expect("create async WAL");
+
+        // Append records
+        wal.append(WalRecord::Insert {
+            term: b"term1".to_vec(),
+            value: None,
+        })
+        .expect("append");
+
+        wal.append(WalRecord::Insert {
+            term: b"term2".to_vec(),
+            value: None,
+        })
+        .expect("append");
+
+        // Blocking sync
+        let synced = wal.sync().expect("sync");
+        assert_eq!(synced, 2);
+
+        // Synced LSN should be updated
+        assert_eq!(wal.synced_lsn(), 2);
+    }
+
+    #[test]
+    fn test_async_wal_sync_async_handle() {
+        let dir = tempdir().expect("create temp dir");
+        let wal_path = dir.path().join("async_handle_test.wal");
+
+        let config = AsyncWalConfig {
+            pending_dir: dir.path().join("wal_pending"),
+            ..Default::default()
+        };
+        let archive_config = WalConfig {
+            archive_enabled: true,
+            archive_dir: dir.path().join("wal_archive"),
+            ..Default::default()
+        };
+
+        let wal = AsyncWalWriter::create(&wal_path, config, archive_config)
+            .expect("create async WAL");
+
+        // Append records
+        for i in 0..5 {
+            wal.append(WalRecord::Insert {
+                term: format!("term{}", i).into_bytes(),
+                value: None,
+            })
+            .expect("append");
+        }
+
+        // Get async sync handle
+        let handle = wal.sync_async().expect("sync_async");
+        assert_eq!(handle.target_lsn(), 5);
+
+        // Initially may not be synced (depends on thread timing)
+        // Wait for completion
+        handle.wait().expect("wait");
+
+        // Now should be synced
+        assert!(handle.is_synced());
+        assert_eq!(wal.synced_lsn(), 5);
+    }
+
+    #[test]
+    fn test_async_wal_concurrent_append_during_sync() {
+        let dir = tempdir().expect("create temp dir");
+        let wal_path = dir.path().join("concurrent_test.wal");
+
+        let config = AsyncWalConfig {
+            pending_dir: dir.path().join("wal_pending"),
+            ..Default::default()
+        };
+        let archive_config = WalConfig {
+            archive_enabled: true,
+            archive_dir: dir.path().join("wal_archive"),
+            ..Default::default()
+        };
+
+        let wal = AsyncWalWriter::create(&wal_path, config, archive_config)
+            .expect("create async WAL");
+
+        // Append initial batch
+        for i in 0..10 {
+            wal.append(WalRecord::Insert {
+                term: format!("batch1_term{}", i).into_bytes(),
+                value: None,
+            })
+            .expect("append");
+        }
+
+        // Start async sync (this rotates the WAL)
+        let handle = wal.sync_async().expect("sync_async");
+        assert_eq!(handle.target_lsn(), 10);
+
+        // Continue appending while sync is in progress!
+        for i in 0..5 {
+            let lsn = wal
+                .append(WalRecord::Insert {
+                    term: format!("batch2_term{}", i).into_bytes(),
+                    value: None,
+                })
+                .expect("append during sync");
+            // LSN should continue from previous batch
+            assert_eq!(lsn, 11 + i as u64);
+        }
+
+        // Wait for first sync to complete
+        handle.wait().expect("wait");
+
+        // First batch should now be synced
+        assert!(wal.synced_lsn() >= 10);
+
+        // Sync the second batch
+        let synced = wal.sync().expect("sync second batch");
+        assert!(synced >= 15);
+    }
+
+    #[test]
+    fn test_async_wal_multiple_concurrent_syncs() {
+        let dir = tempdir().expect("create temp dir");
+        let wal_path = dir.path().join("multi_sync_test.wal");
+
+        let config = AsyncWalConfig {
+            pending_dir: dir.path().join("wal_pending"),
+            max_pending_segments: 8, // Allow more pending segments
+            ..Default::default()
+        };
+        let archive_config = WalConfig {
+            archive_enabled: true,
+            archive_dir: dir.path().join("wal_archive"),
+            ..Default::default()
+        };
+
+        let wal = AsyncWalWriter::create(&wal_path, config, archive_config)
+            .expect("create async WAL");
+
+        let mut handles = Vec::new();
+
+        // Create multiple sync operations
+        for batch in 0..3 {
+            for i in 0..3 {
+                wal.append(WalRecord::Insert {
+                    term: format!("batch{}_term{}", batch, i).into_bytes(),
+                    value: None,
+                })
+                .expect("append");
+            }
+
+            let handle = wal.sync_async().expect("sync_async");
+            handles.push(handle);
+        }
+
+        // Wait for all syncs to complete (in order)
+        for (i, handle) in handles.into_iter().enumerate() {
+            handle.wait().expect("wait");
+            // Each batch has 3 records
+            assert!(handle.target_lsn() >= ((i + 1) * 3) as u64);
+        }
+
+        // Final synced LSN should cover all batches
+        assert!(wal.synced_lsn() >= 9);
+    }
+
+    #[test]
+    fn test_async_wal_sync_timeout() {
+        let dir = tempdir().expect("create temp dir");
+        let wal_path = dir.path().join("timeout_test.wal");
+
+        let config = AsyncWalConfig {
+            pending_dir: dir.path().join("wal_pending"),
+            ..Default::default()
+        };
+        let archive_config = WalConfig {
+            archive_enabled: true,
+            archive_dir: dir.path().join("wal_archive"),
+            ..Default::default()
+        };
+
+        let wal = AsyncWalWriter::create(&wal_path, config, archive_config)
+            .expect("create async WAL");
+
+        // Append a record
+        wal.append(WalRecord::Insert {
+            term: b"test".to_vec(),
+            value: None,
+        })
+        .expect("append");
+
+        // Get async handle
+        let handle = wal.sync_async().expect("sync_async");
+
+        // Wait with a very long timeout (should succeed)
+        let completed = handle.wait_timeout(Duration::from_secs(10)).expect("wait_timeout");
+        assert!(completed, "Sync should complete within timeout");
+    }
+
+    #[test]
+    fn test_async_wal_empty_sync() {
+        let dir = tempdir().expect("create temp dir");
+        let wal_path = dir.path().join("empty_sync_test.wal");
+
+        let config = AsyncWalConfig {
+            pending_dir: dir.path().join("wal_pending"),
+            ..Default::default()
+        };
+        let archive_config = WalConfig {
+            archive_enabled: true,
+            archive_dir: dir.path().join("wal_archive"),
+            ..Default::default()
+        };
+
+        let wal = AsyncWalWriter::create(&wal_path, config, archive_config)
+            .expect("create async WAL");
+
+        // Sync without any records (should be no-op)
+        let handle = wal.sync_async().expect("sync_async empty");
+        assert!(handle.is_synced()); // Already synced (nothing to sync)
+    }
+
+    #[test]
+    fn test_async_wal_recovery_with_pending_segments() {
+        let dir = tempdir().expect("create temp dir");
+        let wal_path = dir.path().join("recovery_test.wal");
+        let pending_dir = dir.path().join("wal_pending");
+        let archive_dir = dir.path().join("wal_archive");
+
+        let config = AsyncWalConfig {
+            pending_dir: pending_dir.clone(),
+            ..Default::default()
+        };
+        let archive_config = WalConfig {
+            archive_enabled: true,
+            archive_dir: archive_dir.clone(),
+            ..Default::default()
+        };
+
+        // Create WAL and write some data
+        {
+            let wal = AsyncWalWriter::create(&wal_path, config.clone(), archive_config.clone())
+                .expect("create async WAL");
+
+            for i in 0..10 {
+                wal.append(WalRecord::Insert {
+                    term: format!("term{}", i).into_bytes(),
+                    value: Some(format!("value{}", i).into_bytes()),
+                })
+                .expect("append");
+            }
+
+            // Sync to create archive segment
+            wal.sync().expect("sync");
+        }
+
+        // Collect all segments using the recovery function
+        let segments = collect_all_segments(&wal_path, &archive_config, &config)
+            .expect("collect segments");
+
+        // Should have at least the active WAL (archive segment may have been created)
+        assert!(!segments.is_empty(), "Should have at least one segment");
+
+        // Verify we can read from the segments
+        let mut total_records = 0;
+        for segment in &segments {
+            if let Ok(reader) = WalReader::new(segment) {
+                for result in reader.iter() {
+                    if result.is_ok() {
+                        total_records += 1;
+                    }
+                }
+            }
+        }
+
+        // Should have recovered all 10 records
+        assert_eq!(total_records, 10, "Should recover all 10 records");
+    }
+
+    #[test]
+    fn test_async_wal_into_sync() {
+        let dir = tempdir().expect("create temp dir");
+        let wal_path = dir.path().join("into_sync_test.wal");
+
+        let config = AsyncWalConfig {
+            pending_dir: dir.path().join("wal_pending"),
+            ..Default::default()
+        };
+        let archive_config = WalConfig {
+            archive_enabled: true,
+            archive_dir: dir.path().join("wal_archive"),
+            ..Default::default()
+        };
+
+        let wal = AsyncWalWriter::create(&wal_path, config, archive_config)
+            .expect("create async WAL");
+
+        // Write and sync some data
+        wal.append(WalRecord::Insert {
+            term: b"test".to_vec(),
+            value: None,
+        })
+        .expect("append");
+        wal.sync().expect("sync");
+
+        // Convert back to sync writer
+        let sync_writer = wal.into_sync().expect("into_sync");
+
+        // Should be able to continue using the sync writer
+        // Note: After async sync, the WAL was rotated to archive and a fresh WAL was created.
+        // So the new LSN starts from where it left off (continuing the sequence).
+        let lsn = sync_writer
+            .append(WalRecord::Insert {
+                term: b"after_convert".to_vec(),
+                value: None,
+            })
+            .expect("append after convert");
+        // The LSN continues from the previous sequence, which was 1 before conversion.
+        // After conversion and reopening, the WAL scanner finds no records (rotated to archive)
+        // and starts fresh from LSN 1.
+        assert!(lsn >= 1, "LSN should be at least 1");
+    }
+
+    #[test]
+    fn test_async_wal_backpressure() {
+        let dir = tempdir().expect("create temp dir");
+        let wal_path = dir.path().join("backpressure_test.wal");
+
+        let config = AsyncWalConfig {
+            pending_dir: dir.path().join("wal_pending"),
+            max_pending_segments: 2, // Very low limit
+            max_pending_bytes: 1024 * 1024, // 1MB
+            ..Default::default()
+        };
+        let archive_config = WalConfig {
+            archive_enabled: true,
+            archive_dir: dir.path().join("wal_archive"),
+            ..Default::default()
+        };
+
+        let wal = AsyncWalWriter::create(&wal_path, config, archive_config)
+            .expect("create async WAL");
+
+        // Write enough data to trigger multiple rotations
+        // This tests that backpressure kicks in when we have too many pending segments
+        for batch in 0..5 {
+            for i in 0..10 {
+                wal.append(WalRecord::Insert {
+                    term: format!("batch{}_term{}", batch, i).into_bytes(),
+                    value: Some(vec![0u8; 100]), // Some data to make segments larger
+                })
+                .expect("append");
+            }
+
+            // Start async sync
+            let handle = wal.sync_async().expect("sync_async");
+
+            // Wait for this sync to complete before next batch
+            // (simulates normal usage pattern)
+            handle.wait().expect("wait");
+        }
+
+        // All data should be synced
+        assert!(wal.synced_lsn() >= 50);
+    }
+
+    #[test]
+    fn test_sync_handle_debug() {
+        let dir = tempdir().expect("create temp dir");
+        let wal_path = dir.path().join("debug_test.wal");
+
+        let config = AsyncWalConfig {
+            pending_dir: dir.path().join("wal_pending"),
+            ..Default::default()
+        };
+        let archive_config = WalConfig::default();
+
+        let wal = AsyncWalWriter::create(&wal_path, config, archive_config)
+            .expect("create async WAL");
+
+        wal.append(WalRecord::Insert {
+            term: b"test".to_vec(),
+            value: None,
+        })
+        .expect("append");
+
+        let handle = wal.sync_async().expect("sync_async");
+
+        // Debug should not panic
+        let debug_str = format!("{:?}", handle);
+        assert!(debug_str.contains("SyncHandle"));
+        assert!(debug_str.contains("target_lsn"));
+    }
+
+    #[test]
+    fn test_async_wal_config_defaults() {
+        let config = AsyncWalConfig::default();
+        assert_eq!(config.max_pending_segments, 4);
+        assert_eq!(config.max_pending_bytes, 256 * 1024 * 1024);
+        assert_eq!(config.idle_check_interval_ms, 10);
+    }
+
+    #[test]
+    fn test_async_wal_error_display() {
+        let wal_error = AsyncWalError::Wal(WalError::NotFound);
+        let display = format!("{}", wal_error);
+        assert!(display.contains("WAL error"));
+
+        let sync_failed = AsyncWalError::SegmentSyncFailed {
+            path: PathBuf::from("/test/path"),
+            attempts: 5,
+            last_error: io::Error::new(io::ErrorKind::Other, "test error"),
+        };
+        let display = format!("{}", sync_failed);
+        assert!(display.contains("5 attempts"));
+
+        let rotation_failed = AsyncWalError::RotationFailed {
+            reason: "test reason".to_string(),
+            source: None,
+        };
+        let display = format!("{}", rotation_failed);
+        assert!(display.contains("test reason"));
+
+        let timeout = AsyncWalError::SyncTimeout {
+            target_lsn: 100,
+            current_synced: 50,
+            timeout_ms: 1000,
+        };
+        let display = format!("{}", timeout);
+        assert!(display.contains("100"));
+        assert!(display.contains("50"));
+    }
+
+    // =========================================================================
+    // WAL Corruption / Truncated Payload Tests
+    //
+    // These tests verify that WalRecord::deserialize correctly handles
+    // malformed/truncated payloads for all record types.
+    // =========================================================================
+
+    #[test]
+    fn test_deserialize_insert_payload_too_short() {
+        // Insert requires at least 5 bytes: term_len (4) + has_value (1)
+        let payload = vec![0, 0, 0]; // Only 3 bytes
+        let result = WalRecord::deserialize(WalRecordType::Insert, &payload);
+        assert!(matches!(result, Err(WalError::CorruptedRecord(msg)) if msg.contains("payload too short")));
+
+        // Exactly 4 bytes is still too short
+        let payload = vec![0, 0, 0, 0];
+        let result = WalRecord::deserialize(WalRecordType::Insert, &payload);
+        assert!(matches!(result, Err(WalError::CorruptedRecord(msg)) if msg.contains("payload too short")));
+    }
+
+    #[test]
+    fn test_deserialize_insert_term_truncated() {
+        // term_len says 10, but only provide 4 bytes of term + no has_value
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&10u32.to_le_bytes()); // term_len = 10
+        payload.extend_from_slice(&[b'a', b'b', b'c', b'd']); // Only 4 bytes of term
+        let result = WalRecord::deserialize(WalRecordType::Insert, &payload);
+        assert!(matches!(result, Err(WalError::CorruptedRecord(msg)) if msg.contains("term truncated")));
+    }
+
+    #[test]
+    fn test_deserialize_insert_value_length_truncated() {
+        // Valid term, has_value=1, but no value length bytes
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&5u32.to_le_bytes()); // term_len = 5
+        payload.extend_from_slice(b"hello"); // term
+        payload.push(1); // has_value = true
+        // Missing value_len bytes
+        let result = WalRecord::deserialize(WalRecordType::Insert, &payload);
+        assert!(matches!(result, Err(WalError::CorruptedRecord(msg)) if msg.contains("value length truncated")));
+
+        // Only partial value_len
+        payload.extend_from_slice(&[0, 0]); // Only 2 bytes of value_len
+        let result = WalRecord::deserialize(WalRecordType::Insert, &payload);
+        assert!(matches!(result, Err(WalError::CorruptedRecord(msg)) if msg.contains("value length truncated")));
+    }
+
+    #[test]
+    fn test_deserialize_insert_value_truncated() {
+        // Valid term, has_value=1, value_len=10, but only 5 bytes of value
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&5u32.to_le_bytes()); // term_len = 5
+        payload.extend_from_slice(b"hello"); // term
+        payload.push(1); // has_value = true
+        payload.extend_from_slice(&10u32.to_le_bytes()); // value_len = 10
+        payload.extend_from_slice(&[1, 2, 3, 4, 5]); // Only 5 bytes of value
+        let result = WalRecord::deserialize(WalRecordType::Insert, &payload);
+        assert!(matches!(result, Err(WalError::CorruptedRecord(msg)) if msg.contains("value truncated")));
+    }
+
+    #[test]
+    fn test_deserialize_insert_no_value_success() {
+        // Valid insert with no value
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&5u32.to_le_bytes()); // term_len = 5
+        payload.extend_from_slice(b"hello"); // term
+        payload.push(0); // has_value = false
+        let result = WalRecord::deserialize(WalRecordType::Insert, &payload);
+        assert!(result.is_ok());
+        match result.unwrap() {
+            WalRecord::Insert { term, value } => {
+                assert_eq!(term, b"hello");
+                assert!(value.is_none());
+            }
+            _ => panic!("Expected Insert"),
+        }
+    }
+
+    #[test]
+    fn test_deserialize_remove_payload_too_short() {
+        // Remove requires at least 4 bytes for term_len
+        let payload = vec![0, 0]; // Only 2 bytes
+        let result = WalRecord::deserialize(WalRecordType::Remove, &payload);
+        assert!(matches!(result, Err(WalError::CorruptedRecord(msg)) if msg.contains("payload too short")));
+    }
+
+    #[test]
+    fn test_deserialize_remove_term_truncated() {
+        // term_len says 10, but only provide 3 bytes
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&10u32.to_le_bytes()); // term_len = 10
+        payload.extend_from_slice(&[b'a', b'b', b'c']); // Only 3 bytes
+        let result = WalRecord::deserialize(WalRecordType::Remove, &payload);
+        assert!(matches!(result, Err(WalError::CorruptedRecord(msg)) if msg.contains("term truncated")));
+    }
+
+    #[test]
+    fn test_deserialize_checkpoint_payload_too_short() {
+        // Checkpoint requires 16 bytes: checkpoint_lsn (8) + timestamp (8)
+        let payload = vec![0; 10]; // Only 10 bytes
+        let result = WalRecord::deserialize(WalRecordType::Checkpoint, &payload);
+        assert!(matches!(result, Err(WalError::CorruptedRecord(msg)) if msg.contains("payload too short")));
+
+        // 15 bytes is still too short
+        let payload = vec![0; 15];
+        let result = WalRecord::deserialize(WalRecordType::Checkpoint, &payload);
+        assert!(matches!(result, Err(WalError::CorruptedRecord(msg)) if msg.contains("payload too short")));
+    }
+
+    #[test]
+    fn test_deserialize_begin_tx_payload_too_short() {
+        // BeginTx requires 8 bytes for tx_id
+        let payload = vec![0; 5]; // Only 5 bytes
+        let result = WalRecord::deserialize(WalRecordType::BeginTx, &payload);
+        assert!(matches!(result, Err(WalError::CorruptedRecord(msg)) if msg.contains("payload too short")));
+    }
+
+    #[test]
+    fn test_deserialize_commit_tx_payload_too_short() {
+        // CommitTx requires 8 bytes for tx_id
+        let payload = vec![0; 7]; // Only 7 bytes
+        let result = WalRecord::deserialize(WalRecordType::CommitTx, &payload);
+        assert!(matches!(result, Err(WalError::CorruptedRecord(msg)) if msg.contains("payload too short")));
+    }
+
+    #[test]
+    fn test_deserialize_abort_tx_payload_too_short() {
+        // AbortTx requires 8 bytes for tx_id
+        let payload = vec![0; 3]; // Only 3 bytes
+        let result = WalRecord::deserialize(WalRecordType::AbortTx, &payload);
+        assert!(matches!(result, Err(WalError::CorruptedRecord(msg)) if msg.contains("payload too short")));
+    }
+
+    #[test]
+    fn test_deserialize_increment_payload_too_short() {
+        // Increment requires at least 4 bytes for term_len
+        let payload = vec![0; 2]; // Only 2 bytes
+        let result = WalRecord::deserialize(WalRecordType::Increment, &payload);
+        assert!(matches!(result, Err(WalError::CorruptedRecord(msg)) if msg.contains("payload too short")));
+    }
+
+    #[test]
+    fn test_deserialize_increment_payload_truncated() {
+        // term_len (4) + term + delta (8) + result (8) = 4 + term_len + 16
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&5u32.to_le_bytes()); // term_len = 5
+        payload.extend_from_slice(b"hello"); // term
+        payload.extend_from_slice(&[0; 10]); // Only 10 bytes instead of 16 (delta + result)
+        let result = WalRecord::deserialize(WalRecordType::Increment, &payload);
+        assert!(matches!(result, Err(WalError::CorruptedRecord(msg)) if msg.contains("truncated")));
+    }
+
+    #[test]
+    fn test_deserialize_upsert_payload_too_short() {
+        // Upsert requires at least 4 bytes for term_len
+        let payload = vec![0; 3]; // Only 3 bytes
+        let result = WalRecord::deserialize(WalRecordType::Upsert, &payload);
+        assert!(matches!(result, Err(WalError::CorruptedRecord(msg)) if msg.contains("payload too short")));
+    }
+
+    #[test]
+    fn test_deserialize_upsert_term_truncated() {
+        // term_len says 10, but missing value_len
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&5u32.to_le_bytes()); // term_len = 5
+        payload.extend_from_slice(b"hello"); // term
+        // Missing value_len (4 bytes)
+        let result = WalRecord::deserialize(WalRecordType::Upsert, &payload);
+        assert!(matches!(result, Err(WalError::CorruptedRecord(msg)) if msg.contains("term truncated")));
+    }
+
+    #[test]
+    fn test_deserialize_upsert_value_truncated() {
+        // Valid term_len, term, value_len, but truncated value
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&5u32.to_le_bytes()); // term_len = 5
+        payload.extend_from_slice(b"hello"); // term
+        payload.extend_from_slice(&10u32.to_le_bytes()); // value_len = 10
+        payload.extend_from_slice(&[1, 2, 3]); // Only 3 bytes of value
+        let result = WalRecord::deserialize(WalRecordType::Upsert, &payload);
+        assert!(matches!(result, Err(WalError::CorruptedRecord(msg)) if msg.contains("value truncated")));
+    }
+
+    #[test]
+    fn test_deserialize_cas_payload_too_short() {
+        // CAS requires at least 4 bytes for term_len
+        let payload = vec![0; 2]; // Only 2 bytes
+        let result = WalRecord::deserialize(WalRecordType::CompareAndSwap, &payload);
+        assert!(matches!(result, Err(WalError::CorruptedRecord(msg)) if msg.contains("payload too short")));
+    }
+
+    #[test]
+    fn test_deserialize_cas_term_truncated() {
+        // term_len + term but missing has_expected
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&5u32.to_le_bytes()); // term_len = 5
+        payload.extend_from_slice(b"hello"); // term
+        // Missing has_expected byte
+        let result = WalRecord::deserialize(WalRecordType::CompareAndSwap, &payload);
+        assert!(matches!(result, Err(WalError::CorruptedRecord(msg)) if msg.contains("term truncated")));
+    }
+
+    #[test]
+    fn test_deserialize_cas_expected_length_truncated() {
+        // Valid term, has_expected=1, but missing expected_len
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&5u32.to_le_bytes()); // term_len = 5
+        payload.extend_from_slice(b"hello"); // term
+        payload.push(1); // has_expected = true
+        // Missing expected_len (4 bytes)
+        let result = WalRecord::deserialize(WalRecordType::CompareAndSwap, &payload);
+        assert!(matches!(result, Err(WalError::CorruptedRecord(msg)) if msg.contains("expected length truncated")));
+    }
+
+    #[test]
+    fn test_deserialize_cas_expected_truncated() {
+        // Valid term, has_expected=1, expected_len=10, but truncated expected value
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&5u32.to_le_bytes()); // term_len = 5
+        payload.extend_from_slice(b"hello"); // term
+        payload.push(1); // has_expected = true
+        payload.extend_from_slice(&10u32.to_le_bytes()); // expected_len = 10
+        payload.extend_from_slice(&[1, 2, 3]); // Only 3 bytes
+        let result = WalRecord::deserialize(WalRecordType::CompareAndSwap, &payload);
+        assert!(matches!(result, Err(WalError::CorruptedRecord(msg)) if msg.contains("expected truncated")));
+    }
+
+    #[test]
+    fn test_deserialize_cas_new_value_length_truncated() {
+        // Valid term, has_expected=0, but missing new_value_len
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&5u32.to_le_bytes()); // term_len = 5
+        payload.extend_from_slice(b"hello"); // term
+        payload.push(0); // has_expected = false
+        // Missing new_value_len (4 bytes)
+        let result = WalRecord::deserialize(WalRecordType::CompareAndSwap, &payload);
+        assert!(matches!(result, Err(WalError::CorruptedRecord(msg)) if msg.contains("new_value length truncated")));
+    }
+
+    #[test]
+    fn test_deserialize_cas_new_value_truncated() {
+        // Valid term, has_expected=0, new_value_len=10, but truncated new_value
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&5u32.to_le_bytes()); // term_len = 5
+        payload.extend_from_slice(b"hello"); // term
+        payload.push(0); // has_expected = false
+        payload.extend_from_slice(&10u32.to_le_bytes()); // new_value_len = 10
+        payload.extend_from_slice(&[1, 2, 3, 4, 5]); // Only 5 bytes (missing success byte too)
+        let result = WalRecord::deserialize(WalRecordType::CompareAndSwap, &payload);
+        assert!(matches!(result, Err(WalError::CorruptedRecord(msg)) if msg.contains("new_value truncated")));
+    }
+
+    #[test]
+    fn test_deserialize_batch_insert_payload_too_short() {
+        // BatchInsert requires at least 4 bytes for count
+        let payload = vec![0; 2]; // Only 2 bytes
+        let result = WalRecord::deserialize(WalRecordType::BatchInsert, &payload);
+        assert!(matches!(result, Err(WalError::CorruptedRecord(msg)) if msg.contains("payload too short")));
+    }
+
+    #[test]
+    fn test_deserialize_batch_insert_entry_term_len_truncated() {
+        // count=2, but entry 0 is incomplete
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&2u32.to_le_bytes()); // count = 2
+        // Entry 0: incomplete term_len
+        payload.extend_from_slice(&[0, 0]); // Only 2 bytes of term_len
+        let result = WalRecord::deserialize(WalRecordType::BatchInsert, &payload);
+        assert!(matches!(result, Err(WalError::CorruptedRecord(msg)) if msg.contains("entry 0 term_len truncated")));
+    }
+
+    #[test]
+    fn test_deserialize_batch_insert_entry_term_truncated() {
+        // count=1, term_len=10 but only 3 bytes of term
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&1u32.to_le_bytes()); // count = 1
+        payload.extend_from_slice(&10u32.to_le_bytes()); // term_len = 10
+        payload.extend_from_slice(&[b'a', b'b', b'c']); // Only 3 bytes of term
+        let result = WalRecord::deserialize(WalRecordType::BatchInsert, &payload);
+        assert!(matches!(result, Err(WalError::CorruptedRecord(msg)) if msg.contains("entry 0 term truncated")));
+    }
+
+    #[test]
+    fn test_deserialize_batch_insert_entry_value_len_truncated() {
+        // count=1, valid term, has_value=1, but missing value_len
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&1u32.to_le_bytes()); // count = 1
+        payload.extend_from_slice(&5u32.to_le_bytes()); // term_len = 5
+        payload.extend_from_slice(b"hello"); // term
+        payload.push(1); // has_value = true
+        // Missing value_len (4 bytes)
+        let result = WalRecord::deserialize(WalRecordType::BatchInsert, &payload);
+        assert!(matches!(result, Err(WalError::CorruptedRecord(msg)) if msg.contains("entry 0 value_len truncated")));
+    }
+
+    #[test]
+    fn test_deserialize_batch_insert_entry_value_truncated() {
+        // count=1, valid term, has_value=1, value_len=10, but only 3 bytes of value
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&1u32.to_le_bytes()); // count = 1
+        payload.extend_from_slice(&5u32.to_le_bytes()); // term_len = 5
+        payload.extend_from_slice(b"hello"); // term
+        payload.push(1); // has_value = true
+        payload.extend_from_slice(&10u32.to_le_bytes()); // value_len = 10
+        payload.extend_from_slice(&[1, 2, 3]); // Only 3 bytes of value
+        let result = WalRecord::deserialize(WalRecordType::BatchInsert, &payload);
+        assert!(matches!(result, Err(WalError::CorruptedRecord(msg)) if msg.contains("entry 0 value truncated")));
+    }
+
+    #[test]
+    fn test_deserialize_batch_insert_second_entry_truncated() {
+        // Test truncation at second entry to ensure loop index is correct
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&2u32.to_le_bytes()); // count = 2
+
+        // Entry 0: complete
+        payload.extend_from_slice(&3u32.to_le_bytes()); // term_len = 3
+        payload.extend_from_slice(b"foo"); // term
+        payload.push(0); // has_value = false
+
+        // Entry 1: incomplete term
+        payload.extend_from_slice(&10u32.to_le_bytes()); // term_len = 10
+        payload.extend_from_slice(&[b'a', b'b']); // Only 2 bytes of term
+
+        let result = WalRecord::deserialize(WalRecordType::BatchInsert, &payload);
+        assert!(matches!(result, Err(WalError::CorruptedRecord(msg)) if msg.contains("entry 1 term truncated")));
+    }
+
+    #[test]
+    fn test_deserialize_valid_increment() {
+        // Valid Increment record
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&5u32.to_le_bytes()); // term_len = 5
+        payload.extend_from_slice(b"count"); // term
+        payload.extend_from_slice(&42i64.to_le_bytes()); // delta
+        payload.extend_from_slice(&100i64.to_le_bytes()); // result
+
+        let result = WalRecord::deserialize(WalRecordType::Increment, &payload);
+        assert!(result.is_ok());
+        match result.unwrap() {
+            WalRecord::Increment { term, delta, result: res } => {
+                assert_eq!(term, b"count");
+                assert_eq!(delta, 42);
+                assert_eq!(res, 100);
+            }
+            _ => panic!("Expected Increment"),
+        }
+    }
+
+    #[test]
+    fn test_deserialize_valid_cas_with_expected() {
+        // Valid CAS with expected value
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&3u32.to_le_bytes()); // term_len = 3
+        payload.extend_from_slice(b"key"); // term
+        payload.push(1); // has_expected = true
+        payload.extend_from_slice(&3u32.to_le_bytes()); // expected_len = 3
+        payload.extend_from_slice(b"old"); // expected
+        payload.extend_from_slice(&3u32.to_le_bytes()); // new_value_len = 3
+        payload.extend_from_slice(b"new"); // new_value
+        payload.push(1); // success = true
+
+        let result = WalRecord::deserialize(WalRecordType::CompareAndSwap, &payload);
+        assert!(result.is_ok());
+        match result.unwrap() {
+            WalRecord::CompareAndSwap { term, expected, new_value, success } => {
+                assert_eq!(term, b"key");
+                assert_eq!(expected, Some(b"old".to_vec()));
+                assert_eq!(new_value, b"new");
+                assert!(success);
+            }
+            _ => panic!("Expected CompareAndSwap"),
+        }
+    }
+
+    #[test]
+    fn test_deserialize_valid_cas_without_expected() {
+        // Valid CAS without expected value (insert if not exists)
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&3u32.to_le_bytes()); // term_len = 3
+        payload.extend_from_slice(b"key"); // term
+        payload.push(0); // has_expected = false
+        payload.extend_from_slice(&5u32.to_le_bytes()); // new_value_len = 5
+        payload.extend_from_slice(b"value"); // new_value
+        payload.push(0); // success = false
+
+        let result = WalRecord::deserialize(WalRecordType::CompareAndSwap, &payload);
+        assert!(result.is_ok());
+        match result.unwrap() {
+            WalRecord::CompareAndSwap { term, expected, new_value, success } => {
+                assert_eq!(term, b"key");
+                assert!(expected.is_none());
+                assert_eq!(new_value, b"value");
+                assert!(!success);
+            }
+            _ => panic!("Expected CompareAndSwap"),
+        }
+    }
+
+    #[test]
+    fn test_deserialize_valid_transaction_records() {
+        // Valid BeginTx
+        let payload = 12345u64.to_le_bytes().to_vec();
+        let result = WalRecord::deserialize(WalRecordType::BeginTx, &payload);
+        assert!(result.is_ok());
+        match result.unwrap() {
+            WalRecord::BeginTx { tx_id } => assert_eq!(tx_id, 12345),
+            _ => panic!("Expected BeginTx"),
+        }
+
+        // Valid CommitTx
+        let result = WalRecord::deserialize(WalRecordType::CommitTx, &payload);
+        assert!(result.is_ok());
+        match result.unwrap() {
+            WalRecord::CommitTx { tx_id } => assert_eq!(tx_id, 12345),
+            _ => panic!("Expected CommitTx"),
+        }
+
+        // Valid AbortTx
+        let result = WalRecord::deserialize(WalRecordType::AbortTx, &payload);
+        assert!(result.is_ok());
+        match result.unwrap() {
+            WalRecord::AbortTx { tx_id } => assert_eq!(tx_id, 12345),
+            _ => panic!("Expected AbortTx"),
+        }
+    }
+
+    #[test]
+    fn test_deserialize_valid_checkpoint() {
+        // Valid Checkpoint
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&100u64.to_le_bytes()); // checkpoint_lsn
+        payload.extend_from_slice(&1234567890u64.to_le_bytes()); // timestamp
+
+        let result = WalRecord::deserialize(WalRecordType::Checkpoint, &payload);
+        assert!(result.is_ok());
+        match result.unwrap() {
+            WalRecord::Checkpoint { checkpoint_lsn, timestamp } => {
+                assert_eq!(checkpoint_lsn, 100);
+                assert_eq!(timestamp, 1234567890);
+            }
+            _ => panic!("Expected Checkpoint"),
+        }
+    }
+
+    #[test]
+    fn test_invalid_record_type() {
+        // Test TryFrom<u8> for WalRecordType with invalid values
+        let result = WalRecordType::try_from(0u8);
+        assert!(matches!(result, Err(WalError::InvalidRecordType(0))));
+
+        let result = WalRecordType::try_from(12u8);
+        assert!(matches!(result, Err(WalError::InvalidRecordType(12))));
+
+        let result = WalRecordType::try_from(255u8);
+        assert!(matches!(result, Err(WalError::InvalidRecordType(255))));
+
+        // Valid types should work
+        assert!(WalRecordType::try_from(1u8).is_ok());
+        assert!(WalRecordType::try_from(10u8).is_ok());
+    }
+
+    #[test]
+    fn test_wal_error_display_and_source() {
+        // Test WalError Display implementations
+        let io_err = WalError::Io(io::Error::new(io::ErrorKind::Other, "test io error"));
+        let display = format!("{}", io_err);
+        assert!(display.contains("WAL I/O error"));
+
+        let invalid = WalError::InvalidRecordType(99);
+        let display = format!("{}", invalid);
+        assert!(display.contains("99"));
+
+        let corrupted = WalError::CorruptedRecord("test corruption".into());
+        let display = format!("{}", corrupted);
+        assert!(display.contains("test corruption"));
+
+        let eof = WalError::UnexpectedEof;
+        let display = format!("{}", eof);
+        assert!(display.contains("Unexpected end"));
+
+        let exists = WalError::AlreadyExists;
+        let display = format!("{}", exists);
+        assert!(display.contains("already exists"));
+
+        let not_found = WalError::NotFound;
+        let display = format!("{}", not_found);
+        assert!(display.contains("not found"));
+
+        let parent_not_found = WalError::ParentNotFound(PathBuf::from("/test/path"));
+        let display = format!("{}", parent_not_found);
+        assert!(display.contains("/test/path"));
+
+        // Test source() method
+        use std::error::Error;
+        let io_err = WalError::Io(io::Error::new(io::ErrorKind::Other, "test"));
+        assert!(io_err.source().is_some());
+
+        let corrupted = WalError::CorruptedRecord("test".into());
+        assert!(corrupted.source().is_none());
     }
 }

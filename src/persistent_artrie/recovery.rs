@@ -653,6 +653,25 @@ impl RecoveryManager {
                         }
                     }
                 }
+                WalRecord::BatchIncrement { entries } => {
+                    // Expand batch into individual increment operations
+                    for (term, delta) in entries {
+                        let op = RecoveredOperation::Increment {
+                            lsn,
+                            term,
+                            delta,
+                            result: 0, // Result is recomputed during apply
+                        };
+                        if let Some(tx_id) = current_tx {
+                            // Part of a transaction - buffer until commit
+                            pending_tx_ops.entry(tx_id).or_default().push(op);
+                        } else {
+                            // Not in a transaction - implicitly committed
+                            operations.push(op);
+                            stats.insert_operations += 1;
+                        }
+                    }
+                }
             }
         }
 
@@ -856,6 +875,25 @@ impl IncrementalRecovery {
                 let ops: Vec<RecoveredOperation> = entries
                     .into_iter()
                     .map(|(term, value)| RecoveredOperation::Insert { lsn, term, value })
+                    .collect();
+
+                if self.current_tx.is_some() {
+                    self.pending_ops.extend(ops);
+                    Ok(None)
+                } else {
+                    Ok(Some(ops))
+                }
+            }
+            WalRecord::BatchIncrement { entries } => {
+                // Expand batch into individual increment operations
+                let ops: Vec<RecoveredOperation> = entries
+                    .into_iter()
+                    .map(|(term, delta)| RecoveredOperation::Increment {
+                        lsn,
+                        term,
+                        delta,
+                        result: 0, // Result is recomputed during apply
+                    })
                     .collect();
 
                 if self.current_tx.is_some() {
@@ -1109,20 +1147,41 @@ fn crc32_header(data: &[u8]) -> u32 {
 ///
 /// Vector of paths to WAL segments, ordered oldest to newest.
 pub fn find_wal_archive_segments<P: AsRef<Path>>(archive_dir: P) -> Vec<PathBuf> {
-    let archive_dir = archive_dir.as_ref();
+    find_wal_segments_in_dir(archive_dir)
+}
 
-    if !archive_dir.exists() {
+/// Find WAL pending segments for recovery.
+///
+/// Scans the pending directory for WAL segments awaiting sync.
+/// These are segments that were rotated but not yet synced before a crash.
+///
+/// # Arguments
+///
+/// * `pending_dir` - Directory containing pending WAL segments
+///
+/// # Returns
+///
+/// Vector of paths to pending segments, ordered oldest to newest.
+pub fn find_wal_pending_segments<P: AsRef<Path>>(pending_dir: P) -> Vec<PathBuf> {
+    find_wal_segments_in_dir(pending_dir)
+}
+
+/// Internal helper to find segments in a directory.
+fn find_wal_segments_in_dir<P: AsRef<Path>>(dir: P) -> Vec<PathBuf> {
+    let dir = dir.as_ref();
+
+    if !dir.exists() {
         return Vec::new();
     }
 
-    let mut segments: Vec<_> = std::fs::read_dir(archive_dir)
+    let mut segments: Vec<_> = std::fs::read_dir(dir)
         .ok()
         .into_iter()
         .flatten()
         .filter_map(|entry| entry.ok())
         .filter(|entry| {
             let path = entry.path();
-            // Archive segments have .segment extension (e.g., wal_12345.segment)
+            // Archive/pending segments have .segment extension (e.g., wal_12345.segment)
             path.extension().and_then(|e| e.to_str()) == Some("segment")
         })
         .map(|entry| entry.path())
@@ -1131,6 +1190,124 @@ pub fn find_wal_archive_segments<P: AsRef<Path>>(archive_dir: P) -> Vec<PathBuf>
     // Sort by filename (which contains timestamp) - oldest first
     segments.sort();
     segments
+}
+
+/// Collect all WAL segments for comprehensive recovery.
+///
+/// This function collects segments from all locations:
+/// 1. Archived segments (already synced, in archive directory)
+/// 2. Pending segments (rotated but not yet synced)
+/// 3. Active WAL file (if it has records beyond the header)
+///
+/// The segments are returned in chronological order based on their timestamps.
+/// During recovery, these should be replayed in order to reconstruct the full state.
+///
+/// # Arguments
+///
+/// * `wal_path` - Path to the active WAL file
+/// * `archive_dir` - Directory containing archived segments (or relative path from WAL parent)
+/// * `pending_dir` - Directory containing pending segments (or relative path from WAL parent)
+///
+/// # Returns
+///
+/// Vector of paths to all WAL segments, ordered oldest to newest.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// use libdictenstein::persistent_artrie::recovery::collect_all_wal_segments;
+/// use std::path::Path;
+///
+/// let segments = collect_all_wal_segments(
+///     Path::new("data/my.wal"),
+///     Path::new("wal_archive"),
+///     Path::new("wal_pending"),
+/// )?;
+///
+/// for segment in segments {
+///     println!("Segment: {}", segment.display());
+/// }
+/// ```
+pub fn collect_all_wal_segments(
+    wal_path: &Path,
+    archive_dir: &Path,
+    pending_dir: &Path,
+) -> Vec<PathBuf> {
+    let parent = wal_path.parent().unwrap_or(Path::new("."));
+    let mut all_segments = Vec::new();
+
+    // 1. Collect archived segments (already synced)
+    let archive_path = if archive_dir.is_absolute() {
+        archive_dir.to_path_buf()
+    } else {
+        parent.join(archive_dir)
+    };
+    all_segments.extend(find_wal_segments_in_dir(&archive_path));
+
+    // 2. Collect pending segments (rotated but not yet synced)
+    let pending_path = if pending_dir.is_absolute() {
+        pending_dir.to_path_buf()
+    } else {
+        parent.join(pending_dir)
+    };
+    all_segments.extend(find_wal_segments_in_dir(&pending_path));
+
+    // Sort all segments by filename (timestamp-based naming ensures chronological order)
+    all_segments.sort();
+
+    // 3. Add active WAL if it has records beyond the header
+    if wal_path.exists() {
+        if let Ok(metadata) = std::fs::metadata(wal_path) {
+            // WAL header is 64 bytes, so if file is larger, it has records
+            if metadata.len() > super::wal::WalHeader::SIZE as u64 {
+                all_segments.push(wal_path.to_path_buf());
+            }
+        }
+    }
+
+    all_segments
+}
+
+/// Get the first LSN from a WAL segment file.
+///
+/// Reads the first record from a segment and returns its LSN.
+/// Used for ordering segments by their actual LSN content rather than filename.
+///
+/// # Arguments
+///
+/// * `segment_path` - Path to the WAL segment
+///
+/// # Returns
+///
+/// The first LSN in the segment, or None if the segment is empty/unreadable.
+pub fn get_segment_first_lsn(segment_path: &Path) -> Option<super::wal::Lsn> {
+    let mut reader = super::wal::WalReader::new(segment_path).ok()?;
+    reader.next_record().and_then(|r| r.ok()).map(|(lsn, _)| lsn)
+}
+
+/// Sort segments by their first LSN for precise ordering.
+///
+/// This is more accurate than filename-based sorting when segments have
+/// been moved or renamed, or when clock drift affects timestamps.
+///
+/// # Arguments
+///
+/// * `segments` - Mutable vector of segment paths to sort in place
+///
+/// # Note
+///
+/// Segments that cannot be read are moved to the end of the list.
+pub fn sort_segments_by_lsn(segments: &mut [PathBuf]) {
+    segments.sort_by(|a, b| {
+        let lsn_a = get_segment_first_lsn(a);
+        let lsn_b = get_segment_first_lsn(b);
+        match (lsn_a, lsn_b) {
+            (Some(a), Some(b)) => a.cmp(&b),
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            (None, None) => a.cmp(b), // Fall back to path comparison
+        }
+    });
 }
 
 /// Rebuild trie from WAL archive segments.
@@ -1172,31 +1349,31 @@ where
 
             // Convert WalRecord to RecoveredOperation and apply
             match record {
-                super::wal::WalRecord::Insert { term, value } => {
+                WalRecord::Insert { term, value } => {
                     let op = RecoveredOperation::Insert { lsn: 0, term, value };
                     if apply_fn(op).is_ok() {
                         terms_recovered += 1;
                     }
                 }
-                super::wal::WalRecord::Remove { term } => {
+                WalRecord::Remove { term } => {
                     let op = RecoveredOperation::Remove { lsn: 0, term };
                     if apply_fn(op).is_ok() {
                         terms_recovered += 1;
                     }
                 }
-                super::wal::WalRecord::Increment { term, delta, result } => {
+                WalRecord::Increment { term, delta, result } => {
                     let op = RecoveredOperation::Increment { lsn: 0, term, delta, result };
                     if apply_fn(op).is_ok() {
                         terms_recovered += 1;
                     }
                 }
-                super::wal::WalRecord::Upsert { term, value } => {
+                WalRecord::Upsert { term, value } => {
                     let op = RecoveredOperation::Upsert { lsn: 0, term, value };
                     if apply_fn(op).is_ok() {
                         terms_recovered += 1;
                     }
                 }
-                super::wal::WalRecord::CompareAndSwap { term, new_value, success, .. } => {
+                WalRecord::CompareAndSwap { term, new_value, success, .. } => {
                     if success {
                         let op = RecoveredOperation::CompareAndSwap {
                             lsn: 0,
@@ -1209,10 +1386,24 @@ where
                         }
                     }
                 }
-                super::wal::WalRecord::BatchInsert { entries } => {
+                WalRecord::BatchInsert { entries } => {
                     // Expand batch and apply each entry
                     for (term, value) in entries {
                         let op = RecoveredOperation::Insert { lsn: 0, term, value };
+                        if apply_fn(op).is_ok() {
+                            terms_recovered += 1;
+                        }
+                    }
+                }
+                WalRecord::BatchIncrement { entries } => {
+                    // Expand batch and apply each increment
+                    for (term, delta) in entries {
+                        let op = RecoveredOperation::Increment {
+                            lsn: 0,
+                            term,
+                            delta,
+                            result: 0, // Result is recomputed during apply
+                        };
                         if apply_fn(op).is_ok() {
                             terms_recovered += 1;
                         }
@@ -1229,7 +1420,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use super::super::wal::WalWriter;
+    use super::super::wal::{WalRecord, WalWriter};
     use tempfile::tempdir;
 
     #[test]
@@ -1491,5 +1682,1152 @@ mod tests {
             .expect("recover_with_callback");
 
         assert_eq!(collected.len(), 5);
+    }
+
+    #[test]
+    fn test_find_wal_pending_segments() {
+        let dir = tempdir().expect("create tempdir");
+        let pending_dir = dir.path().join("wal_pending");
+        std::fs::create_dir_all(&pending_dir).expect("create pending dir");
+
+        // Create some pending segment files
+        for i in 0..3 {
+            let segment_name = format!("wal_pending_{:012}.segment", i * 1000);
+            std::fs::write(pending_dir.join(segment_name), b"dummy").expect("write segment");
+        }
+
+        // Also create a non-segment file (should be ignored)
+        std::fs::write(pending_dir.join("other.txt"), b"other").expect("write other");
+
+        let segments = find_wal_pending_segments(&pending_dir);
+        assert_eq!(segments.len(), 3);
+
+        // Should be sorted by filename
+        for i in 0..3 {
+            let expected = format!("wal_pending_{:012}.segment", i * 1000);
+            assert!(
+                segments[i].file_name().unwrap().to_str().unwrap() == expected,
+                "Expected {} but got {:?}",
+                expected,
+                segments[i]
+            );
+        }
+    }
+
+    #[test]
+    fn test_collect_all_wal_segments() {
+        let dir = tempdir().expect("create tempdir");
+        let wal_path = dir.path().join("test.wal");
+        let archive_dir = dir.path().join("wal_archive");
+        let pending_dir = dir.path().join("wal_pending");
+
+        std::fs::create_dir_all(&archive_dir).expect("create archive dir");
+        std::fs::create_dir_all(&pending_dir).expect("create pending dir");
+
+        // Create archived segments (oldest)
+        for i in 0..2 {
+            let segment_name = format!("wal_{:012}.segment", i * 1000);
+            std::fs::write(archive_dir.join(segment_name), b"dummy").expect("write archive segment");
+        }
+
+        // Create pending segments (middle)
+        for i in 2..4 {
+            let segment_name = format!("wal_pending_{:012}.segment", i * 1000);
+            std::fs::write(pending_dir.join(segment_name), b"dummy").expect("write pending segment");
+        }
+
+        // Create active WAL with a header (newest)
+        // Create WAL with header + some content
+        let wal = WalWriter::create(&wal_path).expect("create WAL");
+        wal.append(WalRecord::Insert {
+            term: b"test".to_vec(),
+            value: None,
+        }).expect("append");
+        wal.sync().expect("sync");
+        drop(wal);
+
+        let segments = collect_all_wal_segments(
+            &wal_path,
+            std::path::Path::new("wal_archive"),
+            std::path::Path::new("wal_pending"),
+        );
+
+        // Should have 2 archive + 2 pending + 1 active = 5 segments
+        assert_eq!(segments.len(), 5);
+
+        // Archive segments should come first (sorted by filename)
+        assert!(segments[0].to_string_lossy().contains("wal_archive"));
+        assert!(segments[1].to_string_lossy().contains("wal_archive"));
+
+        // Then pending segments
+        assert!(segments[2].to_string_lossy().contains("wal_pending"));
+        assert!(segments[3].to_string_lossy().contains("wal_pending"));
+
+        // Active WAL should be last
+        assert_eq!(segments[4], wal_path);
+    }
+
+    #[test]
+    fn test_get_segment_first_lsn() {
+        let dir = tempdir().expect("create tempdir");
+        let wal_path = dir.path().join("test.wal");
+
+        // Create WAL with some records
+        {
+            let wal = WalWriter::create(&wal_path).expect("create WAL");
+            for i in 0..5 {
+                wal.append(WalRecord::Insert {
+                    term: format!("term{}", i).into_bytes(),
+                    value: None,
+                }).expect("append");
+            }
+            wal.sync().expect("sync");
+        }
+
+        let first_lsn = get_segment_first_lsn(&wal_path);
+        assert_eq!(first_lsn, Some(1), "First LSN should be 1");
+
+        // Non-existent file should return None
+        let nonexistent = get_segment_first_lsn(std::path::Path::new("/nonexistent/path.wal"));
+        assert_eq!(nonexistent, None);
+    }
+
+    #[test]
+    fn test_sort_segments_by_lsn() {
+        let dir = tempdir().expect("create tempdir");
+
+        // Create multiple WAL files with different starting LSNs
+        let mut segments = Vec::new();
+
+        // Segment with LSN starting at 10
+        let wal_path_10 = dir.path().join("wal_10.wal");
+        {
+            let wal = WalWriter::create(&wal_path_10).expect("create WAL");
+            // Skip LSNs 1-9 by allocating them
+            for _ in 0..9 {
+                wal.allocate_lsn();
+            }
+            wal.append(WalRecord::Insert {
+                term: b"at_10".to_vec(),
+                value: None,
+            }).expect("append");
+            wal.sync().expect("sync");
+        }
+        segments.push(wal_path_10);
+
+        // Segment with LSN starting at 1
+        let wal_path_1 = dir.path().join("wal_1.wal");
+        {
+            let wal = WalWriter::create(&wal_path_1).expect("create WAL");
+            wal.append(WalRecord::Insert {
+                term: b"at_1".to_vec(),
+                value: None,
+            }).expect("append");
+            wal.sync().expect("sync");
+        }
+        segments.push(wal_path_1.clone());
+
+        // Segment with LSN starting at 5
+        let wal_path_5 = dir.path().join("wal_5.wal");
+        {
+            let wal = WalWriter::create(&wal_path_5).expect("create WAL");
+            for _ in 0..4 {
+                wal.allocate_lsn();
+            }
+            wal.append(WalRecord::Insert {
+                term: b"at_5".to_vec(),
+                value: None,
+            }).expect("append");
+            wal.sync().expect("sync");
+        }
+        segments.push(wal_path_5.clone());
+
+        // Sort by LSN
+        sort_segments_by_lsn(&mut segments);
+
+        // Should be ordered: LSN 1, LSN 5, LSN 10
+        assert_eq!(segments[0], wal_path_1, "First should be segment with LSN 1");
+        assert_eq!(segments[1], wal_path_5, "Second should be segment with LSN 5");
+        // Third segment is wal_path_10
+    }
+
+    // =========================================================================
+    // Transaction Edge Case Tests
+    //
+    // These tests verify correct handling of orphaned/unknown transaction
+    // commits, aborts, and mismatched transaction states.
+    // =========================================================================
+
+    #[test]
+    fn test_recovery_commit_unknown_tx() {
+        // Test: CommitTx for a transaction that was never started (no BeginTx)
+        // Expected: Gracefully ignored, no crash, no operations recovered
+        let dir = tempdir().expect("create tempdir");
+        let wal_path = dir.path().join("orphan_commit.wal");
+
+        {
+            let writer = WalWriter::create(&wal_path).expect("create writer");
+
+            // Some normal operations
+            writer
+                .append(WalRecord::Insert {
+                    term: b"normal".to_vec(),
+                    value: None,
+                })
+                .expect("append insert");
+
+            // CommitTx for unknown tx_id 99 (never had BeginTx)
+            writer
+                .append(WalRecord::CommitTx { tx_id: 99 })
+                .expect("append orphan commit");
+
+            // More normal operations
+            writer
+                .append(WalRecord::Insert {
+                    term: b"after_orphan".to_vec(),
+                    value: None,
+                })
+                .expect("append insert");
+
+            writer.sync().expect("sync");
+        }
+
+        // Recovery should succeed without error
+        let manager = RecoveryManager::new(&wal_path);
+        let state = manager.recover().expect("recover should succeed");
+
+        // Should have 2 normal inserts (orphan commit is gracefully ignored)
+        assert_eq!(state.operation_count(), 2);
+
+        let ops: Vec<_> = state.into_operations();
+        match &ops[0] {
+            RecoveredOperation::Insert { term, .. } => assert_eq!(term, b"normal"),
+            _ => panic!("Expected Insert"),
+        }
+        match &ops[1] {
+            RecoveredOperation::Insert { term, .. } => assert_eq!(term, b"after_orphan"),
+            _ => panic!("Expected Insert"),
+        }
+    }
+
+    #[test]
+    fn test_recovery_abort_unknown_tx() {
+        // Test: AbortTx for a transaction that was never started (no BeginTx)
+        // Expected: Gracefully ignored, no crash, no operations affected
+        let dir = tempdir().expect("create tempdir");
+        let wal_path = dir.path().join("orphan_abort.wal");
+
+        {
+            let writer = WalWriter::create(&wal_path).expect("create writer");
+
+            // Normal insert
+            writer
+                .append(WalRecord::Insert {
+                    term: b"before".to_vec(),
+                    value: None,
+                })
+                .expect("append insert");
+
+            // AbortTx for unknown tx_id 42
+            writer
+                .append(WalRecord::AbortTx { tx_id: 42 })
+                .expect("append orphan abort");
+
+            // Normal insert after
+            writer
+                .append(WalRecord::Insert {
+                    term: b"after".to_vec(),
+                    value: None,
+                })
+                .expect("append insert");
+
+            writer.sync().expect("sync");
+        }
+
+        let manager = RecoveryManager::new(&wal_path);
+        let state = manager.recover().expect("recover should succeed");
+
+        // Both inserts should be recovered
+        assert_eq!(state.operation_count(), 2);
+    }
+
+    #[test]
+    fn test_recovery_commit_no_pending_ops() {
+        // Test: BeginTx followed immediately by CommitTx with no operations
+        // Expected: Empty transaction, no operations recovered
+        let dir = tempdir().expect("create tempdir");
+        let wal_path = dir.path().join("empty_tx.wal");
+
+        {
+            let writer = WalWriter::create(&wal_path).expect("create writer");
+
+            // Empty transaction
+            writer
+                .append(WalRecord::BeginTx { tx_id: 1 })
+                .expect("append begin");
+            writer
+                .append(WalRecord::CommitTx { tx_id: 1 })
+                .expect("append commit");
+
+            // Non-transactional insert for comparison
+            writer
+                .append(WalRecord::Insert {
+                    term: b"non_tx".to_vec(),
+                    value: None,
+                })
+                .expect("append insert");
+
+            writer.sync().expect("sync");
+        }
+
+        let manager = RecoveryManager::new(&wal_path);
+        let state = manager.recover().expect("recover should succeed");
+
+        // Only the non-transactional insert should be recovered
+        assert_eq!(state.operation_count(), 1);
+        assert_eq!(state.stats.committed_transactions, 1); // Empty tx still counts as committed
+
+        let ops: Vec<_> = state.into_operations();
+        match &ops[0] {
+            RecoveredOperation::Insert { term, .. } => assert_eq!(term, b"non_tx"),
+            _ => panic!("Expected Insert"),
+        }
+    }
+
+    #[test]
+    fn test_recovery_nested_transaction_ids() {
+        // Test: Multiple transactions with interleaved operations
+        // Operations should be associated with the most recent BeginTx
+        let dir = tempdir().expect("create tempdir");
+        let wal_path = dir.path().join("interleaved_tx.wal");
+
+        {
+            let writer = WalWriter::create(&wal_path).expect("create writer");
+
+            // Start tx 1
+            writer
+                .append(WalRecord::BeginTx { tx_id: 1 })
+                .expect("append begin");
+            writer
+                .append(WalRecord::Insert {
+                    term: b"tx1_op1".to_vec(),
+                    value: None,
+                })
+                .expect("append insert");
+
+            // Start tx 2 (before tx 1 commits)
+            writer
+                .append(WalRecord::BeginTx { tx_id: 2 })
+                .expect("append begin");
+            writer
+                .append(WalRecord::Insert {
+                    term: b"tx2_op1".to_vec(),
+                    value: None,
+                })
+                .expect("append insert");
+
+            // Commit tx 2 first
+            writer
+                .append(WalRecord::CommitTx { tx_id: 2 })
+                .expect("append commit");
+
+            // More ops in tx 1 (current_tx should be tx 2, but we commit tx 2)
+            // Now operations should be non-transactional (current_tx is None after commit)
+            writer
+                .append(WalRecord::Insert {
+                    term: b"after_tx2_commit".to_vec(),
+                    value: None,
+                })
+                .expect("append insert");
+
+            // Commit tx 1
+            writer
+                .append(WalRecord::CommitTx { tx_id: 1 })
+                .expect("append commit");
+
+            writer.sync().expect("sync");
+        }
+
+        let manager = RecoveryManager::new(&wal_path);
+        let state = manager.recover().expect("recover should succeed");
+
+        // tx1_op1 (committed), tx2_op1 (committed), after_tx2_commit (non-tx)
+        assert_eq!(state.operation_count(), 3);
+        assert_eq!(state.stats.committed_transactions, 2);
+    }
+
+    #[test]
+    fn test_recovery_tx_mismatch_on_commit() {
+        // Test: current_tx doesn't match the committed tx_id
+        // This can happen with concurrent transactions
+        let dir = tempdir().expect("create tempdir");
+        let wal_path = dir.path().join("tx_mismatch_commit.wal");
+
+        {
+            let writer = WalWriter::create(&wal_path).expect("create writer");
+
+            // Start tx 1
+            writer
+                .append(WalRecord::BeginTx { tx_id: 1 })
+                .expect("append begin");
+            writer
+                .append(WalRecord::Insert {
+                    term: b"tx1_data".to_vec(),
+                    value: None,
+                })
+                .expect("append insert");
+
+            // Start tx 2 (overwrites current_tx)
+            writer
+                .append(WalRecord::BeginTx { tx_id: 2 })
+                .expect("append begin");
+            writer
+                .append(WalRecord::Insert {
+                    term: b"tx2_data".to_vec(),
+                    value: None,
+                })
+                .expect("append insert");
+
+            // Commit tx 1 (current_tx is 2, not 1)
+            // This should commit tx 1's pending ops but NOT reset current_tx
+            writer
+                .append(WalRecord::CommitTx { tx_id: 1 })
+                .expect("append commit");
+
+            // Abort tx 2
+            writer
+                .append(WalRecord::AbortTx { tx_id: 2 })
+                .expect("append abort");
+
+            writer.sync().expect("sync");
+        }
+
+        let manager = RecoveryManager::new(&wal_path);
+        let state = manager.recover().expect("recover should succeed");
+
+        // tx1_data should be recovered, tx2_data should NOT
+        assert_eq!(state.operation_count(), 1);
+        let ops: Vec<_> = state.into_operations();
+        match &ops[0] {
+            RecoveredOperation::Insert { term, .. } => assert_eq!(term, b"tx1_data"),
+            _ => panic!("Expected Insert"),
+        }
+    }
+
+    #[test]
+    fn test_recovery_tx_mismatch_on_abort() {
+        // Test: current_tx doesn't match the aborted tx_id
+        let dir = tempdir().expect("create tempdir");
+        let wal_path = dir.path().join("tx_mismatch_abort.wal");
+
+        {
+            let writer = WalWriter::create(&wal_path).expect("create writer");
+
+            // Start tx 1
+            writer
+                .append(WalRecord::BeginTx { tx_id: 1 })
+                .expect("append begin");
+            writer
+                .append(WalRecord::Insert {
+                    term: b"tx1_data".to_vec(),
+                    value: None,
+                })
+                .expect("append insert");
+
+            // Start tx 2
+            writer
+                .append(WalRecord::BeginTx { tx_id: 2 })
+                .expect("append begin");
+            writer
+                .append(WalRecord::Insert {
+                    term: b"tx2_data".to_vec(),
+                    value: None,
+                })
+                .expect("append insert");
+
+            // Abort tx 1 (current_tx is 2, not 1)
+            writer
+                .append(WalRecord::AbortTx { tx_id: 1 })
+                .expect("append abort");
+
+            // Commit tx 2
+            writer
+                .append(WalRecord::CommitTx { tx_id: 2 })
+                .expect("append commit");
+
+            writer.sync().expect("sync");
+        }
+
+        let manager = RecoveryManager::new(&wal_path);
+        let state = manager.recover().expect("recover should succeed");
+
+        // tx1_data should NOT be recovered (aborted), tx2_data should
+        assert_eq!(state.operation_count(), 1);
+        let ops: Vec<_> = state.into_operations();
+        match &ops[0] {
+            RecoveredOperation::Insert { term, .. } => assert_eq!(term, b"tx2_data"),
+            _ => panic!("Expected Insert"),
+        }
+    }
+
+    #[test]
+    fn test_recovery_double_commit() {
+        // Test: CommitTx for the same tx_id twice
+        // Second commit should be a no-op (tx already removed from pending_tx_ops)
+        let dir = tempdir().expect("create tempdir");
+        let wal_path = dir.path().join("double_commit.wal");
+
+        {
+            let writer = WalWriter::create(&wal_path).expect("create writer");
+
+            writer
+                .append(WalRecord::BeginTx { tx_id: 1 })
+                .expect("append begin");
+            writer
+                .append(WalRecord::Insert {
+                    term: b"tx1_data".to_vec(),
+                    value: None,
+                })
+                .expect("append insert");
+            writer
+                .append(WalRecord::CommitTx { tx_id: 1 })
+                .expect("append first commit");
+            // Second commit for same tx
+            writer
+                .append(WalRecord::CommitTx { tx_id: 1 })
+                .expect("append second commit");
+
+            writer.sync().expect("sync");
+        }
+
+        let manager = RecoveryManager::new(&wal_path);
+        let state = manager.recover().expect("recover should succeed");
+
+        // Data should only appear once
+        assert_eq!(state.operation_count(), 1);
+    }
+
+    #[test]
+    fn test_recovery_double_abort() {
+        // Test: AbortTx for the same tx_id twice
+        // Second abort should be a no-op
+        let dir = tempdir().expect("create tempdir");
+        let wal_path = dir.path().join("double_abort.wal");
+
+        {
+            let writer = WalWriter::create(&wal_path).expect("create writer");
+
+            writer
+                .append(WalRecord::BeginTx { tx_id: 1 })
+                .expect("append begin");
+            writer
+                .append(WalRecord::Insert {
+                    term: b"tx1_data".to_vec(),
+                    value: None,
+                })
+                .expect("append insert");
+            writer
+                .append(WalRecord::AbortTx { tx_id: 1 })
+                .expect("append first abort");
+            // Second abort for same tx
+            writer
+                .append(WalRecord::AbortTx { tx_id: 1 })
+                .expect("append second abort");
+
+            // Add non-tx insert to verify recovery works
+            writer
+                .append(WalRecord::Insert {
+                    term: b"after_abort".to_vec(),
+                    value: None,
+                })
+                .expect("append insert");
+
+            writer.sync().expect("sync");
+        }
+
+        let manager = RecoveryManager::new(&wal_path);
+        let state = manager.recover().expect("recover should succeed");
+
+        // Only the non-tx insert should be recovered (tx1 was aborted)
+        assert_eq!(state.operation_count(), 1);
+        let ops: Vec<_> = state.into_operations();
+        match &ops[0] {
+            RecoveredOperation::Insert { term, .. } => assert_eq!(term, b"after_abort"),
+            _ => panic!("Expected Insert"),
+        }
+    }
+
+    #[test]
+    fn test_recovery_commit_then_abort_same_tx() {
+        // Test: CommitTx followed by AbortTx for same tx_id
+        // Commit should succeed, abort should be no-op
+        let dir = tempdir().expect("create tempdir");
+        let wal_path = dir.path().join("commit_then_abort.wal");
+
+        {
+            let writer = WalWriter::create(&wal_path).expect("create writer");
+
+            writer
+                .append(WalRecord::BeginTx { tx_id: 1 })
+                .expect("append begin");
+            writer
+                .append(WalRecord::Insert {
+                    term: b"tx1_data".to_vec(),
+                    value: None,
+                })
+                .expect("append insert");
+            writer
+                .append(WalRecord::CommitTx { tx_id: 1 })
+                .expect("append commit");
+            // Abort after commit - should be ignored
+            writer
+                .append(WalRecord::AbortTx { tx_id: 1 })
+                .expect("append abort");
+
+            writer.sync().expect("sync");
+        }
+
+        let manager = RecoveryManager::new(&wal_path);
+        let state = manager.recover().expect("recover should succeed");
+
+        // Data should be recovered (commit succeeded)
+        assert_eq!(state.operation_count(), 1);
+        let ops: Vec<_> = state.into_operations();
+        match &ops[0] {
+            RecoveredOperation::Insert { term, .. } => assert_eq!(term, b"tx1_data"),
+            _ => panic!("Expected Insert"),
+        }
+    }
+
+    #[test]
+    fn test_recovery_abort_then_commit_same_tx() {
+        // Test: AbortTx followed by CommitTx for same tx_id
+        // Abort should succeed, commit should be no-op
+        let dir = tempdir().expect("create tempdir");
+        let wal_path = dir.path().join("abort_then_commit.wal");
+
+        {
+            let writer = WalWriter::create(&wal_path).expect("create writer");
+
+            writer
+                .append(WalRecord::BeginTx { tx_id: 1 })
+                .expect("append begin");
+            writer
+                .append(WalRecord::Insert {
+                    term: b"tx1_data".to_vec(),
+                    value: None,
+                })
+                .expect("append insert");
+            writer
+                .append(WalRecord::AbortTx { tx_id: 1 })
+                .expect("append abort");
+            // Commit after abort - should be ignored
+            writer
+                .append(WalRecord::CommitTx { tx_id: 1 })
+                .expect("append commit");
+
+            // Add non-tx insert to verify
+            writer
+                .append(WalRecord::Insert {
+                    term: b"after".to_vec(),
+                    value: None,
+                })
+                .expect("append insert");
+
+            writer.sync().expect("sync");
+        }
+
+        let manager = RecoveryManager::new(&wal_path);
+        let state = manager.recover().expect("recover should succeed");
+
+        // tx1_data should NOT be recovered (aborted), only "after"
+        assert_eq!(state.operation_count(), 1);
+        let ops: Vec<_> = state.into_operations();
+        match &ops[0] {
+            RecoveredOperation::Insert { term, .. } => assert_eq!(term, b"after"),
+            _ => panic!("Expected Insert"),
+        }
+    }
+
+    #[test]
+    fn test_recovery_error_display() {
+        // Test Display implementations for RecoveryError
+        let io_err = RecoveryError::Io(io::Error::new(io::ErrorKind::Other, "test"));
+        assert!(format!("{}", io_err).contains("I/O error"));
+
+        let corrupted = RecoveryError::CorruptedWal("test corruption".into());
+        assert!(format!("{}", corrupted).contains("Corrupted WAL"));
+        assert!(format!("{}", corrupted).contains("test corruption"));
+
+        let no_checkpoint = RecoveryError::NoCheckpoint;
+        assert!(format!("{}", no_checkpoint).contains("No checkpoint"));
+
+        let invalid_cp = RecoveryError::InvalidCheckpoint {
+            lsn: 42,
+            reason: "bad data".into(),
+        };
+        let display = format!("{}", invalid_cp);
+        assert!(display.contains("42"));
+        assert!(display.contains("bad data"));
+
+        let tx_inconsistency = RecoveryError::TransactionInconsistency {
+            tx_id: 123,
+            reason: "missing begin".into(),
+        };
+        let display = format!("{}", tx_inconsistency);
+        assert!(display.contains("123"));
+        assert!(display.contains("missing begin"));
+
+        let failed = RecoveryError::RecoveryFailed("general failure".into());
+        assert!(format!("{}", failed).contains("general failure"));
+
+        // Test source() method
+        use std::error::Error;
+        let io_err = RecoveryError::Io(io::Error::new(io::ErrorKind::Other, "test"));
+        assert!(io_err.source().is_some());
+
+        let corrupted = RecoveryError::CorruptedWal("test".into());
+        assert!(corrupted.source().is_none());
+    }
+
+    #[test]
+    fn test_recovery_from_wal_error() {
+        // Test From<WalError> for RecoveryError
+        use super::super::wal::WalError;
+
+        let io_err: RecoveryError = WalError::Io(io::Error::new(io::ErrorKind::Other, "test")).into();
+        assert!(matches!(io_err, RecoveryError::Io(_)));
+
+        let corrupted: RecoveryError = WalError::CorruptedRecord("bad record".into()).into();
+        assert!(matches!(corrupted, RecoveryError::CorruptedWal(_)));
+
+        let eof: RecoveryError = WalError::UnexpectedEof.into();
+        assert!(matches!(eof, RecoveryError::CorruptedWal(_)));
+
+        let invalid_type: RecoveryError = WalError::InvalidRecordType(99).into();
+        assert!(matches!(invalid_type, RecoveryError::CorruptedWal(_)));
+
+        let already_exists: RecoveryError = WalError::AlreadyExists.into();
+        assert!(matches!(already_exists, RecoveryError::RecoveryFailed(_)));
+
+        let not_found: RecoveryError = WalError::NotFound.into();
+        assert!(matches!(not_found, RecoveryError::NoCheckpoint));
+
+        let parent_not_found: RecoveryError =
+            WalError::ParentNotFound(PathBuf::from("/test")).into();
+        assert!(matches!(parent_not_found, RecoveryError::RecoveryFailed(_)));
+    }
+
+    // =========================================================================
+    // Corruption Detection Tests for Branch Coverage
+    // =========================================================================
+
+    #[test]
+    fn test_detect_corruption_missing_file() {
+        // Test: detect_corruption on nonexistent file
+        // Expected: Ok(None) - no file means no corruption
+        let nonexistent = Path::new("/nonexistent/path/to/file.art");
+        let result = detect_corruption(nonexistent, false).expect("should succeed");
+        assert!(result.is_none(), "Missing file should not report corruption");
+    }
+
+    #[test]
+    fn test_detect_corruption_truncated_file() {
+        // Test: File smaller than minimum header size (64 bytes)
+        let dir = tempdir().expect("create tempdir");
+        let path = dir.path().join("truncated.art");
+
+        // Write file smaller than 64 bytes
+        std::fs::write(&path, &[0u8; 32]).expect("write truncated file");
+
+        let result = detect_corruption(&path, false).expect("should succeed");
+        assert!(result.is_some(), "Truncated file should report corruption");
+
+        match result.unwrap() {
+            CorruptionType::Truncated { expected, actual } => {
+                assert_eq!(expected, 64);
+                assert_eq!(actual, 32);
+            }
+            other => panic!("Expected Truncated, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_detect_corruption_invalid_magic() {
+        // Test: File with invalid magic bytes (neither DiskManager nor PART/ARTC format)
+        let dir = tempdir().expect("create tempdir");
+        let path = dir.path().join("bad_magic.art");
+
+        // Write 64+ bytes with garbage magic
+        let mut data = vec![0u8; 128];
+        data[0..4].copy_from_slice(b"XXXX"); // Invalid magic
+        std::fs::write(&path, &data).expect("write file with bad magic");
+
+        let result = detect_corruption(&path, false).expect("should succeed");
+        assert!(result.is_some(), "Invalid magic should report corruption");
+
+        match result.unwrap() {
+            CorruptionType::InvalidHeader(msg) => {
+                assert!(msg.contains("Invalid magic"), "Message should mention magic: {}", msg);
+            }
+            other => panic!("Expected InvalidHeader, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_detect_corruption_valid_disk_manager_magic() {
+        // Test: File with valid DiskManager magic (MAGIC_NUMBER = 0x5041_5254_0001_0000)
+        let dir = tempdir().expect("create tempdir");
+        let path = dir.path().join("valid_disk_magic.art");
+
+        // Create header with DiskManager magic
+        let mut data = vec![0u8; 128];
+        const DISK_MANAGER_MAGIC: u64 = 0x5041_5254_0001_0000;
+        data[0..8].copy_from_slice(&DISK_MANAGER_MAGIC.to_le_bytes());
+        std::fs::write(&path, &data).expect("write file with valid magic");
+
+        let result = detect_corruption(&path, false).expect("should succeed");
+        assert!(result.is_none(), "Valid DiskManager magic should not report corruption");
+    }
+
+    #[test]
+    fn test_detect_corruption_valid_part_magic() {
+        // Test: File with valid PART magic (4-byte format)
+        let dir = tempdir().expect("create tempdir");
+        let path = dir.path().join("valid_part_magic.art");
+
+        // Create header with PART magic and version 1
+        let mut data = vec![0u8; 128];
+        data[0..4].copy_from_slice(b"PART");
+        data[4] = 1; // Version 1
+        std::fs::write(&path, &data).expect("write file with PART magic");
+
+        let result = detect_corruption(&path, false).expect("should succeed");
+        assert!(result.is_none(), "Valid PART magic should not report corruption");
+    }
+
+    #[test]
+    fn test_detect_corruption_invalid_version() {
+        // Test: File with valid PART magic but invalid version
+        let dir = tempdir().expect("create tempdir");
+        let path = dir.path().join("bad_version.art");
+
+        // Create header with PART magic but version 0 (invalid)
+        let mut data = vec![0u8; 128];
+        data[0..4].copy_from_slice(b"PART");
+        data[4] = 0; // Invalid version
+        std::fs::write(&path, &data).expect("write file with invalid version");
+
+        let result = detect_corruption(&path, false).expect("should succeed");
+        assert!(result.is_some(), "Invalid version should report corruption");
+
+        match result.unwrap() {
+            CorruptionType::InvalidHeader(msg) => {
+                assert!(msg.contains("version"), "Message should mention version: {}", msg);
+            }
+            other => panic!("Expected InvalidHeader for version, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_detect_corruption_version_too_high() {
+        // Test: File with valid PART magic but version > 2 (unsupported)
+        let dir = tempdir().expect("create tempdir");
+        let path = dir.path().join("future_version.art");
+
+        // Create header with PART magic but version 3 (unsupported)
+        let mut data = vec![0u8; 128];
+        data[0..4].copy_from_slice(b"PART");
+        data[4] = 3; // Unsupported version
+        std::fs::write(&path, &data).expect("write file with future version");
+
+        let result = detect_corruption(&path, false).expect("should succeed");
+        assert!(result.is_some(), "Unsupported version should report corruption");
+
+        match result.unwrap() {
+            CorruptionType::InvalidHeader(msg) => {
+                assert!(msg.contains("version"), "Message should mention version: {}", msg);
+            }
+            other => panic!("Expected InvalidHeader for version, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_detect_corruption_v2_header_checksum_mismatch() {
+        // Test: V2 file with header checksum mismatch
+        let dir = tempdir().expect("create tempdir");
+        let path = dir.path().join("bad_checksum.art");
+
+        // Create header with PART magic, version 2, and wrong checksum
+        let mut data = vec![0u8; 128];
+        data[0..4].copy_from_slice(b"PART");
+        data[4] = 2; // Version 2 (has checksum)
+        // Checksum at bytes 32-35 should be CRC32 of bytes 0-31
+        // Write wrong checksum
+        data[32..36].copy_from_slice(&0xDEADBEEFu32.to_le_bytes());
+        std::fs::write(&path, &data).expect("write file with bad checksum");
+
+        let result = detect_corruption(&path, false).expect("should succeed");
+        assert!(result.is_some(), "Checksum mismatch should report corruption");
+
+        match result.unwrap() {
+            CorruptionType::InvalidHeader(msg) => {
+                assert!(msg.contains("checksum"), "Message should mention checksum: {}", msg);
+            }
+            other => panic!("Expected InvalidHeader for checksum, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_detect_corruption_with_arena_check_small_file() {
+        // Test: check_arenas with file too small to have arenas
+        let dir = tempdir().expect("create tempdir");
+        let path = dir.path().join("small_with_arena_check.art");
+
+        // Create minimal valid header (DiskManager format)
+        let mut data = vec![0u8; 64];
+        const DISK_MANAGER_MAGIC: u64 = 0x5041_5254_0001_0000;
+        data[0..8].copy_from_slice(&DISK_MANAGER_MAGIC.to_le_bytes());
+        std::fs::write(&path, &data).expect("write small file");
+
+        // With check_arenas=true, should still succeed (just no arenas to check)
+        let result = detect_corruption(&path, true).expect("should succeed");
+        // File is exactly 64 bytes, which passes header check
+        // Arena check branch: file_size < 64 is false, so no truncation reported
+        assert!(result.is_none(), "Small but valid file should pass: {:?}", result);
+    }
+
+    #[test]
+    fn test_recovery_mode_methods() {
+        // Test RecoveryMode helper methods
+        assert!(RecoveryMode::Normal.is_normal());
+        assert!(!RecoveryMode::Normal.recovered());
+
+        assert!(!RecoveryMode::RebuildFromWal.is_normal());
+        assert!(RecoveryMode::RebuildFromWal.recovered());
+
+        assert!(!RecoveryMode::RepairInPlace.is_normal());
+        assert!(RecoveryMode::RepairInPlace.recovered());
+
+        assert!(!RecoveryMode::CreatedNew.is_normal());
+        assert!(RecoveryMode::CreatedNew.recovered());
+    }
+
+    #[test]
+    fn test_recovery_report_constructors() {
+        // Test RecoveryReport constructors
+        let normal = RecoveryReport::normal();
+        assert!(normal.mode.is_normal());
+        assert_eq!(normal.records_replayed, 0);
+        assert!(normal.corrupted_file.is_none());
+        assert!(normal.archive_segments_used.is_empty());
+
+        let created_new = RecoveryReport::created_new();
+        assert!(matches!(created_new.mode, RecoveryMode::CreatedNew));
+        assert_eq!(created_new.records_replayed, 0);
+
+        let rebuild = RecoveryReport::rebuild_from_wal(
+            PathBuf::from("/test/file.art"),
+            "test corruption".to_string(),
+            100,
+            50,
+            vec![PathBuf::from("/archive/seg1.segment")],
+            500,
+        );
+        assert!(matches!(rebuild.mode, RecoveryMode::RebuildFromWal));
+        assert_eq!(rebuild.records_replayed, 100);
+        assert_eq!(rebuild.terms_recovered, 50);
+        assert!(rebuild.corrupted_file.is_some());
+        assert!(rebuild.corruption_reason.is_some());
+        assert_eq!(rebuild.archive_segments_used.len(), 1);
+        assert_eq!(rebuild.duration_ms, 500);
+    }
+
+    #[test]
+    fn test_corruption_type_display() {
+        // Test Display implementation for CorruptionType
+        let header = CorruptionType::InvalidHeader("bad magic".to_string());
+        assert!(format!("{}", header).contains("Invalid header"));
+        assert!(format!("{}", header).contains("bad magic"));
+
+        let arena = CorruptionType::ArenaChecksum {
+            arena_id: 5,
+            expected: 0x12345678,
+            found: 0xDEADBEEF,
+        };
+        let arena_str = format!("{}", arena);
+        assert!(arena_str.contains("Arena 5"));
+        assert!(arena_str.contains("12345678"));
+        assert!(arena_str.contains("deadbeef"));
+
+        let truncated = CorruptionType::Truncated {
+            expected: 1000,
+            actual: 500,
+        };
+        let trunc_str = format!("{}", truncated);
+        assert!(trunc_str.contains("truncated"));
+        assert!(trunc_str.contains("1000"));
+        assert!(trunc_str.contains("500"));
+
+        let root = CorruptionType::InvalidRootDescriptor("bad root".to_string());
+        assert!(format!("{}", root).contains("Invalid root descriptor"));
+        assert!(format!("{}", root).contains("bad root"));
+
+        let io = CorruptionType::IoError("read failed".to_string());
+        assert!(format!("{}", io).contains("I/O error"));
+        assert!(format!("{}", io).contains("read failed"));
+    }
+
+    #[test]
+    fn test_find_wal_segments_nonexistent_dir() {
+        // Test finding segments in nonexistent directory
+        let nonexistent = Path::new("/nonexistent/wal_archive");
+        let segments = find_wal_archive_segments(nonexistent);
+        assert!(segments.is_empty(), "Nonexistent dir should return empty vec");
+
+        let pending = find_wal_pending_segments(nonexistent);
+        assert!(pending.is_empty(), "Nonexistent pending dir should return empty vec");
+    }
+
+    #[test]
+    fn test_crc32_header_computation() {
+        // Test CRC32 computation for various inputs
+        let empty: &[u8] = &[];
+        let crc_empty = crc32_header(empty);
+        assert_eq!(crc_empty, 0x00000000, "CRC of empty input should be 0");
+
+        let test_data = b"test";
+        let crc_test = crc32_header(test_data);
+        // CRC32 of "test" with IEEE polynomial
+        assert_ne!(crc_test, 0, "CRC should not be zero for non-empty input");
+
+        // Same input should produce same CRC
+        let crc_test2 = crc32_header(test_data);
+        assert_eq!(crc_test, crc_test2, "Same input should produce same CRC");
+
+        // Different input should produce different CRC
+        let other_data = b"other";
+        let crc_other = crc32_header(other_data);
+        assert_ne!(crc_test, crc_other, "Different input should produce different CRC");
+    }
+
+    #[test]
+    fn test_rebuild_from_wal_segments_empty() {
+        // Test rebuild with no segments
+        let segments: Vec<PathBuf> = vec![];
+        let mut count = 0;
+        let result = rebuild_from_wal_segments(&segments, |_op| {
+            count += 1;
+            Ok(())
+        });
+
+        let (records, terms) = result.expect("should succeed");
+        assert_eq!(records, 0);
+        assert_eq!(terms, 0);
+        assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn test_rebuild_from_wal_segments_with_records() {
+        let dir = tempdir().expect("create tempdir");
+        let wal_path = dir.path().join("rebuild.wal");
+
+        // Create WAL with various record types
+        {
+            let wal = WalWriter::create(&wal_path).expect("create WAL");
+            wal.append(WalRecord::Insert {
+                term: b"insert1".to_vec(),
+                value: None,
+            }).expect("append insert");
+            wal.append(WalRecord::Insert {
+                term: b"insert2".to_vec(),
+                value: Some(b"value".to_vec()),
+            }).expect("append insert with value");
+            wal.append(WalRecord::Remove {
+                term: b"remove1".to_vec(),
+            }).expect("append remove");
+            wal.append(WalRecord::Increment {
+                term: b"counter".to_vec(),
+                delta: 5,
+                result: 10,
+            }).expect("append increment");
+            wal.append(WalRecord::Upsert {
+                term: b"upsert1".to_vec(),
+                value: b"new_value".to_vec(),
+            }).expect("append upsert");
+            wal.append(WalRecord::CompareAndSwap {
+                term: b"cas1".to_vec(),
+                expected: None,
+                new_value: b"cas_value".to_vec(),
+                success: true,
+            }).expect("append successful CAS");
+            wal.append(WalRecord::CompareAndSwap {
+                term: b"cas2".to_vec(),
+                expected: Some(b"wrong".to_vec()),
+                new_value: b"cas_value2".to_vec(),
+                success: false,
+            }).expect("append failed CAS");
+            // Transaction records should be skipped
+            wal.append(WalRecord::BeginTx { tx_id: 1 }).expect("append begin");
+            wal.append(WalRecord::CommitTx { tx_id: 1 }).expect("append commit");
+            wal.checkpoint(9).expect("checkpoint");
+            wal.sync().expect("sync");
+        }
+
+        let segments = vec![wal_path];
+        let mut operations = Vec::new();
+
+        let result = rebuild_from_wal_segments(&segments, |op| {
+            operations.push(op);
+            Ok(())
+        });
+
+        let (records, terms) = result.expect("should succeed");
+        // 10 total records: 2 inserts, 1 remove, 1 increment, 1 upsert, 2 CAS (1 success),
+        // 1 begin, 1 commit, 1 checkpoint
+        assert_eq!(records, 10, "Should process all records");
+        // 6 term operations: 2 inserts, 1 remove, 1 increment, 1 upsert, 1 successful CAS
+        // (failed CAS doesn't count)
+        assert_eq!(terms, 6, "Should recover 6 terms");
+        assert_eq!(operations.len(), 6, "Should have 6 operations");
+    }
+
+    #[test]
+    fn test_rebuild_from_wal_segments_batch_records() {
+        let dir = tempdir().expect("create tempdir");
+        let wal_path = dir.path().join("batch_rebuild.wal");
+
+        // Create WAL with batch records
+        {
+            let wal = WalWriter::create(&wal_path).expect("create WAL");
+            wal.append(WalRecord::BatchInsert {
+                entries: vec![
+                    (b"batch1".to_vec(), None),
+                    (b"batch2".to_vec(), Some(b"val".to_vec())),
+                    (b"batch3".to_vec(), None),
+                ],
+            }).expect("append batch insert");
+            wal.append(WalRecord::BatchIncrement {
+                entries: vec![
+                    (b"counter1".to_vec(), 1),
+                    (b"counter2".to_vec(), 2),
+                ],
+            }).expect("append batch increment");
+            wal.sync().expect("sync");
+        }
+
+        let segments = vec![wal_path];
+        let mut operations = Vec::new();
+
+        let result = rebuild_from_wal_segments(&segments, |op| {
+            operations.push(op);
+            Ok(())
+        });
+
+        let (records, terms) = result.expect("should succeed");
+        assert_eq!(records, 2, "Should process 2 batch records");
+        // 3 inserts from batch insert + 2 increments from batch increment = 5
+        assert_eq!(terms, 5, "Should recover 5 terms from batches");
+        assert_eq!(operations.len(), 5, "Should have 5 expanded operations");
     }
 }

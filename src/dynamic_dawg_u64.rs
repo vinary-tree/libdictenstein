@@ -83,6 +83,7 @@ impl<V: DictionaryValue> EdgeList<V> {
     }
 
     /// Remove an edge by label, returning a new EdgeList.
+    #[allow(dead_code)]
     fn without_edge(&self, label: u64) -> Self {
         let new_edges: SmallVec<_> = self
             .edges
@@ -792,6 +793,7 @@ impl<V: DictionaryValue> DynamicDawgU64<V> {
     }
 
     /// Get the root node (for zipper access).
+    #[allow(dead_code)]
     pub(crate) fn root_node(&self) -> &Arc<DawgNodeU64<V>> {
         &self.root
     }
@@ -809,6 +811,7 @@ impl<V: DictionaryValue> DynamicDawgU64<V> {
 
 /// Iterator over DAWG terms.
 struct DawgIterator<'a, V: DictionaryValue> {
+    #[allow(dead_code)]
     dawg: &'a DynamicDawgU64<V>,
     stack: Vec<(Arc<DawgNodeU64<V>>, Vec<u64>, usize)>,
 }
@@ -852,6 +855,7 @@ impl<V: DictionaryValue> Iterator for DawgIterator<'_, V> {
 
 /// Iterator over DAWG terms with values.
 struct DawgIteratorWithValues<'a, V: DictionaryValue> {
+    #[allow(dead_code)]
     dawg: &'a DynamicDawgU64<V>,
     stack: Vec<(Arc<DawgNodeU64<V>>, Vec<u64>, usize)>,
 }

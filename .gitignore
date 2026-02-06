@@ -114,6 +114,7 @@ perf.data*
 
 # Formal Verification - TLA+
 formal-verification/tla+/states/
+docs/formal/states/
 
 # Formal Verification - Rocq/Coq
 formal-verification/rocq/.depend
@@ -125,3 +126,9 @@ formal-verification/rocq/**/*.glob
 
 # ThreadSanitizer suppressions (generated)
 tsan-suppressions.txt
+.aider*
+
+# Coverage outputs
+target/coverage/
+lcov.info
+cobertura.xml

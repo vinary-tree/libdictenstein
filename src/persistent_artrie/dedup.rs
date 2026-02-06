@@ -465,4 +465,115 @@ mod tests {
         // 50 hits * 200 bytes avg = 10KB saved
         assert_eq!(stats.space_savings(200), 10000);
     }
+
+    // =========================================================================
+    // Edge case tests for branch coverage
+    // =========================================================================
+
+    /// Test DeduplicatorStats::hit_rate with zero accesses (line 196-197).
+    /// When total accesses is 0, hit_rate should return 0.0.
+    #[test]
+    fn test_deduplicator_stats_zero_accesses() {
+        let stats = DeduplicatorStats {
+            cache_size: 0,
+            hits: 0,
+            misses: 0,
+            collisions: 0,
+        };
+
+        // Test line 196-197: zero total returns 0.0
+        assert_eq!(stats.hit_rate(), 0.0, "Hit rate should be 0.0 when no accesses");
+    }
+
+    /// Test DeduplicatingArenaManager with verify_on_hit = false (line 268-271).
+    /// When verify_on_hit is false, we trust the hash and don't verify data.
+    #[test]
+    fn test_dedup_verify_on_hit_false() {
+        use super::ArenaManager;
+
+        // Create in-memory arena and dedup manager
+        let arena = ArenaManager::with_arena_size(64 * 1024);
+        let mut dedup = DeduplicatingArenaManager::new(arena);
+        dedup.set_verify_on_hit(false); // Test line 268-271
+
+        let data = b"test data for dedup";
+        let slot1 = dedup.allocate_dedup(data).expect("first alloc");
+        let slot2 = dedup.allocate_dedup(data).expect("second alloc");
+
+        // Same data should return same slot
+        assert_eq!(slot1, slot2, "Same data should return same slot");
+
+        let stats = dedup.dedup_stats();
+        assert_eq!(stats.hits, 1, "Should have one cache hit");
+        assert_eq!(stats.misses, 1, "Should have one initial miss");
+    }
+
+    /// Test DeduplicatingArenaManager with verify_on_hit = true (default) (line 258-263).
+    /// When verify_on_hit is true, we verify data matches before reusing.
+    #[test]
+    fn test_dedup_verify_on_hit_true() {
+        use super::ArenaManager;
+
+        let arena = ArenaManager::with_arena_size(64 * 1024);
+        let mut dedup = DeduplicatingArenaManager::new(arena);
+        // verify_on_hit defaults to true - test lines 258-263
+
+        let data = b"test data for verification";
+        let slot1 = dedup.allocate_dedup(data).expect("first alloc");
+        let slot2 = dedup.allocate_dedup(data).expect("second alloc");
+
+        // Same data should return same slot after verification
+        assert_eq!(slot1, slot2, "Same data should return same slot");
+
+        let stats = dedup.dedup_stats();
+        assert_eq!(stats.hits, 1, "Should have one cache hit");
+        assert_eq!(stats.collisions, 0, "Should have no collisions");
+    }
+
+    /// Test multiple allocations with deduplication.
+    #[test]
+    fn test_dedup_multiple_allocations() {
+        use super::ArenaManager;
+
+        let arena = ArenaManager::with_arena_size(64 * 1024);
+        let mut dedup = DeduplicatingArenaManager::new(arena);
+
+        let data1 = b"data one";
+        let data2 = b"data two";
+        let data3 = b"data one"; // Same as data1
+
+        let slot1 = dedup.allocate_dedup(data1).expect("alloc data1");
+        let slot2 = dedup.allocate_dedup(data2).expect("alloc data2");
+        let slot3 = dedup.allocate_dedup(data3).expect("alloc data3");
+
+        // Different data should have different slots
+        assert_ne!(slot1, slot2, "Different data should have different slots");
+
+        // Same data should have same slot
+        assert_eq!(slot1, slot3, "Same data should return same slot");
+
+        let stats = dedup.dedup_stats();
+        assert_eq!(stats.hits, 1, "Should have one cache hit");
+        assert_eq!(stats.misses, 2, "Should have two initial misses");
+    }
+
+    /// Test allocate_direct bypasses dedup cache.
+    #[test]
+    fn test_dedup_allocate_direct_bypasses_cache() {
+        use super::ArenaManager;
+
+        let arena = ArenaManager::with_arena_size(64 * 1024);
+        let mut dedup = DeduplicatingArenaManager::new(arena);
+
+        let data = b"bypass data";
+        let slot1 = dedup.allocate_direct(data).expect("direct alloc 1");
+        let slot2 = dedup.allocate_direct(data).expect("direct alloc 2");
+
+        // Direct allocation bypasses cache, so different slots
+        assert_ne!(slot1, slot2, "Direct allocation should not deduplicate");
+
+        let stats = dedup.dedup_stats();
+        assert_eq!(stats.hits, 0, "Should have no hits with direct alloc");
+        assert_eq!(stats.misses, 0, "Should have no misses with direct alloc");
+    }
 }

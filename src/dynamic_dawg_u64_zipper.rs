@@ -94,6 +94,7 @@ impl<V: DictionaryValue> DynamicDawgU64Zipper<V> {
     /// Create a zipper from a node reference and path.
     ///
     /// This is primarily for internal use by the DAWG implementation.
+    #[allow(dead_code)]
     pub(crate) fn from_node(node: Arc<DawgNodeU64<V>>, path: Vec<u64>) -> Self {
         DynamicDawgU64Zipper { node, path }
     }
@@ -101,7 +102,8 @@ impl<V: DictionaryValue> DynamicDawgU64Zipper<V> {
     /// Get a reference to the current node.
     ///
     /// Useful for debugging or advanced use cases.
-    pub fn node_ref(&self) -> &Arc<DawgNodeU64<V>> {
+    #[allow(dead_code)]
+    pub(crate) fn node_ref(&self) -> &Arc<DawgNodeU64<V>> {
         &self.node
     }
 }

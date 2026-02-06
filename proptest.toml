@@ -1,0 +1,21 @@
+# Proptest configuration for libdictenstein
+# See: https://proptest-rs.github.io/proptest/proptest-config/index.html
+
+[default]
+# Number of test cases per property
+cases = 256
+
+# Fork tests into separate processes for isolation
+fork = true
+
+# Verbosity level (0-2)
+verbose = 1
+
+# Maximum shrinking iterations when finding minimal failing case
+max_shrink_iters = 10000
+
+# Timeout per test case in milliseconds
+timeout = 30000
+
+# Directory for regression test files
+failure_persistence = "proptest-regressions"

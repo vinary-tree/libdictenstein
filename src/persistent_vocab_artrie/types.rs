@@ -49,17 +49,22 @@ pub const FLAG_HAS_PARENT_POINTER: u8 = 0x10;
 ///
 /// # Layout
 ///
+/// This header is designed to be partially compatible with FileHeader at key
+/// positions used by DiskManager (especially block_count at bytes 24-28).
+///
 /// ```text
 /// Offset  Size  Field
 /// ------  ----  -----
 ///   0       4   magic ("VOCB")
 ///   4       1   version
 ///   5       3   reserved
-///   8       8   root_ptr (block ID of root node)
+///   8       8   root_ptr (arena slot of root node)
 ///  16       8   entry_count (number of vocabulary entries)
-///  24       8   checkpoint_lsn
-///  32       4   header_checksum (CRC32 of bytes 0-31)
-///  36      28   padding (base header ends at 64)
+///  24       4   block_count (for DiskManager compatibility)
+///  28       4   _pad1
+///  32       8   checkpoint_lsn
+///  40       4   header_checksum (CRC32 of bytes 0-39)
+///  44      20   padding (base header ends at 64)
 ///  64       8   start_index (first vocabulary index)
 ///  72       8   next_index (next index to assign)
 ///  80       8   reverse_index_capacity
@@ -75,16 +80,20 @@ pub struct VocabTrieFileHeader {
     pub version: u8,
     /// Reserved bytes
     pub _reserved: [u8; 3],
-    /// Root node pointer (block ID)
+    /// Root node pointer (arena slot as u64)
     pub root_ptr: u64,
     /// Number of entries in the vocabulary
     pub entry_count: u64,
+    /// Block count (for DiskManager::allocate_block compatibility)
+    pub block_count: u32,
+    /// Padding for alignment
+    pub _pad1: u32,
     /// Checkpoint LSN (for WAL truncation)
     pub checkpoint_lsn: u64,
-    /// CRC32 checksum of bytes 0-31
+    /// CRC32 checksum of bytes 0-39
     pub header_checksum: u32,
     /// Padding to 64 bytes
-    pub _padding: [u8; 28],
+    pub _padding: [u8; 20],
 
     // === Extended Header (32 bytes) ===
     /// Starting index for vocabulary (configurable, default 0)
@@ -106,9 +115,11 @@ impl VocabTrieFileHeader {
             _reserved: [0; 3],
             root_ptr: 0,
             entry_count: 0,
+            block_count: 1, // Block 0 is the header
+            _pad1: 0,
             checkpoint_lsn: 0,
             header_checksum: 0,
-            _padding: [0; 28],
+            _padding: [0; 20],
             start_index: 0,
             next_index: 0,
             reverse_index_capacity: 0,
@@ -124,15 +135,17 @@ impl VocabTrieFileHeader {
         header
     }
 
-    /// Compute the header checksum (CRC32 of bytes 0-31)
+    /// Compute the header checksum (CRC32 of bytes 0-39)
     pub fn compute_checksum(&self) -> u32 {
-        let mut bytes = [0u8; 32];
+        let mut bytes = [0u8; 40];
         bytes[0..4].copy_from_slice(&self.magic);
         bytes[4] = self.version;
         bytes[5..8].copy_from_slice(&self._reserved);
         bytes[8..16].copy_from_slice(&self.root_ptr.to_le_bytes());
         bytes[16..24].copy_from_slice(&self.entry_count.to_le_bytes());
-        bytes[24..32].copy_from_slice(&self.checkpoint_lsn.to_le_bytes());
+        bytes[24..28].copy_from_slice(&self.block_count.to_le_bytes());
+        bytes[28..32].copy_from_slice(&self._pad1.to_le_bytes());
+        bytes[32..40].copy_from_slice(&self.checkpoint_lsn.to_le_bytes());
         crc32_header(&bytes)
     }
 
@@ -155,9 +168,11 @@ impl VocabTrieFileHeader {
         bytes[5..8].copy_from_slice(&self._reserved);
         bytes[8..16].copy_from_slice(&self.root_ptr.to_le_bytes());
         bytes[16..24].copy_from_slice(&self.entry_count.to_le_bytes());
-        bytes[24..32].copy_from_slice(&self.checkpoint_lsn.to_le_bytes());
-        bytes[32..36].copy_from_slice(&self.header_checksum.to_le_bytes());
-        bytes[36..64].copy_from_slice(&self._padding);
+        bytes[24..28].copy_from_slice(&self.block_count.to_le_bytes());
+        bytes[28..32].copy_from_slice(&self._pad1.to_le_bytes());
+        bytes[32..40].copy_from_slice(&self.checkpoint_lsn.to_le_bytes());
+        bytes[40..44].copy_from_slice(&self.header_checksum.to_le_bytes());
+        bytes[44..64].copy_from_slice(&self._padding);
         // Extended header (64-95)
         bytes[64..72].copy_from_slice(&self.start_index.to_le_bytes());
         bytes[72..80].copy_from_slice(&self.next_index.to_le_bytes());
@@ -186,16 +201,22 @@ impl VocabTrieFileHeader {
                 bytes[16], bytes[17], bytes[18], bytes[19],
                 bytes[20], bytes[21], bytes[22], bytes[23],
             ]),
-            checkpoint_lsn: u64::from_le_bytes([
+            block_count: u32::from_le_bytes([
                 bytes[24], bytes[25], bytes[26], bytes[27],
+            ]),
+            _pad1: u32::from_le_bytes([
                 bytes[28], bytes[29], bytes[30], bytes[31],
             ]),
-            header_checksum: u32::from_le_bytes([
+            checkpoint_lsn: u64::from_le_bytes([
                 bytes[32], bytes[33], bytes[34], bytes[35],
+                bytes[36], bytes[37], bytes[38], bytes[39],
+            ]),
+            header_checksum: u32::from_le_bytes([
+                bytes[40], bytes[41], bytes[42], bytes[43],
             ]),
             _padding: {
-                let mut arr = [0u8; 28];
-                arr.copy_from_slice(&bytes[36..64]);
+                let mut arr = [0u8; 20];
+                arr.copy_from_slice(&bytes[44..64]);
                 arr
             },
             start_index: u64::from_le_bytes([

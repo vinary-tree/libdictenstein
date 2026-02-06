@@ -62,7 +62,7 @@ pub const MAX_OFFSET: u32 = (1 << OFFSET_BITS) - 1;
 /// - `CharBucket`: >48 children, HashMap-like
 ///
 /// Note: CharNode256 is impossible for u32 keys (would require 4GB array).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(u8)]
 pub enum NodeType {
     // === Byte-Level Nodes (0-99) ===

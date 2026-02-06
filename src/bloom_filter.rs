@@ -20,7 +20,10 @@ use std::hash::{Hash, Hasher};
 /// - False positives: Possible (requires full DAWG/trie traversal)
 /// - False negatives: Never (guaranteed correct rejection)
 #[derive(Debug, Clone)]
-#[cfg_attr(feature = "serialization", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(
+    any(feature = "serialization", feature = "serde"),
+    derive(serde::Serialize, serde::Deserialize)
+)]
 pub struct BloomFilter {
     bits: Vec<u64>, // Bit vector (64-bit chunks for efficiency)
     bit_count: usize,

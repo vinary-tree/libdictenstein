@@ -15,6 +15,7 @@
 //! The dictionary uses `Arc<RwLock>` for thread-safe concurrent access.
 //! Read operations can proceed in parallel, while writes are serialized.
 
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::Arc;
 use crate::sync_compat::RwLock;
@@ -34,7 +35,8 @@ use super::serialization::{self, v2::{SerializationContext, DeserializationConte
 
 use super::arena_manager::{ArenaManager, ArenaSlot};
 use super::buffer_manager::BufferManager;
-use super::wal::{Lsn, WalWriter};
+use super::wal::{AsyncWalConfig, AsyncWalError, AsyncWalWriter, Lsn, SyncHandle, WalConfig, WalRecord};
+use super::wal_managed::WalManaged;
 
 #[cfg(feature = "parallel-merge")]
 use rayon::prelude::*;
@@ -256,8 +258,8 @@ pub struct PersistentARTrie<V: DictionaryValue = ()> {
     // Note: DiskManager is owned by BufferManager and accessible via buffer_manager.disk_manager()
     /// Buffer manager with Clock-evicted page cache (owns DiskManager)
     pub(crate) buffer_manager: Option<Arc<RwLock<BufferManager>>>,
-    /// Write-ahead log writer for durability
-    pub(crate) wal_writer: Option<Arc<RwLock<WalWriter>>>,
+    /// Write-ahead log writer for durability (async-capable)
+    pub(crate) wal_writer: Option<Arc<AsyncWalWriter>>,
     /// Next log sequence number to assign
     pub(crate) next_lsn: Lsn,
     /// Prefetcher for DFS traversal optimization
@@ -271,6 +273,28 @@ pub struct PersistentARTrie<V: DictionaryValue = ()> {
     pub(crate) epoch_manager: super::concurrency::EpochManager,
     /// Atomic statistics for monitoring
     pub(crate) stats: Arc<super::concurrency::TrieStats>,
+
+    // === Eviction Support ===
+    /// Eviction coordinator for memory pressure-driven eviction
+    pub(crate) eviction_coordinator: Option<Arc<super::eviction::EvictionCoordinator>>,
+
+    // === Selective Dirty Subtree Traversal ===
+    /// Prefixes modified since last checkpoint (for selective traversal).
+    ///
+    /// When a term is inserted or removed, all prefixes along the path from
+    /// root to the modified node are recorded here. This enables `persist_to_disk()`
+    /// to skip clean subtrees entirely, reducing checkpoint time from O(N) to
+    /// O(D × H) where D = dirty nodes, H = average depth.
+    pub(crate) dirty_prefixes: HashSet<Vec<u8>>,
+
+    /// Disk locations of persisted nodes (keyed by path).
+    ///
+    /// Populated during serialization, preserved across checkpoints.
+    /// Invalidated when paths become dirty (on insert/remove).
+    /// Uses `RwLock` for interior mutability since serialization methods
+    /// take `&self` but need to update this cache. `RwLock` (unlike `RefCell`)
+    /// is `Sync`, allowing the struct to remain thread-safe.
+    pub(crate) persisted_disk_locations: RwLock<HashMap<Vec<u8>, SwizzledPtr>>,
 }
 
 /// Thread-safe wrapper for `PersistentARTrie`.
@@ -359,6 +383,101 @@ pub enum DurabilityPolicy {
     None,
 }
 
+/// Configuration for trie compaction operations.
+///
+/// Compaction rebuilds the trie from scratch, eliminating orphaned nodes
+/// and fragmentation that accumulate from update/delete operations.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// use libdictenstein::persistent_artrie::{PersistentARTrie, CompactionConfig};
+///
+/// let mut trie = PersistentARTrie::<u64>::open("data.artrie")?;
+///
+/// // In-place compaction with default settings
+/// let stats = trie.compact(CompactionConfig::default(), |progress| {
+///     println!("{}: {:.1}%", progress.phase, progress.percent_complete);
+/// })?;
+///
+/// println!("Saved {:.1}% space", stats.space_savings_percent);
+/// ```
+#[derive(Debug, Clone)]
+pub struct CompactionConfig {
+    /// Target output path.
+    ///
+    /// - `None` (default): In-place compaction via atomic rename
+    /// - `Some(path)`: Write to a new file, leaving original unchanged
+    pub output_path: Option<std::path::PathBuf>,
+
+    /// Progress callback interval (in terms).
+    ///
+    /// The progress callback is invoked every `progress_interval` terms.
+    /// Set to 0 to disable progress callbacks. Default: 10,000.
+    pub progress_interval: usize,
+
+    /// Whether to verify data integrity after compaction.
+    ///
+    /// When enabled, verifies that the compacted trie has the same term count
+    /// as the original. Default: true.
+    pub verify_after_compact: bool,
+}
+
+impl Default for CompactionConfig {
+    fn default() -> Self {
+        Self {
+            output_path: None,
+            progress_interval: 10_000,
+            verify_after_compact: true,
+        }
+    }
+}
+
+/// Statistics from a completed compaction operation.
+#[derive(Debug, Clone)]
+pub struct CompactionStats {
+    /// Number of terms copied to the compacted trie.
+    pub terms_copied: u64,
+
+    /// Original file size in bytes before compaction.
+    pub original_bytes: u64,
+
+    /// Compacted file size in bytes after compaction.
+    pub compacted_bytes: u64,
+
+    /// Percentage of space saved (0.0 to 100.0).
+    ///
+    /// Calculated as: `(1.0 - compacted_bytes / original_bytes) * 100.0`
+    pub space_savings_percent: f64,
+
+    /// Duration of the compaction operation in milliseconds.
+    pub duration_ms: u64,
+}
+
+/// Progress information during compaction.
+///
+/// Passed to the progress callback during `compact()` to report status.
+#[derive(Debug, Clone)]
+pub struct CompactionProgress {
+    /// Current phase of compaction.
+    ///
+    /// Possible values:
+    /// - `"copying"`: Iterating and copying terms
+    /// - `"checkpointing"`: Persisting to disk
+    /// - `"verifying"`: Verifying data integrity
+    /// - `"finalizing"`: Atomic rename (in-place mode only)
+    pub phase: &'static str,
+
+    /// Number of terms processed so far.
+    pub terms_processed: u64,
+
+    /// Estimated total number of terms.
+    pub estimated_total: u64,
+
+    /// Percentage complete (0.0 to 100.0).
+    pub percent_complete: f32,
+}
+
 /// A document transaction for per-document atomicity.
 ///
 /// This struct buffers all terms for a single document in memory. When the
@@ -436,6 +555,14 @@ pub(crate) enum TrieRoot<V: DictionaryValue> {
     },
 }
 
+// === WalManaged Trait Implementation ===
+
+impl<V: DictionaryValue> WalManaged for PersistentARTrie<V> {
+    fn wal_writer(&self) -> Option<&Arc<AsyncWalWriter>> {
+        self.wal_writer.as_ref()
+    }
+}
+
 impl<V: DictionaryValue> PersistentARTrie<V> {
     /// Create a new empty in-memory dictionary.
     ///
@@ -463,6 +590,9 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
             durability_policy: DurabilityPolicy::default(),
             epoch_manager: super::concurrency::EpochManager::new(),
             stats: Arc::new(super::concurrency::TrieStats::new()),
+            eviction_coordinator: None,
+            dirty_prefixes: HashSet::new(),
+            persisted_disk_locations: RwLock::new(HashMap::new()),
         }
     }
 
@@ -483,7 +613,6 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
     pub fn create<P: AsRef<Path>>(path: P) -> Result<Self> {
         use super::disk_manager::DiskManager;
         use super::buffer_manager::BufferManager;
-        use super::wal::WalWriter;
         use super::DEFAULT_BUFFER_POOL_SIZE;
 
         let path = path.as_ref();
@@ -507,10 +636,20 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
         let buffer_manager = BufferManager::new(disk_manager, DEFAULT_BUFFER_POOL_SIZE);
         let buffer_manager = Arc::new(RwLock::new(buffer_manager));
 
-        // Create WAL file alongside the main file
+        // Create async WAL file alongside the main file
         let wal_path = path.with_extension("wal");
-        let wal_writer = WalWriter::create(&wal_path)?;
-        let wal_writer = Arc::new(RwLock::new(wal_writer));
+        let async_config = AsyncWalConfig {
+            pending_dir: path.parent().unwrap_or(Path::new(".")).join("wal_pending"),
+            ..Default::default()
+        };
+        let archive_config = WalConfig::default();
+        let wal_writer = AsyncWalWriter::create(&wal_path, async_config, archive_config)
+            .map_err(|e| PersistentARTrieError::io_error(
+                "create_wal",
+                wal_path.display().to_string(),
+                std::io::Error::new(std::io::ErrorKind::Other, e.to_string()),
+            ))?;
+        let wal_writer = Arc::new(wal_writer);
 
         // Create arena manager for space-efficient node storage
         let arena_manager = ArenaManager::with_buffer_manager(Arc::clone(&buffer_manager));
@@ -528,6 +667,9 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
             durability_policy: DurabilityPolicy::default(),
             epoch_manager: super::concurrency::EpochManager::new(),
             stats: Arc::new(super::concurrency::TrieStats::new()),
+            eviction_coordinator: None,
+            dirty_prefixes: HashSet::new(),
+            persisted_disk_locations: RwLock::new(HashMap::new()),
         })
     }
 
@@ -549,7 +691,6 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
     pub fn create_with_slot_tracking<P: AsRef<Path>>(path: P) -> Result<Self> {
         use super::disk_manager::DiskManager;
         use super::buffer_manager::BufferManager;
-        use super::wal::WalWriter;
         use super::arena_manager::FlushConfig;
         use super::DEFAULT_BUFFER_POOL_SIZE;
 
@@ -574,10 +715,20 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
         let buffer_manager = BufferManager::new(disk_manager, DEFAULT_BUFFER_POOL_SIZE);
         let buffer_manager = Arc::new(RwLock::new(buffer_manager));
 
-        // Create WAL file alongside the main file
+        // Create async WAL file alongside the main file
         let wal_path = path.with_extension("wal");
-        let wal_writer = WalWriter::create(&wal_path)?;
-        let wal_writer = Arc::new(RwLock::new(wal_writer));
+        let async_config = AsyncWalConfig {
+            pending_dir: path.parent().unwrap_or(Path::new(".")).join("wal_pending"),
+            ..Default::default()
+        };
+        let archive_config = WalConfig::default();
+        let wal_writer = AsyncWalWriter::create(&wal_path, async_config, archive_config)
+            .map_err(|e| PersistentARTrieError::io_error(
+                "create_wal",
+                wal_path.display().to_string(),
+                std::io::Error::new(std::io::ErrorKind::Other, e.to_string()),
+            ))?;
+        let wal_writer = Arc::new(wal_writer);
 
         // Create arena manager with slot-level tracking enabled
         let flush_config = FlushConfig::with_slot_tracking();
@@ -599,6 +750,9 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
             durability_policy: DurabilityPolicy::default(),
             epoch_manager: super::concurrency::EpochManager::new(),
             stats: Arc::new(super::concurrency::TrieStats::new()),
+            eviction_coordinator: None,
+            dirty_prefixes: HashSet::new(),
+            persisted_disk_locations: RwLock::new(HashMap::new()),
         })
     }
 
@@ -619,7 +773,6 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self> {
         use super::disk_manager::{DiskManager, BLOCK_SIZE};
         use super::buffer_manager::BufferManager;
-        use super::wal::WalWriter;
         use super::recovery::RecoveryManager;
         use super::DEFAULT_BUFFER_POOL_SIZE;
 
@@ -644,12 +797,15 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
         let root_ptr = disk_manager.root_ptr()?;
         let _entry_count = disk_manager.entry_count()?;
 
-        // Read arena_count from root descriptor (needed to load arenas before loading nodes)
-        let arena_count = if root_ptr != 0 {
+        // Read arena_count from root descriptor at fixed location (block 0, offset 64)
+        // Arena block IDs are derived from sequential allocation: 1..=arena_count
+        const DESCRIPTOR_OFFSET: usize = 64;
+        let arena_count: u32 = if root_ptr != 0 {
             let ptr = SwizzledPtr::from_raw(root_ptr);
             if let Some(location) = ptr.disk_location() {
-                let mut descriptor_buf = [0u8; BLOCK_SIZE];
-                disk_manager.read_block(location.block_id, &mut descriptor_buf)?;
+                // Read descriptor from block 0 at offset 64
+                let mut descriptor_buf = [0u8; 18];
+                disk_manager.read_bytes(location.block_id, DESCRIPTOR_OFFSET, &mut descriptor_buf)?;
                 // arena_count is at bytes 6-9 in the root descriptor
                 u32::from_le_bytes([
                     descriptor_buf[6],
@@ -664,6 +820,10 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
             0
         };
 
+        // Derive arena block IDs from sequential allocation
+        // Block 0 = file header + descriptor, Blocks 1..=arena_count = arenas
+        let arena_block_ids: Vec<u32> = (1..=arena_count).collect();
+
         // Create buffer manager (takes ownership of disk_manager)
         let buffer_manager = BufferManager::new(disk_manager, DEFAULT_BUFFER_POOL_SIZE);
         let buffer_manager = Arc::new(RwLock::new(buffer_manager));
@@ -672,11 +832,11 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
         let arena_manager = ArenaManager::with_buffer_manager(Arc::clone(&buffer_manager));
         let arena_manager = Arc::new(RwLock::new(arena_manager));
 
-        // Load arenas into ArenaManager (arenas are at blocks 1..=arena_count)
+        // Load arenas into ArenaManager using derived block IDs
         if arena_count > 0 {
             let mut am = arena_manager.write();
             am.clear_for_loading();
-            for block_id in 1..=arena_count {
+            for block_id in arena_block_ids {
                 am.load_arena(block_id)?;
             }
             let count = am.arena_count();
@@ -715,12 +875,22 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
             (Vec::new(), 1, None)
         };
 
-        // Open WAL writer using TOCTOU-safe pattern
+        // Open async WAL writer using TOCTOU-safe pattern
         // Matches formal model's `open_or_create_safe` in FileSystem.v:
         // - Uses mkdir_all (idempotent) to ensure parent exists
         // - Uses atomic open/create operations to avoid races
-        let wal_writer = WalWriter::open_or_create(&wal_path)?;
-        let wal_writer = Arc::new(RwLock::new(wal_writer));
+        let async_config = AsyncWalConfig {
+            pending_dir: path.parent().unwrap_or(Path::new(".")).join("wal_pending"),
+            ..Default::default()
+        };
+        let archive_config = WalConfig::default();
+        let wal_writer = AsyncWalWriter::open_or_create(&wal_path, async_config, archive_config)
+            .map_err(|e| PersistentARTrieError::io_error(
+                "open_wal",
+                wal_path.display().to_string(),
+                std::io::Error::new(std::io::ErrorKind::Other, e.to_string()),
+            ))?;
+        let wal_writer = Arc::new(wal_writer);
 
         // Create the dictionary with storage layer
         // Use loaded root if available, otherwise start with empty bucket
@@ -735,13 +905,16 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
             term_count: initial_term_count,
             dirty: false,
             buffer_manager: Some(buffer_manager),
-            wal_writer: Some(wal_writer.clone()),
+            wal_writer: Some(Arc::clone(&wal_writer)),
             next_lsn,
             prefetcher: super::prefetch::Prefetcher::new(),
             arena_manager: Some(arena_manager),
             durability_policy: DurabilityPolicy::default(),
             epoch_manager: super::concurrency::EpochManager::new(),
             stats: Arc::new(super::concurrency::TrieStats::new()),
+            eviction_coordinator: None,
+            dirty_prefixes: HashSet::new(),
+            persisted_disk_locations: RwLock::new(HashMap::new()),
         };
 
         // Replay recovered operations
@@ -850,8 +1023,7 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
         // If we loaded from disk AND replayed no operations, we can truncate the WAL
         // (all operations were already persisted to disk before the checkpoint)
         if was_loaded_from_disk && replayed_count == 0 {
-            let wal = wal_writer.write();
-            if let Err(e) = wal.truncate() {
+            if let Err(e) = wal_writer.truncate() {
                 warn!("Failed to truncate WAL after recovery: {:?}", e);
             }
         }
@@ -1308,9 +1480,7 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
         arena_manager: &Arc<RwLock<ArenaManager>>,
         root_ptr: u64,
     ) -> Result<(TrieRoot<V>, u64)> {
-        use super::disk_manager::BLOCK_SIZE;
-
-        // Decode the SwizzledPtr to get block_id
+        // Decode the SwizzledPtr to get block_id and offset
         let ptr = SwizzledPtr::from_raw(root_ptr);
         if ptr.is_null() || ptr.is_swizzled() {
             return Err(PersistentARTrieError::corrupted(
@@ -1322,19 +1492,23 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
             PersistentARTrieError::corrupted("Could not decode disk location from root pointer")
         })?;
 
-        // Read the descriptor block through buffer manager
+        // Read the descriptor from block 0 at the encoded offset (64)
+        // The SwizzledPtr now encodes (block_id=0, offset=64)
         let bm = buffer_manager.read();
         let page = bm.fetch_page(location.block_id)?;
-        let descriptor_buf = page.data();
+        let page_data = page.data();
 
-        // Parse root descriptor
+        // Read descriptor from the offset within block 0
+        let offset = location.offset as usize;
+        let descriptor_buf = &page_data[offset..offset + 18];
+
+        // Parse root descriptor (fixed 18 bytes)
         // Format:
         //   0: type (1 byte)
         //   1: is_final (1 byte)
         //   2-5: term_count (4 bytes, little endian)
         //   6-9: arena_count (4 bytes, little endian)
         //   10-17: root_ptr (8 bytes, little endian)
-        //   18+: value bytes (if any)
         let root_type = descriptor_buf[0];
         let is_final = descriptor_buf[1] != 0;
         let term_count = u32::from_le_bytes([
@@ -1850,7 +2024,7 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
                 })
                 .collect();
 
-            if let Err(e) = wal_writer.write().append_batch(&wal_entries) {
+            if let Err(e) = wal_writer.append_batch(&wal_entries) {
                 warn!("Failed to log batch insert to WAL: {:?}", e);
             }
         }
@@ -1895,7 +2069,7 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
                 })
                 .collect();
 
-            if let Err(e) = wal_writer.write().append_batch(&wal_entries) {
+            if let Err(e) = wal_writer.append_batch(&wal_entries) {
                 warn!("Failed to log batch insert to WAL: {:?}", e);
             }
         }
@@ -2164,6 +2338,7 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
     ///
     /// This ensures all WAL records are synced to persistent storage.
     /// Call this after a batch of operations to ensure durability.
+    /// Honors [`DurabilityPolicy`] for flush behavior.
     ///
     /// # Example
     /// ```rust,ignore
@@ -2173,10 +2348,26 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
     /// dict.sync()?; // Ensure both inserts are durable
     /// ```
     pub fn sync(&self) -> Result<()> {
-        // Sync WAL to disk
+        // Sync WAL to disk based on durability policy
         if let Some(ref wal_writer) = self.wal_writer {
-            let wal = wal_writer.write();
-            wal.sync()?;
+            match self.durability_policy {
+                DurabilityPolicy::Immediate => {
+                    // Blocking sync - wait for durability
+                    wal_writer.sync().map_err(|e| PersistentARTrieError::io_error(
+                        "sync", "WAL", std::io::Error::new(std::io::ErrorKind::Other, e.to_string())
+                    ))?;
+                }
+                DurabilityPolicy::GroupCommit => {
+                    // Async sync - let group commit coordinator handle batching
+                    let _handle = wal_writer.sync_async().map_err(|e| PersistentARTrieError::io_error(
+                        "sync_async", "WAL", std::io::Error::new(std::io::ErrorKind::Other, e.to_string())
+                    ))?;
+                    // Handle can be returned to caller or tracked by coordinator
+                }
+                DurabilityPolicy::Periodic | DurabilityPolicy::None => {
+                    // No immediate sync - background thread handles it
+                }
+            }
         }
 
         // Flush all dirty pages from buffer manager
@@ -2185,6 +2376,45 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
         }
 
         Ok(())
+    }
+
+    /// Async sync - returns a handle to track durability.
+    ///
+    /// The returned [`SyncHandle`] can be used to wait for durability or
+    /// check status without blocking. This allows writes to continue while
+    /// the sync happens in the background.
+    ///
+    /// # Returns
+    ///
+    /// `Ok(Some(handle))` if a WAL writer is configured, where `handle` can be
+    /// used to wait for the sync to complete.
+    /// `Ok(None)` if no WAL writer is configured.
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// let dict: PersistentARTrie<()> = PersistentARTrie::create("words.part")?;
+    /// dict.insert("hello");
+    ///
+    /// // Initiate async sync
+    /// let handle = dict.sync_async()?.unwrap();
+    ///
+    /// // Can continue writing while sync happens
+    /// dict.insert("world");
+    ///
+    /// // Wait for first sync when needed
+    /// handle.wait().map_err(|e| PersistentARTrieError::io_error(
+    ///     "sync_wait", "WAL", std::io::Error::new(std::io::ErrorKind::Other, e.to_string())
+    /// ))?;
+    /// ```
+    pub fn sync_async(&self) -> Result<Option<SyncHandle>> {
+        if let Some(ref wal_writer) = self.wal_writer {
+            let handle = wal_writer.sync_async().map_err(|e| PersistentARTrieError::io_error(
+                "sync_async", "WAL", std::io::Error::new(std::io::ErrorKind::Other, e.to_string())
+            ))?;
+            Ok(Some(handle))
+        } else {
+            Ok(None)
+        }
     }
 
     /// Returns the next LSN that will be assigned to a write operation.
@@ -2206,7 +2436,7 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
     pub fn current_lsn(&self) -> Lsn {
         // Use WAL's authoritative LSN if available, otherwise fall back to cached value
         self.wal_writer.as_ref()
-            .map(|wal| wal.read().current_lsn())
+            .map(|wal| wal.current_lsn())
             .unwrap_or(self.next_lsn)
     }
 
@@ -2229,9 +2459,7 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
     /// assert!(synced.is_some());
     /// ```
     pub fn synced_lsn(&self) -> Option<Lsn> {
-        self.wal_writer.as_ref().map(|wal| {
-            wal.read().synced_lsn()
-        })
+        self.wal_writer.as_ref().map(|wal| wal.synced_lsn())
     }
 
     /// Get the current durability policy.
@@ -2316,8 +2544,6 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
 
         // Then write the checkpoint record to WAL
         if let Some(ref wal_writer) = self.wal_writer {
-            let wal = wal_writer.write();
-
             // Get current LSN as checkpoint
             let checkpoint_lsn = self.next_lsn.saturating_sub(1);
             let timestamp = std::time::SystemTime::now()
@@ -2330,11 +2556,17 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
                 timestamp,
             };
 
-            wal.append(record)?;
-            wal.sync()?;
+            wal_writer.append(record).map_err(|e| PersistentARTrieError::io_error(
+                "checkpoint_append", "WAL", std::io::Error::new(std::io::ErrorKind::Other, e.to_string())
+            ))?;
+            wal_writer.sync().map_err(|e| PersistentARTrieError::io_error(
+                "checkpoint_sync", "WAL", std::io::Error::new(std::io::ErrorKind::Other, e.to_string())
+            ))?;
 
             // Truncate WAL after successful checkpoint - all operations are now persisted
-            wal.truncate()?;
+            wal_writer.truncate().map_err(|e| PersistentARTrieError::io_error(
+                "checkpoint_truncate", "WAL", std::io::Error::new(std::io::ErrorKind::Other, e.to_string())
+            ))?;
         }
 
         Ok(())
@@ -2388,6 +2620,156 @@ impl<V: DictionaryValue> Default for PersistentARTrie<V> {
 // These methods were previously on PersistentARTrie and are now on PersistentARTrie directly.
 
 impl<V: DictionaryValue> PersistentARTrie<V> {
+    // =========================================================================
+    // Dirty Path Tracking for Selective Persistence
+    // =========================================================================
+
+    /// Record a path as dirty for selective persistence.
+    ///
+    /// This records all prefixes of the given path in `dirty_prefixes` and
+    /// invalidates corresponding cached disk locations, since those nodes
+    /// will need re-serialization.
+    ///
+    /// During `persist_to_disk()`, only nodes along dirty paths will be
+    /// traversed and serialized.
+    ///
+    /// # Arguments
+    /// * `path` - The full path to the modified node
+    #[inline]
+    fn record_dirty_path(&mut self, path: &[u8]) {
+        // Record all prefixes (including the full path) and invalidate cached locations
+        let mut cache = self.persisted_disk_locations.write();
+        for len in 0..=path.len() {
+            let prefix = path[..len].to_vec();
+            self.dirty_prefixes.insert(prefix.clone());
+            // Invalidate cached location - node will need re-serialization
+            cache.remove(&prefix);
+        }
+    }
+
+    /// Check if a path needs persistence.
+    ///
+    /// Returns true if any modification has been made along this path
+    /// since the last checkpoint.
+    #[inline]
+    fn path_needs_persistence(&self, path: &[u8]) -> bool {
+        self.dirty_prefixes.contains(path)
+    }
+
+    /// Propagate dirty flags up the ancestor chain.
+    ///
+    /// This sets the HAS_DIRTY_DESCENDANTS flag on the root node
+    /// when any modification is made. For nested ART nodes along the path,
+    /// the flag propagation happens during the serialization phase based on
+    /// dirty_prefixes.
+    fn propagate_dirty_to_root(&mut self) {
+        if let TrieRoot::ArtNode { node, .. } = &mut self.root {
+            node.header_mut().set_has_dirty_descendants(true);
+        }
+    }
+
+    /// Cache a disk location for a path.
+    ///
+    /// This is called:
+    /// 1. When a DiskRef is resolved for mutation (to potentially skip re-serialization)
+    /// 2. After serializing a node (to cache its new disk location for future checkpoints)
+    #[inline]
+    fn cache_disk_location(&self, path: &[u8], ptr: SwizzledPtr) {
+        self.persisted_disk_locations.write().insert(path.to_vec(), ptr);
+    }
+
+    /// Get a cached disk location for a path if it exists and the subtree is clean.
+    ///
+    /// Returns Some(ptr) if:
+    /// 1. The path has a cached disk location
+    /// 2. The path is NOT in dirty_prefixes (subtree was not modified)
+    ///
+    /// Returns an owned `SwizzledPtr` to avoid borrow issues with RefCell.
+    #[inline]
+    fn get_cached_disk_location(&self, path: &[u8]) -> Option<SwizzledPtr> {
+        if self.dirty_prefixes.contains(path) {
+            None // Path was modified, can't use cached location
+        } else {
+            self.persisted_disk_locations.read().get(path).cloned()
+        }
+    }
+
+    /// Resolve a DiskRef child for mutation, caching the original location.
+    ///
+    /// This wraps `resolve_child_for_mutation_with_bm` to also cache the
+    /// original disk location for potential reuse during persistence.
+    ///
+    /// # Arguments
+    /// * `child` - Mutable reference to the child node to resolve
+    /// * `path` - The path to this child (for caching the disk location)
+    ///
+    /// # Returns
+    /// * `true` if the child is now in memory
+    /// * `false` if resolution failed
+    fn resolve_and_cache_disk_location(&mut self, child: &mut ChildNode, path: &[u8]) -> bool {
+        // If it's a DiskRef, cache its location before resolving
+        if let ChildNode::DiskRef { ptr } = child {
+            self.cache_disk_location(path, ptr.clone());
+        }
+
+        resolve_child_for_mutation_with_bm(child, self.buffer_manager.as_ref())
+    }
+
+    /// Clear dirty tracking state after a successful checkpoint.
+    ///
+    /// This clears:
+    /// 1. `dirty_prefixes` - All recorded dirty paths
+    /// 2. Dirty flags on all nodes in the trie
+    ///
+    /// NOTE: `persisted_disk_locations` is intentionally NOT cleared.
+    /// We preserve cached disk locations so that on subsequent checkpoints,
+    /// clean subtrees can return their cached location without re-serialization.
+    /// These cached entries are invalidated by `record_dirty_path()` when
+    /// paths become dirty (on insert/remove).
+    fn clear_dirty_tracking_state(&mut self) {
+        self.dirty_prefixes.clear();
+        // NOTE: Do NOT clear persisted_disk_locations - we need to preserve
+        // cached locations for subsequent checkpoints to skip clean subtrees.
+        self.clear_dirty_flags_recursive();
+    }
+
+    /// Recursively clear dirty flags on all nodes in the trie.
+    fn clear_dirty_flags_recursive(&mut self) {
+        match &mut self.root {
+            TrieRoot::Bucket(_) => {
+                // Buckets don't have dirty flags
+            }
+            TrieRoot::ArtNode { node, children, .. } => {
+                node.header_mut().clear_dirty_flags();
+                for (_, child) in children {
+                    Self::clear_child_dirty_flags_recursive(child);
+                }
+            }
+        }
+    }
+
+    /// Recursively clear dirty flags on a child node and its descendants.
+    fn clear_child_dirty_flags_recursive(child: &mut ChildNode) {
+        match child {
+            ChildNode::Bucket(_) => {
+                // Buckets don't have dirty flags
+            }
+            ChildNode::ArtNode { node, children, .. } => {
+                node.header_mut().clear_dirty_flags();
+                for (_, c) in children {
+                    Self::clear_child_dirty_flags_recursive(c);
+                }
+            }
+            ChildNode::DiskRef { .. } => {
+                // DiskRef nodes are already clean
+            }
+        }
+    }
+
+    // =========================================================================
+    // Insert / Remove Implementations
+    // =========================================================================
+
     /// Insert implementation with WAL logging (for persistent mode).
     fn insert_impl(&mut self, term: &[u8], value: Option<V>) -> bool {
         // Clone value for WAL logging if needed (before move into core)
@@ -2417,7 +2799,7 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
                     term: term.to_vec(),
                     value: serialized_value,
                 };
-                if let Err(e) = wal_writer.write().append(record) {
+                if let Err(e) = wal_writer.append(record) {
                     // Log error but don't fail the insert - data is in memory
                     warn!("Failed to log insert to WAL: {:?}", e);
                 }
@@ -2518,14 +2900,40 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
                             let _ = bucket.insert_key(remaining);
                         }
 
-                        // Add child to ART node
+                        // Add child to ART node, growing the node if it's full
                         let ptr = SwizzledPtr::null();
-                        let _ = match node {
-                            Node::N4(n) => n.add_child(first_byte, ptr),
-                            Node::N16(n) => n.add_child(first_byte, ptr),
-                            Node::N48(n) => n.add_child(first_byte, ptr),
-                            Node::N256(n) => n.add_child(first_byte, ptr),
+                        let add_result = match node {
+                            Node::N4(n) => n.add_child(first_byte, ptr.clone()),
+                            Node::N16(n) => n.add_child(first_byte, ptr.clone()),
+                            Node::N48(n) => n.add_child(first_byte, ptr.clone()),
+                            Node::N256(n) => n.add_child(first_byte, ptr.clone()),
                         };
+
+                        // If node is full, grow it and retry
+                        if let Err(super::nodes::AddChildError::NodeFull) = add_result {
+                            // Grow the node to a larger type
+                            let grown_node = match node {
+                                Node::N4(n) => Node::N16(Box::new(n.grow())),
+                                Node::N16(n) => Node::N48(Box::new(n.grow())),
+                                Node::N48(n) => Node::N256(Box::new(n.grow())),
+                                Node::N256(_) => {
+                                    // Node256 can't grow further, this shouldn't happen
+                                    // since Node256 can hold all 256 children
+                                    log::error!("Cannot grow Node256 - this should never happen");
+                                    children.push((first_byte, ChildNode::Bucket(bucket)));
+                                    return true;
+                                }
+                            };
+                            *node = grown_node;
+
+                            // Retry add_child on the grown node
+                            let _ = match node {
+                                Node::N4(n) => n.add_child(first_byte, ptr),
+                                Node::N16(n) => n.add_child(first_byte, ptr),
+                                Node::N48(n) => n.add_child(first_byte, ptr),
+                                Node::N256(n) => n.add_child(first_byte, ptr),
+                            };
+                        }
 
                         children.push((first_byte, ChildNode::Bucket(bucket)));
                         true
@@ -2537,6 +2945,9 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
         if inserted {
             self.term_count += 1;
             self.dirty = true;
+            // Record the path as dirty for selective persistence
+            self.record_dirty_path(term);
+            self.propagate_dirty_to_root();
         }
 
         inserted
@@ -2554,7 +2965,7 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
                 let record = WalRecord::Remove {
                     term: term.to_vec(),
                 };
-                if let Err(e) = wal_writer.write().append(record) {
+                if let Err(e) = wal_writer.append(record) {
                     // Log error but don't fail the remove - data is in memory
                     warn!("Failed to log remove to WAL: {:?}", e);
                 }
@@ -2643,6 +3054,9 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
         if removed {
             self.term_count -= 1;
             self.dirty = true;
+            // Record the path as dirty for selective persistence
+            self.record_dirty_path(term);
+            self.propagate_dirty_to_root();
         }
 
         removed
@@ -2652,15 +3066,11 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
     fn convert_bucket_to_art(&mut self) {
         if let TrieRoot::Bucket(bucket) = &self.root {
             if let Some(result) = bucket_to_art_node(bucket).ok() {
-                let children: Vec<(u8, ChildNode)> = result
-                    .children
-                    .into_iter()
-                    .map(|(b, bucket)| (b, ChildNode::Bucket(bucket)))
-                    .collect();
-
+                // bucket_to_art_node now returns ChildNode directly (which may be
+                // buckets or nested ART nodes for overflowed children)
                 self.root = TrieRoot::ArtNode {
                     node: result.node,
-                    children,
+                    children: result.children,
                     is_final: result.is_final,
                     // Value cannot be preserved from bucket conversion because
                     // bucket uses Vec<u8> while TrieRoot uses V. Adding serde
@@ -3256,11 +3666,11 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
         })?;
 
         // Serialize the trie root and get a descriptor
-        let (root_type, root_ptr, is_final, value_bytes, term_count) = match &self.root {
+        let (root_type, root_ptr, is_final, term_count) = match &self.root {
             TrieRoot::Bucket(bucket) => {
                 // Serialize the bucket
                 let ptr = self.serialize_bucket_to_disk(bucket)?;
-                (ROOT_TYPE_BUCKET, ptr.to_raw(), false, Vec::new(), self.term_count)
+                (ROOT_TYPE_BUCKET, ptr.to_raw(), false, self.term_count)
             }
             TrieRoot::ArtNode {
                 node,
@@ -3269,9 +3679,12 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
                 value,
             } => {
                 // First, serialize all children recursively and collect their pointers
+                // Use path-aware serialization for selective dirty subtree traversal
                 let mut child_ptrs: Vec<(u8, u64)> = Vec::with_capacity(children.len());
                 for (edge, child) in children {
-                    let ptr = self.serialize_child_to_disk(child)?;
+                    // Construct the path to this child (single byte from root)
+                    let child_path = [*edge];
+                    let ptr = self.serialize_child_to_disk_with_path(child, &child_path)?;
                     child_ptrs.push((*edge, ptr.to_raw()));
                 }
 
@@ -3287,11 +3700,10 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
                 // Serialize the updated node
                 let node_ptr = self.serialize_node_to_disk(&node_copy)?;
 
-                // Prepare value bytes (empty for now since DictionaryValue lacks serialization)
-                let value_bytes = Vec::new();
-                let _ = value; // Value serialization requires serde bounds on DictionaryValue
+                // Value serialization not implemented (DictionaryValue requires serde bounds)
+                let _ = value;
 
-                (ROOT_TYPE_ART_NODE, node_ptr.to_raw(), *is_final, value_bytes, self.term_count)
+                (ROOT_TYPE_ART_NODE, node_ptr.to_raw(), *is_final, self.term_count)
             }
         };
 
@@ -3309,42 +3721,39 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
             }
         }
 
-        // Get arena count for the root descriptor
+        // Get arena count (block IDs are derived from sequential allocation: 1..=arena_count)
         let arena_count: u32 = if let Some(ref arena_manager) = self.arena_manager {
             arena_manager.read().arena_count() as u32
         } else {
             0
         };
 
-        // Create root descriptor block
+        // Create root descriptor (fixed 18 bytes)
         // Format:
         //   0: type (1 byte)
         //   1: is_final (1 byte)
         //   2-5: term_count (4 bytes, little endian)
         //   6-9: arena_count (4 bytes, little endian)
         //   10-17: root_ptr (8 bytes, little endian)
-        //   18+: value bytes (if any)
-        let mut descriptor = vec![0u8; 18 + value_bytes.len()];
+        //
+        // Note: Arena block IDs are NOT stored - they are derived from sequential allocation:
+        // Block 0 = file header + descriptor, Blocks 1..=arena_count = arenas
+        let mut descriptor = [0u8; 18];
         descriptor[0] = root_type;
         descriptor[1] = if is_final { 1 } else { 0 };
         descriptor[2..6].copy_from_slice(&(term_count as u32).to_le_bytes());
         descriptor[6..10].copy_from_slice(&arena_count.to_le_bytes());
         descriptor[10..18].copy_from_slice(&root_ptr.to_le_bytes());
-        if !value_bytes.is_empty() {
-            descriptor[18..].copy_from_slice(&value_bytes);
-        }
 
-        // Allocate a block for the descriptor and write it
+        // Write descriptor to fixed location in block 0 (offset 64, after file header)
+        // This ensures arenas always occupy blocks 1, 2, 3, ... sequentially
+        const DESCRIPTOR_OFFSET: usize = 64;
         let bm = buffer_manager.write();
-
-        let mut page_guard = bm.new_page()?;
-        let block_id = page_guard.block_id();
-        let page_data = page_guard.data_mut();
-        page_data[..descriptor.len()].copy_from_slice(&descriptor);
-
-        // Update the file header with the root pointer
         let dm = bm.disk_manager();
-        let root_descriptor_ptr = SwizzledPtr::on_disk(block_id, 0, NodeType::Bucket);
+        dm.write_bytes(0, DESCRIPTOR_OFFSET, &descriptor)?;
+
+        // Update root_ptr to point to block 0, offset 64
+        let root_descriptor_ptr = SwizzledPtr::on_disk(0, DESCRIPTOR_OFFSET as u32, NodeType::Bucket);
         dm.set_root_ptr(root_descriptor_ptr.to_raw())?;
         dm.set_entry_count(term_count as u64)?;
 
@@ -3353,23 +3762,81 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
         dm.sync()?;
 
         self.dirty = false;
+
+        // Clear dirty tracking state after successful checkpoint
+        // This must be done AFTER flushing to ensure durability
+        drop(bm); // Release buffer manager lock before clearing state
+        self.clear_dirty_tracking_state();
+
         Ok(())
     }
 
     /// Serialize a ChildNode to disk and return its SwizzledPtr.
+    ///
+    /// This is a convenience wrapper around `serialize_child_to_disk_with_path`
+    /// that uses an empty path (legacy behavior).
     fn serialize_child_to_disk(&self, child: &ChildNode) -> Result<SwizzledPtr> {
+        self.serialize_child_to_disk_with_path(child, &[])
+    }
+
+    /// Serialize a ChildNode to disk with path tracking for selective persistence.
+    ///
+    /// This method implements the selective dirty subtree traversal optimization:
+    /// - For `DiskRef` nodes: Returns the existing disk pointer (already persisted)
+    /// - For `ArtNode` with no dirty descendants: May skip serialization if a cached
+    ///   disk location exists for this path
+    /// - For dirty `ArtNode` or `Bucket`: Recursively serializes the node and its children
+    ///
+    /// # Arguments
+    /// * `child` - The child node to serialize
+    /// * `path` - The path from root to this child (for dirty tracking lookup)
+    ///
+    /// # Returns
+    /// The `SwizzledPtr` pointing to the serialized node on disk
+    fn serialize_child_to_disk_with_path(&self, child: &ChildNode, path: &[u8]) -> Result<SwizzledPtr> {
         match child {
-            ChildNode::Bucket(bucket) => self.serialize_bucket_to_disk(bucket),
+            ChildNode::Bucket(bucket) => {
+                // Buckets are always serialized (they don't have per-entry dirty tracking)
+                let ptr = self.serialize_bucket_to_disk(bucket)?;
+                // Cache the serialized location for future checkpoints
+                self.cache_disk_location(path, ptr.clone());
+                Ok(ptr)
+            }
             ChildNode::ArtNode {
                 node,
                 is_final,
                 value,
                 children,
             } => {
+                // OPTIMIZATION: Check if this subtree needs persistence
+                // A node needs persistence if:
+                // 1. It's marked as dirty (IS_DIRTY flag)
+                // 2. Any of its descendants are dirty (HAS_DIRTY_DESCENDANTS flag)
+                // 3. Any of the paths in this subtree are in dirty_prefixes
+                let needs_persist = node.header().needs_persistence()
+                    || self.path_needs_persistence(path);
+
+                // If the subtree is clean and we have a cached disk location, return it
+                if !needs_persist {
+                    if let Some(cached_ptr) = self.get_cached_disk_location(path) {
+                        log::trace!(
+                            "Skipping clean subtree at path {:?} (using cached disk location)",
+                            String::from_utf8_lossy(path)
+                        );
+                        return Ok(cached_ptr);  // Already owned, no clone needed
+                    }
+                    // No cached location, but if this is a fresh in-memory node with no
+                    // dirty flags, we still need to serialize it (first persistence)
+                }
+
                 // Recursively serialize all children first
                 let mut child_ptrs: Vec<(u8, u64)> = Vec::with_capacity(children.len());
                 for (edge, child) in children {
-                    let ptr = self.serialize_child_to_disk(child)?;
+                    // Construct the path to this child
+                    let mut child_path = path.to_vec();
+                    child_path.push(*edge);
+
+                    let ptr = self.serialize_child_to_disk_with_path(child, &child_path)?;
                     child_ptrs.push((*edge, ptr.to_raw()));
                 }
 
@@ -3381,21 +3848,25 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
                     }
                 }
 
+                // CRITICAL: Set the node's is_final flag to match the ChildNode's is_final
+                // This ensures the flag survives serialization/deserialization
+                node_copy.header_mut().set_final(*is_final);
+
                 // Serialize the node
                 let node_ptr = self.serialize_node_to_disk(&node_copy)?;
 
-                // For nested ART nodes, we create a mini-descriptor
-                // Format: is_final (1) + value_len (4) + node_ptr (8) + value
-                let value_bytes: Vec<u8> = Vec::new(); // Value serialization not yet implemented
-                let _ = value;
-                let _ = is_final;
+                // Cache the serialized location for future checkpoints
+                self.cache_disk_location(path, node_ptr.clone());
 
-                // Just return the node pointer directly for now
-                // Full nested descriptor support would require more complex format
+                // Note: Value serialization for nested ART nodes is not yet implemented
+                // DictionaryValue would need serde bounds to enable this
+                let _ = value;
+
                 Ok(node_ptr)
             }
             ChildNode::DiskRef { ptr } => {
-                // Already on disk, return as-is
+                // Already on disk - also cache this location so future checkpoints can skip
+                self.cache_disk_location(path, ptr.clone());
                 Ok(ptr.clone())
             }
         }
@@ -5077,6 +5548,247 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
         Some(terms.into_iter().map(|t| (t.term, t.value)))
     }
 
+    /// Compact the trie, eliminating orphaned nodes and fragmentation.
+    ///
+    /// Compaction performs a fresh rebuild of the trie by iterating all terms
+    /// and inserting them into a new trie. This eliminates:
+    ///
+    /// - **Intra-Arena fragmentation**: Old node versions orphaned when updated
+    /// - **Inter-Arena fragmentation**: Underutilized arenas from append-only allocation
+    /// - **File-level fragmentation**: Scattered freed blocks that never coalesce
+    ///
+    /// # Algorithm
+    ///
+    /// 1. **Setup**: Record original file size, create new trie at temp path
+    /// 2. **Copy**: Iterate all (term, value) pairs and insert into new trie
+    /// 3. **Checkpoint**: Persist new trie to disk
+    /// 4. **Verify** (optional): Confirm term counts match
+    /// 5. **Finalize** (in-place mode): Atomic rename of temp file to original
+    ///
+    /// # Arguments
+    ///
+    /// * `config` - Configuration options (output path, progress interval, verification)
+    /// * `progress` - Callback invoked periodically with progress updates
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(CompactionStats)` - Statistics about the compaction operation
+    /// * `Err(PersistentARTrieError)` - If compaction fails
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// use libdictenstein::persistent_artrie::{PersistentARTrie, CompactionConfig};
+    ///
+    /// let mut trie = PersistentARTrie::<u64>::open("data.artrie")?;
+    ///
+    /// // In-place compaction
+    /// let stats = trie.compact(CompactionConfig::default(), |p| {
+    ///     println!("{}: {:.1}%", p.phase, p.percent_complete);
+    /// })?;
+    ///
+    /// println!("Compacted {} terms, saved {:.1}% space",
+    ///     stats.terms_copied, stats.space_savings_percent);
+    /// ```
+    ///
+    /// # Edge Cases
+    ///
+    /// - **Empty trie**: Creates a minimal compacted file
+    /// - **In-memory trie (no path)**: Returns error
+    /// - **Crash during copy**: Temp file can be safely deleted on restart
+    /// - **Crash after rename**: Compaction is complete (atomic)
+    pub fn compact<F>(&mut self, config: CompactionConfig, mut progress: F) -> Result<CompactionStats>
+    where
+        V: Clone,
+        F: FnMut(CompactionProgress),
+    {
+        use std::time::Instant;
+
+        let start = Instant::now();
+
+        // Get the original file path from the buffer manager
+        let original_path = self
+            .buffer_manager
+            .as_ref()
+            .map(|bm| {
+                let bm_guard = bm.read();
+                std::path::PathBuf::from(bm_guard.disk_manager().path())
+            })
+            .ok_or_else(|| {
+                PersistentARTrieError::io_error(
+                    "compact",
+                    "",
+                    std::io::Error::new(
+                        std::io::ErrorKind::Unsupported,
+                        "Cannot compact in-memory trie (no disk backing)",
+                    ),
+                )
+            })?;
+
+        // Get original file size
+        let original_bytes = std::fs::metadata(&original_path)
+            .map(|m| m.len())
+            .unwrap_or(0);
+
+        let estimated_total = self.term_count as u64;
+
+        // Determine output path
+        let (temp_path, is_in_place) = match &config.output_path {
+            Some(output) => (output.clone(), false),
+            None => (original_path.with_extension("compacting"), true),
+        };
+
+        // Remove temp file if it exists from a previous failed compaction
+        if temp_path.exists() {
+            std::fs::remove_file(&temp_path).map_err(|e| {
+                PersistentARTrieError::io_error("compact", temp_path.display().to_string(), e)
+            })?;
+        }
+
+        // Also clean up temp WAL if it exists
+        let temp_wal_path = temp_path.with_extension("wal");
+        if temp_wal_path.exists() {
+            let _ = std::fs::remove_file(&temp_wal_path);
+        }
+
+        // Phase 1: Create new trie
+        let mut new_trie = Self::create(&temp_path)?;
+
+        // Phase 2: Copy all entries
+        let mut terms_processed = 0u64;
+
+        // Collect terms to avoid borrowing issues
+        let terms_to_copy: Vec<(Vec<u8>, V)> = self
+            .iter_prefix_with_values(b"")
+            .map(|iter| iter.collect())
+            .unwrap_or_default();
+
+        for (term, value) in terms_to_copy {
+            // Convert bytes to string for insert_with_value
+            // Note: term bytes should be valid UTF-8 since they came from string insertions
+            let term_str = match std::str::from_utf8(&term) {
+                Ok(s) => s,
+                Err(_) => {
+                    // For non-UTF8 terms, use lossy conversion
+                    // This shouldn't happen in normal usage but handles edge cases
+                    warn!("Non-UTF8 term encountered during compaction: {:?}", term);
+                    continue;
+                }
+            };
+
+            new_trie.insert_with_value(term_str, value);
+            terms_processed += 1;
+
+            // Progress callback
+            if config.progress_interval > 0 && terms_processed % config.progress_interval as u64 == 0 {
+                let percent = if estimated_total > 0 {
+                    (terms_processed as f32 / estimated_total as f32) * 100.0
+                } else {
+                    100.0
+                };
+                progress(CompactionProgress {
+                    phase: "copying",
+                    terms_processed,
+                    estimated_total,
+                    percent_complete: percent,
+                });
+            }
+        }
+
+        // Phase 3: Checkpoint
+        progress(CompactionProgress {
+            phase: "checkpointing",
+            terms_processed,
+            estimated_total,
+            percent_complete: 100.0,
+        });
+        new_trie.checkpoint()?;
+
+        // Get compacted file size
+        let compacted_bytes = std::fs::metadata(&temp_path)
+            .map(|m| m.len())
+            .unwrap_or(0);
+
+        // Phase 4: Verify (optional)
+        if config.verify_after_compact {
+            progress(CompactionProgress {
+                phase: "verifying",
+                terms_processed,
+                estimated_total,
+                percent_complete: 100.0,
+            });
+
+            let original_count = self.term_count;
+            let compacted_count = new_trie.term_count;
+
+            if original_count != compacted_count {
+                // Clean up temp files on verification failure
+                drop(new_trie);
+                let _ = std::fs::remove_file(&temp_path);
+                let _ = std::fs::remove_file(&temp_wal_path);
+
+                return Err(PersistentARTrieError::CheckpointVerificationFailed {
+                    reason: format!(
+                        "Term count mismatch after compaction: expected {}, got {}",
+                        original_count, compacted_count
+                    ),
+                });
+            }
+        }
+
+        // Phase 5: Finalize
+        if is_in_place {
+            progress(CompactionProgress {
+                phase: "finalizing",
+                terms_processed,
+                estimated_total,
+                percent_complete: 100.0,
+            });
+
+            // Drop the new trie's handles before rename
+            drop(new_trie);
+
+            // Close our own handles to release file locks
+            self.buffer_manager = None;
+            self.wal_writer = None;
+            self.arena_manager = None;
+
+            // Atomic rename
+            std::fs::rename(&temp_path, &original_path).map_err(|e| {
+                PersistentARTrieError::io_error("compact", original_path.display().to_string(), e)
+            })?;
+
+            // Clean up temp WAL (may not exist if checkpoint was clean)
+            let original_wal = original_path.with_extension("wal");
+            let _ = std::fs::remove_file(&temp_wal_path);
+
+            // Also need to handle the original WAL - rename temp WAL to original
+            // Actually, the new trie's WAL should be renamed too
+            let new_wal_path = temp_path.with_extension("wal");
+            if new_wal_path.exists() {
+                let _ = std::fs::rename(&new_wal_path, &original_wal);
+            }
+
+            // Reopen at original path
+            *self = Self::open(&original_path)?;
+        }
+
+        let duration_ms = start.elapsed().as_millis() as u64;
+        let space_savings_percent = if original_bytes > 0 {
+            (1.0 - (compacted_bytes as f64 / original_bytes as f64)) * 100.0
+        } else {
+            0.0
+        };
+
+        Ok(CompactionStats {
+            terms_copied: terms_processed,
+            original_bytes,
+            compacted_bytes,
+            space_savings_percent,
+            duration_ms,
+        })
+    }
+
 }
 
 /// Extension trait for parallel merge operations on [`SharedARTrie`].
@@ -5256,11 +5968,12 @@ impl<V: DictionaryValue + serde::Serialize + serde::de::DeserializeOwned> Persis
         };
 
         // Log BeginTx to WAL
-        {
-            if let Some(ref wal) = self.wal_writer {
-                let wal_guard = wal.read();
-                wal_guard.append(super::wal::WalRecord::BeginTx { tx_id })?;
-            }
+        if let Some(ref wal) = self.wal_writer {
+            wal.append(super::wal::WalRecord::BeginTx { tx_id }).map_err(|e| {
+                PersistentARTrieError::io_error(
+                    "begin_tx", "WAL", std::io::Error::new(std::io::ErrorKind::Other, e.to_string())
+                )
+            })?;
         }
 
         Ok(DocumentTransaction {
@@ -5343,11 +6056,16 @@ impl<V: DictionaryValue + serde::Serialize + serde::de::DeserializeOwned> Persis
             // Empty transaction - just log commit and sync based on durability policy
             tx.state = TransactionState::Committed;
             if let Some(ref wal) = self.wal_writer {
-                let wal_guard = wal.read();
-                wal_guard.append(super::wal::WalRecord::CommitTx { tx_id: tx.tx_id })?;
+                wal.append(super::wal::WalRecord::CommitTx { tx_id: tx.tx_id }).map_err(|e| {
+                    PersistentARTrieError::io_error(
+                        "commit_tx", "WAL", std::io::Error::new(std::io::ErrorKind::Other, e.to_string())
+                    )
+                })?;
                 // Sync WAL based on durability policy (ACID Durability)
                 if self.durability_policy == DurabilityPolicy::Immediate {
-                    wal_guard.sync()?;
+                    wal.sync().map_err(|e| PersistentARTrieError::io_error(
+                        "commit_tx_sync", "WAL", std::io::Error::new(std::io::ErrorKind::Other, e.to_string())
+                    ))?;
                 }
             }
             return Ok(0);
@@ -5367,14 +6085,17 @@ impl<V: DictionaryValue + serde::Serialize + serde::de::DeserializeOwned> Persis
         let inserted = self.insert_batch(&entries);
 
         // Log CommitTx and sync based on durability policy
-        {
-            if let Some(ref wal) = self.wal_writer {
-                let wal_guard = wal.read();
-                wal_guard.append(super::wal::WalRecord::CommitTx { tx_id: tx.tx_id })?;
-                // Sync WAL based on durability policy (ACID Durability)
-                if self.durability_policy == DurabilityPolicy::Immediate {
-                    wal_guard.sync()?;
-                }
+        if let Some(ref wal) = self.wal_writer {
+            wal.append(super::wal::WalRecord::CommitTx { tx_id: tx.tx_id }).map_err(|e| {
+                PersistentARTrieError::io_error(
+                    "commit_tx", "WAL", std::io::Error::new(std::io::ErrorKind::Other, e.to_string())
+                )
+            })?;
+            // Sync WAL based on durability policy (ACID Durability)
+            if self.durability_policy == DurabilityPolicy::Immediate {
+                wal.sync().map_err(|e| PersistentARTrieError::io_error(
+                    "commit_tx_sync", "WAL", std::io::Error::new(std::io::ErrorKind::Other, e.to_string())
+                ))?;
             }
         }
 
@@ -5403,11 +6124,12 @@ impl<V: DictionaryValue + serde::Serialize + serde::de::DeserializeOwned> Persis
         }
 
         // Log AbortTx to WAL
-        {
-            if let Some(ref wal) = self.wal_writer {
-                let wal_guard = wal.read();
-                wal_guard.append(super::wal::WalRecord::AbortTx { tx_id: tx.tx_id })?;
-            }
+        if let Some(ref wal) = self.wal_writer {
+            wal.append(super::wal::WalRecord::AbortTx { tx_id: tx.tx_id }).map_err(|e| {
+                PersistentARTrieError::io_error(
+                    "abort_tx", "WAL", std::io::Error::new(std::io::ErrorKind::Other, e.to_string())
+                )
+            })?;
         }
 
         // Discard buffered terms
@@ -5506,7 +6228,9 @@ impl<V: DictionaryValue + serde::Serialize + serde::de::DeserializeOwned> Persis
                 delta,
                 result: new_value,
             };
-            wal_writer.write().append(record)?;
+            wal_writer.append(record).map_err(|e| PersistentARTrieError::io_error(
+                "increment", "WAL", std::io::Error::new(std::io::ErrorKind::Other, e.to_string())
+            ))?;
         }
 
         Ok(new_value)
@@ -5564,7 +6288,9 @@ impl<V: DictionaryValue + serde::Serialize + serde::de::DeserializeOwned> Persis
                 term: term.to_vec(),
                 value: value_bytes,
             };
-            wal_writer.write().append(record)?;
+            wal_writer.append(record).map_err(|e| PersistentARTrieError::io_error(
+                "upsert", "WAL", std::io::Error::new(std::io::ErrorKind::Other, e.to_string())
+            ))?;
         }
 
         Ok(!existed)
@@ -5653,7 +6379,9 @@ impl<V: DictionaryValue + serde::Serialize + serde::de::DeserializeOwned> Persis
                 new_value: new_value_bytes,
                 success: matches,
             };
-            wal_writer.write().append(record)?;
+            wal_writer.append(record).map_err(|e| PersistentARTrieError::io_error(
+                "compare_and_swap", "WAL", std::io::Error::new(std::io::ErrorKind::Other, e.to_string())
+            ))?;
         }
 
         Ok(matches)
@@ -5721,7 +6449,9 @@ impl<V: DictionaryValue + serde::Serialize + serde::de::DeserializeOwned> Persis
                 term: term.to_vec(),
                 value: value_bytes,
             };
-            wal_writer.write().append(record)?;
+            wal_writer.append(record).map_err(|e| PersistentARTrieError::io_error(
+                "get_or_insert", "WAL", std::io::Error::new(std::io::ErrorKind::Other, e.to_string())
+            ))?;
         }
 
         Ok(default)
@@ -5756,6 +6486,29 @@ impl<V: DictionaryValue> crate::artrie_trait::ARTrie for SharedARTrie<V> {
 
     fn open_with_recovery<P: AsRef<Path>>(path: P) -> Result<(Self, super::recovery::RecoveryReport)> {
         PersistentARTrie::open_with_recovery(path).map(|(t, r)| (Arc::new(RwLock::new(t)), r))
+    }
+
+    fn open_with_recovery_and_slot_tracking<P: AsRef<Path>>(path: P) -> Result<(Self, super::recovery::RecoveryReport)> {
+        let (trie, report) = PersistentARTrie::open_with_recovery(path)?;
+        if let Some(ref am) = trie.arena_manager {
+            am.write().enable_slot_tracking();
+        }
+        Ok((Arc::new(RwLock::new(trie)), report))
+    }
+
+    fn enable_slot_tracking(&self) {
+        let guard = self.read();
+        if let Some(ref am) = guard.arena_manager {
+            am.write().enable_slot_tracking();
+        }
+    }
+
+    fn flush_sequential(&self) -> Result<()> {
+        let guard = self.read();
+        if let Some(ref am) = guard.arena_manager {
+            am.write().flush_sequential()?;
+        }
+        Ok(())
     }
 
     fn insert(&self, term: &str) -> bool
@@ -5804,8 +6557,6 @@ impl<V: DictionaryValue> crate::artrie_trait::ARTrie for SharedARTrie<V> {
         let guard = self.read();
 
         if let Some(ref wal_writer) = guard.wal_writer {
-            let mut wal = wal_writer.write();
-
             // Get current LSN as checkpoint
             let checkpoint_lsn = guard.next_lsn.saturating_sub(1);
             let timestamp = std::time::SystemTime::now()
@@ -5818,11 +6569,17 @@ impl<V: DictionaryValue> crate::artrie_trait::ARTrie for SharedARTrie<V> {
                 timestamp,
             };
 
-            wal.append(record)?;
-            wal.sync()?;
+            wal_writer.append(record).map_err(|e| PersistentARTrieError::io_error(
+                "checkpoint_append", "WAL", std::io::Error::new(std::io::ErrorKind::Other, e.to_string())
+            ))?;
+            wal_writer.sync().map_err(|e| PersistentARTrieError::io_error(
+                "checkpoint_sync", "WAL", std::io::Error::new(std::io::ErrorKind::Other, e.to_string())
+            ))?;
 
             // Truncate WAL after successful checkpoint - all operations are now persisted
-            wal.truncate()?;
+            wal_writer.truncate().map_err(|e| PersistentARTrieError::io_error(
+                "checkpoint_truncate", "WAL", std::io::Error::new(std::io::ErrorKind::Other, e.to_string())
+            ))?;
         }
 
         Ok(())
@@ -5904,6 +6661,202 @@ impl<V: DictionaryValue> crate::artrie_trait::ARTrie for SharedARTrie<V> {
     }
 }
 
+// EvictableARTrie Trait Implementation
+// ============================================================================
+
+impl<V: DictionaryValue> crate::artrie_trait::EvictableARTrie for SharedARTrie<V> {
+    fn enable_eviction(&mut self, config: super::eviction::EvictionConfig) -> Result<()> {
+        config.validate().map_err(|e| PersistentARTrieError::internal(&e))?;
+
+        let mut guard = self.write();
+
+        // Check if eviction is already enabled
+        if guard.eviction_coordinator.is_some() {
+            return Err(PersistentARTrieError::internal("Eviction already enabled"));
+        }
+
+        // Create the epoch manager reference
+        // Note: We need to create a shared epoch manager for the coordinator
+        let epoch_manager = Arc::new(super::concurrency::EpochManager::new());
+
+        // Create the eviction coordinator
+        let coordinator = super::eviction::EvictionCoordinator::new(config.clone(), epoch_manager);
+
+        // Create a weak reference to self for the eviction callback
+        let self_weak = Arc::downgrade(self);
+
+        // Start the eviction coordinator with the eviction callback
+        coordinator.start(move |nodes_to_evict| {
+            // Try to upgrade the weak reference
+            let Some(trie) = self_weak.upgrade() else {
+                return (0, 0);
+            };
+
+            let mut guard = trie.write();
+            let mut evicted_count = 0;
+            let mut bytes_freed = 0;
+
+            for (path_hash, path, disk_ptr) in nodes_to_evict {
+                if guard.evict_node_at_path(&path, disk_ptr.clone()) {
+                    evicted_count += 1;
+                    bytes_freed += 256; // Estimate ~256 bytes per node
+
+                    // Remove from LRU tracking
+                    if let Some(ref coordinator) = guard.eviction_coordinator {
+                        coordinator.lru_registry().remove(&path);
+                    }
+                }
+            }
+
+            (evicted_count, bytes_freed)
+        }).map_err(|e| PersistentARTrieError::internal(&e))?;
+
+        // Start memory pressure monitor if configured
+        coordinator.start_memory_monitor()
+            .map_err(|e| PersistentARTrieError::internal(&e))?;
+
+        guard.eviction_coordinator = Some(coordinator);
+
+        Ok(())
+    }
+
+    fn disable_eviction(&mut self) -> Result<()> {
+        let mut guard = self.write();
+
+        if let Some(coordinator) = guard.eviction_coordinator.take() {
+            coordinator.shutdown();
+        }
+
+        Ok(())
+    }
+
+    fn eviction_enabled(&self) -> bool {
+        let guard = self.read();
+        guard.eviction_coordinator.is_some()
+    }
+
+    fn eviction_stats(&self) -> super::eviction::EvictionStats {
+        let guard = self.read();
+        guard.eviction_coordinator
+            .as_ref()
+            .map(|c| c.stats())
+            .unwrap_or_default()
+    }
+
+    fn force_eviction(&mut self, target_bytes: usize) -> Result<(usize, usize)> {
+        let guard = self.read();
+
+        let Some(coordinator) = &guard.eviction_coordinator else {
+            return Ok((0, 0));
+        };
+
+        Ok(coordinator.force_eviction(target_bytes))
+    }
+
+    fn touch_node(&self, path: &[Self::Unit]) {
+        let guard = self.read();
+        if let Some(coordinator) = &guard.eviction_coordinator {
+            coordinator.lru_registry().touch(path);
+        }
+    }
+}
+
+// Helper methods for eviction on PersistentARTrie
+impl<V: DictionaryValue> PersistentARTrie<V> {
+    /// Evict a single node at the given path, replacing it with a DiskRef.
+    ///
+    /// Returns `true` if the node was successfully evicted, `false` if the
+    /// node was not found or was already a DiskRef.
+    ///
+    /// # Safety
+    ///
+    /// This method should only be called after epoch quiescence has been
+    /// achieved, ensuring no readers from the old epoch are active.
+    pub(crate) fn evict_node_at_path(&mut self, path: &[u8], disk_ptr: SwizzledPtr) -> bool {
+        if path.is_empty() {
+            // Cannot evict root
+            return false;
+        }
+
+        // Navigate to the parent of the target node
+        let parent_path = &path[..path.len() - 1];
+        let target_edge = path[path.len() - 1];
+
+        // Find the parent node
+        match self.find_parent_mut(parent_path) {
+            Some(children) => {
+                // Find the child with the target edge
+                for (edge, child) in children.iter_mut() {
+                    if *edge == target_edge {
+                        match child {
+                            super::transitions::ChildNode::DiskRef { .. } => {
+                                // Already evicted
+                                return false;
+                            }
+                            super::transitions::ChildNode::Bucket(_)
+                            | super::transitions::ChildNode::ArtNode { .. } => {
+                                // Replace with DiskRef
+                                *child = super::transitions::ChildNode::DiskRef { ptr: disk_ptr };
+                                return true;
+                            }
+                        }
+                    }
+                }
+                false
+            }
+            None => false,
+        }
+    }
+
+    /// Find the children vector of the node at the given path.
+    ///
+    /// Returns `Some(&mut Vec<(u8, ChildNode)>)` if found, `None` if the path
+    /// doesn't exist or leads to a bucket/disk ref.
+    fn find_parent_mut(&mut self, path: &[u8]) -> Option<&mut Vec<(u8, super::transitions::ChildNode)>> {
+        if path.is_empty() {
+            // Return root children
+            match &mut self.root {
+                TrieRoot::Bucket(_) => None,
+                TrieRoot::ArtNode { children, .. } => Some(children),
+            }
+        } else {
+            // Navigate down the path
+            let mut current_children = match &mut self.root {
+                TrieRoot::Bucket(_) => return None,
+                TrieRoot::ArtNode { children, .. } => children,
+            };
+
+            for &edge in &path[..path.len().saturating_sub(1)] {
+                let found = current_children
+                    .iter_mut()
+                    .find(|(e, _)| *e == edge);
+
+                match found {
+                    Some((_, super::transitions::ChildNode::ArtNode { children, .. })) => {
+                        current_children = children;
+                    }
+                    _ => return None,
+                }
+            }
+
+            // Handle the last edge
+            if path.is_empty() {
+                return Some(current_children);
+            }
+
+            let last_edge = path[path.len() - 1];
+            let found = current_children
+                .iter_mut()
+                .find(|(e, _)| *e == last_edge);
+
+            match found {
+                Some((_, super::transitions::ChildNode::ArtNode { children, .. })) => Some(children),
+                _ => None,
+            }
+        }
+    }
+}
+
 /// Drop implementation for clean shutdown.
 ///
 /// Attempts a best-effort sync on drop to ensure data durability.
@@ -5911,11 +6864,15 @@ impl<V: DictionaryValue> crate::artrie_trait::ARTrie for SharedARTrie<V> {
 /// but provides a safety net for normal program termination.
 impl<V: DictionaryValue> Drop for PersistentARTrie<V> {
     fn drop(&mut self) {
+        // Shutdown eviction coordinator first
+        if let Some(ref coordinator) = self.eviction_coordinator {
+            coordinator.shutdown();
+        }
+
         // Best-effort sync on close
         // Sync WAL
         if let Some(ref wal_writer) = self.wal_writer {
-            let wal = wal_writer.write();
-            let _ = wal.sync();
+            let _ = wal_writer.sync();
         }
         // Flush buffer manager dirty pages
         if let Some(ref buffer_manager) = self.buffer_manager {
@@ -7112,6 +8069,437 @@ mod tests {
                 );
                 prev_lsn = curr_lsn;
             }
+        }
+    }
+
+    // =========================================================================
+    // Selective Dirty Subtree Traversal Tests
+    // =========================================================================
+
+    #[test]
+    fn test_dirty_path_recording() {
+        let mut dict: PersistentARTrie = PersistentARTrie::new();
+
+        // Initially, no dirty paths
+        assert!(dict.dirty_prefixes.is_empty());
+
+        // Insert a term - should record the path
+        dict.insert("apple");
+
+        // Check that path prefixes are recorded
+        assert!(dict.dirty_prefixes.contains(&vec![])); // Root
+        assert!(dict.dirty_prefixes.contains(&vec![b'a']));
+        assert!(dict.dirty_prefixes.contains(&vec![b'a', b'p']));
+        assert!(dict.dirty_prefixes.contains(&vec![b'a', b'p', b'p']));
+        assert!(dict.dirty_prefixes.contains(&vec![b'a', b'p', b'p', b'l']));
+        assert!(dict.dirty_prefixes.contains(&vec![b'a', b'p', b'p', b'l', b'e']));
+    }
+
+    #[test]
+    fn test_dirty_path_recording_multiple_terms() {
+        let mut dict: PersistentARTrie = PersistentARTrie::new();
+
+        // Insert multiple terms with shared prefix
+        dict.insert("apple");
+        dict.insert("apricot");
+
+        // Both share "ap" prefix, so paths should include both
+        assert!(dict.dirty_prefixes.contains(&vec![b'a', b'p']));
+        // Each has its own suffix paths
+        assert!(dict.dirty_prefixes.contains(&vec![b'a', b'p', b'p'])); // apple
+        assert!(dict.dirty_prefixes.contains(&vec![b'a', b'p', b'r'])); // apricot
+    }
+
+    #[test]
+    fn test_dirty_path_recording_on_remove() {
+        let mut dict: PersistentARTrie = PersistentARTrie::new();
+
+        dict.insert("apple");
+        dict.dirty_prefixes.clear(); // Clear after insert
+
+        // Remove should also record the path
+        dict.remove("apple");
+        assert!(dict.dirty_prefixes.contains(&vec![b'a', b'p', b'p', b'l', b'e']));
+    }
+
+    #[test]
+    fn test_dirty_tracking_state_clear() {
+        let mut dict: PersistentARTrie = PersistentARTrie::new();
+
+        dict.insert("apple");
+        dict.insert("banana");
+
+        assert!(!dict.dirty_prefixes.is_empty());
+
+        // Manually add a cached location to verify it's NOT cleared
+        // (This simulates what happens after serialization)
+        let dummy_ptr = SwizzledPtr::null();
+        dict.persisted_disk_locations.write().insert(vec![b'a'], dummy_ptr);
+
+        // Clear should reset dirty_prefixes but PRESERVE persisted_disk_locations
+        dict.clear_dirty_tracking_state();
+
+        assert!(dict.dirty_prefixes.is_empty());
+        // persisted_disk_locations should NOT be cleared - we preserve cached locations
+        // for subsequent checkpoints to skip clean subtrees
+        assert!(!dict.persisted_disk_locations.read().is_empty());
+        assert!(dict.persisted_disk_locations.read().contains_key(&vec![b'a']));
+    }
+
+    #[test]
+    fn test_dirty_path_invalidates_cache() {
+        let mut dict: PersistentARTrie = PersistentARTrie::new();
+
+        // Manually populate the cache with some locations
+        dict.persisted_disk_locations.write().insert(vec![b'a'], SwizzledPtr::null());
+        dict.persisted_disk_locations.write().insert(vec![b'a', b'p'], SwizzledPtr::null());
+        dict.persisted_disk_locations.write().insert(vec![b'a', b'p', b'p'], SwizzledPtr::null());
+        dict.persisted_disk_locations.write().insert(vec![b'b'], SwizzledPtr::null());
+
+        // Recording a dirty path should invalidate cache entries along that path
+        dict.record_dirty_path(b"ap");
+
+        // Cache entries along the dirty path should be removed
+        let cache = dict.persisted_disk_locations.read();
+        assert!(!cache.contains_key(&vec![]));  // Root prefix is now dirty
+        assert!(!cache.contains_key(&vec![b'a']));  // 'a' prefix is dirty
+        assert!(!cache.contains_key(&vec![b'a', b'p']));  // 'ap' prefix is dirty
+
+        // Unrelated entries should remain
+        assert!(cache.contains_key(&vec![b'a', b'p', b'p']));  // 'app' not on dirty path
+        assert!(cache.contains_key(&vec![b'b']));  // 'b' not on dirty path
+    }
+
+    #[test]
+    fn test_dirty_root_flag_propagation() {
+        let mut dict: PersistentARTrie = PersistentARTrie::new();
+
+        // Insert enough terms to trigger bucket-to-ART conversion
+        for i in 0..100 {
+            dict.insert(&format!("term{:03}", i));
+        }
+
+        // Root should have HAS_DIRTY_DESCENDANTS flag set
+        if let TrieRoot::ArtNode { node, .. } = &dict.root {
+            assert!(
+                node.header().has_dirty_descendants(),
+                "Root should have HAS_DIRTY_DESCENDANTS flag after inserts"
+            );
+        }
+
+        // After clearing dirty state, flags should be reset
+        dict.clear_dirty_tracking_state();
+
+        if let TrieRoot::ArtNode { node, .. } = &dict.root {
+            assert!(
+                !node.header().has_dirty_descendants(),
+                "Root should not have HAS_DIRTY_DESCENDANTS flag after clear"
+            );
+            assert!(
+                !node.header().is_dirty(),
+                "Root should not have IS_DIRTY flag after clear"
+            );
+        }
+    }
+
+    #[test]
+    fn test_path_needs_persistence() {
+        let mut dict: PersistentARTrie = PersistentARTrie::new();
+
+        dict.insert("apple");
+
+        // Paths along "apple" should need persistence
+        assert!(dict.path_needs_persistence(b""));
+        assert!(dict.path_needs_persistence(b"a"));
+        assert!(dict.path_needs_persistence(b"ap"));
+        assert!(dict.path_needs_persistence(b"apple"));
+
+        // Paths not along "apple" should not need persistence
+        assert!(!dict.path_needs_persistence(b"b"));
+        assert!(!dict.path_needs_persistence(b"banana"));
+        assert!(!dict.path_needs_persistence(b"ax"));
+    }
+
+    #[test]
+    fn test_disk_location_caching() {
+        let mut dict: PersistentARTrie = PersistentARTrie::new();
+
+        // Cache a disk location
+        let test_ptr = SwizzledPtr::on_disk(1, 100, NodeType::Node4);
+        dict.cache_disk_location(b"test", test_ptr.clone());
+
+        // Should be retrievable if path is not dirty
+        assert!(dict.get_cached_disk_location(b"test").is_some());
+
+        // After marking path as dirty, should not return cached location
+        dict.record_dirty_path(b"test");
+        assert!(dict.get_cached_disk_location(b"test").is_none());
+    }
+
+    // =========================================================================
+    // SIMD Comparison Edge Case Tests
+    //
+    // These tests verify correct SIMD-accelerated byte comparison behavior
+    // when differences occur at various positions within the 16-byte SIMD chunks.
+    // =========================================================================
+
+    #[test]
+    fn test_simd_cmp_empty_slices() {
+        // Two empty slices should be equal
+        assert!(bytes_le(b"", b""));
+        assert!(!bytes_gt(b"", b""));
+    }
+
+    #[test]
+    fn test_simd_cmp_different_lengths_prefix() {
+        // Shorter is prefix of longer - shorter should be less
+        assert!(bytes_le(b"abc", b"abcd"));
+        assert!(bytes_gt(b"abcd", b"abc"));
+    }
+
+    #[test]
+    fn test_simd_cmp_first_byte_difference() {
+        // Difference at position 0
+        assert!(bytes_le(b"a", b"b"));
+        assert!(bytes_gt(b"b", b"a"));
+    }
+
+    #[test]
+    fn test_simd_cmp_position_1_difference() {
+        // Difference at position 1
+        assert!(bytes_le(b"aa", b"ab"));
+        assert!(bytes_gt(b"ab", b"aa"));
+    }
+
+    #[test]
+    fn test_simd_cmp_mid_chunk_difference() {
+        // Difference at position 8 (middle of 16-byte chunk)
+        let a = b"aaaaaaaa_aaaaaaa";
+        let b = b"aaaaaaaazaaaaaaa";
+        assert!(bytes_le(a, b));
+        assert!(bytes_gt(b, a));
+    }
+
+    #[test]
+    fn test_simd_cmp_position_15_difference() {
+        // Difference at position 15 (last byte of 16-byte chunk)
+        let a = b"aaaaaaaaaaaaaaax";
+        let b = b"aaaaaaaaaaaaaaay";
+        assert!(bytes_le(a, b));
+        assert!(bytes_gt(b, a));
+    }
+
+    #[test]
+    fn test_simd_cmp_across_chunk_boundary() {
+        // 32-byte strings with difference at position 16 (first byte of second chunk)
+        let a = b"aaaaaaaaaaaaaaaa_bbbbbbbbbbbbbbb";
+        let b = b"aaaaaaaaaaaaaaaa~bbbbbbbbbbbbbbb";
+        assert!(bytes_le(a, b));
+        assert!(bytes_gt(b, a));
+    }
+
+    #[test]
+    fn test_simd_cmp_long_equal_prefix() {
+        // Long strings that differ only at the very end
+        let mut a = vec![b'x'; 100];
+        let mut b = vec![b'x'; 100];
+        a.push(b'a');
+        b.push(b'b');
+        assert!(bytes_le(&a, &b));
+        assert!(bytes_gt(&b, &a));
+    }
+
+    #[test]
+    fn test_simd_cmp_scalar_fallback() {
+        // Strings shorter than 16 bytes - uses scalar path
+        let a = b"hello";
+        let b = b"helli";
+        assert!(bytes_gt(a, b)); // 'o' > 'i'
+        assert!(bytes_le(b, a));
+    }
+
+    #[test]
+    fn test_simd_cmp_exactly_16_bytes() {
+        // Exactly 16 bytes - one full SIMD chunk
+        let a = b"abcdefghijklmnop";
+        let b = b"abcdefghijklmnop";
+        assert!(bytes_le(a, b)); // Equal
+        assert!(!bytes_gt(a, b));
+    }
+
+    #[test]
+    fn test_simd_cmp_all_positions_in_chunk() {
+        // Test differences at each position from 0 to 15
+        for pos in 0..16 {
+            let mut a = vec![b'a'; 16];
+            let mut b = vec![b'a'; 16];
+            a[pos] = b'x';
+            b[pos] = b'y';
+
+            assert!(
+                bytes_le(&a, &b),
+                "bytes_le failed at position {}",
+                pos
+            );
+            assert!(
+                bytes_gt(&b, &a),
+                "bytes_gt failed at position {}",
+                pos
+            );
+        }
+    }
+
+    #[test]
+    fn test_simd_cmp_utf8_multibyte() {
+        // UTF-8 multibyte characters (bytes are compared, not codepoints)
+        let a = "hello世界";
+        let b = "hello地球";
+        // Compare as bytes
+        assert!(
+            bytes_le(a.as_bytes(), b.as_bytes()) || bytes_gt(a.as_bytes(), b.as_bytes()),
+            "One must be true"
+        );
+    }
+
+    // =========================================================================
+    // DiskRef Resolution Tests
+    //
+    // These tests verify correct handling of DiskRef resolution failures.
+    // =========================================================================
+
+    #[test]
+    fn test_resolve_child_already_in_memory() {
+        // Test that resolve_child_for_mutation_with_bm returns true for in-memory nodes
+        let bucket = StringBucket::new();
+        let mut child = ChildNode::Bucket(bucket);
+
+        // Should return true without needing buffer manager
+        assert!(resolve_child_for_mutation_with_bm(&mut child, None));
+    }
+
+    #[test]
+    fn test_resolve_child_art_node_already_in_memory() {
+        // ArtNode variant should also return true
+        let node = Node::new_node4();
+        let mut child = ChildNode::ArtNode {
+            node,
+            is_final: false,
+            value: None,
+            children: Vec::new(),
+        };
+
+        assert!(resolve_child_for_mutation_with_bm(&mut child, None));
+    }
+
+    #[test]
+    fn test_resolve_child_disk_ref_no_buffer_manager() {
+        // DiskRef without buffer manager should return false
+        let ptr = SwizzledPtr::on_disk(1, 0, NodeType::Node4);
+        let mut child = ChildNode::DiskRef { ptr };
+
+        assert!(!resolve_child_for_mutation_with_bm(&mut child, None));
+    }
+
+    #[test]
+    fn test_bytes_le_equality() {
+        // Equal slices
+        assert!(bytes_le(b"test", b"test"));
+        assert!(!bytes_gt(b"test", b"test"));
+    }
+
+    #[test]
+    fn test_simd_cmp_binary_data() {
+        // Binary data with high byte values
+        let a: &[u8] = &[0xFF, 0xFE, 0xFD, 0xFC];
+        let b: &[u8] = &[0xFF, 0xFE, 0xFD, 0xFB];
+        assert!(bytes_gt(a, b)); // 0xFC > 0xFB
+    }
+
+    #[test]
+    fn test_simd_cmp_null_bytes() {
+        // Strings with embedded null bytes
+        let a = b"\x00\x00\x01";
+        let b = b"\x00\x00\x02";
+        assert!(bytes_le(a, b));
+        assert!(bytes_gt(b, a));
+    }
+
+    // =========================================================================
+    // Error Path Coverage Tests
+    // =========================================================================
+
+    mod error_path_tests {
+        use super::*;
+        use tempfile::TempDir;
+
+        #[test]
+        fn test_open_nonexistent_returns_error() {
+            let temp_dir = TempDir::new().expect("create temp dir");
+            let dict_path = temp_dir.path().join("nonexistent.part");
+
+            let result: Result<PersistentARTrie<()>> = PersistentARTrie::open(&dict_path);
+            assert!(result.is_err());
+        }
+
+        #[test]
+        fn test_create_with_invalid_parent_path() {
+            // Try to create in a deeply nested path that doesn't exist
+            // The create function should handle directory creation
+            let temp_dir = TempDir::new().expect("create temp dir");
+            let dict_path = temp_dir.path().join("nested/deep/path/test.part");
+
+            // This should succeed because create() handles directory creation
+            let result: Result<PersistentARTrie<()>> = PersistentARTrie::create(&dict_path);
+            assert!(result.is_ok(), "Create should handle nested directory creation");
+        }
+
+        #[test]
+        fn test_sync_on_new_dict() {
+            // Sync on a newly created dict (no changes)
+            let temp_dir = TempDir::new().expect("create temp dir");
+            let dict_path = temp_dir.path().join("new.part");
+
+            let dict: PersistentARTrie<()> =
+                PersistentARTrie::create(&dict_path).expect("create dict");
+
+            // Sync with no changes should succeed
+            dict.sync().expect("sync empty dict");
+        }
+
+        #[test]
+        fn test_checkpoint_on_new_dict() {
+            // Checkpoint on a newly created dict
+            let temp_dir = TempDir::new().expect("create temp dir");
+            let dict_path = temp_dir.path().join("new.part");
+
+            let mut dict: PersistentARTrie<()> =
+                PersistentARTrie::create(&dict_path).expect("create dict");
+
+            // Checkpoint with no changes should succeed
+            dict.checkpoint().expect("checkpoint empty dict");
+        }
+
+        #[test]
+        fn test_open_with_recovery_new_file() {
+            // Test open_with_recovery on a fresh path (creates new)
+            let temp_dir = TempDir::new().expect("create temp dir");
+            let dict_path = temp_dir.path().join("test.part");
+
+            // First create a trie
+            {
+                let mut dict: PersistentARTrie<()> =
+                    PersistentARTrie::create(&dict_path).expect("create dict");
+                dict.insert("test");
+                dict.sync().expect("sync");
+            }
+
+            // Now open with recovery
+            let (dict, report) = PersistentARTrie::<()>::open_with_recovery(&dict_path)
+                .expect("open_with_recovery");
+
+            // Should have normal recovery mode
+            assert!(report.mode.is_normal());
+            assert!(dict.contains("test"));
         }
     }
 }

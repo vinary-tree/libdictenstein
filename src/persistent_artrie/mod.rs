@@ -163,6 +163,9 @@ pub mod zipper;
 // Write-ahead log for crash recovery
 pub mod wal;
 
+// WAL management trait for shared WAL operations
+pub mod wal_managed;
+
 // Crash recovery
 pub mod recovery;
 
@@ -193,6 +196,9 @@ pub mod relative_encoding;
 
 // Memory pressure monitoring for proactive eviction
 pub mod memory_monitor;
+
+// Memory pressure-driven node eviction
+pub mod eviction;
 
 // Adaptive buffer pool sizing
 pub mod adaptive_pool;
@@ -236,6 +242,9 @@ pub use dict_impl::{PrefixTermWithArena, PrefixTermWithValueAndArena};
 // Per-document transaction types
 pub use dict_impl::{DocumentTransaction, DurabilityPolicy, TransactionState};
 
+// Compaction types
+pub use dict_impl::{CompactionConfig, CompactionProgress, CompactionStats};
+
 // Zipper types
 pub use zipper::PersistentARTrieZipper;
 
@@ -260,6 +269,17 @@ pub use compact_encoding::{
 // WAL types
 pub use wal::{GroupCommit, Lsn, WalConfig, WalHeader, WalReader, WalRecord, WalRecordType, WalWriter};
 
+// Async WAL types for concurrent writes during sync
+pub use wal::{
+    AsyncWalConfig, AsyncWalError, AsyncWalWriter, PendingSegment, SegmentSyncManager, SyncHandle,
+    collect_all_segments,
+};
+
+// WAL management trait for shared WAL operations
+pub use wal_managed::{
+    WalManaged, create_async_wal, open_async_wal, open_or_create_async_wal,
+};
+
 // Group commit types (opt-in feature for slower storage)
 #[cfg(feature = "group-commit")]
 pub use group_commit::{GroupCommitConfig, GroupCommitCoordinator, GroupCommitStats};
@@ -268,7 +288,9 @@ pub use group_commit::{GroupCommitConfig, GroupCommitCoordinator, GroupCommitSta
 pub use recovery::{
     CorruptionType, IncrementalRecovery, RecoveredOperation, RecoveredState, RecoveryError,
     RecoveryManager, RecoveryMode, RecoveryReport, RecoveryStats,
-    detect_corruption, find_wal_archive_segments, rebuild_from_wal_segments,
+    detect_corruption, find_wal_archive_segments, find_wal_pending_segments,
+    collect_all_wal_segments, get_segment_first_lsn, sort_segments_by_lsn,
+    rebuild_from_wal_segments,
 };
 
 // Epoch-based checkpointing types
@@ -319,6 +341,12 @@ pub use memory_monitor::{
 // Adaptive buffer pool sizing types
 pub use adaptive_pool::{
     AdaptivePoolConfig, AdaptivePoolController, AdaptivePoolStats, CacheStats,
+};
+
+// Eviction types for bounded-memory operation
+pub use eviction::{
+    AccessTracker, DiskLocationRegistry, EvictionConfig, EvictionCoordinator,
+    EvictionStats, EvictionUrgency, LruRegistry,
 };
 
 // Per-node logging types

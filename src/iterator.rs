@@ -115,11 +115,10 @@ impl<Z: ValuedDictZipper> Iterator for DictionaryIterator<Z> {
             // Path reconstruction happens only for final nodes (~10% of total),
             // making iteration highly efficient.
             if zipper.is_final() {
-                if let Some(value) = zipper.value() {
-                    return Some((zipper.path(), value));
-                }
-                // For V=() dictionaries, value() returns Some(()) so this branch
-                // handles edge cases where is_final() is true but no value exists.
+                // For V=() dictionaries, value() returns None because no value is stored,
+                // but we still want to yield the term. Use Default::default() as fallback.
+                let value = zipper.value().unwrap_or_default();
+                return Some((zipper.path(), value));
             }
         }
 

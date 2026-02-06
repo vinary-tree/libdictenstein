@@ -85,6 +85,19 @@ impl DirtyTracker {
         self.total_marks += 1;
     }
 
+    /// Mark multiple arenas as dirty (for retroactive tracking).
+    ///
+    /// This is useful when enabling slot tracking after arenas have already been
+    /// allocated and marked dirty. Without this, those pre-existing dirty arenas
+    /// would not be tracked and could be skipped during incremental flush,
+    /// leading to "Invalid arena ID" corruption on checkpoint.
+    pub fn mark_arenas_dirty(&mut self, arena_ids: impl IntoIterator<Item = u32>) {
+        for arena_id in arena_ids {
+            self.dirty_arenas.insert(arena_id);
+            self.total_marks += 1;
+        }
+    }
+
     /// Mark a specific slot within an arena as dirty
     ///
     /// Also marks the arena as dirty.
@@ -435,5 +448,44 @@ mod tests {
         assert!(!tracker.is_arena_dirty(1));
         assert!(tracker.is_arena_dirty(2));
         assert!(!tracker.is_arena_dirty(3));
+    }
+
+    #[test]
+    fn test_mark_arenas_dirty_bulk() {
+        let mut tracker = DirtyTracker::slot_level();
+
+        // Mark multiple arenas dirty at once
+        tracker.mark_arenas_dirty([1, 5, 10, 42]);
+
+        assert!(tracker.is_arena_dirty(1));
+        assert!(tracker.is_arena_dirty(5));
+        assert!(tracker.is_arena_dirty(10));
+        assert!(tracker.is_arena_dirty(42));
+        assert!(!tracker.is_arena_dirty(0));
+        assert!(!tracker.is_arena_dirty(100));
+        assert_eq!(tracker.dirty_arena_count(), 4);
+        assert_eq!(tracker.stats().total_marks, 4);
+    }
+
+    #[test]
+    fn test_mark_arenas_dirty_empty() {
+        let mut tracker = DirtyTracker::slot_level();
+
+        // Marking empty iterator should be no-op
+        tracker.mark_arenas_dirty(std::iter::empty());
+
+        assert_eq!(tracker.dirty_arena_count(), 0);
+        assert_eq!(tracker.stats().total_marks, 0);
+    }
+
+    #[test]
+    fn test_mark_arenas_dirty_duplicates() {
+        let mut tracker = DirtyTracker::slot_level();
+
+        // Duplicates should only count once in dirty_arenas but total_marks increases
+        tracker.mark_arenas_dirty([1, 2, 1, 2, 1]);
+
+        assert_eq!(tracker.dirty_arena_count(), 2);
+        assert_eq!(tracker.stats().total_marks, 5);
     }
 }

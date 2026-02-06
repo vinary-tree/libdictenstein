@@ -190,7 +190,11 @@ impl BloomFilter {
     /// Returns:
     /// - false: Definitely NOT in set (fast rejection)
     /// - true: Might be in set (requires full check)
+    ///
+    /// Note: Currently unused as the Bloom filter fast path is not yet
+    /// integrated into contains(). Reserved for future optimization.
     #[inline]
+    #[allow(dead_code)]
     fn might_contain(&self, term: &str) -> bool {
         let bytes = term.as_bytes();
         for i in 0..self.hash_count {

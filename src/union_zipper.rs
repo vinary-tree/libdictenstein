@@ -522,7 +522,7 @@ impl<S> SemiringLattice for S where S: lling_llang::semiring::Semiring + lling_l
 ///
 /// For proper lattice semantics, consider implementing `Lattice` directly on your type.
 #[cfg(feature = "lling-llang")]
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 #[cfg_attr(
     all(feature = "lling-llang", feature = "persistent-artrie"),
     derive(serde::Serialize, serde::Deserialize)
@@ -554,14 +554,14 @@ impl<S: lling_llang::semiring::Semiring + lling_llang::semiring::IdempotentSemir
 // Implement DictionaryValue for SemiringLatticeWrapper so it can be used with dictionaries
 // When persistent-artrie is NOT enabled: basic bounds only
 #[cfg(all(feature = "lling-llang", not(feature = "persistent-artrie")))]
-impl<S: Clone + Send + Sync + Unpin + 'static> crate::value::DictionaryValue
+impl<S: Clone + Default + Send + Sync + Unpin + 'static> crate::value::DictionaryValue
     for SemiringLatticeWrapper<S>
 {
 }
 
 // When persistent-artrie IS enabled: require Serialize + DeserializeOwned
 #[cfg(all(feature = "lling-llang", feature = "persistent-artrie"))]
-impl<S: Clone + Send + Sync + Unpin + 'static + serde::Serialize + serde::de::DeserializeOwned>
+impl<S: Clone + Default + Send + Sync + Unpin + 'static + serde::Serialize + serde::de::DeserializeOwned>
     crate::value::DictionaryValue for SemiringLatticeWrapper<S>
 {
 }

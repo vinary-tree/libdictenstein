@@ -93,7 +93,7 @@ pub use zipper::{DictZipper, ValuedDictZipper};
 
 // Re-export persistent ARTrie types (only available with feature)
 #[cfg(feature = "persistent-artrie")]
-pub use artrie_trait::{ARTrie, ARTrieAtomicOps};
+pub use artrie_trait::{ARTrie, ARTrieAtomicOps, EvictableARTrie};
 #[cfg(feature = "persistent-artrie")]
 pub use persistent_artrie::{PersistentARTrie, PersistentARTrieZipper, WalConfig, RecoveryReport, RecoveryMode};
 #[cfg(feature = "persistent-artrie")]

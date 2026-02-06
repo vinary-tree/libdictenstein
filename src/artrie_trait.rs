@@ -192,6 +192,85 @@ pub trait ARTrie: Clone + Send + Sync {
     /// ```
     fn open_with_recovery<P: AsRef<Path>>(path: P) -> Result<(Self, RecoveryReport)>;
 
+    /// Open with crash recovery and slot-level dirty tracking.
+    ///
+    /// Combines `open_with_recovery()` functionality with slot-level tracking
+    /// enabled. This is the recommended method for production use where both
+    /// crash recovery and optimized incremental checkpoints are desired.
+    ///
+    /// Slot-level tracking reduces checkpoint I/O by 90%+ for localized updates
+    /// by writing only modified slots instead of entire 256KB arenas.
+    ///
+    /// # Arguments
+    ///
+    /// * `path` - Path to the dictionary file
+    ///
+    /// # Returns
+    ///
+    /// Tuple of (trie, recovery_report) with slot tracking enabled.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// use libdictenstein::ARTrie;
+    /// use libdictenstein::persistent_artrie_char::PersistentARTrieChar;
+    ///
+    /// let (trie, report) = PersistentARTrieChar::<i64>::open_with_recovery_and_slot_tracking("data.artc")?;
+    ///
+    /// if !report.mode.is_normal() {
+    ///     eprintln!("Recovered from crash: {} records replayed", report.records_replayed);
+    /// }
+    ///
+    /// // Subsequent checkpoints write only modified slots
+    /// trie.checkpoint()?;
+    /// ```
+    fn open_with_recovery_and_slot_tracking<P: AsRef<Path>>(path: P) -> Result<(Self, RecoveryReport)>;
+
+    /// Enable slot-level dirty tracking for reduced checkpoint I/O.
+    ///
+    /// Slot-level tracking only flushes modified slots within arenas,
+    /// reducing checkpoint I/O by 90%+ for localized updates.
+    ///
+    /// This is idempotent - calling when already enabled has no effect.
+    /// Can be called after construction to enable tracking on a trie
+    /// that was opened without it.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// use libdictenstein::ARTrie;
+    /// use libdictenstein::persistent_artrie_char::PersistentARTrieChar;
+    ///
+    /// let trie = PersistentARTrieChar::<()>::open("words.artc")?;
+    /// trie.enable_slot_tracking(); // Enable after opening
+    ///
+    /// // Now checkpoints will use slot-level tracking
+    /// trie.checkpoint()?;
+    /// ```
+    fn enable_slot_tracking(&self);
+
+    /// Flush dirty arenas in sequential order for optimized disk I/O.
+    ///
+    /// Sorts dirty arenas by ID before flushing, improving I/O locality
+    /// especially on rotational storage. Expected 5-15% faster checkpoints.
+    ///
+    /// # Errors
+    ///
+    /// Returns error if any arena flush fails.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// use libdictenstein::ARTrie;
+    /// use libdictenstein::persistent_artrie_char::PersistentARTrieChar;
+    ///
+    /// let trie = PersistentARTrieChar::<()>::create("words.artc")?;
+    /// trie.insert("hello");
+    /// trie.flush_sequential()?; // Sequential I/O optimization
+    /// trie.checkpoint()?;
+    /// ```
+    fn flush_sequential(&self) -> Result<()>;
+
     // === Core Operations ===
 
     /// Insert a term with default value.
@@ -459,6 +538,128 @@ where
     ///
     /// `true` if the swap succeeded, `false` if the current value didn't match expected.
     fn compare_and_swap(&self, term: &str, expected: Option<Self::Value>, new_value: Self::Value) -> bool;
+}
+
+// === Eviction Extension Trait ===
+
+/// Extension trait for memory pressure-driven node eviction.
+///
+/// Implemented by all persistent ARTrie variants that support bounded-memory
+/// operation. Enables SQLite-style memory management where nodes are evicted
+/// to disk when memory pressure is detected.
+///
+/// # Architecture
+///
+/// ```text
+/// ┌─────────────────────────────────────────────────────────────────┐
+/// │                    PersistentARTrie<V>                          │
+/// ├─────────────────────────────────────────────────────────────────┤
+/// │  MemoryPressureMonitor (background thread)                      │
+/// │    ↓ callback on Low/Critical pressure                          │
+/// │  EvictionCoordinator                                            │
+/// │    ↓ queues eviction request                                    │
+/// │  Eviction Thread (async)                                        │
+/// │    ├─ Wait for epoch quiescence (no old-epoch readers)          │
+/// │    ├─ Select cold nodes via LRU/access tracking                 │
+/// │    └─ Atomically swap ChildNode → DiskRef                       │
+/// └─────────────────────────────────────────────────────────────────┘
+/// ```
+///
+/// # Example
+///
+/// ```rust,ignore
+/// use libdictenstein::persistent_artrie::PersistentARTrie;
+/// use libdictenstein::EvictableARTrie;
+/// use libdictenstein::persistent_artrie::EvictionConfig;
+///
+/// let mut trie = PersistentARTrie::<()>::create("words.part")?;
+///
+/// // Enable memory pressure-driven eviction
+/// let config = EvictionConfig::default();
+/// trie.enable_eviction(config)?;
+///
+/// // Normal operations continue...
+/// trie.insert("hello");
+/// trie.checkpoint()?;
+///
+/// // Eviction happens automatically when memory pressure is detected
+/// let stats = trie.eviction_stats();
+/// println!("Nodes evicted: {}", stats.nodes_evicted);
+///
+/// // Disable eviction when done
+/// trie.disable_eviction()?;
+/// ```
+pub trait EvictableARTrie: ARTrie {
+    /// Enable memory pressure-driven eviction.
+    ///
+    /// This starts a background eviction thread that monitors memory pressure
+    /// and evicts cold nodes to disk when pressure is detected. Nodes are
+    /// evicted in LRU order (coldest first) to keep hot data in memory.
+    ///
+    /// # Arguments
+    ///
+    /// * `config` - Configuration for eviction behavior
+    ///
+    /// # Returns
+    ///
+    /// `Ok(())` on success, or an error if eviction could not be enabled.
+    ///
+    /// # Errors
+    ///
+    /// - If eviction is already enabled
+    /// - If the eviction thread fails to start
+    fn enable_eviction(&mut self, config: crate::persistent_artrie::eviction::EvictionConfig) -> Result<()>;
+
+    /// Disable eviction and release resources.
+    ///
+    /// Stops the background eviction thread and releases any resources
+    /// associated with eviction. Nodes currently in memory will remain
+    /// in memory until the trie is closed.
+    ///
+    /// # Returns
+    ///
+    /// `Ok(())` on success, or an error if eviction could not be disabled.
+    fn disable_eviction(&mut self) -> Result<()>;
+
+    /// Check if eviction is currently enabled.
+    fn eviction_enabled(&self) -> bool;
+
+    /// Get eviction statistics.
+    ///
+    /// Returns a snapshot of eviction-related statistics including:
+    /// - Total nodes evicted
+    /// - Total bytes freed
+    /// - Number of eviction cycles
+    /// - Last eviction duration
+    fn eviction_stats(&self) -> crate::persistent_artrie::eviction::EvictionStats;
+
+    /// Manually trigger eviction (for testing/debugging).
+    ///
+    /// Forces an immediate eviction cycle, evicting up to `target_bytes`
+    /// worth of nodes. This is primarily for testing; production code
+    /// should rely on automatic memory pressure-driven eviction.
+    ///
+    /// # Arguments
+    ///
+    /// * `target_bytes` - Target amount of memory to free
+    ///
+    /// # Returns
+    ///
+    /// The number of nodes evicted and bytes freed.
+    fn force_eviction(&mut self, target_bytes: usize) -> Result<(usize, usize)>;
+
+    /// Record a node access for LRU tracking.
+    ///
+    /// Called during traversal to track which nodes are being accessed.
+    /// Nodes with recent access are less likely to be evicted.
+    ///
+    /// This method is typically called internally during traversal and
+    /// does not need to be called by user code.
+    ///
+    /// # Arguments
+    ///
+    /// * `path` - The path to the accessed node (sequence of edge labels)
+    fn touch_node(&self, path: &[Self::Unit]);
 }
 
 #[cfg(test)]

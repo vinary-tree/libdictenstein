@@ -54,7 +54,7 @@ use serde::{de::DeserializeOwned, Serialize};
 /// use libdictenstein::value::DictionaryValue;
 /// use serde::{Serialize, Deserialize};
 ///
-/// #[derive(Clone, Serialize, Deserialize)]
+/// #[derive(Clone, Default, Serialize, Deserialize)]
 /// struct Metadata {
 ///     category: String,
 ///     priority: u32,
@@ -69,7 +69,7 @@ use serde::{de::DeserializeOwned, Serialize};
 /// requires `serde::Serialize + serde::de::DeserializeOwned` to support value persistence.
 #[cfg(feature = "persistent-artrie")]
 pub trait DictionaryValue:
-    Clone + Send + Sync + Unpin + 'static + Serialize + DeserializeOwned
+    Clone + Default + Send + Sync + Unpin + 'static + Serialize + DeserializeOwned
 {
     /// Returns `true` if this is a meaningful value (not unit type).
     ///
@@ -101,7 +101,7 @@ pub trait DictionaryValue:
 /// ```
 /// use libdictenstein::value::DictionaryValue;
 ///
-/// #[derive(Clone)]
+/// #[derive(Clone, Default)]
 /// struct Metadata {
 ///     category: String,
 ///     priority: u32,
@@ -110,7 +110,7 @@ pub trait DictionaryValue:
 /// impl DictionaryValue for Metadata {}
 /// ```
 #[cfg(not(feature = "persistent-artrie"))]
-pub trait DictionaryValue: Clone + Send + Sync + Unpin + 'static {
+pub trait DictionaryValue: Clone + Default + Send + Sync + Unpin + 'static {
     /// Returns `true` if this is a meaningful value (not unit type).
     ///
     /// Default implementation returns `true`. The unit type `()` overrides this

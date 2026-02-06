@@ -60,6 +60,13 @@ pub mod flags {
     pub const IS_DIRTY: u8 = 0b0000_0010;
     /// Node is a leaf (bucket pointer)
     pub const IS_LEAF: u8 = 0b0000_0100;
+    /// Node has dirty descendants (for selective persistence optimization)
+    ///
+    /// When set, indicates that at least one descendant node in the subtree
+    /// rooted at this node has been modified. This flag propagates upward
+    /// during mutations, enabling `persist_to_disk()` to skip entire clean
+    /// subtrees during checkpoint.
+    pub const HAS_DIRTY_DESCENDANTS: u8 = 0b0000_1000;
 }
 
 /// Common header for all ART node types
@@ -145,6 +152,50 @@ impl NodeHeader {
         } else {
             self.flags &= !flags::IS_LEAF;
         }
+    }
+
+    /// Check if this node has dirty descendants
+    ///
+    /// When true, indicates that at least one descendant node in the subtree
+    /// rooted at this node has been modified since the last checkpoint.
+    #[inline]
+    pub fn has_dirty_descendants(&self) -> bool {
+        self.flags & flags::HAS_DIRTY_DESCENDANTS != 0
+    }
+
+    /// Set the has_dirty_descendants flag
+    ///
+    /// This flag should be set when any descendant node is modified,
+    /// and propagated upward to all ancestors.
+    #[inline]
+    pub fn set_has_dirty_descendants(&mut self, has_dirty: bool) {
+        if has_dirty {
+            self.flags |= flags::HAS_DIRTY_DESCENDANTS;
+        } else {
+            self.flags &= !flags::HAS_DIRTY_DESCENDANTS;
+        }
+    }
+
+    /// Check if this node or any descendant needs to be persisted
+    ///
+    /// Returns true if either:
+    /// - The node itself is dirty (IS_DIRTY flag set)
+    /// - The node has dirty descendants (HAS_DIRTY_DESCENDANTS flag set)
+    ///
+    /// This is used by `persist_to_disk()` to determine whether to traverse
+    /// into a subtree or skip it entirely.
+    #[inline]
+    pub fn needs_persistence(&self) -> bool {
+        (self.flags & (flags::IS_DIRTY | flags::HAS_DIRTY_DESCENDANTS)) != 0
+    }
+
+    /// Clear both dirty flags (IS_DIRTY and HAS_DIRTY_DESCENDANTS)
+    ///
+    /// This should be called after successfully persisting a node to disk
+    /// to reset the dirty tracking state.
+    #[inline]
+    pub fn clear_dirty_flags(&mut self) {
+        self.flags &= !(flags::IS_DIRTY | flags::HAS_DIRTY_DESCENDANTS);
     }
 
     /// Increment the version counter (for optimistic locking)
@@ -671,6 +722,68 @@ mod tests {
         header.set_final(false);
         assert!(!header.is_final());
         assert!(header.is_dirty()); // Other flags unchanged
+    }
+
+    #[test]
+    fn test_node_header_dirty_descendants_flag() {
+        let mut header = NodeHeader::new(4);
+
+        // Initially no dirty flags
+        assert!(!header.has_dirty_descendants());
+        assert!(!header.is_dirty());
+        assert!(!header.needs_persistence());
+
+        // Set has_dirty_descendants
+        header.set_has_dirty_descendants(true);
+        assert!(header.has_dirty_descendants());
+        assert!(!header.is_dirty());
+        assert!(header.needs_persistence()); // Should need persistence
+
+        // Set dirty as well
+        header.set_dirty(true);
+        assert!(header.has_dirty_descendants());
+        assert!(header.is_dirty());
+        assert!(header.needs_persistence());
+
+        // Clear dirty but keep has_dirty_descendants
+        header.set_dirty(false);
+        assert!(header.has_dirty_descendants());
+        assert!(!header.is_dirty());
+        assert!(header.needs_persistence()); // Still needs persistence due to descendants
+
+        // Clear has_dirty_descendants
+        header.set_has_dirty_descendants(false);
+        assert!(!header.has_dirty_descendants());
+        assert!(!header.needs_persistence());
+    }
+
+    #[test]
+    fn test_node_header_clear_dirty_flags() {
+        let mut header = NodeHeader::new(4);
+
+        // Set both dirty flags
+        header.set_dirty(true);
+        header.set_has_dirty_descendants(true);
+        assert!(header.is_dirty());
+        assert!(header.has_dirty_descendants());
+        assert!(header.needs_persistence());
+
+        // Clear both at once
+        header.clear_dirty_flags();
+        assert!(!header.is_dirty());
+        assert!(!header.has_dirty_descendants());
+        assert!(!header.needs_persistence());
+
+        // Other flags should be unchanged
+        header.set_final(true);
+        header.set_leaf(true);
+        header.set_dirty(true);
+        header.set_has_dirty_descendants(true);
+        header.clear_dirty_flags();
+        assert!(header.is_final()); // Preserved
+        assert!(header.is_leaf()); // Preserved
+        assert!(!header.is_dirty());
+        assert!(!header.has_dirty_descendants());
     }
 
     #[test]
