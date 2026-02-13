@@ -672,6 +672,18 @@ impl RecoveryManager {
                         }
                     }
                 }
+                // Version-based WAL records (Phase 6)
+                // These are used for optimized version-based recovery (Phase 7)
+                WalRecord::VersionUpdate { .. } => {
+                    // Version update records - used for version-based recovery
+                    // Skip during mutation-based replay
+                }
+                WalRecord::VersionDurable { .. } => {
+                    // Version durable marker - skip during mutation-based replay
+                }
+                WalRecord::VersionGc { .. } => {
+                    // Version GC record - skip during mutation-based replay
+                }
             }
         }
 
@@ -903,6 +915,11 @@ impl IncrementalRecovery {
                     Ok(Some(ops))
                 }
             }
+            // Version-based WAL records (Phase 6)
+            // These are used for optimized version-based recovery (Phase 7)
+            WalRecord::VersionUpdate { .. } => Ok(None),
+            WalRecord::VersionDurable { .. } => Ok(None),
+            WalRecord::VersionGc { .. } => Ok(None),
         }
     }
 

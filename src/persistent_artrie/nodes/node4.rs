@@ -185,6 +185,93 @@ impl Node4 {
 
         node16
     }
+
+    // =========================================================================
+    // Atomic Child Access for Lock-Free Operations
+    // =========================================================================
+
+    /// Get a child pointer by key with atomic read.
+    ///
+    /// This returns a clone of the SwizzledPtr, loading the value atomically.
+    /// Use this for lock-free traversal where you need a snapshot of the pointer.
+    ///
+    /// # Returns
+    ///
+    /// - `Some(SwizzledPtr)` if a child exists at the given key
+    /// - `None` if no child exists at the given key
+    pub fn get_child_atomic(&self, key: u8) -> Option<SwizzledPtr> {
+        let count = self.header.num_children as usize;
+        for i in 0..count {
+            if self.keys[i] == key {
+                // Clone performs an atomic load internally
+                return Some(self.children[i].clone());
+            }
+        }
+        None
+    }
+
+    /// Get a reference to the child slot for CAS operations.
+    ///
+    /// This returns a reference to the SwizzledPtr at the given index,
+    /// which can be used for atomic compare-and-swap operations.
+    ///
+    /// # Arguments
+    ///
+    /// * `index` - The index of the child slot (must be < num_children)
+    ///
+    /// # Panics
+    ///
+    /// Panics in debug mode if index >= NODE4_MAX_CHILDREN.
+    #[inline]
+    pub fn child_slot(&self, index: usize) -> &SwizzledPtr {
+        debug_assert!(index < NODE4_MAX_CHILDREN, "index {} out of bounds", index);
+        &self.children[index]
+    }
+
+    /// Get the child slot index for a key.
+    ///
+    /// This returns the index where a child with the given key exists,
+    /// or where it should be inserted to maintain sorted order.
+    ///
+    /// # Returns
+    ///
+    /// - `Ok(index)` if the key exists at that index
+    /// - `Err(insert_pos)` if the key doesn't exist (insert_pos is where to insert)
+    pub fn find_slot_for_key(&self, key: u8) -> Result<usize, usize> {
+        self.find_key_index(key)
+    }
+
+    /// Get the next available child slot index.
+    ///
+    /// Returns the index of the next empty slot, or None if the node is full.
+    pub fn next_slot(&self) -> Option<usize> {
+        let count = self.header.num_children as usize;
+        if count < NODE4_MAX_CHILDREN {
+            Some(count)
+        } else {
+            None
+        }
+    }
+
+    /// Get the key at a given index.
+    ///
+    /// # Panics
+    ///
+    /// Panics in debug mode if index >= NODE4_MAX_CHILDREN.
+    #[inline]
+    pub fn key_at(&self, index: usize) -> u8 {
+        debug_assert!(index < NODE4_MAX_CHILDREN, "index {} out of bounds", index);
+        self.keys[index]
+    }
+
+    /// Get an iterator over (index, key, &SwizzledPtr) triples.
+    ///
+    /// This is useful for lock-free operations that need to access
+    /// child slots by index.
+    pub fn iter_indexed(&self) -> impl Iterator<Item = (usize, u8, &SwizzledPtr)> {
+        let count = self.header.num_children as usize;
+        (0..count).map(move |i| (i, self.keys[i], &self.children[i]))
+    }
 }
 
 #[cfg(test)]

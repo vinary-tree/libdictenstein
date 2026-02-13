@@ -199,6 +199,7 @@ pub use crate::persistent_artrie::eviction::{
 
 use std::path::Path;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering as AtomicOrdering};
 
 use parking_lot::RwLock;
 
@@ -232,10 +233,10 @@ pub type SharedCharTrie<V> = SharedCharARTrie<V>;
 pub struct PersistentARTrieChar<V: DictionaryValue = ()> {
     /// Root of the trie
     pub(crate) root: CharTrieRoot<V>,
-    /// Number of terms
-    pub(crate) len: usize,
-    /// Dirty flag (has unsaved changes)
-    pub(crate) dirty: bool,
+    /// Number of terms (atomic for lock-free access)
+    pub(crate) len: AtomicUsize,
+    /// Dirty flag (atomic for lock-free access)
+    pub(crate) dirty: AtomicBool,
 
     // Storage infrastructure (optional - None for in-memory mode)
     pub(crate) buffer_manager: Option<Arc<RwLock<crate::persistent_artrie::buffer_manager::BufferManager>>>,
@@ -243,7 +244,7 @@ pub struct PersistentARTrieChar<V: DictionaryValue = ()> {
     pub(crate) wal_writer: Option<Arc<crate::persistent_artrie::wal::AsyncWalWriter>>,
     /// WAL configuration (archive mode, segment limits, etc.)
     pub(crate) wal_config: crate::persistent_artrie::wal::WalConfig,
-    pub(crate) next_lsn: u64,
+    pub(crate) next_lsn: std::sync::atomic::AtomicU64,
     pub(crate) file_path: Option<std::path::PathBuf>,
     /// Arena manager for space-efficient node storage
     /// Packs multiple nodes into 256KB blocks instead of one node per block
@@ -293,6 +294,17 @@ pub struct PersistentARTrieChar<V: DictionaryValue = ()> {
 
     /// Phantom for value type
     pub(crate) _phantom: std::marker::PhantomData<V>,
+
+    // === Lock-Free Infrastructure (per plan Phase 4) ===
+    /// Lock-free root using PersistentCharNode with im::Vector for CAS operations.
+    /// When present, `insert_cas()` uses this for lock-free concurrent inserts.
+    pub(crate) lockfree_root: Option<nodes::AtomicNodePtr>,
+
+    /// Lock-free cache for term lookups (DashMap for O(1) sharded access).
+    pub(crate) lockfree_cache: Option<dashmap::DashMap<String, bool>>,
+
+    /// Statistics: CAS retries for monitoring contention.
+    pub(crate) cas_retries: std::sync::atomic::AtomicU64,
 }
 
 // Manual Debug implementation to avoid requiring Debug on BufferManager and WalWriter
@@ -329,23 +341,27 @@ impl<V: DictionaryValue> PersistentARTrieChar<V> {
     ///
     /// Returns `true` if any modifications have been made since the last
     /// checkpoint (or creation).
+    #[inline]
     pub fn is_dirty(&self) -> bool {
-        self.dirty
+        self.dirty.load(AtomicOrdering::Acquire)
     }
 
     /// Get the number of terms in the dictionary.
+    #[inline]
     pub fn len(&self) -> usize {
-        self.len
+        self.len.load(AtomicOrdering::Acquire)
     }
 
     /// Get the number of terms in the dictionary (alias for `len()`).
+    #[inline]
     pub fn term_count(&self) -> usize {
-        self.len
+        self.len.load(AtomicOrdering::Acquire)
     }
 
     /// Check if the dictionary is empty.
+    #[inline]
     pub fn is_empty(&self) -> bool {
-        self.len == 0
+        self.len.load(AtomicOrdering::Acquire) == 0
     }
 
     /// Get the root node for dictionary traversal.
@@ -531,8 +547,9 @@ impl<V: DictionaryValue> Dictionary for PersistentARTrieChar<V> {
         PersistentARTrieChar::contains(self, term)
     }
 
+    #[inline]
     fn len(&self) -> Option<usize> {
-        Some(self.len)
+        Some(self.len.load(AtomicOrdering::Acquire))
     }
 }
 
@@ -565,9 +582,10 @@ impl<V: DictionaryValue> Dictionary for SharedCharARTrie<V> {
         guard.contains(term)
     }
 
+    #[inline]
     fn len(&self) -> Option<usize> {
         let guard = self.read();
-        Some(guard.len)
+        Some(guard.len.load(AtomicOrdering::Acquire))
     }
 }
 
@@ -772,9 +790,10 @@ impl<V: DictionaryValue> crate::artrie_trait::ARTrie for SharedCharARTrie<V> {
         guard.remove(term).unwrap_or(false)
     }
 
+    #[inline]
     fn len(&self) -> usize {
         let guard = self.read();
-        guard.len
+        guard.len.load(AtomicOrdering::Acquire)
     }
 
     fn checkpoint(&self) -> crate::persistent_artrie::error::Result<()> {

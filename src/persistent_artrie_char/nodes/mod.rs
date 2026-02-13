@@ -28,11 +28,15 @@ pub mod node4_char;
 pub mod node16_char;
 pub mod node48_char;
 pub mod bucket_char;
+pub mod persistent_node;
+pub mod atomic_ptr;
 
 pub use node4_char::CharNode4;
 pub use node16_char::CharNode16;
 pub use node48_char::CharNode48;
 pub use bucket_char::CharBucket;
+pub use persistent_node::PersistentCharNode;
+pub use atomic_ptr::AtomicNodePtr;
 
 use crate::persistent_artrie::swizzled_ptr::SwizzledPtr;
 

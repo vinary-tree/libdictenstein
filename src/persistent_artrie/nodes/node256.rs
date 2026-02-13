@@ -158,6 +158,53 @@ impl Node256 {
 
         node48
     }
+
+    // =========================================================================
+    // Atomic Child Access for Lock-Free Operations
+    // =========================================================================
+
+    /// Get a child pointer by key with atomic read.
+    ///
+    /// This returns a clone of the SwizzledPtr, loading the value atomically.
+    /// O(1) direct array lookup.
+    pub fn get_child_atomic(&self, key: u8) -> Option<SwizzledPtr> {
+        let child = &self.children[key as usize];
+        if child.is_null() {
+            None
+        } else {
+            Some(child.clone())
+        }
+    }
+
+    /// Get a reference to the child slot for CAS operations.
+    ///
+    /// For Node256, the slot index is the same as the key byte.
+    #[inline]
+    pub fn child_slot(&self, key: u8) -> &SwizzledPtr {
+        &self.children[key as usize]
+    }
+
+    /// Check if a key has a child.
+    ///
+    /// This is faster than get_child_atomic() when you only need to check existence.
+    #[inline]
+    pub fn has_child(&self, key: u8) -> bool {
+        !self.children[key as usize].is_null()
+    }
+
+    /// Get an iterator over (key, &SwizzledPtr) pairs for non-null children.
+    ///
+    /// This iterates over all 256 slots, yielding only those with children.
+    pub fn iter_indexed(&self) -> impl Iterator<Item = (u8, &SwizzledPtr)> + '_ {
+        (0..=255u8).filter_map(move |key| {
+            let child = &self.children[key as usize];
+            if child.is_null() {
+                None
+            } else {
+                Some((key, child))
+            }
+        })
+    }
 }
 
 #[cfg(test)]

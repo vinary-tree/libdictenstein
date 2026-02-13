@@ -18,6 +18,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering as AtomicOrdering};
 use crate::sync_compat::RwLock;
 use log::warn;
 
@@ -96,6 +97,20 @@ fn simd_cmp_bytes(a: &[u8], b: &[u8]) -> std::cmp::Ordering {
 #[inline]
 fn bytes_le(a: &[u8], b: &[u8]) -> bool {
     matches!(simd_cmp_bytes(a, b), std::cmp::Ordering::Less | std::cmp::Ordering::Equal)
+}
+
+/// Result of a lock-free insert attempt.
+///
+/// Used by `insert_cas()` to communicate the outcome of a CAS operation.
+#[cfg(feature = "persistent-artrie")]
+#[derive(Debug)]
+enum LockfreeInsertResult {
+    /// Term was newly inserted - contains the node to finalize
+    Inserted(Arc<super::nodes::PersistentNode>),
+    /// Term already exists in the trie
+    AlreadyExists,
+    /// CAS conflict - another thread modified the tree, retry needed
+    Conflict,
 }
 
 /// Check if a > b using SIMD-accelerated comparison.
@@ -249,10 +264,10 @@ fn resolve_child_for_mutation_with_bm(
 pub struct PersistentARTrie<V: DictionaryValue = ()> {
     /// Root node of the trie (starts as a bucket, grows to ART)
     pub(crate) root: TrieRoot<V>,
-    /// Number of terms in the dictionary
-    pub(crate) term_count: usize,
-    /// Whether the dictionary has been modified
-    pub(crate) dirty: bool,
+    /// Number of terms in the dictionary (atomic for lock-free increment_cas)
+    pub(crate) term_count: AtomicUsize,
+    /// Whether the dictionary has been modified (atomic for lock-free increment_cas)
+    pub(crate) dirty: AtomicBool,
 
     // === Storage Layer (only active with persistent-artrie feature) ===
     // Note: DiskManager is owned by BufferManager and accessible via buffer_manager.disk_manager()
@@ -260,8 +275,8 @@ pub struct PersistentARTrie<V: DictionaryValue = ()> {
     pub(crate) buffer_manager: Option<Arc<RwLock<BufferManager>>>,
     /// Write-ahead log writer for durability (async-capable)
     pub(crate) wal_writer: Option<Arc<AsyncWalWriter>>,
-    /// Next log sequence number to assign
-    pub(crate) next_lsn: Lsn,
+    /// Next log sequence number to assign (atomic for lock-free operations)
+    pub(crate) next_lsn: std::sync::atomic::AtomicU64,
     /// Prefetcher for DFS traversal optimization
     pub(crate) prefetcher: super::prefetch::Prefetcher,
     /// Arena manager for space-efficient node storage
@@ -295,6 +310,26 @@ pub struct PersistentARTrie<V: DictionaryValue = ()> {
     /// take `&self` but need to update this cache. `RwLock` (unlike `RefCell`)
     /// is `Sync`, allowing the struct to remain thread-safe.
     pub(crate) persisted_disk_locations: RwLock<HashMap<Vec<u8>, SwizzledPtr>>,
+
+    // === Lock-Free Layer ===
+    /// Lock-free root pointer for CAS-based concurrent inserts.
+    ///
+    /// When `enable_lockfree()` is called, this pointer becomes the primary
+    /// root for all lock-free operations. The persistent root remains separate
+    /// and is merged during checkpoint.
+    #[cfg(feature = "persistent-artrie")]
+    pub(crate) lockfree_root: Option<super::nodes::AtomicNodePtr>,
+
+    /// Fast cache for lock-free lookups (key → exists).
+    ///
+    /// Uses DashMap for O(1) sharded concurrent access. This cache is populated
+    /// during `insert_cas()` and provides fast-path lookups without trie traversal.
+    #[cfg(feature = "persistent-artrie")]
+    pub(crate) lockfree_cache: Option<dashmap::DashMap<Vec<u8>, bool>>,
+
+    /// Counter for CAS retry attempts (for monitoring contention).
+    #[cfg(feature = "persistent-artrie")]
+    pub(crate) cas_retries: std::sync::atomic::AtomicU64,
 }
 
 /// Thread-safe wrapper for `PersistentARTrie`.
@@ -580,11 +615,11 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
     pub fn new() -> Self {
         Self {
             root: TrieRoot::Bucket(StringBucket::with_values()),
-            term_count: 0,
-            dirty: false,
+            term_count: AtomicUsize::new(0),
+            dirty: AtomicBool::new(false),
             buffer_manager: None,
             wal_writer: None,
-            next_lsn: 0,
+            next_lsn: std::sync::atomic::AtomicU64::new(0),
             prefetcher: super::prefetch::Prefetcher::disabled(),
             arena_manager: None,
             durability_policy: DurabilityPolicy::default(),
@@ -593,6 +628,12 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
             eviction_coordinator: None,
             dirty_prefixes: HashSet::new(),
             persisted_disk_locations: RwLock::new(HashMap::new()),
+            #[cfg(feature = "persistent-artrie")]
+            lockfree_root: None,
+            #[cfg(feature = "persistent-artrie")]
+            lockfree_cache: None,
+            #[cfg(feature = "persistent-artrie")]
+            cas_retries: std::sync::atomic::AtomicU64::new(0),
         }
     }
 
@@ -657,11 +698,11 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
 
         Ok(Self {
             root: TrieRoot::Bucket(StringBucket::with_values()),
-            term_count: 0,
-            dirty: false,
+            term_count: AtomicUsize::new(0),
+            dirty: AtomicBool::new(false),
             buffer_manager: Some(buffer_manager),
             wal_writer: Some(wal_writer),
-            next_lsn: 1, // Start at 1, 0 reserved for "no LSN"
+            next_lsn: std::sync::atomic::AtomicU64::new(1), // Start at 1, 0 reserved for "no LSN"
             prefetcher: super::prefetch::Prefetcher::new(),
             arena_manager: Some(arena_manager),
             durability_policy: DurabilityPolicy::default(),
@@ -670,6 +711,12 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
             eviction_coordinator: None,
             dirty_prefixes: HashSet::new(),
             persisted_disk_locations: RwLock::new(HashMap::new()),
+            #[cfg(feature = "persistent-artrie")]
+            lockfree_root: None,
+            #[cfg(feature = "persistent-artrie")]
+            lockfree_cache: None,
+            #[cfg(feature = "persistent-artrie")]
+            cas_retries: std::sync::atomic::AtomicU64::new(0),
         })
     }
 
@@ -740,11 +787,11 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
 
         Ok(Self {
             root: TrieRoot::Bucket(StringBucket::with_values()),
-            term_count: 0,
-            dirty: false,
+            term_count: AtomicUsize::new(0),
+            dirty: AtomicBool::new(false),
             buffer_manager: Some(buffer_manager),
             wal_writer: Some(wal_writer),
-            next_lsn: 1, // Start at 1, 0 reserved for "no LSN"
+            next_lsn: std::sync::atomic::AtomicU64::new(1), // Start at 1, 0 reserved for "no LSN"
             prefetcher: super::prefetch::Prefetcher::new(),
             arena_manager: Some(arena_manager),
             durability_policy: DurabilityPolicy::default(),
@@ -753,6 +800,12 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
             eviction_coordinator: None,
             dirty_prefixes: HashSet::new(),
             persisted_disk_locations: RwLock::new(HashMap::new()),
+            #[cfg(feature = "persistent-artrie")]
+            lockfree_root: None,
+            #[cfg(feature = "persistent-artrie")]
+            lockfree_cache: None,
+            #[cfg(feature = "persistent-artrie")]
+            cas_retries: std::sync::atomic::AtomicU64::new(0),
         })
     }
 
@@ -902,11 +955,11 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
 
         let mut dict = Self {
             root: initial_root,
-            term_count: initial_term_count,
-            dirty: false,
+            term_count: AtomicUsize::new(initial_term_count),
+            dirty: AtomicBool::new(false),
             buffer_manager: Some(buffer_manager),
             wal_writer: Some(Arc::clone(&wal_writer)),
-            next_lsn,
+            next_lsn: std::sync::atomic::AtomicU64::new(next_lsn),
             prefetcher: super::prefetch::Prefetcher::new(),
             arena_manager: Some(arena_manager),
             durability_policy: DurabilityPolicy::default(),
@@ -915,6 +968,12 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
             eviction_coordinator: None,
             dirty_prefixes: HashSet::new(),
             persisted_disk_locations: RwLock::new(HashMap::new()),
+            #[cfg(feature = "persistent-artrie")]
+            lockfree_root: None,
+            #[cfg(feature = "persistent-artrie")]
+            lockfree_cache: None,
+            #[cfg(feature = "persistent-artrie")]
+            cas_retries: std::sync::atomic::AtomicU64::new(0),
         };
 
         // Replay recovered operations
@@ -1018,7 +1077,7 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
             }
         }
         // Mark clean after recovery replay
-        dict.dirty = false;
+        dict.dirty.store(false, AtomicOrdering::Release);
 
         // If we loaded from disk AND replayed no operations, we can truncate the WAL
         // (all operations were already persisted to disk before the checkpoint)
@@ -1065,6 +1124,18 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
         }
 
         Ok(dict)
+    }
+
+    /// Open with both recovery and slot tracking enabled.
+    ///
+    /// Combines `open_with_recovery()` and slot tracking enablement.
+    /// Returns `(trie, recovery_report)` so callers can inspect recovery status.
+    pub fn open_with_recovery_and_slot_tracking<P: AsRef<Path>>(path: P) -> Result<(Self, super::recovery::RecoveryReport)> {
+        let (mut dict, report) = Self::open_with_recovery(path)?;
+        if let Some(ref am) = dict.arena_manager {
+            am.write().enable_slot_tracking();
+        }
+        Ok((dict, report))
     }
 
     /// Open an existing persistent dictionary with automatic corruption detection and recovery.
@@ -1967,6 +2038,599 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
         }
     }
 
+    // ==================== Lock-Free CAS Methods ====================
+
+    /// Enable lock-free mode for concurrent inserts.
+    ///
+    /// This initializes the lock-free infrastructure including:
+    /// - An `AtomicNodePtr` root for CAS-based tree modifications
+    /// - A `DashMap` cache for fast lookups
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// let mut trie = PersistentARTrie::<()>::create("trie.part")?;
+    /// trie.enable_lockfree();
+    /// trie.insert_cas(b"hello");  // Now works concurrently
+    /// ```
+    #[cfg(feature = "persistent-artrie")]
+    pub fn enable_lockfree(&mut self) {
+        use super::nodes::atomic_ptr::AtomicNodePtr;
+        use super::nodes::persistent_node::PersistentNode;
+        use dashmap::DashMap;
+
+        if self.lockfree_root.is_some() {
+            return; // Already enabled
+        }
+
+        // Initialize with an empty root node
+        let root_node = Arc::new(PersistentNode::new());
+        self.lockfree_root = Some(AtomicNodePtr::new(root_node));
+        self.lockfree_cache = Some(DashMap::new());
+    }
+
+    /// Lock-free insert using CAS operations.
+    ///
+    /// This method inserts a term into the lock-free trie structure without
+    /// acquiring any locks. Multiple threads can call this concurrently.
+    ///
+    /// # Arguments
+    ///
+    /// * `term` - The term bytes to insert
+    ///
+    /// # Returns
+    ///
+    /// `true` if the term was newly inserted, `false` if it already existed.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `enable_lockfree()` was not called first.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// let mut trie = PersistentARTrie::<()>::create("trie.part")?;
+    /// trie.enable_lockfree();
+    ///
+    /// let inserted = trie.insert_cas(b"hello");
+    /// assert!(inserted);
+    ///
+    /// let inserted2 = trie.insert_cas(b"hello");
+    /// assert!(!inserted2);  // Already exists
+    /// ```
+    #[cfg(feature = "persistent-artrie")]
+    pub fn insert_cas(&self, term: &[u8]) -> bool {
+        use std::sync::atomic::Ordering;
+
+        let lockfree_root = self.lockfree_root.as_ref()
+            .expect("Lock-free mode not enabled. Call enable_lockfree() first.");
+        let lockfree_cache = self.lockfree_cache.as_ref()
+            .expect("Lock-free mode not enabled. Call enable_lockfree() first.");
+
+        // Fast path: check cache first
+        if lockfree_cache.contains_key(term) {
+            return false;
+        }
+
+        if term.is_empty() {
+            return false;
+        }
+
+        // Enter the read epoch for safe memory access
+        let _epoch = self.epoch_manager.enter_read();
+
+        // CAS retry loop
+        loop {
+            match self.try_insert_lockfree_path(lockfree_root, term) {
+                LockfreeInsertResult::Inserted(node) => {
+                    // We inserted a new path - try to claim it as final
+                    if node.try_set_final() {
+                        // We won the race to finalize this node
+                        lockfree_cache.insert(term.to_vec(), true);
+                        return true;
+                    } else {
+                        // Another thread finalized it - the term already exists
+                        return false;
+                    }
+                }
+                LockfreeInsertResult::AlreadyExists => {
+                    // Term already exists in the trie
+                    lockfree_cache.insert(term.to_vec(), true);
+                    return false;
+                }
+                LockfreeInsertResult::Conflict => {
+                    // CAS failed due to concurrent modification - retry
+                    self.cas_retries.fetch_add(1, Ordering::Relaxed);
+                    continue;
+                }
+            }
+        }
+    }
+
+    /// Attempt to insert a path in the lock-free trie.
+    ///
+    /// Returns the result of the insertion attempt.
+    #[cfg(feature = "persistent-artrie")]
+    fn try_insert_lockfree_path(
+        &self,
+        root: &super::nodes::AtomicNodePtr,
+        term: &[u8],
+    ) -> LockfreeInsertResult {
+        use super::nodes::PersistentNode;
+
+        // Load current root
+        let current_root = match root.load() {
+            Some(node) => node,
+            None => {
+                // Root is null - try to initialize it
+                let new_root = Arc::new(PersistentNode::new());
+                match root.try_init(new_root) {
+                    Ok(()) => return self.try_insert_lockfree_path(root, term),
+                    Err(actual) => actual,
+                }
+            }
+        };
+
+        // Navigate/create path to the target node
+        self.insert_lockfree_recursive(root, &current_root, term, 0)
+    }
+
+    /// Recursively build a new tree with the path inserted.
+    ///
+    /// This method builds the path from leaf to root: it recurses down to the
+    /// target depth, creates the leaf node, then on the way back up creates
+    /// new versions of each parent with updated child pointers.
+    ///
+    /// # Returns
+    ///
+    /// - `Ok(new_node, leaf)` - New version of this node with path inserted, plus leaf node
+    /// - `Err(())` - Term already exists (node is already final at target depth)
+    #[cfg(feature = "persistent-artrie")]
+    fn build_path_recursive(
+        &self,
+        node: &Arc<super::nodes::PersistentNode>,
+        term: &[u8],
+        depth: usize,
+    ) -> std::result::Result<(Arc<super::nodes::PersistentNode>, Arc<super::nodes::PersistentNode>), ()> {
+        use super::nodes::PersistentNode;
+        use super::swizzled_ptr::SwizzledPtr;
+
+        if depth == term.len() {
+            // Reached target depth - mark as final
+            if node.is_final() {
+                return Err(()); // Already exists
+            }
+            let final_node = Arc::new(node.as_final());
+            return Ok((final_node.clone(), final_node));
+        }
+
+        let key = term[depth];
+
+        match node.find_child(key) {
+            Some(child_ptr) => {
+                // Child exists - check if it's on disk
+                if child_ptr.is_on_disk() {
+                    // On-disk child means this path exists in persistent trie
+                    // For lock-free overlay, we can't easily check this
+                    // Mark as conflict to force re-check via cache/persistent lookup
+                    return Err(());
+                }
+
+                // In-memory child - traverse into it
+                if let Some(ptr) = child_ptr.as_ptr::<PersistentNode>() {
+                    let child = unsafe {
+                        Arc::increment_strong_count(ptr);
+                        Arc::from_raw(ptr)
+                    };
+
+                    // Recursively build path in child
+                    let (new_child, leaf) = self.build_path_recursive(&child, term, depth + 1)?;
+
+                    // Create new version of this node with updated child pointer
+                    let new_child_ptr = SwizzledPtr::in_memory(Arc::into_raw(new_child));
+                    let new_node = Arc::new(node.with_child(key, new_child_ptr));
+
+                    Ok((new_node, leaf))
+                } else {
+                    // Null pointer shouldn't happen
+                    Err(())
+                }
+            }
+            None => {
+                // Child doesn't exist - create entire remaining path
+                let (new_subtree, leaf) = self.create_lockfree_path(&term[depth + 1..]);
+                let new_child_ptr = SwizzledPtr::in_memory(Arc::into_raw(new_subtree));
+                let new_node = Arc::new(node.with_child(key, new_child_ptr));
+
+                Ok((new_node, leaf))
+            }
+        }
+    }
+
+    /// Create a new path for the remaining bytes.
+    ///
+    /// Builds the path bottom-up: creates the final leaf node first,
+    /// then wraps each byte as a parent going up to the start.
+    ///
+    /// # Returns
+    ///
+    /// A tuple of (subtree_root, leaf_node) where:
+    /// - subtree_root is the top of the new path (to be attached as a child)
+    /// - leaf_node is the final node (to have try_set_final called on it)
+    #[cfg(feature = "persistent-artrie")]
+    fn create_lockfree_path(&self, term: &[u8]) -> (Arc<super::nodes::PersistentNode>, Arc<super::nodes::PersistentNode>) {
+        use super::nodes::PersistentNode;
+        use super::swizzled_ptr::SwizzledPtr;
+
+        // Create the final leaf node (not marked final yet - caller will try_set_final)
+        let leaf = Arc::new(PersistentNode::new());
+
+        if term.is_empty() {
+            // No more bytes - leaf is also the root
+            return (leaf.clone(), leaf);
+        }
+
+        // Build path bottom-up
+        let mut current = leaf.clone();
+
+        for &b in term.iter().rev() {
+            let child_ptr = SwizzledPtr::in_memory(Arc::into_raw(current));
+            let parent = PersistentNode::new().with_child(b, child_ptr);
+            current = Arc::new(parent);
+        }
+
+        (current, leaf)
+    }
+
+    /// Attempt to insert a path using CAS. Called from insert_cas retry loop.
+    #[cfg(feature = "persistent-artrie")]
+    fn insert_lockfree_recursive(
+        &self,
+        root: &super::nodes::AtomicNodePtr,
+        current: &Arc<super::nodes::PersistentNode>,
+        term: &[u8],
+        _depth: usize, // Kept for API compatibility
+    ) -> LockfreeInsertResult {
+        // Build the new tree structure with the path inserted
+        match self.build_path_recursive(current, term, 0) {
+            Ok((new_root, leaf)) => {
+                // Try to CAS the root to the new version
+                match root.compare_exchange(current, new_root) {
+                    Ok(_) => {
+                        // Successfully updated the tree
+                        LockfreeInsertResult::Inserted(leaf)
+                    }
+                    Err(_actual) => {
+                        // CAS failed - another thread modified the tree
+                        LockfreeInsertResult::Conflict
+                    }
+                }
+            }
+            Err(()) => {
+                // Term already exists or on-disk reference found
+                LockfreeInsertResult::AlreadyExists
+            }
+        }
+    }
+
+    /// Check if a term exists in the lock-free trie.
+    ///
+    /// This is a fast, lock-free lookup that checks the cache first.
+    #[cfg(feature = "persistent-artrie")]
+    pub fn contains_lockfree(&self, term: &[u8]) -> bool {
+        if let Some(ref cache) = self.lockfree_cache {
+            if cache.contains_key(term) {
+                return true;
+            }
+        }
+
+        // Fall back to checking the lock-free trie structure
+        if let Some(ref root) = self.lockfree_root {
+            if let Some(root_node) = root.load() {
+                return self.find_in_lockfree_trie(&root_node, term, 0);
+            }
+        }
+
+        false
+    }
+
+    /// Navigate the lock-free trie to find a term.
+    #[cfg(feature = "persistent-artrie")]
+    fn find_in_lockfree_trie(
+        &self,
+        node: &Arc<super::nodes::PersistentNode>,
+        term: &[u8],
+        depth: usize,
+    ) -> bool {
+        use super::nodes::PersistentNode;
+
+        if depth >= term.len() {
+            return node.is_final();
+        }
+
+        let key = term[depth];
+        if let Some(child_ptr) = node.find_child(key) {
+            if child_ptr.is_on_disk() {
+                // On-disk reference - can't traverse in lock-free overlay
+                // The persistent trie would need to be checked
+                return false;
+            }
+
+            // In-memory child - traverse into it
+            if let Some(ptr) = child_ptr.as_ptr::<PersistentNode>() {
+                let child = unsafe {
+                    Arc::increment_strong_count(ptr);
+                    Arc::from_raw(ptr)
+                };
+                return self.find_in_lockfree_trie(&child, term, depth + 1);
+            }
+        }
+
+        false
+    }
+
+    /// Merge lock-free entries into the persistent trie.
+    ///
+    /// This method takes entries from the lock-free cache and inserts them
+    /// into the persistent trie structure. Call this during checkpoints or
+    /// before saving to ensure all entries are persisted.
+    ///
+    /// # Returns
+    ///
+    /// The number of entries merged.
+    #[cfg(feature = "persistent-artrie")]
+    pub fn merge_lockfree_to_persistent(&mut self) -> Result<usize> {
+        // Collect entries first to avoid borrow conflict
+        let entries: Vec<Vec<u8>> = match &self.lockfree_cache {
+            Some(cache) => cache.iter().map(|e| e.key().clone()).collect(),
+            None => return Ok(0),
+        };
+
+        let mut count = 0;
+        for term in entries {
+            if self.insert_impl(&term, None) {
+                count += 1;
+            }
+        }
+
+        // Clear the cache after merging
+        if let Some(ref cache) = self.lockfree_cache {
+            cache.clear();
+        }
+
+        Ok(count)
+    }
+
+    /// Get the number of CAS retries (for monitoring contention).
+    #[cfg(feature = "persistent-artrie")]
+    #[inline]
+    pub fn cas_retry_count(&self) -> u64 {
+        self.cas_retries.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Merge lock-free values into the persistent trie by summing.
+    ///
+    /// Unlike `merge_lockfree_to_persistent()` which does boolean insert,
+    /// this method walks the lock-free trie overlay, collects all `(key, value)`
+    /// entries, and adds each value to the persistent trie via `increment_bytes`.
+    ///
+    /// This is the correct merge strategy for n-gram counting where the lock-free
+    /// layer accumulates counts that must be summed with existing persistent values.
+    ///
+    /// After merging, the lock-free layer is cleared (root reset, cache cleared).
+    ///
+    /// # Returns
+    ///
+    /// The number of entries merged.
+    #[cfg(feature = "persistent-artrie")]
+    pub fn merge_lockfree_values_to_persistent(&mut self) -> Result<usize> {
+        use super::nodes::PersistentNode;
+
+        // Collect all (key, value) entries from the lock-free trie
+        let entries = {
+            let lockfree_root = match self.lockfree_root.as_ref() {
+                Some(root) => root,
+                None => return Ok(0),
+            };
+
+            let root_node = match lockfree_root.load() {
+                Some(node) => node,
+                None => return Ok(0),
+            };
+
+            let mut entries: Vec<(Vec<u8>, u64)> = Vec::new();
+            let mut key_buf: Vec<u8> = Vec::new();
+            Self::collect_lockfree_entries_recursive(&root_node, &mut key_buf, &mut entries);
+            entries
+        };
+
+        let mut count = 0;
+        for (key, value) in &entries {
+            self.increment_bytes(key, *value as i64)?;
+            count += 1;
+        }
+
+        // Clear the lock-free layer
+        if let Some(ref cache) = self.lockfree_cache {
+            cache.clear();
+        }
+        if let Some(ref root) = self.lockfree_root {
+            root.store(Arc::new(PersistentNode::new()));
+        }
+
+        Ok(count)
+    }
+
+    /// Recursively collect all (key, value) entries from the lock-free trie.
+    #[cfg(feature = "persistent-artrie")]
+    fn collect_lockfree_entries_recursive(
+        node: &Arc<super::nodes::PersistentNode>,
+        key_buf: &mut Vec<u8>,
+        entries: &mut Vec<(Vec<u8>, u64)>,
+    ) {
+        use super::nodes::PersistentNode;
+
+        // If this node is final and has a value, record it
+        if node.is_final() {
+            if let Some(value) = node.get_value() {
+                entries.push((key_buf.clone(), value));
+            }
+        }
+
+        // Recurse into children
+        for (&child_key, child_ptr) in node.iter_children() {
+            if child_ptr.is_on_disk() {
+                continue; // Skip disk refs in lock-free overlay
+            }
+            if let Some(ptr) = child_ptr.as_ptr::<PersistentNode>() {
+                let child = unsafe {
+                    Arc::increment_strong_count(ptr);
+                    Arc::from_raw(ptr)
+                };
+                key_buf.push(child_key);
+                Self::collect_lockfree_entries_recursive(&child, key_buf, entries);
+                key_buf.pop();
+            }
+        }
+    }
+
+    /// Find the leaf node for a key in the lock-free trie.
+    ///
+    /// Navigates the lock-free trie overlay and returns the leaf node if the
+    /// full path exists and the leaf is final. Unlike `find_in_lockfree_trie`
+    /// which returns a `bool`, this returns the node itself so the caller can
+    /// read or atomically modify its value.
+    ///
+    /// # Arguments
+    ///
+    /// * `root` - The lock-free root pointer
+    /// * `key` - The byte key to look up
+    ///
+    /// # Returns
+    ///
+    /// `Some(leaf)` if the key exists and is final, `None` otherwise.
+    #[cfg(feature = "persistent-artrie")]
+    fn find_leaf_lockfree(
+        &self,
+        root: &super::nodes::AtomicNodePtr,
+        key: &[u8],
+    ) -> Option<Arc<super::nodes::PersistentNode>> {
+        let current = root.load()?;
+        self.find_leaf_recursive(&current, key, 0)
+    }
+
+    /// Recursive helper for `find_leaf_lockfree`.
+    #[cfg(feature = "persistent-artrie")]
+    fn find_leaf_recursive(
+        &self,
+        node: &Arc<super::nodes::PersistentNode>,
+        key: &[u8],
+        depth: usize,
+    ) -> Option<Arc<super::nodes::PersistentNode>> {
+        use super::nodes::PersistentNode;
+
+        if depth == key.len() {
+            return if node.is_final() { Some(Arc::clone(node)) } else { None };
+        }
+
+        let child_ptr = node.find_child(key[depth])?;
+        if child_ptr.is_on_disk() {
+            return None; // Can't traverse disk refs in lock-free overlay
+        }
+
+        let ptr = child_ptr.as_ptr::<PersistentNode>()?;
+        let child = unsafe {
+            Arc::increment_strong_count(ptr);
+            Arc::from_raw(ptr)
+        };
+        self.find_leaf_recursive(&child, key, depth + 1)
+    }
+
+    /// Lock-free read of a value from the lock-free trie overlay.
+    ///
+    /// Returns the value if the key is found in the lock-free layer with a value
+    /// set. Does not check the persistent layer — callers should check both layers
+    /// and sum the results for n-gram counting.
+    ///
+    /// # Arguments
+    ///
+    /// * `key` - The byte key (e.g., LEB128-encoded n-gram)
+    ///
+    /// # Returns
+    ///
+    /// `Some(value)` if found in the lock-free layer, `None` otherwise.
+    #[cfg(feature = "persistent-artrie")]
+    #[inline]
+    pub fn get_lockfree(&self, key: &[u8]) -> Option<u64> {
+        let lockfree_root = self.lockfree_root.as_ref()?;
+        let _epoch = self.epoch_manager.enter_read();
+        self.find_leaf_lockfree(lockfree_root, key)
+            .and_then(|leaf| leaf.get_value())
+    }
+
+    /// Lock-free increment: create path if needed, then atomically add delta.
+    ///
+    /// For existing keys: single `fetch_add` on the leaf (wait-free).
+    /// For new keys: CAS retry loop to create path, then set initial value.
+    ///
+    /// This is the primary method for n-gram counting. Workers call this
+    /// concurrently without any locks — contention only occurs when two
+    /// threads simultaneously create the *same new path* (rare in practice
+    /// since n-gram keys are distributed across the alphabet).
+    ///
+    /// # Arguments
+    ///
+    /// * `key` - The byte key (e.g., LEB128-encoded n-gram)
+    /// * `delta` - The count to add
+    ///
+    /// # Returns
+    ///
+    /// The new accumulated value after increment.
+    #[cfg(feature = "persistent-artrie")]
+    pub fn increment_cas(&self, key: &[u8], delta: u64) -> u64 {
+        use std::sync::atomic::Ordering;
+
+        let lockfree_root = self.lockfree_root.as_ref()
+            .expect("Lock-free mode not enabled. Call enable_lockfree() first.");
+
+        if key.is_empty() {
+            return 0;
+        }
+
+        let _epoch = self.epoch_manager.enter_read();
+
+        // Fast path: find existing leaf and increment atomically (wait-free)
+        if let Some(leaf) = self.find_leaf_lockfree(lockfree_root, key) {
+            return leaf.increment_value(delta);
+        }
+
+        // Slow path: create path, then increment
+        loop {
+            match self.try_insert_lockfree_path(lockfree_root, key) {
+                LockfreeInsertResult::Inserted(leaf) => {
+                    // New path created — claim it as final and set initial value
+                    leaf.try_set_final();
+                    return leaf.increment_value(delta);
+                }
+                LockfreeInsertResult::AlreadyExists => {
+                    // Path exists but we didn't find the leaf earlier — retry find
+                    if let Some(leaf) = self.find_leaf_lockfree(lockfree_root, key) {
+                        return leaf.increment_value(delta);
+                    }
+                    // Unusual: exists flag but no leaf found. Retry full path.
+                    continue;
+                }
+                LockfreeInsertResult::Conflict => {
+                    // CAS failed — another thread modified the tree, retry
+                    self.cas_retries.fetch_add(1, Ordering::Relaxed);
+                    continue;
+                }
+            }
+        }
+    }
+
+    // ==================== End Lock-Free CAS Methods ====================
+
     /// Insert a term into the dictionary (without value)
     pub fn insert(&mut self, term: &str) -> bool {
         self.insert_impl(term.as_bytes(), None)
@@ -2325,13 +2989,15 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
     }
 
     /// Check if the dictionary is dirty (has uncommitted changes)
+    #[inline]
     pub fn is_dirty(&self) -> bool {
-        self.dirty
+        self.dirty.load(AtomicOrdering::Acquire)
     }
 
     /// Mark the dictionary as clean (after flushing to disk)
+    #[inline]
     pub fn mark_clean(&mut self) {
-        self.dirty = false;
+        self.dirty.store(false, AtomicOrdering::Release);
     }
 
     /// Flush all buffered data to disk for durability.
@@ -2375,6 +3041,18 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
             buffer_manager.read().flush_all()?;
         }
 
+        Ok(())
+    }
+
+    /// Flush dirty arena slots using sequential I/O.
+    ///
+    /// This writes modified slots to disk without full re-serialization.
+    /// Requires slot tracking to be enabled (via `create_with_slot_tracking`
+    /// or `open_with_slot_tracking`).
+    pub fn flush_sequential(&self) -> Result<()> {
+        if let Some(ref am) = self.arena_manager {
+            am.write().flush_sequential()?;
+        }
         Ok(())
     }
 
@@ -2433,11 +3111,12 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
     /// let after = trie.current_lsn();
     /// assert!(after > before);
     /// ```
+    #[inline]
     pub fn current_lsn(&self) -> Lsn {
         // Use WAL's authoritative LSN if available, otherwise fall back to cached value
         self.wal_writer.as_ref()
             .map(|wal| wal.current_lsn())
-            .unwrap_or(self.next_lsn)
+            .unwrap_or_else(|| self.next_lsn.load(AtomicOrdering::Acquire))
     }
 
     /// Returns the highest LSN that has been durably synced to storage.
@@ -2545,7 +3224,7 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
         // Then write the checkpoint record to WAL
         if let Some(ref wal_writer) = self.wal_writer {
             // Get current LSN as checkpoint
-            let checkpoint_lsn = self.next_lsn.saturating_sub(1);
+            let checkpoint_lsn = self.next_lsn.load(AtomicOrdering::Acquire).saturating_sub(1);
             let timestamp = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
@@ -2943,8 +3622,8 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
         };
 
         if inserted {
-            self.term_count += 1;
-            self.dirty = true;
+            self.term_count.fetch_add(1, AtomicOrdering::Relaxed);
+            self.dirty.store(true, AtomicOrdering::Release);
             // Record the path as dirty for selective persistence
             self.record_dirty_path(term);
             self.propagate_dirty_to_root();
@@ -3052,8 +3731,8 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
         };
 
         if removed {
-            self.term_count -= 1;
-            self.dirty = true;
+            self.term_count.fetch_sub(1, AtomicOrdering::Relaxed);
+            self.dirty.store(true, AtomicOrdering::Release);
             // Record the path as dirty for selective persistence
             self.record_dirty_path(term);
             self.propagate_dirty_to_root();
@@ -3670,7 +4349,7 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
             TrieRoot::Bucket(bucket) => {
                 // Serialize the bucket
                 let ptr = self.serialize_bucket_to_disk(bucket)?;
-                (ROOT_TYPE_BUCKET, ptr.to_raw(), false, self.term_count)
+                (ROOT_TYPE_BUCKET, ptr.to_raw(), false, self.term_count.load(AtomicOrdering::Acquire))
             }
             TrieRoot::ArtNode {
                 node,
@@ -3703,7 +4382,7 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
                 // Value serialization not implemented (DictionaryValue requires serde bounds)
                 let _ = value;
 
-                (ROOT_TYPE_ART_NODE, node_ptr.to_raw(), *is_final, self.term_count)
+                (ROOT_TYPE_ART_NODE, node_ptr.to_raw(), *is_final, self.term_count.load(AtomicOrdering::Acquire))
             }
         };
 
@@ -3761,7 +4440,7 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
         bm.flush_all()?;
         dm.sync()?;
 
-        self.dirty = false;
+        self.dirty.store(false, AtomicOrdering::Release);
 
         // Clear dirty tracking state after successful checkpoint
         // This must be done AFTER flushing to ensure durability
@@ -5002,8 +5681,9 @@ impl<V: DictionaryValue> Dictionary for PersistentARTrie<V> {
         self.contains_impl(term.as_bytes())
     }
 
+    #[inline]
     fn len(&self) -> Option<usize> {
-        Some(self.term_count)
+        Some(self.term_count.load(AtomicOrdering::Acquire))
     }
 
     fn sync_strategy(&self) -> SyncStrategy {
@@ -5023,8 +5703,8 @@ impl<V: DictionaryValue> MappedDictionary for PersistentARTrie<V> {
 impl<V: DictionaryValue> std::fmt::Debug for PersistentARTrie<V> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PersistentARTrie")
-            .field("term_count", &self.term_count)
-            .field("dirty", &self.dirty)
+            .field("term_count", &self.term_count.load(AtomicOrdering::Relaxed))
+            .field("dirty", &self.dirty.load(AtomicOrdering::Relaxed))
             .finish()
     }
 }
@@ -5630,7 +6310,7 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
             .map(|m| m.len())
             .unwrap_or(0);
 
-        let estimated_total = self.term_count as u64;
+        let estimated_total = self.term_count.load(AtomicOrdering::Acquire) as u64;
 
         // Determine output path
         let (temp_path, is_in_place) = match &config.output_path {
@@ -5718,8 +6398,8 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
                 percent_complete: 100.0,
             });
 
-            let original_count = self.term_count;
-            let compacted_count = new_trie.term_count;
+            let original_count = self.term_count.load(AtomicOrdering::Acquire);
+            let compacted_count = new_trie.term_count.load(AtomicOrdering::Acquire);
 
             if original_count != compacted_count {
                 // Clean up temp files on verification failure
@@ -5959,7 +6639,7 @@ impl<V: DictionaryValue + serde::Serialize + serde::de::DeserializeOwned> Persis
     pub fn begin_document(&self, document_id: &str) -> Result<DocumentTransaction<V>> {
         // Generate a unique transaction ID
         let tx_id = {
-            let base = self.next_lsn as u64;
+            let base = self.next_lsn.load(AtomicOrdering::Acquire);
             // Combine LSN with a random component for uniqueness
             base ^ (std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -6016,6 +6696,65 @@ impl<V: DictionaryValue + serde::Serialize + serde::de::DeserializeOwned> Persis
             }
         );
         tx.shadow_terms.push((term.to_vec(), value));
+    }
+
+    /// Buffer an increment operation in a document transaction (byte key variant).
+    ///
+    /// Reads the current value from the trie, computes the new value after applying
+    /// the delta, and buffers the result as a SET operation in the transaction's
+    /// shadow map. The actual write occurs on commit.
+    ///
+    /// # Arguments
+    ///
+    /// * `tx` - The active transaction to buffer the increment in
+    /// * `term` - The raw byte key to increment
+    /// * `delta` - The increment amount (positive or negative)
+    ///
+    /// # Panics
+    ///
+    /// Panics if the transaction is not in Active state.
+    pub fn tx_increment_bytes(&self, tx: &mut DocumentTransaction<V>, term: &[u8], delta: i64) {
+        assert!(
+            tx.is_active(),
+            "Cannot increment in a {} transaction",
+            match tx.state {
+                TransactionState::Committed => "committed",
+                TransactionState::Aborted => "aborted",
+                TransactionState::Active => unreachable!(),
+            }
+        );
+
+        // Check if we already have a buffered value for this term in the transaction
+        let current: i64 = if let Some(pos) = tx.shadow_terms.iter().rposition(|(k, _)| k == term) {
+            if let Some(ref v) = tx.shadow_terms[pos].1 {
+                let bytes = bincode::serialize(v).unwrap_or_default();
+                if bytes.len() == 8 {
+                    i64::from_le_bytes(bytes.try_into().expect("expected 8 bytes"))
+                } else {
+                    bincode::deserialize::<i64>(&bytes).unwrap_or(0)
+                }
+            } else {
+                0
+            }
+        } else {
+            // Fall back to the persistent trie value
+            match self.get_value_impl(term) {
+                Some(v) => {
+                    let bytes = bincode::serialize(&v).unwrap_or_default();
+                    if bytes.len() == 8 {
+                        i64::from_le_bytes(bytes.try_into().expect("expected 8 bytes"))
+                    } else {
+                        bincode::deserialize::<i64>(&bytes).unwrap_or(0)
+                    }
+                }
+                None => 0,
+            }
+        };
+
+        let new_value = current + delta;
+        let value_bytes = bincode::serialize(&new_value).expect("failed to serialize i64");
+        let v: V = bincode::deserialize(&value_bytes).expect("failed to deserialize i64 as V");
+        tx.shadow_terms.push((term.to_vec(), Some(v)));
     }
 
     /// Commit a document transaction, atomically applying all buffered terms.
@@ -6234,6 +6973,43 @@ impl<V: DictionaryValue + serde::Serialize + serde::de::DeserializeOwned> Persis
         }
 
         Ok(new_value)
+    }
+
+    /// Get value by raw byte key.
+    ///
+    /// Public wrapper around the private `get_value_impl` method for callers
+    /// that already have byte keys (e.g., varint-encoded n-gram keys).
+    ///
+    /// # Arguments
+    ///
+    /// * `term` - The raw byte key to look up
+    ///
+    /// # Returns
+    ///
+    /// `Some(value)` if the term exists, `None` otherwise.
+    #[inline]
+    pub fn get_value_bytes(&self, term: &[u8]) -> Option<V>
+    where
+        V: Clone,
+    {
+        self.get_value_impl(term)
+    }
+
+    /// Check containment by raw byte key.
+    ///
+    /// Public wrapper around the private `contains_impl` method for callers
+    /// that already have byte keys (e.g., varint-encoded n-gram keys).
+    ///
+    /// # Arguments
+    ///
+    /// * `term` - The raw byte key to check
+    ///
+    /// # Returns
+    ///
+    /// `true` if the term exists in the trie, `false` otherwise.
+    #[inline]
+    pub fn contains_bytes(&self, term: &[u8]) -> bool {
+        self.contains_impl(term)
     }
 
     /// Atomically update or insert a value.
@@ -6539,9 +7315,10 @@ impl<V: DictionaryValue> crate::artrie_trait::ARTrie for SharedARTrie<V> {
         guard.remove_impl(term.as_bytes())
     }
 
+    #[inline]
     fn len(&self) -> usize {
         let guard = self.read();
-        guard.term_count
+        guard.term_count.load(AtomicOrdering::Acquire)
     }
 
     fn checkpoint(&self) -> Result<()> {
@@ -6558,7 +7335,7 @@ impl<V: DictionaryValue> crate::artrie_trait::ARTrie for SharedARTrie<V> {
 
         if let Some(ref wal_writer) = guard.wal_writer {
             // Get current LSN as checkpoint
-            let checkpoint_lsn = guard.next_lsn.saturating_sub(1);
+            let checkpoint_lsn = guard.next_lsn.load(AtomicOrdering::Acquire).saturating_sub(1);
             let timestamp = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
@@ -6585,9 +7362,10 @@ impl<V: DictionaryValue> crate::artrie_trait::ARTrie for SharedARTrie<V> {
         Ok(())
     }
 
+    #[inline]
     fn is_dirty(&self) -> bool {
         let guard = self.read();
-        guard.dirty
+        guard.dirty.load(AtomicOrdering::Acquire)
     }
 
     fn remove_prefix(&self, prefix: &str) -> usize {

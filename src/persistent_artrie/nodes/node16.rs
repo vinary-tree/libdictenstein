@@ -270,6 +270,66 @@ impl Node16 {
 
         node48
     }
+
+    // =========================================================================
+    // Atomic Child Access for Lock-Free Operations
+    // =========================================================================
+
+    /// Get a child pointer by key with atomic read.
+    ///
+    /// This returns a clone of the SwizzledPtr, loading the value atomically.
+    /// Use this for lock-free traversal where you need a snapshot of the pointer.
+    pub fn get_child_atomic(&self, key: u8) -> Option<SwizzledPtr> {
+        #[cfg(all(target_arch = "x86_64", target_feature = "sse4.1"))]
+        {
+            self.find_key_index_simd(key).map(|i| self.children[i].clone())
+        }
+
+        #[cfg(not(all(target_arch = "x86_64", target_feature = "sse4.1")))]
+        {
+            self.find_key_index_linear(key).map(|i| self.children[i].clone())
+        }
+    }
+
+    /// Get a reference to the child slot for CAS operations.
+    #[inline]
+    pub fn child_slot(&self, index: usize) -> &SwizzledPtr {
+        debug_assert!(index < NODE16_MAX_CHILDREN, "index {} out of bounds", index);
+        &self.children[index]
+    }
+
+    /// Get the child slot index for a key.
+    ///
+    /// Returns `Ok(index)` if the key exists, `Err(insert_pos)` otherwise.
+    pub fn find_slot_for_key(&self, key: u8) -> Result<usize, usize> {
+        match self.find_key_index_linear(key) {
+            Some(i) => Ok(i),
+            None => Err(self.find_insert_point(key)),
+        }
+    }
+
+    /// Get the next available child slot index.
+    pub fn next_slot(&self) -> Option<usize> {
+        let count = self.header.num_children as usize;
+        if count < NODE16_MAX_CHILDREN {
+            Some(count)
+        } else {
+            None
+        }
+    }
+
+    /// Get the key at a given index.
+    #[inline]
+    pub fn key_at(&self, index: usize) -> u8 {
+        debug_assert!(index < NODE16_MAX_CHILDREN, "index {} out of bounds", index);
+        self.keys[index]
+    }
+
+    /// Get an iterator over (index, key, &SwizzledPtr) triples.
+    pub fn iter_indexed(&self) -> impl Iterator<Item = (usize, u8, &SwizzledPtr)> {
+        let count = self.header.num_children as usize;
+        (0..count).map(move |i| (i, self.keys[i], &self.children[i]))
+    }
 }
 
 #[cfg(test)]

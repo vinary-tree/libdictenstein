@@ -42,10 +42,24 @@ pub mod node16;
 pub mod node48;
 pub mod node256;
 
+// Lock-free persistent node types (requires `im` crate)
+#[cfg(feature = "persistent-artrie")]
+pub mod persistent_node;
+#[cfg(feature = "persistent-artrie")]
+pub mod atomic_ptr;
+
 pub use node4::Node4;
 pub use node16::Node16;
 pub use node48::Node48;
 pub use node256::Node256;
+
+// Lock-free persistent node exports
+#[cfg(feature = "persistent-artrie")]
+pub use persistent_node::PersistentNode;
+#[cfg(feature = "persistent-artrie")]
+pub use atomic_ptr::AtomicNodePtr;
+
+use std::sync::atomic::{AtomicU8, AtomicU16, AtomicU64, Ordering};
 
 use super::swizzled_ptr::SwizzledPtr;
 
@@ -221,6 +235,280 @@ impl NodeHeader {
 }
 
 impl Default for NodeHeader {
+    fn default() -> Self {
+        Self::new(0)
+    }
+}
+
+// =============================================================================
+// Atomic Node Header for Lock-Free Operations
+// =============================================================================
+
+/// Atomic header for lock-free concurrent access to ART nodes.
+///
+/// This provides CAS (compare-and-swap) operations for the critical fields
+/// that need to be updated atomically during concurrent inserts:
+///
+/// - `flags`: For atomically setting IS_FINAL when claiming a node
+/// - `num_children`: For atomically incrementing child count
+/// - `version`: For optimistic locking validation
+///
+/// The non-atomic `node_type` and `prefix_len` are immutable once a node
+/// is created, so they don't need atomic access.
+///
+/// # Memory Layout
+///
+/// Same as `NodeHeader` (16 bytes, C-repr) for safe transmutation.
+#[repr(C)]
+pub struct AtomicNodeHeader {
+    /// Node type discriminant (immutable after creation)
+    pub node_type: u8,
+    /// Length of the compressed prefix (immutable after creation)
+    pub prefix_len: u8,
+    /// Node flags (atomic for CAS on IS_FINAL)
+    flags: AtomicU8,
+    /// Padding for alignment
+    _padding: u8,
+    /// Number of children (atomic for concurrent child updates)
+    num_children: AtomicU16,
+    /// Padding for 8-byte alignment
+    _padding2: [u8; 2],
+    /// Version counter for optimistic locking
+    version: AtomicU64,
+}
+
+impl AtomicNodeHeader {
+    /// Create a new atomic node header.
+    pub fn new(node_type: u8) -> Self {
+        Self {
+            node_type,
+            prefix_len: 0,
+            flags: AtomicU8::new(0),
+            _padding: 0,
+            num_children: AtomicU16::new(0),
+            _padding2: [0; 2],
+            version: AtomicU64::new(0),
+        }
+    }
+
+    /// Create an atomic header from a regular header.
+    ///
+    /// This is used when converting a node for lock-free operations.
+    pub fn from_header(header: &NodeHeader) -> Self {
+        Self {
+            node_type: header.node_type,
+            prefix_len: header.prefix_len,
+            flags: AtomicU8::new(header.flags),
+            _padding: 0,
+            num_children: AtomicU16::new(header.num_children),
+            _padding2: [0; 2],
+            version: AtomicU64::new(header.version),
+        }
+    }
+
+    /// Convert to a regular header for serialization.
+    ///
+    /// This performs atomic loads to get a consistent snapshot.
+    pub fn to_header(&self) -> NodeHeader {
+        NodeHeader {
+            node_type: self.node_type,
+            prefix_len: self.prefix_len,
+            flags: self.flags.load(Ordering::Acquire),
+            _padding: 0,
+            num_children: self.num_children.load(Ordering::Acquire),
+            _padding2: [0; 2],
+            version: self.version.load(Ordering::Acquire),
+        }
+    }
+
+    // =========================================================================
+    // Atomic Flag Operations
+    // =========================================================================
+
+    /// Atomically try to set the IS_FINAL flag.
+    ///
+    /// Uses fetch_or to set the flag and returns true if we were the first
+    /// to set it (i.e., the flag was not previously set).
+    ///
+    /// This is the core primitive for lock-free insert: the thread that
+    /// successfully sets IS_FINAL "wins" and gets to assign the value/index.
+    ///
+    /// # Returns
+    ///
+    /// - `true` if we set the flag (winner)
+    /// - `false` if the flag was already set (another thread won)
+    #[inline]
+    pub fn try_set_final(&self) -> bool {
+        let old = self.flags.fetch_or(flags::IS_FINAL, Ordering::AcqRel);
+        (old & flags::IS_FINAL) == 0
+    }
+
+    /// Check if this node is final (atomic read).
+    #[inline]
+    pub fn is_final(&self) -> bool {
+        (self.flags.load(Ordering::Acquire) & flags::IS_FINAL) != 0
+    }
+
+    /// Atomically set the dirty flag.
+    #[inline]
+    pub fn set_dirty(&self) {
+        self.flags.fetch_or(flags::IS_DIRTY, Ordering::Release);
+    }
+
+    /// Check if this node is dirty (atomic read).
+    #[inline]
+    pub fn is_dirty(&self) -> bool {
+        (self.flags.load(Ordering::Acquire) & flags::IS_DIRTY) != 0
+    }
+
+    /// Atomically set the has_dirty_descendants flag.
+    #[inline]
+    pub fn set_has_dirty_descendants(&self) {
+        self.flags.fetch_or(flags::HAS_DIRTY_DESCENDANTS, Ordering::Release);
+    }
+
+    /// Check if this node has dirty descendants (atomic read).
+    #[inline]
+    pub fn has_dirty_descendants(&self) -> bool {
+        (self.flags.load(Ordering::Acquire) & flags::HAS_DIRTY_DESCENDANTS) != 0
+    }
+
+    /// Check if this node or any descendant needs persistence (atomic read).
+    #[inline]
+    pub fn needs_persistence(&self) -> bool {
+        (self.flags.load(Ordering::Acquire) & (flags::IS_DIRTY | flags::HAS_DIRTY_DESCENDANTS)) != 0
+    }
+
+    /// Atomically clear both dirty flags.
+    #[inline]
+    pub fn clear_dirty_flags(&self) {
+        self.flags.fetch_and(!(flags::IS_DIRTY | flags::HAS_DIRTY_DESCENDANTS), Ordering::Release);
+    }
+
+    /// Load all flags atomically.
+    #[inline]
+    pub fn flags(&self) -> u8 {
+        self.flags.load(Ordering::Acquire)
+    }
+
+    // =========================================================================
+    // Atomic Child Count Operations
+    // =========================================================================
+
+    /// Atomically get the number of children.
+    #[inline]
+    pub fn num_children(&self) -> u16 {
+        self.num_children.load(Ordering::Acquire)
+    }
+
+    /// Atomically increment the child count.
+    ///
+    /// Returns the previous value.
+    #[inline]
+    pub fn fetch_add_children(&self, count: u16) -> u16 {
+        self.num_children.fetch_add(count, Ordering::AcqRel)
+    }
+
+    /// Atomically decrement the child count.
+    ///
+    /// Returns the previous value.
+    #[inline]
+    pub fn fetch_sub_children(&self, count: u16) -> u16 {
+        self.num_children.fetch_sub(count, Ordering::AcqRel)
+    }
+
+    /// Compare-and-swap the child count.
+    ///
+    /// # Returns
+    ///
+    /// - `Ok(current)` if successful
+    /// - `Err(actual)` if the current value didn't match expected
+    #[inline]
+    pub fn compare_exchange_children(
+        &self,
+        expected: u16,
+        new: u16,
+    ) -> Result<u16, u16> {
+        self.num_children.compare_exchange(
+            expected,
+            new,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        )
+    }
+
+    // =========================================================================
+    // Atomic Version Operations
+    // =========================================================================
+
+    /// Atomically get the current version.
+    #[inline]
+    pub fn version(&self) -> u64 {
+        self.version.load(Ordering::Acquire)
+    }
+
+    /// Atomically increment the version counter.
+    ///
+    /// Returns the previous value.
+    #[inline]
+    pub fn fetch_add_version(&self) -> u64 {
+        self.version.fetch_add(1, Ordering::AcqRel)
+    }
+
+    /// Check if version matches expected value (for optimistic validation).
+    #[inline]
+    pub fn check_version(&self, expected: u64) -> bool {
+        self.version.load(Ordering::Acquire) == expected
+    }
+
+    /// Begin a write operation (increment to odd for optimistic locking).
+    ///
+    /// Returns the version before incrementing.
+    #[inline]
+    pub fn begin_write(&self) -> u64 {
+        self.version.fetch_add(1, Ordering::AcqRel)
+    }
+
+    /// End a write operation (increment to even for optimistic locking).
+    #[inline]
+    pub fn end_write(&self) {
+        self.version.fetch_add(1, Ordering::Release);
+    }
+
+    /// Check if the version is stable (even = not being modified).
+    #[inline]
+    pub fn is_version_stable(&self) -> bool {
+        self.version.load(Ordering::Acquire) % 2 == 0
+    }
+}
+
+impl std::fmt::Debug for AtomicNodeHeader {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AtomicNodeHeader")
+            .field("node_type", &self.node_type)
+            .field("prefix_len", &self.prefix_len)
+            .field("flags", &self.flags.load(Ordering::Relaxed))
+            .field("num_children", &self.num_children.load(Ordering::Relaxed))
+            .field("version", &self.version.load(Ordering::Relaxed))
+            .finish()
+    }
+}
+
+impl Clone for AtomicNodeHeader {
+    fn clone(&self) -> Self {
+        Self {
+            node_type: self.node_type,
+            prefix_len: self.prefix_len,
+            flags: AtomicU8::new(self.flags.load(Ordering::Acquire)),
+            _padding: 0,
+            num_children: AtomicU16::new(self.num_children.load(Ordering::Acquire)),
+            _padding2: [0; 2],
+            version: AtomicU64::new(self.version.load(Ordering::Acquire)),
+        }
+    }
+}
+
+impl Default for AtomicNodeHeader {
     fn default() -> Self {
         Self::new(0)
     }
@@ -867,5 +1155,208 @@ mod tests {
         assert_ne!(s1, s3);
         assert_ne!(s1, s4);
         assert_eq!(s4, ChildStorage::Direct);
+    }
+
+    // =========================================================================
+    // AtomicNodeHeader Tests
+    // =========================================================================
+
+    #[test]
+    fn test_atomic_header_new() {
+        let header = AtomicNodeHeader::new(4);
+        assert_eq!(header.node_type, 4);
+        assert_eq!(header.prefix_len, 0);
+        assert_eq!(header.flags(), 0);
+        assert_eq!(header.num_children(), 0);
+        assert_eq!(header.version(), 0);
+    }
+
+    #[test]
+    fn test_atomic_header_from_regular() {
+        let mut regular = NodeHeader::new(16);
+        regular.set_final(true);
+        regular.set_dirty(true);
+        regular.num_children = 5;
+        regular.version = 42;
+
+        let atomic = AtomicNodeHeader::from_header(&regular);
+        assert_eq!(atomic.node_type, 16);
+        assert!(atomic.is_final());
+        assert!(atomic.is_dirty());
+        assert_eq!(atomic.num_children(), 5);
+        assert_eq!(atomic.version(), 42);
+    }
+
+    #[test]
+    fn test_atomic_header_to_regular() {
+        let atomic = AtomicNodeHeader::new(48);
+        atomic.try_set_final();
+        atomic.fetch_add_children(3);
+        atomic.fetch_add_version();
+
+        let regular = atomic.to_header();
+        assert_eq!(regular.node_type, 48);
+        assert!(regular.is_final());
+        assert_eq!(regular.num_children, 3);
+        assert_eq!(regular.version, 1);
+    }
+
+    #[test]
+    fn test_atomic_header_try_set_final() {
+        let header = AtomicNodeHeader::new(4);
+
+        // First call should succeed (winner)
+        assert!(header.try_set_final());
+        assert!(header.is_final());
+
+        // Second call should fail (already set)
+        assert!(!header.try_set_final());
+        assert!(header.is_final());
+    }
+
+    #[test]
+    fn test_atomic_header_try_set_final_concurrent() {
+        use std::sync::Arc;
+        use std::thread;
+
+        let header = Arc::new(AtomicNodeHeader::new(4));
+        let num_threads = 10;
+
+        let handles: Vec<_> = (0..num_threads)
+            .map(|_| {
+                let h = Arc::clone(&header);
+                thread::spawn(move || h.try_set_final())
+            })
+            .collect();
+
+        let results: Vec<bool> = handles
+            .into_iter()
+            .map(|h| h.join().expect("thread should complete"))
+            .collect();
+
+        // Exactly one thread should have won
+        let winners = results.iter().filter(|&&x| x).count();
+        assert_eq!(winners, 1, "exactly one thread should win try_set_final");
+
+        // The flag should be set
+        assert!(header.is_final());
+    }
+
+    #[test]
+    fn test_atomic_header_dirty_flags() {
+        let header = AtomicNodeHeader::new(4);
+
+        assert!(!header.is_dirty());
+        assert!(!header.has_dirty_descendants());
+        assert!(!header.needs_persistence());
+
+        header.set_dirty();
+        assert!(header.is_dirty());
+        assert!(header.needs_persistence());
+
+        header.set_has_dirty_descendants();
+        assert!(header.has_dirty_descendants());
+
+        header.clear_dirty_flags();
+        assert!(!header.is_dirty());
+        assert!(!header.has_dirty_descendants());
+        assert!(!header.needs_persistence());
+    }
+
+    #[test]
+    fn test_atomic_header_children_ops() {
+        let header = AtomicNodeHeader::new(4);
+
+        assert_eq!(header.num_children(), 0);
+
+        // Increment
+        let prev = header.fetch_add_children(5);
+        assert_eq!(prev, 0);
+        assert_eq!(header.num_children(), 5);
+
+        // Increment again
+        let prev = header.fetch_add_children(3);
+        assert_eq!(prev, 5);
+        assert_eq!(header.num_children(), 8);
+
+        // Decrement
+        let prev = header.fetch_sub_children(2);
+        assert_eq!(prev, 8);
+        assert_eq!(header.num_children(), 6);
+    }
+
+    #[test]
+    fn test_atomic_header_children_cas() {
+        let header = AtomicNodeHeader::new(4);
+        header.fetch_add_children(5);
+
+        // CAS should fail with wrong expected value
+        let result = header.compare_exchange_children(3, 10);
+        assert_eq!(result, Err(5));
+        assert_eq!(header.num_children(), 5);
+
+        // CAS should succeed with correct expected value
+        let result = header.compare_exchange_children(5, 10);
+        assert_eq!(result, Ok(5));
+        assert_eq!(header.num_children(), 10);
+    }
+
+    #[test]
+    fn test_atomic_header_version_ops() {
+        let header = AtomicNodeHeader::new(4);
+
+        assert_eq!(header.version(), 0);
+        assert!(header.is_version_stable()); // 0 is even
+
+        // Begin write (increment to odd)
+        let prev = header.begin_write();
+        assert_eq!(prev, 0);
+        assert_eq!(header.version(), 1);
+        assert!(!header.is_version_stable()); // 1 is odd
+
+        // End write (increment to even)
+        header.end_write();
+        assert_eq!(header.version(), 2);
+        assert!(header.is_version_stable()); // 2 is even
+    }
+
+    #[test]
+    fn test_atomic_header_version_check() {
+        let header = AtomicNodeHeader::new(4);
+
+        assert!(header.check_version(0));
+        assert!(!header.check_version(1));
+
+        header.fetch_add_version();
+        assert!(!header.check_version(0));
+        assert!(header.check_version(1));
+    }
+
+    #[test]
+    fn test_atomic_header_clone() {
+        let header = AtomicNodeHeader::new(16);
+        header.try_set_final();
+        header.fetch_add_children(7);
+        header.fetch_add_version();
+
+        let cloned = header.clone();
+
+        assert_eq!(cloned.node_type, 16);
+        assert!(cloned.is_final());
+        assert_eq!(cloned.num_children(), 7);
+        assert_eq!(cloned.version(), 1);
+
+        // Modifications to clone don't affect original
+        cloned.fetch_add_children(3);
+        assert_eq!(header.num_children(), 7);
+        assert_eq!(cloned.num_children(), 10);
+    }
+
+    #[test]
+    fn test_atomic_header_debug() {
+        let header = AtomicNodeHeader::new(4);
+        let debug_str = format!("{:?}", header);
+        assert!(debug_str.contains("AtomicNodeHeader"));
+        assert!(debug_str.contains("node_type: 4"));
     }
 }

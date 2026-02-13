@@ -118,6 +118,12 @@ pub mod serialization;
 // Disk-backed implementation
 pub mod dict_impl;
 
+// Lock-free concurrent vocabulary access
+pub mod concurrent;
+
+// Truly lock-free vocabulary using persistent data structures
+pub mod lockfree;
+
 // Re-export main types
 pub use types::{
     VocabTrieNode, VocabTrieRoot, VocabTrieFileHeader,
@@ -144,6 +150,14 @@ pub use serialization::{
 
 pub use dict_impl::{
     PersistentVocabARTrie, SharedVocabARTrie, VocabSyncHandle,
+};
+
+pub use concurrent::{
+    ConcurrentMode, ConcurrentVocabARTrie, ConcurrentVocabStats,
+};
+
+pub use lockfree::{
+    LockFreeVocab, LockFreeVocabStats, InsertResult,
 };
 
 // Re-export DurabilityPolicy from base layer

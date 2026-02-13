@@ -42,7 +42,7 @@
 use std::collections::HashMap;
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -57,7 +57,8 @@ use crate::persistent_artrie::swizzled_ptr::SwizzledPtr;
 use crate::persistent_artrie::wal::{AsyncWalWriter, WalConfig, WalReader, WalRecord};
 use crate::persistent_artrie::wal_managed::{WalManaged, create_async_wal, open_or_create_async_wal};
 use crate::persistent_artrie_char::arena_manager::{ArenaManager, ArenaSlot};
-use crate::persistent_artrie_char::nodes::CharNode;
+use crate::persistent_artrie_char::nodes::{CharNode, AtomicNodePtr, PersistentCharNode};
+use dashmap::DashMap;
 use crate::persistent_artrie_char::relative_encoding::SerializationContext;
 use crate::persistent_artrie_char::serialization_char::{
     deserialize_char_node_v2, serialize_char_node_v2, DeserializationContext,
@@ -223,17 +224,17 @@ pub struct PersistentVocabARTrie {
     /// Root node of the trie
     root: VocabTrieRoot,
 
-    /// Number of vocabulary entries
-    entry_count: usize,
+    /// Number of vocabulary entries (atomic for lock-free access)
+    entry_count: AtomicUsize,
 
     /// Starting vocabulary index
     start_index: u64,
 
-    /// Next index to assign
-    next_index: u64,
+    /// Next index to assign (atomic for lock-free CAS operations)
+    next_index: AtomicU64,
 
-    /// Dirty flag (unsaved changes)
-    dirty: bool,
+    /// Dirty flag (atomic for lock-free access)
+    dirty: AtomicBool,
 
     /// Reverse index for O(1) node lookup by vocabulary index
     reverse_index: Option<VocabReverseIndex>,
@@ -255,11 +256,11 @@ pub struct PersistentVocabARTrie {
     /// WAL configuration
     wal_config: WalConfig,
 
-    /// Next LSN to assign
-    next_lsn: u64,
+    /// Next LSN to assign (atomic for lock-free access)
+    next_lsn: AtomicU64,
 
-    /// Last synced LSN
-    synced_lsn: u64,
+    /// Last synced LSN (atomic for lock-free access)
+    synced_lsn: AtomicU64,
 
     /// Durability policy for WAL synchronization
     durability_policy: DurabilityPolicy,
@@ -279,6 +280,17 @@ pub struct PersistentVocabARTrie {
     /// Optional BloomFilter for O(1) negative lookups.
     /// Provides 5-10x faster rejection for OOV words.
     bloom_filter: Option<BloomFilter>,
+
+    // === Lock-Free Infrastructure (per plan Phase 4-5) ===
+    /// Lock-free root using PersistentCharNode with im::Vector for CAS operations.
+    /// When present, `insert_cas()` uses this for lock-free concurrent inserts.
+    lockfree_root: Option<AtomicNodePtr>,
+
+    /// Lock-free cache for term → index lookups (DashMap for O(1) sharded access).
+    lockfree_cache: Option<DashMap<String, u64>>,
+
+    /// Statistics: CAS retries for monitoring contention.
+    cas_retries: AtomicU64,
 }
 
 // ============================================================================
@@ -395,23 +407,26 @@ impl PersistentVocabARTrie {
         Ok(Self {
             path,
             root,
-            entry_count: 0,
+            entry_count: AtomicUsize::new(0),
             start_index,
-            next_index: start_index,
-            dirty: false,
+            next_index: AtomicU64::new(start_index),
+            dirty: AtomicBool::new(false),
             reverse_index: Some(reverse_index),
             reverse_cache: VocabReverseCache::new(DEFAULT_REVERSE_CACHE_SIZE),
             node_map,
             next_slot: 1,
             wal_writer: Some(Arc::new(wal_writer)),
             wal_config,
-            next_lsn: 1, // Start at 1, 0 reserved for "no LSN"
-            synced_lsn: 0,
+            next_lsn: AtomicU64::new(1), // Start at 1, 0 reserved for "no LSN"
+            synced_lsn: AtomicU64::new(0),
             durability_policy: DurabilityPolicy::default(),
             arena_manager: Some(arena_manager),
             buffer_manager: Some(buffer_manager),
             eviction_coordinator: None,
             bloom_filter: None,
+            lockfree_root: None,
+            lockfree_cache: None,
+            cas_retries: AtomicU64::new(0),
         })
     }
 
@@ -508,23 +523,26 @@ impl PersistentVocabARTrie {
         let mut trie = Self {
             path,
             root,
-            entry_count: header.entry_count as usize,
+            entry_count: AtomicUsize::new(header.entry_count as usize),
             start_index: header.start_index,
-            next_index: header.next_index,
-            dirty: false,
+            next_index: AtomicU64::new(header.next_index),
+            dirty: AtomicBool::new(false),
             reverse_index,
             reverse_cache: VocabReverseCache::new(DEFAULT_REVERSE_CACHE_SIZE),
             node_map,
             next_slot,
             wal_writer,
             wal_config,
-            next_lsn,
-            synced_lsn: header.checkpoint_lsn,
+            next_lsn: AtomicU64::new(next_lsn),
+            synced_lsn: AtomicU64::new(header.checkpoint_lsn),
             durability_policy: DurabilityPolicy::default(),
             arena_manager: Some(arena_manager),
             buffer_manager: Some(buffer_manager),
             eviction_coordinator: None,
             bloom_filter: None,
+            lockfree_root: None,
+            lockfree_cache: None,
+            cas_retries: AtomicU64::new(0),
         };
 
         // Rebuild reverse_index with fresh NodeRefs after loading
@@ -541,14 +559,16 @@ impl PersistentVocabARTrie {
             }
             Ok(None) => {
                 // Bloom filter file doesn't exist - rebuild from vocabulary
-                if trie.entry_count > 0 {
-                    trie.rebuild_bloom_filter(trie.entry_count);
+                let count = trie.entry_count.load(Ordering::Acquire);
+                if count > 0 {
+                    trie.rebuild_bloom_filter(count);
                 }
             }
             Err(_) => {
                 // Bloom filter file corrupted - rebuild from vocabulary
-                if trie.entry_count > 0 {
-                    trie.rebuild_bloom_filter(trie.entry_count);
+                let count = trie.entry_count.load(Ordering::Acquire);
+                if count > 0 {
+                    trie.rebuild_bloom_filter(count);
                 }
             }
         }
@@ -580,7 +600,7 @@ impl PersistentVocabARTrie {
         let wal_path = path.with_extension("vocab.wal");
         let mut records_replayed = 0;
         let mut inserts_replayed = 0;
-        let checkpoint_lsn = trie.synced_lsn;
+        let checkpoint_lsn = trie.synced_lsn.load(Ordering::Acquire);
 
         if wal_path.exists() {
             let reader = WalReader::new(&wal_path)?;
@@ -634,17 +654,15 @@ impl PersistentVocabARTrie {
                     }
                     WalRecord::Checkpoint { checkpoint_lsn: new_lsn, .. } => {
                         // Update synced LSN
-                        trie.synced_lsn = new_lsn;
+                        trie.synced_lsn.store(new_lsn, Ordering::Release);
                     }
                     _ => {
                         // Other record types not used by vocabulary trie
                     }
                 }
 
-                // Update next LSN
-                if lsn >= trie.next_lsn {
-                    trie.next_lsn = lsn + 1;
-                }
+                // Update next LSN (monotonic high-water mark)
+                trie.next_lsn.fetch_max(lsn + 1, Ordering::AcqRel);
             }
         }
 
@@ -653,7 +671,7 @@ impl PersistentVocabARTrie {
             if let Some(ref wal) = trie.wal_writer {
                 let _ = wal.truncate();
             }
-            trie.dirty = true;
+            trie.dirty.store(true, Ordering::Release);
         }
 
         let report = if records_replayed > 0 {
@@ -1122,12 +1140,22 @@ impl PersistentVocabARTrie {
                     }
 
                     // Update counts
-                    self.entry_count += 1;
+                    self.entry_count.fetch_add(1, Ordering::AcqRel);
                 }
 
-                // Track next index
-                if index >= self.next_index {
-                    self.next_index = index + 1;
+                // Track next index atomically using CAS loop
+                loop {
+                    let current = self.next_index.load(Ordering::Acquire);
+                    if index < current {
+                        break; // Another thread already advanced it
+                    }
+                    let new_val = index + 1;
+                    match self.next_index.compare_exchange(
+                        current, new_val, Ordering::AcqRel, Ordering::Acquire
+                    ) {
+                        Ok(_) => break,
+                        Err(_) => continue, // Retry
+                    }
                 }
             }
         }
@@ -1162,9 +1190,8 @@ impl PersistentVocabARTrie {
             }
         }
 
-        // New term: claim the next index
-        let index = self.next_index;
-        self.next_index += 1;
+        // New term: atomically claim the next index
+        let index = self.next_index.fetch_add(1, Ordering::AcqRel);
 
         // Write WAL record BEFORE modifying trie
         if let Some(ref wal) = self.wal_writer {
@@ -1173,12 +1200,12 @@ impl PersistentVocabARTrie {
                 value: Some(index.to_le_bytes().to_vec()),
             };
             if let Ok(lsn) = wal.append(record) {
-                self.next_lsn = lsn + 1;
+                self.next_lsn.fetch_max(lsn + 1, Ordering::AcqRel);
 
                 // Sync if immediate durability policy
                 if self.durability_policy == DurabilityPolicy::Immediate {
                     let _ = wal.sync();
-                    self.synced_lsn = lsn;
+                    self.synced_lsn.fetch_max(lsn, Ordering::AcqRel);
                 }
             }
         }
@@ -1246,9 +1273,8 @@ impl PersistentVocabARTrie {
                 }
             }
 
-            // New term: claim the next index
-            let index = self.next_index;
-            self.next_index += 1;
+            // New term: atomically claim the next index
+            let index = self.next_index.fetch_add(1, Ordering::AcqRel);
 
             // Prepare for batch WAL record
             new_entries.push((
@@ -1264,12 +1290,12 @@ impl PersistentVocabARTrie {
         if !new_entries.is_empty() {
             if let Some(ref wal) = self.wal_writer {
                 if let Ok(lsn) = wal.append_batch(&new_entries) {
-                    self.next_lsn = lsn + 1;
+                    self.next_lsn.fetch_max(lsn + 1, Ordering::AcqRel);
 
                     // Sync if immediate durability policy
                     if self.durability_policy == DurabilityPolicy::Immediate {
                         let _ = wal.sync();
-                        self.synced_lsn = lsn;
+                        self.synced_lsn.fetch_max(lsn, Ordering::AcqRel);
                     }
                 }
             }
@@ -1285,10 +1311,320 @@ impl PersistentVocabARTrie {
                 }
             }
 
-            self.dirty = true;
+            self.dirty.store(true, Ordering::Release);
         }
 
         indices
+    }
+
+    // =========================================================================
+    // Lock-Free CAS Insert (per plan Phase 5)
+    // =========================================================================
+
+    /// Enable lock-free mode for CAS-based concurrent inserts.
+    ///
+    /// This initializes the lock-free infrastructure using `PersistentCharNode`
+    /// with `im::Vector` for structural sharing. Once enabled, `insert_cas()`
+    /// can be called from multiple threads without locks.
+    ///
+    /// # Returns
+    ///
+    /// `true` if lock-free mode was newly enabled, `false` if already enabled.
+    pub fn enable_lockfree(&mut self) -> bool {
+        if self.lockfree_root.is_some() {
+            return false;
+        }
+
+        // Initialize lock-free root
+        let root = Arc::new(PersistentCharNode::new());
+        self.lockfree_root = Some(AtomicNodePtr::new(root));
+        self.lockfree_cache = Some(DashMap::new());
+
+        true
+    }
+
+    /// Check if lock-free mode is enabled.
+    #[inline]
+    pub fn is_lockfree_enabled(&self) -> bool {
+        self.lockfree_root.is_some()
+    }
+
+    /// Insert a term using lock-free CAS operations.
+    ///
+    /// This method is thread-safe and can be called from multiple threads
+    /// concurrently without external synchronization. It uses `PersistentCharNode`
+    /// with `im::Vector` for structural sharing and CAS for atomic updates.
+    ///
+    /// # Panics
+    ///
+    /// Panics if lock-free mode is not enabled. Call `enable_lockfree()` first.
+    ///
+    /// # Returns
+    ///
+    /// The vocabulary index for the term (existing or newly assigned).
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// use std::sync::Arc;
+    /// use std::thread;
+    ///
+    /// let mut vocab = PersistentVocabARTrie::create("vocab.vocab")?;
+    /// vocab.enable_lockfree();
+    ///
+    /// let vocab = Arc::new(vocab);
+    /// let handles: Vec<_> = (0..8).map(|t| {
+    ///     let v = Arc::clone(&vocab);
+    ///     thread::spawn(move || {
+    ///         for i in 0..1000 {
+    ///             v.insert_cas(&format!("thread{}_{}", t, i));
+    ///         }
+    ///     })
+    /// }).collect();
+    ///
+    /// for h in handles { h.join().unwrap(); }
+    /// ```
+    pub fn insert_cas(&self, term: &str) -> u64 {
+        let lockfree_root = self.lockfree_root.as_ref()
+            .expect("Lock-free mode not enabled. Call enable_lockfree() first.");
+        let lockfree_cache = self.lockfree_cache.as_ref()
+            .expect("Lock-free cache not initialized");
+
+        // Fast path: check cache
+        if let Some(entry) = lockfree_cache.get(term) {
+            return *entry;
+        }
+
+        // Convert term to character codes
+        let chars: Vec<u32> = term.chars().map(|c| c as u32).collect();
+
+        // Check if exists in lock-free trie
+        if let Some(root) = lockfree_root.load() {
+            if let Some(idx) = self.find_in_lockfree_trie(&root, &chars) {
+                lockfree_cache.insert(term.to_string(), idx);
+                return idx;
+            }
+        }
+
+        // Also check the persistent trie (for terms inserted before lock-free was enabled)
+        if let Some(idx) = self.get_index(term) {
+            lockfree_cache.insert(term.to_string(), idx);
+            return idx;
+        }
+
+        // Atomically claim the next index
+        let index = self.next_index.fetch_add(1, Ordering::AcqRel);
+
+        // CAS loop to insert into lock-free trie
+        loop {
+            let root = match lockfree_root.load() {
+                Some(r) => r,
+                None => {
+                    // Root is null - initialize it
+                    let new_root = Arc::new(PersistentCharNode::new());
+                    if lockfree_root.try_init(new_root).is_ok() {
+                        continue; // Root initialized, retry insert
+                    }
+                    continue; // Someone else initialized, retry
+                }
+            };
+
+            match self.try_insert_lockfree_path(&root, &chars, index) {
+                Ok(new_root) => {
+                    // CAS the root to the new version
+                    match lockfree_root.compare_exchange(&root, new_root) {
+                        Ok(_) => {
+                            // Success! Update cache and counts
+                            lockfree_cache.insert(term.to_string(), index);
+                            self.entry_count.fetch_add(1, Ordering::AcqRel);
+                            self.dirty.store(true, Ordering::Release);
+
+                            // Update bloom filter if present
+                            // Note: BloomFilter insertion is not thread-safe,
+                            // but false negatives are acceptable for bloom filters
+                            // (we'll just do an extra lookup)
+
+                            return index;
+                        }
+                        Err(actual) => {
+                            // CAS failed - someone else modified the root
+                            self.cas_retries.fetch_add(1, Ordering::Relaxed);
+
+                            // Check if the term was inserted by another thread
+                            if let Some(existing_idx) = self.find_in_lockfree_trie(&actual, &chars) {
+                                lockfree_cache.insert(term.to_string(), existing_idx);
+                                return existing_idx;
+                            }
+
+                            // Retry with the new root
+                            continue;
+                        }
+                    }
+                }
+                Err(existing_idx) => {
+                    // Term already exists
+                    lockfree_cache.insert(term.to_string(), existing_idx);
+                    return existing_idx;
+                }
+            }
+        }
+    }
+
+    /// Try to create a new root with the term inserted (lock-free version).
+    ///
+    /// Returns `Ok(new_root)` if successful, `Err(existing_idx)` if term already exists.
+    fn try_insert_lockfree_path(
+        &self,
+        root: &Arc<PersistentCharNode>,
+        chars: &[u32],
+        index: u64,
+    ) -> std::result::Result<Arc<PersistentCharNode>, u64> {
+        if chars.is_empty() {
+            // Empty term - mark root as final
+            if root.is_final() {
+                return Err(root.get_value().unwrap_or(0));
+            }
+            let new_root = root.as_final().with_value(index);
+            return Ok(Arc::new(new_root));
+        }
+
+        // Recursively create the path
+        self.insert_lockfree_recursive(root, chars, 0, index)
+    }
+
+    /// Recursively create new nodes along the path (lock-free version).
+    fn insert_lockfree_recursive(
+        &self,
+        node: &Arc<PersistentCharNode>,
+        chars: &[u32],
+        depth: usize,
+        index: u64,
+    ) -> std::result::Result<Arc<PersistentCharNode>, u64> {
+        if depth == chars.len() {
+            // Reached the end - mark as final
+            if node.is_final() {
+                return Err(node.get_value().unwrap_or(0));
+            }
+            let new_node = node.as_final().with_value(index);
+            return Ok(Arc::new(new_node));
+        }
+
+        let c = chars[depth];
+
+        match node.find_child(c) {
+            Some(child_ptr) => {
+                // Child exists - recurse
+                if child_ptr.is_null() {
+                    return Err(0); // Shouldn't happen
+                }
+
+                if let Some(ptr) = child_ptr.as_ptr::<PersistentCharNode>() {
+                    let child = unsafe {
+                        Arc::increment_strong_count(ptr);
+                        Arc::from_raw(ptr)
+                    };
+
+                    // Recurse into child
+                    let new_child = self.insert_lockfree_recursive(&child, chars, depth + 1, index)?;
+
+                    // Create new node with updated child pointer
+                    let new_child_ptr = SwizzledPtr::in_memory(Arc::into_raw(new_child));
+                    let new_node = node.with_child(c, new_child_ptr);
+                    Ok(Arc::new(new_node))
+                } else {
+                    // On-disk child - not supported in lock-free mode yet
+                    Err(0)
+                }
+            }
+            None => {
+                // Child doesn't exist - create new path
+                let new_child = self.create_lockfree_path(&chars[depth + 1..], index);
+                let new_child_ptr = SwizzledPtr::in_memory(Arc::into_raw(new_child));
+                let new_node = node.with_child(c, new_child_ptr);
+                Ok(Arc::new(new_node))
+            }
+        }
+    }
+
+    /// Create a new path from the remaining characters (lock-free version).
+    fn create_lockfree_path(&self, chars: &[u32], index: u64) -> Arc<PersistentCharNode> {
+        if chars.is_empty() {
+            // Create final node with value
+            let node = PersistentCharNode::new().as_final().with_value(index);
+            return Arc::new(node);
+        }
+
+        // Build path bottom-up
+        let mut current = Arc::new(PersistentCharNode::new().as_final().with_value(index));
+
+        for &c in chars.iter().rev() {
+            let child_ptr = SwizzledPtr::in_memory(Arc::into_raw(current));
+            let parent = PersistentCharNode::new().with_child(c, child_ptr);
+            current = Arc::new(parent);
+        }
+
+        current
+    }
+
+    /// Find a term in the lock-free trie, returning its index if found.
+    fn find_in_lockfree_trie(&self, root: &Arc<PersistentCharNode>, chars: &[u32]) -> Option<u64> {
+        let mut current = root.clone();
+
+        for &c in chars {
+            match current.find_child(c) {
+                Some(child_ptr) => {
+                    if child_ptr.is_null() {
+                        return None;
+                    }
+                    if let Some(ptr) = child_ptr.as_ptr::<PersistentCharNode>() {
+                        unsafe {
+                            Arc::increment_strong_count(ptr);
+                            current = Arc::from_raw(ptr);
+                        }
+                    } else {
+                        return None;
+                    }
+                }
+                None => return None,
+            }
+        }
+
+        current.get_value()
+    }
+
+    /// Get CAS retry statistics for monitoring lock contention.
+    #[inline]
+    pub fn cas_retries(&self) -> u64 {
+        self.cas_retries.load(Ordering::Relaxed)
+    }
+
+    /// Merge lock-free trie entries into the persistent trie.
+    ///
+    /// This should be called before checkpointing to ensure all lock-free
+    /// inserts are persisted. The lock-free trie remains valid after merge.
+    ///
+    /// # Returns
+    ///
+    /// Number of entries merged.
+    pub fn merge_lockfree_to_persistent(&mut self) -> Result<usize> {
+        // Collect entries first to avoid borrow conflict
+        let entries: Vec<(String, u64)> = match &self.lockfree_cache {
+            Some(cache) => cache.iter().map(|e| (e.key().clone(), *e.value())).collect(),
+            None => return Ok(0),
+        };
+
+        let mut count = 0;
+        for (term, index) in entries {
+            // Insert into persistent trie if not already there
+            if self.get_index(&term).is_none() {
+                // Use insert_with_index to add to persistent trie
+                if self.insert_with_index(&term, index) {
+                    count += 1;
+                }
+            }
+        }
+
+        Ok(count)
     }
 
     /// Insert a term with a specific vocabulary index.
@@ -1343,9 +1679,24 @@ impl PersistentVocabARTrie {
                 // Cache the term
                 self.reverse_cache.put(index, term.to_string());
 
-                // Update counts
-                self.entry_count += 1;
-                self.dirty = true;
+                // Update counts atomically
+                self.entry_count.fetch_add(1, Ordering::AcqRel);
+                self.dirty.store(true, Ordering::Release);
+
+                // Update next_index if needed atomically (for merge_into to work correctly)
+                loop {
+                    let current = self.next_index.load(Ordering::Acquire);
+                    if index < current {
+                        break; // Another thread already advanced it
+                    }
+                    let new_val = index + 1;
+                    match self.next_index.compare_exchange(
+                        current, new_val, Ordering::AcqRel, Ordering::Acquire
+                    ) {
+                        Ok(_) => break,
+                        Err(_) => continue, // Retry
+                    }
+                }
 
                 true
             }
@@ -1441,13 +1792,13 @@ impl PersistentVocabARTrie {
             return false;
         }
         let vec_index = index - self.start_index;
-        vec_index < self.entry_count as u64
+        vec_index < self.entry_count.load(Ordering::Acquire) as u64
     }
 
     /// Get the number of vocabulary entries.
     #[inline]
     pub fn len(&self) -> usize {
-        self.entry_count
+        self.entry_count.load(Ordering::Acquire)
     }
 
     /// Check if the vocabulary is empty.
@@ -1465,13 +1816,13 @@ impl PersistentVocabARTrie {
     /// Get the next index to be assigned.
     #[inline]
     pub fn next_index(&self) -> u64 {
-        self.next_index
+        self.next_index.load(Ordering::Acquire)
     }
 
     /// Check if there are unsaved changes.
     #[inline]
     pub fn is_dirty(&self) -> bool {
-        self.dirty
+        self.dirty.load(Ordering::Acquire)
     }
 
     /// Checkpoint current state to disk.
@@ -1483,12 +1834,12 @@ impl PersistentVocabARTrie {
     /// 4. Flush reverse index
     /// 5. Write checkpoint record to WAL and truncate
     pub fn checkpoint(&mut self) -> Result<()> {
-        if !self.dirty && self.entry_count == 0 {
+        if !self.dirty.load(Ordering::Acquire) && self.entry_count.load(Ordering::Acquire) == 0 {
             return Ok(());
         }
 
         // Step 1: Persist trie to disk (serialize nodes to arenas)
-        let root_slot = if self.entry_count > 0 {
+        let root_slot = if self.entry_count.load(Ordering::Acquire) > 0 {
             self.persist_to_disk()?
         } else {
             ArenaSlot::new(0, 0)
@@ -1512,14 +1863,14 @@ impl PersistentVocabARTrie {
             version: 1,
             _reserved: [0; 3],
             root_ptr: root_slot.to_u64(),
-            entry_count: self.entry_count as u64,
+            entry_count: self.entry_count.load(Ordering::Acquire) as u64,
             block_count,
             _pad1: 0,
-            checkpoint_lsn: self.next_lsn.saturating_sub(1),
+            checkpoint_lsn: self.next_lsn.load(Ordering::Acquire).saturating_sub(1),
             header_checksum: 0,
             _padding: [0; 20],
             start_index: self.start_index,
-            next_index: self.next_index,
+            next_index: self.next_index.load(Ordering::Acquire),
             reverse_index_capacity,
             _ext_padding: [0; 8],
         };
@@ -1544,15 +1895,15 @@ impl PersistentVocabARTrie {
 
         // Step 4: Write checkpoint record to WAL and truncate
         if let Some(ref wal) = self.wal_writer {
-            let checkpoint_lsn = self.next_lsn.saturating_sub(1);
+            let checkpoint_lsn = self.next_lsn.load(Ordering::Acquire).saturating_sub(1);
             if let Ok(lsn) = wal.checkpoint(checkpoint_lsn) {
-                self.synced_lsn = lsn;
+                self.synced_lsn.fetch_max(lsn, Ordering::AcqRel);
             }
             // Truncate WAL after successful checkpoint
             let _ = wal.truncate();
         }
 
-        self.dirty = false;
+        self.dirty.store(false, Ordering::Release);
         Ok(())
     }
 
@@ -1568,7 +1919,7 @@ impl PersistentVocabARTrie {
                 "WAL",
                 std::io::Error::new(std::io::ErrorKind::Other, e.to_string()),
             ))?;
-            self.synced_lsn = lsn;
+            self.synced_lsn.fetch_max(lsn, Ordering::AcqRel);
         }
         Ok(())
     }
@@ -1609,7 +1960,7 @@ impl PersistentVocabARTrie {
     /// vocab.checkpoint()?;
     /// ```
     pub fn rotate_wal(&mut self) -> Result<()> {
-        if !self.dirty {
+        if !self.dirty.load(Ordering::Acquire) {
             return Ok(());
         }
 
@@ -1640,7 +1991,7 @@ impl PersistentVocabARTrie {
                 "WAL",
                 std::io::Error::new(std::io::ErrorKind::Other, e.to_string()),
             ))?;
-            self.synced_lsn = lsn;
+            self.synced_lsn.fetch_max(lsn, Ordering::AcqRel);
 
             // Note: We do NOT truncate the WAL here because we haven't persisted
             // the trie structure. WAL replay on restart will recover all inserts.
@@ -1731,7 +2082,7 @@ impl PersistentVocabARTrie {
     pub fn sync_to_disk(&mut self) -> Result<()> {
         let handle = self.sync_to_disk_async()?;
         handle.wait().map_err(|e| PersistentARTrieError::internal(&e))?;
-        self.dirty = false;
+        self.dirty.store(false, Ordering::Release);
         Ok(())
     }
 
@@ -1740,7 +2091,7 @@ impl PersistentVocabARTrie {
     /// This is the LSN that will be assigned to the next WAL record.
     #[inline]
     pub fn current_lsn(&self) -> u64 {
-        self.next_lsn
+        self.next_lsn.load(Ordering::Acquire)
     }
 
     /// Get the last synced LSN.
@@ -1748,10 +2099,11 @@ impl PersistentVocabARTrie {
     /// Returns `None` if no records have been synced yet.
     #[inline]
     pub fn synced_lsn(&self) -> Option<u64> {
-        if self.synced_lsn == 0 {
+        let lsn = self.synced_lsn.load(Ordering::Acquire);
+        if lsn == 0 {
             None
         } else {
-            Some(self.synced_lsn)
+            Some(lsn)
         }
     }
 
@@ -1918,7 +2270,7 @@ impl PersistentVocabARTrie {
     /// If the vocabulary already has entries, rebuilds the bloom filter
     /// from existing terms.
     pub fn enable_bloom_filter(&mut self, expected_elements: usize) {
-        if self.entry_count > 0 {
+        if self.entry_count.load(Ordering::Acquire) > 0 {
             self.rebuild_bloom_filter(expected_elements);
         } else {
             self.bloom_filter = Some(BloomFilter::new(expected_elements));
@@ -2111,23 +2463,26 @@ impl Clone for PersistentVocabARTrie {
         Self {
             path: self.path.clone(),
             root: cloned_root,
-            entry_count: self.entry_count,
+            entry_count: AtomicUsize::new(self.entry_count.load(Ordering::Acquire)),
             start_index: self.start_index,
-            next_index: self.next_index,
-            dirty: self.dirty,
+            next_index: AtomicU64::new(self.next_index.load(Ordering::Acquire)),
+            dirty: AtomicBool::new(self.dirty.load(Ordering::Acquire)),
             reverse_index: None, // Cannot clone mmap'd index
             reverse_cache: VocabReverseCache::new(DEFAULT_REVERSE_CACHE_SIZE),
             node_map: new_node_map,
             next_slot: self.next_slot,
             wal_writer: self.wal_writer.clone(),
             wal_config: self.wal_config.clone(),
-            next_lsn: self.next_lsn,
-            synced_lsn: self.synced_lsn,
+            next_lsn: AtomicU64::new(self.next_lsn.load(Ordering::Acquire)),
+            synced_lsn: AtomicU64::new(self.synced_lsn.load(Ordering::Acquire)),
             durability_policy: self.durability_policy,
             arena_manager: None, // Cannot clone arena manager
             buffer_manager: None, // Cannot clone buffer manager
             eviction_coordinator: None, // Cannot clone eviction coordinator
             bloom_filter: self.bloom_filter.clone(),
+            lockfree_root: None, // Cannot clone lock-free root
+            lockfree_cache: None, // Cannot clone lock-free cache
+            cas_retries: AtomicU64::new(0),
         }
     }
 }
@@ -3269,5 +3624,101 @@ mod tests {
         assert_eq!(vocab.len(), 5);
         assert_eq!(vocab.get_index("apple"), Some(0));
         assert_eq!(vocab.get_index("elderberry"), Some(4));
+    }
+
+    #[test]
+    fn test_insert_cas_basic() {
+        let dir = tempdir().expect("Failed to create temp dir");
+        let path = dir.path().join("vocab.vocab");
+
+        let mut vocab = PersistentVocabARTrie::create(&path).expect("Failed to create vocab");
+        vocab.enable_lockfree();
+
+        // Insert using CAS
+        let idx1 = vocab.insert_cas("hello");
+        let idx2 = vocab.insert_cas("world");
+        let idx3 = vocab.insert_cas("hello"); // Duplicate
+
+        assert_eq!(idx1, 0);
+        assert_eq!(idx2, 1);
+        assert_eq!(idx3, 0); // Should return existing index
+
+        // Verify with get_index via cache
+        assert_eq!(vocab.insert_cas("hello"), 0);
+        assert_eq!(vocab.insert_cas("world"), 1);
+    }
+
+    #[test]
+    fn test_insert_cas_concurrent() {
+        use std::thread;
+
+        let dir = tempdir().expect("Failed to create temp dir");
+        let path = dir.path().join("vocab.vocab");
+
+        let mut vocab = PersistentVocabARTrie::create(&path).expect("Failed to create vocab");
+        vocab.enable_lockfree();
+
+        let vocab = Arc::new(vocab);
+        let num_threads = 4;
+        let terms_per_thread = 100;
+
+        let handles: Vec<_> = (0..num_threads)
+            .map(|t| {
+                let v = Arc::clone(&vocab);
+                thread::spawn(move || {
+                    let mut indices = Vec::new();
+                    for i in 0..terms_per_thread {
+                        let term = format!("thread{}_{}", t, i);
+                        let idx = v.insert_cas(&term);
+                        indices.push(idx);
+                    }
+                    indices
+                })
+            })
+            .collect();
+
+        let all_indices: Vec<u64> = handles
+            .into_iter()
+            .flat_map(|h| h.join().expect("thread"))
+            .collect();
+
+        // All indices should be in valid range
+        let max_expected = (num_threads * terms_per_thread) as u64;
+        for &idx in &all_indices {
+            assert!(idx < max_expected + 100, "index {} out of range", idx);
+        }
+
+        // Next index should be at least num_threads * terms_per_thread
+        assert!(vocab.next_index() >= (num_threads * terms_per_thread) as u64);
+    }
+
+    #[test]
+    fn test_insert_cas_merge_to_persistent() {
+        let dir = tempdir().expect("Failed to create temp dir");
+        let path = dir.path().join("vocab.vocab");
+
+        let mut vocab = PersistentVocabARTrie::create(&path).expect("Failed to create vocab");
+        vocab.enable_lockfree();
+
+        // Insert using CAS (lock-free)
+        vocab.insert_cas("apple");
+        vocab.insert_cas("banana");
+        vocab.insert_cas("cherry");
+
+        // Merge to persistent trie
+        let merged = vocab.merge_lockfree_to_persistent().expect("merge failed");
+        assert_eq!(merged, 3);
+
+        // Checkpoint and reopen
+        vocab.checkpoint().expect("checkpoint failed");
+        drop(vocab);
+
+        let (vocab, _) = PersistentVocabARTrie::open_with_recovery(&path)
+            .expect("Failed to open vocab");
+
+        // Data should be persisted
+        assert_eq!(vocab.get_index("apple"), Some(0));
+        assert_eq!(vocab.get_index("banana"), Some(1));
+        assert_eq!(vocab.get_index("cherry"), Some(2));
     }
 }

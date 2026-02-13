@@ -424,6 +424,148 @@ impl SwizzledPtr {
         let block_id = slot.arena_id.saturating_add(1);
         Self::on_disk(block_id, slot.slot_id, node_type)
     }
+
+    // =========================================================================
+    // Lock-Free CAS Operations for Concurrent Access
+    // =========================================================================
+
+    /// Atomically load the raw pointer value.
+    ///
+    /// Uses Acquire ordering to ensure all prior writes are visible.
+    #[inline]
+    pub fn load_raw(&self) -> u64 {
+        self.0.load(Ordering::Acquire)
+    }
+
+    /// Atomically store a raw pointer value.
+    ///
+    /// Uses Release ordering to ensure all prior writes are visible to
+    /// subsequent reads.
+    #[inline]
+    pub fn store_raw(&self, value: u64) {
+        self.0.store(value, Ordering::Release)
+    }
+
+    /// Compare-and-swap the pointer value.
+    ///
+    /// Atomically compares the current value with `expected`, and if they match,
+    /// replaces the value with `new`. This is the core primitive for lock-free
+    /// child pointer updates during concurrent inserts.
+    ///
+    /// # Arguments
+    ///
+    /// * `expected` - The expected current value
+    /// * `new` - The new value to store if expected matches
+    ///
+    /// # Returns
+    ///
+    /// - `Ok(expected)` if the swap succeeded (current was `expected`)
+    /// - `Err(actual)` if the swap failed (current was `actual`)
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// use libdictenstein::persistent_artrie::swizzled_ptr::{SwizzledPtr, NodeType};
+    ///
+    /// let ptr = SwizzledPtr::null();
+    /// let new_child = SwizzledPtr::on_disk(1, 100, NodeType::Node4);
+    ///
+    /// // CAS from null (0) to new child
+    /// match ptr.compare_exchange_raw(0, new_child.to_raw()) {
+    ///     Ok(_) => println!("Successfully inserted child"),
+    ///     Err(actual) => println!("Another thread inserted first: {}", actual),
+    /// }
+    /// ```
+    #[inline]
+    pub fn compare_exchange_raw(
+        &self,
+        expected: u64,
+        new: u64,
+    ) -> Result<u64, u64> {
+        self.0.compare_exchange(expected, new, Ordering::AcqRel, Ordering::Acquire)
+    }
+
+    /// Weak compare-and-swap the pointer value.
+    ///
+    /// Like `compare_exchange_raw`, but may spuriously fail even when the
+    /// comparison would succeed. Use this in a loop for better performance
+    /// on some architectures.
+    ///
+    /// # Arguments
+    ///
+    /// * `expected` - The expected current value
+    /// * `new` - The new value to store if expected matches
+    ///
+    /// # Returns
+    ///
+    /// - `Ok(expected)` if the swap succeeded
+    /// - `Err(actual)` if the swap failed (or spuriously failed)
+    #[inline]
+    pub fn compare_exchange_weak_raw(
+        &self,
+        expected: u64,
+        new: u64,
+    ) -> Result<u64, u64> {
+        self.0.compare_exchange_weak(expected, new, Ordering::AcqRel, Ordering::Acquire)
+    }
+
+    /// Atomically CAS to set a null pointer to a new child pointer.
+    ///
+    /// This is a convenience wrapper for the common pattern of adding a child
+    /// to an empty slot. It only succeeds if the current value is null (0).
+    ///
+    /// # Arguments
+    ///
+    /// * `new_child` - The new child pointer to insert
+    ///
+    /// # Returns
+    ///
+    /// - `Ok(())` if the null pointer was successfully replaced with `new_child`
+    /// - `Err(actual)` if the slot was not null (another thread inserted first)
+    #[inline]
+    pub fn try_insert_child(&self, new_child: &SwizzledPtr) -> Result<(), u64> {
+        let new_raw = new_child.load_raw();
+        match self.compare_exchange_raw(0, new_raw) {
+            Ok(_) => Ok(()),
+            Err(actual) => Err(actual),
+        }
+    }
+
+    /// Atomically CAS to update a child pointer.
+    ///
+    /// This is used when replacing an existing child (e.g., during node growth).
+    ///
+    /// # Arguments
+    ///
+    /// * `expected_child` - The expected current child pointer
+    /// * `new_child` - The new child pointer to insert
+    ///
+    /// # Returns
+    ///
+    /// - `Ok(())` if the swap succeeded
+    /// - `Err(actual)` if the current value didn't match `expected_child`
+    #[inline]
+    pub fn try_update_child(
+        &self,
+        expected_child: &SwizzledPtr,
+        new_child: &SwizzledPtr,
+    ) -> Result<(), u64> {
+        let expected_raw = expected_child.load_raw();
+        let new_raw = new_child.load_raw();
+        match self.compare_exchange_raw(expected_raw, new_raw) {
+            Ok(_) => Ok(()),
+            Err(actual) => Err(actual),
+        }
+    }
+
+    /// Check if this pointer is null without synchronization.
+    ///
+    /// This is faster than `is_null()` when used in contexts where
+    /// the value is known not to be changing (e.g., during single-threaded init).
+    #[inline]
+    pub fn is_null_relaxed(&self) -> bool {
+        self.0.load(Ordering::Relaxed) == 0
+    }
 }
 
 impl Clone for SwizzledPtr {
@@ -634,6 +776,176 @@ mod tests {
             let ptr = SwizzledPtr::on_disk(0, 100, NodeType::Node4);
 
             assert!(ptr.as_arena_slot().is_none());
+        }
+    }
+
+    // =========================================================================
+    // CAS Operation Tests
+    // =========================================================================
+
+    mod cas_tests {
+        use super::*;
+        use std::sync::Arc;
+        use std::thread;
+
+        #[test]
+        fn test_load_store_raw() {
+            let ptr = SwizzledPtr::null();
+            assert_eq!(ptr.load_raw(), 0);
+
+            let child = SwizzledPtr::on_disk(1, 100, NodeType::Node4);
+            ptr.store_raw(child.load_raw());
+
+            assert_eq!(ptr.load_raw(), child.load_raw());
+            assert!(ptr.is_on_disk());
+        }
+
+        #[test]
+        fn test_compare_exchange_raw_success() {
+            let ptr = SwizzledPtr::null();
+            let new_child = SwizzledPtr::on_disk(1, 100, NodeType::Node4);
+
+            // CAS from null (0) to new child should succeed
+            let result = ptr.compare_exchange_raw(0, new_child.load_raw());
+            assert!(result.is_ok());
+            assert_eq!(result.unwrap(), 0);
+            assert_eq!(ptr.load_raw(), new_child.load_raw());
+        }
+
+        #[test]
+        fn test_compare_exchange_raw_failure() {
+            let ptr = SwizzledPtr::on_disk(1, 100, NodeType::Node4);
+            let new_child = SwizzledPtr::on_disk(2, 200, NodeType::Node16);
+
+            // CAS expecting null (0) should fail because ptr is not null
+            let result = ptr.compare_exchange_raw(0, new_child.load_raw());
+            assert!(result.is_err());
+
+            // Should return the actual value
+            let actual = result.unwrap_err();
+            assert_eq!(actual, ptr.load_raw());
+        }
+
+        #[test]
+        fn test_try_insert_child_success() {
+            let slot = SwizzledPtr::null();
+            let child = SwizzledPtr::on_disk(1, 100, NodeType::Node4);
+
+            let result = slot.try_insert_child(&child);
+            assert!(result.is_ok());
+            assert_eq!(slot.load_raw(), child.load_raw());
+        }
+
+        #[test]
+        fn test_try_insert_child_failure() {
+            let existing = SwizzledPtr::on_disk(1, 100, NodeType::Node4);
+            let slot = SwizzledPtr::from_raw(existing.load_raw());
+            let new_child = SwizzledPtr::on_disk(2, 200, NodeType::Node16);
+
+            // Should fail because slot is not null
+            let result = slot.try_insert_child(&new_child);
+            assert!(result.is_err());
+
+            // Original value should be unchanged
+            assert_eq!(slot.load_raw(), existing.load_raw());
+        }
+
+        #[test]
+        fn test_try_update_child_success() {
+            let old_child = SwizzledPtr::on_disk(1, 100, NodeType::Node4);
+            let slot = SwizzledPtr::from_raw(old_child.load_raw());
+            let new_child = SwizzledPtr::on_disk(2, 200, NodeType::Node16);
+
+            let result = slot.try_update_child(&old_child, &new_child);
+            assert!(result.is_ok());
+            assert_eq!(slot.load_raw(), new_child.load_raw());
+        }
+
+        #[test]
+        fn test_try_update_child_failure() {
+            let old_child = SwizzledPtr::on_disk(1, 100, NodeType::Node4);
+            let actual_child = SwizzledPtr::on_disk(3, 300, NodeType::Node48);
+            let slot = SwizzledPtr::from_raw(actual_child.load_raw());
+            let new_child = SwizzledPtr::on_disk(2, 200, NodeType::Node16);
+
+            // Should fail because expected doesn't match
+            let result = slot.try_update_child(&old_child, &new_child);
+            assert!(result.is_err());
+
+            // Original value should be unchanged
+            assert_eq!(slot.load_raw(), actual_child.load_raw());
+        }
+
+        #[test]
+        fn test_is_null_relaxed() {
+            let null_ptr = SwizzledPtr::null();
+            assert!(null_ptr.is_null_relaxed());
+
+            let non_null = SwizzledPtr::on_disk(1, 100, NodeType::Node4);
+            assert!(!non_null.is_null_relaxed());
+        }
+
+        #[test]
+        fn test_concurrent_try_insert_child() {
+            // Test that exactly one thread wins when multiple try to insert
+            let slot = Arc::new(SwizzledPtr::null());
+            let num_threads = 10;
+
+            let handles: Vec<_> = (0..num_threads)
+                .map(|i| {
+                    let s = Arc::clone(&slot);
+                    thread::spawn(move || {
+                        let child = SwizzledPtr::on_disk(1, i as u32, NodeType::Node4);
+                        s.try_insert_child(&child).is_ok()
+                    })
+                })
+                .collect();
+
+            let results: Vec<bool> = handles
+                .into_iter()
+                .map(|h| h.join().expect("thread should complete"))
+                .collect();
+
+            // Exactly one thread should have won
+            let winners = results.iter().filter(|&&x| x).count();
+            assert_eq!(winners, 1, "exactly one thread should win try_insert_child");
+
+            // Slot should not be null
+            assert!(!slot.is_null());
+        }
+
+        #[test]
+        fn test_concurrent_compare_exchange() {
+            // Test competing CAS operations
+            let ptr = Arc::new(SwizzledPtr::null());
+            let num_threads = 20;
+
+            let handles: Vec<_> = (0..num_threads)
+                .map(|i| {
+                    let p = Arc::clone(&ptr);
+                    thread::spawn(move || {
+                        let new_val = SwizzledPtr::on_disk(1, i as u32, NodeType::Node4);
+                        p.compare_exchange_raw(0, new_val.load_raw()).is_ok()
+                    })
+                })
+                .collect();
+
+            let results: Vec<bool> = handles
+                .into_iter()
+                .map(|h| h.join().expect("thread should complete"))
+                .collect();
+
+            // Exactly one thread should have won
+            let winners = results.iter().filter(|&&x| x).count();
+            assert_eq!(winners, 1, "exactly one thread should win CAS");
+
+            // Verify the winner's value is stored
+            let final_val = ptr.load_raw();
+            assert_ne!(final_val, 0, "final value should not be null");
+
+            // The value should be a valid disk reference
+            let disk_ptr = SwizzledPtr::from_raw(final_val);
+            assert!(disk_ptr.is_on_disk());
         }
     }
 }

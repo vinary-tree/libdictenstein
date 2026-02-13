@@ -230,6 +230,7 @@ impl Default for LockCoupling {
 /// This provides a way to safely deallocate memory that might be
 /// accessed by concurrent readers. Memory is not freed until all
 /// readers that might see it have finished.
+#[derive(Debug)]
 pub struct EpochManager {
     /// Global epoch counter
     global_epoch: AtomicU64,

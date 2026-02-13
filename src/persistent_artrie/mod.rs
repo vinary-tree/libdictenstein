@@ -206,6 +206,15 @@ pub mod adaptive_pool;
 // Per-node logging for near-instant recovery
 pub mod per_node_log;
 
+// Version-based checkpoint management
+pub mod version_checkpoint;
+
+// MVCC-lite read transactions
+pub mod mvcc;
+
+// Version garbage collection
+pub mod version_gc;
+
 // Re-exports for convenience
 pub use error::{PersistentARTrieError, Result, SwizzleError};
 pub use path_compression::{PrefixMatchResult, SplitPrefix};
@@ -353,6 +362,21 @@ pub use eviction::{
 pub use per_node_log::{
     DirtyNodeTracker, InlineLog, NodeId, NodeLogEntry, NodeRecoveryResult,
     PageId, PerNodeLogConfig, PerNodeLogStats, PerNodeLogStatsAtomic, RecoveryResult,
+};
+
+// Version checkpoint types (Phase 7)
+pub use version_checkpoint::{
+    VersionCheckpointManager, VersionCheckpointStats, VersionSnapshot,
+};
+
+// MVCC-lite read transaction types (Phase 8)
+pub use mvcc::{
+    MvccStats, MvccStatsTracker, ReadTransaction, TrieRoot,
+};
+
+// Version garbage collection types (Phase 9)
+pub use version_gc::{
+    GcCandidate, GcConfig, GcStats, ReaderGuard, VersionGcRegistry,
 };
 
 /// Maximum key length supported (64KB - 1)

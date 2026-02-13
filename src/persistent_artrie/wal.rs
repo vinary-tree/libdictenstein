@@ -181,6 +181,24 @@ pub enum WalRecordType {
     /// Unlike BatchInsert which uses SET semantics, BatchIncrement accumulates
     /// deltas with existing values.
     BatchIncrement = 11,
+
+    // === Version-Based WAL Records (Phase 6) ===
+
+    /// Version update - records a new version of the trie structure.
+    ///
+    /// This replaces N mutation records with a single version record,
+    /// enabling point-in-time recovery via version restoration.
+    VersionUpdate = 12,
+
+    /// Version durable marker - indicates a version has been fully persisted.
+    ///
+    /// Used to mark which versions are safe for recovery.
+    VersionDurable = 13,
+
+    /// Version garbage collection - records versions that have been reclaimed.
+    ///
+    /// Used during recovery to skip GC'd versions.
+    VersionGc = 14,
 }
 
 impl TryFrom<u8> for WalRecordType {
@@ -199,6 +217,9 @@ impl TryFrom<u8> for WalRecordType {
             9 => Ok(WalRecordType::CompareAndSwap),
             10 => Ok(WalRecordType::BatchInsert),
             11 => Ok(WalRecordType::BatchIncrement),
+            12 => Ok(WalRecordType::VersionUpdate),
+            13 => Ok(WalRecordType::VersionDurable),
+            14 => Ok(WalRecordType::VersionGc),
             _ => Err(WalError::InvalidRecordType(value)),
         }
     }
@@ -323,6 +344,64 @@ pub enum WalRecord {
         /// The increment entries (term, delta)
         entries: Vec<(Vec<u8>, i64)>,
     },
+
+    // === Version-Based WAL Records (Phase 6) ===
+
+    /// Version update - records a new version of the trie structure.
+    ///
+    /// This replaces N mutation records with a single version record,
+    /// enabling point-in-time recovery via version restoration.
+    ///
+    /// # Wire Format
+    ///
+    /// ```text
+    /// +------------+----------+------------+------------+
+    /// | version_id | root_ptr | node_count | timestamp  |
+    /// | (8 bytes)  | (8 bytes)| (8 bytes)  | (8 bytes)  |
+    /// +------------+----------+------------+------------+
+    /// ```
+    VersionUpdate {
+        /// Unique version identifier (monotonically increasing)
+        version_id: u64,
+        /// Root pointer to the versioned trie structure
+        root_ptr: u64,
+        /// Number of nodes in this version
+        node_count: u64,
+        /// Timestamp when this version was created
+        timestamp: u64,
+    },
+
+    /// Version durable marker - indicates a version has been fully persisted.
+    ///
+    /// # Wire Format
+    ///
+    /// ```text
+    /// +------------+----------+
+    /// | version_id | checksum |
+    /// | (8 bytes)  | (4 bytes)|
+    /// +------------+----------+
+    /// ```
+    VersionDurable {
+        /// Version that is now durable
+        version_id: u64,
+        /// Checksum of the persisted version data
+        checksum: u32,
+    },
+
+    /// Version garbage collection - records versions that have been reclaimed.
+    ///
+    /// # Wire Format
+    ///
+    /// ```text
+    /// +-------+--------------------------------------------+
+    /// | count | version_id[0] | version_id[1] | ...        |
+    /// | (4 B) | (8 bytes)     | (8 bytes)     | ...        |
+    /// +-------+--------------------------------------------+
+    /// ```
+    VersionGc {
+        /// List of version IDs that have been garbage collected
+        version_ids: Vec<u64>,
+    },
 }
 
 impl WalRecord {
@@ -340,6 +419,9 @@ impl WalRecord {
             WalRecord::CompareAndSwap { .. } => WalRecordType::CompareAndSwap,
             WalRecord::BatchInsert { .. } => WalRecordType::BatchInsert,
             WalRecord::BatchIncrement { .. } => WalRecordType::BatchIncrement,
+            WalRecord::VersionUpdate { .. } => WalRecordType::VersionUpdate,
+            WalRecord::VersionDurable { .. } => WalRecordType::VersionDurable,
+            WalRecord::VersionGc { .. } => WalRecordType::VersionGc,
         }
     }
 
@@ -437,6 +519,33 @@ impl WalRecord {
                     buf.extend_from_slice(&(term.len() as u32).to_le_bytes());
                     buf.extend_from_slice(term);
                     buf.extend_from_slice(&delta.to_le_bytes());
+                }
+            }
+            WalRecord::VersionUpdate {
+                version_id,
+                root_ptr,
+                node_count,
+                timestamp,
+            } => {
+                // version_id (8) + root_ptr (8) + node_count (8) + timestamp (8) = 32 bytes
+                buf.extend_from_slice(&version_id.to_le_bytes());
+                buf.extend_from_slice(&root_ptr.to_le_bytes());
+                buf.extend_from_slice(&node_count.to_le_bytes());
+                buf.extend_from_slice(&timestamp.to_le_bytes());
+            }
+            WalRecord::VersionDurable {
+                version_id,
+                checksum,
+            } => {
+                // version_id (8) + checksum (4) = 12 bytes
+                buf.extend_from_slice(&version_id.to_le_bytes());
+                buf.extend_from_slice(&checksum.to_le_bytes());
+            }
+            WalRecord::VersionGc { version_ids } => {
+                // count (4) + version_ids (8 each)
+                buf.extend_from_slice(&(version_ids.len() as u32).to_le_bytes());
+                for vid in version_ids {
+                    buf.extend_from_slice(&vid.to_le_bytes());
                 }
             }
         }
@@ -726,6 +835,51 @@ impl WalRecord {
                 }
 
                 Ok(WalRecord::BatchIncrement { entries })
+            }
+            WalRecordType::VersionUpdate => {
+                // version_id (8) + root_ptr (8) + node_count (8) + timestamp (8) = 32 bytes
+                if payload.len() < 32 {
+                    return Err(WalError::CorruptedRecord("VersionUpdate payload too short".into()));
+                }
+                let version_id = u64::from_le_bytes(payload[0..8].try_into().unwrap());
+                let root_ptr = u64::from_le_bytes(payload[8..16].try_into().unwrap());
+                let node_count = u64::from_le_bytes(payload[16..24].try_into().unwrap());
+                let timestamp = u64::from_le_bytes(payload[24..32].try_into().unwrap());
+                Ok(WalRecord::VersionUpdate {
+                    version_id,
+                    root_ptr,
+                    node_count,
+                    timestamp,
+                })
+            }
+            WalRecordType::VersionDurable => {
+                // version_id (8) + checksum (4) = 12 bytes
+                if payload.len() < 12 {
+                    return Err(WalError::CorruptedRecord("VersionDurable payload too short".into()));
+                }
+                let version_id = u64::from_le_bytes(payload[0..8].try_into().unwrap());
+                let checksum = u32::from_le_bytes(payload[8..12].try_into().unwrap());
+                Ok(WalRecord::VersionDurable {
+                    version_id,
+                    checksum,
+                })
+            }
+            WalRecordType::VersionGc => {
+                // count (4) + version_ids (8 each)
+                if payload.len() < 4 {
+                    return Err(WalError::CorruptedRecord("VersionGc payload too short".into()));
+                }
+                let count = u32::from_le_bytes(payload[0..4].try_into().unwrap()) as usize;
+                if payload.len() < 4 + count * 8 {
+                    return Err(WalError::CorruptedRecord("VersionGc version_ids truncated".into()));
+                }
+                let mut version_ids = Vec::with_capacity(count);
+                for i in 0..count {
+                    let offset = 4 + i * 8;
+                    let vid = u64::from_le_bytes(payload[offset..offset + 8].try_into().unwrap());
+                    version_ids.push(vid);
+                }
+                Ok(WalRecord::VersionGc { version_ids })
             }
         }
     }
@@ -4539,15 +4693,18 @@ mod tests {
         let result = WalRecordType::try_from(0u8);
         assert!(matches!(result, Err(WalError::InvalidRecordType(0))));
 
-        let result = WalRecordType::try_from(12u8);
-        assert!(matches!(result, Err(WalError::InvalidRecordType(12))));
+        // 15 is beyond the current max (VersionGc = 14)
+        let result = WalRecordType::try_from(15u8);
+        assert!(matches!(result, Err(WalError::InvalidRecordType(15))));
 
         let result = WalRecordType::try_from(255u8);
         assert!(matches!(result, Err(WalError::InvalidRecordType(255))));
 
-        // Valid types should work
-        assert!(WalRecordType::try_from(1u8).is_ok());
-        assert!(WalRecordType::try_from(10u8).is_ok());
+        // Valid types should work (1-14 are all valid now)
+        assert!(WalRecordType::try_from(1u8).is_ok());  // Insert
+        assert!(WalRecordType::try_from(10u8).is_ok()); // BatchInsert
+        assert!(WalRecordType::try_from(12u8).is_ok()); // VersionUpdate
+        assert!(WalRecordType::try_from(14u8).is_ok()); // VersionGc
     }
 
     #[test]
@@ -4588,5 +4745,127 @@ mod tests {
 
         let corrupted = WalError::CorruptedRecord("test".into());
         assert!(corrupted.source().is_none());
+    }
+
+    // ==================== Version-Based WAL Tests ====================
+
+    #[test]
+    fn test_version_update_roundtrip() {
+        let record = WalRecord::VersionUpdate {
+            version_id: 42,
+            root_ptr: 0x1234_5678_9ABC_DEF0,
+            node_count: 1000,
+            timestamp: 1699999999,
+        };
+
+        assert_eq!(record.record_type(), WalRecordType::VersionUpdate);
+
+        let payload = record.serialize_payload();
+        assert_eq!(payload.len(), 32); // 4 x u64 = 32 bytes
+
+        let deserialized = WalRecord::deserialize(WalRecordType::VersionUpdate, &payload)
+            .expect("deserialize");
+
+        match deserialized {
+            WalRecord::VersionUpdate { version_id, root_ptr, node_count, timestamp } => {
+                assert_eq!(version_id, 42);
+                assert_eq!(root_ptr, 0x1234_5678_9ABC_DEF0);
+                assert_eq!(node_count, 1000);
+                assert_eq!(timestamp, 1699999999);
+            }
+            _ => panic!("Expected VersionUpdate"),
+        }
+    }
+
+    #[test]
+    fn test_version_durable_roundtrip() {
+        let record = WalRecord::VersionDurable {
+            version_id: 99,
+            checksum: 0xDEAD_BEEF,
+        };
+
+        assert_eq!(record.record_type(), WalRecordType::VersionDurable);
+
+        let payload = record.serialize_payload();
+        assert_eq!(payload.len(), 12); // u64 + u32 = 12 bytes
+
+        let deserialized = WalRecord::deserialize(WalRecordType::VersionDurable, &payload)
+            .expect("deserialize");
+
+        match deserialized {
+            WalRecord::VersionDurable { version_id, checksum } => {
+                assert_eq!(version_id, 99);
+                assert_eq!(checksum, 0xDEAD_BEEF);
+            }
+            _ => panic!("Expected VersionDurable"),
+        }
+    }
+
+    #[test]
+    fn test_version_gc_roundtrip() {
+        let record = WalRecord::VersionGc {
+            version_ids: vec![1, 5, 10, 42, 100],
+        };
+
+        assert_eq!(record.record_type(), WalRecordType::VersionGc);
+
+        let payload = record.serialize_payload();
+        assert_eq!(payload.len(), 4 + 5 * 8); // count (4) + 5 x u64 (40) = 44 bytes
+
+        let deserialized = WalRecord::deserialize(WalRecordType::VersionGc, &payload)
+            .expect("deserialize");
+
+        match deserialized {
+            WalRecord::VersionGc { version_ids } => {
+                assert_eq!(version_ids, vec![1, 5, 10, 42, 100]);
+            }
+            _ => panic!("Expected VersionGc"),
+        }
+    }
+
+    #[test]
+    fn test_version_gc_empty() {
+        let record = WalRecord::VersionGc {
+            version_ids: vec![],
+        };
+
+        let payload = record.serialize_payload();
+        assert_eq!(payload.len(), 4); // just the count
+
+        let deserialized = WalRecord::deserialize(WalRecordType::VersionGc, &payload)
+            .expect("deserialize");
+
+        match deserialized {
+            WalRecord::VersionGc { version_ids } => {
+                assert!(version_ids.is_empty());
+            }
+            _ => panic!("Expected VersionGc"),
+        }
+    }
+
+    #[test]
+    fn test_version_update_too_short() {
+        let result = WalRecord::deserialize(WalRecordType::VersionUpdate, &[0; 31]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_version_durable_too_short() {
+        let result = WalRecord::deserialize(WalRecordType::VersionDurable, &[0; 11]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_version_gc_too_short() {
+        // count = 5 but only 3 version IDs provided
+        let mut payload = vec![];
+        payload.extend_from_slice(&5u32.to_le_bytes()); // count = 5
+        payload.extend_from_slice(&1u64.to_le_bytes());
+        payload.extend_from_slice(&2u64.to_le_bytes());
+        payload.extend_from_slice(&3u64.to_le_bytes());
+        // Missing 2 more version IDs
+
+        let result = WalRecord::deserialize(WalRecordType::VersionGc, &payload);
+        assert!(result.is_err());
     }
 }

@@ -640,3 +640,203 @@ fn test_concurrent_transducer_queries() {
     // TODO: Add transducer concurrent query tests when needed
     // This would test multiple threads querying with Levenshtein automata
 }
+
+// =============================================================================
+// Test: Lock-Free CAS Insert
+// =============================================================================
+
+#[test]
+fn test_lockfree_insert_cas_basic() {
+    let temp_dir = TempDir::new().expect("create temp dir");
+    let dict_path = temp_dir.path().join("lockfree_basic.part");
+
+    let mut dict: PersistentARTrie<()> =
+        PersistentARTrie::create(&dict_path).expect("create dict");
+
+    // Enable lock-free mode
+    dict.enable_lockfree();
+
+    // Insert some terms using CAS
+    assert!(dict.insert_cas(b"hello"), "First insert should succeed");
+    assert!(!dict.insert_cas(b"hello"), "Duplicate insert should return false");
+
+    assert!(dict.insert_cas(b"world"), "Second term should succeed");
+    assert!(dict.insert_cas(b"foo"), "Third term should succeed");
+
+    // Verify using lock-free contains
+    assert!(dict.contains_lockfree(b"hello"), "Should find hello");
+    assert!(dict.contains_lockfree(b"world"), "Should find world");
+    assert!(dict.contains_lockfree(b"foo"), "Should find foo");
+    assert!(!dict.contains_lockfree(b"bar"), "Should not find bar");
+}
+
+#[test]
+fn test_lockfree_insert_cas_concurrent() {
+    let temp_dir = TempDir::new().expect("create temp dir");
+    let dict_path = temp_dir.path().join("lockfree_concurrent.part");
+
+    let mut dict: PersistentARTrie<()> =
+        PersistentARTrie::create(&dict_path).expect("create dict");
+
+    // Enable lock-free mode
+    dict.enable_lockfree();
+
+    // Wrap in Arc for sharing (no RwLock needed for lock-free ops!)
+    let dict = Arc::new(dict);
+
+    let barrier = Arc::new(Barrier::new(NUM_READERS));
+    let insert_count = Arc::new(AtomicUsize::new(0));
+
+    // Spawn multiple threads doing concurrent inserts
+    let handles: Vec<_> = (0..NUM_READERS)
+        .map(|thread_id| {
+            let dict_clone = Arc::clone(&dict);
+            let barrier_clone = barrier.clone();
+            let count = insert_count.clone();
+
+            thread::spawn(move || {
+                barrier_clone.wait();
+
+                // Each thread inserts unique terms
+                for i in 0..OPS_PER_THREAD {
+                    let term = format!("t{}_{:05}", thread_id, i);
+                    if dict_clone.insert_cas(term.as_bytes()) {
+                        count.fetch_add(1, Ordering::Relaxed);
+                    }
+                }
+            })
+        })
+        .collect();
+
+    for handle in handles {
+        handle.join().expect("thread join");
+    }
+
+    // All inserts should succeed since each thread uses unique terms
+    let total = insert_count.load(Ordering::SeqCst);
+    assert_eq!(
+        total,
+        NUM_READERS * OPS_PER_THREAD,
+        "All unique inserts should succeed"
+    );
+
+    // Verify all terms are findable
+    for thread_id in 0..NUM_READERS {
+        for i in 0..OPS_PER_THREAD {
+            let term = format!("t{}_{:05}", thread_id, i);
+            assert!(
+                dict.contains_lockfree(term.as_bytes()),
+                "Term should be found: {}",
+                term
+            );
+        }
+    }
+
+    // Check CAS retry count (should be low for unique terms)
+    let retries = dict.cas_retry_count();
+    println!("CAS retries for {} inserts: {} ({:.2}%)",
+        NUM_READERS * OPS_PER_THREAD,
+        retries,
+        100.0 * retries as f64 / (NUM_READERS * OPS_PER_THREAD) as f64
+    );
+}
+
+#[test]
+fn test_lockfree_insert_cas_same_terms() {
+    let temp_dir = TempDir::new().expect("create temp dir");
+    let dict_path = temp_dir.path().join("lockfree_same.part");
+
+    let mut dict: PersistentARTrie<()> =
+        PersistentARTrie::create(&dict_path).expect("create dict");
+
+    // Enable lock-free mode
+    dict.enable_lockfree();
+
+    // Wrap in Arc for sharing
+    let dict = Arc::new(dict);
+
+    let barrier = Arc::new(Barrier::new(NUM_READERS));
+    let insert_success = Arc::new(AtomicUsize::new(0));
+
+    // Generate a shared list of terms
+    let terms: Vec<String> = (0..50).map(|i| format!("shared_{:03}", i)).collect();
+    let terms_arc = Arc::new(terms);
+
+    // Spawn multiple threads trying to insert the SAME terms
+    let handles: Vec<_> = (0..NUM_READERS)
+        .map(|_| {
+            let dict_clone = Arc::clone(&dict);
+            let barrier_clone = barrier.clone();
+            let count = insert_success.clone();
+            let terms = terms_arc.clone();
+
+            thread::spawn(move || {
+                barrier_clone.wait();
+
+                // Each thread tries to insert the same 50 terms
+                for term in terms.iter() {
+                    if dict_clone.insert_cas(term.as_bytes()) {
+                        count.fetch_add(1, Ordering::Relaxed);
+                    }
+                }
+            })
+        })
+        .collect();
+
+    for handle in handles {
+        handle.join().expect("thread join");
+    }
+
+    // Only 50 inserts should succeed (one per unique term)
+    let total = insert_success.load(Ordering::SeqCst);
+    assert_eq!(
+        total, 50,
+        "Only 50 unique terms should be inserted, got {}",
+        total
+    );
+
+    // Verify all terms exist
+    for term in terms_arc.iter() {
+        assert!(
+            dict.contains_lockfree(term.as_bytes()),
+            "Term should be found: {}",
+            term
+        );
+    }
+}
+
+#[test]
+fn test_lockfree_merge_to_persistent() {
+    let temp_dir = TempDir::new().expect("create temp dir");
+    let dict_path = temp_dir.path().join("lockfree_merge.part");
+
+    let mut dict: PersistentARTrie<()> =
+        PersistentARTrie::create(&dict_path).expect("create dict");
+
+    // Enable lock-free mode
+    dict.enable_lockfree();
+
+    // Insert terms using lock-free CAS
+    let terms: Vec<String> = (0..100).map(|i| format!("merge_{:03}", i)).collect();
+    for term in &terms {
+        dict.insert_cas(term.as_bytes());
+    }
+
+    // Verify terms exist in lock-free layer
+    for term in &terms {
+        assert!(
+            dict.contains_lockfree(term.as_bytes()),
+            "Term should be in lockfree layer: {}",
+            term
+        );
+    }
+
+    // Merge to persistent storage
+    let merged = dict.merge_lockfree_to_persistent().expect("merge");
+    assert_eq!(merged, 100, "Should have merged 100 terms");
+
+    // Verify terms exist in persistent storage (using regular contains)
+    for term in &terms {
+        assert!(dict.contains(term), "Term should be in persistent storage: {}", term);
+    }
+}

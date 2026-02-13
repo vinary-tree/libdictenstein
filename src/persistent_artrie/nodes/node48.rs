@@ -213,6 +213,75 @@ impl Node48 {
 
         node256
     }
+
+    // =========================================================================
+    // Atomic Child Access for Lock-Free Operations
+    // =========================================================================
+
+    /// Get a child pointer by key with atomic read.
+    ///
+    /// This returns a clone of the SwizzledPtr, loading the value atomically.
+    /// O(1) lookup via index array.
+    pub fn get_child_atomic(&self, key: u8) -> Option<SwizzledPtr> {
+        let slot = self.index[key as usize];
+        if slot == NO_CHILD {
+            None
+        } else {
+            Some(self.children[slot as usize].clone())
+        }
+    }
+
+    /// Get a reference to the child slot for CAS operations.
+    #[inline]
+    pub fn child_slot(&self, index: usize) -> &SwizzledPtr {
+        debug_assert!(index < NODE48_MAX_CHILDREN, "index {} out of bounds", index);
+        &self.children[index]
+    }
+
+    /// Get the child slot index for a key.
+    ///
+    /// Returns `Ok(slot_index)` if the key exists, `Err(next_slot)` otherwise.
+    pub fn find_slot_for_key(&self, key: u8) -> Result<usize, usize> {
+        let slot = self.index[key as usize];
+        if slot != NO_CHILD {
+            Ok(slot as usize)
+        } else {
+            // Return the next available slot
+            Err(self.header.num_children as usize)
+        }
+    }
+
+    /// Get the next available child slot index.
+    pub fn next_slot(&self) -> Option<usize> {
+        let count = self.header.num_children as usize;
+        if count < NODE48_MAX_CHILDREN {
+            Some(count)
+        } else {
+            None
+        }
+    }
+
+    /// Get the slot index for a key (raw access to index array).
+    ///
+    /// Returns NO_CHILD (255) if the key has no child.
+    #[inline]
+    pub fn slot_for_key(&self, key: u8) -> u8 {
+        self.index[key as usize]
+    }
+
+    /// Get an iterator over (key, slot_index, &SwizzledPtr) triples.
+    ///
+    /// This iterates over all keys (0-255) and yields only those with children.
+    pub fn iter_indexed(&self) -> impl Iterator<Item = (u8, usize, &SwizzledPtr)> + '_ {
+        (0..=255u8).filter_map(move |key| {
+            let slot = self.index[key as usize];
+            if slot != NO_CHILD {
+                Some((key, slot as usize, &self.children[slot as usize]))
+            } else {
+                None
+            }
+        })
+    }
 }
 
 #[cfg(test)]

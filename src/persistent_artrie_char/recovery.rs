@@ -634,6 +634,10 @@ impl RecoveryManager {
             | WalRecord::CommitTx { .. }
             | WalRecord::AbortTx { .. }
             | WalRecord::Checkpoint { .. } => vec![],
+            // Version-based WAL records (Phase 6) - skip during mutation-based replay
+            WalRecord::VersionUpdate { .. }
+            | WalRecord::VersionDurable { .. }
+            | WalRecord::VersionGc { .. } => vec![],
         }
     }
 }
