@@ -72,6 +72,7 @@ use std::sync::Arc;
 use std::collections::HashMap;
 
 use parking_lot::RwLock;
+use xxhash_rust::xxh3::Xxh3DefaultBuilder;
 use crossbeam_channel::{Sender, Receiver, unbounded, TryRecvError};
 
 use super::PersistentVocabARTrie;
@@ -124,7 +125,7 @@ pub struct ConcurrentVocabARTrie {
 
     /// Cache for recently looked-up terms (term -> index)
     /// Only used in Queue mode; LockFree mode uses DashMap internally
-    lookup_cache: RwLock<HashMap<String, u64>>,
+    lookup_cache: RwLock<HashMap<String, u64, Xxh3DefaultBuilder>>,
 }
 
 /// A pending insert operation (Queue mode only)
@@ -151,7 +152,7 @@ impl ConcurrentVocabARTrie {
             insert_tx: tx,
             insert_rx: rx,
             shutdown: AtomicBool::new(false),
-            lookup_cache: RwLock::new(HashMap::new()),
+            lookup_cache: RwLock::new(HashMap::with_hasher(Xxh3DefaultBuilder)),
         }
     }
 
@@ -196,7 +197,38 @@ impl ConcurrentVocabARTrie {
             insert_tx: tx,
             insert_rx: rx,
             shutdown: AtomicBool::new(false),
-            lookup_cache: RwLock::new(HashMap::new()),
+            lookup_cache: RwLock::new(HashMap::with_hasher(Xxh3DefaultBuilder)),
+        }
+    }
+
+    /// Create a new concurrent vocabulary wrapper using lock-free mode
+    /// with pre-allocated capacity for the lock-free layer.
+    ///
+    /// Pre-sizing avoids geometric doubling resize spikes in the DashMap
+    /// term cache and the reverse-lookup Vec within `LockFreeVocab`.
+    ///
+    /// # Arguments
+    ///
+    /// * `vocab` - The underlying persistent vocabulary trie
+    /// * `estimated_terms` - Expected number of new terms to insert via lock-free layer
+    pub fn new_lockfree_with_capacity(vocab: PersistentVocabARTrie, estimated_terms: usize) -> Self {
+        let next_idx = vocab.next_index();
+        let start_idx = vocab.start_index();
+        let (tx, rx) = unbounded();
+
+        // Create lock-free layer with pre-allocated capacity
+        let lockfree = LockFreeVocab::with_start_index_and_capacity(next_idx, estimated_terms);
+
+        Self {
+            mode: ConcurrentMode::LockFree,
+            lockfree_vocab: Some(lockfree),
+            inner: Arc::new(RwLock::new(vocab)),
+            next_index: AtomicU64::new(next_idx),
+            start_index: start_idx,
+            insert_tx: tx,
+            insert_rx: rx,
+            shutdown: AtomicBool::new(false),
+            lookup_cache: RwLock::new(HashMap::with_hasher(Xxh3DefaultBuilder)),
         }
     }
 
@@ -217,7 +249,7 @@ impl ConcurrentVocabARTrie {
             insert_tx: tx,
             insert_rx: rx,
             shutdown: AtomicBool::new(false),
-            lookup_cache: RwLock::new(HashMap::new()),
+            lookup_cache: RwLock::new(HashMap::with_hasher(Xxh3DefaultBuilder)),
         }
     }
 
@@ -240,7 +272,7 @@ impl ConcurrentVocabARTrie {
             insert_tx: tx,
             insert_rx: rx,
             shutdown: AtomicBool::new(false),
-            lookup_cache: RwLock::new(HashMap::new()),
+            lookup_cache: RwLock::new(HashMap::with_hasher(Xxh3DefaultBuilder)),
         }
     }
 

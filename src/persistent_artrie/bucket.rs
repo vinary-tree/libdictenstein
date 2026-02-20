@@ -178,6 +178,23 @@ impl BucketHeader {
             self.data_start as usize - self.directory_end()
         }
     }
+
+    /// Debug-only assertion that free_space matches available_space().
+    /// This invariant should hold after every mutation.
+    #[inline]
+    pub fn debug_assert_free_space_invariant(&self) {
+        debug_assert_eq!(
+            self.free_space,
+            self.available_space() as u32,
+            "free_space ({}) diverged from available_space() ({}) -- \
+             entry_count={}, data_start={}, directory_end={}",
+            self.free_space,
+            self.available_space(),
+            self.entry_count,
+            self.data_start,
+            self.directory_end(),
+        );
+    }
 }
 
 impl Default for BucketHeader {
@@ -492,13 +509,17 @@ impl StringBucket {
                 // Update header
                 header.entry_count += 1;
                 header.data_start = new_data_start as u32;
-                header.free_space -= space_needed as u32;
+                header.free_space = header.available_space() as u32;
 
                 if value.is_some() {
                     header.flags |= flags::HAS_VALUES;
                 }
 
                 self.set_header(&header);
+
+                #[cfg(debug_assertions)]
+                self.header().debug_assert_free_space_invariant();
+
                 Ok(true)
             }
         }
@@ -546,8 +567,11 @@ impl StringBucket {
         self.write_entry_at(index, &new_entry);
 
         header.data_start = new_offset as u32;
-        header.free_space -= space_needed as u32;
+        header.free_space = header.available_space() as u32;
         self.set_header(&header);
+
+        #[cfg(debug_assertions)]
+        self.header().debug_assert_free_space_invariant();
 
         Ok(())
     }
@@ -599,8 +623,15 @@ impl StringBucket {
 
                 // Update header
                 header.entry_count -= 1;
-                // Note: we don't reclaim data space here - compaction handles that
+                // Note: we don't reclaim data space here - compaction handles that.
+                // But we must update free_space to reflect the freed directory slot,
+                // otherwise repeated remove+insert cycles cause free_space to drift
+                // below the true available_space(), eventually underflowing.
+                header.free_space = header.available_space() as u32;
                 self.set_header(&header);
+
+                #[cfg(debug_assertions)]
+                self.header().debug_assert_free_space_invariant();
 
                 Some(entry)
             }
@@ -1421,5 +1452,55 @@ mod tests {
         // Should have all original entries
         let merged_entries: Vec<_> = merged.iter().map(|(_, s)| s.to_vec()).collect();
         assert_eq!(original_entries, merged_entries);
+    }
+
+    /// Regression test: repeated remove+insert of the same key must not cause
+    /// free_space to underflow (the bug that triggered panic_const_sub_overflow
+    /// during Google Books checkpoint saving).
+    #[test]
+    fn test_upsert_pattern_no_free_space_overflow() {
+        let mut bucket = StringBucket::with_values();
+        let suffix = b"checkpoint_key";
+        let value = b"some_val";
+
+        bucket.insert(suffix, value).expect("first insert");
+
+        for i in 0..200 {
+            let removed = bucket.remove(suffix);
+            assert!(removed.is_some(), "remove should succeed on cycle {}", i);
+            bucket.insert(suffix, value)
+                .unwrap_or_else(|e| panic!("insert should not overflow on cycle {}: {}", i, e));
+
+            let header = bucket.header();
+            assert_eq!(
+                header.free_space,
+                header.available_space() as u32,
+                "free_space drift detected on cycle {}", i
+            );
+        }
+    }
+
+    /// Regression test: remove must credit freed directory space to free_space.
+    #[test]
+    fn test_remove_credits_directory_space_to_free_space() {
+        let mut bucket = StringBucket::new();
+        bucket.insert_key(b"alpha").expect("insert alpha");
+        bucket.insert_key(b"bravo").expect("insert bravo");
+
+        let free_before = bucket.header().free_space;
+        bucket.remove(b"bravo");
+        let header_after = bucket.header();
+
+        assert_eq!(
+            header_after.free_space,
+            header_after.available_space() as u32,
+            "free_space should match available_space after remove"
+        );
+        assert!(
+            header_after.free_space > free_before,
+            "free_space should increase after remove: before={}, after={}",
+            free_before,
+            header_after.free_space
+        );
     }
 }

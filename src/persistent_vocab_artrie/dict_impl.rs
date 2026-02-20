@@ -40,6 +40,7 @@
 //! ```
 
 use std::collections::HashMap;
+use xxhash_rust::xxh3::Xxh3DefaultBuilder;
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
@@ -242,9 +243,11 @@ pub struct PersistentVocabARTrie {
     /// LRU cache for hot reverse lookups
     reverse_cache: VocabReverseCache,
 
-    /// Map from NodeRef to in-memory node for lookups
-    /// This is used for term reconstruction via parent pointers
-    node_map: HashMap<NodeRef, *const VocabTrieNode>,
+    /// Map from NodeRef to in-memory node for lookups.
+    /// This is used for term reconstruction via parent pointers.
+    /// Uses xxh3 hasher instead of SipHash for ~3-5x faster hashing on
+    /// non-adversarial input (vocabulary node references).
+    node_map: HashMap<NodeRef, *const VocabTrieNode, Xxh3DefaultBuilder>,
 
     /// Next available slot for NodeRef assignment
     next_slot: u64,
@@ -397,7 +400,7 @@ impl PersistentVocabARTrie {
         let root_node = VocabTrieNode::new();
         let root_ref = NodeRef::new(0, 0);
 
-        let mut node_map = HashMap::new();
+        let mut node_map = HashMap::with_hasher(Xxh3DefaultBuilder);
         let root_ptr = Box::into_raw(Box::new(root_node));
         node_map.insert(root_ref, root_ptr as *const VocabTrieNode);
 
@@ -513,7 +516,7 @@ impl PersistentVocabARTrie {
             let root_node = VocabTrieNode::new();
             let root_ref = NodeRef::new(0, 0);
 
-            let mut map = HashMap::new();
+            let mut map = HashMap::with_hasher(Xxh3DefaultBuilder);
             let root_ptr = Box::into_raw(Box::new(root_node));
             map.insert(root_ref, root_ptr as *const VocabTrieNode);
 
@@ -702,12 +705,12 @@ impl PersistentVocabARTrie {
         arena_manager: &Arc<RwLock<ArenaManager>>,
         buffer_manager: &Arc<RwLock<BufferManager>>,
         root_slot: ArenaSlot,
-    ) -> Result<(VocabTrieRoot, HashMap<NodeRef, *const VocabTrieNode>, u64)> {
+    ) -> Result<(VocabTrieRoot, HashMap<NodeRef, *const VocabTrieNode, Xxh3DefaultBuilder>, u64)> {
         // Phase 1: Load all nodes from disk (parent fields will have stale NodeRefs)
         let root_node = Self::load_vocab_node_structure(arena_manager, buffer_manager, root_slot)?;
 
         // Phase 2: Rebuild node_map with fresh NodeRefs and update parent fields
-        let mut node_map = HashMap::new();
+        let mut node_map = HashMap::with_hasher(Xxh3DefaultBuilder);
         let mut next_slot: u64 = 1; // Start at 1, root gets 0
 
         let root_ref = NodeRef::new(0, 0);
@@ -860,7 +863,7 @@ impl PersistentVocabARTrie {
     unsafe fn rebuild_node_map_and_parents(
         node_ptr: *mut VocabTrieNode,
         my_ref: NodeRef,
-        node_map: &mut HashMap<NodeRef, *const VocabTrieNode>,
+        node_map: &mut HashMap<NodeRef, *const VocabTrieNode, Xxh3DefaultBuilder>,
         next_slot: &mut u64,
     ) {
         let node = &mut *node_ptr;
@@ -1807,6 +1810,21 @@ impl PersistentVocabARTrie {
         self.len() == 0
     }
 
+    /// Pre-allocate capacity in the internal node map.
+    ///
+    /// Call this before bulk insertions (e.g., merging lock-free vocabulary)
+    /// to avoid HashMap resize doubling spikes. During resize, both the old
+    /// and new backing arrays coexist in memory simultaneously — for a
+    /// 5.8M-word vocabulary, this can cause a ~6.4 GB transient spike.
+    ///
+    /// # Arguments
+    ///
+    /// * `additional` - Number of additional nodes to reserve space for.
+    ///   A good estimate is `estimated_terms * 8` (average trie depth).
+    pub fn reserve_node_map(&mut self, additional: usize) {
+        self.node_map.reserve(additional);
+    }
+
     /// Get the starting index.
     #[inline]
     pub fn start_index(&self) -> u64 {
@@ -2454,7 +2472,7 @@ impl Clone for PersistentVocabARTrie {
         let cloned_root = self.root.clone();
 
         // Clone node_map with new pointers
-        let mut new_node_map = HashMap::new();
+        let mut new_node_map = HashMap::with_hasher(Xxh3DefaultBuilder);
         if let VocabTrieRoot::Node(ref root_box) = cloned_root {
             let root_ref = NodeRef::new(0, 0);
             new_node_map.insert(root_ref, root_box.as_ref() as *const VocabTrieNode);

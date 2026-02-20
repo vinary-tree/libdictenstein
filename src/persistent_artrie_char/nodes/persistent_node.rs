@@ -1,14 +1,26 @@
 //! Lock-Free Persistent Character Node
 //!
 //! This module provides a lock-free node implementation using persistent (immutable)
-//! data structures from the `im` crate. Modifications create new versions of the node
-//! rather than mutating in place, enabling lock-free concurrent access.
+//! data structures. Modifications create new versions of the node rather than
+//! mutating in place, enabling lock-free concurrent access.
 //!
 //! # Design
 //!
-//! The key insight is that persistent data structures use structural sharing:
-//! when you "modify" an `im::Vector`, you get a new vector that shares most of
-//! its structure with the original. This is O(log n) for insertions and lookups.
+//! Child storage uses a tiered `ChildStore` enum:
+//!
+//! ```text
+//! ChildStore::Inline  (0-4 children, ~85% of nodes)
+//!   → Zero heap allocation. Clone is pure memcpy.
+//!   → Linear scan for lookups (faster than binary search at this size).
+//!
+//! ChildStore::Heap    (5+ children, ~15% of nodes)
+//!   → Owned Vec<u32> + Vec<SwizzledPtr>. Clone is flat contiguous memcpy.
+//!   → Binary search for lookups.
+//! ```
+//!
+//! This replaces the previous `im::Vector`-based design which used Arc-based
+//! structural sharing (RRB-tree), causing ~7.2 GB peak memory from COW cloning
+//! and ~45% CPU time in `__mprotect` syscalls from glibc mmap for Arc allocations.
 //!
 //! For lock-free concurrent updates, we use CAS on a pointer to the node:
 //!
@@ -25,8 +37,7 @@
 //! # Memory Management
 //!
 //! Nodes are wrapped in `Arc` for shared ownership. Old versions are reclaimed
-//! when their reference count drops to zero. The epoch-based reclamation system
-//! (already implemented in libdictenstein) protects against use-after-free.
+//! when their reference count drops to zero.
 //!
 //! # Example
 //!
@@ -46,8 +57,6 @@
 use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
 use std::sync::Arc;
 
-use im::Vector;
-
 use crate::persistent_artrie::swizzled_ptr::SwizzledPtr;
 
 /// Node flags (same as existing char node flags for compatibility)
@@ -65,11 +74,419 @@ pub mod flags {
 /// Maximum prefix length in characters (u32 values)
 pub const MAX_PREFIX_LEN: usize = 6;
 
-/// A lock-free persistent character node using immutable data structures.
+/// Maximum number of children in the inline storage tier.
 ///
-/// This node type uses `im::Vector` for keys and children, enabling efficient
-/// structural sharing when creating modified versions. All modifications return
-/// a new node rather than mutating in place.
+/// Nodes with 0-4 children use fully inline storage (zero heap allocation).
+/// Adding a 5th child promotes to the Heap tier.
+///
+/// Threshold of 4 is optimal because:
+/// - 4 u32 keys (16 bytes) + 4 SwizzledPtr children (32 bytes) fit in a cache line pair
+/// - Linear scan of 4 elements is faster than binary search
+/// - ~85% of trie nodes have ≤4 children (empirical from vocabulary tries)
+const INLINE_CAPACITY: usize = 4;
+
+// ============================================================================
+// ChildStore: Tiered child storage for PersistentCharNode
+// ============================================================================
+
+/// Tiered child storage that eliminates heap allocation for 85% of nodes.
+///
+/// # Variants
+///
+/// - **Inline**: 0-4 children stored directly in the struct. Zero heap allocation.
+///   Clone is pure value copy. Linear scan for lookups.
+///
+/// - **Heap**: 5+ children in owned `Vec`s. Contiguous memory layout for
+///   cache-friendly iteration. Binary search for lookups.
+///
+/// # Why Not `im::Vector`?
+///
+/// The previous design used `im::Vector<u32>` + `im::Vector<SwizzledPtr>` for
+/// structural sharing via RRB-trees. Profiling showed this caused:
+///
+/// - **7.22 GB peak memory** from `Arc::make_mut` COW cloning during `with_child`
+/// - **4.23 GB** from `Arc::clone_from_ref_in` for lock-free node references
+/// - **~45% CPU** in `__mprotect` syscalls from glibc mmap for Arc allocations
+///
+/// The new tiered design eliminates all Arc/RRB-tree overhead:
+/// - Inline: pure memcpy, no allocation
+/// - Heap: flat Vec clone (single contiguous memcpy per Vec)
+#[derive(Debug)]
+enum ChildStore {
+    /// 0-4 children stored inline (no heap allocation).
+    ///
+    /// Keys are sorted in ascending order. Unused slots contain
+    /// uninitialized values (only `keys[..count]` and `children[..count]`
+    /// are valid).
+    Inline {
+        /// Number of valid children (0-4).
+        count: u8,
+        /// Sorted child keys (Unicode code points). Only `[..count]` is valid.
+        keys: [u32; INLINE_CAPACITY],
+        /// Child pointers corresponding to keys. Only `[..count]` is valid.
+        children: [SwizzledPtr; INLINE_CAPACITY],
+    },
+
+    /// 5+ children in owned Vecs.
+    ///
+    /// Keys are sorted in ascending order. Both Vecs always have the same length.
+    Heap {
+        /// Sorted child keys (Unicode code points).
+        keys: Vec<u32>,
+        /// Child pointers corresponding to keys.
+        children: Vec<SwizzledPtr>,
+    },
+}
+
+impl ChildStore {
+    /// Create an empty inline child store.
+    #[inline]
+    fn new() -> Self {
+        ChildStore::Inline {
+            count: 0,
+            keys: [0u32; INLINE_CAPACITY],
+            children: [
+                SwizzledPtr::null(),
+                SwizzledPtr::null(),
+                SwizzledPtr::null(),
+                SwizzledPtr::null(),
+            ],
+        }
+    }
+
+    /// Number of children.
+    #[inline]
+    fn len(&self) -> usize {
+        match self {
+            ChildStore::Inline { count, .. } => *count as usize,
+            ChildStore::Heap { keys, .. } => keys.len(),
+        }
+    }
+
+    /// Check if empty.
+    #[inline]
+    fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Find a child by key.
+    ///
+    /// Uses linear scan for Inline (optimal for ≤4 elements),
+    /// binary search for Heap.
+    #[inline]
+    fn find_child(&self, key: u32) -> Option<&SwizzledPtr> {
+        match self {
+            ChildStore::Inline { count, keys, children } => {
+                let n = *count as usize;
+                // Linear scan — faster than binary search for ≤4 elements
+                for i in 0..n {
+                    if keys[i] == key {
+                        return Some(&children[i]);
+                    }
+                    // Keys are sorted; early exit if we've passed the target
+                    if keys[i] > key {
+                        return None;
+                    }
+                }
+                None
+            }
+            ChildStore::Heap { keys, children } => {
+                match keys.binary_search(&key) {
+                    Ok(idx) => Some(&children[idx]),
+                    Err(_) => None,
+                }
+            }
+        }
+    }
+
+    /// Check if a child exists for the given key.
+    #[inline]
+    fn has_child(&self, key: u32) -> bool {
+        self.find_child(key).is_some()
+    }
+
+    /// Get the child at a specific index.
+    #[inline]
+    fn child_at(&self, index: usize) -> Option<(&u32, &SwizzledPtr)> {
+        match self {
+            ChildStore::Inline { count, keys, children } => {
+                if index < *count as usize {
+                    Some((&keys[index], &children[index]))
+                } else {
+                    None
+                }
+            }
+            ChildStore::Heap { keys, children } => {
+                if index < keys.len() {
+                    Some((&keys[index], &children[index]))
+                } else {
+                    None
+                }
+            }
+        }
+    }
+
+    /// Get key and child slices for iteration.
+    #[inline]
+    fn slices(&self) -> (&[u32], &[SwizzledPtr]) {
+        match self {
+            ChildStore::Inline { count, keys, children } => {
+                let n = *count as usize;
+                (&keys[..n], &children[..n])
+            }
+            ChildStore::Heap { keys, children } => {
+                (keys.as_slice(), children.as_slice())
+            }
+        }
+    }
+
+    /// Create a new ChildStore with a child added (or replaced if key exists).
+    ///
+    /// Maintains sorted key order. Promotes from Inline to Heap when adding
+    /// a 5th child.
+    fn with_child(&self, key: u32, child: SwizzledPtr) -> Self {
+        match self {
+            ChildStore::Inline { count, keys, children } => {
+                let n = *count as usize;
+
+                // Find insertion point or existing key
+                let mut insert_pos = n;
+                for i in 0..n {
+                    if keys[i] == key {
+                        // Key exists — replace the child
+                        let new_keys = *keys;
+                        let mut new_children = clone_swizzled_array(children);
+                        new_children[i] = child;
+                        return ChildStore::Inline {
+                            count: *count,
+                            keys: new_keys,
+                            children: new_children,
+                        };
+                    }
+                    if keys[i] > key {
+                        insert_pos = i;
+                        break;
+                    }
+                }
+
+                if n < INLINE_CAPACITY {
+                    // Room in inline — shift right and insert
+                    let mut new_keys = *keys;
+                    let mut new_children = clone_swizzled_array(children);
+
+                    // Shift elements right from insert_pos
+                    for i in (insert_pos..n).rev() {
+                        new_keys[i + 1] = new_keys[i];
+                        new_children[i + 1] = new_children[i].clone();
+                    }
+                    new_keys[insert_pos] = key;
+                    new_children[insert_pos] = child;
+
+                    ChildStore::Inline {
+                        count: *count + 1,
+                        keys: new_keys,
+                        children: new_children,
+                    }
+                } else {
+                    // Promote to Heap: copy 4 existing + insert 1 new = 5
+                    let mut new_keys = Vec::with_capacity(n + 1);
+                    let mut new_children = Vec::with_capacity(n + 1);
+
+                    for i in 0..insert_pos {
+                        new_keys.push(keys[i]);
+                        new_children.push(children[i].clone());
+                    }
+                    new_keys.push(key);
+                    new_children.push(child);
+                    for i in insert_pos..n {
+                        new_keys.push(keys[i]);
+                        new_children.push(children[i].clone());
+                    }
+
+                    ChildStore::Heap {
+                        keys: new_keys,
+                        children: new_children,
+                    }
+                }
+            }
+            ChildStore::Heap { keys, children } => {
+                match keys.binary_search(&key) {
+                    Ok(idx) => {
+                        // Key exists — replace the child
+                        let mut new_children = clone_swizzled_vec(children);
+                        new_children[idx] = child;
+                        ChildStore::Heap {
+                            keys: keys.clone(),
+                            children: new_children,
+                        }
+                    }
+                    Err(idx) => {
+                        // Insert at sorted position
+                        let mut new_keys = keys.clone();
+                        let mut new_children = clone_swizzled_vec(children);
+                        new_keys.insert(idx, key);
+                        new_children.insert(idx, child);
+                        ChildStore::Heap {
+                            keys: new_keys,
+                            children: new_children,
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Create a new ChildStore with a child removed.
+    ///
+    /// Returns `None` if the key doesn't exist. Demotes from Heap to Inline
+    /// when the child count drops to INLINE_CAPACITY.
+    fn without_child(&self, key: u32) -> Option<Self> {
+        match self {
+            ChildStore::Inline { count, keys, children } => {
+                let n = *count as usize;
+
+                // Find the key
+                let mut found_pos = None;
+                for i in 0..n {
+                    if keys[i] == key {
+                        found_pos = Some(i);
+                        break;
+                    }
+                    if keys[i] > key {
+                        return None; // Keys are sorted; not found
+                    }
+                }
+
+                let pos = found_pos?;
+
+                // Shift elements left
+                let mut new_keys = *keys;
+                let mut new_children = clone_swizzled_array(children);
+
+                for i in pos..n - 1 {
+                    new_keys[i] = new_keys[i + 1];
+                    new_children[i] = new_children[i + 1].clone();
+                }
+                // Clear the now-unused last slot
+                new_keys[n - 1] = 0;
+                new_children[n - 1] = SwizzledPtr::null();
+
+                Some(ChildStore::Inline {
+                    count: *count - 1,
+                    keys: new_keys,
+                    children: new_children,
+                })
+            }
+            ChildStore::Heap { keys, children } => {
+                let idx = keys.binary_search(&key).ok()?;
+
+                let new_len = keys.len() - 1;
+
+                if new_len <= INLINE_CAPACITY {
+                    // Demote to Inline
+                    let mut new_keys = [0u32; INLINE_CAPACITY];
+                    let mut new_children = [
+                        SwizzledPtr::null(),
+                        SwizzledPtr::null(),
+                        SwizzledPtr::null(),
+                        SwizzledPtr::null(),
+                    ];
+
+                    let mut j = 0;
+                    for i in 0..keys.len() {
+                        if i != idx {
+                            new_keys[j] = keys[i];
+                            new_children[j] = children[i].clone();
+                            j += 1;
+                        }
+                    }
+
+                    Some(ChildStore::Inline {
+                        count: new_len as u8,
+                        keys: new_keys,
+                        children: new_children,
+                    })
+                } else {
+                    // Stay Heap
+                    let mut new_keys = keys.clone();
+                    let mut new_children = clone_swizzled_vec(children);
+                    new_keys.remove(idx);
+                    new_children.remove(idx);
+                    Some(ChildStore::Heap {
+                        keys: new_keys,
+                        children: new_children,
+                    })
+                }
+            }
+        }
+    }
+
+    /// Estimated memory usage in bytes.
+    fn memory_usage(&self) -> usize {
+        match self {
+            ChildStore::Inline { count, .. } => {
+                // The inline arrays are part of the struct — no heap allocation.
+                // Report the logical usage (valid elements only).
+                let n = *count as usize;
+                n * (std::mem::size_of::<u32>() + std::mem::size_of::<SwizzledPtr>())
+            }
+            ChildStore::Heap { keys, children } => {
+                keys.capacity() * std::mem::size_of::<u32>()
+                    + children.capacity() * std::mem::size_of::<SwizzledPtr>()
+            }
+        }
+    }
+}
+
+impl Clone for ChildStore {
+    fn clone(&self) -> Self {
+        match self {
+            ChildStore::Inline { count, keys, children } => {
+                ChildStore::Inline {
+                    count: *count,
+                    keys: *keys,
+                    children: clone_swizzled_array(children),
+                }
+            }
+            ChildStore::Heap { keys, children } => {
+                ChildStore::Heap {
+                    keys: keys.clone(),
+                    children: clone_swizzled_vec(children),
+                }
+            }
+        }
+    }
+}
+
+/// Clone a fixed-size array of SwizzledPtrs.
+///
+/// SwizzledPtr wraps AtomicU64 which doesn't implement Copy,
+/// so we clone each element individually.
+#[inline]
+fn clone_swizzled_array(src: &[SwizzledPtr; INLINE_CAPACITY]) -> [SwizzledPtr; INLINE_CAPACITY] {
+    [
+        src[0].clone(),
+        src[1].clone(),
+        src[2].clone(),
+        src[3].clone(),
+    ]
+}
+
+/// Clone a Vec of SwizzledPtrs.
+#[inline]
+fn clone_swizzled_vec(src: &[SwizzledPtr]) -> Vec<SwizzledPtr> {
+    src.iter().map(|p| p.clone()).collect()
+}
+
+// ============================================================================
+// PersistentCharNode
+// ============================================================================
+
+/// A lock-free persistent character node using tiered child storage.
+///
+/// This node type uses `ChildStore` for keys and children, enabling efficient
+/// zero-allocation storage for the 85% of nodes with ≤4 children. All
+/// modifications return a new node rather than mutating in place.
 ///
 /// # Thread Safety
 ///
@@ -81,8 +498,7 @@ pub const MAX_PREFIX_LEN: usize = 6;
 ///
 /// The node stores:
 /// - `version`: Monotonic version counter for detecting modifications
-/// - `keys`: Sorted vector of child keys (u32 Unicode code points)
-/// - `children`: Vector of child pointers corresponding to keys
+/// - `store`: Tiered child storage (Inline for 0-4, Heap for 5+)
 /// - `flags`: Atomic flags (IS_FINAL, IS_DIRTY, etc.)
 /// - `value`: Atomic value for final nodes (vocabulary index)
 /// - `prefix`: Compressed path prefix for path compression
@@ -91,13 +507,8 @@ pub struct PersistentCharNode {
     /// Monotonic version counter (incremented on each modification)
     version: AtomicU64,
 
-    /// Sorted keys for children (Unicode code points)
-    /// Using im::Vector for O(log n) structural sharing on modifications
-    keys: Vector<u32>,
-
-    /// Child pointers corresponding to keys
-    /// Must maintain same length as keys
-    children: Vector<SwizzledPtr>,
+    /// Tiered child storage (Inline for 0-4 children, Heap for 5+)
+    store: ChildStore,
 
     /// Node flags (IS_FINAL, IS_DIRTY, IS_LEAF, HAS_VALUE)
     /// Atomic to allow setting final flag during concurrent insert race
@@ -119,8 +530,7 @@ impl PersistentCharNode {
     pub fn new() -> Self {
         Self {
             version: AtomicU64::new(0),
-            keys: Vector::new(),
-            children: Vector::new(),
+            store: ChildStore::new(),
             flags: AtomicU8::new(0),
             value: AtomicU64::new(0),
             prefix: Arc::new([]),
@@ -135,8 +545,7 @@ impl PersistentCharNode {
 
         Self {
             version: AtomicU64::new(0),
-            keys: Vector::new(),
-            children: Vector::new(),
+            store: ChildStore::new(),
             flags: AtomicU8::new(0),
             value: AtomicU64::new(0),
             prefix: prefix_data,
@@ -153,13 +562,13 @@ impl PersistentCharNode {
     /// Get the number of children.
     #[inline]
     pub fn num_children(&self) -> usize {
-        self.keys.len()
+        self.store.len()
     }
 
     /// Check if the node is empty (no children).
     #[inline]
     pub fn is_empty(&self) -> bool {
-        self.keys.is_empty()
+        self.store.is_empty()
     }
 
     /// Get the prefix as a slice.
@@ -258,44 +667,40 @@ impl PersistentCharNode {
 
     /// Find a child by key (lock-free read).
     ///
-    /// Uses binary search on the sorted keys vector.
-    /// Returns the child pointer if found, None otherwise.
+    /// Uses linear scan for Inline nodes (≤4 children) and binary search
+    /// for Heap nodes (5+ children).
     ///
     /// # Arguments
     ///
     /// * `key` - The child key (Unicode code point)
     #[inline]
     pub fn find_child(&self, key: u32) -> Option<&SwizzledPtr> {
-        match self.keys.binary_search(&key) {
-            Ok(idx) => self.children.get(idx),
-            Err(_) => None,
-        }
+        self.store.find_child(key)
     }
 
     /// Check if a child exists for the given key.
     #[inline]
     pub fn has_child(&self, key: u32) -> bool {
-        self.keys.binary_search(&key).is_ok()
+        self.store.has_child(key)
     }
 
     /// Get the child at a specific index.
     #[inline]
     pub fn child_at(&self, index: usize) -> Option<(&u32, &SwizzledPtr)> {
-        match (self.keys.get(index), self.children.get(index)) {
-            (Some(k), Some(c)) => Some((k, c)),
-            _ => None,
-        }
+        self.store.child_at(index)
     }
 
     /// Iterate over all (key, child) pairs.
     pub fn iter_children(&self) -> impl Iterator<Item = (&u32, &SwizzledPtr)> {
-        self.keys.iter().zip(self.children.iter())
+        let (keys, children) = self.store.slices();
+        keys.iter().zip(children.iter())
     }
 
     /// Create a new version of this node with an added child.
     ///
     /// This does NOT modify the current node - it returns a new node
-    /// with the child added. The new node shares structure with this one.
+    /// with the child added. For Inline nodes (≤4 children), this is
+    /// a pure value copy with zero heap allocation.
     ///
     /// # Arguments
     ///
@@ -306,27 +711,9 @@ impl PersistentCharNode {
     ///
     /// A new node with the child added (or replaced if key exists).
     pub fn with_child(&self, key: u32, child: SwizzledPtr) -> Self {
-        let (new_keys, new_children) = match self.keys.binary_search(&key) {
-            Ok(idx) => {
-                // Key exists - replace the child
-                let mut new_children = self.children.clone();
-                new_children.set(idx, child);
-                (self.keys.clone(), new_children)
-            }
-            Err(idx) => {
-                // Key doesn't exist - insert at sorted position
-                let mut new_keys = self.keys.clone();
-                let mut new_children = self.children.clone();
-                new_keys.insert(idx, key);
-                new_children.insert(idx, child);
-                (new_keys, new_children)
-            }
-        };
-
         Self {
             version: AtomicU64::new(self.version.load(Ordering::Acquire) + 1),
-            keys: new_keys,
-            children: new_children,
+            store: self.store.with_child(key, child),
             flags: AtomicU8::new(self.flags.load(Ordering::Acquire)),
             value: AtomicU64::new(self.value.load(Ordering::Acquire)),
             prefix: self.prefix.clone(),
@@ -345,25 +732,14 @@ impl PersistentCharNode {
     /// - `Some(new_node)` if the key existed and was removed
     /// - `None` if the key didn't exist
     pub fn without_child(&self, key: u32) -> Option<Self> {
-        match self.keys.binary_search(&key) {
-            Ok(idx) => {
-                let mut new_keys = self.keys.clone();
-                let mut new_children = self.children.clone();
-                new_keys.remove(idx);
-                new_children.remove(idx);
-
-                Some(Self {
-                    version: AtomicU64::new(self.version.load(Ordering::Acquire) + 1),
-                    keys: new_keys,
-                    children: new_children,
-                    flags: AtomicU8::new(self.flags.load(Ordering::Acquire)),
-                    value: AtomicU64::new(self.value.load(Ordering::Acquire)),
-                    prefix: self.prefix.clone(),
-                    prefix_len: self.prefix_len,
-                })
-            }
-            Err(_) => None,
-        }
+        self.store.without_child(key).map(|new_store| Self {
+            version: AtomicU64::new(self.version.load(Ordering::Acquire) + 1),
+            store: new_store,
+            flags: AtomicU8::new(self.flags.load(Ordering::Acquire)),
+            value: AtomicU64::new(self.value.load(Ordering::Acquire)),
+            prefix: self.prefix.clone(),
+            prefix_len: self.prefix_len,
+        })
     }
 
     /// Create a new version with a different prefix.
@@ -377,8 +753,7 @@ impl PersistentCharNode {
 
         Self {
             version: AtomicU64::new(self.version.load(Ordering::Acquire) + 1),
-            keys: self.keys.clone(),
-            children: self.children.clone(),
+            store: self.store.clone(),
             flags: AtomicU8::new(self.flags.load(Ordering::Acquire)),
             value: AtomicU64::new(self.value.load(Ordering::Acquire)),
             prefix: prefix_data,
@@ -390,8 +765,7 @@ impl PersistentCharNode {
     pub fn as_final(&self) -> Self {
         Self {
             version: AtomicU64::new(self.version.load(Ordering::Acquire) + 1),
-            keys: self.keys.clone(),
-            children: self.children.clone(),
+            store: self.store.clone(),
             flags: AtomicU8::new(self.flags.load(Ordering::Acquire) | flags::IS_FINAL),
             value: AtomicU64::new(self.value.load(Ordering::Acquire)),
             prefix: self.prefix.clone(),
@@ -403,8 +777,7 @@ impl PersistentCharNode {
     pub fn with_value(&self, value: u64) -> Self {
         Self {
             version: AtomicU64::new(self.version.load(Ordering::Acquire) + 1),
-            keys: self.keys.clone(),
-            children: self.children.clone(),
+            store: self.store.clone(),
             flags: AtomicU8::new(self.flags.load(Ordering::Acquire) | flags::HAS_VALUE),
             value: AtomicU64::new(value),
             prefix: self.prefix.clone(),
@@ -438,16 +811,13 @@ impl PersistentCharNode {
         // Base struct size
         let base = std::mem::size_of::<Self>();
 
-        // Keys vector (im::Vector has some overhead)
-        let keys_size = self.keys.len() * std::mem::size_of::<u32>();
-
-        // Children vector
-        let children_size = self.children.len() * std::mem::size_of::<SwizzledPtr>();
+        // Child store (heap portion only — inline is part of base)
+        let store_heap = self.store.memory_usage();
 
         // Prefix Arc
         let prefix_size = self.prefix.len() * std::mem::size_of::<u32>();
 
-        base + keys_size + children_size + prefix_size
+        base + store_heap + prefix_size
     }
 }
 
@@ -461,8 +831,7 @@ impl Clone for PersistentCharNode {
     fn clone(&self) -> Self {
         Self {
             version: AtomicU64::new(self.version.load(Ordering::Acquire)),
-            keys: self.keys.clone(),
-            children: self.children.clone(),
+            store: self.store.clone(),
             flags: AtomicU8::new(self.flags.load(Ordering::Acquire)),
             value: AtomicU64::new(self.value.load(Ordering::Acquire)),
             prefix: self.prefix.clone(),
@@ -751,5 +1120,131 @@ mod tests {
         assert_eq!(pairs[0].0, 'a' as u32);
         assert_eq!(pairs[1].0, 'b' as u32);
         assert_eq!(pairs[2].0, 'c' as u32);
+    }
+
+    // =========================================================================
+    // ChildStore tier transition tests
+    // =========================================================================
+
+    #[test]
+    fn test_inline_to_heap_promotion() {
+        let mut node = PersistentCharNode::new();
+
+        // Add 4 children — should stay Inline
+        for i in 0..4u32 {
+            let child = SwizzledPtr::on_disk(i, i * 100, NodeType::CharNode4);
+            node = node.with_child(i + 100, child);
+        }
+        assert_eq!(node.num_children(), 4);
+        assert!(matches!(node.store, ChildStore::Inline { .. }));
+
+        // Add 5th child — should promote to Heap
+        let child = SwizzledPtr::on_disk(5, 500, NodeType::CharNode4);
+        node = node.with_child(104, child);
+        assert_eq!(node.num_children(), 5);
+        assert!(matches!(node.store, ChildStore::Heap { .. }));
+
+        // Verify all 5 children are present and sorted
+        let keys: Vec<u32> = node.iter_children().map(|(&k, _)| k).collect();
+        assert_eq!(keys, vec![100, 101, 102, 103, 104]);
+    }
+
+    #[test]
+    fn test_heap_to_inline_demotion() {
+        let mut node = PersistentCharNode::new();
+
+        // Build a node with 5 children (Heap)
+        for i in 0..5u32 {
+            let child = SwizzledPtr::on_disk(i, i * 100, NodeType::CharNode4);
+            node = node.with_child(i + 100, child);
+        }
+        assert!(matches!(node.store, ChildStore::Heap { .. }));
+
+        // Remove one — should demote to Inline (4 remaining ≤ INLINE_CAPACITY)
+        let node2 = node.without_child(102).expect("should remove");
+        assert_eq!(node2.num_children(), 4);
+        assert!(matches!(node2.store, ChildStore::Inline { .. }));
+
+        // Verify remaining children are correct and sorted
+        let keys: Vec<u32> = node2.iter_children().map(|(&k, _)| k).collect();
+        assert_eq!(keys, vec![100, 101, 103, 104]);
+    }
+
+    #[test]
+    fn test_heap_stays_heap_above_threshold() {
+        let mut node = PersistentCharNode::new();
+
+        // Build a node with 6 children (Heap)
+        for i in 0..6u32 {
+            let child = SwizzledPtr::on_disk(i, i * 100, NodeType::CharNode4);
+            node = node.with_child(i + 100, child);
+        }
+        assert!(matches!(node.store, ChildStore::Heap { .. }));
+
+        // Remove one — should stay Heap (5 remaining > INLINE_CAPACITY)
+        let node2 = node.without_child(102).expect("should remove");
+        assert_eq!(node2.num_children(), 5);
+        assert!(matches!(node2.store, ChildStore::Heap { .. }));
+    }
+
+    #[test]
+    fn test_many_children() {
+        let mut node = PersistentCharNode::new();
+
+        // Add 256 children (all ASCII values)
+        for i in 0..256u32 {
+            let child = SwizzledPtr::on_disk(i, i, NodeType::CharNode4);
+            node = node.with_child(i, child);
+        }
+
+        assert_eq!(node.num_children(), 256);
+        assert!(matches!(node.store, ChildStore::Heap { .. }));
+
+        // Verify all children findable
+        for i in 0..256u32 {
+            assert!(node.has_child(i), "should find child {}", i);
+        }
+
+        // Verify sorted order
+        let keys: Vec<u32> = node.iter_children().map(|(&k, _)| k).collect();
+        let expected: Vec<u32> = (0..256).collect();
+        assert_eq!(keys, expected);
+    }
+
+    #[test]
+    fn test_child_at() {
+        let child = SwizzledPtr::on_disk(1, 100, NodeType::CharNode4);
+        let node = PersistentCharNode::new()
+            .with_child('b' as u32, child.clone())
+            .with_child('a' as u32, child);
+
+        // Index 0 should be 'a' (sorted)
+        let (k, _) = node.child_at(0).expect("should exist");
+        assert_eq!(*k, 'a' as u32);
+
+        // Index 1 should be 'b'
+        let (k, _) = node.child_at(1).expect("should exist");
+        assert_eq!(*k, 'b' as u32);
+
+        // Index 2 should not exist
+        assert!(node.child_at(2).is_none());
+    }
+
+    #[test]
+    fn test_inline_replace_preserves_count() {
+        let child1 = SwizzledPtr::on_disk(1, 100, NodeType::CharNode4);
+        let child2 = SwizzledPtr::on_disk(2, 200, NodeType::CharNode4);
+
+        let node = PersistentCharNode::new()
+            .with_child('a' as u32, child1.clone())
+            .with_child('b' as u32, child1);
+
+        assert_eq!(node.num_children(), 2);
+        assert!(matches!(node.store, ChildStore::Inline { .. }));
+
+        // Replace 'a' — should stay Inline with same count
+        let node2 = node.with_child('a' as u32, child2);
+        assert_eq!(node2.num_children(), 2);
+        assert!(matches!(node2.store, ChildStore::Inline { .. }));
     }
 }
