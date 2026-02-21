@@ -237,6 +237,17 @@ pub enum PersistentARTrieError {
     #[error("Group commit channel closed")]
     GroupCommitChannelClosed,
 
+    /// io_uring I/O error (Linux-only, requires `io-uring-backend` feature)
+    #[cfg(feature = "io-uring-backend")]
+    #[error("io_uring error during {operation}: {source}")]
+    IoUringError {
+        /// What operation was being performed
+        operation: String,
+        /// Underlying I/O error
+        #[source]
+        source: io::Error,
+    },
+
     /// WAL error (simplified string variant for group commit)
     #[error("WAL error: {0}")]
     Wal(String),

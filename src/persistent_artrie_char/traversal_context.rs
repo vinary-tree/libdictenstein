@@ -31,8 +31,9 @@
 //! - **I/O**: Fewer pin/unpin syscalls
 //! - **Memory**: Bounded by max_cached parameter
 
+use crate::persistent_artrie::block_storage::BlockStorage;
 use crate::persistent_artrie::buffer_manager::BufferManager;
-use crate::persistent_artrie::disk_manager::BLOCK_SIZE;
+use crate::persistent_artrie::disk_manager::{MmapDiskManager, BLOCK_SIZE};
 use crate::persistent_artrie::PersistentARTrieError;
 use std::collections::HashMap;
 use std::ptr::NonNull;
@@ -59,9 +60,9 @@ type Result<T> = std::result::Result<T, PersistentARTrieError>;
 ///
 /// TraversalContext is NOT Send/Sync because it holds raw pointers to page data.
 /// Each thread should create its own TraversalContext for traversal.
-pub struct TraversalContext {
+pub struct TraversalContext<S: BlockStorage = MmapDiskManager> {
     /// Buffer manager reference (Arc for shared ownership)
-    buffer_manager: Arc<RwLock<BufferManager>>,
+    buffer_manager: Arc<RwLock<BufferManager<S>>>,
     /// Cached page data: block_id -> raw pointer to page data
     /// The data is valid as long as the page is pinned
     cached_pages: HashMap<u32, NonNull<[u8; BLOCK_SIZE]>>,
@@ -74,14 +75,14 @@ pub struct TraversalContext {
     misses: usize,
 }
 
-impl TraversalContext {
+impl<S: BlockStorage> TraversalContext<S> {
     /// Create a new traversal context
     ///
     /// # Arguments
     ///
     /// * `buffer_manager` - The buffer manager to use for page access
     /// * `max_cached` - Maximum number of pages to keep cached (default: 64)
-    pub fn new(buffer_manager: Arc<RwLock<BufferManager>>, max_cached: usize) -> Self {
+    pub fn new(buffer_manager: Arc<RwLock<BufferManager<S>>>, max_cached: usize) -> Self {
         Self {
             buffer_manager,
             cached_pages: HashMap::with_capacity(max_cached),
@@ -93,7 +94,7 @@ impl TraversalContext {
     }
 
     /// Create a traversal context with default cache size
-    pub fn new_default(buffer_manager: Arc<RwLock<BufferManager>>) -> Self {
+    pub fn new_default(buffer_manager: Arc<RwLock<BufferManager<S>>>) -> Self {
         Self::new(buffer_manager, 64)
     }
 
@@ -203,7 +204,7 @@ impl TraversalContext {
 // which are inherently not thread-safe. The NonNull field already prevents
 // automatic Send/Sync implementations.
 
-impl Drop for TraversalContext {
+impl<S: BlockStorage> Drop for TraversalContext<S> {
     fn drop(&mut self) {
         // Pages are automatically unpinned when PageReadGuard is dropped
         // Since we're using raw pointers, we just need to clear our tracking
@@ -241,13 +242,13 @@ impl TraversalStats {
 ///
 /// This is a simpler version that doesn't cache across multiple get_page calls,
 /// but provides a cleaner API for single-page accesses.
-pub struct LightweightTraversalContext {
-    buffer_manager: Arc<RwLock<BufferManager>>,
+pub struct LightweightTraversalContext<S: BlockStorage = MmapDiskManager> {
+    buffer_manager: Arc<RwLock<BufferManager<S>>>,
 }
 
-impl LightweightTraversalContext {
+impl<S: BlockStorage> LightweightTraversalContext<S> {
     /// Create a new lightweight context
-    pub fn new(buffer_manager: Arc<RwLock<BufferManager>>) -> Self {
+    pub fn new(buffer_manager: Arc<RwLock<BufferManager<S>>>) -> Self {
         Self { buffer_manager }
     }
 
@@ -266,7 +267,7 @@ impl LightweightTraversalContext {
     }
 
     /// Get the buffer manager reference
-    pub fn buffer_manager(&self) -> &Arc<RwLock<BufferManager>> {
+    pub fn buffer_manager(&self) -> &Arc<RwLock<BufferManager<S>>> {
         &self.buffer_manager
     }
 }

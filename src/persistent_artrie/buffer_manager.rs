@@ -12,7 +12,7 @@
 //!
 //! ```text
 //! ┌─────────────────────────────────────────────────────────────┐
-//! │                    BufferManager                             │
+//! │                    BufferManager<S>                           │
 //! ├─────────────────────────────────────────────────────────────┤
 //! │  Page Table: HashMap<BlockId, FrameId>                       │
 //! │    Maps disk blocks to buffer pool frames                    │
@@ -24,8 +24,8 @@
 //! │    - dirty: AtomicBool                                       │
 //! │    - reference_bit: AtomicBool                               │
 //! ├─────────────────────────────────────────────────────────────┤
-//! │  Buffer Pool: Vec<[u8; BLOCK_SIZE]>                          │
-//! │    Raw page data storage                                     │
+//! │  Buffer Pool: Vec<AlignedBlock>                              │
+//! │    4096-byte aligned page data (O_DIRECT compatible)        │
 //! ├─────────────────────────────────────────────────────────────┤
 //! │  Clock Hand: AtomicUsize                                     │
 //! │    Points to next eviction candidate                        │
@@ -48,7 +48,8 @@ use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 
 use parking_lot::RwLock;
 
-use super::disk_manager::{DiskManager, BLOCK_SIZE};
+use super::block_storage::{AlignedBlock, BlockStorage};
+use super::disk_manager::{MmapDiskManager, BLOCK_SIZE};
 use super::error::{PersistentARTrieError, Result};
 
 /// Frame ID type (index into buffer pool)
@@ -136,15 +137,15 @@ impl FrameMetadata {
 /// RAII guard for a pinned page (read access)
 ///
 /// The page is automatically unpinned when the guard is dropped.
-pub struct PageReadGuard<'a> {
-    buffer_manager: &'a BufferManager,
+pub struct PageReadGuard<'a, S: BlockStorage = MmapDiskManager> {
+    buffer_manager: &'a BufferManager<S>,
     frame_id: FrameId,
 }
 
-impl<'a> PageReadGuard<'a> {
+impl<'a, S: BlockStorage> PageReadGuard<'a, S> {
     /// Get a read-only view of the page data
     pub fn data(&self) -> &[u8; BLOCK_SIZE] {
-        &self.buffer_manager.buffer_pool[self.frame_id]
+        &self.buffer_manager.buffer_pool[self.frame_id].data
     }
 
     /// Get the block ID of this page
@@ -155,7 +156,7 @@ impl<'a> PageReadGuard<'a> {
     }
 }
 
-impl<'a> Drop for PageReadGuard<'a> {
+impl<'a, S: BlockStorage> Drop for PageReadGuard<'a, S> {
     fn drop(&mut self) {
         self.buffer_manager.frames[self.frame_id].unpin();
     }
@@ -164,12 +165,12 @@ impl<'a> Drop for PageReadGuard<'a> {
 /// RAII guard for a pinned page (write access)
 ///
 /// The page is automatically marked dirty and unpinned when the guard is dropped.
-pub struct PageWriteGuard<'a> {
-    buffer_manager: &'a BufferManager,
+pub struct PageWriteGuard<'a, S: BlockStorage = MmapDiskManager> {
+    buffer_manager: &'a BufferManager<S>,
     frame_id: FrameId,
 }
 
-impl<'a> PageWriteGuard<'a> {
+impl<'a, S: BlockStorage> PageWriteGuard<'a, S> {
     /// Get a mutable view of the page data
     ///
     /// # Safety
@@ -179,14 +180,14 @@ impl<'a> PageWriteGuard<'a> {
     pub fn data_mut(&mut self) -> &mut [u8; BLOCK_SIZE] {
         // Safety: We have exclusive access via the write guard and pin
         unsafe {
-            let ptr = self.buffer_manager.buffer_pool.as_ptr() as *mut [u8; BLOCK_SIZE];
-            &mut *ptr.add(self.frame_id)
+            let ptr = self.buffer_manager.buffer_pool.as_ptr() as *mut AlignedBlock;
+            &mut (*ptr.add(self.frame_id)).data
         }
     }
 
     /// Get read-only view of the page data
     pub fn data(&self) -> &[u8; BLOCK_SIZE] {
-        &self.buffer_manager.buffer_pool[self.frame_id]
+        &self.buffer_manager.buffer_pool[self.frame_id].data
     }
 
     /// Get the block ID of this page
@@ -197,7 +198,7 @@ impl<'a> PageWriteGuard<'a> {
     }
 }
 
-impl<'a> Drop for PageWriteGuard<'a> {
+impl<'a, S: BlockStorage> Drop for PageWriteGuard<'a, S> {
     fn drop(&mut self) {
         self.buffer_manager.frames[self.frame_id].mark_dirty();
         self.buffer_manager.frames[self.frame_id].unpin();
@@ -205,15 +206,19 @@ impl<'a> Drop for PageWriteGuard<'a> {
 }
 
 /// Buffer manager with Clock eviction algorithm
-pub struct BufferManager {
-    /// The underlying disk manager
-    disk_manager: DiskManager,
+///
+/// Generic over the storage backend `S`. Defaults to `MmapDiskManager` for
+/// backward compatibility — existing code using `BufferManager` without type
+/// parameters continues to compile unchanged.
+pub struct BufferManager<S: BlockStorage = MmapDiskManager> {
+    /// The underlying storage backend
+    storage: S,
     /// Page table: maps block_id -> frame_id
     page_table: RwLock<HashMap<u32, FrameId>>,
     /// Frame metadata
     frames: Vec<FrameMetadata>,
-    /// Buffer pool (actual page data)
-    buffer_pool: Vec<[u8; BLOCK_SIZE]>,
+    /// Buffer pool (actual page data, 4096-byte aligned for O_DIRECT compatibility)
+    buffer_pool: Vec<AlignedBlock>,
     /// Clock hand for eviction
     clock_hand: AtomicUsize,
     /// Maximum number of frames in the pool (allocated capacity)
@@ -222,20 +227,20 @@ pub struct BufferManager {
     active_pool_size: AtomicUsize,
 }
 
-impl BufferManager {
+impl<S: BlockStorage> BufferManager<S> {
     /// Create a new buffer manager
     ///
     /// # Arguments
-    /// * `disk_manager` - The disk manager for I/O operations
+    /// * `storage` - The storage backend for I/O operations
     /// * `pool_size` - Number of frames in the buffer pool
-    pub fn new(disk_manager: DiskManager, pool_size: usize) -> Self {
+    pub fn new(storage: S, pool_size: usize) -> Self {
         let frames: Vec<FrameMetadata> = (0..pool_size).map(|_| FrameMetadata::new()).collect();
-        let buffer_pool: Vec<[u8; BLOCK_SIZE]> = (0..pool_size)
-            .map(|_| [0u8; BLOCK_SIZE])
+        let buffer_pool: Vec<AlignedBlock> = (0..pool_size)
+            .map(|_| AlignedBlock::new())
             .collect();
 
         Self {
-            disk_manager,
+            storage,
             page_table: RwLock::new(HashMap::with_capacity(pool_size)),
             frames,
             buffer_pool,
@@ -251,23 +256,23 @@ impl BufferManager {
     /// Use `grow_pool()` and `shrink_pool()` to adjust the active pool size.
     ///
     /// # Arguments
-    /// * `disk_manager` - The disk manager for I/O operations
+    /// * `storage` - The storage backend for I/O operations
     /// * `initial_size` - Initial number of active frames
     /// * `max_pool_size` - Maximum number of frames (pre-allocated)
     pub fn new_with_max_capacity(
-        disk_manager: DiskManager,
+        storage: S,
         initial_size: usize,
         max_pool_size: usize,
     ) -> Self {
         let frames: Vec<FrameMetadata> = (0..max_pool_size)
             .map(|_| FrameMetadata::new())
             .collect();
-        let buffer_pool: Vec<[u8; BLOCK_SIZE]> = (0..max_pool_size)
-            .map(|_| [0u8; BLOCK_SIZE])
+        let buffer_pool: Vec<AlignedBlock> = (0..max_pool_size)
+            .map(|_| AlignedBlock::new())
             .collect();
 
         Self {
-            disk_manager,
+            storage,
             page_table: RwLock::new(HashMap::with_capacity(max_pool_size)),
             frames,
             buffer_pool,
@@ -281,7 +286,7 @@ impl BufferManager {
     ///
     /// If the page is already in the buffer pool, returns a guard immediately.
     /// Otherwise, loads the page from disk (potentially evicting another page).
-    pub fn fetch_page(&self, block_id: u32) -> Result<PageReadGuard<'_>> {
+    pub fn fetch_page(&self, block_id: u32) -> Result<PageReadGuard<'_, S>> {
         // Check if already in buffer pool
         if let Some(frame_id) = self.lookup_frame(block_id) {
             self.frames[frame_id].pin();
@@ -304,7 +309,7 @@ impl BufferManager {
     ///
     /// Similar to `fetch_page`, but the returned guard will mark the page
     /// dirty when dropped.
-    pub fn fetch_page_mut(&self, block_id: u32) -> Result<PageWriteGuard<'_>> {
+    pub fn fetch_page_mut(&self, block_id: u32) -> Result<PageWriteGuard<'_, S>> {
         // Check if already in buffer pool
         if let Some(frame_id) = self.lookup_frame(block_id) {
             self.frames[frame_id].pin();
@@ -326,9 +331,9 @@ impl BufferManager {
     /// Create a new page (allocate a new block)
     ///
     /// Returns a write guard for the newly allocated page.
-    pub fn new_page(&self) -> Result<PageWriteGuard<'_>> {
+    pub fn new_page(&self) -> Result<PageWriteGuard<'_, S>> {
         // Allocate a new block on disk
-        let block_id = self.disk_manager.allocate_block()?;
+        let block_id = self.storage.allocate_block()?;
 
         // Get a frame for it
         let frame_id = self.get_free_frame()?;
@@ -341,8 +346,8 @@ impl BufferManager {
         // Clear the buffer
         // Safety: We have exclusive access via the new allocation
         unsafe {
-            let ptr = self.buffer_pool.as_ptr() as *mut [u8; BLOCK_SIZE];
-            (*ptr.add(frame_id)).fill(0);
+            let ptr = self.buffer_pool.as_ptr() as *mut AlignedBlock;
+            (*ptr.add(frame_id)).data.fill(0);
         }
 
         // Update page table
@@ -379,7 +384,7 @@ impl BufferManager {
         }
 
         // Free the block on disk
-        self.disk_manager.free_block(block_id)
+        self.storage.free_block(block_id)
     }
 
     /// Flush a specific page to disk
@@ -388,8 +393,8 @@ impl BufferManager {
             let frame = &self.frames[frame_id];
 
             if frame.is_dirty() {
-                self.disk_manager
-                    .write_block(block_id, &self.buffer_pool[frame_id])?;
+                self.storage
+                    .write_block(block_id, &self.buffer_pool[frame_id].data)?;
                 frame.clear_dirty();
             }
         }
@@ -401,13 +406,13 @@ impl BufferManager {
         for (frame_id, frame) in self.frames.iter().enumerate() {
             if frame.is_dirty() {
                 if let Some(block_id) = frame.get_block_id() {
-                    self.disk_manager
-                        .write_block(block_id, &self.buffer_pool[frame_id])?;
+                    self.storage
+                        .write_block(block_id, &self.buffer_pool[frame_id].data)?;
                     frame.clear_dirty();
                 }
             }
         }
-        self.disk_manager.sync()
+        self.storage.sync()
     }
 
     /// Look up a frame by block ID
@@ -423,8 +428,8 @@ impl BufferManager {
         // Read from disk
         // Safety: We have exclusive access to this frame via get_free_frame
         unsafe {
-            let ptr = self.buffer_pool.as_ptr() as *mut [u8; BLOCK_SIZE];
-            self.disk_manager.read_block(block_id, &mut *ptr.add(frame_id))?;
+            let ptr = self.buffer_pool.as_ptr() as *mut AlignedBlock;
+            self.storage.read_block(block_id, &mut (*ptr.add(frame_id)).data)?;
         }
 
         // Set up the frame
@@ -475,8 +480,8 @@ impl BufferManager {
             if let Some(old_block_id) = frame.get_block_id() {
                 // Write back if dirty
                 if frame.is_dirty() {
-                    self.disk_manager
-                        .write_block(old_block_id, &self.buffer_pool[frame_id])?;
+                    self.storage
+                        .write_block(old_block_id, &self.buffer_pool[frame_id].data)?;
                     frame.clear_dirty();
                 }
 
@@ -595,7 +600,7 @@ impl BufferManager {
                 // Flush dirty frames before shrinking
                 if frame.is_dirty() {
                     if let Some(block_id) = frame.get_block_id() {
-                        self.disk_manager.write_block(block_id, &self.buffer_pool[frame_id])?;
+                        self.storage.write_block(block_id, &self.buffer_pool[frame_id].data)?;
                         frame.clear_dirty();
                     }
                 }
@@ -659,9 +664,18 @@ impl BufferManager {
         }
     }
 
-    /// Get a reference to the underlying disk manager
-    pub fn disk_manager(&self) -> &DiskManager {
-        &self.disk_manager
+    /// Get a reference to the underlying storage backend.
+    pub fn storage(&self) -> &S {
+        &self.storage
+    }
+
+    /// Get a reference to the underlying storage backend.
+    ///
+    /// **Deprecated**: Use [`storage()`](Self::storage) instead.
+    /// Retained for backward compatibility during the mmap-to-io_uring migration.
+    #[deprecated(since = "0.9.0", note = "Use storage() instead")]
+    pub fn disk_manager(&self) -> &S {
+        &self.storage
     }
 }
 
@@ -685,6 +699,7 @@ pub struct BufferPoolStats {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use super::super::disk_manager::DiskManager;
     use tempfile::tempdir;
 
     fn create_buffer_manager(pool_size: usize) -> BufferManager {

@@ -44,6 +44,8 @@
 use std::collections::HashMap;
 
 use super::arena_manager::{ArenaManager, ArenaSlot};
+use crate::persistent_artrie::block_storage::BlockStorage;
+use crate::persistent_artrie::disk_manager::MmapDiskManager;
 use crate::persistent_artrie::PersistentARTrieError;
 
 type Result<T> = std::result::Result<T, PersistentARTrieError>;
@@ -213,18 +215,18 @@ impl DeduplicatorStats {
 /// This wraps an ArenaManager to provide transparent deduplication.
 /// When allocating, it first checks the dedup cache.
 #[derive(Debug)]
-pub struct DeduplicatingArenaManager {
+pub struct DeduplicatingArenaManager<S: BlockStorage = MmapDiskManager> {
     /// The underlying arena manager
-    arena_manager: ArenaManager,
+    arena_manager: ArenaManager<S>,
     /// Deduplication cache
     dedup: NodeDeduplicator,
     /// Whether to verify data on cache hit (slower but safer)
     verify_on_hit: bool,
 }
 
-impl DeduplicatingArenaManager {
+impl<S: BlockStorage> DeduplicatingArenaManager<S> {
     /// Create a new deduplicating arena manager
-    pub fn new(arena_manager: ArenaManager) -> Self {
+    pub fn new(arena_manager: ArenaManager<S>) -> Self {
         Self {
             arena_manager,
             dedup: NodeDeduplicator::new(),
@@ -233,7 +235,7 @@ impl DeduplicatingArenaManager {
     }
 
     /// Create with dedup capacity hint
-    pub fn with_capacity(arena_manager: ArenaManager, dedup_capacity: usize) -> Self {
+    pub fn with_capacity(arena_manager: ArenaManager<S>, dedup_capacity: usize) -> Self {
         Self {
             arena_manager,
             dedup: NodeDeduplicator::with_capacity(dedup_capacity),
@@ -290,12 +292,12 @@ impl DeduplicatingArenaManager {
     }
 
     /// Get the underlying arena manager
-    pub fn arena_manager(&self) -> &ArenaManager {
+    pub fn arena_manager(&self) -> &ArenaManager<S> {
         &self.arena_manager
     }
 
     /// Get mutable access to the underlying arena manager
-    pub fn arena_manager_mut(&mut self) -> &mut ArenaManager {
+    pub fn arena_manager_mut(&mut self) -> &mut ArenaManager<S> {
         &mut self.arena_manager
     }
 

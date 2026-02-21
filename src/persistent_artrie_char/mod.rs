@@ -214,7 +214,7 @@ use crate::{Dictionary, DictionaryNode, MappedDictionary, MutableMappedDictionar
 ///
 /// This type alias provides `Arc<RwLock<...>>` semantics for concurrent access
 /// to the disk-backed character trie.
-pub type SharedCharARTrie<V> = Arc<RwLock<PersistentARTrieChar<V>>>;
+pub type SharedCharARTrie<V, S = crate::persistent_artrie::disk_manager::MmapDiskManager> = Arc<RwLock<PersistentARTrieChar<V, S>>>;
 
 /// Deprecated alias for backward compatibility.
 #[deprecated(since = "0.9.0", note = "Use SharedCharARTrie instead")]
@@ -230,7 +230,7 @@ pub type SharedCharTrie<V> = SharedCharARTrie<V>;
 ///
 /// This type provides interior mutability via RwLock. For concurrent access,
 /// use `SharedCharTrie<V>` which is `Arc<RwLock<PersistentARTrieChar<V>>>`.
-pub struct PersistentARTrieChar<V: DictionaryValue = ()> {
+pub struct PersistentARTrieChar<V: DictionaryValue = (), S: crate::persistent_artrie::block_storage::BlockStorage = crate::persistent_artrie::disk_manager::MmapDiskManager> {
     /// Root of the trie
     pub(crate) root: CharTrieRoot<V>,
     /// Number of terms (atomic for lock-free access)
@@ -239,7 +239,7 @@ pub struct PersistentARTrieChar<V: DictionaryValue = ()> {
     pub(crate) dirty: AtomicBool,
 
     // Storage infrastructure (optional - None for in-memory mode)
-    pub(crate) buffer_manager: Option<Arc<RwLock<crate::persistent_artrie::buffer_manager::BufferManager>>>,
+    pub(crate) buffer_manager: Option<Arc<RwLock<crate::persistent_artrie::buffer_manager::BufferManager<S>>>>,
     /// Async WAL writer for durability (handles synchronization internally)
     pub(crate) wal_writer: Option<Arc<crate::persistent_artrie::wal::AsyncWalWriter>>,
     /// WAL configuration (archive mode, segment limits, etc.)
@@ -248,7 +248,7 @@ pub struct PersistentARTrieChar<V: DictionaryValue = ()> {
     pub(crate) file_path: Option<std::path::PathBuf>,
     /// Arena manager for space-efficient node storage
     /// Packs multiple nodes into 256KB blocks instead of one node per block
-    pub(crate) arena_manager: Option<Arc<RwLock<ArenaManager>>>,
+    pub(crate) arena_manager: Option<Arc<RwLock<ArenaManager<S>>>>,
 
     // Concurrency infrastructure
     /// Version for optimistic concurrency control
@@ -308,7 +308,7 @@ pub struct PersistentARTrieChar<V: DictionaryValue = ()> {
 }
 
 // Manual Debug implementation to avoid requiring Debug on BufferManager and WalWriter
-impl<V: DictionaryValue> std::fmt::Debug for PersistentARTrieChar<V> {
+impl<V: DictionaryValue, S: crate::persistent_artrie::block_storage::BlockStorage> std::fmt::Debug for PersistentARTrieChar<V, S> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PersistentARTrieChar")
             .field("root", &self.root)
@@ -327,7 +327,7 @@ impl<V: DictionaryValue> Default for PersistentARTrieChar<V> {
 
 // === WalManaged Trait Implementation ===
 
-impl<V: DictionaryValue> WalManaged for PersistentARTrieChar<V> {
+impl<V: DictionaryValue, S: crate::persistent_artrie::block_storage::BlockStorage> WalManaged for PersistentARTrieChar<V, S> {
     fn wal_writer(&self) -> Option<&Arc<AsyncWalWriter>> {
         self.wal_writer.as_ref()
     }
@@ -336,7 +336,7 @@ impl<V: DictionaryValue> WalManaged for PersistentARTrieChar<V> {
 // Note: Most methods are implemented in dict_impl_char.rs on `impl super::PersistentARTrieChar<V>`
 // These wrapper methods provide convenience APIs
 
-impl<V: DictionaryValue> PersistentARTrieChar<V> {
+impl<V: DictionaryValue, S: crate::persistent_artrie::block_storage::BlockStorage> PersistentARTrieChar<V, S> {
     /// Check if trie has unsaved changes.
     ///
     /// Returns `true` if any modifications have been made since the last
@@ -465,7 +465,7 @@ unsafe impl<V: DictionaryValue> Sync for PersistentARTrieCharNode<V> {}
 
 impl<V: DictionaryValue> PersistentARTrieCharNode<V> {
     /// Create a node from the trie's root
-    fn from_trie(trie: &PersistentARTrieChar<V>) -> Self {
+    fn from_trie<S: crate::persistent_artrie::block_storage::BlockStorage>(trie: &PersistentARTrieChar<V, S>) -> Self {
         match &trie.root {
             CharTrieRoot::Empty => Self {
                 node: None,
@@ -536,7 +536,7 @@ impl<V: DictionaryValue> DictionaryNode for PersistentARTrieCharNode<V> {
     }
 }
 
-impl<V: DictionaryValue> Dictionary for PersistentARTrieChar<V> {
+impl<V: DictionaryValue, S: crate::persistent_artrie::block_storage::BlockStorage> Dictionary for PersistentARTrieChar<V, S> {
     type Node = PersistentARTrieCharNode<V>;
 
     fn root(&self) -> Self::Node {
@@ -553,7 +553,7 @@ impl<V: DictionaryValue> Dictionary for PersistentARTrieChar<V> {
     }
 }
 
-impl<V: DictionaryValue + Clone> MappedDictionary for PersistentARTrieChar<V> {
+impl<V: DictionaryValue + Clone, S: crate::persistent_artrie::block_storage::BlockStorage> MappedDictionary for PersistentARTrieChar<V, S> {
     type Value = V;
 
     fn get_value(&self, term: &str) -> Option<V> {
@@ -956,7 +956,7 @@ impl<V: DictionaryValue> crate::artrie_trait::EvictableARTrie for SharedCharARTr
 }
 
 // Helper methods for eviction on PersistentARTrieChar
-impl<V: DictionaryValue> PersistentARTrieChar<V> {
+impl<V: DictionaryValue, S: crate::persistent_artrie::block_storage::BlockStorage> PersistentARTrieChar<V, S> {
     /// Evict a single node at the given path, replacing it with a DiskRef.
     ///
     /// Returns `true` if the node was successfully evicted, `false` if the

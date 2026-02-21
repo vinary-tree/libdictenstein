@@ -50,6 +50,7 @@ use memmap2::{MmapMut, MmapOptions};
 
 use parking_lot::RwLock;
 
+use super::block_storage::BlockStorage;
 use super::error::{PersistentARTrieError, Result};
 
 /// Block size: 256KB (262144 bytes)
@@ -224,10 +225,19 @@ pub struct FreeBlockEntry {
     pub next: u64,
 }
 
-/// Disk manager for persistent storage
+/// Backward-compatible type alias.
+///
+/// Existing code using `DiskManager` continues to compile unchanged.
+/// New code should use `MmapDiskManager` directly for clarity.
+pub type DiskManager = MmapDiskManager;
+
+/// Memory-mapped disk manager for persistent storage.
 ///
 /// Provides memory-mapped I/O with block allocation and free list management.
 /// Thread-safe for concurrent read access; writes require external synchronization.
+///
+/// Implements the [`BlockStorage`] trait, allowing it to be used interchangeably
+/// with other storage backends (e.g., `IoUringDiskManager`).
 ///
 /// # Thread Safety for Block Allocation
 ///
@@ -257,7 +267,7 @@ pub struct FreeBlockEntry {
 /// This ensures:
 /// - If reader sees updated `file_size`, it has the lock and sees the new mmap
 /// - If reader sees old `file_size` while allocator holds write lock, it will block and wait
-pub struct DiskManager {
+pub struct MmapDiskManager {
     /// The underlying file
     file: File,
     /// Memory-mapped region (optional, for read-heavy workloads)
@@ -270,7 +280,7 @@ pub struct DiskManager {
     path: String,
 }
 
-impl DiskManager {
+impl MmapDiskManager {
     /// Create a new disk manager, creating the file if it doesn't exist.
     ///
     /// This is a TOCTOU-safe "open or create" operation that matches the formal
@@ -1231,12 +1241,12 @@ impl DiskManager {
     /// Read a VocabTrieFileHeader from block 0.
     ///
     /// This reads the 96-byte extended header used by PersistentVocabARTrie.
+    ///
+    /// **Note:** Prefer the free function [`super::block_storage::read_vocab_header`]
+    /// which works with any `BlockStorage` implementation. This method is kept
+    /// for backward compatibility.
     pub fn read_vocab_header(&self) -> Result<crate::persistent_vocab_artrie::types::VocabTrieFileHeader> {
-        use crate::persistent_vocab_artrie::types::{VocabTrieFileHeader, VOCAB_FILE_HEADER_SIZE};
-
-        let mut bytes = [0u8; VOCAB_FILE_HEADER_SIZE];
-        self.read_header_bytes(&mut bytes)?;
-        Ok(VocabTrieFileHeader::from_bytes(&bytes))
+        super::block_storage::read_vocab_header(self)
     }
 
     /// Get a raw pointer to a location in the memory map
@@ -1267,6 +1277,84 @@ impl DiskManager {
         }
 
         Ok(mmap.as_ptr().add(file_offset))
+    }
+}
+
+// =============================================================================
+// BlockStorage trait implementation for MmapDiskManager
+// =============================================================================
+
+impl BlockStorage for MmapDiskManager {
+    fn read_block(&self, block_id: u32, buffer: &mut [u8; BLOCK_SIZE]) -> Result<()> {
+        MmapDiskManager::read_block(self, block_id, buffer)
+    }
+
+    fn write_block(&self, block_id: u32, buffer: &[u8; BLOCK_SIZE]) -> Result<()> {
+        MmapDiskManager::write_block(self, block_id, buffer)
+    }
+
+    fn read_bytes(&self, block_id: u32, offset: usize, buffer: &mut [u8]) -> Result<()> {
+        MmapDiskManager::read_bytes(self, block_id, offset, buffer)
+    }
+
+    fn write_bytes(&self, block_id: u32, offset: usize, data: &[u8]) -> Result<()> {
+        MmapDiskManager::write_bytes(self, block_id, offset, data)
+    }
+
+    fn allocate_block(&self) -> Result<u32> {
+        MmapDiskManager::allocate_block(self)
+    }
+
+    fn free_block(&self, block_id: u32) -> Result<()> {
+        MmapDiskManager::free_block(self, block_id)
+    }
+
+    fn read_header(&self) -> Result<FileHeader> {
+        MmapDiskManager::read_header(self)
+    }
+
+    fn write_header(&self, header: &FileHeader) -> Result<()> {
+        MmapDiskManager::write_header(self, header)
+    }
+
+    fn read_header_bytes(&self, buffer: &mut [u8]) -> Result<()> {
+        MmapDiskManager::read_header_bytes(self, buffer)
+    }
+
+    fn write_header_bytes(&self, bytes: &[u8]) -> Result<()> {
+        MmapDiskManager::write_header_bytes(self, bytes)
+    }
+
+    fn root_ptr(&self) -> Result<u64> {
+        MmapDiskManager::root_ptr(self)
+    }
+
+    fn set_root_ptr(&self, ptr: u64) -> Result<()> {
+        MmapDiskManager::set_root_ptr(self, ptr)
+    }
+
+    fn entry_count(&self) -> Result<u64> {
+        MmapDiskManager::entry_count(self)
+    }
+
+    fn set_entry_count(&self, count: u64) -> Result<()> {
+        MmapDiskManager::set_entry_count(self, count)
+    }
+
+    fn file_size(&self) -> u64 {
+        MmapDiskManager::file_size(self)
+    }
+
+    fn block_count(&self) -> Result<u32> {
+        MmapDiskManager::block_count(self)
+    }
+
+    fn path(&self) -> &str {
+        MmapDiskManager::path(self)
+    }
+
+    fn sync(&self) -> Result<()> {
+        MmapDiskManager::sync(self)
     }
 }
 

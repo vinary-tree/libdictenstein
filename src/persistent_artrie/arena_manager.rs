@@ -13,9 +13,10 @@
 //! This is encoded into a 64-bit value for use with SwizzledPtr.
 
 use super::arena::ByteNodeArena;
+use super::block_storage::BlockStorage;
 use super::buffer_manager::BufferManager;
 use super::dirty_tracker::DirtyTracker;
-use super::disk_manager::BLOCK_SIZE;
+use super::disk_manager::{MmapDiskManager, BLOCK_SIZE};
 use super::PersistentARTrieError;
 
 use parking_lot::RwLock;
@@ -114,13 +115,13 @@ impl FlushStats {
 /// 1. Header (always, as it contains updated node_count etc.)
 /// 2. Each dirty slot's data
 /// 3. Each dirty slot's directory entry
-fn write_dirty_slots_for_arena(
-    bm_guard: &impl std::ops::Deref<Target = BufferManager>,
+fn write_dirty_slots_for_arena<S: BlockStorage>(
+    bm_guard: &impl std::ops::Deref<Target = BufferManager<S>>,
     arena: &ByteNodeArena,
     block_id: u32,
     dirty_slots: impl Iterator<Item = u32>,
 ) -> Result<usize> {
-    let dm = bm_guard.disk_manager();
+    let dm = bm_guard.storage();
     let arena_bytes = arena.as_bytes();
     let mut bytes_written = 0usize;
 
@@ -208,13 +209,16 @@ impl ReservedSlots {
 }
 
 /// ArenaManager - Manages allocation and reading across multiple arenas
-pub struct ArenaManager {
+///
+/// Generic over the storage backend `S`. Defaults to `MmapDiskManager` for
+/// backward compatibility.
+pub struct ArenaManager<S: BlockStorage = MmapDiskManager> {
     /// All arenas (may be in memory or on disk)
     arenas: Vec<ByteNodeArena>,
     /// Index of the current arena for new allocations
     active_arena: usize,
     /// Optional buffer manager for disk I/O
-    buffer_manager: Option<Arc<RwLock<BufferManager>>>,
+    buffer_manager: Option<Arc<RwLock<BufferManager<S>>>>,
     /// Arena size (default BLOCK_SIZE)
     arena_size: usize,
     /// Optional dirty tracker for slot-level incremental checkpoints
@@ -223,7 +227,7 @@ pub struct ArenaManager {
     flush_config: FlushConfig,
 }
 
-impl std::fmt::Debug for ArenaManager {
+impl<S: BlockStorage> std::fmt::Debug for ArenaManager<S> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ArenaManager")
             .field("num_arenas", &self.arenas.len())
@@ -234,7 +238,7 @@ impl std::fmt::Debug for ArenaManager {
     }
 }
 
-impl ArenaManager {
+impl<S: BlockStorage> ArenaManager<S> {
     /// Create a new ArenaManager without disk backing
     pub fn new() -> Self {
         let initial_arena = ByteNodeArena::new_default();
@@ -249,7 +253,7 @@ impl ArenaManager {
     }
 
     /// Create a new ArenaManager with disk backing via BufferManager
-    pub fn with_buffer_manager(buffer_manager: Arc<RwLock<BufferManager>>) -> Self {
+    pub fn with_buffer_manager(buffer_manager: Arc<RwLock<BufferManager<S>>>) -> Self {
         let initial_arena = ByteNodeArena::new_default();
         Self {
             arenas: vec![initial_arena],
@@ -298,7 +302,7 @@ impl ArenaManager {
     ///
     /// This is the primary constructor for disk-backed tries with slot-level tracking.
     pub fn with_buffer_manager_and_config(
-        buffer_manager: Arc<RwLock<BufferManager>>,
+        buffer_manager: Arc<RwLock<BufferManager<S>>>,
         config: FlushConfig,
     ) -> Self {
         let dirty_tracker = if config.slot_level_tracking {
@@ -500,7 +504,7 @@ impl ArenaManager {
 
         if let Some(bm) = &self.buffer_manager {
             let bm_guard = bm.write();
-            bm_guard.disk_manager().sync()?;
+            bm_guard.storage().sync()?;
         }
 
         Ok(())
@@ -1014,7 +1018,7 @@ impl ArenaManager {
     }
 }
 
-impl Default for ArenaManager {
+impl<S: BlockStorage> Default for ArenaManager<S> {
     fn default() -> Self {
         Self::new()
     }
@@ -1061,16 +1065,19 @@ impl ArenaStats {
 mod tests {
     use super::*;
 
+    // Concrete type alias for tests (default type param doesn't always resolve in test contexts)
+    type TestArenaManager = ArenaManager<super::super::disk_manager::MmapDiskManager>;
+
     #[test]
     fn test_arena_manager_creation() {
-        let manager = ArenaManager::new();
+        let manager = TestArenaManager::new();
         assert_eq!(manager.arena_count(), 1);
         assert_eq!(manager.total_node_count(), 0);
     }
 
     #[test]
     fn test_arena_manager_allocation() {
-        let mut manager = ArenaManager::new();
+        let mut manager = TestArenaManager::new();
 
         // Allocate some data
         let data1 = b"hello world";
@@ -1094,7 +1101,7 @@ mod tests {
     #[test]
     fn test_arena_manager_overflow() {
         // Use small arenas to force overflow
-        let mut manager = ArenaManager::with_arena_size(512);
+        let mut manager = TestArenaManager::with_arena_size(512);
 
         // Fill up several arenas
         for i in 0..100 {
@@ -1123,7 +1130,7 @@ mod tests {
 
     #[test]
     fn test_arena_stats() {
-        let mut manager = ArenaManager::with_arena_size(1024);
+        let mut manager = TestArenaManager::with_arena_size(1024);
 
         for _ in 0..10 {
             manager.allocate(&[0u8; 50]).expect("allocation should succeed");
@@ -1141,7 +1148,7 @@ mod tests {
 
     #[test]
     fn test_reserve_slots_basic() {
-        let mut manager = ArenaManager::new();
+        let mut manager = TestArenaManager::new();
 
         // Reserve 3 slots
         let mut reserved = manager.reserve_slots(3).expect("reserve should succeed");
@@ -1185,7 +1192,7 @@ mod tests {
     #[test]
     fn test_reserve_slots_overflow() {
         // Create a small arena that will overflow when reserving
-        let mut manager = ArenaManager::with_arena_size(512);
+        let mut manager = TestArenaManager::with_arena_size(512);
 
         // Fill the first arena almost completely
         for _ in 0..5 {
@@ -1205,7 +1212,7 @@ mod tests {
 
     #[test]
     fn test_reserve_slots_first_child_slot() {
-        let mut manager = ArenaManager::new();
+        let mut manager = TestArenaManager::new();
 
         // Add some allocations first
         manager.allocate(b"pre-existing 1").unwrap();
@@ -1222,7 +1229,7 @@ mod tests {
 
     #[test]
     fn test_reserve_slots_error_zero() {
-        let mut manager = ArenaManager::new();
+        let mut manager = TestArenaManager::new();
 
         // Cannot reserve 0 slots
         let result = manager.reserve_slots(0);
@@ -1231,7 +1238,7 @@ mod tests {
 
     #[test]
     fn test_reserve_slots_exhausted() {
-        let mut manager = ArenaManager::new();
+        let mut manager = TestArenaManager::new();
 
         let mut reserved = manager.reserve_slots(2).expect("reserve should succeed");
 
@@ -1306,14 +1313,14 @@ mod tests {
     #[test]
     fn test_arena_manager_with_config() {
         let config = FlushConfig::with_slot_tracking();
-        let manager = ArenaManager::with_config(config);
+        let manager = TestArenaManager::with_config(config);
         assert!(manager.has_slot_tracking());
         assert!(manager.dirty_tracker_stats().is_some());
     }
 
     #[test]
     fn test_arena_manager_without_slot_tracking() {
-        let manager = ArenaManager::new();
+        let manager = TestArenaManager::new();
         assert!(!manager.has_slot_tracking());
         assert!(manager.dirty_tracker_stats().is_none());
     }
@@ -1321,7 +1328,7 @@ mod tests {
     #[test]
     fn test_slot_tracking_marks_dirty() {
         let config = FlushConfig::with_slot_tracking();
-        let mut manager = ArenaManager::with_config(config);
+        let mut manager = TestArenaManager::with_config(config);
 
         // Allocate some data
         manager.allocate(b"hello").expect("allocation should succeed");
@@ -1338,7 +1345,7 @@ mod tests {
     fn test_slot_tracking_across_arenas() {
         let config = FlushConfig::with_slot_tracking();
         // Use small arena to force overflow
-        let mut manager = ArenaManager::with_config(config);
+        let mut manager = TestArenaManager::with_config(config);
         // Manually set arena_size smaller (through a different constructor)
         manager.arena_size = 512;
         manager.arenas.clear();
@@ -1360,7 +1367,7 @@ mod tests {
     #[test]
     fn test_clear_resets_dirty_tracker() {
         let config = FlushConfig::with_slot_tracking();
-        let mut manager = ArenaManager::with_config(config);
+        let mut manager = TestArenaManager::with_config(config);
 
         // Allocate some data
         manager.allocate(b"hello").expect("allocation should succeed");
@@ -1398,7 +1405,7 @@ mod tests {
     fn test_flush_dirty_slots_no_buffer_manager() {
         // Without buffer manager, flush_dirty_slots returns empty stats
         let config = FlushConfig::with_slot_tracking();
-        let mut manager = ArenaManager::with_config(config);
+        let mut manager = TestArenaManager::with_config(config);
 
         manager.allocate(b"hello").expect("allocation should succeed");
 
@@ -1410,7 +1417,7 @@ mod tests {
     #[test]
     fn test_flush_dirty_slots_fallback_without_tracking() {
         // Without slot tracking, flush_dirty_slots falls back to full flush
-        let mut manager = ArenaManager::new();
+        let mut manager = TestArenaManager::new();
         manager.allocate(b"hello").expect("allocation should succeed");
 
         let stats = manager.flush_dirty_slots().expect("flush should succeed");
@@ -1424,7 +1431,7 @@ mod tests {
 
     #[test]
     fn test_enable_slot_tracking_basic() {
-        let mut manager = ArenaManager::new();
+        let mut manager = TestArenaManager::new();
 
         // Initially no slot tracking
         assert!(!manager.has_slot_tracking());
@@ -1440,7 +1447,7 @@ mod tests {
 
     #[test]
     fn test_enable_slot_tracking_idempotent() {
-        let mut manager = ArenaManager::new();
+        let mut manager = TestArenaManager::new();
 
         // Enable once
         manager.enable_slot_tracking();
@@ -1462,7 +1469,7 @@ mod tests {
 
     #[test]
     fn test_enable_slot_tracking_tracks_allocations() {
-        let mut manager = ArenaManager::with_arena_size(4096);
+        let mut manager = TestArenaManager::with_arena_size(4096);
 
         // Enable slot tracking
         manager.enable_slot_tracking();
@@ -1479,7 +1486,7 @@ mod tests {
 
     #[test]
     fn test_enable_slot_tracking_after_allocations() {
-        let mut manager = ArenaManager::with_arena_size(4096);
+        let mut manager = TestArenaManager::with_arena_size(4096);
 
         // Allocate before enabling (not tracked)
         manager.allocate(b"pre-tracking").unwrap();
@@ -1499,7 +1506,7 @@ mod tests {
     fn test_enable_slot_tracking_with_buffer_manager_constructor() {
         // Verify that enable_slot_tracking works with buffer manager constructor
         // (simulating the open() -> enable_slot_tracking() pattern)
-        let mut manager = ArenaManager::with_arena_size(4096);
+        let mut manager = TestArenaManager::with_arena_size(4096);
 
         // Simulate opening without slot tracking
         assert!(!manager.has_slot_tracking());
@@ -1518,7 +1525,7 @@ mod tests {
 
     #[test]
     fn test_enable_slot_tracking_marks_existing_dirty_arenas() {
-        let mut manager = ArenaManager::with_arena_size(4096);
+        let mut manager = TestArenaManager::with_arena_size(4096);
 
         // Allocate before enabling (creates dirty arenas)
         manager.allocate(b"pre-tracking-1").unwrap();
@@ -1542,7 +1549,7 @@ mod tests {
     #[test]
     fn test_enable_slot_tracking_marks_multiple_dirty_arenas() {
         // Use small arenas to force multiple arenas to be created
-        let mut manager = ArenaManager::with_arena_size(512);
+        let mut manager = TestArenaManager::with_arena_size(512);
 
         // Fill up multiple arenas before enabling tracking
         for i in 0..20 {
@@ -1584,7 +1591,7 @@ mod tests {
 
     #[test]
     fn test_stress_many_small_allocations() {
-        let mut manager = ArenaManager::with_arena_size(4096);
+        let mut manager = TestArenaManager::with_arena_size(4096);
 
         // Allocate many small items
         let mut slots = Vec::new();
@@ -1605,7 +1612,7 @@ mod tests {
 
     #[test]
     fn test_stress_varying_sizes() {
-        let mut manager = ArenaManager::with_arena_size(4096);
+        let mut manager = TestArenaManager::with_arena_size(4096);
 
         // Allocate items of varying sizes
         let sizes = [1, 10, 50, 100, 200, 500, 1000, 16, 32, 64, 128, 256];
@@ -1627,7 +1634,7 @@ mod tests {
     #[test]
     fn test_stress_arena_boundary_crossing() {
         // Use small arena to ensure many boundary crossings
-        let mut manager = ArenaManager::with_arena_size(256);
+        let mut manager = TestArenaManager::with_arena_size(256);
 
         let mut slots = Vec::new();
 
@@ -1696,13 +1703,13 @@ mod tests {
     #[test]
     fn test_arena_stats_edge_cases() {
         // Empty manager
-        let manager = ArenaManager::new();
+        let manager = TestArenaManager::new();
         let stats = manager.stats();
         assert_eq!(stats.node_count, 0);
         assert_eq!(stats.arena_count, 1); // Always starts with one arena
 
         // Single allocation
-        let mut manager = ArenaManager::new();
+        let mut manager = TestArenaManager::new();
         manager.allocate(&[1, 2, 3]).unwrap();
         let stats = manager.stats();
         assert_eq!(stats.node_count, 1);
@@ -1712,7 +1719,7 @@ mod tests {
     #[test]
     fn test_reserve_exact_arena_capacity() {
         // Create a small arena
-        let mut manager = ArenaManager::with_arena_size(512);
+        let mut manager = TestArenaManager::with_arena_size(512);
 
         // Try to reserve exactly as many slots as can fit
         // This should succeed by creating a new arena if needed
@@ -1722,7 +1729,7 @@ mod tests {
 
     #[test]
     fn test_reserve_slots_one() {
-        let mut manager = ArenaManager::new();
+        let mut manager = TestArenaManager::new();
 
         // Reserving one slot should succeed
         let mut reserved = manager.reserve_slots(1).unwrap();
@@ -1739,7 +1746,7 @@ mod tests {
 
     #[test]
     fn test_reservation_tracking() {
-        let mut manager = ArenaManager::with_arena_size(1024);
+        let mut manager = TestArenaManager::with_arena_size(1024);
 
         // Reserve some slots and track their state
         let reserved = manager.reserve_slots(3).unwrap();
@@ -1750,7 +1757,7 @@ mod tests {
 
     #[test]
     fn test_large_data_allocation() {
-        let mut manager = ArenaManager::with_arena_size(4096);
+        let mut manager = TestArenaManager::with_arena_size(4096);
 
         // Allocate data that fills most of a slot
         let large_data = vec![0u8; 2000];
@@ -1763,7 +1770,7 @@ mod tests {
 
     #[test]
     fn test_dirty_state_after_allocation() {
-        let mut manager = ArenaManager::new();
+        let mut manager = TestArenaManager::new();
 
         // Arena should be marked dirty after allocation
         manager.allocate(b"test data").unwrap();
@@ -1772,7 +1779,7 @@ mod tests {
 
     #[test]
     fn test_dirty_tracker_stats_when_disabled() {
-        let manager = ArenaManager::new();
+        let manager = TestArenaManager::new();
 
         // Without enabling slot tracking, stats should return None
         assert!(manager.dirty_tracker_stats().is_none());
@@ -1780,7 +1787,7 @@ mod tests {
 
     #[test]
     fn test_dirty_tracker_stats_when_enabled() {
-        let mut manager = ArenaManager::new();
+        let mut manager = TestArenaManager::new();
         manager.enable_slot_tracking();
 
         let stats = manager.dirty_tracker_stats();
@@ -1793,7 +1800,7 @@ mod tests {
 
     #[test]
     fn test_multiple_enable_slot_tracking_calls() {
-        let mut manager = ArenaManager::new();
+        let mut manager = TestArenaManager::new();
 
         // Enable multiple times should be idempotent
         manager.enable_slot_tracking();
@@ -1808,14 +1815,14 @@ mod tests {
     #[test]
     fn test_with_large_arena_size() {
         // Large arena works normally
-        let mut manager = ArenaManager::with_arena_size(1024 * 1024);
+        let mut manager = TestArenaManager::with_arena_size(1024 * 1024);
         let slot = manager.allocate(&[4, 5, 6]).unwrap();
         assert_eq!(manager.read(slot).unwrap(), &[4, 5, 6]);
     }
 
     #[test]
     fn test_sequential_reserved_allocations() {
-        let mut manager = ArenaManager::with_arena_size(4096);
+        let mut manager = TestArenaManager::with_arena_size(4096);
 
         // Reserve slots
         let mut reserved = manager.reserve_slots(3).unwrap();

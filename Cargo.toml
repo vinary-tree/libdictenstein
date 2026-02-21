@@ -65,6 +65,12 @@ dashmap = { version = "6.1", optional = true }
 # Persistent (immutable) data structures for lock-free trie nodes
 im = { version = "15.1", optional = true }
 
+# io_uring for O_DIRECT async I/O (Linux-only, optional)
+io-uring = { version = "0.7", optional = true }
+
+# libc for O_DIRECT flag and fallocate (Linux-only, used by io-uring-backend)
+libc = { version = "0.2", optional = true }
+
 [build-dependencies]
 prost-build = { version = "0.13", optional = true }
 
@@ -74,6 +80,8 @@ tempfile = "3.8"
 proptest = "1.4"
 paste = "1.0"  # For macro test name concatenation
 ordered-float = "4.6"  # For lling-llang semiring tests
+hdrhistogram = "7.5"  # High dynamic range histograms for latency benchmarks
+rand = "0.8"  # PRNG for randomized benchmark scenarios
 
 [features]
 default = ["parking_lot"]
@@ -91,6 +99,8 @@ parallel-merge = ["persistent-artrie", "rayon"]
 simd = []
 # lling-llang WFST semiring integration (IdempotentSemiring -> Lattice)
 lling-llang = ["dep:lling-llang"]
+# io_uring-based block storage backend (Linux-only, requires kernel >= 5.1)
+io-uring-backend = ["persistent-artrie", "dep:io-uring", "dep:libc"]
 # SCDAWG optimization experiments
 scdawg-bloom = []  # 64-bit bloom filter for edge lookup fast-reject
 scdawg-simd = []   # SIMD edge lookup for small edge counts
@@ -216,3 +226,13 @@ required-features = ["persistent-artrie"]
 [[example]]
 name = "batched_merge_comparison"
 required-features = ["persistent-artrie"]
+
+[[bench]]
+name = "io_backend_benchmarks"
+harness = false
+required-features = ["persistent-artrie"]
+
+[[bench]]
+name = "io_uring_comparison_benchmarks"
+harness = false
+required-features = ["io-uring-backend"]

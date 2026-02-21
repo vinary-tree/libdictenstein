@@ -49,9 +49,10 @@ use std::time::Duration;
 
 use parking_lot::{Mutex, RwLock};
 
+use crate::persistent_artrie::block_storage::BlockStorage;
 use crate::persistent_artrie::buffer_manager::BufferManager;
 use crate::persistent_artrie::dict_impl::DurabilityPolicy;
-use crate::persistent_artrie::disk_manager::DiskManager;
+use crate::persistent_artrie::disk_manager::{DiskManager, MmapDiskManager};
 use crate::persistent_artrie::error::{PersistentARTrieError, Result};
 use crate::persistent_artrie::recovery::RecoveryReport;
 use crate::persistent_artrie::swizzled_ptr::SwizzledPtr;
@@ -217,7 +218,7 @@ impl Clone for VocabSyncHandle {
 /// let (vocab, _) = PersistentVocabARTrie::open_with_recovery("vocab.vocab")?;
 /// assert_eq!(vocab.get_index("hello"), Some(0));
 /// ```
-pub struct PersistentVocabARTrie {
+pub struct PersistentVocabARTrie<S: BlockStorage = MmapDiskManager> {
     // === Vocab-specific fields ===
     /// Path to the main trie file
     path: PathBuf,
@@ -270,10 +271,10 @@ pub struct PersistentVocabARTrie {
 
     // === Storage layer for disk-backed persistence ===
     /// Arena manager for node storage (shared with buffer manager)
-    arena_manager: Option<Arc<RwLock<ArenaManager>>>,
+    arena_manager: Option<Arc<RwLock<ArenaManager<S>>>>,
 
     /// Buffer manager for disk I/O
-    buffer_manager: Option<Arc<RwLock<BufferManager>>>,
+    buffer_manager: Option<Arc<RwLock<BufferManager<S>>>>,
 
     // === Eviction Support ===
     /// Eviction coordinator for memory pressure-driven eviction
@@ -300,7 +301,7 @@ pub struct PersistentVocabARTrie {
 // WalManaged trait implementation
 // ============================================================================
 
-impl WalManaged for PersistentVocabARTrie {
+impl<S: BlockStorage> WalManaged for PersistentVocabARTrie<S> {
     fn wal_writer(&self) -> Option<&Arc<AsyncWalWriter>> {
         self.wal_writer.as_ref()
     }
@@ -308,13 +309,13 @@ impl WalManaged for PersistentVocabARTrie {
 
 // Safety: The raw pointers in node_map are managed carefully and only accessed
 // through methods that ensure proper synchronization.
-unsafe impl Send for PersistentVocabARTrie {}
-unsafe impl Sync for PersistentVocabARTrie {}
+unsafe impl<S: BlockStorage> Send for PersistentVocabARTrie<S> {}
+unsafe impl<S: BlockStorage> Sync for PersistentVocabARTrie<S> {}
 
 /// Thread-safe shared vocabulary ARTrie.
 ///
 /// This is the recommended type for concurrent access to the vocabulary trie.
-pub type SharedVocabARTrie = Arc<RwLock<PersistentVocabARTrie>>;
+pub type SharedVocabARTrie<S = MmapDiskManager> = Arc<RwLock<PersistentVocabARTrie<S>>>;
 
 impl PersistentVocabARTrie {
     /// Create a new vocabulary trie at the given path.
@@ -376,7 +377,7 @@ impl PersistentVocabARTrie {
         // Write initial header
         {
             let bm = buffer_manager.write();
-            let dm = bm.disk_manager();
+            let dm = bm.storage();
             let mut header = VocabTrieFileHeader::with_start_index(start_index);
             dm.write_header_bytes(&header.to_bytes_with_checksum())?;
             dm.sync()?;
@@ -692,7 +693,250 @@ impl PersistentVocabARTrie {
 
         Ok((trie, report))
     }
+}
 
+// === io_uring convenience constructors (Linux-only, requires `io-uring-backend` feature) ===
+
+#[cfg(feature = "io-uring-backend")]
+impl PersistentVocabARTrie<crate::persistent_artrie::IoUringDiskManager> {
+    /// Create a new vocabulary trie using io_uring + O_DIRECT.
+    ///
+    /// This uses `IoUringDiskManager` instead of `MmapDiskManager`, which:
+    /// - Bypasses the kernel page cache (O_DIRECT) to eliminate double caching
+    /// - Uses io_uring for async I/O with predictable latency
+    /// - Supports batched block submissions for better throughput
+    ///
+    /// # Arguments
+    /// * `path` - Path to the vocabulary file (must not exist)
+    pub fn create_with_io_uring<P: AsRef<Path>>(path: P) -> Result<Self> {
+        Self::create_with_io_uring_and_start_index(path, 0)
+    }
+
+    /// Create a new vocabulary trie with io_uring and a custom starting index.
+    pub fn create_with_io_uring_and_start_index<P: AsRef<Path>>(path: P, start_index: u64) -> Result<Self> {
+        use crate::persistent_artrie::IoUringDiskManager;
+
+        let path = path.as_ref().to_path_buf();
+
+        if path.exists() {
+            return Err(PersistentARTrieError::CorruptedFile {
+                reason: format!("File already exists: {}", path.display()),
+            });
+        }
+
+        // Create io_uring disk manager (creates new file with O_DIRECT)
+        let disk_manager = IoUringDiskManager::create(&path)?;
+
+        // Create buffer manager (takes ownership of disk_manager)
+        let buffer_manager = BufferManager::new(disk_manager, DEFAULT_VOCAB_BUFFER_POOL_SIZE);
+        let buffer_manager = Arc::new(RwLock::new(buffer_manager));
+
+        // Create arena manager with buffer manager for disk-backed storage
+        let arena_manager = ArenaManager::with_buffer_manager(Arc::clone(&buffer_manager));
+        let arena_manager = Arc::new(RwLock::new(arena_manager));
+
+        // Write initial header
+        {
+            let bm = buffer_manager.write();
+            let dm = bm.storage();
+            let mut header = VocabTrieFileHeader::with_start_index(start_index);
+            dm.write_header_bytes(&header.to_bytes_with_checksum())?;
+            dm.sync()?;
+        }
+
+        // Create reverse index file
+        let idx_path = path.with_extension("vocab.idx");
+        let reverse_index = VocabReverseIndex::create(&idx_path, start_index, 1024)?;
+
+        // Create WAL file using async writer
+        let wal_path = path.with_extension("vocab.wal");
+        let wal_config = WalConfig::default();
+        let wal_writer = create_async_wal(&wal_path, &path)
+            .map_err(|e| PersistentARTrieError::io_error(
+                "create WAL",
+                wal_path.to_string_lossy(),
+                std::io::Error::new(std::io::ErrorKind::Other, e.to_string()),
+            ))?;
+
+        // Create root node
+        let root_node = VocabTrieNode::new();
+        let root_ref = NodeRef::new(0, 0);
+
+        let mut node_map = HashMap::with_hasher(Xxh3DefaultBuilder);
+        let root_ptr = Box::into_raw(Box::new(root_node));
+        node_map.insert(root_ref, root_ptr as *const VocabTrieNode);
+
+        let root = VocabTrieRoot::Node(unsafe { Box::from_raw(root_ptr) });
+
+        Ok(Self {
+            path,
+            root,
+            entry_count: AtomicUsize::new(0),
+            start_index,
+            next_index: AtomicU64::new(start_index),
+            dirty: AtomicBool::new(false),
+            reverse_index: Some(reverse_index),
+            reverse_cache: VocabReverseCache::new(DEFAULT_REVERSE_CACHE_SIZE),
+            node_map,
+            next_slot: 1,
+            wal_writer: Some(Arc::new(wal_writer)),
+            wal_config,
+            next_lsn: AtomicU64::new(1),
+            synced_lsn: AtomicU64::new(0),
+            durability_policy: DurabilityPolicy::default(),
+            arena_manager: Some(arena_manager),
+            buffer_manager: Some(buffer_manager),
+            eviction_coordinator: None,
+            bloom_filter: None,
+            lockfree_root: None,
+            lockfree_cache: None,
+            cas_retries: AtomicU64::new(0),
+        })
+    }
+
+    /// Open an existing vocabulary trie using io_uring + O_DIRECT.
+    ///
+    /// # Arguments
+    /// * `path` - Path to the vocabulary file (must exist)
+    pub fn open_with_io_uring<P: AsRef<Path>>(path: P) -> Result<Self> {
+        use crate::persistent_artrie::IoUringDiskManager;
+
+        let path = path.as_ref().to_path_buf();
+
+        if !path.exists() {
+            return Err(PersistentARTrieError::io_error(
+                "open vocab trie",
+                path.to_string_lossy(),
+                std::io::Error::new(std::io::ErrorKind::NotFound, "file not found"),
+            ));
+        }
+
+        // Open io_uring disk manager without validating standard PART header
+        // (VocabTrie uses a different header format: VOCB)
+        let disk_manager = IoUringDiskManager::open_without_validation(&path)?;
+
+        // Read and validate the vocab-specific header
+        let header = disk_manager.read_vocab_header()?;
+        header.validate()?;
+
+        // Create buffer manager
+        let buffer_manager = BufferManager::new(disk_manager, DEFAULT_VOCAB_BUFFER_POOL_SIZE);
+        let buffer_manager = Arc::new(RwLock::new(buffer_manager));
+
+        // Create arena manager with buffer manager
+        let arena_manager = ArenaManager::with_buffer_manager(Arc::clone(&buffer_manager));
+        let arena_manager = Arc::new(RwLock::new(arena_manager));
+
+        // Load arenas from disk if there are data blocks
+        if header.block_count > 1 {
+            let mut am = arena_manager.write();
+            am.clear_for_loading();
+
+            for block_id in 1..header.block_count {
+                am.load_arena(block_id)?;
+            }
+
+            let arena_count = am.arena_count();
+            if arena_count > 0 {
+                am.set_active_arena(arena_count - 1);
+            }
+        }
+
+        // Open reverse index
+        let idx_path = path.with_extension("vocab.idx");
+        let reverse_index = if idx_path.exists() {
+            Some(VocabReverseIndex::open(&idx_path)?)
+        } else {
+            None
+        };
+
+        // Open WAL file using async writer
+        let wal_path = path.with_extension("vocab.wal");
+        let wal_config = WalConfig::default();
+        let (wal_writer, next_lsn) = {
+            let wal = open_or_create_async_wal(&wal_path, &path)
+                .map_err(|e| PersistentARTrieError::io_error(
+                    "open WAL",
+                    wal_path.to_string_lossy(),
+                    std::io::Error::new(std::io::ErrorKind::Other, e.to_string()),
+                ))?;
+
+            let min_lsn = header.checkpoint_lsn + 1;
+            wal.set_min_lsn(min_lsn);
+
+            let lsn = wal.current_lsn();
+            (Some(Arc::new(wal)), lsn)
+        };
+
+        // Load root from disk if present
+        let (root, node_map, next_slot) = if header.root_ptr != 0 {
+            let slot = ArenaSlot::from_u64(header.root_ptr);
+            Self::load_trie_from_disk(&arena_manager, &buffer_manager, slot)?
+        } else {
+            let root_node = VocabTrieNode::new();
+            let root_ref = NodeRef::new(0, 0);
+
+            let mut map = HashMap::with_hasher(Xxh3DefaultBuilder);
+            let root_ptr = Box::into_raw(Box::new(root_node));
+            map.insert(root_ref, root_ptr as *const VocabTrieNode);
+
+            (VocabTrieRoot::Node(unsafe { Box::from_raw(root_ptr) }), map, 1)
+        };
+
+        let mut trie = Self {
+            path,
+            root,
+            entry_count: AtomicUsize::new(header.entry_count as usize),
+            start_index: header.start_index,
+            next_index: AtomicU64::new(header.next_index),
+            dirty: AtomicBool::new(false),
+            reverse_index,
+            reverse_cache: VocabReverseCache::new(DEFAULT_REVERSE_CACHE_SIZE),
+            node_map,
+            next_slot,
+            wal_writer,
+            wal_config,
+            next_lsn: AtomicU64::new(next_lsn),
+            synced_lsn: AtomicU64::new(header.checkpoint_lsn),
+            durability_policy: DurabilityPolicy::default(),
+            arena_manager: Some(arena_manager),
+            buffer_manager: Some(buffer_manager),
+            eviction_coordinator: None,
+            bloom_filter: None,
+            lockfree_root: None,
+            lockfree_cache: None,
+            cas_retries: AtomicU64::new(0),
+        };
+
+        // Rebuild reverse_index with fresh NodeRefs after loading
+        if header.root_ptr != 0 {
+            trie.rebuild_reverse_index()?;
+        }
+
+        // Load bloom filter from disk, or rebuild if missing
+        match Self::load_bloom_filter(&trie.path) {
+            Ok(Some(bloom)) => {
+                trie.bloom_filter = Some(bloom);
+            }
+            Ok(None) => {
+                let count = trie.entry_count.load(Ordering::Acquire);
+                if count > 0 {
+                    trie.rebuild_bloom_filter(count);
+                }
+            }
+            Err(_) => {
+                let count = trie.entry_count.load(Ordering::Acquire);
+                if count > 0 {
+                    trie.rebuild_bloom_filter(count);
+                }
+            }
+        }
+
+        Ok(trie)
+    }
+}
+
+impl<S: BlockStorage> PersistentVocabARTrie<S> {
     /// Load the entire trie from disk starting from the root slot.
     ///
     /// This uses a two-phase approach:
@@ -702,8 +946,8 @@ impl PersistentVocabARTrie {
     /// The two-phase approach is necessary because serialized nodes store parent NodeRefs
     /// from the original insertion order, which we can't reproduce during load.
     fn load_trie_from_disk(
-        arena_manager: &Arc<RwLock<ArenaManager>>,
-        buffer_manager: &Arc<RwLock<BufferManager>>,
+        arena_manager: &Arc<RwLock<ArenaManager<S>>>,
+        buffer_manager: &Arc<RwLock<BufferManager<S>>>,
         root_slot: ArenaSlot,
     ) -> Result<(VocabTrieRoot, HashMap<NodeRef, *const VocabTrieNode, Xxh3DefaultBuilder>, u64)> {
         // Phase 1: Load all nodes from disk (parent fields will have stale NodeRefs)
@@ -740,8 +984,8 @@ impl PersistentVocabARTrie {
     /// This only loads the structure - parent NodeRefs will be stale and need to be
     /// fixed up by `rebuild_node_map_and_parents` afterward.
     fn load_vocab_node_structure(
-        arena_manager: &Arc<RwLock<ArenaManager>>,
-        buffer_manager: &Arc<RwLock<BufferManager>>,
+        arena_manager: &Arc<RwLock<ArenaManager<S>>>,
+        buffer_manager: &Arc<RwLock<BufferManager<S>>>,
         slot: ArenaSlot,
     ) -> Result<VocabTrieNode> {
         // Read node data from arena
@@ -1873,7 +2117,7 @@ impl PersistentVocabARTrie {
         // Get current block count from disk manager
         let block_count = {
             let bm = buffer_manager.read();
-            bm.disk_manager().block_count().unwrap_or(1)
+            bm.storage().block_count().unwrap_or(1)
         };
 
         let mut header = VocabTrieFileHeader {
@@ -1895,7 +2139,7 @@ impl PersistentVocabARTrie {
 
         {
             let bm = buffer_manager.write();
-            let dm = bm.disk_manager();
+            let dm = bm.storage();
             dm.write_header_bytes(&header.to_bytes_with_checksum())?;
             bm.flush_all()?;
             dm.sync()?;
@@ -2369,7 +2613,7 @@ struct VocabTermIterator<'a> {
 }
 
 impl<'a> VocabTermIterator<'a> {
-    fn new(trie: &'a PersistentVocabARTrie) -> Self {
+    fn new<S: BlockStorage>(trie: &'a PersistentVocabARTrie<S>) -> Self {
         let mut iter = Self { stack: Vec::new() };
         if let VocabTrieRoot::Node(ref root) = trie.root {
             iter.stack.push((root.as_ref(), Vec::new(), 0));
@@ -2414,7 +2658,7 @@ struct VocabPrefixIterator<'a> {
 }
 
 impl<'a> VocabPrefixIterator<'a> {
-    fn new(trie: &'a PersistentVocabARTrie, prefix: Vec<char>) -> Self {
+    fn new<S: BlockStorage>(trie: &'a PersistentVocabARTrie<S>, prefix: Vec<char>) -> Self {
         let mut iter = Self {
             stack: Vec::new(),
             prefix: prefix.clone(),
@@ -2459,14 +2703,14 @@ impl Iterator for VocabPrefixIterator<'_> {
     }
 }
 
-impl Drop for PersistentVocabARTrie {
+impl<S: BlockStorage> Drop for PersistentVocabARTrie<S> {
     fn drop(&mut self) {
         // Try to checkpoint on drop
         let _ = self.checkpoint();
     }
 }
 
-impl Clone for PersistentVocabARTrie {
+impl<S: BlockStorage> Clone for PersistentVocabARTrie<S> {
     fn clone(&self) -> Self {
         // Deep clone the root
         let cloned_root = self.root.clone();
@@ -2505,7 +2749,7 @@ impl Clone for PersistentVocabARTrie {
     }
 }
 
-impl std::fmt::Debug for PersistentVocabARTrie {
+impl<S: BlockStorage> std::fmt::Debug for PersistentVocabARTrie<S> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PersistentVocabARTrie")
             .field("path", &self.path)

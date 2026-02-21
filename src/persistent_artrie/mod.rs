@@ -124,7 +124,12 @@
 pub mod error;
 pub mod swizzled_ptr;
 
+pub mod block_storage;
 pub mod disk_manager;
+
+// io_uring-based block storage backend (Linux-only)
+#[cfg(feature = "io-uring-backend")]
+pub mod io_uring_disk_manager;
 
 pub mod buffer_manager;
 
@@ -243,7 +248,7 @@ pub use dict_impl::SharedARTrieParallelExt;
 ///
 /// This type alias provides `Arc<RwLock<...>>` semantics for concurrent access
 /// to the disk-backed byte-level trie.
-pub type SharedARTrie<V> = std::sync::Arc<parking_lot::RwLock<PersistentARTrie<V>>>;
+pub type SharedARTrie<V, S = MmapDiskManager> = std::sync::Arc<parking_lot::RwLock<PersistentARTrie<V, S>>>;
 
 // Arena-aware iteration types
 pub use dict_impl::{PrefixTermWithArena, PrefixTermWithValueAndArena};
@@ -257,8 +262,12 @@ pub use dict_impl::{CompactionConfig, CompactionProgress, CompactionStats};
 // Zipper types
 pub use zipper::PersistentARTrieZipper;
 
+pub use block_storage::{AlignedBlock, BlockStorage, read_vocab_header};
 pub use buffer_manager::{BufferManager, BufferPoolStats, PageReadGuard, PageWriteGuard};
-pub use disk_manager::{DiskManager, FileHeader, BLOCK_SIZE, MAX_BLOCK_COUNT};
+pub use disk_manager::{DiskManager, MmapDiskManager, FileHeader, BLOCK_SIZE, MAX_BLOCK_COUNT};
+
+#[cfg(feature = "io-uring-backend")]
+pub use io_uring_disk_manager::IoUringDiskManager;
 
 // Arena types
 pub use arena::{
@@ -281,8 +290,13 @@ pub use wal::{GroupCommit, Lsn, WalConfig, WalHeader, WalReader, WalRecord, WalR
 // Async WAL types for concurrent writes during sync
 pub use wal::{
     AsyncWalConfig, AsyncWalError, AsyncWalWriter, PendingSegment, SegmentSyncManager, SyncHandle,
+    WalSyncBackend, StdFsync,
     collect_all_segments,
 };
+
+// io_uring-based WAL fsync backend (Linux-only, requires `io-uring-backend` feature)
+#[cfg(feature = "io-uring-backend")]
+pub use wal::IoUringFsync;
 
 // WAL management trait for shared WAL operations
 pub use wal_managed::{

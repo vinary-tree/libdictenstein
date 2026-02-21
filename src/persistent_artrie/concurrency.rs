@@ -236,6 +236,11 @@ pub struct EpochManager {
     global_epoch: AtomicU64,
     /// Number of active readers
     active_readers: AtomicUsize,
+    /// Condvar notified when active_readers reaches zero.
+    /// Used by `wait_for_quiescence` to avoid polling.
+    quiescence_condvar: std::sync::Condvar,
+    /// Mutex paired with `quiescence_condvar`.
+    quiescence_mutex: std::sync::Mutex<()>,
 }
 
 impl EpochManager {
@@ -244,6 +249,8 @@ impl EpochManager {
         EpochManager {
             global_epoch: AtomicU64::new(0),
             active_readers: AtomicUsize::new(0),
+            quiescence_condvar: std::sync::Condvar::new(),
+            quiescence_mutex: std::sync::Mutex::new(()),
         }
     }
 
@@ -256,8 +263,16 @@ impl EpochManager {
     }
 
     /// Exit a read epoch.
+    ///
+    /// When the last reader exits, notifies any threads waiting for quiescence.
     pub fn exit_read(&self) {
-        self.active_readers.fetch_sub(1, Ordering::Release);
+        let prev = self.active_readers.fetch_sub(1, Ordering::AcqRel);
+        // If we were the last reader (prev was 1, now 0), notify waiters
+        if prev == 1 {
+            // Lock briefly to synchronize with condvar wait
+            let _guard = self.quiescence_mutex.lock().expect("quiescence_mutex poisoned");
+            self.quiescence_condvar.notify_all();
+        }
     }
 
     /// Advance the global epoch.
@@ -325,7 +340,7 @@ impl EpochManager {
     pub fn wait_for_quiescence(
         &self,
         timeout: std::time::Duration,
-        poll_interval: std::time::Duration,
+        _poll_interval: std::time::Duration,
     ) -> Result<u64, std::time::Duration> {
         use std::time::Instant;
 
@@ -334,15 +349,36 @@ impl EpochManager {
         // Advance epoch to create a boundary
         let old_epoch = self.advance();
 
-        // Wait for readers to drain
-        while start.elapsed() < timeout {
+        // Fast path: no readers active
+        if !self.has_active_readers() {
+            return Ok(old_epoch);
+        }
+
+        // Slow path: wait on condvar for readers to drain
+        let mut guard = self.quiescence_mutex.lock().expect("quiescence_mutex poisoned");
+        loop {
             if !self.has_active_readers() {
                 return Ok(old_epoch);
             }
-            std::thread::sleep(poll_interval);
-        }
 
-        Err(start.elapsed())
+            let remaining = timeout.saturating_sub(start.elapsed());
+            if remaining.is_zero() {
+                return Err(start.elapsed());
+            }
+
+            let (new_guard, wait_result) = self.quiescence_condvar
+                .wait_timeout(guard, remaining)
+                .expect("quiescence_mutex poisoned");
+            guard = new_guard;
+
+            if !self.has_active_readers() {
+                return Ok(old_epoch);
+            }
+
+            if wait_result.timed_out() {
+                return Err(start.elapsed());
+            }
+        }
     }
 
     /// Try to achieve quiescence without blocking.
@@ -1101,20 +1137,29 @@ mod tests {
     #[test]
     fn test_epoch_wait_for_quiescence_timeout() {
         use std::time::Duration;
+        use std::sync::atomic::AtomicBool;
 
         let epoch = Arc::new(EpochManager::new());
         let epoch_clone = Arc::clone(&epoch);
 
+        // Barrier: signals that the reader has entered the epoch
+        let reader_entered = Arc::new(AtomicBool::new(false));
+        let reader_entered_clone = Arc::clone(&reader_entered);
+
         // Start a reader that will hold for a while
         let reader_handle = thread::spawn(move || {
             let _e = epoch_clone.enter_read();
+            // Signal that we've entered the epoch
+            reader_entered_clone.store(true, std::sync::atomic::Ordering::Release);
             // Hold for longer than the timeout
-            thread::sleep(Duration::from_millis(200));
+            thread::sleep(Duration::from_millis(500));
             epoch_clone.exit_read();
         });
 
-        // Give reader time to start
-        thread::sleep(Duration::from_millis(10));
+        // Spin until reader is definitely inside enter_read()
+        while !reader_entered.load(std::sync::atomic::Ordering::Acquire) {
+            thread::yield_now();
+        }
 
         // Try to wait for quiescence with short timeout
         let result = epoch.wait_for_quiescence(

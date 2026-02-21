@@ -29,7 +29,9 @@ use std::time::{Duration, Instant};
 
 use parking_lot::RwLock;
 
+use super::block_storage::BlockStorage;
 use super::buffer_manager::BufferManager;
+use super::disk_manager::MmapDiskManager;
 use super::memory_monitor::{MemoryPressureLevel, MemoryPressureMonitor};
 
 /// Configuration for adaptive buffer pool sizing.
@@ -325,12 +327,12 @@ pub struct AdaptivePoolStats {
 ///
 /// Uses a PID control algorithm to dynamically adjust buffer pool size
 /// based on cache hit rate and available memory.
-pub struct AdaptivePoolController {
+pub struct AdaptivePoolController<S: BlockStorage + 'static = MmapDiskManager> {
     /// Configuration.
     config: AdaptivePoolConfig,
 
     /// Buffer manager reference.
-    buffer_manager: Arc<BufferManager>,
+    buffer_manager: Arc<BufferManager<S>>,
 
     /// Cache statistics.
     cache_stats: Arc<CacheStats>,
@@ -363,7 +365,7 @@ pub struct AdaptivePoolController {
     shutdown: Arc<AtomicBool>,
 }
 
-impl AdaptivePoolController {
+impl<S: BlockStorage + 'static> AdaptivePoolController<S> {
     /// Create a new adaptive pool controller.
     ///
     /// # Arguments
@@ -373,7 +375,7 @@ impl AdaptivePoolController {
     /// * `memory_monitor` - Memory pressure monitor
     pub fn new(
         config: AdaptivePoolConfig,
-        buffer_manager: Arc<BufferManager>,
+        buffer_manager: Arc<BufferManager<S>>,
         cache_stats: Arc<CacheStats>,
         memory_monitor: Arc<MemoryPressureMonitor>,
     ) -> Self {
@@ -476,7 +478,7 @@ impl AdaptivePoolController {
     /// Main control loop running in background thread.
     fn control_loop(
         config: AdaptivePoolConfig,
-        buffer_manager: Arc<BufferManager>,
+        buffer_manager: Arc<BufferManager<S>>,
         cache_stats: Arc<CacheStats>,
         memory_monitor: Arc<MemoryPressureMonitor>,
         current_size: Arc<AtomicUsize>,
@@ -580,7 +582,7 @@ impl AdaptivePoolController {
     }
 }
 
-impl Drop for AdaptivePoolController {
+impl<S: BlockStorage + 'static> Drop for AdaptivePoolController<S> {
     fn drop(&mut self) {
         self.stop();
     }
