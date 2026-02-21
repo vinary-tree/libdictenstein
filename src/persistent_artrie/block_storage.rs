@@ -261,6 +261,131 @@ pub trait BlockStorage: Send + Sync {
         }
         Ok(())
     }
+
+    // =========================================================================
+    // Pre-registered buffer support (zero-copy I/O)
+    // =========================================================================
+
+    /// Register a buffer pool for zero-copy I/O.
+    ///
+    /// Called by `BufferManager` after allocating its buffer pool. Backends that
+    /// support pre-registered buffers (e.g., io_uring with `IORING_REGISTER_BUFFERS`)
+    /// can pin these buffers in the kernel for zero-copy I/O via
+    /// `ReadFixed`/`WriteFixed`, eliminating kernel-side `copy_from_user`/`copy_to_user`.
+    ///
+    /// # Safety
+    /// The caller must ensure the buffer pointers remain valid and unmoved until
+    /// `unregister_buffer_pool()` is called or the storage backend is dropped.
+    ///
+    /// # Arguments
+    /// * `buffers` - Slice of (pointer, length) pairs for each buffer to register
+    ///
+    /// Default: no-op (returns `Ok(())`)
+    unsafe fn register_buffer_pool(&self, _buffers: &[(*mut u8, usize)]) -> Result<()> {
+        Ok(())
+    }
+
+    /// Unregister a previously registered buffer pool.
+    ///
+    /// Called by `BufferManager` on drop or when the buffer pool is being
+    /// deallocated. After this call, `supports_fixed_buffers()` must return false.
+    ///
+    /// Default: no-op (returns `Ok(())`)
+    fn unregister_buffer_pool(&self) -> Result<()> {
+        Ok(())
+    }
+
+    /// Read a block using a pre-registered buffer index (zero-copy path).
+    ///
+    /// When buffers are registered, this uses `ReadFixed` instead of `Read`,
+    /// eliminating kernel-side buffer copies. The buffer must be part of the
+    /// previously registered pool.
+    ///
+    /// # Arguments
+    /// * `block_id` - Block to read
+    /// * `buffer` - Destination buffer (must be part of the registered pool)
+    /// * `buf_index` - Index into the registered buffer array
+    ///
+    /// Default: falls back to `read_block()` (ignoring `buf_index`)
+    fn read_block_fixed(
+        &self,
+        block_id: u32,
+        buffer: &mut [u8; BLOCK_SIZE],
+        _buf_index: u16,
+    ) -> Result<()> {
+        self.read_block(block_id, buffer)
+    }
+
+    /// Write a block using a pre-registered buffer index (zero-copy path).
+    ///
+    /// When buffers are registered, this uses `WriteFixed` instead of `Write`,
+    /// eliminating kernel-side buffer copies. The buffer must be part of the
+    /// previously registered pool.
+    ///
+    /// # Arguments
+    /// * `block_id` - Block to write
+    /// * `buffer` - Source buffer (must be part of the registered pool)
+    /// * `buf_index` - Index into the registered buffer array
+    ///
+    /// Default: falls back to `write_block()` (ignoring `buf_index`)
+    fn write_block_fixed(
+        &self,
+        block_id: u32,
+        buffer: &[u8; BLOCK_SIZE],
+        _buf_index: u16,
+    ) -> Result<()> {
+        self.write_block(block_id, buffer)
+    }
+
+    /// Whether this backend supports pre-registered buffers.
+    ///
+    /// Returns true only after a successful `register_buffer_pool()` call.
+    /// `BufferManager` checks this to decide between fixed and non-fixed I/O paths.
+    ///
+    /// Default: false
+    fn supports_fixed_buffers(&self) -> bool {
+        false
+    }
+
+    /// Batch read using pre-registered buffer indices (zero-copy path).
+    ///
+    /// Combines the benefits of batch SQE submission with zero-copy I/O.
+    /// No intermediate `AlignedBlock` allocation is needed since the caller's
+    /// buffers ARE the registered buffers.
+    ///
+    /// # Arguments
+    /// * `requests` - Slice of (block_id, buffer, buf_index) tuples
+    ///
+    /// Default: falls back to sequential `read_block_fixed()` calls.
+    fn read_blocks_batch_fixed(
+        &self,
+        requests: &mut [(u32, &mut [u8; BLOCK_SIZE], u16)],
+    ) -> Result<()> {
+        for (block_id, buffer, buf_index) in requests.iter_mut() {
+            self.read_block_fixed(*block_id, buffer, *buf_index)?;
+        }
+        Ok(())
+    }
+
+    /// Batch write using pre-registered buffer indices (zero-copy path).
+    ///
+    /// Combines the benefits of batch SQE submission with zero-copy I/O.
+    /// No intermediate `AlignedBlock` allocation is needed since the caller's
+    /// buffers ARE the registered buffers.
+    ///
+    /// # Arguments
+    /// * `requests` - Slice of (block_id, buffer, buf_index) tuples
+    ///
+    /// Default: falls back to sequential `write_block_fixed()` calls.
+    fn write_blocks_batch_fixed(
+        &self,
+        requests: &[(u32, &[u8; BLOCK_SIZE], u16)],
+    ) -> Result<()> {
+        for &(block_id, buffer, buf_index) in requests {
+            self.write_block_fixed(block_id, buffer, buf_index)?;
+        }
+        Ok(())
+    }
 }
 
 /// Read a VocabTrieFileHeader from block 0 of any `BlockStorage` implementation.

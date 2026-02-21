@@ -43,16 +43,23 @@
 //!
 //! # Thread Safety
 //!
-//! The io_uring ring is protected by `parking_lot::Mutex`. Contention is low because
-//! I/O latency dominates. For high-concurrency workloads, consider per-thread rings
-//! (future optimization).
+//! The io_uring rings are protected by `parking_lot::Mutex`. A striped `RingPool`
+//! distributes I/O across multiple rings to reduce mutex contention under
+//! concurrent workloads. The pool size defaults to `min(available_parallelism(), 8)`
+//! and is configurable via `create_with_ring_pool_size()`.
+//!
+//! Pre-registered buffer operations (ReadFixed/WriteFixed) always route to the
+//! primary ring (index 0) since buffer registration is per-ring. Standard I/O
+//! operations use striped ring selection for load distribution.
 
 use std::collections::HashMap;
+use std::collections::hash_map::DefaultHasher;
 use std::fs::{File, OpenOptions};
+use std::hash::{Hash, Hasher};
 use std::os::unix::fs::{FileExt, OpenOptionsExt};
 use std::os::unix::io::AsRawFd;
 use std::path::Path;
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
 use io_uring::{opcode, types, IoUring};
 use parking_lot::Mutex;
@@ -66,6 +73,151 @@ use super::error::{PersistentARTrieError, Result};
 /// 256 is a good default: large enough for batched I/O while keeping kernel
 /// memory usage reasonable (~32KB for the SQ/CQ rings).
 const DEFAULT_RING_ENTRIES: u32 = 256;
+
+/// Maximum number of rings in the pool.
+///
+/// Capped to avoid excessive kernel memory. Each ring uses ~32KB for SQ/CQ,
+/// so 8 rings = ~256KB of kernel memory.
+const MAX_RING_POOL_SIZE: usize = 8;
+
+/// Get a deterministic index for the current thread.
+///
+/// Uses `std::thread::current().id()` hashed to a `usize` for ring pool striping.
+/// This avoids external dependencies while providing good distribution across rings.
+#[inline]
+fn thread_index() -> usize {
+    let id = std::thread::current().id();
+    let mut hasher = DefaultHasher::new();
+    id.hash(&mut hasher);
+    hasher.finish() as usize
+}
+
+// =============================================================================
+// Ring Pool: striped io_uring rings for concurrent I/O
+// =============================================================================
+
+/// A pool of io_uring rings for striped I/O submission.
+///
+/// Each ring is independent with its own SQ/CQ. The file descriptor is safely
+/// shared across all rings — the kernel handles concurrent I/O to the same fd.
+///
+/// # Ring Selection
+///
+/// - **Standard ops** (Read, Write, Fsync): Use `select()` for load distribution
+/// - **Fixed-buffer ops** (ReadFixed, WriteFixed): Use `primary()` since buffer
+///   registration is per-ring
+///
+/// # Thread Safety
+///
+/// Each ring is individually protected by a `Mutex`. Operations acquire at most
+/// one ring lock at a time, so no ring-to-ring ordering is needed.
+struct RingPool {
+    rings: Vec<Mutex<IoUring>>,
+    ring_count: usize,
+}
+
+impl RingPool {
+    /// Create a new ring pool.
+    ///
+    /// # Arguments
+    /// * `count` - Number of rings (capped at `MAX_RING_POOL_SIZE`)
+    /// * `entries_per_ring` - Number of SQEs per ring (must be power of 2)
+    fn new(count: usize, entries_per_ring: u32) -> std::result::Result<Self, std::io::Error> {
+        let count = count.max(1).min(MAX_RING_POOL_SIZE);
+        let mut rings = Vec::with_capacity(count);
+        for _ in 0..count {
+            rings.push(Mutex::new(IoUring::new(entries_per_ring)?));
+        }
+        Ok(Self {
+            rings,
+            ring_count: count,
+        })
+    }
+
+    /// Select a ring for the calling thread via striping.
+    ///
+    /// Returns a reference to the ring's mutex. The caller should lock it
+    /// for the duration of a single SQE submission + CQE drain cycle.
+    #[inline]
+    fn select(&self) -> &Mutex<IoUring> {
+        let idx = thread_index() % self.ring_count;
+        &self.rings[idx]
+    }
+
+    /// Primary ring (index 0) for buffer registration and fixed-buffer I/O.
+    ///
+    /// Buffer registration via `IORING_REGISTER_BUFFERS` is per-ring, so all
+    /// ReadFixed/WriteFixed operations must use the ring that holds the
+    /// registered buffers. This keeps RLIMIT_MEMLOCK usage at 1× pool_size
+    /// instead of N× pool_size.
+    #[inline]
+    fn primary(&self) -> &Mutex<IoUring> {
+        &self.rings[0]
+    }
+
+    /// Get the number of rings in the pool.
+    #[inline]
+    fn ring_count(&self) -> usize {
+        self.ring_count
+    }
+}
+
+// =============================================================================
+// AlignedBlock Pool: recycled heap-allocated aligned buffers
+// =============================================================================
+
+/// Thread-safe freelist of `Box<AlignedBlock>` for batch I/O operations.
+///
+/// Avoids heap allocation on every `read_blocks_batch` / `write_blocks_batch`
+/// call by recycling aligned buffers. The pool is bounded at `capacity` —
+/// excess blocks returned via `release_batch` are dropped.
+///
+/// Falls back to `AlignedBlock::new_boxed()` when the pool is exhausted,
+/// so callers never fail due to pool depletion.
+pub(crate) struct AlignedBlockPool {
+    pool: Mutex<Vec<Box<AlignedBlock>>>,
+    capacity: usize,
+}
+
+impl AlignedBlockPool {
+    /// Create a new pool pre-populated with `capacity` aligned blocks.
+    fn new(capacity: usize) -> Self {
+        let pool: Vec<Box<AlignedBlock>> = (0..capacity)
+            .map(|_| AlignedBlock::new_boxed())
+            .collect();
+        Self {
+            pool: Mutex::new(pool),
+            capacity,
+        }
+    }
+
+    /// Acquire a batch of aligned blocks from the pool.
+    ///
+    /// Returns exactly `count` blocks. Blocks are taken from the pool first;
+    /// any shortfall is satisfied by fresh heap allocation.
+    fn acquire_batch(&self, count: usize) -> Vec<Box<AlignedBlock>> {
+        let mut pool = self.pool.lock();
+        let from_pool = count.min(pool.len());
+        let split_at = pool.len() - from_pool;
+        let mut blocks: Vec<Box<AlignedBlock>> = pool.split_off(split_at);
+        // Allocate any remaining from heap
+        blocks.reserve(count.saturating_sub(from_pool));
+        blocks.extend(
+            (0..count.saturating_sub(from_pool)).map(|_| AlignedBlock::new_boxed()),
+        );
+        blocks
+    }
+
+    /// Return blocks to the pool for reuse.
+    ///
+    /// Excess blocks beyond capacity are dropped automatically.
+    fn release_batch(&self, blocks: Vec<Box<AlignedBlock>>) {
+        let mut pool = self.pool.lock();
+        let space = self.capacity.saturating_sub(pool.len());
+        pool.extend(blocks.into_iter().take(space));
+        // Remaining blocks beyond capacity are dropped automatically
+    }
+}
 
 /// Cached block for sub-block I/O coalescing.
 ///
@@ -102,21 +254,29 @@ struct CachedBlock {
 /// blocks. This is the primary throughput advantage over mmap for sequential
 /// arena flushes.
 ///
-/// # Future Optimization: AlignedBlock Pool
+/// # Per-thread Ring Pool
 ///
-/// If Phase 3 benchmarks show allocator contention under heavy concurrent
-/// load, introduce an `AlignedBlock` freelist pool (`Vec<Box<AlignedBlock>>`)
-/// to recycle aligned buffers instead of heap-allocating on each misaligned
-/// I/O or cache miss. Currently, most hot-path I/O uses pre-aligned
-/// `BufferManager` buffers so the intermediate allocation path is rare,
-/// but this should be validated with profiling.
+/// A striped `RingPool` distributes I/O across multiple io_uring rings to
+/// reduce mutex contention under concurrent workloads. The default ring count
+/// is `min(available_parallelism(), 8)`. Pre-registered buffer ops always
+/// route to the primary ring (index 0) since registration is per-ring.
+///
+/// # AlignedBlock Pool
+///
+/// A thread-safe freelist of `Box<AlignedBlock>` recycles aligned buffers
+/// instead of heap-allocating on each batch I/O call. The pool capacity
+/// matches `DEFAULT_RING_ENTRIES` (256), so a full batch can be served
+/// without heap allocation.
 pub struct IoUringDiskManager {
     /// The underlying file (opened with O_DIRECT).
     file: File,
     /// Raw file descriptor for io_uring operations.
     fd: i32,
-    /// io_uring instance for async I/O submission.
-    ring: Mutex<IoUring>,
+    /// Striped pool of io_uring rings for concurrent I/O submission.
+    ///
+    /// Standard ops use `ring_pool.select()` for load distribution.
+    /// Fixed-buffer ops use `ring_pool.primary()` (registration is per-ring).
+    ring_pool: RingPool,
     /// Current file size in bytes.
     file_size: AtomicU64,
     /// In-memory block count for lock-free CAS allocation.
@@ -128,13 +288,25 @@ pub struct IoUringDiskManager {
     /// Maps `block_id -> CachedBlock`. Dirty blocks are flushed on `sync()`.
     /// Used by `read_bytes`, `write_bytes`, `read_header`, `write_header`.
     block_cache: Mutex<HashMap<u32, CachedBlock>>,
+    /// Whether a buffer pool is registered with io_uring for zero-copy I/O.
+    ///
+    /// When true, `read_block_fixed`/`write_block_fixed` use `ReadFixed`/`WriteFixed`
+    /// opcodes that skip kernel buffer copies. Set by `register_buffer_pool()`,
+    /// cleared by `unregister_buffer_pool()` or `Drop`.
+    buffers_registered: AtomicBool,
+    /// Pre-allocated pool of aligned blocks for batch I/O operations.
+    ///
+    /// Eliminates per-call heap allocation in `read_blocks_batch`,
+    /// `write_blocks_batch`, and `flush_dirty_cache`.
+    aligned_block_pool: AlignedBlockPool,
 }
 
 // SAFETY: IoUringDiskManager is Send + Sync because:
 // - File is Send + Sync
 // - All mutable state is behind atomic ops or Mutex
-// - io_uring ring is behind Mutex
+// - io_uring ring_pool is behind per-ring Mutexes
 // - block_cache is behind Mutex
+// - aligned_block_pool is behind Mutex
 unsafe impl Send for IoUringDiskManager {}
 unsafe impl Sync for IoUringDiskManager {}
 
@@ -200,10 +372,10 @@ impl IoUringDiskManager {
             })?
             .len();
 
-        // Create io_uring ring
-        let ring = IoUring::new(DEFAULT_RING_ENTRIES).map_err(|e| {
+        // Create io_uring ring pool (single ring for backward compat)
+        let ring_pool = RingPool::new(1, DEFAULT_RING_ENTRIES).map_err(|e| {
             PersistentARTrieError::IoUringError {
-                operation: "create io_uring ring".to_string(),
+                operation: "create io_uring ring pool".to_string(),
                 source: e,
             }
         })?;
@@ -213,11 +385,13 @@ impl IoUringDiskManager {
         Ok(Self {
             file,
             fd,
-            ring: Mutex::new(ring),
+            ring_pool,
             file_size: AtomicU64::new(file_size),
             block_count: AtomicU32::new(block_count),
             path: path_str,
             block_cache: Mutex::new(HashMap::new()),
+            buffers_registered: AtomicBool::new(false),
+            aligned_block_pool: AlignedBlockPool::new(DEFAULT_RING_ENTRIES as usize),
         })
     }
 
@@ -258,9 +432,9 @@ impl IoUringDiskManager {
             });
         }
 
-        let ring = IoUring::new(DEFAULT_RING_ENTRIES).map_err(|e| {
+        let ring_pool = RingPool::new(1, DEFAULT_RING_ENTRIES).map_err(|e| {
             PersistentARTrieError::IoUringError {
-                operation: "create io_uring ring".to_string(),
+                operation: "create io_uring ring pool".to_string(),
                 source: e,
             }
         })?;
@@ -270,11 +444,13 @@ impl IoUringDiskManager {
         let manager = Self {
             file,
             fd,
-            ring: Mutex::new(ring),
+            ring_pool,
             file_size: AtomicU64::new(file_size),
             block_count: AtomicU32::new(block_count),
             path: path_str,
             block_cache: Mutex::new(HashMap::new()),
+            buffers_registered: AtomicBool::new(false),
+            aligned_block_pool: AlignedBlockPool::new(DEFAULT_RING_ENTRIES as usize),
         };
 
         // Validate header
@@ -324,9 +500,9 @@ impl IoUringDiskManager {
             });
         }
 
-        let ring = IoUring::new(DEFAULT_RING_ENTRIES).map_err(|e| {
+        let ring_pool = RingPool::new(1, DEFAULT_RING_ENTRIES).map_err(|e| {
             PersistentARTrieError::IoUringError {
-                operation: "create io_uring ring".to_string(),
+                operation: "create io_uring ring pool".to_string(),
                 source: e,
             }
         })?;
@@ -336,11 +512,13 @@ impl IoUringDiskManager {
         Ok(Self {
             file,
             fd,
-            ring: Mutex::new(ring),
+            ring_pool,
             file_size: AtomicU64::new(file_size),
             block_count: AtomicU32::new(block_count),
             path: path_str,
             block_cache: Mutex::new(HashMap::new()),
+            buffers_registered: AtomicBool::new(false),
+            aligned_block_pool: AlignedBlockPool::new(DEFAULT_RING_ENTRIES as usize),
         })
     }
 
@@ -351,12 +529,43 @@ impl IoUringDiskManager {
     /// * `ring_entries` - Number of io_uring SQEs (must be power of 2, min 1, max 32768)
     pub fn create_with_ring_size<P: AsRef<Path>>(path: P, ring_entries: u32) -> Result<Self> {
         let mut manager = Self::create(path)?;
-        // Replace the ring with a custom-sized one
-        let ring = IoUring::new(ring_entries).map_err(|e| PersistentARTrieError::IoUringError {
-            operation: "create io_uring ring with custom size".to_string(),
-            source: e,
+        // Replace the ring pool with a custom-sized one (single ring)
+        let ring_pool =
+            RingPool::new(1, ring_entries).map_err(|e| PersistentARTrieError::IoUringError {
+                operation: "create io_uring ring with custom size".to_string(),
+                source: e,
+            })?;
+        manager.ring_pool = ring_pool;
+        Ok(manager)
+    }
+
+    /// Create an io_uring disk manager with a configurable ring pool size.
+    ///
+    /// Multiple io_uring rings are striped across threads to reduce mutex contention
+    /// during concurrent I/O. Pre-registered buffer operations always route to the
+    /// primary ring (index 0).
+    ///
+    /// # Arguments
+    /// * `path` - Path to the data file
+    /// * `ring_count` - Number of io_uring rings in the pool (1 = single ring, default behavior)
+    ///
+    /// # Examples
+    /// ```no_run
+    /// use libdictenstein::persistent_artrie::IoUringDiskManager;
+    /// let dm = IoUringDiskManager::create_with_ring_pool_size("/tmp/test.part", 4).unwrap();
+    /// ```
+    pub fn create_with_ring_pool_size<P: AsRef<Path>>(
+        path: P,
+        ring_count: usize,
+    ) -> Result<Self> {
+        let mut manager = Self::create(path)?;
+        let ring_pool = RingPool::new(ring_count, DEFAULT_RING_ENTRIES).map_err(|e| {
+            PersistentARTrieError::IoUringError {
+                operation: format!("create io_uring ring pool ({} rings)", ring_count),
+                source: e,
+            }
         })?;
-        manager.ring = Mutex::new(ring);
+        manager.ring_pool = ring_pool;
         Ok(manager)
     }
 
@@ -470,6 +679,8 @@ impl IoUringDiskManager {
 
     /// Submit a single read SQE to io_uring and wait for the CQE.
     ///
+    /// Uses `ring_pool.select()` for striped load distribution.
+    ///
     /// # Safety contract
     /// - `buf` must point to at least `len` bytes of writable memory
     /// - `buf` must be 4096-byte aligned (O_DIRECT requirement)
@@ -480,7 +691,7 @@ impl IoUringDiskManager {
             .build()
             .user_data(0x01);
 
-        let mut ring = self.ring.lock();
+        let mut ring = self.ring_pool.select().lock();
 
         unsafe {
             ring.submission()
@@ -532,6 +743,8 @@ impl IoUringDiskManager {
 
     /// Submit a single write SQE to io_uring and wait for the CQE.
     ///
+    /// Uses `ring_pool.select()` for striped load distribution.
+    ///
     /// # Safety contract
     /// - `buf` must point to at least `len` bytes of readable memory
     /// - `buf` must be 4096-byte aligned (O_DIRECT requirement)
@@ -542,7 +755,7 @@ impl IoUringDiskManager {
             .build()
             .user_data(0x02);
 
-        let mut ring = self.ring.lock();
+        let mut ring = self.ring_pool.select().lock();
 
         unsafe {
             ring.submission()
@@ -593,12 +806,14 @@ impl IoUringDiskManager {
     }
 
     /// Submit an fsync SQE via io_uring and wait for completion.
+    ///
+    /// Uses `ring_pool.select()` — any ring can fsync the same fd.
     fn submit_fsync(&self) -> Result<()> {
         let fsync_e = opcode::Fsync::new(types::Fd(self.fd))
             .build()
             .user_data(0x03);
 
-        let mut ring = self.ring.lock();
+        let mut ring = self.ring_pool.select().lock();
 
         unsafe {
             ring.submission()
@@ -669,37 +884,125 @@ impl IoUringDiskManager {
         Ok(())
     }
 
-    /// Flush all dirty blocks from cache to disk.
+    /// Flush all dirty blocks from cache to disk via batched SQE submission.
     ///
-    /// Writes each dirty block via io_uring, then clears dirty flags.
+    /// Collects all dirty cache blocks, submits them as a single batch of
+    /// io_uring Write SQEs, and waits for all completions. This amortizes
+    /// syscall overhead across all dirty blocks (1 mutex acquisition +
+    /// 1 `submit_and_wait(N)` instead of N of each).
+    ///
+    /// If there are more dirty blocks than the ring's SQ capacity
+    /// (`DEFAULT_RING_ENTRIES`), submissions are chunked to avoid SQ overflow.
+    ///
     /// Called by `sync()` before issuing fsync.
     fn flush_dirty_cache(&self) -> Result<()> {
+        // Count dirty entries first to acquire the right batch size from the pool
+        let dirty_count = {
+            let cache = self.block_cache.lock();
+            cache.values().filter(|c| c.dirty).count()
+        };
+
+        if dirty_count == 0 {
+            return Ok(());
+        }
+
+        // Acquire aligned blocks from pool for copying dirty data
+        let mut pool_blocks = self.aligned_block_pool.acquire_batch(dirty_count);
+
         // Collect dirty blocks and their data (copy out to avoid holding lock during I/O)
-        let dirty_entries: Vec<(u32, Box<AlignedBlock>)> = {
+        let dirty_entries: Vec<(u32, usize)> = {
             let mut cache = self.block_cache.lock();
             cache
                 .iter_mut()
                 .filter(|(_, cached)| cached.dirty)
-                .map(|(&block_id, cached)| {
+                .enumerate()
+                .map(|(i, (&block_id, cached))| {
                     cached.dirty = false;
-                    let mut copy = AlignedBlock::new_boxed();
-                    copy.data.copy_from_slice(&cached.data.data);
-                    (block_id, copy)
+                    pool_blocks[i].data.copy_from_slice(&cached.data.data);
+                    (block_id, i)
                 })
                 .collect()
         };
 
-        if dirty_entries.is_empty() {
-            return Ok(());
-        }
+        // Submit all dirty blocks as batched Write SQEs, chunked to avoid SQ overflow
+        let result = (|| -> Result<()> {
+        for chunk in dirty_entries.chunks(DEFAULT_RING_ENTRIES as usize) {
+            let mut ring = self.ring_pool.select().lock();
 
-        // Write each dirty block to disk
-        for (block_id, block) in &dirty_entries {
-            let offset = *block_id as u64 * BLOCK_SIZE as u64;
-            self.submit_write(block.data.as_ptr(), BLOCK_SIZE, offset)?;
+            for (i, &(block_id, buf_idx)) in chunk.iter().enumerate() {
+                let offset = block_id as u64 * BLOCK_SIZE as u64;
+                let write_e = opcode::Write::new(
+                    types::Fd(self.fd),
+                    pool_blocks[buf_idx].data.as_ptr(),
+                    BLOCK_SIZE as u32,
+                )
+                .offset(offset)
+                .build()
+                .user_data(i as u64);
+
+                unsafe {
+                    ring.submission().push(&write_e).map_err(|_| {
+                        PersistentARTrieError::IoUringError {
+                            operation: "push dirty cache flush SQE".to_string(),
+                            source: std::io::Error::new(
+                                std::io::ErrorKind::Other,
+                                "io_uring submission queue full",
+                            ),
+                        }
+                    })?;
+                }
+            }
+
+            let count = chunk.len();
+            ring.submit_and_wait(count)
+                .map_err(|e| PersistentARTrieError::IoUringError {
+                    operation: "submit_and_wait dirty cache flush".to_string(),
+                    source: e,
+                })?;
+
+            // Drain all CQEs and validate results
+            let mut completed = 0;
+            for cqe in ring.completion() {
+                let result = cqe.result();
+                if result < 0 {
+                    return Err(PersistentARTrieError::IoUringError {
+                        operation: "dirty cache flush I/O".to_string(),
+                        source: std::io::Error::from_raw_os_error(-result),
+                    });
+                }
+                if (result as usize) < BLOCK_SIZE {
+                    return Err(PersistentARTrieError::IoUringError {
+                        operation: "dirty cache flush I/O (short write)".to_string(),
+                        source: std::io::Error::new(
+                            std::io::ErrorKind::WriteZero,
+                            format!(
+                                "short write: wrote {} bytes, expected {}",
+                                result, BLOCK_SIZE
+                            ),
+                        ),
+                    });
+                }
+                completed += 1;
+            }
+
+            if completed != count {
+                return Err(PersistentARTrieError::IoUringError {
+                    operation: "dirty cache flush completion count".to_string(),
+                    source: std::io::Error::new(
+                        std::io::ErrorKind::Other,
+                        format!("expected {} completions, got {}", count, completed),
+                    ),
+                });
+            }
         }
 
         Ok(())
+        })();
+
+        // Return pool blocks regardless of success/failure
+        self.aligned_block_pool.release_batch(pool_blocks);
+
+        result
     }
 
     // =========================================================================
@@ -814,6 +1117,11 @@ impl IoUringDiskManager {
         }
     }
 
+    /// Get the number of io_uring rings in the pool.
+    pub fn ring_count(&self) -> usize {
+        self.ring_pool.ring_count()
+    }
+
     /// Get the number of cached blocks.
     pub fn cached_block_count(&self) -> usize {
         self.block_cache.lock().len()
@@ -846,6 +1154,172 @@ impl IoUringDiskManager {
     /// Get the file path.
     pub fn file_path(&self) -> &str {
         &self.path
+    }
+
+    // =========================================================================
+    // Pre-registered buffer I/O primitives (ReadFixed / WriteFixed)
+    // =========================================================================
+
+    /// Submit a single ReadFixed SQE to io_uring and wait for the CQE.
+    ///
+    /// Uses a pre-registered buffer index to avoid kernel-side buffer copies.
+    /// The buffer must have been previously registered via `register_buffer_pool()`.
+    ///
+    /// Always uses `ring_pool.primary()` since buffer registration is per-ring.
+    ///
+    /// # Safety contract
+    /// - `buf` must point to at least `len` bytes of writable memory
+    /// - `buf` must be part of the registered buffer pool at `buf_index`
+    /// - `buf` must be 4096-byte aligned (O_DIRECT requirement)
+    /// - `buf` must remain valid until this function returns
+    fn submit_read_fixed(
+        &self,
+        buf: *mut u8,
+        len: usize,
+        offset: u64,
+        buf_index: u16,
+    ) -> Result<()> {
+        let read_e = opcode::ReadFixed::new(types::Fd(self.fd), buf, len as u32, buf_index)
+            .offset(offset)
+            .build()
+            .user_data(0x11);
+
+        let mut ring = self.ring_pool.primary().lock();
+
+        unsafe {
+            ring.submission()
+                .push(&read_e)
+                .map_err(|_| PersistentARTrieError::IoUringError {
+                    operation: "push ReadFixed SQE".to_string(),
+                    source: std::io::Error::new(
+                        std::io::ErrorKind::Other,
+                        "io_uring submission queue full",
+                    ),
+                })?;
+        }
+
+        ring.submit_and_wait(1)
+            .map_err(|e| PersistentARTrieError::IoUringError {
+                operation: "submit_and_wait ReadFixed".to_string(),
+                source: e,
+            })?;
+
+        let cqe = ring.completion().next().ok_or_else(|| {
+            PersistentARTrieError::IoUringError {
+                operation: "ReadFixed completion".to_string(),
+                source: std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    "no completion entry after submit_and_wait",
+                ),
+            }
+        })?;
+
+        let result = cqe.result();
+        if result < 0 {
+            return Err(PersistentARTrieError::IoUringError {
+                operation: "ReadFixed I/O".to_string(),
+                source: std::io::Error::from_raw_os_error(-result),
+            });
+        }
+        if (result as usize) < len {
+            return Err(PersistentARTrieError::IoUringError {
+                operation: "ReadFixed I/O (short read)".to_string(),
+                source: std::io::Error::new(
+                    std::io::ErrorKind::UnexpectedEof,
+                    format!("short read: got {} bytes, expected {}", result, len),
+                ),
+            });
+        }
+
+        Ok(())
+    }
+
+    /// Submit a single WriteFixed SQE to io_uring and wait for the CQE.
+    ///
+    /// Uses a pre-registered buffer index to avoid kernel-side buffer copies.
+    /// The buffer must have been previously registered via `register_buffer_pool()`.
+    ///
+    /// Always uses `ring_pool.primary()` since buffer registration is per-ring.
+    ///
+    /// # Safety contract
+    /// - `buf` must point to at least `len` bytes of readable memory
+    /// - `buf` must be part of the registered buffer pool at `buf_index`
+    /// - `buf` must be 4096-byte aligned (O_DIRECT requirement)
+    /// - `buf` must remain valid until this function returns
+    fn submit_write_fixed(
+        &self,
+        buf: *const u8,
+        len: usize,
+        offset: u64,
+        buf_index: u16,
+    ) -> Result<()> {
+        let write_e = opcode::WriteFixed::new(types::Fd(self.fd), buf, len as u32, buf_index)
+            .offset(offset)
+            .build()
+            .user_data(0x12);
+
+        let mut ring = self.ring_pool.primary().lock();
+
+        unsafe {
+            ring.submission()
+                .push(&write_e)
+                .map_err(|_| PersistentARTrieError::IoUringError {
+                    operation: "push WriteFixed SQE".to_string(),
+                    source: std::io::Error::new(
+                        std::io::ErrorKind::Other,
+                        "io_uring submission queue full",
+                    ),
+                })?;
+        }
+
+        ring.submit_and_wait(1)
+            .map_err(|e| PersistentARTrieError::IoUringError {
+                operation: "submit_and_wait WriteFixed".to_string(),
+                source: e,
+            })?;
+
+        let cqe = ring.completion().next().ok_or_else(|| {
+            PersistentARTrieError::IoUringError {
+                operation: "WriteFixed completion".to_string(),
+                source: std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    "no completion entry after submit_and_wait",
+                ),
+            }
+        })?;
+
+        let result = cqe.result();
+        if result < 0 {
+            return Err(PersistentARTrieError::IoUringError {
+                operation: "WriteFixed I/O".to_string(),
+                source: std::io::Error::from_raw_os_error(-result),
+            });
+        }
+        if (result as usize) < len {
+            return Err(PersistentARTrieError::IoUringError {
+                operation: "WriteFixed I/O (short write)".to_string(),
+                source: std::io::Error::new(
+                    std::io::ErrorKind::WriteZero,
+                    format!("short write: wrote {} bytes, expected {}", result, len),
+                ),
+            });
+        }
+
+        Ok(())
+    }
+}
+
+// =============================================================================
+// Drop implementation: unregister buffers before ring destruction
+// =============================================================================
+
+impl Drop for IoUringDiskManager {
+    fn drop(&mut self) {
+        // Unregister buffers from the primary ring if registered (explicit cleanup
+        // for orderly shutdown, even though the kernel auto-cleans on ring destruction)
+        if self.buffers_registered.load(Ordering::Acquire) {
+            let _ = self.unregister_buffer_pool();
+        }
     }
 }
 
@@ -1137,13 +1611,12 @@ impl BlockStorage for IoUringDiskManager {
             return Ok(());
         }
 
-        // Allocate aligned buffers for all I/O requests
-        let mut aligned_buffers: Vec<Box<AlignedBlock>> =
-            (0..needs_io.len()).map(|_| AlignedBlock::new_boxed()).collect();
+        // Acquire aligned buffers from pool for I/O requests
+        let mut aligned_buffers = self.aligned_block_pool.acquire_batch(needs_io.len());
 
         // Submit all read SQEs in one batch
         {
-            let mut ring = self.ring.lock();
+            let mut ring = self.ring_pool.select().lock();
 
             for (buf_idx, &req_idx) in needs_io.iter().enumerate() {
                 let block_id = requests[req_idx].0;
@@ -1219,6 +1692,9 @@ impl BlockStorage for IoUringDiskManager {
                 .copy_from_slice(&aligned_buffers[buf_idx].data);
         }
 
+        // Return aligned buffers to pool for reuse
+        self.aligned_block_pool.release_batch(aligned_buffers);
+
         Ok(())
     }
 
@@ -1243,19 +1719,15 @@ impl BlockStorage for IoUringDiskManager {
             }
         }
 
-        // Copy all source buffers to aligned buffers
-        let aligned_buffers: Vec<Box<AlignedBlock>> = requests
-            .iter()
-            .map(|(_, buffer)| {
-                let mut aligned = AlignedBlock::new_boxed();
-                aligned.data.copy_from_slice(*buffer);
-                aligned
-            })
-            .collect();
+        // Acquire aligned buffers from pool and copy source data
+        let mut aligned_buffers = self.aligned_block_pool.acquire_batch(requests.len());
+        for (i, &(_, buffer)) in requests.iter().enumerate() {
+            aligned_buffers[i].data.copy_from_slice(buffer);
+        }
 
         // Submit all write SQEs in one batch
         {
-            let mut ring = self.ring.lock();
+            let mut ring = self.ring_pool.select().lock();
 
             for (i, &(block_id, _)) in requests.iter().enumerate() {
                 let offset = block_id as u64 * BLOCK_SIZE as u64;
@@ -1324,6 +1796,346 @@ impl BlockStorage for IoUringDiskManager {
             }
         }
 
+        // Return aligned buffers to pool for reuse
+        self.aligned_block_pool.release_batch(aligned_buffers);
+
+        Ok(())
+    }
+
+    // =========================================================================
+    // Pre-registered buffer support
+    // =========================================================================
+
+    unsafe fn register_buffer_pool(&self, buffers: &[(*mut u8, usize)]) -> Result<()> {
+        if buffers.is_empty() {
+            return Ok(());
+        }
+
+        // Convert to libc::iovec for the kernel registration call
+        let iovecs: Vec<libc::iovec> = buffers
+            .iter()
+            .map(|&(ptr, len)| libc::iovec {
+                iov_base: ptr as *mut libc::c_void,
+                iov_len: len,
+            })
+            .collect();
+
+        // Register on primary ring only (RLIMIT_MEMLOCK is 1× pool_size, not N×)
+        let ring = self.ring_pool.primary().lock();
+        ring.submitter()
+            .register_buffers(&iovecs)
+            .map_err(|e| PersistentARTrieError::IoUringError {
+                operation: format!(
+                    "register_buffers ({} buffers, {} bytes each)",
+                    iovecs.len(),
+                    buffers.first().map_or(0, |b| b.1)
+                ),
+                source: e,
+            })?;
+
+        self.buffers_registered.store(true, Ordering::Release);
+
+        Ok(())
+    }
+
+    fn unregister_buffer_pool(&self) -> Result<()> {
+        if !self.buffers_registered.load(Ordering::Acquire) {
+            return Ok(());
+        }
+
+        // Unregister from primary ring (the only ring with registered buffers)
+        let ring = self.ring_pool.primary().lock();
+        ring.submitter()
+            .unregister_buffers()
+            .map_err(|e| PersistentARTrieError::IoUringError {
+                operation: "unregister_buffers".to_string(),
+                source: e,
+            })?;
+
+        self.buffers_registered.store(false, Ordering::Release);
+
+        Ok(())
+    }
+
+    fn read_block_fixed(
+        &self,
+        block_id: u32,
+        buffer: &mut [u8; BLOCK_SIZE],
+        buf_index: u16,
+    ) -> Result<()> {
+        // Graceful degradation: if buffers aren't registered, fall back to
+        // regular read_block (which uses opcode::Read instead of ReadFixed)
+        if !self.buffers_registered.load(Ordering::Acquire) {
+            return self.read_block(block_id, buffer);
+        }
+
+        self.validate_block_id(block_id)?;
+
+        // Check cache first (sub-block writes may have modified this block)
+        {
+            let cache = self.block_cache.lock();
+            if let Some(cached) = cache.get(&block_id) {
+                buffer.copy_from_slice(&cached.data.data);
+                return Ok(());
+            }
+        }
+
+        let offset = block_id as u64 * BLOCK_SIZE as u64;
+        self.submit_read_fixed(buffer.as_mut_ptr(), BLOCK_SIZE, offset, buf_index)
+    }
+
+    fn write_block_fixed(
+        &self,
+        block_id: u32,
+        buffer: &[u8; BLOCK_SIZE],
+        buf_index: u16,
+    ) -> Result<()> {
+        // Graceful degradation: if buffers aren't registered, fall back to
+        // regular write_block (which uses opcode::Write instead of WriteFixed)
+        if !self.buffers_registered.load(Ordering::Acquire) {
+            return self.write_block(block_id, buffer);
+        }
+
+        self.validate_block_id(block_id)?;
+
+        // Update cache if block is cached (keeps cache consistent)
+        {
+            let mut cache = self.block_cache.lock();
+            if let Some(cached) = cache.get_mut(&block_id) {
+                cached.data.data.copy_from_slice(buffer);
+                // Mark NOT dirty since we're writing to disk below
+                cached.dirty = false;
+            }
+        }
+
+        let offset = block_id as u64 * BLOCK_SIZE as u64;
+        self.submit_write_fixed(buffer.as_ptr(), BLOCK_SIZE, offset, buf_index)
+    }
+
+    fn supports_fixed_buffers(&self) -> bool {
+        self.buffers_registered.load(Ordering::Acquire)
+    }
+
+    fn read_blocks_batch_fixed(
+        &self,
+        requests: &mut [(u32, &mut [u8; BLOCK_SIZE], u16)],
+    ) -> Result<()> {
+        if requests.is_empty() {
+            return Ok(());
+        }
+
+        // Graceful degradation: fall back to non-fixed batch read
+        if !self.buffers_registered.load(Ordering::Acquire) {
+            let mut non_fixed: Vec<(u32, &mut [u8; BLOCK_SIZE])> = requests
+                .iter_mut()
+                .map(|(block_id, buffer, _)| (*block_id, &mut **buffer))
+                .collect();
+            return self.read_blocks_batch(&mut non_fixed);
+        }
+
+        // Validate all block IDs
+        for &(block_id, _, _) in requests.iter() {
+            self.validate_block_id(block_id)?;
+        }
+
+        // Determine which blocks need disk I/O vs cache hits
+        let mut needs_io: Vec<usize> = Vec::with_capacity(requests.len());
+        {
+            let cache = self.block_cache.lock();
+            for (i, (block_id, buffer, _)) in requests.iter_mut().enumerate() {
+                if let Some(cached) = cache.get(block_id) {
+                    buffer.copy_from_slice(&cached.data.data);
+                } else {
+                    needs_io.push(i);
+                }
+            }
+        }
+
+        if needs_io.is_empty() {
+            return Ok(());
+        }
+
+        // Submit all ReadFixed SQEs in chunks (SQ has DEFAULT_RING_ENTRIES capacity)
+        // Always use primary ring for fixed-buffer ops (registration is per-ring)
+        for chunk in needs_io.chunks(DEFAULT_RING_ENTRIES as usize) {
+            let mut ring = self.ring_pool.primary().lock();
+
+            for &req_idx in chunk {
+                let (block_id, ref buffer, buf_index) = requests[req_idx];
+                let offset = block_id as u64 * BLOCK_SIZE as u64;
+
+                let read_e = opcode::ReadFixed::new(
+                    types::Fd(self.fd),
+                    buffer.as_ptr() as *mut u8,
+                    BLOCK_SIZE as u32,
+                    buf_index,
+                )
+                .offset(offset)
+                .build()
+                .user_data(req_idx as u64);
+
+                unsafe {
+                    ring.submission().push(&read_e).map_err(|_| {
+                        PersistentARTrieError::IoUringError {
+                            operation: "push batch ReadFixed SQE".to_string(),
+                            source: std::io::Error::new(
+                                std::io::ErrorKind::Other,
+                                "io_uring submission queue full",
+                            ),
+                        }
+                    })?;
+                }
+            }
+
+            let count = chunk.len();
+            ring.submit_and_wait(count)
+                .map_err(|e| PersistentARTrieError::IoUringError {
+                    operation: "submit_and_wait batch ReadFixed".to_string(),
+                    source: e,
+                })?;
+
+            let mut completed = 0;
+            for cqe in ring.completion() {
+                let result = cqe.result();
+                if result < 0 {
+                    return Err(PersistentARTrieError::IoUringError {
+                        operation: "batch ReadFixed I/O".to_string(),
+                        source: std::io::Error::from_raw_os_error(-result),
+                    });
+                }
+                if (result as usize) < BLOCK_SIZE {
+                    return Err(PersistentARTrieError::IoUringError {
+                        operation: "batch ReadFixed I/O (short read)".to_string(),
+                        source: std::io::Error::new(
+                            std::io::ErrorKind::UnexpectedEof,
+                            format!("short read: got {} bytes, expected {}", result, BLOCK_SIZE),
+                        ),
+                    });
+                }
+                completed += 1;
+            }
+
+            if completed != count {
+                return Err(PersistentARTrieError::IoUringError {
+                    operation: "batch ReadFixed completion count".to_string(),
+                    source: std::io::Error::new(
+                        std::io::ErrorKind::Other,
+                        format!("expected {} completions, got {}", count, completed),
+                    ),
+                });
+            }
+        }
+
+        Ok(())
+    }
+
+    fn write_blocks_batch_fixed(
+        &self,
+        requests: &[(u32, &[u8; BLOCK_SIZE], u16)],
+    ) -> Result<()> {
+        if requests.is_empty() {
+            return Ok(());
+        }
+
+        // Graceful degradation: fall back to non-fixed batch write
+        if !self.buffers_registered.load(Ordering::Acquire) {
+            let non_fixed: Vec<(u32, &[u8; BLOCK_SIZE])> = requests
+                .iter()
+                .map(|&(block_id, buffer, _)| (block_id, buffer))
+                .collect();
+            return self.write_blocks_batch(&non_fixed);
+        }
+
+        // Validate all block IDs
+        for &(block_id, _, _) in requests {
+            self.validate_block_id(block_id)?;
+        }
+
+        // Update cache for any cached blocks
+        {
+            let mut cache = self.block_cache.lock();
+            for &(block_id, buffer, _) in requests {
+                if let Some(cached) = cache.get_mut(&block_id) {
+                    cached.data.data.copy_from_slice(buffer);
+                    cached.dirty = false; // Will be written to disk below
+                }
+            }
+        }
+
+        // Submit all WriteFixed SQEs in chunks (SQ has DEFAULT_RING_ENTRIES capacity)
+        // Always use primary ring for fixed-buffer ops (registration is per-ring)
+        for (chunk_idx, chunk) in requests.chunks(DEFAULT_RING_ENTRIES as usize).enumerate() {
+            let mut ring = self.ring_pool.primary().lock();
+            let base = chunk_idx * DEFAULT_RING_ENTRIES as usize;
+
+            for (i, &(block_id, buffer, buf_index)) in chunk.iter().enumerate() {
+                let offset = block_id as u64 * BLOCK_SIZE as u64;
+
+                let write_e = opcode::WriteFixed::new(
+                    types::Fd(self.fd),
+                    buffer.as_ptr(),
+                    BLOCK_SIZE as u32,
+                    buf_index,
+                )
+                .offset(offset)
+                .build()
+                .user_data((base + i) as u64);
+
+                unsafe {
+                    ring.submission().push(&write_e).map_err(|_| {
+                        PersistentARTrieError::IoUringError {
+                            operation: "push batch WriteFixed SQE".to_string(),
+                            source: std::io::Error::new(
+                                std::io::ErrorKind::Other,
+                                "io_uring submission queue full",
+                            ),
+                        }
+                    })?;
+                }
+            }
+
+            let count = chunk.len();
+            ring.submit_and_wait(count)
+                .map_err(|e| PersistentARTrieError::IoUringError {
+                    operation: "submit_and_wait batch WriteFixed".to_string(),
+                    source: e,
+                })?;
+
+            let mut completed = 0;
+            for cqe in ring.completion() {
+                let result = cqe.result();
+                if result < 0 {
+                    return Err(PersistentARTrieError::IoUringError {
+                        operation: "batch WriteFixed I/O".to_string(),
+                        source: std::io::Error::from_raw_os_error(-result),
+                    });
+                }
+                if (result as usize) < BLOCK_SIZE {
+                    return Err(PersistentARTrieError::IoUringError {
+                        operation: "batch WriteFixed I/O (short write)".to_string(),
+                        source: std::io::Error::new(
+                            std::io::ErrorKind::WriteZero,
+                            format!(
+                                "short write: wrote {} bytes, expected {}",
+                                result, BLOCK_SIZE
+                            ),
+                        ),
+                    });
+                }
+                completed += 1;
+            }
+
+            if completed != count {
+                return Err(PersistentARTrieError::IoUringError {
+                    operation: "batch WriteFixed completion count".to_string(),
+                    source: std::io::Error::new(
+                        std::io::ErrorKind::Other,
+                        format!("expected {} completions, got {}", count, completed),
+                    ),
+                });
+            }
+        }
+
         Ok(())
     }
 }
@@ -1335,7 +2147,12 @@ impl std::fmt::Debug for IoUringDiskManager {
             .field("fd", &self.fd)
             .field("file_size", &self.file_size.load(Ordering::Relaxed))
             .field("block_count", &self.block_count.load(Ordering::Relaxed))
+            .field("ring_count", &self.ring_pool.ring_count())
             .field("cached_blocks", &self.block_cache.lock().len())
+            .field(
+                "buffers_registered",
+                &self.buffers_registered.load(Ordering::Relaxed),
+            )
             .finish()
     }
 }

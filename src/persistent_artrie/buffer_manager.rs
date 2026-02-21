@@ -225,6 +225,11 @@ pub struct BufferManager<S: BlockStorage = MmapDiskManager> {
     pool_size: usize,
     /// Currently active pool size (can be <= pool_size for adaptive sizing)
     active_pool_size: AtomicUsize,
+    /// Whether this buffer manager's pool was successfully registered for zero-copy I/O.
+    ///
+    /// Set during construction if `register_buffer_pool()` succeeds. Used to decide
+    /// between fixed-buffer (zero-copy) and standard I/O paths in `flush_all()`.
+    fixed_buffers_registered: bool,
 }
 
 impl<S: BlockStorage> BufferManager<S> {
@@ -239,6 +244,19 @@ impl<S: BlockStorage> BufferManager<S> {
             .map(|_| AlignedBlock::new())
             .collect();
 
+        // Register buffer pool with storage backend for zero-copy I/O.
+        // This is a no-op for mmap but enables ReadFixed/WriteFixed for io_uring.
+        let buffers: Vec<(*mut u8, usize)> = buffer_pool
+            .iter()
+            .map(|block| (block.data.as_ptr() as *mut u8, BLOCK_SIZE))
+            .collect();
+        // Safety: buffer_pool is owned by BufferManager and will not be moved/freed
+        // until BufferManager is dropped, at which point unregister_buffer_pool is called.
+        // The Vec itself is never reallocated (capacity is fixed at construction).
+        let fixed_buffers_registered = unsafe {
+            storage.register_buffer_pool(&buffers).is_ok()
+        };
+
         Self {
             storage,
             page_table: RwLock::new(HashMap::with_capacity(pool_size)),
@@ -247,6 +265,34 @@ impl<S: BlockStorage> BufferManager<S> {
             clock_hand: AtomicUsize::new(0),
             pool_size,
             active_pool_size: AtomicUsize::new(pool_size),
+            fixed_buffers_registered,
+        }
+    }
+
+    /// Create a buffer manager without registering buffers for zero-copy I/O.
+    ///
+    /// Used for benchmarking to isolate the effect of pre-registered buffers.
+    /// In production, use [`new()`](Self::new) which always attempts registration.
+    ///
+    /// # Arguments
+    /// * `storage` - The storage backend for I/O operations
+    /// * `pool_size` - Number of frames in the buffer pool
+    #[cfg(any(test, feature = "bench-internals"))]
+    pub fn new_without_registration(storage: S, pool_size: usize) -> Self {
+        let frames: Vec<FrameMetadata> = (0..pool_size).map(|_| FrameMetadata::new()).collect();
+        let buffer_pool: Vec<AlignedBlock> = (0..pool_size)
+            .map(|_| AlignedBlock::new())
+            .collect();
+
+        Self {
+            storage,
+            page_table: RwLock::new(HashMap::with_capacity(pool_size)),
+            frames,
+            buffer_pool,
+            clock_hand: AtomicUsize::new(0),
+            pool_size,
+            active_pool_size: AtomicUsize::new(pool_size),
+            fixed_buffers_registered: false,
         }
     }
 
@@ -271,6 +317,19 @@ impl<S: BlockStorage> BufferManager<S> {
             .map(|_| AlignedBlock::new())
             .collect();
 
+        // Register buffer pool with storage backend for zero-copy I/O.
+        // Registers ALL max_pool_size buffers (not just initial_size) since the
+        // registration covers the full pre-allocated capacity.
+        let buffers: Vec<(*mut u8, usize)> = buffer_pool
+            .iter()
+            .map(|block| (block.data.as_ptr() as *mut u8, BLOCK_SIZE))
+            .collect();
+        // Safety: buffer_pool is owned by BufferManager and will not be moved/freed
+        // until BufferManager is dropped, at which point unregister_buffer_pool is called.
+        let fixed_buffers_registered = unsafe {
+            storage.register_buffer_pool(&buffers).is_ok()
+        };
+
         Self {
             storage,
             page_table: RwLock::new(HashMap::with_capacity(max_pool_size)),
@@ -279,6 +338,7 @@ impl<S: BlockStorage> BufferManager<S> {
             clock_hand: AtomicUsize::new(0),
             pool_size: max_pool_size,
             active_pool_size: AtomicUsize::new(initial_size.min(max_pool_size)),
+            fixed_buffers_registered,
         }
     }
 
@@ -393,25 +453,66 @@ impl<S: BlockStorage> BufferManager<S> {
             let frame = &self.frames[frame_id];
 
             if frame.is_dirty() {
-                self.storage
-                    .write_block(block_id, &self.buffer_pool[frame_id].data)?;
+                self.storage.write_block_fixed(
+                    block_id,
+                    &self.buffer_pool[frame_id].data,
+                    frame_id as u16,
+                )?;
                 frame.clear_dirty();
             }
         }
         Ok(())
     }
 
-    /// Flush all dirty pages to disk
+    /// Flush all dirty pages to disk via batched I/O.
+    ///
+    /// Collects all dirty frames and writes them in a single batch operation,
+    /// using zero-copy fixed buffers when available (io_uring backend) or
+    /// standard batched writes otherwise. Dirty flags are cleared only AFTER
+    /// the batch write succeeds, ensuring retry safety on failure.
     pub fn flush_all(&self) -> Result<()> {
-        for (frame_id, frame) in self.frames.iter().enumerate() {
-            if frame.is_dirty() {
-                if let Some(block_id) = frame.get_block_id() {
-                    self.storage
-                        .write_block(block_id, &self.buffer_pool[frame_id].data)?;
-                    frame.clear_dirty();
+        let active_size = self.active_pool_size.load(Ordering::Acquire);
+
+        // Collect all dirty (block_id, frame_id) pairs within active pool
+        let dirty_frames: Vec<(u32, usize)> = self.frames[..active_size]
+            .iter()
+            .enumerate()
+            .filter_map(|(frame_id, frame)| {
+                if frame.is_dirty() {
+                    frame.get_block_id().map(|block_id| (block_id, frame_id))
+                } else {
+                    None
                 }
+            })
+            .collect();
+
+        if !dirty_frames.is_empty() {
+            if self.fixed_buffers_registered {
+                // Zero-copy batched flush via pre-registered buffers
+                let requests: Vec<(u32, &[u8; BLOCK_SIZE], u16)> = dirty_frames
+                    .iter()
+                    .map(|&(block_id, frame_id)| {
+                        (block_id, &self.buffer_pool[frame_id].data, frame_id as u16)
+                    })
+                    .collect();
+                self.storage.write_blocks_batch_fixed(&requests)?;
+            } else {
+                // Fallback: batch without fixed buffers (still batches SQEs for io_uring)
+                let requests: Vec<(u32, &[u8; BLOCK_SIZE])> = dirty_frames
+                    .iter()
+                    .map(|&(block_id, frame_id)| {
+                        (block_id, &self.buffer_pool[frame_id].data)
+                    })
+                    .collect();
+                self.storage.write_blocks_batch(&requests)?;
+            }
+
+            // Clear dirty flags AFTER successful batch write (retry safety)
+            for &(_, frame_id) in &dirty_frames {
+                self.frames[frame_id].clear_dirty();
             }
         }
+
         self.storage.sync()
     }
 
@@ -425,11 +526,15 @@ impl<S: BlockStorage> BufferManager<S> {
         // Get a free frame (may evict)
         let frame_id = self.get_free_frame()?;
 
-        // Read from disk
+        // Read from disk using zero-copy path if available
         // Safety: We have exclusive access to this frame via get_free_frame
         unsafe {
             let ptr = self.buffer_pool.as_ptr() as *mut AlignedBlock;
-            self.storage.read_block(block_id, &mut (*ptr.add(frame_id)).data)?;
+            self.storage.read_block_fixed(
+                block_id,
+                &mut (*ptr.add(frame_id)).data,
+                frame_id as u16,
+            )?;
         }
 
         // Set up the frame
@@ -478,10 +583,13 @@ impl<S: BlockStorage> BufferManager<S> {
 
             // Found a victim: evict it
             if let Some(old_block_id) = frame.get_block_id() {
-                // Write back if dirty
+                // Write back if dirty (zero-copy path if available)
                 if frame.is_dirty() {
-                    self.storage
-                        .write_block(old_block_id, &self.buffer_pool[frame_id].data)?;
+                    self.storage.write_block_fixed(
+                        old_block_id,
+                        &self.buffer_pool[frame_id].data,
+                        frame_id as u16,
+                    )?;
                     frame.clear_dirty();
                 }
 
@@ -597,10 +705,14 @@ impl<S: BlockStorage> BufferManager<S> {
                     });
                 }
 
-                // Flush dirty frames before shrinking
+                // Flush dirty frames before shrinking (zero-copy path if available)
                 if frame.is_dirty() {
                     if let Some(block_id) = frame.get_block_id() {
-                        self.storage.write_block(block_id, &self.buffer_pool[frame_id].data)?;
+                        self.storage.write_block_fixed(
+                            block_id,
+                            &self.buffer_pool[frame_id].data,
+                            frame_id as u16,
+                        )?;
                         frame.clear_dirty();
                     }
                 }
@@ -676,6 +788,15 @@ impl<S: BlockStorage> BufferManager<S> {
     #[deprecated(since = "0.9.0", note = "Use storage() instead")]
     pub fn disk_manager(&self) -> &S {
         &self.storage
+    }
+}
+
+impl<S: BlockStorage> Drop for BufferManager<S> {
+    fn drop(&mut self) {
+        // Unregister the buffer pool from the storage backend.
+        // This must happen before the buffer_pool Vec is dropped to avoid
+        // use-after-free of the registered buffer pointers.
+        let _ = self.storage.unregister_buffer_pool();
     }
 }
 

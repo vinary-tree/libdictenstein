@@ -101,6 +101,8 @@ simd = []
 lling-llang = ["dep:lling-llang"]
 # io_uring-based block storage backend (Linux-only, requires kernel >= 5.1)
 io-uring-backend = ["persistent-artrie", "dep:io-uring", "dep:libc"]
+# Expose internal APIs for benchmarks (not in default features)
+bench-internals = ["io-uring-backend"]
 # SCDAWG optimization experiments
 scdawg-bloom = []  # 64-bit bloom filter for edge lookup fast-reject
 scdawg-simd = []   # SIMD edge lookup for small edge counts
@@ -236,3 +238,8 @@ required-features = ["persistent-artrie"]
 name = "io_uring_comparison_benchmarks"
 harness = false
 required-features = ["io-uring-backend"]
+
+[[bench]]
+name = "eviction_benchmarks"
+harness = false
+required-features = ["bench-internals"]
