@@ -154,6 +154,9 @@ pub mod nodes;
 // Path compression operations
 pub mod path_compression;
 
+// Compaction config/stats/progress (Phase-5 split out of dict_impl).
+pub mod compaction;
+
 // Node serialization
 pub mod serialization;
 
