@@ -176,6 +176,9 @@ pub mod atomic_ops;
 // ARTrie + EvictableARTrie trait impls for SharedARTrie<V> (Phase-5 split out of dict_impl).
 pub mod shared_trait_impl;
 
+// Public iteration API (iter / iter_strings / iter_prefix wrappers).
+pub mod public_iter;
+
 // Page-aware prefix-iteration result types (Phase-5 split out of dict_impl).
 pub mod prefix_term;
 
