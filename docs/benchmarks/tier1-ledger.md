@@ -32,7 +32,11 @@ all the duplicated modules under the audit's "share as-is" verdict.
 
 `RUST_BACKTRACE=1 RUST_LOG=warn cargo nextest run --features
 persistent-artrie --no-fail-fast`: **2017 tests run, 2017 passed,
-1 skipped, 0 failed.**
+1 skipped, 0 failed** (re-verified after the Phase-3 ledger
+addition; one intermittent
+`test_open_with_recovery_with_wal_archive` flake on the first
+attempt, passes on retry — same pattern as the documented
+`dynamic_dawg_u64_zipper` flake).
 
 This is the comprehensive end-to-end verification called for by the
 plan's Phase-8 exit gate, captured AFTER the complete Phase-5 byte
