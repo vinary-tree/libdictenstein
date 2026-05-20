@@ -16,29 +16,26 @@
 //! Read operations can proceed in parallel, while writes are serialized.
 
 use std::collections::{HashMap, HashSet};
-use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering as AtomicOrdering};
 use crate::sync_compat::RwLock;
 use log::warn;
 
-use smallvec::SmallVec;
-
-use crate::{Dictionary, MappedDictionary, MutableMappedDictionary, SyncStrategy};
+use crate::{Dictionary, MappedDictionary, SyncStrategy};
 use crate::value::DictionaryValue;
 use super::bucket::StringBucket;
-use super::error::{PersistentARTrieError, Result};
+use super::error::Result;
 use super::node_impl::PersistentARTrieNode;
 use super::nodes::{ArtNode, Node};
-use super::swizzled_ptr::{DiskLocation, NodeType, SwizzledPtr};
-use super::transitions::{bucket_to_art_node, ChildNode};
-use super::serialization::{self, v2::{SerializationContext, DeserializationContext}};
+use super::swizzled_ptr::{NodeType, SwizzledPtr};
+use super::transitions::ChildNode;
+use super::serialization;
 
-use super::arena_manager::{ArenaManager, ArenaSlot};
+use super::arena_manager::ArenaManager;
 use super::block_storage::BlockStorage;
 use super::buffer_manager::BufferManager;
 use super::disk_manager::MmapDiskManager;
-use super::wal::{AsyncWalConfig, AsyncWalWriter, Lsn, SyncHandle, WalConfig};
+use super::wal::AsyncWalWriter;
 use super::wal_managed::WalManaged;
 
 #[cfg(feature = "parallel-merge")]
