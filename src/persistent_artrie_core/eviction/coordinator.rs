@@ -8,7 +8,7 @@
 
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Weak};
+use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
@@ -18,8 +18,12 @@ use super::config::{EvictionConfig, EvictionStats, EvictionStatsAtomic, Eviction
 use super::disk_registry::DiskLocationRegistry;
 use super::lru_tracker::LruRegistry;
 use crate::persistent_artrie_core::concurrency::EpochManager;
-use crate::persistent_artrie_core::memory_monitor::{MemoryMonitorStats, MemoryPressureConfig, MemoryPressureLevel, MemoryPressureMonitor};
-use crate::persistent_artrie_core::swizzled_ptr::{NodeType, SwizzledPtr};
+use crate::persistent_artrie_core::memory_monitor::{MemoryMonitorStats, MemoryPressureLevel, MemoryPressureMonitor};
+// `NodeType` is referenced by the inline test suite at the bottom of this
+// file but not by the production impl, so it is gated to test builds.
+#[cfg(test)]
+use crate::persistent_artrie_core::swizzled_ptr::NodeType;
+use crate::persistent_artrie_core::swizzled_ptr::SwizzledPtr;
 
 /// Request for eviction with urgency level.
 #[derive(Debug, Clone, Copy)]
