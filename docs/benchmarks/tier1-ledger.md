@@ -17,7 +17,7 @@ of core, every byte/char/vocab unit + proptest + recovery + concurrent
 
 ## Cumulative session summary
 
-80+ commits land Phase 0 + Phase 1 + the audit-named Phase-2 correctness
+90+ commits land Phase 0 + Phase 1 + the audit-named Phase-2 correctness
 items + the start of Phase 3 (KeyEncoding skeleton + ByteKey/CharKey
 impls + cross-checked constants-match tests, now living downstream of
 core to preserve the layering invariant) + **Phase 4 complete** (all
@@ -28,10 +28,14 @@ shared_trait_impl, public_iter, io_uring_ctor, dictionary_traits,
 compaction_impl, persistence_api, mmap_ctor, mutation_api, disk_load,
 merge_api, disk_resolve, serialize_impl, arena_iter, cursor_iter,
 dirty_tracking, query_impl, mutation_core — driving byte dict_impl.rs
-from 9633 LOC down to 2119 LOC, a 78% reduction) + 4 Phase-6 char
-dict_impl extractions + 1 Phase-6 vocab extraction + the start of
-**Phase 7 cleanup** (stale top-level imports trimmed across wal.rs,
-dict_impl.rs, dict_impl_char.rs, node_impl.rs, types.rs, mod.rs,
+from 9633 LOC down to 2119 LOC, a 78% reduction) + **Phase 6
+in-progress** (8 char extractions: io_uring_ctor, mmap_ctor, disk_io,
+lockfree_cas, query_api, prefix_helpers — driving char dict_impl_char.rs
+from 9201 LOC down to 5748 LOC, a 38% reduction; 2 vocab extractions:
+sync_handle, io_uring_ctor — driving vocab dict_impl.rs from 3887 LOC
+down to 3646 LOC, a 6% reduction) + the start of **Phase 7 cleanup**
+(stale top-level imports trimmed across wal.rs, dict_impl.rs,
+dict_impl_char.rs, node_impl.rs, types.rs, mod.rs,
 eviction/coordinator.rs, and vocab dict_impl.rs; NodeType
 cfg(test)-gated in eviction; magic-constants-match tests relocated
 downstream of core). 1578 unit tests pass at every commit.
