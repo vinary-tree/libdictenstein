@@ -158,6 +158,9 @@ pub mod parallel_merge;
 // Observability / durability / group-commit / memory-monitor / cache-stats API.
 pub mod observability;
 
+// Epoch-based automatic checkpointing (Phase-6 split out of dict_impl_char).
+pub mod epoch_checkpointing;
+
 // Re-export shared types (always available)
 pub use types::{
     CharTrieFileHeader, CharTrieNodeInner, CharTrieRoot,
