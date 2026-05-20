@@ -5372,13 +5372,18 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
         self.prefetcher.stats().snapshot()
     }
 
-    /// Prefetch all disk-resident children at depth 0.
-    ///
-    /// This is a convenience wrapper for `prefetch_disk_refs_bounded` with depth=0.
-    #[allow(dead_code)]
-    fn prefetch_disk_refs<'a>(&self, children: impl Iterator<Item = (u32, &'a crate::persistent_artrie::swizzled_ptr::SwizzledPtr)>) {
-        self.prefetch_disk_refs_bounded(children, 0);
-    }
+    // DISABLED — `prefetch_disk_refs` was the original depth-0 convenience
+    // wrapper for `prefetch_disk_refs_bounded`; it is fully superseded by
+    // the bounded variant immediately below, which all callers in this
+    // file already use directly (lines 2533, 2573, 3453, 3495). Kept here
+    // commented out per CLAUDE.md to preserve the rename audit trail.
+    //
+    // fn prefetch_disk_refs<'a>(
+    //     &self,
+    //     children: impl Iterator<Item = (u32, &'a crate::persistent_artrie::swizzled_ptr::SwizzledPtr)>,
+    // ) {
+    //     self.prefetch_disk_refs_bounded(children, 0);
+    // }
 
     /// Prefetch disk-resident children with depth bounds for multi-level prefetching.
     ///
