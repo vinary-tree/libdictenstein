@@ -146,33 +146,10 @@ fn write_dirty_slots_for_arena<S: BlockStorage>(
     Ok(bytes_written)
 }
 
-/// Arena slot identifier - combines arena_id and slot_id
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct ArenaSlot {
-    /// Arena ID (which arena)
-    pub arena_id: u32,
-    /// Slot ID within the arena
-    pub slot_id: u32,
-}
-
-impl ArenaSlot {
-    pub fn new(arena_id: u32, slot_id: u32) -> Self {
-        Self { arena_id, slot_id }
-    }
-
-    /// Encode to a 64-bit value
-    pub fn to_u64(&self) -> u64 {
-        ((self.arena_id as u64) << 32) | (self.slot_id as u64)
-    }
-
-    /// Decode from a 64-bit value
-    pub fn from_u64(value: u64) -> Self {
-        Self {
-            arena_id: (value >> 32) as u32,
-            slot_id: (value & 0xFFFFFFFF) as u32,
-        }
-    }
-}
+/// Arena slot identifier — relocated to
+/// [`crate::persistent_artrie_core::arena_slot::ArenaSlot`]. Re-exported here
+/// so existing callers keep working unchanged.
+pub use crate::persistent_artrie_core::arena_slot::ArenaSlot;
 
 /// Handle for a reserved range of consecutive slots.
 ///

@@ -396,11 +396,11 @@ impl SwizzledPtr {
     ///
     /// - arena_id = block_id - 1 (block 0 is header, arenas start at block 1)
     /// - slot_id = offset field (repurposed for slot-based addressing)
-    pub fn as_arena_slot(&self) -> Option<super::arena_manager::ArenaSlot> {
+    pub fn as_arena_slot(&self) -> Option<super::arena_slot::ArenaSlot> {
         let loc = self.disk_location()?;
         // Arena N is stored in Block N+1
         let arena_id = loc.block_id.checked_sub(1)?;
-        Some(super::arena_manager::ArenaSlot::new(arena_id, loc.offset))
+        Some(super::arena_slot::ArenaSlot::new(arena_id, loc.offset))
     }
 
     /// Create a SwizzledPtr from an ArenaSlot.
@@ -417,7 +417,7 @@ impl SwizzledPtr {
     /// Panics in debug mode if arena_id + 1 exceeds MAX_BLOCK_ID or
     /// slot_id exceeds MAX_OFFSET.
     pub fn from_arena_slot(
-        slot: super::arena_manager::ArenaSlot,
+        slot: super::arena_slot::ArenaSlot,
         node_type: NodeType,
     ) -> Self {
         // Arena N is stored in Block N+1
@@ -720,7 +720,7 @@ mod tests {
 
     mod arena_slot_tests {
         use super::*;
-        use crate::persistent_artrie::arena_manager::ArenaSlot;
+        use crate::persistent_artrie_core::arena_slot::ArenaSlot;
 
         #[test]
         fn test_from_arena_slot() {

@@ -54,8 +54,14 @@ pub mod pathmap_zipper;
 
 // === Persistent ARTrie modules (feature-gated at module level) ===
 // These modules are gated here; internal code does NOT need feature gates.
+//
+// Layering: `persistent_artrie_core` is the shared substrate; the three
+// variants depend on core, never on each other. See
+// `persistent_artrie_core/mod.rs` for the invariant.
 #[cfg(feature = "persistent-artrie")]
 pub mod artrie_trait;
+#[cfg(feature = "persistent-artrie")]
+pub mod persistent_artrie_core;
 #[cfg(feature = "persistent-artrie")]
 pub mod persistent_artrie;
 #[cfg(feature = "persistent-artrie")]

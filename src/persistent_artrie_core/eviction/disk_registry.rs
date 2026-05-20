@@ -6,7 +6,7 @@
 use std::collections::HashMap;
 
 use super::lru_tracker::LruRegistry;
-use crate::persistent_artrie::swizzled_ptr::{NodeType, SwizzledPtr};
+use crate::persistent_artrie_core::swizzled_ptr::{NodeType, SwizzledPtr};
 
 /// Information about an evictable node.
 #[derive(Debug, Clone)]

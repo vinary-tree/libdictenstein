@@ -121,17 +121,21 @@
 //! while maintaining full durability. `Periodic` trades some durability for performance.
 
 // Core modules (storage foundation)
-pub mod error;
-pub mod swizzled_ptr;
+//
+// `error` has been relocated to `crate::persistent_artrie_core::error`; it is
+// re-exported here under its original path so existing call-sites work
+// unchanged after the core extraction.
+pub use crate::persistent_artrie_core::error;
+pub use crate::persistent_artrie_core::swizzled_ptr;
 
-pub mod block_storage;
-pub mod disk_manager;
+// Block storage abstraction + memory-mapped and io_uring backends (relocated to core).
+pub use crate::persistent_artrie_core::block_storage;
+pub use crate::persistent_artrie_core::disk_manager;
 
-// io_uring-based block storage backend (Linux-only)
 #[cfg(feature = "io-uring-backend")]
-pub mod io_uring_disk_manager;
+pub use crate::persistent_artrie_core::io_uring_disk_manager;
 
-pub mod buffer_manager;
+pub use crate::persistent_artrie_core::buffer_manager;
 
 // Arena allocation for efficient node storage
 pub mod arena;
@@ -139,7 +143,10 @@ pub mod arena;
 pub mod arena_manager;
 
 // Compact variable-width encoding
-pub mod compact_encoding;
+//
+// Relocated to `crate::persistent_artrie_core::compact_encoding`; re-exported
+// here for backward-compatible call-sites.
+pub use crate::persistent_artrie_core::compact_encoding;
 
 // ART node types
 pub mod nodes;
@@ -165,33 +172,33 @@ pub mod dict_impl;
 // Zipper implementation
 pub mod zipper;
 
-// Write-ahead log for crash recovery
-pub mod wal;
+// Write-ahead log for crash recovery (relocated to core)
+pub use crate::persistent_artrie_core::wal;
 
 // WAL management trait for shared WAL operations
 pub mod wal_managed;
 
-// Crash recovery
-pub mod recovery;
+// Crash recovery (relocated to core)
+pub use crate::persistent_artrie_core::recovery;
 
-// Epoch-based automatic checkpointing
-pub mod epoch;
+// Epoch-based automatic checkpointing (relocated to core)
+pub use crate::persistent_artrie_core::epoch;
 
-// Group commit for WAL batching (opt-in feature for slower storage)
+// Group commit for WAL batching (relocated to core)
 #[cfg(feature = "group-commit")]
-pub mod group_commit;
+pub use crate::persistent_artrie_core::group_commit;
 
 // Prefetching for DFS traversal
-pub mod prefetch;
+pub use crate::persistent_artrie_core::prefetch;
 
-// Concurrency controls - optimistic lock coupling
-pub mod concurrency;
+// Concurrency controls - optimistic lock coupling (relocated to core)
+pub use crate::persistent_artrie_core::concurrency;
 
 // Traversal context for block caching
 pub mod traversal_context;
 
-// Dirty tracking for incremental checkpoints
-pub mod dirty_tracker;
+// Dirty tracking for incremental checkpoints (relocated to core)
+pub use crate::persistent_artrie_core::dirty_tracker;
 
 // Hash-based deduplication for space efficiency
 pub mod dedup;
@@ -200,13 +207,13 @@ pub mod dedup;
 pub mod relative_encoding;
 
 // Memory pressure monitoring for proactive eviction
-pub mod memory_monitor;
+pub use crate::persistent_artrie_core::memory_monitor;
 
-// Memory pressure-driven node eviction
-pub mod eviction;
+// Memory pressure-driven node eviction (relocated to core)
+pub use crate::persistent_artrie_core::eviction;
 
 // Adaptive buffer pool sizing
-pub mod adaptive_pool;
+pub use crate::persistent_artrie_core::adaptive_pool;
 
 // Per-node logging for near-instant recovery
 pub mod per_node_log;
@@ -262,7 +269,7 @@ pub use dict_impl::{CompactionConfig, CompactionProgress, CompactionStats};
 // Zipper types
 pub use zipper::PersistentARTrieZipper;
 
-pub use block_storage::{AlignedBlock, BlockStorage, read_vocab_header};
+pub use block_storage::{AlignedBlock, BlockStorage};
 pub use buffer_manager::{BufferManager, BufferPoolStats, PageReadGuard, PageWriteGuard};
 pub use disk_manager::{DiskManager, MmapDiskManager, FileHeader, BLOCK_SIZE, MAX_BLOCK_COUNT};
 

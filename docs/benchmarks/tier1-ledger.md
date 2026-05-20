@@ -58,6 +58,34 @@ noted in the entry's `Setup:` field.
 
 ## Entries
 
+### [Phase 1] — Mechanical core extraction (Move 1)
+
+**Date:** 2026-05-20
+**Commit (before):** bf81f7f (Phase 0)
+**Hypothesis:** Relocating unit-agnostic infrastructure into `persistent_artrie_core` (file moves + import rewrites only) leaves all 1568 unit tests green with zero behavior change, and breaks the audit's cycle between `persistent_artrie` ↔ `persistent_artrie_char` / `persistent_vocab_artrie`.
+**Setup:** `cargo test --features persistent-artrie --lib` after every batch of moves; `grep -rn "crate::persistent_artrie_char\|crate::persistent_vocab"` over both `src/persistent_artrie_core/` and `src/persistent_artrie/` to verify the layering invariant.
+**Before:**
+- Cycle: `persistent_artrie::mvcc:72 -> persistent_artrie_char::nodes::PersistentCharNode` (byte → char back-edge)
+- Cycle: `persistent_artrie::block_storage::read_vocab_header -> persistent_vocab_artrie::types::VocabTrieFileHeader` (byte → vocab back-edge)
+- `MmapDiskManager::read_vocab_header` and `IoUringDiskManager::read_vocab_header` convenience methods on `persistent_artrie/disk_manager.rs:1248` and `persistent_artrie/io_uring_disk_manager.rs:1150` mirror the layering violation
+- `DurabilityPolicy` enum defined inside byte's `dict_impl.rs:394`; vocab imports it across variant boundary
+- `ArenaSlot` defined inside byte's `arena_manager.rs:151`; would have to cross into core for `swizzled_ptr.rs` to move
+- 21 files in `persistent_artrie/` that are unit-agnostic but live in the byte variant module
+**After:**
+- All three invariants pass empty:
+  - `grep "crate::persistent_artrie_char\|crate::persistent_vocab"` in `src/persistent_artrie_core/` → empty
+  - Same grep in `src/persistent_artrie/` → empty
+  - `grep "use crate::persistent_artrie::"` in `src/persistent_artrie_core/` → empty
+- New module `src/persistent_artrie_core/` with 21 sub-modules: `adaptive_pool`, `arena_slot`, `block_storage`, `buffer_manager`, `compact_encoding`, `concurrency`, `dirty_tracker`, `disk_manager`, `durability`, `epoch`, `error`, `eviction/`, `group_commit`, `io_uring_disk_manager`, `key_encoding`, `memory_monitor`, `mvcc`, `prefetch`, `recovery`, `swizzled_ptr`, `wal`
+- `persistent_artrie_char/mvcc.rs` carries `impl TrieRoot for PersistentCharNode` (eliminates the byte → char import)
+- `persistent_vocab_artrie/header.rs` carries `read_vocab_header(&impl BlockStorage)` (eliminates the byte → vocab call into vocab types)
+- `byte/mvcc.rs` is now a 41-line shim with `impl TrieRoot for PersistentNode` + re-exports
+- 1568 unit tests pass; zero failures, zero ignored
+- `cargo check --all-features`: clean (57 pre-existing warnings, unchanged count)
+**Result:** Hypothesis confirmed. Cycle broken, behavior unchanged.
+**Decision:** Ship; advance to Phase 2 (Tier 1 correctness fixes).
+**Artifacts:** N/A — pure structural change, no perf delta expected (and none measured: file moves cannot change runtime behavior).
+
 ### [Phase 0] — Hygiene baseline
 
 **Date:** 2026-05-20

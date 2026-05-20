@@ -1238,17 +1238,6 @@ impl MmapDiskManager {
         self.read_bytes(0, 0, buffer)
     }
 
-    /// Read a VocabTrieFileHeader from block 0.
-    ///
-    /// This reads the 96-byte extended header used by PersistentVocabARTrie.
-    ///
-    /// **Note:** Prefer the free function [`super::block_storage::read_vocab_header`]
-    /// which works with any `BlockStorage` implementation. This method is kept
-    /// for backward compatibility.
-    pub fn read_vocab_header(&self) -> Result<crate::persistent_vocab_artrie::types::VocabTrieFileHeader> {
-        super::block_storage::read_vocab_header(self)
-    }
-
     /// Get a raw pointer to a location in the memory map
     ///
     /// # Safety

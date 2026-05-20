@@ -5,8 +5,8 @@ use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
-use crate::persistent_artrie::concurrency::EpochManager;
-use crate::persistent_artrie::swizzled_ptr::{NodeType, SwizzledPtr};
+use crate::persistent_artrie_core::concurrency::EpochManager;
+use crate::persistent_artrie_core::swizzled_ptr::{NodeType, SwizzledPtr};
 
 #[test]
 fn test_eviction_config_presets() {

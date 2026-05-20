@@ -102,6 +102,9 @@ pub mod recovery;
 // Per-node logging for near-instant recovery (char-specific adaptation)
 pub mod per_node_log_char;
 
+// Char-side MVCC TrieRoot implementation (paired with generic core mvcc).
+pub mod mvcc;
+
 // Disk-backed implementation
 pub mod dict_impl_char;
 

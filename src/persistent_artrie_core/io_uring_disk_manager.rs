@@ -1143,14 +1143,6 @@ impl IoUringDiskManager {
         self.block_cache.lock().clear();
     }
 
-    /// Read a VocabTrieFileHeader from block 0.
-    ///
-    /// Convenience method that delegates to the free function in `block_storage`.
-    /// Mirrors [`MmapDiskManager::read_vocab_header`](super::disk_manager::MmapDiskManager::read_vocab_header).
-    pub fn read_vocab_header(&self) -> Result<crate::persistent_vocab_artrie::types::VocabTrieFileHeader> {
-        super::block_storage::read_vocab_header(self)
-    }
-
     /// Get the file path.
     pub fn file_path(&self) -> &str {
         &self.path

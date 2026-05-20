@@ -451,7 +451,7 @@ impl PersistentVocabARTrie {
         let disk_manager = DiskManager::open_without_validation(&path)?;
 
         // Read and validate the vocab-specific header
-        let header = disk_manager.read_vocab_header()?;
+        let header = crate::persistent_vocab_artrie::header::read_vocab_header(&disk_manager)?;
         header.validate()?;
 
         // Create buffer manager
@@ -816,7 +816,7 @@ impl PersistentVocabARTrie<crate::persistent_artrie::IoUringDiskManager> {
         let disk_manager = IoUringDiskManager::open_without_validation(&path)?;
 
         // Read and validate the vocab-specific header
-        let header = disk_manager.read_vocab_header()?;
+        let header = crate::persistent_vocab_artrie::header::read_vocab_header(&disk_manager)?;
         header.validate()?;
 
         // Create buffer manager

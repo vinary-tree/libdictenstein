@@ -388,20 +388,6 @@ pub trait BlockStorage: Send + Sync {
     }
 }
 
-/// Read a VocabTrieFileHeader from block 0 of any `BlockStorage` implementation.
-///
-/// This is a free function rather than a trait method because it depends on
-/// vocabulary-specific types that shouldn't be in the core storage trait.
-pub fn read_vocab_header(
-    storage: &impl BlockStorage,
-) -> Result<crate::persistent_vocab_artrie::types::VocabTrieFileHeader> {
-    use crate::persistent_vocab_artrie::types::{VocabTrieFileHeader, VOCAB_FILE_HEADER_SIZE};
-
-    let mut bytes = [0u8; VOCAB_FILE_HEADER_SIZE];
-    storage.read_header_bytes(&mut bytes)?;
-    Ok(VocabTrieFileHeader::from_bytes(&bytes))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

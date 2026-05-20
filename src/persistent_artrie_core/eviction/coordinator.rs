@@ -17,8 +17,9 @@ use parking_lot::{Condvar, Mutex, RwLock};
 use super::config::{EvictionConfig, EvictionStats, EvictionStatsAtomic, EvictionUrgency};
 use super::disk_registry::DiskLocationRegistry;
 use super::lru_tracker::LruRegistry;
-use crate::persistent_artrie::concurrency::EpochManager;
-use crate::persistent_artrie::memory_monitor::{MemoryPressureConfig, MemoryPressureLevel, MemoryPressureMonitor};
+use crate::persistent_artrie_core::concurrency::EpochManager;
+use crate::persistent_artrie_core::memory_monitor::{MemoryMonitorStats, MemoryPressureConfig, MemoryPressureLevel, MemoryPressureMonitor};
+use crate::persistent_artrie_core::swizzled_ptr::{NodeType, SwizzledPtr};
 
 /// Request for eviction with urgency level.
 #[derive(Debug, Clone, Copy)]
@@ -127,7 +128,7 @@ impl EvictionCoordinator {
         callback: F,
     ) -> Result<(), String>
     where
-        F: Fn(Vec<(u64, Vec<u8>, crate::persistent_artrie::SwizzledPtr)>) -> (usize, usize)
+        F: Fn(Vec<(u64, Vec<u8>, SwizzledPtr)>) -> (usize, usize)
             + Send
             + Sync
             + 'static,
@@ -161,7 +162,7 @@ impl EvictionCoordinator {
         callback: F,
     ) -> Result<(), String>
     where
-        F: Fn(Vec<(u64, Vec<char>, crate::persistent_artrie::SwizzledPtr)>) -> (usize, usize)
+        F: Fn(Vec<(u64, Vec<char>, SwizzledPtr)>) -> (usize, usize)
             + Send
             + Sync
             + 'static,
@@ -242,7 +243,7 @@ impl EvictionCoordinator {
     }
 
     /// Get memory pressure statistics (if monitor is running).
-    pub fn memory_pressure_stats(&self) -> Option<crate::persistent_artrie::memory_monitor::MemoryMonitorStats> {
+    pub fn memory_pressure_stats(&self) -> Option<MemoryMonitorStats> {
         self.memory_monitor.read().as_ref().map(|m| m.stats())
     }
 
@@ -348,7 +349,7 @@ impl EvictionCoordinator {
     /// Main eviction loop for byte-level tries.
     fn eviction_loop<F>(self: Arc<Self>, callback: Arc<F>)
     where
-        F: Fn(Vec<(u64, Vec<u8>, crate::persistent_artrie::SwizzledPtr)>) -> (usize, usize)
+        F: Fn(Vec<(u64, Vec<u8>, SwizzledPtr)>) -> (usize, usize)
             + Send
             + Sync,
     {
@@ -393,7 +394,7 @@ impl EvictionCoordinator {
     /// Main eviction loop for char-level tries.
     fn eviction_loop_char<F>(self: Arc<Self>, callback: Arc<F>)
     where
-        F: Fn(Vec<(u64, Vec<char>, crate::persistent_artrie::SwizzledPtr)>) -> (usize, usize)
+        F: Fn(Vec<(u64, Vec<char>, SwizzledPtr)>) -> (usize, usize)
             + Send
             + Sync,
     {
@@ -486,7 +487,7 @@ impl EvictionCoordinator {
     /// Perform eviction for byte-level tries.
     fn perform_eviction<F>(&self, callback: &F, request: &EvictionRequest) -> (usize, usize)
     where
-        F: Fn(Vec<(u64, Vec<u8>, crate::persistent_artrie::SwizzledPtr)>) -> (usize, usize),
+        F: Fn(Vec<(u64, Vec<u8>, SwizzledPtr)>) -> (usize, usize),
     {
         let batch_size = self.config.batch_size * request.urgency.batch_multiplier();
 
@@ -533,7 +534,7 @@ impl EvictionCoordinator {
     /// Perform eviction for char-level tries.
     fn perform_eviction_char<F>(&self, callback: &F, request: &EvictionRequest) -> (usize, usize)
     where
-        F: Fn(Vec<(u64, Vec<char>, crate::persistent_artrie::SwizzledPtr)>) -> (usize, usize),
+        F: Fn(Vec<(u64, Vec<char>, SwizzledPtr)>) -> (usize, usize),
     {
         let batch_size = self.config.batch_size * request.urgency.batch_multiplier();
         let target_bytes = batch_size * 256;
@@ -675,10 +676,10 @@ mod tests {
         let mut registry = DiskLocationRegistry::new();
         registry.register(
             b"test".to_vec(),
-            crate::persistent_artrie::SwizzledPtr::on_disk(1, 100, crate::persistent_artrie::NodeType::Node16),
+            SwizzledPtr::on_disk(1, 100, NodeType::Node16),
             256,
             1,
-            crate::persistent_artrie::NodeType::Node16,
+            NodeType::Node16,
         );
 
         coordinator.update_disk_registry(registry);

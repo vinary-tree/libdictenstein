@@ -45,8 +45,8 @@
 //! println!("Nodes evicted: {}", stats.nodes_evicted);
 //! ```
 //!
-//! [`MemoryPressureMonitor`]: crate::persistent_artrie::memory_monitor::MemoryPressureMonitor
-//! [`EpochManager`]: crate::persistent_artrie::concurrency::EpochManager
+//! [`MemoryPressureMonitor`]: crate::persistent_artrie_core::memory_monitor::MemoryPressureMonitor
+//! [`EpochManager`]: crate::persistent_artrie_core::concurrency::EpochManager
 
 mod config;
 mod coordinator;

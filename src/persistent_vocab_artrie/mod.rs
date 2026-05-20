@@ -106,6 +106,10 @@
 // Core types
 pub mod types;
 
+// Vocabulary-specific file-header reader (relocated out of
+// `persistent_artrie_core::block_storage` so core stays free of variant deps).
+pub mod header;
+
 // Reverse index infrastructure
 pub mod reverse_index;
 
