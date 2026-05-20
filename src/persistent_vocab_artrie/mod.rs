@@ -135,6 +135,9 @@ pub mod bloom_filter_api;
 // Public mutation API (insert / insert_batch / insert_with_index) — Phase-6 split.
 pub mod mutation_api;
 
+// Path-based queries + iter_terms wrappers — Phase-6 split.
+pub mod path_query;
+
 // Reverse index infrastructure
 pub mod reverse_index;
 
