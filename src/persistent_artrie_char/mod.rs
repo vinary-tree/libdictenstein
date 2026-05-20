@@ -148,6 +148,9 @@ pub mod merge_api;
 // Document-transaction execution (begin/tx_insert/commit/abort) — Phase-6 split.
 pub mod document_tx;
 
+// Batch-insert API (insert_batch + 9 variants) — Phase-6 split.
+pub mod batch_insert;
+
 // Re-export shared types (always available)
 pub use types::{
     CharTrieFileHeader, CharTrieNodeInner, CharTrieRoot,
