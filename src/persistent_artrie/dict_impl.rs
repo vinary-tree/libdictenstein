@@ -448,7 +448,7 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
     /// # Arguments
     /// * `path` - The full path to the modified node
     #[inline]
-    fn record_dirty_path(&mut self, path: &[u8]) {
+    pub(super) fn record_dirty_path(&mut self, path: &[u8]) {
         // Record all prefixes (including the full path) and invalidate cached locations
         let mut cache = self.persisted_disk_locations.write();
         for len in 0..=path.len() {
@@ -464,7 +464,7 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
     /// Returns true if any modification has been made along this path
     /// since the last checkpoint.
     #[inline]
-    fn path_needs_persistence(&self, path: &[u8]) -> bool {
+    pub(super) fn path_needs_persistence(&self, path: &[u8]) -> bool {
         self.dirty_prefixes.contains(path)
     }
 
@@ -474,7 +474,7 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
     /// when any modification is made. For nested ART nodes along the path,
     /// the flag propagation happens during the serialization phase based on
     /// dirty_prefixes.
-    fn propagate_dirty_to_root(&mut self) {
+    pub(super) fn propagate_dirty_to_root(&mut self) {
         if let TrieRoot::ArtNode { node, .. } = &mut self.root {
             node.header_mut().set_has_dirty_descendants(true);
         }
@@ -486,7 +486,7 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
     /// 1. When a DiskRef is resolved for mutation (to potentially skip re-serialization)
     /// 2. After serializing a node (to cache its new disk location for future checkpoints)
     #[inline]
-    fn cache_disk_location(&self, path: &[u8], ptr: SwizzledPtr) {
+    pub(super) fn cache_disk_location(&self, path: &[u8], ptr: SwizzledPtr) {
         self.persisted_disk_locations.write().insert(path.to_vec(), ptr);
     }
 
@@ -498,7 +498,7 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
     ///
     /// Returns an owned `SwizzledPtr` to avoid borrow issues with RefCell.
     #[inline]
-    fn get_cached_disk_location(&self, path: &[u8]) -> Option<SwizzledPtr> {
+    pub(super) fn get_cached_disk_location(&self, path: &[u8]) -> Option<SwizzledPtr> {
         if self.dirty_prefixes.contains(path) {
             None // Path was modified, can't use cached location
         } else {
@@ -538,7 +538,7 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
     /// clean subtrees can return their cached location without re-serialization.
     /// These cached entries are invalidated by `record_dirty_path()` when
     /// paths become dirty (on insert/remove).
-    fn clear_dirty_tracking_state(&mut self) {
+    pub(super) fn clear_dirty_tracking_state(&mut self) {
         self.dirty_prefixes.clear();
         // NOTE: Do NOT clear persisted_disk_locations - we need to preserve
         // cached locations for subsequent checkpoints to skip clean subtrees.
@@ -1152,353 +1152,6 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
     }
 
 
-    /// Serialize a bucket to disk and return a SwizzledPtr to its location.
-    ///
-    /// This allocates a new page via the BufferManager, writes the bucket data,
-    /// and returns a SwizzledPtr pointing to the disk location.
-    ///
-    /// # Arguments
-    /// * `bucket` - The bucket to serialize
-    ///
-    /// # Returns
-    /// A SwizzledPtr pointing to the bucket on disk.
-    ///
-    /// The SwizzledPtr uses:
-    /// - arena_id as block_id (23 bits, up to 8M arenas)
-    /// - slot_id as offset (22 bits, up to 4M slots per arena)
-    fn serialize_bucket_to_disk(&self, bucket: &StringBucket) -> Result<SwizzledPtr> {
-        // Get arena manager
-        let arena_manager = self.arena_manager.as_ref().ok_or_else(|| {
-            PersistentARTrieError::internal("No arena manager for disk serialization")
-        })?;
-
-        // Get bucket bytes (8KB)
-        let bucket_bytes = bucket.as_bytes();
-
-        // Allocate in arena (space-efficient: packs buckets and nodes together)
-        let slot = arena_manager.write().allocate(bucket_bytes)?;
-
-        // Return pointer using arena addressing:
-        // - block_id = arena_id + 1 (block 0 is file header, arena N is block N+1)
-        // - offset = slot_id
-        Ok(SwizzledPtr::from_arena_slot(slot, NodeType::Bucket))
-    }
-
-    /// Serialize an ART node to disk and return a SwizzledPtr to its location.
-    ///
-    /// This allocates a new page via the BufferManager, writes the serialized node,
-    /// and returns a SwizzledPtr pointing to the disk location.
-    ///
-    /// # Arguments
-    /// * `node` - The ART node to serialize
-    ///
-    /// # Returns
-    /// A SwizzledPtr pointing to the node on disk.
-    ///
-    /// The SwizzledPtr uses:
-    /// - arena_id as block_id (23 bits, up to 8M arenas)
-    /// - slot_id as offset (22 bits, up to 4M slots per arena)
-    ///
-    /// # Encoding Strategy
-    ///
-    /// Uses v2 serialization with relative offset encoding for child pointers.
-    /// When children are in the same arena as the parent, their pointers are
-    /// encoded as relative offsets (parent_slot - child_slot), which typically
-    /// fit in 1-2 bytes instead of 8 bytes for absolute pointers.
-    ///
-    /// If the parent would overflow to a new arena (breaking same-arena locality),
-    /// falls back to v1 serialization with absolute pointers.
-    fn serialize_node_to_disk(&self, node: &Node) -> Result<SwizzledPtr> {
-        // Get arena manager
-        let arena_manager = self.arena_manager.as_ref().ok_or_else(|| {
-            PersistentARTrieError::internal("No arena manager for disk serialization")
-        })?;
-
-        let mut am = arena_manager.write();
-
-        // Estimate serialized size to check for arena overflow
-        // We need a temporary context to estimate size - use current arena
-        let temp_slot = am.next_slot();
-        let temp_ctx = SerializationContext::new(temp_slot);
-        let estimated_size = serialization::v2::estimate_serialized_size_v2(node, &temp_ctx);
-
-        // Predict the actual parent slot accounting for possible arena overflow
-        let parent_slot = if am.can_fit(estimated_size) {
-            // Node will fit in current arena
-            am.next_slot()
-        } else {
-            // Node will overflow to new arena - predict slot 0 in new arena
-            ArenaSlot::new(am.arena_count() as u32, 0)
-        };
-
-        // Create serialization context with predicted parent slot for relative encoding
-        // Check if children are consecutive (enables sequential sibling storage)
-        let ctx = if let Some(first_child) = Self::check_sequential_children(node, parent_slot.arena_id) {
-            // Children are consecutive in same arena: use sequential sibling encoding
-            // This stores only (first_child_slot, count) instead of N separate pointers
-            SerializationContext::sequential(parent_slot, first_child)
-        } else {
-            // Children are not consecutive: use relative encoding only
-            SerializationContext::new(parent_slot)
-        };
-
-        // Serialize the node to bytes using v2 format with relative offsets
-        let node_bytes = serialization::v2::serialize_node_v2(node, &ctx)?;
-
-        // Allocate in arena (space-efficient: packs many nodes per 256KB block)
-        let slot = am.allocate(&node_bytes)?;
-
-        // Verify we got the slot we predicted
-        debug_assert_eq!(
-            slot, parent_slot,
-            "Slot mismatch: predicted {:?}, got {:?}",
-            parent_slot, slot
-        );
-
-        // Determine node type for SwizzledPtr
-        let node_type = match node {
-            Node::N4(_) => NodeType::Node4,
-            Node::N16(_) => NodeType::Node16,
-            Node::N48(_) => NodeType::Node48,
-            Node::N256(_) => NodeType::Node256,
-        };
-
-        // Return pointer using arena addressing:
-        // - block_id = arena_id + 1 (block 0 is file header, arena N is block N+1)
-        // - offset = slot_id
-        Ok(SwizzledPtr::from_arena_slot(slot, node_type))
-    }
-
-    /// Persist all modified nodes in the trie to disk.
-    ///
-    /// This method walks through the trie structure and serializes all
-    /// in-memory nodes to disk, then updates the file header with the
-    /// root pointer. After this, the trie can be loaded from disk without
-    /// replaying the WAL.
-    ///
-    /// # Algorithm
-    ///
-    /// 1. Recursively serialize all children (buckets and nested ART nodes)
-    /// 2. Serialize the root node/bucket
-    /// 3. Create a root descriptor block with metadata
-    /// 4. Update the file header's root_ptr to point to the descriptor
-    ///
-    /// # Returns
-    ///
-    /// `Ok(())` on success, or an error if serialization fails.
-    pub fn persist_to_disk(&mut self) -> Result<()> {
-
-        // Get buffer manager and arena manager
-        let buffer_manager = self.buffer_manager.as_ref().ok_or_else(|| {
-            PersistentARTrieError::internal("No buffer manager for disk serialization")
-        })?;
-
-        // Serialize the trie root and get a descriptor
-        let (root_type, root_ptr, is_final, term_count) = match &self.root {
-            TrieRoot::Bucket(bucket) => {
-                // Serialize the bucket
-                let ptr = self.serialize_bucket_to_disk(bucket)?;
-                (ROOT_TYPE_BUCKET, ptr.to_raw(), false, self.term_count.load(AtomicOrdering::Acquire))
-            }
-            TrieRoot::ArtNode {
-                node,
-                children,
-                is_final,
-                value,
-            } => {
-                // First, serialize all children recursively and collect their pointers
-                // Use path-aware serialization for selective dirty subtree traversal
-                let mut child_ptrs: Vec<(u8, u64)> = Vec::with_capacity(children.len());
-                for (edge, child) in children {
-                    // Construct the path to this child (single byte from root)
-                    let child_path = [*edge];
-                    let ptr = self.serialize_child_to_disk_with_path(child, &child_path)?;
-                    child_ptrs.push((*edge, ptr.to_raw()));
-                }
-
-                // Create a copy of the node with updated child pointers
-                let mut node_copy = node.clone();
-                for (edge, ptr_raw) in &child_ptrs {
-                    // Update the node's child pointer for this edge
-                    if let Some(child_ptr) = node_copy.find_child_mut(*edge) {
-                        *child_ptr = SwizzledPtr::from_raw(*ptr_raw);
-                    }
-                }
-
-                // Serialize the updated node
-                let node_ptr = self.serialize_node_to_disk(&node_copy)?;
-
-                // Value serialization not implemented (DictionaryValue requires serde bounds)
-                let _ = value;
-
-                (ROOT_TYPE_ART_NODE, node_ptr.to_raw(), *is_final, self.term_count.load(AtomicOrdering::Acquire))
-            }
-        };
-
-        // Flush arenas to disk before creating root descriptor
-        // This ensures all nodes are persisted before we record the root pointer
-        // Uses slot-level incremental flush if configured, otherwise full arena flush
-        if let Some(ref arena_manager) = self.arena_manager {
-            let stats = arena_manager.write().flush_dirty_slots()?;
-            if stats.partial_writes > 0 {
-                log::debug!(
-                    "Incremental flush: {} full arenas, {} partial, {} slots, {} bytes written, {} bytes saved",
-                    stats.full_arena_writes, stats.partial_writes, stats.slots_written,
-                    stats.bytes_written, stats.bytes_saved
-                );
-            }
-        }
-
-        // Get arena count (block IDs are derived from sequential allocation: 1..=arena_count)
-        let arena_count: u32 = if let Some(ref arena_manager) = self.arena_manager {
-            arena_manager.read().arena_count() as u32
-        } else {
-            0
-        };
-
-        // Create root descriptor (fixed 18 bytes)
-        // Format:
-        //   0: type (1 byte)
-        //   1: is_final (1 byte)
-        //   2-5: term_count (4 bytes, little endian)
-        //   6-9: arena_count (4 bytes, little endian)
-        //   10-17: root_ptr (8 bytes, little endian)
-        //
-        // Note: Arena block IDs are NOT stored - they are derived from sequential allocation:
-        // Block 0 = file header + descriptor, Blocks 1..=arena_count = arenas
-        let mut descriptor = [0u8; 18];
-        descriptor[0] = root_type;
-        descriptor[1] = if is_final { 1 } else { 0 };
-        descriptor[2..6].copy_from_slice(&(term_count as u32).to_le_bytes());
-        descriptor[6..10].copy_from_slice(&arena_count.to_le_bytes());
-        descriptor[10..18].copy_from_slice(&root_ptr.to_le_bytes());
-
-        // Write descriptor to fixed location in block 0 (offset 64, after file header)
-        // This ensures arenas always occupy blocks 1, 2, 3, ... sequentially
-        const DESCRIPTOR_OFFSET: usize = 64;
-        let bm = buffer_manager.write();
-        let dm = bm.storage();
-        dm.write_bytes(0, DESCRIPTOR_OFFSET, &descriptor)?;
-
-        // Update root_ptr to point to block 0, offset 64
-        let root_descriptor_ptr = SwizzledPtr::on_disk(0, DESCRIPTOR_OFFSET as u32, NodeType::Bucket);
-        dm.set_root_ptr(root_descriptor_ptr.to_raw())?;
-        dm.set_entry_count(term_count as u64)?;
-
-        // Flush all pages to ensure durability
-        bm.flush_all()?;
-        dm.sync()?;
-
-        self.dirty.store(false, AtomicOrdering::Release);
-
-        // Clear dirty tracking state after successful checkpoint
-        // This must be done AFTER flushing to ensure durability
-        drop(bm); // Release buffer manager lock before clearing state
-        self.clear_dirty_tracking_state();
-
-        Ok(())
-    }
-
-    /// Serialize a ChildNode to disk and return its SwizzledPtr.
-    ///
-    /// This is a convenience wrapper around `serialize_child_to_disk_with_path`
-    /// that uses an empty path (legacy behavior).
-    fn serialize_child_to_disk(&self, child: &ChildNode) -> Result<SwizzledPtr> {
-        self.serialize_child_to_disk_with_path(child, &[])
-    }
-
-    /// Serialize a ChildNode to disk with path tracking for selective persistence.
-    ///
-    /// This method implements the selective dirty subtree traversal optimization:
-    /// - For `DiskRef` nodes: Returns the existing disk pointer (already persisted)
-    /// - For `ArtNode` with no dirty descendants: May skip serialization if a cached
-    ///   disk location exists for this path
-    /// - For dirty `ArtNode` or `Bucket`: Recursively serializes the node and its children
-    ///
-    /// # Arguments
-    /// * `child` - The child node to serialize
-    /// * `path` - The path from root to this child (for dirty tracking lookup)
-    ///
-    /// # Returns
-    /// The `SwizzledPtr` pointing to the serialized node on disk
-    fn serialize_child_to_disk_with_path(&self, child: &ChildNode, path: &[u8]) -> Result<SwizzledPtr> {
-        match child {
-            ChildNode::Bucket(bucket) => {
-                // Buckets are always serialized (they don't have per-entry dirty tracking)
-                let ptr = self.serialize_bucket_to_disk(bucket)?;
-                // Cache the serialized location for future checkpoints
-                self.cache_disk_location(path, ptr.clone());
-                Ok(ptr)
-            }
-            ChildNode::ArtNode {
-                node,
-                is_final,
-                value,
-                children,
-            } => {
-                // OPTIMIZATION: Check if this subtree needs persistence
-                // A node needs persistence if:
-                // 1. It's marked as dirty (IS_DIRTY flag)
-                // 2. Any of its descendants are dirty (HAS_DIRTY_DESCENDANTS flag)
-                // 3. Any of the paths in this subtree are in dirty_prefixes
-                let needs_persist = node.header().needs_persistence()
-                    || self.path_needs_persistence(path);
-
-                // If the subtree is clean and we have a cached disk location, return it
-                if !needs_persist {
-                    if let Some(cached_ptr) = self.get_cached_disk_location(path) {
-                        log::trace!(
-                            "Skipping clean subtree at path {:?} (using cached disk location)",
-                            String::from_utf8_lossy(path)
-                        );
-                        return Ok(cached_ptr);  // Already owned, no clone needed
-                    }
-                    // No cached location, but if this is a fresh in-memory node with no
-                    // dirty flags, we still need to serialize it (first persistence)
-                }
-
-                // Recursively serialize all children first
-                let mut child_ptrs: Vec<(u8, u64)> = Vec::with_capacity(children.len());
-                for (edge, child) in children {
-                    // Construct the path to this child
-                    let mut child_path = path.to_vec();
-                    child_path.push(*edge);
-
-                    let ptr = self.serialize_child_to_disk_with_path(child, &child_path)?;
-                    child_ptrs.push((*edge, ptr.to_raw()));
-                }
-
-                // Create a copy of the node with updated child pointers
-                let mut node_copy = node.clone();
-                for (edge, ptr_raw) in &child_ptrs {
-                    if let Some(child_ptr) = node_copy.find_child_mut(*edge) {
-                        *child_ptr = SwizzledPtr::from_raw(*ptr_raw);
-                    }
-                }
-
-                // CRITICAL: Set the node's is_final flag to match the ChildNode's is_final
-                // This ensures the flag survives serialization/deserialization
-                node_copy.header_mut().set_final(*is_final);
-
-                // Serialize the node
-                let node_ptr = self.serialize_node_to_disk(&node_copy)?;
-
-                // Cache the serialized location for future checkpoints
-                self.cache_disk_location(path, node_ptr.clone());
-
-                // Note: Value serialization for nested ART nodes is not yet implemented
-                // DictionaryValue would need serde bounds to enable this
-                let _ = value;
-
-                Ok(node_ptr)
-            }
-            ChildNode::DiskRef { ptr } => {
-                // Already on disk - also cache this location so future checkpoints can skip
-                self.cache_disk_location(path, ptr.clone());
-                Ok(ptr.clone())
-            }
-        }
-    }
 
     // =========================================================================
     // Arena-aware iteration and merge operations

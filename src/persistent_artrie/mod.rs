@@ -207,6 +207,9 @@ pub mod merge_api;
 // Disk-ref resolution + prefetch helpers — Phase-5 split out of dict_impl.
 pub mod disk_resolve;
 
+// On-disk serialization helpers (persist_to_disk + serialize_*) — Phase-5 split out of dict_impl.
+pub mod serialize_impl;
+
 // Page-aware prefix-iteration result types (Phase-5 split out of dict_impl).
 pub mod prefix_term;
 
