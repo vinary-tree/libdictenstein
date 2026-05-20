@@ -139,6 +139,9 @@ pub mod query_api;
 // Prefix navigation + term collection helpers (Phase-6 split out of dict_impl_char).
 pub mod prefix_helpers;
 
+// Public prefix iter + remove API (Phase-6 split out of dict_impl_char).
+pub mod prefix_api;
+
 // Re-export shared types (always available)
 pub use types::{
     CharTrieFileHeader, CharTrieNodeInner, CharTrieRoot,
