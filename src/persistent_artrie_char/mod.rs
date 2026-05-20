@@ -120,6 +120,10 @@ pub mod mvcc;
 // Disk-backed implementation
 pub mod dict_impl_char;
 
+// IoUringDiskManager-specific constructors (Phase-6 split out of dict_impl_char).
+#[cfg(feature = "io-uring-backend")]
+pub mod io_uring_ctor;
+
 // Re-export shared types (always available)
 pub use types::{
     CharTrieFileHeader, CharTrieNodeInner, CharTrieRoot,
