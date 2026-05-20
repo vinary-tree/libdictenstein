@@ -129,6 +129,9 @@ pub mod persistence_api;
 // Public query API (get_index, get_term, contains, len) — Phase-6 split.
 pub mod query_api;
 
+// BloomFilter support — Phase-6 split out of dict_impl.
+pub mod bloom_filter_api;
+
 // Reverse index infrastructure
 pub mod reverse_index;
 
