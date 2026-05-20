@@ -164,6 +164,9 @@ pub mod transactions;
 #[cfg(feature = "parallel-merge")]
 pub mod parallel_merge;
 
+// Lock-free CAS cluster (Phase-5 split out of dict_impl).
+pub mod lockfree_cas;
+
 // Page-aware prefix-iteration result types (Phase-5 split out of dict_impl).
 pub mod prefix_term;
 
