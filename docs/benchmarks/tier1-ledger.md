@@ -58,6 +58,35 @@ noted in the entry's `Setup:` field.
 
 ## Entries
 
+### [Phase 4] — wal.rs decomposition (in progress)
+
+**Commits:** 45d7acc, 8d84607, 4d252f8, 69dc7d3, 4376483, 879ee6d, b9210a5.
+
+The monolithic 5000-LOC `persistent_artrie_core/wal.rs` is being split
+into the 8 sub-modules called out in the plan's Move 4a sketch. Seven
+extractions have landed so far; each is a pure code move + `pub use`
+re-export from `wal.rs`, with zero behavior change. cargo test passes
+(1578) after every step.
+
+| Sub-module | LOC | Contents |
+|------------|-----|----------|
+| `wal/sync_backend.rs` | 104 | `WalSyncBackend` trait, `StdFsync`, `IoUringFsync` |
+| `wal/config.rs`       |  82 | `WalConfig` + Default + helper constructors |
+| `wal/header.rs`       |  82 | `WalHeader` + MAGIC/VERSION/SIZE + to/from_bytes |
+| `wal/error.rs`        |  64 | `WalError` + Display/Error/From<io::Error> |
+| `wal/async_config.rs` |  60 | `AsyncWalConfig` + Default + with_pending_dir |
+| `wal/async_error.rs`  |  89 | `AsyncWalError` + Display/Error/From<WalError> |
+| `wal/reader.rs`       | 130 | `WalReader` + `WalRecordIterator` |
+
+Still inline in `wal.rs`: WalRecord/WalRecordType (codec, ~700 LOC),
+WalWriter (~500 LOC), AsyncWalWriter + SegmentSyncManager +
+PendingSegment + SyncHandle (~1500 LOC). Those involve tighter
+coupling to the rest of the file (e.g. WalWriter::RECORD_HEADER_SIZE
+is consumed by the reader; the async_writer types share several
+private fields with the segment lifecycle), so future extractions
+will need to widen a small set of visibilities or introduce
+sub-module-shared types.
+
 ### [Phase 2 → 3] — Remaining Tier 1 + initial Phase 3 work
 
 **Commits:** a63f9b6 (T1-2), c8383d7 (T1-1), eded755 (T1-3), plus version_checkpoint/version_gc/wal_managed → core and ByteKey/CharKey KeyEncoding impls.
