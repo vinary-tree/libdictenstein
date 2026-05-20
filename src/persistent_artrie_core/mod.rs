@@ -48,6 +48,7 @@ pub mod mvcc;
 pub mod prefetch;
 pub mod recovery;
 pub mod swizzled_ptr;
+pub mod traversal_context;
 pub mod version_checkpoint;
 pub mod version_gc;
 pub mod wal;
