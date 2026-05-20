@@ -130,6 +130,9 @@ pub mod mmap_ctor;
 // Disk loading + child resolution helpers (Phase-6 split out of dict_impl_char).
 pub mod disk_io;
 
+// Lock-free CAS-based concurrent insert/contains/get/increment (Phase-6 split).
+pub mod lockfree_cas;
+
 // Re-export shared types (always available)
 pub use types::{
     CharTrieFileHeader, CharTrieNodeInner, CharTrieRoot,
