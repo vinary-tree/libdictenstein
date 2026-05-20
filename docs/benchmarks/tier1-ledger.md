@@ -122,6 +122,27 @@ move to sibling modules; the *execution* logic on
 | char | `transactions.rs`   |  95 | `CharDocumentTransaction<V>` (mirrors byte) |
 | vocab | `sync_handle.rs`   | 120 | `VocabSyncHandle` (async-sync completion handle) |
 
+### [Phase 5] — byte dict_impl.rs decomposition (extended)
+
+Subsequent commit 454405d extracted the fifth byte sub-module:
+`SharedARTrieParallelExt` (the rayon-based parallel-merge extension
+trait + its blanket impl on `SharedARTrie<V>`, gated on the
+`parallel-merge` feature). To support the extraction, two private
+helpers used by the trait's impl (`PersistentARTrie::insert_impl` and
+`PersistentARTrie::get_value_impl`) had their visibility widened to
+`pub(super)` with inline rationale.
+
+dict_impl.rs went from 9633 LOC original → 8951 LOC (682 LOC across
+the five Phase-5 extractions; ~7 % reduction). Sub-modules:
+
+| Sub-module | LOC | Contents |
+|------------|-----|----------|
+| `compaction.rs`     | 101 | `CompactionConfig` + Default + `CompactionStats` + `CompactionProgress` |
+| `transactions.rs`   |  81 | `DocumentTransaction<V>` + `TransactionState` |
+| `prefix_term.rs`    |  33 | `PrefixTermWithArena` + `PrefixTermWithValueAndArena` |
+| `iterators.rs`      | 386 | `IterState` + `TermIterator<V>` + `TermValueIterator<V>` |
+| `parallel_merge.rs` | 135 | `SharedARTrieParallelExt` + blanket impl (rayon-based) |
+
 ### [Phase 5] — byte dict_impl.rs decomposition (in progress)
 
 **Commits:** 97d2600 (compaction types), 272e26e (transactions),
