@@ -125,20 +125,20 @@ re-export from `wal.rs`, with zero behavior change. cargo test passes
 | `wal/async_error.rs`  |  89 | `AsyncWalError` + Display/Error/From<WalError> |
 | `wal/reader.rs`       | 130 | `WalReader` + `WalRecordIterator` |
 
-Subsequent commits a330da5 (codec) and d71f7db (writer) extracted the
-two largest remaining chunks. wal.rs is down from ~5000 LOC original
-to ~3151 LOC. Updated table:
+Subsequent commits a330da5 (codec), d71f7db (writer),
+324b866 (pending_segment), and feae77f (sync_handle) extracted four
+more chunks. wal.rs is down from ~5000 LOC original to ~3059 LOC.
+Final table:
 
-| `wal/codec.rs`        | 668 | `WalRecord` + `WalRecordType` + serialize_payload / deserialize |
-| `wal/writer.rs`       | 463 | `WalWriter` + create/open/open_or_create/append/append_batch/sync/checkpoint/truncate/rotate_to_archive/collect_wal_segments/prune_segments_if_needed |
+| `wal/codec.rs`           | 668 | `WalRecord` + `WalRecordType` + serialize_payload / deserialize |
+| `wal/writer.rs`          | 463 | `WalWriter` + 15 methods (create/open/append/sync/checkpoint/truncate/rotate_to_archive/...) |
+| `wal/pending_segment.rs` |  36 | `PendingSegment` data carrier for rotated-but-not-yet-fsync'd segments |
+| `wal/sync_handle.rs`     | 102 | `SyncHandle` — caller-side completion handle for `sync_async()` |
 
-Still inline in `wal.rs`: AsyncWalWriter + SegmentSyncManager +
-PendingSegment + SyncHandle (the async-segment-sync cluster, ~1500
-LOC), the file-level doc comment, the crc32 helper, the `Lsn` type
-alias, and the disabled legacy `GroupCommit` stub. The async-writer
-cluster shares several private fields with the segment lifecycle so
-its extraction would need broader visibility coordination than the
-nine clean cuts landed so far.
+Eleven wal sub-modules total. Still inline: `SegmentSyncManager`
+(~360 LOC) and `AsyncWalWriter` (~480 LOC). These two share private
+fields with the segment lifecycle and must move together; that
+extraction is the natural next cut.
 
 ### [Phase 2 → 3] — Remaining Tier 1 + initial Phase 3 work
 
