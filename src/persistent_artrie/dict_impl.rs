@@ -3575,7 +3575,16 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
         self.prefetcher.stats().snapshot()
     }
 
-    /// Get a snapshot node for traversal
+    /// Get a snapshot node for traversal.
+    ///
+    /// For `TrieRoot::ArtNode`, threads the real `children: Vec<(u8, ChildNode)>`
+    /// into the `PersistentARTrieNode` so the `DictionaryNode::transition`
+    /// path returns correct in-memory transitions rather than synthetic
+    /// empty Node4 placeholders. On-disk children (`ChildNode::DiskRef`) are
+    /// not resolved here — the `DictionaryNode` traversal API skips them,
+    /// and callers needing disk-resident traversal should use
+    /// `PersistentARTrie::contains` / `get_value` which go through
+    /// `resolve_disk_ref` directly.
     fn get_root_node(&self) -> PersistentARTrieNode<V> {
         match &self.root {
             TrieRoot::Bucket(bucket) => PersistentARTrieNode::new_bucket(bucket.clone()),
@@ -3583,11 +3592,12 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
                 node,
                 is_final,
                 value,
-                ..
-            } => PersistentARTrieNode::new_art_node(
+                children,
+            } => PersistentARTrieNode::new_root_with_children(
                 node.clone(),
                 *is_final,
                 value.clone(),
+                children.clone(),
             ),
         }
     }

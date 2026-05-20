@@ -24,6 +24,7 @@ use std::sync::Arc;
 use crate::{DictionaryNode, value::DictionaryValue};
 use super::bucket::StringBucket;
 use super::nodes::{ArtNode, Node, Node4, Node16, Node48, Node256};
+use super::transitions::ChildNode;
 
 /// A node in the Persistent ART that can be either an ART internal node or a bucket leaf.
 ///
@@ -52,12 +53,20 @@ struct BucketPosition {
 enum NodeInner<V: DictionaryValue> {
     /// An ART internal node
     ArtNode {
-        /// The node variant (Node4/16/48/256)
+        /// The node variant (Node4/16/48/256). Kept for `edge_count` / type
+        /// inspection; child traversal uses `children` below, not the
+        /// `SwizzledPtr`s inside this `Node` (which are `null` placeholders
+        /// in this code path).
         node: Node,
         /// Whether this is a final state
         is_final: bool,
         /// Value if this is a final state (for mapped dictionaries)
         value: Option<V>,
+        /// Actual child subtrees (real children — `node`'s `SwizzledPtr`s
+        /// are not followed in this trait surface). Wrapped in `Arc` so
+        /// cloning a `PersistentARTrieNode` and constructing transition
+        /// targets stays cheap.
+        children: Arc<Vec<(u8, ChildNode)>>,
     },
     /// A bucket leaf node
     Bucket {
@@ -72,31 +81,73 @@ enum NodeInner<V: DictionaryValue> {
         is_final: bool,
         /// Value for empty string
         value: Option<V>,
+        /// Actual children of the root (same role as `ArtNode::children`).
+        children: Arc<Vec<(u8, ChildNode)>>,
     },
     /// An empty node (used for non-existent transitions)
     Empty,
 }
 
 impl<V: DictionaryValue> PersistentARTrieNode<V> {
-    /// Create a new root node
+    /// Create a new empty root node (no children).
     pub fn new_root() -> Self {
         Self {
             inner: Arc::new(NodeInner::Root {
                 node: Node::N4(Box::new(Node4::new())),
                 is_final: false,
                 value: None,
+                children: Arc::new(Vec::new()),
             }),
             bucket_position: None,
         }
     }
 
-    /// Create a new ART node
+    /// Create a new root node with explicit children.
+    pub fn new_root_with_children(
+        node: Node,
+        is_final: bool,
+        value: Option<V>,
+        children: Vec<(u8, ChildNode)>,
+    ) -> Self {
+        Self {
+            inner: Arc::new(NodeInner::Root {
+                node,
+                is_final,
+                value,
+                children: Arc::new(children),
+            }),
+            bucket_position: None,
+        }
+    }
+
+    /// Create a new ART node. Used when no actual children are available
+    /// (e.g., synthetic nodes in tests); for trie traversal use
+    /// [`PersistentARTrieNode::new_art_node_with_children`].
     pub fn new_art_node(node: Node, is_final: bool, value: Option<V>) -> Self {
         Self {
             inner: Arc::new(NodeInner::ArtNode {
                 node,
                 is_final,
                 value,
+                children: Arc::new(Vec::new()),
+            }),
+            bucket_position: None,
+        }
+    }
+
+    /// Create a new ART node with the given children.
+    pub fn new_art_node_with_children(
+        node: Node,
+        is_final: bool,
+        value: Option<V>,
+        children: Arc<Vec<(u8, ChildNode)>>,
+    ) -> Self {
+        Self {
+            inner: Arc::new(NodeInner::ArtNode {
+                node,
+                is_final,
+                value,
+                children,
             }),
             bucket_position: None,
         }
@@ -155,56 +206,53 @@ impl<V: DictionaryValue> PersistentARTrieNode<V> {
         }
     }
 
-    /// Get child edges from an ART node
-    fn art_edges(&self, node: &Node) -> Vec<(u8, Self)> {
-        let mut edges = Vec::new();
-
-        match node {
-            Node::N4(n) => {
-                for (key, child_ptr) in n.iter_children() {
-                    // For now, we create placeholder nodes
-                    // In full implementation, we'd resolve the SwizzledPtr
-                    let child = Self::new_art_node(
-                        Node::N4(Box::new(Node4::new())),
-                        false,
-                        None,
-                    );
-                    edges.push((key, child));
-                }
-            }
-            Node::N16(n) => {
-                for (key, _child_ptr) in n.iter_children() {
-                    let child = Self::new_art_node(
-                        Node::N4(Box::new(Node4::new())),
-                        false,
-                        None,
-                    );
-                    edges.push((key, child));
-                }
-            }
-            Node::N48(n) => {
-                for (key, _child_ptr) in n.iter_children() {
-                    let child = Self::new_art_node(
-                        Node::N4(Box::new(Node4::new())),
-                        false,
-                        None,
-                    );
-                    edges.push((key, child));
-                }
-            }
-            Node::N256(n) => {
-                for (key, _child_ptr) in n.iter_children() {
-                    let child = Self::new_art_node(
-                        Node::N4(Box::new(Node4::new())),
-                        false,
-                        None,
-                    );
-                    edges.push((key, child));
-                }
+    /// Get child edges from an ART node.
+    ///
+    /// Walks the real `children: Vec<(u8, ChildNode)>` carried by this node;
+    /// for in-memory children (`ChildNode::Bucket` and `ChildNode::ArtNode`)
+    /// constructs a properly-populated transition target. `ChildNode::DiskRef`
+    /// children are SKIPPED — without a buffer-manager handle the
+    /// `DictionaryNode` traversal cannot load the on-disk subtree; callers
+    /// that need disk-resident traversal must use `PersistentARTrie::contains`
+    /// / `get_value` (which go through the dict's own resolution path
+    /// via `resolve_disk_ref`).
+    fn art_edges(&self, children: &[(u8, ChildNode)]) -> Vec<(u8, Self)> {
+        let mut edges = Vec::with_capacity(children.len());
+        for (key, child) in children {
+            if let Some(node) = self.persistent_node_from_child(child) {
+                edges.push((*key, node));
             }
         }
-
         edges
+    }
+
+    /// Construct a `PersistentARTrieNode` representing a `ChildNode`.
+    /// Returns `None` if the child is a `DiskRef` (no traversal possible
+    /// without disk resolution).
+    fn persistent_node_from_child(&self, child: &ChildNode) -> Option<Self> {
+        match child {
+            ChildNode::Bucket(bucket) => Some(Self::new_bucket(bucket.clone())),
+            ChildNode::ArtNode {
+                node,
+                is_final,
+                value: _,
+                children,
+            } => {
+                // Note: `value` here is `Option<Vec<u8>>` (raw serialized
+                // bytes). Deserializing into `V` requires the dict's value
+                // codec, which is not available at this layer; the trait
+                // surface exposes `is_final` for navigation correctness and
+                // value bytes are retrieved via the dict's `get_value` API
+                // when needed.
+                Some(Self::new_art_node_with_children(
+                    node.clone(),
+                    *is_final,
+                    None,
+                    Arc::new(children.clone()),
+                ))
+            }
+            ChildNode::DiskRef { .. } => None,
+        }
     }
 
     /// Get edges from a bucket (first bytes of all suffixes)
@@ -259,26 +307,16 @@ impl<V: DictionaryValue> DictionaryNode for PersistentARTrieNode<V> {
 
     fn transition(&self, label: Self::Unit) -> Option<Self> {
         match &*self.inner {
-            NodeInner::ArtNode { node, .. } | NodeInner::Root { node, .. } => {
-                // Transition via ART node
-                let child_ptr = match node {
-                    Node::N4(n) => n.find_child(label),
-                    Node::N16(n) => n.find_child(label),
-                    Node::N48(n) => n.find_child(label),
-                    Node::N256(n) => n.find_child(label),
-                };
-
-                if child_ptr.is_some() {
-                    // In full implementation, resolve SwizzledPtr
-                    // For now, return a placeholder
-                    Some(Self::new_art_node(
-                        Node::N4(Box::new(Node4::new())),
-                        false,
-                        None,
-                    ))
-                } else {
-                    None
+            NodeInner::ArtNode { children, .. } | NodeInner::Root { children, .. } => {
+                // Linear scan over real children (each node holds at most 256
+                // entries; the inner Vec is sorted by insertion order, not by
+                // key, so we cannot binary-search without an additional pass).
+                for (key, child) in children.iter() {
+                    if *key == label {
+                        return self.persistent_node_from_child(child);
+                    }
                 }
+                None
             }
             NodeInner::Bucket { bucket } => {
                 if let Some(ref pos) = self.bucket_position {
@@ -321,8 +359,8 @@ impl<V: DictionaryValue> DictionaryNode for PersistentARTrieNode<V> {
 
     fn edges(&self) -> Box<dyn Iterator<Item = (Self::Unit, Self)> + '_> {
         match &*self.inner {
-            NodeInner::ArtNode { node, .. } | NodeInner::Root { node, .. } => {
-                Box::new(self.art_edges(node).into_iter())
+            NodeInner::ArtNode { children, .. } | NodeInner::Root { children, .. } => {
+                Box::new(self.art_edges(children).into_iter())
             }
             NodeInner::Bucket { bucket } => {
                 if let Some(ref pos) = self.bucket_position {
