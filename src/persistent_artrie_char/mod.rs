@@ -151,6 +151,10 @@ pub mod document_tx;
 // Batch-insert API (insert_batch + 9 variants) — Phase-6 split.
 pub mod batch_insert;
 
+// Rayon-based parallel merge (feature-gated) — Phase-6 split.
+#[cfg(feature = "parallel-merge")]
+pub mod parallel_merge;
+
 // Re-export shared types (always available)
 pub use types::{
     CharTrieFileHeader, CharTrieNodeInner, CharTrieRoot,
