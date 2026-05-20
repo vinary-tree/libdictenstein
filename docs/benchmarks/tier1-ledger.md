@@ -58,6 +58,53 @@ noted in the entry's `Setup:` field.
 
 ## Entries
 
+### [Phase 2 → 3] — Remaining Tier 1 + initial Phase 3 work
+
+**Commits:** a63f9b6 (T1-2), c8383d7 (T1-1), eded755 (T1-3), plus version_checkpoint/version_gc/wal_managed → core and ByteKey/CharKey KeyEncoding impls.
+
+**T1-1** — `evict_node_at_path` for char and vocab implemented via a real
+descent + atomic `unswizzle`. Char uses raw-pointer hops guarded by
+`&mut self`; vocab adds a parent-pointer-integrity check that refuses
+to evict any node whose subtree still contains in-memory descendants
+(the eviction coordinator must drain leaf-first to preserve the
+`parent: NodeRef` invariant used by `rebuild_reverse_index`).
+
+**T1-2** — `Dictionary::transition` now follows the trie's real
+`Vec<(u8, ChildNode)>` children threaded through
+`PersistentARTrieNode::new_root_with_children` /
+`new_art_node_with_children`. The previous placeholder synthesized an
+empty `Node4::new()` for every child — silent corruption for any
+Levenshtein-style search past the root. In-memory children
+(`ChildNode::Bucket`, `ChildNode::ArtNode`) are constructed correctly;
+`ChildNode::DiskRef` yields `None` (no transition through this
+NodeRef), which is honest about the limitation (callers needing
+disk-resident traversal continue to use `PersistentARTrie::contains` /
+`get_value`, which go through the dict's `resolve_disk_ref` path).
+
+**T1-3** — `LockFreeVocab::get_index`'s "on-disk → silently return
+None" branch is replaced with `unreachable!` carrying a forensic
+message about the in-memory-only invariant. Investigation confirmed
+`LockFreeVocab` has no `BufferManager` field, no disk-loading
+construction path (only `new()` / `with_start_index()`), and every
+CAS-insert path installs `Arc`-backed in-memory children — so the
+on-disk branch is genuinely unreachable today. The panic protects
+against future regressions.
+
+**Additional T2-2 cleanup** — `version_checkpoint`, `version_gc`,
+`wal_managed` moved into `persistent_artrie_core/`. Each only depends
+on `error` + `wal` (both already in core), so the moves are pure
+relocations with cheap re-exports from `persistent_artrie/mod.rs`.
+
+**Phase 3 start** — Concrete `ByteKey` and `CharKey` marker types
+added in `persistent_artrie_core/key_encoding.rs` with full
+`KeyEncoding` impls. Constants (`ARENA_MAGIC` / `ARENA_MAGIC_V2` /
+`FILE_MAGIC` / `NAME`) match the existing variant modules; 6 unit
+tests verify the values against `persistent_artrie::arena` and
+`persistent_artrie_char::arena` at test time so the trait constants
+cannot drift from the canonical sources without a test failure.
+Removed the speculative `ARENA_MAGIC_V3` constant (no V3 magic exists
+in either arena module).
+
 ### [Phase 2] — Tier 1 correctness + Tier 2 trait/test work (partial)
 
 **Date:** 2026-05-20
