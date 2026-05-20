@@ -1639,82 +1639,11 @@ pub struct PendingSegment {
     pub size_bytes: u64,
 }
 
-/// Error types specific to async WAL operations.
-#[derive(Debug)]
-pub enum AsyncWalError {
-    /// Underlying WAL error.
-    Wal(WalError),
-    /// Segment sync failed after retries.
-    SegmentSyncFailed {
-        path: PathBuf,
-        attempts: u32,
-        last_error: io::Error,
-    },
-    /// Rotation failed.
-    RotationFailed {
-        reason: String,
-        source: Option<io::Error>,
-    },
-    /// Sync wait timed out.
-    SyncTimeout {
-        target_lsn: Lsn,
-        current_synced: Lsn,
-        timeout_ms: u64,
-    },
-    /// Background sync thread panicked.
-    SyncThreadPanicked,
-}
+// `AsyncWalError` was relocated to the sibling `wal::async_error` module;
+// re-exported here under its original path.
+pub use async_error::AsyncWalError;
 
-impl std::fmt::Display for AsyncWalError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            AsyncWalError::Wal(e) => write!(f, "WAL error: {}", e),
-            AsyncWalError::SegmentSyncFailed { path, attempts, last_error } => {
-                write!(
-                    f,
-                    "Segment sync failed after {} attempts at {}: {}",
-                    attempts,
-                    path.display(),
-                    last_error
-                )
-            }
-            AsyncWalError::RotationFailed { reason, source } => {
-                if let Some(e) = source {
-                    write!(f, "Rotation failed ({}): {}", reason, e)
-                } else {
-                    write!(f, "Rotation failed: {}", reason)
-                }
-            }
-            AsyncWalError::SyncTimeout { target_lsn, current_synced, timeout_ms } => {
-                write!(
-                    f,
-                    "Sync timeout: target LSN {} not reached (current synced: {}) after {}ms",
-                    target_lsn, current_synced, timeout_ms
-                )
-            }
-            AsyncWalError::SyncThreadPanicked => {
-                write!(f, "Background sync thread panicked")
-            }
-        }
-    }
-}
-
-impl std::error::Error for AsyncWalError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            AsyncWalError::Wal(e) => Some(e),
-            AsyncWalError::SegmentSyncFailed { last_error, .. } => Some(last_error),
-            AsyncWalError::RotationFailed { source: Some(e), .. } => Some(e),
-            _ => None,
-        }
-    }
-}
-
-impl From<WalError> for AsyncWalError {
-    fn from(e: WalError) -> Self {
-        AsyncWalError::Wal(e)
-    }
-}
+mod async_error;
 
 /// Handle to track completion of an async sync operation.
 ///
