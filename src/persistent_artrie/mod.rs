@@ -220,6 +220,9 @@ pub mod cursor_iter;
 // Dirty-path tracking for selective persistence — Phase-5 split out of dict_impl.
 pub mod dirty_tracking;
 
+// Read-path query implementation (contains_impl / get_value_impl + helpers) — Phase-5 split.
+pub mod query_impl;
+
 // Page-aware prefix-iteration result types (Phase-5 split out of dict_impl).
 pub mod prefix_term;
 
