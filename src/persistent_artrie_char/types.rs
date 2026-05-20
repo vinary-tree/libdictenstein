@@ -3,8 +3,6 @@
 //! This module contains the core types used by both the in-memory and disk-backed
 //! variants of the character-level trie.
 
-use std::sync::Arc;
-
 use crate::persistent_artrie::swizzled_ptr::SwizzledPtr;
 use crate::value::DictionaryValue;
 

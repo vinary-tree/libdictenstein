@@ -212,7 +212,6 @@ pub use crate::persistent_artrie::eviction::{
     EvictionStats, EvictionUrgency, LruRegistry,
 };
 
-use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering as AtomicOrdering};
 
