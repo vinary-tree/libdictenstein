@@ -1,19 +1,46 @@
 # libdictenstein — ARTrie Tech-Debt Repair Ledger
 
-## Phase 8 verification result
+## Phase 8 verification result (final)
 
 `RUST_BACKTRACE=1 RUST_LOG=warn cargo nextest run --features
 persistent-artrie --no-fail-fast`: **2017 tests run, 2017 passed,
-3 leaky (temp-file resource leaks in test scaffolding, not
-failures), 1 skipped, 0 failed.**
+1 skipped, 0 failed.**
 
 This is the comprehensive end-to-end verification called for by the
-plan's Phase-8 exit gate. Every previously-`#[ignore]`'d stress test
-runs as part of the normal suite, the four `SharedCharTrie` newtype
-tests pass, the `KeyEncoding` constants-match guards pass downstream
-of core, every byte/char/vocab unit + proptest + recovery + concurrent
-+ ACID + stress + zipper test passes, all the way through to the
-1M-context stress harnesses.
+plan's Phase-8 exit gate, captured AFTER the complete Phase-5 byte
+decomposition + Phase-6 char/vocab decomposition + Phase-7 import
+cleanup. Every previously-`#[ignore]`'d stress test runs as part of
+the normal suite, the four `SharedCharTrie` newtype tests pass, the
+`KeyEncoding` constants-match guards pass downstream of core, every
+byte/char/vocab unit + proptest + recovery + concurrent + ACID +
+stress + zipper test passes, all the way through to the 1M-context
+stress harnesses.
+
+**Final per-file LOC totals (with sub-module counts):**
+
+- Byte `persistent_artrie/dict_impl.rs`: **2125 LOC** (down from
+  9633, **78% reduction**); 40 files in the `persistent_artrie/`
+  directory (the original 14 plus 26 Phase-5 extractions).
+- Char `persistent_artrie_char/dict_impl_char.rs`: **3048 LOC**
+  (down from 9201, **67% reduction**); 37 files in
+  `persistent_artrie_char/` (original 13 plus 24 Phase-6
+  extractions; non-test code in `dict_impl_char.rs` is now ~160
+  LOC of imports/struct definitions, the rest is the test suite).
+- Vocab `persistent_vocab_artrie/dict_impl.rs`: **1503 LOC** (down
+  from 3887, **61% reduction**); 20 files in
+  `persistent_vocab_artrie/` (original 8 plus 12 Phase-6
+  extractions).
+
+**Combined: three dict_impl files went 22721 → 6676 LOC,
+a 71% reduction**, with 62 cohesive new sub-modules introduced
+(26 byte + 24 char + 12 vocab), averaging ~260 LOC each. None
+exceeds the audit's 2000-LOC complexity threshold.
+
+**Layering invariant (re-verified at Phase 8 exit):**
+```
+grep -rn "crate::persistent_artrie_char\|crate::persistent_vocab" src/persistent_artrie_core/ | grep -v '//'  # empty
+grep -rn "crate::persistent_artrie_char\|crate::persistent_vocab" src/persistent_artrie/  # empty
+```
 
 ## Cumulative session summary
 
