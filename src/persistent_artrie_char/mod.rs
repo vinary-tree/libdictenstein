@@ -218,7 +218,6 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering as AtomicOrdering};
 
 use parking_lot::RwLock;
 
-use crate::persistent_artrie::error::Result as PersistentResult;
 use crate::persistent_artrie::wal::AsyncWalWriter;
 use crate::persistent_artrie::wal_managed::WalManaged;
 use crate::value::DictionaryValue;
