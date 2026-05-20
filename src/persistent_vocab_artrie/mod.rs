@@ -138,6 +138,9 @@ pub mod mutation_api;
 // Path-based queries + iter_terms wrappers — Phase-6 split.
 pub mod path_query;
 
+// Disk I/O helpers (load/persist/serialize/rebuild_reverse_index) — Phase-6 split.
+pub mod disk_io;
+
 // Reverse index infrastructure
 pub mod reverse_index;
 
