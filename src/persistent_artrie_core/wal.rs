@@ -51,11 +51,15 @@
 //! }
 //! ```
 
-use std::fs::{self, File, OpenOptions};
-use std::io::{self, BufReader, BufWriter, Read, Seek, SeekFrom, Write};
-use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+// wal.rs is now a thin re-export hub for the wal/ sub-modules plus the
+// `Lsn` type alias, the `crc32` helper, the disabled legacy GroupCommit
+// stub, and the integration test suite at the bottom of this file. The
+// tests still reach for std types (PathBuf, io, Duration, etc.) via the
+// imports below.
+
+use std::io;
+use std::path::PathBuf;
+use std::time::Duration;
 
 /// Log Sequence Number - monotonically increasing identifier for log records.
 pub type Lsn = u64;
@@ -168,11 +172,10 @@ mod reader;
 //                     └─────────────────┘
 // ```
 
-use std::collections::VecDeque;
-use std::sync::atomic::AtomicBool;
-use std::sync::Condvar;
-use std::thread::{self, JoinHandle};
-use std::time::{Duration, Instant};
+// The async-write subsystem (SegmentSyncManager + AsyncWalWriter +
+// PendingSegment + SyncHandle + collect_all_segments) was moved into the
+// sibling wal/ sub-modules, taking its imports with it. The stale block of
+// std imports that used to live here has been removed.
 
 // `AsyncWalConfig` was relocated to the sibling `wal::async_config` module;
 // re-exported here under its original path.
