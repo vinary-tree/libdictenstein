@@ -132,6 +132,9 @@ pub mod query_api;
 // BloomFilter support — Phase-6 split out of dict_impl.
 pub mod bloom_filter_api;
 
+// Public mutation API (insert / insert_batch / insert_with_index) — Phase-6 split.
+pub mod mutation_api;
+
 // Reverse index infrastructure
 pub mod reverse_index;
 
