@@ -40,9 +40,12 @@ documented test_wait_free_reads_during_writes flake in
 dynamic_dawg_u64_zipper passing on retry).
 
 **Combined Phase-5 + Phase-6 LOC reduction across the three
-dict_impl files:** 22721 → 9271 LOC = 13450 LOC moved into 47 new
-sub-modules averaging 286 LOC each; no sub-module exceeds the
-audit's 2000-LOC complexity threshold.
+dict_impl files:** 22721 → 8809 LOC = 13912 LOC moved into 49 new
+sub-modules averaging 284 LOC each; no sub-module exceeds the
+audit's 2000-LOC complexity threshold. Latest vocab extractions:
+mmap_ctor (377 LOC), lockfree_cas (309 LOC), persistence_api (332
+LOC), query_api (130 LOC) — driving vocab dict_impl.rs to 2498 LOC
+(36% reduction from 3887 LOC original).
 
 The plan called for 12 Phase-5 sub-modules. The 26 actually-produced
 extractions reflect a more aggressive seam-finding pass: each
