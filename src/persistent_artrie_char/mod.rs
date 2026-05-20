@@ -145,6 +145,9 @@ pub mod prefix_api;
 // Merge API (merge_from + variants) — Phase-6 split out of dict_impl_char.
 pub mod merge_api;
 
+// Document-transaction execution (begin/tx_insert/commit/abort) — Phase-6 split.
+pub mod document_tx;
+
 // Re-export shared types (always available)
 pub use types::{
     CharTrieFileHeader, CharTrieNodeInner, CharTrieRoot,
