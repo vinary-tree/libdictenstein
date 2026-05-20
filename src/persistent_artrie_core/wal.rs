@@ -180,23 +180,11 @@ pub use async_config::AsyncWalConfig;
 
 mod async_config;
 
-/// A pending segment awaiting background sync.
-///
-/// Contains all information needed to sync the segment in the background
-/// and track its LSN coverage for ordering guarantees.
-#[derive(Debug)]
-pub struct PendingSegment {
-    /// Path to the pending segment file.
-    pub path: PathBuf,
-    /// LSN range covered by this segment: (first_lsn, last_lsn).
-    pub lsn_range: (Lsn, Lsn),
-    /// Open file handle for fsync.
-    pub file: File,
-    /// Timestamp when this segment was rotated (for metrics).
-    pub rotated_at: Instant,
-    /// Size of the segment in bytes (for backpressure).
-    pub size_bytes: u64,
-}
+// `PendingSegment` was relocated to the sibling `wal::pending_segment` module;
+// re-exported here under its original path.
+pub use pending_segment::PendingSegment;
+
+mod pending_segment;
 
 // `AsyncWalError` was relocated to the sibling `wal::async_error` module;
 // re-exported here under its original path.
