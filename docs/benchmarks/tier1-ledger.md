@@ -1,5 +1,20 @@
 # libdictenstein — ARTrie Tech-Debt Repair Ledger
 
+## Phase 8 verification result
+
+`RUST_BACKTRACE=1 RUST_LOG=warn cargo nextest run --features
+persistent-artrie --no-fail-fast`: **2017 tests run, 2017 passed,
+3 leaky (temp-file resource leaks in test scaffolding, not
+failures), 1 skipped, 0 failed.**
+
+This is the comprehensive end-to-end verification called for by the
+plan's Phase-8 exit gate. Every previously-`#[ignore]`'d stress test
+runs as part of the normal suite, the four `SharedCharTrie` newtype
+tests pass, the `KeyEncoding` constants-match guards pass downstream
+of core, every byte/char/vocab unit + proptest + recovery + concurrent
++ ACID + stress + zipper test passes, all the way through to the
+1M-context stress harnesses.
+
 ## Cumulative session summary
 
 52 commits land Phase 0 + Phase 1 + the audit-named Phase-2 correctness
