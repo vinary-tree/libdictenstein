@@ -176,7 +176,7 @@ pub mod zipper;
 pub use crate::persistent_artrie_core::wal;
 
 // WAL management trait for shared WAL operations
-pub mod wal_managed;
+pub use crate::persistent_artrie_core::wal_managed;
 
 // Crash recovery (relocated to core)
 pub use crate::persistent_artrie_core::recovery;
@@ -219,13 +219,13 @@ pub use crate::persistent_artrie_core::adaptive_pool;
 pub mod per_node_log;
 
 // Version-based checkpoint management
-pub mod version_checkpoint;
+pub use crate::persistent_artrie_core::version_checkpoint;
 
 // MVCC-lite read transactions
 pub mod mvcc;
 
 // Version garbage collection
-pub mod version_gc;
+pub use crate::persistent_artrie_core::version_gc;
 
 // Re-exports for convenience
 pub use error::{PersistentARTrieError, Result, SwizzleError};
