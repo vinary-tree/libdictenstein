@@ -173,6 +173,9 @@ pub mod document_tx;
 // Atomic read-modify-write operations (Phase-5 split out of dict_impl).
 pub mod atomic_ops;
 
+// ARTrie + EvictableARTrie trait impls for SharedARTrie<V> (Phase-5 split out of dict_impl).
+pub mod shared_trait_impl;
+
 // Page-aware prefix-iteration result types (Phase-5 split out of dict_impl).
 pub mod prefix_term;
 
