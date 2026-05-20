@@ -229,6 +229,10 @@ required-features = ["persistent-artrie"]
 name = "batched_merge_comparison"
 required-features = ["persistent-artrie"]
 
+[[example]]
+name = "test_checkpoint_debug"
+required-features = ["persistent-artrie"]
+
 [[bench]]
 name = "io_backend_benchmarks"
 harness = false
