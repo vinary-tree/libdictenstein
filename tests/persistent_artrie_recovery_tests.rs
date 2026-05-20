@@ -790,7 +790,7 @@ fn test_art_node_wal_only_recovery() {
 
 mod char_recovery_tests {
     use libdictenstein::persistent_artrie_char::{
-        CorruptionType, RecoveryMode, RecoveryPolicy, RecoveryReport,
+        CorruptionType, RecoveryMode, RecoveryReport,
         RecoveryManager, detect_corruption,
     };
     use libdictenstein::persistent_artrie::wal::WalConfig;
@@ -1245,7 +1245,7 @@ mod phase_20_prefix_operations {
     #[test]
     fn test_iter_prefix() {
         let dir = tempdir().expect("Failed to create temp dir");
-        let path = dir.path().join("test.artrie");
+        let _path = dir.path().join("test.artrie");
 
         let mut trie: PersistentARTrie<()> = PersistentARTrie::new();
         trie.insert("apple");
@@ -1865,8 +1865,8 @@ mod phase_21_char_prefix_operations {
 
     #[test]
     fn test_disk_char_iter_prefix_with_arena() {
-        use libdictenstein::persistent_artrie_char::PrefixTermWithArena;
-        use std::collections::HashMap;
+        
+        
 
         let dir = tempdir().expect("Failed to create temp dir");
         let path = dir.path().join("test.artrie");
@@ -2021,11 +2021,11 @@ mod phase_21_char_prefix_operations {
 // and iter_prefix_with_values_and_arena()
 
 mod phase_22_merge_operations {
-    use libdictenstein::persistent_artrie::PersistentARTrie;
+    
     use libdictenstein::persistent_artrie_char::PersistentARTrieChar;
     use libdictenstein::persistent_artrie_char::SharedCharTrie;
     use libdictenstein::ARTrie;
-    use libdictenstein::MutableMappedDictionary;
+    
     use tempfile::tempdir;
 
     // =========================================================================
@@ -2332,7 +2332,7 @@ mod phase_22_merge_operations {
 
     #[test]
     fn test_shared_char_trie_basic() {
-        use std::sync::Arc;
+        
         use libdictenstein::ARTrie;
 
         let dir = tempdir().expect("create temp dir");
@@ -2441,7 +2441,7 @@ mod phase_22_merge_operations {
 
     #[test]
     fn test_parallel_merge_pattern() {
-        use std::sync::Arc;
+        
         use std::thread;
 
         let dir = tempdir().expect("create temp dir");
@@ -2501,7 +2501,7 @@ mod phase_22_merge_operations {
 
     #[test]
     fn test_parallel_merge_with_overlaps() {
-        use std::thread;
+        
 
         let dir = tempdir().expect("create temp dir");
 
@@ -2580,7 +2580,7 @@ mod phase_22_merge_operations {
 
 mod phase_22_byte_arena_aware_iteration {
     use super::*;
-    use libdictenstein::persistent_artrie::{PersistentARTrie, PrefixTermWithArena};
+    use libdictenstein::persistent_artrie::PersistentARTrie;
     use libdictenstein::{Dictionary, MappedDictionary};
     use std::collections::HashMap;
 

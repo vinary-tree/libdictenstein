@@ -193,7 +193,7 @@ fn test_compact_multiple_checkpoints() {
         .compact(CompactionConfig::default(), |_| {})
         .expect("Failed to compact");
 
-    let size_after = fs::metadata(&path).expect("metadata").len();
+    let _size_after = fs::metadata(&path).expect("metadata").len();
 
     assert_eq!(stats.terms_copied, 150);
 
@@ -221,7 +221,7 @@ fn test_compact_to_new_file() {
 
     trie.checkpoint().expect("Failed to checkpoint");
 
-    let original_size = fs::metadata(&original_path).expect("metadata").len();
+    let _original_size = fs::metadata(&original_path).expect("metadata").len();
 
     // Compact to new file (not in-place)
     let config = CompactionConfig {
@@ -230,7 +230,7 @@ fn test_compact_to_new_file() {
         verify_after_compact: true,
     };
 
-    let stats = trie
+    let _stats = trie
         .compact(config, |_| {})
         .expect("Failed to compact");
 
@@ -333,7 +333,7 @@ fn test_compact_without_verification() {
 
     let mut phases_seen: Vec<String> = Vec::new();
 
-    let stats = trie
+    let _stats = trie
         .compact(config, |progress| {
             phases_seen.push(progress.phase.to_string());
         })

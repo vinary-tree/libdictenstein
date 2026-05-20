@@ -9,7 +9,7 @@
 #![cfg(feature = "persistent-artrie")]
 
 use libdictenstein::persistent_artrie::{
-    DurabilityPolicy, PersistentARTrie, DocumentTransaction, TransactionState,
+    DurabilityPolicy, PersistentARTrie,
 };
 use libdictenstein::Dictionary;
 use std::fs;

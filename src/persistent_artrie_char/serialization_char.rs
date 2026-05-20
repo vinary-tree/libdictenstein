@@ -927,7 +927,7 @@ fn ptr_to_arena_slot(ptr: &SwizzledPtr) -> Option<ArenaSlot> {
 /// Size in bytes of the type-specific data (excluding header and prefix)
 fn char_node_data_size_v2(node: &CharNode, ctx: &SerializationContext) -> usize {
     let child_slots = collect_char_child_slots(node);
-    let num_children = child_slots.len();
+    let _num_children = child_slots.len();
 
     if ctx.use_sequential && ctx.first_child_slot.is_some() {
         // Sequential mode: only store first_child reference

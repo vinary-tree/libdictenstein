@@ -3,7 +3,6 @@
 //! Tests the `iter()`, `iter_bytes()`/`iter_chars()`, and `IntoIterator` implementations
 //! across all dictionary types.
 
-use std::collections::HashSet;
 
 // ============================================================================
 // DoubleArrayTrie Tests
