@@ -122,60 +122,60 @@ pub use super::sync_handle::VocabSyncHandle;
 pub struct PersistentVocabARTrie<S: BlockStorage = MmapDiskManager> {
     // === Vocab-specific fields ===
     /// Path to the main trie file
-    path: PathBuf,
+    pub(super) path: PathBuf,
 
     /// Root node of the trie
     pub(crate) root: VocabTrieRoot,
 
     /// Number of vocabulary entries (atomic for lock-free access)
-    entry_count: AtomicUsize,
+    pub(super) entry_count: AtomicUsize,
 
     /// Starting vocabulary index
-    start_index: u64,
+    pub(super) start_index: u64,
 
     /// Next index to assign (atomic for lock-free CAS operations)
-    next_index: AtomicU64,
+    pub(super) next_index: AtomicU64,
 
     /// Dirty flag (atomic for lock-free access)
-    dirty: AtomicBool,
+    pub(super) dirty: AtomicBool,
 
     /// Reverse index for O(1) node lookup by vocabulary index
-    reverse_index: Option<VocabReverseIndex>,
+    pub(super) reverse_index: Option<VocabReverseIndex>,
 
     /// LRU cache for hot reverse lookups
-    reverse_cache: VocabReverseCache,
+    pub(super) reverse_cache: VocabReverseCache,
 
     /// Map from NodeRef to in-memory node for lookups.
     /// This is used for term reconstruction via parent pointers.
     /// Uses xxh3 hasher instead of SipHash for ~3-5x faster hashing on
     /// non-adversarial input (vocabulary node references).
-    node_map: HashMap<NodeRef, *const VocabTrieNode, Xxh3DefaultBuilder>,
+    pub(super) node_map: HashMap<NodeRef, *const VocabTrieNode, Xxh3DefaultBuilder>,
 
     /// Next available slot for NodeRef assignment
-    next_slot: u64,
+    pub(super) next_slot: u64,
 
     // === Base persistence layer (from persistent_artrie) ===
     /// WAL writer for durability (using AsyncWalWriter via WalManaged trait)
-    wal_writer: Option<Arc<AsyncWalWriter>>,
+    pub(super) wal_writer: Option<Arc<AsyncWalWriter>>,
 
     /// WAL configuration
-    wal_config: WalConfig,
+    pub(super) wal_config: WalConfig,
 
     /// Next LSN to assign (atomic for lock-free access)
-    next_lsn: AtomicU64,
+    pub(super) next_lsn: AtomicU64,
 
     /// Last synced LSN (atomic for lock-free access)
-    synced_lsn: AtomicU64,
+    pub(super) synced_lsn: AtomicU64,
 
     /// Durability policy for WAL synchronization
-    durability_policy: DurabilityPolicy,
+    pub(super) durability_policy: DurabilityPolicy,
 
     // === Storage layer for disk-backed persistence ===
     /// Arena manager for node storage (shared with buffer manager)
-    arena_manager: Option<Arc<RwLock<ArenaManager<S>>>>,
+    pub(super) arena_manager: Option<Arc<RwLock<ArenaManager<S>>>>,
 
     /// Buffer manager for disk I/O
-    buffer_manager: Option<Arc<RwLock<BufferManager<S>>>>,
+    pub(super) buffer_manager: Option<Arc<RwLock<BufferManager<S>>>>,
 
     // === Eviction Support ===
     /// Eviction coordinator for memory pressure-driven eviction
@@ -184,18 +184,18 @@ pub struct PersistentVocabARTrie<S: BlockStorage = MmapDiskManager> {
     // === BloomFilter Support ===
     /// Optional BloomFilter for O(1) negative lookups.
     /// Provides 5-10x faster rejection for OOV words.
-    bloom_filter: Option<BloomFilter>,
+    pub(super) bloom_filter: Option<BloomFilter>,
 
     // === Lock-Free Infrastructure (per plan Phase 4-5) ===
     /// Lock-free root using PersistentCharNode with im::Vector for CAS operations.
     /// When present, `insert_cas()` uses this for lock-free concurrent inserts.
-    lockfree_root: Option<AtomicNodePtr>,
+    pub(super) lockfree_root: Option<AtomicNodePtr>,
 
     /// Lock-free cache for term → index lookups (DashMap for O(1) sharded access).
-    lockfree_cache: Option<DashMap<String, u64>>,
+    pub(super) lockfree_cache: Option<DashMap<String, u64>>,
 
     /// Statistics: CAS retries for monitoring contention.
-    cas_retries: AtomicU64,
+    pub(super) cas_retries: AtomicU64,
 }
 
 // ============================================================================
@@ -596,247 +596,6 @@ impl PersistentVocabARTrie {
     }
 }
 
-// === io_uring convenience constructors (Linux-only, requires `io-uring-backend` feature) ===
-
-#[cfg(feature = "io-uring-backend")]
-impl PersistentVocabARTrie<crate::persistent_artrie::IoUringDiskManager> {
-    /// Create a new vocabulary trie using io_uring + O_DIRECT.
-    ///
-    /// This uses `IoUringDiskManager` instead of `MmapDiskManager`, which:
-    /// - Bypasses the kernel page cache (O_DIRECT) to eliminate double caching
-    /// - Uses io_uring for async I/O with predictable latency
-    /// - Supports batched block submissions for better throughput
-    ///
-    /// # Arguments
-    /// * `path` - Path to the vocabulary file (must not exist)
-    pub fn create_with_io_uring<P: AsRef<Path>>(path: P) -> Result<Self> {
-        Self::create_with_io_uring_and_start_index(path, 0)
-    }
-
-    /// Create a new vocabulary trie with io_uring and a custom starting index.
-    pub fn create_with_io_uring_and_start_index<P: AsRef<Path>>(path: P, start_index: u64) -> Result<Self> {
-        use crate::persistent_artrie::IoUringDiskManager;
-
-        let path = path.as_ref().to_path_buf();
-
-        if path.exists() {
-            return Err(PersistentARTrieError::CorruptedFile {
-                reason: format!("File already exists: {}", path.display()),
-            });
-        }
-
-        // Create io_uring disk manager (creates new file with O_DIRECT)
-        let disk_manager = IoUringDiskManager::create(&path)?;
-
-        // Create buffer manager (takes ownership of disk_manager)
-        let buffer_manager = BufferManager::new(disk_manager, DEFAULT_VOCAB_BUFFER_POOL_SIZE);
-        let buffer_manager = Arc::new(RwLock::new(buffer_manager));
-
-        // Create arena manager with buffer manager for disk-backed storage
-        let arena_manager = ArenaManager::with_buffer_manager(Arc::clone(&buffer_manager));
-        let arena_manager = Arc::new(RwLock::new(arena_manager));
-
-        // Write initial header
-        {
-            let bm = buffer_manager.write();
-            let dm = bm.storage();
-            let mut header = VocabTrieFileHeader::with_start_index(start_index);
-            dm.write_header_bytes(&header.to_bytes_with_checksum())?;
-            dm.sync()?;
-        }
-
-        // Create reverse index file
-        let idx_path = path.with_extension("vocab.idx");
-        let reverse_index = VocabReverseIndex::create(&idx_path, start_index, 1024)?;
-
-        // Create WAL file using async writer
-        let wal_path = path.with_extension("vocab.wal");
-        let wal_config = WalConfig::default();
-        let wal_writer = create_async_wal(&wal_path, &path)
-            .map_err(|e| PersistentARTrieError::io_error(
-                "create WAL",
-                wal_path.to_string_lossy(),
-                std::io::Error::new(std::io::ErrorKind::Other, e.to_string()),
-            ))?;
-
-        // Create root node
-        let root_node = VocabTrieNode::new();
-        let root_ref = NodeRef::new(0, 0);
-
-        let mut node_map = HashMap::with_hasher(Xxh3DefaultBuilder);
-        let root_ptr = Box::into_raw(Box::new(root_node));
-        node_map.insert(root_ref, root_ptr as *const VocabTrieNode);
-
-        let root = VocabTrieRoot::Node(unsafe { Box::from_raw(root_ptr) });
-
-        Ok(Self {
-            path,
-            root,
-            entry_count: AtomicUsize::new(0),
-            start_index,
-            next_index: AtomicU64::new(start_index),
-            dirty: AtomicBool::new(false),
-            reverse_index: Some(reverse_index),
-            reverse_cache: VocabReverseCache::new(DEFAULT_REVERSE_CACHE_SIZE),
-            node_map,
-            next_slot: 1,
-            wal_writer: Some(Arc::new(wal_writer)),
-            wal_config,
-            next_lsn: AtomicU64::new(1),
-            synced_lsn: AtomicU64::new(0),
-            durability_policy: DurabilityPolicy::default(),
-            arena_manager: Some(arena_manager),
-            buffer_manager: Some(buffer_manager),
-            eviction_coordinator: None,
-            bloom_filter: None,
-            lockfree_root: None,
-            lockfree_cache: None,
-            cas_retries: AtomicU64::new(0),
-        })
-    }
-
-    /// Open an existing vocabulary trie using io_uring + O_DIRECT.
-    ///
-    /// # Arguments
-    /// * `path` - Path to the vocabulary file (must exist)
-    pub fn open_with_io_uring<P: AsRef<Path>>(path: P) -> Result<Self> {
-        use crate::persistent_artrie::IoUringDiskManager;
-
-        let path = path.as_ref().to_path_buf();
-
-        if !path.exists() {
-            return Err(PersistentARTrieError::io_error(
-                "open vocab trie",
-                path.to_string_lossy(),
-                std::io::Error::new(std::io::ErrorKind::NotFound, "file not found"),
-            ));
-        }
-
-        // Open io_uring disk manager without validating standard PART header
-        // (VocabTrie uses a different header format: VOCB)
-        let disk_manager = IoUringDiskManager::open_without_validation(&path)?;
-
-        // Read and validate the vocab-specific header
-        let header = crate::persistent_vocab_artrie::header::read_vocab_header(&disk_manager)?;
-        header.validate()?;
-
-        // Create buffer manager
-        let buffer_manager = BufferManager::new(disk_manager, DEFAULT_VOCAB_BUFFER_POOL_SIZE);
-        let buffer_manager = Arc::new(RwLock::new(buffer_manager));
-
-        // Create arena manager with buffer manager
-        let arena_manager = ArenaManager::with_buffer_manager(Arc::clone(&buffer_manager));
-        let arena_manager = Arc::new(RwLock::new(arena_manager));
-
-        // Load arenas from disk if there are data blocks
-        if header.block_count > 1 {
-            let mut am = arena_manager.write();
-            am.clear_for_loading();
-
-            for block_id in 1..header.block_count {
-                am.load_arena(block_id)?;
-            }
-
-            let arena_count = am.arena_count();
-            if arena_count > 0 {
-                am.set_active_arena(arena_count - 1);
-            }
-        }
-
-        // Open reverse index
-        let idx_path = path.with_extension("vocab.idx");
-        let reverse_index = if idx_path.exists() {
-            Some(VocabReverseIndex::open(&idx_path)?)
-        } else {
-            None
-        };
-
-        // Open WAL file using async writer
-        let wal_path = path.with_extension("vocab.wal");
-        let wal_config = WalConfig::default();
-        let (wal_writer, next_lsn) = {
-            let wal = open_or_create_async_wal(&wal_path, &path)
-                .map_err(|e| PersistentARTrieError::io_error(
-                    "open WAL",
-                    wal_path.to_string_lossy(),
-                    std::io::Error::new(std::io::ErrorKind::Other, e.to_string()),
-                ))?;
-
-            let min_lsn = header.checkpoint_lsn + 1;
-            wal.set_min_lsn(min_lsn);
-
-            let lsn = wal.current_lsn();
-            (Some(Arc::new(wal)), lsn)
-        };
-
-        // Load root from disk if present
-        let (root, node_map, next_slot) = if header.root_ptr != 0 {
-            let slot = ArenaSlot::from_u64(header.root_ptr);
-            Self::load_trie_from_disk(&arena_manager, &buffer_manager, slot)?
-        } else {
-            let root_node = VocabTrieNode::new();
-            let root_ref = NodeRef::new(0, 0);
-
-            let mut map = HashMap::with_hasher(Xxh3DefaultBuilder);
-            let root_ptr = Box::into_raw(Box::new(root_node));
-            map.insert(root_ref, root_ptr as *const VocabTrieNode);
-
-            (VocabTrieRoot::Node(unsafe { Box::from_raw(root_ptr) }), map, 1)
-        };
-
-        let mut trie = Self {
-            path,
-            root,
-            entry_count: AtomicUsize::new(header.entry_count as usize),
-            start_index: header.start_index,
-            next_index: AtomicU64::new(header.next_index),
-            dirty: AtomicBool::new(false),
-            reverse_index,
-            reverse_cache: VocabReverseCache::new(DEFAULT_REVERSE_CACHE_SIZE),
-            node_map,
-            next_slot,
-            wal_writer,
-            wal_config,
-            next_lsn: AtomicU64::new(next_lsn),
-            synced_lsn: AtomicU64::new(header.checkpoint_lsn),
-            durability_policy: DurabilityPolicy::default(),
-            arena_manager: Some(arena_manager),
-            buffer_manager: Some(buffer_manager),
-            eviction_coordinator: None,
-            bloom_filter: None,
-            lockfree_root: None,
-            lockfree_cache: None,
-            cas_retries: AtomicU64::new(0),
-        };
-
-        // Rebuild reverse_index with fresh NodeRefs after loading
-        if header.root_ptr != 0 {
-            trie.rebuild_reverse_index()?;
-        }
-
-        // Load bloom filter from disk, or rebuild if missing
-        match Self::load_bloom_filter(&trie.path) {
-            Ok(Some(bloom)) => {
-                trie.bloom_filter = Some(bloom);
-            }
-            Ok(None) => {
-                let count = trie.entry_count.load(Ordering::Acquire);
-                if count > 0 {
-                    trie.rebuild_bloom_filter(count);
-                }
-            }
-            Err(_) => {
-                let count = trie.entry_count.load(Ordering::Acquire);
-                if count > 0 {
-                    trie.rebuild_bloom_filter(count);
-                }
-            }
-        }
-
-        Ok(trie)
-    }
-}
-
 impl<S: BlockStorage> PersistentVocabARTrie<S> {
     /// Load the entire trie from disk starting from the root slot.
     ///
@@ -846,7 +605,7 @@ impl<S: BlockStorage> PersistentVocabARTrie<S> {
     ///
     /// The two-phase approach is necessary because serialized nodes store parent NodeRefs
     /// from the original insertion order, which we can't reproduce during load.
-    fn load_trie_from_disk(
+    pub(super) fn load_trie_from_disk(
         arena_manager: &Arc<RwLock<ArenaManager<S>>>,
         buffer_manager: &Arc<RwLock<BufferManager<S>>>,
         root_slot: ArenaSlot,
@@ -1041,7 +800,7 @@ impl<S: BlockStorage> PersistentVocabARTrie<S> {
     /// old NodeRefs stored in the serialized reverse_index. This method traverses
     /// the trie in the same order as rebuild_node_map_and_parents and updates
     /// reverse_index entries for all final nodes (nodes with values).
-    fn rebuild_reverse_index(&mut self) -> Result<()> {
+    pub(super) fn rebuild_reverse_index(&mut self) -> Result<()> {
         let reverse_index = match self.reverse_index.as_mut() {
             Some(idx) => idx,
             None => return Ok(()), // No reverse index to rebuild
@@ -2398,7 +2157,7 @@ impl<S: BlockStorage> PersistentVocabARTrie<S> {
     }
 
     /// Load bloom filter from disk using bincode.
-    fn load_bloom_filter(path: &Path) -> Result<Option<BloomFilter>> {
+    pub(super) fn load_bloom_filter(path: &Path) -> Result<Option<BloomFilter>> {
         let bloom_path = path.with_extension("vocab.bloom");
         if !bloom_path.exists() {
             return Ok(None);

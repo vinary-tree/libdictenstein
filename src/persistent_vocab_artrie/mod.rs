@@ -113,6 +113,10 @@ pub mod header;
 // VocabSyncHandle (Phase-6 split out of dict_impl).
 pub mod sync_handle;
 
+// IoUringDiskManager-specific constructors (Phase-6 split out of dict_impl).
+#[cfg(feature = "io-uring-backend")]
+pub mod io_uring_ctor;
+
 // Reverse index infrastructure
 pub mod reverse_index;
 
