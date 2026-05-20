@@ -144,15 +144,12 @@ fn test_stress_6k_diverse_terms() {
     }
 }
 
-/// Test 2: Insert terms with diverse prefix patterns
+/// Test 2: Insert terms with diverse prefix patterns.
 ///
-/// Note: This test is ignored due to known bucket capacity limitations
-/// when approaching the splitting threshold. The implementation correctly
-/// handles up to ~6400 terms but has edge cases near capacity limits.
-///
-/// TODO: Fix recursive bucket splitting to handle edge cases.
+/// The recursive bucket-to-ART conversion (`transitions.rs::insert_key` /
+/// `insert_with_value` retry via `bucket_to_art_node`) handles overflow
+/// correctly through 6,500 terms, so this test runs in the normal suite.
 #[test]
-#[ignore = "Known limitation: bucket capacity edge cases near 6500 terms"]
 fn test_stress_highly_diverse_terms() {
     let temp_dir = TempDir::new().expect("temp dir");
     let path = temp_dir.path().join("stress_diverse");
@@ -188,14 +185,12 @@ fn test_stress_highly_diverse_terms() {
     }
 }
 
-/// Test 3: Mixed insert/remove operations with diverse prefixes
+/// Test 3: Mixed insert/remove operations with diverse prefixes.
 ///
-/// Note: This test is ignored due to known capacity limitations when
-/// mixing operations across different prefix patterns.
-///
-/// TODO: Investigate interaction between insert and remove across ART node boundaries.
+/// Insert/remove interaction across ART node boundaries holds the
+/// `term_count.load() == iter().count()` invariant in this configuration,
+/// so this test runs in the normal suite.
 #[test]
-#[ignore = "Known limitation: mixed operations across ART node boundaries"]
 fn test_stress_mixed_operations() {
     let temp_dir = TempDir::new().expect("temp dir");
     let path = temp_dir.path().join("stress_mixed");
@@ -470,12 +465,10 @@ fn test_stress_wal_recovery() {
 
 /// Test 9: Delete stress (insert many, delete many) with diverse prefixes
 ///
-/// Note: This test is ignored due to known issues with remove operations
-/// across ART node boundaries not correctly updating the length counter.
-///
-/// TODO: Fix remove implementation to properly track deletions across ART nodes.
+/// Removal across ART node boundaries correctly updates the length counter
+/// in this configuration; running this in the normal suite guards against
+/// regression of that property.
 #[test]
-#[ignore = "Known limitation: remove tracking across ART node boundaries"]
 fn test_stress_bulk_delete() {
     let temp_dir = TempDir::new().expect("temp dir");
     let path = temp_dir.path().join("stress_delete");
