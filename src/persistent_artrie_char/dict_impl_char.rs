@@ -29,13 +29,15 @@
 //! ```
 
 use std::sync::Arc;
+#[allow(unused_imports)]
 use std::sync::atomic::Ordering as AtomicOrdering;
+#[allow(unused_imports)]
 use crate::persistent_artrie::wal::WalConfig;
 
 // Most imports moved to the relevant sub-modules in Phase-6 splits.
 // `Arc` stays here for the `LockfreeInsertResult::Inserted` enum variant
-// defined below. `AtomicOrdering` and `WalConfig` are used by the test
-// module that lives in this file.
+// defined below. `AtomicOrdering` and `WalConfig` look unused at the
+// file level but are pulled in by the test module via `use super::*`.
 
 /// Magic bytes for char trie file
 pub const CHAR_TRIE_MAGIC: [u8; 4] = *b"ARTC";
@@ -97,10 +99,9 @@ pub use crate::persistent_artrie::DurabilityPolicy;
 // re-exported here under its original path.
 pub use super::transactions::CharDocumentTransaction;
 
-// Note: CharTrieNodeInner is defined in types.rs and re-exported from mod.rs
-use super::types::CharTrieNodeInner;
-
-// Note: CharTrieRoot is defined in types.rs and re-exported from mod.rs
+// CharTrieRoot is used by the test module below via `use super::*`.
+// CharTrieNodeInner is no longer referenced from this file.
+#[allow(unused_imports)]
 use super::types::CharTrieRoot;
 
 // Note: Debug implementation is in mod.rs on PersistentARTrieChar directly

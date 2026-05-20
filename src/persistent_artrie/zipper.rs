@@ -4,7 +4,9 @@
 //! node-based navigation with lock-per-operation pattern for thread safety.
 
 use std::borrow::Cow;
+#[allow(unused_imports)]
 use std::sync::Arc;
+#[allow(unused_imports)]
 use crate::sync_compat::RwLock;
 
 use crate::value::DictionaryValue;

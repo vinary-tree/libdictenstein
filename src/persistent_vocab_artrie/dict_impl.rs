@@ -41,10 +41,12 @@
 
 use std::collections::HashMap;
 use xxhash_rust::xxh3::Xxh3DefaultBuilder;
-use std::io::Cursor;
-use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize};
+#[allow(unused_imports)]
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
+#[allow(unused_imports)]
 use std::time::Duration;
 
 use parking_lot::RwLock;
@@ -52,26 +54,21 @@ use parking_lot::RwLock;
 use crate::persistent_artrie::block_storage::BlockStorage;
 use crate::persistent_artrie::buffer_manager::BufferManager;
 use crate::persistent_artrie::dict_impl::DurabilityPolicy;
-use crate::persistent_artrie::disk_manager::{DiskManager, MmapDiskManager};
-use crate::persistent_artrie::error::{PersistentARTrieError, Result};
-use crate::persistent_artrie::recovery::RecoveryReport;
-use crate::persistent_artrie::swizzled_ptr::SwizzledPtr;
-use crate::persistent_artrie::wal::{AsyncWalWriter, WalConfig, WalReader, WalRecord};
-use crate::persistent_artrie::wal_managed::{WalManaged, create_async_wal, open_or_create_async_wal};
-use crate::persistent_artrie_char::arena_manager::{ArenaManager, ArenaSlot};
-use crate::persistent_artrie_char::nodes::{CharNode, AtomicNodePtr, PersistentCharNode};
+use crate::persistent_artrie::disk_manager::MmapDiskManager;
+#[allow(unused_imports)]
+use crate::persistent_artrie::wal::{WalConfig, WalReader};
+use crate::persistent_artrie::wal::AsyncWalWriter;
+use crate::persistent_artrie::wal_managed::WalManaged;
+use crate::persistent_artrie_char::arena_manager::ArenaManager;
+use crate::persistent_artrie_char::nodes::AtomicNodePtr;
 use dashmap::DashMap;
-use crate::persistent_artrie_char::relative_encoding::SerializationContext;
-use crate::persistent_artrie_char::serialization_char::{
-    deserialize_char_node_v2, serialize_char_node_v2, DeserializationContext,
-};
 use crate::persistent_artrie_char::types::NodeRef;
 
 use super::reverse_cache::VocabReverseCache;
 use super::reverse_index::VocabReverseIndex;
 use super::types::{
-    VocabTrieFileHeader, VocabTrieNode, VocabTrieRoot,
-    VOCAB_TRIE_MAGIC, DEFAULT_REVERSE_CACHE_SIZE,
+    VocabTrieNode, VocabTrieRoot,
+    DEFAULT_REVERSE_CACHE_SIZE,
 };
 use crate::bloom_filter::BloomFilter;
 

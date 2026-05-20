@@ -12,8 +12,10 @@
 //! sub-module.
 
 use super::dict_impl_char::{
-    CHAR_FILE_HEADER_SIZE, CHAR_HEADER_VERSION_V1, CHAR_HEADER_VERSION_V2, CHAR_TRIE_MAGIC,
+    CHAR_FILE_HEADER_SIZE, CHAR_HEADER_VERSION_V2, CHAR_TRIE_MAGIC,
 };
+#[allow(unused_imports)]
+use super::dict_impl_char::CHAR_HEADER_VERSION_V1;
 use crate::persistent_artrie::error::{PersistentARTrieError, Result};
 
 /// File header for disk-backed char trie

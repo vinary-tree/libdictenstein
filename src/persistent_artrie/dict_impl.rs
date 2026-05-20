@@ -21,12 +21,21 @@ use std::sync::atomic::{AtomicBool, AtomicUsize};
 use crate::sync_compat::RwLock;
 use log::warn;
 
+#[allow(unused_imports)]
 use crate::{Dictionary, MappedDictionary, SyncStrategy};
 use crate::value::DictionaryValue;
 use super::bucket::StringBucket;
+#[allow(unused_imports)]
 use super::error::Result;
+
+// `SyncStrategy` and `Result` look unused at the file level — they're
+// pulled in by the test module via `use super::*`. The cargo dead-code
+// pass doesn't see through that. Suppress the false-positive warning
+// at the imports themselves.
 use super::node_impl::PersistentARTrieNode;
-use super::nodes::{ArtNode, Node};
+use super::nodes::Node;
+#[allow(unused_imports)]
+use super::nodes::ArtNode;
 use super::swizzled_ptr::{NodeType, SwizzledPtr};
 use super::transitions::ChildNode;
 use super::serialization;
