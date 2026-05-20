@@ -110,6 +110,9 @@ pub mod types;
 // `persistent_artrie_core::block_storage` so core stays free of variant deps).
 pub mod header;
 
+// VocabSyncHandle (Phase-6 split out of dict_impl).
+pub mod sync_handle;
+
 // Reverse index infrastructure
 pub mod reverse_index;
 
