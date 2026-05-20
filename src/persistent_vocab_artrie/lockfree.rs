@@ -237,18 +237,37 @@ impl LockFreeVocab {
         for &c in &chars {
             match current.find_child(c) {
                 Some(child_ptr) => {
-                    // For now, only support in-memory children
-                    // TODO: Support disk-backed children
                     if child_ptr.is_null() {
                         return None;
                     }
                     if let Some(ptr) = child_ptr.as_ptr::<PersistentCharNode>() {
+                        // SAFETY: child_ptr is swizzled (as_ptr returned Some);
+                        // ptr originated from `Arc::into_raw` during a CAS
+                        // insertion path (see insert_cas / install_path). The
+                        // Arc strong count is currently >= 1 because the parent
+                        // node holds the reference; bumping the count here
+                        // gives the new local Arc a fresh strong reference.
                         unsafe {
                             Arc::increment_strong_count(ptr);
                             current = Arc::from_raw(ptr);
                         }
                     } else {
-                        return None; // On-disk child, not supported yet
+                        // LockFreeVocab is constructed exclusively via
+                        // `LockFreeVocab::new` / `with_start_index`, both of
+                        // which create an empty in-memory root, and every
+                        // CAS-insert path installs in-memory `Arc`-backed
+                        // children. The trie therefore never contains an
+                        // on-disk `SwizzledPtr`; if one ever appears, the
+                        // construction or persistence layer has introduced an
+                        // invariant violation that needs investigation rather
+                        // than a silent `return None`.
+                        unreachable!(
+                            "LockFreeVocab encountered an on-disk SwizzledPtr child for code \
+                             point {:#x}; the structure does not load nodes from disk and all \
+                             construction paths produce in-memory children only — this indicates \
+                             corruption of the in-memory invariant",
+                            c
+                        );
                     }
                 }
                 None => return None,
