@@ -210,6 +210,10 @@ pub mod disk_resolve;
 // On-disk serialization helpers (persist_to_disk + serialize_*) — Phase-5 split out of dict_impl.
 pub mod serialize_impl;
 
+// Arena-aware prefix iteration (navigate_to_prefix_with_arena, collect_terms_with_arena,
+// iter_prefix_with_arena, iter_prefix_with_values_and_arena) — Phase-5 split out of dict_impl.
+pub mod arena_iter;
+
 // Page-aware prefix-iteration result types (Phase-5 split out of dict_impl).
 pub mod prefix_term;
 
