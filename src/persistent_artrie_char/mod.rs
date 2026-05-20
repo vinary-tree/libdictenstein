@@ -167,6 +167,9 @@ pub mod atomic_ops;
 // On-disk persistence (checkpoint + persist_to_disk + serialize_*) — Phase-6 split.
 pub mod persist;
 
+// Prefetch helpers (stats + bounded depth) — Phase-6 split out of dict_impl_char.
+pub mod prefetch_api;
+
 // Re-export shared types (always available)
 pub use types::{
     CharTrieFileHeader, CharTrieNodeInner, CharTrieRoot,
