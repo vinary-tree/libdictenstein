@@ -80,24 +80,9 @@ pub const CHAR_HEADER_VERSION_V2: u8 = 2;
 /// Default buffer pool size (number of pages)
 pub const DEFAULT_CHAR_BUFFER_POOL_SIZE: usize = 256;
 
-/// Mode of enhanced recovery (with epoch/per-node logging integration).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum EnhancedRecoveryMode {
-    /// File was created new (didn't exist before)
-    CreatedNew,
-    /// Normal open, no recovery needed
-    Normal,
-    /// Recovered from WAL after last checkpoint
-    WalReplay,
-    /// Rebuilt from WAL archive segments
-    RebuiltFromWal,
-    /// Rebuilt from WAL archive files
-    RebuiltFromArchives,
-    /// Recovered using epoch-based checkpointing
-    EpochRecovery,
-    /// Recovered using per-node logging (O(dirty nodes))
-    PerNodeRecovery,
-}
+// `EnhancedRecoveryMode` was relocated to `super::recovery_stats`; re-exported
+// here under its original path.
+pub use super::recovery_stats::EnhancedRecoveryMode;
 
 /// Result of a lock-free CAS insert attempt.
 ///
@@ -113,66 +98,9 @@ enum LockfreeInsertResult {
     Conflict,
 }
 
-impl EnhancedRecoveryMode {
-    /// Returns true if recovery required rebuilding from WAL
-    pub fn required_rebuild(&self) -> bool {
-        matches!(
-            self,
-            EnhancedRecoveryMode::RebuiltFromWal | EnhancedRecoveryMode::RebuiltFromArchives
-        )
-    }
-
-    /// Returns true if this was a normal open (no recovery)
-    pub fn is_normal(&self) -> bool {
-        matches!(
-            self,
-            EnhancedRecoveryMode::Normal | EnhancedRecoveryMode::CreatedNew
-        )
-    }
-}
-
-/// Statistics from enhanced recovery.
-#[derive(Debug, Clone)]
-pub struct EnhancedRecoveryStats {
-    /// The recovery mode used
-    pub mode: EnhancedRecoveryMode,
-    /// Total time for recovery in milliseconds
-    pub duration_ms: u64,
-    /// Number of WAL records replayed
-    pub records_replayed: usize,
-    /// Number of epochs recovered (for epoch-based recovery)
-    pub epochs_recovered: usize,
-    /// Number of dirty nodes recovered (for per-node logging)
-    pub dirty_nodes_recovered: usize,
-    /// Number of archive segments used
-    pub archive_segments_used: usize,
-}
-
-impl EnhancedRecoveryStats {
-    /// Create stats for normal open (no recovery)
-    pub fn normal() -> Self {
-        Self {
-            mode: EnhancedRecoveryMode::Normal,
-            duration_ms: 0,
-            records_replayed: 0,
-            epochs_recovered: 0,
-            dirty_nodes_recovered: 0,
-            archive_segments_used: 0,
-        }
-    }
-
-    /// Create stats for new file creation
-    pub fn created_new() -> Self {
-        Self {
-            mode: EnhancedRecoveryMode::CreatedNew,
-            duration_ms: 0,
-            records_replayed: 0,
-            epochs_recovered: 0,
-            dirty_nodes_recovered: 0,
-            archive_segments_used: 0,
-        }
-    }
-}
+// `EnhancedRecoveryStats` was relocated to `super::recovery_stats`;
+// re-exported here under its original path.
+pub use super::recovery_stats::EnhancedRecoveryStats;
 
 /// File header for disk-backed char trie
 ///

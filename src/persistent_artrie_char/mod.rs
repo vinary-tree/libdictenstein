@@ -105,6 +105,9 @@ pub mod per_node_log_char;
 // Page-aware prefix-iteration result types (Phase-6 split out of dict_impl_char).
 pub mod prefix_term;
 
+// EnhancedRecoveryMode + EnhancedRecoveryStats (Phase-6 split out of dict_impl_char).
+pub mod recovery_stats;
+
 // Char-side MVCC TrieRoot implementation (paired with generic core mvcc).
 pub mod mvcc;
 
