@@ -28,15 +28,21 @@ extractions** (io_uring_ctor, mmap_ctor, disk_io, lockfree_cas,
 query_api, prefix_helpers, prefix_api, merge_api, document_tx,
 batch_insert, parallel_merge, observability — driving char
 dict_impl_char.rs from 9201 LOC down to 4192 LOC, a 54% reduction;
-**2 vocab extractions**: sync_handle, io_uring_ctor — driving vocab
-dict_impl.rs from 3887 LOC down to 3646 LOC, a 6% reduction) + the
-start of **Phase 7 cleanup** (stale top-level imports trimmed across
-wal.rs, dict_impl.rs, dict_impl_char.rs, node_impl.rs, types.rs,
-mod.rs, eviction/coordinator.rs, and vocab dict_impl.rs; NodeType
+**4 vocab extractions**: sync_handle, io_uring_ctor, mmap_ctor,
+lockfree_cas — driving vocab dict_impl.rs from 3887 LOC down to 2960
+LOC, a 24% reduction) + the start of **Phase 7 cleanup** (stale
+top-level imports trimmed across wal.rs, dict_impl.rs,
+dict_impl_char.rs, node_impl.rs, types.rs, mod.rs,
+eviction/coordinator.rs, and vocab dict_impl.rs; NodeType
 cfg(test)-gated in eviction; magic-constants-match tests relocated
 downstream of core). 1578 unit tests pass at every commit (with the
 documented test_wait_free_reads_during_writes flake in
 dynamic_dawg_u64_zipper passing on retry).
+
+**Combined Phase-5 + Phase-6 LOC reduction across the three
+dict_impl files:** 22721 → 9271 LOC = 13450 LOC moved into 47 new
+sub-modules averaging 286 LOC each; no sub-module exceeds the
+audit's 2000-LOC complexity threshold.
 
 The plan called for 12 Phase-5 sub-modules. The 26 actually-produced
 extractions reflect a more aggressive seam-finding pass: each
