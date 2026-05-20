@@ -3597,7 +3597,12 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
     // =========================================================================
 
     /// Insert implementation with WAL logging (for persistent mode).
-    fn insert_impl(&mut self, term: &[u8], value: Option<V>) -> bool {
+    ///
+    /// `pub(super)` so the parallel-merge extension trait in
+    /// `crate::persistent_artrie::parallel_merge` (gated on the
+    /// `parallel-merge` feature) can call it during the
+    /// sequential-write phase of `merge_from_parallel`.
+    pub(super) fn insert_impl(&mut self, term: &[u8], value: Option<V>) -> bool {
         // Clone value for WAL logging if needed (before move into core)
         let value_for_wal = value.clone();
 
@@ -3978,7 +3983,10 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
     /// `None` if the term doesn't exist or has no value.
     ///
     /// Uses multi-level prefetching for better I/O performance on disk-resident tries.
-    fn get_value_impl(&self, term: &[u8]) -> Option<V> {
+    ///
+    /// `pub(super)` for the parallel-merge extension trait (see also
+    /// `insert_impl` above).
+    pub(super) fn get_value_impl(&self, term: &[u8]) -> Option<V> {
         match &self.root {
             TrieRoot::Bucket(bucket) => {
                 // Search for the term in the bucket
@@ -6255,140 +6263,12 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
 
 }
 
-/// Extension trait for parallel merge operations on [`SharedARTrie`].
-///
-/// These methods require the `parallel-merge` feature and use rayon for
-/// parallel processing. They are implemented as an extension trait because
-/// `SharedARTrie` is a type alias for `Arc<RwLock<PersistentARTrie<V>>>`,
-/// and Rust doesn't allow inherent `impl` blocks on type aliases that resolve
-/// to external types.
-///
-/// # Usage
-///
-/// ```rust,ignore
-/// use libdictenstein::persistent_artrie::{SharedARTrie, SharedARTrieParallelExt};
-///
-/// let trie1: SharedARTrie<u32> = /* ... */;
-/// let trie2: SharedARTrie<u32> = /* ... */;
-///
-/// // Import the trait to use the method
-/// let count = trie1.merge_from_parallel(&trie2, |a, b| a + b)?;
-/// ```
+// `SharedARTrieParallelExt` trait + its blanket impl on `SharedARTrie<V>`
+// (feature-gated on `parallel-merge`) were relocated to the sibling
+// `super::parallel_merge` module; re-exported here under their original
+// paths.
 #[cfg(feature = "parallel-merge")]
-pub trait SharedARTrieParallelExt<V: DictionaryValue> {
-    /// Merge all terms from another trie using parallel processing.
-    ///
-    /// This method uses rayon to parallelize the merge computation across multiple
-    /// cores. The parallelization strategy:
-    /// 1. Partition source terms by first byte (256 possible partitions)
-    /// 2. Process partitions in parallel: read source terms, compute merge values
-    /// 3. Batch-insert results sequentially (avoids write contention)
-    ///
-    /// # Performance
-    ///
-    /// Expected speedup: 4-6x on 8 cores for large merges (100K+ terms).
-    /// The speedup is limited by the sequential write phase but the parallel
-    /// read and merge computation phases scale well.
-    ///
-    /// # Arguments
-    ///
-    /// * `other` - The source trie to merge from
-    /// * `merge_fn` - Function to merge values when a term exists in both tries.
-    ///                Called as `merge_fn(self_value, other_value)`.
-    ///
-    /// # Returns
-    ///
-    /// The number of terms processed from the source trie.
-    fn merge_from_parallel<F>(&self, other: &Self, merge_fn: F) -> Result<usize>
-    where
-        F: Fn(&V, &V) -> V + Sync + Send;
-}
-
-#[cfg(feature = "parallel-merge")]
-impl<V: DictionaryValue + Clone + Send + Sync> SharedARTrieParallelExt<V> for SharedARTrie<V> {
-    fn merge_from_parallel<F>(
-        &self,
-        other: &Self,
-        merge_fn: F,
-    ) -> Result<usize>
-    where
-        F: Fn(&V, &V) -> V + Sync + Send,
-    {
-        use rayon::prelude::*;
-
-        // Partition by first byte (0-255) for parallel processing
-        // This naturally distributes work across the trie structure
-        let partitions: Vec<Vec<(Vec<u8>, V)>> = (0u8..=255u8)
-            .into_par_iter()
-            .map(|prefix_byte| {
-                // Read all terms starting with this byte from source
-                let prefix = [prefix_byte];
-                let other_guard = other.read();
-
-                // Collect all terms with this prefix from source
-                let mut partition_terms = Vec::new();
-                let mut cursor: Option<Vec<u8>> = None;
-                let batch_size = 10_000;
-
-                loop {
-                    let batch = match other_guard.iter_prefix_from_cursor(
-                        &prefix,
-                        cursor.as_deref(),
-                        batch_size,
-                    ) {
-                        Ok(b) => b,
-                        Err(_) => break,
-                    };
-
-                    if batch.is_empty() {
-                        break;
-                    }
-
-                    let batch_len = batch.len();
-                    let last_term = batch.last().map(|t| t.term.clone());
-
-                    // For each term, compute the merged value
-                    for term_info in batch {
-                        // We need to check if term exists in self
-                        // This read is safe since we're just reading
-                        let self_guard = self.read();
-                        let existing_value = self_guard.get_value_impl(&term_info.term);
-                        drop(self_guard);
-
-                        let merged_value = if let Some(ref self_value) = existing_value {
-                            merge_fn(self_value, &term_info.value)
-                        } else {
-                            term_info.value
-                        };
-
-                        partition_terms.push((term_info.term, merged_value));
-                    }
-
-                    if batch_len < batch_size {
-                        break;
-                    }
-
-                    cursor = last_term;
-                }
-
-                partition_terms
-            })
-            .collect();
-
-        // Sequential write phase - batch insert all partitions
-        let mut total_processed = 0;
-        let mut guard = self.write();
-
-        for partition in partitions {
-            for (term, value) in partition {
-                guard.insert_impl(&term, Some(value));
-                total_processed += 1;
-            }
-        }
-
-        Ok(total_processed)
-    }
-}
+pub use super::parallel_merge::SharedARTrieParallelExt;
 
 // ===========================================================================
 // Document Transactions

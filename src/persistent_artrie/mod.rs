@@ -160,6 +160,10 @@ pub mod compaction;
 // Document transaction data types (Phase-5 split out of dict_impl).
 pub mod transactions;
 
+// Parallel-merge extension trait (Phase-5 split out of dict_impl).
+#[cfg(feature = "parallel-merge")]
+pub mod parallel_merge;
+
 // Page-aware prefix-iteration result types (Phase-5 split out of dict_impl).
 pub mod prefix_term;
 
