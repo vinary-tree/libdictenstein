@@ -60,76 +60,11 @@ use std::sync::{Arc, Mutex};
 /// Log Sequence Number - monotonically increasing identifier for log records.
 pub type Lsn = u64;
 
-/// WAL configuration for archive mode and segment management.
-///
-/// Archive mode provides crash recovery by preserving WAL segments instead
-/// of truncating them. This allows rebuilding the entire dataset from
-/// archived segments if the base file is corrupted.
-///
-/// # Example
-///
-/// ```rust,ignore
-/// let config = WalConfig {
-///     archive_enabled: true,
-///     archive_dir: PathBuf::from("./wal_archive"),
-///     max_segments: 10,
-///     max_archive_bytes: 10 * 1024 * 1024 * 1024, // 10 GB
-/// };
-/// ```
-#[derive(Debug, Clone)]
-pub struct WalConfig {
-    /// Enable archive mode (rename WAL instead of truncate)
-    ///
-    /// When enabled, checkpoint rotates the WAL to archive instead of
-    /// truncating it. This preserves all operations for potential recovery.
-    pub archive_enabled: bool,
+// `WalConfig` was relocated to the sibling `wal::config` module; re-exported
+// here under its original path.
+pub use config::WalConfig;
 
-    /// Directory for archived WAL segments
-    ///
-    /// Default: "{data_dir}/wal_archive"
-    pub archive_dir: PathBuf,
-
-    /// Maximum number of archived segments to keep
-    ///
-    /// Older segments are pruned when this limit is exceeded.
-    /// Default: 10
-    pub max_segments: usize,
-
-    /// Maximum total bytes in archived segments
-    ///
-    /// Older segments are pruned when this limit is exceeded.
-    /// Default: 10 GB
-    pub max_archive_bytes: u64,
-}
-
-impl Default for WalConfig {
-    fn default() -> Self {
-        Self {
-            archive_enabled: true,
-            archive_dir: PathBuf::from("wal_archive"),
-            max_segments: 10,
-            max_archive_bytes: 10 * 1024 * 1024 * 1024, // 10 GB
-        }
-    }
-}
-
-impl WalConfig {
-    /// Create a new configuration with archive mode disabled
-    pub fn no_archive() -> Self {
-        Self {
-            archive_enabled: false,
-            ..Default::default()
-        }
-    }
-
-    /// Create a new configuration with custom archive directory
-    pub fn with_archive_dir(archive_dir: impl Into<PathBuf>) -> Self {
-        Self {
-            archive_dir: archive_dir.into(),
-            ..Default::default()
-        }
-    }
-}
+mod config;
 
 /// CRC32 for record integrity verification.
 fn crc32(data: &[u8]) -> u32 {
