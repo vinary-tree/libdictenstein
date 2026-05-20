@@ -123,6 +123,9 @@ pub mod mmap_ctor;
 // Lock-free CAS-based concurrent inserts (Phase-6 split out of dict_impl).
 pub mod lockfree_cas;
 
+// Persistence/durability/observability API (Phase-6 split out of dict_impl).
+pub mod persistence_api;
+
 // Reverse index infrastructure
 pub mod reverse_index;
 
