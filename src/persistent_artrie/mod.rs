@@ -186,6 +186,9 @@ pub mod io_uring_ctor;
 // Dictionary / MappedDictionary / Debug trait impls (Phase-5 split out of dict_impl).
 pub mod dictionary_traits;
 
+// PersistentARTrie::compact (file-rewrite compaction) — Phase-5 split out of dict_impl.
+pub mod compaction_impl;
+
 // Page-aware prefix-iteration result types (Phase-5 split out of dict_impl).
 pub mod prefix_term;
 
