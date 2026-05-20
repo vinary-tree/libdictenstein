@@ -170,6 +170,9 @@ pub mod persist;
 // Prefetch helpers (stats + bounded depth) — Phase-6 split out of dict_impl_char.
 pub mod prefetch_api;
 
+// WAL + durability helpers (append_to_wal, sync_wal, *durability_policy).
+pub mod wal_helpers;
+
 // Re-export shared types (always available)
 pub use types::{
     CharTrieFileHeader, CharTrieNodeInner, CharTrieRoot,

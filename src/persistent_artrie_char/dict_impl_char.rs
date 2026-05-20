@@ -334,96 +334,11 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     // ========================================================================
     // Prefix Operations
     // ========================================================================
-
-    /// Navigate to the node at the given prefix path.
-    ///
-    /// Returns `Ok(Some(node))` if the prefix exists, `Ok(None)` if it doesn't.
-    /// Returns `Err` if an I/O error occurs during lazy loading.
-    /// For disk-backed tries, prefetches children at each level for improved I/O performance.
-
-    // ==================== End Performance Infrastructure Methods ====================
-
-
-    /// Get the current durability policy.
-    ///
-    /// The durability policy controls when fsync is called after WAL writes.
-    /// See [`DurabilityPolicy`] for available options and their trade-offs.
-    pub fn durability_policy(&self) -> DurabilityPolicy {
-        self.durability_policy
-    }
-
-    /// Set the durability policy for this trie.
-    ///
-    /// The durability policy controls when fsync is called after WAL writes,
-    /// providing a trade-off between durability and performance.
-    ///
-    /// # Arguments
-    ///
-    /// * `policy` - The new durability policy
-    ///
-    /// # Example
-    ///
-    /// ```rust,ignore
-    /// use libdictenstein::persistent_artrie_char::{PersistentARTrieChar, DurabilityPolicy};
-    ///
-    /// let mut trie: PersistentARTrieChar<()> = PersistentARTrieChar::create("words.trie")?;
-    ///
-    /// // Use periodic sync for better performance (accepts bounded data loss)
-    /// trie.set_durability_policy(DurabilityPolicy::Periodic);
-    /// ```
-    pub fn set_durability_policy(&mut self, policy: DurabilityPolicy) {
-        self.durability_policy = policy;
-    }
-
-    // ==================== End Epoch-Based Checkpointing Methods ====================
-
-    /// Internal helper: Append a record to the WAL, routing through group commit if enabled.
-    ///
-    /// When group commit is enabled, the record is submitted to the group commit
-    /// coordinator which batches writes and reduces fsync overhead. Otherwise,
-    /// the record is written directly to the WAL.
-    pub(super) fn append_to_wal(&self, record: WalRecord) -> Result<()> {
-        // Check if group commit is enabled first
-        #[cfg(feature = "group-commit")]
-        if let Some(ref gc) = self.group_commit {
-            gc.append_with_sync(record)
-                .map_err(|e| PersistentARTrieError::WalError { reason: format!("{:?}", e) })?;
-            return Ok(());
-        }
-
-        // Fall back to direct WAL write
-        if let Some(ref wal_writer) = self.wal_writer {
-            wal_writer
-                .append(record)
-                .map_err(|e| PersistentARTrieError::WalError { reason: format!("{:?}", e) })?;
-        }
-        Ok(())
-    }
-
-    /// Internal helper: Sync the WAL based on durability policy.
-    ///
-    /// Only syncs when durability_policy is Immediate. GroupCommit and Periodic
-    /// policies handle syncing through their respective mechanisms.
-    pub(super) fn sync_wal(&self) -> Result<()> {
-        // Only sync for Immediate policy
-        if self.durability_policy != DurabilityPolicy::Immediate {
-            return Ok(());
-        }
-
-        // Group commit handles syncing internally via append_with_sync
-        #[cfg(feature = "group-commit")]
-        if self.group_commit.is_some() {
-            return Ok(());
-        }
-
-        // Direct WAL sync
-        if let Some(ref wal_writer) = self.wal_writer {
-            wal_writer
-                .sync()
-                .map_err(|e| PersistentARTrieError::WalError { reason: format!("{:?}", e) })?;
-        }
-        Ok(())
-    }
+    //
+    // Navigate to the node at the given prefix path:
+    // navigate_to_prefix, navigate_to_prefix_with_arena, collect_terms_*
+    // — all moved to sibling super::prefix_helpers in Phase-6.
+    // Public prefix iter / remove API moved to super::prefix_api.
 }
 
 /// Root descriptor type constants
