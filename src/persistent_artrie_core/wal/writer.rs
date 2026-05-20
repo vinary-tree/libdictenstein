@@ -1,0 +1,463 @@
+//! Write-Ahead Log writer.
+//!
+//! Split out of the monolithic `wal.rs` (lines ~105-715, ~608 LOC) as part
+//! of the Phase-4 wal decomposition. The `WalWriter` struct owns the
+//! on-disk WAL file handle and is the primary write entry point — append,
+//! sync, batch, checkpoint, truncate, and segment rotation all live here.
+
+use std::fs::{self, File, OpenOptions};
+use std::io::{self, BufReader, BufWriter, Read, Seek, SeekFrom, Write};
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Mutex;
+
+use super::{crc32, Lsn, WalConfig, WalError, WalHeader, WalReader, WalRecord};
+
+/// Write-Ahead Log writer.
+///
+/// Handles appending records to the log with optional group commit.
+pub struct WalWriter {
+    /// Path to the WAL file
+    path: PathBuf,
+    /// File handle.
+    ///
+    /// `pub(super)` so the still-inline async-writer cluster in `wal.rs` can
+    /// poke at the file lock during segment rotation. Will tighten back to
+    /// private once the async-writer cluster also moves into its own
+    /// sub-module.
+    pub(super) file: Mutex<BufWriter<File>>,
+    /// Current LSN (next LSN to assign)
+    next_lsn: AtomicU64,
+    /// Last synced LSN
+    synced_lsn: AtomicU64,
+    /// Header (cached). Same visibility rationale as `file`.
+    pub(super) header: Mutex<WalHeader>,
+}
+
+impl WalWriter {
+    /// Record header size: CRC32 (4) + Length (4) + LSN (8) + Type (1) = 17 bytes
+    pub const RECORD_HEADER_SIZE: usize = 17;
+
+    /// Create a new WAL file.
+    ///
+    /// Uses atomic exclusive creation (`O_CREAT | O_EXCL` via `create_new(true)`)
+    /// to eliminate TOCTOU race conditions. This matches the formal model's
+    /// `open_create` operation in `FileSystem.v`.
+    ///
+    /// # Errors
+    ///
+    /// - `WalError::AlreadyExists` - File already exists (atomic check)
+    /// - `WalError::ParentNotFound` - Parent directory doesn't exist
+    /// - `WalError::Io` - Other I/O errors
+    pub fn create(path: impl AsRef<Path>) -> Result<Self, WalError> {
+        let path = path.as_ref().to_path_buf();
+
+        // Ensure parent directory exists (idempotent, matches formal mkdir_all)
+        if let Some(parent) = path.parent() {
+            if !parent.as_os_str().is_empty() {
+                std::fs::create_dir_all(parent).map_err(|e| {
+                    if e.kind() == io::ErrorKind::NotFound {
+                        WalError::ParentNotFound(parent.to_path_buf())
+                    } else {
+                        WalError::Io(e)
+                    }
+                })?;
+            }
+        }
+
+        // Atomic exclusive creation - eliminates TOCTOU race
+        let file = match OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .read(true)
+            .open(&path)
+        {
+            Ok(f) => f,
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
+                return Err(WalError::AlreadyExists);
+            }
+            Err(e) => return Err(WalError::Io(e)),
+        };
+
+        let mut writer = BufWriter::new(file);
+
+        // Write header
+        let header = WalHeader::new();
+        writer.write_all(&header.to_bytes())?;
+        writer.flush()?;
+
+        Ok(WalWriter {
+            path,
+            file: Mutex::new(writer),
+            next_lsn: AtomicU64::new(1), // LSN 0 reserved for "no LSN"
+            synced_lsn: AtomicU64::new(0),
+            header: Mutex::new(header),
+        })
+    }
+
+    /// Open an existing WAL file for appending.
+    pub fn open(path: impl AsRef<Path>) -> Result<Self, WalError> {
+        let path = path.as_ref().to_path_buf();
+
+        let file = match OpenOptions::new().read(true).write(true).open(&path) {
+            Ok(f) => f,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                return Err(WalError::NotFound);
+            }
+            Err(e) => return Err(WalError::Io(e)),
+        };
+
+        // Read header
+        let mut reader = BufReader::new(&file);
+        let mut header_buf = [0u8; WalHeader::SIZE];
+        reader.read_exact(&mut header_buf)?;
+        let header = WalHeader::from_bytes(&header_buf)?;
+
+        // Find the last LSN by scanning the log
+        let mut last_lsn: Lsn = 0;
+        let mut reader = WalReader::new(path.clone())?;
+        while let Some(result) = reader.next_record() {
+            if let Ok((lsn, _)) = result {
+                last_lsn = lsn;
+            }
+        }
+
+        // Seek to end for appending
+        let file = OpenOptions::new().read(true).write(true).open(&path)?;
+        let mut writer = BufWriter::new(file);
+        writer.seek(SeekFrom::End(0))?;
+
+        Ok(WalWriter {
+            path,
+            file: Mutex::new(writer),
+            next_lsn: AtomicU64::new(last_lsn + 1),
+            synced_lsn: AtomicU64::new(last_lsn),
+            header: Mutex::new(header),
+        })
+    }
+
+    /// TOCTOU-safe open or create.
+    pub fn open_or_create(path: impl AsRef<Path>) -> Result<Self, WalError> {
+        let path = path.as_ref().to_path_buf();
+
+        if let Some(parent) = path.parent() {
+            if !parent.as_os_str().is_empty() {
+                std::fs::create_dir_all(parent).map_err(|e| {
+                    if e.kind() == io::ErrorKind::NotFound {
+                        WalError::ParentNotFound(parent.to_path_buf())
+                    } else {
+                        WalError::Io(e)
+                    }
+                })?;
+            }
+        }
+
+        match Self::open(&path) {
+            Ok(writer) => Ok(writer),
+            Err(WalError::NotFound) => {
+                match Self::create(&path) {
+                    Ok(writer) => Ok(writer),
+                    Err(WalError::AlreadyExists) => Self::open(&path),
+                    Err(e) => Err(e),
+                }
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Append a record to the WAL.
+    pub fn append(&self, record: WalRecord) -> Result<Lsn, WalError> {
+        let lsn = self.next_lsn.fetch_add(1, Ordering::AcqRel);
+        let payload = record.serialize_payload();
+        let record_type = record.record_type() as u8;
+
+        let total_len = Self::RECORD_HEADER_SIZE + payload.len();
+        let mut buf = Vec::with_capacity(total_len);
+
+        buf.extend_from_slice(&[0u8; 4]);
+        buf.extend_from_slice(&(total_len as u32).to_le_bytes());
+        buf.extend_from_slice(&lsn.to_le_bytes());
+        buf.push(record_type);
+        buf.extend_from_slice(&payload);
+
+        let crc = crc32(&buf[4..]);
+        buf[0..4].copy_from_slice(&crc.to_le_bytes());
+
+        let mut file = self.file.lock().expect("WAL lock poisoned");
+        file.write_all(&buf)?;
+
+        Ok(lsn)
+    }
+
+    /// Sync (fsync) the WAL to disk.
+    pub fn sync(&self) -> Result<Lsn, WalError> {
+        let mut file = self.file.lock().expect("WAL lock poisoned");
+        file.flush()?;
+        file.get_ref().sync_all()?;
+
+        let current_lsn = self.next_lsn.load(Ordering::Acquire) - 1;
+        self.synced_lsn.store(current_lsn, Ordering::Release);
+
+        Ok(current_lsn)
+    }
+
+    /// Append a batch of inserts as a single WAL record.
+    pub fn append_batch(&self, entries: &[(Vec<u8>, Option<Vec<u8>>)]) -> Result<Lsn, WalError> {
+        if entries.is_empty() {
+            return self.append(WalRecord::BatchInsert {
+                entries: Vec::new(),
+            });
+        }
+
+        let record = WalRecord::BatchInsert {
+            entries: entries.to_vec(),
+        };
+        self.append(record)
+    }
+
+    /// Append a batch of inserts and sync in a single operation.
+    pub fn append_batch_and_sync(
+        &self,
+        entries: &[(Vec<u8>, Option<Vec<u8>>)],
+    ) -> Result<Lsn, WalError> {
+        self.append_batch(entries)?;
+        self.sync()
+    }
+
+    /// Get the current (next) LSN.
+    pub fn current_lsn(&self) -> Lsn {
+        self.next_lsn.load(Ordering::Acquire)
+    }
+
+    /// Get the last synced LSN.
+    pub fn synced_lsn(&self) -> Lsn {
+        self.synced_lsn.load(Ordering::Acquire)
+    }
+
+    /// Get the path to the WAL file.
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    /// Allocate a new LSN without writing a record.
+    pub fn allocate_lsn(&self) -> Lsn {
+        self.next_lsn.fetch_add(1, Ordering::AcqRel)
+    }
+
+    /// Set the minimum starting LSN for subsequent records.
+    pub fn set_min_lsn(&self, min_lsn: Lsn) {
+        loop {
+            let current = self.next_lsn.load(Ordering::Acquire);
+            if current >= min_lsn {
+                break;
+            }
+            if self.next_lsn.compare_exchange(
+                current,
+                min_lsn,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ).is_ok() {
+                break;
+            }
+        }
+    }
+
+    /// Write a checkpoint record and update the header.
+    pub fn checkpoint(&self, checkpoint_lsn: Lsn) -> Result<Lsn, WalError> {
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+
+        let record = WalRecord::Checkpoint {
+            checkpoint_lsn,
+            timestamp,
+        };
+
+        let lsn = self.append(record)?;
+        self.sync()?;
+
+        let mut header = self.header.lock().expect("header lock poisoned");
+        header.checkpoint_lsn = checkpoint_lsn;
+
+        let mut file = self.file.lock().expect("WAL lock poisoned");
+        file.seek(SeekFrom::Start(0))?;
+        file.write_all(&header.to_bytes())?;
+        file.flush()?;
+        file.get_ref().sync_all()?;
+
+        file.seek(SeekFrom::End(0))?;
+
+        Ok(lsn)
+    }
+
+    /// Get the last checkpoint LSN.
+    pub fn checkpoint_lsn(&self) -> Lsn {
+        let header = self.header.lock().expect("header lock poisoned");
+        header.checkpoint_lsn
+    }
+
+    /// Truncate the WAL file, removing all records.
+    pub fn truncate(&self) -> Result<(), WalError> {
+        let mut file = self.file.lock().expect("WAL lock poisoned");
+
+        file.flush()?;
+
+        let inner_file = file.get_mut();
+        inner_file.set_len(WalHeader::SIZE as u64)?;
+
+        file.seek(SeekFrom::Start(WalHeader::SIZE as u64))?;
+
+        self.next_lsn.store(1, Ordering::Release);
+        self.synced_lsn.store(0, Ordering::Release);
+
+        {
+            let mut header = self.header.lock().expect("header lock poisoned");
+            header.checkpoint_lsn = 0;
+
+            file.seek(SeekFrom::Start(0))?;
+            file.write_all(&header.to_bytes())?;
+            file.flush()?;
+            file.get_ref().sync_all()?;
+
+            file.seek(SeekFrom::Start(WalHeader::SIZE as u64))?;
+        }
+
+        Ok(())
+    }
+
+    /// Rotate WAL to archive directory - O(1) filesystem rename operation.
+    pub fn rotate_to_archive(&self, config: &WalConfig) -> Result<PathBuf, WalError> {
+        self.sync()?;
+
+        let archive_dir = if config.archive_dir.is_absolute() {
+            config.archive_dir.clone()
+        } else {
+            self.path
+                .parent()
+                .unwrap_or(Path::new("."))
+                .join(&config.archive_dir)
+        };
+        fs::create_dir_all(&archive_dir).map_err(|e| WalError::Io(e))?;
+
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis();
+        let segment_name = format!("wal_{}.segment", timestamp);
+        let archive_path = archive_dir.join(&segment_name);
+
+        let mut file = self.file.lock().expect("WAL lock poisoned");
+
+        file.flush()?;
+        file.get_ref().sync_all()?;
+
+        drop(file);
+
+        fs::rename(&self.path, &archive_path).map_err(|e| WalError::Io(e))?;
+
+        let new_file = OpenOptions::new()
+            .create(true)
+            .write(true)
+            .read(true)
+            .open(&self.path)?;
+
+        let mut writer = BufWriter::new(new_file);
+
+        let header = WalHeader::new();
+        writer.write_all(&header.to_bytes())?;
+        writer.flush()?;
+
+        *self.file.lock().expect("WAL lock poisoned") = writer;
+        self.next_lsn.store(1, Ordering::Release);
+        self.synced_lsn.store(0, Ordering::Release);
+        *self.header.lock().expect("header lock poisoned") = header;
+
+        let _ = Self::prune_segments_if_needed(&archive_dir, config);
+
+        Ok(archive_path)
+    }
+
+    /// Collect all WAL segments (archived + active) in chronological order.
+    pub fn collect_wal_segments(&self, config: &WalConfig) -> Result<Vec<PathBuf>, WalError> {
+        let mut segments = Vec::new();
+
+        let archive_dir = if config.archive_dir.is_absolute() {
+            config.archive_dir.clone()
+        } else {
+            self.path
+                .parent()
+                .unwrap_or(Path::new("."))
+                .join(&config.archive_dir)
+        };
+
+        if archive_dir.exists() {
+            for entry in fs::read_dir(&archive_dir).map_err(|e| WalError::Io(e))? {
+                let entry = entry.map_err(|e| WalError::Io(e))?;
+                let path = entry.path();
+                if path.extension().map_or(false, |ext| ext == "segment") {
+                    segments.push(path);
+                }
+            }
+        }
+
+        segments.sort();
+
+        if self.path.exists() {
+            let metadata = fs::metadata(&self.path).map_err(|e| WalError::Io(e))?;
+            if metadata.len() > WalHeader::SIZE as u64 {
+                segments.push(self.path.clone());
+            }
+        }
+
+        Ok(segments)
+    }
+
+    /// Prune old WAL segments to stay within limits.
+    fn prune_segments_if_needed(archive_dir: &Path, config: &WalConfig) -> Result<(), WalError> {
+        if !archive_dir.exists() {
+            return Ok(());
+        }
+
+        let mut segments: Vec<(PathBuf, u64)> = Vec::new();
+        for entry in fs::read_dir(archive_dir).map_err(|e| WalError::Io(e))? {
+            let entry = entry.map_err(|e| WalError::Io(e))?;
+            let path = entry.path();
+            if path.extension().map_or(false, |ext| ext == "segment") {
+                let size = fs::metadata(&path).map_or(0, |m| m.len());
+                segments.push((path, size));
+            }
+        }
+
+        segments.sort_by(|a, b| a.0.cmp(&b.0));
+
+        let total_size: u64 = segments.iter().map(|(_, size)| size).sum();
+
+        let mut current_size = total_size;
+        let mut to_remove = Vec::new();
+
+        for (i, (path, size)) in segments.iter().enumerate() {
+            let remaining_count = segments.len() - i;
+
+            if remaining_count <= 1 {
+                break;
+            }
+
+            let over_count = remaining_count > config.max_segments;
+            let over_size = current_size > config.max_archive_bytes;
+
+            if over_count || over_size {
+                to_remove.push(path.clone());
+                current_size = current_size.saturating_sub(*size);
+            } else {
+                break;
+            }
+        }
+
+        for path in to_remove {
+            let _ = fs::remove_file(path);
+        }
+
+        Ok(())
+    }
+}
