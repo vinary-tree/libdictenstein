@@ -214,6 +214,9 @@ pub mod serialize_impl;
 // iter_prefix_with_arena, iter_prefix_with_values_and_arena) — Phase-5 split out of dict_impl.
 pub mod arena_iter;
 
+// Cursor-based prefix iteration (iter_prefix_from_cursor + collectors) — Phase-5 split.
+pub mod cursor_iter;
+
 // Page-aware prefix-iteration result types (Phase-5 split out of dict_impl).
 pub mod prefix_term;
 
