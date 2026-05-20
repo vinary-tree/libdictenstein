@@ -176,6 +176,9 @@ pub mod wal_helpers;
 // Public mutation API (insert / insert_with_value / remove) — Phase-6 split.
 pub mod mutation_api;
 
+// Core mutation implementations (_no_wal helpers) — Phase-6 split.
+pub mod mutation_core;
+
 // Re-export shared types (always available)
 pub use types::{
     CharTrieFileHeader, CharTrieNodeInner, CharTrieRoot,

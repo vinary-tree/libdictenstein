@@ -138,149 +138,30 @@ use super::types::CharTrieRoot;
 // =============================================================================
 
 // =============================================================================
-// Generic impl block for all BlockStorage backends
+// All instance methods moved to sibling sub-modules in Phase-6:
+//
+// - mutation_core: insert_impl_no_wal, insert_impl_no_wal_with_value,
+//                  remove_impl_no_wal (the _no_wal core primitives)
+// - mutation_api:  insert, insert_with_value, remove (WAL-logged wrappers)
+// - query_api:     contains/try_contains, get/try_get, optimistic variants,
+//                  epoch + retry observability
+// - prefix_helpers: navigate_to_prefix, collect_terms_*
+// - prefix_api:    iter_prefix*, remove_prefix*
+// - disk_io:       load_root_from_disk + child resolution helpers
+// - persist:       checkpoint, persist_to_disk, serialize_char_node_to_disk
+// - serialize variants live in serialization_char (pre-existing)
+// - merge_api:     merge_from + batched variants
+// - parallel_merge: rayon-based parallel merge (feature-gated)
+// - document_tx:   begin/tx_insert/commit/abort
+// - batch_insert:  insert_batch + 9 variants
+// - lockfree_cas:  enable_lockfree/insert_cas/contains_lockfree/...
+// - atomic_ops:    increment, upsert, compare_and_swap, fetch_add, get_or_insert
+// - observability: sync, current_lsn, group commit + memory monitor + cache stats
+// - epoch_checkpointing: enable/disable epoch-based auto checkpoint
+// - prefetch_api:  prefetch_stats, prefetch_disk_refs_bounded
+// - wal_helpers:   append_to_wal, sync_wal, *durability_policy
+// - mmap_ctor / io_uring_ctor: storage-backend-specific constructors
 // =============================================================================
-impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
-    /// Load root from disk given the root descriptor pointer
-    ///
-    /// This function:
-    /// 1. Reads the root descriptor block
-    /// 2. Loads arena block IDs and populates the arena manager
-    /// 3. Loads the root node (which can now read from arenas)
-    ///
-    /// # Arguments
-    /// * `buffer_manager` - The buffer manager for disk I/O
-    /// * `root_desc_ptr` - Pointer to the root descriptor block
-    /// * `eager_depth` - Controls loading strategy:
-    ///   - `None`: Fully lazy loading (only root node loaded)
-    ///   - `Some(0)`: Same as None (lazy loading)
-    ///   - `Some(n)`: Load n levels eagerly, rest lazy
-    ///   - `Some(usize::MAX)`: Fully eager loading (all levels)
-
-    /// Insert a term (internal, no WAL logging)
-    pub(super) fn insert_impl_no_wal(&mut self, term: &str) -> bool {
-        // Ensure we have a root node
-        if matches!(self.root, CharTrieRoot::Empty) {
-            self.root = CharTrieRoot::Node(Box::new(CharTrieNodeInner::new()));
-        }
-
-        // Navigate to the insertion point using raw pointer for traversal
-        // This is safe because we maintain exclusive access through &mut self
-        let root = match &mut self.root {
-            CharTrieRoot::Node(node) => node.as_mut() as *mut CharTrieNodeInner<V>,
-            CharTrieRoot::Empty => unreachable!(),
-        };
-
-        let mut current = root;
-        for c in term.chars() {
-            // Safety: current is valid and we have exclusive access through &mut self
-            let node = unsafe { &mut *current };
-            current = self.get_or_create_child_lazy_ptr(node, c)
-                .expect("I/O error during lazy loading in insert");
-        }
-
-        // Safety: current is valid
-        let node = unsafe { &mut *current };
-
-        // Check if already final
-        if node.is_final() {
-            return false;
-        }
-
-        // Mark as final
-        node.set_final(true);
-        self.len.fetch_add(1, AtomicOrdering::Relaxed);
-        self.dirty.store(true, AtomicOrdering::Release);
-        true
-    }
-
-
-    /// Insert a term with value (internal, no WAL logging)
-    pub(super) fn insert_impl_no_wal_with_value(&mut self, term: &str, value: V) -> bool {
-        // Ensure we have a root node
-        if matches!(self.root, CharTrieRoot::Empty) {
-            self.root = CharTrieRoot::Node(Box::new(CharTrieNodeInner::new()));
-        }
-
-        // Navigate to the insertion point using raw pointer for traversal
-        let root = match &mut self.root {
-            CharTrieRoot::Node(node) => node.as_mut() as *mut CharTrieNodeInner<V>,
-            CharTrieRoot::Empty => unreachable!(),
-        };
-
-        let mut current = root;
-        for c in term.chars() {
-            // Safety: current is valid and we have exclusive access through &mut self
-            let node = unsafe { &mut *current };
-            current = self.get_or_create_child_lazy_ptr(node, c)
-                .expect("I/O error during lazy loading in insert");
-        }
-
-        // Safety: current is valid
-        let node = unsafe { &mut *current };
-
-        // Check if already final
-        if node.is_final() {
-            // Update value if already exists
-            node.value = Some(value);
-            return false;
-        }
-
-        // Mark as final with value
-        node.set_final(true);
-        node.value = Some(value);
-        self.len.fetch_add(1, AtomicOrdering::Relaxed);
-        self.dirty.store(true, AtomicOrdering::Release);
-        true
-    }
-
-    /// Insert a term with value (internal, no WAL logging)
-
-    /// Remove a term (internal, no WAL logging)
-    pub(super) fn remove_impl_no_wal(&mut self, term: &str) -> bool {
-        let root = match &mut self.root {
-            CharTrieRoot::Node(node) => node.as_mut() as *mut CharTrieNodeInner<V>,
-            CharTrieRoot::Empty => return false,
-        };
-
-        // Navigate to the node using raw pointer for traversal
-        let chars: Vec<char> = term.chars().collect();
-        let mut current = root;
-        for &c in &chars {
-            // Safety: current is valid and we have exclusive access through &mut self
-            let node = unsafe { &*current };
-            match self.get_child_mut_lazy(node, c) {
-                Ok(Some(child)) => current = child as *mut CharTrieNodeInner<V>,
-                Ok(None) => return false, // Term not found
-                Err(_) => return false, // I/O error during lazy load
-            }
-        }
-
-        // Safety: current is valid
-        let node = unsafe { &mut *current };
-
-        // Check if this node is final
-        if !node.is_final() {
-            return false;
-        }
-
-        // Mark as not final
-        node.set_final(false);
-        node.value = None;
-        self.len.fetch_sub(1, AtomicOrdering::Relaxed);
-        self.dirty.store(true, AtomicOrdering::Release);
-        true
-    }
-
-    // ========================================================================
-    // Prefix Operations
-    // ========================================================================
-    //
-    // Navigate to the node at the given prefix path:
-    // navigate_to_prefix, navigate_to_prefix_with_arena, collect_terms_*
-    // — all moved to sibling super::prefix_helpers in Phase-6.
-    // Public prefix iter / remove API moved to super::prefix_api.
-}
 
 /// Root descriptor type constants
 pub(super) const ROOT_TYPE_EMPTY: u8 = 0;
