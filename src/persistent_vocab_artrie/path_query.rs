@@ -13,7 +13,7 @@
 use crate::persistent_artrie::block_storage::BlockStorage;
 
 use super::types::VocabTrieRoot;
-use super::dict_impl::{VocabTermIterator, VocabPrefixIterator};
+use super::iterators::{VocabTermIterator, VocabPrefixIterator};
 
 impl<S: BlockStorage> super::dict_impl::PersistentVocabARTrie<S> {
     /// Get root children information for Dictionary trait implementation.

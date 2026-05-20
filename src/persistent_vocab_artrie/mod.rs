@@ -141,6 +141,9 @@ pub mod path_query;
 // Disk I/O helpers (load/persist/serialize/rebuild_reverse_index) — Phase-6 split.
 pub mod disk_io;
 
+// DFS iterators (VocabTermIterator + VocabPrefixIterator) — Phase-6 split.
+pub mod iterators;
+
 // Reverse index infrastructure
 pub mod reverse_index;
 
