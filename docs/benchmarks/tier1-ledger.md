@@ -1,5 +1,27 @@
 # libdictenstein — ARTrie Tech-Debt Repair Ledger
 
+## Cumulative session summary
+
+39 commits land Phase 0 + Phase 1 + the audit-named Phase-2 correctness
+items + the start of Phase 3 (KeyEncoding skeleton + ByteKey/CharKey
+impls) + 11 Phase-4 wal sub-module extractions + 4 Phase-5 byte
+dict_impl extractions + 4 Phase-6 char dict_impl extractions + 1
+Phase-6 vocab extraction. 1578 unit tests pass at every commit.
+
+Module counts in `persistent_artrie_core/`: 22 top-level sub-modules
+plus the `wal/` subdirectory with 11 sub-files. Tier-1 silent
+correctness bugs the audit named are all resolved with real
+implementations (eviction for char + vocab; transition resolves real
+children; lockfree on-disk → documented invariant; legacy GroupCommit
+stub gone; `#[ignore]`'d stress tests pass and ride in the normal
+suite; panics → expect/Result).
+
+Layering invariant — `grep -rn "crate::persistent_artrie_char\|crate::persistent_vocab"
+src/persistent_artrie_core/` and the corresponding check against
+`src/persistent_artrie/` both return empty.
+
+
+
 Scientific-method ledger per `~/.claude/CLAUDE.md`. One entry per Tier 1/Move fix.
 Authoritative plan: `/home/dylon/.claude/plans/rust-backtrace-1-rust-log-debug-cargo-n-purrfect-lemon.md`.
 
