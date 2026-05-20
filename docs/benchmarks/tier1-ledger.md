@@ -2,11 +2,12 @@
 
 ## Cumulative session summary
 
-39 commits land Phase 0 + Phase 1 + the audit-named Phase-2 correctness
+43 commits land Phase 0 + Phase 1 + the audit-named Phase-2 correctness
 items + the start of Phase 3 (KeyEncoding skeleton + ByteKey/CharKey
-impls) + 11 Phase-4 wal sub-module extractions + 4 Phase-5 byte
-dict_impl extractions + 4 Phase-6 char dict_impl extractions + 1
-Phase-6 vocab extraction. 1578 unit tests pass at every commit.
+impls) + **Phase 4 complete** (all 12 wal sub-modules extracted) + 4
+Phase-5 byte dict_impl extractions + 4 Phase-6 char dict_impl
+extractions + 1 Phase-6 vocab extraction. 1578 unit tests pass at
+every commit.
 
 Module counts in `persistent_artrie_core/`: 22 top-level sub-modules
 plus the `wal/` subdirectory with 11 sub-files. Tier-1 silent
