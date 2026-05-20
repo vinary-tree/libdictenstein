@@ -29,7 +29,7 @@ use crate::value::DictionaryValue;
 use super::bucket::StringBucket;
 use super::error::{PersistentARTrieError, Result};
 use super::node_impl::PersistentARTrieNode;
-use super::nodes::{ArtNode, Node, Node4, AddChildError};
+use super::nodes::{ArtNode, Node};
 use super::swizzled_ptr::{DiskLocation, NodeType, SwizzledPtr};
 use super::transitions::{bucket_to_art_node, ChildNode};
 use super::serialization::{self, v2::{SerializationContext, DeserializationContext}};
@@ -38,7 +38,7 @@ use super::arena_manager::{ArenaManager, ArenaSlot};
 use super::block_storage::BlockStorage;
 use super::buffer_manager::BufferManager;
 use super::disk_manager::MmapDiskManager;
-use super::wal::{AsyncWalConfig, AsyncWalError, AsyncWalWriter, Lsn, SyncHandle, WalConfig, WalRecord};
+use super::wal::{AsyncWalConfig, AsyncWalWriter, Lsn, SyncHandle, WalConfig};
 use super::wal_managed::WalManaged;
 
 #[cfg(feature = "parallel-merge")]
