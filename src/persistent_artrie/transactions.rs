@@ -59,6 +59,19 @@ pub struct DocumentTransaction<V: DictionaryValue> {
 }
 
 impl<V: DictionaryValue> DocumentTransaction<V> {
+    /// Construct a new Active-state transaction. Used by
+    /// `PersistentARTrie::begin_document` in the sibling
+    /// `document_tx` module (which cannot otherwise build a value
+    /// since `shadow_terms` is `pub(crate)`).
+    pub(crate) fn new_active(tx_id: u64, document_id: String) -> Self {
+        Self {
+            tx_id,
+            document_id,
+            shadow_terms: Vec::new(),
+            state: TransactionState::Active,
+        }
+    }
+
     /// Returns the number of buffered terms in this transaction.
     pub fn len(&self) -> usize {
         self.shadow_terms.len()
