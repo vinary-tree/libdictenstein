@@ -195,6 +195,9 @@ pub mod persistence_api;
 // MmapDiskManager-specific constructors (Phase-5 split out of dict_impl).
 pub mod mmap_ctor;
 
+// Public mutation API (insert/remove/batch wrappers) — Phase-5 split out of dict_impl.
+pub mod mutation_api;
+
 // Page-aware prefix-iteration result types (Phase-5 split out of dict_impl).
 pub mod prefix_term;
 
