@@ -161,6 +161,9 @@ pub mod observability;
 // Epoch-based automatic checkpointing (Phase-6 split out of dict_impl_char).
 pub mod epoch_checkpointing;
 
+// Atomic read-modify-write operations (Phase-6 split out of dict_impl_char).
+pub mod atomic_ops;
+
 // Re-export shared types (always available)
 pub use types::{
     CharTrieFileHeader, CharTrieNodeInner, CharTrieRoot,
