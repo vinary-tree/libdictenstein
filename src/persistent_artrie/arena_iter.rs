@@ -17,6 +17,8 @@
 //! stays in `dict_impl.rs` until it can be paired with its own
 //! sibling module.
 
+#![allow(dead_code)]
+
 use crate::value::DictionaryValue;
 
 use super::block_storage::BlockStorage;

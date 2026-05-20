@@ -14,6 +14,8 @@
 //! - `load_single_art_node_data` / `load_single_child_data`
 //! - `load_art_node_with_children_from_arena_iterative`
 
+#![allow(dead_code)]
+
 use std::sync::Arc;
 
 use crate::sync_compat::RwLock;

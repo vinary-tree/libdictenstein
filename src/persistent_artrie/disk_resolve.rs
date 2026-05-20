@@ -14,6 +14,8 @@
 //! `resolve_child_for_mutation_with_bm` stays in `dict_impl.rs` as
 //! a free function; this module just wraps it.
 
+#![allow(dead_code)]
+
 use super::arena_manager::ArenaSlot;
 use super::block_storage::BlockStorage;
 use super::bucket::StringBucket;

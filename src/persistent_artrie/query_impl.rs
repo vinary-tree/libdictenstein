@@ -15,6 +15,8 @@
 //!
 //! Depth-bounded prefetching is preserved across the move.
 
+#![allow(dead_code)]
+
 use crate::value::DictionaryValue;
 
 use super::block_storage::BlockStorage;

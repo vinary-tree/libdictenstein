@@ -12,6 +12,8 @@
 //! These are pub(super) so the iter_prefix* and merge_from* APIs
 //! (which remain in dict_impl_char.rs) can drive them.
 
+#![allow(dead_code)]
+
 use crate::persistent_artrie::block_storage::BlockStorage;
 use crate::persistent_artrie::error::Result;
 use crate::value::DictionaryValue;

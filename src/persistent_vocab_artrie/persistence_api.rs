@@ -12,6 +12,8 @@
 //! - `enable_slot_tracking` / `flush_sequential`
 //! - `cache_stats`
 
+#![allow(dead_code)]
+
 use std::sync::atomic::Ordering;
 
 use crate::persistent_artrie::block_storage::BlockStorage;

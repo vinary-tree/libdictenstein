@@ -15,6 +15,8 @@
 //! as `Box`/`SwizzledPtr`) and on-disk arena slots loaded via
 //! `BufferManager` / `ArenaManager`.
 
+#![allow(dead_code)]
+
 use std::sync::Arc;
 
 use crate::persistent_artrie::block_storage::BlockStorage;
