@@ -494,10 +494,12 @@ impl<V: DictionaryValue> Clone for CharTrieNodeInner<V> {
                 let cloned_ptr = SwizzledPtr::in_memory(Box::into_raw(cloned_child));
                 // Add to new node (may cause growth, but since we're cloning
                 // the same size node, we should have capacity)
-                if new_node.add_child_growing(key, cloned_ptr).is_err() {
-                    // This shouldn't happen for clone, but handle gracefully
-                    panic!("Failed to clone child during CharTrieNodeInner clone");
-                }
+                new_node.add_child_growing(key, cloned_ptr).expect(
+                    "invariant violation: CharTrieNodeInner::clone is cloning into a node of \
+                     the same type/capacity as the source, so add_child_growing cannot exceed \
+                     capacity — if this fires, a CharNode*::grow capacity-tracking bug has \
+                     corrupted the cloned subtree",
+                );
             }
         }
 

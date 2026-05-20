@@ -348,9 +348,12 @@ impl Clone for VocabTrieNode {
                 let child_ref = unsafe { &*ptr };
                 let cloned_child = Box::new(child_ref.clone());
                 let cloned_ptr = SwizzledPtr::in_memory(Box::into_raw(cloned_child));
-                if new_node.add_child_growing(key, cloned_ptr).is_err() {
-                    panic!("Failed to clone child during VocabTrieNode clone");
-                }
+                new_node.add_child_growing(key, cloned_ptr).expect(
+                    "invariant violation: VocabTrieNode::clone is cloning into a node of the \
+                     same type/capacity as the source, so add_child_growing cannot exceed \
+                     capacity — if this fires, a Node*::grow capacity-tracking bug has \
+                     corrupted the cloned subtree",
+                );
             }
         }
 

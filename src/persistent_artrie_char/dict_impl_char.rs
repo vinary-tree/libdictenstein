@@ -6552,7 +6552,7 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
         };
 
         // Build a CharNode with disk pointers for serialization
-        let disk_node = self.build_disk_char_node(&node.node, &child_disk_ptrs);
+        let disk_node = self.build_disk_char_node(&node.node, &child_disk_ptrs)?;
 
         // Serialize the value using bincode (needed regardless of encoding)
         let value_bytes: Vec<u8> = if let Some(ref value) = node.value {
@@ -6617,15 +6617,21 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
         Ok(SwizzledPtr::on_disk(final_slot.arena_id + 1, final_slot.slot_id, node_type))
     }
 
-    /// Build a CharNode with disk SwizzledPtrs for serialization
+    /// Build a CharNode with disk SwizzledPtrs for serialization.
     ///
     /// Creates a new CharNode of the same type as the original, but with
     /// children pointing to disk locations instead of in-memory nodes.
+    ///
+    /// Returns `Err` only if the rebuilt node's `add_child_growing` exceeds
+    /// capacity — that indicates corruption (the original held that many
+    /// children, so a same-type rebuild cannot fail to hold them) and the
+    /// caller propagates the error up the serialization stack rather than
+    /// crashing.
     fn build_disk_char_node(
         &self,
         original: &CharNode,
         disk_children: &[(u32, SwizzledPtr)],
-    ) -> CharNode {
+    ) -> Result<CharNode> {
         use super::nodes::{CharBucket, CharNode16, CharNode4, CharNode48};
 
         // Create a new node of the same type
@@ -6650,15 +6656,16 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
 
         // Add disk children
         for &(key, ref ptr) in disk_children {
-            // Use add_child_growing to handle insertions properly
-            // Note: We're inserting disk SwizzledPtrs, not memory pointers
-            if let Err(e) = new_node.add_child_growing(key, ptr.clone()) {
-                // This shouldn't happen since we're rebuilding the same structure
-                panic!("Failed to add disk child during serialization: {:?}", e);
-            }
+            new_node.add_child_growing(key, ptr.clone()).map_err(|e| {
+                PersistentARTrieError::internal(&format!(
+                    "build_disk_char_node: rebuilt node rejected child key {:#x} (Node type same \
+                     as source): {:?} — indicates corruption in source node's child count",
+                    key, e
+                ))
+            })?;
         }
 
-        new_node
+        Ok(new_node)
     }
 
     /// Map CharNode type to NodeType for SwizzledPtr
@@ -9350,17 +9357,78 @@ mod tests {
             }
         }
 
-        // TODO: These tests require SharedCharTrie to have additional methods
-        // (current_lsn, synced_lsn, upsert, sync) that need to be added as part
-        // of Task #2 (Update ARTrie trait with common methods).
-        // The methods can't be added to Arc<RwLock<...>> directly; they need
-        // to be either in a trait or SharedCharTrie needs to be a newtype wrapper.
-        //
-        // #[test]
-        // fn test_shared_char_trie_current_lsn() { ... }
-        //
-        // #[test]
-        // fn test_shared_char_trie_synced_lsn() { ... }
+    }
+
+    #[test]
+    fn test_shared_char_trie_current_lsn() {
+        use crate::artrie_trait::ARTrie;
+        let dir = tempfile::TempDir::new().expect("temp dir");
+        let path = dir.path().join("test_shared_lsn.artc");
+        let trie = std::sync::Arc::new(parking_lot::RwLock::new(
+            PersistentARTrieChar::<()>::create(&path).expect("create trie"),
+        ));
+        let lsn0 = trie.current_lsn();
+        trie.write().insert("hello");
+        let lsn1 = trie.current_lsn();
+        assert!(lsn1 > lsn0, "current_lsn must advance after insert");
+    }
+
+    #[test]
+    fn test_shared_char_trie_synced_lsn() {
+        use crate::artrie_trait::ARTrie;
+        let dir = tempfile::TempDir::new().expect("temp dir");
+        let path = dir.path().join("test_shared_synced.artc");
+        let trie = std::sync::Arc::new(parking_lot::RwLock::new(
+            PersistentARTrieChar::<()>::create(&path).expect("create trie"),
+        ));
+        let synced_before = trie.synced_lsn();
+        trie.write().insert("hello");
+        let current_after_insert = trie.current_lsn();
+        // After an insert that hasn't been synced, current_lsn advances ahead of
+        // synced_lsn (or synced is still None for an unsynced fresh trie).
+        assert!(
+            synced_before.map_or(true, |s| s < current_after_insert),
+            "synced_lsn must lag current_lsn until sync() runs"
+        );
+        trie.sync().expect("sync");
+        // After sync(), synced_lsn must be reported as Some(_): the trie has
+        // flushed the WAL at least once, so the on-disk state has a well-defined
+        // LSN. The exact value relative to current_lsn depends on sync
+        // semantics — the WAL writer's synced_lsn is the last LSN that fsync
+        // confirmed durable, which may lag current_lsn by one record (the
+        // checkpoint marker that sync itself emits).
+        assert!(
+            trie.synced_lsn().is_some(),
+            "synced_lsn must be Some(_) after sync()"
+        );
+    }
+
+    #[test]
+    fn test_shared_char_trie_upsert() {
+        use crate::artrie_trait::ARTrie;
+        let dir = tempfile::TempDir::new().expect("temp dir");
+        let path = dir.path().join("test_shared_upsert.artc");
+        let trie = std::sync::Arc::new(parking_lot::RwLock::new(
+            PersistentARTrieChar::<i64>::create(&path).expect("create trie"),
+        ));
+        assert!(trie.upsert("k", 1).expect("upsert"), "first upsert reports insert");
+        assert!(!trie.upsert("k", 2).expect("upsert"), "second upsert reports update");
+        assert_eq!(trie.read().get("k").copied(), Some(2), "value updated");
+    }
+
+    #[test]
+    fn test_shared_char_trie_sync_persists() {
+        use crate::artrie_trait::ARTrie;
+        let dir = tempfile::TempDir::new().expect("temp dir");
+        let path = dir.path().join("test_shared_sync.artc");
+        let trie = std::sync::Arc::new(parking_lot::RwLock::new(
+            PersistentARTrieChar::<()>::create(&path).expect("create trie"),
+        ));
+        trie.write().insert("persistent");
+        trie.sync().expect("sync");
+        drop(trie);
+        let reopened = PersistentARTrieChar::<()>::open(&path).expect("reopen");
+        assert!(reopened.contains("persistent"));
     }
 
     // ==================== Lock-Free CAS Tests ====================

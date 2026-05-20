@@ -223,6 +223,7 @@ pub type SharedCharARTrie<V, S = crate::persistent_artrie::disk_manager::MmapDis
 #[deprecated(since = "0.9.0", note = "Use SharedCharARTrie instead")]
 pub type SharedCharTrie<V> = SharedCharARTrie<V>;
 
+
 /// Character-level Persistent Adaptive Radix Trie for Unicode support.
 ///
 /// This dictionary provides proper Unicode character-level edit distance
