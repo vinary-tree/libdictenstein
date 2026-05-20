@@ -789,6 +789,20 @@ impl ByteNodeArenaV2 {
 mod tests {
     use super::*;
 
+    /// Guards the upward direction: `persistent_artrie_core::key_encoding::ByteKey`
+    /// hard-codes the arena magic constants, and this test confirms those
+    /// constants still match the canonical sources here in byte's
+    /// `persistent_artrie::arena` module. If the bytes are ever changed in
+    /// one place but not the other the build catches it via this assertion
+    /// rather than waiting for an on-disk-file-open mismatch in production.
+    #[test]
+    fn byte_key_arena_magic_matches_canonical_source() {
+        use crate::persistent_artrie_core::key_encoding::{ByteKey, KeyEncoding};
+        assert_eq!(ByteKey::ARENA_MAGIC, ARENA_MAGIC);
+        assert_eq!(ByteKey::ARENA_MAGIC_V2, ARENA_MAGIC_V2);
+        assert_eq!(&ByteKey::FILE_MAGIC, b"PART");
+    }
+
     #[test]
     fn test_arena_creation() {
         let arena = ByteNodeArena::new(4096);

@@ -1063,6 +1063,17 @@ impl CharNodeArenaV2 {
 mod tests {
     use super::*;
 
+    /// Mirror of `persistent_artrie::arena::tests::byte_key_arena_magic_matches_canonical_source`:
+    /// confirm that `persistent_artrie_core::key_encoding::CharKey`'s
+    /// hard-coded magic constants still match the canonical sources here.
+    #[test]
+    fn char_key_arena_magic_matches_canonical_source() {
+        use crate::persistent_artrie_core::key_encoding::{CharKey, KeyEncoding};
+        assert_eq!(CharKey::ARENA_MAGIC, ARENA_MAGIC);
+        assert_eq!(CharKey::ARENA_MAGIC_V2, ARENA_MAGIC_V2);
+        assert_eq!(&CharKey::FILE_MAGIC, b"ARTC");
+    }
+
     #[test]
     fn test_arena_creation() {
         let arena = CharNodeArena::new(4096);

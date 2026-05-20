@@ -107,29 +107,12 @@ mod tests {
         assert_eq!(units.as_slice(), &[b'h' as u32, 0x1F600]);
     }
 
-    #[test]
-    fn magic_constants_match_byte_module() {
-        // Confirm the trait constants line up with the byte arena module.
-        assert_eq!(ByteKey::ARENA_MAGIC, crate::persistent_artrie::arena::ARENA_MAGIC);
-        assert_eq!(
-            ByteKey::ARENA_MAGIC_V2,
-            crate::persistent_artrie::arena::ARENA_MAGIC_V2
-        );
-        assert_eq!(&ByteKey::FILE_MAGIC, b"PART");
-    }
-
-    #[test]
-    fn magic_constants_match_char_module() {
-        assert_eq!(
-            CharKey::ARENA_MAGIC,
-            crate::persistent_artrie_char::arena::ARENA_MAGIC
-        );
-        assert_eq!(
-            CharKey::ARENA_MAGIC_V2,
-            crate::persistent_artrie_char::arena::ARENA_MAGIC_V2
-        );
-        assert_eq!(&CharKey::FILE_MAGIC, b"ARTC");
-    }
+    // Note: assertions that ByteKey / CharKey constants match the variant
+    // modules' arena ARENA_MAGIC / ARENA_MAGIC_V2 constants live in the
+    // variant modules' test suites (persistent_artrie::arena::tests and
+    // persistent_artrie_char::arena::tests) rather than here, so that
+    // persistent_artrie_core's source set stays free of upward references
+    // to its consumers.
 }
 
 /// Marker trait identifying the key-unit type of a persistent ARTrie variant.
