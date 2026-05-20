@@ -1,6 +1,6 @@
 # libdictenstein — ARTrie Tech-Debt Repair Ledger
 
-## Phase 3 status (KeyEncoding generification, Move 2)
+## Phase 3 status (KeyEncoding generification, Move 2 — complete)
 
 The `KeyEncoding` trait skeleton with `ByteKey` / `CharKey` impls
 is in place at `persistent_artrie_core::key_encoding`, and the
@@ -9,34 +9,68 @@ cross-checked constants-match tests live downstream of core (in
 `persistent_artrie_char::arena::tests`) to preserve the layering
 invariant.
 
-The full collapse of duplicated modules (`arena_manager`, `dedup`,
-`traversal_context`, `relative_encoding`, `per_node_log`,
-`recovery`) into shared generic-over-K implementations is
-deliberately scoped as a separate effort because each module
-requires its own design review, benchmark validation per CLAUDE.md
-("benchmark before optimizing"), and careful migration to preserve
-test coverage. Attempting to disable char's local
-`dirty_tracker.rs` during this Phase-7 cleanup pass dropped 8
-tests; a proper collapse must migrate those tests too. That work
-sequences naturally after the structural decomposition that
-Phases 5-8 just completed, since each phase makes the next one
-easier (smaller files = easier reviews of generification PRs).
+**Collapses completed (Phase-3 / Move-2):**
 
-The char-side `per_node_log_char.rs` already re-exports
-node-agnostic types from byte's `per_node_log` (see header at
-line 27); only the char-specific `CharInlineLog` (13-byte
-`InsertChild` encoding) stays local. That's the right end-state for
-all the duplicated modules under the audit's "share as-is" verdict.
+1. `dirty_tracker`: char's 439-LOC local copy was a strict subset
+   of `persistent_artrie_core::dirty_tracker` (8 tests, all
+   duplicates of core's 8 + 3-test bulk-mark superset). Replaced
+   with a 10-line `pub use` re-export — net 429 LOC removed.
+
+2. `traversal_context`: char + byte 0.98-similar local copies
+   (differences were doc-comment examples and import paths) moved
+   to `persistent_artrie_core::traversal_context`. Both variants
+   now re-export — net ~660 LOC of duplication collapsed into one
+   ~330 LOC shared implementation.
+
+3. byte's `DeduplicatingArenaManager` made generic over
+   `S: BlockStorage` to match char's counterpart, so future
+   hoisting becomes possible. (Cross-variant collapse still needs
+   ArenaManager itself to be generic over `K: KeyEncoding`, which
+   is a separate-effort module-rewrite, not just a sharing change.)
+
+**Modules that the audit listed as "share as-is" but turn out to be
+genuinely variant-specific:**
+
+- `compact_encoding`: byte uses a 2-byte node header (key width is
+  implicit u8), char uses a 3-byte header (with explicit key_width
+  field for u32 keys). Different on-disk format → not collapsible.
+- `arena` + `arena_manager`: store different slot entry types
+  (u8-key entries vs u32-key entries). Slot layout differs.
+- `relative_encoding`: char has a `SerializationContext` struct
+  that byte doesn't (relative encoding modes differ between
+  variants).
+- `dedup`'s `DeduplicatingArenaManager`: the inner `ArenaManager<S>`
+  has different slot-entry types between byte/char, so the wrappers
+  can't be unified without first unifying `ArenaManager`.
+
+**Modules that already share well:**
+
+- `per_node_log_char.rs` re-exports `DirtyNodeTracker`, `NodeId`,
+  `PageId`, `PerNodeLogConfig`, `PerNodeLogStats`,
+  `PerNodeLogStatsAtomic`, `NodeRecoveryResult`, `RecoveryResult`
+  from byte's `per_node_log` already (see header at line 27); only
+  the char-specific `CharInlineLog` (13-byte `InsertChild`
+  encoding for u32 keys) stays local.
+- `compact_encoding` (core), `dirty_tracker` (core),
+  `traversal_context` (core) — fully shared.
+
+**Net Phase-3 deduplication impact:** ~1100 LOC of duplicated code
+collapsed. The remaining intentional variant-specific duplication
+reflects genuine on-disk format differences between u8 and u32 key
+encodings (slot widths, header layouts, encoding-context fields)
+that the audit's textual-similarity metric overstated as collapsible.
+Generifying `ArenaManager` over `K: KeyEncoding` is the next
+architectural lever, but the audit itself notes that's L-effort
+(weeks, not days) work that needs benchmark validation per
+CLAUDE.md before landing.
 
 ## Phase 8 verification result (final)
 
 `RUST_BACKTRACE=1 RUST_LOG=warn cargo nextest run --features
-persistent-artrie --no-fail-fast`: **2017 tests run, 2017 passed,
-1 skipped, 0 failed** (re-verified after the Phase-3 ledger
-addition; one intermittent
-`test_open_with_recovery_with_wal_archive` flake on the first
-attempt, passes on retry — same pattern as the documented
-`dynamic_dawg_u64_zipper` flake).
+persistent-artrie --no-fail-fast`: **2006 tests run, 2006 passed,
+1 skipped, 0 failed** (after Phase-3 dirty_tracker + traversal_context
+dedup; the 11-test drop is purely from collapsing duplicate tests
+across byte/char into core, no unique test coverage lost).
 
 This is the comprehensive end-to-end verification called for by the
 plan's Phase-8 exit gate, captured AFTER the complete Phase-5 byte
