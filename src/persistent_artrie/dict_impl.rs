@@ -5665,29 +5665,11 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
 #[cfg(feature = "parallel-merge")]
 pub use super::parallel_merge::SharedARTrieParallelExt;
 
-// ===========================================================================
-// Document Transactions
-// ===========================================================================
-//
-// Per-document atomicity: buffer all terms for a document, then atomically
-// apply them on commit or discard them on abort. This enables rollback of
-// individual documents without affecting other insertions.
-
-impl<V: DictionaryValue + serde::Serialize + serde::de::DeserializeOwned, S: BlockStorage> PersistentARTrie<V, S> {
-    /// Begin a new document transaction.
-    ///
-    /// This creates a transaction that buffers terms in memory. The terms are
-    /// only applied to the trie when `commit_document()` is called. If processing
-    /// fails, `abort_document()` discards all buffered terms.
-    ///
-    /// # Arguments
-    ///
-    /// * `document_id` - A unique identifier for this document (for debugging/logging)
-    ///
-    /// # Returns
-    ///
-    /// A `DocumentTransaction` that can be used to buffer terms and then commit or abort.
-}
+// Document-transaction methods (begin_document / tx_insert* /
+// commit_document / abort_document) moved to sibling
+// `super::document_tx` module in Phase-5 decomposition. Data
+// carriers (`DocumentTransaction` / `TransactionState`) live in
+// `super::transactions`.
 
 // ===========================================================================
 // Atomic Operations
