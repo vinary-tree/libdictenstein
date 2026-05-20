@@ -288,5 +288,3 @@ Potential optimizations:
 - Incremental minimization (avoid full rebuild)
 - Lazy compaction (defer until read-heavy phase)
 - Adaptive compaction (based on fragmentation metrics)
-
-See `docs/FUTURE_ENHANCEMENTS.md` for roadmap.
