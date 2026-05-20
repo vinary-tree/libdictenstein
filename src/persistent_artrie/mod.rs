@@ -170,6 +170,9 @@ pub mod lockfree_cas;
 // Document-transaction execution methods (Phase-5 split out of dict_impl).
 pub mod document_tx;
 
+// Atomic read-modify-write operations (Phase-5 split out of dict_impl).
+pub mod atomic_ops;
+
 // Page-aware prefix-iteration result types (Phase-5 split out of dict_impl).
 pub mod prefix_term;
 
