@@ -111,6 +111,9 @@ pub mod recovery_stats;
 // CharTrieFileHeader (Phase-6 split out of dict_impl_char).
 pub mod file_header;
 
+// CharDocumentTransaction (Phase-6 split out of dict_impl_char).
+pub mod transactions;
+
 // Char-side MVCC TrieRoot implementation (paired with generic core mvcc).
 pub mod mvcc;
 
