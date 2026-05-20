@@ -204,6 +204,9 @@ pub mod disk_load;
 // Merge API (merge_from/merge_replace/merge_from_batched*) — Phase-5 split out of dict_impl.
 pub mod merge_api;
 
+// Disk-ref resolution + prefetch helpers — Phase-5 split out of dict_impl.
+pub mod disk_resolve;
+
 // Page-aware prefix-iteration result types (Phase-5 split out of dict_impl).
 pub mod prefix_term;
 
