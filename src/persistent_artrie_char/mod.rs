@@ -173,6 +173,9 @@ pub mod prefetch_api;
 // WAL + durability helpers (append_to_wal, sync_wal, *durability_policy).
 pub mod wal_helpers;
 
+// Public mutation API (insert / insert_with_value / remove) — Phase-6 split.
+pub mod mutation_api;
+
 // Re-export shared types (always available)
 pub use types::{
     CharTrieFileHeader, CharTrieNodeInner, CharTrieRoot,
