@@ -223,6 +223,9 @@ pub mod dirty_tracking;
 // Read-path query implementation (contains_impl / get_value_impl + helpers) — Phase-5 split.
 pub mod query_impl;
 
+// Core mutation implementation (insert/remove/convert_bucket_to_art + _no_wal variants).
+pub mod mutation_core;
+
 // Page-aware prefix-iteration result types (Phase-5 split out of dict_impl).
 pub mod prefix_term;
 
