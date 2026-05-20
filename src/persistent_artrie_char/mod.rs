@@ -133,6 +133,9 @@ pub mod disk_io;
 // Lock-free CAS-based concurrent insert/contains/get/increment (Phase-6 split).
 pub mod lockfree_cas;
 
+// Public read-path API + optimistic concurrency variants (Phase-6 split).
+pub mod query_api;
+
 // Re-export shared types (always available)
 pub use types::{
     CharTrieFileHeader, CharTrieNodeInner, CharTrieRoot,
