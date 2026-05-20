@@ -125,14 +125,20 @@ re-export from `wal.rs`, with zero behavior change. cargo test passes
 | `wal/async_error.rs`  |  89 | `AsyncWalError` + Display/Error/From<WalError> |
 | `wal/reader.rs`       | 130 | `WalReader` + `WalRecordIterator` |
 
-Still inline in `wal.rs`: WalRecord/WalRecordType (codec, ~700 LOC),
-WalWriter (~500 LOC), AsyncWalWriter + SegmentSyncManager +
-PendingSegment + SyncHandle (~1500 LOC). Those involve tighter
-coupling to the rest of the file (e.g. WalWriter::RECORD_HEADER_SIZE
-is consumed by the reader; the async_writer types share several
-private fields with the segment lifecycle), so future extractions
-will need to widen a small set of visibilities or introduce
-sub-module-shared types.
+Subsequent commits a330da5 (codec) and d71f7db (writer) extracted the
+two largest remaining chunks. wal.rs is down from ~5000 LOC original
+to ~3151 LOC. Updated table:
+
+| `wal/codec.rs`        | 668 | `WalRecord` + `WalRecordType` + serialize_payload / deserialize |
+| `wal/writer.rs`       | 463 | `WalWriter` + create/open/open_or_create/append/append_batch/sync/checkpoint/truncate/rotate_to_archive/collect_wal_segments/prune_segments_if_needed |
+
+Still inline in `wal.rs`: AsyncWalWriter + SegmentSyncManager +
+PendingSegment + SyncHandle (the async-segment-sync cluster, ~1500
+LOC), the file-level doc comment, the crc32 helper, the `Lsn` type
+alias, and the disabled legacy `GroupCommit` stub. The async-writer
+cluster shares several private fields with the segment lifecycle so
+its extraction would need broader visibility coordination than the
+nine clean cuts landed so far.
 
 ### [Phase 2 → 3] — Remaining Tier 1 + initial Phase 3 work
 
