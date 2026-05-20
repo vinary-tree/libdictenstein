@@ -44,6 +44,8 @@
 use std::collections::HashMap;
 
 use super::arena_manager::{ArenaManager, ArenaSlot};
+use super::block_storage::BlockStorage;
+use super::disk_manager::MmapDiskManager;
 use super::PersistentARTrieError;
 
 type Result<T> = std::result::Result<T, PersistentARTrieError>;
@@ -213,18 +215,18 @@ impl DeduplicatorStats {
 /// This wraps an ArenaManager to provide transparent deduplication.
 /// When allocating, it first checks the dedup cache.
 #[derive(Debug)]
-pub struct DeduplicatingArenaManager {
+pub struct DeduplicatingArenaManager<S: BlockStorage = MmapDiskManager> {
     /// The underlying arena manager
-    arena_manager: ArenaManager,
+    arena_manager: ArenaManager<S>,
     /// Deduplication cache
     dedup: NodeDeduplicator,
     /// Whether to verify data on cache hit (slower but safer)
     verify_on_hit: bool,
 }
 
-impl DeduplicatingArenaManager {
+impl<S: BlockStorage> DeduplicatingArenaManager<S> {
     /// Create a new deduplicating arena manager
-    pub fn new(arena_manager: ArenaManager) -> Self {
+    pub fn new(arena_manager: ArenaManager<S>) -> Self {
         Self {
             arena_manager,
             dedup: NodeDeduplicator::new(),
@@ -233,7 +235,7 @@ impl DeduplicatingArenaManager {
     }
 
     /// Create with dedup capacity hint
-    pub fn with_capacity(arena_manager: ArenaManager, dedup_capacity: usize) -> Self {
+    pub fn with_capacity(arena_manager: ArenaManager<S>, dedup_capacity: usize) -> Self {
         Self {
             arena_manager,
             dedup: NodeDeduplicator::with_capacity(dedup_capacity),
@@ -290,12 +292,12 @@ impl DeduplicatingArenaManager {
     }
 
     /// Get the underlying arena manager
-    pub fn arena_manager(&self) -> &ArenaManager {
+    pub fn arena_manager(&self) -> &ArenaManager<S> {
         &self.arena_manager
     }
 
     /// Get mutable access to the underlying arena manager
-    pub fn arena_manager_mut(&mut self) -> &mut ArenaManager {
+    pub fn arena_manager_mut(&mut self) -> &mut ArenaManager<S> {
         &mut self.arena_manager
     }
 
@@ -492,7 +494,7 @@ mod tests {
         use super::ArenaManager;
 
         // Create in-memory arena and dedup manager
-        let arena = ArenaManager::with_arena_size(64 * 1024);
+        let arena = ArenaManager::<MmapDiskManager>::with_arena_size(64 * 1024);
         let mut dedup = DeduplicatingArenaManager::new(arena);
         dedup.set_verify_on_hit(false); // Test line 268-271
 
@@ -514,7 +516,7 @@ mod tests {
     fn test_dedup_verify_on_hit_true() {
         use super::ArenaManager;
 
-        let arena = ArenaManager::with_arena_size(64 * 1024);
+        let arena = ArenaManager::<MmapDiskManager>::with_arena_size(64 * 1024);
         let mut dedup = DeduplicatingArenaManager::new(arena);
         // verify_on_hit defaults to true - test lines 258-263
 
@@ -535,7 +537,7 @@ mod tests {
     fn test_dedup_multiple_allocations() {
         use super::ArenaManager;
 
-        let arena = ArenaManager::with_arena_size(64 * 1024);
+        let arena = ArenaManager::<MmapDiskManager>::with_arena_size(64 * 1024);
         let mut dedup = DeduplicatingArenaManager::new(arena);
 
         let data1 = b"data one";
@@ -562,7 +564,7 @@ mod tests {
     fn test_dedup_allocate_direct_bypasses_cache() {
         use super::ArenaManager;
 
-        let arena = ArenaManager::with_arena_size(64 * 1024);
+        let arena = ArenaManager::<MmapDiskManager>::with_arena_size(64 * 1024);
         let mut dedup = DeduplicatingArenaManager::new(arena);
 
         let data = b"bypass data";
