@@ -142,6 +142,9 @@ pub mod prefix_helpers;
 // Public prefix iter + remove API (Phase-6 split out of dict_impl_char).
 pub mod prefix_api;
 
+// Merge API (merge_from + variants) — Phase-6 split out of dict_impl_char.
+pub mod merge_api;
+
 // Re-export shared types (always available)
 pub use types::{
     CharTrieFileHeader, CharTrieNodeInner, CharTrieRoot,
