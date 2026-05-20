@@ -163,6 +163,9 @@ pub mod transactions;
 // Page-aware prefix-iteration result types (Phase-5 split out of dict_impl).
 pub mod prefix_term;
 
+// DFS iterators (TermIterator + TermValueIterator + IterState).
+pub mod iterators;
+
 // Node serialization
 pub mod serialization;
 
