@@ -28,41 +28,14 @@
 //! └─────────────────────────────────────────────────┘
 //! ```
 
-use std::path::Path;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering as AtomicOrdering};
+use std::sync::atomic::Ordering as AtomicOrdering;
+use crate::persistent_artrie::wal::WalConfig;
 
-use parking_lot::RwLock;
-
-// SwizzledPtr is used unconditionally for in-memory CharNode children
-use crate::persistent_artrie::swizzled_ptr::SwizzledPtr;
-
-use crate::persistent_artrie::block_storage::BlockStorage;
-use crate::persistent_artrie::buffer_manager::BufferManager;
-use crate::persistent_artrie::disk_manager::DiskManager;
-use crate::persistent_artrie::error::{PersistentARTrieError, Result};
-use crate::persistent_artrie::wal::{
-    AsyncWalConfig, AsyncWalWriter, WalConfig, WalReader, WalRecord,
-};
-use crate::persistent_artrie::wal_managed::{create_async_wal, open_or_create_async_wal};
-use crate::persistent_artrie::concurrency::{
-    EpochManager, OptimisticVersion, RetryStats, EpochGuard, OptimisticReadGuard,
-};
-#[cfg(feature = "group-commit")]
-use crate::persistent_artrie::group_commit::{GroupCommitConfig, GroupCommitCoordinator};
-use crate::persistent_artrie::memory_monitor::{
-    MemoryPressureConfig, MemoryPressureLevel, MemoryPressureMonitor, MemoryStats,
-};
-use crate::persistent_artrie::adaptive_pool::CacheStats;
-use crate::persistent_artrie::epoch::{
-    CheckpointManager, EpochConfig, EpochId, EpochMetadata, EpochStats,
-};
-use super::arena_manager::ArenaManager;
-use crate::value::DictionaryValue;
-
-// Import CharNode types for adaptive radix structure
-use super::nodes::CharNode;
-use crate::persistent_artrie::NodeType;
+// Most imports moved to the relevant sub-modules in Phase-6 splits.
+// `Arc` stays here for the `LockfreeInsertResult::Inserted` enum variant
+// defined below. `AtomicOrdering` and `WalConfig` are used by the test
+// module that lives in this file.
 
 /// Magic bytes for char trie file
 pub const CHAR_TRIE_MAGIC: [u8; 4] = *b"ARTC";
