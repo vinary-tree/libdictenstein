@@ -58,6 +58,27 @@ noted in the entry's `Setup:` field.
 
 ## Entries
 
+### [Phase 6] — char/vocab dict_impl decomposition (in progress)
+
+**Char commits:** 269f513 (prefix_term), 04b3cfb (recovery_stats),
+2699d75 (file_header), 41b3340 (transactions).
+**Vocab commits:** c25b40e (sync_handle).
+
+Five Phase-6 sub-modules extracted across the char and vocab dict_impl
+files. Same pattern as Phase 5: data carriers + their inherent impls
+move to sibling modules; the *execution* logic on
+`PersistentARTrieChar` / `PersistentVocabARTrie` stays in
+`dict_impl_char.rs` / `dict_impl.rs`. dict_impl_char.rs went from
+~9522 LOC down to ~9100 LOC.
+
+| Variant | Sub-module | LOC | Contents |
+|---------|------------|-----|----------|
+| char | `prefix_term.rs`    |  41 | `PrefixTermWithArena` + `PrefixTermWithValueAndArena` (UTF-8 string variants of the byte types) |
+| char | `recovery_stats.rs` |  96 | `EnhancedRecoveryMode` + `EnhancedRecoveryStats` |
+| char | `file_header.rs`    | 253 | `CharTrieFileHeader` + V1/V2 layout + `crc32_header` helper |
+| char | `transactions.rs`   |  95 | `CharDocumentTransaction<V>` (mirrors byte) |
+| vocab | `sync_handle.rs`   | 120 | `VocabSyncHandle` (async-sync completion handle) |
+
 ### [Phase 5] — byte dict_impl.rs decomposition (in progress)
 
 **Commits:** 97d2600 (compaction types), 272e26e (transactions),
