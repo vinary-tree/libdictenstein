@@ -715,14 +715,119 @@ impl crate::artrie_trait::EvictableARTrie for SharedVocabARTrie {
 impl PersistentVocabARTrie {
     /// Evict a single node at the given path, replacing it with a DiskRef.
     ///
-    /// Returns `true` if the node was successfully evicted, `false` if the
-    /// node was not found or was already a DiskRef.
-    pub(crate) fn evict_node_at_path(&mut self, _path: &[char], _disk_ptr: crate::persistent_artrie::swizzled_ptr::SwizzledPtr) -> bool {
-        // Vocab trie eviction is more complex due to different node structure
-        // with parent pointers. This is a simplified placeholder - full implementation
-        // would need to navigate the vocab trie structure while preserving
-        // parent pointer integrity.
-        false
+    /// Walks `path` from the root, descends through `path[..path.len()-1]`
+    /// to reach the parent, and atomically `unswizzle`s the slot for
+    /// `path.last()` to the disk location encoded in `disk_ptr`.
+    ///
+    /// Vocab-specific constraint: a vocab node carries a `parent: NodeRef`
+    /// back-pointer used by `rebuild_reverse_index`. Evicting a node whose
+    /// in-memory subtree is non-trivial would orphan those descendants
+    /// (their `parent` would dangle once the in-memory node is dropped).
+    /// We therefore refuse to evict any node that still has in-memory
+    /// (swizzled) children — the eviction coordinator must descend
+    /// leaf-first via repeated calls before draining a parent.
+    ///
+    /// Returns `true` on successful unswizzle, `false` on any of: empty
+    /// path, navigation failure, parent slot already on disk, child slot
+    /// already on disk, subtree-not-leaf violation, missing/non-disk
+    /// `disk_ptr`, or CAS race loss.
+    pub(crate) fn evict_node_at_path(
+        &mut self,
+        path: &[char],
+        disk_ptr: crate::persistent_artrie::swizzled_ptr::SwizzledPtr,
+    ) -> bool {
+        if path.is_empty() {
+            return false; // The root is never evicted via this path.
+        }
+
+        let target_loc = match disk_ptr.disk_location() {
+            Some(loc) => loc,
+            None => return false,
+        };
+
+        let root_node: &mut crate::persistent_vocab_artrie::types::VocabTrieNode =
+            match self.root {
+                crate::persistent_vocab_artrie::types::VocabTrieRoot::Node(ref mut boxed) => {
+                    boxed.as_mut()
+                }
+                crate::persistent_vocab_artrie::types::VocabTrieRoot::Empty => return false,
+            };
+
+        // Navigate to the parent of the target. As in the char variant, this
+        // uses raw-pointer hops; `&mut self` guarantees no concurrent access
+        // and each pointer comes from a SwizzledPtr we just verified is
+        // in-memory.
+        let mut current: *mut crate::persistent_vocab_artrie::types::VocabTrieNode = root_node;
+        let descent: &[char] = &path[..path.len() - 1];
+        for &edge in descent {
+            // SAFETY: same invariant as `evict_node_at_path` in
+            // `persistent_artrie_char`. The pointer is either the original
+            // `&mut root_node` (first iteration) or a pointer we just proved
+            // points to an in-memory `VocabTrieNode` whose lifetime is at
+            // least the lifetime of `&mut self`.
+            let node = unsafe { &mut *current };
+            let child_slot = match node.inner.find_child(edge as u32) {
+                Some(slot) => slot,
+                None => return false,
+            };
+            if !child_slot.is_swizzled() {
+                return false; // Cannot descend through an on-disk parent slot.
+            }
+            let child_raw = match child_slot
+                .as_ptr::<crate::persistent_vocab_artrie::types::VocabTrieNode>()
+            {
+                Some(p) => p,
+                None => return false,
+            };
+            current = child_raw as *mut crate::persistent_vocab_artrie::types::VocabTrieNode;
+        }
+
+        // SAFETY: same invariant.
+        let parent = unsafe { &mut *current };
+        let last_edge = *path.last().expect("non-empty path verified above");
+        let slot = match parent.inner.find_child_mut(last_edge as u32) {
+            Some(s) => s,
+            None => return false,
+        };
+        if !slot.is_swizzled() {
+            return false; // Already on disk.
+        }
+
+        // Parent-pointer-integrity check: only evict if the target's
+        // subtree has no in-memory descendants. Peek at the target's
+        // children through the slot's in-memory pointer.
+        let target_raw = match slot
+            .as_ptr::<crate::persistent_vocab_artrie::types::VocabTrieNode>()
+        {
+            Some(p) => p,
+            None => return false,
+        };
+        // SAFETY: slot is swizzled, target_raw points at a live
+        // VocabTrieNode owned by this trie.
+        let target = unsafe { &*target_raw };
+        for (_edge, child_slot) in target.inner.iter_children() {
+            if child_slot.is_swizzled() {
+                // Descendant still in memory; refuse to evict.
+                return false;
+            }
+        }
+
+        match slot.unswizzle::<crate::persistent_vocab_artrie::types::VocabTrieNode>(
+            target_loc.block_id,
+            target_loc.offset,
+            target_loc.node_type,
+        ) {
+            Ok(raw_ptr) => {
+                // SAFETY: slot was just unswizzled; we now own the old
+                // pointer, originally `Box::into_raw(Box::new(...))`.
+                unsafe {
+                    let _: Box<crate::persistent_vocab_artrie::types::VocabTrieNode> =
+                        Box::from_raw(raw_ptr as *mut crate::persistent_vocab_artrie::types::VocabTrieNode);
+                }
+                true
+            }
+            Err(_) => false,
+        }
     }
 }
 

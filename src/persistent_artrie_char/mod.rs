@@ -963,13 +963,97 @@ impl<V: DictionaryValue> crate::artrie_trait::EvictableARTrie for SharedCharARTr
 impl<V: DictionaryValue, S: crate::persistent_artrie::block_storage::BlockStorage> PersistentARTrieChar<V, S> {
     /// Evict a single node at the given path, replacing it with a DiskRef.
     ///
-    /// Returns `true` if the node was successfully evicted, `false` if the
-    /// node was not found or was already a DiskRef.
-    pub(crate) fn evict_node_at_path(&mut self, _path: &[char], _disk_ptr: crate::persistent_artrie::swizzled_ptr::SwizzledPtr) -> bool {
-        // Char trie eviction is more complex due to different node structure
-        // This is a simplified placeholder - full implementation would need to
-        // navigate the char trie structure
-        false
+    /// Walks `path` from the root: descends through `path[..path.len()-1]`
+    /// edges to reach the parent node (refusing to descend through any slot
+    /// that is itself already on-disk, since the in-memory chain we hold has
+    /// to be intact), then atomically `unswizzle`s the slot for `path.last()`
+    /// to the disk location encoded in `disk_ptr`. On success the orphaned
+    /// in-memory node is reclaimed (its `Box` is dropped); on race or
+    /// already-on-disk the parent slot is left unchanged.
+    ///
+    /// Returns `true` if the slot was successfully unswizzled, `false` if
+    /// the path could not be navigated, the slot was already on disk, the
+    /// caller-supplied `disk_ptr` does not actually encode a disk location,
+    /// or the CAS-based `unswizzle` raced and lost.
+    pub(crate) fn evict_node_at_path(
+        &mut self,
+        path: &[char],
+        disk_ptr: crate::persistent_artrie::swizzled_ptr::SwizzledPtr,
+    ) -> bool {
+        if path.is_empty() {
+            return false; // The root is never evicted via this path.
+        }
+
+        let target_loc = match disk_ptr.disk_location() {
+            Some(loc) => loc,
+            None => return false,
+        };
+
+        let root_node: &mut types::CharTrieNodeInner<V> = match self.root {
+            types::CharTrieRoot::Node(ref mut boxed) => boxed.as_mut(),
+            types::CharTrieRoot::Empty => return false,
+        };
+
+        // Walk to the parent of the target. The borrow checker would refuse
+        // a fully safe descent through chained `find_child_mut` lifetimes;
+        // we hold `&mut self`, so the chain of `*mut CharTrieNodeInner`
+        // raw-pointer hops below is sound: each pointer comes from a
+        // SwizzledPtr we just verified is in-memory, and `&mut self`
+        // guarantees no concurrent access.
+        let mut current: *mut types::CharTrieNodeInner<V> = root_node;
+        let descent: &[char] = &path[..path.len() - 1];
+        for &edge in descent {
+            // SAFETY: `current` was derived from `&mut root_node` (first
+            // iteration) or from a SwizzledPtr we already proved to be
+            // in-memory and dereferenced as `&mut CharTrieNodeInner<V>`
+            // (subsequent iterations). `&mut self` precludes concurrent use.
+            let node = unsafe { &mut *current };
+            let child_slot = match node.node.find_child(edge as u32) {
+                Some(slot) => slot,
+                None => return false,
+            };
+            if !child_slot.is_swizzled() {
+                return false; // Cannot descend through an on-disk parent slot.
+            }
+            let child_raw = match child_slot.as_ptr::<types::CharTrieNodeInner<V>>() {
+                Some(p) => p,
+                None => return false,
+            };
+            current = child_raw as *mut types::CharTrieNodeInner<V>;
+        }
+
+        // SAFETY: same invariant as above; we now hold &mut access to the
+        // parent of the target node.
+        let parent = unsafe { &mut *current };
+        let last_edge = *path.last().expect("non-empty path verified above");
+        let slot = match parent.node.find_child_mut(last_edge as u32) {
+            Some(s) => s,
+            None => return false,
+        };
+        if !slot.is_swizzled() {
+            return false; // Already on disk.
+        }
+
+        match slot.unswizzle::<types::CharTrieNodeInner<V>>(
+            target_loc.block_id,
+            target_loc.offset,
+            target_loc.node_type,
+        ) {
+            Ok(raw_ptr) => {
+                // SAFETY: the slot was just unswizzled, so we own the old
+                // pointer and no other thread can observe the in-memory
+                // node through that slot. The pointer was originally
+                // produced from `Box::into_raw(Box::new(...))` during
+                // insertion, so it is valid to recover into a `Box` and
+                // drop here.
+                unsafe {
+                    let _: Box<types::CharTrieNodeInner<V>> =
+                        Box::from_raw(raw_ptr as *mut types::CharTrieNodeInner<V>);
+                }
+                true
+            }
+            Err(_) => false,
+        }
     }
 }
 

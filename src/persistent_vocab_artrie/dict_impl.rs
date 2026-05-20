@@ -224,7 +224,7 @@ pub struct PersistentVocabARTrie<S: BlockStorage = MmapDiskManager> {
     path: PathBuf,
 
     /// Root node of the trie
-    root: VocabTrieRoot,
+    pub(crate) root: VocabTrieRoot,
 
     /// Number of vocabulary entries (atomic for lock-free access)
     entry_count: AtomicUsize,
