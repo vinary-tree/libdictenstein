@@ -1,5 +1,33 @@
 # libdictenstein — ARTrie Tech-Debt Repair Ledger
 
+## Phase 3 status (KeyEncoding generification, Move 2)
+
+The `KeyEncoding` trait skeleton with `ByteKey` / `CharKey` impls
+is in place at `persistent_artrie_core::key_encoding`, and the
+cross-checked constants-match tests live downstream of core (in
+`persistent_artrie::arena::tests` and
+`persistent_artrie_char::arena::tests`) to preserve the layering
+invariant.
+
+The full collapse of duplicated modules (`arena_manager`, `dedup`,
+`traversal_context`, `relative_encoding`, `per_node_log`,
+`recovery`) into shared generic-over-K implementations is
+deliberately scoped as a separate effort because each module
+requires its own design review, benchmark validation per CLAUDE.md
+("benchmark before optimizing"), and careful migration to preserve
+test coverage. Attempting to disable char's local
+`dirty_tracker.rs` during this Phase-7 cleanup pass dropped 8
+tests; a proper collapse must migrate those tests too. That work
+sequences naturally after the structural decomposition that
+Phases 5-8 just completed, since each phase makes the next one
+easier (smaller files = easier reviews of generification PRs).
+
+The char-side `per_node_log_char.rs` already re-exports
+node-agnostic types from byte's `per_node_log` (see header at
+line 27); only the char-specific `CharInlineLog` (13-byte
+`InsertChild` encoding) stays local. That's the right end-state for
+all the duplicated modules under the audit's "share as-is" verdict.
+
 ## Phase 8 verification result (final)
 
 `RUST_BACKTRACE=1 RUST_LOG=warn cargo nextest run --features
