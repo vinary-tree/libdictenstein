@@ -58,6 +58,27 @@ noted in the entry's `Setup:` field.
 
 ## Entries
 
+### [Phase 2] — Tier 1 correctness + Tier 2 trait/test work (partial)
+
+**Date:** 2026-05-20
+**Commits:** 0142cd3 (T1-6, T2-4, T2-5), 7be0d0d (T2-3), 8f738fe (T1-5), 0c1420e (T1-4 partial)
+**Items completed in this batch:**
+
+- **T1-5** — Three `#[ignore]`'d stress tests (`test_stress_highly_diverse_terms`, `test_stress_mixed_operations`, `test_stress_bulk_delete` in `tests/persistent_artrie_stress.rs:148, 198, 471`) all pass cleanly when run; removed the stale `#[ignore]` markers and audit-described TODO commentary. The underlying bugs (recursive bucket splitting, mixed insert/remove length-accounting, remove length-counter drift) were fixed in source at some earlier point — only the test markers remained.
+- **T1-6** — Three `panic!` sites in clone / serialization paths replaced with principled error handling:
+  - `vocab/types.rs:352` and `char/types.rs:499` (Clone-time): `.expect("invariant: …")` with forensic message. The "Node*::grow rejected child key" branch is genuinely unreachable under documented invariants.
+  - `char/dict_impl_char.rs:6657` (`build_disk_char_node` during serialization): function signature promoted to `Result<CharNode>`, error propagates via `?` instead of crashing. Caller updated.
+- **T2-3** — `per_node_log_char.rs` now re-exports `NodeRecoveryResult` and `RecoveryResult` (previously missing from its re-export list). The audit's "add CharNodeLogManager ~150 LOC" was based on a type that does not exist in the byte implementation; no port was actually required.
+- **T2-4** — Removed the entire `impl ARTrie for PersistentVocabARTrie` block. All 10 mutation methods (`insert`, `remove`, `checkpoint`, `sync`, `upsert`, `increment`, `enable_slot_tracking`, `flush_sequential`, `insert_with_value`, `remove_prefix`) silently returned `false`/`Err` because `&self` cannot mutate the trie. Verified no production caller depended on this impl; `SharedVocabARTrie` provides the same surface with working mutation via `Arc<RwLock<…>>`.
+- **T2-5** — Verified the 6 commented-out `SharedCharTrie` tests at `char/dict_impl_char.rs:9353` actually need no new types: `ARTrie for SharedCharARTrie<V>` at `char/mod.rs:863+` already implements `current_lsn`, `synced_lsn`, `upsert`, `sync`. Added 4 working tests; they import `crate::artrie_trait::ARTrie` to bring the trait methods into scope.
+- **T1-4 partial** — Commented out the legacy `GroupCommit` stub at `wal.rs:1741-1778` (the one whose `append_sync` synced every record despite claiming to batch) and removed its re-export from `persistent_artrie/mod.rs:295`. The actual batched-WAL path is `DurabilityPolicy::GroupCommit` → `WalWriter::sync_async` → `AsyncWalWriter`, which was already correctly wired.
+
+**Tests:** `cargo test --features persistent-artrie --lib`: 1572 passed, 0 failed. `cargo test --all-features --lib`: 1649 passed, 0 failed.
+
+**Result:** Items as scoped (T1-5/T1-6/T2-3/T2-4/T2-5) and the audit-named "stub" piece of T1-4 are resolved.
+
+**Decision:** Items complete; advance to remaining Phase 2 items (T1-1 char/vocab eviction implementation, T1-2 `Dictionary::transition` disk resolution, T1-3 lockfree vocab disk resolution, and the deeper T1-4 work of wiring `GroupCommitCoordinator` through the per-record write paths).
+
 ### [Phase 1] — Mechanical core extraction (Move 1)
 
 **Date:** 2026-05-20
