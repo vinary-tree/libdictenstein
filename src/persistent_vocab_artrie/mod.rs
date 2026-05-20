@@ -117,6 +117,9 @@ pub mod sync_handle;
 #[cfg(feature = "io-uring-backend")]
 pub mod io_uring_ctor;
 
+// MmapDiskManager-specific constructors (Phase-6 split out of dict_impl).
+pub mod mmap_ctor;
+
 // Reverse index infrastructure
 pub mod reverse_index;
 
