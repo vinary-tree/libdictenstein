@@ -179,6 +179,10 @@ pub mod shared_trait_impl;
 // Public iteration API (iter / iter_strings / iter_prefix wrappers).
 pub mod public_iter;
 
+// IoUringDiskManager-specific constructors (Phase-5 split out of dict_impl).
+#[cfg(feature = "io-uring-backend")]
+pub mod io_uring_ctor;
+
 // Page-aware prefix-iteration result types (Phase-5 split out of dict_impl).
 pub mod prefix_term;
 
