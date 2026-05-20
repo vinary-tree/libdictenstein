@@ -318,7 +318,7 @@ impl MappedDictionary for PersistentVocabARTrie {
 
 // MutableMappedDictionary trait implementation
 impl MutableMappedDictionary for PersistentVocabARTrie {
-    fn insert_with_value(&self, term: &str, _value: Self::Value) -> bool {
+    fn insert_with_value(&self, _term: &str, _value: Self::Value) -> bool {
         // Note: PersistentVocabARTrie auto-assigns indices, so we ignore the value
         // and check if the term already existed
         // This requires interior mutability - for now we return false
@@ -335,7 +335,7 @@ impl MutableMappedDictionary for PersistentVocabARTrie {
         0
     }
 
-    fn update_or_insert<F>(&self, term: &str, _default_value: Self::Value, _update_fn: F) -> bool
+    fn update_or_insert<F>(&self, _term: &str, _default_value: Self::Value, _update_fn: F) -> bool
     where
         F: FnOnce(&mut Self::Value),
     {

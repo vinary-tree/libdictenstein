@@ -16,7 +16,6 @@
 use std::sync::atomic::Ordering as AtomicOrdering;
 
 use crate::persistent_artrie::block_storage::BlockStorage;
-use crate::persistent_artrie::dict_impl::DurabilityPolicy;
 use crate::persistent_artrie::error::{PersistentARTrieError, Result};
 use crate::persistent_artrie::wal::WalRecord;
 use crate::value::DictionaryValue;

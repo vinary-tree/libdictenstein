@@ -130,7 +130,7 @@ impl<S: BlockStorage> TraversalContext<S> {
             let bm = self.buffer_manager.read();
 
             let page = bm.fetch_page(block_id)?;
-            let data = page.data();
+            let _data = page.data();
 
             // We can't safely return a reference here without caching
             // So we'll evict the oldest entry

@@ -13,7 +13,7 @@
 //! `dict_impl.rs`.
 
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
@@ -22,7 +22,7 @@ use xxhash_rust::xxh3::Xxh3DefaultBuilder;
 
 use crate::persistent_artrie::buffer_manager::BufferManager;
 use crate::persistent_artrie::dict_impl::DurabilityPolicy;
-use crate::persistent_artrie::disk_manager::{DiskManager, MmapDiskManager};
+use crate::persistent_artrie::disk_manager::DiskManager;
 use crate::persistent_artrie::error::{PersistentARTrieError, Result};
 use crate::persistent_artrie::recovery::RecoveryReport;
 use crate::persistent_artrie::wal::{WalConfig, WalReader, WalRecord};

@@ -11,7 +11,6 @@ use std::sync::atomic::Ordering;
 
 use crate::persistent_artrie::block_storage::BlockStorage;
 use crate::persistent_artrie::dict_impl::DurabilityPolicy;
-use crate::persistent_artrie::error::PersistentARTrieError;
 use crate::persistent_artrie::wal::WalRecord;
 use crate::persistent_artrie_char::types::NodeRef;
 

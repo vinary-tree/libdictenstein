@@ -14,7 +14,6 @@
 //! - `load_single_art_node_data` / `load_single_child_data`
 //! - `load_art_node_with_children_from_arena_iterative`
 
-use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::sync_compat::RwLock;
@@ -31,8 +30,8 @@ use super::dict_impl::{
 use super::error::{PersistentARTrieError, Result};
 use super::nodes::Node;
 use super::serialization;
-use super::serialization::v2::{DeserializationContext, SerializationContext};
-use super::swizzled_ptr::{DiskLocation, NodeType, SwizzledPtr};
+use super::serialization::v2::DeserializationContext;
+use super::swizzled_ptr::{NodeType, SwizzledPtr};
 use super::transitions::ChildNode;
 
 impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {

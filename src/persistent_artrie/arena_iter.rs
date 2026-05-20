@@ -48,7 +48,7 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
             // Empty prefix means the root - root has no incoming pointer
             return match &self.root {
                 TrieRoot::Bucket(_) => Ok(None), // Can't return ChildNode for root bucket
-                TrieRoot::ArtNode { children, .. } => {
+                TrieRoot::ArtNode { children: _, .. } => {
                     // For empty prefix on ART root, return first child if any
                     // This is a special case - we can't return ChildNode for root itself
                     Ok(None)
@@ -103,7 +103,7 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
                                 None => return Ok(None),
                             }
                         }
-                        ChildNode::DiskRef { ptr } => {
+                        ChildNode::DiskRef { ptr: _ } => {
                             // Would need to load from disk - not yet implemented
                             // For now, return what we have
                             return Ok(Some((current, current_arena)));

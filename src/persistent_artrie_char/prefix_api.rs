@@ -12,7 +12,6 @@
 //! These are thin wrappers over the pub(super) navigation +
 //! collection helpers in `super::prefix_helpers`.
 
-use std::collections::HashMap;
 
 use crate::persistent_artrie::block_storage::BlockStorage;
 use crate::persistent_artrie::error::Result;

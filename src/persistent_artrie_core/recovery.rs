@@ -521,7 +521,7 @@ impl RecoveryManager {
     /// This optimization avoids replaying the entire WAL history on every open.
     fn redo_phase(
         &self,
-        checkpoint_lsn: Option<Lsn>,
+        _checkpoint_lsn: Option<Lsn>,
         _transactions: &HashMap<u64, TransactionState>,
         stats: &mut RecoveryStats,
     ) -> Result<(Vec<RecoveredOperation>, Lsn)> {

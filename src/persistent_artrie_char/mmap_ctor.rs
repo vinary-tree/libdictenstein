@@ -18,7 +18,6 @@ use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering as AtomicOrdering};
 
-use log::warn;
 
 use crate::persistent_artrie::adaptive_pool::CacheStats;
 use crate::persistent_artrie::block_storage::BlockStorage;
@@ -27,7 +26,6 @@ use crate::persistent_artrie::concurrency::{EpochManager, OptimisticVersion, Ret
 use crate::persistent_artrie::dict_impl::DurabilityPolicy;
 use crate::persistent_artrie::disk_manager::DiskManager;
 use crate::persistent_artrie::error::{PersistentARTrieError, Result};
-use crate::persistent_artrie::swizzled_ptr::SwizzledPtr;
 use crate::persistent_artrie::wal::{AsyncWalConfig, AsyncWalWriter, WalConfig, WalReader, WalRecord};
 use crate::persistent_artrie::wal_managed::{create_async_wal, open_or_create_async_wal};
 use crate::sync_compat::RwLock;
@@ -254,7 +252,7 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
 
         // Read root pointer and entry count from header
         let root_ptr = disk_manager.root_ptr()?;
-        let entry_count = disk_manager.entry_count()?;
+        let _entry_count = disk_manager.entry_count()?;
 
         // Create buffer manager (takes ownership of disk_manager)
         let buffer_manager = BufferManager::new(disk_manager, DEFAULT_CHAR_BUFFER_POOL_SIZE);
@@ -515,7 +513,7 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
 
         // Read root pointer and entry count from header
         let root_ptr = disk_manager.root_ptr()?;
-        let entry_count = disk_manager.entry_count()?;
+        let _entry_count = disk_manager.entry_count()?;
 
         // Create buffer manager (takes ownership of disk_manager)
         let buffer_manager = BufferManager::new(disk_manager, DEFAULT_CHAR_BUFFER_POOL_SIZE);
@@ -897,7 +895,7 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
                                     terms_recovered += 1;
                                 }
                             }
-                            WalRecord::Increment { term, delta, result: val } => {
+                            WalRecord::Increment { term, delta: _, result: val } => {
                                 // For increment, store the final result
                                 let term_str = String::from_utf8_lossy(&term);
                                 let value_bytes = bincode::serialize(&val).unwrap_or_default();

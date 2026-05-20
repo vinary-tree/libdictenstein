@@ -32,8 +32,7 @@ use super::bucket::StringBucket;
 use super::dict_impl::{resolve_child_for_mutation_with_bm, PersistentARTrie, TrieRoot};
 use super::nodes::{ArtNode, Node};
 use super::swizzled_ptr::SwizzledPtr;
-use super::transitions::{bucket_to_art_node, BucketToArtResult, ChildNode};
-use super::wal::WalRecord;
+use super::transitions::{bucket_to_art_node, ChildNode};
 
 impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
     /// Insert implementation with WAL logging (for persistent mode).

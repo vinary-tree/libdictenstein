@@ -16,7 +16,6 @@
 //! `BufferManager` / `ArenaManager`.
 
 use std::sync::Arc;
-use std::sync::atomic::Ordering as AtomicOrdering;
 
 use crate::persistent_artrie::block_storage::BlockStorage;
 use crate::persistent_artrie::buffer_manager::BufferManager;
@@ -25,7 +24,6 @@ use crate::persistent_artrie::swizzled_ptr::SwizzledPtr;
 use crate::sync_compat::RwLock;
 use crate::value::DictionaryValue;
 
-use super::arena_manager::ArenaManager;
 use super::dict_impl_char::{ROOT_TYPE_EMPTY, ROOT_TYPE_NODE};
 use super::types::{CharTrieNodeInner, CharTrieRoot};
 

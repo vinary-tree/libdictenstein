@@ -20,7 +20,6 @@ use crate::persistent_artrie::swizzled_ptr::{NodeType, SwizzledPtr};
 use crate::persistent_artrie::wal::WalRecord;
 use crate::value::DictionaryValue;
 
-use super::arena_manager::ArenaSlot;
 use super::dict_impl_char::{ROOT_TYPE_EMPTY, ROOT_TYPE_NODE};
 use super::nodes::CharNode;
 use super::types::{CharTrieNodeInner, CharTrieRoot};

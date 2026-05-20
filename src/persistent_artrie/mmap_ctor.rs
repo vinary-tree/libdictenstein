@@ -257,7 +257,7 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
     /// let dict: PersistentARTrie<()> = PersistentARTrie::open("words.part")?;
     /// ```
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self> {
-        use super::disk_manager::{DiskManager, BLOCK_SIZE};
+        use super::disk_manager::DiskManager;
         use super::buffer_manager::BufferManager;
         use super::recovery::RecoveryManager;
         use super::DEFAULT_BUFFER_POOL_SIZE;
@@ -549,7 +549,7 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
     /// dict.checkpoint()?;
     /// ```
     pub fn open_with_slot_tracking<P: AsRef<Path>>(path: P) -> Result<Self> {
-        let mut dict = Self::open(path)?;
+        let dict = Self::open(path)?;
 
         // Enable slot-level tracking on the arena manager
         if let Some(ref am) = dict.arena_manager {
@@ -564,7 +564,7 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
     /// Combines `open_with_recovery()` and slot tracking enablement.
     /// Returns `(trie, recovery_report)` so callers can inspect recovery status.
     pub fn open_with_recovery_and_slot_tracking<P: AsRef<Path>>(path: P) -> Result<(Self, super::recovery::RecoveryReport)> {
-        let (mut dict, report) = Self::open_with_recovery(path)?;
+        let (dict, report) = Self::open_with_recovery(path)?;
         if let Some(ref am) = dict.arena_manager {
             am.write().enable_slot_tracking();
         }

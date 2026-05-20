@@ -8,13 +8,11 @@
 //! - `merge_from_batched` / `merge_from_batched_grouped`
 //! - `merge_from_batched_with_options` (private, shared)
 
-use std::collections::HashMap;
 
 use crate::persistent_artrie::block_storage::BlockStorage;
 use crate::persistent_artrie::error::Result;
 use crate::value::DictionaryValue;
 
-use super::prefix_term::PrefixTermWithValueAndArena;
 
 impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     /// Merge another trie into this one using a custom merge function.

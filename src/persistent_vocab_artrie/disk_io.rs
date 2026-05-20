@@ -22,7 +22,7 @@
 use std::collections::HashMap;
 use std::io::Cursor;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::Ordering;
 
 use parking_lot::RwLock;
 use xxhash_rust::xxh3::Xxh3DefaultBuilder;
@@ -30,9 +30,9 @@ use xxhash_rust::xxh3::Xxh3DefaultBuilder;
 use crate::persistent_artrie::block_storage::BlockStorage;
 use crate::persistent_artrie::buffer_manager::BufferManager;
 use crate::persistent_artrie::error::{PersistentARTrieError, Result};
-use crate::persistent_artrie::swizzled_ptr::{NodeType, SwizzledPtr};
+use crate::persistent_artrie::swizzled_ptr::SwizzledPtr;
 use crate::persistent_artrie_char::arena_manager::{ArenaManager, ArenaSlot};
-use crate::persistent_artrie_char::nodes::{CharNode, PersistentCharNode};
+use crate::persistent_artrie_char::nodes::CharNode;
 use crate::persistent_artrie_char::relative_encoding::SerializationContext;
 use crate::persistent_artrie_char::serialization_char::{
     deserialize_char_node_v2, serialize_char_node_v2, DeserializationContext,
@@ -40,10 +40,9 @@ use crate::persistent_artrie_char::serialization_char::{
 use crate::persistent_artrie_char::types::NodeRef;
 
 use super::types::{
-    VocabTrieFileHeader, VocabTrieNode, VocabTrieRoot, FLAG_HAS_PARENT_POINTER,
+    VocabTrieNode, VocabTrieRoot,
 };
 use super::reverse_index::VocabReverseIndex;
-use super::serialization::{deserialize_vocab_node, serialize_vocab_node, SerializedVocabNodeHeader};
 
 impl<S: BlockStorage> super::dict_impl::PersistentVocabARTrie<S> {
     ///

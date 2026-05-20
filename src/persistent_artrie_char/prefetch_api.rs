@@ -8,8 +8,6 @@
 //!   for DiskRef children (pub(super) so query_api etc. can drive it)
 
 use crate::persistent_artrie::block_storage::BlockStorage;
-use crate::persistent_artrie::prefetch::PrefetchStatsSnapshot;
-use crate::persistent_artrie::swizzled_ptr::SwizzledPtr;
 use crate::value::DictionaryValue;
 
 impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {

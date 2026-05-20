@@ -450,7 +450,7 @@ impl EvictionCoordinator {
 
     /// Check if we're past the cooldown period.
     fn check_cooldown(&self, request: &EvictionRequest) -> bool {
-        let cooldown = self.config.cooldown_period / request.urgency.cooldown_divisor();
+        let _cooldown = self.config.cooldown_period / request.urgency.cooldown_divisor();
         let time_since_request = request.timestamp.elapsed();
 
         // If request is very old, skip it
