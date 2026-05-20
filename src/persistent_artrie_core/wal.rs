@@ -53,13 +53,8 @@
 
 // wal.rs is now a thin re-export hub for the wal/ sub-modules plus the
 // `Lsn` type alias, the `crc32` helper, the disabled legacy GroupCommit
-// stub, and the integration test suite at the bottom of this file. The
-// tests still reach for std types (PathBuf, io, Duration, etc.) via the
-// imports below.
-
-use std::io;
-use std::path::PathBuf;
-use std::time::Duration;
+// stub, and the integration test suite at the bottom of this file. std
+// imports for the tests live inside `mod tests`.
 
 /// Log Sequence Number - monotonically increasing identifier for log records.
 pub type Lsn = u64;
@@ -221,6 +216,9 @@ mod async_writer;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io;
+    use std::path::PathBuf;
+    use std::time::Duration;
     use tempfile::tempdir;
 
     #[test]
