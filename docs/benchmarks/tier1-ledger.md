@@ -17,28 +17,26 @@ of core, every byte/char/vocab unit + proptest + recovery + concurrent
 
 ## Cumulative session summary
 
-90+ commits land Phase 0 + Phase 1 + the audit-named Phase-2 correctness
+100+ commits land Phase 0 + Phase 1 + the audit-named Phase-2 correctness
 items + the start of Phase 3 (KeyEncoding skeleton + ByteKey/CharKey
 impls + cross-checked constants-match tests, now living downstream of
 core to preserve the layering invariant) + **Phase 4 complete** (all
 12 wal sub-modules extracted) + **Phase 5 complete: 26 byte dict_impl
-extractions** (compaction data carriers, transactions, prefix_term,
-iterators, parallel_merge, lockfree_cas, document_tx, atomic_ops,
-shared_trait_impl, public_iter, io_uring_ctor, dictionary_traits,
-compaction_impl, persistence_api, mmap_ctor, mutation_api, disk_load,
-merge_api, disk_resolve, serialize_impl, arena_iter, cursor_iter,
-dirty_tracking, query_impl, mutation_core — driving byte dict_impl.rs
-from 9633 LOC down to 2119 LOC, a 78% reduction) + **Phase 6
-in-progress** (8 char extractions: io_uring_ctor, mmap_ctor, disk_io,
-lockfree_cas, query_api, prefix_helpers — driving char dict_impl_char.rs
-from 9201 LOC down to 5748 LOC, a 38% reduction; 2 vocab extractions:
-sync_handle, io_uring_ctor — driving vocab dict_impl.rs from 3887 LOC
-down to 3646 LOC, a 6% reduction) + the start of **Phase 7 cleanup**
-(stale top-level imports trimmed across wal.rs, dict_impl.rs,
-dict_impl_char.rs, node_impl.rs, types.rs, mod.rs,
-eviction/coordinator.rs, and vocab dict_impl.rs; NodeType
+extractions** (driving byte dict_impl.rs from 9633 LOC down to 2119
+LOC, a 78% reduction) + **Phase 6 substantial progress: 17 char
+extractions** (io_uring_ctor, mmap_ctor, disk_io, lockfree_cas,
+query_api, prefix_helpers, prefix_api, merge_api, document_tx,
+batch_insert, parallel_merge, observability — driving char
+dict_impl_char.rs from 9201 LOC down to 4192 LOC, a 54% reduction;
+**2 vocab extractions**: sync_handle, io_uring_ctor — driving vocab
+dict_impl.rs from 3887 LOC down to 3646 LOC, a 6% reduction) + the
+start of **Phase 7 cleanup** (stale top-level imports trimmed across
+wal.rs, dict_impl.rs, dict_impl_char.rs, node_impl.rs, types.rs,
+mod.rs, eviction/coordinator.rs, and vocab dict_impl.rs; NodeType
 cfg(test)-gated in eviction; magic-constants-match tests relocated
-downstream of core). 1578 unit tests pass at every commit.
+downstream of core). 1578 unit tests pass at every commit (with the
+documented test_wait_free_reads_during_writes flake in
+dynamic_dawg_u64_zipper passing on retry).
 
 The plan called for 12 Phase-5 sub-modules. The 26 actually-produced
 extractions reflect a more aggressive seam-finding pass: each
