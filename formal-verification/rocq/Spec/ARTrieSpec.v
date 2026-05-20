@@ -266,33 +266,23 @@ Proof.
   intros k. unfold trie_lookup, empty_trie. simpl. reflexivity.
 Qed.
 
-(** ** ARTrie Implements MapSpec *)
+(** ** ARTrie Insert/Delete Obligations *)
 
-(** The ARTrie type class instance - placeholder until insert/delete are defined *)
-(** This instance would be completed once the Operations module provides
-    proper implementations of insert and delete. For now, we axiomatize
-    the correctness of a hypothetical implementation. *)
+(** Insert/delete are declared operations until an executable Operations
+    module is connected here. Their MapSpec refinement laws are tracked as
+    obligations rather than axioms, so importing this file no longer assumes
+    correctness for an implementation that is not present. *)
 
 Parameter trie_insert : ARTrie -> MapSpec.Key -> Value -> ARTrie.
 Parameter trie_delete : ARTrie -> MapSpec.Key -> ARTrie.
 
-Axiom trie_insert_correct : forall t k v k',
+Definition trie_insert_correct_obligation : Prop := forall t k v k',
   interpret_trie (trie_insert t k v) k' =
     if MapSpec.key_eq_dec k k' then Some v else interpret_trie t k'.
 
-Axiom trie_delete_correct : forall t k k',
+Definition trie_delete_correct_obligation : Prop := forall t k k',
   interpret_trie (trie_delete t k) k' =
     if MapSpec.key_eq_dec k k' then None else interpret_trie t k'.
 
-#[global]
-Instance ARTrieMapImpl : MapSpec.MapImpl Value := {
-  MapSpec.map_t := ARTrie;
-  MapSpec.impl_empty := empty_trie;
-  MapSpec.impl_lookup := trie_lookup;
-  MapSpec.impl_insert := trie_insert;
-  MapSpec.impl_delete := trie_delete;
-  MapSpec.impl_interpret := interpret_trie;
-  MapSpec.impl_lookup_correct := fun t k => eq_refl;
-  MapSpec.impl_insert_correct := trie_insert_correct;
-  MapSpec.impl_delete_correct := trie_delete_correct;
-}.
+Definition ARTrieMapImpl_obligation : Prop :=
+  trie_insert_correct_obligation /\ trie_delete_correct_obligation.

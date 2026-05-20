@@ -233,52 +233,60 @@ Qed.
 
     Therefore, we keep the original theorems as admitted to document this limitation. *)
 
-(** After growth, new type is appropriate *)
-(** Note: This theorem is mathematically unprovable as stated.
-    Consider TNode4 -> TNode16 growth:
-    - node_type_appropriate n_old for TNode4: count <= 4
-    - get_child_count n_old = get_child_count n_new: count stays the same
-    - node_type_appropriate n_new for TNode16: count > 4 ∧ count <= 16
-    - If count = 4, then count > 4 is FALSE
-
-    The correct property after growth is node_type_valid, not node_type_appropriate.
-    The node becomes appropriate only after inserting the additional child that
-    triggered the growth. *)
-Theorem growth_type_appropriate :
+(** After growth plus the child insertion that triggered it, new type is appropriate. *)
+Theorem growth_type_appropriate_after_insert :
   forall n_old n_new,
-  children_preserved n_old n_new ->
   get_node_type n_new = grow_target (get_node_type n_old) ->
-  get_child_count n_old = get_child_count n_new ->
+  get_child_count n_new = S (get_child_count n_old) ->
+  should_grow n_old = true ->
   node_type_appropriate n_old ->
   node_type_appropriate n_new.
 Proof.
-  (* UNPROVABLE: See note above.
-     Use growth_type_valid instead for provable structural validity. *)
-Admitted.
+  intros n_old n_new Htype Hcount Hgrow Happ.
+  unfold node_type_appropriate, should_grow, get_node_type, get_child_count, grow_target in *.
+  destruct (header_type (node_header n_old)) eqn:Hold; simpl in Htype, Hgrow, Happ.
+  - destruct (header_type (node_header n_new)) eqn:Hnew; simpl in Htype |- *; try discriminate.
+    change ((NODE4_CAPACITY <=? header_num_children (node_header n_old)) = true) in Hgrow.
+    apply Nat.leb_le in Hgrow. unfold NODE4_CAPACITY in Hgrow. split; lia.
+  - destruct Happ as [Hlo Hhi].
+    destruct (header_type (node_header n_new)) eqn:Hnew; simpl in Htype |- *; try discriminate.
+    change ((NODE16_CAPACITY <=? header_num_children (node_header n_old)) = true) in Hgrow.
+    apply Nat.leb_le in Hgrow. unfold NODE16_CAPACITY in Hgrow. split; lia.
+  - destruct Happ as [Hlo Hhi].
+    destruct (header_type (node_header n_new)) eqn:Hnew; simpl in Htype |- *; try discriminate.
+    change ((NODE48_CAPACITY <=? header_num_children (node_header n_old)) = true) in Hgrow.
+    apply Nat.leb_le in Hgrow. unfold NODE48_CAPACITY in Hgrow. split; lia.
+  - discriminate.
+  - discriminate.
+Qed.
 
-(** After shrink, new type is appropriate *)
-(** Note: This theorem is mathematically unprovable as stated.
-    After shrinking from TNode16 to TNode4 (when count <= 4),
-    the count satisfies count <= 4, which matches TNode4's appropriateness.
-    However, node_type_appropriate for TNode4 requires only count <= 4,
-    so this is actually provable IF we can establish the count bounds.
-
-    The issue is that should_shrink uses <=b (leb), but we need to relate
-    this to the structural definition of node_type_appropriate.
-
-    For a complete proof, we would need to expand the definitions and
-    carefully handle the boolean to Prop conversion. *)
-Theorem shrink_type_appropriate :
+(** After shrink, new type is appropriate when its lower threshold also holds. *)
+Theorem shrink_type_appropriate_with_lower_bound :
   forall n_old n_new,
-  children_preserved n_old n_new ->
   get_node_type n_new = shrink_target (get_node_type n_old) ->
   get_child_count n_old = get_child_count n_new ->
   should_shrink n_old = true ->
+  (match get_node_type n_new with
+   | TNode4 => True
+   | TNode16 => get_child_count n_new > 4
+   | TNode48 => get_child_count n_new > 16
+   | TNode256 => get_child_count n_new > 48
+   | TBucket => True
+   end) ->
   node_type_appropriate n_new.
 Proof.
-  (* For shrink, this is actually close to provable since shrinking
-     moves to a smaller type and should_shrink ensures count is within bounds.
-     However, the lower bound requirements for node_type_appropriate
-     (e.g., TNode16 requires count > 4) make this complex.
-     Use shrink_type_valid for the provable structural validity property. *)
-Admitted.
+  intros n_old n_new Htype Hcount Hshrink Hlower.
+  unfold node_type_appropriate, should_shrink, get_node_type, get_child_count, shrink_target in *.
+  destruct (header_type (node_header n_old)) eqn:Hold; simpl in Htype, Hshrink.
+  - discriminate.
+  - destruct (header_type (node_header n_new)) eqn:Hnew; simpl in Htype, Hlower |- *; try discriminate.
+    change ((header_num_children (node_header n_old) <=? 4) = true) in Hshrink.
+    apply Nat.leb_le in Hshrink. lia.
+  - destruct (header_type (node_header n_new)) eqn:Hnew; simpl in Htype, Hlower |- *; try discriminate.
+    change ((header_num_children (node_header n_old) <=? 16) = true) in Hshrink.
+    apply Nat.leb_le in Hshrink. split; lia.
+  - destruct (header_type (node_header n_new)) eqn:Hnew; simpl in Htype, Hlower |- *; try discriminate.
+    change ((header_num_children (node_header n_old) <=? 48) = true) in Hshrink.
+    apply Nat.leb_le in Hshrink. split; lia.
+  - discriminate.
+Qed.

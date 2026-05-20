@@ -37,12 +37,16 @@ Inductive reachable (t : ARTrie) : nat -> Prop :=
       find_child n b = NodePtr cid ->
       reachable t cid.
 
-(** No cycles: no node is its own ancestor *)
+(** No direct self-loop from any reachable node.
+
+    A full acyclicity invariant needs an explicit path relation. The previous
+    placeholder quantified over arbitrary lists of node pairs and was too
+    strong: any reachable node could be paired with itself by the caller. *)
 Definition no_cycles (t : ARTrie) : Prop :=
-  forall nid path,
-    (* If there's a path from nid back to nid, it must be empty *)
-    (forall p, In p path -> reachable t (fst p)) ->
-    ~In (nid, nid) path.
+  forall nid n b,
+    reachable t nid ->
+    trie_nodes t nid = Some n ->
+    find_child n b <> NodePtr nid.
 
 (** All reachable nodes exist *)
 Definition reachable_nodes_exist (t : ARTrie) : Prop :=
@@ -145,16 +149,8 @@ Proof.
   unfold structural_invariant.
   split; [apply empty_trie_wf |].
   split; [| split; [| split; [| split; [| split; [| split]]]]].
-  - unfold no_cycles. intros nid path H Hcycle.
-    (* Empty trie has no reachable nodes *)
-    (* Need to show In (nid, nid) path -> False *)
-    (* Since H says all elements of path are reachable, and empty trie has no reachable nodes, path must be empty *)
-    destruct path as [| [n1 n2] rest].
-    + (* path is empty, so In (nid, nid) [] is False *)
-      inversion Hcycle.
-    + (* path is non-empty, so H gives reachable t n1, but empty_trie has no reachable nodes *)
-      specialize (H (n1, n2) (or_introl eq_refl)).
-      simpl in H. inversion H; simpl in *; discriminate.
+  - unfold no_cycles. intros nid n b Hreach Hnode Hloop.
+    inversion Hreach; simpl in *; discriminate.
   - unfold reachable_nodes_exist. intros nid Hreach.
     inversion Hreach.
     + simpl in H. discriminate.
@@ -179,30 +175,18 @@ Proof.
   intros. exact H.
 Qed.
 
-(** Placeholder theorems for operations *)
+(** Operation preservation obligations.
 
-(** Insert preserves structural invariant *)
-Theorem insert_preserves_structural : forall t (k : Key) (v : Value) t',
-  structural_invariant t ->
-  (* t' = trie_insert t k v -> *)  (* Would need actual insert definition *)
-  structural_invariant t'.
-Proof.
-  (* Would require showing:
-     1. New nodes are well-formed
-     2. Child counts are updated correctly
-     3. No cycles are introduced
-     4. Path compression is maintained *)
-Admitted.
+    These are intentionally definitions rather than admitted theorems: insert
+    and delete are still abstract parameters in [ARTrieSpec], so there is no
+    implementation body to prove preservation for yet. *)
 
-(** Delete preserves structural invariant *)
-Theorem delete_preserves_structural : forall t (k : Key) t',
-  structural_invariant t ->
-  (* t' = trie_delete t k -> *)
-  structural_invariant t'.
-Proof.
-  (* Would require showing:
-     1. Node removal maintains structure
-     2. Child counts are updated correctly
-     3. Node type transitions are correct
-     4. Path compression is maintained *)
-Admitted.
+Definition insert_preserves_structural_obligation : Prop :=
+  forall t (k : Key) (v : Value),
+    structural_invariant t ->
+    structural_invariant (trie_insert t k v).
+
+Definition delete_preserves_structural_obligation : Prop :=
+  forall t (k : Key),
+    structural_invariant t ->
+    structural_invariant (trie_delete t k).

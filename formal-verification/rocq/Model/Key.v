@@ -324,6 +324,14 @@ Qed.
 Lemma key_compare_eq : forall k1 k2,
   key_compare k1 k2 = Eq <-> k1 = k2.
 Proof.
-  (* Full proof deferred - requires careful handling of comparison cases *)
-Admitted.
-
+  induction k1 as [| b1 k1' IH]; intros [| b2 k2']; simpl; split; intro H;
+    try discriminate; try reflexivity.
+  - destruct (Nat.compare (byte_val b1) (byte_val b2)) eqn:Hcmp; try discriminate.
+    apply Nat.compare_eq in Hcmp.
+    assert (Hb : b1 = b2).
+    { destruct b1 as [n1 H1], b2 as [n2 H2]. simpl in Hcmp.
+      subst. f_equal. apply proof_irrelevance. }
+    apply IH in H. subst. reflexivity.
+  - injection H as Hb Hk. subst.
+    rewrite Nat.compare_refl. apply IH. reflexivity.
+Qed.
