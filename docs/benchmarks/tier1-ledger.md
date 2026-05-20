@@ -58,6 +58,32 @@ noted in the entry's `Setup:` field.
 
 ## Entries
 
+### [Phase 5] — byte dict_impl.rs decomposition (in progress)
+
+**Commits:** 97d2600 (compaction types), 272e26e (transactions),
+c9dfeb6 (prefix_term), 35dda33 (iterators).
+
+Byte's monolithic 9633-LOC `persistent_artrie/dict_impl.rs` is being
+split into smaller sibling modules under `persistent_artrie/`. Four
+clean extractions have landed; each is a pure data-type relocation
+(the *execution* logic — `compact()`, `begin_document()` etc. — stays
+on `PersistentARTrie`) plus a `pub use` re-export so the top-level
+`pub use dict_impl::{...}` block in `persistent_artrie/mod.rs` keeps
+working. Tests pass after each commit.
+
+| Sub-module | LOC | Contents |
+|------------|-----|----------|
+| `compaction.rs`   | 101 | `CompactionConfig` + Default + `CompactionStats` + `CompactionProgress` |
+| `transactions.rs` |  81 | `DocumentTransaction<V>` + `TransactionState` |
+| `prefix_term.rs`  |  33 | `PrefixTermWithArena` + `PrefixTermWithValueAndArena` |
+| `iterators.rs`    | 386 | `IterState` + `TermIterator<V>` + `TermValueIterator<V>` (DFS traversal subsystem) |
+
+dict_impl.rs went from 9633 → ~9070 LOC (about 600 lines extracted).
+Remaining top-level pub items: `PersistentARTrie<V, S>` itself
+(unextractable), the `SharedARTrieParallelExt` trait + impl, plus the
+inherent `impl PersistentARTrie` block holding 100+ private methods
+that constitute the trie operations themselves.
+
 ### [Phase 4] — wal.rs decomposition (in progress)
 
 **Commits:** 45d7acc, 8d84607, 4d252f8, 69dc7d3, 4376483, 879ee6d, b9210a5.
