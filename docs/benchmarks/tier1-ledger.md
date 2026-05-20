@@ -157,10 +157,18 @@ Final table:
 | `wal/pending_segment.rs` |  36 | `PendingSegment` data carrier for rotated-but-not-yet-fsync'd segments |
 | `wal/sync_handle.rs`     | 102 | `SyncHandle` — caller-side completion handle for `sync_async()` |
 
-Eleven wal sub-modules total. Still inline: `SegmentSyncManager`
-(~360 LOC) and `AsyncWalWriter` (~480 LOC). These two share private
-fields with the segment lifecycle and must move together; that
-extraction is the natural next cut.
+Eleven wal sub-modules at first. Commit b450cce then extracted the
+final cluster: `SegmentSyncManager` + `AsyncWalWriter` +
+`collect_all_segments` move together into
+`wal/async_writer.rs` (~775 LOC) since they share private state across
+the segment-rotation lifecycle. **Phase 4 wal decomposition is now
+complete — all 12 sub-modules extracted.** wal.rs proper is now
+~220 LOC of re-export plumbing + the file-level doc comment + crc32
+helper + the disabled legacy GroupCommit stub. The remaining ~1900
+LOC in wal.rs is the inline `#[cfg(test)] mod tests` integration
+suite that exercises the full module from outside; those stay inline
+by design since they test the public surface of the whole `wal::*`
+namespace as a unit.
 
 ### [Phase 2 → 3] — Remaining Tier 1 + initial Phase 3 work
 
