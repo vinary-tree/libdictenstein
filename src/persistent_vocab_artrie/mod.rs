@@ -120,6 +120,9 @@ pub mod io_uring_ctor;
 // MmapDiskManager-specific constructors (Phase-6 split out of dict_impl).
 pub mod mmap_ctor;
 
+// Lock-free CAS-based concurrent inserts (Phase-6 split out of dict_impl).
+pub mod lockfree_cas;
+
 // Reverse index infrastructure
 pub mod reverse_index;
 
