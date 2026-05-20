@@ -896,36 +896,32 @@ impl MmapDiskManager {
         Ok(())
     }
 
-    /// Remap the file after extending.
-    ///
-    /// NOTE: For `allocate_block()`, the remap logic is inlined to allow updating
-    /// `file_size` while holding the write lock (critical for thread safety).
-    /// This method is kept for other use cases that don't require the same
-    /// synchronization guarantees.
-    #[allow(dead_code)]
-    fn remap(&self, new_size: u64) -> Result<()> {
-        let mmap_guard = self.mmap.as_ref().ok_or_else(|| {
-            PersistentARTrieError::CorruptedFile {
-                reason: "No memory map available".to_string(),
-            }
-        })?;
-
-        let mut mmap = mmap_guard.write();
-
-        // Create new mmap
-        let new_mmap = unsafe {
-            MmapOptions::new()
-                .len(new_size as usize)
-                .map_mut(&self.file)
-                .map_err(|e| PersistentARTrieError::MmapError {
-                    operation: "remap after extend".to_string(),
-                    source: e,
-                })?
-        };
-
-        *mmap = new_mmap;
-        Ok(())
-    }
+    // DISABLED — `remap` was the original out-of-line mmap-update path; it
+    // is fully superseded by the inline remap inside `allocate_block`,
+    // which can update `file_size` while still holding the write lock
+    // (critical for thread safety). The dead `remap` method had no
+    // remaining callers but stayed under `#[allow(dead_code)]` for years.
+    // Kept here commented out per CLAUDE.md to preserve the audit trail.
+    //
+    // fn remap(&self, new_size: u64) -> Result<()> {
+    //     let mmap_guard = self.mmap.as_ref().ok_or_else(|| {
+    //         PersistentARTrieError::CorruptedFile {
+    //             reason: "No memory map available".to_string(),
+    //         }
+    //     })?;
+    //     let mut mmap = mmap_guard.write();
+    //     let new_mmap = unsafe {
+    //         MmapOptions::new()
+    //             .len(new_size as usize)
+    //             .map_mut(&self.file)
+    //             .map_err(|e| PersistentARTrieError::MmapError {
+    //                 operation: "remap after extend".to_string(),
+    //                 source: e,
+    //             })?
+    //     };
+    //     *mmap = new_mmap;
+    //     Ok(())
+    // }
 
     /// Read a block into a buffer
     ///
