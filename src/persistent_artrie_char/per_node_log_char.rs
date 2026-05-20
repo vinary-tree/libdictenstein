@@ -25,8 +25,8 @@
 
 // Re-export node-agnostic types from the 1-byte implementation
 pub use crate::persistent_artrie::per_node_log::{
-    DirtyNodeTracker, NodeId, PageId, PerNodeLogConfig, PerNodeLogStats,
-    PerNodeLogStatsAtomic,
+    DirtyNodeTracker, NodeId, NodeRecoveryResult, PageId, PerNodeLogConfig,
+    PerNodeLogStats, PerNodeLogStatsAtomic, RecoveryResult,
 };
 
 /// Inline log for char node entries (4-byte keys).
