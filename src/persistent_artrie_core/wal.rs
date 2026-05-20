@@ -1738,44 +1738,32 @@ impl Iterator for WalRecordIterator {
     }
 }
 
-/// Group commit coordinator.
-///
-/// Batches multiple WAL writes into a single fsync for better performance.
-pub struct GroupCommit {
-    wal: Arc<WalWriter>,
-    /// Pending LSNs waiting for sync
-    pending: Mutex<Vec<(Lsn, std::sync::mpsc::Sender<Result<(), WalError>>)>>,
-    /// Sync interval in milliseconds
-    #[allow(dead_code)]
-    sync_interval_ms: u64,
-}
-
-impl GroupCommit {
-    /// Create a new group commit coordinator.
-    pub fn new(wal: Arc<WalWriter>, sync_interval_ms: u64) -> Self {
-        GroupCommit {
-            wal,
-            pending: Mutex::new(Vec::new()),
-            sync_interval_ms,
-        }
-    }
-
-    /// Append a record and wait for it to be durable.
-    pub fn append_sync(&self, record: WalRecord) -> Result<Lsn, WalError> {
-        let lsn = self.wal.append(record)?;
-
-        // For simplicity, sync immediately
-        // In production, we'd batch and use the sync_interval
-        self.wal.sync()?;
-
-        Ok(lsn)
-    }
-
-    /// Get the underlying WAL writer.
-    pub fn wal(&self) -> &WalWriter {
-        &self.wal
-    }
-}
+// DISABLED — the legacy `GroupCommit` stub claimed to batch but its
+// `append_sync` synchronously fsync'd every record ("For simplicity, sync
+// immediately"). Production batching lives in
+// `crate::persistent_artrie_core::group_commit::GroupCommitCoordinator`
+// (background thread, AIMD batching, oneshot channels) and is selected via
+// `DurabilityPolicy::GroupCommit` routing through
+// `WalWriter::sync_async` from `dict_impl::sync()`. The stub had no
+// remaining callers; commenting it out per CLAUDE.md to keep the audit
+// trail clear.
+//
+// pub struct GroupCommit {
+//     wal: Arc<WalWriter>,
+//     pending: Mutex<Vec<(Lsn, std::sync::mpsc::Sender<Result<(), WalError>>)>>,
+//     #[allow(dead_code)]
+//     sync_interval_ms: u64,
+// }
+//
+// impl GroupCommit {
+//     pub fn new(wal: Arc<WalWriter>, sync_interval_ms: u64) -> Self { ... }
+//     pub fn append_sync(&self, record: WalRecord) -> Result<Lsn, WalError> {
+//         let lsn = self.wal.append(record)?;
+//         self.wal.sync()?;            // <-- this defeats the batching premise
+//         Ok(lsn)
+//     }
+//     pub fn wal(&self) -> &WalWriter { &self.wal }
+// }
 
 // =============================================================================
 // Concurrent WAL Writes - Async Sync Support

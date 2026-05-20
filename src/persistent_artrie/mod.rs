@@ -292,7 +292,7 @@ pub use compact_encoding::{
 };
 
 // WAL types
-pub use wal::{GroupCommit, Lsn, WalConfig, WalHeader, WalReader, WalRecord, WalRecordType, WalWriter};
+pub use wal::{Lsn, WalConfig, WalHeader, WalReader, WalRecord, WalRecordType, WalWriter};
 
 // Async WAL types for concurrent writes during sync
 pub use wal::{
