@@ -217,6 +217,9 @@ pub mod arena_iter;
 // Cursor-based prefix iteration (iter_prefix_from_cursor + collectors) — Phase-5 split.
 pub mod cursor_iter;
 
+// Dirty-path tracking for selective persistence — Phase-5 split out of dict_impl.
+pub mod dirty_tracking;
+
 // Page-aware prefix-iteration result types (Phase-5 split out of dict_impl).
 pub mod prefix_term;
 
