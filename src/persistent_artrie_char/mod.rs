@@ -155,6 +155,9 @@ pub mod batch_insert;
 #[cfg(feature = "parallel-merge")]
 pub mod parallel_merge;
 
+// Observability / durability / group-commit / memory-monitor / cache-stats API.
+pub mod observability;
+
 // Re-export shared types (always available)
 pub use types::{
     CharTrieFileHeader, CharTrieNodeInner, CharTrieRoot,
