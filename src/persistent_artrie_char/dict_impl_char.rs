@@ -28,7 +28,7 @@
 //! └─────────────────────────────────────────────────┘
 //! ```
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering as AtomicOrdering};
 
@@ -39,11 +39,10 @@ use crate::persistent_artrie::swizzled_ptr::SwizzledPtr;
 
 use crate::persistent_artrie::block_storage::BlockStorage;
 use crate::persistent_artrie::buffer_manager::BufferManager;
-use crate::persistent_artrie::disk_manager::{DiskManager, MmapDiskManager};
+use crate::persistent_artrie::disk_manager::DiskManager;
 use crate::persistent_artrie::error::{PersistentARTrieError, Result};
 use crate::persistent_artrie::wal::{
-    AsyncWalConfig, AsyncWalError, AsyncWalWriter, Lsn,
-    WalConfig, WalError, WalReader, WalRecord, WalWriter,
+    AsyncWalConfig, AsyncWalWriter, WalConfig, WalReader, WalRecord,
 };
 use crate::persistent_artrie::wal_managed::{create_async_wal, open_or_create_async_wal};
 use crate::persistent_artrie::concurrency::{
