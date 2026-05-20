@@ -102,6 +102,9 @@ pub mod recovery;
 // Per-node logging for near-instant recovery (char-specific adaptation)
 pub mod per_node_log_char;
 
+// Page-aware prefix-iteration result types (Phase-6 split out of dict_impl_char).
+pub mod prefix_term;
+
 // Char-side MVCC TrieRoot implementation (paired with generic core mvcc).
 pub mod mvcc;
 
