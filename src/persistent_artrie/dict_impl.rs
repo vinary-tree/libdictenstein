@@ -2479,7 +2479,7 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
     /// and callers needing disk-resident traversal should use
     /// `PersistentARTrie::contains` / `get_value` which go through
     /// `resolve_disk_ref` directly.
-    fn get_root_node(&self) -> PersistentARTrieNode<V> {
+    pub(super) fn get_root_node(&self) -> PersistentARTrieNode<V> {
         match &self.root {
             TrieRoot::Bucket(bucket) => PersistentARTrieNode::new_bucket(bucket.clone()),
             TrieRoot::ArtNode {
@@ -4887,44 +4887,6 @@ const ROOT_TYPE_EMPTY: u8 = 0;
 const ROOT_TYPE_BUCKET: u8 = 1;
 const ROOT_TYPE_ART_NODE: u8 = 2;
 
-impl<V: DictionaryValue, S: BlockStorage> Dictionary for PersistentARTrie<V, S> {
-    type Node = PersistentARTrieNode<V>;
-
-    fn root(&self) -> Self::Node {
-        self.get_root_node()
-    }
-
-    fn contains(&self, term: &str) -> bool {
-        self.contains_impl(term.as_bytes())
-    }
-
-    #[inline]
-    fn len(&self) -> Option<usize> {
-        Some(self.term_count.load(AtomicOrdering::Acquire))
-    }
-
-    fn sync_strategy(&self) -> SyncStrategy {
-        SyncStrategy::InternalSync
-    }
-}
-
-impl<V: DictionaryValue, S: BlockStorage> MappedDictionary for PersistentARTrie<V, S> {
-    type Value = V;
-
-    fn get_value(&self, term: &str) -> Option<Self::Value> {
-        self.get_value_impl(term.as_bytes())
-    }
-}
-
-
-impl<V: DictionaryValue, S: BlockStorage> std::fmt::Debug for PersistentARTrie<V, S> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("PersistentARTrie")
-            .field("term_count", &self.term_count.load(AtomicOrdering::Relaxed))
-            .field("dirty", &self.dirty.load(AtomicOrdering::Relaxed))
-            .finish()
-    }
-}
 
 
 // === MmapDiskManager-specific methods (compaction requires file I/O) ===

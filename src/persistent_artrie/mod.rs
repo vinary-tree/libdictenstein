@@ -183,6 +183,9 @@ pub mod public_iter;
 #[cfg(feature = "io-uring-backend")]
 pub mod io_uring_ctor;
 
+// Dictionary / MappedDictionary / Debug trait impls (Phase-5 split out of dict_impl).
+pub mod dictionary_traits;
+
 // Page-aware prefix-iteration result types (Phase-5 split out of dict_impl).
 pub mod prefix_term;
 
