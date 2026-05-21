@@ -113,15 +113,25 @@ items handled in this session:
 | C2 (serde_helpers extraction) | 2026-05-21 | `serialize_arc_vec` / `deserialize_arc_vec` / `serialize_arc_vec_vec` / `deserialize_arc_vec_vec` duplicated byte-for-byte across `double_array_trie.rs` and `double_array_trie_char.rs` | Single canonical home at `src/serialization/serde_helpers.rs`; both DAT files `use` the helpers and reference them unqualified in the serde attribute strings | Build clean, 16 DAT tests pass. |
 | C7 (sync_compat::RwLock parity) | 2026-05-21 | Std-fallback `RwLock` wrapper lacked `try_read`/`try_write` (parking_lot has both) — silent API divergence between backends | Added `try_read`/`try_write` to the std-fallback wrapper, returning `Option<Guard>` to match parking_lot's shape. Added 2 unit tests | Single canonical type per build (cfg-gated); the trait abstraction the audit suggested would add runtime cost for no real benefit (at most one backend compiles). |
 
-### Still pending (L-effort)
+### Architectural items — struct-level dedup DONE, algorithmic methods deferred
 
-| Item | Estimate | Reason for deferral |
-|---|---|---|
-| C1 (DawgCore consolidation) | 2-3 weeks | Mirrors ARTrie Phase 5; ~1000-1200 LOC reduction across 3 DAWG variants. Needs its own session. |
-| C3 (SuffixAutomatonCore) | 3-4 weeks | Similar shape; ~1500 LOC reduction. |
-| C4 (ScdawgCore) | 3-4 weeks | Similar shape; ~900 LOC reduction. |
-| C5 (DAT generic) | 1-2 weeks | DAT internals are simpler; partial `DATShared` infrastructure already exists. |
-| C6 (union_zipper split) | 1 week | 1632 LOC god-object; clean seams (`ValueMergeStrategy` / `Lattice` / `SemiringLatticeWrapper` / `UnionZipper`+`UnionIterator`). |
+The struct/node-level duplication that the audit named is now resolved:
+
+| Item | Status | LOC delta | New module |
+|---|---|---|---|
+| C1 (DAWG variants) | DONE — local `BloomFilter` and `NodeSignature` → canonical `crate::bloom_filter` / `crate::node_signature` | -184 LOC | (re-use of existing canonical modules) |
+| C3 (SuffixAutomaton variants) | DONE — local `SuffixNode<V>`/`SuffixNodeChar<V>` → generic `crate::suffix_automaton_core::SuffixNode<U, V>` | -65 LOC net (-205 removed, +140 generic) | `src/suffix_automaton_core/` |
+| C4 (Scdawg variants) | DONE — local `ScdawgNode<V>`/`ScdawgCharNode<V>` → generic `crate::scdawg_core::ScdawgNode<U, V>` | -60 LOC net (-205 removed, +145 generic) | `src/scdawg_core/` |
+| C5 (DAT variants) | DONE — `DATShared<V>`/`DATSharedChar<V>` → generic `crate::dat_core::DATCoreShared<U, V>` | -106 LOC | `src/dat_core/` |
+| C6 (union_zipper) | DONE — 1632-LOC god-object split into 4 modules | net +42 LOC for module overhead | `src/union_zipper/` |
+
+The remaining duplication (algorithmic methods — DAWG's `insert`/`remove`/
+`minimize`; suffix automaton's `extend()` on-line construction;
+SCDAWG's batch builder + IS-features; DAT's BASE-placement search) is
+tightly coupled to each variant's internal state machine. Migrating
+those is the multi-week portion the audit called out and remains as
+follow-up. See `docs/benchmarks/c{1,3,4,5}-*-handoff.md` for the
+specific step-by-step plans.
 
 ---
 
