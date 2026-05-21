@@ -106,16 +106,16 @@ pub struct DawgCore<U: CharUnit, V: DictionaryValue> {
     pub(crate) needs_compaction: bool,
     /// Suffix sharing cache: hash of suffix -> node index
     #[cfg_attr(feature = "serialization", serde(skip))]
-    suffix_cache: FxHashMap<u64, usize>,
+    pub(crate) suffix_cache: FxHashMap<u64, usize>,
     /// Last node count after minimization (for auto-minimize threshold).
     #[cfg_attr(feature = "serialization", serde(skip))]
-    last_minimized_node_count: usize,
+    pub(crate) last_minimized_node_count: usize,
     /// Threshold ratio to trigger auto-minimization.
     #[cfg_attr(feature = "serialization", serde(skip))]
-    auto_minimize_threshold: f32,
+    pub(crate) auto_minimize_threshold: f32,
     /// Optional Bloom filter for fast negative lookup.
     #[cfg_attr(feature = "serialization", serde(skip))]
-    bloom_filter: Option<BloomFilter>,
+    pub(crate) bloom_filter: Option<BloomFilter>,
 }
 
 impl<U: CharUnit, V: DictionaryValue> DawgCore<U, V> {
@@ -559,7 +559,7 @@ impl<U: CharUnit, V: DictionaryValue> DawgCore<U, V> {
 
     /// Insert an edge in sorted order using binary search.
     #[inline]
-    fn insert_edge_sorted(&mut self, node_idx: usize, label: U, target_idx: usize) {
+    pub(crate) fn insert_edge_sorted(&mut self, node_idx: usize, label: U, target_idx: usize) {
         let edges = &mut self.nodes[node_idx].edges;
         match edges.binary_search_by_key(&label, |(l, _)| *l) {
             Ok(pos) => {
@@ -572,7 +572,7 @@ impl<U: CharUnit, V: DictionaryValue> DawgCore<U, V> {
     }
 
     /// Check if auto-minimization should be triggered.
-    fn check_and_auto_minimize(&mut self) {
+    pub(crate) fn check_and_auto_minimize(&mut self) {
         let current_nodes = self.nodes.len();
         let threshold_nodes =
             (self.last_minimized_node_count as f32 * self.auto_minimize_threshold) as usize;
@@ -583,7 +583,7 @@ impl<U: CharUnit, V: DictionaryValue> DawgCore<U, V> {
     }
 
     /// Check if two nodes are structurally equivalent.
-    fn nodes_structurally_equal(&self, idx1: usize, idx2: usize, node_mapping: &[usize]) -> bool {
+    pub(crate) fn nodes_structurally_equal(&self, idx1: usize, idx2: usize, node_mapping: &[usize]) -> bool {
         let node1 = &self.nodes[idx1];
         let node2 = &self.nodes[idx2];
 
@@ -612,14 +612,14 @@ impl<U: CharUnit, V: DictionaryValue> DawgCore<U, V> {
     }
 
     /// Compute signatures for all nodes.
-    fn compute_signatures(&self) -> Vec<NodeSignature> {
+    pub(crate) fn compute_signatures(&self) -> Vec<NodeSignature> {
         let mut signatures = vec![NodeSignature::zero(); self.nodes.len()];
         let mut visited = vec![false; self.nodes.len()];
         self.compute_signatures_dfs(0, &mut signatures, &mut visited);
         signatures
     }
 
-    fn compute_signatures_dfs(
+    pub(crate) fn compute_signatures_dfs(
         &self,
         node_idx: usize,
         signatures: &mut [NodeSignature],
@@ -647,7 +647,7 @@ impl<U: CharUnit, V: DictionaryValue> DawgCore<U, V> {
     }
 
     /// Find all nodes reachable from root.
-    fn find_reachable_nodes(&self) -> Vec<usize> {
+    pub(crate) fn find_reachable_nodes(&self) -> Vec<usize> {
         let mut reachable = Vec::new();
         let mut visited = vec![false; self.nodes.len()];
         self.find_reachable_dfs(0, &mut visited);
@@ -661,7 +661,7 @@ impl<U: CharUnit, V: DictionaryValue> DawgCore<U, V> {
         reachable
     }
 
-    fn find_reachable_dfs(&self, node_idx: usize, visited: &mut [bool]) {
+    pub(crate) fn find_reachable_dfs(&self, node_idx: usize, visited: &mut [bool]) {
         if visited[node_idx] {
             return;
         }
@@ -673,7 +673,7 @@ impl<U: CharUnit, V: DictionaryValue> DawgCore<U, V> {
     }
 
     /// Compact the node array to only contain reachable nodes.
-    fn compact_with_reachable(&mut self, reachable: &[usize]) {
+    pub(crate) fn compact_with_reachable(&mut self, reachable: &[usize]) {
         let mut old_to_new = vec![usize::MAX; self.nodes.len()];
         for (new_idx, &old_idx) in reachable.iter().enumerate() {
             old_to_new[old_idx] = new_idx;
@@ -694,14 +694,14 @@ impl<U: CharUnit, V: DictionaryValue> DawgCore<U, V> {
     }
 
     /// Extract all terms as unit vectors.
-    fn extract_all_terms(&self) -> Vec<Vec<U>> {
+    pub(crate) fn extract_all_terms(&self) -> Vec<Vec<U>> {
         let mut terms = Vec::new();
         let mut current_term = Vec::new();
         self.dfs_collect(0, &mut current_term, &mut terms);
         terms
     }
 
-    fn dfs_collect(&self, node_idx: usize, current_term: &mut Vec<U>, terms: &mut Vec<Vec<U>>) {
+    pub(crate) fn dfs_collect(&self, node_idx: usize, current_term: &mut Vec<U>, terms: &mut Vec<Vec<U>>) {
         let node = &self.nodes[node_idx];
 
         if node.is_final {
@@ -716,7 +716,7 @@ impl<U: CharUnit, V: DictionaryValue> DawgCore<U, V> {
     }
 
     /// Direct insert without bloom filter or auto-minimize.
-    fn insert_direct(&mut self, units: &[U]) {
+    pub(crate) fn insert_direct(&mut self, units: &[U]) {
         let mut node_idx = 0;
 
         for &unit in units {
