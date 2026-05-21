@@ -929,7 +929,7 @@ impl<V: DictionaryValue> crate::artrie_trait::ARTrie for SharedCharARTrie<V> {
 // ============================================================================
 
 impl<V: DictionaryValue> crate::artrie_trait::EvictableARTrie for SharedCharARTrie<V> {
-    fn enable_eviction(&mut self, config: crate::persistent_artrie::eviction::EvictionConfig) -> crate::persistent_artrie::error::Result<()> {
+    fn enable_eviction(&self, config: crate::persistent_artrie::eviction::EvictionConfig) -> crate::persistent_artrie::error::Result<()> {
         use crate::persistent_artrie::error::PersistentARTrieError;
 
         config.validate().map_err(|e| PersistentARTrieError::internal(&e))?;
@@ -986,7 +986,7 @@ impl<V: DictionaryValue> crate::artrie_trait::EvictableARTrie for SharedCharARTr
         Ok(())
     }
 
-    fn disable_eviction(&mut self) -> crate::persistent_artrie::error::Result<()> {
+    fn disable_eviction(&self) -> crate::persistent_artrie::error::Result<()> {
         let mut guard = self.write();
 
         if let Some(coordinator) = guard.eviction_coordinator.take() {
@@ -1009,7 +1009,7 @@ impl<V: DictionaryValue> crate::artrie_trait::EvictableARTrie for SharedCharARTr
             .unwrap_or_default()
     }
 
-    fn force_eviction(&mut self, target_bytes: usize) -> crate::persistent_artrie::error::Result<(usize, usize)> {
+    fn force_eviction(&self, target_bytes: usize) -> crate::persistent_artrie::error::Result<(usize, usize)> {
         let guard = self.read();
 
         let Some(coordinator) = &guard.eviction_coordinator else {

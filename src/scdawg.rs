@@ -597,6 +597,34 @@ impl<V: DictionaryValue> Scdawg<V> {
         scdawg
     }
 
+    /// Create from an iterator of `(term, value)` pairs.
+    ///
+    /// Matches `ScdawgChar::from_terms_with_values` (B3 parity backfill).
+    pub fn from_terms_with_values<I, S>(entries: I) -> Self
+    where
+        I: IntoIterator<Item = (S, V)>,
+        S: AsRef<str>,
+    {
+        let pairs: Vec<(String, V)> = entries
+            .into_iter()
+            .map(|(s, v)| (s.as_ref().to_string(), v))
+            .collect();
+        let total_chars: usize = pairs.iter().map(|(s, _)| s.len()).sum();
+
+        let inner = ScdawgInner::with_capacity(pairs.len(), total_chars);
+        let scdawg = Self {
+            inner: Arc::new(RwLock::new(inner)),
+        };
+        {
+            let mut inner = scdawg.inner.write();
+            for (term, value) in pairs {
+                inner.insert_with_value(&term, value);
+            }
+            inner.compute_left_edges();
+        }
+        scdawg
+    }
+
     /// Insert a term.
     pub fn insert(&self, term: &str) -> bool {
         let mut inner = self.inner.write();
@@ -615,6 +643,28 @@ impl<V: DictionaryValue> Scdawg<V> {
             inner.compute_left_edges();
         }
         result
+    }
+
+    /// Get the value associated with a term.
+    ///
+    /// Matches `ScdawgChar::get_value` (B3 parity backfill).
+    pub fn get_value(&self, term: &str) -> Option<V>
+    where
+        V: Clone,
+    {
+        let inner = self.inner.read();
+        let mut current = 0;
+        for byte in term.bytes() {
+            match inner.nodes[current].get_edge(byte) {
+                Some(next) => current = next,
+                None => return None,
+            }
+        }
+        if inner.nodes[current].is_final {
+            inner.nodes[current].value.clone()
+        } else {
+            None
+        }
     }
 
     /// Check if a substring exists in any term.
@@ -749,6 +799,15 @@ impl<V: DictionaryValue> Dictionary for Scdawg<V> {
 
     fn sync_strategy(&self) -> crate::SyncStrategy {
         crate::SyncStrategy::ExternalSync
+    }
+}
+
+impl<V: DictionaryValue> crate::MappedDictionary for Scdawg<V> {
+    type Value = V;
+
+    fn get_value(&self, term: &str) -> Option<Self::Value> {
+        // Delegate to the inherent method.
+        Self::get_value(self, term)
     }
 }
 

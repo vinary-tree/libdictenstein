@@ -43,7 +43,7 @@
 //! assert_eq!(bimap.get_value("key1"), Some("value1".to_string()));
 //!
 //! // Reverse lookup
-//! assert_eq!(bimap.get_term(&"value1".to_string()), Some("key1".to_string()));
+//! assert_eq!(bimap.get_term(&"value1".to_string()).as_deref(), Some("key1"));
 //! ```
 //!
 //! # Thread Safety
@@ -56,6 +56,8 @@
 mod bijective_map;
 
 pub use bijective_map::{BijectiveMap, InsertError};
+
+use std::borrow::Cow;
 
 use crate::value::DictionaryValue;
 use crate::MappedDictionary;
@@ -95,8 +97,9 @@ use crate::MappedDictionary;
 /// use libdictenstein::MappedDictionary;
 /// assert_eq!(bimap.get_value("hello"), Some(0u64));
 ///
-/// // Reverse lookup via BijectiveDictionary trait (takes reference)
-/// assert_eq!(BijectiveDictionary::get_term(&bimap, &0u64), Some("hello"));
+/// // Reverse lookup via BijectiveDictionary trait (returns Cow<str>)
+/// let term = BijectiveDictionary::get_term(&bimap, &0u64);
+/// assert_eq!(term.as_deref(), Some("hello"));
 /// ```
 pub trait BijectiveDictionary: MappedDictionary
 where
@@ -106,13 +109,23 @@ where
     ///
     /// Returns `None` if no term maps to this value.
     ///
+    /// The return type is `Option<Cow<'_, str>>` so impls can return either a
+    /// borrowed `&str` (when the term is stored verbatim and the lifetime can
+    /// be tied to `&self`) or an owned `String` (when the term must be
+    /// reconstructed on-the-fly, as in persistent-vocab tries). The previous
+    /// `Option<&str>` signature forced unsafe pointer dereference in
+    /// `BijectiveMap` and forced persistent-vocab impls to stub the method to
+    /// `None` — both are fixed by the `Cow` return type.
+    ///
     /// # Performance
     ///
-    /// Implementation-dependent. For `BijectiveMap<V>`, this is O(1) average via hash lookup.
+    /// Implementation-dependent. For `BijectiveMap<V>`, this is O(1) average
+    /// via hash lookup and a single `String` clone.
     ///
     /// # Examples
     ///
     /// ```rust
+    /// use std::borrow::Cow;
     /// use libdictenstein::bijective::{BijectiveDictionary, BijectiveMap};
     ///
     /// let bimap = BijectiveMap::from_pairs([("cat", 0), ("dog", 1)]);
@@ -122,10 +135,13 @@ where
     /// assert_eq!(bimap.get_term(&1), Some("dog".to_string()));
     /// assert_eq!(bimap.get_term(&999), None);  // No term at this value
     ///
-    /// // Or use the trait method explicitly (returns &str)
-    /// assert_eq!(BijectiveDictionary::get_term(&bimap, &0), Some("cat"));
+    /// // Or use the trait method explicitly (returns Cow<str>)
+    /// let cat = BijectiveDictionary::get_term(&bimap, &0);
+    /// assert_eq!(cat.as_deref(), Some("cat"));
+    /// // BijectiveMap returns Cow::Owned (clones from the reverse HashMap).
+    /// assert!(matches!(cat, Some(Cow::Owned(_))));
     /// ```
-    fn get_term(&self, value: &Self::Value) -> Option<&str>;
+    fn get_term(&self, value: &Self::Value) -> Option<Cow<'_, str>>;
 
     /// Check if a value exists in the dictionary.
     ///

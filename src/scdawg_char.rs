@@ -693,6 +693,14 @@ impl<V: DictionaryValue> Dictionary for ScdawgChar<V> {
     }
 }
 
+impl<V: DictionaryValue> crate::MappedDictionary for ScdawgChar<V> {
+    type Value = V;
+
+    fn get_value(&self, term: &str) -> Option<Self::Value> {
+        Self::get_value(self, term)
+    }
+}
+
 // ============================================================================
 // Node Handle
 // ============================================================================

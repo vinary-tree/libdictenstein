@@ -123,6 +123,7 @@ formal-verification/rocq/**/*.vo
 formal-verification/rocq/**/*.vok
 formal-verification/rocq/**/*.vos
 formal-verification/rocq/**/*.glob
+formal-verification/rocq/**/.*.aux
 
 # ThreadSanitizer suppressions (generated)
 tsan-suppressions.txt

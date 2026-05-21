@@ -1,29 +1,29 @@
-# Cargo configuration for liblevenshtein
+# Cargo configuration for libdictenstein.
 #
-# This configuration sets default build flags required by transitive dependencies
-# (specifically PathMap's gxhash) which require AES and SSE2 CPU intrinsics.
+# We enable the minimum CPU features required by transitive dependencies
+# (PathMap's gxhash needs AES + SSE2) — NOT `target-cpu=native`. The native
+# setting silently invokes AVX2 / AVX-512 / etc. on whatever host the
+# build runs on, producing binaries that emit illegal-instruction signals
+# when run on slightly older x86_64 hardware. SSE2 is baseline on all
+# x86_64 CPUs; AES-NI ships on essentially every Intel/AMD CPU from 2008
+# onward.
+#
+# To rebuild with `target-cpu=native` for local development (release/bench
+# profiles benefit measurably on AVX2+ hardware), set the env var:
+#
+#     RUSTFLAGS="-C target-cpu=native" cargo bench --features persistent-artrie
+#
+# RUSTFLAGS in the environment overrides this file.
 
 [build]
-# Use native CPU features for optimal performance
-# This is equivalent to: RUSTFLAGS="-C target-cpu=native"
-rustflags = ["-C", "target-cpu=native"]
+rustflags = ["-C", "target-feature=+aes,+sse2"]
 
-# Alternative: If you need to support CPUs without native optimizations,
-# you can use specific features instead:
-# rustflags = ["-C", "target-feature=+aes,+sse2"]
-
+# Per-target overrides (kept here so future cross-compile fan-out has an
+# obvious place to land). The x86_64 GNU/Linux row mirrors `[build]` above.
 [target.x86_64-unknown-linux-gnu]
-# Platform-specific flags can be added here if needed
-rustflags = ["-C", "target-cpu=native"]
+rustflags = ["-C", "target-feature=+aes,+sse2"]
 
-# Note: With this configuration, you no longer need to set RUSTFLAGS manually:
-# ✅ cargo build                  (works automatically)
-# ✅ cargo test                   (works automatically)
-# ✅ cargo run                    (works automatically)
-#
-# The RUSTFLAGS environment variable will override this configuration if set.
-
-# Coverage profile for accurate branch coverage with cargo-llvm-cov
+# Coverage profile for accurate branch coverage with cargo-llvm-cov.
 [profile.coverage]
 inherits = "dev"
 opt-level = 0

@@ -8,6 +8,8 @@ libdictenstein provides multiple dictionary implementations optimized for approx
 
 ## Dictionary Backends
 
+### In-memory
+
 | Backend | Best For | Performance | Memory | Dynamic Updates | Unicode |
 |---------|----------|-------------|--------|-----------------|---------|
 | **DoubleArrayTrie** | General use (recommended) | 5/5 | 5/5 | Insert-only | Byte-level |
@@ -17,10 +19,25 @@ libdictenstein provides multiple dictionary implementations optimized for approx
 | **DynamicDawgU64** | Token sequences, time series | 3/5 | 2/5 | Thread-safe | 64-bit labels |
 | **SuffixAutomaton** | Substring search | 3/5 | 2/5 | Insert + Remove | Byte-level |
 | **SuffixAutomatonChar** | Unicode substring search | 3/5 | 2/5 | Insert + Remove | Character-level |
+| **Scdawg** | Substring search (static, compact) | 4/5 | 4/5 | Insert-only | Byte-level |
+| **ScdawgChar** | Unicode substring search (static, compact) | 4/5 | 4/5 | Insert-only | Character-level |
+| **PathMapDictionary** *(feature `pathmap-backend`)* | Fast queries | 4/5 | 3/5 | Thread-safe | Byte-level |
+| **PathMapDictionaryChar** *(feature `pathmap-backend`)* | Fast queries (Unicode) | 4/5 | 3/5 | Thread-safe | Character-level |
+
+### Disk-backed *(feature `persistent-artrie`)*
+
+| Backend | Best For | Persistence | Concurrency | Unicode |
+|---------|----------|-------------|-------------|---------|
+| **PersistentARTrie** | Disk-backed key/value, byte keys | mmap + WAL | Lock-free CAS | Byte-level |
+| **PersistentARTrieChar** | Disk-backed key/value, Unicode | mmap + WAL | Lock-free CAS | Character-level |
+| **PersistentVocabARTrie** | Vocabulary trie (term ↔ u64 index) | mmap + WAL | RwLock | Character-level |
 
 ## Quick Start
 
 ```rust
+// `prelude` re-exports the Dictionary / MappedDictionary / MutableDictionary /
+// CompactableDictionary traits — needed so methods like `.contains` and
+// `.transition` resolve on backend types.
 use libdictenstein::prelude::*;
 use libdictenstein::double_array_trie::DoubleArrayTrie;
 
@@ -30,21 +47,29 @@ let dict = DoubleArrayTrie::from_terms(vec!["hello", "help", "world"]);
 // Check if a term exists
 assert!(dict.contains("hello"));
 
-// Traverse the dictionary
+// Traverse the dictionary node-by-node
 let root = dict.root();
-if let Some(next) = root.transition(b'h') {
+if let Some(_next) = root.transition(b'h') {
     println!("Found edge 'h'");
 }
 ```
 
+For a unified construction API across all in-memory backends, see
+`libdictenstein::factory::DictionaryFactory` (covers 11 backends).
+
 ## Features
 
-- **pathmap-backend**: Enable PathMap dictionary backend
-- **serialization**: Enable serde serialization support
-- **persistent-artrie**: Enable disk-backed Adaptive Radix Trie
-- **simd**: Enable SIMD optimizations for edge lookup
-- **scdawg-bloom**: Enable bloom filter optimization for SCDAWG
-- **scdawg-simd**: Enable SIMD optimization for SCDAWG
+- **default** = `["parking_lot"]`: Use `parking_lot::RwLock` for the dynamic backends (faster than `std::sync::RwLock`)
+- **pathmap-backend**: Enable PathMap dictionary backend (`pathmap` dependency)
+- **serialization**: Enable serde serialization support (`serde`, `bincode`, `serde_json`)
+- **compression**: Gzip compression for serialized dictionaries (`flate2`)
+- **protobuf**: Protobuf serialization (`prost`, requires `prost-build`)
+- **persistent-artrie**: Disk-backed Adaptive Radix Trie family (byte, char, vocab variants)
+- **parallel-merge**: Multi-core parallel merge for persistent ARTrie (requires `persistent-artrie`, adds `rayon`)
+- **io-uring-backend**: io_uring + O_DIRECT block storage (Linux-only, kernel >= 5.1)
+- **bench-internals**: Expose internal APIs for benchmarks (used by `eviction_benchmarks`)
+- **group-commit**: WAL batching coordinator. EXPERIMENTAL — measured ~1.5-2x regression on NVMe; intended for slower storage backends
+- **lling-llang**: WFST semiring integration for the `Lattice` trait
 
 ## Core Traits
 

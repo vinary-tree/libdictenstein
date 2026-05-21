@@ -36,6 +36,12 @@ pub mod protobuf_impl;
 #[cfg(feature = "compression")]
 mod compression_impl;
 
+// Shared serde helpers (`Arc<Vec<T>>` and `Arc<Vec<Vec<T>>>` round-tripping).
+// `pub(crate)` so the DAT byte + char files can `use` them in serde attribute
+// paths.
+#[cfg(feature = "serialization")]
+pub(crate) mod serde_helpers;
+
 // Re-exports
 pub use self::bincode_impl::BincodeSerializer;
 pub use self::json_impl::JsonSerializer;
@@ -92,6 +98,26 @@ pub trait DictionaryFromTerms: Sized {
     fn from_terms<I: IntoIterator<Item = String>>(terms: I) -> Self;
 }
 
+/// Trait for dictionaries that can be constructed from `(term, value)` pairs.
+///
+/// The value-preserving serializers (`*_with_values` methods on
+/// [`BincodeSerializer`], [`JsonSerializer`], [`PlainTextSerializer`]) require
+/// this trait. Backends that implement [`crate::MappedDictionary`] should
+/// implement this trait too so values survive serialization round-trips.
+///
+/// The previous serializer path (`extract_terms` + `from_terms`) silently
+/// dropped values for `MappedDictionary` impls because the
+/// `Vec<String>`-shaped wire format had no slot for them.
+pub trait DictionaryFromTermsWithValues: Sized {
+    /// The value type carried by the dictionary's entries.
+    type Value: crate::DictionaryValue;
+
+    /// Create a dictionary from an iterator of `(term, value)` pairs.
+    fn from_terms_with_values<I>(entries: I) -> Self
+    where
+        I: IntoIterator<Item = (String, Self::Value)>;
+}
+
 /// Errors that can occur during serialization/deserialization.
 #[derive(Debug, thiserror::Error)]
 pub enum SerializationError {
@@ -115,57 +141,190 @@ pub enum SerializationError {
 
 /// Helper to extract all terms from a dictionary.
 ///
-/// This performs a depth-first traversal of the dictionary trie
-/// to collect all valid terms.
+/// Performs an iterative depth-first traversal of the dictionary trie to
+/// collect all valid terms. The iterative form (explicit `Vec` stack rather
+/// than recursive calls) is required because pathological dictionaries — long
+/// single-child chains, for instance — would otherwise overflow the thread
+/// stack at depths in the ~50k-edge range.
 ///
-/// **Note**: For suffix automata, use `extract_suffix_automaton_texts()` instead,
-/// as this function would extract all possible substrings rather than source texts.
+/// **Note**: For suffix automata, use `extract_suffix_automaton_texts()`
+/// instead, as this function would extract all possible substrings rather
+/// than source texts.
 pub fn extract_terms<D>(dict: &D) -> Vec<String>
 where
     D: Dictionary,
     D::Node: DictionaryNode<Unit = u8>,
 {
-    // Pre-allocate with estimated capacity
     let est_size = dict.len().unwrap_or(100);
-    let mut terms = Vec::with_capacity(est_size);
-    let mut current_term = Vec::with_capacity(32); // Most words < 32 bytes
+    let mut terms: Vec<String> = Vec::with_capacity(est_size);
 
-    fn dfs<N: DictionaryNode<Unit = u8>>(
-        node: &N,
-        current_term: &mut Vec<u8>,
-        terms: &mut Vec<String>,
-    ) {
-        if node.is_final() {
-            // SAFETY: Dictionary implementations maintain the invariant that
-            // all terms are valid UTF-8. We avoid the clone by using
-            // from_utf8_unchecked, which is safe because:
-            // 1. Dictionaries are constructed from valid UTF-8 strings
-            // 2. We only traverse edges that were part of valid UTF-8 terms
-            // 3. The byte sequence is validated during dictionary construction
-            //
-            // Fallback: If somehow invalid UTF-8 is encountered (shouldn't happen),
-            // we use from_utf8_lossy which replaces invalid sequences with �
-            match std::str::from_utf8(current_term) {
-                Ok(s) => terms.push(s.to_string()),
-                Err(_) => {
-                    // Defensive: shouldn't happen with proper dictionary implementations
-                    terms.push(String::from_utf8_lossy(current_term).into_owned());
-                }
+    // Explicit traversal stack. Each frame collects its node's outgoing edges
+    // into a `Vec` (so the frame owns its children and the iterator's borrow
+    // of the parent node doesn't outlive the parent across the recursion). We
+    // pop edges off the back; `depth` records how many bytes of `current_term`
+    // were appended by this frame's parent so we can `truncate` on backtrack.
+    struct Frame<N: DictionaryNode<Unit = u8>> {
+        children: Vec<(u8, N)>,
+        depth: usize,
+    }
+
+    let mut current_term: Vec<u8> = Vec::with_capacity(64);
+    let root = dict.root();
+    push_term_if_final(&root, &current_term, &mut terms);
+
+    let mut stack: Vec<Frame<D::Node>> = Vec::with_capacity(64);
+    // Reverse so popping from the back yields edges in encounter order.
+    let mut root_children: Vec<(u8, D::Node)> = root.edges().collect();
+    root_children.reverse();
+    stack.push(Frame {
+        children: root_children,
+        depth: 0,
+    });
+
+    while let Some(frame) = stack.last_mut() {
+        match frame.children.pop() {
+            Some((byte, child)) => {
+                // Record `current_term`'s length BEFORE pushing the descent
+                // byte. On backtrack we'll truncate back to this length,
+                // which restores the parent's prefix.
+                let parent_depth = current_term.len();
+                current_term.push(byte);
+                push_term_if_final(&child, &current_term, &mut terms);
+                let mut child_children: Vec<(u8, D::Node)> = child.edges().collect();
+                child_children.reverse();
+                drop(child);
+                stack.push(Frame {
+                    children: child_children,
+                    depth: parent_depth,
+                });
             }
-        }
-
-        // Explore all edges
-        for (byte, child) in node.edges() {
-            current_term.push(byte);
-            dfs(&child, current_term, terms);
-            current_term.pop();
+            None => {
+                current_term.truncate(frame.depth);
+                stack.pop();
+            }
         }
     }
 
+    terms
+}
+
+#[inline]
+fn push_term_if_final<N: DictionaryNode<Unit = u8>>(
+    node: &N,
+    current_term: &[u8],
+    terms: &mut Vec<String>,
+) {
+    if node.is_final() {
+        match std::str::from_utf8(current_term) {
+            Ok(s) => terms.push(s.to_string()),
+            Err(_) => terms.push(String::from_utf8_lossy(current_term).into_owned()),
+        }
+    }
+}
+
+/// Char-Unit counterpart to [`extract_terms`].
+///
+/// Same iterative traversal pattern, but operating on `char` units instead
+/// of bytes. Each final node yields its term as a UTF-8 `String` built
+/// directly from the accumulated `Vec<char>`. Unblocks value-preserving
+/// serialization for `Unit = char` backends (DAT-Char, DynamicDawg-Char,
+/// SuffixAutomaton-Char, Scdawg-Char, PathMap-Char).
+pub fn extract_terms_char<D>(dict: &D) -> Vec<String>
+where
+    D: Dictionary,
+    D::Node: DictionaryNode<Unit = char>,
+{
+    let est_size = dict.len().unwrap_or(100);
+    let mut terms: Vec<String> = Vec::with_capacity(est_size);
+
+    struct Frame<N: DictionaryNode<Unit = char>> {
+        children: Vec<(char, N)>,
+        depth: usize,
+    }
+
+    let mut current_term: Vec<char> = Vec::with_capacity(64);
     let root = dict.root();
-    dfs(&root, &mut current_term, &mut terms);
+    push_char_term_if_final(&root, &current_term, &mut terms);
+
+    let mut stack: Vec<Frame<D::Node>> = Vec::with_capacity(64);
+    let mut root_children: Vec<(char, D::Node)> = root.edges().collect();
+    root_children.reverse();
+    stack.push(Frame {
+        children: root_children,
+        depth: 0,
+    });
+
+    while let Some(frame) = stack.last_mut() {
+        match frame.children.pop() {
+            Some((ch, child)) => {
+                let parent_depth = current_term.len();
+                current_term.push(ch);
+                push_char_term_if_final(&child, &current_term, &mut terms);
+                let mut child_children: Vec<(char, D::Node)> = child.edges().collect();
+                child_children.reverse();
+                drop(child);
+                stack.push(Frame {
+                    children: child_children,
+                    depth: parent_depth,
+                });
+            }
+            None => {
+                current_term.truncate(frame.depth);
+                stack.pop();
+            }
+        }
+    }
 
     terms
+}
+
+#[inline]
+fn push_char_term_if_final<N: DictionaryNode<Unit = char>>(
+    node: &N,
+    current_term: &[char],
+    terms: &mut Vec<String>,
+) {
+    if node.is_final() {
+        terms.push(current_term.iter().collect());
+    }
+}
+
+/// Char-Unit counterpart to [`extract_terms_with_values`].
+pub fn extract_terms_with_values_char<D>(dict: &D) -> Vec<(String, D::Value)>
+where
+    D: crate::MappedDictionary,
+    D::Node: DictionaryNode<Unit = char>,
+{
+    let terms = extract_terms_char(dict);
+    let mut out = Vec::with_capacity(terms.len());
+    for term in terms {
+        if let Some(value) = dict.get_value(&term) {
+            out.push((term, value));
+        }
+    }
+    out
+}
+
+/// Helper to extract `(term, value)` pairs from a [`crate::MappedDictionary`].
+///
+/// Walks the trie iteratively (same shape as [`extract_terms`]), collects all
+/// final-node terms, then looks up each term's value via
+/// `MappedDictionary::get_value`. Terms whose values are unexpectedly `None`
+/// at lookup time (which would indicate a soundness bug in the impl) are
+/// silently dropped from the resulting vector.
+pub fn extract_terms_with_values<D>(dict: &D) -> Vec<(String, D::Value)>
+where
+    D: crate::MappedDictionary,
+    D::Node: DictionaryNode<Unit = u8>,
+{
+    let terms = extract_terms(dict);
+    let mut out = Vec::with_capacity(terms.len());
+    for term in terms {
+        if let Some(value) = dict.get_value(&term) {
+            out.push((term, value));
+        }
+    }
+    out
 }
 
 // Implementations of DictionaryFromTerms for each dictionary backend
@@ -246,6 +405,129 @@ impl<V: crate::DictionaryValue + Default> DictionaryFromTerms
     }
 }
 
+// =============================================================================
+// DictionaryFromTermsWithValues impls
+// =============================================================================
+//
+// Each impl forwards to the backend's inherent `from_terms_with_values` method
+// (added in A3, except where it predates this plan). The bound on `V` is
+// whatever the backend itself requires for the `MappedDictionary` impl.
+
+impl<V: crate::DictionaryValue> DictionaryFromTermsWithValues
+    for crate::double_array_trie::DoubleArrayTrie<V>
+{
+    type Value = V;
+
+    fn from_terms_with_values<I>(entries: I) -> Self
+    where
+        I: IntoIterator<Item = (String, Self::Value)>,
+    {
+        crate::double_array_trie::DoubleArrayTrie::from_terms_with_values(entries)
+    }
+}
+
+impl<V: crate::DictionaryValue> DictionaryFromTermsWithValues
+    for crate::double_array_trie_char::DoubleArrayTrieChar<V>
+{
+    type Value = V;
+
+    fn from_terms_with_values<I>(entries: I) -> Self
+    where
+        I: IntoIterator<Item = (String, Self::Value)>,
+    {
+        crate::double_array_trie_char::DoubleArrayTrieChar::from_terms_with_values(entries)
+    }
+}
+
+impl<V: crate::DictionaryValue> DictionaryFromTermsWithValues
+    for crate::dynamic_dawg::DynamicDawg<V>
+{
+    type Value = V;
+
+    fn from_terms_with_values<I>(entries: I) -> Self
+    where
+        I: IntoIterator<Item = (String, Self::Value)>,
+    {
+        crate::dynamic_dawg::DynamicDawg::from_terms_with_values(entries)
+    }
+}
+
+impl<V: crate::DictionaryValue> DictionaryFromTermsWithValues
+    for crate::dynamic_dawg_char::DynamicDawgChar<V>
+{
+    type Value = V;
+
+    fn from_terms_with_values<I>(entries: I) -> Self
+    where
+        I: IntoIterator<Item = (String, Self::Value)>,
+    {
+        crate::dynamic_dawg_char::DynamicDawgChar::from_terms_with_values(entries)
+    }
+}
+
+impl<V: crate::DictionaryValue> DictionaryFromTermsWithValues
+    for crate::dynamic_dawg_u64::DynamicDawgU64<V>
+{
+    type Value = V;
+
+    fn from_terms_with_values<I>(entries: I) -> Self
+    where
+        I: IntoIterator<Item = (String, Self::Value)>,
+    {
+        crate::dynamic_dawg_u64::DynamicDawgU64::from_terms_with_values(entries)
+    }
+}
+
+impl<V: crate::DictionaryValue> DictionaryFromTermsWithValues for crate::scdawg::Scdawg<V> {
+    type Value = V;
+
+    fn from_terms_with_values<I>(entries: I) -> Self
+    where
+        I: IntoIterator<Item = (String, Self::Value)>,
+    {
+        crate::scdawg::Scdawg::from_terms_with_values(entries)
+    }
+}
+
+impl<V: crate::DictionaryValue> DictionaryFromTermsWithValues for crate::scdawg_char::ScdawgChar<V> {
+    type Value = V;
+
+    fn from_terms_with_values<I>(entries: I) -> Self
+    where
+        I: IntoIterator<Item = (String, Self::Value)>,
+    {
+        crate::scdawg_char::ScdawgChar::from_terms_with_values(entries)
+    }
+}
+
+#[cfg(feature = "pathmap-backend")]
+impl<V: crate::DictionaryValue + Default> DictionaryFromTermsWithValues
+    for crate::pathmap::PathMapDictionary<V>
+{
+    type Value = V;
+
+    fn from_terms_with_values<I>(entries: I) -> Self
+    where
+        I: IntoIterator<Item = (String, Self::Value)>,
+    {
+        crate::pathmap::PathMapDictionary::from_terms_with_values(entries)
+    }
+}
+
+#[cfg(feature = "pathmap-backend")]
+impl<V: crate::DictionaryValue + Default> DictionaryFromTermsWithValues
+    for crate::pathmap_char::PathMapDictionaryChar<V>
+{
+    type Value = V;
+
+    fn from_terms_with_values<I>(entries: I) -> Self
+    where
+        I: IntoIterator<Item = (String, Self::Value)>,
+    {
+        crate::pathmap_char::PathMapDictionaryChar::from_terms_with_values(entries)
+    }
+}
+
 // Tests
 #[cfg(test)]
 mod tests {
@@ -289,6 +571,44 @@ mod tests {
         assert!(terms.contains(&"apple".to_string()));
         assert!(terms.contains(&"apply".to_string()));
         assert!(terms.contains(&"application".to_string()));
+    }
+
+    #[test]
+    fn test_extract_terms_deep_chain_does_not_stack_overflow() {
+        // Pathological single-child chain — a long all-'a' term forms an
+        // N-edge path in the trie. The previous recursive `dfs` would
+        // overflow the ~8MB default thread stack at this depth (each frame
+        // ~100 bytes); the iterative form survives. We pick 1024 because
+        // DoubleArrayTrie's internal arena sizes itself for typical
+        // dictionaries; the goal of this test is to exercise iterative
+        // traversal under a long single-child chain, not to stress DAT.
+        const DEPTH: usize = 1024;
+        let long_term: String = std::iter::repeat('a').take(DEPTH).collect();
+
+        let dict = DoubleArrayTrie::from_terms(vec![long_term.clone()]);
+        let terms = extract_terms(&dict);
+
+        assert_eq!(terms.len(), 1, "expected exactly one term; got {:?}", terms);
+        assert_eq!(terms[0].len(), DEPTH);
+        assert_eq!(terms[0], long_term);
+    }
+
+    #[test]
+    fn test_extract_terms_deep_chain_dynamic_dawg() {
+        // Same pathological case but via DynamicDawg, which doesn't have
+        // DAT's arena-size constraints. We pick 50k to actually demonstrate
+        // the stack-safety property the iterative rewrite was needed for.
+        use crate::dynamic_dawg::DynamicDawg;
+
+        const DEPTH: usize = 50_000;
+        let long_term: String = std::iter::repeat('a').take(DEPTH).collect();
+
+        let dict: DynamicDawg<()> = DynamicDawg::from_terms(vec![long_term.clone()]);
+        let terms = extract_terms(&dict);
+
+        assert_eq!(terms.len(), 1, "expected exactly one term; got {:?} entries", terms.len());
+        assert_eq!(terms[0].len(), DEPTH);
+        assert_eq!(terms[0], long_term);
     }
 
     #[test]

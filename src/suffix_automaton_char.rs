@@ -19,9 +19,9 @@
 //!
 //! ## Code Search
 //!
-//! ```rust,ignore
+//! ```rust
+//! use libdictenstein::prelude::*;
 //! use libdictenstein::suffix_automaton_char::SuffixAutomatonChar;
-//! use libdictenstein::transducer::{Transducer, Algorithm};
 //!
 //! let code = r#"
 //! fn calculate_total(items: &[Item]) -> f64 {
@@ -30,19 +30,23 @@
 //! "#;
 //!
 //! let dict = SuffixAutomatonChar::<()>::from_text(code);
-//! let transducer = Transducer::new(dict, Algorithm::Standard);
 //!
-//! // Find "calculate" with typos
-//! for term in transducer.query("calculat", 1) {
-//!     println!("Found: {}", term);
-//! }
+//! // Exact (Unicode-aware) substring containment.
+//! assert!(dict.contains("calculate_total"));
+//! assert!(dict.contains("items.iter()"));
 //! ```
+//!
+//! Approximate matching is provided by the downstream
+//! [`liblevenshtein`](https://github.com/universal-automata/liblevenshtein-rust)
+//! crate's `Transducer`: wrap the `SuffixAutomatonChar` returned here and
+//! query with a target distance. The transducer is intentionally
+//! upstream-owned.
 //!
 //! ## Document Search
 //!
-//! ```rust,ignore
+//! ```rust
+//! use libdictenstein::prelude::*;
 //! use libdictenstein::suffix_automaton_char::SuffixAutomatonChar;
-//! use libdictenstein::transducer::{Transducer, Algorithm};
 //!
 //! let docs = vec![
 //!     "Levenshtein automata for approximate matching",
@@ -50,32 +54,30 @@
 //! ];
 //!
 //! let dict = SuffixAutomatonChar::<()>::from_texts(docs);
-//! let transducer = Transducer::new(dict.clone(), Algorithm::Standard);
 //!
-//! // Find "algorithm" even if misspelled
-//! for candidate in transducer.query_ordered("algoritm", 2) {
-//!     let positions = dict.match_positions(&candidate.term);
-//!     for (doc_id, pos) in positions {
-//!         println!("Doc {}, pos {}: {}", doc_id, pos, candidate.term);
-//!     }
-//! }
+//! assert!(dict.contains("approximate matching"));
+//! assert!(dict.contains("pattern search"));
 //! ```
+//!
+//! For fuzzy queries (e.g. "algoritm" → "algorithm"), feed `dict` into the
+//! `liblevenshtein` `Transducer` and call `match_positions` on the returned
+//! candidates to recover the source document and offset.
 //!
 //! # Dynamic Updates
 //!
-//! ```rust,ignore
+//! ```rust
+//! use libdictenstein::prelude::*;
 //! use libdictenstein::suffix_automaton_char::SuffixAutomatonChar;
-//! use libdictenstein::transducer::{Transducer, Algorithm};
 //!
 //! let dict = SuffixAutomatonChar::<()>::new();
-//! let transducer = Transducer::new(dict.clone(), Algorithm::Standard);
 //!
 //! // Build index incrementally
 //! dict.insert("testing the suffix automaton");
 //! dict.insert("another test string");
 //!
-//! // Search
-//! let results: Vec<_> = transducer.query("test", 0).collect();
+//! // Substring lookup
+//! assert!(dict.contains("suffix"));
+//! assert!(dict.contains("test"));
 //!
 //! // Update index
 //! dict.remove("another test string");
@@ -353,7 +355,12 @@ impl<V: DictionaryValue> SuffixAutomatonCharInner<V> {
         }
 
         if let Some(p_idx) = p {
-            let q = self.nodes[p_idx].find_edge(ch).unwrap();
+            // Invariant: the suffix-link walk above exits only when
+            // `find_edge(ch).is_some()`, so the edge for `ch` at `p_idx`
+            // exists by construction.
+            let q = self.nodes[p_idx]
+                .find_edge(ch)
+                .expect("suffix-link walk exited with a known edge for ch at p_idx");
 
             if self.nodes[p_idx].max_length + 1 == self.nodes[q].max_length {
                 // Continuous transition - no split needed
@@ -418,19 +425,21 @@ impl<V: DictionaryValue> SuffixAutomatonCharInner<V> {
 ///
 /// # Querying
 ///
-/// Use with `Transducer` just like any other dictionary:
+/// Exact (Unicode-aware) substring lookup is provided directly:
 ///
-/// ```rust,ignore
+/// ```rust
+/// use libdictenstein::prelude::*;
 /// use libdictenstein::suffix_automaton_char::SuffixAutomatonChar;
-/// use libdictenstein::transducer::{Transducer, Algorithm};
 ///
 /// let dict = SuffixAutomatonChar::<()>::from_text("example text");
-/// let transducer = Transducer::new(dict, Algorithm::Standard);
-///
-/// for term in transducer.query("exmple", 1) {
-///     println!("Found: {}", term);
-/// }
+/// assert!(dict.contains("example"));
+/// assert!(dict.contains("xampl"));
+/// assert!(!dict.contains("missing"));
 /// ```
+///
+/// For approximate matching wrap the automaton in
+/// [`liblevenshtein`](https://github.com/universal-automata/liblevenshtein-rust)'s
+/// `Transducer` (upstream-owned, not part of this crate).
 #[derive(Clone, Debug)]
 pub struct SuffixAutomatonChar<V: DictionaryValue = ()> {
     pub(crate) inner: Arc<RwLock<SuffixAutomatonCharInner<V>>>,
@@ -880,8 +889,13 @@ impl<V: DictionaryValue> SuffixAutomatonChar<V> {
 
         // Term exists - check if it has a value
         if inner.nodes[state].value.is_some() {
-            // Update existing value
-            update_fn(inner.nodes[state].value.as_mut().unwrap());
+            // Update existing value (guard above proves Some).
+            update_fn(
+                inner.nodes[state]
+                    .value
+                    .as_mut()
+                    .expect("value.is_some() checked one line above"),
+            );
             false
         } else {
             // Node exists but no value - set the default value

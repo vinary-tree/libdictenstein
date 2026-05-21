@@ -59,6 +59,28 @@ impl<T> RwLock<T> {
         self.0.write().expect("RwLock poisoned")
     }
 
+    /// Try to acquire a read lock without blocking.
+    ///
+    /// Returns `Some(guard)` if successful, `None` if a writer holds the
+    /// lock. Matches `parking_lot::RwLock::try_read`'s shape. The
+    /// underlying `std::sync::RwLock::try_read` returns
+    /// `Err(TryLockError::WouldBlock)` if the lock is contended; we collapse
+    /// both poison and contention to `None` so the two backends are
+    /// API-compatible.
+    #[inline]
+    pub fn try_read(&self) -> Option<std::sync::RwLockReadGuard<'_, T>> {
+        self.0.try_read().ok()
+    }
+
+    /// Try to acquire a write lock without blocking.
+    ///
+    /// Returns `Some(guard)` if successful, `None` if any reader or writer
+    /// holds the lock. Matches `parking_lot::RwLock::try_write`'s shape.
+    #[inline]
+    pub fn try_write(&self) -> Option<std::sync::RwLockWriteGuard<'_, T>> {
+        self.0.try_write().ok()
+    }
+
     /// Returns a mutable reference to the underlying data.
     #[inline]
     pub fn get_mut(&mut self) -> &mut T {
@@ -120,5 +142,22 @@ mod tests {
     fn test_rwlock_into_inner() {
         let lock = RwLock::new(42);
         assert_eq!(lock.into_inner(), 42);
+    }
+
+    #[test]
+    fn test_rwlock_try_read_succeeds_when_unlocked() {
+        let lock = RwLock::new(42);
+        let guard = lock.try_read().expect("uncontended try_read should succeed");
+        assert_eq!(*guard, 42);
+    }
+
+    #[test]
+    fn test_rwlock_try_write_succeeds_when_unlocked() {
+        let lock = RwLock::new(42);
+        {
+            let mut guard = lock.try_write().expect("uncontended try_write should succeed");
+            *guard = 100;
+        }
+        assert_eq!(*lock.read(), 100);
     }
 }

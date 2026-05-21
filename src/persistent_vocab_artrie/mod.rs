@@ -316,13 +316,23 @@ impl MappedDictionary for PersistentVocabARTrie {
     }
 }
 
-// MutableMappedDictionary trait implementation
+// MutableMappedDictionary trait implementation.
+//
+// `PersistentVocabARTrie` has no interior mutability (mutation methods take
+// `&mut self`), so the `&self`-shaped trait methods cannot do useful work
+// here. All three return their "no-op" sentinel value (`false` or `0`) and
+// emit `log::warn!` so the call site shows up under `RUST_LOG=warn`. To
+// actually mutate, wrap the vocab in `SharedVocabARTrie` (which holds the
+// trie behind an `Arc<RwLock<…>>`) and call its trait impl, or call the
+// inherent `PersistentVocabARTrie::insert(&mut self, term)` directly.
 impl MutableMappedDictionary for PersistentVocabARTrie {
-    fn insert_with_value(&self, _term: &str, _value: Self::Value) -> bool {
-        // Note: PersistentVocabARTrie auto-assigns indices, so we ignore the value
-        // and check if the term already existed
-        // This requires interior mutability - for now we return false
-        // Use SharedVocabARTrie for mutable access
+    fn insert_with_value(&self, term: &str, _value: Self::Value) -> bool {
+        log::warn!(
+            "PersistentVocabARTrie::insert_with_value({term:?}, _) is a no-op \
+             — this type has no interior mutability. Use \
+             SharedVocabARTrie::insert_with_value, or call the inherent \
+             PersistentVocabARTrie::insert via &mut self."
+        );
         false
     }
 
@@ -331,38 +341,42 @@ impl MutableMappedDictionary for PersistentVocabARTrie {
         F: Fn(&Self::Value, &Self::Value) -> Self::Value,
         Self::Value: Clone,
     {
-        // Not implemented for vocabulary tries
+        log::warn!(
+            "PersistentVocabARTrie::union_with is a no-op — vocab tries are \
+             append-only and this type has no interior mutability. Use \
+             SharedVocabARTrie::union_with (note: merge_fn will still be \
+             ignored, vocab indices are auto-assigned)."
+        );
         0
     }
 
-    fn update_or_insert<F>(&self, _term: &str, _default_value: Self::Value, _update_fn: F) -> bool
+    fn update_or_insert<F>(&self, term: &str, _default_value: Self::Value, _update_fn: F) -> bool
     where
         F: FnOnce(&mut Self::Value),
     {
-        // This requires interior mutability - for now we return false
-        // Use SharedVocabARTrie for mutable access
+        log::warn!(
+            "PersistentVocabARTrie::update_or_insert({term:?}, _, _) is a no-op \
+             — this type has no interior mutability. Use \
+             SharedVocabARTrie::update_or_insert (note: default_value and \
+             update_fn will still be ignored, indices are auto-assigned)."
+        );
         false
     }
 }
 
-// BijectiveDictionary trait implementation
+// BijectiveDictionary trait implementation.
 //
-// NOTE: The BijectiveDictionary trait's `get_term()` method expects `&str`,
-// but PersistentVocabARTrie reconstructs terms on-the-fly via parent pointer
-// backtracking. We cannot return a reference to data that doesn't exist in
-// memory until reconstruction.
-//
-// WORKAROUND: Use the inherent method `PersistentVocabARTrie::get_term(index)`
-// which returns `Option<String>`. For SharedVocabARTrie, access via:
-//   `vocab.read().get_term(index)` or cache the result.
-//
-// The other BijectiveDictionary methods (contains_value, bijection_len) work
-// correctly since they don't require returning references.
+// Reverse lookup reconstructs the term on-the-fly via parent-pointer
+// backtracking (`PersistentVocabARTrie::get_term(index)`), then wraps the
+// resulting `String` in `Cow::Owned`. The previous `Option<&str>` trait
+// signature couldn't be honored honestly here — there's no stable in-memory
+// storage to point at, since terms are reconstructed per-call — so this used
+// to be a `None` stub that silently violated the documented bijection
+// invariant. Cow lets the caller see the actual term.
 impl BijectiveDictionary for PersistentVocabARTrie {
-    fn get_term(&self, _value: &Self::Value) -> Option<&str> {
-        // Cannot return reference to on-the-fly reconstructed data.
-        // Use inherent `self.get_term(index)` method which returns Option<String>.
-        None
+    fn get_term(&self, value: &Self::Value) -> Option<std::borrow::Cow<'_, str>> {
+        // Delegate to the inherent method, which returns Option<String>.
+        Self::get_term(self, *value).map(std::borrow::Cow::Owned)
     }
 
     fn contains_value(&self, value: &Self::Value) -> bool {
@@ -419,9 +433,21 @@ impl MappedDictionary for SharedVocabARTrie {
     }
 }
 
+// `SharedVocabARTrie` accepts mutations through its read/write guards, but
+// it cannot honor the `value`/`merge_fn`/`update_fn` arguments that
+// `MutableMappedDictionary` exposes — vocab indices are auto-assigned by the
+// internal allocator, not chosen by the caller. The trait methods below
+// insert the term and emit `log::warn!` so the discarded argument shows up
+// under `RUST_LOG=warn`. Read the assigned index back with
+// `MappedDictionary::get_value`.
 impl MutableMappedDictionary for SharedVocabARTrie {
     fn insert_with_value(&self, term: &str, _value: Self::Value) -> bool {
-        // Auto-assign index, ignore provided value
+        log::warn!(
+            "SharedVocabARTrie::insert_with_value({term:?}, _) discards the \
+             value argument — vocab indices are auto-assigned. Use \
+             insert(term) and read the assigned index back via \
+             MappedDictionary::get_value(term)."
+        );
         let existed = self.read().contains(term);
         if !existed {
             let mut guard = self.write();
@@ -435,8 +461,11 @@ impl MutableMappedDictionary for SharedVocabARTrie {
         F: Fn(&Self::Value, &Self::Value) -> Self::Value,
         Self::Value: Clone,
     {
-        // Simple union - insert all terms from other
-        // Note: merge_fn is ignored since vocabulary indices are auto-assigned
+        log::warn!(
+            "SharedVocabARTrie::union_with discards the merge_fn argument — \
+             vocab indices are auto-assigned, so there is nothing to merge. \
+             Terms missing from self will be inserted with fresh indices."
+        );
         // First collect terms from other to avoid holding locks simultaneously
         let other_terms: Vec<String> = {
             let other_guard = other.read();
@@ -458,7 +487,12 @@ impl MutableMappedDictionary for SharedVocabARTrie {
     where
         F: FnOnce(&mut Self::Value),
     {
-        // For vocab trie, just insert if not present (update_fn is ignored)
+        log::warn!(
+            "SharedVocabARTrie::update_or_insert({term:?}, _, _) discards \
+             both default_value and update_fn — vocab indices are \
+             auto-assigned and immutable. Inserts the term if absent and \
+             returns whether a new term was added."
+        );
         let existed = self.read().contains(term);
         if !existed {
             let mut guard = self.write();
@@ -469,10 +503,12 @@ impl MutableMappedDictionary for SharedVocabARTrie {
 }
 
 impl BijectiveDictionary for SharedVocabARTrie {
-    fn get_term(&self, _value: &Self::Value) -> Option<&str> {
-        // Cannot return reference to temporary reconstructed data.
-        // Use: `vocab.read().get_term(index)` which returns Option<String>.
-        None
+    fn get_term(&self, value: &Self::Value) -> Option<std::borrow::Cow<'_, str>> {
+        // Acquire the read guard, reconstruct the term, drop the guard, return
+        // the owned String wrapped as Cow::Owned. The Cow doesn't borrow from
+        // self because the underlying String is owned outright.
+        let guard = self.read();
+        guard.get_term(*value).map(std::borrow::Cow::Owned)
     }
 
     fn contains_value(&self, value: &Self::Value) -> bool {
@@ -538,6 +574,11 @@ impl crate::artrie_trait::ARTrie for SharedVocabARTrie {
     }
 
     fn insert_with_value(&self, term: &str, _value: Self::Value) -> bool {
+        log::warn!(
+            "SharedVocabARTrie::insert_with_value (via ARTrie trait) for \
+             {term:?} discards the value argument — vocab indices are \
+             auto-assigned."
+        );
         let mut guard = self.write();
         let old_count = guard.len();
         // Explicitly call the struct method, not trait method
@@ -556,8 +597,12 @@ impl crate::artrie_trait::ARTrie for SharedVocabARTrie {
         guard.get_index(term)
     }
 
-    fn remove(&self, _term: &str) -> bool {
-        // Removal not supported for vocabulary tries
+    fn remove(&self, term: &str) -> bool {
+        log::warn!(
+            "SharedVocabARTrie::remove({term:?}) is unsupported — vocab tries \
+             are append-only to preserve the term ↔ index bijection. Returns \
+             false unconditionally."
+        );
         false
     }
 
@@ -576,8 +621,11 @@ impl crate::artrie_trait::ARTrie for SharedVocabARTrie {
         guard.is_dirty()
     }
 
-    fn remove_prefix(&self, _prefix: &str) -> usize {
-        // Prefix removal not supported for vocabulary tries
+    fn remove_prefix(&self, prefix: &str) -> usize {
+        log::warn!(
+            "SharedVocabARTrie::remove_prefix({prefix:?}) is unsupported — \
+             vocab tries are append-only. Returns 0 unconditionally."
+        );
         0
     }
 
@@ -624,7 +672,10 @@ impl crate::artrie_trait::ARTrie for SharedVocabARTrie {
     }
 
     fn upsert(&self, term: &str, _value: Self::Value) -> Result<bool> {
-        // For vocab trie, upsert is equivalent to insert (index is auto-assigned)
+        log::warn!(
+            "SharedVocabARTrie::upsert({term:?}, _) discards the value \
+             argument — vocab indices are auto-assigned. Behaves as insert."
+        );
         let mut guard = self.write();
         let old_count = guard.len();
         // Explicitly call the struct method, not trait method
@@ -645,7 +696,7 @@ impl crate::artrie_trait::ARTrie for SharedVocabARTrie {
 // ============================================================================
 
 impl crate::artrie_trait::EvictableARTrie for SharedVocabARTrie {
-    fn enable_eviction(&mut self, config: crate::persistent_artrie::eviction::EvictionConfig) -> crate::persistent_artrie::error::Result<()> {
+    fn enable_eviction(&self, config: crate::persistent_artrie::eviction::EvictionConfig) -> crate::persistent_artrie::error::Result<()> {
         use crate::persistent_artrie::error::PersistentARTrieError;
 
         config.validate().map_err(|e| PersistentARTrieError::internal(&e))?;
@@ -703,7 +754,7 @@ impl crate::artrie_trait::EvictableARTrie for SharedVocabARTrie {
         Ok(())
     }
 
-    fn disable_eviction(&mut self) -> crate::persistent_artrie::error::Result<()> {
+    fn disable_eviction(&self) -> crate::persistent_artrie::error::Result<()> {
         let mut guard = self.write();
 
         if let Some(coordinator) = guard.eviction_coordinator.take() {
@@ -726,7 +777,7 @@ impl crate::artrie_trait::EvictableARTrie for SharedVocabARTrie {
             .unwrap_or_default()
     }
 
-    fn force_eviction(&mut self, target_bytes: usize) -> crate::persistent_artrie::error::Result<(usize, usize)> {
+    fn force_eviction(&self, target_bytes: usize) -> crate::persistent_artrie::error::Result<(usize, usize)> {
         let guard = self.read();
 
         let Some(coordinator) = &guard.eviction_coordinator else {

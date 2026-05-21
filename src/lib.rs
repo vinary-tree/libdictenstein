@@ -5,6 +5,8 @@
 //!
 //! # Choosing a Dictionary Backend
 //!
+//! ## In-memory backends
+//!
 //! | Backend | Best For | Performance | Memory | Dynamic Updates | Unicode |
 //! |---------|----------|-------------|--------|-----------------|---------|
 //! | **[DoubleArrayTrie]** | General use (recommended) | ⭐⭐⭐⭐⭐ | ⭐⭐⭐⭐⭐ | ✅ Insert-only | Byte-level |
@@ -14,6 +16,22 @@
 //! | **[DynamicDawgU64]** | Token sequences, time series | ⭐⭐⭐ | ⭐⭐ | ✅ Thread-safe | 64-bit labels |
 //! | **[SuffixAutomaton]** | Substring search | ⭐⭐⭐ | ⭐⭐ | ✅ Insert + Remove | Byte-level |
 //! | **[SuffixAutomatonChar]** | Unicode substring search | ⭐⭐⭐ | ⭐⭐ | ✅ Insert + Remove | ✅ Character-level |
+//! | **[Scdawg]** | Substring search (static, compact) | ⭐⭐⭐⭐ | ⭐⭐⭐⭐ | ✅ Insert-only | Byte-level |
+//! | **[ScdawgChar]** | Unicode substring search (static) | ⭐⭐⭐⭐ | ⭐⭐⭐⭐ | ✅ Insert-only | ✅ Character-level |
+//! | **[PathMapDictionary]** (feature `pathmap-backend`) | Fast in-memory queries | ⭐⭐⭐⭐ | ⭐⭐⭐ | ✅ Thread-safe | Byte-level |
+//! | **[PathMapDictionaryChar]** (feature `pathmap-backend`) | Fast in-memory queries (Unicode) | ⭐⭐⭐⭐ | ⭐⭐⭐ | ✅ Thread-safe | ✅ Character-level |
+//!
+//! ## Disk-backed backends (feature `persistent-artrie`)
+//!
+//! | Backend | Best For | Persistence | Concurrency | Unicode |
+//! |---------|----------|-------------|-------------|---------|
+//! | **[PersistentARTrie]** | Disk-backed key/value, byte keys | mmap + WAL | Lock-free CAS | Byte-level |
+//! | **[PersistentARTrieChar]** | Disk-backed key/value, Unicode | mmap + WAL | Lock-free CAS | ✅ Character-level |
+//! | **[PersistentVocabARTrie]** | Vocabulary trie (term ↔ u64 index) | mmap + WAL | RwLock | ✅ Character-level |
+//!
+//! Use the [`factory::DictionaryFactory`] for a unified construction API across
+//! all in-memory backends. See [`bijective::BijectiveDictionary`] for the
+//! bidirectional-lookup trait shared by `BijectiveMap` and the vocab tries.
 //!
 //! [DoubleArrayTrie]: double_array_trie::DoubleArrayTrie
 //! [DoubleArrayTrieChar]: double_array_trie_char::DoubleArrayTrieChar
@@ -22,6 +40,13 @@
 //! [DynamicDawgU64]: dynamic_dawg_u64::DynamicDawgU64
 //! [SuffixAutomaton]: suffix_automaton::SuffixAutomaton
 //! [SuffixAutomatonChar]: suffix_automaton_char::SuffixAutomatonChar
+//! [Scdawg]: scdawg::Scdawg
+//! [ScdawgChar]: scdawg_char::ScdawgChar
+//! [PathMapDictionary]: pathmap::PathMapDictionary
+//! [PathMapDictionaryChar]: pathmap_char::PathMapDictionaryChar
+//! [PersistentARTrie]: persistent_artrie::PersistentARTrie
+//! [PersistentARTrieChar]: persistent_artrie_char::PersistentARTrieChar
+//! [PersistentVocabARTrie]: persistent_vocab_artrie::PersistentVocabARTrie
 
 pub mod bijective;
 pub mod bloom_filter;
@@ -99,7 +124,12 @@ pub use zipper::{DictZipper, ValuedDictZipper};
 
 // Re-export persistent ARTrie types (only available with feature)
 #[cfg(feature = "persistent-artrie")]
-pub use artrie_trait::{ARTrie, ARTrieAtomicOps, EvictableARTrie};
+pub use artrie_trait::{ARTrie, EvictableARTrie};
+// `ARTrieAtomicOps` is #[deprecated]; re-exported behind an allow so the
+// re-export site itself doesn't spam warnings. External callers that name
+// the trait still get the deprecation message.
+#[allow(deprecated)]
+pub use artrie_trait::ARTrieAtomicOps;
 #[cfg(feature = "persistent-artrie")]
 pub use persistent_artrie::{PersistentARTrie, PersistentARTrieZipper, WalConfig, RecoveryReport, RecoveryMode};
 #[cfg(feature = "persistent-artrie")]
@@ -243,15 +273,15 @@ pub trait MappedDictionary: Dictionary {
     /// The type of values associated with dictionary terms
     type Value: DictionaryValue;
 
-    /// Get the value associated with a term
+    /// Get the value associated with a term.
     ///
     /// Returns `None` if the term doesn't exist in the dictionary.
-    fn get_value(&self, term: &str) -> Option<Self::Value> {
-        // Default implementation: traverse to find the term, but return no value
-        // (for backward compatibility with non-mapped dictionaries)
-        let _ = self.contains(term);
-        None
-    }
+    ///
+    /// This is a required method. The previous default returned `None` for
+    /// every term while pretending to be a real implementation, which silently
+    /// broke any user expecting `MappedDictionary` semantics. Every backend in
+    /// this crate now provides an explicit override.
+    fn get_value(&self, term: &str) -> Option<Self::Value>;
 
     /// Check if a term exists and its value matches a predicate
     ///
@@ -279,15 +309,34 @@ pub trait MappedDictionaryNode: DictionaryNode {
     fn value(&self) -> Option<Self::Value>;
 }
 
-/// Trait for dictionaries supporting term insertion and removal.
+/// Trait for dictionaries supporting set-like term insertion and removal.
 ///
-/// This trait extends [`Dictionary`] with mutation capabilities. It is separate
-/// from [`MutableMappedDictionary`] which focuses on value-associated mutations.
+/// This trait extends [`Dictionary`] with mutation capabilities. It is the
+/// set-like interface — `insert(&str)` adds a term, `remove(&str)` removes
+/// one, no values involved. For dictionaries that carry values along with
+/// terms, see [`MutableMappedDictionary`].
+///
+/// # Overlap with `MutableMappedDictionary`
+///
+/// `MutableMappedDictionary` covers most write-with-value operations
+/// (`insert_with_value`, `update_or_insert`, `union_with`, …) but
+/// **deliberately omits** `remove` and the value-free `insert`. The two
+/// traits are complementary, not redundant:
+///
+/// - Dictionaries that are set-like only (or have `Value = ()`): impl
+///   [`MutableDictionary`].
+/// - Dictionaries that carry meaningful values: impl
+///   [`MutableMappedDictionary`] for value-aware writes and (if removal is
+///   supported) [`MutableDictionary`] for set-like removal.
+///
+/// Several backends in this crate (`DynamicDawg`, `DynamicDawgChar`,
+/// `DynamicDawgU64`) implement both.
 ///
 /// # Default Implementations
 ///
-/// The trait provides default implementations for batch operations (`extend`,
-/// `remove_many`) built on top of the required `insert` and `remove` methods.
+/// The trait provides default implementations for batch operations
+/// (`extend`, `remove_many`) built on top of the required `insert` and
+/// `remove` methods.
 pub trait MutableDictionary: Dictionary {
     /// Insert a term into the dictionary.
     ///

@@ -29,48 +29,14 @@ use crate::value::DictionaryValue;
 use crate::{Dictionary, DictionaryNode, MappedDictionary, MappedDictionaryNode};
 use std::sync::Arc;
 
+// serde helpers for Arc<Vec<T>> / Arc<Vec<Vec<T>>> round-tripping moved to
+// `crate::serialization::serde_helpers` (C2 dedup). See sibling
+// `double_array_trie.rs` for the same import pattern.
 #[cfg(feature = "serialization")]
-use serde::{Deserialize, Deserializer, Serialize, Serializer};
-
-/// Custom serialization for Arc<Vec<T>>
-#[cfg(feature = "serialization")]
-fn serialize_arc_vec<S, T>(arc: &Arc<Vec<T>>, serializer: S) -> Result<S::Ok, S::Error>
-where
-    S: Serializer,
-    T: Serialize,
-{
-    arc.as_ref().serialize(serializer)
-}
-
-/// Custom deserialization for Arc<Vec<T>>
-#[cfg(feature = "serialization")]
-fn deserialize_arc_vec<'de, D, T>(deserializer: D) -> Result<Arc<Vec<T>>, D::Error>
-where
-    D: Deserializer<'de>,
-    T: Deserialize<'de>,
-{
-    Vec::<T>::deserialize(deserializer).map(Arc::new)
-}
-
-/// Custom serialization for Arc<Vec<Vec<T>>>
-#[cfg(feature = "serialization")]
-fn serialize_arc_vec_vec<S, T>(arc: &Arc<Vec<Vec<T>>>, serializer: S) -> Result<S::Ok, S::Error>
-where
-    S: Serializer,
-    T: Serialize,
-{
-    arc.as_ref().serialize(serializer)
-}
-
-/// Custom deserialization for Arc<Vec<Vec<T>>>
-#[cfg(feature = "serialization")]
-fn deserialize_arc_vec_vec<'de, D, T>(deserializer: D) -> Result<Arc<Vec<Vec<T>>>, D::Error>
-where
-    D: Deserializer<'de>,
-    T: Deserialize<'de>,
-{
-    Vec::<Vec<T>>::deserialize(deserializer).map(Arc::new)
-}
+#[allow(unused_imports)]
+use crate::serialization::serde_helpers::{
+    deserialize_arc_vec, deserialize_arc_vec_vec, serialize_arc_vec, serialize_arc_vec_vec,
+};
 
 /// Shared data for character-level Double-Array Trie.
 #[cfg_attr(
@@ -179,7 +145,13 @@ pub struct DoubleArrayTrieChar<V: DictionaryValue = ()> {
     /// Shared data referenced by all nodes
     pub(crate) shared: DATSharedChar<V>,
 
-    /// Free list for deleted/unused states
+    /// Free list for deleted/unused states.
+    ///
+    /// # Reserved for future dynamic operations
+    ///
+    /// Mirrors `DoubleArrayTrie::free_list`. Read by no code path today.
+    /// Preserved here (and serialized) because the field is part of the
+    /// on-disk format. See plan item B5.
     #[allow(dead_code)]
     #[cfg_attr(
         feature = "serialization",

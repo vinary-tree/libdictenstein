@@ -230,7 +230,7 @@ impl<V: DictionaryValue> ARTrie for SharedARTrie<V> {
 }
 
 impl<V: DictionaryValue> EvictableARTrie for SharedARTrie<V> {
-    fn enable_eviction(&mut self, config: EvictionConfig) -> Result<()> {
+    fn enable_eviction(&self, config: EvictionConfig) -> Result<()> {
         config
             .validate()
             .map_err(|e| PersistentARTrieError::internal(&e))?;
@@ -281,7 +281,7 @@ impl<V: DictionaryValue> EvictableARTrie for SharedARTrie<V> {
         Ok(())
     }
 
-    fn disable_eviction(&mut self) -> Result<()> {
+    fn disable_eviction(&self) -> Result<()> {
         let mut guard = self.write();
 
         if let Some(coordinator) = guard.eviction_coordinator.take() {
@@ -305,7 +305,7 @@ impl<V: DictionaryValue> EvictableARTrie for SharedARTrie<V> {
             .unwrap_or_default()
     }
 
-    fn force_eviction(&mut self, target_bytes: usize) -> Result<(usize, usize)> {
+    fn force_eviction(&self, target_bytes: usize) -> Result<(usize, usize)> {
         let guard = self.read();
 
         let Some(coordinator) = &guard.eviction_coordinator else {

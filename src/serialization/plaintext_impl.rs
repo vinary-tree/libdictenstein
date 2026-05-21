@@ -34,12 +34,83 @@
 //! let loaded: DoubleArrayTrie = PlainTextSerializer::deserialize(file)?;
 //! ```
 
-use super::{extract_terms, DictionaryFromTerms, DictionarySerializer, SerializationError};
-use crate::{Dictionary, DictionaryNode};
+use super::{
+    extract_terms, extract_terms_with_values, extract_terms_with_values_char,
+    DictionaryFromTerms, DictionaryFromTermsWithValues, DictionarySerializer, SerializationError,
+};
+use crate::{Dictionary, DictionaryNode, MappedDictionary};
 use std::io::{BufRead, BufReader, Write};
 
 /// Plain text serializer using newline-delimited UTF-8.
 pub struct PlainTextSerializer;
+
+impl PlainTextSerializer {
+    /// Serialize a [`MappedDictionary`] as one tab-separated `term\t<JSON
+    /// value>` per line.
+    ///
+    /// Lines containing tabs in the term itself are not supported (this
+    /// matches the format's spec — plaintext is for human-editable
+    /// dictionaries and tabs in terms are pathological).
+    pub fn serialize_with_values<D, W>(dict: &D, mut writer: W) -> Result<(), SerializationError>
+    where
+        D: MappedDictionary,
+        D::Node: DictionaryNode<Unit = u8>,
+        D::Value: serde::Serialize,
+        W: Write,
+    {
+        for (term, value) in extract_terms_with_values(dict) {
+            let value_json = serde_json::to_string(&value)?;
+            writeln!(writer, "{term}\t{value_json}")?;
+        }
+        Ok(())
+    }
+
+    /// Deserialize a tab-separated `term\t<JSON value>` per line.
+    pub fn deserialize_with_values<D, R>(reader: R) -> Result<D, SerializationError>
+    where
+        D: DictionaryFromTermsWithValues,
+        D::Value: serde::de::DeserializeOwned,
+        R: std::io::Read,
+    {
+        let buf_reader = BufReader::new(reader);
+        let mut entries: Vec<(String, D::Value)> = Vec::new();
+        for line in buf_reader.lines() {
+            let line = line?;
+            if line.is_empty() {
+                continue;
+            }
+            // First tab splits term from value.
+            let mut parts = line.splitn(2, '\t');
+            let term = parts.next().unwrap_or("");
+            let value_json = parts.next().ok_or_else(|| {
+                SerializationError::DictionaryError(format!(
+                    "plaintext line missing tab separator: {line:?}"
+                ))
+            })?;
+            let value: D::Value = serde_json::from_str(value_json)?;
+            entries.push((term.to_string(), value));
+        }
+        Ok(D::from_terms_with_values(entries))
+    }
+
+    /// `serialize_with_values` for `Unit = char` (Unicode) backends.
+    pub fn serialize_with_values_char<D, W>(
+        dict: &D,
+        mut writer: W,
+    ) -> Result<(), SerializationError>
+    where
+        D: MappedDictionary,
+        D::Node: DictionaryNode<Unit = char>,
+        D::Value: serde::Serialize,
+        W: Write,
+    {
+        for (term, value) in extract_terms_with_values_char(dict) {
+            let value_json = serde_json::to_string(&value)?;
+            writeln!(writer, "{term}\t{value_json}")?;
+        }
+        Ok(())
+    }
+}
 
 impl DictionarySerializer for PlainTextSerializer {
     fn serialize<D, W>(dict: &D, mut writer: W) -> Result<(), SerializationError>

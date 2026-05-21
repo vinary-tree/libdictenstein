@@ -318,6 +318,19 @@ impl<V: DictionaryValue> DynamicDawgU64<V> {
         Self::from_terms(terms)
     }
 
+    /// Create from an iterator of `(term, value)` pairs.
+    pub fn from_terms_with_values<I, S>(entries: I) -> Self
+    where
+        I: IntoIterator<Item = (S, V)>,
+        S: AsRef<str>,
+    {
+        let dawg = Self::new();
+        for (term, value) in entries {
+            dawg.insert_with_value(term.as_ref(), value);
+        }
+        dawg
+    }
+
     /// Insert a term into the DAWG (string-based API).
     ///
     /// Returns `true` if the term was newly inserted, `false` if it already existed.

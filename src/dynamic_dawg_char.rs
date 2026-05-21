@@ -358,6 +358,28 @@ impl<V: DictionaryValue> DynamicDawgChar<V> {
         dawg
     }
 
+    /// Create from an iterator of `(term, value)` pairs.
+    ///
+    /// Terms are sorted before insertion so the resulting DAWG benefits from
+    /// the same prefix/suffix sharing as [`from_terms`](Self::from_terms).
+    pub fn from_terms_with_values<I, S>(entries: I) -> Self
+    where
+        I: IntoIterator<Item = (S, V)>,
+        S: AsRef<str>,
+    {
+        let mut pairs: Vec<(String, V)> = entries
+            .into_iter()
+            .map(|(s, v)| (s.as_ref().to_string(), v))
+            .collect();
+        pairs.sort_by(|a, b| a.0.cmp(&b.0));
+
+        let dawg = Self::new();
+        for (term, value) in pairs {
+            dawg.insert_with_value(&term, value);
+        }
+        dawg
+    }
+
     /// Insert a term into the DAWG.
     ///
     /// Returns `true` if the term was newly inserted, `false` if it already existed.
@@ -963,6 +985,10 @@ impl<V: DictionaryValue> DynamicDawgCharInner<V> {
     ///
     /// NOTE: Currently unused due to bugs with dynamic insertion (see insert() method).
     /// Kept for future optimization work that properly handles suffix sharing in dynamic DAWGs.
+    ///
+    /// **See `docs/dynamic_dawg/suffix_cache_bug.md`** for a full account of
+    /// the invariant the previous implementation violated and the design
+    /// candidates for re-enabling.
     #[allow(dead_code)]
     fn find_or_create_suffix(
         &mut self,
@@ -1158,8 +1184,13 @@ impl<V: DictionaryValue> DynamicDawgCharInner<V> {
                 }
 
                 if !found_match {
-                    // Hash collision - this is a different node with same hash
-                    sig_to_canonical.get_mut(sig).unwrap().push(node_idx);
+                    // Hash collision - this is a different node with same hash.
+                    // The outer `if let Some(canonical_nodes) = sig_to_canonical.get(sig)`
+                    // guarantees the entry exists, so get_mut returns Some.
+                    sig_to_canonical
+                        .get_mut(sig)
+                        .expect("sig present in map per outer if-let-Some branch")
+                        .push(node_idx);
                     node_mapping[node_idx] = node_idx;
                 }
             } else {

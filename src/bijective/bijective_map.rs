@@ -528,24 +528,15 @@ impl<V: DictionaryValue + Eq + Hash> MappedDictionary for BijectiveMap<V> {
 // =============================================================================
 
 impl<V: DictionaryValue + Eq + Hash> BijectiveDictionary for BijectiveMap<V> {
-    fn get_term(&self, value: &Self::Value) -> Option<&str> {
-        // We need to return a reference with the lifetime of self.
-        // Since the reverse map stores owned Strings, we can't return a direct reference
-        // without unsafe code or changing the return type.
-        //
-        // For the trait implementation, we'll use a different approach:
-        // return a pointer to the String in the HashMap.
-        //
-        // SAFETY: This is safe because:
-        // 1. The HashMap only grows (we never remove entries)
-        // 2. Strings in the HashMap are never modified after insertion
-        // 3. The Arc keeps the data alive as long as self exists
+    fn get_term(&self, value: &Self::Value) -> Option<std::borrow::Cow<'_, str>> {
+        // Acquire the read guard, look up, clone the String into a Cow::Owned.
+        // The clone is necessary because the read guard cannot escape this
+        // function's stack frame and `Cow::Borrowed(&str)` would require a
+        // borrow tied to `self`, not to the guard. The previous unsafe
+        // pointer-dereference shortcut was unsound under concurrent inserts
+        // (HashMap rehashing invalidates element pointers).
         let reverse = self.reverse.read();
-        reverse.get(value).map(|s| {
-            let ptr = s.as_str() as *const str;
-            // SAFETY: See above
-            unsafe { &*ptr }
-        })
+        reverse.get(value).map(|s| std::borrow::Cow::Owned(s.clone()))
     }
 
     fn contains_value(&self, value: &Self::Value) -> bool {
@@ -722,9 +713,10 @@ mod tests {
 
         let bimap = BijectiveMap::from_pairs([("test", 42)]);
 
-        // Test via trait
-        assert_eq!(BijectiveDictionary::get_term(&bimap, &42), Some("test"));
-        assert_eq!(BijectiveDictionary::get_term(&bimap, &99), None);
+        // Test via trait (returns Option<Cow<'_, str>> now).
+        let term = BijectiveDictionary::get_term(&bimap, &42);
+        assert_eq!(term.as_deref(), Some("test"));
+        assert!(BijectiveDictionary::get_term(&bimap, &99).is_none());
         assert!(BijectiveDictionary::contains_value(&bimap, &42));
         assert!(!BijectiveDictionary::contains_value(&bimap, &99));
         assert_eq!(BijectiveDictionary::bijection_len(&bimap), 1);

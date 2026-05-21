@@ -402,7 +402,39 @@ pub trait ARTrie: Clone + Send + Sync {
     ///
     /// * `Some(impl Iterator<Item = String>)` - Iterator over matching terms
     /// * `None` - If no terms with this prefix exist
+    ///
+    /// For typing-preserving iteration (each match as `Vec<Self::Unit>`
+    /// rather than `String`, no UTF-8 conversion), see
+    /// [`Self::iter_prefix_units`].
     fn iter_prefix(&self, prefix: &str) -> Option<Box<dyn Iterator<Item = String> + '_>>;
+
+    /// Sibling of [`Self::iter_prefix`] that preserves the dictionary's
+    /// `Unit` typing.
+    ///
+    /// Yields each matching term as `Vec<Self::Unit>` (e.g. `Vec<char>` for
+    /// char-keyed tries, `Vec<u8>` for byte-keyed tries) instead of forcing
+    /// every term through a `String` allocation + UTF-8 round-trip. Useful
+    /// when the caller wants to manipulate the unit sequence directly (e.g.
+    /// to apply unit-level transforms before re-encoding).
+    ///
+    /// Default implementation falls back to the existing [`Self::iter_prefix`]
+    /// (re-encoding through `String`); impls with native unit-level
+    /// traversal should override for efficiency.
+    fn iter_prefix_units(
+        &self,
+        prefix: &str,
+    ) -> Option<Box<dyn Iterator<Item = Vec<Self::Unit>> + '_>>
+    where
+        Self::Unit: From<u8> + 'static,
+    {
+        // Default: stringly path, then decode each String back to Vec<Unit>
+        // via the u8-byte iterator. Impls that store units natively should
+        // override this to avoid the round-trip.
+        let strings = self.iter_prefix(prefix)?;
+        Some(Box::new(strings.map(|s| {
+            s.into_bytes().into_iter().map(Self::Unit::from).collect()
+        })))
+    }
 
     // === Durability Operations ===
 
@@ -441,7 +473,12 @@ pub trait ARTrie: Clone + Send + Sync {
     /// - `Immediate`: Every write is immediately synced
     /// - `Periodic(interval)`: Syncs at regular intervals
     /// - `Manual`: Only syncs on explicit `sync()` calls
-    fn durability_policy(&self) -> crate::persistent_artrie::dict_impl::DurabilityPolicy;
+    ///
+    /// The return type now points at the canonical home in
+    /// `persistent_artrie_core::durability`. The old
+    /// `persistent_artrie::dict_impl::DurabilityPolicy` path is a
+    /// `pub use` re-export, kept for back-compat for one release.
+    fn durability_policy(&self) -> crate::persistent_artrie_core::durability::DurabilityPolicy;
 
     // === Atomic Update Operations ===
 
@@ -493,52 +530,59 @@ pub trait ARTrie: Clone + Send + Sync {
     fn increment(&self, term: &str, delta: i64) -> Result<i64>;
 }
 
-// === Atomic Operations Extension (requires serde) ===
+// === Atomic Operations Extension (requires serde) — DEPRECATED ===
+//
+// `ARTrieAtomicOps` was a transitional duplicate of `ARTrie`'s
+// atomic-operation methods (`increment`, `upsert`) plus a `compare_and_swap`
+// method. The duplicate signatures conflicted with the canonical `ARTrie`
+// definitions:
+//
+//   ARTrie::increment   -> Result<i64>           (PersistentARTrieError)
+//   ARTrieAtomicOps::increment -> Result<i64, String>   (String error)
+//   ARTrie::upsert      -> Result<bool>
+//   ARTrieAtomicOps::upsert    -> bool
+//
+// No impl of `ARTrieAtomicOps` ever shipped in this crate (verified by
+// `rg 'impl.*ARTrieAtomicOps'` returning empty). The canonical methods on
+// `ARTrie` cover the same surface with consistent return types.
+// `compare_and_swap` remains available as an inherent method on
+// `PersistentARTrie` / `PersistentARTrieChar` (`src/persistent_artrie/
+// atomic_ops.rs:158`, `src/persistent_artrie_char/atomic_ops.rs:148`).
+//
+// The trait body is commented out (per CLAUDE.md "never delete to disable")
+// and the `pub use` re-export at `src/lib.rs` is replaced with a
+// `#[deprecated]` empty re-export so existing callers that named the trait
+// receive a compiler warning rather than a silent break.
+//
+// Removal scheduled: next major version.
+//
+// pub trait ARTrieAtomicOps: ARTrie
+// where
+//     Self::Value: serde::Serialize + serde::de::DeserializeOwned,
+// {
+//     fn increment(&self, term: &str, delta: i64) -> std::result::Result<i64, String>;
+//     fn upsert(&self, term: &str, value: Self::Value) -> bool;
+//     fn compare_and_swap(
+//         &self,
+//         term: &str,
+//         expected: Option<Self::Value>,
+//         new_value: Self::Value,
+//     ) -> bool;
+// }
 
-/// Extension trait for atomic operations on ARTrie.
+/// Deprecated placeholder for the removed `ARTrieAtomicOps` extension trait.
 ///
-/// This trait provides atomic operations that require serde support for value
-/// serialization/deserialization. It is automatically implemented for all types
-/// that implement [`ARTrie`] when the value type supports serde.
-pub trait ARTrieAtomicOps: ARTrie
-where
-    Self::Value: serde::Serialize + serde::de::DeserializeOwned,
-{
-    /// Atomically increment a numeric value.
-    ///
-    /// If the term doesn't exist, it's created with the delta as its initial value.
-    /// The value must be interpretable as i64.
-    ///
-    /// # Arguments
-    ///
-    /// * `term` - The term whose value to increment
-    /// * `delta` - The amount to add (can be negative for decrement)
-    ///
-    /// # Returns
-    ///
-    /// The new value after incrementing.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the value cannot be serialized/deserialized as i64.
-    fn increment(&self, term: &str, delta: i64) -> std::result::Result<i64, String>;
-
-    /// Insert or update a term's value.
-    ///
-    /// # Returns
-    ///
-    /// `true` if a new term was inserted, `false` if an existing term was updated.
-    fn upsert(&self, term: &str, value: Self::Value) -> bool;
-
-    /// Compare-and-swap operation.
-    ///
-    /// Updates the value only if the current value matches `expected`.
-    ///
-    /// # Returns
-    ///
-    /// `true` if the swap succeeded, `false` if the current value didn't match expected.
-    fn compare_and_swap(&self, term: &str, expected: Option<Self::Value>, new_value: Self::Value) -> bool;
-}
+/// All methods that lived on it (`increment`, `upsert`, plus the
+/// never-implemented `compare_and_swap`) are now on [`ARTrie`] directly. Use
+/// the canonical [`ARTrie::increment`] / [`ARTrie::upsert`] methods, or the
+/// inherent `compare_and_swap` on each persistent-ARTrie type.
+#[deprecated(
+    note = "ARTrieAtomicOps was a transitional duplicate of ARTrie's \
+            atomic-op methods. Use ARTrie::increment / ARTrie::upsert; for \
+            compare_and_swap use the inherent method on each persistent-ARTrie \
+            type. This trait will be removed in the next major version."
+)]
+pub trait ARTrieAtomicOps: ARTrie {}
 
 // === Eviction Extension Trait ===
 
@@ -608,7 +652,7 @@ pub trait EvictableARTrie: ARTrie {
     ///
     /// - If eviction is already enabled
     /// - If the eviction thread fails to start
-    fn enable_eviction(&mut self, config: crate::persistent_artrie::eviction::EvictionConfig) -> Result<()>;
+    fn enable_eviction(&self, config: crate::persistent_artrie::eviction::EvictionConfig) -> Result<()>;
 
     /// Disable eviction and release resources.
     ///
@@ -619,7 +663,7 @@ pub trait EvictableARTrie: ARTrie {
     /// # Returns
     ///
     /// `Ok(())` on success, or an error if eviction could not be disabled.
-    fn disable_eviction(&mut self) -> Result<()>;
+    fn disable_eviction(&self) -> Result<()>;
 
     /// Check if eviction is currently enabled.
     fn eviction_enabled(&self) -> bool;
@@ -646,7 +690,7 @@ pub trait EvictableARTrie: ARTrie {
     /// # Returns
     ///
     /// The number of nodes evicted and bytes freed.
-    fn force_eviction(&mut self, target_bytes: usize) -> Result<(usize, usize)>;
+    fn force_eviction(&self, target_bytes: usize) -> Result<(usize, usize)>;
 
     /// Record a node access for LRU tracking.
     ///

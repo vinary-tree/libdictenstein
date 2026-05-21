@@ -11,8 +11,6 @@ use crate::persistent_artrie::block_storage::BlockStorage;
 use crate::value::DictionaryValue;
 
 impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
-    /// ```
-
     // ==================== Prefetching Methods ====================
 
     /// Get a snapshot of prefetch statistics.

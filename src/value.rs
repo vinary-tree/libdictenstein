@@ -126,40 +126,61 @@ pub trait DictionaryValue: Clone + Default + Send + Sync + Unpin + 'static {
 /// by testing predicates on values during graph traversal, rather than filtering
 /// results after the fact.
 ///
+/// # Atoms
+///
+/// Predicates operate on the value's **atom** type ([`Self::Atom`]):
+///
+/// - **Scalar values** (`u32`, `String`, `&'static str`, …) have `Atom = Self`,
+///   so the predicate sees the value directly.
+/// - **Collection values** (`Vec<T>`, `HashSet<T>`, `SmallVec<A>`) have
+///   `Atom = T` (the element type), and predicates are applied per-element via
+///   `self.iter().any(predicate)` / `self.iter().all(predicate)`.
+///
 /// # Performance
 ///
-/// Filtering during traversal (using this trait) provides 10-100x speedups compared
-/// to post-filtering, especially when the filter is highly selective.
+/// Filtering during traversal (using this trait) provides 10-100x speedups
+/// compared to post-filtering, especially when the filter is highly selective.
 ///
 /// # Examples
 ///
 /// ```
 /// use libdictenstein::value::FilterableValue;
 ///
+/// // Scalar: predicate sees the value directly.
 /// let scope: u32 = 4;
-///
-/// // Filter for even numbers
 /// assert!(scope.matches_any(&|&id| id % 2 == 0));
-///
-/// // Filter for numbers > 10 (doesn't match)
 /// assert!(!scope.matches_any(&|&id| id > 10));
+///
+/// // Collection: predicate is applied per element.
+/// let scopes = vec![10u32, 20, 30];
+/// assert!(scopes.matches_any(&|&id| id == 20));
+/// assert!(scopes.matches_all(&|&id| id >= 10));
 /// ```
 pub trait FilterableValue: DictionaryValue {
-    /// Tests if this value matches a predicate.
+    /// The atom type that predicates operate on.
     ///
-    /// For single values, this tests the value directly.
-    /// For collections, this returns `true` if *any* element matches.
+    /// - For scalar values this is `Self`.
+    /// - For collection values (`Vec<T>`, `HashSet<T>`, `SmallVec<A>`) this is
+    ///   the element type, so predicates are `Fn(&T) -> bool`.
+    type Atom: ?Sized;
+
+    /// Tests if any atom of this value matches a predicate.
+    ///
+    /// For scalar values this tests the value itself with the predicate.
+    /// For collection values this is equivalent to
+    /// `self.iter().any(predicate)`.
     fn matches_any<F>(&self, predicate: &F) -> bool
     where
-        F: Fn(&Self) -> bool;
+        F: Fn(&Self::Atom) -> bool;
 
-    /// Tests if all elements (for collections) match a predicate.
+    /// Tests if all atoms of this value match a predicate.
     ///
-    /// For single values, this is equivalent to `matches_any`.
-    /// For collections, this returns `true` only if *all* elements match.
+    /// For scalar values this is equivalent to [`Self::matches_any`].
+    /// For collection values this is equivalent to
+    /// `self.iter().all(predicate)`.
     fn matches_all<F>(&self, predicate: &F) -> bool
     where
-        F: Fn(&Self) -> bool;
+        F: Fn(&Self::Atom) -> bool;
 }
 
 // =============================================================================
@@ -173,16 +194,18 @@ impl DictionaryValue for () {
 }
 
 impl FilterableValue for () {
+    type Atom = ();
+
     fn matches_any<F>(&self, _predicate: &F) -> bool
     where
-        F: Fn(&Self) -> bool,
+        F: Fn(&Self::Atom) -> bool,
     {
         true // No filter, accept everything
     }
 
     fn matches_all<F>(&self, _predicate: &F) -> bool
     where
-        F: Fn(&Self) -> bool,
+        F: Fn(&Self::Atom) -> bool,
     {
         true // No filter, accept everything
     }
@@ -198,16 +221,18 @@ macro_rules! impl_primitive_value {
             impl DictionaryValue for $t {}
 
             impl FilterableValue for $t {
+                type Atom = Self;
+
                 fn matches_any<F>(&self, predicate: &F) -> bool
                 where
-                    F: Fn(&Self) -> bool,
+                    F: Fn(&Self::Atom) -> bool,
                 {
                     predicate(self)
                 }
 
                 fn matches_all<F>(&self, predicate: &F) -> bool
                 where
-                    F: Fn(&Self) -> bool,
+                    F: Fn(&Self::Atom) -> bool,
                 {
                     predicate(self)
                 }
@@ -225,16 +250,18 @@ impl_primitive_value!(u8, u16, u32, u64, usize, i8, i16, i32, i64, isize, bool, 
 impl DictionaryValue for String {}
 
 impl FilterableValue for String {
+    type Atom = Self;
+
     fn matches_any<F>(&self, predicate: &F) -> bool
     where
-        F: Fn(&Self) -> bool,
+        F: Fn(&Self::Atom) -> bool,
     {
         predicate(self)
     }
 
     fn matches_all<F>(&self, predicate: &F) -> bool
     where
-        F: Fn(&Self) -> bool,
+        F: Fn(&Self::Atom) -> bool,
     {
         predicate(self)
     }
@@ -247,16 +274,18 @@ impl DictionaryValue for &'static str {}
 
 #[cfg(not(feature = "persistent-artrie"))]
 impl FilterableValue for &'static str {
+    type Atom = Self;
+
     fn matches_any<F>(&self, predicate: &F) -> bool
     where
-        F: Fn(&Self) -> bool,
+        F: Fn(&Self::Atom) -> bool,
     {
         predicate(self)
     }
 
     fn matches_all<F>(&self, predicate: &F) -> bool
     where
-        F: Fn(&Self) -> bool,
+        F: Fn(&Self::Atom) -> bool,
     {
         predicate(self)
     }
@@ -269,24 +298,20 @@ impl FilterableValue for &'static str {
 impl<T: DictionaryValue> DictionaryValue for Vec<T> {}
 
 impl<T: FilterableValue> FilterableValue for Vec<T> {
+    type Atom = T;
+
     fn matches_any<F>(&self, predicate: &F) -> bool
     where
-        F: Fn(&Self) -> bool,
+        F: Fn(&Self::Atom) -> bool,
     {
-        // If testing the entire vec, test it directly
-        if predicate(self) {
-            return true;
-        }
-        // Otherwise, check if any element would match a per-element predicate
-        // (This is a simplification; real usage would pass element predicates)
-        false
+        self.iter().any(predicate)
     }
 
     fn matches_all<F>(&self, predicate: &F) -> bool
     where
-        F: Fn(&Self) -> bool,
+        F: Fn(&Self::Atom) -> bool,
     {
-        predicate(self)
+        self.iter().all(predicate)
     }
 }
 
@@ -297,18 +322,20 @@ impl<T: FilterableValue> FilterableValue for Vec<T> {
 impl<T: DictionaryValue + Eq + Hash> DictionaryValue for HashSet<T> {}
 
 impl<T: FilterableValue + Eq + Hash> FilterableValue for HashSet<T> {
+    type Atom = T;
+
     fn matches_any<F>(&self, predicate: &F) -> bool
     where
-        F: Fn(&Self) -> bool,
+        F: Fn(&Self::Atom) -> bool,
     {
-        predicate(self)
+        self.iter().any(predicate)
     }
 
     fn matches_all<F>(&self, predicate: &F) -> bool
     where
-        F: Fn(&Self) -> bool,
+        F: Fn(&Self::Atom) -> bool,
     {
-        predicate(self)
+        self.iter().all(predicate)
     }
 }
 
@@ -325,18 +352,20 @@ impl<A: smallvec::Array + Send + Sync + Unpin + 'static> FilterableValue for sma
 where
     A::Item: FilterableValue,
 {
+    type Atom = A::Item;
+
     fn matches_any<F>(&self, predicate: &F) -> bool
     where
-        F: Fn(&Self) -> bool,
+        F: Fn(&Self::Atom) -> bool,
     {
-        predicate(self)
+        self.iter().any(predicate)
     }
 
     fn matches_all<F>(&self, predicate: &F) -> bool
     where
-        F: Fn(&Self) -> bool,
+        F: Fn(&Self::Atom) -> bool,
     {
-        predicate(self)
+        self.iter().all(predicate)
     }
 }
 
@@ -425,25 +454,40 @@ mod tests {
     }
 
     #[test]
-    fn test_vec() {
-        let v = vec![1, 2, 3];
+    fn test_vec_per_element() {
+        let v: Vec<u32> = vec![1, 2, 3];
         assert!(v.is_value());
 
-        // Test filtering the vec itself
-        assert!(v.matches_any(&|x| x.len() == 3));
-        assert!(!v.matches_any(&|x| x.is_empty()));
+        // Per-element semantics: predicate sees each &u32.
+        assert!(v.matches_any(&|&x| x == 2));
+        assert!(!v.matches_any(&|&x| x == 99));
+        assert!(v.matches_all(&|&x| x > 0));
+        assert!(!v.matches_all(&|&x| x > 1));
     }
 
     #[test]
-    fn test_hashset() {
-        let mut set = HashSet::new();
+    fn test_hashset_per_element() {
+        let mut set: HashSet<u32> = HashSet::new();
         set.insert(10);
         set.insert(20);
         set.insert(30);
 
         assert!(set.is_value());
-        assert!(set.matches_any(&|x| x.contains(&20)));
-        assert!(!set.matches_any(&|x| x.contains(&99)));
+        // Per-element semantics: predicate sees each &u32.
+        assert!(set.matches_any(&|&x| x == 20));
+        assert!(!set.matches_any(&|&x| x == 99));
+        assert!(set.matches_all(&|&x| x >= 10));
+        assert!(!set.matches_all(&|&x| x > 15));
+    }
+
+    #[test]
+    fn test_smallvec_per_element() {
+        let sv: smallvec::SmallVec<[u32; 4]> = smallvec::smallvec![5, 10, 15];
+
+        assert!(sv.matches_any(&|&x| x == 10));
+        assert!(!sv.matches_any(&|&x| x == 999));
+        assert!(sv.matches_all(&|&x| x >= 5));
+        assert!(!sv.matches_all(&|&x| x > 10));
     }
 
     #[test]

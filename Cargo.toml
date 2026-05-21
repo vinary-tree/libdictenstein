@@ -91,21 +91,21 @@ compression = ["flate2"]
 protobuf = ["prost", "prost-build"]
 # Persistent Adaptive Radix Trie (disk-based dictionary)
 persistent-artrie = ["memmap2", "parking_lot", "serde", "bincode", "sysinfo", "xxhash-rust", "lru", "dashmap", "crossbeam-channel", "im"]
-# Group commit for WAL batching (REJECTED: causes regression on NVMe, useful for slower storage)
+# Group commit for WAL batching.
+# Status: EXPERIMENTAL — measured 1.5-2x throughput regression on NVMe vs
+# per-record sync in benches/group_commit_benchmarks.rs (recorded 2026-01-15).
+# Retained for slower-storage scenarios (HDDs, remote block stores) and for
+# revisiting under a different coordinator design. Do not enable on NVMe
+# without re-benchmarking. See docs/persistence/group_commit_regression.md.
 group-commit = ["persistent-artrie", "crossbeam-channel"]
 # Parallel merge using rayon for multi-core acceleration
 parallel-merge = ["persistent-artrie", "rayon"]
-# SIMD optimization with AVX2/SSE4.1 intrinsics
-simd = []
 # lling-llang WFST semiring integration (IdempotentSemiring -> Lattice)
 lling-llang = ["dep:lling-llang"]
 # io_uring-based block storage backend (Linux-only, requires kernel >= 5.1)
 io-uring-backend = ["persistent-artrie", "dep:io-uring", "dep:libc"]
 # Expose internal APIs for benchmarks (not in default features)
 bench-internals = ["io-uring-backend"]
-# SCDAWG optimization experiments
-scdawg-bloom = []  # 64-bit bloom filter for edge lookup fast-reject
-scdawg-simd = []   # SIMD edge lookup for small edge counts
 
 [lib]
 name = "libdictenstein"

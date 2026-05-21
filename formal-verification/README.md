@@ -16,7 +16,11 @@ formal-verification/
 ├── tla+/                      # TLA+ specifications
 │   ├── ARTrieTypes.tla        # Type definitions and constants
 │   ├── ARTrieState.tla        # Abstract trie state
+│   ├── ArenaManager.tla       # Arena allocation/free-list model
+│   ├── SequentialSiblings.tla # Sibling-list traversal semantics
 │   ├── WAL.tla                # Write-ahead log specification
+│   ├── WAL_FileSystem.tla     # WAL refined onto POSIX filesystem
+│   ├── FileSystem.tla         # POSIX filesystem model (TOCTOU-aware)
 │   ├── Concurrency.tla        # Optimistic lock coupling model
 │   ├── CrashRecovery.tla      # ARIES-style recovery
 │   ├── NodeTransitions.tla    # Node growth transitions
@@ -25,21 +29,31 @@ formal-verification/
 │   ├── PART.cfg               # TLC configuration (no crash)
 │   └── PART_crash.cfg         # TLC configuration (with crash)
 │
-└── rocq/                      # Rocq/Coq proofs
+└── rocq/                      # Rocq/Coq proofs (15 .v files, ~6,503 LOC,
+    │                            232 propositions, 0 Admitted / 0 Axiom)
     ├── Makefile               # Build system
     ├── Spec/                  # Specifications
     │   ├── MapSpec.v          # Abstract map specification
-    │   └── ARTrieSpec.v       # ARTrie-specific specification
+    │   └── ARTrieSpec.v       # ARTrie-specific specification (incl.
+    │                            trie_insert/_delete + correctness theorems)
     ├── Model/                 # Data structure models
     │   ├── Key.v              # Key representation
     │   ├── NodeTypes.v        # Node4, Node16, Node48, Node256
     │   ├── Bucket.v           # B-trie bucket model
-    │   └── PathCompression.v  # Prefix compression
+    │   ├── PathCompression.v  # Prefix compression
+    │   ├── FileSystem.v       # POSIX filesystem model
+    │   ├── ArenaManager.v     # Arena allocation/free-list model
+    │   └── SequentialSiblings.v   # Sibling-list traversal semantics
     ├── Invariants/            # Invariant definitions and proofs
     │   ├── StructuralInvariants.v
-    │   └── TransitionInvariants.v
-    ├── Operations/            # Operation proofs (TODO)
-    └── Proofs/                # Main theorem proofs (TODO)
+    │   ├── TransitionInvariants.v
+    │   ├── ArenaInvariants.v
+    │   └── SequentialSiblingsInvariants.v
+    ├── Operations/            # (empty) — reserved for extracted
+    │                            imperative variants of insert/delete
+    └── Proofs/                # Main theorem proofs
+        ├── FileSystemSafety.v # TOCTOU safety
+        └── MapRefinement.v    # ARTrie refines Map ADT (WFARTrieMapImpl)
 ```
 
 ## TLA+ Specifications
@@ -85,9 +99,15 @@ tlc -workers 8 PART.tla -config PART_crash.cfg
 
 1. **Lookup Correctness**: `art_lookup t k = interpret_trie t k`
 2. **Insert Correctness**: `interpret_trie (art_insert t k v) = insert_map (interpret_trie t) k v`
+   — see `trie_insert_correct` at `Spec/ARTrieSpec.v:672`
 3. **Delete Correctness**: `interpret_trie (art_delete t k) = delete_map (interpret_trie t) k`
+   — see `trie_delete_correct` at `Spec/ARTrieSpec.v:685`
 4. **Node Transition Correctness**: Transitions preserve all children
+   — see `growth_type_appropriate_after_insert` and
+   `shrink_type_appropriate_with_lower_bound` in
+   `Invariants/TransitionInvariants.v`
 5. **Map Refinement**: ARTrie correctly implements Map ADT
+   — see `WFARTrieMapImpl` Instance in `Proofs/MapRefinement.v`
 
 ### Building Proofs
 
@@ -109,16 +129,27 @@ make check-Model/Key
 
 ### Proof Status
 
+As of 2026-05-20: all modules **Complete** — 0 `Admitted` / 0 `Axiom` /
+0 `Parameter` across the 15 .v files (verified by grep, see
+[VERIFICATION_RESULTS.md](VERIFICATION_RESULTS.md) for the per-file tally).
+
 | Module | Status | Description |
 |--------|--------|-------------|
-| Key.v | Complete | Key representation and operations |
+| Key.v | Complete (0 Admitted) | Key representation and operations |
 | NodeTypes.v | Complete | Node type definitions |
-| Bucket.v | Partial | Bucket operations (some admitted) |
-| PathCompression.v | Partial | Prefix matching (some admitted) |
+| Bucket.v | Complete (0 Admitted) | Bucket operations |
+| PathCompression.v | Complete (0 Admitted) | Prefix matching |
 | MapSpec.v | Complete | Abstract map specification |
-| ARTrieSpec.v | Partial | ARTrie specification (needs insert/delete) |
-| StructuralInvariants.v | Partial | Structural invariants |
-| TransitionInvariants.v | Complete | Node transition proofs |
+| ARTrieSpec.v | Complete (0 Admitted) | ARTrie specification incl. `trie_insert`/`trie_delete` and their correctness theorems |
+| StructuralInvariants.v | Complete (0 Admitted) | Structural invariants |
+| TransitionInvariants.v | Complete (0 Admitted) | Node transition proofs (corrected `_after_insert` / `_with_lower_bound` variants) |
+| ArenaInvariants.v | Complete | Arena allocation invariants |
+| SequentialSiblingsInvariants.v | Complete | Sibling-list invariants |
+| FileSystem.v | Complete | POSIX filesystem model |
+| ArenaManager.v | Complete | Arena allocator model |
+| SequentialSiblings.v | Complete | Sibling-list operations |
+| Proofs/FileSystemSafety.v | Complete | TOCTOU safety |
+| Proofs/MapRefinement.v | Complete | ARTrie refines Map ADT |
 
 ## Relationship to Implementation
 
@@ -215,11 +246,20 @@ The following details are abstracted in the specifications:
 
 ## Future Work
 
-1. **Operations Module**: Complete implementation of insert/delete in Rocq
-2. **Map Refinement Proof**: Formal proof that ARTrie refines Map ADT
+1. ~~**Operations Module**: Complete implementation of insert/delete in Rocq~~
+   **Done.** `trie_insert` / `trie_delete` are defined in `Spec/ARTrieSpec.v`
+   and proven correct under the `entries_of_trie_complete` hypothesis. The
+   `Operations/` directory is reserved for future extraction of concrete
+   imperative variants.
+2. ~~**Map Refinement Proof**: Formal proof that ARTrie refines Map ADT~~
+   **Done** — `Proofs/MapRefinement.v` defines `WFARTrie` + the
+   `WFARTrieMapImpl` Instance with 3 `Qed`-closed theorems.
 3. **Iris Integration**: Separation logic proofs for mutable state
 4. **Liveness Proofs**: Complete TLA+ liveness verification
 5. **Coverage**: Map TLA+ states to code coverage
+6. **TLA+ state-dump refresh**: state-space dumps under
+   `formal-verification/tla+/states/` were last regenerated 2026-01-24; the
+   models themselves are unchanged since.
 
 ## References
 

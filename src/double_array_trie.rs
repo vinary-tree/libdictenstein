@@ -39,48 +39,15 @@ use crate::value::DictionaryValue;
 use crate::{Dictionary, DictionaryNode, MappedDictionary, MappedDictionaryNode};
 use std::sync::Arc;
 
+// serde helpers for Arc<Vec<T>> / Arc<Vec<Vec<T>>> round-tripping moved to
+// `crate::serialization::serde_helpers` (C2 dedup). Brought into scope here
+// so the serde attribute strings ("serialize_arc_vec" etc.) resolve to the
+// shared functions without changing every attribute.
 #[cfg(feature = "serialization")]
-use serde::{Deserialize, Deserializer, Serialize, Serializer};
-
-/// Custom serialization for Arc<Vec<T>> - serializes the inner Vec directly
-#[cfg(feature = "serialization")]
-fn serialize_arc_vec<S, T>(arc: &Arc<Vec<T>>, serializer: S) -> Result<S::Ok, S::Error>
-where
-    S: Serializer,
-    T: Serialize,
-{
-    arc.as_ref().serialize(serializer)
-}
-
-/// Custom deserialization for Arc<Vec<T>> - wraps deserialized Vec in Arc
-#[cfg(feature = "serialization")]
-fn deserialize_arc_vec<'de, D, T>(deserializer: D) -> Result<Arc<Vec<T>>, D::Error>
-where
-    D: Deserializer<'de>,
-    T: Deserialize<'de>,
-{
-    Vec::<T>::deserialize(deserializer).map(Arc::new)
-}
-
-/// Custom serialization for Arc<Vec<Vec<T>>>
-#[cfg(feature = "serialization")]
-fn serialize_arc_vec_vec<S, T>(arc: &Arc<Vec<Vec<T>>>, serializer: S) -> Result<S::Ok, S::Error>
-where
-    S: Serializer,
-    T: Serialize,
-{
-    arc.as_ref().serialize(serializer)
-}
-
-/// Custom deserialization for Arc<Vec<Vec<T>>>
-#[cfg(feature = "serialization")]
-fn deserialize_arc_vec_vec<'de, D, T>(deserializer: D) -> Result<Arc<Vec<Vec<T>>>, D::Error>
-where
-    D: Deserializer<'de>,
-    T: Deserialize<'de>,
-{
-    Vec::<Vec<T>>::deserialize(deserializer).map(Arc::new)
-}
+#[allow(unused_imports)]
+use crate::serialization::serde_helpers::{
+    deserialize_arc_vec, deserialize_arc_vec_vec, serialize_arc_vec, serialize_arc_vec_vec,
+};
 
 /// A Double-Array Trie with support for dynamic updates.
 ///
@@ -219,7 +186,16 @@ pub struct DoubleArrayTrie<V: DictionaryValue = ()> {
     /// Shared data referenced by all nodes
     pub(crate) shared: DATShared<V>,
 
-    /// Free list for deleted/unused states (reserved for future dynamic operations)
+    /// Free list for deleted/unused states.
+    ///
+    /// # Reserved for future dynamic operations
+    ///
+    /// Read by no code path today. Preserved here (and serialized) because
+    /// the field is part of the on-disk format — removing it without a
+    /// format-version bump would silently corrupt any persisted DAT. When
+    /// dynamic delete is implemented this field will hold the list of states
+    /// freed by a delete that haven't yet been re-used by a subsequent
+    /// insert. See plan item B5 + future format-version bump tracking issue.
     #[allow(dead_code)]
     #[cfg_attr(
         feature = "serialization",
@@ -233,8 +209,14 @@ pub struct DoubleArrayTrie<V: DictionaryValue = ()> {
     /// Number of terms in the dictionary
     term_count: usize,
 
-    /// Threshold for triggering rebuild (0.0 to 1.0, e.g., 0.2 = 20% deleted)
-    /// Reserved for future dynamic operations.
+    /// Threshold for triggering rebuild (0.0 to 1.0, e.g., 0.2 = 20% deleted).
+    ///
+    /// # Reserved for future dynamic operations
+    ///
+    /// Read by no code path today. Preserved here (and serialized) because
+    /// the field is part of the on-disk format. Will be consumed by the
+    /// future dynamic-delete path to decide when accumulated deletes
+    /// warrant a structural rebuild of the BASE/CHECK arrays.
     #[allow(dead_code)]
     rebuild_threshold: f64,
 }
