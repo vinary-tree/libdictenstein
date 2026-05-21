@@ -28,7 +28,7 @@
 //!
 //! ## Example
 //!
-//! ```rust,ignore
+//! ```rust,no_run
 //! use libdictenstein::persistent_artrie_char::arena_manager::ArenaSlot;
 //! use libdictenstein::persistent_artrie_char::relative_encoding::*;
 //!

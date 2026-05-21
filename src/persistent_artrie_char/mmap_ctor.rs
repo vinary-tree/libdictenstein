@@ -487,7 +487,7 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
     /// # Example
     /// ```rust,ignore
     /// // Open existing vocabulary with slot-level tracking
-    /// let trie = PersistentARTrieChar::<u64>::open_with_slot_tracking("vocab.trie")?;
+    /// let mut trie = PersistentARTrieChar::<u64>::open_with_slot_tracking("vocab.trie")?;
     ///
     /// // Subsequent allocations will be tracked at slot level
     /// trie.insert("new_term", Some(42));

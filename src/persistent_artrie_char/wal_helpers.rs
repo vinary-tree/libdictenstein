@@ -33,13 +33,16 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     ///
     /// # Example
     ///
-    /// ```rust,ignore
+    /// ```rust,no_run
+    /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
     /// use libdictenstein::persistent_artrie_char::{PersistentARTrieChar, DurabilityPolicy};
     ///
     /// let mut trie: PersistentARTrieChar<()> = PersistentARTrieChar::create("words.trie")?;
     ///
     /// // Use periodic sync for better performance (accepts bounded data loss)
     /// trie.set_durability_policy(DurabilityPolicy::Periodic);
+    /// # Ok(())
+    /// # }
     /// ```
     pub fn set_durability_policy(&mut self, policy: DurabilityPolicy) {
         self.durability_policy = policy;

@@ -25,7 +25,8 @@ use crate::value::DictionaryValue;
 ///
 /// # Example
 ///
-/// ```rust,ignore
+/// ```rust,no_run
+/// # fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// use libdictenstein::persistent_artrie_char::{PersistentARTrieChar, CharDocumentTransaction};
 ///
 /// let mut trie = PersistentARTrieChar::<u64>::create("unicode_docs.trie")?;
@@ -41,6 +42,8 @@ use crate::value::DictionaryValue;
 /// // Commit all terms atomically
 /// let count = trie.commit_document(tx)?;
 /// assert_eq!(count, 3);
+/// # Ok(())
+/// # }
 /// ```
 #[derive(Debug)]
 pub struct CharDocumentTransaction<V: DictionaryValue> {

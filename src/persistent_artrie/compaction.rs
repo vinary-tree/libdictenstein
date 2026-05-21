@@ -12,7 +12,8 @@
 ///
 /// # Example
 ///
-/// ```rust,ignore
+/// ```rust,no_run
+/// # fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// use libdictenstein::persistent_artrie::{PersistentARTrie, CompactionConfig};
 ///
 /// let mut trie = PersistentARTrie::<u64>::open("data.artrie")?;
@@ -23,6 +24,8 @@
 /// })?;
 ///
 /// println!("Saved {:.1}% space", stats.space_savings_percent);
+/// # Ok(())
+/// # }
 /// ```
 #[derive(Debug, Clone)]
 pub struct CompactionConfig {

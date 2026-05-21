@@ -544,7 +544,7 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
     /// use libdictenstein::persistent_artrie::PersistentARTrie;
     ///
     /// // Open existing vocabulary with slot-level tracking
-    /// let dict = PersistentARTrie::<u64>::open_with_slot_tracking("vocab.part")?;
+    /// let mut dict = PersistentARTrie::<u64>::open_with_slot_tracking("vocab.part")?;
     ///
     /// // Subsequent allocations will be tracked at slot level
     /// dict.insert("new_term", Some(42));

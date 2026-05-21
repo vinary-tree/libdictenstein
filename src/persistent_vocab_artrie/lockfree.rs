@@ -38,7 +38,7 @@
 //!
 //! # Example
 //!
-//! ```rust,ignore
+//! ```rust,no_run
 //! use libdictenstein::persistent_vocab_artrie::lockfree::LockFreeVocab;
 //!
 //! let vocab = LockFreeVocab::new();

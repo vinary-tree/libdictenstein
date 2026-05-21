@@ -43,7 +43,7 @@
 //! use libdictenstein::persistent_artrie::PersistentARTrie;
 //!
 //! // Create a new persistent dictionary
-//! let dict = PersistentARTrie::create("words.part")?;
+//! let mut dict = PersistentARTrie::create("words.part")?;
 //!
 //! // Insert terms
 //! dict.insert("hello", ())?;

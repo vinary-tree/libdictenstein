@@ -58,7 +58,7 @@
 //!
 //! // Create with lock-free mode (recommended)
 //! let vocab = PersistentVocabARTrie::create("vocab.vocab")?;
-//! let concurrent = ConcurrentVocabARTrie::new_lockfree(vocab);
+//! let mut concurrent = ConcurrentVocabARTrie::new_lockfree(vocab);
 //!
 //! // Multiple threads can insert concurrently - truly lock-free!
 //! let idx = concurrent.insert_cas("hello");

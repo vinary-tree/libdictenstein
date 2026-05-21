@@ -5,7 +5,8 @@
 //!
 //! # Example
 //!
-//! ```rust,ignore
+//! ```rust,no_run
+//! # fn main() -> Result<(), Box<dyn std::error::Error>> {
 //! use libdictenstein::prelude::*;
 //! use libdictenstein::serialization::{BincodeSerializer, DictionarySerializer};
 //! use std::fs::File;
@@ -20,6 +21,8 @@
 //! // Deserialize from file
 //! let file = File::open("dict.bin")?;
 //! let loaded_dict: DoubleArrayTrie = BincodeSerializer::deserialize(file)?;
+//! # Ok(())
+//! # }
 //! ```
 
 use crate::{Dictionary, DictionaryNode};

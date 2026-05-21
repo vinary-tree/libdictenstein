@@ -18,7 +18,8 @@
 //!
 //! # Example
 //!
-//! ```rust,ignore
+//! ```rust,no_run
+//! # fn main() -> Result<(), Box<dyn std::error::Error>> {
 //! use libdictenstein::prelude::*;
 //! use libdictenstein::serialization::{PlainTextSerializer, DictionarySerializer};
 //! use std::fs::File;
@@ -32,6 +33,8 @@
 //! // Deserialize from file
 //! let file = File::open("terms.txt")?;
 //! let loaded: DoubleArrayTrie = PlainTextSerializer::deserialize(file)?;
+//! # Ok(())
+//! # }
 //! ```
 
 use super::{

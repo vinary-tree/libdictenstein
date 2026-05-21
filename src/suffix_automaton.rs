@@ -990,7 +990,7 @@ impl<V: DictionaryValue> SuffixAutomaton<V> {
     /// ```rust,ignore
     /// use libdictenstein::suffix_automaton::SuffixAutomaton;
     ///
-    /// let dict = SuffixAutomaton::<u32>::new();
+    /// let mut dict = SuffixAutomaton::<u32>::new();
     /// dict.insert_with_value("hello", 42);
     ///
     /// for (bytes, value) in dict.iter_bytes() {

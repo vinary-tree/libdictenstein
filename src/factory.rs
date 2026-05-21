@@ -8,7 +8,7 @@
 //!
 //! # Example
 //!
-//! ```rust,ignore
+//! ```rust,no_run
 //! use libdictenstein::factory::{DictionaryFactory, DictionaryBackend};
 //!
 //! // Create a DoubleArrayTrie dictionary
@@ -191,7 +191,7 @@ impl DictionaryFactory {
     ///
     /// # Example
     ///
-    /// ```rust,ignore
+    /// ```rust,no_run
     /// use libdictenstein::factory::{DictionaryFactory, DictionaryBackend};
     ///
     /// let dict = DictionaryFactory::create(
@@ -246,7 +246,7 @@ impl DictionaryFactory {
     ///
     /// # Example
     ///
-    /// ```rust,ignore
+    /// ```rust,no_run
     /// use libdictenstein::factory::{DictionaryFactory, DictionaryBackend};
     ///
     /// let dict = DictionaryFactory::empty(DictionaryBackend::DynamicDawg);

@@ -28,12 +28,12 @@
 //! }
 //!
 //! // Byte-level trie (disk-backed)
-//! let byte_trie = PersistentARTrie::<()>::create("words.part")?;
+//! let mut byte_trie = PersistentARTrie::<()>::create("words.part")?;
 //! byte_trie.insert("hello");
 //! byte_trie.checkpoint()?;
 //!
 //! // Character-level trie (disk-backed)
-//! let char_trie = PersistentARTrieChar::<()>::create("unicode.artc")?;
+//! let mut char_trie = PersistentARTrieChar::<()>::create("unicode.artc")?;
 //! char_trie.insert("日本語");
 //! char_trie.checkpoint()?;
 //!
@@ -89,7 +89,7 @@ use crate::CharUnit;
 ///     }
 /// }
 ///
-/// let trie = PersistentARTrie::<()>::create("words.part")?;
+/// let mut trie = PersistentARTrie::<()>::create("words.part")?;
 /// trie.insert("hello");
 /// process_vocabulary(&trie);
 /// ```
@@ -120,7 +120,7 @@ pub trait ARTrie: Clone + Send + Sync {
     /// use libdictenstein::ARTrie;
     /// use libdictenstein::persistent_artrie::PersistentARTrie;
     ///
-    /// let trie = PersistentARTrie::<()>::create("words.part")?;
+    /// let mut trie = PersistentARTrie::<()>::create("words.part")?;
     /// trie.insert("hello");
     /// trie.checkpoint()?;
     /// ```
@@ -243,7 +243,7 @@ pub trait ARTrie: Clone + Send + Sync {
     /// use libdictenstein::ARTrie;
     /// use libdictenstein::persistent_artrie_char::PersistentARTrieChar;
     ///
-    /// let trie = PersistentARTrieChar::<()>::open("words.artc")?;
+    /// let mut trie = PersistentARTrieChar::<()>::open("words.artc")?;
     /// trie.enable_slot_tracking(); // Enable after opening
     ///
     /// // Now checkpoints will use slot-level tracking
@@ -266,7 +266,7 @@ pub trait ARTrie: Clone + Send + Sync {
     /// use libdictenstein::ARTrie;
     /// use libdictenstein::persistent_artrie_char::PersistentARTrieChar;
     ///
-    /// let trie = PersistentARTrieChar::<()>::create("words.artc")?;
+    /// let mut trie = PersistentARTrieChar::<()>::create("words.artc")?;
     /// trie.insert("hello");
     /// trie.flush_sequential()?; // Sequential I/O optimization
     /// trie.checkpoint()?;
@@ -287,7 +287,7 @@ pub trait ARTrie: Clone + Send + Sync {
     /// use libdictenstein::ARTrie;
     /// use libdictenstein::persistent_artrie::PersistentARTrie;
     ///
-    /// let trie = PersistentARTrie::<()>::create("words.part")?;
+    /// let mut trie = PersistentARTrie::<()>::create("words.part")?;
     /// assert!(trie.insert("hello")); // New term
     /// assert!(!trie.insert("hello")); // Already exists
     /// ```
@@ -310,7 +310,7 @@ pub trait ARTrie: Clone + Send + Sync {
     /// use libdictenstein::ARTrie;
     /// use libdictenstein::persistent_artrie::PersistentARTrie;
     ///
-    /// let trie = PersistentARTrie::<()>::create("words.part")?;
+    /// let mut trie = PersistentARTrie::<()>::create("words.part")?;
     /// trie.insert("hello");
     /// assert!(trie.contains("hello"));
     /// assert!(!trie.contains("world"));
@@ -353,7 +353,7 @@ pub trait ARTrie: Clone + Send + Sync {
     /// use libdictenstein::ARTrie;
     /// use libdictenstein::persistent_artrie::PersistentARTrie;
     ///
-    /// let trie = PersistentARTrie::<()>::create("words.part")?;
+    /// let mut trie = PersistentARTrie::<()>::create("words.part")?;
     /// trie.insert("hello");
     /// trie.checkpoint()?; // Durably persist to disk
     /// ```
@@ -381,7 +381,7 @@ pub trait ARTrie: Clone + Send + Sync {
     /// use libdictenstein::ARTrie;
     /// use libdictenstein::persistent_artrie::PersistentARTrie;
     ///
-    /// let trie = PersistentARTrie::<()>::create("words.part")?;
+    /// let mut trie = PersistentARTrie::<()>::create("words.part")?;
     /// trie.insert("apple");
     /// trie.insert("application");
     /// trie.insert("banana");
@@ -451,7 +451,7 @@ pub trait ARTrie: Clone + Send + Sync {
     /// use libdictenstein::ARTrie;
     /// use libdictenstein::persistent_artrie::PersistentARTrie;
     ///
-    /// let trie = PersistentARTrie::<()>::create("words.part")?;
+    /// let mut trie = PersistentARTrie::<()>::create("words.part")?;
     /// trie.insert("hello");
     /// trie.sync()?; // Ensure durably persisted
     /// ```

@@ -89,7 +89,8 @@ pub use super::sync_handle::VocabSyncHandle;
 ///
 /// # Example
 ///
-/// ```rust,ignore
+/// ```rust,no_run
+/// # fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// use libdictenstein::persistent_vocab_artrie::PersistentVocabARTrie;
 ///
 /// // Create a new vocabulary
@@ -112,6 +113,8 @@ pub use super::sync_handle::VocabSyncHandle;
 /// drop(vocab);
 /// let (vocab, _) = PersistentVocabARTrie::open_with_recovery("vocab.vocab")?;
 /// assert_eq!(vocab.get_index("hello"), Some(0));
+/// # Ok(())
+/// # }
 /// ```
 pub struct PersistentVocabARTrie<S: BlockStorage = MmapDiskManager> {
     // === Vocab-specific fields ===

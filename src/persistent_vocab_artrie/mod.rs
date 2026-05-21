@@ -56,7 +56,8 @@
 //!
 //! # Example
 //!
-//! ```rust,ignore
+//! ```rust,no_run
+//! # fn main() -> Result<(), Box<dyn std::error::Error>> {
 //! use libdictenstein::persistent_vocab_artrie::PersistentVocabARTrie;
 //!
 //! // Create a new vocabulary
@@ -83,6 +84,8 @@
 //! // Reopen later with crash recovery
 //! let (vocab, report) = PersistentVocabARTrie::open_with_recovery("vocab.vocab")?;
 //! assert_eq!(vocab.get_term(0), Some("hello".to_string()));
+//! # Ok(())
+//! # }
 //! ```
 //!
 //! # Performance
@@ -949,7 +952,8 @@ impl PersistentVocabARTrie {
 ///
 /// # Example
 ///
-/// ```rust,ignore
+/// ```rust,no_run
+/// # fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// use libdictenstein::persistent_vocab_artrie::IndexedVocabularyPersistent;
 ///
 /// // Create new vocabulary
@@ -962,6 +966,8 @@ impl PersistentVocabARTrie {
 ///
 /// // Reverse lookup works immediately!
 /// assert_eq!(vocab.get_term(0), Some("hello".to_string()));
+/// # Ok(())
+/// # }
 /// ```
 pub type IndexedVocabularyPersistent = PersistentVocabARTrie;
 

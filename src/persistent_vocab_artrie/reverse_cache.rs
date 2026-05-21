@@ -50,7 +50,7 @@ use super::types::DEFAULT_REVERSE_CACHE_SIZE;
 ///
 /// # Example
 ///
-/// ```rust,ignore
+/// ```rust,no_run
 /// use libdictenstein::persistent_vocab_artrie::reverse_cache::VocabReverseCache;
 ///
 /// let cache = VocabReverseCache::new(1000);

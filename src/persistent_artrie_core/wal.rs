@@ -33,7 +33,7 @@
 //! ```rust,ignore
 //! use libdictenstein::persistent_artrie::wal::{Wal, WalRecord, WalRecordType};
 //!
-//! let wal = Wal::create("data.wal")?;
+//! let mut wal = Wal::create("data.wal")?;
 //!
 //! // Log an insert operation
 //! let lsn = wal.append(WalRecord::Insert {
@@ -45,7 +45,7 @@
 //! wal.sync()?;
 //!
 //! // On recovery
-//! let wal = Wal::open("data.wal")?;
+//! let mut wal = Wal::open("data.wal")?;
 //! for record in wal.iter() {
 //!     // Replay the operation
 //! }

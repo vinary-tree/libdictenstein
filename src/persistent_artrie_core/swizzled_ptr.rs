@@ -462,7 +462,7 @@ impl SwizzledPtr {
     ///
     /// # Example
     ///
-    /// ```rust,ignore
+    /// ```rust,no_run
     /// use libdictenstein::persistent_artrie::swizzled_ptr::{SwizzledPtr, NodeType};
     ///
     /// let ptr = SwizzledPtr::null();

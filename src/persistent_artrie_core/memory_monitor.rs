@@ -14,7 +14,8 @@
 //!
 //! # Example
 //!
-//! ```rust,ignore
+//! ```rust,no_run
+//! # fn main() -> Result<(), Box<dyn std::error::Error>> {
 //! use libdictenstein::persistent_artrie::memory_monitor::{
 //!     MemoryPressureConfig, MemoryPressureMonitor, MemoryPressureLevel,
 //! };
@@ -27,6 +28,8 @@
 //!         MemoryPressureLevel::Critical => println!("Critical memory: {:.1}% available", stats.available_fraction() * 100.0),
 //!     }
 //! })?;
+//! # Ok(())
+//! # }
 //! ```
 
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};

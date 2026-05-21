@@ -55,7 +55,7 @@ use std::sync::Arc;
 ///
 /// ```rust,ignore
 /// // Without values (default)
-/// let dict = DynamicDawgChar::new();
+/// let mut dict = DynamicDawgChar::new();
 /// dict.insert("hello");
 ///
 /// // With values

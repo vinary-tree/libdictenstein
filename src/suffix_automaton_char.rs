@@ -988,7 +988,7 @@ impl<V: DictionaryValue> SuffixAutomatonChar<V> {
     /// ```rust,ignore
     /// use libdictenstein::suffix_automaton_char::SuffixAutomatonChar;
     ///
-    /// let dict = SuffixAutomatonChar::<u32>::new();
+    /// let mut dict = SuffixAutomatonChar::<u32>::new();
     /// dict.insert_with_value("café", 42);
     ///
     /// for (chars, value) in dict.iter_chars() {

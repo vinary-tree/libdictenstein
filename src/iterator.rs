@@ -3,7 +3,7 @@
 //! This module provides iterator types that work with any dictionary backend
 //! via the zipper abstraction, enabling idiomatic Rust iteration:
 //!
-//! ```rust,ignore
+//! ```rust,no_run
 //! use libdictenstein::double_array_trie::DoubleArrayTrie;
 //!
 //! let dict = DoubleArrayTrie::from_terms_with_values(vec![
@@ -51,7 +51,7 @@ use super::zipper::{DictZipper, ValuedDictZipper};
 ///
 /// # Examples
 ///
-/// ```rust,ignore
+/// ```rust,no_run
 /// use libdictenstein::double_array_trie::DoubleArrayTrie;
 /// use libdictenstein::iterator::DictionaryIterator;
 /// use libdictenstein::double_array_trie_zipper::DoubleArrayTrieZipper;
@@ -81,7 +81,7 @@ impl<Z: ValuedDictZipper> DictionaryIterator<Z> {
     ///
     /// # Examples
     ///
-    /// ```rust,ignore
+    /// ```rust,no_run
     /// use libdictenstein::double_array_trie::DoubleArrayTrie;
     /// use libdictenstein::double_array_trie_zipper::DoubleArrayTrieZipper;
     /// use libdictenstein::iterator::DictionaryIterator;
@@ -138,7 +138,7 @@ impl<Z: ValuedDictZipper> Iterator for DictionaryIterator<Z> {
 ///
 /// # Examples
 ///
-/// ```rust,ignore
+/// ```rust,no_run
 /// use libdictenstein::double_array_trie::DoubleArrayTrie;
 /// use libdictenstein::iterator::DictionaryTermIterator;
 /// use libdictenstein::double_array_trie_zipper::DoubleArrayTrieZipper;

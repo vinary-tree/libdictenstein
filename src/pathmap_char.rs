@@ -267,7 +267,7 @@ impl<V: DictionaryValue> PathMapDictionaryChar<V> {
     ///
     /// # Example
     ///
-    /// ```rust,ignore
+    /// ```rust,no_run
     /// use std::collections::HashSet;
     /// use libdictenstein::pathmap_char::PathMapDictionaryChar;
     ///

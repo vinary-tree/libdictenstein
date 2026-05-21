@@ -286,7 +286,7 @@ impl<V: DictionaryValue> PathMapDictionary<V> {
     ///
     /// # Example
     ///
-    /// ```rust,ignore
+    /// ```rust,no_run
     /// use std::collections::HashSet;
     /// use libdictenstein::pathmap::PathMapDictionary;
     ///
@@ -337,10 +337,10 @@ impl<V: DictionaryValue> PathMapDictionary<V> {
     ///
     /// # Examples
     ///
-    /// ```rust,ignore
+    /// ```rust,no_run
     /// use libdictenstein::pathmap::PathMapDictionary;
     ///
-    /// let dict = PathMapDictionary::<u32>::new();
+    /// let mut dict = PathMapDictionary::<u32>::new();
     /// dict.insert_with_value("cat", 1);
     /// dict.insert_with_value("dog", 2);
     ///
@@ -361,10 +361,10 @@ impl<V: DictionaryValue> PathMapDictionary<V> {
     ///
     /// # Examples
     ///
-    /// ```rust,ignore
+    /// ```rust,no_run
     /// use libdictenstein::pathmap::PathMapDictionary;
     ///
-    /// let dict = PathMapDictionary::<u32>::new();
+    /// let mut dict = PathMapDictionary::<u32>::new();
     /// dict.insert_with_value("cat", 1);
     /// dict.insert_with_value("dog", 2);
     ///
