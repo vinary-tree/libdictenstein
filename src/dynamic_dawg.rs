@@ -100,49 +100,13 @@ pub(crate) struct DynamicDawgInner<V: DictionaryValue> {
 use crate::bloom_filter::BloomFilter;
 use crate::node_signature::NodeSignature;
 
-#[derive(Clone, Debug)]
-#[cfg_attr(
-    feature = "serialization",
-    derive(serde::Serialize, serde::Deserialize)
-)]
-#[cfg_attr(
-    all(feature = "serialization", not(feature = "persistent-artrie")),
-    serde(bound(serialize = "V: serde::Serialize")),
-    serde(bound(deserialize = "V: serde::Deserialize<'de>"))
-)]
-#[cfg_attr(
-    all(feature = "serialization", feature = "persistent-artrie"),
-    serde(bound = "")
-)]
-pub(crate) struct DawgNode<V: DictionaryValue> {
-    // Use SmallVec to avoid heap allocation for nodes with ≤4 edges (most common case)
-    pub(crate) edges: SmallVec<[(u8, usize); 4]>,
-    pub(crate) is_final: bool,
-    // Reference count for dynamic deletion
-    ref_count: usize,
-    // Optional value associated with this node (only for final nodes)
-    pub(crate) value: Option<V>,
-}
-
-impl<V: DictionaryValue> DawgNode<V> {
-    fn new(is_final: bool) -> Self {
-        DawgNode {
-            edges: SmallVec::new(),
-            is_final,
-            ref_count: 0,
-            value: None,
-        }
-    }
-
-    fn new_with_value(is_final: bool, value: Option<V>) -> Self {
-        DawgNode {
-            edges: SmallVec::new(),
-            is_final,
-            ref_count: 0,
-            value,
-        }
-    }
-}
+// C1 step (DAWG byte variant): byte-for-byte-identical local
+// `DawgNode<V>` struct + 2-method impl block replaced with a type
+// alias to the generic `crate::dawg_core::DawgNode<u8, V>` which
+// carries the same field shape and `pub fn new` / `pub fn new_with_value`.
+// Clone + Debug + serde derives live on the canonical struct; the
+// alias inherits them automatically.
+pub(crate) type DawgNode<V = ()> = crate::dawg_core::DawgNode<u8, V>;
 
 // Local `impl BloomFilter` removed: the canonical
 // `crate::bloom_filter::BloomFilter` provides equivalent `new`,
