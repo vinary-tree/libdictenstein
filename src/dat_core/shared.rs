@@ -117,16 +117,19 @@ pub struct DATCoreShared<U: CharUnit, V: DictionaryValue = ()> {
 // (under different unit-type bounds); now both delegate to these.
 
 impl<U: CharUnit, V: DictionaryValue> DATCoreShared<U, V> {
-    /// Walk the trie starting at the root and return whether `term` reaches
-    /// a final state.
+    /// Walk the trie starting at `root_state` and return whether `term`
+    /// reaches a final state.
     ///
-    /// Generic over the unit type via [`CharUnit::iter_str`] +
-    /// [`CharUnit::to_dat_offset`]. Replaces the byte-keyed inherent
-    /// `DoubleArrayTrie::contains` fast-path (and is now also available on
-    /// the char variant for free).
-    pub fn contains_term(&self, term: &str) -> bool {
-        let mut state: usize = 1; // State 1 is the root in our DAT encoding
+    /// The byte DAT uses `root_state = 1` (state 0 is a sentinel); the
+    /// char DAT uses `root_state = 0`. Pass whichever convention your
+    /// builder uses. Generic over the unit type via
+    /// [`CharUnit::iter_str`] + [`CharUnit::to_dat_offset`].
+    pub fn contains_term_from(&self, term: &str, root_state: usize) -> bool {
+        let mut state: usize = root_state;
         for unit in U::iter_str(term) {
+            if state >= self.base.len() {
+                return false;
+            }
             let base = self.base[state];
             if base < 0 {
                 return false;
@@ -140,14 +143,17 @@ impl<U: CharUnit, V: DictionaryValue> DATCoreShared<U, V> {
         state < self.is_final.len() && self.is_final[state]
     }
 
-    /// Walk the trie and return the value at the final state if `term` is
-    /// present; `None` otherwise.
-    pub fn term_value(&self, term: &str) -> Option<V>
+    /// Walk the trie from `root_state` and return the value at the final
+    /// state if `term` is present; `None` otherwise.
+    pub fn term_value_from(&self, term: &str, root_state: usize) -> Option<V>
     where
         V: Clone,
     {
-        let mut state: usize = 1;
+        let mut state: usize = root_state;
         for unit in U::iter_str(term) {
+            if state >= self.base.len() {
+                return None;
+            }
             let base = self.base[state];
             if base < 0 {
                 return None;
@@ -163,6 +169,21 @@ impl<U: CharUnit, V: DictionaryValue> DATCoreShared<U, V> {
         } else {
             None
         }
+    }
+
+    /// `contains_term_from` with byte-DAT's `root_state = 1` convention.
+    #[inline]
+    pub fn contains_term(&self, term: &str) -> bool {
+        self.contains_term_from(term, 1)
+    }
+
+    /// `term_value_from` with byte-DAT's `root_state = 1` convention.
+    #[inline]
+    pub fn term_value(&self, term: &str) -> Option<V>
+    where
+        V: Clone,
+    {
+        self.term_value_from(term, 1)
     }
 }
 

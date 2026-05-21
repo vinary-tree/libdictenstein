@@ -328,6 +328,17 @@ impl<V: DictionaryValue> DoubleArrayTrieChar<V> {
     ///
     /// Returns `None` if the term doesn't exist or has no value.
     pub fn get_value(&self, term: &str) -> Option<V> {
+        // Delegate to the generic `DATCoreShared::term_value_from` with
+        // the char-DAT's `root_state = 0` convention (C5 algorithmic
+        // dedup — char variant). The byte variant uses
+        // `term_value()`/`contains_term()` which default to
+        // `root_state = 1`.
+        if let Some(v) = self.shared.term_value_from(term, 0) {
+            return Some(v);
+        }
+        // Fall-through for the original "is_final but no value" case
+        // — preserves the previous behavior of returning None when the
+        // term reached a final state but no value was attached.
         let mut state = 0;
         for c in term.chars() {
             if state >= self.shared.base.len() {
