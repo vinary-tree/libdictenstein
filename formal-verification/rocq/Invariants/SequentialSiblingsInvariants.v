@@ -22,6 +22,8 @@ From Stdlib Require Import Lia.
 From Stdlib Require Import Bool.
 Import ListNotations.
 
+Opaque u32_max.
+
 (** ** Invariant Definitions *)
 
 (** Arena slot validity: slot_id < node_count *)
@@ -236,7 +238,11 @@ Qed.
 Theorem fixed_decode_rejects_bug_scenario :
   decode_sequential_FIXED bug_scenario_enc 10 = None.
 Proof.
-  reflexivity.
+  unfold decode_sequential_FIXED, bug_scenario_enc.
+  cbn [child_count first_slot slot_id arena_id].
+  change (5 =? 0) with false.
+  change (10 + 5 - 1) with 14.
+  destruct (14 <=? u32_max); reflexivity.
 Qed.
 
 (** ** Summary Theorem *)
@@ -266,7 +272,9 @@ Proof.
       * left. reflexivity.
       * right.
         assert (Hgt: child_count enc > 0) by lia.
-        apply fixed_system_maintains_invariant; assumption.
+        eapply fixed_system_maintains_invariant.
+        -- exact Hgt.
+        -- rewrite Hcount. exact Hcheck.
   - (* Check fails *)
     left. reflexivity.
 Qed.

@@ -15,8 +15,12 @@ Require Import Coq.micromega.Lia.
 Require Import Coq.Logic.FunctionalExtensionality.
 Import ListNotations.
 
-(** ** Proof Irrelevance Axiom (needed for Byte equality proofs) *)
-Axiom proof_irrelevance : forall (P : Prop) (p1 p2 : P), p1 = p2.
+(** ** Bounded Natural Proof Uniqueness *)
+
+Lemma lt_proof_irrelevance : forall n m (p q : n < m), p = q.
+Proof.
+  intros. apply le_unique.
+Qed.
 
 (** ** Byte Type *)
 
@@ -48,9 +52,72 @@ Proof.
   unfold byte_eqb, byte_val. simpl.
   split.
   - intros H. apply Nat.eqb_eq in H. subst.
-    f_equal. apply proof_irrelevance.
+    f_equal. apply lt_proof_irrelevance.
   - intros H. injection H as Hn. subst.
     apply Nat.eqb_refl.
+Qed.
+
+(** ** Byte Enumeration *)
+
+Definition byte_of_nat_option (n : nat) : option Byte :=
+  match lt_dec n 256 with
+  | left H => Some (exist _ n H)
+  | right _ => None
+  end.
+
+Definition enumerate_bytes : list Byte :=
+  fold_right (fun n acc =>
+    match byte_of_nat_option n with
+    | Some b => b :: acc
+    | None => acc
+    end) [] (seq 0 256).
+
+Lemma byte_of_nat_option_some : forall n b,
+  byte_of_nat_option n = Some b -> byte_val b = n.
+Proof.
+  intros n b Hsome.
+  unfold byte_of_nat_option in Hsome.
+  destruct (lt_dec n 256) as [Hlt | Hnlt]; [| discriminate].
+  injection Hsome as Hb. subst. reflexivity.
+Qed.
+
+Lemma byte_of_nat_option_byte_val : forall b,
+  byte_of_nat_option (byte_val b) = Some b.
+Proof.
+  intros [n Hn].
+  unfold byte_of_nat_option, byte_val. simpl.
+  destruct (lt_dec n 256) as [Hlt | Hnlt]; [| lia].
+  f_equal. f_equal. apply lt_proof_irrelevance.
+Qed.
+
+Lemma enumerate_bytes_complete_aux : forall xs n (Hn : n < 256),
+  In n xs ->
+  In (exist (fun n => n < 256) n Hn)
+    (fold_right (fun n acc =>
+      match byte_of_nat_option n with
+      | Some b => b :: acc
+      | None => acc
+      end) [] xs).
+Proof.
+  induction xs as [| x xs IH]; intros n Hn Hin; simpl in *.
+  - contradiction.
+  - destruct Hin as [Hx | Hin].
+    + subst x.
+      unfold byte_of_nat_option.
+      destruct (lt_dec n 256) as [Hlt | Hnlt]; [| lia].
+      simpl. left. f_equal. apply lt_proof_irrelevance.
+    + destruct (byte_of_nat_option x).
+      * simpl. right. apply IH; assumption.
+      * apply IH; assumption.
+Qed.
+
+Lemma enumerate_bytes_complete : forall b,
+  In b enumerate_bytes.
+Proof.
+  intros [n Hn].
+  unfold enumerate_bytes.
+  apply enumerate_bytes_complete_aux.
+  apply in_seq. lia.
 Qed.
 
 (** ** Key Type *)
@@ -94,6 +161,16 @@ Proof.
       subst. reflexivity.
     + intros H. injection H as Hb Hk. subst.
       split; [apply byte_eqb_refl | apply IH; reflexivity].
+Qed.
+
+Lemma key_eqb_sym : forall k1 k2,
+  key_eqb k1 k2 = key_eqb k2 k1.
+Proof.
+  induction k1 as [| b1 k1' IH]; intros [| b2 k2']; simpl; try reflexivity.
+  destruct b1 as [n1 H1], b2 as [n2 H2].
+  unfold byte_eqb, byte_val. simpl.
+  rewrite Nat.eqb_sym.
+  destruct (n2 =? n1); simpl; [apply IH | reflexivity].
 Qed.
 
 (** ** Prefix Operations *)
@@ -330,7 +407,7 @@ Proof.
     apply Nat.compare_eq in Hcmp.
     assert (Hb : b1 = b2).
     { destruct b1 as [n1 H1], b2 as [n2 H2]. simpl in Hcmp.
-      subst. f_equal. apply proof_irrelevance. }
+      subst. f_equal. apply lt_proof_irrelevance. }
     apply IH in H. subst. reflexivity.
   - injection H as Hb Hk. subst.
     rewrite Nat.compare_refl. apply IH. reflexivity.

@@ -14,7 +14,7 @@ SPEC_FILES = Spec/MapSpec.v Spec/ARTrieSpec.v
 MODEL_FILES = Model/Key.v Model/NodeTypes.v Model/Bucket.v Model/PathCompression.v Model/ArenaManager.v Model/SequentialSiblings.v Model/FileSystem.v
 INVARIANT_FILES = Invariants/StructuralInvariants.v Invariants/TransitionInvariants.v Invariants/ArenaInvariants.v Invariants/SequentialSiblingsInvariants.v
 OPERATION_FILES = # Operations/Lookup.v Operations/Insert.v Operations/Delete.v
-PROOF_FILES = Proofs/FileSystemSafety.v # Proofs/MapRefinement.v Proofs/TransitionCorrectness.v
+PROOF_FILES = Proofs/MapRefinement.v Proofs/FileSystemSafety.v # Proofs/TransitionCorrectness.v
 
 # All source files
 VFILES = $(MODEL_FILES) $(SPEC_FILES) $(INVARIANT_FILES) $(OPERATION_FILES) $(PROOF_FILES)
@@ -50,7 +50,7 @@ clean:
 # Build with resource limits (for memory-intensive proofs)
 # Per CLAUDE.md recommendations
 build-safe:
-	systemd-run --user --scope -p MemoryMax=126G -p CPUQuota=1800% \
+	systemd-run --user --scope -p MemoryMax=32G -p CPUQuota=1800% \
 		-p IOWeight=30 -p TasksMax=200 $(MAKE) -j1
 
 # Display build order
@@ -69,7 +69,8 @@ show-order:
 	@echo " 11. Invariants/TransitionInvariants.v"
 	@echo " 12. Invariants/ArenaInvariants.v"
 	@echo " 13. Invariants/SequentialSiblingsInvariants.v"
-	@echo " 14. Proofs/FileSystemSafety.v"
+	@echo " 14. Proofs/MapRefinement.v"
+	@echo " 15. Proofs/FileSystemSafety.v"
 
 # Check a single file
 check-%: %.v

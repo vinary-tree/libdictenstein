@@ -22,8 +22,7 @@ Require Import ARTrie.Model.Bucket.
 Require Import ARTrie.Model.PathCompression.
 Import ListNotations.
 
-(** Helper: enumerate all 256 bytes *)
-Parameter enumerate_bytes : list Byte.
+Opaque enumerate_bytes.
 
 (** ** Tree Structure Invariants *)
 
@@ -124,10 +123,7 @@ Definition leaf_flag_consistent (n : Node) : Prop :=
 Definition final_flag_consistent (t : ARTrie) : Prop :=
   forall nid n, trie_nodes t nid = Some n ->
     has_flag (header_flags (node_header n)) FlagFinal = true ->
-    (* Node is associated with at least one complete key *)
-    exists k, trie_lookup t k <> None /\
-      (* Key ends at this node (offset = length k after prefix) *)
-      True.  (* Detailed condition would relate to traversal state *)
+    node_value n <> None.
 
 (** ** Combined Structural Invariant *)
 
@@ -177,9 +173,11 @@ Qed.
 
 (** Operation preservation obligations.
 
-    These are intentionally definitions rather than admitted theorems: insert
-    and delete are still abstract parameters in [ARTrieSpec], so there is no
-    implementation body to prove preservation for yet. *)
+    The raw canonical rebuild operations have semantic correctness theorems in
+    [ARTrieSpec]. Structural preservation remains a separate obligation because
+    checked construction can fail when fixed-size buckets exceed their page or
+    entry limits, and total structural preservation belongs with the adaptive
+    split/growth proofs. *)
 
 Definition insert_preserves_structural_obligation : Prop :=
   forall t (k : Key) (v : Value),

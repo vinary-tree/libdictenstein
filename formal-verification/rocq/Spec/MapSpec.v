@@ -16,9 +16,12 @@ Require Import Coq.Bool.Bool.
 Require Import Coq.Logic.FunctionalExtensionality.
 Import ListNotations.
 
-(** ** Proof Irrelevance Axiom *)
-(* We assume proof irrelevance for simplifying Byte equality proofs *)
-Axiom proof_irrelevance : forall (P : Prop) (p1 p2 : P), p1 = p2.
+(** ** Bounded Natural Proof Uniqueness *)
+
+Lemma lt_proof_irrelevance : forall n m (p q : n < m), p = q.
+Proof.
+  intros. apply le_unique.
+Qed.
 
 (** ** Key and Value Types *)
 
@@ -38,7 +41,7 @@ Lemma byte_eq_dec : forall (b1 b2 : Byte), {b1 = b2} + {b1 <> b2}.
 Proof.
   intros [n1 H1] [n2 H2].
   destruct (Nat.eq_dec n1 n2).
-  - left. subst. f_equal. apply proof_irrelevance.
+  - left. subst. f_equal. apply lt_proof_irrelevance.
   - right. intro H. injection H. auto.
 Defined.
 

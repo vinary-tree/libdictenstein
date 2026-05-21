@@ -18,8 +18,7 @@ Require Import ARTrie.Model.NodeTypes.
 Require Import ARTrie.Spec.ARTrieSpec.
 Import ListNotations.
 
-(** Helper: enumerate all 256 bytes *)
-Parameter enumerate_bytes : list Byte.
+Opaque enumerate_bytes.
 
 (** ** Child Preservation *)
 

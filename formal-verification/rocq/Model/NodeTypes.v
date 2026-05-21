@@ -251,6 +251,7 @@ Inductive NodeData :=
 Record Node := mkNode {
   node_header : NodeHeader;
   node_prefix : CompressedPrefix;
+  node_value : option (list Byte);
   node_data : NodeData
 }.
 
