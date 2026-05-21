@@ -89,8 +89,12 @@ pathmap-backend = ["pathmap"]
 serialization = ["serde", "bincode", "serde_json"]
 compression = ["flate2"]
 protobuf = ["prost", "prost-build"]
-# Persistent Adaptive Radix Trie (disk-based dictionary)
-persistent-artrie = ["memmap2", "parking_lot", "serde", "bincode", "sysinfo", "xxhash-rust", "lru", "dashmap", "crossbeam-channel", "im"]
+# Persistent Adaptive Radix Trie (disk-based dictionary).
+# Enables the `serialization` feature transitively because the
+# persistent_artrie* modules use `crate::serialization::bincode_compat`
+# unconditionally — without this dep the module references resolve to a
+# feature-gated crate::serialization that isn't visible.
+persistent-artrie = ["memmap2", "parking_lot", "serde", "bincode", "sysinfo", "xxhash-rust", "lru", "dashmap", "crossbeam-channel", "im", "serialization"]
 # Group commit for WAL batching.
 # Status: EXPERIMENTAL — measured 1.5-2x throughput regression on NVMe vs
 # per-record sync in benches/group_commit_benchmarks.rs (recorded 2026-01-15).
