@@ -250,7 +250,7 @@ impl<V: DictionaryValue> PersistentARTrie<V, IoUringDiskManager> {
                         }
                     }
                     let deserialized_value: Option<V> =
-                        value.and_then(|bytes| match bincode::deserialize(&bytes) {
+                        value.and_then(|bytes| match crate::serialization::bincode_compat::deserialize(&bytes) {
                             Ok(v) => Some(v),
                             Err(e) => {
                                 warn!("Failed to deserialize value from WAL: {:?}", e);
@@ -281,7 +281,7 @@ impl<V: DictionaryValue> PersistentARTrie<V, IoUringDiskManager> {
                         }
                     }
                     let value_bytes = result.to_le_bytes().to_vec();
-                    if let Ok(value) = bincode::deserialize(&value_bytes) {
+                    if let Ok(value) = crate::serialization::bincode_compat::deserialize(&value_bytes) {
                         dict.upsert_impl_no_wal(&term, value);
                     }
                     replayed_count += 1;
@@ -292,7 +292,7 @@ impl<V: DictionaryValue> PersistentARTrie<V, IoUringDiskManager> {
                             continue;
                         }
                     }
-                    if let Ok(v) = bincode::deserialize(&value) {
+                    if let Ok(v) = crate::serialization::bincode_compat::deserialize(&value) {
                         dict.upsert_impl_no_wal(&term, v);
                     }
                     replayed_count += 1;
@@ -309,7 +309,7 @@ impl<V: DictionaryValue> PersistentARTrie<V, IoUringDiskManager> {
                         }
                     }
                     if success {
-                        if let Ok(v) = bincode::deserialize(&new_value) {
+                        if let Ok(v) = crate::serialization::bincode_compat::deserialize(&new_value) {
                             dict.upsert_impl_no_wal(&term, v);
                         }
                     }

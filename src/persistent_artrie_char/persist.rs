@@ -361,7 +361,7 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
 
         // Serialize the value using bincode (needed regardless of encoding)
         let value_bytes: Vec<u8> = if let Some(ref value) = node.value {
-            bincode::serialize(value).map_err(|e| {
+            crate::serialization::bincode_compat::serialize(value).map_err(|e| {
                 PersistentARTrieError::internal(&format!("Failed to serialize value: {}", e))
             })?
         } else {

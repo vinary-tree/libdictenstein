@@ -613,7 +613,7 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
                 // Read current value from the persistent node
                 let current: i64 = if node.is_final() {
                     if let Some(v) = node.value.as_ref() {
-                        let bytes = bincode::serialize(v).map_err(|e| {
+                        let bytes = crate::serialization::bincode_compat::serialize(v).map_err(|e| {
                             PersistentARTrieError::internal(format!(
                                 "Failed to serialize value: {}",
                                 e
@@ -622,7 +622,7 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
                         if bytes.len() == 8 {
                             i64::from_le_bytes(bytes.try_into().expect("checked len == 8"))
                         } else {
-                            bincode::deserialize::<i64>(&bytes).map_err(|e| {
+                            crate::serialization::bincode_compat::deserialize::<i64>(&bytes).map_err(|e| {
                                 PersistentARTrieError::internal(format!(
                                     "Failed to deserialize as i64: {}",
                                     e
@@ -639,10 +639,10 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
                 let new_value = current + delta as i64;
 
                 // Serialize the new value back to V
-                let value_bytes = bincode::serialize(&new_value).map_err(|e| {
+                let value_bytes = crate::serialization::bincode_compat::serialize(&new_value).map_err(|e| {
                     PersistentARTrieError::internal(format!("Failed to serialize new value: {}", e))
                 })?;
-                let v: V = bincode::deserialize(&value_bytes).map_err(|e| {
+                let v: V = crate::serialization::bincode_compat::deserialize(&value_bytes).map_err(|e| {
                     PersistentARTrieError::internal(format!("Failed to deserialize as V: {}", e))
                 })?;
 

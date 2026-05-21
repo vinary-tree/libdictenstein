@@ -29,7 +29,7 @@ impl<S: BlockStorage> super::dict_impl::PersistentVocabARTrie<S> {
     /// Save bloom filter to disk using bincode.
     pub(super) fn save_bloom_filter(&self, bloom: &BloomFilter) -> Result<()> {
         let bloom_path = self.bloom_filter_path();
-        let encoded = bincode::serialize(bloom).map_err(|e| {
+        let encoded = crate::serialization::bincode_compat::serialize(bloom).map_err(|e| {
             PersistentARTrieError::io_error(
                 "serialize bloom filter",
                 bloom_path.to_string_lossy(),
@@ -51,7 +51,7 @@ impl<S: BlockStorage> super::dict_impl::PersistentVocabARTrie<S> {
         let data = std::fs::read(&bloom_path).map_err(|e| {
             PersistentARTrieError::io_error("read bloom filter", bloom_path.to_string_lossy(), e)
         })?;
-        let bloom: BloomFilter = bincode::deserialize(&data).map_err(|e| {
+        let bloom: BloomFilter = crate::serialization::bincode_compat::deserialize(&data).map_err(|e| {
             PersistentARTrieError::io_error(
                 "deserialize bloom filter",
                 bloom_path.to_string_lossy(),

@@ -40,13 +40,13 @@ impl<V: DictionaryValue + serde::Serialize + serde::de::DeserializeOwned, S: Blo
     pub fn increment_bytes(&mut self, term: &[u8], delta: i64) -> Result<i64> {
         let current: i64 = match self.get_value_impl(term) {
             Some(v) => {
-                let bytes = bincode::serialize(&v).map_err(|e| {
+                let bytes = crate::serialization::bincode_compat::serialize(&v).map_err(|e| {
                     PersistentARTrieError::internal(format!("Serialization error: {}", e))
                 })?;
                 if bytes.len() == 8 {
                     i64::from_le_bytes(bytes.try_into().expect("expected 8 bytes"))
                 } else {
-                    bincode::deserialize::<i64>(&bytes).map_err(|e| {
+                    crate::serialization::bincode_compat::deserialize::<i64>(&bytes).map_err(|e| {
                         PersistentARTrieError::internal(format!(
                             "Value cannot be interpreted as i64: {}",
                             e
@@ -59,9 +59,9 @@ impl<V: DictionaryValue + serde::Serialize + serde::de::DeserializeOwned, S: Blo
 
         let new_value = current + delta;
 
-        let value_bytes = bincode::serialize(&new_value)
+        let value_bytes = crate::serialization::bincode_compat::serialize(&new_value)
             .map_err(|e| PersistentARTrieError::internal(format!("Serialization error: {}", e)))?;
-        let v: V = bincode::deserialize(&value_bytes).map_err(|e| {
+        let v: V = crate::serialization::bincode_compat::deserialize(&value_bytes).map_err(|e| {
             PersistentARTrieError::internal(format!("Cannot create value from i64: {}", e))
         })?;
 
@@ -126,7 +126,7 @@ impl<V: DictionaryValue + serde::Serialize + serde::de::DeserializeOwned, S: Blo
         self.remove_impl_core(term);
         self.insert_impl_core(term, Some(value.clone()));
 
-        let value_bytes = bincode::serialize(&value)
+        let value_bytes = crate::serialization::bincode_compat::serialize(&value)
             .map_err(|e| PersistentARTrieError::internal(format!("Serialization error: {}", e)))?;
 
         if let Some(ref wal_writer) = self.wal_writer {
@@ -176,15 +176,15 @@ impl<V: DictionaryValue + serde::Serialize + serde::de::DeserializeOwned, S: Blo
         let matches = match (&current, &expected) {
             (None, None) => true,
             (Some(c), Some(e)) => {
-                let c_bytes = bincode::serialize(c).ok();
-                let e_bytes = bincode::serialize(e).ok();
+                let c_bytes = crate::serialization::bincode_compat::serialize(c).ok();
+                let e_bytes = crate::serialization::bincode_compat::serialize(e).ok();
                 c_bytes == e_bytes
             }
             _ => false,
         };
 
-        let expected_bytes = expected.as_ref().and_then(|e| bincode::serialize(e).ok());
-        let new_value_bytes = bincode::serialize(&new_value)
+        let expected_bytes = expected.as_ref().and_then(|e| crate::serialization::bincode_compat::serialize(e).ok());
+        let new_value_bytes = crate::serialization::bincode_compat::serialize(&new_value)
             .map_err(|e| PersistentARTrieError::internal(format!("Serialization error: {}", e)))?;
 
         if matches {
@@ -237,7 +237,7 @@ impl<V: DictionaryValue + serde::Serialize + serde::de::DeserializeOwned, S: Blo
 
         self.insert_impl_core(term, Some(default.clone()));
 
-        let value_bytes = bincode::serialize(&default)
+        let value_bytes = crate::serialization::bincode_compat::serialize(&default)
             .map_err(|e| PersistentARTrieError::internal(format!("Serialization error: {}", e)))?;
 
         if let Some(ref wal_writer) = self.wal_writer {

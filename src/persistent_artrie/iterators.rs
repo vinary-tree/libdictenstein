@@ -97,7 +97,7 @@ impl<V: DictionaryValue> TermIterator<V> {
                 ..
             } => {
                 // Serialize value if present
-                let value_bytes = value.as_ref().and_then(|v| bincode::serialize(v).ok());
+                let value_bytes = value.as_ref().and_then(|v| crate::serialization::bincode_compat::serialize(v).ok());
                 let _ = value; // Silence unused warning
 
                 stack.push(IterState::ArtNode {
@@ -253,7 +253,7 @@ impl<V: DictionaryValue> TermValueIterator<V> {
                 children,
                 ..
             } => {
-                let value_bytes = value.as_ref().and_then(|v| bincode::serialize(v).ok());
+                let value_bytes = value.as_ref().and_then(|v| crate::serialization::bincode_compat::serialize(v).ok());
                 let _ = value;
 
                 stack.push(IterState::ArtNode {
@@ -295,7 +295,7 @@ impl<V: DictionaryValue> Iterator for TermValueIterator<V> {
                         // Deserialize value if present
                         let value: Option<V> = value_bytes
                             .as_ref()
-                            .and_then(|bytes| bincode::deserialize(bytes).ok());
+                            .and_then(|bytes| crate::serialization::bincode_compat::deserialize(bytes).ok());
                         let _ = value_bytes;
 
                         *index += 1;
@@ -317,7 +317,7 @@ impl<V: DictionaryValue> Iterator for TermValueIterator<V> {
 
                         let value: Option<V> = value_bytes
                             .as_ref()
-                            .and_then(|bytes| bincode::deserialize(bytes).ok());
+                            .and_then(|bytes| crate::serialization::bincode_compat::deserialize(bytes).ok());
                         let _ = value_bytes;
 
                         return Some((prefix.clone(), value));

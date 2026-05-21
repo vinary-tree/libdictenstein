@@ -55,7 +55,7 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
                 use super::wal::WalRecord;
 
                 // Serialize the value using bincode if present
-                let serialized_value = value_for_wal.and_then(|v| match bincode::serialize(&v) {
+                let serialized_value = value_for_wal.and_then(|v| match crate::serialization::bincode_compat::serialize(&v) {
                     Ok(bytes) => Some(bytes),
                     Err(e) => {
                         warn!("Failed to serialize value for WAL: {:?}", e);
@@ -90,7 +90,7 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
 
                 // Serialize value for bucket storage
                 let serialized_value: Option<Vec<u8>> =
-                    value.and_then(|v| bincode::serialize(&v).ok());
+                    value.and_then(|v| crate::serialization::bincode_compat::serialize(&v).ok());
 
                 let result = if let Some(ref val_bytes) = serialized_value {
                     bucket.insert(term, val_bytes)
@@ -123,7 +123,7 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
             } => {
                 // Serialize value for bucket storage (same as root bucket case)
                 let serialized_value: Option<Vec<u8>> =
-                    value.clone().and_then(|v| bincode::serialize(&v).ok());
+                    value.clone().and_then(|v| crate::serialization::bincode_compat::serialize(&v).ok());
 
                 if term.is_empty() {
                     // Inserting empty string

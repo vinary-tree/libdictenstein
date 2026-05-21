@@ -272,7 +272,7 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
                 .shadow_terms
                 .iter()
                 .map(|(term, value)| {
-                    let value_bytes = value.as_ref().and_then(|v| bincode::serialize(v).ok());
+                    let value_bytes = value.as_ref().and_then(|v| crate::serialization::bincode_compat::serialize(v).ok());
                     (term.clone(), value_bytes)
                 })
                 .collect();

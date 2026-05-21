@@ -45,6 +45,13 @@ mod compression_impl;
 #[cfg(feature = "serialization")]
 pub(crate) mod serde_helpers;
 
+// bincode 1.x → 2.x compatibility shim. The rest of the crate calls
+// `bincode_compat::{serialize_into, deserialize_from, serialize,
+// deserialize}` instead of the (removed) bincode 1.x crate-root
+// functions. The shim wraps bincode 2.x's `bincode::serde::*` API.
+#[cfg(feature = "serialization")]
+pub mod bincode_compat;
+
 // Re-exports
 pub use self::bincode_impl::BincodeSerializer;
 pub use self::json_impl::JsonSerializer;
@@ -126,7 +133,7 @@ pub trait DictionaryFromTermsWithValues: Sized {
 pub enum SerializationError {
     /// Error during bincode serialization
     #[error("Bincode error")]
-    Bincode(#[from] bincode::Error),
+    Bincode(#[from] crate::serialization::bincode_compat::BincodeError),
     /// Error during JSON serialization
     #[error("JSON error")]
     Json(#[from] serde_json::Error),

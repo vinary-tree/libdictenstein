@@ -133,6 +133,7 @@ pub use artrie_trait::{ARTrie, EvictableARTrie};
 // `ARTrieAtomicOps` is #[deprecated]; re-exported behind an allow so the
 // re-export site itself doesn't spam warnings. External callers that name
 // the trait still get the deprecation message.
+#[cfg(feature = "persistent-artrie")]
 #[allow(deprecated)]
 pub use artrie_trait::ARTrieAtomicOps;
 #[cfg(feature = "persistent-artrie")]

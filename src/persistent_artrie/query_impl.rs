@@ -77,7 +77,7 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
                         if let Some(entry) = bucket.get_entry(idx) {
                             if let Some(value_bytes) = bucket.get_value(&entry) {
                                 // Deserialize the value
-                                bincode::deserialize(value_bytes).ok()
+                                crate::serialization::bincode_compat::deserialize(value_bytes).ok()
                             } else {
                                 None
                             }
@@ -141,7 +141,7 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
                 Ok(idx) => {
                     if let Some(entry) = bucket.get_entry(idx) {
                         if let Some(value_bytes) = bucket.get_value(&entry) {
-                            bincode::deserialize(value_bytes).ok()
+                            crate::serialization::bincode_compat::deserialize(value_bytes).ok()
                         } else {
                             None
                         }
@@ -162,7 +162,7 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
                         // Deserialize value from stored bytes
                         return value
                             .as_ref()
-                            .and_then(|bytes| bincode::deserialize(bytes).ok());
+                            .and_then(|bytes| crate::serialization::bincode_compat::deserialize(bytes).ok());
                     }
                     return None;
                 }

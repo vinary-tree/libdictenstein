@@ -29,7 +29,7 @@ impl BincodeSerializer {
         W: Write,
     {
         let texts = automaton.source_texts();
-        bincode::serialize_into(&mut writer, &texts)?;
+        crate::serialization::bincode_compat::serialize_into(&mut writer, &texts)?;
         Ok(())
     }
 
@@ -40,7 +40,7 @@ impl BincodeSerializer {
     where
         R: Read,
     {
-        let texts: Vec<String> = bincode::deserialize_from(&mut reader)?;
+        let texts: Vec<String> = crate::serialization::bincode_compat::deserialize_from(&mut reader)?;
         Ok(SuffixAutomaton::from_texts(texts))
     }
 
@@ -58,7 +58,7 @@ impl BincodeSerializer {
         W: Write,
     {
         let entries = extract_terms_with_values(dict);
-        bincode::serialize_into(&mut writer, &entries)?;
+        crate::serialization::bincode_compat::serialize_into(&mut writer, &entries)?;
         Ok(())
     }
 
@@ -69,7 +69,7 @@ impl BincodeSerializer {
         D::Value: serde::de::DeserializeOwned,
         R: Read,
     {
-        let entries: Vec<(String, D::Value)> = bincode::deserialize_from(&mut reader)?;
+        let entries: Vec<(String, D::Value)> = crate::serialization::bincode_compat::deserialize_from(&mut reader)?;
         Ok(D::from_terms_with_values(entries))
     }
 
@@ -89,7 +89,7 @@ impl BincodeSerializer {
         W: Write,
     {
         let entries = extract_terms_with_values_char(dict);
-        bincode::serialize_into(&mut writer, &entries)?;
+        crate::serialization::bincode_compat::serialize_into(&mut writer, &entries)?;
         Ok(())
     }
 }
@@ -102,7 +102,7 @@ impl DictionarySerializer for BincodeSerializer {
         W: Write,
     {
         let terms = extract_terms(dict);
-        bincode::serialize_into(&mut writer, &terms)?;
+        crate::serialization::bincode_compat::serialize_into(&mut writer, &terms)?;
         Ok(())
     }
 
@@ -111,7 +111,7 @@ impl DictionarySerializer for BincodeSerializer {
         D: DictionaryFromTerms,
         R: Read,
     {
-        let terms: Vec<String> = bincode::deserialize_from(&mut reader)?;
+        let terms: Vec<String> = crate::serialization::bincode_compat::deserialize_from(&mut reader)?;
         Ok(D::from_terms(terms))
     }
 }

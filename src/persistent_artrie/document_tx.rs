@@ -83,11 +83,11 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
 
         let current: i64 = if let Some(pos) = tx.shadow_terms.iter().rposition(|(k, _)| k == term) {
             if let Some(ref v) = tx.shadow_terms[pos].1 {
-                let bytes = bincode::serialize(v).unwrap_or_default();
+                let bytes = crate::serialization::bincode_compat::serialize(v).unwrap_or_default();
                 if bytes.len() == 8 {
                     i64::from_le_bytes(bytes.try_into().expect("expected 8 bytes"))
                 } else {
-                    bincode::deserialize::<i64>(&bytes).unwrap_or(0)
+                    crate::serialization::bincode_compat::deserialize::<i64>(&bytes).unwrap_or(0)
                 }
             } else {
                 0
@@ -95,11 +95,11 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
         } else {
             match self.get_value_impl(term) {
                 Some(v) => {
-                    let bytes = bincode::serialize(&v).unwrap_or_default();
+                    let bytes = crate::serialization::bincode_compat::serialize(&v).unwrap_or_default();
                     if bytes.len() == 8 {
                         i64::from_le_bytes(bytes.try_into().expect("expected 8 bytes"))
                     } else {
-                        bincode::deserialize::<i64>(&bytes).unwrap_or(0)
+                        crate::serialization::bincode_compat::deserialize::<i64>(&bytes).unwrap_or(0)
                     }
                 }
                 None => 0,
@@ -107,8 +107,8 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
         };
 
         let new_value = current + delta;
-        let value_bytes = bincode::serialize(&new_value).expect("failed to serialize i64");
-        let v: V = bincode::deserialize(&value_bytes).expect("failed to deserialize i64 as V");
+        let value_bytes = crate::serialization::bincode_compat::serialize(&new_value).expect("failed to serialize i64");
+        let v: V = crate::serialization::bincode_compat::deserialize(&value_bytes).expect("failed to deserialize i64 as V");
         tx.shadow_terms.push((term.to_vec(), Some(v)));
     }
 

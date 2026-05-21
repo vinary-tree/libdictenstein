@@ -406,8 +406,8 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
                     // Replay increment: set the term to the result value
                     let term_str = String::from_utf8_lossy(&term);
                     // Create value from the result
-                    if let Ok(value_bytes) = bincode::serialize(&result) {
-                        if let Ok(v) = bincode::deserialize::<V>(&value_bytes) {
+                    if let Ok(value_bytes) = crate::serialization::bincode_compat::serialize(&result) {
+                        if let Ok(v) = crate::serialization::bincode_compat::deserialize::<V>(&value_bytes) {
                             inner.insert_impl_no_wal_with_value(&term_str, v);
                         }
                     }
@@ -415,7 +415,7 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
                 WalRecord::Upsert { term, value } => {
                     // Replay upsert: deserialize and insert the value
                     let term_str = String::from_utf8_lossy(&term);
-                    if let Ok(v) = bincode::deserialize::<V>(&value) {
+                    if let Ok(v) = crate::serialization::bincode_compat::deserialize::<V>(&value) {
                         inner.insert_impl_no_wal_with_value(&term_str, v);
                     }
                 }
@@ -428,7 +428,7 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
                     // Only replay if the CAS was successful
                     if success {
                         let term_str = String::from_utf8_lossy(&term);
-                        if let Ok(v) = bincode::deserialize::<V>(&new_value) {
+                        if let Ok(v) = crate::serialization::bincode_compat::deserialize::<V>(&new_value) {
                             inner.insert_impl_no_wal_with_value(&term_str, v);
                         }
                     }
@@ -438,7 +438,7 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
                     for (term, value_opt) in entries {
                         let term_str = String::from_utf8_lossy(&term);
                         if let Some(value_bytes) = value_opt {
-                            if let Ok(v) = bincode::deserialize::<V>(&value_bytes) {
+                            if let Ok(v) = crate::serialization::bincode_compat::deserialize::<V>(&value_bytes) {
                                 inner.insert_impl_no_wal_with_value(&term_str, v);
                             }
                         } else {
@@ -666,8 +666,8 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
                 WalRecord::Increment { term, result, .. } => {
                     // Replay increment: set the term to the result value
                     let term_str = String::from_utf8_lossy(&term);
-                    if let Ok(value_bytes) = bincode::serialize(&result) {
-                        if let Ok(v) = bincode::deserialize::<V>(&value_bytes) {
+                    if let Ok(value_bytes) = crate::serialization::bincode_compat::serialize(&result) {
+                        if let Ok(v) = crate::serialization::bincode_compat::deserialize::<V>(&value_bytes) {
                             inner.insert_impl_no_wal_with_value(&term_str, v);
                         }
                     }
@@ -675,7 +675,7 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
                 WalRecord::Upsert { term, value } => {
                     // Replay upsert: deserialize and insert the value
                     let term_str = String::from_utf8_lossy(&term);
-                    if let Ok(v) = bincode::deserialize::<V>(&value) {
+                    if let Ok(v) = crate::serialization::bincode_compat::deserialize::<V>(&value) {
                         inner.insert_impl_no_wal_with_value(&term_str, v);
                     }
                 }
@@ -688,7 +688,7 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
                     // Only replay if the CAS was successful
                     if success {
                         let term_str = String::from_utf8_lossy(&term);
-                        if let Ok(v) = bincode::deserialize::<V>(&new_value) {
+                        if let Ok(v) = crate::serialization::bincode_compat::deserialize::<V>(&new_value) {
                             inner.insert_impl_no_wal_with_value(&term_str, v);
                         }
                     }
@@ -698,7 +698,7 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
                     for (term, value_opt) in entries {
                         let term_str = String::from_utf8_lossy(&term);
                         if let Some(value_bytes) = value_opt {
-                            if let Ok(v) = bincode::deserialize::<V>(&value_bytes) {
+                            if let Ok(v) = crate::serialization::bincode_compat::deserialize::<V>(&value_bytes) {
                                 inner.insert_impl_no_wal_with_value(&term_str, v);
                             }
                         } else {
@@ -941,7 +941,7 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
                             WalRecord::Insert { term, value } => {
                                 let term_str = String::from_utf8_lossy(&term);
                                 if let Some(value_bytes) = value {
-                                    if let Ok(v) = bincode::deserialize::<V>(&value_bytes) {
+                                    if let Ok(v) = crate::serialization::bincode_compat::deserialize::<V>(&value_bytes) {
                                         trie.insert_impl_no_wal_with_value(&term_str, v);
                                         terms_recovered += 1;
                                     }
@@ -957,15 +957,15 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
                             } => {
                                 // For increment, store the final result
                                 let term_str = String::from_utf8_lossy(&term);
-                                let value_bytes = bincode::serialize(&val).unwrap_or_default();
-                                if let Ok(v) = bincode::deserialize::<V>(&value_bytes) {
+                                let value_bytes = crate::serialization::bincode_compat::serialize(&val).unwrap_or_default();
+                                if let Ok(v) = crate::serialization::bincode_compat::deserialize::<V>(&value_bytes) {
                                     trie.insert_impl_no_wal_with_value(&term_str, v);
                                     terms_recovered += 1;
                                 }
                             }
                             WalRecord::Upsert { term, value } => {
                                 let term_str = String::from_utf8_lossy(&term);
-                                if let Ok(v) = bincode::deserialize::<V>(&value) {
+                                if let Ok(v) = crate::serialization::bincode_compat::deserialize::<V>(&value) {
                                     trie.insert_impl_no_wal_with_value(&term_str, v);
                                     terms_recovered += 1;
                                 }
@@ -978,7 +978,7 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
                             } => {
                                 if success {
                                     let term_str = String::from_utf8_lossy(&term);
-                                    if let Ok(v) = bincode::deserialize::<V>(&new_value) {
+                                    if let Ok(v) = crate::serialization::bincode_compat::deserialize::<V>(&new_value) {
                                         trie.insert_impl_no_wal_with_value(&term_str, v);
                                         terms_recovered += 1;
                                     }
@@ -1220,7 +1220,7 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
                     WalRecord::Insert { term, value } => {
                         let term_str = String::from_utf8_lossy(&term);
                         if let Some(value_bytes) = value {
-                            if let Ok(v) = bincode::deserialize::<V>(&value_bytes) {
+                            if let Ok(v) = crate::serialization::bincode_compat::deserialize::<V>(&value_bytes) {
                                 trie.insert_impl_no_wal_with_value(&term_str, v);
                             }
                         } else {
@@ -1233,7 +1233,7 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
                     }
                     WalRecord::Upsert { term, value } => {
                         let term_str = String::from_utf8_lossy(&term);
-                        if let Ok(v) = bincode::deserialize::<V>(&value) {
+                        if let Ok(v) = crate::serialization::bincode_compat::deserialize::<V>(&value) {
                             trie.insert_impl_no_wal_with_value(&term_str, v);
                         }
                     }
