@@ -89,28 +89,16 @@ pub(crate) struct DynamicDawgInner<V: DictionaryValue> {
     bloom_filter: Option<BloomFilter>,
 }
 
-/// Simple Bloom filter for fast negative lookup rejection.
-///
-/// Uses 3 hash functions and a bit vector to probabilistically test membership.
-/// - False positives: Possible (requires full DAWG traversal)
-/// - False negatives: Never (guaranteed correct rejection)
-#[derive(Debug, Clone)]
-struct BloomFilter {
-    bits: Vec<u64>, // Bit vector (64-bit chunks for efficiency)
-    bit_count: usize,
-    hash_count: usize,
-}
-
-/// Hash-based node signature for efficient minimization.
-///
-/// Instead of storing recursive Box<NodeSignature>, we use a hash
-/// representing the right language. This eliminates expensive allocations
-/// and enables O(1) equality checks.
-#[derive(Clone, Debug, Copy, PartialEq, Eq, Hash)]
-struct NodeSignature {
-    // Hash representing (is_final, sorted edges with child hashes)
-    hash: u64,
-}
+// C1 step (DAWG byte variant): the byte-for-byte-identical local
+// `BloomFilter` and `NodeSignature` structs are replaced with imports of
+// the canonical crate-level types at `crate::bloom_filter::BloomFilter`
+// and `crate::node_signature::NodeSignature`. The canonical types have
+// the same field shape (BloomFilter: `bits: Vec<u64>`, `bit_count:
+// usize`, `hash_count: usize`; NodeSignature: `hash: u64`) and a
+// superset of the methods that were defined locally (new, insert,
+// might_contain, clear).
+use crate::bloom_filter::BloomFilter;
+use crate::node_signature::NodeSignature;
 
 #[derive(Clone, Debug)]
 #[cfg_attr(
@@ -156,77 +144,10 @@ impl<V: DictionaryValue> DawgNode<V> {
     }
 }
 
-impl BloomFilter {
-    /// Create a new Bloom filter with specified capacity.
-    ///
-    /// Uses ~1.2 bytes per expected element with 3 hash functions.
-    /// Target false positive rate: ~1%
-    fn new(expected_elements: usize) -> Self {
-        // Use 10 bits per element for ~1% false positive rate with 3 hash functions
-        let bit_count = expected_elements * 10;
-        let chunk_count = (bit_count + 63) / 64; // Round up to nearest u64
-
-        BloomFilter {
-            bits: vec![0u64; chunk_count],
-            bit_count: chunk_count * 64,
-            hash_count: 3,
-        }
-    }
-
-    /// Add an element to the Bloom filter.
-    fn insert(&mut self, term: &str) {
-        let bytes = term.as_bytes();
-        for i in 0..self.hash_count {
-            let hash = self.hash_with_seed(bytes, i as u64);
-            let bit_index = (hash % self.bit_count as u64) as usize;
-            let chunk_index = bit_index / 64;
-            let bit_offset = bit_index % 64;
-            self.bits[chunk_index] |= 1u64 << bit_offset;
-        }
-    }
-
-    /// Check if an element might be in the set.
-    ///
-    /// Returns:
-    /// - false: Definitely NOT in set (fast rejection)
-    /// - true: Might be in set (requires full check)
-    ///
-    /// Note: Currently unused as the Bloom filter fast path is not yet
-    /// integrated into contains(). Reserved for future optimization.
-    #[inline]
-    #[allow(dead_code)]
-    fn might_contain(&self, term: &str) -> bool {
-        let bytes = term.as_bytes();
-        for i in 0..self.hash_count {
-            let hash = self.hash_with_seed(bytes, i as u64);
-            let bit_index = (hash % self.bit_count as u64) as usize;
-            let chunk_index = bit_index / 64;
-            let bit_offset = bit_index % 64;
-            if (self.bits[chunk_index] & (1u64 << bit_offset)) == 0 {
-                return false; // Definitely not in set
-            }
-        }
-        true // Might be in set
-    }
-
-    /// Hash with a seed using FxHash.
-    #[inline]
-    fn hash_with_seed(&self, bytes: &[u8], seed: u64) -> u64 {
-        use rustc_hash::FxHasher;
-        use std::hash::Hasher;
-
-        let mut hasher = FxHasher::default();
-        seed.hash(&mut hasher);
-        bytes.hash(&mut hasher);
-        hasher.finish()
-    }
-
-    /// Clear the Bloom filter.
-    #[allow(dead_code)]
-    fn clear(&mut self) {
-        self.bits.fill(0);
-    }
-}
+// Local `impl BloomFilter` removed: the canonical
+// `crate::bloom_filter::BloomFilter` provides equivalent `new`,
+// `insert`, `might_contain`, `clear` methods. Inherent impls on
+// foreign types are not allowed, so this block had to go.
 
 impl<V: DictionaryValue> DynamicDawg<V> {
     /// Create a new empty dynamic DAWG.
@@ -796,7 +717,11 @@ impl<V: DictionaryValue> DynamicDawg<V> {
 
         // Preserve settings
         let auto_minimize_threshold = inner.auto_minimize_threshold;
-        let bloom_capacity = inner.bloom_filter.as_ref().map(|b| b.bit_count / 10);
+        // Recover the expected_elements that originally sized the bloom filter:
+        // BloomFilter::new(n) sets bit_count = max(64, n*10). `capacity()` returns
+        // bit_count after rounding to the next multiple of 64. Dividing by 10
+        // recovers the approximate original expected_elements.
+        let bloom_capacity = inner.bloom_filter.as_ref().map(|b| b.capacity() / 10);
 
         // Rebuild from scratch
         *inner = DynamicDawgInner {
