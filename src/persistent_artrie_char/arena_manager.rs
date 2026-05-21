@@ -127,14 +127,22 @@ fn write_dirty_slots_for_arena<S: BlockStorage>(
 
     // Always write header
     let (header_off, header_len) = arena.header_range();
-    dm.write_bytes(block_id, header_off, &arena_bytes[header_off..header_off + header_len])?;
+    dm.write_bytes(
+        block_id,
+        header_off,
+        &arena_bytes[header_off..header_off + header_len],
+    )?;
     bytes_written += header_len;
 
     // Write each dirty slot's data and directory entry
     for slot_id in dirty_slots {
         // Write data
         let (data_off, data_len) = arena.slot_data_range(slot_id)?;
-        dm.write_bytes(block_id, data_off, &arena_bytes[data_off..data_off + data_len])?;
+        dm.write_bytes(
+            block_id,
+            data_off,
+            &arena_bytes[data_off..data_off + data_len],
+        )?;
         bytes_written += data_len;
 
         // Write directory entry
@@ -471,7 +479,8 @@ impl<S: BlockStorage> ArenaManager<S> {
         };
 
         // Collect dirty arena indices and sort them for sequential I/O
-        let mut dirty_indices: Vec<usize> = self.arenas
+        let mut dirty_indices: Vec<usize> = self
+            .arenas
             .iter()
             .enumerate()
             .filter(|(_, arena)| arena.is_dirty())
@@ -771,7 +780,9 @@ impl<S: BlockStorage> ArenaManager<S> {
     }
 
     /// Get dirty tracker statistics (if tracking is enabled).
-    pub fn dirty_tracker_stats(&self) -> Option<crate::persistent_artrie::dirty_tracker::DirtyTrackerStats> {
+    pub fn dirty_tracker_stats(
+        &self,
+    ) -> Option<crate::persistent_artrie::dirty_tracker::DirtyTrackerStats> {
         self.dirty_tracker.as_ref().map(|t| t.stats())
     }
 
@@ -1064,17 +1075,21 @@ impl<S: BlockStorage> ArenaManager<S> {
     ///
     /// # Panics
     /// Panics if called more times than reserved, or if allocation fails.
-    pub fn allocate_reserved(&mut self, reserved: &mut ReservedSlots, data: &[u8]) -> Result<ArenaSlot> {
+    pub fn allocate_reserved(
+        &mut self,
+        reserved: &mut ReservedSlots,
+        data: &[u8],
+    ) -> Result<ArenaSlot> {
         if reserved.next_idx >= reserved.count {
             return Err(PersistentARTrieError::internal(
-                "Reserved slot range exhausted"
+                "Reserved slot range exhausted",
             ));
         }
 
         // Verify we're still in the reserved arena
         if self.active_arena as u32 != reserved.arena_id {
             return Err(PersistentARTrieError::internal(
-                "Active arena changed during reserved allocation"
+                "Active arena changed during reserved allocation",
             ));
         }
 
@@ -1095,7 +1110,8 @@ impl<S: BlockStorage> ArenaManager<S> {
             .ok_or_else(|| {
                 PersistentARTrieError::internal(&format!(
                     "Failed to allocate reserved slot {} (data size: {} bytes)",
-                    expected_slot, data.len()
+                    expected_slot,
+                    data.len()
                 ))
             })?;
 
@@ -1256,7 +1272,9 @@ mod tests {
         // Fill up several arenas
         for i in 0..100 {
             let data = format!("test data {}", i);
-            manager.allocate(data.as_bytes()).expect("allocation should succeed");
+            manager
+                .allocate(data.as_bytes())
+                .expect("allocation should succeed");
         }
 
         assert!(manager.arena_count() > 1);
@@ -1322,17 +1340,23 @@ mod tests {
 
         // Allocate into reserved slots
         let data0 = b"child 0";
-        let slot0 = manager.allocate_reserved(&mut reserved, data0).expect("slot 0");
+        let slot0 = manager
+            .allocate_reserved(&mut reserved, data0)
+            .expect("slot 0");
         assert_eq!(slot0.slot_id, 0);
         assert_eq!(reserved.remaining(), 2);
 
         let data1 = b"child 1";
-        let slot1 = manager.allocate_reserved(&mut reserved, data1).expect("slot 1");
+        let slot1 = manager
+            .allocate_reserved(&mut reserved, data1)
+            .expect("slot 1");
         assert_eq!(slot1.slot_id, 1);
         assert_eq!(reserved.remaining(), 1);
 
         let data2 = b"child 2";
-        let slot2 = manager.allocate_reserved(&mut reserved, data2).expect("slot 2");
+        let slot2 = manager
+            .allocate_reserved(&mut reserved, data2)
+            .expect("slot 2");
         assert_eq!(slot2.slot_id, 2);
         assert_eq!(reserved.remaining(), 0);
         assert!(reserved.is_complete());
@@ -1368,7 +1392,9 @@ mod tests {
         }
 
         // Reserve should trigger new arena creation if space is tight
-        let reserved = manager.reserve_slots(10).expect("should reserve with new arena");
+        let reserved = manager
+            .reserve_slots(10)
+            .expect("should reserve with new arena");
 
         // Should be in a fresh arena with enough space
         assert_eq!(reserved.first_slot, 0);
@@ -1445,7 +1471,11 @@ mod tests {
 
         manager.clear_for_loading();
         // After clear_for_loading, arenas is empty (transitional state)
-        assert_eq!(manager.arena_count(), 0, "arenas should be empty for loading");
+        assert_eq!(
+            manager.arena_count(),
+            0,
+            "arenas should be empty for loading"
+        );
         // Note: is_valid() would return false here, but that's intentional
         // The invariant is restored when load_arena() adds the first arena
     }
@@ -1537,7 +1567,11 @@ mod tests {
 
         // Clear for loading leaves arenas empty (transitional state)
         manager.clear_for_loading();
-        assert_eq!(manager.arena_count(), 0, "arenas should be empty after clear_for_loading");
+        assert_eq!(
+            manager.arena_count(),
+            0,
+            "arenas should be empty after clear_for_loading"
+        );
 
         // Note: We can't easily test load_arena without buffer_manager.
         // In practice, load_arena() is called immediately after clear_for_loading()
@@ -1607,7 +1641,10 @@ mod tests {
         let stats_after = manager.dirty_tracker_stats();
 
         // Stats should be identical (same tracker instance)
-        assert_eq!(stats_before.unwrap().dirty_arenas, stats_after.unwrap().dirty_arenas);
+        assert_eq!(
+            stats_before.unwrap().dirty_arenas,
+            stats_after.unwrap().dirty_arenas
+        );
     }
 
     #[test]
@@ -1642,7 +1679,10 @@ mod tests {
 
         // Check that the post-tracking allocation is tracked
         let stats = manager.dirty_tracker_stats().unwrap();
-        assert!(stats.dirty_slots >= 1, "should track slot allocated after enable");
+        assert!(
+            stats.dirty_slots >= 1,
+            "should track slot allocated after enable"
+        );
     }
 
     #[test]
@@ -1704,11 +1744,7 @@ mod tests {
         assert!(arena_count_before > 1, "should have multiple arenas");
 
         // Count dirty arenas before enabling
-        let dirty_count_before = manager
-            .arenas
-            .iter()
-            .filter(|a| a.is_dirty())
-            .count();
+        let dirty_count_before = manager.arenas.iter().filter(|a| a.is_dirty()).count();
 
         // Enable slot tracking - should retroactively mark all dirty arenas
         manager.enable_slot_tracking();

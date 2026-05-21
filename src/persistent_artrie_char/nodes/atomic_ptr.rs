@@ -130,7 +130,8 @@ impl AtomicNodePtr {
     /// Panics if the pointer is null.
     #[inline]
     pub fn load_unchecked(&self) -> Arc<PersistentCharNode> {
-        self.load().expect("AtomicNodePtr::load_unchecked called on null pointer")
+        self.load()
+            .expect("AtomicNodePtr::load_unchecked called on null pointer")
     }
 
     /// Store a new node pointer.
@@ -166,9 +167,7 @@ impl AtomicNodePtr {
             None
         } else {
             // We're taking ownership of the Arc (no refcount change needed)
-            unsafe {
-                Some(Arc::from_raw(old_raw as *const PersistentCharNode))
-            }
+            unsafe { Some(Arc::from_raw(old_raw as *const PersistentCharNode)) }
         }
     }
 
@@ -202,12 +201,10 @@ impl AtomicNodePtr {
         let expected_raw = Arc::as_ptr(expected) as u64;
         let new_raw = Arc::into_raw(new) as u64;
 
-        match self.ptr.compare_exchange(
-            expected_raw,
-            new_raw,
-            Ordering::AcqRel,
-            Ordering::Acquire,
-        ) {
+        match self
+            .ptr
+            .compare_exchange(expected_raw, new_raw, Ordering::AcqRel, Ordering::Acquire)
+        {
             Ok(_) => {
                 // CAS succeeded - return clone of expected (caller keeps their Arc)
                 Ok(expected.clone())
@@ -251,9 +248,7 @@ impl AtomicNodePtr {
             Ordering::AcqRel,
             Ordering::Acquire,
         ) {
-            Ok(_) => {
-                Ok(expected.clone())
-            }
+            Ok(_) => Ok(expected.clone()),
             Err(actual_raw) => {
                 // CAS failed - decrement refcount of the rejected new Arc
                 unsafe {
@@ -287,12 +282,10 @@ impl AtomicNodePtr {
     pub fn try_init(&self, new: Arc<PersistentCharNode>) -> Result<(), Arc<PersistentCharNode>> {
         let new_raw = Arc::into_raw(new) as u64;
 
-        match self.ptr.compare_exchange(
-            NULL_PTR,
-            new_raw,
-            Ordering::AcqRel,
-            Ordering::Acquire,
-        ) {
+        match self
+            .ptr
+            .compare_exchange(NULL_PTR, new_raw, Ordering::AcqRel, Ordering::Acquire)
+        {
             Ok(_) => Ok(()),
             Err(actual_raw) => {
                 // CAS failed - decrement refcount of the rejected new Arc
@@ -350,8 +343,8 @@ unsafe impl Sync for AtomicNodePtr {}
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::persistent_artrie::NodeType;
     use crate::persistent_artrie::swizzled_ptr::SwizzledPtr;
+    use crate::persistent_artrie::NodeType;
     use std::thread;
 
     #[test]
@@ -491,7 +484,9 @@ mod tests {
                     let mut successes = 0;
                     for i in 0..ops_per_thread {
                         // Load current
-                        let current = ptr.load().unwrap_or_else(|| Arc::new(PersistentCharNode::new()));
+                        let current = ptr
+                            .load()
+                            .unwrap_or_else(|| Arc::new(PersistentCharNode::new()));
 
                         // Create new version with a child
                         let key = (t * ops_per_thread + i) as u32;
@@ -508,7 +503,8 @@ mod tests {
             })
             .collect();
 
-        let total_successes: usize = handles.into_iter()
+        let total_successes: usize = handles
+            .into_iter()
             .map(|h| h.join().expect("thread join"))
             .sum();
 

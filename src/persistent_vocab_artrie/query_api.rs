@@ -147,5 +147,4 @@ impl<S: BlockStorage> super::dict_impl::PersistentVocabARTrie<S> {
     pub fn next_index(&self) -> u64 {
         self.next_index.load(Ordering::Acquire)
     }
-
 }

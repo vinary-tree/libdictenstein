@@ -66,7 +66,9 @@ pub enum PersistentARTrieError {
     },
 
     /// Checksum verification failed
-    #[error("Checksum mismatch in block {block_id}: expected 0x{expected:016X}, found 0x{found:016X}")]
+    #[error(
+        "Checksum mismatch in block {block_id}: expected 0x{expected:016X}, found 0x{found:016X}"
+    )]
     ChecksumMismatch {
         /// Block that failed verification
         block_id: u32,
@@ -176,7 +178,9 @@ pub enum PersistentARTrieError {
     },
 
     /// Arena checksum mismatch (for char arena V3+)
-    #[error("Arena checksum mismatch in arena {arena_id}: expected {expected:#x}, found {found:#x}")]
+    #[error(
+        "Arena checksum mismatch in arena {arena_id}: expected {expected:#x}, found {found:#x}"
+    )]
     ArenaChecksumMismatch {
         /// Arena block ID
         arena_id: u32,
@@ -296,7 +300,11 @@ pub enum SwizzleError {
 
 impl PersistentARTrieError {
     /// Create an I/O error with context
-    pub fn io_error(operation: impl Into<String>, path: impl Into<String>, source: io::Error) -> Self {
+    pub fn io_error(
+        operation: impl Into<String>,
+        path: impl Into<String>,
+        source: io::Error,
+    ) -> Self {
         Self::IoError {
             operation: operation.into(),
             path: path.into(),
@@ -322,8 +330,7 @@ impl PersistentARTrieError {
     pub fn is_recoverable(&self) -> bool {
         matches!(
             self,
-            Self::ConcurrentModification { .. }
-                | Self::SwizzleError(SwizzleError::RaceCondition)
+            Self::ConcurrentModification { .. } | Self::SwizzleError(SwizzleError::RaceCondition)
         )
     }
 
@@ -410,7 +417,10 @@ mod tests {
     #[test]
     fn test_swizzle_error_display() {
         let err = SwizzleError::AlreadySwizzled;
-        assert_eq!(format!("{}", err), "Pointer is already swizzled (in memory)");
+        assert_eq!(
+            format!("{}", err),
+            "Pointer is already swizzled (in memory)"
+        );
 
         let err = SwizzleError::BlockIdOverflow { block_id: 42 };
         assert!(format!("{}", err).contains("42"));

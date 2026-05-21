@@ -347,7 +347,9 @@ impl<V: crate::DictionaryValue> DictionaryFromTerms for crate::dynamic_dawg::Dyn
     }
 }
 
-impl<V: crate::DictionaryValue> DictionaryFromTerms for crate::dynamic_dawg_char::DynamicDawgChar<V> {
+impl<V: crate::DictionaryValue> DictionaryFromTerms
+    for crate::dynamic_dawg_char::DynamicDawgChar<V>
+{
     fn from_terms<I: IntoIterator<Item = String>>(terms: I) -> Self {
         crate::dynamic_dawg_char::DynamicDawgChar::from_terms(terms)
     }
@@ -360,7 +362,9 @@ impl<V: crate::DictionaryValue> DictionaryFromTerms for crate::dynamic_dawg_u64:
     }
 }
 
-impl<V: crate::DictionaryValue> DictionaryFromTerms for crate::suffix_automaton::SuffixAutomaton<V> {
+impl<V: crate::DictionaryValue> DictionaryFromTerms
+    for crate::suffix_automaton::SuffixAutomaton<V>
+{
     fn from_terms<I: IntoIterator<Item = String>>(terms: I) -> Self {
         // SuffixAutomaton uses from_texts which expects source texts
         crate::suffix_automaton::SuffixAutomaton::from_texts(terms)
@@ -489,7 +493,9 @@ impl<V: crate::DictionaryValue> DictionaryFromTermsWithValues for crate::scdawg:
     }
 }
 
-impl<V: crate::DictionaryValue> DictionaryFromTermsWithValues for crate::scdawg_char::ScdawgChar<V> {
+impl<V: crate::DictionaryValue> DictionaryFromTermsWithValues
+    for crate::scdawg_char::ScdawgChar<V>
+{
     type Value = V;
 
     fn from_terms_with_values<I>(entries: I) -> Self
@@ -606,7 +612,12 @@ mod tests {
         let dict: DynamicDawg<()> = DynamicDawg::from_terms(vec![long_term.clone()]);
         let terms = extract_terms(&dict);
 
-        assert_eq!(terms.len(), 1, "expected exactly one term; got {:?} entries", terms.len());
+        assert_eq!(
+            terms.len(),
+            1,
+            "expected exactly one term; got {:?} entries",
+            terms.len()
+        );
         assert_eq!(terms[0].len(), DEPTH);
         assert_eq!(terms[0], long_term);
     }
@@ -641,8 +652,8 @@ mod tests {
     #[cfg(feature = "protobuf")]
     #[test]
     fn test_suffix_automaton_protobuf_serialization() {
-        use crate::suffix_automaton::SuffixAutomaton;
         use crate::serialization::SuffixAutomatonProtobufSerializer;
+        use crate::suffix_automaton::SuffixAutomaton;
 
         let texts = vec!["hello world".to_string(), "test string".to_string()];
         let dict = SuffixAutomaton::from_texts(texts.clone());

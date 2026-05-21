@@ -39,7 +39,9 @@ use std::path::Path;
 use std::sync::Arc;
 
 use super::error::{PersistentARTrieError, Result};
-use super::wal::{AsyncWalConfig, AsyncWalError, AsyncWalWriter, Lsn, SyncHandle, WalConfig, WalRecord};
+use super::wal::{
+    AsyncWalConfig, AsyncWalError, AsyncWalWriter, Lsn, SyncHandle, WalConfig, WalRecord,
+};
 
 /// Trait for types that support WAL-based persistence.
 ///
@@ -607,8 +609,12 @@ mod tests {
         };
 
         // Insert some data to sync
-        managed.log_insert(b"key1", Some(b"value1".to_vec())).unwrap();
-        managed.log_insert(b"key2", Some(b"value2".to_vec())).unwrap();
+        managed
+            .log_insert(b"key1", Some(b"value1".to_vec()))
+            .unwrap();
+        managed
+            .log_insert(b"key2", Some(b"value2".to_vec()))
+            .unwrap();
 
         // Async sync should return a handle
         let handle = managed.wal_sync_async().unwrap();
@@ -616,7 +622,9 @@ mod tests {
 
         // Wait for sync to complete
         let sync_handle = handle.unwrap();
-        sync_handle.wait().expect("sync should complete successfully");
+        sync_handle
+            .wait()
+            .expect("sync should complete successfully");
 
         // Synced LSN should be updated
         assert!(managed.wal_synced_lsn().is_some());

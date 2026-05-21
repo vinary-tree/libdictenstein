@@ -1,7 +1,7 @@
 use libdictenstein::persistent_artrie::PersistentARTrie;
 use libdictenstein::Dictionary;
-use tempfile::TempDir;
 use std::collections::HashSet;
+use tempfile::TempDir;
 
 fn generate_diverse_terms(count: usize) -> Vec<String> {
     let mut terms = Vec::with_capacity(count);
@@ -24,28 +24,29 @@ fn generate_diverse_terms(count: usize) -> Vec<String> {
 fn main() {
     let temp_dir = TempDir::new().expect("temp dir");
     let path = temp_dir.path().join("debug_test");
-    
+
     // Use fewer terms to debug
     let terms = generate_diverse_terms(1000);
-    
+
     // Phase 1: Insert all terms and verify in memory
     {
         let mut dict = PersistentARTrie::<()>::create(&path).expect("create dict");
-        
+
         for term in &terms {
             dict.insert(term);
         }
-        
+
         let unique_count = terms.iter().collect::<HashSet<_>>().len();
         println!("Inserted {} terms", unique_count);
         assert_eq!(dict.len(), Some(unique_count), "Length should match");
-        
+
         // Count by first letter
-        let mut by_letter: std::collections::HashMap<char, usize> = std::collections::HashMap::new();
+        let mut by_letter: std::collections::HashMap<char, usize> =
+            std::collections::HashMap::new();
         for t in &terms {
             *by_letter.entry(t.chars().next().unwrap()).or_insert(0) += 1;
         }
-        
+
         // Count which letters exist in dict
         println!("BEFORE CHECKPOINT - verifying first letters:");
         for c in 'a'..='z' {
@@ -59,17 +60,17 @@ fn main() {
             }
         }
         println!();
-        
+
         dict.checkpoint().expect("checkpoint");
         dict.sync().expect("sync");
     }
-    
+
     // Phase 2: Reopen and verify
     {
         let dict = PersistentARTrie::<()>::open(&path).expect("reopen");
-        
+
         println!("\nAFTER REOPEN: len = {:?}", dict.len());
-        
+
         println!("After reopen - verifying first letters:");
         for c in 'a'..='z' {
             let test_term = format!("{}a0000", c);
@@ -80,7 +81,7 @@ fn main() {
             }
         }
         println!();
-        
+
         // Full verification
         let mut missing = Vec::new();
         for term in &terms {
@@ -88,7 +89,7 @@ fn main() {
                 missing.push(term.clone());
             }
         }
-        
+
         if !missing.is_empty() {
             println!("\nMISSING TERMS ({} total, first 20):", missing.len());
             for t in missing.iter().take(20) {

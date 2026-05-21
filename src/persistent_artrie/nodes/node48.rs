@@ -155,16 +155,13 @@ impl ArtNode for Node48 {
     }
 
     fn iter_children(&self) -> impl Iterator<Item = (u8, &SwizzledPtr)> {
-        self.index
-            .iter()
-            .enumerate()
-            .filter_map(|(key, &slot)| {
-                if slot != NO_CHILD {
-                    Some((key as u8, &self.children[slot as usize]))
-                } else {
-                    None
-                }
-            })
+        self.index.iter().enumerate().filter_map(|(key, &slot)| {
+            if slot != NO_CHILD {
+                Some((key as u8, &self.children[slot as usize]))
+            } else {
+                None
+            }
+        })
     }
 }
 
@@ -302,11 +299,8 @@ mod tests {
 
         // Add children with various keys
         for key in [0, 50, 100, 150, 200, 255u8] {
-            let child = SwizzledPtr::on_disk(
-                key as u32,
-                0,
-                crate::persistent_artrie::NodeType::Node4,
-            );
+            let child =
+                SwizzledPtr::on_disk(key as u32, 0, crate::persistent_artrie::NodeType::Node4);
             assert!(node.add_child(key, child).is_ok());
         }
 
@@ -314,11 +308,7 @@ mod tests {
 
         // Find all children
         for key in [0, 50, 100, 150, 200, 255u8] {
-            assert!(
-                node.find_child(key).is_some(),
-                "should find key {}",
-                key
-            );
+            assert!(node.find_child(key).is_some(), "should find key {}", key);
         }
 
         // Should not find non-existent keys
@@ -331,11 +321,8 @@ mod tests {
         let mut node = Node48::new();
 
         for i in 0..48 {
-            let child = SwizzledPtr::on_disk(
-                i as u32,
-                0,
-                crate::persistent_artrie::NodeType::Node4,
-            );
+            let child =
+                SwizzledPtr::on_disk(i as u32, 0, crate::persistent_artrie::NodeType::Node4);
             assert!(node.add_child(i as u8, child).is_ok());
         }
 
@@ -350,11 +337,8 @@ mod tests {
         let mut node = Node48::new();
 
         for i in 0..20 {
-            let child = SwizzledPtr::on_disk(
-                i as u32,
-                0,
-                crate::persistent_artrie::NodeType::Node4,
-            );
+            let child =
+                SwizzledPtr::on_disk(i as u32, 0, crate::persistent_artrie::NodeType::Node4);
             node.add_child(i as u8, child).expect("add should succeed");
         }
 
@@ -378,11 +362,8 @@ mod tests {
 
         let keys = [5, 10, 15, 20, 25u8];
         for &key in &keys {
-            let child = SwizzledPtr::on_disk(
-                key as u32,
-                0,
-                crate::persistent_artrie::NodeType::Node4,
-            );
+            let child =
+                SwizzledPtr::on_disk(key as u32, 0, crate::persistent_artrie::NodeType::Node4);
             node.add_child(key, child).expect("add should succeed");
         }
 
@@ -395,11 +376,8 @@ mod tests {
         let mut node = Node48::new();
 
         for i in 0..16 {
-            let child = SwizzledPtr::on_disk(
-                i as u32,
-                0,
-                crate::persistent_artrie::NodeType::Node4,
-            );
+            let child =
+                SwizzledPtr::on_disk(i as u32, 0, crate::persistent_artrie::NodeType::Node4);
             node.add_child(i as u8, child).expect("add should succeed");
         }
 

@@ -215,7 +215,10 @@ mod tests {
         // Continue to [10, 20, 30, 40, 50]
         let n4 = n3.descend(40).expect("Should descend to 40");
         let n5 = n4.descend(50).expect("Should descend to 50");
-        assert!(n5.is_final(), "[10, 20, 30, 40, 50] should be a final state");
+        assert!(
+            n5.is_final(),
+            "[10, 20, 30, 40, 50] should be a final state"
+        );
     }
 
     #[test]
@@ -334,11 +337,7 @@ mod tests {
 
         // Navigate to 10 (non-final)
         let n1 = zipper.descend(10).expect("Should descend to 10");
-        assert_eq!(
-            n1.value(),
-            None,
-            "Non-final node should have no value"
-        );
+        assert_eq!(n1.value(), None, "Non-final node should have no value");
     }
 
     #[test]
@@ -407,8 +406,8 @@ mod tests {
 
     #[test]
     fn test_wait_free_reads_during_writes() {
-        use std::sync::Arc as StdArc;
         use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc as StdArc;
         use std::thread;
 
         let dict = StdArc::new(DynamicDawgU64::<()>::new());
@@ -447,6 +446,9 @@ mod tests {
         let read_count = reader.join().unwrap();
 
         // Verify reader thread was not starved (made progress)
-        assert!(read_count > 0, "Reader should have completed at least one iteration");
+        assert!(
+            read_count > 0,
+            "Reader should have completed at least one iteration"
+        );
     }
 }

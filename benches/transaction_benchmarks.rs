@@ -16,30 +16,23 @@ fn bench_transaction_commit(c: &mut Criterion) {
     for &count in &[10, 100, 1000, 5000] {
         group.throughput(Throughput::Elements(count as u64));
 
-        group.bench_with_input(
-            BenchmarkId::new("commit", count),
-            &count,
-            |b, &count| {
-                let dir = tempdir().expect("create temp dir");
-                let path = dir.path().join("bench.artrie");
-                let mut trie: PersistentARTrie<i64> =
-                    PersistentARTrie::create(&path).expect("create");
+        group.bench_with_input(BenchmarkId::new("commit", count), &count, |b, &count| {
+            let dir = tempdir().expect("create temp dir");
+            let path = dir.path().join("bench.artrie");
+            let mut trie: PersistentARTrie<i64> = PersistentARTrie::create(&path).expect("create");
 
-                // Pre-generate terms
-                let terms: Vec<String> = (0..count)
-                    .map(|i| format!("term_{:08}", i))
-                    .collect();
+            // Pre-generate terms
+            let terms: Vec<String> = (0..count).map(|i| format!("term_{:08}", i)).collect();
 
-                b.iter(|| {
-                    let mut tx = trie.begin_document("bench_doc").expect("begin");
-                    for (i, term) in terms.iter().enumerate() {
-                        trie.tx_insert(&mut tx, term, Some(i as i64));
-                    }
-                    let result = trie.commit_document(tx).expect("commit");
-                    black_box(result)
-                });
-            },
-        );
+            b.iter(|| {
+                let mut tx = trie.begin_document("bench_doc").expect("begin");
+                for (i, term) in terms.iter().enumerate() {
+                    trie.tx_insert(&mut tx, term, Some(i as i64));
+                }
+                let result = trie.commit_document(tx).expect("commit");
+                black_box(result)
+            });
+        });
     }
 
     group.finish();
@@ -52,29 +45,22 @@ fn bench_transaction_abort(c: &mut Criterion) {
     for &count in &[10, 100, 1000, 5000] {
         group.throughput(Throughput::Elements(count as u64));
 
-        group.bench_with_input(
-            BenchmarkId::new("abort", count),
-            &count,
-            |b, &count| {
-                let dir = tempdir().expect("create temp dir");
-                let path = dir.path().join("bench.artrie");
-                let trie: PersistentARTrie<i64> =
-                    PersistentARTrie::create(&path).expect("create");
+        group.bench_with_input(BenchmarkId::new("abort", count), &count, |b, &count| {
+            let dir = tempdir().expect("create temp dir");
+            let path = dir.path().join("bench.artrie");
+            let trie: PersistentARTrie<i64> = PersistentARTrie::create(&path).expect("create");
 
-                // Pre-generate terms
-                let terms: Vec<String> = (0..count)
-                    .map(|i| format!("term_{:08}", i))
-                    .collect();
+            // Pre-generate terms
+            let terms: Vec<String> = (0..count).map(|i| format!("term_{:08}", i)).collect();
 
-                b.iter(|| {
-                    let mut tx = trie.begin_document("bench_doc").expect("begin");
-                    for (i, term) in terms.iter().enumerate() {
-                        trie.tx_insert(&mut tx, term, Some(i as i64));
-                    }
-                    trie.abort_document(tx).expect("abort");
-                });
-            },
-        );
+            b.iter(|| {
+                let mut tx = trie.begin_document("bench_doc").expect("begin");
+                for (i, term) in terms.iter().enumerate() {
+                    trie.tx_insert(&mut tx, term, Some(i as i64));
+                }
+                trie.abort_document(tx).expect("abort");
+            });
+        });
     }
 
     group.finish();
@@ -88,15 +74,12 @@ fn bench_commit_vs_abort(c: &mut Criterion) {
     group.throughput(Throughput::Elements(count as u64));
 
     // Pre-generate terms
-    let terms: Vec<String> = (0..count)
-        .map(|i| format!("term_{:08}", i))
-        .collect();
+    let terms: Vec<String> = (0..count).map(|i| format!("term_{:08}", i)).collect();
 
     group.bench_function("commit_1000", |b| {
         let dir = tempdir().expect("create temp dir");
         let path = dir.path().join("bench.artrie");
-        let mut trie: PersistentARTrie<i64> =
-            PersistentARTrie::create(&path).expect("create");
+        let mut trie: PersistentARTrie<i64> = PersistentARTrie::create(&path).expect("create");
 
         b.iter(|| {
             let mut tx = trie.begin_document("bench_doc").expect("begin");
@@ -111,8 +94,7 @@ fn bench_commit_vs_abort(c: &mut Criterion) {
     group.bench_function("abort_1000", |b| {
         let dir = tempdir().expect("create temp dir");
         let path = dir.path().join("bench.artrie");
-        let trie: PersistentARTrie<i64> =
-            PersistentARTrie::create(&path).expect("create");
+        let trie: PersistentARTrie<i64> = PersistentARTrie::create(&path).expect("create");
 
         b.iter(|| {
             let mut tx = trie.begin_document("bench_doc").expect("begin");
@@ -141,8 +123,7 @@ fn bench_transaction_vs_batch(c: &mut Criterion) {
     group.bench_function("transaction_commit", |b| {
         let dir = tempdir().expect("create temp dir");
         let path = dir.path().join("bench.artrie");
-        let mut trie: PersistentARTrie<i64> =
-            PersistentARTrie::create(&path).expect("create");
+        let mut trie: PersistentARTrie<i64> = PersistentARTrie::create(&path).expect("create");
 
         b.iter(|| {
             let mut tx = trie.begin_document("bench_doc").expect("begin");
@@ -157,8 +138,7 @@ fn bench_transaction_vs_batch(c: &mut Criterion) {
     group.bench_function("direct_insert_batch", |b| {
         let dir = tempdir().expect("create temp dir");
         let path = dir.path().join("bench.artrie");
-        let mut trie: PersistentARTrie<i64> =
-            PersistentARTrie::create(&path).expect("create");
+        let mut trie: PersistentARTrie<i64> = PersistentARTrie::create(&path).expect("create");
 
         b.iter(|| {
             let result = trie.insert_batch(&terms);

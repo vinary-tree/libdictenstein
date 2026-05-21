@@ -311,7 +311,9 @@ pub use path_compression::{PrefixMatchResult, SplitPrefix};
 pub use swizzled_ptr::{DiskLocation, NodeType, SwizzledPtr};
 
 // Bucket types
-pub use bucket::{BucketError, BucketHeader, SplitByByteResult, SplitResult, StringBucket, StringEntry};
+pub use bucket::{
+    BucketError, BucketHeader, SplitByByteResult, SplitResult, StringBucket, StringEntry,
+};
 
 // Transition types
 pub use transitions::{
@@ -333,7 +335,8 @@ pub use dict_impl::SharedARTrieParallelExt;
 ///
 /// This type alias provides `Arc<RwLock<...>>` semantics for concurrent access
 /// to the disk-backed byte-level trie.
-pub type SharedARTrie<V, S = MmapDiskManager> = std::sync::Arc<parking_lot::RwLock<PersistentARTrie<V, S>>>;
+pub type SharedARTrie<V, S = MmapDiskManager> =
+    std::sync::Arc<parking_lot::RwLock<PersistentARTrie<V, S>>>;
 
 // Arena-aware iteration types
 pub use dict_impl::{PrefixTermWithArena, PrefixTermWithValueAndArena};
@@ -349,24 +352,27 @@ pub use zipper::PersistentARTrieZipper;
 
 pub use block_storage::{AlignedBlock, BlockStorage};
 pub use buffer_manager::{BufferManager, BufferPoolStats, PageReadGuard, PageWriteGuard};
-pub use disk_manager::{DiskManager, MmapDiskManager, FileHeader, BLOCK_SIZE, MAX_BLOCK_COUNT};
+pub use disk_manager::{DiskManager, FileHeader, MmapDiskManager, BLOCK_SIZE, MAX_BLOCK_COUNT};
 
 #[cfg(feature = "io-uring-backend")]
 pub use io_uring_disk_manager::IoUringDiskManager;
 
 // Arena types
 pub use arena::{
-    ArenaHeader, ByteNodeArena, ByteNodeArenaV2, SlotEntry, VarintSlotEntry,
-    ARENA_MAGIC, ARENA_MAGIC_V2, ARENA_VERSION, ARENA_VERSION_V2,
-    FLAG_VARINT_DIRECTORY, HEADER_SIZE, MIN_FREE_SPACE, SLOT_SIZE,
+    ArenaHeader, ByteNodeArena, ByteNodeArenaV2, SlotEntry, VarintSlotEntry, ARENA_MAGIC,
+    ARENA_MAGIC_V2, ARENA_VERSION, ARENA_VERSION_V2, FLAG_VARINT_DIRECTORY, HEADER_SIZE,
+    MIN_FREE_SPACE, SLOT_SIZE,
 };
 
-pub use arena_manager::{ArenaManager, ArenaSlot, ArenaStats, FlushConfig, FlushStats, ReservedSlots};
+pub use arena_manager::{
+    ArenaManager, ArenaSlot, ArenaStats, FlushConfig, FlushStats, ReservedSlots,
+};
 
 // Compact encoding types
 pub use compact_encoding::{
-    CompactHeader, DecodedCompactByteNode, COMPACT_HEADER_SIZE, VARINT_LEN_BIAS, VARINT_MAX_SINGLE_BYTE,
-    compact_node_types, determine_ptr_width, read_varint_from_slice, write_varint_to_vec, varint_size,
+    compact_node_types, determine_ptr_width, read_varint_from_slice, varint_size,
+    write_varint_to_vec, CompactHeader, DecodedCompactByteNode, COMPACT_HEADER_SIZE,
+    VARINT_LEN_BIAS, VARINT_MAX_SINGLE_BYTE,
 };
 
 // WAL types
@@ -374,9 +380,8 @@ pub use wal::{Lsn, WalConfig, WalHeader, WalReader, WalRecord, WalRecordType, Wa
 
 // Async WAL types for concurrent writes during sync
 pub use wal::{
-    AsyncWalConfig, AsyncWalError, AsyncWalWriter, PendingSegment, SegmentSyncManager, SyncHandle,
-    WalSyncBackend, StdFsync,
-    collect_all_segments,
+    collect_all_segments, AsyncWalConfig, AsyncWalError, AsyncWalWriter, PendingSegment,
+    SegmentSyncManager, StdFsync, SyncHandle, WalSyncBackend,
 };
 
 // io_uring-based WAL fsync backend (Linux-only, requires `io-uring-backend` feature)
@@ -384,9 +389,7 @@ pub use wal::{
 pub use wal::IoUringFsync;
 
 // WAL management trait for shared WAL operations
-pub use wal_managed::{
-    WalManaged, create_async_wal, open_async_wal, open_or_create_async_wal,
-};
+pub use wal_managed::{create_async_wal, open_async_wal, open_or_create_async_wal, WalManaged};
 
 // Group commit types (opt-in feature for slower storage)
 #[cfg(feature = "group-commit")]
@@ -394,11 +397,10 @@ pub use group_commit::{GroupCommitConfig, GroupCommitCoordinator, GroupCommitSta
 
 // Recovery types
 pub use recovery::{
-    CorruptionType, IncrementalRecovery, RecoveredOperation, RecoveredState, RecoveryError,
-    RecoveryManager, RecoveryMode, RecoveryReport, RecoveryStats,
-    detect_corruption, find_wal_archive_segments, find_wal_pending_segments,
-    collect_all_wal_segments, get_segment_first_lsn, sort_segments_by_lsn,
-    rebuild_from_wal_segments,
+    collect_all_wal_segments, detect_corruption, find_wal_archive_segments,
+    find_wal_pending_segments, get_segment_first_lsn, rebuild_from_wal_segments,
+    sort_segments_by_lsn, CorruptionType, IncrementalRecovery, RecoveredOperation, RecoveredState,
+    RecoveryError, RecoveryManager, RecoveryMode, RecoveryReport, RecoveryStats,
 };
 
 // Epoch-based checkpointing types
@@ -419,14 +421,10 @@ pub use concurrency::{
 };
 
 // Traversal context types
-pub use traversal_context::{
-    LightweightTraversalContext, TraversalContext, TraversalStats,
-};
+pub use traversal_context::{LightweightTraversalContext, TraversalContext, TraversalStats};
 
 // Dirty tracker types
-pub use dirty_tracker::{
-    BatchDirtyTracker, DirtyTracker, DirtyTrackerStats,
-};
+pub use dirty_tracker::{BatchDirtyTracker, DirtyTracker, DirtyTrackerStats};
 
 // Deduplication types
 pub use dedup::{
@@ -435,9 +433,9 @@ pub use dedup::{
 
 // Relative encoding types
 pub use relative_encoding::{
-    encode_child_pointer, decode_child_pointer, encode_children, decode_children,
-    encode_sequential_siblings, decode_sequential_siblings, encoded_size, is_same_arena,
-    FLAG_CROSS_ARENA, FLAG_RELATIVE_OFFSETS, FLAG_SEQUENTIAL_SIBLINGS, CROSS_ARENA_SIZE,
+    decode_child_pointer, decode_children, decode_sequential_siblings, encode_child_pointer,
+    encode_children, encode_sequential_siblings, encoded_size, is_same_arena, CROSS_ARENA_SIZE,
+    FLAG_CROSS_ARENA, FLAG_RELATIVE_OFFSETS, FLAG_SEQUENTIAL_SIBLINGS,
 };
 
 // Memory pressure monitoring types
@@ -453,30 +451,24 @@ pub use adaptive_pool::{
 
 // Eviction types for bounded-memory operation
 pub use eviction::{
-    AccessTracker, DiskLocationRegistry, EvictionConfig, EvictionCoordinator,
-    EvictionStats, EvictionUrgency, LruRegistry,
+    AccessTracker, DiskLocationRegistry, EvictionConfig, EvictionCoordinator, EvictionStats,
+    EvictionUrgency, LruRegistry,
 };
 
 // Per-node logging types
 pub use per_node_log::{
-    DirtyNodeTracker, InlineLog, NodeId, NodeLogEntry, NodeRecoveryResult,
-    PageId, PerNodeLogConfig, PerNodeLogStats, PerNodeLogStatsAtomic, RecoveryResult,
+    DirtyNodeTracker, InlineLog, NodeId, NodeLogEntry, NodeRecoveryResult, PageId,
+    PerNodeLogConfig, PerNodeLogStats, PerNodeLogStatsAtomic, RecoveryResult,
 };
 
 // Version checkpoint types (Phase 7)
-pub use version_checkpoint::{
-    VersionCheckpointManager, VersionCheckpointStats, VersionSnapshot,
-};
+pub use version_checkpoint::{VersionCheckpointManager, VersionCheckpointStats, VersionSnapshot};
 
 // MVCC-lite read transaction types (Phase 8)
-pub use mvcc::{
-    MvccStats, MvccStatsTracker, ReadTransaction, TrieRoot,
-};
+pub use mvcc::{MvccStats, MvccStatsTracker, ReadTransaction, TrieRoot};
 
 // Version garbage collection types (Phase 9)
-pub use version_gc::{
-    GcCandidate, GcConfig, GcStats, ReaderGuard, VersionGcRegistry,
-};
+pub use version_gc::{GcCandidate, GcConfig, GcStats, ReaderGuard, VersionGcRegistry};
 
 /// Maximum key length supported (64KB - 1)
 pub const MAX_KEY_LENGTH: usize = 65535;

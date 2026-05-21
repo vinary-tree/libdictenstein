@@ -14,7 +14,6 @@ use crate::persistent_artrie::wal::WalRecord;
 use crate::value::DictionaryValue;
 
 impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
-
     /// Get the current durability policy.
     ///
     /// The durability policy controls when fsync is called after WAL writes.
@@ -58,7 +57,9 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
         #[cfg(feature = "group-commit")]
         if let Some(ref gc) = self.group_commit {
             gc.append_with_sync(record)
-                .map_err(|e| PersistentARTrieError::WalError { reason: format!("{:?}", e) })?;
+                .map_err(|e| PersistentARTrieError::WalError {
+                    reason: format!("{:?}", e),
+                })?;
             return Ok(());
         }
 
@@ -66,7 +67,9 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
         if let Some(ref wal_writer) = self.wal_writer {
             wal_writer
                 .append(record)
-                .map_err(|e| PersistentARTrieError::WalError { reason: format!("{:?}", e) })?;
+                .map_err(|e| PersistentARTrieError::WalError {
+                    reason: format!("{:?}", e),
+                })?;
         }
         Ok(())
     }
@@ -91,7 +94,9 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
         if let Some(ref wal_writer) = self.wal_writer {
             wal_writer
                 .sync()
-                .map_err(|e| PersistentARTrieError::WalError { reason: format!("{:?}", e) })?;
+                .map_err(|e| PersistentARTrieError::WalError {
+                    reason: format!("{:?}", e),
+                })?;
         }
         Ok(())
     }

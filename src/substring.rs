@@ -194,7 +194,10 @@ impl<N: DictionaryNode> SubstringMatch<N> {
     /// Get the number of characters after the match (right context).
     #[inline]
     pub fn right_context_len(&self) -> usize {
-        self.term.chars().count().saturating_sub(self.position + self.length)
+        self.term
+            .chars()
+            .count()
+            .saturating_sub(self.position + self.length)
     }
 }
 

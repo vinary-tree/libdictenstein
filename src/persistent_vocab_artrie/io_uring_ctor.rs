@@ -10,19 +10,19 @@
 
 use std::collections::HashMap;
 use std::path::Path;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::Arc;
 
 use parking_lot::RwLock;
 use xxhash_rust::xxh3::Xxh3DefaultBuilder;
 
-use crate::persistent_artrie::IoUringDiskManager;
 use crate::persistent_artrie::block_storage::BlockStorage;
 use crate::persistent_artrie::buffer_manager::BufferManager;
 use crate::persistent_artrie::dict_impl::DurabilityPolicy;
 use crate::persistent_artrie::error::{PersistentARTrieError, Result};
 use crate::persistent_artrie::wal::WalConfig;
 use crate::persistent_artrie::wal_managed::{create_async_wal, open_or_create_async_wal};
+use crate::persistent_artrie::IoUringDiskManager;
 use crate::persistent_artrie_char::arena_manager::{ArenaManager, ArenaSlot};
 
 use super::dict_impl::PersistentVocabARTrie;
@@ -32,7 +32,6 @@ use super::types::{
     NodeRef, VocabTrieFileHeader, VocabTrieNode, VocabTrieRoot, DEFAULT_REVERSE_CACHE_SIZE,
     DEFAULT_VOCAB_BUFFER_POOL_SIZE,
 };
-
 
 // === io_uring convenience constructors (Linux-only, requires `io-uring-backend` feature) ===
 
@@ -51,7 +50,10 @@ impl PersistentVocabARTrie<crate::persistent_artrie::IoUringDiskManager> {
     }
 
     /// Create a new vocabulary trie with io_uring and a custom starting index.
-    pub fn create_with_io_uring_and_start_index<P: AsRef<Path>>(path: P, start_index: u64) -> Result<Self> {
+    pub fn create_with_io_uring_and_start_index<P: AsRef<Path>>(
+        path: P,
+        start_index: u64,
+    ) -> Result<Self> {
         use crate::persistent_artrie::IoUringDiskManager;
 
         let path = path.as_ref().to_path_buf();
@@ -89,12 +91,13 @@ impl PersistentVocabARTrie<crate::persistent_artrie::IoUringDiskManager> {
         // Create WAL file using async writer
         let wal_path = path.with_extension("vocab.wal");
         let wal_config = WalConfig::default();
-        let wal_writer = create_async_wal(&wal_path, &path)
-            .map_err(|e| PersistentARTrieError::io_error(
+        let wal_writer = create_async_wal(&wal_path, &path).map_err(|e| {
+            PersistentARTrieError::io_error(
                 "create WAL",
                 wal_path.to_string_lossy(),
                 std::io::Error::new(std::io::ErrorKind::Other, e.to_string()),
-            ))?;
+            )
+        })?;
 
         // Create root node
         let root_node = VocabTrieNode::new();
@@ -192,12 +195,13 @@ impl PersistentVocabARTrie<crate::persistent_artrie::IoUringDiskManager> {
         let wal_path = path.with_extension("vocab.wal");
         let wal_config = WalConfig::default();
         let (wal_writer, next_lsn) = {
-            let wal = open_or_create_async_wal(&wal_path, &path)
-                .map_err(|e| PersistentARTrieError::io_error(
+            let wal = open_or_create_async_wal(&wal_path, &path).map_err(|e| {
+                PersistentARTrieError::io_error(
                     "open WAL",
                     wal_path.to_string_lossy(),
                     std::io::Error::new(std::io::ErrorKind::Other, e.to_string()),
-                ))?;
+                )
+            })?;
 
             let min_lsn = header.checkpoint_lsn + 1;
             wal.set_min_lsn(min_lsn);
@@ -218,7 +222,11 @@ impl PersistentVocabARTrie<crate::persistent_artrie::IoUringDiskManager> {
             let root_ptr = Box::into_raw(Box::new(root_node));
             map.insert(root_ref, root_ptr as *const VocabTrieNode);
 
-            (VocabTrieRoot::Node(unsafe { Box::from_raw(root_ptr) }), map, 1)
+            (
+                VocabTrieRoot::Node(unsafe { Box::from_raw(root_ptr) }),
+                map,
+                1,
+            )
         };
 
         let mut trie = Self {

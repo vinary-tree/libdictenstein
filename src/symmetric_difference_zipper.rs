@@ -639,11 +639,11 @@ mod tests {
 
     #[test]
     fn test_symmetric_difference_with_values() {
-        let dict_a = DoubleArrayTrie::from_terms_with_values(
-            vec![("cat", 1usize), ("dog", 2)].into_iter(),
+        let dict_a =
+            DoubleArrayTrie::from_terms_with_values(vec![("cat", 1usize), ("dog", 2)].into_iter());
+        let dict_b = DoubleArrayTrie::from_terms_with_values(
+            vec![("dog", 20usize), ("fish", 3)].into_iter(),
         );
-        let dict_b =
-            DoubleArrayTrie::from_terms_with_values(vec![("dog", 20usize), ("fish", 3)].into_iter());
 
         let z_a = DoubleArrayTrieZipper::new_from_dict(&dict_a);
         let z_b = DoubleArrayTrieZipper::new_from_dict(&dict_b);
@@ -681,11 +681,11 @@ mod tests {
 
     #[test]
     fn test_symmetric_difference_valued_iterator() {
-        let dict_a = DoubleArrayTrie::from_terms_with_values(
-            vec![("cat", 1usize), ("dog", 2)].into_iter(),
+        let dict_a =
+            DoubleArrayTrie::from_terms_with_values(vec![("cat", 1usize), ("dog", 2)].into_iter());
+        let dict_b = DoubleArrayTrie::from_terms_with_values(
+            vec![("dog", 20usize), ("fish", 3)].into_iter(),
         );
-        let dict_b =
-            DoubleArrayTrie::from_terms_with_values(vec![("dog", 20usize), ("fish", 3)].into_iter());
 
         let z_a = DoubleArrayTrieZipper::new_from_dict(&dict_a);
         let z_b = DoubleArrayTrieZipper::new_from_dict(&dict_b);
@@ -774,8 +774,14 @@ mod tests {
             .collect();
 
         // Manually compute (A ∪ B) \ (A ∩ B)
-        let a_terms: HashSet<String> = ["cat", "dog", "fish"].iter().map(|s| s.to_string()).collect();
-        let b_terms: HashSet<String> = ["dog", "fish", "bird"].iter().map(|s| s.to_string()).collect();
+        let a_terms: HashSet<String> = ["cat", "dog", "fish"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let b_terms: HashSet<String> = ["dog", "fish", "bird"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
 
         let union: HashSet<String> = a_terms.union(&b_terms).cloned().collect();
         let intersection: HashSet<String> = a_terms.intersection(&b_terms).cloned().collect();

@@ -363,7 +363,11 @@ fn test_vocab_trie_large_dataset() {
             PersistentVocabARTrie::create_with_io_uring(&path).expect("create");
         for i in 0..count {
             let idx = vocab.insert(&format!("term_{:06}", i));
-            assert_eq!(idx, i as u64, "First insert of term_{:06} should get index {}", i, i);
+            assert_eq!(
+                idx, i as u64,
+                "First insert of term_{:06} should get index {}",
+                i, i
+            );
         }
         vocab.sync().expect("sync");
     }

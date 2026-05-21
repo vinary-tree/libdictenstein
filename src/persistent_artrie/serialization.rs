@@ -59,15 +59,17 @@
 //! ```
 
 use super::error::{PersistentARTrieError, Result};
-use super::nodes::{CompressedPrefix, Node, Node16, Node256, Node4, Node48, NodeHeader, MAX_PREFIX_LEN};
 use super::nodes::node48::NO_CHILD;
+use super::nodes::{
+    CompressedPrefix, Node, Node16, Node256, Node4, Node48, NodeHeader, MAX_PREFIX_LEN,
+};
 use super::swizzled_ptr::{NodeType, SwizzledPtr};
 use std::io::{Read, Write};
 
 // Relative encoding support (feature-gated)
 use super::arena_manager::ArenaSlot;
 use super::relative_encoding::{
-    encode_children, decode_children, encode_sequential_siblings, decode_sequential_siblings,
+    decode_children, decode_sequential_siblings, encode_children, encode_sequential_siblings,
 };
 
 /// Helper to convert io::Error to PersistentARTrieError for serialization operations
@@ -144,11 +146,7 @@ impl SerializedNodeHeader {
     }
 
     /// Create a header from a NodeHeader with encoding flags (v2 format)
-    pub fn from_node_header_v2(
-        header: &NodeHeader,
-        data_size: u32,
-        encoding_flags: u8,
-    ) -> Self {
+    pub fn from_node_header_v2(header: &NodeHeader, data_size: u32, encoding_flags: u8) -> Self {
         Self {
             magic: NODE_MAGIC,
             version: FORMAT_VERSION_V2,
@@ -164,12 +162,14 @@ impl SerializedNodeHeader {
 
     /// Check if this header uses relative offset encoding
     pub fn uses_relative_offsets(&self) -> bool {
-        self.version >= FORMAT_VERSION_V2 && (self.encoding_flags & encoding_flags::RELATIVE_OFFSETS) != 0
+        self.version >= FORMAT_VERSION_V2
+            && (self.encoding_flags & encoding_flags::RELATIVE_OFFSETS) != 0
     }
 
     /// Check if this header uses sequential sibling storage
     pub fn uses_sequential_siblings(&self) -> bool {
-        self.version >= FORMAT_VERSION_V2 && (self.encoding_flags & encoding_flags::SEQUENTIAL_SIBLINGS) != 0
+        self.version >= FORMAT_VERSION_V2
+            && (self.encoding_flags & encoding_flags::SEQUENTIAL_SIBLINGS) != 0
     }
 
     /// Convert to a NodeHeader
@@ -190,12 +190,24 @@ impl SerializedNodeHeader {
         if self.magic != NODE_MAGIC {
             return Err(PersistentARTrieError::InvalidMagic {
                 expected: u64::from_le_bytes([
-                    NODE_MAGIC[0], NODE_MAGIC[1], NODE_MAGIC[2], NODE_MAGIC[3],
-                    0, 0, 0, 0,
+                    NODE_MAGIC[0],
+                    NODE_MAGIC[1],
+                    NODE_MAGIC[2],
+                    NODE_MAGIC[3],
+                    0,
+                    0,
+                    0,
+                    0,
                 ]),
                 found: u64::from_le_bytes([
-                    self.magic[0], self.magic[1], self.magic[2], self.magic[3],
-                    0, 0, 0, 0,
+                    self.magic[0],
+                    self.magic[1],
+                    self.magic[2],
+                    self.magic[3],
+                    0,
+                    0,
+                    0,
+                    0,
                 ]),
             });
         }
@@ -269,9 +281,9 @@ fn prefix_size(node: &Node) -> usize {
 
 fn node_data_size(node: &Node) -> usize {
     match node {
-        Node::N4(_) => 4 + 4 * 8,      // 4 keys + 4 children (8 bytes each)
-        Node::N16(_) => 16 + 16 * 8,   // 16 keys + 16 children
-        Node::N48(_) => 256 + 48 * 8,  // 256 index + 48 children
+        Node::N4(_) => 4 + 4 * 8,     // 4 keys + 4 children (8 bytes each)
+        Node::N16(_) => 16 + 16 * 8,  // 16 keys + 16 children
+        Node::N48(_) => 256 + 48 * 8, // 256 index + 48 children
         Node::N256(n) => {
             // Bitmap (32 bytes) + non-null children (8 bytes each)
             32 + n.header.num_children as usize * 8
@@ -285,15 +297,11 @@ pub fn serialize_node<W: Write>(node: &Node, writer: &mut W) -> Result<usize> {
     let header = SerializedNodeHeader::from_node_header(node.header(), data_size as u32);
 
     // Write header
-    writer
-        .write_all(&header.to_bytes())
-        .map_err(io_err)?;
+    writer.write_all(&header.to_bytes()).map_err(io_err)?;
 
     // Write prefix if present
     if node.header().prefix_len > 0 {
-        writer
-            .write_all(&node.prefix().bytes)
-            .map_err(io_err)?;
+        writer.write_all(&node.prefix().bytes).map_err(io_err)?;
     }
 
     // Write type-specific data
@@ -309,48 +317,36 @@ pub fn serialize_node<W: Write>(node: &Node, writer: &mut W) -> Result<usize> {
 
 fn serialize_node4<W: Write>(node: &Node4, writer: &mut W) -> Result<()> {
     // Write keys
-    writer
-        .write_all(&node.keys)
-        .map_err(io_err)?;
+    writer.write_all(&node.keys).map_err(io_err)?;
 
     // Write children as u64
     for child in &node.children {
         let raw = child.to_raw();
-        writer
-            .write_all(&raw.to_le_bytes())
-            .map_err(io_err)?;
+        writer.write_all(&raw.to_le_bytes()).map_err(io_err)?;
     }
     Ok(())
 }
 
 fn serialize_node16<W: Write>(node: &Node16, writer: &mut W) -> Result<()> {
     // Write keys
-    writer
-        .write_all(&node.keys)
-        .map_err(io_err)?;
+    writer.write_all(&node.keys).map_err(io_err)?;
 
     // Write children as u64
     for child in &node.children {
         let raw = child.to_raw();
-        writer
-            .write_all(&raw.to_le_bytes())
-            .map_err(io_err)?;
+        writer.write_all(&raw.to_le_bytes()).map_err(io_err)?;
     }
     Ok(())
 }
 
 fn serialize_node48<W: Write>(node: &Node48, writer: &mut W) -> Result<()> {
     // Write index array
-    writer
-        .write_all(&node.index)
-        .map_err(io_err)?;
+    writer.write_all(&node.index).map_err(io_err)?;
 
     // Write children as u64
     for child in &node.children {
         let raw = child.to_raw();
-        writer
-            .write_all(&raw.to_le_bytes())
-            .map_err(io_err)?;
+        writer.write_all(&raw.to_le_bytes()).map_err(io_err)?;
     }
     Ok(())
 }
@@ -366,18 +362,14 @@ fn serialize_node256<W: Write>(node: &Node256, writer: &mut W) -> Result<()> {
 
     // Write bitmap
     for word in &bitmap {
-        writer
-            .write_all(&word.to_le_bytes())
-            .map_err(io_err)?;
+        writer.write_all(&word.to_le_bytes()).map_err(io_err)?;
     }
 
     // Write only non-null children
     for child in &node.children {
         if !child.is_null() {
             let raw = child.to_raw();
-            writer
-                .write_all(&raw.to_le_bytes())
-                .map_err(io_err)?;
+            writer.write_all(&raw.to_le_bytes()).map_err(io_err)?;
         }
     }
     Ok(())
@@ -387,19 +379,17 @@ fn serialize_node256<W: Write>(node: &Node256, writer: &mut W) -> Result<()> {
 pub fn deserialize_node<R: Read>(reader: &mut R) -> Result<Node> {
     // Read and validate header
     let mut header_bytes = [0u8; SERIALIZED_HEADER_SIZE];
-    reader
-        .read_exact(&mut header_bytes)
-        .map_err(io_err)?;
+    reader.read_exact(&mut header_bytes).map_err(io_err)?;
     let header = SerializedNodeHeader::from_bytes(&header_bytes);
     header.validate()?;
 
     // Read prefix if present
     let prefix = if header.prefix_len > 0 {
         let mut prefix_bytes = [0u8; MAX_PREFIX_LEN];
-        reader
-            .read_exact(&mut prefix_bytes)
-            .map_err(io_err)?;
-        CompressedPrefix { bytes: prefix_bytes }
+        reader.read_exact(&mut prefix_bytes).map_err(io_err)?;
+        CompressedPrefix {
+            bytes: prefix_bytes,
+        }
     } else {
         CompressedPrefix::empty()
     };
@@ -427,16 +417,12 @@ fn deserialize_node4<R: Read>(
     node.prefix = prefix;
 
     // Read keys
-    reader
-        .read_exact(&mut node.keys)
-        .map_err(io_err)?;
+    reader.read_exact(&mut node.keys).map_err(io_err)?;
 
     // Read children
     for child in &mut node.children {
         let mut raw_bytes = [0u8; 8];
-        reader
-            .read_exact(&mut raw_bytes)
-            .map_err(io_err)?;
+        reader.read_exact(&mut raw_bytes).map_err(io_err)?;
         *child = SwizzledPtr::from_raw(u64::from_le_bytes(raw_bytes));
     }
 
@@ -453,16 +439,12 @@ fn deserialize_node16<R: Read>(
     node.prefix = prefix;
 
     // Read keys
-    reader
-        .read_exact(&mut node.keys)
-        .map_err(io_err)?;
+    reader.read_exact(&mut node.keys).map_err(io_err)?;
 
     // Read children
     for child in &mut node.children {
         let mut raw_bytes = [0u8; 8];
-        reader
-            .read_exact(&mut raw_bytes)
-            .map_err(io_err)?;
+        reader.read_exact(&mut raw_bytes).map_err(io_err)?;
         *child = SwizzledPtr::from_raw(u64::from_le_bytes(raw_bytes));
     }
 
@@ -479,16 +461,12 @@ fn deserialize_node48<R: Read>(
     node.prefix = prefix;
 
     // Read index array
-    reader
-        .read_exact(&mut node.index)
-        .map_err(io_err)?;
+    reader.read_exact(&mut node.index).map_err(io_err)?;
 
     // Read children
     for child in &mut node.children {
         let mut raw_bytes = [0u8; 8];
-        reader
-            .read_exact(&mut raw_bytes)
-            .map_err(io_err)?;
+        reader.read_exact(&mut raw_bytes).map_err(io_err)?;
         *child = SwizzledPtr::from_raw(u64::from_le_bytes(raw_bytes));
     }
 
@@ -508,9 +486,7 @@ fn deserialize_node256<R: Read>(
     let mut bitmap = [0u64; 4];
     for word in &mut bitmap {
         let mut word_bytes = [0u8; 8];
-        reader
-            .read_exact(&mut word_bytes)
-            .map_err(io_err)?;
+        reader.read_exact(&mut word_bytes).map_err(io_err)?;
         *word = u64::from_le_bytes(word_bytes);
     }
 
@@ -518,9 +494,7 @@ fn deserialize_node256<R: Read>(
     for i in 0..256 {
         if bitmap[i / 64] & (1u64 << (i % 64)) != 0 {
             let mut raw_bytes = [0u8; 8];
-            reader
-                .read_exact(&mut raw_bytes)
-                .map_err(io_err)?;
+            reader.read_exact(&mut raw_bytes).map_err(io_err)?;
             node.children[i] = SwizzledPtr::from_raw(u64::from_le_bytes(raw_bytes));
         }
     }
@@ -697,12 +671,13 @@ pub mod v2 {
     }
 
     /// Estimate the serialized size with relative encoding
-    pub fn estimate_serialized_size_v2(
-        node: &Node,
-        ctx: &SerializationContext,
-    ) -> usize {
+    pub fn estimate_serialized_size_v2(node: &Node, ctx: &SerializationContext) -> usize {
         let header_size = SERIALIZED_HEADER_SIZE;
-        let prefix_size = if node.header().prefix_len > 0 { MAX_PREFIX_LEN } else { 0 };
+        let prefix_size = if node.header().prefix_len > 0 {
+            MAX_PREFIX_LEN
+        } else {
+            0
+        };
 
         let num_children = node.header().num_children as usize;
 
@@ -718,7 +693,8 @@ pub mod v2 {
         } else if ctx.use_relative {
             // Relative: sum of encoded sizes for each child
             let child_slots = collect_child_slots(node);
-            let encoded_size: usize = child_slots.iter()
+            let encoded_size: usize = child_slots
+                .iter()
                 .map(|&child| super::super::relative_encoding::encoded_size(ctx.parent_slot, child))
                 .sum();
             // Add 1 byte per child for node type
@@ -739,10 +715,7 @@ pub mod v2 {
     }
 
     /// Serialize a node with relative encoding to a byte vector
-    pub fn serialize_node_v2(
-        node: &Node,
-        ctx: &SerializationContext,
-    ) -> Result<Vec<u8>> {
+    pub fn serialize_node_v2(node: &Node, ctx: &SerializationContext) -> Result<Vec<u8>> {
         let estimated_size = estimate_serialized_size_v2(node, ctx);
         let mut buffer = Vec::with_capacity(estimated_size);
 
@@ -761,7 +734,11 @@ pub mod v2 {
         }
 
         // Calculate data size (keys + encoded children + node types)
-        let prefix_size = if node.header().prefix_len > 0 { MAX_PREFIX_LEN } else { 0 };
+        let prefix_size = if node.header().prefix_len > 0 {
+            MAX_PREFIX_LEN
+        } else {
+            0
+        };
         let keys_size = match node {
             Node::N4(_) => 4,
             Node::N16(_) => 16,
@@ -829,10 +806,7 @@ pub mod v2 {
     }
 
     /// Deserialize a node with v2 encoding (handles both relative and fixed)
-    pub fn deserialize_node_v2(
-        data: &[u8],
-        ctx: &DeserializationContext,
-    ) -> Result<Node> {
+    pub fn deserialize_node_v2(data: &[u8], ctx: &DeserializationContext) -> Result<Node> {
         let mut reader = std::io::Cursor::new(data);
 
         // Read header
@@ -845,7 +819,9 @@ pub mod v2 {
         let prefix = if header.prefix_len > 0 {
             let mut prefix_bytes = [0u8; MAX_PREFIX_LEN];
             reader.read_exact(&mut prefix_bytes).map_err(io_err)?;
-            CompressedPrefix { bytes: prefix_bytes }
+            CompressedPrefix {
+                bytes: prefix_bytes,
+            }
         } else {
             CompressedPrefix::empty()
         };
@@ -854,18 +830,10 @@ pub mod v2 {
 
         // Decode based on node type and encoding flags
         match header.node_type {
-            node_types::NODE4 => {
-                deserialize_node4_v2(&header, prefix, remaining, ctx)
-            }
-            node_types::NODE16 => {
-                deserialize_node16_v2(&header, prefix, remaining, ctx)
-            }
-            node_types::NODE48 => {
-                deserialize_node48_v2(&header, prefix, remaining, ctx)
-            }
-            node_types::NODE256 => {
-                deserialize_node256_v2(&header, prefix, remaining, ctx)
-            }
+            node_types::NODE4 => deserialize_node4_v2(&header, prefix, remaining, ctx),
+            node_types::NODE16 => deserialize_node16_v2(&header, prefix, remaining, ctx),
+            node_types::NODE48 => deserialize_node48_v2(&header, prefix, remaining, ctx),
+            node_types::NODE256 => deserialize_node256_v2(&header, prefix, remaining, ctx),
             _ => Err(PersistentARTrieError::corrupted(format!(
                 "invalid node type: {}",
                 header.node_type
@@ -890,21 +858,23 @@ pub mod v2 {
 
         // Decode children based on encoding mode
         if header.uses_sequential_siblings() {
-            let (children, bytes_consumed) = decode_sequential_siblings(&data[4..], ctx.parent_slot, num_children);
+            let (children, bytes_consumed) =
+                decode_sequential_siblings(&data[4..], ctx.parent_slot, num_children);
             // Read node types after encoded children
             let types_start = 4 + bytes_consumed;
             for (i, slot) in children.into_iter().enumerate() {
-                let node_type = NodeType::try_from(data[types_start + i])
-                    .unwrap_or(NodeType::Node4);
+                let node_type =
+                    NodeType::try_from(data[types_start + i]).unwrap_or(NodeType::Node4);
                 node.children[i] = SwizzledPtr::from_arena_slot(slot, node_type);
             }
         } else if header.uses_relative_offsets() {
-            let (children, bytes_consumed) = decode_children(&data[4..], ctx.parent_slot, num_children);
+            let (children, bytes_consumed) =
+                decode_children(&data[4..], ctx.parent_slot, num_children);
             // Read node types after encoded children
             let types_start = 4 + bytes_consumed;
             for (i, slot) in children.into_iter().enumerate() {
-                let node_type = NodeType::try_from(data[types_start + i])
-                    .unwrap_or(NodeType::Node4);
+                let node_type =
+                    NodeType::try_from(data[types_start + i]).unwrap_or(NodeType::Node4);
                 node.children[i] = SwizzledPtr::from_arena_slot(slot, node_type);
             }
         } else {
@@ -936,21 +906,23 @@ pub mod v2 {
 
         // Decode children based on encoding mode
         if header.uses_sequential_siblings() {
-            let (children, bytes_consumed) = decode_sequential_siblings(&data[16..], ctx.parent_slot, num_children);
+            let (children, bytes_consumed) =
+                decode_sequential_siblings(&data[16..], ctx.parent_slot, num_children);
             // Read node types after encoded children
             let types_start = 16 + bytes_consumed;
             for (i, slot) in children.into_iter().enumerate() {
-                let node_type = NodeType::try_from(data[types_start + i])
-                    .unwrap_or(NodeType::Node4);
+                let node_type =
+                    NodeType::try_from(data[types_start + i]).unwrap_or(NodeType::Node4);
                 node.children[i] = SwizzledPtr::from_arena_slot(slot, node_type);
             }
         } else if header.uses_relative_offsets() {
-            let (children, bytes_consumed) = decode_children(&data[16..], ctx.parent_slot, num_children);
+            let (children, bytes_consumed) =
+                decode_children(&data[16..], ctx.parent_slot, num_children);
             // Read node types after encoded children
             let types_start = 16 + bytes_consumed;
             for (i, slot) in children.into_iter().enumerate() {
-                let node_type = NodeType::try_from(data[types_start + i])
-                    .unwrap_or(NodeType::Node4);
+                let node_type =
+                    NodeType::try_from(data[types_start + i]).unwrap_or(NodeType::Node4);
                 node.children[i] = SwizzledPtr::from_arena_slot(slot, node_type);
             }
         } else {
@@ -994,23 +966,25 @@ pub mod v2 {
 
         // Decode children based on encoding mode
         if header.uses_sequential_siblings() {
-            let (children, bytes_consumed) = decode_sequential_siblings(&data[256..], ctx.parent_slot, num_children);
+            let (children, bytes_consumed) =
+                decode_sequential_siblings(&data[256..], ctx.parent_slot, num_children);
             // Read node types after encoded children
             let types_start = 256 + bytes_consumed;
             for (i, child_slot) in children.into_iter().enumerate() {
                 let actual_slot = used_slots[i] as usize;
-                let node_type = NodeType::try_from(data[types_start + i])
-                    .unwrap_or(NodeType::Node4);
+                let node_type =
+                    NodeType::try_from(data[types_start + i]).unwrap_or(NodeType::Node4);
                 node.children[actual_slot] = SwizzledPtr::from_arena_slot(child_slot, node_type);
             }
         } else if header.uses_relative_offsets() {
-            let (children, bytes_consumed) = decode_children(&data[256..], ctx.parent_slot, num_children);
+            let (children, bytes_consumed) =
+                decode_children(&data[256..], ctx.parent_slot, num_children);
             // Read node types after encoded children
             let types_start = 256 + bytes_consumed;
             for (i, child_slot) in children.into_iter().enumerate() {
                 let actual_slot = used_slots[i] as usize;
-                let node_type = NodeType::try_from(data[types_start + i])
-                    .unwrap_or(NodeType::Node4);
+                let node_type =
+                    NodeType::try_from(data[types_start + i]).unwrap_or(NodeType::Node4);
                 node.children[actual_slot] = SwizzledPtr::from_arena_slot(child_slot, node_type);
             }
         } else {
@@ -1048,7 +1022,8 @@ pub mod v2 {
 
         // Decode children based on encoding mode
         if header.uses_sequential_siblings() {
-            let (children, bytes_consumed) = decode_sequential_siblings(&data[children_start..], ctx.parent_slot, num_children);
+            let (children, bytes_consumed) =
+                decode_sequential_siblings(&data[children_start..], ctx.parent_slot, num_children);
             // Read node types after encoded children
             let types_start = children_start + bytes_consumed;
             let mut child_idx = 0;
@@ -1061,7 +1036,8 @@ pub mod v2 {
                 }
             }
         } else if header.uses_relative_offsets() {
-            let (children, bytes_consumed) = decode_children(&data[children_start..], ctx.parent_slot, num_children);
+            let (children, bytes_consumed) =
+                decode_children(&data[children_start..], ctx.parent_slot, num_children);
             // Read node types after encoded children
             let types_start = children_start + bytes_consumed;
             let mut child_idx = 0;
@@ -1092,15 +1068,14 @@ pub mod v2 {
 
 // Re-export v2 types for convenience
 pub use v2::{
-    SerializationContext, DeserializationContext,
-    serialize_node_v2, deserialize_node_v2,
-    estimate_serialized_size_v2, collect_child_slots,
+    collect_child_slots, deserialize_node_v2, estimate_serialized_size_v2, serialize_node_v2,
+    DeserializationContext, SerializationContext,
 };
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::persistent_artrie::nodes::{ArtNode, flags};
+    use crate::persistent_artrie::nodes::{flags, ArtNode};
     use crate::persistent_artrie::NodeType;
 
     #[test]
@@ -1573,7 +1548,12 @@ mod tests {
     #[test]
     fn test_all_flag_combinations() {
         // Test serialization with various flag combinations
-        let flag_combinations = [0u8, flags::IS_FINAL, flags::IS_DIRTY, flags::IS_FINAL | flags::IS_DIRTY];
+        let flag_combinations = [
+            0u8,
+            flags::IS_FINAL,
+            flags::IS_DIRTY,
+            flags::IS_FINAL | flags::IS_DIRTY,
+        ];
 
         for flags_val in flag_combinations {
             let mut node4 = Node4::new();

@@ -194,42 +194,36 @@ impl VocabTrieFileHeader {
             version: bytes[4],
             _reserved: [bytes[5], bytes[6], bytes[7]],
             root_ptr: u64::from_le_bytes([
-                bytes[8], bytes[9], bytes[10], bytes[11],
-                bytes[12], bytes[13], bytes[14], bytes[15],
+                bytes[8], bytes[9], bytes[10], bytes[11], bytes[12], bytes[13], bytes[14],
+                bytes[15],
             ]),
             entry_count: u64::from_le_bytes([
-                bytes[16], bytes[17], bytes[18], bytes[19],
-                bytes[20], bytes[21], bytes[22], bytes[23],
+                bytes[16], bytes[17], bytes[18], bytes[19], bytes[20], bytes[21], bytes[22],
+                bytes[23],
             ]),
-            block_count: u32::from_le_bytes([
-                bytes[24], bytes[25], bytes[26], bytes[27],
-            ]),
-            _pad1: u32::from_le_bytes([
-                bytes[28], bytes[29], bytes[30], bytes[31],
-            ]),
+            block_count: u32::from_le_bytes([bytes[24], bytes[25], bytes[26], bytes[27]]),
+            _pad1: u32::from_le_bytes([bytes[28], bytes[29], bytes[30], bytes[31]]),
             checkpoint_lsn: u64::from_le_bytes([
-                bytes[32], bytes[33], bytes[34], bytes[35],
-                bytes[36], bytes[37], bytes[38], bytes[39],
+                bytes[32], bytes[33], bytes[34], bytes[35], bytes[36], bytes[37], bytes[38],
+                bytes[39],
             ]),
-            header_checksum: u32::from_le_bytes([
-                bytes[40], bytes[41], bytes[42], bytes[43],
-            ]),
+            header_checksum: u32::from_le_bytes([bytes[40], bytes[41], bytes[42], bytes[43]]),
             _padding: {
                 let mut arr = [0u8; 20];
                 arr.copy_from_slice(&bytes[44..64]);
                 arr
             },
             start_index: u64::from_le_bytes([
-                bytes[64], bytes[65], bytes[66], bytes[67],
-                bytes[68], bytes[69], bytes[70], bytes[71],
+                bytes[64], bytes[65], bytes[66], bytes[67], bytes[68], bytes[69], bytes[70],
+                bytes[71],
             ]),
             next_index: u64::from_le_bytes([
-                bytes[72], bytes[73], bytes[74], bytes[75],
-                bytes[76], bytes[77], bytes[78], bytes[79],
+                bytes[72], bytes[73], bytes[74], bytes[75], bytes[76], bytes[77], bytes[78],
+                bytes[79],
             ]),
             reverse_index_capacity: u64::from_le_bytes([
-                bytes[80], bytes[81], bytes[82], bytes[83],
-                bytes[84], bytes[85], bytes[86], bytes[87],
+                bytes[80], bytes[81], bytes[82], bytes[83], bytes[84], bytes[85], bytes[86],
+                bytes[87],
             ]),
             _ext_padding: {
                 let mut arr = [0u8; 8];
@@ -245,13 +239,24 @@ impl VocabTrieFileHeader {
 
         if self.magic != VOCAB_TRIE_MAGIC {
             let expected = u64::from_le_bytes([
-                VOCAB_TRIE_MAGIC[0], VOCAB_TRIE_MAGIC[1],
-                VOCAB_TRIE_MAGIC[2], VOCAB_TRIE_MAGIC[3],
-                0, 0, 0, 0,
+                VOCAB_TRIE_MAGIC[0],
+                VOCAB_TRIE_MAGIC[1],
+                VOCAB_TRIE_MAGIC[2],
+                VOCAB_TRIE_MAGIC[3],
+                0,
+                0,
+                0,
+                0,
             ]);
             let found = u64::from_le_bytes([
-                self.magic[0], self.magic[1], self.magic[2], self.magic[3],
-                0, 0, 0, 0,
+                self.magic[0],
+                self.magic[1],
+                self.magic[2],
+                self.magic[3],
+                0,
+                0,
+                0,
+                0,
             ]);
             return Err(PersistentARTrieError::InvalidMagic { expected, found });
         }
@@ -369,7 +374,9 @@ impl Clone for VocabTrieNode {
 impl Drop for VocabTrieNode {
     fn drop(&mut self) {
         // Collect child pointers first to avoid iterator invalidation
-        let child_ptrs: Vec<_> = self.inner.iter_children()
+        let child_ptrs: Vec<_> = self
+            .inner
+            .iter_children()
             .filter_map(|(_, ptr)| ptr.as_ptr::<VocabTrieNode>())
             .collect();
 
@@ -443,7 +450,8 @@ impl VocabTrieNode {
 
     /// Get a child by character
     pub fn get_child(&self, c: char) -> Option<&VocabTrieNode> {
-        self.inner.find_child(c as u32)
+        self.inner
+            .find_child(c as u32)
             .and_then(|ptr| ptr.as_ptr::<VocabTrieNode>())
             .map(|ptr| {
                 // Safety: We control all SwizzledPtr creation; ptr is valid
@@ -453,7 +461,8 @@ impl VocabTrieNode {
 
     /// Get a child mutably by character
     pub fn get_child_mut(&mut self, c: char) -> Option<&mut VocabTrieNode> {
-        self.inner.find_child(c as u32)
+        self.inner
+            .find_child(c as u32)
             .and_then(|ptr| ptr.as_ptr::<VocabTrieNode>())
             .map(|ptr| {
                 // Safety: We control all SwizzledPtr creation; ptr is valid
@@ -489,7 +498,9 @@ impl VocabTrieNode {
             }
             Err(_) => {
                 // Key already exists (shouldn't happen, but handle gracefully)
-                unsafe { drop(Box::from_raw(ptr)); }
+                unsafe {
+                    drop(Box::from_raw(ptr));
+                }
                 return self.get_child_mut(c).expect("child should exist");
             }
         }
@@ -538,7 +549,9 @@ impl VocabTrieNode {
         let key = c as u32;
 
         // Check if child exists and get its pointer
-        let ptr = self.inner.find_child(key)
+        let ptr = self
+            .inner
+            .find_child(key)
             .and_then(|p| p.as_ptr::<VocabTrieNode>())?;
 
         // Remove from node
@@ -554,16 +567,14 @@ impl VocabTrieNode {
 
     /// Iterate over children
     pub fn iter_children(&self) -> impl Iterator<Item = (char, &VocabTrieNode)> {
-        self.inner.iter_children()
-            .filter_map(|(key, ptr)| {
-                ptr.as_ptr::<VocabTrieNode>()
-                    .map(|p| {
-                        let c = char::from_u32(key).unwrap_or('\u{FFFD}');
-                        // Safety: We control all SwizzledPtr creation; ptr is valid
-                        let child_ref = unsafe { &*p };
-                        (c, child_ref)
-                    })
+        self.inner.iter_children().filter_map(|(key, ptr)| {
+            ptr.as_ptr::<VocabTrieNode>().map(|p| {
+                let c = char::from_u32(key).unwrap_or('\u{FFFD}');
+                // Safety: We control all SwizzledPtr creation; ptr is valid
+                let child_ref = unsafe { &*p };
+                (c, child_ref)
             })
+        })
     }
 
     /// Reconstruct the term by backtracking parent pointers.

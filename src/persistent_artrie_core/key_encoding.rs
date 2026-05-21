@@ -34,7 +34,7 @@ impl KeyEncoding for ByteKey {
     // From persistent_artrie/arena.rs:43-46:
     const ARENA_MAGIC: u64 = 0x414E4152_41545942; // "BYTARANA" in little-endian
     const ARENA_MAGIC_V2: u64 = 0x32564152_41545942; // "BYTARAV2" in little-endian
-    // Matches the file-header magic accepted by core/recovery.rs:1083.
+                                                     // Matches the file-header magic accepted by core/recovery.rs:1083.
     const FILE_MAGIC: [u8; 4] = *b"PART";
     const NAME: &'static str = "byte";
 

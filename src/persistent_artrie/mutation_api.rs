@@ -142,10 +142,7 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
     /// which improves I/O locality for disk-resident tries. Terms with the same
     /// first byte tend to land in nearby arenas because arenas fill sequentially
     /// during loading.
-    pub fn insert_batch_arena_grouped(
-        &mut self,
-        mut entries: Vec<(Vec<u8>, Option<V>)>,
-    ) -> usize {
+    pub fn insert_batch_arena_grouped(&mut self, mut entries: Vec<(Vec<u8>, Option<V>)>) -> usize {
         if entries.is_empty() {
             return 0;
         }

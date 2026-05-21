@@ -59,8 +59,8 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
-use parking_lot::RwLock;
 use dashmap::DashMap;
+use parking_lot::RwLock;
 use xxhash_rust::xxh3::Xxh3DefaultBuilder;
 
 use super::PersistentVocabARTrie;
@@ -187,7 +187,10 @@ impl LockFreeVocab {
             root: AtomicNodePtr::new(root),
             next_index: AtomicU64::new(start_index),
             start_index,
-            term_index_cache: DashMap::with_capacity_and_hasher(estimated_terms, Xxh3DefaultBuilder),
+            term_index_cache: DashMap::with_capacity_and_hasher(
+                estimated_terms,
+                Xxh3DefaultBuilder,
+            ),
             index_term_storage: RwLock::new(Vec::with_capacity(estimated_terms)),
             total_inserts: AtomicU64::new(0),
             cas_retries: AtomicU64::new(0),

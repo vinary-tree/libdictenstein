@@ -147,7 +147,9 @@ mod tests {
     #[test]
     fn test_rwlock_try_read_succeeds_when_unlocked() {
         let lock = RwLock::new(42);
-        let guard = lock.try_read().expect("uncontended try_read should succeed");
+        let guard = lock
+            .try_read()
+            .expect("uncontended try_read should succeed");
         assert_eq!(*guard, 42);
     }
 
@@ -155,7 +157,9 @@ mod tests {
     fn test_rwlock_try_write_succeeds_when_unlocked() {
         let lock = RwLock::new(42);
         {
-            let mut guard = lock.try_write().expect("uncontended try_write should succeed");
+            let mut guard = lock
+                .try_write()
+                .expect("uncontended try_write should succeed");
             *guard = 100;
         }
         assert_eq!(*lock.read(), 100);

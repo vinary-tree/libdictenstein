@@ -22,8 +22,7 @@ fn ascii_term_strategy() -> impl Strategy<Value = String> {
 // Strategy for generating terms with diverse first bytes (for bucket splitting)
 fn diverse_term_strategy() -> impl Strategy<Value = String> {
     // First char from a-z, rest from a-z0-9, 2-15 chars total
-    prop::string::string_regex("[a-z][a-z0-9]{1,14}")
-        .expect("valid regex")
+    prop::string::string_regex("[a-z][a-z0-9]{1,14}").expect("valid regex")
 }
 
 // Strategy for generating byte sequences (for fuzzing)

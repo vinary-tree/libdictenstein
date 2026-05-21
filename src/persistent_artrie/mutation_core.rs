@@ -55,13 +55,11 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
                 use super::wal::WalRecord;
 
                 // Serialize the value using bincode if present
-                let serialized_value = value_for_wal.and_then(|v| {
-                    match bincode::serialize(&v) {
-                        Ok(bytes) => Some(bytes),
-                        Err(e) => {
-                            warn!("Failed to serialize value for WAL: {:?}", e);
-                            None
-                        }
+                let serialized_value = value_for_wal.and_then(|v| match bincode::serialize(&v) {
+                    Ok(bytes) => Some(bytes),
+                    Err(e) => {
+                        warn!("Failed to serialize value for WAL: {:?}", e);
+                        None
                     }
                 });
 
@@ -91,10 +89,8 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
                 let value_for_retry = value.clone();
 
                 // Serialize value for bucket storage
-                let serialized_value: Option<Vec<u8>> = value.and_then(|v| {
-                    bincode::serialize(&v).ok()
-                });
-
+                let serialized_value: Option<Vec<u8>> =
+                    value.and_then(|v| bincode::serialize(&v).ok());
 
                 let result = if let Some(ref val_bytes) = serialized_value {
                     bucket.insert(term, val_bytes)
@@ -126,10 +122,8 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
                 value: root_value,
             } => {
                 // Serialize value for bucket storage (same as root bucket case)
-                let serialized_value: Option<Vec<u8>> = value.clone().and_then(|v| {
-                    bincode::serialize(&v).ok()
-                });
-
+                let serialized_value: Option<Vec<u8>> =
+                    value.clone().and_then(|v| bincode::serialize(&v).ok());
 
                 if term.is_empty() {
                     // Inserting empty string
@@ -153,7 +147,10 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
 
                     if let Some(idx) = child_idx {
                         // Resolve DiskRef if needed before mutation
-                        if !resolve_child_for_mutation_with_bm(&mut children[idx].1, buffer_manager.as_ref()) {
+                        if !resolve_child_for_mutation_with_bm(
+                            &mut children[idx].1,
+                            buffer_manager.as_ref(),
+                        ) {
                             return false; // Resolution failed (logged in resolve_child_for_mutation_with_bm)
                         }
                         // Use insert_with_value which handles bucket overflow recursively
@@ -275,7 +272,10 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
 
                     if let Some(idx) = child_idx {
                         // Resolve DiskRef if needed before mutation
-                        if !resolve_child_for_mutation_with_bm(&mut children[idx].1, buffer_manager.as_ref()) {
+                        if !resolve_child_for_mutation_with_bm(
+                            &mut children[idx].1,
+                            buffer_manager.as_ref(),
+                        ) {
                             return false; // Resolution failed (logged in resolve_child_for_mutation_with_bm)
                         }
                         match &mut children[idx].1 {

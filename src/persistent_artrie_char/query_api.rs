@@ -196,7 +196,9 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     }
 
     /// Get retry statistics snapshot.
-    pub fn retry_stats_snapshot(&self) -> crate::persistent_artrie::concurrency::RetryStatsSnapshot {
+    pub fn retry_stats_snapshot(
+        &self,
+    ) -> crate::persistent_artrie::concurrency::RetryStatsSnapshot {
         self.retry_stats.snapshot()
     }
 

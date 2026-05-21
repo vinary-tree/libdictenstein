@@ -205,9 +205,7 @@ impl<V: DictionaryValue + Eq + Hash> BijectiveMap<V> {
         {
             let reverse = self.reverse.read();
             if reverse.contains_key(&value) {
-                panic!(
-                    "BijectiveMap::insert: duplicate value violates bijection invariant"
-                );
+                panic!("BijectiveMap::insert: duplicate value violates bijection invariant");
             }
         }
 
@@ -477,7 +475,9 @@ impl std::fmt::Display for InsertError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             InsertError::DuplicateTerm => write!(f, "duplicate term violates bijection invariant"),
-            InsertError::DuplicateValue => write!(f, "duplicate value violates bijection invariant"),
+            InsertError::DuplicateValue => {
+                write!(f, "duplicate value violates bijection invariant")
+            }
         }
     }
 }
@@ -536,7 +536,9 @@ impl<V: DictionaryValue + Eq + Hash> BijectiveDictionary for BijectiveMap<V> {
         // pointer-dereference shortcut was unsound under concurrent inserts
         // (HashMap rehashing invalidates element pointers).
         let reverse = self.reverse.read();
-        reverse.get(value).map(|s| std::borrow::Cow::Owned(s.clone()))
+        reverse
+            .get(value)
+            .map(|s| std::borrow::Cow::Owned(s.clone()))
     }
 
     fn contains_value(&self, value: &Self::Value) -> bool {
@@ -629,12 +631,7 @@ mod tests {
 
     #[test]
     fn test_unicode_terms() {
-        let bimap = BijectiveMap::from_pairs([
-            ("café", 1),
-            ("日本語", 2),
-            ("🎉", 3),
-            ("naïve", 4),
-        ]);
+        let bimap = BijectiveMap::from_pairs([("café", 1), ("日本語", 2), ("🎉", 3), ("naïve", 4)]);
 
         assert_eq!(bimap.get_value("café"), Some(1));
         assert_eq!(bimap.get_value("日本語"), Some(2));
@@ -654,7 +651,10 @@ mod tests {
         bimap.insert("key2", "value2".to_string());
 
         assert_eq!(bimap.get_value("key1"), Some("value1".to_string()));
-        assert_eq!(bimap.get_term(&"value1".to_string()), Some("key1".to_string()));
+        assert_eq!(
+            bimap.get_term(&"value1".to_string()),
+            Some("key1".to_string())
+        );
     }
 
     #[test]

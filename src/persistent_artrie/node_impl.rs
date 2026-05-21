@@ -21,10 +21,10 @@
 
 use std::sync::Arc;
 
-use crate::{DictionaryNode, value::DictionaryValue};
 use super::bucket::StringBucket;
 use super::nodes::{Node, Node4};
 use super::transitions::ChildNode;
+use crate::{value::DictionaryValue, DictionaryNode};
 
 /// A node in the Persistent ART that can be either an ART internal node or a bucket leaf.
 ///

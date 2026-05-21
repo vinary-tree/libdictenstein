@@ -47,8 +47,8 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use super::wal::{Lsn, WalWriter};
-use super::Result;
 use super::PersistentARTrieError;
+use super::Result;
 use log::warn;
 
 /// Unique identifier for an epoch.
@@ -301,7 +301,8 @@ impl CheckpointMeta {
         // Checkpoint LSN (8 bytes)
         buf.extend_from_slice(&self.checkpoint_lsn.to_le_bytes());
         // Timestamp (8 bytes)
-        let timestamp_secs = self.timestamp
+        let timestamp_secs = self
+            .timestamp
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs();
@@ -316,7 +317,10 @@ impl CheckpointMeta {
     /// Deserialize from bytes.
     pub fn deserialize(data: &[u8]) -> std::result::Result<Self, String> {
         if data.len() < Self::SIZE {
-            return Err(format!("Checkpoint metadata too short: {} bytes", data.len()));
+            return Err(format!(
+                "Checkpoint metadata too short: {} bytes",
+                data.len()
+            ));
         }
 
         // Verify magic
@@ -333,14 +337,19 @@ impl CheckpointMeta {
 
         // Read fields
         let epoch_id = u64::from_le_bytes(data[12..20].try_into().map_err(|_| "Invalid epoch_id")?);
-        let checkpoint_lsn = u64::from_le_bytes(data[20..28].try_into().map_err(|_| "Invalid lsn")?);
-        let timestamp_secs = u64::from_le_bytes(data[28..36].try_into().map_err(|_| "Invalid timestamp")?);
+        let checkpoint_lsn =
+            u64::from_le_bytes(data[20..28].try_into().map_err(|_| "Invalid lsn")?);
+        let timestamp_secs =
+            u64::from_le_bytes(data[28..36].try_into().map_err(|_| "Invalid timestamp")?);
         let stored_crc = u32::from_le_bytes(data[36..40].try_into().map_err(|_| "Invalid crc")?);
 
         // Verify CRC
         let computed_crc = crc32(&data[0..36]);
         if stored_crc != computed_crc {
-            return Err(format!("Checkpoint CRC mismatch: stored={}, computed={}", stored_crc, computed_crc));
+            return Err(format!(
+                "Checkpoint CRC mismatch: stored={}, computed={}",
+                stored_crc, computed_crc
+            ));
         }
 
         Ok(Self {
@@ -435,7 +444,9 @@ pub struct CheckpointManager {
 impl CheckpointManager {
     /// Create a new epoch manager.
     pub fn new(base_dir: impl AsRef<Path>, config: EpochConfig) -> Result<Self> {
-        config.validate().map_err(|e| PersistentARTrieError::internal(e))?;
+        config
+            .validate()
+            .map_err(|e| PersistentARTrieError::internal(e))?;
 
         let base_dir = base_dir.as_ref().to_path_buf();
 
@@ -446,7 +457,11 @@ impl CheckpointManager {
         })?;
         let checkpoint_dir = base_dir.join("checkpoint");
         fs::create_dir_all(&checkpoint_dir).map_err(|e| {
-            PersistentARTrieError::io_error("create directory", checkpoint_dir.display().to_string(), e)
+            PersistentARTrieError::io_error(
+                "create directory",
+                checkpoint_dir.display().to_string(),
+                e,
+            )
         })?;
 
         // Load last checkpoint if exists
@@ -500,7 +515,10 @@ impl CheckpointManager {
     pub fn record_operation(&self, wal_bytes: usize) -> EpochId {
         let epoch = self.current_epoch.load(Ordering::Acquire);
         let ops = self.current_ops.fetch_add(1, Ordering::Relaxed) + 1;
-        let bytes = self.current_wal_bytes.fetch_add(wal_bytes, Ordering::Relaxed) + wal_bytes;
+        let bytes = self
+            .current_wal_bytes
+            .fetch_add(wal_bytes, Ordering::Relaxed)
+            + wal_bytes;
 
         // Update epoch metadata
         {
@@ -530,9 +548,9 @@ impl CheckpointManager {
         let bytes = self.current_wal_bytes.load(Ordering::Relaxed);
         let elapsed = self.epoch_start.read().expect("lock").elapsed();
 
-        ops >= self.config.max_ops_per_epoch ||
-        bytes >= self.config.max_wal_size_bytes ||
-        elapsed >= self.config.epoch_duration
+        ops >= self.config.max_ops_per_epoch
+            || bytes >= self.config.max_wal_size_bytes
+            || elapsed >= self.config.epoch_duration
     }
 
     /// Maybe advance to a new epoch if triggers are met.
@@ -612,7 +630,9 @@ impl CheckpointManager {
             if stats.total_epochs > 0 {
                 stats.avg_ops_per_epoch = stats.total_operations as f64 / stats.total_epochs as f64;
                 let duration_ms = old_start.elapsed().as_millis() as f64;
-                stats.avg_epoch_duration_ms = (stats.avg_epoch_duration_ms * (stats.total_epochs - 1) as f64 + duration_ms) / stats.total_epochs as f64;
+                stats.avg_epoch_duration_ms =
+                    (stats.avg_epoch_duration_ms * (stats.total_epochs - 1) as f64 + duration_ms)
+                        / stats.total_epochs as f64;
             }
         }
 
@@ -627,7 +647,8 @@ impl CheckpointManager {
         // Get the last LSN for this epoch
         let last_lsn = {
             let epochs = self.epochs.read().expect("epochs lock");
-            epochs.iter()
+            epochs
+                .iter()
                 .find(|e| e.id == epoch_id)
                 .map(|e| e.last_lsn)
                 .unwrap_or(0)
@@ -675,7 +696,9 @@ impl CheckpointManager {
 
     /// Get the last durable epoch (safe recovery point).
     pub fn last_durable_epoch(&self) -> Option<EpochId> {
-        self.last_checkpoint.read().expect("lock")
+        self.last_checkpoint
+            .read()
+            .expect("lock")
             .as_ref()
             .map(|c| c.epoch_id)
     }
@@ -686,16 +709,19 @@ impl CheckpointManager {
 
         // Update current WAL size
         let epochs = self.epochs.read().expect("epochs lock");
-        stats.current_total_wal_bytes = epochs.iter()
-            .map(|e| e.wal_size_bytes)
-            .sum();
+        stats.current_total_wal_bytes = epochs.iter().map(|e| e.wal_size_bytes).sum();
 
         stats
     }
 
     /// Get metadata for all tracked epochs.
     pub fn epoch_metadata(&self) -> Vec<EpochMetadata> {
-        self.epochs.read().expect("epochs lock").iter().cloned().collect()
+        self.epochs
+            .read()
+            .expect("epochs lock")
+            .iter()
+            .cloned()
+            .collect()
     }
 
     /// Get the configuration.
@@ -716,7 +742,11 @@ impl CheckpointManager {
         // Remove existing WAL if it exists (leftover from crash)
         if wal_path.exists() {
             fs::remove_file(&wal_path).map_err(|e| {
-                PersistentARTrieError::io_error("remove stale WAL", wal_path.display().to_string(), e)
+                PersistentARTrieError::io_error(
+                    "remove stale WAL",
+                    wal_path.display().to_string(),
+                    e,
+                )
             })?;
         }
 
@@ -735,11 +765,15 @@ impl CheckpointManager {
     }
 
     fn wal_path(&self, epoch: EpochId) -> PathBuf {
-        self.base_dir.join("wal").join(format!("epoch_{:016}.wal", epoch))
+        self.base_dir
+            .join("wal")
+            .join(format!("epoch_{:016}.wal", epoch))
     }
 
     fn checkpoint_path(&self, epoch: EpochId) -> PathBuf {
-        self.base_dir.join("checkpoint").join(format!("checkpoint_{:016}.snap", epoch))
+        self.base_dir
+            .join("checkpoint")
+            .join(format!("checkpoint_{:016}.snap", epoch))
     }
 
     fn checkpoint_meta_path(&self) -> PathBuf {
@@ -753,11 +787,19 @@ impl CheckpointManager {
         }
 
         let mut file = File::open(&path).map_err(|e| {
-            PersistentARTrieError::io_error("open checkpoint metadata", path.display().to_string(), e)
+            PersistentARTrieError::io_error(
+                "open checkpoint metadata",
+                path.display().to_string(),
+                e,
+            )
         })?;
         let mut data = Vec::new();
         file.read_to_end(&mut data).map_err(|e| {
-            PersistentARTrieError::io_error("read checkpoint metadata", path.display().to_string(), e)
+            PersistentARTrieError::io_error(
+                "read checkpoint metadata",
+                path.display().to_string(),
+                e,
+            )
         })?;
 
         match CheckpointMeta::deserialize(&data) {
@@ -781,19 +823,35 @@ impl CheckpointManager {
         // Write to temp file first
         {
             let mut file = File::create(&temp_path).map_err(|e| {
-                PersistentARTrieError::io_error("create checkpoint metadata", temp_path.display().to_string(), e)
+                PersistentARTrieError::io_error(
+                    "create checkpoint metadata",
+                    temp_path.display().to_string(),
+                    e,
+                )
             })?;
             file.write_all(&meta.serialize()).map_err(|e| {
-                PersistentARTrieError::io_error("write checkpoint metadata", temp_path.display().to_string(), e)
+                PersistentARTrieError::io_error(
+                    "write checkpoint metadata",
+                    temp_path.display().to_string(),
+                    e,
+                )
             })?;
             file.sync_all().map_err(|e| {
-                PersistentARTrieError::io_error("sync checkpoint metadata", temp_path.display().to_string(), e)
+                PersistentARTrieError::io_error(
+                    "sync checkpoint metadata",
+                    temp_path.display().to_string(),
+                    e,
+                )
             })?;
         }
 
         // Atomic rename
         fs::rename(&temp_path, &path).map_err(|e| {
-            PersistentARTrieError::io_error("rename checkpoint metadata", path.display().to_string(), e)
+            PersistentARTrieError::io_error(
+                "rename checkpoint metadata",
+                path.display().to_string(),
+                e,
+            )
         })?;
 
         Ok(())
@@ -812,7 +870,11 @@ impl CheckpointManager {
             PersistentARTrieError::io_error("read WAL directory", wal_dir.display().to_string(), e)
         })? {
             let entry = entry.map_err(|e| {
-                PersistentARTrieError::io_error("read directory entry", wal_dir.display().to_string(), e)
+                PersistentARTrieError::io_error(
+                    "read directory entry",
+                    wal_dir.display().to_string(),
+                    e,
+                )
             })?;
             let name = entry.file_name();
             let name_str = name.to_string_lossy();
@@ -826,7 +888,11 @@ impl CheckpointManager {
                         if epoch < cutoff {
                             let entry_path = entry.path();
                             fs::remove_file(&entry_path).map_err(|e| {
-                                PersistentARTrieError::io_error("remove old WAL", entry_path.display().to_string(), e)
+                                PersistentARTrieError::io_error(
+                                    "remove old WAL",
+                                    entry_path.display().to_string(),
+                                    e,
+                                )
                             })?;
 
                             // Mark epoch as archived
@@ -871,7 +937,8 @@ impl CheckpointManager {
         loop {
             // Wait for signal or timeout
             let mut triggered = lock.lock().expect("lock");
-            let result = cvar.wait_timeout(triggered, epoch_duration)
+            let result = cvar
+                .wait_timeout(triggered, epoch_duration)
                 .expect("wait failed");
             triggered = result.0;
             *triggered = false;
@@ -907,7 +974,11 @@ impl CheckpointManager {
             PersistentARTrieError::io_error("read WAL directory", wal_dir.display().to_string(), e)
         })? {
             let entry = entry.map_err(|e| {
-                PersistentARTrieError::io_error("read directory entry", wal_dir.display().to_string(), e)
+                PersistentARTrieError::io_error(
+                    "read directory entry",
+                    wal_dir.display().to_string(),
+                    e,
+                )
             })?;
             let name = entry.file_name();
             let name_str = name.to_string_lossy();
@@ -1057,7 +1128,8 @@ mod tests {
 
         // Create manager and record some operations
         {
-            let manager = CheckpointManager::new(dir.path(), config.clone()).expect("create manager");
+            let manager =
+                CheckpointManager::new(dir.path(), config.clone()).expect("create manager");
 
             for _ in 0..500 {
                 manager.record_operation(100);

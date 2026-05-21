@@ -9,12 +9,10 @@
 //!
 //! Run with: cargo bench --bench persistent_artrie_benchmarks --features persistent-artrie
 
-use criterion::{
-    black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput,
-};
+use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use libdictenstein::{
-    double_array_trie::DoubleArrayTrie, dynamic_dawg::DynamicDawg, persistent_artrie::PersistentARTrie,
-    Dictionary, DictionaryNode,
+    double_array_trie::DoubleArrayTrie, dynamic_dawg::DynamicDawg,
+    persistent_artrie::PersistentARTrie, Dictionary, DictionaryNode,
 };
 use std::hint::black_box as bb;
 
@@ -24,16 +22,16 @@ fn generate_terms(size: usize) -> Vec<String> {
 
     // Common English prefixes and suffixes for realistic dictionary
     let prefixes = [
-        "pre", "un", "re", "in", "dis", "en", "non", "over", "mis", "sub",
-        "anti", "auto", "bio", "co", "counter", "de", "ex", "hyper", "inter", "multi",
+        "pre", "un", "re", "in", "dis", "en", "non", "over", "mis", "sub", "anti", "auto", "bio",
+        "co", "counter", "de", "ex", "hyper", "inter", "multi",
     ];
     let roots = [
-        "test", "code", "data", "work", "play", "read", "write", "run", "walk", "talk",
-        "think", "make", "take", "give", "find", "look", "know", "want", "seem", "feel",
+        "test", "code", "data", "work", "play", "read", "write", "run", "walk", "talk", "think",
+        "make", "take", "give", "find", "look", "know", "want", "seem", "feel",
     ];
     let suffixes = [
-        "ing", "ed", "er", "est", "ly", "ness", "ment", "tion", "able", "ful",
-        "less", "ize", "ify", "ward", "wise", "ous", "ive", "al", "ary", "ory",
+        "ing", "ed", "er", "est", "ly", "ness", "ment", "tion", "able", "ful", "less", "ize",
+        "ify", "ward", "wise", "ous", "ive", "al", "ary", "ory",
     ];
 
     // Generate realistic word combinations
@@ -46,7 +44,10 @@ fn generate_terms(size: usize) -> Vec<String> {
         let word = match i % 4 {
             0 => format!("{}{}", roots[root_idx], suffixes[suffix_idx]),
             1 => format!("{}{}", prefixes[prefix_idx], roots[root_idx]),
-            2 => format!("{}{}{}", prefixes[prefix_idx], roots[root_idx], suffixes[suffix_idx]),
+            2 => format!(
+                "{}{}{}",
+                prefixes[prefix_idx], roots[root_idx], suffixes[suffix_idx]
+            ),
             _ => roots[root_idx].to_string(),
         };
 
@@ -101,19 +102,15 @@ fn bench_part_construction(c: &mut Criterion) {
         let terms = generate_terms(*size);
 
         group.throughput(Throughput::Elements(*size as u64));
-        group.bench_with_input(
-            BenchmarkId::new("persistent_artrie", size),
-            size,
-            |b, _| {
-                b.iter(|| {
-                    let mut dict: PersistentARTrie<()> = PersistentARTrie::new();
-                    for term in &terms {
-                        let _ = dict.insert(bb(term));
-                    }
-                    black_box(dict)
-                });
-            },
-        );
+        group.bench_with_input(BenchmarkId::new("persistent_artrie", size), size, |b, _| {
+            b.iter(|| {
+                let mut dict: PersistentARTrie<()> = PersistentARTrie::new();
+                for term in &terms {
+                    let _ = dict.insert(bb(term));
+                }
+                black_box(dict)
+            });
+        });
     }
     group.finish();
 }
@@ -126,19 +123,15 @@ fn bench_dynamic_dawg_construction(c: &mut Criterion) {
         let terms = generate_terms(*size);
 
         group.throughput(Throughput::Elements(*size as u64));
-        group.bench_with_input(
-            BenchmarkId::new("dynamic_dawg", size),
-            size,
-            |b, _| {
-                b.iter(|| {
-                    let dict = DynamicDawg::<()>::default();
-                    for term in &terms {
-                        dict.insert(bb(term));
-                    }
-                    black_box(dict)
-                });
-            },
-        );
+        group.bench_with_input(BenchmarkId::new("dynamic_dawg", size), size, |b, _| {
+            b.iter(|| {
+                let dict = DynamicDawg::<()>::default();
+                for term in &terms {
+                    dict.insert(bb(term));
+                }
+                black_box(dict)
+            });
+        });
     }
     group.finish();
 }
@@ -151,16 +144,12 @@ fn bench_dat_construction(c: &mut Criterion) {
         let terms = generate_terms(*size);
 
         group.throughput(Throughput::Elements(*size as u64));
-        group.bench_with_input(
-            BenchmarkId::new("double_array_trie", size),
-            size,
-            |b, _| {
-                b.iter(|| {
-                    let dict = DoubleArrayTrie::from_terms(bb(&terms));
-                    black_box(dict)
-                });
-            },
-        );
+        group.bench_with_input(BenchmarkId::new("double_array_trie", size), size, |b, _| {
+            b.iter(|| {
+                let dict = DoubleArrayTrie::from_terms(bb(&terms));
+                black_box(dict)
+            });
+        });
     }
     group.finish();
 }
@@ -184,21 +173,17 @@ fn bench_part_lookup(c: &mut Criterion) {
         }
 
         group.throughput(Throughput::Elements(100));
-        group.bench_with_input(
-            BenchmarkId::new("persistent_artrie", size),
-            size,
-            |b, _| {
-                b.iter(|| {
-                    let mut found = 0;
-                    for query in &queries {
-                        if dict.contains(bb(query)) {
-                            found += 1;
-                        }
+        group.bench_with_input(BenchmarkId::new("persistent_artrie", size), size, |b, _| {
+            b.iter(|| {
+                let mut found = 0;
+                for query in &queries {
+                    if dict.contains(bb(query)) {
+                        found += 1;
                     }
-                    black_box(found)
-                });
-            },
-        );
+                }
+                black_box(found)
+            });
+        });
     }
     group.finish();
 }
@@ -217,21 +202,17 @@ fn bench_dynamic_dawg_lookup(c: &mut Criterion) {
         }
 
         group.throughput(Throughput::Elements(100));
-        group.bench_with_input(
-            BenchmarkId::new("dynamic_dawg", size),
-            size,
-            |b, _| {
-                b.iter(|| {
-                    let mut found = 0;
-                    for query in &queries {
-                        if dict.contains(bb(query)) {
-                            found += 1;
-                        }
+        group.bench_with_input(BenchmarkId::new("dynamic_dawg", size), size, |b, _| {
+            b.iter(|| {
+                let mut found = 0;
+                for query in &queries {
+                    if dict.contains(bb(query)) {
+                        found += 1;
                     }
-                    black_box(found)
-                });
-            },
-        );
+                }
+                black_box(found)
+            });
+        });
     }
     group.finish();
 }
@@ -247,21 +228,17 @@ fn bench_dat_lookup(c: &mut Criterion) {
         let dict = DoubleArrayTrie::from_terms(&terms);
 
         group.throughput(Throughput::Elements(100));
-        group.bench_with_input(
-            BenchmarkId::new("double_array_trie", size),
-            size,
-            |b, _| {
-                b.iter(|| {
-                    let mut found = 0;
-                    for query in &queries {
-                        if dict.contains(bb(query)) {
-                            found += 1;
-                        }
+        group.bench_with_input(BenchmarkId::new("double_array_trie", size), size, |b, _| {
+            b.iter(|| {
+                let mut found = 0;
+                for query in &queries {
+                    if dict.contains(bb(query)) {
+                        found += 1;
                     }
-                    black_box(found)
-                });
-            },
-        );
+                }
+                black_box(found)
+            });
+        });
     }
     group.finish();
 }
@@ -284,24 +261,20 @@ fn bench_part_edge_traversal(c: &mut Criterion) {
         }
 
         group.throughput(Throughput::Elements(*size as u64));
-        group.bench_with_input(
-            BenchmarkId::new("persistent_artrie", size),
-            size,
-            |b, _| {
-                b.iter(|| {
-                    // DFS traversal counting all edges
-                    let mut count = 0usize;
-                    let mut stack = vec![dict.root()];
-                    while let Some(node) = stack.pop() {
-                        for (_, child) in node.edges() {
-                            count += 1;
-                            stack.push(child);
-                        }
+        group.bench_with_input(BenchmarkId::new("persistent_artrie", size), size, |b, _| {
+            b.iter(|| {
+                // DFS traversal counting all edges
+                let mut count = 0usize;
+                let mut stack = vec![dict.root()];
+                while let Some(node) = stack.pop() {
+                    for (_, child) in node.edges() {
+                        count += 1;
+                        stack.push(child);
                     }
-                    black_box(count)
-                });
-            },
-        );
+                }
+                black_box(count)
+            });
+        });
     }
     group.finish();
 }
@@ -319,24 +292,20 @@ fn bench_dynamic_dawg_edge_traversal(c: &mut Criterion) {
         }
 
         group.throughput(Throughput::Elements(*size as u64));
-        group.bench_with_input(
-            BenchmarkId::new("dynamic_dawg", size),
-            size,
-            |b, _| {
-                b.iter(|| {
-                    // DFS traversal counting all edges
-                    let mut count = 0usize;
-                    let mut stack = vec![dict.root()];
-                    while let Some(node) = stack.pop() {
-                        for (_, child) in node.edges() {
-                            count += 1;
-                            stack.push(child);
-                        }
+        group.bench_with_input(BenchmarkId::new("dynamic_dawg", size), size, |b, _| {
+            b.iter(|| {
+                // DFS traversal counting all edges
+                let mut count = 0usize;
+                let mut stack = vec![dict.root()];
+                while let Some(node) = stack.pop() {
+                    for (_, child) in node.edges() {
+                        count += 1;
+                        stack.push(child);
                     }
-                    black_box(count)
-                });
-            },
-        );
+                }
+                black_box(count)
+            });
+        });
     }
     group.finish();
 }
@@ -350,24 +319,20 @@ fn bench_dat_edge_traversal(c: &mut Criterion) {
         let dict = DoubleArrayTrie::from_terms(&terms);
 
         group.throughput(Throughput::Elements(*size as u64));
-        group.bench_with_input(
-            BenchmarkId::new("double_array_trie", size),
-            size,
-            |b, _| {
-                b.iter(|| {
-                    // DFS traversal counting all edges
-                    let mut count = 0usize;
-                    let mut stack = vec![dict.root()];
-                    while let Some(node) = stack.pop() {
-                        for (_, child) in node.edges() {
-                            count += 1;
-                            stack.push(child);
-                        }
+        group.bench_with_input(BenchmarkId::new("double_array_trie", size), size, |b, _| {
+            b.iter(|| {
+                // DFS traversal counting all edges
+                let mut count = 0usize;
+                let mut stack = vec![dict.root()];
+                while let Some(node) = stack.pop() {
+                    for (_, child) in node.edges() {
+                        count += 1;
+                        stack.push(child);
                     }
-                    black_box(count)
-                });
-            },
-        );
+                }
+                black_box(count)
+            });
+        });
     }
     group.finish();
 }
@@ -391,27 +356,23 @@ fn bench_part_transitions(c: &mut Criterion) {
         }
 
         group.throughput(Throughput::Elements(100));
-        group.bench_with_input(
-            BenchmarkId::new("persistent_artrie", size),
-            size,
-            |b, _| {
-                b.iter(|| {
-                    let mut transitions = 0usize;
-                    for query in &queries {
-                        let mut node = dict.root();
-                        for &byte in query.as_bytes() {
-                            if let Some(next) = node.transition(bb(byte)) {
-                                node = next;
-                                transitions += 1;
-                            } else {
-                                break;
-                            }
+        group.bench_with_input(BenchmarkId::new("persistent_artrie", size), size, |b, _| {
+            b.iter(|| {
+                let mut transitions = 0usize;
+                for query in &queries {
+                    let mut node = dict.root();
+                    for &byte in query.as_bytes() {
+                        if let Some(next) = node.transition(bb(byte)) {
+                            node = next;
+                            transitions += 1;
+                        } else {
+                            break;
                         }
                     }
-                    black_box(transitions)
-                });
-            },
-        );
+                }
+                black_box(transitions)
+            });
+        });
     }
     group.finish();
 }
@@ -430,27 +391,23 @@ fn bench_dynamic_dawg_transitions(c: &mut Criterion) {
         }
 
         group.throughput(Throughput::Elements(100));
-        group.bench_with_input(
-            BenchmarkId::new("dynamic_dawg", size),
-            size,
-            |b, _| {
-                b.iter(|| {
-                    let mut transitions = 0usize;
-                    for query in &queries {
-                        let mut node = dict.root();
-                        for &byte in query.as_bytes() {
-                            if let Some(next) = node.transition(bb(byte)) {
-                                node = next;
-                                transitions += 1;
-                            } else {
-                                break;
-                            }
+        group.bench_with_input(BenchmarkId::new("dynamic_dawg", size), size, |b, _| {
+            b.iter(|| {
+                let mut transitions = 0usize;
+                for query in &queries {
+                    let mut node = dict.root();
+                    for &byte in query.as_bytes() {
+                        if let Some(next) = node.transition(bb(byte)) {
+                            node = next;
+                            transitions += 1;
+                        } else {
+                            break;
                         }
                     }
-                    black_box(transitions)
-                });
-            },
-        );
+                }
+                black_box(transitions)
+            });
+        });
     }
     group.finish();
 }
@@ -465,27 +422,23 @@ fn bench_dat_transitions(c: &mut Criterion) {
         let dict = DoubleArrayTrie::from_terms(&terms);
 
         group.throughput(Throughput::Elements(100));
-        group.bench_with_input(
-            BenchmarkId::new("double_array_trie", size),
-            size,
-            |b, _| {
-                b.iter(|| {
-                    let mut transitions = 0usize;
-                    for query in &queries {
-                        let mut node = dict.root();
-                        for &byte in query.as_bytes() {
-                            if let Some(next) = node.transition(bb(byte)) {
-                                node = next;
-                                transitions += 1;
-                            } else {
-                                break;
-                            }
+        group.bench_with_input(BenchmarkId::new("double_array_trie", size), size, |b, _| {
+            b.iter(|| {
+                let mut transitions = 0usize;
+                for query in &queries {
+                    let mut node = dict.root();
+                    for &byte in query.as_bytes() {
+                        if let Some(next) = node.transition(bb(byte)) {
+                            node = next;
+                            transitions += 1;
+                        } else {
+                            break;
                         }
                     }
-                    black_box(transitions)
-                });
-            },
-        );
+                }
+                black_box(transitions)
+            });
+        });
     }
     group.finish();
 }
@@ -519,19 +472,15 @@ fn bench_memory_efficiency(c: &mut Criterion) {
         );
 
         // DynamicDawg
-        group.bench_with_input(
-            BenchmarkId::new("dynamic_dawg_size", size),
-            size,
-            |b, _| {
-                b.iter(|| {
-                    let dict = DynamicDawg::<()>::default();
-                    for term in &terms {
-                        dict.insert(term);
-                    }
-                    black_box(dict.len())
-                });
-            },
-        );
+        group.bench_with_input(BenchmarkId::new("dynamic_dawg_size", size), size, |b, _| {
+            b.iter(|| {
+                let dict = DynamicDawg::<()>::default();
+                for term in &terms {
+                    dict.insert(term);
+                }
+                black_box(dict.len())
+            });
+        });
 
         // DoubleArrayTrie
         group.bench_with_input(
@@ -590,52 +539,44 @@ fn bench_part_disk_io(c: &mut Criterion) {
         );
 
         // Benchmark: Recovery time
-        group.bench_with_input(
-            BenchmarkId::new("recovery", size),
-            size,
-            |b, _| {
-                // Setup: create and populate dictionary
-                let dir = tempdir().unwrap();
-                let path = dir.path().join("bench.part");
-                {
-                    let mut dict = PersistentARTrie::<()>::create(&path).unwrap();
-                    for term in &terms {
-                        let _ = dict.insert(term);
-                    }
-                    let _ = dict.sync();
-                }
-
-                b.iter_custom(|iters| {
-                    let mut total = std::time::Duration::ZERO;
-                    for _ in 0..iters {
-                        let start = Instant::now();
-                        let dict = PersistentARTrie::<()>::open(&path).unwrap();
-                        black_box(dict.len());
-                        total += start.elapsed();
-                    }
-                    total
-                });
-            },
-        );
-
-        // Benchmark: Checkpoint
-        group.bench_with_input(
-            BenchmarkId::new("checkpoint", size),
-            size,
-            |b, _| {
-                let dir = tempdir().unwrap();
-                let path = dir.path().join("bench.part");
+        group.bench_with_input(BenchmarkId::new("recovery", size), size, |b, _| {
+            // Setup: create and populate dictionary
+            let dir = tempdir().unwrap();
+            let path = dir.path().join("bench.part");
+            {
                 let mut dict = PersistentARTrie::<()>::create(&path).unwrap();
                 for term in &terms {
                     let _ = dict.insert(term);
                 }
+                let _ = dict.sync();
+            }
 
-                b.iter(|| {
-                    let _ = dict.checkpoint();
-                    black_box(())
-                });
-            },
-        );
+            b.iter_custom(|iters| {
+                let mut total = std::time::Duration::ZERO;
+                for _ in 0..iters {
+                    let start = Instant::now();
+                    let dict = PersistentARTrie::<()>::open(&path).unwrap();
+                    black_box(dict.len());
+                    total += start.elapsed();
+                }
+                total
+            });
+        });
+
+        // Benchmark: Checkpoint
+        group.bench_with_input(BenchmarkId::new("checkpoint", size), size, |b, _| {
+            let dir = tempdir().unwrap();
+            let path = dir.path().join("bench.part");
+            let mut dict = PersistentARTrie::<()>::create(&path).unwrap();
+            for term in &terms {
+                let _ = dict.insert(term);
+            }
+
+            b.iter(|| {
+                let _ = dict.checkpoint();
+                black_box(())
+            });
+        });
     }
     group.finish();
 }
@@ -672,15 +613,9 @@ criterion_group!(
     bench_dat_transitions,
 );
 
-criterion_group!(
-    memory_benches,
-    bench_memory_efficiency,
-);
+criterion_group!(memory_benches, bench_memory_efficiency,);
 
-criterion_group!(
-    disk_io_benches,
-    bench_part_disk_io,
-);
+criterion_group!(disk_io_benches, bench_part_disk_io,);
 
 criterion_main!(
     construction_benches,

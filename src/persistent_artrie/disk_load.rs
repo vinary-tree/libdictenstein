@@ -23,8 +23,8 @@ use crate::value::DictionaryValue;
 
 use super::arena_manager::{ArenaManager, ArenaSlot};
 use super::block_storage::BlockStorage;
-use super::buffer_manager::BufferManager;
 use super::bucket::StringBucket;
+use super::buffer_manager::BufferManager;
 use super::dict_impl::{
     PersistentARTrie, SingleChildData, TrieRoot, ART_NODE_BUFFER_SIZE, ROOT_TYPE_ART_NODE,
     ROOT_TYPE_BUCKET, ROOT_TYPE_EMPTY,
@@ -100,7 +100,7 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
         ]);
 
         let _ = arena_count; // Arena count stored for recovery
-        let _ = is_final;  // Used for ArtNode but we simplified
+        let _ = is_final; // Used for ArtNode but we simplified
 
         match root_type {
             ROOT_TYPE_BUCKET => {
@@ -208,7 +208,10 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
                 disk_manager.read_bytes(location.block_id, 0, &mut bucket_data)?;
 
                 let bucket = StringBucket::from_bytes(&bucket_data).map_err(|e| {
-                    PersistentARTrieError::corrupted(format!("Failed to load child bucket: {:?}", e))
+                    PersistentARTrieError::corrupted(format!(
+                        "Failed to load child bucket: {:?}",
+                        e
+                    ))
                 })?;
 
                 Ok(ChildNode::Bucket(bucket))
@@ -220,7 +223,10 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
 
                 // Deserialize the node
                 let node = serialization::from_bytes(&node_data).map_err(|e| {
-                    PersistentARTrieError::corrupted(format!("Failed to deserialize child ART node: {:?}", e))
+                    PersistentARTrieError::corrupted(format!(
+                        "Failed to deserialize child ART node: {:?}",
+                        e
+                    ))
                 })?;
 
                 // Check if node is final (has IS_FINAL flag set)
@@ -243,11 +249,12 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
                 })
             }
             // Char-level nodes should never appear in byte-level trie
-            NodeType::CharNode4 | NodeType::CharNode16 | NodeType::CharNode48 | NodeType::CharBucket => {
-                Err(PersistentARTrieError::corrupted(
-                    "Char-level node type encountered in byte-level PersistentARTrie"
-                ))
-            }
+            NodeType::CharNode4
+            | NodeType::CharNode16
+            | NodeType::CharNode48
+            | NodeType::CharBucket => Err(PersistentARTrieError::corrupted(
+                "Char-level node type encountered in byte-level PersistentARTrie",
+            )),
         }
     }
 
@@ -346,7 +353,10 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
 
                 // Load the node and its children using iterative loading
                 // (avoids stack overflow for deep tries)
-                let (node, children) = Self::load_art_node_with_children_from_arena_iterative(arena_manager, &node_ptr)?;
+                let (node, children) = Self::load_art_node_with_children_from_arena_iterative(
+                    arena_manager,
+                    &node_ptr,
+                )?;
 
                 // Value deserialization not yet implemented with arena storage
                 let root_value: Option<V> = None;
@@ -384,9 +394,10 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
         let disk_loc = node_ptr.disk_location().ok_or_else(|| {
             PersistentARTrieError::corrupted("Invalid node pointer: cannot get disk location")
         })?;
-        let arena_id = disk_loc.block_id.checked_sub(1).ok_or_else(|| {
-            PersistentARTrieError::corrupted("Invalid block_id 0 for arena node")
-        })?;
+        let arena_id = disk_loc
+            .block_id
+            .checked_sub(1)
+            .ok_or_else(|| PersistentARTrieError::corrupted("Invalid block_id 0 for arena node"))?;
         let slot = ArenaSlot::new(arena_id, disk_loc.offset);
         let am = arena_manager.read();
         let node_data = am.read(slot)?;
@@ -431,9 +442,10 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
         let disk_loc = child_ptr.disk_location().ok_or_else(|| {
             PersistentARTrieError::corrupted("Invalid child pointer: cannot get disk location")
         })?;
-        let arena_id = disk_loc.block_id.checked_sub(1).ok_or_else(|| {
-            PersistentARTrieError::corrupted("Invalid block_id 0 for arena node")
-        })?;
+        let arena_id = disk_loc
+            .block_id
+            .checked_sub(1)
+            .ok_or_else(|| PersistentARTrieError::corrupted("Invalid block_id 0 for arena node"))?;
         let slot = ArenaSlot::new(arena_id, disk_loc.offset);
 
         // Determine child type from the DiskLocation's node_type
@@ -446,7 +458,10 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
         match node_type {
             NodeType::Bucket => {
                 let bucket = StringBucket::from_bytes(data).map_err(|e| {
-                    PersistentARTrieError::corrupted(format!("Failed to load child bucket: {:?}", e))
+                    PersistentARTrieError::corrupted(format!(
+                        "Failed to load child bucket: {:?}",
+                        e
+                    ))
                 })?;
 
                 Ok(ChildNode::Bucket(bucket))
@@ -456,7 +471,10 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
                 // The slot is the "parent slot" for decoding relative child offsets
                 let ctx = DeserializationContext::new(slot);
                 let node = serialization::v2::deserialize_node_v2(data, &ctx).map_err(|e| {
-                    PersistentARTrieError::corrupted(format!("Failed to deserialize child ART node: {:?}", e))
+                    PersistentARTrieError::corrupted(format!(
+                        "Failed to deserialize child ART node: {:?}",
+                        e
+                    ))
                 })?;
 
                 // Check if node is final (has IS_FINAL flag set)
@@ -475,7 +493,8 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
                 // Load children recursively
                 let mut children = Vec::new();
                 for (key, grandchild_ptr) in child_data {
-                    let grandchild = Self::load_child_from_disk_with_arena(arena_manager, &grandchild_ptr)?;
+                    let grandchild =
+                        Self::load_child_from_disk_with_arena(arena_manager, &grandchild_ptr)?;
                     children.push((key, grandchild));
                 }
 
@@ -487,11 +506,12 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
                 })
             }
             // Char-level nodes should never appear in byte-level trie
-            NodeType::CharNode4 | NodeType::CharNode16 | NodeType::CharNode48 | NodeType::CharBucket => {
-                Err(PersistentARTrieError::corrupted(
-                    "Char-level node type encountered in byte-level PersistentARTrie"
-                ))
-            }
+            NodeType::CharNode4
+            | NodeType::CharNode16
+            | NodeType::CharNode48
+            | NodeType::CharBucket => Err(PersistentARTrieError::corrupted(
+                "Char-level node type encountered in byte-level PersistentARTrie",
+            )),
         }
     }
 
@@ -506,9 +526,10 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
         let disk_loc = node_ptr.disk_location().ok_or_else(|| {
             PersistentARTrieError::corrupted("Invalid node pointer: cannot get disk location")
         })?;
-        let arena_id = disk_loc.block_id.checked_sub(1).ok_or_else(|| {
-            PersistentARTrieError::corrupted("Invalid block_id 0 for arena node")
-        })?;
+        let arena_id = disk_loc
+            .block_id
+            .checked_sub(1)
+            .ok_or_else(|| PersistentARTrieError::corrupted("Invalid block_id 0 for arena node"))?;
         let slot = ArenaSlot::new(arena_id, disk_loc.offset);
         let am = arena_manager.read();
         let node_data = am.read(slot)?;
@@ -544,9 +565,10 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
         let disk_loc = child_ptr.disk_location().ok_or_else(|| {
             PersistentARTrieError::corrupted("Invalid child pointer: cannot get disk location")
         })?;
-        let arena_id = disk_loc.block_id.checked_sub(1).ok_or_else(|| {
-            PersistentARTrieError::corrupted("Invalid block_id 0 for arena node")
-        })?;
+        let arena_id = disk_loc
+            .block_id
+            .checked_sub(1)
+            .ok_or_else(|| PersistentARTrieError::corrupted("Invalid block_id 0 for arena node"))?;
         let slot = ArenaSlot::new(arena_id, disk_loc.offset);
         let node_type = disk_loc.node_type;
 
@@ -556,14 +578,20 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
         match node_type {
             NodeType::Bucket => {
                 let bucket = StringBucket::from_bytes(data).map_err(|e| {
-                    PersistentARTrieError::corrupted(format!("Failed to load child bucket: {:?}", e))
+                    PersistentARTrieError::corrupted(format!(
+                        "Failed to load child bucket: {:?}",
+                        e
+                    ))
                 })?;
                 Ok(SingleChildData::Bucket(bucket))
             }
             NodeType::Node4 | NodeType::Node16 | NodeType::Node48 | NodeType::Node256 => {
                 let ctx = DeserializationContext::new(slot);
                 let node = serialization::v2::deserialize_node_v2(data, &ctx).map_err(|e| {
-                    PersistentARTrieError::corrupted(format!("Failed to deserialize child ART node: {:?}", e))
+                    PersistentARTrieError::corrupted(format!(
+                        "Failed to deserialize child ART node: {:?}",
+                        e
+                    ))
                 })?;
 
                 let is_final = node.header().is_final();
@@ -582,11 +610,12 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
                     child_ptrs: child_data,
                 })
             }
-            NodeType::CharNode4 | NodeType::CharNode16 | NodeType::CharNode48 | NodeType::CharBucket => {
-                Err(PersistentARTrieError::corrupted(
-                    "Char-level node type encountered in byte-level PersistentARTrie"
-                ))
-            }
+            NodeType::CharNode4
+            | NodeType::CharNode16
+            | NodeType::CharNode48
+            | NodeType::CharBucket => Err(PersistentARTrieError::corrupted(
+                "Char-level node type encountered in byte-level PersistentARTrie",
+            )),
         }
     }
 
@@ -647,9 +676,19 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
                         continue;
                     }
 
-                    let (node, is_final, child_ptrs) = Self::load_single_art_node_data(arena_manager, &ptr)?;
-                    let ptrs_to_push: Vec<SwizzledPtr> = child_ptrs.iter().map(|(_, p)| p.clone()).collect();
-                    (ptr_raw, LoadedInfo::RootNode { node, is_final, child_ptrs }, ptrs_to_push)
+                    let (node, is_final, child_ptrs) =
+                        Self::load_single_art_node_data(arena_manager, &ptr)?;
+                    let ptrs_to_push: Vec<SwizzledPtr> =
+                        child_ptrs.iter().map(|(_, p)| p.clone()).collect();
+                    (
+                        ptr_raw,
+                        LoadedInfo::RootNode {
+                            node,
+                            is_final,
+                            child_ptrs,
+                        },
+                        ptrs_to_push,
+                    )
                 }
                 WorkItem::Child(ptr) => {
                     let ptr_raw = ptr.to_raw();
@@ -661,9 +700,22 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
                         SingleChildData::Bucket(bucket) => {
                             (ptr_raw, LoadedInfo::Bucket(bucket), vec![])
                         }
-                        SingleChildData::ArtNodePartial { node, is_final, child_ptrs } => {
-                            let ptrs_to_push: Vec<SwizzledPtr> = child_ptrs.iter().map(|(_, p)| p.clone()).collect();
-                            (ptr_raw, LoadedInfo::ArtNodePartial { node, is_final, child_ptrs }, ptrs_to_push)
+                        SingleChildData::ArtNodePartial {
+                            node,
+                            is_final,
+                            child_ptrs,
+                        } => {
+                            let ptrs_to_push: Vec<SwizzledPtr> =
+                                child_ptrs.iter().map(|(_, p)| p.clone()).collect();
+                            (
+                                ptr_raw,
+                                LoadedInfo::ArtNodePartial {
+                                    node,
+                                    is_final,
+                                    child_ptrs,
+                                },
+                                ptrs_to_push,
+                            )
                         }
                     }
                 }
@@ -680,7 +732,9 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
         }
 
         if loaded_nodes.is_empty() {
-            return Err(PersistentARTrieError::corrupted("No nodes loaded from disk"));
+            return Err(PersistentARTrieError::corrupted(
+                "No nodes loaded from disk",
+            ));
         }
 
         // Phase 2: Build ChildNode structures bottom-up
@@ -696,21 +750,23 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
                     // Root is handled separately
                     continue;
                 }
-                LoadedInfo::Bucket(bucket) => {
-                    ChildNode::Bucket(std::mem::take(bucket))
-                }
-                LoadedInfo::ArtNodePartial { node, is_final, child_ptrs } => {
+                LoadedInfo::Bucket(bucket) => ChildNode::Bucket(std::mem::take(bucket)),
+                LoadedInfo::ArtNodePartial {
+                    node,
+                    is_final,
+                    child_ptrs,
+                } => {
                     // Collect built children
                     let mut children: Vec<(u8, ChildNode)> = Vec::with_capacity(child_ptrs.len());
                     for (key, child_ptr) in child_ptrs.drain(..) {
-                        let child_idx = *ptr_to_idx.get(&child_ptr.to_raw())
-                            .ok_or_else(|| PersistentARTrieError::corrupted(
-                                "Child pointer not found in loaded nodes map"
-                            ))?;
-                        let child = built_children[child_idx].take()
-                            .ok_or_else(|| PersistentARTrieError::corrupted(
-                                "Child not yet built (ordering error)"
-                            ))?;
+                        let child_idx = *ptr_to_idx.get(&child_ptr.to_raw()).ok_or_else(|| {
+                            PersistentARTrieError::corrupted(
+                                "Child pointer not found in loaded nodes map",
+                            )
+                        })?;
+                        let child = built_children[child_idx].take().ok_or_else(|| {
+                            PersistentARTrieError::corrupted("Child not yet built (ordering error)")
+                        })?;
                         children.push((key, child));
                     }
 
@@ -731,25 +787,30 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
 
         // Extract root node info and build its children
         match &mut loaded_nodes[0] {
-            LoadedInfo::RootNode { node, is_final: _, child_ptrs } => {
+            LoadedInfo::RootNode {
+                node,
+                is_final: _,
+                child_ptrs,
+            } => {
                 let mut children: Vec<(u8, ChildNode)> = Vec::with_capacity(child_ptrs.len());
                 for (key, child_ptr) in child_ptrs.drain(..) {
-                    let child_idx = *ptr_to_idx.get(&child_ptr.to_raw())
-                        .ok_or_else(|| PersistentARTrieError::corrupted(
-                            "Root child pointer not found in loaded nodes map"
-                        ))?;
-                    let child = built_children[child_idx].take()
-                        .ok_or_else(|| PersistentARTrieError::corrupted(
-                            "Root child not yet built"
-                        ))?;
+                    let child_idx = *ptr_to_idx.get(&child_ptr.to_raw()).ok_or_else(|| {
+                        PersistentARTrieError::corrupted(
+                            "Root child pointer not found in loaded nodes map",
+                        )
+                    })?;
+                    let child = built_children[child_idx].take().ok_or_else(|| {
+                        PersistentARTrieError::corrupted("Root child not yet built")
+                    })?;
                     children.push((key, child));
                 }
 
                 let root_node = std::mem::replace(node, Node::new_node4());
                 Ok((root_node, children))
             }
-            _ => Err(PersistentARTrieError::corrupted("First loaded node is not root"))
+            _ => Err(PersistentARTrieError::corrupted(
+                "First loaded node is not root",
+            )),
         }
     }
-
 }

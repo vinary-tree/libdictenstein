@@ -47,8 +47,8 @@ use crate::persistent_artrie::wal::{Lsn, WalConfig, WalReader, WalRecord, WalWri
 
 // Re-export node-agnostic recovery types from the 1-byte implementation
 pub use crate::persistent_artrie::recovery::{
-    IncrementalRecovery, RecoveredState, RecoveryError, RecoveryStats,
-    find_wal_archive_segments, rebuild_from_wal_segments,
+    find_wal_archive_segments, rebuild_from_wal_segments, IncrementalRecovery, RecoveredState,
+    RecoveryError, RecoveryStats,
 };
 
 /// Helper to convert io::Error to PersistentARTrieError
@@ -101,9 +101,15 @@ impl RecoveryMode {
     /// Returns the number of records replayed during recovery
     pub fn records_replayed(&self) -> usize {
         match self {
-            RecoveryMode::Normal { wal_records_replayed } => *wal_records_replayed,
-            RecoveryMode::PartialRecovery { recovered_records, .. } => *recovered_records,
-            RecoveryMode::RebuildFromWal { records_replayed, .. } => *records_replayed,
+            RecoveryMode::Normal {
+                wal_records_replayed,
+            } => *wal_records_replayed,
+            RecoveryMode::PartialRecovery {
+                recovered_records, ..
+            } => *recovered_records,
+            RecoveryMode::RebuildFromWal {
+                records_replayed, ..
+            } => *records_replayed,
             RecoveryMode::Unrecoverable { .. } => 0,
         }
     }
@@ -130,7 +136,9 @@ impl RecoveryReport {
     /// Create a new report for normal open
     pub fn normal() -> Self {
         Self {
-            mode: RecoveryMode::Normal { wal_records_replayed: 0 },
+            mode: RecoveryMode::Normal {
+                wal_records_replayed: 0,
+            },
             duration: Duration::ZERO,
             records_replayed: 0,
             checkpoint_lsn: None,
@@ -238,7 +246,9 @@ pub fn detect_corruption(path: &Path, validate_arenas: bool) -> Result<Option<Co
     // Read and validate header
     let mut reader = BufReader::new(file);
     let mut header_buf = [0u8; CHAR_FILE_HEADER_SIZE];
-    reader.read_exact(&mut header_buf).map_err(|e| io_err("read header", path, e))?;
+    reader
+        .read_exact(&mut header_buf)
+        .map_err(|e| io_err("read header", path, e))?;
 
     let header = CharTrieFileHeader::from_bytes(&header_buf);
 
@@ -336,7 +346,10 @@ fn check_wal_available(trie_path: &Path) -> bool {
 /// Count WAL segments available (active + archived).
 fn count_wal_segments(trie_path: &Path) -> usize {
     let wal_path = trie_path.with_extension("wal");
-    let archive_dir = trie_path.parent().unwrap_or(Path::new(".")).join("wal_archive");
+    let archive_dir = trie_path
+        .parent()
+        .unwrap_or(Path::new("."))
+        .join("wal_archive");
 
     let mut count = 0;
 
@@ -383,8 +396,7 @@ impl RecoveryManager {
 
     /// Check if recovery is needed.
     pub fn needs_recovery(&self) -> Result<bool> {
-        detect_corruption(&self.trie_path, false)
-            .map(|opt| opt.is_some())
+        detect_corruption(&self.trie_path, false).map(|opt| opt.is_some())
     }
 
     /// Perform recovery with specified policy.
@@ -564,8 +576,8 @@ impl RecoveryManager {
             return Ok(None);
         }
 
-        let mut file = File::open(&self.trie_path)
-            .map_err(|e| io_err("open", &self.trie_path, e))?;
+        let mut file =
+            File::open(&self.trie_path).map_err(|e| io_err("open", &self.trie_path, e))?;
         let mut header_buf = [0u8; CHAR_FILE_HEADER_SIZE];
         file.read_exact(&mut header_buf)
             .map_err(|e| io_err("read header", &self.trie_path, e))?;
@@ -589,8 +601,17 @@ impl RecoveryManager {
             WalRecord::Remove { term } => {
                 vec![RecoveredOperation::Remove { lsn, term }]
             }
-            WalRecord::Increment { term, delta, result } => {
-                vec![RecoveredOperation::Increment { lsn, term, delta, result }]
+            WalRecord::Increment {
+                term,
+                delta,
+                result,
+            } => {
+                vec![RecoveredOperation::Increment {
+                    lsn,
+                    term,
+                    delta,
+                    result,
+                }]
             }
             WalRecord::Upsert { term, value } => {
                 vec![RecoveredOperation::Upsert { lsn, term, value }]
@@ -612,12 +633,10 @@ impl RecoveryManager {
                     vec![] // Failed CAS operations don't need replay
                 }
             }
-            WalRecord::BatchInsert { entries } => {
-                entries
-                    .into_iter()
-                    .map(|(term, value)| RecoveredOperation::Insert { lsn, term, value })
-                    .collect()
-            }
+            WalRecord::BatchInsert { entries } => entries
+                .into_iter()
+                .map(|(term, value)| RecoveredOperation::Insert { lsn, term, value })
+                .collect(),
             WalRecord::BatchIncrement { entries } => {
                 entries
                     .into_iter()
@@ -726,18 +745,24 @@ mod tests {
 
     #[test]
     fn test_recovery_mode_is_success() {
-        assert!(RecoveryMode::Normal { wal_records_replayed: 0 }.is_success());
+        assert!(RecoveryMode::Normal {
+            wal_records_replayed: 0
+        }
+        .is_success());
         assert!(RecoveryMode::PartialRecovery {
             corrupted_arenas: vec![],
             recovered_records: 0
-        }.is_success());
+        }
+        .is_success());
         assert!(RecoveryMode::RebuildFromWal {
             segments_processed: 0,
             records_replayed: 0
-        }.is_success());
+        }
+        .is_success());
         assert!(!RecoveryMode::Unrecoverable {
             reason: "test".to_string()
-        }.is_success());
+        }
+        .is_success());
     }
 
     #[test]

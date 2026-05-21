@@ -11,8 +11,8 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering as AtomicOrdering};
+use std::sync::Arc;
 
 use log::warn;
 
@@ -62,8 +62,8 @@ impl<V: DictionaryValue> PersistentARTrie<V, IoUringDiskManager> {
             ..Default::default()
         };
         let archive_config = WalConfig::default();
-        let wal_writer = AsyncWalWriter::create(&wal_path, async_config, archive_config)
-            .map_err(|e| {
+        let wal_writer =
+            AsyncWalWriter::create(&wal_path, async_config, archive_config).map_err(|e| {
                 PersistentARTrieError::io_error(
                     "create_wal",
                     wal_path.display().to_string(),
@@ -124,7 +124,11 @@ impl<V: DictionaryValue> PersistentARTrie<V, IoUringDiskManager> {
             let ptr = SwizzledPtr::from_raw(root_ptr);
             if let Some(location) = ptr.disk_location() {
                 let mut descriptor_buf = [0u8; 18];
-                disk_manager.read_bytes(location.block_id, DESCRIPTOR_OFFSET, &mut descriptor_buf)?;
+                disk_manager.read_bytes(
+                    location.block_id,
+                    DESCRIPTOR_OFFSET,
+                    &mut descriptor_buf,
+                )?;
                 u32::from_le_bytes([
                     descriptor_buf[6],
                     descriptor_buf[7],

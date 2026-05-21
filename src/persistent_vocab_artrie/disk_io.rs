@@ -21,8 +21,8 @@
 
 use std::collections::HashMap;
 use std::io::Cursor;
-use std::sync::Arc;
 use std::sync::atomic::Ordering;
+use std::sync::Arc;
 
 use parking_lot::RwLock;
 use xxhash_rust::xxh3::Xxh3DefaultBuilder;
@@ -39,10 +39,8 @@ use crate::persistent_artrie_char::serialization_char::{
 };
 use crate::persistent_artrie_char::types::NodeRef;
 
-use super::types::{
-    VocabTrieNode, VocabTrieRoot,
-};
 use super::reverse_index::VocabReverseIndex;
+use super::types::{VocabTrieNode, VocabTrieRoot};
 
 impl<S: BlockStorage> super::dict_impl::PersistentVocabARTrie<S> {
     ///
@@ -56,7 +54,11 @@ impl<S: BlockStorage> super::dict_impl::PersistentVocabARTrie<S> {
         arena_manager: &Arc<RwLock<ArenaManager<S>>>,
         buffer_manager: &Arc<RwLock<BufferManager<S>>>,
         root_slot: ArenaSlot,
-    ) -> Result<(VocabTrieRoot, HashMap<NodeRef, *const VocabTrieNode, Xxh3DefaultBuilder>, u64)> {
+    ) -> Result<(
+        VocabTrieRoot,
+        HashMap<NodeRef, *const VocabTrieNode, Xxh3DefaultBuilder>,
+        u64,
+    )> {
         // Phase 1: Load all nodes from disk (parent fields will have stale NodeRefs)
         let root_node = Self::load_vocab_node_structure(arena_manager, buffer_manager, root_slot)?;
 
@@ -112,7 +114,7 @@ impl<S: BlockStorage> super::dict_impl::PersistentVocabARTrie<S> {
 
         if remaining.len() < 13 {
             return Err(PersistentARTrieError::corrupted(
-                "VocabTrieNode data too short for vocab fields"
+                "VocabTrieNode data too short for vocab fields",
             ));
         }
 
@@ -132,7 +134,9 @@ impl<S: BlockStorage> super::dict_impl::PersistentVocabARTrie<S> {
                     "VocabTrieNode data too short for value (expected 21 bytes for vocab fields with value)"
                 ));
             }
-            Some(u64::from_le_bytes(remaining[13..21].try_into().expect("8 bytes")))
+            Some(u64::from_le_bytes(
+                remaining[13..21].try_into().expect("8 bytes"),
+            ))
         } else {
             None
         };
@@ -156,11 +160,8 @@ impl<S: BlockStorage> super::dict_impl::PersistentVocabARTrie<S> {
                     disk_loc.offset,
                 );
 
-                let child_node = Self::load_vocab_node_structure(
-                    arena_manager,
-                    buffer_manager,
-                    child_slot,
-                )?;
+                let child_node =
+                    Self::load_vocab_node_structure(arena_manager, buffer_manager, child_slot)?;
 
                 child_nodes.push((key, Box::new(child_node)));
             }
@@ -189,10 +190,13 @@ impl<S: BlockStorage> super::dict_impl::PersistentVocabARTrie<S> {
                     Ok(None) => {} // Successfully added, no growth needed
                     Err(e) => {
                         // Reclaim the child to avoid leak before returning error
-                        unsafe { drop(Box::from_raw(child_ptr)); }
-                        return Err(PersistentARTrieError::corrupted(
-                            format!("Failed to add child during trie load: {:?}", e)
-                        ));
+                        unsafe {
+                            drop(Box::from_raw(child_ptr));
+                        }
+                        return Err(PersistentARTrieError::corrupted(format!(
+                            "Failed to add child during trie load: {:?}",
+                            e
+                        )));
                     }
                 }
             }
@@ -265,11 +269,7 @@ impl<S: BlockStorage> super::dict_impl::PersistentVocabARTrie<S> {
             }
 
             // Recursively process children
-            Self::update_reverse_index_recursive(
-                root.as_ref(),
-                reverse_index,
-                &mut slot_counter,
-            )?;
+            Self::update_reverse_index_recursive(root.as_ref(), reverse_index, &mut slot_counter)?;
         }
 
         Ok(())
@@ -312,7 +312,9 @@ impl<S: BlockStorage> super::dict_impl::PersistentVocabARTrie<S> {
     fn serialize_vocab_node_to_disk(&mut self, node: &VocabTrieNode) -> Result<ArenaSlot> {
         // Verify arena manager exists first (don't keep reference across recursive calls)
         if self.arena_manager.is_none() {
-            return Err(PersistentARTrieError::internal("No arena manager for disk serialization"));
+            return Err(PersistentARTrieError::internal(
+                "No arena manager for disk serialization",
+            ));
         }
 
         // First, recursively serialize all children and collect their disk pointers
@@ -412,7 +414,10 @@ impl<S: BlockStorage> super::dict_impl::PersistentVocabARTrie<S> {
                 Ok(None) => {} // Successfully added, no growth needed
                 Err(e) => {
                     // Log error but continue - this should rarely happen during serialization
-                    eprintln!("Warning: failed to add child in build_disk_char_node_static: {:?}", e);
+                    eprintln!(
+                        "Warning: failed to add child in build_disk_char_node_static: {:?}",
+                        e
+                    );
                 }
             }
         }
@@ -437,9 +442,7 @@ impl<S: BlockStorage> super::dict_impl::PersistentVocabARTrie<S> {
 
         // Serialize the root node (this recursively serializes all children)
         // Safety: root_node_ptr is valid because we own self.root
-        let root_slot = unsafe {
-            self.serialize_vocab_node_to_disk(&*root_node_ptr)?
-        };
+        let root_slot = unsafe { self.serialize_vocab_node_to_disk(&*root_node_ptr)? };
 
         // Flush arenas to disk
         if let Some(ref arena_manager) = self.arena_manager {
@@ -472,7 +475,8 @@ impl<S: BlockStorage> super::dict_impl::PersistentVocabARTrie<S> {
                     let child = current.get_or_create_child(c, current_ref);
 
                     if !self.node_map.contains_key(&child_ref) {
-                        self.node_map.insert(child_ref, child as *const VocabTrieNode);
+                        self.node_map
+                            .insert(child_ref, child as *const VocabTrieNode);
                     }
 
                     current_ref = child_ref;
@@ -505,7 +509,10 @@ impl<S: BlockStorage> super::dict_impl::PersistentVocabARTrie<S> {
                     }
                     let new_val = index + 1;
                     match self.next_index.compare_exchange(
-                        current, new_val, Ordering::AcqRel, Ordering::Acquire
+                        current,
+                        new_val,
+                        Ordering::AcqRel,
+                        Ordering::Acquire,
                     ) {
                         Ok(_) => break,
                         Err(_) => continue, // Retry

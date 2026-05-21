@@ -626,9 +626,7 @@ mod tests {
         let dict_a = DoubleArrayTrie::from_terms_with_values(
             vec![("cat", 1usize), ("dog", 2), ("fish", 3)].into_iter(),
         );
-        let dict_b = DoubleArrayTrie::from_terms_with_values(
-            vec![("dog", 0usize)].into_iter(),
-        );
+        let dict_b = DoubleArrayTrie::from_terms_with_values(vec![("dog", 0usize)].into_iter());
 
         let z_a = DoubleArrayTrieZipper::new_from_dict(&dict_a);
         let z_b = DoubleArrayTrieZipper::new_from_dict(&dict_b);
@@ -661,9 +659,7 @@ mod tests {
         let dict_a = DoubleArrayTrie::from_terms_with_values(
             vec![("cat", 1usize), ("dog", 2), ("fish", 3)].into_iter(),
         );
-        let dict_b = DoubleArrayTrie::from_terms_with_values(
-            vec![("dog", 0usize)].into_iter(),
-        );
+        let dict_b = DoubleArrayTrie::from_terms_with_values(vec![("dog", 0usize)].into_iter());
 
         let z_a = DoubleArrayTrieZipper::new_from_dict(&dict_a);
         let z_b = DoubleArrayTrieZipper::new_from_dict(&dict_b);

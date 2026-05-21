@@ -14,9 +14,7 @@
 //! taskset -c 0-3 cargo bench --bench io_uring_comparison_benchmarks --features io-uring-backend
 //! ```
 
-use criterion::{
-    black_box, criterion_group, criterion_main, Criterion, Throughput,
-};
+use criterion::{black_box, criterion_group, criterion_main, Criterion, Throughput};
 use hdrhistogram::Histogram;
 use std::io::Write;
 use std::sync::Arc;
@@ -27,9 +25,7 @@ use libdictenstein::persistent_artrie::block_storage::{AlignedBlock, BlockStorag
 use libdictenstein::persistent_artrie::buffer_manager::BufferManager;
 use libdictenstein::persistent_artrie::disk_manager::{MmapDiskManager, BLOCK_SIZE};
 use libdictenstein::persistent_artrie::IoUringDiskManager;
-use libdictenstein::persistent_artrie::{
-    PersistentARTrie, StdFsync, WalSyncBackend, IoUringFsync,
-};
+use libdictenstein::persistent_artrie::{IoUringFsync, PersistentARTrie, StdFsync, WalSyncBackend};
 use libdictenstein::Dictionary;
 
 /// Number of blocks for memory pressure scenarios.
@@ -314,9 +310,8 @@ fn cmp_batch_read(c: &mut Criterion) {
         b.iter_custom(|iters| {
             let mut total = Duration::ZERO;
             for _ in 0..iters {
-                let mut buffers: Vec<Box<AlignedBlock>> = (0..batch_size)
-                    .map(|_| AlignedBlock::new_boxed())
-                    .collect();
+                let mut buffers: Vec<Box<AlignedBlock>> =
+                    (0..batch_size).map(|_| AlignedBlock::new_boxed()).collect();
 
                 let start = Instant::now();
                 for (i, buf) in buffers.iter_mut().enumerate() {
@@ -341,9 +336,8 @@ fn cmp_batch_read(c: &mut Criterion) {
         b.iter_custom(|iters| {
             let mut total = Duration::ZERO;
             for _ in 0..iters {
-                let mut buffers: Vec<Box<AlignedBlock>> = (0..batch_size)
-                    .map(|_| AlignedBlock::new_boxed())
-                    .collect();
+                let mut buffers: Vec<Box<AlignedBlock>> =
+                    (0..batch_size).map(|_| AlignedBlock::new_boxed()).collect();
 
                 let mut requests: Vec<(u32, &mut [u8; BLOCK_SIZE])> = buffers
                     .iter_mut()
@@ -372,9 +366,8 @@ fn cmp_batch_read(c: &mut Criterion) {
         b.iter_custom(|iters| {
             let mut total = Duration::ZERO;
             for _ in 0..iters {
-                let mut buffers: Vec<Box<AlignedBlock>> = (0..batch_size)
-                    .map(|_| AlignedBlock::new_boxed())
-                    .collect();
+                let mut buffers: Vec<Box<AlignedBlock>> =
+                    (0..batch_size).map(|_| AlignedBlock::new_boxed()).collect();
 
                 let start = Instant::now();
                 for (i, buf) in buffers.iter_mut().enumerate() {
@@ -444,9 +437,8 @@ fn cmp_wal_fsync(c: &mut Criterion) {
         let dir = tempdir().expect("create temp dir");
         let wal_path = dir.path().join("wal_uring.log");
 
-        let backend: Arc<dyn WalSyncBackend> = Arc::new(
-            IoUringFsync::new(8).expect("create io_uring fsync backend")
-        );
+        let backend: Arc<dyn WalSyncBackend> =
+            Arc::new(IoUringFsync::new(8).expect("create io_uring fsync backend"));
 
         b.iter_custom(|iters| {
             let mut total = Duration::ZERO;
@@ -511,9 +503,8 @@ fn cmp_wal_fsync(c: &mut Criterion) {
     group.bench_function("io_uring_fsync_batched", |b| {
         let dir = tempdir().expect("create temp dir");
         let wal_path = dir.path().join("wal_uring_batch.log");
-        let backend: Arc<dyn WalSyncBackend> = Arc::new(
-            IoUringFsync::new(8).expect("create io_uring fsync backend")
-        );
+        let backend: Arc<dyn WalSyncBackend> =
+            Arc::new(IoUringFsync::new(8).expect("create io_uring fsync backend"));
 
         b.iter_custom(|iters| {
             let mut total = Duration::ZERO;
@@ -553,9 +544,7 @@ fn cmp_trie_insert(c: &mut Criterion) {
     let num_terms: usize = 10_000;
     group.throughput(Throughput::Elements(num_terms as u64));
 
-    let terms: Vec<String> = (0..num_terms)
-        .map(|i| format!("term_{:08}", i))
-        .collect();
+    let terms: Vec<String> = (0..num_terms).map(|i| format!("term_{:08}", i)).collect();
 
     // --- mmap ---
     group.bench_function("mmap", |b| {
@@ -614,16 +603,13 @@ fn cmp_trie_query(c: &mut Criterion) {
     let num_terms: usize = 10_000;
     group.throughput(Throughput::Elements(num_terms as u64));
 
-    let terms: Vec<String> = (0..num_terms)
-        .map(|i| format!("term_{:08}", i))
-        .collect();
+    let terms: Vec<String> = (0..num_terms).map(|i| format!("term_{:08}", i)).collect();
 
     // --- mmap ---
     group.bench_function("mmap", |b| {
         let dir = tempdir().expect("create temp dir");
         let path = dir.path().join("query_mmap.part");
-        let mut dict: PersistentARTrie<()> =
-            PersistentARTrie::create(&path).expect("create");
+        let mut dict: PersistentARTrie<()> = PersistentARTrie::create(&path).expect("create");
         for term in &terms {
             dict.insert(term);
         }
@@ -738,13 +724,9 @@ fn cmp_summary_report(c: &mut Criterion) {
 }
 
 /// Run a block-level benchmark, returning the histogram.
-fn bench_block_ops<S: BlockStorage>(
-    storage: &S,
-    block_ids: &[u32],
-    read: bool,
-) -> Histogram<u64> {
-    let mut hist = Histogram::<u64>::new_with_bounds(1, 60_000_000_000, 3)
-        .expect("create histogram");
+fn bench_block_ops<S: BlockStorage>(storage: &S, block_ids: &[u32], read: bool) -> Histogram<u64> {
+    let mut hist =
+        Histogram::<u64>::new_with_bounds(1, 60_000_000_000, 3).expect("create histogram");
     let mut block = AlignedBlock::new_boxed();
 
     if !read {
@@ -756,9 +738,13 @@ fn bench_block_ops<S: BlockStorage>(
     for &block_id in block_ids {
         let start = Instant::now();
         if read {
-            storage.read_block(block_id, &mut block.data).expect("read block");
+            storage
+                .read_block(block_id, &mut block.data)
+                .expect("read block");
         } else {
-            storage.write_block(block_id, &block.data).expect("write block");
+            storage
+                .write_block(block_id, &block.data)
+                .expect("write block");
         }
         hist.record(start.elapsed().as_nanos() as u64).ok();
     }
@@ -768,8 +754,8 @@ fn bench_block_ops<S: BlockStorage>(
 
 /// Benchmark sync latency (write 10 blocks, then sync).
 fn bench_sync<S: BlockStorage>(storage: &S) -> Histogram<u64> {
-    let mut hist = Histogram::<u64>::new_with_bounds(1, 60_000_000_000, 3)
-        .expect("create histogram");
+    let mut hist =
+        Histogram::<u64>::new_with_bounds(1, 60_000_000_000, 3).expect("create histogram");
     let block = AlignedBlock::new_boxed();
 
     for _ in 0..100 {
@@ -846,8 +832,10 @@ fn cmp_single_block_read_fixed(c: &mut Criterion) {
         // BufferManager::new() auto-registers the pool for ReadFixed/WriteFixed.
         // Pool of 16 × 256KB = 4MB fits within RLIMIT_MEMLOCK (8MB).
         let bm = BufferManager::new(dm, FIXED_POOL_SIZE);
-        eprintln!("[cmp_single_block_read_fixed] io_uring_fixed: buffers_registered={}",
-            bm.storage().supports_fixed_buffers());
+        eprintln!(
+            "[cmp_single_block_read_fixed] io_uring_fixed: buffers_registered={}",
+            bm.storage().supports_fixed_buffers()
+        );
 
         b.iter_custom(|iters| {
             let mut total = Duration::ZERO;
@@ -949,8 +937,10 @@ fn cmp_single_block_write_fixed(c: &mut Criterion) {
     group.bench_function("io_uring_fixed", |b| {
         let (_dir, dm) = setup_io_uring(FIXED_BLOCK_COUNT);
         let bm = BufferManager::new(dm, FIXED_POOL_SIZE);
-        eprintln!("[cmp_single_block_write_fixed] io_uring_fixed: buffers_registered={}",
-            bm.storage().supports_fixed_buffers());
+        eprintln!(
+            "[cmp_single_block_write_fixed] io_uring_fixed: buffers_registered={}",
+            bm.storage().supports_fixed_buffers()
+        );
 
         b.iter_custom(|iters| {
             let mut total = Duration::ZERO;
@@ -1078,8 +1068,10 @@ fn cmp_flush_all_fixed(c: &mut Criterion) {
     group.bench_function("io_uring_fixed", |b| {
         let (_dir, dm) = setup_io_uring(dirty_count);
         let bm = BufferManager::new(dm, FIXED_POOL_SIZE);
-        eprintln!("[cmp_flush_all_fixed] io_uring_fixed: buffers_registered={}",
-            bm.storage().supports_fixed_buffers());
+        eprintln!(
+            "[cmp_flush_all_fixed] io_uring_fixed: buffers_registered={}",
+            bm.storage().supports_fixed_buffers()
+        );
 
         // Pre-load pages
         for id in 1..=dirty_count {

@@ -13,9 +13,7 @@ use libdictenstein::persistent_artrie::PersistentARTrie;
 
 /// Generate test terms for benchmarking
 fn generate_terms(count: usize) -> Vec<String> {
-    (0..count)
-        .map(|i| format!("term_{:08}", i))
-        .collect()
+    (0..count).map(|i| format!("term_{:08}", i)).collect()
 }
 
 /// Benchmark individual inserts with WAL logging
@@ -59,10 +57,7 @@ fn bench_batch_inserts(c: &mut Criterion) {
 
     for size in [100, 1000, 10000] {
         let terms = generate_terms(size);
-        let entries: Vec<(String, Option<()>)> = terms
-            .iter()
-            .map(|t| (t.clone(), None))
-            .collect();
+        let entries: Vec<(String, Option<()>)> = terms.iter().map(|t| (t.clone(), None)).collect();
 
         group.throughput(Throughput::Elements(size as u64));
         group.bench_with_input(BenchmarkId::from_parameter(size), &entries, |b, entries| {
@@ -94,10 +89,7 @@ fn bench_wal_size_comparison(c: &mut Criterion) {
 
     let size = 1000;
     let terms = generate_terms(size);
-    let entries: Vec<(String, Option<()>)> = terms
-        .iter()
-        .map(|t| (t.clone(), None))
-        .collect();
+    let entries: Vec<(String, Option<()>)> = terms.iter().map(|t| (t.clone(), None)).collect();
 
     // Measure individual insert WAL size
     group.bench_function("individual_wal_size", |b| {

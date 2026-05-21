@@ -246,8 +246,7 @@ pub fn extend_prefix(
     let prepend_copy = prepend_bytes.len().min(MAX_PREFIX_LEN);
     if prepend_copy > 0 && write_pos < MAX_PREFIX_LEN {
         let copy_len = prepend_copy.min(MAX_PREFIX_LEN - write_pos);
-        result.bytes[write_pos..write_pos + copy_len]
-            .copy_from_slice(&prepend_bytes[..copy_len]);
+        result.bytes[write_pos..write_pos + copy_len].copy_from_slice(&prepend_bytes[..copy_len]);
         write_pos += copy_len;
     }
 

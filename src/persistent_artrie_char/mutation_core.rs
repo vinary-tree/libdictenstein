@@ -55,7 +55,8 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
         for c in term.chars() {
             // Safety: current is valid and we have exclusive access through &mut self
             let node = unsafe { &mut *current };
-            current = self.get_or_create_child_lazy_ptr(node, c)
+            current = self
+                .get_or_create_child_lazy_ptr(node, c)
                 .expect("I/O error during lazy loading in insert");
         }
 
@@ -74,7 +75,6 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
         true
     }
 
-
     /// Insert a term with value (internal, no WAL logging)
     pub(super) fn insert_impl_no_wal_with_value(&mut self, term: &str, value: V) -> bool {
         // Ensure we have a root node
@@ -92,7 +92,8 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
         for c in term.chars() {
             // Safety: current is valid and we have exclusive access through &mut self
             let node = unsafe { &mut *current };
-            current = self.get_or_create_child_lazy_ptr(node, c)
+            current = self
+                .get_or_create_child_lazy_ptr(node, c)
                 .expect("I/O error during lazy loading in insert");
         }
 
@@ -132,7 +133,7 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
             match self.get_child_mut_lazy(node, c) {
                 Ok(Some(child)) => current = child as *mut CharTrieNodeInner<V>,
                 Ok(None) => return false, // Term not found
-                Err(_) => return false, // I/O error during lazy load
+                Err(_) => return false,   // I/O error during lazy load
             }
         }
 

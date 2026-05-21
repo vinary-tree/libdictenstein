@@ -1,0 +1,197 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+env:
+  CARGO_TERM_COLOR: always
+  # Avoid the unconditional `target-cpu=native` from .cargo/config.toml so CI
+  # builds remain portable. AES + SSE2 are required by PathMap's gxhash.
+  RUSTFLAGS: "-C target-feature=+aes,+sse2"
+
+jobs:
+  # -----------------------------------------------------------------
+  # Feature-matrix build. Catches feature-flag bugs that hide behind
+  # the default `cargo build --all-features` smoke-test.
+  # -----------------------------------------------------------------
+  build-matrix:
+    name: Build (${{ matrix.features-name }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest]
+        include:
+          - features-name: default
+            features: ""
+            os: ubuntu-latest
+          - features-name: no-default
+            features: --no-default-features
+            os: ubuntu-latest
+          - features-name: persistent-artrie
+            features: --no-default-features --features persistent-artrie
+            os: ubuntu-latest
+          - features-name: pathmap-backend
+            features: --no-default-features --features pathmap-backend
+            os: ubuntu-latest
+          - features-name: io-uring-backend
+            features: --no-default-features --features io-uring-backend
+            os: ubuntu-latest
+          - features-name: parallel-merge
+            features: --no-default-features --features parallel-merge
+            os: ubuntu-latest
+          - features-name: serialization
+            features: --no-default-features --features serialization
+            os: ubuntu-latest
+          - features-name: protobuf
+            features: --no-default-features --features protobuf
+            os: ubuntu-latest
+          # `lling-llang` and `union_zipper_lling_llang_tests.rs` —
+          # the latter is cfg-gated on `lling-llang AND NOT persistent-artrie`,
+          # so we explicitly exclude persistent-artrie in this row.
+          - features-name: lling-llang
+            features: --no-default-features --features lling-llang
+            os: ubuntu-latest
+          - features-name: all-features
+            features: --all-features
+            os: ubuntu-latest
+          # Cross-OS sanity on the default feature set.
+          - features-name: macos-default
+            features: ""
+            os: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: cargo build
+        run: cargo build ${{ matrix.features }} --verbose
+      - name: cargo test
+        run: cargo test ${{ matrix.features }} --verbose --no-fail-fast
+
+  # -----------------------------------------------------------------
+  # `cargo clippy` with `-D warnings`. Catches all the lint regressions
+  # that the default `cargo build` would let pass.
+  # -----------------------------------------------------------------
+  clippy:
+    name: Clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - name: cargo clippy --all-features -- -D warnings
+        run: cargo clippy --all-features --all-targets -- -D warnings
+
+  # -----------------------------------------------------------------
+  # `cargo doc` with `-D warnings` so broken intra-doc links fail CI.
+  # -----------------------------------------------------------------
+  doc:
+    name: Doc
+    runs-on: ubuntu-latest
+    env:
+      RUSTDOCFLAGS: "-D warnings"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: cargo doc --all-features --no-deps
+        run: cargo doc --all-features --no-deps
+
+  # -----------------------------------------------------------------
+  # rustfmt --check. Prevents formatting drift.
+  # -----------------------------------------------------------------
+  fmt:
+    name: Rustfmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - name: cargo fmt --check
+        run: cargo fmt --all -- --check
+
+  # -----------------------------------------------------------------
+  # MSRV check. `Cargo.toml` declares `rust-version = "1.70"` —
+  # enforce it.
+  # -----------------------------------------------------------------
+  msrv:
+    name: MSRV (1.70)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.70"
+      - name: cargo build --all-features
+        run: cargo build --all-features
+
+  # -----------------------------------------------------------------
+  # Coverage on nightly (branch coverage requires nightly llvm-cov).
+  # The previous coverage.yml ran on stable, which silently degraded
+  # branch coverage.
+  # -----------------------------------------------------------------
+  coverage:
+    name: Coverage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: llvm-tools-preview
+      - uses: taiki-e/install-action@cargo-llvm-cov
+      - name: Run coverage
+        run: |
+          cargo llvm-cov --all-features --branch \
+            --lcov --output-path lcov.info \
+            --cobertura --output-path cobertura.xml
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v4
+        with:
+          files: lcov.info,cobertura.xml
+          fail_ci_if_error: false
+        env:
+          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+
+  # -----------------------------------------------------------------
+  # Sanitizer suite. Pinned at nightly for `-Z sanitizer=`. Each
+  # sanitizer is its own job so failures are localised.
+  # -----------------------------------------------------------------
+  sanitizers:
+    name: Sanitizer (${{ matrix.sanitizer }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        sanitizer: [address, thread]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rust-src
+      - name: Run ${{ matrix.sanitizer }}sanitizer
+        env:
+          RUSTFLAGS: "-Z sanitizer=${{ matrix.sanitizer }}"
+        run: |
+          cargo +nightly test \
+            --target x86_64-unknown-linux-gnu \
+            --all-features \
+            --no-fail-fast
+
+  # -----------------------------------------------------------------
+  # Rocq proofs. Requires `coqc` >= 9.1 on the runner.
+  # -----------------------------------------------------------------
+  rocq:
+    name: Rocq proofs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rocq (Coq)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y coq
+      - name: Build proofs
+        working-directory: formal-verification/rocq
+        run: make

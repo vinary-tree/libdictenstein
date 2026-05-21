@@ -411,11 +411,7 @@ impl MemoryPressureMonitor {
                         );
                     })
                     .map_err(|e| {
-                        PersistentARTrieError::io_error(
-                            "spawn monitor thread",
-                            "thread",
-                            e,
-                        )
+                        PersistentARTrieError::io_error("spawn monitor thread", "thread", e)
                     })?,
             )
         } else {
@@ -538,7 +534,10 @@ impl MemoryPressureMonitor {
     }
 
     /// Classify memory pressure based on available memory fraction.
-    fn classify_pressure(config: &MemoryPressureConfig, stats: &MemoryStats) -> MemoryPressureLevel {
+    fn classify_pressure(
+        config: &MemoryPressureConfig,
+        stats: &MemoryStats,
+    ) -> MemoryPressureLevel {
         let available = stats.available_fraction();
 
         if available < config.critical_memory_threshold {
@@ -702,7 +701,7 @@ mod tests {
     #[test]
     fn test_memory_stats() {
         let stats = MemoryStats {
-            mem_total: 16 * 1024 * 1024 * 1024, // 16 GB
+            mem_total: 16 * 1024 * 1024 * 1024,    // 16 GB
             mem_available: 8 * 1024 * 1024 * 1024, // 8 GB
             mem_free: 4 * 1024 * 1024 * 1024,
             mem_used: 8 * 1024 * 1024 * 1024,
@@ -763,7 +762,10 @@ mod tests {
 
         assert!(stats.mem_total > 0, "Total memory should be > 0");
         assert!(stats.mem_available > 0, "Available memory should be > 0");
-        assert!(stats.mem_available <= stats.mem_total, "Available should be <= total");
+        assert!(
+            stats.mem_available <= stats.mem_total,
+            "Available should be <= total"
+        );
     }
 
     #[test]
@@ -795,8 +797,7 @@ mod tests {
             ..Default::default()
         };
 
-        let monitor = MemoryPressureMonitor::start(config, |_, _| {})
-            .expect("start monitor");
+        let monitor = MemoryPressureMonitor::start(config, |_, _| {}).expect("start monitor");
 
         let level = monitor.check_now().expect("check now");
         // On a typical system, we expect Normal
@@ -819,6 +820,9 @@ mod tests {
         assert_eq!(MemoryPressureLevel::from(0), MemoryPressureLevel::Normal);
         assert_eq!(MemoryPressureLevel::from(1), MemoryPressureLevel::Low);
         assert_eq!(MemoryPressureLevel::from(2), MemoryPressureLevel::Critical);
-        assert_eq!(MemoryPressureLevel::from(255), MemoryPressureLevel::Critical);
+        assert_eq!(
+            MemoryPressureLevel::from(255),
+            MemoryPressureLevel::Critical
+        );
     }
 }

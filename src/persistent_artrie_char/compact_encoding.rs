@@ -115,7 +115,7 @@ impl CompactHeader {
 
         let b1 = (self.prefix_len & 0x07)
             | ((self.node_type & 0x07) << 3)
-            | (((stored_children >> 2) & 0x03) << 6);  // High 2 bits of num_children
+            | (((stored_children >> 2) & 0x03) << 6); // High 2 bits of num_children
 
         let b2 = self.flags;
 
@@ -142,12 +142,12 @@ impl CompactHeader {
 
         let key_width = (b0 & 0x03) + 1;
         let ptr_width = ((b0 >> 2) & 0x07) + 1;
-        let children_low = (b0 >> 5) & 0x03;  // Low 2 bits
+        let children_low = (b0 >> 5) & 0x03; // Low 2 bits
         let has_value = (b0 >> 7) != 0;
 
         let prefix_len = b1 & 0x07;
         let node_type = (b1 >> 3) & 0x07;
-        let children_high = (b1 >> 6) & 0x03;  // High 2 bits
+        let children_high = (b1 >> 6) & 0x03; // High 2 bits
 
         // Combine 4 bits for num_children (0-15 range)
         let num_children = children_low | (children_high << 2);
@@ -334,7 +334,12 @@ pub fn read_fixed_width_from_slice(data: &[u8], offset: &mut usize, width: u8) -
 }
 
 /// Read N values with the specified byte width from a slice
-pub fn read_n_values_from_slice(data: &[u8], offset: &mut usize, count: usize, width: u8) -> Vec<u64> {
+pub fn read_n_values_from_slice(
+    data: &[u8],
+    offset: &mut usize,
+    count: usize,
+    width: u8,
+) -> Vec<u64> {
     let mut values = Vec::with_capacity(count);
     for _ in 0..count {
         values.push(read_fixed_width_from_slice(data, offset, width));
@@ -433,9 +438,17 @@ pub fn encode_compact_node_auto(
     assert_eq!(keys.len(), children.len());
 
     // Determine optimal widths
-    let max_key = keys.iter().copied().max().unwrap_or(0)
+    let max_key = keys
+        .iter()
+        .copied()
+        .max()
+        .unwrap_or(0)
         .max(prefix.iter().copied().max().unwrap_or(0));
-    let max_ptr = children.iter().copied().max().unwrap_or(0)
+    let max_ptr = children
+        .iter()
+        .copied()
+        .max()
+        .unwrap_or(0)
         .max(value_ptr.unwrap_or(0))
         .max(max_arena_offset);
 
@@ -479,19 +492,38 @@ pub fn decode_compact_node(data: &[u8]) -> DecodedCompactNode {
     let header = CompactHeader::from_bytes_with_extended(data, &mut offset);
 
     // Read prefix
-    let prefix_vals = read_n_values_from_slice(data, &mut offset, header.prefix_len as usize, header.key_width);
+    let prefix_vals = read_n_values_from_slice(
+        data,
+        &mut offset,
+        header.prefix_len as usize,
+        header.key_width,
+    );
     let prefix: Vec<u32> = prefix_vals.iter().map(|&v| v as u32).collect();
 
     // Read keys
-    let key_vals = read_n_values_from_slice(data, &mut offset, header.num_children as usize, header.key_width);
+    let key_vals = read_n_values_from_slice(
+        data,
+        &mut offset,
+        header.num_children as usize,
+        header.key_width,
+    );
     let keys: Vec<u32> = key_vals.iter().map(|&v| v as u32).collect();
 
     // Read children
-    let children = read_n_values_from_slice(data, &mut offset, header.num_children as usize, header.ptr_width);
+    let children = read_n_values_from_slice(
+        data,
+        &mut offset,
+        header.num_children as usize,
+        header.ptr_width,
+    );
 
     // Read value_ptr if present
     let value_ptr = if header.has_value {
-        Some(read_fixed_width_from_slice(data, &mut offset, header.ptr_width))
+        Some(read_fixed_width_from_slice(
+            data,
+            &mut offset,
+            header.ptr_width,
+        ))
     } else {
         None
     };
@@ -542,7 +574,17 @@ mod tests {
 
     #[test]
     fn test_varint_multi_byte() {
-        let values = [248u64, 255, 256, 1000, 65535, 65536, 0xFFFFFF, 0xFFFFFFFF, u64::MAX];
+        let values = [
+            248u64,
+            255,
+            256,
+            1000,
+            65535,
+            65536,
+            0xFFFFFF,
+            0xFFFFFFFF,
+            u64::MAX,
+        ];
         for &v in &values {
             let mut buf = Vec::new();
             write_varint_to_vec(v, &mut buf);

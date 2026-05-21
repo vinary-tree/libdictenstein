@@ -4,8 +4,8 @@ use crate::{Dictionary, DictionaryNode, MappedDictionary};
 use std::io::{Read, Write};
 
 use super::{
-    extract_terms, extract_terms_with_values, extract_terms_with_values_char,
-    DictionaryFromTerms, DictionaryFromTermsWithValues, DictionarySerializer, SerializationError,
+    extract_terms, extract_terms_with_values, extract_terms_with_values_char, DictionaryFromTerms,
+    DictionaryFromTermsWithValues, DictionarySerializer, SerializationError,
 };
 
 use crate::suffix_automaton::SuffixAutomaton;

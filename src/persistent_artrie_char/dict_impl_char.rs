@@ -28,11 +28,11 @@
 //! └─────────────────────────────────────────────────┘
 //! ```
 
-use std::sync::Arc;
-#[allow(unused_imports)]
-use std::sync::atomic::Ordering as AtomicOrdering;
 #[allow(unused_imports)]
 use crate::persistent_artrie::wal::WalConfig;
+#[allow(unused_imports)]
+use std::sync::atomic::Ordering as AtomicOrdering;
+use std::sync::Arc;
 
 // Most imports moved to the relevant sub-modules in Phase-6 splits.
 // `Arc` stays here for the `LockfreeInsertResult::Inserted` enum variant
@@ -148,9 +148,9 @@ pub(super) const ROOT_TYPE_NODE: u8 = 1;
 #[cfg(test)]
 #[allow(deprecated)]
 mod tests {
-    use super::*;
     use super::super::PersistentARTrieChar;
     use super::super::SharedCharTrie;
+    use super::*;
     use crate::ARTrie;
 
     #[test]
@@ -300,8 +300,7 @@ mod tests {
 
         // Reopen and verify
         {
-            let inner: PersistentARTrieChar<()> =
-                PersistentARTrieChar::open(&path).expect("open");
+            let inner: PersistentARTrieChar<()> = PersistentARTrieChar::open(&path).expect("open");
             // WAL replay should have reconstructed the state
             assert_eq!(inner.len(), 2);
         }
@@ -369,14 +368,14 @@ mod tests {
 
         // Test various Unicode characters
         let terms = vec![
-            "こんにちは",     // Japanese
-            "你好",           // Chinese
-            "안녕하세요",     // Korean
-            "مرحبا",          // Arabic
-            "שלום",           // Hebrew
-            "🎉🎊🎋",        // Emoji
-            "café",           // Latin with diacritics
-            "naïve",          // Latin with diacritics
+            "こんにちは", // Japanese
+            "你好",       // Chinese
+            "안녕하세요", // Korean
+            "مرحبا",      // Arabic
+            "שלום",       // Hebrew
+            "🎉🎊🎋",     // Emoji
+            "café",       // Latin with diacritics
+            "naïve",      // Latin with diacritics
         ];
 
         for term in &terms {
@@ -485,8 +484,7 @@ mod tests {
 
         // Reopen and verify
         {
-            let inner: PersistentARTrieChar<()> =
-                PersistentARTrieChar::open(&path).expect("open");
+            let inner: PersistentARTrieChar<()> = PersistentARTrieChar::open(&path).expect("open");
             assert_eq!(inner.len(), 3);
             assert!(inner.contains("alpha"));
             assert!(inner.contains("beta"));
@@ -516,8 +514,7 @@ mod tests {
 
         // Reopen and verify
         {
-            let inner: PersistentARTrieChar<()> =
-                PersistentARTrieChar::open(&path).expect("open");
+            let inner: PersistentARTrieChar<()> = PersistentARTrieChar::open(&path).expect("open");
             assert_eq!(inner.len(), 3);
             assert!(inner.contains("a"));
             assert!(!inner.contains("b"));
@@ -552,7 +549,10 @@ mod tests {
         }
 
         // Verify root_ptr was written
-        assert_ne!(root_ptr_after_checkpoint, 0, "root_ptr should be non-zero after checkpoint");
+        assert_ne!(
+            root_ptr_after_checkpoint, 0,
+            "root_ptr should be non-zero after checkpoint"
+        );
 
         // Reopen and verify data was loaded from disk
         {
@@ -572,11 +572,15 @@ mod tests {
 
             drop(dm);
 
-            let inner: PersistentARTrieChar<()> =
-                PersistentARTrieChar::open(&path).expect("open");
+            let inner: PersistentARTrieChar<()> = PersistentARTrieChar::open(&path).expect("open");
 
-            assert_eq!(inner.len(), 3, "len after reopen (root_ptr was {}, entry_count was {})",
-                stored_root_ptr, stored_entry_count);
+            assert_eq!(
+                inner.len(),
+                3,
+                "len after reopen (root_ptr was {}, entry_count was {})",
+                stored_root_ptr,
+                stored_entry_count
+            );
             assert!(inner.contains("apple"));
             assert!(inner.contains("banana"));
             assert!(inner.contains("cherry"));
@@ -604,8 +608,7 @@ mod tests {
 
         // Reopen and verify Unicode data
         {
-            let inner: PersistentARTrieChar<()> =
-                PersistentARTrieChar::open(&path).expect("open");
+            let inner: PersistentARTrieChar<()> = PersistentARTrieChar::open(&path).expect("open");
             assert_eq!(inner.len(), 4);
             assert!(inner.contains("こんにちは"));
             assert!(inner.contains("你好"));
@@ -637,8 +640,7 @@ mod tests {
 
         // Reopen - should have all 4 (disk + WAL replay)
         {
-            let inner: PersistentARTrieChar<()> =
-                PersistentARTrieChar::open(&path).expect("open");
+            let inner: PersistentARTrieChar<()> = PersistentARTrieChar::open(&path).expect("open");
             assert_eq!(inner.len(), 4);
             assert!(inner.contains("first"));
             assert!(inner.contains("second"));
@@ -663,8 +665,7 @@ mod tests {
 
         // Reopen empty trie
         {
-            let inner: PersistentARTrieChar<()> =
-                PersistentARTrieChar::open(&path).expect("open");
+            let inner: PersistentARTrieChar<()> = PersistentARTrieChar::open(&path).expect("open");
             assert_eq!(inner.len(), 0);
             assert!(!inner.contains("anything"));
         }
@@ -694,8 +695,7 @@ mod tests {
 
         // Reopen and verify all data
         {
-            let inner: PersistentARTrieChar<()> =
-                PersistentARTrieChar::open(&path).expect("open");
+            let inner: PersistentARTrieChar<()> = PersistentARTrieChar::open(&path).expect("open");
             assert_eq!(inner.len(), 3);
             assert!(inner.contains("one"));
             assert!(inner.contains("two"));
@@ -727,8 +727,7 @@ mod tests {
 
         // Reopen and verify all levels
         {
-            let inner: PersistentARTrieChar<()> =
-                PersistentARTrieChar::open(&path).expect("open");
+            let inner: PersistentARTrieChar<()> = PersistentARTrieChar::open(&path).expect("open");
             assert_eq!(inner.len(), 8);
             assert!(inner.contains("a"));
             assert!(inner.contains("ab"));
@@ -773,8 +772,7 @@ mod tests {
 
         // Reopen and verify
         {
-            let inner: PersistentARTrieChar<i64> =
-                PersistentARTrieChar::open(&path).expect("open");
+            let inner: PersistentARTrieChar<i64> = PersistentARTrieChar::open(&path).expect("open");
             assert!(inner.contains("counter"));
         }
     }
@@ -792,16 +790,12 @@ mod tests {
                 PersistentARTrieChar::create(&path).expect("create");
 
             // First upsert inserts
-            let inserted = inner
-                .upsert("key", "value1".to_string())
-                .expect("upsert");
+            let inserted = inner.upsert("key", "value1".to_string()).expect("upsert");
             assert!(inserted);
             assert!(inner.contains("key"));
 
             // Second upsert updates
-            let inserted = inner
-                .upsert("key", "value2".to_string())
-                .expect("upsert");
+            let inserted = inner.upsert("key", "value2".to_string()).expect("upsert");
             assert!(!inserted);
             assert!(inner.contains("key"));
 
@@ -847,8 +841,7 @@ mod tests {
 
         // Reopen and verify
         {
-            let inner: PersistentARTrieChar<i32> =
-                PersistentARTrieChar::open(&path).expect("open");
+            let inner: PersistentARTrieChar<i32> = PersistentARTrieChar::open(&path).expect("open");
             assert!(inner.contains("key"));
         }
     }
@@ -882,8 +875,7 @@ mod tests {
 
         // Reopen and verify
         {
-            let inner: PersistentARTrieChar<i64> =
-                PersistentARTrieChar::open(&path).expect("open");
+            let inner: PersistentARTrieChar<i64> = PersistentARTrieChar::open(&path).expect("open");
             assert!(inner.contains("counter"));
         }
     }
@@ -950,8 +942,7 @@ mod tests {
 
         // Reopen and verify recovery
         {
-            let inner: PersistentARTrieChar<i64> =
-                PersistentARTrieChar::open(&path).expect("open");
+            let inner: PersistentARTrieChar<i64> = PersistentARTrieChar::open(&path).expect("open");
             assert!(inner.contains("counter1"));
             assert!(inner.contains("counter2"));
             assert_eq!(inner.len(), 2);
@@ -979,8 +970,7 @@ mod tests {
 
         // Reopen - should have both (disk + WAL replay)
         {
-            let inner: PersistentARTrieChar<i64> =
-                PersistentARTrieChar::open(&path).expect("open");
+            let inner: PersistentARTrieChar<i64> = PersistentARTrieChar::open(&path).expect("open");
             assert!(inner.contains("before_cp"));
             assert!(inner.contains("after_cp"));
             assert_eq!(inner.len(), 2);
@@ -1008,8 +998,7 @@ mod tests {
 
         // Reopen and verify
         {
-            let inner: PersistentARTrieChar<i64> =
-                PersistentARTrieChar::open(&path).expect("open");
+            let inner: PersistentARTrieChar<i64> = PersistentARTrieChar::open(&path).expect("open");
             assert!(inner.contains("カウンター"));
             assert!(inner.contains("计数器"));
             assert!(inner.contains("🔢"));
@@ -1098,8 +1087,7 @@ mod tests {
         let dir = tempdir().expect("create temp dir");
         let path = dir.path().join("test_epoch.trie");
 
-        let inner: PersistentARTrieChar<()> =
-            PersistentARTrieChar::create(&path).expect("create");
+        let inner: PersistentARTrieChar<()> = PersistentARTrieChar::create(&path).expect("create");
 
         // Initial state
         assert_eq!(inner.current_epoch(), 0);
@@ -1148,7 +1136,7 @@ mod tests {
 
         let stats = inner.retry_stats_snapshot();
         assert!(stats.successful >= 10); // At least 10 successful reads
-        // Retry count should be low (no concurrent writers)
+                                         // Retry count should be low (no concurrent writers)
         assert_eq!(stats.retries, 0);
     }
 
@@ -1173,9 +1161,7 @@ mod tests {
         }
 
         // Reopen and spawn multiple reader threads
-        let inner = Arc::new(
-            PersistentARTrieChar::<()>::open(&path).expect("open")
-        );
+        let inner = Arc::new(PersistentARTrieChar::<()>::open(&path).expect("open"));
 
         let handles: Vec<_> = (0..4)
             .map(|t| {
@@ -1386,8 +1372,7 @@ mod tests {
 
         // Reopen and verify recovery
         {
-            let inner: PersistentARTrieChar<i64> =
-                PersistentARTrieChar::open(&path).expect("open");
+            let inner: PersistentARTrieChar<i64> = PersistentARTrieChar::open(&path).expect("open");
 
             assert!(inner.contains("term1"));
             assert!(inner.contains("term2"));
@@ -1499,10 +1484,10 @@ mod tests {
         let mut tx = inner.begin_document("increment_doc").expect("begin");
 
         // Buffer some increments
-        inner.tx_increment(&mut tx, "term_a", 25);  // Should add to existing 100
-        inner.tx_increment(&mut tx, "term_b", 10);  // Should add to existing 50
-        inner.tx_increment(&mut tx, "term_c", 75);  // New term
-        inner.tx_increment(&mut tx, "term_a", 5);   // Multiple increments to same term
+        inner.tx_increment(&mut tx, "term_a", 25); // Should add to existing 100
+        inner.tx_increment(&mut tx, "term_b", 10); // Should add to existing 50
+        inner.tx_increment(&mut tx, "term_c", 75); // New term
+        inner.tx_increment(&mut tx, "term_a", 5); // Multiple increments to same term
 
         assert_eq!(tx.increment_count(), 4);
         assert_eq!(tx.set_count(), 0);
@@ -1584,8 +1569,7 @@ mod tests {
 
         // Phase 2: Reopen and verify recovery
         {
-            let inner: PersistentARTrieChar<u64> =
-                PersistentARTrieChar::open(&path).expect("open");
+            let inner: PersistentARTrieChar<u64> = PersistentARTrieChar::open(&path).expect("open");
 
             // Values should survive recovery
             assert_eq!(inner.get("existing"), Some(&150u64));
@@ -1810,8 +1794,8 @@ mod tests {
 
         // Insert with some duplicates
         let entries2 = vec![
-            ("apple".to_string(), Some(10u64)), // Duplicate - will update
-            ("cherry".to_string(), Some(3u64)), // New
+            ("apple".to_string(), Some(10u64)),  // Duplicate - will update
+            ("cherry".to_string(), Some(3u64)),  // New
             ("banana".to_string(), Some(20u64)), // Duplicate - will update
         ];
         let count2 = inner.insert_batch(&entries2);
@@ -1843,8 +1827,7 @@ mod tests {
 
         // Reopen and verify recovery
         {
-            let inner: PersistentARTrieChar<i64> =
-                PersistentARTrieChar::open(&path).expect("open");
+            let inner: PersistentARTrieChar<i64> = PersistentARTrieChar::open(&path).expect("open");
 
             assert!(inner.contains("term1"));
             assert!(inner.contains("term2"));
@@ -1904,7 +1887,9 @@ mod tests {
         dst.increment("date", 40).expect("increment");
 
         // Merge with summing function
-        let count = dst.merge_from_batched(&src, |a, b| a + b, 2).expect("merge");
+        let count = dst
+            .merge_from_batched(&src, |a, b| a + b, 2)
+            .expect("merge");
         assert_eq!(count, 3);
 
         // Verify results
@@ -1936,7 +1921,9 @@ mod tests {
         dst.increment("日本語", 100).expect("increment");
 
         // Merge with summing function
-        let count = dst.merge_from_batched(&src, |a, b| a + b, 10).expect("merge");
+        let count = dst
+            .merge_from_batched(&src, |a, b| a + b, 10)
+            .expect("merge");
         assert_eq!(count, 3);
 
         // Verify Unicode terms
@@ -1954,8 +1941,7 @@ mod tests {
         let path2 = dir.path().join("test_merge_batched_empty_dst.trie");
 
         // Create empty source
-        let src: PersistentARTrieChar<i64> =
-            PersistentARTrieChar::create(&path1).expect("create");
+        let src: PersistentARTrieChar<i64> = PersistentARTrieChar::create(&path1).expect("create");
 
         // Create destination with some terms
         let mut dst: PersistentARTrieChar<i64> =
@@ -1963,7 +1949,9 @@ mod tests {
         dst.increment("existing", 100).expect("increment");
 
         // Merge from empty source
-        let count = dst.merge_from_batched(&src, |a, b| a + b, 100).expect("merge");
+        let count = dst
+            .merge_from_batched(&src, |a, b| a + b, 100)
+            .expect("merge");
         assert_eq!(count, 0);
         assert_eq!(dst.len(), 1);
     }
@@ -1981,14 +1969,16 @@ mod tests {
         let mut src: PersistentARTrieChar<i64> =
             PersistentARTrieChar::create(&path1).expect("create");
         for i in 0..100 {
-            src.increment(&format!("term_{:03}", i), i as i64).expect("increment");
+            src.increment(&format!("term_{:03}", i), i as i64)
+                .expect("increment");
         }
 
         // Create destination with some overlapping terms
         let mut dst: PersistentARTrieChar<i64> =
             PersistentARTrieChar::create(&path2).expect("create");
         for i in 0..50 {
-            dst.increment(&format!("term_{:03}", i), 1000).expect("increment");
+            dst.increment(&format!("term_{:03}", i), 1000)
+                .expect("increment");
         }
 
         // Parallel merge with summing function
@@ -2015,7 +2005,8 @@ mod tests {
         let mut src: PersistentARTrieChar<i64> =
             PersistentARTrieChar::create(&path1).expect("create");
         for i in 0..50 {
-            src.increment(&format!("key_{:02}", i), i as i64).expect("increment");
+            src.increment(&format!("key_{:02}", i), i as i64)
+                .expect("increment");
         }
 
         // Create destination
@@ -2024,7 +2015,9 @@ mod tests {
         dst.increment("key_00", 1000).expect("increment");
 
         // Batched parallel merge
-        let count = dst.merge_from_batched_parallel(&src, |a, b| a + b, 10).expect("merge");
+        let count = dst
+            .merge_from_batched_parallel(&src, |a, b| a + b, 10)
+            .expect("merge");
         assert_eq!(count, 50);
         assert_eq!(dst.len(), 50);
     }
@@ -2070,8 +2063,8 @@ mod tests {
     #[cfg(feature = "group-commit")]
     #[test]
     fn test_group_commit_enable_disable() {
-        use tempfile::tempdir;
         use crate::persistent_artrie::group_commit::GroupCommitConfig;
+        use tempfile::tempdir;
 
         let dir = tempdir().expect("create temp dir");
         let path = dir.path().join("test_group_commit.trie");
@@ -2105,8 +2098,8 @@ mod tests {
     #[cfg(feature = "group-commit")]
     #[test]
     fn test_group_commit_with_inserts() {
-        use tempfile::tempdir;
         use crate::persistent_artrie::group_commit::GroupCommitConfig;
+        use tempfile::tempdir;
 
         let dir = tempdir().expect("create temp dir");
         let path = dir.path().join("test_group_commit_inserts.trie");
@@ -2122,7 +2115,8 @@ mod tests {
             adaptive_batching: false,
             ..Default::default()
         };
-        trie.enable_group_commit(config).expect("enable group commit");
+        trie.enable_group_commit(config)
+            .expect("enable group commit");
 
         // Perform inserts
         trie.insert("hello").expect("insert");
@@ -2152,8 +2146,8 @@ mod tests {
     #[cfg(feature = "group-commit")]
     #[test]
     fn test_group_commit_with_unicode() {
-        use tempfile::tempdir;
         use crate::persistent_artrie::group_commit::GroupCommitConfig;
+        use tempfile::tempdir;
 
         let dir = tempdir().expect("create temp dir");
         let path = dir.path().join("test_group_commit_unicode.trie");
@@ -2180,8 +2174,8 @@ mod tests {
     #[cfg(feature = "group-commit")]
     #[test]
     fn test_group_commit_high_throughput_config() {
-        use tempfile::tempdir;
         use crate::persistent_artrie::group_commit::GroupCommitConfig;
+        use tempfile::tempdir;
 
         let dir = tempdir().expect("create temp dir");
         let path = dir.path().join("test_group_commit_throughput.trie");
@@ -2195,7 +2189,8 @@ mod tests {
 
         // Perform many inserts to test batching
         for i in 0..100 {
-            trie.increment(&format!("counter_{}", i), 1).expect("increment");
+            trie.increment(&format!("counter_{}", i), 1)
+                .expect("increment");
         }
 
         // Verify all inserted
@@ -2207,16 +2202,22 @@ mod tests {
         // Check batching efficiency (should have batched multiple writes per fsync)
         let stats = trie.group_commit_stats().expect("stats");
         let efficiency = stats.batching_efficiency();
-        println!("High throughput batching efficiency: {:.2} records/fsync", efficiency);
+        println!(
+            "High throughput batching efficiency: {:.2} records/fsync",
+            efficiency
+        );
         // With high throughput config, we expect some batching
-        assert!(stats.records_committed >= 100, "should have committed at least 100 records");
+        assert!(
+            stats.records_committed >= 100,
+            "should have committed at least 100 records"
+        );
     }
 
     #[cfg(feature = "group-commit")]
     #[test]
     fn test_group_commit_recovery() {
-        use tempfile::tempdir;
         use crate::persistent_artrie::group_commit::GroupCommitConfig;
+        use tempfile::tempdir;
 
         let dir = tempdir().expect("create temp dir");
         let path = dir.path().join("test_group_commit_recovery.trie");
@@ -2239,8 +2240,7 @@ mod tests {
 
         // Reopen without group commit and verify recovery
         {
-            let trie: PersistentARTrieChar<()> =
-                PersistentARTrieChar::open(&path).expect("open");
+            let trie: PersistentARTrieChar<()> = PersistentARTrieChar::open(&path).expect("open");
 
             // Data should be recovered from WAL
             assert!(trie.contains("persisted_1"));
@@ -2253,8 +2253,8 @@ mod tests {
     #[cfg(feature = "group-commit")]
     #[test]
     fn test_group_commit_stats_tracking() {
-        use tempfile::tempdir;
         use crate::persistent_artrie::group_commit::GroupCommitConfig;
+        use tempfile::tempdir;
 
         let dir = tempdir().expect("create temp dir");
         let path = dir.path().join("test_group_commit_stats.trie");
@@ -2296,8 +2296,7 @@ mod tests {
         let dir = tempdir().expect("create temp dir");
         let path = dir.path().join("test_cache_stats.trie");
 
-        let trie: PersistentARTrieChar<()> =
-            PersistentARTrieChar::create(&path).expect("create");
+        let trie: PersistentARTrieChar<()> = PersistentARTrieChar::create(&path).expect("create");
 
         // Initially no accesses
         let (hits, misses) = trie.cache_counts();
@@ -2322,7 +2321,11 @@ mod tests {
 
         // Hit rate should be 75%
         let hit_rate = trie.cache_hit_rate();
-        assert!((hit_rate - 0.75).abs() < 0.001, "Hit rate should be 0.75, got {}", hit_rate);
+        assert!(
+            (hit_rate - 0.75).abs() < 0.001,
+            "Hit rate should be 0.75, got {}",
+            hit_rate
+        );
     }
 
     #[test]
@@ -2332,8 +2335,7 @@ mod tests {
         let dir = tempdir().expect("create temp dir");
         let path = dir.path().join("test_cache_reset.trie");
 
-        let trie: PersistentARTrieChar<()> =
-            PersistentARTrieChar::create(&path).expect("create");
+        let trie: PersistentARTrieChar<()> = PersistentARTrieChar::create(&path).expect("create");
 
         // Record some activity
         trie.record_cache_hit();
@@ -2344,7 +2346,11 @@ mod tests {
         let (hit_rate, hits, misses) = trie.cache_stats_and_reset();
         assert_eq!(hits, 2);
         assert_eq!(misses, 1);
-        assert!((hit_rate - 0.666).abs() < 0.01, "Hit rate should be ~0.666, got {}", hit_rate);
+        assert!(
+            (hit_rate - 0.666).abs() < 0.01,
+            "Hit rate should be ~0.666, got {}",
+            hit_rate
+        );
 
         // After reset, counts should be zero
         let (hits, misses) = trie.cache_counts();
@@ -2354,10 +2360,10 @@ mod tests {
 
     #[test]
     fn test_memory_monitor_enable_disable() {
-        use tempfile::tempdir;
         use crate::persistent_artrie::memory_monitor::MemoryPressureConfig;
         use std::sync::atomic::{AtomicUsize, Ordering};
         use std::sync::Arc;
+        use tempfile::tempdir;
 
         let dir = tempdir().expect("create temp dir");
         let path = dir.path().join("test_memory_monitor.trie");
@@ -2375,12 +2381,10 @@ mod tests {
         let count_clone = Arc::clone(&callback_count);
 
         // Enable with callback
-        let result = trie.enable_memory_monitor(
-            MemoryPressureConfig::default(),
-            move |_level, _stats| {
+        let result =
+            trie.enable_memory_monitor(MemoryPressureConfig::default(), move |_level, _stats| {
                 count_clone.fetch_add(1, Ordering::Relaxed);
-            }
-        );
+            });
         assert!(result.is_ok(), "enable_memory_monitor should succeed");
 
         // Now monitor is enabled
@@ -2412,7 +2416,10 @@ mod tests {
 
         // Enable with default config (no-op callback)
         let result = trie.enable_memory_monitor_default();
-        assert!(result.is_ok(), "enable_memory_monitor_default should succeed");
+        assert!(
+            result.is_ok(),
+            "enable_memory_monitor_default should succeed"
+        );
         assert!(trie.has_memory_monitor());
 
         // Stats should still be queryable
@@ -2426,8 +2433,8 @@ mod tests {
 
     #[test]
     fn test_epoch_checkpointing_enable_disable() {
-        use tempfile::tempdir;
         use crate::persistent_artrie::epoch::EpochConfig;
+        use tempfile::tempdir;
 
         let dir = tempdir().expect("create temp dir");
         let path = dir.path().join("test_epoch_checkpointing.trie");
@@ -2442,7 +2449,10 @@ mod tests {
 
         // Enable with default config
         let result = trie.enable_epoch_checkpointing_default();
-        assert!(result.is_ok(), "enable_epoch_checkpointing_default should succeed");
+        assert!(
+            result.is_ok(),
+            "enable_epoch_checkpointing_default should succeed"
+        );
         assert!(trie.has_epoch_checkpointing());
 
         // Now we should have epoch info
@@ -2482,13 +2492,25 @@ mod tests {
 
         // Epoch should still be the same (not enough ops to advance)
         let current_epoch = trie.current_epoch_id().expect("epoch_id");
-        assert_eq!(initial_epoch, current_epoch, "Epoch should not have advanced yet");
+        assert_eq!(
+            initial_epoch, current_epoch,
+            "Epoch should not have advanced yet"
+        );
 
         // Current epoch metadata should show operations
         let metadata = trie.epoch_metadata().expect("metadata");
-        let current_epoch_meta = metadata.iter().find(|m| m.id == current_epoch).expect("current epoch");
-        assert_eq!(current_epoch_meta.operation_count, 10, "Should have recorded 10 operations");
-        assert_eq!(current_epoch_meta.wal_size_bytes, 1000, "Should have recorded 1000 WAL bytes");
+        let current_epoch_meta = metadata
+            .iter()
+            .find(|m| m.id == current_epoch)
+            .expect("current epoch");
+        assert_eq!(
+            current_epoch_meta.operation_count, 10,
+            "Should have recorded 10 operations"
+        );
+        assert_eq!(
+            current_epoch_meta.wal_size_bytes, 1000,
+            "Should have recorded 1000 WAL bytes"
+        );
     }
 
     #[test]
@@ -2503,12 +2525,18 @@ mod tests {
 
         // Enable with high-throughput config
         let result = trie.enable_epoch_checkpointing_high_throughput();
-        assert!(result.is_ok(), "enable_epoch_checkpointing_high_throughput should succeed");
+        assert!(
+            result.is_ok(),
+            "enable_epoch_checkpointing_high_throughput should succeed"
+        );
         assert!(trie.has_epoch_checkpointing());
 
         // Config should reflect high-throughput settings
         let config = trie.epoch_config().expect("config");
-        assert!(config.max_ops_per_epoch > 10_000, "High-throughput should have high ops limit");
+        assert!(
+            config.max_ops_per_epoch > 10_000,
+            "High-throughput should have high ops limit"
+        );
     }
 
     #[test]
@@ -2523,13 +2551,19 @@ mod tests {
 
         // Enable with low-latency config
         let result = trie.enable_epoch_checkpointing_low_latency();
-        assert!(result.is_ok(), "enable_epoch_checkpointing_low_latency should succeed");
+        assert!(
+            result.is_ok(),
+            "enable_epoch_checkpointing_low_latency should succeed"
+        );
         assert!(trie.has_epoch_checkpointing());
 
         // Config should reflect low-latency settings
         let config = trie.epoch_config().expect("config");
         // Low latency has shorter epochs
-        assert!(config.epoch_duration.as_millis() < 1000, "Low-latency should have short epoch duration");
+        assert!(
+            config.epoch_duration.as_millis() < 1000,
+            "Low-latency should have short epoch duration"
+        );
     }
 
     #[test]
@@ -2546,7 +2580,10 @@ mod tests {
 
         // Should have metadata for at least the current epoch
         let metadata = trie.epoch_metadata().expect("metadata");
-        assert!(!metadata.is_empty(), "Should have at least one epoch's metadata");
+        assert!(
+            !metadata.is_empty(),
+            "Should have at least one epoch's metadata"
+        );
 
         // First epoch should be active
         let first = &metadata[0];
@@ -2623,12 +2660,8 @@ mod tests {
 
         // Open with full recovery
         let (trie, stats): (PersistentARTrieChar<()>, _) =
-            PersistentARTrieChar::open_with_full_recovery(
-                &path,
-                None,
-                WalConfig::default(),
-            )
-            .expect("open_with_full_recovery");
+            PersistentARTrieChar::open_with_full_recovery(&path, None, WalConfig::default())
+                .expect("open_with_full_recovery");
 
         assert_eq!(stats.mode, EnhancedRecoveryMode::Normal);
         assert!(trie.contains("hello")); // contains returns bool directly
@@ -2636,9 +2669,9 @@ mod tests {
 
     #[test]
     fn test_incremental_recovery_empty_wal() {
-        use tempfile::tempdir;
-        use crate::persistent_artrie::wal::WalWriter;
         use crate::persistent_artrie::recovery::IncrementalRecovery;
+        use crate::persistent_artrie::wal::WalWriter;
+        use tempfile::tempdir;
 
         let dir = tempdir().expect("create temp dir");
         let wal_path = dir.path().join("empty.wal");
@@ -2748,14 +2781,18 @@ mod tests {
             inner.upsert("key2", 43).expect("upsert");
 
             // Before sync, synced_lsn should be 0 (no syncs yet)
-            let synced_before = inner.synced_lsn().expect("persistent trie should have synced_lsn");
+            let synced_before = inner
+                .synced_lsn()
+                .expect("persistent trie should have synced_lsn");
             assert_eq!(synced_before, 0, "No data should be synced yet");
 
             // Sync to disk
             inner.sync().expect("sync should succeed");
 
             // After sync, synced_lsn should be positive
-            let synced_after = inner.synced_lsn().expect("persistent trie should have synced_lsn");
+            let synced_after = inner
+                .synced_lsn()
+                .expect("persistent trie should have synced_lsn");
             assert!(
                 synced_after > 0,
                 "synced_lsn should be positive after sync: {}",
@@ -2779,7 +2816,9 @@ mod tests {
             inner.upsert("key2", 43).expect("upsert");
 
             let current = inner.current_lsn();
-            let synced = inner.synced_lsn().expect("persistent trie should have synced_lsn");
+            let synced = inner
+                .synced_lsn()
+                .expect("persistent trie should have synced_lsn");
 
             // Invariant: synced_lsn <= current_lsn - 1
             // (current_lsn is the NEXT lsn to be assigned, so the last written is current - 1)
@@ -2814,7 +2853,6 @@ mod tests {
                 prev_lsn = curr_lsn;
             }
         }
-
     }
 
     #[test]
@@ -2869,8 +2907,14 @@ mod tests {
         let trie = std::sync::Arc::new(parking_lot::RwLock::new(
             PersistentARTrieChar::<i64>::create(&path).expect("create trie"),
         ));
-        assert!(trie.upsert("k", 1).expect("upsert"), "first upsert reports insert");
-        assert!(!trie.upsert("k", 2).expect("upsert"), "second upsert reports update");
+        assert!(
+            trie.upsert("k", 1).expect("upsert"),
+            "first upsert reports insert"
+        );
+        assert!(
+            !trie.upsert("k", 2).expect("upsert"),
+            "second upsert reports update"
+        );
         assert_eq!(trie.read().get("k").copied(), Some(2), "value updated");
     }
 
@@ -2896,8 +2940,8 @@ mod tests {
         let dir = tempfile::TempDir::new().expect("create temp dir");
         let path = dir.path().join("test_insert_cas.artc");
 
-        let mut trie: PersistentARTrieChar<()> = PersistentARTrieChar::create(&path)
-            .expect("create trie");
+        let mut trie: PersistentARTrieChar<()> =
+            PersistentARTrieChar::create(&path).expect("create trie");
         trie.enable_lockfree();
 
         // First insert should succeed
@@ -2918,8 +2962,8 @@ mod tests {
         let dir = tempfile::TempDir::new().expect("create temp dir");
         let path = dir.path().join("test_insert_cas_empty.artc");
 
-        let mut trie: PersistentARTrieChar<()> = PersistentARTrieChar::create(&path)
-            .expect("create trie");
+        let mut trie: PersistentARTrieChar<()> =
+            PersistentARTrieChar::create(&path).expect("create trie");
         trie.enable_lockfree();
 
         // Empty term should return false (not inserted)
@@ -2931,8 +2975,8 @@ mod tests {
         let dir = tempfile::TempDir::new().expect("create temp dir");
         let path = dir.path().join("test_insert_cas_unicode.artc");
 
-        let mut trie: PersistentARTrieChar<()> = PersistentARTrieChar::create(&path)
-            .expect("create trie");
+        let mut trie: PersistentARTrieChar<()> =
+            PersistentARTrieChar::create(&path).expect("create trie");
         trie.enable_lockfree();
 
         // Unicode terms
@@ -2954,8 +2998,8 @@ mod tests {
         let dir = tempfile::TempDir::new().expect("create temp dir");
         let path = dir.path().join("test_insert_cas_concurrent.artc");
 
-        let mut trie: PersistentARTrieChar<()> = PersistentARTrieChar::create(&path)
-            .expect("create trie");
+        let mut trie: PersistentARTrieChar<()> =
+            PersistentARTrieChar::create(&path).expect("create trie");
         trie.enable_lockfree();
 
         let trie = Arc::new(trie);
@@ -2979,7 +3023,8 @@ mod tests {
             })
             .collect();
 
-        let total_inserted: usize = handles.into_iter()
+        let total_inserted: usize = handles
+            .into_iter()
             .map(|h| h.join().expect("thread join"))
             .sum();
 
@@ -2990,7 +3035,12 @@ mod tests {
         assert!(total_inserted >= 1, "At least one term should be inserted");
 
         let retries = trie.cas_retry_count();
-        println!("Inserted: {}/{}, CAS retries: {}", total_inserted, num_threads * terms_per_thread, retries);
+        println!(
+            "Inserted: {}/{}, CAS retries: {}",
+            total_inserted,
+            num_threads * terms_per_thread,
+            retries
+        );
 
         // The lock-free infrastructure is working - concurrent access is safe
         // Full per-level CAS traversal will be implemented in later phases
@@ -3001,8 +3051,8 @@ mod tests {
         let dir = tempfile::TempDir::new().expect("create temp dir");
         let path = dir.path().join("test_contains_lockfree.artc");
 
-        let mut trie: PersistentARTrieChar<()> = PersistentARTrieChar::create(&path)
-            .expect("create trie");
+        let mut trie: PersistentARTrieChar<()> =
+            PersistentARTrieChar::create(&path).expect("create trie");
         trie.enable_lockfree();
 
         // Insert some terms
@@ -3020,8 +3070,8 @@ mod tests {
         let dir = tempfile::TempDir::new().expect("create temp dir");
         let path = dir.path().join("test_merge_lockfree.artc");
 
-        let mut trie: PersistentARTrieChar<()> = PersistentARTrieChar::create(&path)
-            .expect("create trie");
+        let mut trie: PersistentARTrieChar<()> =
+            PersistentARTrieChar::create(&path).expect("create trie");
         trie.enable_lockfree();
 
         // Insert into lock-free trie
@@ -3030,8 +3080,7 @@ mod tests {
         trie.insert_cas("gamma");
 
         // Merge to persistent
-        let count = trie.merge_lockfree_to_persistent()
-            .expect("merge lockfree");
+        let count = trie.merge_lockfree_to_persistent().expect("merge lockfree");
         assert_eq!(count, 3);
 
         // The terms should now be in the persistent trie

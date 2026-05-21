@@ -6,9 +6,9 @@
 //! characters for correct multi-byte UTF-8 handling.
 
 use crate::dynamic_dawg_char::{DynamicDawgChar, DynamicDawgCharInner};
+use crate::sync_compat::RwLock;
 use crate::value::DictionaryValue;
 use crate::zipper::{DictZipper, ValuedDictZipper};
-use crate::sync_compat::RwLock;
 use std::sync::Arc;
 
 /// Zipper for Dynamic DAWG character-level dictionaries.

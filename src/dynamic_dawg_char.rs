@@ -16,9 +16,9 @@
 
 use crate::dynamic_dawg_char_zipper::DynamicDawgCharZipper;
 use crate::iterator::DictionaryIterator;
+use crate::sync_compat::RwLock;
 use crate::value::DictionaryValue;
 use crate::{Dictionary, DictionaryNode, SyncStrategy};
-use crate::sync_compat::RwLock;
 use rustc_hash::FxHashMap;
 use smallvec::SmallVec;
 use std::collections::HashMap;
@@ -70,7 +70,7 @@ pub struct DynamicDawgChar<V: DictionaryValue = ()> {
 #[derive(Debug)]
 #[cfg_attr(
     feature = "serialization",
-    derive(serde::Serialize, serde::Deserialize),
+    derive(serde::Serialize, serde::Deserialize)
 )]
 #[cfg_attr(
     all(feature = "serialization", not(feature = "persistent-artrie")),
@@ -125,7 +125,7 @@ struct NodeSignature {
 #[derive(Clone, Debug)]
 #[cfg_attr(
     feature = "serialization",
-    derive(serde::Serialize, serde::Deserialize),
+    derive(serde::Serialize, serde::Deserialize)
 )]
 #[cfg_attr(
     all(feature = "serialization", not(feature = "persistent-artrie")),

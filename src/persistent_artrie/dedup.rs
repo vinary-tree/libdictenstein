@@ -484,7 +484,11 @@ mod tests {
         };
 
         // Test line 196-197: zero total returns 0.0
-        assert_eq!(stats.hit_rate(), 0.0, "Hit rate should be 0.0 when no accesses");
+        assert_eq!(
+            stats.hit_rate(),
+            0.0,
+            "Hit rate should be 0.0 when no accesses"
+        );
     }
 
     /// Test DeduplicatingArenaManager with verify_on_hit = false (line 268-271).

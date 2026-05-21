@@ -270,7 +270,10 @@ impl EpochManager {
         // If we were the last reader (prev was 1, now 0), notify waiters
         if prev == 1 {
             // Lock briefly to synchronize with condvar wait
-            let _guard = self.quiescence_mutex.lock().expect("quiescence_mutex poisoned");
+            let _guard = self
+                .quiescence_mutex
+                .lock()
+                .expect("quiescence_mutex poisoned");
             self.quiescence_condvar.notify_all();
         }
     }
@@ -355,7 +358,10 @@ impl EpochManager {
         }
 
         // Slow path: wait on condvar for readers to drain
-        let mut guard = self.quiescence_mutex.lock().expect("quiescence_mutex poisoned");
+        let mut guard = self
+            .quiescence_mutex
+            .lock()
+            .expect("quiescence_mutex poisoned");
         loop {
             if !self.has_active_readers() {
                 return Ok(old_epoch);
@@ -366,7 +372,8 @@ impl EpochManager {
                 return Err(start.elapsed());
             }
 
-            let (new_guard, wait_result) = self.quiescence_condvar
+            let (new_guard, wait_result) = self
+                .quiescence_condvar
                 .wait_timeout(guard, remaining)
                 .expect("quiescence_mutex poisoned");
             guard = new_guard;
@@ -1065,7 +1072,10 @@ mod tests {
 
         // Start a write (makes version odd)
         version.begin_write();
-        assert!(!version.is_stable(), "Version should be unstable (odd) during write");
+        assert!(
+            !version.is_stable(),
+            "Version should be unstable (odd) during write"
+        );
 
         // Spawn a reader thread that will spin
         let reader_handle = thread::spawn(move || {
@@ -1083,7 +1093,10 @@ mod tests {
         // Reader should now complete
         let observed = reader_handle.join().expect("reader thread should complete");
         assert_eq!(observed % 2, 0, "Observed version should be even (stable)");
-        assert_eq!(observed, 2, "Version should be 2 after begin_write + end_write");
+        assert_eq!(
+            observed, 2,
+            "Version should be 2 after begin_write + end_write"
+        );
     }
 
     /// Test OptimisticReadGuard with already-stable version (no spin).
@@ -1122,22 +1135,24 @@ mod tests {
         assert!(!epoch.has_active_readers());
 
         // No readers, should succeed immediately
-        let result = epoch.wait_for_quiescence(
-            Duration::from_millis(100),
-            Duration::from_micros(100),
-        );
+        let result =
+            epoch.wait_for_quiescence(Duration::from_millis(100), Duration::from_micros(100));
 
         assert!(result.is_ok(), "Should achieve quiescence immediately");
         let old_epoch = result.unwrap();
         assert_eq!(old_epoch, 0, "Old epoch should be 0");
-        assert_eq!(epoch.current_epoch(), 1, "Current epoch should be 1 after advance");
+        assert_eq!(
+            epoch.current_epoch(),
+            1,
+            "Current epoch should be 1 after advance"
+        );
     }
 
     /// Test EpochManager wait_for_quiescence with active readers (timeout).
     #[test]
     fn test_epoch_wait_for_quiescence_timeout() {
-        use std::time::Duration;
         use std::sync::atomic::AtomicBool;
+        use std::time::Duration;
 
         let epoch = Arc::new(EpochManager::new());
         let epoch_clone = Arc::clone(&epoch);
@@ -1162,14 +1177,15 @@ mod tests {
         }
 
         // Try to wait for quiescence with short timeout
-        let result = epoch.wait_for_quiescence(
-            Duration::from_millis(50),
-            Duration::from_micros(100),
-        );
+        let result =
+            epoch.wait_for_quiescence(Duration::from_millis(50), Duration::from_micros(100));
 
         assert!(result.is_err(), "Should timeout with active reader");
         let elapsed = result.unwrap_err();
-        assert!(elapsed >= Duration::from_millis(50), "Should have waited at least 50ms");
+        assert!(
+            elapsed >= Duration::from_millis(50),
+            "Should have waited at least 50ms"
+        );
 
         // Let the reader finish
         reader_handle.join().expect("reader should complete");
@@ -1227,7 +1243,10 @@ mod tests {
         let stats = RetryStats::new();
 
         // No operations recorded yet
-        assert!((stats.retry_rate() - 0.0).abs() < 0.001, "Retry rate should be 0 with no ops");
+        assert!(
+            (stats.retry_rate() - 0.0).abs() < 0.001,
+            "Retry rate should be 0 with no ops"
+        );
     }
 
     /// Test TrieStats cache_hit_ratio with zero accesses.

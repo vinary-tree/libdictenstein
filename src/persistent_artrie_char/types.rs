@@ -55,7 +55,10 @@ impl NodeRef {
     /// Create a new NodeRef from arena and slot indices.
     #[inline]
     pub const fn new(arena_id: u32, slot_index: u32) -> Self {
-        Self { arena_id, slot_index }
+        Self {
+            arena_id,
+            slot_index,
+        }
     }
 
     /// Check if this is a null reference.
@@ -302,20 +305,18 @@ impl CharTrieFileHeader {
             version: bytes[4],
             _reserved: [bytes[5], bytes[6], bytes[7]],
             root_ptr: u64::from_le_bytes([
-                bytes[8], bytes[9], bytes[10], bytes[11],
-                bytes[12], bytes[13], bytes[14], bytes[15],
+                bytes[8], bytes[9], bytes[10], bytes[11], bytes[12], bytes[13], bytes[14],
+                bytes[15],
             ]),
             entry_count: u64::from_le_bytes([
-                bytes[16], bytes[17], bytes[18], bytes[19],
-                bytes[20], bytes[21], bytes[22], bytes[23],
+                bytes[16], bytes[17], bytes[18], bytes[19], bytes[20], bytes[21], bytes[22],
+                bytes[23],
             ]),
             checkpoint_lsn: u64::from_le_bytes([
-                bytes[24], bytes[25], bytes[26], bytes[27],
-                bytes[28], bytes[29], bytes[30], bytes[31],
+                bytes[24], bytes[25], bytes[26], bytes[27], bytes[28], bytes[29], bytes[30],
+                bytes[31],
             ]),
-            header_checksum: u32::from_le_bytes([
-                bytes[32], bytes[33], bytes[34], bytes[35],
-            ]),
+            header_checksum: u32::from_le_bytes([bytes[32], bytes[33], bytes[34], bytes[35]]),
             _padding: {
                 let mut arr = [0u8; 28];
                 arr.copy_from_slice(&bytes[36..64]);
@@ -327,7 +328,9 @@ impl CharTrieFileHeader {
     /// Deserialize from bytes and verify checksum
     ///
     /// Returns `Err` if checksum verification fails (V2+ only).
-    pub fn from_bytes_verified(bytes: &[u8; CHAR_FILE_HEADER_SIZE]) -> crate::persistent_artrie::error::Result<Self> {
+    pub fn from_bytes_verified(
+        bytes: &[u8; CHAR_FILE_HEADER_SIZE],
+    ) -> crate::persistent_artrie::error::Result<Self> {
         use crate::persistent_artrie::error::PersistentARTrieError;
 
         let header = Self::from_bytes(bytes);
@@ -350,12 +353,24 @@ impl CharTrieFileHeader {
         if self.magic != CHAR_TRIE_MAGIC {
             // Convert [u8; 4] to u64 for the error type
             let expected = u64::from_le_bytes([
-                CHAR_TRIE_MAGIC[0], CHAR_TRIE_MAGIC[1], CHAR_TRIE_MAGIC[2], CHAR_TRIE_MAGIC[3],
-                0, 0, 0, 0,
+                CHAR_TRIE_MAGIC[0],
+                CHAR_TRIE_MAGIC[1],
+                CHAR_TRIE_MAGIC[2],
+                CHAR_TRIE_MAGIC[3],
+                0,
+                0,
+                0,
+                0,
             ]);
             let found = u64::from_le_bytes([
-                self.magic[0], self.magic[1], self.magic[2], self.magic[3],
-                0, 0, 0, 0,
+                self.magic[0],
+                self.magic[1],
+                self.magic[2],
+                self.magic[3],
+                0,
+                0,
+                0,
+                0,
             ]);
             return Err(PersistentARTrieError::InvalidMagic { expected, found });
         }
@@ -512,7 +527,9 @@ impl<V: DictionaryValue> Clone for CharTrieNodeInner<V> {
 impl<V: DictionaryValue> Drop for CharTrieNodeInner<V> {
     fn drop(&mut self) {
         // Collect child pointers first to avoid iterator invalidation
-        let child_ptrs: Vec<_> = self.node.iter_children()
+        let child_ptrs: Vec<_> = self
+            .node
+            .iter_children()
             .filter_map(|(_, ptr)| ptr.as_ptr::<CharTrieNodeInner<V>>())
             .collect();
 
@@ -561,7 +578,8 @@ impl<V: DictionaryValue> CharTrieNodeInner<V> {
 
     /// Get a child by character
     pub fn get_child(&self, c: char) -> Option<&CharTrieNodeInner<V>> {
-        self.node.find_child(c as u32)
+        self.node
+            .find_child(c as u32)
             .and_then(|ptr| ptr.as_ptr::<CharTrieNodeInner<V>>())
             .map(|ptr| {
                 // Safety: We control all SwizzledPtr creation; ptr is valid
@@ -571,7 +589,8 @@ impl<V: DictionaryValue> CharTrieNodeInner<V> {
 
     /// Get a child mutably by character
     pub fn get_child_mut(&mut self, c: char) -> Option<&mut CharTrieNodeInner<V>> {
-        self.node.find_child(c as u32)
+        self.node
+            .find_child(c as u32)
             .and_then(|ptr| ptr.as_ptr::<CharTrieNodeInner<V>>())
             .map(|ptr| {
                 // Safety: We control all SwizzledPtr creation; ptr is valid
@@ -582,7 +601,11 @@ impl<V: DictionaryValue> CharTrieNodeInner<V> {
     }
 
     /// Insert a child, returning the old child if it existed
-    pub fn insert_child(&mut self, c: char, child: CharTrieNodeInner<V>) -> Option<Box<CharTrieNodeInner<V>>> {
+    pub fn insert_child(
+        &mut self,
+        c: char,
+        child: CharTrieNodeInner<V>,
+    ) -> Option<Box<CharTrieNodeInner<V>>> {
         let key = c as u32;
 
         // Check if child already exists
@@ -679,7 +702,9 @@ impl<V: DictionaryValue> CharTrieNodeInner<V> {
             Err(_) => {
                 // Key already exists (shouldn't happen, but handle gracefully)
                 // Free the newly allocated child
-                unsafe { drop(Box::from_raw(ptr)); }
+                unsafe {
+                    drop(Box::from_raw(ptr));
+                }
                 return self.get_child_mut(c).expect("child should exist");
             }
         }
@@ -693,7 +718,9 @@ impl<V: DictionaryValue> CharTrieNodeInner<V> {
         let key = c as u32;
 
         // Check if child exists and get its pointer
-        let ptr = self.node.find_child(key)
+        let ptr = self
+            .node
+            .find_child(key)
             .and_then(|p| p.as_ptr::<CharTrieNodeInner<V>>())?;
 
         // Remove from node
@@ -711,16 +738,14 @@ impl<V: DictionaryValue> CharTrieNodeInner<V> {
     ///
     /// Returns an iterator over (char, &CharTrieNodeInner<V>) pairs.
     pub fn iter_children(&self) -> impl Iterator<Item = (char, &CharTrieNodeInner<V>)> {
-        self.node.iter_children()
-            .filter_map(|(key, ptr)| {
-                ptr.as_ptr::<CharTrieNodeInner<V>>()
-                    .map(|p| {
-                        let c = char::from_u32(key).unwrap_or('\u{FFFD}');
-                        // Safety: We control all SwizzledPtr creation; ptr is valid
-                        let child_ref = unsafe { &*p };
-                        (c, child_ref)
-                    })
+        self.node.iter_children().filter_map(|(key, ptr)| {
+            ptr.as_ptr::<CharTrieNodeInner<V>>().map(|p| {
+                let c = char::from_u32(key).unwrap_or('\u{FFFD}');
+                // Safety: We control all SwizzledPtr creation; ptr is valid
+                let child_ref = unsafe { &*p };
+                (c, child_ref)
             })
+        })
     }
 }
 
@@ -737,7 +762,9 @@ impl<V: DictionaryValue> std::fmt::Debug for CharTrieRoot<V> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             CharTrieRoot::Empty => write!(f, "CharTrieRoot::Empty"),
-            CharTrieRoot::Node(node) => write!(f, "CharTrieRoot::Node({} children)", node.num_children()),
+            CharTrieRoot::Node(node) => {
+                write!(f, "CharTrieRoot::Node({} children)", node.num_children())
+            }
         }
     }
 }

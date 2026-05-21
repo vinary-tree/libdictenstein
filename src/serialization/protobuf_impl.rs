@@ -579,8 +579,6 @@ impl DatProtobufSerializer {
             .collect();
 
         // Rebuild DAT from terms
-        Ok(crate::double_array_trie::DoubleArrayTrie::from_terms(
-            terms,
-        ))
+        Ok(crate::double_array_trie::DoubleArrayTrie::from_terms(terms))
     }
 }

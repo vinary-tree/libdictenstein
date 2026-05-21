@@ -8,9 +8,7 @@ use std::fs::File;
 use std::io::{self, BufReader, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
-use super::{
-    crc32, Lsn, WalError, WalHeader, WalRecord, WalRecordType, WalWriter,
-};
+use super::{crc32, Lsn, WalError, WalHeader, WalRecord, WalRecordType, WalWriter};
 
 /// WAL reader for recovery.
 pub struct WalReader {

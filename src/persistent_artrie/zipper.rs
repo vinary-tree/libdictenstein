@@ -3,18 +3,18 @@
 //! This module provides a zipper implementation for PersistentARTrie that uses
 //! node-based navigation with lock-per-operation pattern for thread safety.
 
+#[allow(unused_imports)]
+use crate::sync_compat::RwLock;
 use std::borrow::Cow;
 #[allow(unused_imports)]
 use std::sync::Arc;
-#[allow(unused_imports)]
-use crate::sync_compat::RwLock;
 
-use crate::value::DictionaryValue;
-use crate::zipper::{DictZipper, ValuedDictZipper};
 use super::bucket::StringBucket;
 use super::dict_impl::{PersistentARTrie, TrieRoot};
-use super::SharedARTrie;
 use super::transitions::ChildNode;
+use super::SharedARTrie;
+use crate::value::DictionaryValue;
+use crate::zipper::{DictZipper, ValuedDictZipper};
 
 /// Zipper for Persistent ART dictionaries.
 ///
@@ -564,8 +564,8 @@ mod tests {
 
     #[test]
     fn test_resolve_child_returns_borrowed_for_art_node() {
-        use std::borrow::Cow;
         use super::super::nodes::{Node, Node4};
+        use std::borrow::Cow;
 
         let mut dict: PersistentARTrie<()> = PersistentARTrie::new();
         dict.insert("test");

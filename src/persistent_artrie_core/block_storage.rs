@@ -377,10 +377,7 @@ pub trait BlockStorage: Send + Sync {
     /// * `requests` - Slice of (block_id, buffer, buf_index) tuples
     ///
     /// Default: falls back to sequential `write_block_fixed()` calls.
-    fn write_blocks_batch_fixed(
-        &self,
-        requests: &[(u32, &[u8; BLOCK_SIZE], u16)],
-    ) -> Result<()> {
+    fn write_blocks_batch_fixed(&self, requests: &[(u32, &[u8; BLOCK_SIZE], u16)]) -> Result<()> {
         for &(block_id, buffer, buf_index) in requests {
             self.write_block_fixed(block_id, buffer, buf_index)?;
         }

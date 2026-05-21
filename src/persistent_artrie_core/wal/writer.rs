@@ -154,13 +154,11 @@ impl WalWriter {
 
         match Self::open(&path) {
             Ok(writer) => Ok(writer),
-            Err(WalError::NotFound) => {
-                match Self::create(&path) {
-                    Ok(writer) => Ok(writer),
-                    Err(WalError::AlreadyExists) => Self::open(&path),
-                    Err(e) => Err(e),
-                }
-            }
+            Err(WalError::NotFound) => match Self::create(&path) {
+                Ok(writer) => Ok(writer),
+                Err(WalError::AlreadyExists) => Self::open(&path),
+                Err(e) => Err(e),
+            },
             Err(e) => Err(e),
         }
     }
@@ -251,12 +249,11 @@ impl WalWriter {
             if current >= min_lsn {
                 break;
             }
-            if self.next_lsn.compare_exchange(
-                current,
-                min_lsn,
-                Ordering::AcqRel,
-                Ordering::Acquire,
-            ).is_ok() {
+            if self
+                .next_lsn
+                .compare_exchange(current, min_lsn, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+            {
                 break;
             }
         }

@@ -71,7 +71,10 @@ fn persistent_vocab_update_or_insert_is_noop() {
 
     assert!(!added, "no-op should report no-change");
     assert!(!update_was_called.get(), "update_fn must be discarded");
-    assert!(vocab.get_value("apple").is_none(), "term not actually inserted");
+    assert!(
+        vocab.get_value("apple").is_none(),
+        "term not actually inserted"
+    );
 }
 
 // =============================================================================

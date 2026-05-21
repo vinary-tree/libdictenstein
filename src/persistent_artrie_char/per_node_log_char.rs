@@ -25,8 +25,8 @@
 
 // Re-export node-agnostic types from the 1-byte implementation
 pub use crate::persistent_artrie::per_node_log::{
-    DirtyNodeTracker, NodeId, NodeRecoveryResult, PageId, PerNodeLogConfig,
-    PerNodeLogStats, PerNodeLogStatsAtomic, RecoveryResult,
+    DirtyNodeTracker, NodeId, NodeRecoveryResult, PageId, PerNodeLogConfig, PerNodeLogStats,
+    PerNodeLogStatsAtomic, RecoveryResult,
 };
 
 /// Inline log for char node entries (4-byte keys).
@@ -506,9 +506,20 @@ mod tests {
     #[test]
     fn test_serialized_size() {
         let entries = [
-            (CharNodeLogEntry::InsertChild { key: 0, child_id: 0 }, 13),
+            (
+                CharNodeLogEntry::InsertChild {
+                    key: 0,
+                    child_id: 0,
+                },
+                13,
+            ),
             (CharNodeLogEntry::RemoveChild { key: 0 }, 5),
-            (CharNodeLogEntry::SetValue { value: vec![1, 2, 3] }, 6),
+            (
+                CharNodeLogEntry::SetValue {
+                    value: vec![1, 2, 3],
+                },
+                6,
+            ),
             (CharNodeLogEntry::ClearValue, 1),
             (CharNodeLogEntry::SetPrefix { prefix: vec![1, 2] }, 11),
         ];
@@ -597,9 +608,15 @@ mod tests {
         let mut log = CharInlineLog::new(256);
 
         // Add entries that can be compacted
-        log.try_append(&CharNodeLogEntry::InsertChild { key: 42, child_id: 1 });
+        log.try_append(&CharNodeLogEntry::InsertChild {
+            key: 42,
+            child_id: 1,
+        });
         log.try_append(&CharNodeLogEntry::SetValue { value: vec![1] });
-        log.try_append(&CharNodeLogEntry::InsertChild { key: 42, child_id: 2 }); // supersedes first
+        log.try_append(&CharNodeLogEntry::InsertChild {
+            key: 42,
+            child_id: 2,
+        }); // supersedes first
         log.try_append(&CharNodeLogEntry::SetValue { value: vec![2] }); // supersedes second
         log.try_append(&CharNodeLogEntry::RemoveChild { key: 42 }); // cancels third
 
@@ -624,12 +641,18 @@ mod tests {
         let mut log = CharInlineLog::new(20);
 
         // InsertChild is 13 bytes - should fit
-        assert!(log.try_append(&CharNodeLogEntry::InsertChild { key: 1, child_id: 1 }));
+        assert!(log.try_append(&CharNodeLogEntry::InsertChild {
+            key: 1,
+            child_id: 1
+        }));
         assert_eq!(log.used_space(), 13);
         assert_eq!(log.available_space(), 7);
 
         // Another InsertChild (13 bytes) won't fit in remaining 7 bytes
-        assert!(!log.try_append(&CharNodeLogEntry::InsertChild { key: 2, child_id: 2 }));
+        assert!(!log.try_append(&CharNodeLogEntry::InsertChild {
+            key: 2,
+            child_id: 2
+        }));
         assert_eq!(log.entry_count(), 1);
 
         // RemoveChild (5 bytes) should fit

@@ -93,7 +93,12 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     /// # Panics
     ///
     /// Panics if the transaction is not in Active state.
-    pub fn tx_insert_chars(&self, tx: &mut CharDocumentTransaction<V>, chars: &[char], value: Option<V>) {
+    pub fn tx_insert_chars(
+        &self,
+        tx: &mut CharDocumentTransaction<V>,
+        chars: &[char],
+        value: Option<V>,
+    ) {
         assert!(
             tx.is_active(),
             "Cannot insert into a {} transaction",
@@ -123,7 +128,12 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     /// # Panics
     ///
     /// Panics if the transaction is not in Active state.
-    pub fn tx_insert_bytes(&self, tx: &mut CharDocumentTransaction<V>, term_bytes: &[u8], value: Option<V>) {
+    pub fn tx_insert_bytes(
+        &self,
+        tx: &mut CharDocumentTransaction<V>,
+        term_bytes: &[u8],
+        value: Option<V>,
+    ) {
         assert!(
             tx.is_active(),
             "Cannot insert into a {} transaction",
@@ -188,7 +198,12 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     /// # Panics
     ///
     /// Panics if the transaction is not in Active state.
-    pub fn tx_increment_bytes(&self, tx: &mut CharDocumentTransaction<V>, term_bytes: &[u8], delta: i64) {
+    pub fn tx_increment_bytes(
+        &self,
+        tx: &mut CharDocumentTransaction<V>,
+        term_bytes: &[u8],
+        delta: i64,
+    ) {
         assert!(
             tx.is_active(),
             "Cannot increment in a {} transaction",
@@ -257,14 +272,14 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
                 .shadow_terms
                 .iter()
                 .map(|(term, value)| {
-                    let value_bytes = value.as_ref().and_then(|v| {
-                        bincode::serialize(v).ok()
-                    });
+                    let value_bytes = value.as_ref().and_then(|v| bincode::serialize(v).ok());
                     (term.clone(), value_bytes)
                 })
                 .collect();
 
-            let batch_record = WalRecord::BatchInsert { entries: wal_entries };
+            let batch_record = WalRecord::BatchInsert {
+                entries: wal_entries,
+            };
             self.append_to_wal(batch_record)?;
 
             // Apply each SET entry without individual WAL logging
@@ -297,7 +312,9 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
                 .collect();
 
             // Log all INCREMENT entries as a single batch WAL record
-            let batch_record = WalRecord::BatchIncrement { entries: wal_entries };
+            let batch_record = WalRecord::BatchIncrement {
+                entries: wal_entries,
+            };
             self.append_to_wal(batch_record)?;
 
             // Apply each aggregated increment without individual WAL logging

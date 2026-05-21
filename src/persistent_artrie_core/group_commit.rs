@@ -70,8 +70,8 @@ use std::time::{Duration, Instant};
 use crossbeam_channel::{bounded, Receiver, Sender};
 use parking_lot::RwLock;
 
-use super::wal::{AsyncWalConfig, AsyncWalWriter, Lsn, WalConfig, WalRecord};
 use super::error::PersistentARTrieError;
+use super::wal::{AsyncWalConfig, AsyncWalWriter, Lsn, WalConfig, WalRecord};
 
 /// Result type for group commit operations.
 pub type Result<T> = std::result::Result<T, PersistentARTrieError>;
@@ -817,8 +817,8 @@ mod tests {
             archive_dir: dir.path().join("archive"),
             ..Default::default()
         };
-        let wal = AsyncWalWriter::create(&wal_path, async_config, archive_config)
-            .expect("create WAL");
+        let wal =
+            AsyncWalWriter::create(&wal_path, async_config, archive_config).expect("create WAL");
         let wal = Arc::new(wal);
 
         let config = GroupCommitConfig {
@@ -860,8 +860,8 @@ mod tests {
             archive_dir: dir.path().join("archive"),
             ..Default::default()
         };
-        let wal = AsyncWalWriter::create(&wal_path, async_config, archive_config)
-            .expect("create WAL");
+        let wal =
+            AsyncWalWriter::create(&wal_path, async_config, archive_config).expect("create WAL");
         let wal = Arc::new(wal);
 
         let config = GroupCommitConfig {

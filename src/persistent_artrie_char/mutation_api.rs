@@ -38,8 +38,9 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     /// Insert a term with an associated value and WAL logging
     pub fn insert_with_value(&mut self, term: &str, value: V) -> Result<bool> {
         // Log to WAL first (routes through group commit if enabled)
-        let value_bytes = bincode::serialize(&value)
-            .map_err(|e| PersistentARTrieError::internal(format!("Failed to serialize value: {}", e)))?;
+        let value_bytes = bincode::serialize(&value).map_err(|e| {
+            PersistentARTrieError::internal(format!("Failed to serialize value: {}", e))
+        })?;
         let record = WalRecord::Insert {
             term: term.as_bytes().to_vec(),
             value: Some(value_bytes),

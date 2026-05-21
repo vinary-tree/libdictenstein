@@ -79,7 +79,9 @@ fn bench_group_commit_batch_sizes(c: &mut Criterion) {
             |b, &batch_size| {
                 let dir = tempdir().expect("create temp dir");
                 let wal_path = dir.path().join("bench.wal");
-                let wal = Arc::new(RwLock::new(WalWriter::create(&wal_path).expect("create WAL")));
+                let wal = Arc::new(RwLock::new(
+                    WalWriter::create(&wal_path).expect("create WAL"),
+                ));
 
                 let config = GroupCommitConfig {
                     max_batch_size: batch_size,
@@ -134,7 +136,9 @@ fn bench_group_commit_concurrency(c: &mut Criterion) {
             |b, &num_threads| {
                 let dir = tempdir().expect("create temp dir");
                 let wal_path = dir.path().join("bench.wal");
-                let wal = Arc::new(RwLock::new(WalWriter::create(&wal_path).expect("create WAL")));
+                let wal = Arc::new(RwLock::new(
+                    WalWriter::create(&wal_path).expect("create WAL"),
+                ));
 
                 let config = GroupCommitConfig {
                     max_batch_size: 100,
@@ -189,7 +193,9 @@ fn bench_adaptive_batching(c: &mut Criterion) {
         group.bench_function(name, |b| {
             let dir = tempdir().expect("create temp dir");
             let wal_path = dir.path().join("bench.wal");
-            let wal = Arc::new(RwLock::new(WalWriter::create(&wal_path).expect("create WAL")));
+            let wal = Arc::new(RwLock::new(
+                WalWriter::create(&wal_path).expect("create WAL"),
+            ));
 
             let config = GroupCommitConfig {
                 max_batch_size: 100,
@@ -244,7 +250,9 @@ fn bench_batching_efficiency(c: &mut Criterion) {
             for _ in 0..iters {
                 let dir = tempdir().expect("create temp dir");
                 let wal_path = dir.path().join("bench.wal");
-                let wal = Arc::new(RwLock::new(WalWriter::create(&wal_path).expect("create WAL")));
+                let wal = Arc::new(RwLock::new(
+                    WalWriter::create(&wal_path).expect("create WAL"),
+                ));
 
                 let config = GroupCommitConfig {
                     max_batch_size: 100,

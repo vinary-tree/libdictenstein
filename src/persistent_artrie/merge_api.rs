@@ -42,7 +42,10 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
         let mut by_arena: BTreeMap<Option<u32>, Vec<PrefixTermWithValueAndArena<V>>> =
             BTreeMap::new();
         for term_info in other_terms {
-            by_arena.entry(term_info.arena_id).or_default().push(term_info);
+            by_arena
+                .entry(term_info.arena_id)
+                .or_default()
+                .push(term_info);
         }
 
         let mut processed = 0;

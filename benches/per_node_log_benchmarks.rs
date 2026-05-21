@@ -461,11 +461,11 @@ fn bench_recovery_simulation(c: &mut Criterion) {
 
     // Simulate recovery with varying dirty node ratios
     for (total_ops, dirty_ratio) in [
-        (10_000, 0.01),   // 1% dirty (100 nodes)
-        (10_000, 0.05),   // 5% dirty (500 nodes)
-        (10_000, 0.10),   // 10% dirty (1000 nodes)
-        (100_000, 0.01),  // 1% dirty (1000 nodes)
-        (100_000, 0.05),  // 5% dirty (5000 nodes)
+        (10_000, 0.01),  // 1% dirty (100 nodes)
+        (10_000, 0.05),  // 5% dirty (500 nodes)
+        (10_000, 0.10),  // 10% dirty (1000 nodes)
+        (100_000, 0.01), // 1% dirty (1000 nodes)
+        (100_000, 0.05), // 5% dirty (5000 nodes)
     ]
     .iter()
     {
@@ -479,11 +479,9 @@ fn bench_recovery_simulation(c: &mut Criterion) {
             |b, &(total_ops, _)| {
                 // Prepare entries to replay
                 let entries: Vec<_> = (0..*total_ops)
-                    .map(|i| {
-                        NodeLogEntry::InsertChild {
-                            key: (i % 256) as u8,
-                            child_id: i,
-                        }
+                    .map(|i| NodeLogEntry::InsertChild {
+                        key: (i % 256) as u8,
+                        child_id: i,
                     })
                     .collect();
 
@@ -496,8 +494,7 @@ fn bench_recovery_simulation(c: &mut Criterion) {
                         // Simulate global WAL: deserialize and process ALL entries
                         for entry in entries.iter() {
                             let serialized = entry.serialize();
-                            let (deserialized, _) =
-                                NodeLogEntry::deserialize(&serialized).unwrap();
+                            let (deserialized, _) = NodeLogEntry::deserialize(&serialized).unwrap();
                             black_box(deserialized);
                         }
 
@@ -516,11 +513,9 @@ fn bench_recovery_simulation(c: &mut Criterion) {
             |b, &(_, dirty_count)| {
                 // Prepare entries for dirty nodes only
                 let entries: Vec<_> = (0..dirty_count)
-                    .map(|i| {
-                        NodeLogEntry::InsertChild {
-                            key: (i % 256) as u8,
-                            child_id: i,
-                        }
+                    .map(|i| NodeLogEntry::InsertChild {
+                        key: (i % 256) as u8,
+                        child_id: i,
                     })
                     .collect();
 
@@ -533,8 +528,7 @@ fn bench_recovery_simulation(c: &mut Criterion) {
                         // Simulate per-node: only deserialize dirty node entries
                         for entry in entries.iter() {
                             let serialized = entry.serialize();
-                            let (deserialized, _) =
-                                NodeLogEntry::deserialize(&serialized).unwrap();
+                            let (deserialized, _) = NodeLogEntry::deserialize(&serialized).unwrap();
                             black_box(deserialized);
                         }
 

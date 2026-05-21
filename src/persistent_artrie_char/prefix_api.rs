@@ -12,7 +12,6 @@
 //! These are thin wrappers over the pub(super) navigation +
 //! collection helpers in `super::prefix_helpers`.
 
-
 use crate::persistent_artrie::block_storage::BlockStorage;
 use crate::persistent_artrie::error::Result;
 use crate::value::DictionaryValue;
@@ -80,7 +79,13 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
         };
 
         let mut terms = Vec::new();
-        self.collect_terms_with_arena(node, prefix.to_string(), prefix_arena, &mut terms, usize::MAX)?;
+        self.collect_terms_with_arena(
+            node,
+            prefix.to_string(),
+            prefix_arena,
+            &mut terms,
+            usize::MAX,
+        )?;
         Ok(Some(terms))
     }
 

@@ -63,7 +63,7 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
             path.with_extension("epoch")
         } else {
             return Err(PersistentARTrieError::internal(
-                "Cannot enable epoch checkpointing without a file path"
+                "Cannot enable epoch checkpointing without a file path",
             ));
         };
 
@@ -115,12 +115,16 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     /// # Returns
     /// The current epoch ID, or None if checkpointing is not enabled.
     pub fn record_epoch_operation(&self, wal_bytes: usize) -> Option<EpochId> {
-        self.checkpoint_manager.as_ref().map(|cm| cm.record_operation(wal_bytes))
+        self.checkpoint_manager
+            .as_ref()
+            .map(|cm| cm.record_operation(wal_bytes))
     }
 
     /// Returns the current epoch ID.
     pub fn current_epoch_id(&self) -> Option<EpochId> {
-        self.checkpoint_manager.as_ref().map(|cm| cm.current_epoch_id())
+        self.checkpoint_manager
+            .as_ref()
+            .map(|cm| cm.current_epoch_id())
     }
 
     /// Forces an immediate checkpoint of the current epoch.
@@ -132,12 +136,16 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     /// * `Some(epoch_id)` - The epoch ID that was checkpointed
     /// * `None` - Checkpoint manager not enabled
     pub fn force_epoch_checkpoint(&self) -> Option<Result<EpochId>> {
-        self.checkpoint_manager.as_ref().map(|cm| cm.force_checkpoint())
+        self.checkpoint_manager
+            .as_ref()
+            .map(|cm| cm.force_checkpoint())
     }
 
     /// Returns the last durable (fully checkpointed) epoch ID.
     pub fn last_durable_epoch(&self) -> Option<EpochId> {
-        self.checkpoint_manager.as_ref().and_then(|cm| cm.last_durable_epoch())
+        self.checkpoint_manager
+            .as_ref()
+            .and_then(|cm| cm.last_durable_epoch())
     }
 
     /// Returns epoch statistics.
@@ -147,7 +155,9 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
 
     /// Returns metadata for recent epochs.
     pub fn epoch_metadata(&self) -> Option<Vec<EpochMetadata>> {
-        self.checkpoint_manager.as_ref().map(|cm| cm.epoch_metadata())
+        self.checkpoint_manager
+            .as_ref()
+            .map(|cm| cm.epoch_metadata())
     }
 
     /// Returns the configuration for epoch checkpointing.

@@ -61,16 +61,22 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
             // Step 3: Write checkpoint record
             wal_writer
                 .append(record)
-                .map_err(|e| PersistentARTrieError::WalError { reason: format!("{:?}", e) })?;
+                .map_err(|e| PersistentARTrieError::WalError {
+                    reason: format!("{:?}", e),
+                })?;
             // Step 4: Sync WAL
             wal_writer
                 .sync()
-                .map_err(|e| PersistentARTrieError::WalError { reason: format!("{:?}", e) })?;
+                .map_err(|e| PersistentARTrieError::WalError {
+                    reason: format!("{:?}", e),
+                })?;
             // Step 5: Archive or truncate WAL based on configuration
             // If archive mode is enabled, rotate to archive; otherwise truncate
             wal_writer
                 .rotate_to_archive(&self.wal_config)
-                .map_err(|e| PersistentARTrieError::WalError { reason: format!("{:?}", e) })?;
+                .map_err(|e| PersistentARTrieError::WalError {
+                    reason: format!("{:?}", e),
+                })?;
         }
 
         self.dirty.store(false, AtomicOrdering::Release);
@@ -124,9 +130,7 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
 
         // Serialize the trie root and get a descriptor
         let (root_type, root_ptr, is_final) = match &self.root {
-            CharTrieRoot::Empty => {
-                (ROOT_TYPE_EMPTY, 0u64, false)
-            }
+            CharTrieRoot::Empty => (ROOT_TYPE_EMPTY, 0u64, false),
             CharTrieRoot::Node(node) => {
                 // Recursively serialize the node and all children
                 let ptr = self.serialize_char_node_to_disk(node.as_ref())?;
@@ -168,7 +172,8 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
         let mut descriptor = [0u8; 18];
         descriptor[0] = root_type;
         descriptor[1] = if is_final { 1 } else { 0 };
-        descriptor[2..6].copy_from_slice(&(self.len.load(AtomicOrdering::Acquire) as u32).to_le_bytes());
+        descriptor[2..6]
+            .copy_from_slice(&(self.len.load(AtomicOrdering::Acquire) as u32).to_le_bytes());
         descriptor[6..10].copy_from_slice(&arena_count.to_le_bytes());
         descriptor[10..18].copy_from_slice(&root_ptr.to_le_bytes());
 
@@ -180,7 +185,8 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
         dm.write_bytes(0, DESCRIPTOR_OFFSET, &descriptor)?;
 
         // Update root_ptr to point to block 0, offset 64
-        let root_descriptor_ptr = SwizzledPtr::on_disk(0, DESCRIPTOR_OFFSET as u32, NodeType::Bucket);
+        let root_descriptor_ptr =
+            SwizzledPtr::on_disk(0, DESCRIPTOR_OFFSET as u32, NodeType::Bucket);
         dm.set_root_ptr(root_descriptor_ptr.to_raw())?;
         dm.set_entry_count(self.len.load(AtomicOrdering::Acquire) as u64)?;
 
@@ -338,9 +344,11 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
             // Parent slot is near the start of an arena - children likely in previous arena
             // Use full encoding to avoid relative offset underflow during decode
             SerializationContext::full_encoding(parent_slot)
-        } else if let Some(first_child) =
-            Self::check_sequential_char_children(&child_disk_ptrs, parent_arena_id, arena_node_count)
-        {
+        } else if let Some(first_child) = Self::check_sequential_char_children(
+            &child_disk_ptrs,
+            parent_arena_id,
+            arena_node_count,
+        ) {
             // Children are consecutive in same arena: use sequential sibling encoding
             SerializationContext::sequential(parent_slot, first_child)
         } else {
@@ -411,7 +419,11 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
         // - block_id = arena_id + 1 (block 0 is file header, arena N is in block N+1)
         // - offset = slot_id
         let node_type = self.char_node_to_node_type(&disk_node);
-        Ok(SwizzledPtr::on_disk(final_slot.arena_id + 1, final_slot.slot_id, node_type))
+        Ok(SwizzledPtr::on_disk(
+            final_slot.arena_id + 1,
+            final_slot.slot_id,
+            node_type,
+        ))
     }
 
     /// Build a CharNode with disk SwizzledPtrs for serialization.

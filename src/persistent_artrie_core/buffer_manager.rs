@@ -240,9 +240,7 @@ impl<S: BlockStorage> BufferManager<S> {
     /// * `pool_size` - Number of frames in the buffer pool
     pub fn new(storage: S, pool_size: usize) -> Self {
         let frames: Vec<FrameMetadata> = (0..pool_size).map(|_| FrameMetadata::new()).collect();
-        let buffer_pool: Vec<AlignedBlock> = (0..pool_size)
-            .map(|_| AlignedBlock::new())
-            .collect();
+        let buffer_pool: Vec<AlignedBlock> = (0..pool_size).map(|_| AlignedBlock::new()).collect();
 
         // Register buffer pool with storage backend for zero-copy I/O.
         // This is a no-op for mmap but enables ReadFixed/WriteFixed for io_uring.
@@ -253,9 +251,7 @@ impl<S: BlockStorage> BufferManager<S> {
         // Safety: buffer_pool is owned by BufferManager and will not be moved/freed
         // until BufferManager is dropped, at which point unregister_buffer_pool is called.
         // The Vec itself is never reallocated (capacity is fixed at construction).
-        let fixed_buffers_registered = unsafe {
-            storage.register_buffer_pool(&buffers).is_ok()
-        };
+        let fixed_buffers_registered = unsafe { storage.register_buffer_pool(&buffers).is_ok() };
 
         Self {
             storage,
@@ -280,9 +276,7 @@ impl<S: BlockStorage> BufferManager<S> {
     #[cfg(any(test, feature = "bench-internals"))]
     pub fn new_without_registration(storage: S, pool_size: usize) -> Self {
         let frames: Vec<FrameMetadata> = (0..pool_size).map(|_| FrameMetadata::new()).collect();
-        let buffer_pool: Vec<AlignedBlock> = (0..pool_size)
-            .map(|_| AlignedBlock::new())
-            .collect();
+        let buffer_pool: Vec<AlignedBlock> = (0..pool_size).map(|_| AlignedBlock::new()).collect();
 
         Self {
             storage,
@@ -305,17 +299,10 @@ impl<S: BlockStorage> BufferManager<S> {
     /// * `storage` - The storage backend for I/O operations
     /// * `initial_size` - Initial number of active frames
     /// * `max_pool_size` - Maximum number of frames (pre-allocated)
-    pub fn new_with_max_capacity(
-        storage: S,
-        initial_size: usize,
-        max_pool_size: usize,
-    ) -> Self {
-        let frames: Vec<FrameMetadata> = (0..max_pool_size)
-            .map(|_| FrameMetadata::new())
-            .collect();
-        let buffer_pool: Vec<AlignedBlock> = (0..max_pool_size)
-            .map(|_| AlignedBlock::new())
-            .collect();
+    pub fn new_with_max_capacity(storage: S, initial_size: usize, max_pool_size: usize) -> Self {
+        let frames: Vec<FrameMetadata> = (0..max_pool_size).map(|_| FrameMetadata::new()).collect();
+        let buffer_pool: Vec<AlignedBlock> =
+            (0..max_pool_size).map(|_| AlignedBlock::new()).collect();
 
         // Register buffer pool with storage backend for zero-copy I/O.
         // Registers ALL max_pool_size buffers (not just initial_size) since the
@@ -326,9 +313,7 @@ impl<S: BlockStorage> BufferManager<S> {
             .collect();
         // Safety: buffer_pool is owned by BufferManager and will not be moved/freed
         // until BufferManager is dropped, at which point unregister_buffer_pool is called.
-        let fixed_buffers_registered = unsafe {
-            storage.register_buffer_pool(&buffers).is_ok()
-        };
+        let fixed_buffers_registered = unsafe { storage.register_buffer_pool(&buffers).is_ok() };
 
         Self {
             storage,
@@ -350,7 +335,9 @@ impl<S: BlockStorage> BufferManager<S> {
         // Check if already in buffer pool
         if let Some(frame_id) = self.lookup_frame(block_id) {
             self.frames[frame_id].pin();
-            self.frames[frame_id].reference_bit.store(true, Ordering::Release);
+            self.frames[frame_id]
+                .reference_bit
+                .store(true, Ordering::Release);
             return Ok(PageReadGuard {
                 buffer_manager: self,
                 frame_id,
@@ -373,7 +360,9 @@ impl<S: BlockStorage> BufferManager<S> {
         // Check if already in buffer pool
         if let Some(frame_id) = self.lookup_frame(block_id) {
             self.frames[frame_id].pin();
-            self.frames[frame_id].reference_bit.store(true, Ordering::Release);
+            self.frames[frame_id]
+                .reference_bit
+                .store(true, Ordering::Release);
             return Ok(PageWriteGuard {
                 buffer_manager: self,
                 frame_id,
@@ -500,9 +489,7 @@ impl<S: BlockStorage> BufferManager<S> {
                 // Fallback: batch without fixed buffers (still batches SQEs for io_uring)
                 let requests: Vec<(u32, &[u8; BLOCK_SIZE])> = dirty_frames
                     .iter()
-                    .map(|&(block_id, frame_id)| {
-                        (block_id, &self.buffer_pool[frame_id].data)
-                    })
+                    .map(|&(block_id, frame_id)| (block_id, &self.buffer_pool[frame_id].data))
                     .collect();
                 self.storage.write_blocks_batch(&requests)?;
             }
@@ -541,7 +528,9 @@ impl<S: BlockStorage> BufferManager<S> {
         self.frames[frame_id].set_block_id(Some(block_id));
         self.frames[frame_id].pin();
         self.frames[frame_id].clear_dirty();
-        self.frames[frame_id].reference_bit.store(true, Ordering::Release);
+        self.frames[frame_id]
+            .reference_bit
+            .store(true, Ordering::Release);
 
         // Update page table
         self.page_table.write().insert(block_id, frame_id);
@@ -698,10 +687,7 @@ impl<S: BlockStorage> BufferManager<S> {
                 let frame = &self.frames[frame_id];
                 if frame.is_pinned() {
                     return Err(PersistentARTrieError::InternalError {
-                        message: format!(
-                            "Cannot shrink pool: frame {} is pinned",
-                            frame_id
-                        ),
+                        message: format!("Cannot shrink pool: frame {} is pinned", frame_id),
                     });
                 }
 
@@ -819,8 +805,8 @@ pub struct BufferPoolStats {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::disk_manager::DiskManager;
+    use super::*;
     use tempfile::tempdir;
 
     fn create_buffer_manager(pool_size: usize) -> BufferManager {

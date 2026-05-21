@@ -575,7 +575,8 @@ impl ByteNodeArenaV2 {
 
         // Add slot entry
         let slot_id = self.slots.len() as u32;
-        self.slots.push(VarintSlotEntry::new(offset as u64, len as u64));
+        self.slots
+            .push(VarintSlotEntry::new(offset as u64, len as u64));
 
         // Update header
         self.header.node_count = self.slots.len() as u32;
@@ -863,7 +864,9 @@ mod tests {
         // Fill it up
         let mut allocated = 0;
         while arena.can_allocate(10) {
-            arena.allocate(&[0u8; 10]).expect("allocation should succeed");
+            arena
+                .allocate(&[0u8; 10])
+                .expect("allocation should succeed");
             allocated += 1;
         }
 
@@ -928,7 +931,9 @@ mod tests {
         // Allocate many small entries with small offsets (should use 1-byte varints)
         for i in 0..50 {
             let data = format!("entry{}", i);
-            arena.allocate(data.as_bytes()).expect("allocation should succeed");
+            arena
+                .allocate(data.as_bytes())
+                .expect("allocation should succeed");
         }
 
         let (fixed_size, varint_size) = arena.directory_savings();
@@ -950,8 +955,8 @@ mod tests {
             (0u64, 0u64),
             (1, 1),
             (100, 50),
-            (247, 247),          // Max single-byte
-            (248, 248),          // Multi-byte starts
+            (247, 247), // Max single-byte
+            (248, 248), // Multi-byte starts
             (1000, 500),
             (65535, 1024),
             (0xFFFFFF, 0xFFFF),
@@ -1011,7 +1016,9 @@ mod tests {
 
         let slot = arena.allocate(b"data").expect("allocation should succeed");
 
-        let (offset, len) = arena.slot_directory_entry_range(slot).expect("should get range");
+        let (offset, len) = arena
+            .slot_directory_entry_range(slot)
+            .expect("should get range");
         assert_eq!(len, SLOT_SIZE); // 8 bytes per entry
         assert!(offset > 0);
         assert!(offset < arena.size());

@@ -314,7 +314,10 @@ impl EpochGuard {
     /// Create a new epoch guard.
     pub fn new(epoch_manager: Arc<EpochManager>) -> Self {
         let epoch = epoch_manager.enter_read();
-        Self { epoch, epoch_manager }
+        Self {
+            epoch,
+            epoch_manager,
+        }
     }
 
     /// Get the epoch of this guard.

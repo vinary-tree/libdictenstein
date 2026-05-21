@@ -3,22 +3,18 @@
 //! Tests the `iter()`, `iter_bytes()`/`iter_chars()`, and `IntoIterator` implementations
 //! across all dictionary types.
 
-
 // ============================================================================
 // DoubleArrayTrie Tests
 // ============================================================================
 
 mod double_array_trie_tests {
-    use std::collections::HashSet;
     use libdictenstein::double_array_trie::DoubleArrayTrie;
+    use std::collections::HashSet;
 
     #[test]
     fn test_iter_bytes_with_values() {
-        let dict = DoubleArrayTrie::from_terms_with_values(vec![
-            ("cat", 1),
-            ("dog", 2),
-            ("cats", 3),
-        ]);
+        let dict =
+            DoubleArrayTrie::from_terms_with_values(vec![("cat", 1), ("dog", 2), ("cats", 3)]);
 
         let results: Vec<(String, usize)> = dict
             .iter_bytes()
@@ -44,8 +40,7 @@ mod double_array_trie_tests {
 
     #[test]
     fn test_into_iterator() {
-        let dict =
-            DoubleArrayTrie::from_terms_with_values(vec![("a", 1), ("b", 2), ("c", 3)]);
+        let dict = DoubleArrayTrie::from_terms_with_values(vec![("a", 1), ("b", 2), ("c", 3)]);
 
         let mut count = 0;
         for (bytes, value) in &dict {
@@ -279,8 +274,8 @@ mod suffix_automaton_char_tests {
 
 #[cfg(feature = "pathmap-backend")]
 mod pathmap_tests {
-    use std::collections::HashSet;
     use libdictenstein::pathmap::PathMapDictionary;
+    use std::collections::HashSet;
 
     #[test]
     fn test_iter_bytes_with_values() {

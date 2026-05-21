@@ -32,7 +32,9 @@ fn sorted_results<T: Ord>(mut results: Vec<T>) -> Vec<T> {
     results
 }
 
-fn collect_terms<Z: DictZipper<Unit = u8>>(iter: impl Iterator<Item = (Vec<u8>, Z)>) -> Vec<String> {
+fn collect_terms<Z: DictZipper<Unit = u8>>(
+    iter: impl Iterator<Item = (Vec<u8>, Z)>,
+) -> Vec<String> {
     sorted_results(
         iter.map(|(path, _)| String::from_utf8(path).unwrap())
             .collect(),
@@ -153,10 +155,8 @@ fn test_intersection_with_values_lattice_meet() {
 
 #[test]
 fn test_intersection_with_values_lattice_join() {
-    let dict1 =
-        DoubleArrayTrie::from_terms_with_values(vec![("score", 85u32)].into_iter());
-    let dict2 =
-        DoubleArrayTrie::from_terms_with_values(vec![("score", 92u32)].into_iter());
+    let dict1 = DoubleArrayTrie::from_terms_with_values(vec![("score", 85u32)].into_iter());
+    let dict2 = DoubleArrayTrie::from_terms_with_values(vec![("score", 92u32)].into_iter());
 
     let z1 = DoubleArrayTrieZipper::new_from_dict(&dict1);
     let z2 = DoubleArrayTrieZipper::new_from_dict(&dict2);
@@ -255,9 +255,7 @@ fn test_difference_with_values() {
     let dict_a = DoubleArrayTrie::from_terms_with_values(
         vec![("cat", 1usize), ("dog", 2), ("fish", 3)].into_iter(),
     );
-    let dict_b = DoubleArrayTrie::from_terms_with_values(
-        vec![("dog", 0usize)].into_iter(),
-    );
+    let dict_b = DoubleArrayTrie::from_terms_with_values(vec![("dog", 0usize)].into_iter());
 
     let z_a = DoubleArrayTrieZipper::new_from_dict(&dict_a);
     let z_b = DoubleArrayTrieZipper::new_from_dict(&dict_b);
@@ -356,12 +354,10 @@ fn test_symmetric_difference_three_dicts() {
 
 #[test]
 fn test_symmetric_difference_with_values() {
-    let dict_a = DoubleArrayTrie::from_terms_with_values(
-        vec![("cat", 1usize), ("dog", 2)].into_iter(),
-    );
-    let dict_b = DoubleArrayTrie::from_terms_with_values(
-        vec![("dog", 20usize), ("fish", 3)].into_iter(),
-    );
+    let dict_a =
+        DoubleArrayTrie::from_terms_with_values(vec![("cat", 1usize), ("dog", 2)].into_iter());
+    let dict_b =
+        DoubleArrayTrie::from_terms_with_values(vec![("dog", 20usize), ("fish", 3)].into_iter());
 
     let z_a = DoubleArrayTrieZipper::new_from_dict(&dict_a);
     let z_b = DoubleArrayTrieZipper::new_from_dict(&dict_b);
@@ -419,12 +415,10 @@ fn test_value_diff_basic() {
 
 #[test]
 fn test_value_diff_identical() {
-    let dict1 = DoubleArrayTrie::from_terms_with_values(
-        vec![("cat", 10usize), ("dog", 20)].into_iter(),
-    );
-    let dict2 = DoubleArrayTrie::from_terms_with_values(
-        vec![("cat", 10usize), ("dog", 20)].into_iter(),
-    );
+    let dict1 =
+        DoubleArrayTrie::from_terms_with_values(vec![("cat", 10usize), ("dog", 20)].into_iter());
+    let dict2 =
+        DoubleArrayTrie::from_terms_with_values(vec![("cat", 10usize), ("dog", 20)].into_iter());
 
     let z1 = DoubleArrayTrieZipper::new_from_dict(&dict1);
     let z2 = DoubleArrayTrieZipper::new_from_dict(&dict2);
@@ -455,12 +449,8 @@ fn test_value_diff_all_different() {
 
 #[test]
 fn test_value_diff_disjoint() {
-    let dict1 = DoubleArrayTrie::from_terms_with_values(
-        vec![("cat", 1usize)].into_iter(),
-    );
-    let dict2 = DoubleArrayTrie::from_terms_with_values(
-        vec![("dog", 2usize)].into_iter(),
-    );
+    let dict1 = DoubleArrayTrie::from_terms_with_values(vec![("cat", 1usize)].into_iter());
+    let dict2 = DoubleArrayTrie::from_terms_with_values(vec![("dog", 2usize)].into_iter());
 
     let z1 = DoubleArrayTrieZipper::new_from_dict(&dict1);
     let z2 = DoubleArrayTrieZipper::new_from_dict(&dict2);
@@ -473,12 +463,10 @@ fn test_value_diff_disjoint() {
 
 #[test]
 fn test_value_diff_navigation() {
-    let dict1 = DoubleArrayTrie::from_terms_with_values(
-        vec![("score", 85u32), ("count", 100)].into_iter(),
-    );
-    let dict2 = DoubleArrayTrie::from_terms_with_values(
-        vec![("score", 92u32), ("count", 100)].into_iter(),
-    );
+    let dict1 =
+        DoubleArrayTrie::from_terms_with_values(vec![("score", 85u32), ("count", 100)].into_iter());
+    let dict2 =
+        DoubleArrayTrie::from_terms_with_values(vec![("score", 92u32), ("count", 100)].into_iter());
 
     let z1 = DoubleArrayTrieZipper::new_from_dict(&dict1);
     let z2 = DoubleArrayTrieZipper::new_from_dict(&dict2);
@@ -583,7 +571,10 @@ fn test_identity_symmetric_difference_via_complement() {
         .collect();
 
     // (A ∪ B) \ (A ∩ B)
-    let expected: HashSet<String> = union_terms.difference(&intersection_terms).cloned().collect();
+    let expected: HashSet<String> = union_terms
+        .difference(&intersection_terms)
+        .cloned()
+        .collect();
 
     assert_eq!(sym_diff_terms, expected);
 }

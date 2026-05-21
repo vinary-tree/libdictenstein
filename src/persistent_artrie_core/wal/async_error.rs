@@ -41,7 +41,11 @@ impl std::fmt::Display for AsyncWalError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             AsyncWalError::Wal(e) => write!(f, "WAL error: {}", e),
-            AsyncWalError::SegmentSyncFailed { path, attempts, last_error } => {
+            AsyncWalError::SegmentSyncFailed {
+                path,
+                attempts,
+                last_error,
+            } => {
                 write!(
                     f,
                     "Segment sync failed after {} attempts at {}: {}",
@@ -57,7 +61,11 @@ impl std::fmt::Display for AsyncWalError {
                     write!(f, "Rotation failed: {}", reason)
                 }
             }
-            AsyncWalError::SyncTimeout { target_lsn, current_synced, timeout_ms } => {
+            AsyncWalError::SyncTimeout {
+                target_lsn,
+                current_synced,
+                timeout_ms,
+            } => {
                 write!(
                     f,
                     "Sync timeout: target LSN {} not reached (current synced: {}) after {}ms",
@@ -76,7 +84,9 @@ impl std::error::Error for AsyncWalError {
         match self {
             AsyncWalError::Wal(e) => Some(e),
             AsyncWalError::SegmentSyncFailed { last_error, .. } => Some(last_error),
-            AsyncWalError::RotationFailed { source: Some(e), .. } => Some(e),
+            AsyncWalError::RotationFailed {
+                source: Some(e), ..
+            } => Some(e),
             _ => None,
         }
     }

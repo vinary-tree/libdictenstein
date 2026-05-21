@@ -15,7 +15,9 @@ use smallvec::SmallVec;
 use crate::value::DictionaryValue;
 
 use super::block_storage::BlockStorage;
-use super::dict_impl::{bytes_gt, bytes_le, PersistentARTrie, PrefixTermWithValueAndArena, TrieRoot};
+use super::dict_impl::{
+    bytes_gt, bytes_le, PersistentARTrie, PrefixTermWithValueAndArena, TrieRoot,
+};
 use super::error::Result;
 use super::transitions::ChildNode;
 
@@ -47,12 +49,7 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
         let mut terms = Vec::with_capacity(limit);
 
         // Collect terms with the cursor filtering
-        self.collect_terms_from_cursor(
-            prefix,
-            cursor,
-            limit,
-            &mut terms,
-        )?;
+        self.collect_terms_from_cursor(prefix, cursor, limit, &mut terms)?;
 
         Ok(terms)
     }
@@ -228,7 +225,9 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
                         // Deserialize the value from bytes
                         if let Ok(v) = bincode::deserialize::<V>(value_bytes) {
                             // Apply cursor filter using SIMD-accelerated comparison
-                            if cursor.map_or(true, |c| bytes_gt(path.as_slice(), c)) && terms.len() < limit {
+                            if cursor.map_or(true, |c| bytes_gt(path.as_slice(), c))
+                                && terms.len() < limit
+                            {
                                 terms.push(PrefixTermWithValueAndArena {
                                     term: path.clone(),
                                     value: v,

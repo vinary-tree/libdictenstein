@@ -86,11 +86,11 @@ pub mod pathmap_zipper;
 #[cfg(feature = "persistent-artrie")]
 pub mod artrie_trait;
 #[cfg(feature = "persistent-artrie")]
-pub mod persistent_artrie_core;
-#[cfg(feature = "persistent-artrie")]
 pub mod persistent_artrie;
 #[cfg(feature = "persistent-artrie")]
 pub mod persistent_artrie_char;
+#[cfg(feature = "persistent-artrie")]
+pub mod persistent_artrie_core;
 #[cfg(feature = "persistent-artrie")]
 pub mod persistent_vocab_artrie;
 
@@ -118,7 +118,9 @@ pub use char_unit::CharUnit;
 pub use dawg_core::{DawgCore, DawgNode};
 pub use iterator::{DictionaryIterator, DictionaryTermIterator};
 pub use node_signature::NodeSignature;
-pub use substring::{BidirectionalDictionaryNode, ExtensionResult, SubstringDictionary, SubstringMatch};
+pub use substring::{
+    BidirectionalDictionaryNode, ExtensionResult, SubstringDictionary, SubstringMatch,
+};
 pub use value::DictionaryValue;
 pub use zipper::{DictZipper, ValuedDictZipper};
 
@@ -131,13 +133,17 @@ pub use artrie_trait::{ARTrie, EvictableARTrie};
 #[allow(deprecated)]
 pub use artrie_trait::ARTrieAtomicOps;
 #[cfg(feature = "persistent-artrie")]
-pub use persistent_artrie::{PersistentARTrie, PersistentARTrieZipper, WalConfig, RecoveryReport, RecoveryMode};
-#[cfg(feature = "persistent-artrie")]
 pub use persistent_artrie::wal::Lsn;
 #[cfg(feature = "persistent-artrie")]
-pub use persistent_artrie_char::{PersistentARTrieChar, PersistentARTrieCharNode, PersistentARTrieCharZipper};
+pub use persistent_artrie::{
+    PersistentARTrie, PersistentARTrieZipper, RecoveryMode, RecoveryReport, WalConfig,
+};
 #[cfg(feature = "persistent-artrie")]
-pub use persistent_vocab_artrie::{PersistentVocabARTrie, IndexedVocabularyPersistent};
+pub use persistent_artrie_char::{
+    PersistentARTrieChar, PersistentARTrieCharNode, PersistentARTrieCharZipper,
+};
+#[cfg(feature = "persistent-artrie")]
+pub use persistent_vocab_artrie::{IndexedVocabularyPersistent, PersistentVocabARTrie};
 
 /// Synchronization strategy for dictionary operations.
 ///
@@ -497,11 +503,9 @@ pub trait MutableMappedDictionary: MappedDictionary {
 /// Prelude module for convenient imports.
 pub mod prelude {
     pub use crate::{
-        CharUnit, Dictionary, DictionaryNode, DictionaryValue,
-        MappedDictionary, MappedDictionaryNode, MutableMappedDictionary,
-        MutableDictionary, CompactableDictionary,
-        SyncStrategy, DictZipper, ValuedDictZipper,
-        BijectiveDictionary, BijectiveMap, InsertError,
+        BijectiveDictionary, BijectiveMap, CharUnit, CompactableDictionary, DictZipper, Dictionary,
+        DictionaryNode, DictionaryValue, InsertError, MappedDictionary, MappedDictionaryNode,
+        MutableDictionary, MutableMappedDictionary, SyncStrategy, ValuedDictZipper,
     };
 
     // Re-export common dictionary types
@@ -510,8 +514,8 @@ pub mod prelude {
     pub use crate::dynamic_dawg::DynamicDawg;
     pub use crate::dynamic_dawg_char::DynamicDawgChar;
     pub use crate::dynamic_dawg_u64::DynamicDawgU64;
-    pub use crate::suffix_automaton::SuffixAutomaton;
-    pub use crate::suffix_automaton_char::SuffixAutomatonChar;
     pub use crate::scdawg::Scdawg;
     pub use crate::scdawg_char::ScdawgChar;
+    pub use crate::suffix_automaton::SuffixAutomaton;
+    pub use crate::suffix_automaton_char::SuffixAutomatonChar;
 }

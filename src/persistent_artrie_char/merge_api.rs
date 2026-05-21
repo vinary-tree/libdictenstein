@@ -8,11 +8,9 @@
 //! - `merge_from_batched` / `merge_from_batched_grouped`
 //! - `merge_from_batched_with_options` (private, shared)
 
-
 use crate::persistent_artrie::block_storage::BlockStorage;
 use crate::persistent_artrie::error::Result;
 use crate::value::DictionaryValue;
-
 
 impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     /// Merge another trie into this one using a custom merge function.
@@ -216,15 +214,11 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
             // Sort batch by arena_id for sequential I/O if requested
             let batch: Vec<_> = if arena_grouped {
                 let mut sorted_batch: Vec<_> = chunk.to_vec();
-                sorted_batch.sort_by(|a, b| {
-                    match (a.arena_id, b.arena_id) {
-                        (Some(a_id), Some(b_id)) => {
-                            a_id.cmp(&b_id).then_with(|| a.term.cmp(&b.term))
-                        }
-                        (Some(_), None) => std::cmp::Ordering::Less,
-                        (None, Some(_)) => std::cmp::Ordering::Greater,
-                        (None, None) => a.term.cmp(&b.term),
-                    }
+                sorted_batch.sort_by(|a, b| match (a.arena_id, b.arena_id) {
+                    (Some(a_id), Some(b_id)) => a_id.cmp(&b_id).then_with(|| a.term.cmp(&b.term)),
+                    (Some(_), None) => std::cmp::Ordering::Less,
+                    (None, Some(_)) => std::cmp::Ordering::Greater,
+                    (None, None) => a.term.cmp(&b.term),
                 });
                 sorted_batch
             } else {

@@ -12,13 +12,13 @@
 //! cargo bench --bench loading_experiments --features persistent-artrie -- --save-baseline eager
 
 use criterion::{
-    black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput,
-    measurement::WallTime,
+    black_box, criterion_group, criterion_main, measurement::WallTime, BenchmarkId, Criterion,
+    Throughput,
 };
 use libdictenstein::persistent_artrie_char::PersistentARTrieChar;
+use log::info;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
-use log::info;
 use tempfile::TempDir;
 
 // ============================================================================
@@ -101,8 +101,8 @@ impl TestDataset {
 
         // Create and persist the trie
         {
-            let mut trie = PersistentARTrieChar::<u64>::create(&trie_path)
-                .expect("Failed to create trie");
+            let mut trie =
+                PersistentARTrieChar::<u64>::create(&trie_path).expect("Failed to create trie");
 
             for (i, term) in terms.iter().enumerate() {
                 trie.upsert(term, i as u64).expect("Failed to insert");
@@ -133,18 +133,14 @@ fn bench_open_time_eager(c: &mut Criterion) {
         let dataset = TestDataset::new(size, 10_000);
 
         group.throughput(Throughput::Elements(size as u64));
-        group.bench_with_input(
-            BenchmarkId::from_parameter(size),
-            &dataset,
-            |b, dataset| {
-                b.iter(|| {
-                    // Drop caches would require sudo, so we just measure multiple times
-                    let trie = PersistentARTrieChar::<u64>::open(&dataset.trie_path)
-                        .expect("Failed to open trie");
-                    black_box(trie)
-                });
-            },
-        );
+        group.bench_with_input(BenchmarkId::from_parameter(size), &dataset, |b, dataset| {
+            b.iter(|| {
+                // Drop caches would require sudo, so we just measure multiple times
+                let trie = PersistentARTrieChar::<u64>::open(&dataset.trie_path)
+                    .expect("Failed to open trie");
+                black_box(trie)
+            });
+        });
     }
 
     group.finish();
@@ -193,8 +189,8 @@ fn bench_bulk_lookup_eager(c: &mut Criterion) {
         let dataset = TestDataset::new(size, 10_000);
 
         // Open trie once for steady-state measurement
-        let trie = PersistentARTrieChar::<u64>::open(&dataset.trie_path)
-            .expect("Failed to open trie");
+        let trie =
+            PersistentARTrieChar::<u64>::open(&dataset.trie_path).expect("Failed to open trie");
 
         group.throughput(Throughput::Elements(dataset.queries.len() as u64));
         group.bench_with_input(
@@ -225,8 +221,7 @@ fn bench_bulk_lookup_eager(c: &mut Criterion) {
 fn get_rss_bytes() -> usize {
     use std::fs;
 
-    let status = fs::read_to_string("/proc/self/status")
-        .expect("Failed to read /proc/self/status");
+    let status = fs::read_to_string("/proc/self/status").expect("Failed to read /proc/self/status");
 
     for line in status.lines() {
         if line.starts_with("VmRSS:") {
@@ -254,33 +249,29 @@ fn bench_memory_usage(c: &mut Criterion) {
     for size in [1_000usize, 100_000, 1_000_000] {
         let dataset = TestDataset::new(size, 100);
 
-        group.bench_with_input(
-            BenchmarkId::from_parameter(size),
-            &dataset,
-            |b, dataset| {
-                b.iter_custom(|iters| {
-                    let mut total_duration = Duration::ZERO;
+        group.bench_with_input(BenchmarkId::from_parameter(size), &dataset, |b, dataset| {
+            b.iter_custom(|iters| {
+                let mut total_duration = Duration::ZERO;
 
-                    for _ in 0..iters {
-                        // Force GC-like behavior by dropping any previous allocations
-                        let start = Instant::now();
-                        let _trie = PersistentARTrieChar::<u64>::open(&dataset.trie_path)
-                            .expect("Failed to open trie");
-                        let elapsed = start.elapsed();
+                for _ in 0..iters {
+                    // Force GC-like behavior by dropping any previous allocations
+                    let start = Instant::now();
+                    let _trie = PersistentARTrieChar::<u64>::open(&dataset.trie_path)
+                        .expect("Failed to open trie");
+                    let elapsed = start.elapsed();
 
-                        // Record RSS (for logging, not timing)
-                        let rss = get_rss_bytes();
+                    // Record RSS (for logging, not timing)
+                    let rss = get_rss_bytes();
 
-                        // Use RSS as a proxy metric (logged in results)
-                        info!("RSS for {} terms: {} MB", size, rss / (1024 * 1024));
+                    // Use RSS as a proxy metric (logged in results)
+                    info!("RSS for {} terms: {} MB", size, rss / (1024 * 1024));
 
-                        total_duration += elapsed;
-                    }
+                    total_duration += elapsed;
+                }
 
-                    total_duration
-                });
-            },
-        );
+                total_duration
+            });
+        });
     }
 
     group.finish();
@@ -302,8 +293,8 @@ fn collect_raw_timings() {
 
         // Warm-up runs (discarded)
         for _ in 0..3 {
-            let _trie = PersistentARTrieChar::<u64>::open(&dataset.trie_path)
-                .expect("Failed to open trie");
+            let _trie =
+                PersistentARTrieChar::<u64>::open(&dataset.trie_path).expect("Failed to open trie");
         }
 
         // Measurement runs
@@ -314,8 +305,8 @@ fn collect_raw_timings() {
         for _ in 0..30 {
             // Open time
             let start = Instant::now();
-            let trie = PersistentARTrieChar::<u64>::open(&dataset.trie_path)
-                .expect("Failed to open trie");
+            let trie =
+                PersistentARTrieChar::<u64>::open(&dataset.trie_path).expect("Failed to open trie");
             let open_elapsed = start.elapsed();
             open_times.push(open_elapsed.as_secs_f64() * 1000.0); // ms
 
@@ -345,9 +336,21 @@ fn collect_raw_timings() {
             (v.iter().map(|x| (x - m).powi(2)).sum::<f64>() / (v.len() - 1) as f64).sqrt()
         };
 
-        println!("  open_time_ms: {:.3} ± {:.3}", mean(&open_times), std_dev(&open_times));
-        println!("  first_lookup_µs: {:.3} ± {:.3}", mean(&first_lookup_times), std_dev(&first_lookup_times));
-        println!("  bulk_lookup_ms: {:.3} ± {:.3}", mean(&bulk_lookup_times), std_dev(&bulk_lookup_times));
+        println!(
+            "  open_time_ms: {:.3} ± {:.3}",
+            mean(&open_times),
+            std_dev(&open_times)
+        );
+        println!(
+            "  first_lookup_µs: {:.3} ± {:.3}",
+            mean(&first_lookup_times),
+            std_dev(&first_lookup_times)
+        );
+        println!(
+            "  bulk_lookup_ms: {:.3} ± {:.3}",
+            mean(&bulk_lookup_times),
+            std_dev(&bulk_lookup_times)
+        );
         println!("  rss_mb: {}", get_rss_bytes() / (1024 * 1024));
         println!();
     }
@@ -376,7 +379,8 @@ fn bench_open_time_depth(c: &mut Criterion) {
                     let trie = PersistentARTrieChar::<u64>::open_with_depth(
                         &dataset.trie_path,
                         Some(*depth),
-                    ).expect("Failed to open trie");
+                    )
+                    .expect("Failed to open trie");
                     black_box(trie)
                 });
             },
@@ -410,7 +414,8 @@ fn bench_first_lookup_depth(c: &mut Criterion) {
                     let trie = PersistentARTrieChar::<u64>::open_with_depth(
                         &dataset.trie_path,
                         Some(*depth),
-                    ).expect("Failed to open trie");
+                    )
+                    .expect("Failed to open trie");
                     let result = trie.contains(term);
                     black_box(result)
                 });
@@ -437,10 +442,8 @@ fn bench_bulk_lookup_depth(c: &mut Criterion) {
     // Test different depths
     for depth in [3usize, 5, 10, 20] {
         // Open trie once for steady-state measurement
-        let trie = PersistentARTrieChar::<u64>::open_with_depth(
-            &dataset.trie_path,
-            Some(depth),
-        ).expect("Failed to open trie");
+        let trie = PersistentARTrieChar::<u64>::open_with_depth(&dataset.trie_path, Some(depth))
+            .expect("Failed to open trie");
 
         group.throughput(Throughput::Elements(dataset.queries.len() as u64));
         group.bench_with_input(

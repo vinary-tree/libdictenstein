@@ -40,14 +40,14 @@
 //! ```
 
 use std::collections::HashMap;
-use xxhash_rust::xxh3::Xxh3DefaultBuilder;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize};
 #[allow(unused_imports)]
 use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize};
 use std::sync::Arc;
 #[allow(unused_imports)]
 use std::time::Duration;
+use xxhash_rust::xxh3::Xxh3DefaultBuilder;
 
 use parking_lot::RwLock;
 
@@ -55,21 +55,18 @@ use crate::persistent_artrie::block_storage::BlockStorage;
 use crate::persistent_artrie::buffer_manager::BufferManager;
 use crate::persistent_artrie::dict_impl::DurabilityPolicy;
 use crate::persistent_artrie::disk_manager::MmapDiskManager;
+use crate::persistent_artrie::wal::AsyncWalWriter;
 #[allow(unused_imports)]
 use crate::persistent_artrie::wal::{WalConfig, WalReader};
-use crate::persistent_artrie::wal::AsyncWalWriter;
 use crate::persistent_artrie::wal_managed::WalManaged;
 use crate::persistent_artrie_char::arena_manager::ArenaManager;
 use crate::persistent_artrie_char::nodes::AtomicNodePtr;
-use dashmap::DashMap;
 use crate::persistent_artrie_char::types::NodeRef;
+use dashmap::DashMap;
 
 use super::reverse_cache::VocabReverseCache;
 use super::reverse_index::VocabReverseIndex;
-use super::types::{
-    VocabTrieNode, VocabTrieRoot,
-    DEFAULT_REVERSE_CACHE_SIZE,
-};
+use super::types::{VocabTrieNode, VocabTrieRoot, DEFAULT_REVERSE_CACHE_SIZE};
 use crate::bloom_filter::BloomFilter;
 
 /// Default buffer pool size for vocabulary trie
@@ -176,7 +173,8 @@ pub struct PersistentVocabARTrie<S: BlockStorage = MmapDiskManager> {
 
     // === Eviction Support ===
     /// Eviction coordinator for memory pressure-driven eviction
-    pub(crate) eviction_coordinator: Option<Arc<crate::persistent_artrie::eviction::EvictionCoordinator>>,
+    pub(crate) eviction_coordinator:
+        Option<Arc<crate::persistent_artrie::eviction::EvictionCoordinator>>,
 
     // === BloomFilter Support ===
     /// Optional BloomFilter for O(1) negative lookups.
@@ -215,10 +213,8 @@ unsafe impl<S: BlockStorage> Sync for PersistentVocabARTrie<S> {}
 /// This is the recommended type for concurrent access to the vocabulary trie.
 pub type SharedVocabARTrie<S = MmapDiskManager> = Arc<RwLock<PersistentVocabARTrie<S>>>;
 
-
 // `load_trie_from_disk` and related disk-loading + persistence helpers
 // moved to sibling `disk_io.rs` in Phase-6 decomposition.
-
 
 impl<S: BlockStorage> Drop for PersistentVocabARTrie<S> {
     fn drop(&mut self) {
@@ -255,11 +251,11 @@ impl<S: BlockStorage> Clone for PersistentVocabARTrie<S> {
             next_lsn: AtomicU64::new(self.next_lsn.load(Ordering::Acquire)),
             synced_lsn: AtomicU64::new(self.synced_lsn.load(Ordering::Acquire)),
             durability_policy: self.durability_policy,
-            arena_manager: None, // Cannot clone arena manager
-            buffer_manager: None, // Cannot clone buffer manager
+            arena_manager: None,        // Cannot clone arena manager
+            buffer_manager: None,       // Cannot clone buffer manager
             eviction_coordinator: None, // Cannot clone eviction coordinator
             bloom_filter: self.bloom_filter.clone(),
-            lockfree_root: None, // Cannot clone lock-free root
+            lockfree_root: None,  // Cannot clone lock-free root
             lockfree_cache: None, // Cannot clone lock-free cache
             cas_retries: AtomicU64::new(0),
         }
@@ -578,7 +574,10 @@ mod tests {
         // Reopen and verify all terms are present
         {
             let (vocab, report) = PersistentVocabARTrie::open_with_recovery(&path).unwrap();
-            assert!(report.mode.is_normal(), "Should load from disk without WAL replay");
+            assert!(
+                report.mode.is_normal(),
+                "Should load from disk without WAL replay"
+            );
             assert_eq!(vocab.len(), terms.len());
 
             // Verify forward lookups
@@ -657,9 +656,7 @@ mod tests {
         let path = dir.path().join("test.vocab");
 
         // Generate terms that will create a trie with varied structure
-        let terms: Vec<String> = (0..50)
-            .map(|i| format!("term_{:03}", i))
-            .collect();
+        let terms: Vec<String> = (0..50).map(|i| format!("term_{:03}", i)).collect();
 
         {
             let mut vocab = PersistentVocabARTrie::create(&path).unwrap();
@@ -697,9 +694,7 @@ mod tests {
         {
             let (mut vocab, _) = PersistentVocabARTrie::open_with_recovery(&path).unwrap();
 
-            let more_terms: Vec<String> = (50..75)
-                .map(|i| format!("term_{:03}", i))
-                .collect();
+            let more_terms: Vec<String> = (50..75).map(|i| format!("term_{:03}", i)).collect();
 
             for (i, term) in more_terms.iter().enumerate() {
                 let idx = vocab.insert(term);
@@ -789,14 +784,17 @@ mod tests {
         let path = dir.path().join("vocab.vocab");
 
         let vocab = Arc::new(RwLock::new(
-            PersistentVocabARTrie::create(&path).expect("Failed to create vocab")
+            PersistentVocabARTrie::create(&path).expect("Failed to create vocab"),
         ));
 
         // Insert some data
         vocab.write().insert("hello");
 
         // Start async sync
-        let handle = vocab.read().sync_to_disk_async().expect("Failed to start async sync");
+        let handle = vocab
+            .read()
+            .sync_to_disk_async()
+            .expect("Failed to start async sync");
 
         // Reads continue during sync
         assert!(vocab.read().contains("hello"));
@@ -821,13 +819,17 @@ mod tests {
         vocab.insert("hello");
 
         // Start first sync
-        let handle1 = vocab.sync_to_disk_async().expect("Failed to start first async sync");
+        let handle1 = vocab
+            .sync_to_disk_async()
+            .expect("Failed to start first async sync");
 
         // Add more data
         vocab.insert("world");
 
         // Start second sync (independent of first)
-        let handle2 = vocab.sync_to_disk_async().expect("Failed to start second async sync");
+        let handle2 = vocab
+            .sync_to_disk_async()
+            .expect("Failed to start second async sync");
 
         // Wait for both handles
         handle1.wait().expect("First sync failed");
@@ -849,10 +851,14 @@ mod tests {
                 vocab.insert(&format!("word{}", i));
             }
             vocab.sync_to_disk().expect("First sync failed");
-            let size_after_first = std::fs::metadata(&path).expect("Failed to get metadata").len();
+            let size_after_first = std::fs::metadata(&path)
+                .expect("Failed to get metadata")
+                .len();
 
             vocab.sync_to_disk().expect("Second sync failed"); // No new data
-            let size_after_second = std::fs::metadata(&path).expect("Failed to get metadata").len();
+            let size_after_second = std::fs::metadata(&path)
+                .expect("Failed to get metadata")
+                .len();
 
             // File size should not increase without new data
             assert_eq!(
@@ -887,9 +893,12 @@ mod tests {
         drop(vocab);
 
         // Now reopen and verify
-        let (vocab, report) = PersistentVocabARTrie::open_with_recovery(&path)
-            .expect("Failed to open vocab");
-        assert!(report.mode.is_normal(), "Should not need WAL replay after checkpoint");
+        let (vocab, report) =
+            PersistentVocabARTrie::open_with_recovery(&path).expect("Failed to open vocab");
+        assert!(
+            report.mode.is_normal(),
+            "Should not need WAL replay after checkpoint"
+        );
         assert!(vocab.contains("hello"), "Missing 'hello' after reopen");
         assert!(vocab.contains("world"), "Missing 'world' after reopen");
     }
@@ -912,12 +921,18 @@ mod tests {
         }
 
         {
-            let (vocab, report) = PersistentVocabARTrie::open_with_recovery(&path)
-                .expect("Failed to open vocab");
+            let (vocab, report) =
+                PersistentVocabARTrie::open_with_recovery(&path).expect("Failed to open vocab");
             // WAL replay should recover the data
             assert!(report.records_replayed > 0, "Expected WAL replay");
-            assert!(vocab.contains("hello"), "Missing 'hello' after WAL recovery");
-            assert!(vocab.contains("world"), "Missing 'world' after WAL recovery");
+            assert!(
+                vocab.contains("hello"),
+                "Missing 'hello' after WAL recovery"
+            );
+            assert!(
+                vocab.contains("world"),
+                "Missing 'world' after WAL recovery"
+            );
         }
     }
 
@@ -929,7 +944,7 @@ mod tests {
         let path = dir.path().join("vocab.vocab");
 
         let vocab = Arc::new(RwLock::new(
-            PersistentVocabARTrie::create(&path).expect("Failed to create vocab")
+            PersistentVocabARTrie::create(&path).expect("Failed to create vocab"),
         ));
 
         // Insert initial data
@@ -938,7 +953,10 @@ mod tests {
         }
 
         // Start async sync
-        let handle = vocab.read().sync_to_disk_async().expect("Failed to start async sync");
+        let handle = vocab
+            .read()
+            .sync_to_disk_async()
+            .expect("Failed to start async sync");
 
         // Spawn readers while sync is in progress
         let vocab_clone = Arc::clone(&vocab);
@@ -966,13 +984,15 @@ mod tests {
         for i in 0..50 {
             assert!(
                 vocab_guard.contains(&format!("initial_{}", i)),
-                "Missing initial_{}", i
+                "Missing initial_{}",
+                i
             );
         }
         for i in 50..100 {
             assert!(
                 vocab_guard.contains(&format!("concurrent_{}", i)),
-                "Missing concurrent_{}", i
+                "Missing concurrent_{}",
+                i
             );
         }
     }
@@ -985,14 +1005,20 @@ mod tests {
         let mut vocab = PersistentVocabARTrie::create(&path).expect("Failed to create vocab");
         vocab.insert("test");
 
-        let handle = vocab.sync_to_disk_async().expect("Failed to start async sync");
+        let handle = vocab
+            .sync_to_disk_async()
+            .expect("Failed to start async sync");
 
         // Wait with generous timeout (sync should complete quickly for small data)
-        let completed = handle.wait_timeout(Duration::from_secs(10))
+        let completed = handle
+            .wait_timeout(Duration::from_secs(10))
             .expect("Sync failed");
 
         assert!(completed, "Sync should complete within timeout");
-        assert!(handle.is_synced(), "Handle should report synced after wait_timeout");
+        assert!(
+            handle.is_synced(),
+            "Handle should report synced after wait_timeout"
+        );
     }
 
     // =========================================================================
@@ -1038,21 +1064,31 @@ mod tests {
         let mut vocab = PersistentVocabARTrie::create(&path).unwrap();
 
         let special_chars = vec![
-            "\0",           // Null byte
-            "\t\n\r",       // Whitespace
-            "a\0b",         // Embedded null
-            "🎉🎊🎁",       // Emoji
-            "αβγδε",        // Greek
+            "\0",          // Null byte
+            "\t\n\r",      // Whitespace
+            "a\0b",        // Embedded null
+            "🎉🎊🎁",      // Emoji
+            "αβγδε",       // Greek
             "מְזָלֵל",        // Hebrew with diacritics
-            "\u{FEFF}BOM",  // BOM character
+            "\u{FEFF}BOM", // BOM character
         ];
 
         for (i, term) in special_chars.iter().enumerate() {
             let idx = vocab.insert(term);
             assert_eq!(idx, i as u64, "Failed for term: {:?}", term);
             assert!(vocab.contains(term), "Not found: {:?}", term);
-            assert_eq!(vocab.get_index(term), Some(i as u64), "Index mismatch: {:?}", term);
-            assert_eq!(vocab.get_term(i as u64), Some(term.to_string()), "Reverse lookup failed: {:?}", term);
+            assert_eq!(
+                vocab.get_index(term),
+                Some(i as u64),
+                "Index mismatch: {:?}",
+                term
+            );
+            assert_eq!(
+                vocab.get_term(i as u64),
+                Some(term.to_string()),
+                "Reverse lookup failed: {:?}",
+                term
+            );
         }
     }
 
@@ -1109,7 +1145,10 @@ mod tests {
             assert_eq!(vocab.get_term(0), Some("simple".to_string()));
             assert_eq!(vocab.get_term(1), Some("日本語".to_string()));
             assert_eq!(vocab.get_term(2), Some("".to_string()));
-            assert_eq!(vocab.get_term(3), Some("with spaces and punctuation!".to_string()));
+            assert_eq!(
+                vocab.get_term(3),
+                Some("with spaces and punctuation!".to_string())
+            );
             assert_eq!(vocab.get_term(4), Some("x".repeat(100)));
         }
     }
@@ -1492,8 +1531,8 @@ mod tests {
         vocab.checkpoint().expect("checkpoint failed");
         drop(vocab);
 
-        let (vocab, _) = PersistentVocabARTrie::open_with_recovery(&path)
-            .expect("Failed to open vocab");
+        let (vocab, _) =
+            PersistentVocabARTrie::open_with_recovery(&path).expect("Failed to open vocab");
 
         // Data should be persisted
         assert_eq!(vocab.get_index("apple"), Some(0));

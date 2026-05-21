@@ -56,12 +56,7 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
     }
 
     /// Buffer a term (as bytes) in a document transaction.
-    pub fn tx_insert_bytes(
-        &self,
-        tx: &mut DocumentTransaction<V>,
-        term: &[u8],
-        value: Option<V>,
-    ) {
+    pub fn tx_insert_bytes(&self, tx: &mut DocumentTransaction<V>, term: &[u8], value: Option<V>) {
         assert!(
             tx.state == TransactionState::Active,
             "Cannot insert into a {} transaction",
@@ -75,12 +70,7 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
     }
 
     /// Buffer an increment operation in a document transaction (byte key).
-    pub fn tx_increment_bytes(
-        &self,
-        tx: &mut DocumentTransaction<V>,
-        term: &[u8],
-        delta: i64,
-    ) {
+    pub fn tx_increment_bytes(&self, tx: &mut DocumentTransaction<V>, term: &[u8], delta: i64) {
         assert!(
             tx.is_active(),
             "Cannot increment in a {} transaction",
@@ -143,13 +133,14 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
         if count == 0 {
             tx.state = TransactionState::Committed;
             if let Some(ref wal) = self.wal_writer {
-                wal.append(WalRecord::CommitTx { tx_id: tx.tx_id }).map_err(|e| {
-                    PersistentARTrieError::io_error(
-                        "commit_tx",
-                        "WAL",
-                        std::io::Error::new(std::io::ErrorKind::Other, e.to_string()),
-                    )
-                })?;
+                wal.append(WalRecord::CommitTx { tx_id: tx.tx_id })
+                    .map_err(|e| {
+                        PersistentARTrieError::io_error(
+                            "commit_tx",
+                            "WAL",
+                            std::io::Error::new(std::io::ErrorKind::Other, e.to_string()),
+                        )
+                    })?;
                 if self.durability_policy == DurabilityPolicy::Immediate {
                     wal.sync().map_err(|e| {
                         PersistentARTrieError::io_error(
@@ -175,13 +166,14 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
         let inserted = self.insert_batch(&entries);
 
         if let Some(ref wal) = self.wal_writer {
-            wal.append(WalRecord::CommitTx { tx_id: tx.tx_id }).map_err(|e| {
-                PersistentARTrieError::io_error(
-                    "commit_tx",
-                    "WAL",
-                    std::io::Error::new(std::io::ErrorKind::Other, e.to_string()),
-                )
-            })?;
+            wal.append(WalRecord::CommitTx { tx_id: tx.tx_id })
+                .map_err(|e| {
+                    PersistentARTrieError::io_error(
+                        "commit_tx",
+                        "WAL",
+                        std::io::Error::new(std::io::ErrorKind::Other, e.to_string()),
+                    )
+                })?;
             if self.durability_policy == DurabilityPolicy::Immediate {
                 wal.sync().map_err(|e| {
                     PersistentARTrieError::io_error(
@@ -211,13 +203,14 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
         }
 
         if let Some(ref wal) = self.wal_writer {
-            wal.append(WalRecord::AbortTx { tx_id: tx.tx_id }).map_err(|e| {
-                PersistentARTrieError::io_error(
-                    "abort_tx",
-                    "WAL",
-                    std::io::Error::new(std::io::ErrorKind::Other, e.to_string()),
-                )
-            })?;
+            wal.append(WalRecord::AbortTx { tx_id: tx.tx_id })
+                .map_err(|e| {
+                    PersistentARTrieError::io_error(
+                        "abort_tx",
+                        "WAL",
+                        std::io::Error::new(std::io::ErrorKind::Other, e.to_string()),
+                    )
+                })?;
         }
 
         tx.shadow_terms.clear();

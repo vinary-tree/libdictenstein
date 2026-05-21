@@ -235,9 +235,7 @@ impl DictionaryFactory {
             DictionaryBackend::SuffixAutomatonChar => {
                 DictionaryContainer::SuffixAutomatonChar(SuffixAutomatonChar::from_texts(terms))
             }
-            DictionaryBackend::Scdawg => {
-                DictionaryContainer::Scdawg(Scdawg::from_terms(terms))
-            }
+            DictionaryBackend::Scdawg => DictionaryContainer::Scdawg(Scdawg::from_terms(terms)),
             DictionaryBackend::ScdawgChar => {
                 DictionaryContainer::ScdawgChar(ScdawgChar::from_terms(terms))
             }
@@ -397,18 +395,9 @@ mod tests {
             DictionaryBackend::ScdawgChar,
         ] {
             let dict = DictionaryFactory::create(backend, unicode_terms.clone());
-            assert!(
-                dict.contains("café"),
-                "{backend} should contain 'café'"
-            );
-            assert!(
-                dict.contains("naïve"),
-                "{backend} should contain 'naïve'"
-            );
-            assert!(
-                dict.contains("日本語"),
-                "{backend} should contain '日本語'"
-            );
+            assert!(dict.contains("café"), "{backend} should contain 'café'");
+            assert!(dict.contains("naïve"), "{backend} should contain 'naïve'");
+            assert!(dict.contains("日本語"), "{backend} should contain '日本語'");
         }
     }
 
@@ -463,18 +452,9 @@ mod tests {
 
         for backend in DictionaryFactory::available_backends() {
             let dict = DictionaryFactory::create(backend, terms.clone());
-            assert!(
-                dict.contains("apple"),
-                "{backend} should contain 'apple'"
-            );
-            assert!(
-                dict.contains("banana"),
-                "{backend} should contain 'banana'"
-            );
-            assert!(
-                dict.contains("cherry"),
-                "{backend} should contain 'cherry'"
-            );
+            assert!(dict.contains("apple"), "{backend} should contain 'apple'");
+            assert!(dict.contains("banana"), "{backend} should contain 'banana'");
+            assert!(dict.contains("cherry"), "{backend} should contain 'cherry'");
         }
     }
 }

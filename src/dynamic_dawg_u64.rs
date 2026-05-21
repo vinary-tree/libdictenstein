@@ -292,7 +292,10 @@ impl<V: DictionaryValue> DynamicDawgU64<V> {
     ///
     /// Note: Bloom filter and auto-minimization are not yet implemented
     /// in the lock-free version. This constructor is provided for API compatibility.
-    pub fn with_config(_auto_minimize_threshold: f32, _bloom_filter_capacity: Option<usize>) -> Self {
+    pub fn with_config(
+        _auto_minimize_threshold: f32,
+        _bloom_filter_capacity: Option<usize>,
+    ) -> Self {
         Self::new()
     }
 
@@ -599,7 +602,12 @@ impl<V: DictionaryValue> DynamicDawgU64<V> {
     }
 
     /// Update or insert a sequence with value.
-    pub fn update_or_insert_sequence<F>(&self, sequence: &[u64], default_value: V, update_fn: F) -> bool
+    pub fn update_or_insert_sequence<F>(
+        &self,
+        sequence: &[u64],
+        default_value: V,
+        update_fn: F,
+    ) -> bool
     where
         F: FnOnce(&mut V),
     {
@@ -1174,10 +1182,7 @@ mod tests {
         }
 
         // All sequences should be present
-        assert_eq!(
-            dawg.term_count(),
-            num_threads * sequences_per_thread
-        );
+        assert_eq!(dawg.term_count(), num_threads * sequences_per_thread);
 
         for t in 0..num_threads {
             for i in 0..sequences_per_thread {
@@ -1331,8 +1336,8 @@ mod tests {
 
     #[test]
     fn test_stress_readers_and_writers() {
-        use std::sync::Arc as StdArc;
         use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc as StdArc;
         use std::thread;
 
         let dawg: DynamicDawgU64<()> = DynamicDawgU64::new();
@@ -1407,8 +1412,8 @@ mod tests {
 
     #[test]
     fn test_stress_50_writers_same_keys() {
-        use std::sync::Arc as StdArc;
         use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc as StdArc;
         use std::thread;
 
         let dawg: DynamicDawgU64<()> = DynamicDawgU64::new();
@@ -1462,7 +1467,10 @@ mod tests {
                     let base = writer_id as u64 * 1000;
                     for i in 0u64..100 {
                         let inserted = dawg.insert_sequence(&[base + i, base + i + 1]);
-                        assert!(inserted, "Writer {writer_id} failed to insert unique seq {i}");
+                        assert!(
+                            inserted,
+                            "Writer {writer_id} failed to insert unique seq {i}"
+                        );
                     }
                 })
             })
@@ -1533,8 +1541,8 @@ mod tests {
 
     #[test]
     fn test_stress_remove_while_reading() {
-        use std::sync::Arc as StdArc;
         use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc as StdArc;
         use std::thread;
 
         let dawg: DynamicDawgU64<()> = DynamicDawgU64::new();
@@ -1594,8 +1602,8 @@ mod tests {
 
     #[test]
     fn test_stress_iterator_during_writes() {
-        use std::sync::Arc as StdArc;
         use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc as StdArc;
         use std::thread;
 
         let dawg: DynamicDawgU64<()> = DynamicDawgU64::new();
@@ -1643,7 +1651,10 @@ mod tests {
         stop.store(true, Ordering::Relaxed);
 
         let iterations = iter_handle.join().expect("Iterator thread panicked");
-        assert!(iterations > 0, "Iterator thread should have run at least once");
+        assert!(
+            iterations > 0,
+            "Iterator thread should have run at least once"
+        );
 
         // Final count: 100 initial + 10 writers × 100 = 1100
         assert_eq!(dawg.term_count(), 1100);

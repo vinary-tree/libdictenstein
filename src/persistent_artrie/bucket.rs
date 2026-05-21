@@ -775,7 +775,11 @@ impl StringBucket {
             }
         }
 
-        SplitByByteResult { buckets, finals, overflow }
+        SplitByByteResult {
+            buckets,
+            finals,
+            overflow,
+        }
     }
 
     /// Compact the bucket to reclaim fragmented space
@@ -1007,7 +1011,11 @@ impl std::fmt::Display for BucketError {
                 )
             }
             BucketError::InvalidSize { expected, found } => {
-                write!(f, "invalid bucket size: expected {}, found {}", expected, found)
+                write!(
+                    f,
+                    "invalid bucket size: expected {}, found {}",
+                    expected, found
+                )
             }
             BucketError::InsufficientSpace { needed, available } => {
                 write!(
@@ -1063,7 +1071,10 @@ mod tests {
 
         // Verify sorted order
         let entries: Vec<_> = bucket.iter().map(|(_, s)| s.to_vec()).collect();
-        assert_eq!(entries, vec![b"apple".to_vec(), b"banana".to_vec(), b"cherry".to_vec()]);
+        assert_eq!(
+            entries,
+            vec![b"apple".to_vec(), b"banana".to_vec(), b"cherry".to_vec()]
+        );
     }
 
     #[test]
@@ -1142,7 +1153,10 @@ mod tests {
 
         // Verify sorted order is maintained
         let entries: Vec<_> = bucket.iter().map(|(_, s)| s.to_vec()).collect();
-        assert_eq!(entries, vec![b"apple".to_vec(), b"mango".to_vec(), b"zebra".to_vec()]);
+        assert_eq!(
+            entries,
+            vec![b"apple".to_vec(), b"mango".to_vec(), b"zebra".to_vec()]
+        );
     }
 
     #[test]
@@ -1199,10 +1213,7 @@ mod tests {
         let header = BucketHeader::new();
         assert!(header.validate().is_ok());
 
-        let invalid_header = BucketHeader {
-            magic: 0,
-            ..header
-        };
+        let invalid_header = BucketHeader { magic: 0, ..header };
         assert!(matches!(
             invalid_header.validate(),
             Err(BucketError::InvalidMagic { .. })
@@ -1468,14 +1479,16 @@ mod tests {
         for i in 0..200 {
             let removed = bucket.remove(suffix);
             assert!(removed.is_some(), "remove should succeed on cycle {}", i);
-            bucket.insert(suffix, value)
+            bucket
+                .insert(suffix, value)
                 .unwrap_or_else(|e| panic!("insert should not overflow on cycle {}: {}", i, e));
 
             let header = bucket.header();
             assert_eq!(
                 header.free_space,
                 header.available_space() as u32,
-                "free_space drift detected on cycle {}", i
+                "free_space drift detected on cycle {}",
+                i
             );
         }
     }

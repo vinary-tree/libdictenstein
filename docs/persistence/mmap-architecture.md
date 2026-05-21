@@ -635,8 +635,43 @@ The persistent ARTrie's mmap-based I/O architecture provides:
 4. **Lazy loading**: SwizzledPtr enables transparent memory/disk bridging
 5. **Formal verification**: TLA+ model checking validates synchronization protocol
 
-For implementation details, see:
-- `src/persistent_artrie/disk_manager.rs` - Core mmap management
-- `src/persistent_artrie/buffer_manager.rs` - Page cache implementation
-- `src/persistent_artrie/swizzled_ptr.rs` - Pointer abstraction
-- `docs/formal/BlockAllocationSync.tla` - Formal specification
+For implementation details, see the post-Phase-6 file layout:
+
+- `src/persistent_artrie_core/disk_manager.rs` — core mmap management
+  (relocated from `persistent_artrie/`; the unit-agnostic infrastructure
+  was extracted into `persistent_artrie_core/` during ARTrie Phase 1).
+- `src/persistent_artrie_core/buffer_manager.rs` — page-cache
+  implementation.
+- `src/persistent_artrie_core/swizzled_ptr.rs` — `SwizzledPtr<T>`
+  abstraction (in-memory vs disk-encoded pointer).
+- `src/persistent_artrie_core/block_storage.rs` — the `BlockStorage`
+  trait that abstracts over `MmapDiskManager` (default) and
+  `IoUringDiskManager` (feature-gated).
+- `src/persistent_artrie_core/io_uring_disk_manager.rs` — io_uring +
+  O_DIRECT backend (feature `io-uring-backend`, Linux-only,
+  kernel ≥ 5.1).
+- `src/persistent_artrie_core/wal.rs` — re-export plumbing for the
+  Phase-4 WAL decomposition (sync_backend, codec, writer, async_writer,
+  …; 12 sub-modules).
+- `src/persistent_artrie_core/durability.rs` — `DurabilityPolicy` enum
+  (canonical home; the old `persistent_artrie::dict_impl` path is a
+  re-export, deprecated path for one release).
+
+Byte-keyed entry point: `src/persistent_artrie/mod.rs` plus 26 Phase-5
+sub-modules under `persistent_artrie/` (dict_impl.rs reduced from 9633
+LOC to 2125 LOC).
+
+Char-keyed entry point: `src/persistent_artrie_char/mod.rs` plus 24
+Phase-6 sub-modules (dict_impl_char.rs reduced from 9201 LOC to 3048
+LOC).
+
+Vocab entry point: `src/persistent_vocab_artrie/mod.rs` plus 12
+Phase-6 sub-modules (dict_impl.rs reduced from 3887 LOC to 1503 LOC).
+
+Formal verification:
+
+- `docs/formal/BlockAllocationSync.tla` — TLA+ specification of the
+  block-allocation synchronization protocol.
+- `formal-verification/rocq/` — Rocq proofs (15 .v files, 232
+  propositions, all closed by `Qed.`; see
+  [VERIFICATION_RESULTS.md](../../formal-verification/VERIFICATION_RESULTS.md)).

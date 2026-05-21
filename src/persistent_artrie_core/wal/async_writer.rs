@@ -152,9 +152,7 @@ impl SegmentSyncManager {
             let count = self.pending_count();
             let bytes = self.pending_bytes();
 
-            if count < self.config.max_pending_segments
-                && bytes < self.config.max_pending_bytes
-            {
+            if count < self.config.max_pending_segments && bytes < self.config.max_pending_bytes {
                 return Ok(());
             }
 
@@ -578,10 +576,7 @@ impl AsyncWalWriter {
     }
 
     /// Rotate WAL to archive directory — O(1) filesystem rename.
-    pub fn rotate_to_archive(
-        &self,
-        config: &WalConfig,
-    ) -> Result<Option<PathBuf>, AsyncWalError> {
+    pub fn rotate_to_archive(&self, config: &WalConfig) -> Result<Option<PathBuf>, AsyncWalError> {
         if !config.archive_enabled {
             self.truncate()?;
             return Ok(None);

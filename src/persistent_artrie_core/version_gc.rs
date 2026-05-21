@@ -246,11 +246,7 @@ impl VersionGcRegistry {
     }
 
     /// Background worker loop.
-    fn gc_worker_loop(
-        registry: Arc<Self>,
-        rx: Receiver<GcMessage>,
-        interval: Duration,
-    ) {
+    fn gc_worker_loop(registry: Arc<Self>, rx: Receiver<GcMessage>, interval: Duration) {
         let mut last_cycle = Instant::now();
 
         loop {
@@ -375,8 +371,9 @@ impl VersionGcRegistry {
             let record = WalRecord::VersionGc {
                 version_ids: collected.clone(),
             };
-            wal.append(record)
-                .map_err(|e| PersistentARTrieError::internal(format!("Failed to write VersionGc: {}", e)))?;
+            wal.append(record).map_err(|e| {
+                PersistentARTrieError::internal(format!("Failed to write VersionGc: {}", e))
+            })?;
         }
 
         Ok(collected)
@@ -533,7 +530,10 @@ impl ReaderGuard {
     /// Create a new reader guard for a version.
     pub fn new(version_id: u64, registry: Arc<VersionGcRegistry>) -> Self {
         registry.add_reader(version_id);
-        Self { version_id, registry }
+        Self {
+            version_id,
+            registry,
+        }
     }
 
     /// Get the version ID this guard is protecting.

@@ -66,7 +66,6 @@ pub const MAX_OFFSET: u32 = (1 << OFFSET_BITS) - 1;
 #[repr(u8)]
 pub enum NodeType {
     // === Byte-Level Nodes (0-99) ===
-
     /// Node with 1-4 children, linear scan lookup (byte-level).
     Node4 = 4,
     /// Node with 5-16 children, SIMD lookup (byte-level).
@@ -79,7 +78,6 @@ pub enum NodeType {
     Bucket = 1,
 
     // === Char-Level Nodes (100-199) ===
-
     /// Char node with 1-4 children, linear scan lookup (char-level).
     CharNode4 = 104,
     /// Char node with 5-16 children, AVX2 SIMD lookup (char-level).
@@ -114,7 +112,11 @@ impl NodeType {
     pub fn is_byte_level(&self) -> bool {
         matches!(
             self,
-            NodeType::Node4 | NodeType::Node16 | NodeType::Node48 | NodeType::Node256 | NodeType::Bucket
+            NodeType::Node4
+                | NodeType::Node16
+                | NodeType::Node48
+                | NodeType::Node256
+                | NodeType::Bucket
         )
     }
 
@@ -123,7 +125,10 @@ impl NodeType {
     pub fn is_char_level(&self) -> bool {
         matches!(
             self,
-            NodeType::CharNode4 | NodeType::CharNode16 | NodeType::CharNode48 | NodeType::CharBucket
+            NodeType::CharNode4
+                | NodeType::CharNode16
+                | NodeType::CharNode48
+                | NodeType::CharBucket
         )
     }
 }
@@ -135,7 +140,6 @@ impl TryFrom<u8> for NodeType {
         NodeType::from_u8(value).ok_or(())
     }
 }
-
 
 /// A swizzled pointer that can represent either a memory address or a disk location.
 ///
@@ -305,10 +309,7 @@ impl SwizzledPtr {
         }
 
         let addr = ptr as u64;
-        assert!(
-            addr & SWIZZLE_FLAG == 0,
-            "pointer address has bit 63 set"
-        );
+        assert!(addr & SWIZZLE_FLAG == 0, "pointer address has bit 63 set");
 
         let new = addr | SWIZZLE_FLAG;
 
@@ -416,10 +417,7 @@ impl SwizzledPtr {
     ///
     /// Panics in debug mode if arena_id + 1 exceeds MAX_BLOCK_ID or
     /// slot_id exceeds MAX_OFFSET.
-    pub fn from_arena_slot(
-        slot: super::arena_slot::ArenaSlot,
-        node_type: NodeType,
-    ) -> Self {
+    pub fn from_arena_slot(slot: super::arena_slot::ArenaSlot, node_type: NodeType) -> Self {
         // Arena N is stored in Block N+1
         let block_id = slot.arena_id.saturating_add(1);
         Self::on_disk(block_id, slot.slot_id, node_type)
@@ -477,12 +475,9 @@ impl SwizzledPtr {
     /// }
     /// ```
     #[inline]
-    pub fn compare_exchange_raw(
-        &self,
-        expected: u64,
-        new: u64,
-    ) -> Result<u64, u64> {
-        self.0.compare_exchange(expected, new, Ordering::AcqRel, Ordering::Acquire)
+    pub fn compare_exchange_raw(&self, expected: u64, new: u64) -> Result<u64, u64> {
+        self.0
+            .compare_exchange(expected, new, Ordering::AcqRel, Ordering::Acquire)
     }
 
     /// Weak compare-and-swap the pointer value.
@@ -501,12 +496,9 @@ impl SwizzledPtr {
     /// - `Ok(expected)` if the swap succeeded
     /// - `Err(actual)` if the swap failed (or spuriously failed)
     #[inline]
-    pub fn compare_exchange_weak_raw(
-        &self,
-        expected: u64,
-        new: u64,
-    ) -> Result<u64, u64> {
-        self.0.compare_exchange_weak(expected, new, Ordering::AcqRel, Ordering::Acquire)
+    pub fn compare_exchange_weak_raw(&self, expected: u64, new: u64) -> Result<u64, u64> {
+        self.0
+            .compare_exchange_weak(expected, new, Ordering::AcqRel, Ordering::Acquire)
     }
 
     /// Atomically CAS to set a null pointer to a new child pointer.

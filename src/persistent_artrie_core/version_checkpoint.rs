@@ -296,8 +296,9 @@ impl VersionCheckpointManager {
             node_count,
             timestamp,
         };
-        wal.append(update_record)
-            .map_err(|e| PersistentARTrieError::internal(format!("Failed to write VersionUpdate: {}", e)))?;
+        wal.append(update_record).map_err(|e| {
+            PersistentARTrieError::internal(format!("Failed to write VersionUpdate: {}", e))
+        })?;
 
         // Sync WAL
         wal.sync()
@@ -308,8 +309,9 @@ impl VersionCheckpointManager {
             version_id,
             checksum,
         };
-        wal.append(durable_record)
-            .map_err(|e| PersistentARTrieError::internal(format!("Failed to write VersionDurable: {}", e)))?;
+        wal.append(durable_record).map_err(|e| {
+            PersistentARTrieError::internal(format!("Failed to write VersionDurable: {}", e))
+        })?;
 
         wal.sync()
             .map_err(|e| PersistentARTrieError::internal(format!("Failed to sync WAL: {}", e)))?;
@@ -449,8 +451,9 @@ impl VersionCheckpointManager {
         }
 
         let gc_record = WalRecord::VersionGc { version_ids };
-        wal.append(gc_record)
-            .map_err(|e| PersistentARTrieError::internal(format!("Failed to write VersionGc: {}", e)))?;
+        wal.append(gc_record).map_err(|e| {
+            PersistentARTrieError::internal(format!("Failed to write VersionGc: {}", e))
+        })?;
 
         Ok(())
     }
@@ -673,7 +676,10 @@ mod tests {
         let v2 = manager.create_version(200, 75);
         // v2 not durable - simulates crash before sync
 
-        let recovered = manager.recover().expect("should recover").expect("should have version");
+        let recovered = manager
+            .recover()
+            .expect("should recover")
+            .expect("should have version");
         assert_eq!(recovered.version_id, 1); // Should recover to v1, not v2
         assert!(recovered.is_durable);
     }

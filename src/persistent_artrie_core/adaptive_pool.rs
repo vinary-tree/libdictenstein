@@ -448,9 +448,8 @@ impl<S: BlockStorage + 'static> AdaptivePoolController<S> {
 
     /// Get controller statistics.
     pub fn stats(&self) -> AdaptivePoolStats {
-        let (last_hit_rate, last_pressure) = {
-            (*self.last_hit_rate.read(), *self.last_pressure.read())
-        };
+        let (last_hit_rate, last_pressure) =
+            { (*self.last_hit_rate.read(), *self.last_pressure.read()) };
 
         AdaptivePoolStats {
             current_size: self.current_size.load(Ordering::Relaxed),
@@ -738,7 +737,11 @@ mod tests {
         let stats = CacheStats::new();
 
         // Test hit_rate with zero accesses
-        assert_eq!(stats.hit_rate(), 1.0, "Hit rate should be 1.0 when no accesses");
+        assert_eq!(
+            stats.hit_rate(),
+            1.0,
+            "Hit rate should be 1.0 when no accesses"
+        );
         assert_eq!(stats.total_accesses(), 0);
     }
 

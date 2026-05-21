@@ -22,9 +22,7 @@
 //! taskset -c 0-3 cargo bench --bench eviction_benchmarks --features bench-internals
 //! ```
 
-use criterion::{
-    black_box, criterion_group, criterion_main, Criterion, Throughput,
-};
+use criterion::{black_box, criterion_group, criterion_main, Criterion, Throughput};
 use hdrhistogram::Histogram;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -220,8 +218,8 @@ fn eviction_read_only(c: &mut Criterion) {
     {
         let (_dir, dm) = setup_mmap_with_data(EVICTION_BLOCK_COUNT);
         let bm = BufferManager::new(dm, EVICTION_POOL_SIZE);
-        let mut hist = Histogram::<u64>::new_with_bounds(1, 100_000_000, 3)
-            .expect("create histogram");
+        let mut hist =
+            Histogram::<u64>::new_with_bounds(1, 100_000_000, 3).expect("create histogram");
         for &id in &read_ids {
             let start = Instant::now();
             let guard = bm.fetch_page(id).expect("fetch page");
@@ -236,8 +234,8 @@ fn eviction_read_only(c: &mut Criterion) {
     {
         let (_dir, dm) = setup_io_uring_with_data(EVICTION_BLOCK_COUNT);
         let bm = BufferManager::new(dm, EVICTION_POOL_SIZE);
-        let mut hist = Histogram::<u64>::new_with_bounds(1, 100_000_000, 3)
-            .expect("create histogram");
+        let mut hist =
+            Histogram::<u64>::new_with_bounds(1, 100_000_000, 3).expect("create histogram");
         for &id in &read_ids {
             let start = Instant::now();
             let guard = bm.fetch_page(id).expect("fetch page");
@@ -252,8 +250,8 @@ fn eviction_read_only(c: &mut Criterion) {
     {
         let (_dir, dm) = setup_io_uring_with_data(EVICTION_BLOCK_COUNT);
         let bm = BufferManager::new_without_registration(dm, EVICTION_POOL_SIZE);
-        let mut hist = Histogram::<u64>::new_with_bounds(1, 100_000_000, 3)
-            .expect("create histogram");
+        let mut hist =
+            Histogram::<u64>::new_with_bounds(1, 100_000_000, 3).expect("create histogram");
         for &id in &read_ids {
             let start = Instant::now();
             let guard = bm.fetch_page(id).expect("fetch page");
@@ -350,8 +348,8 @@ fn eviction_dirty_writeback(c: &mut Criterion) {
     {
         let (_dir, dm) = setup_mmap_with_data(EVICTION_BLOCK_COUNT);
         let bm = BufferManager::new(dm, EVICTION_POOL_SIZE);
-        let mut hist = Histogram::<u64>::new_with_bounds(1, 100_000_000, 3)
-            .expect("create histogram");
+        let mut hist =
+            Histogram::<u64>::new_with_bounds(1, 100_000_000, 3).expect("create histogram");
         for &id in &access_ids {
             let start = Instant::now();
             let mut guard = bm.fetch_page_mut(id).expect("fetch page mut");
@@ -366,8 +364,8 @@ fn eviction_dirty_writeback(c: &mut Criterion) {
     {
         let (_dir, dm) = setup_io_uring_with_data(EVICTION_BLOCK_COUNT);
         let bm = BufferManager::new(dm, EVICTION_POOL_SIZE);
-        let mut hist = Histogram::<u64>::new_with_bounds(1, 100_000_000, 3)
-            .expect("create histogram");
+        let mut hist =
+            Histogram::<u64>::new_with_bounds(1, 100_000_000, 3).expect("create histogram");
         for &id in &access_ids {
             let start = Instant::now();
             let mut guard = bm.fetch_page_mut(id).expect("fetch page mut");
@@ -382,8 +380,8 @@ fn eviction_dirty_writeback(c: &mut Criterion) {
     {
         let (_dir, dm) = setup_io_uring_with_data(EVICTION_BLOCK_COUNT);
         let bm = BufferManager::new_without_registration(dm, EVICTION_POOL_SIZE);
-        let mut hist = Histogram::<u64>::new_with_bounds(1, 100_000_000, 3)
-            .expect("create histogram");
+        let mut hist =
+            Histogram::<u64>::new_with_bounds(1, 100_000_000, 3).expect("create histogram");
         for &id in &access_ids {
             let start = Instant::now();
             let mut guard = bm.fetch_page_mut(id).expect("fetch page mut");
@@ -443,10 +441,7 @@ fn eviction_concurrent(c: &mut Criterion) {
 
     // --- io_uring, 4 threads, per-thread rings ---
     group.bench_function("io_uring_4t", |b| {
-        let (_dir, dm) = setup_io_uring_with_ring_pool(
-            EVICTION_BLOCK_COUNT,
-            EVICTION_THREAD_COUNT,
-        );
+        let (_dir, dm) = setup_io_uring_with_ring_pool(EVICTION_BLOCK_COUNT, EVICTION_THREAD_COUNT);
         let bm = Arc::new(BufferManager::new(dm, EVICTION_POOL_SIZE));
 
         b.iter_custom(|iters| {

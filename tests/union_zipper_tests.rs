@@ -23,8 +23,8 @@ use libdictenstein::union_zipper::{
     LastWins, LatticeJoin, LatticeMeet, UnionZipper, UnionZipperExt, ValueMergeStrategy,
     ValuedUnionIterator,
 };
-use std::collections::HashSet;
 use libdictenstein::zipper::{DictZipper, ValuedDictZipper};
+use std::collections::HashSet;
 
 // ============================================================================
 // Helper Functions
@@ -1123,7 +1123,14 @@ fn test_lattice_char_dictionary() {
         .expect("Should find '日本'");
 
     // LatticeJoin: {"ja"} ∪ {"jp", "jpn"} = {"ja", "jp", "jpn"}
-    assert_eq!(japan.value(), Some(HashSet::from(["ja".to_string(), "jp".to_string(), "jpn".to_string()])));
+    assert_eq!(
+        japan.value(),
+        Some(HashSet::from([
+            "ja".to_string(),
+            "jp".to_string(),
+            "jpn".to_string()
+        ]))
+    );
 }
 
 #[test]

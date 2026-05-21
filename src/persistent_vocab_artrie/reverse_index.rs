@@ -123,16 +123,16 @@ impl ReverseIndexHeader {
             version: bytes[4],
             _reserved: [bytes[5], bytes[6], bytes[7]],
             start_index: u64::from_le_bytes([
-                bytes[8], bytes[9], bytes[10], bytes[11],
-                bytes[12], bytes[13], bytes[14], bytes[15],
+                bytes[8], bytes[9], bytes[10], bytes[11], bytes[12], bytes[13], bytes[14],
+                bytes[15],
             ]),
             entry_count: u64::from_le_bytes([
-                bytes[16], bytes[17], bytes[18], bytes[19],
-                bytes[20], bytes[21], bytes[22], bytes[23],
+                bytes[16], bytes[17], bytes[18], bytes[19], bytes[20], bytes[21], bytes[22],
+                bytes[23],
             ]),
             capacity: u64::from_le_bytes([
-                bytes[24], bytes[25], bytes[26], bytes[27],
-                bytes[28], bytes[29], bytes[30], bytes[31],
+                bytes[24], bytes[25], bytes[26], bytes[27], bytes[28], bytes[29], bytes[30],
+                bytes[31],
             ]),
         }
     }
@@ -141,13 +141,24 @@ impl ReverseIndexHeader {
     pub fn validate(&self) -> Result<()> {
         if self.magic != REVERSE_INDEX_MAGIC {
             let expected = u64::from_le_bytes([
-                REVERSE_INDEX_MAGIC[0], REVERSE_INDEX_MAGIC[1],
-                REVERSE_INDEX_MAGIC[2], REVERSE_INDEX_MAGIC[3],
-                0, 0, 0, 0,
+                REVERSE_INDEX_MAGIC[0],
+                REVERSE_INDEX_MAGIC[1],
+                REVERSE_INDEX_MAGIC[2],
+                REVERSE_INDEX_MAGIC[3],
+                0,
+                0,
+                0,
+                0,
             ]);
             let found = u64::from_le_bytes([
-                self.magic[0], self.magic[1], self.magic[2], self.magic[3],
-                0, 0, 0, 0,
+                self.magic[0],
+                self.magic[1],
+                self.magic[2],
+                self.magic[3],
+                0,
+                0,
+                0,
+                0,
             ]);
             return Err(PersistentARTrieError::InvalidMagic { expected, found });
         }
@@ -202,16 +213,19 @@ impl VocabReverseIndex {
             .create(true)
             .truncate(true)
             .open(&path)
-            .map_err(|e| PersistentARTrieError::io_error("create reverse index", path.to_string_lossy(), e))?;
+            .map_err(|e| {
+                PersistentARTrieError::io_error("create reverse index", path.to_string_lossy(), e)
+            })?;
 
-        file.set_len(file_size as u64)
-            .map_err(|e| PersistentARTrieError::io_error("set reverse index size", path.to_string_lossy(), e))?;
+        file.set_len(file_size as u64).map_err(|e| {
+            PersistentARTrieError::io_error("set reverse index size", path.to_string_lossy(), e)
+        })?;
 
         // Memory map the file
         let mut mmap = unsafe {
-            MmapOptions::new()
-                .map_mut(&file)
-                .map_err(|e| PersistentARTrieError::io_error("mmap reverse index", path.to_string_lossy(), e))?
+            MmapOptions::new().map_mut(&file).map_err(|e| {
+                PersistentARTrieError::io_error("mmap reverse index", path.to_string_lossy(), e)
+            })?
         };
 
         // Write header
@@ -226,8 +240,9 @@ impl VocabReverseIndex {
         }
 
         // Sync to disk
-        mmap.flush()
-            .map_err(|e| PersistentARTrieError::io_error("flush reverse index", path.to_string_lossy(), e))?;
+        mmap.flush().map_err(|e| {
+            PersistentARTrieError::io_error("flush reverse index", path.to_string_lossy(), e)
+        })?;
 
         Ok(Self {
             path,
@@ -250,13 +265,15 @@ impl VocabReverseIndex {
             .read(true)
             .write(true)
             .open(&path)
-            .map_err(|e| PersistentARTrieError::io_error("open reverse index", path.to_string_lossy(), e))?;
+            .map_err(|e| {
+                PersistentARTrieError::io_error("open reverse index", path.to_string_lossy(), e)
+            })?;
 
         // Memory map the file
         let mmap = unsafe {
-            MmapOptions::new()
-                .map_mut(&file)
-                .map_err(|e| PersistentARTrieError::io_error("mmap reverse index", path.to_string_lossy(), e))?
+            MmapOptions::new().map_mut(&file).map_err(|e| {
+                PersistentARTrieError::io_error("mmap reverse index", path.to_string_lossy(), e)
+            })?
         };
 
         // Read and validate header
@@ -330,10 +347,7 @@ impl VocabReverseIndex {
     pub fn set(&mut self, index: u64, node_ref: NodeRef) -> Result<()> {
         if index < self.start_index {
             return Err(PersistentARTrieError::CorruptedFile {
-                reason: format!(
-                    "Index {} is below start_index {}",
-                    index, self.start_index
-                ),
+                reason: format!("Index {} is below start_index {}", index, self.start_index),
             });
         }
 
@@ -390,9 +404,9 @@ impl VocabReverseIndex {
 
     /// Flush changes to disk.
     pub fn flush(&self) -> Result<()> {
-        self.mmap
-            .flush()
-            .map_err(|e| PersistentARTrieError::io_error("flush reverse index", self.path.to_string_lossy(), e))
+        self.mmap.flush().map_err(|e| {
+            PersistentARTrieError::io_error("flush reverse index", self.path.to_string_lossy(), e)
+        })
     }
 
     /// Grow the index to accommodate at least `min_capacity` entries.
@@ -400,29 +414,34 @@ impl VocabReverseIndex {
         // Calculate new capacity with growth factor
         let mut new_capacity = self.capacity;
         while new_capacity < min_capacity {
-            new_capacity = ((new_capacity as f64 * GROWTH_FACTOR).ceil() as u64).max(new_capacity + 1);
+            new_capacity =
+                ((new_capacity as f64 * GROWTH_FACTOR).ceil() as u64).max(new_capacity + 1);
         }
 
         // Unmap current file
-        self.mmap.flush()
-            .map_err(|e| PersistentARTrieError::io_error("flush before grow", self.path.to_string_lossy(), e))?;
+        self.mmap.flush().map_err(|e| {
+            PersistentARTrieError::io_error("flush before grow", self.path.to_string_lossy(), e)
+        })?;
 
         // Open file and resize
         let file = OpenOptions::new()
             .read(true)
             .write(true)
             .open(&self.path)
-            .map_err(|e| PersistentARTrieError::io_error("open for grow", self.path.to_string_lossy(), e))?;
+            .map_err(|e| {
+                PersistentARTrieError::io_error("open for grow", self.path.to_string_lossy(), e)
+            })?;
 
         let new_file_size = REVERSE_INDEX_HEADER_SIZE + (new_capacity as usize * ENTRY_SIZE);
-        file.set_len(new_file_size as u64)
-            .map_err(|e| PersistentARTrieError::io_error("grow reverse index", self.path.to_string_lossy(), e))?;
+        file.set_len(new_file_size as u64).map_err(|e| {
+            PersistentARTrieError::io_error("grow reverse index", self.path.to_string_lossy(), e)
+        })?;
 
         // Re-map
         let mut new_mmap = unsafe {
-            MmapOptions::new()
-                .map_mut(&file)
-                .map_err(|e| PersistentARTrieError::io_error("remap after grow", self.path.to_string_lossy(), e))?
+            MmapOptions::new().map_mut(&file).map_err(|e| {
+                PersistentARTrieError::io_error("remap after grow", self.path.to_string_lossy(), e)
+            })?
         };
 
         // Initialize new entries to NULL
@@ -448,8 +467,9 @@ impl VocabReverseIndex {
         self.mmap = new_mmap;
 
         // Sync
-        self.mmap.flush()
-            .map_err(|e| PersistentARTrieError::io_error("flush after grow", self.path.to_string_lossy(), e))?;
+        self.mmap.flush().map_err(|e| {
+            PersistentARTrieError::io_error("flush after grow", self.path.to_string_lossy(), e)
+        })?;
 
         Ok(())
     }
@@ -526,7 +546,10 @@ mod tests {
         // Note: create() uses max(initial_capacity, DEFAULT_INITIAL_CAPACITY=1024)
         let mut index = VocabReverseIndex::create(&path, 0, 10).unwrap();
         let initial_capacity = index.capacity();
-        assert_eq!(initial_capacity, DEFAULT_INITIAL_CAPACITY, "Initial capacity should be DEFAULT_INITIAL_CAPACITY");
+        assert_eq!(
+            initial_capacity, DEFAULT_INITIAL_CAPACITY,
+            "Initial capacity should be DEFAULT_INITIAL_CAPACITY"
+        );
 
         // Add entries beyond initial capacity (must exceed DEFAULT_INITIAL_CAPACITY)
         let count = (DEFAULT_INITIAL_CAPACITY + 500) as u64;
@@ -534,7 +557,10 @@ mod tests {
             index.set(i, NodeRef::new(0, i as u32)).unwrap();
         }
 
-        assert!(index.capacity() > initial_capacity, "Capacity should have grown");
+        assert!(
+            index.capacity() > initial_capacity,
+            "Capacity should have grown"
+        );
         assert_eq!(index.len(), count);
 
         // Verify all entries

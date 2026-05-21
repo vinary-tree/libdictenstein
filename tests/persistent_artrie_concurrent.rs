@@ -193,7 +193,11 @@ fn test_single_writer_multiple_readers() {
     // Verify all terms are present after writes complete
     let dict_guard = shared_dict.read();
     for term in initial_terms.iter() {
-        assert!(dict_guard.contains(term), "Initial term should exist: {}", term);
+        assert!(
+            dict_guard.contains(term),
+            "Initial term should exist: {}",
+            term
+        );
     }
 }
 
@@ -262,10 +266,7 @@ fn test_reader_during_checkpoint() {
 
     // No read errors should occur
     let errors = read_errors.load(Ordering::SeqCst);
-    assert_eq!(
-        errors, 0,
-        "No read errors should occur during checkpoints"
-    );
+    assert_eq!(errors, 0, "No read errors should occur during checkpoints");
 }
 
 // =============================================================================
@@ -340,8 +341,7 @@ fn test_writer_contention() {
     let temp_dir = TempDir::new().expect("create temp dir");
     let dict_path = temp_dir.path().join("writer_contention.part");
 
-    let dict: PersistentARTrie<i32> =
-        PersistentARTrie::create(&dict_path).expect("create dict");
+    let dict: PersistentARTrie<i32> = PersistentARTrie::create(&dict_path).expect("create dict");
 
     // Wrap in SharedARTrie for thread-safe access
     let shared_dict = make_shared(dict);
@@ -461,7 +461,11 @@ fn test_read_write_interleaving() {
     // Original terms should still exist
     let dict_guard = shared_dict.read();
     for term in &initial_terms {
-        assert!(dict_guard.contains(term), "Original term should exist: {}", term);
+        assert!(
+            dict_guard.contains(term),
+            "Original term should exist: {}",
+            term
+        );
     }
 }
 
@@ -524,8 +528,7 @@ fn test_concurrent_opens_same_path() {
     let dict_path = temp_dir.path().join("same_path.part");
 
     // Create the dictionary
-    let _dict: PersistentARTrie<()> =
-        PersistentARTrie::create(&dict_path).expect("create dict");
+    let _dict: PersistentARTrie<()> = PersistentARTrie::create(&dict_path).expect("create dict");
 
     // Try to create another dictionary at the same path - should fail
     let result: Result<PersistentARTrie<()>, _> = PersistentARTrie::create(&dict_path);
@@ -572,7 +575,10 @@ fn test_shared_artrie_shares_state() {
     // Original should see clone's insert
     {
         let dict_guard = shared_dict.read();
-        assert!(dict_guard.contains("world"), "Original should see clone's insert");
+        assert!(
+            dict_guard.contains("world"),
+            "Original should see clone's insert"
+        );
     }
 }
 
@@ -650,15 +656,17 @@ fn test_lockfree_insert_cas_basic() {
     let temp_dir = TempDir::new().expect("create temp dir");
     let dict_path = temp_dir.path().join("lockfree_basic.part");
 
-    let mut dict: PersistentARTrie<()> =
-        PersistentARTrie::create(&dict_path).expect("create dict");
+    let mut dict: PersistentARTrie<()> = PersistentARTrie::create(&dict_path).expect("create dict");
 
     // Enable lock-free mode
     dict.enable_lockfree();
 
     // Insert some terms using CAS
     assert!(dict.insert_cas(b"hello"), "First insert should succeed");
-    assert!(!dict.insert_cas(b"hello"), "Duplicate insert should return false");
+    assert!(
+        !dict.insert_cas(b"hello"),
+        "Duplicate insert should return false"
+    );
 
     assert!(dict.insert_cas(b"world"), "Second term should succeed");
     assert!(dict.insert_cas(b"foo"), "Third term should succeed");
@@ -675,8 +683,7 @@ fn test_lockfree_insert_cas_concurrent() {
     let temp_dir = TempDir::new().expect("create temp dir");
     let dict_path = temp_dir.path().join("lockfree_concurrent.part");
 
-    let mut dict: PersistentARTrie<()> =
-        PersistentARTrie::create(&dict_path).expect("create dict");
+    let mut dict: PersistentARTrie<()> = PersistentARTrie::create(&dict_path).expect("create dict");
 
     // Enable lock-free mode
     dict.enable_lockfree();
@@ -734,7 +741,8 @@ fn test_lockfree_insert_cas_concurrent() {
 
     // Check CAS retry count (should be low for unique terms)
     let retries = dict.cas_retry_count();
-    println!("CAS retries for {} inserts: {} ({:.2}%)",
+    println!(
+        "CAS retries for {} inserts: {} ({:.2}%)",
         NUM_READERS * OPS_PER_THREAD,
         retries,
         100.0 * retries as f64 / (NUM_READERS * OPS_PER_THREAD) as f64
@@ -746,8 +754,7 @@ fn test_lockfree_insert_cas_same_terms() {
     let temp_dir = TempDir::new().expect("create temp dir");
     let dict_path = temp_dir.path().join("lockfree_same.part");
 
-    let mut dict: PersistentARTrie<()> =
-        PersistentARTrie::create(&dict_path).expect("create dict");
+    let mut dict: PersistentARTrie<()> = PersistentARTrie::create(&dict_path).expect("create dict");
 
     // Enable lock-free mode
     dict.enable_lockfree();
@@ -810,8 +817,7 @@ fn test_lockfree_merge_to_persistent() {
     let temp_dir = TempDir::new().expect("create temp dir");
     let dict_path = temp_dir.path().join("lockfree_merge.part");
 
-    let mut dict: PersistentARTrie<()> =
-        PersistentARTrie::create(&dict_path).expect("create dict");
+    let mut dict: PersistentARTrie<()> = PersistentARTrie::create(&dict_path).expect("create dict");
 
     // Enable lock-free mode
     dict.enable_lockfree();
@@ -837,6 +843,10 @@ fn test_lockfree_merge_to_persistent() {
 
     // Verify terms exist in persistent storage (using regular contains)
     for term in &terms {
-        assert!(dict.contains(term), "Term should be in persistent storage: {}", term);
+        assert!(
+            dict.contains(term),
+            "Term should be in persistent storage: {}",
+            term
+        );
     }
 }

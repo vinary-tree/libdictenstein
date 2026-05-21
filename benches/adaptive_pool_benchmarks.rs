@@ -13,9 +13,7 @@
 //! ```
 
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
-use libdictenstein::persistent_artrie::{
-    AdaptivePoolConfig, CacheStats,
-};
+use libdictenstein::persistent_artrie::{AdaptivePoolConfig, CacheStats};
 use std::sync::Arc;
 
 /// Number of operations per benchmark iteration

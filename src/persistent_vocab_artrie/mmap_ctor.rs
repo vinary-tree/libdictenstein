@@ -14,12 +14,13 @@
 
 use std::collections::HashMap;
 use std::path::Path;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::Arc;
 
 use parking_lot::RwLock;
 use xxhash_rust::xxh3::Xxh3DefaultBuilder;
 
+use crate::bloom_filter::BloomFilter;
 use crate::persistent_artrie::buffer_manager::BufferManager;
 use crate::persistent_artrie::dict_impl::DurabilityPolicy;
 use crate::persistent_artrie::disk_manager::DiskManager;
@@ -28,7 +29,6 @@ use crate::persistent_artrie::recovery::RecoveryReport;
 use crate::persistent_artrie::wal::{WalConfig, WalReader, WalRecord};
 use crate::persistent_artrie::wal_managed::{create_async_wal, open_or_create_async_wal};
 use crate::persistent_artrie_char::arena_manager::{ArenaManager, ArenaSlot};
-use crate::bloom_filter::BloomFilter;
 
 use super::dict_impl::PersistentVocabARTrie;
 use super::reverse_cache::VocabReverseCache;
@@ -111,12 +111,13 @@ impl PersistentVocabARTrie {
         // Create WAL file using async writer
         let wal_path = path.with_extension("vocab.wal");
         let wal_config = WalConfig::default();
-        let wal_writer = create_async_wal(&wal_path, &path)
-            .map_err(|e| PersistentARTrieError::io_error(
+        let wal_writer = create_async_wal(&wal_path, &path).map_err(|e| {
+            PersistentARTrieError::io_error(
                 "create WAL",
                 wal_path.to_string_lossy(),
                 std::io::Error::new(std::io::ErrorKind::Other, e.to_string()),
-            ))?;
+            )
+        })?;
 
         // Create root node
         let root_node = VocabTrieNode::new();
@@ -212,12 +213,13 @@ impl PersistentVocabARTrie {
         let wal_path = path.with_extension("vocab.wal");
         let wal_config = WalConfig::default();
         let (wal_writer, next_lsn) = {
-            let wal = open_or_create_async_wal(&wal_path, &path)
-                .map_err(|e| PersistentARTrieError::io_error(
+            let wal = open_or_create_async_wal(&wal_path, &path).map_err(|e| {
+                PersistentARTrieError::io_error(
                     "open WAL",
                     wal_path.to_string_lossy(),
                     std::io::Error::new(std::io::ErrorKind::Other, e.to_string()),
-                ))?;
+                )
+            })?;
 
             // Ensure WAL's starting LSN is at least checkpoint_lsn + 1 to avoid
             // writing records with LSN <= checkpoint_lsn after a truncate
@@ -242,7 +244,11 @@ impl PersistentVocabARTrie {
             let root_ptr = Box::into_raw(Box::new(root_node));
             map.insert(root_ref, root_ptr as *const VocabTrieNode);
 
-            (VocabTrieRoot::Node(unsafe { Box::from_raw(root_ptr) }), map, 1)
+            (
+                VocabTrieRoot::Node(unsafe { Box::from_raw(root_ptr) }),
+                map,
+                1,
+            )
         };
 
         let mut trie = Self {
@@ -342,16 +348,17 @@ impl PersistentVocabARTrie {
                 match record {
                     WalRecord::Insert { term, value } => {
                         // Replay insert
-                        let term_str = String::from_utf8(term)
-                            .map_err(|e| PersistentARTrieError::CorruptedFile {
+                        let term_str = String::from_utf8(term).map_err(|e| {
+                            PersistentARTrieError::CorruptedFile {
                                 reason: format!("Invalid UTF-8 in WAL term: {}", e),
-                            })?;
+                            }
+                        })?;
 
                         // Extract index from value bytes
                         if let Some(value_bytes) = value {
                             if value_bytes.len() >= 8 {
                                 let index = u64::from_le_bytes(
-                                    value_bytes[..8].try_into().expect("checked length")
+                                    value_bytes[..8].try_into().expect("checked length"),
                                 );
                                 trie.replay_insert(&term_str, index)?;
                                 inserts_replayed += 1;
@@ -361,15 +368,16 @@ impl PersistentVocabARTrie {
                     WalRecord::BatchInsert { entries } => {
                         // Replay batch insert
                         for (term, value) in entries {
-                            let term_str = String::from_utf8(term)
-                                .map_err(|e| PersistentARTrieError::CorruptedFile {
+                            let term_str = String::from_utf8(term).map_err(|e| {
+                                PersistentARTrieError::CorruptedFile {
                                     reason: format!("Invalid UTF-8 in WAL batch term: {}", e),
-                                })?;
+                                }
+                            })?;
 
                             if let Some(value_bytes) = value {
                                 if value_bytes.len() >= 8 {
                                     let index = u64::from_le_bytes(
-                                        value_bytes[..8].try_into().expect("checked length")
+                                        value_bytes[..8].try_into().expect("checked length"),
                                     );
                                     trie.replay_insert(&term_str, index)?;
                                     inserts_replayed += 1;
@@ -377,7 +385,10 @@ impl PersistentVocabARTrie {
                             }
                         }
                     }
-                    WalRecord::Checkpoint { checkpoint_lsn: new_lsn, .. } => {
+                    WalRecord::Checkpoint {
+                        checkpoint_lsn: new_lsn,
+                        ..
+                    } => {
                         // Update synced LSN
                         trie.synced_lsn.store(new_lsn, Ordering::Release);
                     }

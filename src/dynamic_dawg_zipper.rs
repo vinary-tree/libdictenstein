@@ -4,9 +4,9 @@
 //! node-index-based navigation with lock-per-operation pattern for thread safety.
 
 use crate::dynamic_dawg::{DynamicDawg, DynamicDawgInner};
+use crate::sync_compat::RwLock;
 use crate::value::DictionaryValue;
 use crate::zipper::{DictZipper, ValuedDictZipper};
-use crate::sync_compat::RwLock;
 use std::sync::Arc;
 
 /// Zipper for Dynamic DAWG dictionaries.

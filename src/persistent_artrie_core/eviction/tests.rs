@@ -49,7 +49,10 @@ fn test_lru_coldness_ordering() {
 
     // Cold should have highest score (evicted first)
     // Hot should have lowest score (kept in memory)
-    assert!(cold_score > medium_score, "Cold should be colder than medium");
+    assert!(
+        cold_score > medium_score,
+        "Cold should be colder than medium"
+    );
     assert!(medium_score > hot_score, "Medium should be colder than hot");
 }
 
@@ -271,7 +274,9 @@ fn test_coordinator_stats_accuracy() {
     assert_eq!(stats.eviction_requests, 0);
 
     // Start and make requests
-    coordinator.start(|nodes| (nodes.len(), nodes.len() * 256)).unwrap();
+    coordinator
+        .start(|nodes| (nodes.len(), nodes.len() * 256))
+        .unwrap();
 
     for _ in 0..5 {
         coordinator.request_eviction(EvictionUrgency::Moderate);

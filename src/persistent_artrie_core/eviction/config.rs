@@ -106,7 +106,8 @@ pub struct EvictionConfig {
     /// If `None`, default memory pressure thresholds are used.
     ///
     /// Default: `None` (use default thresholds)
-    pub memory_pressure_config: Option<crate::persistent_artrie::memory_monitor::MemoryPressureConfig>,
+    pub memory_pressure_config:
+        Option<crate::persistent_artrie::memory_monitor::MemoryPressureConfig>,
 }
 
 impl Default for EvictionConfig {
@@ -150,11 +151,13 @@ impl EvictionConfig {
             cooldown_period: Duration::from_millis(50),
             use_lru_tracking: true,
             enable_memory_pressure_monitor: true,
-            memory_pressure_config: Some(crate::persistent_artrie::memory_monitor::MemoryPressureConfig {
-                low_memory_threshold: 0.20,
-                critical_memory_threshold: 0.05,
-                ..Default::default()
-            }),
+            memory_pressure_config: Some(
+                crate::persistent_artrie::memory_monitor::MemoryPressureConfig {
+                    low_memory_threshold: 0.20,
+                    critical_memory_threshold: 0.05,
+                    ..Default::default()
+                },
+            ),
         }
     }
 
@@ -288,7 +291,8 @@ impl EvictionStatsAtomic {
         self.nodes_evicted.fetch_add(nodes, Ordering::Relaxed);
         self.bytes_freed.fetch_add(bytes, Ordering::Relaxed);
         self.eviction_cycles.fetch_add(1, Ordering::Relaxed);
-        self.last_eviction_duration_ms.store(duration_ms, Ordering::Relaxed);
+        self.last_eviction_duration_ms
+            .store(duration_ms, Ordering::Relaxed);
     }
 
     /// Record an eviction request.

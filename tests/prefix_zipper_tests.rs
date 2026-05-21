@@ -249,11 +249,8 @@ fn test_dawg_char_unicode_prefix() {
 #[test]
 fn test_valued_dict_prefix_iteration() {
     let terms_with_values = vec![("cat", 1), ("cats", 2), ("dog", 3)];
-    let dict = DoubleArrayTrie::from_terms_with_values(
-        terms_with_values
-            .into_iter()
-            .map(|(k, v)| (k, v)),
-    );
+    let dict =
+        DoubleArrayTrie::from_terms_with_values(terms_with_values.into_iter().map(|(k, v)| (k, v)));
 
     let zipper = DoubleArrayTrieZipper::new_from_dict(&dict);
     let mut results: Vec<(String, usize)> = zipper
@@ -263,17 +260,17 @@ fn test_valued_dict_prefix_iteration() {
         .collect();
 
     results.sort();
-    assert_eq!(results, vec![("cat".to_string(), 1), ("cats".to_string(), 2)]);
+    assert_eq!(
+        results,
+        vec![("cat".to_string(), 1), ("cats".to_string(), 2)]
+    );
 }
 
 #[test]
 fn test_valued_dict_no_matches() {
     let terms_with_values = vec![("hello", 1), ("world", 2)];
-    let dict = DoubleArrayTrie::from_terms_with_values(
-        terms_with_values
-            .into_iter()
-            .map(|(k, v)| (k, v)),
-    );
+    let dict =
+        DoubleArrayTrie::from_terms_with_values(terms_with_values.into_iter().map(|(k, v)| (k, v)));
 
     let zipper = DoubleArrayTrieZipper::new_from_dict(&dict);
     assert!(zipper.with_prefix_values(b"xyz").is_none());

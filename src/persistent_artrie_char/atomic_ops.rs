@@ -145,7 +145,12 @@ impl<V: DictionaryValue + serde::Serialize + serde::de::DeserializeOwned, S: Blo
     /// # Returns
     ///
     /// `true` if the swap succeeded, `false` if the current value didn't match expected.
-    pub fn compare_and_swap(&mut self, term: &str, expected: Option<V>, new_value: V) -> Result<bool> {
+    pub fn compare_and_swap(
+        &mut self,
+        term: &str,
+        expected: Option<V>,
+        new_value: V,
+    ) -> Result<bool> {
         let current = self.get(term).cloned();
 
         // Check if current matches expected

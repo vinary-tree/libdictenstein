@@ -12,8 +12,8 @@
 
 use crate::persistent_artrie::block_storage::BlockStorage;
 
+use super::iterators::{VocabPrefixIterator, VocabTermIterator};
 use super::types::VocabTrieRoot;
-use super::iterators::{VocabTermIterator, VocabPrefixIterator};
 
 impl<S: BlockStorage> super::dict_impl::PersistentVocabARTrie<S> {
     /// Get root children information for Dictionary trait implementation.
@@ -22,11 +22,10 @@ impl<S: BlockStorage> super::dict_impl::PersistentVocabARTrie<S> {
     pub fn get_root_children(&self) -> Vec<(char, bool)> {
         match &self.root {
             VocabTrieRoot::Empty => Vec::new(),
-            VocabTrieRoot::Node(root) => {
-                root.iter_children()
-                    .map(|(c, child)| (c, child.is_final()))
-                    .collect()
-            }
+            VocabTrieRoot::Node(root) => root
+                .iter_children()
+                .map(|(c, child)| (c, child.is_final()))
+                .collect(),
         }
     }
 
@@ -44,7 +43,8 @@ impl<S: BlockStorage> super::dict_impl::PersistentVocabARTrie<S> {
                         None => return Vec::new(),
                     }
                 }
-                current.iter_children()
+                current
+                    .iter_children()
                     .map(|(c, child)| (c, child.is_final()))
                     .collect()
             }
@@ -71,7 +71,6 @@ impl<S: BlockStorage> super::dict_impl::PersistentVocabARTrie<S> {
         }
     }
 
-
     /// Iterate over all terms in the vocabulary.
     ///
     /// This performs a depth-first traversal of the trie to enumerate all terms.
@@ -84,7 +83,10 @@ impl<S: BlockStorage> super::dict_impl::PersistentVocabARTrie<S> {
     /// Iterate over terms with the given prefix.
     ///
     /// Returns an iterator over all terms that start with the given prefix.
-    pub fn iter_terms_with_prefix<'a>(&'a self, prefix: &'a str) -> impl Iterator<Item = String> + 'a {
+    pub fn iter_terms_with_prefix<'a>(
+        &'a self,
+        prefix: &'a str,
+    ) -> impl Iterator<Item = String> + 'a {
         let prefix_chars: Vec<char> = prefix.chars().collect();
         VocabPrefixIterator::new(self, prefix_chars)
     }

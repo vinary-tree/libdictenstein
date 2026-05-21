@@ -269,7 +269,9 @@ pub fn overlapping_term_sets(
 }
 
 /// Generate three sets of terms for testing n-ary operations.
-pub fn three_term_sets(size: usize) -> impl Strategy<Value = (Vec<String>, Vec<String>, Vec<String>)> {
+pub fn three_term_sets(
+    size: usize,
+) -> impl Strategy<Value = (Vec<String>, Vec<String>, Vec<String>)> {
     (
         prop::collection::vec(ascii_term(1, 10), size),
         prop::collection::vec(ascii_term(1, 10), size),

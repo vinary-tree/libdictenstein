@@ -91,7 +91,11 @@ impl<S: BlockStorage> super::dict_impl::PersistentVocabARTrie<S> {
         let bloom_path = self.bloom_filter_path();
         if bloom_path.exists() {
             std::fs::remove_file(&bloom_path).map_err(|e| {
-                PersistentARTrieError::io_error("remove bloom filter", bloom_path.to_string_lossy(), e)
+                PersistentARTrieError::io_error(
+                    "remove bloom filter",
+                    bloom_path.to_string_lossy(),
+                    e,
+                )
             })?;
         }
         Ok(())

@@ -161,8 +161,8 @@ fn bench_monitor_lifecycle(c: &mut Criterion) {
                 };
 
                 let start = std::time::Instant::now();
-                let monitor = MemoryPressureMonitor::start(config, noop_callback())
-                    .expect("create monitor");
+                let monitor =
+                    MemoryPressureMonitor::start(config, noop_callback()).expect("create monitor");
                 total_duration += start.elapsed();
 
                 drop(monitor);
@@ -184,8 +184,8 @@ fn bench_monitor_lifecycle(c: &mut Criterion) {
                 };
 
                 let start = std::time::Instant::now();
-                let monitor = MemoryPressureMonitor::start(config, noop_callback())
-                    .expect("create monitor");
+                let monitor =
+                    MemoryPressureMonitor::start(config, noop_callback()).expect("create monitor");
                 total_duration += start.elapsed();
 
                 drop(monitor);
@@ -206,8 +206,8 @@ fn bench_monitor_lifecycle(c: &mut Criterion) {
                     poll_interval: Duration::from_secs(60),
                     ..Default::default()
                 };
-                let monitor = MemoryPressureMonitor::start(config, noop_callback())
-                    .expect("create monitor");
+                let monitor =
+                    MemoryPressureMonitor::start(config, noop_callback()).expect("create monitor");
 
                 let start = std::time::Instant::now();
                 drop(monitor);
@@ -295,7 +295,8 @@ fn bench_callback_invocation(c: &mut Criterion) {
                 let start = std::time::Instant::now();
                 let monitor = MemoryPressureMonitor::start(config, move |_, _| {
                     count_clone.fetch_add(1, Ordering::Relaxed);
-                }).expect("create monitor");
+                })
+                .expect("create monitor");
                 total_duration += start.elapsed();
 
                 black_box(callback_count.load(Ordering::Relaxed));
@@ -362,8 +363,8 @@ fn bench_enabled_vs_disabled(c: &mut Criterion) {
         enabled: false,
         ..Default::default()
     };
-    let disabled_monitor = MemoryPressureMonitor::start(disabled_config, noop_callback())
-        .expect("create monitor");
+    let disabled_monitor =
+        MemoryPressureMonitor::start(disabled_config, noop_callback()).expect("create monitor");
 
     group.bench_function("disabled", |b| {
         b.iter_custom(|iters| {
@@ -388,8 +389,8 @@ fn bench_enabled_vs_disabled(c: &mut Criterion) {
         poll_interval: Duration::from_secs(1),
         ..Default::default()
     };
-    let enabled_monitor = MemoryPressureMonitor::start(enabled_config, noop_callback())
-        .expect("create monitor");
+    let enabled_monitor =
+        MemoryPressureMonitor::start(enabled_config, noop_callback()).expect("create monitor");
 
     group.bench_function("enabled", |b| {
         b.iter_custom(|iters| {
@@ -423,8 +424,8 @@ fn bench_memory_stats_helpers(c: &mut Criterion) {
 
     // Create sample memory stats
     let stats = MemoryStats {
-        mem_total: 16 * 1024 * 1024 * 1024,      // 16 GB
-        mem_available: 8 * 1024 * 1024 * 1024,   // 8 GB (50% available)
+        mem_total: 16 * 1024 * 1024 * 1024,    // 16 GB
+        mem_available: 8 * 1024 * 1024 * 1024, // 8 GB (50% available)
         mem_free: 4 * 1024 * 1024 * 1024,
         mem_used: 8 * 1024 * 1024 * 1024,
         swap_total: 8 * 1024 * 1024 * 1024,

@@ -66,7 +66,10 @@ pub(super) struct VocabPrefixIterator<'a> {
 }
 
 impl<'a> VocabPrefixIterator<'a> {
-    pub(super) fn new<S: BlockStorage>(trie: &'a PersistentVocabARTrie<S>, prefix: Vec<char>) -> Self {
+    pub(super) fn new<S: BlockStorage>(
+        trie: &'a PersistentVocabARTrie<S>,
+        prefix: Vec<char>,
+    ) -> Self {
         let mut iter = Self {
             stack: Vec::new(),
             prefix: prefix.clone(),

@@ -57,7 +57,7 @@ rayon = { version = "1.10", optional = true }
 xxhash-rust = { version = "0.8", features = ["xxh3"], optional = true }
 
 # LRU cache for reverse lookups in vocabulary trie
-lru = { version = "0.12", optional = true }
+lru = { version = "0.18", optional = true }
 
 # Concurrent hash map for LRU tracking in eviction
 dashmap = { version = "6.1", optional = true }

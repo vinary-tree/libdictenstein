@@ -327,7 +327,8 @@ impl DiskLocationRegistry {
         }
 
         // Collect candidates with coldness scores
-        let mut candidates: Vec<_> = self.locations
+        let mut candidates: Vec<_> = self
+            .locations
             .iter()
             .filter(|(_, node)| node.depth >= min_depth)
             .map(|(hash, node)| {
@@ -370,7 +371,8 @@ impl DiskLocationRegistry {
             return Vec::new();
         }
 
-        let mut candidates: Vec<_> = self.char_locations
+        let mut candidates: Vec<_> = self
+            .char_locations
             .iter()
             .filter(|(_, node)| node.depth >= min_depth)
             .map(|(hash, node)| {

@@ -541,9 +541,7 @@ mod tests {
         assert_eq!(node.num_children(), 4);
 
         // Verify sorted order
-        let collected_keys: Vec<u8> = node.iter_children()
-            .map(|(&k, _)| k)
-            .collect();
+        let collected_keys: Vec<u8> = node.iter_children().map(|(&k, _)| k).collect();
         assert_eq!(collected_keys, vec![b'a', b'f', b'm', b'z']);
     }
 
@@ -553,8 +551,7 @@ mod tests {
         let child2 = SwizzledPtr::on_disk(2, 200, NodeType::Node4);
         let child2_raw = child2.to_raw();
 
-        let node = PersistentNode::new()
-            .with_child(b'a', child1);
+        let node = PersistentNode::new().with_child(b'a', child1);
 
         assert_eq!(node.num_children(), 1);
 
@@ -715,7 +712,8 @@ mod tests {
             .with_child(b'a', child.clone())
             .with_child(b'b', child);
 
-        let pairs: Vec<(u8, u64)> = node.iter_children()
+        let pairs: Vec<(u8, u64)> = node
+            .iter_children()
             .map(|(&k, c)| (k, c.to_raw()))
             .collect();
 

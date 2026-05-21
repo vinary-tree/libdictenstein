@@ -6,24 +6,24 @@ use tempfile::TempDir;
 fn main() {
     let temp_dir = TempDir::new().expect("Failed to create temp dir");
     let trie_path = temp_dir.path().join("test_trie");
-    
+
     println!("Creating trie at: {:?}", trie_path);
-    
+
     // Create and populate trie
     {
-        let mut trie = PersistentARTrieChar::<u64>::create(&trie_path)
-            .expect("Failed to create trie");
-        
+        let mut trie =
+            PersistentARTrieChar::<u64>::create(&trie_path).expect("Failed to create trie");
+
         for i in 0..1000 {
             let term = format!("term{:05}", i);
             trie.upsert(&term, i as u64).expect("Failed to insert");
         }
-        
+
         println!("Inserted 1000 terms, checkpointing...");
         trie.checkpoint().expect("Failed to checkpoint");
         println!("Checkpoint complete");
     }
-    
+
     // Open multiple times
     for attempt in 1..=10 {
         println!("\nAttempt {}: Opening trie...", attempt);
@@ -37,6 +37,6 @@ fn main() {
             }
         }
     }
-    
+
     println!("\nDone!");
 }

@@ -84,7 +84,8 @@ impl SyncHandle {
     /// - `Ok(false)` if the timeout elapsed before sync completed
     /// - `Err(...)` if the sync thread panicked
     pub fn wait_timeout(&self, timeout: Duration) -> Result<bool, AsyncWalError> {
-        self.sync_manager.wait_for_lsn_timeout(self.target_lsn, timeout)
+        self.sync_manager
+            .wait_for_lsn_timeout(self.target_lsn, timeout)
     }
 }
 

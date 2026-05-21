@@ -228,7 +228,10 @@ mod tests {
 
         // Keys should be sorted: a, f, m, z
         let sorted_keys: Vec<_> = node.iter_children().map(|(k, _)| k).collect();
-        assert_eq!(sorted_keys, vec!['a' as u32, 'f' as u32, 'm' as u32, 'z' as u32]);
+        assert_eq!(
+            sorted_keys,
+            vec!['a' as u32, 'f' as u32, 'm' as u32, 'z' as u32]
+        );
 
         // Find all children
         for &key in &keys {
@@ -317,14 +320,12 @@ mod tests {
 
         for i in 0..4 {
             let child = SwizzledPtr::on_disk(i, 0, NodeType::Node4);
-            node.add_child(b'a' as u32 + i, child).expect("add should succeed");
+            node.add_child(b'a' as u32 + i, child)
+                .expect("add should succeed");
         }
 
         let keys: Vec<_> = node.iter_children().map(|(k, _)| k).collect();
-        assert_eq!(
-            keys,
-            vec!['a' as u32, 'b' as u32, 'c' as u32, 'd' as u32]
-        );
+        assert_eq!(keys, vec!['a' as u32, 'b' as u32, 'c' as u32, 'd' as u32]);
     }
 
     #[test]

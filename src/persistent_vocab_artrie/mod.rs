@@ -164,57 +164,52 @@ pub mod lockfree;
 
 // Re-export main types
 pub use types::{
-    VocabTrieNode, VocabTrieRoot, VocabTrieFileHeader,
     NodeRef, // Re-export from persistent_artrie_char
-    VOCAB_TRIE_MAGIC, VOCAB_FILE_HEADER_SIZE, VOCAB_HEADER_VERSION_V1,
-    DEFAULT_VOCAB_BUFFER_POOL_SIZE, DEFAULT_REVERSE_CACHE_SIZE,
+    VocabTrieFileHeader,
+    VocabTrieNode,
+    VocabTrieRoot,
+    DEFAULT_REVERSE_CACHE_SIZE,
+    DEFAULT_VOCAB_BUFFER_POOL_SIZE,
     FLAG_HAS_PARENT_POINTER,
+    VOCAB_FILE_HEADER_SIZE,
+    VOCAB_HEADER_VERSION_V1,
+    VOCAB_TRIE_MAGIC,
 };
 
 pub use reverse_index::{
-    VocabReverseIndex, ReverseIndexHeader,
-    REVERSE_INDEX_MAGIC, REVERSE_INDEX_HEADER_SIZE,
+    ReverseIndexHeader, VocabReverseIndex, REVERSE_INDEX_HEADER_SIZE, REVERSE_INDEX_MAGIC,
 };
 
-pub use reverse_cache::{VocabReverseCache, CacheStats};
+pub use reverse_cache::{CacheStats, VocabReverseCache};
 
 pub use serialization::{
-    SerializedVocabNodeHeader,
-    serialize_vocab_node, deserialize_vocab_node,
-    vocab_serialized_size,
-    VOCAB_NODE_MAGIC, VOCAB_FORMAT_VERSION, VOCAB_SERIALIZED_HEADER_SIZE,
-    FLAG_HAS_VALUE,
+    deserialize_vocab_node, serialize_vocab_node, vocab_serialized_size, SerializedVocabNodeHeader,
+    FLAG_HAS_VALUE, VOCAB_FORMAT_VERSION, VOCAB_NODE_MAGIC, VOCAB_SERIALIZED_HEADER_SIZE,
 };
 
-pub use dict_impl::{
-    PersistentVocabARTrie, SharedVocabARTrie, VocabSyncHandle,
-};
+pub use dict_impl::{PersistentVocabARTrie, SharedVocabARTrie, VocabSyncHandle};
 
-pub use concurrent::{
-    ConcurrentMode, ConcurrentVocabARTrie, ConcurrentVocabStats,
-};
+pub use concurrent::{ConcurrentMode, ConcurrentVocabARTrie, ConcurrentVocabStats};
 
-pub use lockfree::{
-    LockFreeVocab, LockFreeVocabStats, InsertResult,
-};
+pub use lockfree::{InsertResult, LockFreeVocab, LockFreeVocabStats};
 
 // Re-export DurabilityPolicy from base layer
 pub use crate::persistent_artrie::dict_impl::DurabilityPolicy;
 
 // Re-export eviction types from byte-level implementation (shared)
 pub use crate::persistent_artrie::eviction::{
-    AccessTracker, DiskLocationRegistry, EvictionConfig, EvictionCoordinator,
-    EvictionStats, EvictionUrgency, LruRegistry,
+    AccessTracker, DiskLocationRegistry, EvictionConfig, EvictionCoordinator, EvictionStats,
+    EvictionUrgency, LruRegistry,
 };
 
 // ============================================================================
 // Trait Implementations
 // ============================================================================
 
+use crate::bijective::BijectiveDictionary;
 use crate::persistent_artrie::error::Result;
 use crate::persistent_artrie::recovery::RecoveryReport;
 use crate::{Dictionary, DictionaryNode, MappedDictionary, MutableMappedDictionary};
-use crate::bijective::BijectiveDictionary;
 use std::path::Path;
 
 // Dictionary trait implementation
@@ -258,7 +253,11 @@ pub struct VocabTrieNodeRef {
 impl VocabTrieNodeRef {
     /// Create a new node reference with snapshot data
     fn new(is_final: bool, children: Vec<(char, bool)>, path: Vec<char>) -> Self {
-        Self { is_final, children, path }
+        Self {
+            is_final,
+            children,
+            path,
+        }
     }
 
     /// Create a root node reference (placeholder - requires trie access for real data)
@@ -296,7 +295,9 @@ impl DictionaryNode for VocabTrieNodeRef {
 
     fn edges(&self) -> Box<dyn Iterator<Item = (char, Self)> + '_> {
         let path = self.path.clone();
-        let edges: Vec<_> = self.children.iter()
+        let edges: Vec<_> = self
+            .children
+            .iter()
             .map(move |&(label, is_final)| {
                 let mut new_path = path.clone();
                 new_path.push(label);
@@ -401,8 +402,8 @@ impl BijectiveDictionary for PersistentVocabARTrie {
 // SharedVocabARTrie Trait Implementations
 // ============================================================================
 
-use std::sync::Arc;
 use parking_lot::RwLock;
+use std::sync::Arc;
 
 impl Dictionary for SharedVocabARTrie {
     type Node = VocabTrieNodeRef;
@@ -543,11 +544,12 @@ impl crate::artrie_trait::ARTrie for SharedVocabARTrie {
     }
 
     fn open_with_recovery<P: AsRef<Path>>(path: P) -> Result<(Self, RecoveryReport)> {
-        PersistentVocabARTrie::open_with_recovery(path)
-            .map(|(t, r)| (Arc::new(RwLock::new(t)), r))
+        PersistentVocabARTrie::open_with_recovery(path).map(|(t, r)| (Arc::new(RwLock::new(t)), r))
     }
 
-    fn open_with_recovery_and_slot_tracking<P: AsRef<Path>>(path: P) -> Result<(Self, RecoveryReport)> {
+    fn open_with_recovery_and_slot_tracking<P: AsRef<Path>>(
+        path: P,
+    ) -> Result<(Self, RecoveryReport)> {
         let (mut trie, report) = PersistentVocabARTrie::open_with_recovery(path)?;
         trie.enable_slot_tracking();
         Ok((Arc::new(RwLock::new(trie)), report))
@@ -639,7 +641,8 @@ impl crate::artrie_trait::ARTrie for SharedVocabARTrie {
         let prefix_exists = if prefix.is_empty() {
             true
         } else {
-            guard.get_index(prefix).is_some() || !guard.get_children_at_path(&prefix_chars).is_empty()
+            guard.get_index(prefix).is_some()
+                || !guard.get_children_at_path(&prefix_chars).is_empty()
         };
 
         if prefix_exists {
@@ -685,9 +688,12 @@ impl crate::artrie_trait::ARTrie for SharedVocabARTrie {
 
     fn increment(&self, _term: &str, _delta: i64) -> Result<i64> {
         // Vocabulary tries don't support increment (indices are fixed)
-        Err(crate::persistent_artrie::error::PersistentARTrieError::InvalidOperation(
-            "PersistentVocabARTrie does not support increment - indices are auto-assigned".into()
-        ))
+        Err(
+            crate::persistent_artrie::error::PersistentARTrieError::InvalidOperation(
+                "PersistentVocabARTrie does not support increment - indices are auto-assigned"
+                    .into(),
+            ),
+        )
     }
 }
 
@@ -696,10 +702,15 @@ impl crate::artrie_trait::ARTrie for SharedVocabARTrie {
 // ============================================================================
 
 impl crate::artrie_trait::EvictableARTrie for SharedVocabARTrie {
-    fn enable_eviction(&self, config: crate::persistent_artrie::eviction::EvictionConfig) -> crate::persistent_artrie::error::Result<()> {
+    fn enable_eviction(
+        &self,
+        config: crate::persistent_artrie::eviction::EvictionConfig,
+    ) -> crate::persistent_artrie::error::Result<()> {
         use crate::persistent_artrie::error::PersistentARTrieError;
 
-        config.validate().map_err(|e| PersistentARTrieError::internal(&e))?;
+        config
+            .validate()
+            .map_err(|e| PersistentARTrieError::internal(&e))?;
 
         let mut guard = self.write();
 
@@ -712,41 +723,49 @@ impl crate::artrie_trait::EvictableARTrie for SharedVocabARTrie {
         let epoch_manager = Arc::new(crate::persistent_artrie::concurrency::EpochManager::new());
 
         // Create the eviction coordinator
-        let coordinator = crate::persistent_artrie::eviction::EvictionCoordinator::new(config.clone(), epoch_manager);
+        let coordinator = crate::persistent_artrie::eviction::EvictionCoordinator::new(
+            config.clone(),
+            epoch_manager,
+        );
 
         // Create a weak reference to self for the eviction callback
         let self_weak = Arc::downgrade(self);
 
         // Start the eviction coordinator with the eviction callback for char nodes
         // (VocabARTrie uses char-based nodes internally)
-        coordinator.start_char(move |nodes_to_evict| {
-            // Try to upgrade the weak reference
-            let Some(trie) = self_weak.upgrade() else {
-                return (0, 0);
-            };
+        coordinator
+            .start_char(move |nodes_to_evict| {
+                // Try to upgrade the weak reference
+                let Some(trie) = self_weak.upgrade() else {
+                    return (0, 0);
+                };
 
-            let mut guard = trie.write();
-            let mut evicted_count = 0;
-            let mut bytes_freed = 0;
+                let mut guard = trie.write();
+                let mut evicted_count = 0;
+                let mut bytes_freed = 0;
 
-            for (_path_hash, path, disk_ptr) in nodes_to_evict {
-                if guard.evict_node_at_path(&path, disk_ptr.clone()) {
-                    evicted_count += 1;
-                    bytes_freed += 256; // Estimate ~256 bytes per node
+                for (_path_hash, path, disk_ptr) in nodes_to_evict {
+                    if guard.evict_node_at_path(&path, disk_ptr.clone()) {
+                        evicted_count += 1;
+                        bytes_freed += 256; // Estimate ~256 bytes per node
 
-                    // Remove from LRU tracking
-                    if let Some(ref coordinator) = guard.eviction_coordinator {
-                        use crate::persistent_artrie::eviction::lru_tracker::hash_char_path;
-                        coordinator.lru_registry().remove_hash(hash_char_path(&path));
+                        // Remove from LRU tracking
+                        if let Some(ref coordinator) = guard.eviction_coordinator {
+                            use crate::persistent_artrie::eviction::lru_tracker::hash_char_path;
+                            coordinator
+                                .lru_registry()
+                                .remove_hash(hash_char_path(&path));
+                        }
                     }
                 }
-            }
 
-            (evicted_count, bytes_freed)
-        }).map_err(|e| PersistentARTrieError::internal(&e))?;
+                (evicted_count, bytes_freed)
+            })
+            .map_err(|e| PersistentARTrieError::internal(&e))?;
 
         // Start memory pressure monitor if configured
-        coordinator.start_memory_monitor()
+        coordinator
+            .start_memory_monitor()
             .map_err(|e| PersistentARTrieError::internal(&e))?;
 
         guard.eviction_coordinator = Some(coordinator);
@@ -771,13 +790,17 @@ impl crate::artrie_trait::EvictableARTrie for SharedVocabARTrie {
 
     fn eviction_stats(&self) -> crate::persistent_artrie::eviction::EvictionStats {
         let guard = self.read();
-        guard.eviction_coordinator
+        guard
+            .eviction_coordinator
             .as_ref()
             .map(|c| c.stats())
             .unwrap_or_default()
     }
 
-    fn force_eviction(&self, target_bytes: usize) -> crate::persistent_artrie::error::Result<(usize, usize)> {
+    fn force_eviction(
+        &self,
+        target_bytes: usize,
+    ) -> crate::persistent_artrie::error::Result<(usize, usize)> {
         let guard = self.read();
 
         let Some(coordinator) = &guard.eviction_coordinator else {
@@ -830,13 +853,12 @@ impl PersistentVocabARTrie {
             None => return false,
         };
 
-        let root_node: &mut crate::persistent_vocab_artrie::types::VocabTrieNode =
-            match self.root {
-                crate::persistent_vocab_artrie::types::VocabTrieRoot::Node(ref mut boxed) => {
-                    boxed.as_mut()
-                }
-                crate::persistent_vocab_artrie::types::VocabTrieRoot::Empty => return false,
-            };
+        let root_node: &mut crate::persistent_vocab_artrie::types::VocabTrieNode = match self.root {
+            crate::persistent_vocab_artrie::types::VocabTrieRoot::Node(ref mut boxed) => {
+                boxed.as_mut()
+            }
+            crate::persistent_vocab_artrie::types::VocabTrieRoot::Empty => return false,
+        };
 
         // Navigate to the parent of the target. As in the char variant, this
         // uses raw-pointer hops; `&mut self` guarantees no concurrent access
@@ -858,12 +880,11 @@ impl PersistentVocabARTrie {
             if !child_slot.is_swizzled() {
                 return false; // Cannot descend through an on-disk parent slot.
             }
-            let child_raw = match child_slot
-                .as_ptr::<crate::persistent_vocab_artrie::types::VocabTrieNode>()
-            {
-                Some(p) => p,
-                None => return false,
-            };
+            let child_raw =
+                match child_slot.as_ptr::<crate::persistent_vocab_artrie::types::VocabTrieNode>() {
+                    Some(p) => p,
+                    None => return false,
+                };
             current = child_raw as *mut crate::persistent_vocab_artrie::types::VocabTrieNode;
         }
 
@@ -881,8 +902,7 @@ impl PersistentVocabARTrie {
         // Parent-pointer-integrity check: only evict if the target's
         // subtree has no in-memory descendants. Peek at the target's
         // children through the slot's in-memory pointer.
-        let target_raw = match slot
-            .as_ptr::<crate::persistent_vocab_artrie::types::VocabTrieNode>()
+        let target_raw = match slot.as_ptr::<crate::persistent_vocab_artrie::types::VocabTrieNode>()
         {
             Some(p) => p,
             None => return false,
@@ -907,7 +927,9 @@ impl PersistentVocabARTrie {
                 // pointer, originally `Box::into_raw(Box::new(...))`.
                 unsafe {
                     let _: Box<crate::persistent_vocab_artrie::types::VocabTrieNode> =
-                        Box::from_raw(raw_ptr as *mut crate::persistent_vocab_artrie::types::VocabTrieNode);
+                        Box::from_raw(
+                            raw_ptr as *mut crate::persistent_vocab_artrie::types::VocabTrieNode,
+                        );
                 }
                 true
             }

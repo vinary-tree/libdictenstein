@@ -8,9 +8,7 @@
 
 #![cfg(feature = "persistent-artrie")]
 
-use libdictenstein::persistent_artrie::{
-    DurabilityPolicy, PersistentARTrie,
-};
+use libdictenstein::persistent_artrie::{DurabilityPolicy, PersistentARTrie};
 use libdictenstein::Dictionary;
 use std::fs;
 use std::path::PathBuf;
@@ -55,8 +53,8 @@ fn test_durability_committed_data_persists() {
 
     // Create trie, insert data, and commit
     {
-        let mut trie: PersistentARTrie<u64> = PersistentARTrie::create(&path)
-            .expect("Failed to create trie");
+        let mut trie: PersistentARTrie<u64> =
+            PersistentARTrie::create(&path).expect("Failed to create trie");
 
         // Start a transaction
         let mut tx = trie.begin_document("test_doc").expect("Failed to begin tx");
@@ -79,8 +77,8 @@ fn test_durability_committed_data_persists() {
 
     // Reopen and verify data persists
     {
-        let trie: PersistentARTrie<u64> = PersistentARTrie::open(&path)
-            .expect("Failed to open trie");
+        let trie: PersistentARTrie<u64> =
+            PersistentARTrie::open(&path).expect("Failed to open trie");
 
         assert!(trie.contains("hello"), "hello should persist after reopen");
         assert!(trie.contains("world"), "world should persist after reopen");
@@ -93,8 +91,8 @@ fn test_durability_policy_none_for_testing() {
     let dir = tempdir().expect("Failed to create temp dir");
     let path = dir.path().join("policy_none_test.part");
 
-    let mut trie: PersistentARTrie<u64> = PersistentARTrie::create(&path)
-        .expect("Failed to create trie");
+    let mut trie: PersistentARTrie<u64> =
+        PersistentARTrie::create(&path).expect("Failed to create trie");
 
     // Set to None policy (testing only)
     trie.set_durability_policy(DurabilityPolicy::None);
@@ -119,8 +117,8 @@ fn test_atomicity_abort_discards_all_terms() {
     let dir = tempdir().expect("Failed to create temp dir");
     let path = dir.path().join("atomicity_abort_test.part");
 
-    let trie: PersistentARTrie<u64> = PersistentARTrie::create(&path)
-        .expect("Failed to create trie");
+    let trie: PersistentARTrie<u64> =
+        PersistentARTrie::create(&path).expect("Failed to create trie");
 
     // Start a transaction
     let mut tx = trie.begin_document("doc1").expect("Failed to begin tx");
@@ -131,17 +129,35 @@ fn test_atomicity_abort_discards_all_terms() {
     trie.tx_insert(&mut tx, "term3", Some(3));
 
     // Verify terms are not yet in trie (buffered in transaction)
-    assert!(!trie.contains("term1"), "term1 should not be visible before commit");
-    assert!(!trie.contains("term2"), "term2 should not be visible before commit");
-    assert!(!trie.contains("term3"), "term3 should not be visible before commit");
+    assert!(
+        !trie.contains("term1"),
+        "term1 should not be visible before commit"
+    );
+    assert!(
+        !trie.contains("term2"),
+        "term2 should not be visible before commit"
+    );
+    assert!(
+        !trie.contains("term3"),
+        "term3 should not be visible before commit"
+    );
 
     // Abort the transaction
     trie.abort_document(tx).expect("Failed to abort tx");
 
     // Verify no terms were inserted
-    assert!(!trie.contains("term1"), "term1 should not exist after abort");
-    assert!(!trie.contains("term2"), "term2 should not exist after abort");
-    assert!(!trie.contains("term3"), "term3 should not exist after abort");
+    assert!(
+        !trie.contains("term1"),
+        "term1 should not exist after abort"
+    );
+    assert!(
+        !trie.contains("term2"),
+        "term2 should not exist after abort"
+    );
+    assert!(
+        !trie.contains("term3"),
+        "term3 should not exist after abort"
+    );
 }
 
 #[test]
@@ -149,8 +165,8 @@ fn test_atomicity_commit_inserts_all_terms() {
     let dir = tempdir().expect("Failed to create temp dir");
     let path = dir.path().join("atomicity_commit_test.part");
 
-    let mut trie: PersistentARTrie<u64> = PersistentARTrie::create(&path)
-        .expect("Failed to create trie");
+    let mut trie: PersistentARTrie<u64> =
+        PersistentARTrie::create(&path).expect("Failed to create trie");
 
     // Start a transaction
     let mut tx = trie.begin_document("doc1").expect("Failed to begin tx");
@@ -175,8 +191,8 @@ fn test_atomicity_cannot_commit_twice() {
     let dir = tempdir().expect("Failed to create temp dir");
     let path = dir.path().join("atomicity_double_commit_test.part");
 
-    let mut trie: PersistentARTrie<u64> = PersistentARTrie::create(&path)
-        .expect("Failed to create trie");
+    let mut trie: PersistentARTrie<u64> =
+        PersistentARTrie::create(&path).expect("Failed to create trie");
 
     // Start and commit a transaction
     let mut tx = trie.begin_document("doc1").expect("Failed to begin tx");
@@ -196,8 +212,8 @@ fn test_isolation_concurrent_reads_dont_block() {
     let dir = tempdir().expect("Failed to create temp dir");
     let path = dir.path().join("isolation_concurrent_reads.part");
 
-    let mut trie: PersistentARTrie<u64> = PersistentARTrie::create(&path)
-        .expect("Failed to create trie");
+    let mut trie: PersistentARTrie<u64> =
+        PersistentARTrie::create(&path).expect("Failed to create trie");
 
     // Insert some initial data
     let mut tx = trie.begin_document("init").expect("Failed to begin tx");
@@ -235,16 +251,20 @@ fn test_isolation_no_dirty_reads() {
     let dir = tempdir().expect("Failed to create temp dir");
     let path = dir.path().join("isolation_no_dirty_reads.part");
 
-    let trie: PersistentARTrie<u64> = PersistentARTrie::create(&path)
-        .expect("Failed to create trie");
+    let trie: PersistentARTrie<u64> =
+        PersistentARTrie::create(&path).expect("Failed to create trie");
 
     // Start a transaction but don't commit
-    let mut tx = trie.begin_document("uncommitted").expect("Failed to begin tx");
+    let mut tx = trie
+        .begin_document("uncommitted")
+        .expect("Failed to begin tx");
     trie.tx_insert(&mut tx, "dirty_read_test", Some(42));
 
     // Another "reader" should not see uncommitted data
-    assert!(!trie.contains("dirty_read_test"),
-        "Uncommitted data should not be visible (no dirty reads)");
+    assert!(
+        !trie.contains("dirty_read_test"),
+        "Uncommitted data should not be visible (no dirty reads)"
+    );
 
     // Abort the transaction
     trie.abort_document(tx).expect("Failed to abort");
@@ -262,8 +282,8 @@ fn test_consistency_trie_invariants_maintained() {
     let dir = tempdir().expect("Failed to create temp dir");
     let path = dir.path().join("consistency_invariants.part");
 
-    let mut trie: PersistentARTrie<u64> = PersistentARTrie::create(&path)
-        .expect("Failed to create trie");
+    let mut trie: PersistentARTrie<u64> =
+        PersistentARTrie::create(&path).expect("Failed to create trie");
 
     // Insert many terms with various patterns
     let mut tx = trie.begin_document("test").expect("Failed to begin tx");
@@ -298,8 +318,8 @@ fn test_stats_tracking() {
     let dir = tempdir().expect("Failed to create temp dir");
     let path = dir.path().join("stats_test.part");
 
-    let mut trie: PersistentARTrie<u64> = PersistentARTrie::create(&path)
-        .expect("Failed to create trie");
+    let mut trie: PersistentARTrie<u64> =
+        PersistentARTrie::create(&path).expect("Failed to create trie");
 
     // Get initial stats
     let initial_stats = trie.stats();
@@ -319,9 +339,10 @@ fn test_stats_tracking() {
     let final_stats = trie.stats();
 
     // Just verify stats are accessible and reasonable
-    assert!(final_stats.reads >= initial_stats.reads ||
-            final_stats.writes >= initial_stats.writes,
-        "Stats should track some operations");
+    assert!(
+        final_stats.reads >= initial_stats.reads || final_stats.writes >= initial_stats.writes,
+        "Stats should track some operations"
+    );
 }
 
 // =============================================================================
@@ -333,8 +354,8 @@ fn test_epoch_advancement() {
     let dir = tempdir().expect("Failed to create temp dir");
     let path = dir.path().join("epoch_test.part");
 
-    let trie: PersistentARTrie<u64> = PersistentARTrie::create(&path)
-        .expect("Failed to create trie");
+    let trie: PersistentARTrie<u64> =
+        PersistentARTrie::create(&path).expect("Failed to create trie");
 
     // Get initial epoch
     let initial_epoch = trie.current_epoch();

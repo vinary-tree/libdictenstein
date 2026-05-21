@@ -60,11 +60,27 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
         //   10-17: root_ptr (8 bytes, little endian)
         let root_type = descriptor_buf[0];
         let _is_final = descriptor_buf[1] != 0;
-        let term_count = u32::from_le_bytes([descriptor_buf[2], descriptor_buf[3], descriptor_buf[4], descriptor_buf[5]]) as usize;
-        let arena_count = u32::from_le_bytes([descriptor_buf[6], descriptor_buf[7], descriptor_buf[8], descriptor_buf[9]]);
+        let term_count = u32::from_le_bytes([
+            descriptor_buf[2],
+            descriptor_buf[3],
+            descriptor_buf[4],
+            descriptor_buf[5],
+        ]) as usize;
+        let arena_count = u32::from_le_bytes([
+            descriptor_buf[6],
+            descriptor_buf[7],
+            descriptor_buf[8],
+            descriptor_buf[9],
+        ]);
         let root_ptr = u64::from_le_bytes([
-            descriptor_buf[10], descriptor_buf[11], descriptor_buf[12], descriptor_buf[13],
-            descriptor_buf[14], descriptor_buf[15], descriptor_buf[16], descriptor_buf[17],
+            descriptor_buf[10],
+            descriptor_buf[11],
+            descriptor_buf[12],
+            descriptor_buf[13],
+            descriptor_buf[14],
+            descriptor_buf[15],
+            descriptor_buf[16],
+            descriptor_buf[17],
         ]);
 
         // Derive arena block IDs from sequential allocation
@@ -93,9 +109,7 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
         }
 
         match root_type {
-            ROOT_TYPE_EMPTY => {
-                Ok((CharTrieRoot::Empty, 0))
-            }
+            ROOT_TYPE_EMPTY => Ok((CharTrieRoot::Empty, 0)),
             ROOT_TYPE_NODE => {
                 let root_swizzled = SwizzledPtr::from_raw(root_ptr);
                 // Choose loading strategy based on eager_depth
@@ -110,17 +124,19 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
                     }
                     Some(depth) => {
                         // Depth-limited: load `depth` levels, rest lazy
-                        self.load_char_node_from_disk_with_depth(buffer_manager, &root_swizzled, Some(depth))?
+                        self.load_char_node_from_disk_with_depth(
+                            buffer_manager,
+                            &root_swizzled,
+                            Some(depth),
+                        )?
                     }
                 };
                 Ok((CharTrieRoot::Node(Box::new(node)), term_count))
             }
-            _ => {
-                Err(PersistentARTrieError::internal(format!(
-                    "Unknown root type: {}",
-                    root_type
-                )))
-            }
+            _ => Err(PersistentARTrieError::internal(format!(
+                "Unknown root type: {}",
+                root_type
+            ))),
         }
     }
 
@@ -147,19 +163,21 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
         use crate::persistent_artrie::swizzled_ptr::SwizzledPtr;
         use std::io::Cursor;
 
-        let arena_manager = self.arena_manager.as_ref().ok_or_else(|| {
-            PersistentARTrieError::internal("No arena manager for disk reading")
-        })?;
+        let arena_manager = self
+            .arena_manager
+            .as_ref()
+            .ok_or_else(|| PersistentARTrieError::internal("No arena manager for disk reading"))?;
 
         // Get arena slot from the disk location
         // block_id = arena_id + 1 (block 0 is file header)
         // offset = slot_id
-        let disk_loc = node_ptr.disk_location().ok_or_else(|| {
-            PersistentARTrieError::internal("Node pointer is swizzled or null")
-        })?;
-        let arena_id = disk_loc.block_id.checked_sub(1).ok_or_else(|| {
-            PersistentARTrieError::internal("Invalid block_id 0 for arena node")
-        })?;
+        let disk_loc = node_ptr
+            .disk_location()
+            .ok_or_else(|| PersistentARTrieError::internal("Node pointer is swizzled or null"))?;
+        let arena_id = disk_loc
+            .block_id
+            .checked_sub(1)
+            .ok_or_else(|| PersistentARTrieError::internal("Invalid block_id 0 for arena node"))?;
         let slot = ArenaSlot::new(arena_id, disk_loc.offset);
 
         // Read from arena
@@ -250,19 +268,21 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
         use crate::persistent_artrie::swizzled_ptr::SwizzledPtr;
         use std::io::Cursor;
 
-        let arena_manager = self.arena_manager.as_ref().ok_or_else(|| {
-            PersistentARTrieError::internal("No arena manager for disk reading")
-        })?;
+        let arena_manager = self
+            .arena_manager
+            .as_ref()
+            .ok_or_else(|| PersistentARTrieError::internal("No arena manager for disk reading"))?;
 
         // Get arena slot from the disk location
         // block_id = arena_id + 1 (block 0 is file header)
         // offset = slot_id
-        let disk_loc = node_ptr.disk_location().ok_or_else(|| {
-            PersistentARTrieError::internal("Node pointer is swizzled or null")
-        })?;
-        let arena_id = disk_loc.block_id.checked_sub(1).ok_or_else(|| {
-            PersistentARTrieError::internal("Invalid block_id 0 for arena node")
-        })?;
+        let disk_loc = node_ptr
+            .disk_location()
+            .ok_or_else(|| PersistentARTrieError::internal("Node pointer is swizzled or null"))?;
+        let arena_id = disk_loc
+            .block_id
+            .checked_sub(1)
+            .ok_or_else(|| PersistentARTrieError::internal("Invalid block_id 0 for arena node"))?;
         let slot = ArenaSlot::new(arena_id, disk_loc.offset);
 
         // Read from arena
@@ -300,9 +320,7 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
         // Collect child pointers from the CharNode (as-is, for lazy loading)
         let child_data: Vec<(char, SwizzledPtr)> = char_node
             .iter_children()
-            .filter_map(|(key, ptr)| {
-                char::from_u32(key).map(|c| (c, ptr.clone()))
-            })
+            .filter_map(|(key, ptr)| char::from_u32(key).map(|c| (c, ptr.clone())))
             .collect();
 
         drop(am);
@@ -333,25 +351,30 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     pub(super) fn load_single_node_data(
         &self,
         node_ptr: &crate::persistent_artrie::swizzled_ptr::SwizzledPtr,
-    ) -> Result<(CharTrieNodeInner<V>, Vec<(char, crate::persistent_artrie::swizzled_ptr::SwizzledPtr)>)> {
+    ) -> Result<(
+        CharTrieNodeInner<V>,
+        Vec<(char, crate::persistent_artrie::swizzled_ptr::SwizzledPtr)>,
+    )> {
         use super::arena_manager::ArenaSlot;
         use super::serialization_char::{deserialize_char_node_v2, DeserializationContext};
         use crate::persistent_artrie::swizzled_ptr::SwizzledPtr;
         use std::io::Cursor;
 
-        let arena_manager = self.arena_manager.as_ref().ok_or_else(|| {
-            PersistentARTrieError::internal("No arena manager for disk reading")
-        })?;
+        let arena_manager = self
+            .arena_manager
+            .as_ref()
+            .ok_or_else(|| PersistentARTrieError::internal("No arena manager for disk reading"))?;
 
         // Get arena slot from the disk location
         // block_id = arena_id + 1 (block 0 is file header)
         // offset = slot_id
-        let disk_loc = node_ptr.disk_location().ok_or_else(|| {
-            PersistentARTrieError::internal("Node pointer is swizzled or null")
-        })?;
-        let arena_id = disk_loc.block_id.checked_sub(1).ok_or_else(|| {
-            PersistentARTrieError::internal("Invalid block_id 0 for arena node")
-        })?;
+        let disk_loc = node_ptr
+            .disk_location()
+            .ok_or_else(|| PersistentARTrieError::internal("Node pointer is swizzled or null"))?;
+        let arena_id = disk_loc
+            .block_id
+            .checked_sub(1)
+            .ok_or_else(|| PersistentARTrieError::internal("Invalid block_id 0 for arena node"))?;
         let slot = ArenaSlot::new(arena_id, disk_loc.offset);
 
         // Read from arena
@@ -389,9 +412,7 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
         // Collect child pointers from the CharNode
         let child_entries: Vec<(char, SwizzledPtr)> = char_node
             .iter_children()
-            .filter_map(|(key, ptr)| {
-                char::from_u32(key).map(|c| (c, ptr.clone()))
-            })
+            .filter_map(|(key, ptr)| char::from_u32(key).map(|c| (c, ptr.clone())))
             .collect();
 
         drop(am);
@@ -456,11 +477,13 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
             ptr_to_idx.insert(ptr_raw, result_idx);
 
             // Store child entries for Phase 2
-            let child_ptrs: Vec<SwizzledPtr> = child_entries.iter()
-                .map(|(_, ptr)| ptr.clone())
-                .collect();
+            let child_ptrs: Vec<SwizzledPtr> =
+                child_entries.iter().map(|(_, ptr)| ptr.clone()).collect();
 
-            loaded_nodes.push(LoadedNodeInfo { node, child_entries });
+            loaded_nodes.push(LoadedNodeInfo {
+                node,
+                child_entries,
+            });
 
             // Push children onto stack (reverse order for correct DFS ordering)
             // This ensures children are processed in the order they appear
@@ -481,16 +504,13 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
             let child_entries = std::mem::take(&mut loaded_nodes[idx].child_entries);
 
             for (char_key, child_ptr) in child_entries {
-                let child_idx = *ptr_to_idx.get(&child_ptr.to_raw())
-                    .ok_or_else(|| PersistentARTrieError::internal(
-                        "Child pointer not found in loaded nodes map"
-                    ))?;
+                let child_idx = *ptr_to_idx.get(&child_ptr.to_raw()).ok_or_else(|| {
+                    PersistentARTrieError::internal("Child pointer not found in loaded nodes map")
+                })?;
 
                 // Take ownership of the child node (replace with empty placeholder)
-                let child_node = std::mem::replace(
-                    &mut loaded_nodes[child_idx].node,
-                    CharTrieNodeInner::new()
-                );
+                let child_node =
+                    std::mem::replace(&mut loaded_nodes[child_idx].node, CharTrieNodeInner::new());
 
                 // Connect child to parent
                 loaded_nodes[idx].node.insert_child(char_key, child_node);
@@ -498,7 +518,10 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
         }
 
         // Root is at index 0 (first node pushed/processed)
-        Ok(std::mem::replace(&mut loaded_nodes[0].node, CharTrieNodeInner::new()))
+        Ok(std::mem::replace(
+            &mut loaded_nodes[0].node,
+            CharTrieNodeInner::new(),
+        ))
     }
 
     /// Load a CharTrieNodeInner with depth-limited eager loading.
@@ -577,7 +600,8 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
             ptr_to_idx.insert(ptr_raw, result_idx);
 
             // Determine which children to load eagerly vs lazily
-            let at_depth_limit = max_depth.map_or(false, |max| work_item.depth >= max.saturating_sub(1));
+            let at_depth_limit =
+                max_depth.map_or(false, |max| work_item.depth >= max.saturating_sub(1));
 
             let (eager_children, lazy_children): (Vec<_>, Vec<_>) = if at_depth_limit {
                 // At depth limit: all children become lazy
@@ -618,16 +642,13 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
             // Then, connect eager children (already loaded)
             let eager_children = std::mem::take(&mut loaded_nodes[idx].eager_children);
             for (char_key, child_ptr) in eager_children {
-                let child_idx = *ptr_to_idx.get(&child_ptr.to_raw())
-                    .ok_or_else(|| PersistentARTrieError::internal(
-                        "Child pointer not found in loaded nodes map"
-                    ))?;
+                let child_idx = *ptr_to_idx.get(&child_ptr.to_raw()).ok_or_else(|| {
+                    PersistentARTrieError::internal("Child pointer not found in loaded nodes map")
+                })?;
 
                 // Take ownership of the child node
-                let child_node = std::mem::replace(
-                    &mut loaded_nodes[child_idx].node,
-                    CharTrieNodeInner::new()
-                );
+                let child_node =
+                    std::mem::replace(&mut loaded_nodes[child_idx].node, CharTrieNodeInner::new());
 
                 // Connect child to parent
                 loaded_nodes[idx].node.insert_child(char_key, child_node);
@@ -635,7 +656,10 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
         }
 
         // Root is at index 0
-        Ok(std::mem::replace(&mut loaded_nodes[0].node, CharTrieNodeInner::new()))
+        Ok(std::mem::replace(
+            &mut loaded_nodes[0].node,
+            CharTrieNodeInner::new(),
+        ))
     }
 
     /// Get a child of a node with lazy loading support.
@@ -645,12 +669,20 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     ///
     /// Returns `Ok(None)` if the child doesn't exist.
     /// Returns `Err` if an I/O error occurs during lazy loading.
-    pub(super) fn get_child_lazy(&self, node: &CharTrieNodeInner<V>, c: char) -> Result<Option<&CharTrieNodeInner<V>>> {
+    pub(super) fn get_child_lazy(
+        &self,
+        node: &CharTrieNodeInner<V>,
+        c: char,
+    ) -> Result<Option<&CharTrieNodeInner<V>>> {
         self.get_child_lazy_u32(node, c as u32)
     }
 
     /// Get a child reference of a node with lazy loading support, using a u32 key directly.
-    pub(super) fn get_child_lazy_u32(&self, node: &CharTrieNodeInner<V>, key: u32) -> Result<Option<&CharTrieNodeInner<V>>> {
+    pub(super) fn get_child_lazy_u32(
+        &self,
+        node: &CharTrieNodeInner<V>,
+        key: u32,
+    ) -> Result<Option<&CharTrieNodeInner<V>>> {
         match node.node.find_child(key) {
             Some(ptr) => {
                 if ptr.is_null() {
@@ -670,12 +702,20 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     ///
     /// Returns `Ok(None)` if the child doesn't exist.
     /// Returns `Err` if an I/O error occurs during lazy loading.
-    pub(super) fn get_child_mut_lazy(&self, node: &CharTrieNodeInner<V>, c: char) -> Result<Option<&mut CharTrieNodeInner<V>>> {
+    pub(super) fn get_child_mut_lazy(
+        &self,
+        node: &CharTrieNodeInner<V>,
+        c: char,
+    ) -> Result<Option<&mut CharTrieNodeInner<V>>> {
         self.get_child_mut_lazy_u32(node, c as u32)
     }
 
     /// Get a mutable child reference of a node with lazy loading support, using a u32 key directly.
-    pub(super) fn get_child_mut_lazy_u32(&self, node: &CharTrieNodeInner<V>, key: u32) -> Result<Option<&mut CharTrieNodeInner<V>>> {
+    pub(super) fn get_child_mut_lazy_u32(
+        &self,
+        node: &CharTrieNodeInner<V>,
+        key: u32,
+    ) -> Result<Option<&mut CharTrieNodeInner<V>>> {
         match node.node.find_child(key) {
             Some(ptr) => {
                 if ptr.is_null() {
@@ -741,13 +781,17 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
             }
             Err(_) => {
                 // Key already exists (shouldn't happen, but handle gracefully)
-                unsafe { drop(Box::from_raw(ptr)); }
+                unsafe {
+                    drop(Box::from_raw(ptr));
+                }
                 // Try to get the existing child
                 if let Some(existing_ptr) = node.node.find_child(key) {
                     let child_ref = self.resolve_swizzled_ptr_mut(existing_ptr)?;
                     return Ok(child_ref as *mut CharTrieNodeInner<V>);
                 }
-                return Err(PersistentARTrieError::internal("Failed to add or find child"));
+                return Err(PersistentARTrieError::internal(
+                    "Failed to add or find child",
+                ));
             }
         }
 
@@ -777,13 +821,16 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
 
         // Null pointer check
         if ptr.is_null() {
-            return Err(PersistentARTrieError::internal("Cannot resolve null SwizzledPtr"));
+            return Err(PersistentARTrieError::internal(
+                "Cannot resolve null SwizzledPtr",
+            ));
         }
 
         // Slow path: load from disk
-        let buffer_manager = self.buffer_manager.as_ref().ok_or_else(|| {
-            PersistentARTrieError::internal("No buffer manager for disk access")
-        })?;
+        let buffer_manager = self
+            .buffer_manager
+            .as_ref()
+            .ok_or_else(|| PersistentARTrieError::internal("No buffer manager for disk access"))?;
 
         // Load the node data (lazy - children are not recursively loaded)
         let loaded = self.load_char_node_from_disk_lazy(buffer_manager, ptr)?;
@@ -798,14 +845,21 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
             }
             Err(SwizzleError::RaceCondition) | Err(SwizzleError::AlreadySwizzled) => {
                 // Another thread won the race - free our copy and use theirs
-                unsafe { drop(Box::from_raw(raw_ptr)); }
+                unsafe {
+                    drop(Box::from_raw(raw_ptr));
+                }
                 // Safety: The winner has swizzled the pointer
                 Ok(unsafe { &*ptr.as_ptr_unchecked::<CharTrieNodeInner<V>>() })
             }
             Err(e) => {
                 // Something else went wrong - free our allocation
-                unsafe { drop(Box::from_raw(raw_ptr)); }
-                Err(PersistentARTrieError::internal(&format!("Swizzle failed: {:?}", e)))
+                unsafe {
+                    drop(Box::from_raw(raw_ptr));
+                }
+                Err(PersistentARTrieError::internal(&format!(
+                    "Swizzle failed: {:?}",
+                    e
+                )))
             }
         }
     }
@@ -817,7 +871,10 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     /// # Safety
     ///
     /// The caller must ensure exclusive access to the node.
-    pub(super) fn resolve_swizzled_ptr_mut(&self, ptr: &SwizzledPtr) -> Result<&mut CharTrieNodeInner<V>> {
+    pub(super) fn resolve_swizzled_ptr_mut(
+        &self,
+        ptr: &SwizzledPtr,
+    ) -> Result<&mut CharTrieNodeInner<V>> {
         use crate::persistent_artrie::error::SwizzleError;
 
         // Fast path: already in memory
@@ -828,13 +885,16 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
 
         // Null pointer check
         if ptr.is_null() {
-            return Err(PersistentARTrieError::internal("Cannot resolve null SwizzledPtr"));
+            return Err(PersistentARTrieError::internal(
+                "Cannot resolve null SwizzledPtr",
+            ));
         }
 
         // Slow path: load from disk
-        let buffer_manager = self.buffer_manager.as_ref().ok_or_else(|| {
-            PersistentARTrieError::internal("No buffer manager for disk access")
-        })?;
+        let buffer_manager = self
+            .buffer_manager
+            .as_ref()
+            .ok_or_else(|| PersistentARTrieError::internal("No buffer manager for disk access"))?;
 
         // Load the node data (lazy - children are not recursively loaded)
         let loaded = self.load_char_node_from_disk_lazy(buffer_manager, ptr)?;
@@ -849,14 +909,24 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
             }
             Err(SwizzleError::RaceCondition) | Err(SwizzleError::AlreadySwizzled) => {
                 // Another thread won the race - free our copy and use theirs
-                unsafe { drop(Box::from_raw(raw_ptr)); }
+                unsafe {
+                    drop(Box::from_raw(raw_ptr));
+                }
                 // Safety: The winner has swizzled the pointer
-                Ok(unsafe { &mut *(ptr.as_ptr_unchecked::<CharTrieNodeInner<V>>() as *mut CharTrieNodeInner<V>) })
+                Ok(unsafe {
+                    &mut *(ptr.as_ptr_unchecked::<CharTrieNodeInner<V>>()
+                        as *mut CharTrieNodeInner<V>)
+                })
             }
             Err(e) => {
                 // Something else went wrong - free our allocation
-                unsafe { drop(Box::from_raw(raw_ptr)); }
-                Err(PersistentARTrieError::internal(&format!("Swizzle failed: {:?}", e)))
+                unsafe {
+                    drop(Box::from_raw(raw_ptr));
+                }
+                Err(PersistentARTrieError::internal(&format!(
+                    "Swizzle failed: {:?}",
+                    e
+                )))
             }
         }
     }

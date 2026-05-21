@@ -49,9 +49,9 @@ use rustc_hash::FxHashSet;
 use smallvec::SmallVec;
 
 use crate::substring::{BidirectionalDictionaryNode, SubstringDictionary, SubstringMatch};
+use crate::sync_compat::RwLock;
 use crate::value::DictionaryValue;
 use crate::{Dictionary, DictionaryNode};
-use crate::sync_compat::RwLock;
 
 /// Sentinel value for "no suffix link" or "no parent".
 const NIL: usize = usize::MAX;
@@ -219,7 +219,8 @@ impl<V: DictionaryValue> ScdawgCharInner<V> {
     /// Allocate a new node and return its index.
     fn alloc_node(&mut self, length: usize, suffix_link: usize, first_char: char) -> usize {
         let idx = self.nodes.len();
-        self.nodes.push(ScdawgCharNode::new(length, suffix_link, first_char));
+        self.nodes
+            .push(ScdawgCharNode::new(length, suffix_link, first_char));
         idx
     }
 
@@ -626,10 +627,12 @@ impl<V: DictionaryValue> ScdawgChar<V> {
     /// This is the `find(x)` operation from Blumer et al. (1987).
     pub fn find(&self, pattern: &str) -> Option<ScdawgCharNodeHandle<V>> {
         let inner = self.inner.read();
-        inner.find_substring_fast(pattern).map(|node_idx| ScdawgCharNodeHandle {
-            inner: Arc::clone(&self.inner),
-            node_idx,
-        })
+        inner
+            .find_substring_fast(pattern)
+            .map(|node_idx| ScdawgCharNodeHandle {
+                inner: Arc::clone(&self.inner),
+                node_idx,
+            })
     }
 
     /// Get the frequency (occurrence count) of a substring pattern.
@@ -658,7 +661,11 @@ impl<V: DictionaryValue> ScdawgChar<V> {
     }
 
     /// Get all occurrence locations from a specific SCDAWG node handle.
-    pub fn locations_at(&self, handle: &ScdawgCharNodeHandle<V>, pattern_len: usize) -> Vec<(String, usize)> {
+    pub fn locations_at(
+        &self,
+        handle: &ScdawgCharNodeHandle<V>,
+        pattern_len: usize,
+    ) -> Vec<(String, usize)> {
         let inner = self.inner.read();
         let mut results = Vec::new();
         inner.collect_term_positions(handle.node_idx, pattern_len, &mut results);
@@ -918,7 +925,7 @@ mod tests {
         assert_eq!(matches.len(), 1);
         assert_eq!(matches[0].term, "café");
         assert_eq!(matches[0].position, 1); // Character position, not byte
-        assert_eq!(matches[0].length, 3);   // 3 characters
+        assert_eq!(matches[0].length, 3); // 3 characters
     }
 
     #[test]

@@ -52,8 +52,8 @@
 //! primary ring (index 0) since buffer registration is per-ring. Standard I/O
 //! operations use striped ring selection for load distribution.
 
-use std::collections::HashMap;
 use std::collections::hash_map::DefaultHasher;
+use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
 use std::hash::{Hash, Hasher};
 use std::os::unix::fs::{FileExt, OpenOptionsExt};
@@ -182,9 +182,8 @@ pub(crate) struct AlignedBlockPool {
 impl AlignedBlockPool {
     /// Create a new pool pre-populated with `capacity` aligned blocks.
     fn new(capacity: usize) -> Self {
-        let pool: Vec<Box<AlignedBlock>> = (0..capacity)
-            .map(|_| AlignedBlock::new_boxed())
-            .collect();
+        let pool: Vec<Box<AlignedBlock>> =
+            (0..capacity).map(|_| AlignedBlock::new_boxed()).collect();
         Self {
             pool: Mutex::new(pool),
             capacity,
@@ -202,9 +201,7 @@ impl AlignedBlockPool {
         let mut blocks: Vec<Box<AlignedBlock>> = pool.split_off(split_at);
         // Allocate any remaining from heap
         blocks.reserve(count.saturating_sub(from_pool));
-        blocks.extend(
-            (0..count.saturating_sub(from_pool)).map(|_| AlignedBlock::new_boxed()),
-        );
+        blocks.extend((0..count.saturating_sub(from_pool)).map(|_| AlignedBlock::new_boxed()));
         blocks
     }
 
@@ -350,11 +347,13 @@ impl IoUringDiskManager {
             })?;
 
         let fd = file.as_raw_fd();
-        let metadata = file.metadata().map_err(|e| PersistentARTrieError::IoError {
-            operation: "get metadata".to_string(),
-            path: path_str.clone(),
-            source: e,
-        })?;
+        let metadata = file
+            .metadata()
+            .map_err(|e| PersistentARTrieError::IoError {
+                operation: "get metadata".to_string(),
+                path: path_str.clone(),
+                source: e,
+            })?;
 
         let file_size = metadata.len();
 
@@ -554,10 +553,7 @@ impl IoUringDiskManager {
     /// use libdictenstein::persistent_artrie::IoUringDiskManager;
     /// let dm = IoUringDiskManager::create_with_ring_pool_size("/tmp/test.part", 4).unwrap();
     /// ```
-    pub fn create_with_ring_pool_size<P: AsRef<Path>>(
-        path: P,
-        ring_count: usize,
-    ) -> Result<Self> {
+    pub fn create_with_ring_pool_size<P: AsRef<Path>>(path: P, ring_count: usize) -> Result<Self> {
         let mut manager = Self::create(path)?;
         let ring_pool = RingPool::new(ring_count, DEFAULT_RING_ENTRIES).map_err(|e| {
             PersistentARTrieError::IoUringError {
@@ -711,15 +707,16 @@ impl IoUringDiskManager {
                 source: e,
             })?;
 
-        let cqe = ring.completion().next().ok_or_else(|| {
-            PersistentARTrieError::IoUringError {
+        let cqe = ring
+            .completion()
+            .next()
+            .ok_or_else(|| PersistentARTrieError::IoUringError {
                 operation: "read completion".to_string(),
                 source: std::io::Error::new(
                     std::io::ErrorKind::Other,
                     "no completion entry after submit_and_wait",
                 ),
-            }
-        })?;
+            })?;
 
         let result = cqe.result();
         if result < 0 {
@@ -775,15 +772,16 @@ impl IoUringDiskManager {
                 source: e,
             })?;
 
-        let cqe = ring.completion().next().ok_or_else(|| {
-            PersistentARTrieError::IoUringError {
+        let cqe = ring
+            .completion()
+            .next()
+            .ok_or_else(|| PersistentARTrieError::IoUringError {
                 operation: "write completion".to_string(),
                 source: std::io::Error::new(
                     std::io::ErrorKind::Other,
                     "no completion entry after submit_and_wait",
                 ),
-            }
-        })?;
+            })?;
 
         let result = cqe.result();
         if result < 0 {
@@ -833,15 +831,16 @@ impl IoUringDiskManager {
                 source: e,
             })?;
 
-        let cqe = ring.completion().next().ok_or_else(|| {
-            PersistentARTrieError::IoUringError {
+        let cqe = ring
+            .completion()
+            .next()
+            .ok_or_else(|| PersistentARTrieError::IoUringError {
                 operation: "fsync completion".to_string(),
                 source: std::io::Error::new(
                     std::io::ErrorKind::Other,
                     "no completion entry after submit_and_wait",
                 ),
-            }
-        })?;
+            })?;
 
         let result = cqe.result();
         if result < 0 {
@@ -926,77 +925,77 @@ impl IoUringDiskManager {
 
         // Submit all dirty blocks as batched Write SQEs, chunked to avoid SQ overflow
         let result = (|| -> Result<()> {
-        for chunk in dirty_entries.chunks(DEFAULT_RING_ENTRIES as usize) {
-            let mut ring = self.ring_pool.select().lock();
+            for chunk in dirty_entries.chunks(DEFAULT_RING_ENTRIES as usize) {
+                let mut ring = self.ring_pool.select().lock();
 
-            for (i, &(block_id, buf_idx)) in chunk.iter().enumerate() {
-                let offset = block_id as u64 * BLOCK_SIZE as u64;
-                let write_e = opcode::Write::new(
-                    types::Fd(self.fd),
-                    pool_blocks[buf_idx].data.as_ptr(),
-                    BLOCK_SIZE as u32,
-                )
-                .offset(offset)
-                .build()
-                .user_data(i as u64);
+                for (i, &(block_id, buf_idx)) in chunk.iter().enumerate() {
+                    let offset = block_id as u64 * BLOCK_SIZE as u64;
+                    let write_e = opcode::Write::new(
+                        types::Fd(self.fd),
+                        pool_blocks[buf_idx].data.as_ptr(),
+                        BLOCK_SIZE as u32,
+                    )
+                    .offset(offset)
+                    .build()
+                    .user_data(i as u64);
 
-                unsafe {
-                    ring.submission().push(&write_e).map_err(|_| {
-                        PersistentARTrieError::IoUringError {
-                            operation: "push dirty cache flush SQE".to_string(),
-                            source: std::io::Error::new(
-                                std::io::ErrorKind::Other,
-                                "io_uring submission queue full",
-                            ),
-                        }
+                    unsafe {
+                        ring.submission().push(&write_e).map_err(|_| {
+                            PersistentARTrieError::IoUringError {
+                                operation: "push dirty cache flush SQE".to_string(),
+                                source: std::io::Error::new(
+                                    std::io::ErrorKind::Other,
+                                    "io_uring submission queue full",
+                                ),
+                            }
+                        })?;
+                    }
+                }
+
+                let count = chunk.len();
+                ring.submit_and_wait(count)
+                    .map_err(|e| PersistentARTrieError::IoUringError {
+                        operation: "submit_and_wait dirty cache flush".to_string(),
+                        source: e,
                     })?;
-                }
-            }
 
-            let count = chunk.len();
-            ring.submit_and_wait(count)
-                .map_err(|e| PersistentARTrieError::IoUringError {
-                    operation: "submit_and_wait dirty cache flush".to_string(),
-                    source: e,
-                })?;
-
-            // Drain all CQEs and validate results
-            let mut completed = 0;
-            for cqe in ring.completion() {
-                let result = cqe.result();
-                if result < 0 {
-                    return Err(PersistentARTrieError::IoUringError {
-                        operation: "dirty cache flush I/O".to_string(),
-                        source: std::io::Error::from_raw_os_error(-result),
-                    });
-                }
-                if (result as usize) < BLOCK_SIZE {
-                    return Err(PersistentARTrieError::IoUringError {
-                        operation: "dirty cache flush I/O (short write)".to_string(),
-                        source: std::io::Error::new(
-                            std::io::ErrorKind::WriteZero,
-                            format!(
-                                "short write: wrote {} bytes, expected {}",
-                                result, BLOCK_SIZE
+                // Drain all CQEs and validate results
+                let mut completed = 0;
+                for cqe in ring.completion() {
+                    let result = cqe.result();
+                    if result < 0 {
+                        return Err(PersistentARTrieError::IoUringError {
+                            operation: "dirty cache flush I/O".to_string(),
+                            source: std::io::Error::from_raw_os_error(-result),
+                        });
+                    }
+                    if (result as usize) < BLOCK_SIZE {
+                        return Err(PersistentARTrieError::IoUringError {
+                            operation: "dirty cache flush I/O (short write)".to_string(),
+                            source: std::io::Error::new(
+                                std::io::ErrorKind::WriteZero,
+                                format!(
+                                    "short write: wrote {} bytes, expected {}",
+                                    result, BLOCK_SIZE
+                                ),
                             ),
+                        });
+                    }
+                    completed += 1;
+                }
+
+                if completed != count {
+                    return Err(PersistentARTrieError::IoUringError {
+                        operation: "dirty cache flush completion count".to_string(),
+                        source: std::io::Error::new(
+                            std::io::ErrorKind::Other,
+                            format!("expected {} completions, got {}", count, completed),
                         ),
                     });
                 }
-                completed += 1;
             }
 
-            if completed != count {
-                return Err(PersistentARTrieError::IoUringError {
-                    operation: "dirty cache flush completion count".to_string(),
-                    source: std::io::Error::new(
-                        std::io::ErrorKind::Other,
-                        format!("expected {} completions, got {}", count, completed),
-                    ),
-                });
-            }
-        }
-
-        Ok(())
+            Ok(())
         })();
 
         // Return pool blocks regardless of success/failure
@@ -1129,11 +1128,7 @@ impl IoUringDiskManager {
 
     /// Get the number of dirty cached blocks.
     pub fn dirty_block_count(&self) -> usize {
-        self.block_cache
-            .lock()
-            .values()
-            .filter(|c| c.dirty)
-            .count()
+        self.block_cache.lock().values().filter(|c| c.dirty).count()
     }
 
     /// Clear the block cache (all dirty blocks are lost!).
@@ -1196,15 +1191,16 @@ impl IoUringDiskManager {
                 source: e,
             })?;
 
-        let cqe = ring.completion().next().ok_or_else(|| {
-            PersistentARTrieError::IoUringError {
+        let cqe = ring
+            .completion()
+            .next()
+            .ok_or_else(|| PersistentARTrieError::IoUringError {
                 operation: "ReadFixed completion".to_string(),
                 source: std::io::Error::new(
                     std::io::ErrorKind::Other,
                     "no completion entry after submit_and_wait",
                 ),
-            }
-        })?;
+            })?;
 
         let result = cqe.result();
         if result < 0 {
@@ -1270,15 +1266,16 @@ impl IoUringDiskManager {
                 source: e,
             })?;
 
-        let cqe = ring.completion().next().ok_or_else(|| {
-            PersistentARTrieError::IoUringError {
+        let cqe = ring
+            .completion()
+            .next()
+            .ok_or_else(|| PersistentARTrieError::IoUringError {
                 operation: "WriteFixed completion".to_string(),
                 source: std::io::Error::new(
                     std::io::ErrorKind::Other,
                     "no completion entry after submit_and_wait",
                 ),
-            }
-        })?;
+            })?;
 
         let result = cqe.result();
         if result < 0 {
@@ -1409,13 +1406,13 @@ impl BlockStorage for IoUringDiskManager {
                         .len();
 
                     if new_file_size > current_actual_size {
-                        self.file
-                            .set_len(new_file_size)
-                            .map_err(|e| PersistentARTrieError::IoError {
+                        self.file.set_len(new_file_size).map_err(|e| {
+                            PersistentARTrieError::IoError {
                                 operation: "extend file".to_string(),
                                 path: self.path.clone(),
                                 source: e,
-                            })?;
+                            }
+                        })?;
 
                         // Pre-allocate storage to avoid holes (best-effort).
                         // fallocate prevents sparse regions that could cause ENOSPC later.
@@ -1814,16 +1811,16 @@ impl BlockStorage for IoUringDiskManager {
 
         // Register on primary ring only (RLIMIT_MEMLOCK is 1× pool_size, not N×)
         let ring = self.ring_pool.primary().lock();
-        ring.submitter()
-            .register_buffers(&iovecs)
-            .map_err(|e| PersistentARTrieError::IoUringError {
+        ring.submitter().register_buffers(&iovecs).map_err(|e| {
+            PersistentARTrieError::IoUringError {
                 operation: format!(
                     "register_buffers ({} buffers, {} bytes each)",
                     iovecs.len(),
                     buffers.first().map_or(0, |b| b.1)
                 ),
                 source: e,
-            })?;
+            }
+        })?;
 
         self.buffers_registered.store(true, Ordering::Release);
 
@@ -2021,10 +2018,7 @@ impl BlockStorage for IoUringDiskManager {
         Ok(())
     }
 
-    fn write_blocks_batch_fixed(
-        &self,
-        requests: &[(u32, &[u8; BLOCK_SIZE], u16)],
-    ) -> Result<()> {
+    fn write_blocks_batch_fixed(&self, requests: &[(u32, &[u8; BLOCK_SIZE], u16)]) -> Result<()> {
         if requests.is_empty() {
             return Ok(());
         }
@@ -2255,8 +2249,7 @@ mod tests {
 
         assert_eq!(dm.root_ptr().expect("root_ptr"), 0);
 
-        dm.set_root_ptr(0x123456789ABCDEF0)
-            .expect("set_root_ptr");
+        dm.set_root_ptr(0x123456789ABCDEF0).expect("set_root_ptr");
         assert_eq!(
             dm.root_ptr().expect("root_ptr after set"),
             0x123456789ABCDEF0
@@ -2365,24 +2358,16 @@ mod tests {
         buf2.data[0] = 2;
         buf3.data[0] = 3;
 
-        dm.write_blocks_batch(&[
-            (b1, &buf1.data),
-            (b2, &buf2.data),
-            (b3, &buf3.data),
-        ])
-        .expect("batch write");
+        dm.write_blocks_batch(&[(b1, &buf1.data), (b2, &buf2.data), (b3, &buf3.data)])
+            .expect("batch write");
 
         // Read batch
         let mut r1 = AlignedBlock::new_boxed();
         let mut r2 = AlignedBlock::new_boxed();
         let mut r3 = AlignedBlock::new_boxed();
 
-        dm.read_blocks_batch(&mut [
-            (b1, &mut r1.data),
-            (b2, &mut r2.data),
-            (b3, &mut r3.data),
-        ])
-        .expect("batch read");
+        dm.read_blocks_batch(&mut [(b1, &mut r1.data), (b2, &mut r2.data), (b3, &mut r3.data)])
+            .expect("batch read");
 
         assert_eq!(r1.data[0], 1);
         assert_eq!(r2.data[0], 2);
@@ -2427,12 +2412,13 @@ mod tests {
                     });
 
                     let mut read_buf = AlignedBlock::new_boxed();
-                    dm.read_block(block_id, &mut read_buf.data).unwrap_or_else(|e| {
-                        panic!(
-                            "Thread {} failed to read block {} (id={}): {:?}",
-                            thread_id, i, block_id, e
-                        )
-                    });
+                    dm.read_block(block_id, &mut read_buf.data)
+                        .unwrap_or_else(|e| {
+                            panic!(
+                                "Thread {} failed to read block {} (id={}): {:?}",
+                                thread_id, i, block_id, e
+                            )
+                        });
 
                     assert_eq!(&read_buf.data[0..4], &block_id.to_le_bytes());
                     ids.push(block_id);
@@ -2468,7 +2454,8 @@ mod tests {
 
         IoUringDiskManager::create(&path).expect("create");
 
-        let dm = IoUringDiskManager::open_without_validation(&path).expect("open without validation");
+        let dm =
+            IoUringDiskManager::open_without_validation(&path).expect("open without validation");
         let header = BlockStorage::read_header(&dm).expect("read header");
         assert_eq!(header.magic, super::super::disk_manager::MAGIC_NUMBER);
     }

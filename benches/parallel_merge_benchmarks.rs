@@ -91,7 +91,9 @@ fn bench_parallel_merge(c: &mut Criterion) {
                     (_source_dir, source, _target_dir, target)
                 },
                 |(_sd, source, _td, target)| {
-                    target.merge_from_parallel(&source, |a, b| a + b).expect("merge");
+                    target
+                        .merge_from_parallel(&source, |a, b| a + b)
+                        .expect("merge");
                 },
             );
         });
@@ -136,7 +138,9 @@ fn bench_direct_comparison(c: &mut Criterion) {
                 (_source_dir, source, _target_dir, target)
             },
             |(_sd, source, _td, target)| {
-                target.merge_from_parallel(&source, |a, b| a + b).expect("merge");
+                target
+                    .merge_from_parallel(&source, |a, b| a + b)
+                    .expect("merge");
             },
         );
     });
@@ -180,7 +184,9 @@ fn bench_direct_comparison_50k(c: &mut Criterion) {
                 (_source_dir, source, _target_dir, target)
             },
             |(_sd, source, _td, target)| {
-                target.merge_from_parallel(&source, |a, b| a + b).expect("merge");
+                target
+                    .merge_from_parallel(&source, |a, b| a + b)
+                    .expect("merge");
             },
         );
     });
@@ -195,10 +201,9 @@ fn generate_varied_prefix_terms_with_values(count: usize, value_offset: i64) -> 
     use std::hash::{Hash, Hasher};
 
     let prefixes = [
-        "alpha", "beta", "charlie", "delta", "echo", "foxtrot", "golf", "hotel",
-        "india", "juliet", "kilo", "lima", "mike", "november", "oscar", "papa",
-        "quebec", "romeo", "sierra", "tango", "uniform", "victor", "whiskey",
-        "xray", "yankee", "zulu",
+        "alpha", "beta", "charlie", "delta", "echo", "foxtrot", "golf", "hotel", "india", "juliet",
+        "kilo", "lima", "mike", "november", "oscar", "papa", "quebec", "romeo", "sierra", "tango",
+        "uniform", "victor", "whiskey", "xray", "yankee", "zulu",
     ];
 
     let mut terms: Vec<(String, i64)> = (0..count)
@@ -268,8 +273,7 @@ fn create_populated_trie_varied_cold(
     let path = dir.path().join("test.artrie");
 
     {
-        let trie: PersistentARTrie<i64> =
-            PersistentARTrie::create(&path).expect("create trie");
+        let trie: PersistentARTrie<i64> = PersistentARTrie::create(&path).expect("create trie");
         for (term, value) in terms {
             trie.insert_with_value(term, *value);
         }
@@ -301,70 +305,60 @@ fn bench_merge_arena_grouped(c: &mut Criterion) {
         let target_terms: Vec<(String, i64)> = generate_varied_prefix_terms_with_values(size, 0)
             .into_iter()
             .skip(size / 2)
-            .chain(
-                (0..size / 2).map(|i| (format!("unique_target_{:08}", i), (i * 100) as i64)),
-            )
+            .chain((0..size / 2).map(|i| (format!("unique_target_{:08}", i), (i * 100) as i64)))
             .collect();
 
         group.throughput(Throughput::Elements(size as u64));
 
-        group.bench_with_input(
-            BenchmarkId::new("lexicographic", size),
-            &size,
-            |b, _| {
-                b.iter_with_setup(
-                    || {
-                        // Create tries and force to disk
-                        let (_source_dir, source_path) =
-                            create_populated_trie_varied_cold(&source_terms);
-                        let (_target_dir, target_path) =
-                            create_populated_trie_varied_cold(&target_terms);
+        group.bench_with_input(BenchmarkId::new("lexicographic", size), &size, |b, _| {
+            b.iter_with_setup(
+                || {
+                    // Create tries and force to disk
+                    let (_source_dir, source_path) =
+                        create_populated_trie_varied_cold(&source_terms);
+                    let (_target_dir, target_path) =
+                        create_populated_trie_varied_cold(&target_terms);
 
-                        // Re-open with cold caches
-                        let source: PersistentARTrie<i64> =
-                            PersistentARTrie::open(&source_path).expect("open source");
-                        let target: PersistentARTrie<i64> =
-                            PersistentARTrie::open(&target_path).expect("open target");
+                    // Re-open with cold caches
+                    let source: PersistentARTrie<i64> =
+                        PersistentARTrie::open(&source_path).expect("open source");
+                    let target: PersistentARTrie<i64> =
+                        PersistentARTrie::open(&target_path).expect("open target");
 
-                        (_source_dir, source, _target_dir, target)
-                    },
-                    |(_sd, source, _td, mut target)| {
-                        target
-                            .merge_from_batched(&source, |a, b| a + b, 1000)
-                            .expect("merge");
-                    },
-                );
-            },
-        );
+                    (_source_dir, source, _target_dir, target)
+                },
+                |(_sd, source, _td, mut target)| {
+                    target
+                        .merge_from_batched(&source, |a, b| a + b, 1000)
+                        .expect("merge");
+                },
+            );
+        });
 
-        group.bench_with_input(
-            BenchmarkId::new("arena_grouped", size),
-            &size,
-            |b, _| {
-                b.iter_with_setup(
-                    || {
-                        // Create tries and force to disk
-                        let (_source_dir, source_path) =
-                            create_populated_trie_varied_cold(&source_terms);
-                        let (_target_dir, target_path) =
-                            create_populated_trie_varied_cold(&target_terms);
+        group.bench_with_input(BenchmarkId::new("arena_grouped", size), &size, |b, _| {
+            b.iter_with_setup(
+                || {
+                    // Create tries and force to disk
+                    let (_source_dir, source_path) =
+                        create_populated_trie_varied_cold(&source_terms);
+                    let (_target_dir, target_path) =
+                        create_populated_trie_varied_cold(&target_terms);
 
-                        // Re-open with cold caches
-                        let source: PersistentARTrie<i64> =
-                            PersistentARTrie::open(&source_path).expect("open source");
-                        let target: PersistentARTrie<i64> =
-                            PersistentARTrie::open(&target_path).expect("open target");
+                    // Re-open with cold caches
+                    let source: PersistentARTrie<i64> =
+                        PersistentARTrie::open(&source_path).expect("open source");
+                    let target: PersistentARTrie<i64> =
+                        PersistentARTrie::open(&target_path).expect("open target");
 
-                        (_source_dir, source, _target_dir, target)
-                    },
-                    |(_sd, source, _td, mut target)| {
-                        target
-                            .merge_from_batched_grouped(&source, |a, b| a + b, 1000)
-                            .expect("merge");
-                    },
-                );
-            },
-        );
+                    (_source_dir, source, _target_dir, target)
+                },
+                |(_sd, source, _td, mut target)| {
+                    target
+                        .merge_from_batched_grouped(&source, |a, b| a + b, 1000)
+                        .expect("merge");
+                },
+            );
+        });
     }
 
     group.finish();

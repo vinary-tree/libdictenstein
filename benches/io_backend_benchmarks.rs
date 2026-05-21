@@ -27,9 +27,7 @@
 //!   cargo bench --bench io_backend_benchmarks --features persistent-artrie
 //! ```
 
-use criterion::{
-    black_box, criterion_group, criterion_main, Criterion, Throughput,
-};
+use criterion::{black_box, criterion_group, criterion_main, Criterion, Throughput};
 use hdrhistogram::Histogram;
 use std::time::{Duration, Instant};
 use tempfile::tempdir;
@@ -87,7 +85,12 @@ fn setup_mmap(block_count: u32) -> (tempfile::TempDir, MmapDiskManager) {
 }
 
 #[cfg(feature = "io-uring-backend")]
-fn setup_io_uring(block_count: u32) -> (tempfile::TempDir, libdictenstein::persistent_artrie::IoUringDiskManager) {
+fn setup_io_uring(
+    block_count: u32,
+) -> (
+    tempfile::TempDir,
+    libdictenstein::persistent_artrie::IoUringDiskManager,
+) {
     use libdictenstein::persistent_artrie::IoUringDiskManager;
 
     let dir = tempdir().expect("create temp dir");
@@ -119,13 +122,9 @@ fn report_histogram(name: &str, backend: &str, hist: &Histogram<u64>) {
 }
 
 /// Run a block-level benchmark, returning the histogram.
-fn bench_block_ops<S: BlockStorage>(
-    storage: &S,
-    block_ids: &[u32],
-    read: bool,
-) -> Histogram<u64> {
-    let mut hist = Histogram::<u64>::new_with_bounds(1, 60_000_000_000, 3)
-        .expect("create histogram");
+fn bench_block_ops<S: BlockStorage>(storage: &S, block_ids: &[u32], read: bool) -> Histogram<u64> {
+    let mut hist =
+        Histogram::<u64>::new_with_bounds(1, 60_000_000_000, 3).expect("create histogram");
     let mut block = AlignedBlock::new_boxed();
 
     // Fill with pattern data for writes
@@ -138,9 +137,13 @@ fn bench_block_ops<S: BlockStorage>(
     for &block_id in block_ids {
         let start = Instant::now();
         if read {
-            storage.read_block(block_id, &mut block.data).expect("read block");
+            storage
+                .read_block(block_id, &mut block.data)
+                .expect("read block");
         } else {
-            storage.write_block(block_id, &block.data).expect("write block");
+            storage
+                .write_block(block_id, &block.data)
+                .expect("write block");
         }
         let elapsed_ns = start.elapsed().as_nanos() as u64;
         hist.record(elapsed_ns).ok();
@@ -599,9 +602,8 @@ fn bench_batch_read(c: &mut Criterion) {
             let mut total = Duration::ZERO;
             for _ in 0..iters {
                 // Prepare batch request buffers
-                let mut buffers: Vec<Box<AlignedBlock>> = (0..batch_size)
-                    .map(|_| AlignedBlock::new_boxed())
-                    .collect();
+                let mut buffers: Vec<Box<AlignedBlock>> =
+                    (0..batch_size).map(|_| AlignedBlock::new_boxed()).collect();
 
                 let start = Instant::now();
                 // Sequential read (mmap default batch impl)
@@ -628,9 +630,8 @@ fn bench_batch_read(c: &mut Criterion) {
         b.iter_custom(|iters| {
             let mut total = Duration::ZERO;
             for _ in 0..iters {
-                let mut buffers: Vec<Box<AlignedBlock>> = (0..batch_size)
-                    .map(|_| AlignedBlock::new_boxed())
-                    .collect();
+                let mut buffers: Vec<Box<AlignedBlock>> =
+                    (0..batch_size).map(|_| AlignedBlock::new_boxed()).collect();
 
                 // Build batch request
                 let mut requests: Vec<(u32, &mut [u8; BLOCK_SIZE])> = buffers

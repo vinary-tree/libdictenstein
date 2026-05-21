@@ -42,11 +42,11 @@ use std::io::{Read, Write};
 use crate::persistent_artrie::error::{PersistentARTrieError, Result};
 use crate::persistent_artrie::swizzled_ptr::SwizzledPtr;
 use crate::persistent_artrie_char::nodes::{
-    CharBucket, CharCompressedPrefix, CharNode, CharNode16, CharNode4, CharNode48,
-    CharNodeHeader, CHAR_MAX_PREFIX_LEN,
+    CharBucket, CharCompressedPrefix, CharNode, CharNode16, CharNode4, CharNode48, CharNodeHeader,
+    CHAR_MAX_PREFIX_LEN,
 };
-use crate::persistent_artrie_char::types::NodeRef;
 use crate::persistent_artrie_char::serialization_char::char_node_types;
+use crate::persistent_artrie_char::types::NodeRef;
 
 use super::types::{VocabTrieNode, FLAG_HAS_PARENT_POINTER};
 
@@ -169,14 +169,20 @@ impl SerializedVocabNodeHeader {
                     VOCAB_NODE_MAGIC[1],
                     VOCAB_NODE_MAGIC[2],
                     VOCAB_NODE_MAGIC[3],
-                    0, 0, 0, 0,
+                    0,
+                    0,
+                    0,
+                    0,
                 ]),
                 found: u64::from_le_bytes([
                     self.magic[0],
                     self.magic[1],
                     self.magic[2],
                     self.magic[3],
-                    0, 0, 0, 0,
+                    0,
+                    0,
+                    0,
+                    0,
                 ]),
             });
         }
@@ -237,8 +243,8 @@ impl SerializedVocabNodeHeader {
             _padding: bytes[11],
             data_size: u32::from_le_bytes([bytes[12], bytes[13], bytes[14], bytes[15]]),
             parent: NodeRef::from_bytes(&[
-                bytes[16], bytes[17], bytes[18], bytes[19],
-                bytes[20], bytes[21], bytes[22], bytes[23],
+                bytes[16], bytes[17], bytes[18], bytes[19], bytes[20], bytes[21], bytes[22],
+                bytes[23],
             ]),
             parent_edge: 0, // Read separately from data section
         }
@@ -264,9 +270,9 @@ fn vocab_prefix_size(node: &VocabTrieNode) -> usize {
 
 fn vocab_node_data_size(node: &VocabTrieNode) -> usize {
     match &node.inner {
-        CharNode::N4(_) => 4 * 4 + 4 * 8 + 8, // 56 bytes
-        CharNode::N16(_) => 16 * 4 + 16 * 8 + 8, // 200 bytes
-        CharNode::N48(_) => 48 * 4 + 48 * 8 + 8, // 584 bytes
+        CharNode::N4(_) => 4 * 4 + 4 * 8 + 8,                // 56 bytes
+        CharNode::N16(_) => 16 * 4 + 16 * 8 + 8,             // 200 bytes
+        CharNode::N48(_) => 48 * 4 + 48 * 8 + 8,             // 584 bytes
         CharNode::Bucket(n) => 4 + 8 + n.entries.len() * 12, // 12 + 12n bytes
     }
 }
@@ -284,7 +290,9 @@ pub fn serialize_vocab_node<W: Write>(node: &VocabTrieNode, writer: &mut W) -> R
     writer.write_all(&header.to_bytes()).map_err(io_err)?;
 
     // Write parent_edge
-    writer.write_all(&node.parent_edge.to_le_bytes()).map_err(io_err)?;
+    writer
+        .write_all(&node.parent_edge.to_le_bytes())
+        .map_err(io_err)?;
 
     // Write value if present
     if let Some(value) = node.value {
@@ -370,7 +378,9 @@ fn serialize_charnode48<W: Write>(node: &CharNode48, writer: &mut W) -> Result<(
 fn serialize_charbucket<W: Write>(node: &CharBucket, writer: &mut W) -> Result<()> {
     // Write number of entries
     let num_entries = node.entries.len() as u32;
-    writer.write_all(&num_entries.to_le_bytes()).map_err(io_err)?;
+    writer
+        .write_all(&num_entries.to_le_bytes())
+        .map_err(io_err)?;
 
     // Write value_ptr
     let value_raw = node.value_ptr.to_raw();

@@ -49,10 +49,7 @@ where
 }
 
 /// Custom serialization for `Arc<Vec<Vec<T>>>`.
-pub fn serialize_arc_vec_vec<S, T>(
-    arc: &Arc<Vec<Vec<T>>>,
-    serializer: S,
-) -> Result<S::Ok, S::Error>
+pub fn serialize_arc_vec_vec<S, T>(arc: &Arc<Vec<Vec<T>>>, serializer: S) -> Result<S::Ok, S::Error>
 where
     S: Serializer,
     T: Serialize,
@@ -61,9 +58,7 @@ where
 }
 
 /// Custom deserialization for `Arc<Vec<Vec<T>>>`.
-pub fn deserialize_arc_vec_vec<'de, D, T>(
-    deserializer: D,
-) -> Result<Arc<Vec<Vec<T>>>, D::Error>
+pub fn deserialize_arc_vec_vec<'de, D, T>(deserializer: D) -> Result<Arc<Vec<Vec<T>>>, D::Error>
 where
     D: Deserializer<'de>,
     T: Deserialize<'de>,

@@ -67,16 +67,16 @@
 //! concurrent.checkpoint()?;
 //! ```
 
-use std::sync::atomic::{AtomicU64, AtomicBool, Ordering};
-use std::sync::Arc;
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::Arc;
 
+use crossbeam_channel::{unbounded, Receiver, Sender, TryRecvError};
 use parking_lot::RwLock;
 use xxhash_rust::xxh3::Xxh3DefaultBuilder;
-use crossbeam_channel::{Sender, Receiver, unbounded, TryRecvError};
 
-use super::PersistentVocabARTrie;
 use super::lockfree::LockFreeVocab;
+use super::PersistentVocabARTrie;
 use crate::persistent_artrie::error::Result;
 
 /// Operating mode for the concurrent vocabulary.
@@ -211,7 +211,10 @@ impl ConcurrentVocabARTrie {
     ///
     /// * `vocab` - The underlying persistent vocabulary trie
     /// * `estimated_terms` - Expected number of new terms to insert via lock-free layer
-    pub fn new_lockfree_with_capacity(vocab: PersistentVocabARTrie, estimated_terms: usize) -> Self {
+    pub fn new_lockfree_with_capacity(
+        vocab: PersistentVocabARTrie,
+        estimated_terms: usize,
+    ) -> Self {
         let next_idx = vocab.next_index();
         let start_idx = vocab.start_index();
         let (tx, rx) = unbounded();
@@ -294,11 +297,11 @@ impl ConcurrentVocabARTrie {
     /// Get the current next index value (atomically).
     pub fn next_index(&self) -> u64 {
         match self.mode {
-            ConcurrentMode::LockFree => {
-                self.lockfree_vocab.as_ref()
-                    .map(|lf| lf.next_index())
-                    .unwrap_or_else(|| self.next_index.load(Ordering::Acquire))
-            }
+            ConcurrentMode::LockFree => self
+                .lockfree_vocab
+                .as_ref()
+                .map(|lf| lf.next_index())
+                .unwrap_or_else(|| self.next_index.load(Ordering::Acquire)),
             ConcurrentMode::Queue => self.next_index.load(Ordering::Acquire),
         }
     }
@@ -636,9 +639,7 @@ impl ConcurrentVocabARTrie {
     pub fn pending_count(&self) -> usize {
         match self.mode {
             ConcurrentMode::LockFree => {
-                self.lockfree_vocab.as_ref()
-                    .map(|lf| lf.len())
-                    .unwrap_or(0)
+                self.lockfree_vocab.as_ref().map(|lf| lf.len()).unwrap_or(0)
             }
             ConcurrentMode::Queue => self.insert_rx.len(),
         }
@@ -662,7 +663,10 @@ impl ConcurrentVocabARTrie {
             ConcurrentMode::LockFree => {
                 let lf_stats = self.lockfree_vocab.as_ref().map(|lf| lf.stats());
                 (
-                    lf_stats.as_ref().map(|s| s.next_index).unwrap_or(self.next_index.load(Ordering::Acquire)),
+                    lf_stats
+                        .as_ref()
+                        .map(|s| s.next_index)
+                        .unwrap_or(self.next_index.load(Ordering::Acquire)),
                     lf_stats.as_ref().map(|s| s.entry_count).unwrap_or(0),
                     lf_stats.as_ref().map(|s| s.cache_size).unwrap_or(0),
                 )
@@ -706,8 +710,8 @@ unsafe impl Sync for ConcurrentVocabARTrie {}
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::tempdir;
     use std::thread;
+    use tempfile::tempdir;
 
     #[test]
     fn test_concurrent_vocab_basic() {
@@ -793,8 +797,12 @@ mod tests {
             let mut sorted = thread_indices.clone();
             sorted.sort();
             for window in sorted.windows(2) {
-                assert!(window[0] != window[1] || window.len() < 2,
-                    "duplicate indices within thread: {} and {}", window[0], window[1]);
+                assert!(
+                    window[0] != window[1] || window.len() < 2,
+                    "duplicate indices within thread: {} and {}",
+                    window[0],
+                    window[1]
+                );
             }
         }
 
@@ -938,8 +946,12 @@ mod tests {
             let mut sorted = thread_indices.clone();
             sorted.sort();
             for window in sorted.windows(2) {
-                assert!(window[0] != window[1] || window.len() < 2,
-                    "duplicate indices within thread: {} and {}", window[0], window[1]);
+                assert!(
+                    window[0] != window[1] || window.len() < 2,
+                    "duplicate indices within thread: {} and {}",
+                    window[0],
+                    window[1]
+                );
             }
         }
 
@@ -947,8 +959,11 @@ mod tests {
         let mut all_flat: Vec<u64> = all_indices.into_iter().flatten().collect();
         all_flat.sort();
         all_flat.dedup();
-        assert_eq!(all_flat.len(), (num_threads * terms_per_thread) as usize,
-            "all indices should be unique across all threads");
+        assert_eq!(
+            all_flat.len(),
+            (num_threads * terms_per_thread) as usize,
+            "all indices should be unique across all threads"
+        );
     }
 
     #[test]

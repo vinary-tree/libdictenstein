@@ -125,8 +125,13 @@ pub fn should_convert_bucket_to_art(bucket: &StringBucket) -> bool {
 pub fn bucket_to_art_node(bucket: &StringBucket) -> Result<BucketToArtResult, TransitionError> {
     let split_result = bucket.split_by_first_byte();
 
-    if split_result.buckets.is_empty() && split_result.finals.is_empty() && split_result.overflow.is_empty() {
-        return Err(TransitionError::BucketNotReady("bucket is empty".to_string()));
+    if split_result.buckets.is_empty()
+        && split_result.finals.is_empty()
+        && split_result.overflow.is_empty()
+    {
+        return Err(TransitionError::BucketNotReady(
+            "bucket is empty".to_string(),
+        ));
     }
 
     // Create a new Node4 (will grow as needed when children are added)
@@ -160,7 +165,9 @@ pub fn bucket_to_art_node(bucket: &StringBucket) -> Result<BucketToArtResult, Tr
         if let Some(idx) = child_idx {
             // Insert into existing child (may trigger bucket-to-ART conversion)
             let inserted = if let Some(ref v) = value {
-                children[idx].1.insert_with_value(&remaining, Some(v.as_slice()))
+                children[idx]
+                    .1
+                    .insert_with_value(&remaining, Some(v.as_slice()))
             } else {
                 children[idx].1.insert_key(&remaining)
             };
@@ -247,8 +254,7 @@ pub fn art_node_to_bucket(
     is_final: bool,
     final_value: Option<&[u8]>,
 ) -> Result<ArtToBucketResult, TransitionError> {
-    let has_values = children.iter().any(|(_, b)| b.header().has_values())
-        || final_value.is_some();
+    let has_values = children.iter().any(|(_, b)| b.header().has_values()) || final_value.is_some();
 
     let mut bucket = if has_values {
         StringBucket::with_values()
@@ -385,9 +391,7 @@ impl ChildNode {
                 // traverse into this bucket.
                 true
             }
-            ChildNode::ArtNode { node, .. } => {
-                node.header().needs_persistence()
-            }
+            ChildNode::ArtNode { node, .. } => node.header().needs_persistence(),
             ChildNode::DiskRef { .. } => {
                 // Already on disk and clean - no persistence needed
                 false
@@ -461,7 +465,12 @@ impl ChildNode {
     /// Get as mutable ART node reference
     pub fn as_art_node_mut(
         &mut self,
-    ) -> Option<(&mut Node, &mut bool, &mut Option<Vec<u8>>, &mut Vec<(u8, ChildNode)>)> {
+    ) -> Option<(
+        &mut Node,
+        &mut bool,
+        &mut Option<Vec<u8>>,
+        &mut Vec<(u8, ChildNode)>,
+    )> {
         match self {
             ChildNode::ArtNode {
                 node,
@@ -669,9 +678,7 @@ impl ChildNode {
     /// * `false` if it didn't exist, removal failed, or the node is a `DiskRef`
     pub fn remove_key(&mut self, remaining: &[u8]) -> bool {
         match self {
-            ChildNode::Bucket(bucket) => {
-                bucket.remove(remaining).is_some()
-            }
+            ChildNode::Bucket(bucket) => bucket.remove(remaining).is_some(),
             ChildNode::ArtNode {
                 is_final,
                 value,
@@ -727,13 +734,9 @@ impl ChildNode {
     /// * `false` if it doesn't exist, or the node is a `DiskRef`
     pub fn contains_key(&self, remaining: &[u8]) -> bool {
         match self {
-            ChildNode::Bucket(bucket) => {
-                bucket.contains(remaining)
-            }
+            ChildNode::Bucket(bucket) => bucket.contains(remaining),
             ChildNode::ArtNode {
-                is_final,
-                children,
-                ..
+                is_final, children, ..
             } => {
                 if remaining.is_empty() {
                     *is_final
@@ -888,17 +891,22 @@ mod tests {
         let children: Vec<(u8, &StringBucket)> = art_result
             .children
             .iter()
-            .filter_map(|(b, child)| {
-                child.as_bucket().map(|bucket| (*b, bucket))
-            })
+            .filter_map(|(b, child)| child.as_bucket().map(|bucket| (*b, bucket)))
             .collect();
 
-        let bucket_result =
-            art_node_to_bucket(&children, art_result.is_final, art_result.final_value.as_deref())
-                .unwrap();
+        let bucket_result = art_node_to_bucket(
+            &children,
+            art_result.is_final,
+            art_result.final_value.as_deref(),
+        )
+        .unwrap();
 
         // Should have same entries
-        let restored_entries: Vec<_> = bucket_result.bucket.iter().map(|(_, s)| s.to_vec()).collect();
+        let restored_entries: Vec<_> = bucket_result
+            .bucket
+            .iter()
+            .map(|(_, s)| s.to_vec())
+            .collect();
         assert_eq!(original_entries, restored_entries);
     }
 
@@ -1022,12 +1030,8 @@ mod tests {
         );
 
         let outer_node = Node::N4(Box::new(Node4::new()));
-        let mut outer_child = ChildNode::art_node_with_children(
-            outer_node,
-            false,
-            None,
-            vec![(b'a', inner_child)],
-        );
+        let mut outer_child =
+            ChildNode::art_node_with_children(outer_node, false, None, vec![(b'a', inner_child)]);
 
         // Insert through nested structure
         assert!(outer_child.insert_key(b"apple")); // a -> p -> ple

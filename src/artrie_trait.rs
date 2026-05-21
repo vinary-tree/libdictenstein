@@ -51,10 +51,10 @@
 
 use std::path::Path;
 
-use crate::CharUnit;
-use crate::value::DictionaryValue;
 use crate::persistent_artrie::error::Result;
 use crate::persistent_artrie::recovery::RecoveryReport;
+use crate::value::DictionaryValue;
+use crate::CharUnit;
 
 /// Common trait for Adaptive Radix Trie implementations.
 ///
@@ -224,7 +224,9 @@ pub trait ARTrie: Clone + Send + Sync {
     /// // Subsequent checkpoints write only modified slots
     /// trie.checkpoint()?;
     /// ```
-    fn open_with_recovery_and_slot_tracking<P: AsRef<Path>>(path: P) -> Result<(Self, RecoveryReport)>;
+    fn open_with_recovery_and_slot_tracking<P: AsRef<Path>>(
+        path: P,
+    ) -> Result<(Self, RecoveryReport)>;
 
     /// Enable slot-level dirty tracking for reduced checkpoint I/O.
     ///
@@ -576,12 +578,10 @@ pub trait ARTrie: Clone + Send + Sync {
 /// never-implemented `compare_and_swap`) are now on [`ARTrie`] directly. Use
 /// the canonical [`ARTrie::increment`] / [`ARTrie::upsert`] methods, or the
 /// inherent `compare_and_swap` on each persistent-ARTrie type.
-#[deprecated(
-    note = "ARTrieAtomicOps was a transitional duplicate of ARTrie's \
+#[deprecated(note = "ARTrieAtomicOps was a transitional duplicate of ARTrie's \
             atomic-op methods. Use ARTrie::increment / ARTrie::upsert; for \
             compare_and_swap use the inherent method on each persistent-ARTrie \
-            type. This trait will be removed in the next major version."
-)]
+            type. This trait will be removed in the next major version.")]
 pub trait ARTrieAtomicOps: ARTrie {}
 
 // === Eviction Extension Trait ===
@@ -652,7 +652,10 @@ pub trait EvictableARTrie: ARTrie {
     ///
     /// - If eviction is already enabled
     /// - If the eviction thread fails to start
-    fn enable_eviction(&self, config: crate::persistent_artrie::eviction::EvictionConfig) -> Result<()>;
+    fn enable_eviction(
+        &self,
+        config: crate::persistent_artrie::eviction::EvictionConfig,
+    ) -> Result<()>;
 
     /// Disable eviction and release resources.
     ///

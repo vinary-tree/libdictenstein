@@ -92,11 +92,12 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
                     children: Vec::new(),
                 })
             }
-            NodeType::CharNode4 | NodeType::CharNode16 | NodeType::CharNode48 | NodeType::CharBucket => {
-                Err(PersistentARTrieError::corrupted(
-                    "Char-level node type encountered in byte-level PersistentARTrie",
-                ))
-            }
+            NodeType::CharNode4
+            | NodeType::CharNode16
+            | NodeType::CharNode48
+            | NodeType::CharBucket => Err(PersistentARTrieError::corrupted(
+                "Char-level node type encountered in byte-level PersistentARTrie",
+            )),
         }
     }
 
@@ -149,7 +150,10 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
             return None;
         }
 
-        if child_slots.iter().any(|slot| slot.arena_id != parent_arena_id) {
+        if child_slots
+            .iter()
+            .any(|slot| slot.arena_id != parent_arena_id)
+        {
             return None;
         }
 

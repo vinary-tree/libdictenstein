@@ -309,7 +309,11 @@ pub enum CorruptionType {
     /// File header is invalid (bad magic, version, or checksum).
     InvalidHeader(String),
     /// Arena checksum mismatch.
-    ArenaChecksum { arena_id: u32, expected: u32, found: u32 },
+    ArenaChecksum {
+        arena_id: u32,
+        expected: u32,
+        found: u32,
+    },
     /// File is truncated.
     Truncated { expected: usize, actual: usize },
     /// Root descriptor is invalid.
@@ -322,11 +326,23 @@ impl std::fmt::Display for CorruptionType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             CorruptionType::InvalidHeader(msg) => write!(f, "Invalid header: {}", msg),
-            CorruptionType::ArenaChecksum { arena_id, expected, found } => {
-                write!(f, "Arena {} checksum mismatch: expected {:#x}, found {:#x}", arena_id, expected, found)
+            CorruptionType::ArenaChecksum {
+                arena_id,
+                expected,
+                found,
+            } => {
+                write!(
+                    f,
+                    "Arena {} checksum mismatch: expected {:#x}, found {:#x}",
+                    arena_id, expected, found
+                )
             }
             CorruptionType::Truncated { expected, actual } => {
-                write!(f, "File truncated: expected {} bytes, found {}", expected, actual)
+                write!(
+                    f,
+                    "File truncated: expected {} bytes, found {}",
+                    expected, actual
+                )
             }
             CorruptionType::InvalidRootDescriptor(msg) => {
                 write!(f, "Invalid root descriptor: {}", msg)
@@ -475,7 +491,10 @@ impl RecoveryManager {
             };
 
             match record {
-                WalRecord::Checkpoint { checkpoint_lsn: cp_lsn, .. } => {
+                WalRecord::Checkpoint {
+                    checkpoint_lsn: cp_lsn,
+                    ..
+                } => {
                     // Use the most recent checkpoint
                     checkpoint_lsn = Some(cp_lsn);
                 }
@@ -789,7 +808,11 @@ impl IncrementalRecovery {
     }
 
     /// Process a single record and return any committed operations.
-    fn process_record(&mut self, lsn: Lsn, record: WalRecord) -> Result<Option<Vec<RecoveredOperation>>> {
+    fn process_record(
+        &mut self,
+        lsn: Lsn,
+        record: WalRecord,
+    ) -> Result<Option<Vec<RecoveredOperation>>> {
         match record {
             WalRecord::BeginTx { tx_id } => {
                 self.current_tx = Some(tx_id);
@@ -944,7 +967,11 @@ where
 
     for op in operations {
         match op {
-            RecoveredOperation::Insert { lsn: _, term, value } => {
+            RecoveredOperation::Insert {
+                lsn: _,
+                term,
+                value,
+            } => {
                 insert_fn(&term, value.as_deref())?;
                 count += 1;
             }
@@ -965,7 +992,11 @@ where
                 insert_fn(&term, Some(&value_bytes))?;
                 count += 1;
             }
-            RecoveredOperation::Upsert { lsn: _, term, value } => {
+            RecoveredOperation::Upsert {
+                lsn: _,
+                term,
+                value,
+            } => {
                 insert_fn(&term, Some(&value))?;
                 count += 1;
             }
@@ -1032,9 +1063,7 @@ pub fn detect_corruption<P: AsRef<Path>>(
     }
 
     // Open and read header
-    let mut file = File::open(path).map_err(|e| {
-        RecoveryError::Io(e)
-    })?;
+    let mut file = File::open(path).map_err(|e| RecoveryError::Io(e))?;
 
     // Read header bytes
     let mut header_bytes = [0u8; 64];
@@ -1063,8 +1092,14 @@ pub fn detect_corruption<P: AsRef<Path>>(
 
     // First check for DiskManager u64 magic (MAGIC_NUMBER = 0x5041_5254_0001_0000)
     let magic_u64 = u64::from_le_bytes([
-        header_bytes[0], header_bytes[1], header_bytes[2], header_bytes[3],
-        header_bytes[4], header_bytes[5], header_bytes[6], header_bytes[7],
+        header_bytes[0],
+        header_bytes[1],
+        header_bytes[2],
+        header_bytes[3],
+        header_bytes[4],
+        header_bytes[5],
+        header_bytes[6],
+        header_bytes[7],
     ]);
 
     // DiskManager's MAGIC_NUMBER
@@ -1083,7 +1118,8 @@ pub fn detect_corruption<P: AsRef<Path>>(
     if magic_4 != b"PART" && magic_4 != b"ARTC" {
         return Ok(Some(CorruptionType::InvalidHeader(format!(
             "Invalid magic: u64={:#018x} (bytes {:?})",
-            magic_u64, &header_bytes[0..8]
+            magic_u64,
+            &header_bytes[0..8]
         ))));
     }
 
@@ -1299,7 +1335,10 @@ pub fn collect_all_wal_segments(
 /// The first LSN in the segment, or None if the segment is empty/unreadable.
 pub fn get_segment_first_lsn(segment_path: &Path) -> Option<super::wal::Lsn> {
     let mut reader = super::wal::WalReader::new(segment_path).ok()?;
-    reader.next_record().and_then(|r| r.ok()).map(|(lsn, _)| lsn)
+    reader
+        .next_record()
+        .and_then(|r| r.ok())
+        .map(|(lsn, _)| lsn)
 }
 
 /// Sort segments by their first LSN for precise ordering.
@@ -1367,7 +1406,11 @@ where
             // Convert WalRecord to RecoveredOperation and apply
             match record {
                 WalRecord::Insert { term, value } => {
-                    let op = RecoveredOperation::Insert { lsn: 0, term, value };
+                    let op = RecoveredOperation::Insert {
+                        lsn: 0,
+                        term,
+                        value,
+                    };
                     if apply_fn(op).is_ok() {
                         terms_recovered += 1;
                     }
@@ -1378,19 +1421,37 @@ where
                         terms_recovered += 1;
                     }
                 }
-                WalRecord::Increment { term, delta, result } => {
-                    let op = RecoveredOperation::Increment { lsn: 0, term, delta, result };
+                WalRecord::Increment {
+                    term,
+                    delta,
+                    result,
+                } => {
+                    let op = RecoveredOperation::Increment {
+                        lsn: 0,
+                        term,
+                        delta,
+                        result,
+                    };
                     if apply_fn(op).is_ok() {
                         terms_recovered += 1;
                     }
                 }
                 WalRecord::Upsert { term, value } => {
-                    let op = RecoveredOperation::Upsert { lsn: 0, term, value };
+                    let op = RecoveredOperation::Upsert {
+                        lsn: 0,
+                        term,
+                        value,
+                    };
                     if apply_fn(op).is_ok() {
                         terms_recovered += 1;
                     }
                 }
-                WalRecord::CompareAndSwap { term, new_value, success, .. } => {
+                WalRecord::CompareAndSwap {
+                    term,
+                    new_value,
+                    success,
+                    ..
+                } => {
                     if success {
                         let op = RecoveredOperation::CompareAndSwap {
                             lsn: 0,
@@ -1406,7 +1467,11 @@ where
                 WalRecord::BatchInsert { entries } => {
                     // Expand batch and apply each entry
                     for (term, value) in entries {
-                        let op = RecoveredOperation::Insert { lsn: 0, term, value };
+                        let op = RecoveredOperation::Insert {
+                            lsn: 0,
+                            term,
+                            value,
+                        };
                         if apply_fn(op).is_ok() {
                             terms_recovered += 1;
                         }
@@ -1436,8 +1501,8 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::wal::{WalRecord, WalWriter};
+    use super::*;
     use tempfile::tempdir;
 
     #[test]
@@ -1744,13 +1809,15 @@ mod tests {
         // Create archived segments (oldest)
         for i in 0..2 {
             let segment_name = format!("wal_{:012}.segment", i * 1000);
-            std::fs::write(archive_dir.join(segment_name), b"dummy").expect("write archive segment");
+            std::fs::write(archive_dir.join(segment_name), b"dummy")
+                .expect("write archive segment");
         }
 
         // Create pending segments (middle)
         for i in 2..4 {
             let segment_name = format!("wal_pending_{:012}.segment", i * 1000);
-            std::fs::write(pending_dir.join(segment_name), b"dummy").expect("write pending segment");
+            std::fs::write(pending_dir.join(segment_name), b"dummy")
+                .expect("write pending segment");
         }
 
         // Create active WAL with a header (newest)
@@ -1759,7 +1826,8 @@ mod tests {
         wal.append(WalRecord::Insert {
             term: b"test".to_vec(),
             value: None,
-        }).expect("append");
+        })
+        .expect("append");
         wal.sync().expect("sync");
         drop(wal);
 
@@ -1796,7 +1864,8 @@ mod tests {
                 wal.append(WalRecord::Insert {
                     term: format!("term{}", i).into_bytes(),
                     value: None,
-                }).expect("append");
+                })
+                .expect("append");
             }
             wal.sync().expect("sync");
         }
@@ -1827,7 +1896,8 @@ mod tests {
             wal.append(WalRecord::Insert {
                 term: b"at_10".to_vec(),
                 value: None,
-            }).expect("append");
+            })
+            .expect("append");
             wal.sync().expect("sync");
         }
         segments.push(wal_path_10);
@@ -1839,7 +1909,8 @@ mod tests {
             wal.append(WalRecord::Insert {
                 term: b"at_1".to_vec(),
                 value: None,
-            }).expect("append");
+            })
+            .expect("append");
             wal.sync().expect("sync");
         }
         segments.push(wal_path_1.clone());
@@ -1854,7 +1925,8 @@ mod tests {
             wal.append(WalRecord::Insert {
                 term: b"at_5".to_vec(),
                 value: None,
-            }).expect("append");
+            })
+            .expect("append");
             wal.sync().expect("sync");
         }
         segments.push(wal_path_5.clone());
@@ -1863,8 +1935,14 @@ mod tests {
         sort_segments_by_lsn(&mut segments);
 
         // Should be ordered: LSN 1, LSN 5, LSN 10
-        assert_eq!(segments[0], wal_path_1, "First should be segment with LSN 1");
-        assert_eq!(segments[1], wal_path_5, "Second should be segment with LSN 5");
+        assert_eq!(
+            segments[0], wal_path_1,
+            "First should be segment with LSN 1"
+        );
+        assert_eq!(
+            segments[1], wal_path_5,
+            "Second should be segment with LSN 5"
+        );
         // Third segment is wal_path_10
     }
 
@@ -2412,7 +2490,8 @@ mod tests {
         // Test From<WalError> for RecoveryError
         use super::super::wal::WalError;
 
-        let io_err: RecoveryError = WalError::Io(io::Error::new(io::ErrorKind::Other, "test")).into();
+        let io_err: RecoveryError =
+            WalError::Io(io::Error::new(io::ErrorKind::Other, "test")).into();
         assert!(matches!(io_err, RecoveryError::Io(_)));
 
         let corrupted: RecoveryError = WalError::CorruptedRecord("bad record".into()).into();
@@ -2445,7 +2524,10 @@ mod tests {
         // Expected: Ok(None) - no file means no corruption
         let nonexistent = Path::new("/nonexistent/path/to/file.art");
         let result = detect_corruption(nonexistent, false).expect("should succeed");
-        assert!(result.is_none(), "Missing file should not report corruption");
+        assert!(
+            result.is_none(),
+            "Missing file should not report corruption"
+        );
     }
 
     #[test]
@@ -2485,7 +2567,11 @@ mod tests {
 
         match result.unwrap() {
             CorruptionType::InvalidHeader(msg) => {
-                assert!(msg.contains("Invalid magic"), "Message should mention magic: {}", msg);
+                assert!(
+                    msg.contains("Invalid magic"),
+                    "Message should mention magic: {}",
+                    msg
+                );
             }
             other => panic!("Expected InvalidHeader, got {:?}", other),
         }
@@ -2504,7 +2590,10 @@ mod tests {
         std::fs::write(&path, &data).expect("write file with valid magic");
 
         let result = detect_corruption(&path, false).expect("should succeed");
-        assert!(result.is_none(), "Valid DiskManager magic should not report corruption");
+        assert!(
+            result.is_none(),
+            "Valid DiskManager magic should not report corruption"
+        );
     }
 
     #[test]
@@ -2520,7 +2609,10 @@ mod tests {
         std::fs::write(&path, &data).expect("write file with PART magic");
 
         let result = detect_corruption(&path, false).expect("should succeed");
-        assert!(result.is_none(), "Valid PART magic should not report corruption");
+        assert!(
+            result.is_none(),
+            "Valid PART magic should not report corruption"
+        );
     }
 
     #[test]
@@ -2540,7 +2632,11 @@ mod tests {
 
         match result.unwrap() {
             CorruptionType::InvalidHeader(msg) => {
-                assert!(msg.contains("version"), "Message should mention version: {}", msg);
+                assert!(
+                    msg.contains("version"),
+                    "Message should mention version: {}",
+                    msg
+                );
             }
             other => panic!("Expected InvalidHeader for version, got {:?}", other),
         }
@@ -2559,11 +2655,18 @@ mod tests {
         std::fs::write(&path, &data).expect("write file with future version");
 
         let result = detect_corruption(&path, false).expect("should succeed");
-        assert!(result.is_some(), "Unsupported version should report corruption");
+        assert!(
+            result.is_some(),
+            "Unsupported version should report corruption"
+        );
 
         match result.unwrap() {
             CorruptionType::InvalidHeader(msg) => {
-                assert!(msg.contains("version"), "Message should mention version: {}", msg);
+                assert!(
+                    msg.contains("version"),
+                    "Message should mention version: {}",
+                    msg
+                );
             }
             other => panic!("Expected InvalidHeader for version, got {:?}", other),
         }
@@ -2579,17 +2682,24 @@ mod tests {
         let mut data = vec![0u8; 128];
         data[0..4].copy_from_slice(b"PART");
         data[4] = 2; // Version 2 (has checksum)
-        // Checksum at bytes 32-35 should be CRC32 of bytes 0-31
-        // Write wrong checksum
+                     // Checksum at bytes 32-35 should be CRC32 of bytes 0-31
+                     // Write wrong checksum
         data[32..36].copy_from_slice(&0xDEADBEEFu32.to_le_bytes());
         std::fs::write(&path, &data).expect("write file with bad checksum");
 
         let result = detect_corruption(&path, false).expect("should succeed");
-        assert!(result.is_some(), "Checksum mismatch should report corruption");
+        assert!(
+            result.is_some(),
+            "Checksum mismatch should report corruption"
+        );
 
         match result.unwrap() {
             CorruptionType::InvalidHeader(msg) => {
-                assert!(msg.contains("checksum"), "Message should mention checksum: {}", msg);
+                assert!(
+                    msg.contains("checksum"),
+                    "Message should mention checksum: {}",
+                    msg
+                );
             }
             other => panic!("Expected InvalidHeader for checksum, got {:?}", other),
         }
@@ -2611,7 +2721,11 @@ mod tests {
         let result = detect_corruption(&path, true).expect("should succeed");
         // File is exactly 64 bytes, which passes header check
         // Arena check branch: file_size < 64 is false, so no truncation reported
-        assert!(result.is_none(), "Small but valid file should pass: {:?}", result);
+        assert!(
+            result.is_none(),
+            "Small but valid file should pass: {:?}",
+            result
+        );
     }
 
     #[test]
@@ -2700,10 +2814,16 @@ mod tests {
         // Test finding segments in nonexistent directory
         let nonexistent = Path::new("/nonexistent/wal_archive");
         let segments = find_wal_archive_segments(nonexistent);
-        assert!(segments.is_empty(), "Nonexistent dir should return empty vec");
+        assert!(
+            segments.is_empty(),
+            "Nonexistent dir should return empty vec"
+        );
 
         let pending = find_wal_pending_segments(nonexistent);
-        assert!(pending.is_empty(), "Nonexistent pending dir should return empty vec");
+        assert!(
+            pending.is_empty(),
+            "Nonexistent pending dir should return empty vec"
+        );
     }
 
     #[test]
@@ -2725,7 +2845,10 @@ mod tests {
         // Different input should produce different CRC
         let other_data = b"other";
         let crc_other = crc32_header(other_data);
-        assert_ne!(crc_test, crc_other, "Different input should produce different CRC");
+        assert_ne!(
+            crc_test, crc_other,
+            "Different input should produce different CRC"
+        );
     }
 
     #[test]
@@ -2755,38 +2878,47 @@ mod tests {
             wal.append(WalRecord::Insert {
                 term: b"insert1".to_vec(),
                 value: None,
-            }).expect("append insert");
+            })
+            .expect("append insert");
             wal.append(WalRecord::Insert {
                 term: b"insert2".to_vec(),
                 value: Some(b"value".to_vec()),
-            }).expect("append insert with value");
+            })
+            .expect("append insert with value");
             wal.append(WalRecord::Remove {
                 term: b"remove1".to_vec(),
-            }).expect("append remove");
+            })
+            .expect("append remove");
             wal.append(WalRecord::Increment {
                 term: b"counter".to_vec(),
                 delta: 5,
                 result: 10,
-            }).expect("append increment");
+            })
+            .expect("append increment");
             wal.append(WalRecord::Upsert {
                 term: b"upsert1".to_vec(),
                 value: b"new_value".to_vec(),
-            }).expect("append upsert");
+            })
+            .expect("append upsert");
             wal.append(WalRecord::CompareAndSwap {
                 term: b"cas1".to_vec(),
                 expected: None,
                 new_value: b"cas_value".to_vec(),
                 success: true,
-            }).expect("append successful CAS");
+            })
+            .expect("append successful CAS");
             wal.append(WalRecord::CompareAndSwap {
                 term: b"cas2".to_vec(),
                 expected: Some(b"wrong".to_vec()),
                 new_value: b"cas_value2".to_vec(),
                 success: false,
-            }).expect("append failed CAS");
+            })
+            .expect("append failed CAS");
             // Transaction records should be skipped
-            wal.append(WalRecord::BeginTx { tx_id: 1 }).expect("append begin");
-            wal.append(WalRecord::CommitTx { tx_id: 1 }).expect("append commit");
+            wal.append(WalRecord::BeginTx { tx_id: 1 })
+                .expect("append begin");
+            wal.append(WalRecord::CommitTx { tx_id: 1 })
+                .expect("append commit");
             wal.checkpoint(9).expect("checkpoint");
             wal.sync().expect("sync");
         }
@@ -2823,13 +2955,12 @@ mod tests {
                     (b"batch2".to_vec(), Some(b"val".to_vec())),
                     (b"batch3".to_vec(), None),
                 ],
-            }).expect("append batch insert");
+            })
+            .expect("append batch insert");
             wal.append(WalRecord::BatchIncrement {
-                entries: vec![
-                    (b"counter1".to_vec(), 1),
-                    (b"counter2".to_vec(), 2),
-                ],
-            }).expect("append batch increment");
+                entries: vec![(b"counter1".to_vec(), 1), (b"counter2".to_vec(), 2)],
+            })
+            .expect("append batch increment");
             wal.sync().expect("sync");
         }
 

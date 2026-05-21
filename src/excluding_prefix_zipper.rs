@@ -462,9 +462,7 @@ pub struct ValuedExcludingIterator<'a, Z: ValuedDictZipper, P> {
     inner: ExcludingIterator<'a, Z, P>,
 }
 
-impl<'a, Z: ValuedDictZipper, P: AsRef<[Z::Unit]>> Iterator
-    for ValuedExcludingIterator<'a, Z, P>
-{
+impl<'a, Z: ValuedDictZipper, P: AsRef<[Z::Unit]>> Iterator for ValuedExcludingIterator<'a, Z, P> {
     type Item = (Vec<Z::Unit>, Z::Value);
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -551,12 +549,7 @@ mod tests {
 
     #[test]
     fn test_valued_excluding_iterator() {
-        let terms_with_values = vec![
-            ("cat", 1usize),
-            ("cats", 2),
-            ("\x00meta", 99),
-            ("dog", 3),
-        ];
+        let terms_with_values = vec![("cat", 1usize), ("cats", 2), ("\x00meta", 99), ("dog", 3)];
         let dict = DoubleArrayTrie::from_terms_with_values(terms_with_values.into_iter());
 
         let zipper = DoubleArrayTrieZipper::new_from_dict(&dict);

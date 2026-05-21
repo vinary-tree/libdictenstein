@@ -101,7 +101,6 @@ pub use header::WalHeader;
 
 mod header;
 
-
 // `WalWriter` was relocated to the sibling `wal::writer` module; re-exported
 // here under its original path.
 pub use writer::WalWriter;
@@ -200,9 +199,9 @@ mod sync_handle;
 // the sibling `wal::sync_backend` module. They are re-exported below so
 // downstream code (and the rest of this file) can keep using the unqualified
 // names `WalSyncBackend`, `StdFsync`, `IoUringFsync`.
-pub use sync_backend::{StdFsync, WalSyncBackend};
 #[cfg(feature = "io-uring-backend")]
 pub use sync_backend::IoUringFsync;
+pub use sync_backend::{StdFsync, WalSyncBackend};
 
 mod sync_backend;
 
@@ -465,7 +464,9 @@ mod tests {
         // Verify archive segment was created
         assert!(archive_path.exists(), "Archive segment should exist");
         assert!(
-            archive_path.extension().map_or(false, |ext| ext == "segment"),
+            archive_path
+                .extension()
+                .map_or(false, |ext| ext == "segment"),
             "Archive should have .segment extension"
         );
 
@@ -473,12 +474,20 @@ mod tests {
         assert!(wal_path.exists(), "Active WAL should exist");
         let reader = WalReader::new(&wal_path).expect("open active WAL");
         let records: Vec<_> = reader.iter().collect();
-        assert_eq!(records.len(), 0, "Active WAL should be empty after rotation");
+        assert_eq!(
+            records.len(),
+            0,
+            "Active WAL should be empty after rotation"
+        );
 
         // Verify archived segment contains the records
         let reader = WalReader::new(&archive_path).expect("open archive");
         let records: Vec<_> = reader.iter().collect();
-        assert_eq!(records.len(), 3, "Archive should have 3 records (2 inserts + 1 checkpoint)");
+        assert_eq!(
+            records.len(),
+            3,
+            "Archive should have 3 records (2 inserts + 1 checkpoint)"
+        );
     }
 
     #[test]
@@ -532,10 +541,7 @@ mod tests {
             let ext = segments[i].extension().unwrap_or_default();
             assert_eq!(ext, "segment", "Archived segments should come first");
         }
-        assert_eq!(
-            segments[3], wal_path,
-            "Active WAL should be last"
-        );
+        assert_eq!(segments[3], wal_path, "Active WAL should be last");
     }
 
     #[test]
@@ -610,7 +616,10 @@ mod tests {
         assert_eq!(segments[0], wal_path);
 
         // Archive dir should not exist
-        assert!(!archive_dir.exists(), "Archive dir should not be created when disabled");
+        assert!(
+            !archive_dir.exists(),
+            "Archive dir should not be created when disabled"
+        );
     }
 
     #[test]
@@ -626,8 +635,8 @@ mod tests {
         // Test empty batch
         let record = WalRecord::BatchInsert { entries: vec![] };
         let buf = record.serialize_payload();
-        let deserialized = WalRecord::deserialize(WalRecordType::BatchInsert, &buf)
-            .expect("deserialize");
+        let deserialized =
+            WalRecord::deserialize(WalRecordType::BatchInsert, &buf).expect("deserialize");
         match deserialized {
             WalRecord::BatchInsert { entries } => {
                 assert_eq!(entries.len(), 0);
@@ -641,19 +650,29 @@ mod tests {
             (b"foo".to_vec(), None),
             (b"bar".to_vec(), Some(b"baz".to_vec())),
         ];
-        let record = WalRecord::BatchInsert { entries: entries.clone() };
+        let record = WalRecord::BatchInsert {
+            entries: entries.clone(),
+        };
         let buf = record.serialize_payload();
-        let deserialized = WalRecord::deserialize(WalRecordType::BatchInsert, &buf)
-            .expect("deserialize");
+        let deserialized =
+            WalRecord::deserialize(WalRecordType::BatchInsert, &buf).expect("deserialize");
         match deserialized {
-            WalRecord::BatchInsert { entries: deserialized_entries } => {
+            WalRecord::BatchInsert {
+                entries: deserialized_entries,
+            } => {
                 assert_eq!(deserialized_entries.len(), 3);
                 assert_eq!(deserialized_entries[0].0, b"hello");
-                assert_eq!(deserialized_entries[0].1.as_ref().map(|v| v.as_slice()), Some(b"world".as_slice()));
+                assert_eq!(
+                    deserialized_entries[0].1.as_ref().map(|v| v.as_slice()),
+                    Some(b"world".as_slice())
+                );
                 assert_eq!(deserialized_entries[1].0, b"foo");
                 assert!(deserialized_entries[1].1.is_none());
                 assert_eq!(deserialized_entries[2].0, b"bar");
-                assert_eq!(deserialized_entries[2].1.as_ref().map(|v| v.as_slice()), Some(b"baz".as_slice()));
+                assert_eq!(
+                    deserialized_entries[2].1.as_ref().map(|v| v.as_slice()),
+                    Some(b"baz".as_slice())
+                );
             }
             _ => panic!("Expected BatchInsert"),
         }
@@ -768,23 +787,24 @@ mod tests {
 
         // At least one thread should succeed (the one that created the file)
         let successes = results.iter().filter(|r| r.is_ok()).count();
-        assert!(
-            successes >= 1,
-            "At least one thread should succeed"
-        );
+        assert!(successes >= 1, "At least one thread should succeed");
 
         // All threads should either succeed or fail with an expected error (Io)
         // No thread should fail with NotFound or AlreadyExists (those are TOCTOU symptoms)
-        let toctou_failures = results.iter().filter(|r| {
-            matches!(r, Err(WalError::NotFound) | Err(WalError::AlreadyExists))
-        }).count();
+        let toctou_failures = results
+            .iter()
+            .filter(|r| matches!(r, Err(WalError::NotFound) | Err(WalError::AlreadyExists)))
+            .count();
         assert_eq!(
             toctou_failures, 0,
             "No threads should fail with TOCTOU-related errors (NotFound/AlreadyExists)"
         );
 
         // Verify the file was created
-        assert!(wal_path.exists(), "WAL file should exist after concurrent access");
+        assert!(
+            wal_path.exists(),
+            "WAL file should exist after concurrent access"
+        );
     }
 
     /// Test that concurrent create with exclusive mode fails correctly for losers.
@@ -1032,8 +1052,8 @@ mod tests {
             ..Default::default()
         };
 
-        let wal = AsyncWalWriter::create(&wal_path, config, archive_config)
-            .expect("create async WAL");
+        let wal =
+            AsyncWalWriter::create(&wal_path, config, archive_config).expect("create async WAL");
 
         // Append some records
         let lsn1 = wal
@@ -1071,8 +1091,8 @@ mod tests {
             ..Default::default()
         };
 
-        let wal = AsyncWalWriter::create(&wal_path, config, archive_config)
-            .expect("create async WAL");
+        let wal =
+            AsyncWalWriter::create(&wal_path, config, archive_config).expect("create async WAL");
 
         // Append records
         wal.append(WalRecord::Insert {
@@ -1110,8 +1130,8 @@ mod tests {
             ..Default::default()
         };
 
-        let wal = AsyncWalWriter::create(&wal_path, config, archive_config)
-            .expect("create async WAL");
+        let wal =
+            AsyncWalWriter::create(&wal_path, config, archive_config).expect("create async WAL");
 
         // Append records
         for i in 0..5 {
@@ -1150,8 +1170,8 @@ mod tests {
             ..Default::default()
         };
 
-        let wal = AsyncWalWriter::create(&wal_path, config, archive_config)
-            .expect("create async WAL");
+        let wal =
+            AsyncWalWriter::create(&wal_path, config, archive_config).expect("create async WAL");
 
         // Append initial batch
         for i in 0..10 {
@@ -1205,8 +1225,8 @@ mod tests {
             ..Default::default()
         };
 
-        let wal = AsyncWalWriter::create(&wal_path, config, archive_config)
-            .expect("create async WAL");
+        let wal =
+            AsyncWalWriter::create(&wal_path, config, archive_config).expect("create async WAL");
 
         let mut handles = Vec::new();
 
@@ -1250,8 +1270,8 @@ mod tests {
             ..Default::default()
         };
 
-        let wal = AsyncWalWriter::create(&wal_path, config, archive_config)
-            .expect("create async WAL");
+        let wal =
+            AsyncWalWriter::create(&wal_path, config, archive_config).expect("create async WAL");
 
         // Append a record
         wal.append(WalRecord::Insert {
@@ -1264,7 +1284,9 @@ mod tests {
         let handle = wal.sync_async().expect("sync_async");
 
         // Wait with a very long timeout (should succeed)
-        let completed = handle.wait_timeout(Duration::from_secs(10)).expect("wait_timeout");
+        let completed = handle
+            .wait_timeout(Duration::from_secs(10))
+            .expect("wait_timeout");
         assert!(completed, "Sync should complete within timeout");
     }
 
@@ -1283,8 +1305,8 @@ mod tests {
             ..Default::default()
         };
 
-        let wal = AsyncWalWriter::create(&wal_path, config, archive_config)
-            .expect("create async WAL");
+        let wal =
+            AsyncWalWriter::create(&wal_path, config, archive_config).expect("create async WAL");
 
         // Sync without any records (should be no-op)
         let handle = wal.sync_async().expect("sync_async empty");
@@ -1326,8 +1348,8 @@ mod tests {
         }
 
         // Collect all segments using the recovery function
-        let segments = collect_all_segments(&wal_path, &archive_config, &config)
-            .expect("collect segments");
+        let segments =
+            collect_all_segments(&wal_path, &archive_config, &config).expect("collect segments");
 
         // Should have at least the active WAL (archive segment may have been created)
         assert!(!segments.is_empty(), "Should have at least one segment");
@@ -1363,8 +1385,8 @@ mod tests {
             ..Default::default()
         };
 
-        let wal = AsyncWalWriter::create(&wal_path, config, archive_config)
-            .expect("create async WAL");
+        let wal =
+            AsyncWalWriter::create(&wal_path, config, archive_config).expect("create async WAL");
 
         // Write and sync some data
         wal.append(WalRecord::Insert {
@@ -1399,7 +1421,7 @@ mod tests {
 
         let config = AsyncWalConfig {
             pending_dir: dir.path().join("wal_pending"),
-            max_pending_segments: 2, // Very low limit
+            max_pending_segments: 2,        // Very low limit
             max_pending_bytes: 1024 * 1024, // 1MB
             ..Default::default()
         };
@@ -1409,8 +1431,8 @@ mod tests {
             ..Default::default()
         };
 
-        let wal = AsyncWalWriter::create(&wal_path, config, archive_config)
-            .expect("create async WAL");
+        let wal =
+            AsyncWalWriter::create(&wal_path, config, archive_config).expect("create async WAL");
 
         // Write enough data to trigger multiple rotations
         // This tests that backpressure kicks in when we have too many pending segments
@@ -1446,8 +1468,8 @@ mod tests {
         };
         let archive_config = WalConfig::default();
 
-        let wal = AsyncWalWriter::create(&wal_path, config, archive_config)
-            .expect("create async WAL");
+        let wal =
+            AsyncWalWriter::create(&wal_path, config, archive_config).expect("create async WAL");
 
         wal.append(WalRecord::Insert {
             term: b"test".to_vec(),
@@ -1514,12 +1536,16 @@ mod tests {
         // Insert requires at least 5 bytes: term_len (4) + has_value (1)
         let payload = vec![0, 0, 0]; // Only 3 bytes
         let result = WalRecord::deserialize(WalRecordType::Insert, &payload);
-        assert!(matches!(result, Err(WalError::CorruptedRecord(msg)) if msg.contains("payload too short")));
+        assert!(
+            matches!(result, Err(WalError::CorruptedRecord(msg)) if msg.contains("payload too short"))
+        );
 
         // Exactly 4 bytes is still too short
         let payload = vec![0, 0, 0, 0];
         let result = WalRecord::deserialize(WalRecordType::Insert, &payload);
-        assert!(matches!(result, Err(WalError::CorruptedRecord(msg)) if msg.contains("payload too short")));
+        assert!(
+            matches!(result, Err(WalError::CorruptedRecord(msg)) if msg.contains("payload too short"))
+        );
     }
 
     #[test]
@@ -1529,7 +1555,9 @@ mod tests {
         payload.extend_from_slice(&10u32.to_le_bytes()); // term_len = 10
         payload.extend_from_slice(&[b'a', b'b', b'c', b'd']); // Only 4 bytes of term
         let result = WalRecord::deserialize(WalRecordType::Insert, &payload);
-        assert!(matches!(result, Err(WalError::CorruptedRecord(msg)) if msg.contains("term truncated")));
+        assert!(
+            matches!(result, Err(WalError::CorruptedRecord(msg)) if msg.contains("term truncated"))
+        );
     }
 
     #[test]
@@ -1539,14 +1567,18 @@ mod tests {
         payload.extend_from_slice(&5u32.to_le_bytes()); // term_len = 5
         payload.extend_from_slice(b"hello"); // term
         payload.push(1); // has_value = true
-        // Missing value_len bytes
+                         // Missing value_len bytes
         let result = WalRecord::deserialize(WalRecordType::Insert, &payload);
-        assert!(matches!(result, Err(WalError::CorruptedRecord(msg)) if msg.contains("value length truncated")));
+        assert!(
+            matches!(result, Err(WalError::CorruptedRecord(msg)) if msg.contains("value length truncated"))
+        );
 
         // Only partial value_len
         payload.extend_from_slice(&[0, 0]); // Only 2 bytes of value_len
         let result = WalRecord::deserialize(WalRecordType::Insert, &payload);
-        assert!(matches!(result, Err(WalError::CorruptedRecord(msg)) if msg.contains("value length truncated")));
+        assert!(
+            matches!(result, Err(WalError::CorruptedRecord(msg)) if msg.contains("value length truncated"))
+        );
     }
 
     #[test]
@@ -1559,7 +1591,9 @@ mod tests {
         payload.extend_from_slice(&10u32.to_le_bytes()); // value_len = 10
         payload.extend_from_slice(&[1, 2, 3, 4, 5]); // Only 5 bytes of value
         let result = WalRecord::deserialize(WalRecordType::Insert, &payload);
-        assert!(matches!(result, Err(WalError::CorruptedRecord(msg)) if msg.contains("value truncated")));
+        assert!(
+            matches!(result, Err(WalError::CorruptedRecord(msg)) if msg.contains("value truncated"))
+        );
     }
 
     #[test]
@@ -1585,7 +1619,9 @@ mod tests {
         // Remove requires at least 4 bytes for term_len
         let payload = vec![0, 0]; // Only 2 bytes
         let result = WalRecord::deserialize(WalRecordType::Remove, &payload);
-        assert!(matches!(result, Err(WalError::CorruptedRecord(msg)) if msg.contains("payload too short")));
+        assert!(
+            matches!(result, Err(WalError::CorruptedRecord(msg)) if msg.contains("payload too short"))
+        );
     }
 
     #[test]
@@ -1595,7 +1631,9 @@ mod tests {
         payload.extend_from_slice(&10u32.to_le_bytes()); // term_len = 10
         payload.extend_from_slice(&[b'a', b'b', b'c']); // Only 3 bytes
         let result = WalRecord::deserialize(WalRecordType::Remove, &payload);
-        assert!(matches!(result, Err(WalError::CorruptedRecord(msg)) if msg.contains("term truncated")));
+        assert!(
+            matches!(result, Err(WalError::CorruptedRecord(msg)) if msg.contains("term truncated"))
+        );
     }
 
     #[test]
@@ -1603,12 +1641,16 @@ mod tests {
         // Checkpoint requires 16 bytes: checkpoint_lsn (8) + timestamp (8)
         let payload = vec![0; 10]; // Only 10 bytes
         let result = WalRecord::deserialize(WalRecordType::Checkpoint, &payload);
-        assert!(matches!(result, Err(WalError::CorruptedRecord(msg)) if msg.contains("payload too short")));
+        assert!(
+            matches!(result, Err(WalError::CorruptedRecord(msg)) if msg.contains("payload too short"))
+        );
 
         // 15 bytes is still too short
         let payload = vec![0; 15];
         let result = WalRecord::deserialize(WalRecordType::Checkpoint, &payload);
-        assert!(matches!(result, Err(WalError::CorruptedRecord(msg)) if msg.contains("payload too short")));
+        assert!(
+            matches!(result, Err(WalError::CorruptedRecord(msg)) if msg.contains("payload too short"))
+        );
     }
 
     #[test]
@@ -1616,7 +1658,9 @@ mod tests {
         // BeginTx requires 8 bytes for tx_id
         let payload = vec![0; 5]; // Only 5 bytes
         let result = WalRecord::deserialize(WalRecordType::BeginTx, &payload);
-        assert!(matches!(result, Err(WalError::CorruptedRecord(msg)) if msg.contains("payload too short")));
+        assert!(
+            matches!(result, Err(WalError::CorruptedRecord(msg)) if msg.contains("payload too short"))
+        );
     }
 
     #[test]
@@ -1624,7 +1668,9 @@ mod tests {
         // CommitTx requires 8 bytes for tx_id
         let payload = vec![0; 7]; // Only 7 bytes
         let result = WalRecord::deserialize(WalRecordType::CommitTx, &payload);
-        assert!(matches!(result, Err(WalError::CorruptedRecord(msg)) if msg.contains("payload too short")));
+        assert!(
+            matches!(result, Err(WalError::CorruptedRecord(msg)) if msg.contains("payload too short"))
+        );
     }
 
     #[test]
@@ -1632,7 +1678,9 @@ mod tests {
         // AbortTx requires 8 bytes for tx_id
         let payload = vec![0; 3]; // Only 3 bytes
         let result = WalRecord::deserialize(WalRecordType::AbortTx, &payload);
-        assert!(matches!(result, Err(WalError::CorruptedRecord(msg)) if msg.contains("payload too short")));
+        assert!(
+            matches!(result, Err(WalError::CorruptedRecord(msg)) if msg.contains("payload too short"))
+        );
     }
 
     #[test]
@@ -1640,7 +1688,9 @@ mod tests {
         // Increment requires at least 4 bytes for term_len
         let payload = vec![0; 2]; // Only 2 bytes
         let result = WalRecord::deserialize(WalRecordType::Increment, &payload);
-        assert!(matches!(result, Err(WalError::CorruptedRecord(msg)) if msg.contains("payload too short")));
+        assert!(
+            matches!(result, Err(WalError::CorruptedRecord(msg)) if msg.contains("payload too short"))
+        );
     }
 
     #[test]
@@ -1659,7 +1709,9 @@ mod tests {
         // Upsert requires at least 4 bytes for term_len
         let payload = vec![0; 3]; // Only 3 bytes
         let result = WalRecord::deserialize(WalRecordType::Upsert, &payload);
-        assert!(matches!(result, Err(WalError::CorruptedRecord(msg)) if msg.contains("payload too short")));
+        assert!(
+            matches!(result, Err(WalError::CorruptedRecord(msg)) if msg.contains("payload too short"))
+        );
     }
 
     #[test]
@@ -1668,9 +1720,11 @@ mod tests {
         let mut payload = Vec::new();
         payload.extend_from_slice(&5u32.to_le_bytes()); // term_len = 5
         payload.extend_from_slice(b"hello"); // term
-        // Missing value_len (4 bytes)
+                                             // Missing value_len (4 bytes)
         let result = WalRecord::deserialize(WalRecordType::Upsert, &payload);
-        assert!(matches!(result, Err(WalError::CorruptedRecord(msg)) if msg.contains("term truncated")));
+        assert!(
+            matches!(result, Err(WalError::CorruptedRecord(msg)) if msg.contains("term truncated"))
+        );
     }
 
     #[test]
@@ -1682,7 +1736,9 @@ mod tests {
         payload.extend_from_slice(&10u32.to_le_bytes()); // value_len = 10
         payload.extend_from_slice(&[1, 2, 3]); // Only 3 bytes of value
         let result = WalRecord::deserialize(WalRecordType::Upsert, &payload);
-        assert!(matches!(result, Err(WalError::CorruptedRecord(msg)) if msg.contains("value truncated")));
+        assert!(
+            matches!(result, Err(WalError::CorruptedRecord(msg)) if msg.contains("value truncated"))
+        );
     }
 
     #[test]
@@ -1690,7 +1746,9 @@ mod tests {
         // CAS requires at least 4 bytes for term_len
         let payload = vec![0; 2]; // Only 2 bytes
         let result = WalRecord::deserialize(WalRecordType::CompareAndSwap, &payload);
-        assert!(matches!(result, Err(WalError::CorruptedRecord(msg)) if msg.contains("payload too short")));
+        assert!(
+            matches!(result, Err(WalError::CorruptedRecord(msg)) if msg.contains("payload too short"))
+        );
     }
 
     #[test]
@@ -1699,9 +1757,11 @@ mod tests {
         let mut payload = Vec::new();
         payload.extend_from_slice(&5u32.to_le_bytes()); // term_len = 5
         payload.extend_from_slice(b"hello"); // term
-        // Missing has_expected byte
+                                             // Missing has_expected byte
         let result = WalRecord::deserialize(WalRecordType::CompareAndSwap, &payload);
-        assert!(matches!(result, Err(WalError::CorruptedRecord(msg)) if msg.contains("term truncated")));
+        assert!(
+            matches!(result, Err(WalError::CorruptedRecord(msg)) if msg.contains("term truncated"))
+        );
     }
 
     #[test]
@@ -1711,9 +1771,11 @@ mod tests {
         payload.extend_from_slice(&5u32.to_le_bytes()); // term_len = 5
         payload.extend_from_slice(b"hello"); // term
         payload.push(1); // has_expected = true
-        // Missing expected_len (4 bytes)
+                         // Missing expected_len (4 bytes)
         let result = WalRecord::deserialize(WalRecordType::CompareAndSwap, &payload);
-        assert!(matches!(result, Err(WalError::CorruptedRecord(msg)) if msg.contains("expected length truncated")));
+        assert!(
+            matches!(result, Err(WalError::CorruptedRecord(msg)) if msg.contains("expected length truncated"))
+        );
     }
 
     #[test]
@@ -1726,7 +1788,9 @@ mod tests {
         payload.extend_from_slice(&10u32.to_le_bytes()); // expected_len = 10
         payload.extend_from_slice(&[1, 2, 3]); // Only 3 bytes
         let result = WalRecord::deserialize(WalRecordType::CompareAndSwap, &payload);
-        assert!(matches!(result, Err(WalError::CorruptedRecord(msg)) if msg.contains("expected truncated")));
+        assert!(
+            matches!(result, Err(WalError::CorruptedRecord(msg)) if msg.contains("expected truncated"))
+        );
     }
 
     #[test]
@@ -1736,9 +1800,11 @@ mod tests {
         payload.extend_from_slice(&5u32.to_le_bytes()); // term_len = 5
         payload.extend_from_slice(b"hello"); // term
         payload.push(0); // has_expected = false
-        // Missing new_value_len (4 bytes)
+                         // Missing new_value_len (4 bytes)
         let result = WalRecord::deserialize(WalRecordType::CompareAndSwap, &payload);
-        assert!(matches!(result, Err(WalError::CorruptedRecord(msg)) if msg.contains("new_value length truncated")));
+        assert!(
+            matches!(result, Err(WalError::CorruptedRecord(msg)) if msg.contains("new_value length truncated"))
+        );
     }
 
     #[test]
@@ -1751,7 +1817,9 @@ mod tests {
         payload.extend_from_slice(&10u32.to_le_bytes()); // new_value_len = 10
         payload.extend_from_slice(&[1, 2, 3, 4, 5]); // Only 5 bytes (missing success byte too)
         let result = WalRecord::deserialize(WalRecordType::CompareAndSwap, &payload);
-        assert!(matches!(result, Err(WalError::CorruptedRecord(msg)) if msg.contains("new_value truncated")));
+        assert!(
+            matches!(result, Err(WalError::CorruptedRecord(msg)) if msg.contains("new_value truncated"))
+        );
     }
 
     #[test]
@@ -1759,7 +1827,9 @@ mod tests {
         // BatchInsert requires at least 4 bytes for count
         let payload = vec![0; 2]; // Only 2 bytes
         let result = WalRecord::deserialize(WalRecordType::BatchInsert, &payload);
-        assert!(matches!(result, Err(WalError::CorruptedRecord(msg)) if msg.contains("payload too short")));
+        assert!(
+            matches!(result, Err(WalError::CorruptedRecord(msg)) if msg.contains("payload too short"))
+        );
     }
 
     #[test]
@@ -1767,10 +1837,12 @@ mod tests {
         // count=2, but entry 0 is incomplete
         let mut payload = Vec::new();
         payload.extend_from_slice(&2u32.to_le_bytes()); // count = 2
-        // Entry 0: incomplete term_len
+                                                        // Entry 0: incomplete term_len
         payload.extend_from_slice(&[0, 0]); // Only 2 bytes of term_len
         let result = WalRecord::deserialize(WalRecordType::BatchInsert, &payload);
-        assert!(matches!(result, Err(WalError::CorruptedRecord(msg)) if msg.contains("entry 0 term_len truncated")));
+        assert!(
+            matches!(result, Err(WalError::CorruptedRecord(msg)) if msg.contains("entry 0 term_len truncated"))
+        );
     }
 
     #[test]
@@ -1781,7 +1853,9 @@ mod tests {
         payload.extend_from_slice(&10u32.to_le_bytes()); // term_len = 10
         payload.extend_from_slice(&[b'a', b'b', b'c']); // Only 3 bytes of term
         let result = WalRecord::deserialize(WalRecordType::BatchInsert, &payload);
-        assert!(matches!(result, Err(WalError::CorruptedRecord(msg)) if msg.contains("entry 0 term truncated")));
+        assert!(
+            matches!(result, Err(WalError::CorruptedRecord(msg)) if msg.contains("entry 0 term truncated"))
+        );
     }
 
     #[test]
@@ -1792,9 +1866,11 @@ mod tests {
         payload.extend_from_slice(&5u32.to_le_bytes()); // term_len = 5
         payload.extend_from_slice(b"hello"); // term
         payload.push(1); // has_value = true
-        // Missing value_len (4 bytes)
+                         // Missing value_len (4 bytes)
         let result = WalRecord::deserialize(WalRecordType::BatchInsert, &payload);
-        assert!(matches!(result, Err(WalError::CorruptedRecord(msg)) if msg.contains("entry 0 value_len truncated")));
+        assert!(
+            matches!(result, Err(WalError::CorruptedRecord(msg)) if msg.contains("entry 0 value_len truncated"))
+        );
     }
 
     #[test]
@@ -1808,7 +1884,9 @@ mod tests {
         payload.extend_from_slice(&10u32.to_le_bytes()); // value_len = 10
         payload.extend_from_slice(&[1, 2, 3]); // Only 3 bytes of value
         let result = WalRecord::deserialize(WalRecordType::BatchInsert, &payload);
-        assert!(matches!(result, Err(WalError::CorruptedRecord(msg)) if msg.contains("entry 0 value truncated")));
+        assert!(
+            matches!(result, Err(WalError::CorruptedRecord(msg)) if msg.contains("entry 0 value truncated"))
+        );
     }
 
     #[test]
@@ -1827,7 +1905,9 @@ mod tests {
         payload.extend_from_slice(&[b'a', b'b']); // Only 2 bytes of term
 
         let result = WalRecord::deserialize(WalRecordType::BatchInsert, &payload);
-        assert!(matches!(result, Err(WalError::CorruptedRecord(msg)) if msg.contains("entry 1 term truncated")));
+        assert!(
+            matches!(result, Err(WalError::CorruptedRecord(msg)) if msg.contains("entry 1 term truncated"))
+        );
     }
 
     #[test]
@@ -1842,7 +1922,11 @@ mod tests {
         let result = WalRecord::deserialize(WalRecordType::Increment, &payload);
         assert!(result.is_ok());
         match result.unwrap() {
-            WalRecord::Increment { term, delta, result: res } => {
+            WalRecord::Increment {
+                term,
+                delta,
+                result: res,
+            } => {
                 assert_eq!(term, b"count");
                 assert_eq!(delta, 42);
                 assert_eq!(res, 100);
@@ -1867,7 +1951,12 @@ mod tests {
         let result = WalRecord::deserialize(WalRecordType::CompareAndSwap, &payload);
         assert!(result.is_ok());
         match result.unwrap() {
-            WalRecord::CompareAndSwap { term, expected, new_value, success } => {
+            WalRecord::CompareAndSwap {
+                term,
+                expected,
+                new_value,
+                success,
+            } => {
                 assert_eq!(term, b"key");
                 assert_eq!(expected, Some(b"old".to_vec()));
                 assert_eq!(new_value, b"new");
@@ -1891,7 +1980,12 @@ mod tests {
         let result = WalRecord::deserialize(WalRecordType::CompareAndSwap, &payload);
         assert!(result.is_ok());
         match result.unwrap() {
-            WalRecord::CompareAndSwap { term, expected, new_value, success } => {
+            WalRecord::CompareAndSwap {
+                term,
+                expected,
+                new_value,
+                success,
+            } => {
                 assert_eq!(term, b"key");
                 assert!(expected.is_none());
                 assert_eq!(new_value, b"value");
@@ -1939,7 +2033,10 @@ mod tests {
         let result = WalRecord::deserialize(WalRecordType::Checkpoint, &payload);
         assert!(result.is_ok());
         match result.unwrap() {
-            WalRecord::Checkpoint { checkpoint_lsn, timestamp } => {
+            WalRecord::Checkpoint {
+                checkpoint_lsn,
+                timestamp,
+            } => {
                 assert_eq!(checkpoint_lsn, 100);
                 assert_eq!(timestamp, 1234567890);
             }
@@ -1961,7 +2058,7 @@ mod tests {
         assert!(matches!(result, Err(WalError::InvalidRecordType(255))));
 
         // Valid types should work (1-14 are all valid now)
-        assert!(WalRecordType::try_from(1u8).is_ok());  // Insert
+        assert!(WalRecordType::try_from(1u8).is_ok()); // Insert
         assert!(WalRecordType::try_from(10u8).is_ok()); // BatchInsert
         assert!(WalRecordType::try_from(12u8).is_ok()); // VersionUpdate
         assert!(WalRecordType::try_from(14u8).is_ok()); // VersionGc
@@ -2023,11 +2120,16 @@ mod tests {
         let payload = record.serialize_payload();
         assert_eq!(payload.len(), 32); // 4 x u64 = 32 bytes
 
-        let deserialized = WalRecord::deserialize(WalRecordType::VersionUpdate, &payload)
-            .expect("deserialize");
+        let deserialized =
+            WalRecord::deserialize(WalRecordType::VersionUpdate, &payload).expect("deserialize");
 
         match deserialized {
-            WalRecord::VersionUpdate { version_id, root_ptr, node_count, timestamp } => {
+            WalRecord::VersionUpdate {
+                version_id,
+                root_ptr,
+                node_count,
+                timestamp,
+            } => {
                 assert_eq!(version_id, 42);
                 assert_eq!(root_ptr, 0x1234_5678_9ABC_DEF0);
                 assert_eq!(node_count, 1000);
@@ -2049,11 +2151,14 @@ mod tests {
         let payload = record.serialize_payload();
         assert_eq!(payload.len(), 12); // u64 + u32 = 12 bytes
 
-        let deserialized = WalRecord::deserialize(WalRecordType::VersionDurable, &payload)
-            .expect("deserialize");
+        let deserialized =
+            WalRecord::deserialize(WalRecordType::VersionDurable, &payload).expect("deserialize");
 
         match deserialized {
-            WalRecord::VersionDurable { version_id, checksum } => {
+            WalRecord::VersionDurable {
+                version_id,
+                checksum,
+            } => {
                 assert_eq!(version_id, 99);
                 assert_eq!(checksum, 0xDEAD_BEEF);
             }
@@ -2072,8 +2177,8 @@ mod tests {
         let payload = record.serialize_payload();
         assert_eq!(payload.len(), 4 + 5 * 8); // count (4) + 5 x u64 (40) = 44 bytes
 
-        let deserialized = WalRecord::deserialize(WalRecordType::VersionGc, &payload)
-            .expect("deserialize");
+        let deserialized =
+            WalRecord::deserialize(WalRecordType::VersionGc, &payload).expect("deserialize");
 
         match deserialized {
             WalRecord::VersionGc { version_ids } => {
@@ -2092,8 +2197,8 @@ mod tests {
         let payload = record.serialize_payload();
         assert_eq!(payload.len(), 4); // just the count
 
-        let deserialized = WalRecord::deserialize(WalRecordType::VersionGc, &payload)
-            .expect("deserialize");
+        let deserialized =
+            WalRecord::deserialize(WalRecordType::VersionGc, &payload).expect("deserialize");
 
         match deserialized {
             WalRecord::VersionGc { version_ids } => {

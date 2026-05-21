@@ -151,7 +151,9 @@ impl DirtyTracker {
             return None;
         }
 
-        self.dirty_slots.get(&arena_id).map(|slots| slots.iter().copied())
+        self.dirty_slots
+            .get(&arena_id)
+            .map(|slots| slots.iter().copied())
     }
 
     /// Get the number of dirty arenas
@@ -263,7 +265,11 @@ impl DirtyTrackerStats {
     /// # Returns
     ///
     /// A tuple of (full_checkpoint_bytes, incremental_bytes, savings_percent)
-    pub fn estimate_io_savings(&self, total_arenas: usize, arena_size: usize) -> (usize, usize, f64) {
+    pub fn estimate_io_savings(
+        &self,
+        total_arenas: usize,
+        arena_size: usize,
+    ) -> (usize, usize, f64) {
         let full_bytes = total_arenas * arena_size;
         let incremental_bytes = self.dirty_arenas * arena_size;
 

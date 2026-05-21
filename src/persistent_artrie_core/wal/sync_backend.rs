@@ -76,23 +76,21 @@ impl WalSyncBackend for IoUringFsync {
 
         // Submit fsync SQE
         unsafe {
-            ring.submission()
-                .push(&fsync_op)
-                .map_err(|_| std::io::Error::new(
-                    std::io::ErrorKind::Other,
-                    "io_uring submission queue full",
-                ))?;
+            ring.submission().push(&fsync_op).map_err(|_| {
+                std::io::Error::new(std::io::ErrorKind::Other, "io_uring submission queue full")
+            })?;
         }
 
         // Submit and wait for completion
         ring.submit_and_wait(1)?;
 
         // Check the CQE result
-        let cqe = ring.completion().next()
-            .ok_or_else(|| std::io::Error::new(
+        let cqe = ring.completion().next().ok_or_else(|| {
+            std::io::Error::new(
                 std::io::ErrorKind::Other,
                 "io_uring: no completion entry after fsync",
-            ))?;
+            )
+        })?;
 
         let result = cqe.result();
         if result < 0 {

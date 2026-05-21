@@ -59,9 +59,8 @@ impl<V: DictionaryValue + serde::Serialize + serde::de::DeserializeOwned, S: Blo
 
         let new_value = current + delta;
 
-        let value_bytes = bincode::serialize(&new_value).map_err(|e| {
-            PersistentARTrieError::internal(format!("Serialization error: {}", e))
-        })?;
+        let value_bytes = bincode::serialize(&new_value)
+            .map_err(|e| PersistentARTrieError::internal(format!("Serialization error: {}", e)))?;
         let v: V = bincode::deserialize(&value_bytes).map_err(|e| {
             PersistentARTrieError::internal(format!("Cannot create value from i64: {}", e))
         })?;
@@ -127,9 +126,8 @@ impl<V: DictionaryValue + serde::Serialize + serde::de::DeserializeOwned, S: Blo
         self.remove_impl_core(term);
         self.insert_impl_core(term, Some(value.clone()));
 
-        let value_bytes = bincode::serialize(&value).map_err(|e| {
-            PersistentARTrieError::internal(format!("Serialization error: {}", e))
-        })?;
+        let value_bytes = bincode::serialize(&value)
+            .map_err(|e| PersistentARTrieError::internal(format!("Serialization error: {}", e)))?;
 
         if let Some(ref wal_writer) = self.wal_writer {
             let record = WalRecord::Upsert {
@@ -186,9 +184,8 @@ impl<V: DictionaryValue + serde::Serialize + serde::de::DeserializeOwned, S: Blo
         };
 
         let expected_bytes = expected.as_ref().and_then(|e| bincode::serialize(e).ok());
-        let new_value_bytes = bincode::serialize(&new_value).map_err(|e| {
-            PersistentARTrieError::internal(format!("Serialization error: {}", e))
-        })?;
+        let new_value_bytes = bincode::serialize(&new_value)
+            .map_err(|e| PersistentARTrieError::internal(format!("Serialization error: {}", e)))?;
 
         if matches {
             self.remove_impl_core(term);
@@ -240,9 +237,8 @@ impl<V: DictionaryValue + serde::Serialize + serde::de::DeserializeOwned, S: Blo
 
         self.insert_impl_core(term, Some(default.clone()));
 
-        let value_bytes = bincode::serialize(&default).map_err(|e| {
-            PersistentARTrieError::internal(format!("Serialization error: {}", e))
-        })?;
+        let value_bytes = bincode::serialize(&default)
+            .map_err(|e| PersistentARTrieError::internal(format!("Serialization error: {}", e)))?;
 
         if let Some(ref wal_writer) = self.wal_writer {
             let record = WalRecord::Upsert {

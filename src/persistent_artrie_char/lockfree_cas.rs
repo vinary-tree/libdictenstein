@@ -13,8 +13,8 @@
 //!   `find_in_lockfree_trie`, `find_leaf_lockfree`, `find_leaf_recursive`,
 //!   `merge_lockfree_zipper`, `chars_to_utf8_bytes`
 
-use std::sync::Arc;
 use std::sync::atomic::Ordering as AtomicOrdering;
+use std::sync::Arc;
 
 use crate::persistent_artrie::block_storage::BlockStorage;
 use crate::persistent_artrie::error::{PersistentARTrieError, Result};
@@ -87,9 +87,13 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     pub fn insert_cas(&self, term: &str) -> bool {
         use std::sync::atomic::Ordering;
 
-        let lockfree_root = self.lockfree_root.as_ref()
+        let lockfree_root = self
+            .lockfree_root
+            .as_ref()
             .expect("Lock-free mode not enabled. Call enable_lockfree() first.");
-        let lockfree_cache = self.lockfree_cache.as_ref()
+        let lockfree_cache = self
+            .lockfree_cache
+            .as_ref()
             .expect("Lock-free mode not enabled. Call enable_lockfree() first.");
 
         // Fast path: check cache first
@@ -176,7 +180,13 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
         node: &Arc<super::nodes::persistent_node::PersistentCharNode>,
         chars: &[u32],
         depth: usize,
-    ) -> std::result::Result<(Arc<super::nodes::persistent_node::PersistentCharNode>, Arc<super::nodes::persistent_node::PersistentCharNode>), ()> {
+    ) -> std::result::Result<
+        (
+            Arc<super::nodes::persistent_node::PersistentCharNode>,
+            Arc<super::nodes::persistent_node::PersistentCharNode>,
+        ),
+        (),
+    > {
         use super::nodes::persistent_node::PersistentCharNode;
         use crate::persistent_artrie::swizzled_ptr::SwizzledPtr;
 
@@ -242,7 +252,13 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     /// A tuple of (subtree_root, leaf_node) where:
     /// - subtree_root is the top of the new path (to be attached as a child)
     /// - leaf_node is the final node (to have try_set_final called on it)
-    fn create_lockfree_path(&self, chars: &[u32]) -> (Arc<super::nodes::persistent_node::PersistentCharNode>, Arc<super::nodes::persistent_node::PersistentCharNode>) {
+    fn create_lockfree_path(
+        &self,
+        chars: &[u32],
+    ) -> (
+        Arc<super::nodes::persistent_node::PersistentCharNode>,
+        Arc<super::nodes::persistent_node::PersistentCharNode>,
+    ) {
         use super::nodes::persistent_node::PersistentCharNode;
         use crate::persistent_artrie::swizzled_ptr::SwizzledPtr;
 
@@ -407,7 +423,11 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
         use super::nodes::persistent_node::PersistentCharNode;
 
         if depth == chars.len() {
-            return if node.is_final() { Some(Arc::clone(node)) } else { None };
+            return if node.is_final() {
+                Some(Arc::clone(node))
+            } else {
+                None
+            };
         }
 
         let child_ptr = node.find_child(chars[depth])?;
@@ -471,7 +491,9 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     pub fn increment_cas(&self, key: &str, delta: u64) -> u64 {
         use std::sync::atomic::Ordering;
 
-        let lockfree_root = self.lockfree_root.as_ref()
+        let lockfree_root = self
+            .lockfree_root
+            .as_ref()
             .expect("Lock-free mode not enabled. Call enable_lockfree() first.");
 
         let chars: Vec<u32> = key.chars().map(|c| c as u32).collect();
@@ -547,11 +569,7 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
         //   - String allocation / UTF-8 encode+decode per entry
         //   - redundant root-to-leaf persistent trie traversal per entry
         let mut key_buf: Vec<u32> = Vec::new();
-        let count = self.merge_lockfree_zipper(
-            &root_node,
-            persistent_root,
-            &mut key_buf,
-        )?;
+        let count = self.merge_lockfree_zipper(&root_node, persistent_root, &mut key_buf)?;
 
         // Clear the lock-free layer
         if let Some(ref cache) = self.lockfree_cache {
@@ -596,19 +614,19 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
                 let current: i64 = if node.is_final() {
                     if let Some(v) = node.value.as_ref() {
                         let bytes = bincode::serialize(v).map_err(|e| {
-                            PersistentARTrieError::internal(
-                                format!("Failed to serialize value: {}", e),
-                            )
+                            PersistentARTrieError::internal(format!(
+                                "Failed to serialize value: {}",
+                                e
+                            ))
                         })?;
                         if bytes.len() == 8 {
-                            i64::from_le_bytes(
-                                bytes.try_into().expect("checked len == 8"),
-                            )
+                            i64::from_le_bytes(bytes.try_into().expect("checked len == 8"))
                         } else {
                             bincode::deserialize::<i64>(&bytes).map_err(|e| {
-                                PersistentARTrieError::internal(
-                                    format!("Failed to deserialize as i64: {}", e),
-                                )
+                                PersistentARTrieError::internal(format!(
+                                    "Failed to deserialize as i64: {}",
+                                    e
+                                ))
                             })?
                         }
                     } else {
@@ -622,14 +640,10 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
 
                 // Serialize the new value back to V
                 let value_bytes = bincode::serialize(&new_value).map_err(|e| {
-                    PersistentARTrieError::internal(
-                        format!("Failed to serialize new value: {}", e),
-                    )
+                    PersistentARTrieError::internal(format!("Failed to serialize new value: {}", e))
                 })?;
                 let v: V = bincode::deserialize(&value_bytes).map_err(|e| {
-                    PersistentARTrieError::internal(
-                        format!("Failed to deserialize as V: {}", e),
-                    )
+                    PersistentARTrieError::internal(format!("Failed to deserialize as V: {}", e))
                 })?;
 
                 // WAL record — the only point that needs UTF-8 encoding
@@ -670,11 +684,7 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
                 };
 
                 key_buf.push(child_key);
-                count += self.merge_lockfree_zipper(
-                    &child,
-                    persistent_child,
-                    key_buf,
-                )?;
+                count += self.merge_lockfree_zipper(&child, persistent_child, key_buf)?;
                 key_buf.pop();
             }
         }

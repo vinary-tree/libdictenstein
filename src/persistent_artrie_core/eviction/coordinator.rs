@@ -18,7 +18,9 @@ use super::config::{EvictionConfig, EvictionStats, EvictionStatsAtomic, Eviction
 use super::disk_registry::DiskLocationRegistry;
 use super::lru_tracker::LruRegistry;
 use crate::persistent_artrie_core::concurrency::EpochManager;
-use crate::persistent_artrie_core::memory_monitor::{MemoryMonitorStats, MemoryPressureLevel, MemoryPressureMonitor};
+use crate::persistent_artrie_core::memory_monitor::{
+    MemoryMonitorStats, MemoryPressureLevel, MemoryPressureMonitor,
+};
 // `NodeType` is referenced by the inline test suite at the bottom of this
 // file but not by the production impl, so it is gated to test builds.
 #[cfg(test)]
@@ -87,10 +89,7 @@ impl EvictionCoordinator {
     ///
     /// The coordinator is created in a stopped state. Call `start()` with
     /// the eviction callback to begin processing eviction requests.
-    pub fn new(
-        config: EvictionConfig,
-        epoch_manager: Arc<EpochManager>,
-    ) -> Arc<Self> {
+    pub fn new(config: EvictionConfig, epoch_manager: Arc<EpochManager>) -> Arc<Self> {
         let lru_registry = if config.use_lru_tracking {
             Arc::new(LruRegistry::new())
         } else {
@@ -127,15 +126,9 @@ impl EvictionCoordinator {
     ///
     /// * `self_arc` - Arc to this coordinator (for the eviction thread)
     /// * `callback` - Function to perform the actual node eviction
-    pub fn start<F>(
-        self: &Arc<Self>,
-        callback: F,
-    ) -> Result<(), String>
+    pub fn start<F>(self: &Arc<Self>, callback: F) -> Result<(), String>
     where
-        F: Fn(Vec<(u64, Vec<u8>, SwizzledPtr)>) -> (usize, usize)
-            + Send
-            + Sync
-            + 'static,
+        F: Fn(Vec<(u64, Vec<u8>, SwizzledPtr)>) -> (usize, usize) + Send + Sync + 'static,
     {
         if !self.config.enabled {
             return Ok(());
@@ -161,15 +154,9 @@ impl EvictionCoordinator {
     }
 
     /// Start the coordinator for char-level tries.
-    pub fn start_char<F>(
-        self: &Arc<Self>,
-        callback: F,
-    ) -> Result<(), String>
+    pub fn start_char<F>(self: &Arc<Self>, callback: F) -> Result<(), String>
     where
-        F: Fn(Vec<(u64, Vec<char>, SwizzledPtr)>) -> (usize, usize)
-            + Send
-            + Sync
-            + 'static,
+        F: Fn(Vec<(u64, Vec<char>, SwizzledPtr)>) -> (usize, usize) + Send + Sync + 'static,
     {
         if !self.config.enabled {
             return Ok(());
@@ -207,7 +194,10 @@ impl EvictionCoordinator {
         }
 
         // Use custom config or default
-        let pressure_config = self.config.memory_pressure_config.clone()
+        let pressure_config = self
+            .config
+            .memory_pressure_config
+            .clone()
             .unwrap_or_default();
 
         // Create a weak reference for the callback
@@ -227,7 +217,8 @@ impl EvictionCoordinator {
             };
 
             coordinator.request_eviction(urgency);
-        }).map_err(|e| format!("Failed to start memory pressure monitor: {}", e))?;
+        })
+        .map_err(|e| format!("Failed to start memory pressure monitor: {}", e))?;
 
         *self.memory_monitor.write() = Some(Arc::new(monitor));
 
@@ -297,7 +288,10 @@ impl EvictionCoordinator {
         );
 
         // Return the candidates info for the caller to perform actual eviction
-        (candidates.len(), candidates.iter().map(|(_, n)| n.size_bytes).sum())
+        (
+            candidates.len(),
+            candidates.iter().map(|(_, n)| n.size_bytes).sum(),
+        )
     }
 
     /// Get the LRU registry for access tracking.
@@ -353,9 +347,7 @@ impl EvictionCoordinator {
     /// Main eviction loop for byte-level tries.
     fn eviction_loop<F>(self: Arc<Self>, callback: Arc<F>)
     where
-        F: Fn(Vec<(u64, Vec<u8>, SwizzledPtr)>) -> (usize, usize)
-            + Send
-            + Sync,
+        F: Fn(Vec<(u64, Vec<u8>, SwizzledPtr)>) -> (usize, usize) + Send + Sync,
     {
         while !self.shutdown.load(Ordering::Relaxed) {
             // Wait for eviction request
@@ -386,7 +378,8 @@ impl EvictionCoordinator {
             let duration_ms = start.elapsed().as_millis() as u64;
 
             if nodes_evicted > 0 {
-                self.stats.record_eviction(nodes_evicted as u64, bytes_freed as u64, duration_ms);
+                self.stats
+                    .record_eviction(nodes_evicted as u64, bytes_freed as u64, duration_ms);
                 self.last_eviction.store(
                     Instant::now().elapsed().as_millis() as u64,
                     Ordering::Relaxed,
@@ -398,9 +391,7 @@ impl EvictionCoordinator {
     /// Main eviction loop for char-level tries.
     fn eviction_loop_char<F>(self: Arc<Self>, callback: Arc<F>)
     where
-        F: Fn(Vec<(u64, Vec<char>, SwizzledPtr)>) -> (usize, usize)
-            + Send
-            + Sync,
+        F: Fn(Vec<(u64, Vec<char>, SwizzledPtr)>) -> (usize, usize) + Send + Sync,
     {
         while !self.shutdown.load(Ordering::Relaxed) {
             let request = self.wait_for_request();
@@ -427,7 +418,8 @@ impl EvictionCoordinator {
             let duration_ms = start.elapsed().as_millis() as u64;
 
             if nodes_evicted > 0 {
-                self.stats.record_eviction(nodes_evicted as u64, bytes_freed as u64, duration_ms);
+                self.stats
+                    .record_eviction(nodes_evicted as u64, bytes_freed as u64, duration_ms);
                 self.last_eviction.store(
                     Instant::now().elapsed().as_millis() as u64,
                     Ordering::Relaxed,
@@ -442,7 +434,8 @@ impl EvictionCoordinator {
 
         // Wait with timeout to allow periodic shutdown checks
         while queue.is_empty() && !self.shutdown.load(Ordering::Relaxed) {
-            self.request_condvar.wait_for(&mut queue, Duration::from_millis(100));
+            self.request_condvar
+                .wait_for(&mut queue, Duration::from_millis(100));
         }
 
         queue.pop_front()

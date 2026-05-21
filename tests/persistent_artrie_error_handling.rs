@@ -618,8 +618,7 @@ fn test_moderately_large_term() {
     let temp_dir = TempDir::new().expect("create temp dir");
     let dict_path = temp_dir.path().join("large_term.part");
 
-    let mut dict: PersistentARTrie<()> =
-        PersistentARTrie::create(&dict_path).expect("create dict");
+    let mut dict: PersistentARTrie<()> = PersistentARTrie::create(&dict_path).expect("create dict");
 
     // Try to insert a moderately large term (1KB - safe for stack)
     // Note: Very large terms (64KB+) can cause stack overflow due to
@@ -653,8 +652,7 @@ fn test_checkpoint_no_changes() {
     let temp_dir = TempDir::new().expect("create temp dir");
     let dict_path = temp_dir.path().join("checkpoint_no_changes.part");
 
-    let mut dict: PersistentARTrie<()> =
-        PersistentARTrie::create(&dict_path).expect("create dict");
+    let mut dict: PersistentARTrie<()> = PersistentARTrie::create(&dict_path).expect("create dict");
 
     // Insert, checkpoint, then checkpoint again without changes
     let _ = dict.insert("term");

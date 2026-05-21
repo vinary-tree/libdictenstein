@@ -18,8 +18,8 @@
 //! `super::prefetch`; this module just wraps those calls in the
 //! `PersistentARTrie` API surface.
 
-use std::sync::Arc;
 use std::sync::atomic::Ordering as AtomicOrdering;
+use std::sync::Arc;
 
 use crate::persistent_artrie_core::concurrency::{TrieStats, TrieStatsSnapshot};
 use crate::persistent_artrie_core::durability::DurabilityPolicy;
@@ -173,7 +173,10 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
         self.persist_to_disk()?;
 
         if let Some(ref wal_writer) = self.wal_writer {
-            let checkpoint_lsn = self.next_lsn.load(AtomicOrdering::Acquire).saturating_sub(1);
+            let checkpoint_lsn = self
+                .next_lsn
+                .load(AtomicOrdering::Acquire)
+                .saturating_sub(1);
             let timestamp = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()

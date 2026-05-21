@@ -16,8 +16,8 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering as AtomicOrdering};
+use std::sync::Arc;
 
 use log::warn;
 
@@ -85,8 +85,8 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
     /// let dict: PersistentARTrie<()> = PersistentARTrie::create("words.part")?;
     /// ```
     pub fn create<P: AsRef<Path>>(path: P) -> Result<Self> {
-        use super::disk_manager::DiskManager;
         use super::buffer_manager::BufferManager;
+        use super::disk_manager::DiskManager;
         use super::DEFAULT_BUFFER_POOL_SIZE;
 
         let path = path.as_ref();
@@ -117,12 +117,14 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
             ..Default::default()
         };
         let archive_config = WalConfig::default();
-        let wal_writer = AsyncWalWriter::create(&wal_path, async_config, archive_config)
-            .map_err(|e| PersistentARTrieError::io_error(
-                "create_wal",
-                wal_path.display().to_string(),
-                std::io::Error::new(std::io::ErrorKind::Other, e.to_string()),
-            ))?;
+        let wal_writer =
+            AsyncWalWriter::create(&wal_path, async_config, archive_config).map_err(|e| {
+                PersistentARTrieError::io_error(
+                    "create_wal",
+                    wal_path.display().to_string(),
+                    std::io::Error::new(std::io::ErrorKind::Other, e.to_string()),
+                )
+            })?;
         let wal_writer = Arc::new(wal_writer);
 
         // Create arena manager for space-efficient node storage
@@ -169,9 +171,9 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
     /// let dict: PersistentARTrie<()> = PersistentARTrie::create_with_slot_tracking("words.part")?;
     /// ```
     pub fn create_with_slot_tracking<P: AsRef<Path>>(path: P) -> Result<Self> {
-        use super::disk_manager::DiskManager;
-        use super::buffer_manager::BufferManager;
         use super::arena_manager::FlushConfig;
+        use super::buffer_manager::BufferManager;
+        use super::disk_manager::DiskManager;
         use super::DEFAULT_BUFFER_POOL_SIZE;
 
         let path = path.as_ref();
@@ -202,20 +204,20 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
             ..Default::default()
         };
         let archive_config = WalConfig::default();
-        let wal_writer = AsyncWalWriter::create(&wal_path, async_config, archive_config)
-            .map_err(|e| PersistentARTrieError::io_error(
-                "create_wal",
-                wal_path.display().to_string(),
-                std::io::Error::new(std::io::ErrorKind::Other, e.to_string()),
-            ))?;
+        let wal_writer =
+            AsyncWalWriter::create(&wal_path, async_config, archive_config).map_err(|e| {
+                PersistentARTrieError::io_error(
+                    "create_wal",
+                    wal_path.display().to_string(),
+                    std::io::Error::new(std::io::ErrorKind::Other, e.to_string()),
+                )
+            })?;
         let wal_writer = Arc::new(wal_writer);
 
         // Create arena manager with slot-level tracking enabled
         let flush_config = FlushConfig::with_slot_tracking();
-        let arena_manager = ArenaManager::with_buffer_manager_and_config(
-            Arc::clone(&buffer_manager),
-            flush_config,
-        );
+        let arena_manager =
+            ArenaManager::with_buffer_manager_and_config(Arc::clone(&buffer_manager), flush_config);
         let arena_manager = Arc::new(RwLock::new(arena_manager));
 
         Ok(Self {
@@ -257,8 +259,8 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
     /// let dict: PersistentARTrie<()> = PersistentARTrie::open("words.part")?;
     /// ```
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self> {
-        use super::disk_manager::DiskManager;
         use super::buffer_manager::BufferManager;
+        use super::disk_manager::DiskManager;
         use super::recovery::RecoveryManager;
         use super::DEFAULT_BUFFER_POOL_SIZE;
 
@@ -269,10 +271,7 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
             return Err(PersistentARTrieError::io_error(
                 "open",
                 path.display().to_string(),
-                std::io::Error::new(
-                    std::io::ErrorKind::NotFound,
-                    "Dictionary file not found",
-                ),
+                std::io::Error::new(std::io::ErrorKind::NotFound, "Dictionary file not found"),
             ));
         }
 
@@ -291,7 +290,11 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
             if let Some(location) = ptr.disk_location() {
                 // Read descriptor from block 0 at offset 64
                 let mut descriptor_buf = [0u8; 18];
-                disk_manager.read_bytes(location.block_id, DESCRIPTOR_OFFSET, &mut descriptor_buf)?;
+                disk_manager.read_bytes(
+                    location.block_id,
+                    DESCRIPTOR_OFFSET,
+                    &mut descriptor_buf,
+                )?;
                 // arena_count is at bytes 6-9 in the root descriptor
                 u32::from_le_bytes([
                     descriptor_buf[6],
@@ -371,11 +374,13 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
         };
         let archive_config = WalConfig::default();
         let wal_writer = AsyncWalWriter::open_or_create(&wal_path, async_config, archive_config)
-            .map_err(|e| PersistentARTrieError::io_error(
-                "open_wal",
-                wal_path.display().to_string(),
-                std::io::Error::new(std::io::ErrorKind::Other, e.to_string()),
-            ))?;
+            .map_err(|e| {
+                PersistentARTrieError::io_error(
+                    "open_wal",
+                    wal_path.display().to_string(),
+                    std::io::Error::new(std::io::ErrorKind::Other, e.to_string()),
+                )
+            })?;
         let wal_writer = Arc::new(wal_writer);
 
         // Create the dictionary with storage layer
@@ -430,15 +435,14 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
                         }
                     }
                     // Deserialize value from WAL if present
-                    let deserialized_value: Option<V> = value.and_then(|bytes| {
-                        match bincode::deserialize(&bytes) {
+                    let deserialized_value: Option<V> =
+                        value.and_then(|bytes| match bincode::deserialize(&bytes) {
                             Ok(v) => Some(v),
                             Err(e) => {
                                 warn!("Failed to deserialize value from WAL: {:?}", e);
                                 None
                             }
-                        }
-                    });
+                        });
                     // Replay insert without re-logging to WAL
                     dict.insert_impl_no_wal(&term, deserialized_value);
                     replayed_count += 1;
@@ -563,7 +567,9 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
     ///
     /// Combines `open_with_recovery()` and slot tracking enablement.
     /// Returns `(trie, recovery_report)` so callers can inspect recovery status.
-    pub fn open_with_recovery_and_slot_tracking<P: AsRef<Path>>(path: P) -> Result<(Self, super::recovery::RecoveryReport)> {
+    pub fn open_with_recovery_and_slot_tracking<P: AsRef<Path>>(
+        path: P,
+    ) -> Result<(Self, super::recovery::RecoveryReport)> {
         let (dict, report) = Self::open_with_recovery(path)?;
         if let Some(ref am) = dict.arena_manager {
             am.write().enable_slot_tracking();
@@ -602,7 +608,9 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
     ///     eprintln!("Recovered from crash: {} records replayed", report.records_replayed);
     /// }
     /// ```
-    pub fn open_with_recovery<P: AsRef<Path>>(path: P) -> Result<(Self, super::recovery::RecoveryReport)> {
+    pub fn open_with_recovery<P: AsRef<Path>>(
+        path: P,
+    ) -> Result<(Self, super::recovery::RecoveryReport)> {
         use super::wal::WalConfig;
         Self::open_with_recovery_config(path, WalConfig::default())
     }
@@ -623,9 +631,7 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
         path: P,
         config: super::wal::WalConfig,
     ) -> Result<(Self, super::recovery::RecoveryReport)> {
-        use super::recovery::{
-            detect_corruption, find_wal_archive_segments, RecoveryReport,
-        };
+        use super::recovery::{detect_corruption, find_wal_archive_segments, RecoveryReport};
         use super::wal::{WalReader, WalRecord};
         use std::time::Instant;
 
@@ -651,7 +657,10 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
                 let corruption_reason = corruption.to_string();
 
                 // Find archive directory
-                let archive_dir = path.parent().unwrap_or(Path::new(".")).join(&config.archive_dir);
+                let archive_dir = path
+                    .parent()
+                    .unwrap_or(Path::new("."))
+                    .join(&config.archive_dir);
 
                 // Find WAL archive segments
                 let segments = find_wal_archive_segments(&archive_dir);
@@ -701,13 +710,16 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
                         match record {
                             WalRecord::Insert { term, value } => {
                                 // Deserialize value if present
-                                let deserialized: Option<V> = value.and_then(|bytes| {
-                                    bincode::deserialize(&bytes).ok()
-                                });
+                                let deserialized: Option<V> =
+                                    value.and_then(|bytes| bincode::deserialize(&bytes).ok());
                                 trie.insert_impl_no_wal(&term, deserialized);
                                 terms_recovered += 1;
                             }
-                            WalRecord::Increment { term, delta: _, result: val } => {
+                            WalRecord::Increment {
+                                term,
+                                delta: _,
+                                result: val,
+                            } => {
                                 // For increment, store the final result
                                 let value_bytes = val.to_le_bytes();
                                 if let Ok(v) = bincode::deserialize::<V>(&value_bytes) {
@@ -721,7 +733,12 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
                                     terms_recovered += 1;
                                 }
                             }
-                            WalRecord::CompareAndSwap { term, new_value, success, .. } => {
+                            WalRecord::CompareAndSwap {
+                                term,
+                                new_value,
+                                success,
+                                ..
+                            } => {
                                 if success {
                                     if let Ok(v) = bincode::deserialize::<V>(&new_value) {
                                         trie.upsert_impl_no_wal(&term, v);

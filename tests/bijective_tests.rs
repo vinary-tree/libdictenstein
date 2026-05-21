@@ -44,7 +44,10 @@ mod bijective_map {
         ]);
 
         assert_eq!(colors.get_value("red"), Some("Color::Red".to_string()));
-        assert_eq!(colors.get_term(&"Color::Blue".to_string()), Some("blue".to_string()));
+        assert_eq!(
+            colors.get_term(&"Color::Blue".to_string()),
+            Some("blue".to_string())
+        );
     }
 
     #[test]
@@ -107,7 +110,10 @@ mod bijective_map {
         assert_eq!(translations.get_value("hello"), Some("hola".to_string()));
 
         // Spanish to English
-        assert_eq!(translations.get_term(&"hola".to_string()), Some("hello".to_string()));
+        assert_eq!(
+            translations.get_term(&"hola".to_string()),
+            Some("hello".to_string())
+        );
     }
 }
 

@@ -127,7 +127,9 @@ impl CharNode48 {
 
         let count = self.header.num_children as usize;
         for i in 0..count {
-            bucket.entries.insert(self.keys[i], self.children[i].clone());
+            bucket
+                .entries
+                .insert(self.keys[i], self.children[i].clone());
         }
 
         bucket
@@ -347,7 +349,10 @@ mod tests {
         let mut node = CharNode48::new();
 
         // Add Unicode code points
-        let keys: Vec<u32> = "αβγδεζηθικλμνξοπρστυφχψω".chars().map(|c| c as u32).collect();
+        let keys: Vec<u32> = "αβγδεζηθικλμνξοπρστυφχψω"
+            .chars()
+            .map(|c| c as u32)
+            .collect();
         for &key in &keys {
             let child = SwizzledPtr::on_disk(key, 0, NodeType::Node4);
             assert!(node.add_child(key, child).is_ok());

@@ -16,9 +16,7 @@ use libdictenstein::persistent_artrie::PersistentARTrie;
 
 /// Generate test terms in sorted order
 fn generate_sorted_terms(count: usize) -> Vec<String> {
-    (0..count)
-        .map(|i| format!("term_{:08}", i))
-        .collect()
+    (0..count).map(|i| format!("term_{:08}", i)).collect()
 }
 
 /// Generate test terms in random/shuffled order (simulating real-world unsorted input)
@@ -26,9 +24,7 @@ fn generate_shuffled_terms(count: usize) -> Vec<String> {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
 
-    let mut terms: Vec<String> = (0..count)
-        .map(|i| format!("term_{:08}", i))
-        .collect();
+    let mut terms: Vec<String> = (0..count).map(|i| format!("term_{:08}", i)).collect();
 
     // Deterministic shuffle using hash for reproducibility
     let len = terms.len();
@@ -47,8 +43,9 @@ fn generate_varied_prefix_terms(count: usize) -> Vec<String> {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
 
-    let prefixes = ["alpha", "beta", "gamma", "delta", "epsilon",
-                    "zeta", "eta", "theta", "iota", "kappa"];
+    let prefixes = [
+        "alpha", "beta", "gamma", "delta", "epsilon", "zeta", "eta", "theta", "iota", "kappa",
+    ];
 
     let mut terms: Vec<String> = (0..count)
         .map(|i| {
@@ -77,10 +74,8 @@ fn bench_unsorted_batch_inserts(c: &mut Criterion) {
 
     for size in [1000, 5000, 10000] {
         let shuffled_terms = generate_shuffled_terms(size);
-        let entries: Vec<(String, Option<()>)> = shuffled_terms
-            .iter()
-            .map(|t| (t.clone(), None))
-            .collect();
+        let entries: Vec<(String, Option<()>)> =
+            shuffled_terms.iter().map(|t| (t.clone(), None)).collect();
 
         group.throughput(Throughput::Elements(size as u64));
         group.bench_with_input(BenchmarkId::from_parameter(size), &entries, |b, entries| {
@@ -111,10 +106,8 @@ fn bench_sorted_batch_inserts(c: &mut Criterion) {
 
     for size in [1000, 5000, 10000] {
         let shuffled_terms = generate_shuffled_terms(size);
-        let entries: Vec<(String, Option<()>)> = shuffled_terms
-            .iter()
-            .map(|t| (t.clone(), None))
-            .collect();
+        let entries: Vec<(String, Option<()>)> =
+            shuffled_terms.iter().map(|t| (t.clone(), None)).collect();
 
         group.throughput(Throughput::Elements(size as u64));
         group.bench_with_input(BenchmarkId::from_parameter(size), &entries, |b, entries| {
@@ -146,10 +139,7 @@ fn bench_varied_prefix_unsorted(c: &mut Criterion) {
 
     for size in [1000, 5000, 10000] {
         let terms = generate_varied_prefix_terms(size);
-        let entries: Vec<(String, Option<()>)> = terms
-            .iter()
-            .map(|t| (t.clone(), None))
-            .collect();
+        let entries: Vec<(String, Option<()>)> = terms.iter().map(|t| (t.clone(), None)).collect();
 
         group.throughput(Throughput::Elements(size as u64));
         group.bench_with_input(BenchmarkId::from_parameter(size), &entries, |b, entries| {
@@ -180,10 +170,7 @@ fn bench_varied_prefix_sorted(c: &mut Criterion) {
 
     for size in [1000, 5000, 10000] {
         let terms = generate_varied_prefix_terms(size);
-        let entries: Vec<(String, Option<()>)> = terms
-            .iter()
-            .map(|t| (t.clone(), None))
-            .collect();
+        let entries: Vec<(String, Option<()>)> = terms.iter().map(|t| (t.clone(), None)).collect();
 
         group.throughput(Throughput::Elements(size as u64));
         group.bench_with_input(BenchmarkId::from_parameter(size), &entries, |b, entries| {
@@ -214,10 +201,8 @@ fn bench_direct_comparison(c: &mut Criterion) {
 
     let size = 10000;
     let shuffled_terms = generate_shuffled_terms(size);
-    let entries: Vec<(String, Option<()>)> = shuffled_terms
-        .iter()
-        .map(|t| (t.clone(), None))
-        .collect();
+    let entries: Vec<(String, Option<()>)> =
+        shuffled_terms.iter().map(|t| (t.clone(), None)).collect();
 
     group.throughput(Throughput::Elements(size as u64));
 
@@ -284,10 +269,9 @@ fn generate_varied_prefix_entries(count: usize) -> Vec<(Vec<u8>, Option<u32>)> {
     use std::hash::{Hash, Hasher};
 
     let prefixes = [
-        "alpha", "beta", "charlie", "delta", "echo", "foxtrot", "golf", "hotel",
-        "india", "juliet", "kilo", "lima", "mike", "november", "oscar", "papa",
-        "quebec", "romeo", "sierra", "tango", "uniform", "victor", "whiskey",
-        "xray", "yankee", "zulu",
+        "alpha", "beta", "charlie", "delta", "echo", "foxtrot", "golf", "hotel", "india", "juliet",
+        "kilo", "lima", "mike", "november", "oscar", "papa", "quebec", "romeo", "sierra", "tango",
+        "uniform", "victor", "whiskey", "xray", "yankee", "zulu",
     ];
 
     let mut entries: Vec<(Vec<u8>, Option<u32>)> = (0..count)

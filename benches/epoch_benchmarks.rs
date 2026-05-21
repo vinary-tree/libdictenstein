@@ -12,12 +12,10 @@
 //! ```
 
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
-use libdictenstein::persistent_artrie::{
-    CheckpointManager, EpochConfig, WalWriter, WalRecord,
-};
+use libdictenstein::persistent_artrie::{CheckpointManager, EpochConfig, WalRecord, WalWriter};
+use log::info;
 use std::time::Duration;
 use tempfile::tempdir;
-use log::info;
 
 /// Number of operations per benchmark iteration
 const OPS_PER_ITER: u64 = 1000;
@@ -95,8 +93,8 @@ fn bench_epoch_duration(c: &mut Criterion) {
                             ..Default::default()
                         };
 
-                        let manager = CheckpointManager::new(dir.path(), config)
-                            .expect("create manager");
+                        let manager =
+                            CheckpointManager::new(dir.path(), config).expect("create manager");
 
                         let start = std::time::Instant::now();
                         for _ in 0..OPS_PER_ITER {
@@ -140,8 +138,8 @@ fn bench_epoch_ops_limit(c: &mut Criterion) {
                             ..Default::default()
                         };
 
-                        let manager = CheckpointManager::new(dir.path(), config)
-                            .expect("create manager");
+                        let manager =
+                            CheckpointManager::new(dir.path(), config).expect("create manager");
 
                         let start = std::time::Instant::now();
                         for _ in 0..OPS_PER_ITER {
@@ -191,8 +189,8 @@ fn bench_wal_bounding(c: &mut Criterion) {
                             ..Default::default()
                         };
 
-                        let manager = CheckpointManager::new(dir.path(), config)
-                            .expect("create manager");
+                        let manager =
+                            CheckpointManager::new(dir.path(), config).expect("create manager");
 
                         let start = std::time::Instant::now();
                         for _ in 0..ops_count {
@@ -202,7 +200,8 @@ fn bench_wal_bounding(c: &mut Criterion) {
 
                         // Check WAL segment sizes
                         let segments = manager.find_wal_segments().unwrap_or_default();
-                        let total_size: u64 = segments.iter()
+                        let total_size: u64 = segments
+                            .iter()
                             .filter_map(|(_, path)| std::fs::metadata(path).ok())
                             .map(|m| m.len())
                             .sum();
@@ -262,8 +261,8 @@ fn bench_epoch_recovery(c: &mut Criterion) {
 
                         // Phase 2: Measure recovery time
                         let start = std::time::Instant::now();
-                        let recovered_manager = CheckpointManager::new(dir.path(), config)
-                            .expect("recover manager");
+                        let recovered_manager =
+                            CheckpointManager::new(dir.path(), config).expect("recover manager");
                         total_duration += start.elapsed();
 
                         black_box(recovered_manager.stats());
@@ -302,8 +301,7 @@ fn bench_epoch_statistics(c: &mut Criterion) {
                     ..Default::default()
                 };
 
-                let manager = CheckpointManager::new(dir.path(), config)
-                    .expect("create manager");
+                let manager = CheckpointManager::new(dir.path(), config).expect("create manager");
 
                 let start = std::time::Instant::now();
                 for _ in 0..ops_count {
@@ -315,7 +313,8 @@ fn bench_epoch_statistics(c: &mut Criterion) {
                 // Verify epoch count is reasonable
                 let expected_epochs = (ops_count / 200) + 1;
                 assert!(
-                    stats.total_epochs >= expected_epochs - 1 && stats.total_epochs <= expected_epochs + 1,
+                    stats.total_epochs >= expected_epochs - 1
+                        && stats.total_epochs <= expected_epochs + 1,
                     "Expected ~{} epochs, got {}",
                     expected_epochs,
                     stats.total_epochs
@@ -382,8 +381,7 @@ fn bench_epoch_vs_direct(c: &mut Criterion) {
                     ..Default::default()
                 };
 
-                let manager = CheckpointManager::new(dir.path(), config)
-                    .expect("create manager");
+                let manager = CheckpointManager::new(dir.path(), config).expect("create manager");
 
                 let start = std::time::Instant::now();
                 for _ in 0..OPS_PER_ITER {

@@ -16,9 +16,7 @@
 
 #![cfg(feature = "persistent-artrie")]
 
-use libdictenstein::persistent_artrie_char::{
-    PersistentARTrieChar, PersistentARTrieCharZipper,
-};
+use libdictenstein::persistent_artrie_char::{PersistentARTrieChar, PersistentARTrieCharZipper};
 use libdictenstein::zipper::DictZipper;
 use libdictenstein::{DictionaryNode, MappedDictionary};
 
@@ -616,8 +614,7 @@ fn test_deep_trie_no_stack_overflow() {
     let string_length = 500usize; // Deeper than default stack limit for many recursive calls
 
     {
-        let mut trie = PersistentARTrieChar::<u64>::create(&path)
-            .expect("Failed to create trie");
+        let mut trie = PersistentARTrieChar::<u64>::create(&path).expect("Failed to create trie");
 
         for i in 0..num_strings {
             // Generate a long string with varying characters
@@ -665,7 +662,12 @@ fn test_deep_trie_no_stack_overflow() {
             })
             .collect();
         let present = reopened.contains(&long_key);
-        println!("String {} present after reopen: {} (first char: '{}')", i, present, long_key.chars().next().unwrap());
+        println!(
+            "String {} present after reopen: {} (first char: '{}')",
+            i,
+            present,
+            long_key.chars().next().unwrap()
+        );
 
         // Debug: for string 9, try to trace the issue
         if i == 9 && !present {
@@ -676,7 +678,11 @@ fn test_deep_trie_no_stack_overflow() {
         }
     }
 
-    assert_eq!(reopened.len(), num_strings, "All strings should be present after reopen");
+    assert_eq!(
+        reopened.len(),
+        num_strings,
+        "All strings should be present after reopen"
+    );
 
     // Verify we can still look up the strings
     for i in 0..num_strings {
@@ -713,8 +719,7 @@ fn test_deep_unicode_trie_no_stack_overflow() {
     let string_length = 300usize; // Fewer characters but still deep
 
     {
-        let mut trie = PersistentARTrieChar::<u64>::create(&path)
-            .expect("Failed to create trie");
+        let mut trie = PersistentARTrieChar::<u64>::create(&path).expect("Failed to create trie");
 
         for i in 0..num_strings {
             // Generate a long Unicode string with CJK characters
@@ -733,8 +738,7 @@ fn test_deep_unicode_trie_no_stack_overflow() {
     }
 
     // Reopen
-    let reopened = PersistentARTrieChar::<u64>::open(&path)
-        .expect("Failed to reopen Unicode trie");
+    let reopened = PersistentARTrieChar::<u64>::open(&path).expect("Failed to reopen Unicode trie");
 
     assert_eq!(reopened.len(), num_strings);
 }

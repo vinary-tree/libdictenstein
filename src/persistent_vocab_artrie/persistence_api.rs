@@ -50,11 +50,16 @@ impl<S: BlockStorage> super::dict_impl::PersistentVocabARTrie<S> {
         };
 
         // Step 2: Update header with root pointer
-        let buffer_manager = self.buffer_manager.as_ref().ok_or_else(|| {
-            PersistentARTrieError::internal("No buffer manager for checkpoint")
-        })?;
+        let buffer_manager = self
+            .buffer_manager
+            .as_ref()
+            .ok_or_else(|| PersistentARTrieError::internal("No buffer manager for checkpoint"))?;
 
-        let reverse_index_capacity = self.reverse_index.as_ref().map(|r| r.capacity()).unwrap_or(0);
+        let reverse_index_capacity = self
+            .reverse_index
+            .as_ref()
+            .map(|r| r.capacity())
+            .unwrap_or(0);
 
         // Get current block count from disk manager
         let block_count = {
@@ -118,11 +123,13 @@ impl<S: BlockStorage> super::dict_impl::PersistentVocabARTrie<S> {
     /// without the overhead of a full checkpoint.
     pub fn sync(&mut self) -> Result<()> {
         if let Some(ref wal) = self.wal_writer {
-            let lsn = wal.sync().map_err(|e| PersistentARTrieError::io_error(
-                "sync WAL",
-                "WAL",
-                std::io::Error::new(std::io::ErrorKind::Other, e.to_string()),
-            ))?;
+            let lsn = wal.sync().map_err(|e| {
+                PersistentARTrieError::io_error(
+                    "sync WAL",
+                    "WAL",
+                    std::io::Error::new(std::io::ErrorKind::Other, e.to_string()),
+                )
+            })?;
             self.synced_lsn.fetch_max(lsn, Ordering::AcqRel);
         }
         Ok(())
@@ -170,11 +177,13 @@ impl<S: BlockStorage> super::dict_impl::PersistentVocabARTrie<S> {
 
         // Step 1: Flush reverse index (mmap, very fast)
         if let Some(ref ri) = self.reverse_index {
-            ri.flush().map_err(|e| PersistentARTrieError::io_error(
-                "flush reverse index",
-                "reverse_index",
-                std::io::Error::new(std::io::ErrorKind::Other, e.to_string()),
-            ))?;
+            ri.flush().map_err(|e| {
+                PersistentARTrieError::io_error(
+                    "flush reverse index",
+                    "reverse_index",
+                    std::io::Error::new(std::io::ErrorKind::Other, e.to_string()),
+                )
+            })?;
         }
 
         // Step 2: Save bloom filter if present
@@ -190,11 +199,13 @@ impl<S: BlockStorage> super::dict_impl::PersistentVocabARTrie<S> {
 
         // Step 4: Sync and truncate WAL
         if let Some(ref wal) = self.wal_writer {
-            let lsn = wal.sync().map_err(|e| PersistentARTrieError::io_error(
-                "sync WAL",
-                "WAL",
-                std::io::Error::new(std::io::ErrorKind::Other, e.to_string()),
-            ))?;
+            let lsn = wal.sync().map_err(|e| {
+                PersistentARTrieError::io_error(
+                    "sync WAL",
+                    "WAL",
+                    std::io::Error::new(std::io::ErrorKind::Other, e.to_string()),
+                )
+            })?;
             self.synced_lsn.fetch_max(lsn, Ordering::AcqRel);
 
             // Note: We do NOT truncate the WAL here because we haven't persisted
@@ -246,21 +257,25 @@ impl<S: BlockStorage> super::dict_impl::PersistentVocabARTrie<S> {
         // Flush reverse index synchronously (it uses mmap and is not cloneable)
         // This is fast since it just flushes the memory-mapped region
         if let Some(ref ri) = self.reverse_index {
-            ri.flush().map_err(|e| PersistentARTrieError::io_error(
-                "flush reverse index",
-                "reverse_index",
-                std::io::Error::new(std::io::ErrorKind::Other, e.to_string()),
-            ))?;
+            ri.flush().map_err(|e| {
+                PersistentARTrieError::io_error(
+                    "flush reverse index",
+                    "reverse_index",
+                    std::io::Error::new(std::io::ErrorKind::Other, e.to_string()),
+                )
+            })?;
         }
 
         // Sync the WAL to ensure all records are durable
         // WAL provides crash recovery - the main trie file is only updated during checkpoint
         if let Some(ref wal) = self.wal_writer {
-            wal.sync().map_err(|e| PersistentARTrieError::io_error(
-                "sync WAL",
-                "WAL",
-                std::io::Error::new(std::io::ErrorKind::Other, e.to_string()),
-            ))?;
+            wal.sync().map_err(|e| {
+                PersistentARTrieError::io_error(
+                    "sync WAL",
+                    "WAL",
+                    std::io::Error::new(std::io::ErrorKind::Other, e.to_string()),
+                )
+            })?;
         }
 
         // Return immediately completed handle since sync() blocks
@@ -285,7 +300,9 @@ impl<S: BlockStorage> super::dict_impl::PersistentVocabARTrie<S> {
     /// - You want fine-grained control over sync completion
     pub fn sync_to_disk(&mut self) -> Result<()> {
         let handle = self.sync_to_disk_async()?;
-        handle.wait().map_err(|e| PersistentARTrieError::internal(&e))?;
+        handle
+            .wait()
+            .map_err(|e| PersistentARTrieError::internal(&e))?;
         self.dirty.store(false, Ordering::Release);
         Ok(())
     }

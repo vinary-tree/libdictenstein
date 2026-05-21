@@ -181,10 +181,9 @@ pub mod mutation_core;
 
 // Re-export shared types (always available)
 pub use types::{
-    CharTrieFileHeader, CharTrieNodeInner, CharTrieRoot,
-    CHAR_FILE_HEADER_SIZE, CHAR_TRIE_MAGIC, CHAR_HEADER_VERSION_V1, CHAR_HEADER_VERSION_V2,
-    DEFAULT_CHAR_BUFFER_POOL_SIZE,
-    EnhancedRecoveryMode, EnhancedRecoveryStats,
+    CharTrieFileHeader, CharTrieNodeInner, CharTrieRoot, EnhancedRecoveryMode,
+    EnhancedRecoveryStats, CHAR_FILE_HEADER_SIZE, CHAR_HEADER_VERSION_V1, CHAR_HEADER_VERSION_V2,
+    CHAR_TRIE_MAGIC, DEFAULT_CHAR_BUFFER_POOL_SIZE,
 };
 
 // Re-export disk-backed types (feature-gated)
@@ -193,7 +192,9 @@ pub use types::{PrefixTermWithArena, PrefixTermWithValueAndArena};
 // Re-export disk-backed implementation types
 pub use dict_impl_char::{
     // Transaction types
-    CharDocumentTransaction, DurabilityPolicy, TransactionState,
+    CharDocumentTransaction,
+    DurabilityPolicy,
+    TransactionState,
 };
 
 // Note: CharTrieNodeInner is already re-exported from types
@@ -207,37 +208,47 @@ pub use nodes::{
 // Re-export serialization
 pub use serialization_char::{
     char_from_bytes, char_serialized_size, char_to_bytes, deserialize_char_node,
-    serialize_char_node, CHAR_FORMAT_VERSION, CHAR_NODE_MAGIC, CHAR_SERIALIZED_HEADER_SIZE,
-    SerializedCharNodeHeader,
+    serialize_char_node, SerializedCharNodeHeader, CHAR_FORMAT_VERSION, CHAR_NODE_MAGIC,
+    CHAR_SERIALIZED_HEADER_SIZE,
 };
 
 // Re-export compact serialization (under feature flag)
 pub use serialization_char::{
-    char_from_bytes_compact, char_to_bytes_compact, char_compact_serialized_size,
+    char_compact_serialized_size, char_from_bytes_compact, char_to_bytes_compact,
 };
 
 // Re-export compact encoding utilities (under feature flag)
 pub use compact_encoding::{
-    CompactHeader, DecodedCompactNode, determine_key_width, determine_ptr_width,
-    COMPACT_NODE_TYPE_N4, COMPACT_NODE_TYPE_N16, COMPACT_NODE_TYPE_N48, COMPACT_NODE_TYPE_BUCKET,
+    determine_key_width, determine_ptr_width, CompactHeader, DecodedCompactNode,
+    COMPACT_NODE_TYPE_BUCKET, COMPACT_NODE_TYPE_N16, COMPACT_NODE_TYPE_N4, COMPACT_NODE_TYPE_N48,
 };
 
 // Re-export arena types (under feature flag)
 pub use arena::{
-    ArenaHeader, CharNodeArena, CharNodeArenaV2, SlotEntry, VarintSlotEntry,
-    ARENA_MAGIC, ARENA_MAGIC_V2, ARENA_VERSION, ARENA_VERSION_V2,
-    FLAG_VARINT_DIRECTORY, HEADER_SIZE, MIN_FREE_SPACE, SLOT_SIZE,
+    ArenaHeader, CharNodeArena, CharNodeArenaV2, SlotEntry, VarintSlotEntry, ARENA_MAGIC,
+    ARENA_MAGIC_V2, ARENA_VERSION, ARENA_VERSION_V2, FLAG_VARINT_DIRECTORY, HEADER_SIZE,
+    MIN_FREE_SPACE, SLOT_SIZE,
 };
 
 // Re-export arena manager types (under feature flag)
-pub use arena_manager::{ArenaManager, ArenaSlot, ArenaStats, FlushConfig, FlushStats, ReservedSlots};
+pub use arena_manager::{
+    ArenaManager, ArenaSlot, ArenaStats, FlushConfig, FlushStats, ReservedSlots,
+};
 
 // Re-export per-node logging types (under feature flag)
 pub use per_node_log_char::{
-    CharNodeLogEntry, CharInlineLog, CharInlineLogIter, CharLogWriter, CharLogIterExt,
+    CharInlineLog,
+    CharInlineLogIter,
+    CharLogIterExt,
+    CharLogWriter,
+    CharNodeLogEntry,
     // Re-export node-agnostic types from the base module
-    DirtyNodeTracker, NodeId, PageId, PerNodeLogConfig,
-    PerNodeLogStats, PerNodeLogStatsAtomic,
+    DirtyNodeTracker,
+    NodeId,
+    PageId,
+    PerNodeLogConfig,
+    PerNodeLogStats,
+    PerNodeLogStatsAtomic,
 };
 
 // Re-export traversal context types (under feature flag)
@@ -247,32 +258,44 @@ pub use traversal_context::{LightweightTraversalContext, TraversalContext, Trave
 pub use dirty_tracker::{BatchDirtyTracker, DirtyTracker, DirtyTrackerStats};
 
 // Re-export deduplication types (under feature flag)
-pub use dedup::{BatchDeduplicator, DeduplicatingArenaManager, DeduplicatorStats, NodeDeduplicator};
+pub use dedup::{
+    BatchDeduplicator, DeduplicatingArenaManager, DeduplicatorStats, NodeDeduplicator,
+};
 
 // Re-export relative encoding types (under feature flag)
 pub use relative_encoding::{
-    encode_child_pointer, decode_child_pointer, encode_children, decode_children,
-    encode_sequential_siblings, decode_sequential_siblings, encoded_size, is_same_arena,
-    FLAG_CROSS_ARENA, FLAG_RELATIVE_OFFSETS, FLAG_SEQUENTIAL_SIBLINGS, CROSS_ARENA_SIZE,
+    decode_child_pointer, decode_children, decode_sequential_siblings, encode_child_pointer,
+    encode_children, encode_sequential_siblings, encoded_size, is_same_arena, CROSS_ARENA_SIZE,
+    FLAG_CROSS_ARENA, FLAG_RELATIVE_OFFSETS, FLAG_SEQUENTIAL_SIBLINGS,
 };
 
 // Re-export recovery types (under feature flag)
 pub use recovery::{
-    CorruptionInfo, CorruptionType, RecoveredOperation, RecoveryManager,
-    RecoveryMode, RecoveryPolicy, RecoveryReport, detect_corruption,
+    detect_corruption,
+    find_wal_archive_segments,
+    rebuild_from_wal_segments,
+    CorruptionInfo,
+    CorruptionType,
     // Re-exported from 1-byte implementation (node-agnostic)
-    IncrementalRecovery, RecoveredState, RecoveryError, RecoveryStats,
-    find_wal_archive_segments, rebuild_from_wal_segments,
+    IncrementalRecovery,
+    RecoveredOperation,
+    RecoveredState,
+    RecoveryError,
+    RecoveryManager,
+    RecoveryMode,
+    RecoveryPolicy,
+    RecoveryReport,
+    RecoveryStats,
 };
 
 // Re-export eviction types from byte-level implementation (shared)
 pub use crate::persistent_artrie::eviction::{
-    AccessTracker, DiskLocationRegistry, EvictionConfig, EvictionCoordinator,
-    EvictionStats, EvictionUrgency, LruRegistry,
+    AccessTracker, DiskLocationRegistry, EvictionConfig, EvictionCoordinator, EvictionStats,
+    EvictionUrgency, LruRegistry,
 };
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering as AtomicOrdering};
+use std::sync::Arc;
 
 use parking_lot::RwLock;
 
@@ -286,12 +309,12 @@ use crate::{Dictionary, DictionaryNode, MappedDictionary, MutableMappedDictionar
 ///
 /// This type alias provides `Arc<RwLock<...>>` semantics for concurrent access
 /// to the disk-backed character trie.
-pub type SharedCharARTrie<V, S = crate::persistent_artrie::disk_manager::MmapDiskManager> = Arc<RwLock<PersistentARTrieChar<V, S>>>;
+pub type SharedCharARTrie<V, S = crate::persistent_artrie::disk_manager::MmapDiskManager> =
+    Arc<RwLock<PersistentARTrieChar<V, S>>>;
 
 /// Deprecated alias for backward compatibility.
 #[deprecated(since = "0.9.0", note = "Use SharedCharARTrie instead")]
 pub type SharedCharTrie<V> = SharedCharARTrie<V>;
-
 
 /// Character-level Persistent Adaptive Radix Trie for Unicode support.
 ///
@@ -381,7 +404,9 @@ pub struct PersistentARTrieChar<V: DictionaryValue = (), S: crate::persistent_ar
 }
 
 // Manual Debug implementation to avoid requiring Debug on BufferManager and WalWriter
-impl<V: DictionaryValue, S: crate::persistent_artrie::block_storage::BlockStorage> std::fmt::Debug for PersistentARTrieChar<V, S> {
+impl<V: DictionaryValue, S: crate::persistent_artrie::block_storage::BlockStorage> std::fmt::Debug
+    for PersistentARTrieChar<V, S>
+{
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PersistentARTrieChar")
             .field("root", &self.root)
@@ -400,7 +425,9 @@ impl<V: DictionaryValue> Default for PersistentARTrieChar<V> {
 
 // === WalManaged Trait Implementation ===
 
-impl<V: DictionaryValue, S: crate::persistent_artrie::block_storage::BlockStorage> WalManaged for PersistentARTrieChar<V, S> {
+impl<V: DictionaryValue, S: crate::persistent_artrie::block_storage::BlockStorage> WalManaged
+    for PersistentARTrieChar<V, S>
+{
     fn wal_writer(&self) -> Option<&Arc<AsyncWalWriter>> {
         self.wal_writer.as_ref()
     }
@@ -409,7 +436,9 @@ impl<V: DictionaryValue, S: crate::persistent_artrie::block_storage::BlockStorag
 // Note: Most methods are implemented in dict_impl_char.rs on `impl super::PersistentARTrieChar<V>`
 // These wrapper methods provide convenience APIs
 
-impl<V: DictionaryValue, S: crate::persistent_artrie::block_storage::BlockStorage> PersistentARTrieChar<V, S> {
+impl<V: DictionaryValue, S: crate::persistent_artrie::block_storage::BlockStorage>
+    PersistentARTrieChar<V, S>
+{
     /// Check if trie has unsaved changes.
     ///
     /// Returns `true` if any modifications have been made since the last
@@ -484,7 +513,10 @@ impl<V: DictionaryValue, S: crate::persistent_artrie::block_storage::BlockStorag
     /// Iterate over all terms with the given prefix, including values (convenience wrapper).
     ///
     /// Returns `None` if the prefix doesn't exist in the trie.
-    pub fn iter_prefix_with_values_vec(&self, prefix: &str) -> Option<impl Iterator<Item = (String, V)> + '_>
+    pub fn iter_prefix_with_values_vec(
+        &self,
+        prefix: &str,
+    ) -> Option<impl Iterator<Item = (String, V)> + '_>
     where
         V: Clone,
     {
@@ -538,7 +570,9 @@ unsafe impl<V: DictionaryValue> Sync for PersistentARTrieCharNode<V> {}
 
 impl<V: DictionaryValue> PersistentARTrieCharNode<V> {
     /// Create a node from the trie's root
-    fn from_trie<S: crate::persistent_artrie::block_storage::BlockStorage>(trie: &PersistentARTrieChar<V, S>) -> Self {
+    fn from_trie<S: crate::persistent_artrie::block_storage::BlockStorage>(
+        trie: &PersistentARTrieChar<V, S>,
+    ) -> Self {
         match &trie.root {
             CharTrieRoot::Empty => Self {
                 node: None,
@@ -585,7 +619,8 @@ impl<V: DictionaryValue> DictionaryNode for PersistentARTrieCharNode<V> {
         if let Some(ptr) = self.node {
             // Safety: pointer is valid for the lifetime of the trie
             unsafe {
-                (*ptr).get_child(label)
+                (*ptr)
+                    .get_child(label)
                     .map(|child| Self::from_ptr(child as *const _))
             }
         } else {
@@ -601,7 +636,8 @@ impl<V: DictionaryValue> DictionaryNode for PersistentARTrieCharNode<V> {
         let ptr = self.node.unwrap();
         // Safety: pointer is valid for the lifetime of the trie
         let edges: Vec<_> = unsafe {
-            (*ptr).iter_children()
+            (*ptr)
+                .iter_children()
                 .map(|(c, child)| (c, Self::from_ptr(child as *const _)))
                 .collect()
         };
@@ -609,7 +645,9 @@ impl<V: DictionaryValue> DictionaryNode for PersistentARTrieCharNode<V> {
     }
 }
 
-impl<V: DictionaryValue, S: crate::persistent_artrie::block_storage::BlockStorage> Dictionary for PersistentARTrieChar<V, S> {
+impl<V: DictionaryValue, S: crate::persistent_artrie::block_storage::BlockStorage> Dictionary
+    for PersistentARTrieChar<V, S>
+{
     type Node = PersistentARTrieCharNode<V>;
 
     fn root(&self) -> Self::Node {
@@ -626,7 +664,9 @@ impl<V: DictionaryValue, S: crate::persistent_artrie::block_storage::BlockStorag
     }
 }
 
-impl<V: DictionaryValue + Clone, S: crate::persistent_artrie::block_storage::BlockStorage> MappedDictionary for PersistentARTrieChar<V, S> {
+impl<V: DictionaryValue + Clone, S: crate::persistent_artrie::block_storage::BlockStorage>
+    MappedDictionary for PersistentARTrieChar<V, S>
+{
     type Value = V;
 
     fn get_value(&self, term: &str) -> Option<V> {
@@ -698,7 +738,9 @@ impl<V: DictionaryValue + Clone> MutableMappedDictionary for SharedCharARTrie<V>
             guard.upsert(term, value).unwrap_or(false);
             false // Term existed
         } else {
-            guard.insert_with_value(term, default_value).unwrap_or(false);
+            guard
+                .insert_with_value(term, default_value)
+                .unwrap_or(false);
             true // New term
         }
     }
@@ -750,14 +792,21 @@ impl<V: DictionaryValue> DictZipper for PersistentARTrieCharZipper<V> {
 
     fn children(&self) -> impl Iterator<Item = (char, Self)> {
         let path = self.path_vec.clone();
-        self.node.edges().map(move |(c, child)| {
-            let mut new_path = path.clone();
-            new_path.push(c);
-            (c, Self {
-                node: child,
-                path_vec: new_path,
+        self.node
+            .edges()
+            .map(move |(c, child)| {
+                let mut new_path = path.clone();
+                new_path.push(c);
+                (
+                    c,
+                    Self {
+                        node: child,
+                        path_vec: new_path,
+                    },
+                )
             })
-        }).collect::<Vec<_>>().into_iter()
+            .collect::<Vec<_>>()
+            .into_iter()
     }
 
     fn path(&self) -> Vec<char> {
@@ -793,7 +842,9 @@ impl<V: DictionaryValue> crate::artrie_trait::ARTrie for SharedCharARTrie<V> {
         PersistentARTrieChar::create(path).map(|t| Arc::new(RwLock::new(t)))
     }
 
-    fn create_with_slot_tracking<P: AsRef<std::path::Path>>(path: P) -> crate::persistent_artrie::error::Result<Self> {
+    fn create_with_slot_tracking<P: AsRef<std::path::Path>>(
+        path: P,
+    ) -> crate::persistent_artrie::error::Result<Self> {
         PersistentARTrieChar::create_with_slot_tracking(path).map(|t| Arc::new(RwLock::new(t)))
     }
 
@@ -801,15 +852,27 @@ impl<V: DictionaryValue> crate::artrie_trait::ARTrie for SharedCharARTrie<V> {
         PersistentARTrieChar::open(path).map(|t| Arc::new(RwLock::new(t)))
     }
 
-    fn open_with_slot_tracking<P: AsRef<std::path::Path>>(path: P) -> crate::persistent_artrie::error::Result<Self> {
+    fn open_with_slot_tracking<P: AsRef<std::path::Path>>(
+        path: P,
+    ) -> crate::persistent_artrie::error::Result<Self> {
         PersistentARTrieChar::open_with_slot_tracking(path).map(|t| Arc::new(RwLock::new(t)))
     }
 
-    fn open_with_recovery<P: AsRef<std::path::Path>>(path: P) -> crate::persistent_artrie::error::Result<(Self, crate::persistent_artrie::recovery::RecoveryReport)> {
+    fn open_with_recovery<P: AsRef<std::path::Path>>(
+        path: P,
+    ) -> crate::persistent_artrie::error::Result<(
+        Self,
+        crate::persistent_artrie::recovery::RecoveryReport,
+    )> {
         PersistentARTrieChar::open_with_recovery(path).map(|(t, r)| (Arc::new(RwLock::new(t)), r))
     }
 
-    fn open_with_recovery_and_slot_tracking<P: AsRef<std::path::Path>>(path: P) -> crate::persistent_artrie::error::Result<(Self, crate::persistent_artrie::recovery::RecoveryReport)> {
+    fn open_with_recovery_and_slot_tracking<P: AsRef<std::path::Path>>(
+        path: P,
+    ) -> crate::persistent_artrie::error::Result<(
+        Self,
+        crate::persistent_artrie::recovery::RecoveryReport,
+    )> {
         let (trie, report) = PersistentARTrieChar::open_with_recovery(path)?;
         if let Some(ref am) = trie.arena_manager {
             am.write().enable_slot_tracking();
@@ -887,7 +950,8 @@ impl<V: DictionaryValue> crate::artrie_trait::ARTrie for SharedCharARTrie<V> {
     fn iter_prefix(&self, prefix: &str) -> Option<Box<dyn Iterator<Item = String> + '_>> {
         // Note: This returns owned data because we need to release the lock
         let guard = self.read();
-        guard.iter_prefix(prefix)
+        guard
+            .iter_prefix(prefix)
             .ok()
             .flatten()
             .map(|v| Box::new(v.into_iter()) as Box<dyn Iterator<Item = String> + '_>)
@@ -913,7 +977,11 @@ impl<V: DictionaryValue> crate::artrie_trait::ARTrie for SharedCharARTrie<V> {
         guard.durability_policy()
     }
 
-    fn upsert(&self, term: &str, value: Self::Value) -> crate::persistent_artrie::error::Result<bool> {
+    fn upsert(
+        &self,
+        term: &str,
+        value: Self::Value,
+    ) -> crate::persistent_artrie::error::Result<bool> {
         let mut guard = self.write();
         guard.upsert(term, value)
     }
@@ -929,10 +997,15 @@ impl<V: DictionaryValue> crate::artrie_trait::ARTrie for SharedCharARTrie<V> {
 // ============================================================================
 
 impl<V: DictionaryValue> crate::artrie_trait::EvictableARTrie for SharedCharARTrie<V> {
-    fn enable_eviction(&self, config: crate::persistent_artrie::eviction::EvictionConfig) -> crate::persistent_artrie::error::Result<()> {
+    fn enable_eviction(
+        &self,
+        config: crate::persistent_artrie::eviction::EvictionConfig,
+    ) -> crate::persistent_artrie::error::Result<()> {
         use crate::persistent_artrie::error::PersistentARTrieError;
 
-        config.validate().map_err(|e| PersistentARTrieError::internal(&e))?;
+        config
+            .validate()
+            .map_err(|e| PersistentARTrieError::internal(&e))?;
 
         let mut guard = self.write();
 
@@ -945,40 +1018,48 @@ impl<V: DictionaryValue> crate::artrie_trait::EvictableARTrie for SharedCharARTr
         let epoch_manager = Arc::new(crate::persistent_artrie::concurrency::EpochManager::new());
 
         // Create the eviction coordinator
-        let coordinator = crate::persistent_artrie::eviction::EvictionCoordinator::new(config.clone(), epoch_manager);
+        let coordinator = crate::persistent_artrie::eviction::EvictionCoordinator::new(
+            config.clone(),
+            epoch_manager,
+        );
 
         // Create a weak reference to self for the eviction callback
         let self_weak = Arc::downgrade(self);
 
         // Start the eviction coordinator with the eviction callback for char nodes
-        coordinator.start_char(move |nodes_to_evict| {
-            // Try to upgrade the weak reference
-            let Some(trie) = self_weak.upgrade() else {
-                return (0, 0);
-            };
+        coordinator
+            .start_char(move |nodes_to_evict| {
+                // Try to upgrade the weak reference
+                let Some(trie) = self_weak.upgrade() else {
+                    return (0, 0);
+                };
 
-            let mut guard = trie.write();
-            let mut evicted_count = 0;
-            let mut bytes_freed = 0;
+                let mut guard = trie.write();
+                let mut evicted_count = 0;
+                let mut bytes_freed = 0;
 
-            for (_path_hash, path, disk_ptr) in nodes_to_evict {
-                if guard.evict_node_at_path(&path, disk_ptr.clone()) {
-                    evicted_count += 1;
-                    bytes_freed += 256; // Estimate ~256 bytes per node
+                for (_path_hash, path, disk_ptr) in nodes_to_evict {
+                    if guard.evict_node_at_path(&path, disk_ptr.clone()) {
+                        evicted_count += 1;
+                        bytes_freed += 256; // Estimate ~256 bytes per node
 
-                    // Remove from LRU tracking
-                    if let Some(ref coordinator) = guard.eviction_coordinator {
-                        use crate::persistent_artrie::eviction::lru_tracker::hash_char_path;
-                        coordinator.lru_registry().remove_hash(hash_char_path(&path));
+                        // Remove from LRU tracking
+                        if let Some(ref coordinator) = guard.eviction_coordinator {
+                            use crate::persistent_artrie::eviction::lru_tracker::hash_char_path;
+                            coordinator
+                                .lru_registry()
+                                .remove_hash(hash_char_path(&path));
+                        }
                     }
                 }
-            }
 
-            (evicted_count, bytes_freed)
-        }).map_err(|e| PersistentARTrieError::internal(&e))?;
+                (evicted_count, bytes_freed)
+            })
+            .map_err(|e| PersistentARTrieError::internal(&e))?;
 
         // Start memory pressure monitor if configured
-        coordinator.start_memory_monitor()
+        coordinator
+            .start_memory_monitor()
             .map_err(|e| PersistentARTrieError::internal(&e))?;
 
         guard.eviction_coordinator = Some(coordinator);
@@ -1003,13 +1084,17 @@ impl<V: DictionaryValue> crate::artrie_trait::EvictableARTrie for SharedCharARTr
 
     fn eviction_stats(&self) -> crate::persistent_artrie::eviction::EvictionStats {
         let guard = self.read();
-        guard.eviction_coordinator
+        guard
+            .eviction_coordinator
             .as_ref()
             .map(|c| c.stats())
             .unwrap_or_default()
     }
 
-    fn force_eviction(&self, target_bytes: usize) -> crate::persistent_artrie::error::Result<(usize, usize)> {
+    fn force_eviction(
+        &self,
+        target_bytes: usize,
+    ) -> crate::persistent_artrie::error::Result<(usize, usize)> {
         let guard = self.read();
 
         let Some(coordinator) = &guard.eviction_coordinator else {
@@ -1029,7 +1114,9 @@ impl<V: DictionaryValue> crate::artrie_trait::EvictableARTrie for SharedCharARTr
 }
 
 // Helper methods for eviction on PersistentARTrieChar
-impl<V: DictionaryValue, S: crate::persistent_artrie::block_storage::BlockStorage> PersistentARTrieChar<V, S> {
+impl<V: DictionaryValue, S: crate::persistent_artrie::block_storage::BlockStorage>
+    PersistentARTrieChar<V, S>
+{
     /// Evict a single node at the given path, replacing it with a DiskRef.
     ///
     /// Walks `path` from the root: descends through `path[..path.len()-1]`

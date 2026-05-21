@@ -127,14 +127,22 @@ fn write_dirty_slots_for_arena<S: BlockStorage>(
 
     // Always write header
     let (header_off, header_len) = arena.header_range();
-    dm.write_bytes(block_id, header_off, &arena_bytes[header_off..header_off + header_len])?;
+    dm.write_bytes(
+        block_id,
+        header_off,
+        &arena_bytes[header_off..header_off + header_len],
+    )?;
     bytes_written += header_len;
 
     // Write each dirty slot's data and directory entry
     for slot_id in dirty_slots {
         // Write data
         let (data_off, data_len) = arena.slot_data_range(slot_id)?;
-        dm.write_bytes(block_id, data_off, &arena_bytes[data_off..data_off + data_len])?;
+        dm.write_bytes(
+            block_id,
+            data_off,
+            &arena_bytes[data_off..data_off + data_len],
+        )?;
         bytes_written += data_len;
 
         // Write directory entry
@@ -431,7 +439,8 @@ impl<S: BlockStorage> ArenaManager<S> {
         };
 
         // Collect dirty arena indices and sort them for sequential I/O
-        let mut dirty_indices: Vec<usize> = self.arenas
+        let mut dirty_indices: Vec<usize> = self
+            .arenas
             .iter()
             .enumerate()
             .filter(|(_, arena)| arena.is_dirty())
@@ -633,7 +642,6 @@ impl<S: BlockStorage> ArenaManager<S> {
 
         Ok(stats)
     }
-
 
     /// Get the current flush configuration.
     pub fn flush_config(&self) -> &FlushConfig {
@@ -946,17 +954,21 @@ impl<S: BlockStorage> ArenaManager<S> {
     ///
     /// # Panics
     /// Panics if called more times than reserved, or if allocation fails.
-    pub fn allocate_reserved(&mut self, reserved: &mut ReservedSlots, data: &[u8]) -> Result<ArenaSlot> {
+    pub fn allocate_reserved(
+        &mut self,
+        reserved: &mut ReservedSlots,
+        data: &[u8],
+    ) -> Result<ArenaSlot> {
         if reserved.next_idx >= reserved.count {
             return Err(PersistentARTrieError::internal(
-                "Reserved slot range exhausted"
+                "Reserved slot range exhausted",
             ));
         }
 
         // Verify we're still in the reserved arena
         if self.active_arena as u32 != reserved.arena_id {
             return Err(PersistentARTrieError::internal(
-                "Active arena changed during reserved allocation"
+                "Active arena changed during reserved allocation",
             ));
         }
 
@@ -977,7 +989,8 @@ impl<S: BlockStorage> ArenaManager<S> {
             .ok_or_else(|| {
                 PersistentARTrieError::internal(&format!(
                     "Failed to allocate reserved slot {} (data size: {} bytes)",
-                    expected_slot, data.len()
+                    expected_slot,
+                    data.len()
                 ))
             })?;
 
@@ -1110,7 +1123,9 @@ mod tests {
         let mut manager = TestArenaManager::with_arena_size(1024);
 
         for _ in 0..10 {
-            manager.allocate(&[0u8; 50]).expect("allocation should succeed");
+            manager
+                .allocate(&[0u8; 50])
+                .expect("allocation should succeed");
         }
 
         let stats = manager.stats();
@@ -1138,18 +1153,24 @@ mod tests {
 
         // Allocate into reserved slots
         let data1 = b"child 1";
-        let slot1 = manager.allocate_reserved(&mut reserved, data1).expect("should succeed");
+        let slot1 = manager
+            .allocate_reserved(&mut reserved, data1)
+            .expect("should succeed");
         assert_eq!(slot1.arena_id, 0);
         assert_eq!(slot1.slot_id, 0);
         assert_eq!(reserved.next_idx, 1);
 
         let data2 = b"child 2";
-        let slot2 = manager.allocate_reserved(&mut reserved, data2).expect("should succeed");
+        let slot2 = manager
+            .allocate_reserved(&mut reserved, data2)
+            .expect("should succeed");
         assert_eq!(slot2.arena_id, 0);
         assert_eq!(slot2.slot_id, 1);
 
         let data3 = b"child 3";
-        let slot3 = manager.allocate_reserved(&mut reserved, data3).expect("should succeed");
+        let slot3 = manager
+            .allocate_reserved(&mut reserved, data3)
+            .expect("should succeed");
         assert_eq!(slot3.arena_id, 0);
         assert_eq!(slot3.slot_id, 2);
 
@@ -1173,7 +1194,9 @@ mod tests {
 
         // Fill the first arena almost completely
         for _ in 0..5 {
-            manager.allocate(&[0u8; 50]).expect("allocation should succeed");
+            manager
+                .allocate(&[0u8; 50])
+                .expect("allocation should succeed");
         }
 
         let initial_arena_count = manager.arena_count();
@@ -1308,8 +1331,12 @@ mod tests {
         let mut manager = TestArenaManager::with_config(config);
 
         // Allocate some data
-        manager.allocate(b"hello").expect("allocation should succeed");
-        manager.allocate(b"world").expect("allocation should succeed");
+        manager
+            .allocate(b"hello")
+            .expect("allocation should succeed");
+        manager
+            .allocate(b"world")
+            .expect("allocation should succeed");
 
         // Check dirty stats
         let stats = manager.dirty_tracker_stats().expect("should have stats");
@@ -1332,7 +1359,9 @@ mod tests {
         // Allocate enough to cross arenas
         for i in 0..20 {
             let data = format!("data_{:03}", i);
-            manager.allocate(data.as_bytes()).expect("allocation should succeed");
+            manager
+                .allocate(data.as_bytes())
+                .expect("allocation should succeed");
         }
 
         // Should have multiple dirty arenas
@@ -1347,7 +1376,9 @@ mod tests {
         let mut manager = TestArenaManager::with_config(config);
 
         // Allocate some data
-        manager.allocate(b"hello").expect("allocation should succeed");
+        manager
+            .allocate(b"hello")
+            .expect("allocation should succeed");
 
         let stats_before = manager.dirty_tracker_stats().expect("should have stats");
         assert_eq!(stats_before.dirty_slots, 1);
@@ -1384,7 +1415,9 @@ mod tests {
         let config = FlushConfig::with_slot_tracking();
         let mut manager = TestArenaManager::with_config(config);
 
-        manager.allocate(b"hello").expect("allocation should succeed");
+        manager
+            .allocate(b"hello")
+            .expect("allocation should succeed");
 
         let stats = manager.flush_dirty_slots().expect("flush should succeed");
         // No buffer manager means no actual writes
@@ -1395,7 +1428,9 @@ mod tests {
     fn test_flush_dirty_slots_fallback_without_tracking() {
         // Without slot tracking, flush_dirty_slots falls back to full flush
         let mut manager = TestArenaManager::new();
-        manager.allocate(b"hello").expect("allocation should succeed");
+        manager
+            .allocate(b"hello")
+            .expect("allocation should succeed");
 
         let stats = manager.flush_dirty_slots().expect("flush should succeed");
         // Without buffer manager, still returns meaningful stats about what would be flushed
@@ -1441,7 +1476,10 @@ mod tests {
         let stats_after = manager.dirty_tracker_stats();
 
         // Stats should be identical (same tracker instance)
-        assert_eq!(stats_before.unwrap().dirty_arenas, stats_after.unwrap().dirty_arenas);
+        assert_eq!(
+            stats_before.unwrap().dirty_arenas,
+            stats_after.unwrap().dirty_arenas
+        );
     }
 
     #[test]
@@ -1476,7 +1514,10 @@ mod tests {
 
         // Check that the post-tracking allocation is tracked
         let stats = manager.dirty_tracker_stats().unwrap();
-        assert!(stats.dirty_slots >= 1, "should track slot allocated after enable");
+        assert!(
+            stats.dirty_slots >= 1,
+            "should track slot allocated after enable"
+        );
     }
 
     #[test]
@@ -1538,11 +1579,7 @@ mod tests {
         assert!(arena_count_before > 1, "should have multiple arenas");
 
         // Count dirty arenas before enabling
-        let dirty_count_before = manager
-            .arenas
-            .iter()
-            .filter(|a| a.is_dirty())
-            .count();
+        let dirty_count_before = manager.arenas.iter().filter(|a| a.is_dirty()).count();
 
         // Enable slot tracking - should retroactively mark all dirty arenas
         manager.enable_slot_tracking();
@@ -1574,14 +1611,21 @@ mod tests {
         let mut slots = Vec::new();
         for i in 0..1000 {
             let data = format!("item_{:04}", i);
-            let slot = manager.allocate(data.as_bytes()).expect("allocation should succeed");
+            let slot = manager
+                .allocate(data.as_bytes())
+                .expect("allocation should succeed");
             slots.push((slot, data));
         }
 
         // Verify all allocations
         for (slot, expected) in &slots {
             let actual = manager.read(*slot).expect("read should succeed");
-            assert_eq!(actual, expected.as_bytes(), "Data mismatch for slot {:?}", slot);
+            assert_eq!(
+                actual,
+                expected.as_bytes(),
+                "Data mismatch for slot {:?}",
+                slot
+            );
         }
 
         assert_eq!(manager.total_node_count(), 1000);
@@ -1604,7 +1648,12 @@ mod tests {
         // Verify all allocations
         for (slot, expected) in &slots {
             let actual = manager.read(*slot).expect("read should succeed");
-            assert_eq!(actual, expected.as_slice(), "Data mismatch for slot {:?}", slot);
+            assert_eq!(
+                actual,
+                expected.as_slice(),
+                "Data mismatch for slot {:?}",
+                slot
+            );
         }
     }
 
@@ -1618,12 +1667,18 @@ mod tests {
         // Fill multiple arenas
         for i in 0..500 {
             let data = format!("boundary_test_{:04}", i);
-            let slot = manager.allocate(data.as_bytes()).expect("allocation should succeed");
+            let slot = manager
+                .allocate(data.as_bytes())
+                .expect("allocation should succeed");
             slots.push((slot, data));
         }
 
         // Should have created many arenas
-        assert!(manager.arena_count() > 10, "Expected many arenas, got {}", manager.arena_count());
+        assert!(
+            manager.arena_count() > 10,
+            "Expected many arenas, got {}",
+            manager.arena_count()
+        );
 
         // Verify all data is still accessible across arenas
         for (slot, expected) in &slots {
@@ -1649,7 +1704,11 @@ mod tests {
             let encoded = slot.to_u64();
             let decoded = ArenaSlot::from_u64(encoded);
 
-            assert_eq!(decoded.arena_id, arena_id, "Arena ID mismatch for {:?}", slot);
+            assert_eq!(
+                decoded.arena_id, arena_id,
+                "Arena ID mismatch for {:?}",
+                slot
+            );
             assert_eq!(decoded.slot_id, slot_id, "Slot ID mismatch for {:?}", slot);
         }
     }

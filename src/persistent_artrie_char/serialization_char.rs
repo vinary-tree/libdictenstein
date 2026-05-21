@@ -68,12 +68,12 @@ use crate::persistent_artrie::error::{PersistentARTrieError, Result};
 use crate::persistent_artrie::swizzled_ptr::SwizzledPtr;
 
 use super::nodes::{
-    CharBucket, CharCompressedPrefix, CharNode, CharNode16, CharNode4, CharNode48,
-    CharNodeHeader, CHAR_MAX_PREFIX_LEN,
+    CharBucket, CharCompressedPrefix, CharNode, CharNode16, CharNode4, CharNode48, CharNodeHeader,
+    CHAR_MAX_PREFIX_LEN,
 };
 
 use super::compact_encoding::{
-    decode_compact_node, encode_compact_node, determine_key_width, determine_ptr_width,
+    decode_compact_node, determine_key_width, determine_ptr_width, encode_compact_node,
     CompactHeader, DecodedCompactNode, COMPACT_NODE_TYPE_BUCKET, COMPACT_NODE_TYPE_N16,
     COMPACT_NODE_TYPE_N4, COMPACT_NODE_TYPE_N48,
 };
@@ -81,8 +81,8 @@ use super::compact_encoding::{
 use super::arena_manager::ArenaSlot;
 
 use super::relative_encoding::{
-    SerializationContext, encode_child_pointer, encode_sequential_siblings,
-    decode_children, decode_sequential_siblings,
+    decode_children, decode_sequential_siblings, encode_child_pointer, encode_sequential_siblings,
+    SerializationContext,
 };
 
 /// Helper to convert io::Error to PersistentARTrieError for serialization operations
@@ -618,7 +618,12 @@ pub fn char_to_bytes_compact(node: &CharNode, max_ptr_value: u64) -> Vec<u8> {
     let (keys, children, prefix_chars, value_ptr, node_type, flags) = extract_node_data(node);
 
     // Determine optimal widths
-    let max_key = keys.iter().chain(prefix_chars.iter()).copied().max().unwrap_or(0);
+    let max_key = keys
+        .iter()
+        .chain(prefix_chars.iter())
+        .copied()
+        .max()
+        .unwrap_or(0);
     let key_width = determine_key_width(max_key);
     let ptr_width = determine_ptr_width(max_ptr_value);
 
@@ -634,13 +639,7 @@ pub fn char_to_bytes_compact(node: &CharNode, max_ptr_value: u64) -> Vec<u8> {
     };
 
     // Encode
-    encode_compact_node(
-        &header,
-        &prefix_chars,
-        &keys,
-        &children,
-        value_ptr,
-    )
+    encode_compact_node(&header, &prefix_chars, &keys, &children, value_ptr)
 }
 
 /// Deserialize a CharNode from compact variable-width encoding
@@ -662,7 +661,12 @@ pub fn char_from_bytes_compact(bytes: &[u8]) -> Result<CharNode> {
 pub fn char_compact_serialized_size(node: &CharNode, max_ptr_value: u64) -> usize {
     let (keys, children, prefix_chars, value_ptr, _node_type, _flags) = extract_node_data(node);
 
-    let max_key = keys.iter().chain(prefix_chars.iter()).copied().max().unwrap_or(0);
+    let max_key = keys
+        .iter()
+        .chain(prefix_chars.iter())
+        .copied()
+        .max()
+        .unwrap_or(0);
     let key_width = determine_key_width(max_key) as usize;
     let ptr_width = determine_ptr_width(max_ptr_value) as usize;
 
@@ -697,7 +701,14 @@ fn extract_node_data(node: &CharNode) -> (Vec<u32>, Vec<u64>, Vec<u32>, Option<u
             } else {
                 Some(n.value_ptr.to_raw())
             };
-            (keys, children, prefix_chars, value_ptr, COMPACT_NODE_TYPE_N4, n.header.flags)
+            (
+                keys,
+                children,
+                prefix_chars,
+                value_ptr,
+                COMPACT_NODE_TYPE_N4,
+                n.header.flags,
+            )
         }
         CharNode::N16(n) => {
             let num_children = n.header.num_children as usize;
@@ -712,7 +723,14 @@ fn extract_node_data(node: &CharNode) -> (Vec<u32>, Vec<u64>, Vec<u32>, Option<u
             } else {
                 Some(n.value_ptr.to_raw())
             };
-            (keys, children, prefix_chars, value_ptr, COMPACT_NODE_TYPE_N16, n.header.flags)
+            (
+                keys,
+                children,
+                prefix_chars,
+                value_ptr,
+                COMPACT_NODE_TYPE_N16,
+                n.header.flags,
+            )
         }
         CharNode::N48(n) => {
             let num_children = n.header.num_children as usize;
@@ -727,7 +745,14 @@ fn extract_node_data(node: &CharNode) -> (Vec<u32>, Vec<u64>, Vec<u32>, Option<u
             } else {
                 Some(n.value_ptr.to_raw())
             };
-            (keys, children, prefix_chars, value_ptr, COMPACT_NODE_TYPE_N48, n.header.flags)
+            (
+                keys,
+                children,
+                prefix_chars,
+                value_ptr,
+                COMPACT_NODE_TYPE_N48,
+                n.header.flags,
+            )
         }
         CharNode::Bucket(n) => {
             // Bucket uses HashMap, collect entries sorted by key
@@ -741,7 +766,14 @@ fn extract_node_data(node: &CharNode) -> (Vec<u32>, Vec<u64>, Vec<u32>, Option<u
             } else {
                 Some(n.value_ptr.to_raw())
             };
-            (keys, children, prefix_chars, value_ptr, COMPACT_NODE_TYPE_BUCKET, n.header.flags)
+            (
+                keys,
+                children,
+                prefix_chars,
+                value_ptr,
+                COMPACT_NODE_TYPE_BUCKET,
+                n.header.flags,
+            )
         }
     }
 }
@@ -826,7 +858,8 @@ fn reconstruct_node_from_decoded(decoded: DecodedCompactNode) -> Result<CharNode
 
             // Insert all entries into the bucket's HashMap
             for (i, &key) in decoded.keys.iter().enumerate() {
-                node.entries.insert(key, SwizzledPtr::from_raw(decoded.children[i]));
+                node.entries
+                    .insert(key, SwizzledPtr::from_raw(decoded.children[i]));
             }
 
             // Set value_ptr
@@ -943,9 +976,9 @@ fn char_node_data_size_v2(node: &CharNode, ctx: &SerializationContext) -> usize 
         };
 
         match node {
-            CharNode::N4(_) => 4 * 4 + first_slot_size + 8,    // 4 keys + first_slot + value_ptr
-            CharNode::N16(_) => 16 * 4 + first_slot_size + 8,  // 16 keys + first_slot + value_ptr
-            CharNode::N48(_) => 48 * 4 + first_slot_size + 8,  // 48 keys + first_slot + value_ptr
+            CharNode::N4(_) => 4 * 4 + first_slot_size + 8, // 4 keys + first_slot + value_ptr
+            CharNode::N16(_) => 16 * 4 + first_slot_size + 8, // 16 keys + first_slot + value_ptr
+            CharNode::N48(_) => 48 * 4 + first_slot_size + 8, // 48 keys + first_slot + value_ptr
             CharNode::Bucket(n) => 4 + first_slot_size + 8 + n.entries.len() * 4, // num_entries + first_slot + value_ptr + keys
         }
     } else {
@@ -957,9 +990,9 @@ fn char_node_data_size_v2(node: &CharNode, ctx: &SerializationContext) -> usize 
         }
 
         match node {
-            CharNode::N4(_) => 4 * 4 + children_size + 8,          // 4 keys + children + value_ptr
-            CharNode::N16(_) => 16 * 4 + children_size + 8,        // 16 keys + children + value_ptr
-            CharNode::N48(_) => 48 * 4 + children_size + 8,        // 48 keys + children + value_ptr
+            CharNode::N4(_) => 4 * 4 + children_size + 8, // 4 keys + children + value_ptr
+            CharNode::N16(_) => 16 * 4 + children_size + 8, // 16 keys + children + value_ptr
+            CharNode::N48(_) => 48 * 4 + children_size + 8, // 48 keys + children + value_ptr
             CharNode::Bucket(n) => 4 + children_size + 8 + n.entries.len() * 4, // num_entries + children + value_ptr + keys
         }
     }
@@ -1094,7 +1127,9 @@ fn serialize_charbucket_v2<W: Write>(
 ) -> Result<()> {
     // Write number of entries
     let num_entries = node.entries.len() as u32;
-    writer.write_all(&num_entries.to_le_bytes()).map_err(io_err)?;
+    writer
+        .write_all(&num_entries.to_le_bytes())
+        .map_err(io_err)?;
 
     // Write value_ptr
     let value_raw = node.value_ptr.to_raw();
@@ -1216,12 +1251,10 @@ fn deserialize_charnode4_v2<R: Read>(
 
     if uses_sequential {
         // Read first_child reference and reconstruct sequential children
-        let remaining_data = read_remaining_data(reader, header.data_size as usize, 4 * 4, prefix_size)?;
-        let (children, bytes_consumed) = decode_sequential_siblings(
-            &remaining_data,
-            ctx.parent_slot,
-            num_children,
-        );
+        let remaining_data =
+            read_remaining_data(reader, header.data_size as usize, 4 * 4, prefix_size)?;
+        let (children, bytes_consumed) =
+            decode_sequential_siblings(&remaining_data, ctx.parent_slot, num_children);
 
         for (i, slot) in children.iter().enumerate().take(4) {
             node.children[i] = arena_slot_to_ptr(*slot);
@@ -1231,18 +1264,18 @@ fn deserialize_charnode4_v2<R: Read>(
         let value_offset = bytes_consumed;
         if remaining_data.len() >= value_offset + 8 {
             let value_raw = u64::from_le_bytes(
-                remaining_data[value_offset..value_offset + 8].try_into().unwrap()
+                remaining_data[value_offset..value_offset + 8]
+                    .try_into()
+                    .unwrap(),
             );
             node.value_ptr = SwizzledPtr::from_raw(value_raw);
         }
     } else if uses_relative {
         // Read relative-encoded children
-        let remaining_data = read_remaining_data(reader, header.data_size as usize, 4 * 4, prefix_size)?;
-        let (children, bytes_consumed) = decode_children(
-            &remaining_data,
-            ctx.parent_slot,
-            num_children,
-        );
+        let remaining_data =
+            read_remaining_data(reader, header.data_size as usize, 4 * 4, prefix_size)?;
+        let (children, bytes_consumed) =
+            decode_children(&remaining_data, ctx.parent_slot, num_children);
 
         for (i, slot) in children.iter().enumerate().take(4) {
             node.children[i] = arena_slot_to_ptr(*slot);
@@ -1252,7 +1285,9 @@ fn deserialize_charnode4_v2<R: Read>(
         let value_offset = bytes_consumed;
         if remaining_data.len() >= value_offset + 8 {
             let value_raw = u64::from_le_bytes(
-                remaining_data[value_offset..value_offset + 8].try_into().unwrap()
+                remaining_data[value_offset..value_offset + 8]
+                    .try_into()
+                    .unwrap(),
             );
             node.value_ptr = SwizzledPtr::from_raw(value_raw);
         }
@@ -1296,12 +1331,10 @@ fn deserialize_charnode16_v2<R: Read>(
     let prefix_size = header_prefix_size(header);
 
     if uses_sequential {
-        let remaining_data = read_remaining_data(reader, header.data_size as usize, 16 * 4, prefix_size)?;
-        let (children, bytes_consumed) = decode_sequential_siblings(
-            &remaining_data,
-            ctx.parent_slot,
-            num_children,
-        );
+        let remaining_data =
+            read_remaining_data(reader, header.data_size as usize, 16 * 4, prefix_size)?;
+        let (children, bytes_consumed) =
+            decode_sequential_siblings(&remaining_data, ctx.parent_slot, num_children);
 
         for (i, slot) in children.iter().enumerate().take(16) {
             node.children[i] = arena_slot_to_ptr(*slot);
@@ -1310,17 +1343,17 @@ fn deserialize_charnode16_v2<R: Read>(
         let value_offset = bytes_consumed;
         if remaining_data.len() >= value_offset + 8 {
             let value_raw = u64::from_le_bytes(
-                remaining_data[value_offset..value_offset + 8].try_into().unwrap()
+                remaining_data[value_offset..value_offset + 8]
+                    .try_into()
+                    .unwrap(),
             );
             node.value_ptr = SwizzledPtr::from_raw(value_raw);
         }
     } else if uses_relative {
-        let remaining_data = read_remaining_data(reader, header.data_size as usize, 16 * 4, prefix_size)?;
-        let (children, bytes_consumed) = decode_children(
-            &remaining_data,
-            ctx.parent_slot,
-            num_children,
-        );
+        let remaining_data =
+            read_remaining_data(reader, header.data_size as usize, 16 * 4, prefix_size)?;
+        let (children, bytes_consumed) =
+            decode_children(&remaining_data, ctx.parent_slot, num_children);
 
         for (i, slot) in children.iter().enumerate().take(16) {
             node.children[i] = arena_slot_to_ptr(*slot);
@@ -1329,7 +1362,9 @@ fn deserialize_charnode16_v2<R: Read>(
         let value_offset = bytes_consumed;
         if remaining_data.len() >= value_offset + 8 {
             let value_raw = u64::from_le_bytes(
-                remaining_data[value_offset..value_offset + 8].try_into().unwrap()
+                remaining_data[value_offset..value_offset + 8]
+                    .try_into()
+                    .unwrap(),
             );
             node.value_ptr = SwizzledPtr::from_raw(value_raw);
         }
@@ -1371,12 +1406,10 @@ fn deserialize_charnode48_v2<R: Read>(
     let prefix_size = header_prefix_size(header);
 
     if uses_sequential {
-        let remaining_data = read_remaining_data(reader, header.data_size as usize, 48 * 4, prefix_size)?;
-        let (children, bytes_consumed) = decode_sequential_siblings(
-            &remaining_data,
-            ctx.parent_slot,
-            num_children,
-        );
+        let remaining_data =
+            read_remaining_data(reader, header.data_size as usize, 48 * 4, prefix_size)?;
+        let (children, bytes_consumed) =
+            decode_sequential_siblings(&remaining_data, ctx.parent_slot, num_children);
 
         for (i, slot) in children.iter().enumerate().take(48) {
             node.children[i] = arena_slot_to_ptr(*slot);
@@ -1385,17 +1418,17 @@ fn deserialize_charnode48_v2<R: Read>(
         let value_offset = bytes_consumed;
         if remaining_data.len() >= value_offset + 8 {
             let value_raw = u64::from_le_bytes(
-                remaining_data[value_offset..value_offset + 8].try_into().unwrap()
+                remaining_data[value_offset..value_offset + 8]
+                    .try_into()
+                    .unwrap(),
             );
             node.value_ptr = SwizzledPtr::from_raw(value_raw);
         }
     } else if uses_relative {
-        let remaining_data = read_remaining_data(reader, header.data_size as usize, 48 * 4, prefix_size)?;
-        let (children, bytes_consumed) = decode_children(
-            &remaining_data,
-            ctx.parent_slot,
-            num_children,
-        );
+        let remaining_data =
+            read_remaining_data(reader, header.data_size as usize, 48 * 4, prefix_size)?;
+        let (children, bytes_consumed) =
+            decode_children(&remaining_data, ctx.parent_slot, num_children);
 
         for (i, slot) in children.iter().enumerate().take(48) {
             node.children[i] = arena_slot_to_ptr(*slot);
@@ -1404,7 +1437,9 @@ fn deserialize_charnode48_v2<R: Read>(
         let value_offset = bytes_consumed;
         if remaining_data.len() >= value_offset + 8 {
             let value_raw = u64::from_le_bytes(
-                remaining_data[value_offset..value_offset + 8].try_into().unwrap()
+                remaining_data[value_offset..value_offset + 8]
+                    .try_into()
+                    .unwrap(),
             );
             node.value_ptr = SwizzledPtr::from_raw(value_raw);
         }
@@ -1459,26 +1494,19 @@ fn deserialize_charbucket_v2<R: Read>(
         // Read remaining data for children
         // data_size includes prefix, but prefix was already read before this function was called
         let remaining_size = (header.data_size as usize)
-            .saturating_sub(prefix_size)  // prefix already read
-            .saturating_sub(4)            // num_entries
-            .saturating_sub(8)            // value_ptr
+            .saturating_sub(prefix_size) // prefix already read
+            .saturating_sub(4) // num_entries
+            .saturating_sub(8) // value_ptr
             .saturating_sub(num_entries * 4); // keys
         let mut remaining_data = vec![0u8; remaining_size];
         reader.read_exact(&mut remaining_data).map_err(io_err)?;
 
         let children = if uses_sequential {
-            let (children, _) = decode_sequential_siblings(
-                &remaining_data,
-                ctx.parent_slot,
-                num_entries,
-            );
+            let (children, _) =
+                decode_sequential_siblings(&remaining_data, ctx.parent_slot, num_entries);
             children
         } else {
-            let (children, _) = decode_children(
-                &remaining_data,
-                ctx.parent_slot,
-                num_entries,
-            );
+            let (children, _) = decode_children(&remaining_data, ctx.parent_slot, num_entries);
             children
         };
 
@@ -1516,7 +1544,9 @@ fn read_remaining_data<R: Read>(
     keys_size: usize,
     prefix_size: usize,
 ) -> Result<Vec<u8>> {
-    let remaining_size = data_size.saturating_sub(keys_size).saturating_sub(prefix_size);
+    let remaining_size = data_size
+        .saturating_sub(keys_size)
+        .saturating_sub(prefix_size);
     let mut data = vec![0u8; remaining_size];
     reader.read_exact(&mut data).map_err(io_err)?;
     Ok(data)
@@ -1634,10 +1664,16 @@ mod tests {
 
         // Add some children
         node4
-            .add_child('a' as u32, SwizzledPtr::on_disk(100, 0, NodeType::CharNode4))
+            .add_child(
+                'a' as u32,
+                SwizzledPtr::on_disk(100, 0, NodeType::CharNode4),
+            )
             .expect("add child a");
         node4
-            .add_child('b' as u32, SwizzledPtr::on_disk(200, 0, NodeType::CharNode16))
+            .add_child(
+                'b' as u32,
+                SwizzledPtr::on_disk(200, 0, NodeType::CharNode16),
+            )
             .expect("add child b");
 
         let node = CharNode::N4(Box::new(node4));
@@ -1663,7 +1699,10 @@ mod tests {
         // Add some children
         for i in 0..8 {
             node16
-                .add_child('a' as u32 + i, SwizzledPtr::on_disk(i as u32, 0, NodeType::CharNode4))
+                .add_child(
+                    'a' as u32 + i,
+                    SwizzledPtr::on_disk(i as u32, 0, NodeType::CharNode4),
+                )
                 .expect("add child");
         }
 
@@ -1789,7 +1828,10 @@ mod tests {
                 .expect("add");
         }
         let bucket_node = CharNode::Bucket(Box::new(bucket));
-        assert_eq!(char_serialized_size(&bucket_node), 16 + 0 + (4 + 8 + 5 * 12));
+        assert_eq!(
+            char_serialized_size(&bucket_node),
+            16 + 0 + (4 + 8 + 5 * 12)
+        );
     }
 
     #[test]
@@ -1819,7 +1861,10 @@ mod tests {
         let restored = char_from_bytes(&bytes).expect("deserialize");
 
         if let CharNode::N4(n) = restored {
-            let loc = n.value_ptr.disk_location().expect("should have disk location");
+            let loc = n
+                .value_ptr
+                .disk_location()
+                .expect("should have disk location");
             assert_eq!(loc.block_id, 999);
             assert_eq!(loc.offset, 123);
         } else {
@@ -1842,10 +1887,16 @@ mod tests {
 
             // Add children
             node4
-                .add_child('a' as u32, SwizzledPtr::on_disk(100, 0, NodeType::CharNode4))
+                .add_child(
+                    'a' as u32,
+                    SwizzledPtr::on_disk(100, 0, NodeType::CharNode4),
+                )
                 .expect("add child a");
             node4
-                .add_child('b' as u32, SwizzledPtr::on_disk(200, 0, NodeType::CharNode16))
+                .add_child(
+                    'b' as u32,
+                    SwizzledPtr::on_disk(200, 0, NodeType::CharNode16),
+                )
                 .expect("add child b");
 
             let node = CharNode::N4(Box::new(node4));
@@ -1869,7 +1920,10 @@ mod tests {
 
             for i in 0..8 {
                 node16
-                    .add_child('a' as u32 + i, SwizzledPtr::on_disk(i as u32, 0, NodeType::CharNode4))
+                    .add_child(
+                        'a' as u32 + i,
+                        SwizzledPtr::on_disk(i as u32, 0, NodeType::CharNode4),
+                    )
                     .expect("add child");
             }
 
@@ -1940,10 +1994,16 @@ mod tests {
             // Create a typical node with ASCII keys and small pointers
             let mut node4 = CharNode4::new();
             node4
-                .add_child('a' as u32, SwizzledPtr::on_disk(100, 0, NodeType::CharNode4))
+                .add_child(
+                    'a' as u32,
+                    SwizzledPtr::on_disk(100, 0, NodeType::CharNode4),
+                )
                 .expect("add");
             node4
-                .add_child('b' as u32, SwizzledPtr::on_disk(200, 0, NodeType::CharNode4))
+                .add_child(
+                    'b' as u32,
+                    SwizzledPtr::on_disk(200, 0, NodeType::CharNode4),
+                )
                 .expect("add");
 
             let node = CharNode::N4(Box::new(node4));
@@ -2007,10 +2067,16 @@ mod tests {
         fn test_compact_size_calculation() {
             let mut node4 = CharNode4::new();
             node4
-                .add_child('a' as u32, SwizzledPtr::on_disk(100, 0, NodeType::CharNode4))
+                .add_child(
+                    'a' as u32,
+                    SwizzledPtr::on_disk(100, 0, NodeType::CharNode4),
+                )
                 .expect("add");
             node4
-                .add_child('b' as u32, SwizzledPtr::on_disk(200, 0, NodeType::CharNode4))
+                .add_child(
+                    'b' as u32,
+                    SwizzledPtr::on_disk(200, 0, NodeType::CharNode4),
+                )
                 .expect("add");
 
             let node = CharNode::N4(Box::new(node4));
@@ -2047,7 +2113,10 @@ mod tests {
             //       offset is 22 bits max (0x3FFFFF = 4,194,303)
             let mut node4 = CharNode4::new();
             node4
-                .add_child('a' as u32, SwizzledPtr::on_disk(0x7FFFFF, 0x3FFFFF, NodeType::CharNode4))
+                .add_child(
+                    'a' as u32,
+                    SwizzledPtr::on_disk(0x7FFFFF, 0x3FFFFF, NodeType::CharNode4),
+                )
                 .expect("add");
 
             let node = CharNode::N4(Box::new(node4));
@@ -2130,23 +2199,20 @@ mod tests {
             let ctx = SerializationContext::new(parent_slot);
 
             let mut buffer = Vec::new();
-            let bytes_written = serialize_char_node_v2(&node, &mut buffer, &ctx)
-                .expect("serialize");
+            let bytes_written =
+                serialize_char_node_v2(&node, &mut buffer, &ctx).expect("serialize");
 
             assert!(bytes_written > 0);
 
             // Check that header has relative offsets flag
-            let header = SerializedCharNodeHeader::from_bytes(
-                buffer[..16].try_into().unwrap()
-            );
+            let header = SerializedCharNodeHeader::from_bytes(buffer[..16].try_into().unwrap());
             assert!(header.uses_relative_offsets());
             assert!(!header.uses_sequential_siblings());
 
             // Deserialize and verify
             let deser_ctx = DeserializationContext::new(parent_slot);
             let mut cursor = std::io::Cursor::new(&buffer);
-            let restored = deserialize_char_node_v2(&mut cursor, &deser_ctx)
-                .expect("deserialize");
+            let restored = deserialize_char_node_v2(&mut cursor, &deser_ctx).expect("deserialize");
 
             assert!(matches!(restored, CharNode::N4(_)));
             assert_eq!(restored.header().num_children, 2);
@@ -2178,23 +2244,20 @@ mod tests {
             let ctx = SerializationContext::sequential(parent_slot, first_child_slot);
 
             let mut buffer = Vec::new();
-            let bytes_written = serialize_char_node_v2(&node, &mut buffer, &ctx)
-                .expect("serialize");
+            let bytes_written =
+                serialize_char_node_v2(&node, &mut buffer, &ctx).expect("serialize");
 
             assert!(bytes_written > 0);
 
             // Check that header has both flags set
-            let header = SerializedCharNodeHeader::from_bytes(
-                buffer[..16].try_into().unwrap()
-            );
+            let header = SerializedCharNodeHeader::from_bytes(buffer[..16].try_into().unwrap());
             assert!(header.uses_relative_offsets());
             assert!(header.uses_sequential_siblings());
 
             // Deserialize and verify
             let deser_ctx = DeserializationContext::new(parent_slot);
             let mut cursor = std::io::Cursor::new(&buffer);
-            let restored = deserialize_char_node_v2(&mut cursor, &deser_ctx)
-                .expect("deserialize");
+            let restored = deserialize_char_node_v2(&mut cursor, &deser_ctx).expect("deserialize");
 
             assert!(matches!(restored, CharNode::N4(_)));
             assert_eq!(restored.header().num_children, 3);
@@ -2229,7 +2292,10 @@ mod tests {
             // Add children in same arena with small deltas
             for i in 0..4 {
                 node4
-                    .add_child(('a' as u32) + i, SwizzledPtr::on_disk(1, 10 + i, NodeType::CharNode4))
+                    .add_child(
+                        ('a' as u32) + i,
+                        SwizzledPtr::on_disk(1, 10 + i, NodeType::CharNode4),
+                    )
                     .expect("add");
             }
 

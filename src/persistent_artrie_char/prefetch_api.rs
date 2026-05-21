@@ -69,20 +69,22 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     ) {
         // Collect disk-resident children for prefetching
         // Use low byte of codepoint as key proxy for the prefetcher
-        let disk_children: Vec<(u8, crate::persistent_artrie::swizzled_ptr::SwizzledPtr)> = children
-            .filter_map(|(codepoint, ptr)| {
-                if ptr.is_on_disk() {
-                    // Use low byte of codepoint as routing key
-                    let key_byte = (codepoint & 0xFF) as u8;
-                    Some((key_byte, ptr.clone()))
-                } else {
-                    None
-                }
-            })
-            .collect();
+        let disk_children: Vec<(u8, crate::persistent_artrie::swizzled_ptr::SwizzledPtr)> =
+            children
+                .filter_map(|(codepoint, ptr)| {
+                    if ptr.is_on_disk() {
+                        // Use low byte of codepoint as routing key
+                        let key_byte = (codepoint & 0xFF) as u8;
+                        Some((key_byte, ptr.clone()))
+                    } else {
+                        None
+                    }
+                })
+                .collect();
 
         if !disk_children.is_empty() {
-            self.prefetcher.prefetch_children_bounded(&disk_children, depth);
+            self.prefetcher
+                .prefetch_children_bounded(&disk_children, depth);
         }
     }
 }

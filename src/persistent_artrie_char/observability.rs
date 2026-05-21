@@ -14,9 +14,10 @@
 //!   `cache_counts` / `cache_total_accesses` / `cache_stats_and_reset` /
 //!   `get_cache_stats`
 
-use std::sync::Arc;
 use std::sync::atomic::Ordering as AtomicOrdering;
+use std::sync::Arc;
 
+use crate::persistent_artrie::adaptive_pool::CacheStats;
 use crate::persistent_artrie::block_storage::BlockStorage;
 use crate::persistent_artrie::error::{PersistentARTrieError, Result};
 #[cfg(feature = "group-commit")]
@@ -24,7 +25,6 @@ use crate::persistent_artrie::group_commit::{GroupCommitConfig, GroupCommitCoord
 use crate::persistent_artrie::memory_monitor::{
     MemoryPressureConfig, MemoryPressureLevel, MemoryPressureMonitor, MemoryStats,
 };
-use crate::persistent_artrie::adaptive_pool::CacheStats;
 use crate::value::DictionaryValue;
 
 impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
@@ -33,7 +33,9 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
         if let Some(ref wal_writer) = self.wal_writer {
             wal_writer
                 .sync()
-                .map_err(|e| PersistentARTrieError::WalError { reason: format!("{:?}", e) })?;
+                .map_err(|e| PersistentARTrieError::WalError {
+                    reason: format!("{:?}", e),
+                })?;
         }
         Ok(())
     }
@@ -57,7 +59,8 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     #[inline]
     pub fn current_lsn(&self) -> u64 {
         // Use WAL's authoritative LSN if available, otherwise fall back to cached value
-        self.wal_writer.as_ref()
+        self.wal_writer
+            .as_ref()
             .map(|wal| wal.current_lsn())
             .unwrap_or_else(|| self.next_lsn.load(AtomicOrdering::Acquire))
     }
@@ -162,7 +165,9 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     ///
     /// Returns None if group commit is not enabled.
     #[cfg(feature = "group-commit")]
-    pub fn group_commit_stats(&self) -> Option<crate::persistent_artrie::group_commit::GroupCommitStats> {
+    pub fn group_commit_stats(
+        &self,
+    ) -> Option<crate::persistent_artrie::group_commit::GroupCommitStats> {
         self.group_commit.as_ref().map(|gc| gc.stats())
     }
 
@@ -191,7 +196,11 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     ///     }
     /// )?;
     /// ```
-    pub fn enable_memory_monitor<F>(&mut self, config: MemoryPressureConfig, callback: F) -> Result<()>
+    pub fn enable_memory_monitor<F>(
+        &mut self,
+        config: MemoryPressureConfig,
+        callback: F,
+    ) -> Result<()>
     where
         F: Fn(MemoryPressureLevel, &MemoryStats) + Send + Sync + 'static,
     {

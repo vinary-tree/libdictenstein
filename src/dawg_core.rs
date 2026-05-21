@@ -525,7 +525,10 @@ impl<U: CharUnit, V: DictionaryValue> DawgCore<U, V> {
                     }
                 }
                 if !found_match {
-                    sig_to_canonical.get_mut(sig).expect("sig exists").push(node_idx);
+                    sig_to_canonical
+                        .get_mut(sig)
+                        .expect("sig exists")
+                        .push(node_idx);
                     node_mapping[node_idx] = node_idx;
                 }
             } else {
@@ -580,12 +583,7 @@ impl<U: CharUnit, V: DictionaryValue> DawgCore<U, V> {
     }
 
     /// Check if two nodes are structurally equivalent.
-    fn nodes_structurally_equal(
-        &self,
-        idx1: usize,
-        idx2: usize,
-        node_mapping: &[usize],
-    ) -> bool {
+    fn nodes_structurally_equal(&self, idx1: usize, idx2: usize, node_mapping: &[usize]) -> bool {
         let node1 = &self.nodes[idx1];
         let node2 = &self.nodes[idx2];
 
@@ -703,12 +701,7 @@ impl<U: CharUnit, V: DictionaryValue> DawgCore<U, V> {
         terms
     }
 
-    fn dfs_collect(
-        &self,
-        node_idx: usize,
-        current_term: &mut Vec<U>,
-        terms: &mut Vec<Vec<U>>,
-    ) {
+    fn dfs_collect(&self, node_idx: usize, current_term: &mut Vec<U>, terms: &mut Vec<Vec<U>>) {
         let node = &self.nodes[node_idx];
 
         if node.is_final {

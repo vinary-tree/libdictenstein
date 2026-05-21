@@ -22,7 +22,9 @@
 use crate::value::DictionaryValue;
 
 use super::block_storage::BlockStorage;
-use super::dict_impl::{PersistentARTrie, PrefixTermWithArena, PrefixTermWithValueAndArena, TrieRoot};
+use super::dict_impl::{
+    PersistentARTrie, PrefixTermWithArena, PrefixTermWithValueAndArena, TrieRoot,
+};
 use super::error::Result;
 use super::transitions::ChildNode;
 
@@ -72,9 +74,7 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
                 let (child, mut current_arena) = match child_entry {
                     Some((_, child)) => {
                         let arena = match child {
-                            ChildNode::DiskRef { ptr } => {
-                                ptr.as_arena_slot().map(|s| s.arena_id)
-                            }
+                            ChildNode::DiskRef { ptr } => ptr.as_arena_slot().map(|s| s.arena_id),
                             _ => None,
                         };
                         (child, arena)
@@ -166,9 +166,7 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
                 }
             }
             ChildNode::ArtNode {
-                is_final,
-                children,
-                ..
+                is_final, children, ..
             } => {
                 // If this node is final, record the term
                 if *is_final {
@@ -187,9 +185,7 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
                     child_prefix.push(*edge);
 
                     let child_arena = match child {
-                        ChildNode::DiskRef { ptr } => {
-                            ptr.as_arena_slot().map(|s| s.arena_id)
-                        }
+                        ChildNode::DiskRef { ptr } => ptr.as_arena_slot().map(|s| s.arena_id),
                         _ => None,
                     };
 
@@ -300,9 +296,7 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
                     child_prefix.push(*edge);
 
                     let child_arena = match child {
-                        ChildNode::DiskRef { ptr } => {
-                            ptr.as_arena_slot().map(|s| s.arena_id)
-                        }
+                        ChildNode::DiskRef { ptr } => ptr.as_arena_slot().map(|s| s.arena_id),
                         _ => None,
                     };
 
@@ -381,9 +375,7 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
                 }
             }
             TrieRoot::ArtNode {
-                is_final,
-                children,
-                ..
+                is_final, children, ..
             } => {
                 let mut terms = Vec::new();
 
@@ -398,9 +390,7 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
 
                     for (edge, child) in children {
                         let child_arena = match child {
-                            ChildNode::DiskRef { ptr } => {
-                                ptr.as_arena_slot().map(|s| s.arena_id)
-                            }
+                            ChildNode::DiskRef { ptr } => ptr.as_arena_slot().map(|s| s.arena_id),
                             _ => None,
                         };
 
@@ -420,9 +410,7 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
                     let child_entry = children.iter().find(|(b, _)| *b == first_byte);
                     if let Some((_, child)) = child_entry {
                         let child_arena = match child {
-                            ChildNode::DiskRef { ptr } => {
-                                ptr.as_arena_slot().map(|s| s.arena_id)
-                            }
+                            ChildNode::DiskRef { ptr } => ptr.as_arena_slot().map(|s| s.arena_id),
                             _ => None,
                         };
 
@@ -559,9 +547,7 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
 
                     for (edge, child) in children {
                         let child_arena = match child {
-                            ChildNode::DiskRef { ptr } => {
-                                ptr.as_arena_slot().map(|s| s.arena_id)
-                            }
+                            ChildNode::DiskRef { ptr } => ptr.as_arena_slot().map(|s| s.arena_id),
                             _ => None,
                         };
 
@@ -581,9 +567,7 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
                     let child_entry = children.iter().find(|(b, _)| *b == first_byte);
                     if let Some((_, child)) = child_entry {
                         let child_arena = match child {
-                            ChildNode::DiskRef { ptr } => {
-                                ptr.as_arena_slot().map(|s| s.arena_id)
-                            }
+                            ChildNode::DiskRef { ptr } => ptr.as_arena_slot().map(|s| s.arena_id),
                             _ => None,
                         };
 
@@ -617,8 +601,11 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
                                         if let Some(entry) = bucket.get_entry(i) {
                                             let suffix = bucket.get_suffix(&entry);
                                             if suffix.starts_with(search_suffix) {
-                                                if let Some(value_bytes) = bucket.get_value(&entry) {
-                                                    if let Ok(value) = bincode::deserialize::<V>(value_bytes) {
+                                                if let Some(value_bytes) = bucket.get_value(&entry)
+                                                {
+                                                    if let Ok(value) =
+                                                        bincode::deserialize::<V>(value_bytes)
+                                                    {
                                                         let mut term = path.clone();
                                                         term.extend_from_slice(suffix);
                                                         terms.push(PrefixTermWithValueAndArena {

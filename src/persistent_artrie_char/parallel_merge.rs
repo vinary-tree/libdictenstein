@@ -23,13 +23,8 @@ use crate::persistent_artrie::error::Result;
 use crate::value::DictionaryValue;
 
 impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
-
     #[cfg(feature = "parallel-merge")]
-    pub fn merge_from_parallel<F>(
-        &mut self,
-        other: &Self,
-        merge_fn: F,
-    ) -> Result<usize>
+    pub fn merge_from_parallel<F>(&mut self, other: &Self, merge_fn: F) -> Result<usize>
     where
         F: Fn(&V, &V) -> V + Sync + Send,
         V: Clone + Send + Sync,

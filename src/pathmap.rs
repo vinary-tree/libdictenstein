@@ -3,9 +3,7 @@
 use crate::iterator::DictionaryIterator;
 use crate::pathmap_zipper::PathMapZipper;
 use crate::value::DictionaryValue;
-use crate::{
-    Dictionary, DictionaryNode, MappedDictionary, MappedDictionaryNode, SyncStrategy,
-};
+use crate::{Dictionary, DictionaryNode, MappedDictionary, MappedDictionaryNode, SyncStrategy};
 // NOTE: Serialization support (DictionaryFromTerms impl) is provided in liblevenshtein
 // since the trait lives there.
 use pathmap::utils::BitMask;

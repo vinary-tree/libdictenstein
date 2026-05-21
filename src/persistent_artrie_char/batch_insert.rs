@@ -25,14 +25,14 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
             .iter()
             .map(|(term, value)| {
                 let term_bytes = term.as_bytes().to_vec();
-                let value_bytes = value.as_ref().and_then(|v| {
-                    bincode::serialize(v).ok()
-                });
+                let value_bytes = value.as_ref().and_then(|v| bincode::serialize(v).ok());
                 (term_bytes, value_bytes)
             })
             .collect();
 
-        let batch_record = WalRecord::BatchInsert { entries: wal_entries };
+        let batch_record = WalRecord::BatchInsert {
+            entries: wal_entries,
+        };
         if let Err(e) = self.append_to_wal(batch_record) {
             log::warn!("Failed to log batch insert to WAL: {:?}", e);
         }
@@ -114,14 +114,14 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
         let wal_entries: Vec<(Vec<u8>, Option<Vec<u8>>)> = entries
             .iter()
             .map(|(term, value)| {
-                let value_bytes = value.as_ref().and_then(|v| {
-                    bincode::serialize(v).ok()
-                });
+                let value_bytes = value.as_ref().and_then(|v| bincode::serialize(v).ok());
                 (term.to_vec(), value_bytes)
             })
             .collect();
 
-        let batch_record = WalRecord::BatchInsert { entries: wal_entries };
+        let batch_record = WalRecord::BatchInsert {
+            entries: wal_entries,
+        };
         if let Err(e) = self.append_to_wal(batch_record) {
             log::warn!("Failed to log batch insert to WAL: {:?}", e);
         }
@@ -281,7 +281,10 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     /// # Returns
     ///
     /// The number of terms that were newly inserted.
-    pub fn insert_batch_chars_grouped(&mut self, mut entries: Vec<(Vec<char>, Option<V>)>) -> usize {
+    pub fn insert_batch_chars_grouped(
+        &mut self,
+        mut entries: Vec<(Vec<char>, Option<V>)>,
+    ) -> usize {
         if entries.is_empty() {
             return 0;
         }

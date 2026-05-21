@@ -32,7 +32,8 @@ impl<S: BlockStorage> super::dict_impl::PersistentVocabARTrie<S> {
     pub fn insert(&mut self, term: &str) -> u64 {
         // Fast path: bloom filter says definitely NOT in vocabulary
         // This skips the O(k) trie traversal for new terms
-        let is_definitely_new = self.bloom_filter
+        let is_definitely_new = self
+            .bloom_filter
             .as_ref()
             .map(|b| !b.might_contain(term))
             .unwrap_or(false);
@@ -114,7 +115,8 @@ impl<S: BlockStorage> super::dict_impl::PersistentVocabARTrie<S> {
         // Phase 1: Collect indices, separating existing vs new terms
         for (pos, term) in terms.iter().enumerate() {
             // Fast path: bloom filter says definitely NOT in vocabulary
-            let is_definitely_new = self.bloom_filter
+            let is_definitely_new = self
+                .bloom_filter
                 .as_ref()
                 .map(|b| !b.might_contain(term))
                 .unwrap_or(false);
@@ -131,10 +133,7 @@ impl<S: BlockStorage> super::dict_impl::PersistentVocabARTrie<S> {
             let index = self.next_index.fetch_add(1, Ordering::AcqRel);
 
             // Prepare for batch WAL record
-            new_entries.push((
-                term.as_bytes().to_vec(),
-                Some(index.to_le_bytes().to_vec()),
-            ));
+            new_entries.push((term.as_bytes().to_vec(), Some(index.to_le_bytes().to_vec())));
 
             new_term_indices.push((pos, index));
             indices.push(index);
@@ -171,7 +170,6 @@ impl<S: BlockStorage> super::dict_impl::PersistentVocabARTrie<S> {
         indices
     }
 
-
     /// Insert a term with a specific vocabulary index.
     ///
     /// # Returns
@@ -201,7 +199,8 @@ impl<S: BlockStorage> super::dict_impl::PersistentVocabARTrie<S> {
 
                     // Update node map
                     if !self.node_map.contains_key(&child_ref) {
-                        self.node_map.insert(child_ref, child as *const VocabTrieNode);
+                        self.node_map
+                            .insert(child_ref, child as *const VocabTrieNode);
                     }
 
                     current_ref = child_ref;
@@ -236,7 +235,10 @@ impl<S: BlockStorage> super::dict_impl::PersistentVocabARTrie<S> {
                     }
                     let new_val = index + 1;
                     match self.next_index.compare_exchange(
-                        current, new_val, Ordering::AcqRel, Ordering::Acquire
+                        current,
+                        new_val,
+                        Ordering::AcqRel,
+                        Ordering::Acquire,
                     ) {
                         Ok(_) => break,
                         Err(_) => continue, // Retry

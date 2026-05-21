@@ -264,7 +264,11 @@ pub fn read_varint_branchless(data: &[u8]) -> (u64, usize) {
         u64::from_le_bytes(buf)
     };
     let zeros = 64 - (len * 8);
-    let value = if zeros < 64 { (rest << zeros) >> zeros } else { rest };
+    let value = if zeros < 64 {
+        (rest << zeros) >> zeros
+    } else {
+        rest
+    };
     (value, len + 1)
 }
 
@@ -470,11 +474,20 @@ pub fn decode_compact_byte_node(data: &[u8]) -> DecodedCompactByteNode {
     offset += header.num_children as usize;
 
     // Read children
-    let children = read_n_values_from_slice(data, &mut offset, header.num_children as usize, header.ptr_width);
+    let children = read_n_values_from_slice(
+        data,
+        &mut offset,
+        header.num_children as usize,
+        header.ptr_width,
+    );
 
     // Read value_ptr if present
     let value_ptr = if header.has_value {
-        Some(read_fixed_width_from_slice(data, &mut offset, header.ptr_width))
+        Some(read_fixed_width_from_slice(
+            data,
+            &mut offset,
+            header.ptr_width,
+        ))
     } else {
         None
     };
@@ -502,7 +515,7 @@ pub fn compact_byte_node_size(
         + prefix_len  // prefix (1 byte per char)
         + num_children  // keys (1 byte per key)
         + (num_children * ptr_width)  // children
-        + if has_value { ptr_width } else { 0 }  // value_ptr
+        + if has_value { ptr_width } else { 0 } // value_ptr
 }
 
 #[cfg(test)]
@@ -523,7 +536,17 @@ mod tests {
 
     #[test]
     fn test_varint_multi_byte() {
-        let values = [248u64, 255, 256, 1000, 65535, 65536, 0xFFFFFF, 0xFFFFFFFF, u64::MAX];
+        let values = [
+            248u64,
+            255,
+            256,
+            1000,
+            65535,
+            65536,
+            0xFFFFFF,
+            0xFFFFFFFF,
+            u64::MAX,
+        ];
         for &v in &values {
             let mut buf = Vec::new();
             write_varint_to_vec(v, &mut buf);

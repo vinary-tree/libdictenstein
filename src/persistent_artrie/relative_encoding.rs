@@ -47,7 +47,7 @@
 //! ```
 
 use super::arena_manager::ArenaSlot;
-use super::compact_encoding::{write_varint_to_vec, read_varint_from_slice};
+use super::compact_encoding::{read_varint_from_slice, write_varint_to_vec};
 
 /// Flag bit indicating cross-arena encoding (bit 0 = 1)
 pub const FLAG_CROSS_ARENA: u8 = 0x01;
@@ -307,7 +307,10 @@ pub fn decode_sequential_siblings(
     // Reconstruct all child slots (consecutive slot IDs)
     let mut children = Vec::with_capacity(count);
     for i in 0..count {
-        children.push(ArenaSlot::new(first_child.arena_id, first_child.slot_id + i as u32));
+        children.push(ArenaSlot::new(
+            first_child.arena_id,
+            first_child.slot_id + i as u32,
+        ));
     }
 
     (children, bytes_consumed)
@@ -320,7 +323,7 @@ mod tests {
     #[test]
     fn test_same_arena_relative_encoding() {
         let parent = ArenaSlot::new(0, 100);
-        let child = ArenaSlot::new(0, 95);  // Delta = 5
+        let child = ArenaSlot::new(0, 95); // Delta = 5
 
         let mut buf = Vec::new();
         let len = encode_child_pointer(parent, child, &mut buf);
@@ -328,7 +331,7 @@ mod tests {
         // (5 << 1) = 10, fits in single byte
         assert_eq!(len, 1);
         assert_eq!(buf.len(), 1);
-        assert_eq!(buf[0], 10);  // 5 << 1 = 10
+        assert_eq!(buf[0], 10); // 5 << 1 = 10
 
         let (decoded, consumed) = decode_child_pointer(&buf, parent);
         assert_eq!(consumed, 1);
@@ -339,7 +342,7 @@ mod tests {
     #[test]
     fn test_cross_arena_full_encoding() {
         let parent = ArenaSlot::new(0, 100);
-        let child = ArenaSlot::new(1, 50);  // Different arena
+        let child = ArenaSlot::new(1, 50); // Different arena
 
         let mut buf = Vec::new();
         let len = encode_child_pointer(parent, child, &mut buf);
@@ -358,7 +361,7 @@ mod tests {
     #[test]
     fn test_zero_delta() {
         let parent = ArenaSlot::new(0, 100);
-        let child = ArenaSlot::new(0, 100);  // Same slot (edge case)
+        let child = ArenaSlot::new(0, 100); // Same slot (edge case)
 
         let mut buf = Vec::new();
         let len = encode_child_pointer(parent, child, &mut buf);
@@ -374,7 +377,7 @@ mod tests {
     #[test]
     fn test_large_delta() {
         let parent = ArenaSlot::new(0, 100000);
-        let child = ArenaSlot::new(0, 0);  // Delta = 100000
+        let child = ArenaSlot::new(0, 0); // Delta = 100000
 
         let mut buf = Vec::new();
         let len = encode_child_pointer(parent, child, &mut buf);
@@ -404,9 +407,9 @@ mod tests {
     fn test_encode_decode_children() {
         let parent = ArenaSlot::new(0, 100);
         let children = vec![
-            ArenaSlot::new(0, 90),  // Same arena
-            ArenaSlot::new(0, 80),  // Same arena
-            ArenaSlot::new(1, 50),  // Different arena
+            ArenaSlot::new(0, 90), // Same arena
+            ArenaSlot::new(0, 80), // Same arena
+            ArenaSlot::new(1, 50), // Different arena
         ];
 
         let mut buf = Vec::new();
@@ -446,7 +449,7 @@ mod tests {
     #[test]
     fn test_sequential_siblings_cross_arena() {
         let parent = ArenaSlot::new(0, 100);
-        let first_child = ArenaSlot::new(1, 0);  // Different arena
+        let first_child = ArenaSlot::new(1, 0); // Different arena
         let count = 3;
 
         let mut buf = Vec::new();
@@ -469,10 +472,7 @@ mod tests {
         let parent = ArenaSlot::new(0, 1000);
 
         // Typical case: children allocated just before parent
-        let children: Vec<ArenaSlot> = (990..1000)
-            .rev()
-            .map(|s| ArenaSlot::new(0, s))
-            .collect();
+        let children: Vec<ArenaSlot> = (990..1000).rev().map(|s| ArenaSlot::new(0, s)).collect();
 
         let mut buf = Vec::new();
         let relative_size = encode_children(parent, &children, &mut buf);

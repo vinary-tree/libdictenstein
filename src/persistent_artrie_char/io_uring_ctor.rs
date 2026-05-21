@@ -8,10 +8,9 @@
 #![cfg(feature = "io-uring-backend")]
 
 use std::path::Path;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering as AtomicOrdering};
+use std::sync::Arc;
 
-use crate::persistent_artrie::IoUringDiskManager;
 use crate::persistent_artrie::adaptive_pool::CacheStats;
 use crate::persistent_artrie::block_storage::BlockStorage;
 use crate::persistent_artrie::buffer_manager::BufferManager;
@@ -20,14 +19,17 @@ use crate::persistent_artrie::dict_impl::DurabilityPolicy;
 use crate::persistent_artrie::error::{PersistentARTrieError, Result};
 use crate::persistent_artrie::wal::{WalConfig, WalReader, WalRecord};
 use crate::persistent_artrie::wal_managed::{create_async_wal, open_or_create_async_wal};
+use crate::persistent_artrie::IoUringDiskManager;
 use crate::sync_compat::RwLock;
 use crate::value::DictionaryValue;
 
-use super::DEFAULT_CHAR_BUFFER_POOL_SIZE;
 use super::arena_manager::ArenaManager;
 use super::types::CharTrieRoot;
+use super::DEFAULT_CHAR_BUFFER_POOL_SIZE;
 
-impl<V: DictionaryValue> super::PersistentARTrieChar<V, crate::persistent_artrie::IoUringDiskManager> {
+impl<V: DictionaryValue>
+    super::PersistentARTrieChar<V, crate::persistent_artrie::IoUringDiskManager>
+{
     /// Create a new disk-backed trie using io_uring + O_DIRECT.
     ///
     /// This uses `IoUringDiskManager` instead of `MmapDiskManager`, which:
@@ -51,8 +53,10 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V, crate::persistent_artrie
 
         // Create async WAL file
         let wal_path = path.with_extension("wal");
-        let wal_writer = create_async_wal(&wal_path, path)
-            .map_err(|e| PersistentARTrieError::WalError { reason: format!("{:?}", e) })?;
+        let wal_writer =
+            create_async_wal(&wal_path, path).map_err(|e| PersistentARTrieError::WalError {
+                reason: format!("{:?}", e),
+            })?;
         let wal_writer = Arc::new(wal_writer);
 
         // Create arena manager for space-efficient node storage
@@ -95,8 +99,8 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V, crate::persistent_artrie
     /// # Arguments
     /// * `path` - Path to the trie file (must exist)
     pub fn open_with_io_uring<P: AsRef<Path>>(path: P) -> Result<Self> {
-        use crate::persistent_artrie::IoUringDiskManager;
         use crate::persistent_artrie::swizzled_ptr::SwizzledPtr;
+        use crate::persistent_artrie::IoUringDiskManager;
 
         let path = path.as_ref();
 
@@ -114,8 +118,10 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V, crate::persistent_artrie
         // Read WAL records for recovery if WAL exists
         let wal_path = path.with_extension("wal");
         let (recovered_ops, next_lsn, checkpoint_lsn) = if wal_path.exists() {
-            let mut reader = WalReader::new(&wal_path)
-                .map_err(|e| PersistentARTrieError::WalError { reason: format!("{:?}", e) })?;
+            let mut reader =
+                WalReader::new(&wal_path).map_err(|e| PersistentARTrieError::WalError {
+                    reason: format!("{:?}", e),
+                })?;
 
             let mut records = Vec::new();
             let mut max_lsn = 0u64;
@@ -124,7 +130,11 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V, crate::persistent_artrie
                 match result {
                     Ok((lsn, record)) => {
                         max_lsn = max_lsn.max(lsn);
-                        if let WalRecord::Checkpoint { checkpoint_lsn: cp_lsn, .. } = &record {
+                        if let WalRecord::Checkpoint {
+                            checkpoint_lsn: cp_lsn,
+                            ..
+                        } = &record
+                        {
                             checkpoint_lsn = checkpoint_lsn.max(*cp_lsn);
                         }
                         records.push((lsn, record));
@@ -140,8 +150,11 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V, crate::persistent_artrie
         };
 
         // Create async WAL writer using TOCTOU-safe open_or_create
-        let wal_writer = open_or_create_async_wal(&wal_path, path)
-            .map_err(|e| PersistentARTrieError::WalError { reason: format!("{:?}", e) })?;
+        let wal_writer = open_or_create_async_wal(&wal_path, path).map_err(|e| {
+            PersistentARTrieError::WalError {
+                reason: format!("{:?}", e),
+            }
+        })?;
         let wal_writer = Arc::new(wal_writer);
 
         // Create arena manager for space-efficient node storage
@@ -233,7 +246,12 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V, crate::persistent_artrie
                         inner.insert_impl_no_wal_with_value(&term_str, v);
                     }
                 }
-                WalRecord::CompareAndSwap { term, new_value, success, .. } => {
+                WalRecord::CompareAndSwap {
+                    term,
+                    new_value,
+                    success,
+                    ..
+                } => {
                     if success {
                         let term_str = String::from_utf8_lossy(&term);
                         if let Ok(v) = bincode::deserialize::<V>(&new_value) {

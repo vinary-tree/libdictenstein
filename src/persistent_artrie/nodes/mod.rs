@@ -37,29 +37,29 @@
 //! Node16 uses SSE4.1 SIMD instructions (`_mm_cmpeq_epi8`) for parallel
 //! key comparison, finding matches in ~3 cycles vs ~16 for linear scan.
 
-pub mod node4;
 pub mod node16;
-pub mod node48;
 pub mod node256;
+pub mod node4;
+pub mod node48;
 
 // Lock-free persistent node types (requires `im` crate)
 #[cfg(feature = "persistent-artrie")]
-pub mod persistent_node;
-#[cfg(feature = "persistent-artrie")]
 pub mod atomic_ptr;
+#[cfg(feature = "persistent-artrie")]
+pub mod persistent_node;
 
-pub use node4::Node4;
 pub use node16::Node16;
-pub use node48::Node48;
 pub use node256::Node256;
+pub use node4::Node4;
+pub use node48::Node48;
 
 // Lock-free persistent node exports
 #[cfg(feature = "persistent-artrie")]
-pub use persistent_node::PersistentNode;
-#[cfg(feature = "persistent-artrie")]
 pub use atomic_ptr::AtomicNodePtr;
+#[cfg(feature = "persistent-artrie")]
+pub use persistent_node::PersistentNode;
 
-use std::sync::atomic::{AtomicU8, AtomicU16, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU16, AtomicU64, AtomicU8, Ordering};
 
 use super::swizzled_ptr::SwizzledPtr;
 
@@ -364,7 +364,8 @@ impl AtomicNodeHeader {
     /// Atomically set the has_dirty_descendants flag.
     #[inline]
     pub fn set_has_dirty_descendants(&self) {
-        self.flags.fetch_or(flags::HAS_DIRTY_DESCENDANTS, Ordering::Release);
+        self.flags
+            .fetch_or(flags::HAS_DIRTY_DESCENDANTS, Ordering::Release);
     }
 
     /// Check if this node has dirty descendants (atomic read).
@@ -382,7 +383,10 @@ impl AtomicNodeHeader {
     /// Atomically clear both dirty flags.
     #[inline]
     pub fn clear_dirty_flags(&self) {
-        self.flags.fetch_and(!(flags::IS_DIRTY | flags::HAS_DIRTY_DESCENDANTS), Ordering::Release);
+        self.flags.fetch_and(
+            !(flags::IS_DIRTY | flags::HAS_DIRTY_DESCENDANTS),
+            Ordering::Release,
+        );
     }
 
     /// Load all flags atomically.
@@ -424,17 +428,9 @@ impl AtomicNodeHeader {
     /// - `Ok(current)` if successful
     /// - `Err(actual)` if the current value didn't match expected
     #[inline]
-    pub fn compare_exchange_children(
-        &self,
-        expected: u16,
-        new: u16,
-    ) -> Result<u16, u16> {
-        self.num_children.compare_exchange(
-            expected,
-            new,
-            Ordering::AcqRel,
-            Ordering::Acquire,
-        )
+    pub fn compare_exchange_children(&self, expected: u16, new: u16) -> Result<u16, u16> {
+        self.num_children
+            .compare_exchange(expected, new, Ordering::AcqRel, Ordering::Acquire)
     }
 
     // =========================================================================
@@ -765,7 +761,11 @@ impl Node {
     /// - `Ok(None)` - Child added successfully to existing node
     /// - `Ok(Some(new_node))` - Node was grown and child added to new node
     /// - `Err(AddChildError::KeyExists)` - Key already exists
-    pub fn add_child_growing(&mut self, key: u8, child: SwizzledPtr) -> Result<Option<Node>, AddChildError> {
+    pub fn add_child_growing(
+        &mut self,
+        key: u8,
+        child: SwizzledPtr,
+    ) -> Result<Option<Node>, AddChildError> {
         match self {
             Node::N4(n) => {
                 if n.is_full() {
@@ -817,9 +817,7 @@ impl Node {
     /// - `None` - Key not found
     pub fn remove_child_shrinking(&mut self, key: u8) -> Option<(SwizzledPtr, Option<Node>)> {
         match self {
-            Node::N4(n) => {
-                n.remove_child(key).map(|removed| (removed, None))
-            }
+            Node::N4(n) => n.remove_child(key).map(|removed| (removed, None)),
             Node::N16(n) => {
                 if let Some(removed) = n.remove_child(key) {
                     if n.header.num_children <= 4 {
@@ -977,7 +975,10 @@ impl ChildStorage {
 
     /// Create a sequential storage reference
     pub fn sequential(arena_id: u32, first_slot: u32) -> Self {
-        ChildStorage::Sequential { arena_id, first_slot }
+        ChildStorage::Sequential {
+            arena_id,
+            first_slot,
+        }
     }
 }
 

@@ -15,30 +15,30 @@
 //! The dictionary uses `Arc<RwLock>` for thread-safe concurrent access.
 //! Read operations can proceed in parallel, while writes are serialized.
 
-use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicUsize};
 use crate::sync_compat::RwLock;
 use log::warn;
+use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicBool, AtomicUsize};
+use std::sync::Arc;
 
-#[allow(unused_imports)]
-use crate::{Dictionary, MappedDictionary, SyncStrategy};
-use crate::value::DictionaryValue;
 use super::bucket::StringBucket;
 #[allow(unused_imports)]
 use super::error::Result;
+use crate::value::DictionaryValue;
+#[allow(unused_imports)]
+use crate::{Dictionary, MappedDictionary, SyncStrategy};
 
 // `SyncStrategy` and `Result` look unused at the file level — they're
 // pulled in by the test module via `use super::*`. The cargo dead-code
 // pass doesn't see through that. Suppress the false-positive warning
 // at the imports themselves.
 use super::node_impl::PersistentARTrieNode;
-use super::nodes::Node;
 #[allow(unused_imports)]
 use super::nodes::ArtNode;
+use super::nodes::Node;
+use super::serialization;
 use super::swizzled_ptr::{NodeType, SwizzledPtr};
 use super::transitions::ChildNode;
-use super::serialization;
 
 use super::arena_manager::ArenaManager;
 use super::block_storage::BlockStorage;
@@ -104,9 +104,11 @@ fn simd_cmp_bytes(a: &[u8], b: &[u8]) -> std::cmp::Ordering {
 /// Check if a <= b using SIMD-accelerated comparison.
 #[inline]
 pub(super) fn bytes_le(a: &[u8], b: &[u8]) -> bool {
-    matches!(simd_cmp_bytes(a, b), std::cmp::Ordering::Less | std::cmp::Ordering::Equal)
+    matches!(
+        simd_cmp_bytes(a, b),
+        std::cmp::Ordering::Less | std::cmp::Ordering::Equal
+    )
 }
-
 
 /// Check if a > b using SIMD-accelerated comparison.
 #[inline]
@@ -213,7 +215,10 @@ pub(super) fn resolve_child_for_mutation_with_bm<S: BlockStorage>(
                 }
             }
             // Char-level nodes should never appear in byte-level trie
-            NodeType::CharNode4 | NodeType::CharNode16 | NodeType::CharNode48 | NodeType::CharBucket => {
+            NodeType::CharNode4
+            | NodeType::CharNode16
+            | NodeType::CharNode48
+            | NodeType::CharBucket => {
                 warn!(
                     "Char-level node type encountered in byte-level PersistentARTrie at block {}, offset {}",
                     disk_location.block_id, disk_location.offset
@@ -332,7 +337,6 @@ pub struct PersistentARTrie<V: DictionaryValue = (), S: BlockStorage = MmapDiskM
 /// This type alias provides the same thread-safety model as the previous
 /// `PersistentARTrie` implementation (which internally used `Arc<RwLock<...>>`).
 ///
-
 // `PrefixTermWithArena` and `PrefixTermWithValueAndArena` were relocated to
 // `super::prefix_term`; re-exported here under their original paths.
 pub use super::prefix_term::{PrefixTermWithArena, PrefixTermWithValueAndArena};
@@ -388,16 +392,12 @@ impl<V: DictionaryValue, S: BlockStorage> WalManaged for PersistentARTrie<V, S> 
     }
 }
 
-
 // === io_uring convenience constructors (Linux-only, requires `io-uring-backend` feature) ===
-
 
 // === Generic methods (work with any BlockStorage backend) ===
 
 impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
-
     /// Insert a term into the dictionary (without value)
-
 
     /// Get a snapshot node for traversal.
     ///
@@ -441,22 +441,12 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
     // =========================================================================
     // Insert / Remove Implementations
     // =========================================================================
-
-
-
-
-
-
-
 }
 
 /// Root descriptor type constants
 pub(super) const ROOT_TYPE_EMPTY: u8 = 0;
 pub(super) const ROOT_TYPE_BUCKET: u8 = 1;
 pub(super) const ROOT_TYPE_ART_NODE: u8 = 2;
-
-
-
 
 // `SharedARTrieParallelExt` trait + its blanket impl on `SharedARTrie<V>`
 // (feature-gated on `parallel-merge`) were relocated to the sibling
@@ -470,8 +460,6 @@ pub use super::parallel_merge::SharedARTrieParallelExt;
 // `super::document_tx` module in Phase-5 decomposition. Data
 // carriers (`DocumentTransaction` / `TransactionState`) live in
 // `super::transactions`.
-
-
 
 /// Drop implementation for clean shutdown.
 ///
@@ -876,7 +864,9 @@ mod tests {
                 PersistentARTrie::create(&dict_path).expect("create dict");
 
             // Insert new term
-            let is_new = dict.upsert("greeting", "hello".to_string()).expect("upsert");
+            let is_new = dict
+                .upsert("greeting", "hello".to_string())
+                .expect("upsert");
             assert!(is_new, "Should return true for new insertion");
 
             // Verify value
@@ -893,7 +883,8 @@ mod tests {
                 PersistentARTrie::create(&dict_path).expect("create dict");
 
             // Insert initial value
-            dict.upsert("greeting", "hello".to_string()).expect("upsert");
+            dict.upsert("greeting", "hello".to_string())
+                .expect("upsert");
 
             // Update existing term
             let is_new = dict.upsert("greeting", "hi".to_string()).expect("upsert");
@@ -952,7 +943,10 @@ mod tests {
 
             // CAS with None expected succeeds when term doesn't exist
             let success = dict.compare_and_swap("new_key", None, 42).expect("cas");
-            assert!(success, "CAS should succeed when expecting None and key doesn't exist");
+            assert!(
+                success,
+                "CAS should succeed when expecting None and key doesn't exist"
+            );
 
             // Verify value was inserted
             assert_eq!(dict.get_value("new_key"), Some(42));
@@ -1160,7 +1154,7 @@ mod tests {
     mod sequential_siblings_tests {
         use super::*;
         use crate::persistent_artrie::arena_manager::ArenaSlot;
-        use crate::persistent_artrie::nodes::{Node, Node4, ChildStorage};
+        use crate::persistent_artrie::nodes::{ChildStorage, Node, Node4};
         use crate::persistent_artrie::swizzled_ptr::SwizzledPtr;
 
         #[test]
@@ -1176,7 +1170,11 @@ mod tests {
             // Single child - not enough for sequential optimization
             // Note: block_id=1 maps to arena_id=0 (arena N = block N+1)
             let mut n4 = Node4::new();
-            let child_ptr = SwizzledPtr::on_disk(1, 10, crate::persistent_artrie::swizzled_ptr::NodeType::Node4);
+            let child_ptr = SwizzledPtr::on_disk(
+                1,
+                10,
+                crate::persistent_artrie::swizzled_ptr::NodeType::Node4,
+            );
             let _ = n4.add_child(b'a', child_ptr);
             let node = Node::N4(Box::new(n4));
 
@@ -1189,14 +1187,25 @@ mod tests {
             // Two children with consecutive slot IDs in same arena
             // Note: block_id=1 maps to arena_id=0 (arena N = block N+1)
             let mut n4 = Node4::new();
-            let ptr1 = SwizzledPtr::on_disk(1, 10, crate::persistent_artrie::swizzled_ptr::NodeType::Node4);
-            let ptr2 = SwizzledPtr::on_disk(1, 11, crate::persistent_artrie::swizzled_ptr::NodeType::Node4);
+            let ptr1 = SwizzledPtr::on_disk(
+                1,
+                10,
+                crate::persistent_artrie::swizzled_ptr::NodeType::Node4,
+            );
+            let ptr2 = SwizzledPtr::on_disk(
+                1,
+                11,
+                crate::persistent_artrie::swizzled_ptr::NodeType::Node4,
+            );
             let _ = n4.add_child(b'a', ptr1);
             let _ = n4.add_child(b'b', ptr2);
             let node = Node::N4(Box::new(n4));
 
             let result = PersistentARTrie::<()>::check_sequential_children(&node, 0);
-            assert!(result.is_some(), "Consecutive children should use sequential");
+            assert!(
+                result.is_some(),
+                "Consecutive children should use sequential"
+            );
 
             let first = result.unwrap();
             assert_eq!(first.arena_id, 0);
@@ -1208,14 +1217,25 @@ mod tests {
             // Two children with gap in slot IDs
             // Note: block_id=1 maps to arena_id=0 (arena N = block N+1)
             let mut n4 = Node4::new();
-            let ptr1 = SwizzledPtr::on_disk(1, 10, crate::persistent_artrie::swizzled_ptr::NodeType::Node4);
-            let ptr2 = SwizzledPtr::on_disk(1, 15, crate::persistent_artrie::swizzled_ptr::NodeType::Node4); // Gap!
+            let ptr1 = SwizzledPtr::on_disk(
+                1,
+                10,
+                crate::persistent_artrie::swizzled_ptr::NodeType::Node4,
+            );
+            let ptr2 = SwizzledPtr::on_disk(
+                1,
+                15,
+                crate::persistent_artrie::swizzled_ptr::NodeType::Node4,
+            ); // Gap!
             let _ = n4.add_child(b'a', ptr1);
             let _ = n4.add_child(b'b', ptr2);
             let node = Node::N4(Box::new(n4));
 
             let result = PersistentARTrie::<()>::check_sequential_children(&node, 0);
-            assert!(result.is_none(), "Non-consecutive slots should not use sequential");
+            assert!(
+                result.is_none(),
+                "Non-consecutive slots should not use sequential"
+            );
         }
 
         #[test]
@@ -1223,14 +1243,25 @@ mod tests {
             // Two children in different arenas
             // block_id=1 maps to arena_id=0, block_id=2 maps to arena_id=1
             let mut n4 = Node4::new();
-            let ptr1 = SwizzledPtr::on_disk(1, 10, crate::persistent_artrie::swizzled_ptr::NodeType::Node4);
-            let ptr2 = SwizzledPtr::on_disk(2, 11, crate::persistent_artrie::swizzled_ptr::NodeType::Node4); // Different arena!
+            let ptr1 = SwizzledPtr::on_disk(
+                1,
+                10,
+                crate::persistent_artrie::swizzled_ptr::NodeType::Node4,
+            );
+            let ptr2 = SwizzledPtr::on_disk(
+                2,
+                11,
+                crate::persistent_artrie::swizzled_ptr::NodeType::Node4,
+            ); // Different arena!
             let _ = n4.add_child(b'a', ptr1);
             let _ = n4.add_child(b'b', ptr2);
             let node = Node::N4(Box::new(n4));
 
             let result = PersistentARTrie::<()>::check_sequential_children(&node, 0);
-            assert!(result.is_none(), "Cross-arena children should not use sequential");
+            assert!(
+                result.is_none(),
+                "Cross-arena children should not use sequential"
+            );
         }
 
         #[test]
@@ -1238,8 +1269,16 @@ mod tests {
             // Children consecutive but parent will be in different arena
             // block_id=1 maps to arena_id=0 (arena N = block N+1)
             let mut n4 = Node4::new();
-            let ptr1 = SwizzledPtr::on_disk(1, 10, crate::persistent_artrie::swizzled_ptr::NodeType::Node4);
-            let ptr2 = SwizzledPtr::on_disk(1, 11, crate::persistent_artrie::swizzled_ptr::NodeType::Node4);
+            let ptr1 = SwizzledPtr::on_disk(
+                1,
+                10,
+                crate::persistent_artrie::swizzled_ptr::NodeType::Node4,
+            );
+            let ptr2 = SwizzledPtr::on_disk(
+                1,
+                11,
+                crate::persistent_artrie::swizzled_ptr::NodeType::Node4,
+            );
             let _ = n4.add_child(b'a', ptr1);
             let _ = n4.add_child(b'b', ptr2);
             let node = Node::N4(Box::new(n4));
@@ -1254,9 +1293,21 @@ mod tests {
             // Three children with consecutive slot IDs
             // Note: block_id=1 maps to arena_id=0 (arena N = block N+1)
             let mut n4 = Node4::new();
-            let ptr1 = SwizzledPtr::on_disk(1, 100, crate::persistent_artrie::swizzled_ptr::NodeType::Node4);
-            let ptr2 = SwizzledPtr::on_disk(1, 101, crate::persistent_artrie::swizzled_ptr::NodeType::Node4);
-            let ptr3 = SwizzledPtr::on_disk(1, 102, crate::persistent_artrie::swizzled_ptr::NodeType::Node4);
+            let ptr1 = SwizzledPtr::on_disk(
+                1,
+                100,
+                crate::persistent_artrie::swizzled_ptr::NodeType::Node4,
+            );
+            let ptr2 = SwizzledPtr::on_disk(
+                1,
+                101,
+                crate::persistent_artrie::swizzled_ptr::NodeType::Node4,
+            );
+            let ptr3 = SwizzledPtr::on_disk(
+                1,
+                102,
+                crate::persistent_artrie::swizzled_ptr::NodeType::Node4,
+            );
             let _ = n4.add_child(b'a', ptr1);
             let _ = n4.add_child(b'b', ptr2);
             let _ = n4.add_child(b'c', ptr3);
@@ -1299,8 +1350,8 @@ mod tests {
 
         #[test]
         fn test_multi_level_prefetch_respects_depth_limit() {
-            use crate::persistent_artrie::prefetch::{Prefetcher, PrefetchStrategy};
-            use crate::persistent_artrie::swizzled_ptr::{SwizzledPtr, NodeType};
+            use crate::persistent_artrie::prefetch::{PrefetchStrategy, Prefetcher};
+            use crate::persistent_artrie::swizzled_ptr::{NodeType, SwizzledPtr};
 
             // Create prefetcher with depth limit of 2
             let prefetcher = Prefetcher::with_config(100, PrefetchStrategy::DepthLimited(2));
@@ -1332,8 +1383,8 @@ mod tests {
 
         #[test]
         fn test_prefetch_children_bounded_with_first_n_strategy() {
-            use crate::persistent_artrie::prefetch::{Prefetcher, PrefetchStrategy};
-            use crate::persistent_artrie::swizzled_ptr::{SwizzledPtr, NodeType};
+            use crate::persistent_artrie::prefetch::{PrefetchStrategy, Prefetcher};
+            use crate::persistent_artrie::swizzled_ptr::{NodeType, SwizzledPtr};
 
             // Create prefetcher with FirstN(3) limit
             let prefetcher = Prefetcher::with_config(100, PrefetchStrategy::FirstN(3));
@@ -1354,8 +1405,8 @@ mod tests {
 
         #[test]
         fn test_prefetch_disabled_strategy() {
-            use crate::persistent_artrie::prefetch::{Prefetcher, PrefetchStrategy};
-            use crate::persistent_artrie::swizzled_ptr::{SwizzledPtr, NodeType};
+            use crate::persistent_artrie::prefetch::{PrefetchStrategy, Prefetcher};
+            use crate::persistent_artrie::swizzled_ptr::{NodeType, SwizzledPtr};
 
             let prefetcher = Prefetcher::with_config(100, PrefetchStrategy::Disabled);
 
@@ -1621,14 +1672,18 @@ mod tests {
             dict.insert_with_value("key2", 43);
 
             // Before sync, synced_lsn should be 0 (no syncs yet)
-            let synced_before = dict.synced_lsn().expect("persistent trie should have synced_lsn");
+            let synced_before = dict
+                .synced_lsn()
+                .expect("persistent trie should have synced_lsn");
             assert_eq!(synced_before, 0, "No data should be synced yet");
 
             // Sync to disk
             dict.sync().expect("sync should succeed");
 
             // After sync, synced_lsn should be positive
-            let synced_after = dict.synced_lsn().expect("persistent trie should have synced_lsn");
+            let synced_after = dict
+                .synced_lsn()
+                .expect("persistent trie should have synced_lsn");
             assert!(
                 synced_after > 0,
                 "synced_lsn should be positive after sync: {}",
@@ -1652,7 +1707,9 @@ mod tests {
             dict.insert_with_value("key2", 43);
 
             let current = dict.current_lsn();
-            let synced = dict.synced_lsn().expect("persistent trie should have synced_lsn");
+            let synced = dict
+                .synced_lsn()
+                .expect("persistent trie should have synced_lsn");
 
             // Invariant: synced_lsn <= current_lsn - 1
             // (current_lsn is the NEXT lsn to be assigned, so the last written is current - 1)
@@ -1709,7 +1766,9 @@ mod tests {
         assert!(dict.dirty_prefixes.contains(&vec![b'a', b'p']));
         assert!(dict.dirty_prefixes.contains(&vec![b'a', b'p', b'p']));
         assert!(dict.dirty_prefixes.contains(&vec![b'a', b'p', b'p', b'l']));
-        assert!(dict.dirty_prefixes.contains(&vec![b'a', b'p', b'p', b'l', b'e']));
+        assert!(dict
+            .dirty_prefixes
+            .contains(&vec![b'a', b'p', b'p', b'l', b'e']));
     }
 
     #[test]
@@ -1736,7 +1795,9 @@ mod tests {
 
         // Remove should also record the path
         dict.remove("apple");
-        assert!(dict.dirty_prefixes.contains(&vec![b'a', b'p', b'p', b'l', b'e']));
+        assert!(dict
+            .dirty_prefixes
+            .contains(&vec![b'a', b'p', b'p', b'l', b'e']));
     }
 
     #[test]
@@ -1751,7 +1812,9 @@ mod tests {
         // Manually add a cached location to verify it's NOT cleared
         // (This simulates what happens after serialization)
         let dummy_ptr = SwizzledPtr::null();
-        dict.persisted_disk_locations.write().insert(vec![b'a'], dummy_ptr);
+        dict.persisted_disk_locations
+            .write()
+            .insert(vec![b'a'], dummy_ptr);
 
         // Clear should reset dirty_prefixes but PRESERVE persisted_disk_locations
         dict.clear_dirty_tracking_state();
@@ -1760,7 +1823,10 @@ mod tests {
         // persisted_disk_locations should NOT be cleared - we preserve cached locations
         // for subsequent checkpoints to skip clean subtrees
         assert!(!dict.persisted_disk_locations.read().is_empty());
-        assert!(dict.persisted_disk_locations.read().contains_key(&vec![b'a']));
+        assert!(dict
+            .persisted_disk_locations
+            .read()
+            .contains_key(&vec![b'a']));
     }
 
     #[test]
@@ -1768,23 +1834,31 @@ mod tests {
         let mut dict: PersistentARTrie = PersistentARTrie::new();
 
         // Manually populate the cache with some locations
-        dict.persisted_disk_locations.write().insert(vec![b'a'], SwizzledPtr::null());
-        dict.persisted_disk_locations.write().insert(vec![b'a', b'p'], SwizzledPtr::null());
-        dict.persisted_disk_locations.write().insert(vec![b'a', b'p', b'p'], SwizzledPtr::null());
-        dict.persisted_disk_locations.write().insert(vec![b'b'], SwizzledPtr::null());
+        dict.persisted_disk_locations
+            .write()
+            .insert(vec![b'a'], SwizzledPtr::null());
+        dict.persisted_disk_locations
+            .write()
+            .insert(vec![b'a', b'p'], SwizzledPtr::null());
+        dict.persisted_disk_locations
+            .write()
+            .insert(vec![b'a', b'p', b'p'], SwizzledPtr::null());
+        dict.persisted_disk_locations
+            .write()
+            .insert(vec![b'b'], SwizzledPtr::null());
 
         // Recording a dirty path should invalidate cache entries along that path
         dict.record_dirty_path(b"ap");
 
         // Cache entries along the dirty path should be removed
         let cache = dict.persisted_disk_locations.read();
-        assert!(!cache.contains_key(&vec![]));  // Root prefix is now dirty
-        assert!(!cache.contains_key(&vec![b'a']));  // 'a' prefix is dirty
-        assert!(!cache.contains_key(&vec![b'a', b'p']));  // 'ap' prefix is dirty
+        assert!(!cache.contains_key(&vec![])); // Root prefix is now dirty
+        assert!(!cache.contains_key(&vec![b'a'])); // 'a' prefix is dirty
+        assert!(!cache.contains_key(&vec![b'a', b'p'])); // 'ap' prefix is dirty
 
         // Unrelated entries should remain
-        assert!(cache.contains_key(&vec![b'a', b'p', b'p']));  // 'app' not on dirty path
-        assert!(cache.contains_key(&vec![b'b']));  // 'b' not on dirty path
+        assert!(cache.contains_key(&vec![b'a', b'p', b'p'])); // 'app' not on dirty path
+        assert!(cache.contains_key(&vec![b'b'])); // 'b' not on dirty path
     }
 
     #[test]
@@ -1953,16 +2027,8 @@ mod tests {
             a[pos] = b'x';
             b[pos] = b'y';
 
-            assert!(
-                bytes_le(&a, &b),
-                "bytes_le failed at position {}",
-                pos
-            );
-            assert!(
-                bytes_gt(&b, &a),
-                "bytes_gt failed at position {}",
-                pos
-            );
+            assert!(bytes_le(&a, &b), "bytes_le failed at position {}", pos);
+            assert!(bytes_gt(&b, &a), "bytes_gt failed at position {}", pos);
         }
     }
 
@@ -2070,7 +2136,10 @@ mod tests {
 
             // This should succeed because create() handles directory creation
             let result: Result<PersistentARTrie<()>> = PersistentARTrie::create(&dict_path);
-            assert!(result.is_ok(), "Create should handle nested directory creation");
+            assert!(
+                result.is_ok(),
+                "Create should handle nested directory creation"
+            );
         }
 
         #[test]
@@ -2114,8 +2183,8 @@ mod tests {
             }
 
             // Now open with recovery
-            let (dict, report) = PersistentARTrie::<()>::open_with_recovery(&dict_path)
-                .expect("open_with_recovery");
+            let (dict, report) =
+                PersistentARTrie::<()>::open_with_recovery(&dict_path).expect("open_with_recovery");
 
             // Should have normal recovery mode
             assert!(report.mode.is_normal());

@@ -169,9 +169,7 @@ impl ArenaHeader {
     /// Read header from bytes
     pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
         if bytes.len() < HEADER_SIZE {
-            return Err(PersistentARTrieError::corrupted(
-                "Arena header too small",
-            ));
+            return Err(PersistentARTrieError::corrupted("Arena header too small"));
         }
 
         let magic = u64::from_le_bytes(bytes[0..8].try_into().expect("8 bytes"));
@@ -576,7 +574,8 @@ impl CharNodeArena {
         if new_data.len() != original_len {
             return Err(PersistentARTrieError::internal(&format!(
                 "Update size mismatch: original={}, new={}",
-                original_len, new_data.len()
+                original_len,
+                new_data.len()
             )));
         }
 
@@ -869,7 +868,8 @@ impl CharNodeArenaV2 {
         }
 
         let slot_id = self.slots.len() as u32;
-        self.slots.push(VarintSlotEntry::new(offset as u64, len as u64));
+        self.slots
+            .push(VarintSlotEntry::new(offset as u64, len as u64));
 
         self.header.node_count = self.slots.len() as u32;
         self.header.free_offset = self.data_end as u32;
@@ -1217,9 +1217,18 @@ mod tests {
         // Fixed: 100 * 8 = 800 bytes
         // Varint: ~200-300 bytes (offset ~1 byte, len = 1 byte for 50)
         assert_eq!(fixed, 800);
-        assert!(varint < fixed, "Varint should be smaller: {} vs {}", varint, fixed);
-        println!("V2 directory savings: {} -> {} bytes ({:.1}% reduction)",
-            fixed, varint, (1.0 - varint as f64 / fixed as f64) * 100.0);
+        assert!(
+            varint < fixed,
+            "Varint should be smaller: {} vs {}",
+            varint,
+            fixed
+        );
+        println!(
+            "V2 directory savings: {} -> {} bytes ({:.1}% reduction)",
+            fixed,
+            varint,
+            (1.0 - varint as f64 / fixed as f64) * 100.0
+        );
     }
 
     #[test]
@@ -1310,7 +1319,10 @@ mod tests {
 
         // Verify detection
         let validation = CharNodeArena::validate_checksums(&bytes).unwrap();
-        assert!(matches!(validation, ArenaValidation::HeaderChecksumMismatch { .. }));
+        assert!(matches!(
+            validation,
+            ArenaValidation::HeaderChecksumMismatch { .. }
+        ));
     }
 
     #[test]
@@ -1325,7 +1337,10 @@ mod tests {
 
         // Verify detection
         let validation = CharNodeArena::validate_checksums(&bytes).unwrap();
-        assert!(matches!(validation, ArenaValidation::DataChecksumMismatch { .. }));
+        assert!(matches!(
+            validation,
+            ArenaValidation::DataChecksumMismatch { .. }
+        ));
     }
 
     #[test]
@@ -1405,7 +1420,13 @@ mod tests {
     fn test_arena_validation_truncated() {
         let bytes = vec![0u8; 32]; // Too small for header
         let validation = CharNodeArena::validate_checksums(&bytes).unwrap();
-        assert!(matches!(validation, ArenaValidation::Truncated { expected_min: 64, actual: 32 }));
+        assert!(matches!(
+            validation,
+            ArenaValidation::Truncated {
+                expected_min: 64,
+                actual: 32
+            }
+        ));
     }
 
     #[test]

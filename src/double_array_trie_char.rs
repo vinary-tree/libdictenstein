@@ -41,7 +41,7 @@ use crate::serialization::serde_helpers::{
 /// Shared data for character-level Double-Array Trie.
 #[cfg_attr(
     feature = "serialization",
-    derive(serde::Serialize, serde::Deserialize),
+    derive(serde::Serialize, serde::Deserialize)
 )]
 #[cfg_attr(
     all(feature = "serialization", not(feature = "persistent-artrie")),
@@ -129,7 +129,7 @@ pub(crate) struct DATSharedChar<V: DictionaryValue = ()> {
 /// ```
 #[cfg_attr(
     feature = "serialization",
-    derive(serde::Serialize, serde::Deserialize),
+    derive(serde::Serialize, serde::Deserialize)
 )]
 #[cfg_attr(
     all(feature = "serialization", not(feature = "persistent-artrie")),
@@ -1133,18 +1133,8 @@ mod tests {
     fn test_from_sorted_matches_from_terms() {
         // Verify that from_sorted_terms_with_values produces the same result
         // as from_terms_with_values when given pre-sorted input
-        let unsorted_terms = vec![
-            ("cherry", 3),
-            ("apple", 1),
-            ("banana", 2),
-            ("date", 4),
-        ];
-        let sorted_terms = vec![
-            ("apple", 1),
-            ("banana", 2),
-            ("cherry", 3),
-            ("date", 4),
-        ];
+        let unsorted_terms = vec![("cherry", 3), ("apple", 1), ("banana", 2), ("date", 4)];
+        let sorted_terms = vec![("apple", 1), ("banana", 2), ("cherry", 3), ("date", 4)];
 
         let dict1 = DoubleArrayTrieChar::from_terms_with_values(unsorted_terms);
         let dict2 = DoubleArrayTrieChar::from_sorted_terms_with_values(sorted_terms);

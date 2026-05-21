@@ -71,9 +71,13 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
     pub fn insert_cas(&self, term: &[u8]) -> bool {
         use std::sync::atomic::Ordering;
 
-        let lockfree_root = self.lockfree_root.as_ref()
+        let lockfree_root = self
+            .lockfree_root
+            .as_ref()
             .expect("Lock-free mode not enabled. Call enable_lockfree() first.");
-        let lockfree_cache = self.lockfree_cache.as_ref()
+        let lockfree_cache = self
+            .lockfree_cache
+            .as_ref()
             .expect("Lock-free mode not enabled. Call enable_lockfree() first.");
 
         // Fast path: check cache first
@@ -148,7 +152,13 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
         node: &Arc<super::nodes::PersistentNode>,
         term: &[u8],
         depth: usize,
-    ) -> std::result::Result<(Arc<super::nodes::PersistentNode>, Arc<super::nodes::PersistentNode>), ()> {
+    ) -> std::result::Result<
+        (
+            Arc<super::nodes::PersistentNode>,
+            Arc<super::nodes::PersistentNode>,
+        ),
+        (),
+    > {
         use super::nodes::PersistentNode;
         use super::swizzled_ptr::SwizzledPtr;
 
@@ -201,7 +211,10 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
     fn create_lockfree_path(
         &self,
         term: &[u8],
-    ) -> (Arc<super::nodes::PersistentNode>, Arc<super::nodes::PersistentNode>) {
+    ) -> (
+        Arc<super::nodes::PersistentNode>,
+        Arc<super::nodes::PersistentNode>,
+    ) {
         use super::nodes::PersistentNode;
         use super::swizzled_ptr::SwizzledPtr;
 
@@ -231,12 +244,10 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
         _depth: usize,
     ) -> LockfreeInsertResult {
         match self.build_path_recursive(current, term, 0) {
-            Ok((new_root, leaf)) => {
-                match root.compare_exchange(current, new_root) {
-                    Ok(_) => LockfreeInsertResult::Inserted(leaf),
-                    Err(_actual) => LockfreeInsertResult::Conflict,
-                }
-            }
+            Ok((new_root, leaf)) => match root.compare_exchange(current, new_root) {
+                Ok(_) => LockfreeInsertResult::Inserted(leaf),
+                Err(_actual) => LockfreeInsertResult::Conflict,
+            },
             Err(()) => LockfreeInsertResult::AlreadyExists,
         }
     }
@@ -414,7 +425,11 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
         use super::nodes::PersistentNode;
 
         if depth == key.len() {
-            return if node.is_final() { Some(Arc::clone(node)) } else { None };
+            return if node.is_final() {
+                Some(Arc::clone(node))
+            } else {
+                None
+            };
         }
 
         let child_ptr = node.find_child(key[depth])?;
@@ -446,7 +461,9 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
     pub fn increment_cas(&self, key: &[u8], delta: u64) -> u64 {
         use std::sync::atomic::Ordering;
 
-        let lockfree_root = self.lockfree_root.as_ref()
+        let lockfree_root = self
+            .lockfree_root
+            .as_ref()
             .expect("Lock-free mode not enabled. Call enable_lockfree() first.");
 
         if key.is_empty() {

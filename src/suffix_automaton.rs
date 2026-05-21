@@ -144,7 +144,7 @@ use crate::{Dictionary, DictionaryNode, SyncStrategy};
 #[derive(Clone, Debug)]
 #[cfg_attr(
     feature = "serialization",
-    derive(serde::Serialize, serde::Deserialize),
+    derive(serde::Serialize, serde::Deserialize)
 )]
 #[cfg_attr(
     all(feature = "serialization", not(feature = "persistent-artrie")),
@@ -258,7 +258,7 @@ impl<V: DictionaryValue> SuffixNode<V> {
 #[derive(Debug)]
 #[cfg_attr(
     feature = "serialization",
-    derive(serde::Serialize, serde::Deserialize),
+    derive(serde::Serialize, serde::Deserialize)
 )]
 #[cfg_attr(
     all(feature = "serialization", not(feature = "persistent-artrie")),

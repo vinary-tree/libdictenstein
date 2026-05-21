@@ -15,9 +15,8 @@
 //! `dict_impl_char.rs`.
 
 use std::path::Path;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering as AtomicOrdering};
-
+use std::sync::Arc;
 
 use crate::persistent_artrie::adaptive_pool::CacheStats;
 #[allow(unused_imports)]
@@ -27,15 +26,17 @@ use crate::persistent_artrie::concurrency::{EpochManager, OptimisticVersion, Ret
 use crate::persistent_artrie::dict_impl::DurabilityPolicy;
 use crate::persistent_artrie::disk_manager::DiskManager;
 use crate::persistent_artrie::error::{PersistentARTrieError, Result};
-use crate::persistent_artrie::wal::{AsyncWalConfig, AsyncWalWriter, WalConfig, WalReader, WalRecord};
+use crate::persistent_artrie::wal::{
+    AsyncWalConfig, AsyncWalWriter, WalConfig, WalReader, WalRecord,
+};
 use crate::persistent_artrie::wal_managed::{create_async_wal, open_or_create_async_wal};
 use crate::sync_compat::RwLock;
 use crate::value::DictionaryValue;
 
-use super::DEFAULT_CHAR_BUFFER_POOL_SIZE;
 use super::arena_manager::ArenaManager;
 use super::recovery_stats::{EnhancedRecoveryMode, EnhancedRecoveryStats};
 use super::types::CharTrieRoot;
+use super::DEFAULT_CHAR_BUFFER_POOL_SIZE;
 
 impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
     /// Create a new empty trie (in-memory mode)
@@ -81,8 +82,10 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
 
         // Create async WAL file
         let wal_path = path.with_extension("wal");
-        let wal_writer = create_async_wal(&wal_path, path)
-            .map_err(|e| PersistentARTrieError::WalError { reason: format!("{:?}", e) })?;
+        let wal_writer =
+            create_async_wal(&wal_path, path).map_err(|e| PersistentARTrieError::WalError {
+                reason: format!("{:?}", e),
+            })?;
         let wal_writer = Arc::new(wal_writer);
 
         // Create arena manager for space-efficient node storage
@@ -139,16 +142,16 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
 
         // Create async WAL file
         let wal_path = path.with_extension("wal");
-        let wal_writer = create_async_wal(&wal_path, path)
-            .map_err(|e| PersistentARTrieError::WalError { reason: format!("{:?}", e) })?;
+        let wal_writer =
+            create_async_wal(&wal_path, path).map_err(|e| PersistentARTrieError::WalError {
+                reason: format!("{:?}", e),
+            })?;
         let wal_writer = Arc::new(wal_writer);
 
         // Create arena manager with slot-level tracking enabled
         let flush_config = FlushConfig::with_slot_tracking();
-        let arena_manager = ArenaManager::with_buffer_manager_and_config(
-            Arc::clone(&buffer_manager),
-            flush_config,
-        );
+        let arena_manager =
+            ArenaManager::with_buffer_manager_and_config(Arc::clone(&buffer_manager), flush_config);
         let arena_manager = Arc::new(RwLock::new(arena_manager));
 
         Ok(Self {
@@ -197,16 +200,25 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
             ..Default::default()
         };
         let wal_writer = AsyncWalWriter::create(&wal_path, async_config, wal_config.clone())
-            .map_err(|e| PersistentARTrieError::WalError { reason: format!("{:?}", e) })?;
+            .map_err(|e| PersistentARTrieError::WalError {
+                reason: format!("{:?}", e),
+            })?;
         let wal_writer = Arc::new(wal_writer);
 
         // Create archive directory if archive mode is enabled
         // NOTE: create_dir_all() is idempotent - no exists() check needed.
         // Checking exists() before create_dir_all() creates a TOCTOU race window.
         if wal_config.archive_enabled {
-            let archive_dir = path.parent().unwrap_or(Path::new(".")).join(&wal_config.archive_dir);
+            let archive_dir = path
+                .parent()
+                .unwrap_or(Path::new("."))
+                .join(&wal_config.archive_dir);
             std::fs::create_dir_all(&archive_dir).map_err(|e| {
-                PersistentARTrieError::io_error("create archive directory", archive_dir.display().to_string(), e)
+                PersistentARTrieError::io_error(
+                    "create archive directory",
+                    archive_dir.display().to_string(),
+                    e,
+                )
             })?;
         }
 
@@ -263,8 +275,10 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
         let wal_path = path.with_extension("wal");
         let (recovered_ops, next_lsn, checkpoint_lsn) = if wal_path.exists() {
             // Recover from WAL
-            let mut reader = WalReader::new(&wal_path)
-                .map_err(|e| PersistentARTrieError::WalError { reason: format!("{:?}", e) })?;
+            let mut reader =
+                WalReader::new(&wal_path).map_err(|e| PersistentARTrieError::WalError {
+                    reason: format!("{:?}", e),
+                })?;
 
             let mut records = Vec::new();
             let mut max_lsn = 0u64;
@@ -274,7 +288,11 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
                     Ok((lsn, record)) => {
                         max_lsn = max_lsn.max(lsn);
                         // Track the latest checkpoint LSN
-                        if let WalRecord::Checkpoint { checkpoint_lsn: cp_lsn, .. } = &record {
+                        if let WalRecord::Checkpoint {
+                            checkpoint_lsn: cp_lsn,
+                            ..
+                        } = &record
+                        {
                             checkpoint_lsn = checkpoint_lsn.max(*cp_lsn);
                         }
                         records.push((lsn, record));
@@ -290,8 +308,11 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
         };
 
         // Create async WAL writer using TOCTOU-safe open_or_create
-        let wal_writer = open_or_create_async_wal(&wal_path, path)
-            .map_err(|e| PersistentARTrieError::WalError { reason: format!("{:?}", e) })?;
+        let wal_writer = open_or_create_async_wal(&wal_path, path).map_err(|e| {
+            PersistentARTrieError::WalError {
+                reason: format!("{:?}", e),
+            }
+        })?;
         let wal_writer = Arc::new(wal_writer);
 
         // Create arena manager for space-efficient node storage
@@ -398,7 +419,12 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
                         inner.insert_impl_no_wal_with_value(&term_str, v);
                     }
                 }
-                WalRecord::CompareAndSwap { term, new_value, success, .. } => {
+                WalRecord::CompareAndSwap {
+                    term,
+                    new_value,
+                    success,
+                    ..
+                } => {
                     // Only replay if the CAS was successful
                     if success {
                         let term_str = String::from_utf8_lossy(&term);
@@ -524,8 +550,10 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
         let wal_path = path.with_extension("wal");
         let (recovered_ops, next_lsn, checkpoint_lsn) = if wal_path.exists() {
             // Recover from WAL
-            let mut reader = WalReader::new(&wal_path)
-                .map_err(|e| PersistentARTrieError::WalError { reason: format!("{:?}", e) })?;
+            let mut reader =
+                WalReader::new(&wal_path).map_err(|e| PersistentARTrieError::WalError {
+                    reason: format!("{:?}", e),
+                })?;
 
             let mut records = Vec::new();
             let mut max_lsn = 0u64;
@@ -535,7 +563,11 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
                     Ok((lsn, record)) => {
                         max_lsn = max_lsn.max(lsn);
                         // Track the latest checkpoint LSN
-                        if let WalRecord::Checkpoint { checkpoint_lsn: cp_lsn, .. } = &record {
+                        if let WalRecord::Checkpoint {
+                            checkpoint_lsn: cp_lsn,
+                            ..
+                        } = &record
+                        {
                             checkpoint_lsn = checkpoint_lsn.max(*cp_lsn);
                         }
                         records.push((lsn, record));
@@ -551,8 +583,11 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
         };
 
         // Create async WAL writer using TOCTOU-safe open_or_create
-        let wal_writer = open_or_create_async_wal(&wal_path, path)
-            .map_err(|e| PersistentARTrieError::WalError { reason: format!("{:?}", e) })?;
+        let wal_writer = open_or_create_async_wal(&wal_path, path).map_err(|e| {
+            PersistentARTrieError::WalError {
+                reason: format!("{:?}", e),
+            }
+        })?;
         let wal_writer = Arc::new(wal_writer);
 
         // Create arena manager for space-efficient node storage
@@ -644,7 +679,12 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
                         inner.insert_impl_no_wal_with_value(&term_str, v);
                     }
                 }
-                WalRecord::CompareAndSwap { term, new_value, success, .. } => {
+                WalRecord::CompareAndSwap {
+                    term,
+                    new_value,
+                    success,
+                    ..
+                } => {
                     // Only replay if the CAS was successful
                     if success {
                         let term_str = String::from_utf8_lossy(&term);
@@ -696,9 +736,16 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
         // Checking exists() before create_dir_all() creates a TOCTOU race window.
         if wal_config.archive_enabled {
             if let Some(ref file_path) = trie.file_path {
-                let archive_dir = file_path.parent().unwrap_or(Path::new(".")).join(&wal_config.archive_dir);
+                let archive_dir = file_path
+                    .parent()
+                    .unwrap_or(Path::new("."))
+                    .join(&wal_config.archive_dir);
                 std::fs::create_dir_all(&archive_dir).map_err(|e| {
-                    PersistentARTrieError::io_error("create archive directory", archive_dir.display().to_string(), e)
+                    PersistentARTrieError::io_error(
+                        "create archive directory",
+                        archive_dir.display().to_string(),
+                        e,
+                    )
                 })?;
             }
         }
@@ -738,7 +785,9 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
     ///     eprintln!("Recovered from crash: {} records replayed", report.records_replayed);
     /// }
     /// ```
-    pub fn open_with_recovery<P: AsRef<Path>>(path: P) -> Result<(Self, crate::persistent_artrie::recovery::RecoveryReport)> {
+    pub fn open_with_recovery<P: AsRef<Path>>(
+        path: P,
+    ) -> Result<(Self, crate::persistent_artrie::recovery::RecoveryReport)> {
         Self::open_with_recovery_config(path, WalConfig::default())
     }
 
@@ -758,7 +807,9 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
     /// # Returns
     ///
     /// Tuple of (trie, recovery_report) with slot tracking enabled.
-    pub fn open_with_recovery_and_slot_tracking<P: AsRef<Path>>(path: P) -> Result<(Self, crate::persistent_artrie::recovery::RecoveryReport)> {
+    pub fn open_with_recovery_and_slot_tracking<P: AsRef<Path>>(
+        path: P,
+    ) -> Result<(Self, crate::persistent_artrie::recovery::RecoveryReport)> {
         let (trie, report) = Self::open_with_recovery(path)?;
         if let Some(ref am) = trie.arena_manager {
             am.write().enable_slot_tracking();
@@ -832,7 +883,10 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
                 let corruption_reason = corruption.to_string();
 
                 // Find archive directory
-                let archive_dir = path.parent().unwrap_or(Path::new(".")).join(&config.archive_dir);
+                let archive_dir = path
+                    .parent()
+                    .unwrap_or(Path::new("."))
+                    .join(&config.archive_dir);
 
                 // Find WAL archive segments
                 let segments = find_wal_archive_segments(&archive_dir);
@@ -896,7 +950,11 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
                                     terms_recovered += 1;
                                 }
                             }
-                            WalRecord::Increment { term, delta: _, result: val } => {
+                            WalRecord::Increment {
+                                term,
+                                delta: _,
+                                result: val,
+                            } => {
                                 // For increment, store the final result
                                 let term_str = String::from_utf8_lossy(&term);
                                 let value_bytes = bincode::serialize(&val).unwrap_or_default();
@@ -912,7 +970,12 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
                                     terms_recovered += 1;
                                 }
                             }
-                            WalRecord::CompareAndSwap { term, new_value, success, .. } => {
+                            WalRecord::CompareAndSwap {
+                                term,
+                                new_value,
+                                success,
+                                ..
+                            } => {
                                 if success {
                                     let term_str = String::from_utf8_lossy(&term);
                                     if let Ok(v) = bincode::deserialize::<V>(&new_value) {
@@ -1083,8 +1146,9 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
     pub fn incremental_recovery<P: AsRef<Path>>(
         wal_path: P,
     ) -> Result<super::recovery::IncrementalRecovery> {
-        super::recovery::IncrementalRecovery::new(wal_path.as_ref())
-            .map_err(|e| PersistentARTrieError::internal(format!("Failed to create incremental recovery: {}", e)))
+        super::recovery::IncrementalRecovery::new(wal_path.as_ref()).map_err(|e| {
+            PersistentARTrieError::internal(format!("Failed to create incremental recovery: {}", e))
+        })
     }
 
     /// Recover from archived WAL segments.

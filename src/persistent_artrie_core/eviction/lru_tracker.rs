@@ -3,9 +3,9 @@
 //! This module provides access tracking to enable smarter eviction decisions.
 //! Nodes are evicted in LRU order (coldest first), keeping hot data in memory.
 
+use std::hash::{Hash, Hasher};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
-use std::hash::{Hash, Hasher};
 
 use dashmap::DashMap;
 
@@ -190,7 +190,8 @@ impl LruRegistry {
         // Insert new entry
         // Note: There's a tiny race window here, but it's harmless for LRU purposes
         if self.trackers.len() < self.max_entries {
-            self.trackers.insert(hash, AccessTracker::with_timestamp(now));
+            self.trackers
+                .insert(hash, AccessTracker::with_timestamp(now));
         }
     }
 
@@ -205,7 +206,8 @@ impl LruRegistry {
         }
 
         if self.trackers.len() < self.max_entries {
-            self.trackers.insert(hash, AccessTracker::with_timestamp(now));
+            self.trackers
+                .insert(hash, AccessTracker::with_timestamp(now));
         }
     }
 
@@ -272,7 +274,8 @@ impl LruRegistry {
     /// Returns up to `n` hashes sorted by coldness (coldest first).
     pub fn coldest_n(&self, n: usize) -> Vec<u64> {
         let now = self.now_us();
-        let mut entries: Vec<_> = self.trackers
+        let mut entries: Vec<_> = self
+            .trackers
             .iter()
             .map(|entry| (*entry.key(), entry.value().coldness_score(now)))
             .collect();
@@ -280,7 +283,9 @@ impl LruRegistry {
         // Partial sort for efficiency when n << len
         let len = entries.len();
         if n < len / 4 {
-            entries.select_nth_unstable_by_key(n.min(len.saturating_sub(1)), |(_h, score)| std::cmp::Reverse(*score));
+            entries.select_nth_unstable_by_key(n.min(len.saturating_sub(1)), |(_h, score)| {
+                std::cmp::Reverse(*score)
+            });
             entries.truncate(n);
         } else {
             entries.sort_unstable_by_key(|(_h, score)| std::cmp::Reverse(*score));

@@ -35,9 +35,7 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
         match &self.root {
             TrieRoot::Bucket(bucket) => bucket.contains(term),
             TrieRoot::ArtNode {
-                children,
-                is_final,
-                ..
+                children, is_final, ..
             } => {
                 if term.is_empty() {
                     return *is_final;
@@ -132,24 +130,27 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
     /// * `child` - The child node to search
     /// * `remaining` - The remaining term bytes to match
     /// * `depth` - Current traversal depth (increments with each level)
-    fn get_value_in_child_with_depth(&self, child: &ChildNode, remaining: &[u8], depth: u16) -> Option<V> {
+    fn get_value_in_child_with_depth(
+        &self,
+        child: &ChildNode,
+        remaining: &[u8],
+        depth: u16,
+    ) -> Option<V> {
         match child {
-            ChildNode::Bucket(bucket) => {
-                match bucket.search(remaining) {
-                    Ok(idx) => {
-                        if let Some(entry) = bucket.get_entry(idx) {
-                            if let Some(value_bytes) = bucket.get_value(&entry) {
-                                bincode::deserialize(value_bytes).ok()
-                            } else {
-                                None
-                            }
+            ChildNode::Bucket(bucket) => match bucket.search(remaining) {
+                Ok(idx) => {
+                    if let Some(entry) = bucket.get_entry(idx) {
+                        if let Some(value_bytes) = bucket.get_value(&entry) {
+                            bincode::deserialize(value_bytes).ok()
                         } else {
                             None
                         }
+                    } else {
+                        None
                     }
-                    Err(_) => None,
                 }
-            }
+                Err(_) => None,
+            },
             ChildNode::ArtNode {
                 is_final,
                 children,
@@ -159,9 +160,9 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
                 if remaining.is_empty() {
                     if *is_final {
                         // Deserialize value from stored bytes
-                        return value.as_ref().and_then(|bytes| {
-                            bincode::deserialize(bytes).ok()
-                        });
+                        return value
+                            .as_ref()
+                            .and_then(|bytes| bincode::deserialize(bytes).ok());
                     }
                     return None;
                 }
@@ -210,13 +211,16 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
     /// * `child` - The child node to search
     /// * `remaining` - The remaining term bytes to match
     /// * `depth` - Current traversal depth (increments with each level)
-    fn contains_in_child_with_depth(&self, child: &ChildNode, remaining: &[u8], depth: u16) -> bool {
+    fn contains_in_child_with_depth(
+        &self,
+        child: &ChildNode,
+        remaining: &[u8],
+        depth: u16,
+    ) -> bool {
         match child {
             ChildNode::Bucket(bucket) => bucket.contains(remaining),
             ChildNode::ArtNode {
-                is_final,
-                children,
-                ..
+                is_final, children, ..
             } => {
                 if remaining.is_empty() {
                     return *is_final;

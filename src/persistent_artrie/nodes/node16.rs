@@ -282,12 +282,14 @@ impl Node16 {
     pub fn get_child_atomic(&self, key: u8) -> Option<SwizzledPtr> {
         #[cfg(all(target_arch = "x86_64", target_feature = "sse4.1"))]
         {
-            self.find_key_index_simd(key).map(|i| self.children[i].clone())
+            self.find_key_index_simd(key)
+                .map(|i| self.children[i].clone())
         }
 
         #[cfg(not(all(target_arch = "x86_64", target_feature = "sse4.1")))]
         {
-            self.find_key_index_linear(key).map(|i| self.children[i].clone())
+            self.find_key_index_linear(key)
+                .map(|i| self.children[i].clone())
         }
     }
 
@@ -350,11 +352,8 @@ mod tests {
 
         // Add children in random order
         for &key in &[b'h', b'a', b'd', b'f', b'c', b'e', b'g', b'b'] {
-            let child = SwizzledPtr::on_disk(
-                key as u32,
-                0,
-                crate::persistent_artrie::NodeType::Node4,
-            );
+            let child =
+                SwizzledPtr::on_disk(key as u32, 0, crate::persistent_artrie::NodeType::Node4);
             assert!(node.add_child(key, child).is_ok());
         }
 
@@ -381,11 +380,8 @@ mod tests {
         let mut node = Node16::new();
 
         for i in 0..16 {
-            let child = SwizzledPtr::on_disk(
-                i as u32,
-                0,
-                crate::persistent_artrie::NodeType::Node4,
-            );
+            let child =
+                SwizzledPtr::on_disk(i as u32, 0, crate::persistent_artrie::NodeType::Node4);
             assert!(node.add_child(i as u8, child).is_ok());
         }
 
@@ -400,11 +396,8 @@ mod tests {
         let mut node = Node16::new();
 
         for i in 0..10 {
-            let child = SwizzledPtr::on_disk(
-                i as u32,
-                0,
-                crate::persistent_artrie::NodeType::Node4,
-            );
+            let child =
+                SwizzledPtr::on_disk(i as u32, 0, crate::persistent_artrie::NodeType::Node4);
             node.add_child(i as u8, child).expect("add should succeed");
         }
 
@@ -427,11 +420,8 @@ mod tests {
         let mut node = Node16::new();
 
         for i in 0..8 {
-            let child = SwizzledPtr::on_disk(
-                i as u32,
-                0,
-                crate::persistent_artrie::NodeType::Node4,
-            );
+            let child =
+                SwizzledPtr::on_disk(i as u32, 0, crate::persistent_artrie::NodeType::Node4);
             node.add_child(b'a' + i, child).expect("add should succeed");
         }
 
@@ -444,11 +434,8 @@ mod tests {
         let mut node = Node16::new();
 
         for i in 0..4 {
-            let child = SwizzledPtr::on_disk(
-                i as u32,
-                0,
-                crate::persistent_artrie::NodeType::Node4,
-            );
+            let child =
+                SwizzledPtr::on_disk(i as u32, 0, crate::persistent_artrie::NodeType::Node4);
             node.add_child(i as u8, child).expect("add should succeed");
         }
 

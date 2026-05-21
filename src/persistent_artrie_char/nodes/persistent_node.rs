@@ -176,7 +176,11 @@ impl ChildStore {
     #[inline]
     fn find_child(&self, key: u32) -> Option<&SwizzledPtr> {
         match self {
-            ChildStore::Inline { count, keys, children } => {
+            ChildStore::Inline {
+                count,
+                keys,
+                children,
+            } => {
                 let n = *count as usize;
                 // Linear scan — faster than binary search for ≤4 elements
                 for i in 0..n {
@@ -190,12 +194,10 @@ impl ChildStore {
                 }
                 None
             }
-            ChildStore::Heap { keys, children } => {
-                match keys.binary_search(&key) {
-                    Ok(idx) => Some(&children[idx]),
-                    Err(_) => None,
-                }
-            }
+            ChildStore::Heap { keys, children } => match keys.binary_search(&key) {
+                Ok(idx) => Some(&children[idx]),
+                Err(_) => None,
+            },
         }
     }
 
@@ -209,7 +211,11 @@ impl ChildStore {
     #[inline]
     fn child_at(&self, index: usize) -> Option<(&u32, &SwizzledPtr)> {
         match self {
-            ChildStore::Inline { count, keys, children } => {
+            ChildStore::Inline {
+                count,
+                keys,
+                children,
+            } => {
                 if index < *count as usize {
                     Some((&keys[index], &children[index]))
                 } else {
@@ -230,13 +236,15 @@ impl ChildStore {
     #[inline]
     fn slices(&self) -> (&[u32], &[SwizzledPtr]) {
         match self {
-            ChildStore::Inline { count, keys, children } => {
+            ChildStore::Inline {
+                count,
+                keys,
+                children,
+            } => {
                 let n = *count as usize;
                 (&keys[..n], &children[..n])
             }
-            ChildStore::Heap { keys, children } => {
-                (keys.as_slice(), children.as_slice())
-            }
+            ChildStore::Heap { keys, children } => (keys.as_slice(), children.as_slice()),
         }
     }
 
@@ -246,7 +254,11 @@ impl ChildStore {
     /// a 5th child.
     fn with_child(&self, key: u32, child: SwizzledPtr) -> Self {
         match self {
-            ChildStore::Inline { count, keys, children } => {
+            ChildStore::Inline {
+                count,
+                keys,
+                children,
+            } => {
                 let n = *count as usize;
 
                 // Find insertion point or existing key
@@ -342,7 +354,11 @@ impl ChildStore {
     /// when the child count drops to INLINE_CAPACITY.
     fn without_child(&self, key: u32) -> Option<Self> {
         match self {
-            ChildStore::Inline { count, keys, children } => {
+            ChildStore::Inline {
+                count,
+                keys,
+                children,
+            } => {
                 let n = *count as usize;
 
                 // Find the key
@@ -441,19 +457,19 @@ impl ChildStore {
 impl Clone for ChildStore {
     fn clone(&self) -> Self {
         match self {
-            ChildStore::Inline { count, keys, children } => {
-                ChildStore::Inline {
-                    count: *count,
-                    keys: *keys,
-                    children: clone_swizzled_array(children),
-                }
-            }
-            ChildStore::Heap { keys, children } => {
-                ChildStore::Heap {
-                    keys: keys.clone(),
-                    children: clone_swizzled_vec(children),
-                }
-            }
+            ChildStore::Inline {
+                count,
+                keys,
+                children,
+            } => ChildStore::Inline {
+                count: *count,
+                keys: *keys,
+                children: clone_swizzled_array(children),
+            },
+            ChildStore::Heap { keys, children } => ChildStore::Heap {
+                keys: keys.clone(),
+                children: clone_swizzled_vec(children),
+            },
         }
     }
 }
@@ -865,7 +881,9 @@ mod tests {
         let node = PersistentCharNode::with_prefix(&prefix);
 
         assert_eq!(node.prefix_len(), 5);
-        let stored_prefix: Vec<char> = node.prefix().iter()
+        let stored_prefix: Vec<char> = node
+            .prefix()
+            .iter()
             .filter_map(|&c| char::from_u32(c))
             .collect();
         assert_eq!(stored_prefix, vec!['h', 'e', 'l', 'l', 'o']);
@@ -909,10 +927,11 @@ mod tests {
         assert_eq!(node.num_children(), 4);
 
         // Verify sorted order
-        let collected_keys: Vec<u32> = node.iter_children()
-            .map(|(&k, _)| k)
-            .collect();
-        assert_eq!(collected_keys, vec!['a' as u32, 'f' as u32, 'm' as u32, 'z' as u32]);
+        let collected_keys: Vec<u32> = node.iter_children().map(|(&k, _)| k).collect();
+        assert_eq!(
+            collected_keys,
+            vec!['a' as u32, 'f' as u32, 'm' as u32, 'z' as u32]
+        );
     }
 
     #[test]
@@ -921,8 +940,7 @@ mod tests {
         let child2 = SwizzledPtr::on_disk(2, 200, NodeType::CharNode4);
         let child2_raw = child2.to_raw();
 
-        let node = PersistentCharNode::new()
-            .with_child('a' as u32, child1);
+        let node = PersistentCharNode::new().with_child('a' as u32, child1);
 
         assert_eq!(node.num_children(), 1);
 
@@ -1111,7 +1129,8 @@ mod tests {
             .with_child('a' as u32, child.clone())
             .with_child('b' as u32, child);
 
-        let pairs: Vec<(u32, u64)> = node.iter_children()
+        let pairs: Vec<(u32, u64)> = node
+            .iter_children()
             .map(|(&k, c)| (k, c.to_raw()))
             .collect();
 

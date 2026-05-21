@@ -508,10 +508,16 @@ impl<T: Clone + Eq + Send + Sync> Lattice for Vec<T> {
 /// semiring `times` (⊗) operation represents path composition, not lattice meet.
 /// For semirings that need both join and meet, implement `Lattice` explicitly.
 #[cfg(feature = "lling-llang")]
-pub trait SemiringLattice: lling_llang::semiring::Semiring + lling_llang::semiring::IdempotentSemiring {}
+pub trait SemiringLattice:
+    lling_llang::semiring::Semiring + lling_llang::semiring::IdempotentSemiring
+{
+}
 
 #[cfg(feature = "lling-llang")]
-impl<S> SemiringLattice for S where S: lling_llang::semiring::Semiring + lling_llang::semiring::IdempotentSemiring {}
+impl<S> SemiringLattice for S where
+    S: lling_llang::semiring::Semiring + lling_llang::semiring::IdempotentSemiring
+{
+}
 
 /// Adapter for using IdempotentSemiring as a join-only Lattice.
 ///
@@ -534,8 +540,13 @@ impl<S> SemiringLattice for S where S: lling_llang::semiring::Semiring + lling_l
 pub struct SemiringLatticeWrapper<S>(pub S);
 
 #[cfg(feature = "lling-llang")]
-impl<S: lling_llang::semiring::Semiring + lling_llang::semiring::IdempotentSemiring + Clone + Send + Sync> Lattice
-    for SemiringLatticeWrapper<S>
+impl<
+        S: lling_llang::semiring::Semiring
+            + lling_llang::semiring::IdempotentSemiring
+            + Clone
+            + Send
+            + Sync,
+    > Lattice for SemiringLatticeWrapper<S>
 {
     #[inline]
     fn join(&self, other: &Self) -> Self {
@@ -561,8 +572,16 @@ impl<S: Clone + Default + Send + Sync + Unpin + 'static> crate::value::Dictionar
 
 // When persistent-artrie IS enabled: require Serialize + DeserializeOwned
 #[cfg(all(feature = "lling-llang", feature = "persistent-artrie"))]
-impl<S: Clone + Default + Send + Sync + Unpin + 'static + serde::Serialize + serde::de::DeserializeOwned>
-    crate::value::DictionaryValue for SemiringLatticeWrapper<S>
+impl<
+        S: Clone
+            + Default
+            + Send
+            + Sync
+            + Unpin
+            + 'static
+            + serde::Serialize
+            + serde::de::DeserializeOwned,
+    > crate::value::DictionaryValue for SemiringLatticeWrapper<S>
 {
 }
 
@@ -1173,8 +1192,9 @@ mod tests {
     fn test_valued_union_first_wins() {
         let dict1 =
             DoubleArrayTrie::from_terms_with_values(vec![("cat", 1usize), ("dog", 2)].into_iter());
-        let dict2 =
-            DoubleArrayTrie::from_terms_with_values(vec![("cat", 10usize), ("fish", 3)].into_iter());
+        let dict2 = DoubleArrayTrie::from_terms_with_values(
+            vec![("cat", 10usize), ("fish", 3)].into_iter(),
+        );
 
         let z1 = DoubleArrayTrieZipper::new_from_dict(&dict1);
         let z2 = DoubleArrayTrieZipper::new_from_dict(&dict2);
@@ -1196,8 +1216,9 @@ mod tests {
     fn test_valued_union_last_wins() {
         let dict1 =
             DoubleArrayTrie::from_terms_with_values(vec![("cat", 1usize), ("dog", 2)].into_iter());
-        let dict2 =
-            DoubleArrayTrie::from_terms_with_values(vec![("cat", 10usize), ("fish", 3)].into_iter());
+        let dict2 = DoubleArrayTrie::from_terms_with_values(
+            vec![("cat", 10usize), ("fish", 3)].into_iter(),
+        );
 
         let z1 = DoubleArrayTrieZipper::new_from_dict(&dict1);
         let z2 = DoubleArrayTrieZipper::new_from_dict(&dict2);
@@ -1219,8 +1240,9 @@ mod tests {
     fn test_valued_union_iterator() {
         let dict1 =
             DoubleArrayTrie::from_terms_with_values(vec![("cat", 1usize), ("dog", 2)].into_iter());
-        let dict2 =
-            DoubleArrayTrie::from_terms_with_values(vec![("cat", 10usize), ("fish", 3)].into_iter());
+        let dict2 = DoubleArrayTrie::from_terms_with_values(
+            vec![("cat", 10usize), ("fish", 3)].into_iter(),
+        );
 
         let z1 = DoubleArrayTrieZipper::new_from_dict(&dict1);
         let z2 = DoubleArrayTrieZipper::new_from_dict(&dict2);
@@ -1237,7 +1259,7 @@ mod tests {
         assert_eq!(
             results,
             vec![
-                ("cat".to_string(), 1),  // FirstWins
+                ("cat".to_string(), 1), // FirstWins
                 ("dog".to_string(), 2),
                 ("fish".to_string(), 3),
             ]
@@ -1298,10 +1320,8 @@ mod tests {
             }
         }
 
-        let dict1 =
-            DoubleArrayTrie::from_terms_with_values(vec![("cat", 1usize)].into_iter());
-        let dict2 =
-            DoubleArrayTrie::from_terms_with_values(vec![("cat", 10usize)].into_iter());
+        let dict1 = DoubleArrayTrie::from_terms_with_values(vec![("cat", 1usize)].into_iter());
+        let dict2 = DoubleArrayTrie::from_terms_with_values(vec![("cat", 10usize)].into_iter());
 
         let z1 = DoubleArrayTrieZipper::new_from_dict(&dict1);
         let z2 = DoubleArrayTrieZipper::new_from_dict(&dict2);
@@ -1534,15 +1554,12 @@ mod tests {
 
     #[test]
     fn test_lattice_join_three_dicts() {
-        let dict1 = DoubleArrayTrie::from_terms_with_values(
-            vec![("ctx", HashSet::from([1]))].into_iter(),
-        );
-        let dict2 = DoubleArrayTrie::from_terms_with_values(
-            vec![("ctx", HashSet::from([2]))].into_iter(),
-        );
-        let dict3 = DoubleArrayTrie::from_terms_with_values(
-            vec![("ctx", HashSet::from([3]))].into_iter(),
-        );
+        let dict1 =
+            DoubleArrayTrie::from_terms_with_values(vec![("ctx", HashSet::from([1]))].into_iter());
+        let dict2 =
+            DoubleArrayTrie::from_terms_with_values(vec![("ctx", HashSet::from([2]))].into_iter());
+        let dict3 =
+            DoubleArrayTrie::from_terms_with_values(vec![("ctx", HashSet::from([3]))].into_iter());
 
         let z1 = DoubleArrayTrieZipper::new_from_dict(&dict1);
         let z2 = DoubleArrayTrieZipper::new_from_dict(&dict2);

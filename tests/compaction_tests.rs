@@ -5,9 +5,7 @@
 
 #![cfg(feature = "persistent-artrie")]
 
-use libdictenstein::persistent_artrie::{
-    CompactionConfig, CompactionProgress, PersistentARTrie,
-};
+use libdictenstein::persistent_artrie::{CompactionConfig, CompactionProgress, PersistentARTrie};
 use libdictenstein::{Dictionary, MappedDictionary};
 use std::fs;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -22,8 +20,8 @@ fn test_compact_empty_trie() {
     let dir = tempdir().expect("Failed to create temp dir");
     let path = dir.path().join("empty_compact.artrie");
 
-    let mut trie: PersistentARTrie<u64> = PersistentARTrie::create(&path)
-        .expect("Failed to create trie");
+    let mut trie: PersistentARTrie<u64> =
+        PersistentARTrie::create(&path).expect("Failed to create trie");
 
     // Compact empty trie
     let mut progress_calls = 0;
@@ -45,8 +43,8 @@ fn test_compact_preserves_all_data() {
     let dir = tempdir().expect("Failed to create temp dir");
     let path = dir.path().join("preserve_data.artrie");
 
-    let mut trie: PersistentARTrie<u64> = PersistentARTrie::create(&path)
-        .expect("Failed to create trie");
+    let mut trie: PersistentARTrie<u64> =
+        PersistentARTrie::create(&path).expect("Failed to create trie");
 
     // Insert test data
     let test_terms = vec![
@@ -79,7 +77,11 @@ fn test_compact_preserves_all_data() {
     // Verify all data is preserved
     assert_eq!(trie.len(), original_count);
     for (term, value) in &test_terms {
-        assert!(trie.contains(term), "Term '{}' not found after compaction", term);
+        assert!(
+            trie.contains(term),
+            "Term '{}' not found after compaction",
+            term
+        );
         assert_eq!(
             trie.get_value(term),
             Some(*value),
@@ -96,8 +98,8 @@ fn test_compact_after_modifications() {
     let dir = tempdir().expect("Failed to create temp dir");
     let path = dir.path().join("modifications_compact.artrie");
 
-    let mut trie: PersistentARTrie<u64> = PersistentARTrie::create(&path)
-        .expect("Failed to create trie");
+    let mut trie: PersistentARTrie<u64> =
+        PersistentARTrie::create(&path).expect("Failed to create trie");
 
     // Insert initial terms
     for i in 0..100 {
@@ -160,8 +162,8 @@ fn test_compact_multiple_checkpoints() {
     let dir = tempdir().expect("Failed to create temp dir");
     let path = dir.path().join("multi_checkpoint.artrie");
 
-    let mut trie: PersistentARTrie<u64> = PersistentARTrie::create(&path)
-        .expect("Failed to create trie");
+    let mut trie: PersistentARTrie<u64> =
+        PersistentARTrie::create(&path).expect("Failed to create trie");
 
     // First batch
     for i in 0..50 {
@@ -211,8 +213,8 @@ fn test_compact_to_new_file() {
     let original_path = dir.path().join("original.artrie");
     let compacted_path = dir.path().join("compacted.artrie");
 
-    let mut trie: PersistentARTrie<u64> = PersistentARTrie::create(&original_path)
-        .expect("Failed to create trie");
+    let mut trie: PersistentARTrie<u64> =
+        PersistentARTrie::create(&original_path).expect("Failed to create trie");
 
     // Insert test data
     for i in 0..100 {
@@ -230,9 +232,7 @@ fn test_compact_to_new_file() {
         verify_after_compact: true,
     };
 
-    let _stats = trie
-        .compact(config, |_| {})
-        .expect("Failed to compact");
+    let _stats = trie.compact(config, |_| {}).expect("Failed to compact");
 
     // Both files should exist
     assert!(original_path.exists(), "Original file should still exist");
@@ -242,8 +242,8 @@ fn test_compact_to_new_file() {
     assert_eq!(trie.len(), Some(100));
 
     // Open the compacted file and verify
-    let compacted_trie: PersistentARTrie<u64> = PersistentARTrie::open(&compacted_path)
-        .expect("Failed to open compacted trie");
+    let compacted_trie: PersistentARTrie<u64> =
+        PersistentARTrie::open(&compacted_path).expect("Failed to open compacted trie");
 
     assert_eq!(compacted_trie.len(), Some(100));
     for i in 0..100 {
@@ -259,8 +259,8 @@ fn test_compact_progress_callback() {
     let dir = tempdir().expect("Failed to create temp dir");
     let path = dir.path().join("progress_test.artrie");
 
-    let mut trie: PersistentARTrie<u64> = PersistentARTrie::create(&path)
-        .expect("Failed to create trie");
+    let mut trie: PersistentARTrie<u64> =
+        PersistentARTrie::create(&path).expect("Failed to create trie");
 
     // Insert enough terms to trigger progress callbacks
     for i in 0..50 {
@@ -288,7 +288,11 @@ fn test_compact_progress_callback() {
 
     // Should have seen multiple progress callbacks
     let count = progress_count.load(Ordering::SeqCst);
-    assert!(count >= 4, "Expected at least 4 progress callbacks, got {}", count);
+    assert!(
+        count >= 4,
+        "Expected at least 4 progress callbacks, got {}",
+        count
+    );
 
     // Should have seen all major phases
     assert!(
@@ -316,8 +320,8 @@ fn test_compact_without_verification() {
     let dir = tempdir().expect("Failed to create temp dir");
     let path = dir.path().join("no_verify.artrie");
 
-    let mut trie: PersistentARTrie<u64> = PersistentARTrie::create(&path)
-        .expect("Failed to create trie");
+    let mut trie: PersistentARTrie<u64> =
+        PersistentARTrie::create(&path).expect("Failed to create trie");
 
     for i in 0..20 {
         trie.insert_with_value(&format!("term_{:02}", i), i as u64);
@@ -327,7 +331,7 @@ fn test_compact_without_verification() {
 
     let config = CompactionConfig {
         output_path: None,
-        progress_interval: 0, // Disable progress callbacks
+        progress_interval: 0,        // Disable progress callbacks
         verify_after_compact: false, // Skip verification
     };
 
@@ -361,8 +365,8 @@ fn test_compact_single_term() {
     let dir = tempdir().expect("Failed to create temp dir");
     let path = dir.path().join("single_term.artrie");
 
-    let mut trie: PersistentARTrie<u64> = PersistentARTrie::create(&path)
-        .expect("Failed to create trie");
+    let mut trie: PersistentARTrie<u64> =
+        PersistentARTrie::create(&path).expect("Failed to create trie");
 
     trie.insert_with_value("single", 42);
     trie.checkpoint().expect("Failed to checkpoint");
@@ -381,13 +385,13 @@ fn test_compact_large_values() {
     let dir = tempdir().expect("Failed to create temp dir");
     let path = dir.path().join("large_values.artrie");
 
-    let mut trie: PersistentARTrie<String> = PersistentARTrie::create(&path)
-        .expect("Failed to create trie");
+    let mut trie: PersistentARTrie<String> =
+        PersistentARTrie::create(&path).expect("Failed to create trie");
 
     // Insert terms with large string values
     // Use shorter keys to avoid potential bucket overflow issues
     for i in 0..20 {
-        let large_value = "x".repeat(100 + i);  // Smaller values to fit in buckets
+        let large_value = "x".repeat(100 + i); // Smaller values to fit in buckets
         trie.insert_with_value(&format!("k{:02}", i), large_value);
     }
 
@@ -399,16 +403,18 @@ fn test_compact_large_values() {
         ..Default::default()
     };
 
-    let stats = trie
-        .compact(config, |_| {})
-        .expect("Failed to compact");
+    let stats = trie.compact(config, |_| {}).expect("Failed to compact");
 
     assert!(stats.terms_copied > 0, "Should have copied some terms");
 
     // Verify values can be retrieved
     for i in 0..20 {
         let val = trie.get_value(&format!("k{:02}", i));
-        assert!(val.is_some(), "Value for k{:02} should exist after compaction", i);
+        assert!(
+            val.is_some(),
+            "Value for k{:02} should exist after compaction",
+            i
+        );
     }
 }
 
@@ -417,8 +423,8 @@ fn test_compact_stats_accuracy() {
     let dir = tempdir().expect("Failed to create temp dir");
     let path = dir.path().join("stats_test.artrie");
 
-    let mut trie: PersistentARTrie<u64> = PersistentARTrie::create(&path)
-        .expect("Failed to create trie");
+    let mut trie: PersistentARTrie<u64> =
+        PersistentARTrie::create(&path).expect("Failed to create trie");
 
     for i in 0..100 {
         trie.insert_with_value(&format!("term_{:03}", i), i as u64);
@@ -465,8 +471,8 @@ fn test_compact_cleans_up_stale_temp_file() {
     // Create a stale temp file (simulating crashed compaction)
     fs::write(&temp_path, b"stale data").expect("Failed to create stale file");
 
-    let mut trie: PersistentARTrie<u64> = PersistentARTrie::create(&path)
-        .expect("Failed to create trie");
+    let mut trie: PersistentARTrie<u64> =
+        PersistentARTrie::create(&path).expect("Failed to create trie");
 
     trie.insert_with_value("test", 1);
     trie.checkpoint().expect("Failed to checkpoint");

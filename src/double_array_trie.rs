@@ -57,7 +57,7 @@ use crate::serialization::serde_helpers::{
 /// Reduces Arc cloning overhead by grouping all shared arrays together.
 #[cfg_attr(
     feature = "serialization",
-    derive(serde::Serialize, serde::Deserialize),
+    derive(serde::Serialize, serde::Deserialize)
 )]
 #[cfg_attr(
     all(feature = "serialization", not(feature = "persistent-artrie")),
@@ -170,7 +170,7 @@ pub(crate) struct DATShared<V: DictionaryValue = ()> {
 /// ```
 #[cfg_attr(
     feature = "serialization",
-    derive(serde::Serialize, serde::Deserialize),
+    derive(serde::Serialize, serde::Deserialize)
 )]
 #[cfg_attr(
     all(feature = "serialization", not(feature = "persistent-artrie")),

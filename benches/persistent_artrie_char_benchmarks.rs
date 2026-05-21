@@ -9,14 +9,10 @@
 //!
 //! Run with: cargo bench --bench persistent_artrie_char_benchmarks --features persistent-artrie
 
-use criterion::{
-    black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput,
-};
-use libdictenstein::{
-    persistent_artrie_char::PersistentARTrieChar, DictionaryNode,
-};
+use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 #[cfg(feature = "persistent-artrie")]
 use libdictenstein::persistent_artrie_char::PersistentARTrieChar;
+use libdictenstein::{persistent_artrie_char::PersistentARTrieChar, DictionaryNode};
 use std::hint::black_box as bb;
 
 /// Generate realistic Unicode dictionary terms for benchmarking
@@ -384,16 +380,12 @@ fn bench_char_iteration(c: &mut Criterion) {
         }
 
         group.throughput(Throughput::Elements(*size as u64));
-        group.bench_with_input(
-            BenchmarkId::new("iter", size),
-            size,
-            |b, _| {
-                b.iter(|| {
-                    let count = dict.iter().count();
-                    black_box(count)
-                });
-            },
-        );
+        group.bench_with_input(BenchmarkId::new("iter", size), size, |b, _| {
+            b.iter(|| {
+                let count = dict.iter().count();
+                black_box(count)
+            });
+        });
     }
     group.finish();
 }
@@ -419,21 +411,17 @@ fn bench_char_optimistic_reads(c: &mut Criterion) {
 
         // Regular contains
         group.throughput(Throughput::Elements(100));
-        group.bench_with_input(
-            BenchmarkId::new("regular_contains", size),
-            size,
-            |b, _| {
-                b.iter(|| {
-                    let mut found = 0;
-                    for query in &queries {
-                        if dict.contains(bb(query)) {
-                            found += 1;
-                        }
+        group.bench_with_input(BenchmarkId::new("regular_contains", size), size, |b, _| {
+            b.iter(|| {
+                let mut found = 0;
+                for query in &queries {
+                    if dict.contains(bb(query)) {
+                        found += 1;
                     }
-                    black_box(found)
-                });
-            },
-        );
+                }
+                black_box(found)
+            });
+        });
     }
     group.finish();
 }
@@ -511,52 +499,44 @@ fn bench_char_disk_io(c: &mut Criterion) {
         );
 
         // Benchmark: Recovery time
-        group.bench_with_input(
-            BenchmarkId::new("recovery", size),
-            size,
-            |b, _| {
-                // Setup: create and populate dictionary
-                let dir = tempdir().unwrap();
-                let path = dir.path().join("bench.chartrie");
-                {
-                    let mut dict = PersistentARTrieChar::<()>::create(&path).expect("create dict");
-                    for term in &terms {
-                        let _ = dict.insert(term);
-                    }
-                    let _ = dict.sync();
-                }
-
-                b.iter_custom(|iters| {
-                    let mut total = std::time::Duration::ZERO;
-                    for _ in 0..iters {
-                        let start = Instant::now();
-                        let dict = PersistentARTrieChar::<()>::open(&path).expect("open dict");
-                        black_box(dict.len);
-                        total += start.elapsed();
-                    }
-                    total
-                });
-            },
-        );
-
-        // Benchmark: Checkpoint
-        group.bench_with_input(
-            BenchmarkId::new("checkpoint", size),
-            size,
-            |b, _| {
-                let dir = tempdir().unwrap();
-                let path = dir.path().join("bench.chartrie");
+        group.bench_with_input(BenchmarkId::new("recovery", size), size, |b, _| {
+            // Setup: create and populate dictionary
+            let dir = tempdir().unwrap();
+            let path = dir.path().join("bench.chartrie");
+            {
                 let mut dict = PersistentARTrieChar::<()>::create(&path).expect("create dict");
                 for term in &terms {
                     let _ = dict.insert(term);
                 }
+                let _ = dict.sync();
+            }
 
-                b.iter(|| {
-                    let _ = dict.checkpoint();
-                    black_box(())
-                });
-            },
-        );
+            b.iter_custom(|iters| {
+                let mut total = std::time::Duration::ZERO;
+                for _ in 0..iters {
+                    let start = Instant::now();
+                    let dict = PersistentARTrieChar::<()>::open(&path).expect("open dict");
+                    black_box(dict.len);
+                    total += start.elapsed();
+                }
+                total
+            });
+        });
+
+        // Benchmark: Checkpoint
+        group.bench_with_input(BenchmarkId::new("checkpoint", size), size, |b, _| {
+            let dir = tempdir().unwrap();
+            let path = dir.path().join("bench.chartrie");
+            let mut dict = PersistentARTrieChar::<()>::create(&path).expect("create dict");
+            for term in &terms {
+                let _ = dict.insert(term);
+            }
+
+            b.iter(|| {
+                let _ = dict.checkpoint();
+                black_box(())
+            });
+        });
     }
     group.finish();
 }
@@ -665,16 +645,9 @@ criterion_group!(
     bench_char_construction_ascii,
 );
 
-criterion_group!(
-    lookup_benches,
-    bench_char_lookup,
-    bench_char_lookup_cjk,
-);
+criterion_group!(lookup_benches, bench_char_lookup, bench_char_lookup_cjk,);
 
-criterion_group!(
-    edge_traversal_benches,
-    bench_char_edge_traversal,
-);
+criterion_group!(edge_traversal_benches, bench_char_edge_traversal,);
 
 criterion_group!(
     transition_benches,
@@ -682,34 +655,18 @@ criterion_group!(
     bench_char_transitions_emoji,
 );
 
-criterion_group!(
-    iteration_benches,
-    bench_char_iteration,
-);
+criterion_group!(iteration_benches, bench_char_iteration,);
 
-criterion_group!(
-    memory_benches,
-    bench_char_memory_efficiency,
-);
+criterion_group!(memory_benches, bench_char_memory_efficiency,);
 
 #[cfg(feature = "persistent-artrie")]
-criterion_group!(
-    optimistic_benches,
-    bench_char_optimistic_reads,
-);
+criterion_group!(optimistic_benches, bench_char_optimistic_reads,);
 
 #[cfg(feature = "persistent-artrie")]
-criterion_group!(
-    disk_io_benches,
-    bench_char_disk_io,
-    bench_char_disk_io_cjk,
-);
+criterion_group!(disk_io_benches, bench_char_disk_io, bench_char_disk_io_cjk,);
 
 #[cfg(feature = "persistent-artrie")]
-criterion_group!(
-    atomic_benches,
-    bench_char_atomic_ops,
-);
+criterion_group!(atomic_benches, bench_char_atomic_ops,);
 
 #[cfg(feature = "persistent-artrie")]
 criterion_main!(

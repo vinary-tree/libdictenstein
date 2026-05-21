@@ -24,19 +24,19 @@
 //! CharNode16 uses AVX2 SIMD instructions (`_mm256_cmpeq_epi32`) for parallel
 //! key comparison, comparing 8 u32 values simultaneously (two 256-bit registers).
 
-pub mod node4_char;
+pub mod atomic_ptr;
+pub mod bucket_char;
 pub mod node16_char;
 pub mod node48_char;
-pub mod bucket_char;
+pub mod node4_char;
 pub mod persistent_node;
-pub mod atomic_ptr;
 
-pub use node4_char::CharNode4;
+pub use atomic_ptr::AtomicNodePtr;
+pub use bucket_char::CharBucket;
 pub use node16_char::CharNode16;
 pub use node48_char::CharNode48;
-pub use bucket_char::CharBucket;
+pub use node4_char::CharNode4;
 pub use persistent_node::PersistentCharNode;
-pub use atomic_ptr::AtomicNodePtr;
 
 use crate::persistent_artrie::swizzled_ptr::SwizzledPtr;
 
@@ -398,7 +398,11 @@ impl CharNode {
     }
 
     /// Add a child to this node, automatically growing if necessary.
-    pub fn add_child_growing(&mut self, key: u32, child: SwizzledPtr) -> Result<Option<CharNode>, AddChildError> {
+    pub fn add_child_growing(
+        &mut self,
+        key: u32,
+        child: SwizzledPtr,
+    ) -> Result<Option<CharNode>, AddChildError> {
         match self {
             CharNode::N4(n) => {
                 if n.is_full() {
@@ -440,9 +444,7 @@ impl CharNode {
     /// Remove a child from this node, automatically shrinking if appropriate.
     pub fn remove_child_shrinking(&mut self, key: u32) -> Option<(SwizzledPtr, Option<CharNode>)> {
         match self {
-            CharNode::N4(n) => {
-                n.remove_child(key).map(|removed| (removed, None))
-            }
+            CharNode::N4(n) => n.remove_child(key).map(|removed| (removed, None)),
             CharNode::N16(n) => {
                 if let Some(removed) = n.remove_child(key) {
                     if n.header.num_children <= 4 {
@@ -602,7 +604,10 @@ impl ChildStorage {
 
     /// Create a sequential storage reference
     pub fn sequential(arena_id: u32, first_slot: u32) -> Self {
-        ChildStorage::Sequential { arena_id, first_slot }
+        ChildStorage::Sequential {
+            arena_id,
+            first_slot,
+        }
     }
 }
 

@@ -10,8 +10,8 @@
 //! - `merge_lockfree_to_persistent` — promote lockfree overlay into
 //!   the persistent trie
 
-use std::sync::Arc;
 use std::sync::atomic::Ordering;
+use std::sync::Arc;
 
 use dashmap::DashMap;
 
@@ -88,9 +88,13 @@ impl super::dict_impl::PersistentVocabARTrie {
     /// for h in handles { h.join().unwrap(); }
     /// ```
     pub fn insert_cas(&self, term: &str) -> u64 {
-        let lockfree_root = self.lockfree_root.as_ref()
+        let lockfree_root = self
+            .lockfree_root
+            .as_ref()
             .expect("Lock-free mode not enabled. Call enable_lockfree() first.");
-        let lockfree_cache = self.lockfree_cache.as_ref()
+        let lockfree_cache = self
+            .lockfree_cache
+            .as_ref()
             .expect("Lock-free cache not initialized");
 
         // Fast path: check cache
@@ -154,7 +158,8 @@ impl super::dict_impl::PersistentVocabARTrie {
                             self.cas_retries.fetch_add(1, Ordering::Relaxed);
 
                             // Check if the term was inserted by another thread
-                            if let Some(existing_idx) = self.find_in_lockfree_trie(&actual, &chars) {
+                            if let Some(existing_idx) = self.find_in_lockfree_trie(&actual, &chars)
+                            {
                                 lockfree_cache.insert(term.to_string(), existing_idx);
                                 return existing_idx;
                             }
@@ -228,7 +233,8 @@ impl super::dict_impl::PersistentVocabARTrie {
                     };
 
                     // Recurse into child
-                    let new_child = self.insert_lockfree_recursive(&child, chars, depth + 1, index)?;
+                    let new_child =
+                        self.insert_lockfree_recursive(&child, chars, depth + 1, index)?;
 
                     // Create new node with updated child pointer
                     let new_child_ptr = SwizzledPtr::in_memory(Arc::into_raw(new_child));
@@ -312,7 +318,10 @@ impl super::dict_impl::PersistentVocabARTrie {
     pub fn merge_lockfree_to_persistent(&mut self) -> Result<usize> {
         // Collect entries first to avoid borrow conflict
         let entries: Vec<(String, u64)> = match &self.lockfree_cache {
-            Some(cache) => cache.iter().map(|e| (e.key().clone(), *e.value())).collect(),
+            Some(cache) => cache
+                .iter()
+                .map(|e| (e.key().clone(), *e.value()))
+                .collect(),
             None => return Ok(0),
         };
 

@@ -402,7 +402,8 @@ mod tests {
 
         for i in 0..8 {
             let child = SwizzledPtr::on_disk(i, 0, NodeType::Node4);
-            node.add_child('a' as u32 + i, child).expect("add should succeed");
+            node.add_child('a' as u32 + i, child)
+                .expect("add should succeed");
         }
 
         let keys: Vec<_> = node.iter_children().map(|(k, _)| k).collect();
@@ -468,11 +469,7 @@ mod tests {
         // Test finding all keys
         for i in 0..12 {
             let key = i * 100;
-            assert!(
-                node.find_child(key).is_some(),
-                "should find key {}",
-                key
-            );
+            assert!(node.find_child(key).is_some(), "should find key {}", key);
         }
 
         // Test not finding missing keys

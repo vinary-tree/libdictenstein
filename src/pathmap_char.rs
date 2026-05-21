@@ -25,9 +25,7 @@
 //! - Value-based filtering is needed with Unicode content
 
 use crate::value::DictionaryValue;
-use crate::{
-    Dictionary, DictionaryNode, MappedDictionary, MappedDictionaryNode, SyncStrategy,
-};
+use crate::{Dictionary, DictionaryNode, MappedDictionary, MappedDictionaryNode, SyncStrategy};
 use pathmap::utils::BitMask;
 use pathmap::zipper::{Zipper, ZipperMoving, ZipperValues};
 use pathmap::PathMap;

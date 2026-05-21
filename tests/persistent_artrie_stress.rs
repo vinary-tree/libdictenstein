@@ -216,7 +216,11 @@ fn test_stress_mixed_operations() {
         let _ = dict.remove(term);
     }
 
-    assert_eq!(dict.len(), Some(expected.len()), "Phase 2: After 1K removes");
+    assert_eq!(
+        dict.len(),
+        Some(expected.len()),
+        "Phase 2: After 1K removes"
+    );
 
     // Phase 3: Insert 1,000 new terms with different prefix pattern
     // Use a completely different prefix to avoid overlap
@@ -226,15 +230,15 @@ fn test_stress_mixed_operations() {
         let _ = dict.insert_with_value(&term, (3000 + i) as i32);
     }
 
-    assert_eq!(dict.len(), Some(expected.len()), "Phase 3: After additional inserts");
+    assert_eq!(
+        dict.len(),
+        Some(expected.len()),
+        "Phase 3: After additional inserts"
+    );
 
     // Verify final state (sample)
     for term in expected.iter().take(500) {
-        assert!(
-            dict.contains(term),
-            "Expected term {} not found",
-            term
-        );
+        assert!(dict.contains(term), "Expected term {} not found", term);
     }
 }
 
@@ -300,11 +304,7 @@ fn test_stress_checkpoint_cycles() {
         );
 
         for term in &cumulative_terms {
-            assert!(
-                dict.contains(term),
-                "Final: Term {} should exist",
-                term
-            );
+            assert!(dict.contains(term), "Final: Term {} should exist", term);
         }
     }
 }
@@ -457,7 +457,11 @@ fn test_stress_wal_recovery() {
         assert_eq!(dict.len(), Some(5000), "Should recover 5000 terms from WAL");
 
         for (i, term) in terms.iter().enumerate() {
-            assert!(dict.contains(term), "Term {} should exist after WAL recovery", term);
+            assert!(
+                dict.contains(term),
+                "Term {} should exist after WAL recovery",
+                term
+            );
             assert_eq!(dict.get_value(term), Some(i as i32));
         }
     }

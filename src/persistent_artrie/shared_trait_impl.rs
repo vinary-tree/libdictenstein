@@ -6,8 +6,8 @@
 //! here; the per-method semantics are unchanged.
 
 use std::path::Path;
-use std::sync::Arc;
 use std::sync::atomic::Ordering as AtomicOrdering;
+use std::sync::Arc;
 
 use crate::artrie_trait::{ARTrie, EvictableARTrie};
 use crate::persistent_artrie_core::concurrency::EpochManager;
@@ -117,7 +117,10 @@ impl<V: DictionaryValue> ARTrie for SharedARTrie<V> {
         let guard = self.read();
 
         if let Some(ref wal_writer) = guard.wal_writer {
-            let checkpoint_lsn = guard.next_lsn.load(AtomicOrdering::Acquire).saturating_sub(1);
+            let checkpoint_lsn = guard
+                .next_lsn
+                .load(AtomicOrdering::Acquire)
+                .saturating_sub(1);
             let timestamp = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
@@ -193,9 +196,11 @@ impl<V: DictionaryValue> ARTrie for SharedARTrie<V> {
     fn iter_prefix(&self, prefix: &str) -> Option<Box<dyn Iterator<Item = String> + '_>> {
         let guard = self.read();
         let terms = guard.iter_prefix_with_arena(prefix.as_bytes()).ok()??;
-        Some(Box::new(terms.into_iter().map(|t| {
-            String::from_utf8_lossy(&t.term).into_owned()
-        })))
+        Some(Box::new(
+            terms
+                .into_iter()
+                .map(|t| String::from_utf8_lossy(&t.term).into_owned()),
+        ))
     }
 
     fn sync(&self) -> Result<()> {
@@ -394,9 +399,7 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
             }
 
             let last_edge = path[path.len() - 1];
-            let found = current_children
-                .iter_mut()
-                .find(|(e, _)| *e == last_edge);
+            let found = current_children.iter_mut().find(|(e, _)| *e == last_edge);
 
             match found {
                 Some((_, ChildNode::ArtNode { children, .. })) => Some(children),

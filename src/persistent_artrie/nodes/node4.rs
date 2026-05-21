@@ -318,7 +318,8 @@ mod tests {
         let mut node = Node4::new();
 
         for i in 0..4 {
-            let child = SwizzledPtr::on_disk(i as u32, 0, crate::persistent_artrie::NodeType::Node4);
+            let child =
+                SwizzledPtr::on_disk(i as u32, 0, crate::persistent_artrie::NodeType::Node4);
             assert!(node.add_child(i as u8, child).is_ok());
         }
 
@@ -334,7 +335,8 @@ mod tests {
         let mut node = Node4::new();
 
         for i in 0..4 {
-            let child = SwizzledPtr::on_disk(i as u32, 0, crate::persistent_artrie::NodeType::Node4);
+            let child =
+                SwizzledPtr::on_disk(i as u32, 0, crate::persistent_artrie::NodeType::Node4);
             node.add_child(i as u8, child).expect("add should succeed");
         }
 
@@ -368,7 +370,8 @@ mod tests {
         let mut node = Node4::new();
 
         for i in 0..3 {
-            let child = SwizzledPtr::on_disk(i as u32, 0, crate::persistent_artrie::NodeType::Node4);
+            let child =
+                SwizzledPtr::on_disk(i as u32, 0, crate::persistent_artrie::NodeType::Node4);
             node.add_child(b'a' + i, child).expect("add should succeed");
         }
 

@@ -44,7 +44,6 @@ pub enum WalRecordType {
     BatchIncrement = 11,
 
     // === Version-Based WAL Records (Phase 6) ===
-
     /// Version update - records a new version of the trie structure.
     ///
     /// This replaces N mutation records with a single version record,
@@ -177,7 +176,6 @@ pub enum WalRecord {
     },
 
     // === Version-Based WAL Records (Phase 6) ===
-
     /// Version update - records a new version of the trie structure.
     VersionUpdate {
         /// Unique version identifier (monotonically increasing)
@@ -369,7 +367,9 @@ impl WalRecord {
                 let value = if has_value {
                     let value_offset = 4 + term_len + 1;
                     if payload.len() < value_offset + 4 {
-                        return Err(WalError::CorruptedRecord("Insert value length truncated".into()));
+                        return Err(WalError::CorruptedRecord(
+                            "Insert value length truncated".into(),
+                        ));
                     }
                     let value_len = u32::from_le_bytes(
                         payload[value_offset..value_offset + 4].try_into().unwrap(),
@@ -396,7 +396,9 @@ impl WalRecord {
             }
             WalRecordType::Checkpoint => {
                 if payload.len() < 16 {
-                    return Err(WalError::CorruptedRecord("Checkpoint payload too short".into()));
+                    return Err(WalError::CorruptedRecord(
+                        "Checkpoint payload too short".into(),
+                    ));
                 }
                 let checkpoint_lsn = u64::from_le_bytes(payload[0..8].try_into().unwrap());
                 let timestamp = u64::from_le_bytes(payload[8..16].try_into().unwrap());
@@ -407,38 +409,47 @@ impl WalRecord {
             }
             WalRecordType::BeginTx => {
                 if payload.len() < 8 {
-                    return Err(WalError::CorruptedRecord("BeginTx payload too short".into()));
+                    return Err(WalError::CorruptedRecord(
+                        "BeginTx payload too short".into(),
+                    ));
                 }
                 let tx_id = u64::from_le_bytes(payload[0..8].try_into().unwrap());
                 Ok(WalRecord::BeginTx { tx_id })
             }
             WalRecordType::CommitTx => {
                 if payload.len() < 8 {
-                    return Err(WalError::CorruptedRecord("CommitTx payload too short".into()));
+                    return Err(WalError::CorruptedRecord(
+                        "CommitTx payload too short".into(),
+                    ));
                 }
                 let tx_id = u64::from_le_bytes(payload[0..8].try_into().unwrap());
                 Ok(WalRecord::CommitTx { tx_id })
             }
             WalRecordType::AbortTx => {
                 if payload.len() < 8 {
-                    return Err(WalError::CorruptedRecord("AbortTx payload too short".into()));
+                    return Err(WalError::CorruptedRecord(
+                        "AbortTx payload too short".into(),
+                    ));
                 }
                 let tx_id = u64::from_le_bytes(payload[0..8].try_into().unwrap());
                 Ok(WalRecord::AbortTx { tx_id })
             }
             WalRecordType::Increment => {
                 if payload.len() < 4 {
-                    return Err(WalError::CorruptedRecord("Increment payload too short".into()));
+                    return Err(WalError::CorruptedRecord(
+                        "Increment payload too short".into(),
+                    ));
                 }
                 let term_len = u32::from_le_bytes(payload[0..4].try_into().unwrap()) as usize;
                 if payload.len() < 4 + term_len + 16 {
-                    return Err(WalError::CorruptedRecord("Increment payload truncated".into()));
+                    return Err(WalError::CorruptedRecord(
+                        "Increment payload truncated".into(),
+                    ));
                 }
                 let term = payload[4..4 + term_len].to_vec();
                 let delta_offset = 4 + term_len;
-                let delta = i64::from_le_bytes(
-                    payload[delta_offset..delta_offset + 8].try_into().unwrap(),
-                );
+                let delta =
+                    i64::from_le_bytes(payload[delta_offset..delta_offset + 8].try_into().unwrap());
                 let result = i64::from_le_bytes(
                     payload[delta_offset + 8..delta_offset + 16]
                         .try_into()
@@ -488,11 +499,13 @@ impl WalRecord {
 
                 let expected = if has_expected {
                     if payload.len() < offset + 4 {
-                        return Err(WalError::CorruptedRecord("CAS expected length truncated".into()));
+                        return Err(WalError::CorruptedRecord(
+                            "CAS expected length truncated".into(),
+                        ));
                     }
-                    let exp_len = u32::from_le_bytes(
-                        payload[offset..offset + 4].try_into().unwrap(),
-                    ) as usize;
+                    let exp_len =
+                        u32::from_le_bytes(payload[offset..offset + 4].try_into().unwrap())
+                            as usize;
                     offset += 4;
                     if payload.len() < offset + exp_len {
                         return Err(WalError::CorruptedRecord("CAS expected truncated".into()));
@@ -505,11 +518,12 @@ impl WalRecord {
                 };
 
                 if payload.len() < offset + 4 {
-                    return Err(WalError::CorruptedRecord("CAS new_value length truncated".into()));
+                    return Err(WalError::CorruptedRecord(
+                        "CAS new_value length truncated".into(),
+                    ));
                 }
-                let new_value_len = u32::from_le_bytes(
-                    payload[offset..offset + 4].try_into().unwrap(),
-                ) as usize;
+                let new_value_len =
+                    u32::from_le_bytes(payload[offset..offset + 4].try_into().unwrap()) as usize;
                 offset += 4;
                 if payload.len() < offset + new_value_len + 1 {
                     return Err(WalError::CorruptedRecord("CAS new_value truncated".into()));
@@ -528,7 +542,9 @@ impl WalRecord {
             }
             WalRecordType::BatchInsert => {
                 if payload.len() < 4 {
-                    return Err(WalError::CorruptedRecord("BatchInsert payload too short".into()));
+                    return Err(WalError::CorruptedRecord(
+                        "BatchInsert payload too short".into(),
+                    ));
                 }
                 let count = u32::from_le_bytes(payload[0..4].try_into().unwrap()) as usize;
                 let mut offset = 4;
@@ -536,19 +552,21 @@ impl WalRecord {
 
                 for i in 0..count {
                     if payload.len() < offset + 4 {
-                        return Err(WalError::CorruptedRecord(
-                            format!("BatchInsert entry {} term_len truncated", i),
-                        ));
+                        return Err(WalError::CorruptedRecord(format!(
+                            "BatchInsert entry {} term_len truncated",
+                            i
+                        )));
                     }
-                    let term_len = u32::from_le_bytes(
-                        payload[offset..offset + 4].try_into().unwrap(),
-                    ) as usize;
+                    let term_len =
+                        u32::from_le_bytes(payload[offset..offset + 4].try_into().unwrap())
+                            as usize;
                     offset += 4;
 
                     if payload.len() < offset + term_len + 1 {
-                        return Err(WalError::CorruptedRecord(
-                            format!("BatchInsert entry {} term truncated", i),
-                        ));
+                        return Err(WalError::CorruptedRecord(format!(
+                            "BatchInsert entry {} term truncated",
+                            i
+                        )));
                     }
                     let term = payload[offset..offset + term_len].to_vec();
                     offset += term_len;
@@ -558,19 +576,21 @@ impl WalRecord {
 
                     let value = if has_value {
                         if payload.len() < offset + 4 {
-                            return Err(WalError::CorruptedRecord(
-                                format!("BatchInsert entry {} value_len truncated", i),
-                            ));
+                            return Err(WalError::CorruptedRecord(format!(
+                                "BatchInsert entry {} value_len truncated",
+                                i
+                            )));
                         }
-                        let value_len = u32::from_le_bytes(
-                            payload[offset..offset + 4].try_into().unwrap(),
-                        ) as usize;
+                        let value_len =
+                            u32::from_le_bytes(payload[offset..offset + 4].try_into().unwrap())
+                                as usize;
                         offset += 4;
 
                         if payload.len() < offset + value_len {
-                            return Err(WalError::CorruptedRecord(
-                                format!("BatchInsert entry {} value truncated", i),
-                            ));
+                            return Err(WalError::CorruptedRecord(format!(
+                                "BatchInsert entry {} value truncated",
+                                i
+                            )));
                         }
                         let v = payload[offset..offset + value_len].to_vec();
                         offset += value_len;
@@ -586,7 +606,9 @@ impl WalRecord {
             }
             WalRecordType::BatchIncrement => {
                 if payload.len() < 4 {
-                    return Err(WalError::CorruptedRecord("BatchIncrement payload too short".into()));
+                    return Err(WalError::CorruptedRecord(
+                        "BatchIncrement payload too short".into(),
+                    ));
                 }
                 let count = u32::from_le_bytes(payload[0..4].try_into().unwrap()) as usize;
                 let mut offset = 4;
@@ -594,26 +616,26 @@ impl WalRecord {
 
                 for i in 0..count {
                     if payload.len() < offset + 4 {
-                        return Err(WalError::CorruptedRecord(
-                            format!("BatchIncrement entry {} term_len truncated", i),
-                        ));
+                        return Err(WalError::CorruptedRecord(format!(
+                            "BatchIncrement entry {} term_len truncated",
+                            i
+                        )));
                     }
-                    let term_len = u32::from_le_bytes(
-                        payload[offset..offset + 4].try_into().unwrap(),
-                    ) as usize;
+                    let term_len =
+                        u32::from_le_bytes(payload[offset..offset + 4].try_into().unwrap())
+                            as usize;
                     offset += 4;
 
                     if payload.len() < offset + term_len + 8 {
-                        return Err(WalError::CorruptedRecord(
-                            format!("BatchIncrement entry {} term or delta truncated", i),
-                        ));
+                        return Err(WalError::CorruptedRecord(format!(
+                            "BatchIncrement entry {} term or delta truncated",
+                            i
+                        )));
                     }
                     let term = payload[offset..offset + term_len].to_vec();
                     offset += term_len;
 
-                    let delta = i64::from_le_bytes(
-                        payload[offset..offset + 8].try_into().unwrap(),
-                    );
+                    let delta = i64::from_le_bytes(payload[offset..offset + 8].try_into().unwrap());
                     offset += 8;
 
                     entries.push((term, delta));
@@ -623,7 +645,9 @@ impl WalRecord {
             }
             WalRecordType::VersionUpdate => {
                 if payload.len() < 32 {
-                    return Err(WalError::CorruptedRecord("VersionUpdate payload too short".into()));
+                    return Err(WalError::CorruptedRecord(
+                        "VersionUpdate payload too short".into(),
+                    ));
                 }
                 let version_id = u64::from_le_bytes(payload[0..8].try_into().unwrap());
                 let root_ptr = u64::from_le_bytes(payload[8..16].try_into().unwrap());
@@ -638,7 +662,9 @@ impl WalRecord {
             }
             WalRecordType::VersionDurable => {
                 if payload.len() < 12 {
-                    return Err(WalError::CorruptedRecord("VersionDurable payload too short".into()));
+                    return Err(WalError::CorruptedRecord(
+                        "VersionDurable payload too short".into(),
+                    ));
                 }
                 let version_id = u64::from_le_bytes(payload[0..8].try_into().unwrap());
                 let checksum = u32::from_le_bytes(payload[8..12].try_into().unwrap());
@@ -649,11 +675,15 @@ impl WalRecord {
             }
             WalRecordType::VersionGc => {
                 if payload.len() < 4 {
-                    return Err(WalError::CorruptedRecord("VersionGc payload too short".into()));
+                    return Err(WalError::CorruptedRecord(
+                        "VersionGc payload too short".into(),
+                    ));
                 }
                 let count = u32::from_le_bytes(payload[0..4].try_into().unwrap()) as usize;
                 if payload.len() < 4 + count * 8 {
-                    return Err(WalError::CorruptedRecord("VersionGc version_ids truncated".into()));
+                    return Err(WalError::CorruptedRecord(
+                        "VersionGc version_ids truncated".into(),
+                    ));
                 }
                 let mut version_ids = Vec::with_capacity(count);
                 for i in 0..count {

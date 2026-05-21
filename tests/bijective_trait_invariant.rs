@@ -54,8 +54,7 @@ mod persistent_vocab {
         let dir = tempdir().expect("create tempdir");
         let path = dir.path().join("vocab.dict");
 
-        let mut vocab =
-            PersistentVocabARTrie::create(&path).expect("create persistent vocab");
+        let mut vocab = PersistentVocabARTrie::create(&path).expect("create persistent vocab");
         let terms = ["apple", "banana", "cherry"];
         for t in &terms {
             vocab.insert(t);

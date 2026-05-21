@@ -17,9 +17,7 @@ use libdictenstein::dynamic_dawg::DynamicDawg;
 use libdictenstein::dynamic_dawg_char::DynamicDawgChar;
 use libdictenstein::dynamic_dawg_char_zipper::DynamicDawgCharZipper;
 use libdictenstein::dynamic_dawg_zipper::DynamicDawgZipper;
-use libdictenstein::excluding_prefix_zipper::{
-    ExcludingPrefixZipper, ValuedExcludingPrefixZipper,
-};
+use libdictenstein::excluding_prefix_zipper::{ExcludingPrefixZipper, ValuedExcludingPrefixZipper};
 
 // ============================================================================
 // Helper Functions

@@ -24,7 +24,9 @@ use std::collections::HashSet;
 // Helper Functions
 // =============================================================================
 
-fn collect_zipper_terms<Z: DictZipper<Unit = u8>>(iter: impl Iterator<Item = (Vec<u8>, Z)>) -> HashSet<String> {
+fn collect_zipper_terms<Z: DictZipper<Unit = u8>>(
+    iter: impl Iterator<Item = (Vec<u8>, Z)>,
+) -> HashSet<String> {
     iter.map(|(path, _)| String::from_utf8(path).expect("valid UTF-8"))
         .collect()
 }

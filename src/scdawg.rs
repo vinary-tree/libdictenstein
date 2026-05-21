@@ -49,9 +49,9 @@ use rustc_hash::FxHashSet;
 use smallvec::SmallVec;
 
 use crate::substring::{BidirectionalDictionaryNode, SubstringDictionary, SubstringMatch};
+use crate::sync_compat::RwLock;
 use crate::value::DictionaryValue;
 use crate::{Dictionary, DictionaryNode};
-use crate::sync_compat::RwLock;
 
 /// Sentinel value for "no suffix link" or "no parent".
 const NIL: usize = usize::MAX;
@@ -232,7 +232,8 @@ impl<V: DictionaryValue> ScdawgInner<V> {
     /// Allocate a new node and return its index.
     fn alloc_node(&mut self, length: usize, suffix_link: usize, first_char: u8) -> usize {
         let idx = self.nodes.len();
-        self.nodes.push(ScdawgNode::new(length, suffix_link, first_char));
+        self.nodes
+            .push(ScdawgNode::new(length, suffix_link, first_char));
         idx
     }
 
@@ -707,10 +708,12 @@ impl<V: DictionaryValue> Scdawg<V> {
     /// ```
     pub fn find(&self, pattern: &str) -> Option<ScdawgNodeHandle<V>> {
         let inner = self.inner.read();
-        inner.find_substring_fast(pattern).map(|node_idx| ScdawgNodeHandle {
-            inner: Arc::clone(&self.inner),
-            node_idx,
-        })
+        inner
+            .find_substring_fast(pattern)
+            .map(|node_idx| ScdawgNodeHandle {
+                inner: Arc::clone(&self.inner),
+                node_idx,
+            })
     }
 
     /// Get the frequency (occurrence count) of a substring pattern.
@@ -767,7 +770,11 @@ impl<V: DictionaryValue> Scdawg<V> {
     /// Get all occurrence locations from a specific SCDAWG node handle.
     ///
     /// Use this with `find()` for efficient repeated location queries.
-    pub fn locations_at(&self, handle: &ScdawgNodeHandle<V>, pattern_len: usize) -> Vec<(String, usize)> {
+    pub fn locations_at(
+        &self,
+        handle: &ScdawgNodeHandle<V>,
+        pattern_len: usize,
+    ) -> Vec<(String, usize)> {
         let inner = self.inner.read();
         let mut results = Vec::new();
         inner.collect_term_positions(handle.node_idx, pattern_len, &mut results);
@@ -1076,8 +1083,12 @@ mod tests {
 
         // Navigate to the node representing "bc" via root -> 'b' -> 'c'
         let root = scdawg.root();
-        let node_b = root.transition(b'b').expect("Should have edge 'b' from root");
-        let node_bc = node_b.transition(b'c').expect("Should have edge 'c' from 'b'");
+        let node_b = root
+            .transition(b'b')
+            .expect("Should have edge 'b' from root");
+        let node_bc = node_b
+            .transition(b'c')
+            .expect("Should have edge 'c' from 'b'");
 
         // The left extension edges from "bc" should have labels 'a' and 'd'
         let left_edges: Vec<_> = node_bc.reverse_edges().collect();
@@ -1088,7 +1099,10 @@ mod tests {
             labels.contains(&b'a'),
             "Node 'bc' should have left extension edge with label 'a'. \
              Found edges: {:?}",
-            left_edges.iter().map(|(l, _)| *l as char).collect::<Vec<_>>()
+            left_edges
+                .iter()
+                .map(|(l, _)| *l as char)
+                .collect::<Vec<_>>()
         );
 
         // Check for left extension edge with label 'd' (from "dbc" suffix linking to "bc")
@@ -1096,7 +1110,10 @@ mod tests {
             labels.contains(&b'd'),
             "Node 'bc' should have left extension edge with label 'd'. \
              Found edges: {:?}",
-            left_edges.iter().map(|(l, _)| *l as char).collect::<Vec<_>>()
+            left_edges
+                .iter()
+                .map(|(l, _)| *l as char)
+                .collect::<Vec<_>>()
         );
     }
 
@@ -1155,19 +1172,35 @@ mod tests {
         let scdawg = Scdawg::<()>::from_terms(vec!["abab"]);
 
         // "ab" appears twice in "abab": at positions 0 and 2
-        assert_eq!(scdawg.freq("ab"), 2, "Pattern 'ab' should appear twice in 'abab'");
+        assert_eq!(
+            scdawg.freq("ab"),
+            2,
+            "Pattern 'ab' should appear twice in 'abab'"
+        );
 
         // "a" appears twice in "abab": at positions 0 and 2
-        assert_eq!(scdawg.freq("a"), 2, "Pattern 'a' should appear twice in 'abab'");
+        assert_eq!(
+            scdawg.freq("a"),
+            2,
+            "Pattern 'a' should appear twice in 'abab'"
+        );
 
         // "b" appears twice in "abab": at positions 1 and 3
-        assert_eq!(scdawg.freq("b"), 2, "Pattern 'b' should appear twice in 'abab'");
+        assert_eq!(
+            scdawg.freq("b"),
+            2,
+            "Pattern 'b' should appear twice in 'abab'"
+        );
 
         // "abab" appears once
         assert_eq!(scdawg.freq("abab"), 1, "Pattern 'abab' should appear once");
 
         // Non-existent pattern
-        assert_eq!(scdawg.freq("xyz"), 0, "Non-existent pattern should have freq 0");
+        assert_eq!(
+            scdawg.freq("xyz"),
+            0,
+            "Non-existent pattern should have freq 0"
+        );
     }
 
     #[test]
@@ -1211,18 +1244,29 @@ mod tests {
         // - "cat" position 0
         // - "cathedral" position 0
         // - "scatter" position 2
-        let term_positions: std::collections::HashSet<_> =
-            locs.iter().map(|(term, pos)| (term.as_str(), *pos)).collect();
+        let term_positions: std::collections::HashSet<_> = locs
+            .iter()
+            .map(|(term, pos)| (term.as_str(), *pos))
+            .collect();
 
-        assert!(term_positions.contains(&("cat", 0)), "Should find 'cat' at position 0 in 'cat'");
-        assert!(term_positions.contains(&("cathedral", 0)), "Should find 'cat' at position 0 in 'cathedral'");
+        assert!(
+            term_positions.contains(&("cat", 0)),
+            "Should find 'cat' at position 0 in 'cat'"
+        );
+        assert!(
+            term_positions.contains(&("cathedral", 0)),
+            "Should find 'cat' at position 0 in 'cathedral'"
+        );
 
         // Note: "scatter" contains "cat" starting at position 2 (s-c-a-t-t-e-r, indices 2,3,4)
         // Wait, let me verify: "scatter" = s(0) c(1) a(2) t(3) t(4) e(5) r(6)
         // So "cat" would be at positions... c(1) a(2) t(3), starting at index 1, not 2!
         // Let me fix the test
-        assert!(term_positions.contains(&("scatter", 1)),
-            "Should find 'cat' at position 1 in 'scatter'. Found: {:?}", term_positions);
+        assert!(
+            term_positions.contains(&("scatter", 1)),
+            "Should find 'cat' at position 1 in 'scatter'. Found: {:?}",
+            term_positions
+        );
     }
 
     #[test]
@@ -1268,5 +1312,4 @@ mod tests {
             "Node 'bc' should have left extension 'x' -> 'xbc'"
         );
     }
-
 }

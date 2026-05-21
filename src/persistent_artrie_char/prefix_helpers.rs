@@ -18,8 +18,8 @@ use crate::persistent_artrie::block_storage::BlockStorage;
 use crate::persistent_artrie::error::Result;
 use crate::value::DictionaryValue;
 
-use super::types::{CharTrieNodeInner, CharTrieRoot};
 use super::prefix_term::{PrefixTermWithArena, PrefixTermWithValueAndArena};
+use super::types::{CharTrieNodeInner, CharTrieRoot};
 
 impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     pub(super) fn navigate_to_prefix(&self, prefix: &str) -> Result<Option<&CharTrieNodeInner<V>>> {

@@ -286,9 +286,7 @@ impl NodeLogEntry {
                 let value = data[3..3 + len].to_vec();
                 Some((Self::SetValue { value }, 3 + len))
             }
-            log_entry_type::CLEAR_VALUE => {
-                Some((Self::ClearValue, 1))
-            }
+            log_entry_type::CLEAR_VALUE => Some((Self::ClearValue, 1)),
             log_entry_type::SET_PREFIX => {
                 // [type:1][len:1][prefix:len] = 2 + len bytes
                 if data.len() < 2 {
@@ -496,9 +494,11 @@ impl PerNodeLogStatsAtomic {
     pub fn record_entry_written(&self, bytes: usize, is_overflow: bool) {
         self.entries_written.fetch_add(1, Ordering::Relaxed);
         if is_overflow {
-            self.overflow_bytes_written.fetch_add(bytes as u64, Ordering::Relaxed);
+            self.overflow_bytes_written
+                .fetch_add(bytes as u64, Ordering::Relaxed);
         } else {
-            self.inline_bytes_written.fetch_add(bytes as u64, Ordering::Relaxed);
+            self.inline_bytes_written
+                .fetch_add(bytes as u64, Ordering::Relaxed);
         }
     }
 
@@ -746,7 +746,10 @@ mod tests {
         assert!(log.is_empty());
         assert_eq!(log.available_space(), 64);
 
-        let entry1 = NodeLogEntry::InsertChild { key: 0x01, child_id: 100 };
+        let entry1 = NodeLogEntry::InsertChild {
+            key: 0x01,
+            child_id: 100,
+        };
         assert!(log.try_append(&entry1));
         assert_eq!(log.entry_count(), 1);
         assert_eq!(log.used_space(), 10);
@@ -762,11 +765,17 @@ mod tests {
         let mut log = InlineLog::new(16);
 
         // First entry fits (10 bytes)
-        let entry1 = NodeLogEntry::InsertChild { key: 0x01, child_id: 100 };
+        let entry1 = NodeLogEntry::InsertChild {
+            key: 0x01,
+            child_id: 100,
+        };
         assert!(log.try_append(&entry1));
 
         // Second entry doesn't fit (10 bytes but only 6 available)
-        let entry2 = NodeLogEntry::InsertChild { key: 0x02, child_id: 200 };
+        let entry2 = NodeLogEntry::InsertChild {
+            key: 0x02,
+            child_id: 200,
+        };
         assert!(!log.try_append(&entry2));
 
         // Small entry fits (2 bytes)
@@ -778,14 +787,23 @@ mod tests {
     fn test_inline_log_iteration() {
         let mut log = InlineLog::new(64);
 
-        log.try_append(&NodeLogEntry::InsertChild { key: 0x01, child_id: 100 });
+        log.try_append(&NodeLogEntry::InsertChild {
+            key: 0x01,
+            child_id: 100,
+        });
         log.try_append(&NodeLogEntry::RemoveChild { key: 0x02 });
         log.try_append(&NodeLogEntry::ClearValue);
 
         let entries: Vec<_> = log.iter().collect();
         assert_eq!(entries.len(), 3);
 
-        assert_eq!(entries[0], NodeLogEntry::InsertChild { key: 0x01, child_id: 100 });
+        assert_eq!(
+            entries[0],
+            NodeLogEntry::InsertChild {
+                key: 0x01,
+                child_id: 100
+            }
+        );
         assert_eq!(entries[1], NodeLogEntry::RemoveChild { key: 0x02 });
         assert_eq!(entries[2], NodeLogEntry::ClearValue);
     }
@@ -794,7 +812,10 @@ mod tests {
     fn test_inline_log_clear() {
         let mut log = InlineLog::new(64);
 
-        log.try_append(&NodeLogEntry::InsertChild { key: 0x01, child_id: 100 });
+        log.try_append(&NodeLogEntry::InsertChild {
+            key: 0x01,
+            child_id: 100,
+        });
         assert!(!log.is_empty());
 
         log.clear();
@@ -858,13 +879,18 @@ mod tests {
 
     #[test]
     fn test_serialized_size() {
-        let entry1 = NodeLogEntry::InsertChild { key: 0, child_id: 0 };
+        let entry1 = NodeLogEntry::InsertChild {
+            key: 0,
+            child_id: 0,
+        };
         assert_eq!(entry1.serialized_size(), entry1.serialize().len());
 
         let entry2 = NodeLogEntry::RemoveChild { key: 0 };
         assert_eq!(entry2.serialized_size(), entry2.serialize().len());
 
-        let entry3 = NodeLogEntry::SetValue { value: vec![1, 2, 3] };
+        let entry3 = NodeLogEntry::SetValue {
+            value: vec![1, 2, 3],
+        };
         assert_eq!(entry3.serialized_size(), entry3.serialize().len());
 
         let entry4 = NodeLogEntry::ClearValue;
@@ -894,7 +920,8 @@ mod tests {
     #[test]
     fn test_inline_log_from_data() {
         let data = vec![
-            log_entry_type::REMOVE_CHILD, 0x42,
+            log_entry_type::REMOVE_CHILD,
+            0x42,
             log_entry_type::CLEAR_VALUE,
         ];
 
