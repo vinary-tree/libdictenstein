@@ -154,16 +154,20 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
             return Ok(0);
         }
 
-        let entries: Vec<(String, Option<V>)> = tx
-            .shadow_terms
-            .drain(..)
-            .map(|(term, value)| {
-                let term_str = String::from_utf8_lossy(&term).to_string();
-                (term_str, value)
-            })
+        // Take ownership of the buffered (Vec<u8>, Option<V>) entries and
+        // borrow them as &[u8] for the byte-keyed insert path. The previous
+        // implementation routed through `String::from_utf8_lossy → insert_batch`
+        // which silently mangled any high-bit (≥0x80) bytes into the Unicode
+        // replacement character U+FFFD — corrupting all varint-encoded n-gram
+        // keys with vocab indices ≥ 128. `insert_batch_bytes` preserves the
+        // raw byte sequence exactly.
+        let owned_entries: Vec<(Vec<u8>, Option<V>)> = tx.shadow_terms.drain(..).collect();
+        let borrowed_entries: Vec<(&[u8], Option<V>)> = owned_entries
+            .iter()
+            .map(|(k, v)| (k.as_slice(), v.clone()))
             .collect();
 
-        let inserted = self.insert_batch(&entries);
+        let inserted = self.insert_batch_bytes(&borrowed_entries);
 
         if let Some(ref wal) = self.wal_writer {
             wal.append(WalRecord::CommitTx { tx_id: tx.tx_id })
