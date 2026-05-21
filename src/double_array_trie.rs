@@ -548,29 +548,10 @@ impl<V: DictionaryValue> DoubleArrayTrie<V> {
     ///
     /// Returns `None` if the term doesn't exist in the dictionary.
     pub fn get_value(&self, term: &str) -> Option<V> {
-        // Navigate to final state
-        let mut state = 1; // Root
-        for &byte in term.as_bytes() {
-            if state >= self.shared.base.len() {
-                return None;
-            }
-            let base = self.shared.base[state];
-            if base < 0 {
-                return None;
-            }
-            let next = (base as usize) + (byte as usize);
-            if next >= self.shared.check.len() || self.shared.check[next] != state as i32 {
-                return None;
-            }
-            state = next;
-        }
-
-        // Check if final and return value
-        if state < self.shared.is_final.len() && self.shared.is_final[state] {
-            self.shared.values.get(state).and_then(|v| v.clone())
-        } else {
-            None
-        }
+        // Delegates to the generic `DATCoreShared::term_value` (C5
+        // algorithmic dedup); the byte and char variants share the
+        // BASE/CHECK walk.
+        self.shared.term_value(term)
     }
 
     /// Get the number of terms in the dictionary.
@@ -584,25 +565,11 @@ impl<V: DictionaryValue> DoubleArrayTrie<V> {
     }
 
     /// Check if a term exists in the dictionary.
+    ///
+    /// Delegates to the generic `DATCoreShared::contains_term` (C5 algorithmic
+    /// dedup) so the byte and char variants share the BASE/CHECK walk.
     pub fn contains(&self, term: &str) -> bool {
-        let mut state = 1; // Start at root
-
-        for &byte in term.as_bytes() {
-            let base = self.shared.base[state];
-            if base < 0 {
-                return false; // No edges
-            }
-
-            let next = (base as usize).wrapping_add(byte as usize);
-
-            if next >= self.shared.check.len() || self.shared.check[next] != state as i32 {
-                return false; // Invalid transition
-            }
-
-            state = next;
-        }
-
-        state < self.shared.is_final.len() && self.shared.is_final[state]
+        self.shared.contains_term(term)
     }
 
     /// Get the number of states in the trie.

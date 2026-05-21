@@ -108,6 +108,64 @@ pub struct DATCoreShared<U: CharUnit, V: DictionaryValue = ()> {
     pub values: Arc<Vec<Option<V>>>,
 }
 
+// =============================================================================
+// Algorithmic methods generic over U: CharUnit
+// =============================================================================
+//
+// Methods that operate on the BASE/CHECK arrays in unit-agnostic ways. The
+// byte and char DAT variants used to each carry their own copy of these
+// (under different unit-type bounds); now both delegate to these.
+
+impl<U: CharUnit, V: DictionaryValue> DATCoreShared<U, V> {
+    /// Walk the trie starting at the root and return whether `term` reaches
+    /// a final state.
+    ///
+    /// Generic over the unit type via [`CharUnit::iter_str`] +
+    /// [`CharUnit::to_dat_offset`]. Replaces the byte-keyed inherent
+    /// `DoubleArrayTrie::contains` fast-path (and is now also available on
+    /// the char variant for free).
+    pub fn contains_term(&self, term: &str) -> bool {
+        let mut state: usize = 1; // State 1 is the root in our DAT encoding
+        for unit in U::iter_str(term) {
+            let base = self.base[state];
+            if base < 0 {
+                return false;
+            }
+            let next = (base as usize).wrapping_add(unit.to_dat_offset());
+            if next >= self.check.len() || self.check[next] != state as i32 {
+                return false;
+            }
+            state = next;
+        }
+        state < self.is_final.len() && self.is_final[state]
+    }
+
+    /// Walk the trie and return the value at the final state if `term` is
+    /// present; `None` otherwise.
+    pub fn term_value(&self, term: &str) -> Option<V>
+    where
+        V: Clone,
+    {
+        let mut state: usize = 1;
+        for unit in U::iter_str(term) {
+            let base = self.base[state];
+            if base < 0 {
+                return None;
+            }
+            let next = (base as usize).wrapping_add(unit.to_dat_offset());
+            if next >= self.check.len() || self.check[next] != state as i32 {
+                return None;
+            }
+            state = next;
+        }
+        if state < self.is_final.len() && self.is_final[state] {
+            self.values.get(state).and_then(|v| v.clone())
+        } else {
+            None
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

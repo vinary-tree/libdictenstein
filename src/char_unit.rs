@@ -69,6 +69,11 @@ pub trait CharUnit:
         self.hash(&mut hasher);
         hasher.finish()
     }
+
+    /// Convert this unit to a `usize` offset for DAT-style BASE/CHECK
+    /// arithmetic. `u8::to_dat_offset` is the byte's value;
+    /// `char::to_dat_offset` is the codepoint's `u32` cast.
+    fn to_dat_offset(&self) -> usize;
 }
 
 /// Byte-level implementation (existing behavior).
@@ -91,6 +96,11 @@ impl CharUnit for u8 {
     fn iter_str(s: &str) -> Box<dyn Iterator<Item = Self> + '_> {
         Box::new(s.bytes())
     }
+
+    #[inline]
+    fn to_dat_offset(&self) -> usize {
+        *self as usize
+    }
 }
 
 /// Character-level implementation (Unicode-aware).
@@ -111,6 +121,11 @@ impl CharUnit for char {
     #[inline]
     fn iter_str(s: &str) -> Box<dyn Iterator<Item = Self> + '_> {
         Box::new(s.chars())
+    }
+
+    #[inline]
+    fn to_dat_offset(&self) -> usize {
+        *self as usize
     }
 }
 
@@ -168,6 +183,12 @@ impl CharUnit for u64 {
     #[inline]
     fn iter_str(s: &str) -> Box<dyn Iterator<Item = Self> + '_> {
         Box::new(Self::from_str(s).into_iter())
+    }
+
+    #[inline]
+    fn to_dat_offset(&self) -> usize {
+        // u64 backends aren't backed by a DAT; cast the low 32 bits.
+        (*self as u32) as usize
     }
 }
 
