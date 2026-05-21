@@ -60,106 +60,13 @@ const NIL: usize = usize::MAX;
 // True SCDAWG Char Node
 // ============================================================================
 
-/// A node in the Unicode-aware SCDAWG.
-///
-/// Represents an equivalence class of substrings that share the same end-position set.
-#[derive(Clone, Debug)]
-struct ScdawgCharNode<V: DictionaryValue = ()> {
-    /// Forward edges (right extensions): label -> target node.
-    /// These allow appending characters to the represented string.
-    forward_edges: SmallVec<[(char, usize); 4]>,
-
-    /// Suffix link: points to the state representing the longest proper suffix
-    /// in a different equivalence class.
-    suffix_link: usize,
-
-    /// Left extension edges: label -> target node.
-    /// These allow prepending characters to the represented string.
-    /// Derived from suffix links after construction.
-    left_edges: SmallVec<[(char, usize); 2]>,
-
-    /// Maximum length of strings in this equivalence class (in characters).
-    length: usize,
-
-    /// Whether this state is a final state (end of some term).
-    is_final: bool,
-
-    /// Which terms end at this state (for multi-string support).
-    /// Stores (term_index, position_in_term) pairs.
-    term_ends: SmallVec<[(usize, usize); 2]>,
-
-    /// Optional value associated with final states.
-    value: Option<V>,
-
-    /// Parent node in the canonical path (for bidirectional traversal).
-    parent: usize,
-
-    /// Edge label from parent to this node (last character of canonical path).
-    parent_label: char,
-
-    /// First character of the canonical (longest) string represented by this node.
-    /// Used for computing left extension edges (sext links).
-    first_char: char,
-
-    /// Depth from root (number of edges in canonical path).
-    depth: usize,
-}
-
-impl<V: DictionaryValue> ScdawgCharNode<V> {
-    /// Create a new root node.
-    fn root() -> Self {
-        Self {
-            forward_edges: SmallVec::new(),
-            suffix_link: NIL,
-            left_edges: SmallVec::new(),
-            length: 0,
-            is_final: false,
-            term_ends: SmallVec::new(),
-            value: None,
-            parent: NIL,
-            parent_label: '\0',
-            first_char: '\0', // Root has no first character
-            depth: 0,
-        }
-    }
-
-    /// Create a new non-root node.
-    fn new(length: usize, suffix_link: usize, first_char: char) -> Self {
-        Self {
-            forward_edges: SmallVec::new(),
-            suffix_link,
-            left_edges: SmallVec::new(),
-            length,
-            is_final: false,
-            term_ends: SmallVec::new(),
-            value: None,
-            parent: NIL,
-            parent_label: '\0',
-            first_char,
-            depth: 0,
-        }
-    }
-
-    /// Find a forward edge by label.
-    /// Uses binary search for sorted edges.
-    #[inline(always)]
-    fn get_edge(&self, label: char) -> Option<usize> {
-        match self.forward_edges.binary_search_by_key(&label, |(l, _)| *l) {
-            Ok(idx) => Some(self.forward_edges[idx].1),
-            Err(_) => None,
-        }
-    }
-
-    /// Add or update a forward edge.
-    /// Maintains sorted order for binary search.
-    #[inline(always)]
-    fn set_edge(&mut self, label: char, target: usize) {
-        match self.forward_edges.binary_search_by_key(&label, |(l, _)| *l) {
-            Ok(idx) => self.forward_edges[idx].1 = target,
-            Err(idx) => self.forward_edges.insert(idx, (label, target)),
-        }
-    }
-}
+// C4 step: byte-for-byte-identical local `ScdawgCharNode<V>` struct
+// + 4-method impl block (root/new/get_edge/set_edge) replaced with a
+// type alias to the generic `crate::scdawg_core::ScdawgNode<char, V>`.
+// The canonical impl additionally provides `is_root()` which the char
+// variant didn't previously have — harmless addition. Clone + Debug
+// derives live on the generic struct, so the alias inherits them.
+type ScdawgCharNode<V = ()> = crate::scdawg_core::ScdawgNode<char, V>;
 
 // ============================================================================
 // True SCDAWG Char Inner State

@@ -66,113 +66,15 @@ const END_MARKER_BASE: u8 = 0x01; // Use low bytes as end markers
 // True SCDAWG Node
 // ============================================================================
 
-/// A node in the true SCDAWG.
-///
-/// Represents an equivalence class of substrings that share the same end-position set.
-#[derive(Clone, Debug)]
-struct ScdawgNode<V: DictionaryValue = ()> {
-    /// Forward edges (right extensions): label -> target node.
-    /// These allow appending characters to the represented string.
-    forward_edges: SmallVec<[(u8, usize); 4]>,
-
-    /// Suffix link: points to the state representing the longest proper suffix
-    /// in a different equivalence class.
-    suffix_link: usize,
-
-    /// Left extension edges: label -> target node.
-    /// These allow prepending characters to the represented string.
-    /// Derived from suffix links after construction.
-    left_edges: SmallVec<[(u8, usize); 2]>,
-
-    /// Maximum length of strings in this equivalence class.
-    length: usize,
-
-    /// Whether this state is a final state (end of some term).
-    is_final: bool,
-
-    /// Which terms end at this state (for multi-string support).
-    /// Stores (term_index, position_in_term) pairs.
-    term_ends: SmallVec<[(usize, usize); 2]>,
-
-    /// Optional value associated with final states.
-    value: Option<V>,
-
-    /// Parent node in the canonical path (for bidirectional traversal).
-    parent: usize,
-
-    /// Edge label from parent to this node (last character of canonical path).
-    parent_label: u8,
-
-    /// First character of the canonical (longest) string represented by this node.
-    /// Used for computing left extension edges (sext links).
-    first_char: u8,
-
-    /// Depth from root (number of edges in canonical path).
-    depth: usize,
-}
-
-impl<V: DictionaryValue> ScdawgNode<V> {
-    /// Create a new root node.
-    fn root() -> Self {
-        Self {
-            forward_edges: SmallVec::new(),
-            suffix_link: NIL,
-            left_edges: SmallVec::new(),
-            length: 0,
-            is_final: false,
-            term_ends: SmallVec::new(),
-            value: None,
-            parent: NIL,
-            parent_label: 0,
-            first_char: 0, // Root has no first character
-            depth: 0,
-        }
-    }
-
-    /// Create a new non-root node.
-    fn new(length: usize, suffix_link: usize, first_char: u8) -> Self {
-        Self {
-            forward_edges: SmallVec::new(),
-            suffix_link,
-            left_edges: SmallVec::new(),
-            length,
-            is_final: false,
-            term_ends: SmallVec::new(),
-            value: None,
-            parent: NIL,
-            parent_label: 0,
-            first_char,
-            depth: 0,
-        }
-    }
-
-    /// Find a forward edge by label.
-    /// Uses binary search for sorted edges (typically small, but helps at scale).
-    #[inline(always)]
-    fn get_edge(&self, label: u8) -> Option<usize> {
-        match self.forward_edges.binary_search_by_key(&label, |(l, _)| *l) {
-            Ok(idx) => Some(self.forward_edges[idx].1),
-            Err(_) => None,
-        }
-    }
-
-    /// Add or update a forward edge.
-    /// Maintains sorted order for binary search.
-    #[inline(always)]
-    fn set_edge(&mut self, label: u8, target: usize) {
-        match self.forward_edges.binary_search_by_key(&label, |(l, _)| *l) {
-            Ok(idx) => self.forward_edges[idx].1 = target,
-            Err(idx) => self.forward_edges.insert(idx, (label, target)),
-        }
-    }
-
-    /// Check if this is the root node.
-    #[inline]
-    #[allow(dead_code)]
-    fn is_root(&self) -> bool {
-        self.parent == NIL && self.length == 0
-    }
-}
+// C4 step: byte-for-byte-identical local `ScdawgNode<V>` struct +
+// 5-method impl block (root/new/get_edge/set_edge/is_root) replaced
+// with a type alias to the generic `crate::scdawg_core::ScdawgNode<u8, V>`.
+// The canonical impl carries the same methods with `label: U` instead
+// of `label: u8`; for `U = u8` they resolve identically.
+//
+// Clone + Debug derives are already on the generic struct, so the
+// alias inherits them automatically.
+type ScdawgNode<V = ()> = crate::scdawg_core::ScdawgNode<u8, V>;
 
 // ============================================================================
 // True SCDAWG Inner State

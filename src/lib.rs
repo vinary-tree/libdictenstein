@@ -98,6 +98,7 @@ pub mod persistent_vocab_artrie;
 pub mod prefix_zipper;
 pub mod scdawg;
 pub mod scdawg_char;
+pub mod scdawg_core;
 pub mod substring;
 pub mod suffix_automaton;
 pub mod suffix_automaton_char;

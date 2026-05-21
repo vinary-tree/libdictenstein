@@ -28,7 +28,17 @@
 /// let dict_chars: DoubleArrayTrieChar = DoubleArrayTrieChar::from_terms(vec!["café"]);
 /// ```
 pub trait CharUnit:
-    Copy + Clone + Eq + PartialEq + Ord + std::hash::Hash + std::fmt::Debug + Send + Sync + 'static
+    Copy
+    + Clone
+    + Default
+    + Eq
+    + PartialEq
+    + Ord
+    + std::hash::Hash
+    + std::fmt::Debug
+    + Send
+    + Sync
+    + 'static
 {
     /// Convert from a string slice to a vector of units.
     ///
