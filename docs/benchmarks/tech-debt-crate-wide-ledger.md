@@ -141,13 +141,11 @@ specific step-by-step plans.
 |---|---|---|---|---|
 | D1 (target-cpu=native scope) | 2026-05-21 | `.cargo/config.toml` set `target-cpu=native` unconditionally, producing binaries that silently emit illegal-instruction signals on slightly older x86_64 hardware | Replaced with `target-feature=+aes,+sse2` — the minimum required by PathMap's gxhash. Comments explain how to opt back into native via `RUSTFLAGS` env var for release/bench builds | Build still clean. |
 
-### Still pending
+### Phase 4 completion update (2026-05-21)
 
-| Item | Estimate | Reason for deferral |
+| Item | Date | Result |
 |---|---|---|
-| D2 (lling-llang CI job) | half-day | Pure yaml; better grouped with D3 |
-| D3 (CI matrix + clippy/doc/fmt/msrv/nightly-branch-coverage) | 2-3 days | New `.github/workflows/ci.yml` with full matrix; iteratively fix whatever breaks under each combo |
-| D5 (dep upgrades) | 2-4 days | bincode 1.x → 2.x is a breaking-format upgrade that needs serializer migration |
+| D5 (bincode 1.3 → 2.0) | 2026-05-21 | Done via `src/serialization/bincode_compat.rs` shim. bincode 2.x's `bincode::serde::*` API + `bincode::config::legacy()` config preserves bincode 1.x's wire-format byte-for-byte, so the format-version constant did not need bumping. All 105 call-sites migrated mechanically via `sed`. Test suite passes (2294 tests). `lib.rs` `ARTrieAtomicOps` re-export gated behind the `persistent-artrie` feature to fix the `--features serialization` standalone build. |
 
 ---
 
