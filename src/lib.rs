@@ -101,6 +101,7 @@ pub mod scdawg_char;
 pub mod substring;
 pub mod suffix_automaton;
 pub mod suffix_automaton_char;
+pub mod suffix_automaton_core;
 pub mod suffix_automaton_char_zipper;
 pub mod suffix_automaton_zipper;
 pub mod symmetric_difference_zipper;

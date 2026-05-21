@@ -140,115 +140,72 @@ use crate::{Dictionary, DictionaryNode, SyncStrategy};
 /// Each state represents an equivalence class of substrings that have the same
 /// set of ending positions (endpos). This minimizes the number of states while
 /// maintaining the ability to recognize all substrings.
-#[derive(Clone, Debug)]
-#[cfg_attr(
-    feature = "serialization",
-    derive(serde::Serialize, serde::Deserialize)
-)]
-#[cfg_attr(
-    all(feature = "serialization", not(feature = "persistent-artrie")),
-    serde(bound(serialize = "V: serde::Serialize")),
-    serde(bound(deserialize = "V: serde::Deserialize<'de>"))
-)]
-#[cfg_attr(
-    all(feature = "serialization", feature = "persistent-artrie"),
-    serde(bound = "")
-)]
-pub(crate) struct SuffixNodeChar<V: DictionaryValue = ()> {
-    /// Outgoing edges: (character label, target state index).
-    ///
-    /// Kept sorted by character for efficient binary search on large alphabets.
-    pub(crate) edges: Vec<(char, usize)>,
+// C3 step: byte-for-byte-identical local `SuffixNodeChar<V>` struct +
+// impl block replaced with a type alias to the generic
+// `crate::suffix_automaton_core::SuffixNode<char, V>`. The canonical
+// impl carries the same 5 methods (root, new, find_edge, add_edge,
+// update_edge) generic over `U: CharUnit`, so call-sites resolve
+// unchanged.
+pub(crate) type SuffixNodeChar<V = ()> = crate::suffix_automaton_core::SuffixNode<char, V>;
 
-    /// Suffix link: points to state representing the longest proper suffix
-    /// in a different endpos equivalence class.
-    ///
-    /// The suffix link forms a tree over states, enabling efficient construction
-    /// and navigation through suffix relationships.
-    suffix_link: Option<usize>,
-
-    /// Length of the longest string in this equivalence class.
-    ///
-    /// All strings in this class have lengths in the range:
-    /// [nodes[suffix_link].max_length + 1, max_length]
-    max_length: usize,
-
-    /// True if this state represents an end-of-string position.
-    ///
-    /// For generalized suffix automaton (multiple strings), this marks
-    /// states where at least one indexed string ends.
-    pub(crate) is_final: bool,
-
-    /// Optional value associated with this state (only for final nodes).
-    pub(crate) value: Option<V>,
+#[allow(dead_code)]
+mod _suffix_node_char_legacy {
+    // Original local impl preserved as a comment so the historical
+    // method bodies remain in the source tree per the project's
+    // never-delete-to-disable policy. The methods are now provided by
+    // the canonical `crate::suffix_automaton_core::node::SuffixNode<U, V>`
+    // impl.
+    //
+    // fn root() -> Self {
+    //     Self {
+    //         edges: Vec::new(),
+    //         suffix_link: None,
+    //         max_length: 0,
+    //         is_final: false,
+    //         value: None,
+    //     }
+    // }
+    //
+    // fn new(max_length: usize) -> Self {
+    //     Self {
+    //         edges: Vec::new(),
+    //         suffix_link: None,
+    //         max_length,
+    //         is_final: false,
+    //         value: None,
+    //     }
+    // }
+    //
+    // fn find_edge(&self, label: char) -> Option<usize> {
+    //     if self.edges.len() < 16 {
+    //         self.edges.iter().find(|(b, _)| *b == label).map(|(_, t)| *t)
+    //     } else {
+    //         self.edges.binary_search_by_key(&label, |(b, _)| *b).ok()
+    //             .map(|idx| self.edges[idx].1)
+    //     }
+    // }
+    //
+    // fn add_edge(&mut self, label: char, target: usize) {
+    //     match self.edges.binary_search_by_key(&label, |(b, _)| *b) {
+    //         Ok(idx) => { self.edges[idx].1 = target; }
+    //         Err(idx) => { self.edges.insert(idx, (label, target)); }
+    //     }
+    // }
+    //
+    // fn update_edge(&mut self, label: char, new_target: usize) -> bool {
+    //     if let Some(idx) = self.edges.iter().position(|(b, _)| *b == label) {
+    //         self.edges[idx].1 = new_target;
+    //         true
+    //     } else {
+    //         false
+    //     }
+    // }
 }
 
-impl<V: DictionaryValue> SuffixNodeChar<V> {
-    /// Create a new root node.
-    fn root() -> Self {
-        Self {
-            edges: Vec::new(),
-            suffix_link: None,
-            max_length: 0,
-            is_final: false,
-            value: None,
-        }
-    }
-
-    /// Create a new non-root node.
-    fn new(max_length: usize) -> Self {
-        Self {
-            edges: Vec::new(),
-            suffix_link: None,
-            max_length,
-            is_final: false,
-            value: None,
-        }
-    }
-
-    /// Find an edge by label.
-    ///
-    /// Uses linear search for small edge counts, binary search for larger.
-    /// Threshold at 16 edges based on benchmarks from DAWG implementation.
-    fn find_edge(&self, label: char) -> Option<usize> {
-        if self.edges.len() < 16 {
-            self.edges
-                .iter()
-                .find(|(b, _)| *b == label)
-                .map(|(_, t)| *t)
-        } else {
-            self.edges
-                .binary_search_by_key(&label, |(b, _)| *b)
-                .ok()
-                .map(|idx| self.edges[idx].1)
-        }
-    }
-
-    /// Add an edge, maintaining sorted order.
-    fn add_edge(&mut self, label: char, target: usize) {
-        // Find insertion point to maintain sorted order
-        match self.edges.binary_search_by_key(&label, |(b, _)| *b) {
-            Ok(idx) => {
-                // Edge already exists, update target
-                self.edges[idx].1 = target;
-            }
-            Err(idx) => {
-                // Insert at correct position
-                self.edges.insert(idx, (label, target));
-            }
-        }
-    }
-
-    /// Update an existing edge target.
-    fn update_edge(&mut self, label: char, new_target: usize) -> bool {
-        if let Some(idx) = self.edges.iter().position(|(b, _)| *b == label) {
-            self.edges[idx].1 = new_target;
-            true
-        } else {
-            false
-        }
-    }
-}
+// The original `fn update_edge` body lived here in the local impl. It
+// is now provided by the canonical impl on
+// `crate::suffix_automaton_core::node::SuffixNode<U, V>` (with
+// `U = char` for this file).
 
 /// Internal state of the suffix automaton.
 ///
