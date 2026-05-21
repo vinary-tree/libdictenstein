@@ -49,80 +49,15 @@ use crate::serialization::serde_helpers::{
     deserialize_arc_vec, deserialize_arc_vec_vec, serialize_arc_vec, serialize_arc_vec_vec,
 };
 
-/// A Double-Array Trie with support for dynamic updates.
-///
-/// Uses BASE/CHECK arrays for O(1) transitions with excellent cache locality.
-/// Supports insertions and deletions with XOR-based relocation and lazy rebuilding.
-/// Shared data structure for all nodes in a DAT.
-/// Reduces Arc cloning overhead by grouping all shared arrays together.
-#[cfg_attr(
-    feature = "serialization",
-    derive(serde::Serialize, serde::Deserialize)
-)]
-#[cfg_attr(
-    all(feature = "serialization", not(feature = "persistent-artrie")),
-    serde(bound(serialize = "V: serde::Serialize")),
-    serde(bound(deserialize = "V: serde::Deserialize<'de>"))
-)]
-#[cfg_attr(
-    all(feature = "serialization", feature = "persistent-artrie"),
-    serde(bound = "")
-)]
-#[derive(Clone, Debug)]
-pub(crate) struct DATShared<V: DictionaryValue = ()> {
-    /// BASE array: offset for computing next state
-    #[cfg_attr(
-        feature = "serialization",
-        serde(
-            serialize_with = "serialize_arc_vec",
-            deserialize_with = "deserialize_arc_vec"
-        )
-    )]
-    pub(crate) base: Arc<Vec<i32>>,
-
-    /// CHECK array: parent state verification
-    #[cfg_attr(
-        feature = "serialization",
-        serde(
-            serialize_with = "serialize_arc_vec",
-            deserialize_with = "deserialize_arc_vec"
-        )
-    )]
-    pub(crate) check: Arc<Vec<i32>>,
-
-    /// Final states marking valid term endings
-    #[cfg_attr(
-        feature = "serialization",
-        serde(
-            serialize_with = "serialize_arc_vec",
-            deserialize_with = "deserialize_arc_vec"
-        )
-    )]
-    pub(crate) is_final: Arc<Vec<bool>>,
-
-    /// Edge lists per state: which bytes have valid transitions
-    /// This optimizes the edges() iterator to only check actual edges
-    /// instead of all 256 possible bytes.
-    #[cfg_attr(
-        feature = "serialization",
-        serde(
-            serialize_with = "serialize_arc_vec_vec",
-            deserialize_with = "deserialize_arc_vec_vec"
-        )
-    )]
-    pub(crate) edges: Arc<Vec<Vec<u8>>>,
-
-    /// Optional values associated with final states
-    /// Indexed by state number; only final states may have Some(value)
-    #[cfg_attr(
-        feature = "serialization",
-        serde(
-            serialize_with = "serialize_arc_vec",
-            deserialize_with = "deserialize_arc_vec"
-        )
-    )]
-    pub(crate) values: Arc<Vec<Option<V>>>,
-}
+// C5 step 2: byte DAT's local `DATShared<V>` struct is now a type alias
+// for the generic `crate::dat_core::DATCoreShared<u8, V>`. The fields are
+// byte-for-byte identical (same Arc<Vec<i32>>, Arc<Vec<bool>>,
+// Arc<Vec<Vec<u8>>>, Arc<Vec<Option<V>>>) and the serde plumbing now
+// flows through `crate::serialization::serde_helpers` (set up in C2).
+//
+// Call-sites throughout this file continue to reference `DATShared<V>`
+// unchanged.
+pub(crate) type DATShared<V = ()> = crate::dat_core::DATCoreShared<u8, V>;
 
 /// A compact, cache-efficient dictionary implementation using the Double-Array Trie data structure.
 ///

@@ -38,72 +38,15 @@ use crate::serialization::serde_helpers::{
     deserialize_arc_vec, deserialize_arc_vec_vec, serialize_arc_vec, serialize_arc_vec_vec,
 };
 
-/// Shared data for character-level Double-Array Trie.
-#[cfg_attr(
-    feature = "serialization",
-    derive(serde::Serialize, serde::Deserialize)
-)]
-#[cfg_attr(
-    all(feature = "serialization", not(feature = "persistent-artrie")),
-    serde(bound(serialize = "V: serde::Serialize")),
-    serde(bound(deserialize = "V: serde::Deserialize<'de>"))
-)]
-#[cfg_attr(
-    all(feature = "serialization", feature = "persistent-artrie"),
-    serde(bound = "")
-)]
-#[derive(Clone, Debug)]
-pub(crate) struct DATSharedChar<V: DictionaryValue = ()> {
-    /// BASE array: offset for computing next state
-    #[cfg_attr(
-        feature = "serialization",
-        serde(
-            serialize_with = "serialize_arc_vec",
-            deserialize_with = "deserialize_arc_vec"
-        )
-    )]
-    pub(crate) base: Arc<Vec<i32>>,
-
-    /// CHECK array: parent state verification
-    #[cfg_attr(
-        feature = "serialization",
-        serde(
-            serialize_with = "serialize_arc_vec",
-            deserialize_with = "deserialize_arc_vec"
-        )
-    )]
-    pub(crate) check: Arc<Vec<i32>>,
-
-    /// Final states marking valid term endings
-    #[cfg_attr(
-        feature = "serialization",
-        serde(
-            serialize_with = "serialize_arc_vec",
-            deserialize_with = "deserialize_arc_vec"
-        )
-    )]
-    pub(crate) is_final: Arc<Vec<bool>>,
-
-    /// Edge lists per state: which chars have valid transitions
-    #[cfg_attr(
-        feature = "serialization",
-        serde(
-            serialize_with = "serialize_arc_vec_vec",
-            deserialize_with = "deserialize_arc_vec_vec"
-        )
-    )]
-    pub(crate) edges: Arc<Vec<Vec<char>>>,
-
-    /// Values associated with final states
-    #[cfg_attr(
-        feature = "serialization",
-        serde(
-            serialize_with = "serialize_arc_vec",
-            deserialize_with = "deserialize_arc_vec"
-        )
-    )]
-    pub(crate) values: Arc<Vec<Option<V>>>,
-}
+// C5 step 3: char DAT's local `DATSharedChar<V>` struct is now a type
+// alias for the generic `crate::dat_core::DATCoreShared<char, V>`. The
+// fields are byte-for-byte identical (same Arc<Vec<i32>>,
+// Arc<Vec<bool>>, Arc<Vec<Vec<char>>>, Arc<Vec<Option<V>>>) and the
+// serde plumbing flows through `crate::serialization::serde_helpers`.
+//
+// Call-sites throughout this file continue to reference `DATSharedChar<V>`
+// unchanged.
+pub(crate) type DATSharedChar<V = ()> = crate::dat_core::DATCoreShared<char, V>;
 
 /// Character-level Double-Array Trie for proper Unicode support.
 ///
