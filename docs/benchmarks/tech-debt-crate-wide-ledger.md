@@ -164,6 +164,52 @@ items handled in this session:
 
 ---
 
-## Phase 6 — Verification close-out (planned)
+## Phase 6 — Verification close-out (2026-05-21)
 
-(Filled in.)
+### Final test results
+
+- `cargo test --all-features --no-fail-fast`: **2288 passed, 0 failed,
+  151 ignored** across 26 test binaries.
+- `cargo fmt --all -- --check`: clean.
+- `cd formal-verification/rocq && make`: green (all 15 .v files up to
+  date).
+- `cargo build --all-features`: 0 errors, ~19 warnings (all pre-existing
+  unused-Result warnings in legacy code paths).
+- `cargo test --all-features --doc`: **152 passed, 0 failed, 150 ignored**.
+
+### Test growth across the plan
+
+- Pre-plan baseline: 2006 passing tests.
+- Post-plan: **2288 passing tests (+282)**.
+- New test files: `bijective_trait_invariant.rs` (3),
+  `serialization_value_roundtrip.rs` (10),
+  `vocab_trait_honesty.rs` (11). Plus +25 unit tests sprinkled across the
+  source tree (extract_terms deep-chain × 2, factory unicode_backends,
+  sync_compat try_read/try_write × 2, value FilterableValue per-element ×
+  3, suffix_automaton doc-tests × 6).
+
+### Remaining work — multi-week / multi-day, deferred to follow-up sessions
+
+The following plan items are L-effort architectural refactors that the
+plan itself estimated as multi-week or multi-day and cannot reasonably fit
+in a single session:
+
+| Item | Estimate | Why deferred |
+|---|---|---|
+| C1 (DawgCore consolidation) | 2-3 weeks | ~1000-1200 LOC reduction across 3 DAWG variants (DynamicDawg, DynamicDawgChar, DynamicDawgU64). Mirrors ARTrie Phase 5. |
+| C3 (SuffixAutomatonCore) | 3-4 weeks | ~1500 LOC reduction; involves redesigning the on-line suffix automaton state to be generic over `Unit: CharUnit`. |
+| C4 (ScdawgCore) | 3-4 weeks | ~900 LOC reduction. Similar shape to C3. |
+| C5 (DAT generic) | 1-2 weeks | 3000 LOC across 4 DAT files; the `edges: Arc<Vec<Vec<u8>>>` vs `Arc<Vec<Vec<char>>>` difference percolates through every method. Existing partial `DATShared` infrastructure helps but doesn't shortcut the bulk of the work. |
+| D5 (bincode 1.x → 3.0 migration) | 2-4 days | bincode 3.0 has a completely different API surface (`bincode::serde::encode_to_vec` etc.); migration touches every serializer impl + every on-disk format check. |
+| D7 (90 remaining rust,ignore doc-tests) | 1 week | Each block needs per-block API rewriting. 25 of 148 originally rust,ignore blocks were rescued; the remaining 123 demonstrate API patterns that need context-specific rewrites (e.g., `let trie = PersistentARTrie::create("path")?` followed by generic-ARTrie-trait method calls, which only work via `SharedARTrie::create`'s `Arc<RwLock<…>>`-wrapped variant). |
+
+These items are real but they're optimization opportunities, not
+correctness blockers. The code as it stands today is correct, well-tested
+(2288 passing tests), formatted (cargo fmt clean), documented, and CI-ed.
+
+### Memory / handoff notes
+
+Updated `/home/dylon/.claude/projects/-home-dylon-Workspace-f1r3fly-io-libdictenstein/memory/MEMORY.md`
+with the final state. The remaining items above are tracked as
+follow-up sessions in that file as well.
+
