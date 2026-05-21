@@ -12,7 +12,7 @@ use super::{DictionaryFromTerms, DictionarySerializer, SerializationError};
 ///
 /// # Example
 ///
-/// ```rust,ignore
+/// ```text
 /// use liblevenshtein::prelude::*;
 /// use liblevenshtein::serialization::{GzipSerializer, BincodeSerializer};
 /// use std::fs::File;

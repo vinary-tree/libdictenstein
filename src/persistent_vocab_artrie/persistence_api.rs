@@ -160,7 +160,7 @@ impl<S: BlockStorage> super::dict_impl::PersistentVocabARTrie<S> {
     ///
     /// # Example
     ///
-    /// ```rust,ignore
+    /// ```text
     /// // Bulk import with WAL rotation
     /// for batch in large_vocabulary.chunks(100_000) {
     ///     vocab.insert_batch(batch);
@@ -244,7 +244,7 @@ impl<S: BlockStorage> super::dict_impl::PersistentVocabARTrie<S> {
     ///
     /// # Example
     ///
-    /// ```rust,ignore
+    /// ```text
     /// // Start background sync, continue processing
     /// let handle = vocab.sync_to_disk_async()?;
     ///

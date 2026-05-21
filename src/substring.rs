@@ -27,7 +27,7 @@
 //!
 //! # Example
 //!
-//! ```rust,ignore
+//! ```text
 //! use libdictenstein::substring::{SubstringMatch, SubstringDictionary};
 //! use libdictenstein::scdawg::Scdawg;
 //!
@@ -74,7 +74,7 @@ use super::{CharUnit, Dictionary, DictionaryNode};
 ///
 /// # Example
 ///
-/// ```rust,ignore
+/// ```text
 /// // Searching for "ello" in dictionary ["hello", "yellow", "mellow"]
 /// // Returns matches:
 /// SubstringMatch {
@@ -219,7 +219,7 @@ impl<N: DictionaryNode> SubstringMatch<N> {
 ///
 /// # Example
 ///
-/// ```rust,ignore
+/// ```text
 /// use libdictenstein::substring::SubstringDictionary;
 ///
 /// fn find_candidates<D: SubstringDictionary>(dict: &D, piece: &str) {
@@ -332,7 +332,7 @@ pub trait SubstringDictionary: Dictionary {
 ///
 /// # Example
 ///
-/// ```rust,ignore
+/// ```text
 /// use libdictenstein::substring::BidirectionalDictionaryNode;
 ///
 /// fn reconstruct_path<N: BidirectionalDictionaryNode>(mut node: N) -> String {

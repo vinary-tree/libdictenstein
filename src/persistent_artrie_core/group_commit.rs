@@ -39,7 +39,7 @@
 //!
 //! # Example
 //!
-//! ```rust,ignore
+//! ```text
 //! use libdictenstein::persistent_artrie::group_commit::{
 //!     GroupCommitConfig, GroupCommitCoordinator,
 //! };
@@ -357,7 +357,7 @@ impl AdaptiveController {
 ///
 /// # Example
 ///
-/// ```rust,ignore
+/// ```text
 /// let async_config = AsyncWalConfig::default();
 /// let archive_config = WalConfig::default();
 /// let wal = Arc::new(AsyncWalWriter::open(path, async_config, archive_config)?);

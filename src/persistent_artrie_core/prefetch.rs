@@ -30,7 +30,7 @@
 //!
 //! # Usage
 //!
-//! ```rust,ignore
+//! ```text
 //! use libdictenstein::persistent_artrie::prefetch::Prefetcher;
 //!
 //! let prefetcher = Prefetcher::new(buffer_manager.clone());
@@ -333,7 +333,7 @@ impl Prefetcher {
     ///
     /// # Example
     ///
-    /// ```rust,ignore
+    /// ```text
     /// // With DepthLimited(3) strategy:
     /// prefetcher.prefetch_children_bounded(&children, 0); // depth 0: prefetch
     /// prefetcher.prefetch_children_bounded(&children, 1); // depth 1: prefetch

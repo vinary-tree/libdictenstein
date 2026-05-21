@@ -33,7 +33,7 @@
 //!
 //! # Usage
 //!
-//! ```rust,ignore
+//! ```text
 //! let mut manager = VersionCheckpointManager::new();
 //!
 //! // Create a new version snapshot

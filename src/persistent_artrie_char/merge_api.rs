@@ -34,7 +34,7 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     ///
     /// # Example
     ///
-    /// ```rust,ignore
+    /// ```text
     /// // Merge n-gram counts from worker trie into main trie
     /// let processed = main_trie.merge_from(&worker_trie, |self_count, other_count| {
     ///     self_count + other_count  // Sum the counts

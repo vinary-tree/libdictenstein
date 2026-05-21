@@ -29,7 +29,7 @@ pub enum TransactionState {
 ///
 /// # Example
 ///
-/// ```rust,ignore
+/// ```text
 /// use libdictenstein::persistent_artrie::PersistentARTrie;
 ///
 /// let trie: PersistentARTrie<i64> = PersistentARTrie::create("my.artrie")?;

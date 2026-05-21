@@ -17,7 +17,7 @@
 //!
 //! # Usage
 //!
-//! ```rust,ignore
+//! ```text
 //! use libdictenstein::ARTrie;
 //! use libdictenstein::persistent_artrie::PersistentARTrie;
 //! use libdictenstein::persistent_artrie_char::PersistentARTrieChar;
@@ -78,7 +78,7 @@ use crate::CharUnit;
 ///
 /// # Example
 ///
-/// ```rust,ignore
+/// ```text
 /// use libdictenstein::ARTrie;
 /// use libdictenstein::persistent_artrie::PersistentARTrie;
 ///
@@ -116,7 +116,7 @@ pub trait ARTrie: Clone + Send + Sync {
     ///
     /// # Example
     ///
-    /// ```rust,ignore
+    /// ```text
     /// use libdictenstein::ARTrie;
     /// use libdictenstein::persistent_artrie::PersistentARTrie;
     ///
@@ -180,7 +180,7 @@ pub trait ARTrie: Clone + Send + Sync {
     ///
     /// # Example
     ///
-    /// ```rust,ignore
+    /// ```text
     /// use libdictenstein::ARTrie;
     /// use libdictenstein::persistent_artrie::PersistentARTrie;
     ///
@@ -211,7 +211,7 @@ pub trait ARTrie: Clone + Send + Sync {
     ///
     /// # Example
     ///
-    /// ```rust,ignore
+    /// ```text
     /// use libdictenstein::ARTrie;
     /// use libdictenstein::persistent_artrie_char::PersistentARTrieChar;
     ///
@@ -239,7 +239,7 @@ pub trait ARTrie: Clone + Send + Sync {
     ///
     /// # Example
     ///
-    /// ```rust,ignore
+    /// ```text
     /// use libdictenstein::ARTrie;
     /// use libdictenstein::persistent_artrie_char::PersistentARTrieChar;
     ///
@@ -262,7 +262,7 @@ pub trait ARTrie: Clone + Send + Sync {
     ///
     /// # Example
     ///
-    /// ```rust,ignore
+    /// ```text
     /// use libdictenstein::ARTrie;
     /// use libdictenstein::persistent_artrie_char::PersistentARTrieChar;
     ///
@@ -283,7 +283,7 @@ pub trait ARTrie: Clone + Send + Sync {
     ///
     /// # Example
     ///
-    /// ```rust,ignore
+    /// ```text
     /// use libdictenstein::ARTrie;
     /// use libdictenstein::persistent_artrie::PersistentARTrie;
     ///
@@ -306,7 +306,7 @@ pub trait ARTrie: Clone + Send + Sync {
     ///
     /// # Example
     ///
-    /// ```rust,ignore
+    /// ```text
     /// use libdictenstein::ARTrie;
     /// use libdictenstein::persistent_artrie::PersistentARTrie;
     ///
@@ -349,7 +349,7 @@ pub trait ARTrie: Clone + Send + Sync {
     ///
     /// # Example
     ///
-    /// ```rust,ignore
+    /// ```text
     /// use libdictenstein::ARTrie;
     /// use libdictenstein::persistent_artrie::PersistentARTrie;
     ///
@@ -377,7 +377,7 @@ pub trait ARTrie: Clone + Send + Sync {
     ///
     /// # Example
     ///
-    /// ```rust,ignore
+    /// ```text
     /// use libdictenstein::ARTrie;
     /// use libdictenstein::persistent_artrie::PersistentARTrie;
     ///
@@ -447,7 +447,7 @@ pub trait ARTrie: Clone + Send + Sync {
     ///
     /// # Example
     ///
-    /// ```rust,ignore
+    /// ```text
     /// use libdictenstein::ARTrie;
     /// use libdictenstein::persistent_artrie::PersistentARTrie;
     ///
@@ -494,7 +494,7 @@ pub trait ARTrie: Clone + Send + Sync {
     ///
     /// # Example
     ///
-    /// ```rust,ignore
+    /// ```text
     /// use libdictenstein::ARTrie;
     /// use libdictenstein::persistent_artrie_char::PersistentARTrieChar;
     ///
@@ -520,7 +520,7 @@ pub trait ARTrie: Clone + Send + Sync {
     ///
     /// # Example
     ///
-    /// ```rust,ignore
+    /// ```text
     /// use libdictenstein::ARTrie;
     /// use libdictenstein::persistent_artrie_char::PersistentARTrieChar;
     ///
@@ -611,7 +611,7 @@ pub trait ARTrieAtomicOps: ARTrie {}
 ///
 /// # Example
 ///
-/// ```rust,ignore
+/// ```text
 /// use libdictenstein::persistent_artrie::PersistentARTrie;
 /// use libdictenstein::EvictableARTrie;
 /// use libdictenstein::persistent_artrie::EvictionConfig;

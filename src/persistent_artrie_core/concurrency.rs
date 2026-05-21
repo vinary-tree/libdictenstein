@@ -37,7 +37,7 @@
 //!
 //! # Usage
 //!
-//! ```rust,ignore
+//! ```text
 //! use libdictenstein::persistent_artrie::concurrency::*;
 //!
 //! let node = OptimisticNode::new(data);
@@ -319,7 +319,7 @@ impl EpochManager {
     ///
     /// # Example
     ///
-    /// ```rust,ignore
+    /// ```text
     /// use std::time::Duration;
     /// use libdictenstein::persistent_artrie::concurrency::EpochManager;
     ///
@@ -449,7 +449,7 @@ impl<'a> Drop for EpochGuard<'a> {
 ///
 /// # Example
 ///
-/// ```rust,ignore
+/// ```text
 /// use libdictenstein::persistent_artrie::concurrency::{EpochManager, MvccReadContext};
 ///
 /// let epoch_manager = EpochManager::new();

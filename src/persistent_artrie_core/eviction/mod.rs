@@ -24,7 +24,7 @@
 //!
 //! # Usage
 //!
-//! ```rust,ignore
+//! ```text
 //! use libdictenstein::persistent_artrie::{PersistentARTrie, EvictionConfig};
 //! use libdictenstein::EvictableARTrie;
 //!

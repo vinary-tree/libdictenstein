@@ -79,7 +79,7 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
     /// * `path` - Path to the dictionary file (will also create `.wal` file)
     ///
     /// # Example
-    /// ```rust,ignore
+    /// ```text
     /// use libdictenstein::persistent_artrie::PersistentARTrie;
     ///
     /// let dict: PersistentARTrie<()> = PersistentARTrie::create("words.part")?;
@@ -165,7 +165,7 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
     /// * `path` - Path to the dictionary file (must not exist)
     ///
     /// # Example
-    /// ```rust,ignore
+    /// ```text
     /// use libdictenstein::persistent_artrie::PersistentARTrie;
     ///
     /// let dict: PersistentARTrie<()> = PersistentARTrie::create_with_slot_tracking("words.part")?;
@@ -253,7 +253,7 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
     /// * `path` - Path to the dictionary file
     ///
     /// # Example
-    /// ```rust,ignore
+    /// ```text
     /// use libdictenstein::persistent_artrie::PersistentARTrie;
     ///
     /// let dict: PersistentARTrie<()> = PersistentARTrie::open("words.part")?;
@@ -540,7 +540,7 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
     /// * `path` - Path to the dictionary file (must exist)
     ///
     /// # Example
-    /// ```rust,ignore
+    /// ```text
     /// use libdictenstein::persistent_artrie::PersistentARTrie;
     ///
     /// // Open existing vocabulary with slot-level tracking
@@ -599,7 +599,7 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
     ///
     /// # Example
     ///
-    /// ```rust,ignore
+    /// ```text
     /// use libdictenstein::persistent_artrie::PersistentARTrie;
     ///
     /// let (dict, report) = PersistentARTrie::<i64>::open_with_recovery("data.part")?;

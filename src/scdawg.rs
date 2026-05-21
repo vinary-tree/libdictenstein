@@ -602,7 +602,7 @@ impl<V: DictionaryValue> Scdawg<V> {
     ///
     /// # Example
     ///
-    /// ```rust,ignore
+    /// ```text
     /// let scdawg = Scdawg::<()>::from_terms(["cathedral", "category"]);
     /// if let Some(handle) = scdawg.find("cat") {
     ///     println!("Pattern 'cat' found, frequency: {}", scdawg.freq_at(&handle));
@@ -629,7 +629,7 @@ impl<V: DictionaryValue> Scdawg<V> {
     ///
     /// # Example
     ///
-    /// ```rust,ignore
+    /// ```text
     /// let scdawg = Scdawg::<()>::from_terms(["abab", "bab"]);
     /// assert_eq!(scdawg.freq("ab"), 3); // 2 in "abab" + 1 in "bab"
     /// ```
@@ -659,7 +659,7 @@ impl<V: DictionaryValue> Scdawg<V> {
     ///
     /// # Example
     ///
-    /// ```rust,ignore
+    /// ```text
     /// let scdawg = Scdawg::<()>::from_terms(["abab"]);
     /// let locs = scdawg.locations("ab");
     /// // Returns: [("abab", 0), ("abab", 2)]

@@ -35,7 +35,7 @@
 //!
 //! # Usage
 //!
-//! ```rust,ignore
+//! ```text
 //! use libdictenstein::persistent_vocab_artrie::reverse_index::VocabReverseIndex;
 //!
 //! // Create a new index

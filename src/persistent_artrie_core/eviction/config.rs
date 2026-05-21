@@ -9,7 +9,7 @@ use std::time::Duration;
 ///
 /// # Example
 ///
-/// ```rust,ignore
+/// ```text
 /// use libdictenstein::persistent_artrie::EvictionConfig;
 ///
 /// let config = EvictionConfig {
@@ -254,7 +254,7 @@ impl EvictionUrgency {
 ///
 /// # Example
 ///
-/// ```rust,ignore
+/// ```text
 /// use libdictenstein::EvictableARTrie;
 ///
 /// let stats = trie.eviction_stats();

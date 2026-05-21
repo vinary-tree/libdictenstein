@@ -666,7 +666,7 @@ impl<S: BlockStorage> ArenaManager<S> {
     ///
     /// # Example
     ///
-    /// ```rust,ignore
+    /// ```text
     /// // Open existing trie without slot tracking
     /// let mut am = ArenaManager::with_buffer_manager(bm);
     ///
@@ -898,7 +898,7 @@ impl<S: BlockStorage> ArenaManager<S> {
     /// A `ReservedSlots` handle for allocating into the reserved range.
     ///
     /// # Usage
-    /// ```rust,ignore
+    /// ```text
     /// let mut reserved = arena_manager.reserve_slots(3)?;
     /// let first_slot = reserved.first_slot;
     ///

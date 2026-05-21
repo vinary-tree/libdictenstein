@@ -485,7 +485,7 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
     /// * `path` - Path to the trie file (must exist)
     ///
     /// # Example
-    /// ```rust,ignore
+    /// ```text
     /// // Open existing vocabulary with slot-level tracking
     /// let mut trie = PersistentARTrieChar::<u64>::open_with_slot_tracking("vocab.trie")?;
     ///
@@ -776,7 +776,7 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
     ///
     /// # Example
     ///
-    /// ```rust,ignore
+    /// ```text
     /// use libdictenstein::persistent_artrie_char::PersistentARTrieChar;
     ///
     /// let (trie, report) = PersistentARTrieChar::<()>::open_with_recovery("words.artc")?;
@@ -1030,7 +1030,7 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
     ///
     /// # Example
     ///
-    /// ```rust,ignore
+    /// ```text
     /// use libdictenstein::persistent_artrie_char::SharedCharARTrie;
     /// use libdictenstein::persistent_artrie::epoch::EpochConfig;
     ///
@@ -1129,7 +1129,7 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
     ///
     /// # Example
     ///
-    /// ```rust,ignore
+    /// ```text
     /// use libdictenstein::persistent_artrie_char::SharedCharARTrie;
     ///
     /// let mut recovery = SharedCharARTrie::<i64>::incremental_recovery("data.wal")?;

@@ -19,7 +19,7 @@ use parking_lot::Mutex;
 ///
 /// # Example
 ///
-/// ```rust,ignore
+/// ```text
 /// let handle = vocab.sync_to_disk_async()?;
 ///
 /// // Non-blocking check

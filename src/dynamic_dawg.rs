@@ -43,7 +43,7 @@ use std::sync::Arc;
 ///
 /// # Examples
 ///
-/// ```rust,ignore
+/// ```text
 /// // Without values (default)
 /// let mut dict = DynamicDawg::new();
 /// dict.insert("hello");
@@ -121,7 +121,7 @@ impl<V: DictionaryValue> DynamicDawg<V> {
     ///
     /// # Example
     ///
-    /// ```rust,ignore
+    /// ```text
     /// // Without values (default)
     /// let dawg: DynamicDawg<()> = DynamicDawg::new();
     /// dawg.insert("hello");
@@ -147,7 +147,7 @@ impl<V: DictionaryValue> DynamicDawg<V> {
     ///
     /// # Example
     ///
-    /// ```rust,ignore
+    /// ```text
     /// // Auto-minimize at 50% bloat (default)
     /// let dawg: DynamicDawg<()> = DynamicDawg::with_auto_minimize_threshold(1.5);
     ///
@@ -168,7 +168,7 @@ impl<V: DictionaryValue> DynamicDawg<V> {
     ///
     /// # Example
     ///
-    /// ```rust,ignore
+    /// ```text
     /// // With Bloom filter for 10000 expected terms
     /// let dawg: DynamicDawg<()> = DynamicDawg::with_config(f32::INFINITY, Some(10000));
     ///
@@ -220,7 +220,7 @@ impl<V: DictionaryValue> DynamicDawg<V> {
     ///
     /// # Example
     ///
-    /// ```rust,ignore
+    /// ```text
     /// let mut terms = vec!["apple", "banana", "cherry"];
     /// terms.sort();  // Already sorted
     /// let dawg: DynamicDawg<()> = DynamicDawg::from_sorted_terms(terms);
@@ -355,7 +355,7 @@ impl<V: DictionaryValue> DynamicDawg<V> {
     ///
     /// # Example
     ///
-    /// ```rust,ignore
+    /// ```text
     /// let dict: DynamicDawg<u32> = DynamicDawg::new();
     /// assert!(dict.insert_with_value("hello", 42));
     /// assert!(!dict.insert_with_value("hello", 43)); // Updates value
@@ -451,7 +451,7 @@ impl<V: DictionaryValue> DynamicDawg<V> {
     ///
     /// # Example
     ///
-    /// ```rust,ignore
+    /// ```text
     /// use std::collections::HashSet;
     /// let dict: DynamicDawg<HashSet<String>> = DynamicDawg::new();
     ///
@@ -564,7 +564,7 @@ impl<V: DictionaryValue> DynamicDawg<V> {
     ///
     /// # Example
     ///
-    /// ```rust,ignore
+    /// ```text
     /// let dict: DynamicDawg<String> = DynamicDawg::new();
     /// dict.insert_with_value("key", "value".to_string());
     /// assert_eq!(dict.get_value("key"), Some("value".to_string()));
@@ -657,7 +657,7 @@ impl<V: DictionaryValue> DynamicDawg<V> {
     /// This rebuilds the internal structure, merging equivalent suffixes
     /// and removing unreachable nodes. Ideal for batch operations:
     ///
-    /// ```rust,ignore
+    /// ```text
     /// // Batch updates
     /// dawg.insert("term1");
     /// dawg.insert("term2");
@@ -731,7 +731,7 @@ impl<V: DictionaryValue> DynamicDawg<V> {
     /// If the DAWG was minimal before updates, only the new paths and
     /// their neighbors need to be examined.
     ///
-    /// ```rust,ignore
+    /// ```text
     /// // DAWG is minimal
     /// dawg.minimize();
     ///
@@ -840,7 +840,7 @@ impl<V: DictionaryValue> DynamicDawg<V> {
     ///
     /// # Example
     ///
-    /// ```rust,ignore
+    /// ```text
     /// let dawg: DynamicDawg<()> = DynamicDawg::new();
     /// assert!(dawg.insert_bytes(&[0x10, 0x20, 0x30]));
     /// assert!(!dawg.insert_bytes(&[0x10, 0x20, 0x30])); // Duplicate
@@ -901,7 +901,7 @@ impl<V: DictionaryValue> DynamicDawg<V> {
     ///
     /// # Example
     ///
-    /// ```rust,ignore
+    /// ```text
     /// let dawg: DynamicDawg<u32> = DynamicDawg::new();
     /// assert!(dawg.insert_bytes_with_value(&[0x10, 0x20], 42));
     /// assert_eq!(dawg.get_bytes_value(&[0x10, 0x20]), Some(42));
@@ -970,7 +970,7 @@ impl<V: DictionaryValue> DynamicDawg<V> {
     ///
     /// # Example
     ///
-    /// ```rust,ignore
+    /// ```text
     /// let dawg: DynamicDawg<()> = DynamicDawg::new();
     /// dawg.insert_bytes(&[0x10, 0x20, 0x30]);
     /// assert!(dawg.contains_bytes(&[0x10, 0x20, 0x30]));
@@ -992,7 +992,7 @@ impl<V: DictionaryValue> DynamicDawg<V> {
     ///
     /// # Example
     ///
-    /// ```rust,ignore
+    /// ```text
     /// let dawg: DynamicDawg<String> = DynamicDawg::new();
     /// dawg.insert_bytes_with_value(&[0x10, 0x20], "value".to_string());
     /// assert_eq!(dawg.get_bytes_value(&[0x10, 0x20]), Some("value".to_string()));

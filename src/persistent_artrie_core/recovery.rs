@@ -18,7 +18,7 @@
 //!
 //! # Example
 //!
-//! ```rust,ignore
+//! ```text
 //! use libdictenstein::persistent_artrie::recovery::RecoveryManager;
 //!
 //! let recovery = RecoveryManager::new("data.wal")?;
@@ -1040,7 +1040,7 @@ where
 ///
 /// # Example
 ///
-/// ```rust,ignore
+/// ```text
 /// use libdictenstein::persistent_artrie::recovery::detect_corruption;
 ///
 /// match detect_corruption("data.part", true)? {
@@ -1267,7 +1267,7 @@ fn find_wal_segments_in_dir<P: AsRef<Path>>(dir: P) -> Vec<PathBuf> {
 ///
 /// # Example
 ///
-/// ```rust,ignore
+/// ```text
 /// use libdictenstein::persistent_artrie::recovery::collect_all_wal_segments;
 /// use std::path::Path;
 ///

@@ -39,7 +39,7 @@
 //!
 //! # Usage
 //!
-//! ```rust,ignore
+//! ```text
 //! use libdictenstein::persistent_artrie::PersistentARTrie;
 //!
 //! // Create a new persistent dictionary

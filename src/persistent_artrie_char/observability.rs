@@ -49,7 +49,7 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     /// - The next LSN to be assigned (starts at 1 for persistent tries)
     ///
     /// # Example
-    /// ```rust,ignore
+    /// ```text
     /// let mut trie = PersistentARTrieChar::<i32>::create("test.part")?;
     /// let before = trie.current_lsn();
     /// trie.upsert("key", 42)?;
@@ -76,7 +76,7 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     /// - `None` if WAL is disabled (in-memory trie) or no data has been synced yet
     ///
     /// # Example
-    /// ```rust,ignore
+    /// ```text
     /// let mut trie = PersistentARTrieChar::<i32>::create("test.part")?;
     /// trie.upsert("key", 42)?;
     /// trie.sync()?;  // Force durability
@@ -109,7 +109,7 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     ///
     /// # Example
     ///
-    /// ```rust,ignore
+    /// ```text
     /// use libdictenstein::persistent_artrie::group_commit::GroupCommitConfig;
     ///
     /// let mut trie = PersistentARTrieChar::<u64>::create("data.trie")?;
@@ -188,7 +188,7 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     /// * `Err(_)` - Failed to start monitor thread
     ///
     /// # Example
-    /// ```rust,ignore
+    /// ```text
     /// trie.enable_memory_monitor(
     ///     MemoryPressureConfig::default(),
     ///     |level, stats| {

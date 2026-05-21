@@ -47,7 +47,7 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     /// * `Err(_)` - Failed to initialize (e.g., directory creation failed)
     ///
     /// # Example
-    /// ```rust,ignore
+    /// ```text
     /// // Enable with custom thresholds
     /// let config = EpochConfig {
     ///     epoch_duration: Duration::from_millis(500),

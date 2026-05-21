@@ -33,7 +33,7 @@
 //!
 //! # Example
 //!
-//! ```rust,ignore
+//! ```text
 //! use libdictenstein::persistent_artrie::nodes::persistent_node::PersistentNode;
 //!
 //! let node = PersistentNode::new();

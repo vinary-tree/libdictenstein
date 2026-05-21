@@ -251,7 +251,7 @@ pub(super) fn resolve_child_for_mutation_with_bm<S: BlockStorage>(
 ///
 /// # Example
 ///
-/// ```rust,ignore
+/// ```text
 /// use libdictenstein::persistent_artrie::PersistentARTrie;
 ///
 /// let mut dict = PersistentARTrie::new();

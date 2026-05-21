@@ -69,7 +69,7 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     ///
     /// # Example
     ///
-    /// ```rust,ignore
+    /// ```text
     /// let entries = vec![
     ///     (&['日', '本', '語'][..], Some(1)),
     ///     (&['中', '文'][..], Some(2)),

@@ -41,7 +41,7 @@
 //!
 //! # Example
 //!
-//! ```rust,ignore
+//! ```text
 //! use libdictenstein::persistent_artrie_char::nodes::persistent_node::PersistentCharNode;
 //!
 //! let node = PersistentCharNode::new();

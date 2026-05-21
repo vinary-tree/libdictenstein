@@ -44,7 +44,7 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
     ///
     /// # Example
     ///
-    /// ```rust,ignore
+    /// ```text
     /// let mut trie = PersistentARTrie::<()>::create("trie.part")?;
     /// trie.enable_lockfree();
     /// trie.insert_cas(b"hello");  // Now works concurrently

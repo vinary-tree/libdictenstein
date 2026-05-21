@@ -53,7 +53,7 @@ use std::sync::Arc;
 ///
 /// # Examples
 ///
-/// ```rust,ignore
+/// ```text
 /// // Without values (default)
 /// let mut dict = DynamicDawgChar::new();
 /// dict.insert("hello");
@@ -125,7 +125,7 @@ impl<V: DictionaryValue> DynamicDawgChar<V> {
     ///
     /// # Example
     ///
-    /// ```rust,ignore
+    /// ```text
     /// // Without values (default)
     /// let dawg: DynamicDawgChar<()> = DynamicDawgChar::new();
     /// dawg.insert("hello");
@@ -151,7 +151,7 @@ impl<V: DictionaryValue> DynamicDawgChar<V> {
     ///
     /// # Example
     ///
-    /// ```rust,ignore
+    /// ```text
     /// // Auto-minimize at 50% bloat (default)
     /// let dawg: DynamicDawgChar<()> = DynamicDawgChar::with_auto_minimize_threshold(1.5);
     ///
@@ -172,7 +172,7 @@ impl<V: DictionaryValue> DynamicDawgChar<V> {
     ///
     /// # Example
     ///
-    /// ```rust,ignore
+    /// ```text
     /// // With Bloom filter for 10000 expected terms
     /// let dawg: DynamicDawgChar<()> = DynamicDawgChar::with_config(f32::INFINITY, Some(10000));
     ///
@@ -224,7 +224,7 @@ impl<V: DictionaryValue> DynamicDawgChar<V> {
     ///
     /// # Example
     ///
-    /// ```rust,ignore
+    /// ```text
     /// let mut terms = vec!["apple", "banana", "cherry"];
     /// terms.sort();  // Already sorted
     /// let dawg: DynamicDawgChar<()> = DynamicDawgChar::from_sorted_terms(terms);
@@ -359,7 +359,7 @@ impl<V: DictionaryValue> DynamicDawgChar<V> {
     ///
     /// # Example
     ///
-    /// ```rust,ignore
+    /// ```text
     /// let dict: DynamicDawgChar<u32> = DynamicDawgChar::new();
     /// assert!(dict.insert_with_value("hello", 42));
     /// assert!(!dict.insert_with_value("hello", 43)); // Updates value
@@ -457,7 +457,7 @@ impl<V: DictionaryValue> DynamicDawgChar<V> {
     ///
     /// # Example
     ///
-    /// ```rust,ignore
+    /// ```text
     /// use std::collections::HashSet;
     ///
     /// let dict: DynamicDawgChar<HashSet<u32>> = DynamicDawgChar::new();
@@ -563,7 +563,7 @@ impl<V: DictionaryValue> DynamicDawgChar<V> {
     ///
     /// # Example
     ///
-    /// ```rust,ignore
+    /// ```text
     /// let dict: DynamicDawgChar<String> = DynamicDawgChar::new();
     /// dict.insert_with_value("key", "value".to_string());
     /// assert_eq!(dict.get_value("key"), Some("value".to_string()));
@@ -656,7 +656,7 @@ impl<V: DictionaryValue> DynamicDawgChar<V> {
     /// This rebuilds the internal structure, merging equivalent suffixes
     /// and removing unreachable nodes. Ideal for batch operations:
     ///
-    /// ```rust,ignore
+    /// ```text
     /// // Batch updates
     /// dawg.insert("term1");
     /// dawg.insert("term2");
@@ -729,7 +729,7 @@ impl<V: DictionaryValue> DynamicDawgChar<V> {
     /// If the DAWG was minimal before updates, only the new paths and
     /// their neighbors need to be examined.
     ///
-    /// ```rust,ignore
+    /// ```text
     /// // DAWG is minimal
     /// dawg.minimize();
     ///

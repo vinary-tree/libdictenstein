@@ -20,7 +20,7 @@ use super::{AsyncWalError, Lsn, SegmentSyncManager};
 ///
 /// # Example
 ///
-/// ```rust,ignore
+/// ```text
 /// let handle = wal.sync_async()?;
 ///
 /// // Non-blocking check

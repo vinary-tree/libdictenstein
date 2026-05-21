@@ -207,7 +207,7 @@ impl<Z: DictZipper> PrefixZipper for Z {}
 ///
 /// # Examples
 ///
-/// ```rust,ignore
+/// ```text
 /// use libdictenstein::prelude::*;
 /// use libdictenstein::prefix_zipper::PrefixZipper;
 ///

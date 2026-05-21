@@ -20,7 +20,7 @@
 ///
 /// # Example
 ///
-/// ```rust,ignore
+/// ```text
 /// // Byte-level dictionary (existing behavior)
 /// let dict_bytes: DoubleArrayTrie = DoubleArrayTrie::from_terms(vec!["café"]);
 ///

@@ -175,7 +175,7 @@ impl<V: DictionaryValue> DawgNodeU64<V> {
 ///
 /// # Examples
 ///
-/// ```rust,ignore
+/// ```text
 /// use std::thread;
 /// use std::sync::Arc;
 ///
@@ -260,7 +260,7 @@ impl<V: DictionaryValue> DynamicDawgU64<V> {
     ///
     /// # Example
     ///
-    /// ```rust,ignore
+    /// ```text
     /// let dawg: DynamicDawgU64<()> = DynamicDawgU64::new();
     /// dawg.insert_sequence(&[1, 2, 3]);
     /// ```

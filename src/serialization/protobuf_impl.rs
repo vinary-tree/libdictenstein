@@ -219,7 +219,7 @@ impl DictionarySerializer for ProtobufSerializer {
 ///
 /// # Example
 ///
-/// ```rust,ignore
+/// ```text
 /// use liblevenshtein::prelude::*;
 ///
 /// let dict = PathMapDictionary::from_terms(vec!["test", "testing"]);

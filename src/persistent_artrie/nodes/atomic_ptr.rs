@@ -21,7 +21,7 @@
 //!
 //! # Usage
 //!
-//! ```rust,ignore
+//! ```text
 //! use std::sync::Arc;
 //! use libdictenstein::persistent_artrie::nodes::atomic_ptr::AtomicNodePtr;
 //! use libdictenstein::persistent_artrie::nodes::persistent_node::PersistentNode;

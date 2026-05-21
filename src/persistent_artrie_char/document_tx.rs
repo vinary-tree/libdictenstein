@@ -165,7 +165,7 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     ///
     /// # Example
     ///
-    /// ```rust,ignore
+    /// ```text
     /// let mut tx = trie.begin_document("file1")?;
     /// trie.tx_increment(&mut tx, "the|quick", 100);
     /// trie.tx_increment(&mut tx, "the|quick", 50);  // Accumulates: will add 150

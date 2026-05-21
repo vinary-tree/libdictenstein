@@ -9,7 +9,7 @@
 //!
 //! # Usage
 //!
-//! ```rust,ignore
+//! ```text
 //! use crate::sync_compat::RwLock;
 //!
 //! let lock = RwLock::new(42);

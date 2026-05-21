@@ -53,7 +53,7 @@
 //!
 //! # Usage
 //!
-//! ```rust,ignore
+//! ```text
 //! use libdictenstein::persistent_vocab_artrie::concurrent::ConcurrentVocabARTrie;
 //!
 //! // Create with lock-free mode (recommended)
@@ -164,7 +164,7 @@ impl ConcurrentVocabARTrie {
     ///
     /// # Example
     ///
-    /// ```rust,ignore
+    /// ```text
     /// let vocab = PersistentVocabARTrie::create("vocab.vocab")?;
     /// let concurrent = ConcurrentVocabARTrie::new_lockfree(vocab);
     ///

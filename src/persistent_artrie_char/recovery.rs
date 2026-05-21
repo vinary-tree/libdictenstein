@@ -17,7 +17,7 @@
 //!
 //! # Example
 //!
-//! ```rust,ignore
+//! ```text
 //! use libdictenstein::persistent_artrie_char::recovery::{
 //!     RecoveryManager, RecoveryPolicy, detect_corruption
 //! };

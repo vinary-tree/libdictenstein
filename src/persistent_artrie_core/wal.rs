@@ -30,7 +30,7 @@
 //!
 //! # Example
 //!
-//! ```rust,ignore
+//! ```text
 //! use libdictenstein::persistent_artrie::wal::{Wal, WalRecord, WalRecordType};
 //!
 //! let mut wal = Wal::create("data.wal")?;

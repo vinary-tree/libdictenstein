@@ -48,7 +48,7 @@ pub(super) enum IterState {
 ///
 /// # Example
 ///
-/// ```rust,ignore
+/// ```text
 /// use libdictenstein::persistent_artrie::PersistentARTrie;
 ///
 /// let mut dict = PersistentARTrie::new();

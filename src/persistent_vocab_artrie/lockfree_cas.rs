@@ -68,7 +68,7 @@ impl super::dict_impl::PersistentVocabARTrie {
     ///
     /// # Example
     ///
-    /// ```rust,ignore
+    /// ```text
     /// use std::sync::Arc;
     /// use std::thread;
     ///

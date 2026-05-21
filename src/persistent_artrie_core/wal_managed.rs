@@ -19,7 +19,7 @@
 //!
 //! # Example
 //!
-//! ```rust,ignore
+//! ```text
 //! use libdictenstein::persistent_artrie::wal_managed::WalManaged;
 //!
 //! // Any type implementing WalManaged gets these methods for free

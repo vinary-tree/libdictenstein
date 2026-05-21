@@ -801,7 +801,7 @@ impl<V: DictionaryValue> SuffixAutomatonChar<V> {
     ///
     /// # Example
     ///
-    /// ```rust,ignore
+    /// ```text
     /// use std::collections::HashSet;
     /// use libdictenstein::suffix_automaton_char::SuffixAutomatonChar;
     ///
@@ -942,7 +942,7 @@ impl<V: DictionaryValue> SuffixAutomatonChar<V> {
     ///
     /// # Examples
     ///
-    /// ```rust,ignore
+    /// ```text
     /// use libdictenstein::suffix_automaton_char::SuffixAutomatonChar;
     ///
     /// let mut dict = SuffixAutomatonChar::<u32>::new();

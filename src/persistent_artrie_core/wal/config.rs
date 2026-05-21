@@ -18,7 +18,7 @@ use std::path::PathBuf;
 ///
 /// # Example
 ///
-/// ```rust,ignore
+/// ```text
 /// let config = WalConfig {
 ///     archive_enabled: true,
 ///     archive_dir: PathBuf::from("./wal_archive"),

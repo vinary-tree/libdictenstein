@@ -27,7 +27,7 @@ use crate::value::DictionaryValue;
 ///
 /// # Usage
 ///
-/// ```rust,ignore
+/// ```text
 /// use libdictenstein::persistent_artrie::{SharedARTrie, SharedARTrieParallelExt};
 ///
 /// let trie1: SharedARTrie<u32> = /* ... */;

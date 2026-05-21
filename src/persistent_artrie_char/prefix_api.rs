@@ -60,7 +60,7 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     ///
     /// # Example
     ///
-    /// ```rust,ignore
+    /// ```text
     /// let trie = PersistentARTrieChar::open("data.artrie")?;
     /// if let Some(terms) = trie.iter_prefix_with_arena("app")? {
     ///     // Group by arena for I/O-efficient processing
@@ -102,7 +102,7 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     ///
     /// # Example
     ///
-    /// ```rust,ignore
+    /// ```text
     /// let trie = PersistentARTrieChar::<i64>::open("data.artrie")?;
     /// if let Some(terms) = trie.iter_prefix_with_values_and_arena("")? {
     ///     // Group by arena for I/O-efficient merge processing

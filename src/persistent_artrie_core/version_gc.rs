@@ -44,7 +44,7 @@
 //!
 //! # Usage
 //!
-//! ```rust,ignore
+//! ```text
 //! let registry = VersionGcRegistry::new(GcConfig::default());
 //!
 //! // Track a reader for a version

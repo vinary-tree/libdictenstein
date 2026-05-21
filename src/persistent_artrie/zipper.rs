@@ -40,7 +40,7 @@ use crate::zipper::{DictZipper, ValuedDictZipper};
 ///
 /// # Examples
 ///
-/// ```rust,ignore
+/// ```text
 /// use libdictenstein::DictZipper;
 /// use libdictenstein::persistent_artrie::PersistentARTrie;
 /// use libdictenstein::persistent_artrie::zipper::PersistentARTrieZipper;
@@ -80,7 +80,7 @@ impl<V: DictionaryValue> PersistentARTrieZipper<V> {
     ///
     /// # Examples
     ///
-    /// ```rust,ignore
+    /// ```text
     /// use libdictenstein::persistent_artrie::{PersistentARTrie, SharedARTrie};
     /// use libdictenstein::persistent_artrie::zipper::PersistentARTrieZipper;
     /// use std::sync::Arc;

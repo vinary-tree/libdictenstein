@@ -35,7 +35,7 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     ///
     /// # Example
     ///
-    /// ```rust,ignore
+    /// ```text
     /// let mut trie = PersistentARTrieChar::<()>::create("trie.artc")?;
     /// trie.enable_lockfree();
     /// trie.insert_cas("hello");  // Now works concurrently
@@ -74,7 +74,7 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     ///
     /// # Example
     ///
-    /// ```rust,ignore
+    /// ```text
     /// let mut trie = PersistentARTrieChar::<()>::create("trie.artc")?;
     /// trie.enable_lockfree();
     ///

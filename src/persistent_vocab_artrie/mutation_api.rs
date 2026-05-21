@@ -94,7 +94,7 @@ impl<S: BlockStorage> super::dict_impl::PersistentVocabARTrie<S> {
     ///
     /// # Example
     ///
-    /// ```rust,ignore
+    /// ```text
     /// let mut vocab = PersistentVocabARTrie::create("vocab.vocab")?;
     /// let indices = vocab.insert_batch(&["apple", "banana", "cherry"]);
     /// assert_eq!(indices, vec![0, 1, 2]);
