@@ -211,152 +211,18 @@ mod _suffix_node_char_legacy {
 ///
 /// This is wrapped in Arc<RwLock<...>> to provide thread-safe concurrent access
 /// with dynamic mutation support.
-#[derive(Debug)]
-#[cfg_attr(
-    feature = "serialization",
-    derive(serde::Serialize, serde::Deserialize)
-)]
-#[cfg_attr(
-    all(feature = "serialization", not(feature = "persistent-artrie")),
-    serde(bound(serialize = "V: serde::Serialize")),
-    serde(bound(deserialize = "V: serde::Deserialize<'de>"))
-)]
-#[cfg_attr(
-    all(feature = "serialization", feature = "persistent-artrie"),
-    serde(bound = "")
-)]
-pub(crate) struct SuffixAutomatonCharInner<V: DictionaryValue = ()> {
-    /// Node storage (index-based graph).
-    ///
-    /// State 0 is always the root. States are added sequentially during
-    /// construction, resulting in dense index space.
-    pub(crate) nodes: Vec<SuffixNodeChar<V>>,
+// C3 algorithmic dedup (char variant): mirror of the byte path.
+// Local `SuffixAutomatonCharInner<V>` struct + 2-method impl block
+// replaced with a type alias to the generic
+// `crate::suffix_automaton_core::SuffixAutomatonInner<char, V>`. The
+// canonical impl carries `new()` + `extend(unit: char)`.
+pub(crate) type SuffixAutomatonCharInner<V = ()> =
+    crate::suffix_automaton_core::SuffixAutomatonInner<char, V>;
 
-    /// Current state during online construction.
-    ///
-    /// Points to the last state added. New characters extend from here.
-    /// Reset to 0 (root) when starting a new string in generalized automaton.
-    last_state: usize,
-
-    /// Total number of indexed strings.
-    string_count: usize,
-
-    /// Original source texts for serialization.
-    ///
-    /// Stored to enable proper deserialization since the automaton
-    /// cannot be reconstructed from the graph structure alone.
-    source_texts: Vec<String>,
-
-    /// Position metadata: maps state IDs to (string_id, end_position).
-    ///
-    /// When a query matches at a final state, this map provides context
-    /// about where the substring appears in the original texts.
-    positions: HashMap<usize, Vec<(usize, usize)>>,
-
-    /// Flag indicating compaction is recommended.
-    ///
-    /// Set to true when strings are removed, creating potentially unreachable
-    /// states. Compaction performs garbage collection.
-    needs_compaction: bool,
-}
-
-impl<V: DictionaryValue> SuffixAutomatonCharInner<V> {
-    /// Create an empty suffix automaton with root state.
-    fn new() -> Self {
-        Self {
-            nodes: vec![SuffixNodeChar::root()],
-            last_state: 0,
-            string_count: 0,
-            source_texts: Vec::new(),
-            positions: HashMap::new(),
-            needs_compaction: false,
-        }
-    }
-
-    /// Extend the automaton with one character (online construction).
-    ///
-    /// This implements the algorithm from Blumer et al. (1985).
-    ///
-    /// # Complexity
-    ///
-    /// - Time: O(1) amortized per character
-    /// - Space: Adds 1 state, possibly 1 clone
-    ///
-    /// # Algorithm Overview
-    ///
-    /// 1. Create new state for current character
-    /// 2. Walk suffix links backward, adding transitions
-    /// 3. Handle equivalence class splitting if necessary
-    /// 4. Update last_state pointer
-    ///
-    /// # Note on is_final
-    ///
-    /// Unlike prefix tries where only complete words are final, in a suffix
-    /// automaton EVERY state (except root) represents a valid substring.
-    /// We mark all states as final to work with Transducer's matching logic.
-    fn extend(&mut self, ch: char) {
-        let cur = self.nodes.len();
-        let mut new_node = SuffixNodeChar::new(self.nodes[self.last_state].max_length + 1);
-        // Mark as final since every reachable state is a valid substring
-        new_node.is_final = true;
-        self.nodes.push(new_node);
-
-        // Walk suffix links backward, adding transitions to new state
-        let mut p = Some(self.last_state);
-        while let Some(p_idx) = p {
-            if self.nodes[p_idx].find_edge(ch).is_some() {
-                break;
-            }
-            self.nodes[p_idx].add_edge(ch, cur);
-            p = self.nodes[p_idx].suffix_link;
-        }
-
-        if let Some(p_idx) = p {
-            // Invariant: the suffix-link walk above exits only when
-            // `find_edge(ch).is_some()`, so the edge for `ch` at `p_idx`
-            // exists by construction.
-            let q = self.nodes[p_idx]
-                .find_edge(ch)
-                .expect("suffix-link walk exited with a known edge for ch at p_idx");
-
-            if self.nodes[p_idx].max_length + 1 == self.nodes[q].max_length {
-                // Continuous transition - no split needed
-                self.nodes[cur].suffix_link = Some(q);
-            } else {
-                // Split equivalence class by cloning state q
-                let clone = self.nodes.len();
-                let mut cloned_node = self.nodes[q].clone();
-                cloned_node.max_length = self.nodes[p_idx].max_length + 1;
-                cloned_node.is_final = true; // Cloned states are also valid substrings
-                self.nodes.push(cloned_node);
-
-                // Update suffix links
-                self.nodes[cur].suffix_link = Some(clone);
-                self.nodes[q].suffix_link = Some(clone);
-
-                // Redirect transitions from states along suffix link path
-                let mut p2 = Some(p_idx);
-                while let Some(p2_idx) = p2 {
-                    if let Some(target) = self.nodes[p2_idx].find_edge(ch) {
-                        if target == q {
-                            self.nodes[p2_idx].update_edge(ch, clone);
-                            p2 = self.nodes[p2_idx].suffix_link;
-                        } else {
-                            break;
-                        }
-                    } else {
-                        break;
-                    }
-                }
-            }
-        } else {
-            // Reached root without finding transition - simple case
-            self.nodes[cur].suffix_link = Some(0);
-        }
-
-        self.last_state = cur;
-    }
-}
+// The original `fn extend(&mut self, ch: char) {...}` body (~60 LOC)
+// lived here. It now lives on the canonical generic impl at
+// `crate::suffix_automaton_core::SuffixAutomatonInner::extend` (for
+// `U = char` it resolves to the byte-identical implementation).
 
 /// Suffix automaton for approximate substring matching.
 ///

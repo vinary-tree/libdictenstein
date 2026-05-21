@@ -17,6 +17,8 @@
 //! `docs/benchmarks/c3-suffix-automaton-core-handoff.md` for the full
 //! generification plan.
 
+pub mod inner;
 pub mod node;
 
+pub use inner::SuffixAutomatonInner;
 pub use node::SuffixNode;
