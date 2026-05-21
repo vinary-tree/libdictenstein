@@ -55,6 +55,7 @@ pub mod dawg_core;
 pub mod node_signature;
 pub mod sync_compat;
 
+pub mod dat_core;
 pub mod difference_zipper;
 pub mod double_array_trie;
 pub mod double_array_trie_char;
