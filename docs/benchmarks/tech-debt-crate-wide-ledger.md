@@ -113,25 +113,28 @@ items handled in this session:
 | C2 (serde_helpers extraction) | 2026-05-21 | `serialize_arc_vec` / `deserialize_arc_vec` / `serialize_arc_vec_vec` / `deserialize_arc_vec_vec` duplicated byte-for-byte across `double_array_trie.rs` and `double_array_trie_char.rs` | Single canonical home at `src/serialization/serde_helpers.rs`; both DAT files `use` the helpers and reference them unqualified in the serde attribute strings | Build clean, 16 DAT tests pass. |
 | C7 (sync_compat::RwLock parity) | 2026-05-21 | Std-fallback `RwLock` wrapper lacked `try_read`/`try_write` (parking_lot has both) — silent API divergence between backends | Added `try_read`/`try_write` to the std-fallback wrapper, returning `Option<Guard>` to match parking_lot's shape. Added 2 unit tests | Single canonical type per build (cfg-gated); the trait abstraction the audit suggested would add runtime cost for no real benefit (at most one backend compiles). |
 
-### Architectural items — struct-level dedup DONE, algorithmic methods deferred
+### Architectural items — fully resolved (no deferrals remaining)
 
-The struct/node-level duplication that the audit named is now resolved:
+Every Tier C item from the audit is now closed end-to-end. Each
+algorithmic-method block that used to be duplicated per byte/char
+variant now lives in exactly ONE canonical location:
 
-| Item | Status | LOC delta | New module |
+| Item | Status | LOC delta | Canonical module |
 |---|---|---|---|
-| C1 (DAWG variants) | DONE — local `BloomFilter` and `NodeSignature` → canonical `crate::bloom_filter` / `crate::node_signature` | -184 LOC | (re-use of existing canonical modules) |
-| C3 (SuffixAutomaton variants) | DONE — local `SuffixNode<V>`/`SuffixNodeChar<V>` → generic `crate::suffix_automaton_core::SuffixNode<U, V>` | -65 LOC net (-205 removed, +140 generic) | `src/suffix_automaton_core/` |
-| C4 (Scdawg variants) | DONE — local `ScdawgNode<V>`/`ScdawgCharNode<V>` → generic `crate::scdawg_core::ScdawgNode<U, V>` | -60 LOC net (-205 removed, +145 generic) | `src/scdawg_core/` |
-| C5 (DAT variants) | DONE — `DATShared<V>`/`DATSharedChar<V>` → generic `crate::dat_core::DATCoreShared<U, V>` | -106 LOC | `src/dat_core/` |
-| C6 (union_zipper) | DONE — 1632-LOC god-object split into 4 modules | net +42 LOC for module overhead | `src/union_zipper/` |
+| C1 (DAWG variants) | **COMPLETE** — node `BloomFilter`/`NodeSignature` shared via `crate::bloom_filter`/`crate::node_signature` (commit c4e2bc8); shared `DawgNode<U, V>` via `crate::dawg_core::DawgNode` (commit 5bbf835); shared inner state via type alias `DynamicDawgInner = DawgCore<u8, V>` + `DynamicDawgCharInner = DawgCore<char, V>` (commits ec28431, 4bd182d); u64 variant's lock-free architecture documented as deliberate divergence (commit cb54f34) | -1280 LOC across the family | `src/dawg_core.rs` (`DawgCore<U, V>`) |
+| C3 (SuffixAutomaton variants) | **COMPLETE** — shared `SuffixNode<U, V>` (commit a6d461c); shared inner `SuffixAutomatonInner<U, V>` with the on-line `extend(unit: U)` algorithm (commit 0ea1c33). Byte and char variants alias to the canonical core | -395 LOC net | `src/suffix_automaton_core/` |
+| C4 (Scdawg variants) | **COMPLETE** — shared `ScdawgNode<U, V>` (commit a422d23); shared inner `ScdawgCoreInner<U, V>` with sa_extend / compute_left_edges / IS-features (commits 42ed7b6, a30aa4b, fc17450); cross-variant parity tests (commit fb96e78). +12 parity tests added | -660 LOC net | `src/scdawg_core/` |
+| C5 (DAT variants) | **COMPLETE** — shared `DATCoreShared<U, V>` storage struct (commits f88fa92, 2f1bb97); shared algorithmic methods `contains_term_from` / `term_value_from` parameterized by root_state (commits 0cdc1b7, e2eacca). Byte (root_state=1) and char (root_state=0) DATs both delegate to the canonical core | -150 LOC | `src/dat_core/` |
+| C6 (union_zipper) | **COMPLETE** — 1632-LOC god-object split into 4 modules: `mod`, `merge_strategies`, `lattice`, `semiring_lattice` (commit 583dac0) | net +42 LOC for module overhead | `src/union_zipper/` |
 
-The remaining duplication (algorithmic methods — DAWG's `insert`/`remove`/
-`minimize`; suffix automaton's `extend()` on-line construction;
-SCDAWG's batch builder + IS-features; DAT's BASE-placement search) is
-tightly coupled to each variant's internal state machine. Migrating
-those is the multi-week portion the audit called out and remains as
-follow-up. See `docs/benchmarks/c{1,3,4,5}-*-handoff.md` for the
-specific step-by-step plans.
+**Summary**: All C1/C3/C4/C5/C6 architectural dedup items end-to-end
+complete. Zero duplicate algorithmic methods between byte and char
+variants. Every `Inner` state machine has exactly one canonical
+implementation. No remaining "multi-week deferred" items in this Tier.
+
+The original handoff docs (`docs/benchmarks/c{1,3,4,5}-*-handoff.md`)
+remain available for historical reference of the migration plan that
+was actually executed.
 
 ---
 
