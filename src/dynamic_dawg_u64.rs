@@ -4,6 +4,34 @@
 //! concurrent access. Reads are wait-free (no blocking, no retries), and
 //! writes use CAS (compare-and-swap) loops for lock-free progress guarantees.
 //!
+//! # Architectural divergence from `DawgCore<U, V>`
+//!
+//! Unlike [`DynamicDawg<V>`](crate::dynamic_dawg::DynamicDawg) and
+//! [`DynamicDawgChar<V>`](crate::dynamic_dawg_char::DynamicDawgChar) — both
+//! of which (as of C1a/C1b in 2026-05-21) alias their inner state to the
+//! shared generic [`DawgCore<U, V>`](crate::dawg_core::DawgCore) —
+//! `DynamicDawgU64<V>` deliberately does NOT unify with `DawgCore`. The
+//! divergence is fundamental, not cosmetic:
+//!
+//! - **Node storage**: `DawgCore<U, V>` uses
+//!   `Vec<DawgNode<U, V>>` indexed by `usize` slot, mutated under an
+//!   outer `Arc<RwLock<…>>`. `DynamicDawgU64<V>` uses
+//!   `Vec<Arc<DawgNodeU64<V>>>` with per-node `ArcSwap<EdgeList<V>>` for
+//!   lock-free copy-on-write edge mutation.
+//! - **Concurrency model**: `DawgCore` is reader-writer-locked (one writer
+//!   blocks all readers). `DynamicDawgU64` is fully lock-free for reads
+//!   and uses CAS retries for writes.
+//! - **Memory cost**: `DynamicDawgU64`'s `Arc`-per-node and atomic-pointer-
+//!   per-edge-list cost ~2-3x the per-node footprint of `DawgCore`. The
+//!   trade-off is wait-free reads, which `DawgCore` cannot offer.
+//!
+//! Unifying the two would require extending `DawgCore` with an edge-storage
+//! trait that abstracts over `Vec`-of-nodes vs `Arc`-swappable-edges. This
+//! is genuinely a 1-2 week refactor of `DawgCore` itself; see
+//! `docs/benchmarks/c1-dawg-core-handoff.md` for the design. Until that
+//! extension lands, `DynamicDawgU64<V>` keeps its own algorithmic
+//! implementation by design.
+//!
 //! Unlike the byte-level `DynamicDawg` (u8 edges) or character-level
 //! `DynamicDawgChar` (char/u32 edges), this variant uses 64-bit labels (u64),
 //! enabling:
