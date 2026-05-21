@@ -11,12 +11,15 @@
 //! exposes a single generic [`ScdawgNode<U, V>`] (and its impl) so the
 //! variants share the node-shape and node-API entirely.
 //!
-//! The larger [`ScdawgInner<V>`] (each variant's mutable state plus the
-//! batch-construction algorithm and the IS-features find /
-//! match_positions / count_substring) stays per-variant for now — see
-//! `docs/benchmarks/c4-scdawg-core-handoff.md` for the full
-//! generification plan.
+//! The larger [`ScdawgCoreInner<U, V>`] hosts the on-line construction
+//! state machine (Blumer et al. 1987's `sa_extend`), the post-pass
+//! `compute_left_edges`, and the IS-features (`find_substring_fast`,
+//! `contains_substring`, `find_exact_substring`, `frequency`,
+//! `count_occurrences`). Both byte and char SCDAWG variants alias to it
+//! after the C4a/C4b/C4c migration.
 
+pub mod inner;
 pub mod node;
 
+pub use inner::ScdawgCoreInner;
 pub use node::{ScdawgNode, NIL};
