@@ -46,12 +46,14 @@ impl<V: DictionaryValue + serde::Serialize + serde::de::DeserializeOwned, S: Blo
                 if bytes.len() == 8 {
                     i64::from_le_bytes(bytes.try_into().expect("expected 8 bytes"))
                 } else {
-                    crate::serialization::bincode_compat::deserialize::<i64>(&bytes).map_err(|e| {
-                        PersistentARTrieError::internal(format!(
-                            "Value cannot be interpreted as i64: {}",
-                            e
-                        ))
-                    })?
+                    crate::serialization::bincode_compat::deserialize::<i64>(&bytes).map_err(
+                        |e| {
+                            PersistentARTrieError::internal(format!(
+                                "Value cannot be interpreted as i64: {}",
+                                e
+                            ))
+                        },
+                    )?
                 }
             }
             None => 0,
@@ -61,9 +63,10 @@ impl<V: DictionaryValue + serde::Serialize + serde::de::DeserializeOwned, S: Blo
 
         let value_bytes = crate::serialization::bincode_compat::serialize(&new_value)
             .map_err(|e| PersistentARTrieError::internal(format!("Serialization error: {}", e)))?;
-        let v: V = crate::serialization::bincode_compat::deserialize(&value_bytes).map_err(|e| {
-            PersistentARTrieError::internal(format!("Cannot create value from i64: {}", e))
-        })?;
+        let v: V =
+            crate::serialization::bincode_compat::deserialize(&value_bytes).map_err(|e| {
+                PersistentARTrieError::internal(format!("Cannot create value from i64: {}", e))
+            })?;
 
         self.remove_impl_core(term);
         self.insert_impl_core(term, Some(v));
@@ -183,7 +186,9 @@ impl<V: DictionaryValue + serde::Serialize + serde::de::DeserializeOwned, S: Blo
             _ => false,
         };
 
-        let expected_bytes = expected.as_ref().and_then(|e| crate::serialization::bincode_compat::serialize(e).ok());
+        let expected_bytes = expected
+            .as_ref()
+            .and_then(|e| crate::serialization::bincode_compat::serialize(e).ok());
         let new_value_bytes = crate::serialization::bincode_compat::serialize(&new_value)
             .map_err(|e| PersistentARTrieError::internal(format!("Serialization error: {}", e)))?;
 

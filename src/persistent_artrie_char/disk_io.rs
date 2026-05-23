@@ -205,9 +205,11 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
             let value_start = offset + 4;
             let value_end = value_start + value_len;
             let value_bytes = &node_data[value_start..value_end];
-            Some(crate::serialization::bincode_compat::deserialize(value_bytes).map_err(|e| {
-                PersistentARTrieError::internal(&format!("Failed to deserialize value: {}", e))
-            })?)
+            Some(
+                crate::serialization::bincode_compat::deserialize(value_bytes).map_err(|e| {
+                    PersistentARTrieError::internal(&format!("Failed to deserialize value: {}", e))
+                })?,
+            )
         } else {
             None
         };
@@ -310,9 +312,11 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
             let value_start = offset + 4;
             let value_end = value_start + value_len;
             let value_bytes = &node_data[value_start..value_end];
-            Some(crate::serialization::bincode_compat::deserialize(value_bytes).map_err(|e| {
-                PersistentARTrieError::internal(&format!("Failed to deserialize value: {}", e))
-            })?)
+            Some(
+                crate::serialization::bincode_compat::deserialize(value_bytes).map_err(|e| {
+                    PersistentARTrieError::internal(&format!("Failed to deserialize value: {}", e))
+                })?,
+            )
         } else {
             None
         };
@@ -402,9 +406,11 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
             let value_start = offset + 4;
             let value_end = value_start + value_len;
             let value_bytes = &node_data[value_start..value_end];
-            Some(crate::serialization::bincode_compat::deserialize(value_bytes).map_err(|e| {
-                PersistentARTrieError::internal(&format!("Failed to deserialize value: {}", e))
-            })?)
+            Some(
+                crate::serialization::bincode_compat::deserialize(value_bytes).map_err(|e| {
+                    PersistentARTrieError::internal(&format!("Failed to deserialize value: {}", e))
+                })?,
+            )
         } else {
             None
         };

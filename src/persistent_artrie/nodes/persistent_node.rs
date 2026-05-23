@@ -474,7 +474,10 @@ impl Clone for PersistentNode {
     }
 }
 
-// Safety: PersistentNode uses atomic operations for all mutable state
+// SAFETY: PersistentNode is shared through Arc in the lock-free overlay. The
+// key/child/prefix collections are path-copy data and are never mutated through
+// shared references after a node is published. The remaining mutable fields are
+// atomics, and child publication uses SwizzledPtr's atomic raw value.
 unsafe impl Send for PersistentNode {}
 unsafe impl Sync for PersistentNode {}
 

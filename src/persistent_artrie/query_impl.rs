@@ -160,9 +160,9 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
                 if remaining.is_empty() {
                     if *is_final {
                         // Deserialize value from stored bytes
-                        return value
-                            .as_ref()
-                            .and_then(|bytes| crate::serialization::bincode_compat::deserialize(bytes).ok());
+                        return value.as_ref().and_then(|bytes| {
+                            crate::serialization::bincode_compat::deserialize(bytes).ok()
+                        });
                     }
                     return None;
                 }

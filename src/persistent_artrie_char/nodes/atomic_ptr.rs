@@ -1,20 +1,22 @@
-//! Atomic Node Pointer for Lock-Free CAS Operations
+//! Thread-safe node pointer for CAS-style operations
 //!
 //! This module provides `AtomicNodePtr`, a wrapper around `Arc<PersistentCharNode>`
-//! that enables atomic compare-and-swap operations. This is the core primitive
-//! for lock-free trie modifications.
+//! that exposes compare-and-swap-style operations for concurrent trie
+//! modifications.
 //!
 //! # Design
 //!
-//! The pointer stores an `Arc<PersistentCharNode>` as a raw u64 address in an `AtomicU64`.
-//! This allows atomic CAS operations to swap between different node versions.
+//! The pointer stores an `Arc<PersistentCharNode>` behind a small lock. Earlier
+//! versions stored raw `Arc` pointers in an atomic integer, but that is not
+//! sound without an epoch/hazard-pointer scheme because `load()` can race with
+//! replacement and attempt to increment a freed allocation.
 //!
 //! # Memory Safety
 //!
-//! - When loading, we increment the Arc's reference count before returning
-//! - When CAS succeeds, the old Arc is decremented (via the expected value)
-//! - When CAS fails, the new Arc we tried to insert is decremented
-//! - The epoch-based reclamation system protects against ABA problems
+//! - `load()` clones the current `Arc` while the slot is locked
+//! - `compare_exchange()` swaps only when the stored `Arc` is pointer-equal to
+//!   the expected `Arc`
+//! - rejected replacements are dropped normally
 //!
 //! # Usage
 //!
@@ -39,38 +41,34 @@
 //! }
 //! ```
 
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 use super::persistent_node::PersistentCharNode;
 
-/// Null pointer sentinel value (0 is never a valid Arc address)
+/// Null pointer sentinel value used by `as_raw` for diagnostics/tests.
 const NULL_PTR: u64 = 0;
 
-/// An atomic pointer to a persistent character node.
+/// A CAS-style pointer to a persistent character node.
 ///
-/// This wrapper enables lock-free compare-and-swap operations on
-/// `Arc<PersistentCharNode>` pointers. It's the core building block
-/// for lock-free trie modifications.
+/// This wrapper enables thread-safe compare-and-swap-style operations on
+/// `Arc<PersistentCharNode>` pointers.
 ///
 /// # Thread Safety
 ///
-/// All operations are atomic and safe to call from multiple threads.
-/// The `compare_exchange` method provides the lock-free CAS semantic
-/// needed for concurrent updates.
+/// All operations are safe to call from multiple threads. The
+/// `compare_exchange` method provides CAS-style success/failure semantics while
+/// keeping `Arc` ownership inside Rust's safe memory model.
 ///
 /// # Memory Management
 ///
 /// The struct carefully manages Arc reference counts:
-/// - `load()` increments refcount before returning
-/// - `compare_exchange()` decrements refcount of replaced value on success
-/// - `compare_exchange()` decrements refcount of rejected new value on failure
-/// - `Drop` decrements refcount of the stored pointer
+/// - `load()` clones the stored `Arc`
+/// - `compare_exchange()` returns a clone of the replaced or actual node
+/// - replaced/rejected nodes are dropped by normal `Arc` ownership
 #[derive(Debug)]
 pub struct AtomicNodePtr {
-    /// The raw pointer stored as u64 for atomic operations
-    /// 0 = null, otherwise = Arc<PersistentCharNode> raw pointer
-    ptr: AtomicU64,
+    /// The current node slot.
+    ptr: RwLock<Option<Arc<PersistentCharNode>>>,
 }
 
 impl AtomicNodePtr {
@@ -78,23 +76,25 @@ impl AtomicNodePtr {
     ///
     /// The Arc's reference count is NOT incremented - ownership is transferred.
     pub fn new(node: Arc<PersistentCharNode>) -> Self {
-        let raw = Arc::into_raw(node) as u64;
         Self {
-            ptr: AtomicU64::new(raw),
+            ptr: RwLock::new(Some(node)),
         }
     }
 
     /// Create a null atomic pointer.
     pub fn null() -> Self {
         Self {
-            ptr: AtomicU64::new(NULL_PTR),
+            ptr: RwLock::new(None),
         }
     }
 
     /// Check if the pointer is null.
     #[inline]
     pub fn is_null(&self) -> bool {
-        self.ptr.load(Ordering::Acquire) == NULL_PTR
+        self.ptr
+            .read()
+            .expect("AtomicNodePtr read lock poisoned")
+            .is_none()
     }
 
     /// Load the current node pointer.
@@ -107,18 +107,10 @@ impl AtomicNodePtr {
     /// - `Some(Arc<PersistentCharNode>)` if the pointer is not null
     /// - `None` if the pointer is null
     pub fn load(&self) -> Option<Arc<PersistentCharNode>> {
-        let raw = self.ptr.load(Ordering::Acquire);
-        if raw == NULL_PTR {
-            return None;
-        }
-
-        // Safety: We're incrementing the refcount before creating a new Arc
-        // to ensure the pointer remains valid.
-        unsafe {
-            let ptr = raw as *const PersistentCharNode;
-            Arc::increment_strong_count(ptr);
-            Some(Arc::from_raw(ptr))
-        }
+        self.ptr
+            .read()
+            .expect("AtomicNodePtr read lock poisoned")
+            .clone()
     }
 
     /// Load the current node, panicking if null.
@@ -143,15 +135,7 @@ impl AtomicNodePtr {
     ///
     /// * `node` - The new node to store (ownership is transferred)
     pub fn store(&self, node: Arc<PersistentCharNode>) {
-        let new_raw = Arc::into_raw(node) as u64;
-        let old_raw = self.ptr.swap(new_raw, Ordering::AcqRel);
-
-        // Decrement refcount of old pointer
-        if old_raw != NULL_PTR {
-            unsafe {
-                Arc::decrement_strong_count(old_raw as *const PersistentCharNode);
-            }
-        }
+        *self.ptr.write().expect("AtomicNodePtr write lock poisoned") = Some(node);
     }
 
     /// Store null, returning the old value.
@@ -162,18 +146,15 @@ impl AtomicNodePtr {
     ///
     /// The previous node if it was not null.
     pub fn take(&self) -> Option<Arc<PersistentCharNode>> {
-        let old_raw = self.ptr.swap(NULL_PTR, Ordering::AcqRel);
-        if old_raw == NULL_PTR {
-            None
-        } else {
-            // We're taking ownership of the Arc (no refcount change needed)
-            unsafe { Some(Arc::from_raw(old_raw as *const PersistentCharNode)) }
-        }
+        self.ptr
+            .write()
+            .expect("AtomicNodePtr write lock poisoned")
+            .take()
     }
 
     /// Atomically compare and exchange the node pointer.
     ///
-    /// This is the core operation for lock-free updates. If the current
+    /// This is the core operation for CAS-style updates. If the current
     /// pointer equals `expected`, it's replaced with `new`. Otherwise,
     /// the operation fails and returns the actual current value.
     ///
@@ -189,7 +170,8 @@ impl AtomicNodePtr {
     ///
     /// # Memory Management
     ///
-    /// - On success: `expected`'s Arc is NOT decremented (caller still owns it)
+    /// - On success: the pointer slot owns `new` and the returned `old` Arc is
+    ///   a normal owned clone of the replaced node
     /// - On success: `new`'s Arc ownership is transferred to the pointer
     /// - On failure: `new`'s Arc is decremented (rejected)
     /// - On failure: Returns a new Arc to `actual` (with incremented refcount)
@@ -198,34 +180,16 @@ impl AtomicNodePtr {
         expected: &Arc<PersistentCharNode>,
         new: Arc<PersistentCharNode>,
     ) -> Result<Arc<PersistentCharNode>, Arc<PersistentCharNode>> {
-        let expected_raw = Arc::as_ptr(expected) as u64;
-        let new_raw = Arc::into_raw(new) as u64;
+        let mut guard = self.ptr.write().expect("AtomicNodePtr write lock poisoned");
 
-        match self
-            .ptr
-            .compare_exchange(expected_raw, new_raw, Ordering::AcqRel, Ordering::Acquire)
-        {
-            Ok(_) => {
-                // CAS succeeded - return clone of expected (caller keeps their Arc)
-                Ok(expected.clone())
+        match guard.as_ref() {
+            Some(current) if Arc::ptr_eq(current, expected) => {
+                let old = Arc::clone(current);
+                *guard = Some(new);
+                Ok(old)
             }
-            Err(actual_raw) => {
-                // CAS failed - decrement refcount of the rejected new Arc
-                unsafe {
-                    Arc::decrement_strong_count(new_raw as *const PersistentCharNode);
-                }
-
-                // Return the actual current value (increment refcount first)
-                if actual_raw == NULL_PTR {
-                    // This shouldn't happen in normal use, but handle it
-                    Err(Arc::new(PersistentCharNode::new()))
-                } else {
-                    unsafe {
-                        Arc::increment_strong_count(actual_raw as *const PersistentCharNode);
-                        Err(Arc::from_raw(actual_raw as *const PersistentCharNode))
-                    }
-                }
-            }
+            Some(current) => Err(Arc::clone(current)),
+            None => Err(Arc::new(PersistentCharNode::new())),
         }
     }
 
@@ -239,32 +203,7 @@ impl AtomicNodePtr {
         expected: &Arc<PersistentCharNode>,
         new: Arc<PersistentCharNode>,
     ) -> Result<Arc<PersistentCharNode>, Arc<PersistentCharNode>> {
-        let expected_raw = Arc::as_ptr(expected) as u64;
-        let new_raw = Arc::into_raw(new) as u64;
-
-        match self.ptr.compare_exchange_weak(
-            expected_raw,
-            new_raw,
-            Ordering::AcqRel,
-            Ordering::Acquire,
-        ) {
-            Ok(_) => Ok(expected.clone()),
-            Err(actual_raw) => {
-                // CAS failed - decrement refcount of the rejected new Arc
-                unsafe {
-                    Arc::decrement_strong_count(new_raw as *const PersistentCharNode);
-                }
-
-                if actual_raw == NULL_PTR {
-                    Err(Arc::new(PersistentCharNode::new()))
-                } else {
-                    unsafe {
-                        Arc::increment_strong_count(actual_raw as *const PersistentCharNode);
-                        Err(Arc::from_raw(actual_raw as *const PersistentCharNode))
-                    }
-                }
-            }
-        }
+        self.compare_exchange(expected, new)
     }
 
     /// Try to set a null pointer to a new value.
@@ -280,44 +219,25 @@ impl AtomicNodePtr {
     /// - `Ok(())` if the pointer was null and is now set to `new`
     /// - `Err(actual)` if the pointer was not null
     pub fn try_init(&self, new: Arc<PersistentCharNode>) -> Result<(), Arc<PersistentCharNode>> {
-        let new_raw = Arc::into_raw(new) as u64;
+        let mut guard = self.ptr.write().expect("AtomicNodePtr write lock poisoned");
 
-        match self
-            .ptr
-            .compare_exchange(NULL_PTR, new_raw, Ordering::AcqRel, Ordering::Acquire)
-        {
-            Ok(_) => Ok(()),
-            Err(actual_raw) => {
-                // CAS failed - decrement refcount of the rejected new Arc
-                unsafe {
-                    Arc::decrement_strong_count(new_raw as *const PersistentCharNode);
-                }
-
-                // Return the actual current value
-                unsafe {
-                    Arc::increment_strong_count(actual_raw as *const PersistentCharNode);
-                    Err(Arc::from_raw(actual_raw as *const PersistentCharNode))
-                }
-            }
+        if guard.is_none() {
+            *guard = Some(new);
+            Ok(())
+        } else {
+            Err(Arc::clone(guard.as_ref().expect("non-null guard")))
         }
     }
 
     /// Get the raw pointer value (for debugging/testing).
     #[inline]
     pub fn as_raw(&self) -> u64 {
-        self.ptr.load(Ordering::Acquire)
-    }
-}
-
-impl Drop for AtomicNodePtr {
-    fn drop(&mut self) {
-        let raw = self.ptr.load(Ordering::Acquire);
-        if raw != NULL_PTR {
-            // Decrement the refcount by reconstructing and dropping the Arc
-            unsafe {
-                drop(Arc::from_raw(raw as *const PersistentCharNode));
-            }
-        }
+        self.ptr
+            .read()
+            .expect("AtomicNodePtr read lock poisoned")
+            .as_ref()
+            .map(|node| Arc::as_ptr(node) as u64)
+            .unwrap_or(NULL_PTR)
     }
 }
 
@@ -335,10 +255,6 @@ impl Default for AtomicNodePtr {
         Self::null()
     }
 }
-
-// Safety: AtomicNodePtr uses only atomic operations
-unsafe impl Send for AtomicNodePtr {}
-unsafe impl Sync for AtomicNodePtr {}
 
 #[cfg(test)]
 mod tests {

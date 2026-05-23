@@ -120,6 +120,12 @@ Proof.
   apply in_seq. lia.
 Qed.
 
+Lemma enumerate_bytes_length : length enumerate_bytes = 256.
+Proof.
+  unfold enumerate_bytes, byte_of_nat_option.
+  vm_compute. reflexivity.
+Qed.
+
 (** ** Key Type *)
 
 Definition Key := list Byte.
@@ -411,4 +417,102 @@ Proof.
     apply IH in H. subst. reflexivity.
   - injection H as Hb Hk. subst.
     rewrite Nat.compare_refl. apply IH. reflexivity.
+Qed.
+
+Lemma key_compare_cons_same : forall b k1 k2,
+  key_compare (b :: k1) (b :: k2) = key_compare k1 k2.
+Proof.
+  intros b k1 k2. simpl.
+  rewrite Nat.compare_refl. reflexivity.
+Qed.
+
+Lemma key_compare_gt_flip_lt : forall k1 k2,
+  key_compare k1 k2 = Gt ->
+  key_compare k2 k1 = Lt.
+Proof.
+  induction k1 as [| b1 k1' IH]; intros [| b2 k2'] Hcmp; simpl in *;
+    try discriminate; try reflexivity.
+  destruct (Nat.compare (byte_val b1) (byte_val b2)) eqn:Hb12;
+    try discriminate.
+  - apply IH in Hcmp.
+    destruct (Nat.compare (byte_val b2) (byte_val b1)) eqn:Hb21;
+      try reflexivity.
+    + exact Hcmp.
+    + apply Nat.compare_eq_iff in Hb12.
+      apply Nat.compare_gt_iff in Hb21.
+      lia.
+  - apply Nat.compare_gt_iff in Hb12.
+    destruct (Nat.compare (byte_val b2) (byte_val b1)) eqn:Hb21;
+      try reflexivity.
+    + apply Nat.compare_eq_iff in Hb21. lia.
+    + apply Nat.compare_gt_iff in Hb21. lia.
+Qed.
+
+Lemma key_compare_lt_flip_gt : forall k1 k2,
+  key_compare k1 k2 = Lt ->
+  key_compare k2 k1 = Gt.
+Proof.
+  induction k1 as [| b1 k1' IH]; intros [| b2 k2'] Hcmp; simpl in *;
+    try discriminate; try reflexivity.
+  destruct (Nat.compare (byte_val b1) (byte_val b2)) eqn:Hb12;
+    try discriminate.
+  - apply IH in Hcmp.
+    destruct (Nat.compare (byte_val b2) (byte_val b1)) eqn:Hb21;
+      try reflexivity.
+    + exact Hcmp.
+    + apply Nat.compare_eq_iff in Hb12.
+      apply Nat.compare_lt_iff in Hb21.
+      lia.
+  - apply Nat.compare_lt_iff in Hb12.
+    destruct (Nat.compare (byte_val b2) (byte_val b1)) eqn:Hb21;
+      try reflexivity.
+    + apply Nat.compare_eq_iff in Hb21. lia.
+    + apply Nat.compare_lt_iff in Hb21. lia.
+Qed.
+
+Lemma key_compare_gt_flip_le : forall k1 k2,
+  key_compare k1 k2 = Gt ->
+  key_compare k2 k1 <> Gt.
+Proof.
+  intros k1 k2 Hgt.
+  rewrite (key_compare_gt_flip_lt k1 k2 Hgt).
+  discriminate.
+Qed.
+
+Lemma key_compare_le_trans : forall k1 k2 k3,
+  key_compare k1 k2 <> Gt ->
+  key_compare k2 k3 <> Gt ->
+  key_compare k1 k3 <> Gt.
+Proof.
+  induction k1 as [| b1 k1' IH]; intros k2 k3 H12 H23.
+  - destruct k3; simpl; discriminate.
+  - destruct k2 as [| b2 k2']; simpl in H12; [contradiction|].
+    destruct k3 as [| b3 k3']; simpl in H23; [contradiction|].
+    simpl in *.
+    destruct (Nat.compare (byte_val b1) (byte_val b2)) eqn:Hb12;
+      simpl in H12; try contradiction.
+    + apply Nat.compare_eq_iff in Hb12.
+      destruct (Nat.compare (byte_val b2) (byte_val b3)) eqn:Hb23;
+        simpl in H23; try contradiction.
+      * apply Nat.compare_eq_iff in Hb23.
+        rewrite Hb12, Hb23, Nat.compare_refl.
+        eapply IH; eauto.
+      * apply Nat.compare_lt_iff in Hb23.
+        destruct (Nat.compare (byte_val b1) (byte_val b3)) eqn:Hb13;
+          try discriminate.
+        -- apply Nat.compare_eq_iff in Hb13. lia.
+        -- apply Nat.compare_gt_iff in Hb13. lia.
+    + apply Nat.compare_lt_iff in Hb12.
+      destruct (Nat.compare (byte_val b2) (byte_val b3)) eqn:Hb23;
+        simpl in H23; try contradiction.
+      * apply Nat.compare_eq_iff in Hb23.
+        destruct (Nat.compare (byte_val b1) (byte_val b3)) eqn:Hb13;
+          try discriminate.
+        -- apply Nat.compare_eq_iff in Hb13. lia.
+        -- apply Nat.compare_gt_iff in Hb13. lia.
+      * apply Nat.compare_lt_iff in Hb23.
+        destruct (Nat.compare (byte_val b1) (byte_val b3)) eqn:Hb13;
+          try discriminate.
+        -- apply Nat.compare_eq_iff in Hb13. lia.
+        -- apply Nat.compare_gt_iff in Hb13. lia.
 Qed.

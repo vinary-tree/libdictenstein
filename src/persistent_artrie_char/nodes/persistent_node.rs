@@ -856,7 +856,10 @@ impl Clone for PersistentCharNode {
     }
 }
 
-// Safety: PersistentCharNode uses atomic operations for all mutable state
+// SAFETY: PersistentCharNode is shared through Arc in the lock-free overlay.
+// Child storage and prefixes are path-copy data and are never mutated through
+// shared references after publication. The remaining mutable fields are
+// atomics, and child publication uses SwizzledPtr's atomic raw value.
 unsafe impl Send for PersistentCharNode {}
 unsafe impl Sync for PersistentCharNode {}
 

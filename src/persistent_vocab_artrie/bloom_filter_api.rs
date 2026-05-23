@@ -51,13 +51,14 @@ impl<S: BlockStorage> super::dict_impl::PersistentVocabARTrie<S> {
         let data = std::fs::read(&bloom_path).map_err(|e| {
             PersistentARTrieError::io_error("read bloom filter", bloom_path.to_string_lossy(), e)
         })?;
-        let bloom: BloomFilter = crate::serialization::bincode_compat::deserialize(&data).map_err(|e| {
-            PersistentARTrieError::io_error(
-                "deserialize bloom filter",
-                bloom_path.to_string_lossy(),
-                std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()),
-            )
-        })?;
+        let bloom: BloomFilter =
+            crate::serialization::bincode_compat::deserialize(&data).map_err(|e| {
+                PersistentARTrieError::io_error(
+                    "deserialize bloom filter",
+                    bloom_path.to_string_lossy(),
+                    std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()),
+                )
+            })?;
         Ok(Some(bloom))
     }
 

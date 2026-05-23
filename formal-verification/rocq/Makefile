@@ -10,11 +10,11 @@ COQFLAGS = -Q . ARTrie
 DIRS = Spec Model Invariants Operations Proofs
 
 # Source files in dependency order
-SPEC_FILES = Spec/MapSpec.v Spec/ARTrieSpec.v
-MODEL_FILES = Model/Key.v Model/NodeTypes.v Model/Bucket.v Model/PathCompression.v Model/ArenaManager.v Model/SequentialSiblings.v Model/FileSystem.v
+SPEC_FILES = Spec/MapSpec.v Spec/ARTrieSpec.v Spec/ReplicatedMapSpec.v
+MODEL_FILES = Model/Key.v Model/NodeTypes.v Model/Bucket.v Model/HotStuff.v Model/PathCompression.v Model/ArenaManager.v Model/SequentialSiblings.v Model/FileSystem.v
 INVARIANT_FILES = Invariants/StructuralInvariants.v Invariants/TransitionInvariants.v Invariants/ArenaInvariants.v Invariants/SequentialSiblingsInvariants.v
 OPERATION_FILES = # Operations/Lookup.v Operations/Insert.v Operations/Delete.v
-PROOF_FILES = Proofs/MapRefinement.v Proofs/FileSystemSafety.v # Proofs/TransitionCorrectness.v
+PROOF_FILES = Proofs/MapRefinement.v Proofs/StructuralPreservation.v Proofs/ByzantineRecovery.v Proofs/CertifiedReference.v Proofs/HotStuffSafety.v Proofs/ProofCarryingExtraction.v Proofs/FileSystemSafety.v # Proofs/TransitionCorrectness.v
 
 # All source files
 VFILES = $(MODEL_FILES) $(SPEC_FILES) $(INVARIANT_FILES) $(OPERATION_FILES) $(PROOF_FILES)
@@ -59,18 +59,25 @@ show-order:
 	@echo "  1. Model/Key.v"
 	@echo "  2. Model/NodeTypes.v"
 	@echo "  3. Model/Bucket.v"
-	@echo "  4. Model/PathCompression.v"
-	@echo "  5. Model/ArenaManager.v"
-	@echo "  6. Model/SequentialSiblings.v"
-	@echo "  7. Model/FileSystem.v"
-	@echo "  8. Spec/MapSpec.v"
-	@echo "  9. Spec/ARTrieSpec.v"
-	@echo " 10. Invariants/StructuralInvariants.v"
-	@echo " 11. Invariants/TransitionInvariants.v"
-	@echo " 12. Invariants/ArenaInvariants.v"
-	@echo " 13. Invariants/SequentialSiblingsInvariants.v"
-	@echo " 14. Proofs/MapRefinement.v"
-	@echo " 15. Proofs/FileSystemSafety.v"
+	@echo "  4. Model/HotStuff.v"
+	@echo "  5. Model/PathCompression.v"
+	@echo "  6. Model/ArenaManager.v"
+	@echo "  7. Model/SequentialSiblings.v"
+	@echo "  8. Model/FileSystem.v"
+	@echo "  9. Spec/MapSpec.v"
+	@echo " 10. Spec/ARTrieSpec.v"
+	@echo " 11. Spec/ReplicatedMapSpec.v"
+	@echo " 12. Invariants/StructuralInvariants.v"
+	@echo " 13. Invariants/TransitionInvariants.v"
+	@echo " 14. Invariants/ArenaInvariants.v"
+	@echo " 15. Invariants/SequentialSiblingsInvariants.v"
+	@echo " 16. Proofs/MapRefinement.v"
+	@echo " 17. Proofs/StructuralPreservation.v"
+	@echo " 18. Proofs/ByzantineRecovery.v"
+	@echo " 19. Proofs/CertifiedReference.v"
+	@echo " 20. Proofs/HotStuffSafety.v"
+	@echo " 21. Proofs/ProofCarryingExtraction.v"
+	@echo " 22. Proofs/FileSystemSafety.v"
 
 # Check a single file
 check-%: %.v

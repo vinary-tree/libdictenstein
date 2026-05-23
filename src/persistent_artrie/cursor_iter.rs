@@ -82,13 +82,13 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
                             }
                         }
                         bucket.get_value(&entry).and_then(|value_bytes| {
-                            crate::serialization::bincode_compat::deserialize::<V>(value_bytes).ok().map(|value| {
-                                PrefixTermWithValueAndArena {
+                            crate::serialization::bincode_compat::deserialize::<V>(value_bytes)
+                                .ok()
+                                .map(|value| PrefixTermWithValueAndArena {
                                     term: suffix.to_vec(),
                                     value,
                                     arena_id: None,
-                                }
-                            })
+                                })
                         })
                     })
                     .collect();
@@ -200,7 +200,9 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
                         }
 
                         if let Some(value_bytes) = bucket.get_value(&entry) {
-                            if let Ok(value) = crate::serialization::bincode_compat::deserialize::<V>(value_bytes) {
+                            if let Ok(value) =
+                                crate::serialization::bincode_compat::deserialize::<V>(value_bytes)
+                            {
                                 terms.push(PrefixTermWithValueAndArena {
                                     term: full_term.into_vec(),
                                     value,
@@ -223,7 +225,9 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
                 if *is_final {
                     if let Some(value_bytes) = value {
                         // Deserialize the value from bytes
-                        if let Ok(v) = crate::serialization::bincode_compat::deserialize::<V>(value_bytes) {
+                        if let Ok(v) =
+                            crate::serialization::bincode_compat::deserialize::<V>(value_bytes)
+                        {
                             // Apply cursor filter using SIMD-accelerated comparison
                             if cursor.map_or(true, |c| bytes_gt(path.as_slice(), c))
                                 && terms.len() < limit

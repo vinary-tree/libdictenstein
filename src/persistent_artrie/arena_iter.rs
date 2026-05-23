@@ -256,7 +256,9 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
 
                         // Deserialize value from bucket
                         if let Some(value_bytes) = bucket.get_value(&entry) {
-                            if let Ok(value) = crate::serialization::bincode_compat::deserialize::<V>(value_bytes) {
+                            if let Ok(value) =
+                                crate::serialization::bincode_compat::deserialize::<V>(value_bytes)
+                            {
                                 terms.push(PrefixTermWithValueAndArena {
                                     term,
                                     value,
@@ -277,7 +279,9 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
                 if *is_final {
                     if let Some(value_bytes) = value {
                         // Deserialize the value from bytes
-                        if let Ok(v) = crate::serialization::bincode_compat::deserialize::<V>(value_bytes) {
+                        if let Ok(v) =
+                            crate::serialization::bincode_compat::deserialize::<V>(value_bytes)
+                        {
                             terms.push(PrefixTermWithValueAndArena {
                                 term: prefix.clone(),
                                 value: v,
@@ -508,7 +512,10 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
                         let suffix = bucket.get_suffix(&entry);
                         if suffix.starts_with(prefix) {
                             if let Some(value_bytes) = bucket.get_value(&entry) {
-                                if let Ok(value) = crate::serialization::bincode_compat::deserialize::<V>(value_bytes) {
+                                if let Ok(value) = crate::serialization::bincode_compat::deserialize::<
+                                    V,
+                                >(value_bytes)
+                                {
                                     terms.push(PrefixTermWithValueAndArena {
                                         term: suffix.to_vec(),
                                         value,

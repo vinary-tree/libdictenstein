@@ -48,12 +48,14 @@ impl<V: DictionaryValue + serde::Serialize + serde::de::DeserializeOwned, S: Blo
         let new_value = current + delta;
 
         // Create value from i64
-        let value_bytes = crate::serialization::bincode_compat::serialize(&new_value).map_err(|e| {
-            PersistentARTrieError::internal(format!("Failed to serialize new value: {}", e))
-        })?;
-        let v: V = crate::serialization::bincode_compat::deserialize(&value_bytes).map_err(|e| {
-            PersistentARTrieError::internal(format!("Failed to deserialize as V: {}", e))
-        })?;
+        let value_bytes =
+            crate::serialization::bincode_compat::serialize(&new_value).map_err(|e| {
+                PersistentARTrieError::internal(format!("Failed to serialize new value: {}", e))
+            })?;
+        let v: V =
+            crate::serialization::bincode_compat::deserialize(&value_bytes).map_err(|e| {
+                PersistentARTrieError::internal(format!("Failed to deserialize as V: {}", e))
+            })?;
 
         // Log to WAL first (routes through group commit if enabled)
         let record = WalRecord::Increment {
@@ -170,9 +172,10 @@ impl<V: DictionaryValue + serde::Serialize + serde::de::DeserializeOwned, S: Blo
                 .as_ref()
                 .map(|e| crate::serialization::bincode_compat::serialize(e).ok())
                 .flatten();
-            let new_value_bytes = crate::serialization::bincode_compat::serialize(&new_value).map_err(|e| {
-                PersistentARTrieError::internal(format!("Failed to serialize value: {}", e))
-            })?;
+            let new_value_bytes = crate::serialization::bincode_compat::serialize(&new_value)
+                .map_err(|e| {
+                    PersistentARTrieError::internal(format!("Failed to serialize value: {}", e))
+                })?;
             let record = WalRecord::CompareAndSwap {
                 term: term.as_bytes().to_vec(),
                 expected: expected_bytes,

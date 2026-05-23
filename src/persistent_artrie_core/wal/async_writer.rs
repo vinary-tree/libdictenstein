@@ -461,8 +461,23 @@ impl AsyncWalWriter {
     pub fn append(&self, record: WalRecord) -> Result<Lsn, AsyncWalError> {
         let writer = self.writer.lock().expect("WAL writer lock poisoned");
         let lsn = writer.append(record)?;
-        self.next_lsn.store(writer.current_lsn(), Ordering::Release);
+        self.next_lsn
+            .fetch_max(writer.current_lsn(), Ordering::AcqRel);
         Ok(lsn)
+    }
+
+    /// Append a record using an LSN that was reserved by `allocate_lsn`.
+    #[cfg(feature = "group-commit")]
+    pub(crate) fn append_with_lsn(
+        &self,
+        lsn: Lsn,
+        record: WalRecord,
+    ) -> Result<Lsn, AsyncWalError> {
+        let writer = self.writer.lock().expect("WAL writer lock poisoned");
+        let written_lsn = writer.append_with_lsn(lsn, record)?;
+        self.next_lsn
+            .fetch_max(writer.current_lsn(), Ordering::AcqRel);
+        Ok(written_lsn)
     }
 
     /// Append a batch of inserts as a single WAL record.
@@ -472,7 +487,8 @@ impl AsyncWalWriter {
     ) -> Result<Lsn, AsyncWalError> {
         let writer = self.writer.lock().expect("WAL writer lock poisoned");
         let lsn = writer.append_batch(entries)?;
-        self.next_lsn.store(writer.current_lsn(), Ordering::Release);
+        self.next_lsn
+            .fetch_max(writer.current_lsn(), Ordering::AcqRel);
         Ok(lsn)
     }
 

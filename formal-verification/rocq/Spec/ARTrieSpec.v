@@ -12,6 +12,7 @@
 Require Import Coq.Lists.List.
 Require Import Coq.Arith.Arith.
 Require Import Coq.Bool.Bool.
+Require Import Coq.Sorting.Sorted.
 Require Import Coq.micromega.Lia.
 Require Import ARTrie.Spec.MapSpec.
 Require Import ARTrie.Model.Key.
@@ -385,6 +386,338 @@ Proof.
   - apply kv_lookup_delete_other. exact Hneq.
 Qed.
 
+Definition kv_entry_le (e1 e2 : KeyValue) : Prop :=
+  key_compare (fst e1) (fst e2) <> Gt.
+
+Fixpoint kv_insert_ordered (entry : KeyValue) (entries : list KeyValue)
+  : list KeyValue :=
+  match entries with
+  | [] => [entry]
+  | current :: rest =>
+      match key_compare (fst entry) (fst current) with
+      | Lt => entry :: current :: rest
+      | Eq => entry :: rest
+      | Gt => current :: kv_insert_ordered entry rest
+      end
+  end.
+
+Definition kv_insert_normalized (entry : KeyValue) (entries : list KeyValue)
+  : list KeyValue :=
+  kv_insert_ordered entry (kv_delete entries (fst entry)).
+
+Definition kv_normalize (entries : list KeyValue) : list KeyValue :=
+  fold_right kv_insert_normalized [] entries.
+
+Lemma kv_lookup_insert_ordered_same : forall entries k v,
+  kv_lookup (kv_insert_ordered (k, v) entries) k = Some v.
+Proof.
+  induction entries as [| [k0 v0] rest IH]; intros k v; simpl.
+  - rewrite key_eqb_refl. reflexivity.
+  - destruct (key_compare k k0) eqn:Hcmp; simpl.
+    + rewrite key_eqb_refl. reflexivity.
+    + rewrite key_eqb_refl. reflexivity.
+    + destruct (key_eqb k0 k) eqn:Hsame.
+      * apply key_eqb_eq in Hsame. subst k0.
+        rewrite key_compare_refl in Hcmp. discriminate.
+      * apply IH.
+Qed.
+
+Lemma kv_lookup_insert_ordered_other : forall entries k v k',
+  k <> k' ->
+  kv_lookup (kv_insert_ordered (k, v) entries) k' = kv_lookup entries k'.
+Proof.
+  induction entries as [| [k0 v0] rest IH]; intros k v k' Hneq; simpl.
+  - destruct (key_eqb k k') eqn:Hsame.
+    + apply key_eqb_eq in Hsame. contradiction.
+    + reflexivity.
+  - destruct (key_compare k k0) eqn:Hcmp; simpl.
+    + apply key_compare_eq in Hcmp. subst k0.
+      destruct (key_eqb k k') eqn:Hsame.
+      * apply key_eqb_eq in Hsame. contradiction.
+      * reflexivity.
+    + destruct (key_eqb k k') eqn:Hsame.
+      * apply key_eqb_eq in Hsame. contradiction.
+      * reflexivity.
+    + destruct (key_eqb k0 k'); [reflexivity|].
+      apply IH. exact Hneq.
+Qed.
+
+Lemma kv_lookup_insert_normalized_same : forall entries k v,
+  kv_lookup (kv_insert_normalized (k, v) entries) k = Some v.
+Proof.
+  intros entries k v.
+  unfold kv_insert_normalized.
+  apply kv_lookup_insert_ordered_same.
+Qed.
+
+Lemma kv_lookup_insert_normalized_other : forall entries k v k',
+  k <> k' ->
+  kv_lookup (kv_insert_normalized (k, v) entries) k' = kv_lookup entries k'.
+Proof.
+  intros entries k v k' Hneq.
+  unfold kv_insert_normalized.
+  rewrite kv_lookup_insert_ordered_other by exact Hneq.
+  apply kv_lookup_delete_other. exact Hneq.
+Qed.
+
+Lemma kv_lookup_normalize : forall entries k,
+  kv_lookup (kv_normalize entries) k = kv_lookup entries k.
+Proof.
+  induction entries as [| [k0 v0] rest IH]; intros k; simpl.
+  - reflexivity.
+  - destruct (key_eqb k0 k) eqn:Hsame.
+    + apply key_eqb_eq in Hsame. subst k0.
+      rewrite kv_lookup_insert_normalized_same. reflexivity.
+    + rewrite kv_lookup_insert_normalized_other.
+      * rewrite IH. reflexivity.
+      * intro Heq. subst k. rewrite key_eqb_refl in Hsame. discriminate.
+Qed.
+
+Lemma kv_entry_le_trans : forall e1 e2 e3,
+  kv_entry_le e1 e2 ->
+  kv_entry_le e2 e3 ->
+  kv_entry_le e1 e3.
+Proof.
+  intros e1 e2 e3 H12 H23.
+  unfold kv_entry_le in *.
+  eapply key_compare_le_trans; eauto.
+Qed.
+
+Lemma kv_Forall_entry_le_trans : forall e1 e2 rest,
+  kv_entry_le e1 e2 ->
+  Forall (kv_entry_le e2) rest ->
+  Forall (kv_entry_le e1) rest.
+Proof.
+  intros e1 e2 rest He12 Hall.
+  induction Hall as [| e3 rest He23 _ IH].
+  - constructor.
+  - constructor.
+    + eapply kv_entry_le_trans; eauto.
+    + exact IH.
+Qed.
+
+Lemma kv_HdRel_key_eq_left : forall e1 e2 rest,
+  fst e1 = fst e2 ->
+  HdRel kv_entry_le e2 rest ->
+  HdRel kv_entry_le e1 rest.
+Proof.
+  intros e1 e2 [| x xs] Hkey Hhd; constructor.
+  inversion Hhd as [| ? ? Hle]; subst.
+  unfold kv_entry_le in *. simpl in *.
+  rewrite Hkey. exact Hle.
+Qed.
+
+Lemma kv_insert_ordered_hdrel : forall entry head rest,
+  kv_entry_le head entry ->
+  HdRel kv_entry_le head rest ->
+  HdRel kv_entry_le head (kv_insert_ordered entry rest).
+Proof.
+  intros entry head [| x xs] Hhead_entry Hhd; simpl.
+  - constructor. exact Hhead_entry.
+  - destruct (key_compare (fst entry) (fst x)); constructor.
+    + exact Hhead_entry.
+    + exact Hhead_entry.
+    + inversion Hhd as [| ? ? Hhead_x]; subst. exact Hhead_x.
+Qed.
+
+Lemma kv_insert_ordered_sorted : forall entries entry,
+  Sorted kv_entry_le entries ->
+  Sorted kv_entry_le (kv_insert_ordered entry entries).
+Proof.
+  intros entries entry Hsorted.
+  induction Hsorted as [| head rest Hsorted IH Hhd]; simpl.
+  - constructor; [constructor|constructor].
+  - destruct (key_compare (fst entry) (fst head)) eqn:Hcmp.
+    + apply key_compare_eq in Hcmp.
+      constructor.
+      * exact Hsorted.
+      * eapply kv_HdRel_key_eq_left; eauto.
+    + constructor.
+      * constructor; assumption.
+      * constructor. unfold kv_entry_le. rewrite Hcmp. discriminate.
+    + constructor.
+      * exact IH.
+      * apply kv_insert_ordered_hdrel.
+        -- unfold kv_entry_le. apply key_compare_gt_flip_le. exact Hcmp.
+        -- exact Hhd.
+Qed.
+
+Lemma kv_sorted_forall_tail : forall e rest,
+  Sorted kv_entry_le (e :: rest) ->
+  Forall (kv_entry_le e) rest.
+Proof.
+  intros e rest Hsorted.
+  remember (e :: rest) as entries eqn:Hentries.
+  revert e rest Hentries.
+  induction Hsorted as [| x xs Hsorted IH Hhd]; intros e rest Hentries.
+  - discriminate.
+  - injection Hentries as He Hrest. subst x xs.
+    destruct rest as [| y ys].
+    + constructor.
+    + inversion Hhd as [| ? ? Hey]; subst.
+      constructor; [exact Hey|].
+      specialize (IH y ys eq_refl) as Htail_forall.
+      eapply kv_Forall_entry_le_trans; eauto.
+Qed.
+
+Lemma kv_Forall_delete : forall P entries k,
+  Forall P entries ->
+  Forall P (kv_delete entries k).
+Proof.
+  intros P entries k Hall.
+  induction Hall as [| [k0 v0] rest Hp _ IH]; simpl.
+  - constructor.
+  - destruct (key_eqb k0 k); [exact IH|constructor; assumption].
+Qed.
+
+Lemma kv_HdRel_from_Forall : forall e rest,
+  Forall (kv_entry_le e) rest ->
+  HdRel kv_entry_le e rest.
+Proof.
+  intros e [| x xs] Hall; constructor.
+  inversion Hall as [| ? ? Hle]; subst. exact Hle.
+Qed.
+
+Lemma kv_delete_sorted : forall entries k,
+  Sorted kv_entry_le entries ->
+  Sorted kv_entry_le (kv_delete entries k).
+Proof.
+  intros entries k Hsorted.
+  induction Hsorted as [| head rest Hsorted IH Hhd].
+  - constructor.
+  - destruct head as [k0 v0]. simpl.
+    destruct (key_eqb k0 k) eqn:Hdelete.
+    + exact IH.
+    + constructor.
+      * exact IH.
+      * apply kv_HdRel_from_Forall.
+        apply kv_Forall_delete.
+        apply kv_sorted_forall_tail.
+        constructor; assumption.
+Qed.
+
+Lemma kv_delete_key_not_in : forall entries k,
+  ~ In k (map fst (kv_delete entries k)).
+Proof.
+  induction entries as [| [k0 v0] rest IH]; intros k; simpl.
+  - intro Hin. exact Hin.
+  - destruct (key_eqb k0 k) eqn:Hsame; simpl.
+    + apply IH.
+    + intro Hin. destruct Hin as [Hin | Hin].
+      * subst k0. rewrite key_eqb_refl in Hsame. discriminate.
+      * apply (IH k). exact Hin.
+Qed.
+
+Lemma kv_delete_keys_subset : forall entries k key,
+  In key (map fst (kv_delete entries k)) ->
+  In key (map fst entries).
+Proof.
+  induction entries as [| [k0 v0] rest IH]; intros k key Hin; simpl in *.
+  - contradiction.
+  - destruct (key_eqb k0 k) eqn:Hsame; simpl in Hin.
+    + right. apply IH with (k := k). exact Hin.
+    + destruct Hin as [Hin | Hin].
+      * left. exact Hin.
+      * right. apply IH with (k := k). exact Hin.
+Qed.
+
+Lemma kv_delete_nodup : forall entries k,
+  NoDup (map fst entries) ->
+  NoDup (map fst (kv_delete entries k)).
+Proof.
+  induction entries as [| [k0 v0] rest IH]; intros k Hnodup; simpl.
+  - constructor.
+  - inversion Hnodup as [| x xs Hnotin Htail]; subst.
+    destruct (key_eqb k0 k) eqn:Hsame; simpl.
+    + apply IH. exact Htail.
+    + constructor.
+      * intro Hin. apply Hnotin.
+        apply kv_delete_keys_subset with (k := k). exact Hin.
+      * apply IH. exact Htail.
+Qed.
+
+Lemma kv_insert_ordered_keys_cases : forall entries entry key,
+  In key (map fst (kv_insert_ordered entry entries)) ->
+  key = fst entry \/ In key (map fst entries).
+Proof.
+  induction entries as [| current rest IH]; intros entry key Hin; simpl in *.
+  - destruct Hin as [Hin | []]. left. symmetry. exact Hin.
+  - destruct (key_compare (fst entry) (fst current)); simpl in Hin.
+    + destruct Hin as [Hin | Hin].
+      * left. symmetry. exact Hin.
+      * right. right. exact Hin.
+    + destruct Hin as [Hin | Hin].
+      * left. symmetry. exact Hin.
+      * right. destruct Hin as [Hin | Hin].
+        -- left. exact Hin.
+        -- right. exact Hin.
+    + destruct Hin as [Hin | Hin].
+      * right. left. exact Hin.
+      * apply IH in Hin as [Hin | Hin].
+        -- left. exact Hin.
+        -- right. right. exact Hin.
+Qed.
+
+Lemma kv_insert_ordered_nodup : forall entries entry,
+  ~ In (fst entry) (map fst entries) ->
+  NoDup (map fst entries) ->
+  NoDup (map fst (kv_insert_ordered entry entries)).
+Proof.
+  induction entries as [| current rest IH]; intros entry Hnotin Hnodup; simpl.
+  - constructor; [intro H; inversion H|constructor].
+  - inversion Hnodup as [| x xs Hhead_notin Htail]; subst.
+    destruct (key_compare (fst entry) (fst current)) eqn:Hcmp; simpl.
+    + apply key_compare_eq in Hcmp. exfalso.
+      apply Hnotin. left. symmetry. exact Hcmp.
+    + constructor.
+      * exact Hnotin.
+      * constructor; assumption.
+    + constructor.
+      * intro Hin. apply kv_insert_ordered_keys_cases in Hin as [Hin | Hin].
+        -- apply Hnotin. left. exact Hin.
+        -- apply Hhead_notin. exact Hin.
+      * apply IH.
+        -- intro Hin. apply Hnotin. right. exact Hin.
+        -- exact Htail.
+Qed.
+
+Lemma kv_insert_normalized_sorted : forall entries entry,
+  Sorted kv_entry_le entries ->
+  Sorted kv_entry_le (kv_insert_normalized entry entries).
+Proof.
+  intros entries entry Hsorted.
+  unfold kv_insert_normalized.
+  apply kv_insert_ordered_sorted.
+  apply kv_delete_sorted. exact Hsorted.
+Qed.
+
+Lemma kv_insert_normalized_nodup : forall entries entry,
+  NoDup (map fst entries) ->
+  NoDup (map fst (kv_insert_normalized entry entries)).
+Proof.
+  intros entries entry Hnodup.
+  unfold kv_insert_normalized.
+  apply kv_insert_ordered_nodup.
+  - apply kv_delete_key_not_in.
+  - apply kv_delete_nodup. exact Hnodup.
+Qed.
+
+Lemma kv_normalize_sorted : forall entries,
+  Sorted kv_entry_le (kv_normalize entries).
+Proof.
+  induction entries as [| entry rest IH]; simpl.
+  - constructor.
+  - apply kv_insert_normalized_sorted. exact IH.
+Qed.
+
+Lemma kv_normalize_nodup : forall entries,
+  NoDup (map fst (kv_normalize entries)).
+Proof.
+  induction entries as [| entry rest IH]; simpl.
+  - constructor.
+  - apply kv_insert_normalized_nodup. exact IH.
+Qed.
+
 Fixpoint entries_of_keys (t : ARTrie) (keys : list Key) : list KeyValue :=
   match keys with
   | [] => []
@@ -412,6 +745,90 @@ Fixpoint bucket_entries_for (first : Byte) (entries : list KeyValue)
       then mkEntry suffix (Some v) :: bucket_entries_for first rest
       else bucket_entries_for first rest
   end.
+
+Definition canonical_entries_wf (entries : list KeyValue) : Prop :=
+  NoDup (map fst entries) /\ Sorted kv_entry_le entries.
+
+Lemma kv_normalize_canonical_entries_wf : forall entries,
+  canonical_entries_wf (kv_normalize entries).
+Proof.
+  intro entries.
+  split.
+  - apply kv_normalize_nodup.
+  - apply kv_normalize_sorted.
+Qed.
+
+Lemma bucket_entries_for_suffix_in_entries : forall entries first suffix,
+  In suffix (map entry_suffix (bucket_entries_for first entries)) ->
+  In (first :: suffix) (map fst entries).
+Proof.
+  induction entries as [| [[| b k] v] rest IH]; intros first suffix Hin; simpl in *.
+  - contradiction.
+  - apply IH in Hin. right. exact Hin.
+  - destruct (byte_eqb b first) eqn:Hbyte.
+    + simpl in Hin. destruct Hin as [Hin | Hin].
+      * apply byte_eqb_eq in Hbyte. subst b.
+        left. f_equal. exact Hin.
+      * right. apply IH. exact Hin.
+    + right. apply IH. exact Hin.
+Qed.
+
+Lemma bucket_entries_for_unique : forall entries first,
+  NoDup (map fst entries) ->
+  NoDup (map entry_suffix (bucket_entries_for first entries)).
+Proof.
+  induction entries as [| [[| b k] v] rest IH]; intros first Hnodup; simpl.
+  - constructor.
+  - inversion Hnodup as [| x xs Hnotin Htail]; subst.
+    apply IH. exact Htail.
+  - inversion Hnodup as [| x xs Hnotin Htail]; subst.
+    destruct (byte_eqb b first) eqn:Hbyte; simpl.
+    + constructor.
+      * intro Hin.
+        apply Hnotin.
+        apply bucket_entries_for_suffix_in_entries in Hin.
+        apply byte_eqb_eq in Hbyte. subst b.
+        exact Hin.
+      * apply IH. exact Htail.
+    + apply IH. exact Htail.
+Qed.
+
+Lemma bucket_entries_for_hdrel : forall first suffix value rest,
+  Forall (kv_entry_le (first :: suffix, value)) rest ->
+  HdRel entry_le (mkEntry suffix (Some value))
+    (bucket_entries_for first rest).
+Proof.
+  intros first suffix value rest Hall.
+  induction rest as [| [[| b k] v] rest IH]; simpl.
+  - constructor.
+  - inversion Hall as [| ? ? _ Hall_tail]; subst.
+    apply IH. exact Hall_tail.
+  - inversion Hall as [| ? ? Hle Hall_tail]; subst.
+    destruct (byte_eqb b first) eqn:Hbyte.
+    + apply byte_eqb_eq in Hbyte. subst b.
+      constructor.
+      unfold entry_le, kv_entry_le in *. simpl in *.
+      rewrite Nat.compare_refl in Hle. exact Hle.
+    + apply IH. exact Hall_tail.
+Qed.
+
+Lemma bucket_entries_for_sorted : forall entries first,
+  Sorted kv_entry_le entries ->
+  Sorted entry_le (bucket_entries_for first entries).
+Proof.
+  intros entries first Hsorted.
+  induction Hsorted as [| [[| b k] v] rest Hsorted IH Hhd]; simpl.
+  - constructor.
+  - exact IH.
+  - destruct (byte_eqb b first) eqn:Hbyte.
+    + apply byte_eqb_eq in Hbyte. subst b.
+      constructor.
+      * exact IH.
+      * apply bucket_entries_for_hdrel.
+        apply kv_sorted_forall_tail.
+        constructor; assumption.
+    + exact IH.
+Qed.
 
 Definition canonical_bucket (first : Byte) (entries : list KeyValue) : Bucket :=
   let bucket_entries := bucket_entries_for first entries in
@@ -509,6 +926,59 @@ Definition canonical_bucket_checked (first : Byte) (entries : list KeyValue)
   then Some (canonical_bucket first entries)
   else None.
 
+Lemma canonical_bucket_checked_wf : forall entries first b,
+  NoDup (map entry_suffix (bucket_entries_for first entries)) ->
+  canonical_bucket_checked first entries = Some b ->
+  wf_bucket b.
+Proof.
+  intros entries first b Huniq Hchecked.
+  unfold canonical_bucket_checked in Hchecked.
+  set (bucket_entries := bucket_entries_for first entries) in *.
+  destruct ((length bucket_entries <=? MAX_BUCKET_ENTRIES) &&
+            (bucket_size_for_entries bucket_entries <=?
+             BUCKET_PAGE_SIZE)) eqn:Hfit; [| discriminate].
+  apply andb_true_iff in Hfit.
+  destruct Hfit as [Hcount Hsize].
+  apply Nat.leb_le in Hcount.
+  apply Nat.leb_le in Hsize.
+  injection Hchecked as Hb. subst b.
+  unfold canonical_bucket.
+  fold bucket_entries.
+  set (size := bucket_size_for_entries bucket_entries).
+  change (wf_bucket (mkBucket bucket_entries size (BUCKET_PAGE_SIZE - size))).
+  unfold wf_bucket. split.
+  - unfold bucket_keys_unique. cbn. exact Huniq.
+  - split.
+    + unfold bucket_count_valid. cbn. exact Hcount.
+    + split.
+      * change (size <= BUCKET_PAGE_SIZE /\
+                BUCKET_PAGE_SIZE - size = BUCKET_PAGE_SIZE - size).
+        split.
+        -- unfold size, bucket_size_for_entries in Hsize. exact Hsize.
+        -- reflexivity.
+      * change (size = BUCKET_HEADER_SIZE + entries_space bucket_entries).
+        unfold size, bucket_size_for_entries. reflexivity.
+Qed.
+
+Lemma canonical_bucket_checked_wf_sorted : forall entries first b,
+  canonical_entries_wf entries ->
+  canonical_bucket_checked first entries = Some b ->
+  wf_sorted_bucket b.
+Proof.
+  intros entries first b [Huniq Hsorted] Hchecked.
+  split.
+  - eapply canonical_bucket_checked_wf.
+    + apply bucket_entries_for_unique. exact Huniq.
+    + exact Hchecked.
+  - unfold canonical_bucket_checked in Hchecked.
+    destruct ((length (bucket_entries_for first entries) <=? MAX_BUCKET_ENTRIES) &&
+              (bucket_size_for_entries (bucket_entries_for first entries) <=?
+               BUCKET_PAGE_SIZE)); [| discriminate].
+    injection Hchecked as Hb. subst b.
+    unfold bucket_sorted, canonical_bucket. simpl.
+    apply bucket_entries_for_sorted. exact Hsorted.
+Qed.
+
 Fixpoint canonical_buckets_fit_from (bytes : list Byte)
   (entries : list KeyValue) : bool :=
   match bytes with
@@ -531,7 +1001,7 @@ Definition canonical_buckets_checked (entries : list KeyValue)
     | None => None
     end.
 
-Definition build_canonical_trie_checked (entries : list KeyValue)
+Definition build_canonical_trie_checked_normalized (entries : list KeyValue)
   : option ARTrie :=
   match entries with
   | [] => Some empty_trie
@@ -546,6 +1016,10 @@ Definition build_canonical_trie_checked (entries : list KeyValue)
           (length entries))
       else None
   end.
+
+Definition build_canonical_trie_checked (entries : list KeyValue)
+  : option ARTrie :=
+  build_canonical_trie_checked_normalized (kv_normalize entries).
 
 Lemma canonical_bucket_checked_lookup : forall entries first b suffix,
   canonical_bucket_checked first entries = Some b ->
@@ -591,8 +1065,14 @@ Lemma checked_canonical_lookup_correct : forall entries t k,
 Proof.
   intros entries t k Hbuild.
   unfold build_canonical_trie_checked in Hbuild.
-  destruct entries as [| entry entries'].
+  remember (kv_normalize entries) as normalized eqn:Hnormalized.
+  assert (Hlookup_norm : forall key,
+    kv_lookup normalized key = kv_lookup entries key).
+  { intro key. subst normalized. apply kv_lookup_normalize. }
+  unfold build_canonical_trie_checked_normalized in Hbuild.
+  destruct normalized as [| entry entries'].
   - injection Hbuild as Ht. subst t.
+    rewrite <- Hlookup_norm.
     destruct k; reflexivity.
   - destruct (canonical_buckets_fit (entry :: entries')) eqn:Hfit;
       [| discriminate].
@@ -600,7 +1080,7 @@ Proof.
     destruct k as [| first suffix].
     + unfold trie_lookup. cbn.
       unfold lookup_aux, traverse_node, match_prefix. cbn.
-      reflexivity.
+      apply Hlookup_norm.
     + unfold trie_lookup. cbn.
       unfold lookup_aux, traverse_node, match_prefix. cbn.
       destruct first as [n Hn].
@@ -614,8 +1094,9 @@ Proof.
         (entry :: entries')) as [bucket |] eqn:Hbucket.
       * destruct (length suffix + 100) as [| fuel'] eqn:Hfuel; [lia | cbn].
         change (bucket_lookup bucket suffix =
-          kv_lookup (entry :: entries')
+          kv_lookup entries
             (exist (fun n => n < 256) n Hn :: suffix)).
+        rewrite <- Hlookup_norm.
         eapply canonical_bucket_checked_lookup. exact Hbucket.
       * exfalso.
         pose proof (canonical_buckets_fit_complete

@@ -179,6 +179,11 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
                 }
 
                 if let Some(ptr) = child_ptr.as_ptr::<PersistentNode>() {
+                    // SAFETY: lock-free child pointers are created from
+                    // Arc::into_raw in this module. Incrementing the strong
+                    // count before Arc::from_raw creates a temporary owned
+                    // Arc for traversal while leaving the published child
+                    // pointer valid for other readers.
                     let child = unsafe {
                         Arc::increment_strong_count(ptr);
                         Arc::from_raw(ptr)
@@ -291,6 +296,10 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
             }
 
             if let Some(ptr) = child_ptr.as_ptr::<PersistentNode>() {
+                // SAFETY: see build_path_recursive. The raw child pointer is
+                // an Arc allocation published by Arc::into_raw; bumping the
+                // strong count before from_raw keeps this traversal's Arc
+                // independent of the published pointer.
                 let child = unsafe {
                     Arc::increment_strong_count(ptr);
                     Arc::from_raw(ptr)
@@ -394,6 +403,10 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
                 continue;
             }
             if let Some(ptr) = child_ptr.as_ptr::<PersistentNode>() {
+                // SAFETY: lock-free child pointers are Arc allocations that
+                // remain published through SwizzledPtr raw values. The strong
+                // count is incremented before reconstructing this temporary
+                // Arc so collection owns a valid traversal reference.
                 let child = unsafe {
                     Arc::increment_strong_count(ptr);
                     Arc::from_raw(ptr)
@@ -438,6 +451,9 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
         }
 
         let ptr = child_ptr.as_ptr::<PersistentNode>()?;
+        // SAFETY: lock-free child pointers are Arc allocations published by
+        // Arc::into_raw in this module. Increment before from_raw so the
+        // returned Arc is an owned traversal reference.
         let child = unsafe {
             Arc::increment_strong_count(ptr);
             Arc::from_raw(ptr)

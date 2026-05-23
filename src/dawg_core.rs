@@ -583,7 +583,12 @@ impl<U: CharUnit, V: DictionaryValue> DawgCore<U, V> {
     }
 
     /// Check if two nodes are structurally equivalent.
-    pub(crate) fn nodes_structurally_equal(&self, idx1: usize, idx2: usize, node_mapping: &[usize]) -> bool {
+    pub(crate) fn nodes_structurally_equal(
+        &self,
+        idx1: usize,
+        idx2: usize,
+        node_mapping: &[usize],
+    ) -> bool {
         let node1 = &self.nodes[idx1];
         let node2 = &self.nodes[idx2];
 
@@ -701,7 +706,12 @@ impl<U: CharUnit, V: DictionaryValue> DawgCore<U, V> {
         terms
     }
 
-    pub(crate) fn dfs_collect(&self, node_idx: usize, current_term: &mut Vec<U>, terms: &mut Vec<Vec<U>>) {
+    pub(crate) fn dfs_collect(
+        &self,
+        node_idx: usize,
+        current_term: &mut Vec<U>,
+        terms: &mut Vec<Vec<U>>,
+    ) {
         let node = &self.nodes[node_idx];
 
         if node.is_final {

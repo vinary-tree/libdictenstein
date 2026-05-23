@@ -52,7 +52,9 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
                 .iter()
                 .map(|(term, value)| {
                     let term_bytes = term.as_bytes().to_vec();
-                    let value_bytes = value.as_ref().and_then(|v| crate::serialization::bincode_compat::serialize(v).ok());
+                    let value_bytes = value
+                        .as_ref()
+                        .and_then(|v| crate::serialization::bincode_compat::serialize(v).ok());
                     (term_bytes, value_bytes)
                 })
                 .collect();
@@ -85,7 +87,9 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
             let wal_entries: Vec<(Vec<u8>, Option<Vec<u8>>)> = entries
                 .iter()
                 .map(|(term, value)| {
-                    let value_bytes = value.as_ref().and_then(|v| crate::serialization::bincode_compat::serialize(v).ok());
+                    let value_bytes = value
+                        .as_ref()
+                        .and_then(|v| crate::serialization::bincode_compat::serialize(v).ok());
                     (term.to_vec(), value_bytes)
                 })
                 .collect();

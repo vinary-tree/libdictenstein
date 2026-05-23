@@ -17,7 +17,10 @@ use crate::CharUnit;
 /// This is wrapped in `Arc<RwLock<...>>` to provide thread-safe concurrent
 /// access with dynamic mutation support.
 #[derive(Debug)]
-#[cfg_attr(feature = "serialization", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(
+    feature = "serialization",
+    derive(serde::Serialize, serde::Deserialize)
+)]
 #[cfg_attr(
     all(feature = "serialization", not(feature = "persistent-artrie")),
     serde(bound(

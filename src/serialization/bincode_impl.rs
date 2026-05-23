@@ -40,7 +40,8 @@ impl BincodeSerializer {
     where
         R: Read,
     {
-        let texts: Vec<String> = crate::serialization::bincode_compat::deserialize_from(&mut reader)?;
+        let texts: Vec<String> =
+            crate::serialization::bincode_compat::deserialize_from(&mut reader)?;
         Ok(SuffixAutomaton::from_texts(texts))
     }
 
@@ -69,7 +70,8 @@ impl BincodeSerializer {
         D::Value: serde::de::DeserializeOwned,
         R: Read,
     {
-        let entries: Vec<(String, D::Value)> = crate::serialization::bincode_compat::deserialize_from(&mut reader)?;
+        let entries: Vec<(String, D::Value)> =
+            crate::serialization::bincode_compat::deserialize_from(&mut reader)?;
         Ok(D::from_terms_with_values(entries))
     }
 
@@ -111,7 +113,8 @@ impl DictionarySerializer for BincodeSerializer {
         D: DictionaryFromTerms,
         R: Read,
     {
-        let terms: Vec<String> = crate::serialization::bincode_compat::deserialize_from(&mut reader)?;
+        let terms: Vec<String> =
+            crate::serialization::bincode_compat::deserialize_from(&mut reader)?;
         Ok(D::from_terms(terms))
     }
 }

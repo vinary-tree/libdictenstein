@@ -613,21 +613,23 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
                 // Read current value from the persistent node
                 let current: i64 = if node.is_final() {
                     if let Some(v) = node.value.as_ref() {
-                        let bytes = crate::serialization::bincode_compat::serialize(v).map_err(|e| {
-                            PersistentARTrieError::internal(format!(
-                                "Failed to serialize value: {}",
-                                e
-                            ))
-                        })?;
+                        let bytes =
+                            crate::serialization::bincode_compat::serialize(v).map_err(|e| {
+                                PersistentARTrieError::internal(format!(
+                                    "Failed to serialize value: {}",
+                                    e
+                                ))
+                            })?;
                         if bytes.len() == 8 {
                             i64::from_le_bytes(bytes.try_into().expect("checked len == 8"))
                         } else {
-                            crate::serialization::bincode_compat::deserialize::<i64>(&bytes).map_err(|e| {
-                                PersistentARTrieError::internal(format!(
-                                    "Failed to deserialize as i64: {}",
-                                    e
-                                ))
-                            })?
+                            crate::serialization::bincode_compat::deserialize::<i64>(&bytes)
+                                .map_err(|e| {
+                                    PersistentARTrieError::internal(format!(
+                                        "Failed to deserialize as i64: {}",
+                                        e
+                                    ))
+                                })?
                         }
                     } else {
                         0
@@ -639,12 +641,20 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
                 let new_value = current + delta as i64;
 
                 // Serialize the new value back to V
-                let value_bytes = crate::serialization::bincode_compat::serialize(&new_value).map_err(|e| {
-                    PersistentARTrieError::internal(format!("Failed to serialize new value: {}", e))
-                })?;
-                let v: V = crate::serialization::bincode_compat::deserialize(&value_bytes).map_err(|e| {
-                    PersistentARTrieError::internal(format!("Failed to deserialize as V: {}", e))
-                })?;
+                let value_bytes = crate::serialization::bincode_compat::serialize(&new_value)
+                    .map_err(|e| {
+                        PersistentARTrieError::internal(format!(
+                            "Failed to serialize new value: {}",
+                            e
+                        ))
+                    })?;
+                let v: V = crate::serialization::bincode_compat::deserialize(&value_bytes)
+                    .map_err(|e| {
+                        PersistentARTrieError::internal(format!(
+                            "Failed to deserialize as V: {}",
+                            e
+                        ))
+                    })?;
 
                 // WAL record — the only point that needs UTF-8 encoding
                 let record = WalRecord::Increment {

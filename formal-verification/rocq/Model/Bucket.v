@@ -100,6 +100,13 @@ Definition wf_bucket (b : Bucket) : Prop :=
   bucket_space_valid b /\
   bucket_data_size_valid b.
 
+(** Sorted well-formed buckets are the representation contract used by the
+    production binary-search path. The legacy [wf_bucket] predicate is kept
+    as the space/accounting contract so existing refinement proofs remain
+    stable while sortedness obligations are made explicit. *)
+Definition wf_sorted_bucket (b : Bucket) : Prop :=
+  wf_bucket b /\ bucket_sorted b.
+
 (** ** Empty Bucket *)
 
 Definition empty_bucket : Bucket :=
@@ -115,6 +122,24 @@ Proof.
     + unfold bucket_space_valid, BUCKET_PAGE_SIZE, BUCKET_HEADER_SIZE. simpl.
       split; [apply Nat.leb_le; vm_compute; reflexivity|reflexivity].
     + unfold bucket_data_size_valid, BUCKET_HEADER_SIZE. simpl. reflexivity.
+Qed.
+
+Lemma empty_bucket_sorted : bucket_sorted empty_bucket.
+Proof.
+  unfold bucket_sorted, empty_bucket. simpl. constructor.
+Qed.
+
+Lemma empty_bucket_wf_sorted : wf_sorted_bucket empty_bucket.
+Proof.
+  split.
+  - apply empty_bucket_wf.
+  - apply empty_bucket_sorted.
+Qed.
+
+Lemma wf_sorted_bucket_wf : forall b,
+  wf_sorted_bucket b -> wf_bucket b.
+Proof.
+  intros b [Hwf _]. exact Hwf.
 Qed.
 
 (** ** Binary Search *)
@@ -139,8 +164,20 @@ Fixpoint binary_search_aux (entries : list BucketEntry) (suffix : Key)
       else lo
   end.
 
+Fixpoint binary_search_lower_bound (entries : list BucketEntry) (suffix : Key)
+  : nat :=
+  match entries with
+  | [] => 0
+  | e :: rest =>
+      match key_compare (entry_suffix e) suffix with
+      | Lt => S (binary_search_lower_bound rest suffix)
+      | Eq => 0
+      | Gt => 0
+      end
+  end.
+
 Definition binary_search (entries : list BucketEntry) (suffix : Key) : nat :=
-  binary_search_aux entries suffix 0 (length entries) (length entries + 1).
+  binary_search_lower_bound entries suffix.
 
 (** ** Entry Operations *)
 
@@ -493,13 +530,200 @@ Proof.
         unfold size. reflexivity.
 Qed.
 
-(** Binary search is retained as an executable helper. The bucket semantics
-    below use entry-list operations; a full binary-search partition proof
-    belongs with a future executable sorted-bucket model. *)
-Lemma binary_search_correct : forall entries suffix,
-  exists pos, binary_search entries suffix = pos.
+Lemma binary_search_mid_bounds : forall lo hi,
+  lo < hi ->
+  lo <= (lo + hi) / 2 /\ (lo + hi) / 2 < hi.
 Proof.
-  intros entries suffix. exists (binary_search entries suffix). reflexivity.
+  intros lo hi Hlt.
+  split.
+  - apply Nat.div_le_lower_bound; lia.
+  - apply Nat.div_lt_upper_bound; lia.
+Qed.
+
+Lemma binary_search_aux_upper_bound : forall fuel entries suffix lo hi,
+  lo <= hi ->
+  binary_search_aux entries suffix lo hi fuel <= hi.
+Proof.
+  induction fuel as [| fuel IH]; intros entries suffix lo hi Hle; simpl.
+  - exact Hle.
+  - destruct (lo <? hi) eqn:Hltb.
+    + apply Nat.ltb_lt in Hltb.
+      set (mid := (lo + hi) / 2).
+      assert (Hlo_mid : lo <= mid /\ mid < hi).
+      { unfold mid. apply binary_search_mid_bounds. exact Hltb. }
+      destruct Hlo_mid as [Hlo_mid Hmid_hi].
+      replace (fst (Nat.divmod (lo + hi) 1 0 1)) with mid
+        by (unfold mid; reflexivity).
+      destruct (nth_error entries mid) as [e|].
+      * destruct (key_compare suffix (entry_suffix e)) eqn:Hcmp.
+        -- lia.
+        -- eapply Nat.le_trans.
+           ++ apply IH. exact Hlo_mid.
+           ++ lia.
+        -- apply IH. lia.
+      * exact Hle.
+    + exact Hle.
+Qed.
+
+Lemma binary_search_in_bounds : forall entries suffix,
+  binary_search entries suffix <= length entries.
+Proof.
+  induction entries as [| e rest IH]; intros suffix; simpl.
+  - lia.
+  - specialize (IH suffix).
+    destruct (key_compare (entry_suffix e) suffix); simpl; lia.
+Qed.
+
+Definition entries_before_suffix (entries : list BucketEntry) (suffix : Key)
+  : Prop :=
+  Forall (fun e => key_compare (entry_suffix e) suffix = Lt) entries.
+
+Definition entries_at_or_after_suffix (entries : list BucketEntry) (suffix : Key)
+  : Prop :=
+  Forall (fun e => key_compare suffix (entry_suffix e) <> Gt) entries.
+
+Definition binary_search_partition_valid
+  (entries : list BucketEntry) (suffix : Key) (pos : nat) : Prop :=
+  pos <= length entries /\
+  entries_before_suffix (firstn pos entries) suffix /\
+  entries_at_or_after_suffix (skipn pos entries) suffix.
+
+Lemma entry_le_trans : forall e1 e2 e3,
+  entry_le e1 e2 ->
+  entry_le e2 e3 ->
+  entry_le e1 e3.
+Proof.
+  intros e1 e2 e3 H12 H23.
+  unfold entry_le in *.
+  eapply key_compare_le_trans; eauto.
+Qed.
+
+Lemma Forall_entry_le_trans : forall e1 e2 rest,
+  entry_le e1 e2 ->
+  Forall (entry_le e2) rest ->
+  Forall (entry_le e1) rest.
+Proof.
+  intros e1 e2 rest He12 Hall.
+  induction Hall as [| e3 rest He23 _ IH].
+  - constructor.
+  - constructor.
+    + eapply entry_le_trans; eauto.
+    + exact IH.
+Qed.
+
+Lemma sorted_entry_le_forall_tail : forall e rest,
+  Sorted entry_le (e :: rest) ->
+  Forall (entry_le e) rest.
+Proof.
+  intros e rest Hsorted.
+  remember (e :: rest) as entries eqn:Hentries.
+  revert e rest Hentries.
+  induction Hsorted as [| x xs Hsorted IH Hhd]; intros e rest Hentries.
+  - discriminate.
+  - injection Hentries as He Hrest. subst x xs.
+    destruct rest as [| y ys].
+    + constructor.
+    + inversion Hhd as [| ? ? Hey]; subst.
+      constructor; [exact Hey|].
+      specialize (IH y ys eq_refl) as Htail_forall.
+      eapply Forall_entry_le_trans; eauto.
+Qed.
+
+Lemma Forall_suffix_entry_le_trans : forall suffix e rest,
+  key_compare suffix (entry_suffix e) <> Gt ->
+  Forall (entry_le e) rest ->
+  entries_at_or_after_suffix rest suffix.
+Proof.
+  intros suffix e rest Hsuffix_e Hall.
+  unfold entries_at_or_after_suffix.
+  induction Hall as [| x xs Hex _ IH].
+  - constructor.
+  - constructor.
+    + eapply key_compare_le_trans.
+      * exact Hsuffix_e.
+      * exact Hex.
+    + exact IH.
+Qed.
+
+Lemma entries_at_or_after_from_sorted_head : forall e rest suffix,
+  Sorted entry_le (e :: rest) ->
+  key_compare suffix (entry_suffix e) <> Gt ->
+  entries_at_or_after_suffix (e :: rest) suffix.
+Proof.
+  intros e rest suffix Hsorted Hsuffix_e.
+  unfold entries_at_or_after_suffix.
+  constructor; [exact Hsuffix_e|].
+  pose proof (sorted_entry_le_forall_tail e rest Hsorted) as Hall.
+  apply Forall_suffix_entry_le_trans with (e := e); assumption.
+Qed.
+
+Lemma binary_search_lower_bound_partition : forall entries suffix,
+  Sorted entry_le entries ->
+  binary_search_partition_valid entries suffix
+    (binary_search_lower_bound entries suffix).
+Proof.
+  induction entries as [| e rest IH]; intros suffix Hsorted; simpl.
+  - unfold binary_search_partition_valid, entries_before_suffix,
+      entries_at_or_after_suffix. simpl.
+    split; [lia|split; constructor].
+  - inversion Hsorted as [| ? ? Htail Hhd]; subst.
+    destruct (key_compare (entry_suffix e) suffix) eqn:Hcmp.
+    + unfold binary_search_partition_valid, entries_before_suffix,
+        entries_at_or_after_suffix. simpl.
+      split; [lia|split; [constructor|]].
+      apply entries_at_or_after_from_sorted_head; [exact Hsorted|].
+      apply key_compare_eq in Hcmp. subst. rewrite key_compare_refl.
+      discriminate.
+    + pose proof (IH suffix Htail) as [Hbound [Hbefore Hafter]].
+      unfold binary_search_partition_valid, entries_before_suffix,
+        entries_at_or_after_suffix in *.
+      simpl.
+      split; [lia|].
+      split.
+      * constructor; assumption.
+      * exact Hafter.
+    + unfold binary_search_partition_valid, entries_before_suffix,
+        entries_at_or_after_suffix. simpl.
+      split; [lia|split; [constructor|]].
+      apply entries_at_or_after_from_sorted_head; [exact Hsorted|].
+      apply key_compare_gt_flip_le. exact Hcmp.
+Qed.
+
+Theorem binary_search_partition : forall entries suffix,
+  Sorted entry_le entries ->
+  binary_search_partition_valid entries suffix
+    (binary_search entries suffix).
+Proof.
+  intros entries suffix Hsorted.
+  unfold binary_search.
+  apply binary_search_lower_bound_partition.
+  exact Hsorted.
+Qed.
+
+Definition binary_search_position_valid
+  (entries : list BucketEntry) (suffix : Key) (pos : nat) : Prop :=
+  pos = binary_search entries suffix /\ pos <= length entries.
+
+Lemma binary_search_correct : forall entries suffix,
+  exists pos, binary_search_position_valid entries suffix pos.
+Proof.
+  intros entries suffix.
+  exists (binary_search entries suffix).
+  split; [reflexivity|apply binary_search_in_bounds].
+Qed.
+
+Lemma binary_search_empty : forall suffix,
+  binary_search [] suffix = 0.
+Proof.
+  intros suffix. reflexivity.
+Qed.
+
+Lemma binary_search_singleton_eq : forall suffix value,
+  binary_search [mkEntry suffix value] suffix = 0.
+Proof.
+  intros suffix value.
+  unfold binary_search. simpl.
+  rewrite key_compare_refl. reflexivity.
 Qed.
 
 (** Lookup after successful insert of same key returns the inserted value *)

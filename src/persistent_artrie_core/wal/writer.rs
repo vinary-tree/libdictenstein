@@ -166,6 +166,27 @@ impl WalWriter {
     /// Append a record to the WAL.
     pub fn append(&self, record: WalRecord) -> Result<Lsn, WalError> {
         let lsn = self.next_lsn.fetch_add(1, Ordering::AcqRel);
+        self.write_record_at_lsn(lsn, record)?;
+        Ok(lsn)
+    }
+
+    /// Append a record using an LSN that was reserved before the write.
+    #[cfg(feature = "group-commit")]
+    pub(crate) fn append_with_lsn(&self, lsn: Lsn, record: WalRecord) -> Result<Lsn, WalError> {
+        let current = self.current_lsn();
+        if lsn < current {
+            return Err(WalError::CorruptedRecord(format!(
+                "reserved LSN {} is behind next WAL LSN {}",
+                lsn, current
+            )));
+        }
+
+        self.set_min_lsn(lsn.saturating_add(1));
+        self.write_record_at_lsn(lsn, record)?;
+        Ok(lsn)
+    }
+
+    fn write_record_at_lsn(&self, lsn: Lsn, record: WalRecord) -> Result<(), WalError> {
         let payload = record.serialize_payload();
         let record_type = record.record_type() as u8;
 
@@ -184,7 +205,7 @@ impl WalWriter {
         let mut file = self.file.lock().expect("WAL lock poisoned");
         file.write_all(&buf)?;
 
-        Ok(lsn)
+        Ok(())
     }
 
     /// Sync (fsync) the WAL to disk.

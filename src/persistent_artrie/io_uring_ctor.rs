@@ -249,14 +249,15 @@ impl<V: DictionaryValue> PersistentARTrie<V, IoUringDiskManager> {
                             continue;
                         }
                     }
-                    let deserialized_value: Option<V> =
-                        value.and_then(|bytes| match crate::serialization::bincode_compat::deserialize(&bytes) {
+                    let deserialized_value: Option<V> = value.and_then(|bytes| {
+                        match crate::serialization::bincode_compat::deserialize(&bytes) {
                             Ok(v) => Some(v),
                             Err(e) => {
                                 warn!("Failed to deserialize value from WAL: {:?}", e);
                                 None
                             }
-                        });
+                        }
+                    });
                     dict.insert_impl_no_wal(&term, deserialized_value);
                     replayed_count += 1;
                 }
@@ -281,7 +282,9 @@ impl<V: DictionaryValue> PersistentARTrie<V, IoUringDiskManager> {
                         }
                     }
                     let value_bytes = result.to_le_bytes().to_vec();
-                    if let Ok(value) = crate::serialization::bincode_compat::deserialize(&value_bytes) {
+                    if let Ok(value) =
+                        crate::serialization::bincode_compat::deserialize(&value_bytes)
+                    {
                         dict.upsert_impl_no_wal(&term, value);
                     }
                     replayed_count += 1;
@@ -309,7 +312,8 @@ impl<V: DictionaryValue> PersistentARTrie<V, IoUringDiskManager> {
                         }
                     }
                     if success {
-                        if let Ok(v) = crate::serialization::bincode_compat::deserialize(&new_value) {
+                        if let Ok(v) = crate::serialization::bincode_compat::deserialize(&new_value)
+                        {
                             dict.upsert_impl_no_wal(&term, v);
                         }
                     }

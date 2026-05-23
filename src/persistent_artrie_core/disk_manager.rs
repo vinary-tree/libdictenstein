@@ -263,6 +263,7 @@ pub type DiskManager = MmapDiskManager;
 ///
 /// Key invariant verified by TLA+: `file_size <= mmap_len` always holds, ensuring that
 /// any reader that passes the file_size check can safely access the memory.
+/// See `formal-verification/tla+/MmapBlockStorage.tla` for the bounded model.
 ///
 /// This ensures:
 /// - If reader sees updated `file_size`, it has the lock and sees the new mmap
@@ -281,6 +282,46 @@ pub struct MmapDiskManager {
 }
 
 impl MmapDiskManager {
+    fn validate_byte_range(
+        block_id: u32,
+        offset_in_block: usize,
+        len: usize,
+    ) -> Result<(usize, usize)> {
+        if offset_in_block > BLOCK_SIZE || len > BLOCK_SIZE.saturating_sub(offset_in_block) {
+            return Err(PersistentARTrieError::InvalidBlockId {
+                block_id,
+                reason: format!(
+                    "Range [{}, {}) exceeds block size {}",
+                    offset_in_block,
+                    offset_in_block.saturating_add(len),
+                    BLOCK_SIZE
+                ),
+            });
+        }
+
+        let block_offset = (block_id as usize).checked_mul(BLOCK_SIZE).ok_or_else(|| {
+            PersistentARTrieError::InvalidBlockId {
+                block_id,
+                reason: "Block offset overflowed usize".to_string(),
+            }
+        })?;
+        let file_offset = block_offset.checked_add(offset_in_block).ok_or_else(|| {
+            PersistentARTrieError::InvalidBlockId {
+                block_id,
+                reason: "File offset overflowed usize".to_string(),
+            }
+        })?;
+        let end_offset =
+            file_offset
+                .checked_add(len)
+                .ok_or_else(|| PersistentARTrieError::InvalidBlockId {
+                    block_id,
+                    reason: "End offset overflowed usize".to_string(),
+                })?;
+
+        Ok((file_offset, end_offset))
+    }
+
     /// Create a new disk manager, creating the file if it doesn't exist.
     ///
     /// This is a TOCTOU-safe "open or create" operation that matches the formal
@@ -1074,8 +1115,8 @@ impl MmapDiskManager {
         offset_in_block: usize,
         buffer: &mut [u8],
     ) -> Result<()> {
-        let file_offset = block_id as usize * BLOCK_SIZE + offset_in_block;
-        let end_offset = file_offset + buffer.len();
+        let (file_offset, end_offset) =
+            Self::validate_byte_range(block_id, offset_in_block, buffer.len())?;
 
         // Step 1: Quick-reject against block_count
         let current_block_count = self.block_count.load(Ordering::Acquire);
@@ -1127,8 +1168,8 @@ impl MmapDiskManager {
     ///
     /// Uses lock-ordered synchronization: acquire mmap lock first, then check file_size.
     pub fn write_bytes(&self, block_id: u32, offset_in_block: usize, buffer: &[u8]) -> Result<()> {
-        let file_offset = block_id as usize * BLOCK_SIZE + offset_in_block;
-        let end_offset = file_offset + buffer.len();
+        let (file_offset, end_offset) =
+            Self::validate_byte_range(block_id, offset_in_block, buffer.len())?;
 
         // Step 1: Quick-reject against block_count
         let current_block_count = self.block_count.load(Ordering::Acquire);
@@ -1172,7 +1213,23 @@ impl MmapDiskManager {
     /// Flush all changes to disk
     pub fn sync(&self) -> Result<()> {
         if let Some(mmap_guard) = &self.mmap {
-            let mmap = mmap_guard.read();
+            let mut mmap = mmap_guard.write();
+            if mmap.len() < 64 {
+                return Err(PersistentARTrieError::CorruptedFile {
+                    reason: "File too small for header checksum refresh".to_string(),
+                });
+            }
+
+            let header_bytes: [u8; 64] =
+                mmap[0..64]
+                    .try_into()
+                    .map_err(|_| PersistentARTrieError::CorruptedFile {
+                        reason: "Failed to read header bytes for checksum refresh".to_string(),
+                    })?;
+            let mut header = FileHeader::from_bytes(&header_bytes);
+            header.checksum = header.compute_checksum();
+            mmap[0..64].copy_from_slice(&header.to_bytes());
+
             mmap.flush().map_err(|e| PersistentARTrieError::MmapError {
                 operation: "flush mmap".to_string(),
                 source: e,
@@ -1264,9 +1321,20 @@ impl MmapDiskManager {
     ///
     /// # Safety
     /// The caller must ensure the returned pointer is not used after the mmap is remapped
-    /// or the DiskManager is dropped.
+    /// or the DiskManager is dropped. `offset_in_block` must name a byte inside the
+    /// requested block; one-past-end and cross-block offsets are rejected.
     pub unsafe fn raw_ptr(&self, block_id: u32, offset_in_block: usize) -> Result<*const u8> {
-        let file_offset = block_id as usize * BLOCK_SIZE + offset_in_block;
+        if offset_in_block >= BLOCK_SIZE {
+            return Err(PersistentARTrieError::InvalidBlockId {
+                block_id,
+                reason: format!(
+                    "Offset {} exceeds block size {}",
+                    offset_in_block, BLOCK_SIZE
+                ),
+            });
+        }
+
+        let (file_offset, _) = Self::validate_byte_range(block_id, offset_in_block, 1)?;
 
         let mmap_guard =
             self.mmap

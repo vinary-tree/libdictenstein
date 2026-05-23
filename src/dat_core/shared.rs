@@ -30,7 +30,10 @@ use crate::CharUnit;
 /// [`crate::serialization::serde_helpers`] so the on-disk format
 /// matches the previous byte-for-byte layout used by both
 /// `DoubleArrayTrie<V>` and `DoubleArrayTrieChar<V>`.
-#[cfg_attr(feature = "serialization", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(
+    feature = "serialization",
+    derive(serde::Serialize, serde::Deserialize)
+)]
 #[cfg_attr(
     all(feature = "serialization", not(feature = "persistent-artrie")),
     serde(bound(

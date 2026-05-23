@@ -82,6 +82,7 @@ paste = "1.0"  # For macro test name concatenation
 ordered-float = "4.6"  # For lling-llang semiring tests
 hdrhistogram = "7.5"  # High dynamic range histograms for latency benchmarks
 rand = "0.8"  # PRNG for randomized benchmark scenarios
+loom = "0.7"  # Bounded schedule exploration for concurrency correspondence tests
 
 [features]
 default = ["parking_lot"]

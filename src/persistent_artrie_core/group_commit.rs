@@ -71,7 +71,7 @@ use crossbeam_channel::{bounded, Receiver, Sender};
 use parking_lot::RwLock;
 
 use super::error::PersistentARTrieError;
-use super::wal::{AsyncWalConfig, AsyncWalWriter, Lsn, WalConfig, WalRecord};
+use super::wal::{AsyncWalWriter, Lsn, WalRecord};
 
 /// Result type for group commit operations.
 pub type Result<T> = std::result::Result<T, PersistentARTrieError>;
@@ -644,7 +644,7 @@ impl GroupCommitCoordinator {
         // Write all records to WAL (AsyncWalWriter handles internal synchronization)
         let write_result: std::result::Result<(), PersistentARTrieError> = (|| {
             for pending in batch.iter() {
-                wal.append(pending.record.clone())
+                wal.append_with_lsn(pending.lsn, pending.record.clone())
                     .map_err(|e| PersistentARTrieError::Wal(format!("{}", e)))?;
                 max_lsn = max_lsn.max(pending.lsn);
                 total_bytes += pending.serialized_size;
@@ -747,6 +747,7 @@ impl<T> OneshotReceiver<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::persistent_artrie_core::wal::{AsyncWalConfig, WalConfig};
     use tempfile::tempdir;
 
     #[test]

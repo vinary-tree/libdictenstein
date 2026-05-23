@@ -220,9 +220,17 @@ impl<V: DictionaryValue>
             skipped_all = false;
 
             match record {
-                WalRecord::Insert { term, .. } => {
+                WalRecord::Insert { term, value } => {
                     let term_str = String::from_utf8_lossy(&term);
-                    inner.insert_impl_no_wal(&term_str);
+                    if let Some(value_bytes) = value {
+                        if let Ok(v) =
+                            crate::serialization::bincode_compat::deserialize::<V>(&value_bytes)
+                        {
+                            inner.insert_impl_no_wal_with_value(&term_str, v);
+                        }
+                    } else {
+                        inner.insert_impl_no_wal(&term_str);
+                    }
                 }
                 WalRecord::Remove { term } => {
                     let term_str = String::from_utf8_lossy(&term);
@@ -234,8 +242,12 @@ impl<V: DictionaryValue>
                 | WalRecord::AbortTx { .. } => {}
                 WalRecord::Increment { term, result, .. } => {
                     let term_str = String::from_utf8_lossy(&term);
-                    if let Ok(value_bytes) = crate::serialization::bincode_compat::serialize(&result) {
-                        if let Ok(v) = crate::serialization::bincode_compat::deserialize::<V>(&value_bytes) {
+                    if let Ok(value_bytes) =
+                        crate::serialization::bincode_compat::serialize(&result)
+                    {
+                        if let Ok(v) =
+                            crate::serialization::bincode_compat::deserialize::<V>(&value_bytes)
+                        {
                             inner.insert_impl_no_wal_with_value(&term_str, v);
                         }
                     }
@@ -254,7 +266,9 @@ impl<V: DictionaryValue>
                 } => {
                     if success {
                         let term_str = String::from_utf8_lossy(&term);
-                        if let Ok(v) = crate::serialization::bincode_compat::deserialize::<V>(&new_value) {
+                        if let Ok(v) =
+                            crate::serialization::bincode_compat::deserialize::<V>(&new_value)
+                        {
                             inner.insert_impl_no_wal_with_value(&term_str, v);
                         }
                     }
@@ -263,7 +277,9 @@ impl<V: DictionaryValue>
                     for (term, value_opt) in entries {
                         let term_str = String::from_utf8_lossy(&term);
                         if let Some(value_bytes) = value_opt {
-                            if let Ok(v) = crate::serialization::bincode_compat::deserialize::<V>(&value_bytes) {
+                            if let Ok(v) =
+                                crate::serialization::bincode_compat::deserialize::<V>(&value_bytes)
+                            {
                                 inner.insert_impl_no_wal_with_value(&term_str, v);
                             }
                         } else {

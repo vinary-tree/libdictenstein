@@ -60,9 +60,8 @@
 //! child_guard.modify(|data| { /* ... */ });
 //! ```
 
-use std::cell::UnsafeCell;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 /// Version number for optimistic concurrency control.
 ///
@@ -93,7 +92,23 @@ impl OptimisticVersion {
 
     /// Begin a write operation (increment to odd).
     pub fn begin_write(&self) -> u64 {
-        self.version.fetch_add(1, Ordering::AcqRel)
+        loop {
+            let observed = self.version.load(Ordering::Acquire);
+            if observed % 2 != 0 {
+                std::hint::spin_loop();
+                continue;
+            }
+
+            if self
+                .version
+                .compare_exchange(observed, observed + 1, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+            {
+                return observed;
+            }
+
+            std::hint::spin_loop();
+        }
     }
 
     /// End a write operation (increment to even).
@@ -797,13 +812,13 @@ impl TrieStatsSnapshot {
 pub struct OptimisticCell<T> {
     /// Version for optimistic concurrency
     version: OptimisticVersion,
-    /// The data (UnsafeCell for interior mutability)
-    data: UnsafeCell<T>,
+    /// The data guarded against Rust-level read/write races.
+    data: RwLock<T>,
 }
 
-// SAFETY: OptimisticCell is Sync if T is Send
-// because we ensure proper synchronization through version checks
-unsafe impl<T: Send> Sync for OptimisticCell<T> {}
+// SAFETY: RwLock serializes mutable access and allows shared read access only
+// when T is safe to share.
+unsafe impl<T: Send + Sync> Sync for OptimisticCell<T> {}
 unsafe impl<T: Send> Send for OptimisticCell<T> {}
 
 impl<T> OptimisticCell<T> {
@@ -811,7 +826,7 @@ impl<T> OptimisticCell<T> {
     pub fn new(data: T) -> Self {
         OptimisticCell {
             version: OptimisticVersion::new(),
-            data: UnsafeCell::new(data),
+            data: RwLock::new(data),
         }
     }
 
@@ -825,8 +840,9 @@ impl<T> OptimisticCell<T> {
     {
         let guard = OptimisticReadGuard::new(&self.version);
 
-        // SAFETY: We check the version after reading
-        let result = unsafe { f(&*self.data.get()) };
+        let data = self.data.read().expect("OptimisticCell read lock poisoned");
+        let result = f(&data);
+        drop(data);
 
         if guard.validate() {
             Some(result)
@@ -858,8 +874,11 @@ impl<T> OptimisticCell<T> {
     {
         let _guard = WriteGuard::new(&self.version);
 
-        // SAFETY: WriteGuard ensures exclusive access
-        unsafe { f(&mut *self.data.get()) }
+        let mut data = self
+            .data
+            .write()
+            .expect("OptimisticCell write lock poisoned");
+        f(&mut data)
     }
 
     /// Get the current version.

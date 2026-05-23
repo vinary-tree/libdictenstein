@@ -4,7 +4,7 @@
 
 This document records the results of formal verification efforts for the Persistent Adaptive Radix Trie (PART) implementation in libdictenstein.
 
-**Date:** 2026-01-20 (Updated: 2026-01-24 — TOCTOU Race Condition Fixes; 2026-05-20 — All `Admitted`/`Axiom` obligations eliminated across Model + Invariants + Spec, see commit `b7630ad` "Prove ARTrie Rocq map correctness" and `efe1943` "proofs(rocq): eliminate Admitted/Axiom obligations across Model + Invariants + Spec")
+**Date:** 2026-01-20 (Updated: 2026-01-24 — TOCTOU Race Condition Fixes; 2026-05-20 — All `Admitted`/`Axiom` obligations eliminated across Model + Invariants + Spec, see commit `b7630ad` "Prove ARTrie Rocq map correctness" and `efe1943` "proofs(rocq): eliminate Admitted/Axiom obligations across Model + Invariants + Spec"; 2026-05-22 — checked structural contracts, bounded Byzantine storage and HotStuff-style quorum models, proof-carrying replay boundary, expanded TLA+ focused models, and Rust correspondence harness; 2026-05-23 — end-to-end WAL crash-prefix matrix, transaction replay correspondence, mmap block-storage synchronization, and byte lock-free ARTrie linearizability)
 
 ---
 
@@ -24,8 +24,15 @@ This document records the results of formal verification efforts for the Persist
 | PART.tla | ~457 | Syntax Valid |
 | FileSystem.tla | ~450 | Syntax Valid |
 | WAL_FileSystem.tla | ~350 | Syntax Valid |
+| DocumentTransactions.tla | ~107 | TLC passed |
+| AsyncWalGroupCommit.tla | ~62 | TLC passed |
+| VersionLifecycle.tla | ~87 | TLC passed |
+| MmapBlockStorage.tla | 182 | TLC passed |
+| LockFreeARTrieLinearizability.tla | 153 | TLC passed |
+| ByzantineStorage.tla | ~70 | TLC passed |
+| HotStuffConsensus.tla | ~91 | TLC passed |
 
-**Total TLA+ LOC:** ~3,815
+**Total TLA+ LOC:** ~5,670
 
 ### Model Checking Configuration
 
@@ -74,6 +81,78 @@ NodeIds = {1, 2, 3, 4, 5, 6}
 | PROPERTY_CrashRecovery | Liveness | No violations in explored states |
 | Deadlock Freedom | Safety | No deadlocks found |
 
+#### Focused TLC Runs Added 2026-05-22/2026-05-23
+
+| Module | Config | States Generated | Distinct States | Depth | Result |
+|--------|--------|-----------------:|----------------:|------:|--------|
+| DocumentTransactions.tla | DocumentTransactions.cfg | 39,205 | 10,057 | 13 | No errors |
+| AsyncWalGroupCommit.tla | AsyncWalGroupCommit.cfg | 36 | 19 | 5 | No errors |
+| VersionLifecycle.tla | VersionLifecycle.cfg | 963 | 177 | 7 | No errors |
+| MmapBlockStorage.tla | MmapBlockStorage.cfg | 1,618,433 | 540,928 | 33 | No errors |
+| LockFreeARTrieLinearizability.tla | LockFreeARTrieLinearizability.cfg | 38,379 | 7,593 | 16 | No errors |
+| ByzantineStorage.tla | ByzantineStorage.cfg | 11,059,201 | 331,776 | 21 | No errors |
+| HotStuffConsensus.tla | HotStuffConsensus.cfg | 17,991 | 2,940 | 12 | No errors |
+
+All seven focused modules also passed `tla2sany` syntax/semantic checking.
+
+#### Implementation Correspondence Runs Added 2026-05-22
+
+The repository now includes `tests/persistent_artrie_formal_correspondence.rs`
+and `scripts/verify-formal-correspondence.sh` to tie the checked models to the
+Rust implementation surface.
+
+| Check | Rust/Formal Boundary | Result |
+|-------|----------------------|--------|
+| Bucket sorted reference | `Bucket.v` to `src/persistent_artrie/bucket.rs` | Passed, 64 proptest cases |
+| Bucket split/merge preservation | structural bucket obligations to Rust split/merge | Passed, 64 proptest cases |
+| Trie trace reference | `CertifiedReference.v` boundary to `PersistentARTrie` behavior | Passed, 64 proptest cases |
+| Deterministic large trie trace | normalized checked-entry/reference-map boundary to `PersistentARTrie` behavior | Passed, 2,048 operations |
+| Deterministic reopen trace | WAL value replay/recovery boundary to `PersistentARTrie::open` | Passed, 768 operations |
+| Document transaction visibility | `DocumentTransactions.tla` to `document_tx.rs` | Passed |
+| WAL CRC fail-closed reads | Byzantine/corruption filtering boundary to WAL reader | Passed |
+| WAL codec roundtrip | all public `WalRecord` variants to byte payloads | Passed |
+| WAL parser rejection | invalid type, truncated payload, torn trailing header | Passed |
+| WAL durable-prefix behavior | intact records remain readable before a later torn payload | Passed |
+| WAL record-boundary reopen prefixes | crash-prefix recovery model to `PersistentARTrie::open` over real WAL bytes | Passed, header-only plus 5 record prefixes |
+| End-to-end torn WAL payload reopen | recovery applies only the durable prefix before a partial payload | Passed |
+| WAL transaction recovery | committed transaction replay vs incomplete transaction discard | Passed |
+| WAL header parser | header roundtrip plus bad magic/version rejection | Passed |
+| Bucket page parser | page roundtrip plus bad magic/version/size rejection | Passed, 64 proptest cases |
+| Version-GC reader protection | `VersionLifecycle.tla` to `version_gc.rs` | Passed |
+| Group-commit durable LSN prefix | `AsyncWalGroupCommit.tla` to `group_commit.rs`/async WAL | Passed |
+| Proof-carrying trace replay | `ProofCarryingExtraction.v` to certified trace checker behavior | Passed |
+| Corrupt certificate rejection | `invalid_step_rejected` to Rust certificate checker fail-closed behavior | Passed |
+| Swizzled-pointer state contract | unsafe pointer encoding boundary to `SwizzledPtr` | Passed, including pure raw disk-pointer roundtrip |
+| Atomic node pointer CAS ownership | former unsafe raw `Arc` slot boundary to lock-guarded `AtomicNodePtr` | Passed |
+| Optimistic-cell writer serialization | unsafe interior-mutability boundary to `OptimisticCell` | Passed |
+| End-to-end torn-WAL reopen | crash-prefix model to `PersistentARTrie::open` | Passed, torn header and torn payload |
+| Persistent dictionary law trace | reference-map laws to public mutation/query methods | Passed |
+| Mmap concurrent allocation | `MmapBlockStorage.tla` to `MmapDiskManager::allocate_block` | Passed, 32 concurrent allocations |
+| Mmap sub-block bounds | `BlockStorage` range contract to `MmapDiskManager::{read_bytes,write_bytes}` | Passed |
+| Mmap sync/reopen checksum | allocation metadata persistence to `MmapDiskManager::sync/open` | Passed |
+| Mmap raw pointer bounds | unsafe raw pointer contract to `MmapDiskManager::raw_ptr` | Passed |
+| Byte lock-free root CAS | `LockFreeARTrieLinearizability.tla` to byte `AtomicNodePtr` publication | Passed under Loom |
+| Byte duplicate insert linearization | root CAS/cache contract to `insert_cas` behavior | Passed under Loom |
+| Byte insert-vs-contains visibility | contains linearization boundary to root/cache publication | Passed under Loom |
+| Byte merge snapshot prefix | merge-to-persistent visibility boundary to cache snapshot semantics | Passed under Loom |
+| Byte child pointer Arc handoff | raw child-pointer ownership contract to Arc clone-before-use pattern | Passed under Loom |
+| io_uring sub-block bounds | `BlockStorage` range contract to `IoUringDiskManager` when enabled | Passed with `io-uring-backend` |
+
+The full command `RUN_TLC=1 scripts/verify-formal-correspondence.sh` passed on
+2026-05-22 for the then-current focused modules. The new
+`LockFreeARTrieLinearizability.tla` TLC run passed independently on 2026-05-23.
+TLC requires running outside the local filesystem sandbox because the Java
+runtime opens a local RMI listener.
+
+The no-TLC verification command `scripts/verify-formal-correspondence.sh`
+passed on 2026-05-23, including 27 formal correspondence tests, 5 storage
+correspondence tests, 5 Loom schedule tests, the group-commit-specific test,
+the Rocq build, and TLA+ SANY checks.
+
+The optional command
+`cargo test --features "persistent-artrie io-uring-backend" --test persistent_artrie_storage_correspondence`
+also passed on 2026-05-23 with 6 storage correspondence tests.
+
 #### Notes
 - The state space is large due to the concurrent threads and crash recovery modeling
 - Full state space exploration would require significantly more time
@@ -85,31 +164,42 @@ NodeIds = {1, 2, 3, 4, 5, 6}
 
 ### Modules Compiled
 
-All 15 `.v` files compile end-to-end with Rocq 9.1.0 (~72 s wall clock under
+All 22 `.v` files compile end-to-end with Rocq 9.1.0. Every theorem is closed
+by `Qed.` — **0 `Axiom`, 0 `Admitted`, 0 `Parameter`** across the tree
+(verified 2026-05-22).
+
+The prior 15-module core compiled with Rocq 9.1.0 (~72 s wall clock under
 `make -j1`). Every theorem is closed by `Qed.` — **0 `Axiom`, 0 `Admitted`, 0
 `Parameter`** across the tree (verified 2026-05-20).
 
 | Module | LOC | Theorems | Lemmas | Qed | Status |
 |--------|----:|---------:|-------:|----:|--------|
-| Model/Key.v | 414 | 0 | 22 | 22 | Complete |
+| Model/Key.v | 518 | 0 | 28 | 28 | Complete |
 | Model/NodeTypes.v | 347 | 0 | 0 | 0 (2 `Defined`) | Complete |
-| Model/Bucket.v | 707 | 0 | 30 | 30 | Complete |
+| Model/Bucket.v | 931 | 1 | 44 | 45 | Complete |
+| Model/HotStuff.v | 141 | 3 | 4 | 7 | Complete |
 | Model/PathCompression.v | 311 | 0 | 12 | 12 (+5 `Defined`) | Complete |
 | Model/FileSystem.v | 1516 | 2 | 44 | 46 | Complete |
 | Model/ArenaManager.v | 362 | 11 | 5 | 17 | Complete |
 | Model/SequentialSiblings.v | 384 | 6 | 5 | 13 | Complete |
 | Spec/MapSpec.v | 287 | 11 | 2 | 12 (+2 `Defined`) | Complete |
-| Spec/ARTrieSpec.v | 714 | 7 | 12 | 19 | Complete |
+| Spec/ARTrieSpec.v | 1195 | 7 | 42 | 49 | Complete |
+| Spec/ReplicatedMapSpec.v | 91 | 4 | 0 | 4 | Complete |
 | Invariants/ArenaInvariants.v | 299 | 11 | 6 | 18 | Complete |
-| Invariants/StructuralInvariants.v | 190 | 2 | 0 | 2 | Complete |
+| Invariants/StructuralInvariants.v | 192 | 2 | 0 | 2 | Complete |
 | Invariants/TransitionInvariants.v | 291 | 10 | 0 | 10 | Complete |
 | Invariants/SequentialSiblingsInvariants.v | 280 | 10 | 0 | 11 | Complete |
 | Proofs/FileSystemSafety.v | 311 | 6 | 5 | 12 | Complete |
 | Proofs/MapRefinement.v | 90 | 3 | 0 | 3 | Complete |
+| Proofs/StructuralPreservation.v | 281 | 7 | 8 | 15 | Complete |
+| Proofs/ByzantineRecovery.v | 104 | 5 | 0 | 5 | Complete |
+| Proofs/CertifiedReference.v | 50 | 4 | 0 | 4 | Complete |
+| Proofs/HotStuffSafety.v | 46 | 2 | 0 | 2 | Complete |
+| Proofs/ProofCarryingExtraction.v | 80 | 3 | 0 | 3 | Complete |
 
-**Total Rocq LOC:** ~6,503 (15 modules)
-**Aggregate proof tally:** 89 `Theorem` + 143 `Lemma` = 232 propositions, all
-closed (227 `Qed.` + 9 `Defined.` for transparent definitions).
+**Total Rocq LOC:** 8,107 (22 modules)
+**Aggregate proof tally:** 108 `Theorem` + 205 `Lemma` = 313 theorem/lemma
+propositions, all closed (`Qed.`/`Defined.`; no escape hatches).
 
 ### Compilation Command
 ```bash
@@ -119,7 +209,7 @@ systemd-run --user --scope -p MemoryMax=126G -p CPUQuota=1800% \
 
 ### Admitted Theorems
 
-**None.** As of 2026-05-20 there are zero outstanding `Admitted.` markers and
+**None.** As of 2026-05-22 there are zero outstanding `Admitted.` markers and
 zero `Axiom` declarations anywhere in the Rocq tree. Previously-admitted
 obligations were resolved as follows:
 
@@ -139,27 +229,30 @@ obligations were resolved as follows:
   post-shrink lower bound as an explicit premise); both are now `Qed.`-closed.
 - **StructuralInvariants.v** (2 previously admitted) — the unprovable
   acyclicity placeholder was weakened to "no direct self-loop from any
-  reachable node" (provable); `insert_preserves_structural`/
-  `delete_preserves_structural` were promoted from admitted theorems to
-  `Prop`-level obligations satisfied by the concrete `trie_insert`/
-  `trie_delete` definitions in `Spec/ARTrieSpec.v`.
+  reachable node" (provable); `insert_preserves_structural_obligation`/
+  `delete_preserves_structural_obligation` are now explicit `Prop`-level
+  obligations scoped to successful checked operations.
 - **Key.v** — the prior `Axiom proof_irrelevance` was eliminated and replaced
   with a proved local `Lemma lt_proof_irrelevance`.
-- **Spec/ARTrieSpec.v** — `trie_insert_correct` (line 672) and
-  `trie_delete_correct` (line 685), previously declared as `Axiom`s, are now
+- **Spec/ARTrieSpec.v** — `trie_insert_correct` (line 706) and
+  `trie_delete_correct` (line 719), previously declared as `Axiom`s, are now
   real `Theorem ... Qed.` proofs under the `entries_of_trie_complete` hypothesis,
   using `canonical_lookup_correct` plus `kv_lookup_upsert_same`/`_other` and the
   symmetric delete lemmas.
 
 ### Proven Theorems (selected highlights)
 
-A non-exhaustive sample of the 232 closed propositions. See per-module file for
+A non-exhaustive sample of the 313 theorem/lemma propositions. See per-module file for
 the complete list; see [README.md](README.md) for module-by-module module-status
 table.
 
 - `key_equality_decidable` - Key equality is decidable
 - `lt_proof_irrelevance` (Key.v:20) - Replaces the former `Axiom proof_irrelevance`
 - `binary_search_correct` - Binary search returns the canonical position
+- `binary_search_in_bounds` - Binary search returns an insertion point within
+  the bucket entry bounds
+- `canonical_bucket_checked_wf` - Successful checked canonical bucket
+  construction preserves `wf_bucket` under suffix uniqueness
 - `bucket_lookup_insert_same` / `bucket_lookup_insert_other` - Bucket map laws
 - `bucket_split_wf` / `bucket_split_preserves` - Split preserves well-formedness
 - `lookup_empty` - Looking up in empty map returns None
@@ -168,11 +261,25 @@ table.
 - `shrink_type_appropriate_with_lower_bound` (TransitionInvariants.v) - Corrected variant
 - `trie_invariant_empty` - Empty trie satisfies structural invariants
 - `children_preserved_reflexive` - Children preservation is reflexive
-- `trie_insert_correct` (ARTrieSpec.v:672) - **Was axiomatic; now proved**
-- `trie_delete_correct` (ARTrieSpec.v:685) - **Was axiomatic; now proved**
+- `trie_insert_correct` (ARTrieSpec.v:706) - **Was axiomatic; now proved**
+- `trie_delete_correct` (ARTrieSpec.v:719) - **Was axiomatic; now proved**
 - `ARTrieMapImpl_obligation` (ARTrieSpec.v:708) - Aggregator that `exact`s into
   the two correctness theorems, retiring the prior `ARTrieMapImpl` Instance
   which had been axiomatized.
+- `recovered_records_are_committed_and_authenticated` - Byzantine storage
+  recovery applies only committed authenticated records
+- `certified_reference_insert_refines` /
+  `certified_reference_delete_refines` - Certified reference interface refines
+  the abstract map semantics
+- `hotstuff_committed_logs_compatible` - Honest quorum intersection and vote
+  locking imply committed logs are prefix-compatible
+- `quorum_sets_cannot_be_disjoint` - Two 2f+1 quorums over 3f+1 replicas
+  cannot be disjoint
+- `replicated_hotstuff_committed_replays_share_prefix` - Compatible committed
+  replicated logs replay as prefix extensions of one another
+- `certified_trace_replays_reference` - A valid certified trace replays to the
+  reference command-log semantics
+- `invalid_step_rejected` - A trace step with an incorrect post-state is rejected
 
 ---
 
@@ -232,12 +339,23 @@ table.
    `Proofs/MapRefinement.v` (3 Qed'd theorems including `WFARTrieMapImpl`
    Instance)
 2. Implement separation logic proofs using Iris
-3. Model SIMD operations in TLA+ specification
+3. Add Loom/Shuttle schedule exploration for the lock-free trie paths now
+   listed in `UNSAFE_BOUNDARY.md`
+4. Model SIMD operations in TLA+ specification
 
 ### Long-term
-1. Formal verification of recovery correctness with Byzantine faults
+1. ~~Formal verification of recovery correctness with Byzantine faults~~
+   **Scoped models added** (2026-05-22) for storage/WAL drop, duplicate, and
+   corruption faults plus bounded HotStuff/PBFT-style quorum safety. This does
+   not claim production Byzantine networking, liveness, compromised
+   cryptography, or malicious CPU execution.
 2. Mechanized proof of linearizability
-3. Integration with certified compilation (CompCert/RustBelt)
+3. ~~Integration with certified compilation (CompCert/RustBelt)~~
+   **Proof-carrying reference boundary added** (2026-05-22). The current
+   checked claim is for the Rocq reference interface, certified trace checker,
+   and TCB documentation, not certified Rust/LLVM binaries.
+4. Whole-crate unsafe-boundary proof, including mmap/io_uring and unsafe
+   `Send`/`Sync` implementations outside the persistent ARTrie model.
 
 ---
 
@@ -252,9 +370,43 @@ table.
 - `PART.tla` - Added NullRecord, fixed CHOOSE expressions, SystemCrash
 - `PART.cfg` - Added Null constant
 - `PART_crash.cfg` - Changed Values to strings, added Null
+- `LockFreeARTrieLinearizability.tla` - Adds bounded byte lock-free
+  root-CAS/cache/contains/merge publication model.
 
 ### Rocq
 - `Invariants/TransitionInvariants.v` - Added imports, fixed proofs
+
+### Rust Correspondence
+- `src/persistent_artrie_core/group_commit.rs` - Writes queued records with
+  the LSN reserved and returned by the coordinator.
+- `src/persistent_artrie_core/wal/writer.rs` - Adds reserved-LSN record append
+  support for group commit.
+- `src/persistent_artrie_core/wal/async_writer.rs` - Preserves monotonic async
+  LSN state while supporting reserved-LSN appends.
+- `tests/persistent_artrie_formal_correspondence.rs` - Adds CI-practical
+  correspondence tests across bucket, trie, WAL, transactions, version GC,
+  unsafe pointer/concurrency boundaries, record-boundary crash-prefix reopen,
+  torn-WAL reopen, transaction recovery, and group commit.
+- `tests/persistent_artrie_storage_correspondence.rs` - Adds CI-practical
+  storage-boundary checks for mmap allocation uniqueness, sub-block bounds,
+  sync/reopen checksum refresh, and raw-pointer bounds.
+- `tests/persistent_artrie_loom_correspondence.rs` - Adds bounded Loom
+  schedule checks for byte lock-free publication, duplicate insert,
+  insert/contains visibility, merge snapshot behavior, and child-pointer
+  handoff.
+- `Cargo.toml` / `Cargo.lock` - Adds `loom` as a dev-dependency for bounded
+  schedule exploration.
+- `src/persistent_artrie/{lockfree_cas.rs,nodes/persistent_node.rs}` and
+  `src/persistent_artrie_char/nodes/persistent_node.rs` - Clarify safety
+  contracts around Arc-backed child traversal and `Send`/`Sync`.
+- `src/persistent_artrie_core/disk_manager.rs` - Rejects cross-block sub-block
+  I/O ranges, rejects one-past-end raw pointer offsets, refreshes the header
+  checksum during `sync()`, and points the mmap invariant docs at
+  `MmapBlockStorage.tla`.
+- `formal-verification/UNSAFE_BOUNDARY.md` - Documents the current unsafe
+  boundary, executable checks, and remaining proof obligations.
+- `scripts/verify-formal-correspondence.sh` - Adds a single local/CI entry
+  point for Rust correspondence, Rocq proofs, SANY checks, and optional TLC.
 
 ---
 
@@ -319,7 +471,7 @@ In reality, `WalWriter::create()` involves multiple syscalls that can be interle
 
 ### Admitted Theorems (Require Additional Work)
 
-**None.** As of 2026-05-20 `Proofs/FileSystemSafety.v` reports 6 `Theorem` + 5
+**None.** As of 2026-05-22 `Proofs/FileSystemSafety.v` reports 6 `Theorem` + 5
 `Lemma` = 11 propositions, all `Qed.`-closed. The previously-listed
 `mkdir_all_idempotent_full` and
 `open_or_create_safe_maintains_parent_invariant` either landed as full proofs
@@ -375,12 +527,22 @@ The formal verification provides strong evidence for the correctness of the PART
 
 3. **Filesystem layer verification** (new) closes the abstraction gap for TOCTOU and parent directory races.
 
+4. **Rust correspondence tests** exercise the implementation boundary for the
+   focused proof/model obligations and caught/fixed the group-commit
+   reserved-LSN correspondence requirement. They also check proof-carrying
+   trace replay, corrupt-certificate rejection, record-boundary crash-prefix
+   reopen, WAL transaction recovery, mmap storage-boundary behavior, and byte
+   lock-free publication under bounded Loom schedules.
+
 The combination of model checking (for concurrent/crash scenarios) and theorem proving (for functional correctness) provides complementary assurance:
 - TLA+ finds protocol bugs via exhaustive state exploration
 - Rocq proves properties that hold for all inputs
-- The new filesystem layer verification ensures the implementation correctly handles POSIX syscall non-atomicity
+- The filesystem, mmap block-storage, and byte lock-free publication models
+  check TOCTOU-safe file creation, allocation/remap/access ordering, and
+  root-CAS/cache/merge linearization
+- The Rust correspondence harness guards the model-to-code boundary in CI
 
-As of 2026-05-20 the Rocq tree has **zero outstanding `Admitted`/`Axiom` obligations**: all 232 propositions across the 15 modules close by `Qed.` (or `Defined.` for transparent definitions). The remaining future-work items are extension scope (Iris separation logic, SIMD model, larger TLA+ runs), not proof gaps in the existing tree.
+As of 2026-05-22 the Rocq tree has **zero outstanding `Admitted`/`Axiom`/`Parameter` obligations**: all 313 theorem/lemma propositions across the 22 modules close by `Qed.` (or `Defined.` for transparent definitions). Remaining extension scope and proof boundaries are tracked in `GAP_LEDGER.md`; the current boundary is production Byzantine networking/liveness and certified Rust/LLVM compilation, not unchecked structural-preservation proof gaps.
 
 ---
 

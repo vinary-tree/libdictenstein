@@ -435,14 +435,15 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
                         }
                     }
                     // Deserialize value from WAL if present
-                    let deserialized_value: Option<V> =
-                        value.and_then(|bytes| match crate::serialization::bincode_compat::deserialize(&bytes) {
+                    let deserialized_value: Option<V> = value.and_then(|bytes| {
+                        match crate::serialization::bincode_compat::deserialize(&bytes) {
                             Ok(v) => Some(v),
                             Err(e) => {
                                 warn!("Failed to deserialize value from WAL: {:?}", e);
                                 None
                             }
-                        });
+                        }
+                    });
                     // Replay insert without re-logging to WAL
                     dict.insert_impl_no_wal(&term, deserialized_value);
                     replayed_count += 1;
@@ -473,7 +474,9 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
                     // For increment recovery, we set the final result value directly
                     // (this is idempotent even if replayed multiple times)
                     let value_bytes = result.to_le_bytes().to_vec();
-                    if let Ok(value) = crate::serialization::bincode_compat::deserialize(&value_bytes) {
+                    if let Ok(value) =
+                        crate::serialization::bincode_compat::deserialize(&value_bytes)
+                    {
                         dict.upsert_impl_no_wal(&term, value);
                     }
                     replayed_count += 1;
@@ -505,7 +508,8 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
                     }
                     // Only apply if the CAS succeeded
                     if success {
-                        if let Ok(v) = crate::serialization::bincode_compat::deserialize(&new_value) {
+                        if let Ok(v) = crate::serialization::bincode_compat::deserialize(&new_value)
+                        {
                             dict.upsert_impl_no_wal(&term, v);
                         }
                     }
@@ -710,8 +714,9 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
                         match record {
                             WalRecord::Insert { term, value } => {
                                 // Deserialize value if present
-                                let deserialized: Option<V> =
-                                    value.and_then(|bytes| crate::serialization::bincode_compat::deserialize(&bytes).ok());
+                                let deserialized: Option<V> = value.and_then(|bytes| {
+                                    crate::serialization::bincode_compat::deserialize(&bytes).ok()
+                                });
                                 trie.insert_impl_no_wal(&term, deserialized);
                                 terms_recovered += 1;
                             }
@@ -722,13 +727,17 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
                             } => {
                                 // For increment, store the final result
                                 let value_bytes = val.to_le_bytes();
-                                if let Ok(v) = crate::serialization::bincode_compat::deserialize::<V>(&value_bytes) {
+                                if let Ok(v) = crate::serialization::bincode_compat::deserialize::<V>(
+                                    &value_bytes,
+                                ) {
                                     trie.upsert_impl_no_wal(&term, v);
                                     terms_recovered += 1;
                                 }
                             }
                             WalRecord::Upsert { term, value } => {
-                                if let Ok(v) = crate::serialization::bincode_compat::deserialize::<V>(&value) {
+                                if let Ok(v) =
+                                    crate::serialization::bincode_compat::deserialize::<V>(&value)
+                                {
                                     trie.upsert_impl_no_wal(&term, v);
                                     terms_recovered += 1;
                                 }
@@ -740,7 +749,10 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
                                 ..
                             } => {
                                 if success {
-                                    if let Ok(v) = crate::serialization::bincode_compat::deserialize::<V>(&new_value) {
+                                    if let Ok(v) = crate::serialization::bincode_compat::deserialize::<
+                                        V,
+                                    >(&new_value)
+                                    {
                                         trie.upsert_impl_no_wal(&term, v);
                                         terms_recovered += 1;
                                     }

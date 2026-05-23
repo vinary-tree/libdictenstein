@@ -18,7 +18,10 @@ pub const NIL: usize = usize::MAX;
 /// Forward edges allow appending characters; left edges (computed in
 /// the post-construction `compute_left_edges()` pass) allow prepending.
 #[derive(Clone, Debug)]
-#[cfg_attr(feature = "serialization", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(
+    feature = "serialization",
+    derive(serde::Serialize, serde::Deserialize)
+)]
 #[cfg_attr(
     all(feature = "serialization", not(feature = "persistent-artrie")),
     serde(bound(

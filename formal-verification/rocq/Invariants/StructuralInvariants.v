@@ -174,17 +174,19 @@ Qed.
 (** Operation preservation obligations.
 
     The raw canonical rebuild operations have semantic correctness theorems in
-    [ARTrieSpec]. Structural preservation remains a separate obligation because
-    checked construction can fail when fixed-size buckets exceed their page or
-    entry limits, and total structural preservation belongs with the adaptive
-    split/growth proofs. *)
+    [ARTrieSpec], but raw total structural preservation is not the right
+    capacity-aware obligation: checked construction can fail when fixed-size
+    buckets exceed page or entry limits. The named obligations therefore target
+    successful checked operations. *)
 
 Definition insert_preserves_structural_obligation : Prop :=
-  forall t (k : Key) (v : Value),
+  forall t (k : Key) (v : Value) t',
     structural_invariant t ->
-    structural_invariant (trie_insert t k v).
+    trie_insert_checked t k v = Some t' ->
+    structural_invariant t'.
 
 Definition delete_preserves_structural_obligation : Prop :=
-  forall t (k : Key),
+  forall t (k : Key) t',
     structural_invariant t ->
-    structural_invariant (trie_delete t k).
+    trie_delete_checked t k = Some t' ->
+    structural_invariant t'.

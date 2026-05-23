@@ -17,7 +17,10 @@ use crate::CharUnit;
 /// longest string in this class, plus a final-state flag and optional
 /// value.
 #[derive(Debug, Clone)]
-#[cfg_attr(feature = "serialization", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(
+    feature = "serialization",
+    derive(serde::Serialize, serde::Deserialize)
+)]
 #[cfg_attr(
     all(feature = "serialization", not(feature = "persistent-artrie")),
     serde(bound(
