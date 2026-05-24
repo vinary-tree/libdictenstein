@@ -16,7 +16,7 @@
 //! `pattern.chars().count()`). Both reduce to `U::iter_str(term)` /
 //! `U::from_str(pattern).len()` here, removing the duplication.
 
-use rustc_hash::FxHashSet;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 use super::node::{ScdawgNode, NIL};
 use crate::value::DictionaryValue;
@@ -35,6 +35,13 @@ pub struct ScdawgCoreInner<U: CharUnit, V: DictionaryValue> {
     pub terms: Vec<String>,
     /// Fast duplicate detection using hash set.
     pub term_set: FxHashSet<String>,
+    /// Exact term-to-value table for public mapped-dictionary semantics.
+    ///
+    /// SCDAWG states represent substring equivalence classes and may be split
+    /// or shared as later terms are inserted. Keeping exact values here avoids
+    /// conflating the public complete-term map with the internal substring
+    /// automaton topology.
+    pub term_values: FxHashMap<String, V>,
     /// Whether left edges have been computed.
     pub left_edges_computed: bool,
 }
@@ -48,6 +55,7 @@ impl<U: CharUnit, V: DictionaryValue> ScdawgCoreInner<U, V> {
             term_count: 0,
             terms: Vec::new(),
             term_set: FxHashSet::default(),
+            term_values: FxHashMap::default(),
             left_edges_computed: false,
         }
     }
@@ -64,6 +72,7 @@ impl<U: CharUnit, V: DictionaryValue> ScdawgCoreInner<U, V> {
             term_count: 0,
             terms: Vec::with_capacity(term_count),
             term_set: FxHashSet::with_capacity_and_hasher(term_count, Default::default()),
+            term_values: FxHashMap::with_capacity_and_hasher(term_count, Default::default()),
             left_edges_computed: false,
         }
     }
@@ -196,8 +205,19 @@ impl<U: CharUnit, V: DictionaryValue> ScdawgCoreInner<U, V> {
 
     /// Insert a term with an associated value.
     pub fn insert_with_value(&mut self, term: &str, value: V) -> bool {
+        if self.term_set.contains(term) {
+            self.term_values.insert(term.to_string(), value.clone());
+            if let Some(node) = self.find_substring_fast(term) {
+                if self.nodes[node].is_final {
+                    self.nodes[node].value = Some(value);
+                }
+            }
+            return false;
+        }
+
         if self.insert(term) {
-            self.nodes[self.last].value = Some(value);
+            self.nodes[self.last].value = Some(value.clone());
+            self.term_values.insert(term.to_string(), value);
             true
         } else {
             false

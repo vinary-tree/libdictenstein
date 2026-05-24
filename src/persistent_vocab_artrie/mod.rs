@@ -926,6 +926,10 @@ impl PersistentVocabARTrie {
             target_loc.node_type,
         ) {
             Ok(raw_ptr) => {
+                let raw_const =
+                    raw_ptr as *const crate::persistent_vocab_artrie::types::VocabTrieNode;
+                self.node_map.retain(|_, node_ptr| *node_ptr != raw_const);
+
                 // SAFETY: slot was just unswizzled; we now own the old
                 // pointer, originally `Box::into_raw(Box::new(...))`.
                 unsafe {
@@ -982,7 +986,81 @@ pub type DiskBackedVocabTrieInner = PersistentVocabARTrie;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::persistent_artrie::{NodeType, SwizzledPtr};
+    use std::collections::HashMap;
+    use std::sync::atomic::Ordering;
     use tempfile::tempdir;
+
+    fn suppress_drop_checkpoint(vocab: &PersistentVocabARTrie) {
+        vocab.entry_count.store(0, Ordering::Release);
+        vocab.dirty.store(false, Ordering::Release);
+    }
+
+    fn assert_rebuilt_node_map_parent_chain(vocab: &PersistentVocabARTrie) {
+        let mut ptr_to_ref = HashMap::new();
+
+        for (node_ref, node_ptr) in &vocab.node_map {
+            assert!(
+                !node_ptr.is_null(),
+                "node_map must not contain null pointers"
+            );
+            assert!(
+                ptr_to_ref.insert(*node_ptr as usize, *node_ref).is_none(),
+                "node_map must assign each raw node pointer a single NodeRef"
+            );
+        }
+
+        let root = match &vocab.root {
+            VocabTrieRoot::Node(root) => root.as_ref(),
+            VocabTrieRoot::Empty => panic!("checkpointed vocabulary root should be loaded"),
+        };
+        let root_ref = NodeRef::new(0, 0);
+        let root_ptr = root as *const VocabTrieNode as usize;
+
+        assert_eq!(ptr_to_ref.get(&root_ptr), Some(&root_ref));
+        assert!(
+            root.parent.is_null(),
+            "reloaded root must not acquire a parent pointer"
+        );
+
+        let mut visited = Vec::new();
+        let mut stack = vec![(root_ref, root)];
+
+        while let Some((node_ref, node)) = stack.pop() {
+            let node_ptr = node as *const VocabTrieNode as usize;
+            visited.push(node_ptr);
+
+            for (edge, child) in node.iter_children() {
+                let child_ptr = child as *const VocabTrieNode as usize;
+                let child_ref = ptr_to_ref
+                    .get(&child_ptr)
+                    .expect("in-memory child must be present in node_map");
+
+                assert_eq!(
+                    child.parent, node_ref,
+                    "rebuild must set each child parent NodeRef"
+                );
+                assert_eq!(
+                    child.parent_edge, edge as u32,
+                    "rebuild must set the parent edge used for reverse lookup"
+                );
+                assert_eq!(
+                    vocab.node_map.get(child_ref).map(|ptr| *ptr as usize),
+                    Some(child_ptr),
+                    "child NodeRef must resolve to the same raw pointer"
+                );
+                stack.push((*child_ref, child));
+            }
+        }
+
+        visited.sort_unstable();
+        visited.dedup();
+        assert_eq!(
+            visited.len(),
+            vocab.node_map.len(),
+            "node_map must not retain stale raw pointers after rebuild"
+        );
+    }
 
     #[test]
     fn test_vocab_trie_basic() {
@@ -1164,5 +1242,146 @@ mod tests {
 
         // Checkpoint
         ARTrie::checkpoint(&vocab).unwrap();
+    }
+
+    #[test]
+    fn vocab_parent_eviction_is_rejected_while_child_is_in_memory() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("evict_parent_reject.vocab");
+        let mut vocab = PersistentVocabARTrie::create(&path).unwrap();
+        vocab.insert("ab");
+
+        let parent_ptr = match &vocab.root {
+            VocabTrieRoot::Node(root) => {
+                root.get_child('a').expect("parent child exists") as *const VocabTrieNode
+            }
+            VocabTrieRoot::Empty => panic!("vocab root is empty"),
+        };
+
+        let disk_ptr = SwizzledPtr::on_disk(1, 4096, NodeType::CharNode4);
+        assert!(
+            !vocab.evict_node_at_path(&['a'], disk_ptr),
+            "parent with an in-memory descendant must not be evicted"
+        );
+        assert!(
+            vocab.node_map.values().any(|ptr| *ptr == parent_ptr),
+            "rejected eviction must leave node_map unchanged"
+        );
+
+        suppress_drop_checkpoint(&vocab);
+    }
+
+    #[test]
+    fn vocab_leaf_eviction_invalidates_node_map_entry_before_drop() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("evict_leaf_invalidate.vocab");
+        let mut vocab = PersistentVocabARTrie::create(&path).unwrap();
+        vocab.insert("ab");
+
+        let leaf_ptr = match &vocab.root {
+            VocabTrieRoot::Node(root) => {
+                root.get_child('a')
+                    .and_then(|node| node.get_child('b'))
+                    .expect("leaf child exists") as *const VocabTrieNode
+            }
+            VocabTrieRoot::Empty => panic!("vocab root is empty"),
+        };
+        assert!(
+            vocab.node_map.values().any(|ptr| *ptr == leaf_ptr),
+            "leaf pointer should be registered before eviction"
+        );
+
+        let disk_ptr = SwizzledPtr::on_disk(1, 8192, NodeType::CharNode4);
+        assert!(
+            vocab.evict_node_at_path(&['a', 'b'], disk_ptr),
+            "leaf eviction should succeed"
+        );
+        assert!(
+            vocab.node_map.values().all(|ptr| *ptr != leaf_ptr),
+            "successful eviction must not leave a stale raw node_map pointer"
+        );
+
+        let leaf_slot = match &vocab.root {
+            VocabTrieRoot::Node(root) => root
+                .get_child('a')
+                .and_then(|node| node.inner.find_child('b' as u32))
+                .expect("evicted child slot remains as disk pointer"),
+            VocabTrieRoot::Empty => panic!("vocab root is empty"),
+        };
+        assert!(leaf_slot.disk_location().is_some());
+
+        suppress_drop_checkpoint(&vocab);
+    }
+
+    #[test]
+    fn vocab_leaf_eviction_keeps_sibling_queries_on_live_nodes() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("evict_leaf_sibling_live.vocab");
+        let mut vocab = PersistentVocabARTrie::create(&path).unwrap();
+        let evicted_index = vocab.insert("ab");
+        let sibling_index = vocab.insert("ac");
+
+        let leaf_ptr = match &vocab.root {
+            VocabTrieRoot::Node(root) => {
+                root.get_child('a')
+                    .and_then(|node| node.get_child('b'))
+                    .expect("leaf child exists") as *const VocabTrieNode
+            }
+            VocabTrieRoot::Empty => panic!("vocab root is empty"),
+        };
+
+        let disk_ptr = SwizzledPtr::on_disk(1, 12_288, NodeType::CharNode4);
+        assert!(
+            vocab.evict_node_at_path(&['a', 'b'], disk_ptr),
+            "leaf eviction should succeed"
+        );
+        assert!(
+            vocab.node_map.values().all(|ptr| *ptr != leaf_ptr),
+            "evicted leaf raw pointer must be removed before the Box is dropped"
+        );
+
+        assert_eq!(
+            vocab.get_index("ac"),
+            Some(sibling_index),
+            "sibling path must remain backed by live in-memory nodes"
+        );
+        assert_eq!(
+            vocab.get_index("ab"),
+            None,
+            "query traversal must not dereference an evicted disk-only child"
+        );
+        assert_ne!(evicted_index, sibling_index);
+
+        suppress_drop_checkpoint(&vocab);
+    }
+
+    #[test]
+    fn vocab_reopen_rebuilds_node_map_parent_chain_and_reverse_index() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("reopen_rebuilds_node_map.vocab");
+        let terms = ["alpha", "alpine", "beta", "delta"];
+        let mut expected = Vec::new();
+
+        {
+            let mut vocab = PersistentVocabARTrie::create(&path).unwrap();
+            for term in terms {
+                expected.push((term.to_string(), vocab.insert(term)));
+            }
+
+            vocab.checkpoint().unwrap();
+            suppress_drop_checkpoint(&vocab);
+        }
+
+        let reopened = PersistentVocabARTrie::open(&path).unwrap();
+        assert_eq!(reopened.len(), expected.len());
+
+        for (term, index) in &expected {
+            assert_eq!(reopened.get_index(term), Some(*index));
+            assert_eq!(reopened.get_term(*index), Some(term.clone()));
+            assert!(reopened.contains_index(*index));
+        }
+
+        assert_rebuilt_node_map_parent_chain(&reopened);
+        suppress_drop_checkpoint(&reopened);
     }
 }

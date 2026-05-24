@@ -251,7 +251,8 @@ impl<S: BlockStorage> BufferManager<S> {
         // Safety: buffer_pool is owned by BufferManager and will not be moved/freed
         // until BufferManager is dropped, at which point unregister_buffer_pool is called.
         // The Vec itself is never reallocated (capacity is fixed at construction).
-        let fixed_buffers_registered = unsafe { storage.register_buffer_pool(&buffers).is_ok() };
+        let fixed_buffers_registered = unsafe { storage.register_buffer_pool(&buffers).is_ok() }
+            && storage.supports_fixed_buffers();
 
         Self {
             storage,
@@ -313,7 +314,8 @@ impl<S: BlockStorage> BufferManager<S> {
             .collect();
         // Safety: buffer_pool is owned by BufferManager and will not be moved/freed
         // until BufferManager is dropped, at which point unregister_buffer_pool is called.
-        let fixed_buffers_registered = unsafe { storage.register_buffer_pool(&buffers).is_ok() };
+        let fixed_buffers_registered = unsafe { storage.register_buffer_pool(&buffers).is_ok() }
+            && storage.supports_fixed_buffers();
 
         Self {
             storage,
@@ -805,8 +807,10 @@ pub struct BufferPoolStats {
 
 #[cfg(test)]
 mod tests {
-    use super::super::disk_manager::DiskManager;
+    use super::super::disk_manager::{DiskManager, FileHeader};
     use super::*;
+    use std::sync::atomic::AtomicBool;
+    use std::sync::Arc;
     use tempfile::tempdir;
 
     fn create_buffer_manager(pool_size: usize) -> BufferManager {
@@ -818,6 +822,291 @@ mod tests {
         std::mem::forget(dir);
 
         BufferManager::new(disk_manager, pool_size)
+    }
+
+    #[derive(Clone)]
+    struct TrackingFixedStorage {
+        state: Arc<TrackingFixedStorageState>,
+    }
+
+    struct TrackingFixedStorageState {
+        blocks: RwLock<Vec<Box<AlignedBlock>>>,
+        registered: AtomicBool,
+        register_calls: AtomicUsize,
+        unregister_calls: AtomicUsize,
+        registered_buffers: AtomicUsize,
+        regular_writes: AtomicUsize,
+        fixed_writes: AtomicUsize,
+        fixed_batch_writes: AtomicUsize,
+        fixed_reads: AtomicUsize,
+    }
+
+    impl TrackingFixedStorage {
+        fn new() -> Self {
+            Self {
+                state: Arc::new(TrackingFixedStorageState {
+                    blocks: RwLock::new(vec![AlignedBlock::new_boxed()]),
+                    registered: AtomicBool::new(false),
+                    register_calls: AtomicUsize::new(0),
+                    unregister_calls: AtomicUsize::new(0),
+                    registered_buffers: AtomicUsize::new(0),
+                    regular_writes: AtomicUsize::new(0),
+                    fixed_writes: AtomicUsize::new(0),
+                    fixed_batch_writes: AtomicUsize::new(0),
+                    fixed_reads: AtomicUsize::new(0),
+                }),
+            }
+        }
+    }
+
+    impl TrackingFixedStorageState {
+        fn invalid_block(block_id: u32) -> PersistentARTrieError {
+            PersistentARTrieError::InvalidBlockId {
+                block_id,
+                reason: "tracking storage block does not exist".to_string(),
+            }
+        }
+
+        fn invalid_range(block_id: u32) -> PersistentARTrieError {
+            PersistentARTrieError::InvalidBlockId {
+                block_id,
+                reason: "tracking storage byte range is outside the block".to_string(),
+            }
+        }
+
+        fn read_block_into(&self, block_id: u32, buffer: &mut [u8; BLOCK_SIZE]) -> Result<()> {
+            let blocks = self.blocks.read();
+            let block = blocks
+                .get(block_id as usize)
+                .ok_or_else(|| Self::invalid_block(block_id))?;
+            buffer.copy_from_slice(&block.data);
+            Ok(())
+        }
+
+        fn write_block_from(&self, block_id: u32, buffer: &[u8; BLOCK_SIZE]) -> Result<()> {
+            let mut blocks = self.blocks.write();
+            let block = blocks
+                .get_mut(block_id as usize)
+                .ok_or_else(|| Self::invalid_block(block_id))?;
+            block.data.copy_from_slice(buffer);
+            Ok(())
+        }
+
+        fn read_bytes_into(&self, block_id: u32, offset: usize, buffer: &mut [u8]) -> Result<()> {
+            let end = offset
+                .checked_add(buffer.len())
+                .ok_or_else(|| Self::invalid_range(block_id))?;
+            if end > BLOCK_SIZE {
+                return Err(Self::invalid_range(block_id));
+            }
+
+            let blocks = self.blocks.read();
+            let block = blocks
+                .get(block_id as usize)
+                .ok_or_else(|| Self::invalid_block(block_id))?;
+            buffer.copy_from_slice(&block.data[offset..end]);
+            Ok(())
+        }
+
+        fn write_bytes_from(&self, block_id: u32, offset: usize, data: &[u8]) -> Result<()> {
+            let end = offset
+                .checked_add(data.len())
+                .ok_or_else(|| Self::invalid_range(block_id))?;
+            if end > BLOCK_SIZE {
+                return Err(Self::invalid_range(block_id));
+            }
+
+            let mut blocks = self.blocks.write();
+            let block = blocks
+                .get_mut(block_id as usize)
+                .ok_or_else(|| Self::invalid_block(block_id))?;
+            block.data[offset..end].copy_from_slice(data);
+            Ok(())
+        }
+    }
+
+    impl BlockStorage for TrackingFixedStorage {
+        fn read_block(&self, block_id: u32, buffer: &mut [u8; BLOCK_SIZE]) -> Result<()> {
+            self.state.read_block_into(block_id, buffer)
+        }
+
+        fn write_block(&self, block_id: u32, buffer: &[u8; BLOCK_SIZE]) -> Result<()> {
+            self.state.regular_writes.fetch_add(1, Ordering::AcqRel);
+            self.state.write_block_from(block_id, buffer)
+        }
+
+        fn read_bytes(&self, block_id: u32, offset: usize, buffer: &mut [u8]) -> Result<()> {
+            self.state.read_bytes_into(block_id, offset, buffer)
+        }
+
+        fn write_bytes(&self, block_id: u32, offset: usize, data: &[u8]) -> Result<()> {
+            self.state.write_bytes_from(block_id, offset, data)
+        }
+
+        fn allocate_block(&self) -> Result<u32> {
+            let mut blocks = self.state.blocks.write();
+            let block_id = blocks.len() as u32;
+            blocks.push(AlignedBlock::new_boxed());
+            Ok(block_id)
+        }
+
+        fn free_block(&self, block_id: u32) -> Result<()> {
+            if block_id == 0 {
+                return Err(TrackingFixedStorageState::invalid_block(block_id));
+            }
+
+            let mut blocks = self.state.blocks.write();
+            let block = blocks
+                .get_mut(block_id as usize)
+                .ok_or_else(|| TrackingFixedStorageState::invalid_block(block_id))?;
+            block.data.fill(0);
+            Ok(())
+        }
+
+        fn read_header(&self) -> Result<FileHeader> {
+            let mut bytes = [0u8; 64];
+            self.read_header_bytes(&mut bytes)?;
+            Ok(FileHeader::from_bytes(&bytes))
+        }
+
+        fn write_header(&self, header: &FileHeader) -> Result<()> {
+            self.write_header_bytes(&header.to_bytes())
+        }
+
+        fn read_header_bytes(&self, buffer: &mut [u8]) -> Result<()> {
+            self.state.read_bytes_into(0, 0, buffer)
+        }
+
+        fn write_header_bytes(&self, bytes: &[u8]) -> Result<()> {
+            self.state.write_bytes_from(0, 0, bytes)
+        }
+
+        fn root_ptr(&self) -> Result<u64> {
+            Ok(self.read_header()?.root_ptr.load(Ordering::SeqCst))
+        }
+
+        fn set_root_ptr(&self, ptr: u64) -> Result<()> {
+            let header = self.read_header()?;
+            header.root_ptr.store(ptr, Ordering::SeqCst);
+            self.write_header(&header)
+        }
+
+        fn entry_count(&self) -> Result<u64> {
+            Ok(self.read_header()?.entry_count.load(Ordering::SeqCst))
+        }
+
+        fn set_entry_count(&self, count: u64) -> Result<()> {
+            let header = self.read_header()?;
+            header.entry_count.store(count, Ordering::SeqCst);
+            self.write_header(&header)
+        }
+
+        fn file_size(&self) -> u64 {
+            self.state.blocks.read().len() as u64 * BLOCK_SIZE as u64
+        }
+
+        fn block_count(&self) -> Result<u32> {
+            Ok(self.state.blocks.read().len() as u32)
+        }
+
+        fn path(&self) -> &str {
+            "tracking-fixed-storage"
+        }
+
+        fn sync(&self) -> Result<()> {
+            Ok(())
+        }
+
+        unsafe fn register_buffer_pool(&self, buffers: &[(*mut u8, usize)]) -> Result<()> {
+            assert!(
+                buffers
+                    .iter()
+                    .all(|(ptr, len)| !ptr.is_null() && *len == BLOCK_SIZE),
+                "registered buffers must be non-null full blocks"
+            );
+            self.state.register_calls.fetch_add(1, Ordering::AcqRel);
+            self.state
+                .registered_buffers
+                .store(buffers.len(), Ordering::Release);
+            self.state.registered.store(true, Ordering::Release);
+            Ok(())
+        }
+
+        fn unregister_buffer_pool(&self) -> Result<()> {
+            self.state.unregister_calls.fetch_add(1, Ordering::AcqRel);
+            self.state.registered.store(false, Ordering::Release);
+            Ok(())
+        }
+
+        fn read_block_fixed(
+            &self,
+            block_id: u32,
+            buffer: &mut [u8; BLOCK_SIZE],
+            _buf_index: u16,
+        ) -> Result<()> {
+            self.state.fixed_reads.fetch_add(1, Ordering::AcqRel);
+            self.state.read_block_into(block_id, buffer)
+        }
+
+        fn write_block_fixed(
+            &self,
+            block_id: u32,
+            buffer: &[u8; BLOCK_SIZE],
+            _buf_index: u16,
+        ) -> Result<()> {
+            self.state.fixed_writes.fetch_add(1, Ordering::AcqRel);
+            self.state.write_block_from(block_id, buffer)
+        }
+
+        fn supports_fixed_buffers(&self) -> bool {
+            self.state.registered.load(Ordering::Acquire)
+        }
+
+        fn write_blocks_batch_fixed(
+            &self,
+            requests: &[(u32, &[u8; BLOCK_SIZE], u16)],
+        ) -> Result<()> {
+            self.state.fixed_batch_writes.fetch_add(1, Ordering::AcqRel);
+            for &(block_id, buffer, buf_index) in requests {
+                self.write_block_fixed(block_id, buffer, buf_index)?;
+            }
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn fixed_buffer_registration_covers_write_guard_mutation_and_flush() {
+        let storage = TrackingFixedStorage::new();
+        let state = Arc::clone(&storage.state);
+        let block_id;
+
+        {
+            let bm = BufferManager::new(storage, 2);
+            assert_eq!(state.register_calls.load(Ordering::Acquire), 1);
+            assert_eq!(state.registered_buffers.load(Ordering::Acquire), 2);
+            assert!(state.registered.load(Ordering::Acquire));
+
+            {
+                let mut guard = bm.new_page().expect("new page");
+                block_id = guard.block_id();
+                guard.data_mut()[7] = 0xA5;
+                guard.data_mut()[BLOCK_SIZE - 1] = 0x5A;
+            }
+
+            assert_eq!(bm.stats().dirty_frames, 1);
+            bm.flush_all().expect("flush fixed buffer page");
+            assert_eq!(bm.stats().dirty_frames, 0);
+            assert_eq!(state.regular_writes.load(Ordering::Acquire), 0);
+            assert_eq!(state.fixed_batch_writes.load(Ordering::Acquire), 1);
+            assert_eq!(state.fixed_writes.load(Ordering::Acquire), 1);
+
+            let blocks = state.blocks.read();
+            assert_eq!(blocks[block_id as usize].data[7], 0xA5);
+            assert_eq!(blocks[block_id as usize].data[BLOCK_SIZE - 1], 0x5A);
+        }
+
+        assert_eq!(state.unregister_calls.load(Ordering::Acquire), 1);
+        assert!(!state.registered.load(Ordering::Acquire));
     }
 
     #[test]

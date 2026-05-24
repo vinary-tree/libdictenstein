@@ -21,8 +21,6 @@ use crate::value::DictionaryValue;
 use crate::{Dictionary, DictionaryNode, SyncStrategy};
 use rustc_hash::FxHashMap;
 use smallvec::SmallVec;
-use std::collections::HashMap;
-use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
 /// A dynamic DAWG that supports online insertions and deletions.
@@ -75,11 +73,9 @@ pub struct DynamicDawgChar<V: DictionaryValue = ()> {
 pub(crate) type DynamicDawgCharInner<V = ()> = crate::dawg_core::DawgCore<char, V>;
 
 // C1 step (DAWG char variant): byte-for-byte-identical local
-// `BloomFilter` and `NodeSignature` structs replaced with imports of
-// `crate::bloom_filter::BloomFilter` and `crate::node_signature::NodeSignature`.
-// Matches the byte DAWG variant's import in dynamic_dawg.rs.
+// `BloomFilter` is replaced with `crate::bloom_filter::BloomFilter`.
+// Node signatures now live entirely in the canonical generic DAWG core.
 use crate::bloom_filter::BloomFilter;
-use crate::node_signature::NodeSignature;
 
 // C1 step (DAWG char variant): byte-for-byte-identical local
 // `DawgNodeChar<V>` struct + 2-method impl block replaced with a type
@@ -248,83 +244,11 @@ impl<V: DictionaryValue> DynamicDawgChar<V> {
     pub fn insert(&self, term: &str) -> bool {
         let mut inner = self.inner.write();
         let chars: Vec<char> = term.chars().collect();
-
-        // Navigate to insertion point, creating nodes as needed
-        let mut node_idx = 0;
-        let mut path: Vec<(usize, char)> = Vec::new(); // (parent_idx, label)
-
-        for &ch in &chars {
-            if let Some(&child_idx) = inner.nodes[node_idx]
-                .edges
-                .iter()
-                .find(|(c, _)| *c == ch)
-                .map(|(_, idx)| idx)
-            {
-                // Edge exists, follow it
-                path.push((node_idx, ch));
-                node_idx = child_idx;
-            } else {
-                // Need to create new suffix
-                break;
-            }
+        let inserted = inner.insert_units(&chars);
+        if inserted {
+            inner.bloom_insert(term);
         }
-
-        // Check if term already exists
-        if path.len() == chars.len() && inner.nodes[node_idx].is_final {
-            return false; // Already exists
-        }
-
-        // Build remaining suffix with sharing
-        let start_char_idx = path.len();
-
-        // Phase 2.1: DISABLED - Suffix sharing is incompatible with dynamic insertions
-        // that can later mark intermediate nodes as final.
-        //
-        // Bug: When inserting "kb" after "jb", suffix sharing would reuse the same
-        // entry node for both 'j' and 'k' edges. Later, inserting "j" marks that
-        // shared node as final, incorrectly making "k" also appear as a valid term.
-        //
-        // Example:
-        //   dict.insert("jb"); dict.insert("kb");  // Creates shared structure
-        //   dict.insert("j");                       // BUG: also marks "k" as valid
-        //
-        // The correct DAWG structure for ["jb", "kb"] should have distinct nodes
-        // for 'j' and 'k' edges, even though they both continue with 'b'.
-        //
-        // For now, we disable Phase 2.1 and rely on the node-by-node construction
-        // below. Future work: implement proper suffix sharing that creates distinct
-        // intermediate nodes while sharing only the deeper suffix nodes.
-
-        // Create nodes one by one (no suffix sharing)
-        for i in start_char_idx..chars.len() {
-            let ch = chars[i];
-            let new_idx = inner.nodes.len();
-            let is_final = i == chars.len() - 1;
-            let mut new_node = DawgNodeChar::new(is_final);
-            new_node.ref_count = 1;
-
-            inner.nodes.push(new_node);
-            inner.insert_edge_sorted(node_idx, ch, new_idx);
-
-            node_idx = new_idx;
-        }
-
-        // Mark as final if we followed existing path
-        if start_char_idx == chars.len() {
-            inner.nodes[node_idx].is_final = true;
-        }
-
-        inner.term_count += 1;
-
-        // Add to Bloom filter if enabled (Opt #4)
-        if let Some(ref mut bloom) = inner.bloom_filter {
-            bloom.insert(term);
-        }
-
-        // Auto-minimize if bloat threshold exceeded
-        inner.check_and_auto_minimize();
-
-        true
+        inserted
     }
 
     /// Insert a term with an associated value.
@@ -343,76 +267,11 @@ impl<V: DictionaryValue> DynamicDawgChar<V> {
     pub fn insert_with_value(&self, term: &str, value: V) -> bool {
         let mut inner = self.inner.write();
         let chars: Vec<char> = term.chars().collect();
-
-        // Navigate to insertion point
-        let mut node_idx = 0;
-        let mut path: Vec<(usize, char)> = Vec::new();
-
-        for &ch in &chars {
-            if let Some(&child_idx) = inner.nodes[node_idx]
-                .edges
-                .iter()
-                .find(|(c, _)| *c == ch)
-                .map(|(_, idx)| idx)
-            {
-                path.push((node_idx, ch));
-                node_idx = child_idx;
-            } else {
-                break;
-            }
+        let inserted = inner.insert_units_with_value(&chars, value);
+        if inserted {
+            inner.bloom_insert(term);
         }
-
-        // Check if term already exists
-        if path.len() == chars.len() {
-            if inner.nodes[node_idx].is_final {
-                // Term exists - update value
-                inner.nodes[node_idx].value = Some(value);
-                return false;
-            } else {
-                // Mark as final and set value
-                inner.nodes[node_idx].is_final = true;
-                inner.nodes[node_idx].value = Some(value);
-                inner.term_count += 1;
-
-                // Add to Bloom filter
-                if let Some(ref mut bloom) = inner.bloom_filter {
-                    bloom.insert(term);
-                }
-
-                return true;
-            }
-        }
-
-        // Build remaining suffix
-        let start_char_idx = path.len();
-        for i in start_char_idx..chars.len() {
-            let ch = chars[i];
-            let new_idx = inner.nodes.len();
-            let is_final = i == chars.len() - 1;
-
-            let mut new_node = if is_final {
-                DawgNodeChar::new_with_value(true, Some(value.clone()))
-            } else {
-                DawgNodeChar::new(false)
-            };
-            new_node.ref_count = 1;
-
-            inner.nodes.push(new_node);
-            inner.insert_edge_sorted(node_idx, ch, new_idx);
-            node_idx = new_idx;
-        }
-
-        inner.term_count += 1;
-
-        // Add to Bloom filter
-        if let Some(ref mut bloom) = inner.bloom_filter {
-            bloom.insert(term);
-        }
-
-        // Auto-minimize if needed
-        inner.check_and_auto_minimize();
-
-        true
+        inserted
     }
 
     /// Update an existing term's value in place, or insert a new term with a default value.
@@ -451,85 +310,11 @@ impl<V: DictionaryValue> DynamicDawgChar<V> {
     {
         let mut inner = self.inner.write();
         let chars: Vec<char> = term.chars().collect();
-
-        // Navigate to insertion point
-        let mut node_idx = 0;
-        let mut path: Vec<(usize, char)> = Vec::new();
-
-        for &ch in &chars {
-            if let Some(&child_idx) = inner.nodes[node_idx]
-                .edges
-                .iter()
-                .find(|(c, _)| *c == ch)
-                .map(|(_, idx)| idx)
-            {
-                path.push((node_idx, ch));
-                node_idx = child_idx;
-            } else {
-                break;
-            }
+        let inserted = inner.update_or_insert_units(&chars, default_value, update_fn);
+        if inserted {
+            inner.bloom_insert(term);
         }
-
-        // Check if term already exists
-        if path.len() == chars.len() && inner.nodes[node_idx].is_final {
-            // Term exists - update value in place
-            if let Some(ref mut value) = inner.nodes[node_idx].value {
-                update_fn(value);
-            } else {
-                // Term exists but has no value (shouldn't happen with typed values)
-                // Insert default and apply update
-                let mut value = default_value;
-                update_fn(&mut value);
-                inner.nodes[node_idx].value = Some(value);
-            }
-            return false;
-        }
-
-        // Term doesn't exist - insert with default value
-        if path.len() == chars.len() {
-            // Node exists but isn't final - mark as final
-            inner.nodes[node_idx].is_final = true;
-            inner.nodes[node_idx].value = Some(default_value);
-            inner.term_count += 1;
-
-            // Add to Bloom filter
-            if let Some(ref mut bloom) = inner.bloom_filter {
-                bloom.insert(term);
-            }
-
-            return true;
-        }
-
-        // Build remaining suffix
-        let start_char_idx = path.len();
-        for i in start_char_idx..chars.len() {
-            let ch = chars[i];
-            let new_idx = inner.nodes.len();
-            let is_final = i == chars.len() - 1;
-
-            let mut new_node = if is_final {
-                DawgNodeChar::new_with_value(true, Some(default_value.clone()))
-            } else {
-                DawgNodeChar::new(false)
-            };
-            new_node.ref_count = 1;
-
-            inner.nodes.push(new_node);
-            inner.insert_edge_sorted(node_idx, ch, new_idx);
-            node_idx = new_idx;
-        }
-
-        inner.term_count += 1;
-
-        // Add to Bloom filter
-        if let Some(ref mut bloom) = inner.bloom_filter {
-            bloom.insert(term);
-        }
-
-        // Auto-minimize if needed
-        inner.check_and_auto_minimize();
-
-        true
+        inserted
     }
 
     /// Get the value associated with a term.
@@ -581,49 +366,7 @@ impl<V: DictionaryValue> DynamicDawgChar<V> {
     pub fn remove(&self, term: &str) -> bool {
         let mut inner = self.inner.write();
         let chars: Vec<char> = term.chars().collect();
-
-        // Navigate to the term
-        let mut node_idx = 0;
-        let mut path: Vec<(usize, char, usize)> = Vec::new(); // (parent, label, child)
-
-        for &ch in &chars {
-            if let Some(&child_idx) = inner.nodes[node_idx]
-                .edges
-                .iter()
-                .find(|(c, _)| *c == ch)
-                .map(|(_, idx)| idx)
-            {
-                path.push((node_idx, ch, child_idx));
-                node_idx = child_idx;
-            } else {
-                return false; // Term doesn't exist
-            }
-        }
-
-        // Check if it's a final node
-        if !inner.nodes[node_idx].is_final {
-            return false; // Term doesn't exist
-        }
-
-        // Unmark as final
-        inner.nodes[node_idx].is_final = false;
-        inner.term_count -= 1;
-
-        // Prune unreachable branches (nodes with no children and not final)
-        for (parent_idx, label, child_idx) in path.iter().rev() {
-            let child = &inner.nodes[*child_idx];
-            if !child.is_final && child.edges.is_empty() {
-                // Remove edge from parent
-                inner.nodes[*parent_idx].edges.retain(|(b, _)| *b != *label);
-            } else {
-                break; // Stop pruning
-            }
-        }
-
-        // Phase 2.1: Invalidate suffix cache since structure changed
-        inner.suffix_cache.clear();
-        inner.needs_compaction = true;
-        true
+        inner.remove_units(&chars)
     }
 
     /// Compact the DAWG to restore perfect minimality.
@@ -648,50 +391,7 @@ impl<V: DictionaryValue> DynamicDawgChar<V> {
     /// Returns the number of nodes removed.
     pub fn compact(&self) -> usize {
         let mut inner = self.inner.write();
-
-        // Extract all terms
-        let terms = inner.extract_all_terms();
-        let old_node_count = inner.nodes.len();
-
-        // Preserve settings
-        let auto_minimize_threshold = inner.auto_minimize_threshold;
-        // BloomFilter::capacity() returns bit_count; divide by 10 to recover
-        // the approximate original expected_elements (matches the byte DAWG
-        // dynamic_dawg.rs path post-C1 migration).
-        let bloom_capacity = inner.bloom_filter.as_ref().map(|b| b.capacity() / 10);
-
-        // Rebuild from scratch
-        *inner = DynamicDawgCharInner {
-            nodes: vec![DawgNodeChar::new(false)],
-            term_count: 0,
-            needs_compaction: false,
-            suffix_cache: FxHashMap::default(),
-            last_minimized_node_count: 1,
-            auto_minimize_threshold,
-            bloom_filter: bloom_capacity.map(BloomFilter::new),
-        };
-
-        // Re-insert sorted terms for optimal prefix sharing
-        let mut sorted_terms = terms;
-        sorted_terms.sort();
-
-        for term in &sorted_terms {
-            // Direct insertion without locking (we already have write lock)
-            inner.insert_direct(term);
-
-            // Rebuild Bloom filter — `term: &Vec<char>`, so collect to a
-            // String first since BloomFilter::insert takes &str.
-            if let Some(ref mut bloom) = inner.bloom_filter {
-                let term_str: String = term.iter().collect();
-                bloom.insert(&term_str);
-            }
-        }
-
-        // Now minimize to merge equivalent suffixes (DAWG minimization)
-        // This is what makes it a true DAWG instead of just a trie
-        let minimized = inner.minimize_incremental();
-
-        old_node_count - inner.nodes.len() + minimized
+        inner.compact()
     }
 
     /// Minimize the DAWG using incremental suffix merging.

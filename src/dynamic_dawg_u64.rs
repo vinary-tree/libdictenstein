@@ -639,64 +639,70 @@ impl<V: DictionaryValue> DynamicDawgU64<V> {
     where
         F: FnOnce(&mut V),
     {
-        // Navigate to the node, creating path if needed
+        // Navigate to the node, creating path if needed, without overwriting an
+        // existing value before the update function can observe it.
         if sequence.is_empty() {
             if self.root.is_final.load(Ordering::Acquire) {
-                // Update existing value
                 let current_val = self.root.value.load();
-                // current_val is Guard<Option<Arc<V>>>; *current_val is Option<Arc<V>>
-                if let Some(val) = &*current_val {
-                    // val is &Arc<V>, **val is V
-                    let mut new_val = (**val).clone();
-                    update_fn(&mut new_val);
-                    self.root.value.store(Some(Arc::new(new_val)));
-                }
+                let new_value = if let Some(val) = &*current_val {
+                    let mut new_value = (**val).clone();
+                    update_fn(&mut new_value);
+                    new_value
+                } else {
+                    default_value
+                };
+                self.root.value.store(Some(Arc::new(new_value)));
                 return false;
-            } else {
-                // Insert new
-                self.root.is_final.store(true, Ordering::Release);
-                self.root.value.store(Some(Arc::new(default_value)));
-                self.term_count.fetch_add(1, Ordering::Relaxed);
-                return true;
             }
+
+            self.root.value.store(Some(Arc::new(default_value)));
+            self.root.is_final.store(true, Ordering::Release);
+            self.term_count.fetch_add(1, Ordering::Relaxed);
+            return true;
         }
 
-        // First, ensure the path exists
-        let is_new = self.insert_sequence_with_value(sequence, default_value.clone());
-
-        if !is_new {
-            // Path existed, update the value
-            let node = self.find_node(sequence);
-            if let Some(node) = node {
-                let current_val = node.value.load();
-                if let Some(val) = &*current_val {
-                    let mut new_val = (**val).clone();
-                    update_fn(&mut new_val);
-                    node.value.store(Some(Arc::new(new_val)));
-                }
-            }
-        }
-
-        is_new
-    }
-
-    /// Find a node by sequence (internal helper).
-    fn find_node(&self, sequence: &[u64]) -> Option<Arc<DawgNodeU64<V>>> {
         let mut current: Arc<DawgNodeU64<V>> = self.root.clone();
 
         for &label in sequence {
-            let edges = current.edges.load();
-            match edges.find(label) {
-                Some(child) => {
-                    // Clone the Arc to increment refcount and own the node.
-                    // This ensures the node stays alive after the guard drops.
+            loop {
+                let edges = current.edges.load();
+
+                if let Some(child) = edges.find(label) {
                     current = child.clone();
+                    break;
                 }
-                None => return None,
+
+                let new_node = Arc::new(DawgNodeU64::new(false));
+                let new_edges = Arc::new(edges.with_edge(label, new_node.clone()));
+                let prev = current.edges.compare_and_swap(&edges, new_edges);
+
+                if Arc::ptr_eq(&prev, &edges) {
+                    current = new_node;
+                    break;
+                }
             }
         }
 
-        Some(current)
+        if current
+            .is_final
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed)
+            .is_ok()
+        {
+            current.value.store(Some(Arc::new(default_value)));
+            self.term_count.fetch_add(1, Ordering::Relaxed);
+            return true;
+        }
+
+        let current_val = current.value.load();
+        let new_value = if let Some(val) = &*current_val {
+            let mut new_value = (**val).clone();
+            update_fn(&mut new_value);
+            new_value
+        } else {
+            default_value
+        };
+        current.value.store(Some(Arc::new(new_value)));
+        false
     }
 
     /// Get the value for a sequence.
@@ -893,9 +899,7 @@ impl<V: DictionaryValue> Iterator for DawgIterator<'_, V> {
                 self.stack.push((child.clone(), new_path, 0));
             } else if node.is_final.load(Ordering::Acquire) {
                 // All children visited, and this is a final node - return the path
-                if !path.is_empty() || edge_idx == 0 {
-                    return Some(path);
-                }
+                return Some(path);
             }
         }
         None

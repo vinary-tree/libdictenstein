@@ -45,9 +45,6 @@
 
 use std::sync::Arc;
 
-use rustc_hash::FxHashSet;
-use smallvec::SmallVec;
-
 use crate::substring::{BidirectionalDictionaryNode, SubstringDictionary, SubstringMatch};
 use crate::sync_compat::RwLock;
 use crate::value::DictionaryValue;
@@ -205,6 +202,10 @@ impl<V: DictionaryValue> Scdawg<V> {
         V: Clone,
     {
         let inner = self.inner.read();
+        if let Some(value) = inner.term_values.get(term) {
+            return Some(value.clone());
+        }
+
         let mut current = 0;
         for byte in term.bytes() {
             match inner.nodes[current].get_edge(byte) {

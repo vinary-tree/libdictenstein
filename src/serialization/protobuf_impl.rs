@@ -5,10 +5,182 @@ use std::io::{Read, Write};
 
 use super::{DictionaryFromTerms, DictionarySerializer, SerializationError};
 
+#[cfg(feature = "protobuf")]
+use std::collections::{HashMap, HashSet};
+
 /// Generated protobuf types
 mod proto {
     #![allow(dead_code)]
     include!(concat!(env!("OUT_DIR"), "/libdictenstein.proto.rs"));
+}
+
+#[cfg(feature = "protobuf")]
+const DAT_TERMS_MAGIC: &[u8] = b"LDT1";
+
+#[cfg(feature = "protobuf")]
+fn dictionary_error(message: impl Into<String>) -> SerializationError {
+    SerializationError::DictionaryError(message.into())
+}
+
+#[cfg(feature = "protobuf")]
+fn checked_label_u32(label: u32, format: &str) -> Result<u8, SerializationError> {
+    u8::try_from(label)
+        .map_err(|_| dictionary_error(format!("{format} edge label {label} exceeds u8")))
+}
+
+#[cfg(feature = "protobuf")]
+fn checked_label_u64(label: u64, format: &str) -> Result<u8, SerializationError> {
+    u8::try_from(label)
+        .map_err(|_| dictionary_error(format!("{format} edge label {label} exceeds u8")))
+}
+
+#[cfg(feature = "protobuf")]
+fn validate_term_count(
+    expected: u64,
+    actual: usize,
+    format: &str,
+) -> Result<(), SerializationError> {
+    let expected = usize::try_from(expected)
+        .map_err(|_| dictionary_error(format!("{format} term count does not fit usize")))?;
+    if expected == actual {
+        Ok(())
+    } else {
+        Err(dictionary_error(format!(
+            "{format} term count mismatch: expected {expected}, decoded {actual}"
+        )))
+    }
+}
+
+#[cfg(feature = "protobuf")]
+fn ensure_reachable_acyclic(
+    root_id: u64,
+    adjacency: &HashMap<u64, Vec<(u8, u64)>>,
+) -> Result<(), SerializationError> {
+    fn visit(
+        node_id: u64,
+        adjacency: &HashMap<u64, Vec<(u8, u64)>>,
+        visiting: &mut HashSet<u64>,
+        visited: &mut HashSet<u64>,
+    ) -> Result<(), SerializationError> {
+        if visited.contains(&node_id) {
+            return Ok(());
+        }
+        if !visiting.insert(node_id) {
+            return Err(dictionary_error(format!(
+                "protobuf graph contains a reachable cycle at node {node_id}"
+            )));
+        }
+
+        if let Some(edges) = adjacency.get(&node_id) {
+            for &(_, target_id) in edges {
+                visit(target_id, adjacency, visiting, visited)?;
+            }
+        }
+
+        visiting.remove(&node_id);
+        visited.insert(node_id);
+        Ok(())
+    }
+
+    let mut visiting = HashSet::new();
+    let mut visited = HashSet::new();
+    visit(root_id, adjacency, &mut visiting, &mut visited)
+}
+
+#[cfg(feature = "protobuf")]
+fn terms_from_adjacency(
+    root_id: u64,
+    adjacency: &HashMap<u64, Vec<(u8, u64)>>,
+    final_set: &HashSet<u64>,
+) -> Result<Vec<String>, SerializationError> {
+    ensure_reachable_acyclic(root_id, adjacency)?;
+
+    fn dfs(
+        node_id: u64,
+        adjacency: &HashMap<u64, Vec<(u8, u64)>>,
+        final_set: &HashSet<u64>,
+        current_term: &mut Vec<u8>,
+        terms: &mut Vec<String>,
+    ) -> Result<(), SerializationError> {
+        if final_set.contains(&node_id) {
+            let term = String::from_utf8(current_term.clone()).map_err(|_| {
+                dictionary_error("protobuf graph produced a non-UTF-8 dictionary term")
+            })?;
+            terms.push(term);
+        }
+
+        if let Some(edges) = adjacency.get(&node_id) {
+            for &(label, target_id) in edges {
+                current_term.push(label);
+                dfs(target_id, adjacency, final_set, current_term, terms)?;
+                current_term.pop();
+            }
+        }
+
+        Ok(())
+    }
+
+    let mut terms = Vec::with_capacity(final_set.len());
+    let mut current_term = Vec::with_capacity(32);
+    dfs(root_id, adjacency, final_set, &mut current_term, &mut terms)?;
+    Ok(terms)
+}
+
+#[cfg(feature = "protobuf")]
+fn encode_dat_terms(terms: &[String]) -> Result<Vec<u8>, SerializationError> {
+    let mut encoded = Vec::new();
+    encoded.extend_from_slice(DAT_TERMS_MAGIC);
+    for term in terms {
+        let term_bytes = term.as_bytes();
+        let len = u32::try_from(term_bytes.len())
+            .map_err(|_| dictionary_error("DAT protobuf term exceeds u32 length"))?;
+        encoded.extend_from_slice(&len.to_le_bytes());
+        encoded.extend_from_slice(term_bytes);
+    }
+    Ok(encoded)
+}
+
+#[cfg(feature = "protobuf")]
+fn decode_dat_terms(edge_data: &[u8], term_count: u64) -> Result<Vec<String>, SerializationError> {
+    let terms = if edge_data.starts_with(DAT_TERMS_MAGIC) {
+        let mut offset = DAT_TERMS_MAGIC.len();
+        let mut terms = Vec::new();
+
+        while offset < edge_data.len() {
+            let Some(length_bytes) = edge_data.get(offset..offset + 4) else {
+                return Err(dictionary_error("DAT protobuf term length is truncated"));
+            };
+            let len = u32::from_le_bytes([
+                length_bytes[0],
+                length_bytes[1],
+                length_bytes[2],
+                length_bytes[3],
+            ]) as usize;
+            offset += 4;
+
+            let Some(term_bytes) = edge_data.get(offset..offset + len) else {
+                return Err(dictionary_error("DAT protobuf term payload is truncated"));
+            };
+            offset += len;
+
+            let term = String::from_utf8(term_bytes.to_vec())
+                .map_err(|_| dictionary_error("DAT protobuf term is not valid UTF-8"))?;
+            terms.push(term);
+        }
+
+        terms
+    } else {
+        let terms_str = std::str::from_utf8(edge_data)
+            .map_err(|_| dictionary_error("legacy DAT protobuf terms are not valid UTF-8"))?;
+        terms_str
+            .lines()
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string())
+            .collect()
+    };
+
+    validate_term_count(term_count, terms.len(), "DAT protobuf")?;
+    Ok(terms)
 }
 
 #[cfg(feature = "protobuf")]
@@ -139,7 +311,6 @@ impl DictionarySerializer for ProtobufSerializer {
         R: Read,
     {
         use prost::Message;
-        use std::collections::HashMap;
 
         // Read all bytes
         let mut buf = Vec::new();
@@ -152,54 +323,47 @@ impl DictionarySerializer for ProtobufSerializer {
         // Build adjacency list with pre-allocated capacity
         let est_nodes = proto_dict.node_id.len();
         let mut adjacency: HashMap<u64, Vec<(u8, u64)>> = HashMap::with_capacity(est_nodes);
+        let node_ids: HashSet<u64> = proto_dict.node_id.iter().copied().collect();
+        if !node_ids.contains(&proto_dict.root_id) {
+            return Err(dictionary_error(format!(
+                "protobuf v1 root node {} is not declared",
+                proto_dict.root_id
+            )));
+        }
+
         for edge in &proto_dict.edge {
+            if !node_ids.contains(&edge.source_id) {
+                return Err(dictionary_error(format!(
+                    "protobuf v1 edge source {} is not declared",
+                    edge.source_id
+                )));
+            }
+            if !node_ids.contains(&edge.target_id) {
+                return Err(dictionary_error(format!(
+                    "protobuf v1 edge target {} is not declared",
+                    edge.target_id
+                )));
+            }
+            let label = checked_label_u32(edge.label, "protobuf v1")?;
             adjacency
                 .entry(edge.source_id)
                 .or_default()
-                .push((edge.label as u8, edge.target_id));
+                .push((label, edge.target_id));
         }
 
         // Pre-allocate HashSet with known size
-        let mut final_set: std::collections::HashSet<u64> =
-            std::collections::HashSet::with_capacity(proto_dict.final_node_id.len());
+        let mut final_set: HashSet<u64> = HashSet::with_capacity(proto_dict.final_node_id.len());
         final_set.extend(proto_dict.final_node_id.iter().copied());
-
-        // Extract all terms using DFS
-        let est_terms = proto_dict.final_node_id.len();
-        let mut terms = Vec::with_capacity(est_terms);
-        let mut current_term = Vec::with_capacity(32); // Most words < 32 bytes
-
-        fn dfs(
-            node_id: u64,
-            adjacency: &HashMap<u64, Vec<(u8, u64)>>,
-            final_set: &std::collections::HashSet<u64>,
-            current_term: &mut Vec<u8>,
-            terms: &mut Vec<String>,
-        ) {
-            if final_set.contains(&node_id) {
-                // Avoid clone by borrowing current_term
-                match std::str::from_utf8(current_term) {
-                    Ok(s) => terms.push(s.to_string()),
-                    Err(_) => terms.push(String::from_utf8_lossy(current_term).into_owned()),
-                }
-            }
-
-            if let Some(edges) = adjacency.get(&node_id) {
-                for &(label, target_id) in edges {
-                    current_term.push(label);
-                    dfs(target_id, adjacency, final_set, current_term, terms);
-                    current_term.pop();
-                }
+        for final_id in &final_set {
+            if !node_ids.contains(final_id) {
+                return Err(dictionary_error(format!(
+                    "protobuf v1 final node {final_id} is not declared"
+                )));
             }
         }
 
-        dfs(
-            proto_dict.root_id,
-            &adjacency,
-            &final_set,
-            &mut current_term,
-            &mut terms,
-        );
+        let terms = terms_from_adjacency(proto_dict.root_id, &adjacency, &final_set)?;
+        validate_term_count(proto_dict.size, terms.len(), "protobuf v1")?;
 
         Ok(D::from_terms(terms))
     }
@@ -336,7 +500,6 @@ impl DictionarySerializer for OptimizedProtobufSerializer {
         R: Read,
     {
         use prost::Message;
-        use std::collections::HashMap;
 
         // Read all bytes
         let mut buf = Vec::new();
@@ -352,24 +515,33 @@ impl DictionarySerializer for OptimizedProtobufSerializer {
                 proto_dict.edge_data.len()
             )));
         }
+        let num_edges = proto_dict.edge_data.len() / 3;
+        let declared_edges = usize::try_from(proto_dict.edge_count)
+            .map_err(|_| dictionary_error("protobuf v2 edge_count does not fit usize"))?;
+        if declared_edges != num_edges {
+            return Err(dictionary_error(format!(
+                "protobuf v2 edge_count mismatch: expected {declared_edges}, decoded {num_edges}"
+            )));
+        }
 
         // Reconstruct final node IDs from deltas with pre-allocation
         let mut final_node_ids = Vec::with_capacity(proto_dict.final_node_delta.len());
         if !proto_dict.final_node_delta.is_empty() {
             let mut cumsum = 0u64;
             for &delta in &proto_dict.final_node_delta {
-                cumsum += delta;
+                cumsum = cumsum
+                    .checked_add(delta)
+                    .ok_or_else(|| dictionary_error("protobuf v2 final-node delta overflow"))?;
                 final_node_ids.push(cumsum);
             }
         }
 
         // Build adjacency list from packed edge data with pre-allocation
-        let num_edges = proto_dict.edge_data.len() / 3;
         let est_nodes = (num_edges as f64 * 0.6) as usize; // Estimate nodes from edges
         let mut adjacency: HashMap<u64, Vec<(u8, u64)>> = HashMap::with_capacity(est_nodes);
         for chunk in proto_dict.edge_data.chunks_exact(3) {
             let source_id = chunk[0];
-            let label = chunk[1] as u8;
+            let label = checked_label_u64(chunk[1], "protobuf v2")?;
             let target_id = chunk[2];
 
             adjacency
@@ -379,46 +551,11 @@ impl DictionarySerializer for OptimizedProtobufSerializer {
         }
 
         // Pre-allocate HashSet with known size
-        let mut final_set: std::collections::HashSet<u64> =
-            std::collections::HashSet::with_capacity(final_node_ids.len());
+        let mut final_set: HashSet<u64> = HashSet::with_capacity(final_node_ids.len());
         final_set.extend(final_node_ids.iter().copied());
 
-        // Extract all terms using DFS with pre-allocation
-        let est_terms = final_node_ids.len();
-        let mut terms = Vec::with_capacity(est_terms);
-        let mut current_term = Vec::with_capacity(32); // Most words < 32 bytes
-
-        fn dfs(
-            node_id: u64,
-            adjacency: &HashMap<u64, Vec<(u8, u64)>>,
-            final_set: &std::collections::HashSet<u64>,
-            current_term: &mut Vec<u8>,
-            terms: &mut Vec<String>,
-        ) {
-            if final_set.contains(&node_id) {
-                // Avoid clone by borrowing current_term
-                match std::str::from_utf8(current_term) {
-                    Ok(s) => terms.push(s.to_string()),
-                    Err(_) => terms.push(String::from_utf8_lossy(current_term).into_owned()),
-                }
-            }
-
-            if let Some(edges) = adjacency.get(&node_id) {
-                for &(label, target_id) in edges {
-                    current_term.push(label);
-                    dfs(target_id, adjacency, final_set, current_term, terms);
-                    current_term.pop();
-                }
-            }
-        }
-
-        dfs(
-            proto_dict.root_id,
-            &adjacency,
-            &final_set,
-            &mut current_term,
-            &mut terms,
-        );
+        let terms = terms_from_adjacency(proto_dict.root_id, &adjacency, &final_set)?;
+        validate_term_count(proto_dict.size, terms.len(), "protobuf v2")?;
 
         Ok(D::from_terms(terms))
     }
@@ -542,7 +679,7 @@ impl DatProtobufSerializer {
             base: Vec::new(), // Placeholder - we serialize via terms
             check: Vec::new(),
             is_final: Vec::new(),
-            edge_data: terms.join("\n").into_bytes(), // Store terms as newline-delimited
+            edge_data: encode_dat_terms(&terms)?,
             free_list: Vec::new(),
             term_count: terms.len() as u64,
             rebuild_threshold: 0.2,
@@ -570,13 +707,7 @@ impl DatProtobufSerializer {
 
         let proto_dat = proto::DoubleArrayTrie::decode(&buf[..])?;
 
-        // Extract terms from edge_data
-        let terms_str = String::from_utf8_lossy(&proto_dat.edge_data);
-        let terms: Vec<String> = terms_str
-            .lines()
-            .filter(|s| !s.is_empty())
-            .map(|s| s.to_string())
-            .collect();
+        let terms = decode_dat_terms(&proto_dat.edge_data, proto_dat.term_count)?;
 
         // Rebuild DAT from terms
         Ok(crate::double_array_trie::DoubleArrayTrie::from_terms(terms))

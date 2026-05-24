@@ -1,0 +1,106 @@
+# path	kind	pattern	count	contract
+src/persistent_artrie/dict_impl.rs	unsafe_block	unsafe {	1	persistent-artrie-mmap-open
+src/persistent_artrie/lockfree_cas.rs	unsafe_block	let child = unsafe {	4	byte-lockfree-child-arc-handoff
+src/persistent_artrie/mvcc.rs	unsafe_block	unsafe {	1	byte-mvcc-root-snapshot
+src/persistent_artrie/nodes/node16.rs	unsafe_block	unsafe {	1	byte-node16-prefix-copy
+src/persistent_artrie/nodes/persistent_node.rs	unsafe_impl	unsafe impl Send for PersistentNode {}	1	byte-persistent-node-thread-contract
+src/persistent_artrie/nodes/persistent_node.rs	unsafe_impl	unsafe impl Sync for PersistentNode {}	1	byte-persistent-node-thread-contract
+src/persistent_artrie_char/disk_io.rs	unsafe_block	Ok(unsafe {	1	char-disk-swizzled-pointer-resolution
+src/persistent_artrie_char/disk_io.rs	unsafe_block	Ok(unsafe { &*ptr.as_ptr_unchecked::<CharTrieNodeInner<V>>() })	1	char-disk-swizzled-pointer-resolution
+src/persistent_artrie_char/disk_io.rs	unsafe_block	Ok(unsafe { &*raw_ptr })	1	char-disk-node-map-resolution
+src/persistent_artrie_char/disk_io.rs	unsafe_block	Ok(unsafe { &mut *raw_ptr })	1	char-disk-node-map-resolution
+src/persistent_artrie_char/disk_io.rs	unsafe_block	return Ok(unsafe { &*p });	1	char-disk-node-map-resolution
+src/persistent_artrie_char/disk_io.rs	unsafe_block	return Ok(unsafe { &mut *(p as *mut CharTrieNodeInner<V>) });	1	char-disk-node-map-resolution
+src/persistent_artrie_char/disk_io.rs	unsafe_block	unsafe {	5	char-disk-box-ownership
+src/persistent_artrie_char/lockfree_cas.rs	unsafe_block	let child = unsafe {	4	char-lockfree-child-arc-handoff
+src/persistent_artrie_char/lockfree_cas.rs	unsafe_block	let node = unsafe { &mut *persistent_node };	2	char-lockfree-persistent-node-mutation
+src/persistent_artrie_char/mod.rs	unsafe_block	let edges: Vec<_> = unsafe {	1	char-public-node-edge-snapshot
+src/persistent_artrie_char/mod.rs	unsafe_block	let node = unsafe { &mut *current };	1	char-public-node-mutation
+src/persistent_artrie_char/mod.rs	unsafe_block	let parent = unsafe { &mut *current };	1	char-public-node-mutation
+src/persistent_artrie_char/mod.rs	unsafe_block	unsafe {	2	char-public-node-traversal
+src/persistent_artrie_char/mod.rs	unsafe_block	unsafe { (*ptr).is_final() }	1	char-public-node-traversal
+src/persistent_artrie_char/mod.rs	unsafe_block	unsafe { (*ptr).value.clone() }	1	char-public-node-traversal
+src/persistent_artrie_char/mod.rs	unsafe_impl	unsafe impl<V: DictionaryValue> Send for PersistentARTrieCharNode<V> {}	1	char-public-node-thread-contract
+src/persistent_artrie_char/mod.rs	unsafe_impl	unsafe impl<V: DictionaryValue> Sync for PersistentARTrieCharNode<V> {}	1	char-public-node-thread-contract
+src/persistent_artrie_char/mutation_core.rs	unsafe_block	let node = unsafe { &*current };	1	char-mutation-core-traversal
+src/persistent_artrie_char/mutation_core.rs	unsafe_block	let node = unsafe { &mut *current };	5	char-mutation-core-unique-borrow
+src/persistent_artrie_char/mvcc.rs	unsafe_block	unsafe {	1	char-mvcc-root-snapshot
+src/persistent_artrie_char/nodes/node16_char.rs	unsafe_block	unsafe {	1	char-node16-prefix-copy
+src/persistent_artrie_char/nodes/persistent_node.rs	unsafe_impl	unsafe impl Send for PersistentCharNode {}	1	char-persistent-node-thread-contract
+src/persistent_artrie_char/nodes/persistent_node.rs	unsafe_impl	unsafe impl Sync for PersistentCharNode {}	1	char-persistent-node-thread-contract
+src/persistent_artrie_char/persist.rs	unsafe_block	let child = unsafe { &*child_raw };	1	char-persist-child-serialization
+src/persistent_artrie_char/types.rs	unsafe_block	Some(unsafe { Box::from_raw(ptr as *mut CharTrieNodeInner<V>) })	1	char-child-box-reclaim
+src/persistent_artrie_char/types.rs	unsafe_block	let child_ref = unsafe { &*p };	1	char-child-read-only-traversal
+src/persistent_artrie_char/types.rs	unsafe_block	let child_ref = unsafe { &*ptr };	1	char-child-read-only-traversal
+src/persistent_artrie_char/types.rs	unsafe_block	let old_child = unsafe { Box::from_raw(ptr as *mut CharTrieNodeInner<V>) };	1	char-child-box-replacement
+src/persistent_artrie_char/types.rs	unsafe_block	unsafe {	2	char-child-raw-map-iteration
+src/persistent_artrie_char/types.rs	unsafe_block	unsafe { &*ptr }	1	char-child-read-only-traversal
+src/persistent_artrie_char/types.rs	unsafe_block	unsafe { &mut *(ptr as *mut CharTrieNodeInner<V>) }	1	char-child-unique-mutation
+src/persistent_artrie_char/types.rs	unsafe_block	unsafe { &mut *ptr }	1	char-child-unique-mutation
+src/persistent_artrie_core/block_storage.rs	unsafe_block	unsafe {	1	block-storage-default-fixed-buffer-registration
+src/persistent_artrie_core/block_storage.rs	unsafe_fn	unsafe fn register_buffer_pool(&self, _buffers: &[(*mut u8, usize)]) -> Result<()> {	1	block-storage-fixed-buffer-registration-contract
+src/persistent_artrie_core/buffer_manager.rs	unsafe_block	let fixed_buffers_registered = unsafe { storage.register_buffer_pool(&buffers).is_ok() }	2	buffer-manager-fixed-buffer-registration
+src/persistent_artrie_core/buffer_manager.rs	unsafe_block	unsafe {	3	buffer-manager-aligned-buffer-ownership
+src/persistent_artrie_core/buffer_manager.rs	unsafe_fn	unsafe fn register_buffer_pool(&self, buffers: &[(*mut u8, usize)]) -> Result<()> {	1	buffer-manager-test-fixed-buffer-registration
+src/persistent_artrie_core/compact_encoding.rs	unsafe_block	unsafe { data.as_ptr().add(1).cast::<u64>().read_unaligned() }	1	compact-encoding-unaligned-read
+src/persistent_artrie_core/concurrency.rs	unsafe_impl	unsafe impl<T: Send + Sync> Sync for OptimisticCell<T> {}	1	optimistic-cell-rwlock-thread-contract
+src/persistent_artrie_core/concurrency.rs	unsafe_impl	unsafe impl<T: Send> Send for OptimisticCell<T> {}	1	optimistic-cell-rwlock-thread-contract
+src/persistent_artrie_core/disk_manager.rs	unsafe_block	let mmap = unsafe {	3	mmap-manager-map-lifetime
+src/persistent_artrie_core/disk_manager.rs	unsafe_block	let new_mmap = unsafe {	1	mmap-manager-remap-lifetime
+src/persistent_artrie_core/disk_manager.rs	unsafe_fn	pub unsafe fn raw_ptr(&self, block_id: u32, offset_in_block: usize) -> Result<*const u8> {	1	mmap-manager-raw-pointer-contract
+src/persistent_artrie_core/io_uring_disk_manager.rs	unsafe_block	let ret = unsafe {	1	io-uring-syscall-boundary
+src/persistent_artrie_core/io_uring_disk_manager.rs	unsafe_block	unsafe {	10	io-uring-mmap-direct-io-boundary
+src/persistent_artrie_core/io_uring_disk_manager.rs	unsafe_fn	unsafe fn register_buffer_pool(&self, buffers: &[(*mut u8, usize)]) -> Result<()> {	1	io-uring-fixed-buffer-registration-contract
+src/persistent_artrie_core/io_uring_disk_manager.rs	unsafe_impl	unsafe impl Send for IoUringDiskManager {}	1	io-uring-manager-thread-contract
+src/persistent_artrie_core/io_uring_disk_manager.rs	unsafe_impl	unsafe impl Sync for IoUringDiskManager {}	1	io-uring-manager-thread-contract
+src/persistent_artrie_core/mvcc.rs	unsafe_impl	unsafe impl<T: TrieRoot> Send for ReadTransaction<T> {}	1	read-transaction-root-snapshot-thread-contract
+src/persistent_artrie_core/swizzled_ptr.rs	unsafe_block	assert_eq!(unsafe { *old_ptr }, 42);	1	swizzled-pointer-unit-test-deref
+src/persistent_artrie_core/swizzled_ptr.rs	unsafe_block	assert_eq!(unsafe { *retrieved }, 12345);	1	swizzled-pointer-unit-test-deref
+src/persistent_artrie_core/swizzled_ptr.rs	unsafe_block	assert_eq!(unsafe { *retrieved }, 42);	1	swizzled-pointer-unit-test-deref
+src/persistent_artrie_core/swizzled_ptr.rs	unsafe_fn	pub unsafe fn as_ptr_unchecked<T>(&self) -> *const T {	1	swizzled-pointer-raw-extraction-contract
+src/persistent_artrie_core/traversal_context.rs	unsafe_block	Ok(unsafe { non_null.as_ref() })	1	traversal-context-nonnull-reference
+src/persistent_artrie_core/traversal_context.rs	unsafe_block	return Ok(unsafe { ptr.as_ref() });	1	traversal-context-nonnull-reference
+src/persistent_artrie_core/wal/sync_backend.rs	unsafe_block	unsafe {	1	wal-sync-raw-fd-boundary
+src/persistent_vocab_artrie/concurrent.rs	unsafe_impl	unsafe impl Send for ConcurrentVocabARTrie {}	1	concurrent-vocab-rwlock-thread-contract
+src/persistent_vocab_artrie/concurrent.rs	unsafe_impl	unsafe impl Sync for ConcurrentVocabARTrie {}	1	concurrent-vocab-rwlock-thread-contract
+src/persistent_vocab_artrie/dict_impl.rs	unsafe_impl	unsafe impl<S: BlockStorage> Send for PersistentVocabARTrie<S> {}	1	persistent-vocab-storage-thread-contract
+src/persistent_vocab_artrie/dict_impl.rs	unsafe_impl	unsafe impl<S: BlockStorage> Sync for PersistentVocabARTrie<S> {}	1	persistent-vocab-storage-thread-contract
+src/persistent_vocab_artrie/disk_io.rs	unsafe_block	VocabTrieRoot::Node(unsafe { Box::from_raw(root_ptr) }),	1	vocab-disk-root-box-reclaim
+src/persistent_vocab_artrie/disk_io.rs	unsafe_block	let child = unsafe { &*child_ptr };	1	vocab-disk-child-serialization
+src/persistent_vocab_artrie/disk_io.rs	unsafe_block	let child = unsafe { &*child_raw };	1	vocab-disk-child-serialization
+src/persistent_vocab_artrie/disk_io.rs	unsafe_block	let root_slot = unsafe { self.serialize_vocab_node_to_disk(&*root_node_ptr)? };	1	vocab-disk-root-serialization
+src/persistent_vocab_artrie/disk_io.rs	unsafe_block	unsafe {	2	vocab-disk-box-ownership
+src/persistent_vocab_artrie/disk_io.rs	unsafe_fn	unsafe fn rebuild_node_map_and_parents(	1	vocab-disk-node-map-rebuild-contract
+src/persistent_vocab_artrie/io_uring_ctor.rs	unsafe_block	VocabTrieRoot::Node(unsafe { Box::from_raw(root_ptr) }),	1	vocab-io-uring-root-box-reclaim
+src/persistent_vocab_artrie/io_uring_ctor.rs	unsafe_block	let root = VocabTrieRoot::Node(unsafe { Box::from_raw(root_ptr) });	1	vocab-io-uring-root-box-reclaim
+src/persistent_vocab_artrie/lockfree.rs	unsafe_block	let child = unsafe {	1	vocab-lockfree-child-arc-handoff
+src/persistent_vocab_artrie/lockfree.rs	unsafe_block	unsafe {	2	vocab-lockfree-root-cas-arc-handoff
+src/persistent_vocab_artrie/lockfree.rs	unsafe_impl	unsafe impl Send for LockFreeVocab {}	1	vocab-lockfree-thread-contract
+src/persistent_vocab_artrie/lockfree.rs	unsafe_impl	unsafe impl Sync for LockFreeVocab {}	1	vocab-lockfree-thread-contract
+src/persistent_vocab_artrie/lockfree_cas.rs	unsafe_block	let child = unsafe {	1	vocab-lockfree-cas-child-arc-handoff
+src/persistent_vocab_artrie/lockfree_cas.rs	unsafe_block	unsafe {	1	vocab-lockfree-cas-root-arc-handoff
+src/persistent_vocab_artrie/mmap_ctor.rs	unsafe_block	VocabTrieRoot::Node(unsafe { Box::from_raw(root_ptr) }),	1	vocab-mmap-root-box-reclaim
+src/persistent_vocab_artrie/mmap_ctor.rs	unsafe_block	let root = VocabTrieRoot::Node(unsafe { Box::from_raw(root_ptr) });	1	vocab-mmap-root-box-reclaim
+src/persistent_vocab_artrie/mod.rs	unsafe_block	let node = unsafe { &mut *current };	1	vocab-public-node-mutation
+src/persistent_vocab_artrie/mod.rs	unsafe_block	let parent = unsafe { &mut *current };	1	vocab-public-node-mutation
+src/persistent_vocab_artrie/mod.rs	unsafe_block	let target = unsafe { &*target_raw };	1	vocab-eviction-target-reference
+src/persistent_vocab_artrie/mod.rs	unsafe_block	unsafe {	1	vocab-eviction-child-drop
+src/persistent_vocab_artrie/query_api.rs	unsafe_block	Some(&ptr) => current = unsafe { &*ptr },	1	vocab-query-node-map-traversal
+src/persistent_vocab_artrie/query_api.rs	unsafe_block	let node = unsafe { &*node_ptr };	1	vocab-query-node-map-traversal
+src/persistent_vocab_artrie/reverse_index.rs	unsafe_block	let mmap = unsafe {	1	vocab-reverse-index-map-lifetime
+src/persistent_vocab_artrie/reverse_index.rs	unsafe_block	let mut mmap = unsafe {	1	vocab-reverse-index-map-lifetime
+src/persistent_vocab_artrie/reverse_index.rs	unsafe_block	let mut new_mmap = unsafe {	1	vocab-reverse-index-remap-lifetime
+src/persistent_vocab_artrie/types.rs	unsafe_block	Some(unsafe { Box::from_raw(ptr as *mut VocabTrieNode) })	1	vocab-child-box-reclaim
+src/persistent_vocab_artrie/types.rs	unsafe_block	let child_ref = unsafe { &*p };	1	vocab-child-read-only-traversal
+src/persistent_vocab_artrie/types.rs	unsafe_block	let child_ref = unsafe { &*ptr };	1	vocab-child-read-only-traversal
+src/persistent_vocab_artrie/types.rs	unsafe_block	let old_child = unsafe { Box::from_raw(ptr as *mut VocabTrieNode) };	1	vocab-child-box-replacement
+src/persistent_vocab_artrie/types.rs	unsafe_block	unsafe {	2	vocab-child-raw-map-iteration
+src/persistent_vocab_artrie/types.rs	unsafe_block	unsafe { &*ptr }	1	vocab-child-read-only-traversal
+src/persistent_vocab_artrie/types.rs	unsafe_block	unsafe { &mut *(ptr as *mut VocabTrieNode) }	1	vocab-child-unique-mutation
+src/persistent_vocab_artrie/types.rs	unsafe_block	unsafe { &mut *ptr }	1	vocab-child-unique-mutation
+src/scdawg.rs	unsafe_impl	unsafe impl<V: DictionaryValue> Send for ScdawgNodeHandle<V> {}	1	scdawg-handle-rwlock-thread-contract
+src/scdawg.rs	unsafe_impl	unsafe impl<V: DictionaryValue> Sync for ScdawgNodeHandle<V> {}	1	scdawg-handle-rwlock-thread-contract
+src/scdawg_char.rs	unsafe_impl	unsafe impl<V: DictionaryValue> Send for ScdawgCharNodeHandle<V> {}	1	scdawg-char-handle-rwlock-thread-contract
+src/scdawg_char.rs	unsafe_impl	unsafe impl<V: DictionaryValue> Sync for ScdawgCharNodeHandle<V> {}	1	scdawg-char-handle-rwlock-thread-contract
+src/substring.rs	unsafe_impl	unsafe impl Send for MockNode {}	1	substring-test-mock-thread-contract
+src/substring.rs	unsafe_impl	unsafe impl Sync for MockNode {}	1	substring-test-mock-thread-contract

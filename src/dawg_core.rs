@@ -179,7 +179,7 @@ impl<U: CharUnit, V: DictionaryValue> DawgCore<U, V> {
     pub fn insert_units(&mut self, units: &[U]) -> bool {
         // Navigate to insertion point, creating nodes as needed
         let mut node_idx = 0;
-        let mut path_len = 0;
+        let mut path: Vec<(usize, U, usize)> = Vec::new();
 
         for &unit in units {
             if let Some(&child_idx) = self.nodes[node_idx]
@@ -189,18 +189,23 @@ impl<U: CharUnit, V: DictionaryValue> DawgCore<U, V> {
                 .map(|(_, idx)| idx)
             {
                 // Edge exists, follow it
+                path.push((node_idx, unit, child_idx));
                 node_idx = child_idx;
-                path_len += 1;
             } else {
                 // Need to create new suffix
                 break;
             }
         }
 
+        let path_len = path.len();
+
         // Check if term already exists
         if path_len == units.len() && self.nodes[node_idx].is_final {
             return false; // Already exists
         }
+
+        let unique_path = self.make_path_unique(&path);
+        node_idx = unique_path.last().map(|(_, _, child)| *child).unwrap_or(0);
 
         // Create nodes one by one
         for i in path_len..units.len() {
@@ -221,6 +226,7 @@ impl<U: CharUnit, V: DictionaryValue> DawgCore<U, V> {
         }
 
         self.term_count += 1;
+        self.recompute_ref_counts();
         self.check_and_auto_minimize();
         true
     }
@@ -231,7 +237,7 @@ impl<U: CharUnit, V: DictionaryValue> DawgCore<U, V> {
     /// (in which case the value is updated).
     pub fn insert_units_with_value(&mut self, units: &[U], value: V) -> bool {
         let mut node_idx = 0;
-        let mut path_len = 0;
+        let mut path: Vec<(usize, U, usize)> = Vec::new();
 
         for &unit in units {
             if let Some(&child_idx) = self.nodes[node_idx]
@@ -240,27 +246,38 @@ impl<U: CharUnit, V: DictionaryValue> DawgCore<U, V> {
                 .find(|(u, _)| *u == unit)
                 .map(|(_, idx)| idx)
             {
+                path.push((node_idx, unit, child_idx));
                 node_idx = child_idx;
-                path_len += 1;
             } else {
                 break;
             }
         }
 
+        let path_len = path.len();
+
         // Check if term already exists
         if path_len == units.len() {
+            let unique_path = self.make_path_unique(&path);
+            node_idx = unique_path.last().map(|(_, _, child)| *child).unwrap_or(0);
+
             if self.nodes[node_idx].is_final {
                 // Term exists - update value
                 self.nodes[node_idx].value = Some(value);
+                self.recompute_ref_counts();
                 return false;
             } else {
                 // Mark as final and set value
                 self.nodes[node_idx].is_final = true;
                 self.nodes[node_idx].value = Some(value);
                 self.term_count += 1;
+                self.recompute_ref_counts();
+                self.check_and_auto_minimize();
                 return true;
             }
         }
+
+        let unique_path = self.make_path_unique(&path);
+        node_idx = unique_path.last().map(|(_, _, child)| *child).unwrap_or(0);
 
         // Build remaining suffix
         for i in path_len..units.len() {
@@ -281,6 +298,7 @@ impl<U: CharUnit, V: DictionaryValue> DawgCore<U, V> {
         }
 
         self.term_count += 1;
+        self.recompute_ref_counts();
         self.check_and_auto_minimize();
         true
     }
@@ -354,13 +372,16 @@ impl<U: CharUnit, V: DictionaryValue> DawgCore<U, V> {
             return false;
         }
 
+        let unique_path = self.make_path_unique(&path);
+        node_idx = unique_path.last().map(|(_, _, child)| *child).unwrap_or(0);
+
         // Unmark as final
         self.nodes[node_idx].is_final = false;
         self.nodes[node_idx].value = None;
         self.term_count -= 1;
 
         // Prune unreachable branches (nodes with no children and not final)
-        for (parent_idx, label, child_idx) in path.iter().rev() {
+        for (parent_idx, label, child_idx) in unique_path.iter().rev() {
             let child = &self.nodes[*child_idx];
             if !child.is_final && child.edges.is_empty() {
                 // Remove edge from parent
@@ -372,6 +393,7 @@ impl<U: CharUnit, V: DictionaryValue> DawgCore<U, V> {
 
         self.suffix_cache.clear();
         self.needs_compaction = true;
+        self.recompute_ref_counts();
         true
     }
 
@@ -383,7 +405,7 @@ impl<U: CharUnit, V: DictionaryValue> DawgCore<U, V> {
         F: FnOnce(&mut V),
     {
         let mut node_idx = 0;
-        let mut path_len = 0;
+        let mut path: Vec<(usize, U, usize)> = Vec::new();
 
         for &unit in units {
             if let Some(&child_idx) = self.nodes[node_idx]
@@ -392,15 +414,20 @@ impl<U: CharUnit, V: DictionaryValue> DawgCore<U, V> {
                 .find(|(u, _)| *u == unit)
                 .map(|(_, idx)| idx)
             {
+                path.push((node_idx, unit, child_idx));
                 node_idx = child_idx;
-                path_len += 1;
             } else {
                 break;
             }
         }
 
+        let path_len = path.len();
+
         // Check if term already exists
         if path_len == units.len() {
+            let unique_path = self.make_path_unique(&path);
+            node_idx = unique_path.last().map(|(_, _, child)| *child).unwrap_or(0);
+
             if self.nodes[node_idx].is_final {
                 // Term exists - update its value
                 if let Some(ref mut existing_value) = self.nodes[node_idx].value {
@@ -408,15 +435,21 @@ impl<U: CharUnit, V: DictionaryValue> DawgCore<U, V> {
                 } else {
                     self.nodes[node_idx].value = Some(default_value);
                 }
+                self.recompute_ref_counts();
                 return false;
             } else {
                 // Node exists but wasn't final
                 self.nodes[node_idx].is_final = true;
                 self.nodes[node_idx].value = Some(default_value);
                 self.term_count += 1;
+                self.recompute_ref_counts();
+                self.check_and_auto_minimize();
                 return true;
             }
         }
+
+        let unique_path = self.make_path_unique(&path);
+        node_idx = unique_path.last().map(|(_, _, child)| *child).unwrap_or(0);
 
         // Build remaining path
         for i in path_len..units.len() {
@@ -437,6 +470,7 @@ impl<U: CharUnit, V: DictionaryValue> DawgCore<U, V> {
         }
 
         self.term_count += 1;
+        self.recompute_ref_counts();
         self.check_and_auto_minimize();
         true
     }
@@ -461,8 +495,8 @@ impl<U: CharUnit, V: DictionaryValue> DawgCore<U, V> {
     ///
     /// Returns the number of nodes removed.
     pub fn compact(&mut self) -> usize {
-        // Extract all terms
-        let terms = self.extract_all_terms();
+        // Extract all terms and their optional values before rebuilding.
+        let entries = self.extract_all_entries();
         let old_node_count = self.nodes.len();
 
         // Preserve settings
@@ -478,12 +512,12 @@ impl<U: CharUnit, V: DictionaryValue> DawgCore<U, V> {
         self.auto_minimize_threshold = auto_minimize_threshold;
         self.bloom_filter = bloom_capacity.map(BloomFilter::new);
 
-        // Re-insert sorted terms for optimal prefix sharing
-        let mut sorted_terms = terms;
-        sorted_terms.sort();
+        // Re-insert sorted terms for deterministic prefix sharing.
+        let mut sorted_entries = entries;
+        sorted_entries.sort_by(|(left, _), (right, _)| left.cmp(right));
 
-        for term in &sorted_terms {
-            self.insert_direct(term);
+        for (term, value) in &sorted_entries {
+            self.insert_direct_with_value(term, value.clone());
             if let Some(ref mut bloom) = self.bloom_filter {
                 let term_str = U::to_string(term);
                 bloom.insert(&term_str);
@@ -492,7 +526,7 @@ impl<U: CharUnit, V: DictionaryValue> DawgCore<U, V> {
 
         // Now minimize to merge equivalent suffixes
         let minimized = self.minimize_incremental();
-        old_node_count - self.nodes.len() + minimized
+        old_node_count.saturating_sub(self.nodes.len()) + minimized
     }
 
     /// Incremental minimization using signature-based node merging.
@@ -553,8 +587,9 @@ impl<U: CharUnit, V: DictionaryValue> DawgCore<U, V> {
         self.suffix_cache.clear();
         self.needs_compaction = false;
         self.last_minimized_node_count = self.nodes.len();
+        self.recompute_ref_counts();
 
-        initial_count - self.nodes.len()
+        initial_count.saturating_sub(self.nodes.len())
     }
 
     /// Insert an edge in sorted order using binary search.
@@ -567,6 +602,75 @@ impl<U: CharUnit, V: DictionaryValue> DawgCore<U, V> {
             }
             Err(pos) => {
                 edges.insert(pos, (label, target_idx));
+            }
+        }
+    }
+
+    fn make_path_unique(&mut self, path: &[(usize, U, usize)]) -> Vec<(usize, U, usize)> {
+        let mut unique_path = Vec::with_capacity(path.len());
+        let mut parent_idx = 0;
+
+        for (_, label, _) in path {
+            let child_idx = self.nodes[parent_idx]
+                .edges
+                .iter()
+                .find(|(edge_label, _)| edge_label == label)
+                .map(|(_, target)| *target)
+                .expect("path labels must exist while making path unique");
+            let unique_child = self.ensure_unique_child(parent_idx, *label, child_idx);
+            unique_path.push((parent_idx, *label, unique_child));
+            parent_idx = unique_child;
+        }
+
+        unique_path
+    }
+
+    fn ensure_unique_child(&mut self, parent_idx: usize, label: U, child_idx: usize) -> usize {
+        if self.nodes[child_idx].ref_count <= 1 {
+            return child_idx;
+        }
+
+        let new_idx = self.nodes.len();
+        let mut cloned = self.nodes[child_idx].clone();
+        cloned.ref_count = 1;
+        let cloned_child_targets: Vec<usize> =
+            cloned.edges.iter().map(|(_, target)| *target).collect();
+        self.nodes.push(cloned);
+
+        for target in cloned_child_targets {
+            self.nodes[target].ref_count += 1;
+        }
+
+        self.nodes[child_idx].ref_count -= 1;
+        let edge_pos = self.nodes[parent_idx]
+            .edges
+            .iter()
+            .position(|(edge_label, target)| *edge_label == label && *target == child_idx)
+            .expect("path edge must exist while cloning shared DAWG node");
+        self.nodes[parent_idx].edges[edge_pos].1 = new_idx;
+
+        new_idx
+    }
+
+    pub(crate) fn recompute_ref_counts(&mut self) {
+        for node in &mut self.nodes {
+            node.ref_count = 0;
+        }
+
+        if self.nodes.is_empty() {
+            return;
+        }
+
+        self.nodes[0].ref_count = 1;
+        let targets: Vec<usize> = self
+            .nodes
+            .iter()
+            .flat_map(|node| node.edges.iter().map(|(_, target)| *target))
+            .collect();
+
+        for target in targets {
+            if let Some(node) = self.nodes.get_mut(target) {
+                node.ref_count += 1;
             }
         }
     }
@@ -593,6 +697,10 @@ impl<U: CharUnit, V: DictionaryValue> DawgCore<U, V> {
         let node2 = &self.nodes[idx2];
 
         if node1.is_final != node2.is_final {
+            return false;
+        }
+
+        if node1.value.is_some() || node2.value.is_some() {
             return false;
         }
 
@@ -696,37 +804,37 @@ impl<U: CharUnit, V: DictionaryValue> DawgCore<U, V> {
             .collect();
 
         self.nodes = new_nodes;
+        self.recompute_ref_counts();
     }
 
-    /// Extract all terms as unit vectors.
-    pub(crate) fn extract_all_terms(&self) -> Vec<Vec<U>> {
-        let mut terms = Vec::new();
+    pub(crate) fn extract_all_entries(&self) -> Vec<(Vec<U>, Option<V>)> {
+        let mut entries = Vec::new();
         let mut current_term = Vec::new();
-        self.dfs_collect(0, &mut current_term, &mut terms);
-        terms
+        self.dfs_collect_entries(0, &mut current_term, &mut entries);
+        entries
     }
 
-    pub(crate) fn dfs_collect(
+    fn dfs_collect_entries(
         &self,
         node_idx: usize,
         current_term: &mut Vec<U>,
-        terms: &mut Vec<Vec<U>>,
+        entries: &mut Vec<(Vec<U>, Option<V>)>,
     ) {
         let node = &self.nodes[node_idx];
 
         if node.is_final {
-            terms.push(current_term.clone());
+            entries.push((current_term.clone(), node.value.clone()));
         }
 
         for (unit, child_idx) in &node.edges {
             current_term.push(*unit);
-            self.dfs_collect(*child_idx, current_term, terms);
+            self.dfs_collect_entries(*child_idx, current_term, entries);
             current_term.pop();
         }
     }
 
-    /// Direct insert without bloom filter or auto-minimize.
-    pub(crate) fn insert_direct(&mut self, units: &[U]) {
+    /// Direct insert preserving an optional value, without bloom or auto-minimize.
+    pub(crate) fn insert_direct_with_value(&mut self, units: &[U], value: Option<V>) {
         let mut node_idx = 0;
 
         for &unit in units {
@@ -745,8 +853,11 @@ impl<U: CharUnit, V: DictionaryValue> DawgCore<U, V> {
             }
         }
 
+        if !self.nodes[node_idx].is_final {
+            self.term_count += 1;
+        }
         self.nodes[node_idx].is_final = true;
-        self.term_count += 1;
+        self.nodes[node_idx].value = value;
     }
 }
 

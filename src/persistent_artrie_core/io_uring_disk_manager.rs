@@ -80,6 +80,66 @@ const DEFAULT_RING_ENTRIES: u32 = 256;
 /// so 8 rings = ~256KB of kernel memory.
 const MAX_RING_POOL_SIZE: usize = 8;
 
+#[derive(Debug, Clone, Copy)]
+enum CompletionExpectation {
+    FullRead(usize),
+    FullWrite(usize),
+    NoPayload,
+}
+
+fn validate_completion_result(
+    operation: &'static str,
+    result: i32,
+    expectation: CompletionExpectation,
+) -> Result<()> {
+    if result < 0 {
+        return Err(PersistentARTrieError::IoUringError {
+            operation: operation.to_string(),
+            source: std::io::Error::from_raw_os_error(-result),
+        });
+    }
+
+    match expectation {
+        CompletionExpectation::FullRead(expected) if (result as usize) < expected => {
+            Err(PersistentARTrieError::IoUringError {
+                operation: format!("{operation} (short read)"),
+                source: std::io::Error::new(
+                    std::io::ErrorKind::UnexpectedEof,
+                    format!("short read: got {} bytes, expected {}", result, expected),
+                ),
+            })
+        }
+        CompletionExpectation::FullWrite(expected) if (result as usize) < expected => {
+            Err(PersistentARTrieError::IoUringError {
+                operation: format!("{operation} (short write)"),
+                source: std::io::Error::new(
+                    std::io::ErrorKind::WriteZero,
+                    format!("short write: wrote {} bytes, expected {}", result, expected),
+                ),
+            })
+        }
+        _ => Ok(()),
+    }
+}
+
+fn validate_completion_count(
+    operation: &'static str,
+    expected: usize,
+    completed: usize,
+) -> Result<()> {
+    if completed == expected {
+        Ok(())
+    } else {
+        Err(PersistentARTrieError::IoUringError {
+            operation: operation.to_string(),
+            source: std::io::Error::new(
+                std::io::ErrorKind::Other,
+                format!("expected {} completions, got {}", expected, completed),
+            ),
+        })
+    }
+}
+
 /// Get a deterministic index for the current thread.
 ///
 /// Uses `std::thread::current().id()` hashed to a `usize` for ring pool striping.
@@ -718,24 +778,11 @@ impl IoUringDiskManager {
                 ),
             })?;
 
-        let result = cqe.result();
-        if result < 0 {
-            return Err(PersistentARTrieError::IoUringError {
-                operation: "read I/O".to_string(),
-                source: std::io::Error::from_raw_os_error(-result),
-            });
-        }
-        if (result as usize) < len {
-            return Err(PersistentARTrieError::IoUringError {
-                operation: "read I/O (short read)".to_string(),
-                source: std::io::Error::new(
-                    std::io::ErrorKind::UnexpectedEof,
-                    format!("short read: got {} bytes, expected {}", result, len),
-                ),
-            });
-        }
-
-        Ok(())
+        validate_completion_result(
+            "read I/O",
+            cqe.result(),
+            CompletionExpectation::FullRead(len),
+        )
     }
 
     /// Submit a single write SQE to io_uring and wait for the CQE.
@@ -783,24 +830,11 @@ impl IoUringDiskManager {
                 ),
             })?;
 
-        let result = cqe.result();
-        if result < 0 {
-            return Err(PersistentARTrieError::IoUringError {
-                operation: "write I/O".to_string(),
-                source: std::io::Error::from_raw_os_error(-result),
-            });
-        }
-        if (result as usize) < len {
-            return Err(PersistentARTrieError::IoUringError {
-                operation: "write I/O (short write)".to_string(),
-                source: std::io::Error::new(
-                    std::io::ErrorKind::WriteZero,
-                    format!("short write: wrote {} bytes, expected {}", result, len),
-                ),
-            });
-        }
-
-        Ok(())
+        validate_completion_result(
+            "write I/O",
+            cqe.result(),
+            CompletionExpectation::FullWrite(len),
+        )
     }
 
     /// Submit an fsync SQE via io_uring and wait for completion.
@@ -842,15 +876,7 @@ impl IoUringDiskManager {
                 ),
             })?;
 
-        let result = cqe.result();
-        if result < 0 {
-            return Err(PersistentARTrieError::IoUringError {
-                operation: "fsync".to_string(),
-                source: std::io::Error::from_raw_os_error(-result),
-            });
-        }
-
-        Ok(())
+        validate_completion_result("fsync", cqe.result(), CompletionExpectation::NoPayload)
     }
 
     // =========================================================================
@@ -962,41 +988,28 @@ impl IoUringDiskManager {
                 // Drain all CQEs and validate results
                 let mut completed = 0;
                 for cqe in ring.completion() {
-                    let result = cqe.result();
-                    if result < 0 {
-                        return Err(PersistentARTrieError::IoUringError {
-                            operation: "dirty cache flush I/O".to_string(),
-                            source: std::io::Error::from_raw_os_error(-result),
-                        });
-                    }
-                    if (result as usize) < BLOCK_SIZE {
-                        return Err(PersistentARTrieError::IoUringError {
-                            operation: "dirty cache flush I/O (short write)".to_string(),
-                            source: std::io::Error::new(
-                                std::io::ErrorKind::WriteZero,
-                                format!(
-                                    "short write: wrote {} bytes, expected {}",
-                                    result, BLOCK_SIZE
-                                ),
-                            ),
-                        });
-                    }
+                    validate_completion_result(
+                        "dirty cache flush I/O",
+                        cqe.result(),
+                        CompletionExpectation::FullWrite(BLOCK_SIZE),
+                    )?;
                     completed += 1;
                 }
 
-                if completed != count {
-                    return Err(PersistentARTrieError::IoUringError {
-                        operation: "dirty cache flush completion count".to_string(),
-                        source: std::io::Error::new(
-                            std::io::ErrorKind::Other,
-                            format!("expected {} completions, got {}", count, completed),
-                        ),
-                    });
-                }
+                validate_completion_count("dirty cache flush completion count", count, completed)?;
             }
 
             Ok(())
         })();
+
+        if result.is_err() {
+            let mut cache = self.block_cache.lock();
+            for (block_id, _) in &dirty_entries {
+                if let Some(cached) = cache.get_mut(block_id) {
+                    cached.dirty = true;
+                }
+            }
+        }
 
         // Return pool blocks regardless of success/failure
         self.aligned_block_pool.release_batch(pool_blocks);
@@ -1202,24 +1215,11 @@ impl IoUringDiskManager {
                 ),
             })?;
 
-        let result = cqe.result();
-        if result < 0 {
-            return Err(PersistentARTrieError::IoUringError {
-                operation: "ReadFixed I/O".to_string(),
-                source: std::io::Error::from_raw_os_error(-result),
-            });
-        }
-        if (result as usize) < len {
-            return Err(PersistentARTrieError::IoUringError {
-                operation: "ReadFixed I/O (short read)".to_string(),
-                source: std::io::Error::new(
-                    std::io::ErrorKind::UnexpectedEof,
-                    format!("short read: got {} bytes, expected {}", result, len),
-                ),
-            });
-        }
-
-        Ok(())
+        validate_completion_result(
+            "ReadFixed I/O",
+            cqe.result(),
+            CompletionExpectation::FullRead(len),
+        )
     }
 
     /// Submit a single WriteFixed SQE to io_uring and wait for the CQE.
@@ -1277,24 +1277,11 @@ impl IoUringDiskManager {
                 ),
             })?;
 
-        let result = cqe.result();
-        if result < 0 {
-            return Err(PersistentARTrieError::IoUringError {
-                operation: "WriteFixed I/O".to_string(),
-                source: std::io::Error::from_raw_os_error(-result),
-            });
-        }
-        if (result as usize) < len {
-            return Err(PersistentARTrieError::IoUringError {
-                operation: "WriteFixed I/O (short write)".to_string(),
-                source: std::io::Error::new(
-                    std::io::ErrorKind::WriteZero,
-                    format!("short write: wrote {} bytes, expected {}", result, len),
-                ),
-            });
-        }
-
-        Ok(())
+        validate_completion_result(
+            "WriteFixed I/O",
+            cqe.result(),
+            CompletionExpectation::FullWrite(len),
+        )
     }
 }
 
@@ -1336,16 +1323,27 @@ impl BlockStorage for IoUringDiskManager {
         self.validate_block_id(block_id)?;
 
         // Update cache if block is cached (keeps cache consistent)
-        {
+        let updated_cached_block = {
             let mut cache = self.block_cache.lock();
             if let Some(cached) = cache.get_mut(&block_id) {
                 cached.data.data.copy_from_slice(buffer);
                 // Mark NOT dirty since we're writing to disk below
                 cached.dirty = false;
+                true
+            } else {
+                false
+            }
+        };
+
+        let result = self.write_block_uring(block_id, buffer);
+        if result.is_err() && updated_cached_block {
+            let mut cache = self.block_cache.lock();
+            if let Some(cached) = cache.get_mut(&block_id) {
+                cached.dirty = true;
             }
         }
 
-        self.write_block_uring(block_id, buffer)
+        result
     }
 
     fn read_bytes(&self, block_id: u32, offset: usize, buffer: &mut [u8]) -> Result<()> {
@@ -1604,7 +1602,7 @@ impl BlockStorage for IoUringDiskManager {
         let mut aligned_buffers = self.aligned_block_pool.acquire_batch(needs_io.len());
 
         // Submit all read SQEs in one batch
-        {
+        let result = (|| -> Result<()> {
             let mut ring = self.ring_pool.select().lock();
 
             for (buf_idx, &req_idx) in needs_io.iter().enumerate() {
@@ -1644,47 +1642,31 @@ impl BlockStorage for IoUringDiskManager {
             // Drain all CQEs
             let mut completed = 0;
             for cqe in ring.completion() {
-                let result = cqe.result();
-                if result < 0 {
-                    return Err(PersistentARTrieError::IoUringError {
-                        operation: "batch read I/O".to_string(),
-                        source: std::io::Error::from_raw_os_error(-result),
-                    });
-                }
-                if (result as usize) < BLOCK_SIZE {
-                    return Err(PersistentARTrieError::IoUringError {
-                        operation: "batch read I/O (short read)".to_string(),
-                        source: std::io::Error::new(
-                            std::io::ErrorKind::UnexpectedEof,
-                            format!("short read: got {} bytes, expected {}", result, BLOCK_SIZE),
-                        ),
-                    });
-                }
+                validate_completion_result(
+                    "batch read I/O",
+                    cqe.result(),
+                    CompletionExpectation::FullRead(BLOCK_SIZE),
+                )?;
                 completed += 1;
             }
 
-            if completed != count {
-                return Err(PersistentARTrieError::IoUringError {
-                    operation: "batch read completion count".to_string(),
-                    source: std::io::Error::new(
-                        std::io::ErrorKind::Other,
-                        format!("expected {} completions, got {}", count, completed),
-                    ),
-                });
-            }
-        }
+            validate_completion_count("batch read completion count", count, completed)?;
+            Ok(())
+        })();
 
-        // Copy results from aligned buffers to caller's buffers
-        for (buf_idx, &req_idx) in needs_io.iter().enumerate() {
-            requests[req_idx]
-                .1
-                .copy_from_slice(&aligned_buffers[buf_idx].data);
+        if result.is_ok() {
+            // Copy results from aligned buffers to caller's buffers
+            for (buf_idx, &req_idx) in needs_io.iter().enumerate() {
+                requests[req_idx]
+                    .1
+                    .copy_from_slice(&aligned_buffers[buf_idx].data);
+            }
         }
 
         // Return aligned buffers to pool for reuse
         self.aligned_block_pool.release_batch(aligned_buffers);
 
-        Ok(())
+        result
     }
 
     fn write_blocks_batch(&self, requests: &[(u32, &[u8; BLOCK_SIZE])]) -> Result<()> {
@@ -1698,12 +1680,14 @@ impl BlockStorage for IoUringDiskManager {
         }
 
         // Update cache for any cached blocks
+        let mut cached_block_ids = Vec::new();
         {
             let mut cache = self.block_cache.lock();
             for &(block_id, buffer) in requests {
                 if let Some(cached) = cache.get_mut(&block_id) {
                     cached.data.data.copy_from_slice(buffer);
                     cached.dirty = false; // Will be written to disk below
+                    cached_block_ids.push(block_id);
                 }
             }
         }
@@ -1715,7 +1699,7 @@ impl BlockStorage for IoUringDiskManager {
         }
 
         // Submit all write SQEs in one batch
-        {
+        let result = (|| -> Result<()> {
             let mut ring = self.ring_pool.select().lock();
 
             for (i, &(block_id, _)) in requests.iter().enumerate() {
@@ -1752,43 +1736,31 @@ impl BlockStorage for IoUringDiskManager {
 
             let mut completed = 0;
             for cqe in ring.completion() {
-                let result = cqe.result();
-                if result < 0 {
-                    return Err(PersistentARTrieError::IoUringError {
-                        operation: "batch write I/O".to_string(),
-                        source: std::io::Error::from_raw_os_error(-result),
-                    });
-                }
-                if (result as usize) < BLOCK_SIZE {
-                    return Err(PersistentARTrieError::IoUringError {
-                        operation: "batch write I/O (short write)".to_string(),
-                        source: std::io::Error::new(
-                            std::io::ErrorKind::WriteZero,
-                            format!(
-                                "short write: wrote {} bytes, expected {}",
-                                result, BLOCK_SIZE
-                            ),
-                        ),
-                    });
-                }
+                validate_completion_result(
+                    "batch write I/O",
+                    cqe.result(),
+                    CompletionExpectation::FullWrite(BLOCK_SIZE),
+                )?;
                 completed += 1;
             }
 
-            if completed != count {
-                return Err(PersistentARTrieError::IoUringError {
-                    operation: "batch write completion count".to_string(),
-                    source: std::io::Error::new(
-                        std::io::ErrorKind::Other,
-                        format!("expected {} completions, got {}", count, completed),
-                    ),
-                });
+            validate_completion_count("batch write completion count", count, completed)?;
+            Ok(())
+        })();
+
+        if result.is_err() {
+            let mut cache = self.block_cache.lock();
+            for block_id in &cached_block_ids {
+                if let Some(cached) = cache.get_mut(block_id) {
+                    cached.dirty = true;
+                }
             }
         }
 
         // Return aligned buffers to pool for reuse
         self.aligned_block_pool.release_batch(aligned_buffers);
 
-        Ok(())
+        result
     }
 
     // =========================================================================
@@ -1798,6 +1770,25 @@ impl BlockStorage for IoUringDiskManager {
     unsafe fn register_buffer_pool(&self, buffers: &[(*mut u8, usize)]) -> Result<()> {
         if buffers.is_empty() {
             return Ok(());
+        }
+
+        for (index, &(ptr, len)) in buffers.iter().enumerate() {
+            if ptr.is_null() {
+                return Err(PersistentARTrieError::internal(format!(
+                    "register_buffer_pool rejected null buffer at index {index}"
+                )));
+            }
+            if len != BLOCK_SIZE {
+                return Err(PersistentARTrieError::internal(format!(
+                    "register_buffer_pool rejected buffer at index {index}: length {len} != \
+                     block size {BLOCK_SIZE}"
+                )));
+            }
+            if (ptr as usize) % std::mem::align_of::<AlignedBlock>() != 0 {
+                return Err(PersistentARTrieError::internal(format!(
+                    "register_buffer_pool rejected unaligned buffer at index {index}"
+                )));
+            }
         }
 
         // Convert to libc::iovec for the kernel registration call
@@ -1888,17 +1879,28 @@ impl BlockStorage for IoUringDiskManager {
         self.validate_block_id(block_id)?;
 
         // Update cache if block is cached (keeps cache consistent)
-        {
+        let updated_cached_block = {
             let mut cache = self.block_cache.lock();
             if let Some(cached) = cache.get_mut(&block_id) {
                 cached.data.data.copy_from_slice(buffer);
                 // Mark NOT dirty since we're writing to disk below
                 cached.dirty = false;
+                true
+            } else {
+                false
+            }
+        };
+
+        let offset = block_id as u64 * BLOCK_SIZE as u64;
+        let result = self.submit_write_fixed(buffer.as_ptr(), BLOCK_SIZE, offset, buf_index);
+        if result.is_err() && updated_cached_block {
+            let mut cache = self.block_cache.lock();
+            if let Some(cached) = cache.get_mut(&block_id) {
+                cached.dirty = true;
             }
         }
 
-        let offset = block_id as u64 * BLOCK_SIZE as u64;
-        self.submit_write_fixed(buffer.as_ptr(), BLOCK_SIZE, offset, buf_index)
+        result
     }
 
     fn supports_fixed_buffers(&self) -> bool {
@@ -1985,34 +1987,15 @@ impl BlockStorage for IoUringDiskManager {
 
             let mut completed = 0;
             for cqe in ring.completion() {
-                let result = cqe.result();
-                if result < 0 {
-                    return Err(PersistentARTrieError::IoUringError {
-                        operation: "batch ReadFixed I/O".to_string(),
-                        source: std::io::Error::from_raw_os_error(-result),
-                    });
-                }
-                if (result as usize) < BLOCK_SIZE {
-                    return Err(PersistentARTrieError::IoUringError {
-                        operation: "batch ReadFixed I/O (short read)".to_string(),
-                        source: std::io::Error::new(
-                            std::io::ErrorKind::UnexpectedEof,
-                            format!("short read: got {} bytes, expected {}", result, BLOCK_SIZE),
-                        ),
-                    });
-                }
+                validate_completion_result(
+                    "batch ReadFixed I/O",
+                    cqe.result(),
+                    CompletionExpectation::FullRead(BLOCK_SIZE),
+                )?;
                 completed += 1;
             }
 
-            if completed != count {
-                return Err(PersistentARTrieError::IoUringError {
-                    operation: "batch ReadFixed completion count".to_string(),
-                    source: std::io::Error::new(
-                        std::io::ErrorKind::Other,
-                        format!("expected {} completions, got {}", count, completed),
-                    ),
-                });
-            }
+            validate_completion_count("batch ReadFixed completion count", count, completed)?;
         }
 
         Ok(())
@@ -2038,91 +2021,83 @@ impl BlockStorage for IoUringDiskManager {
         }
 
         // Update cache for any cached blocks
+        let mut cached_block_ids = Vec::new();
         {
             let mut cache = self.block_cache.lock();
             for &(block_id, buffer, _) in requests {
                 if let Some(cached) = cache.get_mut(&block_id) {
                     cached.data.data.copy_from_slice(buffer);
                     cached.dirty = false; // Will be written to disk below
+                    cached_block_ids.push(block_id);
                 }
             }
         }
 
         // Submit all WriteFixed SQEs in chunks (SQ has DEFAULT_RING_ENTRIES capacity)
         // Always use primary ring for fixed-buffer ops (registration is per-ring)
-        for (chunk_idx, chunk) in requests.chunks(DEFAULT_RING_ENTRIES as usize).enumerate() {
-            let mut ring = self.ring_pool.primary().lock();
-            let base = chunk_idx * DEFAULT_RING_ENTRIES as usize;
+        let result = (|| -> Result<()> {
+            for (chunk_idx, chunk) in requests.chunks(DEFAULT_RING_ENTRIES as usize).enumerate() {
+                let mut ring = self.ring_pool.primary().lock();
+                let base = chunk_idx * DEFAULT_RING_ENTRIES as usize;
 
-            for (i, &(block_id, buffer, buf_index)) in chunk.iter().enumerate() {
-                let offset = block_id as u64 * BLOCK_SIZE as u64;
+                for (i, &(block_id, buffer, buf_index)) in chunk.iter().enumerate() {
+                    let offset = block_id as u64 * BLOCK_SIZE as u64;
 
-                let write_e = opcode::WriteFixed::new(
-                    types::Fd(self.fd),
-                    buffer.as_ptr(),
-                    BLOCK_SIZE as u32,
-                    buf_index,
-                )
-                .offset(offset)
-                .build()
-                .user_data((base + i) as u64);
+                    let write_e = opcode::WriteFixed::new(
+                        types::Fd(self.fd),
+                        buffer.as_ptr(),
+                        BLOCK_SIZE as u32,
+                        buf_index,
+                    )
+                    .offset(offset)
+                    .build()
+                    .user_data((base + i) as u64);
 
-                unsafe {
-                    ring.submission().push(&write_e).map_err(|_| {
-                        PersistentARTrieError::IoUringError {
-                            operation: "push batch WriteFixed SQE".to_string(),
-                            source: std::io::Error::new(
-                                std::io::ErrorKind::Other,
-                                "io_uring submission queue full",
-                            ),
-                        }
+                    unsafe {
+                        ring.submission().push(&write_e).map_err(|_| {
+                            PersistentARTrieError::IoUringError {
+                                operation: "push batch WriteFixed SQE".to_string(),
+                                source: std::io::Error::new(
+                                    std::io::ErrorKind::Other,
+                                    "io_uring submission queue full",
+                                ),
+                            }
+                        })?;
+                    }
+                }
+
+                let count = chunk.len();
+                ring.submit_and_wait(count)
+                    .map_err(|e| PersistentARTrieError::IoUringError {
+                        operation: "submit_and_wait batch WriteFixed".to_string(),
+                        source: e,
                     })?;
+
+                let mut completed = 0;
+                for cqe in ring.completion() {
+                    validate_completion_result(
+                        "batch WriteFixed I/O",
+                        cqe.result(),
+                        CompletionExpectation::FullWrite(BLOCK_SIZE),
+                    )?;
+                    completed += 1;
                 }
+
+                validate_completion_count("batch WriteFixed completion count", count, completed)?;
             }
+            Ok(())
+        })();
 
-            let count = chunk.len();
-            ring.submit_and_wait(count)
-                .map_err(|e| PersistentARTrieError::IoUringError {
-                    operation: "submit_and_wait batch WriteFixed".to_string(),
-                    source: e,
-                })?;
-
-            let mut completed = 0;
-            for cqe in ring.completion() {
-                let result = cqe.result();
-                if result < 0 {
-                    return Err(PersistentARTrieError::IoUringError {
-                        operation: "batch WriteFixed I/O".to_string(),
-                        source: std::io::Error::from_raw_os_error(-result),
-                    });
+        if result.is_err() {
+            let mut cache = self.block_cache.lock();
+            for block_id in &cached_block_ids {
+                if let Some(cached) = cache.get_mut(block_id) {
+                    cached.dirty = true;
                 }
-                if (result as usize) < BLOCK_SIZE {
-                    return Err(PersistentARTrieError::IoUringError {
-                        operation: "batch WriteFixed I/O (short write)".to_string(),
-                        source: std::io::Error::new(
-                            std::io::ErrorKind::WriteZero,
-                            format!(
-                                "short write: wrote {} bytes, expected {}",
-                                result, BLOCK_SIZE
-                            ),
-                        ),
-                    });
-                }
-                completed += 1;
-            }
-
-            if completed != count {
-                return Err(PersistentARTrieError::IoUringError {
-                    operation: "batch WriteFixed completion count".to_string(),
-                    source: std::io::Error::new(
-                        std::io::ErrorKind::Other,
-                        format!("expected {} completions, got {}", count, completed),
-                    ),
-                });
             }
         }
 
-        Ok(())
+        result
     }
 }
 
@@ -2148,6 +2123,67 @@ mod tests {
     use super::*;
     use std::sync::atomic::Ordering as AtomicOrdering;
     use tempfile::tempdir;
+
+    #[test]
+    fn io_uring_completion_result_contracts_fail_closed() {
+        assert!(validate_completion_result(
+            "read I/O",
+            BLOCK_SIZE as i32,
+            CompletionExpectation::FullRead(BLOCK_SIZE)
+        )
+        .is_ok());
+
+        let short_read = validate_completion_result(
+            "read I/O",
+            (BLOCK_SIZE - 1) as i32,
+            CompletionExpectation::FullRead(BLOCK_SIZE),
+        )
+        .expect_err("short read must fail closed");
+        assert!(matches!(
+            short_read,
+            PersistentARTrieError::IoUringError { operation, source }
+                if operation == "read I/O (short read)"
+                    && source.kind() == std::io::ErrorKind::UnexpectedEof
+        ));
+
+        let short_write = validate_completion_result(
+            "write I/O",
+            (BLOCK_SIZE - 1) as i32,
+            CompletionExpectation::FullWrite(BLOCK_SIZE),
+        )
+        .expect_err("short write must fail closed");
+        assert!(matches!(
+            short_write,
+            PersistentARTrieError::IoUringError { operation, source }
+                if operation == "write I/O (short write)"
+                    && source.kind() == std::io::ErrorKind::WriteZero
+        ));
+
+        let negative =
+            validate_completion_result("fsync", -libc::EIO, CompletionExpectation::NoPayload)
+                .expect_err("negative CQE result must fail closed");
+        assert!(matches!(
+            negative,
+            PersistentARTrieError::IoUringError { operation, source }
+                if operation == "fsync"
+                    && source.raw_os_error() == Some(libc::EIO)
+        ));
+    }
+
+    #[test]
+    fn io_uring_completion_count_contracts_fail_closed() {
+        assert!(validate_completion_count("batch read completion count", 2, 2).is_ok());
+
+        let missing = validate_completion_count("batch read completion count", 2, 1)
+            .expect_err("missing CQE must fail closed");
+        assert!(matches!(
+            missing,
+            PersistentARTrieError::IoUringError { operation, source }
+                if operation == "batch read completion count"
+                    && source.kind() == std::io::ErrorKind::Other
+                    && source.to_string().contains("expected 2 completions, got 1")
+        ));
+    }
 
     #[test]
     fn test_create_and_open() {

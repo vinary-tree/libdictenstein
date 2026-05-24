@@ -8,22 +8,32 @@
 
 #![cfg(feature = "persistent-artrie")]
 
+use libdictenstein::persistent_artrie::nodes::PersistentNode;
 use libdictenstein::persistent_artrie::wal::WalError;
 use libdictenstein::persistent_artrie::{
-    BucketError, PersistentARTrie, StringBucket, WalHeader, WalReader, WalRecord, WalRecordType,
-    WalWriter,
+    AsyncWalConfig, BucketError, MmapDiskManager, PendingSegment, PersistentARTrie,
+    SegmentSyncManager, StringBucket, WalConfig, WalHeader, WalReader, WalRecord, WalRecordType,
+    WalSyncBackend, WalWriter,
+};
+use libdictenstein::persistent_artrie_char::nodes::PersistentCharNode;
+use libdictenstein::persistent_artrie_char::{CharTrieNodeInner, PersistentARTrieCharNode};
+use libdictenstein::persistent_artrie_core::concurrency::OptimisticCell;
+use libdictenstein::persistent_artrie_core::mvcc::ReadTransaction;
+use libdictenstein::persistent_vocab_artrie::{
+    ConcurrentVocabARTrie, LockFreeVocab, NodeRef, PersistentVocabARTrie, VocabTrieNode,
 };
 use libdictenstein::serialization::bincode_compat;
 use libdictenstein::{Dictionary, MappedDictionary};
 use proptest::prelude::*;
 use rand::{rngs::StdRng, Rng, SeedableRng};
 use std::collections::{BTreeMap, BTreeSet};
-use std::fs::OpenOptions;
+use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::Path;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Barrier};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tempfile::TempDir;
 
 fn byte_key_strategy() -> impl Strategy<Value = Vec<u8>> {
@@ -79,6 +89,20 @@ fn assert_search_partition(bucket: &StringBucket, sorted_keys: &[Vec<u8>], probe
     }
 }
 
+struct FailingSyncBackend {
+    attempts: Arc<AtomicUsize>,
+}
+
+impl WalSyncBackend for FailingSyncBackend {
+    fn sync_file(&self, _file: &File) -> std::io::Result<()> {
+        self.attempts.fetch_add(1, Ordering::AcqRel);
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Other,
+            "injected fsync failure",
+        ))
+    }
+}
+
 fn assert_trie_matches_reference(
     dict: &PersistentARTrie<i32>,
     expected: &BTreeMap<String, i32>,
@@ -101,6 +125,10 @@ fn assert_trie_matches_reference(
         }
     }
 }
+
+fn assert_send<T: Send>() {}
+
+fn assert_send_sync<T: Send + Sync>() {}
 
 #[derive(Debug, Clone)]
 enum TrieOp {
@@ -398,6 +426,217 @@ fn copy_base_with_wal_bytes(
     std::fs::write(case_path.with_extension("wal"), wal_bytes).expect("write case WAL");
 
     PersistentARTrie::<i32>::open(&case_path).expect("reopen crash-prefix case")
+}
+
+#[test]
+fn unsafe_send_sync_contracts_remain_explicit() {
+    assert_send_sync::<PersistentNode>();
+    assert_send_sync::<PersistentCharNode>();
+    assert_send_sync::<PersistentARTrieCharNode<u64>>();
+    assert_send_sync::<OptimisticCell<u64>>();
+    assert_send_sync::<PersistentVocabARTrie<MmapDiskManager>>();
+    assert_send_sync::<ConcurrentVocabARTrie>();
+    assert_send_sync::<LockFreeVocab>();
+    assert_send::<ReadTransaction<PersistentNode>>();
+    assert_send::<ReadTransaction<PersistentCharNode>>();
+
+    #[cfg(feature = "io-uring-backend")]
+    assert_send_sync::<libdictenstein::persistent_artrie::IoUringDiskManager>();
+}
+
+#[test]
+fn vocab_child_remove_transfers_box_ownership_once() {
+    let mut root = VocabTrieNode::new();
+    let root_ref = NodeRef::new(0, 0);
+
+    root.get_or_create_child('a', root_ref).set_value(7);
+    let raw_before = root.get_child('a').expect("child exists") as *const VocabTrieNode;
+
+    let removed = root.remove_child('a').expect("child removed");
+    let raw_after = removed.as_ref() as *const VocabTrieNode;
+
+    assert_eq!(raw_before, raw_after);
+    assert_eq!(removed.get_value(), Some(7));
+    assert!(root.get_child('a').is_none());
+    assert!(root.remove_child('a').is_none());
+}
+
+#[test]
+fn vocab_insert_child_replaces_without_aliasing_old_box() {
+    let mut root = VocabTrieNode::new();
+    let root_ref = NodeRef::new(0, 0);
+
+    let mut first = VocabTrieNode::with_parent(root_ref, 'x');
+    first.set_value(11);
+    assert!(root.insert_child('x', first).is_none());
+
+    let first_raw = root.get_child('x').expect("first child exists") as *const VocabTrieNode;
+
+    let mut second = VocabTrieNode::with_parent(root_ref, 'x');
+    second.set_value(22);
+    let replaced = root
+        .insert_child('x', second)
+        .expect("old child returned on replacement");
+
+    let second_raw = root.get_child('x').expect("second child exists") as *const VocabTrieNode;
+    assert_eq!(replaced.as_ref() as *const VocabTrieNode, first_raw);
+    assert_ne!(second_raw, first_raw);
+    assert_eq!(replaced.get_value(), Some(11));
+    assert_eq!(
+        root.get_child('x').and_then(VocabTrieNode::get_value),
+        Some(22)
+    );
+}
+
+#[test]
+fn vocab_clone_deep_copies_child_boxes() {
+    let mut original = VocabTrieNode::new();
+    let root_ref = NodeRef::new(0, 0);
+
+    original.get_or_create_child('z', root_ref).set_value(33);
+    let mut cloned = original.clone();
+
+    let original_child = original.remove_child('z').expect("original child removed");
+    let cloned_child = cloned.remove_child('z').expect("cloned child removed");
+
+    assert_ne!(
+        original_child.as_ref() as *const VocabTrieNode,
+        cloned_child.as_ref() as *const VocabTrieNode
+    );
+    assert_eq!(original_child.get_value(), Some(33));
+    assert_eq!(cloned_child.get_value(), Some(33));
+    assert!(original.get_child('z').is_none());
+    assert!(cloned.get_child('z').is_none());
+}
+
+#[test]
+fn char_child_remove_transfers_box_ownership_once() {
+    let mut root = CharTrieNodeInner::<i32>::new();
+
+    root.get_or_create_child('λ').set_final(true);
+    let raw_before = root.get_child('λ').expect("child exists") as *const CharTrieNodeInner<i32>;
+
+    let removed = root.remove_child('λ').expect("child removed");
+    let raw_after = removed.as_ref() as *const CharTrieNodeInner<i32>;
+
+    assert_eq!(raw_before, raw_after);
+    assert!(removed.is_final());
+    assert!(root.get_child('λ').is_none());
+    assert!(root.remove_child('λ').is_none());
+}
+
+#[test]
+fn char_insert_child_replaces_without_aliasing_old_box() {
+    let mut root = CharTrieNodeInner::<i32>::new();
+
+    let mut first = CharTrieNodeInner::new();
+    first.set_final(true);
+    assert!(root.insert_child('ß', first).is_none());
+
+    let first_raw =
+        root.get_child('ß').expect("first child exists") as *const CharTrieNodeInner<i32>;
+
+    let mut second = CharTrieNodeInner::new();
+    second.set_final(false);
+    second.get_or_create_child('ø').set_final(true);
+    let replaced = root
+        .insert_child('ß', second)
+        .expect("old child returned on replacement");
+
+    let second_raw =
+        root.get_child('ß').expect("second child exists") as *const CharTrieNodeInner<i32>;
+    assert_eq!(
+        replaced.as_ref() as *const CharTrieNodeInner<i32>,
+        first_raw
+    );
+    assert_ne!(second_raw, first_raw);
+    assert!(replaced.is_final());
+    assert!(!root.get_child('ß').expect("replacement child").is_final());
+    assert!(root
+        .get_child('ß')
+        .and_then(|child| child.get_child('ø'))
+        .expect("replacement grandchild")
+        .is_final());
+}
+
+#[test]
+fn char_clone_deep_copies_child_boxes() {
+    let mut original = CharTrieNodeInner::<i32>::new();
+
+    original.get_or_create_child('Ж').set_final(true);
+    let mut cloned = original.clone();
+
+    let original_child = original.remove_child('Ж').expect("original child removed");
+    let cloned_child = cloned.remove_child('Ж').expect("cloned child removed");
+
+    assert_ne!(
+        original_child.as_ref() as *const CharTrieNodeInner<i32>,
+        cloned_child.as_ref() as *const CharTrieNodeInner<i32>
+    );
+    assert!(original_child.is_final());
+    assert!(cloned_child.is_final());
+    assert!(original.get_child('Ж').is_none());
+    assert!(cloned.get_child('Ж').is_none());
+}
+
+#[test]
+fn vocab_checkpoint_reopen_preserves_unicode_bijection() {
+    let temp_dir = TempDir::new().expect("temp dir");
+    let path = temp_dir.path().join("vocab_reopen_unicode.vocab");
+    let terms = [
+        "alpha",
+        "résumé",
+        "東京",
+        "emoji😀",
+        "antidisestablishmentarianism",
+        "antidisestablishment",
+    ];
+
+    {
+        let mut vocab = PersistentVocabARTrie::create(&path).expect("create vocab trie");
+        for (expected_index, term) in terms.iter().enumerate() {
+            assert_eq!(vocab.insert(term), expected_index as u64);
+        }
+        assert_eq!(vocab.insert("résumé"), 1);
+        vocab.checkpoint().expect("checkpoint vocab trie");
+    }
+
+    let vocab = PersistentVocabARTrie::open(&path).expect("reopen vocab trie");
+    assert_eq!(vocab.len(), terms.len());
+
+    for (expected_index, term) in terms.iter().enumerate() {
+        let index = expected_index as u64;
+        assert_eq!(vocab.get_index(term), Some(index), "term -> index: {term}");
+        assert_eq!(
+            vocab.get_term(index),
+            Some((*term).to_string()),
+            "index -> term: {index}"
+        );
+    }
+}
+
+#[test]
+fn vocab_duplicate_insert_keeps_stable_index_after_reopen() {
+    let temp_dir = TempDir::new().expect("temp dir");
+    let path = temp_dir.path().join("vocab_duplicate_reopen.vocab");
+
+    {
+        let mut vocab = PersistentVocabARTrie::create(&path).expect("create vocab trie");
+        assert_eq!(vocab.insert("duplicate"), 0);
+        assert_eq!(vocab.insert("delta"), 1);
+        assert_eq!(vocab.insert("duplicate"), 0);
+        vocab.checkpoint().expect("checkpoint vocab trie");
+    }
+
+    let mut reopened = PersistentVocabARTrie::open(&path).expect("reopen vocab trie");
+    assert_eq!(reopened.insert("duplicate"), 0);
+    assert_eq!(reopened.get_index("duplicate"), Some(0));
+    assert_eq!(reopened.get_term(0), Some("duplicate".to_string()));
+    assert_eq!(
+        reopened.insert("epsilon"),
+        2,
+        "duplicate replay must not consume a new index"
+    );
 }
 
 proptest! {
@@ -757,6 +996,64 @@ fn wal_reader_ignores_torn_trailing_header_after_durable_prefix() {
 }
 
 #[test]
+fn segment_sync_failure_does_not_advance_durable_frontier() {
+    let temp_dir = TempDir::new().expect("temp dir");
+    let wal_path = temp_dir.path().join("active.wal");
+    let segment_path = temp_dir.path().join("pending.segment");
+    std::fs::write(&segment_path, b"pending segment bytes").expect("write segment");
+    let segment_file = File::open(&segment_path).expect("open pending segment");
+    let size_bytes = std::fs::metadata(&segment_path)
+        .expect("segment metadata")
+        .len();
+
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let manager = SegmentSyncManager::with_sync_backend(
+        AsyncWalConfig {
+            idle_check_interval_ms: 1,
+            pending_dir: temp_dir.path().join("pending"),
+            ..AsyncWalConfig::default()
+        },
+        WalConfig::no_archive(),
+        wal_path,
+        0,
+        Arc::new(FailingSyncBackend {
+            attempts: Arc::clone(&attempts),
+        }),
+    );
+
+    manager.enqueue(PendingSegment {
+        path: segment_path,
+        lsn_range: (1, 4),
+        file: segment_file,
+        rotated_at: Instant::now(),
+        size_bytes,
+    });
+
+    let deadline = Instant::now() + Duration::from_secs(1);
+    while attempts.load(Ordering::Acquire) == 0 && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(10));
+    }
+
+    assert!(
+        attempts.load(Ordering::Acquire) > 0,
+        "sync backend was not exercised"
+    );
+    assert_eq!(
+        manager.global_synced_lsn.load(Ordering::Acquire),
+        0,
+        "failed fsync advanced the durable frontier"
+    );
+    assert!(
+        !manager
+            .wait_for_lsn_timeout(4, Duration::from_millis(20))
+            .expect("timeout wait should not fail while manager is running"),
+        "failed fsync reported the target LSN as durable"
+    );
+
+    manager.stop();
+}
+
+#[test]
 fn proof_carrying_trace_certificate_replays_reference() {
     let commands = vec![
         CertifiedTraceCommand::Put("alpha".to_string(), 1),
@@ -943,6 +1240,71 @@ fn swizzled_pointer_state_transitions_preserve_location_contract() {
     assert_eq!(loc.block_id, 17);
     assert_eq!(loc.offset, 23);
     assert_eq!(loc.node_type, NodeType::Bucket);
+}
+
+#[test]
+fn swizzled_pointer_raw_extraction_is_gated_by_in_memory_state() {
+    use libdictenstein::persistent_artrie::{NodeType, SwizzledPtr};
+
+    let null = SwizzledPtr::null();
+    assert!(!null.is_swizzled());
+    assert_eq!(null.as_ptr::<u64>(), None);
+    assert_eq!(null.disk_location(), None);
+
+    let slot = SwizzledPtr::on_disk(3, 64, NodeType::Bucket);
+    assert!(slot.is_on_disk());
+    assert!(!slot.is_swizzled());
+    assert_eq!(slot.as_ptr::<u64>(), None);
+    assert!(slot.disk_location().is_some());
+
+    let value = Box::new(0xfeed_cafe_dead_beef_u64);
+    let raw = value.as_ref() as *const u64;
+
+    slot.swizzle(raw).expect("publish in-memory pointer");
+    assert!(slot.is_swizzled());
+    assert_eq!(slot.disk_location(), None);
+
+    let safe = slot
+        .as_ptr::<u64>()
+        .expect("safe extraction succeeds only for in-memory pointer");
+    assert_eq!(safe, raw);
+
+    let unchecked = unsafe { slot.as_ptr_unchecked::<u64>() };
+    assert_eq!(unchecked, safe);
+    assert_eq!(unsafe { *unchecked }, *value);
+
+    let previous = slot
+        .unswizzle::<u64>(3, 96, NodeType::Bucket)
+        .expect("unpublish in-memory pointer");
+    assert_eq!(previous, raw);
+    assert!(!slot.is_swizzled());
+    assert_eq!(slot.as_ptr::<u64>(), None);
+    assert!(slot.disk_location().is_some());
+}
+
+#[test]
+fn swizzled_pointer_losing_lazy_load_candidate_can_be_reclaimed_once() {
+    use libdictenstein::persistent_artrie::error::SwizzleError;
+    use libdictenstein::persistent_artrie::{NodeType, SwizzledPtr};
+
+    let slot = SwizzledPtr::on_disk(7, 4096, NodeType::CharNode4);
+    let winner = Box::into_raw(Box::new(41_u64));
+    let loser = Box::into_raw(Box::new(99_u64));
+
+    slot.swizzle(winner).expect("winner publishes loaded node");
+    assert_eq!(
+        slot.swizzle(loser),
+        Err(SwizzleError::AlreadySwizzled),
+        "losing lazy-load candidate must stay unpublished"
+    );
+
+    let recovered_loser = unsafe { Box::from_raw(loser) };
+    assert_eq!(*recovered_loser, 99);
+
+    let published = slot.as_ptr::<u64>().expect("published pointer");
+    assert_eq!(published, winner as *const u64);
+    let recovered_winner = unsafe { Box::from_raw(winner) };
+    assert_eq!(*recovered_winner, 41);
 }
 
 #[test]

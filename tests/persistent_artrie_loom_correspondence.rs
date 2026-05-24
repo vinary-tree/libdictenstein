@@ -97,6 +97,360 @@ fn merge_once(cache: &AtomicBool, persisted: &AtomicBool) {
     }
 }
 
+#[derive(Debug)]
+struct ModelValueLeaf {
+    value: AtomicUsize,
+}
+
+#[derive(Debug)]
+struct ModelValueOverlay {
+    leaf: RwLock<Option<Arc<ModelValueLeaf>>>,
+    cache: AtomicBool,
+    leaf_initializations: AtomicUsize,
+}
+
+impl ModelValueOverlay {
+    fn new() -> Self {
+        Self {
+            leaf: RwLock::new(None),
+            cache: AtomicBool::new(false),
+            leaf_initializations: AtomicUsize::new(0),
+        }
+    }
+
+    fn get_or_create_leaf(&self) -> Arc<ModelValueLeaf> {
+        if let Some(leaf) = self.leaf.read().expect("value leaf read lock").clone() {
+            return leaf;
+        }
+
+        let candidate = Arc::new(ModelValueLeaf {
+            value: AtomicUsize::new(0),
+        });
+        let mut guard = self.leaf.write().expect("value leaf write lock");
+
+        match guard.as_ref() {
+            Some(existing) => Arc::clone(existing),
+            None => {
+                self.leaf_initializations.fetch_add(1, Ordering::SeqCst);
+                *guard = Some(Arc::clone(&candidate));
+                self.cache.store(true, Ordering::Release);
+                candidate
+            }
+        }
+    }
+
+    fn increment(&self, delta: usize) -> usize {
+        let leaf = self.get_or_create_leaf();
+        leaf.value.fetch_add(delta, Ordering::AcqRel) + delta
+    }
+
+    fn get_value(&self) -> Option<usize> {
+        self.leaf
+            .read()
+            .expect("value leaf read lock")
+            .as_ref()
+            .map(|leaf| leaf.value.load(Ordering::Acquire))
+    }
+
+    fn merge_snapshot(&self, persisted: &AtomicUsize) {
+        if let Some(value) = self.get_value() {
+            persisted.store(value, Ordering::Release);
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ModelVocabSnapshot {
+    entries: [Option<usize>; 2],
+}
+
+impl ModelVocabSnapshot {
+    fn empty() -> Self {
+        Self {
+            entries: [None, None],
+        }
+    }
+
+    fn get(&self, term: usize) -> Option<usize> {
+        self.entries[term]
+    }
+
+    fn set(&mut self, term: usize, index: usize) {
+        self.entries[term] = Some(index);
+    }
+}
+
+#[derive(Debug)]
+struct ModelVocabOverlay {
+    root: RwLock<ModelVocabSnapshot>,
+    cache: RwLock<ModelVocabSnapshot>,
+    persisted: RwLock<ModelVocabSnapshot>,
+    next_index: AtomicUsize,
+    entry_count: AtomicUsize,
+}
+
+impl ModelVocabOverlay {
+    fn new() -> Self {
+        Self {
+            root: RwLock::new(ModelVocabSnapshot::empty()),
+            cache: RwLock::new(ModelVocabSnapshot::empty()),
+            persisted: RwLock::new(ModelVocabSnapshot::empty()),
+            next_index: AtomicUsize::new(0),
+            entry_count: AtomicUsize::new(0),
+        }
+    }
+
+    fn root_snapshot(&self) -> ModelVocabSnapshot {
+        *self.root.read().expect("vocab root read lock")
+    }
+
+    fn cache_get(&self, term: usize) -> Option<usize> {
+        self.cache.read().expect("vocab cache read lock").get(term)
+    }
+
+    fn cache_set(&self, term: usize, index: usize) {
+        self.cache
+            .write()
+            .expect("vocab cache write lock")
+            .set(term, index);
+    }
+
+    fn compare_exchange_root(
+        &self,
+        expected: ModelVocabSnapshot,
+        new: ModelVocabSnapshot,
+    ) -> Result<ModelVocabSnapshot, ModelVocabSnapshot> {
+        let mut guard = self.root.write().expect("vocab root write lock");
+
+        if *guard == expected {
+            let old = *guard;
+            *guard = new;
+            Ok(old)
+        } else {
+            Err(*guard)
+        }
+    }
+
+    fn insert(&self, term: usize) -> usize {
+        if let Some(index) = self.cache_get(term) {
+            return index;
+        }
+
+        if let Some(index) = self.root_snapshot().get(term) {
+            self.cache_set(term, index);
+            return index;
+        }
+
+        let claimed = self.next_index.fetch_add(1, Ordering::AcqRel);
+
+        loop {
+            let current = self.root_snapshot();
+
+            if let Some(existing) = current.get(term) {
+                self.cache_set(term, existing);
+                return existing;
+            }
+
+            let mut next = current;
+            next.set(term, claimed);
+
+            match self.compare_exchange_root(current, next) {
+                Ok(_) => {
+                    self.cache_set(term, claimed);
+                    self.entry_count.fetch_add(1, Ordering::AcqRel);
+                    return claimed;
+                }
+                Err(actual) => {
+                    if let Some(existing) = actual.get(term) {
+                        self.cache_set(term, existing);
+                        return existing;
+                    }
+
+                    thread::yield_now();
+                }
+            }
+        }
+    }
+
+    fn merge_snapshot(&self) {
+        let cache = *self.cache.read().expect("vocab cache read lock");
+        let mut persisted = self.persisted.write().expect("vocab persisted write lock");
+
+        for term in 0..cache.entries.len() {
+            if let Some(index) = cache.get(term) {
+                persisted.set(term, index);
+            }
+        }
+    }
+
+    fn persisted_get(&self, term: usize) -> Option<usize> {
+        self.persisted
+            .read()
+            .expect("vocab persisted read lock")
+            .get(term)
+    }
+}
+
+#[derive(Debug)]
+struct ModelDurabilityFrontier {
+    next_lsn: AtomicUsize,
+    durable: RwLock<[bool; 4]>,
+    synced_lsn: AtomicUsize,
+}
+
+impl ModelDurabilityFrontier {
+    fn new() -> Self {
+        Self {
+            next_lsn: AtomicUsize::new(1),
+            durable: RwLock::new([false; 4]),
+            synced_lsn: AtomicUsize::new(0),
+        }
+    }
+
+    fn reserve_lsn(&self) -> usize {
+        let lsn = self.next_lsn.fetch_add(1, Ordering::AcqRel);
+        assert!(lsn < 4, "bounded model supports LSNs 1..=3");
+        lsn
+    }
+
+    fn complete_lsn(&self, lsn: usize) {
+        self.durable.write().expect("durable write lock")[lsn] = true;
+    }
+
+    fn publish_frontier(&self) {
+        let durable = self.durable.read().expect("durable read lock");
+        let mut candidate = 0;
+
+        for lsn in 1..durable.len() {
+            if durable[lsn] {
+                candidate = lsn;
+            } else {
+                break;
+            }
+        }
+
+        self.advance_synced_to(candidate);
+    }
+
+    fn advance_synced_to(&self, candidate: usize) {
+        loop {
+            let current = self.synced_lsn.load(Ordering::Acquire);
+            if candidate <= current {
+                return;
+            }
+
+            if self
+                .synced_lsn
+                .compare_exchange(current, candidate, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+            {
+                return;
+            }
+        }
+    }
+
+    fn notify_if_durable(&self, target_lsn: usize, acknowledged: &AtomicBool) {
+        if self.synced_lsn.load(Ordering::Acquire) >= target_lsn {
+            acknowledged.store(true, Ordering::Release);
+        }
+    }
+
+    fn prefix_is_durable(&self, target_lsn: usize) -> bool {
+        let durable = self.durable.read().expect("durable read lock");
+        (1..=target_lsn).all(|lsn| durable[lsn])
+    }
+}
+
+#[derive(Debug)]
+struct ModelCheckpointPublisher {
+    checkpoint_lsn: AtomicUsize,
+}
+
+impl ModelCheckpointPublisher {
+    fn new() -> Self {
+        Self {
+            checkpoint_lsn: AtomicUsize::new(0),
+        }
+    }
+
+    fn publish_checkpoint(&self, frontier: &ModelDurabilityFrontier, requested_lsn: usize) {
+        let synced = frontier.synced_lsn.load(Ordering::Acquire);
+        let publishable = requested_lsn.min(synced);
+
+        loop {
+            let current = self.checkpoint_lsn.load(Ordering::Acquire);
+            if publishable <= current {
+                return;
+            }
+
+            if self
+                .checkpoint_lsn
+                .compare_exchange(current, publishable, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+            {
+                return;
+            }
+        }
+    }
+}
+
+#[derive(Debug)]
+struct ModelVersionRegistry {
+    state: RwLock<usize>,
+    readers: AtomicUsize,
+    gc_durable: AtomicBool,
+}
+
+impl ModelVersionRegistry {
+    const ACTIVE: usize = 0;
+    const RETIRED: usize = 1;
+    const RECLAIMED: usize = 2;
+
+    fn new() -> Self {
+        Self {
+            state: RwLock::new(Self::ACTIVE),
+            readers: AtomicUsize::new(0),
+            gc_durable: AtomicBool::new(false),
+        }
+    }
+
+    fn retire(&self) {
+        let mut state = self.state.write().expect("version state write lock");
+        if *state == Self::ACTIVE {
+            *state = Self::RETIRED;
+        }
+    }
+
+    fn begin_read(&self) -> bool {
+        let state = self.state.write().expect("version state write lock");
+        if *state == Self::RECLAIMED {
+            return false;
+        }
+
+        self.readers.fetch_add(1, Ordering::AcqRel);
+        true
+    }
+
+    fn end_read(&self) {
+        self.readers.fetch_sub(1, Ordering::AcqRel);
+    }
+
+    fn try_reclaim_with_durable_gc(&self) -> bool {
+        let mut state = self.state.write().expect("version state write lock");
+        if *state == Self::RETIRED && self.readers.load(Ordering::Acquire) == 0 {
+            self.gc_durable.store(true, Ordering::Release);
+            *state = Self::RECLAIMED;
+            true
+        } else {
+            false
+        }
+    }
+
+    fn is_reclaimed(&self) -> bool {
+        *self.state.read().expect("version state read lock") == Self::RECLAIMED
+    }
+}
+
 #[test]
 fn atomic_root_compare_exchange_has_single_winner() {
     loom::model(|| {
@@ -228,6 +582,405 @@ fn merge_snapshot_is_prefix_of_cache_publication() {
         merge_once(&cache, &persisted);
         assert!(persisted.load(Ordering::Acquire));
         assert!(contains_one_key(&root, &cache));
+    });
+}
+
+#[test]
+fn char_increment_same_key_counts_each_successful_delta() {
+    loom::model(|| {
+        let overlay = Arc::new(ModelValueOverlay::new());
+        let persisted = Arc::new(AtomicUsize::new(0));
+
+        let mut handles = Vec::new();
+        for _ in 0..2 {
+            let overlay = Arc::clone(&overlay);
+            handles.push(thread::spawn(move || {
+                overlay.increment(1);
+            }));
+        }
+
+        for handle in handles {
+            handle.join().expect("increment completed");
+        }
+
+        assert_eq!(overlay.get_value(), Some(2));
+        assert!(overlay.cache.load(Ordering::Acquire));
+
+        overlay.merge_snapshot(&persisted);
+        assert_eq!(persisted.load(Ordering::Acquire), 2);
+    });
+}
+
+#[test]
+fn char_create_vs_increment_race_has_one_leaf_and_total_value() {
+    loom::model(|| {
+        let overlay = Arc::new(ModelValueOverlay::new());
+
+        let first = {
+            let overlay = Arc::clone(&overlay);
+            thread::spawn(move || overlay.increment(1))
+        };
+
+        let second = {
+            let overlay = Arc::clone(&overlay);
+            thread::spawn(move || overlay.increment(2))
+        };
+
+        let first_result = first.join().expect("first increment completed");
+        let second_result = second.join().expect("second increment completed");
+
+        assert!(matches!(first_result, 1 | 3));
+        assert!(matches!(second_result, 2 | 3));
+        assert_eq!(overlay.leaf_initializations.load(Ordering::SeqCst), 1);
+        assert_eq!(overlay.get_value(), Some(3));
+    });
+}
+
+#[test]
+fn char_merge_snapshot_never_exceeds_visible_value() {
+    loom::model(|| {
+        let overlay = Arc::new(ModelValueOverlay::new());
+        let persisted = Arc::new(AtomicUsize::new(0));
+
+        let incrementer = {
+            let overlay = Arc::clone(&overlay);
+            thread::spawn(move || {
+                overlay.increment(1);
+                thread::yield_now();
+                overlay.increment(1);
+            })
+        };
+
+        let merger = {
+            let overlay = Arc::clone(&overlay);
+            let persisted = Arc::clone(&persisted);
+            thread::spawn(move || {
+                overlay.merge_snapshot(&persisted);
+            })
+        };
+
+        incrementer.join().expect("increments completed");
+        merger.join().expect("merge completed");
+
+        let visible = overlay.get_value().unwrap_or(0);
+        assert!(persisted.load(Ordering::Acquire) <= visible);
+
+        overlay.merge_snapshot(&persisted);
+        assert_eq!(persisted.load(Ordering::Acquire), visible);
+    });
+}
+
+#[test]
+fn vocab_duplicate_insert_returns_stable_index_and_allows_sparse_next_index() {
+    loom::model(|| {
+        const NOT_OBSERVED: usize = usize::MAX;
+
+        let vocab = Arc::new(ModelVocabOverlay::new());
+        let first_index = Arc::new(AtomicUsize::new(NOT_OBSERVED));
+        let second_index = Arc::new(AtomicUsize::new(NOT_OBSERVED));
+
+        let first = {
+            let vocab = Arc::clone(&vocab);
+            let first_index = Arc::clone(&first_index);
+            thread::spawn(move || {
+                first_index.store(vocab.insert(0), Ordering::Release);
+            })
+        };
+
+        let second = {
+            let vocab = Arc::clone(&vocab);
+            let second_index = Arc::clone(&second_index);
+            thread::spawn(move || {
+                second_index.store(vocab.insert(0), Ordering::Release);
+            })
+        };
+
+        first.join().expect("first vocab insert completed");
+        second.join().expect("second vocab insert completed");
+
+        let first_index = first_index.load(Ordering::Acquire);
+        let second_index = second_index.load(Ordering::Acquire);
+        let next_index = vocab.next_index.load(Ordering::Acquire);
+
+        assert_ne!(first_index, NOT_OBSERVED);
+        assert_eq!(first_index, second_index);
+        assert_eq!(vocab.root_snapshot().get(0), Some(first_index));
+        assert_eq!(vocab.cache_get(0), Some(first_index));
+        assert_eq!(vocab.entry_count.load(Ordering::Acquire), 1);
+        assert!((1..=2).contains(&next_index));
+        assert!(next_index >= vocab.entry_count.load(Ordering::Acquire));
+    });
+}
+
+#[test]
+fn vocab_distinct_insert_commits_unique_indices_without_wasting_claims() {
+    loom::model(|| {
+        const NOT_OBSERVED: usize = usize::MAX;
+
+        let vocab = Arc::new(ModelVocabOverlay::new());
+        let first_index = Arc::new(AtomicUsize::new(NOT_OBSERVED));
+        let second_index = Arc::new(AtomicUsize::new(NOT_OBSERVED));
+
+        let first = {
+            let vocab = Arc::clone(&vocab);
+            let first_index = Arc::clone(&first_index);
+            thread::spawn(move || {
+                first_index.store(vocab.insert(0), Ordering::Release);
+            })
+        };
+
+        let second = {
+            let vocab = Arc::clone(&vocab);
+            let second_index = Arc::clone(&second_index);
+            thread::spawn(move || {
+                second_index.store(vocab.insert(1), Ordering::Release);
+            })
+        };
+
+        first.join().expect("first vocab insert completed");
+        second.join().expect("second vocab insert completed");
+
+        let first_index = first_index.load(Ordering::Acquire);
+        let second_index = second_index.load(Ordering::Acquire);
+        let root = vocab.root_snapshot();
+
+        assert_ne!(first_index, NOT_OBSERVED);
+        assert_ne!(second_index, NOT_OBSERVED);
+        assert_ne!(first_index, second_index);
+        assert_eq!(root.get(0), Some(first_index));
+        assert_eq!(root.get(1), Some(second_index));
+        assert_eq!(vocab.entry_count.load(Ordering::Acquire), 2);
+        assert_eq!(vocab.next_index.load(Ordering::Acquire), 2);
+    });
+}
+
+#[test]
+fn vocab_merge_snapshot_preserves_cache_root_agreement() {
+    loom::model(|| {
+        let vocab = Arc::new(ModelVocabOverlay::new());
+
+        let inserter = {
+            let vocab = Arc::clone(&vocab);
+            thread::spawn(move || {
+                vocab.insert(0);
+                thread::yield_now();
+                vocab.insert(1);
+            })
+        };
+
+        let merger = {
+            let vocab = Arc::clone(&vocab);
+            thread::spawn(move || {
+                vocab.merge_snapshot();
+            })
+        };
+
+        inserter.join().expect("vocab inserts completed");
+        merger.join().expect("vocab merge completed");
+
+        let root = vocab.root_snapshot();
+        for term in 0..2 {
+            if let Some(persisted) = vocab.persisted_get(term) {
+                assert_eq!(root.get(term), Some(persisted));
+            }
+        }
+
+        vocab.merge_snapshot();
+        let root = vocab.root_snapshot();
+        for term in 0..2 {
+            assert_eq!(vocab.cache_get(term), root.get(term));
+            assert_eq!(vocab.persisted_get(term), root.get(term));
+        }
+    });
+}
+
+#[test]
+fn group_commit_publish_acknowledges_only_durable_prefix() {
+    loom::model(|| {
+        let frontier = Arc::new(ModelDurabilityFrontier::new());
+        let acknowledged = Arc::new(AtomicBool::new(false));
+
+        let first_lsn = frontier.reserve_lsn();
+        let second_lsn = frontier.reserve_lsn();
+        assert_eq!(first_lsn, 1);
+        assert_eq!(second_lsn, 2);
+
+        frontier.complete_lsn(second_lsn);
+        frontier.publish_frontier();
+        frontier.notify_if_durable(second_lsn, &acknowledged);
+
+        assert!(!acknowledged.load(Ordering::Acquire));
+        assert!(frontier.synced_lsn.load(Ordering::Acquire) < second_lsn);
+
+        frontier.complete_lsn(first_lsn);
+        frontier.publish_frontier();
+        frontier.notify_if_durable(second_lsn, &acknowledged);
+
+        assert!(acknowledged.load(Ordering::Acquire));
+        assert_eq!(frontier.synced_lsn.load(Ordering::Acquire), second_lsn);
+        assert!(frontier.prefix_is_durable(second_lsn));
+    });
+}
+
+#[test]
+fn concurrent_group_commit_reservations_publish_unique_contiguous_lsns() {
+    loom::model(|| {
+        const NOT_OBSERVED: usize = usize::MAX;
+
+        let frontier = Arc::new(ModelDurabilityFrontier::new());
+        let first_observed = Arc::new(AtomicUsize::new(NOT_OBSERVED));
+        let second_observed = Arc::new(AtomicUsize::new(NOT_OBSERVED));
+
+        let first = {
+            let frontier = Arc::clone(&frontier);
+            let first_observed = Arc::clone(&first_observed);
+            thread::spawn(move || {
+                let lsn = frontier.reserve_lsn();
+                frontier.complete_lsn(lsn);
+                frontier.publish_frontier();
+                first_observed.store(lsn, Ordering::Release);
+            })
+        };
+
+        let second = {
+            let frontier = Arc::clone(&frontier);
+            let second_observed = Arc::clone(&second_observed);
+            thread::spawn(move || {
+                let lsn = frontier.reserve_lsn();
+                frontier.complete_lsn(lsn);
+                frontier.publish_frontier();
+                second_observed.store(lsn, Ordering::Release);
+            })
+        };
+
+        first.join().expect("first group commit append completed");
+        second.join().expect("second group commit append completed");
+        frontier.publish_frontier();
+
+        let first_lsn = first_observed.load(Ordering::Acquire);
+        let second_lsn = second_observed.load(Ordering::Acquire);
+
+        assert_ne!(first_lsn, NOT_OBSERVED);
+        assert_ne!(second_lsn, NOT_OBSERVED);
+        assert_ne!(first_lsn, second_lsn);
+        assert_eq!(frontier.synced_lsn.load(Ordering::Acquire), 2);
+        assert!(frontier.prefix_is_durable(2));
+    });
+}
+
+#[test]
+fn async_wal_out_of_order_completion_does_not_advance_past_gap() {
+    loom::model(|| {
+        let frontier = ModelDurabilityFrontier::new();
+        let first_lsn = frontier.reserve_lsn();
+        let second_lsn = frontier.reserve_lsn();
+
+        frontier.complete_lsn(second_lsn);
+        frontier.publish_frontier();
+
+        assert_eq!(frontier.synced_lsn.load(Ordering::Acquire), 0);
+        assert!(!frontier.prefix_is_durable(second_lsn));
+
+        frontier.complete_lsn(first_lsn);
+        frontier.publish_frontier();
+
+        assert_eq!(frontier.synced_lsn.load(Ordering::Acquire), second_lsn);
+        assert!(frontier.prefix_is_durable(second_lsn));
+    });
+}
+
+#[test]
+fn checkpoint_publication_never_exceeds_synced_frontier() {
+    loom::model(|| {
+        let frontier = Arc::new(ModelDurabilityFrontier::new());
+        let checkpoint = Arc::new(ModelCheckpointPublisher::new());
+
+        let lsn = frontier.reserve_lsn();
+
+        let checkpoint_thread = {
+            let frontier = Arc::clone(&frontier);
+            let checkpoint = Arc::clone(&checkpoint);
+            thread::spawn(move || {
+                checkpoint.publish_checkpoint(&frontier, lsn);
+            })
+        };
+
+        let append_thread = {
+            let frontier = Arc::clone(&frontier);
+            thread::spawn(move || {
+                thread::yield_now();
+                frontier.complete_lsn(lsn);
+                frontier.publish_frontier();
+            })
+        };
+
+        checkpoint_thread
+            .join()
+            .expect("checkpoint publication completed");
+        append_thread.join().expect("append publication completed");
+
+        checkpoint.publish_checkpoint(&frontier, lsn);
+
+        let checkpoint_lsn = checkpoint.checkpoint_lsn.load(Ordering::Acquire);
+        let synced_lsn = frontier.synced_lsn.load(Ordering::Acquire);
+
+        assert!(checkpoint_lsn <= synced_lsn);
+        assert!(frontier.prefix_is_durable(checkpoint_lsn));
+    });
+}
+
+#[test]
+fn version_gc_reader_guard_blocks_reclaim_until_drop() {
+    loom::model(|| {
+        let registry = Arc::new(ModelVersionRegistry::new());
+        registry.retire();
+
+        assert!(registry.begin_read());
+        assert!(!registry.try_reclaim_with_durable_gc());
+        assert!(!registry.is_reclaimed());
+
+        registry.end_read();
+        assert!(registry.try_reclaim_with_durable_gc());
+        assert!(registry.gc_durable.load(Ordering::Acquire));
+        assert!(registry.is_reclaimed());
+    });
+}
+
+#[test]
+fn version_gc_race_reclaims_only_without_active_reader() {
+    loom::model(|| {
+        let registry = Arc::new(ModelVersionRegistry::new());
+        registry.retire();
+
+        let reader = {
+            let registry = Arc::clone(&registry);
+            thread::spawn(move || {
+                if registry.begin_read() {
+                    thread::yield_now();
+                    assert!(!registry.is_reclaimed());
+                    registry.end_read();
+                }
+            })
+        };
+
+        let collector = {
+            let registry = Arc::clone(&registry);
+            thread::spawn(move || {
+                thread::yield_now();
+                registry.try_reclaim_with_durable_gc();
+            })
+        };
+
+        reader.join().expect("reader completed");
+        collector.join().expect("collector completed");
+
+        if !registry.is_reclaimed() {
+            assert!(registry.try_reclaim_with_durable_gc());
+        }
+
+        assert_eq!(registry.readers.load(Ordering::Acquire), 0);
+        assert!(registry.gc_durable.load(Ordering::Acquire));
+        assert!(registry.is_reclaimed());
     });
 }
 

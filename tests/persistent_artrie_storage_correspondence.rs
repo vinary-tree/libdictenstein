@@ -196,3 +196,73 @@ fn io_uring_block_storage_rejects_out_of_block_ranges_when_available() {
         .expect("read second block");
     assert_eq!(&recovered, b"keep");
 }
+
+#[cfg(feature = "io-uring-backend")]
+#[test]
+fn io_uring_buffer_registration_rejects_invalid_entries_when_available() {
+    use libdictenstein::persistent_artrie::{BlockStorage, IoUringDiskManager};
+
+    let temp_dir = TempDir::new().expect("temp dir");
+    let path = temp_dir.path().join("io_uring_register_invalid.part");
+    let storage = match IoUringDiskManager::create(&path) {
+        Ok(storage) => storage,
+        Err(error) => {
+            eprintln!("skipping io_uring registration correspondence test: {error}");
+            return;
+        }
+    };
+
+    assert!(
+        unsafe { storage.register_buffer_pool(&[(std::ptr::null_mut(), BLOCK_SIZE)]) }.is_err(),
+        "null registered buffer pointer was accepted"
+    );
+
+    let mut short = [0u8; 128];
+    assert!(
+        unsafe { storage.register_buffer_pool(&[(short.as_mut_ptr(), short.len())]) }.is_err(),
+        "short registered buffer was accepted"
+    );
+}
+
+#[cfg(feature = "io-uring-backend")]
+#[test]
+fn io_uring_unregister_clears_fixed_buffer_capability_before_owner_drop() {
+    use libdictenstein::persistent_artrie::{AlignedBlock, BlockStorage, IoUringDiskManager};
+
+    let temp_dir = TempDir::new().expect("temp dir");
+    let path = temp_dir.path().join("io_uring_register_unregister.part");
+    let storage = match IoUringDiskManager::create(&path) {
+        Ok(storage) => storage,
+        Err(error) => {
+            eprintln!("skipping io_uring registration lifetime test: {error}");
+            return;
+        }
+    };
+
+    let block_id = storage.allocate_block().expect("allocate block");
+    let mut registered = AlignedBlock::new_boxed();
+    registered.data[..8].copy_from_slice(b"fixedbuf");
+    let registration = [(registered.data.as_mut_ptr(), BLOCK_SIZE)];
+
+    if let Err(error) = unsafe { storage.register_buffer_pool(&registration) } {
+        eprintln!("skipping io_uring fixed-buffer registration test: {error}");
+        return;
+    }
+
+    assert!(storage.supports_fixed_buffers());
+    storage
+        .write_block_fixed(block_id, &registered.data, 0)
+        .expect("write through registered buffer");
+    storage
+        .unregister_buffer_pool()
+        .expect("unregister buffer pool before owner drop");
+    assert!(!storage.supports_fixed_buffers());
+
+    drop(registered);
+
+    let mut recovered = AlignedBlock::new_boxed();
+    storage
+        .read_block(block_id, &mut recovered.data)
+        .expect("read after registered owner dropped");
+    assert_eq!(&recovered.data[..8], b"fixedbuf");
+}

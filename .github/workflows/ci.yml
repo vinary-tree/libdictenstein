@@ -5,6 +5,10 @@ on:
     branches: [main, master]
   pull_request:
     branches: [main, master]
+  workflow_dispatch:
+  schedule:
+    # Weekly deep formal run. The regular PR path runs the no-TLC harness.
+    - cron: "37 5 * * 0"
 
 env:
   CARGO_TERM_COLOR: always
@@ -195,3 +199,170 @@ jobs:
       - name: Build proofs
         working-directory: formal-verification/rocq
         run: make
+
+  # -----------------------------------------------------------------
+  # Formal correspondence harness. This ties Rust tests, Rocq, unsafe
+  # inventory drift, and TLA+ SANY checks into one PR gate.
+  # -----------------------------------------------------------------
+  formal-correspondence:
+    name: Formal correspondence
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+      - name: Install Rocq and TLA+ tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y coq curl
+          curl -L \
+            https://github.com/tlaplus/tlaplus/releases/latest/download/tla2tools.jar \
+            -o tla2tools.jar
+          sudo mkdir -p /opt/tla
+          sudo mv tla2tools.jar /opt/tla/tla2tools.jar
+          sudo tee /usr/local/bin/tla2sany >/dev/null <<'EOF'
+          #!/usr/bin/env bash
+          exec java -Xmx"${TLA_JAVA_HEAP:-3g}" -cp /opt/tla/tla2tools.jar tla2sany.SANY "$@"
+          EOF
+          sudo tee /usr/local/bin/tlc >/dev/null <<'EOF'
+          #!/usr/bin/env bash
+          exec java -Xmx"${TLA_JAVA_HEAP:-3g}" -cp /opt/tla/tla2tools.jar tlc2.TLC "$@"
+          EOF
+          sudo chmod +x /usr/local/bin/tla2sany /usr/local/bin/tlc
+      - name: Run no-TLC correspondence harness
+        env:
+          CARGO_BUILD_JOBS: "2"
+          FORMAL_MEM_LIMIT_BYTES: "8589934592"
+          TLA_JAVA_HEAP: "3g"
+        run: prlimit --as="$FORMAL_MEM_LIMIT_BYTES" --rss="$FORMAL_MEM_LIMIT_BYTES" -- bash scripts/verify-formal-correspondence.sh
+
+  # -----------------------------------------------------------------
+  # Miri unsafe-boundary checks. Runs on nightly because `cargo miri`
+  # is a nightly component.
+  # -----------------------------------------------------------------
+  formal-miri:
+    name: Formal unsafe boundary (Miri)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: miri,rust-src
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+      - name: Install Rocq and TLA+ tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y coq curl
+          curl -L \
+            https://github.com/tlaplus/tlaplus/releases/latest/download/tla2tools.jar \
+            -o tla2tools.jar
+          sudo mkdir -p /opt/tla
+          sudo mv tla2tools.jar /opt/tla/tla2tools.jar
+          sudo tee /usr/local/bin/tla2sany >/dev/null <<'EOF'
+          #!/usr/bin/env bash
+          exec java -Xmx"${TLA_JAVA_HEAP:-3g}" -cp /opt/tla/tla2tools.jar tla2sany.SANY "$@"
+          EOF
+          sudo tee /usr/local/bin/tlc >/dev/null <<'EOF'
+          #!/usr/bin/env bash
+          exec java -Xmx"${TLA_JAVA_HEAP:-3g}" -cp /opt/tla/tla2tools.jar tlc2.TLC "$@"
+          EOF
+          sudo chmod +x /usr/local/bin/tla2sany /usr/local/bin/tlc
+      - name: Prepare Miri
+        env:
+          CARGO_BUILD_JOBS: "2"
+          FORMAL_MEM_LIMIT_BYTES: "8589934592"
+        run: prlimit --as="$FORMAL_MEM_LIMIT_BYTES" --rss="$FORMAL_MEM_LIMIT_BYTES" -- cargo miri setup
+      - name: Run Miri-gated correspondence harness
+        env:
+          CARGO_BUILD_JOBS: "2"
+          FORMAL_MEM_LIMIT_BYTES: "8589934592"
+          RUN_MIRI: "1"
+          TLA_JAVA_HEAP: "3g"
+        run: prlimit --as="$FORMAL_MEM_LIMIT_BYTES" --rss="$FORMAL_MEM_LIMIT_BYTES" -- bash scripts/verify-formal-correspondence.sh
+
+  # -----------------------------------------------------------------
+  # Linux io_uring backend correspondence. Tests skip internally if
+  # the runner kernel/filesystem rejects io_uring + O_DIRECT setup.
+  # -----------------------------------------------------------------
+  formal-io-uring:
+    name: Formal storage backend (io_uring)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+      - name: Install Rocq and TLA+ tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y coq curl
+          curl -L \
+            https://github.com/tlaplus/tlaplus/releases/latest/download/tla2tools.jar \
+            -o tla2tools.jar
+          sudo mkdir -p /opt/tla
+          sudo mv tla2tools.jar /opt/tla/tla2tools.jar
+          sudo tee /usr/local/bin/tla2sany >/dev/null <<'EOF'
+          #!/usr/bin/env bash
+          exec java -Xmx"${TLA_JAVA_HEAP:-3g}" -cp /opt/tla/tla2tools.jar tla2sany.SANY "$@"
+          EOF
+          sudo tee /usr/local/bin/tlc >/dev/null <<'EOF'
+          #!/usr/bin/env bash
+          exec java -Xmx"${TLA_JAVA_HEAP:-3g}" -cp /opt/tla/tla2tools.jar tlc2.TLC "$@"
+          EOF
+          sudo chmod +x /usr/local/bin/tla2sany /usr/local/bin/tlc
+      - name: Run io_uring-gated correspondence harness
+        env:
+          CARGO_BUILD_JOBS: "2"
+          FORMAL_MEM_LIMIT_BYTES: "8589934592"
+          RUN_IO_URING: "1"
+          TLA_JAVA_HEAP: "3g"
+        run: prlimit --as="$FORMAL_MEM_LIMIT_BYTES" --rss="$FORMAL_MEM_LIMIT_BYTES" -- bash scripts/verify-formal-correspondence.sh
+
+  # -----------------------------------------------------------------
+  # Scheduled/manual deep bounded model check. This is intentionally
+  # not a PR job because several focused TLC models are large.
+  # -----------------------------------------------------------------
+  formal-tlc:
+    name: Formal bounded models (TLC)
+    runs-on: ubuntu-latest
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+      - name: Install Rocq and TLA+ tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y coq curl
+          curl -L \
+            https://github.com/tlaplus/tlaplus/releases/latest/download/tla2tools.jar \
+            -o tla2tools.jar
+          sudo mkdir -p /opt/tla
+          sudo mv tla2tools.jar /opt/tla/tla2tools.jar
+          sudo tee /usr/local/bin/tla2sany >/dev/null <<'EOF'
+          #!/usr/bin/env bash
+          exec java -Xmx"${TLA_JAVA_HEAP:-5g}" -cp /opt/tla/tla2tools.jar tla2sany.SANY "$@"
+          EOF
+          sudo tee /usr/local/bin/tlc >/dev/null <<'EOF'
+          #!/usr/bin/env bash
+          exec java -Xmx"${TLA_JAVA_HEAP:-5g}" -cp /opt/tla/tla2tools.jar tlc2.TLC "$@"
+          EOF
+          sudo chmod +x /usr/local/bin/tla2sany /usr/local/bin/tlc
+      - name: Run TLC-gated correspondence harness
+        env:
+          CARGO_BUILD_JOBS: "2"
+          FORMAL_MEM_LIMIT_BYTES: "10737418240"
+          RUN_TLC: "1"
+          TLA_JAVA_HEAP: "5g"
+        run: prlimit --as="$FORMAL_MEM_LIMIT_BYTES" --rss="$FORMAL_MEM_LIMIT_BYTES" -- bash scripts/verify-formal-correspondence.sh

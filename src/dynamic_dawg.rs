@@ -11,8 +11,6 @@ use crate::value::DictionaryValue;
 use crate::{Dictionary, DictionaryNode, SyncStrategy};
 use rustc_hash::FxHashMap;
 use smallvec::SmallVec;
-use std::collections::HashMap;
-use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
 /// A dynamic DAWG that supports online insertions and deletions.
@@ -67,15 +65,10 @@ pub struct DynamicDawg<V: DictionaryValue = ()> {
 pub(crate) type DynamicDawgInner<V = ()> = crate::dawg_core::DawgCore<u8, V>;
 
 // C1 step (DAWG byte variant): the byte-for-byte-identical local
-// `BloomFilter` and `NodeSignature` structs are replaced with imports of
-// the canonical crate-level types at `crate::bloom_filter::BloomFilter`
-// and `crate::node_signature::NodeSignature`. The canonical types have
-// the same field shape (BloomFilter: `bits: Vec<u64>`, `bit_count:
-// usize`, `hash_count: usize`; NodeSignature: `hash: u64`) and a
-// superset of the methods that were defined locally (new, insert,
-// might_contain, clear).
+// `BloomFilter` is replaced with the canonical crate-level type at
+// `crate::bloom_filter::BloomFilter`. Node signatures now live entirely
+// in the canonical generic DAWG core.
 use crate::bloom_filter::BloomFilter;
-use crate::node_signature::NodeSignature;
 
 // C1 step (DAWG byte variant): byte-for-byte-identical local
 // `DawgNode<V>` struct + 2-method impl block replaced with a type
@@ -245,84 +238,11 @@ impl<V: DictionaryValue> DynamicDawg<V> {
     /// Insertions maintain minimality by sharing suffixes with existing nodes.
     pub fn insert(&self, term: &str) -> bool {
         let mut inner = self.inner.write();
-        let bytes = term.as_bytes();
-
-        // Navigate to insertion point, creating nodes as needed
-        let mut node_idx = 0;
-        let mut path: Vec<(usize, u8)> = Vec::new(); // (parent_idx, label)
-
-        for &byte in bytes {
-            if let Some(&child_idx) = inner.nodes[node_idx]
-                .edges
-                .iter()
-                .find(|(b, _)| *b == byte)
-                .map(|(_, idx)| idx)
-            {
-                // Edge exists, follow it
-                path.push((node_idx, byte));
-                node_idx = child_idx;
-            } else {
-                // Need to create new suffix
-                break;
-            }
+        let inserted = inner.insert_units(term.as_bytes());
+        if inserted {
+            inner.bloom_insert(term);
         }
-
-        // Check if term already exists
-        if path.len() == bytes.len() && inner.nodes[node_idx].is_final {
-            return false; // Already exists
-        }
-
-        // Build remaining suffix with sharing
-        let start_byte_idx = path.len();
-
-        // Phase 2.1: DISABLED - Suffix sharing is incompatible with dynamic insertions
-        // that can later mark intermediate nodes as final.
-        //
-        // Bug: When inserting "kb" after "jb", suffix sharing would reuse the same
-        // entry node for both 'j' and 'k' edges. Later, inserting "j" marks that
-        // shared node as final, incorrectly making "k" also appear as a valid term.
-        //
-        // Example:
-        //   dict.insert("jb"); dict.insert("kb");  // Creates shared structure
-        //   dict.insert("j");                       // BUG: also marks "k" as valid
-        //
-        // The correct DAWG structure for ["jb", "kb"] should have distinct nodes
-        // for 'j' and 'k' edges, even though they both continue with 'b'.
-        //
-        // For now, we disable Phase 2.1 and rely on the node-by-node construction
-        // below. Future work: implement proper suffix sharing that creates distinct
-        // intermediate nodes while sharing only the deeper suffix nodes.
-
-        // Create nodes one by one (no suffix sharing)
-        for i in start_byte_idx..bytes.len() {
-            let byte = bytes[i];
-            let new_idx = inner.nodes.len();
-            let is_final = i == bytes.len() - 1;
-            let mut new_node = DawgNode::new(is_final);
-            new_node.ref_count = 1;
-
-            inner.nodes.push(new_node);
-            inner.insert_edge_sorted(node_idx, byte, new_idx);
-
-            node_idx = new_idx;
-        }
-
-        // Mark as final if we followed existing path
-        if start_byte_idx == bytes.len() {
-            inner.nodes[node_idx].is_final = true;
-        }
-
-        inner.term_count += 1;
-
-        // Add to Bloom filter if enabled (Opt #4)
-        if let Some(ref mut bloom) = inner.bloom_filter {
-            bloom.insert(term);
-        }
-
-        // Auto-minimize if bloat threshold exceeded
-        inner.check_and_auto_minimize();
-
-        true
+        inserted
     }
 
     /// Insert a term with an associated value.
@@ -340,77 +260,11 @@ impl<V: DictionaryValue> DynamicDawg<V> {
     /// ```
     pub fn insert_with_value(&self, term: &str, value: V) -> bool {
         let mut inner = self.inner.write();
-        let bytes = term.as_bytes();
-
-        // Navigate to insertion point
-        let mut node_idx = 0;
-        let mut path: Vec<(usize, u8)> = Vec::new();
-
-        for &byte in bytes {
-            if let Some(&child_idx) = inner.nodes[node_idx]
-                .edges
-                .iter()
-                .find(|(b, _)| *b == byte)
-                .map(|(_, idx)| idx)
-            {
-                path.push((node_idx, byte));
-                node_idx = child_idx;
-            } else {
-                break;
-            }
+        let inserted = inner.insert_units_with_value(term.as_bytes(), value);
+        if inserted {
+            inner.bloom_insert(term);
         }
-
-        // Check if term already exists
-        if path.len() == bytes.len() {
-            if inner.nodes[node_idx].is_final {
-                // Term exists - update value
-                inner.nodes[node_idx].value = Some(value);
-                return false;
-            } else {
-                // Mark as final and set value
-                inner.nodes[node_idx].is_final = true;
-                inner.nodes[node_idx].value = Some(value);
-                inner.term_count += 1;
-
-                // Add to Bloom filter
-                if let Some(ref mut bloom) = inner.bloom_filter {
-                    bloom.insert(term);
-                }
-
-                return true;
-            }
-        }
-
-        // Build remaining suffix
-        let start_byte_idx = path.len();
-        for i in start_byte_idx..bytes.len() {
-            let byte = bytes[i];
-            let new_idx = inner.nodes.len();
-            let is_final = i == bytes.len() - 1;
-
-            let mut new_node = if is_final {
-                DawgNode::new_with_value(true, Some(value.clone()))
-            } else {
-                DawgNode::new(false)
-            };
-            new_node.ref_count = 1;
-
-            inner.nodes.push(new_node);
-            inner.insert_edge_sorted(node_idx, byte, new_idx);
-            node_idx = new_idx;
-        }
-
-        inner.term_count += 1;
-
-        // Add to Bloom filter
-        if let Some(ref mut bloom) = inner.bloom_filter {
-            bloom.insert(term);
-        }
-
-        // Auto-minimize if needed
-        inner.check_and_auto_minimize();
-
-        true
+        inserted
     }
 
     /// Update an existing term's value in place, or insert a new term with a default value.
@@ -455,84 +309,11 @@ impl<V: DictionaryValue> DynamicDawg<V> {
         F: FnOnce(&mut V),
     {
         let mut inner = self.inner.write();
-        let bytes = term.as_bytes();
-
-        // Navigate to the term's location, creating nodes as needed
-        let mut node_idx = 0;
-        let mut path_len = 0;
-
-        for &byte in bytes {
-            if let Some(&child_idx) = inner.nodes[node_idx]
-                .edges
-                .iter()
-                .find(|(b, _)| *b == byte)
-                .map(|(_, idx)| idx)
-            {
-                // Edge exists, follow it
-                node_idx = child_idx;
-                path_len += 1;
-            } else {
-                // Need to create remaining path
-                break;
-            }
+        let inserted = inner.update_or_insert_units(term.as_bytes(), default_value, update_fn);
+        if inserted {
+            inner.bloom_insert(term);
         }
-
-        // Check if term already exists
-        if path_len == bytes.len() {
-            if inner.nodes[node_idx].is_final {
-                // Term exists - update its value
-                if let Some(ref mut existing_value) = inner.nodes[node_idx].value {
-                    update_fn(existing_value);
-                } else {
-                    // Has is_final but no value (shouldn't happen for valued DAWGs, but handle it)
-                    inner.nodes[node_idx].value = Some(default_value);
-                }
-                return false; // Term already existed
-            } else {
-                // Node exists but wasn't final - mark it final with default value
-                inner.nodes[node_idx].is_final = true;
-                inner.nodes[node_idx].value = Some(default_value);
-                inner.term_count += 1;
-
-                // Add to Bloom filter if enabled
-                if let Some(ref mut bloom) = inner.bloom_filter {
-                    bloom.insert(term);
-                }
-
-                return true; // New term
-            }
-        }
-
-        // Build remaining path (term doesn't exist yet)
-        let start_byte_idx = path_len;
-        for i in start_byte_idx..bytes.len() {
-            let byte = bytes[i];
-            let new_idx = inner.nodes.len();
-            let is_final = i == bytes.len() - 1;
-
-            let mut new_node = if is_final {
-                DawgNode::new_with_value(true, Some(default_value.clone()))
-            } else {
-                DawgNode::new(false)
-            };
-            new_node.ref_count = 1;
-
-            inner.nodes.push(new_node);
-            inner.insert_edge_sorted(node_idx, byte, new_idx);
-            node_idx = new_idx;
-        }
-
-        inner.term_count += 1;
-
-        // Add to Bloom filter if enabled
-        if let Some(ref mut bloom) = inner.bloom_filter {
-            bloom.insert(term);
-        }
-
-        // Auto-minimize if needed
-        inner.check_and_auto_minimize();
-
-        true // New term was inserted
+        inserted
     }
 
     /// Get the value associated with a term.
@@ -583,50 +364,7 @@ impl<V: DictionaryValue> DynamicDawg<V> {
     /// minimality by removing unreachable nodes.
     pub fn remove(&self, term: &str) -> bool {
         let mut inner = self.inner.write();
-        let bytes = term.as_bytes();
-
-        // Navigate to the term
-        let mut node_idx = 0;
-        let mut path: Vec<(usize, u8, usize)> = Vec::new(); // (parent, label, child)
-
-        for &byte in bytes {
-            if let Some(&child_idx) = inner.nodes[node_idx]
-                .edges
-                .iter()
-                .find(|(b, _)| *b == byte)
-                .map(|(_, idx)| idx)
-            {
-                path.push((node_idx, byte, child_idx));
-                node_idx = child_idx;
-            } else {
-                return false; // Term doesn't exist
-            }
-        }
-
-        // Check if it's a final node
-        if !inner.nodes[node_idx].is_final {
-            return false; // Term doesn't exist
-        }
-
-        // Unmark as final
-        inner.nodes[node_idx].is_final = false;
-        inner.term_count -= 1;
-
-        // Prune unreachable branches (nodes with no children and not final)
-        for (parent_idx, label, child_idx) in path.iter().rev() {
-            let child = &inner.nodes[*child_idx];
-            if !child.is_final && child.edges.is_empty() {
-                // Remove edge from parent
-                inner.nodes[*parent_idx].edges.retain(|(b, _)| *b != *label);
-            } else {
-                break; // Stop pruning
-            }
-        }
-
-        // Phase 2.1: Invalidate suffix cache since structure changed
-        inner.suffix_cache.clear();
-        inner.needs_compaction = true;
-        true
+        inner.remove_units(term.as_bytes())
     }
 
     /// Compact the DAWG to restore perfect minimality.
@@ -651,49 +389,7 @@ impl<V: DictionaryValue> DynamicDawg<V> {
     /// Returns the number of nodes removed.
     pub fn compact(&self) -> usize {
         let mut inner = self.inner.write();
-
-        // Extract all terms
-        let terms = inner.extract_all_terms();
-        let old_node_count = inner.nodes.len();
-
-        // Preserve settings
-        let auto_minimize_threshold = inner.auto_minimize_threshold;
-        // Recover the expected_elements that originally sized the bloom filter:
-        // BloomFilter::new(n) sets bit_count = max(64, n*10). `capacity()` returns
-        // bit_count after rounding to the next multiple of 64. Dividing by 10
-        // recovers the approximate original expected_elements.
-        let bloom_capacity = inner.bloom_filter.as_ref().map(|b| b.capacity() / 10);
-
-        // Rebuild from scratch
-        *inner = DynamicDawgInner {
-            nodes: vec![DawgNode::new(false)],
-            term_count: 0,
-            needs_compaction: false,
-            suffix_cache: FxHashMap::default(),
-            last_minimized_node_count: 1,
-            auto_minimize_threshold,
-            bloom_filter: bloom_capacity.map(BloomFilter::new),
-        };
-
-        // Re-insert sorted terms for optimal prefix sharing
-        let mut sorted_terms = terms;
-        sorted_terms.sort();
-
-        for term in &sorted_terms {
-            // Direct insertion without locking (we already have write lock)
-            inner.insert_direct(term);
-
-            // Rebuild Bloom filter (canonical BloomFilter::insert_bytes accepts &[u8])
-            if let Some(ref mut bloom) = inner.bloom_filter {
-                bloom.insert_bytes(term);
-            }
-        }
-
-        // Now minimize to merge equivalent suffixes (DAWG minimization)
-        // This is what makes it a true DAWG instead of just a trie
-        let minimized = inner.minimize_incremental();
-
-        old_node_count - inner.nodes.len() + minimized
+        inner.compact()
     }
 
     /// Minimize the DAWG using incremental suffix merging.
@@ -824,52 +520,13 @@ impl<V: DictionaryValue> DynamicDawg<V> {
     /// ```
     pub fn insert_bytes(&self, bytes: &[u8]) -> bool {
         let mut inner = self.inner.write();
-
-        // Navigate to insertion point, creating nodes as needed
-        let mut node_idx = 0;
-        let mut path: Vec<(usize, u8)> = Vec::new();
-
-        for &byte in bytes {
-            if let Some(&child_idx) = inner.nodes[node_idx]
-                .edges
-                .iter()
-                .find(|(b, _)| *b == byte)
-                .map(|(_, idx)| idx)
-            {
-                path.push((node_idx, byte));
-                node_idx = child_idx;
-            } else {
-                break;
+        let inserted = inner.insert_units(bytes);
+        if inserted {
+            if let Some(ref mut bloom) = inner.bloom_filter {
+                bloom.insert_bytes(bytes);
             }
         }
-
-        // Check if term already exists
-        if path.len() == bytes.len() && inner.nodes[node_idx].is_final {
-            return false;
-        }
-
-        // Build remaining suffix
-        let start_byte_idx = path.len();
-        for i in start_byte_idx..bytes.len() {
-            let byte = bytes[i];
-            let new_idx = inner.nodes.len();
-            let is_final = i == bytes.len() - 1;
-            let mut new_node = DawgNode::new(is_final);
-            new_node.ref_count = 1;
-
-            inner.nodes.push(new_node);
-            inner.insert_edge_sorted(node_idx, byte, new_idx);
-            node_idx = new_idx;
-        }
-
-        // Mark as final if we followed existing path
-        if start_byte_idx == bytes.len() {
-            inner.nodes[node_idx].is_final = true;
-        }
-
-        inner.term_count += 1;
-        inner.check_and_auto_minimize();
-        true
+        inserted
     }
 
     /// Insert raw bytes with an associated value.
@@ -885,62 +542,13 @@ impl<V: DictionaryValue> DynamicDawg<V> {
     /// ```
     pub fn insert_bytes_with_value(&self, bytes: &[u8], value: V) -> bool {
         let mut inner = self.inner.write();
-
-        // Navigate to insertion point
-        let mut node_idx = 0;
-        let mut path: Vec<(usize, u8)> = Vec::new();
-
-        for &byte in bytes {
-            if let Some(&child_idx) = inner.nodes[node_idx]
-                .edges
-                .iter()
-                .find(|(b, _)| *b == byte)
-                .map(|(_, idx)| idx)
-            {
-                path.push((node_idx, byte));
-                node_idx = child_idx;
-            } else {
-                break;
+        let inserted = inner.insert_units_with_value(bytes, value);
+        if inserted {
+            if let Some(ref mut bloom) = inner.bloom_filter {
+                bloom.insert_bytes(bytes);
             }
         }
-
-        // Check if term already exists
-        if path.len() == bytes.len() {
-            if inner.nodes[node_idx].is_final {
-                // Update value
-                inner.nodes[node_idx].value = Some(value);
-                return false;
-            } else {
-                // Mark as final and set value
-                inner.nodes[node_idx].is_final = true;
-                inner.nodes[node_idx].value = Some(value);
-                inner.term_count += 1;
-                return true;
-            }
-        }
-
-        // Build remaining suffix
-        let start_byte_idx = path.len();
-        for i in start_byte_idx..bytes.len() {
-            let byte = bytes[i];
-            let new_idx = inner.nodes.len();
-            let is_final = i == bytes.len() - 1;
-
-            let mut new_node = if is_final {
-                DawgNode::new_with_value(true, Some(value.clone()))
-            } else {
-                DawgNode::new(false)
-            };
-            new_node.ref_count = 1;
-
-            inner.nodes.push(new_node);
-            inner.insert_edge_sorted(node_idx, byte, new_idx);
-            node_idx = new_idx;
-        }
-
-        inner.term_count += 1;
-        inner.check_and_auto_minimize();
-        true
+        inserted
     }
 
     /// Check if raw bytes exist in the DAWG.
@@ -1003,7 +611,7 @@ impl<V: DictionaryValue> DynamicDawg<V> {
 // block lived here. It defined check_and_auto_minimize, insert_edge_sorted,
 // minimize_incremental, nodes_structurally_equal, compute_signatures,
 // compute_signatures_dfs, find_reachable_nodes, find_reachable_dfs,
-// compact_with_reachable, extract_all_terms, dfs_collect, insert_direct,
+// compact_with_reachable, value-preserving term extraction/rebuild helpers,
 // plus the disabled suffix-share cache helpers (find_or_create_suffix,
 // compute_suffix_hash, verify_suffix_match, create_suffix_chain).
 //

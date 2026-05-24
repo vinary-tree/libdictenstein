@@ -87,9 +87,10 @@ message DoubleArrayTrie {
     // Size: ceil(num_states / 8)
     bytes is_final = 3;
 
-    // Edge lists per state: which bytes have valid transitions
-    // Format: [state0_edge_count, edge0, edge1, ..., state1_edge_count, ...]
-    // Each edge is a single byte (u8)
+    // DAT-specific payload. Current Rust encoding stores dictionary terms as:
+    // magic "LDT1" followed by repeated little-endian u32 byte lengths and
+    // UTF-8 term bytes. The Rust decoder keeps legacy newline-delimited
+    // payload support for older serialized dictionaries.
     bytes edge_data = 4;
 
     // Free list: indices of deleted/unused states
