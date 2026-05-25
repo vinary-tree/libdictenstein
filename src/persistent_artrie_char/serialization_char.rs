@@ -81,8 +81,8 @@ use super::compact_encoding::{
 use super::arena_manager::ArenaSlot;
 
 use super::relative_encoding::{
-    decode_children, decode_sequential_siblings, encode_child_pointer, encode_sequential_siblings,
-    SerializationContext,
+    encode_child_pointer, encode_sequential_siblings, try_decode_children,
+    try_decode_sequential_siblings, RelativeEncodingError, SerializationContext,
 };
 
 /// Helper to convert io::Error to PersistentARTrieError for serialization operations
@@ -1166,6 +1166,38 @@ impl DeserializationContext {
     }
 }
 
+fn relative_decode_err(err: RelativeEncodingError) -> PersistentARTrieError {
+    PersistentARTrieError::corrupted(format!("invalid relative child encoding: {}", err))
+}
+
+fn decode_v2_child_slots(
+    data: &[u8],
+    parent: ArenaSlot,
+    count: usize,
+    uses_sequential: bool,
+) -> Result<(Vec<ArenaSlot>, usize)> {
+    if uses_sequential {
+        try_decode_sequential_siblings(data, parent, count).map_err(relative_decode_err)
+    } else {
+        try_decode_children(data, parent, count).map_err(relative_decode_err)
+    }
+}
+
+fn read_value_ptr_after_children(data: &[u8], value_offset: usize) -> Result<SwizzledPtr> {
+    let end = value_offset
+        .checked_add(8)
+        .ok_or_else(|| PersistentARTrieError::corrupted("char v2 value pointer offset overflow"))?;
+    if data.len() < end {
+        return Err(PersistentARTrieError::corrupted(format!(
+            "truncated char v2 value pointer: child bytes consumed {}, remaining data length {}",
+            value_offset,
+            data.len()
+        )));
+    }
+    let value_raw = u64::from_le_bytes(data[value_offset..end].try_into().unwrap());
+    Ok(SwizzledPtr::from_raw(value_raw))
+}
+
 /// Deserialize a CharNode using v2 format with relative offset decoding
 ///
 /// Handles both relative offset and sequential sibling encodings based on
@@ -1254,43 +1286,25 @@ fn deserialize_charnode4_v2<R: Read>(
         let remaining_data =
             read_remaining_data(reader, header.data_size as usize, 4 * 4, prefix_size)?;
         let (children, bytes_consumed) =
-            decode_sequential_siblings(&remaining_data, ctx.parent_slot, num_children);
+            decode_v2_child_slots(&remaining_data, ctx.parent_slot, num_children, true)?;
 
         for (i, slot) in children.iter().enumerate().take(4) {
             node.children[i] = arena_slot_to_ptr(*slot);
         }
 
-        // Read value_ptr from remaining data
-        let value_offset = bytes_consumed;
-        if remaining_data.len() >= value_offset + 8 {
-            let value_raw = u64::from_le_bytes(
-                remaining_data[value_offset..value_offset + 8]
-                    .try_into()
-                    .unwrap(),
-            );
-            node.value_ptr = SwizzledPtr::from_raw(value_raw);
-        }
+        node.value_ptr = read_value_ptr_after_children(&remaining_data, bytes_consumed)?;
     } else if uses_relative {
         // Read relative-encoded children
         let remaining_data =
             read_remaining_data(reader, header.data_size as usize, 4 * 4, prefix_size)?;
         let (children, bytes_consumed) =
-            decode_children(&remaining_data, ctx.parent_slot, num_children);
+            decode_v2_child_slots(&remaining_data, ctx.parent_slot, num_children, false)?;
 
         for (i, slot) in children.iter().enumerate().take(4) {
             node.children[i] = arena_slot_to_ptr(*slot);
         }
 
-        // Read value_ptr from remaining data
-        let value_offset = bytes_consumed;
-        if remaining_data.len() >= value_offset + 8 {
-            let value_raw = u64::from_le_bytes(
-                remaining_data[value_offset..value_offset + 8]
-                    .try_into()
-                    .unwrap(),
-            );
-            node.value_ptr = SwizzledPtr::from_raw(value_raw);
-        }
+        node.value_ptr = read_value_ptr_after_children(&remaining_data, bytes_consumed)?;
     } else {
         // Legacy fixed-width encoding
         for child in &mut node.children {
@@ -1334,40 +1348,24 @@ fn deserialize_charnode16_v2<R: Read>(
         let remaining_data =
             read_remaining_data(reader, header.data_size as usize, 16 * 4, prefix_size)?;
         let (children, bytes_consumed) =
-            decode_sequential_siblings(&remaining_data, ctx.parent_slot, num_children);
+            decode_v2_child_slots(&remaining_data, ctx.parent_slot, num_children, true)?;
 
         for (i, slot) in children.iter().enumerate().take(16) {
             node.children[i] = arena_slot_to_ptr(*slot);
         }
 
-        let value_offset = bytes_consumed;
-        if remaining_data.len() >= value_offset + 8 {
-            let value_raw = u64::from_le_bytes(
-                remaining_data[value_offset..value_offset + 8]
-                    .try_into()
-                    .unwrap(),
-            );
-            node.value_ptr = SwizzledPtr::from_raw(value_raw);
-        }
+        node.value_ptr = read_value_ptr_after_children(&remaining_data, bytes_consumed)?;
     } else if uses_relative {
         let remaining_data =
             read_remaining_data(reader, header.data_size as usize, 16 * 4, prefix_size)?;
         let (children, bytes_consumed) =
-            decode_children(&remaining_data, ctx.parent_slot, num_children);
+            decode_v2_child_slots(&remaining_data, ctx.parent_slot, num_children, false)?;
 
         for (i, slot) in children.iter().enumerate().take(16) {
             node.children[i] = arena_slot_to_ptr(*slot);
         }
 
-        let value_offset = bytes_consumed;
-        if remaining_data.len() >= value_offset + 8 {
-            let value_raw = u64::from_le_bytes(
-                remaining_data[value_offset..value_offset + 8]
-                    .try_into()
-                    .unwrap(),
-            );
-            node.value_ptr = SwizzledPtr::from_raw(value_raw);
-        }
+        node.value_ptr = read_value_ptr_after_children(&remaining_data, bytes_consumed)?;
     } else {
         for child in &mut node.children {
             let mut raw_bytes = [0u8; 8];
@@ -1409,40 +1407,24 @@ fn deserialize_charnode48_v2<R: Read>(
         let remaining_data =
             read_remaining_data(reader, header.data_size as usize, 48 * 4, prefix_size)?;
         let (children, bytes_consumed) =
-            decode_sequential_siblings(&remaining_data, ctx.parent_slot, num_children);
+            decode_v2_child_slots(&remaining_data, ctx.parent_slot, num_children, true)?;
 
         for (i, slot) in children.iter().enumerate().take(48) {
             node.children[i] = arena_slot_to_ptr(*slot);
         }
 
-        let value_offset = bytes_consumed;
-        if remaining_data.len() >= value_offset + 8 {
-            let value_raw = u64::from_le_bytes(
-                remaining_data[value_offset..value_offset + 8]
-                    .try_into()
-                    .unwrap(),
-            );
-            node.value_ptr = SwizzledPtr::from_raw(value_raw);
-        }
+        node.value_ptr = read_value_ptr_after_children(&remaining_data, bytes_consumed)?;
     } else if uses_relative {
         let remaining_data =
             read_remaining_data(reader, header.data_size as usize, 48 * 4, prefix_size)?;
         let (children, bytes_consumed) =
-            decode_children(&remaining_data, ctx.parent_slot, num_children);
+            decode_v2_child_slots(&remaining_data, ctx.parent_slot, num_children, false)?;
 
         for (i, slot) in children.iter().enumerate().take(48) {
             node.children[i] = arena_slot_to_ptr(*slot);
         }
 
-        let value_offset = bytes_consumed;
-        if remaining_data.len() >= value_offset + 8 {
-            let value_raw = u64::from_le_bytes(
-                remaining_data[value_offset..value_offset + 8]
-                    .try_into()
-                    .unwrap(),
-            );
-            node.value_ptr = SwizzledPtr::from_raw(value_raw);
-        }
+        node.value_ptr = read_value_ptr_after_children(&remaining_data, bytes_consumed)?;
     } else {
         for child in &mut node.children {
             let mut raw_bytes = [0u8; 8];
@@ -1501,14 +1483,19 @@ fn deserialize_charbucket_v2<R: Read>(
         let mut remaining_data = vec![0u8; remaining_size];
         reader.read_exact(&mut remaining_data).map_err(io_err)?;
 
-        let children = if uses_sequential {
-            let (children, _) =
-                decode_sequential_siblings(&remaining_data, ctx.parent_slot, num_entries);
-            children
-        } else {
-            let (children, _) = decode_children(&remaining_data, ctx.parent_slot, num_entries);
-            children
-        };
+        let (children, bytes_consumed) = decode_v2_child_slots(
+            &remaining_data,
+            ctx.parent_slot,
+            num_entries,
+            uses_sequential,
+        )?;
+        if bytes_consumed != remaining_data.len() {
+            return Err(PersistentARTrieError::corrupted(format!(
+                "char bucket relative children consumed {} bytes from {} bytes",
+                bytes_consumed,
+                remaining_data.len()
+            )));
+        }
 
         for (key, slot) in keys.iter().zip(children.iter()) {
             node.entries.insert(*key, arena_slot_to_ptr(*slot));

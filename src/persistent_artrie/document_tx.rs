@@ -135,7 +135,6 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
         let count = tx.shadow_terms.len();
 
         if count == 0 {
-            tx.state = TransactionState::Committed;
             if let Some(ref wal) = self.wal_writer {
                 wal.append(WalRecord::CommitTx { tx_id: tx.tx_id })
                     .map_err(|e| {
@@ -155,25 +154,29 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
                     })?;
                 }
             }
+            tx.state = TransactionState::Committed;
             return Ok(0);
         }
 
-        // Take ownership of the buffered (Vec<u8>, Option<V>) entries and
-        // borrow them as &[u8] for the byte-keyed insert path. The previous
-        // implementation routed through `String::from_utf8_lossy → insert_batch`
-        // which silently mangled any high-bit (≥0x80) bytes into the Unicode
-        // replacement character U+FFFD — corrupting all varint-encoded n-gram
-        // keys with vocab indices ≥ 128. `insert_batch_bytes` preserves the
-        // raw byte sequence exactly.
-        let owned_entries: Vec<(Vec<u8>, Option<V>)> = tx.shadow_terms.drain(..).collect();
-        let borrowed_entries: Vec<(&[u8], Option<V>)> = owned_entries
-            .iter()
-            .map(|(k, v)| (k.as_slice(), v.clone()))
-            .collect();
-
-        let inserted = self.insert_batch_bytes(&borrowed_entries);
+        let mut wal_entries = Vec::with_capacity(count);
+        for (term, value) in &tx.shadow_terms {
+            let value_bytes = match value.as_ref() {
+                Some(v) => Some(crate::serialization::bincode_compat::serialize(v).map_err(
+                    |e| PersistentARTrieError::internal(format!("Serialization error: {}", e)),
+                )?),
+                None => None,
+            };
+            wal_entries.push((term.clone(), value_bytes));
+        }
 
         if let Some(ref wal) = self.wal_writer {
+            wal.append_batch(&wal_entries).map_err(|e| {
+                PersistentARTrieError::io_error(
+                    "commit_tx_batch",
+                    "WAL",
+                    std::io::Error::new(std::io::ErrorKind::Other, e.to_string()),
+                )
+            })?;
             wal.append(WalRecord::CommitTx { tx_id: tx.tx_id })
                 .map_err(|e| {
                     PersistentARTrieError::io_error(
@@ -190,6 +193,13 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
                         std::io::Error::new(std::io::ErrorKind::Other, e.to_string()),
                     )
                 })?;
+            }
+        }
+
+        let mut inserted = 0;
+        for (term, value) in tx.shadow_terms.drain(..) {
+            if self.insert_impl_core(&term, value) {
+                inserted += 1;
             }
         }
 

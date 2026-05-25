@@ -36,6 +36,49 @@ use super::serialization::v2::DeserializationContext;
 use super::swizzled_ptr::{NodeType, SwizzledPtr};
 use super::transitions::ChildNode;
 
+pub(super) const ROOT_DESCRIPTOR_OFFSET: usize = 64;
+pub(super) const ROOT_DESCRIPTOR_LEN: usize = 18;
+
+pub(super) fn read_root_descriptor<S: BlockStorage>(
+    storage: &S,
+    root_ptr: u64,
+) -> Result<[u8; ROOT_DESCRIPTOR_LEN]> {
+    let ptr = SwizzledPtr::from_raw(root_ptr);
+    if ptr.is_null() || ptr.is_swizzled() {
+        return Err(PersistentARTrieError::corrupted(
+            "Invalid root descriptor pointer: null or already swizzled",
+        ));
+    }
+
+    let location = ptr.disk_location().ok_or_else(|| {
+        PersistentARTrieError::corrupted("Could not decode root descriptor disk location")
+    })?;
+
+    if location.block_id != 0 || location.offset as usize != ROOT_DESCRIPTOR_OFFSET {
+        return Err(PersistentARTrieError::corrupted(format!(
+            "Root descriptor pointer must target block 0 offset {}, got block {} offset {}",
+            ROOT_DESCRIPTOR_OFFSET, location.block_id, location.offset
+        )));
+    }
+
+    let mut descriptor = [0u8; ROOT_DESCRIPTOR_LEN];
+    storage.read_bytes(location.block_id, location.offset as usize, &mut descriptor)?;
+    Ok(descriptor)
+}
+
+pub(super) fn read_root_descriptor_arena_count<S: BlockStorage>(
+    storage: &S,
+    root_ptr: u64,
+) -> Result<u32> {
+    let descriptor = read_root_descriptor(storage, root_ptr)?;
+    Ok(u32::from_le_bytes([
+        descriptor[6],
+        descriptor[7],
+        descriptor[8],
+        descriptor[9],
+    ]))
+}
+
 impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
     /// Load the trie root from disk.
     ///
@@ -47,7 +90,6 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
         disk_manager: &impl BlockStorage,
         root_ptr: u64,
     ) -> Result<(TrieRoot<V>, u64)> {
-        use super::disk_manager::BLOCK_SIZE;
         use super::BUCKET_PAGE_SIZE;
 
         // Decode the SwizzledPtr to get block_id
@@ -62,9 +104,14 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
             PersistentARTrieError::corrupted("Could not decode disk location from root pointer")
         })?;
 
-        // Read the descriptor block
-        let mut descriptor_buf = [0u8; BLOCK_SIZE];
-        disk_manager.read_block(location.block_id, &mut descriptor_buf)?;
+        if location.block_id != 0 || location.offset as usize != ROOT_DESCRIPTOR_OFFSET {
+            return Err(PersistentARTrieError::corrupted(format!(
+                "Root descriptor pointer must target block 0 offset {}, got block {} offset {}",
+                ROOT_DESCRIPTOR_OFFSET, location.block_id, location.offset
+            )));
+        }
+
+        let descriptor_buf = read_root_descriptor(disk_manager, root_ptr)?;
 
         // Parse root descriptor
         // Format:
@@ -100,6 +147,13 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
         ]);
 
         let _ = arena_count; // Arena count stored for recovery
+
+        if descriptor_buf[1] > 1 {
+            return Err(PersistentARTrieError::corrupted(format!(
+                "Invalid root descriptor final flag: {}",
+                descriptor_buf[1]
+            )));
+        }
         let _ = is_final; // Used for ArtNode but we simplified
 
         match root_type {
@@ -140,10 +194,19 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
                     term_count as u64,
                 ))
             }
-            ROOT_TYPE_EMPTY | _ => {
-                // Empty or unknown type
-                Ok((TrieRoot::Bucket(StringBucket::with_values()), 0))
+            ROOT_TYPE_EMPTY => {
+                if data_ptr == 0 && term_count == 0 {
+                    Ok((TrieRoot::Bucket(StringBucket::with_values()), 0))
+                } else {
+                    Err(PersistentARTrieError::corrupted(
+                        "Empty root descriptor carried non-empty payload",
+                    ))
+                }
             }
+            other => Err(PersistentARTrieError::corrupted(format!(
+                "Unknown root descriptor type: {}",
+                other
+            ))),
         }
     }
 
@@ -284,6 +347,13 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
             PersistentARTrieError::corrupted("Could not decode disk location from root pointer")
         })?;
 
+        if location.block_id != 0 || location.offset as usize != ROOT_DESCRIPTOR_OFFSET {
+            return Err(PersistentARTrieError::corrupted(format!(
+                "Root descriptor pointer must target block 0 offset {}, got block {} offset {}",
+                ROOT_DESCRIPTOR_OFFSET, location.block_id, location.offset
+            )));
+        }
+
         // Read the descriptor from block 0 at the encoded offset (64)
         // The SwizzledPtr now encodes (block_id=0, offset=64)
         let bm = buffer_manager.read();
@@ -292,7 +362,16 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
 
         // Read descriptor from the offset within block 0
         let offset = location.offset as usize;
-        let descriptor_buf = &page_data[offset..offset + 18];
+        let end = offset
+            .checked_add(ROOT_DESCRIPTOR_LEN)
+            .ok_or_else(|| PersistentARTrieError::corrupted("Root descriptor offset overflow"))?;
+        if end > page_data.len() {
+            return Err(PersistentARTrieError::corrupted(
+                "Root descriptor extends past header block",
+            ));
+        }
+        let mut descriptor_buf = [0u8; ROOT_DESCRIPTOR_LEN];
+        descriptor_buf.copy_from_slice(&page_data[offset..end]);
 
         // Parse root descriptor (fixed 18 bytes)
         // Format:
@@ -319,6 +398,13 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
             descriptor_buf[16],
             descriptor_buf[17],
         ]);
+
+        if descriptor_buf[1] > 1 {
+            return Err(PersistentARTrieError::corrupted(format!(
+                "Invalid root descriptor final flag: {}",
+                descriptor_buf[1]
+            )));
+        }
 
         drop(page);
         drop(bm);
@@ -371,10 +457,19 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
                     term_count as u64,
                 ))
             }
-            ROOT_TYPE_EMPTY | _ => {
-                // Empty or unknown type
-                Ok((TrieRoot::Bucket(StringBucket::with_values()), 0))
+            ROOT_TYPE_EMPTY => {
+                if data_ptr == 0 && term_count == 0 {
+                    Ok((TrieRoot::Bucket(StringBucket::with_values()), 0))
+                } else {
+                    Err(PersistentARTrieError::corrupted(
+                        "Empty root descriptor carried non-empty payload",
+                    ))
+                }
             }
+            other => Err(PersistentARTrieError::corrupted(format!(
+                "Unknown root descriptor type: {}",
+                other
+            ))),
         }
     }
 

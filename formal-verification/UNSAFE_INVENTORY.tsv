@@ -23,7 +23,7 @@ src/persistent_artrie_char/mod.rs	unsafe_block	unsafe { (*ptr).value.clone() }	1
 src/persistent_artrie_char/mod.rs	unsafe_impl	unsafe impl<V: DictionaryValue> Send for PersistentARTrieCharNode<V> {}	1	char-public-node-thread-contract
 src/persistent_artrie_char/mod.rs	unsafe_impl	unsafe impl<V: DictionaryValue> Sync for PersistentARTrieCharNode<V> {}	1	char-public-node-thread-contract
 src/persistent_artrie_char/mutation_core.rs	unsafe_block	let node = unsafe { &*current };	1	char-mutation-core-traversal
-src/persistent_artrie_char/mutation_core.rs	unsafe_block	let node = unsafe { &mut *current };	5	char-mutation-core-unique-borrow
+src/persistent_artrie_char/mutation_core.rs	unsafe_block	let node = unsafe { &mut *current };	6	char-mutation-core-unique-borrow
 src/persistent_artrie_char/mvcc.rs	unsafe_block	unsafe {	1	char-mvcc-root-snapshot
 src/persistent_artrie_char/nodes/node16_char.rs	unsafe_block	unsafe {	1	char-node16-prefix-copy
 src/persistent_artrie_char/nodes/persistent_node.rs	unsafe_impl	unsafe impl Send for PersistentCharNode {}	1	char-persistent-node-thread-contract

@@ -27,6 +27,7 @@ run_capped cargo test --test unsafe_boundary_contracts
 run_capped cargo test --test zipper_language_correspondence
 run_capped cargo test --test valued_set_combinator_correspondence
 run_capped cargo test --features lling-llang --test valued_set_combinator_correspondence
+run_capped cargo test --features pathmap-backend --test pathmap_factory_correspondence
 run_capped cargo test --test substring_candidate_correspondence
 run_capped cargo test --test scdawg_occurrence_correspondence
 run_capped cargo test --test fuzzy_candidate_coverage_correspondence
@@ -40,6 +41,13 @@ run_capped cargo test --features persistent-artrie --test unsafe_boundary_contra
 run_capped cargo test --features persistent-artrie --test zipper_language_correspondence
 run_capped cargo test --features persistent-artrie --test persistent_artrie_formal_correspondence
 run_capped cargo test --features persistent-artrie --test persistent_prefix_correspondence
+run_capped cargo test --features persistent-artrie --test relative_encoding_correspondence
+run_capped cargo test --features persistent-artrie --test arena_manager_correspondence
+run_capped cargo test --features persistent-artrie --test dedup_arena_correspondence
+run_capped cargo test --features persistent-artrie --test root_descriptor_reopen_correspondence
+run_capped cargo test --features persistent-artrie --test persistent_lazy_mutation_correspondence
+run_capped cargo test --features persistent-artrie --test persistent_wal_atomicity_correspondence
+run_capped cargo test --features persistent-artrie --test checkpoint_retention_correspondence
 (
   export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-2}"
   run_capped cargo test --features persistent-artrie --test persistent_merge_correspondence

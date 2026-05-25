@@ -22,12 +22,15 @@ use super::types::CharTrieRoot;
 impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     ///
     /// For persistent tries with lazy loading, this will load nodes on-demand.
-    /// I/O errors during lazy loading will cause a panic. Use `try_contains()`
-    /// for explicit error handling.
+    /// I/O errors during lazy loading fail closed as `false`. Use
+    /// `try_contains()` for explicit error handling.
     pub fn contains(&self, term: &str) -> bool {
-        {
-            self.try_contains(term)
-                .expect("I/O error during lazy loading in contains()")
+        match self.try_contains(term) {
+            Ok(result) => result,
+            Err(error) => {
+                log::warn!("I/O error during lazy loading in contains(): {:?}", error);
+                false
+            }
         }
     }
 
@@ -62,12 +65,15 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     /// Get a value by term
     ///
     /// For persistent tries with lazy loading, this will load nodes on-demand.
-    /// I/O errors during lazy loading will cause a panic. Use `try_get()`
+    /// I/O errors during lazy loading fail closed as `None`. Use `try_get()`
     /// for explicit error handling.
     pub fn get(&self, term: &str) -> Option<&V> {
-        {
-            self.try_get(term)
-                .expect("I/O error during lazy loading in get()")
+        match self.try_get(term) {
+            Ok(result) => result,
+            Err(error) => {
+                log::warn!("I/O error during lazy loading in get(): {:?}", error);
+                None
+            }
         }
     }
 

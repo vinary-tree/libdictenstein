@@ -29,6 +29,8 @@ impl<V: DictionaryValue + serde::Serialize + serde::de::DeserializeOwned, S: Blo
     ///
     /// The new value after incrementing.
     pub fn increment(&mut self, term: &str, delta: i64) -> Result<i64> {
+        self.preflight_insert_with_value_no_wal(term)?;
+
         // Get current value
         let current: i64 = if let Some(v) = self.get(term) {
             let bytes = crate::serialization::bincode_compat::serialize(&v).map_err(|e| {
@@ -66,7 +68,7 @@ impl<V: DictionaryValue + serde::Serialize + serde::de::DeserializeOwned, S: Blo
         self.append_to_wal(record)?;
 
         // Update the trie
-        self.insert_impl_no_wal_with_value(term, v);
+        self.try_insert_impl_no_wal_with_value(term, v)?;
 
         Ok(new_value)
     }
@@ -122,6 +124,7 @@ impl<V: DictionaryValue + serde::Serialize + serde::de::DeserializeOwned, S: Blo
     ///
     /// `true` if a new term was inserted, `false` if an existing term was updated.
     pub fn upsert(&mut self, term: &str, value: V) -> Result<bool> {
+        self.preflight_insert_with_value_no_wal(term)?;
         let existed = self.contains(term);
 
         // Log to WAL first (routes through group commit if enabled)
@@ -135,7 +138,7 @@ impl<V: DictionaryValue + serde::Serialize + serde::de::DeserializeOwned, S: Blo
         self.append_to_wal(record)?;
 
         // Update the trie
-        self.insert_impl_no_wal_with_value(term, value);
+        self.try_insert_impl_no_wal_with_value(term, value)?;
 
         Ok(!existed)
     }
@@ -153,25 +156,26 @@ impl<V: DictionaryValue + serde::Serialize + serde::de::DeserializeOwned, S: Blo
         expected: Option<V>,
         new_value: V,
     ) -> Result<bool> {
+        self.preflight_insert_with_value_no_wal(term)?;
         let current = self.get(term).cloned();
 
         // Check if current matches expected
-        let matches = match (&current, &expected) {
-            (None, None) => true,
+        let (matches, expected_bytes) = match (&current, &expected) {
+            (None, None) => (true, None),
             (Some(c), Some(e)) => {
-                let c_bytes = crate::serialization::bincode_compat::serialize(c).ok();
-                let e_bytes = crate::serialization::bincode_compat::serialize(e).ok();
-                c_bytes == e_bytes
+                let c_bytes = crate::serialization::bincode_compat::serialize(c).map_err(|e| {
+                    PersistentARTrieError::internal(format!("Failed to serialize value: {}", e))
+                })?;
+                let e_bytes = crate::serialization::bincode_compat::serialize(e).map_err(|e| {
+                    PersistentARTrieError::internal(format!("Failed to serialize value: {}", e))
+                })?;
+                (c_bytes == e_bytes, Some(e_bytes))
             }
-            _ => false,
+            _ => (false, None),
         };
 
         if matches {
             // Log to WAL first (routes through group commit if enabled)
-            let expected_bytes = expected
-                .as_ref()
-                .map(|e| crate::serialization::bincode_compat::serialize(e).ok())
-                .flatten();
             let new_value_bytes = crate::serialization::bincode_compat::serialize(&new_value)
                 .map_err(|e| {
                     PersistentARTrieError::internal(format!("Failed to serialize value: {}", e))
@@ -185,7 +189,7 @@ impl<V: DictionaryValue + serde::Serialize + serde::de::DeserializeOwned, S: Blo
             self.append_to_wal(record)?;
 
             // Update the trie
-            self.insert_impl_no_wal_with_value(term, new_value);
+            self.try_insert_impl_no_wal_with_value(term, new_value)?;
         }
 
         Ok(matches)
@@ -204,20 +208,25 @@ impl<V: DictionaryValue + serde::Serialize + serde::de::DeserializeOwned, S: Blo
     /// If the term exists, returns its current value.
     /// If not, inserts the default value and returns it.
     pub fn get_or_insert(&mut self, term: &str, default: V) -> Result<V> {
+        self.preflight_insert_with_value_no_wal(term)?;
+
         if let Some(v) = self.get(term).cloned() {
             return Ok(v);
         }
 
         // Log to WAL first (routes through group commit if enabled)
-        let value_bytes = crate::serialization::bincode_compat::serialize(&default).ok();
+        let value_bytes =
+            crate::serialization::bincode_compat::serialize(&default).map_err(|e| {
+                PersistentARTrieError::internal(format!("Failed to serialize value: {}", e))
+            })?;
         let record = WalRecord::Insert {
             term: term.as_bytes().to_vec(),
-            value: value_bytes,
+            value: Some(value_bytes),
         };
         self.append_to_wal(record)?;
 
         // Insert the default value
-        self.insert_impl_no_wal_with_value(term, default.clone());
+        self.try_insert_impl_no_wal_with_value(term, default.clone())?;
 
         Ok(default)
     }

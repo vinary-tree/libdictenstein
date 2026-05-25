@@ -117,10 +117,12 @@ impl FlushStats {
 /// 3. Each dirty slot's directory entry
 fn write_dirty_slots_for_arena<S: BlockStorage>(
     bm_guard: &impl std::ops::Deref<Target = BufferManager<S>>,
-    arena: &CharNodeArena,
+    arena: &mut CharNodeArena,
     block_id: u32,
     dirty_slots: impl Iterator<Item = u32>,
 ) -> Result<usize> {
+    arena.finalize_checksums();
+
     let dm = bm_guard.storage();
     let arena_bytes = arena.as_bytes();
     let mut bytes_written = 0usize;
@@ -390,7 +392,11 @@ impl<S: BlockStorage> ArenaManager<S> {
             )));
         }
 
-        self.arenas[arena_id].update(slot.slot_id, new_data)
+        self.arenas[arena_id].update(slot.slot_id, new_data)?;
+        if let Some(ref mut tracker) = self.dirty_tracker {
+            tracker.mark_slot_dirty(slot.arena_id, slot.slot_id);
+        }
+        Ok(())
     }
 
     /// Get the number of arenas
@@ -498,6 +504,7 @@ impl<S: BlockStorage> ArenaManager<S> {
 
         for arena_index in dirty_indices {
             let arena = &mut self.arenas[arena_index];
+            arena.finalize_checksums();
 
             if let Some(id) = arena.block_id {
                 // Arena already has a block_id assigned - fetch and update
@@ -607,8 +614,8 @@ impl<S: BlockStorage> ArenaManager<S> {
             None => return Ok(FlushStats::default()),
         };
 
-        // No dirty arenas, nothing to do
-        if tracker.dirty_arena_count() == 0 {
+        // No tracked or untracked dirty arenas, nothing to do.
+        if tracker.dirty_arena_count() == 0 && !self.arenas.iter().any(|arena| arena.is_dirty()) {
             return Ok(FlushStats::default());
         }
 
@@ -692,18 +699,23 @@ impl<S: BlockStorage> ArenaManager<S> {
             arena.mark_clean();
         }
 
-        // Defense in depth: flush any untracked dirty arenas that need block_ids.
+        // Defense in depth: flush any untracked dirty arenas.
         // This catches arenas that were dirty before slot tracking was enabled
-        // but weren't captured in the tracker's dirty set.
+        // or dirtied by a future code path that forgot to mark individual slots.
         for (arena_id, arena) in self.arenas.iter_mut().enumerate() {
-            if arena.is_dirty() && arena.block_id.is_none() {
+            if arena.is_dirty() {
                 log::warn!(
                     "Flushing untracked dirty arena {} (slot tracking may have been enabled late)",
                     arena_id
                 );
                 arena.finalize_checksums();
-                let mut page = bm_guard.new_page()?;
-                arena.set_block_id(page.block_id());
+                let mut page = if let Some(block_id) = arena.block_id {
+                    bm_guard.fetch_page_mut(block_id)?
+                } else {
+                    let page = bm_guard.new_page()?;
+                    arena.set_block_id(page.block_id());
+                    page
+                };
                 let page_data = page.data_mut();
                 let arena_data = arena.as_bytes();
                 let arena_data_len = arena_data.len();

@@ -24,9 +24,9 @@ use super::block_storage::BlockStorage;
 use super::bucket::StringBucket;
 use super::buffer_manager::BufferManager;
 use super::dict_impl::{DurabilityPolicy, PersistentARTrie, TrieRoot};
+use super::disk_load::read_root_descriptor_arena_count;
 use super::error::{PersistentARTrieError, Result};
 use super::recovery::{RecoveredOperation, RecoveryManager};
-use super::swizzled_ptr::SwizzledPtr;
 use super::wal::{AsyncWalConfig, AsyncWalWriter, WalConfig};
 use super::{IoUringDiskManager, DEFAULT_BUFFER_POOL_SIZE};
 
@@ -119,30 +119,25 @@ impl<V: DictionaryValue> PersistentARTrie<V, IoUringDiskManager> {
         let root_ptr = disk_manager.root_ptr()?;
         let _entry_count = disk_manager.entry_count()?;
 
-        const DESCRIPTOR_OFFSET: usize = 64;
-        let arena_count: u32 = if root_ptr != 0 {
-            let ptr = SwizzledPtr::from_raw(root_ptr);
-            if let Some(location) = ptr.disk_location() {
-                let mut descriptor_buf = [0u8; 18];
-                disk_manager.read_bytes(
-                    location.block_id,
-                    DESCRIPTOR_OFFSET,
-                    &mut descriptor_buf,
-                )?;
-                u32::from_le_bytes([
-                    descriptor_buf[6],
-                    descriptor_buf[7],
-                    descriptor_buf[8],
-                    descriptor_buf[9],
-                ])
-            } else {
-                0
+        let storage_block_count = disk_manager.block_count()?;
+        let arena_count = if root_ptr != 0 {
+            match read_root_descriptor_arena_count(&disk_manager, root_ptr) {
+                Ok(count) if count <= storage_block_count.saturating_sub(1) => count,
+                Ok(count) => {
+                    warn!(
+                        "Ignoring invalid root descriptor arena_count {} for {} storage blocks",
+                        count, storage_block_count
+                    );
+                    0
+                }
+                Err(e) => {
+                    warn!("Failed to read root descriptor arena_count: {:?}", e);
+                    0
+                }
             }
         } else {
             0
         };
-
-        let arena_block_ids: Vec<u32> = (1..=arena_count).collect();
 
         let buffer_manager = BufferManager::new(disk_manager, DEFAULT_BUFFER_POOL_SIZE);
         let buffer_manager = Arc::new(RwLock::new(buffer_manager));
@@ -153,11 +148,20 @@ impl<V: DictionaryValue> PersistentARTrie<V, IoUringDiskManager> {
         if arena_count > 0 {
             let mut am = arena_manager.write();
             am.clear_for_loading();
-            for block_id in arena_block_ids {
-                am.load_arena(block_id)?;
+            let mut load_failed = false;
+            for block_id in 1..=arena_count {
+                if let Err(e) = am.load_arena(block_id) {
+                    warn!("Failed to load arena block {}: {:?}", block_id, e);
+                    am.clear_for_loading();
+                    am.ensure_valid();
+                    load_failed = true;
+                    break;
+                }
             }
-            let count = am.arena_count();
-            am.set_active_arena(count.saturating_sub(1));
+            if !load_failed {
+                let count = am.arena_count();
+                am.set_active_arena(count.saturating_sub(1));
+            }
         }
 
         let (loaded_root, loaded_term_count) = if root_ptr != 0 {

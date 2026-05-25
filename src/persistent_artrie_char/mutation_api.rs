@@ -19,6 +19,10 @@ use crate::value::DictionaryValue;
 impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     /// Insert a term with WAL logging
     pub fn insert(&mut self, term: &str) -> Result<bool> {
+        if !self.preflight_insert_no_wal(term)? {
+            return Ok(false);
+        }
+
         // Log to WAL first (routes through group commit if enabled)
         let record = WalRecord::Insert {
             term: term.as_bytes().to_vec(),
@@ -28,15 +32,17 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
 
         // Mark version as being written (odd = in-progress)
         self.version.begin_write();
-        let result = self.insert_impl_no_wal(term);
+        let result = self.try_insert_impl_no_wal(term);
         // Mark version as stable (even = complete)
         self.version.end_write();
 
-        Ok(result)
+        result
     }
 
     /// Insert a term with an associated value and WAL logging
     pub fn insert_with_value(&mut self, term: &str, value: V) -> Result<bool> {
+        self.preflight_insert_with_value_no_wal(term)?;
+
         // Log to WAL first (routes through group commit if enabled)
         let value_bytes = crate::serialization::bincode_compat::serialize(&value).map_err(|e| {
             PersistentARTrieError::internal(format!("Failed to serialize value: {}", e))
@@ -49,15 +55,19 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
 
         // Mark version as being written (odd = in-progress)
         self.version.begin_write();
-        let result = self.insert_impl_no_wal_with_value(term, value);
+        let result = self.try_insert_impl_no_wal_with_value(term, value);
         // Mark version as stable (even = complete)
         self.version.end_write();
 
-        Ok(result)
+        result
     }
 
     /// Remove a term with WAL logging
     pub fn remove(&mut self, term: &str) -> Result<bool> {
+        if !self.preflight_remove_no_wal(term)? {
+            return Ok(false);
+        }
+
         // Log to WAL first (routes through group commit if enabled)
         let record = WalRecord::Remove {
             term: term.as_bytes().to_vec(),
@@ -66,9 +76,9 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
 
         // Mark version as being written
         self.version.begin_write();
-        let result = self.remove_impl_no_wal(term);
+        let result = self.try_remove_impl_no_wal(term);
         self.version.end_write();
 
-        Ok(result)
+        result
     }
 }

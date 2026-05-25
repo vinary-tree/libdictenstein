@@ -256,77 +256,67 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
 
         if set_count == 0 && increment_count == 0 {
             // Empty transaction - just log commit (routes through group commit if enabled)
-            tx.state = TransactionState::Committed;
             self.append_to_wal(WalRecord::CommitTx { tx_id: tx.tx_id })?;
             // Sync WAL to ensure CommitTx is durable (ACID Durability)
             self.sync_wal()?;
+            tx.state = TransactionState::Committed;
             return Ok(0);
         }
 
-        let mut total_operations = 0;
+        let total_operations = set_count + increment_count;
+        let mut set_wal_entries = Vec::with_capacity(set_count);
+        let mut prepared_sets = Vec::with_capacity(set_count);
 
-        // 1. Process SET operations (BatchInsert)
-        if set_count > 0 {
-            // Log all SET entries as a single batch WAL record
-            let wal_entries: Vec<(Vec<u8>, Option<Vec<u8>>)> = tx
-                .shadow_terms
-                .iter()
-                .map(|(term, value)| {
-                    let value_bytes = value
-                        .as_ref()
-                        .and_then(|v| crate::serialization::bincode_compat::serialize(v).ok());
-                    (term.clone(), value_bytes)
-                })
-                .collect();
-
-            let batch_record = WalRecord::BatchInsert {
-                entries: wal_entries,
-            };
-            self.append_to_wal(batch_record)?;
-
-            // Apply each SET entry without individual WAL logging
-            for (term_bytes, value) in tx.shadow_terms.drain(..) {
-                let term_str = String::from_utf8_lossy(&term_bytes);
-                if let Some(v) = value {
-                    self.insert_impl_no_wal_with_value(&term_str, v);
-                } else {
-                    self.insert_impl_no_wal(&term_str);
-                }
+        for (term_bytes, value) in &tx.shadow_terms {
+            let term_str = String::from_utf8_lossy(term_bytes).into_owned();
+            if value.is_some() {
+                self.preflight_insert_with_value_no_wal(&term_str)?;
+            } else {
+                let _ = self.preflight_insert_no_wal(&term_str)?;
             }
 
-            total_operations += set_count;
+            let value_bytes = match value.as_ref() {
+                Some(v) => Some(crate::serialization::bincode_compat::serialize(v).map_err(
+                    |e| {
+                        PersistentARTrieError::internal(format!(
+                            "Failed to serialize transaction value: {}",
+                            e
+                        ))
+                    },
+                )?),
+                None => None,
+            };
+            set_wal_entries.push((term_bytes.clone(), value_bytes));
+            prepared_sets.push((term_str, value.clone()));
         }
 
-        // 2. Process INCREMENT operations (BatchIncrement)
-        if increment_count > 0 {
-            // Aggregate increments for the same term within the transaction
-            // This combines multiple increments to the same term into a single delta
-            let mut aggregated: std::collections::HashMap<Vec<u8>, i64> =
-                std::collections::HashMap::with_capacity(increment_count);
-            for (term_bytes, delta) in &tx.increments {
-                *aggregated.entry(term_bytes.clone()).or_insert(0) += delta;
-            }
+        // Aggregate increments for the same term within the transaction.
+        let mut aggregated_increments: std::collections::HashMap<Vec<u8>, i64> =
+            std::collections::HashMap::with_capacity(increment_count);
+        for (term_bytes, delta) in &tx.increments {
+            *aggregated_increments.entry(term_bytes.clone()).or_insert(0) += delta;
+        }
 
-            // Convert to WAL entries
-            let wal_entries: Vec<(Vec<u8>, i64)> = aggregated
-                .iter()
-                .map(|(term, delta)| (term.clone(), *delta))
-                .collect();
+        let mut increment_wal_entries = Vec::with_capacity(aggregated_increments.len());
+        let mut prepared_increments = Vec::with_capacity(aggregated_increments.len());
+        for (term_bytes, delta) in aggregated_increments {
+            let term_str = String::from_utf8_lossy(&term_bytes).into_owned();
+            self.preflight_insert_with_value_no_wal(&term_str)?;
+            increment_wal_entries.push((term_bytes, delta));
+            prepared_increments.push((term_str, delta));
+        }
 
-            // Log all INCREMENT entries as a single batch WAL record
+        if !set_wal_entries.is_empty() {
+            self.append_to_wal(WalRecord::BatchInsert {
+                entries: set_wal_entries,
+            })?;
+        }
+
+        if !increment_wal_entries.is_empty() {
             let batch_record = WalRecord::BatchIncrement {
-                entries: wal_entries,
+                entries: increment_wal_entries,
             };
             self.append_to_wal(batch_record)?;
-
-            // Apply each aggregated increment without individual WAL logging
-            for (term_bytes, delta) in aggregated {
-                let term_str = String::from_utf8_lossy(&term_bytes);
-                // Use internal increment logic without WAL logging
-                self.increment_impl_no_wal(&term_str, delta);
-            }
-
-            total_operations += increment_count;
         }
 
         // Log CommitTx (routes through group commit if enabled)
@@ -334,6 +324,21 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
         // Sync WAL to ensure CommitTx is durable (ACID Durability)
         self.sync_wal()?;
 
+        for (term, value) in prepared_sets {
+            if let Some(v) = value {
+                self.try_insert_impl_no_wal_with_value(&term, v)?;
+            } else {
+                self.try_insert_impl_no_wal(&term)?;
+            }
+        }
+
+        for (term, delta) in prepared_increments {
+            // Use internal increment logic without WAL logging.
+            self.increment_impl_no_wal(&term, delta);
+        }
+
+        tx.shadow_terms.clear();
+        tx.increments.clear();
         tx.state = TransactionState::Committed;
         Ok(total_operations)
     }

@@ -243,12 +243,13 @@ impl<S: BlockStorage> DeduplicatingArenaManager<S> {
         }
     }
 
-    /// Set whether to verify data on cache hit
+    /// Set whether to verify data on cache hit.
     ///
-    /// If true (default), reads back data to verify it matches before reusing.
-    /// If false, trusts the hash and returns cached slot without verification.
-    pub fn set_verify_on_hit(&mut self, verify: bool) {
-        self.verify_on_hit = verify;
+    /// Verification is mandatory for soundness. This setter is retained for
+    /// compatibility, but passing `false` no longer disables read-back
+    /// verification.
+    pub fn set_verify_on_hit(&mut self, _verify: bool) {
+        self.verify_on_hit = true;
     }
 
     /// Allocate with deduplication

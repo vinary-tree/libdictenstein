@@ -356,6 +356,27 @@ impl<S: BlockStorage> ArenaManager<S> {
         self.arenas[arena_id].read(slot.slot_id)
     }
 
+    /// Update data at the specified arena slot.
+    ///
+    /// The replacement must be exactly the same length as the existing slot
+    /// payload so directory entries and persisted slot identities stay stable.
+    pub fn update(&mut self, slot: ArenaSlot, new_data: &[u8]) -> Result<()> {
+        let arena_id = slot.arena_id as usize;
+        if arena_id >= self.arenas.len() {
+            return Err(PersistentARTrieError::corrupted(&format!(
+                "Invalid arena ID {} (have {} arenas)",
+                arena_id,
+                self.arenas.len()
+            )));
+        }
+
+        self.arenas[arena_id].update(slot.slot_id, new_data)?;
+        if let Some(ref mut tracker) = self.dirty_tracker {
+            tracker.mark_slot_dirty(slot.arena_id, slot.slot_id);
+        }
+        Ok(())
+    }
+
     /// Get the number of arenas
     pub fn arena_count(&self) -> usize {
         self.arenas.len()
@@ -532,8 +553,8 @@ impl<S: BlockStorage> ArenaManager<S> {
             None => return Ok(FlushStats::default()),
         };
 
-        // No dirty arenas, nothing to do
-        if tracker.dirty_arena_count() == 0 {
+        // No tracked or untracked dirty arenas, nothing to do.
+        if tracker.dirty_arena_count() == 0 && !self.arenas.iter().any(|arena| arena.is_dirty()) {
             return Ok(FlushStats::default());
         }
 
@@ -611,17 +632,22 @@ impl<S: BlockStorage> ArenaManager<S> {
             arena.mark_clean();
         }
 
-        // Defense in depth: flush any untracked dirty arenas that need block_ids.
+        // Defense in depth: flush any untracked dirty arenas.
         // This catches arenas that were dirty before slot tracking was enabled
-        // but weren't captured in the tracker's dirty set.
+        // or dirtied by a future code path that forgot to mark individual slots.
         for (arena_id, arena) in self.arenas.iter_mut().enumerate() {
-            if arena.is_dirty() && arena.block_id.is_none() {
+            if arena.is_dirty() {
                 log::warn!(
                     "Flushing untracked dirty arena {} (slot tracking may have been enabled late)",
                     arena_id
                 );
-                let mut page = bm_guard.new_page()?;
-                arena.set_block_id(page.block_id());
+                let mut page = if let Some(block_id) = arena.block_id {
+                    bm_guard.fetch_page_mut(block_id)?
+                } else {
+                    let page = bm_guard.new_page()?;
+                    arena.set_block_id(page.block_id());
+                    page
+                };
                 let page_data = page.data_mut();
                 let arena_data = arena.as_bytes();
                 let arena_data_len = arena_data.len();
@@ -837,6 +863,31 @@ impl<S: BlockStorage> ArenaManager<S> {
         }
     }
 
+    /// Ensure the arena manager satisfies its basic non-empty/active-index
+    /// invariant after a failed or interrupted loading sequence.
+    pub fn ensure_valid(&mut self) {
+        if self.arenas.is_empty() {
+            log::warn!("ArenaManager had no arenas; creating initial arena");
+            self.arenas.push(ByteNodeArena::new(self.arena_size));
+            self.active_arena = 0;
+        } else if self.active_arena >= self.arenas.len() {
+            log::warn!(
+                "ArenaManager active_arena {} >= len {}; resetting to {}",
+                self.active_arena,
+                self.arenas.len(),
+                self.arenas.len() - 1
+            );
+            self.active_arena = self.arenas.len() - 1;
+        }
+        debug_assert!(self.is_valid());
+    }
+
+    /// Check the arena manager's basic non-empty/active-index invariant.
+    #[inline]
+    pub fn is_valid(&self) -> bool {
+        !self.arenas.is_empty() && self.active_arena < self.arenas.len()
+    }
+
     /// Get the next slot that will be allocated
     ///
     /// This returns the ArenaSlot that the next `allocate()` call will return,
@@ -852,6 +903,26 @@ impl<S: BlockStorage> ArenaManager<S> {
     ///
     /// Use `can_fit()` to check if the allocation will stay in the current arena.
     pub fn next_slot(&self) -> ArenaSlot {
+        if self.arenas.is_empty() {
+            log::error!(
+                "ArenaManager::next_slot called with empty arenas. \
+                 This violates arena_manager_valid invariant."
+            );
+            return ArenaSlot::new(0, 0);
+        }
+
+        if self.active_arena >= self.arenas.len() {
+            log::error!(
+                "ArenaManager::next_slot: active_arena {} >= arenas.len() {}. \
+                 This violates arena_manager_valid invariant.",
+                self.active_arena,
+                self.arenas.len()
+            );
+            let last_arena = self.arenas.len() - 1;
+            let slot_id = self.arenas[last_arena].node_count();
+            return ArenaSlot::new(last_arena as u32, slot_id);
+        }
+
         let arena_id = self.active_arena as u32;
         let slot_id = self.arenas[self.active_arena].node_count();
         ArenaSlot::new(arena_id, slot_id)

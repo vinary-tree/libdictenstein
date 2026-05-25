@@ -47,20 +47,25 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
             return 0;
         }
 
-        if let Some(ref wal_writer) = self.wal_writer {
-            let wal_entries: Vec<(Vec<u8>, Option<Vec<u8>>)> = entries
-                .iter()
-                .map(|(term, value)| {
-                    let term_bytes = term.as_bytes().to_vec();
-                    let value_bytes = value
-                        .as_ref()
-                        .and_then(|v| crate::serialization::bincode_compat::serialize(v).ok());
-                    (term_bytes, value_bytes)
-                })
-                .collect();
+        let mut wal_entries = Vec::with_capacity(entries.len());
+        for (term, value) in entries {
+            let value_bytes = match value.as_ref() {
+                Some(v) => match crate::serialization::bincode_compat::serialize(v) {
+                    Ok(bytes) => Some(bytes),
+                    Err(e) => {
+                        warn!("Failed to serialize batch insert value for WAL: {:?}", e);
+                        return 0;
+                    }
+                },
+                None => None,
+            };
+            wal_entries.push((term.as_bytes().to_vec(), value_bytes));
+        }
 
+        if let Some(ref wal_writer) = self.wal_writer {
             if let Err(e) = wal_writer.append_batch(&wal_entries) {
                 warn!("Failed to log batch insert to WAL: {:?}", e);
+                return 0;
             }
         }
 
@@ -83,19 +88,25 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
             return 0;
         }
 
-        if let Some(ref wal_writer) = self.wal_writer {
-            let wal_entries: Vec<(Vec<u8>, Option<Vec<u8>>)> = entries
-                .iter()
-                .map(|(term, value)| {
-                    let value_bytes = value
-                        .as_ref()
-                        .and_then(|v| crate::serialization::bincode_compat::serialize(v).ok());
-                    (term.to_vec(), value_bytes)
-                })
-                .collect();
+        let mut wal_entries = Vec::with_capacity(entries.len());
+        for (term, value) in entries {
+            let value_bytes = match value.as_ref() {
+                Some(v) => match crate::serialization::bincode_compat::serialize(v) {
+                    Ok(bytes) => Some(bytes),
+                    Err(e) => {
+                        warn!("Failed to serialize batch insert value for WAL: {:?}", e);
+                        return 0;
+                    }
+                },
+                None => None,
+            };
+            wal_entries.push((term.to_vec(), value_bytes));
+        }
 
+        if let Some(ref wal_writer) = self.wal_writer {
             if let Err(e) = wal_writer.append_batch(&wal_entries) {
                 warn!("Failed to log batch insert to WAL: {:?}", e);
+                return 0;
             }
         }
 
@@ -210,10 +221,16 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
                 break;
             }
 
+            let mut removed_this_round = 0;
             for term in batch {
                 if self.remove_impl(&term) {
                     total_removed += 1;
+                    removed_this_round += 1;
                 }
+            }
+
+            if removed_this_round == 0 {
+                break;
             }
         }
 

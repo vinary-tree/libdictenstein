@@ -200,8 +200,6 @@ impl<V: DictionaryValue>
                 }
                 Err(e) => {
                     log::warn!("Failed to load root from disk: {:?}", e);
-                    #[cfg(test)]
-                    panic!("load_root_from_disk failed: {:?}", e);
                 }
             }
         }

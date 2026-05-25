@@ -265,8 +265,12 @@ pub use dedup::{
 // Re-export relative encoding types (under feature flag)
 pub use relative_encoding::{
     decode_child_pointer, decode_children, decode_sequential_siblings, encode_child_pointer,
-    encode_children, encode_sequential_siblings, encoded_size, is_same_arena, CROSS_ARENA_SIZE,
-    FLAG_CROSS_ARENA, FLAG_RELATIVE_OFFSETS, FLAG_SEQUENTIAL_SIBLINGS,
+    encode_children, encode_sequential_siblings, encoded_size, is_same_arena,
+    try_decode_child_pointer, try_decode_children, try_decode_full, try_decode_relative,
+    try_decode_sequential_siblings, try_encode_child_pointer, try_encode_children,
+    try_encode_sequential_siblings, try_encoded_size, RelativeEncodingError,
+    RelativeEncodingResult, CROSS_ARENA_SIZE, FLAG_CROSS_ARENA, FLAG_RELATIVE_OFFSETS,
+    FLAG_SEQUENTIAL_SIBLINGS,
 };
 
 // Re-export recovery types (under feature flag)

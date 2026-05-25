@@ -69,7 +69,8 @@ use std::io::{Read, Write};
 // Relative encoding support (feature-gated)
 use super::arena_manager::ArenaSlot;
 use super::relative_encoding::{
-    decode_children, decode_sequential_siblings, encode_children, encode_sequential_siblings,
+    encode_children, encode_sequential_siblings, try_decode_children,
+    try_decode_sequential_siblings, RelativeEncodingError,
 };
 
 /// Helper to convert io::Error to PersistentARTrieError for serialization operations
@@ -582,6 +583,34 @@ pub mod v2 {
         }
     }
 
+    fn relative_decode_err(err: RelativeEncodingError) -> PersistentARTrieError {
+        PersistentARTrieError::corrupted(format!("invalid relative child encoding: {}", err))
+    }
+
+    fn decode_v2_child_slots(
+        data: &[u8],
+        parent: ArenaSlot,
+        count: usize,
+        uses_sequential: bool,
+    ) -> Result<(Vec<ArenaSlot>, usize)> {
+        if uses_sequential {
+            try_decode_sequential_siblings(data, parent, count).map_err(relative_decode_err)
+        } else {
+            try_decode_children(data, parent, count).map_err(relative_decode_err)
+        }
+    }
+
+    fn read_v2_node_type(data: &[u8], offset: usize) -> Result<NodeType> {
+        let byte = *data.get(offset).ok_or_else(|| {
+            PersistentARTrieError::corrupted(format!(
+                "missing relative child node type at offset {} in {} byte node payload",
+                offset,
+                data.len()
+            ))
+        })?;
+        Ok(NodeType::try_from(byte).unwrap_or(NodeType::Node4))
+    }
+
     /// Collect child slots from a node for relative encoding
     ///
     /// Returns only valid child slots (filters out null and in-memory pointers).
@@ -859,22 +888,20 @@ pub mod v2 {
         // Decode children based on encoding mode
         if header.uses_sequential_siblings() {
             let (children, bytes_consumed) =
-                decode_sequential_siblings(&data[4..], ctx.parent_slot, num_children);
+                decode_v2_child_slots(&data[4..], ctx.parent_slot, num_children, true)?;
             // Read node types after encoded children
             let types_start = 4 + bytes_consumed;
             for (i, slot) in children.into_iter().enumerate() {
-                let node_type =
-                    NodeType::try_from(data[types_start + i]).unwrap_or(NodeType::Node4);
+                let node_type = read_v2_node_type(data, types_start + i)?;
                 node.children[i] = SwizzledPtr::from_arena_slot(slot, node_type);
             }
         } else if header.uses_relative_offsets() {
             let (children, bytes_consumed) =
-                decode_children(&data[4..], ctx.parent_slot, num_children);
+                decode_v2_child_slots(&data[4..], ctx.parent_slot, num_children, false)?;
             // Read node types after encoded children
             let types_start = 4 + bytes_consumed;
             for (i, slot) in children.into_iter().enumerate() {
-                let node_type =
-                    NodeType::try_from(data[types_start + i]).unwrap_or(NodeType::Node4);
+                let node_type = read_v2_node_type(data, types_start + i)?;
                 node.children[i] = SwizzledPtr::from_arena_slot(slot, node_type);
             }
         } else {
@@ -907,22 +934,20 @@ pub mod v2 {
         // Decode children based on encoding mode
         if header.uses_sequential_siblings() {
             let (children, bytes_consumed) =
-                decode_sequential_siblings(&data[16..], ctx.parent_slot, num_children);
+                decode_v2_child_slots(&data[16..], ctx.parent_slot, num_children, true)?;
             // Read node types after encoded children
             let types_start = 16 + bytes_consumed;
             for (i, slot) in children.into_iter().enumerate() {
-                let node_type =
-                    NodeType::try_from(data[types_start + i]).unwrap_or(NodeType::Node4);
+                let node_type = read_v2_node_type(data, types_start + i)?;
                 node.children[i] = SwizzledPtr::from_arena_slot(slot, node_type);
             }
         } else if header.uses_relative_offsets() {
             let (children, bytes_consumed) =
-                decode_children(&data[16..], ctx.parent_slot, num_children);
+                decode_v2_child_slots(&data[16..], ctx.parent_slot, num_children, false)?;
             // Read node types after encoded children
             let types_start = 16 + bytes_consumed;
             for (i, slot) in children.into_iter().enumerate() {
-                let node_type =
-                    NodeType::try_from(data[types_start + i]).unwrap_or(NodeType::Node4);
+                let node_type = read_v2_node_type(data, types_start + i)?;
                 node.children[i] = SwizzledPtr::from_arena_slot(slot, node_type);
             }
         } else {
@@ -967,24 +992,36 @@ pub mod v2 {
         // Decode children based on encoding mode
         if header.uses_sequential_siblings() {
             let (children, bytes_consumed) =
-                decode_sequential_siblings(&data[256..], ctx.parent_slot, num_children);
+                decode_v2_child_slots(&data[256..], ctx.parent_slot, num_children, true)?;
             // Read node types after encoded children
             let types_start = 256 + bytes_consumed;
             for (i, child_slot) in children.into_iter().enumerate() {
+                if i >= used_slots.len() {
+                    return Err(PersistentARTrieError::corrupted(format!(
+                        "node48 relative child count {} exceeds index entries {}",
+                        num_children,
+                        used_slots.len()
+                    )));
+                }
                 let actual_slot = used_slots[i] as usize;
-                let node_type =
-                    NodeType::try_from(data[types_start + i]).unwrap_or(NodeType::Node4);
+                let node_type = read_v2_node_type(data, types_start + i)?;
                 node.children[actual_slot] = SwizzledPtr::from_arena_slot(child_slot, node_type);
             }
         } else if header.uses_relative_offsets() {
             let (children, bytes_consumed) =
-                decode_children(&data[256..], ctx.parent_slot, num_children);
+                decode_v2_child_slots(&data[256..], ctx.parent_slot, num_children, false)?;
             // Read node types after encoded children
             let types_start = 256 + bytes_consumed;
             for (i, child_slot) in children.into_iter().enumerate() {
+                if i >= used_slots.len() {
+                    return Err(PersistentARTrieError::corrupted(format!(
+                        "node48 relative child count {} exceeds index entries {}",
+                        num_children,
+                        used_slots.len()
+                    )));
+                }
                 let actual_slot = used_slots[i] as usize;
-                let node_type =
-                    NodeType::try_from(data[types_start + i]).unwrap_or(NodeType::Node4);
+                let node_type = read_v2_node_type(data, types_start + i)?;
                 node.children[actual_slot] = SwizzledPtr::from_arena_slot(child_slot, node_type);
             }
         } else {
@@ -1022,29 +1059,47 @@ pub mod v2 {
 
         // Decode children based on encoding mode
         if header.uses_sequential_siblings() {
-            let (children, bytes_consumed) =
-                decode_sequential_siblings(&data[children_start..], ctx.parent_slot, num_children);
+            let (children, bytes_consumed) = decode_v2_child_slots(
+                &data[children_start..],
+                ctx.parent_slot,
+                num_children,
+                true,
+            )?;
             // Read node types after encoded children
             let types_start = children_start + bytes_consumed;
             let mut child_idx = 0;
             for i in 0..256 {
                 if bitmap[i / 64] & (1u64 << (i % 64)) != 0 {
-                    let node_type = NodeType::try_from(data[types_start + child_idx])
-                        .unwrap_or(NodeType::Node4);
+                    if child_idx >= children.len() {
+                        return Err(PersistentARTrieError::corrupted(format!(
+                            "node256 bitmap references more children than header count {}",
+                            num_children
+                        )));
+                    }
+                    let node_type = read_v2_node_type(data, types_start + child_idx)?;
                     node.children[i] = SwizzledPtr::from_arena_slot(children[child_idx], node_type);
                     child_idx += 1;
                 }
             }
         } else if header.uses_relative_offsets() {
-            let (children, bytes_consumed) =
-                decode_children(&data[children_start..], ctx.parent_slot, num_children);
+            let (children, bytes_consumed) = decode_v2_child_slots(
+                &data[children_start..],
+                ctx.parent_slot,
+                num_children,
+                false,
+            )?;
             // Read node types after encoded children
             let types_start = children_start + bytes_consumed;
             let mut child_idx = 0;
             for i in 0..256 {
                 if bitmap[i / 64] & (1u64 << (i % 64)) != 0 {
-                    let node_type = NodeType::try_from(data[types_start + child_idx])
-                        .unwrap_or(NodeType::Node4);
+                    if child_idx >= children.len() {
+                        return Err(PersistentARTrieError::corrupted(format!(
+                            "node256 bitmap references more children than header count {}",
+                            num_children
+                        )));
+                    }
+                    let node_type = read_v2_node_type(data, types_start + child_idx)?;
                     node.children[i] = SwizzledPtr::from_arena_slot(children[child_idx], node_type);
                     child_idx += 1;
                 }

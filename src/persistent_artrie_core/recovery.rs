@@ -35,7 +35,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-use super::wal::{Lsn, WalError, WalReader, WalRecord};
+use super::wal::{Lsn, WalConfig, WalError, WalReader, WalRecord};
 use log::warn;
 
 /// Error types for recovery operations.
@@ -1319,6 +1319,46 @@ pub fn collect_all_wal_segments(
     }
 
     all_segments
+}
+
+/// Collect WAL segments for corruption rebuild while preserving the active WAL.
+///
+/// Rebuilding a corrupted data file requires creating a fresh active WAL at the
+/// original path. If the old active WAL still contains replayable records, move
+/// it into the archive directory first and return the moved path in the same
+/// chronological position. This prevents post-checkpoint records from being
+/// deleted before recovery can replay them.
+pub fn collect_retained_wal_segments_for_rebuild(
+    wal_path: &Path,
+    config: &WalConfig,
+    pending_dir: &Path,
+) -> std::result::Result<Vec<PathBuf>, io::Error> {
+    let mut segments = collect_all_wal_segments(wal_path, &config.archive_dir, pending_dir);
+
+    if let Some(active_index) = segments.iter().position(|path| path == wal_path) {
+        let parent = wal_path.parent().unwrap_or(Path::new("."));
+        let archive_dir = if config.archive_dir.is_absolute() {
+            config.archive_dir.clone()
+        } else {
+            parent.join(&config.archive_dir)
+        };
+        std::fs::create_dir_all(&archive_dir)?;
+
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let retained_path = archive_dir.join(format!(
+            "wal_recovery_active_{}_{}.segment",
+            std::process::id(),
+            nanos
+        ));
+
+        std::fs::rename(wal_path, &retained_path)?;
+        segments[active_index] = retained_path;
+    }
+
+    Ok(segments)
 }
 
 /// Get the first LSN from a WAL segment file.

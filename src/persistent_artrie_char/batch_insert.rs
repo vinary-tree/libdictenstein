@@ -20,37 +20,54 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
             return 0;
         }
 
-        // First, log all entries as a single batch WAL record (routes through group commit if enabled)
-        let wal_entries: Vec<(Vec<u8>, Option<Vec<u8>>)> = entries
-            .iter()
-            .map(|(term, value)| {
-                let term_bytes = term.as_bytes().to_vec();
-                let value_bytes = value
-                    .as_ref()
-                    .and_then(|v| crate::serialization::bincode_compat::serialize(v).ok());
-                (term_bytes, value_bytes)
-            })
-            .collect();
+        let mut wal_entries = Vec::with_capacity(entries.len());
+        for (term, value) in entries {
+            let preflight = if value.is_some() {
+                self.preflight_insert_with_value_no_wal(term).map(|_| true)
+            } else {
+                self.preflight_insert_no_wal(term)
+            };
+            if let Err(e) = preflight {
+                log::warn!("Failed to preflight batch insert: {:?}", e);
+                return 0;
+            }
+
+            let value_bytes = match value.as_ref() {
+                Some(v) => match crate::serialization::bincode_compat::serialize(v) {
+                    Ok(bytes) => Some(bytes),
+                    Err(e) => {
+                        log::warn!("Failed to serialize batch insert value for WAL: {:?}", e);
+                        return 0;
+                    }
+                },
+                None => None,
+            };
+            wal_entries.push((term.as_bytes().to_vec(), value_bytes));
+        }
 
         let batch_record = WalRecord::BatchInsert {
             entries: wal_entries,
         };
         if let Err(e) = self.append_to_wal(batch_record) {
             log::warn!("Failed to log batch insert to WAL: {:?}", e);
+            return 0;
         }
 
         // Then insert each entry without individual WAL logging
         let mut inserted_count = 0;
         for (term, value) in entries {
-            if let Some(v) = value {
-                if self.insert_impl_no_wal_with_value(term, v.clone()) {
-                    inserted_count += 1;
-                }
+            let result = if let Some(v) = value {
+                self.try_insert_impl_no_wal_with_value(term, v.clone())
             } else {
-                if self.insert_impl_no_wal(term) {
-                    inserted_count += 1;
+                self.try_insert_impl_no_wal(term)
+            };
+            match result {
+                Ok(true) => inserted_count += 1,
+                Ok(false) => {}
+                Err(e) => {
+                    log::warn!("Failed to apply batch insert after WAL append: {:?}", e);
                 }
-            }
+            };
         }
 
         inserted_count
@@ -112,37 +129,64 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
             return 0;
         }
 
-        // First, log all entries as a single batch WAL record (routes through group commit if enabled)
-        let wal_entries: Vec<(Vec<u8>, Option<Vec<u8>>)> = entries
-            .iter()
-            .map(|(term, value)| {
-                let value_bytes = value
-                    .as_ref()
-                    .and_then(|v| crate::serialization::bincode_compat::serialize(v).ok());
-                (term.to_vec(), value_bytes)
-            })
-            .collect();
+        let mut wal_entries = Vec::with_capacity(entries.len());
+        let mut prepared = Vec::with_capacity(entries.len());
+        for (term, value) in entries {
+            let term_str = String::from_utf8_lossy(term).into_owned();
+            let preflight = if value.is_some() {
+                self.preflight_insert_with_value_no_wal(&term_str)
+                    .map(|_| true)
+            } else {
+                self.preflight_insert_no_wal(&term_str)
+            };
+            if let Err(e) = preflight {
+                log::warn!("Failed to preflight byte batch insert: {:?}", e);
+                return 0;
+            }
+
+            let value_bytes = match value.as_ref() {
+                Some(v) => match crate::serialization::bincode_compat::serialize(v) {
+                    Ok(bytes) => Some(bytes),
+                    Err(e) => {
+                        log::warn!(
+                            "Failed to serialize byte batch insert value for WAL: {:?}",
+                            e
+                        );
+                        return 0;
+                    }
+                },
+                None => None,
+            };
+            wal_entries.push((term.to_vec(), value_bytes));
+            prepared.push((term_str, value.clone()));
+        }
 
         let batch_record = WalRecord::BatchInsert {
             entries: wal_entries,
         };
         if let Err(e) = self.append_to_wal(batch_record) {
             log::warn!("Failed to log batch insert to WAL: {:?}", e);
+            return 0;
         }
 
         // Then insert each entry without individual WAL logging
         let mut inserted_count = 0;
-        for (term, value) in entries {
-            let term_str = String::from_utf8_lossy(term);
-            if let Some(v) = value {
-                if self.insert_impl_no_wal_with_value(&term_str, v.clone()) {
-                    inserted_count += 1;
-                }
+        for (term, value) in prepared {
+            let result = if let Some(v) = value {
+                self.try_insert_impl_no_wal_with_value(&term, v)
             } else {
-                if self.insert_impl_no_wal(&term_str) {
-                    inserted_count += 1;
+                self.try_insert_impl_no_wal(&term)
+            };
+            match result {
+                Ok(true) => inserted_count += 1,
+                Ok(false) => {}
+                Err(e) => {
+                    log::warn!(
+                        "Failed to apply byte batch insert after WAL append: {:?}",
+                        e
+                    );
                 }
-            }
+            };
         }
 
         inserted_count

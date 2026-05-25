@@ -429,6 +429,16 @@ impl<V: DictionaryValue> MappedDictionary for PathMapDictionary<V> {
     }
 }
 
+impl<V: DictionaryValue + Default> crate::MutableDictionary for PathMapDictionary<V> {
+    fn insert(&self, term: &str) -> bool {
+        PathMapDictionary::insert(self, term)
+    }
+
+    fn remove(&self, term: &str) -> bool {
+        PathMapDictionary::remove(self, term)
+    }
+}
+
 impl<V: DictionaryValue> crate::MutableMappedDictionary for PathMapDictionary<V> {
     fn insert_with_value(&self, term: &str, value: Self::Value) -> bool {
         PathMapDictionary::insert_with_value(self, term, value)

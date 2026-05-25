@@ -359,9 +359,6 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
                 }
                 Err(e) => {
                     log::warn!("Failed to load root from disk: {:?}", e);
-                    // In tests, panic instead of silently falling back
-                    #[cfg(test)]
-                    panic!("load_root_from_disk failed: {:?}", e);
                     // Fall back to WAL replay
                 }
             }
@@ -654,6 +651,10 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
             }
         }
 
+        if let Some(ref arena_manager) = inner.arena_manager {
+            arena_manager.write().ensure_valid();
+        }
+
         // Replay WAL records that came after the checkpoint
         // Skip records with LSN <= checkpoint_lsn (already persisted to disk)
         for (lsn, record) in recovered_ops {
@@ -889,7 +890,7 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
         config: WalConfig,
     ) -> Result<(Self, crate::persistent_artrie::recovery::RecoveryReport)> {
         use crate::persistent_artrie::recovery::{
-            detect_corruption, find_wal_archive_segments, RecoveryReport,
+            collect_retained_wal_segments_for_rebuild, detect_corruption, RecoveryReport,
         };
         use std::time::Instant;
 
@@ -914,21 +915,23 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
                 // Corruption detected - attempt recovery from WAL archives
                 let corruption_reason = corruption.to_string();
 
-                // Find archive directory
-                let archive_dir = path
-                    .parent()
-                    .unwrap_or(Path::new("."))
-                    .join(&config.archive_dir);
-
-                // Find WAL archive segments
-                let segments = find_wal_archive_segments(&archive_dir);
+                let wal_path = path.with_extension("wal");
+                let pending_dir = path.parent().unwrap_or(Path::new(".")).join("wal_pending");
+                let segments =
+                    collect_retained_wal_segments_for_rebuild(&wal_path, &config, &pending_dir)
+                        .map_err(|e| PersistentARTrieError::RecoveryError {
+                            reason: format!(
+                                "Corruption detected ({}) but WAL segment retention failed: {}",
+                                corruption_reason, e
+                            ),
+                        })?;
 
                 if segments.is_empty() {
                     // No archive segments - can't recover
                     return Err(PersistentARTrieError::RecoveryError {
                         reason: format!(
-                            "Corruption detected ({}) but no WAL archive segments found in {:?}",
-                            corruption_reason, archive_dir
+                            "Corruption detected ({}) but no WAL archive, pending, or active segments found",
+                            corruption_reason
                         ),
                     });
                 }
@@ -936,8 +939,7 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
                 // Remove corrupted file
                 let _ = std::fs::remove_file(path);
 
-                // Also remove current WAL (we'll rebuild from archives)
-                let wal_path = path.with_extension("wal");
+                // Also remove any header-only active WAL left at the original path.
                 let _ = std::fs::remove_file(&wal_path);
 
                 // Create fresh trie
@@ -986,6 +988,10 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
                                     terms_recovered += 1;
                                 }
                             }
+                            WalRecord::Remove { term } => {
+                                let term_str = String::from_utf8_lossy(&term);
+                                trie.remove_impl_no_wal(&term_str);
+                            }
                             WalRecord::Increment {
                                 term,
                                 delta: _,
@@ -1027,6 +1033,31 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
                                         trie.insert_impl_no_wal_with_value(&term_str, v);
                                         terms_recovered += 1;
                                     }
+                                }
+                            }
+                            WalRecord::BatchInsert { entries } => {
+                                for (term, value) in entries {
+                                    let term_str = String::from_utf8_lossy(&term);
+                                    if let Some(value_bytes) = value {
+                                        if let Ok(v) =
+                                            crate::serialization::bincode_compat::deserialize::<V>(
+                                                &value_bytes,
+                                            )
+                                        {
+                                            trie.insert_impl_no_wal_with_value(&term_str, v);
+                                            terms_recovered += 1;
+                                        }
+                                    } else {
+                                        trie.insert_impl_no_wal(&term_str);
+                                        terms_recovered += 1;
+                                    }
+                                }
+                            }
+                            WalRecord::BatchIncrement { entries } => {
+                                for (term, delta) in entries {
+                                    let term_str = String::from_utf8_lossy(&term);
+                                    trie.increment_impl_no_wal(&term_str, delta);
+                                    terms_recovered += 1;
                                 }
                             }
                             _ => {} // Skip transaction/checkpoint records

@@ -4,7 +4,7 @@
 
 This document records the results of formal verification efforts for the Persistent Adaptive Radix Trie (PART) implementation in libdictenstein.
 
-**Date:** 2026-01-20 (Updated: 2026-01-24 — TOCTOU Race Condition Fixes; 2026-05-20 — All `Admitted`/`Axiom` obligations eliminated across Model + Invariants + Spec, see commit `b7630ad` "Prove ARTrie Rocq map correctness" and `efe1943` "proofs(rocq): eliminate Admitted/Axiom obligations across Model + Invariants + Spec"; 2026-05-22 — checked structural contracts, bounded Byzantine storage and HotStuff-style quorum models, proof-carrying replay boundary, expanded TLA+ focused models, and Rust correspondence harness; 2026-05-23 — end-to-end WAL crash-prefix matrix, transaction replay correspondence, mmap block-storage synchronization, storage syscall outcome fail-closed durability boundary, byte lock-free ARTrie linearizability, indexed char/vocab lock-free overlay linearizability, durability-frontier/reclamation safety, raw pointer ownership boundary checks, vocab persistence/eviction ownership, io_uring fixed-buffer ownership and registration contracts, io_uring SQE/CQE lifecycle checking, public dictionary law conformance, DynamicDawg mutation/compaction preservation, double-array trie construction/traversal correctness, zipper/query-language conformance, substring candidate correctness, SCDAWG occurrence construction correctness, fuzzy candidate coverage, public serialization roundtrip correctness, and feature-gated protobuf/compression codec correspondence; 2026-05-24 — expanded Miri-gated unsafe-boundary targets for swizzled raw extraction, vocab reopen node-map/parent-chain rebuild, vocab eviction query liveness, BufferManager fixed-buffer lifetime, persistent cursor/batched/grouped/parallel merge equivalence, persistent char prefix semantics, valued set-combinator merge semantics for union/intersection zippers, and Bloom filter no-false-negative lookup rejection)
+**Date:** 2026-01-20 (Updated: 2026-01-24 — TOCTOU Race Condition Fixes; 2026-05-20 — All `Admitted`/`Axiom` obligations eliminated across Model + Invariants + Spec, see commit `b7630ad` "Prove ARTrie Rocq map correctness" and `efe1943` "proofs(rocq): eliminate Admitted/Axiom obligations across Model + Invariants + Spec"; 2026-05-22 — checked structural contracts, bounded Byzantine storage and HotStuff-style quorum models, proof-carrying replay boundary, expanded TLA+ focused models, and Rust correspondence harness; 2026-05-23 — end-to-end WAL crash-prefix matrix, transaction replay correspondence, mmap block-storage synchronization, storage syscall outcome fail-closed durability boundary, byte lock-free ARTrie linearizability, indexed char/vocab lock-free overlay linearizability, durability-frontier/reclamation safety, raw pointer ownership boundary checks, vocab persistence/eviction ownership, io_uring fixed-buffer ownership and registration contracts, io_uring SQE/CQE lifecycle checking, public dictionary law conformance, DynamicDawg mutation/compaction preservation, double-array trie construction/traversal correctness, zipper/query-language conformance, substring candidate correctness, SCDAWG occurrence construction correctness, fuzzy candidate coverage, public serialization roundtrip correctness, and feature-gated protobuf/compression codec correspondence; 2026-05-24 — expanded Miri-gated unsafe-boundary targets for swizzled raw extraction, vocab reopen node-map/parent-chain rebuild, vocab eviction query liveness, BufferManager fixed-buffer lifetime, persistent cursor/batched/grouped/parallel merge equivalence, persistent char prefix semantics, valued set-combinator merge semantics for union/intersection zippers, Bloom filter no-false-negative lookup rejection, and arena reservation/dirty-slot persistence correspondence; 2026-05-25 — persistent deduplicating-arena cache soundness, root descriptor/reopen refinement, persistent lazy mutation atomicity for no-WAL-on-error/no-op behavior and replay after successful lazy writes, persistent WAL write-atomicity for serialization/WAL failures, atomic writes, and document commits, and checkpoint/WAL retention safety for corruption rebuilds from archive/pending/active segments)
 
 ---
 
@@ -160,6 +160,14 @@ implementation surface.
 | Valued set-combinator spec | `ValuedSetCombinatorSpec.v` to `UnionZipper` / `IntersectionZipper` duplicate-value merge semantics | Passed, 7 default-feature tests and 9 `lling-llang` tests |
 | Persistent merge spec | `PersistentMergeSpec.v` to `PersistentARTrie` cursor pagination, ordinary batched merge, arena-grouped batched merge, and feature-gated parallel merge | Passed, 3 `persistent-artrie` tests and 4 `persistent-artrie parallel-merge` tests |
 | Persistent prefix spec | `PersistentPrefixSpec.v` to `PersistentARTrieChar` prefix iteration, valued/arena projections, ordinary removal, and batched removal | Passed, 4 `persistent-artrie` tests |
+| PathMap/factory spec | `PathMapFactorySpec.v` to optional `PathMapDictionary`, `PathMapDictionaryChar`, `PathMapZipper`, mutation traits, and `DictionaryFactory` dispatch | Passed, 4 `pathmap-backend` tests; caught/fixed missing `MutableDictionary` impls and collapsed Unicode sibling edges |
+| Relative encoding spec | `RelativeEncodingSpec.v` to byte/char child-pointer relative encoding, checked decode APIs, persistent v2 char deserialization, and dedup-cache soundness boundary | Passed, 6 `persistent-artrie` tests; caught/fixed same-arena forward-child saturation, truncated decode panics, odd relative tags, relative underflow, and sequential overflow |
+| Arena reservation spec | `ArenaReservationSpec.v` to byte/char `ArenaManager` slot allocation, reservation, update, dirty-flush, and load/reopen behavior | Passed, 6 `persistent-artrie` tests; caught/fixed byte missing slot update/defensive validity recovery, char update dirty-tracker omission, and stale V3 checksums on partial dirty-slot writes |
+| Deduplicating arena spec | `DedupArenaSpec.v` to byte/char `DeduplicatingArenaManager`, `NodeDeduplicator`, and `BatchDeduplicator` cache/reuse behavior | Passed, 9 `persistent-artrie` tests; covers verified hit reuse, stale-cache fail-closed allocation, verify-false compatibility behavior, direct allocation bypass, cache clear, and batch take |
+| Root descriptor reopen spec | `RootDescriptorReopenSpec.v` to byte/char root descriptor publication, arena-count validation, WAL skip-threshold fallback, and char lazy-load fail-closed reads | Passed, 6 `persistent-artrie` tests; caught/fixed unknown byte descriptor-as-empty load, char test-only root-load panic, invalid `arena_count` trust/unbounded loading, and public lazy-read panic wrappers |
+| Persistent lazy mutation spec | `PersistentLazyMutationSpec.v` to char lazy mutation preflight, WAL append ordering, no-op duplicate inserts, failed insert/value-insert/remove behavior, and replay after successful lazy writes | Passed, 4 `persistent-artrie` tests; caught/fixed char lazy insert panics and WAL-before-failed-mutation divergence |
+| Persistent WAL atomicity spec | `PersistentWalAtomicitySpec.v` to byte/char value-write serialization failures, WAL-before-mutation ordering for atomic writes, document commit ordering, and replay after successful atomic writes | Passed, 8 `persistent-artrie` tests; caught/fixed byte mutation-before-WAL paths, `.ok()` value-dropping WAL records, and byte/char document commit visibility before durable CommitTx |
+| Checkpoint/WAL retention spec | `PersistentCheckpointRetentionSpec.v` to byte/char corruption rebuild, active WAL retention, archive/pending/active replay order, batch replay, remove replay, and safe truncation premises | Passed, 2 `persistent-artrie` tests; caught/fixed corruption-rebuild paths that ignored active WAL tails and rebuild replay paths that skipped batch/remove records |
 | Substring candidate spec | `SubstringSearchSpec.v` to public `SubstringDictionary` exact candidate APIs for byte and Unicode SCDAWG | Passed, 5 default-feature tests |
 | SCDAWG occurrence spec | `ScdawgOccurrenceSpec.v` to byte and Unicode SCDAWG `find`/`freq`/`locations`, handle-based occurrence APIs, and left-extension traversal | Passed, 7 default-feature tests |
 | Fuzzy candidate coverage spec | `FuzzyCandidateCoverageSpec.v` to WallBreaker-style byte/Unicode SCDAWG query-piece candidate coverage | Passed, 5 default-feature tests |
@@ -206,23 +214,24 @@ requires running outside the local filesystem sandbox because the Java runtime
 opens a local RMI listener.
 
 The no-TLC verification command `scripts/verify-formal-correspondence.sh`
-passed on 2026-05-24 under explicit process caps
-(`CARGO_BUILD_JOBS=2`, `JAVA_TOOL_OPTIONS=-Xmx512m ...`,
-`prlimit --rss=8GiB`; no virtual address cap is used because OCaml reserves
-virtual minor heaps up front), including the unsafe inventory
+passed again on 2026-05-25 under explicit process caps
+(`FORMAL_RSS_LIMIT_BYTES=8589934592`, applied as `prlimit --rss=8GiB`; no
+virtual address cap is used because OCaml reserves virtual minor heaps up
+front, and the merge targets set `CARGO_BUILD_JOBS=2` internally), including
+the unsafe inventory
 drift gate, the public dictionary law target, the DynamicDawg mutation target,
-the DynamicDawgU64 sequence target, the Bloom filter target, the double-array trie target, the valued set-combinator
-target under default features and `lling-llang`, the persistent merge target under
-`persistent-artrie` and `persistent-artrie parallel-merge`, the persistent
-prefix target under `persistent-artrie`, the default and
-persistent SCDAWG unsafe-boundary targets, the default and persistent
-zipper-language targets, the substring candidate target, the fuzzy candidate
-coverage target, the feature-gated serialization
-correspondence/value/protobuf-compression targets, 49 formal correspondence
-tests, 8 Bloom filter correspondence tests, 7 default valued set-combinator tests, 9 `lling-llang` valued
-set-combinator tests, 5 storage correspondence tests, 17 Loom schedule tests,
-4 crate-internal vocab persistence/eviction tests, the group-commit-specific
-test, the Rocq build, and TLA+ SANY checks.
+the DynamicDawgU64 sequence target, the Bloom filter target, the double-array
+trie target, the valued set-combinator target under default features and
+`lling-llang`, the persistent merge target under `persistent-artrie` and
+`persistent-artrie parallel-merge`, the persistent prefix, relative encoding,
+arena reservation, dedup arena, root descriptor/reopen, persistent lazy
+mutation, persistent WAL atomicity, and checkpoint retention targets under
+`persistent-artrie`, the default and persistent SCDAWG unsafe-boundary targets,
+the default and persistent zipper-language targets, the substring candidate
+target, the fuzzy candidate coverage target, the feature-gated serialization
+correspondence/value/protobuf-compression targets, the storage correspondence
+target, Loom schedule checks, crate-internal vocab persistence/eviction tests,
+the group-commit-specific test, the Rocq build, and TLA+ SANY checks.
 
 `RUN_MIRI=1 scripts/verify-formal-correspondence.sh` now wires in the three
 raw `VocabTrieNode` ownership-transfer checks, three raw `CharTrieNodeInner`
@@ -254,9 +263,9 @@ also passed on 2026-05-23 with 8 storage correspondence tests.
 
 ### Modules Compiled
 
-All 33 `.v` files compile end-to-end with Rocq 9.1.0. Every theorem is closed
+All 43 `.v` files compile end-to-end with Rocq 9.1.0. Every theorem is closed
 by `Qed.` — **0 `Axiom`, 0 `Admitted`, 0 `Parameter`** across the tree
-(verified 2026-05-24).
+(verified 2026-05-25).
 
 The prior 15-module core compiled with Rocq 9.1.0 (~72 s wall clock under
 `make -j1`). Every theorem is closed by `Qed.` — **0 `Axiom`, 0 `Admitted`, 0
@@ -282,6 +291,14 @@ The prior 15-module core compiled with Rocq 9.1.0 (~72 s wall clock under
 | Spec/BloomFilterSpec.v | 362 | 11 | 6 | 17 (+1 `Defined`) | Complete |
 | Spec/PersistentMergeSpec.v | 246 | 11 | 0 | 11 | Complete |
 | Spec/PersistentPrefixSpec.v | 408 | 16 | 2 | 18 (+1 `Defined`) | Complete |
+| Spec/PathMapFactorySpec.v | 448 | 25 | 0 | 25 | Complete |
+| Spec/RelativeEncodingSpec.v | 416 | 16 | 2 | 18 (+1 `Defined`) | Complete |
+| Spec/ArenaReservationSpec.v | 429 | 18 | 1 | 19 (+1 `Defined`) | Complete |
+| Spec/DedupArenaSpec.v | 422 | 14 | 0 | 14 (+2 `Defined`) | Complete |
+| Spec/RootDescriptorReopenSpec.v | 433 | 19 | 0 | 19 | Complete |
+| Spec/PersistentLazyMutationSpec.v | 350 | 19 | 1 | 20 | Complete |
+| Spec/PersistentWalAtomicitySpec.v | 521 | 27 | 1 | 28 | Complete |
+| Spec/PersistentCheckpointRetentionSpec.v | 421 | 21 | 0 | 21 | Complete |
 | Spec/SubstringSearchSpec.v | 344 | 21 | 2 | 23 | Complete |
 | Spec/ScdawgOccurrenceSpec.v | 395 | 14 | 0 | 14 | Complete |
 | Spec/FuzzyCandidateCoverageSpec.v | 292 | 7 | 3 | 10 | Complete |
@@ -300,8 +317,8 @@ The prior 15-module core compiled with Rocq 9.1.0 (~72 s wall clock under
 | Proofs/HotStuffSafety.v | 46 | 2 | 0 | 2 | Complete |
 | Proofs/ProofCarryingExtraction.v | 80 | 3 | 0 | 3 | Complete |
 
-**Total Rocq LOC:** 13,890 (34 modules)
-**Aggregate proof tally:** 388 `Theorem` + 248 `Lemma` = 636 theorem/lemma
+**Total Rocq LOC:** 17,738 (43 modules)
+**Aggregate proof tally:** 564 `Theorem` + 256 `Lemma` = 820 theorem/lemma
 propositions, all closed (`Qed.`/`Defined.`; no escape hatches).
 
 ### Compilation Command
@@ -345,7 +362,7 @@ obligations were resolved as follows:
 
 ### Proven Theorems (selected highlights)
 
-A non-exhaustive sample of the 636 theorem/lemma propositions. See per-module file for
+A non-exhaustive sample of the 820 theorem/lemma propositions. See per-module file for
 the complete list; see [README.md](README.md) for module-by-module module-status
 table.
 
@@ -408,6 +425,32 @@ table.
 - `bloom_clear_rejects_all` / `string_might_contain_refines_bytes` - Clear
   removes all Bloom evidence under the nonzero-hash invariant, and string
   queries refine byte queries
+- `invalid_descriptor_ignores_checkpoint_map` /
+  `failed_root_load_replays_wal_from_zero` - Reopen uses the checkpoint skip
+  threshold only after a valid descriptor and successful root load
+- `public_contains_fails_closed_on_lazy_error` /
+  `public_get_fails_closed_on_lazy_error` - Public lazy reads return absence
+  rather than panicking or fabricating values after lazy-load failure
+- `lazy_error_does_not_append_wal` /
+  `successful_mutation_replay_matches_memory` - Public lazy mutations reject
+  load errors before WAL append, while successful appended mutations replay to
+  the same map state
+- `wal_error_rejects_write_before_mutation` /
+  `successful_write_replay_matches_memory` - Persistent writes reject WAL
+  append failures before in-memory mutation, while successful atomic writes
+  replay to the same map state
+- `invalid_checkpoint_has_no_skip_threshold` /
+  `retained_active_tail_is_replayed` - Corruption rebuilds replay from zero
+  when the checkpoint/root is invalid, and a retained active WAL tail remains
+  visible after recovery
+- `archive_then_active_tail_replay_order` /
+  `active_batch_then_remove_matches_reference` - Archive/pending/active
+  segment ordering and batch/remove replay match the reference map
+- `safe_truncation_prefix_is_checkpointed` - WAL truncation is justified only
+  for prefixes covered by a valid checkpoint boundary
+- `successful_transaction_appends_commit_record` /
+  `successful_transaction_replay_matches_memory` - Document commits publish
+  batch records plus `CommitTx` before applying the buffered map transition
 - `bijective_refinement_forward_injective` - Forward/reverse refinement implies
   unique values map back to unique terms
 - `dat_transition_parent_checked` - Successful DAT transitions are justified by
@@ -558,6 +601,38 @@ table.
 - `Spec/PersistentPrefixSpec.v` - Adds persistent char prefix-filter,
   valued/arena projection, ordinary removal, idempotence, and batched-removal
   equivalence laws.
+- `Spec/PathMapFactorySpec.v` - Adds optional PathMap byte/char mutation,
+  value-update, union, node-edge soundness/completeness, UTF-8-backed
+  character traversal, and factory backend-dispatch laws.
+- `Spec/RelativeEncodingSpec.v` - Adds persistent child-pointer encoding laws
+  for strict relative roundtrip, lossless full-encoding fallback, checked
+  malformed decode rejection, sequential sibling overflow, and verified dedup
+  cache hits/collisions.
+- `Spec/ArenaReservationSpec.v` - Adds arena slot-store laws for allocation
+  readback, same-size updates, contiguous sibling reservations, fail-closed
+  dirty-slot flushing, and load/reopen slot-directory reconstruction.
+- `Spec/DedupArenaSpec.v` - Adds persistent deduplicating-arena laws for
+  verified hit soundness, stale/colliding cache fail-closed allocation,
+  compatibility setter preservation of verified mode, legacy unverified-mode
+  collision-free assumptions, cache clear, batch take, and byte/char backend
+  model parity.
+- `Spec/RootDescriptorReopenSpec.v` - Adds persistent root descriptor/reopen
+  laws for known root-kind validation, final-flag and empty-payload checks,
+  arena-count bounds, checkpoint threshold trust only after a loaded root, WAL
+  replay fallback after descriptor/load failure, lazy `try_*` error
+  propagation, public fail-closed reads, and byte/char backend parity.
+- `Spec/PersistentLazyMutationSpec.v` - Adds persistent lazy mutation laws for
+  lazy-load error rejection before WAL append, duplicate/no-op mutation
+  non-append behavior, successful insert/value-insert/remove replay
+  correspondence, and byte/char backend parity.
+- `Spec/PersistentWalAtomicitySpec.v` - Adds persistent write-atomicity laws
+  for serialization/preflight rejection before WAL append, WAL append failure
+  before memory mutation, no-op atomic writes, successful replay
+  correspondence, and document commit batch/CommitTx ordering.
+- `Spec/PersistentCheckpointRetentionSpec.v` - Adds checkpoint/WAL retention
+  laws for valid checkpoint skip thresholds, invalid-checkpoint no-skip
+  behavior, active WAL retention, archive/pending/active replay order,
+  batch/remove replay, safe truncation premises, and byte/char backend parity.
 - `Spec/SubstringSearchSpec.v` - Adds backend-neutral exact substring
   candidate laws for non-empty patterns, occurrence bounds, duplicate-free
   result sets, and limited-result prefixes.
@@ -642,6 +717,38 @@ table.
   correspondence checks for ASCII/Unicode/empty prefixes, valued and
   arena-aware projections, ordinary/batched removal across batch sizes
   including zero, idempotence, and sync/reopen persistence.
+- `tests/root_descriptor_reopen_correspondence.rs` - Adds persistent byte and
+  char checkpoint/reopen correspondence checks for malformed root descriptors,
+  invalid arena counts, WAL checkpoint fallback, and lazy-load fail-closed
+  query behavior.
+- `src/persistent_artrie/{disk_load,mmap_ctor,io_uring_ctor}.rs` and
+  `src/persistent_artrie_char/{disk_io,mmap_ctor,io_uring_ctor,query_api}.rs`
+  - Validate root descriptor offsets, kinds, final flags, empty payloads, and
+  arena counts before trusting checkpoint thresholds; failed root loads fall
+  back to WAL replay, and public char lazy reads fail closed.
+- `tests/persistent_lazy_mutation_correspondence.rs` - Adds persistent char
+  lazy mutation correspondence checks for failed term inserts, value inserts,
+  and removes not appending WAL; duplicate term-only inserts as no-ops; and
+  successful lazy mutations replaying after reopen.
+- `tests/checkpoint_retention_correspondence.rs` - Adds persistent byte and
+  char corruption-rebuild correspondence checks for retained active WAL tails,
+  archived checkpoint segments plus post-checkpoint active records, batch
+  insert replay, and remove replay.
+- `src/persistent_artrie_core/recovery.rs` and
+  `src/persistent_artrie{,_char}/mmap_ctor.rs` - Retain the active WAL as a
+  replay segment before corruption rebuild, preserve archive/pending/active
+  ordering, and replay batch/remove records during rebuild.
+- `src/persistent_artrie_char/{mutation_core,mutation_api}.rs` - Adds
+  lazy-load preflight and `try_*_no_wal` mutation primitives so public char
+  insert/value-insert/remove return lazy-load errors before WAL append instead
+  of panicking or durably logging an unapplied mutation.
+- `src/pathmap.rs`, `src/pathmap_char.rs` - Add `MutableDictionary` impls for
+  PathMap byte/char dictionaries; fix PathMapChar edge enumeration so sibling
+  Unicode scalar values sharing leading UTF-8 bytes are all exposed.
+- `tests/pathmap_factory_correspondence.rs` - Adds feature-gated PathMap and
+  factory correspondence checks for byte map/zipper traversal, Unicode
+  character-edge completeness, mapped mutation/union, and all factory backends
+  under `pathmap-backend`.
 - `tests/substring_candidate_correspondence.rs` - Adds exact substring
   candidate checks for byte and Unicode SCDAWG, including repeated and
   overlapping matches, duplicate-term suppression, limited-result prefixes,
@@ -669,8 +776,11 @@ table.
 - `scripts/verify-formal-correspondence.sh` - Adds a single local/CI entry
   point for Rust correspondence, Rocq proofs, SANY checks, optional Miri,
   optional io_uring checks, optional TLC, and the storage syscall plus SQE/CQE
-  lifecycle models. Each spawned verification command runs through an 8GiB RSS
-  cap by default (`FORMAL_RSS_LIMIT_BYTES=0` disables the wrapper).
+  lifecycle models, including the root descriptor/reopen, persistent lazy
+  mutation, persistent WAL atomicity, and checkpoint retention correspondence
+  targets. Each spawned verification command runs
+  through an 8GiB RSS cap by default (`FORMAL_RSS_LIMIT_BYTES=0` disables the
+  wrapper).
 - `.github/workflows/ci.yml` - Adds formal correspondence CI jobs for the
   default no-TLC harness, Miri-gated harness, io_uring-gated harness, and
   scheduled/manual TLC harness, with `prlimit` memory caps, bounded Cargo
@@ -804,9 +914,11 @@ The formal verification provides strong evidence for the correctness of the PART
    publication/reclamation under bounded Loom schedules, storage syscall
    outcome fail-closed behavior, io_uring fixed-buffer and SQE/CQE lifecycle
    obligations, DynamicDawg mutation/compaction preservation, persistent
-   cursor/batched/grouped/parallel merge equivalence, valued set-combinator
-   merge semantics, and SCDAWG occurrence construction for byte and Unicode
-   substring APIs.
+   cursor/batched/grouped/parallel merge equivalence, persistent root
+   descriptor/reopen fallback, persistent lazy mutation atomicity, persistent
+   WAL write-atomicity, checkpoint/WAL retention safety, valued
+   set-combinator merge semantics, and SCDAWG
+   occurrence construction for byte and Unicode substring APIs.
 
 The combination of model checking (for concurrent/crash scenarios) and theorem proving (for functional correctness) provides complementary assurance:
 - TLA+ finds protocol bugs via exhaustive state exploration
@@ -821,7 +933,7 @@ The combination of model checking (for concurrent/crash scenarios) and theorem p
   prefix-closed durability/reclamation publication
 - The Rust correspondence harness guards the model-to-code boundary in CI
 
-As of 2026-05-24 the Rocq tree has **zero outstanding `Admitted`/`Axiom`/`Parameter` obligations**: all 654 theorem/lemma propositions across the 35 modules close by `Qed.` (or `Defined.` for transparent definitions). Remaining extension scope and proof boundaries are tracked in `GAP_LEDGER.md`; the current boundary is production Byzantine networking/liveness, certified Rust/LLVM compilation, kernel io_uring/syscall internals below the modeled outcome boundary, gzip/prost internals, cross-language protobuf implementations, optimal/minimal automata size, arena-locality/throughput optimality, Bloom false-positive rates/hash-quality guarantees, arbitrary semiring `times`-as-meet semantics, and upstream Levenshtein transducer correctness, not unchecked structural-preservation, DynamicDawg mutation/compaction, DynamicDawgU64 sequence semantics, Bloom filter no-false-negative rejection, double-array-trie traversal, traversal-language, valued set-combinator merge, persistent merge equivalence, persistent char prefix semantics, SCDAWG occurrence construction, substring-candidate, fuzzy-candidate, storage syscall outcome, io_uring fixed-buffer/SQE-CQE lifecycle, or public serialization proof gaps.
+As of 2026-05-25 the Rocq tree has **zero outstanding `Admitted`/`Axiom`/`Parameter` obligations**: all 820 theorem/lemma propositions across the 43 modules close by `Qed.` (or `Defined.` for transparent definitions). Remaining extension scope and proof boundaries are tracked in `GAP_LEDGER.md`; the current boundary is production Byzantine networking/liveness, certified Rust/LLVM compilation, kernel io_uring/syscall internals below the modeled outcome boundary, gzip/prost internals, cross-language protobuf implementations, optimal/minimal automata size, arena-locality/throughput optimality, Bloom false-positive rates/hash-quality guarantees, arbitrary semiring `times` as meet for arbitrary semirings, and upstream Levenshtein transducer correctness, not unchecked structural-preservation, DynamicDawg mutation/compaction, DynamicDawgU64 sequence semantics, Bloom filter no-false-negative rejection, double-array-trie traversal, traversal-language, valued set-combinator merge, persistent merge equivalence, persistent char prefix semantics, persistent relative encoding, arena reservation/dirty-slot persistence, persistent deduplicating-arena soundness, root descriptor/reopen fallback, persistent lazy mutation atomicity, persistent WAL write-atomicity, checkpoint/WAL retention safety, SCDAWG occurrence construction, substring-candidate, fuzzy-candidate, storage syscall outcome, io_uring fixed-buffer/SQE-CQE lifecycle, or public serialization proof gaps.
 
 ---
 

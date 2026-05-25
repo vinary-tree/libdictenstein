@@ -243,12 +243,13 @@ impl<S: BlockStorage> DeduplicatingArenaManager<S> {
         }
     }
 
-    /// Set whether to verify data on cache hit
+    /// Set whether to verify data on cache hit.
     ///
-    /// If true (default), reads back data to verify it matches before reusing.
-    /// If false, trusts the hash and returns cached slot without verification.
-    pub fn set_verify_on_hit(&mut self, verify: bool) {
-        self.verify_on_hit = verify;
+    /// Verification is mandatory for soundness. This setter is retained for
+    /// compatibility, but passing `false` no longer disables read-back
+    /// verification.
+    pub fn set_verify_on_hit(&mut self, _verify: bool) {
+        self.verify_on_hit = true;
     }
 
     /// Allocate with deduplication
@@ -491,8 +492,9 @@ mod tests {
         );
     }
 
-    /// Test DeduplicatingArenaManager with verify_on_hit = false (line 268-271).
-    /// When verify_on_hit is false, we trust the hash and don't verify data.
+    /// Test the compatibility setter for verify_on_hit = false.
+    /// Verification remains enabled even when callers request the old trusted
+    /// hash mode.
     #[test]
     fn test_dedup_verify_on_hit_false() {
         use super::ArenaManager;
@@ -500,7 +502,7 @@ mod tests {
         // Create in-memory arena and dedup manager
         let arena = ArenaManager::<MmapDiskManager>::with_arena_size(64 * 1024);
         let mut dedup = DeduplicatingArenaManager::new(arena);
-        dedup.set_verify_on_hit(false); // Test line 268-271
+        dedup.set_verify_on_hit(false);
 
         let data = b"test data for dedup";
         let slot1 = dedup.allocate_dedup(data).expect("first alloc");
@@ -514,7 +516,7 @@ mod tests {
         assert_eq!(stats.misses, 1, "Should have one initial miss");
     }
 
-    /// Test DeduplicatingArenaManager with verify_on_hit = true (default) (line 258-263).
+    /// Test DeduplicatingArenaManager with verify_on_hit = true (default).
     /// When verify_on_hit is true, we verify data matches before reusing.
     #[test]
     fn test_dedup_verify_on_hit_true() {

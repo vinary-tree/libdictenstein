@@ -29,6 +29,9 @@ use crate::value::DictionaryValue;
 use super::dict_impl_char::{ROOT_TYPE_EMPTY, ROOT_TYPE_NODE};
 use super::types::{CharTrieNodeInner, CharTrieRoot};
 
+const ROOT_DESCRIPTOR_OFFSET: usize = 64;
+const ROOT_DESCRIPTOR_LEN: usize = 18;
+
 impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     pub(super) fn load_root_from_disk(
         &self,
@@ -44,12 +47,27 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
         let disk_loc = root_desc_ptr.disk_location().ok_or_else(|| {
             PersistentARTrieError::internal("Root descriptor pointer is swizzled or null")
         })?;
+        if disk_loc.block_id != 0 || disk_loc.offset as usize != ROOT_DESCRIPTOR_OFFSET {
+            return Err(PersistentARTrieError::corrupted(format!(
+                "Root descriptor pointer must target block 0 offset {}, got block {} offset {}",
+                ROOT_DESCRIPTOR_OFFSET, disk_loc.block_id, disk_loc.offset
+            )));
+        }
         let page_guard = bm.fetch_page(disk_loc.block_id)?;
         let page_data = page_guard.data();
 
         // Read descriptor from the offset within block 0
         let offset = disk_loc.offset as usize;
-        let descriptor_buf = &page_data[offset..offset + 18];
+        let end = offset
+            .checked_add(ROOT_DESCRIPTOR_LEN)
+            .ok_or_else(|| PersistentARTrieError::corrupted("Root descriptor offset overflow"))?;
+        if end > page_data.len() {
+            return Err(PersistentARTrieError::corrupted(
+                "Root descriptor extends past header block",
+            ));
+        }
+        let mut descriptor = [0u8; ROOT_DESCRIPTOR_LEN];
+        descriptor.copy_from_slice(&page_data[offset..end]);
 
         // Parse root descriptor (fixed 18 bytes)
         // Format:
@@ -58,34 +76,41 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
         //   2-5: term_count (4 bytes, little endian)
         //   6-9: arena_count (4 bytes, little endian)
         //   10-17: root_ptr (8 bytes, little endian)
-        let root_type = descriptor_buf[0];
-        let _is_final = descriptor_buf[1] != 0;
-        let term_count = u32::from_le_bytes([
-            descriptor_buf[2],
-            descriptor_buf[3],
-            descriptor_buf[4],
-            descriptor_buf[5],
-        ]) as usize;
-        let arena_count = u32::from_le_bytes([
-            descriptor_buf[6],
-            descriptor_buf[7],
-            descriptor_buf[8],
-            descriptor_buf[9],
-        ]);
+        let root_type = descriptor[0];
+        let is_final_flag = descriptor[1];
+        if is_final_flag > 1 {
+            return Err(PersistentARTrieError::corrupted(format!(
+                "Invalid root descriptor final flag: {}",
+                is_final_flag
+            )));
+        }
+        let term_count =
+            u32::from_le_bytes([descriptor[2], descriptor[3], descriptor[4], descriptor[5]])
+                as usize;
+        let arena_count =
+            u32::from_le_bytes([descriptor[6], descriptor[7], descriptor[8], descriptor[9]]);
         let root_ptr = u64::from_le_bytes([
-            descriptor_buf[10],
-            descriptor_buf[11],
-            descriptor_buf[12],
-            descriptor_buf[13],
-            descriptor_buf[14],
-            descriptor_buf[15],
-            descriptor_buf[16],
-            descriptor_buf[17],
+            descriptor[10],
+            descriptor[11],
+            descriptor[12],
+            descriptor[13],
+            descriptor[14],
+            descriptor[15],
+            descriptor[16],
+            descriptor[17],
         ]);
+
+        let storage_block_count = bm.storage().block_count()?;
+        if arena_count > storage_block_count.saturating_sub(1) {
+            return Err(PersistentARTrieError::corrupted(format!(
+                "Root descriptor arena_count {} exceeds available arena blocks {}",
+                arena_count,
+                storage_block_count.saturating_sub(1)
+            )));
+        }
 
         // Derive arena block IDs from sequential allocation
         // Block 0 = file header + descriptor, Blocks 1..=arena_count = arenas
-        let arena_block_ids: Vec<u32> = (1..=arena_count).collect();
 
         drop(page_guard);
         drop(bm);
@@ -98,7 +123,7 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
                     // Clear the initial empty arena
                     am.clear_for_loading();
                     // Load each arena from disk
-                    for block_id in arena_block_ids {
+                    for block_id in 1..=arena_count {
                         am.load_arena(block_id)?;
                     }
                     // Set active arena to the last one for new allocations
@@ -109,7 +134,15 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
         }
 
         match root_type {
-            ROOT_TYPE_EMPTY => Ok((CharTrieRoot::Empty, 0)),
+            ROOT_TYPE_EMPTY => {
+                if root_ptr == 0 && term_count == 0 {
+                    Ok((CharTrieRoot::Empty, 0))
+                } else {
+                    Err(PersistentARTrieError::corrupted(
+                        "Empty root descriptor carried non-empty payload",
+                    ))
+                }
+            }
             ROOT_TYPE_NODE => {
                 let root_swizzled = SwizzledPtr::from_raw(root_ptr);
                 // Choose loading strategy based on eager_depth

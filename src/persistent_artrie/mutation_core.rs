@@ -42,42 +42,36 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
     /// `parallel-merge` feature) can call it during the
     /// sequential-write phase of `merge_from_parallel`.
     pub(super) fn insert_impl(&mut self, term: &[u8], value: Option<V>) -> bool {
-        // Clone value for WAL logging if needed (before move into core)
-        let value_for_wal = value.clone();
+        let serialized_value = match value.as_ref() {
+            Some(v) => match crate::serialization::bincode_compat::serialize(v) {
+                Ok(bytes) => Some(bytes),
+                Err(e) => {
+                    warn!("Failed to serialize value for WAL: {:?}", e);
+                    return false;
+                }
+            },
+            None => None,
+        };
 
-        // Perform the actual insert
-        let inserted = self.insert_impl_core(term, value);
-
-        // Log to WAL if insert was successful OR if we're updating an existing term's value
-        // We need to log value updates even when the term already exists (inserted = false)
-        if inserted || value_for_wal.is_some() {
+        // Log new terms and value updates before applying them in memory.
+        // Duplicate term-only inserts are no-ops and do not need WAL traffic.
+        let needs_wal = value.is_some() || !self.contains_impl(term);
+        if needs_wal {
             if let Some(ref wal_writer) = self.wal_writer {
                 use super::wal::WalRecord;
-
-                // Serialize the value using bincode if present
-                let serialized_value =
-                    value_for_wal.and_then(
-                        |v| match crate::serialization::bincode_compat::serialize(&v) {
-                            Ok(bytes) => Some(bytes),
-                            Err(e) => {
-                                warn!("Failed to serialize value for WAL: {:?}", e);
-                                None
-                            }
-                        },
-                    );
 
                 let record = WalRecord::Insert {
                     term: term.to_vec(),
                     value: serialized_value,
                 };
                 if let Err(e) = wal_writer.append(record) {
-                    // Log error but don't fail the insert - data is in memory
                     warn!("Failed to log insert to WAL: {:?}", e);
+                    return false;
                 }
             }
         }
 
-        inserted
+        self.insert_impl_core(term, value)
     }
 
     /// Core insert implementation without WAL logging.
@@ -226,24 +220,22 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
 
     /// Remove implementation with WAL logging (for persistent mode).
     pub(super) fn remove_impl(&mut self, term: &[u8]) -> bool {
-        // Perform the actual remove
-        let removed = self.remove_impl_core(term);
+        if !self.contains_impl(term) {
+            return false;
+        }
 
-        // Log to WAL if remove was successful and we have a WAL writer
-        if removed {
-            if let Some(ref wal_writer) = self.wal_writer {
-                use super::wal::WalRecord;
-                let record = WalRecord::Remove {
-                    term: term.to_vec(),
-                };
-                if let Err(e) = wal_writer.append(record) {
-                    // Log error but don't fail the remove - data is in memory
-                    warn!("Failed to log remove to WAL: {:?}", e);
-                }
+        if let Some(ref wal_writer) = self.wal_writer {
+            use super::wal::WalRecord;
+            let record = WalRecord::Remove {
+                term: term.to_vec(),
+            };
+            if let Err(e) = wal_writer.append(record) {
+                warn!("Failed to log remove to WAL: {:?}", e);
+                return false;
             }
         }
 
-        removed
+        self.remove_impl_core(term)
     }
 
     /// Core remove implementation without WAL logging.

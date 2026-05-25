@@ -2,14 +2,14 @@
 //!
 //! This module provides encoding utilities that minimize storage overhead by:
 //! 1. Using relative offsets for same-arena child pointers
-//! 2. Falling back to full encoding for cross-arena pointers
+//! 2. Falling back to full encoding for cross-arena or forward same-arena pointers
 //!
 //! ## Encoding Scheme
 //!
 //! Child pointers use a flag bit to distinguish encoding modes:
 //!
 //! - **Bit 0 = 0**: Same-arena relative offset (remaining bits = varint delta)
-//! - **Bit 0 = 1**: Cross-arena full pointer (remaining bytes = arena_id:slot_id)
+//! - **Bit 0 = 1**: Full pointer (remaining bytes = arena_id:slot_id)
 //!
 //! ### Same-Arena Relative Offset
 //!
@@ -20,9 +20,10 @@
 //!
 //! Typical deltas are small (1-100), encoding to 1-2 bytes vs 8 bytes fixed.
 //!
-//! ### Cross-Arena Full Pointer
+//! ### Full Pointer
 //!
-//! When parent and child are in different arenas:
+//! When parent and child are in different arenas, or when a same-arena child is
+//! allocated after its parent:
 //! - Store full (arena_id, slot_id) pair
 //! - Encode as: `0x01 | arena_id (4 bytes) | slot_id (4 bytes)`
 //!
@@ -46,14 +47,98 @@
 //! assert_eq!(decoded.slot_id, 95);
 //! ```
 
+use std::fmt;
+
 use super::arena_manager::ArenaSlot;
-use super::compact_encoding::{read_varint_from_slice, varint_size, write_varint_to_vec};
+use super::compact_encoding::{varint_size, write_varint_to_vec, VARINT_LEN_BIAS};
 
 /// Flag bit indicating cross-arena encoding (bit 0 = 1)
 pub const FLAG_CROSS_ARENA: u8 = 0x01;
 
 /// Minimum size for cross-arena encoding: 1 byte flag + 4 bytes arena_id + 4 bytes slot_id
 pub const CROSS_ARENA_SIZE: usize = 9;
+
+/// Error returned by checked relative pointer encoding/decoding APIs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RelativeEncodingError {
+    /// The decoder was asked to read from an empty byte slice.
+    EmptyInput,
+    /// A full pointer was shorter than the required 9 bytes.
+    TruncatedFullPointer { actual_len: usize },
+    /// A varint header promised more payload bytes than were available.
+    TruncatedVarint {
+        expected_len: usize,
+        actual_len: usize,
+    },
+    /// A full-pointer decoder was called on data with the wrong flag byte.
+    InvalidFullPointerFlag { flag: u8 },
+    /// Relative pointer payloads must have tag bit 0 cleared.
+    OddRelativeTag { value: u64 },
+    /// The decoded relative delta does not fit in a u32 slot offset.
+    RelativeDeltaTooLarge { value: u64 },
+    /// Applying the decoded delta would underflow the parent slot.
+    RelativeUnderflow { parent: ArenaSlot, delta: u32 },
+    /// Strict relative encoding requires the child to be at or before the parent.
+    InvalidRelativeDirection { parent: ArenaSlot, child: ArenaSlot },
+    /// A sequential child index cannot be represented as a u32 slot offset.
+    SequentialIndexTooLarge { index: usize },
+    /// Reconstructing sequential siblings would overflow u32.
+    SequentialOverflow {
+        first_child: ArenaSlot,
+        index: usize,
+    },
+}
+
+impl fmt::Display for RelativeEncodingError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::EmptyInput => write!(f, "empty relative pointer input"),
+            Self::TruncatedFullPointer { actual_len } => write!(
+                f,
+                "truncated full pointer: got {actual_len} bytes, need {CROSS_ARENA_SIZE}"
+            ),
+            Self::TruncatedVarint {
+                expected_len,
+                actual_len,
+            } => write!(
+                f,
+                "truncated varint: got {actual_len} bytes, need {expected_len}"
+            ),
+            Self::InvalidFullPointerFlag { flag } => {
+                write!(f, "invalid full pointer flag byte: {flag:#04x}")
+            }
+            Self::OddRelativeTag { value } => {
+                write!(f, "relative pointer has full-pointer tag bit set: {value}")
+            }
+            Self::RelativeDeltaTooLarge { value } => {
+                write!(f, "relative delta exceeds u32 slot range: {value}")
+            }
+            Self::RelativeUnderflow { parent, delta } => write!(
+                f,
+                "relative delta {delta} underflows parent slot {:?}",
+                parent
+            ),
+            Self::InvalidRelativeDirection { parent, child } => write!(
+                f,
+                "child slot {:?} cannot be relatively encoded from parent {:?}",
+                child, parent
+            ),
+            Self::SequentialIndexTooLarge { index } => {
+                write!(f, "sequential sibling index exceeds u32: {index}")
+            }
+            Self::SequentialOverflow { first_child, index } => write!(
+                f,
+                "sequential sibling index {index} overflows first child {:?}",
+                first_child
+            ),
+        }
+    }
+}
+
+impl std::error::Error for RelativeEncodingError {}
+
+/// Result type for checked relative pointer operations.
+pub type RelativeEncodingResult<T> = std::result::Result<T, RelativeEncodingError>;
 
 // =============================================================================
 // Header Flags for Relative Mode
@@ -168,8 +253,9 @@ impl Default for SerializationContext {
 
 /// Encode a child pointer relative to the parent.
 ///
-/// If parent and child are in the same arena, encodes as a relative offset.
-/// Otherwise, encodes using full (arena_id, slot_id) pair.
+/// If parent and child are in the same arena and the child is at or before the
+/// parent slot, encodes as a relative offset. Otherwise, encodes using a full
+/// (arena_id, slot_id) pair.
 ///
 /// # Arguments
 /// * `parent` - Parent's arena slot (used for relative offset calculation)
@@ -180,13 +266,38 @@ impl Default for SerializationContext {
 /// Number of bytes written to `out`
 pub fn encode_child_pointer(parent: ArenaSlot, child: ArenaSlot, out: &mut Vec<u8>) -> usize {
     if parent.arena_id == child.arena_id {
-        // Same arena: use relative offset (varint)
-        // Post-order serialization guarantees parent.slot_id > child.slot_id
-        let delta = parent.slot_id.saturating_sub(child.slot_id);
-        encode_relative(delta, out)
+        if let Some(delta) = parent.slot_id.checked_sub(child.slot_id) {
+            // Same arena, child allocated at or before the parent: use relative offset.
+            encode_relative(delta, out)
+        } else {
+            // Same arena but not relatively representable. Fall back to full encoding
+            // instead of saturating to zero, which would decode to the parent slot.
+            encode_full(child, out)
+        }
     } else {
         // Cross arena: use full encoding
         encode_full(child, out)
+    }
+}
+
+/// Strictly encode a child pointer relative to the parent.
+///
+/// This checked variant rejects same-arena children that are allocated after
+/// the parent. The infallible [`encode_child_pointer`] wrapper falls back to
+/// full encoding for that case to preserve legacy call sites.
+pub fn try_encode_child_pointer(
+    parent: ArenaSlot,
+    child: ArenaSlot,
+    out: &mut Vec<u8>,
+) -> RelativeEncodingResult<usize> {
+    if parent.arena_id == child.arena_id {
+        let delta = parent
+            .slot_id
+            .checked_sub(child.slot_id)
+            .ok_or(RelativeEncodingError::InvalidRelativeDirection { parent, child })?;
+        Ok(encode_relative(delta, out))
+    } else {
+        Ok(encode_full(child, out))
     }
 }
 
@@ -241,16 +352,29 @@ pub fn encode_full(slot: ArenaSlot, out: &mut Vec<u8>) -> usize {
 /// # Returns
 /// Tuple of (decoded ArenaSlot, bytes consumed)
 pub fn decode_child_pointer(data: &[u8], parent: ArenaSlot) -> (ArenaSlot, usize) {
-    let first = data[0];
+    try_decode_child_pointer(data, parent).expect("invalid relative child pointer encoding")
+}
 
-    if first & FLAG_CROSS_ARENA != 0 && first == FLAG_CROSS_ARENA {
+/// Checked version of [`decode_child_pointer`].
+///
+/// Returns an error for empty, truncated, malformed, or underflowing encodings.
+pub fn try_decode_child_pointer(
+    data: &[u8],
+    parent: ArenaSlot,
+) -> RelativeEncodingResult<(ArenaSlot, usize)> {
+    let first = *data.first().ok_or(RelativeEncodingError::EmptyInput)?;
+
+    if first == FLAG_CROSS_ARENA {
         // Cross arena: full encoding (flag byte followed by arena_id and slot_id)
-        decode_full(data)
+        try_decode_full(data)
     } else {
         // Same arena: relative offset (varint with bit 0 = 0)
-        let (delta, len) = decode_relative(data);
-        let child_slot = parent.slot_id.saturating_sub(delta);
-        (ArenaSlot::new(parent.arena_id, child_slot), len)
+        let (delta, len) = try_decode_relative(data)?;
+        let child_slot = parent
+            .slot_id
+            .checked_sub(delta)
+            .ok_or(RelativeEncodingError::RelativeUnderflow { parent, delta })?;
+        Ok((ArenaSlot::new(parent.arena_id, child_slot), len))
     }
 }
 
@@ -263,9 +387,21 @@ pub fn decode_child_pointer(data: &[u8], parent: ArenaSlot) -> (ArenaSlot, usize
 /// Tuple of (delta value, bytes consumed)
 #[inline]
 pub fn decode_relative(data: &[u8]) -> (u32, usize) {
-    let (value, len) = read_varint_from_slice(data);
-    // The stored value is (delta << 1), so shift right to get delta
-    ((value >> 1) as u32, len)
+    try_decode_relative(data).expect("invalid relative offset encoding")
+}
+
+/// Checked version of [`decode_relative`].
+#[inline]
+pub fn try_decode_relative(data: &[u8]) -> RelativeEncodingResult<(u32, usize)> {
+    let (value, len) = try_read_varint_from_slice(data)?;
+    if value & FLAG_CROSS_ARENA as u64 != 0 {
+        return Err(RelativeEncodingError::OddRelativeTag { value });
+    }
+    let delta = value >> 1;
+    if delta > u32::MAX as u64 {
+        return Err(RelativeEncodingError::RelativeDeltaTooLarge { value: delta });
+    }
+    Ok((delta as u32, len))
 }
 
 /// Decode a full (arena_id, slot_id) pair (cross-arena pointer).
@@ -277,21 +413,56 @@ pub fn decode_relative(data: &[u8]) -> (u32, usize) {
 /// Tuple of (decoded ArenaSlot, bytes consumed = 9)
 #[inline]
 pub fn decode_full(data: &[u8]) -> (ArenaSlot, usize) {
-    debug_assert!(data[0] == FLAG_CROSS_ARENA);
+    try_decode_full(data).expect("invalid full child pointer encoding")
+}
+
+/// Checked version of [`decode_full`].
+#[inline]
+pub fn try_decode_full(data: &[u8]) -> RelativeEncodingResult<(ArenaSlot, usize)> {
+    let first = *data.first().ok_or(RelativeEncodingError::EmptyInput)?;
+    if first != FLAG_CROSS_ARENA {
+        return Err(RelativeEncodingError::InvalidFullPointerFlag { flag: first });
+    }
+    if data.len() < CROSS_ARENA_SIZE {
+        return Err(RelativeEncodingError::TruncatedFullPointer {
+            actual_len: data.len(),
+        });
+    }
 
     let arena_id = u32::from_le_bytes([data[1], data[2], data[3], data[4]]);
     let slot_id = u32::from_le_bytes([data[5], data[6], data[7], data[8]]);
 
-    (ArenaSlot::new(arena_id, slot_id), CROSS_ARENA_SIZE)
+    Ok((ArenaSlot::new(arena_id, slot_id), CROSS_ARENA_SIZE))
+}
+
+#[inline]
+fn try_read_varint_from_slice(data: &[u8]) -> RelativeEncodingResult<(u64, usize)> {
+    let first = *data.first().ok_or(RelativeEncodingError::EmptyInput)?;
+    if first <= VARINT_LEN_BIAS {
+        Ok((first as u64, 1))
+    } else {
+        let len = (first - VARINT_LEN_BIAS) as usize;
+        let expected_len = 1 + len;
+        if data.len() < expected_len {
+            return Err(RelativeEncodingError::TruncatedVarint {
+                expected_len,
+                actual_len: data.len(),
+            });
+        }
+        let mut bytes = [0u8; 8];
+        bytes[..len].copy_from_slice(&data[1..expected_len]);
+        Ok((u64::from_le_bytes(bytes), expected_len))
+    }
 }
 
 // =============================================================================
 // Utility Functions
 // =============================================================================
 
-/// Check if a child pointer would use relative encoding.
+/// Check if a child pointer is in the same arena as the parent.
 ///
-/// Returns `true` if parent and child are in the same arena.
+/// Same-arena children use relative encoding only when the child slot is at or
+/// before the parent slot; otherwise encoding falls back to a full pointer.
 #[inline]
 pub fn is_same_arena(parent: ArenaSlot, child: ArenaSlot) -> bool {
     parent.arena_id == child.arena_id
@@ -306,14 +477,30 @@ pub fn is_same_arena(parent: ArenaSlot, child: ArenaSlot) -> bool {
 /// # Returns
 /// Number of bytes required to encode the pointer
 pub fn encoded_size(parent: ArenaSlot, child: ArenaSlot) -> usize {
-    if parent.arena_id == child.arena_id {
+    if parent.arena_id == child.arena_id && child.slot_id <= parent.slot_id {
         // Same arena: varint size of (delta << 1)
-        let delta = parent.slot_id.saturating_sub(child.slot_id);
+        let delta = parent.slot_id - child.slot_id;
         let value = (delta as u64) << 1;
         varint_size(value)
     } else {
-        // Cross arena: fixed 9 bytes
+        // Cross arena, or same arena but not relatively representable: fixed 9 bytes
         CROSS_ARENA_SIZE
+    }
+}
+
+/// Calculate the size of the strict relative encoding.
+///
+/// Unlike [`encoded_size`], this rejects same-arena children that are allocated
+/// after the parent instead of accounting for the full-encoding fallback.
+pub fn try_encoded_size(parent: ArenaSlot, child: ArenaSlot) -> RelativeEncodingResult<usize> {
+    if parent.arena_id == child.arena_id {
+        let delta = parent
+            .slot_id
+            .checked_sub(child.slot_id)
+            .ok_or(RelativeEncodingError::InvalidRelativeDirection { parent, child })?;
+        Ok(varint_size((delta as u64) << 1))
+    } else {
+        Ok(CROSS_ARENA_SIZE)
     }
 }
 
@@ -334,6 +521,19 @@ pub fn encode_children(parent: ArenaSlot, children: &[ArenaSlot], out: &mut Vec<
     total
 }
 
+/// Strictly encode multiple child pointers.
+pub fn try_encode_children(
+    parent: ArenaSlot,
+    children: &[ArenaSlot],
+    out: &mut Vec<u8>,
+) -> RelativeEncodingResult<usize> {
+    let mut total = 0;
+    for &child in children {
+        total += try_encode_child_pointer(parent, child, out)?;
+    }
+    Ok(total)
+}
+
 /// Decode multiple child pointers.
 ///
 /// # Arguments
@@ -344,16 +544,25 @@ pub fn encode_children(parent: ArenaSlot, children: &[ArenaSlot], out: &mut Vec<
 /// # Returns
 /// Tuple of (decoded ArenaSlots, total bytes consumed)
 pub fn decode_children(data: &[u8], parent: ArenaSlot, count: usize) -> (Vec<ArenaSlot>, usize) {
+    try_decode_children(data, parent, count).expect("invalid relative child list encoding")
+}
+
+/// Checked version of [`decode_children`].
+pub fn try_decode_children(
+    data: &[u8],
+    parent: ArenaSlot,
+    count: usize,
+) -> RelativeEncodingResult<(Vec<ArenaSlot>, usize)> {
     let mut children = Vec::with_capacity(count);
     let mut offset = 0;
 
     for _ in 0..count {
-        let (child, len) = decode_child_pointer(&data[offset..], parent);
+        let (child, len) = try_decode_child_pointer(&data[offset..], parent)?;
         children.push(child);
         offset += len;
     }
 
-    (children, offset)
+    Ok((children, offset))
 }
 
 // =============================================================================
@@ -384,6 +593,15 @@ pub fn encode_sequential_siblings(
     encode_child_pointer(parent, first_child, out)
 }
 
+/// Strictly encode a sequential sibling reference.
+pub fn try_encode_sequential_siblings(
+    parent: ArenaSlot,
+    first_child: ArenaSlot,
+    out: &mut Vec<u8>,
+) -> RelativeEncodingResult<usize> {
+    try_encode_child_pointer(parent, first_child, out)
+}
+
 /// Decode a sequential sibling reference and reconstruct all child slots.
 ///
 /// # Arguments
@@ -398,21 +616,38 @@ pub fn decode_sequential_siblings(
     parent: ArenaSlot,
     count: usize,
 ) -> (Vec<ArenaSlot>, usize) {
+    try_decode_sequential_siblings(data, parent, count)
+        .expect("invalid sequential sibling encoding")
+}
+
+/// Checked version of [`decode_sequential_siblings`].
+pub fn try_decode_sequential_siblings(
+    data: &[u8],
+    parent: ArenaSlot,
+    count: usize,
+) -> RelativeEncodingResult<(Vec<ArenaSlot>, usize)> {
+    if count == 0 {
+        return Ok((Vec::new(), 0));
+    }
+
     // Decode first child slot
-    let (first_child, bytes_consumed) = decode_child_pointer(data, parent);
+    let (first_child, bytes_consumed) = try_decode_child_pointer(data, parent)?;
 
     // Reconstruct all child slots (consecutive slot IDs)
-    // Use checked_add to prevent u32 overflow (defense in depth).
     let mut children = Vec::with_capacity(count);
     for i in 0..count {
-        let slot_id = first_child
-            .slot_id
-            .checked_add(i as u32)
-            .unwrap_or(first_child.slot_id); // Fallback to first_child on overflow
+        let offset = u32::try_from(i)
+            .map_err(|_| RelativeEncodingError::SequentialIndexTooLarge { index: i })?;
+        let slot_id = first_child.slot_id.checked_add(offset).ok_or(
+            RelativeEncodingError::SequentialOverflow {
+                first_child,
+                index: i,
+            },
+        )?;
         children.push(ArenaSlot::new(first_child.arena_id, slot_id));
     }
 
-    (children, bytes_consumed)
+    Ok((children, bytes_consumed))
 }
 
 #[cfg(test)]

@@ -348,6 +348,16 @@ impl<V: DictionaryValue> MappedDictionary for PathMapDictionaryChar<V> {
     }
 }
 
+impl<V: DictionaryValue + Default> crate::MutableDictionary for PathMapDictionaryChar<V> {
+    fn insert(&self, term: &str) -> bool {
+        PathMapDictionaryChar::insert(self, term)
+    }
+
+    fn remove(&self, term: &str) -> bool {
+        PathMapDictionaryChar::remove(self, term)
+    }
+}
+
 impl<V: DictionaryValue> crate::MutableMappedDictionary for PathMapDictionaryChar<V> {
     fn insert_with_value(&self, term: &str, value: Self::Value) -> bool {
         PathMapDictionaryChar::insert_with_value(self, term, value)
@@ -427,12 +437,18 @@ impl<V: DictionaryValue> PathMapNodeChar<V> {
         f(zipper)
     }
 
-    /// Get all child bytes from current position
-    fn get_child_bytes(&self) -> Vec<u8> {
-        self.with_zipper(|zipper| {
-            let mask = zipper.child_mask();
-            (0..=255u8).filter(|byte| mask.test_bit(*byte)).collect()
-        })
+    fn utf8_sequence_len(first_byte: u8) -> Option<usize> {
+        if first_byte & 0b1000_0000 == 0 {
+            Some(1)
+        } else if first_byte & 0b1110_0000 == 0b1100_0000 {
+            Some(2)
+        } else if first_byte & 0b1111_0000 == 0b1110_0000 {
+            Some(3)
+        } else if first_byte & 0b1111_1000 == 0b1111_0000 {
+            Some(4)
+        } else {
+            None
+        }
     }
 }
 
@@ -472,106 +488,68 @@ impl<V: DictionaryValue> DictionaryNode for PathMapNodeChar<V> {
     }
 
     fn edges(&self) -> Box<dyn Iterator<Item = (char, Self)> + '_> {
-        // Get all child bytes from current position
-        let child_bytes = self.get_child_bytes();
-
-        // Group bytes into UTF-8 sequences and decode to characters
         let map = Arc::clone(&self.map);
         let base_path = Arc::clone(&self.byte_path);
 
-        // We need to identify which bytes start valid UTF-8 sequences
-        // Strategy: Try to decode from each starting byte position
-
-        let mut char_edges: Vec<(char, Vec<u8>)> = Vec::new();
-        let mut processed = std::collections::HashSet::new();
-
-        for &first_byte in &child_bytes {
-            if processed.contains(&first_byte) {
-                continue;
-            }
-
-            // Determine UTF-8 sequence length from first byte
-            let seq_len = if first_byte & 0b1000_0000 == 0 {
-                1 // ASCII: 0xxxxxxx
-            } else if first_byte & 0b1110_0000 == 0b1100_0000 {
-                2 // 110xxxxx
-            } else if first_byte & 0b1111_0000 == 0b1110_0000 {
-                3 // 1110xxxx
-            } else if first_byte & 0b1111_1000 == 0b1111_0000 {
-                4 // 11110xxx
+        let char_edges: Vec<(char, Vec<u8>)> = {
+            let map_guard = map.read();
+            let zipper = if base_path.is_empty() {
+                map_guard.read_zipper()
             } else {
-                // Invalid UTF-8 start byte, skip
-                continue;
+                map_guard.read_zipper_at_path(&**base_path)
             };
+            let mask = zipper.child_mask();
+            let first_bytes: Vec<u8> = (0..=255u8).filter(|byte| mask.test_bit(*byte)).collect();
 
-            // Try to collect the full UTF-8 sequence
-            let mut utf8_bytes = vec![first_byte];
+            let mut edges = Vec::new();
 
-            if seq_len > 1 {
-                // Need to check if continuation bytes exist in child_bytes
-                // For simplicity, we'll verify by attempting path traversal
-                let valid = {
-                    let map_guard = map.read();
-                    let mut test_zipper = if base_path.is_empty() {
-                        map_guard.read_zipper()
-                    } else {
-                        map_guard.read_zipper_at_path(&**base_path)
-                    };
-
-                    // Descend by first byte
-                    test_zipper.descend_to([first_byte]);
-                    if !test_zipper.path_exists() {
-                        false
-                    } else {
-                        // Try to collect continuation bytes (10xxxxxx)
-                        let mut complete = true;
-                        for _ in 1..seq_len {
-                            let child_mask = test_zipper.child_mask();
-
-                            // Find a continuation byte (starts with 10)
-                            if let Some(&cont_byte) = (0..=255u8)
-                                .find(|b| {
-                                    child_mask.test_bit(*b) && (*b & 0b1100_0000) == 0b1000_0000
-                                })
-                                .as_ref()
-                            {
-                                utf8_bytes.push(cont_byte);
-                                test_zipper.descend_to([cont_byte]);
-                                if !test_zipper.path_exists() {
-                                    complete = false;
-                                    break;
-                                }
-                            } else {
-                                // Missing continuation byte
-                                complete = false;
-                                break;
-                            }
-                        }
-                        complete
-                    }
-                    // map_guard is dropped here at end of scope
+            for first_byte in first_bytes {
+                let seq_len = match Self::utf8_sequence_len(first_byte) {
+                    Some(seq_len) => seq_len,
+                    None => continue,
                 };
+                let mut partials = vec![vec![first_byte]];
 
-                if !valid {
-                    utf8_bytes.clear();
-                }
-            }
+                for _ in 1..seq_len {
+                    let mut next_partials = Vec::new();
+                    for partial in partials {
+                        let mut absolute_path = Vec::with_capacity(base_path.len() + partial.len());
+                        absolute_path.extend_from_slice(&base_path);
+                        absolute_path.extend_from_slice(&partial);
 
-            if utf8_bytes.len() != seq_len {
-                continue;
-            }
+                        let partial_zipper = map_guard.read_zipper_at_path(&absolute_path);
+                        if !partial_zipper.path_exists() {
+                            continue;
+                        }
 
-            // Try to decode the UTF-8 sequence
-            if let Ok(s) = std::str::from_utf8(&utf8_bytes) {
-                if let Some(c) = s.chars().next() {
-                    // Mark all bytes in this sequence as processed
-                    for &b in &utf8_bytes {
-                        processed.insert(b);
+                        let child_mask = partial_zipper.child_mask();
+                        for cont_byte in (0..=255u8).filter(|byte| {
+                            child_mask.test_bit(*byte) && (*byte & 0b1100_0000) == 0b1000_0000
+                        }) {
+                            let mut extended = partial.clone();
+                            extended.push(cont_byte);
+                            next_partials.push(extended);
+                        }
                     }
-                    char_edges.push((c, utf8_bytes.clone()));
+                    partials = next_partials;
+                }
+
+                for utf8_bytes in partials {
+                    if utf8_bytes.len() != seq_len {
+                        continue;
+                    }
+
+                    if let Ok(s) = std::str::from_utf8(&utf8_bytes) {
+                        let mut chars = s.chars();
+                        if let (Some(c), None) = (chars.next(), chars.next()) {
+                            edges.push((c, utf8_bytes));
+                        }
+                    }
                 }
             }
-        }
+
+            edges
+        };
 
         // Return iterator over character edges
         Box::new(char_edges.into_iter().map(move |(c, utf8_bytes)| {
