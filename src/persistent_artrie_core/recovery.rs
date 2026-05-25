@@ -161,6 +161,85 @@ pub enum RecoveredOperation {
     },
 }
 
+impl RecoveredOperation {
+    /// Return the WAL LSN that produced this recovered operation.
+    pub fn lsn(&self) -> Lsn {
+        match self {
+            Self::Insert { lsn, .. }
+            | Self::Remove { lsn, .. }
+            | Self::Increment { lsn, .. }
+            | Self::Upsert { lsn, .. }
+            | Self::CompareAndSwap { lsn, .. } => *lsn,
+        }
+    }
+}
+
+/// Convert one WAL record into the replay operations it contributes.
+///
+/// Transaction-control, checkpoint, and version records do not directly mutate
+/// trie contents and therefore produce no replay operation. Failed CAS records
+/// are also intentionally skipped because they did not change the durable state.
+pub fn recovered_operations_from_record(lsn: Lsn, record: WalRecord) -> Vec<RecoveredOperation> {
+    match record {
+        WalRecord::Insert { term, value } => {
+            vec![RecoveredOperation::Insert { lsn, term, value }]
+        }
+        WalRecord::Remove { term } => {
+            vec![RecoveredOperation::Remove { lsn, term }]
+        }
+        WalRecord::Increment {
+            term,
+            delta,
+            result,
+        } => vec![RecoveredOperation::Increment {
+            lsn,
+            term,
+            delta,
+            result,
+        }],
+        WalRecord::Upsert { term, value } => {
+            vec![RecoveredOperation::Upsert { lsn, term, value }]
+        }
+        WalRecord::CompareAndSwap {
+            term,
+            new_value,
+            success,
+            ..
+        } => {
+            if success {
+                vec![RecoveredOperation::CompareAndSwap {
+                    lsn,
+                    term,
+                    new_value,
+                    success,
+                }]
+            } else {
+                vec![]
+            }
+        }
+        WalRecord::BatchInsert { entries } => entries
+            .into_iter()
+            .map(|(term, value)| RecoveredOperation::Insert { lsn, term, value })
+            .collect(),
+        WalRecord::BatchIncrement { entries } => entries
+            .into_iter()
+            .map(|(term, delta)| RecoveredOperation::Increment {
+                lsn,
+                term,
+                delta,
+                result: 0,
+            })
+            .collect(),
+        WalRecord::BeginTx { .. }
+        | WalRecord::CommitTx { .. }
+        | WalRecord::AbortTx { .. }
+        | WalRecord::Checkpoint { .. }
+        | WalRecord::VersionUpdate { .. }
+        | WalRecord::VersionDurable { .. }
+        | WalRecord::VersionGc { .. } => vec![],
+    }
+}
+
 /// State of a transaction during recovery.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum TransactionState {
@@ -484,9 +563,14 @@ impl RecoveryManager {
                 }
                 Err(e) => {
                     stats.corrupted_records += 1;
-                    // Log corruption but continue - we want to recover as much as possible
-                    warn!("Corrupted record during analysis: {:?}", e);
-                    continue;
+                    // A corrupt record ends the trusted durable prefix. Later bytes may
+                    // be well-formed by coincidence, but they are not part of the
+                    // authenticated prefix represented by this WAL scan.
+                    warn!(
+                        "Corrupted record during analysis; stopping at durable prefix: {:?}",
+                        e
+                    );
+                    break;
                 }
             };
 
@@ -557,7 +641,13 @@ impl RecoveryManager {
         for result in wal_reader.iter() {
             let (lsn, record) = match result {
                 Ok(r) => r,
-                Err(_) => continue, // Skip corrupted records
+                Err(e) => {
+                    warn!(
+                        "Corrupted record during redo; stopping at durable prefix: {:?}",
+                        e
+                    );
+                    break;
+                }
             };
 
             next_lsn = lsn + 1;
@@ -587,121 +677,13 @@ impl RecoveryManager {
                         current_tx = None;
                     }
                 }
-                WalRecord::Insert { term, value } => {
-                    let op = RecoveredOperation::Insert { lsn, term, value };
+                record => {
+                    let ops = recovered_operations_from_record(lsn, record);
                     if let Some(tx_id) = current_tx {
-                        // Part of a transaction - buffer until commit
-                        pending_tx_ops.entry(tx_id).or_default().push(op);
+                        pending_tx_ops.entry(tx_id).or_default().extend(ops);
                     } else {
-                        // Not in a transaction - implicitly committed
-                        operations.push(op);
-                        stats.insert_operations += 1;
+                        operations.extend(ops);
                     }
-                }
-                WalRecord::Remove { term } => {
-                    let op = RecoveredOperation::Remove { lsn, term };
-                    if let Some(tx_id) = current_tx {
-                        pending_tx_ops.entry(tx_id).or_default().push(op);
-                    } else {
-                        operations.push(op);
-                        stats.remove_operations += 1;
-                    }
-                }
-                WalRecord::Checkpoint { .. } => {
-                    // Checkpoint records are processed during analysis phase.
-                    // Checkpoint-based skipping will be implemented when full
-                    // disk persistence is added.
-                }
-                WalRecord::Increment {
-                    term,
-                    delta,
-                    result,
-                } => {
-                    let op = RecoveredOperation::Increment {
-                        lsn,
-                        term,
-                        delta,
-                        result,
-                    };
-                    if let Some(tx_id) = current_tx {
-                        pending_tx_ops.entry(tx_id).or_default().push(op);
-                    } else {
-                        operations.push(op);
-                    }
-                }
-                WalRecord::Upsert { term, value } => {
-                    let op = RecoveredOperation::Upsert { lsn, term, value };
-                    if let Some(tx_id) = current_tx {
-                        pending_tx_ops.entry(tx_id).or_default().push(op);
-                    } else {
-                        operations.push(op);
-                    }
-                }
-                WalRecord::CompareAndSwap {
-                    term,
-                    expected: _,
-                    new_value,
-                    success,
-                } => {
-                    // Only apply if the CAS succeeded
-                    if success {
-                        let op = RecoveredOperation::CompareAndSwap {
-                            lsn,
-                            term,
-                            new_value,
-                            success,
-                        };
-                        if let Some(tx_id) = current_tx {
-                            pending_tx_ops.entry(tx_id).or_default().push(op);
-                        } else {
-                            operations.push(op);
-                        }
-                    }
-                }
-                WalRecord::BatchInsert { entries } => {
-                    // Expand batch into individual insert operations
-                    for (term, value) in entries {
-                        let op = RecoveredOperation::Insert { lsn, term, value };
-                        if let Some(tx_id) = current_tx {
-                            // Part of a transaction - buffer until commit
-                            pending_tx_ops.entry(tx_id).or_default().push(op);
-                        } else {
-                            // Not in a transaction - implicitly committed
-                            operations.push(op);
-                            stats.insert_operations += 1;
-                        }
-                    }
-                }
-                WalRecord::BatchIncrement { entries } => {
-                    // Expand batch into individual increment operations
-                    for (term, delta) in entries {
-                        let op = RecoveredOperation::Increment {
-                            lsn,
-                            term,
-                            delta,
-                            result: 0, // Result is recomputed during apply
-                        };
-                        if let Some(tx_id) = current_tx {
-                            // Part of a transaction - buffer until commit
-                            pending_tx_ops.entry(tx_id).or_default().push(op);
-                        } else {
-                            // Not in a transaction - implicitly committed
-                            operations.push(op);
-                            stats.insert_operations += 1;
-                        }
-                    }
-                }
-                // Version-based WAL records (Phase 6)
-                // These are used for optimized version-based recovery (Phase 7)
-                WalRecord::VersionUpdate { .. } => {
-                    // Version update records - used for version-based recovery
-                    // Skip during mutation-based replay
-                }
-                WalRecord::VersionDurable { .. } => {
-                    // Version durable marker - skip during mutation-based replay
-                }
-                WalRecord::VersionGc { .. } => {
-                    // Version GC record - skip during mutation-based replay
                 }
             }
         }
@@ -752,6 +734,8 @@ pub struct IncrementalRecovery {
     pending_ops: Vec<RecoveredOperation>,
     /// Next LSN
     next_lsn: Lsn,
+    /// Whether replay reached a corrupt record and must not read further.
+    stopped_at_corruption: bool,
     /// Whether analysis phase is complete
     #[allow(dead_code)]
     analysis_complete: bool,
@@ -768,6 +752,7 @@ impl IncrementalRecovery {
             current_tx: None,
             pending_ops: Vec::new(),
             next_lsn: 1,
+            stopped_at_corruption: false,
             analysis_complete: false,
         })
     }
@@ -776,6 +761,10 @@ impl IncrementalRecovery {
     ///
     /// Returns None when recovery is complete.
     pub fn next_batch(&mut self, max_ops: usize) -> Result<Option<Vec<RecoveredOperation>>> {
+        if self.stopped_at_corruption {
+            return Ok(None);
+        }
+
         let mut batch = Vec::with_capacity(max_ops);
 
         while batch.len() < max_ops {
@@ -787,8 +776,9 @@ impl IncrementalRecovery {
                     }
                 }
                 Some(Err(_)) => {
-                    // Skip corrupted records
-                    continue;
+                    // A corrupt record ends the trusted durable prefix.
+                    self.stopped_at_corruption = true;
+                    break;
                 }
                 None => {
                     // WAL exhausted
@@ -835,114 +825,15 @@ impl IncrementalRecovery {
                 }
                 Ok(None)
             }
-            WalRecord::Insert { term, value } => {
-                let op = RecoveredOperation::Insert { lsn, term, value };
-                if self.current_tx.is_some() {
-                    self.pending_ops.push(op);
-                    Ok(None)
-                } else {
-                    Ok(Some(vec![op]))
-                }
-            }
-            WalRecord::Remove { term } => {
-                let op = RecoveredOperation::Remove { lsn, term };
-                if self.current_tx.is_some() {
-                    self.pending_ops.push(op);
-                    Ok(None)
-                } else {
-                    Ok(Some(vec![op]))
-                }
-            }
-            WalRecord::Checkpoint { .. } => Ok(None),
-            WalRecord::Increment {
-                term,
-                delta,
-                result,
-            } => {
-                let op = RecoveredOperation::Increment {
-                    lsn,
-                    term,
-                    delta,
-                    result,
-                };
-                if self.current_tx.is_some() {
-                    self.pending_ops.push(op);
-                    Ok(None)
-                } else {
-                    Ok(Some(vec![op]))
-                }
-            }
-            WalRecord::Upsert { term, value } => {
-                let op = RecoveredOperation::Upsert { lsn, term, value };
-                if self.current_tx.is_some() {
-                    self.pending_ops.push(op);
-                    Ok(None)
-                } else {
-                    Ok(Some(vec![op]))
-                }
-            }
-            WalRecord::CompareAndSwap {
-                term,
-                expected: _,
-                new_value,
-                success,
-            } => {
-                // Only apply if the CAS succeeded
-                if success {
-                    let op = RecoveredOperation::CompareAndSwap {
-                        lsn,
-                        term,
-                        new_value,
-                        success,
-                    };
-                    if self.current_tx.is_some() {
-                        self.pending_ops.push(op);
-                        Ok(None)
-                    } else {
-                        Ok(Some(vec![op]))
-                    }
-                } else {
-                    Ok(None)
-                }
-            }
-            WalRecord::BatchInsert { entries } => {
-                // Expand batch into individual insert operations
-                let ops: Vec<RecoveredOperation> = entries
-                    .into_iter()
-                    .map(|(term, value)| RecoveredOperation::Insert { lsn, term, value })
-                    .collect();
-
+            record => {
+                let ops = recovered_operations_from_record(lsn, record);
                 if self.current_tx.is_some() {
                     self.pending_ops.extend(ops);
                     Ok(None)
                 } else {
-                    Ok(Some(ops))
+                    Ok((!ops.is_empty()).then_some(ops))
                 }
             }
-            WalRecord::BatchIncrement { entries } => {
-                // Expand batch into individual increment operations
-                let ops: Vec<RecoveredOperation> = entries
-                    .into_iter()
-                    .map(|(term, delta)| RecoveredOperation::Increment {
-                        lsn,
-                        term,
-                        delta,
-                        result: 0, // Result is recomputed during apply
-                    })
-                    .collect();
-
-                if self.current_tx.is_some() {
-                    self.pending_ops.extend(ops);
-                    Ok(None)
-                } else {
-                    Ok(Some(ops))
-                }
-            }
-            // Version-based WAL records (Phase 6)
-            // These are used for optimized version-based recovery (Phase 7)
-            WalRecord::VersionUpdate { .. } => Ok(None),
-            WalRecord::VersionDurable { .. } => Ok(None),
-            WalRecord::VersionGc { .. } => Ok(None),
         }
     }
 
@@ -1428,109 +1319,30 @@ where
     let mut records_replayed: u64 = 0;
     let mut terms_recovered: u64 = 0;
 
-    for segment_path in segments {
+    'segments: for segment_path in segments {
         let reader = match WalReader::new(segment_path) {
             Ok(r) => r,
             Err(_) => continue, // Skip unreadable segments
         };
 
         for result in reader.iter() {
-            let (_lsn, record) = match result {
+            let (lsn, record) = match result {
                 Ok(r) => r,
-                Err(_) => continue, // Skip corrupted records
+                Err(e) => {
+                    warn!(
+                        "Corrupted WAL segment record during rebuild; stopping at durable prefix: {:?}",
+                        e
+                    );
+                    break 'segments;
+                }
             };
 
             records_replayed += 1;
 
-            // Convert WalRecord to RecoveredOperation and apply
-            match record {
-                WalRecord::Insert { term, value } => {
-                    let op = RecoveredOperation::Insert {
-                        lsn: 0,
-                        term,
-                        value,
-                    };
-                    if apply_fn(op).is_ok() {
-                        terms_recovered += 1;
-                    }
+            for op in recovered_operations_from_record(lsn, record) {
+                if apply_fn(op).is_ok() {
+                    terms_recovered += 1;
                 }
-                WalRecord::Remove { term } => {
-                    let op = RecoveredOperation::Remove { lsn: 0, term };
-                    if apply_fn(op).is_ok() {
-                        terms_recovered += 1;
-                    }
-                }
-                WalRecord::Increment {
-                    term,
-                    delta,
-                    result,
-                } => {
-                    let op = RecoveredOperation::Increment {
-                        lsn: 0,
-                        term,
-                        delta,
-                        result,
-                    };
-                    if apply_fn(op).is_ok() {
-                        terms_recovered += 1;
-                    }
-                }
-                WalRecord::Upsert { term, value } => {
-                    let op = RecoveredOperation::Upsert {
-                        lsn: 0,
-                        term,
-                        value,
-                    };
-                    if apply_fn(op).is_ok() {
-                        terms_recovered += 1;
-                    }
-                }
-                WalRecord::CompareAndSwap {
-                    term,
-                    new_value,
-                    success,
-                    ..
-                } => {
-                    if success {
-                        let op = RecoveredOperation::CompareAndSwap {
-                            lsn: 0,
-                            term,
-                            new_value,
-                            success,
-                        };
-                        if apply_fn(op).is_ok() {
-                            terms_recovered += 1;
-                        }
-                    }
-                }
-                WalRecord::BatchInsert { entries } => {
-                    // Expand batch and apply each entry
-                    for (term, value) in entries {
-                        let op = RecoveredOperation::Insert {
-                            lsn: 0,
-                            term,
-                            value,
-                        };
-                        if apply_fn(op).is_ok() {
-                            terms_recovered += 1;
-                        }
-                    }
-                }
-                WalRecord::BatchIncrement { entries } => {
-                    // Expand batch and apply each increment
-                    for (term, delta) in entries {
-                        let op = RecoveredOperation::Increment {
-                            lsn: 0,
-                            term,
-                            delta,
-                            result: 0, // Result is recomputed during apply
-                        };
-                        if apply_fn(op).is_ok() {
-                            terms_recovered += 1;
-                        }
-                    }
-                }
-                _ => {} // Skip transaction/checkpoint records
             }
         }
     }

@@ -64,8 +64,8 @@
 //! let mut vocab = PersistentVocabARTrie::create("vocab.vocab")?;
 //!
 //! // Insert terms (auto-assigns indices)
-//! let idx1 = vocab.insert("hello"); // Returns 0
-//! let idx2 = vocab.insert("world"); // Returns 1
+//! let idx1 = vocab.insert("hello")?; // Returns 0
+//! let idx2 = vocab.insert("world")?; // Returns 1
 //!
 //! // Forward lookup: term → index
 //! assert_eq!(vocab.get_index("hello"), Some(0));
@@ -455,7 +455,10 @@ impl MutableMappedDictionary for SharedVocabARTrie {
         let existed = self.read().contains(term);
         if !existed {
             let mut guard = self.write();
-            guard.insert(term);
+            if let Err(error) = guard.insert(term) {
+                log::warn!("SharedVocabARTrie::insert_with_value failed: {error}");
+                return false;
+            }
         }
         !existed
     }
@@ -480,8 +483,12 @@ impl MutableMappedDictionary for SharedVocabARTrie {
         let mut self_guard = self.write();
         for term in other_terms {
             if !self_guard.contains(&term) {
-                self_guard.insert(&term);
-                count += 1;
+                match self_guard.insert(&term) {
+                    Ok(_) => count += 1,
+                    Err(error) => {
+                        log::warn!("SharedVocabARTrie::union_with failed for {term:?}: {error}");
+                    }
+                }
             }
         }
         count
@@ -500,7 +507,10 @@ impl MutableMappedDictionary for SharedVocabARTrie {
         let existed = self.read().contains(term);
         if !existed {
             let mut guard = self.write();
-            guard.insert(term);
+            if let Err(error) = guard.insert(term) {
+                log::warn!("SharedVocabARTrie::update_or_insert failed: {error}");
+                return false;
+            }
         }
         !existed
     }
@@ -573,7 +583,10 @@ impl crate::artrie_trait::ARTrie for SharedVocabARTrie {
         let mut guard = self.write();
         let old_count = guard.len();
         // Explicitly call the struct method, not trait method
-        let _ = PersistentVocabARTrie::insert(&mut *guard, term);
+        if let Err(error) = PersistentVocabARTrie::insert(&mut *guard, term) {
+            log::warn!("SharedVocabARTrie::insert failed: {error}");
+            return false;
+        }
         // Return true if a new term was added (count increased)
         guard.len() > old_count
     }
@@ -587,7 +600,10 @@ impl crate::artrie_trait::ARTrie for SharedVocabARTrie {
         let mut guard = self.write();
         let old_count = guard.len();
         // Explicitly call the struct method, not trait method
-        let _ = PersistentVocabARTrie::insert(&mut *guard, term);
+        if let Err(error) = PersistentVocabARTrie::insert(&mut *guard, term) {
+            log::warn!("SharedVocabARTrie::insert_with_value failed: {error}");
+            return false;
+        }
         // Return true if a new term was added (count increased)
         guard.len() > old_count
     }
@@ -685,7 +701,7 @@ impl crate::artrie_trait::ARTrie for SharedVocabARTrie {
         let mut guard = self.write();
         let old_count = guard.len();
         // Explicitly call the struct method, not trait method
-        let _ = PersistentVocabARTrie::insert(&mut *guard, term);
+        PersistentVocabARTrie::insert(&mut *guard, term)?;
         Ok(guard.len() > old_count)
     }
 
@@ -962,7 +978,7 @@ impl PersistentVocabARTrie {
 ///
 /// // Create new vocabulary
 /// let mut vocab = IndexedVocabularyPersistent::create("vocab.vocab")?;
-/// vocab.insert("hello"); // Returns 0
+/// vocab.insert("hello")?; // Returns 0
 ///
 /// // Checkpoint and reopen with recovery
 /// vocab.checkpoint()?;
@@ -1070,9 +1086,9 @@ mod tests {
         let mut vocab = PersistentVocabARTrie::create(&path).unwrap();
 
         // Insert
-        let idx1 = vocab.insert("apple");
-        let idx2 = vocab.insert("banana");
-        let idx3 = vocab.insert("cherry");
+        let idx1 = vocab.insert("apple").expect("insert apple");
+        let idx2 = vocab.insert("banana").expect("insert banana");
+        let idx3 = vocab.insert("cherry").expect("insert cherry");
 
         assert_eq!(idx1, 0);
         assert_eq!(idx2, 1);
@@ -1123,8 +1139,8 @@ mod tests {
         // Reserve 0-9 for special tokens
         let mut vocab = PersistentVocabARTrie::create_with_start_index(&path, 10).unwrap();
 
-        let idx1 = vocab.insert("first");
-        let idx2 = vocab.insert("second");
+        let idx1 = vocab.insert("first").expect("insert first");
+        let idx2 = vocab.insert("second").expect("insert second");
 
         assert_eq!(idx1, 10);
         assert_eq!(idx2, 11);
@@ -1138,9 +1154,11 @@ mod tests {
 
         let mut vocab = PersistentVocabARTrie::create(&path).unwrap();
 
-        let idx1 = vocab.insert("duplicate");
-        let idx2 = vocab.insert("duplicate");
-        let idx3 = vocab.insert("duplicate");
+        let idx1 = vocab.insert("duplicate").expect("insert duplicate");
+        let idx2 = vocab.insert("duplicate").expect("insert duplicate again");
+        let idx3 = vocab
+            .insert("duplicate")
+            .expect("insert duplicate third time");
 
         assert_eq!(idx1, 0);
         assert_eq!(idx2, 0);
@@ -1318,8 +1336,8 @@ mod tests {
         let dir = tempdir().unwrap();
         let path = dir.path().join("evict_leaf_sibling_live.vocab");
         let mut vocab = PersistentVocabARTrie::create(&path).unwrap();
-        let evicted_index = vocab.insert("ab");
-        let sibling_index = vocab.insert("ac");
+        let evicted_index = vocab.insert("ab").expect("insert evicted term");
+        let sibling_index = vocab.insert("ac").expect("insert sibling term");
 
         let leaf_ptr = match &vocab.root {
             VocabTrieRoot::Node(root) => {
@@ -1365,7 +1383,7 @@ mod tests {
         {
             let mut vocab = PersistentVocabARTrie::create(&path).unwrap();
             for term in terms {
-                expected.push((term.to_string(), vocab.insert(term)));
+                expected.push((term.to_string(), vocab.insert(term).expect("insert term")));
             }
 
             vocab.checkpoint().unwrap();

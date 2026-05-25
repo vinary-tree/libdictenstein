@@ -426,95 +426,13 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
 
         let mut replayed_count = 0;
         for op in recovered_ops.into_iter() {
-            match op {
-                super::recovery::RecoveredOperation::Insert { lsn, term, value } => {
-                    // Skip if this operation is already reflected in disk state
-                    if let Some(threshold) = skip_threshold {
-                        if lsn <= threshold {
-                            continue;
-                        }
-                    }
-                    // Deserialize value from WAL if present
-                    let deserialized_value: Option<V> = value.and_then(|bytes| {
-                        match crate::serialization::bincode_compat::deserialize(&bytes) {
-                            Ok(v) => Some(v),
-                            Err(e) => {
-                                warn!("Failed to deserialize value from WAL: {:?}", e);
-                                None
-                            }
-                        }
-                    });
-                    // Replay insert without re-logging to WAL
-                    dict.insert_impl_no_wal(&term, deserialized_value);
-                    replayed_count += 1;
+            if let Some(threshold) = skip_threshold {
+                if op.lsn() <= threshold {
+                    continue;
                 }
-                super::recovery::RecoveredOperation::Remove { lsn, term } => {
-                    // Skip if this operation is already reflected in disk state
-                    if let Some(threshold) = skip_threshold {
-                        if lsn <= threshold {
-                            continue;
-                        }
-                    }
-                    // Replay remove without re-logging to WAL
-                    dict.remove_impl_no_wal(&term);
-                    replayed_count += 1;
-                }
-                super::recovery::RecoveredOperation::Increment {
-                    lsn,
-                    term,
-                    delta: _,
-                    result,
-                } => {
-                    // Skip if this operation is already reflected in disk state
-                    if let Some(threshold) = skip_threshold {
-                        if lsn <= threshold {
-                            continue;
-                        }
-                    }
-                    // For increment recovery, we set the final result value directly
-                    // (this is idempotent even if replayed multiple times)
-                    let value_bytes = result.to_le_bytes().to_vec();
-                    if let Ok(value) =
-                        crate::serialization::bincode_compat::deserialize(&value_bytes)
-                    {
-                        dict.upsert_impl_no_wal(&term, value);
-                    }
-                    replayed_count += 1;
-                }
-                super::recovery::RecoveredOperation::Upsert { lsn, term, value } => {
-                    // Skip if this operation is already reflected in disk state
-                    if let Some(threshold) = skip_threshold {
-                        if lsn <= threshold {
-                            continue;
-                        }
-                    }
-                    // Deserialize and apply value
-                    if let Ok(v) = crate::serialization::bincode_compat::deserialize(&value) {
-                        dict.upsert_impl_no_wal(&term, v);
-                    }
-                    replayed_count += 1;
-                }
-                super::recovery::RecoveredOperation::CompareAndSwap {
-                    lsn,
-                    term,
-                    new_value,
-                    success,
-                } => {
-                    // Skip if this operation is already reflected in disk state
-                    if let Some(threshold) = skip_threshold {
-                        if lsn <= threshold {
-                            continue;
-                        }
-                    }
-                    // Only apply if the CAS succeeded
-                    if success {
-                        if let Ok(v) = crate::serialization::bincode_compat::deserialize(&new_value)
-                        {
-                            dict.upsert_impl_no_wal(&term, v);
-                        }
-                    }
-                    replayed_count += 1;
-                }
+            }
+            if dict.apply_recovered_operation_no_wal(op) {
+                replayed_count += 1;
             }
         }
         // Mark clean after recovery replay
@@ -638,7 +556,7 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
         use super::recovery::{
             collect_retained_wal_segments_for_rebuild, detect_corruption, RecoveryReport,
         };
-        use super::wal::{WalReader, WalRecord};
+        use super::wal::WalReader;
         use std::time::Instant;
 
         let path = path.as_ref();
@@ -697,7 +615,7 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
                 let mut terms_recovered: u64 = 0;
                 let mut segments_used = Vec::new();
 
-                for segment_path in &segments {
+                'segments: for segment_path in &segments {
                     let reader = match WalReader::new(segment_path) {
                         Ok(r) => r,
                         Err(_) => continue, // Skip unreadable segments
@@ -706,75 +624,23 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
                     segments_used.push(segment_path.clone());
 
                     for result in reader.iter() {
-                        let (_lsn, record) = match result {
+                        let (lsn, record) = match result {
                             Ok(r) => r,
-                            Err(_) => continue, // Skip corrupted records
+                            Err(e) => {
+                                warn!(
+                                    "Corrupted WAL record during rebuild; stopping at durable prefix: {:?}",
+                                    e
+                                );
+                                break 'segments;
+                            }
                         };
 
                         records_replayed += 1;
 
-                        // Apply the record to the trie
-                        match record {
-                            WalRecord::Insert { term, value } => {
-                                // Deserialize value if present
-                                let deserialized: Option<V> = value.and_then(|bytes| {
-                                    crate::serialization::bincode_compat::deserialize(&bytes).ok()
-                                });
-                                trie.insert_impl_no_wal(&term, deserialized);
+                        for op in super::recovery::recovered_operations_from_record(lsn, record) {
+                            if trie.apply_recovered_operation_no_wal(op) {
                                 terms_recovered += 1;
                             }
-                            WalRecord::Remove { term } => {
-                                trie.remove_impl_no_wal(&term);
-                            }
-                            WalRecord::Increment {
-                                term,
-                                delta: _,
-                                result: val,
-                            } => {
-                                // For increment, store the final result
-                                let value_bytes = val.to_le_bytes();
-                                if let Ok(v) = crate::serialization::bincode_compat::deserialize::<V>(
-                                    &value_bytes,
-                                ) {
-                                    trie.upsert_impl_no_wal(&term, v);
-                                    terms_recovered += 1;
-                                }
-                            }
-                            WalRecord::Upsert { term, value } => {
-                                if let Ok(v) =
-                                    crate::serialization::bincode_compat::deserialize::<V>(&value)
-                                {
-                                    trie.upsert_impl_no_wal(&term, v);
-                                    terms_recovered += 1;
-                                }
-                            }
-                            WalRecord::CompareAndSwap {
-                                term,
-                                new_value,
-                                success,
-                                ..
-                            } => {
-                                if success {
-                                    if let Ok(v) = crate::serialization::bincode_compat::deserialize::<
-                                        V,
-                                    >(&new_value)
-                                    {
-                                        trie.upsert_impl_no_wal(&term, v);
-                                        terms_recovered += 1;
-                                    }
-                                }
-                            }
-                            WalRecord::BatchInsert { entries } => {
-                                for (term, value) in entries {
-                                    let deserialized: Option<V> = value.and_then(|bytes| {
-                                        crate::serialization::bincode_compat::deserialize(&bytes)
-                                            .ok()
-                                    });
-                                    trie.insert_impl_no_wal(&term, deserialized);
-                                    terms_recovered += 1;
-                                }
-                            }
-                            _ => {} // Skip transaction/checkpoint records
                         }
                     }
                 }

@@ -97,8 +97,8 @@ pub use super::sync_handle::VocabSyncHandle;
 /// let mut vocab = PersistentVocabARTrie::create("vocab.vocab")?;
 ///
 /// // Insert terms
-/// let idx1 = vocab.insert("hello"); // Returns 0
-/// let idx2 = vocab.insert("world"); // Returns 1
+/// let idx1 = vocab.insert("hello")?; // Returns 0
+/// let idx2 = vocab.insert("world")?; // Returns 1
 ///
 /// // Forward lookup
 /// assert_eq!(vocab.get_index("hello"), Some(0));
@@ -295,9 +295,9 @@ mod tests {
         let mut vocab = PersistentVocabARTrie::create(&path).unwrap();
 
         // Insert terms
-        let idx1 = vocab.insert("hello");
-        let idx2 = vocab.insert("world");
-        let idx3 = vocab.insert("hello"); // Duplicate
+        let idx1 = vocab.insert("hello").expect("insert hello");
+        let idx2 = vocab.insert("world").expect("insert world");
+        let idx3 = vocab.insert("hello").expect("insert duplicate hello"); // Duplicate
 
         assert_eq!(idx1, 0);
         assert_eq!(idx2, 1);
@@ -345,9 +345,9 @@ mod tests {
 
         let mut vocab = PersistentVocabARTrie::create(&path).unwrap();
 
-        let idx1 = vocab.insert("日本語");
-        let idx2 = vocab.insert("中文");
-        let idx3 = vocab.insert("한글");
+        let idx1 = vocab.insert("日本語").expect("insert Japanese term");
+        let idx2 = vocab.insert("中文").expect("insert Chinese term");
+        let idx3 = vocab.insert("한글").expect("insert Korean term");
 
         assert_eq!(vocab.get_index("日本語"), Some(idx1));
         assert_eq!(vocab.get_index("中文"), Some(idx2));
@@ -365,8 +365,8 @@ mod tests {
 
         let mut vocab = PersistentVocabARTrie::create_with_start_index(&path, 100).unwrap();
 
-        let idx1 = vocab.insert("first");
-        let idx2 = vocab.insert("second");
+        let idx1 = vocab.insert("first").expect("insert first");
+        let idx2 = vocab.insert("second").expect("insert second");
 
         assert_eq!(idx1, 100);
         assert_eq!(idx2, 101);
@@ -568,7 +568,7 @@ mod tests {
         {
             let mut vocab = PersistentVocabARTrie::create(&path).unwrap();
             for (i, term) in terms.iter().enumerate() {
-                let idx = vocab.insert(term);
+                let idx = vocab.insert(term).expect("insert term");
                 assert_eq!(idx, i as u64, "Term '{}' should have index {}", term, i);
             }
             vocab.checkpoint().unwrap();
@@ -624,7 +624,7 @@ mod tests {
         {
             let mut vocab = PersistentVocabARTrie::create(&path).unwrap();
             for (i, term) in prefixes.iter().enumerate() {
-                let idx = vocab.insert(term);
+                let idx = vocab.insert(term).expect("insert term");
                 assert_eq!(idx, i as u64);
             }
             // This checkpoint triggers serialization with potential node growth
@@ -664,7 +664,7 @@ mod tests {
         {
             let mut vocab = PersistentVocabARTrie::create(&path).unwrap();
             for (i, term) in terms.iter().enumerate() {
-                let idx = vocab.insert(term);
+                let idx = vocab.insert(term).expect("insert term");
                 assert_eq!(idx, i as u64);
             }
             vocab.checkpoint().unwrap();
@@ -700,7 +700,7 @@ mod tests {
             let more_terms: Vec<String> = (50..75).map(|i| format!("term_{:03}", i)).collect();
 
             for (i, term) in more_terms.iter().enumerate() {
-                let idx = vocab.insert(term);
+                let idx = vocab.insert(term).expect("insert term");
                 assert_eq!(idx, (50 + i) as u64);
             }
             vocab.checkpoint().unwrap();
@@ -1036,7 +1036,7 @@ mod tests {
         let mut vocab = PersistentVocabARTrie::create(&path).unwrap();
 
         // Empty string should be insertable
-        let idx = vocab.insert("");
+        let idx = vocab.insert("").expect("insert empty term");
         assert_eq!(idx, 0);
         assert!(vocab.contains(""));
         assert_eq!(vocab.get_index(""), Some(0));
@@ -1052,7 +1052,7 @@ mod tests {
 
         // Long string
         let long_term: String = "a".repeat(1000);
-        let idx = vocab.insert(&long_term);
+        let idx = vocab.insert(&long_term).expect("insert long term");
         assert_eq!(idx, 0);
         assert!(vocab.contains(&long_term));
         assert_eq!(vocab.get_index(&long_term), Some(0));
@@ -1077,7 +1077,7 @@ mod tests {
         ];
 
         for (i, term) in special_chars.iter().enumerate() {
-            let idx = vocab.insert(term);
+            let idx = vocab.insert(term).expect("insert special term");
             assert_eq!(idx, i as u64, "Failed for term: {:?}", term);
             assert!(vocab.contains(term), "Not found: {:?}", term);
             assert_eq!(
@@ -1291,7 +1291,9 @@ mod tests {
         let mut vocab = PersistentVocabARTrie::create(&path).expect("Failed to create vocab");
 
         // Batch insert multiple terms
-        let indices = vocab.insert_batch(&["apple", "banana", "cherry"]);
+        let indices = vocab
+            .insert_batch(&["apple", "banana", "cherry"])
+            .expect("insert batch");
 
         // Verify sequential indices assigned
         assert_eq!(indices, vec![0, 1, 2]);
@@ -1320,7 +1322,9 @@ mod tests {
         vocab.insert("banana");
 
         // Batch insert with some duplicates
-        let indices = vocab.insert_batch(&["apple", "cherry", "banana", "date"]);
+        let indices = vocab
+            .insert_batch(&["apple", "cherry", "banana", "date"])
+            .expect("insert batch with duplicates");
 
         // Duplicates should return existing indices
         assert_eq!(indices, vec![0, 2, 1, 3]);
@@ -1335,7 +1339,7 @@ mod tests {
         let mut vocab = PersistentVocabARTrie::create(&path).expect("Failed to create vocab");
 
         // Empty batch should return empty vec
-        let indices = vocab.insert_batch(&[]);
+        let indices = vocab.insert_batch(&[]).expect("insert empty batch");
         assert!(indices.is_empty());
         assert_eq!(vocab.len(), 0);
     }
@@ -1348,7 +1352,9 @@ mod tests {
         // Phase 1: Batch insert and sync WAL (no checkpoint)
         {
             let mut vocab = PersistentVocabARTrie::create(&path).expect("Failed to create vocab");
-            let indices = vocab.insert_batch(&["apple", "banana", "cherry"]);
+            let indices = vocab
+                .insert_batch(&["apple", "banana", "cherry"])
+                .expect("insert batch");
             assert_eq!(indices, vec![0, 1, 2]);
             vocab.sync().expect("Sync failed");
             // No checkpoint - data only in WAL

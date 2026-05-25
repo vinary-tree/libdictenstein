@@ -7,14 +7,42 @@
 //! carriers (`CompactionConfig`, `CompactionProgress`,
 //! `CompactionStats`) live in `super::compaction`.
 
+use std::collections::BTreeMap;
+use std::ffi::OsString;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering as AtomicOrdering;
-
-use log::warn;
 
 use super::compaction::{CompactionConfig, CompactionProgress, CompactionStats};
 use super::dict_impl::PersistentARTrie;
 use super::error::{PersistentARTrieError, Result};
 use crate::value::DictionaryValue;
+
+type SerializedSnapshot = BTreeMap<Vec<u8>, Option<Vec<u8>>>;
+
+fn wal_sidecar_path(path: &Path) -> PathBuf {
+    path.with_extension("wal")
+}
+
+fn in_place_temp_path(original_path: &Path) -> PathBuf {
+    let mut file_name = original_path
+        .file_name()
+        .map(OsString::from)
+        .unwrap_or_else(|| OsString::from("compact"));
+    file_name.push(".compacting");
+    original_path.with_file_name(file_name)
+}
+
+fn remove_file_if_exists(path: &Path, operation: &'static str) -> Result<()> {
+    match std::fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(PersistentARTrieError::io_error(
+            operation,
+            path.display().to_string(),
+            e,
+        )),
+    }
+}
 
 impl<V: DictionaryValue> PersistentARTrie<V> {
     /// Compact the trie, eliminating orphaned nodes and fragmentation.
@@ -70,10 +98,26 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
 
         let estimated_total = self.term_count.load(AtomicOrdering::Acquire) as u64;
 
+        let original_wal_path = wal_sidecar_path(&original_path);
         let (temp_path, is_in_place) = match &config.output_path {
             Some(output) => (output.clone(), false),
-            None => (original_path.with_extension("compacting"), true),
+            None => (in_place_temp_path(&original_path), true),
         };
+        let temp_wal_path = wal_sidecar_path(&temp_path);
+
+        if temp_path == original_path {
+            return Err(PersistentARTrieError::InvalidOperation(
+                "compaction output path must not be the original trie path".to_string(),
+            ));
+        }
+
+        if temp_wal_path == original_wal_path {
+            return Err(PersistentARTrieError::InvalidOperation(format!(
+                "compaction WAL sidecar {} would collide with original WAL {}",
+                temp_wal_path.display(),
+                original_wal_path.display()
+            )));
+        }
 
         if temp_path.exists() {
             std::fs::remove_file(&temp_path).map_err(|e| {
@@ -81,30 +125,43 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
             })?;
         }
 
-        let temp_wal_path = temp_path.with_extension("wal");
-        if temp_wal_path.exists() {
-            let _ = std::fs::remove_file(&temp_wal_path);
+        let legacy_temp_path = original_path.with_extension("compacting");
+        if is_in_place && legacy_temp_path != original_path && legacy_temp_path != temp_path {
+            remove_file_if_exists(&legacy_temp_path, "compact_remove_legacy_temp")?;
         }
+
+        remove_file_if_exists(&temp_wal_path, "compact_remove_temp_wal")?;
 
         let mut new_trie = PersistentARTrie::<V>::create(&temp_path)?;
 
         let mut terms_processed = 0u64;
 
-        let terms_to_copy: Vec<(Vec<u8>, V)> = self
-            .iter_prefix_with_values(b"")
-            .map(|iter| iter.collect())
-            .unwrap_or_default();
+        let terms_to_copy = self.compaction_snapshot()?;
+        let expected_snapshot = Self::serialized_snapshot_from_terms(&terms_to_copy)?;
 
         for (term, value) in terms_to_copy {
-            let term_str = match std::str::from_utf8(&term) {
-                Ok(s) => s,
-                Err(_) => {
-                    warn!("Non-UTF8 term encountered during compaction: {:?}", term);
-                    continue;
+            if let Some(ref value) = value {
+                if let Err(e) = crate::serialization::bincode_compat::serialize(value) {
+                    drop(new_trie);
+                    let _ = remove_file_if_exists(&temp_path, "compact_cleanup_temp");
+                    let _ = remove_file_if_exists(&temp_wal_path, "compact_cleanup_temp_wal");
+                    return Err(PersistentARTrieError::CheckpointVerificationFailed {
+                        reason: format!(
+                            "Failed to serialize value for term {:?} during compaction: {}",
+                            term, e
+                        ),
+                    });
                 }
-            };
+            }
 
-            new_trie.insert_with_value(term_str, value);
+            if !new_trie.insert_impl_no_wal(&term, value) {
+                drop(new_trie);
+                let _ = remove_file_if_exists(&temp_path, "compact_cleanup_temp");
+                let _ = remove_file_if_exists(&temp_wal_path, "compact_cleanup_temp_wal");
+                return Err(PersistentARTrieError::CheckpointVerificationFailed {
+                    reason: format!("Failed to copy term {:?} during compaction", term),
+                });
+            }
             terms_processed += 1;
 
             if config.progress_interval > 0
@@ -142,22 +199,25 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
                 percent_complete: 100.0,
             });
 
-            let original_count = self.term_count.load(AtomicOrdering::Acquire);
-            let compacted_count = new_trie.term_count.load(AtomicOrdering::Acquire);
+            let compacted_snapshot = new_trie.compaction_serialized_snapshot()?;
 
-            if original_count != compacted_count {
+            if expected_snapshot != compacted_snapshot {
                 drop(new_trie);
                 let _ = std::fs::remove_file(&temp_path);
                 let _ = std::fs::remove_file(&temp_wal_path);
 
                 return Err(PersistentARTrieError::CheckpointVerificationFailed {
                     reason: format!(
-                        "Term count mismatch after compaction: expected {}, got {}",
-                        original_count, compacted_count
+                        "Snapshot mismatch after compaction: expected {} terms, got {} terms",
+                        expected_snapshot.len(),
+                        compacted_snapshot.len()
                     ),
                 });
             }
         }
+
+        new_trie.wal_writer = None;
+        remove_file_if_exists(&temp_wal_path, "compact_remove_temp_wal")?;
 
         if is_in_place {
             progress(CompactionProgress {
@@ -177,13 +237,7 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
                 PersistentARTrieError::io_error("compact", original_path.display().to_string(), e)
             })?;
 
-            let original_wal = original_path.with_extension("wal");
-            let _ = std::fs::remove_file(&temp_wal_path);
-
-            let new_wal_path = temp_path.with_extension("wal");
-            if new_wal_path.exists() {
-                let _ = std::fs::rename(&new_wal_path, &original_wal);
-            }
+            remove_file_if_exists(&original_wal_path, "compact_remove_stale_wal")?;
 
             *self = Self::open(&original_path)?;
         }
@@ -202,5 +256,59 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
             space_savings_percent,
             duration_ms,
         })
+    }
+
+    fn compaction_snapshot(&self) -> Result<Vec<(Vec<u8>, Option<V>)>>
+    where
+        V: Clone,
+    {
+        let mut terms = self
+            .iter_prefix_with_arena(b"")?
+            .unwrap_or_default()
+            .into_iter()
+            .map(|term| term.term)
+            .collect::<Vec<_>>();
+        terms.sort();
+        terms.dedup();
+
+        Ok(terms
+            .into_iter()
+            .map(|term| {
+                let value = self.get_value_impl(&term);
+                (term, value)
+            })
+            .collect())
+    }
+
+    fn serialized_snapshot_from_terms(terms: &[(Vec<u8>, Option<V>)]) -> Result<SerializedSnapshot>
+    where
+        V: Clone,
+    {
+        let mut snapshot = BTreeMap::new();
+
+        for (term, value) in terms {
+            let serialized = match value {
+                Some(value) => Some(crate::serialization::bincode_compat::serialize(value).map_err(
+                    |e| PersistentARTrieError::CheckpointVerificationFailed {
+                        reason: format!(
+                            "Failed to serialize value for term {:?} during compaction verification: {}",
+                            term, e
+                        ),
+                    },
+                )?),
+                None => None,
+            };
+            snapshot.insert(term.clone(), serialized);
+        }
+
+        Ok(snapshot)
+    }
+
+    fn compaction_serialized_snapshot(&self) -> Result<SerializedSnapshot>
+    where
+        V: Clone,
+    {
+        let terms = self.compaction_snapshot()?;
+        Self::serialized_snapshot_from_terms(&terms)
     }
 }

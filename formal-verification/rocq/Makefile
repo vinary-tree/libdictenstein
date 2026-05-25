@@ -10,7 +10,7 @@ COQFLAGS = -Q . ARTrie
 DIRS = Spec Model Invariants Operations Proofs
 
 # Source files in dependency order
-SPEC_FILES = Spec/MapSpec.v Spec/DictionaryLawSpec.v Spec/DynamicDawgMutationSpec.v Spec/DynamicDawgU64Spec.v Spec/DoubleArrayTrieSpec.v Spec/ZipperLanguageSpec.v Spec/ValuedSetCombinatorSpec.v Spec/BloomFilterSpec.v Spec/PersistentMergeSpec.v Spec/PersistentPrefixSpec.v Spec/PathMapFactorySpec.v Spec/RelativeEncodingSpec.v Spec/ArenaReservationSpec.v Spec/DedupArenaSpec.v Spec/RootDescriptorReopenSpec.v Spec/PersistentLazyMutationSpec.v Spec/PersistentWalAtomicitySpec.v Spec/PersistentCheckpointRetentionSpec.v Spec/PersistentWalSegmentLifecycleSpec.v Spec/SubstringSearchSpec.v Spec/ScdawgOccurrenceSpec.v Spec/FuzzyCandidateCoverageSpec.v Spec/SerializationRoundtripSpec.v Spec/ARTrieSpec.v Spec/ReplicatedMapSpec.v
+SPEC_FILES = Spec/MapSpec.v Spec/DictionaryLawSpec.v Spec/DynamicDawgMutationSpec.v Spec/DynamicDawgU64Spec.v Spec/DoubleArrayTrieSpec.v Spec/ZipperLanguageSpec.v Spec/ValuedSetCombinatorSpec.v Spec/BloomFilterSpec.v Spec/PersistentMergeSpec.v Spec/PersistentPrefixSpec.v Spec/PathMapFactorySpec.v Spec/RelativeEncodingSpec.v Spec/ArenaReservationSpec.v Spec/DedupArenaSpec.v Spec/RootDescriptorReopenSpec.v Spec/PersistentLazyMutationSpec.v Spec/PersistentWalAtomicitySpec.v Spec/PersistentVocabWalAtomicitySpec.v Spec/PersistentCheckpointRetentionSpec.v Spec/PersistentDirtyCheckpointSpec.v Spec/PersistentWalSegmentLifecycleSpec.v Spec/PersistentRecoveryPlannerSpec.v Spec/PersistentRecoveryReplayCompletenessSpec.v Spec/PersistentCompactionSpec.v Spec/SubstringSearchSpec.v Spec/ScdawgOccurrenceSpec.v Spec/FuzzyCandidateCoverageSpec.v Spec/SerializationRoundtripSpec.v Spec/ARTrieSpec.v Spec/ReplicatedMapSpec.v
 MODEL_FILES = Model/Key.v Model/NodeTypes.v Model/Bucket.v Model/HotStuff.v Model/PathCompression.v Model/ArenaManager.v Model/SequentialSiblings.v Model/FileSystem.v
 INVARIANT_FILES = Invariants/StructuralInvariants.v Invariants/TransitionInvariants.v Invariants/ArenaInvariants.v Invariants/SequentialSiblingsInvariants.v
 OPERATION_FILES = # Operations/Lookup.v Operations/Insert.v Operations/Delete.v
@@ -81,25 +81,30 @@ show-order:
 	@echo " 23. Spec/RootDescriptorReopenSpec.v"
 	@echo " 24. Spec/PersistentLazyMutationSpec.v"
 	@echo " 25. Spec/PersistentWalAtomicitySpec.v"
-	@echo " 26. Spec/PersistentCheckpointRetentionSpec.v"
-	@echo " 27. Spec/PersistentWalSegmentLifecycleSpec.v"
-	@echo " 28. Spec/SubstringSearchSpec.v"
-	@echo " 29. Spec/ScdawgOccurrenceSpec.v"
-	@echo " 30. Spec/FuzzyCandidateCoverageSpec.v"
-	@echo " 31. Spec/SerializationRoundtripSpec.v"
-	@echo " 32. Spec/ARTrieSpec.v"
-	@echo " 33. Spec/ReplicatedMapSpec.v"
-	@echo " 34. Invariants/StructuralInvariants.v"
-	@echo " 35. Invariants/TransitionInvariants.v"
-	@echo " 36. Invariants/ArenaInvariants.v"
-	@echo " 37. Invariants/SequentialSiblingsInvariants.v"
-	@echo " 38. Proofs/MapRefinement.v"
-	@echo " 39. Proofs/StructuralPreservation.v"
-	@echo " 40. Proofs/ByzantineRecovery.v"
-	@echo " 41. Proofs/CertifiedReference.v"
-	@echo " 42. Proofs/HotStuffSafety.v"
-	@echo " 43. Proofs/ProofCarryingExtraction.v"
-	@echo " 44. Proofs/FileSystemSafety.v"
+	@echo " 26. Spec/PersistentVocabWalAtomicitySpec.v"
+	@echo " 27. Spec/PersistentCheckpointRetentionSpec.v"
+	@echo " 28. Spec/PersistentDirtyCheckpointSpec.v"
+	@echo " 29. Spec/PersistentWalSegmentLifecycleSpec.v"
+	@echo " 30. Spec/PersistentRecoveryPlannerSpec.v"
+	@echo " 31. Spec/PersistentRecoveryReplayCompletenessSpec.v"
+	@echo " 32. Spec/PersistentCompactionSpec.v"
+	@echo " 33. Spec/SubstringSearchSpec.v"
+	@echo " 34. Spec/ScdawgOccurrenceSpec.v"
+	@echo " 35. Spec/FuzzyCandidateCoverageSpec.v"
+	@echo " 36. Spec/SerializationRoundtripSpec.v"
+	@echo " 37. Spec/ARTrieSpec.v"
+	@echo " 38. Spec/ReplicatedMapSpec.v"
+	@echo " 39. Invariants/StructuralInvariants.v"
+	@echo " 40. Invariants/TransitionInvariants.v"
+	@echo " 41. Invariants/ArenaInvariants.v"
+	@echo " 42. Invariants/SequentialSiblingsInvariants.v"
+	@echo " 43. Proofs/MapRefinement.v"
+	@echo " 44. Proofs/StructuralPreservation.v"
+	@echo " 45. Proofs/ByzantineRecovery.v"
+	@echo " 46. Proofs/CertifiedReference.v"
+	@echo " 47. Proofs/HotStuffSafety.v"
+	@echo " 48. Proofs/ProofCarryingExtraction.v"
+	@echo " 49. Proofs/FileSystemSafety.v"
 
 # Check a single file
 check-%: %.v

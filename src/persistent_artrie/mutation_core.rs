@@ -375,4 +375,107 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
         // Then insert with new value
         self.insert_impl_core(term, Some(value));
     }
+
+    /// Apply a recovered WAL operation without writing a new WAL record.
+    pub(super) fn apply_recovered_operation_no_wal(
+        &mut self,
+        op: super::recovery::RecoveredOperation,
+    ) -> bool {
+        match op {
+            super::recovery::RecoveredOperation::Insert { term, value, .. } => {
+                let deserialized =
+                    value.and_then(
+                        |bytes| match crate::serialization::bincode_compat::deserialize(&bytes) {
+                            Ok(value) => Some(value),
+                            Err(error) => {
+                                warn!("Failed to deserialize recovered insert value: {:?}", error);
+                                None
+                            }
+                        },
+                    );
+                self.insert_impl_no_wal(&term, deserialized);
+                true
+            }
+            super::recovery::RecoveredOperation::Remove { term, .. } => {
+                self.remove_impl_no_wal(&term);
+                true
+            }
+            super::recovery::RecoveredOperation::Increment {
+                term,
+                delta,
+                result,
+                ..
+            } => {
+                let final_value = if result == 0 {
+                    self.recompute_recovered_increment(&term, delta)
+                } else {
+                    result
+                };
+
+                match Self::value_from_i64(final_value) {
+                    Some(value) => {
+                        self.upsert_impl_no_wal(&term, value);
+                        true
+                    }
+                    None => false,
+                }
+            }
+            super::recovery::RecoveredOperation::Upsert { term, value, .. } => {
+                match crate::serialization::bincode_compat::deserialize(&value) {
+                    Ok(value) => {
+                        self.upsert_impl_no_wal(&term, value);
+                        true
+                    }
+                    Err(error) => {
+                        warn!("Failed to deserialize recovered upsert value: {:?}", error);
+                        false
+                    }
+                }
+            }
+            super::recovery::RecoveredOperation::CompareAndSwap {
+                term,
+                new_value,
+                success,
+                ..
+            } => {
+                if !success {
+                    return false;
+                }
+
+                match crate::serialization::bincode_compat::deserialize(&new_value) {
+                    Ok(value) => {
+                        self.upsert_impl_no_wal(&term, value);
+                        true
+                    }
+                    Err(error) => {
+                        warn!("Failed to deserialize recovered CAS value: {:?}", error);
+                        false
+                    }
+                }
+            }
+        }
+    }
+
+    fn recompute_recovered_increment(&self, term: &[u8], delta: i64) -> i64 {
+        let current = self
+            .get_value_impl(term)
+            .and_then(|value| Self::i64_from_value(&value))
+            .unwrap_or(0);
+        current + delta
+    }
+
+    fn i64_from_value(value: &V) -> Option<i64> {
+        let bytes = crate::serialization::bincode_compat::serialize(value).ok()?;
+        if bytes.len() == 8 {
+            let raw: [u8; 8] = bytes.try_into().ok()?;
+            Some(i64::from_le_bytes(raw))
+        } else {
+            crate::serialization::bincode_compat::deserialize::<i64>(&bytes).ok()
+        }
+    }
+
+    fn value_from_i64(value: i64) -> Option<V> {
+        let bytes = crate::serialization::bincode_compat::serialize(&value).ok()?;
+        crate::serialization::bincode_compat::deserialize(&bytes).ok()
+    }
 }

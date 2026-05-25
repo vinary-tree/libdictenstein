@@ -455,7 +455,7 @@ mod persistent {
 
         let terms = ["alpha", "beta", "gamma", "delta"];
         for (expected_index, term) in terms.iter().enumerate() {
-            let index = vocab.insert(term);
+            let index = vocab.insert(term).expect("insert vocab term");
             assert_eq!(index, expected_index as u64);
             assert_eq!(vocab.get_value(term), Some(index));
             assert_eq!(
@@ -464,7 +464,7 @@ mod persistent {
             );
         }
 
-        let duplicate = vocab.insert("beta");
+        let duplicate = vocab.insert("beta").expect("insert duplicate vocab term");
         assert_eq!(duplicate, 1);
         assert_eq!(Dictionary::len(&vocab), Some(terms.len()));
         assert!(BijectiveDictionary::get_term(&vocab, &99).is_none());

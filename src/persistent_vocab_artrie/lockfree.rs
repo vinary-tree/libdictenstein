@@ -563,7 +563,7 @@ impl LockFreeVocab {
         for (offset, opt_term) in storage.iter().enumerate() {
             if let Some(term) = opt_term {
                 let index = self.start_index + offset as u64;
-                if target.insert_with_index(term, index) {
+                if target.insert_with_index(term, index)? {
                     count += 1;
                 }
             }

@@ -21,7 +21,6 @@
 
 use std::collections::HashMap;
 use std::io::Cursor;
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 use parking_lot::RwLock;
@@ -454,73 +453,7 @@ impl<S: BlockStorage> super::dict_impl::PersistentVocabARTrie<S> {
 
     /// Replay an insert during WAL recovery.
     pub(super) fn replay_insert(&mut self, term: &str, index: u64) -> Result<()> {
-        let chars: Vec<char> = term.chars().collect();
-        let root_ref = NodeRef::new(0, 0);
-
-        match &mut self.root {
-            VocabTrieRoot::Empty => {
-                return Err(PersistentARTrieError::CorruptedFile {
-                    reason: "Cannot replay insert into empty root".to_string(),
-                });
-            }
-            VocabTrieRoot::Node(root) => {
-                let mut current = root.as_mut();
-                let mut current_ref = root_ref;
-
-                for &c in chars.iter() {
-                    let slot = self.next_slot;
-                    self.next_slot += 1;
-                    let child_ref = NodeRef::new(0, slot as u32);
-
-                    let child = current.get_or_create_child(c, current_ref);
-
-                    if !self.node_map.contains_key(&child_ref) {
-                        self.node_map
-                            .insert(child_ref, child as *const VocabTrieNode);
-                    }
-
-                    current_ref = child_ref;
-                    current = child;
-                }
-
-                // Check if already final (idempotent replay)
-                if !current.is_final() {
-                    current.set_value(index);
-
-                    // Update reverse index
-                    if let Some(ref mut rev_idx) = self.reverse_index {
-                        let _ = rev_idx.set(index, current_ref);
-                    }
-
-                    // Update bloom filter
-                    if let Some(ref mut bloom) = self.bloom_filter {
-                        bloom.insert(term);
-                    }
-
-                    // Update counts
-                    self.entry_count.fetch_add(1, Ordering::AcqRel);
-                }
-
-                // Track next index atomically using CAS loop
-                loop {
-                    let current = self.next_index.load(Ordering::Acquire);
-                    if index < current {
-                        break; // Another thread already advanced it
-                    }
-                    let new_val = index + 1;
-                    match self.next_index.compare_exchange(
-                        current,
-                        new_val,
-                        Ordering::AcqRel,
-                        Ordering::Acquire,
-                    ) {
-                        Ok(_) => break,
-                        Err(_) => continue, // Retry
-                    }
-                }
-            }
-        }
-
+        self.insert_with_index_no_wal(term, index)?;
         Ok(())
     }
 }

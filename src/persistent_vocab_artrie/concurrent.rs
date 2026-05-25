@@ -419,7 +419,10 @@ impl ConcurrentVocabARTrie {
         if self.insert_tx.send(pending).is_err() {
             // Channel closed - fall back to direct insert
             let mut guard = self.inner.write();
-            guard.insert_with_index(term, index);
+            if let Err(error) = guard.insert_with_index(term, index) {
+                log::warn!("direct queued vocabulary insert failed for {term:?}: {error}");
+                return guard.get_index(term).unwrap_or(index);
+            }
         }
 
         // Update cache
@@ -549,7 +552,12 @@ impl ConcurrentVocabARTrie {
             // Apply all inserts under a single write lock
             let mut guard = self.inner.write();
             for insert in pending {
-                guard.insert_with_index(&insert.term, insert.index);
+                if let Err(error) = guard.insert_with_index(&insert.term, insert.index) {
+                    log::warn!(
+                        "drained queued vocabulary insert failed for {:?}: {error}",
+                        insert.term
+                    );
+                }
             }
         }
 

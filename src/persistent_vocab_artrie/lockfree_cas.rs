@@ -330,7 +330,7 @@ impl super::dict_impl::PersistentVocabARTrie {
             // Insert into persistent trie if not already there
             if self.get_index(&term).is_none() {
                 // Use insert_with_index to add to persistent trie
-                if self.insert_with_index(&term, index) {
+                if self.insert_with_index(&term, index)? {
                     count += 1;
                 }
             }

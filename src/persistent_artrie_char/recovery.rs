@@ -491,8 +491,7 @@ impl RecoveryManager {
                     }
                 }
                 Err(_) => {
-                    // Skip corrupted records
-                    continue;
+                    break;
                 }
             }
         }
@@ -536,7 +535,7 @@ impl RecoveryManager {
         let mut corrupted_skipped = 0;
 
         // Process all segments in order
-        for segment_path in &segments {
+        'segments: for segment_path in &segments {
             let reader = match WalReader::new(segment_path) {
                 Ok(r) => r,
                 Err(_) => continue, // Skip unreadable segments
@@ -552,6 +551,7 @@ impl RecoveryManager {
                     }
                     Err(_) => {
                         corrupted_skipped += 1;
+                        break 'segments;
                     }
                 }
             }
@@ -594,70 +594,10 @@ impl RecoveryManager {
     ///
     /// Returns a vector because BatchInsert records contain multiple operations.
     fn record_to_operations(&self, lsn: Lsn, record: WalRecord) -> Vec<RecoveredOperation> {
-        match record {
-            WalRecord::Insert { term, value } => {
-                vec![RecoveredOperation::Insert { lsn, term, value }]
-            }
-            WalRecord::Remove { term } => {
-                vec![RecoveredOperation::Remove { lsn, term }]
-            }
-            WalRecord::Increment {
-                term,
-                delta,
-                result,
-            } => {
-                vec![RecoveredOperation::Increment {
-                    lsn,
-                    term,
-                    delta,
-                    result,
-                }]
-            }
-            WalRecord::Upsert { term, value } => {
-                vec![RecoveredOperation::Upsert { lsn, term, value }]
-            }
-            WalRecord::CompareAndSwap {
-                term,
-                new_value,
-                success,
-                ..
-            } => {
-                if success {
-                    vec![RecoveredOperation::CompareAndSwap {
-                        lsn,
-                        term,
-                        new_value,
-                        success,
-                    }]
-                } else {
-                    vec![] // Failed CAS operations don't need replay
-                }
-            }
-            WalRecord::BatchInsert { entries } => entries
-                .into_iter()
-                .map(|(term, value)| RecoveredOperation::Insert { lsn, term, value })
-                .collect(),
-            WalRecord::BatchIncrement { entries } => {
-                entries
-                    .into_iter()
-                    .map(|(term, delta)| RecoveredOperation::Increment {
-                        lsn,
-                        term,
-                        delta,
-                        result: 0, // Result is recomputed during apply
-                    })
-                    .collect()
-            }
-            // Skip transaction and checkpoint records
-            WalRecord::BeginTx { .. }
-            | WalRecord::CommitTx { .. }
-            | WalRecord::AbortTx { .. }
-            | WalRecord::Checkpoint { .. } => vec![],
-            // Version-based WAL records (Phase 6) - skip during mutation-based replay
-            WalRecord::VersionUpdate { .. }
-            | WalRecord::VersionDurable { .. }
-            | WalRecord::VersionGc { .. } => vec![],
-        }
+        crate::persistent_artrie::recovery::recovered_operations_from_record(lsn, record)
+            .into_iter()
+            .map(RecoveredOperation::from)
+            .collect()
     }
 }
 
@@ -711,6 +651,44 @@ pub enum RecoveredOperation {
         /// Whether successful
         success: bool,
     },
+}
+
+impl From<crate::persistent_artrie::recovery::RecoveredOperation> for RecoveredOperation {
+    fn from(op: crate::persistent_artrie::recovery::RecoveredOperation) -> Self {
+        match op {
+            crate::persistent_artrie::recovery::RecoveredOperation::Insert { lsn, term, value } => {
+                Self::Insert { lsn, term, value }
+            }
+            crate::persistent_artrie::recovery::RecoveredOperation::Remove { lsn, term } => {
+                Self::Remove { lsn, term }
+            }
+            crate::persistent_artrie::recovery::RecoveredOperation::Increment {
+                lsn,
+                term,
+                delta,
+                result,
+            } => Self::Increment {
+                lsn,
+                term,
+                delta,
+                result,
+            },
+            crate::persistent_artrie::recovery::RecoveredOperation::Upsert { lsn, term, value } => {
+                Self::Upsert { lsn, term, value }
+            }
+            crate::persistent_artrie::recovery::RecoveredOperation::CompareAndSwap {
+                lsn,
+                term,
+                new_value,
+                success,
+            } => Self::CompareAndSwap {
+                lsn,
+                term,
+                new_value,
+                success,
+            },
+        }
+    }
 }
 
 impl RecoveredOperation {

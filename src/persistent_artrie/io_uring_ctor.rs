@@ -26,7 +26,7 @@ use super::buffer_manager::BufferManager;
 use super::dict_impl::{DurabilityPolicy, PersistentARTrie, TrieRoot};
 use super::disk_load::read_root_descriptor_arena_count;
 use super::error::{PersistentARTrieError, Result};
-use super::recovery::{RecoveredOperation, RecoveryManager};
+use super::recovery::RecoveryManager;
 use super::wal::{AsyncWalConfig, AsyncWalWriter, WalConfig};
 use super::{IoUringDiskManager, DEFAULT_BUFFER_POOL_SIZE};
 
@@ -246,83 +246,13 @@ impl<V: DictionaryValue> PersistentARTrie<V, IoUringDiskManager> {
 
         let mut replayed_count = 0;
         for op in recovered_ops.into_iter() {
-            match op {
-                RecoveredOperation::Insert { lsn, term, value } => {
-                    if let Some(threshold) = skip_threshold {
-                        if lsn <= threshold {
-                            continue;
-                        }
-                    }
-                    let deserialized_value: Option<V> = value.and_then(|bytes| {
-                        match crate::serialization::bincode_compat::deserialize(&bytes) {
-                            Ok(v) => Some(v),
-                            Err(e) => {
-                                warn!("Failed to deserialize value from WAL: {:?}", e);
-                                None
-                            }
-                        }
-                    });
-                    dict.insert_impl_no_wal(&term, deserialized_value);
-                    replayed_count += 1;
+            if let Some(threshold) = skip_threshold {
+                if op.lsn() <= threshold {
+                    continue;
                 }
-                RecoveredOperation::Remove { lsn, term } => {
-                    if let Some(threshold) = skip_threshold {
-                        if lsn <= threshold {
-                            continue;
-                        }
-                    }
-                    dict.remove_impl_no_wal(&term);
-                    replayed_count += 1;
-                }
-                RecoveredOperation::Increment {
-                    lsn,
-                    term,
-                    delta: _,
-                    result,
-                } => {
-                    if let Some(threshold) = skip_threshold {
-                        if lsn <= threshold {
-                            continue;
-                        }
-                    }
-                    let value_bytes = result.to_le_bytes().to_vec();
-                    if let Ok(value) =
-                        crate::serialization::bincode_compat::deserialize(&value_bytes)
-                    {
-                        dict.upsert_impl_no_wal(&term, value);
-                    }
-                    replayed_count += 1;
-                }
-                RecoveredOperation::Upsert { lsn, term, value } => {
-                    if let Some(threshold) = skip_threshold {
-                        if lsn <= threshold {
-                            continue;
-                        }
-                    }
-                    if let Ok(v) = crate::serialization::bincode_compat::deserialize(&value) {
-                        dict.upsert_impl_no_wal(&term, v);
-                    }
-                    replayed_count += 1;
-                }
-                RecoveredOperation::CompareAndSwap {
-                    lsn,
-                    term,
-                    new_value,
-                    success,
-                } => {
-                    if let Some(threshold) = skip_threshold {
-                        if lsn <= threshold {
-                            continue;
-                        }
-                    }
-                    if success {
-                        if let Ok(v) = crate::serialization::bincode_compat::deserialize(&new_value)
-                        {
-                            dict.upsert_impl_no_wal(&term, v);
-                        }
-                    }
-                    replayed_count += 1;
-                }
+            }
+            if dict.apply_recovered_operation_no_wal(op) {
+                replayed_count += 1;
             }
         }
 

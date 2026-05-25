@@ -399,8 +399,9 @@ pub use group_commit::{GroupCommitConfig, GroupCommitCoordinator, GroupCommitSta
 pub use recovery::{
     collect_all_wal_segments, detect_corruption, find_wal_archive_segments,
     find_wal_pending_segments, get_segment_first_lsn, rebuild_from_wal_segments,
-    sort_segments_by_lsn, CorruptionType, IncrementalRecovery, RecoveredOperation, RecoveredState,
-    RecoveryError, RecoveryManager, RecoveryMode, RecoveryReport, RecoveryStats,
+    recovered_operations_from_record, sort_segments_by_lsn, CorruptionType, IncrementalRecovery,
+    RecoveredOperation, RecoveredState, RecoveryError, RecoveryManager, RecoveryMode,
+    RecoveryReport, RecoveryStats,
 };
 
 // Epoch-based checkpointing types

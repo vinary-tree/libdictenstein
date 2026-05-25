@@ -1,11 +1,12 @@
 # Unsafe Boundary Verification Notes
 
-Updated: 2026-05-24
+Updated: 2026-05-25
 
 This document records the current Rust implementation boundary that is not
 covered by Rocq extraction or TLC state exploration. The goal is to keep every
-unsafe primitive tied to an executable correspondence check or an explicit
-remaining proof obligation.
+unsafe primitive tied to an explicit coverage class, an executable
+correspondence check or bounded model, and any remaining trusted-boundary
+obligation.
 
 ## Boundary Map
 
@@ -20,7 +21,7 @@ remaining proof obligation.
 | mmap/io_uring storage access | `persistent_artrie_core::{disk_manager,io_uring_disk_manager}` and trie constructors | `MmapBlockStorage.tla` checks the bounded allocation/remap/access protocol. `StorageSyscallOutcome.tla` checks the bounded write/sync outcome boundary: only full writes followed by successful syncs advance the durable/reported/recovered prefix. `IoUringFixedBufferOwnership.tla` checks fixed-buffer registration, in-flight fixed I/O, unregister, invalid registration, fallback, and owner-drop ordering. `IoUringSqeCqeLifecycle.tla` checks the bounded submit/complete lifecycle: each submitted request owns one live buffer until exactly one CQE is checked, short/error completions fail closed, and temporary buffers are returned only after checking. Storage correspondence tests cover concurrent mmap allocation uniqueness, sub-block bounds rejection, sync/reopen checksum refresh, `raw_ptr` bounds, failed WAL fsync frontier handling, io_uring range rejection, fixed-buffer registration input validation, and unregister-before-owner-drop behavior when the backend is available. Kernel io_uring internals remain trusted implementation code. |
 | Raw trie child pointers and byte lock-free CAS paths | `persistent_artrie::{lockfree_cas,nodes/atomic_ptr,nodes/persistent_node}` | `LockFreeARTrieLinearizability.tla` checks the bounded root-CAS/cache/contains/merge publication contract. Loom tests cover single-winner root CAS, duplicate insert linearization, insert-vs-contains visibility, merge snapshot behavior, and child-pointer Arc handoff. |
 | Indexed char/vocab lock-free overlays | `persistent_artrie_char::lockfree_cas`, `persistent_vocab_artrie::lockfree_cas` | `LockFreeIndexedOverlay.tla` checks char increment value preservation, merge-prefix behavior, vocab duplicate insert stability, committed-index uniqueness, sparse `next_index` claims, and cache/root/persistent agreement. Loom tests cover the same bounded schedule obligations. |
-| Whole-crate unsafe inventory | `formal-verification/UNSAFE_INVENTORY.tsv`, `formal-verification/UNSAFE_CONTRACTS.tsv`, `scripts/verify-unsafe-boundary-inventory.sh` | The verification harness now compares the live `src/**/*.rs` unsafe blocks, unsafe functions, and unsafe impls against the reviewed inventory, then checks that every inventory contract tag has a reviewed contract entry. New or changed unsafe sites fail the correspondence script until the pattern, count, and contract tag are updated intentionally. |
+| Whole-crate unsafe inventory | `formal-verification/UNSAFE_INVENTORY.tsv`, `formal-verification/UNSAFE_CONTRACTS.tsv`, `scripts/verify-unsafe-boundary-inventory.sh` | The verification harness now compares the live `src/**/*.rs` unsafe blocks, unsafe functions, and unsafe impls against the reviewed inventory, checks that every inventory tag has a reviewed contract entry, and rejects contract rows without a valid coverage/status classification. New or changed unsafe sites fail the correspondence script until the pattern, count, contract tag, coverage class, status, and evidence are updated intentionally. |
 | Unsafe `Send`/`Sync` impls outside the persistent ART core | SCDAWG handles, vocab variants, test mock nodes | The explicit unsafe impl surface is inventoried. Persistent ARTrie/vocab contracts are type-checked in `persistent_artrie_formal_correspondence`; SCDAWG byte/char handle contracts are type-checked and exercised under concurrent read traversal in `unsafe_boundary_contracts`. |
 
 ## Safety Contract Matrix
@@ -34,7 +35,7 @@ remaining proof obligation.
 | io_uring fixed buffers are non-null, block-sized, aligned, used only while registered, and unregistered before owner drop. | `IoUringFixedBufferOwnership.tla`, `IoUringDiskManager::register_buffer_pool` validation, `BufferManager` fixed-capability gating, `io_uring_*registration*` storage correspondence tests, and the fixed-capable `BufferManager` storage double. |
 | io_uring submitted requests keep ownership of one buffer until completion checking, and short/error CQEs fail closed. | `IoUringSqeCqeLifecycle.tla` plus `IoUringDiskManager` completion-count, negative-result, short-read/write, and temporary-buffer return checks. |
 | Backends that accept the default no-op registration do not accidentally enable fixed I/O. | `BufferManager` requires both registration success and `supports_fixed_buffers()`, with a regression in `tests/unsafe_boundary_contracts.rs`. |
-| Every unsafe source pattern has a reviewed contract tag. | `scripts/verify-unsafe-boundary-inventory.sh` compares `src/**/*.rs` against `formal-verification/UNSAFE_INVENTORY.tsv` and checks every tag against `formal-verification/UNSAFE_CONTRACTS.tsv` before the correspondence tests run. |
+| Every unsafe source pattern has a reviewed contract tag and coverage class. | `scripts/verify-unsafe-boundary-inventory.sh` compares `src/**/*.rs` against `formal-verification/UNSAFE_INVENTORY.tsv`, checks every tag against `formal-verification/UNSAFE_CONTRACTS.tsv`, validates coverage tokens (`rocq`, `tla`, `loom`, `miri`, `correspondence`, `compile-time`, `unit`, or `trusted-boundary`), and rejects persistence unsafe contracts that are not `covered` or `miri-wired`. |
 
 ## Current Claim
 
@@ -83,7 +84,7 @@ intersects the formal ARTrie model:
   correspondence harness runs; the SCDAWG byte and char handle contracts are
   exercised by concurrent read traversal tests outside the persistent ARTrie
   feature gate, and every unsafe inventory tag resolves to a reviewed
-  `UNSAFE_CONTRACTS.tsv` entry.
+  `UNSAFE_CONTRACTS.tsv` entry with machine-checked coverage/status metadata.
 - vocabulary checkpoint/reopen preserves stable forward and reverse indexes,
   duplicate inserts keep the original index, checkpoint/reopen rebuilds
   `node_map` and parent-chain entries for live nodes, and leaf eviction removes
@@ -103,11 +104,12 @@ intersects the formal ARTrie model:
   io_uring single, batched, or fixed-buffer writes re-mark updated cached
   blocks dirty so a later sync can retry.
 
-This is not a RustBelt, Iris, Miri, Kani, or certified-compilation result. The
+This is not a RustBelt, Iris, Kani, or certified-compilation result. The
 current harness has expanded Miri-compatible targets, including raw child
 ownership, swizzled raw extraction, vocab reopen/eviction ownership, and
-buffer-manager fixed-buffer lifetime. The remaining high-value proof extensions
-are Miri execution for those targets on a nightly toolchain, broader mechanized
+buffer-manager fixed-buffer lifetime, and the unsafe inventory gate now rejects
+coverage metadata drift. The remaining high-value proof extensions are Miri
+execution for those targets on a nightly toolchain, broader mechanized
 unsafe-boundary proofs for the raw-pointer and kernel io_uring internals, and
 keeping the bounded correspondence CI jobs green.
 
@@ -118,7 +120,7 @@ keeping the bounded correspondence CI jobs green.
 2. Keep the no-TLC correspondence, Miri-gated, io_uring-gated, and
    scheduled/manual TLC CI jobs green.
 3. Keep the unsafe inventory gate mandatory in local and CI verification so new
-   unsafe blocks cannot bypass review.
+   unsafe blocks cannot bypass review or coverage classification.
 4. Keep `StorageSyscallOutcome.tla` and the corresponding Rust fsync/CQE
    checks green; deepen the trusted kernel/syscall boundary only if the project
    needs claims below the syscall outcome abstraction.

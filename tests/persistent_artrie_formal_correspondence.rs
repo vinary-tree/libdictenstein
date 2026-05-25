@@ -595,9 +595,12 @@ fn vocab_checkpoint_reopen_preserves_unicode_bijection() {
     {
         let mut vocab = PersistentVocabARTrie::create(&path).expect("create vocab trie");
         for (expected_index, term) in terms.iter().enumerate() {
-            assert_eq!(vocab.insert(term), expected_index as u64);
+            assert_eq!(
+                vocab.insert(term).expect("insert vocab term"),
+                expected_index as u64
+            );
         }
-        assert_eq!(vocab.insert("résumé"), 1);
+        assert_eq!(vocab.insert("résumé").expect("insert duplicate"), 1);
         vocab.checkpoint().expect("checkpoint vocab trie");
     }
 
@@ -622,18 +625,21 @@ fn vocab_duplicate_insert_keeps_stable_index_after_reopen() {
 
     {
         let mut vocab = PersistentVocabARTrie::create(&path).expect("create vocab trie");
-        assert_eq!(vocab.insert("duplicate"), 0);
-        assert_eq!(vocab.insert("delta"), 1);
-        assert_eq!(vocab.insert("duplicate"), 0);
+        assert_eq!(vocab.insert("duplicate").expect("insert duplicate"), 0);
+        assert_eq!(vocab.insert("delta").expect("insert delta"), 1);
+        assert_eq!(
+            vocab.insert("duplicate").expect("insert duplicate again"),
+            0
+        );
         vocab.checkpoint().expect("checkpoint vocab trie");
     }
 
     let mut reopened = PersistentVocabARTrie::open(&path).expect("reopen vocab trie");
-    assert_eq!(reopened.insert("duplicate"), 0);
+    assert_eq!(reopened.insert("duplicate").expect("insert duplicate"), 0);
     assert_eq!(reopened.get_index("duplicate"), Some(0));
     assert_eq!(reopened.get_term(0), Some("duplicate".to_string()));
     assert_eq!(
-        reopened.insert("epsilon"),
+        reopened.insert("epsilon").expect("insert epsilon"),
         2,
         "duplicate replay must not consume a new index"
     );

@@ -102,11 +102,7 @@ impl<S: BlockStorage> super::dict_impl::PersistentVocabARTrie<S> {
     /// Check if an index exists in the vocabulary.
     #[inline]
     pub fn contains_index(&self, index: u64) -> bool {
-        if index < self.start_index {
-            return false;
-        }
-        let vec_index = index - self.start_index;
-        vec_index < self.entry_count.load(Ordering::Acquire) as u64
+        self.get_term(index).is_some()
     }
 
     /// Get the number of vocabulary entries.

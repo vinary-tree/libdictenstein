@@ -950,7 +950,7 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
                 let mut terms_recovered: u64 = 0;
                 let mut segments_used = Vec::new();
 
-                for segment_path in &segments {
+                'segments: for segment_path in &segments {
                     // Create reader for this segment
                     use crate::persistent_artrie::wal::WalReader;
 
@@ -964,7 +964,13 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
                     for result in reader.iter() {
                         let (_lsn, record) = match result {
                             Ok(r) => r,
-                            Err(_) => continue, // Skip corrupted records
+                            Err(e) => {
+                                log::warn!(
+                                    "Corrupted WAL record during rebuild; stopping at durable prefix: {:?}",
+                                    e
+                                );
+                                break 'segments;
+                            }
                         };
 
                         records_replayed += 1;
@@ -1227,6 +1233,110 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
         })
     }
 
+    fn apply_core_recovered_operation_no_wal(
+        &mut self,
+        op: crate::persistent_artrie::recovery::RecoveredOperation,
+    ) -> bool {
+        match op {
+            crate::persistent_artrie::recovery::RecoveredOperation::Insert {
+                term, value, ..
+            } => {
+                let term_str = String::from_utf8_lossy(&term);
+                if let Some(value_bytes) = value {
+                    match crate::serialization::bincode_compat::deserialize::<V>(&value_bytes) {
+                        Ok(value) => {
+                            self.insert_impl_no_wal_with_value(&term_str, value);
+                            true
+                        }
+                        Err(error) => {
+                            log::warn!(
+                                "Failed to deserialize recovered char insert value: {:?}",
+                                error
+                            );
+                            false
+                        }
+                    }
+                } else {
+                    self.insert_impl_no_wal(&term_str);
+                    true
+                }
+            }
+            crate::persistent_artrie::recovery::RecoveredOperation::Remove { term, .. } => {
+                let term_str = String::from_utf8_lossy(&term);
+                self.remove_impl_no_wal(&term_str);
+                true
+            }
+            crate::persistent_artrie::recovery::RecoveredOperation::Increment {
+                term,
+                delta,
+                result,
+                ..
+            } => {
+                let term_str = String::from_utf8_lossy(&term);
+                if result == 0 {
+                    self.increment_impl_no_wal(&term_str, delta);
+                    true
+                } else {
+                    match Self::value_from_recovered_i64(result) {
+                        Some(value) => {
+                            self.insert_impl_no_wal_with_value(&term_str, value);
+                            true
+                        }
+                        None => false,
+                    }
+                }
+            }
+            crate::persistent_artrie::recovery::RecoveredOperation::Upsert {
+                term, value, ..
+            } => {
+                let term_str = String::from_utf8_lossy(&term);
+                match crate::serialization::bincode_compat::deserialize::<V>(&value) {
+                    Ok(value) => {
+                        self.insert_impl_no_wal_with_value(&term_str, value);
+                        true
+                    }
+                    Err(error) => {
+                        log::warn!(
+                            "Failed to deserialize recovered char upsert value: {:?}",
+                            error
+                        );
+                        false
+                    }
+                }
+            }
+            crate::persistent_artrie::recovery::RecoveredOperation::CompareAndSwap {
+                term,
+                new_value,
+                success,
+                ..
+            } => {
+                if !success {
+                    return false;
+                }
+
+                let term_str = String::from_utf8_lossy(&term);
+                match crate::serialization::bincode_compat::deserialize::<V>(&new_value) {
+                    Ok(value) => {
+                        self.insert_impl_no_wal_with_value(&term_str, value);
+                        true
+                    }
+                    Err(error) => {
+                        log::warn!(
+                            "Failed to deserialize recovered char CAS value: {:?}",
+                            error
+                        );
+                        false
+                    }
+                }
+            }
+        }
+    }
+
+    fn value_from_recovered_i64(value: i64) -> Option<V> {
+        let bytes = crate::serialization::bincode_compat::serialize(&value).ok()?;
+        crate::serialization::bincode_compat::deserialize(&bytes).ok()
+    }
+
     /// Recover from archived WAL segments.
     ///
     /// This method collects all WAL archive segments and replays them
@@ -1272,55 +1382,17 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
         // Create fresh trie
         let mut trie = Self::create_with_config(path, config)?;
 
-        // Replay all segments
-        let mut records_replayed: u64 = 0;
-
-        for segment_path in &segments {
-            use crate::persistent_artrie::wal::WalReader;
-
-            let reader = match WalReader::new(segment_path) {
-                Ok(r) => r,
-                Err(_) => continue,
-            };
-
-            for result in reader.iter() {
-                let (_lsn, record) = match result {
-                    Ok(r) => r,
-                    Err(_) => continue,
-                };
-
-                records_replayed += 1;
-
-                use crate::persistent_artrie::wal::WalRecord;
-                match record {
-                    WalRecord::Insert { term, value } => {
-                        let term_str = String::from_utf8_lossy(&term);
-                        if let Some(value_bytes) = value {
-                            if let Ok(v) =
-                                crate::serialization::bincode_compat::deserialize::<V>(&value_bytes)
-                            {
-                                trie.insert_impl_no_wal_with_value(&term_str, v);
-                            }
-                        } else {
-                            trie.insert_impl_no_wal(&term_str);
-                        }
-                    }
-                    WalRecord::Remove { term } => {
-                        let term_str = String::from_utf8_lossy(&term);
-                        trie.remove(&term_str);
-                    }
-                    WalRecord::Upsert { term, value } => {
-                        let term_str = String::from_utf8_lossy(&term);
-                        if let Ok(v) =
-                            crate::serialization::bincode_compat::deserialize::<V>(&value)
-                        {
-                            trie.insert_impl_no_wal_with_value(&term_str, v);
-                        }
-                    }
-                    _ => {} // Skip other records
+        let (records_replayed, _) =
+            crate::persistent_artrie::recovery::rebuild_from_wal_segments(&segments, |op| {
+                if trie.apply_core_recovered_operation_no_wal(op) {
+                    Ok(())
+                } else {
+                    Err("failed to apply recovered archive operation".to_string())
                 }
-            }
-        }
+            })
+            .map_err(|error| PersistentARTrieError::RecoveryError {
+                reason: error.to_string(),
+            })?;
 
         Ok((
             trie,

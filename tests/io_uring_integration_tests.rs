@@ -257,9 +257,9 @@ fn test_vocab_trie_create_insert_lookup() {
     let mut vocab: PersistentVocabARTrie<_> =
         PersistentVocabARTrie::create_with_io_uring(&path).expect("create with io_uring");
 
-    let idx0 = vocab.insert("hello");
-    let idx1 = vocab.insert("world");
-    let idx_dup = vocab.insert("hello"); // duplicate returns existing index
+    let idx0 = vocab.insert("hello").expect("insert hello");
+    let idx1 = vocab.insert("world").expect("insert world");
+    let idx_dup = vocab.insert("hello").expect("insert duplicate hello"); // duplicate returns existing index
 
     assert_eq!(idx0, 0);
     assert_eq!(idx1, 1);
@@ -362,7 +362,9 @@ fn test_vocab_trie_large_dataset() {
         let mut vocab: PersistentVocabARTrie<_> =
             PersistentVocabARTrie::create_with_io_uring(&path).expect("create");
         for i in 0..count {
-            let idx = vocab.insert(&format!("term_{:06}", i));
+            let idx = vocab
+                .insert(&format!("term_{:06}", i))
+                .expect("insert large vocab term");
             assert_eq!(
                 idx, i as u64,
                 "First insert of term_{:06} should get index {}",

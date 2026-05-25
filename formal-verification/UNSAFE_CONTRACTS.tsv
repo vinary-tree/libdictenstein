@@ -1,73 +1,73 @@
-# contract	scope	obligation	evidence
-block-storage-default-fixed-buffer-registration	fixed-buffer trait default	Default backends must not report fixed-buffer capability, and fixed I/O must fall back to ordinary block I/O.	unsafe_boundary_contracts; IoUringFixedBufferOwnership.tla
-block-storage-fixed-buffer-registration-contract	fixed-buffer trait unsafe fn	Caller keeps registered buffer pointers valid and unmoved until explicit unregister or backend drop.	block_storage docs; IoUringFixedBufferOwnership.tla
-buffer-manager-aligned-buffer-ownership	buffer pool raw mutation	AlignedBlock storage remains owned by BufferManager and is only mutably exposed through a pinned write guard.	buffer_manager unit tests; storage correspondence
-buffer-manager-fixed-buffer-registration	buffer pool registration	BufferManager may use fixed I/O only after registration succeeds and the backend reports fixed-buffer support.	unsafe_boundary_contracts; IoUringFixedBufferOwnership.tla
-buffer-manager-test-fixed-buffer-registration	buffer pool registration test double	Test-only fixed-buffer storage validates non-null full-block buffers, reports fixed capability only while registered, and unregisters before the observed owner drop.	buffer_manager fixed-buffer registration unit test; IoUringFixedBufferOwnership.tla
-byte-lockfree-child-arc-handoff	byte lock-free child pointer	Raw child pointers are converted to Arc only after ownership is retained by the published node.	LockFreeARTrieLinearizability.tla; loom correspondence
-byte-mvcc-root-snapshot	byte MVCC root snapshot	Read transactions hold a stable root snapshot for the transaction lifetime.	VersionLifecycle.tla; formal correspondence
-byte-node16-prefix-copy	byte node prefix copy	Prefix bytes are copied within the declared fixed prefix capacity.	node tests; structural correspondence
-byte-persistent-node-thread-contract	byte persistent node Send/Sync	Node fields are safe for shared access under the node ownership and synchronization discipline.	compile-time Send/Sync checks
-char-child-box-reclaim	char raw child reclaim	Box::from_raw is called only for a detached child pointer and exactly once.	PointerOwnership.tla; Miri-gated child tests
-char-child-box-replacement	char raw child replacement	Replacing a child detaches and returns the old box without aliasing the new child.	PointerOwnership.tla; child replacement tests
-char-child-raw-map-iteration	char raw child iteration	Iteration creates shared references only while the parent owns the child map.	PointerOwnership.tla; dictionary law tests
-char-child-read-only-traversal	char raw child traversal	Shared references are read-only and do not overlap mutable borrows.	PointerOwnership.tla; traversal correspondence
-char-child-unique-mutation	char raw child mutation	Mutable references require unique access through the parent mutation path.	PointerOwnership.tla; mutation correspondence
-char-disk-box-ownership	char disk load ownership	Raw boxes reconstructed during disk load are either installed into ownership structures or dropped once.	PointerOwnership.tla; reopen tests
-char-disk-node-map-resolution	char node-map raw references	Node-map entries are valid only while the pointed node remains live.	PointerOwnership.tla; vocab persistence ownership analogs
-char-disk-swizzled-pointer-resolution	char swizzled pointer resolution	Disk pointers resolve to live nodes or fail without fabricating raw references.	PointerOwnership.tla; swizzled pointer tests
-char-lockfree-child-arc-handoff	char lock-free child pointer	Arc handoff preserves child lifetime during lock-free publication.	LockFreeIndexedOverlay.tla; loom correspondence
-char-lockfree-persistent-node-mutation	char lock-free persistent mutation	Persistent-node mutation happens only behind the lock-free overlay's exclusive update path.	LockFreeIndexedOverlay.tla; loom correspondence
-char-mutation-core-traversal	char mutation traversal	Traversal raw references stay inside the live trie while no exclusive mutation aliases them.	PointerOwnership.tla; mutation correspondence
-char-mutation-core-unique-borrow	char mutation unique borrow	Mutation creates one active mutable borrow for the current raw node.	PointerOwnership.tla; Miri-gated child tests
-char-mvcc-root-snapshot	char MVCC root snapshot	Read transactions hold a stable root snapshot for the transaction lifetime.	VersionLifecycle.tla; formal correspondence
-char-node16-prefix-copy	char node prefix copy	Prefix chars are copied within the declared fixed prefix capacity.	node tests; structural correspondence
-char-persist-child-serialization	char persistence child read	Serialization reads live child pointers without taking ownership.	storage correspondence; reopen tests
-char-persistent-node-thread-contract	char persistent node Send/Sync	Node fields are safe for shared access under the node ownership and synchronization discipline.	compile-time Send/Sync checks
-char-public-node-edge-snapshot	char public edge snapshot	Public edge snapshots clone data before the underlying raw traversal can change.	dictionary law tests
-char-public-node-mutation	char public node mutation	Public mutation holds unique trie access before raw mutable dereference.	mutation correspondence
-char-public-node-thread-contract	char public node Send/Sync	Node handles are safe to send/share only for DictionaryValue bounds that satisfy the contract.	compile-time Send/Sync checks
-char-public-node-traversal	char public node traversal	Public traversal uses shared raw references without mutation aliasing.	dictionary law tests
-compact-encoding-unaligned-read	compact encoding	Unaligned integer reads are bounded by prior slice-length checks.	code review; parser rejection tests
-concurrent-vocab-rwlock-thread-contract	concurrent vocab Send/Sync	Shared mutable state is protected by RwLock or channels before cross-thread sharing.	compile-time Send/Sync checks; concurrent tests
-io-uring-fixed-buffer-registration-contract	io_uring fixed buffers	Registered buffers are non-null, block-sized, aligned, kept alive during fixed I/O, and unregistered before owner drop.	IoUringFixedBufferOwnership.tla; io_uring storage tests
-io-uring-manager-thread-contract	io_uring manager Send/Sync	File, rings, cache, and buffer pool mutations are behind atomics or mutexes.	compile-time Send/Sync checks; storage correspondence
-io-uring-mmap-direct-io-boundary	io_uring direct I/O	SQE buffers are aligned and remain valid until submit_and_wait completes.	io_uring storage tests; IoUringFixedBufferOwnership.tla; IoUringSqeCqeLifecycle.tla; StorageSyscallOutcome.tla
-io-uring-syscall-boundary	io_uring syscall boundary	Raw syscall return values are checked before the operation is treated as successful.	io_uring storage tests; IoUringSqeCqeLifecycle.tla; StorageSyscallOutcome.tla
-mmap-manager-map-lifetime	mmap map lifetime	Memory maps live at least as long as references derived from them.	MmapBlockStorage.tla; storage correspondence
-mmap-manager-raw-pointer-contract	mmap raw pointer	Returned raw pointers are inside the declared block and mapped file range.	MmapBlockStorage.tla; raw_ptr bounds test
-mmap-manager-remap-lifetime	mmap remap lifetime	Remap publishes the new mapping only after file extension succeeds.	MmapBlockStorage.tla
-optimistic-cell-rwlock-thread-contract	OptimisticCell Send/Sync	Data access is serialized by RwLock while version counters provide optimistic validation.	formal correspondence tests
-persistent-artrie-mmap-open	persistent ARTrie mmap open	Opened mappings are validated before the trie treats them as storage.	reopen correspondence tests
-persistent-vocab-storage-thread-contract	persistent vocab Send/Sync	BlockStorage supplies Send/Sync and interior mutation is synchronized.	compile-time Send/Sync checks
-read-transaction-root-snapshot-thread-contract	read transaction Send	Read transactions carry immutable root snapshots across threads.	VersionLifecycle.tla; compile-time checks
-scdawg-char-handle-rwlock-thread-contract	Unicode SCDAWG handle Send/Sync	Handles share immutable/RwLock-protected SCDAWG state during read traversal.	unsafe_boundary_contracts
-scdawg-handle-rwlock-thread-contract	byte SCDAWG handle Send/Sync	Handles share immutable/RwLock-protected SCDAWG state during read traversal.	unsafe_boundary_contracts
-substring-test-mock-thread-contract	substring test mock	Send/Sync is limited to the immutable test mock node.	substring tests
-swizzled-pointer-raw-extraction-contract	swizzled pointer raw extraction	Unchecked raw extraction is valid only for swizzled in-memory pointers.	PointerOwnership.tla; swizzled pointer tests
-swizzled-pointer-unit-test-deref	swizzled pointer unit tests	Unit-test dereferences use stack values that outlive the checked pointer operation.	swizzled pointer unit tests
-traversal-context-nonnull-reference	traversal context NonNull	NonNull references are created only from live traversal roots.	traversal tests
-vocab-child-box-reclaim	vocab raw child reclaim	Box::from_raw is called only for a detached child pointer and exactly once.	PointerOwnership.tla; Miri-gated child tests
-vocab-child-box-replacement	vocab raw child replacement	Replacing a child detaches and returns the old box without aliasing the new child.	PointerOwnership.tla; child replacement tests
-vocab-child-raw-map-iteration	vocab raw child iteration	Iteration creates shared references only while the parent owns the child map.	PointerOwnership.tla; vocab tests
-vocab-child-read-only-traversal	vocab raw child traversal	Shared references are read-only and do not overlap mutable borrows.	PointerOwnership.tla; query correspondence
-vocab-child-unique-mutation	vocab raw child mutation	Mutable references require unique access through the parent mutation path.	PointerOwnership.tla; vocab mutation tests
-vocab-disk-box-ownership	vocab disk load ownership	Raw boxes reconstructed during disk load are either installed into ownership structures or dropped once.	VocabPersistenceOwnership.tla; reopen tests
-vocab-disk-child-serialization	vocab persistence child read	Serialization reads live child pointers without taking ownership.	VocabPersistenceOwnership.tla; checkpoint tests
-vocab-disk-node-map-rebuild-contract	vocab node-map rebuild	Node-map rebuild installs entries only for live nodes and clears stale entries before drop.	VocabPersistenceOwnership.tla; eviction tests
-vocab-disk-root-box-reclaim	vocab disk root reclaim	Root Box::from_raw takes ownership of a freshly detached root pointer exactly once.	VocabPersistenceOwnership.tla; reopen tests
-vocab-disk-root-serialization	vocab root serialization	Root serialization reads a live root pointer without taking ownership.	checkpoint correspondence
-vocab-eviction-child-drop	vocab eviction child drop	Eviction invalidates side-table references before dropping a child subtree.	VocabPersistenceOwnership.tla; eviction tests
-vocab-eviction-target-reference	vocab eviction target reference	Eviction target references are live for the duration of the eviction check.	VocabPersistenceOwnership.tla; eviction tests
-vocab-io-uring-root-box-reclaim	vocab io_uring root reclaim	io_uring reopen root Box::from_raw takes ownership exactly once after validation.	VocabPersistenceOwnership.tla; io_uring integration tests
-vocab-lockfree-cas-child-arc-handoff	vocab lock-free CAS child	Arc handoff preserves child lifetime during lock-free CAS publication.	LockFreeIndexedOverlay.tla; loom correspondence
-vocab-lockfree-cas-root-arc-handoff	vocab lock-free CAS root	Root Arc handoff preserves lifetime across CAS winners and losers.	LockFreeIndexedOverlay.tla; loom correspondence
-vocab-lockfree-child-arc-handoff	vocab lock-free child	Arc handoff preserves child lifetime during lock-free publication.	LockFreeIndexedOverlay.tla; loom correspondence
-vocab-lockfree-root-cas-arc-handoff	vocab lock-free root	Root Arc handoff preserves lifetime across CAS winners and losers.	LockFreeIndexedOverlay.tla; loom correspondence
-vocab-lockfree-thread-contract	vocab lock-free Send/Sync	Lock-free vocab shared state is protected by atomics and Arc ownership.	compile-time Send/Sync checks; loom correspondence
-vocab-mmap-root-box-reclaim	vocab mmap root reclaim	mmap reopen root Box::from_raw takes ownership exactly once after validation.	VocabPersistenceOwnership.tla; reopen tests
-vocab-public-node-mutation	vocab public node mutation	Public mutation holds unique trie access before raw mutable dereference.	vocab mutation tests
-vocab-query-node-map-traversal	vocab node-map query	Query traversal dereferences only live node-map entries.	VocabPersistenceOwnership.tla; query tests
-vocab-reverse-index-map-lifetime	vocab reverse-index mmap	Reverse-index maps live at least as long as references derived from them.	reverse-index tests
-vocab-reverse-index-remap-lifetime	vocab reverse-index remap	Reverse-index remap publishes the new mapping only after file extension succeeds.	reverse-index tests
-wal-sync-raw-fd-boundary	WAL fsync raw fd	Raw file descriptors are obtained from live files and failed sync outcomes do not advance the durable frontier.	WAL correspondence; group-commit tests; StorageSyscallOutcome.tla
+# contract	scope	obligation	coverage	status	evidence
+block-storage-default-fixed-buffer-registration	fixed-buffer trait default	Default backends must not report fixed-buffer capability, and fixed I/O must fall back to ordinary block I/O.	tla,correspondence	covered	unsafe_boundary_contracts; IoUringFixedBufferOwnership.tla
+block-storage-fixed-buffer-registration-contract	fixed-buffer trait unsafe fn	Caller keeps registered buffer pointers valid and unmoved until explicit unregister or backend drop.	tla	covered	block_storage docs; IoUringFixedBufferOwnership.tla
+buffer-manager-aligned-buffer-ownership	buffer pool raw mutation	AlignedBlock storage remains owned by BufferManager and is only mutably exposed through a pinned write guard.	correspondence,unit	covered	buffer_manager unit tests; storage correspondence
+buffer-manager-fixed-buffer-registration	buffer pool registration	BufferManager may use fixed I/O only after registration succeeds and the backend reports fixed-buffer support.	tla,correspondence	covered	unsafe_boundary_contracts; IoUringFixedBufferOwnership.tla
+buffer-manager-test-fixed-buffer-registration	buffer pool registration test double	Test-only fixed-buffer storage validates non-null full-block buffers, reports fixed capability only while registered, and unregisters before the observed owner drop.	tla,unit	covered	buffer_manager fixed-buffer registration unit test; IoUringFixedBufferOwnership.tla
+byte-lockfree-child-arc-handoff	byte lock-free child pointer	Raw child pointers are converted to Arc only after ownership is retained by the published node.	tla,loom	covered	LockFreeARTrieLinearizability.tla; loom correspondence
+byte-mvcc-root-snapshot	byte MVCC root snapshot	Read transactions hold a stable root snapshot for the transaction lifetime.	tla,correspondence	covered	VersionLifecycle.tla; formal correspondence
+byte-node16-prefix-copy	byte node prefix copy	Prefix bytes are copied within the declared fixed prefix capacity.	correspondence,unit	covered	node tests; structural correspondence
+byte-persistent-node-thread-contract	byte persistent node Send/Sync	Node fields are safe for shared access under the node ownership and synchronization discipline.	compile-time	covered	compile-time Send/Sync checks
+char-child-box-reclaim	char raw child reclaim	Box::from_raw is called only for a detached child pointer and exactly once.	tla,miri	miri-wired	PointerOwnership.tla; Miri-gated child tests
+char-child-box-replacement	char raw child replacement	Replacing a child detaches and returns the old box without aliasing the new child.	tla,miri,correspondence	miri-wired	PointerOwnership.tla; child replacement tests
+char-child-raw-map-iteration	char raw child iteration	Iteration creates shared references only while the parent owns the child map.	tla,correspondence	covered	PointerOwnership.tla; dictionary law tests
+char-child-read-only-traversal	char raw child traversal	Shared references are read-only and do not overlap mutable borrows.	tla,correspondence	covered	PointerOwnership.tla; traversal correspondence
+char-child-unique-mutation	char raw child mutation	Mutable references require unique access through the parent mutation path.	tla,correspondence	covered	PointerOwnership.tla; mutation correspondence
+char-disk-box-ownership	char disk load ownership	Raw boxes reconstructed during disk load are either installed into ownership structures or dropped once.	tla,correspondence	covered	PointerOwnership.tla; reopen tests
+char-disk-node-map-resolution	char node-map raw references	Node-map entries are valid only while the pointed node remains live.	tla,correspondence	covered	PointerOwnership.tla; vocab persistence ownership analogs
+char-disk-swizzled-pointer-resolution	char swizzled pointer resolution	Disk pointers resolve to live nodes or fail without fabricating raw references.	tla,correspondence	covered	PointerOwnership.tla; swizzled pointer tests
+char-lockfree-child-arc-handoff	char lock-free child pointer	Arc handoff preserves child lifetime during lock-free publication.	tla,loom	covered	LockFreeIndexedOverlay.tla; loom correspondence
+char-lockfree-persistent-node-mutation	char lock-free persistent mutation	Persistent-node mutation happens only behind the lock-free overlay's exclusive update path.	tla,loom	covered	LockFreeIndexedOverlay.tla; loom correspondence
+char-mutation-core-traversal	char mutation traversal	Traversal raw references stay inside the live trie while no exclusive mutation aliases them.	tla,correspondence	covered	PointerOwnership.tla; mutation correspondence
+char-mutation-core-unique-borrow	char mutation unique borrow	Mutation creates one active mutable borrow for the current raw node.	tla,miri	miri-wired	PointerOwnership.tla; Miri-gated child tests
+char-mvcc-root-snapshot	char MVCC root snapshot	Read transactions hold a stable root snapshot for the transaction lifetime.	tla,correspondence	covered	VersionLifecycle.tla; formal correspondence
+char-node16-prefix-copy	char node prefix copy	Prefix chars are copied within the declared fixed prefix capacity.	correspondence,unit	covered	node tests; structural correspondence
+char-persist-child-serialization	char persistence child read	Serialization reads live child pointers without taking ownership.	correspondence	covered	storage correspondence; reopen tests
+char-persistent-node-thread-contract	char persistent node Send/Sync	Node fields are safe for shared access under the node ownership and synchronization discipline.	compile-time	covered	compile-time Send/Sync checks
+char-public-node-edge-snapshot	char public edge snapshot	Public edge snapshots clone data before the underlying raw traversal can change.	correspondence	covered	dictionary law tests
+char-public-node-mutation	char public node mutation	Public mutation holds unique trie access before raw mutable dereference.	correspondence	covered	mutation correspondence
+char-public-node-thread-contract	char public node Send/Sync	Node handles are safe to send/share only for DictionaryValue bounds that satisfy the contract.	compile-time	covered	compile-time Send/Sync checks
+char-public-node-traversal	char public node traversal	Public traversal uses shared raw references without mutation aliasing.	correspondence	covered	dictionary law tests
+compact-encoding-unaligned-read	compact encoding	Unaligned integer reads are bounded by prior slice-length checks.	correspondence	covered	code review; parser rejection tests
+concurrent-vocab-rwlock-thread-contract	concurrent vocab Send/Sync	Shared mutable state is protected by RwLock or channels before cross-thread sharing.	compile-time,correspondence	covered	compile-time Send/Sync checks; concurrent tests
+io-uring-fixed-buffer-registration-contract	io_uring fixed buffers	Registered buffers are non-null, block-sized, aligned, kept alive during fixed I/O, and unregistered before owner drop.	tla,correspondence	covered	IoUringFixedBufferOwnership.tla; io_uring storage tests
+io-uring-manager-thread-contract	io_uring manager Send/Sync	File, rings, cache, and buffer pool mutations are behind atomics or mutexes.	compile-time,correspondence	covered	compile-time Send/Sync checks; storage correspondence
+io-uring-mmap-direct-io-boundary	io_uring direct I/O	SQE buffers are aligned and remain valid until submit_and_wait completes.	tla,correspondence	covered	io_uring storage tests; IoUringFixedBufferOwnership.tla; IoUringSqeCqeLifecycle.tla; StorageSyscallOutcome.tla
+io-uring-syscall-boundary	io_uring syscall boundary	Raw syscall return values are checked before the operation is treated as successful.	tla,correspondence	covered	io_uring storage tests; IoUringSqeCqeLifecycle.tla; StorageSyscallOutcome.tla
+mmap-manager-map-lifetime	mmap map lifetime	Memory maps live at least as long as references derived from them.	tla,correspondence	covered	MmapBlockStorage.tla; storage correspondence
+mmap-manager-raw-pointer-contract	mmap raw pointer	Returned raw pointers are inside the declared block and mapped file range.	tla,correspondence	covered	MmapBlockStorage.tla; raw_ptr bounds test
+mmap-manager-remap-lifetime	mmap remap lifetime	Remap publishes the new mapping only after file extension succeeds.	tla	covered	MmapBlockStorage.tla
+optimistic-cell-rwlock-thread-contract	OptimisticCell Send/Sync	Data access is serialized by RwLock while version counters provide optimistic validation.	correspondence	covered	formal correspondence tests
+persistent-artrie-mmap-open	persistent ARTrie mmap open	Opened mappings are validated before the trie treats them as storage.	correspondence	covered	reopen correspondence tests
+persistent-vocab-storage-thread-contract	persistent vocab Send/Sync	BlockStorage supplies Send/Sync and interior mutation is synchronized.	compile-time	covered	compile-time Send/Sync checks
+read-transaction-root-snapshot-thread-contract	read transaction Send	Read transactions carry immutable root snapshots across threads.	tla,compile-time	covered	VersionLifecycle.tla; compile-time checks
+scdawg-char-handle-rwlock-thread-contract	Unicode SCDAWG handle Send/Sync	Handles share immutable/RwLock-protected SCDAWG state during read traversal.	correspondence	covered	unsafe_boundary_contracts
+scdawg-handle-rwlock-thread-contract	byte SCDAWG handle Send/Sync	Handles share immutable/RwLock-protected SCDAWG state during read traversal.	correspondence	covered	unsafe_boundary_contracts
+substring-test-mock-thread-contract	substring test mock	Send/Sync is limited to the immutable test mock node.	correspondence	covered	substring tests
+swizzled-pointer-raw-extraction-contract	swizzled pointer raw extraction	Unchecked raw extraction is valid only for swizzled in-memory pointers.	tla,miri,correspondence	miri-wired	PointerOwnership.tla; swizzled pointer tests
+swizzled-pointer-unit-test-deref	swizzled pointer unit tests	Unit-test dereferences use stack values that outlive the checked pointer operation.	unit	covered	swizzled pointer unit tests
+traversal-context-nonnull-reference	traversal context NonNull	NonNull references are created only from live traversal roots.	correspondence	covered	traversal tests
+vocab-child-box-reclaim	vocab raw child reclaim	Box::from_raw is called only for a detached child pointer and exactly once.	tla,miri	miri-wired	PointerOwnership.tla; Miri-gated child tests
+vocab-child-box-replacement	vocab raw child replacement	Replacing a child detaches and returns the old box without aliasing the new child.	tla,miri,correspondence	miri-wired	PointerOwnership.tla; child replacement tests
+vocab-child-raw-map-iteration	vocab raw child iteration	Iteration creates shared references only while the parent owns the child map.	tla,correspondence	covered	PointerOwnership.tla; vocab tests
+vocab-child-read-only-traversal	vocab raw child traversal	Shared references are read-only and do not overlap mutable borrows.	tla,correspondence	covered	PointerOwnership.tla; query correspondence
+vocab-child-unique-mutation	vocab raw child mutation	Mutable references require unique access through the parent mutation path.	tla,correspondence	covered	PointerOwnership.tla; vocab mutation tests
+vocab-disk-box-ownership	vocab disk load ownership	Raw boxes reconstructed during disk load are either installed into ownership structures or dropped once.	tla,correspondence	covered	VocabPersistenceOwnership.tla; reopen tests
+vocab-disk-child-serialization	vocab persistence child read	Serialization reads live child pointers without taking ownership.	tla,correspondence	covered	VocabPersistenceOwnership.tla; checkpoint tests
+vocab-disk-node-map-rebuild-contract	vocab node-map rebuild	Node-map rebuild installs entries only for live nodes and clears stale entries before drop.	tla,miri,correspondence	miri-wired	VocabPersistenceOwnership.tla; eviction tests
+vocab-disk-root-box-reclaim	vocab disk root reclaim	Root Box::from_raw takes ownership of a freshly detached root pointer exactly once.	tla,correspondence	covered	VocabPersistenceOwnership.tla; reopen tests
+vocab-disk-root-serialization	vocab root serialization	Root serialization reads a live root pointer without taking ownership.	correspondence	covered	checkpoint correspondence
+vocab-eviction-child-drop	vocab eviction child drop	Eviction invalidates side-table references before dropping a child subtree.	tla,miri,correspondence	miri-wired	VocabPersistenceOwnership.tla; eviction tests
+vocab-eviction-target-reference	vocab eviction target reference	Eviction target references are live for the duration of the eviction check.	tla,correspondence	covered	VocabPersistenceOwnership.tla; eviction tests
+vocab-io-uring-root-box-reclaim	vocab io_uring root reclaim	io_uring reopen root Box::from_raw takes ownership exactly once after validation.	tla,correspondence	covered	VocabPersistenceOwnership.tla; io_uring integration tests
+vocab-lockfree-cas-child-arc-handoff	vocab lock-free CAS child	Arc handoff preserves child lifetime during lock-free CAS publication.	tla,loom	covered	LockFreeIndexedOverlay.tla; loom correspondence
+vocab-lockfree-cas-root-arc-handoff	vocab lock-free CAS root	Root Arc handoff preserves lifetime across CAS winners and losers.	tla,loom	covered	LockFreeIndexedOverlay.tla; loom correspondence
+vocab-lockfree-child-arc-handoff	vocab lock-free child	Arc handoff preserves child lifetime during lock-free publication.	tla,loom	covered	LockFreeIndexedOverlay.tla; loom correspondence
+vocab-lockfree-root-cas-arc-handoff	vocab lock-free root	Root Arc handoff preserves lifetime across CAS winners and losers.	tla,loom	covered	LockFreeIndexedOverlay.tla; loom correspondence
+vocab-lockfree-thread-contract	vocab lock-free Send/Sync	Lock-free vocab shared state is protected by atomics and Arc ownership.	compile-time,loom	covered	compile-time Send/Sync checks; loom correspondence
+vocab-mmap-root-box-reclaim	vocab mmap root reclaim	mmap reopen root Box::from_raw takes ownership exactly once after validation.	tla,correspondence	covered	VocabPersistenceOwnership.tla; reopen tests
+vocab-public-node-mutation	vocab public node mutation	Public mutation holds unique trie access before raw mutable dereference.	correspondence	covered	vocab mutation tests
+vocab-query-node-map-traversal	vocab node-map query	Query traversal dereferences only live node-map entries.	tla,correspondence	covered	VocabPersistenceOwnership.tla; query tests
+vocab-reverse-index-map-lifetime	vocab reverse-index mmap	Reverse-index maps live at least as long as references derived from them.	correspondence	covered	reverse-index tests
+vocab-reverse-index-remap-lifetime	vocab reverse-index remap	Reverse-index remap publishes the new mapping only after file extension succeeds.	correspondence	covered	reverse-index tests
+wal-sync-raw-fd-boundary	WAL fsync raw fd	Raw file descriptors are obtained from live files and failed sync outcomes do not advance the durable frontier.	tla,correspondence	covered	WAL correspondence; group-commit tests; StorageSyscallOutcome.tla
