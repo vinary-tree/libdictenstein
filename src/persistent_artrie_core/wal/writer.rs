@@ -13,6 +13,8 @@ use std::sync::Mutex;
 
 use super::{crc32, Lsn, WalConfig, WalError, WalHeader, WalReader, WalRecord};
 
+static ARCHIVE_SEGMENT_COUNTER: AtomicU64 = AtomicU64::new(0);
+
 /// Write-Ahead Log writer.
 ///
 /// Handles appending records to the log with optional group commit.
@@ -280,6 +282,23 @@ impl WalWriter {
         }
     }
 
+    /// Set the minimum synced LSN when durable retained segments are known.
+    pub(super) fn set_min_synced_lsn(&self, min_lsn: Lsn) {
+        loop {
+            let current = self.synced_lsn.load(Ordering::Acquire);
+            if current >= min_lsn {
+                break;
+            }
+            if self
+                .synced_lsn
+                .compare_exchange(current, min_lsn, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+            {
+                break;
+            }
+        }
+    }
+
     /// Write a checkpoint record and update the header.
     pub fn checkpoint(&self, checkpoint_lsn: Lsn) -> Result<Lsn, WalError> {
         let timestamp = std::time::SystemTime::now()
@@ -344,9 +363,68 @@ impl WalWriter {
         Ok(())
     }
 
+    pub(super) fn unique_archive_segment_path(archive_dir: &Path) -> PathBuf {
+        loop {
+            let nanos = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos();
+            let counter = ARCHIVE_SEGMENT_COUNTER.fetch_add(1, Ordering::AcqRel);
+            let segment_name = format!(
+                "wal_{:020}_{}_{}.segment",
+                nanos,
+                std::process::id(),
+                counter
+            );
+            let candidate = archive_dir.join(segment_name);
+            if !candidate.exists() {
+                return candidate;
+            }
+        }
+    }
+
+    pub(super) fn sort_segments_by_first_lsn(segments: &mut [PathBuf]) {
+        segments.sort_by(|a, b| {
+            let lsn_a = Self::segment_first_lsn(a);
+            let lsn_b = Self::segment_first_lsn(b);
+            match (lsn_a, lsn_b) {
+                (Some(lsn_a), Some(lsn_b)) => lsn_a.cmp(&lsn_b).then_with(|| a.cmp(b)),
+                (Some(_), None) => std::cmp::Ordering::Less,
+                (None, Some(_)) => std::cmp::Ordering::Greater,
+                (None, None) => a.cmp(b),
+            }
+        });
+    }
+
+    pub(super) fn max_lsn_in_segments(segments: &[PathBuf]) -> Option<Lsn> {
+        let mut max_lsn = None;
+        for path in segments {
+            let Ok(reader) = WalReader::new(path) else {
+                continue;
+            };
+            for result in reader.iter() {
+                let Ok((lsn, _)) = result else {
+                    continue;
+                };
+                max_lsn = Some(max_lsn.map_or(lsn, |current: Lsn| current.max(lsn)));
+            }
+        }
+        max_lsn
+    }
+
+    fn segment_first_lsn(segment_path: &Path) -> Option<Lsn> {
+        let mut reader = WalReader::new(segment_path).ok()?;
+        reader
+            .next_record()
+            .and_then(|result| result.ok())
+            .map(|(lsn, _)| lsn)
+    }
+
     /// Rotate WAL to archive directory - O(1) filesystem rename operation.
     pub fn rotate_to_archive(&self, config: &WalConfig) -> Result<PathBuf, WalError> {
         self.sync()?;
+        let next_lsn_after_rotation = self.next_lsn.load(Ordering::Acquire);
+        let synced_lsn_after_rotation = self.synced_lsn.load(Ordering::Acquire);
 
         let archive_dir = if config.archive_dir.is_absolute() {
             config.archive_dir.clone()
@@ -358,12 +436,7 @@ impl WalWriter {
         };
         fs::create_dir_all(&archive_dir).map_err(|e| WalError::Io(e))?;
 
-        let timestamp = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis();
-        let segment_name = format!("wal_{}.segment", timestamp);
-        let archive_path = archive_dir.join(&segment_name);
+        let archive_path = Self::unique_archive_segment_path(&archive_dir);
 
         let mut file = self.file.lock().expect("WAL lock poisoned");
 
@@ -387,8 +460,10 @@ impl WalWriter {
         writer.flush()?;
 
         *self.file.lock().expect("WAL lock poisoned") = writer;
-        self.next_lsn.store(1, Ordering::Release);
-        self.synced_lsn.store(0, Ordering::Release);
+        self.next_lsn
+            .store(next_lsn_after_rotation, Ordering::Release);
+        self.synced_lsn
+            .store(synced_lsn_after_rotation, Ordering::Release);
         *self.header.lock().expect("header lock poisoned") = header;
 
         let _ = Self::prune_segments_if_needed(&archive_dir, config);
@@ -419,8 +494,6 @@ impl WalWriter {
             }
         }
 
-        segments.sort();
-
         if self.path.exists() {
             let metadata = fs::metadata(&self.path).map_err(|e| WalError::Io(e))?;
             if metadata.len() > WalHeader::SIZE as u64 {
@@ -428,11 +501,16 @@ impl WalWriter {
             }
         }
 
+        Self::sort_segments_by_first_lsn(&mut segments);
+
         Ok(segments)
     }
 
     /// Prune old WAL segments to stay within limits.
-    fn prune_segments_if_needed(archive_dir: &Path, config: &WalConfig) -> Result<(), WalError> {
+    pub(super) fn prune_segments_if_needed(
+        archive_dir: &Path,
+        config: &WalConfig,
+    ) -> Result<(), WalError> {
         if !archive_dir.exists() {
             return Ok(());
         }

@@ -43,8 +43,8 @@ formal-verification/
 │   ├── PART.cfg               # TLC configuration (no crash)
 │   └── PART_crash.cfg         # TLC configuration (with crash)
 │
-└── rocq/                      # Rocq/Coq proofs (43 .v files, 17,738 LOC,
-    │                            820 theorem/lemma propositions,
+└── rocq/                      # Rocq/Coq proofs (44 .v files, 18,205 LOC,
+    │                            848 theorem/lemma propositions,
     │                            0 Admitted / 0 Axiom / 0 Parameter)
     ├── Makefile               # Build system
     ├── Spec/                  # Specifications
@@ -66,6 +66,7 @@ formal-verification/
     │   ├── PersistentLazyMutationSpec.v # Lazy mutation/WAL atomicity laws
     │   ├── PersistentWalAtomicitySpec.v # Persistent write-before-mutation laws
     │   ├── PersistentCheckpointRetentionSpec.v # Checkpoint/WAL retention laws
+    │   ├── PersistentWalSegmentLifecycleSpec.v # WAL segment lifecycle laws
     │   ├── SubstringSearchSpec.v # Exact substring candidate laws
     │   ├── ScdawgOccurrenceSpec.v # SCDAWG occurrence-construction laws
     │   ├── FuzzyCandidateCoverageSpec.v # WallBreaker candidate coverage laws
@@ -193,9 +194,8 @@ tag is defined in `formal-verification/UNSAFE_CONTRACTS.tsv`. The default
 harness includes the DynamicDawg mutation, DynamicDawgU64 sequence, Bloom filter,
 double-array trie, valued set-combinator, persistent merge, persistent prefix,
 root descriptor/reopen, persistent lazy mutation, persistent WAL atomicity,
-checkpoint retention,
-substring, SCDAWG
-occurrence, and fuzzy candidate coverage targets plus the feature-gated valued semiring and public
+checkpoint retention, WAL segment lifecycle, substring, SCDAWG occurrence, and
+fuzzy candidate coverage targets plus the feature-gated valued semiring and public
 serialization targets under `--features lling-llang`,
 `--features serialization`, `--features "serialization protobuf compression"`,
 and `--features "persistent-artrie parallel-merge"`. Set
@@ -302,19 +302,24 @@ RUN_IO_URING=1 scripts/verify-formal-correspondence.sh
    skip thresholds, invalid checkpoints cannot justify truncation, and active
    WAL tails are retained before corruption rebuild
    — see `Spec/PersistentCheckpointRetentionSpec.v`
-19. **Substring Candidate Correctness**: non-empty exact substring queries return
+19. **WAL Segment Lifecycle Safety**: archive/pending/active segment collection
+   is ordered by record LSNs rather than filenames, rotations preserve
+   monotonic LSN state, reopen continues after retained archives, and
+   checkpoint-covered archive pruning is safe
+   — see `Spec/PersistentWalSegmentLifecycleSpec.v`
+20. **Substring Candidate Correctness**: non-empty exact substring queries return
    precisely the reference `(term, position, length)` candidate set needed by
    fuzzy-search transducers
    — see `Spec/SubstringSearchSpec.v`
-20. **SCDAWG Occurrence Construction**: forward traversal, left-extension
+21. **SCDAWG Occurrence Construction**: forward traversal, left-extension
    closure, handle-based `locations_at`, public `locations`, and `freq` refine
    the same reference occurrence relation
    — see `Spec/ScdawgOccurrenceSpec.v`
-21. **Fuzzy Candidate Coverage**: a `budget + 1` nonempty query-piece split
+22. **Fuzzy Candidate Coverage**: a `budget + 1` nonempty query-piece split
    leaves at least one exact piece candidate for any term whose edit witness
    damages at most `budget` pieces
    — see `Spec/FuzzyCandidateCoverageSpec.v`
-22. **Serialization Roundtrip Correctness**: public serializers preserve
+23. **Serialization Roundtrip Correctness**: public serializers preserve
    term-membership, mapped lookup values, gzip wrapper payloads, protobuf graph
    formats, DAT protobuf terms, and suffix-automaton source languages according
    to their wire format, and invalid payloads fail closed
@@ -341,7 +346,7 @@ make check-Model/Key
 ### Proof Status
 
 As of 2026-05-25: all modules **Complete** — 0 `Admitted` / 0 `Axiom` /
-0 `Parameter` across the 43 .v files (verified by grep, see
+0 `Parameter` across the 44 .v files (verified by grep, see
 [VERIFICATION_RESULTS.md](VERIFICATION_RESULTS.md) for the per-file tally).
 
 | Module | Status | Description |
@@ -369,6 +374,7 @@ As of 2026-05-25: all modules **Complete** — 0 `Admitted` / 0 `Axiom` /
 | PersistentLazyMutationSpec.v | Complete | Public lazy mutation preflight, no-WAL-on-error/no-op, successful mutation replay, and byte/char parity laws |
 | PersistentWalAtomicitySpec.v | Complete | Persistent byte/char write preflight, serialization failure, WAL append failure, no-op atomic writes, successful replay, and document commit ordering laws |
 | PersistentCheckpointRetentionSpec.v | Complete | Checkpoint skip-threshold safety, invalid-checkpoint no-skip behavior, active WAL retention, archive/pending/active replay order, safe truncation, and byte/char parity laws |
+| PersistentWalSegmentLifecycleSpec.v | Complete | WAL segment state transitions, LSN-based segment collection order, monotonic LSN and synced-frontier continuation after rotation/reopen, checkpoint-covered pruning, and archive/active replay laws |
 | SubstringSearchSpec.v | Complete | Exact substring candidate, occurrence-position, and limited-result laws |
 | ScdawgOccurrenceSpec.v | Complete | SCDAWG forward traversal, left-extension closure, `locations`, and `freq` occurrence exactness laws |
 | FuzzyCandidateCoverageSpec.v | Complete | WallBreaker query-piece pigeonhole and fuzzy candidate coverage laws |
@@ -435,6 +441,7 @@ The formal specifications model the key components of the Rust implementation:
 | `PersistentLazyMutationSpec.v` | `tests/persistent_lazy_mutation_correspondence.rs`, char lazy mutation preflight, WAL append ordering, no-op duplicate insert behavior, failed insert/value-insert/remove errors, and replay after successful lazy mutation |
 | `PersistentWalAtomicitySpec.v` | `tests/persistent_wal_atomicity_correspondence.rs`, byte and char value-write serialization failures, WAL-before-mutation ordering for atomic writes, document commit ordering, and replay after successful atomic writes |
 | `PersistentCheckpointRetentionSpec.v` | `tests/checkpoint_retention_correspondence.rs`, byte and char corruption rebuild from retained archive/pending/active WAL segments, active-tail preservation, batch insert replay, and remove replay |
+| `PersistentWalSegmentLifecycleSpec.v` | `tests/wal_segment_lifecycle_correspondence.rs`, `src/persistent_artrie_core/wal/{writer,async_writer}.rs`, and `src/persistent_artrie_core/recovery.rs` LSN-ordered segment collection, monotonic rotation/reopen LSN and synced-frontier continuation, archive pruning to `max_segments`, and collision-resistant archive segment names |
 | `SubstringSearchSpec.v` | `tests/substring_candidate_correspondence.rs`, public `SubstringDictionary` APIs for byte and Unicode SCDAWG candidate generation |
 | `ScdawgOccurrenceSpec.v` | `tests/scdawg_occurrence_correspondence.rs`, byte and Unicode SCDAWG `find`/`freq`/`locations`, handle-based `freq_at`/`locations_at`, and left-extension traversal |
 | `FuzzyCandidateCoverageSpec.v` | `tests/fuzzy_candidate_coverage_correspondence.rs`, WallBreaker-style query-piece candidate coverage over byte and Unicode SCDAWG substring APIs |
@@ -510,6 +517,9 @@ The executable correspondence harness covers:
 - checkpoint/WAL retention traces for byte and char corruption rebuild,
   including active WAL tails after the last checkpoint, batch inserts, and
   removes;
+- WAL segment lifecycle traces for LSN-ordered collection even when archive
+  filenames disagree, monotonic async rotation/reopen LSN and synced-frontier
+  continuation, and archive pruning to the configured segment limit;
 - substring candidate traces for byte and Unicode SCDAWG exact substring
   search, including repeated/overlapping occurrences, duplicate-term
   suppression, limited-result prefixes, and explicit empty-pattern behavior;

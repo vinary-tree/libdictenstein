@@ -1305,9 +1305,6 @@ pub fn collect_all_wal_segments(
     };
     all_segments.extend(find_wal_segments_in_dir(&pending_path));
 
-    // Sort all segments by filename (timestamp-based naming ensures chronological order)
-    all_segments.sort();
-
     // 3. Add active WAL if it has records beyond the header
     if wal_path.exists() {
         if let Ok(metadata) = std::fs::metadata(wal_path) {
@@ -1317,6 +1314,8 @@ pub fn collect_all_wal_segments(
             }
         }
     }
+
+    sort_segments_by_lsn(&mut all_segments);
 
     all_segments
 }

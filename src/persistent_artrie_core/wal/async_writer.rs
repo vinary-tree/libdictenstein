@@ -294,12 +294,7 @@ impl SegmentSyncManager {
                     if let Err(e) = fs::create_dir_all(&archive_dir) {
                         log::warn!("Failed to create archive directory: {}", e);
                     } else {
-                        let timestamp = std::time::SystemTime::now()
-                            .duration_since(std::time::UNIX_EPOCH)
-                            .unwrap_or_default()
-                            .as_millis();
-                        let segment_name = format!("wal_{}.segment", timestamp);
-                        let archive_path = archive_dir.join(segment_name);
+                        let archive_path = WalWriter::unique_archive_segment_path(&archive_dir);
 
                         if let Err(e) = fs::rename(&path, &archive_path) {
                             log::warn!(
@@ -308,6 +303,10 @@ impl SegmentSyncManager {
                                 archive_path.display(),
                                 e
                             );
+                        } else if let Err(e) =
+                            WalWriter::prune_segments_if_needed(&archive_dir, &self.archive_config)
+                        {
+                            log::warn!("Failed to prune WAL archive segments: {}", e);
                         }
                     }
                 } else {
@@ -423,6 +422,15 @@ impl AsyncWalWriter {
         })?;
 
         let writer = WalWriter::open(&path)?;
+        let mut segments_for_lsn =
+            collect_all_segments(&path, &archive_config, &config).unwrap_or_else(|_| Vec::new());
+        if !segments_for_lsn.is_empty() {
+            WalWriter::sort_segments_by_first_lsn(&mut segments_for_lsn);
+            if let Some(max_lsn) = WalWriter::max_lsn_in_segments(&segments_for_lsn) {
+                writer.set_min_lsn(max_lsn.saturating_add(1));
+                writer.set_min_synced_lsn(max_lsn);
+            }
+        }
         let synced_lsn = writer.synced_lsn();
         let sync_manager = SegmentSyncManager::new(
             config.clone(),
@@ -773,14 +781,14 @@ pub fn collect_all_segments(
         }
     }
 
-    segments.sort();
-
     if wal_path.exists() {
         let metadata = fs::metadata(wal_path).map_err(WalError::Io)?;
         if metadata.len() > WalHeader::SIZE as u64 {
             segments.push(wal_path.to_path_buf());
         }
     }
+
+    WalWriter::sort_segments_by_first_lsn(&mut segments);
 
     Ok(segments)
 }

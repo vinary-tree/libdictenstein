@@ -48,6 +48,7 @@ run_capped cargo test --features persistent-artrie --test root_descriptor_reopen
 run_capped cargo test --features persistent-artrie --test persistent_lazy_mutation_correspondence
 run_capped cargo test --features persistent-artrie --test persistent_wal_atomicity_correspondence
 run_capped cargo test --features persistent-artrie --test checkpoint_retention_correspondence
+run_capped cargo test --features persistent-artrie --test wal_segment_lifecycle_correspondence
 (
   export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-2}"
   run_capped cargo test --features persistent-artrie --test persistent_merge_correspondence
