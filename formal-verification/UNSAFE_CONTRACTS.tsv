@@ -8,8 +8,8 @@ byte-lockfree-child-arc-handoff	byte lock-free child pointer	Raw child pointers 
 byte-mvcc-root-snapshot	byte MVCC root snapshot	Read transactions hold a stable root snapshot for the transaction lifetime.	tla,correspondence	covered	VersionLifecycle.tla; formal correspondence
 byte-node16-prefix-copy	byte node prefix copy	Prefix bytes are copied within the declared fixed prefix capacity.	correspondence,unit	covered	node tests; structural correspondence
 byte-persistent-node-thread-contract	byte persistent node Send/Sync	Node fields are safe for shared access under the node ownership and synchronization discipline.	compile-time	covered	compile-time Send/Sync checks
-char-child-box-reclaim	char raw child reclaim	Box::from_raw is called only for a detached child pointer and exactly once.	tla,miri	miri-wired	PointerOwnership.tla; Miri-gated child tests
-char-child-box-replacement	char raw child replacement	Replacing a child detaches and returns the old box without aliasing the new child.	tla,miri,correspondence	miri-wired	PointerOwnership.tla; child replacement tests
+char-child-box-reclaim	char raw child reclaim	Box::from_raw is called only for a detached child pointer and exactly once.	tla,miri	covered	PointerOwnership.tla; Miri-gated child tests
+char-child-box-replacement	char raw child replacement	Replacing a child detaches and returns the old box without aliasing the new child.	tla,miri,correspondence	covered	PointerOwnership.tla; Miri-gated child replacement tests
 char-child-raw-map-iteration	char raw child iteration	Iteration creates shared references only while the parent owns the child map.	tla,correspondence	covered	PointerOwnership.tla; dictionary law tests
 char-child-read-only-traversal	char raw child traversal	Shared references are read-only and do not overlap mutable borrows.	tla,correspondence	covered	PointerOwnership.tla; traversal correspondence
 char-child-unique-mutation	char raw child mutation	Mutable references require unique access through the parent mutation path.	tla,correspondence	covered	PointerOwnership.tla; mutation correspondence
@@ -19,7 +19,7 @@ char-disk-swizzled-pointer-resolution	char swizzled pointer resolution	Disk poin
 char-lockfree-child-arc-handoff	char lock-free child pointer	Arc handoff preserves child lifetime during lock-free publication.	tla,loom	covered	LockFreeIndexedOverlay.tla; loom correspondence
 char-lockfree-persistent-node-mutation	char lock-free persistent mutation	Persistent-node mutation happens only behind the lock-free overlay's exclusive update path.	tla,loom	covered	LockFreeIndexedOverlay.tla; loom correspondence
 char-mutation-core-traversal	char mutation traversal	Traversal raw references stay inside the live trie while no exclusive mutation aliases them.	tla,correspondence	covered	PointerOwnership.tla; mutation correspondence
-char-mutation-core-unique-borrow	char mutation unique borrow	Mutation creates one active mutable borrow for the current raw node.	tla,miri	miri-wired	PointerOwnership.tla; Miri-gated child tests
+char-mutation-core-unique-borrow	char mutation unique borrow	Mutation creates one active mutable borrow for the current raw node.	tla,miri	covered	PointerOwnership.tla; Miri-gated get_or_create child mutation test
 char-mvcc-root-snapshot	char MVCC root snapshot	Read transactions hold a stable root snapshot for the transaction lifetime.	tla,correspondence	covered	VersionLifecycle.tla; formal correspondence
 char-node16-prefix-copy	char node prefix copy	Prefix chars are copied within the declared fixed prefix capacity.	correspondence,unit	covered	node tests; structural correspondence
 char-persist-child-serialization	char persistence child read	Serialization reads live child pointers without taking ownership.	correspondence	covered	storage correspondence; reopen tests
@@ -44,20 +44,20 @@ read-transaction-root-snapshot-thread-contract	read transaction Send	Read transa
 scdawg-char-handle-rwlock-thread-contract	Unicode SCDAWG handle Send/Sync	Handles share immutable/RwLock-protected SCDAWG state during read traversal.	correspondence	covered	unsafe_boundary_contracts
 scdawg-handle-rwlock-thread-contract	byte SCDAWG handle Send/Sync	Handles share immutable/RwLock-protected SCDAWG state during read traversal.	correspondence	covered	unsafe_boundary_contracts
 substring-test-mock-thread-contract	substring test mock	Send/Sync is limited to the immutable test mock node.	correspondence	covered	substring tests
-swizzled-pointer-raw-extraction-contract	swizzled pointer raw extraction	Unchecked raw extraction is valid only for swizzled in-memory pointers.	tla,miri,correspondence	miri-wired	PointerOwnership.tla; swizzled pointer tests
+swizzled-pointer-raw-extraction-contract	swizzled pointer raw extraction	Unchecked raw extraction is valid only for swizzled in-memory pointers.	tla,miri,correspondence	covered	PointerOwnership.tla; strict-provenance Miri-gated swizzled pointer tests
 swizzled-pointer-unit-test-deref	swizzled pointer unit tests	Unit-test dereferences use stack values that outlive the checked pointer operation.	unit	covered	swizzled pointer unit tests
 traversal-context-nonnull-reference	traversal context NonNull	NonNull references are created only from live traversal roots.	correspondence	covered	traversal tests
-vocab-child-box-reclaim	vocab raw child reclaim	Box::from_raw is called only for a detached child pointer and exactly once.	tla,miri	miri-wired	PointerOwnership.tla; Miri-gated child tests
-vocab-child-box-replacement	vocab raw child replacement	Replacing a child detaches and returns the old box without aliasing the new child.	tla,miri,correspondence	miri-wired	PointerOwnership.tla; child replacement tests
+vocab-child-box-reclaim	vocab raw child reclaim	Box::from_raw is called only for a detached child pointer and exactly once.	tla,miri	covered	PointerOwnership.tla; Miri-gated child tests
+vocab-child-box-replacement	vocab raw child replacement	Replacing a child detaches and returns the old box without aliasing the new child.	tla,miri,correspondence	covered	PointerOwnership.tla; Miri-gated child replacement tests
 vocab-child-raw-map-iteration	vocab raw child iteration	Iteration creates shared references only while the parent owns the child map.	tla,correspondence	covered	PointerOwnership.tla; vocab tests
 vocab-child-read-only-traversal	vocab raw child traversal	Shared references are read-only and do not overlap mutable borrows.	tla,correspondence	covered	PointerOwnership.tla; query correspondence
 vocab-child-unique-mutation	vocab raw child mutation	Mutable references require unique access through the parent mutation path.	tla,correspondence	covered	PointerOwnership.tla; vocab mutation tests
 vocab-disk-box-ownership	vocab disk load ownership	Raw boxes reconstructed during disk load are either installed into ownership structures or dropped once.	tla,correspondence	covered	VocabPersistenceOwnership.tla; reopen tests
 vocab-disk-child-serialization	vocab persistence child read	Serialization reads live child pointers without taking ownership.	tla,correspondence	covered	VocabPersistenceOwnership.tla; checkpoint tests
-vocab-disk-node-map-rebuild-contract	vocab node-map rebuild	Node-map rebuild installs entries only for live nodes and clears stale entries before drop.	tla,miri,correspondence	miri-wired	VocabPersistenceOwnership.tla; eviction tests
+vocab-disk-node-map-rebuild-contract	vocab node-map rebuild	Node-map rebuild installs entries only for live nodes and clears stale entries before drop.	tla,miri,correspondence	covered	VocabPersistenceOwnership.tla; Miri-gated heap node-map and eviction tests
 vocab-disk-root-box-reclaim	vocab disk root reclaim	Root Box::from_raw takes ownership of a freshly detached root pointer exactly once.	tla,correspondence	covered	VocabPersistenceOwnership.tla; reopen tests
 vocab-disk-root-serialization	vocab root serialization	Root serialization reads a live root pointer without taking ownership.	correspondence	covered	checkpoint correspondence
-vocab-eviction-child-drop	vocab eviction child drop	Eviction invalidates side-table references before dropping a child subtree.	tla,miri,correspondence	miri-wired	VocabPersistenceOwnership.tla; eviction tests
+vocab-eviction-child-drop	vocab eviction child drop	Eviction invalidates side-table references before dropping a child subtree.	tla,miri,correspondence	covered	VocabPersistenceOwnership.tla; Miri-gated eviction tests
 vocab-eviction-target-reference	vocab eviction target reference	Eviction target references are live for the duration of the eviction check.	tla,correspondence	covered	VocabPersistenceOwnership.tla; eviction tests
 vocab-io-uring-root-box-reclaim	vocab io_uring root reclaim	io_uring reopen root Box::from_raw takes ownership exactly once after validation.	tla,correspondence	covered	VocabPersistenceOwnership.tla; io_uring integration tests
 vocab-lockfree-cas-child-arc-handoff	vocab lock-free CAS child	Arc handoff preserves child lifetime during lock-free CAS publication.	tla,loom	covered	LockFreeIndexedOverlay.tla; loom correspondence

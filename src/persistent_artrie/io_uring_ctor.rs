@@ -114,6 +114,8 @@ impl<V: DictionaryValue> PersistentARTrie<V, IoUringDiskManager> {
             ));
         }
 
+        super::compaction_impl::recover_in_place_compaction_finalization(path)?;
+
         let disk_manager = IoUringDiskManager::open(path)?;
 
         let root_ptr = disk_manager.root_ptr()?;
@@ -261,6 +263,10 @@ impl<V: DictionaryValue> PersistentARTrie<V, IoUringDiskManager> {
         if was_loaded_from_disk && replayed_count == 0 {
             if let Err(e) = wal_writer.truncate() {
                 warn!("Failed to truncate WAL after recovery: {:?}", e);
+            } else if let Some(threshold) = checkpoint_lsn {
+                let next_lsn = threshold.saturating_add(1);
+                wal_writer.set_min_lsn(next_lsn);
+                dict.next_lsn.store(next_lsn, AtomicOrdering::Release);
             }
         }
 

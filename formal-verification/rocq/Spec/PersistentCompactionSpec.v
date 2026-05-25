@@ -11,8 +11,10 @@
     - term-count equality is not a sufficient verification condition;
     - temporary data and WAL sidecars must be disjoint from the original;
     - failures before finalization preserve the original durable state; and
-    - successful finalization installs the compacted snapshot and discards the
-      stale original WAL rather than replaying it on reopen.
+    - successful finalization installs the compacted snapshot and either
+      restores the old WAL before data publication or discards the stale
+      original WAL backup after data publication rather than replaying it on
+      reopen.
  *)
 
 From Stdlib Require Import List.
@@ -86,13 +88,29 @@ Fixpoint count_present (keys : list Key) (map : RefMap) : nat :=
 Inductive WalOp : Type :=
 | WalPutTerm : Key -> WalOp
 | WalPutValue : Key -> Value -> WalOp
-| WalDelete : Key -> WalOp.
+| WalDelete : Key -> WalOp
+| WalAdd : Key -> Value -> WalOp.
+
+Definition map_add_value
+  (map : RefMap)
+  (key : Key)
+  (delta : Value)
+  : RefMap :=
+  fun query =>
+    if Nat.eq_dec query key
+    then
+      match map key with
+      | Some (TermValue value) => Some (TermValue (value + delta))
+      | _ => Some (TermValue delta)
+      end
+    else map query.
 
 Definition apply_wal_op (op : WalOp) (map : RefMap) : RefMap :=
   match op with
   | WalPutTerm key => map_put_term map key
   | WalPutValue key value => map_put_value map key value
   | WalDelete key => map_remove map key
+  | WalAdd key delta => map_add_value map key delta
   end.
 
 Fixpoint replay_wal (wal : list WalOp) (map : RefMap) : RefMap :=
@@ -159,6 +177,60 @@ Definition output_file_compaction
     (durable_wal state)
     (Some output)
     [].
+
+Inductive FinalizationCrashPoint : Type :=
+| CrashBeforeWalBackup
+| CrashAfterWalBackupBeforeDataRename
+| CrashAfterDataRenameBeforeWalCleanup
+| CrashAfterWalCleanup.
+
+Record FinalizationCrashState : Type := mkFinalizationCrashState {
+  crash_data : RefMap;
+  crash_wal : list WalOp;
+  crash_temp_data : option RefMap;
+  crash_stale_wal_backup : list WalOp
+}.
+
+Definition finalization_crash_state
+  (old_data compacted : RefMap)
+  (old_wal : list WalOp)
+  (point : FinalizationCrashPoint)
+  : FinalizationCrashState :=
+  match point with
+  | CrashBeforeWalBackup =>
+      mkFinalizationCrashState old_data old_wal (Some compacted) []
+  | CrashAfterWalBackupBeforeDataRename =>
+      mkFinalizationCrashState old_data [] (Some compacted) old_wal
+  | CrashAfterDataRenameBeforeWalCleanup =>
+      mkFinalizationCrashState compacted [] None old_wal
+  | CrashAfterWalCleanup =>
+      mkFinalizationCrashState compacted [] None []
+  end.
+
+Definition recover_finalization_crash_state
+  (state : FinalizationCrashState)
+  : RefMap :=
+  match crash_temp_data state with
+  | Some _ =>
+      match crash_stale_wal_backup state with
+      | [] => replay_wal (crash_wal state) (crash_data state)
+      | backup => replay_wal backup (crash_data state)
+      end
+  | None => crash_data state
+  end.
+
+Definition recovered_after_finalization_crash
+  (old_data : RefMap)
+  (old_wal : list WalOp)
+  (compacted : RefMap)
+  (point : FinalizationCrashPoint)
+  : RefMap :=
+  match point with
+  | CrashBeforeWalBackup => replay_wal old_wal old_data
+  | CrashAfterWalBackupBeforeDataRename => replay_wal old_wal old_data
+  | CrashAfterDataRenameBeforeWalCleanup => compacted
+  | CrashAfterWalCleanup => compacted
+  end.
 
 Theorem map_put_term_lookup_same :
   forall map key,
@@ -275,6 +347,19 @@ Proof.
   apply map_put_value_lookup_same.
 Qed.
 
+Theorem additive_wal_replay_is_not_idempotent_on_compacted_snapshot :
+  lookup (replay_wal [WalAdd 0 5] (singleton_value_map 5)) 0 =
+    Some (TermValue 10).
+Proof.
+  simpl.
+  unfold lookup, map_add_value, singleton_value_map.
+  destruct (Nat.eq_dec 0 0) as [_ | Hneq].
+  - destruct (Nat.eq_dec 0 0) as [_ | Hneq_inner].
+    + reflexivity.
+    + exfalso. apply Hneq_inner. reflexivity.
+  - exfalso. apply Hneq. reflexivity.
+Qed.
+
 Theorem finalized_compaction_ignores_stale_wal :
   forall compacted old_state,
     durable_wal (finalize_compaction compacted old_state) = [].
@@ -386,6 +471,61 @@ Qed.
 Theorem output_file_compaction_writes_snapshot_to_temp :
   forall output state,
     temp_data (output_file_compaction output state) = Some output.
+Proof.
+  reflexivity.
+Qed.
+
+Theorem finalization_crash_recovery_matches_protocol :
+  forall old_data old_wal compacted point,
+    recover_finalization_crash_state
+      (finalization_crash_state old_data compacted old_wal point) =
+    recovered_after_finalization_crash old_data old_wal compacted point.
+Proof.
+  intros old_data old_wal compacted point.
+  destruct point; simpl; try reflexivity.
+  destruct old_wal; reflexivity.
+Qed.
+
+Theorem finalization_crash_recovery_is_old_or_compacted :
+  forall old_data old_wal compacted point,
+    recover_finalization_crash_state
+      (finalization_crash_state old_data compacted old_wal point) =
+      replay_wal old_wal old_data \/
+    recover_finalization_crash_state
+      (finalization_crash_state old_data compacted old_wal point) =
+      compacted.
+Proof.
+  intros old_data old_wal compacted point.
+  destruct point; simpl.
+  - left. reflexivity.
+  - left. destruct old_wal; reflexivity.
+  - right. reflexivity.
+  - right. reflexivity.
+Qed.
+
+Theorem crash_before_data_rename_restores_stale_wal_backup :
+  forall old_data old_wal compacted,
+    recover_finalization_crash_state
+      (finalization_crash_state
+        old_data
+        compacted
+        old_wal
+        CrashAfterWalBackupBeforeDataRename) =
+    replay_wal old_wal old_data.
+Proof.
+  intros old_data old_wal compacted.
+  destruct old_wal; reflexivity.
+Qed.
+
+Theorem crash_after_data_rename_ignores_stale_wal_backup :
+  forall old_data old_wal compacted,
+    recover_finalization_crash_state
+      (finalization_crash_state
+        old_data
+        compacted
+        old_wal
+        CrashAfterDataRenameBeforeWalCleanup) =
+    compacted.
 Proof.
   reflexivity.
 Qed.

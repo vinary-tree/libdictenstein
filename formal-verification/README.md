@@ -35,6 +35,8 @@ formal-verification/
 │   ├── IoUringSqeCqeLifecycle.tla # io_uring submit/complete/buffer lifecycle model
 │   ├── LockFreeARTrieLinearizability.tla # Byte lock-free root/cache model
 │   ├── LockFreeIndexedOverlay.tla # Char/vocab value/index overlay model
+│   ├── ConcurrentCheckpointPublication.tla # Mutation/checkpoint race model
+│   ├── ConcurrentVocabLinearizability.tla # Public concurrent vocab history model
 │   ├── ByzantineStorage.tla   # Authenticated committed-record recovery
 │   ├── HotStuffConsensus.tla  # Bounded Byzantine quorum/log safety model
 │   ├── NodeTransitions.tla    # Node growth transitions
@@ -43,8 +45,8 @@ formal-verification/
 │   ├── PART.cfg               # TLC configuration (no crash)
 │   └── PART_crash.cfg         # TLC configuration (with crash)
 │
-└── rocq/                      # Rocq/Coq proofs (49 .v files, 20,930 LOC,
-    │                            1,001 theorem/lemma propositions,
+└── rocq/                      # Rocq/Coq proofs (51 .v files, 21,970 LOC,
+    │                            1,051 theorem/lemma propositions,
     │                            0 Admitted / 0 Axiom / 0 Parameter)
     ├── Makefile               # Build system
     ├── Spec/                  # Specifications
@@ -66,12 +68,14 @@ formal-verification/
     │   ├── PersistentLazyMutationSpec.v # Lazy mutation/WAL atomicity laws
     │   ├── PersistentWalAtomicitySpec.v # Persistent write-before-mutation laws
     │   ├── PersistentVocabWalAtomicitySpec.v # Vocab WAL atomicity and bijection laws
+    │   ├── PersistentVocabCheckpointSpec.v # Vocab checkpoint/sidecar publication laws
     │   ├── PersistentCheckpointRetentionSpec.v # Checkpoint/WAL retention laws
     │   ├── PersistentDirtyCheckpointSpec.v # Dirty checkpoint publication laws
     │   ├── PersistentWalSegmentLifecycleSpec.v # WAL segment lifecycle laws
     │   ├── PersistentRecoveryPlannerSpec.v # Recovery planner/durable-prefix laws
     │   ├── PersistentRecoveryReplayCompletenessSpec.v # Recovery replay completeness laws
-    │   ├── PersistentCompactionSpec.v # Persistent compaction rewrite laws
+    │   ├── PersistentCompactionSpec.v # Persistent compaction rewrite/finalization laws
+    │   ├── PersistentRewriteCompactionSpec.v # Char/vocab rewrite checkpoint laws
     │   ├── SubstringSearchSpec.v # Exact substring candidate laws
     │   ├── ScdawgOccurrenceSpec.v # SCDAWG occurrence-construction laws
     │   ├── FuzzyCandidateCoverageSpec.v # WallBreaker candidate coverage laws
@@ -131,6 +135,8 @@ formal-verification/
 | Storage Syscall Outcomes | Safety | Short/error/interrupted/cancelled/missing write or sync outcomes cannot advance the reported durable prefix; recovery applies only the durable prefix |
 | Byte Lock-Free ARTrie Publication | Safety | Root CAS, cache publication, contains, and merge snapshot points are linearizable |
 | Indexed Lock-Free Overlays | Safety | Char increments preserve value sums, and vocab CAS inserts preserve stable unique indices while allowing sparse claims |
+| Concurrent Checkpoint Publication | Safety | Inserts and checkpoint publication are mutually ordered so snapshots do not lose visible mutations or truncate needed WAL tails |
+| Concurrent Vocab Linearizability | Safety | Public insert/read/batch/checkpoint/recover histories have a sequential vocabulary-map explanation respecting real-time order |
 | io_uring Fixed-Buffer Ownership | Safety | Fixed-buffer I/O is used only for registered live buffers, and owners drop buffers only after unregister |
 | io_uring SQE/CQE Lifecycle | Safety | Submitted requests own one live buffer until exactly one CQE is checked; short/error completions fail closed |
 | Byzantine Storage Filtering | Safety | Recovery applies only committed authenticated records |
@@ -153,7 +159,7 @@ formal-verification/
 | Dirty Checkpoint Publication | Safety | Dirty arena/slot evidence, root descriptors, checkpoint records, and WAL truncation thresholds compose only after successful flush/sync |
 | Recovery Planner Durable Prefix | Safety | Root/checkpoint trust, corrupt-file rebuild selection, and byte/char recovery replay stop at the first corrupt WAL record |
 | Recovery Replay Completeness | Safety | Every mutating WAL variant maps to byte/char/archive/incremental no-WAL replay, batch records expand in order, failed CAS is ignored, and corrupt suffixes are not trusted |
-| Persistent Compaction Rewrite | Safety | Byte trie compaction preserves the exact key/value snapshot, rejects WAL sidecar collisions, and removes stale original WAL only after successful finalization |
+| Persistent Compaction Rewrite | Safety | Byte trie compaction preserves the exact key/value snapshot, rejects WAL sidecar collisions, and recovers crash points around stale-WAL backup, data rename, and cleanup |
 | Substring Candidate Correctness | Safety | Exact substring APIs return the reference occurrence set needed by fuzzy-search candidate generation |
 | SCDAWG Occurrence Construction | Safety | Forward traversal, left-extension closure, `locations`, and `freq` refine exact reference substring occurrences |
 | Fuzzy Candidate Coverage | Safety | Splitting a query into `budget + 1` nonempty pieces guarantees at least one surviving exact substring candidate for in-budget terms |
@@ -182,6 +188,8 @@ tlc -workers 1 -config IoUringSqeCqeLifecycle.cfg IoUringSqeCqeLifecycle.tla
 tlc -workers 1 -config LockFreeARTrieLinearizability.cfg LockFreeARTrieLinearizability.tla
 tlc -workers 1 -config LockFreeIndexedOverlayCounter.cfg LockFreeIndexedOverlay.tla
 tlc -workers 1 -config LockFreeIndexedOverlayVocabulary.cfg LockFreeIndexedOverlay.tla
+tlc -workers 1 -config ConcurrentCheckpointPublication.cfg ConcurrentCheckpointPublication.tla
+tlc -workers 1 -config ConcurrentVocabLinearizability.cfg ConcurrentVocabLinearizability.tla
 tlc -workers 1 -config ByzantineStorage.cfg ByzantineStorage.tla
 tlc -workers 1 -config HotStuffConsensus.cfg HotStuffConsensus.tla
 ```
@@ -207,7 +215,8 @@ contracts must be marked `covered` or `miri-wired`. The default
 harness includes the DynamicDawg mutation, DynamicDawgU64 sequence, Bloom filter,
 double-array trie, valued set-combinator, persistent merge, persistent prefix,
 root descriptor/reopen, persistent lazy mutation, persistent WAL atomicity,
-persistent vocab WAL atomicity, checkpoint retention, dirty checkpoint
+persistent vocab WAL atomicity, persistent vocab checkpoint publication,
+concurrent checkpoint publication, checkpoint retention, dirty checkpoint
 publication, WAL segment lifecycle, recovery planner durable-prefix replay,
 recovery replay completeness, substring, SCDAWG occurrence, and fuzzy candidate
 coverage targets plus the
@@ -319,49 +328,61 @@ RUN_IO_URING=1 scripts/verify-formal-correspondence.sh
    term reindexing and index collisions, preserve state on WAL failure, and
    keep `contains_index` exact with the reverse map
    — see `Spec/PersistentVocabWalAtomicitySpec.v`
-19. **Checkpoint/WAL Retention Safety**: valid checkpoints may justify replay
+19. **Persistent Vocab Checkpoint Publication**: successful checkpoints reopen
+   the same forward/reverse bijection, failed publication retains dirty/WAL
+   replay evidence, post-checkpoint inserts stay above the checkpoint LSN,
+   `rotate_wal`/`sync_to_disk` do not act as checkpoints, and missing/corrupt
+   Bloom or reverse-index sidecars rebuild safely
+   — see `Spec/PersistentVocabCheckpointSpec.v`
+20. **Checkpoint/WAL Retention Safety**: valid checkpoints may justify replay
    skip thresholds, invalid checkpoints cannot justify truncation, and active
    WAL tails are retained before corruption rebuild
    — see `Spec/PersistentCheckpointRetentionSpec.v`
-20. **Dirty Checkpoint Publication Safety**: dirty arena/slot evidence is
+21. **Dirty Checkpoint Publication Safety**: dirty arena/slot evidence is
    cleared only after successful flush/sync, late slot tracking preserves
    existing dirty coverage, and WAL truncation/replay skipping requires a valid
    synced root descriptor plus a synced checkpoint record
    — see `Spec/PersistentDirtyCheckpointSpec.v`
-21. **WAL Segment Lifecycle Safety**: archive/pending/active segment collection
+22. **WAL Segment Lifecycle Safety**: archive/pending/active segment collection
    is ordered by record LSNs rather than filenames, rotations preserve
    monotonic LSN state, reopen continues after retained archives, and
    checkpoint-covered archive pruning is safe
    — see `Spec/PersistentWalSegmentLifecycleSpec.v`
-22. **Recovery Planner Durable-Prefix Safety**: root/checkpoint trust, corrupt
+23. **Recovery Planner Durable-Prefix Safety**: root/checkpoint trust, corrupt
    file rebuild selection, retained segment replay, and byte/char recovery
    entry points all stop at the first corrupt WAL record and use only the
    durable prefix
    — see `Spec/PersistentRecoveryPlannerSpec.v`
-23. **Recovery Replay Completeness**: byte, char, archive, recovery-manager,
+24. **Recovery Replay Completeness**: byte, char, archive, recovery-manager,
    and incremental entry points share the same WAL-record-to-replay mapping;
    batch insert/increment records expand in order, failed CAS records do not
    mutate state, corrupt suffixes are ignored, and recovery uses no-WAL
    mutations
    — see `Spec/PersistentRecoveryReplayCompletenessSpec.v`
-24. **Persistent Compaction Rewrite Safety**: byte trie compaction copies the
+25. **Persistent Compaction Rewrite Safety**: byte trie compaction copies the
    exact key/value/term-only snapshot, rejects temporary WAL sidecar
-   collisions, and discards stale original WAL input only after successful
-   finalization
+   collisions, and recovers finalization crashes by restoring the old WAL
+   before data publication or suppressing stale WAL replay after data
+   publication
    — see `Spec/PersistentCompactionSpec.v`
-25. **Substring Candidate Correctness**: non-empty exact substring queries return
+26. **Char/Vocab Rewrite Checkpoint Safety**: char and vocabulary checkpoint
+   rewrites preserve Unicode value snapshots and sparse vocab index bijections;
+   post-checkpoint WAL tails replay over the checkpoint, and failed publication
+   keeps dirty/WAL evidence retryable
+   — see `Spec/PersistentRewriteCompactionSpec.v`
+27. **Substring Candidate Correctness**: non-empty exact substring queries return
    precisely the reference `(term, position, length)` candidate set needed by
    fuzzy-search transducers
    — see `Spec/SubstringSearchSpec.v`
-26. **SCDAWG Occurrence Construction**: forward traversal, left-extension
+28. **SCDAWG Occurrence Construction**: forward traversal, left-extension
    closure, handle-based `locations_at`, public `locations`, and `freq` refine
    the same reference occurrence relation
    — see `Spec/ScdawgOccurrenceSpec.v`
-27. **Fuzzy Candidate Coverage**: a `budget + 1` nonempty query-piece split
+29. **Fuzzy Candidate Coverage**: a `budget + 1` nonempty query-piece split
    leaves at least one exact piece candidate for any term whose edit witness
    damages at most `budget` pieces
    — see `Spec/FuzzyCandidateCoverageSpec.v`
-28. **Serialization Roundtrip Correctness**: public serializers preserve
+30. **Serialization Roundtrip Correctness**: public serializers preserve
    term-membership, mapped lookup values, gzip wrapper payloads, protobuf graph
    formats, DAT protobuf terms, and suffix-automaton source languages according
    to their wire format, and invalid payloads fail closed
@@ -388,7 +409,7 @@ make check-Model/Key
 ### Proof Status
 
 As of 2026-05-25: all modules **Complete** — 0 `Admitted` / 0 `Axiom` /
-0 `Parameter` across the 49 .v files (verified by grep, see
+0 `Parameter` across the 51 .v files (verified by grep, see
 [VERIFICATION_RESULTS.md](VERIFICATION_RESULTS.md) for the per-file tally).
 
 | Module | Status | Description |
@@ -416,12 +437,14 @@ As of 2026-05-25: all modules **Complete** — 0 `Admitted` / 0 `Axiom` /
 | PersistentLazyMutationSpec.v | Complete | Public lazy mutation preflight, no-WAL-on-error/no-op, successful mutation replay, and byte/char parity laws |
 | PersistentWalAtomicitySpec.v | Complete | Persistent byte/char write preflight, serialization failure, WAL append failure, no-op atomic writes, successful replay, and document commit ordering laws |
 | PersistentVocabWalAtomicitySpec.v | Complete | Persistent vocabulary WAL-before-mutation, duplicate stability, reindex/collision rejection, exact reverse-index membership, and batch first-occurrence deduplication laws |
+| PersistentVocabCheckpointSpec.v | Complete | Persistent vocabulary checkpoint/reopen bijection, failure-retained WAL/dirty evidence, post-checkpoint LSN continuation, non-checkpoint WAL sync/rotation, and Bloom/reverse-index sidecar rebuild laws |
 | PersistentCheckpointRetentionSpec.v | Complete | Checkpoint skip-threshold safety, invalid-checkpoint no-skip behavior, active WAL retention, archive/pending/active replay order, safe truncation, and byte/char parity laws |
 | PersistentDirtyCheckpointSpec.v | Complete | Dirty arena/slot evidence, retry after failed write/sync, late slot-tracking coverage, trusted checkpoint publication, and WAL truncation/replay threshold laws |
 | PersistentWalSegmentLifecycleSpec.v | Complete | WAL segment state transitions, LSN-based segment collection order, monotonic LSN and synced-frontier continuation after rotation/reopen, checkpoint-covered pruning, and archive/active replay laws |
 | PersistentRecoveryPlannerSpec.v | Complete | Recovery mode selection, root/checkpoint trust, durable-prefix replay after corrupt WAL records, retained segment order, and byte/char planner parity laws |
 | PersistentRecoveryReplayCompletenessSpec.v | Complete | Shared WAL-record replay mapping, batch expansion, failed-CAS elision, durable-prefix stopping, endpoint parity, and no-WAL recovery application laws |
-| PersistentCompactionSpec.v | Complete | Byte persistent compaction snapshot identity, term-count insufficiency, temp/WAL sidecar disjointness, failure preservation, stale-WAL removal, and output-file preservation laws |
+| PersistentCompactionSpec.v | Complete | Byte persistent compaction snapshot identity, term-count insufficiency, temp/WAL sidecar disjointness, failure preservation, stale-WAL replay hazard, crash-finalization recovery, and output-file preservation laws |
+| PersistentRewriteCompactionSpec.v | Complete | Char/vocab rewrite checkpoint snapshot preservation, sparse index bijection, post-checkpoint WAL-tail replay, and failed publication dirty/WAL retention laws |
 | SubstringSearchSpec.v | Complete | Exact substring candidate, occurrence-position, and limited-result laws |
 | ScdawgOccurrenceSpec.v | Complete | SCDAWG forward traversal, left-extension closure, `locations`, and `freq` occurrence exactness laws |
 | FuzzyCandidateCoverageSpec.v | Complete | WallBreaker query-piece pigeonhole and fuzzy candidate coverage laws |
@@ -465,6 +488,8 @@ The formal specifications model the key components of the Rust implementation:
 | `IoUringSqeCqeLifecycle.tla` | `src/persistent_artrie_core/io_uring_disk_manager.rs`, the io_uring completion paths, temporary aligned-buffer handling, and optional io_uring storage correspondence tests |
 | `LockFreeARTrieLinearizability.tla` | `src/persistent_artrie/{lockfree_cas.rs,nodes/atomic_ptr.rs}` and `tests/persistent_artrie_loom_correspondence.rs` |
 | `LockFreeIndexedOverlay.tla` | `src/persistent_artrie_char/lockfree_cas.rs`, `src/persistent_vocab_artrie/lockfree_cas.rs`, and `tests/persistent_artrie_loom_correspondence.rs` |
+| `ConcurrentCheckpointPublication.tla` | `src/persistent_vocab_artrie/concurrent.rs`, `tests/concurrent_checkpoint_publication_correspondence.rs`, and `tests/persistent_artrie_loom_correspondence.rs` |
+| `ConcurrentVocabLinearizability.tla` | `src/persistent_vocab_artrie/concurrent.rs`, `tests/concurrent_checkpoint_publication_correspondence.rs`, and history-checking Loom tests in `tests/persistent_artrie_loom_correspondence.rs` |
 | `ByzantineStorage.tla` | authenticated WAL/storage recovery filtering in `src/persistent_artrie_core/recovery.rs` |
 | `HotStuffConsensus.tla` | proof/model-only Byzantine quorum safety boundary |
 | `NodeTypes.v` | `src/persistent_artrie/nodes/*.rs` |
@@ -488,12 +513,14 @@ The formal specifications model the key components of the Rust implementation:
 | `PersistentLazyMutationSpec.v` | `tests/persistent_lazy_mutation_correspondence.rs`, char lazy mutation preflight, WAL append ordering, no-op duplicate insert behavior, failed insert/value-insert/remove errors, and replay after successful lazy mutation |
 | `PersistentWalAtomicitySpec.v` | `tests/persistent_wal_atomicity_correspondence.rs`, byte and char value-write serialization failures, WAL-before-mutation ordering for atomic writes, document commit ordering, and replay after successful atomic writes |
 | `PersistentVocabWalAtomicitySpec.v` | `tests/persistent_vocab_wal_atomicity_correspondence.rs`, `src/persistent_vocab_artrie/{mutation_api,disk_io,query_api}.rs`, and public vocab mutation APIs for WAL-before-visible-mutation ordering, manual-index replay, duplicate batch index stability, collision/reindex rejection, and exact reverse-index membership |
+| `PersistentVocabCheckpointSpec.v` | `tests/persistent_vocab_checkpoint_correspondence.rs`, `src/persistent_vocab_artrie/{persistence_api,mmap_ctor,io_uring_ctor}.rs`, and WAL LSN/truncation paths for checkpoint/reopen bijection, replay retention until checkpoint, post-checkpoint insert replay, `rotate_wal`/`sync_to_disk` non-checkpoint behavior, and Bloom/reverse-index sidecar rebuild |
 | `PersistentCheckpointRetentionSpec.v` | `tests/checkpoint_retention_correspondence.rs`, byte and char corruption rebuild from retained archive/pending/active WAL segments, active-tail preservation, batch insert replay, and remove replay |
 | `PersistentDirtyCheckpointSpec.v` | `tests/dirty_checkpoint_correspondence.rs`, byte and char dirty-slot write/sync retry behavior, late slot-tracking coverage, and descriptor publication before WAL truncation |
 | `PersistentWalSegmentLifecycleSpec.v` | `tests/wal_segment_lifecycle_correspondence.rs`, `src/persistent_artrie_core/wal/{writer,async_writer}.rs`, and `src/persistent_artrie_core/recovery.rs` LSN-ordered segment collection, monotonic rotation/reopen LSN and synced-frontier continuation, archive pruning to `max_segments`, and collision-resistant archive segment names |
 | `PersistentRecoveryPlannerSpec.v` | `tests/recovery_planner_correspondence.rs`, `src/persistent_artrie_core/recovery.rs`, and byte/char recovery constructors for durable-prefix replay after corrupt WAL records and corruption rebuild mode parity |
 | `PersistentRecoveryReplayCompletenessSpec.v` | `tests/recovery_replay_completeness_correspondence.rs`, `src/persistent_artrie_core/recovery.rs`, byte `mmap`/`io_uring` replay application, and char archive/recovery-manager replay for complete mutating WAL variant coverage, no-WAL replay, and durable-prefix stopping |
-| `PersistentCompactionSpec.v` | `tests/persistent_compaction_correspondence.rs` and `src/persistent_artrie/compaction_impl.rs` for byte persistent compaction exact snapshot preservation, term-only and non-UTF8 byte-key copying, temp WAL sidecar collision rejection, and stale original WAL cleanup after finalization |
+| `PersistentCompactionSpec.v` | `tests/persistent_compaction_correspondence.rs` and `src/persistent_artrie/compaction_impl.rs` for byte persistent compaction exact snapshot preservation, term-only and non-UTF8 byte-key copying, temp WAL sidecar collision rejection, stale original WAL cleanup after finalization, and stale-WAL backup recovery across the data-file rename |
+| `PersistentRewriteCompactionSpec.v` | `tests/persistent_rewrite_compaction_correspondence.rs`, `src/persistent_artrie_char/persist.rs`, and `src/persistent_vocab_artrie/persistence_api.rs` for char/vocab rewrite checkpoint preservation, post-checkpoint WAL-tail replay, and failed publication dirty/WAL retention |
 | `SubstringSearchSpec.v` | `tests/substring_candidate_correspondence.rs`, public `SubstringDictionary` APIs for byte and Unicode SCDAWG candidate generation |
 | `ScdawgOccurrenceSpec.v` | `tests/scdawg_occurrence_correspondence.rs`, byte and Unicode SCDAWG `find`/`freq`/`locations`, handle-based `freq_at`/`locations_at`, and left-extension traversal |
 | `FuzzyCandidateCoverageSpec.v` | `tests/fuzzy_candidate_coverage_correspondence.rs`, WallBreaker-style query-piece candidate coverage over byte and Unicode SCDAWG substring APIs |
@@ -600,16 +627,23 @@ The executable correspondence harness covers:
   generated cases, legacy term-only value dropping, and malformed-payload
   rejection;
 - vocab checkpoint/reopen preservation for Unicode terms and duplicate inserts,
-  direct `node_map`/parent-chain rebuild checks after reopen, plus
+  sparse/manual indices, batch duplicates, post-checkpoint WAL replay,
+  recovery WAL retention until checkpoint, non-checkpoint `rotate_wal` and
+  `sync_to_disk`, missing/corrupt/stale reverse-index sidecars, missing/corrupt
+  Bloom sidecars, failed sidecar publication dirty/WAL retention, direct
+  `node_map`/parent-chain rebuild checks after reopen, heap-only shared-prefix
+  `node_map` parent-chain liveness checks that caught duplicate `NodeRef`
+  allocation for existing children, plus
   crate-internal eviction checks that reject parent eviction while a child is
   resident, remove stale `node_map` entries before dropping evicted leaves, and
   keep sibling queries on live nodes;
 - unsafe-boundary regressions for swizzled-pointer transitions, atomic node
   pointer CAS ownership, optimistic-cell writer serialization, raw char and
   `VocabTrieNode` child ownership transfer/replacement/deep-clone paths,
-  swizzled raw extraction only after confirmed in-memory state, lazy-load loser
-  reclamation, explicit `Send`/`Sync` contract checks, fixed-buffer fallback
-  when a backend does not support registration, fixed-capable BufferManager
+  unique `get_or_create_child` mutation borrows, swizzled raw extraction only
+  after confirmed in-memory state, lazy-load loser reclamation, explicit
+  `Send`/`Sync` contract checks, fixed-buffer fallback when a backend does not
+  support registration, fixed-capable BufferManager
   write-guard mutation and unregister-before-owner-drop behavior,
   unsafe-inventory contract-tag plus coverage/status drift, torn-WAL
   header/payload reopen, and persistent dictionary law traces.
@@ -730,15 +764,20 @@ The following details are abstracted in the specifications:
   publication, char/vocab indexed overlays, vocab persistence/eviction
   ownership, representative ARTrie pointer/concurrency, durability-frontier
   publication, persistent root descriptor/reopen, persistent lazy mutation,
-  persistent WAL atomicity, persistent vocab WAL atomicity,
+  persistent WAL atomicity, persistent vocab WAL atomicity, persistent vocab
+  checkpoint publication,
   checkpoint/WAL retention, dirty checkpoint publication, recovery planner
   durable-prefix replay, recovery replay completeness, mmap storage checks,
   storage syscall outcome checks,
   io_uring fixed-buffer registration,
   BufferManager fixed-buffer lifetime, and io_uring SQE/CQE completion
-  checking are executable, and the whole-crate unsafe inventory now enforces
-  coverage/status metadata for every reviewed contract. Kernel syscall internals
-  and fully mechanized Rust memory-safety proofs remain future proof targets
+  checking are executable, the Miri gate runs under
+  `FORMAL_MIRI_TOOLCHAIN=nightly` with strict provenance enabled by default,
+  and the whole-crate unsafe inventory now enforces coverage/status metadata
+  for every reviewed contract. `SwizzledPtr` now stores in-memory pointers in a
+  provenance-preserving runtime slot instead of reconstructing them from raw
+  integers; kernel syscall internals and fully mechanized Rust memory-safety
+  proofs remain future proof targets
 
 See [GAP_LEDGER.md](GAP_LEDGER.md) for the current scoped claims and remaining
 proof obligations.
@@ -763,18 +802,20 @@ proof obligations.
    regressions are in [UNSAFE_BOUNDARY.md](UNSAFE_BOUNDARY.md). Mmap storage,
    byte lock-free publication, char/vocab indexed overlays, persistent root
    descriptor/reopen, persistent lazy mutation, persistent WAL atomicity,
-   persistent vocab WAL atomicity, checkpoint/WAL retention, dirty checkpoint
+   persistent vocab WAL atomicity, persistent vocab checkpoint publication,
+   concurrent checkpoint publication, checkpoint/WAL retention, dirty checkpoint
    publication, recovery planner durable-prefix replay, recovery replay
    completeness, and the
    durability/reclamation frontier now have bounded models or Rocq laws plus
    executable correspondence tests. Vocab
    persistence/reopen and eviction invalidation have both a bounded model and
-   Rust correspondence checks. Storage syscall outcome handling, io_uring
+   Rust/Miri correspondence checks. Storage syscall outcome handling, io_uring
    fixed-buffer ownership, and SQE/CQE completion checking now have bounded
-   models, harness wiring, and CI jobs. Next, keep the Miri/io_uring/scheduled
-   TLC jobs green and deepen the remaining syscall/kernel and unsafe
-   raw-pointer/`Send`/`Sync` contracts where the library still relies on trusted
-   Rust or kernel behavior.
+   models, harness wiring, and CI jobs. `SwizzledPtr` strict-provenance Miri
+   coverage is now wired into the harness. Next, keep the
+   Miri/io_uring/scheduled TLC jobs green and deepen syscall/kernel and unsafe
+   raw-pointer/`Send`/`Sync` contracts where the library still relies on
+   trusted Rust or kernel behavior.
 
 ## References
 

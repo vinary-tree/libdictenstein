@@ -395,6 +395,410 @@ impl ModelCheckpointPublisher {
 }
 
 #[derive(Debug)]
+struct ModelConcurrentCheckpointVocab {
+    publication_gate: RwLock<()>,
+    visible: RwLock<[bool; 2]>,
+    wal_lsn: RwLock<[usize; 2]>,
+    checkpointed: RwLock<[bool; 2]>,
+    next_lsn: AtomicUsize,
+    truncated_through: AtomicUsize,
+    dirty: AtomicBool,
+}
+
+impl ModelConcurrentCheckpointVocab {
+    fn new() -> Self {
+        Self {
+            publication_gate: RwLock::new(()),
+            visible: RwLock::new([false; 2]),
+            wal_lsn: RwLock::new([0; 2]),
+            checkpointed: RwLock::new([false; 2]),
+            next_lsn: AtomicUsize::new(1),
+            truncated_through: AtomicUsize::new(0),
+            dirty: AtomicBool::new(false),
+        }
+    }
+
+    fn insert(&self, term: usize) {
+        let _publication_read = self.publication_gate.read().expect("publication read gate");
+        let lsn = self.next_lsn.fetch_add(1, Ordering::AcqRel);
+        assert!(lsn <= 2, "bounded checkpoint model supports two inserts");
+
+        self.wal_lsn.write().expect("wal lsn write")[term] = lsn;
+        self.visible.write().expect("visible write")[term] = true;
+        self.dirty.store(true, Ordering::Release);
+    }
+
+    fn checkpoint(&self) {
+        let _publication_write = self
+            .publication_gate
+            .write()
+            .expect("publication write gate");
+        let visible = *self.visible.read().expect("visible read");
+        let wal_lsn = *self.wal_lsn.read().expect("wal lsn read");
+        let checkpoint_lsn = visible
+            .iter()
+            .enumerate()
+            .filter_map(|(term, is_visible)| is_visible.then_some(wal_lsn[term]))
+            .max()
+            .unwrap_or(0);
+
+        *self.checkpointed.write().expect("checkpointed write") = visible;
+        self.truncated_through
+            .store(checkpoint_lsn, Ordering::Release);
+        self.dirty.store(false, Ordering::Release);
+    }
+
+    fn sync_only(&self) {
+        // WAL sync is not checkpoint publication.
+    }
+
+    fn rotate_wal(&self) {
+        // WAL rotation is not checkpoint publication or truncation here.
+    }
+
+    fn recovery_contains(&self, term: usize) -> bool {
+        let checkpointed = *self.checkpointed.read().expect("checkpointed read");
+        if checkpointed[term] {
+            return true;
+        }
+
+        let visible = *self.visible.read().expect("visible read");
+        let wal_lsn = *self.wal_lsn.read().expect("wal lsn read");
+        let truncated_through = self.truncated_through.load(Ordering::Acquire);
+
+        visible[term] && wal_lsn[term] > truncated_through
+    }
+
+    fn assert_recovery_covers_visible(&self) {
+        let visible = *self.visible.read().expect("visible read");
+        for (term, is_visible) in visible.iter().copied().enumerate() {
+            if is_visible {
+                assert!(
+                    self.recovery_contains(term),
+                    "visible term {term} must be checkpointed or WAL-replayable"
+                );
+            }
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ObservedVocabKind {
+    Insert(usize),
+    Read(usize),
+    BatchFixed,
+    Checkpoint,
+    Recover,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ObservedVocabOp {
+    kind: ObservedVocabKind,
+    start: usize,
+    finish: usize,
+    ret: Option<usize>,
+    batch_ret: [Option<usize>; 4],
+    recovered: [Option<usize>; 2],
+}
+
+impl ObservedVocabOp {
+    fn new(kind: ObservedVocabKind, start: usize, finish: usize) -> Self {
+        Self {
+            kind,
+            start,
+            finish,
+            ret: None,
+            batch_ret: [None; 4],
+            recovered: [None; 2],
+        }
+    }
+}
+
+#[derive(Debug)]
+struct ModelLinearizableVocab {
+    publication_gate: RwLock<()>,
+    visible: RwLock<[Option<usize>; 2]>,
+    checkpointed: RwLock<[Option<usize>; 2]>,
+    wal_live: RwLock<[bool; 2]>,
+    next_index: AtomicUsize,
+    clock: AtomicUsize,
+    history: RwLock<Vec<ObservedVocabOp>>,
+}
+
+impl ModelLinearizableVocab {
+    const BATCH_TERMS: [usize; 4] = [0, 0, 1, 0];
+
+    fn new() -> Self {
+        Self {
+            publication_gate: RwLock::new(()),
+            visible: RwLock::new([None; 2]),
+            checkpointed: RwLock::new([None; 2]),
+            wal_live: RwLock::new([false; 2]),
+            next_index: AtomicUsize::new(0),
+            clock: AtomicUsize::new(1),
+            history: RwLock::new(Vec::new()),
+        }
+    }
+
+    fn tick(&self) -> usize {
+        self.clock.fetch_add(1, Ordering::SeqCst)
+    }
+
+    fn push_history(&self, op: ObservedVocabOp) {
+        self.history.write().expect("history write").push(op);
+    }
+
+    fn insert(&self, term: usize) -> usize {
+        let start = self.tick();
+        let _publication_read = self.publication_gate.read().expect("publication read");
+        thread::yield_now();
+
+        let mut visible = self.visible.write().expect("visible write");
+        let index = match visible[term] {
+            Some(existing) => existing,
+            None => {
+                let index = self.next_index.fetch_add(1, Ordering::SeqCst);
+                visible[term] = Some(index);
+                self.wal_live.write().expect("wal write")[term] = true;
+                index
+            }
+        };
+
+        drop(visible);
+        let finish = self.tick();
+        let mut op = ObservedVocabOp::new(ObservedVocabKind::Insert(term), start, finish);
+        op.ret = Some(index);
+        self.push_history(op);
+        index
+    }
+
+    fn read_index(&self, term: usize) -> Option<usize> {
+        let start = self.tick();
+        thread::yield_now();
+        let result = self.visible.read().expect("visible read")[term];
+        let finish = self.tick();
+
+        let mut op = ObservedVocabOp::new(ObservedVocabKind::Read(term), start, finish);
+        op.ret = result;
+        self.push_history(op);
+        result
+    }
+
+    fn insert_batch_fixed(&self) -> [usize; 4] {
+        let start = self.tick();
+        let _publication_read = self.publication_gate.read().expect("publication read");
+        thread::yield_now();
+
+        let mut visible = self.visible.write().expect("visible write");
+        let mut wal_live = self.wal_live.write().expect("wal write");
+        let mut result = [0; 4];
+
+        for (slot, term) in Self::BATCH_TERMS.iter().copied().enumerate() {
+            result[slot] = match visible[term] {
+                Some(existing) => existing,
+                None => {
+                    let index = self.next_index.fetch_add(1, Ordering::SeqCst);
+                    visible[term] = Some(index);
+                    wal_live[term] = true;
+                    index
+                }
+            };
+        }
+
+        drop(wal_live);
+        drop(visible);
+        let finish = self.tick();
+
+        let mut op = ObservedVocabOp::new(ObservedVocabKind::BatchFixed, start, finish);
+        op.batch_ret = result.map(Some);
+        self.push_history(op);
+        result
+    }
+
+    fn checkpoint(&self) -> usize {
+        let start = self.tick();
+        let _publication_write = self.publication_gate.write().expect("publication write");
+        thread::yield_now();
+
+        let visible = *self.visible.read().expect("visible read");
+        *self.checkpointed.write().expect("checkpointed write") = visible;
+        *self.wal_live.write().expect("wal write") = [false; 2];
+        let count = visible.iter().filter(|entry| entry.is_some()).count();
+
+        let finish = self.tick();
+        let mut op = ObservedVocabOp::new(ObservedVocabKind::Checkpoint, start, finish);
+        op.ret = Some(count);
+        self.push_history(op);
+        count
+    }
+
+    fn recover(&self) -> [Option<usize>; 2] {
+        let start = self.tick();
+        thread::yield_now();
+
+        let visible = *self.visible.read().expect("visible read");
+        let checkpointed = *self.checkpointed.read().expect("checkpointed read");
+        let wal_live = *self.wal_live.read().expect("wal read");
+        let mut recovered = [None; 2];
+
+        for term in 0..2 {
+            recovered[term] = if checkpointed[term].is_some() {
+                checkpointed[term]
+            } else if wal_live[term] {
+                visible[term]
+            } else {
+                None
+            };
+        }
+
+        let finish = self.tick();
+        let mut op = ObservedVocabOp::new(ObservedVocabKind::Recover, start, finish);
+        op.recovered = recovered;
+        self.push_history(op);
+        recovered
+    }
+
+    fn history(&self) -> Vec<ObservedVocabOp> {
+        self.history.read().expect("history read").clone()
+    }
+}
+
+fn apply_vocab_op(
+    mut visible: [Option<usize>; 2],
+    mut next_index: usize,
+    op: ObservedVocabOp,
+) -> Option<([Option<usize>; 2], usize)> {
+    match op.kind {
+        ObservedVocabKind::Insert(term) => match visible[term] {
+            Some(existing) if op.ret == Some(existing) => Some((visible, next_index)),
+            None if op.ret == Some(next_index) => {
+                visible[term] = Some(next_index);
+                Some((visible, next_index + 1))
+            }
+            _ => None,
+        },
+        ObservedVocabKind::Read(term) => {
+            if op.ret == visible[term] {
+                Some((visible, next_index))
+            } else {
+                None
+            }
+        }
+        ObservedVocabKind::BatchFixed => {
+            let mut expected = [None; 4];
+            for (slot, term) in ModelLinearizableVocab::BATCH_TERMS
+                .iter()
+                .copied()
+                .enumerate()
+            {
+                let index = match visible[term] {
+                    Some(existing) => existing,
+                    None => {
+                        let index = next_index;
+                        visible[term] = Some(index);
+                        next_index += 1;
+                        index
+                    }
+                };
+                expected[slot] = Some(index);
+            }
+
+            if op.batch_ret == expected {
+                Some((visible, next_index))
+            } else {
+                None
+            }
+        }
+        ObservedVocabKind::Checkpoint => {
+            let expected_count = visible.iter().filter(|entry| entry.is_some()).count();
+            if op.ret == Some(expected_count) {
+                Some((visible, next_index))
+            } else {
+                None
+            }
+        }
+        ObservedVocabKind::Recover => {
+            if op.recovered == visible {
+                Some((visible, next_index))
+            } else {
+                None
+            }
+        }
+    }
+}
+
+fn order_respects_real_time(history: &[ObservedVocabOp], order: &[usize]) -> bool {
+    for later_pos in 0..order.len() {
+        let later = history[order[later_pos]];
+        for earlier_pos in (later_pos + 1)..order.len() {
+            let earlier = history[order[earlier_pos]];
+            if earlier.finish < later.start {
+                return false;
+            }
+        }
+    }
+    true
+}
+
+fn order_matches_sequential_vocab(history: &[ObservedVocabOp], order: &[usize]) -> bool {
+    let mut visible = [None; 2];
+    let mut next_index = 0;
+
+    for &idx in order {
+        match apply_vocab_op(visible, next_index, history[idx]) {
+            Some((next_visible, next_next_index)) => {
+                visible = next_visible;
+                next_index = next_next_index;
+            }
+            None => return false,
+        }
+    }
+
+    true
+}
+
+fn has_linearizable_vocab_order(
+    history: &[ObservedVocabOp],
+    used: &mut [bool],
+    order: &mut Vec<usize>,
+) -> bool {
+    if order.len() == history.len() {
+        return order_respects_real_time(history, order)
+            && order_matches_sequential_vocab(history, order);
+    }
+
+    for idx in 0..history.len() {
+        if used[idx] {
+            continue;
+        }
+
+        used[idx] = true;
+        order.push(idx);
+
+        if order_respects_real_time(history, order)
+            && has_linearizable_vocab_order(history, used, order)
+        {
+            return true;
+        }
+
+        order.pop();
+        used[idx] = false;
+    }
+
+    false
+}
+
+fn assert_vocab_history_linearizable(history: &[ObservedVocabOp]) {
+    let mut used = vec![false; history.len()];
+    let mut order = Vec::with_capacity(history.len());
+
+    assert!(
+        has_linearizable_vocab_order(history, &mut used, &mut order),
+        "no sequential explanation for vocab history: {history:?}"
+    );
+}
+
+#[derive(Debug)]
 struct ModelVersionRegistry {
     state: RwLock<usize>,
     readers: AtomicUsize,
@@ -795,6 +1199,119 @@ fn vocab_merge_snapshot_preserves_cache_root_agreement() {
 }
 
 #[test]
+fn vocab_public_insert_read_history_has_sequential_explanation() {
+    let mut builder = loom::model::Builder::new();
+    builder.preemption_bound = Some(2);
+
+    builder.check(|| {
+        let vocab = Arc::new(ModelLinearizableVocab::new());
+
+        let first_insert = {
+            let vocab = Arc::clone(&vocab);
+            thread::spawn(move || {
+                vocab.insert(0);
+            })
+        };
+
+        let duplicate_insert = {
+            let vocab = Arc::clone(&vocab);
+            thread::spawn(move || {
+                vocab.insert(0);
+            })
+        };
+
+        let reader = {
+            let vocab = Arc::clone(&vocab);
+            thread::spawn(move || {
+                vocab.read_index(0);
+            })
+        };
+
+        first_insert.join().expect("first insert completed");
+        duplicate_insert.join().expect("duplicate insert completed");
+        reader.join().expect("reader completed");
+
+        assert_vocab_history_linearizable(&vocab.history());
+    });
+}
+
+#[test]
+fn vocab_public_batch_checkpoint_recover_history_is_linearizable() {
+    let mut builder = loom::model::Builder::new();
+    builder.preemption_bound = Some(2);
+
+    builder.check(|| {
+        let vocab = Arc::new(ModelLinearizableVocab::new());
+
+        let batch = {
+            let vocab = Arc::clone(&vocab);
+            thread::spawn(move || {
+                let result = vocab.insert_batch_fixed();
+                assert_eq!(result[0], result[1]);
+                assert_eq!(result[0], result[3]);
+                assert_ne!(result[0], result[2]);
+            })
+        };
+
+        let checkpoint = {
+            let vocab = Arc::clone(&vocab);
+            thread::spawn(move || {
+                vocab.checkpoint();
+            })
+        };
+
+        batch.join().expect("batch completed");
+        checkpoint.join().expect("checkpoint completed");
+
+        let recovered = vocab.recover();
+        let visible = *vocab.visible.read().expect("visible read");
+        assert_eq!(
+            recovered, visible,
+            "checkpoint plus retained WAL must recover all visible terms"
+        );
+        assert_vocab_history_linearizable(&vocab.history());
+    });
+}
+
+#[test]
+fn vocab_public_distinct_insert_checkpoint_recover_history_is_linearizable() {
+    let mut builder = loom::model::Builder::new();
+    builder.preemption_bound = Some(2);
+
+    builder.check(|| {
+        let vocab = Arc::new(ModelLinearizableVocab::new());
+
+        let first = {
+            let vocab = Arc::clone(&vocab);
+            thread::spawn(move || {
+                vocab.insert(0);
+            })
+        };
+
+        let second = {
+            let vocab = Arc::clone(&vocab);
+            thread::spawn(move || {
+                vocab.insert(1);
+            })
+        };
+
+        let checkpoint = {
+            let vocab = Arc::clone(&vocab);
+            thread::spawn(move || {
+                vocab.checkpoint();
+            })
+        };
+
+        first.join().expect("first insert completed");
+        second.join().expect("second insert completed");
+        checkpoint.join().expect("checkpoint completed");
+
+        vocab.recover();
+        assert_vocab_history_linearizable(&vocab.history());
+    });
+}
+
+#[test]
 fn group_commit_publish_acknowledges_only_durable_prefix() {
     loom::model(|| {
         let frontier = Arc::new(ModelDurabilityFrontier::new());
@@ -926,6 +1443,88 @@ fn checkpoint_publication_never_exceeds_synced_frontier() {
 
         assert!(checkpoint_lsn <= synced_lsn);
         assert!(frontier.prefix_is_durable(checkpoint_lsn));
+    });
+}
+
+#[test]
+fn concurrent_checkpoint_recovers_insert_racing_publication() {
+    loom::model(|| {
+        let vocab = Arc::new(ModelConcurrentCheckpointVocab::new());
+
+        let inserter = {
+            let vocab = Arc::clone(&vocab);
+            thread::spawn(move || {
+                vocab.insert(0);
+            })
+        };
+
+        let checkpointer = {
+            let vocab = Arc::clone(&vocab);
+            thread::spawn(move || {
+                vocab.checkpoint();
+            })
+        };
+
+        inserter.join().expect("insert completed");
+        checkpointer.join().expect("checkpoint completed");
+
+        vocab.assert_recovery_covers_visible();
+    });
+}
+
+#[test]
+fn concurrent_checkpoint_with_two_inserts_preserves_replay_tail() {
+    let mut builder = loom::model::Builder::new();
+    builder.preemption_bound = Some(2);
+
+    builder.check(|| {
+        let vocab = Arc::new(ModelConcurrentCheckpointVocab::new());
+
+        let first = {
+            let vocab = Arc::clone(&vocab);
+            thread::spawn(move || {
+                vocab.insert(0);
+            })
+        };
+
+        let checkpoint = {
+            let vocab = Arc::clone(&vocab);
+            thread::spawn(move || {
+                vocab.checkpoint();
+            })
+        };
+
+        let second = {
+            let vocab = Arc::clone(&vocab);
+            thread::spawn(move || {
+                vocab.insert(1);
+            })
+        };
+
+        first.join().expect("first insert completed");
+        checkpoint.join().expect("checkpoint completed");
+        second.join().expect("second insert completed");
+
+        vocab.assert_recovery_covers_visible();
+    });
+}
+
+#[test]
+fn sync_and_rotate_do_not_publish_concurrent_checkpoint() {
+    loom::model(|| {
+        let vocab = ModelConcurrentCheckpointVocab::new();
+
+        vocab.insert(0);
+        vocab.sync_only();
+        vocab.rotate_wal();
+
+        assert!(vocab.dirty.load(Ordering::Acquire));
+        assert_eq!(
+            *vocab.checkpointed.read().expect("checkpointed read"),
+            [false; 2],
+            "sync/rotate must not publish checkpoint state"
+        );
+        vocab.assert_recovery_covers_visible();
     });
 }
 

@@ -53,7 +53,10 @@ run_capped cargo test --features persistent-artrie --test wal_segment_lifecycle_
 run_capped cargo test --features persistent-artrie --test recovery_planner_correspondence
 run_capped cargo test --features persistent-artrie --test recovery_replay_completeness_correspondence
 run_capped cargo test --features persistent-artrie --test persistent_compaction_correspondence
+run_capped cargo test --features persistent-artrie --test persistent_rewrite_compaction_correspondence
 run_capped cargo test --features persistent-artrie --test persistent_vocab_wal_atomicity_correspondence
+run_capped cargo test --features persistent-artrie --test persistent_vocab_checkpoint_correspondence
+run_capped cargo test --features persistent-artrie --test concurrent_checkpoint_publication_correspondence
 (
   export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-2}"
   run_capped cargo test --features persistent-artrie --test persistent_merge_correspondence
@@ -77,56 +80,84 @@ run_capped cargo test \
 
 if [ "${RUN_MIRI:-0}" = "1" ]; then
   echo "== Miri unsafe-boundary checks =="
-  if ! cargo miri --version >/dev/null 2>&1; then
+  miri_cargo=(cargo)
+  if [ -n "${FORMAL_MIRI_TOOLCHAIN:-}" ]; then
+    miri_cargo=(cargo "+${FORMAL_MIRI_TOOLCHAIN}")
+  fi
+
+  if ! "${miri_cargo[@]}" miri --version >/dev/null 2>&1; then
     echo "RUN_MIRI=1 was set, but cargo miri is not available" >&2
+    if [ -z "${FORMAL_MIRI_TOOLCHAIN:-}" ]; then
+      echo "Set FORMAL_MIRI_TOOLCHAIN=nightly to use an installed nightly toolchain" >&2
+    fi
     exit 1
   fi
 
-  run_capped cargo miri test \
+  if [ "${FORMAL_MIRI_STRICT_PROVENANCE:-1}" = "1" ]; then
+    export MIRIFLAGS="-Zmiri-strict-provenance ${MIRIFLAGS:-}"
+  fi
+
+  if [ "${FORMAL_MIRI_DISABLE_ISOLATION:-1}" = "1" ]; then
+    export MIRIFLAGS="-Zmiri-disable-isolation ${MIRIFLAGS:-}"
+  fi
+
+  run_capped "${miri_cargo[@]}" miri test \
     --features persistent-artrie \
     --test persistent_artrie_formal_correspondence \
     vocab_child_remove_transfers_box_ownership_once
-  run_capped cargo miri test \
+  run_capped "${miri_cargo[@]}" miri test \
     --features persistent-artrie \
     --test persistent_artrie_formal_correspondence \
     vocab_insert_child_replaces_without_aliasing_old_box
-  run_capped cargo miri test \
+  run_capped "${miri_cargo[@]}" miri test \
     --features persistent-artrie \
     --test persistent_artrie_formal_correspondence \
     vocab_clone_deep_copies_child_boxes
-  run_capped cargo miri test \
+  run_capped "${miri_cargo[@]}" miri test \
+    --features persistent-artrie \
+    --test persistent_artrie_formal_correspondence \
+    vocab_get_or_create_child_mutation_keeps_unique_raw_borrow
+  run_capped "${miri_cargo[@]}" miri test \
     --features persistent-artrie \
     --test persistent_artrie_formal_correspondence \
     char_child_remove_transfers_box_ownership_once
-  run_capped cargo miri test \
+  run_capped "${miri_cargo[@]}" miri test \
     --features persistent-artrie \
     --test persistent_artrie_formal_correspondence \
     char_insert_child_replaces_without_aliasing_old_box
-  run_capped cargo miri test \
+  run_capped "${miri_cargo[@]}" miri test \
     --features persistent-artrie \
     --test persistent_artrie_formal_correspondence \
     char_clone_deep_copies_child_boxes
-  run_capped cargo miri test \
+  run_capped "${miri_cargo[@]}" miri test \
+    --features persistent-artrie \
+    --test persistent_artrie_formal_correspondence \
+    char_get_or_create_child_mutation_keeps_unique_raw_borrow
+  run_capped "${miri_cargo[@]}" miri test \
     --features persistent-artrie \
     --test persistent_artrie_formal_correspondence \
     swizzled_pointer_raw_extraction_is_gated_by_in_memory_state
-  run_capped cargo miri test \
+  run_capped "${miri_cargo[@]}" miri test \
     --features persistent-artrie \
     --test persistent_artrie_formal_correspondence \
     swizzled_pointer_losing_lazy_load_candidate_can_be_reclaimed_once
-  run_capped cargo miri test \
+  run_capped "${miri_cargo[@]}" miri test \
+    --features persistent-artrie \
+    --lib \
+    persistent_artrie_core::swizzled_ptr::tests
+  run_capped "${miri_cargo[@]}" miri test \
     --features persistent-artrie \
     --lib \
     persistent_vocab_artrie::tests::vocab_leaf_eviction_invalidates_node_map_entry_before_drop
-  run_capped cargo miri test \
+  run_capped "${miri_cargo[@]}" miri test \
     --features persistent-artrie \
     --lib \
     persistent_vocab_artrie::tests::vocab_leaf_eviction_keeps_sibling_queries_on_live_nodes
-  run_capped cargo miri test \
+  run_capped "${miri_cargo[@]}" miri test \
     --features persistent-artrie \
     --lib \
-    persistent_vocab_artrie::tests::vocab_reopen_rebuilds_node_map_parent_chain_and_reverse_index
-  run_capped cargo miri test \
+    persistent_vocab_artrie::tests::vocab_heap_node_map_parent_chain_tracks_live_nodes
+  run_capped "${miri_cargo[@]}" miri test \
     --features persistent-artrie \
     --lib \
     persistent_artrie_core::buffer_manager::tests::fixed_buffer_registration_covers_write_guard_mutation_and_flush
@@ -167,6 +198,8 @@ if command -v tla2sany >/dev/null 2>&1; then
       IoUringSqeCqeLifecycle \
       LockFreeARTrieLinearizability \
       LockFreeIndexedOverlay \
+      ConcurrentCheckpointPublication \
+      ConcurrentVocabLinearizability \
       ByzantineStorage \
       HotStuffConsensus
     do
@@ -198,6 +231,8 @@ if [ "${RUN_TLC:-0}" = "1" ]; then
       IoUringFixedBufferOwnership \
       IoUringSqeCqeLifecycle \
       LockFreeARTrieLinearizability \
+      ConcurrentCheckpointPublication \
+      ConcurrentVocabLinearizability \
       ByzantineStorage \
       HotStuffConsensus
     do

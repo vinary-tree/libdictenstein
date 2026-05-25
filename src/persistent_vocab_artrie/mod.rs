@@ -1002,14 +1002,50 @@ pub type DiskBackedVocabTrieInner = PersistentVocabARTrie;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::persistent_artrie::wal::WalConfig;
     use crate::persistent_artrie::{NodeType, SwizzledPtr};
     use std::collections::HashMap;
-    use std::sync::atomic::Ordering;
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
     use tempfile::tempdir;
+    use xxhash_rust::xxh3::Xxh3DefaultBuilder;
 
     fn suppress_drop_checkpoint(vocab: &PersistentVocabARTrie) {
         vocab.entry_count.store(0, Ordering::Release);
         vocab.dirty.store(false, Ordering::Release);
+    }
+
+    fn heap_only_vocab_for_unsafe_tests() -> PersistentVocabARTrie {
+        let root = Box::new(VocabTrieNode::new());
+        let root_ref = NodeRef::new(0, 0);
+        let root_ptr = root.as_ref() as *const VocabTrieNode;
+        let mut node_map = HashMap::with_hasher(Xxh3DefaultBuilder);
+        node_map.insert(root_ref, root_ptr);
+
+        PersistentVocabARTrie {
+            path: PathBuf::new(),
+            root: VocabTrieRoot::Node(root),
+            entry_count: AtomicUsize::new(0),
+            start_index: 0,
+            next_index: AtomicU64::new(0),
+            dirty: AtomicBool::new(false),
+            reverse_index: None,
+            reverse_cache: VocabReverseCache::new(DEFAULT_REVERSE_CACHE_SIZE),
+            node_map,
+            next_slot: 1,
+            wal_writer: None,
+            wal_config: WalConfig::default(),
+            next_lsn: AtomicU64::new(1),
+            synced_lsn: AtomicU64::new(0),
+            durability_policy: DurabilityPolicy::Periodic,
+            arena_manager: None,
+            buffer_manager: None,
+            eviction_coordinator: None,
+            bloom_filter: None,
+            lockfree_root: None,
+            lockfree_cache: None,
+            cas_retries: AtomicU64::new(0),
+        }
     }
 
     fn assert_rebuilt_node_map_parent_chain(vocab: &PersistentVocabARTrie) {
@@ -1264,10 +1300,8 @@ mod tests {
 
     #[test]
     fn vocab_parent_eviction_is_rejected_while_child_is_in_memory() {
-        let dir = tempdir().unwrap();
-        let path = dir.path().join("evict_parent_reject.vocab");
-        let mut vocab = PersistentVocabARTrie::create(&path).unwrap();
-        vocab.insert("ab");
+        let mut vocab = heap_only_vocab_for_unsafe_tests();
+        vocab.insert_with_index_no_wal("ab", 0).unwrap();
 
         let parent_ptr = match &vocab.root {
             VocabTrieRoot::Node(root) => {
@@ -1291,10 +1325,8 @@ mod tests {
 
     #[test]
     fn vocab_leaf_eviction_invalidates_node_map_entry_before_drop() {
-        let dir = tempdir().unwrap();
-        let path = dir.path().join("evict_leaf_invalidate.vocab");
-        let mut vocab = PersistentVocabARTrie::create(&path).unwrap();
-        vocab.insert("ab");
+        let mut vocab = heap_only_vocab_for_unsafe_tests();
+        vocab.insert_with_index_no_wal("ab", 0).unwrap();
 
         let leaf_ptr = match &vocab.root {
             VocabTrieRoot::Node(root) => {
@@ -1333,11 +1365,11 @@ mod tests {
 
     #[test]
     fn vocab_leaf_eviction_keeps_sibling_queries_on_live_nodes() {
-        let dir = tempdir().unwrap();
-        let path = dir.path().join("evict_leaf_sibling_live.vocab");
-        let mut vocab = PersistentVocabARTrie::create(&path).unwrap();
-        let evicted_index = vocab.insert("ab").expect("insert evicted term");
-        let sibling_index = vocab.insert("ac").expect("insert sibling term");
+        let mut vocab = heap_only_vocab_for_unsafe_tests();
+        vocab.insert_with_index_no_wal("ab", 0).unwrap();
+        vocab.insert_with_index_no_wal("ac", 1).unwrap();
+        let evicted_index = 0;
+        let sibling_index = 1;
 
         let leaf_ptr = match &vocab.root {
             VocabTrieRoot::Node(root) => {
@@ -1369,6 +1401,26 @@ mod tests {
             "query traversal must not dereference an evicted disk-only child"
         );
         assert_ne!(evicted_index, sibling_index);
+
+        suppress_drop_checkpoint(&vocab);
+    }
+
+    #[test]
+    fn vocab_heap_node_map_parent_chain_tracks_live_nodes() {
+        let mut vocab = heap_only_vocab_for_unsafe_tests();
+        let expected = [("alpha", 0), ("alpine", 1), ("beta", 2), ("delta", 3)];
+
+        for (term, index) in expected {
+            assert!(vocab.insert_with_index_no_wal(term, index).unwrap());
+        }
+
+        assert_eq!(vocab.len(), expected.len());
+        for (term, index) in expected {
+            assert_eq!(vocab.get_index(term), Some(index));
+            assert_eq!(vocab.get_term(index), Some(term.to_string()));
+            assert!(vocab.contains_index(index));
+        }
+        assert_rebuilt_node_map_parent_chain(&vocab);
 
         suppress_drop_checkpoint(&vocab);
     }

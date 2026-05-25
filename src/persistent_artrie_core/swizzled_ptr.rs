@@ -1,26 +1,35 @@
 //! Swizzled pointer implementation for transparent memory/disk addressing.
 //!
-//! A swizzled pointer uses a single 64-bit value to represent either:
-//! - A memory pointer (when the node is loaded in RAM)
+//! A swizzled pointer uses a stable 64-bit state word plus a separate
+//! provenance-carrying pointer slot to represent either:
+//! - A memory state (when the node is loaded in RAM)
 //! - A disk reference (block_id + offset when the node is on disk)
 //!
-//! The MSB (bit 63) discriminates between the two states:
-//! - MSB = 1: Memory pointer (remaining 63 bits are the address)
+//! The MSB (bit 63) discriminates between state classes:
+//! - MSB = 1: Memory/transitional state; the actual pointer is stored
+//!   separately to preserve Rust pointer provenance
 //! - MSB = 0: Disk reference (encoded block_id + offset + flags)
 //!
 //! This design enables lazy loading: start with disk references, swizzle to
 //! memory pointers on first access, and the transition is atomic.
 
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::ptr;
+use std::sync::atomic::{AtomicPtr, AtomicU64, Ordering};
 
 use super::error::SwizzleError;
 
 /// The swizzle flag is the MSB (bit 63).
-/// When set, the pointer is in memory; when clear, it's a disk reference.
+/// When set, the state is memory/transitional; when clear, it's a disk reference.
 const SWIZZLE_FLAG: u64 = 1 << 63;
 
-/// Mask to extract the memory address (clear the MSB).
-const PTR_MASK: u64 = !SWIZZLE_FLAG;
+/// Stable state used once `memory_ptr` contains the live in-memory pointer.
+const MEMORY_STATE: u64 = SWIZZLE_FLAG;
+
+/// Transitional state while a thread owns publication of `memory_ptr`.
+const INSTALLING_MEMORY_STATE: u64 = SWIZZLE_FLAG | 1;
+
+/// Transitional state while a thread owns removal of `memory_ptr`.
+const EVICTING_MEMORY_STATE: u64 = SWIZZLE_FLAG | 2;
 
 /// Bit layout for disk references (when MSB = 0):
 /// - Bits 62-40: Block ID (23 bits = 8M blocks)
@@ -152,13 +161,18 @@ impl TryFrom<u8> for NodeType {
 /// Multiple threads can safely race to swizzle the same pointer; only one
 /// will succeed, and all will observe the same final state.
 #[derive(Debug)]
-#[repr(transparent)]
-pub struct SwizzledPtr(AtomicU64);
+pub struct SwizzledPtr {
+    state: AtomicU64,
+    memory_ptr: AtomicPtr<()>,
+}
 
 impl SwizzledPtr {
     /// Create a null pointer (neither in memory nor on disk).
     pub const fn null() -> Self {
-        Self(AtomicU64::new(0))
+        Self {
+            state: AtomicU64::new(0),
+            memory_ptr: AtomicPtr::new(ptr::null_mut()),
+        }
     }
 
     /// Create a new unswizzled (on-disk) pointer.
@@ -195,44 +209,42 @@ impl SwizzledPtr {
             "disk reference must not have swizzle flag set"
         );
 
-        Self(AtomicU64::new(encoded))
+        Self {
+            state: AtomicU64::new(encoded),
+            memory_ptr: AtomicPtr::new(ptr::null_mut()),
+        }
     }
 
     /// Create a new swizzled (in-memory) pointer.
     ///
-    /// # Safety
-    ///
-    /// The pointer must be valid and have bit 63 clear (which is true for
-    /// all user-space pointers on modern 64-bit systems).
-    ///
     /// # Panics
     ///
-    /// Panics if the pointer has bit 63 set (which would conflict with the swizzle flag).
+    /// Panics if the pointer is null.
     pub fn in_memory<T>(ptr: *const T) -> Self {
-        let addr = ptr as u64;
-        assert!(
-            addr & SWIZZLE_FLAG == 0,
-            "pointer address has bit 63 set, which conflicts with swizzle flag"
-        );
-        Self(AtomicU64::new(addr | SWIZZLE_FLAG))
+        assert!(!ptr.is_null(), "memory pointer must not be null");
+        Self {
+            state: AtomicU64::new(MEMORY_STATE),
+            memory_ptr: AtomicPtr::new(ptr.cast_mut().cast::<()>()),
+        }
     }
 
     /// Check if this pointer is null.
     #[inline]
     pub fn is_null(&self) -> bool {
-        self.0.load(Ordering::Acquire) == 0
+        self.state.load(Ordering::Acquire) == 0
     }
 
     /// Check if this pointer is swizzled (pointing to memory).
     #[inline]
     pub fn is_swizzled(&self) -> bool {
-        self.0.load(Ordering::Acquire) & SWIZZLE_FLAG != 0
+        self.state.load(Ordering::Acquire) == MEMORY_STATE
+            && !self.memory_ptr.load(Ordering::Acquire).is_null()
     }
 
     /// Check if this pointer is unswizzled (pointing to disk).
     #[inline]
     pub fn is_on_disk(&self) -> bool {
-        let val = self.0.load(Ordering::Acquire);
+        let val = self.state.load(Ordering::Acquire);
         val != 0 && val & SWIZZLE_FLAG == 0
     }
 
@@ -244,27 +256,30 @@ impl SwizzledPtr {
     /// The returned pointer is valid as long as the node is not evicted.
     #[inline]
     pub unsafe fn as_ptr_unchecked<T>(&self) -> *const T {
-        let val = self.0.load(Ordering::Acquire);
-        debug_assert!(val & SWIZZLE_FLAG != 0, "pointer is not swizzled");
-        (val & PTR_MASK) as *const T
+        debug_assert!(
+            self.state.load(Ordering::Acquire) == MEMORY_STATE,
+            "pointer is not swizzled"
+        );
+        let ptr = self.memory_ptr.load(Ordering::Acquire);
+        debug_assert!(!ptr.is_null(), "memory pointer is missing");
+        ptr.cast::<T>()
     }
 
     /// Get the memory pointer, returning None if not swizzled.
     #[inline]
     pub fn as_ptr<T>(&self) -> Option<*const T> {
-        let val = self.0.load(Ordering::Acquire);
-        if val & SWIZZLE_FLAG != 0 {
-            Some((val & PTR_MASK) as *const T)
-        } else {
-            None
+        if self.state.load(Ordering::Acquire) != MEMORY_STATE {
+            return None;
         }
+        let ptr = self.memory_ptr.load(Ordering::Acquire);
+        (!ptr.is_null()).then_some(ptr.cast::<T>())
     }
 
     /// Decode the disk location from an unswizzled pointer.
     ///
     /// Returns None if the pointer is swizzled (in memory) or null.
     pub fn disk_location(&self) -> Option<DiskLocation> {
-        let val = self.0.load(Ordering::Acquire);
+        let val = self.state.load(Ordering::Acquire);
         if val == 0 || val & SWIZZLE_FLAG != 0 {
             return None;
         }
@@ -296,11 +311,15 @@ impl SwizzledPtr {
     /// - `Err(AlreadySwizzled)` if the pointer was already in memory
     /// - `Err(RaceCondition)` if another thread swizzled first
     pub fn swizzle<T>(&self, ptr: *const T) -> Result<(), SwizzleError> {
-        let old = self.0.load(Ordering::Acquire);
+        assert!(!ptr.is_null(), "memory pointer must not be null");
+        let old = self.state.load(Ordering::Acquire);
 
         // Already swizzled?
-        if old & SWIZZLE_FLAG != 0 {
+        if old == MEMORY_STATE {
             return Err(SwizzleError::AlreadySwizzled);
+        }
+        if old & SWIZZLE_FLAG != 0 {
+            return Err(SwizzleError::RaceCondition);
         }
 
         // Null pointer?
@@ -308,15 +327,19 @@ impl SwizzledPtr {
             return Err(SwizzleError::AlreadyUnswizzled);
         }
 
-        let addr = ptr as u64;
-        assert!(addr & SWIZZLE_FLAG == 0, "pointer address has bit 63 set");
+        self.state
+            .compare_exchange(
+                old,
+                INSTALLING_MEMORY_STATE,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .map_err(|_| SwizzleError::RaceCondition)?;
 
-        let new = addr | SWIZZLE_FLAG;
-
-        self.0
-            .compare_exchange(old, new, Ordering::AcqRel, Ordering::Acquire)
-            .map(|_| ())
-            .map_err(|_| SwizzleError::RaceCondition)
+        self.memory_ptr
+            .store(ptr.cast_mut().cast::<()>(), Ordering::Release);
+        self.state.store(MEMORY_STATE, Ordering::Release);
+        Ok(())
     }
 
     /// Atomically unswizzle: replace a memory pointer with a disk reference.
@@ -348,29 +371,48 @@ impl SwizzledPtr {
             return Err(SwizzleError::OffsetOverflow { offset });
         }
 
-        let old = self.0.load(Ordering::Acquire);
+        let old = self.state.load(Ordering::Acquire);
 
         // Not swizzled?
         if old & SWIZZLE_FLAG == 0 {
             return Err(SwizzleError::AlreadyUnswizzled);
+        }
+        if old != MEMORY_STATE {
+            return Err(SwizzleError::RaceCondition);
         }
 
         let new = ((block_id as u64 & BLOCK_ID_MASK) << BLOCK_ID_SHIFT)
             | ((offset as u64 & OFFSET_MASK) << OFFSET_SHIFT)
             | (node_type as u64 & FLAGS_MASK);
 
-        self.0
-            .compare_exchange(old, new, Ordering::AcqRel, Ordering::Acquire)
-            .map(|v| (v & PTR_MASK) as *const T)
-            .map_err(|_| SwizzleError::RaceCondition)
+        self.state
+            .compare_exchange(
+                MEMORY_STATE,
+                EVICTING_MEMORY_STATE,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .map_err(|_| SwizzleError::RaceCondition)?;
+
+        let old_ptr = self.memory_ptr.load(Ordering::Acquire);
+        if old_ptr.is_null() {
+            self.state.store(MEMORY_STATE, Ordering::Release);
+            return Err(SwizzleError::RaceCondition);
+        }
+
+        self.memory_ptr.store(ptr::null_mut(), Ordering::Release);
+        self.state.store(new, Ordering::Release);
+        Ok(old_ptr.cast::<T>())
     }
 
     /// Get the raw u64 value for serialization.
     ///
-    /// This returns the internal representation which can be stored
-    /// and later restored with `from_raw`.
+    /// This returns the disk/null representation that can be stored and later
+    /// restored with `from_raw`. In-memory pointers intentionally return a
+    /// memory-state sentinel instead of an address; pointer provenance cannot
+    /// be serialized or reconstructed from an integer.
     pub fn to_raw(&self) -> u64 {
-        self.0.load(Ordering::Acquire)
+        self.state.load(Ordering::Acquire)
     }
 
     /// Create a SwizzledPtr from a raw u64 value.
@@ -382,7 +424,10 @@ impl SwizzledPtr {
     /// The caller must ensure that `raw` was produced by a previous
     /// call to `to_raw` and represents a valid pointer state.
     pub fn from_raw(raw: u64) -> Self {
-        Self(AtomicU64::new(raw))
+        Self {
+            state: AtomicU64::new(raw),
+            memory_ptr: AtomicPtr::new(ptr::null_mut()),
+        }
     }
 
     /// Convert to ArenaSlot for relative encoding.
@@ -432,7 +477,7 @@ impl SwizzledPtr {
     /// Uses Acquire ordering to ensure all prior writes are visible.
     #[inline]
     pub fn load_raw(&self) -> u64 {
-        self.0.load(Ordering::Acquire)
+        self.state.load(Ordering::Acquire)
     }
 
     /// Atomically store a raw pointer value.
@@ -441,7 +486,8 @@ impl SwizzledPtr {
     /// subsequent reads.
     #[inline]
     pub fn store_raw(&self, value: u64) {
-        self.0.store(value, Ordering::Release)
+        self.memory_ptr.store(ptr::null_mut(), Ordering::Release);
+        self.state.store(value, Ordering::Release)
     }
 
     /// Compare-and-swap the pointer value.
@@ -476,7 +522,10 @@ impl SwizzledPtr {
     /// ```
     #[inline]
     pub fn compare_exchange_raw(&self, expected: u64, new: u64) -> Result<u64, u64> {
-        self.0
+        if expected & SWIZZLE_FLAG != 0 || new & SWIZZLE_FLAG != 0 {
+            return Err(self.load_raw());
+        }
+        self.state
             .compare_exchange(expected, new, Ordering::AcqRel, Ordering::Acquire)
     }
 
@@ -497,7 +546,10 @@ impl SwizzledPtr {
     /// - `Err(actual)` if the swap failed (or spuriously failed)
     #[inline]
     pub fn compare_exchange_weak_raw(&self, expected: u64, new: u64) -> Result<u64, u64> {
-        self.0
+        if expected & SWIZZLE_FLAG != 0 || new & SWIZZLE_FLAG != 0 {
+            return Err(self.load_raw());
+        }
+        self.state
             .compare_exchange_weak(expected, new, Ordering::AcqRel, Ordering::Acquire)
     }
 
@@ -517,6 +569,29 @@ impl SwizzledPtr {
     #[inline]
     pub fn try_insert_child(&self, new_child: &SwizzledPtr) -> Result<(), u64> {
         let new_raw = new_child.load_raw();
+        if new_raw == MEMORY_STATE {
+            let new_ptr = new_child.memory_ptr.load(Ordering::Acquire);
+            if new_ptr.is_null() {
+                return Err(self.load_raw());
+            }
+            return match self.state.compare_exchange(
+                0,
+                INSTALLING_MEMORY_STATE,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => {
+                    self.memory_ptr.store(new_ptr, Ordering::Release);
+                    self.state.store(MEMORY_STATE, Ordering::Release);
+                    Ok(())
+                }
+                Err(actual) => Err(actual),
+            };
+        }
+        if new_raw & SWIZZLE_FLAG != 0 {
+            return Err(self.load_raw());
+        }
+
         match self.compare_exchange_raw(0, new_raw) {
             Ok(_) => Ok(()),
             Err(actual) => Err(actual),
@@ -544,9 +619,96 @@ impl SwizzledPtr {
     ) -> Result<(), u64> {
         let expected_raw = expected_child.load_raw();
         let new_raw = new_child.load_raw();
-        match self.compare_exchange_raw(expected_raw, new_raw) {
-            Ok(_) => Ok(()),
-            Err(actual) => Err(actual),
+        let expected_ptr = expected_child.memory_ptr.load(Ordering::Acquire);
+        let new_ptr = new_child.memory_ptr.load(Ordering::Acquire);
+        if (expected_raw & SWIZZLE_FLAG != 0 && expected_raw != MEMORY_STATE)
+            || (new_raw & SWIZZLE_FLAG != 0 && new_raw != MEMORY_STATE)
+        {
+            return Err(self.load_raw());
+        }
+
+        match (expected_raw == MEMORY_STATE, new_raw == MEMORY_STATE) {
+            (false, false) => match self.compare_exchange_raw(expected_raw, new_raw) {
+                Ok(_) => {
+                    self.memory_ptr.store(ptr::null_mut(), Ordering::Release);
+                    Ok(())
+                }
+                Err(actual) => Err(actual),
+            },
+            (false, true) => {
+                if new_ptr.is_null() {
+                    return Err(self.load_raw());
+                }
+                match self.state.compare_exchange(
+                    expected_raw,
+                    INSTALLING_MEMORY_STATE,
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
+                ) {
+                    Ok(_) => {
+                        self.memory_ptr.store(new_ptr, Ordering::Release);
+                        self.state.store(MEMORY_STATE, Ordering::Release);
+                        Ok(())
+                    }
+                    Err(actual) => Err(actual),
+                }
+            }
+            (true, false) => {
+                if expected_ptr.is_null() {
+                    return Err(self.load_raw());
+                }
+                if self.state.load(Ordering::Acquire) != MEMORY_STATE
+                    || self.memory_ptr.load(Ordering::Acquire) != expected_ptr
+                {
+                    return Err(self.load_raw());
+                }
+                match self.state.compare_exchange(
+                    MEMORY_STATE,
+                    EVICTING_MEMORY_STATE,
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
+                ) {
+                    Ok(_) => {
+                        let actual_ptr = self.memory_ptr.load(Ordering::Acquire);
+                        if actual_ptr != expected_ptr {
+                            self.state.store(MEMORY_STATE, Ordering::Release);
+                            return Err(MEMORY_STATE);
+                        }
+                        self.memory_ptr.store(ptr::null_mut(), Ordering::Release);
+                        self.state.store(new_raw, Ordering::Release);
+                        Ok(())
+                    }
+                    Err(actual) => Err(actual),
+                }
+            }
+            (true, true) => {
+                if expected_ptr.is_null() || new_ptr.is_null() {
+                    return Err(self.load_raw());
+                }
+                if self.state.load(Ordering::Acquire) != MEMORY_STATE
+                    || self.memory_ptr.load(Ordering::Acquire) != expected_ptr
+                {
+                    return Err(self.load_raw());
+                }
+                match self.state.compare_exchange(
+                    MEMORY_STATE,
+                    INSTALLING_MEMORY_STATE,
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
+                ) {
+                    Ok(_) => {
+                        let actual_ptr = self.memory_ptr.load(Ordering::Acquire);
+                        if actual_ptr != expected_ptr {
+                            self.state.store(MEMORY_STATE, Ordering::Release);
+                            return Err(MEMORY_STATE);
+                        }
+                        self.memory_ptr.store(new_ptr, Ordering::Release);
+                        self.state.store(MEMORY_STATE, Ordering::Release);
+                        Ok(())
+                    }
+                    Err(actual) => Err(actual),
+                }
+            }
         }
     }
 
@@ -556,13 +718,16 @@ impl SwizzledPtr {
     /// the value is known not to be changing (e.g., during single-threaded init).
     #[inline]
     pub fn is_null_relaxed(&self) -> bool {
-        self.0.load(Ordering::Relaxed) == 0
+        self.state.load(Ordering::Relaxed) == 0
     }
 }
 
 impl Clone for SwizzledPtr {
     fn clone(&self) -> Self {
-        Self(AtomicU64::new(self.0.load(Ordering::Acquire)))
+        Self {
+            state: AtomicU64::new(self.state.load(Ordering::Acquire)),
+            memory_ptr: AtomicPtr::new(self.memory_ptr.load(Ordering::Acquire)),
+        }
     }
 }
 
@@ -629,6 +794,21 @@ mod tests {
 
         let retrieved: *const u64 = ptr.as_ptr().expect("should have memory pointer");
         assert_eq!(unsafe { *retrieved }, 42);
+    }
+
+    #[test]
+    fn test_memory_raw_value_does_not_reconstruct_provenance() {
+        let data: u64 = 42;
+        let ptr = SwizzledPtr::in_memory(&data);
+        let raw = ptr.to_raw();
+
+        assert_eq!(raw, MEMORY_STATE);
+
+        let restored = SwizzledPtr::from_raw(raw);
+        assert!(!restored.is_null());
+        assert!(!restored.is_on_disk());
+        assert!(!restored.is_swizzled());
+        assert_eq!(restored.as_ptr::<u64>(), None);
     }
 
     #[test]
@@ -777,7 +957,8 @@ mod tests {
 
     mod cas_tests {
         use super::*;
-        use std::sync::Arc;
+        use std::sync::atomic::AtomicUsize;
+        use std::sync::{Arc, Barrier};
         use std::thread;
 
         #[test]
@@ -829,6 +1010,18 @@ mod tests {
         }
 
         #[test]
+        fn test_try_insert_memory_child_preserves_pointer() {
+            let slot = SwizzledPtr::null();
+            let child_data = 123_u64;
+            let child = SwizzledPtr::in_memory(&child_data);
+
+            let result = slot.try_insert_child(&child);
+            assert!(result.is_ok());
+            assert!(slot.is_swizzled());
+            assert_eq!(slot.as_ptr::<u64>(), Some(&child_data as *const u64));
+        }
+
+        #[test]
         fn test_try_insert_child_failure() {
             let existing = SwizzledPtr::on_disk(1, 100, NodeType::Node4);
             let slot = SwizzledPtr::from_raw(existing.load_raw());
@@ -851,6 +1044,75 @@ mod tests {
             let result = slot.try_update_child(&old_child, &new_child);
             assert!(result.is_ok());
             assert_eq!(slot.load_raw(), new_child.load_raw());
+        }
+
+        #[test]
+        fn test_try_update_memory_child_checks_pointer_identity() {
+            let old_data = 10_u64;
+            let wrong_old_data = 11_u64;
+            let new_data = 12_u64;
+            let old_child = SwizzledPtr::in_memory(&old_data);
+            let wrong_old_child = SwizzledPtr::in_memory(&wrong_old_data);
+            let slot = old_child.clone();
+            let new_child = SwizzledPtr::in_memory(&new_data);
+
+            assert!(slot.try_update_child(&wrong_old_child, &new_child).is_err());
+            assert_eq!(slot.as_ptr::<u64>(), Some(&old_data as *const u64));
+
+            assert!(slot.try_update_child(&old_child, &new_child).is_ok());
+            assert_eq!(slot.as_ptr::<u64>(), Some(&new_data as *const u64));
+        }
+
+        #[test]
+        fn test_concurrent_memory_child_update_has_single_expected_pointer_winner() {
+            let values = Arc::new([10_u64, 20, 30, 40, 50, 60, 70, 80]);
+            let slot = Arc::new(SwizzledPtr::in_memory(&values[0]));
+            let expected = Arc::new(SwizzledPtr::in_memory(&values[0]));
+            let successes = Arc::new(AtomicUsize::new(0));
+            let num_threads = values.len() - 1;
+            let barrier = Arc::new(Barrier::new(num_threads));
+
+            let handles: Vec<_> = (1..values.len())
+                .map(|i| {
+                    let values = Arc::clone(&values);
+                    let slot = Arc::clone(&slot);
+                    let expected = Arc::clone(&expected);
+                    let successes = Arc::clone(&successes);
+                    let barrier = Arc::clone(&barrier);
+                    thread::spawn(move || {
+                        let new_child = SwizzledPtr::in_memory(&values[i]);
+                        barrier.wait();
+                        if slot.try_update_child(&expected, &new_child).is_ok() {
+                            successes.fetch_add(1, Ordering::SeqCst);
+                        }
+                    })
+                })
+                .collect();
+
+            for handle in handles {
+                handle.join().expect("thread should complete");
+            }
+
+            assert_eq!(
+                successes.load(Ordering::SeqCst),
+                1,
+                "only one stale expected memory pointer update may publish"
+            );
+            let final_ptr = slot.as_ptr::<u64>().expect("slot should remain in memory");
+            assert!((1..values.len()).any(|i| final_ptr == &values[i] as *const u64));
+        }
+
+        #[test]
+        fn test_try_update_memory_child_to_disk_clears_pointer() {
+            let old_data = 10_u64;
+            let old_child = SwizzledPtr::in_memory(&old_data);
+            let slot = old_child.clone();
+            let disk_child = SwizzledPtr::on_disk(4, 512, NodeType::Node16);
+
+            assert!(slot.try_update_child(&old_child, &disk_child).is_ok());
+            assert_eq!(slot.as_ptr::<u64>(), None);
+            assert!(slot.is_on_disk());
+            assert_eq!(slot.disk_location(), disk_child.disk_location());
         }
 
         #[test]

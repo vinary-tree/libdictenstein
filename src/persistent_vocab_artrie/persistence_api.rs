@@ -102,14 +102,33 @@ impl<S: BlockStorage> super::dict_impl::PersistentVocabARTrie<S> {
             self.save_bloom_filter(bloom)?;
         }
 
-        // Step 4: Write checkpoint record to WAL and truncate
+        // Step 4: Write checkpoint record to WAL and truncate.
+        // WAL errors must stay fail-closed: a failed checkpoint/truncate means
+        // the active WAL is still needed for replay, so the dirty flag remains
+        // set and the caller sees the error.
         if let Some(ref wal) = self.wal_writer {
             let checkpoint_lsn = self.next_lsn.load(Ordering::Acquire).saturating_sub(1);
-            if let Ok(lsn) = wal.checkpoint(checkpoint_lsn) {
-                self.synced_lsn.fetch_max(lsn, Ordering::AcqRel);
-            }
-            // Truncate WAL after successful checkpoint
-            let _ = wal.truncate();
+            let wal_path = wal.path().to_string_lossy().into_owned();
+            wal.checkpoint(checkpoint_lsn).map_err(|e| {
+                PersistentARTrieError::io_error(
+                    "checkpoint WAL",
+                    wal_path.clone(),
+                    std::io::Error::new(std::io::ErrorKind::Other, e.to_string()),
+                )
+            })?;
+            self.synced_lsn.fetch_max(checkpoint_lsn, Ordering::AcqRel);
+
+            wal.truncate().map_err(|e| {
+                PersistentARTrieError::io_error(
+                    "truncate WAL after vocab checkpoint",
+                    wal_path,
+                    std::io::Error::new(std::io::ErrorKind::Other, e.to_string()),
+                )
+            })?;
+
+            let next_lsn = checkpoint_lsn.saturating_add(1);
+            wal.set_min_lsn(next_lsn);
+            self.next_lsn.store(next_lsn, Ordering::Release);
         }
 
         self.dirty.store(false, Ordering::Release);
@@ -141,8 +160,7 @@ impl<S: BlockStorage> super::dict_impl::PersistentVocabARTrie<S> {
     /// (causing file bloat), this method:
     /// 1. Flushes the reverse index (mmap, fast)
     /// 2. Saves the bloom filter to disk
-    /// 3. Flushes only dirty slots via arena manager
-    /// 4. Syncs and truncates the WAL
+    /// 3. Syncs the WAL without truncating it
     ///
     /// This prevents file bloat while still providing crash recovery via WAL replay.
     /// On restart, all inserts are recovered from the WAL.
@@ -151,7 +169,7 @@ impl<S: BlockStorage> super::dict_impl::PersistentVocabARTrie<S> {
     ///
     /// Use `rotate_wal()` for periodic durability during bulk imports:
     /// - No file bloat from repeated trie serialization
-    /// - WAL truncation prevents unbounded WAL growth
+    /// - WAL replay remains available because this is not a checkpoint
     /// - Fast recovery via WAL replay
     ///
     /// Use `checkpoint()` for final compaction:
@@ -191,13 +209,10 @@ impl<S: BlockStorage> super::dict_impl::PersistentVocabARTrie<S> {
             self.save_bloom_filter(bloom)?;
         }
 
-        // Step 3: Flush dirty slots in arena manager (NOT full trie serialization)
-        // This only writes slots that have been modified, avoiding file bloat
-        if let Some(ref am) = self.arena_manager {
-            am.write().flush_sequential()?;
-        }
-
-        // Step 4: Sync and truncate WAL
+        // Step 3: Sync WAL while retaining it for replay. Do not flush arenas
+        // here: vocab nodes are only assigned durable arena locations during
+        // full checkpoint serialization, so an arena flush here would publish
+        // incomplete storage state without a matching vocab header.
         if let Some(ref wal) = self.wal_writer {
             let lsn = wal.sync().map_err(|e| {
                 PersistentARTrieError::io_error(
@@ -222,8 +237,8 @@ impl<S: BlockStorage> super::dict_impl::PersistentVocabARTrie<S> {
 
     /// Non-blocking sync to disk without checkpoint bookkeeping.
     ///
-    /// This method flushes dirty arenas in-place without re-serializing the entire
-    /// trie (which the full `checkpoint()` method does). This avoids:
+    /// This method syncs the WAL without re-serializing the entire trie (which
+    /// the full `checkpoint()` method does). This avoids:
     /// - File fragmentation from repeated re-serialization
     /// - File bloat from old serialized data not being reclaimed
     /// - Checkpoint bookkeeping overhead (LSN tracking, WAL truncation)
@@ -233,7 +248,7 @@ impl<S: BlockStorage> super::dict_impl::PersistentVocabARTrie<S> {
     /// - **Reads**: Continue unblocked during sync
     /// - **Writes**: Continue unblocked during sync
     /// - **Single sync at a time**: Returns existing handle if sync in progress
-    /// - **Data safety**: WAL ensures durability; arenas flushed in-place
+    /// - **Data safety**: WAL ensures durability; checkpoint publishes the trie
     ///
     /// # Returns
     ///
@@ -303,7 +318,6 @@ impl<S: BlockStorage> super::dict_impl::PersistentVocabARTrie<S> {
         handle
             .wait()
             .map_err(|e| PersistentARTrieError::internal(&e))?;
-        self.dirty.store(false, Ordering::Release);
         Ok(())
     }
 

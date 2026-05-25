@@ -19,17 +19,26 @@ use crate::value::DictionaryValue;
 
 type SerializedSnapshot = BTreeMap<Vec<u8>, Option<Vec<u8>>>;
 
-fn wal_sidecar_path(path: &Path) -> PathBuf {
+pub(super) fn wal_sidecar_path(path: &Path) -> PathBuf {
     path.with_extension("wal")
 }
 
-fn in_place_temp_path(original_path: &Path) -> PathBuf {
+pub(super) fn in_place_temp_path(original_path: &Path) -> PathBuf {
     let mut file_name = original_path
         .file_name()
         .map(OsString::from)
         .unwrap_or_else(|| OsString::from("compact"));
     file_name.push(".compacting");
     original_path.with_file_name(file_name)
+}
+
+pub(super) fn stale_wal_backup_path(original_wal_path: &Path) -> PathBuf {
+    let mut file_name = original_wal_path
+        .file_name()
+        .map(OsString::from)
+        .unwrap_or_else(|| OsString::from("compact.wal"));
+    file_name.push(".compacting-stale");
+    original_wal_path.with_file_name(file_name)
 }
 
 fn remove_file_if_exists(path: &Path, operation: &'static str) -> Result<()> {
@@ -42,6 +51,43 @@ fn remove_file_if_exists(path: &Path, operation: &'static str) -> Result<()> {
             e,
         )),
     }
+}
+
+pub(super) fn recover_in_place_compaction_finalization(original_path: &Path) -> Result<()> {
+    let original_wal_path = wal_sidecar_path(original_path);
+    let stale_wal_backup_path = stale_wal_backup_path(&original_wal_path);
+
+    if !stale_wal_backup_path.exists() {
+        return Ok(());
+    }
+
+    let temp_path = in_place_temp_path(original_path);
+    let temp_wal_path = wal_sidecar_path(&temp_path);
+
+    if temp_path.exists() {
+        if !original_wal_path.exists() {
+            std::fs::rename(&stale_wal_backup_path, &original_wal_path).map_err(|e| {
+                PersistentARTrieError::io_error(
+                    "compact_restore_stale_wal",
+                    original_wal_path.display().to_string(),
+                    e,
+                )
+            })?;
+        } else {
+            remove_file_if_exists(&stale_wal_backup_path, "compact_remove_duplicate_stale_wal")?;
+        }
+
+        remove_file_if_exists(&temp_wal_path, "compact_recover_remove_temp_wal")?;
+        remove_file_if_exists(&temp_path, "compact_recover_remove_temp")?;
+    } else {
+        remove_file_if_exists(&original_wal_path, "compact_recover_remove_stale_wal")?;
+        remove_file_if_exists(
+            &stale_wal_backup_path,
+            "compact_recover_remove_stale_wal_backup",
+        )?;
+    }
+
+    Ok(())
 }
 
 impl<V: DictionaryValue> PersistentARTrie<V> {
@@ -104,6 +150,7 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
             None => (in_place_temp_path(&original_path), true),
         };
         let temp_wal_path = wal_sidecar_path(&temp_path);
+        let stale_wal_backup_path = stale_wal_backup_path(&original_wal_path);
 
         if temp_path == original_path {
             return Err(PersistentARTrieError::InvalidOperation(
@@ -131,6 +178,7 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
         }
 
         remove_file_if_exists(&temp_wal_path, "compact_remove_temp_wal")?;
+        remove_file_if_exists(&stale_wal_backup_path, "compact_remove_stale_wal_backup")?;
 
         let mut new_trie = PersistentARTrie::<V>::create(&temp_path)?;
 
@@ -233,11 +281,26 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
             self.wal_writer = None;
             self.arena_manager = None;
 
+            if original_wal_path.exists() {
+                std::fs::rename(&original_wal_path, &stale_wal_backup_path).map_err(|e| {
+                    PersistentARTrieError::io_error(
+                        "compact_backup_stale_wal",
+                        stale_wal_backup_path.display().to_string(),
+                        e,
+                    )
+                })?;
+            }
+
             std::fs::rename(&temp_path, &original_path).map_err(|e| {
+                if stale_wal_backup_path.exists() && !original_wal_path.exists() {
+                    let _ = std::fs::rename(&stale_wal_backup_path, &original_wal_path);
+                }
+
                 PersistentARTrieError::io_error("compact", original_path.display().to_string(), e)
             })?;
 
             remove_file_if_exists(&original_wal_path, "compact_remove_stale_wal")?;
+            remove_file_if_exists(&stale_wal_backup_path, "compact_remove_stale_wal_backup")?;
 
             *self = Self::open(&original_path)?;
         }

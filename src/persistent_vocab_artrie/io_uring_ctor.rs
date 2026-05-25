@@ -183,13 +183,20 @@ impl PersistentVocabARTrie<crate::persistent_artrie::IoUringDiskManager> {
             }
         }
 
-        // Open reverse index
+        // Rebuild the reverse-index sidecar from the durable trie snapshot.
+        // NodeRefs are process-local after load, so a missing, corrupt, or stale
+        // sidecar must not be trusted as authoritative.
         let idx_path = path.with_extension("vocab.idx");
-        let reverse_index = if idx_path.exists() {
-            Some(VocabReverseIndex::open(&idx_path)?)
-        } else {
-            None
-        };
+        let reverse_index_capacity = header
+            .reverse_index_capacity
+            .max(header.next_index.saturating_sub(header.start_index))
+            .max(header.entry_count)
+            .max(1024);
+        let reverse_index = Some(VocabReverseIndex::create(
+            &idx_path,
+            header.start_index,
+            reverse_index_capacity,
+        )?);
 
         // Open WAL file using async writer
         let wal_path = path.with_extension("vocab.wal");
@@ -254,7 +261,7 @@ impl PersistentVocabARTrie<crate::persistent_artrie::IoUringDiskManager> {
             cas_retries: AtomicU64::new(0),
         };
 
-        // Rebuild reverse_index with fresh NodeRefs after loading
+        // Rebuild reverse_index with fresh NodeRefs after loading.
         if header.root_ptr != 0 {
             trie.rebuild_reverse_index()?;
         }

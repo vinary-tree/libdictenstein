@@ -596,6 +596,12 @@ impl AsyncWalWriter {
     pub fn truncate(&self) -> Result<(), AsyncWalError> {
         let writer = self.writer.lock().expect("WAL writer lock poisoned");
         writer.truncate()?;
+        self.next_lsn.store(writer.current_lsn(), Ordering::Release);
+        let synced_lsn = writer.synced_lsn();
+        self.synced_lsn.store(synced_lsn, Ordering::Release);
+        self.sync_manager
+            .global_synced_lsn
+            .store(synced_lsn, Ordering::Release);
         Ok(())
     }
 

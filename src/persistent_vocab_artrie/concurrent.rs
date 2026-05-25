@@ -107,6 +107,14 @@ pub struct ConcurrentVocabARTrie {
     /// The underlying vocabulary trie (protected by RwLock for writes)
     inner: Arc<RwLock<PersistentVocabARTrie>>,
 
+    /// Publication gate for mutation-vs-checkpoint exclusion.
+    ///
+    /// Inserts take a shared guard; checkpoint takes an exclusive guard. This
+    /// keeps checkpoint snapshots from racing with queued or lock-free inserts
+    /// that have become visible but have not yet been merged into the durable
+    /// trie and WAL.
+    publication_gate: RwLock<()>,
+
     /// Atomic counter for next vocabulary index (lock-free allocation)
     /// Only used in Queue mode
     next_index: AtomicU64,
@@ -147,6 +155,7 @@ impl ConcurrentVocabARTrie {
             mode: ConcurrentMode::Queue,
             lockfree_vocab: None,
             inner: Arc::new(RwLock::new(vocab)),
+            publication_gate: RwLock::new(()),
             next_index: AtomicU64::new(next_idx),
             start_index: start_idx,
             insert_tx: tx,
@@ -192,6 +201,7 @@ impl ConcurrentVocabARTrie {
             mode: ConcurrentMode::LockFree,
             lockfree_vocab: Some(lockfree),
             inner: Arc::new(RwLock::new(vocab)),
+            publication_gate: RwLock::new(()),
             next_index: AtomicU64::new(next_idx),
             start_index: start_idx,
             insert_tx: tx,
@@ -226,6 +236,7 @@ impl ConcurrentVocabARTrie {
             mode: ConcurrentMode::LockFree,
             lockfree_vocab: Some(lockfree),
             inner: Arc::new(RwLock::new(vocab)),
+            publication_gate: RwLock::new(()),
             next_index: AtomicU64::new(next_idx),
             start_index: start_idx,
             insert_tx: tx,
@@ -247,6 +258,7 @@ impl ConcurrentVocabARTrie {
             mode: ConcurrentMode::Queue,
             lockfree_vocab: None,
             inner: vocab,
+            publication_gate: RwLock::new(()),
             next_index: AtomicU64::new(next_idx),
             start_index: start_idx,
             insert_tx: tx,
@@ -270,6 +282,7 @@ impl ConcurrentVocabARTrie {
             mode: ConcurrentMode::LockFree,
             lockfree_vocab: Some(lockfree),
             inner: vocab,
+            publication_gate: RwLock::new(()),
             next_index: AtomicU64::new(next_idx),
             start_index: start_idx,
             insert_tx: tx,
@@ -377,6 +390,8 @@ impl ConcurrentVocabARTrie {
     ///
     /// The vocabulary index for the term (existing or newly assigned).
     pub fn insert_cas(&self, term: &str) -> u64 {
+        let _publication_read = self.publication_gate.read();
+
         match self.mode {
             ConcurrentMode::LockFree => {
                 // Check persistent trie first (for terms added before lock-free layer)
@@ -401,13 +416,22 @@ impl ConcurrentVocabARTrie {
 
     /// Insert using queue mode (legacy implementation).
     fn insert_cas_queue_mode(&self, term: &str) -> u64 {
-        // Fast path: check if already exists
-        if let Some(idx) = self.get_index(term) {
+        let mut cache = self.lookup_cache.write();
+
+        if let Some(&idx) = cache.get(term) {
             return idx;
         }
 
+        {
+            let guard = self.inner.read();
+            if let Some(idx) = guard.get_index(term) {
+                cache.insert(term.to_string(), idx);
+                return idx;
+            }
+        }
+
         // Atomically claim the next index
-        let index = self.next_index.fetch_add(1, Ordering::AcqRel);
+        let mut index = self.next_index.fetch_add(1, Ordering::AcqRel);
 
         // Queue for batched insert
         let pending = PendingInsert {
@@ -421,15 +445,12 @@ impl ConcurrentVocabARTrie {
             let mut guard = self.inner.write();
             if let Err(error) = guard.insert_with_index(term, index) {
                 log::warn!("direct queued vocabulary insert failed for {term:?}: {error}");
-                return guard.get_index(term).unwrap_or(index);
+                index = guard.get_index(term).unwrap_or(index);
             }
         }
 
         // Update cache
-        {
-            let mut cache = self.lookup_cache.write();
-            cache.insert(term.to_string(), index);
-        }
+        cache.insert(term.to_string(), index);
 
         index
     }
@@ -446,6 +467,8 @@ impl ConcurrentVocabARTrie {
         if terms.is_empty() {
             return Vec::new();
         }
+
+        let _publication_read = self.publication_gate.read();
 
         match self.mode {
             ConcurrentMode::LockFree => {
@@ -481,15 +504,30 @@ impl ConcurrentVocabARTrie {
 
     /// Insert batch using queue mode (legacy implementation).
     fn insert_batch_queue_mode(&self, terms: &[&str]) -> Vec<u64> {
+        let mut cache = self.lookup_cache.write();
         let mut indices = Vec::with_capacity(terms.len());
         let mut new_terms = Vec::new();
         let mut new_indices = Vec::new();
+        let mut assigned_in_batch = HashMap::new();
 
         // First pass: check for existing terms and allocate indices for new ones
         {
             let guard = self.inner.read();
-            for term in terms {
+            for term in terms.iter().copied() {
+                if let Some(&idx) = assigned_in_batch.get(term) {
+                    indices.push(idx);
+                    continue;
+                }
+
+                if let Some(&idx) = cache.get(term) {
+                    assigned_in_batch.insert(term, idx);
+                    indices.push(idx);
+                    continue;
+                }
+
                 if let Some(idx) = guard.get_index(term) {
+                    cache.insert(term.to_string(), idx);
+                    assigned_in_batch.insert(term, idx);
                     indices.push(idx);
                 } else {
                     // Atomically claim index
@@ -497,6 +535,7 @@ impl ConcurrentVocabARTrie {
                     indices.push(idx);
                     new_terms.push(term.to_string());
                     new_indices.push(idx);
+                    assigned_in_batch.insert(term, idx);
                 }
             }
         }
@@ -510,12 +549,8 @@ impl ConcurrentVocabARTrie {
             let _ = self.insert_tx.send(pending);
         }
 
-        // Update cache
-        {
-            let mut cache = self.lookup_cache.write();
-            for (term, &index) in new_terms.iter().zip(new_indices.iter()) {
-                cache.insert(term.clone(), index);
-            }
+        for (term, &index) in new_terms.iter().zip(new_indices.iter()) {
+            cache.insert(term.clone(), index);
         }
 
         indices
@@ -533,6 +568,12 @@ impl ConcurrentVocabARTrie {
     ///
     /// The number of inserts applied.
     pub fn drain_pending_inserts(&self) -> usize {
+        let _publication_read = self.publication_gate.read();
+
+        self.drain_pending_inserts_without_gate()
+    }
+
+    fn drain_pending_inserts_without_gate(&self) -> usize {
         let mut count = 0;
         let mut pending = Vec::new();
 
@@ -552,11 +593,15 @@ impl ConcurrentVocabARTrie {
             // Apply all inserts under a single write lock
             let mut guard = self.inner.write();
             for insert in pending {
-                if let Err(error) = guard.insert_with_index(&insert.term, insert.index) {
-                    log::warn!(
-                        "drained queued vocabulary insert failed for {:?}: {error}",
-                        insert.term
-                    );
+                match guard.insert_with_index(&insert.term, insert.index) {
+                    Ok(true) => {}
+                    Ok(false) => {}
+                    Err(error) => {
+                        log::warn!(
+                            "drained queued vocabulary insert failed for {:?}: {error}",
+                            insert.term
+                        );
+                    }
                 }
             }
         }
@@ -575,20 +620,24 @@ impl ConcurrentVocabARTrie {
     ///
     /// The number of new terms merged into persistent storage.
     pub fn checkpoint(&self) -> Result<usize> {
+        let _publication_write = self.publication_gate.write();
+
         match self.mode {
             ConcurrentMode::LockFree => {
+                let mut guard = self.inner.write();
                 if let Some(ref lf) = self.lockfree_vocab {
-                    let mut guard = self.inner.write();
                     let count = lf.merge_into(&mut *guard)?;
+                    guard.checkpoint()?;
                     Ok(count)
                 } else {
+                    guard.checkpoint()?;
                     Ok(0)
                 }
             }
             ConcurrentMode::Queue => {
-                let count = self.drain_pending_inserts();
+                let count = self.drain_pending_inserts_without_gate();
                 let mut guard = self.inner.write();
-                guard.sync()?;
+                guard.checkpoint()?;
                 Ok(count)
             }
         }
@@ -624,16 +673,11 @@ impl ConcurrentVocabARTrie {
             ConcurrentMode::LockFree => {
                 // Checkpoint lock-free layer to persistent storage
                 self.checkpoint()?;
-                // Sync the underlying trie
-                let mut guard = self.inner.write();
-                guard.sync()
+                Ok(())
             }
             ConcurrentMode::Queue => {
-                // Drain pending inserts first
-                self.drain_pending_inserts();
-                // Sync the underlying trie
-                let mut guard = self.inner.write();
-                guard.sync()
+                self.checkpoint()?;
+                Ok(())
             }
         }
     }

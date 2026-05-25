@@ -153,6 +153,10 @@ impl<V: DictionaryValue> ARTrie for SharedARTrie<V> {
                     std::io::Error::new(std::io::ErrorKind::Other, e.to_string()),
                 )
             })?;
+
+            let next_lsn = checkpoint_lsn.saturating_add(1);
+            wal_writer.set_min_lsn(next_lsn);
+            guard.next_lsn.store(next_lsn, AtomicOrdering::Release);
         }
 
         Ok(())

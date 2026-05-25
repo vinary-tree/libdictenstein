@@ -9,7 +9,39 @@
 
 use libdictenstein::persistent_artrie::{CompactionConfig, PersistentARTrie};
 use libdictenstein::{Dictionary, MappedDictionary};
+use std::ffi::OsString;
+use std::path::{Path, PathBuf};
 use tempfile::tempdir;
+
+fn wal_sidecar_path(path: &Path) -> PathBuf {
+    path.with_extension("wal")
+}
+
+fn in_place_temp_path(original_path: &Path) -> PathBuf {
+    let mut file_name = original_path
+        .file_name()
+        .map(OsString::from)
+        .unwrap_or_else(|| OsString::from("compact"));
+    file_name.push(".compacting");
+    original_path.with_file_name(file_name)
+}
+
+fn stale_wal_backup_path(original_wal_path: &Path) -> PathBuf {
+    let mut file_name = original_wal_path
+        .file_name()
+        .map(OsString::from)
+        .unwrap_or_else(|| OsString::from("compact.wal"));
+    file_name.push(".compacting-stale");
+    original_wal_path.with_file_name(file_name)
+}
+
+fn create_compacted_counter_snapshot(path: &Path, value: i64) {
+    let mut compacted = PersistentARTrie::<i64>::create(path).expect("create compacted snapshot");
+    assert!(compacted.insert_with_value("counter", value));
+    compacted
+        .checkpoint()
+        .expect("checkpoint compacted snapshot");
+}
 
 #[test]
 fn in_place_compaction_preserves_unsynced_wal_values_after_reopen() {
@@ -149,6 +181,10 @@ fn successful_in_place_compaction_does_not_replay_stale_original_wal() {
         !reopened.contains("stale-suffix"),
         "stale original WAL must not be replayed after compacted snapshot"
     );
+    assert!(
+        !stale_wal_backup_path(&wal_sidecar_path(&path)).exists(),
+        "successful compaction must not leave stale WAL backup artifacts"
+    );
 }
 
 #[test]
@@ -175,4 +211,87 @@ fn output_file_compaction_preserves_key_value_snapshot() {
     let compacted = PersistentARTrie::<u64>::open(&compacted_path).expect("open output snapshot");
     assert_eq!(compacted.get_value("alpha"), Some(11));
     assert_eq!(compacted.get_value("beta"), Some(20));
+}
+
+#[test]
+fn crash_before_data_rename_restores_original_wal_for_recovery() {
+    let dir = tempdir().expect("temp dir");
+    let path = dir.path().join("restore_before_rename.artrie");
+    let temp_path = in_place_temp_path(&path);
+    let original_wal_path = wal_sidecar_path(&path);
+    let backup_wal_path = stale_wal_backup_path(&original_wal_path);
+
+    {
+        let mut trie = PersistentARTrie::<i64>::create(&path).expect("create trie");
+        assert_eq!(trie.increment("counter", 5).expect("increment to five"), 5);
+        trie.checkpoint().expect("checkpoint old data");
+        assert_eq!(
+            trie.increment("counter", -5)
+                .expect("increment back to zero"),
+            0
+        );
+    }
+
+    create_compacted_counter_snapshot(&temp_path, 0);
+    let _ = std::fs::remove_file(wal_sidecar_path(&temp_path));
+    std::fs::rename(&original_wal_path, &backup_wal_path).expect("backup original WAL");
+
+    let reopened = PersistentARTrie::<i64>::open(&path).expect("reopen before data rename");
+    assert_eq!(
+        reopened.get_value("counter"),
+        Some(0),
+        "old data must recover through the restored WAL if data rename did not happen"
+    );
+    assert!(
+        original_wal_path.exists(),
+        "original WAL must be restored for ordinary recovery"
+    );
+    assert!(
+        !backup_wal_path.exists(),
+        "backup WAL must be consumed after restoring the pre-rename state"
+    );
+    assert!(
+        !temp_path.exists(),
+        "unfinished compacted data must be discarded when original data remains published"
+    );
+}
+
+#[test]
+fn crash_after_data_rename_ignores_stale_wal_backup() {
+    let dir = tempdir().expect("temp dir");
+    let path = dir.path().join("ignore_after_rename.artrie");
+    let temp_path = in_place_temp_path(&path);
+    let original_wal_path = wal_sidecar_path(&path);
+    let backup_wal_path = stale_wal_backup_path(&original_wal_path);
+
+    {
+        let mut trie = PersistentARTrie::<i64>::create(&path).expect("create trie");
+        assert_eq!(trie.increment("counter", 5).expect("increment to five"), 5);
+        trie.checkpoint().expect("checkpoint old data");
+        assert_eq!(
+            trie.increment("counter", -5)
+                .expect("increment back to zero"),
+            0
+        );
+    }
+
+    create_compacted_counter_snapshot(&temp_path, 0);
+    let _ = std::fs::remove_file(wal_sidecar_path(&temp_path));
+    std::fs::rename(&original_wal_path, &backup_wal_path).expect("backup original WAL");
+    std::fs::rename(&temp_path, &path).expect("publish compacted data");
+
+    let reopened = PersistentARTrie::<i64>::open(&path).expect("reopen after data rename");
+    assert_eq!(
+        reopened.get_value("counter"),
+        Some(0),
+        "compacted data must not replay the stale increment WAL after publication"
+    );
+    assert!(
+        !backup_wal_path.exists(),
+        "stale WAL backup must be removed after compacted data is published"
+    );
+    assert!(
+        original_wal_path.exists(),
+        "reopen should create a fresh WAL after consuming the stale backup"
+    );
 }

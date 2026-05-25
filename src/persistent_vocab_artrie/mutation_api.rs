@@ -269,6 +269,15 @@ impl<S: BlockStorage> super::dict_impl::PersistentVocabARTrie<S> {
 
         let chars: Vec<char> = term.chars().collect();
         let root_ref = NodeRef::new(0, 0);
+        let mut ptr_to_ref = HashMap::with_capacity(self.node_map.len());
+        for (node_ref, node_ptr) in &self.node_map {
+            if ptr_to_ref.insert(*node_ptr, *node_ref).is_some() {
+                return Err(PersistentARTrieError::CorruptedFile {
+                    reason: "node_map assigns multiple NodeRefs to one live vocabulary node"
+                        .to_string(),
+                });
+            }
+        }
 
         match &mut self.root {
             VocabTrieRoot::Empty => {
@@ -282,7 +291,27 @@ impl<S: BlockStorage> super::dict_impl::PersistentVocabARTrie<S> {
                 let mut current_ref = root_ref;
 
                 for &c in chars.iter() {
-                    // Assign NodeRef for current node if not already
+                    if let Some(existing_child_ptr) = current
+                        .get_child(c)
+                        .map(|child| child as *const VocabTrieNode)
+                    {
+                        let child_ref =
+                            ptr_to_ref
+                                .get(&existing_child_ptr)
+                                .copied()
+                                .ok_or_else(|| PersistentARTrieError::CorruptedFile {
+                                    reason: format!(
+                                        "node_map missing live vocabulary child for edge {c:?}"
+                                    ),
+                                })?;
+                        current_ref = child_ref;
+                        current = current
+                            .get_child_mut(c)
+                            .expect("existing vocabulary child should be mutable");
+                        continue;
+                    }
+
+                    // Assign a NodeRef only for a newly-created child.
                     let slot = self.next_slot;
                     self.next_slot += 1;
                     let child_ref = NodeRef::new(0, slot as u32);
@@ -291,10 +320,9 @@ impl<S: BlockStorage> super::dict_impl::PersistentVocabARTrie<S> {
                     let child = current.get_or_create_child(c, current_ref);
 
                     // Update node map
-                    if !self.node_map.contains_key(&child_ref) {
-                        self.node_map
-                            .insert(child_ref, child as *const VocabTrieNode);
-                    }
+                    self.node_map
+                        .insert(child_ref, child as *const VocabTrieNode);
+                    ptr_to_ref.insert(child as *const VocabTrieNode, child_ref);
 
                     current_ref = child_ref;
                     current = child;

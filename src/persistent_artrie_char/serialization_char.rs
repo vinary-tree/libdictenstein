@@ -30,10 +30,14 @@
 //!
 //! # Type-Specific Layouts
 //!
+//! Serialized child and value pointers are 64-bit disk/null `SwizzledPtr`
+//! state words. In-memory `SwizzledPtr` values keep pointer provenance in a
+//! separate runtime slot and cannot be reconstructed from serialized integers.
+//!
 //! ## CharNode4
 //! ```text
 //! │ keys: [u32; 4]        │ 16 bytes                                   │
-//! │ children: [u64; 4]    │ 32 bytes (SwizzledPtr as u64)              │
+//! │ children: [u64; 4]    │ 32 bytes (disk/null SwizzledPtr state)     │
 //! │ value_ptr: u64        │ 8 bytes                                    │
 //! Total: 56 bytes + header
 //! ```
@@ -41,7 +45,7 @@
 //! ## CharNode16
 //! ```text
 //! │ keys: [u32; 16]       │ 64 bytes                                   │
-//! │ children: [u64; 16]   │ 128 bytes (SwizzledPtr as u64)             │
+//! │ children: [u64; 16]   │ 128 bytes (disk/null SwizzledPtr state)    │
 //! │ value_ptr: u64        │ 8 bytes                                    │
 //! Total: 200 bytes + header
 //! ```
@@ -49,7 +53,7 @@
 //! ## CharNode48
 //! ```text
 //! │ keys: [u32; 48]       │ 192 bytes (sorted for binary search)       │
-//! │ children: [u64; 48]   │ 384 bytes (SwizzledPtr as u64)             │
+//! │ children: [u64; 48]   │ 384 bytes (disk/null SwizzledPtr state)    │
 //! │ value_ptr: u64        │ 8 bytes                                    │
 //! Total: 584 bytes + header
 //! ```

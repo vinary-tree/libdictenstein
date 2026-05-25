@@ -510,6 +510,35 @@ fn vocab_clone_deep_copies_child_boxes() {
 }
 
 #[test]
+fn vocab_get_or_create_child_mutation_keeps_unique_raw_borrow() {
+    let mut root = VocabTrieNode::new();
+    let root_ref = NodeRef::new(0, 0);
+    let child_ref = NodeRef::new(0, 1);
+
+    {
+        let child = root.get_or_create_child('語', root_ref);
+        child.set_value(101);
+        child.get_or_create_child('尾', child_ref).set_value(202);
+    }
+
+    let child_raw = root.get_child('語').expect("child exists") as *const VocabTrieNode;
+    {
+        let same_child = root.get_or_create_child('語', root_ref);
+        assert_eq!(same_child as *const VocabTrieNode, child_raw);
+        same_child.set_value(303);
+    }
+
+    let removed = root.remove_child('語').expect("child removed");
+    assert_eq!(removed.as_ref() as *const VocabTrieNode, child_raw);
+    assert_eq!(removed.get_value(), Some(303));
+    assert_eq!(
+        removed.get_child('尾').and_then(VocabTrieNode::get_value),
+        Some(202)
+    );
+    assert!(root.get_child('語').is_none());
+}
+
+#[test]
 fn char_child_remove_transfers_box_ownership_once() {
     let mut root = CharTrieNodeInner::<i32>::new();
 
@@ -577,6 +606,33 @@ fn char_clone_deep_copies_child_boxes() {
     assert!(cloned_child.is_final());
     assert!(original.get_child('Ж').is_none());
     assert!(cloned.get_child('Ж').is_none());
+}
+
+#[test]
+fn char_get_or_create_child_mutation_keeps_unique_raw_borrow() {
+    let mut root = CharTrieNodeInner::<i32>::new();
+
+    {
+        let child = root.get_or_create_child('語');
+        child.set_final(true);
+        child.get_or_create_child('尾').set_final(true);
+    }
+
+    let child_raw = root.get_child('語').expect("child exists") as *const CharTrieNodeInner<i32>;
+    {
+        let same_child = root.get_or_create_child('語');
+        assert_eq!(same_child as *const CharTrieNodeInner<i32>, child_raw);
+        same_child.set_final(false);
+    }
+
+    let removed = root.remove_child('語').expect("child removed");
+    assert_eq!(removed.as_ref() as *const CharTrieNodeInner<i32>, child_raw);
+    assert!(!removed.is_final());
+    assert!(removed
+        .get_child('尾')
+        .expect("grandchild remains owned by removed subtree")
+        .is_final());
+    assert!(root.get_child('語').is_none());
 }
 
 #[test]
@@ -1234,6 +1290,15 @@ fn swizzled_pointer_state_transitions_preserve_location_contract() {
     assert!(restored.is_swizzled());
     assert!(restored.disk_location().is_none());
     assert_eq!(restored.as_ptr::<u64>(), Some(&value as *const u64));
+
+    let memory_raw = restored.to_raw();
+    let memory_raw_restored = SwizzledPtr::from_raw(memory_raw);
+    assert!(
+        !memory_raw_restored.is_swizzled(),
+        "serialized memory-state sentinels must not fabricate pointer provenance"
+    );
+    assert_eq!(memory_raw_restored.as_ptr::<u64>(), None);
+    assert_eq!(memory_raw_restored.disk_location(), None);
 
     let previous = restored
         .unswizzle::<u64>(17, 23, NodeType::Bucket)

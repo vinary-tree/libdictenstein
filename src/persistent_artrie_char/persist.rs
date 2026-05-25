@@ -190,11 +190,11 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
         dm.set_root_ptr(root_descriptor_ptr.to_raw())?;
         dm.set_entry_count(self.len.load(AtomicOrdering::Acquire) as u64)?;
 
-        // Flush all pages to ensure durability
+        // Flush all pages to ensure durability. This publishes the root
+        // descriptor, but checkpoint-level dirty state is cleared only after
+        // the WAL checkpoint/rotation step succeeds in `checkpoint()`.
         bm.flush_all()?;
         dm.sync()?;
-
-        self.dirty.store(false, AtomicOrdering::Release);
         Ok(())
     }
 
