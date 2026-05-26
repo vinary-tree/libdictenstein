@@ -39,6 +39,7 @@ formal-verification/
 │   ├── ConcurrentCheckpointPublication.tla # Mutation/checkpoint race model
 │   ├── SharedPersistentConcurrency.tla # Shared public RwLock/checkpoint model
 │   ├── PublicDurabilityPolicy.tla # Public mutation/sync acknowledgement model
+│   ├── PersistentEndToEndTrace.tla # Public checkpoint/WAL/compaction/reopen trace model
 │   ├── PublicReadSnapshotTraversal.tla # Public read traversal snapshot model
 │   ├── ConcurrentVocabLinearizability.tla # Public concurrent vocab history model
 │   ├── EpochCheckpointRecovery.tla # Epoch checkpoint/recovery ordering model
@@ -52,8 +53,8 @@ formal-verification/
 │   ├── PART.cfg               # TLC configuration (no crash)
 │   └── PART_crash.cfg         # TLC configuration (with crash)
 │
-└── rocq/                      # Rocq/Coq proofs (57 .v files, 24,086 LOC,
-    │                            1,170 theorem/lemma/corollary propositions,
+└── rocq/                      # Rocq/Coq proofs (58 .v files, 24,405 LOC,
+    │                            1,192 theorem/lemma/corollary propositions,
     │                            0 Admitted / 0 Axiom / 0 Parameter)
     ├── Makefile               # Build system
     ├── Spec/                  # Specifications
@@ -78,6 +79,7 @@ formal-verification/
     │   ├── SharedPersistentConcurrencySpec.v # Shared public API concurrency laws
     │   ├── PublicDurabilityPolicySpec.v # Public durability acknowledgement laws
     │   ├── PersistentPublicWalLifecycleSpec.v # Public WAL open/replay lifecycle laws
+    │   ├── PersistentEndToEndTraceSpec.v # Composed checkpoint/WAL/compaction/reopen trace laws
     │   ├── PersistentVocabWalAtomicitySpec.v # Vocab WAL atomicity and bijection laws
     │   ├── PersistentVocabCheckpointSpec.v # Vocab checkpoint/sidecar publication laws
     │   ├── PersistentCheckpointRetentionSpec.v # Checkpoint/WAL retention laws
@@ -151,6 +153,7 @@ formal-verification/
 | Shared Persistent Public API Concurrency | Safety | Shared byte/char/vocab writes, reads, sync, checkpoint, and recovery stay linearizable through `Arc<RwLock<...>>` and do not truncate replay evidence for racing visible writes |
 | Public Durability Policy | Safety | `Immediate` and `GroupCommit` public mutation/sync acknowledgements are covered by the synced WAL frontier; `Periodic`/`None` do not overclaim synced durability |
 | Public WAL Lifecycle | Safety | Public byte/char/vocab open recovers persisted checkpoints plus synced retained WAL tails, and group-commit returned LSNs match durable WAL record order |
+| Persistent End-to-End Trace | Safety | Public mutations, checkpoint publication, byte compaction rewrite, crash/reopen replay, and vocab bijection preservation compose into one recoverable trace |
 | Public Read Snapshot Traversal | Safety | Byte/char/vocab public iteration, prefix iteration, and zipper-style traversal return exact visible snapshots or fail closed on lazy/disk corruption |
 | Concurrent Vocab Linearizability | Safety | Public insert/read/batch/checkpoint/recover histories have a sequential vocabulary-map explanation respecting real-time order |
 | Epoch Checkpoint Recovery | Safety | Epoch metadata is published only after the trie checkpoint, and WAL cleanup retains recovery evidence for visible operations |
@@ -209,6 +212,7 @@ tlc -workers 1 -config LockFreeIndexedOverlayVocabulary.cfg LockFreeIndexedOverl
 tlc -workers 1 -config LockFreeCounterMergeAtomicity.cfg LockFreeCounterMergeAtomicity.tla
 tlc -workers 1 -config ConcurrentCheckpointPublication.cfg ConcurrentCheckpointPublication.tla
 tlc -workers 1 -config SharedPersistentConcurrency.cfg SharedPersistentConcurrency.tla
+tlc -workers 1 -config PersistentEndToEndTrace.cfg PersistentEndToEndTrace.tla
 tlc -workers 1 -config ConcurrentVocabLinearizability.cfg ConcurrentVocabLinearizability.tla
 tlc -workers 1 -config EpochCheckpointRecovery.cfg EpochCheckpointRecovery.tla
 tlc -workers 1 -config ByzantineStorage.cfg ByzantineStorage.tla
@@ -241,8 +245,9 @@ lock-free counter merge atomicity, persistent vocab WAL atomicity,
 persistent vocab checkpoint publication,
 concurrent checkpoint publication, checkpoint retention, dirty checkpoint
 publication, WAL segment lifecycle, recovery planner durable-prefix replay,
-recovery replay completeness, epoch checkpoint recovery, substring, SCDAWG
-occurrence, and fuzzy candidate coverage targets plus the
+recovery replay completeness, persistent public lifecycle, persistent
+end-to-end trace, epoch checkpoint recovery, substring, SCDAWG occurrence, and
+fuzzy candidate coverage targets plus the
 feature-gated valued semiring and public
 serialization targets under `--features lling-llang`,
 `--features serialization`, `--features "serialization protobuf compression"`,
@@ -410,6 +415,10 @@ RUN_IO_URING=1 scripts/verify-formal-correspondence.sh
    formats, DAT protobuf terms, and suffix-automaton source languages according
    to their wire format, and invalid payloads fail closed
    — see `Spec/SerializationRoundtripSpec.v`
+31. **End-to-End Persistent Trace Refinement**: public mutation, checkpoint,
+   byte compaction rewrite, crash/reopen replay, and vocab bijection laws
+   compose over one persistent trace
+   — see `Spec/PersistentEndToEndTraceSpec.v`
 
 ### Building Proofs
 
@@ -432,7 +441,7 @@ make check-Model/Key
 ### Proof Status
 
 As of 2026-05-26: all modules **Complete** — 0 `Admitted` / 0 `Axiom` /
-0 `Parameter` across the 57 .v files (verified by grep, see
+0 `Parameter` across the 58 .v files (verified by grep, see
 [VERIFICATION_RESULTS.md](VERIFICATION_RESULTS.md) for the per-file tally).
 
 | Module | Status | Description |

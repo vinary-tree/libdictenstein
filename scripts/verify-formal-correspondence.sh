@@ -69,6 +69,7 @@ run_capped cargo test --features persistent-artrie --test concurrent_checkpoint_
 run_capped cargo test --features persistent-artrie --test persistent_shared_concurrency_correspondence
 run_capped cargo test --features persistent-artrie --test persistent_public_durability_policy_correspondence
 run_capped cargo test --features persistent-artrie --test persistent_public_lifecycle_correspondence
+run_capped cargo test --features persistent-artrie --test persistent_end_to_end_trace_correspondence
 run_capped cargo test --features persistent-artrie --test epoch_checkpoint_recovery_correspondence
 (
   export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-2}"
@@ -219,6 +220,7 @@ if command -v tla2sany >/dev/null 2>&1; then
       ConcurrentCheckpointPublication \
       SharedPersistentConcurrency \
       PublicDurabilityPolicy \
+      PersistentEndToEndTrace \
       PublicReadSnapshotTraversal \
       CharNodeV2Layout \
       ConcurrentVocabLinearizability \
@@ -260,6 +262,7 @@ if [ "${RUN_TLC:-0}" = "1" ]; then
       ConcurrentCheckpointPublication \
       SharedPersistentConcurrency \
       PublicDurabilityPolicy \
+      PersistentEndToEndTrace \
       PublicReadSnapshotTraversal \
       CharNodeV2Layout \
       ConcurrentVocabLinearizability \

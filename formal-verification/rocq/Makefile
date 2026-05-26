@@ -10,7 +10,7 @@ COQFLAGS = -Q . ARTrie
 DIRS = Spec Model Invariants Operations Proofs
 
 # Source files in dependency order
-SPEC_FILES = Spec/MapSpec.v Spec/DictionaryLawSpec.v Spec/DynamicDawgMutationSpec.v Spec/DynamicDawgU64Spec.v Spec/DoubleArrayTrieSpec.v Spec/ZipperLanguageSpec.v Spec/ValuedSetCombinatorSpec.v Spec/BloomFilterSpec.v Spec/PersistentMergeSpec.v Spec/PersistentPrefixSpec.v Spec/PersistentReadTraversalSpec.v Spec/PersistentCharNodeLayoutSpec.v Spec/PathMapFactorySpec.v Spec/RelativeEncodingSpec.v Spec/ArenaReservationSpec.v Spec/DedupArenaSpec.v Spec/RootDescriptorReopenSpec.v Spec/PersistentLazyMutationSpec.v Spec/PersistentWalAtomicitySpec.v Spec/LockFreeCounterMergeSpec.v Spec/SharedPersistentConcurrencySpec.v Spec/PublicDurabilityPolicySpec.v Spec/PersistentPublicWalLifecycleSpec.v Spec/PersistentVocabWalAtomicitySpec.v Spec/PersistentVocabCheckpointSpec.v Spec/PersistentCheckpointRetentionSpec.v Spec/PersistentDirtyCheckpointSpec.v Spec/PersistentWalSegmentLifecycleSpec.v Spec/PersistentRecoveryPlannerSpec.v Spec/PersistentRecoveryReplayCompletenessSpec.v Spec/PersistentCompactionSpec.v Spec/PersistentRewriteCompactionSpec.v Spec/SubstringSearchSpec.v Spec/ScdawgOccurrenceSpec.v Spec/FuzzyCandidateCoverageSpec.v Spec/SerializationRoundtripSpec.v Spec/ARTrieSpec.v Spec/ReplicatedMapSpec.v
+SPEC_FILES = Spec/MapSpec.v Spec/DictionaryLawSpec.v Spec/DynamicDawgMutationSpec.v Spec/DynamicDawgU64Spec.v Spec/DoubleArrayTrieSpec.v Spec/ZipperLanguageSpec.v Spec/ValuedSetCombinatorSpec.v Spec/BloomFilterSpec.v Spec/PersistentMergeSpec.v Spec/PersistentPrefixSpec.v Spec/PersistentReadTraversalSpec.v Spec/PersistentCharNodeLayoutSpec.v Spec/PathMapFactorySpec.v Spec/RelativeEncodingSpec.v Spec/ArenaReservationSpec.v Spec/DedupArenaSpec.v Spec/RootDescriptorReopenSpec.v Spec/PersistentLazyMutationSpec.v Spec/PersistentWalAtomicitySpec.v Spec/LockFreeCounterMergeSpec.v Spec/SharedPersistentConcurrencySpec.v Spec/PublicDurabilityPolicySpec.v Spec/PersistentPublicWalLifecycleSpec.v Spec/PersistentEndToEndTraceSpec.v Spec/PersistentVocabWalAtomicitySpec.v Spec/PersistentVocabCheckpointSpec.v Spec/PersistentCheckpointRetentionSpec.v Spec/PersistentDirtyCheckpointSpec.v Spec/PersistentWalSegmentLifecycleSpec.v Spec/PersistentRecoveryPlannerSpec.v Spec/PersistentRecoveryReplayCompletenessSpec.v Spec/PersistentCompactionSpec.v Spec/PersistentRewriteCompactionSpec.v Spec/SubstringSearchSpec.v Spec/ScdawgOccurrenceSpec.v Spec/FuzzyCandidateCoverageSpec.v Spec/SerializationRoundtripSpec.v Spec/ARTrieSpec.v Spec/ReplicatedMapSpec.v
 MODEL_FILES = Model/Key.v Model/NodeTypes.v Model/Bucket.v Model/HotStuff.v Model/PathCompression.v Model/ArenaManager.v Model/SequentialSiblings.v Model/FileSystem.v
 INVARIANT_FILES = Invariants/StructuralInvariants.v Invariants/TransitionInvariants.v Invariants/ArenaInvariants.v Invariants/SequentialSiblingsInvariants.v
 OPERATION_FILES = # Operations/Lookup.v Operations/Insert.v Operations/Delete.v
@@ -87,32 +87,33 @@ show-order:
 	@echo " 29. Spec/SharedPersistentConcurrencySpec.v"
 	@echo " 30. Spec/PublicDurabilityPolicySpec.v"
 	@echo " 31. Spec/PersistentPublicWalLifecycleSpec.v"
-	@echo " 32. Spec/PersistentVocabWalAtomicitySpec.v"
-	@echo " 33. Spec/PersistentVocabCheckpointSpec.v"
-	@echo " 34. Spec/PersistentCheckpointRetentionSpec.v"
-	@echo " 35. Spec/PersistentDirtyCheckpointSpec.v"
-	@echo " 36. Spec/PersistentWalSegmentLifecycleSpec.v"
-	@echo " 37. Spec/PersistentRecoveryPlannerSpec.v"
-	@echo " 38. Spec/PersistentRecoveryReplayCompletenessSpec.v"
-	@echo " 39. Spec/PersistentCompactionSpec.v"
-	@echo " 40. Spec/PersistentRewriteCompactionSpec.v"
-	@echo " 41. Spec/SubstringSearchSpec.v"
-	@echo " 42. Spec/ScdawgOccurrenceSpec.v"
-	@echo " 43. Spec/FuzzyCandidateCoverageSpec.v"
-	@echo " 44. Spec/SerializationRoundtripSpec.v"
-	@echo " 45. Spec/ARTrieSpec.v"
-	@echo " 46. Spec/ReplicatedMapSpec.v"
-	@echo " 47. Invariants/StructuralInvariants.v"
-	@echo " 48. Invariants/TransitionInvariants.v"
-	@echo " 49. Invariants/ArenaInvariants.v"
-	@echo " 50. Invariants/SequentialSiblingsInvariants.v"
-	@echo " 51. Proofs/MapRefinement.v"
-	@echo " 52. Proofs/StructuralPreservation.v"
-	@echo " 53. Proofs/ByzantineRecovery.v"
-	@echo " 54. Proofs/CertifiedReference.v"
-	@echo " 55. Proofs/HotStuffSafety.v"
-	@echo " 56. Proofs/ProofCarryingExtraction.v"
-	@echo " 57. Proofs/FileSystemSafety.v"
+	@echo " 32. Spec/PersistentEndToEndTraceSpec.v"
+	@echo " 33. Spec/PersistentVocabWalAtomicitySpec.v"
+	@echo " 34. Spec/PersistentVocabCheckpointSpec.v"
+	@echo " 35. Spec/PersistentCheckpointRetentionSpec.v"
+	@echo " 36. Spec/PersistentDirtyCheckpointSpec.v"
+	@echo " 37. Spec/PersistentWalSegmentLifecycleSpec.v"
+	@echo " 38. Spec/PersistentRecoveryPlannerSpec.v"
+	@echo " 39. Spec/PersistentRecoveryReplayCompletenessSpec.v"
+	@echo " 40. Spec/PersistentCompactionSpec.v"
+	@echo " 41. Spec/PersistentRewriteCompactionSpec.v"
+	@echo " 42. Spec/SubstringSearchSpec.v"
+	@echo " 43. Spec/ScdawgOccurrenceSpec.v"
+	@echo " 44. Spec/FuzzyCandidateCoverageSpec.v"
+	@echo " 45. Spec/SerializationRoundtripSpec.v"
+	@echo " 46. Spec/ARTrieSpec.v"
+	@echo " 47. Spec/ReplicatedMapSpec.v"
+	@echo " 48. Invariants/StructuralInvariants.v"
+	@echo " 49. Invariants/TransitionInvariants.v"
+	@echo " 50. Invariants/ArenaInvariants.v"
+	@echo " 51. Invariants/SequentialSiblingsInvariants.v"
+	@echo " 52. Proofs/MapRefinement.v"
+	@echo " 53. Proofs/StructuralPreservation.v"
+	@echo " 54. Proofs/ByzantineRecovery.v"
+	@echo " 55. Proofs/CertifiedReference.v"
+	@echo " 56. Proofs/HotStuffSafety.v"
+	@echo " 57. Proofs/ProofCarryingExtraction.v"
+	@echo " 58. Proofs/FileSystemSafety.v"
 
 # Check a single file
 check-%: %.v
