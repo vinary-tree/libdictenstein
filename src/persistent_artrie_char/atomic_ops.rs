@@ -3,7 +3,7 @@
 //! Split out of char `dict_impl_char.rs` (lines ~505-700, ~196 LOC)
 //! as the nineteenth Phase-6 char sub-module. Methods covered:
 //!
-//! - `increment` / `increment_impl_no_wal` — i64 increment
+//! - `increment` / `try_increment_impl_no_wal` — i64 increment
 //! - `upsert` — set value (insert-if-missing or update)
 //! - `compare_and_swap` — atomic CAS update
 //! - `fetch_add` — increment + return previous value
@@ -47,7 +47,12 @@ impl<V: DictionaryValue + serde::Serialize + serde::de::DeserializeOwned, S: Blo
             0
         };
 
-        let new_value = current + delta;
+        let new_value = current.checked_add(delta).ok_or_else(|| {
+            PersistentARTrieError::InvalidOperation(format!(
+                "increment overflow for term {:?}: {} + {} exceeds i64 range",
+                term, current, delta
+            ))
+        })?;
 
         // Create value from i64
         let value_bytes =
@@ -81,41 +86,40 @@ impl<V: DictionaryValue + serde::Serialize + serde::de::DeserializeOwned, S: Blo
     /// # Returns
     ///
     /// The new value after incrementing.
-    pub(super) fn increment_impl_no_wal(&mut self, term: &str, delta: i64) -> i64 {
+    pub(super) fn try_increment_impl_no_wal(&mut self, term: &str, delta: i64) -> Result<i64> {
         // Get current value
         let current: i64 = if let Some(v) = self.get(term) {
-            let bytes = match crate::serialization::bincode_compat::serialize(&v) {
-                Ok(b) => b,
-                Err(_) => return delta, // On error, treat as starting from 0
-            };
+            let bytes = crate::serialization::bincode_compat::serialize(&v).unwrap_or_default();
             if bytes.len() == 8 {
                 i64::from_le_bytes(bytes.try_into().unwrap())
             } else {
-                match crate::serialization::bincode_compat::deserialize::<i64>(&bytes) {
-                    Ok(val) => val,
-                    Err(_) => 0,
-                }
+                crate::serialization::bincode_compat::deserialize::<i64>(&bytes).unwrap_or(0)
             }
         } else {
             0
         };
 
-        let new_value = current + delta;
+        let new_value = current.checked_add(delta).ok_or_else(|| {
+            PersistentARTrieError::InvalidOperation(format!(
+                "increment overflow for term {:?}: {} + {} exceeds i64 range",
+                term, current, delta
+            ))
+        })?;
 
         // Create value from i64
-        let value_bytes = match crate::serialization::bincode_compat::serialize(&new_value) {
-            Ok(b) => b,
-            Err(_) => return new_value,
-        };
-        let v: V = match crate::serialization::bincode_compat::deserialize(&value_bytes) {
-            Ok(val) => val,
-            Err(_) => return new_value,
-        };
+        let value_bytes =
+            crate::serialization::bincode_compat::serialize(&new_value).map_err(|e| {
+                PersistentARTrieError::internal(format!("Failed to serialize new value: {}", e))
+            })?;
+        let v: V =
+            crate::serialization::bincode_compat::deserialize(&value_bytes).map_err(|e| {
+                PersistentARTrieError::internal(format!("Failed to deserialize as V: {}", e))
+            })?;
 
         // Update the trie (no WAL logging)
-        self.insert_impl_no_wal_with_value(term, v);
+        self.try_insert_impl_no_wal_with_value(term, v)?;
 
-        new_value
+        Ok(new_value)
     }
 
     /// Atomically update or insert a value.

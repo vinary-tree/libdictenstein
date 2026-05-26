@@ -378,6 +378,13 @@ pub struct GroupCommitCoordinator {
     /// Channel for submitting writes.
     submit_tx: Sender<PendingWrite>,
 
+    /// Serializes LSN reservation with queue submission.
+    ///
+    /// WAL records must be appended in LSN order. Without this guard, a writer
+    /// can reserve LSN N, be preempted before enqueueing, and let another
+    /// writer enqueue LSN N+1 first.
+    submit_order: Mutex<()>,
+
     /// Background commit thread handle (if dedicated_commit_thread is true).
     commit_thread: Option<JoinHandle<()>>,
 
@@ -440,6 +447,7 @@ impl GroupCommitCoordinator {
             wal,
             config,
             submit_tx,
+            submit_order: Mutex::new(()),
             commit_thread,
             shutdown,
             synced_lsn,
@@ -460,24 +468,30 @@ impl GroupCommitCoordinator {
         let submitted_at = Instant::now();
         let serialized_size = record.serialized_size();
 
-        // Allocate LSN
-        let lsn = self.wal.allocate_lsn();
-
         // Create response channel
         let (response_tx, response_rx) = oneshot_channel();
 
-        // Submit to queue
-        let pending = PendingWrite {
-            record,
-            lsn,
-            response_tx,
-            submitted_at,
-            serialized_size,
-        };
+        {
+            let _submit_guard = self
+                .submit_order
+                .lock()
+                .expect("group commit submit lock poisoned");
 
-        self.submit_tx
-            .send(pending)
-            .map_err(|_| PersistentARTrieError::GroupCommitChannelClosed)?;
+            // Allocate LSN and enqueue while holding the submit-order guard so
+            // the commit thread observes the same FIFO order as LSN order.
+            let lsn = self.wal.allocate_lsn();
+            let pending = PendingWrite {
+                record,
+                lsn,
+                response_tx,
+                submitted_at,
+                serialized_size,
+            };
+
+            self.submit_tx
+                .send(pending)
+                .map_err(|_| PersistentARTrieError::GroupCommitChannelClosed)?;
+        }
 
         // Wait for response
         let result = response_rx
@@ -502,11 +516,15 @@ impl GroupCommitCoordinator {
     ///
     /// The LSN assigned to this record.
     pub fn append_async(&self, record: WalRecord) -> Result<Lsn> {
-        let lsn = self.wal.allocate_lsn();
-
         // Create a response channel but don't wait on it
         let (response_tx, _response_rx) = oneshot_channel();
 
+        let _submit_guard = self
+            .submit_order
+            .lock()
+            .expect("group commit submit lock poisoned");
+
+        let lsn = self.wal.allocate_lsn();
         let pending = PendingWrite {
             record,
             lsn,

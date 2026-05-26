@@ -463,7 +463,7 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
                     // Replay batch increment: apply each delta
                     for (term, delta) in entries {
                         let term_str = String::from_utf8_lossy(&term);
-                        inner.increment_impl_no_wal(&term_str, delta);
+                        inner.try_increment_impl_no_wal(&term_str, delta)?;
                     }
                 }
                 // Version-based WAL records (Phase 6) - skip during mutation-based replay
@@ -743,7 +743,7 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
                     // Replay batch increment: apply each delta
                     for (term, delta) in entries {
                         let term_str = String::from_utf8_lossy(&term);
-                        inner.increment_impl_no_wal(&term_str, delta);
+                        inner.try_increment_impl_no_wal(&term_str, delta)?;
                     }
                 }
                 // Version-based WAL records (Phase 6) - skip during mutation-based replay
@@ -1062,7 +1062,15 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
                             WalRecord::BatchIncrement { entries } => {
                                 for (term, delta) in entries {
                                     let term_str = String::from_utf8_lossy(&term);
-                                    trie.increment_impl_no_wal(&term_str, delta);
+                                    if let Err(error) =
+                                        trie.try_increment_impl_no_wal(&term_str, delta)
+                                    {
+                                        log::warn!(
+                                            "Invalid WAL batch increment during rebuild; stopping at durable prefix: {:?}",
+                                            error
+                                        );
+                                        break 'segments;
+                                    }
                                     terms_recovered += 1;
                                 }
                             }
@@ -1274,8 +1282,7 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
             } => {
                 let term_str = String::from_utf8_lossy(&term);
                 if result == 0 {
-                    self.increment_impl_no_wal(&term_str, delta);
-                    true
+                    self.try_increment_impl_no_wal(&term_str, delta).is_ok()
                 } else {
                     match Self::value_from_recovered_i64(result) {
                         Some(value) => {

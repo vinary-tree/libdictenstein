@@ -2780,22 +2780,28 @@ mod tests {
             inner.upsert("key1", 42).expect("upsert");
             inner.upsert("key2", 43).expect("upsert");
 
-            // Before sync, synced_lsn should be 0 (no syncs yet)
+            // The default Immediate durability policy syncs each acknowledged
+            // mutation, so the WAL should already cover the last insert.
             let synced_before = inner
                 .synced_lsn()
                 .expect("persistent trie should have synced_lsn");
-            assert_eq!(synced_before, 0, "No data should be synced yet");
+            assert_eq!(
+                synced_before,
+                inner.current_lsn().saturating_sub(1),
+                "Immediate durability should sync through the last acknowledged write"
+            );
 
             // Sync to disk
             inner.sync().expect("sync should succeed");
 
-            // After sync, synced_lsn should be positive
+            // Explicit sync must not move the durable LSN backwards.
             let synced_after = inner
                 .synced_lsn()
                 .expect("persistent trie should have synced_lsn");
             assert!(
-                synced_after > 0,
-                "synced_lsn should be positive after sync: {}",
+                synced_after >= synced_before,
+                "synced_lsn should not go backwards after sync: before={}, after={}",
+                synced_before,
                 synced_after
             );
         }

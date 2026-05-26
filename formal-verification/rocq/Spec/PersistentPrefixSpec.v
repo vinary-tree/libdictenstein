@@ -18,6 +18,7 @@
 From Stdlib Require Import Lists.List.
 From Stdlib Require Import Bool.Bool.
 From Stdlib Require Import Arith.PeanoNat.
+From Stdlib Require Import ZArith.ZArith.
 From Stdlib Require Import Logic.FunctionalExtensionality.
 Import ListNotations.
 
@@ -278,6 +279,159 @@ Theorem remove_prefix_batched_equiv_unbatched :
     remove_prefix map prefix.
 Proof.
   reflexivity.
+Qed.
+
+(** ** Durable-prefix deletion correspondence
+
+    The implementation of [remove_prefix_batched] is intentionally not a
+    transaction.  It first collects a batch, then appends one remove record
+    before each visible removal.  A crash can therefore recover any durable
+    prefix of the per-term remove records, but no key may disappear unless its
+    remove record exists in that durable prefix.
+*)
+
+Definition remove_key {V : Type} (map : CharMap V) (target : CharKey)
+  : CharMap V :=
+  fun key => if char_key_eq_dec key target then None else map key.
+
+Fixpoint remove_keys {V : Type} (map : CharMap V) (keys : list CharKey)
+  : CharMap V :=
+  match keys with
+  | [] => map
+  | key :: rest => remove_keys (remove_key map key) rest
+  end.
+
+Theorem remove_keys_none_stays_none :
+  forall (V : Type) (map : CharMap V) keys key,
+    map key = None ->
+    remove_keys map keys key = None.
+Proof.
+  intros V map keys.
+  revert map.
+  induction keys as [| head rest IH]; intros map key Hnone.
+  - exact Hnone.
+  - simpl.
+    apply IH.
+    unfold remove_key.
+    destruct (char_key_eq_dec key head) as [_ | _].
+    + reflexivity.
+    + exact Hnone.
+Qed.
+
+Theorem remove_keys_removes_listed :
+  forall (V : Type) (map : CharMap V) keys key,
+    In key keys ->
+    remove_keys map keys key = None.
+Proof.
+  intros V map keys.
+  revert map.
+  induction keys as [| head rest IH]; intros map key Hin.
+  - contradiction.
+  - simpl in Hin |- *.
+    destruct Hin as [Heq | Hin].
+    + subst head.
+      apply remove_keys_none_stays_none.
+      unfold remove_key.
+      destruct (char_key_eq_dec key key) as [_ | Hneq].
+      * reflexivity.
+      * contradiction.
+    + apply IH. exact Hin.
+Qed.
+
+Theorem remove_keys_preserves_not_listed :
+  forall (V : Type) (map : CharMap V) keys key,
+    ~ In key keys ->
+    remove_keys map keys key = map key.
+Proof.
+  intros V map keys.
+  revert map.
+  induction keys as [| head rest IH]; intros map key Hnot.
+  - reflexivity.
+  - simpl.
+    rewrite IH.
+    + unfold remove_key.
+      destruct (char_key_eq_dec key head) as [Heq | _].
+      * exfalso. apply Hnot. left. exact (eq_sym Heq).
+      * reflexivity.
+    + intro Hin. apply Hnot. right. exact Hin.
+Qed.
+
+Theorem durable_prefix_visible_delete_has_record :
+  forall (V : Type) (map : CharMap V) durable_keys key,
+    map key <> None ->
+    remove_keys map durable_keys key = None ->
+    In key durable_keys.
+Proof.
+  intros V map durable_keys key Hpresent Hremoved.
+  destruct (in_dec char_key_eq_dec key durable_keys) as [Hin | Hnot].
+  - exact Hin.
+  - rewrite remove_keys_preserves_not_listed in Hremoved.
+    + contradiction.
+    + exact Hnot.
+Qed.
+
+Theorem durable_prefix_preserves_nonrecords :
+  forall (V : Type) (map : CharMap V) durable_keys key,
+    ~ In key durable_keys ->
+    remove_keys map durable_keys key = map key.
+Proof.
+  exact remove_keys_preserves_not_listed.
+Qed.
+
+Theorem durable_prefix_preserves_nonmatching_when_records_are_prefixed :
+  forall (V : Type) (map : CharMap V) durable_keys prefix key,
+    (forall record_key, In record_key durable_keys -> starts_with prefix record_key) ->
+    ~ starts_with prefix key ->
+    remove_keys map durable_keys key = map key.
+Proof.
+  intros V map durable_keys prefix key Hrecords Hnot_prefix.
+  apply remove_keys_preserves_not_listed.
+  intro Hin.
+  exact (Hnot_prefix (Hrecords key Hin)).
+Qed.
+
+(** ** Checked numeric RMW correspondence *)
+
+Definition checked_i64_add
+  (min_value max_value current delta : Z) : option Z :=
+  let result := (current + delta)%Z in
+  if (min_value <=? result)%Z && (result <=? max_value)%Z
+  then Some result
+  else None.
+
+Theorem checked_i64_add_success_in_range :
+  forall min_value max_value current delta result,
+    checked_i64_add min_value max_value current delta = Some result ->
+    result = (current + delta)%Z /\
+    (min_value <= result <= max_value)%Z.
+Proof.
+  intros min_value max_value current delta result Hchecked.
+  unfold checked_i64_add in Hchecked.
+  destruct (((min_value <=? current + delta)%Z &&
+            (current + delta <=? max_value)%Z)) eqn:Hrange.
+  - inversion Hchecked; subst result.
+    apply andb_true_iff in Hrange.
+    destruct Hrange as [Hlower Hupper].
+    apply Z.leb_le in Hlower.
+    apply Z.leb_le in Hupper.
+    split; [reflexivity | split; assumption].
+  - discriminate Hchecked.
+Qed.
+
+Theorem checked_i64_add_overflow_none :
+  forall min_value max_value current delta,
+    checked_i64_add min_value max_value current delta = None ->
+    ((current + delta < min_value) \/ (max_value < current + delta))%Z.
+Proof.
+  intros min_value max_value current delta Hchecked.
+  unfold checked_i64_add in Hchecked.
+  destruct (((min_value <=? current + delta)%Z &&
+            (current + delta <=? max_value)%Z)) eqn:Hrange.
+  - discriminate Hchecked.
+  - apply andb_false_iff in Hrange.
+    destruct Hrange as [Hlower | Hupper].
+    + apply Z.leb_gt in Hlower. left. exact Hlower.
+    + apply Z.leb_gt in Hupper. right. exact Hupper.
 Qed.
 
 (** ** Executable-list correspondence shape *)

@@ -255,6 +255,9 @@ impl<V: DictionaryValue> PersistentARTrie<V, IoUringDiskManager> {
             }
             if dict.apply_recovered_operation_no_wal(op) {
                 replayed_count += 1;
+            } else {
+                warn!("Recovered operation failed during replay; stopping at durable prefix");
+                break;
             }
         }
 

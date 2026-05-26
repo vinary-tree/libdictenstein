@@ -255,8 +255,36 @@ impl PersistentNode {
     /// The new value after increment.
     #[inline]
     pub fn increment_value(&self, delta: u64) -> u64 {
-        self.flags.fetch_or(flags::HAS_VALUE, Ordering::AcqRel);
-        self.value.fetch_add(delta, Ordering::Relaxed) + delta
+        self.try_increment_value(delta, u64::MAX)
+            .expect("lock-free value increment overflowed u64")
+    }
+
+    /// Atomically increment the value by delta while enforcing an upper bound.
+    ///
+    /// On overflow or if the result would exceed `max_value`, the node is left
+    /// unchanged and `None` is returned.
+    #[inline]
+    pub fn try_increment_value(&self, delta: u64, max_value: u64) -> Option<u64> {
+        loop {
+            let current = self.value.load(Ordering::Acquire);
+            let new_value = current.checked_add(delta)?;
+            if new_value > max_value {
+                return None;
+            }
+
+            match self.value.compare_exchange_weak(
+                current,
+                new_value,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => {
+                    self.flags.fetch_or(flags::HAS_VALUE, Ordering::AcqRel);
+                    return Some(new_value);
+                }
+                Err(_) => continue,
+            }
+        }
     }
 
     /// Find a child by key (lock-free read).

@@ -158,7 +158,7 @@ pub mod parallel_merge;
 // Observability / durability / group-commit / memory-monitor / cache-stats API.
 pub mod observability;
 
-// Epoch-based automatic checkpointing (Phase-6 split out of dict_impl_char).
+// Epoch-based checkpoint tracking (Phase-6 split out of dict_impl_char).
 pub mod epoch_checkpointing;
 
 // Atomic read-modify-write operations (Phase-6 split out of dict_impl_char).
@@ -370,11 +370,11 @@ pub struct PersistentARTrieChar<V: DictionaryValue = (), S: crate::persistent_ar
     pub(crate) memory_monitor: Option<Arc<crate::persistent_artrie::memory_monitor::MemoryPressureMonitor>>,
     /// Cache statistics for monitoring buffer pool performance.
     pub(crate) cache_stats: crate::persistent_artrie::adaptive_pool::CacheStats,
-    /// Epoch-based checkpoint manager for automatic checkpointing.
+    /// Epoch-based checkpoint manager for WAL/metadata tracking.
     ///
     /// When enabled, the checkpoint manager tracks operation counts and WAL size,
-    /// triggering automatic checkpoints based on configurable thresholds.
-    /// This provides bounded WAL size and faster recovery.
+    /// advancing epoch metadata based on configurable thresholds. Explicit
+    /// forced epoch checkpoints publish trie data before durable metadata.
     pub(crate) checkpoint_manager: Option<Arc<crate::persistent_artrie::epoch::CheckpointManager>>,
     /// Durability policy for WAL synchronization.
     /// Controls when fsync is called after WAL writes.

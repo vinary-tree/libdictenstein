@@ -111,14 +111,16 @@
 //!
 //! | Policy      | fsync Behavior      | Guarantee    | Use Case                        |
 //! |-------------|---------------------|--------------|----------------------------------|
-//! | `Immediate` | Every CommitTx      | Full         | ACID compliance (default)       |
-//! | `GroupCommit`| Batched by coordinator| Full      | High-throughput workloads       |
+//! | `Immediate` | Before public mutation/commit acknowledgement | Full | ACID compliance (default) |
+//! | `GroupCommit` | Batched by coordinator or blocking sync fallback | Full | High-throughput workloads |
 //! | `Periodic`  | At checkpoints only | Bounded loss | Performance-critical            |
 //! | `None`      | Never               | None         | Testing only                    |
 //!
-//! The default `Immediate` policy ensures that committed transactions are immediately
-//! durable on disk. The `GroupCommit` policy batches fsync calls for better throughput
-//! while maintaining full durability. `Periodic` trades some durability for performance.
+//! The default `Immediate` policy ensures that acknowledged public mutations and
+//! committed transactions are durable on disk. The `GroupCommit` policy batches
+//! fsync calls when a coordinator is installed and otherwise falls back to a
+//! blocking sync to preserve full durability acknowledgements. `Periodic` trades
+//! some durability for performance.
 
 // Core modules (storage foundation)
 //
@@ -259,7 +261,7 @@ pub use crate::persistent_artrie_core::wal_managed;
 // Crash recovery (relocated to core)
 pub use crate::persistent_artrie_core::recovery;
 
-// Epoch-based automatic checkpointing (relocated to core)
+// Epoch-based checkpoint metadata/tracking (relocated to core)
 pub use crate::persistent_artrie_core::epoch;
 
 // Group commit for WAL batching (relocated to core)

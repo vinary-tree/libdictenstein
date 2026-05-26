@@ -59,7 +59,14 @@ impl<V: DictionaryValue + serde::Serialize + serde::de::DeserializeOwned, S: Blo
             None => 0,
         };
 
-        let new_value = current + delta;
+        let new_value = current.checked_add(delta).ok_or_else(|| {
+            PersistentARTrieError::InvalidOperation(format!(
+                "increment overflow for term {:?}: {} + {} exceeds i64 range",
+                String::from_utf8_lossy(term),
+                current,
+                delta
+            ))
+        })?;
 
         let value_bytes = crate::serialization::bincode_compat::serialize(&new_value)
             .map_err(|e| PersistentARTrieError::internal(format!("Serialization error: {}", e)))?;
@@ -68,20 +75,12 @@ impl<V: DictionaryValue + serde::Serialize + serde::de::DeserializeOwned, S: Blo
                 PersistentARTrieError::internal(format!("Cannot create value from i64: {}", e))
             })?;
 
-        if let Some(ref wal_writer) = self.wal_writer {
-            let record = WalRecord::Increment {
-                term: term.to_vec(),
-                delta,
-                result: new_value,
-            };
-            wal_writer.append(record).map_err(|e| {
-                PersistentARTrieError::io_error(
-                    "increment",
-                    "WAL",
-                    std::io::Error::new(std::io::ErrorKind::Other, e.to_string()),
-                )
-            })?;
-        }
+        let record = WalRecord::Increment {
+            term: term.to_vec(),
+            delta,
+            result: new_value,
+        };
+        self.append_mutation_wal_record(record, "increment")?;
 
         self.remove_impl_core(term);
         self.insert_impl_core(term, Some(v));
@@ -129,19 +128,11 @@ impl<V: DictionaryValue + serde::Serialize + serde::de::DeserializeOwned, S: Blo
         let value_bytes = crate::serialization::bincode_compat::serialize(&value)
             .map_err(|e| PersistentARTrieError::internal(format!("Serialization error: {}", e)))?;
 
-        if let Some(ref wal_writer) = self.wal_writer {
-            let record = WalRecord::Upsert {
-                term: term.to_vec(),
-                value: value_bytes,
-            };
-            wal_writer.append(record).map_err(|e| {
-                PersistentARTrieError::io_error(
-                    "upsert",
-                    "WAL",
-                    std::io::Error::new(std::io::ErrorKind::Other, e.to_string()),
-                )
-            })?;
-        }
+        let record = WalRecord::Upsert {
+            term: term.to_vec(),
+            value: value_bytes,
+        };
+        self.append_mutation_wal_record(record, "upsert")?;
 
         self.remove_impl_core(term);
         self.insert_impl_core(term, Some(value));
@@ -197,21 +188,13 @@ impl<V: DictionaryValue + serde::Serialize + serde::de::DeserializeOwned, S: Blo
         let new_value_bytes = crate::serialization::bincode_compat::serialize(&new_value)
             .map_err(|e| PersistentARTrieError::internal(format!("Serialization error: {}", e)))?;
 
-        if let Some(ref wal_writer) = self.wal_writer {
-            let record = WalRecord::CompareAndSwap {
-                term: term.to_vec(),
-                expected: expected_bytes,
-                new_value: new_value_bytes,
-                success: true,
-            };
-            wal_writer.append(record).map_err(|e| {
-                PersistentARTrieError::io_error(
-                    "compare_and_swap",
-                    "WAL",
-                    std::io::Error::new(std::io::ErrorKind::Other, e.to_string()),
-                )
-            })?;
-        }
+        let record = WalRecord::CompareAndSwap {
+            term: term.to_vec(),
+            expected: expected_bytes,
+            new_value: new_value_bytes,
+            success: true,
+        };
+        self.append_mutation_wal_record(record, "compare_and_swap")?;
 
         self.remove_impl_core(term);
         self.insert_impl_core(term, Some(new_value));
@@ -246,19 +229,11 @@ impl<V: DictionaryValue + serde::Serialize + serde::de::DeserializeOwned, S: Blo
         let value_bytes = crate::serialization::bincode_compat::serialize(&default)
             .map_err(|e| PersistentARTrieError::internal(format!("Serialization error: {}", e)))?;
 
-        if let Some(ref wal_writer) = self.wal_writer {
-            let record = WalRecord::Upsert {
-                term: term.to_vec(),
-                value: value_bytes,
-            };
-            wal_writer.append(record).map_err(|e| {
-                PersistentARTrieError::io_error(
-                    "get_or_insert",
-                    "WAL",
-                    std::io::Error::new(std::io::ErrorKind::Other, e.to_string()),
-                )
-            })?;
-        }
+        let record = WalRecord::Upsert {
+            term: term.to_vec(),
+            value: value_bytes,
+        };
+        self.append_mutation_wal_record(record, "get_or_insert")?;
 
         self.insert_impl_core(term, Some(default.clone()));
 

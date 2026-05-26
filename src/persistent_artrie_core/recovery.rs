@@ -1340,9 +1340,14 @@ where
             records_replayed += 1;
 
             for op in recovered_operations_from_record(lsn, record) {
-                if apply_fn(op).is_ok() {
-                    terms_recovered += 1;
+                if let Err(error) = apply_fn(op) {
+                    warn!(
+                        "Recovered operation failed during rebuild; stopping at durable prefix: {}",
+                        error
+                    );
+                    break 'segments;
                 }
+                terms_recovered += 1;
             }
         }
     }
@@ -1657,23 +1662,37 @@ mod tests {
         std::fs::create_dir_all(&archive_dir).expect("create archive dir");
         std::fs::create_dir_all(&pending_dir).expect("create pending dir");
 
+        let write_segment = |path: &std::path::Path, first_lsn: u64| {
+            let wal = WalWriter::create(path).expect("create segment WAL");
+            for _ in 1..first_lsn {
+                wal.allocate_lsn();
+            }
+            wal.append(WalRecord::Insert {
+                term: format!("term-{first_lsn}").into_bytes(),
+                value: None,
+            })
+            .expect("append segment record");
+            wal.sync().expect("sync segment WAL");
+        };
+
         // Create archived segments (oldest)
         for i in 0..2 {
             let segment_name = format!("wal_{:012}.segment", i * 1000);
-            std::fs::write(archive_dir.join(segment_name), b"dummy")
-                .expect("write archive segment");
+            write_segment(&archive_dir.join(segment_name), i + 1);
         }
 
         // Create pending segments (middle)
         for i in 2..4 {
             let segment_name = format!("wal_pending_{:012}.segment", i * 1000);
-            std::fs::write(pending_dir.join(segment_name), b"dummy")
-                .expect("write pending segment");
+            write_segment(&pending_dir.join(segment_name), i + 1);
         }
 
         // Create active WAL with a header (newest)
         // Create WAL with header + some content
         let wal = WalWriter::create(&wal_path).expect("create WAL");
+        for _ in 1..5 {
+            wal.allocate_lsn();
+        }
         wal.append(WalRecord::Insert {
             term: b"test".to_vec(),
             value: None,

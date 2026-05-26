@@ -406,12 +406,17 @@ mod tests {
 
     #[test]
     fn test_wait_free_reads_during_writes() {
-        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
         use std::sync::Arc as StdArc;
         use std::thread;
+        use std::time::{Duration, Instant};
 
         let dict = StdArc::new(DynamicDawgU64::<()>::new());
         let stop = StdArc::new(AtomicBool::new(false));
+        let writer_active = StdArc::new(AtomicBool::new(false));
+        let reads_completed = StdArc::new(AtomicUsize::new(0));
+        let reads_during_writes = StdArc::new(AtomicUsize::new(0));
+        let writer_observed_reader = StdArc::new(AtomicBool::new(false));
 
         // Pre-populate some data
         for i in 0..100 {
@@ -420,35 +425,78 @@ mod tests {
 
         let dict_clone = dict.clone();
         let stop_clone = stop.clone();
+        let writer_active_clone = writer_active.clone();
+        let reads_completed_clone = reads_completed.clone();
+        let reads_during_writes_clone = reads_during_writes.clone();
 
         // Reader thread - should never block
         let reader = thread::spawn(move || {
-            let mut reads = 0u64;
-            while !stop_clone.load(Ordering::Relaxed) {
+            let mut reads = 0usize;
+            while !stop_clone.load(Ordering::Acquire) {
                 let zipper = DynamicDawgU64Zipper::new_from_dict(&dict_clone);
                 for (_, child) in zipper.children() {
                     let _ = child.is_final();
                 }
                 reads += 1;
+                reads_completed_clone.fetch_add(1, Ordering::Relaxed);
+                if writer_active_clone.load(Ordering::Acquire) {
+                    reads_during_writes_clone.fetch_add(1, Ordering::Relaxed);
+                }
+                thread::yield_now();
             }
             reads
         });
 
+        let initial_read_deadline = Instant::now() + Duration::from_secs(2);
+        while reads_completed.load(Ordering::Acquire) == 0 && Instant::now() < initial_read_deadline
+        {
+            thread::yield_now();
+        }
+        if reads_completed.load(Ordering::Acquire) == 0 {
+            stop.store(true, Ordering::Release);
+            let read_count = reader.join().unwrap();
+            panic!("Reader should have completed an initial iteration before writes; completed {read_count}");
+        }
+
         // Writer thread - performs concurrent modifications
+        let writer_active_clone = writer_active.clone();
+        let reads_during_writes_clone = reads_during_writes.clone();
+        let writer_observed_reader_clone = writer_observed_reader.clone();
         let writer = thread::spawn(move || {
-            for i in 100..200 {
+            writer_active_clone.store(true, Ordering::Release);
+            let deadline = Instant::now() + Duration::from_secs(2);
+            for i in 100..5_000 {
                 dict.insert_sequence(&[i, i + 1, i + 2]);
+                if i % 16 == 0 {
+                    thread::yield_now();
+                }
+                if reads_during_writes_clone.load(Ordering::Acquire) > 0 {
+                    writer_observed_reader_clone.store(true, Ordering::Release);
+                    break;
+                }
+                if Instant::now() >= deadline {
+                    break;
+                }
             }
+            writer_active_clone.store(false, Ordering::Release);
         });
 
         writer.join().unwrap();
-        stop.store(true, Ordering::Relaxed);
+        stop.store(true, Ordering::Release);
         let read_count = reader.join().unwrap();
 
         // Verify reader thread was not starved (made progress)
         assert!(
             read_count > 0,
             "Reader should have completed at least one iteration"
+        );
+        assert!(
+            reads_during_writes.load(Ordering::Acquire) > 0,
+            "Reader should have completed at least one iteration while the writer was active"
+        );
+        assert!(
+            writer_observed_reader.load(Ordering::Acquire),
+            "Writer should have observed reader progress before leaving the active write window"
         );
     }
 }

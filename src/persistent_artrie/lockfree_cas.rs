@@ -19,8 +19,11 @@ use std::sync::Arc;
 
 use super::block_storage::BlockStorage;
 use super::dict_impl::PersistentARTrie;
-use super::error::Result;
+use super::error::{PersistentARTrieError, Result};
+use super::wal::WalRecord;
 use crate::value::DictionaryValue;
+
+const LOCKFREE_COUNTER_MAX: u64 = i64::MAX as u64;
 
 /// Result of a lock-free insert attempt.
 ///
@@ -368,10 +371,22 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
             entries
         };
 
-        let mut count = 0;
-        for (key, value) in &entries {
-            self.increment_bytes(key, *value as i64)?;
-            count += 1;
+        if entries.is_empty() {
+            return Ok(0);
+        }
+
+        let (wal_entries, prepared_values) = self.prepare_lockfree_value_merge(&entries)?;
+        let merged_count = wal_entries.len();
+
+        self.append_mutation_wal_record(
+            WalRecord::BatchIncrement {
+                entries: wal_entries,
+            },
+            "lockfree_value_merge",
+        )?;
+
+        for (key, value) in prepared_values {
+            self.upsert_impl_no_wal(&key, value);
         }
 
         if let Some(ref cache) = self.lockfree_cache {
@@ -381,7 +396,76 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
             root.store(Arc::new(PersistentNode::new()));
         }
 
-        Ok(count)
+        Ok(merged_count)
+    }
+
+    fn prepare_lockfree_value_merge(
+        &self,
+        entries: &[(Vec<u8>, u64)],
+    ) -> Result<(Vec<(Vec<u8>, i64)>, Vec<(Vec<u8>, V)>)> {
+        let mut wal_entries = Vec::with_capacity(entries.len());
+        let mut prepared_values = Vec::with_capacity(entries.len());
+
+        for (key, delta) in entries {
+            let delta_i64 = Self::lockfree_delta_to_i64(key, *delta)?;
+            let current = self.current_i64_for_lockfree_merge(key)?;
+            let new_value = current.checked_add(delta_i64).ok_or_else(|| {
+                PersistentARTrieError::InvalidOperation(format!(
+                    "lock-free merge increment overflow for term {:?}: {} + {} exceeds i64 range",
+                    String::from_utf8_lossy(key),
+                    current,
+                    delta_i64
+                ))
+            })?;
+            let value = Self::value_from_i64_for_lockfree_merge(new_value)?;
+
+            wal_entries.push((key.clone(), delta_i64));
+            prepared_values.push((key.clone(), value));
+        }
+
+        Ok((wal_entries, prepared_values))
+    }
+
+    fn current_i64_for_lockfree_merge(&self, term: &[u8]) -> Result<i64> {
+        match self.get_value_impl(term) {
+            Some(value) => {
+                let bytes =
+                    crate::serialization::bincode_compat::serialize(&value).map_err(|e| {
+                        PersistentARTrieError::internal(format!("Serialization error: {}", e))
+                    })?;
+                if bytes.len() == 8 {
+                    Ok(i64::from_le_bytes(
+                        bytes.try_into().expect("checked len == 8"),
+                    ))
+                } else {
+                    crate::serialization::bincode_compat::deserialize::<i64>(&bytes).map_err(|e| {
+                        PersistentARTrieError::internal(format!(
+                            "Value cannot be interpreted as i64: {}",
+                            e
+                        ))
+                    })
+                }
+            }
+            None => Ok(0),
+        }
+    }
+
+    fn value_from_i64_for_lockfree_merge(value: i64) -> Result<V> {
+        let value_bytes = crate::serialization::bincode_compat::serialize(&value)
+            .map_err(|e| PersistentARTrieError::internal(format!("Serialization error: {}", e)))?;
+        crate::serialization::bincode_compat::deserialize(&value_bytes).map_err(|e| {
+            PersistentARTrieError::internal(format!("Cannot create value from i64: {}", e))
+        })
+    }
+
+    fn lockfree_delta_to_i64(term: &[u8], delta: u64) -> Result<i64> {
+        i64::try_from(delta).map_err(|_| {
+            PersistentARTrieError::InvalidOperation(format!(
+                "lock-free counter value for term {:?} exceeds i64 persistence domain: {}",
+                String::from_utf8_lossy(term),
+                delta
+            ))
+        })
     }
 
     /// Recursively collect all (key, value) entries from the lock-free trie.
@@ -470,11 +554,11 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
             .and_then(|leaf| leaf.get_value())
     }
 
-    /// Lock-free increment: create path if needed, then atomically add delta.
+    /// Checked lock-free increment: create path if needed, then atomically add delta.
     ///
     /// For existing keys: single `fetch_add` on the leaf (wait-free).
     /// For new keys: CAS retry loop to create path, then set initial value.
-    pub fn increment_cas(&self, key: &[u8], delta: u64) -> u64 {
+    pub fn try_increment_cas(&self, key: &[u8], delta: u64) -> Result<u64> {
         use std::sync::atomic::Ordering;
 
         let lockfree_root = self
@@ -483,24 +567,44 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
             .expect("Lock-free mode not enabled. Call enable_lockfree() first.");
 
         if key.is_empty() {
-            return 0;
+            return Ok(0);
+        }
+
+        if delta > LOCKFREE_COUNTER_MAX {
+            return Err(Self::lockfree_increment_overflow_error(key, None, delta));
         }
 
         let _epoch = self.epoch_manager.enter_read();
 
         if let Some(leaf) = self.find_leaf_lockfree(lockfree_root, key) {
-            return leaf.increment_value(delta);
+            return leaf
+                .try_increment_value(delta, LOCKFREE_COUNTER_MAX)
+                .ok_or_else(|| {
+                    Self::lockfree_increment_overflow_error(key, leaf.get_value(), delta)
+                });
         }
 
         loop {
             match self.try_insert_lockfree_path(lockfree_root, key) {
                 LockfreeInsertResult::Inserted(leaf) => {
                     leaf.try_set_final();
-                    return leaf.increment_value(delta);
+                    return leaf
+                        .try_increment_value(delta, LOCKFREE_COUNTER_MAX)
+                        .ok_or_else(|| {
+                            Self::lockfree_increment_overflow_error(key, leaf.get_value(), delta)
+                        });
                 }
                 LockfreeInsertResult::AlreadyExists => {
                     if let Some(leaf) = self.find_leaf_lockfree(lockfree_root, key) {
-                        return leaf.increment_value(delta);
+                        return leaf
+                            .try_increment_value(delta, LOCKFREE_COUNTER_MAX)
+                            .ok_or_else(|| {
+                                Self::lockfree_increment_overflow_error(
+                                    key,
+                                    leaf.get_value(),
+                                    delta,
+                                )
+                            });
                     }
                     continue;
                 }
@@ -510,5 +614,27 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
                 }
             }
         }
+    }
+
+    /// Lock-free increment: create path if needed, then atomically add delta.
+    ///
+    /// Panics if the checked counter domain would be exceeded. Use
+    /// [`Self::try_increment_cas`] to handle overflow as a recoverable error.
+    pub fn increment_cas(&self, key: &[u8], delta: u64) -> u64 {
+        self.try_increment_cas(key, delta)
+            .unwrap_or_else(|error| panic!("lock-free increment_cas failed: {}", error))
+    }
+
+    fn lockfree_increment_overflow_error(
+        key: &[u8],
+        current: Option<u64>,
+        delta: u64,
+    ) -> PersistentARTrieError {
+        PersistentARTrieError::InvalidOperation(format!(
+            "lock-free increment overflow for term {:?}: current {:?} + {} exceeds i64 persistence domain",
+            String::from_utf8_lossy(key),
+            current,
+            delta
+        ))
     }
 }

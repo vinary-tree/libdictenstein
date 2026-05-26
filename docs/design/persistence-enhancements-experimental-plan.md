@@ -1155,6 +1155,13 @@ criterion_main!(benches);
 
 ## 3. Experiment 2: Epoch-Based Automatic Checkpointing
 
+> Verification note (2026-05-25): this section is the original experiment
+> plan. The checked production claim is narrower: epoch management tracks
+> WAL/metadata, public mutations update that tracking after successful WAL
+> appends, and `force_epoch_checkpoint()` publishes the trie checkpoint before
+> durable epoch metadata. Threshold-driven epoch advancement is not claimed to
+> be an automatic full-trie checkpoint without the explicit checkpoint path.
+
 ### 3.1 Hypothesis
 
 Automatic periodic checkpointing will bound WAL size, provide predictable durability guarantees, and enable faster recovery without manual intervention.
@@ -1225,16 +1232,17 @@ data/
 ### 3.4 Configuration Parameters
 
 ```rust
-/// Configuration for epoch-based automatic checkpointing.
+/// Configuration for epoch-based checkpoint tracking.
 ///
-/// Epochs divide time into discrete intervals. At each epoch boundary,
-/// the system ensures all data from the previous epoch is durable.
+/// Epochs divide WAL writes into discrete intervals. Durable epoch metadata is
+/// published by explicit checkpoint paths after the trie data checkpoint has
+/// been persisted and verified.
 ///
 /// # Recovery Semantics
 ///
-/// On crash during epoch N, the system recovers to the end of epoch N-2.
-/// This provides a bounded recovery window while allowing writes within
-/// an epoch to be batched efficiently.
+/// The epoch metadata layer does not replace the trie checkpoint/WAL recovery
+/// boundary. Recovery may trust a durable epoch only after metadata publication
+/// follows a successful trie checkpoint.
 ///
 /// # Tuning Guidelines
 ///

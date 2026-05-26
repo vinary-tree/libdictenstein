@@ -1,8 +1,10 @@
-//! Epoch-Based Automatic Checkpointing
+//! Epoch-Based Checkpoint Tracking
 //!
-//! This module implements epoch-based checkpointing for bounded WAL size
-//! and predictable recovery. Based on the BD+Tree (SIGMOD 2024) epoch-based
-//! persistence model.
+//! This module implements epoch metadata, per-epoch WAL files, and checkpoint
+//! metadata publication. The `persistent_artrie_char` integration records WAL
+//! bytes after successful public mutation appends and uses an explicit forced
+//! checkpoint path to persist and verify the trie data before publishing epoch
+//! metadata.
 //!
 //! # Epoch Lifecycle
 //!
@@ -33,9 +35,9 @@
 //!
 //! # Recovery Semantics
 //!
-//! On crash during epoch N, the system recovers to the end of epoch N-2.
-//! This provides a bounded recovery window while allowing writes within
-//! an epoch to be batched efficiently.
+//! A durable epoch metadata record is trusted only after the trie checkpoint
+//! has been published. Threshold-driven epoch advancement tracks and rotates
+//! metadata/WAL state, but it is not by itself a full trie checkpoint.
 
 use std::collections::VecDeque;
 use std::fs::{self, File};
@@ -54,16 +56,17 @@ use log::warn;
 /// Unique identifier for an epoch.
 pub type EpochId = u64;
 
-/// Configuration for epoch-based automatic checkpointing.
+/// Configuration for epoch-based checkpoint tracking.
 ///
-/// Epochs divide time into discrete intervals. At each epoch boundary,
-/// the system ensures all data from the previous epoch is durable.
+/// Epochs divide WAL writes into discrete intervals. Durable epoch metadata is
+/// published by explicit checkpoint paths after the trie data checkpoint has
+/// been persisted and verified.
 ///
 /// # Recovery Semantics
 ///
-/// On crash during epoch N, the system recovers to the end of epoch N-2.
-/// This provides a bounded recovery window while allowing writes within
-/// an epoch to be batched efficiently.
+/// The epoch metadata layer does not replace the trie checkpoint/WAL recovery
+/// boundary. Recovery may trust a durable epoch only after metadata publication
+/// follows a successful trie checkpoint.
 ///
 /// # Tuning Guidelines
 ///

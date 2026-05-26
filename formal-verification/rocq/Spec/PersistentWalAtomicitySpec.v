@@ -22,6 +22,7 @@ Definition Key := nat.
 Definition Value := nat.
 Definition TxId := nat.
 Definition RefMap := Key -> option Value.
+Definition MaxValue := 5.
 
 Definition empty_map : RefMap := fun _ => None.
 
@@ -40,6 +41,17 @@ Definition option_value_eqb (left right : option Value) : bool :=
   | Some l, Some r => Nat.eqb l r
   | _, _ => false
   end.
+
+Definition option_value (value : option Value) : Value :=
+  match value with
+  | Some current => current
+  | None => 0
+  end.
+
+Definition checked_add (current delta : Value) : option Value :=
+  if (current + delta) <=? MaxValue
+  then Some (current + delta)
+  else None.
 
 Inductive WalRecord : Type :=
 | WalInsert : Key -> option Value -> WalRecord
@@ -74,6 +86,19 @@ Fixpoint apply_batch_increment
   | [] => map
   | (key, result) :: rest =>
       apply_batch_increment rest (map_put map key result)
+  end.
+
+Fixpoint checked_apply_batch_increment
+  (entries : list (Key * Value))
+  (map : RefMap)
+  : option RefMap :=
+  match entries with
+  | [] => Some map
+  | (key, delta) :: rest =>
+      match checked_add (option_value (lookup map key)) delta with
+      | Some result => checked_apply_batch_increment rest (map_put map key result)
+      | None => None
+      end
   end.
 
 Definition apply_wal_record (map : RefMap) (record : WalRecord) : RefMap :=
@@ -176,6 +201,17 @@ Definition run_write
       end
   end.
 
+Definition run_checked_increment
+  (state : PersistentState)
+  (wal_result : WalResult)
+  (key : Key)
+  (delta : Value)
+  : option PersistentState :=
+  match checked_add (option_value (lookup (state_map state) key)) delta with
+  | None => None
+  | Some result => run_write state PrepOk wal_result (WriteIncrement key result)
+  end.
+
 Definition map_after_attempt
   (state : PersistentState)
   (prep : PrepResult)
@@ -213,6 +249,45 @@ Definition run_transaction_commit
         state_map := replay_from records (state_map state);
         state_wal := state_wal state ++ records ++ [WalCommitTx tx_id]
       |}
+  end.
+
+Definition run_checked_batch_increment_commit
+  (state : PersistentState)
+  (wal_result : WalResult)
+  (entries : list (Key * Value))
+  (tx_id : TxId)
+  : option PersistentState :=
+  match checked_apply_batch_increment entries (state_map state), wal_result with
+  | None, _ => None
+  | Some _, WalError => None
+  | Some map', WalOk =>
+      Some {|
+        state_map := map';
+        state_wal :=
+          state_wal state ++ [WalBatchIncrement entries] ++ [WalCommitTx tx_id]
+      |}
+  end.
+
+Definition checked_batch_map_after_attempt
+  (state : PersistentState)
+  (wal_result : WalResult)
+  (entries : list (Key * Value))
+  (tx_id : TxId)
+  : RefMap :=
+  match run_checked_batch_increment_commit state wal_result entries tx_id with
+  | Some state' => state_map state'
+  | None => state_map state
+  end.
+
+Definition checked_batch_wal_after_attempt
+  (state : PersistentState)
+  (wal_result : WalResult)
+  (entries : list (Key * Value))
+  (tx_id : TxId)
+  : list WalRecord :=
+  match run_checked_batch_increment_commit state wal_result entries tx_id with
+  | Some state' => state_wal state'
+  | None => state_wal state
   end.
 
 Definition transaction_map_after_attempt
@@ -448,6 +523,66 @@ Proof.
   simpl. rewrite Nat.eqb_refl. reflexivity.
 Qed.
 
+Theorem checked_increment_overflow_rejects_before_wal :
+  forall state wal_result key delta,
+    checked_add (option_value (lookup (state_map state) key)) delta = None ->
+    run_checked_increment state wal_result key delta = None.
+Proof.
+  intros state wal_result key delta Hoverflow.
+  unfold run_checked_increment.
+  rewrite Hoverflow. reflexivity.
+Qed.
+
+Theorem checked_increment_overflow_preserves_map :
+  forall state wal_result key delta query,
+    checked_add (option_value (lookup (state_map state) key)) delta = None ->
+    lookup
+      (match run_checked_increment state wal_result key delta with
+       | Some state' => state_map state'
+       | None => state_map state
+       end)
+      query =
+    lookup (state_map state) query.
+Proof.
+  intros state wal_result key delta query Hoverflow.
+  rewrite (checked_increment_overflow_rejects_before_wal
+    state wal_result key delta Hoverflow).
+  reflexivity.
+Qed.
+
+Theorem checked_increment_overflow_does_not_append_wal :
+  forall state wal_result key delta,
+    checked_add (option_value (lookup (state_map state) key)) delta = None ->
+    match run_checked_increment state wal_result key delta with
+    | Some state' => state_wal state'
+    | None => state_wal state
+    end = state_wal state.
+Proof.
+  intros state wal_result key delta Hoverflow.
+  rewrite (checked_increment_overflow_rejects_before_wal
+    state wal_result key delta Hoverflow).
+  reflexivity.
+Qed.
+
+Theorem checked_increment_success_sets_checked_result :
+  forall state key delta result,
+    checked_add (option_value (lookup (state_map state) key)) delta =
+      Some result ->
+    lookup
+      (match run_checked_increment state WalOk key delta with
+       | Some state' => state_map state'
+       | None => state_map state
+       end)
+      key =
+    Some result.
+Proof.
+  intros state key delta result Hchecked.
+  unfold run_checked_increment.
+  rewrite Hchecked.
+  unfold run_write, write_record, lookup, apply_wal_record, map_put.
+  simpl. rewrite Nat.eqb_refl. reflexivity.
+Qed.
+
 Theorem get_or_insert_absent_sets_default :
   forall state key default,
     lookup (state_map state) key = None ->
@@ -502,6 +637,55 @@ Theorem successful_transaction_replay_matches_memory :
     lookup (replay_from records (state_map state)) key.
 Proof.
   reflexivity.
+Qed.
+
+Theorem checked_batch_increment_overflow_rejects_commit :
+  forall state wal_result entries tx_id,
+    checked_apply_batch_increment entries (state_map state) = None ->
+    run_checked_batch_increment_commit state wal_result entries tx_id = None.
+Proof.
+  intros state wal_result entries tx_id Hoverflow.
+  unfold run_checked_batch_increment_commit.
+  rewrite Hoverflow. reflexivity.
+Qed.
+
+Theorem checked_batch_increment_overflow_preserves_map :
+  forall state wal_result entries tx_id key,
+    checked_apply_batch_increment entries (state_map state) = None ->
+    lookup
+      (checked_batch_map_after_attempt state wal_result entries tx_id)
+      key =
+    lookup (state_map state) key.
+Proof.
+  intros state wal_result entries tx_id key Hoverflow.
+  unfold checked_batch_map_after_attempt.
+  rewrite (checked_batch_increment_overflow_rejects_commit
+    state wal_result entries tx_id Hoverflow).
+  reflexivity.
+Qed.
+
+Theorem checked_batch_increment_overflow_does_not_append_commit_wal :
+  forall state wal_result entries tx_id,
+    checked_apply_batch_increment entries (state_map state) = None ->
+    checked_batch_wal_after_attempt state wal_result entries tx_id =
+    state_wal state.
+Proof.
+  intros state wal_result entries tx_id Hoverflow.
+  unfold checked_batch_wal_after_attempt.
+  rewrite (checked_batch_increment_overflow_rejects_commit
+    state wal_result entries tx_id Hoverflow).
+  reflexivity.
+Qed.
+
+Theorem checked_batch_increment_success_appends_batch_and_commit :
+  forall state entries tx_id map',
+    checked_apply_batch_increment entries (state_map state) = Some map' ->
+    checked_batch_wal_after_attempt state WalOk entries tx_id =
+    state_wal state ++ [WalBatchIncrement entries] ++ [WalCommitTx tx_id].
+Proof.
+  intros state entries tx_id map' Hchecked.
+  unfold checked_batch_wal_after_attempt, run_checked_batch_increment_commit.
+  rewrite Hchecked. reflexivity.
 Qed.
 
 Theorem commit_record_does_not_change_replay :

@@ -22,6 +22,7 @@ Definition Key := nat.
 Definition Value := nat.
 Definition Lsn := nat.
 Definition RefMap := Key -> option Value.
+Definition MaxValue := 5.
 
 Definition empty_map : RefMap := fun _ => None.
 
@@ -40,9 +41,21 @@ Definition option_value (value : option Value) : Value :=
   | None => 0
   end.
 
+Definition checked_add (current delta : Value) : option Value :=
+  if (current + delta) <=? MaxValue
+  then Some (current + delta)
+  else None.
+
 Definition map_increment (map : RefMap) (key : Key) (delta : Value)
   : RefMap :=
   map_put map key (option_value (lookup map key) + delta).
+
+Definition checked_map_increment (map : RefMap) (key : Key) (delta : Value)
+  : option RefMap :=
+  match checked_add (option_value (lookup map key)) delta with
+  | Some result => Some (map_put map key result)
+  | None => None
+  end.
 
 Theorem map_put_lookup_same :
   forall map key value,
@@ -73,6 +86,29 @@ Theorem map_increment_lookup_same :
 Proof.
   intros map key delta.
   unfold map_increment.
+  apply map_put_lookup_same.
+Qed.
+
+Theorem checked_map_increment_overflow_none :
+  forall map key delta,
+    checked_add (option_value (lookup map key)) delta = None ->
+    checked_map_increment map key delta = None.
+Proof.
+  intros map key delta Hoverflow.
+  unfold checked_map_increment.
+  rewrite Hoverflow. reflexivity.
+Qed.
+
+Theorem checked_map_increment_success_lookup_same :
+  forall map key delta result map',
+    checked_add (option_value (lookup map key)) delta = Some result ->
+    checked_map_increment map key delta = Some map' ->
+    lookup map' key = Some result.
+Proof.
+  intros map key delta result map' Hchecked Hmap.
+  unfold checked_map_increment in Hmap.
+  rewrite Hchecked in Hmap.
+  inversion Hmap; subst.
   apply map_put_lookup_same.
 Qed.
 
@@ -362,7 +398,8 @@ Proof. reflexivity. Qed.
 
 Inductive ScanItem : Type :=
 | DurableRecord : Lsn -> WalRecord -> ScanItem
-| CorruptRecord : ScanItem.
+| CorruptRecord : ScanItem
+| InvalidArithmeticRecord : ScanItem.
 
 Definition scan_of_entry (entry : Lsn * WalRecord) : ScanItem :=
   let '(lsn, record) := entry in DurableRecord lsn record.
@@ -373,6 +410,7 @@ Fixpoint durable_prefix (scan : list ScanItem) : list (Lsn * WalRecord) :=
   | DurableRecord lsn record :: rest =>
       (lsn, record) :: durable_prefix rest
   | CorruptRecord :: _ => []
+  | InvalidArithmeticRecord :: _ => []
   end.
 
 Definition replay_entry (entry : Lsn * WalRecord) (map : RefMap) : RefMap :=
@@ -408,6 +446,36 @@ Proof.
   intros prefix suffix state_map.
   unfold replay_scan.
   rewrite durable_prefix_stops_at_corruption.
+  reflexivity.
+Qed.
+
+Theorem durable_prefix_stops_at_invalid_arithmetic :
+  forall prefix suffix,
+    durable_prefix (map scan_of_entry prefix ++ InvalidArithmeticRecord :: suffix) =
+      prefix.
+Proof.
+  induction prefix as [| [lsn record] rest IH]; intros suffix.
+  - reflexivity.
+  - simpl. rewrite IH. reflexivity.
+Qed.
+
+Theorem replay_scan_ignores_invalid_arithmetic_suffix :
+  forall prefix suffix state_map,
+    replay_scan
+      (map scan_of_entry prefix ++ InvalidArithmeticRecord :: suffix)
+      state_map =
+      replay_entries prefix state_map.
+Proof.
+  intros prefix suffix state_map.
+  unfold replay_scan.
+  rewrite durable_prefix_stops_at_invalid_arithmetic.
+  reflexivity.
+Qed.
+
+Theorem invalid_arithmetic_at_head_replays_no_suffix :
+  forall suffix state_map,
+    replay_scan (InvalidArithmeticRecord :: suffix) state_map = state_map.
+Proof.
   reflexivity.
 Qed.
 

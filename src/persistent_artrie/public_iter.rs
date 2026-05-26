@@ -17,14 +17,35 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
     ///
     /// Returns an iterator yielding terms as `Vec<u8>` in lexicographic order.
     pub fn iter(&self) -> TermIterator<V> {
-        TermIterator::new(&self.root)
+        let mut terms: Vec<_> = self
+            .iter_prefix_with_arena(b"")
+            .ok()
+            .flatten()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|entry| entry.term)
+            .collect();
+        terms.sort();
+        TermIterator::from_terms(terms)
     }
 
     /// Iterate over all terms with their values.
     ///
     /// Returns an iterator yielding `(term, Option<value>)` pairs in lexicographic order.
     pub fn iter_with_values(&self) -> TermValueIterator<V> {
-        TermValueIterator::new(&self.root)
+        let mut entries: Vec<_> = self
+            .iter_prefix_with_arena(b"")
+            .ok()
+            .flatten()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|entry| {
+                let value = self.get_value_impl(&entry.term);
+                (entry.term, value)
+            })
+            .collect();
+        entries.sort_by(|left, right| left.0.cmp(&right.0));
+        TermValueIterator::from_terms(entries)
     }
 
     /// Iterate over all terms as strings.
@@ -46,7 +67,8 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
 
     /// Direct prefix iteration implementation (non-zipper based).
     fn iter_prefix_direct(&self, prefix: &[u8]) -> Option<impl Iterator<Item = Vec<u8>> + '_> {
-        let terms = self.iter_prefix_with_arena(prefix).ok()??;
+        let mut terms = self.iter_prefix_with_arena(prefix).ok()??;
+        terms.sort_by(|left, right| left.term.cmp(&right.term));
         Some(terms.into_iter().map(|t| t.term))
     }
 
@@ -62,7 +84,8 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
     where
         V: Clone,
     {
-        let terms = self.iter_prefix_with_values_and_arena(prefix).ok()??;
+        let mut terms = self.iter_prefix_with_values_and_arena(prefix).ok()??;
+        terms.sort_by(|left, right| left.term.cmp(&right.term));
         Some(terms.into_iter().map(|t| (t.term, t.value)))
     }
 }

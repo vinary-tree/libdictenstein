@@ -200,7 +200,7 @@ impl SerializedCharNodeHeader {
         CharNodeHeader {
             node_type: self.node_type,
             prefix_len: self.prefix_len,
-            flags: self.flags,
+            flags: self.flags & 0x3F,
             _padding: 0,
             num_children: self.num_children,
             _padding2: [0; 2],
@@ -252,11 +252,25 @@ impl SerializedCharNodeHeader {
                 )));
             }
         }
+        if self.reserved != 0 || self._padding != 0 {
+            return Err(PersistentARTrieError::corrupted(format!(
+                "nonzero reserved char node header bytes: reserved={}, padding={}",
+                self.reserved, self._padding
+            )));
+        }
         if self.prefix_len as usize > CHAR_MAX_PREFIX_LEN {
             return Err(PersistentARTrieError::corrupted(format!(
                 "prefix length {} exceeds maximum {}",
                 self.prefix_len, CHAR_MAX_PREFIX_LEN
             )));
+        }
+        if let Some(max_children) = fixed_node_child_capacity(self.node_type) {
+            if self.num_children as usize > max_children {
+                return Err(PersistentARTrieError::corrupted(format!(
+                    "char node type {} declares {} children, capacity is {}",
+                    self.node_type, self.num_children, max_children
+                )));
+            }
         }
         Ok(())
     }
@@ -290,6 +304,88 @@ impl SerializedCharNodeHeader {
             data_size: u32::from_le_bytes([bytes[12], bytes[13], bytes[14], bytes[15]]),
         }
     }
+}
+
+fn fixed_node_child_capacity(node_type: u8) -> Option<usize> {
+    match node_type {
+        char_node_types::CHARNODE4 => Some(4),
+        char_node_types::CHARNODE16 => Some(16),
+        char_node_types::CHARNODE48 => Some(48),
+        char_node_types::CHARBUCKET => None,
+        _ => None,
+    }
+}
+
+fn checked_layout_add(left: usize, right: usize, context: &str) -> Result<usize> {
+    left.checked_add(right).ok_or_else(|| {
+        PersistentARTrieError::corrupted(format!("char node layout size overflow: {context}"))
+    })
+}
+
+fn validate_v2_header_layout(header: &SerializedCharNodeHeader) -> Result<()> {
+    header.validate()?;
+    if header.uses_sequential_siblings() && !header.uses_relative_offsets() {
+        return Err(PersistentARTrieError::corrupted(
+            "char v2 sequential-sibling flag requires relative-offset flag",
+        ));
+    }
+    if header.uses_sequential_siblings() && header.num_children == 0 {
+        return Err(PersistentARTrieError::corrupted(
+            "char v2 sequential-sibling layout requires at least one child",
+        ));
+    }
+    Ok(())
+}
+
+fn ensure_fixed_node_data_size(
+    header: &SerializedCharNodeHeader,
+    key_bytes: usize,
+    child_capacity: usize,
+) -> Result<()> {
+    let prefix_size = header_prefix_size(header);
+    let child_bytes = child_capacity.checked_mul(8).ok_or_else(|| {
+        PersistentARTrieError::corrupted("char fixed child layout size overflow")
+    })?;
+    let expected = checked_layout_add(prefix_size, key_bytes, "fixed keys")?;
+    let expected = checked_layout_add(expected, child_bytes, "fixed children")?;
+    let expected = checked_layout_add(expected, 8, "fixed value pointer")?;
+    if header.data_size as usize != expected {
+        return Err(PersistentARTrieError::corrupted(format!(
+            "noncanonical char fixed node data_size: got {}, expected {}",
+            header.data_size, expected
+        )));
+    }
+    Ok(())
+}
+
+fn ensure_bucket_entry_count(header: &SerializedCharNodeHeader, num_entries: usize) -> Result<()> {
+    if num_entries != header.num_children as usize {
+        return Err(PersistentARTrieError::corrupted(format!(
+            "char bucket header declares {} children but payload has {} entries",
+            header.num_children, num_entries
+        )));
+    }
+    Ok(())
+}
+
+fn ensure_bucket_fixed_data_size(
+    header: &SerializedCharNodeHeader,
+    num_entries: usize,
+) -> Result<()> {
+    let prefix_size = header_prefix_size(header);
+    let entry_bytes = num_entries.checked_mul(12).ok_or_else(|| {
+        PersistentARTrieError::corrupted("char bucket fixed entry layout size overflow")
+    })?;
+    let expected = checked_layout_add(prefix_size, 4, "bucket entry count")?;
+    let expected = checked_layout_add(expected, 8, "bucket value pointer")?;
+    let expected = checked_layout_add(expected, entry_bytes, "bucket entries")?;
+    if header.data_size as usize != expected {
+        return Err(PersistentARTrieError::corrupted(format!(
+            "noncanonical char bucket fixed data_size: got {}, expected {}",
+            header.data_size, expected
+        )));
+    }
+    Ok(())
 }
 
 /// Calculate the serialized size of a char node
@@ -962,14 +1058,18 @@ fn ptr_to_arena_slot(ptr: &SwizzledPtr) -> Option<ArenaSlot> {
 ///
 /// # Returns
 /// Size in bytes of the type-specific data (excluding header and prefix)
-fn char_node_data_size_v2(node: &CharNode, ctx: &SerializationContext) -> usize {
-    let child_slots = collect_char_child_slots(node);
-    let _num_children = child_slots.len();
-
+fn char_node_data_size_v2(
+    node: &CharNode,
+    ctx: &SerializationContext,
+    child_slots: &[ArenaSlot],
+) -> usize {
     if ctx.use_sequential && ctx.first_child_slot.is_some() {
         // Sequential mode: only store first_child reference
         // Encoded size depends on whether same arena as parent
-        let first_child = ctx.first_child_slot.unwrap();
+        let first_child = match ctx.first_child_slot {
+            Some(slot) => slot,
+            None => ctx.parent_slot,
+        };
         let first_slot_size = if first_child.arena_id == ctx.parent_slot.arena_id {
             // Same arena: relative offset uses varint
             use super::relative_encoding::encoded_size;
@@ -988,7 +1088,7 @@ fn char_node_data_size_v2(node: &CharNode, ctx: &SerializationContext) -> usize 
     } else {
         // Relative mode: encode each child pointer individually
         let mut children_size = 0;
-        for slot in &child_slots {
+        for slot in child_slots {
             use super::relative_encoding::encoded_size;
             children_size += encoded_size(ctx.parent_slot, *slot);
         }
@@ -1000,6 +1100,66 @@ fn char_node_data_size_v2(node: &CharNode, ctx: &SerializationContext) -> usize 
             CharNode::Bucket(n) => 4 + children_size + 8 + n.entries.len() * 4, // num_entries + children + value_ptr + keys
         }
     }
+}
+
+fn validate_v2_serialization_context(
+    node: &CharNode,
+    ctx: &SerializationContext,
+    child_slots: &[ArenaSlot],
+) -> Result<()> {
+    let declared_children = node.header().num_children as usize;
+    if child_slots.len() != declared_children {
+        return Err(PersistentARTrieError::corrupted(format!(
+            "char v2 serialization saw {} disk children but header declares {}",
+            child_slots.len(),
+            declared_children
+        )));
+    }
+    if let CharNode::Bucket(bucket) = node {
+        if bucket.entries.len() != declared_children {
+            return Err(PersistentARTrieError::corrupted(format!(
+                "char v2 bucket header declares {} children but entries contain {}",
+                declared_children,
+                bucket.entries.len()
+            )));
+        }
+    }
+    if ctx.use_sequential {
+        if !ctx.use_relative {
+            return Err(PersistentARTrieError::corrupted(
+                "char v2 sequential serialization requires relative encoding",
+            ));
+        }
+        if declared_children == 0 {
+            return Err(PersistentARTrieError::corrupted(
+                "char v2 sequential serialization requires at least one child",
+            ));
+        }
+        let first_child = ctx.first_child_slot.ok_or_else(|| {
+            PersistentARTrieError::corrupted(
+                "char v2 sequential serialization missing first child slot",
+            )
+        })?;
+        for (idx, slot) in child_slots.iter().enumerate() {
+            let offset = u32::try_from(idx).map_err(|_| {
+                PersistentARTrieError::corrupted(
+                    "char v2 sequential child index exceeds u32 slot range",
+                )
+            })?;
+            let expected_slot = first_child.slot_id.checked_add(offset).ok_or_else(|| {
+                PersistentARTrieError::corrupted(
+                    "char v2 sequential child range overflows u32 slot range",
+                )
+            })?;
+            if slot.arena_id != first_child.arena_id || slot.slot_id != expected_slot {
+                return Err(PersistentARTrieError::corrupted(format!(
+                    "char v2 sequential child mismatch at index {}: got {:?}, expected arena {} slot {}",
+                    idx, slot, first_child.arena_id, expected_slot
+                )));
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Serialize a CharNode using v2 format with relative offsets/sequential siblings
@@ -1020,7 +1180,14 @@ pub fn serialize_char_node_v2<W: Write>(
     writer: &mut W,
     ctx: &SerializationContext,
 ) -> Result<usize> {
-    let data_size = char_prefix_size(node) + char_node_data_size_v2(node, ctx);
+    if !ctx.use_relative && !ctx.use_sequential {
+        return serialize_char_node(node, writer);
+    }
+
+    let child_slots = collect_char_child_slots(node);
+    validate_v2_serialization_context(node, ctx, &child_slots)?;
+
+    let data_size = char_prefix_size(node) + char_node_data_size_v2(node, ctx, &child_slots);
     let header = SerializedCharNodeHeader::from_node_header_v2(
         node.header(),
         data_size as u32,
@@ -1039,13 +1206,15 @@ pub fn serialize_char_node_v2<W: Write>(
     }
 
     // Encode children based on context
-    let child_slots = collect_char_child_slots(node);
     let mut children_buf = Vec::new();
 
     if ctx.use_sequential {
-        if let Some(first_child) = ctx.first_child_slot {
-            encode_sequential_siblings(ctx.parent_slot, first_child, &mut children_buf);
-        }
+        let Some(first_child) = ctx.first_child_slot else {
+            return Err(PersistentARTrieError::corrupted(
+                "char v2 sequential serialization missing first child slot",
+            ));
+        };
+        encode_sequential_siblings(ctx.parent_slot, first_child, &mut children_buf);
     } else {
         // Encode each child individually with relative offsets
         for &slot in &child_slots {
@@ -1198,6 +1367,13 @@ fn read_value_ptr_after_children(data: &[u8], value_offset: usize) -> Result<Swi
             data.len()
         )));
     }
+    if data.len() != end {
+        return Err(PersistentARTrieError::corrupted(format!(
+            "noncanonical char v2 data_size: value pointer ends at {}, remaining data length {}",
+            end,
+            data.len()
+        )));
+    }
     let value_raw = u64::from_le_bytes(data[value_offset..end].try_into().unwrap());
     Ok(SwizzledPtr::from_raw(value_raw))
 }
@@ -1221,7 +1397,7 @@ pub fn deserialize_char_node_v2<R: Read>(
     let mut header_bytes = [0u8; CHAR_SERIALIZED_HEADER_SIZE];
     reader.read_exact(&mut header_bytes).map_err(io_err)?;
     let header = SerializedCharNodeHeader::from_bytes(&header_bytes);
-    header.validate()?;
+    validate_v2_header_layout(&header)?;
 
     // Read prefix if present
     let prefix = if header.prefix_len > 0 {
@@ -1310,6 +1486,7 @@ fn deserialize_charnode4_v2<R: Read>(
 
         node.value_ptr = read_value_ptr_after_children(&remaining_data, bytes_consumed)?;
     } else {
+        ensure_fixed_node_data_size(header, 4 * 4, 4)?;
         // Legacy fixed-width encoding
         for child in &mut node.children {
             let mut raw_bytes = [0u8; 8];
@@ -1371,6 +1548,7 @@ fn deserialize_charnode16_v2<R: Read>(
 
         node.value_ptr = read_value_ptr_after_children(&remaining_data, bytes_consumed)?;
     } else {
+        ensure_fixed_node_data_size(header, 16 * 4, 16)?;
         for child in &mut node.children {
             let mut raw_bytes = [0u8; 8];
             reader.read_exact(&mut raw_bytes).map_err(io_err)?;
@@ -1430,6 +1608,7 @@ fn deserialize_charnode48_v2<R: Read>(
 
         node.value_ptr = read_value_ptr_after_children(&remaining_data, bytes_consumed)?;
     } else {
+        ensure_fixed_node_data_size(header, 48 * 4, 48)?;
         for child in &mut node.children {
             let mut raw_bytes = [0u8; 8];
             reader.read_exact(&mut raw_bytes).map_err(io_err)?;
@@ -1460,6 +1639,7 @@ fn deserialize_charbucket_v2<R: Read>(
     let mut num_entries_bytes = [0u8; 4];
     reader.read_exact(&mut num_entries_bytes).map_err(io_err)?;
     let num_entries = u32::from_le_bytes(num_entries_bytes) as usize;
+    ensure_bucket_entry_count(header, num_entries)?;
 
     // Read value_ptr
     let mut value_bytes = [0u8; 8];
@@ -1479,11 +1659,23 @@ fn deserialize_charbucket_v2<R: Read>(
 
         // Read remaining data for children
         // data_size includes prefix, but prefix was already read before this function was called
-        let remaining_size = (header.data_size as usize)
-            .saturating_sub(prefix_size) // prefix already read
-            .saturating_sub(4) // num_entries
-            .saturating_sub(8) // value_ptr
-            .saturating_sub(num_entries * 4); // keys
+        let entries_key_bytes = num_entries.checked_mul(4).ok_or_else(|| {
+            PersistentARTrieError::corrupted("char bucket key layout size overflow")
+        })?;
+        let consumed_before_children = checked_layout_add(prefix_size, 4, "bucket count")?;
+        let consumed_before_children =
+            checked_layout_add(consumed_before_children, 8, "bucket value pointer")?;
+        let consumed_before_children =
+            checked_layout_add(consumed_before_children, entries_key_bytes, "bucket keys")?;
+        let remaining_size =
+            (header.data_size as usize)
+                .checked_sub(consumed_before_children)
+                .ok_or_else(|| {
+                    PersistentARTrieError::corrupted(format!(
+                        "char bucket data_size {} is smaller than fixed payload {}",
+                        header.data_size, consumed_before_children
+                    ))
+                })?;
         let mut remaining_data = vec![0u8; remaining_size];
         reader.read_exact(&mut remaining_data).map_err(io_err)?;
 
@@ -1505,6 +1697,7 @@ fn deserialize_charbucket_v2<R: Read>(
             node.entries.insert(*key, arena_slot_to_ptr(*slot));
         }
     } else {
+        ensure_bucket_fixed_data_size(header, num_entries)?;
         // Legacy fixed-width encoding
         for _ in 0..num_entries {
             let mut key_bytes = [0u8; 4];
@@ -1535,9 +1728,13 @@ fn read_remaining_data<R: Read>(
     keys_size: usize,
     prefix_size: usize,
 ) -> Result<Vec<u8>> {
-    let remaining_size = data_size
-        .saturating_sub(keys_size)
-        .saturating_sub(prefix_size);
+    let consumed = checked_layout_add(prefix_size, keys_size, "node keys")?;
+    let remaining_size = data_size.checked_sub(consumed).ok_or_else(|| {
+        PersistentARTrieError::corrupted(format!(
+            "char v2 data_size {} is smaller than prefix+keys {}",
+            data_size, consumed
+        ))
+    })?;
     let mut data = vec![0u8; remaining_size];
     reader.read_exact(&mut data).map_err(io_err)?;
     Ok(data)

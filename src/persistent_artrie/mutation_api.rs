@@ -62,11 +62,9 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
             wal_entries.push((term.as_bytes().to_vec(), value_bytes));
         }
 
-        if let Some(ref wal_writer) = self.wal_writer {
-            if let Err(e) = wal_writer.append_batch(&wal_entries) {
-                warn!("Failed to log batch insert to WAL: {:?}", e);
-                return 0;
-            }
+        if let Err(e) = self.append_batch_mutation_wal_record(&wal_entries, "batch_insert") {
+            warn!("Failed to log batch insert to WAL: {:?}", e);
+            return 0;
         }
 
         let mut inserted_count = 0;
@@ -103,11 +101,9 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
             wal_entries.push((term.to_vec(), value_bytes));
         }
 
-        if let Some(ref wal_writer) = self.wal_writer {
-            if let Err(e) = wal_writer.append_batch(&wal_entries) {
-                warn!("Failed to log batch insert to WAL: {:?}", e);
-                return 0;
-            }
+        if let Err(e) = self.append_batch_mutation_wal_record(&wal_entries, "batch_insert_bytes") {
+            warn!("Failed to log batch insert to WAL: {:?}", e);
+            return 0;
         }
 
         let mut inserted_count = 0;

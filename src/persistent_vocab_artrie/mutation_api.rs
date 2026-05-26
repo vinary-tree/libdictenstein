@@ -42,7 +42,7 @@ impl<S: BlockStorage> super::dict_impl::PersistentVocabARTrie<S> {
             .append(record)
             .map_err(|e| Self::map_wal_error("append vocabulary insert WAL record", e))?;
         self.next_lsn.fetch_max(lsn + 1, Ordering::AcqRel);
-        self.sync_vocab_wal_if_immediate(lsn)?;
+        self.sync_vocab_wal_after_append(lsn)?;
         Ok(lsn)
     }
 
@@ -62,13 +62,14 @@ impl<S: BlockStorage> super::dict_impl::PersistentVocabARTrie<S> {
             .append_batch(entries)
             .map_err(|e| Self::map_wal_error("append vocabulary batch WAL record", e))?;
         self.next_lsn.fetch_max(lsn + 1, Ordering::AcqRel);
-        self.sync_vocab_wal_if_immediate(lsn)?;
+        self.sync_vocab_wal_after_append(lsn)?;
         Ok(Some(lsn))
     }
 
-    fn sync_vocab_wal_if_immediate(&mut self, appended_lsn: Lsn) -> Result<()> {
-        if self.durability_policy != DurabilityPolicy::Immediate {
-            return Ok(());
+    fn sync_vocab_wal_after_append(&mut self, appended_lsn: Lsn) -> Result<()> {
+        match self.durability_policy {
+            DurabilityPolicy::Immediate | DurabilityPolicy::GroupCommit => {}
+            DurabilityPolicy::Periodic | DurabilityPolicy::None => return Ok(()),
         }
 
         let wal = self

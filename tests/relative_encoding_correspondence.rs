@@ -1,3 +1,5 @@
+#![cfg(feature = "persistent-artrie")]
+
 use std::io::Cursor;
 
 use libdictenstein::persistent_artrie::arena_manager::ArenaSlot as ByteArenaSlot;

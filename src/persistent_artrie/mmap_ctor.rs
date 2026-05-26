@@ -435,6 +435,9 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
             }
             if dict.apply_recovered_operation_no_wal(op) {
                 replayed_count += 1;
+            } else {
+                warn!("Recovered operation failed during replay; stopping at durable prefix");
+                break;
             }
         }
         // Mark clean after recovery replay
@@ -646,6 +649,11 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
                         for op in super::recovery::recovered_operations_from_record(lsn, record) {
                             if trie.apply_recovered_operation_no_wal(op) {
                                 terms_recovered += 1;
+                            } else {
+                                warn!(
+                                    "Recovered operation failed during rebuild; stopping at durable prefix"
+                                );
+                                break 'segments;
                             }
                         }
                     }

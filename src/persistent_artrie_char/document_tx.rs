@@ -13,6 +13,7 @@
 //! The `CharDocumentTransaction<V>` data type lives in
 //! `super::transactions`.
 
+use std::collections::HashMap;
 use std::sync::atomic::Ordering as AtomicOrdering;
 
 use crate::persistent_artrie::block_storage::BlockStorage;
@@ -43,6 +44,7 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
             document_id: document_id.to_string(),
             shadow_terms: Vec::new(),
             increments: Vec::new(),
+            failure: None,
             state: TransactionState::Active,
         })
     }
@@ -182,7 +184,19 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
             }
         );
 
-        tx.increments.push((term.as_bytes().to_vec(), delta));
+        if let Err(error) = self.try_tx_increment(tx, term, delta) {
+            tx.mark_failed(error.to_string());
+        }
+    }
+
+    /// Checked variant of [`Self::tx_increment`].
+    pub fn try_tx_increment(
+        &self,
+        tx: &mut CharDocumentTransaction<V>,
+        term: &str,
+        delta: i64,
+    ) -> Result<()> {
+        self.try_tx_increment_bytes(tx, term.as_bytes(), delta)
     }
 
     /// Buffer an increment operation (as bytes) in a document transaction.
@@ -214,7 +228,63 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
             }
         );
 
+        if let Err(error) = self.try_tx_increment_bytes(tx, term_bytes, delta) {
+            tx.mark_failed(error.to_string());
+        }
+    }
+
+    /// Checked byte-key variant of [`Self::tx_increment_bytes`].
+    pub fn try_tx_increment_bytes(
+        &self,
+        tx: &mut CharDocumentTransaction<V>,
+        term_bytes: &[u8],
+        delta: i64,
+    ) -> Result<()> {
+        if tx.state != TransactionState::Active {
+            return Err(PersistentARTrieError::InvalidOperation(format!(
+                "Cannot increment in a {} transaction",
+                match tx.state {
+                    TransactionState::Committed => "committed",
+                    TransactionState::Aborted => "aborted",
+                    TransactionState::Active => unreachable!(),
+                }
+            )));
+        }
+
+        if let Some(reason) = tx.failure_reason() {
+            return Err(PersistentARTrieError::InvalidOperation(format!(
+                "Cannot increment in failed transaction {}: {}",
+                tx.document_id(),
+                reason
+            )));
+        }
+
+        let pending_delta =
+            tx.increments
+                .iter()
+                .try_fold(0_i64, |acc, (existing_term, existing_delta)| {
+                    if existing_term == term_bytes {
+                        acc.checked_add(*existing_delta)
+                    } else {
+                        Some(acc)
+                    }
+                });
+
+        let aggregate = match pending_delta.and_then(|pending| pending.checked_add(delta)) {
+            Some(value) => value,
+            None => {
+                let reason = format!(
+                    "transaction increment aggregate overflow for term {:?}",
+                    String::from_utf8_lossy(term_bytes)
+                );
+                tx.mark_failed(reason.clone());
+                return Err(PersistentARTrieError::InvalidOperation(reason));
+            }
+        };
+
+        let _ = aggregate;
         tx.increments.push((term_bytes.to_vec(), delta));
+        Ok(())
     }
 
     /// Commit a document transaction, applying all buffered operations atomically.
@@ -251,6 +321,14 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
             )));
         }
 
+        if let Some(reason) = tx.failure_reason() {
+            return Err(PersistentARTrieError::InvalidOperation(format!(
+                "Cannot commit failed transaction {}: {}",
+                tx.document_id(),
+                reason
+            )));
+        }
+
         let set_count = tx.shadow_terms.len();
         let increment_count = tx.increments.len();
 
@@ -266,6 +344,7 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
         let total_operations = set_count + increment_count;
         let mut set_wal_entries = Vec::with_capacity(set_count);
         let mut prepared_sets = Vec::with_capacity(set_count);
+        let mut prepared_set_i64: HashMap<Vec<u8>, i64> = HashMap::with_capacity(set_count);
 
         for (term_bytes, value) in &tx.shadow_terms {
             let term_str = String::from_utf8_lossy(term_bytes).into_owned();
@@ -288,13 +367,23 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
             };
             set_wal_entries.push((term_bytes.clone(), value_bytes));
             prepared_sets.push((term_str, value.clone()));
+            prepared_set_i64.insert(
+                term_bytes.clone(),
+                value.as_ref().map(Self::i64_from_value_lossy).unwrap_or(0),
+            );
         }
 
         // Aggregate increments for the same term within the transaction.
-        let mut aggregated_increments: std::collections::HashMap<Vec<u8>, i64> =
-            std::collections::HashMap::with_capacity(increment_count);
+        let mut aggregated_increments: HashMap<Vec<u8>, i64> =
+            HashMap::with_capacity(increment_count);
         for (term_bytes, delta) in &tx.increments {
-            *aggregated_increments.entry(term_bytes.clone()).or_insert(0) += delta;
+            let entry = aggregated_increments.entry(term_bytes.clone()).or_insert(0);
+            *entry = entry.checked_add(*delta).ok_or_else(|| {
+                PersistentARTrieError::InvalidOperation(format!(
+                    "transaction increment aggregate overflow for term {:?}",
+                    String::from_utf8_lossy(term_bytes)
+                ))
+            })?;
         }
 
         let mut increment_wal_entries = Vec::with_capacity(aggregated_increments.len());
@@ -302,8 +391,19 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
         for (term_bytes, delta) in aggregated_increments {
             let term_str = String::from_utf8_lossy(&term_bytes).into_owned();
             self.preflight_insert_with_value_no_wal(&term_str)?;
+            let current = prepared_set_i64
+                .get(&term_bytes)
+                .copied()
+                .unwrap_or_else(|| self.current_i64_for_increment(&term_str));
+            let new_value = current.checked_add(delta).ok_or_else(|| {
+                PersistentARTrieError::InvalidOperation(format!(
+                    "transaction increment overflow for term {:?}: {} + {} exceeds i64 range",
+                    term_str, current, delta
+                ))
+            })?;
+            let value = Self::value_from_i64_checked(new_value)?;
             increment_wal_entries.push((term_bytes, delta));
-            prepared_increments.push((term_str, delta));
+            prepared_increments.push((term_str, value));
         }
 
         if !set_wal_entries.is_empty() {
@@ -332,9 +432,8 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
             }
         }
 
-        for (term, delta) in prepared_increments {
-            // Use internal increment logic without WAL logging.
-            self.increment_impl_no_wal(&term, delta);
+        for (term, value) in prepared_increments {
+            self.try_insert_impl_no_wal_with_value(&term, value)?;
         }
 
         tx.shadow_terms.clear();
@@ -375,5 +474,35 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
         // Discard buffered terms (happens automatically via drop)
         tx.state = TransactionState::Aborted;
         Ok(())
+    }
+
+    fn current_i64_for_increment(&self, term: &str) -> i64 {
+        self.get(term).map(Self::i64_from_value_lossy).unwrap_or(0)
+    }
+
+    fn i64_from_value_lossy(value: &V) -> i64 {
+        let bytes = crate::serialization::bincode_compat::serialize(value).unwrap_or_default();
+        if bytes.len() == 8 {
+            let raw: [u8; 8] = bytes.try_into().expect("expected 8 bytes");
+            i64::from_le_bytes(raw)
+        } else {
+            crate::serialization::bincode_compat::deserialize::<i64>(&bytes).unwrap_or(0)
+        }
+    }
+
+    fn value_from_i64_checked(value: i64) -> Result<V> {
+        let value_bytes =
+            crate::serialization::bincode_compat::serialize(&value).map_err(|error| {
+                PersistentARTrieError::internal(format!(
+                    "Failed to serialize transaction increment value: {}",
+                    error
+                ))
+            })?;
+        crate::serialization::bincode_compat::deserialize(&value_bytes).map_err(|error| {
+            PersistentARTrieError::internal(format!(
+                "Failed to deserialize transaction increment value as V: {}",
+                error
+            ))
+        })
     }
 }

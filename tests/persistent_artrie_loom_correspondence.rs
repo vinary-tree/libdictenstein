@@ -140,8 +140,28 @@ impl ModelValueOverlay {
     }
 
     fn increment(&self, delta: usize) -> usize {
+        self.try_increment_checked(delta, usize::MAX)
+            .expect("model increment overflow")
+    }
+
+    fn try_increment_checked(&self, delta: usize, max_value: usize) -> Result<usize, ()> {
         let leaf = self.get_or_create_leaf();
-        leaf.value.fetch_add(delta, Ordering::AcqRel) + delta
+        loop {
+            let current = leaf.value.load(Ordering::Acquire);
+            let new_value = current.checked_add(delta).ok_or(())?;
+            if new_value > max_value {
+                return Err(());
+            }
+            match leaf.value.compare_exchange(
+                current,
+                new_value,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => return Ok(new_value),
+                Err(_) => thread::yield_now(),
+            }
+        }
     }
 
     fn get_value(&self) -> Option<usize> {
@@ -156,6 +176,22 @@ impl ModelValueOverlay {
         if let Some(value) = self.get_value() {
             persisted.store(value, Ordering::Release);
         }
+    }
+
+    fn try_merge_snapshot_checked(
+        &self,
+        persisted: &AtomicUsize,
+        max_value: usize,
+    ) -> Result<(), ()> {
+        if let Some(value) = self.get_value() {
+            let current = persisted.load(Ordering::Acquire);
+            let new_value = current.checked_add(value).ok_or(())?;
+            if new_value > max_value {
+                return Err(());
+            }
+            persisted.store(new_value, Ordering::Release);
+        }
+        Ok(())
     }
 }
 
@@ -1037,6 +1073,34 @@ fn char_create_vs_increment_race_has_one_leaf_and_total_value() {
         assert!(matches!(second_result, 2 | 3));
         assert_eq!(overlay.leaf_initializations.load(Ordering::SeqCst), 1);
         assert_eq!(overlay.get_value(), Some(3));
+    });
+}
+
+#[test]
+fn char_checked_increment_overflow_preserves_overlay_value() {
+    loom::model(|| {
+        let overlay = ModelValueOverlay::new();
+
+        assert_eq!(overlay.try_increment_checked(2, 3), Ok(2));
+        assert_eq!(overlay.try_increment_checked(2, 3), Err(()));
+        assert_eq!(overlay.get_value(), Some(2));
+    });
+}
+
+#[test]
+fn char_checked_merge_overflow_preserves_overlay_and_persistent_value() {
+    loom::model(|| {
+        let overlay = ModelValueOverlay::new();
+        let persisted = AtomicUsize::new(2);
+
+        assert_eq!(overlay.try_increment_checked(2, 3), Ok(2));
+        assert_eq!(overlay.try_merge_snapshot_checked(&persisted, 3), Err(()));
+        assert_eq!(persisted.load(Ordering::Acquire), 2);
+        assert_eq!(overlay.get_value(), Some(2));
+
+        persisted.store(1, Ordering::Release);
+        assert_eq!(overlay.try_merge_snapshot_checked(&persisted, 3), Ok(()));
+        assert_eq!(persisted.load(Ordering::Acquire), 3);
     });
 }
 

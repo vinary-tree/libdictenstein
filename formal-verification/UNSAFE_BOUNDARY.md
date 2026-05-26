@@ -1,6 +1,6 @@
 # Unsafe Boundary Verification Notes
 
-Updated: 2026-05-25
+Updated: 2026-05-26
 
 This document records the current Rust implementation boundary that is not
 covered by Rocq extraction or TLC state exploration. The goal is to keep every
@@ -17,10 +17,13 @@ obligation.
 | Optimistic mutable cell | `persistent_artrie_core::concurrency::OptimisticCell` | The data path is guarded by `RwLock` so the safe API no longer permits Rust-level read/write races; tests check concurrent writer serialization, version parity, and final value. |
 | WAL crash/recovery prefix | `persistent_artrie_core::wal`, `persistent_artrie_core::recovery`, `PersistentARTrie::open` | Parser checks are extended with end-to-end reopen tests over real WAL bytes: every complete record-boundary prefix, torn header/payload after a durable prefix, and committed-vs-incomplete transaction replay. |
 | Durability and reclamation frontier | `persistent_artrie_core::{group_commit,version_gc,wal/async_writer}` | `DurabilityFrontier.tla` checks prefix-closed synced LSN publication, no early group-commit acknowledgements, checkpoint/recovery within the durable frontier, and durable VersionGc-before-reclaim. Loom tests cover bounded schedule races for the same obligations. |
+| Public durability acknowledgement | `PersistentARTrie`, `PersistentARTrieChar`, and `PersistentVocabARTrie` public mutation/sync paths | `PublicDurabilityPolicy.tla` checks full-policy acknowledgement coverage by the synced WAL frontier and weak-policy non-overclaiming. `PublicDurabilityPolicySpec.v` proves the corresponding Immediate/GroupCommit, async sync, checkpoint, and recovery-prefix laws. Rust correspondence tests cover byte/char/vocab public mutation paths, byte transaction commit sync, `sync_async` handles, and `Periodic` non-overclaiming. |
+| Public read traversal snapshot | `PersistentARTrie`, `PersistentARTrieChar`, and `PersistentVocabARTrie` public iterator/prefix traversal paths | `PublicReadSnapshotTraversal.tla` checks successful read exactness and fail-closed lazy/disk corruption. `PersistentReadTraversalSpec.v` proves prefix soundness/completeness, no-fabrication, and read-preserves-snapshot laws. Rust correspondence tests cover byte/char/vocab checkpoint/reopen traversal and char lazy traversal corruption without WAL append. |
+| Shared persistent public concurrency | `persistent_artrie::SharedARTrie`, `persistent_artrie_char::SharedCharARTrie`, `persistent_vocab_artrie::SharedVocabARTrie` | `SharedPersistentConcurrency.tla` checks the bounded `Arc<RwLock<...>>` public write/read/sync/checkpoint/recovery protocol. `SharedPersistentConcurrencySpec.v` proves the corresponding lock, checkpoint, sync, read, and recovery laws. Rust correspondence tests cover byte/char/vocab shared checkpoint/write/sync/reopen races and caught the byte shared checkpoint lock-publication bug. |
 | Raw char/vocab child-pointer ownership | `persistent_artrie_char::types`, `persistent_vocab_artrie::{types,mod,disk_io}`, and unsafe `Send`/`Sync` surfaces | `PointerOwnership.tla` checks bounded raw slot pointer ownership, disk-slot/lazy-load publication, node-map raw reference liveness, borrow exclusivity, unswizzle/drop no-dangling-reference obligations, and no double drop. `VocabPersistenceOwnership.tla` checks stable vocab indexes across checkpoint/reopen and requires eviction to invalidate `node_map` before drop. Correspondence tests cover char and vocab child remove/replacement/deep-clone ownership transfer, unique `get_or_create_child` mutation borrow paths, checkpoint/reopen bijection, direct `node_map`/parent-chain rebuild after reopen, heap-only node-map parent-chain liveness, eviction invalidation, sibling query preservation after leaf eviction, and compile-time `Send`/`Sync` contracts. Miri execution is wired through `RUN_MIRI=1`, with `FORMAL_MIRI_TOOLCHAIN=nightly` support and filesystem isolation disabled for the heap-only persistence targets. |
 | mmap/io_uring storage access | `persistent_artrie_core::{disk_manager,io_uring_disk_manager}` and trie constructors | `MmapBlockStorage.tla` checks the bounded allocation/remap/access protocol. `StorageSyscallOutcome.tla` checks the bounded write/sync outcome boundary: only full writes followed by successful syncs advance the durable/reported/recovered prefix. `IoUringFixedBufferOwnership.tla` checks fixed-buffer registration, in-flight fixed I/O, unregister, invalid registration, fallback, and owner-drop ordering. `IoUringSqeCqeLifecycle.tla` checks the bounded submit/complete lifecycle: each submitted request owns one live buffer until exactly one CQE is checked, short/error completions fail closed, and temporary buffers are returned only after checking. Storage correspondence tests cover concurrent mmap allocation uniqueness, sub-block bounds rejection, sync/reopen checksum refresh, `raw_ptr` bounds, failed WAL fsync frontier handling, io_uring range rejection, fixed-buffer registration input validation, and unregister-before-owner-drop behavior when the backend is available. Kernel io_uring internals remain trusted implementation code. |
-| Raw trie child pointers and byte lock-free CAS paths | `persistent_artrie::{lockfree_cas,nodes/atomic_ptr,nodes/persistent_node}` | `LockFreeARTrieLinearizability.tla` checks the bounded root-CAS/cache/contains/merge publication contract. Loom tests cover single-winner root CAS, duplicate insert linearization, insert-vs-contains visibility, merge snapshot behavior, and child-pointer Arc handoff. |
-| Indexed char/vocab lock-free overlays | `persistent_artrie_char::lockfree_cas`, `persistent_vocab_artrie::lockfree_cas` | `LockFreeIndexedOverlay.tla` checks char increment value preservation, merge-prefix behavior, vocab duplicate insert stability, committed-index uniqueness, sparse `next_index` claims, and cache/root/persistent agreement. Loom tests cover the same bounded schedule obligations. |
+| Raw trie child pointers and byte lock-free CAS paths | `persistent_artrie::{lockfree_cas,nodes/atomic_ptr,nodes/persistent_node}` | `LockFreeARTrieLinearizability.tla` checks the bounded root-CAS/cache/contains/merge publication contract. `LockFreeCounterMergeAtomicity.tla` checks checked counter increments and all-or-nothing value merge into one `BatchIncrement`. Loom tests cover single-winner root CAS, duplicate insert linearization, insert-vs-contains visibility, merge snapshot behavior, checked overflow/merge failure preservation, and child-pointer Arc handoff. |
+| Indexed char/vocab lock-free overlays | `persistent_artrie_char::lockfree_cas`, `persistent_vocab_artrie::lockfree_cas` | `LockFreeIndexedOverlay.tla` checks char increment value preservation, merge-prefix behavior, vocab duplicate insert stability, committed-index uniqueness, sparse `next_index` claims, and cache/root/persistent agreement. `LockFreeCounterMergeAtomicity.tla` also covers checked char counter overflow and merge failure preservation for the persistent counter boundary. Loom tests cover the same bounded schedule obligations. |
 | Whole-crate unsafe inventory | `formal-verification/UNSAFE_INVENTORY.tsv`, `formal-verification/UNSAFE_CONTRACTS.tsv`, `scripts/verify-unsafe-boundary-inventory.sh` | The verification harness now compares the live `src/**/*.rs` unsafe blocks, unsafe functions, and unsafe impls against the reviewed inventory, checks that every inventory tag has a reviewed contract entry, and rejects contract rows without a valid coverage/status classification. New or changed unsafe sites fail the correspondence script until the pattern, count, contract tag, coverage class, status, and evidence are updated intentionally. |
 | Unsafe `Send`/`Sync` impls outside the persistent ART core | SCDAWG handles, vocab variants, test mock nodes | The explicit unsafe impl surface is inventoried. Persistent ARTrie/vocab contracts are type-checked in `persistent_artrie_formal_correspondence`; SCDAWG byte/char handle contracts are type-checked and exercised under concurrent read traversal in `unsafe_boundary_contracts`. |
 
@@ -32,6 +35,8 @@ obligation.
 | Lazy-load race losers keep private ownership and are dropped without publication. | `PointerOwnership.tla` `LoadingPointersAreThreadLocal` / `NoLoadCandidateAliasing` invariants plus `swizzled_pointer_losing_lazy_load_candidate_can_be_reclaimed_once`. |
 | Raw child replacement returns the old `Box` and does not alias the new child. | Char and vocab remove/replace/deep-clone correspondence tests, Miri-gated in the harness. |
 | Storage write/sync outcomes advance durability only after full write plus successful sync. | `StorageSyscallOutcome.tla`, failed fsync frontier correspondence, io_uring completion helper tests, and cached-write dirty re-marking on failed single/batched/fixed-buffer writes. |
+| Public full-policy acknowledgements are not returned until the appended WAL LSN is covered by the synced frontier. | `PublicDurabilityPolicy.tla`, `PublicDurabilityPolicySpec.v`, and `tests/persistent_public_durability_policy_correspondence.rs` across byte/char/vocab public mutation and sync paths. |
+| Public read traversals return exact visible snapshots or fail closed on lazy/disk corruption. | `PublicReadSnapshotTraversal.tla`, `PersistentReadTraversalSpec.v`, and `tests/persistent_read_snapshot_correspondence.rs` across byte/char/vocab iteration, prefix iteration, and checkpoint/reopen paths. |
 | io_uring fixed buffers are non-null, block-sized, aligned, used only while registered, and unregistered before owner drop. | `IoUringFixedBufferOwnership.tla`, `IoUringDiskManager::register_buffer_pool` validation, `BufferManager` fixed-capability gating, `io_uring_*registration*` storage correspondence tests, and the fixed-capable `BufferManager` storage double. |
 | io_uring submitted requests keep ownership of one buffer until completion checking, and short/error CQEs fail closed. | `IoUringSqeCqeLifecycle.tla` plus `IoUringDiskManager` completion-count, negative-result, short-read/write, and temporary-buffer return checks. |
 | Backends that accept the default no-op registration do not accidentally enable fixed I/O. | `BufferManager` requires both registration success and `supports_fixed_buffers()`, with a regression in `tests/unsafe_boundary_contracts.rs`. |
@@ -65,11 +70,14 @@ intersects the formal ARTrie model:
   header checksums on sync/reopen, and reject out-of-block raw pointer offsets.
 - byte lock-free insert linearizes at successful root publication, cache entries
   are only published after the root contains the key, contains never reports a
-  visible key as absent, and merge persists only a cache snapshot prefix in the
-  bounded model.
+  visible key as absent, merge persists only a cache snapshot prefix in the
+  bounded model, and checked value-counter merges reject overflow before
+  overlay/persistent/WAL mutation while successful merges publish one
+  `BatchIncrement`.
 - char lock-free increments add each successful delta exactly once, create at
-  most one visible leaf for a raced key, and merge only persists a value visible
-  at the snapshot point in the bounded model;
+  most one visible leaf for a raced key, merge only persists a value visible
+  at the snapshot point in the bounded model, and checked overflow or merge
+  failure preserves overlay, persistent state, and WAL state;
 - vocab lock-free inserts publish one stable index per committed term, preserve
   uniqueness across distinct terms, and allow sparse `next_index` values when a
   duplicate race wastes a claimed index.
@@ -110,8 +118,9 @@ intersects the formal ARTrie model:
 This is not a RustBelt, Iris, Kani, or certified-compilation result. The
 current harness runs strict-provenance Miri-compatible targets for raw child
 ownership, unique child mutation, swizzled raw extraction, `SwizzledPtr` unit
-state transitions, heap-only vocab node-map/eviction ownership, and
-buffer-manager fixed-buffer lifetime, and the unsafe inventory gate now rejects
+state transitions, heap-only vocab node-map/eviction ownership, public
+read-traversal lazy failure closure, and buffer-manager fixed-buffer lifetime,
+and the unsafe inventory gate now rejects
 coverage metadata drift. `SwizzledPtr` no longer reconstructs in-memory
 pointers from integers; broader mechanized unsafe-boundary proofs for
 raw-pointer and kernel io_uring internals remain out of scope for the current

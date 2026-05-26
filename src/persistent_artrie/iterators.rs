@@ -13,6 +13,7 @@ use super::dict_impl::TrieRoot;
 use super::transitions::ChildNode;
 
 /// Iterator state for DFS traversal of the trie
+#[allow(dead_code)]
 #[derive(Clone)]
 pub(super) enum IterState {
     /// Iterating over a bucket's entries
@@ -62,12 +63,15 @@ pub(super) enum IterState {
 pub struct TermIterator<V: DictionaryValue> {
     /// Stack of iteration states for DFS
     stack: Vec<IterState>,
+    /// Pre-collected snapshot used by disk-aware public iteration.
+    precollected: Option<std::vec::IntoIter<Vec<u8>>>,
     /// Marker for value type
     _marker: std::marker::PhantomData<V>,
 }
 
 impl<V: DictionaryValue> TermIterator<V> {
     /// Create a new iterator starting from the trie root.
+    #[allow(dead_code)]
     pub(super) fn new(root: &TrieRoot<V>) -> Self {
         let mut stack = Vec::new();
 
@@ -115,6 +119,16 @@ impl<V: DictionaryValue> TermIterator<V> {
 
         Self {
             stack,
+            precollected: None,
+            _marker: std::marker::PhantomData,
+        }
+    }
+
+    /// Create an iterator from a pre-collected snapshot.
+    pub(super) fn from_terms(terms: Vec<Vec<u8>>) -> Self {
+        Self {
+            stack: Vec::new(),
+            precollected: Some(terms.into_iter()),
             _marker: std::marker::PhantomData,
         }
     }
@@ -124,6 +138,10 @@ impl<V: DictionaryValue> Iterator for TermIterator<V> {
     type Item = Vec<u8>;
 
     fn next(&mut self) -> Option<Self::Item> {
+        if let Some(iter) = self.precollected.as_mut() {
+            return iter.next();
+        }
+
         loop {
             let state = self.stack.last_mut()?;
 
@@ -222,12 +240,15 @@ impl<V: DictionaryValue> Iterator for TermIterator<V> {
 pub struct TermValueIterator<V: DictionaryValue> {
     /// Stack of iteration states for DFS
     stack: Vec<IterState>,
+    /// Pre-collected snapshot used by disk-aware public iteration.
+    precollected: Option<std::vec::IntoIter<(Vec<u8>, Option<V>)>>,
     /// Marker for value type
     _marker: std::marker::PhantomData<V>,
 }
 
 impl<V: DictionaryValue> TermValueIterator<V> {
     /// Create a new iterator starting from the trie root.
+    #[allow(dead_code)]
     pub(super) fn new(root: &TrieRoot<V>) -> Self {
         let mut stack = Vec::new();
 
@@ -273,6 +294,16 @@ impl<V: DictionaryValue> TermValueIterator<V> {
 
         Self {
             stack,
+            precollected: None,
+            _marker: std::marker::PhantomData,
+        }
+    }
+
+    /// Create an iterator from a pre-collected snapshot.
+    pub(super) fn from_terms(terms: Vec<(Vec<u8>, Option<V>)>) -> Self {
+        Self {
+            stack: Vec::new(),
+            precollected: Some(terms.into_iter()),
             _marker: std::marker::PhantomData,
         }
     }
@@ -282,6 +313,10 @@ impl<V: DictionaryValue> Iterator for TermValueIterator<V> {
     type Item = (Vec<u8>, Option<V>);
 
     fn next(&mut self) -> Option<Self::Item> {
+        if let Some(iter) = self.precollected.as_mut() {
+            return iter.next();
+        }
+
         loop {
             let state = self.stack.last_mut()?;
 

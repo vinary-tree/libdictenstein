@@ -54,6 +54,8 @@ pub struct DocumentTransaction<V: DictionaryValue> {
     pub document_id: String,
     /// Buffered terms to be applied on commit
     pub(crate) shadow_terms: Vec<(Vec<u8>, Option<V>)>,
+    /// Deferred failure for compatibility methods that cannot return `Result`.
+    pub(crate) failure: Option<String>,
     /// Current state of the transaction
     pub state: TransactionState,
 }
@@ -68,6 +70,7 @@ impl<V: DictionaryValue> DocumentTransaction<V> {
             tx_id,
             document_id,
             shadow_terms: Vec::new(),
+            failure: None,
             state: TransactionState::Active,
         }
     }
@@ -90,5 +93,15 @@ impl<V: DictionaryValue> DocumentTransaction<V> {
     /// Returns true if the transaction is still active.
     pub fn is_active(&self) -> bool {
         self.state == TransactionState::Active
+    }
+
+    pub(crate) fn mark_failed(&mut self, reason: impl Into<String>) {
+        if self.failure.is_none() {
+            self.failure = Some(reason.into());
+        }
+    }
+
+    pub(crate) fn failure_reason(&self) -> Option<&str> {
+        self.failure.as_deref()
     }
 }

@@ -271,8 +271,17 @@ Added to WAL (`src/persistent_artrie/wal.rs`):
 **Date:** 2026-01-15
 **Git commit (before):** 1a870b4
 
+**Verification update (2026-05-25):** The production claim is now scoped to
+epoch checkpoint tracking. Public mutations record epoch operation/WAL-byte
+metadata after successful WAL appends, and `force_epoch_checkpoint()` publishes
+the trie checkpoint before durable epoch metadata. Threshold-driven epoch
+advancement rotates metadata/WAL state, but is not claimed to be an automatic
+full-trie checkpoint without the explicit checkpoint path.
+
 ### Hypothesis
 Automatic periodic checkpointing will bound WAL size, provide predictable durability guarantees, and enable faster recovery without manual intervention.
+The verified implementation currently satisfies the narrower checkpoint
+tracking and explicit forced-checkpoint publication boundary above.
 
 ### Expected Outcomes
 - WAL size bounded to configured max_wal_size_bytes
@@ -329,7 +338,8 @@ Key features:
 | 5000 | 38.7 µs | 129 Melem/s |
 | 10000 | 41.7 µs | 240 Melem/s |
 
-**Key Finding:** Recovery is near-instant (~40µs) because it only loads checkpoint metadata.
+**Key Finding:** Metadata load is near-instant (~40µs). This benchmark measured
+epoch metadata tracking, not full trie recovery from a published checkpoint.
 
 #### Epoch vs Direct Comparison (1000 operations)
 | Mode | Time | Throughput | Comparison |
@@ -355,13 +365,16 @@ The epoch management infrastructure adds **negligible overhead**:
 - ✅ No regression in core operations
 
 ### Decision
-**ACCEPTED** - Epoch-based checkpointing provides valuable infrastructure with minimal overhead.
+**ACCEPTED AS TRACKING INFRASTRUCTURE** - Epoch-based checkpointing provides
+valuable metadata infrastructure with minimal overhead. The durable recovery
+claim is covered by the explicit forced checkpoint path verified on 2026-05-25.
 
 **Rationale:**
 1. Hypothesis was that epoch checkpointing bounds WAL and provides predictable recovery
-2. Implementation achieves both goals:
-   - WAL segmentation per epoch enables bounded WAL size
-   - Checkpoint metadata enables fast recovery (~40µs)
+2. Current verified implementation achieves the scoped tracking boundary:
+   - WAL segmentation per epoch enables bounded metadata/WAL tracking
+   - Durable epoch metadata is published only after the trie checkpoint
+   - Checkpoint metadata load is fast (~40µs)
 3. Overhead is minimal (< 50ns per operation)
 4. Framework is ready for integration with actual WAL writes
 

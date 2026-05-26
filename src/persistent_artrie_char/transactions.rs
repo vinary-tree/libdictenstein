@@ -55,6 +55,8 @@ pub struct CharDocumentTransaction<V: DictionaryValue> {
     pub(crate) shadow_terms: Vec<(Vec<u8>, Option<V>)>,
     /// Buffered increment operations (term as bytes, delta)
     pub(crate) increments: Vec<(Vec<u8>, i64)>,
+    /// Deferred failure for compatibility methods that cannot return `Result`.
+    pub(crate) failure: Option<String>,
     /// Current state of the transaction
     pub state: TransactionState,
 }
@@ -88,5 +90,15 @@ impl<V: DictionaryValue> CharDocumentTransaction<V> {
     /// Returns true if the transaction is still active.
     pub fn is_active(&self) -> bool {
         self.state == TransactionState::Active
+    }
+
+    pub(crate) fn mark_failed(&mut self, reason: impl Into<String>) {
+        if self.failure.is_none() {
+            self.failure = Some(reason.into());
+        }
+    }
+
+    pub(crate) fn failure_reason(&self) -> Option<&str> {
+        self.failure.as_deref()
     }
 }

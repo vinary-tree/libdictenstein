@@ -288,7 +288,7 @@ impl<V: DictionaryValue>
                 WalRecord::BatchIncrement { entries } => {
                     for (term, delta) in entries {
                         let term_str = String::from_utf8_lossy(&term);
-                        inner.increment_impl_no_wal(&term_str, delta);
+                        inner.try_increment_impl_no_wal(&term_str, delta)?;
                     }
                 }
                 WalRecord::VersionUpdate { .. }

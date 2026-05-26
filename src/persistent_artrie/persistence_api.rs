@@ -52,19 +52,10 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
     pub fn sync(&self) -> Result<()> {
         if let Some(ref wal_writer) = self.wal_writer {
             match self.durability_policy {
-                DurabilityPolicy::Immediate => {
+                DurabilityPolicy::Immediate | DurabilityPolicy::GroupCommit => {
                     wal_writer.sync().map_err(|e| {
                         PersistentARTrieError::io_error(
                             "sync",
-                            "WAL",
-                            std::io::Error::new(std::io::ErrorKind::Other, e.to_string()),
-                        )
-                    })?;
-                }
-                DurabilityPolicy::GroupCommit => {
-                    let _handle = wal_writer.sync_async().map_err(|e| {
-                        PersistentARTrieError::io_error(
-                            "sync_async",
                             "WAL",
                             std::io::Error::new(std::io::ErrorKind::Other, e.to_string()),
                         )
@@ -139,6 +130,80 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
     /// Set the durability policy for this trie.
     pub fn set_durability_policy(&mut self, policy: DurabilityPolicy) {
         self.durability_policy = policy;
+    }
+
+    pub(super) fn append_mutation_wal_record(
+        &self,
+        record: WalRecord,
+        operation: &'static str,
+    ) -> Result<Lsn> {
+        let Some(ref wal_writer) = self.wal_writer else {
+            return Ok(0);
+        };
+
+        let appended_lsn = wal_writer.append(record).map_err(|e| {
+            PersistentARTrieError::io_error(
+                operation,
+                "WAL",
+                std::io::Error::new(std::io::ErrorKind::Other, e.to_string()),
+            )
+        })?;
+        self.sync_wal_after_append(appended_lsn, operation)?;
+        Ok(appended_lsn)
+    }
+
+    pub(super) fn append_batch_mutation_wal_record(
+        &self,
+        entries: &[(Vec<u8>, Option<Vec<u8>>)],
+        operation: &'static str,
+    ) -> Result<Lsn> {
+        let Some(ref wal_writer) = self.wal_writer else {
+            return Ok(0);
+        };
+
+        let appended_lsn = wal_writer.append_batch(entries).map_err(|e| {
+            PersistentARTrieError::io_error(
+                operation,
+                "WAL",
+                std::io::Error::new(std::io::ErrorKind::Other, e.to_string()),
+            )
+        })?;
+        self.sync_wal_after_append(appended_lsn, operation)?;
+        Ok(appended_lsn)
+    }
+
+    pub(super) fn sync_wal_after_append(
+        &self,
+        appended_lsn: Lsn,
+        operation: &'static str,
+    ) -> Result<()> {
+        if appended_lsn == 0 {
+            return Ok(());
+        }
+
+        match self.durability_policy {
+            DurabilityPolicy::Immediate | DurabilityPolicy::GroupCommit => {
+                let Some(ref wal_writer) = self.wal_writer else {
+                    return Ok(());
+                };
+
+                let synced_lsn = wal_writer.sync().map_err(|e| {
+                    PersistentARTrieError::io_error(
+                        operation,
+                        "WAL",
+                        std::io::Error::new(std::io::ErrorKind::Other, e.to_string()),
+                    )
+                })?;
+                if synced_lsn < appended_lsn {
+                    return Err(PersistentARTrieError::Wal(format!(
+                        "{operation} sync failed to cover appended LSN {appended_lsn}; synced {synced_lsn}"
+                    )));
+                }
+            }
+            DurabilityPolicy::Periodic | DurabilityPolicy::None => {}
+        }
+
+        Ok(())
     }
 
     /// Get a snapshot of the trie statistics.

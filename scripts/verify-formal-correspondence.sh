@@ -17,6 +17,10 @@ run_capped() {
 echo "== Unsafe boundary inventory =="
 run_capped bash scripts/verify-unsafe-boundary-inventory.sh
 
+echo "== Rust feature profile compile checks =="
+run_capped cargo test --no-run
+run_capped cargo test --all-features --no-run
+
 echo "== Rust correspondence tests =="
 run_capped cargo test --test dictionary_law_correspondence
 run_capped cargo test --test dynamic_dawg_mutation_correspondence
@@ -41,12 +45,17 @@ run_capped cargo test --features persistent-artrie --test unsafe_boundary_contra
 run_capped cargo test --features persistent-artrie --test zipper_language_correspondence
 run_capped cargo test --features persistent-artrie --test persistent_artrie_formal_correspondence
 run_capped cargo test --features persistent-artrie --test persistent_prefix_correspondence
+run_capped cargo test --features persistent-artrie --test persistent_read_snapshot_correspondence
+run_capped cargo test --features persistent-artrie --test persistent_char_node_layout_correspondence
 run_capped cargo test --features persistent-artrie --test relative_encoding_correspondence
 run_capped cargo test --features persistent-artrie --test arena_manager_correspondence
 run_capped cargo test --features persistent-artrie --test dedup_arena_correspondence
 run_capped cargo test --features persistent-artrie --test root_descriptor_reopen_correspondence
 run_capped cargo test --features persistent-artrie --test persistent_lazy_mutation_correspondence
 run_capped cargo test --features persistent-artrie --test persistent_wal_atomicity_correspondence
+run_capped cargo test --features persistent-artrie --test persistent_bulk_mutation_correspondence
+run_capped cargo test --features persistent-artrie --test persistent_transaction_increment_correspondence
+run_capped cargo test --features persistent-artrie --test persistent_lockfree_merge_correspondence
 run_capped cargo test --features persistent-artrie --test checkpoint_retention_correspondence
 run_capped cargo test --features persistent-artrie --test dirty_checkpoint_correspondence
 run_capped cargo test --features persistent-artrie --test wal_segment_lifecycle_correspondence
@@ -57,6 +66,10 @@ run_capped cargo test --features persistent-artrie --test persistent_rewrite_com
 run_capped cargo test --features persistent-artrie --test persistent_vocab_wal_atomicity_correspondence
 run_capped cargo test --features persistent-artrie --test persistent_vocab_checkpoint_correspondence
 run_capped cargo test --features persistent-artrie --test concurrent_checkpoint_publication_correspondence
+run_capped cargo test --features persistent-artrie --test persistent_shared_concurrency_correspondence
+run_capped cargo test --features persistent-artrie --test persistent_public_durability_policy_correspondence
+run_capped cargo test --features persistent-artrie --test persistent_public_lifecycle_correspondence
+run_capped cargo test --features persistent-artrie --test epoch_checkpoint_recovery_correspondence
 (
   export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-2}"
   run_capped cargo test --features persistent-artrie --test persistent_merge_correspondence
@@ -77,6 +90,10 @@ run_capped cargo test \
   --features "persistent-artrie group-commit" \
   --test persistent_artrie_formal_correspondence \
   group_commit_writes_returned_lsns_in_wal_order
+run_capped cargo test \
+  --features "persistent-artrie group-commit" \
+  --test persistent_public_lifecycle_correspondence \
+  group_commit_concurrent_writes_return_lsn_written_for_same_record
 
 if [ "${RUN_MIRI:-0}" = "1" ]; then
   echo "== Miri unsafe-boundary checks =="
@@ -198,8 +215,16 @@ if command -v tla2sany >/dev/null 2>&1; then
       IoUringSqeCqeLifecycle \
       LockFreeARTrieLinearizability \
       LockFreeIndexedOverlay \
+      LockFreeCounterMergeAtomicity \
       ConcurrentCheckpointPublication \
+      SharedPersistentConcurrency \
+      PublicDurabilityPolicy \
+      PublicReadSnapshotTraversal \
+      CharNodeV2Layout \
       ConcurrentVocabLinearizability \
+      EpochCheckpointRecovery \
+      PersistentCharBulkMutationRecovery \
+      PersistentTransactionIncrementRecovery \
       ByzantineStorage \
       HotStuffConsensus
     do
@@ -231,8 +256,16 @@ if [ "${RUN_TLC:-0}" = "1" ]; then
       IoUringFixedBufferOwnership \
       IoUringSqeCqeLifecycle \
       LockFreeARTrieLinearizability \
+      LockFreeCounterMergeAtomicity \
       ConcurrentCheckpointPublication \
+      SharedPersistentConcurrency \
+      PublicDurabilityPolicy \
+      PublicReadSnapshotTraversal \
+      CharNodeV2Layout \
       ConcurrentVocabLinearizability \
+      EpochCheckpointRecovery \
+      PersistentCharBulkMutationRecovery \
+      PersistentTransactionIncrementRecovery \
       ByzantineStorage \
       HotStuffConsensus
     do

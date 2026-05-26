@@ -22,7 +22,6 @@ use super::error::{PersistentARTrieError, Result};
 use super::recovery::RecoveryReport;
 use super::swizzled_ptr::SwizzledPtr;
 use super::transitions::ChildNode;
-use super::wal::WalRecord;
 use super::SharedARTrie;
 
 impl<V: DictionaryValue> ARTrie for SharedARTrie<V> {
@@ -109,57 +108,8 @@ impl<V: DictionaryValue> ARTrie for SharedARTrie<V> {
     }
 
     fn checkpoint(&self) -> Result<()> {
-        {
-            let mut guard = self.write();
-            guard.persist_to_disk()?;
-        }
-
-        let guard = self.read();
-
-        if let Some(ref wal_writer) = guard.wal_writer {
-            let checkpoint_lsn = guard
-                .next_lsn
-                .load(AtomicOrdering::Acquire)
-                .saturating_sub(1);
-            let timestamp = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs();
-
-            let record = WalRecord::Checkpoint {
-                checkpoint_lsn,
-                timestamp,
-            };
-
-            wal_writer.append(record).map_err(|e| {
-                PersistentARTrieError::io_error(
-                    "checkpoint_append",
-                    "WAL",
-                    std::io::Error::new(std::io::ErrorKind::Other, e.to_string()),
-                )
-            })?;
-            wal_writer.sync().map_err(|e| {
-                PersistentARTrieError::io_error(
-                    "checkpoint_sync",
-                    "WAL",
-                    std::io::Error::new(std::io::ErrorKind::Other, e.to_string()),
-                )
-            })?;
-
-            wal_writer.truncate().map_err(|e| {
-                PersistentARTrieError::io_error(
-                    "checkpoint_truncate",
-                    "WAL",
-                    std::io::Error::new(std::io::ErrorKind::Other, e.to_string()),
-                )
-            })?;
-
-            let next_lsn = checkpoint_lsn.saturating_add(1);
-            wal_writer.set_min_lsn(next_lsn);
-            guard.next_lsn.store(next_lsn, AtomicOrdering::Release);
-        }
-
-        Ok(())
+        let mut guard = self.write();
+        guard.checkpoint()
     }
 
     #[inline]

@@ -17,7 +17,6 @@ char-disk-box-ownership	char disk load ownership	Raw boxes reconstructed during 
 char-disk-node-map-resolution	char node-map raw references	Node-map entries are valid only while the pointed node remains live.	tla,correspondence	covered	PointerOwnership.tla; vocab persistence ownership analogs
 char-disk-swizzled-pointer-resolution	char swizzled pointer resolution	Disk pointers resolve to live nodes or fail without fabricating raw references.	tla,correspondence	covered	PointerOwnership.tla; swizzled pointer tests
 char-lockfree-child-arc-handoff	char lock-free child pointer	Arc handoff preserves child lifetime during lock-free publication.	tla,loom	covered	LockFreeIndexedOverlay.tla; loom correspondence
-char-lockfree-persistent-node-mutation	char lock-free persistent mutation	Persistent-node mutation happens only behind the lock-free overlay's exclusive update path.	tla,loom	covered	LockFreeIndexedOverlay.tla; loom correspondence
 char-mutation-core-traversal	char mutation traversal	Traversal raw references stay inside the live trie while no exclusive mutation aliases them.	tla,correspondence	covered	PointerOwnership.tla; mutation correspondence
 char-mutation-core-unique-borrow	char mutation unique borrow	Mutation creates one active mutable borrow for the current raw node.	tla,miri	covered	PointerOwnership.tla; Miri-gated get_or_create child mutation test
 char-mvcc-root-snapshot	char MVCC root snapshot	Read transactions hold a stable root snapshot for the transaction lifetime.	tla,correspondence	covered	VersionLifecycle.tla; formal correspondence

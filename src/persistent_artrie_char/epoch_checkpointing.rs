@@ -1,4 +1,4 @@
-//! Epoch-based automatic checkpointing for `PersistentARTrieChar<V, S>`.
+//! Epoch-based checkpoint tracking for `PersistentARTrieChar<V, S>`.
 //!
 //! Split out of char `dict_impl_char.rs` (lines ~422-552, ~131 LOC)
 //! as the eighteenth Phase-6 char sub-module. Methods covered:
@@ -25,19 +25,21 @@ use crate::value::DictionaryValue;
 impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     // ==================== Epoch-Based Checkpointing Methods ====================
 
-    /// Enables epoch-based automatic checkpointing.
+    /// Enables epoch-based checkpoint tracking.
     ///
-    /// The checkpoint manager tracks operations and triggers automatic
-    /// checkpoints based on configurable thresholds:
+    /// The checkpoint manager tracks successful WAL appends and advances epoch
+    /// metadata based on configurable thresholds:
     /// - Operation count per epoch
     /// - WAL size limit
     /// - Time-based epoch duration
     ///
-    /// This provides bounded WAL size and faster recovery times.
+    /// Public mutation APIs record epoch operations automatically after their
+    /// WAL append succeeds. Use [`Self::force_epoch_checkpoint`] to publish the
+    /// current trie checkpoint and then mark the previous epoch durable.
     ///
     /// **Important:** The checkpoint manager creates its own WAL in a subdirectory.
-    /// For integration with the existing WAL, call `record_epoch_operation()`
-    /// after each WAL write to track operation counts.
+    /// [`Self::record_epoch_operation`] remains available for external/manual WAL
+    /// records, but ordinary trie mutations should not call it directly.
     ///
     /// # Arguments
     /// * `config` - Configuration for epoch thresholds and behavior
@@ -72,12 +74,12 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
         Ok(())
     }
 
-    /// Enables epoch-based checkpointing with default configuration.
+    /// Enables epoch-based checkpoint tracking with default configuration.
     pub fn enable_epoch_checkpointing_default(&mut self) -> Result<()> {
         self.enable_epoch_checkpointing(EpochConfig::default())
     }
 
-    /// Enables epoch-based checkpointing with high-throughput configuration.
+    /// Enables epoch-based checkpoint tracking with high-throughput configuration.
     ///
     /// Uses longer epochs and higher operation limits, suitable for
     /// batch processing workloads.
@@ -85,10 +87,10 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
         self.enable_epoch_checkpointing(EpochConfig::high_throughput())
     }
 
-    /// Enables epoch-based checkpointing with low-latency configuration.
+    /// Enables epoch-based checkpoint tracking with low-latency configuration.
     ///
-    /// Uses shorter epochs for faster recovery, suitable for
-    /// real-time applications.
+    /// Uses shorter epochs for lower-latency epoch rotation, suitable for
+    /// real-time tracking.
     pub fn enable_epoch_checkpointing_low_latency(&mut self) -> Result<()> {
         self.enable_epoch_checkpointing(EpochConfig::low_latency())
     }
@@ -106,11 +108,12 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
         self.checkpoint_manager.is_some()
     }
 
-    /// Records an operation in the current epoch.
+    /// Records an externally managed operation in the current epoch.
     ///
-    /// Call this after each WAL write to track operation counts for
-    /// automatic epoch advancement. The `wal_bytes` parameter should
-    /// be the size of the WAL record written.
+    /// Public trie mutation APIs call this automatically after successful WAL
+    /// appends. Call this manually only for WAL records written outside the
+    /// trie's normal mutation path. The `wal_bytes` parameter should be the size
+    /// of the WAL record written.
     ///
     /// # Returns
     /// The current epoch ID, or None if checkpointing is not enabled.
@@ -127,18 +130,23 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
             .map(|cm| cm.current_epoch_id())
     }
 
-    /// Forces an immediate checkpoint of the current epoch.
+    /// Forces an immediate trie checkpoint and epoch metadata publication.
     ///
-    /// This advances to a new epoch and checkpoints the previous one.
-    /// Useful before shutdown or when you want to ensure durability.
+    /// This first persists and verifies the trie checkpoint through
+    /// [`Self::checkpoint`], then advances to a new epoch and marks the previous
+    /// epoch durable. The ordering is intentional: epoch metadata is published
+    /// only after the trie state itself is durable.
     ///
     /// # Returns
-    /// * `Some(epoch_id)` - The epoch ID that was checkpointed
+    /// * `Some(Ok(epoch_id))` - The new current epoch ID after checkpoint publication
+    /// * `Some(Err(_))` - The trie checkpoint or epoch metadata publication failed
     /// * `None` - Checkpoint manager not enabled
-    pub fn force_epoch_checkpoint(&self) -> Option<Result<EpochId>> {
-        self.checkpoint_manager
-            .as_ref()
-            .map(|cm| cm.force_checkpoint())
+    pub fn force_epoch_checkpoint(&mut self) -> Option<Result<EpochId>> {
+        let checkpoint_manager = self.checkpoint_manager.as_ref().cloned()?;
+        Some((|| {
+            self.checkpoint()?;
+            checkpoint_manager.force_checkpoint()
+        })())
     }
 
     /// Returns the last durable (fully checkpointed) epoch ID.

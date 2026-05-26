@@ -13,7 +13,6 @@ src/persistent_artrie_char/disk_io.rs	unsafe_block	return Ok(unsafe { &*p });	1	
 src/persistent_artrie_char/disk_io.rs	unsafe_block	return Ok(unsafe { &mut *(p as *mut CharTrieNodeInner<V>) });	1	char-disk-node-map-resolution
 src/persistent_artrie_char/disk_io.rs	unsafe_block	unsafe {	5	char-disk-box-ownership
 src/persistent_artrie_char/lockfree_cas.rs	unsafe_block	let child = unsafe {	4	char-lockfree-child-arc-handoff
-src/persistent_artrie_char/lockfree_cas.rs	unsafe_block	let node = unsafe { &mut *persistent_node };	2	char-lockfree-persistent-node-mutation
 src/persistent_artrie_char/mod.rs	unsafe_block	let edges: Vec<_> = unsafe {	1	char-public-node-edge-snapshot
 src/persistent_artrie_char/mod.rs	unsafe_block	let node = unsafe { &mut *current };	1	char-public-node-mutation
 src/persistent_artrie_char/mod.rs	unsafe_block	let parent = unsafe { &mut *current };	1	char-public-node-mutation

@@ -57,17 +57,15 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
         // Duplicate term-only inserts are no-ops and do not need WAL traffic.
         let needs_wal = value.is_some() || !self.contains_impl(term);
         if needs_wal {
-            if let Some(ref wal_writer) = self.wal_writer {
-                use super::wal::WalRecord;
+            use super::wal::WalRecord;
 
-                let record = WalRecord::Insert {
-                    term: term.to_vec(),
-                    value: serialized_value,
-                };
-                if let Err(e) = wal_writer.append(record) {
-                    warn!("Failed to log insert to WAL: {:?}", e);
-                    return false;
-                }
+            let record = WalRecord::Insert {
+                term: term.to_vec(),
+                value: serialized_value,
+            };
+            if let Err(e) = self.append_mutation_wal_record(record, "insert") {
+                warn!("Failed to log insert to WAL: {:?}", e);
+                return false;
             }
         }
 
@@ -224,15 +222,13 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
             return false;
         }
 
-        if let Some(ref wal_writer) = self.wal_writer {
-            use super::wal::WalRecord;
-            let record = WalRecord::Remove {
-                term: term.to_vec(),
-            };
-            if let Err(e) = wal_writer.append(record) {
-                warn!("Failed to log remove to WAL: {:?}", e);
-                return false;
-            }
+        use super::wal::WalRecord;
+        let record = WalRecord::Remove {
+            term: term.to_vec(),
+        };
+        if let Err(e) = self.append_mutation_wal_record(record, "remove") {
+            warn!("Failed to log remove to WAL: {:?}", e);
+            return false;
         }
 
         self.remove_impl_core(term)
@@ -406,10 +402,19 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
                 result,
                 ..
             } => {
-                let final_value = if result == 0 {
+                let final_value = match if result == 0 {
                     self.recompute_recovered_increment(&term, delta)
                 } else {
-                    result
+                    Some(result)
+                } {
+                    Some(value) => value,
+                    None => {
+                        warn!(
+                            "Recovered increment overflow for term {:?}; stopping replay at durable prefix",
+                            String::from_utf8_lossy(&term)
+                        );
+                        return false;
+                    }
                 };
 
                 match Self::value_from_i64(final_value) {
@@ -456,12 +461,12 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
         }
     }
 
-    fn recompute_recovered_increment(&self, term: &[u8], delta: i64) -> i64 {
+    fn recompute_recovered_increment(&self, term: &[u8], delta: i64) -> Option<i64> {
         let current = self
             .get_value_impl(term)
             .and_then(|value| Self::i64_from_value(&value))
             .unwrap_or(0);
-        current + delta
+        current.checked_add(delta)
     }
 
     fn i64_from_value(value: &V) -> Option<i64> {

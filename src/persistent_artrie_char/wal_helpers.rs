@@ -5,7 +5,7 @@
 //!
 //! - `durability_policy` / `set_durability_policy`
 //! - `append_to_wal` (pub(super); routes through group commit when enabled)
-//! - `sync_wal` (pub(super); respects DurabilityPolicy::Immediate)
+//! - `sync_wal` (pub(super); respects full durability policies)
 
 use crate::persistent_artrie::block_storage::BlockStorage;
 use crate::persistent_artrie::dict_impl::DurabilityPolicy;
@@ -54,40 +54,52 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     ///
     /// When group commit is enabled, the record is submitted to the group commit
     /// coordinator which batches writes and reduces fsync overhead. Otherwise,
-    /// the record is written directly to the WAL.
+    /// the record is written directly to the WAL. After a successful append,
+    /// epoch checkpointing records the exact WAL bytes written so epoch
+    /// metadata stays aligned with public mutations.
     pub(super) fn append_to_wal(&self, record: WalRecord) -> Result<()> {
+        let wal_bytes = record.serialized_size();
+
         // Check if group commit is enabled first
         #[cfg(feature = "group-commit")]
         if let Some(ref gc) = self.group_commit {
-            gc.append_with_sync(record)
-                .map_err(|e| PersistentARTrieError::WalError {
-                    reason: format!("{:?}", e),
-                })?;
+            let appended_lsn =
+                gc.append_with_sync(record)
+                    .map_err(|e| PersistentARTrieError::WalError {
+                        reason: format!("{:?}", e),
+                    })?;
+            self.record_epoch_operation(wal_bytes);
+            self.verify_full_policy_sync_coverage(appended_lsn)?;
             return Ok(());
         }
 
         // Fall back to direct WAL write
         if let Some(ref wal_writer) = self.wal_writer {
-            wal_writer
-                .append(record)
-                .map_err(|e| PersistentARTrieError::WalError {
-                    reason: format!("{:?}", e),
-                })?;
+            let appended_lsn =
+                wal_writer
+                    .append(record)
+                    .map_err(|e| PersistentARTrieError::WalError {
+                        reason: format!("{:?}", e),
+                    })?;
+            self.record_epoch_operation(wal_bytes);
+            self.sync_wal_after_append(appended_lsn)?;
         }
         Ok(())
     }
 
     /// Internal helper: Sync the WAL based on durability policy.
     ///
-    /// Only syncs when durability_policy is Immediate. GroupCommit and Periodic
-    /// policies handle syncing through their respective mechanisms.
+    /// Immediate and GroupCommit both expose full durability acknowledgement
+    /// semantics. If a group commit coordinator is installed, the append path
+    /// has already waited for the submitted LSN; otherwise this direct WAL
+    /// fallback performs a blocking sync.
     pub(super) fn sync_wal(&self) -> Result<()> {
-        // Only sync for Immediate policy
-        if self.durability_policy != DurabilityPolicy::Immediate {
-            return Ok(());
+        match self.durability_policy {
+            DurabilityPolicy::Immediate | DurabilityPolicy::GroupCommit => {}
+            DurabilityPolicy::Periodic | DurabilityPolicy::None => return Ok(()),
         }
 
-        // Group commit handles syncing internally via append_with_sync
+        // Group commit handles syncing internally via append_with_sync.
         #[cfg(feature = "group-commit")]
         if self.group_commit.is_some() {
             return Ok(());
@@ -100,6 +112,51 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
                 .map_err(|e| PersistentARTrieError::WalError {
                     reason: format!("{:?}", e),
                 })?;
+        }
+        Ok(())
+    }
+
+    fn sync_wal_after_append(&self, appended_lsn: u64) -> Result<()> {
+        match self.durability_policy {
+            DurabilityPolicy::Immediate | DurabilityPolicy::GroupCommit => {}
+            DurabilityPolicy::Periodic | DurabilityPolicy::None => return Ok(()),
+        }
+
+        // Group commit handles syncing internally via append_with_sync.
+        #[cfg(feature = "group-commit")]
+        if self.group_commit.is_some() {
+            return self.verify_full_policy_sync_coverage(appended_lsn);
+        }
+
+        if let Some(ref wal_writer) = self.wal_writer {
+            let synced_lsn = wal_writer
+                .sync()
+                .map_err(|e| PersistentARTrieError::WalError {
+                    reason: format!("{:?}", e),
+                })?;
+            if synced_lsn < appended_lsn {
+                return Err(PersistentARTrieError::Wal(format!(
+                    "char WAL sync failed to cover appended LSN {appended_lsn}; synced {synced_lsn}"
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    #[cfg(feature = "group-commit")]
+    fn verify_full_policy_sync_coverage(&self, appended_lsn: u64) -> Result<()> {
+        match self.durability_policy {
+            DurabilityPolicy::Immediate | DurabilityPolicy::GroupCommit => {}
+            DurabilityPolicy::Periodic | DurabilityPolicy::None => return Ok(()),
+        }
+
+        if let Some(ref wal_writer) = self.wal_writer {
+            let synced_lsn = wal_writer.synced_lsn();
+            if synced_lsn < appended_lsn {
+                return Err(PersistentARTrieError::Wal(format!(
+                    "char WAL sync failed to cover appended LSN {appended_lsn}; synced {synced_lsn}"
+                )));
+            }
         }
         Ok(())
     }

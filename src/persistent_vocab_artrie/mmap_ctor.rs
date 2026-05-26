@@ -156,8 +156,23 @@ impl PersistentVocabARTrie {
         })
     }
 
-    /// Open an existing vocabulary trie.
+    /// Open an existing vocabulary trie, replaying WAL records if needed.
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self> {
+        let path = path.as_ref();
+        if !path.exists() {
+            return Err(PersistentARTrieError::io_error(
+                "open vocab trie",
+                path.to_string_lossy(),
+                std::io::Error::new(std::io::ErrorKind::NotFound, "file not found"),
+            ));
+        }
+
+        let (trie, _) = Self::open_with_recovery(path)?;
+        Ok(trie)
+    }
+
+    /// Open the checkpoint snapshot without replaying WAL records.
+    fn open_snapshot<P: AsRef<Path>>(path: P) -> Result<Self> {
         let path = path.as_ref().to_path_buf();
 
         if !path.exists() {
@@ -331,8 +346,9 @@ impl PersistentVocabARTrie {
             return Ok((trie, report));
         }
 
-        // Open existing (loads trie from disk if checkpointed)
-        let mut trie = Self::open(&path)?;
+        // Open existing checkpoint snapshot, then replay WAL records newer
+        // than that snapshot.
+        let mut trie = Self::open_snapshot(&path)?;
 
         // Check for WAL file and replay records AFTER checkpoint_lsn
         let wal_path = path.with_extension("vocab.wal");

@@ -13,7 +13,6 @@
 //!   `find_in_lockfree_trie`, `find_leaf_lockfree`, `find_leaf_recursive`,
 //!   `merge_lockfree_zipper`, `chars_to_utf8_bytes`
 
-use std::sync::atomic::Ordering as AtomicOrdering;
 use std::sync::Arc;
 
 use crate::persistent_artrie::block_storage::BlockStorage;
@@ -22,7 +21,8 @@ use crate::persistent_artrie::wal::WalRecord;
 use crate::value::DictionaryValue;
 
 use super::dict_impl_char::LockfreeInsertResult;
-use super::types::{CharTrieNodeInner, CharTrieRoot};
+
+const LOCKFREE_COUNTER_MAX: u64 = i64::MAX as u64;
 
 impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     // ==================== Lock-Free CAS Methods (Phase 4) ====================
@@ -465,7 +465,7 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
             .and_then(|leaf| leaf.get_value())
     }
 
-    /// Lock-free increment: create path if needed, then atomically add delta.
+    /// Checked lock-free increment: create path if needed, then atomically add delta.
     ///
     /// For existing keys: single `fetch_add` on the leaf (wait-free).
     /// For new keys: CAS retry loop to create path, then set initial value.
@@ -488,7 +488,7 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     /// # Panics
     ///
     /// Panics if `enable_lockfree()` was not called first.
-    pub fn increment_cas(&self, key: &str, delta: u64) -> u64 {
+    pub fn try_increment_cas(&self, key: &str, delta: u64) -> Result<u64> {
         use std::sync::atomic::Ordering;
 
         let lockfree_root = self
@@ -498,14 +498,22 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
 
         let chars: Vec<u32> = key.chars().map(|c| c as u32).collect();
         if chars.is_empty() {
-            return 0;
+            return Ok(0);
+        }
+
+        if delta > LOCKFREE_COUNTER_MAX {
+            return Err(Self::lockfree_increment_overflow_error(key, None, delta));
         }
 
         let _epoch = self.epoch_manager.enter_read();
 
         // Fast path: find existing leaf and increment atomically (wait-free)
         if let Some(leaf) = self.find_leaf_lockfree(lockfree_root, &chars) {
-            return leaf.increment_value(delta);
+            return leaf
+                .try_increment_value(delta, LOCKFREE_COUNTER_MAX)
+                .ok_or_else(|| {
+                    Self::lockfree_increment_overflow_error(key, leaf.get_value(), delta)
+                });
         }
 
         // Slow path: create path, then increment
@@ -514,12 +522,24 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
                 LockfreeInsertResult::Inserted(leaf) => {
                     // New path created — claim it as final and set initial value
                     leaf.try_set_final();
-                    return leaf.increment_value(delta);
+                    return leaf
+                        .try_increment_value(delta, LOCKFREE_COUNTER_MAX)
+                        .ok_or_else(|| {
+                            Self::lockfree_increment_overflow_error(key, leaf.get_value(), delta)
+                        });
                 }
                 LockfreeInsertResult::AlreadyExists => {
                     // Path exists but we didn't find the leaf earlier — retry find
                     if let Some(leaf) = self.find_leaf_lockfree(lockfree_root, &chars) {
-                        return leaf.increment_value(delta);
+                        return leaf
+                            .try_increment_value(delta, LOCKFREE_COUNTER_MAX)
+                            .ok_or_else(|| {
+                                Self::lockfree_increment_overflow_error(
+                                    key,
+                                    leaf.get_value(),
+                                    delta,
+                                )
+                            });
                     }
                     // Unusual: exists flag but no leaf found. Retry full path.
                     continue;
@@ -531,6 +551,15 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
                 }
             }
         }
+    }
+
+    /// Lock-free increment: create path if needed, then atomically add delta.
+    ///
+    /// Panics if the checked counter domain would be exceeded. Use
+    /// [`Self::try_increment_cas`] to handle overflow as a recoverable error.
+    pub fn increment_cas(&self, key: &str, delta: u64) -> u64 {
+        self.try_increment_cas(key, delta)
+            .unwrap_or_else(|error| panic!("lock-free increment_cas failed: {}", error))
     }
 
     /// Merge lock-free values into the persistent trie by summing.
@@ -545,31 +574,35 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     pub fn merge_lockfree_values_to_persistent(&mut self) -> Result<usize> {
         use super::nodes::persistent_node::PersistentCharNode;
 
-        // Load the lock-free root into an independent Arc (does not borrow self)
-        let root_node = match self.lockfree_root.as_ref() {
-            Some(root) => match root.load() {
-                Some(node) => node,
+        let entries = {
+            let root_node = match self.lockfree_root.as_ref() {
+                Some(root) => match root.load() {
+                    Some(node) => node,
+                    None => return Ok(0),
+                },
                 None => return Ok(0),
-            },
-            None => return Ok(0),
+            };
+
+            let mut entries = Vec::new();
+            let mut key_buf = Vec::new();
+            Self::collect_lockfree_value_entries_recursive(&root_node, &mut key_buf, &mut entries)?;
+            entries
         };
 
-        // Ensure we have a persistent root node for the zipper to descend into
-        if matches!(self.root, CharTrieRoot::Empty) {
-            self.root = CharTrieRoot::Node(Box::new(CharTrieNodeInner::new()));
+        if entries.is_empty() {
+            return Ok(0);
         }
-        let persistent_root = match &mut self.root {
-            CharTrieRoot::Node(node) => node.as_mut() as *mut CharTrieNodeInner<V>,
-            CharTrieRoot::Empty => unreachable!(),
-        };
 
-        // Zipper merge: walk the lock-free trie and the persistent trie in
-        // lockstep, merging values directly at co-positioned nodes.  Avoids:
-        //   - intermediate Vec buffer of all entries
-        //   - String allocation / UTF-8 encode+decode per entry
-        //   - redundant root-to-leaf persistent trie traversal per entry
-        let mut key_buf: Vec<u32> = Vec::new();
-        let count = self.merge_lockfree_zipper(&root_node, persistent_root, &mut key_buf)?;
+        let (wal_entries, prepared_values) = self.prepare_lockfree_value_merge(&entries)?;
+        let merged_count = wal_entries.len();
+
+        self.append_to_wal(WalRecord::BatchIncrement {
+            entries: wal_entries,
+        })?;
+
+        for (term, value) in prepared_values {
+            self.try_insert_impl_no_wal_with_value(&term, value)?;
+        }
 
         // Clear the lock-free layer
         if let Some(ref cache) = self.lockfree_cache {
@@ -579,104 +612,92 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
             root.store(Arc::new(PersistentCharNode::new()));
         }
 
-        Ok(count)
+        Ok(merged_count)
     }
 
-    /// Recursive zipper that walks the lock-free overlay and the persistent trie
-    /// in parallel, merging accumulated deltas directly at each co-positioned node.
-    ///
-    /// Both tree pointers advance together — no redundant traversal from the root.
-    /// UTF-8 encoding is deferred to the single WAL-write point per entry.
-    ///
-    /// # Safety contract (same as `insert_impl_no_wal_with_value`)
-    ///
-    /// `persistent_node` must be a valid pointer into this trie's node tree.
-    /// The caller must ensure no other mutable references to the persistent trie
-    /// exist for the duration of this call.
-    fn merge_lockfree_zipper(
+    fn prepare_lockfree_value_merge(
         &self,
+        entries: &[(String, u64)],
+    ) -> Result<(Vec<(Vec<u8>, i64)>, Vec<(String, V)>)> {
+        let mut wal_entries = Vec::with_capacity(entries.len());
+        let mut prepared_values = Vec::with_capacity(entries.len());
+
+        for (term, delta) in entries {
+            let delta_i64 = Self::lockfree_delta_to_i64(term, *delta)?;
+            let current = self.current_i64_for_lockfree_merge(term)?;
+            let new_value = current.checked_add(delta_i64).ok_or_else(|| {
+                PersistentARTrieError::InvalidOperation(format!(
+                    "lock-free merge increment overflow for term {:?}: {} + {} exceeds i64 range",
+                    term, current, delta_i64
+                ))
+            })?;
+            let value = Self::value_from_i64_for_lockfree_merge(new_value)?;
+
+            wal_entries.push((term.as_bytes().to_vec(), delta_i64));
+            prepared_values.push((term.clone(), value));
+        }
+
+        Ok((wal_entries, prepared_values))
+    }
+
+    fn current_i64_for_lockfree_merge(&self, term: &str) -> Result<i64> {
+        match self.get(term) {
+            Some(value) => {
+                let bytes =
+                    crate::serialization::bincode_compat::serialize(value).map_err(|e| {
+                        PersistentARTrieError::internal(format!("Failed to serialize value: {}", e))
+                    })?;
+                if bytes.len() == 8 {
+                    Ok(i64::from_le_bytes(
+                        bytes.try_into().expect("checked len == 8"),
+                    ))
+                } else {
+                    crate::serialization::bincode_compat::deserialize::<i64>(&bytes).map_err(|e| {
+                        PersistentARTrieError::internal(format!(
+                            "Failed to deserialize as i64: {}",
+                            e
+                        ))
+                    })
+                }
+            }
+            None => Ok(0),
+        }
+    }
+
+    fn value_from_i64_for_lockfree_merge(value: i64) -> Result<V> {
+        let value_bytes = crate::serialization::bincode_compat::serialize(&value).map_err(|e| {
+            PersistentARTrieError::internal(format!("Failed to serialize new value: {}", e))
+        })?;
+        crate::serialization::bincode_compat::deserialize(&value_bytes).map_err(|e| {
+            PersistentARTrieError::internal(format!("Failed to deserialize as V: {}", e))
+        })
+    }
+
+    fn lockfree_delta_to_i64(term: &str, delta: u64) -> Result<i64> {
+        i64::try_from(delta).map_err(|_| {
+            PersistentARTrieError::InvalidOperation(format!(
+                "lock-free counter value for term {:?} exceeds i64 persistence domain: {}",
+                term, delta
+            ))
+        })
+    }
+
+    fn collect_lockfree_value_entries_recursive(
         lockfree_node: &Arc<super::nodes::persistent_node::PersistentCharNode>,
-        persistent_node: *mut CharTrieNodeInner<V>,
         key_buf: &mut Vec<u32>,
+        entries: &mut Vec<(String, u64)>,
     ) -> Result<usize> {
         use super::nodes::persistent_node::PersistentCharNode;
 
         let mut count = 0;
 
-        // If this lock-free node has an accumulated value, merge it into the
-        // co-positioned persistent node
         if lockfree_node.is_final() {
             if let Some(delta) = lockfree_node.get_value() {
-                // Safety: persistent_node is valid per caller contract
-                let node = unsafe { &mut *persistent_node };
-
-                // Read current value from the persistent node
-                let current: i64 = if node.is_final() {
-                    if let Some(v) = node.value.as_ref() {
-                        let bytes =
-                            crate::serialization::bincode_compat::serialize(v).map_err(|e| {
-                                PersistentARTrieError::internal(format!(
-                                    "Failed to serialize value: {}",
-                                    e
-                                ))
-                            })?;
-                        if bytes.len() == 8 {
-                            i64::from_le_bytes(bytes.try_into().expect("checked len == 8"))
-                        } else {
-                            crate::serialization::bincode_compat::deserialize::<i64>(&bytes)
-                                .map_err(|e| {
-                                    PersistentARTrieError::internal(format!(
-                                        "Failed to deserialize as i64: {}",
-                                        e
-                                    ))
-                                })?
-                        }
-                    } else {
-                        0
-                    }
-                } else {
-                    0
-                };
-
-                let new_value = current + delta as i64;
-
-                // Serialize the new value back to V
-                let value_bytes = crate::serialization::bincode_compat::serialize(&new_value)
-                    .map_err(|e| {
-                        PersistentARTrieError::internal(format!(
-                            "Failed to serialize new value: {}",
-                            e
-                        ))
-                    })?;
-                let v: V = crate::serialization::bincode_compat::deserialize(&value_bytes)
-                    .map_err(|e| {
-                        PersistentARTrieError::internal(format!(
-                            "Failed to deserialize as V: {}",
-                            e
-                        ))
-                    })?;
-
-                // WAL record — the only point that needs UTF-8 encoding
-                let record = WalRecord::Increment {
-                    term: Self::chars_to_utf8_bytes(key_buf),
-                    delta: delta as i64,
-                    result: new_value,
-                };
-                self.append_to_wal(record)?;
-
-                // Update the persistent node in place
-                if !node.is_final() {
-                    node.set_final(true);
-                    self.len.fetch_add(1, AtomicOrdering::Relaxed);
-                }
-                node.value = Some(v);
-                self.dirty.store(true, AtomicOrdering::Release);
-
+                entries.push((Self::chars_to_string(key_buf)?, delta));
                 count += 1;
             }
         }
 
-        // Recurse into lock-free children, advancing both tree pointers
         for (&child_key, child_ptr) in lockfree_node.iter_children() {
             if child_ptr.is_on_disk() {
                 continue; // Skip disk refs in lock-free overlay
@@ -687,14 +708,8 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
                     Arc::from_raw(ptr)
                 };
 
-                // Advance the persistent trie to the matching child (create if needed)
-                let persistent_child = {
-                    let node = unsafe { &mut *persistent_node };
-                    self.get_or_create_child_lazy_u32_ptr(node, child_key)?
-                };
-
                 key_buf.push(child_key);
-                count += self.merge_lockfree_zipper(&child, persistent_child, key_buf)?;
+                count += Self::collect_lockfree_value_entries_recursive(&child, key_buf, entries)?;
                 key_buf.pop();
             }
         }
@@ -702,20 +717,29 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
         Ok(count)
     }
 
-    /// Encode u32 character codes to UTF-8 bytes without intermediate String.
-    ///
-    /// Used by the merge zipper to produce WAL record payloads from the `&[u32]`
-    /// key buffer maintained during traversal.
-    fn chars_to_utf8_bytes(chars: &[u32]) -> Vec<u8> {
-        let mut buf = Vec::with_capacity(chars.len() * 2);
-        let mut encode_buf = [0u8; 4];
+    fn chars_to_string(chars: &[u32]) -> Result<String> {
+        let mut term = String::with_capacity(chars.len());
         for &code in chars {
-            if let Some(c) = char::from_u32(code) {
-                let encoded = c.encode_utf8(&mut encode_buf);
-                buf.extend_from_slice(encoded.as_bytes());
-            }
+            let c = char::from_u32(code).ok_or_else(|| {
+                PersistentARTrieError::InvalidOperation(format!(
+                    "lock-free overlay contained invalid Unicode scalar value: {}",
+                    code
+                ))
+            })?;
+            term.push(c);
         }
-        buf
+        Ok(term)
+    }
+
+    fn lockfree_increment_overflow_error(
+        key: &str,
+        current: Option<u64>,
+        delta: u64,
+    ) -> PersistentARTrieError {
+        PersistentARTrieError::InvalidOperation(format!(
+            "lock-free increment overflow for term {:?}: current {:?} + {} exceeds i64 persistence domain",
+            key, current, delta
+        ))
     }
 
     /// Get the number of CAS retries (for monitoring contention).

@@ -4,7 +4,7 @@
 //! of the Phase-5 decomposition. The `DocumentTransaction<V>` /
 //! `TransactionState` data carriers themselves live in
 //! `super::transactions`; this file holds the trie-side `begin_document`
-//! / `tx_insert` / `tx_insert_bytes` / `tx_increment_bytes` /
+//! / `tx_insert` / `tx_insert_bytes` / `tx_increment*` /
 //! `commit_document` / `abort_document` methods that operate on those
 //! transactions.
 
@@ -15,7 +15,6 @@ use super::dict_impl::PersistentARTrie;
 use super::error::{PersistentARTrieError, Result};
 use super::transactions::{DocumentTransaction, TransactionState};
 use super::wal::WalRecord;
-use crate::persistent_artrie_core::durability::DurabilityPolicy;
 use crate::value::DictionaryValue;
 
 impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
@@ -69,6 +68,25 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
         tx.shadow_terms.push((term.to_vec(), value));
     }
 
+    /// Buffer an increment operation in a document transaction.
+    ///
+    /// Compatibility wrapper for [`Self::try_tx_increment`]. Arithmetic or
+    /// value-conversion failures poison the transaction; `commit_document`
+    /// will return the deferred error without appending commit records.
+    pub fn tx_increment(&self, tx: &mut DocumentTransaction<V>, term: &str, delta: i64) {
+        self.tx_increment_bytes(tx, term.as_bytes(), delta);
+    }
+
+    /// Checked variant of [`Self::tx_increment`].
+    pub fn try_tx_increment(
+        &self,
+        tx: &mut DocumentTransaction<V>,
+        term: &str,
+        delta: i64,
+    ) -> Result<()> {
+        self.try_tx_increment_bytes(tx, term.as_bytes(), delta)
+    }
+
     /// Buffer an increment operation in a document transaction (byte key).
     pub fn tx_increment_bytes(&self, tx: &mut DocumentTransaction<V>, term: &[u8], delta: i64) {
         assert!(
@@ -81,39 +99,72 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
             }
         );
 
+        if let Err(error) = self.try_tx_increment_bytes(tx, term, delta) {
+            tx.mark_failed(error.to_string());
+        }
+    }
+
+    /// Checked byte-key variant of [`Self::tx_increment_bytes`].
+    pub fn try_tx_increment_bytes(
+        &self,
+        tx: &mut DocumentTransaction<V>,
+        term: &[u8],
+        delta: i64,
+    ) -> Result<()> {
+        if tx.state != TransactionState::Active {
+            return Err(PersistentARTrieError::InvalidOperation(format!(
+                "Cannot increment in a {} transaction",
+                match tx.state {
+                    TransactionState::Committed => "committed",
+                    TransactionState::Aborted => "aborted",
+                    TransactionState::Active => unreachable!(),
+                }
+            )));
+        }
+
+        if let Some(reason) = tx.failure_reason() {
+            return Err(PersistentARTrieError::InvalidOperation(format!(
+                "Cannot increment in failed transaction {}: {}",
+                tx.document_id(),
+                reason
+            )));
+        }
+
         let current: i64 = if let Some(pos) = tx.shadow_terms.iter().rposition(|(k, _)| k == term) {
             if let Some(ref v) = tx.shadow_terms[pos].1 {
-                let bytes = crate::serialization::bincode_compat::serialize(v).unwrap_or_default();
-                if bytes.len() == 8 {
-                    i64::from_le_bytes(bytes.try_into().expect("expected 8 bytes"))
-                } else {
-                    crate::serialization::bincode_compat::deserialize::<i64>(&bytes).unwrap_or(0)
-                }
+                Self::i64_from_value_lossy(v)
             } else {
                 0
             }
         } else {
             match self.get_value_impl(term) {
-                Some(v) => {
-                    let bytes =
-                        crate::serialization::bincode_compat::serialize(&v).unwrap_or_default();
-                    if bytes.len() == 8 {
-                        i64::from_le_bytes(bytes.try_into().expect("expected 8 bytes"))
-                    } else {
-                        crate::serialization::bincode_compat::deserialize::<i64>(&bytes)
-                            .unwrap_or(0)
-                    }
-                }
+                Some(v) => Self::i64_from_value_lossy(&v),
                 None => 0,
             }
         };
 
-        let new_value = current + delta;
-        let value_bytes = crate::serialization::bincode_compat::serialize(&new_value)
-            .expect("failed to serialize i64");
-        let v: V = crate::serialization::bincode_compat::deserialize(&value_bytes)
-            .expect("failed to deserialize i64 as V");
+        let new_value = match current.checked_add(delta) {
+            Some(value) => value,
+            None => {
+                let reason = format!(
+                    "transaction increment overflow for term {:?}: {} + {} exceeds i64 range",
+                    String::from_utf8_lossy(term),
+                    current,
+                    delta
+                );
+                tx.mark_failed(reason.clone());
+                return Err(PersistentARTrieError::InvalidOperation(reason));
+            }
+        };
+        let v = match Self::value_from_i64_checked(new_value) {
+            Ok(value) => value,
+            Err(error) => {
+                tx.mark_failed(error.to_string());
+                return Err(error);
+            }
+        };
         tx.shadow_terms.push((term.to_vec(), Some(v)));
+        Ok(())
     }
 
     /// Commit a document transaction, atomically applying all buffered terms.
@@ -132,11 +183,20 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
             )));
         }
 
+        if let Some(reason) = tx.failure_reason() {
+            return Err(PersistentARTrieError::InvalidOperation(format!(
+                "Cannot commit failed transaction {}: {}",
+                tx.document_id(),
+                reason
+            )));
+        }
+
         let count = tx.shadow_terms.len();
 
         if count == 0 {
             if let Some(ref wal) = self.wal_writer {
-                wal.append(WalRecord::CommitTx { tx_id: tx.tx_id })
+                let commit_lsn = wal
+                    .append(WalRecord::CommitTx { tx_id: tx.tx_id })
                     .map_err(|e| {
                         PersistentARTrieError::io_error(
                             "commit_tx",
@@ -144,15 +204,7 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
                             std::io::Error::new(std::io::ErrorKind::Other, e.to_string()),
                         )
                     })?;
-                if self.durability_policy == DurabilityPolicy::Immediate {
-                    wal.sync().map_err(|e| {
-                        PersistentARTrieError::io_error(
-                            "commit_tx_sync",
-                            "WAL",
-                            std::io::Error::new(std::io::ErrorKind::Other, e.to_string()),
-                        )
-                    })?;
-                }
+                self.sync_wal_after_append(commit_lsn, "commit_tx_sync")?;
             }
             tx.state = TransactionState::Committed;
             return Ok(0);
@@ -177,7 +229,8 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
                     std::io::Error::new(std::io::ErrorKind::Other, e.to_string()),
                 )
             })?;
-            wal.append(WalRecord::CommitTx { tx_id: tx.tx_id })
+            let commit_lsn = wal
+                .append(WalRecord::CommitTx { tx_id: tx.tx_id })
                 .map_err(|e| {
                     PersistentARTrieError::io_error(
                         "commit_tx",
@@ -185,15 +238,7 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
                         std::io::Error::new(std::io::ErrorKind::Other, e.to_string()),
                     )
                 })?;
-            if self.durability_policy == DurabilityPolicy::Immediate {
-                wal.sync().map_err(|e| {
-                    PersistentARTrieError::io_error(
-                        "commit_tx_sync",
-                        "WAL",
-                        std::io::Error::new(std::io::ErrorKind::Other, e.to_string()),
-                    )
-                })?;
-            }
+            self.sync_wal_after_append(commit_lsn, "commit_tx_sync")?;
         }
 
         let mut inserted = 0;
@@ -235,5 +280,31 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
         tx.state = TransactionState::Aborted;
 
         Ok(())
+    }
+
+    fn i64_from_value_lossy(value: &V) -> i64 {
+        let bytes = crate::serialization::bincode_compat::serialize(value).unwrap_or_default();
+        if bytes.len() == 8 {
+            let raw: [u8; 8] = bytes.try_into().expect("expected 8 bytes");
+            i64::from_le_bytes(raw)
+        } else {
+            crate::serialization::bincode_compat::deserialize::<i64>(&bytes).unwrap_or(0)
+        }
+    }
+
+    fn value_from_i64_checked(value: i64) -> Result<V> {
+        let value_bytes =
+            crate::serialization::bincode_compat::serialize(&value).map_err(|error| {
+                PersistentARTrieError::internal(format!(
+                    "Failed to serialize transaction increment value: {}",
+                    error
+                ))
+            })?;
+        crate::serialization::bincode_compat::deserialize(&value_bytes).map_err(|error| {
+            PersistentARTrieError::internal(format!(
+                "Failed to deserialize transaction increment value as V: {}",
+                error
+            ))
+        })
     }
 }
