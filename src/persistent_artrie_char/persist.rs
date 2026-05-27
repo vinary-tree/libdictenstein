@@ -16,6 +16,7 @@ use std::sync::atomic::Ordering as AtomicOrdering;
 
 use crate::persistent_artrie::block_storage::BlockStorage;
 use crate::persistent_artrie::error::{PersistentARTrieError, Result};
+use crate::persistent_artrie::eviction::DiskLocationRegistry;
 use crate::persistent_artrie::swizzled_ptr::{NodeType, SwizzledPtr};
 use crate::persistent_artrie::wal::WalRecord;
 use crate::value::DictionaryValue;
@@ -41,12 +42,24 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     pub fn checkpoint(&mut self) -> Result<()> {
         use std::time::{SystemTime, UNIX_EPOCH};
 
-        // Step 1: Persist trie to disk
-        self.persist_to_disk()?;
+        // Step 1: Persist trie to disk (collecting on-disk node locations for
+        // eviction when eviction is enabled).
+        let eviction_registry = self.persist_to_disk_tracked()?;
 
         // Step 2: Verify checkpoint - re-read header and verify checksum
         // This ensures the sync() actually succeeded and data is durable
         self.verify_checkpoint()?;
+
+        // Step 2b: durability is now verified, so publish the freshly-built
+        // disk-location registry to the eviction coordinator. Eviction can then
+        // reclaim in-memory node boxes (unswizzling them to these on-disk
+        // locations) under memory pressure or an explicit force_eviction. Built
+        // only when eviction is enabled; a no-op otherwise.
+        if let Some(registry) = eviction_registry {
+            if let Some(ref coordinator) = self.eviction_coordinator {
+                coordinator.update_disk_registry(registry);
+            }
+        }
 
         // Steps 3-5: WAL operations (only after verification passes)
         if let Some(ref wal_writer) = self.wal_writer {
@@ -120,8 +133,24 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     /// This serializes the trie structure and writes it to the data file,
     /// updating the file header with the root pointer.
     pub fn persist_to_disk(&mut self) -> Result<()> {
+        self.persist_to_disk_tracked().map(|_| ())
+    }
+
+    /// Like [`Self::persist_to_disk`], but when eviction is enabled it also
+    /// builds a fresh [`DiskLocationRegistry`] mapping every serialized node's
+    /// char-path to its on-disk location, returning it so the caller can publish
+    /// it to the eviction coordinator once durability is verified. Returns `None`
+    /// when eviction is disabled — zero overhead, no registry is built. The
+    /// registry is a pure side-effect: the serialized bytes and the file header
+    /// are identical whether or not it is collected, so recovery is unaffected.
+    fn persist_to_disk_tracked(&mut self) -> Result<Option<DiskLocationRegistry>> {
         use crate::persistent_artrie::swizzled_ptr::SwizzledPtr;
         use crate::persistent_artrie::NodeType;
+
+        let mut eviction_registry = self
+            .eviction_coordinator
+            .as_ref()
+            .map(|_| DiskLocationRegistry::new());
 
         // Get buffer manager
         let buffer_manager = self.buffer_manager.as_ref().ok_or_else(|| {
@@ -132,8 +161,15 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
         let (root_type, root_ptr, is_final) = match &self.root {
             CharTrieRoot::Empty => (ROOT_TYPE_EMPTY, 0u64, false),
             CharTrieRoot::Node(node) => {
-                // Recursively serialize the node and all children
-                let ptr = self.serialize_char_node_to_disk(node.as_ref())?;
+                // Recursively serialize the node and all children. `path` tracks
+                // the char key-sequence from the root so each node registers its
+                // disk location at its full path (eviction locates nodes by path).
+                let mut path: Vec<char> = Vec::new();
+                let ptr = self.serialize_char_node_to_disk(
+                    node.as_ref(),
+                    &mut path,
+                    eviction_registry.as_mut(),
+                )?;
                 (ROOT_TYPE_NODE, ptr.to_raw(), node.is_final())
             }
         };
@@ -195,7 +231,7 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
         // the WAL checkpoint/rotation step succeeds in `checkpoint()`.
         bm.flush_all()?;
         dm.sync()?;
-        Ok(())
+        Ok(eviction_registry)
     }
 
     /// Check if serialized children are consecutive in the same arena.
@@ -285,7 +321,12 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     /// The SwizzledPtr uses:
     /// - arena_id as block_id (23 bits, up to 8M arenas)
     /// - slot_id as offset (22 bits, up to 4M slots per arena)
-    fn serialize_char_node_to_disk(&self, node: &CharTrieNodeInner<V>) -> Result<SwizzledPtr> {
+    fn serialize_char_node_to_disk(
+        &self,
+        node: &CharTrieNodeInner<V>,
+        path: &mut Vec<char>,
+        mut registry: Option<&mut DiskLocationRegistry>,
+    ) -> Result<SwizzledPtr> {
         use super::relative_encoding::SerializationContext;
         use super::serialization_char::serialize_char_node_v2;
 
@@ -313,7 +354,15 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
                 // Child is in memory - serialize it recursively
                 // Safety: ptr was created via Box::into_raw() from CharTrieNodeInner<V>
                 let child = unsafe { &*child_raw };
-                let ptr = self.serialize_char_node_to_disk(child)?;
+                // Extend the path by this edge's char so the child registers its
+                // own disk location at its full key path. Invalid codepoints
+                // (should not occur in a char trie) skip path-tracking for that
+                // subtree rather than corrupt the registry.
+                let pushed = char::from_u32(key).map(|ch| path.push(ch)).is_some();
+                let ptr = self.serialize_char_node_to_disk(child, path, registry.as_deref_mut())?;
+                if pushed {
+                    path.pop();
+                }
                 child_disk_ptrs.push((key, ptr));
             }
             // If neither disk_location nor as_ptr succeeds, skip this child
@@ -419,11 +468,24 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
         // - block_id = arena_id + 1 (block 0 is file header, arena N is in block N+1)
         // - offset = slot_id
         let node_type = self.char_node_to_node_type(&disk_node);
-        Ok(SwizzledPtr::on_disk(
-            final_slot.arena_id + 1,
-            final_slot.slot_id,
-            node_type,
-        ))
+        let result_ptr =
+            SwizzledPtr::on_disk(final_slot.arena_id + 1, final_slot.slot_id, node_type);
+
+        // Register this node's on-disk location so the eviction coordinator can
+        // later reclaim its in-memory box (unswizzling it to this location).
+        // Pure side-effect: `result_ptr` and the bytes written above are
+        // identical whether or not the registry is present.
+        if let Some(reg) = registry.as_deref_mut() {
+            reg.register_char(
+                path.clone(),
+                result_ptr.clone(),
+                data.len(),
+                path.len(),
+                node_type,
+            );
+        }
+
+        Ok(result_ptr)
     }
 
     /// Build a CharNode with disk SwizzledPtrs for serialization.

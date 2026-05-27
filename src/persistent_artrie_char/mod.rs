@@ -179,6 +179,12 @@ pub mod mutation_api;
 // Core mutation implementations (_no_wal helpers) — Phase-6 split.
 pub mod mutation_core;
 
+// In-crate white-box tests for the eviction-registry wiring (commit f10c43e):
+// state oracle (slot swizzled -> on-disk) + the async eviction path, both of
+// which need private node/coordinator internals.
+#[cfg(test)]
+mod eviction_registry_tests;
+
 // Re-export shared types (always available)
 pub use types::{
     CharTrieFileHeader, CharTrieNodeInner, CharTrieRoot, EnhancedRecoveryMode,
@@ -307,7 +313,9 @@ use crate::persistent_artrie::wal::AsyncWalWriter;
 use crate::persistent_artrie::wal_managed::WalManaged;
 use crate::value::DictionaryValue;
 use crate::zipper::{DictZipper, ValuedDictZipper};
-use crate::{Dictionary, DictionaryNode, MappedDictionary, MutableMappedDictionary};
+use crate::{
+    Dictionary, DictionaryNode, MappedDictionary, MappedDictionaryNode, MutableMappedDictionary,
+};
 
 /// Thread-safe wrapper for `PersistentARTrieChar`.
 ///
@@ -646,6 +654,20 @@ impl<V: DictionaryValue> DictionaryNode for PersistentARTrieCharNode<V> {
                 .collect()
         };
         Box::new(edges.into_iter())
+    }
+}
+
+impl<V: DictionaryValue> MappedDictionaryNode for PersistentARTrieCharNode<V> {
+    type Value = V;
+
+    /// The value stored at this node (if it terminates a key). Reads the
+    /// node's `value` field directly — this unlocks liblevenshtein's
+    /// value-aware transducer queries (value-yielding + `query_filtered` /
+    /// `query_by_value_set`) over the persistent char trie.
+    fn value(&self) -> Option<V> {
+        // Safety: the node pointer is valid for the lifetime of the trie
+        // (same invariant the `DictionaryNode` methods above rely on).
+        self.node.and_then(|ptr| unsafe { (*ptr).value.clone() })
     }
 }
 
@@ -1000,6 +1022,44 @@ impl<V: DictionaryValue> crate::artrie_trait::ARTrie for SharedCharARTrie<V> {
 // EvictableARTrie Trait Implementation (on SharedCharARTrie)
 // ============================================================================
 
+/// Reclaim a batch of in-memory char nodes, unswizzling each to its on-disk
+/// location and dropping the freed box. Shared by the asynchronous eviction loop
+/// (started in [`SharedCharARTrie::enable_eviction`]) and the synchronous
+/// [`force_eviction`](crate::artrie_trait::EvictableARTrie::force_eviction) path,
+/// so both reclaim identically. Returns `(nodes_evicted, bytes_freed)`.
+///
+/// Takes the trie write lock for the batch; callers MUST NOT hold any trie or
+/// eviction-registry lock when invoking it (parking_lot locks are not re-entrant).
+fn evict_char_nodes<V: DictionaryValue>(
+    trie: &SharedCharARTrie<V>,
+    nodes_to_evict: Vec<(
+        u64,
+        Vec<char>,
+        crate::persistent_artrie::swizzled_ptr::SwizzledPtr,
+    )>,
+) -> (usize, usize) {
+    let mut guard = trie.write();
+    let mut evicted_count = 0;
+    let mut bytes_freed = 0;
+
+    for (_path_hash, path, disk_ptr) in nodes_to_evict {
+        if guard.evict_node_at_path(&path, disk_ptr.clone()) {
+            evicted_count += 1;
+            bytes_freed += 256; // Estimate ~256 bytes per node
+
+            // Remove from LRU tracking so a later reload starts fresh.
+            if let Some(ref coordinator) = guard.eviction_coordinator {
+                use crate::persistent_artrie::eviction::lru_tracker::hash_char_path;
+                coordinator
+                    .lru_registry()
+                    .remove_hash(hash_char_path(&path));
+            }
+        }
+    }
+
+    (evicted_count, bytes_freed)
+}
+
 impl<V: DictionaryValue> crate::artrie_trait::EvictableARTrie for SharedCharARTrie<V> {
     fn enable_eviction(
         &self,
@@ -1037,27 +1097,7 @@ impl<V: DictionaryValue> crate::artrie_trait::EvictableARTrie for SharedCharARTr
                 let Some(trie) = self_weak.upgrade() else {
                     return (0, 0);
                 };
-
-                let mut guard = trie.write();
-                let mut evicted_count = 0;
-                let mut bytes_freed = 0;
-
-                for (_path_hash, path, disk_ptr) in nodes_to_evict {
-                    if guard.evict_node_at_path(&path, disk_ptr.clone()) {
-                        evicted_count += 1;
-                        bytes_freed += 256; // Estimate ~256 bytes per node
-
-                        // Remove from LRU tracking
-                        if let Some(ref coordinator) = guard.eviction_coordinator {
-                            use crate::persistent_artrie::eviction::lru_tracker::hash_char_path;
-                            coordinator
-                                .lru_registry()
-                                .remove_hash(hash_char_path(&path));
-                        }
-                    }
-                }
-
-                (evicted_count, bytes_freed)
+                evict_char_nodes(&trie, nodes_to_evict)
             })
             .map_err(|e| PersistentARTrieError::internal(&e))?;
 
@@ -1099,13 +1139,25 @@ impl<V: DictionaryValue> crate::artrie_trait::EvictableARTrie for SharedCharARTr
         &self,
         target_bytes: usize,
     ) -> crate::persistent_artrie::error::Result<(usize, usize)> {
-        let guard = self.read();
-
-        let Some(coordinator) = &guard.eviction_coordinator else {
-            return Ok((0, 0));
+        // Clone the coordinator Arc out under a short-lived read guard, then
+        // release the guard before reclaiming: the reclaim callback takes the
+        // trie WRITE lock and parking_lot's RwLock is not re-entrant, so no trie
+        // lock may be held across `force_eviction_char`.
+        let coordinator = {
+            let guard = self.read();
+            match &guard.eviction_coordinator {
+                Some(c) => Arc::clone(c),
+                None => return Ok((0, 0)),
+            }
         };
 
-        Ok(coordinator.force_eviction(target_bytes))
+        // Route to the char-aware path: the byte `force_eviction` reads the byte
+        // `locations` map and would always return (0, 0) for a char trie, whose
+        // nodes are registered in `char_locations`. `force_eviction_char` selects
+        // from `char_locations` and reclaims inline via `evict_char_nodes`.
+        let trie = Arc::clone(self);
+        Ok(coordinator
+            .force_eviction_char(target_bytes, move |nodes| evict_char_nodes(&trie, nodes)))
     }
 
     fn touch_node(&self, path: &[Self::Unit]) {
@@ -1121,6 +1173,55 @@ impl<V: DictionaryValue> crate::artrie_trait::EvictableARTrie for SharedCharARTr
 impl<V: DictionaryValue, S: crate::persistent_artrie::block_storage::BlockStorage>
     PersistentARTrieChar<V, S>
 {
+    /// Invalidate any published eviction [`DiskLocationRegistry`] because the
+    /// in-memory trie is about to diverge from the last checkpoint's on-disk
+    /// image.
+    ///
+    /// After [`checkpoint`](Self::checkpoint) publishes a registry, it maps each
+    /// node's char-path to a *durable, verified* on-disk location. A subsequent
+    /// mutation rewrites in-memory nodes (new value, grown node type, added/
+    /// removed children) while those on-disk images stay frozen at the last
+    /// checkpoint. If eviction then reclaimed such a node it would unswizzle the
+    /// *newer* in-memory box onto the *stale* on-disk pointer and drop the box,
+    /// so the next read would reload the old value — a lost update. Marking the
+    /// registry invalid makes the coordinator refuse to select any node for
+    /// eviction (`select_char_for_eviction` / `perform_eviction_char` both gate
+    /// on `is_valid()`) until the next checkpoint rebuilds and republishes a
+    /// fresh, durable registry.
+    ///
+    /// This is the formal `Mutate` action of
+    /// `formal-verification/tla+/EvictionRegistryPublication.tla`, which clears
+    /// the registry on any write so the `RegistryEntriesAreDurable` invariant is
+    /// preserved across mutations. It is a no-op when eviction is disabled.
+    ///
+    /// Called from the single mutation chokepoint
+    /// [`append_to_wal`](Self::append_to_wal): every durable public mutation —
+    /// `insert`/`insert_with_value`/`remove`/`upsert`/the `insert_batch*` family/
+    /// `insert_cas`/document transactions, and the `merge_from`/`remove_prefix`
+    /// helpers that delegate to them — logs through it, while `checkpoint` (which
+    /// writes its WAL record directly) and WAL recovery replay do not.
+    pub(crate) fn invalidate_eviction_registry(&self) {
+        if let Some(ref coordinator) = self.eviction_coordinator {
+            coordinator.invalidate_registry();
+        }
+    }
+
+    /// Number of char nodes registered as evictable in the disk-location
+    /// registry published at the last [`checkpoint`](Self::checkpoint).
+    ///
+    /// Returns `None` when eviction is disabled. Returns `Some(0)` before the
+    /// first checkpoint. After a checkpoint with eviction enabled it reflects how
+    /// many on-disk node locations the coordinator may reclaim in-memory boxes
+    /// for. Note that a post-checkpoint mutation *invalidates* the registry
+    /// (eviction then selects nothing) without immediately changing this count —
+    /// observe invalidation via [`force_eviction`](crate::artrie_trait::EvictableARTrie::force_eviction)
+    /// returning `(0, 0)`; the count is refreshed by the next checkpoint.
+    pub fn evictable_node_count(&self) -> Option<usize> {
+        self.eviction_coordinator
+            .as_ref()
+            .map(|c| c.disk_registry_char_len())
+    }
+
     /// Evict a single node at the given path, replacing it with a DiskRef.
     ///
     /// Walks `path` from the root: descends through `path[..path.len()-1]`

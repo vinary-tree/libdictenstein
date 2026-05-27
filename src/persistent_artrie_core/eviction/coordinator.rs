@@ -294,6 +294,67 @@ impl EvictionCoordinator {
         )
     }
 
+    /// Synchronously evict cold *char* nodes, invoking `callback` inline on the
+    /// calling thread to reclaim them.
+    ///
+    /// This is the char-trie counterpart of [`force_eviction`](Self::force_eviction).
+    /// The byte `force_eviction` selects from the byte `locations` map and would
+    /// return `(0, 0)` for a char trie (whose nodes live in `char_locations`), so
+    /// char tries route here instead. Unlike the byte `force_eviction` — which
+    /// only *selects and counts* — this method **actually performs reclamation**
+    /// by invoking `callback` (the same closure the async `eviction_loop_char`
+    /// uses), giving callers a deterministic, single-threaded eviction path with
+    /// no eviction thread, quiescence wait, or cooldown.
+    ///
+    /// Selection mirrors [`perform_eviction_char`](Self::perform_eviction_char):
+    /// it refuses to act on an invalidated registry (`is_valid()`), reads the
+    /// published `char_locations`, and respects `min_eviction_depth`. The
+    /// registry read lock is released **before** `callback` runs, because the
+    /// callback takes the trie write lock to unswizzle nodes. Returns
+    /// `(nodes_evicted, bytes_freed)` as reported by `callback`.
+    pub fn force_eviction_char<F>(&self, target_bytes: usize, callback: F) -> (usize, usize)
+    where
+        F: Fn(Vec<(u64, Vec<char>, SwizzledPtr)>) -> (usize, usize),
+    {
+        let disk_registry = self.disk_registry.read();
+        if !disk_registry.is_valid() {
+            return (0, 0);
+        }
+
+        let candidates = disk_registry.select_char_for_eviction(
+            target_bytes,
+            &self.lru_registry,
+            self.config.min_eviction_depth,
+            self.config.batch_size,
+        );
+
+        if candidates.is_empty() {
+            return (0, 0);
+        }
+
+        let eviction_list: Vec<_> = candidates
+            .into_iter()
+            .map(|(hash, node)| (hash, node.path, node.disk_ptr))
+            .collect();
+
+        // Release the registry lock before reclaiming: the callback takes the
+        // trie write lock, and parking_lot locks are not re-entrant.
+        drop(disk_registry);
+
+        callback(eviction_list)
+    }
+
+    /// Number of char nodes currently tracked in the published disk-location
+    /// registry (i.e. nodes eligible for eviction, before the `min_eviction_depth`
+    /// filter). This is the count populated by `serialize_char_node_to_disk` via
+    /// `register_char` and handed over in [`update_disk_registry`](Self::update_disk_registry)
+    /// at checkpoint. Returns 0 before the first checkpoint or after the registry
+    /// is invalidated-then-cleared. Primarily for observability of the
+    /// checkpoint→publish path.
+    pub fn disk_registry_char_len(&self) -> usize {
+        self.disk_registry.read().char_len()
+    }
+
     /// Get the LRU registry for access tracking.
     pub fn lru_registry(&self) -> &Arc<LruRegistry> {
         &self.lru_registry

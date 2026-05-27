@@ -66,6 +66,13 @@ run_capped cargo test --features persistent-artrie --test persistent_rewrite_com
 run_capped cargo test --features persistent-artrie --test persistent_vocab_wal_atomicity_correspondence
 run_capped cargo test --features persistent-artrie --test persistent_vocab_checkpoint_correspondence
 run_capped cargo test --features persistent-artrie --test concurrent_checkpoint_publication_correspondence
+run_capped cargo test --features persistent-artrie --test persistent_char_eviction_correspondence
+run_capped cargo test --features persistent-artrie --test persistent_char_eviction_registry_correspondence
+run_capped cargo test --features persistent-artrie --test persistent_char_eviction_proptest
+run_capped cargo test \
+  --features persistent-artrie \
+  --lib \
+  persistent_artrie_char::eviction_registry_tests
 run_capped cargo test --features persistent-artrie --test persistent_shared_concurrency_correspondence
 run_capped cargo test --features persistent-artrie --test persistent_public_durability_policy_correspondence
 run_capped cargo test --features persistent-artrie --test persistent_public_lifecycle_correspondence
@@ -218,6 +225,7 @@ if command -v tla2sany >/dev/null 2>&1; then
       LockFreeIndexedOverlay \
       LockFreeCounterMergeAtomicity \
       ConcurrentCheckpointPublication \
+      EvictionRegistryPublication \
       SharedPersistentConcurrency \
       PublicDurabilityPolicy \
       PersistentEndToEndTrace \
@@ -260,6 +268,7 @@ if [ "${RUN_TLC:-0}" = "1" ]; then
       LockFreeARTrieLinearizability \
       LockFreeCounterMergeAtomicity \
       ConcurrentCheckpointPublication \
+      EvictionRegistryPublication \
       SharedPersistentConcurrency \
       PublicDurabilityPolicy \
       PersistentEndToEndTrace \

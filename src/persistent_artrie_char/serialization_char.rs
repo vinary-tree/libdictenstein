@@ -343,9 +343,9 @@ fn ensure_fixed_node_data_size(
     child_capacity: usize,
 ) -> Result<()> {
     let prefix_size = header_prefix_size(header);
-    let child_bytes = child_capacity.checked_mul(8).ok_or_else(|| {
-        PersistentARTrieError::corrupted("char fixed child layout size overflow")
-    })?;
+    let child_bytes = child_capacity
+        .checked_mul(8)
+        .ok_or_else(|| PersistentARTrieError::corrupted("char fixed child layout size overflow"))?;
     let expected = checked_layout_add(prefix_size, key_bytes, "fixed keys")?;
     let expected = checked_layout_add(expected, child_bytes, "fixed children")?;
     let expected = checked_layout_add(expected, 8, "fixed value pointer")?;
@@ -1667,15 +1667,14 @@ fn deserialize_charbucket_v2<R: Read>(
             checked_layout_add(consumed_before_children, 8, "bucket value pointer")?;
         let consumed_before_children =
             checked_layout_add(consumed_before_children, entries_key_bytes, "bucket keys")?;
-        let remaining_size =
-            (header.data_size as usize)
-                .checked_sub(consumed_before_children)
-                .ok_or_else(|| {
-                    PersistentARTrieError::corrupted(format!(
-                        "char bucket data_size {} is smaller than fixed payload {}",
-                        header.data_size, consumed_before_children
-                    ))
-                })?;
+        let remaining_size = (header.data_size as usize)
+            .checked_sub(consumed_before_children)
+            .ok_or_else(|| {
+                PersistentARTrieError::corrupted(format!(
+                    "char bucket data_size {} is smaller than fixed payload {}",
+                    header.data_size, consumed_before_children
+                ))
+            })?;
         let mut remaining_data = vec![0u8; remaining_size];
         reader.read_exact(&mut remaining_data).map_err(io_err)?;
 

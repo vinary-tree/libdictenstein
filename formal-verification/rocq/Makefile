@@ -10,7 +10,7 @@ COQFLAGS = -Q . ARTrie
 DIRS = Spec Model Invariants Operations Proofs
 
 # Source files in dependency order
-SPEC_FILES = Spec/MapSpec.v Spec/DictionaryLawSpec.v Spec/DynamicDawgMutationSpec.v Spec/DynamicDawgU64Spec.v Spec/DoubleArrayTrieSpec.v Spec/ZipperLanguageSpec.v Spec/ValuedSetCombinatorSpec.v Spec/BloomFilterSpec.v Spec/PersistentMergeSpec.v Spec/PersistentPrefixSpec.v Spec/PersistentReadTraversalSpec.v Spec/PersistentCharNodeLayoutSpec.v Spec/PathMapFactorySpec.v Spec/RelativeEncodingSpec.v Spec/ArenaReservationSpec.v Spec/DedupArenaSpec.v Spec/RootDescriptorReopenSpec.v Spec/PersistentLazyMutationSpec.v Spec/PersistentWalAtomicitySpec.v Spec/LockFreeCounterMergeSpec.v Spec/SharedPersistentConcurrencySpec.v Spec/PublicDurabilityPolicySpec.v Spec/PersistentPublicWalLifecycleSpec.v Spec/PersistentEndToEndTraceSpec.v Spec/PersistentVocabWalAtomicitySpec.v Spec/PersistentVocabCheckpointSpec.v Spec/PersistentCheckpointRetentionSpec.v Spec/PersistentDirtyCheckpointSpec.v Spec/PersistentWalSegmentLifecycleSpec.v Spec/PersistentRecoveryPlannerSpec.v Spec/PersistentRecoveryReplayCompletenessSpec.v Spec/PersistentCompactionSpec.v Spec/PersistentRewriteCompactionSpec.v Spec/SubstringSearchSpec.v Spec/ScdawgOccurrenceSpec.v Spec/FuzzyCandidateCoverageSpec.v Spec/SerializationRoundtripSpec.v Spec/ARTrieSpec.v Spec/ReplicatedMapSpec.v
+SPEC_FILES = Spec/MapSpec.v Spec/DictionaryLawSpec.v Spec/DynamicDawgMutationSpec.v Spec/DynamicDawgU64Spec.v Spec/DoubleArrayTrieSpec.v Spec/ZipperLanguageSpec.v Spec/ValuedSetCombinatorSpec.v Spec/BloomFilterSpec.v Spec/PersistentMergeSpec.v Spec/PersistentPrefixSpec.v Spec/PersistentReadTraversalSpec.v Spec/PersistentCharNodeLayoutSpec.v Spec/PathMapFactorySpec.v Spec/RelativeEncodingSpec.v Spec/ArenaReservationSpec.v Spec/DedupArenaSpec.v Spec/RootDescriptorReopenSpec.v Spec/PersistentLazyMutationSpec.v Spec/PersistentWalAtomicitySpec.v Spec/LockFreeCounterMergeSpec.v Spec/SharedPersistentConcurrencySpec.v Spec/PublicDurabilityPolicySpec.v Spec/PersistentPublicWalLifecycleSpec.v Spec/PersistentEndToEndTraceSpec.v Spec/PersistentVocabWalAtomicitySpec.v Spec/PersistentVocabCheckpointSpec.v Spec/PersistentCheckpointRetentionSpec.v Spec/PersistentDirtyCheckpointSpec.v Spec/PersistentWalSegmentLifecycleSpec.v Spec/PersistentRecoveryPlannerSpec.v Spec/PersistentRecoveryReplayCompletenessSpec.v Spec/PersistentCompactionSpec.v Spec/PersistentRewriteCompactionSpec.v Spec/SubstringSearchSpec.v Spec/ScdawgOccurrenceSpec.v Spec/FuzzyCandidateCoverageSpec.v Spec/SerializationRoundtripSpec.v Spec/ARTrieSpec.v Spec/ReplicatedMapSpec.v Spec/PersistentCharEvictionRegistrySpec.v
 MODEL_FILES = Model/Key.v Model/NodeTypes.v Model/Bucket.v Model/HotStuff.v Model/PathCompression.v Model/ArenaManager.v Model/SequentialSiblings.v Model/FileSystem.v
 INVARIANT_FILES = Invariants/StructuralInvariants.v Invariants/TransitionInvariants.v Invariants/ArenaInvariants.v Invariants/SequentialSiblingsInvariants.v
 OPERATION_FILES = # Operations/Lookup.v Operations/Insert.v Operations/Delete.v
@@ -103,17 +103,18 @@ show-order:
 	@echo " 45. Spec/SerializationRoundtripSpec.v"
 	@echo " 46. Spec/ARTrieSpec.v"
 	@echo " 47. Spec/ReplicatedMapSpec.v"
-	@echo " 48. Invariants/StructuralInvariants.v"
-	@echo " 49. Invariants/TransitionInvariants.v"
-	@echo " 50. Invariants/ArenaInvariants.v"
-	@echo " 51. Invariants/SequentialSiblingsInvariants.v"
-	@echo " 52. Proofs/MapRefinement.v"
-	@echo " 53. Proofs/StructuralPreservation.v"
-	@echo " 54. Proofs/ByzantineRecovery.v"
-	@echo " 55. Proofs/CertifiedReference.v"
-	@echo " 56. Proofs/HotStuffSafety.v"
-	@echo " 57. Proofs/ProofCarryingExtraction.v"
-	@echo " 58. Proofs/FileSystemSafety.v"
+	@echo " 48. Spec/PersistentCharEvictionRegistrySpec.v"
+	@echo " 49. Invariants/StructuralInvariants.v"
+	@echo " 50. Invariants/TransitionInvariants.v"
+	@echo " 51. Invariants/ArenaInvariants.v"
+	@echo " 52. Invariants/SequentialSiblingsInvariants.v"
+	@echo " 53. Proofs/MapRefinement.v"
+	@echo " 54. Proofs/StructuralPreservation.v"
+	@echo " 55. Proofs/ByzantineRecovery.v"
+	@echo " 56. Proofs/CertifiedReference.v"
+	@echo " 57. Proofs/HotStuffSafety.v"
+	@echo " 58. Proofs/ProofCarryingExtraction.v"
+	@echo " 59. Proofs/FileSystemSafety.v"
 
 # Check a single file
 check-%: %.v

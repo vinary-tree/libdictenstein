@@ -58,6 +58,15 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     /// epoch checkpointing records the exact WAL bytes written so epoch
     /// metadata stays aligned with public mutations.
     pub(super) fn append_to_wal(&self, record: WalRecord) -> Result<()> {
+        // A durable mutation is being logged: the in-memory trie is diverging
+        // from the last checkpoint's on-disk image, so any published eviction
+        // registry now references potentially-stale on-disk data. Invalidate it
+        // here — the single chokepoint every public mutation passes through — so
+        // eviction cannot unswizzle a live node onto a stale disk location until
+        // the next checkpoint rebuilds a fresh registry. No-op when eviction is
+        // disabled. See `invalidate_eviction_registry` for the full rationale.
+        self.invalidate_eviction_registry();
+
         let wal_bytes = record.serialized_size();
 
         // Check if group commit is enabled first
