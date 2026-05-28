@@ -106,11 +106,29 @@ impl SegmentSyncManager {
             sync_backend,
         });
 
-        let manager_clone = Arc::clone(&manager);
+        // The worker holds only a `Weak` ref so it can never keep the manager
+        // alive past its owner's drop. Previously it captured a strong
+        // `Arc::clone(&manager)`; combined with `running` being cleared only in
+        // `stop()`/`Drop`, that was a self-sustaining cycle (the thread kept the
+        // Arc alive, so `Drop`/`stop` never ran, so the thread looped forever,
+        // leaking the OS thread). Upgrade per iteration; exit when the owner is
+        // gone or `running` is cleared, releasing the strong ref before sleeping.
+        let idle_ms = manager.config.idle_check_interval_ms;
+        let weak = Arc::downgrade(&manager);
         let handle = thread::Builder::new()
             .name("wal-sync".to_string())
             .spawn(move || {
-                manager_clone.sync_loop();
+                loop {
+                    let Some(this) = weak.upgrade() else { break };
+                    if !this.running.load(Ordering::Relaxed) {
+                        break;
+                    }
+                    let did_work = this.sync_once();
+                    drop(this); // release the strong ref BEFORE the idle sleep
+                    if !did_work {
+                        thread::sleep(Duration::from_millis(idle_ms));
+                    }
+                }
             })
             .expect("Failed to spawn WAL sync thread");
 
@@ -220,107 +238,112 @@ impl SegmentSyncManager {
         }
     }
 
-    /// The background sync loop.
-    fn sync_loop(&self) {
-        while self.running.load(Ordering::Relaxed) {
-            let segment = {
-                let mut queue = self
-                    .pending_segments
-                    .lock()
-                    .expect("pending_segments lock poisoned");
-                queue.pop_front()
-            };
+    /// Process at most one pending segment.
+    ///
+    /// Returns `true` if a segment was dequeued (and synced + archived),
+    /// `false` if the queue was empty (the caller then performs the idle
+    /// sleep). Extracted from the old `sync_loop` so the spawned worker can
+    /// drive the loop through a `Weak` handle and release its strong ref
+    /// before the idle sleep — see `with_sync_backend`.
+    fn sync_once(&self) -> bool {
+        let segment = {
+            let mut queue = self
+                .pending_segments
+                .lock()
+                .expect("pending_segments lock poisoned");
+            queue.pop_front()
+        };
 
-            if let Some(segment) = segment {
-                let size = segment.size_bytes;
-                let lsn_end = segment.lsn_range.1;
-                let path = segment.path.clone();
+        let Some(segment) = segment else {
+            return false;
+        };
 
-                let mut attempts = 0u32;
-                loop {
-                    attempts += 1;
-                    match self.sync_backend.sync_file(&segment.file) {
-                        Ok(()) => {
-                            log::debug!(
-                                "Synced segment {} (LSN {}-{}) in {} attempts",
-                                path.display(),
-                                segment.lsn_range.0,
-                                lsn_end,
-                                attempts
-                            );
-                            break;
-                        }
-                        Err(e) => {
-                            log::error!(
-                                "Sync failed for {} (attempt {}): {:?}",
-                                path.display(),
-                                attempts,
-                                e
-                            );
-                            thread::sleep(Duration::from_millis(100));
+        let size = segment.size_bytes;
+        let lsn_end = segment.lsn_range.1;
+        let path = segment.path.clone();
 
-                            if attempts >= 10 {
-                                log::error!(
-                                    "WARNING: {} sync attempts failed for {}. Will keep retrying.",
-                                    attempts,
-                                    path.display()
-                                );
-                            }
-                        }
-                    }
+        let mut attempts = 0u32;
+        loop {
+            attempts += 1;
+            match self.sync_backend.sync_file(&segment.file) {
+                Ok(()) => {
+                    log::debug!(
+                        "Synced segment {} (LSN {}-{}) in {} attempts",
+                        path.display(),
+                        segment.lsn_range.0,
+                        lsn_end,
+                        attempts
+                    );
+                    break;
+                }
+                Err(e) => {
+                    log::error!(
+                        "Sync failed for {} (attempt {}): {:?}",
+                        path.display(),
+                        attempts,
+                        e
+                    );
+                    thread::sleep(Duration::from_millis(100));
 
-                    if !self.running.load(Ordering::Relaxed) {
-                        log::warn!(
-                            "Sync thread stopping with unsynced segment: {}",
+                    if attempts >= 10 {
+                        log::error!(
+                            "WARNING: {} sync attempts failed for {}. Will keep retrying.",
+                            attempts,
                             path.display()
                         );
-                        return;
                     }
                 }
+            }
 
-                self.pending_bytes.fetch_sub(size, Ordering::AcqRel);
-                self.global_synced_lsn.store(lsn_end, Ordering::Release);
-
-                if self.archive_config.archive_enabled {
-                    let archive_dir = if self.archive_config.archive_dir.is_absolute() {
-                        self.archive_config.archive_dir.clone()
-                    } else {
-                        self.wal_path
-                            .parent()
-                            .unwrap_or(Path::new("."))
-                            .join(&self.archive_config.archive_dir)
-                    };
-
-                    if let Err(e) = fs::create_dir_all(&archive_dir) {
-                        log::warn!("Failed to create archive directory: {}", e);
-                    } else {
-                        let archive_path = WalWriter::unique_archive_segment_path(&archive_dir);
-
-                        if let Err(e) = fs::rename(&path, &archive_path) {
-                            log::warn!(
-                                "Failed to move synced segment to archive: {} -> {}: {}",
-                                path.display(),
-                                archive_path.display(),
-                                e
-                            );
-                        } else if let Err(e) =
-                            WalWriter::prune_segments_if_needed(&archive_dir, &self.archive_config)
-                        {
-                            log::warn!("Failed to prune WAL archive segments: {}", e);
-                        }
-                    }
-                } else {
-                    if let Err(e) = fs::remove_file(&path) {
-                        log::warn!("Failed to remove synced segment {}: {}", path.display(), e);
-                    }
-                }
-
-                let _guard = self.sync_mutex.lock().expect("sync_mutex lock poisoned");
-                self.sync_complete.notify_all();
-            } else {
-                thread::sleep(Duration::from_millis(self.config.idle_check_interval_ms));
+            if !self.running.load(Ordering::Relaxed) {
+                log::warn!(
+                    "Sync thread stopping with unsynced segment: {}",
+                    path.display()
+                );
+                return true;
             }
         }
+
+        self.pending_bytes.fetch_sub(size, Ordering::AcqRel);
+        self.global_synced_lsn.store(lsn_end, Ordering::Release);
+
+        if self.archive_config.archive_enabled {
+            let archive_dir = if self.archive_config.archive_dir.is_absolute() {
+                self.archive_config.archive_dir.clone()
+            } else {
+                self.wal_path
+                    .parent()
+                    .unwrap_or(Path::new("."))
+                    .join(&self.archive_config.archive_dir)
+            };
+
+            if let Err(e) = fs::create_dir_all(&archive_dir) {
+                log::warn!("Failed to create archive directory: {}", e);
+            } else {
+                let archive_path = WalWriter::unique_archive_segment_path(&archive_dir);
+
+                if let Err(e) = fs::rename(&path, &archive_path) {
+                    log::warn!(
+                        "Failed to move synced segment to archive: {} -> {}: {}",
+                        path.display(),
+                        archive_path.display(),
+                        e
+                    );
+                } else if let Err(e) =
+                    WalWriter::prune_segments_if_needed(&archive_dir, &self.archive_config)
+                {
+                    log::warn!("Failed to prune WAL archive segments: {}", e);
+                }
+            }
+        } else {
+            if let Err(e) = fs::remove_file(&path) {
+                log::warn!("Failed to remove synced segment {}: {}", path.display(), e);
+            }
+        }
+
+        let _guard = self.sync_mutex.lock().expect("sync_mutex lock poisoned");
+        self.sync_complete.notify_all();
+        true
     }
 
     /// Stop the background sync thread.
@@ -729,10 +752,24 @@ impl AsyncWalWriter {
 
         Ok(())
     }
+
+    /// Stop and join the background WAL-sync thread.
+    ///
+    /// Public, idempotent wrapper around the (private) `SegmentSyncManager`
+    /// so an owner that holds only `&AsyncWalWriter` (e.g.
+    /// `PersistentARTrieChar::close`) can deterministically tear the worker
+    /// down without waiting for Arc-refcount drop order.
+    pub fn stop_sync(&self) {
+        self.sync_manager.stop();
+    }
 }
 
 impl Drop for AsyncWalWriter {
     fn drop(&mut self) {
+        // Stop + join the background sync thread first so it cannot race the
+        // final fsync, and so the wal-sync thread is reclaimed deterministically
+        // from this (the owning) thread rather than via Arc-refcount drop order.
+        self.sync_manager.stop();
         if let Ok(writer) = self.writer.lock() {
             if let Err(e) = writer.sync() {
                 log::warn!("Failed to sync WAL on drop: {:?}", e);

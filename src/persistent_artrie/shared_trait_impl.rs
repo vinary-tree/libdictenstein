@@ -241,12 +241,14 @@ impl<V: DictionaryValue> EvictableARTrie for SharedARTrie<V> {
     }
 
     fn disable_eviction(&self) -> Result<()> {
-        let mut guard = self.write();
-
-        if let Some(coordinator) = guard.eviction_coordinator.take() {
+        // Take the coordinator out under a short-lived write guard, then RELEASE
+        // the guard before `shutdown()` joins the eviction thread: the eviction
+        // callback itself takes `trie.write()`, so joining while holding the trie
+        // lock deadlocks (the same rule `force_eviction` already documents).
+        let coordinator = self.write().eviction_coordinator.take();
+        if let Some(coordinator) = coordinator {
             coordinator.shutdown();
         }
-
         Ok(())
     }
 

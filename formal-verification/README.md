@@ -538,6 +538,7 @@ The formal specifications model the key components of the Rust implementation:
 | `PersistentCharBulkMutationRecovery.tla` | `src/persistent_artrie_char/prefix_api.rs`, `src/persistent_artrie{,_char}/atomic_ops.rs`, and `tests/persistent_bulk_mutation_correspondence.rs` |
 | `PersistentTransactionIncrementRecovery.tla` | `src/persistent_artrie{,_char}/{document_tx.rs,transactions.rs}`, `src/persistent_artrie_char/{atomic_ops.rs,mmap_ctor.rs,io_uring_ctor.rs}`, shared recovery replay, and `tests/persistent_transaction_increment_correspondence.rs` |
 | `ByzantineStorage.tla` | authenticated WAL/storage recovery filtering in `src/persistent_artrie_core/recovery.rs` |
+| `BackgroundWorkerLifecycle.tla` | Background-daemon shutdown protocol after the Weak-handle thread-leak fix: `src/persistent_artrie_core/eviction/coordinator.rs` (`shutdown`/`Drop`, Weak worker + 100 ms poll), `wal/async_writer.rs` (`SegmentSyncManager::stop`/`Drop`, `AsyncWalWriter::stop_sync`), `persistent_artrie{,_char}` `close()`/`Drop`; `tests/persistent_{char,byte}_thread_lifecycle.rs`, `tests/persistent_char_thread_lifecycle_proptest.rs`, `tests/persistent_worker_lifecycle_loom.rs`, and `rocq/WorkerLifecycle.v` |
 | `HotStuffConsensus.tla` | proof/model-only Byzantine quorum safety boundary |
 | `NodeTypes.v` | `src/persistent_artrie/nodes/*.rs` |
 | `Bucket.v` | `src/persistent_artrie/bucket.rs` |

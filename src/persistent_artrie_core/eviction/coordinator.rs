@@ -8,7 +8,7 @@
 
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
@@ -153,13 +153,13 @@ impl EvictionCoordinator {
             return Err("Eviction coordinator already running".to_string());
         }
 
-        let self_clone = Arc::clone(self);
+        let weak = Arc::downgrade(self);
         let callback = Arc::new(callback);
 
         let handle = thread::Builder::new()
             .name("artrie-eviction".to_string())
             .spawn(move || {
-                self_clone.eviction_loop(callback);
+                Self::eviction_loop(weak, callback);
             })
             .map_err(|e| format!("Failed to spawn eviction thread: {}", e))?;
 
@@ -181,13 +181,13 @@ impl EvictionCoordinator {
             return Err("Eviction coordinator already running".to_string());
         }
 
-        let self_clone = Arc::clone(self);
+        let weak = Arc::downgrade(self);
         let callback = Arc::new(callback);
 
         let handle = thread::Builder::new()
             .name("artrie-eviction-char".to_string())
             .spawn(move || {
-                self_clone.eviction_loop_char(callback);
+                Self::eviction_loop_char(weak, callback);
             })
             .map_err(|e| format!("Failed to spawn eviction thread: {}", e))?;
 
@@ -421,102 +421,123 @@ impl EvictionCoordinator {
     // --- Private methods ---
 
     /// Main eviction loop for byte-level tries.
-    fn eviction_loop<F>(self: Arc<Self>, callback: Arc<F>)
+    ///
+    /// Driven through a `Weak<Self>` (not a strong `Arc`): the worker upgrades
+    /// once per iteration and drops the strong ref before sleeping, so it can
+    /// never keep the coordinator alive past its owner's drop (the bug that
+    /// leaked one OS thread per trie instance). Eviction is background
+    /// memory-reclamation, so a 100 ms poll — vs the old condvar wait, which
+    /// pinned a strong ref for the loop's whole life — is acceptable.
+    fn eviction_loop<F>(weak: Weak<Self>, callback: Arc<F>)
     where
         F: Fn(Vec<(u64, Vec<u8>, SwizzledPtr)>) -> (usize, usize) + Send + Sync,
     {
-        while !self.shutdown.load(Ordering::Relaxed) {
-            // Wait for eviction request
-            let request = self.wait_for_request();
-            if self.shutdown.load(Ordering::Relaxed) {
+        loop {
+            let Some(this) = weak.upgrade() else { break };
+            if this.shutdown.load(Ordering::Relaxed) {
                 break;
             }
 
-            let Some(request) = request else {
-                continue;
+            let had_request = if let Some(request) = this.try_pop_request() {
+                // Check cooldown
+                if !this.check_cooldown(&request) {
+                    this.stats.record_skip();
+                } else if !this.wait_for_quiescence() {
+                    // Wait for epoch quiescence
+                    this.stats.record_quiescence_timeout();
+                } else {
+                    // Perform eviction
+                    let start = Instant::now();
+                    let (nodes_evicted, bytes_freed) = this.perform_eviction(&*callback, &request);
+                    let duration_ms = start.elapsed().as_millis() as u64;
+
+                    if nodes_evicted > 0 {
+                        this.stats.record_eviction(
+                            nodes_evicted as u64,
+                            bytes_freed as u64,
+                            duration_ms,
+                        );
+                        this.last_eviction.store(
+                            Instant::now().elapsed().as_millis() as u64,
+                            Ordering::Relaxed,
+                        );
+                    }
+                }
+                true
+            } else {
+                false
             };
 
-            // Check cooldown
-            if !self.check_cooldown(&request) {
-                self.stats.record_skip();
-                continue;
-            }
-
-            // Wait for epoch quiescence
-            if !self.wait_for_quiescence() {
-                self.stats.record_quiescence_timeout();
-                continue;
-            }
-
-            // Perform eviction
-            let start = Instant::now();
-            let (nodes_evicted, bytes_freed) = self.perform_eviction(&*callback, &request);
-            let duration_ms = start.elapsed().as_millis() as u64;
-
-            if nodes_evicted > 0 {
-                self.stats
-                    .record_eviction(nodes_evicted as u64, bytes_freed as u64, duration_ms);
-                self.last_eviction.store(
-                    Instant::now().elapsed().as_millis() as u64,
-                    Ordering::Relaxed,
-                );
+            drop(this); // release the strong ref BEFORE sleeping
+            if !had_request {
+                thread::sleep(Duration::from_millis(100));
             }
         }
     }
 
     /// Main eviction loop for char-level tries.
-    fn eviction_loop_char<F>(self: Arc<Self>, callback: Arc<F>)
+    ///
+    /// See [`eviction_loop`](Self::eviction_loop) for why this is driven through
+    /// a `Weak<Self>` + 100 ms poll rather than a strong `Arc` + condvar wait.
+    fn eviction_loop_char<F>(weak: Weak<Self>, callback: Arc<F>)
     where
         F: Fn(Vec<(u64, Vec<char>, SwizzledPtr)>) -> (usize, usize) + Send + Sync,
     {
-        while !self.shutdown.load(Ordering::Relaxed) {
-            let request = self.wait_for_request();
-            if self.shutdown.load(Ordering::Relaxed) {
+        loop {
+            let Some(this) = weak.upgrade() else { break };
+            if this.shutdown.load(Ordering::Relaxed) {
                 break;
             }
 
-            let Some(request) = request else {
-                continue;
+            let had_request = if let Some(request) = this.try_pop_request() {
+                if !this.check_cooldown(&request) {
+                    this.stats.record_skip();
+                } else {
+                    // NB: no pre-eviction drain here (unlike the byte `eviction_loop`). The
+                    // char reclaim path (`evict_char_nodes`, invoked by the callback) does
+                    // epoch-based reclamation in the correct order — unlink + retire, THEN
+                    // drain, THEN free. Draining BEFORE the unlink would be unnecessary AND
+                    // over-conservative: it would skip eviction entirely whenever any walk
+                    // is active, even though the post-unlink drain handles that case safely
+                    // (deferring the free, never freeing under a live reader).
+                    let start = Instant::now();
+                    let (nodes_evicted, bytes_freed) =
+                        this.perform_eviction_char(&*callback, &request);
+                    let duration_ms = start.elapsed().as_millis() as u64;
+
+                    if nodes_evicted > 0 {
+                        this.stats.record_eviction(
+                            nodes_evicted as u64,
+                            bytes_freed as u64,
+                            duration_ms,
+                        );
+                        this.last_eviction.store(
+                            Instant::now().elapsed().as_millis() as u64,
+                            Ordering::Relaxed,
+                        );
+                    }
+                }
+                true
+            } else {
+                false
             };
 
-            if !self.check_cooldown(&request) {
-                self.stats.record_skip();
-                continue;
-            }
-
-            // NB: no pre-eviction drain here (unlike the byte `eviction_loop`). The
-            // char reclaim path (`evict_char_nodes`, invoked by the callback) does
-            // epoch-based reclamation in the correct order — unlink + retire, THEN
-            // drain, THEN free. Draining BEFORE the unlink would be unnecessary AND
-            // over-conservative: it would skip eviction entirely whenever any walk
-            // is active, even though the post-unlink drain handles that case safely
-            // (deferring the free, never freeing under a live reader).
-            let start = Instant::now();
-            let (nodes_evicted, bytes_freed) = self.perform_eviction_char(&*callback, &request);
-            let duration_ms = start.elapsed().as_millis() as u64;
-
-            if nodes_evicted > 0 {
-                self.stats
-                    .record_eviction(nodes_evicted as u64, bytes_freed as u64, duration_ms);
-                self.last_eviction.store(
-                    Instant::now().elapsed().as_millis() as u64,
-                    Ordering::Relaxed,
-                );
+            drop(this); // release the strong ref BEFORE sleeping
+            if !had_request {
+                thread::sleep(Duration::from_millis(100));
             }
         }
     }
 
-    /// Wait for an eviction request.
-    fn wait_for_request(&self) -> Option<EvictionRequest> {
-        let mut queue = self.request_queue.lock();
-
-        // Wait with timeout to allow periodic shutdown checks
-        while queue.is_empty() && !self.shutdown.load(Ordering::Relaxed) {
-            self.request_condvar
-                .wait_for(&mut queue, Duration::from_millis(100));
-        }
-
-        queue.pop_front()
+    /// Non-blocking pop of the next eviction request.
+    ///
+    /// The background loop drives itself through a `Weak<Self>` and polls this
+    /// every 100 ms (see [`eviction_loop`](Self::eviction_loop)), so it must not
+    /// block: blocking on the condvar here would pin a strong `Arc<Self>` for the
+    /// loop's whole life and recreate the self-reference cycle that leaked the
+    /// thread.
+    fn try_pop_request(&self) -> Option<EvictionRequest> {
+        self.request_queue.lock().pop_front()
     }
 
     /// Check if we're past the cooldown period.
@@ -643,12 +664,11 @@ impl EvictionCoordinator {
 
 impl Drop for EvictionCoordinator {
     fn drop(&mut self) {
-        self.shutdown.store(true, Ordering::SeqCst);
-        self.request_condvar.notify_all();
-
-        if let Some(handle) = self.eviction_thread.lock().take() {
-            let _ = handle.join();
-        }
+        // Route through `shutdown()` so teardown is complete (it also stops the
+        // memory-pressure monitor) and identical on every drop path. The worker
+        // holds only a `Weak<Self>`, so this `Drop` is reachable as soon as the
+        // owning trie releases its `Arc`.
+        self.shutdown();
     }
 }
 

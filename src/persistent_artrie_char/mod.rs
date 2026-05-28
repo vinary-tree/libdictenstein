@@ -461,6 +461,17 @@ impl<V: DictionaryValue> Default for PersistentARTrieChar<V> {
     }
 }
 
+impl<V: DictionaryValue, S: crate::persistent_artrie::block_storage::BlockStorage> Drop
+    for PersistentARTrieChar<V, S>
+{
+    /// Stop + join the trie's background daemon threads before the rest of the
+    /// trie (mmap buffers, WAL files, arena) is torn down. See
+    /// [`PersistentARTrieChar::close`].
+    fn drop(&mut self) {
+        self.close();
+    }
+}
+
 // === WalManaged Trait Implementation ===
 
 impl<V: DictionaryValue, S: crate::persistent_artrie::block_storage::BlockStorage> WalManaged
@@ -477,6 +488,33 @@ impl<V: DictionaryValue, S: crate::persistent_artrie::block_storage::BlockStorag
 impl<V: DictionaryValue, S: crate::persistent_artrie::block_storage::BlockStorage>
     PersistentARTrieChar<V, S>
 {
+    /// Stop and join all background daemon threads owned by this trie: the
+    /// WAL-sync thread, the eviction thread, and the memory-pressure monitor.
+    ///
+    /// Idempotent and safe to call repeatedly — each underlying
+    /// `stop()`/`shutdown()` takes its `JoinHandle` via `Option::take`, so a
+    /// second call is a no-op. Called automatically by `Drop`, and exposed
+    /// publicly so an owner can reclaim the threads *deterministically* (e.g.
+    /// before swapping a freshly-rebuilt trie into a cache) instead of relying
+    /// on `Arc`-refcount drop order.
+    ///
+    /// Historically each background thread captured a strong `Arc` to its
+    /// manager, so the manager's `Drop` could never run and the OS thread
+    /// leaked once per trie instance (≈3 threads per trie). The workers now
+    /// hold only a `Weak`, so this teardown — and the managers' own `Drop`
+    /// backstops — actually run.
+    pub fn close(&self) {
+        if let Some(coordinator) = &self.eviction_coordinator {
+            coordinator.shutdown();
+        }
+        if let Some(monitor) = &self.memory_monitor {
+            monitor.shutdown();
+        }
+        if let Some(wal) = &self.wal_writer {
+            wal.stop_sync();
+        }
+    }
+
     /// Check if trie has unsaved changes.
     ///
     /// Returns `true` if any modifications have been made since the last
@@ -1418,12 +1456,14 @@ impl<V: DictionaryValue> crate::artrie_trait::EvictableARTrie for SharedCharARTr
     }
 
     fn disable_eviction(&self) -> crate::persistent_artrie::error::Result<()> {
-        let mut guard = self.write();
-
-        if let Some(coordinator) = guard.eviction_coordinator.take() {
+        // Take the coordinator out under a short-lived write guard, then RELEASE
+        // the guard before `shutdown()` joins the eviction thread: the eviction
+        // callback itself takes `trie.write()`, so joining while holding the trie
+        // lock deadlocks (the same rule `force_eviction` already documents).
+        let coordinator = self.write().eviction_coordinator.take();
+        if let Some(coordinator) = coordinator {
             coordinator.shutdown();
         }
-
         Ok(())
     }
 

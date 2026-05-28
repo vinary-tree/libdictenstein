@@ -466,23 +466,48 @@ pub use super::parallel_merge::SharedARTrieParallelExt;
 /// Attempts a best-effort sync on drop to ensure data durability.
 /// This is not guaranteed to succeed (e.g., if locks are poisoned),
 /// but provides a safety net for normal program termination.
-impl<V: DictionaryValue, S: BlockStorage> Drop for PersistentARTrie<V, S> {
-    fn drop(&mut self) {
-        // Shutdown eviction coordinator first
+impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
+    /// Stop and join this trie's background daemon threads — the eviction
+    /// coordinator (which in turn stops its memory-pressure monitor) and the
+    /// WAL-sync thread — then best-effort flush the WAL and dirty pages.
+    ///
+    /// Idempotent and safe to call repeatedly: each underlying
+    /// `shutdown()`/`stop()` takes its `JoinHandle` via `Option::take`, so a
+    /// second call is a no-op. Called automatically by `Drop`, and exposed
+    /// publicly so an owner can reclaim the daemon threads *deterministically*
+    /// (e.g. before swapping a freshly-rebuilt trie into a cache) instead of
+    /// relying on `Arc`-refcount drop order. The workers hold only a `Weak`, so
+    /// this teardown — and the managers' own `Drop` backstops — actually run.
+    pub fn close(&self) {
+        // Shut down the eviction coordinator first (it also stops the memory
+        // monitor). Its callback takes the trie write lock, but `close` holds
+        // no such lock while joining, so this cannot deadlock.
         if let Some(ref coordinator) = self.eviction_coordinator {
             coordinator.shutdown();
         }
 
-        // Best-effort sync on close
-        // Sync WAL
+        // Best-effort sync on close.
+        // Stop + join the WAL-sync thread before the final fsync so the
+        // background thread cannot race the close-time sync, and so it is
+        // reclaimed deterministically from this thread.
         if let Some(ref wal_writer) = self.wal_writer {
+            wal_writer.stop_sync();
             let _ = wal_writer.sync();
         }
-        // Flush buffer manager dirty pages
+        // Flush buffer manager dirty pages.
         if let Some(ref buffer_manager) = self.buffer_manager {
             let bm = buffer_manager.read();
             let _ = bm.flush_all();
         }
+    }
+}
+
+impl<V: DictionaryValue, S: BlockStorage> Drop for PersistentARTrie<V, S> {
+    /// Stop + join the background daemon threads and flush before the trie's
+    /// resources (mmap buffers, WAL files, arena) are torn down. See
+    /// [`PersistentARTrie::close`].
+    fn drop(&mut self) {
+        self.close();
     }
 }
 

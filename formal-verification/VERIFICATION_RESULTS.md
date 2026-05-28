@@ -43,6 +43,7 @@ This document records the results of formal verification efforts for the Persist
 | PersistentEndToEndTrace.tla | 121 | TLC passed |
 | ConcurrentVocabLinearizability.tla | 345 | TLC passed |
 | EpochCheckpointRecovery.tla | 186 | TLC passed |
+| BackgroundWorkerLifecycle.tla | 95 | TLC passed |
 | PersistentCharBulkMutationRecovery.tla | 190 | TLC passed |
 | PersistentTransactionIncrementRecovery.tla | 201 | TLC passed |
 | ByzantineStorage.tla | ~70 | TLC passed |
@@ -115,6 +116,7 @@ NodeIds = {1, 2, 3, 4, 5, 6}
 | LockFreeIndexedOverlay.tla | LockFreeIndexedOverlayCounter.cfg | 7,681 | 900 | 10 | No errors |
 | LockFreeIndexedOverlay.tla | LockFreeIndexedOverlayVocabulary.cfg | 1,659 | 333 | 9 | No errors |
 | LockFreeCounterMergeAtomicity.tla | LockFreeCounterMergeAtomicity.cfg | 421,373 | 30,242 | 19 | No errors |
+| BackgroundWorkerLifecycle.tla | BackgroundWorkerLifecycle.cfg | 4 | 4 | 3 | No errors (TypeOK, NoOrphan, Termination) |
 | ConcurrentCheckpointPublication.tla | ConcurrentCheckpointPublication.cfg | 1,703 | 312 | 10 | No errors |
 | SharedPersistentConcurrency.tla | SharedPersistentConcurrency.cfg | 11,009 | 2,752 | 13 | No errors |
 | PublicDurabilityPolicy.tla | PublicDurabilityPolicy.cfg | 33,281 | 3,568 | 10 | No errors |
