@@ -179,6 +179,10 @@ pub mod mutation_api;
 // Core mutation implementations (_no_wal helpers) — Phase-6 split.
 pub mod mutation_core;
 
+/// Epoch-deferred reclamation of evicted subtrees (eviction-safety for the
+/// lock-free `DictionaryNode` walk).
+pub(crate) mod reclaim;
+
 // In-crate white-box tests for the eviction-registry wiring (commit f10c43e):
 // state oracle (slot swizzled -> on-disk) + the async eviction path, both of
 // which need private node/coordinator internals.
@@ -361,8 +365,30 @@ pub struct PersistentARTrieChar<V: DictionaryValue = (), S: crate::persistent_ar
     // Concurrency infrastructure
     /// Version for optimistic concurrency control
     pub(crate) version: crate::persistent_artrie::concurrency::OptimisticVersion,
-    /// Epoch manager for safe memory reclamation
-    pub(crate) epoch_manager: crate::persistent_artrie::concurrency::EpochManager,
+    /// Epoch manager for safe memory reclamation.
+    ///
+    /// `Arc` so the eviction coordinator can SHARE this exact manager (see
+    /// `enable_eviction`) and a `DictionaryNode` walk can pin it for the walk's
+    /// lifetime (see `CharWalkGuard`). A reader's `enter_read` and the
+    /// coordinator's `wait_for_quiescence` must observe the same `active_readers`
+    /// counter, or quiescence is vacuous and eviction frees nodes out from under a
+    /// live walk.
+    pub(crate) epoch_manager: Arc<crate::persistent_artrie::concurrency::EpochManager>,
+    /// Epoch-deferred retire list for evicted subtrees. Eviction `unswizzle`s a
+    /// subtree's parent slot then retires the subtree root here instead of freeing
+    /// it inline; the reclaimer frees it only after a quiescence drain proves no
+    /// live `DictionaryNode` walk holds a pointer into it. See [`reclaim`].
+    pub(crate) retire_list: Arc<reclaim::CharRetireList<V>>,
+    /// Monotonic counter bumped on every durable in-place structural mutation (via
+    /// `invalidate_eviction_registry` at the `append_to_wal` chokepoint). A
+    /// `DictionaryNode` walk snapshots it at `root()`; in debug builds each handle
+    /// rechecks it before dereferencing its raw node pointer and panics on a
+    /// mismatch — surfacing the contract violation "a handle was used across a
+    /// concurrent structural mutation" (which would dangle the raw pointer) as a
+    /// loud failure instead of silent UB. NOT bumped by eviction (EBR-safe) or by
+    /// faulting (a read-path operation), so a walk concurrent with eviction/faulting
+    /// does not trip it.
+    pub(crate) structural_generation: std::sync::atomic::AtomicU64,
     /// Retry statistics for monitoring
     pub(crate) retry_stats: crate::persistent_artrie::concurrency::RetryStats,
 
@@ -565,6 +591,108 @@ impl<'a, V: DictionaryValue + Default> FromIterator<&'a str> for PersistentARTri
     }
 }
 
+/// Object-safe (over the block-storage parameter `S`) faulting capability that
+/// lets a [`PersistentARTrieCharNode`] resolve on-disk (swizzled) child pointers
+/// during a lock-free `DictionaryNode` walk without naming `S`.
+///
+/// After a trie is reopened from disk (or after eviction), a node's child slots
+/// hold swizzled [`SwizzledPtr`](crate::persistent_artrie::swizzled_ptr::SwizzledPtr)s
+/// whose `as_ptr()` returns `None`. The non-faulting
+/// `CharTrieNodeInner::{get_child, iter_children}` therefore drop those children,
+/// which silently truncates any `DictionaryNode`-driven traversal (e.g.
+/// liblevenshtein's `Transducer`) to the resident subtree — the root alone after
+/// a fresh reopen. The node carries a type-erased pointer to this trait so
+/// `transition`/`edges` can fault children in via the trie's
+/// `get_child_lazy_u32`/`resolve_swizzled_ptr`, exactly as the `iter_prefix` path
+/// already does. Implemented for every `PersistentARTrieChar<V, S>`; the concrete
+/// `S` is erased at the `from_trie` call site (the only place that names it).
+pub(crate) trait CharNodeFaulter<V: DictionaryValue> {
+    /// Fault in (loading from disk if the child is swizzled) and return the child
+    /// of `node` reached by `key` (a `char` as `u32`). Returns `None` when there
+    /// is no such edge or the load fails — both degrade to "no transition", the
+    /// only non-panicking mapping available through the infallible
+    /// `DictionaryNode` API (a transient I/O error yields a miss, never UB).
+    fn fault_child_u32(
+        &self,
+        node: &CharTrieNodeInner<V>,
+        key: u32,
+    ) -> Option<&CharTrieNodeInner<V>>;
+
+    /// Fault in (loading from disk if swizzled) and return the child behind an
+    /// already-located child slot, or `None` if it is null/unresolvable.
+    fn fault_slot(
+        &self,
+        slot: &crate::persistent_artrie::swizzled_ptr::SwizzledPtr,
+    ) -> Option<&CharTrieNodeInner<V>>;
+
+    /// Current structural generation of the owning trie. Used only by the
+    /// debug-only walk-contract detector (see
+    /// `PersistentARTrieChar::structural_generation`).
+    fn structural_generation(&self) -> u64;
+}
+
+impl<V: DictionaryValue, S: crate::persistent_artrie::block_storage::BlockStorage>
+    CharNodeFaulter<V> for PersistentARTrieChar<V, S>
+{
+    #[inline]
+    fn fault_child_u32(
+        &self,
+        node: &CharTrieNodeInner<V>,
+        key: u32,
+    ) -> Option<&CharTrieNodeInner<V>> {
+        self.get_child_lazy_u32(node, key).ok().flatten()
+    }
+
+    #[inline]
+    fn fault_slot(
+        &self,
+        slot: &crate::persistent_artrie::swizzled_ptr::SwizzledPtr,
+    ) -> Option<&CharTrieNodeInner<V>> {
+        self.resolve_swizzled_ptr(slot).ok()
+    }
+
+    #[inline]
+    fn structural_generation(&self) -> u64 {
+        self.structural_generation
+            .load(std::sync::atomic::Ordering::Acquire)
+    }
+}
+
+/// RAII pin carried by every [`PersistentARTrieCharNode`] handle produced by a
+/// [`SharedCharARTrie`] walk. While ANY handle of the walk (the root, its
+/// transitive children, and all their clones) is alive:
+///
+/// - `_keepalive` holds a type-erased `Arc` clone of the owning
+///   `Arc<RwLock<PersistentARTrieChar<V, S>>>`, keeping the trie allocation alive
+///   at a fixed address — so the node's raw `node`/`faulter` pointers stay valid
+///   even if the caller drops its own trie handle mid-walk.
+/// - `_epoch` pins the trie's (shared) `EpochManager` — one `enter_read` on
+///   construction, one `exit_read` on `Drop` — so the eviction coordinator's
+///   `wait_for_quiescence` blocks until this walk drains before it reclaims any
+///   node the walk may still hold.
+///
+/// Shared behind an `Arc` and propagated by clone, so the pin is acquired once at
+/// `root()` and released exactly once when the last handle of the walk drops.
+#[allow(dead_code)] // `_epoch`/`_keepalive` held for their `Drop` side effects (RAII);
+                    // `gen_snapshot` read only by the debug-only contract detector
+struct CharWalkGuard {
+    _epoch: crate::persistent_artrie_core::mvcc::EpochGuard,
+    _keepalive: Arc<dyn std::any::Any + Send + Sync>,
+    /// `PersistentARTrieChar::structural_generation` snapshot at `root()`; the
+    /// debug-only detector compares the trie's current generation against this on
+    /// each handle deref to catch a handle used across a structural mutation.
+    gen_snapshot: u64,
+}
+
+impl std::fmt::Debug for CharWalkGuard {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CharWalkGuard")
+            .field("epoch", &self._epoch.epoch())
+            .field("gen", &self.gen_snapshot)
+            .finish_non_exhaustive()
+    }
+}
+
 /// Node in the character-level trie for DictionaryNode trait
 #[derive(Debug, Clone)]
 pub struct PersistentARTrieCharNode<V: DictionaryValue = ()> {
@@ -574,9 +702,30 @@ pub struct PersistentARTrieCharNode<V: DictionaryValue = ()> {
     is_root: bool,
     /// Whether the root is empty (no children)
     root_empty: bool,
+    /// Type-erased handle to the owning trie's faulting capability. Used by
+    /// `transition`/`edges` to load on-disk (swizzled) children during a
+    /// lock-free transducer walk. Validity is guaranteed by `pin` (below): the
+    /// pin's `_keepalive` Arc keeps the trie — and thus this pointer's target —
+    /// alive for the walk. `None` only for a node never built from a trie.
+    faulter: Option<*const dyn CharNodeFaulter<V>>,
+    /// Walk pin (see [`CharWalkGuard`]). `Some` for handles from
+    /// [`SharedCharARTrie::root`] — the only path where concurrent eviction can
+    /// run — where it keeps the trie alive and pins the shared epoch so eviction
+    /// cannot reclaim a node this walk holds until the walk drains. `None` for an
+    /// owned `PersistentARTrieChar::root()` walk (an owned trie cannot enable
+    /// eviction, so nothing frees concurrently). Propagated by clone to every
+    /// child handle; released when the last handle drops.
+    pin: Option<Arc<CharWalkGuard>>,
 }
 
-// Safety: The node pointer is valid for the lifetime of the trie
+// Safety: the `node` and `faulter` raw pointers reference trie-owned storage.
+// They are kept valid for the walk by `pin` (a `CharWalkGuard`): the pin holds an
+// `Arc` clone of the owning `Arc<RwLock<trie>>` (so the allocation stays put) and
+// pins the shared `EpochManager` (so eviction's `wait_for_quiescence` drains this
+// walk before reclaiming any node it holds). Only `&`-references are formed on the
+// read path (no `&mut` aliasing); faulting transitions slots on-disk -> in-memory
+// via atomic CAS. For an owned-trie walk (`pin == None`) no concurrent free is
+// possible, so the pointers are valid for as long as the caller holds the trie.
 unsafe impl<V: DictionaryValue> Send for PersistentARTrieCharNode<V> {}
 unsafe impl<V: DictionaryValue> Sync for PersistentARTrieCharNode<V> {}
 
@@ -585,26 +734,67 @@ impl<V: DictionaryValue> PersistentARTrieCharNode<V> {
     fn from_trie<S: crate::persistent_artrie::block_storage::BlockStorage>(
         trie: &PersistentARTrieChar<V, S>,
     ) -> Self {
+        // Erase `S`: capture the trie as a `dyn CharNodeFaulter<V>` so children
+        // can be faulted in during traversal without the node naming `S`.
+        let faulter: Option<*const dyn CharNodeFaulter<V>> =
+            Some(trie as &dyn CharNodeFaulter<V> as *const dyn CharNodeFaulter<V>);
+        // `pin` is `None` here; `SharedCharARTrie::root` attaches the walk pin
+        // after building the root node (only it has the owning `Arc<RwLock>`).
         match &trie.root {
             CharTrieRoot::Empty => Self {
                 node: None,
                 is_root: true,
                 root_empty: true,
+                faulter,
+                pin: None,
             },
             CharTrieRoot::Node(node) => Self {
                 node: Some(node.as_ref() as *const _),
                 is_root: true,
                 root_empty: false,
+                faulter,
+                pin: None,
             },
         }
     }
 
-    /// Create a node from a node pointer
-    fn from_ptr(ptr: *const CharTrieNodeInner<V>) -> Self {
+    /// Create a child node from a node pointer, inheriting the parent's faulter
+    /// and walk pin so descent can continue to load on-disk grandchildren and the
+    /// epoch stays pinned for the whole walk.
+    fn from_ptr(
+        ptr: *const CharTrieNodeInner<V>,
+        faulter: Option<*const dyn CharNodeFaulter<V>>,
+        pin: Option<Arc<CharWalkGuard>>,
+    ) -> Self {
         Self {
             node: Some(ptr),
             is_root: false,
             root_empty: false,
+            faulter,
+            pin,
+        }
+    }
+
+    /// Debug-only detector for the walk contract: a `DictionaryNode` handle must
+    /// not be used across a structural mutation of the same trie. Compares the
+    /// trie's current `structural_generation` against the snapshot taken at
+    /// `root()`; a mismatch means a concurrent in-place insert/remove ran while
+    /// this handle was alive — the handle's raw pointer may dangle. Compiled to a
+    /// no-op in release builds (the contract, not the detector, is the guarantee).
+    #[inline]
+    fn debug_check_no_concurrent_mutation(&self) {
+        #[cfg(debug_assertions)]
+        if let (Some(pin), Some(faulter)) = (self.pin.as_ref(), self.faulter) {
+            // Safety: `faulter` points at the trie, kept alive by the pin's `_keepalive`.
+            let current = unsafe { (*faulter).structural_generation() };
+            debug_assert_eq!(
+                current, pin.gen_snapshot,
+                "a `DictionaryNode` handle was used across a structural mutation of \
+                 the same trie — walk-contract violation: a handle must not outlive a \
+                 concurrent insert/remove on the same trie (concurrent bulk writes \
+                 must go through the lock-free overlay). The handle's raw pointer may \
+                 now dangle."
+            );
         }
     }
 }
@@ -613,11 +803,12 @@ impl<V: DictionaryValue> DictionaryNode for PersistentARTrieCharNode<V> {
     type Unit = char;
 
     fn is_final(&self) -> bool {
+        self.debug_check_no_concurrent_mutation();
         if self.root_empty {
             return false;
         }
         if let Some(ptr) = self.node {
-            // Safety: pointer is valid for the lifetime of the trie
+            // Safety: pointer validity is guaranteed by `pin` for the walk.
             unsafe { (*ptr).is_final() }
         } else {
             false
@@ -625,34 +816,71 @@ impl<V: DictionaryValue> DictionaryNode for PersistentARTrieCharNode<V> {
     }
 
     fn transition(&self, label: char) -> Option<Self> {
+        self.debug_check_no_concurrent_mutation();
         if self.root_empty {
             return None;
         }
-        if let Some(ptr) = self.node {
-            // Safety: pointer is valid for the lifetime of the trie
-            unsafe {
-                (*ptr)
-                    .get_child(label)
-                    .map(|child| Self::from_ptr(child as *const _))
+        let ptr = self.node?;
+        // Safety: `ptr` references trie-owned storage, valid for the trie's lifetime.
+        let node_ref = unsafe { &*ptr };
+        match self.faulter {
+            // Fault the child in (loading from disk if its slot is swizzled) so
+            // traversal descends correctly on a reopened/evicted trie. A missing
+            // edge or a transient load error both map to `None` (no transition).
+            Some(faulter) => {
+                // Safety: `faulter` points at the owning trie, valid for its lifetime.
+                let faulter_ref = unsafe { &*faulter };
+                faulter_ref
+                    .fault_child_u32(node_ref, label as u32)
+                    .map(|child| Self::from_ptr(child as *const _, self.faulter, self.pin.clone()))
             }
-        } else {
-            None
+            // No faulter (node never built from a trie): resident-only lookup,
+            // never worse than the previous behavior.
+            None => node_ref
+                .get_child(label)
+                .map(|child| Self::from_ptr(child as *const _, None, self.pin.clone())),
         }
     }
 
     fn edges(&self) -> Box<dyn Iterator<Item = (char, Self)> + '_> {
+        self.debug_check_no_concurrent_mutation();
         if self.root_empty || self.node.is_none() {
             return Box::new(std::iter::empty());
         }
-
         let ptr = self.node.unwrap();
-        // Safety: pointer is valid for the lifetime of the trie
-        let edges: Vec<_> = unsafe {
-            (*ptr)
+        // Safety: `ptr` references trie-owned storage, valid for the trie's lifetime.
+        let node_ref = unsafe { &*ptr };
+
+        let Some(faulter) = self.faulter else {
+            // Resident-only fallback (no faulter); preserves the prior behavior.
+            let edges: Vec<_> = node_ref
                 .iter_children()
-                .map(|(c, child)| (c, Self::from_ptr(child as *const _)))
-                .collect()
+                .map(|(c, child)| (c, Self::from_ptr(child as *const _, None, self.pin.clone())))
+                .collect();
+            return Box::new(edges.into_iter());
         };
+        // Safety: `faulter` points at the owning trie, valid for its lifetime.
+        let faulter_ref = unsafe { &*faulter };
+
+        // Iterate ALL child slots (including swizzled/on-disk ones) via the inner
+        // `CharNode` iterator — unlike `CharTrieNodeInner::iter_children`, which
+        // drops swizzled slots through `as_ptr` — and fault each in on demand.
+        // Preallocated to the known child count.
+        let mut edges = Vec::with_capacity(node_ref.num_children());
+        for (key, slot) in node_ref.node.iter_children() {
+            if slot.is_null() {
+                continue;
+            }
+            let Some(c) = char::from_u32(key) else {
+                continue;
+            };
+            if let Some(child) = faulter_ref.fault_slot(slot) {
+                edges.push((
+                    c,
+                    Self::from_ptr(child as *const _, Some(faulter), self.pin.clone()),
+                ));
+            }
+        }
         Box::new(edges.into_iter())
     }
 }
@@ -665,8 +893,9 @@ impl<V: DictionaryValue> MappedDictionaryNode for PersistentARTrieCharNode<V> {
     /// value-aware transducer queries (value-yielding + `query_filtered` /
     /// `query_by_value_set`) over the persistent char trie.
     fn value(&self) -> Option<V> {
-        // Safety: the node pointer is valid for the lifetime of the trie
-        // (same invariant the `DictionaryNode` methods above rely on).
+        self.debug_check_no_concurrent_mutation();
+        // Safety: the node pointer's validity is guaranteed by `pin` (same
+        // invariant the `DictionaryNode` methods rely on).
         self.node.and_then(|ptr| unsafe { (*ptr).value.clone() })
     }
 }
@@ -713,7 +942,27 @@ impl<V: DictionaryValue> Dictionary for SharedCharARTrie<V> {
 
     fn root(&self) -> Self::Node {
         let guard = self.read();
-        PersistentARTrieCharNode::from_trie(&guard)
+        // Build the walk pin while STILL holding the read guard (so the epoch is
+        // entered before the guard drops, leaving no window for eviction to
+        // advance+drain past us): pin the shared epoch and capture a type-erased
+        // `Arc` clone of the trie to keep it alive for the walk. This is the only
+        // `root()` path subject to concurrent eviction; the owned
+        // `PersistentARTrieChar::root` carries no pin.
+        let trie_arc: SharedCharARTrie<V> = Arc::clone(self);
+        let keepalive: Arc<dyn std::any::Any + Send + Sync> = trie_arc;
+        let gen_snapshot = guard
+            .structural_generation
+            .load(std::sync::atomic::Ordering::Acquire);
+        let pin = Arc::new(CharWalkGuard {
+            _epoch: crate::persistent_artrie_core::mvcc::EpochGuard::new(Arc::clone(
+                &guard.epoch_manager,
+            )),
+            _keepalive: keepalive,
+            gen_snapshot,
+        });
+        let mut node = PersistentARTrieCharNode::from_trie(&guard);
+        node.pin = Some(pin);
+        node
     }
 
     fn contains(&self, term: &str) -> bool {
@@ -1022,14 +1271,32 @@ impl<V: DictionaryValue> crate::artrie_trait::ARTrie for SharedCharARTrie<V> {
 // EvictableARTrie Trait Implementation (on SharedCharARTrie)
 // ============================================================================
 
-/// Reclaim a batch of in-memory char nodes, unswizzling each to its on-disk
-/// location and dropping the freed box. Shared by the asynchronous eviction loop
-/// (started in [`SharedCharARTrie::enable_eviction`]) and the synchronous
+/// Reclaim a batch of in-memory char nodes via non-blocking epoch-based
+/// reclamation. Shared by the asynchronous eviction loop (started in
+/// [`SharedCharARTrie::enable_eviction`]) and the synchronous
 /// [`force_eviction`](crate::artrie_trait::EvictableARTrie::force_eviction) path,
 /// so both reclaim identically. Returns `(nodes_evicted, bytes_freed)`.
 ///
-/// Takes the trie write lock for the batch; callers MUST NOT hold any trie or
-/// eviction-registry lock when invoking it (parking_lot locks are not re-entrant).
+/// Ordering (the heart of the eviction-vs-walk safety):
+/// 1. **Unlink + retire under the write lock.** Each victim's parent slot is
+///    `unswizzle`d (so the subtree is unreachable to NEW readers) and the subtree
+///    root is RETIRED — never freed inline.
+/// 2. **Release the write lock**, then **drain**. Holding the write lock across the
+///    drain would block `root()`'s read lock, so readers could never enter/exit and
+///    `active_readers` could never reach zero — a stall. The `fence(SeqCst)` orders
+///    the unlinks before the reader-count read (pairing with readers' `SeqCst`
+///    `enter_read`): either we observe an active reader (and defer), or any such
+///    reader observes the unlink and re-faults a fresh node instead of the retired
+///    one.
+/// 3. **Free only when no reader is active** (inline fast path) **or after a
+///    successful quiescence drain**. On a timed-out drain, leave the retirees for a
+///    later cycle — NEVER free under a possibly-live reader. Because the drain is to
+///    ZERO readers, a successful drain authorizes freeing the WHOLE accumulated
+///    retire list (no live reader holds any retired pointer), so no per-generation
+///    bookkeeping is needed.
+///
+/// Callers MUST NOT hold any trie or eviction-registry lock when invoking it
+/// (parking_lot locks are not re-entrant).
 fn evict_char_nodes<V: DictionaryValue>(
     trie: &SharedCharARTrie<V>,
     nodes_to_evict: Vec<(
@@ -1037,24 +1304,53 @@ fn evict_char_nodes<V: DictionaryValue>(
         Vec<char>,
         crate::persistent_artrie::swizzled_ptr::SwizzledPtr,
     )>,
+    quiescence_timeout: std::time::Duration,
+    quiescence_poll: std::time::Duration,
 ) -> (usize, usize) {
-    let mut guard = trie.write();
-    let mut evicted_count = 0;
-    let mut bytes_freed = 0;
+    // Clone the shared epoch manager + retire list out under a brief read lock so
+    // the drain and the (possibly O(subtree)) reclaim hold NO trie lock.
+    let (epoch_manager, retire_list) = {
+        let guard = trie.read();
+        (
+            Arc::clone(&guard.epoch_manager),
+            Arc::clone(&guard.retire_list),
+        )
+    };
 
-    for (_path_hash, path, disk_ptr) in nodes_to_evict {
-        if guard.evict_node_at_path(&path, disk_ptr.clone()) {
-            evicted_count += 1;
-            bytes_freed += 256; // Estimate ~256 bytes per node
+    // Phase 1: unlink + retire under the write lock.
+    let (evicted_count, bytes_freed) = {
+        let mut guard = trie.write();
+        let mut evicted_count = 0;
+        let mut bytes_freed = 0;
+        for (_path_hash, path, disk_ptr) in nodes_to_evict {
+            if guard.evict_node_at_path(&path, disk_ptr.clone()) {
+                evicted_count += 1;
+                bytes_freed += 256; // Estimate ~256 bytes per node
 
-            // Remove from LRU tracking so a later reload starts fresh.
-            if let Some(ref coordinator) = guard.eviction_coordinator {
-                use crate::persistent_artrie::eviction::lru_tracker::hash_char_path;
-                coordinator
-                    .lru_registry()
-                    .remove_hash(hash_char_path(&path));
+                // Remove from LRU tracking so a later reload starts fresh.
+                if let Some(ref coordinator) = guard.eviction_coordinator {
+                    use crate::persistent_artrie::eviction::lru_tracker::hash_char_path;
+                    coordinator
+                        .lru_registry()
+                        .remove_hash(hash_char_path(&path));
+                }
             }
         }
+        (evicted_count, bytes_freed)
+    }; // write lock released here
+
+    // Phase 2 (NO lock held): drain, then reclaim.
+    std::sync::atomic::fence(std::sync::atomic::Ordering::SeqCst);
+    let drained = epoch_manager.active_reader_count() == 0
+        || epoch_manager
+            .wait_for_quiescence(quiescence_timeout, quiescence_poll)
+            .is_ok();
+    if drained {
+        // SAFETY: a zero-reader observation (inline or via a successful drain),
+        // ordered after the unlinks by the `SeqCst` fence + readers' `SeqCst`
+        // `enter_read`, guarantees no live walk holds a pointer into ANY retired
+        // subtree. Freeing the unlinked, now-private subtrees is sound.
+        unsafe { retire_list.reclaim_all() };
     }
 
     (evicted_count, bytes_freed)
@@ -1078,8 +1374,18 @@ impl<V: DictionaryValue> crate::artrie_trait::EvictableARTrie for SharedCharARTr
             return Err(PersistentARTrieError::internal("Eviction already enabled"));
         }
 
-        // Create the epoch manager reference
-        let epoch_manager = Arc::new(crate::persistent_artrie::concurrency::EpochManager::new());
+        // Capture the quiescence parameters for the reclaim path: the eviction
+        // callback drains this shared epoch before freeing retired subtrees.
+        let quiescence_timeout = config.quiescence_timeout;
+        let quiescence_poll = config.quiescence_poll_interval;
+
+        // Share the trie's OWN epoch manager with the coordinator. Previously this
+        // minted a FRESH manager, so the coordinator's `wait_for_quiescence` drained
+        // a counter no reader ever incremented (vacuous quiescence) — eviction could
+        // then free a node a live `DictionaryNode` walk still held. A walk pins this
+        // same manager via `CharWalkGuard`, so the coordinator now genuinely waits
+        // for active walks to drain before reclaiming.
+        let epoch_manager = Arc::clone(&guard.epoch_manager);
 
         // Create the eviction coordinator
         let coordinator = crate::persistent_artrie::eviction::EvictionCoordinator::new(
@@ -1097,7 +1403,7 @@ impl<V: DictionaryValue> crate::artrie_trait::EvictableARTrie for SharedCharARTr
                 let Some(trie) = self_weak.upgrade() else {
                     return (0, 0);
                 };
-                evict_char_nodes(&trie, nodes_to_evict)
+                evict_char_nodes(&trie, nodes_to_evict, quiescence_timeout, quiescence_poll)
             })
             .map_err(|e| PersistentARTrieError::internal(&e))?;
 
@@ -1155,9 +1461,14 @@ impl<V: DictionaryValue> crate::artrie_trait::EvictableARTrie for SharedCharARTr
         // `locations` map and would always return (0, 0) for a char trie, whose
         // nodes are registered in `char_locations`. `force_eviction_char` selects
         // from `char_locations` and reclaims inline via `evict_char_nodes`.
+        // The eviction callback drains the shared epoch (after unlinking) before
+        // freeing retired subtrees; pass the quiescence parameters from the config.
+        let quiescence_timeout = coordinator.quiescence_timeout();
+        let quiescence_poll = coordinator.quiescence_poll_interval();
         let trie = Arc::clone(self);
-        Ok(coordinator
-            .force_eviction_char(target_bytes, move |nodes| evict_char_nodes(&trie, nodes)))
+        Ok(coordinator.force_eviction_char(target_bytes, move |nodes| {
+            evict_char_nodes(&trie, nodes, quiescence_timeout, quiescence_poll)
+        }))
     }
 
     fn touch_node(&self, path: &[Self::Unit]) {
@@ -1201,6 +1512,13 @@ impl<V: DictionaryValue, S: crate::persistent_artrie::block_storage::BlockStorag
     /// helpers that delegate to them — logs through it, while `checkpoint` (which
     /// writes its WAL record directly) and WAL recovery replay do not.
     pub(crate) fn invalidate_eviction_registry(&self) {
+        // Bump the structural generation on every durable in-place mutation (this is
+        // the `append_to_wal` chokepoint). A concurrent `DictionaryNode` walk's
+        // debug detector compares its `root()` snapshot against this and panics on a
+        // mismatch, surfacing the "handle used across a structural mutation" contract
+        // violation (which would dangle the handle's raw pointer) as a loud failure.
+        self.structural_generation
+            .fetch_add(1, std::sync::atomic::Ordering::Release);
         if let Some(ref coordinator) = self.eviction_coordinator {
             coordinator.invalidate_registry();
         }
@@ -1301,16 +1619,17 @@ impl<V: DictionaryValue, S: crate::persistent_artrie::block_storage::BlockStorag
             target_loc.node_type,
         ) {
             Ok(raw_ptr) => {
-                // SAFETY: the slot was just unswizzled, so we own the old
-                // pointer and no other thread can observe the in-memory
-                // node through that slot. The pointer was originally
-                // produced from `Box::into_raw(Box::new(...))` during
-                // insertion, so it is valid to recover into a `Box` and
-                // drop here.
-                unsafe {
-                    let _: Box<types::CharTrieNodeInner<V>> =
-                        Box::from_raw(raw_ptr as *mut types::CharTrieNodeInner<V>);
-                }
+                // Do NOT free inline. The slot was just `unswizzle`d to an on-disk
+                // reference, so this (possibly non-leaf) subtree is now UNLINKED —
+                // unreachable to any NEW reader, which re-faults a fresh box from
+                // disk. But a concurrent lock-free `DictionaryNode` walk may still
+                // hold a raw pointer to this node or one of its resident
+                // descendants. RETIRE the subtree root; the reclaimer
+                // (`evict_char_nodes`) frees the whole now-private subtree via its
+                // recursive `Drop` only after a quiescence drain proves no reader
+                // active-at-unlink remains. See [`reclaim`].
+                self.retire_list
+                    .retire(raw_ptr as *mut types::CharTrieNodeInner<V>);
                 true
             }
             Err(_) => false,
@@ -1321,6 +1640,112 @@ impl<V: DictionaryValue, S: crate::persistent_artrie::block_storage::BlockStorag
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Regression: after a trie is reopened from disk, the root's children are
+    /// swizzled (on-disk) `SwizzledPtr`s. The `DictionaryNode` traversal that
+    /// external transducers (e.g. liblevenshtein) drive MUST fault those
+    /// children in. Before the swizzle-aware fix, `transition`/`edges` used the
+    /// non-faulting `get_child`/`iter_children`, which drop swizzled children via
+    /// `as_ptr`, so the walk saw an empty subtree and every fuzzy query returned
+    /// zero hits after a daemon restart. (liblevenshtein is not a dev-dependency
+    /// here, so this drives the `DictionaryNode` API the transducer relies on
+    /// directly; the end-to-end transducer test lives in pgmcp.)
+    #[test]
+    fn dictionary_node_traversal_descends_after_reopen() {
+        use crate::{DictionaryNode, MappedDictionaryNode};
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("reopen_traversal.artc");
+
+        // Build + checkpoint + DROP so the in-memory node boxes are released and
+        // only the on-disk image remains.
+        {
+            let mut trie = PersistentARTrieChar::<i32>::create(&path).expect("create");
+            trie.insert_with_value("receive", 1).expect("insert");
+            trie.insert_with_value("recipe", 2).expect("insert");
+            trie.insert_with_value("decide", 3).expect("insert");
+            trie.checkpoint().expect("checkpoint");
+        }
+
+        // Reopen: root resident, children swizzled (on-disk, `eager_depth=None`).
+        let trie = PersistentARTrieChar::<i32>::open(&path).expect("open");
+        assert_eq!(trie.len(), 3);
+
+        // Before the fix this count was 0 (swizzled children dropped by `as_ptr`).
+        assert!(
+            trie.root().edges().count() > 0,
+            "root edges empty after reopen — swizzle-fault regression"
+        );
+
+        // Descend the full path of an inserted term; every step must fault the
+        // next on-disk child in, ending on a final node that carries its value.
+        let mut node = trie.root();
+        for ch in "receive".chars() {
+            node = node
+                .transition(ch)
+                .unwrap_or_else(|| panic!("transition '{ch}' lost after reopen"));
+        }
+        assert!(node.is_final(), "terminal node not final after reopen");
+        assert_eq!(node.value(), Some(1), "value lost after reopen");
+
+        // An absent first character still yields no transition (no false edge).
+        assert!(
+            trie.root().transition('x').is_none(),
+            "spurious transition for absent edge"
+        );
+    }
+
+    /// Regression variant: forced eviction swizzles resident node boxes back to
+    /// disk. The `DictionaryNode` traversal must re-fault them on demand. The
+    /// background eviction thread is stopped before traversal so the assertions
+    /// are deterministic and race-free (the production tool instances likewise
+    /// never run eviction concurrently with a query).
+    #[test]
+    fn dictionary_node_traversal_descends_after_forced_eviction() {
+        use crate::{Dictionary, DictionaryNode, EvictableARTrie};
+        use parking_lot::RwLock;
+        use std::sync::Arc;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("evict_traversal.artc");
+        {
+            let mut trie = PersistentARTrieChar::<i32>::create(&path).expect("create");
+            for (t, v) in [
+                ("receive", 1),
+                ("recipe", 2),
+                ("recital", 3),
+                ("reception", 4),
+                ("decide", 5),
+            ] {
+                trie.insert_with_value(t, v).expect("insert");
+            }
+            trie.checkpoint().expect("checkpoint");
+        }
+
+        let shared: SharedCharARTrie<i32> = Arc::new(RwLock::new(
+            PersistentARTrieChar::<i32>::open(&path).expect("open"),
+        ));
+
+        // Enable eviction + checkpoint to populate the disk-location registry,
+        // force a one-shot reclaim, then stop the background thread BEFORE
+        // traversing. `force_eviction` may legitimately reclaim zero nodes; the
+        // assertions require only query correctness, so the test holds either way.
+        let _ = shared.enable_eviction(EvictionConfig::default());
+        shared.write().checkpoint().expect("checkpoint");
+        let _ = shared.force_eviction(usize::MAX);
+        let _ = shared.disable_eviction();
+
+        assert!(
+            shared.root().edges().count() > 0,
+            "root edges empty after eviction — re-fault regression"
+        );
+        let mut node = shared.root();
+        for ch in "reception".chars() {
+            node = node
+                .transition(ch)
+                .unwrap_or_else(|| panic!("transition '{ch}' lost after eviction"));
+        }
+        assert!(node.is_final(), "terminal node not final after eviction");
+    }
 
     #[test]
     #[allow(deprecated)]

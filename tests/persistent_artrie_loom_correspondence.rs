@@ -1703,3 +1703,86 @@ fn child_pointer_handoff_keeps_arc_alive_for_readers() {
         assert_eq!(drops.load(Ordering::SeqCst), 1);
     });
 }
+
+// ============================================================================
+// Char-trie eviction-vs-walk EBR (epoch-based reclamation) models.
+//
+// These mirror the protocol in `EvictionWalkEBR.tla` /
+// `PersistentCharEpochReclamationSpec.v` and the implementation in
+// `persistent_artrie_char::{reclaim, evict_char_nodes}` +
+// `persistent_artrie_core::concurrency::EpochManager`, WITHOUT making the
+// production code depend on loom primitives. Loom exhaustively explores the
+// thread interleavings.
+//
+// Tool division for the gated drain-to-zero reclaim:
+//
+// The reclaim's safety (an unlinked node is freed only after every reader that
+// could hold it has drained) rests on the SeqCst STORE-LOAD ordering between a
+// reader's `enter_read` (store `active`) / pointer load and the evictor's unlink
+// (store the slot) / `active_reader_count` load — a store-buffer (Dekker) litmus
+// that ONLY full SeqCst forbids. Loom does not faithfully model SeqCst store-load
+// ordering, so a loom model of this reclaim reports a SPURIOUS use-after-free that
+// real SeqCst hardware (and the C11 model the implementation targets) forbid.
+//
+// That ordering is therefore verified where it can be modeled faithfully:
+//   * `EvictionWalkEBR.tla` (TLC) — models the gated protocol under a true total
+//     order; `NoUseAfterFree` holds with the gate (`Gated = TRUE`) and is VIOLATED
+//     without it (`Gated = FALSE`), proving the gate is necessary;
+//   * `PersistentCharEpochReclamationSpec.v` (Rocq) — proves NoUseAfterFree is a
+//     state invariant of the unlink -> retire -> drain -> free protocol;
+//   * `tests/persistent_char_ebr_correspondence.rs` — exercises the REAL code
+//     (walks ‖ eviction over a reopened trie) under ASan/TSan.
+//
+// Loom's contribution below is the part it models robustly: the lock-free
+// swizzle-install CAS race (AcqRel), which has no SC store-load dependency.
+// ============================================================================
+
+/// Two readers fault the SAME on-disk slot concurrently (CAS-install). Exactly one
+/// wins and publishes its box; the loser frees its OWN (never-published) box and
+/// adopts the winner's. Both observe the same installed box, and the loser's free
+/// is never a double-free of the published box. Models `resolve_swizzled_ptr`'s
+/// install race in `disk_io.rs`.
+#[test]
+fn swizzle_install_race_single_winner_no_double_free() {
+    fn fault(slot: &AtomicUsize, loser_frees: &AtomicUsize, my_box: usize) -> usize {
+        // Fast path: already installed by someone else.
+        let cur = slot.load(Ordering::Acquire);
+        if cur != 0 {
+            return cur;
+        }
+        // Slow path: try to install my own box.
+        match slot.compare_exchange(0, my_box, Ordering::AcqRel, Ordering::Acquire) {
+            Ok(_) => my_box, // won the race: my box is now published
+            Err(winner) => {
+                // lost: free my own unpublished box, adopt the winner's.
+                loser_frees.fetch_add(1, Ordering::SeqCst);
+                winner
+            }
+        }
+    }
+
+    loom::model(|| {
+        let slot = Arc::new(AtomicUsize::new(0)); // 0 = on-disk / empty
+        let loser_frees = Arc::new(AtomicUsize::new(0));
+
+        let t1 = {
+            let (slot, lf) = (slot.clone(), loser_frees.clone());
+            thread::spawn(move || fault(&slot, &lf, 1))
+        };
+        let t2 = {
+            let (slot, lf) = (slot.clone(), loser_frees.clone());
+            thread::spawn(move || fault(&slot, &lf, 2))
+        };
+        let r1 = t1.join().expect("t1");
+        let r2 = t2.join().expect("t2");
+
+        let installed = slot.load(Ordering::Acquire);
+        assert!(installed == 1 || installed == 2, "no box installed");
+        assert_eq!(r1, installed, "reader 1 disagrees with installed box");
+        assert_eq!(r2, installed, "reader 2 disagrees with installed box");
+        assert!(
+            loser_frees.load(Ordering::SeqCst) <= 1,
+            "double-free: more than one loser box freed"
+        );
+    });
+}

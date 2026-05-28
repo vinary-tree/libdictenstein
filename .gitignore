@@ -133,3 +133,5 @@ tsan-suppressions.txt
 target/coverage/
 lcov.info
 cobertura.xml
+
+.pgmcp.toml

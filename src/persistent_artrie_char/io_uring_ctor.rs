@@ -74,7 +74,9 @@ impl<V: DictionaryValue>
             file_path: Some(path.to_path_buf()),
             arena_manager: Some(arena_manager),
             version: OptimisticVersion::new(),
-            epoch_manager: EpochManager::new(),
+            epoch_manager: Arc::new(EpochManager::new()),
+            retire_list: Arc::new(super::reclaim::CharRetireList::new()),
+            structural_generation: std::sync::atomic::AtomicU64::new(0),
             retry_stats: RetryStats::new(),
             #[cfg(feature = "group-commit")]
             group_commit: None,
@@ -172,7 +174,9 @@ impl<V: DictionaryValue>
             file_path: Some(path.to_path_buf()),
             arena_manager: Some(arena_manager),
             version: OptimisticVersion::new(),
-            epoch_manager: EpochManager::new(),
+            epoch_manager: Arc::new(EpochManager::new()),
+            retire_list: Arc::new(super::reclaim::CharRetireList::new()),
+            structural_generation: std::sync::atomic::AtomicU64::new(0),
             retry_stats: RetryStats::new(),
             #[cfg(feature = "group-commit")]
             group_commit: None,

@@ -12,10 +12,11 @@
 //! **G9 — `MappedDictionaryNode::value()`** on `PersistentARTrieCharNode<V>`.
 //!
 //! Two facts shape these tests:
-//! 1. The node-walk API (`transition`) does NOT lazily reload evicted (on-disk)
-//!    nodes — only the `get` read path does (via `get_child_lazy`). So G9
-//!    `value()` is exercised over in-memory tries, and "value survives eviction"
-//!    is checked through the reloading `get` path.
+//! 1. The node-walk API (`transition`/`edges`) lazily FAULTS evicted (on-disk)
+//!    nodes back in (the swizzle-fault fix in HEAD), exactly like the `get` read
+//!    path. So a walk over a reopened/evicted trie reaches the stored values —
+//!    see `value_at_reloads_after_eviction`. (Before the fix the node walk dropped
+//!    swizzled children and returned zero results after a reopen/eviction.)
 //! 2. The white-box proof that an evicted slot actually becomes a DiskRef — and
 //!    the end-to-end *async* eviction path (`request_eviction` lives only on the
 //!    private coordinator) — need internal access and live in the in-crate
@@ -274,8 +275,9 @@ fn reopen_identical_with_and_without_eviction() {
 // ============================ G9: MappedDictionaryNode::value ============================
 
 /// Walk the node API from the root; returns `(is_final, value)` at the term, or
-/// `(false, None)` if the term's path does not exist. In-memory only (the node
-/// API does not reload evicted nodes — see the module docs).
+/// `(false, None)` if the term's path does not exist. The node walk now FAULTS
+/// evicted (on-disk) nodes back in (see the module docs), so this also reaches
+/// values over a reopened/evicted trie, not just an in-memory one.
 fn value_at(trie: &PersistentARTrieChar<i32>, term: &str) -> (bool, Option<i32>) {
     let mut node = trie.root();
     for c in term.chars() {
@@ -303,6 +305,41 @@ fn value_at_terminal_and_nonterminal_nodes() {
 
     // A path that does not exist.
     assert_eq!(value_at(&trie, "zzz"), (false, None));
+}
+
+#[test]
+fn value_at_reloads_after_eviction() {
+    // After the swizzle-fault fix, the node-walk API (`transition`) FAULTS evicted
+    // (on-disk) nodes back in, so a walk reaches the stored value just like the
+    // `get` path. Before the fix this returned `(false, None)` for any path whose
+    // nodes had been evicted — this test is the positive RED->GREEN guard.
+    let dir = tempdir().expect("tempdir");
+    let shared = deep_shared_trie(&dir.path().join("g9walk_evict.trie"));
+    shared
+        .enable_eviction(EvictionConfig::without_memory_monitor())
+        .expect("enable");
+    shared.write().checkpoint().expect("checkpoint");
+    assert!(
+        shared.force_eviction(1 << 20).expect("force").0 >= 1,
+        "expected at least one node evicted"
+    );
+    // Stop eviction before walking so the walk is race-free (mirrors production:
+    // queries do not run concurrently with eviction reclamation).
+    shared.disable_eviction().expect("disable");
+
+    // Walk the node API; `transition` must fault the evicted nodes back in and
+    // reach the stored values.
+    let guard = shared.read();
+    assert_eq!(
+        value_at(&*guard, "alphabet"),
+        (true, Some(2)),
+        "transition must reload evicted node and yield value for \"alphabet\""
+    );
+    assert_eq!(
+        value_at(&*guard, "zenith"),
+        (true, Some(4)),
+        "transition must reload evicted node and yield value for \"zenith\""
+    );
 }
 
 #[test]

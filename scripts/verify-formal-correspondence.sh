@@ -47,6 +47,8 @@ run_capped cargo test --features persistent-artrie --test persistent_artrie_form
 run_capped cargo test --features persistent-artrie --test persistent_prefix_correspondence
 run_capped cargo test --features persistent-artrie --test persistent_read_snapshot_correspondence
 run_capped cargo test --features persistent-artrie --test persistent_char_node_layout_correspondence
+run_capped cargo test --features persistent-artrie --test dictionary_node_reopen_traversal_correspondence
+run_capped cargo test --features persistent-artrie --test persistent_char_ebr_correspondence
 run_capped cargo test --features persistent-artrie --test relative_encoding_correspondence
 run_capped cargo test --features persistent-artrie --test arena_manager_correspondence
 run_capped cargo test --features persistent-artrie --test dedup_arena_correspondence
@@ -236,7 +238,9 @@ if command -v tla2sany >/dev/null 2>&1; then
       PersistentCharBulkMutationRecovery \
       PersistentTransactionIncrementRecovery \
       ByzantineStorage \
-      HotStuffConsensus
+      HotStuffConsensus \
+      PublicDictionaryNodeTraversal \
+      EvictionWalkEBR
     do
       run_capped tla2sany "${module}.tla"
     done
@@ -279,7 +283,9 @@ if [ "${RUN_TLC:-0}" = "1" ]; then
       PersistentCharBulkMutationRecovery \
       PersistentTransactionIncrementRecovery \
       ByzantineStorage \
-      HotStuffConsensus
+      HotStuffConsensus \
+      PublicDictionaryNodeTraversal \
+      EvictionWalkEBR
     do
       run_capped tlc -workers 1 -config "${module}.cfg" "${module}.tla"
     done

@@ -273,7 +273,16 @@ impl EpochManager {
     ///
     /// Returns the current epoch for validation.
     pub fn enter_read(&self) -> u64 {
-        self.active_readers.fetch_add(1, Ordering::AcqRel);
+        // SeqCst: the pin-publish (this increment) must be globally ordered BEFORE
+        // any pointer the reader subsequently loads. This is the StoreLoad barrier
+        // epoch-based reclamation requires — it pairs with the `fence(SeqCst)` a
+        // reclaimer issues after unlinking a node and before reading
+        // `active_reader_count`. Together they guarantee that if the reclaimer's
+        // scan fails to observe this reader, the reader is guaranteed to observe
+        // the reclaimer's unlink (and re-fault a fresh node) rather than deref a
+        // freed one. `AcqRel`/`Acquire` alone permit StoreLoad reordering and are
+        // NOT sufficient.
+        self.active_readers.fetch_add(1, Ordering::SeqCst);
         self.global_epoch.load(Ordering::Acquire)
     }
 
@@ -281,7 +290,10 @@ impl EpochManager {
     ///
     /// When the last reader exits, notifies any threads waiting for quiescence.
     pub fn exit_read(&self) {
-        let prev = self.active_readers.fetch_sub(1, Ordering::AcqRel);
+        // SeqCst: a reader's pointer accesses must be globally ordered BEFORE this
+        // un-pin, so a reclaimer that observes the count drop to zero is guaranteed
+        // the reader is done touching any node it held.
+        let prev = self.active_readers.fetch_sub(1, Ordering::SeqCst);
         // If we were the last reader (prev was 1, now 0), notify waiters
         if prev == 1 {
             // Lock briefly to synchronize with condvar wait
@@ -307,13 +319,19 @@ impl EpochManager {
     }
 
     /// Check if there are any active readers.
+    ///
+    /// `SeqCst`: a reclaimer reads this AFTER a `fence(SeqCst)` that follows its
+    /// unlink; the SeqCst load participates in the same total order as readers'
+    /// SeqCst `enter_read`, closing the StoreLoad gap (see [`Self::enter_read`]).
     pub fn has_active_readers(&self) -> bool {
-        self.active_readers.load(Ordering::Acquire) > 0
+        self.active_readers.load(Ordering::SeqCst) > 0
     }
 
     /// Get the number of active readers.
+    ///
+    /// `SeqCst` for the same EBR StoreLoad reason as [`Self::has_active_readers`].
     pub fn active_reader_count(&self) -> usize {
-        self.active_readers.load(Ordering::Acquire)
+        self.active_readers.load(Ordering::SeqCst)
     }
 
     /// Wait for epoch quiescence (no active readers).

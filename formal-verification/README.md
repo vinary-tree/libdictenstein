@@ -155,6 +155,8 @@ formal-verification/
 | Public WAL Lifecycle | Safety | Public byte/char/vocab open recovers persisted checkpoints plus synced retained WAL tails, and group-commit returned LSNs match durable WAL record order |
 | Persistent End-to-End Trace | Safety | Public mutations, checkpoint publication, byte compaction rewrite, crash/reopen replay, and vocab bijection preservation compose into one recoverable trace |
 | Public Read Snapshot Traversal | Safety | Byte/char/vocab public iteration, prefix iteration, and zipper-style traversal return exact visible snapshots or fail closed on lazy/disk corruption |
+| Public DictionaryNode Traversal | Safety | The faulting `DictionaryNode` walk reaches exactly the snapshot regardless of residency (`WalkReachesAllKeys`); faulting/reopen never drop a key; the non-faulting walk is sound but incomplete over swizzled children |
+| Eviction Walk EBR | Safety | No active reader observes a freed node under the gated unlink → retire → drain → free reclaim (`NoUseAfterFree`); a linked node is never freed; the gate is necessary (the property is violated with `Gated = FALSE`) |
 | Concurrent Vocab Linearizability | Safety | Public insert/read/batch/checkpoint/recover histories have a sequential vocabulary-map explanation respecting real-time order |
 | Epoch Checkpoint Recovery | Safety | Epoch metadata is published only after the trie checkpoint, and WAL cleanup retains recovery evidence for visible operations |
 | Transaction Increment Recovery | Safety | Transaction increment aggregation/current-value overflow fails before commit WAL publication, and replay stops before overflowed `BatchIncrement` suffixes |
@@ -488,6 +490,8 @@ As of 2026-05-26: all modules **Complete** — 0 `Admitted` / 0 `Axiom` /
 | SerializationRoundtripSpec.v | Complete | Public serializer membership/value roundtrip, legacy value-dropping, gzip/protobuf feature-codec, and fail-closed malformed-payload laws |
 | ARTrieSpec.v | Complete (0 Admitted) | ARTrie specification incl. normalized checked construction and insert/delete correctness theorems |
 | ReplicatedMapSpec.v | Complete | Replicated put/remove log replay over the map-entry reference model |
+| DictionaryNodeReopenTraversalSpec.v | Complete (0 Admitted) | Faulting `DictionaryNode` traversal is residency-invariant (equals the snapshot regardless of swizzled children), reopen preserves it, `edges` enumerates all children, and the non-faulting walk is sound but strictly incomplete over swizzled children |
+| PersistentCharEpochReclamationSpec.v | Complete (0 Admitted) | Eviction-vs-walk EBR: no active reader observes a freed node, preserved as a state invariant of the gated unlink → retire → drain → free protocol |
 | StructuralInvariants.v | Complete (0 Admitted) | Structural invariants |
 | TransitionInvariants.v | Complete (0 Admitted) | Node transition proofs (corrected `_after_insert` / `_with_lower_bound` variants) |
 | ArenaInvariants.v | Complete | Arena allocation invariants |
@@ -549,6 +553,8 @@ The formal specifications model the key components of the Rust implementation:
 | `PersistentMergeSpec.v` | `tests/persistent_merge_correspondence.rs`, `PersistentARTrie::iter_prefix_from_cursor`, `merge_from_batched`, `merge_from_batched_grouped`, and `SharedARTrieParallelExt::merge_from_parallel` |
 | `PersistentPrefixSpec.v` | `tests/persistent_prefix_correspondence.rs`, `tests/persistent_bulk_mutation_correspondence.rs`, `PersistentARTrieChar::iter_prefix*`, `iter_prefix_with_*_arena`, `remove_prefix`, `remove_prefix_batched`, and byte/char checked `increment`/`fetch_add` overflow |
 | `PersistentReadTraversalSpec.v` | `tests/persistent_read_snapshot_correspondence.rs`, byte `PersistentARTrie::iter*`/`iter_prefix*`, char `PersistentARTrieChar::iter*`/`iter_prefix*`, and vocab `iter_terms*` checkpoint/reopen traversal |
+| `DictionaryNodeReopenTraversalSpec.v` + `PublicDictionaryNodeTraversal.tla` | `tests/dictionary_node_reopen_traversal_correspondence.rs`, char `PersistentARTrieCharNode::{transition,edges,is_final,value}` faulting after checkpoint/reopen (the `DictionaryNode` walk a transducer drives) |
+| `PersistentCharEpochReclamationSpec.v` + `EvictionWalkEBR.tla` | `tests/persistent_char_ebr_correspondence.rs` (threaded, TSan/ASan) + `tests/persistent_artrie_loom_correspondence.rs` (swizzle-install race), char `evict_char_nodes`/`reclaim::CharRetireList` + `CharWalkGuard` epoch pin |
 | `PathMapFactorySpec.v` | `tests/pathmap_factory_correspondence.rs`, optional `PathMapDictionary`, `PathMapDictionaryChar`, `PathMapZipper`, `MutableDictionary`/`MutableMappedDictionary` impls, and `DictionaryFactory` dispatch under `pathmap-backend` |
 | `RelativeEncodingSpec.v` | `tests/relative_encoding_correspondence.rs`, byte and char `relative_encoding` checked APIs, `serialization.rs`, `serialization_char.rs`, and persistent fail-closed child-pointer deserialization |
 | `ArenaReservationSpec.v` | `tests/arena_manager_correspondence.rs`, byte and char `ArenaManager` allocation/reservation/update/dirty-flush/load paths |

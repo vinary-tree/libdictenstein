@@ -133,7 +133,12 @@ impl std::fmt::Debug for AlignedBlock {
 /// Implementations must be safe for concurrent access from multiple threads.
 /// The `BufferManager` may call `read_block` from multiple threads simultaneously,
 /// and `write_block` / `allocate_block` from one thread while others read.
-pub trait BlockStorage: Send + Sync {
+// `'static`: every storage backend owns its resources (mmap/files/buffers) and
+// carries no borrowed lifetime; all impls (MmapDiskManager, IoUringDiskManager,
+// TrackingFixedStorage) are concrete owned types. Requiring it lets a
+// `PersistentARTrieChar<V, S>` be erased behind a `dyn` trait object (see
+// `CharNodeFaulter` in persistent_artrie_char) without a node lifetime param.
+pub trait BlockStorage: Send + Sync + 'static {
     /// Read a full block from storage.
     ///
     /// # Arguments

@@ -847,58 +847,84 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     ///
     /// # Safety
     ///
-    /// The returned reference is valid as long as the node is not evicted from
-    /// memory. In the current implementation, nodes are never evicted.
+    /// The returned reference points at a trie-owned node. For the durable
+    /// `DictionaryNode` walk it remains valid because the walk pins the trie's
+    /// epoch (see `CharWalkGuard`): eviction `unswizzle`s + RETIRES nodes and frees
+    /// them only after a quiescence drain proves no pinned reader remains
+    /// (epoch-based reclamation). NOTE: nodes ARE evicted — the prior "never
+    /// evicted" claim was stale. The reference is not valid across a concurrent
+    /// in-place mutation of the same node.
     pub(super) fn resolve_swizzled_ptr(&self, ptr: &SwizzledPtr) -> Result<&CharTrieNodeInner<V>> {
         use crate::persistent_artrie::error::SwizzleError;
 
-        // Fast path: already in memory
-        if let Some(p) = ptr.as_ptr::<CharTrieNodeInner<V>>() {
-            // Safety: We control all SwizzledPtr creation; ptr is valid
-            return Ok(unsafe { &*p });
-        }
-
-        // Null pointer check
-        if ptr.is_null() {
-            return Err(PersistentARTrieError::internal(
-                "Cannot resolve null SwizzledPtr",
-            ));
-        }
-
-        // Slow path: load from disk
-        let buffer_manager = self
-            .buffer_manager
-            .as_ref()
-            .ok_or_else(|| PersistentARTrieError::internal("No buffer manager for disk access"))?;
-
-        // Load the node data (lazy - children are not recursively loaded)
-        let loaded = self.load_char_node_from_disk_lazy(buffer_manager, ptr)?;
-        let boxed = Box::new(loaded);
-        let raw_ptr = Box::into_raw(boxed);
-
-        // Try to swizzle atomically
-        match ptr.swizzle(raw_ptr) {
-            Ok(()) => {
-                // We won the race
-                Ok(unsafe { &*raw_ptr })
+        // Retry loop. Concurrent walks may fault the SAME slot at once, and
+        // eviction may `unswizzle` it concurrently, so the slot can be observed in
+        // a transient state (`INSTALLING`/`EVICTING`). We must never read the
+        // pointer until the slot SETTLES to a terminal state — MEMORY (an installer
+        // won; return its pointer) or on-disk (an evictor won; reload). Reading
+        // mid-`INSTALLING` (as the prior loser branch did via `as_ptr_unchecked`)
+        // could observe a not-yet-published null pointer — a use-after/​read of an
+        // uninitialized slot.
+        loop {
+            // Fast path: already in memory (terminal MEMORY state).
+            if let Some(p) = ptr.as_ptr::<CharTrieNodeInner<V>>() {
+                // Safety: state == MEMORY_STATE, so the memory pointer is published
+                // and (for a pinned walk) kept alive by epoch reclamation.
+                return Ok(unsafe { &*p });
             }
-            Err(SwizzleError::RaceCondition) | Err(SwizzleError::AlreadySwizzled) => {
-                // Another thread won the race - free our copy and use theirs
-                unsafe {
-                    drop(Box::from_raw(raw_ptr));
-                }
-                // Safety: The winner has swizzled the pointer
-                Ok(unsafe { &*ptr.as_ptr_unchecked::<CharTrieNodeInner<V>>() })
+
+            // Null slot.
+            if ptr.is_null() {
+                return Err(PersistentARTrieError::internal(
+                    "Cannot resolve null SwizzledPtr",
+                ));
             }
-            Err(e) => {
-                // Something else went wrong - free our allocation
-                unsafe {
-                    drop(Box::from_raw(raw_ptr));
+
+            // Transient (INSTALLING/EVICTING): another thread is mid-transition.
+            // Spin until it settles, then re-examine.
+            if !ptr.is_on_disk() {
+                std::hint::spin_loop();
+                continue;
+            }
+
+            // On disk: load and try to install (swizzle) it.
+            let buffer_manager = self.buffer_manager.as_ref().ok_or_else(|| {
+                PersistentARTrieError::internal("No buffer manager for disk access")
+            })?;
+            let loaded = match self.load_char_node_from_disk_lazy(buffer_manager, ptr) {
+                Ok(loaded) => loaded,
+                // A racing fault swizzled the slot out from under us between the
+                // `is_on_disk` check and the load; retry to pick up the resident ptr.
+                Err(_) if !ptr.is_on_disk() => {
+                    std::hint::spin_loop();
+                    continue;
                 }
-                Err(PersistentARTrieError::internal(&format!(
-                    "Swizzle failed: {:?}",
-                    e
-                )))
+                Err(e) => return Err(e),
+            };
+            let raw_ptr = Box::into_raw(Box::new(loaded));
+
+            match ptr.swizzle(raw_ptr) {
+                // We won: our box is now published.
+                Ok(()) => return Ok(unsafe { &*raw_ptr }),
+                // Lost the race (another fault is installing, or eviction changed
+                // the slot). Free our copy and retry: the loop re-reads the SETTLED
+                // state — MEMORY (return the winner's ptr) or on-disk (reload).
+                Err(SwizzleError::RaceCondition)
+                | Err(SwizzleError::AlreadySwizzled)
+                | Err(SwizzleError::AlreadyUnswizzled) => {
+                    // Safety: `raw_ptr` is our own never-published box.
+                    unsafe { drop(Box::from_raw(raw_ptr)) };
+                    std::hint::spin_loop();
+                    continue;
+                }
+                Err(e) => {
+                    // Safety: `raw_ptr` is our own never-published box.
+                    unsafe { drop(Box::from_raw(raw_ptr)) };
+                    return Err(PersistentARTrieError::internal(&format!(
+                        "Swizzle failed: {:?}",
+                        e
+                    )));
+                }
             }
         }
     }

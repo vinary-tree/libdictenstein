@@ -112,6 +112,21 @@ impl EvictionCoordinator {
         })
     }
 
+    /// Quiescence timeout from the eviction config.
+    ///
+    /// The char reclaim path (`evict_char_nodes`) drains this (shared) epoch AFTER
+    /// unlinking a batch and before freeing the retired subtrees; it reads these
+    /// parameters for that drain.
+    pub fn quiescence_timeout(&self) -> std::time::Duration {
+        self.config.quiescence_timeout
+    }
+
+    /// Quiescence poll interval from the eviction config (see
+    /// [`Self::quiescence_timeout`]).
+    pub fn quiescence_poll_interval(&self) -> std::time::Duration {
+        self.config.quiescence_poll_interval
+    }
+
     /// Start the eviction coordinator with a callback for performing evictions.
     ///
     /// The callback is invoked for each batch of nodes to evict. It receives:
@@ -469,11 +484,13 @@ impl EvictionCoordinator {
                 continue;
             }
 
-            if !self.wait_for_quiescence() {
-                self.stats.record_quiescence_timeout();
-                continue;
-            }
-
+            // NB: no pre-eviction drain here (unlike the byte `eviction_loop`). The
+            // char reclaim path (`evict_char_nodes`, invoked by the callback) does
+            // epoch-based reclamation in the correct order — unlink + retire, THEN
+            // drain, THEN free. Draining BEFORE the unlink would be unnecessary AND
+            // over-conservative: it would skip eviction entirely whenever any walk
+            // is active, even though the post-unlink drain handles that case safely
+            // (deferring the free, never freeing under a live reader).
             let start = Instant::now();
             let (nodes_evicted, bytes_freed) = self.perform_eviction_char(&*callback, &request);
             let duration_ms = start.elapsed().as_millis() as u64;

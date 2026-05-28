@@ -10,8 +10,6 @@
 //! Run with: cargo bench --bench persistent_artrie_char_benchmarks --features persistent-artrie
 
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
-#[cfg(feature = "persistent-artrie")]
-use libdictenstein::persistent_artrie_char::PersistentARTrieChar;
 use libdictenstein::{persistent_artrie_char::PersistentARTrieChar, DictionaryNode};
 use std::hint::black_box as bb;
 
@@ -117,7 +115,7 @@ fn bench_char_construction(c: &mut Criterion) {
             size,
             |b, _| {
                 b.iter(|| {
-                    let dict: PersistentARTrieChar<()> = PersistentARTrieChar::new();
+                    let mut dict: PersistentARTrieChar<()> = PersistentARTrieChar::new();
                     for term in &terms {
                         dict.insert(bb(term));
                     }
@@ -144,7 +142,7 @@ fn bench_char_construction_ascii(c: &mut Criterion) {
             size,
             |b, _| {
                 b.iter(|| {
-                    let dict: PersistentARTrieChar<()> = PersistentARTrieChar::new();
+                    let mut dict: PersistentARTrieChar<()> = PersistentARTrieChar::new();
                     for term in &terms {
                         dict.insert(bb(term));
                     }
@@ -169,7 +167,7 @@ fn bench_char_lookup(c: &mut Criterion) {
         let terms = generate_unicode_terms(*size);
         let queries = generate_queries(&terms, 100);
 
-        let dict: PersistentARTrieChar<()> = PersistentARTrieChar::new();
+        let mut dict: PersistentARTrieChar<()> = PersistentARTrieChar::new();
         for term in &terms {
             dict.insert(term);
         }
@@ -213,7 +211,7 @@ fn bench_char_lookup_cjk(c: &mut Criterion) {
 
     let queries: Vec<String> = terms.iter().take(100).cloned().collect();
 
-    let dict: PersistentARTrieChar<()> = PersistentARTrieChar::new();
+    let mut dict: PersistentARTrieChar<()> = PersistentARTrieChar::new();
     for term in &terms {
         dict.insert(term);
     }
@@ -245,7 +243,7 @@ fn bench_char_edge_traversal(c: &mut Criterion) {
     for size in [100, 1000, 5000].iter() {
         let terms = generate_unicode_terms(*size);
 
-        let dict: PersistentARTrieChar<()> = PersistentARTrieChar::new();
+        let mut dict: PersistentARTrieChar<()> = PersistentARTrieChar::new();
         for term in &terms {
             dict.insert(term);
         }
@@ -286,7 +284,7 @@ fn bench_char_transitions(c: &mut Criterion) {
         let terms = generate_unicode_terms(*size);
         let queries: Vec<_> = terms.iter().take(100).collect();
 
-        let dict: PersistentARTrieChar<()> = PersistentARTrieChar::new();
+        let mut dict: PersistentARTrieChar<()> = PersistentARTrieChar::new();
         for term in &terms {
             dict.insert(term);
         }
@@ -336,7 +334,7 @@ fn bench_char_transitions_emoji(c: &mut Criterion) {
 
     let queries: Vec<_> = terms.iter().take(50).collect();
 
-    let dict: PersistentARTrieChar<()> = PersistentARTrieChar::new();
+    let mut dict: PersistentARTrieChar<()> = PersistentARTrieChar::new();
     for term in &terms {
         dict.insert(term);
     }
@@ -374,7 +372,7 @@ fn bench_char_iteration(c: &mut Criterion) {
     for size in [100, 500, 1000].iter() {
         let terms = generate_unicode_terms(*size);
 
-        let dict: PersistentARTrieChar<()> = PersistentARTrieChar::new();
+        let mut dict: PersistentARTrieChar<()> = PersistentARTrieChar::new();
         for term in &terms {
             dict.insert(term);
         }
@@ -404,7 +402,7 @@ fn bench_char_optimistic_reads(c: &mut Criterion) {
         let terms = generate_unicode_terms(*size);
         let queries = generate_queries(&terms, 100);
 
-        let dict: PersistentARTrieChar<()> = PersistentARTrieChar::new();
+        let mut dict: PersistentARTrieChar<()> = PersistentARTrieChar::new();
         for term in &terms {
             dict.insert(term);
         }
@@ -443,7 +441,7 @@ fn bench_char_memory_efficiency(c: &mut Criterion) {
             size,
             |b, _| {
                 b.iter(|| {
-                    let dict: PersistentARTrieChar<()> = PersistentARTrieChar::new();
+                    let mut dict: PersistentARTrieChar<()> = PersistentARTrieChar::new();
                     for term in &terms {
                         dict.insert(term);
                     }
@@ -516,7 +514,7 @@ fn bench_char_disk_io(c: &mut Criterion) {
                 for _ in 0..iters {
                     let start = Instant::now();
                     let dict = PersistentARTrieChar::<()>::open(&path).expect("open dict");
-                    black_box(dict.len);
+                    black_box(dict.len());
                     total += start.elapsed();
                 }
                 total
