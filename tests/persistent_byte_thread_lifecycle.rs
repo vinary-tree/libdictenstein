@@ -22,7 +22,6 @@
 use libdictenstein::artrie_trait::{ARTrie, EvictableARTrie};
 use libdictenstein::persistent_artrie::eviction::EvictionConfig;
 use libdictenstein::persistent_artrie::SharedARTrie;
-use libdictenstein::MutableDictionary;
 use std::time::{Duration, Instant};
 use tempfile::tempdir;
 
@@ -80,10 +79,12 @@ fn wait_until_threads_at_most(target: usize, timeout: Duration) -> usize {
 /// (from `enable_eviction` with the default, monitor-enabled config).
 fn build_trie_with_eviction(path: &std::path::Path) -> SharedARTrie<()> {
     let shared: SharedARTrie<()> = ARTrie::create(path).expect("create byte trie");
-    // The byte trie is a plain (value-less) dictionary — unlike the char/vocab
-    // tries it does not implement `MutableMappedDictionary`.
-    assert!(MutableDictionary::insert(&shared, "alpha"));
-    assert!(MutableDictionary::insert(&shared, "alphabet"));
+    // The byte trie is a plain (value-less) dictionary — it inserts terms via
+    // the `ARTrie` trait (`SharedARTrie` implements neither
+    // `MutableMappedDictionary` nor `MutableDictionary`, which the char/vocab
+    // tries use for valued inserts).
+    assert!(ARTrie::insert(&shared, "alpha"));
+    assert!(ARTrie::insert(&shared, "alphabet"));
     shared
         .enable_eviction(EvictionConfig::default())
         .expect("enable eviction");

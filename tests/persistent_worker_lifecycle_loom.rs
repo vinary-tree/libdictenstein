@@ -1,4 +1,4 @@
-#![cfg(loom)]
+#![cfg(feature = "persistent-artrie")]
 //! Loom model of the background-worker *teardown* handshake (the
 //! `disable_eviction` / `close` deadlock fix).
 //!

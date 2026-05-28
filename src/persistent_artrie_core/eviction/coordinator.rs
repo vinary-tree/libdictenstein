@@ -12,7 +12,7 @@ use std::sync::{Arc, Weak};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use parking_lot::{Condvar, Mutex, RwLock};
+use parking_lot::{Mutex, RwLock};
 
 use super::config::{EvictionConfig, EvictionStats, EvictionStatsAtomic, EvictionUrgency};
 use super::disk_registry::DiskLocationRegistry;
@@ -66,8 +66,6 @@ pub struct EvictionCoordinator {
     lru_registry: Arc<LruRegistry>,
     /// Pending eviction requests
     request_queue: Mutex<VecDeque<EvictionRequest>>,
-    /// Condition variable for waking eviction thread
-    request_condvar: Condvar,
     /// Shutdown flag
     shutdown: AtomicBool,
     /// Eviction thread handle
@@ -101,7 +99,6 @@ impl EvictionCoordinator {
             epoch_manager,
             lru_registry,
             request_queue: Mutex::new(VecDeque::with_capacity(16)),
-            request_condvar: Condvar::new(),
             shutdown: AtomicBool::new(false),
             eviction_thread: Mutex::new(None),
             stats: Arc::new(EvictionStatsAtomic::new()),
@@ -284,8 +281,8 @@ impl EvictionCoordinator {
             }
             queue.push_back(request);
         }
-
-        self.request_condvar.notify_one();
+        // The worker polls `try_pop_request` every 100 ms (it drives itself
+        // through a `Weak<Self>`), so there is no condvar to notify here.
     }
 
     /// Manually trigger eviction (for testing/debugging).
@@ -399,8 +396,8 @@ impl EvictionCoordinator {
         self.stop_memory_monitor();
 
         self.shutdown.store(true, Ordering::SeqCst);
-        self.request_condvar.notify_all();
-
+        // The worker polls the `shutdown` flag every 100 ms, so no condvar wake
+        // is needed; the join below completes within one poll interval.
         if let Some(handle) = self.eviction_thread.lock().take() {
             let _ = handle.join();
         }
