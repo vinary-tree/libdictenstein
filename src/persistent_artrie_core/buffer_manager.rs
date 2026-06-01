@@ -5,7 +5,7 @@
 //!
 //! - **Page Cache**: Fixed-size pool of in-memory pages
 //! - **Clock Eviction**: O(1) amortized eviction with reference bit tracking
-//! - **Pin/Unpin**: RAII guards that prevent eviction during active use
+//! - **Read/Write Leases**: RAII guards that prevent eviction during active use
 //! - **Dirty Tracking**: Pages modified in memory are tracked for write-back
 //!
 //! # Architecture
@@ -20,7 +20,7 @@
 //! │  Frame Metadata: Vec<FrameMetadata>                          │
 //! │    [frame 0] [frame 1] [frame 2] ... [frame N-1]            │
 //! │    - block_id: Option<u32>                                   │
-//! │    - pin_count: AtomicU32                                    │
+//! │    - lease_state: AtomicU32                                  │
 //! │    - dirty: AtomicBool                                       │
 //! │    - reference_bit: AtomicBool                               │
 //! ├─────────────────────────────────────────────────────────────┤
@@ -44,9 +44,10 @@
 //! This gives O(1) amortized eviction time with good cache behavior.
 
 use std::collections::HashMap;
+use std::ptr::NonNull;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 
-use parking_lot::RwLock;
+use parking_lot::{Mutex, RwLock};
 
 use super::block_storage::{AlignedBlock, BlockStorage};
 use super::disk_manager::{MmapDiskManager, BLOCK_SIZE};
@@ -60,8 +61,12 @@ pub type FrameId = usize;
 pub struct FrameMetadata {
     /// Block ID stored in this frame (u32::MAX = None/free)
     block_id: AtomicU32,
-    /// Number of active pins (frame cannot be evicted while > 0)
-    pin_count: AtomicU32,
+    /// Active lease state (frame cannot be evicted while non-zero).
+    ///
+    /// Values `0..WRITE_LEASE` are shared read leases. `WRITE_LEASE` is the
+    /// exclusive mutable lease bit. Page write guards use an exclusive lease
+    /// because `data_mut()` creates `&mut` from interior buffer storage.
+    lease_state: AtomicU32,
     /// Whether the page has been modified since last write-back
     dirty: AtomicBool,
     /// Reference bit for Clock algorithm (set on access, cleared by clock hand)
@@ -71,12 +76,14 @@ pub struct FrameMetadata {
 impl FrameMetadata {
     /// Sentinel value indicating no block is assigned (frame is free)
     const NONE_BLOCK: u32 = u32::MAX;
+    const WRITE_LEASE: u32 = 1 << 31;
+    const READERS_MASK: u32 = Self::WRITE_LEASE - 1;
 
     /// Create a new free frame
     fn new() -> Self {
         Self {
             block_id: AtomicU32::new(Self::NONE_BLOCK),
-            pin_count: AtomicU32::new(0),
+            lease_state: AtomicU32::new(0),
             dirty: AtomicBool::new(false),
             reference_bit: AtomicBool::new(false),
         }
@@ -89,19 +96,86 @@ impl FrameMetadata {
 
     /// Check if this frame is pinned
     fn is_pinned(&self) -> bool {
-        self.pin_count.load(Ordering::Acquire) > 0
+        self.lease_state.load(Ordering::Acquire) != 0
     }
 
-    /// Increment pin count
-    fn pin(&self) {
-        self.pin_count.fetch_add(1, Ordering::AcqRel);
-        self.reference_bit.store(true, Ordering::Release);
+    /// Check if this frame currently has an exclusive mutable lease.
+    fn has_write_lease(&self) -> bool {
+        self.lease_state.load(Ordering::Acquire) & Self::WRITE_LEASE != 0
     }
 
-    /// Decrement pin count
-    fn unpin(&self) {
-        let old = self.pin_count.fetch_sub(1, Ordering::AcqRel);
-        debug_assert!(old > 0, "unpin called on unpinned frame");
+    /// Acquire a shared read lease.
+    fn pin_read(&self) -> Result<()> {
+        loop {
+            let observed = self.lease_state.load(Ordering::Acquire);
+            if observed & Self::WRITE_LEASE != 0 {
+                return Err(PersistentARTrieError::internal(
+                    "cannot read-pin frame while an exclusive write lease is active",
+                ));
+            }
+            if observed == Self::READERS_MASK {
+                return Err(PersistentARTrieError::internal(
+                    "buffer frame read lease count overflow",
+                ));
+            }
+            if self
+                .lease_state
+                .compare_exchange_weak(observed, observed + 1, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+            {
+                self.reference_bit.store(true, Ordering::Release);
+                return Ok(());
+            }
+        }
+    }
+
+    /// Release a shared read lease.
+    fn unpin_read(&self) {
+        loop {
+            let observed = self.lease_state.load(Ordering::Acquire);
+            debug_assert!(
+                observed > 0 && observed & Self::WRITE_LEASE == 0,
+                "read unpin called without an active read lease"
+            );
+            if observed == 0 || observed & Self::WRITE_LEASE != 0 {
+                return;
+            }
+            if self
+                .lease_state
+                .compare_exchange_weak(observed, observed - 1, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+            {
+                return;
+            }
+        }
+    }
+
+    /// Acquire the exclusive mutable lease used by [`PageWriteGuard`].
+    fn pin_write(&self) -> Result<()> {
+        self.lease_state
+            .compare_exchange(0, Self::WRITE_LEASE, Ordering::AcqRel, Ordering::Acquire)
+            .map(|_| {
+                self.reference_bit.store(true, Ordering::Release);
+            })
+            .map_err(|_| {
+                PersistentARTrieError::internal(
+                    "cannot mutably pin frame while another page lease is active",
+                )
+            })
+    }
+
+    /// Release the exclusive mutable lease.
+    fn unpin_write(&self) {
+        let result = self.lease_state.compare_exchange(
+            Self::WRITE_LEASE,
+            0,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        );
+        debug_assert!(
+            result.is_ok(),
+            "write unpin called without an active write lease"
+        );
     }
 
     /// Mark the frame as dirty
@@ -158,7 +232,7 @@ impl<'a, S: BlockStorage> PageReadGuard<'a, S> {
 
 impl<'a, S: BlockStorage> Drop for PageReadGuard<'a, S> {
     fn drop(&mut self) {
-        self.buffer_manager.frames[self.frame_id].unpin();
+        self.buffer_manager.frames[self.frame_id].unpin_read();
     }
 }
 
@@ -201,7 +275,7 @@ impl<'a, S: BlockStorage> PageWriteGuard<'a, S> {
 impl<'a, S: BlockStorage> Drop for PageWriteGuard<'a, S> {
     fn drop(&mut self) {
         self.buffer_manager.frames[self.frame_id].mark_dirty();
-        self.buffer_manager.frames[self.frame_id].unpin();
+        self.buffer_manager.frames[self.frame_id].unpin_write();
     }
 }
 
@@ -215,6 +289,8 @@ pub struct BufferManager<S: BlockStorage = MmapDiskManager> {
     storage: S,
     /// Page table: maps block_id -> frame_id
     page_table: RwLock<HashMap<u32, FrameId>>,
+    /// Serializes frame residency changes and page-table-based lease acquisition.
+    lifecycle_lock: Mutex<()>,
     /// Frame metadata
     frames: Vec<FrameMetadata>,
     /// Buffer pool (actual page data, 4096-byte aligned for O_DIRECT compatibility)
@@ -257,6 +333,7 @@ impl<S: BlockStorage> BufferManager<S> {
         Self {
             storage,
             page_table: RwLock::new(HashMap::with_capacity(pool_size)),
+            lifecycle_lock: Mutex::new(()),
             frames,
             buffer_pool,
             clock_hand: AtomicUsize::new(0),
@@ -282,6 +359,7 @@ impl<S: BlockStorage> BufferManager<S> {
         Self {
             storage,
             page_table: RwLock::new(HashMap::with_capacity(pool_size)),
+            lifecycle_lock: Mutex::new(()),
             frames,
             buffer_pool,
             clock_hand: AtomicUsize::new(0),
@@ -320,6 +398,7 @@ impl<S: BlockStorage> BufferManager<S> {
         Self {
             storage,
             page_table: RwLock::new(HashMap::with_capacity(max_pool_size)),
+            lifecycle_lock: Mutex::new(()),
             frames,
             buffer_pool,
             clock_hand: AtomicUsize::new(0),
@@ -333,10 +412,19 @@ impl<S: BlockStorage> BufferManager<S> {
     ///
     /// If the page is already in the buffer pool, returns a guard immediately.
     /// Otherwise, loads the page from disk (potentially evicting another page).
+    ///
+    /// # Lease contention
+    ///
+    /// The returned [`PageReadGuard`] holds a shared **read lease**. Many
+    /// readers may hold read leases on the same page concurrently, but this
+    /// call returns an error if an exclusive write lease is currently held on
+    /// the page (see [`fetch_page_mut`](Self::fetch_page_mut)).
     pub fn fetch_page(&self, block_id: u32) -> Result<PageReadGuard<'_, S>> {
+        let _lifecycle = self.lifecycle_lock.lock();
+
         // Check if already in buffer pool
         if let Some(frame_id) = self.lookup_frame(block_id) {
-            self.frames[frame_id].pin();
+            self.frames[frame_id].pin_read()?;
             self.frames[frame_id]
                 .reference_bit
                 .store(true, Ordering::Release);
@@ -358,10 +446,21 @@ impl<S: BlockStorage> BufferManager<S> {
     ///
     /// Similar to `fetch_page`, but the returned guard will mark the page
     /// dirty when dropped.
+    ///
+    /// # Lease contention
+    ///
+    /// The returned [`PageWriteGuard`] holds an **exclusive** write lease: this
+    /// call returns an error if any other lease (read or write) is currently
+    /// held on the page. Callers that may race other accessors of the same page
+    /// must be prepared to retry. Internal callers serialize through the outer
+    /// `RwLock<BufferManager>` (writers take the write side), so they never
+    /// observe contention here.
     pub fn fetch_page_mut(&self, block_id: u32) -> Result<PageWriteGuard<'_, S>> {
+        let _lifecycle = self.lifecycle_lock.lock();
+
         // Check if already in buffer pool
         if let Some(frame_id) = self.lookup_frame(block_id) {
-            self.frames[frame_id].pin();
+            self.frames[frame_id].pin_write()?;
             self.frames[frame_id]
                 .reference_bit
                 .store(true, Ordering::Release);
@@ -372,7 +471,7 @@ impl<S: BlockStorage> BufferManager<S> {
         }
 
         // Need to load from disk
-        let frame_id = self.load_page(block_id)?;
+        let frame_id = self.load_page_mut(block_id)?;
         Ok(PageWriteGuard {
             buffer_manager: self,
             frame_id,
@@ -386,12 +485,28 @@ impl<S: BlockStorage> BufferManager<S> {
         // Allocate a new block on disk
         let block_id = self.storage.allocate_block()?;
 
-        // Get a frame for it
-        let frame_id = self.get_free_frame()?;
+        let _lifecycle = self.lifecycle_lock.lock();
+
+        // Get a frame for it. On failure (pool exhausted, etc.) free the
+        // just-allocated block so it is not leaked on disk.
+        let frame_id = match self.get_free_frame() {
+            Ok(frame_id) => frame_id,
+            Err(e) => {
+                let _ = self.storage.free_block(block_id);
+                return Err(e);
+            }
+        };
 
         // Initialize the frame
         self.frames[frame_id].set_block_id(Some(block_id));
-        self.frames[frame_id].pin();
+        if let Err(e) = self.frames[frame_id].pin_write() {
+            // The frame was free (no block, unpinned) so this is effectively
+            // unreachable, but roll back the block_id assignment and free the
+            // block defensively so neither the frame nor the block is leaked.
+            self.frames[frame_id].set_block_id(None);
+            let _ = self.storage.free_block(block_id);
+            return Err(e);
+        }
         self.frames[frame_id].mark_dirty();
 
         // Clear the buffer
@@ -414,6 +529,8 @@ impl<S: BlockStorage> BufferManager<S> {
     ///
     /// The page must not be pinned by anyone else.
     pub fn delete_page(&self, block_id: u32) -> Result<()> {
+        let _lifecycle = self.lifecycle_lock.lock();
+
         // Check if in buffer pool
         if let Some(frame_id) = self.lookup_frame(block_id) {
             let frame = &self.frames[frame_id];
@@ -440,10 +557,17 @@ impl<S: BlockStorage> BufferManager<S> {
 
     /// Flush a specific page to disk
     pub fn flush_page(&self, block_id: u32) -> Result<()> {
+        let _lifecycle = self.lifecycle_lock.lock();
+
         if let Some(frame_id) = self.lookup_frame(block_id) {
             let frame = &self.frames[frame_id];
 
             if frame.is_dirty() {
+                if frame.has_write_lease() {
+                    return Err(PersistentARTrieError::internal(
+                        "cannot flush page during an active mutable page lease",
+                    ));
+                }
                 self.storage.write_block_fixed(
                     block_id,
                     &self.buffer_pool[frame_id].data,
@@ -462,6 +586,7 @@ impl<S: BlockStorage> BufferManager<S> {
     /// standard batched writes otherwise. Dirty flags are cleared only AFTER
     /// the batch write succeeds, ensuring retry safety on failure.
     pub fn flush_all(&self) -> Result<()> {
+        let _lifecycle = self.lifecycle_lock.lock();
         let active_size = self.active_pool_size.load(Ordering::Acquire);
 
         // Collect all dirty (block_id, frame_id) pairs within active pool
@@ -478,6 +603,15 @@ impl<S: BlockStorage> BufferManager<S> {
             .collect();
 
         if !dirty_frames.is_empty() {
+            if dirty_frames
+                .iter()
+                .any(|&(_, frame_id)| self.frames[frame_id].has_write_lease())
+            {
+                return Err(PersistentARTrieError::internal(
+                    "cannot flush dirty pages during an active mutable page lease",
+                ));
+            }
+
             if self.fixed_buffers_registered {
                 // Zero-copy batched flush via pre-registered buffers
                 let requests: Vec<(u32, &[u8; BLOCK_SIZE], u16)> = dirty_frames
@@ -528,7 +662,7 @@ impl<S: BlockStorage> BufferManager<S> {
 
         // Set up the frame
         self.frames[frame_id].set_block_id(Some(block_id));
-        self.frames[frame_id].pin();
+        self.frames[frame_id].pin_read()?;
         self.frames[frame_id].clear_dirty();
         self.frames[frame_id]
             .reference_bit
@@ -540,13 +674,68 @@ impl<S: BlockStorage> BufferManager<S> {
         Ok(frame_id)
     }
 
+    /// Load a page from disk into a frame and return it with an exclusive write lease.
+    fn load_page_mut(&self, block_id: u32) -> Result<FrameId> {
+        let frame_id = self.get_free_frame()?;
+
+        // Read from disk before granting mutable access to the frame contents.
+        // Safety: We have exclusive access to this frame via get_free_frame.
+        unsafe {
+            let ptr = self.buffer_pool.as_ptr() as *mut AlignedBlock;
+            self.storage.read_block_fixed(
+                block_id,
+                &mut (*ptr.add(frame_id)).data,
+                frame_id as u16,
+            )?;
+        }
+
+        self.frames[frame_id].set_block_id(Some(block_id));
+        self.frames[frame_id].pin_write()?;
+        self.frames[frame_id].clear_dirty();
+        self.frames[frame_id]
+            .reference_bit
+            .store(true, Ordering::Release);
+
+        self.page_table.write().insert(block_id, frame_id);
+
+        Ok(frame_id)
+    }
+
+    /// Pin a page for raw-pointer-backed traversal caching.
+    ///
+    /// The returned pointer remains valid until [`Self::unpin_read_frame`] is
+    /// called for the frame, or until the buffer manager is dropped.
+    pub(crate) fn pin_page_data(
+        &self,
+        block_id: u32,
+    ) -> Result<(FrameId, NonNull<[u8; BLOCK_SIZE]>)> {
+        let _lifecycle = self.lifecycle_lock.lock();
+
+        let frame_id = if let Some(frame_id) = self.lookup_frame(block_id) {
+            self.frames[frame_id].pin_read()?;
+            self.frames[frame_id]
+                .reference_bit
+                .store(true, Ordering::Release);
+            frame_id
+        } else {
+            self.load_page(block_id)?
+        };
+
+        Ok((frame_id, NonNull::from(&self.buffer_pool[frame_id].data)))
+    }
+
+    /// Release a read lease acquired by [`Self::pin_page_data`].
+    pub(crate) fn unpin_read_frame(&self, frame_id: FrameId) {
+        self.frames[frame_id].unpin_read();
+    }
+
     /// Get a free frame using the Clock algorithm
     fn get_free_frame(&self) -> Result<FrameId> {
         let active_size = self.active_pool_size.load(Ordering::Acquire);
 
         // First pass: look for a free frame within active pool
         for frame_id in 0..active_size {
-            if self.frames[frame_id].is_free() {
+            if self.frames[frame_id].is_free() && !self.frames[frame_id].is_pinned() {
                 return Ok(frame_id);
             }
         }
@@ -635,6 +824,8 @@ impl<S: BlockStorage> BufferManager<S> {
     /// `new_with_max_capacity()`. Growing beyond the pre-allocated
     /// capacity is not supported.
     pub fn grow_pool(&self, additional_frames: usize) -> Result<usize> {
+        let _lifecycle = self.lifecycle_lock.lock();
+
         loop {
             let current = self.active_pool_size.load(Ordering::Acquire);
             let new_size = current.saturating_add(additional_frames);
@@ -674,6 +865,8 @@ impl<S: BlockStorage> BufferManager<S> {
     /// Frames that are pinned or contain data must be flushed first.
     /// This method will evict unpinned frames in the shrink range.
     pub fn shrink_pool(&self, frames_to_remove: usize) -> Result<usize> {
+        let _lifecycle = self.lifecycle_lock.lock();
+
         loop {
             let current = self.active_pool_size.load(Ordering::Acquire);
 
@@ -1143,6 +1336,83 @@ mod tests {
         // Fetch again and verify
         let guard = bm.fetch_page(block_id).expect("fetch_page");
         assert_eq!(guard.data()[100], 42);
+    }
+
+    #[test]
+    fn mutable_page_lease_excludes_other_leases() {
+        let bm = create_buffer_manager(10);
+
+        let mut guard = bm.new_page().expect("new_page");
+        let block_id = guard.block_id();
+        guard.data_mut()[0] = 7;
+        drop(guard);
+
+        let mut write_guard = bm.fetch_page_mut(block_id).expect("fetch_page_mut");
+        write_guard.data_mut()[0] = 9;
+
+        assert!(
+            bm.fetch_page(block_id).is_err(),
+            "read lease must not overlap an active mutable page lease"
+        );
+        assert!(
+            bm.fetch_page_mut(block_id).is_err(),
+            "second mutable lease must not alias the first mutable page lease"
+        );
+
+        drop(write_guard);
+
+        let read_guard = bm.fetch_page(block_id).expect("fetch after write lease");
+        assert_eq!(read_guard.data()[0], 9);
+    }
+
+    #[test]
+    fn read_page_lease_blocks_mutable_lease() {
+        let bm = create_buffer_manager(10);
+
+        let mut guard = bm.new_page().expect("new_page");
+        let block_id = guard.block_id();
+        guard.data_mut()[0] = 11;
+        drop(guard);
+
+        let read_guard = bm.fetch_page(block_id).expect("fetch_page");
+        assert_eq!(read_guard.data()[0], 11);
+        assert!(
+            bm.fetch_page_mut(block_id).is_err(),
+            "mutable page lease must not overlap an active read lease"
+        );
+
+        drop(read_guard);
+
+        let mut write_guard = bm
+            .fetch_page_mut(block_id)
+            .expect("fetch_page_mut after read");
+        write_guard.data_mut()[0] = 12;
+    }
+
+    #[test]
+    fn flush_rejects_dirty_page_with_active_mutable_lease() {
+        let bm = create_buffer_manager(10);
+
+        let mut guard = bm.new_page().expect("new_page");
+        let block_id = guard.block_id();
+        guard.data_mut()[0] = 1;
+        drop(guard);
+
+        let mut write_guard = bm.fetch_page_mut(block_id).expect("fetch_page_mut");
+        write_guard.data_mut()[0] = 2;
+
+        assert!(
+            bm.flush_page(block_id).is_err(),
+            "flush_page must not read a dirty frame while a mutable lease is active"
+        );
+        assert!(
+            bm.flush_all().is_err(),
+            "flush_all must not read dirty frames while a mutable lease is active"
+        );
+
+        drop(write_guard);
+        bm.flush_page(block_id)
+            .expect("flush succeeds after mutable lease release");
     }
 
     #[test]

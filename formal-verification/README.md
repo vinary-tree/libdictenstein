@@ -31,6 +31,8 @@ formal-verification/
 │   ├── VocabPersistenceOwnership.tla # Vocab checkpoint/reopen/eviction ownership model
 │   ├── MmapBlockStorage.tla   # mmap allocation/remap/access model
 │   ├── StorageSyscallOutcome.tla # write/sync outcome durability boundary model
+│   ├── BufferPageLease.tla    # BufferManager page lease/cache model
+│   ├── ReverseIndexMmap.tla   # Vocab reverse-index mmap/remap model
 │   ├── IoUringFixedBufferOwnership.tla # io_uring fixed-buffer lifetime model
 │   ├── IoUringSqeCqeLifecycle.tla # io_uring submit/complete/buffer lifecycle model
 │   ├── LockFreeARTrieLinearizability.tla # Byte lock-free root/cache model
@@ -146,6 +148,8 @@ formal-verification/
 | Vocab Persistence Ownership | Safety | Vocab checkpoint/reopen preserves stable term-index bijections, and eviction invalidates node-map raw entries before drop |
 | Mmap Block Storage | Safety | Allocation/remap protocol maps blocks before successful access |
 | Storage Syscall Outcomes | Safety | Short/error/interrupted/cancelled/missing write or sync outcomes cannot advance the reported durable prefix; recovery applies only the durable prefix |
+| Buffer Page Lease Safety | Safety | BufferManager read leases may coexist, write leases are exclusive, cached traversal page pointers stay pinned, and leased/cached frames remain resident |
+| Reverse Index Mmap Publication | Safety | Vocab reverse-index file, mapping, header capacity, and entry publication stay ordered so published headers and entries remain inside the live mapping |
 | Byte Lock-Free ARTrie Publication | Safety | Root CAS, cache publication, contains, and merge snapshot points are linearizable |
 | Indexed Lock-Free Overlays | Safety | Char increments preserve value sums, and vocab CAS inserts preserve stable unique indices while allowing sparse claims |
 | Lock-Free Counter Merge Atomicity | Safety | Checked byte/char counter overlays reject overflow before mutation and merge as one all-or-nothing `BatchIncrement` |
@@ -197,7 +201,7 @@ tlc -workers 8 PART.tla -config PART.cfg
 # With crash recovery verification
 tlc -workers 8 PART.tla -config PART_crash.cfg
 
-# Bounded focused models added in 2026-05-22/2026-05-26 refreshes
+# Bounded focused models added in 2026-05-22/2026-05-26/2026-06-01 refreshes
 tlc -workers 1 -config DocumentTransactions.cfg DocumentTransactions.tla
 tlc -workers 1 -config AsyncWalGroupCommit.cfg AsyncWalGroupCommit.tla
 tlc -workers 1 -config VersionLifecycle.cfg VersionLifecycle.tla
@@ -206,6 +210,8 @@ tlc -workers 1 -config PointerOwnership.cfg PointerOwnership.tla
 tlc -workers 1 -config VocabPersistenceOwnership.cfg VocabPersistenceOwnership.tla
 tlc -workers 1 -config MmapBlockStorage.cfg MmapBlockStorage.tla
 tlc -workers 1 -config StorageSyscallOutcome.cfg StorageSyscallOutcome.tla
+tlc -workers 1 -config BufferPageLease.cfg BufferPageLease.tla
+tlc -workers 1 -config ReverseIndexMmap.cfg ReverseIndexMmap.tla
 tlc -workers 1 -config IoUringFixedBufferOwnership.cfg IoUringFixedBufferOwnership.tla
 tlc -workers 1 -config IoUringSqeCqeLifecycle.cfg IoUringSqeCqeLifecycle.tla
 tlc -workers 1 -config LockFreeARTrieLinearizability.cfg LockFreeARTrieLinearizability.tla
@@ -267,7 +273,7 @@ swizzled raw-extraction, lazy-load candidate cleanup, vocab reopen/eviction
 ownership, and BufferManager fixed-buffer lifetime checks:
 
 ```bash
-RUN_MIRI=1 scripts/verify-formal-correspondence.sh
+RUN_MIRI=1 FORMAL_MIRI_TOOLCHAIN=nightly scripts/verify-formal-correspondence.sh
 ```
 
 Set `RUN_IO_URING=1` on an io_uring-capable Linux host to add the optional
@@ -275,6 +281,12 @@ storage backend checks:
 
 ```bash
 RUN_IO_URING=1 scripts/verify-formal-correspondence.sh
+```
+
+Miri and io_uring can be enabled together when the host supports both:
+
+```bash
+RUN_MIRI=1 RUN_IO_URING=1 FORMAL_MIRI_TOOLCHAIN=nightly scripts/verify-formal-correspondence.sh
 ```
 
 ### Configuration Parameters
@@ -525,6 +537,8 @@ The formal specifications model the key components of the Rust implementation:
 | `VocabPersistenceOwnership.tla` | `src/persistent_vocab_artrie/{mod.rs,disk_io.rs}`, `tests/persistent_artrie_formal_correspondence.rs`, and crate-internal vocab eviction tests |
 | `MmapBlockStorage.tla` | `src/persistent_artrie_core/{disk_manager,block_storage}.rs` and `tests/persistent_artrie_storage_correspondence.rs` |
 | `StorageSyscallOutcome.tla` | `src/persistent_artrie_core/{io_uring_disk_manager.rs,wal/sync_backend.rs,wal/async_writer.rs}`, `tests/persistent_artrie_formal_correspondence.rs`, and optional io_uring completion contract tests |
+| `BufferPageLease.tla` | `src/persistent_artrie_core/{buffer_manager.rs,traversal_context.rs}` and focused page lease/cache pin unit tests |
+| `ReverseIndexMmap.tla` | `src/persistent_vocab_artrie/reverse_index.rs` and reverse-index correspondence/regression tests |
 | `IoUringFixedBufferOwnership.tla` | `src/persistent_artrie_core/{block_storage,buffer_manager,io_uring_disk_manager}.rs`, `tests/unsafe_boundary_contracts.rs`, and optional io_uring storage correspondence tests |
 | `IoUringSqeCqeLifecycle.tla` | `src/persistent_artrie_core/io_uring_disk_manager.rs`, the io_uring completion paths, temporary aligned-buffer handling, and optional io_uring storage correspondence tests |
 | `LockFreeARTrieLinearizability.tla` | `src/persistent_artrie/{lockfree_cas.rs,nodes/atomic_ptr.rs}` and `tests/persistent_artrie_loom_correspondence.rs` |
@@ -705,11 +719,15 @@ The executable correspondence harness covers:
   `Send`/`Sync` contract checks, fixed-buffer fallback when a backend does not
   support registration, fixed-capable BufferManager
   write-guard mutation and unregister-before-owner-drop behavior,
+  BufferManager read/write page-lease exclusion, TraversalContext cached-page
+  pin release, FIFO cache eviction lease release, and dirty-flush rejection
+  during active mutable leases,
   unsafe-inventory contract-tag plus coverage/status drift, torn-WAL
   header/payload reopen, and persistent dictionary law traces.
 - storage-boundary regressions for mmap block allocation uniqueness, sub-block
   bounds rejection, sync/reopen header checksum refresh, and raw-pointer
-  bounds rejection, plus a Miri-friendly swizzled disk-pointer raw roundtrip
+  bounds rejection, reverse-index mmap/remap publication ordering, plus a
+  Miri-friendly swizzled disk-pointer raw roundtrip
   and optional io_uring range rejection plus fixed-buffer registration
   lifetime and SQE/CQE completion lifecycle checks when that backend is
   enabled.
@@ -730,8 +748,9 @@ The executable correspondence harness covers:
   WAL frontier.
 
 See [UNSAFE_BOUNDARY.md](UNSAFE_BOUNDARY.md) for the scoped Rust unsafe
-boundary ledger, the checked unsafe-source inventory gate, and the remaining
-proof obligations.
+boundary ledger, the checked unsafe-source inventory gate, and the explicit
+abstraction boundaries for claims below Rust, TLA+, Rocq, and correspondence
+tests.
 
 ### Filesystem Operations Correspondence
 
@@ -833,21 +852,22 @@ The following details are abstracted in the specifications:
   checkpoint publication,
   checkpoint/WAL retention, dirty checkpoint publication, recovery planner
   durable-prefix replay, recovery replay completeness, mmap storage checks,
-  storage syscall outcome checks,
+  storage syscall outcome checks, reverse-index mmap/remap publication,
   io_uring fixed-buffer registration,
-  BufferManager fixed-buffer lifetime, and io_uring SQE/CQE completion
+  BufferManager fixed-buffer lifetime, BufferManager page-lease/cached-page
+  pinning, dirty-flush exclusion during active mutable leases, and io_uring SQE/CQE completion
   checking are executable, the Miri gate runs under
   `FORMAL_MIRI_TOOLCHAIN=nightly` with strict provenance enabled by default,
   and the whole-crate unsafe inventory now enforces coverage/status metadata
   for every reviewed contract. `SwizzledPtr` now stores in-memory pointers in a
   provenance-preserving runtime slot instead of reconstructing them from raw
-  integers; kernel syscall internals and fully mechanized Rust memory-safety
-  proofs remain future proof targets
+  integers. Kernel syscall internals and fully mechanized Rust memory-safety
+  proofs are explicit abstraction boundaries below the checked claims.
 
-See [GAP_LEDGER.md](GAP_LEDGER.md) for the current scoped claims and remaining
-proof obligations.
+See [GAP_LEDGER.md](GAP_LEDGER.md) for the current scoped claims and explicit
+abstraction boundaries.
 
-## Future Work
+## Extension Targets
 
 1. ~~**Operations Module**: Complete implementation of insert/delete in Rocq~~
    **Done.** `trie_insert` / `trie_delete` are defined in `Spec/ARTrieSpec.v`
@@ -857,12 +877,16 @@ proof obligations.
 2. ~~**Map Refinement Proof**: Formal proof that ARTrie refines Map ADT~~
    **Done** — `Proofs/MapRefinement.v` defines `WFARTrie` + the
    `WFARTrieMapImpl` Instance with 3 `Qed`-closed theorems.
-3. **Iris Integration**: Separation logic proofs for mutable state
-4. **Liveness Proofs**: Complete TLA+ liveness verification
-5. **Coverage**: Map TLA+ states to code coverage
+3. **Iris Integration**: Optional separation logic proofs for mutable state
+   below the current correspondence boundary.
+4. **Liveness Proofs**: Optional broader TLA+ liveness verification beyond
+   the current safety and bounded-liveness checks.
+5. **Coverage**: Optional mapping from TLA+ states to code coverage.
 6. **TLA+ state-dump refresh**: state-space dumps under
-   `formal-verification/tla+/states/` were last regenerated 2026-01-24; the
-   main composed PART model is unchanged since.
+   `formal-verification/tla+/states/` are archival and were last regenerated
+   2026-01-24; focused unsafe-boundary models are checked by the harness, and
+   no new committed state dumps are required unless the composed PART
+   assumptions change.
 7. **Unsafe-boundary assurance**: initial ledger and representative ARTrie
    regressions are in [UNSAFE_BOUNDARY.md](UNSAFE_BOUNDARY.md). Mmap storage,
    byte lock-free publication, char/vocab indexed overlays, lock-free counter
@@ -875,15 +899,18 @@ proof obligations.
    publication, recovery planner durable-prefix replay, recovery replay
    completeness, and the
    durability/reclamation frontier now have bounded models or Rocq laws plus
-   executable correspondence tests. Vocab
+   executable correspondence tests. BufferManager page leases, TraversalContext
+   cached-page pins, dirty-flush exclusion, and vocab reverse-index mmap/remap
+   publication now have focused TLA+ models and unit/correspondence coverage.
+   Vocab
    persistence/reopen and eviction invalidation have both a bounded model and
    Rust/Miri correspondence checks. Storage syscall outcome handling, io_uring
    fixed-buffer ownership, and SQE/CQE completion checking now have bounded
    models, harness wiring, and CI jobs. `SwizzledPtr` strict-provenance Miri
-   coverage is now wired into the harness. Next, keep the
-   Miri/io_uring/scheduled TLC jobs green and deepen syscall/kernel and unsafe
-   raw-pointer/`Send`/`Sync` contracts where the library still relies on
-   trusted Rust or kernel behavior.
+   coverage is now wired into the harness. Keep the
+   Miri/io_uring/scheduled TLC jobs green; deeper syscall/kernel and unsafe
+   raw-pointer/`Send`/`Sync` claims require new contracts below the current
+   explicit Rust/kernel abstraction boundary.
 
 ## References
 

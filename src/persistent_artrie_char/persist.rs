@@ -25,6 +25,40 @@ use super::dict_impl_char::{ROOT_TYPE_EMPTY, ROOT_TYPE_NODE};
 use super::nodes::CharNode;
 use super::types::{CharTrieNodeInner, CharTrieRoot};
 
+/// An immutable, self-consistent checkpoint snapshot captured during checkpoint
+/// **Phase A** (serialize the in-memory tree into freshly-allocated arena slots
+/// — copy-on-serialize, so the captured `root_ptr` + arena image is frozen).
+/// The durable-publish phase consumes only these owned values, so it never
+/// re-reads mutable trie state.
+///
+/// The non-blocking `SharedCharARTrie::checkpoint` captures this under an
+/// exclusive `RwLock` write guard, then **downgrades** the guard to a read guard
+/// (admitting concurrent readers) for the durable-publish + WAL phases — using
+/// exactly this frozen snapshot, so those phases never re-read mutable trie state.
+pub(crate) struct CheckpointSnapshot {
+    /// Root descriptor type byte (`ROOT_TYPE_EMPTY` / `ROOT_TYPE_NODE`).
+    root_type: u8,
+    /// Whether the root node is itself a terminal/final node.
+    is_final: bool,
+    /// Term count at the snapshot point (used for both the descriptor's
+    /// `term_count` field and the header `entry_count`, so they agree).
+    entry_count: u64,
+    /// Number of arenas after serialization (block IDs derive from this).
+    arena_count: u32,
+    /// Raw `SwizzledPtr` of the serialized root.
+    root_ptr: u64,
+    /// `next_lsn` observed at capture. The WAL `Checkpoint` record uses
+    /// `next_lsn` at publish time; under the write-then-downgraded-read guard no
+    /// `L1.write` mutator can run, so `next_lsn` cannot change — we
+    /// `debug_assert_eq!` this at publish to fail loudly if that invariant is
+    /// ever violated (e.g. a lock-free WAL-appending writer is exposed on the
+    /// shared handle), which would otherwise risk a lost write.
+    next_lsn_at_capture: u64,
+    /// Freshly-built disk-location registry (only when eviction is enabled),
+    /// published to the eviction coordinator after durability is verified.
+    eviction_registry: Option<DiskLocationRegistry>,
+}
+
 impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     /// Checkpoint: persist trie to disk and truncate WAL
     ///
@@ -40,28 +74,66 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     /// If verification fails at step 2, the WAL is NOT truncated,
     /// allowing recovery from the existing WAL on next open.
     pub fn checkpoint(&mut self) -> Result<()> {
+        // Owned/blocking checkpoint: the whole sequence runs under the caller's
+        // exclusive `&mut self` borrow (= the trie write lock held throughout
+        // when reached via `SharedCharARTrie`'s write guard). The non-blocking
+        // `SharedCharARTrie::checkpoint` instead captures the snapshot under a
+        // write guard, atomically DOWNGRADES it to a read guard, then runs
+        // `publish_durable_and_reclaim` so concurrent readers proceed during the
+        // (fsync-bound) publish phase.
+        let snapshot = self.capture_snapshot()?;
+        self.publish_durable_and_reclaim(snapshot)
+    }
+
+    /// Checkpoint **Phase B+C** — publish the captured snapshot durably, then
+    /// record + reclaim the WAL.
+    ///
+    /// Takes `&self` so it can run under either the owned `&mut self` checkpoint
+    /// or a downgraded read guard (the non-blocking path). Consumes the snapshot
+    /// (moves the eviction registry into the coordinator). The sequence is
+    /// byte-identical to the prior blocking checkpoint tail: publish descriptor
+    /// + flush + fsync (the linearization point) → verify header checksum →
+    /// publish the eviction registry → WAL `Checkpoint` append + sync +
+    /// archive/truncate → clear the dirty flag.
+    pub(crate) fn publish_durable_and_reclaim(&self, snapshot: CheckpointSnapshot) -> Result<()> {
         use std::time::{SystemTime, UNIX_EPOCH};
 
-        // Step 1: Persist trie to disk (collecting on-disk node locations for
-        // eviction when eviction is enabled).
-        let eviction_registry = self.persist_to_disk_tracked()?;
+        // Phase B: publish the snapshot to disk and fsync (linearization point).
+        self.publish_snapshot(&snapshot)?;
 
-        // Step 2: Verify checkpoint - re-read header and verify checksum
-        // This ensures the sync() actually succeeded and data is durable
+        // Verify checkpoint - re-read header and verify checksum. Ensures the
+        // sync() actually succeeded and the data is durable.
         self.verify_checkpoint()?;
 
-        // Step 2b: durability is now verified, so publish the freshly-built
-        // disk-location registry to the eviction coordinator. Eviction can then
-        // reclaim in-memory node boxes (unswizzling them to these on-disk
-        // locations) under memory pressure or an explicit force_eviction. Built
-        // only when eviction is enabled; a no-op otherwise.
-        if let Some(registry) = eviction_registry {
+        // Durability verified: publish the freshly-built disk-location registry
+        // to the eviction coordinator. Eviction can then reclaim in-memory node
+        // boxes (unswizzling them to these on-disk locations) under memory
+        // pressure or an explicit force_eviction. Built only when eviction is
+        // enabled; a no-op otherwise.
+        if let Some(registry) = snapshot.eviction_registry {
             if let Some(ref coordinator) = self.eviction_coordinator {
                 coordinator.update_disk_registry(registry);
             }
         }
 
-        // Steps 3-5: WAL operations (only after verification passes)
+        // Phase C: WAL operations (only after verification passes).
+        //
+        // `checkpoint_lsn` is read here as `next_lsn` (the original convention).
+        // Under the write-then-downgraded-read guard of the non-blocking path —
+        // and trivially under the owned `&mut self` path — no `L1.write` mutator
+        // can run between capture and here, so `next_lsn` is unchanged from
+        // capture; the WAL frontier and the descriptor's snapshot therefore
+        // agree, and `rotate_to_archive` only ever archives covered records. The
+        // assert below turns any violation of that invariant (which could
+        // archive a racing write out of recovery's reach — the GAP_LEDGER #41
+        // footgun) into a loud failure instead of silent data loss.
+        debug_assert_eq!(
+            self.next_lsn.load(AtomicOrdering::Acquire),
+            snapshot.next_lsn_at_capture,
+            "checkpoint: next_lsn changed between capture and WAL publish — a \
+             writer raced the checkpoint (C2 invariant violated); the WAL \
+             reclaim could lose that write"
+        );
         if let Some(ref wal_writer) = self.wal_writer {
             let timestamp = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
@@ -71,19 +143,19 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
                 checkpoint_lsn: self.next_lsn.load(AtomicOrdering::Acquire),
                 timestamp,
             };
-            // Step 3: Write checkpoint record
+            // Write checkpoint record
             wal_writer
                 .append(record)
                 .map_err(|e| PersistentARTrieError::WalError {
                     reason: format!("{:?}", e),
                 })?;
-            // Step 4: Sync WAL
+            // Sync WAL
             wal_writer
                 .sync()
                 .map_err(|e| PersistentARTrieError::WalError {
                     reason: format!("{:?}", e),
                 })?;
-            // Step 5: Archive or truncate WAL based on configuration
+            // Archive or truncate WAL based on configuration
             // If archive mode is enabled, rotate to archive; otherwise truncate
             wal_writer
                 .rotate_to_archive(&self.wal_config)
@@ -144,18 +216,40 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     /// registry is a pure side-effect: the serialized bytes and the file header
     /// are identical whether or not it is collected, so recovery is unaffected.
     fn persist_to_disk_tracked(&mut self) -> Result<Option<DiskLocationRegistry>> {
-        use crate::persistent_artrie::swizzled_ptr::SwizzledPtr;
-        use crate::persistent_artrie::NodeType;
+        // Disk serialization requires a buffer manager (disk-backed mode).
+        // Checked up-front so an in-memory-only trie errors before any arena
+        // serialization side effects, preserving the prior behavior.
+        if self.buffer_manager.is_none() {
+            return Err(PersistentARTrieError::internal(
+                "No buffer manager for disk serialization",
+            ));
+        }
+
+        // Phase A: capture a frozen snapshot (serialize tree -> fresh arenas).
+        let snapshot = self.capture_snapshot()?;
+        // Phase B: publish the snapshot durably (descriptor + flush + sync).
+        self.publish_snapshot(&snapshot)?;
+
+        Ok(snapshot.eviction_registry)
+    }
+
+    /// Checkpoint **Phase A** — capture a frozen, self-consistent snapshot.
+    ///
+    /// Serializes the in-memory tree into freshly-allocated arena slots
+    /// (copy-on-serialize: every node gets a new slot, so the produced
+    /// `root_ptr` + arena image is immutable and self-consistent for this
+    /// checkpoint) and flushes dirty arena slots to buffer-manager pages.
+    /// Returns the descriptor values the publish phase needs. Takes `&self`
+    /// (all mutation goes through the interior-mutable arena/buffer managers),
+    /// which lets a later phase run this under a shared trie borrow.
+    pub(crate) fn capture_snapshot(&self) -> Result<CheckpointSnapshot> {
+        // `next_lsn` at capture; asserted unchanged at publish (see field doc).
+        let next_lsn_at_capture = self.next_lsn.load(AtomicOrdering::Acquire);
 
         let mut eviction_registry = self
             .eviction_coordinator
             .as_ref()
             .map(|_| DiskLocationRegistry::new());
-
-        // Get buffer manager
-        let buffer_manager = self.buffer_manager.as_ref().ok_or_else(|| {
-            PersistentARTrieError::internal("No buffer manager for disk serialization")
-        })?;
 
         // Serialize the trie root and get a descriptor
         let (root_type, root_ptr, is_final) = match &self.root {
@@ -195,6 +289,33 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
             0
         };
 
+        // Capture the term count ONCE so the descriptor's term_count and the
+        // header entry_count are guaranteed to agree for this snapshot.
+        let entry_count = self.len.load(AtomicOrdering::Acquire) as u64;
+
+        Ok(CheckpointSnapshot {
+            root_type,
+            is_final,
+            entry_count,
+            arena_count,
+            root_ptr,
+            next_lsn_at_capture,
+            eviction_registry,
+        })
+    }
+
+    /// Checkpoint **Phase B** — publish the captured snapshot durably.
+    ///
+    /// Writes the 18-byte root descriptor to block 0, updates the header
+    /// root-pointer + entry-count, then flushes all pages and fsyncs the data
+    /// file. This is the on-disk linearization point of the checkpoint.
+    /// Checkpoint-level dirty state is cleared only after the WAL
+    /// checkpoint/rotation step succeeds in `checkpoint()`. Takes `&self`.
+    fn publish_snapshot(&self, snapshot: &CheckpointSnapshot) -> Result<()> {
+        let buffer_manager = self.buffer_manager.as_ref().ok_or_else(|| {
+            PersistentARTrieError::internal("No buffer manager for disk serialization")
+        })?;
+
         // Create root descriptor (fixed 18 bytes)
         // Format:
         //   0: type (1 byte)
@@ -206,12 +327,11 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
         // Note: Arena block IDs are NOT stored - they are derived from sequential allocation:
         // Block 0 = file header + descriptor, Blocks 1..=arena_count = arenas
         let mut descriptor = [0u8; 18];
-        descriptor[0] = root_type;
-        descriptor[1] = if is_final { 1 } else { 0 };
-        descriptor[2..6]
-            .copy_from_slice(&(self.len.load(AtomicOrdering::Acquire) as u32).to_le_bytes());
-        descriptor[6..10].copy_from_slice(&arena_count.to_le_bytes());
-        descriptor[10..18].copy_from_slice(&root_ptr.to_le_bytes());
+        descriptor[0] = snapshot.root_type;
+        descriptor[1] = if snapshot.is_final { 1 } else { 0 };
+        descriptor[2..6].copy_from_slice(&(snapshot.entry_count as u32).to_le_bytes());
+        descriptor[6..10].copy_from_slice(&snapshot.arena_count.to_le_bytes());
+        descriptor[10..18].copy_from_slice(&snapshot.root_ptr.to_le_bytes());
 
         // Write descriptor to fixed location in block 0 (offset 64, after file header)
         // This ensures arenas always occupy blocks 1, 2, 3, ... sequentially
@@ -224,14 +344,14 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
         let root_descriptor_ptr =
             SwizzledPtr::on_disk(0, DESCRIPTOR_OFFSET as u32, NodeType::Bucket);
         dm.set_root_ptr(root_descriptor_ptr.to_raw())?;
-        dm.set_entry_count(self.len.load(AtomicOrdering::Acquire) as u64)?;
+        dm.set_entry_count(snapshot.entry_count)?;
 
         // Flush all pages to ensure durability. This publishes the root
         // descriptor, but checkpoint-level dirty state is cleared only after
         // the WAL checkpoint/rotation step succeeds in `checkpoint()`.
         bm.flush_all()?;
         dm.sync()?;
-        Ok(eviction_registry)
+        Ok(())
     }
 
     /// Check if serialized children are consecutive in the same arena.

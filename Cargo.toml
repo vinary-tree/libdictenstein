@@ -36,7 +36,7 @@ flate2 = { version = "1.0", optional = true }
 prost = { version = "0.13", optional = true }
 
 # PathMap as an optional dictionary backend
-pathmap = { version = "0.2.0-alpha0", optional = true }
+pathmap = { version = "0.2", optional = true }
 
 # WFST semiring integration for Lattice trait
 lling-llang = { path = "../lling-llang", optional = true }
@@ -211,6 +211,10 @@ name = "wal_debug"
 required-features = ["persistent-artrie"]
 
 [[example]]
+name = "exp_checkpoint_throughput"
+required-features = ["persistent-artrie"]
+
+[[example]]
 name = "wal_compare"
 required-features = ["persistent-artrie"]
 
@@ -252,3 +256,8 @@ required-features = ["io-uring-backend"]
 name = "eviction_benchmarks"
 harness = false
 required-features = ["bench-internals"]
+
+[[bench]]
+name = "concurrent_read_vs_flush_benchmarks"
+harness = false
+required-features = ["persistent-artrie"]

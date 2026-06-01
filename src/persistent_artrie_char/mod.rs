@@ -1246,8 +1246,39 @@ impl<V: DictionaryValue> crate::artrie_trait::ARTrie for SharedCharARTrie<V> {
     }
 
     fn checkpoint(&self) -> crate::persistent_artrie::error::Result<()> {
-        let mut guard = self.write();
-        guard.checkpoint()
+        // Non-blocking checkpoint: capture the snapshot under an exclusive write
+        // guard (serialization must exclude concurrent inserts), then ATOMICALLY
+        // downgrade the guard to a read guard so concurrent readers (`contains`/
+        // `get_value`) run during the fsync-bound publish phase. The downgrade
+        // never releases the lock, so no writer can race in (no GAP_LEDGER #41
+        // window): writers stay excluded for the whole checkpoint, and two
+        // checkpoints serialize on the write lock (no separate checkpoint mutex
+        // needed).
+        let guard = self.write();
+        // C2 invariant: the lock-free overlay (whose `insert_cas` bypasses
+        // `L1.write`) must not be active under the shared durable-checkpoint
+        // path, or a writer could race the snapshot. It is never exposed on
+        // `SharedCharARTrie`; assert it to fail loudly if that ever changes.
+        debug_assert!(
+            guard.lockfree_root.is_none(),
+            "SharedCharARTrie non-blocking checkpoint requires the lock-free \
+             overlay to be disabled (insert_cas would bypass L1.write)"
+        );
+        // Phase A: serialize the in-memory tree into fresh arenas, epoch-pinned
+        // so a concurrent prior-round eviction reclaim cannot free a node the
+        // walk dereferences. The pin is dropped before the downgrade — Phase B/C
+        // touch only the serialized arena image, never in-memory node pointers.
+        let snapshot = {
+            let _pin = crate::persistent_artrie_core::mvcc::EpochGuard::new(Arc::clone(
+                &guard.epoch_manager,
+            ));
+            guard.capture_snapshot()?
+        };
+        // Atomic write -> read downgrade (parking_lot guarantees no intermediate
+        // state a waiting writer can acquire). Readers admitted; writers excluded.
+        let read_guard = parking_lot::RwLockWriteGuard::downgrade(guard);
+        // Phase B + C under the read guard: durable publish + WAL reclaim.
+        read_guard.publish_durable_and_reclaim(snapshot)
     }
 
     fn is_dirty(&self) -> bool {

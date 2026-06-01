@@ -221,6 +221,8 @@ if command -v tla2sany >/dev/null 2>&1; then
       VocabPersistenceOwnership \
       MmapBlockStorage \
       StorageSyscallOutcome \
+      BufferPageLease \
+      ReverseIndexMmap \
       IoUringFixedBufferOwnership \
       IoUringSqeCqeLifecycle \
       LockFreeARTrieLinearizability \
@@ -267,6 +269,8 @@ if [ "${RUN_TLC:-0}" = "1" ]; then
       VocabPersistenceOwnership \
       MmapBlockStorage \
       StorageSyscallOutcome \
+      BufferPageLease \
+      ReverseIndexMmap \
       IoUringFixedBufferOwnership \
       IoUringSqeCqeLifecycle \
       LockFreeARTrieLinearizability \

@@ -4,7 +4,7 @@
 
 This document records the results of formal verification efforts for the Persistent Adaptive Radix Trie (PART) implementation in libdictenstein.
 
-**Date:** 2026-01-20 (Updated: 2026-01-24 — TOCTOU Race Condition Fixes; 2026-05-20 — All `Admitted`/`Axiom` obligations eliminated across Model + Invariants + Spec, see commit `b7630ad` "Prove ARTrie Rocq map correctness" and `efe1943` "proofs(rocq): eliminate Admitted/Axiom obligations across Model + Invariants + Spec"; 2026-05-22 — checked structural contracts, bounded Byzantine storage and HotStuff-style quorum models, proof-carrying replay boundary, expanded TLA+ focused models, and Rust correspondence harness; 2026-05-23 — end-to-end WAL crash-prefix matrix, transaction replay correspondence, mmap block-storage synchronization, storage syscall outcome fail-closed durability boundary, byte lock-free ARTrie linearizability, indexed char/vocab lock-free overlay linearizability, durability-frontier/reclamation safety, raw pointer ownership boundary checks, vocab persistence/eviction ownership, io_uring fixed-buffer ownership and registration contracts, io_uring SQE/CQE lifecycle checking, public dictionary law conformance, DynamicDawg mutation/compaction preservation, double-array trie construction/traversal correctness, zipper/query-language conformance, substring candidate correctness, SCDAWG occurrence construction correctness, fuzzy candidate coverage, public serialization roundtrip correctness, and feature-gated protobuf/compression codec correspondence; 2026-05-24 — expanded Miri-gated unsafe-boundary targets for swizzled raw extraction, vocab reopen node-map/parent-chain rebuild, vocab eviction query liveness, BufferManager fixed-buffer lifetime, persistent cursor/batched/grouped/parallel merge equivalence, persistent char prefix semantics, valued set-combinator merge semantics for union/intersection zippers, Bloom filter no-false-negative lookup rejection, and arena reservation/dirty-slot persistence correspondence; 2026-05-25 — persistent deduplicating-arena cache soundness, root descriptor/reopen refinement, persistent lazy mutation atomicity for no-WAL-on-error/no-op behavior and replay after successful lazy writes, persistent WAL write-atomicity for serialization/WAL failures, atomic writes, document commits, and checked transaction increments, checkpoint/WAL retention safety for corruption rebuilds from archive/pending/active segments, dirty checkpoint publication safety for dirty-slot retry and descriptor-before-truncation reopen, WAL segment lifecycle safety for LSN-ordered archive handling and monotonic rotation/reopen, recovery planner durable-prefix safety for corrupt WAL suffixes, recovery replay completeness for all mutating WAL variants/no-WAL replay/corrupt archive and invalid-arithmetic prefixes, byte persistent compaction rewrite/finalization recovery, persistent vocabulary WAL atomicity/bijection fixes, persistent vocabulary checkpoint/sidecar publication fixes, concurrent checkpoint publication fixes, public concurrent vocabulary linearizability, char/vocab rewrite checkpoint dirty-state fixes, epoch checkpoint recovery correspondence, persistent char bulk-mutation durable-prefix/checked-RMW correspondence, persistent transaction increment recovery correspondence, lock-free counter merge atomicity correspondence, shared persistent public-API concurrency correspondence with a byte `SharedARTrie::checkpoint` lock-publication fix, and public durability acknowledgement policy correspondence with byte/char/vocab full-policy sync fixes; 2026-05-26 — strengthened ordered `AsyncWalGroupCommit` model, added `PersistentPublicWalLifecycleSpec.v`, added byte/char/vocab public open/replay and group-commit correspondence tests, added default/all-features compile gates to the formal harness, and added end-to-end persistent trace refinement across checkpoint, compaction rewrite, crash/reopen, and vocab bijection behavior)
+**Date:** 2026-01-20 (Updated: 2026-01-24 — TOCTOU Race Condition Fixes; 2026-05-20 — All `Admitted`/`Axiom` obligations eliminated across Model + Invariants + Spec, see commit `b7630ad` "Prove ARTrie Rocq map correctness" and `efe1943` "proofs(rocq): eliminate Admitted/Axiom obligations across Model + Invariants + Spec"; 2026-05-22 — checked structural contracts, bounded Byzantine storage and HotStuff-style quorum models, proof-carrying replay boundary, expanded TLA+ focused models, and Rust correspondence harness; 2026-05-23 — end-to-end WAL crash-prefix matrix, transaction replay correspondence, mmap block-storage synchronization, storage syscall outcome fail-closed durability boundary, byte lock-free ARTrie linearizability, indexed char/vocab lock-free overlay linearizability, durability-frontier/reclamation safety, raw pointer ownership boundary checks, vocab persistence/eviction ownership, io_uring fixed-buffer ownership and registration contracts, io_uring SQE/CQE lifecycle checking, public dictionary law conformance, DynamicDawg mutation/compaction preservation, double-array trie construction/traversal correctness, zipper/query-language conformance, substring candidate correctness, SCDAWG occurrence construction correctness, fuzzy candidate coverage, public serialization roundtrip correctness, and feature-gated protobuf/compression codec correspondence; 2026-05-24 — expanded Miri-gated unsafe-boundary targets for swizzled raw extraction, vocab reopen node-map/parent-chain rebuild, vocab eviction query liveness, BufferManager fixed-buffer lifetime, persistent cursor/batched/grouped/parallel merge equivalence, persistent char prefix semantics, valued set-combinator merge semantics for union/intersection zippers, Bloom filter no-false-negative lookup rejection, and arena reservation/dirty-slot persistence correspondence; 2026-05-25 — persistent deduplicating-arena cache soundness, root descriptor/reopen refinement, persistent lazy mutation atomicity for no-WAL-on-error/no-op behavior and replay after successful lazy writes, persistent WAL write-atomicity for serialization/WAL failures, atomic writes, document commits, and checked transaction increments, checkpoint/WAL retention safety for corruption rebuilds from archive/pending/active segments, dirty checkpoint publication safety for dirty-slot retry and descriptor-before-truncation reopen, WAL segment lifecycle safety for LSN-ordered archive handling and monotonic rotation/reopen, recovery planner durable-prefix safety for corrupt WAL suffixes, recovery replay completeness for all mutating WAL variants/no-WAL replay/corrupt archive and invalid-arithmetic prefixes, byte persistent compaction rewrite/finalization recovery, persistent vocabulary WAL atomicity/bijection fixes, persistent vocabulary checkpoint/sidecar publication fixes, concurrent checkpoint publication fixes, public concurrent vocabulary linearizability, char/vocab rewrite checkpoint dirty-state fixes, epoch checkpoint recovery correspondence, persistent char bulk-mutation durable-prefix/checked-RMW correspondence, persistent transaction increment recovery correspondence, lock-free counter merge atomicity correspondence, shared persistent public-API concurrency correspondence with a byte `SharedARTrie::checkpoint` lock-publication fix, and public durability acknowledgement policy correspondence with byte/char/vocab full-policy sync fixes; 2026-05-26 — strengthened ordered `AsyncWalGroupCommit` model, added `PersistentPublicWalLifecycleSpec.v`, added byte/char/vocab public open/replay and group-commit correspondence tests, added default/all-features compile gates to the formal harness, and added end-to-end persistent trace refinement across checkpoint, compaction rewrite, crash/reopen, and vocab bijection behavior; 2026-06-01 — added BufferManager page-lease and TraversalContext cached-page pinning coverage, added reverse-index mmap/remap publication coverage, and refreshed unsafe inventory/contract evidence for newly documented unsafe operations)
 
 ---
 
@@ -32,6 +32,8 @@ This document records the results of formal verification efforts for the Persist
 | VocabPersistenceOwnership.tla | 180 | TLC passed |
 | MmapBlockStorage.tla | 182 | TLC passed |
 | StorageSyscallOutcome.tla | 143 | TLC passed |
+| BufferPageLease.tla | 144 | TLC passed |
+| ReverseIndexMmap.tla | 91 | TLC passed |
 | IoUringFixedBufferOwnership.tla | 132 | TLC passed |
 | IoUringSqeCqeLifecycle.tla | 189 | TLC passed |
 | LockFreeARTrieLinearizability.tla | 153 | TLC passed |
@@ -49,7 +51,7 @@ This document records the results of formal verification efforts for the Persist
 | ByzantineStorage.tla | ~70 | TLC passed |
 | HotStuffConsensus.tla | ~91 | TLC passed |
 
-**Total TLA+ LOC:** 9,112
+**Total TLA+ LOC:** 10,419
 
 ### Model Checking Configuration
 
@@ -98,7 +100,7 @@ NodeIds = {1, 2, 3, 4, 5, 6}
 | PROPERTY_CrashRecovery | Liveness | No violations in explored states |
 | Deadlock Freedom | Safety | No deadlocks found |
 
-#### Focused TLC Runs Added 2026-05-22 Through 2026-05-26
+#### Focused TLC Runs Added 2026-05-22 Through 2026-06-01
 
 | Module | Config | States Generated | Distinct States | Depth | Result |
 |--------|--------|-----------------:|----------------:|------:|--------|
@@ -218,6 +220,8 @@ implementation surface.
 | Storage syscall outcome model | `StorageSyscallOutcome.tla` write/sync result lattice | Passed, 88 generated states and 42 distinct states |
 | WAL segment fsync failure frontier | `StorageSyscallOutcome.tla` to `SegmentSyncManager` failed sync handling | Passed, failed fsync does not advance `global_synced_lsn` or satisfy durable-LSN waits |
 | BufferManager fixed-buffer capability | `IoUringFixedBufferOwnership.tla` to `BufferManager::new` registration gating, default no-op backend fallback, and fixed-capable registration lifetime | Passed |
+| BufferManager page lease safety | `BufferPageLease.tla` to `BufferManager` read/write guard leasing, flush exclusion, and `TraversalContext` cached raw page references | Passed, TLC generated 14,341 states with 2,479 distinct states; focused unit tests cover read-vs-write exclusion, mutable lease exclusion, dirty-flush rejection during an active mutable lease, cached-page pin retention until `clear`, and FIFO cache eviction lease release |
+| Reverse-index mmap/remap publication | `ReverseIndexMmap.tla` to `VocabReverseIndex` create/open/grow/remap mmap publication | Passed, TLC generated 342 states with 70 distinct states; the model checks mapped capacity within the file, published header capacity within the map, and entries within the header |
 | io_uring SQE/CQE lifecycle | `IoUringSqeCqeLifecycle.tla` to `IoUringDiskManager` completion count, short/error CQE fail-closed checks, fixed-buffer registration preconditions, and temporary-buffer return discipline | Passed |
 | io_uring completion outcome classification | `StorageSyscallOutcome.tla` and `IoUringSqeCqeLifecycle.tla` to `IoUringDiskManager` CQE helper behavior | Passed with `io-uring-backend`, including negative, short, and missing completion rejection |
 | Byte lock-free root CAS | `LockFreeARTrieLinearizability.tla` to byte `AtomicNodePtr` publication | Passed under Loom |
@@ -244,7 +248,8 @@ implementation surface.
 | io_uring fixed-buffer registration | unsafe fixed-buffer contract to `IoUringDiskManager::register_buffer_pool` and `IoUringFixedBufferOwnership.tla` | Passed with `io-uring-backend`, including invalid registration rejection and unregister-before-owner-drop |
 
 The full command `RUN_TLC=1 scripts/verify-formal-correspondence.sh` passed on
-2026-05-22 for the then-current focused modules. The
+2026-06-01 for the current focused modules, including `BufferPageLease.tla` and
+`ReverseIndexMmap.tla`. The
 `LockFreeARTrieLinearizability.tla`, `LockFreeIndexedOverlay.tla`,
 `DurabilityFrontier.tla`, `PointerOwnership.tla`,
 `VocabPersistenceOwnership.tla`, `StorageSyscallOutcome.tla`, and
@@ -264,6 +269,10 @@ The strengthened `AsyncWalGroupCommit.tla` passed on 2026-05-26 with 69
 generated states, 26 distinct states, and depth 5 under the same 8GiB RSS cap.
 `PersistentEndToEndTrace.tla` passed on 2026-05-26 with 677 generated states,
 172 distinct states, and depth 5 under the same 8GiB RSS cap.
+`BufferPageLease.tla` passed on 2026-06-01 with 14,341 generated states, 2,479
+distinct states, and depth 14.
+`ReverseIndexMmap.tla` passed on 2026-06-01 with 342 generated states, 70
+distinct states, and depth 6.
 `StorageSyscallOutcome.tla` passed with an 8GiB process cap and a 1GiB Java
 heap. `IoUringSqeCqeLifecycle.tla` also passed with an 8GiB process cap and a
 1GiB Java heap. TLC
@@ -271,7 +280,7 @@ requires running outside the local filesystem sandbox because the Java runtime
 opens a local RMI listener.
 
 The no-TLC verification command `scripts/verify-formal-correspondence.sh`
-passed again on 2026-05-25 under explicit process caps
+passed again on 2026-06-01 under explicit process caps
 (`FORMAL_RSS_LIMIT_BYTES=8589934592`, applied as `prlimit --rss=8GiB`; no
 virtual address cap is used because OCaml reserves virtual minor heaps up
 front, and the merge targets set `CARGO_BUILD_JOBS=2` internally), including
@@ -308,8 +317,14 @@ BufferManager fixed-buffer registration lifetime targets. The harness enables
 `-Zmiri-strict-provenance` by default unless
 `FORMAL_MIRI_STRICT_PROVENANCE=0` is set.
 
+The combined optional command `RUN_MIRI=1 RUN_IO_URING=1
+FORMAL_MIRI_TOOLCHAIN=nightly scripts/verify-formal-correspondence.sh` passed on
+2026-06-01. It reran the correspondence harness with Miri-compatible unsafe
+boundary targets and the io_uring storage correspondence checks enabled; TLC
+remains a separate `RUN_TLC=1` mode.
+
 Focused capped Rust and Miri checks for the newly added unsafe-boundary targets
-passed on 2026-05-25 with `prlimit --rss=8GiB`: the child ownership-transfer
+passed on 2026-06-01 with `prlimit --rss=8GiB`: the child ownership-transfer
 and unique-mutation correspondence tests, the swizzled raw-extraction
 correspondence tests, heap-only vocab eviction tests, heap-only vocab
 `node_map` parent-chain liveness test, and the BufferManager fixed-buffer
@@ -625,9 +640,10 @@ table.
 ### Short-term
 1. ~~Complete the admitted Rocq proofs by adding `should_grow`/`should_shrink` hypotheses~~ **Done** (2026-05-20, all admits eliminated)
 2. Run TLC with larger state space (overnight run with more memory)
-3. Fix remaining UNCHANGED warning in MarkDirty composition
-4. Refresh TLA+ state-space dumps under `formal-verification/tla+/states/`
-   (last regenerated 2026-01-24, no new ASSUMES added since)
+3. ~~Resolve stale MarkDirty composition warning follow-up~~ **Done** (2026-06-01, focused unsafe-boundary models are checked directly by the harness)
+4. Treat TLA+ state-space dumps under `formal-verification/tla+/states/` as
+   archival unless the composed PART assumptions change; focused
+   unsafe-boundary models are checked directly by the harness.
 
 ### Medium-term
 1. ~~Add refinement proofs (ARTrie refines Map ADT)~~ **Done** — see
@@ -651,7 +667,10 @@ table.
    checked claim is for the Rocq reference interface, certified trace checker,
    and TCB documentation, not certified Rust/LLVM binaries.
 4. Whole-crate unsafe-boundary proof, including mmap/io_uring and unsafe
-   `Send`/`Sync` implementations outside the persistent ARTrie model.
+   `Send`/`Sync` implementations outside the persistent ARTrie model. The
+   2026-06-01 page-lease and reverse-index mmap models close the newly
+   documented BufferManager/TraversalContext and reverse-index publication
+   gaps at the bounded-model level.
 
 ---
 
@@ -687,6 +706,12 @@ table.
 - `StorageSyscallOutcome.tla` - Adds bounded write/sync syscall outcome model
   for full, short, error, interrupted, cancelled, and missing completions at
   the durable-prefix boundary.
+- `BufferPageLease.tla` - Adds bounded read/write page lease, cached
+  TraversalContext pointer, dirty frame, and eviction-residency model for
+  BufferManager unsafe references.
+- `ReverseIndexMmap.tla` - Adds bounded reverse-index create/open/grow/remap
+  publication model for file capacity, map capacity, header capacity, and
+  entry-count ordering.
 - `ConcurrentCheckpointPublication.tla` - Adds bounded mutation/checkpoint
   publication model for WAL-before-visible inserts, checkpoint gating,
   truncation/replay-tail safety, sync/rotation non-publication, and recovery
@@ -861,8 +886,17 @@ table.
   keeps CQE result checks on the fail-closed completion path. Failed
   single-block, batched, and fixed-buffer writes re-mark affected cached blocks
   dirty so later sync can retry them.
+- `src/persistent_artrie_core/buffer_manager.rs` -
+  Replaces frame pin counts with read/write lease state so mutable page guards
+  are exclusive and shared page guards can coexist only with other reads.
+- `src/persistent_artrie_core/traversal_context.rs` -
+  Keeps cached raw page pointers backed by BufferManager read leases until
+  cache eviction, `clear`, or drop.
+- `src/persistent_vocab_artrie/reverse_index.rs` -
+  Covered by the reverse-index mmap/remap publication model for header/map/file
+  capacity ordering.
 - `formal-verification/UNSAFE_BOUNDARY.md` - Documents the current unsafe
-  boundary, executable checks, and remaining proof obligations.
+  boundary, executable checks, and explicit abstraction boundaries.
 - `tests/dictionary_law_correspondence.rs` - Adds public law correspondence
   checks for static/dynamic byte and Unicode dictionaries, mapped backends,
   set-zippers, suffix substring semantics, bijective maps, `PersistentARTrie`,
@@ -1180,12 +1214,16 @@ The formal verification provides strong evidence for the correctness of the PART
 The combination of model checking (for concurrent/crash scenarios) and theorem proving (for functional correctness) provides complementary assurance:
 - TLA+ finds protocol bugs via exhaustive state exploration
 - Rocq proves properties that hold for all inputs
-- The filesystem, mmap block-storage, storage syscall outcome, io_uring
+- The filesystem, mmap block-storage, storage syscall outcome, BufferManager
+  page-lease, reverse-index mmap/remap publication, io_uring
   fixed-buffer/SQE-CQE, byte lock-free publication, indexed overlay,
   lock-free counter merge atomicity, and
   durability-frontier models check TOCTOU-safe file creation,
   allocation/remap/access ordering, write/sync fail-closed durability
-  publication, request/buffer ownership through completion checking,
+  publication, cached-page pinning, read/write lease exclusion, and dirty
+  flush exclusion during active mutable leases,
+  header/map/file capacity publication, request/buffer ownership through
+  completion checking,
   root-CAS/cache/merge linearization, checked counter overflow and
   all-or-nothing batch merge publication, char increment preservation, stable
   unique vocab index publication with sparse claim accounting, concurrent
@@ -1196,7 +1234,7 @@ The combination of model checking (for concurrent/crash scenarios) and theorem p
   the unsafe inventory gate rejects contract rows without valid coverage/status
   metadata
 
-As of 2026-05-26 the Rocq tree has **zero outstanding `Admitted`/`Axiom`/`Parameter` obligations**: all theorem/lemma/corollary propositions across the proof modules close by `Qed.` (or `Defined.` for transparent definitions). Remaining extension scope and proof boundaries are tracked in `GAP_LEDGER.md`; the current boundary is production Byzantine networking/liveness, certified Rust/LLVM compilation, kernel io_uring/syscall internals below the modeled outcome boundary, gzip/prost internals, cross-language protobuf implementations, optimal/minimal automata size, arena-locality/throughput optimality, Bloom false-positive rates/hash-quality guarantees, arbitrary semiring `times` as meet for arbitrary semirings, and upstream Levenshtein transducer correctness, not unchecked structural-preservation, DynamicDawg mutation/compaction, DynamicDawgU64 sequence semantics, Bloom filter no-false-negative rejection, double-array-trie traversal, traversal-language, public read traversal, valued set-combinator merge, persistent merge equivalence, persistent char prefix semantics, persistent char bulk-mutation recovery, persistent relative encoding, arena reservation/dirty-slot persistence, persistent deduplicating-arena soundness, root descriptor/reopen fallback, persistent lazy mutation atomicity, persistent WAL write-atomicity, persistent transaction increment recovery, lock-free counter merge atomicity, shared persistent public API concurrency, public durability acknowledgement, persistent vocab WAL atomicity, persistent vocab checkpoint publication, concurrent checkpoint publication, checkpoint/WAL retention safety, dirty checkpoint publication safety, WAL segment lifecycle safety, recovery planner durable-prefix safety, recovery replay completeness, persistent compaction rewrite safety, char/vocab rewrite checkpoint safety, SCDAWG occurrence construction, substring-candidate, fuzzy-candidate, storage syscall outcome, io_uring fixed-buffer/SQE-CQE lifecycle, or public serialization proof gaps.
+As of 2026-06-01 the Rocq tree has **zero outstanding `Admitted`/`Axiom`/`Parameter` obligations**: all theorem/lemma/corollary propositions across the proof modules close by `Qed.` (or `Defined.` for transparent definitions). Scoped abstraction boundaries are tracked in `GAP_LEDGER.md`; the current boundary is production Byzantine networking/liveness, certified Rust/LLVM compilation, kernel io_uring/syscall internals below the modeled outcome boundary, gzip/prost internals, cross-language protobuf implementations, optimal/minimal automata size, arena-locality/throughput optimality, Bloom false-positive rates/hash-quality guarantees, arbitrary semiring `times` as meet for arbitrary semirings, and upstream Levenshtein transducer correctness, not unchecked structural-preservation, DynamicDawg mutation/compaction, DynamicDawgU64 sequence semantics, Bloom filter no-false-negative rejection, double-array-trie traversal, traversal-language, public read traversal, valued set-combinator merge, persistent merge equivalence, persistent char prefix semantics, persistent char bulk-mutation recovery, persistent relative encoding, arena reservation/dirty-slot persistence, persistent deduplicating-arena soundness, root descriptor/reopen fallback, persistent lazy mutation atomicity, persistent WAL write-atomicity, persistent transaction increment recovery, lock-free counter merge atomicity, shared persistent public API concurrency, public durability acknowledgement, persistent vocab WAL atomicity, persistent vocab checkpoint publication, concurrent checkpoint publication, checkpoint/WAL retention safety, dirty checkpoint publication safety, WAL segment lifecycle safety, recovery planner durable-prefix safety, recovery replay completeness, persistent compaction rewrite safety, char/vocab rewrite checkpoint safety, SCDAWG occurrence construction, substring-candidate, fuzzy-candidate, storage syscall outcome, BufferManager page-lease/cached-page pinning, reverse-index mmap/remap publication, io_uring fixed-buffer/SQE-CQE lifecycle, or public serialization proof gaps.
 
 ---
 

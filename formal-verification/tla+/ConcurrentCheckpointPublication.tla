@@ -145,10 +145,17 @@ PublishInsert(w) ==
                   checkpointLsn, gate, ckptPhase, ckptSnapshot, ckptTarget,
                   ckptPrevDirty, recovered>>
 
+\* A resident read of a committed term. Admitted both outside a checkpoint
+\* (`gate = "Open"`) AND DURING one (`gate = "Checkpoint"`): the non-blocking
+\* (write->read downgrade) checkpoint admits concurrent readers while it
+\* publishes + reclaims, whereas the prior blocking checkpoint held the trie
+\* write lock throughout and excluded them. A checkpoint never mutates `visible`,
+\* so a read admitted during publish observes consistent committed state — TLC
+\* verifies that admitting reads during a checkpoint violates no safety invariant.
 ObserveExisting(w, k) ==
     /\ w \in Writers
     /\ k \in Terms
-    /\ gate = "Open"
+    /\ gate \in GateStates
     /\ phase[w] = "Idle"
     /\ visible[k] # None
     /\ UNCHANGED Vars
@@ -253,6 +260,18 @@ TruncationKeepsUncheckpointedVisibleWal ==
         /\ visible[k] # None
         /\ durableCheckpoint[k] # visible[k]
         => termLsn[k] >= walRetainedFrom
+
+\* The write->read DOWNGRADE keeps the WAL frontier exact. Because no writer can
+\* run for the whole checkpoint (writers are excluded across capture AND publish
+\* — the downgrade never releases the lock, so there is no race window), `nextLsn`
+\* is unchanged from capture to WAL publish. Hence the published checkpoint frontier
+\* `ckptTarget` is exactly `nextLsn - 1`, i.e. `checkpoint_lsn = next_lsn` stays
+\* correct with no off-by-one and no racing-writer LSN gap. This is the model-level
+\* witness of the `debug_assert_eq!(next_lsn, snapshot.next_lsn_at_capture)` in
+\* `publish_durable_and_reclaim`, and is precisely why option (a) needs no
+\* frontier-bounded WAL reclaim (the GAP_LEDGER #41 footgun cannot occur).
+CaptureEqualsPublishFrontier ==
+    gate = "Checkpoint" => nextLsn = ckptTarget + 1
 
 DirtyFalseMeansCheckpointCoversVisible ==
     dirty = FALSE => durableCheckpoint = visible
