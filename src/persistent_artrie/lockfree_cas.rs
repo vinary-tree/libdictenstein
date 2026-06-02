@@ -12,6 +12,27 @@
 //! `pub(crate)` fields directly — the layered storage state stays in
 //! `dict_impl.rs`'s `struct PersistentARTrie` definition, this sibling
 //! file just contains the lock-free `impl` methods.
+//!
+//! # G4 — genericized over `V`, increment is now PATH-COPY CAS
+//!
+//! The overlay node (`super::nodes::PersistentNode<V>`) carries an **immutable**
+//! `Option<V>` value (G4 — was an in-place `AtomicU64`). The membership block is
+//! generic `<V: DictionaryValue, S>` and its proven two-phase `try_set_final`
+//! finalization (plus the prefix single-arbiter fix) is unchanged — only the
+//! `PersistentNode`/`AtomicNodePtr` names gain the `<V>` parameter.
+//!
+//! The **counter** half is `V = i64`-specific (byte tries persist `i64`; the
+//! lock-free n-gram counter accumulates a `u64` count bounded by
+//! `LOCKFREE_COUNTER_MAX = i64::MAX as u64`, stored in the overlay leaf as the
+//! trie's own `i64` value). Its increment is a **path-copy CAS** — mirroring char
+//! `lockfree_cas.rs::try_increment_cas` (`build_value_path_recursive`): read the
+//! leaf's count from the published snapshot, build a new leaf
+//! `old.as_final().with_value(new_count_as_i64)`, path-copy the root→leaf spine,
+//! CAS-publish the root. The wait-free in-place `fetch_add` is gone (arbitrary
+//! `V` cannot live in an atomic); the root CAS is the single linearization point,
+//! so no increment is lost (a loser re-reads the higher count and folds its
+//! delta onto the winner's). This is the same single-phase model the vocab
+//! overlay already uses and the char overlay proved via the loom race test.
 
 #![cfg(feature = "persistent-artrie")]
 
@@ -28,14 +49,31 @@ const LOCKFREE_COUNTER_MAX: u64 = i64::MAX as u64;
 /// Result of a lock-free insert attempt.
 ///
 /// Used by `insert_cas()` to communicate the outcome of a CAS operation.
-#[derive(Debug)]
-enum LockfreeInsertResult {
+///
+/// G4: generic over `V` so the `Inserted` node matches the trie's
+/// `lockfree_root: AtomicNodePtr<V>`. A membership trie (`V=()`) is unchanged; a
+/// counter trie (`V=i64`) carries the valued leaf back to the caller.
+enum LockfreeInsertResult<V = ()> {
     /// Term was newly inserted - contains the node to finalize
-    Inserted(Arc<super::nodes::PersistentNode>),
+    Inserted(Arc<super::nodes::PersistentNode<V>>),
     /// Term already exists in the trie
     AlreadyExists,
     /// CAS conflict - another thread modified the tree, retry needed
     Conflict,
+}
+
+// Manual `Debug` so `V` need not be `Debug` (the `DictionaryValue` bound omits
+// it). `V: Clone` so the node's own manual `Debug` (on `impl<V: Clone>`) applies.
+impl<V: Clone> std::fmt::Debug for LockfreeInsertResult<V> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            LockfreeInsertResult::Inserted(_) => f.write_str("LockfreeInsertResult::Inserted(..)"),
+            LockfreeInsertResult::AlreadyExists => {
+                f.write_str("LockfreeInsertResult::AlreadyExists")
+            }
+            LockfreeInsertResult::Conflict => f.write_str("LockfreeInsertResult::Conflict"),
+        }
+    }
 }
 
 impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
@@ -62,7 +100,7 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
         }
 
         // Initialize with an empty root node
-        let root_node = Arc::new(PersistentNode::new());
+        let root_node = Arc::new(PersistentNode::<V>::new());
         self.lockfree_root = Some(AtomicNodePtr::new(root_node));
         self.lockfree_cache = Some(DashMap::new());
     }
@@ -126,15 +164,15 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
     /// Attempt to insert a path in the lock-free trie.
     fn try_insert_lockfree_path(
         &self,
-        root: &super::nodes::AtomicNodePtr,
+        root: &super::nodes::AtomicNodePtr<V>,
         term: &[u8],
-    ) -> LockfreeInsertResult {
+    ) -> LockfreeInsertResult<V> {
         use super::nodes::PersistentNode;
 
         let current_root = match root.load() {
             Some(node) => node,
             None => {
-                let new_root = Arc::new(PersistentNode::new());
+                let new_root = Arc::new(PersistentNode::<V>::new());
                 match root.try_init(new_root) {
                     Ok(()) => return self.try_insert_lockfree_path(root, term),
                     Err(actual) => actual,
@@ -152,51 +190,48 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
     /// of each parent with updated child pointers.
     fn build_path_recursive(
         &self,
-        node: &Arc<super::nodes::PersistentNode>,
+        node: &Arc<super::nodes::PersistentNode<V>>,
         term: &[u8],
         depth: usize,
     ) -> std::result::Result<
         (
-            Arc<super::nodes::PersistentNode>,
-            Arc<super::nodes::PersistentNode>,
+            Arc<super::nodes::PersistentNode<V>>,
+            Arc<super::nodes::PersistentNode<V>>,
         ),
         (),
     > {
-        use super::nodes::PersistentNode;
-        use super::swizzled_ptr::SwizzledPtr;
+        use super::nodes::persistent_node::Child;
 
         if depth == term.len() {
             if node.is_final() {
-                return Err(()); // Already exists
+                return Err(()); // Already a complete term
             }
-            let final_node = Arc::new(node.as_final());
-            return Ok((final_node.clone(), final_node));
+            // Return the EXISTING node (shared Arc) as the leaf to finalize so
+            // `insert_cas`'s `try_set_final` is the SINGLE atomic arbiter across
+            // racing inserters. Do NOT pre-finalize (the old `node.as_final()`):
+            // that made `try_set_final` see an already-final node and wrongly
+            // report a *new* prefix term (e.g. "a" after "ab") as a duplicate,
+            // returning `false` AND skipping the lock-free cache so
+            // `merge_lockfree_to_persistent` (cache-only) silently dropped it.
+            // (Mirror of the char-overlay fix.)
+            return Ok((Arc::clone(node), Arc::clone(node)));
         }
 
         let key = term[depth];
 
         match node.find_child(key) {
             Some(child_ptr) => {
-                if child_ptr.is_on_disk() {
-                    return Err(());
-                }
-
-                if let Some(ptr) = child_ptr.as_ptr::<PersistentNode>() {
-                    // SAFETY: lock-free child pointers are created from
-                    // Arc::into_raw in this module. Incrementing the strong
-                    // count before Arc::from_raw creates a temporary owned
-                    // Arc for traversal while leaving the published child
-                    // pointer valid for other readers.
-                    let child = unsafe {
-                        Arc::increment_strong_count(ptr);
-                        Arc::from_raw(ptr)
-                    };
-
-                    let (new_child, leaf) = self.build_path_recursive(&child, term, depth + 1)?;
-
-                    let new_child_ptr = SwizzledPtr::in_memory(Arc::into_raw(new_child));
-                    let new_node = Arc::new(node.with_child(key, new_child_ptr));
-
+                // In-memory child: path-copy into it. An on-disk child means this
+                // path lives in the persistent trie, which the lock-free overlay
+                // cannot fault in here — treat it (and the impossible null filler)
+                // as a conflict to force a re-check. Zero `unsafe`: `as_in_mem`
+                // borrows the owned child `Arc` and `Child::InMem` re-wraps the
+                // path-copied replacement.
+                if let Some(child_arc) = child_ptr.as_in_mem() {
+                    let child_arc = Arc::clone(child_arc);
+                    let (new_child, leaf) =
+                        self.build_path_recursive(&child_arc, term, depth + 1)?;
+                    let new_node = Arc::new(node.with_child(key, Child::InMem(new_child)));
                     Ok((new_node, leaf))
                 } else {
                     Err(())
@@ -204,8 +239,7 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
             }
             None => {
                 let (new_subtree, leaf) = self.create_lockfree_path(&term[depth + 1..]);
-                let new_child_ptr = SwizzledPtr::in_memory(Arc::into_raw(new_subtree));
-                let new_node = Arc::new(node.with_child(key, new_child_ptr));
+                let new_node = Arc::new(node.with_child(key, Child::InMem(new_subtree)));
 
                 Ok((new_node, leaf))
             }
@@ -220,13 +254,12 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
         &self,
         term: &[u8],
     ) -> (
-        Arc<super::nodes::PersistentNode>,
-        Arc<super::nodes::PersistentNode>,
+        Arc<super::nodes::PersistentNode<V>>,
+        Arc<super::nodes::PersistentNode<V>>,
     ) {
-        use super::nodes::PersistentNode;
-        use super::swizzled_ptr::SwizzledPtr;
+        use super::nodes::persistent_node::{Child, PersistentNode};
 
-        let leaf = Arc::new(PersistentNode::new());
+        let leaf = Arc::new(PersistentNode::<V>::new());
 
         if term.is_empty() {
             return (leaf.clone(), leaf);
@@ -235,8 +268,8 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
         let mut current = leaf.clone();
 
         for &b in term.iter().rev() {
-            let child_ptr = SwizzledPtr::in_memory(Arc::into_raw(current));
-            let parent = PersistentNode::new().with_child(b, child_ptr);
+            // Each parent owns its child by `Arc` (no raw-pointer smuggling).
+            let parent = PersistentNode::<V>::new().with_child(b, Child::InMem(current));
             current = Arc::new(parent);
         }
 
@@ -246,11 +279,11 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
     /// Attempt to insert a path using CAS. Called from `insert_cas` retry loop.
     fn insert_lockfree_recursive(
         &self,
-        root: &super::nodes::AtomicNodePtr,
-        current: &Arc<super::nodes::PersistentNode>,
+        root: &super::nodes::AtomicNodePtr<V>,
+        current: &Arc<super::nodes::PersistentNode<V>>,
         term: &[u8],
         _depth: usize,
-    ) -> LockfreeInsertResult {
+    ) -> LockfreeInsertResult<V> {
         match self.build_path_recursive(current, term, 0) {
             Ok((new_root, leaf)) => match root.compare_exchange(current, new_root) {
                 Ok(_) => LockfreeInsertResult::Inserted(leaf),
@@ -282,32 +315,20 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
     /// Navigate the lock-free trie to find a term.
     fn find_in_lockfree_trie(
         &self,
-        node: &Arc<super::nodes::PersistentNode>,
+        node: &Arc<super::nodes::PersistentNode<V>>,
         term: &[u8],
         depth: usize,
     ) -> bool {
-        use super::nodes::PersistentNode;
-
         if depth >= term.len() {
             return node.is_final();
         }
 
         let key = term[depth];
         if let Some(child_ptr) = node.find_child(key) {
-            if child_ptr.is_on_disk() {
-                return false;
-            }
-
-            if let Some(ptr) = child_ptr.as_ptr::<PersistentNode>() {
-                // SAFETY: see build_path_recursive. The raw child pointer is
-                // an Arc allocation published by Arc::into_raw; bumping the
-                // strong count before from_raw keeps this traversal's Arc
-                // independent of the published pointer.
-                let child = unsafe {
-                    Arc::increment_strong_count(ptr);
-                    Arc::from_raw(ptr)
-                };
-                return self.find_in_lockfree_trie(&child, term, depth + 1);
+            // On-disk references can't be traversed in the lock-free overlay;
+            // in-memory children are borrowed and recursed into (owned `Arc`).
+            if let Some(child_arc) = child_ptr.as_in_mem() {
+                return self.find_in_lockfree_trie(&Arc::clone(child_arc), term, depth + 1);
             }
         }
 
@@ -345,12 +366,242 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
         self.cas_retries.load(std::sync::atomic::Ordering::Relaxed)
     }
 
+    /// Find the leaf node for a key in the lock-free trie.
+    ///
+    /// Generic helper shared by the membership block and the `<i64>` counter
+    /// block (its calls resolve at `V = i64` — same code, different impl).
+    fn find_leaf_lockfree(
+        &self,
+        root: &super::nodes::AtomicNodePtr<V>,
+        key: &[u8],
+    ) -> Option<Arc<super::nodes::PersistentNode<V>>> {
+        let current = root.load()?;
+        self.find_leaf_recursive(&current, key, 0)
+    }
+
+    /// Recursive helper for `find_leaf_lockfree`.
+    fn find_leaf_recursive(
+        &self,
+        node: &Arc<super::nodes::PersistentNode<V>>,
+        key: &[u8],
+        depth: usize,
+    ) -> Option<Arc<super::nodes::PersistentNode<V>>> {
+        if depth == key.len() {
+            return if node.is_final() {
+                Some(Arc::clone(node))
+            } else {
+                None
+            };
+        }
+
+        let child_ptr = node.find_child(key[depth])?;
+        // Can't traverse disk refs in the lock-free overlay; `as_in_mem` returns
+        // `None` for an on-disk child, short-circuiting via `?` (owned `Arc`).
+        let child_arc = child_ptr.as_in_mem()?;
+        self.find_leaf_recursive(&Arc::clone(child_arc), key, depth + 1)
+    }
+}
+
+// ============================================================================
+// Counter (valued) overlay methods — `V = i64` ONLY.
+// ============================================================================
+//
+// G4: the lock-free overlay node now carries an **immutable** `Option<V>` value
+// (was an in-place `AtomicU64`). The wait-free `fetch_add` increment is therefore
+// gone; an increment becomes a **path-copy CAS** (read the leaf's value, build a
+// new leaf with `old_leaf.as_final().with_value(new_val)`, path-copy the
+// root→leaf spine, CAS-publish the root — exactly the single-phase model the
+// vocab overlay (`persistent_vocab_artrie::lockfree_cas`) and the char overlay
+// (`persistent_artrie_char::lockfree_cas`) already use).
+//
+// Byte tries persist `i64`, so the lock-free counter overlay lives in a
+// `V = i64` impl block: the overlay leaf stores the running count as the trie's
+// own `i64` value, while the increment accumulates a `u64` count bounded by
+// `LOCKFREE_COUNTER_MAX = i64::MAX as u64` (the i64 persistence domain) and the
+// public API exposes `u64`. The generic membership block above remains `<V>` and
+// its proven `try_set_final` two-phase finalization is untouched. Cross-block
+// calls to the generic helpers (`find_leaf_lockfree`, `find_leaf_recursive`,
+// `try_insert_lockfree_path`) resolve at `V = i64` — same code, different impl.
+impl<S: BlockStorage> PersistentARTrie<i64, S> {
+    /// Lock-free read of a value from the lock-free trie overlay.
+    ///
+    /// Returns the accumulated count if the key is present in the lock-free layer
+    /// with a value set. Does not check the persistent layer — callers should
+    /// check both layers and sum for n-gram counting. The leaf stores the count
+    /// as the trie's `i64` value; it is non-negative (bounded at insert by
+    /// `LOCKFREE_COUNTER_MAX`), so the widen to `u64` is lossless.
+    #[inline]
+    pub fn get_lockfree(&self, key: &[u8]) -> Option<u64> {
+        let lockfree_root = self.lockfree_root.as_ref()?;
+        let _epoch = self.epoch_manager.enter_read();
+        self.find_leaf_lockfree(lockfree_root, key)
+            .and_then(|leaf| leaf.get_value())
+            .map(|v| v as u64)
+    }
+
+    /// Checked lock-free increment: create path if needed, then add `delta`.
+    ///
+    /// **G4 path-copy CAS** (the wait-free in-place `fetch_add` is gone — the
+    /// node's value is now an immutable `Option<i64>`). Each attempt:
+    ///   1. loads the overlay root (a published, immutable snapshot);
+    ///   2. reads the current count `cur` at `key` (0 if the leaf is absent or
+    ///      has no value), overflow-checks `cur.checked_add(delta)` against
+    ///      `LOCKFREE_COUNTER_MAX`;
+    ///   3. builds the new leaf `old_leaf.as_final().with_value(cur + delta)` and
+    ///      path-copies the root→leaf spine splicing in that leaf;
+    ///   4. CAS-publishes the new root via `lockfree_root.compare_exchange`.
+    /// On CAS failure another writer published a newer root, so we bump
+    /// `cas_retries` and retry — re-reading the (now higher) count, so **no
+    /// increment is lost** (the loser folds its delta onto the winner's value).
+    ///
+    /// Mirrors char `lockfree_cas.rs::try_increment_cas` verbatim modulo
+    /// `&str`→`&[u8]` (no decode needed for byte keys) and the leaf value type
+    /// (`i64` instead of `u64`). The root CAS is the single linearization point,
+    /// formally checked by the char loom race test.
+    pub fn try_increment_cas(&self, key: &[u8], delta: u64) -> Result<u64> {
+        use super::nodes::persistent_node::PersistentNode;
+        use std::sync::atomic::Ordering;
+
+        let lockfree_root = self
+            .lockfree_root
+            .as_ref()
+            .expect("Lock-free mode not enabled. Call enable_lockfree() first.");
+
+        if key.is_empty() {
+            return Ok(0);
+        }
+
+        if delta > LOCKFREE_COUNTER_MAX {
+            return Err(Self::lockfree_increment_overflow_error(key, None, delta));
+        }
+
+        let _epoch = self.epoch_manager.enter_read();
+
+        // Path-copy CAS retry loop (single-phase: the root CAS is the sole
+        // visibility arbiter — the new leaf's value is published atomically with
+        // the new root, so a stale reader never sees a torn count).
+        loop {
+            // (1) Load the current published root (initializing it if null — the
+            // same null-init dance the membership path uses).
+            let root = match lockfree_root.load() {
+                Some(r) => r,
+                None => {
+                    let new_root = Arc::new(PersistentNode::<i64>::new());
+                    let _ = lockfree_root.try_init(new_root);
+                    continue;
+                }
+            };
+
+            // (2) Read the current count at `key` from THIS snapshot. The leaf
+            // stores a non-negative `i64`; widen to `u64` for the running sum.
+            let cur = self
+                .find_leaf_recursive(&root, key, 0)
+                .and_then(|leaf| leaf.get_value())
+                .map(|v| v as u64)
+                .unwrap_or(0);
+
+            // (3) Overflow-check against the i64 persistence domain.
+            let new_val = match cur.checked_add(delta) {
+                Some(v) if v <= LOCKFREE_COUNTER_MAX => v,
+                _ => {
+                    return Err(Self::lockfree_increment_overflow_error(
+                        key,
+                        Some(cur),
+                        delta,
+                    ))
+                }
+            };
+
+            // (4) Build a new root with the value-carrying leaf spliced in. The
+            // count is bounded by `LOCKFREE_COUNTER_MAX = i64::MAX as u64`, so the
+            // narrow to `i64` is lossless.
+            let new_root = match self.build_value_path_recursive(&root, key, 0, new_val as i64) {
+                Some(r) => r,
+                None => {
+                    // An on-disk child blocked the path-copy (cannot fault in the
+                    // overlay). Treat as a transient conflict and retry from a
+                    // fresh root load — mirrors the membership `Conflict` arm.
+                    self.cas_retries.fetch_add(1, Ordering::Relaxed);
+                    continue;
+                }
+            };
+
+            // (5) CAS-publish. On success the new value is now visible. On
+            // failure another writer won; re-read the higher count and retry so
+            // this delta is not lost (it is folded onto the winner's value).
+            match lockfree_root.compare_exchange(&root, new_root) {
+                Ok(_) => return Ok(new_val),
+                Err(_actual) => {
+                    self.cas_retries.fetch_add(1, Ordering::Relaxed);
+                    continue;
+                }
+            }
+        }
+    }
+
+    /// Path-copy the `root`→leaf spine for `key`, finalizing the leaf with
+    /// `value`. Returns a new root `Arc` (the published-version candidate) or
+    /// `None` if an on-disk child blocks the copy (cannot be faulted in here).
+    ///
+    /// Mirrors the membership `build_path_recursive`, but instead of returning the
+    /// shared leaf for a later `try_set_final`, it bakes `as_final().with_value`
+    /// into the leaf so finalization+value publish atomically with the root CAS
+    /// (single-phase). For an existing path this replaces the leaf's value
+    /// (last-writer = the CAS winner); for a new path it creates the spine.
+    /// (Verbatim port of char `build_value_path_recursive` with `u32`→`u8` keys
+    /// and `u64`→`i64` leaf value.)
+    fn build_value_path_recursive(
+        &self,
+        node: &Arc<super::nodes::PersistentNode<i64>>,
+        key: &[u8],
+        depth: usize,
+        value: i64,
+    ) -> Option<Arc<super::nodes::PersistentNode<i64>>> {
+        use super::nodes::persistent_node::{Child, PersistentNode};
+
+        if depth == key.len() {
+            // Reached the leaf: bake finality + the new value into a fresh copy.
+            return Some(Arc::new(node.as_final().with_value(value)));
+        }
+
+        let k = key[depth];
+        match node.find_child(k) {
+            Some(child) => {
+                // In-memory child: path-copy into it. On-disk → cannot fault in.
+                let child_arc = child.as_in_mem()?;
+                let child_arc = Arc::clone(child_arc);
+                let new_child =
+                    self.build_value_path_recursive(&child_arc, key, depth + 1, value)?;
+                Some(Arc::new(node.with_child(k, Child::InMem(new_child))))
+            }
+            None => {
+                // Child absent: build the remaining spine bottom-up, valued leaf
+                // at the bottom.
+                let leaf = Arc::new(PersistentNode::<i64>::new().as_final().with_value(value));
+                let mut current = leaf;
+                for &b in key[depth + 1..].iter().rev() {
+                    let parent = PersistentNode::<i64>::new().with_child(b, Child::InMem(current));
+                    current = Arc::new(parent);
+                }
+                Some(Arc::new(node.with_child(k, Child::InMem(current))))
+            }
+        }
+    }
+
+    /// Lock-free increment: create path if needed, then atomically add delta.
+    ///
+    /// Panics if the checked counter domain would be exceeded. Use
+    /// [`Self::try_increment_cas`] to handle overflow as a recoverable error.
+    pub fn increment_cas(&self, key: &[u8], delta: u64) -> u64 {
+        self.try_increment_cas(key, delta)
+            .unwrap_or_else(|error| panic!("lock-free increment_cas failed: {}", error))
+    }
+
     /// Merge lock-free values into the persistent trie by summing.
     ///
     /// Unlike `merge_lockfree_to_persistent()` which does boolean insert,
     /// this method walks the lock-free trie overlay, collects all
-    /// `(key, value)` entries, and adds each value to the persistent trie
-    /// via `increment_bytes`.
+    /// `(key, value)` entries, and adds each value to the persistent trie.
     pub fn merge_lockfree_values_to_persistent(&mut self) -> Result<usize> {
         use super::nodes::PersistentNode;
 
@@ -393,7 +644,7 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
             cache.clear();
         }
         if let Some(ref root) = self.lockfree_root {
-            root.store(Arc::new(PersistentNode::new()));
+            root.store(Arc::new(PersistentNode::<i64>::new()));
         }
 
         Ok(merged_count)
@@ -402,7 +653,7 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
     fn prepare_lockfree_value_merge(
         &self,
         entries: &[(Vec<u8>, u64)],
-    ) -> Result<(Vec<(Vec<u8>, i64)>, Vec<(Vec<u8>, V)>)> {
+    ) -> Result<(Vec<(Vec<u8>, i64)>, Vec<(Vec<u8>, i64)>)> {
         let mut wal_entries = Vec::with_capacity(entries.len());
         let mut prepared_values = Vec::with_capacity(entries.len());
 
@@ -417,45 +668,18 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
                     delta_i64
                 ))
             })?;
-            let value = Self::value_from_i64_for_lockfree_merge(new_value)?;
 
             wal_entries.push((key.clone(), delta_i64));
-            prepared_values.push((key.clone(), value));
+            prepared_values.push((key.clone(), new_value));
         }
 
         Ok((wal_entries, prepared_values))
     }
 
     fn current_i64_for_lockfree_merge(&self, term: &[u8]) -> Result<i64> {
-        match self.get_value_impl(term) {
-            Some(value) => {
-                let bytes =
-                    crate::serialization::bincode_compat::serialize(&value).map_err(|e| {
-                        PersistentARTrieError::internal(format!("Serialization error: {}", e))
-                    })?;
-                if bytes.len() == 8 {
-                    Ok(i64::from_le_bytes(
-                        bytes.try_into().expect("checked len == 8"),
-                    ))
-                } else {
-                    crate::serialization::bincode_compat::deserialize::<i64>(&bytes).map_err(|e| {
-                        PersistentARTrieError::internal(format!(
-                            "Value cannot be interpreted as i64: {}",
-                            e
-                        ))
-                    })
-                }
-            }
-            None => Ok(0),
-        }
-    }
-
-    fn value_from_i64_for_lockfree_merge(value: i64) -> Result<V> {
-        let value_bytes = crate::serialization::bincode_compat::serialize(&value)
-            .map_err(|e| PersistentARTrieError::internal(format!("Serialization error: {}", e)))?;
-        crate::serialization::bincode_compat::deserialize(&value_bytes).map_err(|e| {
-            PersistentARTrieError::internal(format!("Cannot create value from i64: {}", e))
-        })
+        // The persistent value is the trie's own `i64`; read it directly (the
+        // running sum is bounded by `LOCKFREE_COUNTER_MAX = i64::MAX`).
+        Ok(self.get_value_impl(term).unwrap_or(0))
     }
 
     fn lockfree_delta_to_i64(term: &[u8], delta: u64) -> Result<i64> {
@@ -469,160 +693,28 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
     }
 
     /// Recursively collect all (key, value) entries from the lock-free trie.
+    /// The leaf stores a non-negative `i64` count; widen to `u64` for the merge.
     fn collect_lockfree_entries_recursive(
-        node: &Arc<super::nodes::PersistentNode>,
+        node: &Arc<super::nodes::PersistentNode<i64>>,
         key_buf: &mut Vec<u8>,
         entries: &mut Vec<(Vec<u8>, u64)>,
     ) {
-        use super::nodes::PersistentNode;
-
         if node.is_final() {
             if let Some(value) = node.get_value() {
-                entries.push((key_buf.clone(), value));
+                entries.push((key_buf.clone(), value as u64));
             }
         }
 
         for (&child_key, child_ptr) in node.iter_children() {
-            if child_ptr.is_on_disk() {
-                continue;
-            }
-            if let Some(ptr) = child_ptr.as_ptr::<PersistentNode>() {
-                // SAFETY: lock-free child pointers are Arc allocations that
-                // remain published through SwizzledPtr raw values. The strong
-                // count is incremented before reconstructing this temporary
-                // Arc so collection owns a valid traversal reference.
-                let child = unsafe {
-                    Arc::increment_strong_count(ptr);
-                    Arc::from_raw(ptr)
-                };
+            // Skip on-disk refs in the lock-free overlay; recurse into in-memory
+            // children (borrowed owned `Arc`, no `unsafe`).
+            if let Some(child_arc) = child_ptr.as_in_mem() {
+                let child_arc = Arc::clone(child_arc);
                 key_buf.push(child_key);
-                Self::collect_lockfree_entries_recursive(&child, key_buf, entries);
+                Self::collect_lockfree_entries_recursive(&child_arc, key_buf, entries);
                 key_buf.pop();
             }
         }
-    }
-
-    /// Find the leaf node for a key in the lock-free trie.
-    fn find_leaf_lockfree(
-        &self,
-        root: &super::nodes::AtomicNodePtr,
-        key: &[u8],
-    ) -> Option<Arc<super::nodes::PersistentNode>> {
-        let current = root.load()?;
-        self.find_leaf_recursive(&current, key, 0)
-    }
-
-    /// Recursive helper for `find_leaf_lockfree`.
-    fn find_leaf_recursive(
-        &self,
-        node: &Arc<super::nodes::PersistentNode>,
-        key: &[u8],
-        depth: usize,
-    ) -> Option<Arc<super::nodes::PersistentNode>> {
-        use super::nodes::PersistentNode;
-
-        if depth == key.len() {
-            return if node.is_final() {
-                Some(Arc::clone(node))
-            } else {
-                None
-            };
-        }
-
-        let child_ptr = node.find_child(key[depth])?;
-        if child_ptr.is_on_disk() {
-            return None;
-        }
-
-        let ptr = child_ptr.as_ptr::<PersistentNode>()?;
-        // SAFETY: lock-free child pointers are Arc allocations published by
-        // Arc::into_raw in this module. Increment before from_raw so the
-        // returned Arc is an owned traversal reference.
-        let child = unsafe {
-            Arc::increment_strong_count(ptr);
-            Arc::from_raw(ptr)
-        };
-        self.find_leaf_recursive(&child, key, depth + 1)
-    }
-
-    /// Lock-free read of a value from the lock-free trie overlay.
-    #[inline]
-    pub fn get_lockfree(&self, key: &[u8]) -> Option<u64> {
-        let lockfree_root = self.lockfree_root.as_ref()?;
-        let _epoch = self.epoch_manager.enter_read();
-        self.find_leaf_lockfree(lockfree_root, key)
-            .and_then(|leaf| leaf.get_value())
-    }
-
-    /// Checked lock-free increment: create path if needed, then atomically add delta.
-    ///
-    /// For existing keys: single `fetch_add` on the leaf (wait-free).
-    /// For new keys: CAS retry loop to create path, then set initial value.
-    pub fn try_increment_cas(&self, key: &[u8], delta: u64) -> Result<u64> {
-        use std::sync::atomic::Ordering;
-
-        let lockfree_root = self
-            .lockfree_root
-            .as_ref()
-            .expect("Lock-free mode not enabled. Call enable_lockfree() first.");
-
-        if key.is_empty() {
-            return Ok(0);
-        }
-
-        if delta > LOCKFREE_COUNTER_MAX {
-            return Err(Self::lockfree_increment_overflow_error(key, None, delta));
-        }
-
-        let _epoch = self.epoch_manager.enter_read();
-
-        if let Some(leaf) = self.find_leaf_lockfree(lockfree_root, key) {
-            return leaf
-                .try_increment_value(delta, LOCKFREE_COUNTER_MAX)
-                .ok_or_else(|| {
-                    Self::lockfree_increment_overflow_error(key, leaf.get_value(), delta)
-                });
-        }
-
-        loop {
-            match self.try_insert_lockfree_path(lockfree_root, key) {
-                LockfreeInsertResult::Inserted(leaf) => {
-                    leaf.try_set_final();
-                    return leaf
-                        .try_increment_value(delta, LOCKFREE_COUNTER_MAX)
-                        .ok_or_else(|| {
-                            Self::lockfree_increment_overflow_error(key, leaf.get_value(), delta)
-                        });
-                }
-                LockfreeInsertResult::AlreadyExists => {
-                    if let Some(leaf) = self.find_leaf_lockfree(lockfree_root, key) {
-                        return leaf
-                            .try_increment_value(delta, LOCKFREE_COUNTER_MAX)
-                            .ok_or_else(|| {
-                                Self::lockfree_increment_overflow_error(
-                                    key,
-                                    leaf.get_value(),
-                                    delta,
-                                )
-                            });
-                    }
-                    continue;
-                }
-                LockfreeInsertResult::Conflict => {
-                    self.cas_retries.fetch_add(1, Ordering::Relaxed);
-                    continue;
-                }
-            }
-        }
-    }
-
-    /// Lock-free increment: create path if needed, then atomically add delta.
-    ///
-    /// Panics if the checked counter domain would be exceeded. Use
-    /// [`Self::try_increment_cas`] to handle overflow as a recoverable error.
-    pub fn increment_cas(&self, key: &[u8], delta: u64) -> u64 {
-        self.try_increment_cas(key, delta)
-            .unwrap_or_else(|error| panic!("lock-free increment_cas failed: {}", error))
     }
 
     fn lockfree_increment_overflow_error(
@@ -636,5 +728,79 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
             current,
             delta
         ))
+    }
+}
+
+#[cfg(test)]
+mod reclaim_tests {
+    //! Phase-A leak-detection tests for the byte lock-free overlay (the
+    //! `Child`-enum fix). Mirror of the char overlay's `reclaim_tests`: prove that
+    //! superseded path-copied node versions are reclaimed via ordinary `Arc`
+    //! refcounting (owned `Child::InMem` children), not leaked as the old
+    //! `Arc::into_raw`-through-`SwizzledPtr` smuggling did. The witness is
+    //! `Arc::strong_count` on a retained leaf: after the overlay is dropped, only
+    //! the test's handle may reference it (count == 1).
+
+    use crate::persistent_artrie::nodes::persistent_node::PersistentNode;
+    use crate::persistent_artrie::PersistentARTrie;
+    use std::sync::Arc;
+
+    fn lockfree_trie(prefix: &str) -> (tempfile::TempDir, PersistentARTrie<()>) {
+        let dir = tempfile::Builder::new()
+            .prefix(prefix)
+            .tempdir_in("target/test-tmp")
+            .expect("scratch tempdir under target/test-tmp");
+        let path = dir.path().join("overlay.part");
+        let mut trie = PersistentARTrie::<()>::create(&path).expect("create trie");
+        trie.enable_lockfree();
+        (dir, trie)
+    }
+
+    /// Walk the live overlay root down a byte path, returning an owned `Arc`
+    /// clone of the node reached (every edge must be an in-memory child).
+    fn walk_to(trie: &PersistentARTrie<()>, path: &[u8]) -> Arc<PersistentNode> {
+        let mut node = trie
+            .lockfree_root
+            .as_ref()
+            .expect("lock-free enabled")
+            .load()
+            .expect("non-null overlay root");
+        for &b in path {
+            let next = node
+                .find_child(b)
+                .unwrap_or_else(|| panic!("missing child {b} while walking {path:?}"))
+                .as_in_mem()
+                .unwrap_or_else(|| panic!("child {b} is on-disk while walking {path:?}"))
+                .clone();
+            node = next;
+        }
+        node
+    }
+
+    #[test]
+    fn superseded_overlay_nodes_are_reclaimed_not_leaked() {
+        let (_dir, trie) = lockfree_trie("byte-overlay-reclaim");
+
+        for term in [b"ab", b"ac", b"ad", b"ae"] {
+            trie.insert_cas(term);
+        }
+
+        let held_leaf = walk_to(&trie, b"ab");
+        assert!(
+            Arc::strong_count(&held_leaf) >= 2,
+            "the live overlay and our handle must both reference the leaf; got {}",
+            Arc::strong_count(&held_leaf)
+        );
+
+        drop(trie);
+
+        assert_eq!(
+            Arc::strong_count(&held_leaf),
+            1,
+            "after dropping the trie only our handle may reference the leaf; \
+             strong_count {} > 1 means a superseded node version leaked a child \
+             reference (the bug the Child leak-fix closes)",
+            Arc::strong_count(&held_leaf)
+        );
     }
 }

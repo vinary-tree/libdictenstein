@@ -4,7 +4,66 @@ This document describes the lock-free concurrent insert mechanism for `Persisten
 
 ## Overview
 
-Traditional concurrent trie implementations use locks (RwLock) which serialize writes and can cause contention when many threads insert concurrently. This design uses **persistent data structures** from the `im` crate combined with **CAS operations** to achieve truly lock-free concurrent inserts.
+Traditional concurrent trie implementations use locks (RwLock) which serialize writes and can cause contention when many threads insert concurrently. This design uses **persistent data structures** combined with **CAS operations** to achieve truly lock-free concurrent inserts.
+
+> ## ⚠️ Phase A — current state (supersedes the `im::Vector` / RwLock descriptions below)
+>
+> The sections after this box describe the *original* design. The **char overlay**
+> (`PersistentCharNode`, used by both the char and vocab lock-free overlays) has
+> since been made genuinely lock-free and leak-free; the byte overlay has received
+> the correctness fix only (its owned-`Arc` conversion is a follow-on). Current
+> reality, for reconstruction:
+>
+> 1. **Atomic root is genuinely atomic.** `AtomicNodePtr`
+>    (`nodes/atomic_ptr.rs`) wraps `arc_swap::ArcSwapOption<PersistentCharNode>`,
+>    **not** a `RwLock`. `load()` → `ArcSwapOption::load_full()` (lock-free,
+>    hazard-protected, returns an owned `Arc` = an MVCC snapshot); `compare_exchange`
+>    → `ArcSwapOption::compare_and_swap` + `Arc::ptr_eq` (pointer-identity CAS, no
+>    spurious failure). An earlier stopgap stored a raw `Arc` in an `AtomicU64`
+>    (unsound) and then retreated to a `RwLock` (a "lock-free root" that was a lock).
+>    arc-swap is the sound *and* lock-free resolution.
+>
+> 2. **Children are owned, not smuggled (the leak fix).** `PersistentCharNode`'s
+>    child slots are `Child = InMem(Arc<PersistentCharNode>) | OnDisk(SwizzledPtr)`
+>    (`nodes/persistent_node.rs`), stored in a tiered `ChildStore`
+>    (`Inline[≤4]` zero-alloc / `Heap[5+]`) — **not** `im::Vector`. Previously an
+>    in-memory child was an `Arc::into_raw` pointer smuggled through `SwizzledPtr`'s
+>    `u64`; because that `u64` has no `Drop`, **every superseded node version leaked
+>    its children**. With owned `Child::InMem`, reclamation is ordinary `Arc`
+>    refcounting (a node frees exactly when no live version — including reader
+>    snapshots — references it). **No EBR is required for correctness**; it would
+>    only batch refcount traffic. All overlay `unsafe` (the `Arc::from_raw` handoff
+>    + the manual `unsafe impl Send/Sync`) is **removed**: `Send`/`Sync` now
+>    auto-derive (the compiler proves what the manual impl asserted), and the
+>    `formal-verification/UNSAFE_INVENTORY.tsv`/`UNSAFE_CONTRACTS.tsv` rows for those
+>    blocks are deleted.
+>
+> 3. **Prefix-insert finalization (correctness fix).** At `depth == len`,
+>    `build_path_recursive` returns the **existing (shared) node** un-finalized, so
+>    `insert_cas`'s `try_set_final` (an atomic `fetch_or`) is the **single arbiter**
+>    of the winner across racing inserters. The old code pre-finalized via
+>    `node.as_final()`, which made `try_set_final` observe an already-final node and
+>    wrongly report a *new* proper-prefix term (e.g. "d" after "da") as a duplicate —
+>    returning `false` **and skipping the lock-free cache**, so the cache-only
+>    `merge_lockfree_to_persistent` silently **dropped the term** (data loss). Fixed
+>    in both the char and byte overlays. The **vocab** overlay commits final+value in
+>    a single root-CAS-published path-copy and is already correct (it must **not**
+>    receive this change).
+>
+> 4. **Verification.** `tests/persistent_lockfree_overlay_proptest.rs` (BTreeSet
+>    oracle + contended finalization + post-*merge* data-loss witnesses),
+>    `tests/persistent_lockfree_overlay_loom.rs` (no-lost-update, prefix single-
+>    arbiter, reader-no-UAF), and an in-crate `reclaim_tests` module in
+>    `lockfree_cas.rs` (`Arc::strong_count == 1` after drop ⇒ no leaked references).
+>
+> **Scope:** char overlay = fully converted (atomic root + owned children + fix).
+> **Byte overlay = now also fully converted** — `im::Vector` → tiered `ChildStore`
+> (Inline/Heap, u8 keys), `SwizzledPtr` children → owned `Child`, `AtomicNodePtr`
+> `RwLock` → `arc_swap::ArcSwapOption`, all overlay `unsafe` removed + `Send`/`Sync`
+> auto-derived. This removed the crate's last `im` user, so the **`im` dependency is
+> dropped from `Cargo.toml`**. Vocab overlay = already correct (shares
+> `PersistentCharNode`; migrated alongside char). Both byte and char overlays now
+> carry the `reclaim_tests` `strong_count == 1`-after-drop leak witness.
 
 ## Architecture
 

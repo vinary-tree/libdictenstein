@@ -1077,6 +1077,42 @@ fn char_create_vs_increment_race_has_one_leaf_and_total_value() {
 }
 
 #[test]
+fn byte_create_vs_increment_race_has_one_leaf_and_total_value() {
+    // G4: the BYTE overlay increment changed from an in-place `fetch_add` to the
+    // same PATH-COPY CAS char uses (`build_value_path_recursive`; the root CAS is
+    // the single linearization point). The model is key-agnostic — it abstracts
+    // "leaf-init + root-CAS publish" — so this byte-named mirror of
+    // `char_create_vs_increment_race_…` attests the byte path-copy increment's
+    // no-lost-update property: two racing increments converge to ONE leaf with the
+    // SUMMED value, never double-initializing the leaf and never dropping a delta.
+    loom::model(|| {
+        let overlay = Arc::new(ModelValueOverlay::new());
+
+        let first = {
+            let overlay = Arc::clone(&overlay);
+            thread::spawn(move || overlay.increment(1))
+        };
+
+        let second = {
+            let overlay = Arc::clone(&overlay);
+            thread::spawn(move || overlay.increment(2))
+        };
+
+        let first_result = first.join().expect("first increment completed");
+        let second_result = second.join().expect("second increment completed");
+
+        // Each thread observes either its own delta (it won the empty→value CAS)
+        // or the summed total (it folded onto the winner) — never a lost update.
+        assert!(matches!(first_result, 1 | 3));
+        assert!(matches!(second_result, 2 | 3));
+        // Exactly one leaf was ever initialized (no double-create under the race).
+        assert_eq!(overlay.leaf_initializations.load(Ordering::SeqCst), 1);
+        // The published value is the total of both deltas.
+        assert_eq!(overlay.get_value(), Some(3));
+    });
+}
+
+#[test]
 fn char_checked_increment_overflow_preserves_overlay_value() {
     loom::model(|| {
         let overlay = ModelValueOverlay::new();

@@ -9,7 +9,17 @@ use libdictenstein::MappedDictionary;
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::Path;
-use tempfile::tempdir;
+
+/// Real-disk scratch dir. `/tmp` is tmpfs (RAM) on this host, so disk-backed
+/// tries must NOT use bare `tempdir()` (it once filled tmpfs to 39 GB). Always
+/// allocate under `target/test-tmp`.
+fn tempdir() -> tempfile::TempDir {
+    std::fs::create_dir_all("target/test-tmp").ok();
+    tempfile::Builder::new()
+        .prefix("lockfree-merge")
+        .tempdir_in("target/test-tmp")
+        .expect("scratch tempdir under target/test-tmp")
+}
 
 fn wal_len(path: &Path) -> u64 {
     fs::metadata(path.with_extension("wal"))
@@ -39,7 +49,7 @@ fn batch_increment_terms(path: &Path) -> Vec<BTreeSet<Vec<u8>>> {
 
 #[test]
 fn checked_increment_cas_rejects_signed_persistence_domain_overflow() {
-    let dir = tempdir().expect("tempdir");
+    let dir = tempdir();
     let byte_path = dir.path().join("byte_checked.part");
     let char_path = dir.path().join("char_checked.artc");
     let max = i64::MAX as u64;
@@ -58,7 +68,12 @@ fn checked_increment_cas_rejects_signed_persistence_domain_overflow() {
     assert!(error.to_string().contains("overflow"));
     assert_eq!(byte_trie.get_lockfree(b"counter"), Some(max));
 
-    let mut char_trie = PersistentARTrieChar::<i64>::create(&char_path).expect("create char trie");
+    // G1: the char lock-free counter overlay is `V = u64`-specific (the overlay
+    // leaf now carries an immutable `Option<u64>` count, not an `AtomicU64` in an
+    // `<i64>`-valued trie). The increment domain is still bounded by
+    // `LOCKFREE_COUNTER_MAX = i64::MAX as u64`, so `i64::MAX` succeeds and `+1`
+    // overflows exactly as before.
+    let mut char_trie = PersistentARTrieChar::<u64>::create(&char_path).expect("create char trie");
     char_trie.enable_lockfree();
     assert_eq!(
         char_trie
@@ -75,7 +90,7 @@ fn checked_increment_cas_rejects_signed_persistence_domain_overflow() {
 
 #[test]
 fn byte_lockfree_value_merge_overflow_is_all_or_nothing() {
-    let dir = tempdir().expect("tempdir");
+    let dir = tempdir();
     let path = dir.path().join("byte_merge_overflow.part");
     let mut trie = PersistentARTrie::<i64>::create(&path).expect("create byte trie");
 
@@ -100,12 +115,15 @@ fn byte_lockfree_value_merge_overflow_is_all_or_nothing() {
 
 #[test]
 fn char_lockfree_value_merge_overflow_is_all_or_nothing() {
-    let dir = tempdir().expect("tempdir");
+    let dir = tempdir();
     let path = dir.path().join("char_merge_overflow.artc");
-    let mut trie = PersistentARTrieChar::<i64>::create(&path).expect("create char trie");
+    // G1: char counter overlay is `V = u64`; the merge still bounds running sums
+    // at the i64 persistence domain, so seeding `bad = i64::MAX` and merging `+1`
+    // overflows that domain identically.
+    let mut trie = PersistentARTrieChar::<u64>::create(&path).expect("create char trie");
 
     trie.upsert("ok", 10).expect("seed ok");
-    trie.upsert("bad", i64::MAX).expect("seed bad");
+    trie.upsert("bad", i64::MAX as u64).expect("seed bad");
     trie.enable_lockfree();
     trie.try_increment_cas("ok", 5).expect("overlay ok");
     trie.try_increment_cas("bad", 1).expect("overlay bad");
@@ -117,7 +135,7 @@ fn char_lockfree_value_merge_overflow_is_all_or_nothing() {
     assert!(error.to_string().contains("overflow"));
     assert_eq!(wal_len(&path), before_wal);
     assert_eq!(trie.get("ok").copied(), Some(10));
-    assert_eq!(trie.get("bad").copied(), Some(i64::MAX));
+    assert_eq!(trie.get("bad").copied(), Some(i64::MAX as u64));
     assert_eq!(trie.get_lockfree("ok"), Some(5));
     assert_eq!(trie.get_lockfree("bad"), Some(1));
     assert!(batch_increment_terms(&path).is_empty());
@@ -125,7 +143,7 @@ fn char_lockfree_value_merge_overflow_is_all_or_nothing() {
 
 #[test]
 fn byte_lockfree_value_merge_appends_one_batch_and_reopens_exact_sums() {
-    let dir = tempdir().expect("tempdir");
+    let dir = tempdir();
     let path = dir.path().join("byte_merge_success.part");
     let mut trie = PersistentARTrie::<i64>::create(&path).expect("create byte trie");
 
@@ -160,9 +178,10 @@ fn byte_lockfree_value_merge_appends_one_batch_and_reopens_exact_sums() {
 
 #[test]
 fn char_lockfree_value_merge_appends_one_batch_and_reopens_exact_sums() {
-    let dir = tempdir().expect("tempdir");
+    let dir = tempdir();
     let path = dir.path().join("char_merge_success.artc");
-    let mut trie = PersistentARTrieChar::<i64>::create(&path).expect("create char trie");
+    // G1: char counter overlay is `V = u64`.
+    let mut trie = PersistentARTrieChar::<u64>::create(&path).expect("create char trie");
 
     trie.upsert("alpha", 10).expect("seed alpha");
     trie.enable_lockfree();
@@ -189,7 +208,7 @@ fn char_lockfree_value_merge_appends_one_batch_and_reopens_exact_sums() {
             .collect()
     ));
 
-    let reopened = PersistentARTrieChar::<i64>::open(&path).expect("reopen char trie");
+    let reopened = PersistentARTrieChar::<u64>::open(&path).expect("reopen char trie");
     assert_eq!(reopened.get("alpha").copied(), Some(15));
     assert_eq!(reopened.get("日本").copied(), Some(7));
 }

@@ -164,15 +164,19 @@ fn bench_read_vs_flush(c: &mut Criterion) {
             });
         });
 
-        group.bench_with_input(BenchmarkId::new("readers_with_checkpoint", n), &n, |b, &n| {
-            b.iter_custom(|iters| {
-                let mut total = Duration::ZERO;
-                for _ in 0..iters {
-                    total += time_readers(&trie, n, true);
-                }
-                total
-            });
-        });
+        group.bench_with_input(
+            BenchmarkId::new("readers_with_checkpoint", n),
+            &n,
+            |b, &n| {
+                b.iter_custom(|iters| {
+                    let mut total = Duration::ZERO;
+                    for _ in 0..iters {
+                        total += time_readers(&trie, n, true);
+                    }
+                    total
+                });
+            },
+        );
     }
 
     group.finish();

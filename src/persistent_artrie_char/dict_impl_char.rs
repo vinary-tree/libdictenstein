@@ -62,14 +62,48 @@ pub use super::recovery_stats::EnhancedRecoveryMode;
 ///
 /// Used internally by `insert_cas()` to communicate the outcome
 /// of a single CAS attempt.
-#[derive(Debug)]
-pub(super) enum LockfreeInsertResult {
+///
+/// G1: generic over the overlay value type `V` (default `()`), so the
+/// `Inserted` node matches the trie's `lockfree_root: AtomicNodePtr<V>`. A
+/// membership trie (`V=()`) is unchanged; a counter trie (`V=u64`) carries the
+/// `u64`-valued leaf back to the caller.
+pub(super) enum LockfreeInsertResult<V = ()> {
     /// Successfully inserted a new term, returning the target node
-    Inserted(Arc<super::nodes::persistent_node::PersistentCharNode>),
+    Inserted(Arc<super::nodes::persistent_node::PersistentCharNode<V>>),
     /// Term already exists in the trie
     AlreadyExists,
     /// CAS failed due to concurrent modification (should retry)
     Conflict,
+    /// WRITE-PATH FAULT-IN (design §4): a buffer-manager I/O error occurred while
+    /// faulting an `OnDisk` prefix node back into memory during the path-copy. The
+    /// term is NOT acknowledged; the durable image is intact (fault-in writes
+    /// nothing). `insert_cas_durable` surfaces this as `Err(e)`; `insert_cas`
+    /// treats it as a bounded-retry/`false`. Only constructed when fault-in is
+    /// compiled in (`any(test, bench-internals)`).
+    #[cfg(any(test, feature = "bench-internals"))]
+    IoError(crate::persistent_artrie::error::PersistentARTrieError),
+}
+
+// Manual `Debug` so `V` need not be `Debug` (the `DictionaryValue` bound omits
+// it). `V: Clone` so the node's own manual `Debug` (on `impl<V: Clone>`) applies.
+impl<V: Clone> std::fmt::Debug for LockfreeInsertResult<V> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            LockfreeInsertResult::Inserted(node) => f
+                .debug_tuple("LockfreeInsertResult::Inserted")
+                .field(node)
+                .finish(),
+            LockfreeInsertResult::AlreadyExists => {
+                f.write_str("LockfreeInsertResult::AlreadyExists")
+            }
+            LockfreeInsertResult::Conflict => f.write_str("LockfreeInsertResult::Conflict"),
+            #[cfg(any(test, feature = "bench-internals"))]
+            LockfreeInsertResult::IoError(e) => f
+                .debug_tuple("LockfreeInsertResult::IoError")
+                .field(e)
+                .finish(),
+        }
+    }
 }
 
 // `EnhancedRecoveryStats` was relocated to `super::recovery_stats`;

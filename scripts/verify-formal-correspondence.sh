@@ -58,6 +58,7 @@ run_capped cargo test --features persistent-artrie --test persistent_wal_atomici
 run_capped cargo test --features persistent-artrie --test persistent_bulk_mutation_correspondence
 run_capped cargo test --features persistent-artrie --test persistent_transaction_increment_correspondence
 run_capped cargo test --features persistent-artrie --test persistent_lockfree_merge_correspondence
+run_capped cargo test --features persistent-artrie --test persistent_lockfree_overlay_proptest
 run_capped cargo test --features persistent-artrie --test checkpoint_retention_correspondence
 run_capped cargo test --features persistent-artrie --test dirty_checkpoint_correspondence
 run_capped cargo test --features persistent-artrie --test wal_segment_lifecycle_correspondence
@@ -92,6 +93,8 @@ run_capped cargo test --features persistent-artrie --test epoch_checkpoint_recov
 )
 run_capped cargo test --features persistent-artrie --test persistent_artrie_storage_correspondence
 run_capped cargo test --features persistent-artrie --test persistent_artrie_loom_correspondence
+run_capped cargo test --features persistent-artrie --test persistent_lockfree_overlay_loom
+run_capped cargo test --features persistent-artrie --test persistent_lockfree_durable_loom
 run_capped cargo test \
   --features persistent-artrie \
   --lib \
@@ -229,6 +232,8 @@ if command -v tla2sany >/dev/null 2>&1; then
       LockFreeIndexedOverlay \
       LockFreeCounterMergeAtomicity \
       ConcurrentCheckpointPublication \
+      LockFreeDurableCheckpoint \
+      LockFreeDurableCheckpointEviction \
       EvictionRegistryPublication \
       SharedPersistentConcurrency \
       PublicDurabilityPolicy \
@@ -242,7 +247,8 @@ if command -v tla2sany >/dev/null 2>&1; then
       ByzantineStorage \
       HotStuffConsensus \
       PublicDictionaryNodeTraversal \
-      EvictionWalkEBR
+      EvictionWalkEBR \
+      OverlayEvictionCas
     do
       run_capped tla2sany "${module}.tla"
     done
@@ -276,6 +282,8 @@ if [ "${RUN_TLC:-0}" = "1" ]; then
       LockFreeARTrieLinearizability \
       LockFreeCounterMergeAtomicity \
       ConcurrentCheckpointPublication \
+      LockFreeDurableCheckpoint \
+      LockFreeDurableCheckpointEviction \
       EvictionRegistryPublication \
       SharedPersistentConcurrency \
       PublicDurabilityPolicy \
@@ -289,12 +297,42 @@ if [ "${RUN_TLC:-0}" = "1" ]; then
       ByzantineStorage \
       HotStuffConsensus \
       PublicDictionaryNodeTraversal \
-      EvictionWalkEBR
+      EvictionWalkEBR \
+      OverlayEvictionCas
     do
       run_capped tlc -workers 1 -config "${module}.cfg" "${module}.tla"
     done
     run_capped tlc -workers 1 -config LockFreeIndexedOverlayCounter.cfg LockFreeIndexedOverlay.tla
     run_capped tlc -workers 1 -config LockFreeIndexedOverlayVocabulary.cfg LockFreeIndexedOverlay.tla
+
+    # ── Negative controls (each `_Unsafe.cfg` MUST FAIL its model's safety) ──
+    # Each `_Unsafe.cfg` deliberately relaxes the one design choice the model
+    # exists to justify, and MUST FAIL a safety invariant:
+    #   * LockFreeDurableCheckpoint / LockFreeDurableCheckpointEviction set
+    #     USE_WATERMARK = FALSE and MUST violate `NoLostWriteUnderLockFreeCommit`
+    #     (the GAP_LEDGER #41 appended-frontier losing trace) — proving the
+    #     committed-watermark choice is REQUIRED (base retain-WAL reclaim AND with
+    #     eviction-registry publication on).
+    #   * OverlayEvictionCas sets USE_FAULT_IN = FALSE (lets the overlay evictor
+    #     fire on a LIVE node with NO fault-in recovery) and MUST violate
+    #     `ReadNeverMissesCommitted` — proving the read/write fault-in path is
+    #     REQUIRED once eviction is unrestricted (an acked LIVE node evicted with
+    #     no fault-in is permanently unreachable = silent data loss).
+    # If TLC unexpectedly PASSES one of these, the model no longer exhibits the
+    # bug it must catch → the negative control is broken → fail the whole gate.
+    for unsafe_module in \
+      LockFreeDurableCheckpoint \
+      LockFreeDurableCheckpointEviction \
+      OverlayEvictionCas
+    do
+      echo "== Negative control: ${unsafe_module}_Unsafe.cfg (MUST violate a safety invariant) =="
+      if run_capped tlc -workers 1 -config "${unsafe_module}_Unsafe.cfg" "${unsafe_module}.tla"; then
+        echo "ERROR: ${unsafe_module}_Unsafe.cfg PASSED but MUST FAIL (negative control did not fire)" >&2
+        exit 1
+      else
+        echo "OK: ${unsafe_module}_Unsafe.cfg failed as required (negative control fired)"
+      fi
+    done
   )
 else
   echo "Skipping TLC model checking; set RUN_TLC=1 to enable bounded TLC runs"

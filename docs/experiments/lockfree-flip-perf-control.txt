@@ -1,0 +1,20 @@
+Error:
+Failure to open event 'cpu/cycles/Pu' on PMU 'cpu' which will be removed.
+The sys_perf_event_open() syscall failed for event (cpu/cycles/Pu): Invalid argument
+"dmesg | grep -i perf" may provide additional information.
+
+Error:
+Failure to open any events for recording.
+
+────────────────────────────────────────────────────────────────────────
+PERF ATTRIBUTION SKIPPED (ledger §10 step 6 / §E permitted skip).
+Reason: kernel.perf_event_paranoid=2 with no CAP_PERFMON / no sudo →
+  sys_perf_event_open() returns EINVAL ("Failure to open any events for
+  recording") even for own-process userspace hardware-event sampling.
+  Neither LBR nor a dwarf fallback can be attempted without raising the
+  paranoid level (root). This is an environment limitation, NOT an
+  experiment failure; the §8 decision rule does not depend on perf.
+Expected attribution (from the design, unconfirmed): CONTROL dominated by
+  RwLock write-guard serialization + serialize_char_node_to_disk re-walk +
+  fsync/msync; TREATMENT by compare_exchange spin + Arc refcount + fsync.
+────────────────────────────────────────────────────────────────────────

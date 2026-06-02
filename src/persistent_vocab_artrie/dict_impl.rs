@@ -187,7 +187,10 @@ pub struct PersistentVocabARTrie<S: BlockStorage = MmapDiskManager> {
     // === Lock-Free Infrastructure (per plan Phase 4-5) ===
     /// Lock-free root using PersistentCharNode with im::Vector for CAS operations.
     /// When present, `insert_cas()` uses this for lock-free concurrent inserts.
-    pub(super) lockfree_root: Option<AtomicNodePtr>,
+    ///
+    /// G1: the char overlay node is generic over its value type; the vocab
+    /// overlay instantiates it at `V = u64` (the vocabulary index).
+    pub(super) lockfree_root: Option<AtomicNodePtr<u64>>,
 
     /// Lock-free cache for term → index lookups (DashMap for O(1) sharded access).
     pub(super) lockfree_cache: Option<DashMap<String, u64>>,

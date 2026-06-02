@@ -65,8 +65,18 @@ use xxhash_rust::xxh3::Xxh3DefaultBuilder;
 
 use super::PersistentVocabARTrie;
 use crate::persistent_artrie::error::Result;
-use crate::persistent_artrie::swizzled_ptr::SwizzledPtr;
-use crate::persistent_artrie_char::nodes::{AtomicNodePtr, PersistentCharNode};
+use crate::persistent_artrie_char::nodes::persistent_node::Child as ChildGeneric;
+use crate::persistent_artrie_char::nodes::{
+    AtomicNodePtr as AtomicNodePtrGeneric, PersistentCharNode as PersistentCharNodeGeneric,
+};
+
+// The vocab overlay's node value is the `u64` vocabulary index, so it instantiates
+// the (now generic, G1) char overlay node at `V = u64`. These aliases keep the
+// rest of this module's bare `PersistentCharNode`/`AtomicNodePtr`/`Child` usages
+// resolving to the `u64` instantiation.
+type Child = ChildGeneric<u64>;
+type AtomicNodePtr = AtomicNodePtrGeneric<u64>;
+type PersistentCharNode = PersistentCharNodeGeneric<u64>;
 
 /// Result of a lock-free insert operation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -239,38 +249,34 @@ impl LockFreeVocab {
         let mut current = root;
         for &c in &chars {
             match current.find_child(c) {
-                Some(child_ptr) => {
-                    if child_ptr.is_null() {
+                Some(child) => {
+                    if child.is_null() {
                         return None;
                     }
-                    if let Some(ptr) = child_ptr.as_ptr::<PersistentCharNode>() {
-                        // SAFETY: child_ptr is swizzled (as_ptr returned Some);
-                        // ptr originated from `Arc::into_raw` during a CAS
-                        // insertion path (see insert_cas / install_path). The
-                        // Arc strong count is currently >= 1 because the parent
-                        // node holds the reference; bumping the count here
-                        // gives the new local Arc a fresh strong reference.
-                        unsafe {
-                            Arc::increment_strong_count(ptr);
-                            current = Arc::from_raw(ptr);
+                    // Owned-`Arc` child: borrow and clone it (no raw-pointer
+                    // smuggling / `unsafe`). The Arc strong count is >= 1 because
+                    // the parent node holds the reference; `Arc::clone` adds a
+                    // fresh strong reference for the local traversal cursor.
+                    match child.as_in_mem() {
+                        Some(child_arc) => current = Arc::clone(child_arc),
+                        None => {
+                            // LockFreeVocab is constructed exclusively via
+                            // `LockFreeVocab::new` / `with_start_index`, both of
+                            // which create an empty in-memory root, and every
+                            // CAS-insert path installs in-memory `Arc`-backed
+                            // children. The trie therefore never contains an
+                            // on-disk `SwizzledPtr`; if one ever appears, the
+                            // construction or persistence layer has introduced an
+                            // invariant violation that needs investigation rather
+                            // than a silent `return None`.
+                            unreachable!(
+                                "LockFreeVocab encountered an on-disk SwizzledPtr child for code \
+                                 point {:#x}; the structure does not load nodes from disk and all \
+                                 construction paths produce in-memory children only — this indicates \
+                                 corruption of the in-memory invariant",
+                                c
+                            );
                         }
-                    } else {
-                        // LockFreeVocab is constructed exclusively via
-                        // `LockFreeVocab::new` / `with_start_index`, both of
-                        // which create an empty in-memory root, and every
-                        // CAS-insert path installs in-memory `Arc`-backed
-                        // children. The trie therefore never contains an
-                        // on-disk `SwizzledPtr`; if one ever appears, the
-                        // construction or persistence layer has introduced an
-                        // invariant violation that needs investigation rather
-                        // than a silent `return None`.
-                        unreachable!(
-                            "LockFreeVocab encountered an on-disk SwizzledPtr child for code \
-                             point {:#x}; the structure does not load nodes from disk and all \
-                             construction paths produce in-memory children only — this indicates \
-                             corruption of the in-memory invariant",
-                            c
-                        );
                     }
                 }
                 None => return None,
@@ -419,35 +425,35 @@ impl LockFreeVocab {
         let c = chars[depth];
 
         match node.find_child(c) {
-            Some(child_ptr) => {
+            Some(child) => {
                 // Child exists - recurse
-                if child_ptr.is_null() {
+                if child.is_null() {
                     return Err(0); // Shouldn't happen
                 }
 
-                if let Some(ptr) = child_ptr.as_ptr::<PersistentCharNode>() {
-                    let child = unsafe {
-                        Arc::increment_strong_count(ptr);
-                        Arc::from_raw(ptr)
-                    };
+                match child.as_in_mem() {
+                    Some(child_arc) => {
+                        let child_arc = Arc::clone(child_arc);
 
-                    // Recurse into child
-                    let new_child = self.insert_recursive(&child, chars, depth + 1, index)?;
+                        // Recurse into child
+                        let new_child =
+                            self.insert_recursive(&child_arc, chars, depth + 1, index)?;
 
-                    // Create new node with updated child pointer
-                    let new_child_ptr = SwizzledPtr::in_memory(Arc::into_raw(new_child));
-                    let new_node = node.with_child(c, new_child_ptr);
-                    Ok(Arc::new(new_node))
-                } else {
-                    // On-disk child - not supported yet
-                    Err(0)
+                        // Create new node owning the updated child by `Arc`
+                        // (no raw-pointer smuggling).
+                        let new_node = node.with_child(c, Child::InMem(new_child));
+                        Ok(Arc::new(new_node))
+                    }
+                    None => {
+                        // On-disk child - not supported yet
+                        Err(0)
+                    }
                 }
             }
             None => {
                 // Child doesn't exist - create new path
                 let new_child = self.create_path(&chars[depth + 1..], index);
-                let new_child_ptr = SwizzledPtr::in_memory(Arc::into_raw(new_child));
-                let new_node = node.with_child(c, new_child_ptr);
+                let new_node = node.with_child(c, Child::InMem(new_child));
                 Ok(Arc::new(new_node))
             }
         }
@@ -465,8 +471,8 @@ impl LockFreeVocab {
         let mut current = Arc::new(PersistentCharNode::new().as_final().with_value(index));
 
         for &c in chars.iter().rev() {
-            let child_ptr = SwizzledPtr::in_memory(Arc::into_raw(current));
-            let parent = PersistentCharNode::new().with_child(c, child_ptr);
+            // Each parent owns its child by `Arc` (no raw-pointer smuggling).
+            let parent = PersistentCharNode::new().with_child(c, Child::InMem(current));
             current = Arc::new(parent);
         }
 
@@ -479,17 +485,14 @@ impl LockFreeVocab {
 
         for &c in chars {
             match current.find_child(c) {
-                Some(child_ptr) => {
-                    if child_ptr.is_null() {
+                Some(child) => {
+                    if child.is_null() {
                         return None;
                     }
-                    if let Some(ptr) = child_ptr.as_ptr::<PersistentCharNode>() {
-                        unsafe {
-                            Arc::increment_strong_count(ptr);
-                            current = Arc::from_raw(ptr);
-                        }
-                    } else {
-                        return None;
+                    // On-disk children are not traversable here → `None`.
+                    match child.as_in_mem() {
+                        Some(child_arc) => current = Arc::clone(child_arc),
+                        None => return None,
                     }
                 }
                 None => return None,

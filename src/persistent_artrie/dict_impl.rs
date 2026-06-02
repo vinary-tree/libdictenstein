@@ -317,8 +317,12 @@ pub struct PersistentARTrie<V: DictionaryValue = (), S: BlockStorage = MmapDiskM
     /// When `enable_lockfree()` is called, this pointer becomes the primary
     /// root for all lock-free operations. The persistent root remains separate
     /// and is merged during checkpoint.
+    ///
+    /// G4: generic over the trie value `V` (mirrors the char overlay's
+    /// `lockfree_root: AtomicNodePtr<V>`), so the membership block (`<V>`) and the
+    /// `<i64>` counter block share one root carrying `OverlayNode<ByteKey, V>`.
     #[cfg(feature = "persistent-artrie")]
-    pub(crate) lockfree_root: Option<super::nodes::AtomicNodePtr>,
+    pub(crate) lockfree_root: Option<super::nodes::AtomicNodePtr<V>>,
 
     /// Fast cache for lock-free lookups (key → exists).
     ///

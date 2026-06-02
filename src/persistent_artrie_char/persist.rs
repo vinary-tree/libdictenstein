@@ -54,6 +54,16 @@ pub(crate) struct CheckpointSnapshot {
     /// ever violated (e.g. a lock-free WAL-appending writer is exposed on the
     /// shared handle), which would otherwise risk a lost write.
     next_lsn_at_capture: u64,
+    /// **Migration Phase E (immutable-overlay capture only).** The committed
+    /// watermark captured (Acquire) BEFORE the root load (the capture-ordering
+    /// invariant). `Some(w)` for [`Self::capture_snapshot_immutable`]; `None` for
+    /// the owned [`Self::capture_snapshot`] (which reclaims by the `next_lsn`
+    /// convention instead). The retaining-WAL publisher writes a `Checkpoint`
+    /// record with `checkpoint_lsn = w` so recovery skips WAL deltas ≤ `w` (already
+    /// folded into the published image) and replays only the tail `> w` — the
+    /// watermark-based `checkpoint_lsn` the plan §4 mandates, which is what makes
+    /// publishing a counter image while retaining the WAL non-double-counting.
+    committed_watermark_at_capture: Option<u64>,
     /// Freshly-built disk-location registry (only when eviction is enabled),
     /// published to the eviction coordinator after durability is verified.
     eviction_registry: Option<DiskLocationRegistry>,
@@ -300,8 +310,456 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
             arena_count,
             root_ptr,
             next_lsn_at_capture,
+            // Owned-tree capture reclaims by the `next_lsn` convention, not a
+            // watermark (writers are excluded by the write lock), so this is None.
+            committed_watermark_at_capture: None,
             eviction_registry,
         })
+    }
+
+    /// **Migration Phase B (test-only):** capture a checkpoint snapshot from the
+    /// IMMUTABLE lock-free overlay representation instead of the owned tree.
+    ///
+    /// Each overlay `PersistentCharNode` is converted to an owned production
+    /// `CharTrieNodeInner<V>` ([`overlay_to_inner`]) and then serialized through
+    /// the EXISTING [`Self::serialize_char_node_to_disk`] — so for the same
+    /// logical data the on-disk image is **equivalent by construction** to a
+    /// `capture_snapshot()` of an owned tree built from the same terms (proven by
+    /// the correspondence test below). This is the capability that lets a future
+    /// phase make the immutable representation the checkpoint source for all `V`;
+    /// it is `cfg(test)` until that flip (Phase E) wires it into `checkpoint()`.
+    ///
+    /// G1: the overlay node now carries `Option<V>` directly, so the converter
+    /// reads the value off the node — the former `map_value: Fn(u64) -> V` bridge
+    /// is gone. For `V = ()` membership tries the overlay never holds a value.
+    ///
+    /// REVERSIBLE BENCH GATE: also exposed under the existing `bench-internals`
+    /// feature (still `pub(crate)`, NOT unconditionally public) so the
+    /// `lockfree_flip_benchmark` can measure the TREATMENT checkpoint path
+    /// (`capture_snapshot_immutable` → `publish_immutable_snapshot_retaining_wal`)
+    /// without performing the Phase-E flip. Removing the `bench-internals`
+    /// disjunct restores the pre-bench `#[cfg(test)]`-only visibility exactly.
+    #[cfg(any(test, feature = "bench-internals"))]
+    pub(crate) fn capture_snapshot_immutable(&self) -> Result<CheckpointSnapshot> {
+        let next_lsn_at_capture = self.next_lsn.load(AtomicOrdering::Acquire);
+
+        let mut eviction_registry = self
+            .eviction_coordinator
+            .as_ref()
+            .map(|_| DiskLocationRegistry::new());
+
+        // ═══════════════════════════════════════════════════════════════════
+        //  THE SNAPSHOT-LSN CAPTURE ORDERING — "the single most dangerous line
+        //  in the design" (plan §4). Read with the utmost care before editing.
+        // ═══════════════════════════════════════════════════════════════════
+        //
+        // We capture the committed watermark `Acquire` STRICTLY BEFORE loading
+        // the atomic overlay root (also `Acquire`). This ordering — watermark
+        // FIRST, then root — is the executable refinement of the TLA invariant
+        // `NoLostWriteUnderLockFreeCommit` (`LockFreeDurableCheckpoint.tla`):
+        // it makes the captured snapshot a subset of the committed-durable
+        // prefix, so `checkpoint_lsn := watermark` can NEVER reclaim a WAL
+        // record that the snapshot does not contain (the GAP_LEDGER #41
+        // data-loss footgun, which the `_Unsafe.cfg` appended-frontier model
+        // exhibits as a concrete losing trace).
+        //
+        // WHY THE ORDERING ALONE SUFFICES (and why we cannot max over per-node
+        // LSNs):  the immutable overlay `PersistentCharNode` carries NO per-node
+        // LSN — it stores only finality + an `Option<V>` value (the G1 overlay
+        // is `u64`-only; membership carries no value). So unlike a node-versioned
+        // store, there is no per-node `lsn` field to take a `max` over. The
+        // safety argument is instead PURELY the publication chain, each link of
+        // which is established by an `Acquire`/`Release` pair in the proven
+        // Order-A path (`insert_cas_durable`):
+        //
+        //   snapshot ⊆ published-root ⊆ committed-prefix(watermark_at_capture)
+        //
+        //   (1) snapshot ⊆ published-root.  Order A makes a write visible ONLY
+        //       by CAS-publishing a new root whose spine contains the new leaf
+        //       (`lockfree_cas.rs`: append+sync DURABLE → root CAS → mark).
+        //       Every term in the snapshot we load was published by some such
+        //       CAS that linearized at-or-before our `root.load()`.
+        //   (2) published-root ⊆ committed-prefix.  A term is visible in the
+        //       loaded root ⇒ its publishing CAS already landed ⇒ its WAL LSN
+        //       was appended-and-synced DURABLE *before* that CAS (Order A) ⇒
+        //       and `mark_committed(lsn)` runs immediately after the CAS. The
+        //       contiguous-prefix watermark therefore covers that LSN AS SOON AS
+        //       the contiguous run closes. The ONE subtlety the watermark exists
+        //       to handle: out-of-order commit can leave a published write's LSN
+        //       temporarily ABOVE the contiguous watermark (an earlier LSN has
+        //       not yet `mark_committed`). That is exactly why we reclaim by the
+        //       WATERMARK, not the appended frontier: any visible-but-above-
+        //       watermark write has lsn > watermark_at_capture, so it is RETAINED
+        //       in the WAL (never archived) and replayed on recovery — no loss.
+        //       Conversely every lsn ≤ watermark_at_capture is, by the watermark
+        //       contract, fully committed/durable, so archiving up to it is safe.
+        //
+        // Because the watermark is read FIRST, any root we subsequently load can
+        // only be NEWER-or-equal (monotonic publication), so the snapshot can
+        // only contain MORE writes than the watermark proves durable — and those
+        // extra writes are precisely the lsn > watermark tail that stays in the
+        // WAL. Reordering these two loads (root before watermark) would break the
+        // subset direction and reopen #41. DO NOT REORDER.
+        let watermark_at_capture = self.committed_watermark.watermark();
+        // The DURABLY-SYNCED WAL frontier, captured in the same capture-ordering
+        // window (before the root load). This — NOT the trie's `self.next_lsn`
+        // counter — is the frontier the watermark lives in: every committed LSN
+        // came from `append_to_wal_returning_lsn`, which both appends AND syncs it
+        // durable (Order A), then `mark_committed`s it. `self.next_lsn` is a
+        // SEPARATE, owned-mutation counter that the lock-free durable path never
+        // advances, so it is the WRONG bound (it stays at its initial value while
+        // the WAL writer's own LSN domain — surfaced as `synced_lsn()` — advances).
+        // `None` (no WAL) ⇒ no durable LSNs can exist, so the frontier is 0 and the
+        // watermark must also be 0.
+        let synced_frontier_at_capture: u64 = self
+            .wal_writer
+            .as_ref()
+            .map(|w| w.synced_lsn())
+            .unwrap_or(0);
+
+        let overlay_root = self.lockfree_root.as_ref().and_then(|root| root.load());
+        let (root_type, root_ptr, is_final, entry_count) = match overlay_root {
+            None => (ROOT_TYPE_EMPTY, 0u64, false, 0u64),
+            Some(root) => {
+                let inner_root = overlay_to_inner::<V>(&root);
+                let mut path: Vec<char> = Vec::new();
+                let ptr = self.serialize_char_node_to_disk(
+                    &inner_root,
+                    &mut path,
+                    eviction_registry.as_mut(),
+                )?;
+                let entry_count = count_overlay_finals(&root);
+                (
+                    ROOT_TYPE_NODE,
+                    ptr.to_raw(),
+                    inner_root.node.is_final(),
+                    entry_count,
+                )
+            }
+        };
+
+        // ── Executable refinement of the capture-ordering invariant ──────────
+        // What we CAN assert (the overlay has no per-node LSN to max over, per the
+        // long comment above): the committed watermark captured BEFORE the root
+        // load never exceeds the DURABLY-SYNCED WAL frontier captured in the same
+        // window. This is the tight, correct refinement of
+        //   snapshot ⊆ published-root ⊆ committed-prefix(watermark) ⊆ durable-WAL
+        // — reclaiming the WAL up to `watermark` is safe ONLY IF every LSN ≤
+        // watermark is already durably synced, i.e. `watermark ≤ synced_frontier`.
+        // A watermark above the synced frontier would mean we `mark_committed`'d an
+        // LSN the WAL had not actually synced (an Order-A violation / mark misuse),
+        // and reclaiming to it could archive an un-synced write out of recovery's
+        // reach (the GAP_LEDGER #41 footgun). We turn that into a loud failure here
+        // rather than silent data loss. (`debug_assert!` is the lock-free analogue
+        // of the shipped owned-path `next_lsn`-unchanged assert in
+        // `publish_durable_and_reclaim`, replacing write-exclusion with a watermark
+        // ≤ durable-frontier bound.)
+        //
+        // NOTE — domain correctness (the bug this very assert CAUGHT during the
+        // soak): the bound is the WAL writer's `synced_lsn()`, NOT the trie's
+        // `self.next_lsn`. Those are different LSN counters; the lock-free durable
+        // path advances only the WAL writer's, leaving `self.next_lsn` at its
+        // initial value, so comparing the watermark against `self.next_lsn` was a
+        // domain mismatch that this debug_assert surfaced loudly.
+        debug_assert!(
+            watermark_at_capture <= synced_frontier_at_capture,
+            "capture_snapshot_immutable: committed watermark {watermark_at_capture} \
+             exceeds the durably-synced WAL frontier {synced_frontier_at_capture} — \
+             a committed LSN is not yet durable (Order-A / mark_committed misuse); \
+             reclaiming to this watermark could archive an un-synced write \
+             (GAP_LEDGER #41 capture-ordering invariant violated)"
+        );
+        // Keep the two captured frontiers live in ALL builds (the `watermark()` and
+        // `synced_lsn()` Acquire loads are the capture-ordering side effects); the
+        // `debug_assert!` itself compiles out in release.
+        let _ = (
+            watermark_at_capture,
+            synced_frontier_at_capture,
+            next_lsn_at_capture,
+        );
+
+        if let Some(ref arena_manager) = self.arena_manager {
+            arena_manager.write().flush_dirty_slots()?;
+        }
+        let arena_count: u32 = if let Some(ref arena_manager) = self.arena_manager {
+            arena_manager.read().arena_count() as u32
+        } else {
+            0
+        };
+
+        Ok(CheckpointSnapshot {
+            root_type,
+            is_final,
+            entry_count,
+            arena_count,
+            root_ptr,
+            next_lsn_at_capture,
+            // The watermark captured BEFORE the root load — the safe `checkpoint_lsn`
+            // the retaining-WAL publisher records so recovery skips deltas ≤ it.
+            committed_watermark_at_capture: Some(watermark_at_capture),
+            eviction_registry,
+        })
+    }
+
+    /// **Migration Phase E (test-only):** publish an immutable-overlay snapshot's
+    /// durable on-disk image and record `checkpoint_lsn = committed watermark`,
+    /// **while RETAINING the entire WAL** — the provably-safe checkpoint to run
+    /// CONCURRENTLY with lock-free Order-A writers in the reversible-hardening soak.
+    ///
+    /// The shipped [`Self::publish_durable_and_reclaim`] rotates/truncates the WAL
+    /// by `next_lsn` and asserts `next_lsn` is unchanged since capture — both of
+    /// which are INCOMPATIBLE with concurrent lock-free writers (writers bump the
+    /// WAL frontier mid-checkpoint, which is the entire reason the committed
+    /// watermark exists). Destructive watermark-bounded WAL *truncation* is the
+    /// owner-gated IRREVERSIBLE flip, out of scope here. So this helper does the
+    /// SAFE, REVERSIBLE subset:
+    ///
+    ///   1. publish the descriptor + fsync the data file (the on-disk image
+    ///      advances and is verified durable);
+    ///   2. append a `Checkpoint` WAL record carrying `checkpoint_lsn = w` (the
+    ///      watermark captured BEFORE the root load — `plan §4`'s mandated safe
+    ///      `checkpoint_lsn`), then sync it — but DO NOT rotate/truncate. The full
+    ///      WAL stays on disk.
+    ///
+    /// The `Checkpoint` record is what makes this NON-DOUBLE-COUNTING for counters:
+    /// recovery skips WAL records with `lsn ≤ checkpoint_lsn` (already folded into
+    /// the published image) and replays only the tail `lsn > w`. Without it,
+    /// recovery would load the image's counts AND re-apply every retained
+    /// `BatchIncrement` delta on top → an inflated count (the exact bug the counter
+    /// soak caught: c0 reopened to 115 instead of 60). Membership inserts are
+    /// idempotent so they tolerated the missing record, but deltas are not.
+    ///
+    /// Because the watermark is the contiguous committed-durable prefix and the WAL
+    /// tail `> w` is retained in full, recovery sees image(≤w) ⊕ WAL(>w) with NO
+    /// overlap and NO gap → every acknowledged write survives exactly once under
+    /// ANY interleaving. It only ever ADDS durability (retains more WAL than a
+    /// truncating reclaim would), so it cannot lose a write — the Task-4 contract.
+    ///
+    /// Requires the snapshot to come from [`Self::capture_snapshot_immutable`]
+    /// (which sets `committed_watermark_at_capture`); an owned-tree snapshot
+    /// (`None`) is rejected, since its `next_lsn` convention is the wrong
+    /// `checkpoint_lsn` here.
+    ///
+    /// REVERSIBLE BENCH GATE: also exposed under the existing `bench-internals`
+    /// feature (still `pub(crate)`) so the `lockfree_flip_benchmark` can drive
+    /// the TREATMENT immutable-snapshot publish without the Phase-E flip.
+    /// Removing the `bench-internals` disjunct restores `#[cfg(test)]`-only.
+    #[cfg(any(test, feature = "bench-internals"))]
+    pub(crate) fn publish_immutable_snapshot_retaining_wal(
+        &self,
+        snapshot: &CheckpointSnapshot,
+    ) -> Result<()> {
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        // The eviction registry is intentionally NOT published here: this helper
+        // is for the durability soak, which does not enable eviction (so the
+        // snapshot's `eviction_registry` is always `None`). Publishing it is a
+        // Phase-D concern orthogonal to the durability contract and would require
+        // the registry to be `Clone` (it is not), so it is left to the
+        // owner-gated flip's `publish_durable_and_reclaim`.
+        debug_assert!(
+            snapshot.eviction_registry.is_none(),
+            "publish_immutable_snapshot_retaining_wal is the eviction-disabled soak \
+             publisher; an eviction registry here means it was called on an \
+             eviction-enabled trie, which must use publish_durable_and_reclaim"
+        );
+
+        // The safe `checkpoint_lsn` is the watermark captured before the root load.
+        let checkpoint_lsn = snapshot.committed_watermark_at_capture.ok_or_else(|| {
+            PersistentARTrieError::internal(
+                "publish_immutable_snapshot_retaining_wal requires an immutable-overlay \
+                 snapshot (committed_watermark_at_capture = Some); got an owned-tree snapshot",
+            )
+        })?;
+
+        // (1) Durable descriptor publish (the on-disk linearization point) + verify.
+        self.publish_snapshot(snapshot)?;
+        self.verify_checkpoint()?;
+
+        // (2) Record `checkpoint_lsn = watermark` so recovery skips deltas ≤ it
+        //     (already in the image), then sync — but RETAIN the WAL (no rotate).
+        if let Some(ref wal_writer) = self.wal_writer {
+            let timestamp = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+            wal_writer
+                .append(WalRecord::Checkpoint {
+                    checkpoint_lsn,
+                    timestamp,
+                })
+                .map_err(|e| PersistentARTrieError::WalError {
+                    reason: format!("{:?}", e),
+                })?;
+            wal_writer
+                .sync()
+                .map_err(|e| PersistentARTrieError::WalError {
+                    reason: format!("{:?}", e),
+                })?;
+            // Deliberately NO rotate_to_archive: the WAL (incl. the tail > w) is
+            // retained in full. That is what keeps this reversible (no destructive
+            // truncation) while remaining non-double-counting (the Checkpoint
+            // record gates the replay).
+        }
+        Ok(())
+    }
+
+    /// **EVICTION-ON reversible publisher** — the durable retain-WAL checkpoint of
+    /// [`Self::publish_immutable_snapshot_retaining_wal`] PLUS eviction-registry
+    /// publication, for benchmarking/testing the eviction-ON immutable-snapshot
+    /// checkpoint path WITHOUT the owner-gated production flip
+    /// (`g4-eviction-on-immutable-checkpoint.md`).
+    ///
+    /// The shipped [`Self::publish_immutable_snapshot_retaining_wal`] deliberately
+    /// REFUSES a registry (`debug_assert!(eviction_registry.is_none())`): it is the
+    /// eviction-DISABLED durability soak publisher. The owned-tree
+    /// [`Self::publish_durable_and_reclaim`] DOES publish the registry, but its
+    /// reclaim is lock-free-incompatible (it reclaims by `next_lsn`, which the
+    /// lock-free durable path never advances, and asserts `next_lsn` unchanged,
+    /// which a concurrent `insert_cas_durable` violates). This publisher is the
+    /// one-line gap closed: the watermark-bounded **retain-WAL** reclaim of the
+    /// retain-WAL publisher (record `checkpoint_lsn = committed watermark`, RETAIN
+    /// the WAL, NO destructive `rotate_to_archive`) plus the registry publication
+    /// the owned path already does (`coordinator.update_disk_registry`).
+    ///
+    /// Reclaim/durability semantics are therefore BYTE-IDENTICAL to the
+    /// already-proven [`Self::publish_immutable_snapshot_retaining_wal`]: the
+    /// single most dangerous line — recording `checkpoint_lsn = watermark` and
+    /// retaining the WAL — is UNMOVED. The committed-watermark no-lost-write proof
+    /// (`LockFreeDurableCheckpoint.tla` `NoLostWriteUnderLockFreeCommit`,
+    /// re-derived under registry publication + eviction in
+    /// `LockFreeDurableCheckpointEviction.tla`) carries: the registry is invisible
+    /// to recovery (`RecoveredSet` never reads it), so publishing it cannot change
+    /// the conclusion. The registry is published ONLY AFTER `verify_checkpoint()`
+    /// proves the on-disk image durable (the `EvictionRegistryPublication.tla`
+    /// publish-after-verify ordering), and every durable mutation INVALIDATES it at
+    /// the `append_to_wal_inner` chokepoint BEFORE its visibility CAS — so a racing
+    /// writer dirties the published registry before its write is visible, and
+    /// eviction (gated on `is_valid()`) then reclaims nothing: a liveness loss, not
+    /// a safety loss.
+    ///
+    /// Takes the snapshot BY VALUE because `update_disk_registry` consumes the
+    /// registry (mirrors the owned `publish_durable_and_reclaim(snapshot)`).
+    /// Requires an immutable-overlay snapshot (`committed_watermark_at_capture =
+    /// Some`); an owned-tree snapshot is rejected (its `next_lsn` convention is the
+    /// wrong `checkpoint_lsn` here).
+    ///
+    /// REVERSIBLE GATE: `cfg(any(test, feature = "bench-internals"))` so the
+    /// `bench_immutable_checkpoint_with_eviction` shim can drive it from a bench
+    /// binary (an external crate that cannot name the `pub(crate)`
+    /// [`CheckpointSnapshot`]). Removing the `bench-internals` disjunct restores
+    /// the pre-bench `#[cfg(test)]`-only visibility exactly. `checkpoint()` + every
+    /// production path stay untouched; this performs NO flip and does NO
+    /// destructive WAL truncation.
+    #[cfg(any(test, feature = "bench-internals"))]
+    pub(crate) fn publish_immutable_snapshot_retaining_wal_with_eviction(
+        &self,
+        snapshot: CheckpointSnapshot,
+    ) -> Result<()> {
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        // The safe `checkpoint_lsn` is the committed watermark captured BEFORE the
+        // root load (the data-loss-critical invariant); an owned-tree snapshot
+        // (`None`) is the wrong convention here and is rejected.
+        let checkpoint_lsn = snapshot.committed_watermark_at_capture.ok_or_else(|| {
+            PersistentARTrieError::internal(
+                "publish_immutable_snapshot_retaining_wal_with_eviction requires an \
+                 immutable-overlay snapshot (committed_watermark_at_capture = Some); \
+                 got an owned-tree snapshot",
+            )
+        })?;
+
+        // (1) Durable descriptor publish (the on-disk linearization point) + verify.
+        //     `publish_snapshot(&snapshot)` BORROWS the snapshot before the move below.
+        self.publish_snapshot(&snapshot)?;
+        self.verify_checkpoint()?;
+
+        // (2) Publish the eviction registry — ONLY AFTER verify proves the image
+        //     durable (publish-after-verify, EvictionRegistryPublication.tla). The
+        //     registry CONSUMES (moves) here; `update_disk_registry` is an in-memory
+        //     `RwLock::write` swap with ZERO fsync (no per-checkpoint fsync-count
+        //     asymmetry vs the eviction-OFF publisher).
+        if let Some(registry) = snapshot.eviction_registry {
+            if let Some(ref coordinator) = self.eviction_coordinator {
+                coordinator.update_disk_registry(registry);
+            }
+        }
+
+        // (3) Record `checkpoint_lsn = watermark` so recovery skips deltas ≤ it
+        //     (already in the image), then sync — but RETAIN the WAL (NO rotate).
+        //     Identical to publish_immutable_snapshot_retaining_wal: the reclaim
+        //     semantics, and thus the no-lost-write proof, are byte-identical.
+        if let Some(ref wal_writer) = self.wal_writer {
+            let timestamp = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+            wal_writer
+                .append(WalRecord::Checkpoint {
+                    checkpoint_lsn,
+                    timestamp,
+                })
+                .map_err(|e| PersistentARTrieError::WalError {
+                    reason: format!("{:?}", e),
+                })?;
+            wal_writer
+                .sync()
+                .map_err(|e| PersistentARTrieError::WalError {
+                    reason: format!("{:?}", e),
+                })?;
+            // Deliberately NO rotate_to_archive: destructive watermark-bounded WAL
+            // truncation is the owner-gated IRREVERSIBLE flip, out of scope here.
+        }
+        Ok(())
+    }
+
+    /// **REVERSIBLE BENCH SHIM** (gated entirely behind the existing
+    /// `bench-internals` feature). The TREATMENT (lock-free-flip) checkpoint as a
+    /// single `()` -returning primitive a bench *binary* (an external crate that
+    /// cannot name the `pub(crate)` [`CheckpointSnapshot`]) can call: it captures
+    /// the immutable-overlay snapshot via [`Self::capture_snapshot_immutable`]
+    /// and publishes it durably (WAL-retaining) via
+    /// [`Self::publish_immutable_snapshot_retaining_wal`] — exactly the two steps
+    /// the Phase-E flip would wire into `checkpoint()`, with NO write lock held
+    /// against concurrent `insert_cas_durable` writers. Returns `Ok(())` on a
+    /// successful durable publish.
+    ///
+    /// This exists ONLY to make the path measurable from `benches/`; it performs
+    /// no flip and is compiled out unless `bench-internals` is enabled. Deleting
+    /// this method (and the two `bench-internals` cfg disjuncts above) fully
+    /// reverts the bench-instrumentation surface.
+    // `cfg(any(test, feature = "bench-internals"))`: the wrapped helpers
+    // (`capture_snapshot_immutable` / `publish_immutable_snapshot_retaining_wal`)
+    // are already `any(test, …)`-gated, so widening this thin shim lets the
+    // in-crate OE1–OE4 overlay-eviction correspondence tests publish an overlay
+    // checkpoint under the DEFAULT `cargo test` (no `bench-internals`). The
+    // `bench-internals` path is unchanged.
+    #[cfg(any(test, feature = "bench-internals"))]
+    pub fn bench_immutable_checkpoint(&self) -> Result<()> {
+        let snapshot = self.capture_snapshot_immutable()?;
+        self.publish_immutable_snapshot_retaining_wal(&snapshot)
+    }
+
+    /// **REVERSIBLE BENCH SHIM — EVICTION-ON** (gated entirely behind the existing
+    /// `bench-internals` feature). The eviction-ON counterpart of
+    /// [`Self::bench_immutable_checkpoint`]: captures the immutable-overlay
+    /// snapshot via [`Self::capture_snapshot_immutable`] (which builds the
+    /// `DiskLocationRegistry` when eviction is enabled) and publishes it durably
+    /// (WAL-retaining) WITH eviction-registry publication via
+    /// [`Self::publish_immutable_snapshot_retaining_wal_with_eviction`] — the two
+    /// steps the eviction-ON flip would wire into `checkpoint()`, with NO write
+    /// lock held against concurrent `insert_cas_durable` writers and NO destructive
+    /// WAL truncation. Used by the `lockfree_flip_benchmark` `--eviction` TREATMENT
+    /// arm. Deleting this method + the `bench_enable_eviction` enabler + the
+    /// `bench-internals` cfg disjunct on the publisher fully reverts the
+    /// eviction-ON bench surface.
+    // `cfg(any(test, feature = "bench-internals"))`: see `bench_immutable_checkpoint`
+    // above — widened so the OE1–OE4 overlay-eviction correspondence tests can
+    // publish the eviction-ON overlay registry under the default `cargo test`.
+    #[cfg(any(test, feature = "bench-internals"))]
+    pub fn bench_immutable_checkpoint_with_eviction(&self) -> Result<()> {
+        let snapshot = self.capture_snapshot_immutable()?;
+        self.publish_immutable_snapshot_retaining_wal_with_eviction(snapshot)
     }
 
     /// Checkpoint **Phase B** — publish the captured snapshot durably.
@@ -667,5 +1125,1106 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
             CharNode::N48(_) => NodeType::CharNode48,
             CharNode::Bucket(_) => NodeType::CharBucket,
         }
+    }
+}
+
+/// Convert an immutable lock-free overlay node (`PersistentCharNode`) into an
+/// owned production `CharTrieNodeInner<V>` subtree, recursively (Phase-B helper).
+///
+/// The conversion lets the immutable overlay be checkpointed through the EXISTING
+/// `serialize_char_node_to_disk` (equivalence by construction). Children are added
+/// via `add_child_growing`, which grows the ART tier (N4→N16→…) and returns the
+/// grown node — captured here to replace `inner.node` (unlike `CharTrieNodeInner`'s
+/// `Clone`, which pre-sizes the tier and can ignore the return).
+///
+/// REVERSIBLE BENCH GATE: gated `any(test, bench-internals)` so the bench-only
+/// `capture_snapshot_immutable` (which it backs) compiles under `bench-internals`.
+#[cfg(any(test, feature = "bench-internals"))]
+fn overlay_to_inner<V>(node: &super::nodes::PersistentCharNode<V>) -> CharTrieNodeInner<V>
+where
+    V: DictionaryValue,
+{
+    let mut inner = CharTrieNodeInner::<V>::default();
+    inner.node.header_mut().set_final(node.is_final());
+    // G1: the overlay node now carries `Option<V>` directly, so the value is read
+    // straight off the node — no `u64 → V` (`map_value`) bridge. For `V = ()`
+    // membership the overlay never stores a value, so this is `None`.
+    inner.value = node.get_value();
+    for (&key, child) in node.iter_children() {
+        if let Some(child_arc) = child.as_in_mem() {
+            let child_inner = overlay_to_inner::<V>(child_arc);
+            let child_ptr = SwizzledPtr::in_memory(Box::into_raw(Box::new(child_inner)));
+            if let Some(grown) = inner
+                .node
+                .add_child_growing(key, child_ptr)
+                .expect("overlay_to_inner: add in-memory child within capacity")
+            {
+                inner.node = grown;
+            }
+        } else if let Some(on_disk) = child.as_on_disk() {
+            // On-disk overlay children (from a future fault-in/eviction path) carry
+            // an already-serialized location; reuse it directly. Null fillers are
+            // never yielded by `iter_children`, but guard defensively.
+            if !on_disk.is_null() {
+                if let Some(grown) = inner
+                    .node
+                    .add_child_growing(key, on_disk.clone())
+                    .expect("overlay_to_inner: add on-disk child within capacity")
+                {
+                    inner.node = grown;
+                }
+            }
+        }
+    }
+    inner
+}
+
+/// Convert ONE owned production `CharTrieNodeInner<V>` back into an immutable
+/// lock-free overlay node (`PersistentCharNode<V>`), keeping its children as
+/// `Child::OnDisk(SwizzledPtr)` references (single-level / lazy — exactly the
+/// overlay granularity). This is the **structural inverse builder** of
+/// [`overlay_to_inner`]'s single-node projection: where `overlay_to_inner` reads
+/// an overlay node's finality / value / child-set into an inner node,
+/// `inner_to_overlay` reads them back out into a fresh overlay node.
+///
+/// FAULT-IN ROLE (design §2): the bytes at a `Child::OnDisk(ptr)` location were
+/// written by `serialize_char_node_to_disk` from `overlay_to_inner(n)`;
+/// `load_char_node_from_disk_lazy` is its proven inverse *decoder* (yielding the
+/// owned `CharTrieNodeInner<V>` with children still OnDisk); `inner_to_overlay`
+/// is the inverse *builder* that turns that decoded inner back into an overlay
+/// node. Composed, `load_overlay_node_from_disk` gives
+/// `load(serialize(overlay_to_inner(n))) ≡ n` for finality / value / child-set —
+/// the round-trip equivalence the Phase-2 unit test + OE5 pin byte-for-byte.
+///
+/// Children: each non-null child SwizzledPtr is carried across verbatim as
+/// `Child::OnDisk(ptr.clone())` (mirror of `overlay_to_inner`'s `Child::OnDisk`
+/// arm, reversed) — NON-RECURSIVE, so deeper nodes stay on disk until they are
+/// themselves faulted (the lazy discipline; one fetch per node per eviction
+/// epoch). `iter_children` never yields null fillers, but we guard defensively.
+///
+/// Prefix: the overlay representation that `overlay_to_inner` serializes never
+/// path-compresses (it builds via `add_child_growing`, which leaves the prefix
+/// empty), so on the round-trip the prefix is empty; we still propagate any
+/// non-empty prefix faithfully so the builder is a total inverse.
+///
+/// REVERSIBLE BENCH GATE: gated `any(test, bench-internals)` (the fault-in
+/// primitive that consumes it is itself bench/test-gated until the production
+/// flip — design §6/§8).
+///
+/// MAINTENANCE COUPLING: mirrors [`overlay_to_inner`]; keep the two in lockstep.
+#[cfg(any(test, feature = "bench-internals"))]
+pub(super) fn inner_to_overlay<V>(inner: &CharTrieNodeInner<V>) -> super::nodes::PersistentCharNode<V>
+where
+    V: DictionaryValue,
+{
+    // Start from the (possibly non-empty) prefix. The overlay round-trip path
+    // produces empty prefixes, but propagate faithfully for a total inverse.
+    let prefix_len = inner.node.header().prefix_len as usize;
+    let mut node = if prefix_len > 0 {
+        super::nodes::PersistentCharNode::<V>::with_prefix(inner.node.prefix().as_slice(prefix_len))
+    } else {
+        super::nodes::PersistentCharNode::<V>::new()
+    };
+
+    if inner.is_final() {
+        node = node.as_final();
+    }
+    // G1: the overlay node carries `Option<V>` directly (no `u64 → V` bridge).
+    if let Some(v) = inner.value.clone() {
+        node = node.with_value(v);
+    }
+    for (key, ptr) in inner.node.iter_children() {
+        if !ptr.is_null() {
+            node = node.with_child(
+                key,
+                super::nodes::persistent_node::Child::OnDisk(ptr.clone()),
+            );
+        }
+    }
+    node
+}
+
+/// Count the finalized (terminal) nodes in the overlay subtree — the term count of
+/// the immutable representation (`self.len` tracks the owned tree, not the overlay).
+///
+/// REVERSIBLE BENCH GATE: gated `any(test, bench-internals)` alongside
+/// `overlay_to_inner` so `capture_snapshot_immutable` compiles under `bench-internals`.
+#[cfg(any(test, feature = "bench-internals"))]
+fn count_overlay_finals<V: DictionaryValue>(node: &super::nodes::PersistentCharNode<V>) -> u64 {
+    let mut count = u64::from(node.is_final());
+    for (_, child) in node.iter_children() {
+        if let Some(child_arc) = child.as_in_mem() {
+            count += count_overlay_finals(child_arc);
+        }
+    }
+    count
+}
+
+#[cfg(test)]
+mod immutable_checkpoint_correspondence {
+    //! **Migration Phase B correspondence.** A checkpoint captured from the
+    //! IMMUTABLE lock-free overlay representation (`capture_snapshot_immutable`)
+    //! must reopen to a dictionary equal to one captured from the owned tree
+    //! (`checkpoint`) built from the same terms. This proves the immutable
+    //! representation is a sound checkpoint source — the foundation for later
+    //! making it the default (Phases C–F). Scratch lives on real disk
+    //! (`target/test-tmp`), never `/tmp` (tmpfs).
+
+    use crate::persistent_artrie_char::PersistentARTrieChar;
+    use crate::{Dictionary, MappedDictionary};
+
+    fn scratch(prefix: &str) -> tempfile::TempDir {
+        std::fs::create_dir_all("target/test-tmp").ok();
+        tempfile::Builder::new()
+            .prefix(prefix)
+            .tempdir_in("target/test-tmp")
+            .expect("scratch tempdir under target/test-tmp")
+    }
+
+    /// `V = ()` membership: build the two reps from the same terms, checkpoint each
+    /// via its own path, reopen both, and assert identical membership.
+    #[test]
+    fn membership_immutable_checkpoint_reopens_equal_to_owned() {
+        // Terms spanning every ART tier (N4/N16/N48/Bucket via the wide fan) +
+        // shared spines + Unicode, so the converter exercises tier growth.
+        let mut terms: Vec<String> = vec![
+            "a", "ab", "abc", "abd", "abe", "b", "ban", "banana", "bandana", "z", "日本", "🎉",
+        ]
+        .into_iter()
+        .map(String::from)
+        .collect();
+        // A wide fan under "w" to force N4→N16→N48→Bucket growth in the converter.
+        for i in 0..60u32 {
+            terms.push(format!("w{i:02}"));
+        }
+
+        // Owned representation.
+        let dir_o = scratch("imm-ckpt-owned");
+        let path_o = dir_o.path().join("owned.artc");
+        {
+            let mut owned = PersistentARTrieChar::<()>::create(&path_o).expect("create owned");
+            for t in &terms {
+                owned.insert(t).expect("owned insert");
+            }
+            owned.checkpoint().expect("owned checkpoint");
+        }
+
+        // Immutable (lock-free overlay) representation.
+        let dir_i = scratch("imm-ckpt-immutable");
+        let path_i = dir_i.path().join("immutable.artc");
+        let (snap_entry_count, snap_root_type) = {
+            let mut imm = PersistentARTrieChar::<()>::create(&path_i).expect("create immutable");
+            imm.enable_lockfree();
+            for t in &terms {
+                imm.insert_cas(t);
+            }
+            let snapshot = imm
+                .capture_snapshot_immutable()
+                .expect("capture immutable snapshot");
+            let counts = (snapshot.entry_count, snapshot.root_type);
+            imm.publish_durable_and_reclaim(snapshot)
+                .expect("publish immutable snapshot");
+            counts
+        };
+        assert_eq!(
+            snap_entry_count,
+            terms.len() as u64,
+            "immutable snapshot term count must equal the inserted-term count"
+        );
+        assert_ne!(snap_root_type, 0, "non-empty trie must have a node root");
+
+        // Reopen both and compare membership.
+        let owned = PersistentARTrieChar::<()>::open(&path_o).expect("reopen owned");
+        let imm = PersistentARTrieChar::<()>::open(&path_i).expect("reopen immutable");
+        for t in &terms {
+            assert!(
+                Dictionary::contains(&owned, t),
+                "owned reopen missing term {t:?}"
+            );
+            assert!(
+                Dictionary::contains(&imm, t),
+                "immutable-checkpoint reopen missing term {t:?} (Phase-B equivalence broken)"
+            );
+        }
+        assert!(!Dictionary::contains(&imm, "absent-term"));
+        assert!(!Dictionary::contains(&imm, "w"));
+        assert_eq!(
+            Dictionary::len(&owned),
+            Dictionary::len(&imm),
+            "owned vs immutable-checkpoint reopen term counts differ"
+        );
+    }
+
+    /// `V = u64` counters: the value blob (`bincode(u64)`) must round-trip
+    /// identically through the immutable-rep checkpoint. G1: the overlay leaf
+    /// carries the count directly in `Option<u64>`; `capture_snapshot_immutable()`
+    /// copies it onto the converted node, which the existing serializer writes as
+    /// the appended value blob — exactly as the owned tree does.
+    #[test]
+    fn counter_immutable_checkpoint_reopens_equal_to_owned() {
+        let entries: Vec<(String, u64)> = vec![
+            ("a", 1u64),
+            ("ab", 2),
+            ("abc", 30),
+            ("abd", 0), // a final node whose count is 0 (still HAS_VALUE)
+            ("b", 4),
+            ("banana", 5000),
+            ("bandana", 7),
+            ("z", 9),
+            ("日本", 42),
+            ("🎉", 100),
+        ]
+        .into_iter()
+        .map(|(t, v)| (t.to_string(), v))
+        .collect();
+
+        // Owned representation (V = u64).
+        let dir_o = scratch("imm-ckpt-owned-u64");
+        let path_o = dir_o.path().join("owned.artc");
+        {
+            let mut owned = PersistentARTrieChar::<u64>::create(&path_o).expect("create owned u64");
+            for (t, v) in &entries {
+                owned.insert_with_value(t, *v);
+            }
+            owned.checkpoint().expect("owned checkpoint");
+        }
+
+        // Immutable (overlay) representation: set each count to its value via a
+        // single increment from 0, then checkpoint from the immutable snapshot.
+        let dir_i = scratch("imm-ckpt-immutable-u64");
+        let path_i = dir_i.path().join("immutable.artc");
+        {
+            let mut imm =
+                PersistentARTrieChar::<u64>::create(&path_i).expect("create immutable u64");
+            imm.enable_lockfree();
+            for (t, v) in &entries {
+                imm.increment_cas(t, *v);
+            }
+            let snapshot = imm
+                .capture_snapshot_immutable()
+                .expect("capture immutable u64 snapshot");
+            assert_eq!(snapshot.entry_count, entries.len() as u64);
+            imm.publish_durable_and_reclaim(snapshot)
+                .expect("publish immutable u64 snapshot");
+        }
+
+        // Reopen both and compare values.
+        let owned = PersistentARTrieChar::<u64>::open(&path_o).expect("reopen owned u64");
+        let imm = PersistentARTrieChar::<u64>::open(&path_i).expect("reopen immutable u64");
+        for (t, v) in &entries {
+            assert_eq!(
+                owned.get_value(t),
+                Some(*v),
+                "owned reopen value mismatch for {t:?}"
+            );
+            assert_eq!(
+                imm.get_value(t),
+                Some(*v),
+                "immutable-checkpoint reopen value mismatch for {t:?} (Phase-B value-blob equivalence broken)"
+            );
+        }
+        assert_eq!(imm.get_value("absent"), None);
+    }
+}
+
+#[cfg(test)]
+mod overlay_faultin_load_roundtrip {
+    //! **Fault-in Phase 2 — load+converter round-trip (design §2).** The fault-in
+    //! load primitive [`super::super::PersistentARTrieChar::load_overlay_node_from_disk`]
+    //! must satisfy `load(serialize(overlay_to_inner(n))) ≡ n` for finality /
+    //! value / child-set, where `serialize` is the EXISTING production
+    //! `serialize_char_node_to_disk` and `load` reuses the EXISTING lazy decoder
+    //! `load_char_node_from_disk_lazy`. This pins the round-trip equivalence that
+    //! makes "a faulted node equals its durable bytes" true (the TLA
+    //! `FaultEqualsDurable` witness), so fault-in can never manufacture or drop a
+    //! term. Both `V = ()` (membership) and `V = u64` (the bincode value blob)
+    //! are exercised. Scratch is real disk (`target/test-tmp`), never `/tmp`.
+
+    use crate::persistent_artrie_char::nodes::persistent_node::{Child, PersistentCharNode};
+    use crate::persistent_artrie_char::PersistentARTrieChar;
+    use crate::persistent_artrie_core::overlay::node::OverlayNode;
+    use crate::value::DictionaryValue;
+
+    fn scratch(prefix: &str) -> tempfile::TempDir {
+        std::fs::create_dir_all("target/test-tmp").ok();
+        tempfile::Builder::new()
+            .prefix(prefix)
+            .tempdir_in("target/test-tmp")
+            .expect("scratch tempdir under target/test-tmp")
+    }
+
+    /// Compare the public structure (finality, value, child key-set, per-child
+    /// OnDisk discriminant) of two overlay nodes — the equivalence the round-trip
+    /// must preserve at single-node (lazy) granularity. The loaded node's children
+    /// are always `OnDisk` (lazy); the original's children we build as `OnDisk`
+    /// too, so the discriminant matches.
+    fn assert_overlay_node_eq<V: DictionaryValue + PartialEq + std::fmt::Debug>(
+        loaded: &OverlayNode<crate::persistent_artrie_core::key_encoding::CharKey, V>,
+        original: &OverlayNode<crate::persistent_artrie_core::key_encoding::CharKey, V>,
+    ) {
+        assert_eq!(
+            loaded.is_final(),
+            original.is_final(),
+            "fault-in round-trip: finality diverged"
+        );
+        assert_eq!(
+            loaded.get_value(),
+            original.get_value(),
+            "fault-in round-trip: value diverged"
+        );
+        let mut loaded_keys: Vec<u32> = loaded.iter_children().map(|(k, _)| *k).collect();
+        let mut orig_keys: Vec<u32> = original.iter_children().map(|(k, _)| *k).collect();
+        loaded_keys.sort_unstable();
+        orig_keys.sort_unstable();
+        assert_eq!(
+            loaded_keys, orig_keys,
+            "fault-in round-trip: child key-set diverged"
+        );
+        for (k, child) in loaded.iter_children() {
+            assert!(
+                child.as_on_disk().is_some(),
+                "fault-in round-trip: loaded child {k} must stay OnDisk (lazy)"
+            );
+        }
+    }
+
+    /// Build an overlay node, serialize it through the production
+    /// `serialize_char_node_to_disk`, then fault it back in via
+    /// `load_overlay_node_from_disk` and assert structural equivalence.
+    ///
+    /// To produce real on-disk child SwizzledPtrs for the parent's child slots,
+    /// we first serialize a couple of standalone child leaves (getting their disk
+    /// ptrs), then attach those ptrs as `Child::OnDisk` on the parent's overlay
+    /// node before serializing the parent. This mirrors exactly what eviction +
+    /// the lazy serializer produce for an overlay node whose children are on disk.
+    fn roundtrip_one<V>(prefix: &str, value: Option<V>, child_keys: &[u32])
+    where
+        V: DictionaryValue + PartialEq + std::fmt::Debug,
+    {
+        let dir = scratch(prefix);
+        let path = dir.path().join("t.artc");
+        let mut trie = PersistentARTrieChar::<V>::create(&path).expect("create disk-backed trie");
+
+        // Serialize standalone child leaves to obtain real OnDisk SwizzledPtrs.
+        let mut original = PersistentCharNode::<V>::new().as_final();
+        if let Some(v) = value.clone() {
+            original = original.with_value(v);
+        }
+        for &k in child_keys {
+            // A minimal final child leaf; serialize it to disk and capture its ptr.
+            let child_overlay = PersistentCharNode::<V>::new().as_final();
+            let child_inner = super::overlay_to_inner::<V>(&child_overlay);
+            let mut p: Vec<char> = Vec::new();
+            let child_ptr = trie
+                .serialize_char_node_to_disk(&child_inner, &mut p, None)
+                .expect("serialize child leaf to disk");
+            assert!(
+                child_ptr.disk_location().is_some(),
+                "serialized child must have a disk location"
+            );
+            original = original.with_child(k, Child::OnDisk(child_ptr));
+        }
+
+        // Serialize the parent overlay node (via overlay_to_inner -> production
+        // serializer), then fault it back in.
+        let parent_inner = super::overlay_to_inner::<V>(&original);
+        let mut pp: Vec<char> = Vec::new();
+        let parent_ptr = trie
+            .serialize_char_node_to_disk(&parent_inner, &mut pp, None)
+            .expect("serialize parent overlay node to disk");
+        assert!(parent_ptr.disk_location().is_some());
+
+        let loaded = trie
+            .load_overlay_node_from_disk(&parent_ptr)
+            .expect("fault-in load_overlay_node_from_disk");
+
+        assert_overlay_node_eq::<V>(&loaded, &original);
+    }
+
+    /// `V = ()` membership: a final node with several OnDisk children round-trips.
+    #[test]
+    fn membership_node_load_roundtrip_preserves_structure() {
+        let keys: Vec<u32> = ['a', 'b', 'z', '日', '🎉'].iter().map(|c| *c as u32).collect();
+        roundtrip_one::<()>("faultin-rt-unit", None, &keys);
+    }
+
+    /// `V = u64` valued: the bincode value blob must round-trip identically,
+    /// including a value of 0 on a final node (HAS_VALUE set, value == 0).
+    #[test]
+    fn valued_node_load_roundtrip_preserves_value_and_structure() {
+        let keys: Vec<u32> = ['x', 'y'].iter().map(|c| *c as u32).collect();
+        roundtrip_one::<u64>("faultin-rt-u64", Some(4242u64), &keys);
+        // Edge: value 0 on a final node.
+        roundtrip_one::<u64>("faultin-rt-u64-zero", Some(0u64), &['q' as u32]);
+    }
+
+    /// A leaf with NO children (the common terminal case) round-trips: finality
+    /// preserved, empty child-set.
+    #[test]
+    fn childless_final_leaf_load_roundtrip() {
+        roundtrip_one::<()>("faultin-rt-leaf", None, &[]);
+        roundtrip_one::<u64>("faultin-rt-leaf-u64", Some(7u64), &[]);
+    }
+}
+
+#[cfg(test)]
+mod immutable_recovery_correspondence {
+    //! **Migration Phase C — recovery rebuild of the immutable (overlay) root.**
+    //!
+    //! Because Phase B kept the on-disk format unchanged (the immutable rep is
+    //! serialized through the SAME `serialize_char_node_to_disk`), recovery uses
+    //! the EXISTING owned-tree loader — no descriptor version bit is needed. This
+    //! phase proves the lock-free overlay can be **reconstituted after recovery**
+    //! (the bootstrap an overlay-default architecture needs on open): reopen a
+    //! checkpointed trie, rebuild the overlay from the recovered terms, and assert
+    //! the overlay answers identically to the recovered owned tree. (A structural,
+    //! on-disk-children-preserving lazy load is a Phase-E refinement.) Scratch is
+    //! real disk (`target/test-tmp`), never `/tmp` (tmpfs).
+
+    use crate::persistent_artrie_char::PersistentARTrieChar;
+    use crate::{Dictionary, MappedDictionary};
+
+    fn scratch(prefix: &str) -> tempfile::TempDir {
+        std::fs::create_dir_all("target/test-tmp").ok();
+        tempfile::Builder::new()
+            .prefix(prefix)
+            .tempdir_in("target/test-tmp")
+            .expect("scratch tempdir under target/test-tmp")
+    }
+
+    /// `V = ()` membership: after recovery, the rebuilt overlay must answer
+    /// membership identically to the recovered owned tree.
+    #[test]
+    fn membership_overlay_rebuilt_from_recovered_matches_owned() {
+        let mut terms: Vec<String> = vec!["a", "ab", "abc", "b", "banana", "z", "日本", "🎉"]
+            .into_iter()
+            .map(String::from)
+            .collect();
+        for i in 0..40u32 {
+            terms.push(format!("k{i:02}"));
+        }
+
+        let dir = scratch("phase-c-membership");
+        let path = dir.path().join("t.artc");
+        {
+            let mut owned = PersistentARTrieChar::<()>::create(&path).expect("create");
+            for t in &terms {
+                owned.insert(t).expect("insert");
+            }
+            owned.checkpoint().expect("checkpoint");
+        }
+
+        // Recover the owned tree, then rebuild the overlay from its terms.
+        let mut recovered = PersistentARTrieChar::<()>::open(&path).expect("reopen");
+        let recovered_terms: Vec<String> = recovered.iter().collect();
+        assert_eq!(
+            recovered_terms.len(),
+            terms.len(),
+            "recovery lost terms before overlay rebuild"
+        );
+        recovered.enable_lockfree();
+        for t in &recovered_terms {
+            recovered.insert_cas(t);
+        }
+
+        // The rebuilt overlay answers membership identically to the recovered tree.
+        for t in &terms {
+            assert!(
+                Dictionary::contains(&recovered, t),
+                "recovered owned tree missing {t:?}"
+            );
+            assert!(
+                recovered.contains_lockfree(t),
+                "rebuilt overlay missing recovered term {t:?} (Phase-C rebuild broken)"
+            );
+        }
+        assert!(!recovered.contains_lockfree("absent-term"));
+    }
+
+    /// `V = u64` counters: the rebuilt overlay must carry the recovered values.
+    #[test]
+    fn counter_overlay_rebuilt_from_recovered_matches_owned() {
+        let entries: Vec<(String, u64)> = vec![
+            ("a", 1u64),
+            ("ab", 2),
+            ("abc", 30),
+            ("b", 4),
+            ("banana", 5000),
+            ("z", 9),
+            ("日本", 42),
+        ]
+        .into_iter()
+        .map(|(t, v)| (t.to_string(), v))
+        .collect();
+
+        let dir = scratch("phase-c-counter");
+        let path = dir.path().join("t.artc");
+        {
+            let mut owned = PersistentARTrieChar::<u64>::create(&path).expect("create");
+            for (t, v) in &entries {
+                owned.insert_with_value(t, *v);
+            }
+            owned.checkpoint().expect("checkpoint");
+        }
+
+        // Recover, snapshot (term, value) pairs, then rebuild the overlay.
+        let mut recovered = PersistentARTrieChar::<u64>::open(&path).expect("reopen");
+        let recovered_entries: Vec<(String, u64)> = recovered
+            .iter()
+            .map(|t| {
+                let v = recovered.get_value(&t).expect("recovered term has a value");
+                (t, v)
+            })
+            .collect();
+        recovered.enable_lockfree();
+        for (t, v) in &recovered_entries {
+            // Set the overlay count to the recovered value (increment from 0).
+            recovered.increment_cas(t, *v);
+        }
+
+        // The rebuilt overlay carries each recovered value.
+        for (t, v) in &entries {
+            assert_eq!(
+                recovered.get_value(t),
+                Some(*v),
+                "recovered owned value mismatch for {t:?}"
+            );
+            assert_eq!(
+                recovered.get_lockfree(t),
+                Some(*v),
+                "rebuilt overlay value mismatch for {t:?} (Phase-C value rebuild broken)"
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod multi_writer_checkpointer_soak {
+    //! **Migration Phase E — multi-writer ‖ checkpointer durability soak (the
+    //! #41-closed witness under lock-free writers).**
+    //!
+    //! N writer threads run the Order-A durable overlay paths
+    //! (`insert_cas_durable` for membership, `try_increment_cas_durable` for
+    //! counters) CONCURRENTLY with one checkpointer thread that repeatedly
+    //! captures an immutable overlay snapshot (`capture_snapshot_immutable` — the
+    //! watermark-before-root capture-ordering path with its snapshot-LSN assert)
+    //! and publishes its durable on-disk image while RETAINING the full WAL
+    //! (`publish_immutable_snapshot_retaining_wal`). After bounded rounds the trie
+    //! is dropped WITHOUT a final reclaim and reopened: EVERY acknowledged write
+    //! must survive — exact term set for membership, exact summed counts for
+    //! counters.
+    //!
+    //! Why this is safe AND a real test of the capture path: the checkpointer
+    //! advances the on-disk checkpoint image concurrently with committing writers
+    //! (exercising the dangerous capture-before-load ordering under contention),
+    //! but never reclaims the WAL (watermark-bounded reclaim is the owner-gated
+    //! irreversible flip). So recovery has the checkpoint image AND the full WAL
+    //! tail; durability can only ever be ADDED, never lost, under any interleaving
+    //! — which is exactly the property asserted. A single checkpointer avoids
+    //! concurrent arena re-serialization (the arena/buffer managers are
+    //! interior-`RwLock`, so this is memory-safe regardless, but one checkpointer
+    //! keeps the on-disk image well-defined). Bounded, deterministic, seconds-long.
+    //!
+    //! Scratch is real disk (`target/test-tmp`), never `/tmp` (tmpfs on this host),
+    //! with a modest node budget.
+
+    use crate::persistent_artrie_char::PersistentARTrieChar;
+    use crate::persistent_artrie_core::durability::DurabilityPolicy;
+    use crate::{Dictionary, MappedDictionary};
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Barrier};
+    use std::thread;
+
+    fn scratch(prefix: &str) -> tempfile::TempDir {
+        std::fs::create_dir_all("target/test-tmp").ok();
+        tempfile::Builder::new()
+            .prefix(prefix)
+            .tempdir_in("target/test-tmp")
+            .expect("scratch tempdir under target/test-tmp")
+    }
+
+    /// Membership soak: N writers `insert_cas_durable` disjoint shared-prefix keys
+    /// ‖ a checkpointer loops capture+publish; reopen ⇒ every acknowledged term
+    /// survives (exact set).
+    #[test]
+    fn membership_writers_concurrent_with_checkpointer_all_survive_reopen() {
+        let dir = scratch("soak-membership");
+        let path = dir.path().join("t.artc");
+        let n_writers = 4usize;
+        let per_writer = 80usize; // 320 keys — bounded, seconds.
+
+        let acknowledged: Vec<String> = {
+            let mut trie = PersistentARTrieChar::<()>::create(&path).expect("create");
+            trie.set_durability_policy(DurabilityPolicy::Immediate);
+            trie.enable_lockfree();
+            let trie = Arc::new(trie);
+            // +1 for the checkpointer so it starts alongside the writers.
+            let barrier = Arc::new(Barrier::new(n_writers + 1));
+            let writers_done = Arc::new(AtomicBool::new(false));
+
+            // Checkpointer: capture + publish (retaining WAL) until writers finish,
+            // then a couple of final rounds to race the tail.
+            let checkpointer = {
+                let trie = Arc::clone(&trie);
+                let barrier = Arc::clone(&barrier);
+                let writers_done = Arc::clone(&writers_done);
+                thread::spawn(move || {
+                    barrier.wait();
+                    let mut rounds = 0u32;
+                    loop {
+                        // Capture the immutable overlay snapshot (exercises the
+                        // watermark-before-root capture-ordering + its assert) and
+                        // publish the durable image, retaining the full WAL.
+                        if let Ok(snapshot) = trie.capture_snapshot_immutable() {
+                            let _ = trie.publish_immutable_snapshot_retaining_wal(&snapshot);
+                        }
+                        rounds += 1;
+                        if writers_done.load(Ordering::Acquire) && rounds > 2 {
+                            break;
+                        }
+                        thread::yield_now();
+                    }
+                })
+            };
+
+            let handles: Vec<_> = (0..n_writers)
+                .map(|w| {
+                    let trie = Arc::clone(&trie);
+                    let barrier = Arc::clone(&barrier);
+                    thread::spawn(move || {
+                        barrier.wait();
+                        let mut acked = Vec::with_capacity(per_writer);
+                        for i in 0..per_writer {
+                            // Shared "s" prefix → CAS contention on the spine.
+                            let key = format!("s{w}_{i:04}");
+                            if trie.insert_cas_durable(&key).expect("durable insert") {
+                                acked.push(key);
+                            }
+                        }
+                        acked
+                    })
+                })
+                .collect();
+
+            let acked: Vec<String> = handles
+                .into_iter()
+                .flat_map(|h| h.join().expect("writer thread"))
+                .collect();
+            writers_done.store(true, Ordering::Release);
+            checkpointer.join().expect("checkpointer thread");
+            // DROP WITHOUT a final reclaim — durability rests on WAL + published image.
+            drop(trie);
+            acked
+        };
+
+        assert_eq!(
+            acknowledged.len(),
+            n_writers * per_writer,
+            "every distinct durable key must be newly acknowledged exactly once"
+        );
+
+        // Reopen: every acknowledged key must be recoverable (WAL replay and/or
+        // the published checkpoint image).
+        let reopened = PersistentARTrieChar::<()>::open(&path).expect("reopen");
+        for key in &acknowledged {
+            assert!(
+                Dictionary::contains(&reopened, key),
+                "acknowledged durable key {key:?} lost after writers‖checkpointer reopen (#41 reborn)"
+            );
+        }
+        assert!(!Dictionary::contains(&reopened, "never-acknowledged"));
+    }
+
+    /// Counter soak: N writers `try_increment_cas_durable` on DISTINCT keys
+    /// (each by a known delta, fixed step count) ‖ a checkpointer loops the
+    /// immutable CAPTURE; reopen ⇒ each key's count equals its exact summed deltas.
+    ///
+    /// Why the checkpointer here CAPTURES but does NOT publish a value image (it
+    /// does for the idempotent membership soak): the immutable overlay carries no
+    /// per-node LSN, so a captured snapshot cannot be trimmed to exactly the
+    /// committed-watermark prefix — it may contain a delta with `lsn > watermark`
+    /// (committed out-of-order, already in the published root but not yet under the
+    /// contiguous watermark). Publishing that as a value image while ALSO retaining
+    /// the WAL tail (`lsn > watermark`) would replay that delta a SECOND time →
+    /// inflated count (the exact bug an earlier draft hit: c0 = 115 vs 60).
+    /// Idempotent membership inserts tolerate the overlap; commutative-but-not-
+    /// idempotent deltas do not. Trimming the image to ≤ watermark is the
+    /// per-node-LSN closure the IRREVERSIBLE Phase-E flip adds (out of scope). So
+    /// here the checkpointer still exercises the dangerous concurrent
+    /// `capture_snapshot_immutable` path (its capture-ordering watermark/root load +
+    /// the snapshot-LSN `debug_assert!` + the overlay walk under live CAS), which is
+    /// the thing being hardened, while durability rests on pure WAL replay — keeping
+    /// the assertion deterministic and exact.
+    #[test]
+    fn counter_writers_concurrent_with_checkpointer_sum_exactly_after_reopen() {
+        let dir = scratch("soak-counter");
+        let path = dir.path().join("t.artc");
+        let n_writers = 4usize;
+        let per_writer = 60u64; // 240 durable increments total.
+
+        {
+            let mut trie = PersistentARTrieChar::<u64>::create(&path).expect("create");
+            trie.set_durability_policy(DurabilityPolicy::Immediate);
+            trie.enable_lockfree();
+            let trie = Arc::new(trie);
+            let barrier = Arc::new(Barrier::new(n_writers + 1));
+            let writers_done = Arc::new(AtomicBool::new(false));
+
+            let checkpointer = {
+                let trie = Arc::clone(&trie);
+                let barrier = Arc::clone(&barrier);
+                let writers_done = Arc::clone(&writers_done);
+                thread::spawn(move || {
+                    barrier.wait();
+                    let mut rounds = 0u32;
+                    loop {
+                        // Capture-only (see the method doc above): exercises the
+                        // hardened capture-ordering path + snapshot-LSN assert
+                        // under live writers without publishing a double-counting
+                        // value image. Durability is WAL-only for counters.
+                        let _ = trie.capture_snapshot_immutable();
+                        rounds += 1;
+                        if writers_done.load(Ordering::Acquire) && rounds > 2 {
+                            break;
+                        }
+                        thread::yield_now();
+                    }
+                })
+            };
+
+            let handles: Vec<_> = (0..n_writers)
+                .map(|w| {
+                    let trie = Arc::clone(&trie);
+                    let barrier = Arc::clone(&barrier);
+                    let delta = (w as u64) + 1; // distinct delta per writer
+                    thread::spawn(move || {
+                        barrier.wait();
+                        let key = format!("c{w}");
+                        for _ in 0..per_writer {
+                            trie.try_increment_cas_durable(&key, delta)
+                                .expect("durable increment");
+                        }
+                    })
+                })
+                .collect();
+
+            for h in handles {
+                h.join().expect("writer thread");
+            }
+            writers_done.store(true, Ordering::Release);
+            checkpointer.join().expect("checkpointer thread");
+            drop(trie);
+        }
+
+        // Reopen: each distinct key's count must equal per_writer * its delta.
+        let reopened = PersistentARTrieChar::<u64>::open(&path).expect("reopen");
+        for w in 0..n_writers {
+            let delta = (w as u64) + 1;
+            assert_eq!(
+                reopened.get_value(&format!("c{w}")),
+                Some(per_writer * delta),
+                "counter c{w} lost/wrong after writers‖checkpointer reopen \
+                 (Order-A durable increment under concurrent checkpoint broken)"
+            );
+        }
+        assert_eq!(reopened.get_value("never-incremented"), None);
+    }
+}
+
+#[cfg(test)]
+mod immutable_eviction_checkpoint_correspondence {
+    //! **EVICTION-ON immutable-snapshot checkpoint correspondence**
+    //! (`docs/design/g4-eviction-on-immutable-checkpoint.md` §5b; TLA model
+    //! `formal-verification/tla+/LockFreeDurableCheckpointEviction.tla`).
+    //!
+    //! These tests exercise the new
+    //! [`PersistentARTrieChar::publish_immutable_snapshot_retaining_wal_with_eviction`]
+    //! publisher — the watermark-bounded RETAIN-WAL reclaim (byte-identical to the
+    //! proven eviction-OFF [`publish_immutable_snapshot_retaining_wal`]) PLUS
+    //! eviction-registry publication. The two properties under test:
+    //!
+    //! - **T1** closes the GAP the eviction-OFF publisher leaves: that
+    //!   `capture_snapshot_immutable` builds a NON-EMPTY eviction registry over the
+    //!   immutable overlay snapshot (`registry.char_len() > 0`), that the publisher
+    //!   makes it live (`evictable_node_count() > 0`), that a forced eviction over
+    //!   it still resolves every term, and that dropping WITHOUT a destructive
+    //!   reclaim then reopening loses nothing.
+    //! - **T2** is the runtime witness for the NEW combo the publisher introduces:
+    //!   concurrent `insert_cas_durable` writers ‖ an eviction-checkpointer looping
+    //!   capture + `publish_*_with_eviction` (retain) + a racing `force_eviction`.
+    //!   Reopen ⇒ the exact acknowledged set survives (membership is idempotent;
+    //!   counters are CAPTURE-only — see the soak module — so this is a membership
+    //!   trie).
+    //!
+    //! The trie handle is `SharedCharARTrie<()>` (= `Arc<RwLock<PersistentARTrieChar>>`)
+    //! so the `EvictableARTrie` enable/force-eviction/observe surface is reachable;
+    //! the `&self` lock-free + new-publisher methods are called through the
+    //! read/write guards. Scratch is real disk (`target/test-tmp`), never `/tmp`
+    //! (tmpfs on this host).
+
+    use crate::artrie_trait::EvictableARTrie;
+    use crate::persistent_artrie::eviction::EvictionConfig;
+    use crate::persistent_artrie_char::{PersistentARTrieChar, SharedCharARTrie};
+    use crate::persistent_artrie_core::durability::DurabilityPolicy;
+    use crate::Dictionary;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Barrier};
+    use std::thread;
+
+    fn scratch(prefix: &str) -> tempfile::TempDir {
+        std::fs::create_dir_all("target/test-tmp").ok();
+        tempfile::Builder::new()
+            .prefix(prefix)
+            .tempdir_in("target/test-tmp")
+            .expect("scratch tempdir under target/test-tmp")
+    }
+
+    /// **T1** — eviction-enabled overlay membership trie, `Immediate`,
+    /// `enable_lockfree`; `insert_cas_durable` a tier-spanning set; capture the
+    /// immutable snapshot (assert its registry is NON-EMPTY — the GAP closed);
+    /// publish with eviction (assert `evictable_node_count() > 0`); force an
+    /// eviction (every term still resolves via reload); drop WITHOUT a destructive
+    /// reclaim; reopen; assert EVERY acknowledged term present.
+    #[test]
+    fn immutable_eviction_checkpoint_reopens_losing_nothing() {
+        let dir = scratch("imm-evict-t1");
+        let path = dir.path().join("t.artc");
+
+        // Tier-spanning terms: a wide fan under "w" (N4→N16→N48→Bucket growth) +
+        // shared spines + Unicode, so the registry has many node paths to register.
+        let mut terms: Vec<String> = vec![
+            "a", "ab", "abc", "abd", "b", "ban", "banana", "bandana", "z", "日本", "🎉",
+        ]
+        .into_iter()
+        .map(String::from)
+        .collect();
+        for i in 0..80u32 {
+            terms.push(format!("w{i:02}"));
+        }
+
+        let acknowledged: Vec<String> = {
+            // Build the trie via the production `SharedCharARTrie` handle so the
+            // `EvictableARTrie` surface (enable/force/observe) is reachable.
+            let shared: SharedCharARTrie<()> =
+                crate::artrie_trait::ARTrie::create(&path).expect("create eviction overlay trie");
+            {
+                let mut guard = shared.write();
+                guard.set_durability_policy(DurabilityPolicy::Immediate);
+                guard.enable_lockfree();
+            }
+            // Enable eviction (production wiring: shares the trie epoch manager).
+            shared
+                .enable_eviction(EvictionConfig::without_memory_monitor())
+                .expect("enable eviction");
+
+            // Order-A durable lock-free inserts (no write lock).
+            let mut acked = Vec::with_capacity(terms.len());
+            for t in &terms {
+                if shared.read().insert_cas_durable(t).expect("durable insert") {
+                    acked.push(t.clone());
+                }
+            }
+
+            // Capture the immutable overlay snapshot. THE GAP: the registry it
+            // builds over the overlay must be NON-EMPTY when eviction is enabled.
+            let snapshot = shared
+                .read()
+                .capture_snapshot_immutable()
+                .expect("capture immutable snapshot");
+            let registry_len = snapshot
+                .eviction_registry
+                .as_ref()
+                .map(|r| r.char_len())
+                .expect("eviction enabled ⇒ snapshot carries a registry");
+            assert!(
+                registry_len > 0,
+                "capture_snapshot_immutable built an EMPTY eviction registry — the \
+                 eviction-ON GAP is NOT closed (expected the overlay snapshot to \
+                 register its node paths)"
+            );
+
+            // Publish with eviction (retain WAL): publishes the registry to the
+            // coordinator after verify, records checkpoint_lsn = watermark, retains
+            // the WAL. After this the coordinator must report evictable nodes.
+            shared
+                .read()
+                .publish_immutable_snapshot_retaining_wal_with_eviction(snapshot)
+                .expect("publish immutable snapshot with eviction");
+            assert!(
+                shared.read().evictable_node_count().unwrap_or(0) > 0,
+                "publish_*_with_eviction did not publish a non-empty registry \
+                 (evictable_node_count == 0)"
+            );
+
+            // Force an eviction over the published registry. The registry IS the
+            // selectable pool (`evictable_node_count() > 0` above), and selection
+            // finds candidates; but the actual unswizzle (`evict_node_at_path`)
+            // walks the OWNED `self.root` tree, which is `Empty` on a pure lock-free
+            // overlay trie (the data lives in `lockfree_root`). So over an overlay
+            // trie `force_eviction` is structurally a clean NO-OP — there are no
+            // OWNED in-memory node boxes to reclaim — and must not error or panic.
+            // (This is the honest architectural truth of the reversible bench path:
+            // the registry-publication GAP is closed — asserted above — while
+            // in-memory reclamation of overlay nodes is a Phase-E flip concern that
+            // wires the overlay into the owned eviction walk. The eviction-OFF
+            // CONTROL/owned-tree path DOES reclaim; see eviction_registry_tests.rs.)
+            let (evicted, _bytes) = shared.force_eviction(1 << 20).expect("force eviction");
+            assert_eq!(
+                evicted, 0,
+                "force_eviction over a lock-free OVERLAY trie should be a structural \
+                 no-op (owned self.root is Empty); got {evicted} — if the overlay was \
+                 wired into the owned eviction walk this expectation must be revisited"
+            );
+
+            // Every term still resolves through the overlay (the registry publish +
+            // the no-op eviction left the overlay membership intact).
+            for t in &terms {
+                assert!(
+                    shared.read().contains_lockfree(t),
+                    "term {t:?} unresolvable after eviction-ON publish (overlay membership broken)"
+                );
+            }
+
+            // DROP WITHOUT a destructive reclaim — durability rests on the WAL +
+            // the published checkpoint image. `disable_eviction` first so the
+            // background eviction thread is joined cleanly before the Arc drops.
+            shared.disable_eviction().expect("disable eviction");
+            drop(shared);
+            acked
+        };
+
+        assert_eq!(
+            acknowledged.len(),
+            terms.len(),
+            "every distinct durable term must be newly acknowledged exactly once"
+        );
+
+        // Reopen: EVERY acknowledged term must be present (WAL replay and/or the
+        // published checkpoint image — the eviction registry is NOT recovery state).
+        let reopened = PersistentARTrieChar::<()>::open(&path).expect("reopen");
+        for t in &acknowledged {
+            assert!(
+                Dictionary::contains(&reopened, t),
+                "acknowledged term {t:?} lost after eviction-ON checkpoint reopen \
+                 (#41 reborn / registry leaked into recovery)"
+            );
+        }
+        assert!(!Dictionary::contains(&reopened, "absent-term"));
+        assert!(!Dictionary::contains(&reopened, "w"));
+    }
+
+    /// **T2** — N `insert_cas_durable` writers ‖ a checkpointer looping
+    /// capture + `publish_*_with_eviction` (retain) + a racing `force_eviction`;
+    /// reopen ⇒ the exact acknowledged set survives. This is the runtime witness
+    /// for the NEW combo (force_eviction ‖ live insert_cas_durable under the new
+    /// publisher); a flake here would surface the eviction-vs-CAS-writer race
+    /// (design §8 risk 3).
+    #[test]
+    fn writers_concurrent_with_eviction_checkpointer_all_survive_reopen() {
+        let dir = scratch("imm-evict-t2");
+        let path = dir.path().join("t.artc");
+        let n_writers = 4usize;
+        let per_writer = 80usize; // 320 keys — bounded, seconds.
+
+        let acknowledged: Vec<String> = {
+            let shared: SharedCharARTrie<()> =
+                crate::artrie_trait::ARTrie::create(&path).expect("create");
+            {
+                let mut guard = shared.write();
+                guard.set_durability_policy(DurabilityPolicy::Immediate);
+                guard.enable_lockfree();
+            }
+            shared
+                .enable_eviction(EvictionConfig::without_memory_monitor())
+                .expect("enable eviction");
+
+            // +1 for the checkpointer so it starts alongside the writers.
+            let barrier = Arc::new(Barrier::new(n_writers + 1));
+            let writers_done = Arc::new(AtomicBool::new(false));
+
+            // Eviction-checkpointer: loop capture + publish-with-eviction (retain
+            // WAL) + a racing force_eviction until writers finish, then a couple of
+            // final rounds to race the tail.
+            let checkpointer = {
+                let shared = Arc::clone(&shared);
+                let barrier = Arc::clone(&barrier);
+                let writers_done = Arc::clone(&writers_done);
+                thread::spawn(move || {
+                    barrier.wait();
+                    let mut rounds = 0u32;
+                    loop {
+                        // Capture the immutable overlay snapshot (exercises the
+                        // watermark-before-root capture-ordering + its assert) and
+                        // publish the durable image WITH eviction, retaining the WAL.
+                        if let Ok(snapshot) = shared.read().capture_snapshot_immutable() {
+                            let _ = shared
+                                .read()
+                                .publish_immutable_snapshot_retaining_wal_with_eviction(snapshot);
+                        }
+                        // Race a forced eviction against the live CAS writers (the
+                        // registry is invalidated by each durable write before its
+                        // visibility CAS, so this is liveness-not-safety; it must
+                        // never crash / lose a write).
+                        let _ = shared.force_eviction(1 << 20);
+                        rounds += 1;
+                        if writers_done.load(Ordering::Acquire) && rounds > 2 {
+                            break;
+                        }
+                        thread::yield_now();
+                    }
+                })
+            };
+
+            let handles: Vec<_> = (0..n_writers)
+                .map(|w| {
+                    let shared = Arc::clone(&shared);
+                    let barrier = Arc::clone(&barrier);
+                    thread::spawn(move || {
+                        barrier.wait();
+                        let mut acked = Vec::with_capacity(per_writer);
+                        for i in 0..per_writer {
+                            // Shared "s" prefix → CAS contention on the spine.
+                            let key = format!("s{w}_{i:04}");
+                            if shared
+                                .read()
+                                .insert_cas_durable(&key)
+                                .expect("durable insert")
+                            {
+                                acked.push(key);
+                            }
+                        }
+                        acked
+                    })
+                })
+                .collect();
+
+            let acked: Vec<String> = handles
+                .into_iter()
+                .flat_map(|h| h.join().expect("writer thread"))
+                .collect();
+            writers_done.store(true, Ordering::Release);
+            checkpointer.join().expect("checkpointer thread");
+            // DROP WITHOUT a final reclaim — durability rests on WAL + published image.
+            shared.disable_eviction().expect("disable eviction");
+            drop(shared);
+            acked
+        };
+
+        assert_eq!(
+            acknowledged.len(),
+            n_writers * per_writer,
+            "every distinct durable key must be newly acknowledged exactly once"
+        );
+
+        // Reopen: every acknowledged key must be recoverable.
+        let reopened = PersistentARTrieChar::<()>::open(&path).expect("reopen");
+        for key in &acknowledged {
+            assert!(
+                Dictionary::contains(&reopened, key),
+                "acknowledged durable key {key:?} lost after writers‖eviction-checkpointer \
+                 reopen (#41 reborn / eviction-vs-CAS race)"
+            );
+        }
+        assert!(!Dictionary::contains(&reopened, "never-acknowledged"));
     }
 }

@@ -1,0 +1,42 @@
+========================================================================
+LOCK-FREE FLIP — FROZEN ANALYSIS (ledger §8)
+scipy available: True
+========================================================================
+
+=== Throughput inference [variant A — disjoint (PRIMARY)] (write_ops_per_sec) ===
+  CONTROL  : n=30 mean=2,720.1 sd=401.9
+  TREATMENT: n=30 mean=17,234.8 sd=2,337.3
+  diff (T-C)   = 14,514.7 ops/s (+533.61%)  95% Welch CI [13,631.2, 15,398.1]
+  Welch t      = 33.5213  df = 30.71  p(two-sided) = 9.4038e-26
+  Cohen's d    = 8.6552 (pooled)
+  Mann-Whitney U = 900.0  p(two-sided) = 3.0199e-11
+
+=== S1 — checkpoint pause (veto: TREATMENT ≤ CONTROL) ===
+  [S1 PRIMARY] writer-observed p999 (us): control=262004.7 treatment=7147.1
+  [secondary 'ALSO'] checkpointer-side mean (us): control=127497.2 treatment=89703.7
+  [secondary 'ALSO'] checkpointer-side p99  (us): control=272911.7 treatment=305765.5
+
+=== S2 — write tail p50/p99/p999 (veto: T ≤ 1.10×C on p99/p999) ===
+  write_p50_us: control=77.7 treatment=342.2  ratio(T/C)=4.403
+  write_p99_us: control=118552.8 treatment=2395.2  ratio(T/C)=0.020
+  write_p999_us: control=262004.7 treatment=7147.1  ratio(T/C)=0.027
+
+=== S3 — peak RSS (single-arm-per-process pass; veto: T ≤ 1.25×C) ===
+  peak RSS (KiB): control=3,178,396 treatment=1,318,888  ratio(T/C)=0.415
+
+=== Throughput inference [variant B — contended (S4)] (write_ops_per_sec) ===
+  CONTROL  : n=30 mean=3,799.2 sd=115.2
+  TREATMENT: n=30 mean=15,204.5 sd=582.3
+  diff (T-C)   = 11,405.3 ops/s (+300.20%)  95% Welch CI [11,184.4, 11,626.3]
+  Welch t      = 105.2376  df = 31.27  p(two-sided) = 1.9016e-41
+  Cohen's d    = 27.1722 (pooled)
+  Mann-Whitney U = 900.0  p(two-sided) = 3.0199e-11
+  S4 cas_retries (treatment, per round): mean=101.1 max=207
+
+=== §8 DECISION RULE ===
+  -> BRANCH 1: PROCEED. throughput +14,514.7 ops/s (95% CI [13,631.2,15,398.1]), p=9.404e-26, d=8.66≥0.8, no S1/S2/S3/S4 regression
+
+========================================================================
+VERDICT: branch 1 = PROCEED
+EVIDENCE: throughput +14,514.7 ops/s (95% CI [13,631.2,15,398.1]), p=9.404e-26, d=8.66≥0.8, no S1/S2/S3/S4 regression
+========================================================================

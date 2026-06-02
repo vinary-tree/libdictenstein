@@ -58,6 +58,24 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     /// epoch checkpointing records the exact WAL bytes written so epoch
     /// metadata stays aligned with public mutations.
     pub(super) fn append_to_wal(&self, record: WalRecord) -> Result<()> {
+        self.append_to_wal_inner(record).map(|_| ())
+    }
+
+    /// Like [`Self::append_to_wal`], but returns the assigned WAL **LSN** (in the
+    /// WAL-writer LSN domain — the same domain `WalRecord::Checkpoint` and
+    /// recovery use). This is the foundation of the lock-free **Order-A** durable
+    /// write path: the returned LSN is durable-per-policy at return (group-commit
+    /// blocks on the batch fsync; the direct path verifies `synced_lsn >= lsn`),
+    /// so the WAL record is durable BEFORE the caller performs the
+    /// visibility-publishing root CAS. Returns `0` when no WAL writer is
+    /// installed (no durability is available — Order-A callers MUST treat a `0`
+    /// return as "no WAL" and refuse to acknowledge durability).
+    pub(super) fn append_to_wal_returning_lsn(&self, record: WalRecord) -> Result<u64> {
+        self.append_to_wal_inner(record)
+    }
+
+    /// Shared body for [`Self::append_to_wal`] / [`Self::append_to_wal_returning_lsn`].
+    fn append_to_wal_inner(&self, record: WalRecord) -> Result<u64> {
         // A durable mutation is being logged: the in-memory trie is diverging
         // from the last checkpoint's on-disk image, so any published eviction
         // registry now references potentially-stale on-disk data. Invalidate it
@@ -79,7 +97,7 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
                     })?;
             self.record_epoch_operation(wal_bytes);
             self.verify_full_policy_sync_coverage(appended_lsn)?;
-            return Ok(());
+            return Ok(appended_lsn);
         }
 
         // Fall back to direct WAL write
@@ -92,8 +110,9 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
                     })?;
             self.record_epoch_operation(wal_bytes);
             self.sync_wal_after_append(appended_lsn)?;
+            return Ok(appended_lsn);
         }
-        Ok(())
+        Ok(0)
     }
 
     /// Internal helper: Sync the WAL based on durability policy.

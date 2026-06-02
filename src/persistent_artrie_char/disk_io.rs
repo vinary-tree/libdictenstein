@@ -378,6 +378,41 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
         Ok(result)
     }
 
+    /// Load an `OnDisk` overlay child back into an immutable overlay node
+    /// (`Arc<PersistentCharNode<V>>`) — the **fault-in load+deserialize primitive**
+    /// (design §2). Reuses the production/recovery-tested lazy decoder
+    /// [`Self::load_char_node_from_disk_lazy`] (do NOT hand-roll a byte reader),
+    /// then converts the decoded owned `CharTrieNodeInner<V>` into an overlay node
+    /// via [`super::persist::inner_to_overlay`] (children stay `Child::OnDisk`, so
+    /// the fault is single-level / lazy — exactly the overlay granularity).
+    ///
+    /// The returned node's finality / value / child-set equal the durable image's
+    /// (`load(serialize(overlay_to_inner(n))) ≡ n`, design §2 round-trip), so a
+    /// faulted node can never manufacture or drop a term. The caller (read-path
+    /// `find_leaf_faulting` / write-path `build_path_recursive` OnDisk arm)
+    /// CAS-installs it `InMem` via the single loser-safe root CAS — fault-in itself
+    /// writes nothing to disk and advances no watermark (no-lost-write preserved,
+    /// design §5).
+    ///
+    /// ZERO new `unsafe`: the only `unsafe` reached is the EXISTING lazy loader's,
+    /// called through this safe `&self` boundary; the conversion is pure node
+    /// copies + `Arc` allocation.
+    ///
+    /// REVERSIBLE BENCH GATE: gated `any(test, bench-internals)` (the fault-in
+    /// read/write wiring that consumes it is bench/test-gated until the production
+    /// flip — design §6/§8).
+    #[cfg(any(test, feature = "bench-internals"))]
+    pub(super) fn load_overlay_node_from_disk(
+        &self,
+        disk_ptr: &SwizzledPtr,
+    ) -> Result<Arc<super::nodes::PersistentCharNode<V>>> {
+        let bm = self.buffer_manager.as_ref().ok_or_else(|| {
+            PersistentARTrieError::internal("No buffer manager for overlay fault-in load")
+        })?;
+        let inner = self.load_char_node_from_disk_lazy(bm, disk_ptr)?;
+        Ok(Arc::new(super::persist::inner_to_overlay::<V>(&inner)))
+    }
+
     /// Load a single CharTrieNodeInner's data from disk WITHOUT loading children.
     ///
     /// This is a helper for iterative loading. Returns the node (without children

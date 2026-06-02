@@ -1,0 +1,249 @@
+   Compiling libdictenstein v0.1.0 (/home/dylon/Workspace/f1r3fly.io/libdictenstein)
+warning: unused import: `crate::persistent_artrie::IoUringDiskManager`
+  --> src/persistent_artrie_char/io_uring_ctor.rs:22:5
+   |
+22 | use crate::persistent_artrie::IoUringDiskManager;
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `crate::persistent_artrie::IoUringDiskManager`
+  --> src/persistent_vocab_artrie/io_uring_ctor.rs:25:5
+   |
+25 | use crate::persistent_artrie::IoUringDiskManager;
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused variable: `entry_count`
+   --> src/persistent_artrie_char/io_uring_ctor.rs:116:13
+    |
+116 |         let entry_count = disk_manager.entry_count()?;
+    |             ^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_entry_count`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: variant `Empty` is never constructed
+  --> src/persistent_artrie/node_impl.rs:88:5
+   |
+53 | enum NodeInner<V: DictionaryValue> {
+   |      --------- variant in this enum
+...
+88 |     Empty,
+   |     ^^^^^
+   |
+   = note: `NodeInner` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: associated function `empty` is never used
+   --> src/persistent_artrie/node_impl.rs:173:8
+    |
+ 91 | impl<V: DictionaryValue> PersistentARTrieNode<V> {
+    | ------------------------------------------------ associated function in this implementation
+...
+173 |     fn empty() -> Self {
+    |        ^^^^^
+
+warning: field `overlay_write_mode` is never read
+   --> src/persistent_artrie_char/mod.rs:378:16
+    |
+353 | pub struct PersistentARTrieChar<V: DictionaryValue = (), S: crate::persistent_artrie::block_storage::BlockStorage = crate::persiste...
+    |            -------------------- field in this struct
+...
+378 |     pub(crate) overlay_write_mode: overlay_write_mode::OverlayWriteMode,
+    |                ^^^^^^^^^^^^^^^^^^
+
+warning: method `structural_generation` is never used
+   --> src/persistent_artrie_char/mod.rs:692:8
+    |
+670 | pub(crate) trait CharNodeFaulter<V: DictionaryValue> {
+    |                  --------------- method in this trait
+...
+692 |     fn structural_generation(&self) -> u64;
+    |        ^^^^^^^^^^^^^^^^^^^^^
+
+warning: field `is_root` is never read
+   --> src/persistent_artrie_char/mod.rs:763:5
+    |
+759 | pub struct PersistentARTrieCharNode<V: DictionaryValue = ()> {
+    |            ------------------------ field in this struct
+...
+763 |     is_root: bool,
+    |     ^^^^^^^
+    |
+    = note: `PersistentARTrieCharNode` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: method `pending_len` is never used
+  --> src/persistent_artrie_char/reclaim.rs:59:19
+   |
+44 | impl<V: DictionaryValue> CharRetireList<V> {
+   | ------------------------------------------ method in this implementation
+...
+59 |     pub(crate) fn pending_len(&self) -> usize {
+   |                   ^^^^^^^^^^^
+
+warning: method `checkpoint_path` is never used
+   --> src/persistent_artrie_core/epoch.rs:776:8
+    |
+447 | impl CheckpointManager {
+    | ---------------------- method in this implementation
+...
+776 |     fn checkpoint_path(&self, epoch: EpochId) -> PathBuf {
+    |        ^^^^^^^^^^^^^^^
+
+warning: struct `PendingTransaction` is never constructed
+   --> src/persistent_artrie_core/recovery.rs:256:8
+    |
+256 | struct PendingTransaction {
+    |        ^^^^^^^^^^^^^^^^^^
+
+warning: field `archive_config` is never read
+   --> src/persistent_artrie_core/wal/async_writer.rs:383:5
+    |
+371 | pub struct AsyncWalWriter {
+    |            -------------- field in this struct
+...
+383 |     archive_config: WalConfig,
+    |     ^^^^^^^^^^^^^^
+
+warning: associated function `placeholder` is never used
+   --> src/persistent_vocab_artrie/mod.rs:267:8
+    |
+256 | impl VocabTrieNodeRef {
+    | --------------------- associated function in this implementation
+...
+267 |     fn placeholder() -> Self {
+    |        ^^^^^^^^^^^
+
+warning: constant `DEFAULT_VOCAB_BUFFER_POOL_SIZE` is never used
+  --> src/persistent_vocab_artrie/dict_impl.rs:73:7
+   |
+73 | const DEFAULT_VOCAB_BUFFER_POOL_SIZE: usize = 64;
+   |       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: field `shutdown` is never read
+   --> src/persistent_vocab_artrie/concurrent.rs:132:5
+    |
+100 | pub struct ConcurrentVocabARTrie {
+    |            --------------------- field in this struct
+...
+132 |     shutdown: AtomicBool,
+    |     ^^^^^^^^
+
+warning: type alias `ScdawgNode` is never used
+  --> src/scdawg.rs:74:6
+   |
+74 | type ScdawgNode<V = ()> = crate::scdawg_core::ScdawgNode<u8, V>;
+   |      ^^^^^^^^^^
+
+warning: type alias `ScdawgCharNode` is never used
+  --> src/scdawg_char.rs:66:6
+   |
+66 | type ScdawgCharNode<V = ()> = crate::scdawg_core::ScdawgNode<char, V>;
+   |      ^^^^^^^^^^^^^^
+
+warning: type alias `SuffixNode` is never used
+   --> src/suffix_automaton.rs:150:17
+    |
+150 | pub(crate) type SuffixNode<V = ()> = crate::suffix_automaton_core::SuffixNode<u8, V>;
+    |                 ^^^^^^^^^^
+
+warning: type alias `SuffixNodeChar` is never used
+   --> src/suffix_automaton_char.rs:149:17
+    |
+149 | pub(crate) type SuffixNodeChar<V = ()> = crate::suffix_automaton_core::SuffixNode<char, V>;
+    |                 ^^^^^^^^^^^^^^
+
+warning: unused `std::result::Result` that must be used
+   --> src/persistent_artrie_char/mod.rs:638:13
+    |
+638 |             trie.insert(&term);
+    |             ^^^^^^^^^^^^^^^^^^
+    |
+    = note: this `Result` may be an `Err` variant, which should be handled
+    = note: `#[warn(unused_must_use)]` (part of `#[warn(unused)]`) on by default
+help: use `let _ = ...` to ignore the resulting value
+    |
+638 |             let _ = trie.insert(&term);
+    |             +++++++
+
+warning: unused `std::result::Result` that must be used
+   --> src/persistent_artrie_char/mod.rs:649:13
+    |
+649 |             trie.insert(term);
+    |             ^^^^^^^^^^^^^^^^^
+    |
+    = note: this `Result` may be an `Err` variant, which should be handled
+help: use `let _ = ...` to ignore the resulting value
+    |
+649 |             let _ = trie.insert(term);
+    |             +++++++
+
+warning: `libdictenstein` (lib) generated 21 warnings (run `cargo fix --lib -p libdictenstein` to apply 3 suggestions)
+    Finished `bench` profile [optimized] target(s) in 16.22s
+     Running benches/lockfree_flip_benchmark.rs (target/release/deps/lockfree_flip_benchmark-68d054ff63e8b9e9)
+# lockfree_flip_benchmark MEASURED RUN  W=8 R=4 writes/round=2000 K=30 warmup=2 variant=disjoint arm_select=Both
+csv_header,arm,round,is_warmup,write_ops,elapsed_secs,write_ops_per_sec,read_ops,checkpoint_rounds,ckpt_pause_mean_us,ckpt_pause_p99_us,write_p50_us,write_p99_us,write_p999_us,cas_retries,peak_rss_kib,round_dir_bytes,variant,durability
+csv,control,0,1,16000,3.340305,4790.0,7847,40,61265.1,118840.6,62.4,61803.3,117221.9,0,432492,297629507,disjoint,Immediate
+csv,treatment,0,1,16000,0.933863,17133.1,14273909,13,62909.0,188908.2,306.3,2081.6,4596.5,593,431256,67946247,disjoint,Immediate
+csv,treatment,1,1,16000,0.912089,17542.2,15158950,12,56078.8,171840.7,329.0,1733.0,3774.1,540,431256,55101158,disjoint,Immediate
+csv,control,1,1,16000,3.541791,4517.5,7948,40,68738.3,140773.8,59.2,63584.8,126397.6,0,497188,320611673,disjoint,Immediate
+csv,control,2,0,16000,3.486631,4589.0,7999,40,66841.4,129583.7,58.1,66052.8,125768.9,0,495768,314863977,disjoint,Immediate
+csv,treatment,2,0,16000,0.849418,18836.4,13991062,12,61686.0,191167.3,302.8,1962.5,3955.3,130,495768,60606182,disjoint,Immediate
+csv,treatment,3,0,16000,0.861301,18576.5,15017263,13,63170.8,203134.1,303.5,1980.5,4084.9,204,495768,69256967,disjoint,Immediate
+csv,control,3,0,16000,3.463318,4619.8,7997,40,66085.6,125867.0,59.0,65125.6,124101.3,0,499596,320113705,disjoint,Immediate
+csv,control,4,0,16000,3.490334,4584.1,7989,40,66543.3,123951.3,58.2,67926.5,125632.9,0,498044,319335010,disjoint,Immediate
+csv,treatment,4,0,16000,0.839015,19070.0,14300033,12,58691.1,181753.3,297.4,1961.7,4230.7,91,497800,58246886,disjoint,Immediate
+csv,treatment,5,0,16000,0.873417,18318.9,14923043,12,57231.4,182442.1,309.9,2107.5,3762.1,198,497800,56411878,disjoint,Immediate
+csv,control,5,0,16000,3.446698,4642.1,7990,40,65717.3,126470.5,57.6,67837.3,126621.9,0,576520,319063754,disjoint,Immediate
+csv,control,6,0,16000,3.575948,4474.3,7996,40,69330.1,131198.8,56.0,70694.7,126892.9,0,576520,333466766,disjoint,Immediate
+csv,treatment,6,0,16000,0.843264,18973.9,15388480,12,63220.8,198308.7,304.5,1920.0,3581.3,94,576520,62179046,disjoint,Immediate
+csv,treatment,7,0,16000,0.857314,18662.9,14430742,12,56272.5,177420.0,306.2,1891.8,3822.1,140,576520,56411878,disjoint,Immediate
+csv,control,7,0,16000,3.389697,4720.2,7989,40,63337.8,124997.1,59.9,64141.6,120018.4,0,576520,302846537,disjoint,Immediate
+csv,control,8,0,16000,3.616935,4423.6,7865,40,70828.8,132673.1,57.3,66003.2,124462.3,0,576520,336070040,disjoint,Immediate
+csv,treatment,8,0,16000,0.857025,18669.2,14231273,12,59420.1,180833.3,308.4,1993.5,4529.0,124,576520,59033318,disjoint,Immediate
+csv,treatment,9,0,16000,0.817676,19567.7,13164612,12,62777.2,205622.7,309.5,1723.7,3668.7,75,576520,61654758,disjoint,Immediate
+csv,control,9,0,16000,3.508860,4559.9,7984,40,67556.2,129845.6,56.7,65719.3,127610.5,0,576520,319052035,disjoint,Immediate
+csv,control,10,0,16000,3.424792,4671.8,8000,40,64305.7,129310.6,59.6,65658.5,122746.4,0,576520,308870563,disjoint,Immediate
+csv,treatment,10,0,16000,0.871271,18364.0,14379991,13,64079.4,203289.9,321.8,1886.4,4120.1,180,576520,70305543,disjoint,Immediate
+csv,treatment,11,0,16000,0.851000,18801.4,13905376,12,57112.1,178028.3,308.9,1951.9,3949.6,120,576520,56936166,disjoint,Immediate
+csv,control,11,0,16000,3.472407,4607.8,8000,40,65769.8,126500.5,59.7,67088.4,124754.9,0,576520,306241809,disjoint,Immediate
+csv,treatment,12,0,16000,0.809983,19753.5,13515340,11,61317.6,181669.9,293.1,1806.5,3591.0,47,576520,55887557,disjoint,Immediate
+csv,control,12,0,16000,3.378551,4735.8,7987,40,63290.2,128414.2,58.8,67027.3,122272.1,0,576520,307556647,disjoint,Immediate
+csv,treatment,13,0,16000,0.826115,19367.8,14081016,12,63731.2,201828.8,286.7,2028.0,3976.3,105,576520,62965478,disjoint,Immediate
+csv,control,13,0,16000,3.402253,4702.8,7989,40,64209.2,125138.7,58.7,65592.4,124851.2,0,576520,308592290,disjoint,Immediate
+csv,treatment,14,0,16000,0.822647,19449.4,14069255,12,63930.6,200051.9,301.9,1848.3,3728.9,100,576520,63227622,disjoint,Immediate
+csv,control,14,0,16000,3.307785,4837.1,7997,37,69411.3,131307.4,57.0,56429.3,122982.2,0,576520,298074667,disjoint,Immediate
+csv,treatment,15,0,16000,0.888403,18009.8,14734969,12,55603.9,176963.0,322.6,1937.3,4095.7,237,576520,54314726,disjoint,Immediate
+csv,control,15,0,16000,3.430146,4664.5,7999,40,64611.8,132761.2,60.0,67403.8,125522.9,0,576520,308339429,disjoint,Immediate
+csv,control,16,0,16000,3.450708,4636.7,7997,40,65500.0,133161.8,59.0,68959.3,122976.4,0,576520,307540704,disjoint,Immediate
+csv,treatment,16,0,16000,0.816790,19588.9,13415609,12,61743.1,192546.0,297.2,1856.6,3772.1,45,576520,62965478,disjoint,Immediate
+csv,control,17,0,16000,3.507281,4561.9,7999,40,67591.8,137923.9,56.7,66321.7,126163.7,0,576520,319311975,disjoint,Immediate
+csv,treatment,17,0,16000,0.814195,19651.3,13641332,11,55556.1,166036.3,294.3,1859.4,3603.8,69,576520,50906821,disjoint,Immediate
+csv,control,18,0,16000,3.453128,4633.5,7995,40,65305.8,131297.0,60.3,66909.3,122799.4,0,576520,309383783,disjoint,Immediate
+csv,treatment,18,0,16000,0.808095,19799.7,13362662,11,58837.4,175500.6,296.4,1778.6,3474.4,81,576520,53528261,disjoint,Immediate
+csv,treatment,19,0,16000,0.846590,18899.3,14070476,12,54774.5,170496.6,307.0,1932.9,4096.8,196,576520,55887590,disjoint,Immediate
+csv,control,19,0,16000,3.457622,4627.5,7976,39,68756.1,130430.0,57.0,68046.8,129108.2,0,576520,320615952,disjoint,Immediate
+csv,treatment,20,0,16000,0.852799,18761.7,13845274,12,56477.5,174585.1,302.6,2053.5,4093.4,97,576520,56936166,disjoint,Immediate
+csv,control,20,0,16000,3.615106,4425.9,7870,40,70393.5,140158.4,59.3,68707.5,127463.2,0,576520,332676076,disjoint,Immediate
+csv,control,21,0,16000,3.446221,4642.8,7997,40,65462.0,126036.2,56.8,68516.4,123156.1,0,576520,315403337,disjoint,Immediate
+csv,treatment,21,0,16000,0.839282,19063.9,14273891,12,59226.6,186386.9,300.0,1943.3,4363.4,109,576520,59295462,disjoint,Immediate
+csv,control,22,0,16000,3.589286,4457.7,7980,40,69653.0,138268.6,60.0,68421.2,129536.0,0,576520,327175607,disjoint,Immediate
+csv,treatment,22,0,16000,0.866910,18456.4,14420394,12,57462.4,180921.1,306.1,2041.3,5215.6,90,576520,56149734,disjoint,Immediate
+csv,treatment,23,0,16000,0.831293,19247.1,13989036,12,60767.9,192079.1,296.2,1932.9,5607.5,79,576520,61392614,disjoint,Immediate
+csv,control,23,0,16000,3.535774,4525.2,7990,39,70684.2,139151.0,56.2,64889.4,129435.5,0,576520,318259895,disjoint,Immediate
+csv,treatment,24,0,16000,0.896649,17844.2,14690271,12,55646.6,167510.5,323.0,2086.9,5787.8,288,576520,54839014,disjoint,Immediate
+csv,control,24,0,16000,3.592273,4454.0,7993,40,69064.4,153321.4,58.2,67232.5,131096.3,0,576520,315404805,disjoint,Immediate
+csv,control,25,0,16000,3.608075,4434.5,7969,40,70127.5,135472.9,58.2,69157.2,128793.4,0,576520,326651964,disjoint,Immediate
+csv,treatment,25,0,16000,0.850468,18813.2,16139806,12,63514.1,198450.3,300.0,1986.3,5498.5,73,576520,61392614,disjoint,Immediate
+csv,control,26,0,16000,3.361252,4760.1,11902,40,61657.3,129009.8,60.0,66153.2,121333.8,0,576520,287157200,disjoint,Immediate
+csv,treatment,26,0,16000,0.805083,19873.7,13604049,11,53939.9,166624.3,306.9,1597.9,5137.8,56,576520,49333957,disjoint,Immediate
+csv,control,27,0,16000,3.743200,4274.4,7965,40,73993.5,136447.6,56.8,67717.5,130672.4,0,576520,342885368,disjoint,Immediate
+csv,treatment,27,0,16000,0.952085,16805.2,15663523,13,64053.6,200062.1,337.5,1998.4,5503.0,392,576520,67421959,disjoint,Immediate
+csv,control,28,0,16000,3.664204,4366.6,7994,40,70881.0,134558.6,60.4,71695.6,130678.4,0,576520,324051851,disjoint,Immediate
+csv,treatment,28,0,16000,0.835382,19152.9,14571321,12,62507.0,195206.6,304.1,1877.7,5167.1,85,576520,62179046,disjoint,Immediate
+csv,treatment,29,0,16000,0.969322,16506.4,16090582,13,62717.8,195653.6,338.1,2368.4,6547.2,340,576520,67159815,disjoint,Immediate
+csv,control,29,0,16000,3.650634,4382.8,7995,40,70676.4,130677.7,58.8,72615.7,130008.2,0,576520,326669928,disjoint,Immediate
+csv,treatment,30,0,16000,0.886177,18055.1,14807209,12,53894.7,164840.9,320.3,2160.6,6394.6,191,576520,54839014,disjoint,Immediate
+csv,control,30,0,16000,3.613647,4427.7,12000,40,69873.4,131436.0,56.8,72709.4,129886.8,0,576520,327453761,disjoint,Immediate
+csv,control,31,0,16000,3.657969,4374.0,7994,40,71275.9,138958.6,56.2,71417.5,133864.0,0,576520,330849240,disjoint,Immediate
+csv,treatment,31,0,16000,0.850335,18816.1,14625053,12,56598.5,173017.5,266.6,2165.1,6626.1,70,576520,57198310,disjoint,Immediate
+# MEASURED RUN COMPLETE

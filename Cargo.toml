@@ -62,8 +62,10 @@ lru = { version = "0.18", optional = true }
 # Concurrent hash map for LRU tracking in eviction
 dashmap = { version = "6.1", optional = true }
 
-# Persistent (immutable) data structures for lock-free trie nodes
-im = { version = "15.1", optional = true }
+# (Removed) `im` was the RRB-tree backing for the lock-free overlay nodes; both
+# the char and byte overlay nodes now use the tiered `ChildStore` (Inline/Heap)
+# with owned `Child` slots, so `im` has no remaining users. Re-add here if a
+# future module needs persistent vectors again.
 
 # io_uring for O_DIRECT async I/O (Linux-only, optional)
 io-uring = { version = "0.7", optional = true }
@@ -95,7 +97,7 @@ protobuf = ["prost", "prost-build"]
 # persistent_artrie* modules use `crate::serialization::bincode_compat`
 # unconditionally — without this dep the module references resolve to a
 # feature-gated crate::serialization that isn't visible.
-persistent-artrie = ["memmap2", "parking_lot", "serde", "bincode", "sysinfo", "xxhash-rust", "lru", "dashmap", "crossbeam-channel", "im", "serialization"]
+persistent-artrie = ["memmap2", "parking_lot", "serde", "bincode", "sysinfo", "xxhash-rust", "lru", "dashmap", "crossbeam-channel", "serialization"]
 # Group commit for WAL batching.
 # Status: EXPERIMENTAL — measured 1.5-2x throughput regression on NVMe vs
 # per-record sync in benches/group_commit_benchmarks.rs (recorded 2026-01-15).
@@ -261,3 +263,10 @@ required-features = ["bench-internals"]
 name = "concurrent_read_vs_flush_benchmarks"
 harness = false
 required-features = ["persistent-artrie"]
+
+[[bench]]
+name = "lockfree_flip_benchmark"
+# criterion provides its own main via criterion_main!, so the libtest harness
+# must be disabled (otherwise libtest's main runs and criterion never executes).
+harness = false
+required-features = ["persistent-artrie", "bench-internals"]

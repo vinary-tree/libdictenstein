@@ -437,7 +437,11 @@ fn unsafe_send_sync_contracts_remain_explicit() {
     assert_send_sync::<PersistentVocabARTrie<MmapDiskManager>>();
     assert_send_sync::<ConcurrentVocabARTrie>();
     assert_send_sync::<LockFreeVocab>();
-    assert_send::<ReadTransaction<PersistentNode>>();
+    // G4: the byte/char overlay nodes are now generic over `V`; `TrieRoot` (the
+    // MVCC snapshot read bound) is impl'd on the byte node at `<i64>` (its
+    // persistence/counter domain) and on the char node at any `<V>`. Pin the byte
+    // `ReadTransaction` to the `<i64>` instantiation that carries the impl.
+    assert_send::<ReadTransaction<PersistentNode<i64>>>();
     assert_send::<ReadTransaction<PersistentCharNode>>();
 
     #[cfg(feature = "io-uring-backend")]
@@ -1417,18 +1421,22 @@ fn swizzled_pointer_null_initialization_has_single_cas_winner() {
 #[test]
 fn atomic_node_ptr_successful_cas_releases_replaced_slot_reference() {
     use libdictenstein::persistent_artrie::nodes::atomic_ptr::AtomicNodePtr;
-    use libdictenstein::persistent_artrie::nodes::persistent_node::PersistentNode;
+    use libdictenstein::persistent_artrie::nodes::persistent_node::{Child, PersistentNode};
     use libdictenstein::persistent_artrie::{NodeType, SwizzledPtr};
 
-    let initial = Arc::new(PersistentNode::new());
+    // G4: bare `PersistentNode::new()` no longer infers `V`; this CAS-semantics
+    // test exercises the default `<()>` membership node.
+    let initial = Arc::new(PersistentNode::<()>::new());
     let ptr = AtomicNodePtr::new(Arc::clone(&initial));
     assert_eq!(Arc::strong_count(&initial), 2);
 
     let expected = ptr.load().expect("initial pointer loads");
     assert_eq!(Arc::strong_count(&initial), 3);
 
-    let replacement =
-        Arc::new(expected.with_child(b'a', SwizzledPtr::on_disk(1, 64, NodeType::Bucket)));
+    let replacement = Arc::new(expected.with_child(
+        b'a',
+        Child::OnDisk(SwizzledPtr::on_disk(1, 64, NodeType::Bucket)),
+    ));
     let replaced = ptr
         .compare_exchange(&expected, replacement)
         .expect("CAS from loaded expected succeeds");
@@ -1450,10 +1458,11 @@ fn atomic_node_ptr_successful_cas_releases_replaced_slot_reference() {
 #[test]
 fn atomic_node_ptr_concurrent_cas_has_single_visible_replacement() {
     use libdictenstein::persistent_artrie::nodes::atomic_ptr::AtomicNodePtr;
-    use libdictenstein::persistent_artrie::nodes::persistent_node::PersistentNode;
+    use libdictenstein::persistent_artrie::nodes::persistent_node::{Child, PersistentNode};
     use libdictenstein::persistent_artrie::{NodeType, SwizzledPtr};
 
-    let ptr = Arc::new(AtomicNodePtr::new(Arc::new(PersistentNode::new())));
+    // G4: pin the default `<()>` membership node (bare `::new()` no longer infers V).
+    let ptr = Arc::new(AtomicNodePtr::new(Arc::new(PersistentNode::<()>::new())));
     let barrier = Arc::new(Barrier::new(9));
     let mut handles = Vec::new();
 
@@ -1464,7 +1473,11 @@ fn atomic_node_ptr_concurrent_cas_has_single_visible_replacement() {
             let expected = ptr.load().expect("initial pointer loads before race");
             let replacement = Arc::new(expected.with_child(
                 label,
-                SwizzledPtr::on_disk(u32::from(label), 128, NodeType::Bucket),
+                Child::OnDisk(SwizzledPtr::on_disk(
+                    u32::from(label),
+                    128,
+                    NodeType::Bucket,
+                )),
             ));
             barrier.wait();
             ptr.compare_exchange(&expected, replacement).is_ok()

@@ -45,6 +45,11 @@ pub mod io_uring_disk_manager;
 pub mod key_encoding;
 pub mod memory_monitor;
 pub mod mvcc;
+/// G4: the shared lock-free `OverlayNode<K, V>` / `AtomicNodePtr<K, V>` aliased by
+/// the byte/char overlays. Gated on `persistent-artrie` like the variant node
+/// modules (it depends on `arc_swap` and the overlay machinery).
+#[cfg(feature = "persistent-artrie")]
+pub mod overlay;
 pub mod prefetch;
 pub mod recovery;
 pub mod swizzled_ptr;

@@ -44,7 +44,11 @@ fn nonblocking_checkpoint_preserves_data_under_concurrent_reads_writes() {
         let trie: SharedCharARTrie<i64> = ARTrie::create(&path).expect("create shared char trie");
 
         for i in 0..SEED {
-            assert!(ARTrie::insert_with_value(&trie, &format!("seed-{i}"), i as i64));
+            assert!(ARTrie::insert_with_value(
+                &trie,
+                &format!("seed-{i}"),
+                i as i64
+            ));
         }
         ARTrie::checkpoint(&trie).expect("seed checkpoint");
 

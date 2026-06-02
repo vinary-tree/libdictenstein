@@ -38,6 +38,10 @@ impl KeyEncoding for ByteKey {
     const FILE_MAGIC: [u8; 4] = *b"PART";
     const NAME: &'static str = "byte";
 
+    // G4 (shared `OverlayNode`): byte path-compression caps at 12 units = 12 B.
+    const MAX_PREFIX_LEN: usize = 12;
+    const UNIT_ZERO: Self::Unit = 0u8;
+
     fn units_from_str(s: &str) -> SmallVec<[Self::Unit; 32]> {
         s.as_bytes().iter().copied().collect()
     }
@@ -59,6 +63,10 @@ impl KeyEncoding for CharKey {
     const ARENA_MAGIC_V2: u64 = 0x32564152_4148_43; // "CHARARV2" in little-endian
     const FILE_MAGIC: [u8; 4] = *b"ARTC";
     const NAME: &'static str = "char";
+
+    // G4 (shared `OverlayNode`): char path-compression caps at 6 units = 24 B.
+    const MAX_PREFIX_LEN: usize = 6;
+    const UNIT_ZERO: Self::Unit = 0u32;
 
     fn units_from_str(s: &str) -> SmallVec<[Self::Unit; 32]> {
         s.chars().map(|c| c as u32).collect()
@@ -139,6 +147,17 @@ pub trait KeyEncoding: 'static + Copy + Send + Sync + Debug {
 
     /// Human-readable name used in diagnostics and panic messages.
     const NAME: &'static str;
+
+    /// G4: maximum path-compression prefix length, in key units.
+    ///
+    /// `12` for byte (12 B), `6` for char (24 B). Consumed by the shared
+    /// `persistent_artrie_core::overlay::OverlayNode` to cap its `prefix` length.
+    const MAX_PREFIX_LEN: usize;
+
+    /// G4: the zero-valued unit used as dead filler in the shared
+    /// `OverlayNode`'s inline child-array `[count..]` slots (never read; only
+    /// `keys[..count]` are live). `0u8` for byte, `0u32` for char.
+    const UNIT_ZERO: Self::Unit;
 
     /// Decode `s` into a sequence of edge units.
     ///

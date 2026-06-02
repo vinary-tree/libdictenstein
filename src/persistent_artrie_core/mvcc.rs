@@ -97,6 +97,10 @@ pub trait TrieRoot: Send + Sync + 'static {
     /// The key type for this trie (u8 or u32).
     type Key: Copy;
 
+    /// The value type held at final nodes (`u64` for counter/index tries, `()`
+    /// for membership tries, or an arbitrary `V` once the overlay is generic).
+    type Value;
+
     /// Check if this node is a final node (end of a word).
     fn is_final(&self) -> bool;
 
@@ -104,7 +108,7 @@ pub trait TrieRoot: Send + Sync + 'static {
     fn find_child(&self, key: Self::Key) -> Option<Arc<Self>>;
 
     /// Get the value if this is a final node.
-    fn get_value(&self) -> Option<u64>;
+    fn get_value(&self) -> Option<Self::Value>;
 }
 
 /// A read transaction for MVCC-lite snapshot isolation.
@@ -213,7 +217,7 @@ impl<T: TrieRoot<Key = u8>> ReadTransaction<T> {
     }
 
     /// Get the value for a byte term in the pinned version.
-    pub fn get(&self, term: &[u8]) -> Option<u64> {
+    pub fn get(&self, term: &[u8]) -> Option<T::Value> {
         if let Some(stats) = &self.stats {
             stats.record_read();
         }
@@ -259,7 +263,7 @@ impl<T: TrieRoot<Key = u32>> ReadTransaction<T> {
     }
 
     /// Get the value for a string term in the pinned version.
-    pub fn get_str(&self, term: &str) -> Option<u64> {
+    pub fn get_str(&self, term: &str) -> Option<T::Value> {
         if let Some(stats) = &self.stats {
             stats.record_read();
         }
@@ -372,6 +376,7 @@ mod tests {
 
     impl TrieRoot for TestNode {
         type Key = u8;
+        type Value = u64;
 
         fn is_final(&self) -> bool {
             self.is_final

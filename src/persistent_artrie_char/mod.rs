@@ -173,6 +173,14 @@ pub mod prefetch_api;
 // WAL + durability helpers (append_to_wal, sync_wal, *durability_policy).
 pub mod wal_helpers;
 
+// Committed-LSN watermark for the lock-free Order-A durable write path
+// (Migration Phase E; the executable refinement of LockFreeDurableCheckpoint.tla).
+pub(crate) mod committed_watermark;
+
+// Kill-switch scaffold for the irreversible Phase-E write-path flip. Inert
+// (`OwnedTree`) default; no production path consults it yet.
+pub(crate) mod overlay_write_mode;
+
 // Public mutation API (insert / insert_with_value / remove) — Phase-6 split.
 pub mod mutation_api;
 
@@ -188,6 +196,13 @@ pub(crate) mod reclaim;
 // which need private node/coordinator internals.
 #[cfg(test)]
 mod eviction_registry_tests;
+
+// OE1–OE4 correspondence tests for the reversible overlay-eviction driver
+// (`evict_overlay_node_at_path` / `evict_overlay_nodes`). In-crate because they
+// drive the private driver + `pub(crate)` `OverlayEvictOutcome` and the overlay
+// internals. The Rust witness for `formal-verification/tla+/OverlayEvictionCas.tla`.
+#[cfg(test)]
+mod overlay_eviction_driver_correspondence;
 
 // Re-export shared types (always available)
 pub use types::{
@@ -357,6 +372,17 @@ pub struct PersistentARTrieChar<V: DictionaryValue = (), S: crate::persistent_ar
     /// WAL configuration (archive mode, segment limits, etc.)
     pub(crate) wal_config: crate::persistent_artrie::wal::WalConfig,
     pub(crate) next_lsn: std::sync::atomic::AtomicU64,
+    /// Committed-LSN watermark for the lock-free Order-A durable write path
+    /// (Migration Phase E). The largest contiguously-committed LSN; the only safe
+    /// `checkpoint_lsn` under out-of-order lock-free commit. See
+    /// [`committed_watermark::CommittedWatermark`].
+    pub(crate) committed_watermark: committed_watermark::CommittedWatermark,
+    /// Kill-switch selecting the production write-path representation
+    /// (owned-tree vs lock-free overlay). Migration Phase E scaffold — wired as
+    /// the inert [`OverlayWriteMode::OwnedTree`](overlay_write_mode::OverlayWriteMode::OwnedTree)
+    /// default so it changes NO current behavior; the irreversible flip flips it
+    /// and gains a one-release fallback. No production path reads it yet.
+    pub(crate) overlay_write_mode: overlay_write_mode::OverlayWriteMode,
     pub(crate) file_path: Option<std::path::PathBuf>,
     /// Arena manager for space-efficient node storage
     /// Packs multiple nodes into 256KB blocks instead of one node per block
@@ -432,7 +458,11 @@ pub struct PersistentARTrieChar<V: DictionaryValue = (), S: crate::persistent_ar
     // === Lock-Free Infrastructure (per plan Phase 4) ===
     /// Lock-free root using PersistentCharNode with im::Vector for CAS operations.
     /// When present, `insert_cas()` uses this for lock-free concurrent inserts.
-    pub(crate) lockfree_root: Option<nodes::AtomicNodePtr>,
+    ///
+    /// G1: the overlay node is generic over the trie's value type `V`, so a
+    /// membership trie (`V=()`) carries `<()>` (unchanged behavior) and a counter
+    /// trie (`V=u64`) carries the `u64` count in the overlay leaf's `Option<V>`.
+    pub(crate) lockfree_root: Option<nodes::AtomicNodePtr<V>>,
 
     /// Lock-free cache for term lookups (DashMap for O(1) sharded access).
     pub(crate) lockfree_cache: Option<dashmap::DashMap<String, bool>>,
@@ -1337,6 +1367,236 @@ impl<V: DictionaryValue> crate::artrie_trait::ARTrie for SharedCharARTrie<V> {
 }
 
 // ============================================================================
+// REVERSIBLE OVERLAY-EVICTION DRIVER (design g4-overlay-eviction-reclamation)
+// ============================================================================
+//
+// `cfg(any(test, feature = "bench-internals"))` — NOT a production path. This is
+// the reversible driver that makes the eviction-ON benchmark's TREATMENT arm do
+// REAL in-memory reclamation of COLD overlay subtrees (vs the §E structural
+// no-op). It is the OVERLAY analogue of `evict_node_at_path`/`evict_char_nodes`
+// (which act on the OWNED `self.root`, Empty in the overlay arm): it path-copies
+// the `lockfree_root` spine and swaps a COLD in-memory child for an `OnDisk`
+// reference via a loser-safe root CAS. ZERO `unsafe` (reuses the proven Phase-D
+// safe `Arc`/`arc-swap` primitive). The CAS-arbitration safety (loser-safe,
+// cold-only, no-UAF) is TLC-verified in
+// `formal-verification/tla+/OverlayEvictionCas.tla`.
+//
+// Rollback (design §4): delete this whole section + `bench_evict_overlay_cold_nodes`
+// + the §F bench arm + the TLA spec + its 3 verify-script lines. The write path,
+// recovery, production eviction, and `checkpoint()` are untouched.
+
+/// Outcome of an attempt to evict ONE overlay node to an on-disk reference.
+#[cfg(any(test, feature = "bench-internals"))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum OverlayEvictOutcome {
+    /// The node's parent slot was atomically swapped to an `OnDisk` reference and
+    /// the new root CAS-published. The superseded in-memory subtree reclaims by
+    /// `Arc` refcount once the last referencing root version (incl. concurrent
+    /// reader snapshots) drops.
+    Evicted,
+    /// A concurrent writer advanced the overlay root between our `load` and our
+    /// CAS, so the CAS lost. Loser-safe: nothing was published; the caller should
+    /// rebase (re-load the root) and retry.
+    RootCasLost,
+    /// The node could not be evicted from THIS root snapshot (path missing, a
+    /// spine slot is already on-disk, the target child is already on-disk, or
+    /// `disk_ptr` is not a real disk location). Skipped — never retried.
+    NotEvictable,
+}
+
+#[cfg(any(test, feature = "bench-internals"))]
+impl<V: DictionaryValue, S: crate::persistent_artrie::block_storage::BlockStorage>
+    PersistentARTrieChar<V, S>
+{
+    /// Evict a single OVERLAY node at `char_path` to the on-disk reference
+    /// `disk_ptr`, by path-copying the `lockfree_root` spine and CAS-publishing a
+    /// new root whose `char_path` child is `Child::OnDisk(disk_ptr)`.
+    ///
+    /// This is the overlay analogue of [`evict_node_at_path`](Self::evict_node_at_path)
+    /// (which acts on the owned `self.root`). The overlay's nodes are immutable
+    /// persistent `Arc<PersistentCharNode<V>>` under an `arc-swap` root, so we never
+    /// take a write lock and never use `unsafe`:
+    ///
+    /// 1. pin the read epoch (parity with the write/read paths) and `load()` the
+    ///    current published root (`load_full` — hazard-protected);
+    /// 2. walk `char_path` cloning the in-memory child `Arc` per hop. Any on-disk
+    ///    or missing slot along the spine (or at the target) ⇒ `NotEvictable`;
+    /// 3. rebuild the spine bottom-up: the target's parent gets
+    ///    `with_child(edge, Child::OnDisk(disk_ptr))`, each ancestor is rebuilt
+    ///    `with_child(edge, Child::InMem(new_child))`;
+    /// 4. `compare_exchange(&old_root, new_root)`. `Ok` ⇒ `Evicted` (the old root
+    ///    version drops, and with it the superseded in-memory subtree once no
+    ///    reader still pins it); `Err` ⇒ `RootCasLost` (a concurrent writer won —
+    ///    loser-safe, we never clobber the insert).
+    ///
+    /// **No UAF** (the Phase-D witness, `lockfree_cas.rs` eviction primitive): a
+    /// reader holding the pre-eviction root snapshot still sees the subtree; it is
+    /// freed only when the last version drops. **No lost write**: if a writer
+    /// landed between load and CAS, our CAS fails and we report `RootCasLost`.
+    ///
+    /// `char_path` is the full edge sequence from the overlay root to the victim
+    /// (the `Vec<char>` the registry stores per [`EvictableCharNode`]).
+    pub(crate) fn evict_overlay_node_at_path(
+        &self,
+        char_path: &[u32],
+        disk_ptr: crate::persistent_artrie::swizzled_ptr::SwizzledPtr,
+    ) -> OverlayEvictOutcome {
+        use crate::persistent_artrie_char::nodes::persistent_node::Child;
+
+        if char_path.is_empty() {
+            // The root is never evicted via this path (it has no parent slot).
+            return OverlayEvictOutcome::NotEvictable;
+        }
+        // The supplied pointer must encode a real on-disk location (a checkpointed
+        // node's `SwizzledPtr`); a swizzled/null one is rejected (parity with
+        // `evict_node_at_path`).
+        if disk_ptr.disk_location().is_none() {
+            return OverlayEvictOutcome::NotEvictable;
+        }
+
+        let lockfree_root = match self.lockfree_root.as_ref() {
+            Some(r) => r,
+            None => return OverlayEvictOutcome::NotEvictable,
+        };
+
+        // Pin the epoch for parity with the read/write paths (the overlay needs no
+        // EBR for correctness — reclamation is by Arc refcount — but pinning keeps
+        // the active-reader accounting honest under concurrent walks).
+        let _epoch = self.epoch_manager.enter_read();
+
+        // (1) Load the current published root snapshot.
+        let old_root = match lockfree_root.load() {
+            Some(r) => r,
+            None => return OverlayEvictOutcome::NotEvictable,
+        };
+
+        // (2) Walk the spine top-down, collecting (node, edge) for the rebuild.
+        // Preallocate to the known path length (no reallocation).
+        let mut spine: Vec<(
+            Arc<crate::persistent_artrie_char::nodes::persistent_node::PersistentCharNode<V>>,
+            u32,
+        )> = Vec::with_capacity(char_path.len());
+        let mut current = Arc::clone(&old_root);
+        for &edge in char_path {
+            let child = match current.find_child(edge) {
+                Some(c) => c,
+                None => return OverlayEvictOutcome::NotEvictable, // path missing
+            };
+            // We must descend through in-memory slots only; an already-on-disk
+            // spine slot means a deeper node was evicted before its ancestor
+            // (or this very node already is on disk) ⇒ skip (overlay analogue of
+            // `evict_node_at_path`'s on-disk-parent guard).
+            let child_arc = match child.as_in_mem() {
+                Some(a) => Arc::clone(a),
+                None => return OverlayEvictOutcome::NotEvictable,
+            };
+            spine.push((Arc::clone(&current), edge));
+            current = child_arc;
+        }
+        // `current` is now the victim node (still in memory); `spine` holds its
+        // ancestor chain root→parent with the edge taken at each step.
+
+        // (3) Rebuild bottom-up. The deepest spine entry is the victim's PARENT;
+        // its `edge` child becomes the OnDisk reference. Each shallower ancestor is
+        // rebuilt InMem around the new child.
+        let mut new_child: Option<
+            Arc<crate::persistent_artrie_char::nodes::persistent_node::PersistentCharNode<V>>,
+        > = None;
+        for (ancestor, edge) in spine.into_iter().rev() {
+            let rebuilt = match new_child.take() {
+                // Higher ancestors: re-link the freshly rebuilt in-memory child.
+                Some(c) => ancestor.with_child(edge, Child::InMem(c)),
+                // The victim's parent (deepest): swap its child for the on-disk ref.
+                None => ancestor.with_child(edge, Child::OnDisk(disk_ptr.clone())),
+            };
+            new_child = Some(Arc::new(rebuilt));
+        }
+        let new_root = match new_child {
+            Some(r) => r,
+            // Unreachable: `char_path` is non-empty so `spine` had ≥1 entry.
+            None => return OverlayEvictOutcome::NotEvictable,
+        };
+
+        // (4) Loser-safe root CAS. Ok ⇒ published (Evicted). Err ⇒ a concurrent
+        // writer advanced the root; we publish nothing (RootCasLost) and never
+        // overwrite the concurrent insert.
+        match lockfree_root.compare_exchange(&old_root, new_root) {
+            Ok(_) => OverlayEvictOutcome::Evicted,
+            Err(_actual) => OverlayEvictOutcome::RootCasLost,
+        }
+    }
+}
+
+/// Reclaim a batch of COLD OVERLAY nodes (the overlay analogue of
+/// [`evict_char_nodes`]). Evicts LEAF-FIRST (descending depth) so a node is
+/// evicted before any ancestor — keeping each victim's parent spine in memory at
+/// eviction time (a later shallower candidate whose spine now passes through an
+/// already-on-disk slot is reported `NotEvictable` and skipped). Each victim gets
+/// up to `max_rebase_retries` root-CAS attempts: a `RootCasLost` (a concurrent
+/// writer won) rebases and retries; on exhaustion the victim is SKIPPED (a missed
+/// eviction is liveness-only — loser-safe).
+///
+/// Returns `(evicted, bytes_freed)` where `bytes_freed` is the registry
+/// `size_bytes` sum of the successfully-evicted nodes (nominal; the peak-RSS pass
+/// is the physical witness). Takes NO lock and uses NO `unsafe`.
+#[cfg(any(test, feature = "bench-internals"))]
+pub(crate) fn evict_overlay_nodes<V: DictionaryValue, S: crate::persistent_artrie::block_storage::BlockStorage>(
+    trie: &PersistentARTrieChar<V, S>,
+    mut nodes: Vec<(
+        u64,
+        Vec<char>,
+        crate::persistent_artrie::swizzled_ptr::SwizzledPtr,
+    )>,
+    max_rebase_retries: usize,
+) -> (usize, usize) {
+    // LEAF-FIRST: sort by DESCENDING path length (depth). Deeper nodes evict
+    // first, so an ancestor's spine is still fully in memory when we reach it.
+    nodes.sort_by(|a, b| b.1.len().cmp(&a.1.len()));
+
+    let mut evicted = 0usize;
+    let mut bytes_freed = 0usize;
+    for (_path_hash, path, disk_ptr) in nodes {
+        // The registry stores the path as `Vec<char>`; the overlay keys on u32
+        // code points. Convert once (preallocated).
+        let mut char_path: Vec<u32> = Vec::with_capacity(path.len());
+        char_path.extend(path.iter().map(|&c| c as u32));
+
+        // Bounded loser-safe retry: rebase on a lost root CAS; stop on the first
+        // terminal outcome (Evicted or NotEvictable) or on retry exhaustion.
+        let mut attempt = 0;
+        loop {
+            match trie.evict_overlay_node_at_path(&char_path, disk_ptr.clone()) {
+                OverlayEvictOutcome::Evicted => {
+                    evicted += 1;
+                    // Nominal byte estimate per evicted overlay node (parity with
+                    // `evict_char_nodes`' ~256 B/node estimate; the RSS pass is the
+                    // physical witness).
+                    bytes_freed += 256;
+                    // Drop the LRU entry so a later (re)insert of this cold path
+                    // starts fresh (parity with `evict_char_nodes`).
+                    if let Some(ref coordinator) = trie.eviction_coordinator {
+                        use crate::persistent_artrie::eviction::lru_tracker::hash_char_path;
+                        coordinator
+                            .lru_registry()
+                            .remove_hash(hash_char_path(&path));
+                    }
+                    break;
+                }
+                OverlayEvictOutcome::RootCasLost => {
+                    attempt += 1;
+                    if attempt > max_rebase_retries {
+                        break; // exhausted → SKIP (liveness-only miss)
+                    }
+                    // else: rebase (re-load the root) on the next iteration.
+                }
+                OverlayEvictOutcome::NotEvictable => break, // skip; never retried
+            }
+        }
+    }
+    (evicted, bytes_freed)
+}
+
+// ============================================================================
 // EvictableARTrie Trait Implementation (on SharedCharARTrie)
 // ============================================================================
 
@@ -1609,6 +1869,129 @@ impl<V: DictionaryValue, S: crate::persistent_artrie::block_storage::BlockStorag
         self.eviction_coordinator
             .as_ref()
             .map(|c| c.disk_registry_char_len())
+    }
+
+    /// **REVERSIBLE BENCH ENABLER — EVICTION-ON** (gated entirely behind the
+    /// existing `bench-internals` feature). Constructs and installs an
+    /// [`EvictionCoordinator`] directly on this bare `PersistentARTrieChar` so the
+    /// `lockfree_flip_benchmark` `--eviction` TREATMENT arm — which holds the trie
+    /// as a bare `Arc<PersistentARTrieChar>` (the lock-free path needs only `&self`),
+    /// NOT a `SharedCharARTrie<_>` (`Arc<RwLock<…>>`) — can run eviction-ON
+    /// checkpoints (`bench_immutable_checkpoint_with_eviction`). The
+    /// `bench_immutable_checkpoint*` methods are `PersistentARTrieChar` methods, so
+    /// the TREATMENT trie cannot be a `SharedCharARTrie`; this enabler is the
+    /// bare-trie analogue of [`SharedCharARTrie::enable_eviction`].
+    ///
+    /// Mirrors that construction: validate the config, share THIS trie's own
+    /// `epoch_manager` with the coordinator (so a walk and the coordinator pin the
+    /// same epoch), `start_char` the background loop, and `start_memory_monitor`
+    /// (a no-op under `EvictionConfig::without_memory_monitor`).
+    ///
+    /// THE RECLAIM CALLBACK IS A NO-OP `(0, 0)`. This is faithful, not a cut: over
+    /// a lock-free OVERLAY trie the owned `self.root` is `Empty` (the data lives in
+    /// `lockfree_root`), so `evict_node_at_path` — which the production
+    /// `SharedCharARTrie` callback (`evict_char_nodes`) walks — would unswizzle
+    /// nothing and return `(0, 0)` ANYWAY (proven by the in-crate T1 correspondence
+    /// test `immutable_eviction_checkpoint_reopens_losing_nothing`). Wiring the
+    /// overlay into the owned eviction walk is the owner-gated Phase-E flip, out of
+    /// scope. The benchmark measures the CHECKPOINT path (registry build +
+    /// `update_disk_registry` publication — the eviction-ON cost being studied),
+    /// which this enabler activates; the reclaim callback is never on the timed
+    /// writer path.
+    ///
+    /// **Maintenance coupling (design §8 risk 5):** the coordinator construction
+    /// duplicates `SharedCharARTrie::enable_eviction`'s shape (same crate; flagged).
+    /// Deleting this method + `bench_immutable_checkpoint_with_eviction` + the
+    /// `bench-internals` cfg disjunct on the publisher fully reverts the eviction-ON
+    /// bench surface.
+    ///
+    /// `cfg(any(test, feature = "bench-internals"))`: widened from `bench-internals`-
+    /// only so the in-crate OE1–OE4 overlay-eviction correspondence tests can
+    /// install the coordinator (and thus publish a real overlay eviction registry)
+    /// under the DEFAULT `cargo test`. The `bench-internals` benchmark path is
+    /// unchanged.
+    #[cfg(any(test, feature = "bench-internals"))]
+    pub fn bench_enable_eviction(
+        &mut self,
+        config: crate::persistent_artrie::eviction::EvictionConfig,
+    ) -> crate::persistent_artrie::error::Result<()> {
+        use crate::persistent_artrie::error::PersistentARTrieError;
+
+        config
+            .validate()
+            .map_err(|e| PersistentARTrieError::internal(&e))?;
+
+        if self.eviction_coordinator.is_some() {
+            return Err(PersistentARTrieError::internal("Eviction already enabled"));
+        }
+
+        // Share THIS trie's epoch manager with the coordinator (parity with
+        // SharedCharARTrie::enable_eviction).
+        let epoch_manager = Arc::clone(&self.epoch_manager);
+        let coordinator = crate::persistent_artrie::eviction::EvictionCoordinator::new(
+            config.clone(),
+            epoch_manager,
+        );
+
+        // No-op reclaim callback: see the method doc — overlay eviction is a
+        // structural no-op (owned self.root is Empty), so the production
+        // `evict_char_nodes` callback would reclaim nothing here regardless. The
+        // bench only measures the registry-publication CHECKPOINT path.
+        coordinator
+            .start_char(|_nodes_to_evict| (0usize, 0usize))
+            .map_err(|e| PersistentARTrieError::internal(&e))?;
+        coordinator
+            .start_memory_monitor()
+            .map_err(|e| PersistentARTrieError::internal(&e))?;
+
+        self.eviction_coordinator = Some(coordinator);
+        Ok(())
+    }
+
+    /// **REVERSIBLE BENCH ACCESSOR — overlay COLD reclamation** (gated entirely
+    /// behind `bench-internals`). Synchronously reclaim COLD overlay subtrees from
+    /// the calling thread, returning the number of overlay nodes evicted.
+    ///
+    /// This is what makes the eviction-ON benchmark's TREATMENT arm perform REAL
+    /// in-memory reclamation (vs the §E structural no-op). It reuses the
+    /// coordinator's eviction SELECTION (coldest-first LRU, `min_eviction_depth`,
+    /// `batch_size`, registry-validity gate — `force_eviction_char` refuses an
+    /// invalidated registry, yielding 0 = liveness-not-safety), then filters the
+    /// selected candidates to COLD paths (`cold_filter`, e.g.
+    /// `|p| p.first() == Some(&'c')`) and reclaims them via the driver
+    /// [`evict_overlay_nodes`]. ONLY COLD nodes are ever evicted (SF5(ii)
+    /// `faultin_count == 0`): fault-in is absent, so a re-touchable LIVE node must
+    /// never be evicted.
+    ///
+    /// Needs only `&self` (the overlay path is all `&self`), so the benchmark's
+    /// checkpointer thread can call it synchronously after each checkpoint
+    /// publishes the registry — deterministic, off the writer path. Returns 0 if
+    /// eviction was not enabled (`bench_enable_eviction` not called).
+    ///
+    /// **Rollback (design §4):** delete this method (one edit); the driver +
+    /// `OverlayEvictOutcome` + the §F bench arm + the TLA spec then revert
+    /// independently. The write path, recovery, production eviction, and
+    /// `checkpoint()` are untouched.
+    #[cfg(feature = "bench-internals")]
+    pub fn bench_evict_overlay_cold_nodes<F>(&self, budget_bytes: usize, cold_filter: F) -> usize
+    where
+        F: Fn(&[char]) -> bool,
+    {
+        let coordinator = match self.eviction_coordinator.as_ref() {
+            Some(c) => c,
+            None => return 0,
+        };
+        coordinator
+            .force_eviction_char(budget_bytes, |cands| {
+                // COLD-only: drop any selected candidate whose path is not cold, so
+                // the evictor never touches a LIVE (re-touchable) subtree.
+                let filtered: Vec<_> = cands
+                    .into_iter()
+                    .filter(|(_, p, _)| cold_filter(p))
+                    .collect();
+                evict_overlay_nodes(self, filtered, 4)
+            })
+            .0
     }
 
     /// Evict a single node at the given path, replacing it with a DiskRef.

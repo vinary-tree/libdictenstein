@@ -850,3 +850,44 @@ fn test_lockfree_merge_to_persistent() {
         );
     }
 }
+
+/// Byte-overlay regression for the prefix-insert data-loss fix (mirror of the
+/// char `prefix_insert_survives_merge_into_persistent_trie`).
+///
+/// Inserting a term that is a proper prefix of an existing term ("a" after "ab")
+/// must report newness `true` and survive the cache-only
+/// `merge_lockfree_to_persistent`. Pre-fix, `insert_cas(b"a")` returned `false`
+/// and skipped the lock-free cache, so the merge silently dropped "a" — visible
+/// only by reading the persistent trie (`contains`), which is what this asserts.
+#[test]
+fn test_lockfree_prefix_insert_survives_merge() {
+    std::fs::create_dir_all("target/test-tmp").ok();
+    let temp_dir = tempfile::Builder::new()
+        .prefix("byte-prefix-merge")
+        .tempdir_in("target/test-tmp")
+        .expect("scratch tempdir under target/test-tmp (never /tmp — it is tmpfs)");
+    let dict_path = temp_dir.path().join("byte_prefix_merge.part");
+    let mut dict: PersistentARTrie<()> = PersistentARTrie::create(&dict_path).expect("create dict");
+    dict.enable_lockfree();
+
+    assert!(dict.insert_cas(b"ab"), "\"ab\" is a new term");
+    assert!(
+        dict.insert_cas(b"a"),
+        "\"a\" (a proper prefix of \"ab\") is a new term — insert_cas must report true"
+    );
+    assert!(dict.contains_lockfree(b"a"));
+    assert!(dict.contains_lockfree(b"ab"));
+
+    let merged = dict.merge_lockfree_to_persistent().expect("merge");
+    assert_eq!(
+        merged, 2,
+        "both \"ab\" and \"a\" must be merged (none dropped)"
+    );
+
+    // Read the persistent trie — the layer the cache-only merge writes to.
+    assert!(
+        dict.contains("a"),
+        "prefix term \"a\" was lost during merge into the persistent trie (data loss)"
+    );
+    assert!(dict.contains("ab"));
+}
