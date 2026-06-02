@@ -817,6 +817,51 @@ impl<K: KeyEncoding, V: Clone> OverlayNode<K, V> {
         }
     }
 
+    /// Create a new version marked as **NOT final** (the safe mirror of
+    /// [`Self::as_final`]) — the node primitive behind a proven overlay DELETE
+    /// (design "R-B", §2).
+    ///
+    /// Clears `IS_FINAL`+`HAS_VALUE` on a COPY (immutability preserved — the
+    /// original node is untouched, so concurrent readers holding it see no change)
+    /// and drops the value (mirroring an owned remove, which discards the value).
+    /// The child store and prefix are **RETAINED**: removing a term that is a
+    /// proper prefix of a longer term must keep the longer term reachable
+    /// (removing "cat" must keep "cats"). Subtree compaction is a future
+    /// optimization, out of scope here — exactly as owned remove also leaves the
+    /// (now non-final) node in place.
+    ///
+    /// # Why a fresh copy, never an in-place clear (design §3.5)
+    ///
+    /// [`Self::try_set_final`]'s in-place `fetch_or(IS_FINAL)` is monotone-safe
+    /// (an early observer of a 0→1 flip is benign — membership only ever grows on
+    /// that path). A 1→0 clear is NOT monotone: an in-place `fetch_and(!IS_FINAL)`
+    /// racing an in-place `fetch_or(IS_FINAL)` on the SAME shared node has no
+    /// serialization point and could resurrect or lose a write. By producing a
+    /// fresh cleared node version here and publishing it ONLY via the overlay's
+    /// single root CAS, the clear is atomic with one specific published root and
+    /// the root-CAS arbiter linearizes it. The node's `flags` is therefore only
+    /// ever flipped in-place 0→1 (by `try_set_final`); the 1→0 transition happens
+    /// solely on a fresh copy via this method, arbitrated by the root CAS. The
+    /// `LockFreeOverlayRemoveCas_Unsafe.cfg` negative control proves the in-place
+    /// alternative violates last-writer-wins.
+    ///
+    /// ZERO `unsafe` (same construction shape as `as_final`; `Send`/`Sync`
+    /// unaffected — every field stays `Send + Sync`).
+    pub fn as_non_final(&self) -> Self {
+        Self {
+            version: AtomicU64::new(self.version.load(Ordering::Acquire) + 1),
+            // SUBTREE RETAINED: remove "cat" must keep "cats" reachable.
+            store: self.store.clone(),
+            flags: AtomicU8::new(
+                self.flags.load(Ordering::Acquire) & !(flags::IS_FINAL | flags::HAS_VALUE),
+            ),
+            // Drop the value (mirror owned remove).
+            value: None,
+            prefix: self.prefix.clone(),
+            prefix_len: self.prefix_len,
+        }
+    }
+
     /// Create a new version with a value set.
     pub fn with_value(&self, value: V) -> Self {
         Self {
@@ -1668,5 +1713,123 @@ mod tests {
     #[test]
     fn generic_heap_clone_char() {
         check_heap_clone::<CharKey>(NodeType::CharNode4);
+    }
+
+    // ---- R-B (proven overlay DELETE) node primitive: `as_non_final`. ----
+    //
+    // The safe mirror of `as_final`: it clears `IS_FINAL`+`HAS_VALUE` and drops
+    // the value on a FRESH COPY (immutability preserved), while RETAINING the
+    // child store + prefix (so removing a prefix term keeps the longer term
+    // reachable). These tests are the RB0 gate; both instantiations run.
+
+    /// `as_non_final` clears finality + value on a copy, retains children, leaves
+    /// the original untouched, and round-trips with `as_final`.
+    fn check_as_non_final<K: KeyEncoding>(nt: NodeType)
+    where
+        K::Unit: TryFrom<u32>,
+        <K::Unit as TryFrom<u32>>::Error: std::fmt::Debug,
+    {
+        let kx = K::Unit::try_from(b'x' as u32).expect("unit fits");
+        // A final, value-carrying node with one child.
+        let original = OverlayNode::<K, u64>::new()
+            .with_child(kx, an_on_disk_child::<K, u64>(1, nt))
+            .as_final()
+            .with_value(42);
+        assert!(original.is_final());
+        assert!(original.has_value());
+        assert_eq!(original.get_value(), Some(42));
+        assert_eq!(original.num_children(), 1);
+        let v_before = original.version();
+
+        // Clearing produces a NON-final, value-less copy that RETAINS the child.
+        let cleared = original.as_non_final();
+        assert!(!cleared.is_final(), "as_non_final must clear IS_FINAL");
+        assert!(!cleared.has_value(), "as_non_final must clear HAS_VALUE");
+        assert_eq!(
+            cleared.get_value(),
+            None,
+            "as_non_final must drop the value (None, not Some(0))"
+        );
+        assert_eq!(
+            cleared.num_children(),
+            1,
+            "as_non_final must RETAIN children (remove \"cat\" keeps \"cats\")"
+        );
+        assert!(cleared.has_child(kx), "the retained child must still be found");
+        assert_eq!(
+            cleared.version(),
+            v_before + 1,
+            "as_non_final is a structural edit ⇒ +1 version"
+        );
+
+        // ORIGINAL UNCHANGED (persistent data structure — a concurrent reader
+        // holding the original observes no clear).
+        assert!(original.is_final(), "original must remain final");
+        assert!(original.has_value(), "original must keep its value");
+        assert_eq!(original.get_value(), Some(42));
+
+        // Round-trip: as_non_final ∘ as_final returns to a final, child-retaining
+        // node (the value is NOT restored — as_final does not synthesize a value).
+        let refinal = cleared.as_final();
+        assert!(refinal.is_final(), "re-finalized node must be final again");
+        assert!(
+            !refinal.has_value(),
+            "re-finalizing a cleared node does not resurrect the dropped value"
+        );
+        assert_eq!(refinal.num_children(), 1, "round-trip must keep children");
+    }
+
+    /// Deep-child retention: a node "cat" cleared via `as_non_final` must keep its
+    /// "cats" descendant final and reachable (the prefix-of-a-longer-term case).
+    fn check_as_non_final_deep_child<K: KeyEncoding>(nt: NodeType)
+    where
+        K::Unit: TryFrom<u32>,
+        <K::Unit as TryFrom<u32>>::Error: std::fmt::Debug,
+    {
+        // Build "cat" (final) with a child edge 's' → "cats" leaf (final): the
+        // node-local shape of `root -'c'-'a'-> cat[final] -'s'-> cats[final]`.
+        let ks = K::Unit::try_from(b's' as u32).expect("unit fits");
+        let cats_leaf = Arc::new(OverlayNode::<K, ()>::new().as_final());
+        let cat = OverlayNode::<K, ()>::new()
+            .with_child(ks, Child::InMem(Arc::clone(&cats_leaf)))
+            .as_final();
+        assert!(cat.is_final());
+        assert!(cat.has_child(ks));
+
+        // "Remove cat": clear finality on a fresh copy; the 's' → "cats" edge and
+        // the final "cats" leaf must survive.
+        let cat_removed = cat.as_non_final();
+        assert!(!cat_removed.is_final(), "\"cat\" must no longer be final");
+        let surviving = cat_removed
+            .find_child(ks)
+            .expect("\"cats\" edge must survive removing \"cat\"")
+            .as_in_mem()
+            .expect("the surviving child is in-memory");
+        assert!(
+            surviving.is_final(),
+            "\"cats\" must remain final after removing the prefix \"cat\""
+        );
+        // The original "cat" node is still final (immutability).
+        assert!(cat.is_final(), "original \"cat\" node unchanged");
+    }
+
+    #[test]
+    fn generic_as_non_final_byte() {
+        check_as_non_final::<ByteKey>(NodeType::Node4);
+    }
+
+    #[test]
+    fn generic_as_non_final_char() {
+        check_as_non_final::<CharKey>(NodeType::CharNode4);
+    }
+
+    #[test]
+    fn generic_as_non_final_deep_child_byte() {
+        check_as_non_final_deep_child::<ByteKey>(NodeType::Node4);
+    }
+
+    #[test]
+    fn generic_as_non_final_deep_child_char() {
+        check_as_non_final_deep_child::<CharKey>(NodeType::CharNode4);
     }
 }

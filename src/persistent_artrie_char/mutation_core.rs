@@ -230,4 +230,159 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
             false
         })
     }
+
+    /// **Shared owned-tree WAL replay (Order-A replay-order fix, design C′ — the
+    /// single `replay_records_lww` consumer).** Reconcile the recovered records
+    /// into per-term last-writer-wins by commit generation
+    /// ([`crate::persistent_artrie_core::recovery::reconcile_lww`]), then apply
+    /// each winning operation in commit-visibility order via
+    /// [`Self::apply_core_recovered_operation_no_wal`].
+    ///
+    /// Generic over `S: BlockStorage` so EVERY owned-tree replay site — the two
+    /// `mmap_ctor::open*` ctors (`MmapDiskManager`) AND the `io_uring_ctor` ctor
+    /// (`IoUringDiskManager`) — routes through THIS one function and cannot drift
+    /// apart (design risk 7). Returns whether at least one record was in scope
+    /// (`false` when every record was skipped by the checkpoint guard — the
+    /// pre-fix `skipped_all` signal the ctors use to consider WAL truncation /
+    /// clearing the dirty flag).
+    ///
+    /// For a WAL with no `CommitRank` records (any pre-fix log) this is
+    /// byte-for-byte the pre-fix in-order replay: `generation_of = lsn`, so the
+    /// per-term winner is the highest-LSN op, applied in LSN order.
+    pub(super) fn replay_records_lww(
+        &mut self,
+        recovered_ops: Vec<(
+            crate::persistent_artrie::wal::Lsn,
+            crate::persistent_artrie::wal::WalRecord,
+        )>,
+        loaded_from_disk: bool,
+        checkpoint_lsn: crate::persistent_artrie::wal::Lsn,
+    ) -> bool {
+        // Was anything in scope at all (i.e. not entirely below the checkpoint)?
+        // Mirrors the pre-fix `skipped_all` flag: true iff every record was
+        // skipped by the checkpoint guard.
+        let any_in_scope = recovered_ops
+            .iter()
+            .any(|(lsn, _)| !(loaded_from_disk && checkpoint_lsn > 0 && *lsn <= checkpoint_lsn));
+
+        let winners = crate::persistent_artrie_core::recovery::reconcile_lww(
+            recovered_ops,
+            loaded_from_disk,
+            checkpoint_lsn,
+        );
+        for op in winners {
+            // The applier logs+returns false on a value-deserialize failure
+            // (same best-effort semantics the pre-fix inline loop had, which
+            // simply skipped on a deserialize `Err`).
+            let _ = self.apply_core_recovered_operation_no_wal(op);
+        }
+        any_in_scope
+    }
+
+    /// Apply ONE reconciled [`crate::persistent_artrie::recovery::RecoveredOperation`]
+    /// to the owned tree without WAL logging. The per-term winners chosen by
+    /// [`Self::replay_records_lww`] are applied through here; also reused by the
+    /// archive-segment recovery path. Generic over `S` (see `replay_records_lww`).
+    pub(super) fn apply_core_recovered_operation_no_wal(
+        &mut self,
+        op: crate::persistent_artrie::recovery::RecoveredOperation,
+    ) -> bool {
+        match op {
+            crate::persistent_artrie::recovery::RecoveredOperation::Insert {
+                term, value, ..
+            } => {
+                let term_str = String::from_utf8_lossy(&term);
+                if let Some(value_bytes) = value {
+                    match crate::serialization::bincode_compat::deserialize::<V>(&value_bytes) {
+                        Ok(value) => {
+                            self.insert_impl_no_wal_with_value(&term_str, value);
+                            true
+                        }
+                        Err(error) => {
+                            log::warn!(
+                                "Failed to deserialize recovered char insert value: {:?}",
+                                error
+                            );
+                            false
+                        }
+                    }
+                } else {
+                    self.insert_impl_no_wal(&term_str);
+                    true
+                }
+            }
+            crate::persistent_artrie::recovery::RecoveredOperation::Remove { term, .. } => {
+                let term_str = String::from_utf8_lossy(&term);
+                self.remove_impl_no_wal(&term_str);
+                true
+            }
+            crate::persistent_artrie::recovery::RecoveredOperation::Increment {
+                term,
+                delta,
+                result,
+                ..
+            } => {
+                let term_str = String::from_utf8_lossy(&term);
+                if result == 0 {
+                    self.try_increment_impl_no_wal(&term_str, delta).is_ok()
+                } else {
+                    match Self::value_from_recovered_i64(result) {
+                        Some(value) => {
+                            self.insert_impl_no_wal_with_value(&term_str, value);
+                            true
+                        }
+                        None => false,
+                    }
+                }
+            }
+            crate::persistent_artrie::recovery::RecoveredOperation::Upsert {
+                term, value, ..
+            } => {
+                let term_str = String::from_utf8_lossy(&term);
+                match crate::serialization::bincode_compat::deserialize::<V>(&value) {
+                    Ok(value) => {
+                        self.insert_impl_no_wal_with_value(&term_str, value);
+                        true
+                    }
+                    Err(error) => {
+                        log::warn!(
+                            "Failed to deserialize recovered char upsert value: {:?}",
+                            error
+                        );
+                        false
+                    }
+                }
+            }
+            crate::persistent_artrie::recovery::RecoveredOperation::CompareAndSwap {
+                term,
+                new_value,
+                success,
+                ..
+            } => {
+                if !success {
+                    return false;
+                }
+
+                let term_str = String::from_utf8_lossy(&term);
+                match crate::serialization::bincode_compat::deserialize::<V>(&new_value) {
+                    Ok(value) => {
+                        self.insert_impl_no_wal_with_value(&term_str, value);
+                        true
+                    }
+                    Err(error) => {
+                        log::warn!(
+                            "Failed to deserialize recovered char CAS value: {:?}",
+                            error
+                        );
+                        false
+                    }
+                }
+            }
+        }
+    }
+
+    fn value_from_recovered_i64(value: i64) -> Option<V> {
+        let bytes = crate::serialization::bincode_compat::serialize(&value).ok()?;
+        crate::serialization::bincode_compat::deserialize(&bytes).ok()
+    }
 }

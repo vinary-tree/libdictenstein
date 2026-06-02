@@ -172,6 +172,129 @@ impl RecoveredOperation {
             | Self::CompareAndSwap { lsn, .. } => *lsn,
         }
     }
+
+    /// Borrow the term (raw key bytes) this operation mutates.
+    ///
+    /// Used by [`reconcile_lww`] to group per-term records. Kept as raw bytes
+    /// (NOT lossy-UTF8) so two distinct keys that lossy-decode to the same
+    /// `String` never collide into one winner bucket (design §3 / risk 6).
+    pub fn term(&self) -> &[u8] {
+        match self {
+            Self::Insert { term, .. }
+            | Self::Remove { term, .. }
+            | Self::Increment { term, .. }
+            | Self::Upsert { term, .. }
+            | Self::CompareAndSwap { term, .. } => term,
+        }
+    }
+}
+
+/// **Order-A replay-order reconcile (design C′, the single shared
+/// `replay_records_lww` consumer).** Turn the physically-ordered recovered WAL
+/// records into the ordered list of per-term LAST-WRITER-WINS operations to
+/// apply, using the durable commit generation rather than WAL physical/LSN
+/// order.
+///
+/// # Why this exists (the bug it fixes)
+///
+/// Order-A appends the data record (LSN order `≺_LSN`) BEFORE the visibility CAS
+/// (commit order `≺_CAS`); nothing forces `≺_LSN == ≺_CAS`. A naive in-order /
+/// highest-LSN-per-term replay can therefore pick the WRONG last writer (the
+/// s019 trace: `Insert@352, Remove@356` with CAS last-writer = Insert → in-order
+/// replay ends absent → an acked net-present key is lost). This reconcile keys
+/// the per-term winner on the **commit generation** carried by the additive
+/// `CommitRank` marker, so replay order == CAS/visibility order
+/// (`ReplayEqualsCommittedVisible`).
+///
+/// # Algorithm
+///
+/// * **Pass 1** builds `rank: HashMap<Lsn, u64>` from every `CommitRank{data_lsn,
+///   generation}` (a data record's commit generation).
+/// * **Pass 2** expands each *data* record via [`recovered_operations_from_record`]
+///   (which fans `BatchInsert`/`BatchIncrement` out to one op per entry) and
+///   stamps each with `generation_of(lsn) = rank.get(lsn).copied().unwrap_or(lsn)`.
+///   `CommitRank`/transaction/checkpoint/version markers expand to nothing
+///   (membership no-ops).
+/// * **Every** data op is returned, ordered by `(generation, lsn)` — i.e. in
+///   CAS/commit-visibility order. Two ops on the **same** term are thereby
+///   linearized by their commit generation (the fix); ops on different terms are
+///   order-independent (each op mutates exactly one term), so a single global
+///   `(generation, lsn)` sort yields the correct final state. The explicit
+///   `(gen, lsn)` sort also closes secondary hazard H2 (Immediate's
+///   `fetch_add`-then-lock can make WAL physical order differ from LSN order — we
+///   no longer trust physical order).
+///
+/// # Why apply ALL ops, not just a per-term "winner"
+///
+/// A per-term last-writer collapse is correct ONLY for **absolute-overwrite**
+/// effects (`Insert`/`Insert+value`/`Upsert`/successful-`CAS`/`Remove`/`Increment`
+/// replayed as set-to-`result`). But `BatchIncrement` (and the single-entry
+/// `BatchIncrement` the durable counter path logs) replays as an **accumulating**
+/// `+delta` (`recovered_operations_from_record` maps it to `Increment{result:0}`,
+/// which the applier ACCUMULATES): collapsing those to one record would drop the
+/// other increments and corrupt the sum. Applying every op in `(generation, lsn)`
+/// order is correct for BOTH classes — for overwrite ops the last writer in that
+/// order still wins (earlier ones are overwritten); for accumulating ops every
+/// delta is summed in commit order. This is what the pre-fix loop did (apply all,
+/// in order), so it is behavior-preserving while additionally honoring generation.
+///
+/// # Back-compat (design §3.4)
+///
+/// A WAL with NO `CommitRank` records has `rank` empty, so `generation_of = lsn`
+/// for every op, and the `(generation, lsn)` sort degenerates to a stable LSN
+/// order — **byte-for-byte the pre-fix in-order replay** for every log that can
+/// exist pre-fix (insert-only / pre-remove / counters). No migration.
+///
+/// # Checkpoint skip
+///
+/// Records whose own LSN is `<= checkpoint_lsn` are already persisted in the main
+/// file (when `loaded_from_disk`), so they are skipped — keyed on the DATA
+/// record's LSN exactly as the pre-fix loop's `lsn <= checkpoint_lsn` guard did.
+pub fn reconcile_lww(
+    recovered_ops: Vec<(Lsn, WalRecord)>,
+    loaded_from_disk: bool,
+    checkpoint_lsn: Lsn,
+) -> Vec<RecoveredOperation> {
+    // Pass 1: lsn -> commit generation, from the CommitRank markers.
+    let mut rank: HashMap<Lsn, u64> = HashMap::new();
+    for (_marker_lsn, record) in &recovered_ops {
+        if let WalRecord::CommitRank {
+            data_lsn,
+            generation,
+            ..
+        } = record
+        {
+            // Keyed by the unique data LSN; the producer emits exactly one
+            // CommitRank per data record, so this is a 1:1 binding.
+            rank.insert(*data_lsn, *generation);
+        }
+    }
+
+    let generation_of = |lsn: Lsn| -> u64 { rank.get(&lsn).copied().unwrap_or(lsn) };
+
+    // Pass 2: expand every (in-scope) data record into its ops, stamped with the
+    // commit generation, then apply in (generation, lsn) order.
+    let mut stamped: Vec<(u64, Lsn, RecoveredOperation)> =
+        Vec::with_capacity(recovered_ops.len());
+
+    for (lsn, record) in recovered_ops {
+        // Skip records already durable in the main file (checkpoint subsumes
+        // them). Keyed on the data record's own LSN, matching the pre-fix guard.
+        if loaded_from_disk && checkpoint_lsn > 0 && lsn <= checkpoint_lsn {
+            continue;
+        }
+        let g = generation_of(lsn);
+        for op in recovered_operations_from_record(lsn, record) {
+            stamped.push((g, lsn, op));
+        }
+    }
+
+    // Stable sort by (generation, lsn): same-term ops linearize by commit
+    // generation (the fix); the order of different-term ops is irrelevant to the
+    // final state. A rank-less WAL has generation == lsn, so this is a stable LSN
+    // ordering = the pre-fix in-order replay.
+    stamped.sort_by(|a, b| (a.0, a.1).cmp(&(b.0, b.1)));
+    stamped.into_iter().map(|(_, _, op)| op).collect()
 }
 
 /// Convert one WAL record into the replay operations it contributes.
@@ -236,7 +359,15 @@ pub fn recovered_operations_from_record(lsn: Lsn, record: WalRecord) -> Vec<Reco
         | WalRecord::Checkpoint { .. }
         | WalRecord::VersionUpdate { .. }
         | WalRecord::VersionDurable { .. }
-        | WalRecord::VersionGc { .. } => vec![],
+        | WalRecord::VersionGc { .. }
+        // CommitRank is a per-term commit-generation MARKER (Order-A replay-order
+        // fix, design C′): it carries no membership effect of its own (a replay
+        // no-op like Checkpoint). It is consumed by the reconcile pass in
+        // `replay_records_lww` (OD1), which builds the lsn→generation map; this
+        // mutation-replay path emits no operation for it. Preserves REC-A
+        // replay-completeness (every record maps to its replay ops; markers map
+        // to none).
+        | WalRecord::CommitRank { .. } => vec![],
     }
 }
 
@@ -2847,5 +2978,226 @@ mod tests {
         // 3 inserts from batch insert + 2 increments from batch increment = 5
         assert_eq!(terms, 5, "Should recover 5 terms from batches");
         assert_eq!(operations.len(), 5, "Should have 5 expanded operations");
+    }
+}
+
+#[cfg(test)]
+mod reconcile_lww_tests {
+    //! OD1 unit coverage for [`reconcile_lww`] (Order-A replay-order fix, design
+    //! C′). Operates on hand-built `Vec<(Lsn, WalRecord)>` — no disk, no trie —
+    //! so the reconcile logic is tested in isolation from the char applier.
+    use super::*;
+
+    fn ins(term: &[u8]) -> WalRecord {
+        WalRecord::Insert {
+            term: term.to_vec(),
+            value: None,
+        }
+    }
+    fn rem(term: &[u8]) -> WalRecord {
+        WalRecord::Remove { term: term.to_vec() }
+    }
+    fn rank(data_lsn: Lsn, term: &[u8], generation: u64) -> WalRecord {
+        WalRecord::CommitRank {
+            data_lsn,
+            term: term.to_vec(),
+            generation,
+        }
+    }
+    /// Project the reconcile result to a compact (kind, term) view in apply order.
+    fn project(ops: &[RecoveredOperation]) -> Vec<(&'static str, Vec<u8>)> {
+        ops.iter()
+            .map(|op| match op {
+                RecoveredOperation::Insert { term, .. } => ("ins", term.clone()),
+                RecoveredOperation::Remove { term, .. } => ("rem", term.clone()),
+                RecoveredOperation::Increment { term, .. } => ("inc", term.clone()),
+                RecoveredOperation::Upsert { term, .. } => ("ups", term.clone()),
+                RecoveredOperation::CompareAndSwap { term, .. } => ("cas", term.clone()),
+            })
+            .collect()
+    }
+
+    /// The LAST op applied to `term` decides its final overwrite-state. Returns
+    /// the kind ("ins"/"rem"/…) of the last op touching `term`, or `None` if no op
+    /// does. Since `reconcile_lww` emits ops in commit `(generation, lsn)` order,
+    /// this is the committed-visible last writer = the s019 obligation.
+    fn last_effect<'a>(ops: &'a [RecoveredOperation], term: &[u8]) -> Option<&'a str> {
+        ops.iter().rev().find_map(|op| match op {
+            RecoveredOperation::Insert { term: t, .. } if t == term => Some("ins"),
+            RecoveredOperation::Remove { term: t, .. } if t == term => Some("rem"),
+            RecoveredOperation::Increment { term: t, .. } if t == term => Some("inc"),
+            RecoveredOperation::Upsert { term: t, .. } if t == term => Some("ups"),
+            RecoveredOperation::CompareAndSwap { term: t, .. } if t == term => Some("cas"),
+            _ => None,
+        })
+    }
+
+    /// **Back-compat (design §3.4):** a rank-LESS WAL applies every op in LSN
+    /// order, so the last op per term decides its final state = the pre-fix
+    /// behavior. `a` ends present (re-inserted at the highest LSN), `b` present.
+    #[test]
+    fn rankless_wal_applies_in_lsn_order() {
+        let recovered = vec![
+            (10, ins(b"a")),
+            (20, ins(b"b")),
+            (30, rem(b"a")), // a: removed…
+            (40, ins(b"a")), // …then re-inserted — final = present
+        ];
+        let winners = reconcile_lww(recovered, false, 0);
+        // Every op is emitted, in LSN order (rank-less ⇒ generation == lsn).
+        assert_eq!(
+            project(&winners),
+            vec![
+                ("ins", b"a".to_vec()),
+                ("ins", b"b".to_vec()),
+                ("rem", b"a".to_vec()),
+                ("ins", b"a".to_vec()),
+            ]
+        );
+        assert_eq!(last_effect(&winners, b"a"), Some("ins")); // present
+        assert_eq!(last_effect(&winners, b"b"), Some("ins"));
+    }
+
+    /// **THE s019 fix (headline):** WAL physical order is `Insert@352, Remove@356`
+    /// (the remove has the HIGHER lsn), but the durable `CommitRank` markers say
+    /// the INSERT committed LATER (generation 5) than the remove (generation 2).
+    /// Reconcile MUST order them by generation so the INSERT is applied LAST
+    /// (final = present) — proving replay order == CAS/visibility order, the
+    /// opposite of the broken trust-physical-order scheme.
+    #[test]
+    fn commit_rank_reorders_against_lsn_s019() {
+        let recovered = vec![
+            (352, ins(b"s019")),
+            (356, rem(b"s019")),
+            // Generations reflect CAS order: Remove committed at gen 2, Insert at
+            // gen 5 (the insert's CAS landed LAST despite its lower data LSN).
+            (357, rank(356, b"s019", 2)),
+            (358, rank(352, b"s019", 5)),
+        ];
+        let winners = reconcile_lww(recovered, false, 0);
+        // Ordered by generation: Remove(gen2) THEN Insert(gen5).
+        assert_eq!(
+            project(&winners),
+            vec![("rem", b"s019".to_vec()), ("ins", b"s019".to_vec())]
+        );
+        assert_eq!(
+            last_effect(&winners, b"s019"),
+            Some("ins"),
+            "the Insert (gen 5) is applied last ⇒ final present, NOT lost"
+        );
+
+        // Control: WITHOUT the rank records (rank-less), the SAME physical WAL
+        // applies in LSN order, so Remove@356 is last ⇒ absent — the s019 loss
+        // the fix closes.
+        let rankless = vec![(352, ins(b"s019")), (356, rem(b"s019"))];
+        assert_eq!(
+            last_effect(&reconcile_lww(rankless, false, 0), b"s019"),
+            Some("rem"),
+            "rank-less LSN order applies the Remove last (the s019 loss)"
+        );
+    }
+
+    /// Resurrection-polarity twin: WAL is `Remove@352, Insert@356` but the REMOVE
+    /// committed later (gen 9) than the insert (gen 3). Reconcile orders the
+    /// Remove LAST ⇒ final absent — no resurrection of a net-removed key.
+    #[test]
+    fn commit_rank_reorders_against_lsn_resurrection_polarity() {
+        let recovered = vec![
+            (352, rem(b"s019")),
+            (356, ins(b"s019")),
+            (357, rank(356, b"s019", 3)),
+            (358, rank(352, b"s019", 9)),
+        ];
+        let winners = reconcile_lww(recovered, false, 0);
+        assert_eq!(
+            project(&winners),
+            vec![("ins", b"s019".to_vec()), ("rem", b"s019".to_vec())]
+        );
+        assert_eq!(
+            last_effect(&winners, b"s019"),
+            Some("rem"),
+            "the Remove (gen 9) is applied last ⇒ final absent, no resurrection"
+        );
+    }
+
+    /// Ties on generation fall back to lsn (the higher lsn is applied last).
+    #[test]
+    fn generation_ties_broken_by_lsn() {
+        let recovered = vec![
+            (10, rem(b"x")),
+            (20, ins(b"x")),
+            (30, rank(10, b"x", 7)),
+            (31, rank(20, b"x", 7)), // same generation as the remove
+        ];
+        // gen tie (7,7) ⇒ higher lsn (20, the insert) sorts last ⇒ final present.
+        assert_eq!(last_effect(&reconcile_lww(recovered, false, 0), b"x"), Some("ins"));
+    }
+
+    /// `checkpoint_lsn` skip is keyed on the DATA record's LSN; records at or
+    /// below it are dropped (already in the main file) only when loaded_from_disk.
+    #[test]
+    fn checkpoint_lsn_skips_data_records_at_or_below_watermark() {
+        let recovered = vec![
+            (5, ins(b"old")),  // <= checkpoint, skipped (loaded_from_disk)
+            (15, ins(b"new")), // > checkpoint, kept
+        ];
+        let winners = reconcile_lww(recovered.clone(), true, 10);
+        assert_eq!(project(&winners), vec![("ins", b"new".to_vec())]);
+        // When NOT loaded_from_disk, the checkpoint guard does not apply.
+        let winners_no_disk = reconcile_lww(recovered, false, 10);
+        assert_eq!(
+            project(&winners_no_disk),
+            vec![("ins", b"old".to_vec()), ("ins", b"new".to_vec())]
+        );
+    }
+
+    /// **Accumulating records are NOT collapsed (the OD1 counter-regression fix).**
+    /// Three single-entry `BatchIncrement`s on the same key (the durable counter
+    /// path's record) must ALL be applied (summed), not deduped to one. Each
+    /// expands to `Increment{result:0}` (the ACCUMULATE arm).
+    #[test]
+    fn batch_increments_same_key_are_all_kept() {
+        let bi = |term: &[u8], delta: i64| WalRecord::BatchIncrement {
+            entries: vec![(term.to_vec(), delta)],
+        };
+        let recovered = vec![(10, bi(b"ctr", 1)), (20, bi(b"ctr", 1)), (30, bi(b"ctr", 1))];
+        let winners = reconcile_lww(recovered, false, 0);
+        assert_eq!(
+            winners.len(),
+            3,
+            "all three accumulating increments must survive (sum = 3, not 1)"
+        );
+        for op in &winners {
+            assert!(matches!(
+                op,
+                RecoveredOperation::Increment { result: 0, delta: 1, .. }
+            ));
+        }
+    }
+
+    /// Distinct raw-byte terms that would lossy-UTF8-collide must NOT share a
+    /// winner bucket (design risk 6: key on raw `Vec<u8>`).
+    #[test]
+    fn distinct_invalid_utf8_terms_do_not_collide() {
+        let a = vec![0xFF, 0x01];
+        let b = vec![0xFF, 0x02];
+        // Both lossy-decode to "\u{FFFD}\u{0001}" / "\u{FFFD}\u{0002}" — distinct
+        // here, but the point is the bucket key is the raw bytes regardless.
+        let recovered = vec![(10, ins(&a)), (20, ins(&b))];
+        let winners = reconcile_lww(recovered, false, 0);
+        let terms: std::collections::BTreeSet<Vec<u8>> =
+            winners.iter().map(|op| op.term().to_vec()).collect();
+        assert_eq!(terms.len(), 2, "two distinct raw-byte terms = two winners");
+        assert!(terms.contains(&a) && terms.contains(&b));
+    }
+
+    /// `CommitRank` itself contributes NO membership op (a replay no-op).
+    #[test]
+    fn commit_rank_record_is_membership_no_op() {
+        let recovered = vec![(10, rank(99, b"ghost", 3))];
+        assert!(
+            reconcile_lww(recovered, false, 0).is_empty(),
+            "a lone CommitRank produces no operation"
+        );
     }
 }

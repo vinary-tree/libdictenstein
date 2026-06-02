@@ -394,108 +394,14 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
             arena_manager.write().ensure_valid();
         }
 
-        // Replay WAL records that came after the checkpoint
-        // Skip records with LSN <= checkpoint_lsn (already persisted to disk)
-        let mut skipped_all = true;
-        for (lsn, record) in recovered_ops {
-            // Skip if we loaded from disk and this record is from before checkpoint
-            if loaded_from_disk && checkpoint_lsn > 0 && lsn <= checkpoint_lsn {
-                continue;
-            }
-            skipped_all = false;
-
-            match record {
-                WalRecord::Insert { term, value } => {
-                    let term_str = String::from_utf8_lossy(&term);
-                    if let Some(value_bytes) = value {
-                        if let Ok(v) =
-                            crate::serialization::bincode_compat::deserialize::<V>(&value_bytes)
-                        {
-                            inner.insert_impl_no_wal_with_value(&term_str, v);
-                        }
-                    } else {
-                        inner.insert_impl_no_wal(&term_str);
-                    }
-                }
-                WalRecord::Remove { term } => {
-                    let term_str = String::from_utf8_lossy(&term);
-                    inner.remove_impl_no_wal(&term_str);
-                }
-                WalRecord::Checkpoint { .. } => {
-                    // Skip checkpoint records during replay
-                }
-                WalRecord::BeginTx { .. }
-                | WalRecord::CommitTx { .. }
-                | WalRecord::AbortTx { .. } => {
-                    // Skip transaction records
-                }
-                WalRecord::Increment { term, result, .. } => {
-                    // Replay increment: set the term to the result value
-                    let term_str = String::from_utf8_lossy(&term);
-                    // Create value from the result
-                    if let Ok(value_bytes) =
-                        crate::serialization::bincode_compat::serialize(&result)
-                    {
-                        if let Ok(v) =
-                            crate::serialization::bincode_compat::deserialize::<V>(&value_bytes)
-                        {
-                            inner.insert_impl_no_wal_with_value(&term_str, v);
-                        }
-                    }
-                }
-                WalRecord::Upsert { term, value } => {
-                    // Replay upsert: deserialize and insert the value
-                    let term_str = String::from_utf8_lossy(&term);
-                    if let Ok(v) = crate::serialization::bincode_compat::deserialize::<V>(&value) {
-                        inner.insert_impl_no_wal_with_value(&term_str, v);
-                    }
-                }
-                WalRecord::CompareAndSwap {
-                    term,
-                    new_value,
-                    success,
-                    ..
-                } => {
-                    // Only replay if the CAS was successful
-                    if success {
-                        let term_str = String::from_utf8_lossy(&term);
-                        if let Ok(v) =
-                            crate::serialization::bincode_compat::deserialize::<V>(&new_value)
-                        {
-                            inner.insert_impl_no_wal_with_value(&term_str, v);
-                        }
-                    }
-                }
-                WalRecord::BatchInsert { entries } => {
-                    // Replay batch insert: expand into individual inserts
-                    for (term, value_opt) in entries {
-                        let term_str = String::from_utf8_lossy(&term);
-                        if let Some(value_bytes) = value_opt {
-                            if let Ok(v) =
-                                crate::serialization::bincode_compat::deserialize::<V>(&value_bytes)
-                            {
-                                inner.insert_impl_no_wal_with_value(&term_str, v);
-                            }
-                        } else {
-                            inner.insert_impl_no_wal(&term_str);
-                        }
-                    }
-                }
-                WalRecord::BatchIncrement { entries } => {
-                    // Replay batch increment: apply each delta
-                    for (term, delta) in entries {
-                        let term_str = String::from_utf8_lossy(&term);
-                        inner.try_increment_impl_no_wal(&term_str, delta)?;
-                    }
-                }
-                // Version-based WAL records (Phase 6) - skip during mutation-based replay
-                WalRecord::VersionUpdate { .. }
-                | WalRecord::VersionDurable { .. }
-                | WalRecord::VersionGc { .. } => {
-                    // Skip version-based records during mutation-based replay
-                }
-            }
-        }
+        // Replay WAL records that came after the checkpoint via the shared
+        // Order-A reconcile (design C′): per-term last-writer-wins by commit
+        // generation, NOT WAL physical/LSN order. Records with LSN <=
+        // checkpoint_lsn are already persisted to disk and are skipped inside
+        // `reconcile_lww`. For a rank-less (pre-fix) WAL this is byte-for-byte the
+        // old in-order replay (generation_of = lsn).
+        let applied_any = inner.replay_records_lww(recovered_ops, loaded_from_disk, checkpoint_lsn);
+        let skipped_all = !applied_any;
 
         // If we loaded from disk and skipped all WAL records, we can truncate the WAL
         // (This is safe because all data is already persisted)
@@ -683,105 +589,12 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
             arena_manager.write().ensure_valid();
         }
 
-        // Replay WAL records that came after the checkpoint
-        // Skip records with LSN <= checkpoint_lsn (already persisted to disk)
-        for (lsn, record) in recovered_ops {
-            // Skip if we loaded from disk and this record is from before checkpoint
-            if loaded_from_disk && checkpoint_lsn > 0 && lsn <= checkpoint_lsn {
-                continue;
-            }
-
-            match record {
-                WalRecord::Insert { term, value } => {
-                    let term_str = String::from_utf8_lossy(&term);
-                    if let Some(value_bytes) = value {
-                        if let Ok(v) =
-                            crate::serialization::bincode_compat::deserialize::<V>(&value_bytes)
-                        {
-                            inner.insert_impl_no_wal_with_value(&term_str, v);
-                        }
-                    } else {
-                        inner.insert_impl_no_wal(&term_str);
-                    }
-                }
-                WalRecord::Remove { term } => {
-                    let term_str = String::from_utf8_lossy(&term);
-                    inner.remove_impl_no_wal(&term_str);
-                }
-                WalRecord::Checkpoint { .. } => {
-                    // Skip checkpoint records during replay
-                }
-                WalRecord::BeginTx { .. }
-                | WalRecord::CommitTx { .. }
-                | WalRecord::AbortTx { .. } => {
-                    // Transaction control records - skip for now
-                }
-                WalRecord::Increment { term, result, .. } => {
-                    // Replay increment: set the term to the result value
-                    let term_str = String::from_utf8_lossy(&term);
-                    if let Ok(value_bytes) =
-                        crate::serialization::bincode_compat::serialize(&result)
-                    {
-                        if let Ok(v) =
-                            crate::serialization::bincode_compat::deserialize::<V>(&value_bytes)
-                        {
-                            inner.insert_impl_no_wal_with_value(&term_str, v);
-                        }
-                    }
-                }
-                WalRecord::Upsert { term, value } => {
-                    // Replay upsert: deserialize and insert the value
-                    let term_str = String::from_utf8_lossy(&term);
-                    if let Ok(v) = crate::serialization::bincode_compat::deserialize::<V>(&value) {
-                        inner.insert_impl_no_wal_with_value(&term_str, v);
-                    }
-                }
-                WalRecord::CompareAndSwap {
-                    term,
-                    new_value,
-                    success,
-                    ..
-                } => {
-                    // Only replay if the CAS was successful
-                    if success {
-                        let term_str = String::from_utf8_lossy(&term);
-                        if let Ok(v) =
-                            crate::serialization::bincode_compat::deserialize::<V>(&new_value)
-                        {
-                            inner.insert_impl_no_wal_with_value(&term_str, v);
-                        }
-                    }
-                }
-                WalRecord::BatchInsert { entries } => {
-                    // Replay batch insert: expand into individual inserts
-                    for (term, value_opt) in entries {
-                        let term_str = String::from_utf8_lossy(&term);
-                        if let Some(value_bytes) = value_opt {
-                            if let Ok(v) =
-                                crate::serialization::bincode_compat::deserialize::<V>(&value_bytes)
-                            {
-                                inner.insert_impl_no_wal_with_value(&term_str, v);
-                            }
-                        } else {
-                            inner.insert_impl_no_wal(&term_str);
-                        }
-                    }
-                }
-                WalRecord::BatchIncrement { entries } => {
-                    // Replay batch increment: apply each delta
-                    for (term, delta) in entries {
-                        let term_str = String::from_utf8_lossy(&term);
-                        inner.try_increment_impl_no_wal(&term_str, delta)?;
-                    }
-                }
-                // Version-based WAL records (Phase 6) - skip during mutation-based replay
-                WalRecord::VersionUpdate { .. }
-                | WalRecord::VersionDurable { .. }
-                | WalRecord::VersionGc { .. } => {
-                    // Skip version-based records during mutation-based replay
-                }
-            }
-        }
+        // Replay WAL records that came after the checkpoint via the shared
+        // Order-A reconcile (design C′) — identical to the `open()` site so the
+        // two cannot drift (no-drift constraint). Per-term last-writer-wins by
+        // commit generation; checkpoint-subsumed records skipped inside
+        // `reconcile_lww`. Rank-less WAL ⇒ byte-for-byte the old in-order replay.
+        let _ = inner.replay_records_lww(recovered_ops, loaded_from_disk, checkpoint_lsn);
 
         Ok(inner)
     }
@@ -1269,108 +1082,12 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
         })
     }
 
-    fn apply_core_recovered_operation_no_wal(
-        &mut self,
-        op: crate::persistent_artrie::recovery::RecoveredOperation,
-    ) -> bool {
-        match op {
-            crate::persistent_artrie::recovery::RecoveredOperation::Insert {
-                term, value, ..
-            } => {
-                let term_str = String::from_utf8_lossy(&term);
-                if let Some(value_bytes) = value {
-                    match crate::serialization::bincode_compat::deserialize::<V>(&value_bytes) {
-                        Ok(value) => {
-                            self.insert_impl_no_wal_with_value(&term_str, value);
-                            true
-                        }
-                        Err(error) => {
-                            log::warn!(
-                                "Failed to deserialize recovered char insert value: {:?}",
-                                error
-                            );
-                            false
-                        }
-                    }
-                } else {
-                    self.insert_impl_no_wal(&term_str);
-                    true
-                }
-            }
-            crate::persistent_artrie::recovery::RecoveredOperation::Remove { term, .. } => {
-                let term_str = String::from_utf8_lossy(&term);
-                self.remove_impl_no_wal(&term_str);
-                true
-            }
-            crate::persistent_artrie::recovery::RecoveredOperation::Increment {
-                term,
-                delta,
-                result,
-                ..
-            } => {
-                let term_str = String::from_utf8_lossy(&term);
-                if result == 0 {
-                    self.try_increment_impl_no_wal(&term_str, delta).is_ok()
-                } else {
-                    match Self::value_from_recovered_i64(result) {
-                        Some(value) => {
-                            self.insert_impl_no_wal_with_value(&term_str, value);
-                            true
-                        }
-                        None => false,
-                    }
-                }
-            }
-            crate::persistent_artrie::recovery::RecoveredOperation::Upsert {
-                term, value, ..
-            } => {
-                let term_str = String::from_utf8_lossy(&term);
-                match crate::serialization::bincode_compat::deserialize::<V>(&value) {
-                    Ok(value) => {
-                        self.insert_impl_no_wal_with_value(&term_str, value);
-                        true
-                    }
-                    Err(error) => {
-                        log::warn!(
-                            "Failed to deserialize recovered char upsert value: {:?}",
-                            error
-                        );
-                        false
-                    }
-                }
-            }
-            crate::persistent_artrie::recovery::RecoveredOperation::CompareAndSwap {
-                term,
-                new_value,
-                success,
-                ..
-            } => {
-                if !success {
-                    return false;
-                }
-
-                let term_str = String::from_utf8_lossy(&term);
-                match crate::serialization::bincode_compat::deserialize::<V>(&new_value) {
-                    Ok(value) => {
-                        self.insert_impl_no_wal_with_value(&term_str, value);
-                        true
-                    }
-                    Err(error) => {
-                        log::warn!(
-                            "Failed to deserialize recovered char CAS value: {:?}",
-                            error
-                        );
-                        false
-                    }
-                }
-            }
-        }
-    }
-
-    fn value_from_recovered_i64(value: i64) -> Option<V> {
-        let bytes = crate::serialization::bincode_compat::serialize(&value).ok()?;
-        crate::serialization::bincode_compat::deserialize(&bytes).ok()
-    }
+    // NOTE (Order-A replay-order fix, OD1): `replay_records_lww`,
+    // `apply_core_recovered_operation_no_wal`, and `value_from_recovered_i64`
+    // were RELOCATED from this default-`S` (`MmapDiskManager`) impl block to the
+    // `<V, S>`-generic block in `mutation_core.rs` so the `io_uring_ctor`
+    // (`IoUringDiskManager`) owned-tree replay can route through the SAME shared
+    // reconcile (no-drift constraint). See `mutation_core.rs`.
 
     /// Recover from archived WAL segments.
     ///

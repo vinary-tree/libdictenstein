@@ -59,6 +59,21 @@ pub enum WalRecordType {
     ///
     /// Used during recovery to skip GC'd versions.
     VersionGc = 14,
+
+    // === Commit-rank record (Order-A replay-order fix, design C′) ===
+    /// Per-term **commit generation** marker, appended+synced AFTER a
+    /// state-changing op's visibility CAS wins and BEFORE the op is acked.
+    ///
+    /// Binds a durable data record (identified by its `data_lsn`) to the
+    /// generation (the published leaf node's `version`) that the op committed
+    /// at, in CAS/visibility order. Recovery reconciles per-term by MAX
+    /// generation (`generation_of(lsn) = rank.unwrap_or(lsn)`, ties by lsn) so
+    /// LSN-ordered replay membership equals CAS-order committed-visible
+    /// membership (`ReplayEqualsCommittedVisible`). It carries NO membership
+    /// effect of its own (a replay no-op like `Checkpoint`). Additive +
+    /// back-compat: a WAL with no `CommitRank` records falls back to
+    /// `generation_of = lsn` = the pre-fix in-order behavior.
+    CommitRank = 15,
 }
 
 impl TryFrom<u8> for WalRecordType {
@@ -80,6 +95,7 @@ impl TryFrom<u8> for WalRecordType {
             12 => Ok(WalRecordType::VersionUpdate),
             13 => Ok(WalRecordType::VersionDurable),
             14 => Ok(WalRecordType::VersionGc),
+            15 => Ok(WalRecordType::CommitRank),
             _ => Err(WalError::InvalidRecordType(value)),
         }
     }
@@ -201,6 +217,22 @@ pub enum WalRecord {
         /// List of version IDs that have been garbage collected
         version_ids: Vec<u64>,
     },
+
+    /// Per-term **commit-generation** marker (Order-A replay-order fix, design
+    /// C′). Appended+synced AFTER a state-changing op's visibility CAS wins and
+    /// BEFORE the op is acked, binding the durable data record at `data_lsn` to
+    /// the generation it committed at (the published leaf node's `version`, read
+    /// from the EXACT leaf the op published — §3.6). Recovery keeps, per term,
+    /// the data record with the MAX generation. Carries no membership effect.
+    CommitRank {
+        /// LSN of the data record (`Insert`/`Remove`/…) this rank pertains to.
+        data_lsn: Lsn,
+        /// The term bytes (raw, NOT lossy-UTF8) the data record mutated.
+        term: Vec<u8>,
+        /// Commit generation = published leaf node `version` at CAS-success.
+        /// Monotone per term in CAS/visibility order (§3.6 theorem).
+        generation: u64,
+    },
 }
 
 impl WalRecord {
@@ -221,6 +253,7 @@ impl WalRecord {
             WalRecord::VersionUpdate { .. } => WalRecordType::VersionUpdate,
             WalRecord::VersionDurable { .. } => WalRecordType::VersionDurable,
             WalRecord::VersionGc { .. } => WalRecordType::VersionGc,
+            WalRecord::CommitRank { .. } => WalRecordType::CommitRank,
         }
     }
 
@@ -336,6 +369,17 @@ impl WalRecord {
                 for vid in version_ids {
                     buf.extend_from_slice(&vid.to_le_bytes());
                 }
+            }
+            WalRecord::CommitRank {
+                data_lsn,
+                term,
+                generation,
+            } => {
+                // Layout: data_lsn(u64 LE) ‖ term_len(u32 LE) ‖ term ‖ generation(u64 LE).
+                buf.extend_from_slice(&data_lsn.to_le_bytes());
+                buf.extend_from_slice(&(term.len() as u32).to_le_bytes());
+                buf.extend_from_slice(term);
+                buf.extend_from_slice(&generation.to_le_bytes());
             }
         }
 
@@ -693,6 +737,115 @@ impl WalRecord {
                 }
                 Ok(WalRecord::VersionGc { version_ids })
             }
+            WalRecordType::CommitRank => {
+                // Layout: data_lsn(8) ‖ term_len(4) ‖ term ‖ generation(8).
+                if payload.len() < 12 {
+                    return Err(WalError::CorruptedRecord(
+                        "CommitRank payload too short".into(),
+                    ));
+                }
+                let data_lsn = u64::from_le_bytes(payload[0..8].try_into().unwrap());
+                let term_len = u32::from_le_bytes(payload[8..12].try_into().unwrap()) as usize;
+                let term_end = 12 + term_len;
+                if payload.len() < term_end + 8 {
+                    return Err(WalError::CorruptedRecord(
+                        "CommitRank term or generation truncated".into(),
+                    ));
+                }
+                let term = payload[12..term_end].to_vec();
+                let generation =
+                    u64::from_le_bytes(payload[term_end..term_end + 8].try_into().unwrap());
+                Ok(WalRecord::CommitRank {
+                    data_lsn,
+                    term,
+                    generation,
+                })
+            }
         }
+    }
+}
+
+#[cfg(test)]
+mod commit_rank_codec_tests {
+    //! OD0 codec round-trip + back-compat byte-stability coverage for the
+    //! `CommitRank=15` record (Order-A replay-order fix, design C′).
+    use super::*;
+
+    /// `serialize_payload` → `deserialize` is the identity for `CommitRank`,
+    /// including the empty-term and BMP-spanning UTF-8 cases.
+    #[test]
+    fn commit_rank_round_trip_identity() {
+        for (data_lsn, term, generation) in [
+            (1u64, b"s019".to_vec(), 7u64),
+            (352, "héllo".as_bytes().to_vec(), 1),
+            (u64::MAX, Vec::new(), 0),
+            (42, vec![0xF0, 0x9F, 0x98, 0x80], u64::MAX), // 😀
+        ] {
+            let rec = WalRecord::CommitRank {
+                data_lsn,
+                term: term.clone(),
+                generation,
+            };
+            assert_eq!(rec.record_type(), WalRecordType::CommitRank);
+            let payload = rec.serialize_payload();
+            // Header (17) + payload, used by group-commit batch sizing.
+            assert_eq!(rec.serialized_size(), 17 + payload.len());
+            let decoded = WalRecord::deserialize(WalRecordType::CommitRank, &payload)
+                .expect("CommitRank decodes");
+            assert_eq!(decoded, rec, "CommitRank round-trip must be the identity");
+        }
+    }
+
+    /// `CommitRank=15` does not collide with any pre-existing discriminant and
+    /// `TryFrom<u8>` maps it back.
+    #[test]
+    fn commit_rank_discriminant_is_fifteen() {
+        assert_eq!(WalRecordType::CommitRank as u8, 15);
+        assert_eq!(
+            WalRecordType::try_from(15u8).expect("15 is CommitRank"),
+            WalRecordType::CommitRank
+        );
+    }
+
+    /// A truncated `CommitRank` payload is rejected (not silently mis-decoded).
+    #[test]
+    fn commit_rank_truncated_payload_errors() {
+        assert!(WalRecord::deserialize(WalRecordType::CommitRank, &[0u8; 4]).is_err());
+        // Claims a 100-byte term but supplies none.
+        let mut p = Vec::new();
+        p.extend_from_slice(&5u64.to_le_bytes());
+        p.extend_from_slice(&100u32.to_le_bytes());
+        assert!(WalRecord::deserialize(WalRecordType::CommitRank, &p).is_err());
+    }
+
+    /// **Back-compat byte-stability (design §3.4):** adding `CommitRank` MUST NOT
+    /// change the on-disk encoding of any pre-existing record. These golden bytes
+    /// are the exact payloads the pre-OD0 codec produced; if any differs, an
+    /// existing WAL would no longer read back unchanged.
+    #[test]
+    fn existing_record_payload_bytes_unchanged() {
+        // Insert{ "ab", None }: term_len=2 ‖ "ab" ‖ has_value=0.
+        assert_eq!(
+            WalRecord::Insert {
+                term: b"ab".to_vec(),
+                value: None,
+            }
+            .serialize_payload(),
+            vec![2, 0, 0, 0, b'a', b'b', 0]
+        );
+        // Remove{ "ab" }: term_len=2 ‖ "ab".
+        assert_eq!(
+            WalRecord::Remove { term: b"ab".to_vec() }.serialize_payload(),
+            vec![2, 0, 0, 0, b'a', b'b']
+        );
+        // Checkpoint{ lsn=1, ts=2 }: two u64 LE.
+        assert_eq!(
+            WalRecord::Checkpoint {
+                checkpoint_lsn: 1,
+                timestamp: 2,
+            }
+            .serialize_payload(),
+            vec![1, 0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0]
+        );
     }
 }

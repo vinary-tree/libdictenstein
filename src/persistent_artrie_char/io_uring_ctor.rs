@@ -219,93 +219,13 @@ impl<V: DictionaryValue>
             arena_manager.write().ensure_valid();
         }
 
-        // Replay WAL records that came after the checkpoint
-        let mut skipped_all = true;
-        for (lsn, record) in recovered_ops {
-            if loaded_from_disk && checkpoint_lsn > 0 && lsn <= checkpoint_lsn {
-                continue;
-            }
-            skipped_all = false;
-
-            match record {
-                WalRecord::Insert { term, value } => {
-                    let term_str = String::from_utf8_lossy(&term);
-                    if let Some(value_bytes) = value {
-                        if let Ok(v) =
-                            crate::serialization::bincode_compat::deserialize::<V>(&value_bytes)
-                        {
-                            inner.insert_impl_no_wal_with_value(&term_str, v);
-                        }
-                    } else {
-                        inner.insert_impl_no_wal(&term_str);
-                    }
-                }
-                WalRecord::Remove { term } => {
-                    let term_str = String::from_utf8_lossy(&term);
-                    inner.remove_impl_no_wal(&term_str);
-                }
-                WalRecord::Checkpoint { .. } => {}
-                WalRecord::BeginTx { .. }
-                | WalRecord::CommitTx { .. }
-                | WalRecord::AbortTx { .. } => {}
-                WalRecord::Increment { term, result, .. } => {
-                    let term_str = String::from_utf8_lossy(&term);
-                    if let Ok(value_bytes) =
-                        crate::serialization::bincode_compat::serialize(&result)
-                    {
-                        if let Ok(v) =
-                            crate::serialization::bincode_compat::deserialize::<V>(&value_bytes)
-                        {
-                            inner.insert_impl_no_wal_with_value(&term_str, v);
-                        }
-                    }
-                }
-                WalRecord::Upsert { term, value } => {
-                    let term_str = String::from_utf8_lossy(&term);
-                    if let Ok(v) = crate::serialization::bincode_compat::deserialize::<V>(&value) {
-                        inner.insert_impl_no_wal_with_value(&term_str, v);
-                    }
-                }
-                WalRecord::CompareAndSwap {
-                    term,
-                    new_value,
-                    success,
-                    ..
-                } => {
-                    if success {
-                        let term_str = String::from_utf8_lossy(&term);
-                        if let Ok(v) =
-                            crate::serialization::bincode_compat::deserialize::<V>(&new_value)
-                        {
-                            inner.insert_impl_no_wal_with_value(&term_str, v);
-                        }
-                    }
-                }
-                WalRecord::BatchInsert { entries } => {
-                    for (term, value_opt) in entries {
-                        let term_str = String::from_utf8_lossy(&term);
-                        if let Some(value_bytes) = value_opt {
-                            if let Ok(v) =
-                                crate::serialization::bincode_compat::deserialize::<V>(&value_bytes)
-                            {
-                                inner.insert_impl_no_wal_with_value(&term_str, v);
-                            }
-                        } else {
-                            inner.insert_impl_no_wal(&term_str);
-                        }
-                    }
-                }
-                WalRecord::BatchIncrement { entries } => {
-                    for (term, delta) in entries {
-                        let term_str = String::from_utf8_lossy(&term);
-                        inner.try_increment_impl_no_wal(&term_str, delta)?;
-                    }
-                }
-                WalRecord::VersionUpdate { .. }
-                | WalRecord::VersionDurable { .. }
-                | WalRecord::VersionGc { .. } => {}
-            }
-        }
+        // Replay WAL records that came after the checkpoint via the SAME shared
+        // Order-A reconcile (design C′) the mmap ctors use (no-drift constraint):
+        // per-term last-writer-wins by commit generation, checkpoint-subsumed
+        // records skipped inside `reconcile_lww`. Rank-less WAL ⇒ byte-for-byte
+        // the old in-order replay.
+        let applied_any = inner.replay_records_lww(recovered_ops, loaded_from_disk, checkpoint_lsn);
+        let skipped_all = !applied_any;
 
         if loaded_from_disk && skipped_all {
             inner.dirty.store(false, AtomicOrdering::Release);

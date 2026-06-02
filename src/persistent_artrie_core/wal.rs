@@ -2050,18 +2050,21 @@ mod tests {
         let result = WalRecordType::try_from(0u8);
         assert!(matches!(result, Err(WalError::InvalidRecordType(0))));
 
-        // 15 is beyond the current max (VersionGc = 14)
-        let result = WalRecordType::try_from(15u8);
-        assert!(matches!(result, Err(WalError::InvalidRecordType(15))));
+        // 16 is beyond the current max (CommitRank = 15, the Order-A replay-order
+        // fix's commit-generation marker; 15 is now VALID — see the assertion
+        // below). The first invalid discriminant moved 15 → 16 with that addition.
+        let result = WalRecordType::try_from(16u8);
+        assert!(matches!(result, Err(WalError::InvalidRecordType(16))));
 
         let result = WalRecordType::try_from(255u8);
         assert!(matches!(result, Err(WalError::InvalidRecordType(255))));
 
-        // Valid types should work (1-14 are all valid now)
+        // Valid types should work (1-15 are all valid now)
         assert!(WalRecordType::try_from(1u8).is_ok()); // Insert
         assert!(WalRecordType::try_from(10u8).is_ok()); // BatchInsert
         assert!(WalRecordType::try_from(12u8).is_ok()); // VersionUpdate
         assert!(WalRecordType::try_from(14u8).is_ok()); // VersionGc
+        assert!(WalRecordType::try_from(15u8).is_ok()); // CommitRank (Order-A fix)
     }
 
     #[test]

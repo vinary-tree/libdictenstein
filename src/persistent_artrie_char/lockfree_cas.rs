@@ -25,6 +25,48 @@ use super::dict_impl_char::LockfreeInsertResult;
 
 const LOCKFREE_COUNTER_MAX: u64 = i64::MAX as u64;
 
+/// **OD4 deterministic-regression rendezvous (test-only).** The two phases a
+/// durable lock-free op crosses between Order-A step 1 (WAL append) and the ack:
+/// `AfterAppend` fires right after the data record is durable (LSN fixed) and
+/// BEFORE the visibility CAS; `AfterCommit` fires right after the winning CAS and
+/// BEFORE the `CommitRank` append + return. A test installs a per-thread closure
+/// (see `set_commit_rendezvous`) to deterministically stage the s019 interleaving
+/// — both threads append first (fixing WAL/LSN order), then one CAS is forced to
+/// land before the other (commit/generation order). Production builds never
+/// reference this (every call site is `#[cfg(test)]`).
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum RendezvousPhase {
+    /// Step 1 complete: the data record is durable; the CAS has not run.
+    AfterAppend,
+    /// Step 2 complete: the visibility CAS won; the `CommitRank` is not yet appended.
+    AfterCommit,
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Per-thread rendezvous closure consulted by the durable producers. `None`
+    /// (the default) ⇒ the producers behave exactly as in production.
+    static COMMIT_RENDEZVOUS: std::cell::RefCell<Option<Box<dyn Fn(RendezvousPhase)>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Install (or clear, with `None`) this thread's OD4 commit rendezvous closure.
+#[cfg(test)]
+pub(crate) fn set_commit_rendezvous(hook: Option<Box<dyn Fn(RendezvousPhase)>>) {
+    COMMIT_RENDEZVOUS.with(|h| *h.borrow_mut() = hook);
+}
+
+/// Fire this thread's rendezvous closure for `phase`, if one is installed.
+#[cfg(test)]
+fn commit_rendezvous(phase: RendezvousPhase) {
+    COMMIT_RENDEZVOUS.with(|h| {
+        if let Some(hook) = h.borrow().as_ref() {
+            hook(phase);
+        }
+    });
+}
+
 /// Default bound on read/write fault-in install-CAS retries before falling back to
 /// a single read-only walk (design §3 liveness bound; OE8 regression-guards it).
 /// Generous: each retry rebases off a freshly-published root, so contention is the
@@ -40,11 +82,50 @@ enum BuildPathError {
     /// The term already exists (the target node is already final at full depth).
     /// Maps to [`LockfreeInsertResult::AlreadyExists`].
     AlreadyExists,
+    /// **R-B (proven overlay DELETE):** the term is ABSENT on this snapshot — the
+    /// remove path reached the full depth and the target node is NOT final, or a
+    /// spine edge is missing/null. The remove must NOT publish a no-op spine; the
+    /// caller returns `Ok(false)` (LSN still durable, watermark must not stall).
+    /// Maps to [`LockfreeRemoveResult::AlreadyAbsent`]. Constructed only by the
+    /// remove path; the insert path never produces it.
+    AlreadyAbsent,
     /// WRITE-PATH FAULT-IN: an I/O error faulting an `OnDisk` prefix node back in.
     /// Maps to [`LockfreeInsertResult::IoError`]. Only constructible when fault-in
     /// is compiled in.
     #[cfg(any(test, feature = "bench-internals"))]
     Io(crate::persistent_artrie::error::PersistentARTrieError),
+}
+
+/// Outcome of a single [`PersistentARTrieChar::try_remove_lockfree_path`] attempt
+/// (R-B membership-clear path). The dual of [`LockfreeInsertResult`]:
+/// a `Removed` clears finality on a fresh leaf published via the root CAS, while
+/// `AlreadyAbsent` is the no-op (durable-LSN, no spine published) and `Conflict`
+/// re-finds on retry. The new root is installed inside `try_remove_lockfree_path`'s
+/// own CAS, so — unlike [`LockfreeInsertResult`] which hands its leaf back for a
+/// separate `try_set_final` — these variants carry no node and the enum needs no
+/// `V` parameter (the 1→0 clear is fully arbitrated by the root CAS before this
+/// result is returned).
+enum LockfreeRemoveResult {
+    /// The term was present and cleared: a new root with the freshly-cleared
+    /// (non-final) leaf was published via the root CAS. Carries the
+    /// **published-root version** — the Order-A commit GENERATION (design C′,
+    /// §3.6), read from the EXACT root the CAS swapped (NOT a re-walk). The root
+    /// version is bumped by the spine path-copy on every publication, so it is
+    /// strictly monotone in root-CAS order for both insert and remove (the same
+    /// generation source the insert path uses — so an insert and the remove it
+    /// clobbers never TIE).
+    Removed(u64),
+    /// The term is absent on this snapshot (reached full depth non-final, or a
+    /// missing/null spine edge). No spine was published.
+    AlreadyAbsent,
+    /// CAS failed due to a concurrent modification — re-find and retry.
+    Conflict,
+    /// WRITE-PATH FAULT-IN (design §3, R-B): a buffer-manager I/O error faulting
+    /// an `OnDisk` prefix node back in. The Remove WAL record is ALREADY durable;
+    /// surfaced as `Err(e)` (durable-but-visible-only-after-reopen window). Only
+    /// constructed when fault-in is compiled in.
+    #[cfg(any(test, feature = "bench-internals"))]
+    IoError(crate::persistent_artrie::error::PersistentARTrieError),
 }
 
 impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
@@ -136,7 +217,8 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
         // CAS retry loop
         loop {
             match self.try_insert_lockfree_path(lockfree_root, &chars) {
-                LockfreeInsertResult::Inserted(node) => {
+                // The non-durable path does not record a commit generation.
+                LockfreeInsertResult::Inserted(node, _gen) => {
                     // We inserted a new path - try to claim it as final
                     if node.try_set_final() {
                         // We won the race to finalize this node
@@ -247,25 +329,63 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
             value: None,
         })?;
 
+        // OD4 (test-only): the data record is durable; the CAS has not run. A
+        // regression test rendezvouses here to fix the WAL/LSN order before any
+        // CAS lands.
+        #[cfg(test)]
+        commit_rendezvous(RendezvousPhase::AfterAppend);
+
         // Step 2: the existing lock-free CAS publication (the visibility point).
         // The single durable append above covers every CAS retry — we never
         // re-append (that would burn LSNs and punch holes in the watermark).
         let _epoch = self.epoch_manager.enter_read();
         loop {
             match self.try_insert_lockfree_path(lockfree_root, &chars) {
-                LockfreeInsertResult::Inserted(node) => {
+                LockfreeInsertResult::Inserted(node, root_generation) => {
                     let newly = node.try_set_final();
+                    // OD4 (test-only): the visibility CAS has won; the CommitRank
+                    // is not yet appended. A test rendezvouses here to order this
+                    // commit relative to the other op's commit.
+                    #[cfg(test)]
+                    commit_rendezvous(RendezvousPhase::AfterCommit);
+                    // §3.6 GENERATION (load-bearing): the commit generation is the
+                    // PUBLISHED-ROOT version captured at THIS op's visibility CAS
+                    // (returned by `try_insert_lockfree_path` from the exact root it
+                    // swapped — no live re-walk). Unlike the leaf `version` (which
+                    // the in-place `try_set_final` finalize does NOT bump, so an
+                    // insert re-finalizing a leaf a remove cleared would TIE the
+                    // remove's generation), the root version is bumped by every
+                    // publication (`with_child` path-copy), so it is STRICTLY
+                    // MONOTONE in the root-CAS order for BOTH insert and remove —
+                    // closing the s019 re-finalize race.
+                    let generation = root_generation;
                     lockfree_cache.insert(term.to_string(), true);
-                    // Step 3: the write is now durable AND visible (or the term is
-                    // already present from a concurrent op whose record this one
-                    // idempotently duplicates) — advance the committed watermark to
-                    // include this LSN so the contiguous prefix does not stall.
+                    // Step 2.5 (NEW, Order-A-preserving): bind the durable data
+                    // record (`lsn`) to its commit generation, durable BEFORE ack.
+                    let rank_lsn = self.append_commit_rank(lsn, term.as_bytes(), generation)?;
+                    // Step 3: the write is now durable AND visible. Advance the
+                    // committed watermark to include BOTH the data LSN and the rank
+                    // LSN so the contiguous prefix does not stall on the rank record.
                     self.committed_watermark.mark_committed(lsn);
+                    self.committed_watermark.mark_committed(rank_lsn);
                     return Ok(newly);
                 }
                 LockfreeInsertResult::AlreadyExists => {
+                    // §3.6 idempotent arm: the term is already published-present (a
+                    // concurrent op finalized it) — this op published NO new root.
+                    // Record the CURRENT published-root version (the generation of
+                    // the last committed publication) under the same pin. If this
+                    // no-op is out-ordered by the real writer, the writer's record
+                    // carries a strictly higher root generation and wins replay —
+                    // harmless (design §3.6).
+                    let generation = lockfree_root.load().map(|r| r.version()).unwrap_or(0);
+                    // OD4 (test-only): this idempotent commit "decided" here.
+                    #[cfg(test)]
+                    commit_rendezvous(RendezvousPhase::AfterCommit);
                     lockfree_cache.insert(term.to_string(), true);
+                    let rank_lsn = self.append_commit_rank(lsn, term.as_bytes(), generation)?;
                     self.committed_watermark.mark_committed(lsn);
+                    self.committed_watermark.mark_committed(rank_lsn);
                     return Ok(false);
                 }
                 LockfreeInsertResult::Conflict => {
@@ -288,6 +408,321 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
                     return Err(e);
                 }
             }
+        }
+    }
+
+    /// **Order-A durable** lock-free REMOVE (design "R-B") — the proven mirror of
+    /// [`Self::insert_cas_durable`]. Clears a term's membership in the lock-free
+    /// overlay durably: the `Remove` WAL record is appended AND synced DURABLE
+    /// BEFORE the visibility-publishing root CAS, and the committed watermark
+    /// advances only once the CAS lands. A crash therefore loses no acknowledged
+    /// remove — an acked remove replays (clears the term on recovery); a
+    /// non-acked one was never durable.
+    ///
+    /// Returns `Ok(true)` iff this call cleared a previously-present term,
+    /// `Ok(false)` if the term was already absent.
+    ///
+    /// # Why monotonicity is dropped here (and why it is still sound)
+    ///
+    /// The insert path relies on finality being monotone (0→1 only) so the shared
+    /// node's in-place `try_set_final` (`fetch_or`) is the single arbiter. Remove
+    /// breaks 0→1-only (it does 1→0). R-B keeps the protocol sound by NEVER
+    /// clearing a shared node in place: the cleared leaf is a FRESH
+    /// [`OverlayNode::as_non_final`] copy spliced into a NEW spine and published
+    /// ONLY via the root CAS, so the root-CAS total order linearizes inserts and
+    /// removes together (last-writer-wins). The composite linearizability is
+    /// machine-checked by the RB2 loom schedules, the RB3 remove-aware proptest,
+    /// and the RB4 `LockFreeOverlayRemoveCas.tla` spec (whose `_Unsafe` negative
+    /// control proves the in-place-clear alternative violates last-writer-wins).
+    ///
+    /// # Cache invalidation (DATA-CORRECTNESS — design §3.4)
+    ///
+    /// `contains_lockfree` trusts the insert-only positive `lockfree_cache` FIRST
+    /// and short-circuits `true`. A remove that cleared the trie but left a stale
+    /// cache entry would make the term read present FOREVER. So this method
+    /// `lockfree_cache.remove(term)` on EVERY state-changing arm (`Removed` and
+    /// `AlreadyAbsent`) BEFORE `mark_committed`. The RB3 proptest `Contains`
+    /// assertion + an RB2 remove‖contains schedule witness this.
+    ///
+    /// Requires `enable_lockfree()` and a synchronous durability policy
+    /// (`Immediate`/`GroupCommit`), rejected EXACTLY as `insert_cas_durable` does.
+    /// Behind the `enable_lockfree` opt-in; NOT routed from production `remove`
+    /// (that routing is the later flip's RB6, which depends on fault-in being
+    /// un-gated to production — design §6).
+    pub fn remove_cas_durable(&self, term: &str) -> Result<bool> {
+        use std::sync::atomic::Ordering;
+
+        // "Acknowledged ⇒ durable" only holds under a synchronous policy — reject
+        // the others EXACTLY as `insert_cas_durable` does.
+        match self.durability_policy {
+            DurabilityPolicy::Immediate | DurabilityPolicy::GroupCommit => {}
+            DurabilityPolicy::Periodic | DurabilityPolicy::None => {
+                return Err(PersistentARTrieError::InvalidOperation(
+                    "remove_cas_durable requires Immediate or GroupCommit durability so an \
+                     acknowledged remove is guaranteed durable before it becomes visible"
+                        .to_string(),
+                ));
+            }
+        }
+
+        let lockfree_root = self.lockfree_root.as_ref().ok_or_else(|| {
+            PersistentARTrieError::InvalidOperation(
+                "Lock-free mode not enabled. Call enable_lockfree() first.".to_string(),
+            )
+        })?;
+        let lockfree_cache = self.lockfree_cache.as_ref().ok_or_else(|| {
+            PersistentARTrieError::InvalidOperation(
+                "Lock-free mode not enabled. Call enable_lockfree() first.".to_string(),
+            )
+        })?;
+
+        let chars: Vec<u32> = term.chars().map(|c| c as u32).collect();
+        if chars.is_empty() {
+            return Ok(false);
+        }
+
+        // ── ABSENT FAST-PATH + WAL AVOIDANCE (key divergence from insert) ──
+        // A no-op remove must NOT burn an LSN / punch a watermark hole (matches
+        // the owned `preflight_remove_no_wal`). Consult the TRIE, not just the
+        // positive cache: a cache MISS is not the same as trie-ABSENT (the cache
+        // can be empty after a recovery rebuild while the term is live in the
+        // overlay). When fault-in is compiled in, walk through `find_leaf_faulting`
+        // so a term under an evicted (OnDisk) prefix is faulted back and seen
+        // present; on I/O error fall back to the non-faulting walk (best-effort).
+        let _epoch = self.epoch_manager.enter_read();
+        let present_before = {
+            #[cfg(any(test, feature = "bench-internals"))]
+            {
+                match self.find_leaf_faulting(lockfree_root, &chars, DEFAULT_MAX_FAULTIN_RETRIES) {
+                    Ok(found) => found.is_some(),
+                    Err(_) => self.find_leaf_lockfree(lockfree_root, &chars).is_some(),
+                }
+            }
+            #[cfg(not(any(test, feature = "bench-internals")))]
+            {
+                self.find_leaf_lockfree(lockfree_root, &chars).is_some()
+            }
+        };
+        if !present_before {
+            // Genuinely absent → no WAL record (no LSN, no watermark hole).
+            // Invalidate the positive cache defensively (a stale entry without a
+            // matching final trie node would otherwise read present forever).
+            lockfree_cache.remove(term);
+            return Ok(false);
+        }
+
+        // ORDER A — step 1: append + sync the Remove record DURABLE, before any
+        // visibility. The returned LSN is durable-per-policy at this point. One
+        // append covers every CAS retry — we never re-append (that would burn
+        // LSNs and punch holes in the watermark).
+        let lsn = self.append_to_wal_returning_lsn(WalRecord::Remove {
+            term: term.as_bytes().to_vec(),
+        })?;
+
+        // OD4 (test-only): the Remove record is durable; the CAS has not run.
+        #[cfg(test)]
+        commit_rendezvous(RendezvousPhase::AfterAppend);
+
+        // Step 2: the visibility CAS loop. The single root CAS inside
+        // `try_remove_lockfree_path` is the SOLE visibility arbiter.
+        loop {
+            match self.try_remove_lockfree_path(lockfree_root, &chars) {
+                LockfreeRemoveResult::Removed(root_generation) => {
+                    // §3.6 GENERATION (load-bearing): the commit generation is the
+                    // PUBLISHED-ROOT version captured at THIS remove's CAS (from the
+                    // exact root it swapped — no re-walk). The root version is
+                    // bumped by every publication, so it is strictly monotone in
+                    // root-CAS order — the SAME source the insert path uses, so a
+                    // remove and the insert it clobbers (or that clobbers it) never
+                    // TIE on generation.
+                    let generation = root_generation;
+                    // OD4 (test-only): the clear CAS has won; CommitRank not yet
+                    // appended. A test rendezvouses here to order this commit.
+                    #[cfg(test)]
+                    commit_rendezvous(RendezvousPhase::AfterCommit);
+                    // §3.4 CACHE INVALIDATION (FIRST, before mark_committed): the
+                    // term is no longer in the trie, so it must not read present
+                    // via the positive cache.
+                    lockfree_cache.remove(term);
+                    // Step 2.5 (NEW, Order-A-preserving): bind the durable Remove
+                    // record (`lsn`) to its commit generation, durable BEFORE ack.
+                    let rank_lsn = self.append_commit_rank(lsn, term.as_bytes(), generation)?;
+                    self.committed_watermark.mark_committed(lsn);
+                    self.committed_watermark.mark_committed(rank_lsn);
+                    return Ok(true);
+                }
+                LockfreeRemoveResult::AlreadyAbsent => {
+                    // Raced: a concurrent remove cleared it between our presence
+                    // check and the CAS. The Remove LSN is durable; the watermark
+                    // must not stall (mirrors insert's AlreadyExists arm). Still
+                    // invalidate the cache (the term is absent now).
+                    //
+                    // §3.6 idempotent arm: this op published NO new root. Record the
+                    // CURRENT published-root version (the generation of the last
+                    // committed publication) under the same pin. If out-ordered by
+                    // the real writer, the writer carries a strictly higher root
+                    // generation and wins replay — harmless.
+                    let generation = lockfree_root.load().map(|r| r.version()).unwrap_or(0);
+                    // OD4 (test-only): this idempotent commit "decided" here.
+                    #[cfg(test)]
+                    commit_rendezvous(RendezvousPhase::AfterCommit);
+                    lockfree_cache.remove(term);
+                    let rank_lsn = self.append_commit_rank(lsn, term.as_bytes(), generation)?;
+                    self.committed_watermark.mark_committed(lsn);
+                    self.committed_watermark.mark_committed(rank_lsn);
+                    return Ok(false);
+                }
+                LockfreeRemoveResult::Conflict => {
+                    self.cas_retries.fetch_add(1, Ordering::Relaxed);
+                    continue;
+                }
+                // WRITE-PATH FAULT-IN I/O error (fault-in builds only): the Remove
+                // record is ALREADY durable (step 1) but we could not fault the
+                // evicted prefix in to make the clear VISIBLE. Surface the error;
+                // do NOT advance the watermark (the contiguous prefix correctly
+                // stalls at this LSN until a later retry / recovery completes it).
+                // This is the documented Order-A "durable-but-visible-after-reopen"
+                // window — recovery replays the logged Remove, NOT a lost write.
+                #[cfg(any(test, feature = "bench-internals"))]
+                LockfreeRemoveResult::IoError(e) => {
+                    self.cas_retries.fetch_add(1, Ordering::Relaxed);
+                    let _ = lsn;
+                    return Err(e);
+                }
+            }
+        }
+    }
+
+    /// Attempt to clear a term's membership in the lock-free overlay via a single
+    /// path-copy + root CAS (R-B). Dual of [`Self::try_insert_lockfree_path`].
+    fn try_remove_lockfree_path(
+        &self,
+        root: &super::nodes::atomic_ptr::AtomicNodePtr<V>,
+        chars: &[u32],
+    ) -> LockfreeRemoveResult {
+        // Load the current published root. A null/empty overlay has nothing to
+        // remove (absent).
+        let current_root = match root.load() {
+            Some(node) => node,
+            None => return LockfreeRemoveResult::AlreadyAbsent,
+        };
+
+        // Build a NEW spine whose leaf is a FRESH cleared copy (as_non_final);
+        // the single root CAS below is the SOLE visibility arbiter — no in-place
+        // clear of a shared node (design §3.5). The PUBLISHED-ROOT version is the
+        // Order-A commit generation (§3.6): the spine path-copy bumped it to
+        // `current_root.version + 1`, fixed at this CAS, strictly monotone in
+        // root-CAS order — the SAME generation source the insert path reads, so an
+        // insert and the remove it clobbers can never TIE.
+        match self.build_remove_path_recursive(&current_root, chars, 0) {
+            Ok((new_root, _cleared_leaf)) => {
+                let root_generation = new_root.version();
+                match root.compare_exchange(&current_root, new_root) {
+                    Ok(_) => LockfreeRemoveResult::Removed(root_generation),
+                    Err(_actual) => LockfreeRemoveResult::Conflict,
+                }
+            }
+            Err(BuildPathError::AlreadyAbsent) => LockfreeRemoveResult::AlreadyAbsent,
+            // `build_remove_path_recursive` never returns `AlreadyExists`; keep the
+            // match total by mapping it to absent (the no-op spine outcome).
+            Err(BuildPathError::AlreadyExists) => LockfreeRemoveResult::AlreadyAbsent,
+            #[cfg(any(test, feature = "bench-internals"))]
+            Err(BuildPathError::Io(e)) => LockfreeRemoveResult::IoError(e),
+        }
+    }
+
+    /// Recursively build a NEW tree with `chars`'s leaf cleared (non-final) — the
+    /// dual of [`Self::build_path_recursive`]. On the way down it descends the
+    /// existing spine; at `depth == len` it clears finality on a **FRESH**
+    /// [`OverlayNode::as_non_final`] copy of the existing leaf (NOT a shared Arc
+    /// like insert — the root CAS is the sole arbiter for the 1→0 transition,
+    /// §3.5). On the way back up it path-copies each ancestor with the rebuilt
+    /// child. Returns the new spine root, or:
+    ///   * `Err(AlreadyAbsent)` if the leaf is already non-final (don't publish a
+    ///     no-op spine) or a spine edge is missing/null;
+    ///   * `Err(Io(_))` (fault-in builds) if loading an evicted `OnDisk` prefix
+    ///     fails.
+    ///
+    /// Returns `(new_spine_root, cleared_leaf)` on success: the rebuilt root the
+    /// caller CAS-publishes, AND the FRESH cleared-leaf Arc itself (created at the
+    /// base case, passed UNCHANGED up the path-copy). The caller reads the leaf's
+    /// `version()` for the Order-A commit generation (§3.6) from this EXACT node —
+    /// the one the root CAS publishes — not a re-walk.
+    fn build_remove_path_recursive(
+        &self,
+        node: &Arc<super::nodes::persistent_node::PersistentCharNode<V>>,
+        chars: &[u32],
+        depth: usize,
+    ) -> std::result::Result<
+        (
+            Arc<super::nodes::persistent_node::PersistentCharNode<V>>,
+            Arc<super::nodes::persistent_node::PersistentCharNode<V>>,
+        ),
+        BuildPathError,
+    > {
+        use super::nodes::persistent_node::Child;
+
+        if depth == chars.len() {
+            // Reached the target depth.
+            if !node.is_final() {
+                // Already absent — do NOT publish a no-op spine.
+                return Err(BuildPathError::AlreadyAbsent);
+            }
+            // FRESH cleared leaf (as_non_final): a NEW node version, published
+            // only via the root CAS. The subtree is RETAINED (remove "cat" keeps
+            // "cats"). This is the 1→0 transition the §3.5/§4.4 negative control
+            // proves MUST go through a fresh copy + root CAS, never an in-place
+            // `fetch_and` on the shared node. At the base, root == leaf.
+            let leaf = Arc::new(node.as_non_final());
+            return Ok((Arc::clone(&leaf), leaf));
+        }
+
+        let key = chars[depth];
+
+        match node.find_child(key) {
+            Some(child) => {
+                if let Some(child_arc) = child.as_in_mem() {
+                    // In-memory child: descend + path-copy. Thread the cleared
+                    // leaf up unchanged.
+                    let child_arc = Arc::clone(child_arc);
+                    let (new_child, leaf) =
+                        self.build_remove_path_recursive(&child_arc, chars, depth + 1)?;
+                    let new_node = Arc::new(node.with_child(key, Child::InMem(new_child)));
+                    Ok((new_node, leaf))
+                } else if let Some(on_disk) = child.as_on_disk().filter(|p| !p.is_null()) {
+                    // WRITE-PATH FAULT-IN (design §3, R-B): the prefix child was
+                    // EVICTED to OnDisk. Fault it in first, then descend, splicing
+                    // `Child::InMem(faulted)` — identical in shape to an in-memory
+                    // child, so the single root CAS stays the SOLE arbiter (no new
+                    // commit point). Gated; production keeps the conservative
+                    // "treat as absent" until the flip (design §6).
+                    #[cfg(any(test, feature = "bench-internals"))]
+                    {
+                        let loaded = match self.load_overlay_node_from_disk(on_disk) {
+                            Ok(n) => n,
+                            Err(e) => return Err(BuildPathError::Io(e)),
+                        };
+                        let (new_child, leaf) =
+                            self.build_remove_path_recursive(&loaded, chars, depth + 1)?;
+                        let new_node = Arc::new(node.with_child(key, Child::InMem(new_child)));
+                        return Ok((new_node, leaf));
+                    }
+                    // Production (no fault-in): an OnDisk prefix can't be faulted
+                    // in the overlay here — treat as absent (conservative; the
+                    // pre-flip behavior, reversible). The term lives in the
+                    // persistent trie, which the overlay remove does not touch.
+                    #[cfg(not(any(test, feature = "bench-internals")))]
+                    {
+                        let _ = on_disk;
+                        Err(BuildPathError::AlreadyAbsent)
+                    }
+                } else {
+                    // Null filler (never a real child) ⇒ absent.
+                    Err(BuildPathError::AlreadyAbsent)
+                }
+            }
+            // Missing edge ⇒ the term is absent on this snapshot.
+            None => Err(BuildPathError::AlreadyAbsent),
         }
     }
 
@@ -484,11 +919,17 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
         // splices any faulted prefix InMem), so it adds no second commit point.
         match self.build_path_recursive(current, chars, 0) {
             Ok((new_root, leaf)) => {
+                // The published root's version IS the Order-A commit generation
+                // (design C′, §3.6): `with_child` path-copy bumped it to
+                // `current.version + 1`, and it is fixed at the CAS, so successive
+                // publications are strictly monotone in CAS order. Capture it
+                // BEFORE the CAS consumes `new_root`.
+                let root_generation = new_root.version();
                 // Try to CAS the root to the new version
                 match root.compare_exchange(current, new_root) {
                     Ok(_) => {
                         // Successfully updated the tree
-                        LockfreeInsertResult::Inserted(leaf)
+                        LockfreeInsertResult::Inserted(leaf, root_generation)
                     }
                     Err(_actual) => {
                         // CAS failed - another thread modified the tree
@@ -501,6 +942,12 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
                 // reference treated conservatively as present).
                 LockfreeInsertResult::AlreadyExists
             }
+            // R-B `AlreadyAbsent` is produced ONLY by the remove path
+            // (`build_remove_path_recursive`); the insert path's
+            // `build_path_recursive` never returns it. Treat it conservatively as
+            // "already exists" so this arm stays total without inventing a new
+            // insert outcome (unreachable in practice for inserts).
+            Err(BuildPathError::AlreadyAbsent) => LockfreeInsertResult::AlreadyExists,
             // WRITE-PATH FAULT-IN I/O error (fault-in builds only): surface it so
             // the durable caller returns `Err(e)` and the best-effort caller retries
             // / returns false. The durable image is intact (fault-in writes nothing).
@@ -1670,6 +2117,100 @@ mod durable_write_tests {
         );
     }
 
+    // ──────────────────── R-B (proven overlay DELETE) ────────────────────
+
+    /// The R-B durable remove rejects a non-synchronous policy EXACTLY as the
+    /// durable insert/increment paths do (the durable entry points agree).
+    #[test]
+    fn remove_cas_durable_rejects_non_synchronous_policy() {
+        let dir = scratch("rb-remove-reject");
+        let path = dir.path().join("t.artc");
+        let mut trie = PersistentARTrieChar::<()>::create(&path).expect("create");
+        trie.set_durability_policy(DurabilityPolicy::Periodic);
+        trie.enable_lockfree();
+        assert!(
+            trie.remove_cas_durable("x").is_err(),
+            "remove_cas_durable must reject a non-synchronous durability policy"
+        );
+    }
+
+    /// Single-thread durable remove round-trip. Insert durably, remove durably
+    /// (Ok(true) — cleared a present term, cache invalidated so `contains_lockfree`
+    /// reports absent), remove again (Ok(false) — already absent, NO new WAL hole),
+    /// then reopen WITH NO CHECKPOINT: the removed term must stay absent (the
+    /// `Remove` record replays over the recovered tree) while a co-inserted,
+    /// never-removed term survives.
+    #[test]
+    fn remove_cas_durable_clears_and_survives_reopen_without_checkpoint() {
+        let dir = scratch("rb-remove-roundtrip");
+        let path = dir.path().join("t.artc");
+
+        {
+            let mut trie = PersistentARTrieChar::<()>::create(&path).expect("create");
+            trie.set_durability_policy(DurabilityPolicy::Immediate);
+            trie.enable_lockfree();
+
+            // Insert "apple" and "apricot" (shared "ap" prefix), then remove
+            // "apple" — "apricot" must remain reachable (subtree retained).
+            assert!(trie.insert_cas_durable("apple").expect("durable insert"));
+            assert!(trie.insert_cas_durable("apricot").expect("durable insert"));
+            assert!(trie.contains_lockfree("apple"));
+            assert!(trie.contains_lockfree("apricot"));
+
+            let wm_before_remove = trie.committed_watermark.watermark();
+
+            // Remove a PRESENT term → Ok(true); the positive cache MUST be
+            // invalidated so the term reads absent immediately (the §3.4 guard).
+            assert!(
+                trie.remove_cas_durable("apple").expect("durable remove"),
+                "removing a present term returns Ok(true)"
+            );
+            assert!(
+                !trie.contains_lockfree("apple"),
+                "removed term must read ABSENT — stale positive cache would resurrect it"
+            );
+            assert!(
+                trie.contains_lockfree("apricot"),
+                "the shared-prefix sibling must survive the remove (subtree retained)"
+            );
+            // The Remove appended exactly one LSN; the watermark advanced past it.
+            assert!(
+                trie.committed_watermark.watermark() > wm_before_remove,
+                "the durable Remove must advance the committed watermark"
+            );
+
+            // Removing an ABSENT term → Ok(false) and NO watermark hole: a no-op
+            // remove must not append a WAL record at all.
+            let wm_before_noop = trie.committed_watermark.watermark();
+            assert!(
+                !trie.remove_cas_durable("apple").expect("idempotent remove"),
+                "removing an already-absent term returns Ok(false)"
+            );
+            assert!(
+                !trie.remove_cas_durable("never-present").expect("absent remove"),
+                "removing a never-present term returns Ok(false)"
+            );
+            assert_eq!(
+                trie.committed_watermark.watermark(),
+                wm_before_noop,
+                "a no-op remove must NOT append a WAL record / advance the watermark"
+            );
+            // DROP WITHOUT CHECKPOINT — durability rests entirely on the WAL.
+        }
+
+        // Reopen: the durable Remove replays over the recovered tree, so "apple"
+        // is gone; "apricot" (never removed) survives.
+        let trie = PersistentARTrieChar::<()>::open(&path).expect("reopen");
+        assert!(
+            !Dictionary::contains(&trie, "apple"),
+            "durably-removed term \"apple\" reappeared after reopen (Order-A remove broken)"
+        );
+        assert!(
+            Dictionary::contains(&trie, "apricot"),
+            "co-inserted, never-removed term \"apricot\" lost after reopen"
+        );
+    }
+
     /// `try_increment_cas_durable` (the counter Order-A path): each durably-
     /// acknowledged delta survives a reopen WITH NO CHECKPOINT, replayed from the
     /// delta-based `BatchIncrement` WAL records. The reopened counts equal the
@@ -1799,6 +2340,419 @@ mod durable_write_tests {
             );
         }
         assert!(!Dictionary::contains(&trie, "never-acknowledged"));
+    }
+
+    /// **RB5 — durable MIXED insert/remove soak (the R-B analogue of
+    /// `concurrent_durable_writers_all_survive_reopen`).** N threads concurrently
+    /// insert AND remove both DISJOINT (per-thread) and SHARED keys under Immediate
+    /// durability (WAL-only — no checkpoint, per the safety boundary). After the
+    /// chaotic concurrent phase quiesces, the LIVE overlay membership is the ground
+    /// truth (the net of every acknowledged op under the root-CAS linearization);
+    /// we snapshot it, drop WITHOUT a checkpoint, reopen, and assert the recovered
+    /// live set EQUALS that snapshot EXACTLY — every net insert survived (Order-A
+    /// durable + replay) and every net remove stayed removed (the `Remove` record
+    /// replays over the recovered tree; REC-A). A torn state (a removed key
+    /// resurrected, or a present key lost) on reopen would fail.
+    #[test]
+    fn concurrent_durable_mixed_insert_remove_reopen_equals_live_set() {
+        // Immediate-durability variant (the original RB5 soak). OD5 runs this
+        // ≥50× green under the wrapped runner.
+        run_mixed_insert_remove_soak("rb-mixed-soak", |trie| {
+            trie.set_durability_policy(DurabilityPolicy::Immediate);
+        });
+    }
+
+    /// **OD5 GroupCommit twin** of the mixed insert/remove soak. Identical body,
+    /// but durability is `GroupCommit` (the rank append is coalesced through the
+    /// group-commit coordinator, still durable-before-ack). Gated on the
+    /// `group-commit` feature. Proves the Order-A replay-order fix holds under the
+    /// batched-fsync policy too, not just `Immediate`.
+    #[cfg(feature = "group-commit")]
+    #[test]
+    fn concurrent_durable_mixed_insert_remove_reopen_equals_live_set_group_commit() {
+        use crate::persistent_artrie::group_commit::GroupCommitConfig;
+        run_mixed_insert_remove_soak("rb-mixed-soak-gc", |trie| {
+            trie.set_durability_policy(DurabilityPolicy::GroupCommit);
+            trie.enable_group_commit(GroupCommitConfig::default())
+                .expect("enable group commit");
+        });
+    }
+
+    /// Shared body for the mixed insert/remove soak (no-drift between the
+    /// `Immediate` and `GroupCommit` variants). `configure` installs the
+    /// durability policy (and, for the GroupCommit twin, the coordinator) on the
+    /// freshly-created trie BEFORE `enable_lockfree`.
+    fn run_mixed_insert_remove_soak(
+        prefix: &str,
+        configure: impl Fn(&mut PersistentARTrieChar<()>),
+    ) {
+        let dir = scratch(prefix);
+        let path = dir.path().join("t.artc");
+        let n_threads = 6;
+        let per_thread = 80;
+        // The shared key pool every thread contends insert-vs-remove on.
+        let shared: Vec<String> = (0..40).map(|i| format!("s{:03}", i)).collect();
+
+        let live_snapshot: std::collections::BTreeSet<String> = {
+            let mut trie = PersistentARTrieChar::<()>::create(&path).expect("create");
+            configure(&mut trie);
+            trie.enable_lockfree();
+            let trie = Arc::new(trie);
+            let barrier = Arc::new(Barrier::new(n_threads));
+
+            let handles: Vec<_> = (0..n_threads)
+                .map(|t| {
+                    let trie = Arc::clone(&trie);
+                    let barrier = Arc::clone(&barrier);
+                    let shared = shared.clone();
+                    thread::spawn(move || {
+                        barrier.wait();
+                        // Disjoint per-thread keys: insert then (for odd i) remove,
+                        // so each thread's net is deterministic but still exercises
+                        // the durable remove path heavily.
+                        for i in 0..per_thread {
+                            let key = format!("d{t}_{i:04}");
+                            trie.insert_cas_durable(&key).expect("durable insert");
+                            if i % 3 == 0 {
+                                trie.remove_cas_durable(&key).expect("durable remove");
+                            }
+                        }
+                        // Shared keys: all threads contend insert-vs-remove (the
+                        // chaotic, interleaving-dependent part).
+                        for (i, k) in shared.iter().enumerate() {
+                            if (i + t) % 2 == 0 {
+                                trie.insert_cas_durable(k).expect("durable insert");
+                            } else {
+                                trie.remove_cas_durable(k).expect("durable remove");
+                            }
+                        }
+                    })
+                })
+                .collect();
+            for h in handles {
+                h.join().expect("worker thread");
+            }
+
+            // ── QUIESCENCE ── the live overlay is now the ground-truth net set.
+            // Reclaim the trie (all worker Arcs dropped at join) to read + drop it.
+            let trie = Arc::try_unwrap(trie)
+                .unwrap_or_else(|_| panic!("outstanding trie references after join"));
+
+            // Snapshot the live membership over every key the workers touched.
+            let mut snapshot = std::collections::BTreeSet::new();
+            for t in 0..n_threads {
+                for i in 0..per_thread {
+                    let key = format!("d{t}_{i:04}");
+                    if trie.contains_lockfree(&key) {
+                        snapshot.insert(key);
+                    }
+                }
+            }
+            for k in &shared {
+                if trie.contains_lockfree(k) {
+                    snapshot.insert(k.clone());
+                }
+            }
+
+            // Sanity on the deterministic disjoint net: i%3==0 keys were removed,
+            // the rest remain present.
+            for t in 0..n_threads {
+                for i in 0..per_thread {
+                    let key = format!("d{t}_{i:04}");
+                    let expected_present = i % 3 != 0;
+                    assert_eq!(
+                        snapshot.contains(&key),
+                        expected_present,
+                        "disjoint key {key:?} net membership wrong at quiescence"
+                    );
+                }
+            }
+            // DROP WITHOUT CHECKPOINT — durability rests entirely on the WAL.
+            drop(trie);
+            snapshot
+        };
+
+        // Reopen: the recovered live set must EQUAL the pre-drop snapshot exactly.
+        let trie = PersistentARTrieChar::<()>::open(&path).expect("reopen");
+        // (a) Every net-present key survived.
+        for key in &live_snapshot {
+            assert!(
+                Dictionary::contains(&trie, key),
+                "net-present key {key:?} lost after mixed-workload reopen (Order-A insert/replay broken)"
+            );
+        }
+        // (b) Every touched-but-net-absent key stayed absent (no resurrection).
+        for t in 0..n_threads {
+            for i in 0..per_thread {
+                let key = format!("d{t}_{i:04}");
+                if !live_snapshot.contains(&key) {
+                    assert!(
+                        !Dictionary::contains(&trie, &key),
+                        "net-removed key {key:?} resurrected after reopen (Order-A remove/replay broken)"
+                    );
+                }
+            }
+        }
+        for k in &shared {
+            assert_eq!(
+                Dictionary::contains(&trie, k),
+                live_snapshot.contains(k),
+                "shared key {k:?} reopen membership disagrees with the quiesced live net"
+            );
+        }
+        assert!(!Dictionary::contains(&trie, "never-touched"));
+    }
+
+    // ====================================================================
+    // OD4 — DETERMINISTIC s019 regression (Order-A replay-order fix, C′).
+    //
+    // Forces the s019 interleaving with a controlled scheduler (the test-only
+    // `commit_rendezvous` hooks): the Insert APPENDS FIRST (lower LSN) but its
+    // visibility CAS lands LAST; the Remove APPENDS SECOND (higher LSN) but its
+    // CAS lands FIRST. So the WAL physical/LSN order is `Insert@lsnI,
+    // Remove@lsnR` with lsnI < lsnR, while the CAS/visibility last-writer is the
+    // Insert ⇒ the quiesced overlay is PRESENT. The PUBLISHED-ROOT versions make
+    // the Insert's commit GENERATION strictly greater than the Remove's.
+    //
+    // Drop WITHOUT a checkpoint and reopen: recovery MUST reconstruct PRESENT.
+    // With OD2's CommitRank append in place, `reconcile_lww` orders by generation
+    // ⇒ the Insert wins ⇒ present (PASS). With the rank append reverted, recovery
+    // falls back to LSN order ⇒ the higher-LSN Remove wins ⇒ ABSENT (FAIL).
+    //
+    // DIFFERENTIAL CONFIRMED (OD4): reverting the four `append_commit_rank(...)`
+    // calls in `insert_cas_durable`/`remove_cas_durable` to `rank_lsn = lsn` makes
+    // `replay_orders_by_commit_rank_not_lsn` FAIL ("s019 LOST after reopen") and
+    // the resurrection twin FAIL ("s019 RESURRECTED"); restoring the rank append
+    // makes both PASS. The differential proves the tests have teeth.
+    //
+    // GENERATION SOURCE (the §3.6 fix): the commit generation is the
+    // PUBLISHED-ROOT `version` (bumped by the spine path-copy on EVERY
+    // publication, fixed at the root CAS), NOT the leaf version — the insert
+    // finalize is an in-place `try_set_final` that does NOT bump the leaf, so an
+    // insert re-finalizing a leaf a remove cleared would otherwise TIE the
+    // remove's generation and lose this race even WITH CommitRank present.
+    // ====================================================================
+
+    /// Shared scheduler state for the OD4 rendezvous. `i_appended` is raised by
+    /// the insert thread once its data record is durable; `r_committed` is raised
+    /// by the remove thread once its clear CAS has won. The condvar wakes the
+    /// waiter on each transition.
+    struct S019Sched {
+        state: std::sync::Mutex<S019Flags>,
+        cv: std::sync::Condvar,
+    }
+    #[derive(Default)]
+    struct S019Flags {
+        i_appended: bool,
+        r_committed: bool,
+    }
+    impl S019Sched {
+        fn new() -> Arc<Self> {
+            Arc::new(S019Sched {
+                state: std::sync::Mutex::new(S019Flags::default()),
+                cv: std::sync::Condvar::new(),
+            })
+        }
+        fn set_i_appended(&self) {
+            self.state.lock().expect("lock").i_appended = true;
+            self.cv.notify_all();
+        }
+        fn set_r_committed(&self) {
+            self.state.lock().expect("lock").r_committed = true;
+            self.cv.notify_all();
+        }
+        fn wait_i_appended(&self) {
+            let mut g = self.state.lock().expect("lock");
+            while !g.i_appended {
+                g = self.cv.wait(g).expect("wait");
+            }
+        }
+        fn wait_r_committed(&self) {
+            let mut g = self.state.lock().expect("lock");
+            while !g.r_committed {
+                g = self.cv.wait(g).expect("wait");
+            }
+        }
+    }
+
+    /// Stage the s019 interleaving on a shared trie and return the path. The trie
+    /// is dropped WITHOUT a checkpoint inside (durability rests on the WAL).
+    fn stage_s019(prefix: &str) -> tempfile::TempDir {
+        use super::{set_commit_rendezvous, RendezvousPhase};
+
+        let dir = scratch(prefix);
+        let path = dir.path().join("t.artc");
+        {
+            let mut trie = PersistentARTrieChar::<()>::create(&path).expect("create");
+            trie.set_durability_policy(DurabilityPolicy::Immediate);
+            trie.enable_lockfree();
+
+            // Pre-seed "s019" PRESENT (committed), then drop ONLY its positive
+            // cache entry: the overlay still holds it final (so the remove's
+            // presence precheck finds it), but the insert thread's fast-path cache
+            // check will MISS and proceed to append (so we get a real Insert
+            // record with a lower LSN than the Remove).
+            trie.insert_cas_durable("s019").expect("seed insert");
+            trie.lockfree_cache
+                .as_ref()
+                .expect("cache enabled")
+                .remove("s019");
+
+            let trie = Arc::new(trie);
+            let sched = S019Sched::new();
+
+            // INSERT thread: appends first (lower LSN), parks post-append until the
+            // remove has committed, THEN its CAS lands last (higher generation).
+            let ti = {
+                let trie = Arc::clone(&trie);
+                let sched = Arc::clone(&sched);
+                thread::spawn(move || {
+                    let s = Arc::clone(&sched);
+                    set_commit_rendezvous(Some(Box::new(move |phase| {
+                        if phase == RendezvousPhase::AfterAppend {
+                            // Data durable: announce, then block so the remove's
+                            // CAS lands before ours.
+                            s.set_i_appended();
+                            s.wait_r_committed();
+                        }
+                    })));
+                    let r = trie.insert_cas_durable("s019").expect("durable insert");
+                    set_commit_rendezvous(None);
+                    r
+                })
+            };
+
+            // REMOVE thread: waits until the insert has appended (so the remove's
+            // append gets the HIGHER LSN), then runs to completion; its CAS lands
+            // first and signals the insert to proceed.
+            let tr = {
+                let trie = Arc::clone(&trie);
+                let sched = Arc::clone(&sched);
+                thread::spawn(move || {
+                    sched.wait_i_appended();
+                    let s = Arc::clone(&sched);
+                    set_commit_rendezvous(Some(Box::new(move |phase| {
+                        if phase == RendezvousPhase::AfterCommit {
+                            s.set_r_committed();
+                        }
+                    })));
+                    let r = trie.remove_cas_durable("s019").expect("durable remove");
+                    set_commit_rendezvous(None);
+                    r
+                })
+            };
+
+            let _i_added = ti.join().expect("insert thread");
+            let _r_removed = tr.join().expect("remove thread");
+
+            // QUIESCED: the overlay's committed-visible state is PRESENT (the
+            // insert's CAS was the last writer).
+            let trie =
+                Arc::try_unwrap(trie).unwrap_or_else(|_| panic!("outstanding trie refs"));
+            assert!(
+                trie.contains_lockfree("s019"),
+                "pre-drop: s019 must be PRESENT (insert is the CAS last-writer); \
+                 the staging did not realize the s019 interleaving"
+            );
+            // DROP WITHOUT CHECKPOINT — durability is WAL-only.
+            drop(trie);
+        }
+        dir
+    }
+
+    /// THE OD4 regression: after the s019 interleaving + drop-no-checkpoint +
+    /// reopen, the net-present key MUST be recovered present. Fails pre-OD2 (rank
+    /// reverted ⇒ LSN-order replay drops it); passes post-OD2.
+    #[test]
+    fn replay_orders_by_commit_rank_not_lsn() {
+        let dir = stage_s019("od4-s019-present");
+        let path = dir.path().join("t.artc");
+        let trie = PersistentARTrieChar::<()>::open(&path).expect("reopen");
+        assert!(
+            Dictionary::contains(&trie, "s019"),
+            "s019 LOST after reopen: replay used LSN order (Remove@higher-LSN won) \
+             instead of commit generation — the Order-A replay-order bug"
+        );
+    }
+
+    /// Resurrection-polarity twin: the same controlled scheduler but the net op is
+    /// a REMOVE — the Insert APPENDS SECOND (higher LSN) yet the Remove's CAS lands
+    /// LAST (higher generation), so the quiesced overlay is ABSENT. Reopen MUST NOT
+    /// resurrect it. This guards the opposite direction (no false-present).
+    #[test]
+    fn replay_orders_by_commit_rank_not_lsn_resurrection_polarity() {
+        use super::{set_commit_rendezvous, RendezvousPhase};
+
+        let dir = scratch("od4-s019-absent");
+        let path = dir.path().join("t.artc");
+        {
+            let mut trie = PersistentARTrieChar::<()>::create(&path).expect("create");
+            trie.set_durability_policy(DurabilityPolicy::Immediate);
+            trie.enable_lockfree();
+            // Seed present (so the remove can clear it), drop only the cache entry
+            // so the insert thread still appends.
+            trie.insert_cas_durable("s019").expect("seed insert");
+            trie.lockfree_cache
+                .as_ref()
+                .expect("cache enabled")
+                .remove("s019");
+
+            let trie = Arc::new(trie);
+            let sched = S019Sched::new();
+
+            // REMOVE thread appends FIRST (lower LSN) but parks until the insert
+            // has committed, so the remove's CAS lands LAST (higher generation) ⇒
+            // net ABSENT. (i_appended/r_committed are reused as generic "first op
+            // appended" / "second op committed" signals.)
+            let tr = {
+                let trie = Arc::clone(&trie);
+                let sched = Arc::clone(&sched);
+                thread::spawn(move || {
+                    let s = Arc::clone(&sched);
+                    set_commit_rendezvous(Some(Box::new(move |phase| {
+                        if phase == RendezvousPhase::AfterAppend {
+                            s.set_i_appended();
+                            s.wait_r_committed();
+                        }
+                    })));
+                    trie.remove_cas_durable("s019").expect("durable remove");
+                    set_commit_rendezvous(None);
+                })
+            };
+            // INSERT thread appends SECOND (higher LSN); its CAS lands FIRST and
+            // signals the remove to proceed.
+            let ti = {
+                let trie = Arc::clone(&trie);
+                let sched = Arc::clone(&sched);
+                thread::spawn(move || {
+                    sched.wait_i_appended();
+                    let s = Arc::clone(&sched);
+                    set_commit_rendezvous(Some(Box::new(move |phase| {
+                        if phase == RendezvousPhase::AfterCommit {
+                            s.set_r_committed();
+                        }
+                    })));
+                    trie.insert_cas_durable("s019").expect("durable insert");
+                    set_commit_rendezvous(None);
+                })
+            };
+            tr.join().expect("remove thread");
+            ti.join().expect("insert thread");
+
+            let trie =
+                Arc::try_unwrap(trie).unwrap_or_else(|_| panic!("outstanding trie refs"));
+            assert!(
+                !trie.contains_lockfree("s019"),
+                "pre-drop: s019 must be ABSENT (remove is the CAS last-writer)"
+            );
+            drop(trie);
+        }
+        let trie = PersistentARTrieChar::<()>::open(&path).expect("reopen");
+        assert!(
+            !Dictionary::contains(&trie, "s019"),
+            "s019 RESURRECTED after reopen: replay used LSN order (Insert@higher-LSN \
+             won) instead of commit generation"
+        );
     }
 }
 

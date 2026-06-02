@@ -74,6 +74,29 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
         self.append_to_wal_inner(record)
     }
 
+    /// **Order-A replay-order fix (design C′, step 2.5).** Append + sync a
+    /// [`WalRecord::CommitRank`] binding the durable data record at `data_lsn` to
+    /// the commit `generation` its visibility CAS landed at, returning the rank
+    /// record's own LSN. Called AFTER the visibility CAS wins and BEFORE the op is
+    /// acked, so it STRENGTHENS Order-A (an ack now also waits for the rank to be
+    /// durable). Recovery's `reconcile_lww` consumes these to order same-term
+    /// replay by commit generation instead of WAL physical/LSN order.
+    ///
+    /// Returns `0` when no WAL writer is installed (same convention as
+    /// [`Self::append_to_wal_returning_lsn`]).
+    pub(super) fn append_commit_rank(
+        &self,
+        data_lsn: u64,
+        term: &[u8],
+        generation: u64,
+    ) -> Result<u64> {
+        self.append_to_wal_returning_lsn(WalRecord::CommitRank {
+            data_lsn,
+            term: term.to_vec(),
+            generation,
+        })
+    }
+
     /// Shared body for [`Self::append_to_wal`] / [`Self::append_to_wal_returning_lsn`].
     fn append_to_wal_inner(&self, record: WalRecord) -> Result<u64> {
         // A durable mutation is being logged: the in-memory trie is diverging

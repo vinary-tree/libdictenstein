@@ -68,8 +68,20 @@ pub use super::recovery_stats::EnhancedRecoveryMode;
 /// membership trie (`V=()`) is unchanged; a counter trie (`V=u64`) carries the
 /// `u64`-valued leaf back to the caller.
 pub(super) enum LockfreeInsertResult<V = ()> {
-    /// Successfully inserted a new term, returning the target node
-    Inserted(Arc<super::nodes::persistent_node::PersistentCharNode<V>>),
+    /// Successfully inserted a new term, returning the target leaf node AND the
+    /// **published-root version** — the Order-A commit GENERATION (design C′,
+    /// §3.6). The root the visibility CAS published carries `version =
+    /// old_root.version + 1` (its top-level `with_child` path-copy bumps it), so
+    /// across successful publications the value is STRICTLY MONOTONE in the
+    /// root-CAS linearization order, for BOTH insert and remove — unlike the leaf
+    /// `version`, which the in-place `try_set_final` finalize does NOT bump (so an
+    /// insert re-finalizing a leaf a remove cleared would otherwise TIE the
+    /// remove's generation and lose the s019 race). The generation is read from
+    /// the EXACT root the CAS swapped (no live re-walk / stale read).
+    Inserted(
+        Arc<super::nodes::persistent_node::PersistentCharNode<V>>,
+        u64,
+    ),
     /// Term already exists in the trie
     AlreadyExists,
     /// CAS failed due to concurrent modification (should retry)
@@ -89,9 +101,10 @@ pub(super) enum LockfreeInsertResult<V = ()> {
 impl<V: Clone> std::fmt::Debug for LockfreeInsertResult<V> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            LockfreeInsertResult::Inserted(node) => f
+            LockfreeInsertResult::Inserted(node, gen) => f
                 .debug_tuple("LockfreeInsertResult::Inserted")
                 .field(node)
+                .field(gen)
                 .finish(),
             LockfreeInsertResult::AlreadyExists => {
                 f.write_str("LockfreeInsertResult::AlreadyExists")

@@ -248,7 +248,9 @@ if command -v tla2sany >/dev/null 2>&1; then
       HotStuffConsensus \
       PublicDictionaryNodeTraversal \
       EvictionWalkEBR \
-      OverlayEvictionCas
+      OverlayEvictionCas \
+      LockFreeOverlayRemoveCas \
+      LockFreeOverlayDurableReplay
     do
       run_capped tla2sany "${module}.tla"
     done
@@ -298,7 +300,9 @@ if [ "${RUN_TLC:-0}" = "1" ]; then
       HotStuffConsensus \
       PublicDictionaryNodeTraversal \
       EvictionWalkEBR \
-      OverlayEvictionCas
+      OverlayEvictionCas \
+      LockFreeOverlayRemoveCas \
+      LockFreeOverlayDurableReplay
     do
       run_capped tlc -workers 1 -config "${module}.cfg" "${module}.tla"
     done
@@ -318,12 +322,28 @@ if [ "${RUN_TLC:-0}" = "1" ]; then
     #     `ReadNeverMissesCommitted` — proving the read/write fault-in path is
     #     REQUIRED once eviction is unrestricted (an acked LIVE node evicted with
     #     no fault-in is permanently unreachable = silent data loss).
+    #   * LockFreeOverlayRemoveCas sets USE_FRESH_COPY_CLEAR = FALSE (models the
+    #     rejected in-place `fetch_and(!IS_FINAL)` clear that writes `present` and
+    #     `removed` non-atomically with no root bump) and MUST violate
+    #     `LastWriterWins` (resurrection / lost-remove) — proving the proven-DELETE
+    #     fresh-copy-published-via-root-CAS choice (design §3.5) is REQUIRED for the
+    #     composite {insert, remove} to stay last-writer-wins.
+    #   * LockFreeOverlayDurableReplay sets USE_COMMIT_RANK = FALSE (recovery
+    #     reconciles by LSN/physical order = the broken pre-fix scheme) and MUST
+    #     violate `ReplayEqualsCommittedVisible` via the s019 interleaving (Append
+    #     Insert@lsn1, Append Remove@lsn2>lsn1, then CommitAndRank(Remove) before
+    #     CommitAndRank(Insert) ⇒ committed-visible PRESENT but lsn-order replay
+    #     ends ABSENT = the acked-net-present-key loss) — proving the durable
+    #     commit-generation reconcile (design C′, §3) is REQUIRED so replay order
+    #     equals CAS/visibility order.
     # If TLC unexpectedly PASSES one of these, the model no longer exhibits the
     # bug it must catch → the negative control is broken → fail the whole gate.
     for unsafe_module in \
       LockFreeDurableCheckpoint \
       LockFreeDurableCheckpointEviction \
-      OverlayEvictionCas
+      OverlayEvictionCas \
+      LockFreeOverlayRemoveCas \
+      LockFreeOverlayDurableReplay
     do
       echo "== Negative control: ${unsafe_module}_Unsafe.cfg (MUST violate a safety invariant) =="
       if run_capped tlc -workers 1 -config "${unsafe_module}_Unsafe.cfg" "${unsafe_module}.tla"; then

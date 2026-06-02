@@ -125,6 +125,19 @@ intersects the formal ARTrie model:
   `wait_for_lsn_timeout` report the target LSN as durable, and failed
   io_uring single, batched, or fixed-buffer writes re-mark updated cached
   blocks dirty so a later sync can retry.
+- the Order-A durable lock-free overlay records a per-term commit `generation`
+  (the published-ROOT `version`, strictly monotone in root-CAS order) in an
+  additive `WalRecord::CommitRank` synced after the visibility CAS and before
+  ack, and recovery's shared `reconcile_lww` reconstructs the committed-visible
+  membership by ordering same-term replay by that generation rather than WAL
+  physical/LSN order (`LockFreeOverlayDurableReplay.tla` `ReplayEqualsCommitted-
+  Visible`, with the `_Unsafe.cfg` replay-by-LSN negative control violating it on
+  the s019 trace). The associated **one-way WAL-format change** bumps the WAL
+  header version 1 → 2: a version-1 WAL still reads unchanged (`generation_of =
+  lsn` fallback, no CommitRank) via `MIN_SUPPORTED_VERSION = 1`, existing record
+  bytes are byte-identical, and an older binary refuses a version-2 file
+  fail-closed (no silent truncation). This is opt-in (enable_lockfree +
+  synchronous durability), pre-flip, and adds no `unsafe`.
 
 This is not a RustBelt, Iris, Kani, or certified-compilation result. The
 current harness runs strict-provenance Miri-compatible targets for raw child
