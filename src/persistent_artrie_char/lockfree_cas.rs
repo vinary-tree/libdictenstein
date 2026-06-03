@@ -218,7 +218,9 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
 
         // CAS retry loop
         loop {
-            match self.try_insert_lockfree_path(lockfree_root, &chars) {
+            // Non-durable: `finalize = false` ⇒ the shared non-final leaf +
+            // `try_set_final` arbiter below (UNCHANGED behavior).
+            match self.try_insert_lockfree_path(lockfree_root, &chars, false) {
                 // The non-durable path does not record a commit generation.
                 LockfreeInsertResult::Inserted(node, _gen) => {
                     // We inserted a new path - try to claim it as final
@@ -342,9 +344,15 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
         // re-append (that would burn LSNs and punch holes in the watermark).
         let _epoch = self.epoch_manager.enter_read();
         loop {
-            match self.try_insert_lockfree_path(lockfree_root, &chars) {
-                LockfreeInsertResult::Inserted(node, root_generation) => {
-                    let newly = node.try_set_final();
+            // Durable (1a, D2.8 §1.2): `finalize = true` ⇒ the leaf is published
+            // FINAL inside the root CAS (the SOLE linearization point), so the root
+            // CAS — not a later `try_set_final` — arbitrates. Reaching the
+            // `Inserted` arm means OUR root CAS won ⇒ this op newly published the
+            // term (a racer loses the CAS, retries, and sees `AlreadyExists`).
+            match self.try_insert_lockfree_path(lockfree_root, &chars, true) {
+                LockfreeInsertResult::Inserted(_node, root_generation) => {
+                    // Leaf is already final (built via `as_final`); no try_set_final.
+                    let newly = true;
                     // OD4 (test-only): the visibility CAS has won; the CommitRank
                     // is not yet appended. A test rendezvouses here to order this
                     // commit relative to the other op's commit.
@@ -734,6 +742,7 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
         &self,
         root: &super::nodes::atomic_ptr::AtomicNodePtr<V>,
         chars: &[u32],
+        finalize: bool,
     ) -> LockfreeInsertResult<V> {
         use super::nodes::persistent_node::PersistentCharNode;
 
@@ -744,14 +753,14 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
                 // Root is null - try to initialize it
                 let new_root = Arc::new(PersistentCharNode::new());
                 match root.try_init(new_root) {
-                    Ok(()) => return self.try_insert_lockfree_path(root, chars),
+                    Ok(()) => return self.try_insert_lockfree_path(root, chars, finalize),
                     Err(actual) => actual,
                 }
             }
         };
 
         // Navigate/create path to the target node
-        self.insert_lockfree_recursive(root, &current_root, chars, 0)
+        self.insert_lockfree_recursive(root, &current_root, chars, 0, finalize)
     }
 
     /// Recursively build a new tree with the path inserted.
@@ -769,6 +778,7 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
         node: &Arc<super::nodes::persistent_node::PersistentCharNode<V>>,
         chars: &[u32],
         depth: usize,
+        finalize: bool,
     ) -> std::result::Result<
         (
             Arc<super::nodes::persistent_node::PersistentCharNode<V>>,
@@ -783,21 +793,26 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
             if node.is_final() {
                 return Err(BuildPathError::AlreadyExists); // Already a complete term
             }
-            // Return the EXISTING node (shared Arc) as the leaf to finalize:
-            // `insert_cas`'s `try_set_final` is the SINGLE atomic arbiter of the
-            // winner across racing inserters, so converging every racer on one
-            // allocation guarantees exactly-one-win even when two threads both
-            // reach the `Inserted` arm. Do NOT pre-finalize here (the old
-            // `node.as_final()`): that made `try_set_final` observe an
-            // already-final node and wrongly report a *new* prefix term (e.g.
-            // inserting "d" after "da") as a duplicate — returning `false` AND
-            // skipping the lock-free cache, so `merge_lockfree_to_persistent`
-            // (cache-only) silently dropped the term. A *fresh copy* per thread
-            // would instead let two racers each finalize their own copy →
-            // double-count; sharing the node keeps the single `fetch_or` arbiter.
-            // (Best-effort monotonic overlay: a stale-root reader observing the
-            // shared node's final bit early is benign — membership only ever
-            // goes 0→1, and MVCC snapshot reads use the separate `mvcc.rs` path.)
+            // (1a, D2.8 §1.2 / RT-D2-A): the DURABLE path (`finalize == true`)
+            // publishes a FRESH FINAL leaf INSIDE the root CAS, so the root CAS in
+            // `insert_lockfree_recursive` becomes the SOLE linearization point
+            // (matching the value/remove paths) ⇒ generation/commit_seq order ==
+            // visibility order. No proper-prefix regression and no double-count:
+            // two racers each build a fresh final copy but only ONE root CAS wins;
+            // the loser retries, sees `is_final()` above ⇒ `AlreadyExists` ⇒ exactly
+            // one publisher. (The old shared-node + `try_set_final` arbiter is kept
+            // ONLY for the non-durable path below — it has no replay key to
+            // mis-order, so its split linearization point is harmless there.)
+            if finalize {
+                let final_leaf = Arc::new(node.as_final());
+                return Ok((Arc::clone(&final_leaf), final_leaf));
+            }
+            // Non-durable `insert_cas` (`finalize == false`): return the EXISTING
+            // shared node so its later `try_set_final` (`fetch_or`) is the single
+            // atomic arbiter — UNCHANGED behavior (the §6.2 no-regression contract;
+            // a fresh-final here would make `try_set_final` observe an already-final
+            // node and wrongly report a new prefix term, e.g. "d" after "da", as a
+            // duplicate — the Phase-A bug — so the non-durable path MUST stay shared).
             return Ok((Arc::clone(node), Arc::clone(node)));
         }
 
@@ -813,7 +828,7 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
 
                     // Recursively build path in child
                     let (new_child, leaf) =
-                        self.build_path_recursive(&child_arc, chars, depth + 1)?;
+                        self.build_path_recursive(&child_arc, chars, depth + 1, finalize)?;
 
                     // Create new version of this node with the updated child
                     let new_node = Arc::new(node.with_child(key, Child::InMem(new_child)));
@@ -839,7 +854,7 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
                             Err(e) => return Err(BuildPathError::Io(e)),
                         };
                         let (new_child, leaf) =
-                            self.build_path_recursive(&loaded, chars, depth + 1)?;
+                            self.build_path_recursive(&loaded, chars, depth + 1, finalize)?;
                         let new_node = Arc::new(node.with_child(key, Child::InMem(new_child)));
                         return Ok((new_node, leaf));
                     }
@@ -859,7 +874,7 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
             }
             None => {
                 // Child doesn't exist - create entire remaining path
-                let (new_subtree, leaf) = self.create_lockfree_path(&chars[depth + 1..]);
+                let (new_subtree, leaf) = self.create_lockfree_path(&chars[depth + 1..], finalize);
                 let new_node = Arc::new(node.with_child(key, Child::InMem(new_subtree)));
 
                 Ok((new_node, leaf))
@@ -880,14 +895,21 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     fn create_lockfree_path(
         &self,
         chars: &[u32],
+        finalize: bool,
     ) -> (
         Arc<super::nodes::persistent_node::PersistentCharNode<V>>,
         Arc<super::nodes::persistent_node::PersistentCharNode<V>>,
     ) {
         use super::nodes::persistent_node::{Child, PersistentCharNode};
 
-        // Create the final leaf node (not marked final yet - caller will try_set_final)
-        let leaf = Arc::new(PersistentCharNode::new());
+        // The leaf: for the durable (1a) path `finalize == true` it is published
+        // FINAL inside the root CAS (the sole LP); for the non-durable path it is
+        // non-final and the caller's `try_set_final` is the arbiter (unchanged).
+        let leaf = Arc::new(if finalize {
+            PersistentCharNode::new().as_final()
+        } else {
+            PersistentCharNode::new()
+        });
 
         if chars.is_empty() {
             // No more characters - leaf is also the root
@@ -913,12 +935,13 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
         current: &Arc<super::nodes::persistent_node::PersistentCharNode<V>>,
         chars: &[u32],
         _depth: usize, // Kept for API compatibility
+        finalize: bool,
     ) -> LockfreeInsertResult<V> {
         // Build the new tree structure with the path inserted. The single root CAS
         // below is the SOLE visibility arbiter — write-path fault-in (design §4)
         // happens INSIDE `build_path_recursive` (it rebuilds ONE new spine that
         // splices any faulted prefix InMem), so it adds no second commit point.
-        match self.build_path_recursive(current, chars, 0) {
+        match self.build_path_recursive(current, chars, 0, finalize) {
             Ok((new_root, leaf)) => {
                 // The published root's version IS the Order-A commit generation
                 // (design C′, §3.6): `with_child` path-copy bumped it to
