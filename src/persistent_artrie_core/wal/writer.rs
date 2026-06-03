@@ -362,15 +362,31 @@ impl WalWriter {
         header.commit_seq_floor
     }
 
+    /// Returns `true` iff no records have been appended since creation/truncation
+    /// (`next_lsn == 1`) — i.e. the WAL is header-only ("empty after header"). This is
+    /// the authoritative emptiness check used by the regime-stamp guards; it is robust
+    /// to `BufWriter` buffering (a buffered-but-unflushed record still bumps `next_lsn`),
+    /// unlike a raw on-disk file length.
+    pub fn is_empty_after_header(&self) -> bool {
+        self.next_lsn.load(Ordering::Acquire) == 1
+    }
+
     /// Stamp the header to the Overlay regime (`MAGIC_OVERLAY` + `rank_regime=Overlay`)
-    /// and persist it (S4 / N-S4-1). **SAFE ONLY when the WAL is EMPTY** (header-only,
-    /// no records) — the caller MUST guarantee this. An in-place magic+regime restamp of
-    /// a NON-empty file would (a) torn-write the magic without the regime ⇒
-    /// Overlay-magic-Owned-regime ⇒ orphans wrongly KEPT, and (b) place pre-existing
-    /// Owned records under the Overlay drop; the non-empty case needs a WAL rotation
-    /// (deferred to the S5 production flip). On an empty WAL there are no records to
-    /// mis-classify, so even a torn header just re-stamps on the next open. Idempotent.
+    /// and persist it (S4 / N-S4-1). **ENFORCED to be EMPTY** (S5-3): an in-place
+    /// magic+regime restamp of a NON-empty file would (a) torn-write the magic without
+    /// the regime ⇒ Overlay-magic-Owned-regime ⇒ orphans wrongly KEPT, and (b) place
+    /// pre-existing Owned records under the Overlay drop; the non-empty case needs a WAL
+    /// rotation. Previously a doc-only contract; now returns
+    /// [`WalError::InvalidRegimeStamp`] if the WAL is non-empty. Idempotent on an
+    /// already-Overlay header.
     pub fn set_overlay_regime(&self) -> Result<(), WalError> {
+        if !self.is_empty_after_header() {
+            return Err(WalError::InvalidRegimeStamp(
+                "set_overlay_regime on a non-empty WAL (records already appended); \
+                 the non-empty Owned→Overlay transition requires a rotation"
+                    .to_string(),
+            ));
+        }
         let mut header = self.header.lock().expect("header lock poisoned");
         if header.rank_regime == RankRegime::Overlay as u8 {
             return Ok(()); // already Overlay
@@ -384,6 +400,39 @@ impl WalWriter {
         file.flush()?;
         file.get_ref().sync_all()?;
         file.seek(SeekFrom::End(0))?;
+        debug_assert_eq!(header.rank_regime, RankRegime::Overlay as u8);
+        Ok(())
+    }
+
+    /// Stamp the header BACK to the Owned regime (`MAGIC` + `rank_regime=Owned`) and
+    /// persist it — the inverse of [`set_overlay_regime`], for the S5 kill-switch
+    /// (Overlay→Owned rollback). **ENFORCED to be EMPTY** (S5-4) for the symmetric
+    /// reason: an in-place restamp of a non-empty Overlay WAL would place its Overlay
+    /// records under the Owned keep-all rule (resurrecting dropped orphans). Returns
+    /// [`WalError::InvalidRegimeStamp`] if non-empty. Idempotent on an already-Owned
+    /// header.
+    pub fn set_owned_regime(&self) -> Result<(), WalError> {
+        if !self.is_empty_after_header() {
+            return Err(WalError::InvalidRegimeStamp(
+                "set_owned_regime on a non-empty WAL (records already appended); \
+                 the non-empty Overlay→Owned transition requires a rotation"
+                    .to_string(),
+            ));
+        }
+        let mut header = self.header.lock().expect("header lock poisoned");
+        if header.rank_regime == RankRegime::Owned as u8 {
+            return Ok(()); // already Owned
+        }
+        header.magic = WalHeader::MAGIC;
+        header.rank_regime = RankRegime::Owned as u8;
+
+        let mut file = self.file.lock().expect("WAL lock poisoned");
+        file.seek(SeekFrom::Start(0))?;
+        file.write_all(&header.to_bytes())?;
+        file.flush()?;
+        file.get_ref().sync_all()?;
+        file.seek(SeekFrom::End(0))?;
+        debug_assert_eq!(header.rank_regime, RankRegime::Owned as u8);
         Ok(())
     }
 
@@ -664,6 +713,62 @@ mod dg0_carry_tests {
             writer.header.lock().expect("header lock").rank_regime,
             1,
             "rank_regime carried across rotate"
+        );
+    }
+
+    /// S5-3 / S5-4: the regime-stamp guards ACCEPT an empty WAL (Overlay↔Owned
+    /// round-trips, since a regime stamp writes only the header — no records — so the
+    /// WAL stays empty) and REJECT a non-empty WAL (an in-place restamp would
+    /// mis-classify the pre-existing records). REAL-disk scratch (never tmpfs).
+    #[test]
+    fn regime_stamp_guards_reject_non_empty_wal() {
+        use super::{RankRegime, WalError, WalRecord};
+
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("target/test-tmp/s5_regime_guard");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("scratch dir");
+        let wal_path = dir.join("wal.log");
+
+        let writer = WalWriter::create(&wal_path).expect("create wal");
+
+        // Empty WAL: stamps succeed and round-trip (Owned → Overlay → Owned).
+        assert!(
+            writer.is_empty_after_header(),
+            "fresh WAL is empty after header"
+        );
+        writer.set_overlay_regime().expect("stamp overlay on empty");
+        assert_eq!(writer.rank_regime(), RankRegime::Overlay);
+        assert!(
+            writer.is_empty_after_header(),
+            "stamping the header appends no records"
+        );
+        writer.set_owned_regime().expect("stamp owned on empty");
+        assert_eq!(writer.rank_regime(), RankRegime::Owned);
+
+        // Append a record → non-empty → BOTH stamps are REJECTED.
+        writer
+            .append(WalRecord::Insert {
+                term: b"x".to_vec(),
+                value: None,
+            })
+            .expect("append");
+        assert!(
+            !writer.is_empty_after_header(),
+            "WAL is non-empty after an append"
+        );
+        assert!(
+            matches!(
+                writer.set_overlay_regime(),
+                Err(WalError::InvalidRegimeStamp(_))
+            ),
+            "set_overlay_regime must reject a non-empty WAL"
+        );
+        assert!(
+            matches!(
+                writer.set_owned_regime(),
+                Err(WalError::InvalidRegimeStamp(_))
+            ),
+            "set_owned_regime must reject a non-empty WAL"
         );
     }
 }

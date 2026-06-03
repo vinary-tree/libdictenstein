@@ -387,6 +387,9 @@ impl From<super::wal::WalError> for PersistentARTrieError {
                     format!("Parent directory not found: {}", path.display()),
                 ),
             },
+            WalError::InvalidRegimeStamp(msg) => Self::InternalError {
+                message: format!("Invalid WAL regime stamp: {}", msg),
+            },
         }
     }
 }

@@ -597,10 +597,24 @@ impl AsyncWalWriter {
         }
     }
 
-    /// Stamp the WAL header to the Overlay regime (S4). Delegates to the inner sync
-    /// writer; SAFE ONLY on an empty WAL (the caller guards on emptiness — see
-    /// `WalWriter::set_overlay_regime` + N-S4-1).
+    /// Returns `true` iff no records have been appended via THIS async writer
+    /// (`next_lsn == 1`). The async writer owns its own `next_lsn` (the inner sync
+    /// writer's counter may lag), so the regime-stamp guards must consult the async
+    /// counter, not the sync writer's.
+    pub fn is_empty_after_header(&self) -> bool {
+        self.next_lsn.load(Ordering::Acquire) == 1
+    }
+
+    /// Stamp the WAL header to the Overlay regime (S4). **ENFORCED to be EMPTY**
+    /// (S5-3) on the async counter, then delegates to the inner sync writer (which
+    /// re-checks its own counter).
     pub fn set_overlay_regime(&self) -> Result<(), WalError> {
+        if !self.is_empty_after_header() {
+            return Err(WalError::InvalidRegimeStamp(
+                "set_overlay_regime on a non-empty async WAL (records already appended)"
+                    .to_string(),
+            ));
+        }
         let writer = self.writer.lock().expect("WAL writer lock poisoned");
         writer.set_overlay_regime()
     }
@@ -609,6 +623,18 @@ impl AsyncWalWriter {
     pub fn rank_regime(&self) -> super::RankRegime {
         let writer = self.writer.lock().expect("WAL writer lock poisoned");
         writer.rank_regime()
+    }
+
+    /// Stamp the WAL header BACK to the Owned regime (S5-4 kill-switch). **ENFORCED to
+    /// be EMPTY** on the async counter, then delegates to the inner sync writer.
+    pub fn set_owned_regime(&self) -> Result<(), WalError> {
+        if !self.is_empty_after_header() {
+            return Err(WalError::InvalidRegimeStamp(
+                "set_owned_regime on a non-empty async WAL (records already appended)".to_string(),
+            ));
+        }
+        let writer = self.writer.lock().expect("WAL writer lock poisoned");
+        writer.set_owned_regime()
     }
 
     /// Get the path to the WAL file.

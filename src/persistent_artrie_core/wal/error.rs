@@ -25,6 +25,11 @@ pub enum WalError {
     /// Parent directory does not exist.
     /// Distinguishes from general NotFound for semantic matching with formal model.
     ParentNotFound(PathBuf),
+    /// A regime restamp (`set_overlay_regime`/`set_owned_regime`) was attempted on a
+    /// NON-empty WAL (records already appended). An in-place restamp would
+    /// mis-classify the pre-existing records (Owned records placed under the Overlay
+    /// drop, or vice versa); the non-empty transition requires a WAL rotation.
+    InvalidRegimeStamp(String),
 }
 
 impl std::fmt::Display for WalError {
@@ -39,6 +44,9 @@ impl std::fmt::Display for WalError {
             WalError::ParentNotFound(path) => {
                 write!(f, "Parent directory not found: {}", path.display())
             }
+            WalError::InvalidRegimeStamp(msg) => {
+                write!(f, "Invalid WAL regime stamp: {}", msg)
+            }
         }
     }
 }
@@ -52,7 +60,8 @@ impl std::error::Error for WalError {
             | WalError::UnexpectedEof
             | WalError::AlreadyExists
             | WalError::NotFound
-            | WalError::ParentNotFound(_) => None,
+            | WalError::ParentNotFound(_)
+            | WalError::InvalidRegimeStamp(_) => None,
         }
     }
 }

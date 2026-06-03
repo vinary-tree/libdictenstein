@@ -102,6 +102,9 @@ impl From<WalError> for RecoveryError {
                 "Parent directory not found: {}",
                 path.display()
             )),
+            WalError::InvalidRegimeStamp(msg) => {
+                RecoveryError::RecoveryFailed(format!("Invalid WAL regime stamp: {}", msg))
+            }
         }
     }
 }
