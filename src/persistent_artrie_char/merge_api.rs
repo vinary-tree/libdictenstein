@@ -45,6 +45,23 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
         F: Fn(&V, &V) -> V,
         V: Clone,
     {
+        // BROKEN-BY-DESIGN under the overlay (reachability audit): `self.get` would
+        // return None (defeating `merge_fn`) and `self.upsert` is last-writer-wins
+        // OVERWRITE, not additive — a merge would silently REPLACE the live overlay
+        // counts. Reject, mirroring `merge_lockfree_values_to_persistent` (the overlay
+        // IS the durable production state; merge-into-it is incoherent). Overlay merge
+        // is an E1-iter-B follow-on.
+        if self.route_overlay() {
+            return Err(
+                crate::persistent_artrie::error::PersistentARTrieError::InvalidOperation(
+                    "merge_from is not valid under the lock-free overlay write mode (the overlay \
+                     is the durable production state; a trie-to-trie merge would overwrite rather \
+                     than combine accumulated values)"
+                        .to_string(),
+                ),
+            );
+        }
+
         use std::collections::HashMap;
 
         let mut processed = 0;
@@ -199,6 +216,19 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
         F: Fn(&V, &V) -> V,
         V: Clone,
     {
+        // BROKEN-BY-DESIGN under the overlay (see `merge_from`): reject — `self.upsert`
+        // overwrites rather than combines.
+        if self.route_overlay() {
+            return Err(
+                crate::persistent_artrie::error::PersistentARTrieError::InvalidOperation(
+                    "merge_from_batched is not valid under the lock-free overlay write mode (the \
+                     overlay is the durable production state; a trie-to-trie merge would overwrite \
+                     rather than combine accumulated values)"
+                        .to_string(),
+                ),
+            );
+        }
+
         let batch_size = if batch_size == 0 { 5_000 } else { batch_size };
 
         // Collect all terms with arena info for page-locality optimization

@@ -75,6 +75,26 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
         }
     }
 
+    /// **S5-12 EDIT 1 (owner-GO, IRREVERSIBLE): a freshly-created trie flips to the
+    /// lock-free overlay for `V ∈ {(), u64}`; a strict NO-OP for arbitrary `V`.**
+    ///
+    /// A `create*` ctor builds a FRESH WAL (`current_lsn() == 1`), so
+    /// `flip_to_overlay`'s `enable_lockfree` stamps the Overlay regime and the V-2
+    /// stamp re-check (`route_overlay() && rank_regime()==Overlay`) MUST succeed —
+    /// `!took` therefore means the stamp silently failed (a torn header / no WAL),
+    /// which we surface as a hard error rather than enabling a write-broken or
+    /// recovery-unsafe overlay. For `V ∉ {(), u64}` `overlay_eligible_v()` is false,
+    /// the gate short-circuits, the trie stays `OwnedTree`, and this is a pure no-op
+    /// (the proven owned path runs, unchanged — backward-compat for arbitrary V).
+    fn apply_create_flip(mut self) -> Result<Self> {
+        if Self::overlay_eligible_v() && !self.flip_to_overlay() {
+            return Err(PersistentARTrieError::internal(
+                "S5-12 create-flip: flip_to_overlay did not engage on a fresh trie",
+            ));
+        }
+        Ok(self)
+    }
+
     /// Create a new disk-backed trie at the given path
     pub fn create<P: AsRef<Path>>(path: P) -> Result<Self> {
         let path = path.as_ref();
@@ -98,7 +118,8 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
         let arena_manager = ArenaManager::with_buffer_manager(Arc::clone(&buffer_manager));
         let arena_manager = Arc::new(RwLock::new(arena_manager));
 
-        Ok(Self {
+        // S5-12 EDIT 1: flip a fresh eligible-V trie to the overlay (no-op for arbitrary V).
+        Self::apply_create_flip(Self {
             root: CharTrieRoot::Empty,
             len: AtomicUsize::new(0),
             dirty: AtomicBool::new(false),
@@ -166,7 +187,8 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
             ArenaManager::with_buffer_manager_and_config(Arc::clone(&buffer_manager), flush_config);
         let arena_manager = Arc::new(RwLock::new(arena_manager));
 
-        Ok(Self {
+        // S5-12 EDIT 1: flip a fresh eligible-V trie to the overlay (no-op for arbitrary V).
+        Self::apply_create_flip(Self {
             root: CharTrieRoot::Empty,
             len: AtomicUsize::new(0),
             dirty: AtomicBool::new(false),
@@ -244,7 +266,8 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
         let arena_manager = ArenaManager::with_buffer_manager(Arc::clone(&buffer_manager));
         let arena_manager = Arc::new(RwLock::new(arena_manager));
 
-        Ok(Self {
+        // S5-12 EDIT 1: flip a fresh eligible-V trie to the overlay (no-op for arbitrary V).
+        Self::apply_create_flip(Self {
             root: CharTrieRoot::Empty,
             len: AtomicUsize::new(0),
             dirty: AtomicBool::new(false),
@@ -444,6 +467,24 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
         if loaded_from_disk && skipped_all && checkpoint_lsn > 0 {
             // WAL truncation would happen here if we implement it
             // For now, just note that we could truncate
+        }
+
+        // S5-12 EDIT 2 (IRREVERSIBLE): an already-Overlay file ⇒ move the recovered owned
+        // tree into the lock-free overlay + select LockFreeOverlay so the production
+        // read/checkpoint path sees it. Owned-regime (incl. an empty WAL) ⇒ STAY owned
+        // (backward-compat: no flip, no rotation, no loss). The `rank_regime` local was
+        // read from the WAL header above (the SAME value that drove the reconcile).
+        if rank_regime == crate::persistent_artrie_core::wal::RankRegime::Overlay
+            && Self::overlay_eligible_v()
+        {
+            // flip_to_overlay on an already-Overlay (non-empty) WAL: enable_lockfree skips
+            // the re-stamp (current_lsn > 1) but the regime is ALREADY Overlay, so the V-2
+            // re-check passes and flip returns true.
+            let took = inner.flip_to_overlay();
+            debug_assert!(took, "Overlay-regime open must flip");
+            // owned → overlay (value-carrying for u64, membership for ()); a mid-stream `?`
+            // aborts open with the owned tree INTACT (owned cleared LAST, RES-7).
+            inner.reestablish_overlay_dispatch()?;
         }
 
         Ok(inner)
@@ -657,6 +698,16 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
             .unwrap_or(crate::persistent_artrie_core::wal::RankRegime::Owned);
         let _ =
             inner.replay_records_lww(recovered_ops, loaded_from_disk, checkpoint_lsn, rank_regime);
+
+        // S5-12 EDIT 2 (IRREVERSIBLE): identical to `open` — an already-Overlay file moves
+        // the recovered owned tree into the overlay (eligible V); Owned-regime stays owned.
+        if rank_regime == crate::persistent_artrie_core::wal::RankRegime::Overlay
+            && Self::overlay_eligible_v()
+        {
+            let took = inner.flip_to_overlay();
+            debug_assert!(took, "Overlay-regime open must flip");
+            inner.reestablish_overlay_dispatch()?;
+        }
 
         Ok(inner)
     }
@@ -1019,6 +1070,22 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
                     }
                 }
 
+                // S5-12 EDIT 3 (IRREVERSIBLE): the rebuild above repopulated the OWNED
+                // tree (the no-WAL recovery path is owned-targeted). But after EDIT 1 the
+                // fresh `trie` from `create_with_config` is ALREADY in LockFreeOverlay
+                // mode for eligible V (with an empty overlay), so returning it as-is would
+                // make the next checkpoint route-split capture the EMPTY overlay and lose
+                // every rebuilt term (total loss). Move the rebuilt owned tree into the
+                // overlay whenever the trie is overlay-routed (⟺ eligible V was create-
+                // flipped). Gate on `route_overlay()`, NOT `any_overlay`: the orphan-drop
+                // is the reconcile's job (regime-aware vs inline above), whereas the owned
+                // →overlay move is required for the OVERLAY-MODE trie regardless of the
+                // archives' regime. A `?` aborts with the owned tree intact (RES-7); a
+                // pure no-op for arbitrary V (which create did not flip ⇒ !route_overlay).
+                if trie.route_overlay() {
+                    trie.reestablish_overlay_dispatch()?;
+                }
+
                 let duration_ms = start_time.elapsed().as_millis() as u64;
 
                 let report = RecoveryReport::rebuild_from_wal(
@@ -1251,6 +1318,19 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
                 reason: error.to_string(),
             })?;
 
+        // S5-12 EDIT 3 (IRREVERSIBLE, recover_from_archives twin): the regime-aware
+        // rebuild repopulated the OWNED tree. After EDIT 1 the fresh `trie` from
+        // `create_with_config` is ALREADY overlay-routed for eligible V (empty overlay),
+        // so without this move the next checkpoint would capture the empty overlay and
+        // lose every rebuilt term. Gate on `route_overlay()` (⟺ eligible V was create-
+        // flipped) rather than the archives' regime — the owned→overlay move is required
+        // for the overlay-mode trie regardless of archive regime; the orphan-drop is the
+        // reconcile's responsibility above. A `?` aborts with the owned tree intact
+        // (RES-7); a pure no-op for arbitrary V (create did not flip ⇒ !route_overlay).
+        if trie.route_overlay() {
+            trie.reestablish_overlay_dispatch()?;
+        }
+
         Ok((
             trie,
             EnhancedRecoveryStats {
@@ -1262,5 +1342,314 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
                 archive_segments_used: segments.len(),
             },
         ))
+    }
+}
+
+#[cfg(test)]
+mod s5_12_flip_ctor_gate {
+    //! **S5-12 production-flip ctor-wiring gate (EDIT 1/2/3).** The irreversible,
+    //! data-loss-critical create-flip + open-3-cases + corruption-rebuild wiring.
+    //! Scratch is REAL disk (`target/test-tmp`), never `/tmp` (tmpfs on this host).
+    //!
+    //! Read-path note: an Overlay reopen (EDIT 2) moves the recovered owned tree INTO
+    //! the lock-free overlay and clears the owned tree, so post-reopen membership is
+    //! read via `contains_lockfree` and values via `get_lockfree` (the owned-tree
+    //! `Dictionary::contains` is intentionally empty after the move).
+
+    use super::*;
+    use crate::persistent_artrie::wal::{WalHeader, WalReader};
+    use crate::persistent_artrie_char::PersistentARTrieChar;
+    use crate::{Dictionary, MappedDictionary};
+
+    fn scratch(prefix: &str) -> tempfile::TempDir {
+        std::fs::create_dir_all("target/test-tmp").ok();
+        tempfile::Builder::new()
+            .prefix(prefix)
+            .tempdir_in("target/test-tmp")
+            .expect("scratch tempdir under target/test-tmp")
+    }
+
+    /// Read the on-disk WAL header for a trie data path (its sibling `.wal`).
+    fn wal_header(data_path: &Path) -> WalHeader {
+        let wal_path = data_path.with_extension("wal");
+        WalReader::read_header(&wal_path).expect("read WAL header")
+    }
+
+    // ───────────────────────── Gate 1: create-flip TypeId gate ─────────────────────────
+
+    /// `create<u64>` and `create<()>` flip to the overlay (`route_overlay()==true`)
+    /// and stamp the WAL header `MAGIC_OVERLAY`; `create<String>` (arbitrary V) is a
+    /// strict no-op — `route_overlay()==false`, header stays `MAGIC`, and a subsequent
+    /// owned insert/increment still works.
+    #[test]
+    fn s5_12_create_flip_eligible_v_overlay_arbitrary_v_owned() {
+        // V = u64: flipped + Overlay magic.
+        {
+            let dir = scratch("s5-12-create-u64");
+            let path = dir.path().join("t.artc");
+            let trie = PersistentARTrieChar::<u64>::create(&path).expect("create<u64>");
+            assert!(
+                trie.route_overlay(),
+                "create<u64> must flip to the overlay (route_overlay true)"
+            );
+            assert_eq!(
+                wal_header(&path).magic,
+                WalHeader::MAGIC_OVERLAY,
+                "create<u64> WAL header must be stamped MAGIC_OVERLAY"
+            );
+        }
+        // V = (): flipped + Overlay magic.
+        {
+            let dir = scratch("s5-12-create-unit");
+            let path = dir.path().join("t.artc");
+            let trie = PersistentARTrieChar::<()>::create(&path).expect("create<()>");
+            assert!(
+                trie.route_overlay(),
+                "create<()> must flip to the overlay (route_overlay true)"
+            );
+            assert_eq!(
+                wal_header(&path).magic,
+                WalHeader::MAGIC_OVERLAY,
+                "create<()> WAL header must be stamped MAGIC_OVERLAY"
+            );
+        }
+        // V = String (arbitrary): NO flip, standard MAGIC, owned path still works.
+        {
+            let dir = scratch("s5-12-create-string");
+            let path = dir.path().join("t.artc");
+            let mut trie = PersistentARTrieChar::<String>::create(&path).expect("create<String>");
+            assert!(
+                !trie.route_overlay(),
+                "create<String> must NOT flip (arbitrary V stays on the owned path)"
+            );
+            assert_eq!(
+                wal_header(&path).magic,
+                WalHeader::MAGIC,
+                "create<String> WAL header must stay the standard MAGIC (no overlay stamp)"
+            );
+            // The owned path still works for arbitrary V (the flip was a no-op).
+            trie.insert_with_value("hello", "world".to_string());
+            assert_eq!(
+                MappedDictionary::get_value(&trie, "hello"),
+                Some("world".to_string()),
+                "owned insert_with_value must work for arbitrary V after the no-op flip"
+            );
+        }
+    }
+
+    // ───────────────────── Gate 2: create → durable write → reopen ─────────────────────
+
+    /// create→durable-write→checkpoint→reopen with NO data loss and NO double-count,
+    /// for both `()` (membership) and `u64` (counters). After the Overlay reopen the
+    /// data lives in the overlay (read via `contains_lockfree` / `get_lockfree`).
+    #[test]
+    fn s5_12_create_write_reopen_no_loss_unit_and_u64() {
+        // Membership (V = ()).
+        {
+            let dir = scratch("s5-12-rw-unit");
+            let path = dir.path().join("t.artc");
+            let terms: Vec<String> = (0..40u32).map(|i| format!("term{i:03}")).collect();
+            {
+                let mut trie = PersistentARTrieChar::<()>::create(&path).expect("create<()>");
+                // create-flip already ran enable_lockfree + LockFreeOverlay; default
+                // durability is Immediate (set it explicitly to match S5 conventions).
+                trie.set_durability_policy(
+                    crate::persistent_artrie_core::durability::DurabilityPolicy::Immediate,
+                );
+                assert!(trie.route_overlay(), "fresh create<()> is overlay-routed");
+                for t in &terms {
+                    assert!(
+                        trie.insert_cas_durable(t).expect("durable overlay insert"),
+                        "first durable insert of {t:?} must be newly-inserted"
+                    );
+                }
+                trie.checkpoint().expect("overlay checkpoint (route-split)");
+            }
+            let recovered = PersistentARTrieChar::<()>::open(&path).expect("reopen<()>");
+            assert!(
+                recovered.route_overlay(),
+                "an Overlay file must reopen overlay-routed (EDIT 2 CASE-a)"
+            );
+            for t in &terms {
+                assert!(
+                    recovered.contains_lockfree(t),
+                    "membership lost {t:?} across create→write→checkpoint→reopen"
+                );
+            }
+        }
+        // Counters (V = u64): exact summed counts, no double, no loss.
+        {
+            let dir = scratch("s5-12-rw-u64");
+            let path = dir.path().join("t.artc");
+            // Distinct deltas so a double-count or drop is detectable per key.
+            let entries: Vec<(String, u64)> =
+                (0..40u32).map(|i| (format!("k{i:03}"), (i as u64) + 1)).collect();
+            {
+                let mut trie = PersistentARTrieChar::<u64>::create(&path).expect("create<u64>");
+                trie.set_durability_policy(
+                    crate::persistent_artrie_core::durability::DurabilityPolicy::Immediate,
+                );
+                assert!(trie.route_overlay(), "fresh create<u64> is overlay-routed");
+                for (k, d) in &entries {
+                    let v = trie.try_increment_cas_durable(k, *d).expect("durable increment");
+                    assert_eq!(v, *d, "first increment of {k:?} must equal its delta");
+                }
+                trie.checkpoint().expect("overlay checkpoint (route-split)");
+            }
+            let recovered = PersistentARTrieChar::<u64>::open(&path).expect("reopen<u64>");
+            assert!(recovered.route_overlay(), "u64 Overlay file reopens overlay-routed");
+            for (k, d) in &entries {
+                assert_eq!(
+                    recovered.get_lockfree(k),
+                    Some(*d),
+                    "counter {k:?} wrong after reopen (loss or double-count)"
+                );
+            }
+        }
+    }
+
+    // ──────────────────── Gate 3: old-Owned file stays Owned on reopen ────────────────────
+
+    /// A `<String>` (arbitrary V ⇒ never flips) trie that was created, written, and
+    /// checkpointed produces an OWNED-regime file. Reopening it (EDIT 2) must keep it
+    /// Owned: `route_overlay()==false`, data intact via the OWNED read path, header
+    /// still standard `MAGIC`. (Backward-compat: an Owned file never silently flips.)
+    #[test]
+    fn s5_12_old_owned_file_stays_owned_on_reopen() {
+        let dir = scratch("s5-12-owned-stays");
+        let path = dir.path().join("t.artc");
+        let entries: Vec<(String, String)> = (0..30u32)
+            .map(|i| (format!("w{i:03}"), format!("v{i:03}")))
+            .collect();
+        {
+            let mut trie = PersistentARTrieChar::<String>::create(&path).expect("create<String>");
+            assert!(!trie.route_overlay(), "String trie must not flip on create");
+            for (k, v) in &entries {
+                trie.insert_with_value(k, v.clone());
+            }
+            trie.checkpoint().expect("owned checkpoint");
+        }
+        let recovered = PersistentARTrieChar::<String>::open(&path).expect("reopen<String>");
+        assert!(
+            !recovered.route_overlay(),
+            "an Owned-regime file must STAY owned on reopen (no flip, backward-compat)"
+        );
+        assert_eq!(
+            wal_header(&path).magic,
+            WalHeader::MAGIC,
+            "an Owned file's WAL header must stay the standard MAGIC across reopen"
+        );
+        for (k, v) in &entries {
+            assert_eq!(
+                MappedDictionary::get_value(&recovered, k),
+                Some(v.clone()),
+                "owned data lost for {k:?} across reopen"
+            );
+            assert!(
+                Dictionary::contains(&recovered, k),
+                "owned membership lost for {k:?} (data must stay in the owned tree)"
+            );
+        }
+    }
+
+    // ─────────────────── Gate 4: mixed-monomorph reopen (V-4, no panic) ───────────────────
+
+    /// A flipped `<u64>` file reopened as `<()>` must NOT panic and must NOT corrupt the
+    /// file (it stays openable as `<u64>`). The cross-monomorph value-loss is a DOCUMENTED
+    /// operational invariant (V-4: reopen with the same V); this gate only asserts the
+    /// no-panic / no-corruption boundary.
+    #[test]
+    fn s5_12_mixed_monomorph_reopen_no_panic_no_corruption() {
+        let dir = scratch("s5-12-mixed-mono");
+        let path = dir.path().join("t.artc");
+        let entries: Vec<(String, u64)> =
+            vec![("alpha", 7u64), ("beta", 11), ("gamma", 13)]
+                .into_iter()
+                .map(|(t, v)| (t.to_string(), v))
+                .collect();
+        {
+            let mut trie = PersistentARTrieChar::<u64>::create(&path).expect("create<u64>");
+            trie.set_durability_policy(
+                crate::persistent_artrie_core::durability::DurabilityPolicy::Immediate,
+            );
+            for (k, d) in &entries {
+                trie.try_increment_cas_durable(k, *d).expect("durable increment");
+            }
+            trie.checkpoint().expect("overlay checkpoint");
+        }
+        // Reopen as <()> — the WRONG monomorph. V-4: bincode trailing-byte tolerance
+        // means the u64 value bytes are dropped rather than panicking. The reestablish
+        // for V=() routes through the MEMBERSHIP twin (no value decode), so this must
+        // complete without panic. We tolerate either Ok (membership recovered) or a
+        // clean Err — the contract is NO PANIC and NO file corruption.
+        let reopened_as_unit = PersistentARTrieChar::<()>::open(&path);
+        match reopened_as_unit {
+            Ok(t) => {
+                // Membership may be recovered into the overlay; value semantics are lost
+                // by construction (documented V-4), which is fine for V=().
+                let _ = t.contains_lockfree("alpha");
+            }
+            Err(_e) => {
+                // A clean error is also acceptable — the point is no panic, no corruption.
+            }
+        }
+        // CRITICAL: the file is NOT corrupted — it still opens as the correct <u64>
+        // monomorph with the original counters intact.
+        let recovered = PersistentARTrieChar::<u64>::open(&path)
+            .expect("file must still open as <u64> after a wrong-monomorph reopen attempt");
+        for (k, d) in &entries {
+            assert_eq!(
+                recovered.get_lockfree(k),
+                Some(*d),
+                "counter {k:?} corrupted by a wrong-monomorph reopen (must be intact)"
+            );
+        }
+    }
+
+    // ─────────────────── Gate 5: old-binary fail-closed on MAGIC_OVERLAY ───────────────────
+
+    /// A flipped trie's WAL header carries `MAGIC_OVERLAY`. An OLD binary that only
+    /// accepts the standard `MAGIC` (the Owned-only parse predicate `magic == MAGIC`)
+    /// must FAIL-CLOSE on it, while THIS (new) binary's `from_bytes` accepts it with the
+    /// Overlay regime — the D8-2 dual-magic tripwire, end-to-end on a real on-disk file.
+    #[test]
+    fn s5_12_old_binary_fail_closed_on_overlay_magic() {
+        use std::io::Read;
+
+        let dir = scratch("s5-12-fail-closed");
+        let path = dir.path().join("t.artc");
+        // A fresh create<()> stamps MAGIC_OVERLAY on the WAL header.
+        let _trie = PersistentARTrieChar::<()>::create(&path).expect("create<()>");
+        let wal_path = path.with_extension("wal");
+
+        // Read the raw 64-byte header off disk.
+        let mut buf = [0u8; WalHeader::SIZE];
+        {
+            let mut f = std::fs::File::open(&wal_path).expect("open .wal");
+            f.read_exact(&mut buf).expect("read 64-byte header");
+        }
+        let magic: [u8; 8] = buf[0..8].try_into().unwrap();
+
+        // Sanity: the on-disk magic IS the Overlay magic (create-flip stamped it).
+        assert_eq!(
+            magic,
+            WalHeader::MAGIC_OVERLAY,
+            "the flipped file must carry MAGIC_OVERLAY on disk"
+        );
+
+        // OLD-BINARY predicate (accepts ONLY the standard MAGIC) ⇒ fail-closed.
+        assert_ne!(
+            magic,
+            WalHeader::MAGIC,
+            "an Owned-only (MAGIC-only) parser must FAIL-CLOSE on the Overlay magic"
+        );
+
+        // NEW-BINARY `from_bytes` accepts it with the Overlay regime (dual-magic).
+        let h = WalHeader::from_bytes(&buf).expect("new binary parses MAGIC_OVERLAY");
+        assert_eq!(
+            h.regime(),
+            crate::persistent_artrie_core::wal::RankRegime::Overlay,
+            "the dual-magic header must decode the Overlay regime"
+        );
     }
 }

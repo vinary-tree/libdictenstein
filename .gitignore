@@ -21,6 +21,7 @@ Thumbs.db
 *.profraw
 *.profdata
 *.proptest-regressions
+proptest-regressions/
 
 # Profiling artifacts
 perf.data

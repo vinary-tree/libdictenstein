@@ -29,6 +29,18 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
         F: Fn(&V, &V) -> V + Sync + Send,
         V: Clone + Send + Sync,
     {
+        // BROKEN-BY-DESIGN under the overlay (see `merge_api::merge_from`): the
+        // overlay `upsert` overwrites rather than combines; reject.
+        if self.route_overlay() {
+            return Err(
+                crate::persistent_artrie::error::PersistentARTrieError::InvalidOperation(
+                    "merge_from_parallel is not valid under the lock-free overlay write mode (a \
+                     trie-to-trie merge would overwrite rather than combine accumulated values)"
+                        .to_string(),
+                ),
+            );
+        }
+
         use rayon::prelude::*;
         use std::collections::HashMap;
 
@@ -113,6 +125,18 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
         F: Fn(&V, &V) -> V + Sync + Send,
         V: Clone + Send + Sync,
     {
+        // BROKEN-BY-DESIGN under the overlay (see `merge_api::merge_from`): reject.
+        if self.route_overlay() {
+            return Err(
+                crate::persistent_artrie::error::PersistentARTrieError::InvalidOperation(
+                    "merge_from_batched_parallel is not valid under the lock-free overlay write \
+                     mode (a trie-to-trie merge would overwrite rather than combine accumulated \
+                     values)"
+                        .to_string(),
+                ),
+            );
+        }
+
         use rayon::prelude::*;
 
         let batch_size = if batch_size == 0 { 5_000 } else { batch_size };

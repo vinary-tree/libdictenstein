@@ -116,8 +116,13 @@ impl<V: DictionaryValue + serde::Serialize + serde::de::DeserializeOwned, S: Blo
     ///
     /// The new value after incrementing.
     pub(super) fn try_increment_impl_no_wal(&mut self, term: &str, delta: i64) -> Result<i64> {
-        // Get current value
-        let current: i64 = if let Some(v) = self.get(term) {
+        // Get current value. MUST be the OWNED read (not the E1-routed `get`): this
+        // read-modify-write rebuilds the OWNED tree during crash recovery
+        // (`apply_core_recovered_operation_no_wal` → BatchIncrement), and that rebuild
+        // runs with `route_overlay()` already true (the trie was create-flipped before
+        // the replay loop). Routing this read to the empty overlay would accumulate
+        // every recovered delta from 0 — a silent counter under-count on reopen.
+        let current: i64 = if let Some(v) = self.owned_get(term) {
             let bytes = crate::serialization::bincode_compat::serialize(&v).unwrap_or_default();
             if bytes.len() == 8 {
                 i64::from_le_bytes(bytes.try_into().unwrap())

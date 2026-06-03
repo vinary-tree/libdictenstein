@@ -67,8 +67,10 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     /// branch whose `false` arm is the verbatim current owned-tree body (the
     /// one-release fallback) and whose `true` arm wires the proven Order-A overlay
     /// primitives — NO mutation logic is duplicated (design §2/§6).
+    /// Public flip-state predicate (pairs with [`Self::kill_switch_to_owned`]): `true`
+    /// iff reads/writes/checkpoint take the lock-free overlay path for this trie.
     #[inline]
-    pub(crate) fn route_overlay(&self) -> bool {
+    pub fn route_overlay(&self) -> bool {
         self.overlay_write_mode.uses_overlay() && self.lockfree_root.is_some()
     }
 
@@ -115,6 +117,21 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
         }
         self.enable_lockfree();
         self.set_overlay_write_mode(OverlayWriteMode::LockFreeOverlay);
+        // Re-engaging the overlay after a `kill_switch_to_owned` (which stamped Owned on
+        // a fresh WAL) must restamp Overlay — `enable_lockfree` only stamps on its FIRST
+        // call (it early-returns once `lockfree_root` is set), so a second engage would
+        // otherwise leave the WAL Owned-regime and fail the V-2 stamp check below. Gated
+        // on a fresh WAL (`current_lsn() == 1`); a no-op for the ctor flip (where
+        // `enable_lockfree` already stamped Overlay) and for non-empty WALs.
+        if let Some(ref writer) = self.wal_writer {
+            if writer.current_lsn() == 1
+                && writer.rank_regime() != crate::persistent_artrie_core::wal::RankRegime::Overlay
+            {
+                if let Err(e) = writer.set_overlay_regime() {
+                    log::warn!("flip_to_overlay: could not stamp Overlay regime: {:?}", e);
+                }
+            }
+        }
         // V-2: `enable_lockfree` only `log::warn!`s if the Overlay-regime stamp failed,
         // then STILL enables the overlay — so verify the WAL is ACTUALLY Overlay-regime.
         // An Owned-regime WAL under overlay routing would make recovery KEEP unranked
@@ -128,15 +145,34 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
         self.route_overlay() && stamped_overlay
     }
 
-    /// **S5-10c — kill-switch construction helper (NOT wired).** Revert the production
-    /// write path to the proven owned tree (the one-release fallback). RESTART-TIME
-    /// (set the mode, then reopen — the WAL is the shared source of truth; see
-    /// [`Self::set_overlay_write_mode`]). Deliberately does NOT restamp the WAL regime:
-    /// `set_owned_regime` is valid only on an EMPTY WAL, whereas a real kill-switch
-    /// reopens with a non-empty Overlay-regime WAL and rebuilds the owned tree from it.
-    #[cfg_attr(not(test), allow(dead_code))]
-    pub(crate) fn kill_switch_to_owned(&mut self) {
+    /// **Kill-switch — the public one-release fallback for the S5-12 flip.** Revert the
+    /// production write path from the lock-free overlay back to the proven owned tree:
+    /// after this returns, `route_overlay()` is false, so writes/reads/checkpoint take
+    /// the owned arm (the pre-flip behavior). Use it if the overlay path needs to be
+    /// disabled in a deployed binary without rebuilding.
+    ///
+    /// In-session it takes effect immediately (the next op routes to the owned tree).
+    /// Across a reopen it is RESTART-TIME: it deliberately does NOT restamp the WAL
+    /// regime (`set_owned_regime` is valid only on an EMPTY WAL), so a reopen of a
+    /// non-empty Overlay-regime WAL rebuilds the owned tree and re-flips — the durable
+    /// regime is governed by the WAL, the in-memory mode by this switch.
+    pub fn kill_switch_to_owned(&mut self) {
         self.set_overlay_write_mode(OverlayWriteMode::OwnedTree);
+        // On a still-fresh WAL (no records appended — `current_lsn() == 1`, e.g.
+        // immediately after `create()`), also restamp the durable regime to Owned so a
+        // later reopen STAYS owned (no re-flip) and owned-mode records survive recovery
+        // (otherwise the create-flip's Overlay stamp makes recovery DROP them as
+        // two-append-window orphans). On a NON-empty WAL this is intentionally a no-op —
+        // the documented restart-time semantics: the durable regime is already fixed, so
+        // a reopen rebuilds the owned tree from the Overlay-regime WAL and re-flips. This
+        // mirrors `enable_lockfree`'s `current_lsn() == 1` empty-WAL stamp guard.
+        if let Some(ref writer) = self.wal_writer {
+            if writer.current_lsn() == 1 {
+                if let Err(e) = writer.set_owned_regime() {
+                    log::warn!("kill_switch_to_owned: could not stamp Owned regime: {:?}", e);
+                }
+            }
+        }
     }
 }
 
@@ -170,17 +206,22 @@ mod tests {
         let path = dir.path().join("t.artc");
         let mut trie = PersistentARTrieChar::<u64>::create(&path).expect("create");
 
-        assert!(!trie.route_overlay(), "fresh trie routes to the owned tree");
+        // Post-flip: `create()` create-flips an eligible-V (u64) trie, so a FRESH trie
+        // already routes to the overlay. Round-trip the kill-switch from there.
         assert!(
-            trie.flip_to_overlay(),
-            "flip_to_overlay must make route_overlay() true"
+            trie.route_overlay(),
+            "create-flip routes a fresh eligible-V (u64) trie to the overlay"
         );
-        assert!(trie.route_overlay());
         trie.kill_switch_to_owned();
         assert!(
             !trie.route_overlay(),
             "kill_switch_to_owned must revert to the owned path"
         );
+        assert!(
+            trie.flip_to_overlay(),
+            "flip_to_overlay must re-engage the overlay"
+        );
+        assert!(trie.route_overlay());
     }
 
     /// S5-12 (V-1): the TypeId gate — `overlay_eligible_v()` is true only for

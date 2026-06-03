@@ -141,6 +141,7 @@ pub mod prefix_helpers;
 
 // Public prefix iter + remove API (Phase-6 split out of dict_impl_char).
 pub mod prefix_api;
+pub mod overlay_read;
 
 // Merge API (merge_from + variants) — Phase-6 split out of dict_impl_char.
 pub mod merge_api;
@@ -577,23 +578,45 @@ impl<V: DictionaryValue, S: crate::persistent_artrie::block_storage::BlockStorag
     /// Get the number of terms in the dictionary.
     #[inline]
     pub fn len(&self) -> usize {
+        // E1 read-flip: `self.len` tracks the OWNED tree, which is cleared under the
+        // overlay regime; count the overlay's resident finals instead.
+        if self.route_overlay() {
+            return self.overlay_len();
+        }
         self.len.load(AtomicOrdering::Acquire)
     }
 
     /// Get the number of terms in the dictionary (alias for `len()`).
     #[inline]
     pub fn term_count(&self) -> usize {
-        self.len.load(AtomicOrdering::Acquire)
+        self.len()
     }
 
     /// Check if the dictionary is empty.
     #[inline]
     pub fn is_empty(&self) -> bool {
+        // E1 read-flip: cheap any-final early-out over the overlay (not `overlay_len()
+        // == 0`, which would be O(N)).
+        if self.route_overlay() {
+            return self.overlay_is_empty();
+        }
         self.len.load(AtomicOrdering::Acquire) == 0
     }
 
     /// Get the root node for dictionary traversal.
+    ///
+    /// E1-iter-B boundary: under the lock-free overlay regime this walks the OWNED
+    /// tree (empty), so zipper / transducer / fuzzy traversal over a flipped trie sees
+    /// an empty dictionary. Overlay-backed `DictionaryNode` traversal is a follow-on
+    /// (E1-iter-B); the `log::warn!` makes the boundary observable rather than silent.
     pub fn root(&self) -> PersistentARTrieCharNode<V> {
+        if self.route_overlay() {
+            log::warn!(
+                "root()/zipper traversal under the lock-free overlay returns an EMPTY owned \
+                 tree (E1-iter-B: overlay-backed DictionaryNode traversal is not yet \
+                 implemented); use contains / get_value / iter_prefix for overlay reads"
+            );
+        }
         PersistentARTrieCharNode::from_trie(self)
     }
 
@@ -1003,7 +1026,9 @@ impl<V: DictionaryValue, S: crate::persistent_artrie::block_storage::BlockStorag
 
     #[inline]
     fn len(&self) -> Option<usize> {
-        Some(self.len.load(AtomicOrdering::Acquire))
+        // D2: delegate to the inherent `len()`, which routes to the overlay under the
+        // flip (this trait body read `self.len` directly, bypassing the route).
+        Some(self.len())
     }
 }
 
@@ -1013,7 +1038,10 @@ impl<V: DictionaryValue + Clone, S: crate::persistent_artrie::block_storage::Blo
     type Value = V;
 
     fn get_value(&self, term: &str) -> Option<V> {
-        self.get(term).cloned()
+        // D2/S3″: delegate to the inherent `get_value` (which value-routes to the
+        // overlay), NOT `self.get(..).cloned()` — `get` returns `None` under the flip.
+        // The inherent method shadows this trait method in `.get_value()` call syntax.
+        self.get_value(term)
     }
 }
 
@@ -1060,8 +1088,10 @@ impl<V: DictionaryValue> Dictionary for SharedCharARTrie<V> {
 
     #[inline]
     fn len(&self) -> Option<usize> {
+        // D3/S2: delegate to the inner inherent `len()` (overlay-routed under the
+        // flip); this read `guard.len` directly, bypassing the route.
         let guard = self.read();
-        Some(guard.len.load(AtomicOrdering::Acquire))
+        Some(guard.len())
     }
 }
 
@@ -1069,8 +1099,10 @@ impl<V: DictionaryValue + Clone> MappedDictionary for SharedCharARTrie<V> {
     type Value = V;
 
     fn get_value(&self, term: &str) -> Option<V> {
+        // D3/S3: delegate to the inner inherent `get_value` (value-routed), NOT
+        // `guard.get(..).cloned()` (which is `None` under the flip).
         let guard = self.read();
-        guard.get(term).cloned()
+        guard.get_value(term)
     }
 }
 
@@ -1280,8 +1312,9 @@ impl<V: DictionaryValue> crate::artrie_trait::ARTrie for SharedCharARTrie<V> {
     where
         V: Clone,
     {
+        // D3/S3′: inner inherent `get_value` (value-routed under the flip).
         let guard = self.read();
-        guard.get(term).cloned()
+        guard.get_value(term)
     }
 
     fn remove(&self, term: &str) -> bool {
@@ -1291,8 +1324,9 @@ impl<V: DictionaryValue> crate::artrie_trait::ARTrie for SharedCharARTrie<V> {
 
     #[inline]
     fn len(&self) -> usize {
+        // D3/S2′: inner inherent `len()` (overlay-routed under the flip).
         let guard = self.read();
-        guard.len.load(AtomicOrdering::Acquire)
+        guard.len()
     }
 
     fn checkpoint(&self) -> crate::persistent_artrie::error::Result<()> {

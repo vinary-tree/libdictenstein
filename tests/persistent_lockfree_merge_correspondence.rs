@@ -121,6 +121,8 @@ fn char_lockfree_value_merge_overflow_is_all_or_nothing() {
     // at the i64 persistence domain, so seeding `bad = i64::MAX` and merging `+1`
     // overflows that domain identically.
     let mut trie = PersistentARTrieChar::<u64>::create(&path).expect("create char trie");
+    // Force the proven owned-tree path (pre-flip behavior) — this test exercises an owned/transaction/merge/archive feature that the create-flip would otherwise route to the lock-free overlay.
+    trie.kill_switch_to_owned();
 
     trie.upsert("ok", 10).expect("seed ok");
     trie.upsert("bad", i64::MAX as u64).expect("seed bad");
@@ -182,6 +184,8 @@ fn char_lockfree_value_merge_appends_one_batch_and_reopens_exact_sums() {
     let path = dir.path().join("char_merge_success.artc");
     // G1: char counter overlay is `V = u64`.
     let mut trie = PersistentARTrieChar::<u64>::create(&path).expect("create char trie");
+    // Force the proven owned-tree path (pre-flip behavior) — this test exercises an owned/transaction/merge/archive feature that the create-flip would otherwise route to the lock-free overlay.
+    trie.kill_switch_to_owned();
 
     trie.upsert("alpha", 10).expect("seed alpha");
     trie.enable_lockfree();

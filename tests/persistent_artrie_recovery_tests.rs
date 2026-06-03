@@ -1029,6 +1029,8 @@ mod archive_mode_tests {
         // Create trie with archive mode enabled (default)
         {
             let mut trie = PersistentARTrieChar::<()>::create(&path).expect("create trie");
+            // Force the proven owned-tree path (pre-flip behavior) — this test exercises an owned/transaction/merge/archive feature that the create-flip would otherwise route to the lock-free overlay.
+            trie.kill_switch_to_owned();
 
             // Insert some data
             for i in 0..100 {
@@ -1266,6 +1268,8 @@ mod open_with_recovery_tests {
         {
             let mut trie = PersistentARTrieChar::<()>::create_with_config(&path, config.clone())
                 .expect("create trie");
+            // Force the proven owned-tree path (pre-flip behavior) — this test exercises an owned/transaction/merge/archive feature that the create-flip would otherwise route to the lock-free overlay.
+            trie.kill_switch_to_owned();
 
             for round in 0..3 {
                 for i in 0..5 {

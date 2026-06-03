@@ -1741,27 +1741,19 @@ mod immutable_recovery_correspondence {
             owned.checkpoint().expect("checkpoint");
         }
 
-        // Recover, snapshot (term, value) pairs, then rebuild the overlay.
-        let mut recovered = PersistentARTrieChar::<u64>::open(&path).expect("reopen");
-        let recovered_entries: Vec<(String, u64)> = recovered
-            .iter()
-            .map(|t| {
-                let v = recovered.get_value(&t).expect("recovered term has a value");
-                (t, v)
-            })
-            .collect();
-        recovered.enable_lockfree();
-        for (t, v) in &recovered_entries {
-            // Set the overlay count to the recovered value (increment from 0).
-            recovered.increment_cas(t, *v);
-        }
+        // Reopen: the Overlay-regime reopen AUTOMATICALLY rebuilds the overlay from the
+        // recovered owned tree (the Phase-C value rebuild is now wired into the flip's
+        // open path via `reestablish_overlay_after_recovery`). A manual `enable_lockfree`
+        // + `increment_cas` rebuild here would DOUBLE-count on top of the automatic one.
+        let recovered = PersistentARTrieChar::<u64>::open(&path).expect("reopen");
 
-        // The rebuilt overlay carries each recovered value.
+        // The rebuilt overlay carries each recovered value — read via the overlay-routed
+        // `get_value` and the direct `get_lockfree`.
         for (t, v) in &entries {
             assert_eq!(
                 recovered.get_value(t),
                 Some(*v),
-                "recovered owned value mismatch for {t:?}"
+                "routed get_value mismatch for {t:?}"
             );
             assert_eq!(
                 recovered.get_lockfree(t),
@@ -1841,8 +1833,11 @@ mod multi_writer_checkpointer_soak {
             // not. A checkpoint that captured the owned tree would persist NOTHING.
             for t in &terms {
                 assert!(trie.contains_lockfree(t), "overlay missing {t:?}");
+                // E1: `Dictionary::contains` now routes to the overlay (the read-flip),
+                // so peek the OWNED tree directly via the un-routed reader to prove the
+                // data is overlay-only (the owned tree never received it).
                 assert!(
-                    !Dictionary::contains(&trie, t),
+                    !trie.owned_try_contains(t).expect("owned read"),
                     "owned tree must NOT hold {t:?} (data is overlay-only)"
                 );
             }
@@ -1926,10 +1921,10 @@ mod multi_writer_checkpointer_soak {
             }
             owned.checkpoint().expect("checkpoint");
         }
-        let mut trie = PersistentARTrieChar::<u64>::open(&path).expect("reopen");
-        trie.enable_lockfree(); // empty overlay
-        trie.reestablish_overlay_after_recovery()
-            .expect("reestablish overlay from recovered owned tree");
+        // The Overlay-regime reopen AUTOMATICALLY runs `reestablish_overlay_after_recovery`
+        // (via `reestablish_overlay_dispatch`, u64 → the value-carrying variant — the
+        // function under test). A second manual call would be redundant + double-rebuild.
+        let trie = PersistentARTrieChar::<u64>::open(&path).expect("reopen");
 
         // Overlay carries every recovered (term, value); the owned tree is cleared.
         for (t, v) in &entries {
@@ -1939,8 +1934,10 @@ mod multi_writer_checkpointer_soak {
                 "overlay value mismatch for {t:?} after reestablish"
             );
         }
+        // E1: `Dictionary::contains` routes to the overlay; check the owned tree directly.
         assert!(
-            !Dictionary::contains(&trie, "a") && !Dictionary::contains(&trie, "banana"),
+            !trie.owned_try_contains("a").expect("owned read")
+                && !trie.owned_try_contains("banana").expect("owned read"),
             "owned tree must be cleared LAST after a successful reestablish"
         );
     }
@@ -1963,18 +1960,19 @@ mod multi_writer_checkpointer_soak {
             }
             owned.checkpoint().expect("checkpoint");
         }
-        let mut trie = PersistentARTrieChar::<()>::open(&path).expect("reopen");
-        trie.enable_lockfree();
-        trie.reestablish_overlay_membership_after_recovery()
-            .expect("membership reestablish");
+        // The Overlay-regime reopen AUTOMATICALLY runs the membership reestablish (via
+        // `reestablish_overlay_dispatch`, () → the membership twin — the function under
+        // test). A second manual call would be redundant.
+        let trie = PersistentARTrieChar::<()>::open(&path).expect("reopen");
         for t in &terms {
             assert!(
                 trie.contains_lockfree(t),
                 "overlay missing {t:?} after membership reestablish"
             );
         }
+        // E1: `Dictionary::contains` routes to the overlay; check the owned tree directly.
         assert!(
-            !Dictionary::contains(&trie, "a"),
+            !trie.owned_try_contains("a").expect("owned read"),
             "owned tree must be cleared after a successful membership reestablish"
         );
     }

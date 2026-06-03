@@ -1118,6 +1118,8 @@ mod tests {
 
         let mut inner: PersistentARTrieChar<()> =
             PersistentARTrieChar::create(&path).expect("create");
+        // Force the proven owned-tree path (pre-flip behavior) — this test exercises an owned/transaction/merge/archive feature that the create-flip would otherwise route to the lock-free overlay.
+        inner.kill_switch_to_owned();
 
         let v0 = inner.current_version();
         assert_eq!(v0, 0); // Initial version
@@ -1293,6 +1295,8 @@ mod tests {
 
         let mut inner: PersistentARTrieChar<u64> =
             PersistentARTrieChar::create(&path).expect("create");
+        // Force the proven owned-tree path (pre-flip behavior) — this test exercises an owned/transaction/merge/archive feature that the create-flip would otherwise route to the lock-free overlay.
+        inner.kill_switch_to_owned();
 
         // Start a transaction
         let mut tx = inner.begin_document("doc_001").expect("begin");
@@ -1332,6 +1336,8 @@ mod tests {
 
         let mut inner: PersistentARTrieChar<u64> =
             PersistentARTrieChar::create(&path).expect("create");
+        // Force the proven owned-tree path (pre-flip behavior) — this test exercises an owned/transaction/merge/archive feature that the create-flip would otherwise route to the lock-free overlay.
+        inner.kill_switch_to_owned();
 
         // Insert a baseline term
         inner.insert("existing").expect("insert");
@@ -1394,6 +1400,8 @@ mod tests {
 
         let mut inner: PersistentARTrieChar<()> =
             PersistentARTrieChar::create(&path).expect("create");
+        // Force the proven owned-tree path (pre-flip behavior) — this test exercises an owned/transaction/merge/archive feature that the create-flip would otherwise route to the lock-free overlay.
+        inner.kill_switch_to_owned();
 
         // Create and commit an empty transaction
         let tx = inner.begin_document("empty_doc").expect("begin");
@@ -1448,6 +1456,8 @@ mod tests {
 
         let mut inner: PersistentARTrieChar<()> =
             PersistentARTrieChar::create(&path).expect("create");
+        // Force the proven owned-tree path (pre-flip behavior) — this test exercises an owned/transaction/merge/archive feature that the create-flip would otherwise route to the lock-free overlay.
+        inner.kill_switch_to_owned();
 
         // First transaction succeeds
         let mut tx = inner.begin_document("test").expect("begin");
@@ -1468,6 +1478,8 @@ mod tests {
 
         let mut inner: PersistentARTrieChar<u64> =
             PersistentARTrieChar::create(&path).expect("create");
+        // Force the proven owned-tree path (pre-flip behavior) — this test exercises an owned/transaction/merge/archive feature that the create-flip would otherwise route to the lock-free overlay.
+        inner.kill_switch_to_owned();
 
         // First document
         let mut tx1 = inner.begin_document("doc1").expect("begin");
@@ -1504,6 +1516,8 @@ mod tests {
 
         let mut inner: PersistentARTrieChar<u64> =
             PersistentARTrieChar::create(&path).expect("create");
+        // Force the proven owned-tree path (pre-flip behavior) — this test exercises an owned/transaction/merge/archive feature that the create-flip would otherwise route to the lock-free overlay.
+        inner.kill_switch_to_owned();
 
         let mut tx = inner.begin_document("bytes_doc").expect("begin");
 
@@ -1529,6 +1543,8 @@ mod tests {
 
         let mut inner: PersistentARTrieChar<u64> =
             PersistentARTrieChar::create(&path).expect("create");
+        // Force the proven owned-tree path (pre-flip behavior) — this test exercises an owned/transaction/merge/archive feature that the create-flip would otherwise route to the lock-free overlay.
+        inner.kill_switch_to_owned();
 
         // Insert some initial values
         inner.increment("term_a", 100).expect("initial increment");
@@ -1574,6 +1590,8 @@ mod tests {
 
         let mut inner: PersistentARTrieChar<u64> =
             PersistentARTrieChar::create(&path).expect("create");
+        // Force the proven owned-tree path (pre-flip behavior) — this test exercises an owned/transaction/merge/archive feature that the create-flip would otherwise route to the lock-free overlay.
+        inner.kill_switch_to_owned();
 
         // Create a transaction with both inserts and increments
         let mut tx = inner.begin_document("mixed_doc").expect("begin");
@@ -1608,6 +1626,8 @@ mod tests {
         {
             let mut inner: PersistentARTrieChar<u64> =
                 PersistentARTrieChar::create(&path).expect("create");
+            // Force the proven owned-tree path (pre-flip behavior) — this test exercises an owned/transaction/merge/archive feature that the create-flip would otherwise route to the lock-free overlay.
+            inner.kill_switch_to_owned();
 
             inner.increment("existing", 100).expect("initial");
 
@@ -2708,6 +2728,8 @@ mod tests {
         {
             let mut trie: PersistentARTrieChar<()> =
                 PersistentARTrieChar::create(&path).expect("create");
+            // Force the proven owned-tree path (pre-flip behavior) — this test exercises an owned/transaction/merge/archive feature that the create-flip would otherwise route to the lock-free overlay.
+            trie.kill_switch_to_owned();
             trie.insert_impl_no_wal("hello");
             trie.checkpoint().expect("checkpoint");
         }

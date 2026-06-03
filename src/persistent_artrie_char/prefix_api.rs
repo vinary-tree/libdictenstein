@@ -20,6 +20,18 @@ use super::prefix_term::{PrefixTermWithArena, PrefixTermWithValueAndArena};
 
 impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     pub fn iter_prefix(&self, prefix: &str) -> Result<Option<Vec<String>>> {
+        // E1 read-flip: under the overlay regime the owned tree is empty; enumerate
+        // the immutable overlay (non-faulting, resident-finals — see `overlay_read`).
+        if self.route_overlay() {
+            return self.overlay_iter_prefix(prefix);
+        }
+        self.owned_iter_prefix(prefix)
+    }
+
+    /// Owned-tree prefix iteration (UN-routed). E1 `false`-arm AND the
+    /// recovery/reestablish bootstrap (D1 — reads the recovered owned tree even while
+    /// `route_overlay()` is true).
+    pub(crate) fn owned_iter_prefix(&self, prefix: &str) -> Result<Option<Vec<String>>> {
         let node = match self.navigate_to_prefix(prefix)? {
             Some(n) => n,
             None => return Ok(None),
@@ -35,6 +47,23 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     /// Returns `Ok(None)` if the prefix path doesn't exist in the trie.
     /// Returns `Ok(Some(vec))` with all (term, value) pairs for terms starting with the prefix.
     pub fn iter_prefix_with_values(&self, prefix: &str) -> Result<Option<Vec<(String, V)>>>
+    where
+        V: Clone,
+    {
+        // E1 read-flip: enumerate the overlay (the `u64` counter per final, or the
+        // synthesized `()` for membership — see `overlay_read`).
+        if self.route_overlay() {
+            return self.overlay_iter_prefix_with_values(prefix);
+        }
+        self.owned_iter_prefix_with_values(prefix)
+    }
+
+    /// Owned-tree (term, value) prefix iteration (UN-routed). E1 `false`-arm + the
+    /// recovery/reestablish bootstrap (D1).
+    pub(crate) fn owned_iter_prefix_with_values(
+        &self,
+        prefix: &str,
+    ) -> Result<Option<Vec<(String, V)>>>
     where
         V: Clone,
     {
@@ -73,6 +102,22 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     /// }
     /// ```
     pub fn iter_prefix_with_arena(&self, prefix: &str) -> Result<Option<Vec<PrefixTermWithArena>>> {
+        // E1: overlay nodes are all resident (in-memory), so `arena_id` is `None` for
+        // every term — exactly the value the owned path returns for not-yet-persisted
+        // nodes (see the struct doc). Arena grouping is a disk-page-locality
+        // optimization that is a no-op for the in-memory overlay; the TERMS are
+        // returned faithfully (resident-finals, non-faulting — see `overlay_read`).
+        if self.route_overlay() {
+            return Ok(self.overlay_iter_prefix(prefix)?.map(|terms| {
+                terms
+                    .into_iter()
+                    .map(|term| PrefixTermWithArena {
+                        term,
+                        arena_id: None,
+                    })
+                    .collect()
+            }));
+        }
         let (node, prefix_arena) = match self.navigate_to_prefix_with_arena(prefix)? {
             Some(pair) => pair,
             None => return Ok(None),
@@ -127,6 +172,19 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     where
         V: Clone,
     {
+        // E1: see `iter_prefix_with_arena` — overlay terms are resident, `arena_id` None.
+        if self.route_overlay() {
+            return Ok(self.overlay_iter_prefix_with_values(prefix)?.map(|entries| {
+                entries
+                    .into_iter()
+                    .map(|(term, value)| PrefixTermWithValueAndArena {
+                        term,
+                        value,
+                        arena_id: None,
+                    })
+                    .collect()
+            }));
+        }
         let (node, prefix_arena) = match self.navigate_to_prefix_with_arena(prefix)? {
             Some(pair) => pair,
             None => return Ok(None),
@@ -155,6 +213,28 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
         self.remove_prefix_batched(prefix, 1024)
     }
 
+    /// E1 overlay prefix removal: enumerate the prefix subtree from the immutable
+    /// overlay (non-faulting, resident-finals — see `overlay_read`) and durably remove
+    /// each term via the Order-A `remove_cas_durable` path. Durable, so reopen sees the
+    /// removals (the WAL-recovery test). Resident-finals semantics: exact while no
+    /// overlay node is evicted (E1-iter-A), consistent with `overlay_iter_prefix`.
+    fn remove_prefix_overlay(&mut self, prefix: &str) -> Result<usize> {
+        // Snapshot the matching terms first (one resident enumeration), then remove
+        // each — `remove_cas_durable` republishes the overlay root per call, so we must
+        // not hold a borrow of the tree across the removals.
+        let terms = match self.overlay_iter_prefix(prefix)? {
+            Some(terms) => terms,
+            None => return Ok(0),
+        };
+        let mut removed = 0usize;
+        for term in &terms {
+            if self.remove_cas_durable(term)? {
+                removed += 1;
+            }
+        }
+        Ok(removed)
+    }
+
     /// Remove all terms with the given prefix using page-aware batching.
     ///
     /// This method groups terms by their disk arena before removal, improving
@@ -171,6 +251,16 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     /// The number of terms removed.
     pub fn remove_prefix_batched(&mut self, prefix: &str, batch_size: usize) -> Result<usize> {
         use std::collections::HashMap;
+
+        // E1: under the overlay regime there is no owned arena to group by, so the
+        // arena-batched path does not apply. Remove via the overlay — enumerate the
+        // prefix (non-faulting, resident-finals) and durably remove each term through
+        // the Order-A `remove_cas_durable` path. (Arena page-locality grouping is an
+        // owned-tree disk-layout optimization with no overlay analogue; the removal
+        // SEMANTICS are fully preserved.)
+        if self.route_overlay() {
+            return self.remove_prefix_overlay(prefix);
+        }
 
         let batch_size = batch_size.max(1);
         let mut total_removed = 0;

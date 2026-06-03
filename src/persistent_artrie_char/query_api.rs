@@ -39,6 +39,19 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     /// This version returns a `Result` for lazy loading I/O errors.
     /// For disk-backed tries, prefetches children at each level for improved I/O performance.
     pub fn try_contains(&self, term: &str) -> Result<bool> {
+        // E1 read-flip: under the overlay regime the owned tree is empty (cleared on
+        // reopen), so route membership to the non-faulting lock-free read.
+        if self.route_overlay() {
+            return Ok(self.contains_lockfree(term));
+        }
+        self.owned_try_contains(term)
+    }
+
+    /// Owned-tree membership read (UN-routed). This is the E1 `false`-arm body AND
+    /// the read the recovery/reestablish bootstrap must use directly: that bootstrap
+    /// runs with `route_overlay()` already true yet must read the recovered OWNED tree
+    /// (routing it would read the empty overlay — total data loss; D1).
+    pub(crate) fn owned_try_contains(&self, term: &str) -> Result<bool> {
         let root = match &self.root {
             CharTrieRoot::Node(node) => node.as_ref(),
             CharTrieRoot::Empty => return Ok(false),
@@ -77,11 +90,57 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
         }
     }
 
+    /// Owned-tree value read returning a borrow (UN-routed). Mirrors `get` but always
+    /// reads `self.root`. Used by the recovery/reestablish bootstrap (D1) and by
+    /// `try_increment_impl_no_wal` — the `BatchIncrement` read-modify-write that runs
+    /// during a corruption-recovery rebuild, which executes with `route_overlay()`
+    /// already true (the trie was create-flipped) yet must read the OWNED tree it is
+    /// rebuilding, or recovered counters silently accumulate from 0.
+    pub(crate) fn owned_get(&self, term: &str) -> Option<&V> {
+        match self.owned_try_get(term) {
+            Ok(result) => result,
+            Err(error) => {
+                log::warn!("I/O error during lazy loading in owned_get(): {:?}", error);
+                None
+            }
+        }
+    }
+
+    /// E1 read-flip: term → value as an owned `Option<V>` (unlike `get`'s borrow).
+    /// Under `route_overlay()` it value-routes to the overlay (the `u64` counter via
+    /// `get_lockfree`, or `()` membership) through the SAFE `Any` dispatch in
+    /// `overlay_get_value`; otherwise it reads the owned tree. This is the canonical
+    /// value getter the `MappedDictionary`/`ARTrie` trait bodies delegate to — the
+    /// inherent method shadows the trait method of the same name in `.get_value()`
+    /// call syntax, so `self.get_value(..)` from a trait body calls THIS (no recursion).
+    pub fn get_value(&self, term: &str) -> Option<V> {
+        if self.route_overlay() {
+            if let Some(result) = self.overlay_get_value(term) {
+                return result;
+            }
+        }
+        self.owned_get(term).cloned()
+    }
+
     /// Get a value by term with explicit error handling.
     ///
     /// This version returns a `Result` for lazy loading I/O errors.
     /// For disk-backed tries, prefetches children at each level for improved I/O performance.
     pub fn try_get(&self, term: &str) -> Result<Option<&V>> {
+        // E1 read-flip: the overlay value is computed, not stored in `self.root`, so it
+        // cannot be returned as a borrow `&V`. Under the overlay regime this reference-
+        // returning getter reports absence; callers needing the value use `get_value`
+        // (owned `Option<V>`), which value-routes to the overlay.
+        if self.route_overlay() {
+            return Ok(None);
+        }
+        self.owned_try_get(term)
+    }
+
+    /// Owned-tree value read returning a borrow (UN-routed). E1 `false`-arm + the
+    /// recovery/reestablish bootstrap (D1 — must read the recovered owned tree even
+    /// while `route_overlay()` is true).
+    pub(crate) fn owned_try_get(&self, term: &str) -> Result<Option<&V>> {
         let root = match &self.root {
             CharTrieRoot::Node(node) => node.as_ref(),
             CharTrieRoot::Empty => return Ok(None),
@@ -154,8 +213,11 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     pub fn try_get_optimistic(&self, term: &str) -> Option<Option<V>> {
         let guard = OptimisticReadGuard::new(&self.version);
 
-        // Clone the value if found (to avoid holding reference during validation)
-        let result = self.get(term).cloned();
+        // Clone the value if found (to avoid holding reference during validation).
+        // D4: value-route via `get_value` (owned `Option<V>`, no borrow) so the
+        // optimistic getter reflects the overlay under the flip, instead of `get`
+        // (which returns `None` under the overlay — the borrow limitation).
+        let result = self.get_value(term);
 
         if guard.validate() {
             Some(result)

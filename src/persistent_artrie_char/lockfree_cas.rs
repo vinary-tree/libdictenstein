@@ -296,15 +296,22 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn reestablish_overlay_membership_after_recovery(&mut self) -> Result<()> {
         use std::collections::BTreeSet;
+        // D1 (CRITICAL): read the recovered OWNED tree via the UN-routed `owned_*`
+        // readers. This runs with `route_overlay()` ALREADY TRUE (the ctor flips
+        // before dispatching reestablish), so the public `iter`/`iter_prefix` would
+        // E1-route to the EMPTY overlay — we'd copy nothing, then clear owned below =
+        // total irreversible loss. The owned readers bypass the route.
         let mut first_units: BTreeSet<char> = BTreeSet::new();
-        for term in self.iter() {
-            if let Some(c) = term.chars().next() {
-                first_units.insert(c);
+        if let Some(all_terms) = self.owned_iter_prefix("")? {
+            for term in &all_terms {
+                if let Some(c) = term.chars().next() {
+                    first_units.insert(c);
+                }
             }
         }
         for c in first_units {
             let prefix: String = c.to_string();
-            if let Some(chunk) = self.iter_prefix(&prefix)? {
+            if let Some(chunk) = self.owned_iter_prefix(&prefix)? {
                 for term in &chunk {
                     self.insert_cas(term);
                 }
@@ -2069,26 +2076,29 @@ impl<S: BlockStorage> super::PersistentARTrieChar<u64, S> {
     /// once; a single-walk root-child enumeration is a future optimization.)
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn reestablish_overlay_after_recovery(&mut self) -> Result<()> {
-        use crate::MappedDictionary;
         use std::collections::BTreeSet;
         // Disjoint first-code-point partition cover of the recovered owned terms; the
         // empty term ("") has no first char and is its own partition (RES-6).
-        // NB: reads (`iter`/`iter_prefix_with_values`/`get_value`) target the OWNED
-        // tree — they are NOT write-routed by `route_overlay()` (the read-flip is the
-        // separate S5-12 E1 step), so they correctly read the recovered data here.
+        // D1 (CRITICAL): these reads use the UN-routed `owned_*` readers. Reestablish
+        // runs with `route_overlay()` ALREADY TRUE (the ctor flips before dispatching
+        // here), so the public `iter`/`iter_prefix_with_values`/`get_value` would
+        // E1-route to the EMPTY overlay — we'd copy nothing, then clear owned below =
+        // total irreversible loss. The owned readers bypass the route.
         let mut first_units: BTreeSet<char> = BTreeSet::new();
         let mut has_empty_term = false;
-        for term in self.iter() {
-            match term.chars().next() {
-                Some(c) => {
-                    first_units.insert(c);
+        if let Some(all_terms) = self.owned_iter_prefix("")? {
+            for term in &all_terms {
+                match term.chars().next() {
+                    Some(c) => {
+                        first_units.insert(c);
+                    }
+                    None => has_empty_term = true,
                 }
-                None => has_empty_term = true,
             }
         }
         // Empty-term partition first.
         if has_empty_term {
-            if let Some(v) = self.get_value("") {
+            if let Some(v) = self.owned_get("").copied() {
                 self.increment_cas("", v);
             }
         }
@@ -2096,7 +2106,7 @@ impl<S: BlockStorage> super::PersistentARTrieChar<u64, S> {
         // each via the no-WAL overlay path, drop the chunk before the next unit.
         for c in first_units {
             let prefix: String = c.to_string();
-            if let Some(chunk) = self.iter_prefix_with_values(&prefix)? {
+            if let Some(chunk) = self.owned_iter_prefix_with_values(&prefix)? {
                 for (term, value) in &chunk {
                     self.increment_cas(term, *value);
                 }
