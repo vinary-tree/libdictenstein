@@ -543,22 +543,26 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
         // the owned `preflight_remove_no_wal`). Consult the TRIE, not just the
         // positive cache: a cache MISS is not the same as trie-ABSENT (the cache
         // can be empty after a recovery rebuild while the term is live in the
-        // overlay). When fault-in is compiled in, walk through `find_leaf_faulting`
-        // so a term under an evicted (OnDisk) prefix is faulted back and seen
-        // present; on I/O error fall back to the non-faulting walk (best-effort).
+        // overlay).
         let _epoch = self.epoch_manager.enter_read();
-        // Flip F0: fault-in un-gated to production. A term under an evicted (OnDisk)
-        // prefix is faulted back and seen present; on I/O error fall back to the
-        // non-faulting walk (best-effort).
+        // §9 (S5-10d): NON-FAULTING first — the hot path (removing a present,
+        // in-memory term) skips the faulting read entirely (the production 75-minute-
+        // hang footgun: a faulting read on the hot path can block under eviction).
+        // Only an absent-in-memory miss — which COULD be a term under an evicted
+        // (OnDisk) prefix — pays a faulting read to confirm presence; on I/O error
+        // treat as absent (best-effort). A false-absent only skips a NO-OP remove (the
+        // root CAS is the sole arbiter; a never-present term has nothing to remove), so
+        // it never loses a write — the best-effort fallback is safe. (Was faulting-
+        // first, which paid the fault on EVERY remove incl. present-in-memory ones.)
         let present_before = {
-            match self.find_leaf_faulting(lockfree_root, &chars, DEFAULT_MAX_FAULTIN_RETRIES) {
-                Ok(found) => found.is_some(),
-                Err(_) => self.find_leaf_lockfree(lockfree_root, &chars).is_some(),
+            if self.find_leaf_lockfree(lockfree_root, &chars).is_some() {
+                true
+            } else {
+                match self.find_leaf_faulting(lockfree_root, &chars, DEFAULT_MAX_FAULTIN_RETRIES) {
+                    Ok(found) => found.is_some(),
+                    Err(_) => false,
+                }
             }
-            // Pre-flip production fallback (commented out, not deleted — F0
-            // reversibility): the non-faulting walk that reported a term under an
-            // evicted prefix as absent.
-            // self.find_leaf_lockfree(lockfree_root, &chars).is_some()
         };
         if !present_before {
             // Genuinely absent → no WAL record (no LSN, no watermark hole).
