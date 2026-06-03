@@ -90,6 +90,8 @@ impl<V: DictionaryValue>
             prefetcher: crate::persistent_artrie::prefetch::Prefetcher::new(),
             _phantom: std::marker::PhantomData,
             lockfree_root: None,
+            commit_seq: std::sync::atomic::AtomicU64::new(0),
+            commit_seq_by_data_lsn: std::sync::Mutex::new(std::collections::BTreeMap::new()),
             lockfree_cache: None,
             cas_retries: std::sync::atomic::AtomicU64::new(0),
         })
@@ -194,6 +196,8 @@ impl<V: DictionaryValue>
             prefetcher: crate::persistent_artrie::prefetch::Prefetcher::new(),
             _phantom: std::marker::PhantomData,
             lockfree_root: None,
+            commit_seq: std::sync::atomic::AtomicU64::new(0),
+            commit_seq_by_data_lsn: std::sync::Mutex::new(std::collections::BTreeMap::new()),
             lockfree_cache: None,
             cas_retries: std::sync::atomic::AtomicU64::new(0),
         };

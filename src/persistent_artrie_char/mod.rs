@@ -177,9 +177,14 @@ pub mod wal_helpers;
 // (Migration Phase E; the executable refinement of LockFreeDurableCheckpoint.tla).
 pub(crate) mod committed_watermark;
 
-// Kill-switch scaffold for the irreversible Phase-E write-path flip. Inert
-// (`OwnedTree`) default; no production path consults it yet.
+// Kill-switch scaffold + thin production-write-path router for the lock-free
+// flip. `route_overlay()` + `set_overlay_write_mode()` live here.
 pub(crate) mod overlay_write_mode;
+
+// Per-monomorph routing for the valued production mutators (insert_with_value /
+// increment / upsert): routes to the overlay only for V = u64 (SAFE Any downcast),
+// owned tree otherwise. Flip F0.
+pub(crate) mod lockfree_value_route;
 
 // Public mutation API (insert / insert_with_value / remove) — Phase-6 split.
 pub mod mutation_api;
@@ -469,6 +474,21 @@ pub struct PersistentARTrieChar<V: DictionaryValue = (), S: crate::persistent_ar
 
     /// Statistics: CAS retries for monitoring contention.
     pub(crate) cas_retries: std::sync::atomic::AtomicU64,
+
+    /// DG0 (D2.8 D4): the durable global commit-sequence counter. Seeded on open
+    /// from `max(header.commit_seq_floor, scan-max-of-CommitRank)`; a future
+    /// `next_commit_seq()` is a claim-before-CAS `fetch_add` (the visibility-order
+    /// replay key). Plumbed here (default 0); it becomes load-bearing only when
+    /// DG-RECON stamps it into `CommitRank.generation` — until then it is inert.
+    pub(crate) commit_seq: std::sync::atomic::AtomicU64,
+
+    /// DG0 (D2.8 §4.2): index `data_lsn -> commit_seq` for the reclaimed-set floor
+    /// (`floor = max{commit_seq : data_lsn <= checkpoint_lsn}`). A *cache* (the
+    /// durable `CommitRank` records are truth); bounded with a scan-fallback so it
+    /// cannot grow unbounded under a never-checkpoint overlay. Updated via `&self`
+    /// in `append_commit_rank` (DG-RECON) ⇒ wrapped in a `Mutex`. The key is a WAL
+    /// `Lsn` (a `u64` alias); kept as `u64` here to avoid an Lsn import.
+    pub(crate) commit_seq_by_data_lsn: std::sync::Mutex<std::collections::BTreeMap<u64, u64>>,
 }
 
 // Manual Debug implementation to avoid requiring Debug on BufferManager and WalWriter
