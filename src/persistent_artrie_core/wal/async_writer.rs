@@ -637,6 +637,19 @@ impl AsyncWalWriter {
         writer.set_owned_regime()
     }
 
+    /// Durably raise the WAL `commit_seq_floor` (S5-2 A3 floor). Delegates to the
+    /// inner sync writer (monotone raise-only; persists the header).
+    pub fn set_commit_seq_floor(&self, floor: u64) -> Result<(), WalError> {
+        let writer = self.writer.lock().expect("WAL writer lock poisoned");
+        writer.set_commit_seq_floor(floor)
+    }
+
+    /// The durable `commit_seq_floor` from the header (S5-2).
+    pub fn commit_seq_floor(&self) -> u64 {
+        let writer = self.writer.lock().expect("WAL writer lock poisoned");
+        writer.commit_seq_floor()
+    }
+
     /// Get the path to the WAL file.
     pub fn path(&self) -> &Path {
         &self.path

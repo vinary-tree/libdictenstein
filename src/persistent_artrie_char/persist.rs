@@ -64,6 +64,14 @@ pub(crate) struct CheckpointSnapshot {
     /// watermark-based `checkpoint_lsn` the plan §4 mandates, which is what makes
     /// publishing a counter image while retaining the WAL non-double-counting.
     committed_watermark_at_capture: Option<u64>,
+    /// **S5-2 (A3 commit_seq floor).** The durable global `commit_seq` observed
+    /// (Acquire) in the SAME capture window as the watermark and BEFORE the root
+    /// load. `Some(c)` for [`Self::capture_snapshot_immutable`]; `None` for the owned
+    /// [`Self::capture_snapshot`] (which never advances `commit_seq`, so there is no
+    /// floor to raise). The retaining-WAL publisher raises the WAL `commit_seq_floor`
+    /// to this value (monotone, carried across rotate) so a post-checkpoint overlay op
+    /// out-ranks every pre-checkpoint survivor on a later rebuild.
+    commit_seq_at_capture: Option<u64>,
     /// Freshly-built disk-location registry (only when eviction is enabled),
     /// published to the eviction coordinator after durability is verified.
     eviction_registry: Option<DiskLocationRegistry>,
@@ -318,6 +326,8 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
             // Owned-tree capture reclaims by the `next_lsn` convention, not a
             // watermark (writers are excluded by the write lock), so this is None.
             committed_watermark_at_capture: None,
+            // Owned capture never advances `commit_seq` (S5-2) ⇒ no floor to raise.
+            commit_seq_at_capture: None,
             eviction_registry,
         })
     }
@@ -422,6 +432,15 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
             .map(|w| w.synced_lsn())
             .unwrap_or(0);
 
+        // S5-2 (A3 floor): the durable global commit_seq, captured (Acquire) in the
+        // SAME pre-root-load window as the watermark. commit_seq claims are monotone in
+        // CAS order (fetch_add loop-top), so this value is ≥ every survivor generation
+        // folded into the about-to-be-loaded root ⇒ raising the WAL floor to it makes a
+        // post-checkpoint op out-rank all of them. Reading it BEFORE the root load is
+        // required (after would risk a floor above an in-snapshot survivor). DO NOT
+        // REORDER past the root load below.
+        let commit_seq_at_capture = self.commit_seq.load(AtomicOrdering::Acquire);
+
         let overlay_root = self.lockfree_root.as_ref().and_then(|root| root.load());
         let (root_type, root_ptr, is_final, entry_count) = match overlay_root {
             None => (ROOT_TYPE_EMPTY, 0u64, false, 0u64),
@@ -507,6 +526,9 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
             // The watermark captured BEFORE the root load — the safe `checkpoint_lsn`
             // the retaining-WAL publisher records so recovery skips deltas ≤ it.
             committed_watermark_at_capture: Some(watermark_at_capture),
+            // The commit_seq captured in the same window (S5-2); the publisher raises
+            // the WAL floor to it.
+            commit_seq_at_capture: Some(commit_seq_at_capture),
             eviction_registry,
         })
     }
@@ -606,6 +628,17 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
                 .map_err(|e| PersistentARTrieError::WalError {
                     reason: format!("{:?}", e),
                 })?;
+            // S5-2 (A3 floor): durably raise the WAL commit_seq floor to the value
+            // captured in the watermark window, so a post-checkpoint overlay op
+            // out-ranks every pre-checkpoint survivor across a later rotate. Monotone
+            // (raise-only); carried across rotate. `None` for an owned snapshot.
+            if let Some(floor) = snapshot.commit_seq_at_capture {
+                wal_writer.set_commit_seq_floor(floor).map_err(|e| {
+                    PersistentARTrieError::WalError {
+                        reason: format!("{:?}", e),
+                    }
+                })?;
+            }
             // Deliberately NO rotate_to_archive: the WAL (incl. the tail > w) is
             // retained in full. That is what keeps this reversible (no destructive
             // truncation) while remaining non-double-counting (the Checkpoint
@@ -717,6 +750,16 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
                 .map_err(|e| PersistentARTrieError::WalError {
                     reason: format!("{:?}", e),
                 })?;
+            // S5-2 (A3 floor): raise the WAL commit_seq floor (same as the
+            // retaining-WAL publisher). `commit_seq_at_capture` is `Copy`, so it
+            // survives the earlier `eviction_registry` partial-move.
+            if let Some(floor) = snapshot.commit_seq_at_capture {
+                wal_writer.set_commit_seq_floor(floor).map_err(|e| {
+                    PersistentARTrieError::WalError {
+                        reason: format!("{:?}", e),
+                    }
+                })?;
+            }
             // Deliberately NO rotate_to_archive: destructive watermark-bounded WAL
             // truncation is the owner-gated IRREVERSIBLE flip, out of scope here.
         }
