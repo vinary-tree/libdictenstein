@@ -97,7 +97,7 @@ mod error;
 
 // `WalHeader` was relocated to the sibling `wal::header` module; re-exported
 // here under its original path.
-pub use header::WalHeader;
+pub use header::{RankRegime, WalHeader};
 
 mod header;
 

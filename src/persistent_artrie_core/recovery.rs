@@ -35,7 +35,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-use super::wal::{Lsn, WalConfig, WalError, WalReader, WalRecord};
+use super::wal::{Lsn, RankRegime, WalConfig, WalError, WalReader, WalRecord};
 use log::warn;
 
 /// Error types for recovery operations.
@@ -258,6 +258,11 @@ pub fn reconcile_lww(
     recovered_ops: Vec<(Lsn, WalRecord)>,
     loaded_from_disk: bool,
     checkpoint_lsn: Lsn,
+    // D2.8 §1.5: the regime of the FILE these records came from. `Owned` (the
+    // current, pre-flip value for every base/vocab/char file) keeps unranked
+    // records in LSN order (unchanged behavior). `Overlay` drops unranked records
+    // (two-append-window orphans). INERT until the flip writes an Overlay file.
+    rank_regime: RankRegime,
 ) -> Vec<RecoveredOperation> {
     // Pass 1: lsn -> commit generation, from the CommitRank markers.
     let mut rank: HashMap<Lsn, u64> = HashMap::new();
@@ -274,8 +279,6 @@ pub fn reconcile_lww(
         }
     }
 
-    let generation_of = |lsn: Lsn| -> u64 { rank.get(&lsn).copied().unwrap_or(lsn) };
-
     // Pass 2: expand every (in-scope) data record into its ops, stamped with the
     // commit generation, then apply in (generation, lsn) order.
     let mut stamped: Vec<(u64, Lsn, RecoveredOperation)> =
@@ -287,7 +290,19 @@ pub fn reconcile_lww(
         if loaded_from_disk && checkpoint_lsn > 0 && lsn <= checkpoint_lsn {
             continue;
         }
-        let g = generation_of(lsn);
+        // Regime-gated drop (D2.8 §1.5). RANKED ⇒ a confirmed (acked) op → keep at
+        // its commit-generation. UNRANKED ⇒ Owned/legacy file: KEEP @ lsn (in-order
+        // replay; the pre-fix `unwrap_or(lsn)` behavior — INERT while every file is
+        // Owned); Overlay file: DROP (a never-acked two-append-window orphan — ack
+        // waits for the CommitRank, so dropping it loses no acked write and
+        // resurrects nothing).
+        let g = match rank.get(&lsn).copied() {
+            Some(commit_seq) => commit_seq,
+            None => match rank_regime {
+                RankRegime::Owned => lsn,
+                RankRegime::Overlay => continue,
+            },
+        };
         for op in recovered_operations_from_record(lsn, record) {
             stamped.push((g, lsn, op));
         }
@@ -3054,7 +3069,7 @@ mod reconcile_lww_tests {
             (30, rem(b"a")), // a: removed…
             (40, ins(b"a")), // …then re-inserted — final = present
         ];
-        let winners = reconcile_lww(recovered, false, 0);
+        let winners = reconcile_lww(recovered, false, 0, crate::persistent_artrie_core::wal::RankRegime::Owned);
         // Every op is emitted, in LSN order (rank-less ⇒ generation == lsn).
         assert_eq!(
             project(&winners),
@@ -3085,7 +3100,7 @@ mod reconcile_lww_tests {
             (357, rank(356, b"s019", 2)),
             (358, rank(352, b"s019", 5)),
         ];
-        let winners = reconcile_lww(recovered, false, 0);
+        let winners = reconcile_lww(recovered, false, 0, crate::persistent_artrie_core::wal::RankRegime::Owned);
         // Ordered by generation: Remove(gen2) THEN Insert(gen5).
         assert_eq!(
             project(&winners),
@@ -3102,7 +3117,7 @@ mod reconcile_lww_tests {
         // the fix closes.
         let rankless = vec![(352, ins(b"s019")), (356, rem(b"s019"))];
         assert_eq!(
-            last_effect(&reconcile_lww(rankless, false, 0), b"s019"),
+            last_effect(&reconcile_lww(rankless, false, 0, crate::persistent_artrie_core::wal::RankRegime::Owned), b"s019"),
             Some("rem"),
             "rank-less LSN order applies the Remove last (the s019 loss)"
         );
@@ -3119,7 +3134,7 @@ mod reconcile_lww_tests {
             (357, rank(356, b"s019", 3)),
             (358, rank(352, b"s019", 9)),
         ];
-        let winners = reconcile_lww(recovered, false, 0);
+        let winners = reconcile_lww(recovered, false, 0, crate::persistent_artrie_core::wal::RankRegime::Owned);
         assert_eq!(
             project(&winners),
             vec![("ins", b"s019".to_vec()), ("rem", b"s019".to_vec())]
@@ -3141,7 +3156,7 @@ mod reconcile_lww_tests {
             (31, rank(20, b"x", 7)), // same generation as the remove
         ];
         // gen tie (7,7) ⇒ higher lsn (20, the insert) sorts last ⇒ final present.
-        assert_eq!(last_effect(&reconcile_lww(recovered, false, 0), b"x"), Some("ins"));
+        assert_eq!(last_effect(&reconcile_lww(recovered, false, 0, crate::persistent_artrie_core::wal::RankRegime::Owned), b"x"), Some("ins"));
     }
 
     /// `checkpoint_lsn` skip is keyed on the DATA record's LSN; records at or
@@ -3152,10 +3167,10 @@ mod reconcile_lww_tests {
             (5, ins(b"old")),  // <= checkpoint, skipped (loaded_from_disk)
             (15, ins(b"new")), // > checkpoint, kept
         ];
-        let winners = reconcile_lww(recovered.clone(), true, 10);
+        let winners = reconcile_lww(recovered.clone(), true, 10, crate::persistent_artrie_core::wal::RankRegime::Owned);
         assert_eq!(project(&winners), vec![("ins", b"new".to_vec())]);
         // When NOT loaded_from_disk, the checkpoint guard does not apply.
-        let winners_no_disk = reconcile_lww(recovered, false, 10);
+        let winners_no_disk = reconcile_lww(recovered, false, 10, crate::persistent_artrie_core::wal::RankRegime::Owned);
         assert_eq!(
             project(&winners_no_disk),
             vec![("ins", b"old".to_vec()), ("ins", b"new".to_vec())]
@@ -3172,7 +3187,7 @@ mod reconcile_lww_tests {
             entries: vec![(term.to_vec(), delta)],
         };
         let recovered = vec![(10, bi(b"ctr", 1)), (20, bi(b"ctr", 1)), (30, bi(b"ctr", 1))];
-        let winners = reconcile_lww(recovered, false, 0);
+        let winners = reconcile_lww(recovered, false, 0, crate::persistent_artrie_core::wal::RankRegime::Owned);
         assert_eq!(
             winners.len(),
             3,
@@ -3240,7 +3255,7 @@ mod reconcile_lww_tests {
         // Both lossy-decode to "\u{FFFD}\u{0001}" / "\u{FFFD}\u{0002}" — distinct
         // here, but the point is the bucket key is the raw bytes regardless.
         let recovered = vec![(10, ins(&a)), (20, ins(&b))];
-        let winners = reconcile_lww(recovered, false, 0);
+        let winners = reconcile_lww(recovered, false, 0, crate::persistent_artrie_core::wal::RankRegime::Owned);
         let terms: std::collections::BTreeSet<Vec<u8>> =
             winners.iter().map(|op| op.term().to_vec()).collect();
         assert_eq!(terms.len(), 2, "two distinct raw-byte terms = two winners");
@@ -3252,7 +3267,7 @@ mod reconcile_lww_tests {
     fn commit_rank_record_is_membership_no_op() {
         let recovered = vec![(10, rank(99, b"ghost", 3))];
         assert!(
-            reconcile_lww(recovered, false, 0).is_empty(),
+            reconcile_lww(recovered, false, 0, crate::persistent_artrie_core::wal::RankRegime::Owned).is_empty(),
             "a lone CommitRank produces no operation"
         );
     }
