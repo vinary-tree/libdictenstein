@@ -1207,12 +1207,10 @@ where
 /// empty), so on the round-trip the prefix is empty; we still propagate any
 /// non-empty prefix faithfully so the builder is a total inverse.
 ///
-/// REVERSIBLE BENCH GATE: gated `any(test, bench-internals)` (the fault-in
-/// primitive that consumes it is itself bench/test-gated until the production
-/// flip — design §6/§8).
+/// **Flip F0:** un-gated to production (the fault-in primitive that consumes it is
+/// now a production path).
 ///
 /// MAINTENANCE COUPLING: mirrors [`overlay_to_inner`]; keep the two in lockstep.
-#[cfg(any(test, feature = "bench-internals"))]
 pub(super) fn inner_to_overlay<V>(inner: &CharTrieNodeInner<V>) -> super::nodes::PersistentCharNode<V>
 where
     V: DictionaryValue,

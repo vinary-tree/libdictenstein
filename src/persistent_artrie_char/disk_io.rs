@@ -398,10 +398,9 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     /// called through this safe `&self` boundary; the conversion is pure node
     /// copies + `Arc` allocation.
     ///
-    /// REVERSIBLE BENCH GATE: gated `any(test, bench-internals)` (the fault-in
-    /// read/write wiring that consumes it is bench/test-gated until the production
-    /// flip — design §6/§8).
-    #[cfg(any(test, feature = "bench-internals"))]
+    /// **Flip F0:** un-gated to production. The fault-in read/write wiring that
+    /// consumes it is now a production path (`route_overlay()`), so evicted overlay
+    /// nodes must be loadable unconditionally.
     pub(super) fn load_overlay_node_from_disk(
         &self,
         disk_ptr: &SwizzledPtr,

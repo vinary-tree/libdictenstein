@@ -90,9 +90,8 @@ pub(super) enum LockfreeInsertResult<V = ()> {
     /// faulting an `OnDisk` prefix node back into memory during the path-copy. The
     /// term is NOT acknowledged; the durable image is intact (fault-in writes
     /// nothing). `insert_cas_durable` surfaces this as `Err(e)`; `insert_cas`
-    /// treats it as a bounded-retry/`false`. Only constructed when fault-in is
-    /// compiled in (`any(test, bench-internals)`).
-    #[cfg(any(test, feature = "bench-internals"))]
+    /// treats it as a bounded-retry/`false`. **Flip F0:** un-gated — fault-in is
+    /// now a production path, so this variant is always constructible.
     IoError(crate::persistent_artrie::error::PersistentARTrieError),
 }
 
@@ -110,7 +109,6 @@ impl<V: Clone> std::fmt::Debug for LockfreeInsertResult<V> {
                 f.write_str("LockfreeInsertResult::AlreadyExists")
             }
             LockfreeInsertResult::Conflict => f.write_str("LockfreeInsertResult::Conflict"),
-            #[cfg(any(test, feature = "bench-internals"))]
             LockfreeInsertResult::IoError(e) => f
                 .debug_tuple("LockfreeInsertResult::IoError")
                 .field(e)

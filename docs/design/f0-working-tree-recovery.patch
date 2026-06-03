@@ -1,0 +1,925 @@
+diff --git a/src/persistent_artrie_char/atomic_ops.rs b/src/persistent_artrie_char/atomic_ops.rs
+index de7e6d8..798ac0c 100644
+--- a/src/persistent_artrie_char/atomic_ops.rs
++++ b/src/persistent_artrie_char/atomic_ops.rs
+@@ -28,7 +28,22 @@ impl<V: DictionaryValue + serde::Serialize + serde::de::DeserializeOwned, S: Blo
+     /// # Returns
+     ///
+     /// The new value after incrementing.
++    ///
++    /// **Flip routing (design §2):** for the `V = u64` monomorph with `delta >= 0`
++    /// and `route_overlay()`, this routes to the proven Order-A
++    /// [`try_increment_cas_durable`](Self::try_increment_cas_durable) (add-only
++    /// `BatchIncrement`, commutative-on-replay). A NEGATIVE delta or arbitrary `V`
++    /// falls back to the owned tree (the design's "negative-delta increment
++    /// unsupported" + "arbitrary V → forced OwnedTree" gaps — dispatched via the
++    /// SAFE `Any` downcast in `lockfree_value_route`, zero unsafe).
+     pub fn increment(&mut self, term: &str, delta: i64) -> Result<i64> {
++        if self.route_overlay() {
++            if let Some(routed) = super::lockfree_value_route::route_increment(self, term, delta) {
++                return routed;
++            }
++            // delta < 0 or arbitrary V: fall through to the owned body.
++        }
++
+         self.preflight_insert_with_value_no_wal(term)?;
+ 
+         // Get current value
+@@ -127,7 +142,19 @@ impl<V: DictionaryValue + serde::Serialize + serde::de::DeserializeOwned, S: Blo
+     /// # Returns
+     ///
+     /// `true` if a new term was inserted, `false` if an existing term was updated.
++    ///
++    /// **Flip routing (design §2):** for the `V = u64` monomorph with
++    /// `route_overlay()`, routes to the thin Order-A
++    /// [`upsert_cas_durable`](Self::upsert_cas_durable) (last-writer = the root-CAS
++    /// winner). Arbitrary `V` falls back to the owned tree (SAFE `Any` dispatch).
+     pub fn upsert(&mut self, term: &str, value: V) -> Result<bool> {
++        if self.route_overlay() {
++            if let Some(routed) = super::lockfree_value_route::route_upsert(self, term, &value) {
++                return routed;
++            }
++            // Arbitrary V under LockFreeOverlay: fall through to the owned body.
++        }
++
+         self.preflight_insert_with_value_no_wal(term)?;
+         let existed = self.contains(term);
+ 
+@@ -160,6 +187,21 @@ impl<V: DictionaryValue + serde::Serialize + serde::de::DeserializeOwned, S: Blo
+         expected: Option<V>,
+         new_value: V,
+     ) -> Result<bool> {
++        // Flip gap (design §1, named residual): the overlay has no value-level
++        // compare-and-swap primitive (only the root-version CAS arbitrates
++        // structural publication, not an expected-value match). Reject under
++        // `route_overlay()` rather than write the owned tree (which the overlay
++        // read/checkpoint path would not observe). Reachable only for the u64
++        // monomorph under the F5 default; arbitrary V keeps `lockfree_root = None`
++        // so `route_overlay()` is false and the owned body runs.
++        if self.route_overlay() {
++            return Err(PersistentARTrieError::InvalidOperation(
++                "compare_and_swap is not supported under the lock-free overlay write mode (no \
++                 value-level CAS primitive); use OverlayWriteMode::OwnedTree"
++                    .to_string(),
++            ));
++        }
++
+         self.preflight_insert_with_value_no_wal(term)?;
+         let current = self.get(term).cloned();
+ 
+@@ -212,6 +254,17 @@ impl<V: DictionaryValue + serde::Serialize + serde::de::DeserializeOwned, S: Blo
+     /// If the term exists, returns its current value.
+     /// If not, inserts the default value and returns it.
+     pub fn get_or_insert(&mut self, term: &str, default: V) -> Result<V> {
++        // Flip routing (design §2): for the u64 monomorph under `route_overlay()`,
++        // insert-if-absent into the overlay then read the resulting value back.
++        // Arbitrary V falls back to the owned body (SAFE `Any` dispatch).
++        if self.route_overlay() {
++            if let Some(routed) =
++                super::lockfree_value_route::route_get_or_insert(self, term, &default)
++            {
++                return routed;
++            }
++        }
++
+         self.preflight_insert_with_value_no_wal(term)?;
+ 
+         if let Some(v) = self.get(term).cloned() {
+diff --git a/src/persistent_artrie_char/batch_insert.rs b/src/persistent_artrie_char/batch_insert.rs
+index 9d996d1..5fdf5ee 100644
+--- a/src/persistent_artrie_char/batch_insert.rs
++++ b/src/persistent_artrie_char/batch_insert.rs
+@@ -20,6 +20,27 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
+             return 0;
+         }
+ 
++        // Flip routing (design §2): under the overlay each entry commits via the
++        // proven per-op Order-A path (the overlay's discipline is per-op WAL-then-
++        // CAS, not the owned tree's single-BatchInsert append). Delegate to the
++        // already-routed single-op `insert` / `insert_with_value` so NO mutation
++        // logic is duplicated; arbitrary-V valued entries fall back inside those.
++        if self.route_overlay() {
++            let mut inserted_count = 0;
++            for (term, value) in entries {
++                let result = match value {
++                    Some(v) => self.insert_with_value(term, v.clone()),
++                    None => self.insert(term),
++                };
++                match result {
++                    Ok(true) => inserted_count += 1,
++                    Ok(false) => {}
++                    Err(e) => log::warn!("Failed overlay batch insert entry: {:?}", e),
++                }
++            }
++            return inserted_count;
++        }
++
+         let mut wal_entries = Vec::with_capacity(entries.len());
+         for (term, value) in entries {
+             let preflight = if value.is_some() {
+diff --git a/src/persistent_artrie_char/dict_impl_char.rs b/src/persistent_artrie_char/dict_impl_char.rs
+index 8ada57a..3fe25cf 100644
+--- a/src/persistent_artrie_char/dict_impl_char.rs
++++ b/src/persistent_artrie_char/dict_impl_char.rs
+@@ -90,9 +90,8 @@ pub(super) enum LockfreeInsertResult<V = ()> {
+     /// faulting an `OnDisk` prefix node back into memory during the path-copy. The
+     /// term is NOT acknowledged; the durable image is intact (fault-in writes
+     /// nothing). `insert_cas_durable` surfaces this as `Err(e)`; `insert_cas`
+-    /// treats it as a bounded-retry/`false`. Only constructed when fault-in is
+-    /// compiled in (`any(test, bench-internals)`).
+-    #[cfg(any(test, feature = "bench-internals"))]
++    /// treats it as a bounded-retry/`false`. **Flip F0:** un-gated — fault-in is
++    /// now a production path, so this variant is always constructible.
+     IoError(crate::persistent_artrie::error::PersistentARTrieError),
+ }
+ 
+@@ -110,7 +109,6 @@ impl<V: Clone> std::fmt::Debug for LockfreeInsertResult<V> {
+                 f.write_str("LockfreeInsertResult::AlreadyExists")
+             }
+             LockfreeInsertResult::Conflict => f.write_str("LockfreeInsertResult::Conflict"),
+-            #[cfg(any(test, feature = "bench-internals"))]
+             LockfreeInsertResult::IoError(e) => f
+                 .debug_tuple("LockfreeInsertResult::IoError")
+                 .field(e)
+diff --git a/src/persistent_artrie_char/disk_io.rs b/src/persistent_artrie_char/disk_io.rs
+index 4871ee4..e400853 100644
+--- a/src/persistent_artrie_char/disk_io.rs
++++ b/src/persistent_artrie_char/disk_io.rs
+@@ -398,10 +398,9 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
+     /// called through this safe `&self` boundary; the conversion is pure node
+     /// copies + `Arc` allocation.
+     ///
+-    /// REVERSIBLE BENCH GATE: gated `any(test, bench-internals)` (the fault-in
+-    /// read/write wiring that consumes it is bench/test-gated until the production
+-    /// flip — design §6/§8).
+-    #[cfg(any(test, feature = "bench-internals"))]
++    /// **Flip F0:** un-gated to production. The fault-in read/write wiring that
++    /// consumes it is now a production path (`route_overlay()`), so evicted overlay
++    /// nodes must be loadable unconditionally.
+     pub(super) fn load_overlay_node_from_disk(
+         &self,
+         disk_ptr: &SwizzledPtr,
+diff --git a/src/persistent_artrie_char/document_tx.rs b/src/persistent_artrie_char/document_tx.rs
+index 498ad7b..6b2d851 100644
+--- a/src/persistent_artrie_char/document_tx.rs
++++ b/src/persistent_artrie_char/document_tx.rs
+@@ -310,6 +310,24 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
+     where
+         V: Clone,
+     {
++        // Flip gap (design §1, named residual): multi-op document transactions are
++        // UNSUPPORTED under the lock-free overlay — the apply step below writes the
++        // OWNED tree (via `try_insert_impl_no_wal*`), which the overlay-default read
++        // path and the overlay checkpoint would NOT see (silent data loss). Rather
++        // than risk that, reject the commit under `route_overlay()` (PS3-guarded).
++        // Overlay-native document-tx apply ("same WAL records, overlay apply") is a
++        // named follow-on. Callers needing transactions use the OwnedTree kill-
++        // switch mode. `abort_document` stays valid (it applies nothing).
++        if self.route_overlay() {
++            return Err(PersistentARTrieError::InvalidOperation(
++                "document transactions are not supported under the lock-free overlay write mode \
++                 (commit_document applies to the owned tree, which the overlay read/checkpoint \
++                 path does not observe); use OverlayWriteMode::OwnedTree for transactions, or \
++                 the single-op insert/increment/upsert which route to the overlay"
++                    .to_string(),
++            ));
++        }
++
+         if tx.state != TransactionState::Active {
+             return Err(PersistentARTrieError::InvalidOperation(format!(
+                 "Cannot commit a {} transaction",
+diff --git a/src/persistent_artrie_char/lockfree_cas.rs b/src/persistent_artrie_char/lockfree_cas.rs
+index 92c221e..fa384b4 100644
+--- a/src/persistent_artrie_char/lockfree_cas.rs
++++ b/src/persistent_artrie_char/lockfree_cas.rs
+@@ -71,7 +71,11 @@ fn commit_rendezvous(phase: RendezvousPhase) {
+ /// a single read-only walk (design §3 liveness bound; OE8 regression-guards it).
+ /// Generous: each retry rebases off a freshly-published root, so contention is the
+ /// only reason to loop, and the fallback is correct (durable) anyway.
+-#[cfg(any(test, feature = "bench-internals"))]
++///
++/// **Flip F0:** un-gated to production. Once the production write path routes
++/// through the overlay (`route_overlay()`), evicted overlay nodes must be
++/// re-readable/writable on every path, so fault-in is unconditional (the g5
++/// design anticipated "the flip CONSUMES this primitive").
+ pub(crate) const DEFAULT_MAX_FAULTIN_RETRIES: usize = 16;
+ 
+ /// Error outcomes of [`PersistentARTrieChar::build_path_recursive`] (membership
+@@ -90,9 +94,8 @@ enum BuildPathError {
+     /// remove path; the insert path never produces it.
+     AlreadyAbsent,
+     /// WRITE-PATH FAULT-IN: an I/O error faulting an `OnDisk` prefix node back in.
+-    /// Maps to [`LockfreeInsertResult::IoError`]. Only constructible when fault-in
+-    /// is compiled in.
+-    #[cfg(any(test, feature = "bench-internals"))]
++    /// Maps to [`LockfreeInsertResult::IoError`]. **Flip F0:** un-gated — fault-in
++    /// is now a production path, so this variant is always constructible.
+     Io(crate::persistent_artrie::error::PersistentARTrieError),
+ }
+ 
+@@ -122,9 +125,8 @@ enum LockfreeRemoveResult {
+     Conflict,
+     /// WRITE-PATH FAULT-IN (design §3, R-B): a buffer-manager I/O error faulting
+     /// an `OnDisk` prefix node back in. The Remove WAL record is ALREADY durable;
+-    /// surfaced as `Err(e)` (durable-but-visible-only-after-reopen window). Only
+-    /// constructed when fault-in is compiled in.
+-    #[cfg(any(test, feature = "bench-internals"))]
++    /// surfaced as `Err(e)` (durable-but-visible-only-after-reopen window). **Flip
++    /// F0:** un-gated — fault-in is now a production path.
+     IoError(crate::persistent_artrie::error::PersistentARTrieError),
+ }
+ 
+@@ -242,8 +244,8 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
+                 // WRITE-PATH FAULT-IN I/O error (design §4): could not load an
+                 // evicted prefix from the durable image. Non-durable best-effort
+                 // insert: bump the retry counter and report `false` (not acked).
+-                // The durable image is intact; a later call can retry.
+-                #[cfg(any(test, feature = "bench-internals"))]
++                // The durable image is intact; a later call can retry. (Flip F0:
++                // un-gated — fault-in is a production path.)
+                 LockfreeInsertResult::IoError(_e) => {
+                     self.cas_retries.fetch_add(1, Ordering::Relaxed);
+                     return false;
+@@ -400,8 +402,8 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
+                 // reopen" window, NOT a lost write: recovery replays the logged
+                 // Insert. We do NOT advance the committed watermark (the write is
+                 // not yet visible), so the contiguous prefix correctly stalls at
+-                // this LSN until a later retry (or recovery) completes it.
+-                #[cfg(any(test, feature = "bench-internals"))]
++                // this LSN until a later retry (or recovery) completes it. (Flip F0:
++                // un-gated to production.)
+                 LockfreeInsertResult::IoError(e) => {
+                     self.cas_retries.fetch_add(1, Ordering::Relaxed);
+                     let _ = lsn;
+@@ -490,18 +492,18 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
+         // so a term under an evicted (OnDisk) prefix is faulted back and seen
+         // present; on I/O error fall back to the non-faulting walk (best-effort).
+         let _epoch = self.epoch_manager.enter_read();
++        // Flip F0: fault-in un-gated to production. A term under an evicted (OnDisk)
++        // prefix is faulted back and seen present; on I/O error fall back to the
++        // non-faulting walk (best-effort).
+         let present_before = {
+-            #[cfg(any(test, feature = "bench-internals"))]
+-            {
+-                match self.find_leaf_faulting(lockfree_root, &chars, DEFAULT_MAX_FAULTIN_RETRIES) {
+-                    Ok(found) => found.is_some(),
+-                    Err(_) => self.find_leaf_lockfree(lockfree_root, &chars).is_some(),
+-                }
+-            }
+-            #[cfg(not(any(test, feature = "bench-internals")))]
+-            {
+-                self.find_leaf_lockfree(lockfree_root, &chars).is_some()
++            match self.find_leaf_faulting(lockfree_root, &chars, DEFAULT_MAX_FAULTIN_RETRIES) {
++                Ok(found) => found.is_some(),
++                Err(_) => self.find_leaf_lockfree(lockfree_root, &chars).is_some(),
+             }
++            // Pre-flip production fallback (commented out, not deleted — F0
++            // reversibility): the non-faulting walk that reported a term under an
++            // evicted prefix as absent.
++            // self.find_leaf_lockfree(lockfree_root, &chars).is_some()
+         };
+         if !present_before {
+             // Genuinely absent → no WAL record (no LSN, no watermark hole).
+@@ -583,7 +585,7 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
+                 // stalls at this LSN until a later retry / recovery completes it).
+                 // This is the documented Order-A "durable-but-visible-after-reopen"
+                 // window — recovery replays the logged Remove, NOT a lost write.
+-                #[cfg(any(test, feature = "bench-internals"))]
++                // (Flip F0: un-gated to production.)
+                 LockfreeRemoveResult::IoError(e) => {
+                     self.cas_retries.fetch_add(1, Ordering::Relaxed);
+                     let _ = lsn;
+@@ -626,7 +628,7 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
+             // `build_remove_path_recursive` never returns `AlreadyExists`; keep the
+             // match total by mapping it to absent (the no-op spine outcome).
+             Err(BuildPathError::AlreadyExists) => LockfreeRemoveResult::AlreadyAbsent,
+-            #[cfg(any(test, feature = "bench-internals"))]
++            // Flip F0: fault-in I/O error un-gated to production.
+             Err(BuildPathError::Io(e)) => LockfreeRemoveResult::IoError(e),
+         }
+     }
+@@ -694,9 +696,9 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
+                     // EVICTED to OnDisk. Fault it in first, then descend, splicing
+                     // `Child::InMem(faulted)` — identical in shape to an in-memory
+                     // child, so the single root CAS stays the SOLE arbiter (no new
+-                    // commit point). Gated; production keeps the conservative
+-                    // "treat as absent" until the flip (design §6).
+-                    #[cfg(any(test, feature = "bench-internals"))]
++                    // commit point). Flip F0: un-gated to production (RB6 depends on
++                    // fault-in being a production path — remove-under-evicted-prefix
++                    // needs it).
+                     {
+                         let loaded = match self.load_overlay_node_from_disk(on_disk) {
+                             Ok(n) => n,
+@@ -707,15 +709,14 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
+                         let new_node = Arc::new(node.with_child(key, Child::InMem(new_child)));
+                         return Ok((new_node, leaf));
+                     }
+-                    // Production (no fault-in): an OnDisk prefix can't be faulted
+-                    // in the overlay here — treat as absent (conservative; the
+-                    // pre-flip behavior, reversible). The term lives in the
+-                    // persistent trie, which the overlay remove does not touch.
+-                    #[cfg(not(any(test, feature = "bench-internals")))]
+-                    {
+-                        let _ = on_disk;
+-                        Err(BuildPathError::AlreadyAbsent)
+-                    }
++                    // Pre-flip production fallback (commented out, not deleted — F0
++                    // reversibility): an OnDisk prefix couldn't be faulted in, so the
++                    // overlay remove treated it as absent.
++                    // #[cfg(not(any(test, feature = "bench-internals")))]
++                    // {
++                    //     let _ = on_disk;
++                    //     Err(BuildPathError::AlreadyAbsent)
++                    // }
+                 } else {
+                     // Null filler (never a real child) ⇒ absent.
+                     Err(BuildPathError::AlreadyAbsent)
+@@ -828,10 +829,10 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
+                     // CAS in `insert_lockfree_recursive` remains the SOLE arbiter (NO
+                     // new commit point is introduced here).
+                     //
+-                    // Gated `any(test, bench-internals)`: production read/write routing
+-                    // is unchanged until the flip (design §6). In the production build
+-                    // the OnDisk arm keeps the original conservative behavior below.
+-                    #[cfg(any(test, feature = "bench-internals"))]
++                    // Flip F0: un-gated to production. The flip routes production
++                    // inserts through the overlay, so a NEW term under an evicted
++                    // prefix MUST fault the prefix in rather than be silently dropped
++                    // (the data-loss-critical write-path half, design §4).
+                     {
+                         let loaded = match self.load_overlay_node_from_disk(on_disk) {
+                             Ok(n) => n,
+@@ -842,15 +843,15 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
+                         let new_node = Arc::new(node.with_child(key, Child::InMem(new_child)));
+                         return Ok((new_node, leaf));
+                     }
+-                    // Production (no fault-in): an OnDisk child means this path lives
+-                    // in the persistent trie, which the overlay cannot fault in here —
+-                    // treat as already-present to force a re-check via cache/persistent
+-                    // lookup (the pre-fault-in behavior; reversible).
+-                    #[cfg(not(any(test, feature = "bench-internals")))]
+-                    {
+-                        let _ = on_disk;
+-                        Err(BuildPathError::AlreadyExists)
+-                    }
++                    // Pre-flip production fallback (commented out, not deleted — F0
++                    // reversibility): treated an OnDisk child as already-present
++                    // (forcing a cache/persistent re-check), which silently dropped a
++                    // new term under an evicted prefix.
++                    // #[cfg(not(any(test, feature = "bench-internals")))]
++                    // {
++                    //     let _ = on_disk;
++                    //     Err(BuildPathError::AlreadyExists)
++                    // }
+                 } else {
+                     // Null filler (never a real child) — conservative AlreadyExists.
+                     Err(BuildPathError::AlreadyExists)
+@@ -948,10 +949,10 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
+             // "already exists" so this arm stays total without inventing a new
+             // insert outcome (unreachable in practice for inserts).
+             Err(BuildPathError::AlreadyAbsent) => LockfreeInsertResult::AlreadyExists,
+-            // WRITE-PATH FAULT-IN I/O error (fault-in builds only): surface it so
+-            // the durable caller returns `Err(e)` and the best-effort caller retries
+-            // / returns false. The durable image is intact (fault-in writes nothing).
+-            #[cfg(any(test, feature = "bench-internals"))]
++            // WRITE-PATH FAULT-IN I/O error: surface it so the durable caller
++            // returns `Err(e)` and the best-effort caller retries / returns false.
++            // The durable image is intact (fault-in writes nothing). (Flip F0:
++            // un-gated to production.)
+             Err(BuildPathError::Io(e)) => LockfreeInsertResult::IoError(e),
+         }
+     }
+@@ -970,14 +971,11 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
+         if let Some(ref root) = self.lockfree_root {
+             let chars: Vec<u32> = term.chars().map(|c| c as u32).collect();
+ 
+-            // READ-PATH FAULT-IN (design §3): when fault-in is compiled in
+-            // (test / bench-internals), route through `find_leaf_faulting` so a
+-            // term under an EVICTED (OnDisk) prefix is faulted back and reported
+-            // present instead of spuriously absent. On an I/O error we fall back
+-            // to the non-faulting walk (best-effort; liveness-only). The
+-            // production default (no gate) keeps the original non-faulting walk
+-            // untouched — reversibility (design §6).
+-            #[cfg(any(test, feature = "bench-internals"))]
++            // READ-PATH FAULT-IN (design §3): Flip F0 un-gates this to production.
++            // Route through `find_leaf_faulting` so a term under an EVICTED (OnDisk)
++            // prefix is faulted back and reported present instead of spuriously
++            // absent — production point-reads now follow the overlay. On an I/O
++            // error fall back to the non-faulting walk (best-effort; liveness-only).
+             {
+                 match self.find_leaf_faulting(root, &chars, DEFAULT_MAX_FAULTIN_RETRIES) {
+                     Ok(found) => return found.is_some(),
+@@ -989,12 +987,14 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
+                     }
+                 }
+             }
+-            #[cfg(not(any(test, feature = "bench-internals")))]
+-            {
+-                if let Some(root_node) = root.load() {
+-                    return self.find_in_lockfree_trie(&root_node, &chars, 0);
+-                }
+-            }
++            // Pre-flip production fallback (commented out, not deleted — F0
++            // reversibility): the non-faulting walk that read a term under an
++            // evicted prefix as absent.
++            // {
++            //     if let Some(root_node) = root.load() {
++            //         return self.find_in_lockfree_trie(&root_node, &chars, 0);
++            //     }
++            // }
+         }
+ 
+         false
+@@ -1136,7 +1136,7 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
+     /// untouched until the flip — design §6/§8).
+     ///
+     /// MAINTENANCE COUPLING: mirrors `evict_overlay_node_at_path`; keep in lockstep.
+-    #[cfg(any(test, feature = "bench-internals"))]
++    // Flip F0: un-gated to production (the read/write paths route through this).
+     pub(crate) fn find_leaf_faulting(
+         &self,
+         root_slot: &super::nodes::atomic_ptr::AtomicNodePtr<V>,
+@@ -1302,10 +1302,10 @@ impl<S: BlockStorage> super::PersistentARTrieChar<u64, S> {
+         let _epoch = self.epoch_manager.enter_read();
+         let chars: Vec<u32> = key.chars().map(|c| c as u32).collect();
+ 
+-        // READ-PATH FAULT-IN (design §3): fault an evicted (OnDisk) prefix back in
+-        // so the value is the durable value, not a spurious `None`. On I/O error
+-        // fall back to the non-faulting walk. Production default unchanged.
+-        #[cfg(any(test, feature = "bench-internals"))]
++        // READ-PATH FAULT-IN (design §3): Flip F0 un-gates this to production.
++        // Fault an evicted (OnDisk) prefix back in so the value is the durable
++        // value, not a spurious `None`. On I/O error fall through to the
++        // non-faulting walk below (best-effort).
+         {
+             if let Ok(found) = self.find_leaf_faulting(lockfree_root, &chars, DEFAULT_MAX_FAULTIN_RETRIES)
+             {
+@@ -1392,9 +1392,8 @@ impl<S: BlockStorage> super::PersistentARTrieChar<u64, S> {
+             // is against `root` (this snapshot), so a fault that advanced the root
+             // simply makes that CAS lose → we retry from the now-faulted root and
+             // descend without reload (also fixes the pre-existing OnDisk infinite
+-            // spin in the write step, design §4 read half). Production default
+-            // keeps the non-faulting read.
+-            #[cfg(any(test, feature = "bench-internals"))]
++            // spin in the write step, design §4 read half). Flip F0: un-gated to
++            // production.
+             let cur = match self.find_leaf_faulting(lockfree_root, &chars, DEFAULT_MAX_FAULTIN_RETRIES)
+             {
+                 Ok(found) => found.and_then(|leaf| leaf.get_value()).unwrap_or(0),
+@@ -1404,11 +1403,13 @@ impl<S: BlockStorage> super::PersistentARTrieChar<u64, S> {
+                     .and_then(|leaf| leaf.get_value())
+                     .unwrap_or(0),
+             };
+-            #[cfg(not(any(test, feature = "bench-internals")))]
+-            let cur = self
+-                .find_leaf_recursive(&root, &chars, 0)
+-                .and_then(|leaf| leaf.get_value())
+-                .unwrap_or(0);
++            // Pre-flip production fallback (commented out, not deleted — F0
++            // reversibility): the non-faulting read that returned 0 (silent counter
++            // reset) for a term under an evicted prefix.
++            // let cur = self
++            //     .find_leaf_recursive(&root, &chars, 0)
++            //     .and_then(|leaf| leaf.get_value())
++            //     .unwrap_or(0);
+ 
+             // (3) Overflow-check against the i64 persistence domain.
+             let new_val = match cur.checked_add(delta) {
+@@ -1552,6 +1553,226 @@ impl<S: BlockStorage> super::PersistentARTrieChar<u64, S> {
+         Ok(new_val)
+     }
+ 
++    /// **Flip F0 — thin Order-A durable VALUED insert** (`V = u64`). The valued
++    /// analogue of [`Self::insert_cas_durable`] (which writes membership only,
++    /// `value = None`): this bakes a `u64` value into the leaf via
++    /// [`Self::build_value_path_recursive`] (single-phase — finality + value
++    /// publish atomically with the root CAS).
++    ///
++    /// **Insert semantics (NOT upsert):** if the term is already present this is a
++    /// no-op returning `Ok(false)` with NO WAL record (matches owned
++    /// `insert_with_value`, which preflights and skips an existing term — the
++    /// value is NOT overwritten). Presence is consulted on the TRIE via
++    /// `find_leaf_faulting` (a term under an evicted prefix is faulted back), NOT
++    /// just the positive cache.
++    ///
++    /// Order-A: the `Insert{value}` WAL record is appended+synced DURABLE before
++    /// the visibility CAS; the committed watermark advances only after the CAS
++    /// lands (+ the CommitRank record, design C′). Requires a synchronous
++    /// durability policy and `enable_lockfree()`, rejected exactly as
++    /// `insert_cas_durable`.
++    ///
++    /// Returns `Ok(true)` iff this call newly inserted the term.
++    pub fn insert_cas_with_value_durable(&self, term: &str, value: u64) -> Result<bool> {
++        use super::nodes::persistent_node::PersistentCharNode;
++        use std::sync::atomic::Ordering;
++
++        match self.durability_policy {
++            DurabilityPolicy::Immediate | DurabilityPolicy::GroupCommit => {}
++            DurabilityPolicy::Periodic | DurabilityPolicy::None => {
++                return Err(PersistentARTrieError::InvalidOperation(
++                    "insert_cas_with_value_durable requires Immediate or GroupCommit durability so an \
++                     acknowledged write is guaranteed durable before it becomes visible"
++                        .to_string(),
++                ));
++            }
++        }
++
++        let lockfree_root = self.lockfree_root.as_ref().ok_or_else(|| {
++            PersistentARTrieError::InvalidOperation(
++                "Lock-free mode not enabled. Call enable_lockfree() first.".to_string(),
++            )
++        })?;
++
++        let chars: Vec<u32> = term.chars().map(|c| c as u32).collect();
++        if chars.is_empty() {
++            return Ok(false);
++        }
++        if value > LOCKFREE_COUNTER_MAX {
++            return Err(Self::lockfree_increment_overflow_error(term, None, value));
++        }
++
++        // INSERT (not upsert): if already present, no-op with NO WAL (don't burn an
++        // LSN / punch a watermark hole). Consult the trie (fault-in), not the cache.
++        {
++            let _epoch = self.epoch_manager.enter_read();
++            let present_before =
++                match self.find_leaf_faulting(lockfree_root, &chars, DEFAULT_MAX_FAULTIN_RETRIES) {
++                    Ok(found) => found.is_some(),
++                    Err(_) => self.find_leaf_lockfree(lockfree_root, &chars).is_some(),
++                };
++            if present_before {
++                return Ok(false);
++            }
++        }
++
++        // ORDER A — step 1: append + sync the valued Insert record DURABLE, before
++        // any visibility. One append covers every CAS retry (never re-appended).
++        let value_bytes = crate::serialization::bincode_compat::serialize(&value).map_err(|e| {
++            PersistentARTrieError::internal(format!("Failed to serialize value: {}", e))
++        })?;
++        let lsn = self.append_to_wal_returning_lsn(WalRecord::Insert {
++            term: term.as_bytes().to_vec(),
++            value: Some(value_bytes),
++        })?;
++
++        // Step 2: publish the valued leaf via the single-root-CAS arbiter (the same
++        // path-copy `build_value_path_recursive` the proven counter path uses, so
++        // no new commit point is introduced).
++        let _epoch = self.epoch_manager.enter_read();
++        loop {
++            let root = match lockfree_root.load() {
++                Some(r) => r,
++                None => {
++                    let new_root = Arc::new(PersistentCharNode::<u64>::new());
++                    let _ = lockfree_root.try_init(new_root);
++                    continue;
++                }
++            };
++            let new_root = match self.build_value_path_recursive(&root, &chars, 0, value) {
++                Some(r) => r,
++                // An I/O error faulting an evicted prefix blocked the path-copy: the
++                // WAL record is ALREADY durable, but we could not make the write
++                // visible. Surface it (Order-A durable-but-visible-after-reopen
++                // window — recovery replays the logged Insert); do NOT advance the
++                // watermark (the contiguous prefix stalls at this LSN).
++                None => {
++                    self.cas_retries.fetch_add(1, Ordering::Relaxed);
++                    return Err(PersistentARTrieError::internal(
++                        "insert_cas_with_value_durable: could not fault an evicted prefix in to \
++                         publish the valued leaf; the Insert record is durable and replays on reopen",
++                    ));
++                }
++            };
++            // §3.6 GENERATION (design C′): the published-root version, captured at
++            // THIS op's visibility CAS — strictly monotone in root-CAS order.
++            let generation = new_root.version();
++            match lockfree_root.compare_exchange(&root, new_root) {
++                Ok(_) => {
++                    if let Some(ref cache) = self.lockfree_cache {
++                        cache.insert(term.to_string(), true);
++                    }
++                    let rank_lsn = self.append_commit_rank(lsn, term.as_bytes(), generation)?;
++                    self.committed_watermark.mark_committed(lsn);
++                    self.committed_watermark.mark_committed(rank_lsn);
++                    return Ok(true);
++                }
++                Err(_actual) => {
++                    self.cas_retries.fetch_add(1, Ordering::Relaxed);
++                    continue;
++                }
++            }
++        }
++    }
++
++    /// **Flip F0 — thin Order-A durable UPSERT** (`V = u64`). Like
++    /// [`Self::insert_cas_with_value_durable`] but with UPSERT semantics: the value
++    /// is ALWAYS written (last-writer-wins = the root-CAS winner), whether or not
++    /// the term already existed. Mirrors owned `upsert` (which always writes and
++    /// returns whether the term was newly inserted).
++    ///
++    /// Returns `Ok(true)` iff the term was newly inserted (`false` = updated an
++    /// existing term).
++    pub fn upsert_cas_durable(&self, term: &str, value: u64) -> Result<bool> {
++        use super::nodes::persistent_node::PersistentCharNode;
++        use std::sync::atomic::Ordering;
++
++        match self.durability_policy {
++            DurabilityPolicy::Immediate | DurabilityPolicy::GroupCommit => {}
++            DurabilityPolicy::Periodic | DurabilityPolicy::None => {
++                return Err(PersistentARTrieError::InvalidOperation(
++                    "upsert_cas_durable requires Immediate or GroupCommit durability so an \
++                     acknowledged write is guaranteed durable before it becomes visible"
++                        .to_string(),
++                ));
++            }
++        }
++
++        let lockfree_root = self.lockfree_root.as_ref().ok_or_else(|| {
++            PersistentARTrieError::InvalidOperation(
++                "Lock-free mode not enabled. Call enable_lockfree() first.".to_string(),
++            )
++        })?;
++
++        let chars: Vec<u32> = term.chars().map(|c| c as u32).collect();
++        if chars.is_empty() {
++            return Ok(false);
++        }
++        if value > LOCKFREE_COUNTER_MAX {
++            return Err(Self::lockfree_increment_overflow_error(term, None, value));
++        }
++
++        // UPSERT returns whether the term was NEWLY inserted: consult the trie
++        // (fault-in) BEFORE the write so the return value is correct. This read is
++        // advisory for the return flag only (the write is unconditional), so a race
++        // is harmless (the CAS is the linearization point).
++        let existed = {
++            let _epoch = self.epoch_manager.enter_read();
++            match self.find_leaf_faulting(lockfree_root, &chars, DEFAULT_MAX_FAULTIN_RETRIES) {
++                Ok(found) => found.is_some(),
++                Err(_) => self.find_leaf_lockfree(lockfree_root, &chars).is_some(),
++            }
++        };
++
++        // ORDER A — step 1: append + sync the Upsert record DURABLE.
++        let value_bytes = crate::serialization::bincode_compat::serialize(&value).map_err(|e| {
++            PersistentARTrieError::internal(format!("Failed to serialize value: {}", e))
++        })?;
++        let lsn = self.append_to_wal_returning_lsn(WalRecord::Upsert {
++            term: term.as_bytes().to_vec(),
++            value: value_bytes,
++        })?;
++
++        // Step 2: publish via the single-root-CAS arbiter (always writes the value).
++        let _epoch = self.epoch_manager.enter_read();
++        loop {
++            let root = match lockfree_root.load() {
++                Some(r) => r,
++                None => {
++                    let new_root = Arc::new(PersistentCharNode::<u64>::new());
++                    let _ = lockfree_root.try_init(new_root);
++                    continue;
++                }
++            };
++            let new_root = match self.build_value_path_recursive(&root, &chars, 0, value) {
++                Some(r) => r,
++                None => {
++                    self.cas_retries.fetch_add(1, Ordering::Relaxed);
++                    return Err(PersistentARTrieError::internal(
++                        "upsert_cas_durable: could not fault an evicted prefix in to publish the \
++                         valued leaf; the Upsert record is durable and replays on reopen",
++                    ));
++                }
++            };
++            let generation = new_root.version();
++            match lockfree_root.compare_exchange(&root, new_root) {
++                Ok(_) => {
++                    if let Some(ref cache) = self.lockfree_cache {
++                        cache.insert(term.to_string(), true);
++                    }
++                    let rank_lsn = self.append_commit_rank(lsn, term.as_bytes(), generation)?;
++                    self.committed_watermark.mark_committed(lsn);
++                    self.committed_watermark.mark_committed(rank_lsn);
++                    return Ok(!existed);
++                }
++                Err(_actual) => {
++                    self.cas_retries.fetch_add(1, Ordering::Relaxed);
++                    continue;
++                }
++            }
++        }
++    }
++
+     /// Path-copy the `root`→leaf spine for `chars`, finalizing the leaf with
+     /// `value`. Returns a new root `Arc` (the published-version candidate) or
+     /// `None` if an on-disk child blocks the copy (cannot be faulted in here).
+@@ -1593,9 +1814,9 @@ impl<S: BlockStorage> super::PersistentARTrieChar<u64, S> {
+                 // OnDisk root. Now we fault it in (the read step already published a
+                 // faulted root, so on the retry this slot is InMem). On I/O error we
+                 // return `None` (transient Conflict → bounded by the read step's own
+-                // fault-in + retries; never an unbounded spin). Gated; production
+-                // keeps the conservative `None` (reversible).
+-                #[cfg(any(test, feature = "bench-internals"))]
++                // fault-in + retries; never an unbounded spin). Flip F0: un-gated to
++                // production (fixes the pre-existing OnDisk infinite-spin on the
++                // counter write path).
+                 {
+                     let on_disk = child.as_on_disk().filter(|p| !p.is_null())?;
+                     let loaded = self.load_overlay_node_from_disk(on_disk).ok()?;
+@@ -1603,10 +1824,13 @@ impl<S: BlockStorage> super::PersistentARTrieChar<u64, S> {
+                         self.build_value_path_recursive(&loaded, chars, depth + 1, value)?;
+                     Some(Arc::new(node.with_child(key, Child::InMem(new_child))))
+                 }
+-                #[cfg(not(any(test, feature = "bench-internals")))]
+-                {
+-                    None
+-                }
++                // Pre-flip production fallback (commented out, not deleted — F0
++                // reversibility): returned `None` for an OnDisk child (which spun
++                // the counter write path forever).
++                // #[cfg(not(any(test, feature = "bench-internals")))]
++                // {
++                //     None
++                // }
+             }
+             None => {
+                 // Child absent: build the remaining spine bottom-up, valued leaf
+diff --git a/src/persistent_artrie_char/mod.rs b/src/persistent_artrie_char/mod.rs
+index a37ed41..2e489b8 100644
+--- a/src/persistent_artrie_char/mod.rs
++++ b/src/persistent_artrie_char/mod.rs
+@@ -177,10 +177,15 @@ pub mod wal_helpers;
+ // (Migration Phase E; the executable refinement of LockFreeDurableCheckpoint.tla).
+ pub(crate) mod committed_watermark;
+ 
+-// Kill-switch scaffold for the irreversible Phase-E write-path flip. Inert
+-// (`OwnedTree`) default; no production path consults it yet.
++// Kill-switch scaffold + thin production-write-path router for the lock-free
++// flip. `route_overlay()` + `set_overlay_write_mode()` live here.
+ pub(crate) mod overlay_write_mode;
+ 
++// Per-monomorph routing for the valued production mutators (insert_with_value /
++// increment / upsert): routes to the overlay only for V = u64 (SAFE Any downcast),
++// owned tree otherwise. Flip F0.
++pub(crate) mod lockfree_value_route;
++
+ // Public mutation API (insert / insert_with_value / remove) — Phase-6 split.
+ pub mod mutation_api;
+ 
+diff --git a/src/persistent_artrie_char/mutation_api.rs b/src/persistent_artrie_char/mutation_api.rs
+index 726e623..31c92bb 100644
+--- a/src/persistent_artrie_char/mutation_api.rs
++++ b/src/persistent_artrie_char/mutation_api.rs
+@@ -17,8 +17,23 @@ use crate::persistent_artrie::wal::WalRecord;
+ use crate::value::DictionaryValue;
+ 
+ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
+-    /// Insert a term with WAL logging
++    /// Insert a term with WAL logging.
++    ///
++    /// **Flip routing (design §2):** when `route_overlay()` (the kill-switch
++    /// selects the lock-free overlay AND it is live), this membership insert
++    /// routes to the proven Order-A [`insert_cas_durable`](Self::insert_cas_durable)
++    /// (value-free, so it is safe for ALL `V`). Otherwise the verbatim owned-tree
++    /// body runs (the one-release fallback — NO mutation logic duplicated).
+     pub fn insert(&mut self, term: &str) -> Result<bool> {
++        if self.route_overlay() {
++            // Overlay path: Order-A WAL-then-CAS over the immutable overlay. The
++            // primitive itself does the WAL append (chokepoint =
++            // `invalidate_eviction_registry`), the visibility CAS, and the
++            // committed-watermark advance — so the registry-invalidation contract
++            // and `NoLostWriteUnderLockFreeCommit` hold by construction.
++            return self.insert_cas_durable(term);
++        }
++
+         if !self.preflight_insert_no_wal(term)? {
+             return Ok(false);
+         }
+@@ -39,8 +54,25 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
+         result
+     }
+ 
+-    /// Insert a term with an associated value and WAL logging
++    /// Insert a term with an associated value and WAL logging.
++    ///
++    /// **Flip routing (design §2, per-monomorph guard):** the overlay value-write
++    /// path is hardcoded `<u64>` (arbitrary `V` needs G1), so this routes to the
++    /// overlay ONLY for the `V = u64` monomorph, dispatched via the SAFE `Any`
++    /// downcast in [`super::lockfree_value_route::route_insert_with_value`] (zero
++    /// unsafe). Arbitrary `V` stays on the proven owned tree (the design's
++    /// "arbitrary V → forced OwnedTree" gap).
+     pub fn insert_with_value(&mut self, term: &str, value: V) -> Result<bool> {
++        if self.route_overlay() {
++            if let Some(routed) =
++                super::lockfree_value_route::route_insert_with_value(self, term, &value)
++            {
++                return routed;
++            }
++            // Arbitrary V under LockFreeOverlay: fall through to the owned body
++            // (forced OwnedTree — the value write path cannot represent arbitrary V).
++        }
++
+         self.preflight_insert_with_value_no_wal(term)?;
+ 
+         // Log to WAL first (routes through group commit if enabled)
+@@ -62,8 +94,19 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
+         result
+     }
+ 
+-    /// Remove a term with WAL logging
++    /// Remove a term with WAL logging.
++    ///
++    /// **Flip routing (design RB6 / §2):** when `route_overlay()`, this routes to
++    /// the PROVEN [`remove_cas_durable`](Self::remove_cas_durable) (R-B: Order-A
++    /// WAL `Remove` → path-copy clearing the leaf's finality → root-CAS →
++    /// mark_committed; loom/proptest/TLA-re-proven, committed). Value-free, so it
++    /// is safe for ALL `V`. RB6 depends on fault-in being a production path (F0
++    /// un-gated it), because remove-under-evicted-prefix needs fault-in.
+     pub fn remove(&mut self, term: &str) -> Result<bool> {
++        if self.route_overlay() {
++            return self.remove_cas_durable(term);
++        }
++
+         if !self.preflight_remove_no_wal(term)? {
+             return Ok(false);
+         }
+diff --git a/src/persistent_artrie_char/overlay_write_mode.rs b/src/persistent_artrie_char/overlay_write_mode.rs
+index 90139be..7d384a1 100644
+--- a/src/persistent_artrie_char/overlay_write_mode.rs
++++ b/src/persistent_artrie_char/overlay_write_mode.rs
+@@ -40,17 +40,51 @@ pub(crate) enum OverlayWriteMode {
+ }
+ 
+ impl OverlayWriteMode {
+-    /// `true` when the production path should use the lock-free overlay. Today
+-    /// this is always `false` (the field is the inert `OwnedTree` default), so
+-    /// callers gated on it are no-ops until the irreversible flip sets the field
+-    /// to [`LockFreeOverlay`](Self::LockFreeOverlay).
+-    #[allow(dead_code)] // Read site lands with the flip (out of scope here).
++    /// `true` when the production path should use the lock-free overlay. Before
++    /// the flip's default switch (F5) this is `false` for the inert `OwnedTree`
++    /// default; after F5 the constructor sets it to
++    /// [`LockFreeOverlay`](Self::LockFreeOverlay) for `V ∈ {(), u64}`.
+     #[inline]
+     pub(crate) fn uses_overlay(self) -> bool {
+         matches!(self, OverlayWriteMode::LockFreeOverlay)
+     }
+ }
+ 
++use crate::persistent_artrie::block_storage::BlockStorage;
++use crate::value::DictionaryValue;
++
++impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
++    /// **Flip F0 — the THIN production-write-path router predicate.**
++    ///
++    /// `true` iff the production write path should route to the lock-free overlay
++    /// for THIS trie: the kill-switch mode selects the overlay AND the overlay is
++    /// actually live (`enable_lockfree()` has run, so `lockfree_root` is `Some`).
++    /// Both conjuncts matter: a `LockFreeOverlay` mode with no overlay root (e.g.
++    /// an arbitrary-`V` monomorph that the F5 default flip deliberately does NOT
++    /// enable) correctly falls back to the proven owned tree.
++    ///
++    /// Each production mutator gains ONE top-level `match self.route_overlay()`
++    /// branch whose `false` arm is the verbatim current owned-tree body (the
++    /// one-release fallback) and whose `true` arm wires the proven Order-A overlay
++    /// primitives — NO mutation logic is duplicated (design §2/§6).
++    #[inline]
++    pub(crate) fn route_overlay(&self) -> bool {
++        self.overlay_write_mode.uses_overlay() && self.lockfree_root.is_some()
++    }
++
++    /// **Flip §8 — restart-time kill-switch setter.** Select the production
++    /// write-path representation. This is a RESTART-TIME switch (set the mode then
++    /// reopen — the WAL is the shared source of truth, both trees recoverable from
++    /// it), NOT a hot toggle: under `LockFreeOverlay` the owned tree is not
++    /// written, so a hot flip back to `OwnedTree` would read a stale owned tree.
++    /// Used to fall back to the proven owned path for one release if the overlay
++    /// path regresses in production.
++    #[inline]
++    pub(crate) fn set_overlay_write_mode(&mut self, mode: OverlayWriteMode) {
++        self.overlay_write_mode = mode;
++    }
++}
++
+ #[cfg(test)]
+ mod tests {
+     use super::OverlayWriteMode;
+diff --git a/src/persistent_artrie_char/persist.rs b/src/persistent_artrie_char/persist.rs
+index 5745ef9..3127802 100644
+--- a/src/persistent_artrie_char/persist.rs
++++ b/src/persistent_artrie_char/persist.rs
+@@ -1207,12 +1207,10 @@ where
+ /// empty), so on the round-trip the prefix is empty; we still propagate any
+ /// non-empty prefix faithfully so the builder is a total inverse.
+ ///
+-/// REVERSIBLE BENCH GATE: gated `any(test, bench-internals)` (the fault-in
+-/// primitive that consumes it is itself bench/test-gated until the production
+-/// flip — design §6/§8).
++/// **Flip F0:** un-gated to production (the fault-in primitive that consumes it is
++/// now a production path).
+ ///
+ /// MAINTENANCE COUPLING: mirrors [`overlay_to_inner`]; keep the two in lockstep.
+-#[cfg(any(test, feature = "bench-internals"))]
+ pub(super) fn inner_to_overlay<V>(inner: &CharTrieNodeInner<V>) -> super::nodes::PersistentCharNode<V>
+ where
+     V: DictionaryValue,

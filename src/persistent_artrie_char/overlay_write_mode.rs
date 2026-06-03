@@ -40,14 +40,48 @@ pub(crate) enum OverlayWriteMode {
 }
 
 impl OverlayWriteMode {
-    /// `true` when the production path should use the lock-free overlay. Today
-    /// this is always `false` (the field is the inert `OwnedTree` default), so
-    /// callers gated on it are no-ops until the irreversible flip sets the field
-    /// to [`LockFreeOverlay`](Self::LockFreeOverlay).
-    #[allow(dead_code)] // Read site lands with the flip (out of scope here).
+    /// `true` when the production path should use the lock-free overlay. Before
+    /// the flip's default switch (F5) this is `false` for the inert `OwnedTree`
+    /// default; after F5 the constructor sets it to
+    /// [`LockFreeOverlay`](Self::LockFreeOverlay) for `V ∈ {(), u64}`.
     #[inline]
     pub(crate) fn uses_overlay(self) -> bool {
         matches!(self, OverlayWriteMode::LockFreeOverlay)
+    }
+}
+
+use crate::persistent_artrie::block_storage::BlockStorage;
+use crate::value::DictionaryValue;
+
+impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
+    /// **Flip F0 — the THIN production-write-path router predicate.**
+    ///
+    /// `true` iff the production write path should route to the lock-free overlay
+    /// for THIS trie: the kill-switch mode selects the overlay AND the overlay is
+    /// actually live (`enable_lockfree()` has run, so `lockfree_root` is `Some`).
+    /// Both conjuncts matter: a `LockFreeOverlay` mode with no overlay root (e.g.
+    /// an arbitrary-`V` monomorph that the F5 default flip deliberately does NOT
+    /// enable) correctly falls back to the proven owned tree.
+    ///
+    /// Each production mutator gains ONE top-level `match self.route_overlay()`
+    /// branch whose `false` arm is the verbatim current owned-tree body (the
+    /// one-release fallback) and whose `true` arm wires the proven Order-A overlay
+    /// primitives — NO mutation logic is duplicated (design §2/§6).
+    #[inline]
+    pub(crate) fn route_overlay(&self) -> bool {
+        self.overlay_write_mode.uses_overlay() && self.lockfree_root.is_some()
+    }
+
+    /// **Flip §8 — restart-time kill-switch setter.** Select the production
+    /// write-path representation. This is a RESTART-TIME switch (set the mode then
+    /// reopen — the WAL is the shared source of truth, both trees recoverable from
+    /// it), NOT a hot toggle: under `LockFreeOverlay` the owned tree is not
+    /// written, so a hot flip back to `OwnedTree` would read a stale owned tree.
+    /// Used to fall back to the proven owned path for one release if the overlay
+    /// path regresses in production.
+    #[inline]
+    pub(crate) fn set_overlay_write_mode(&mut self, mode: OverlayWriteMode) {
+        self.overlay_write_mode = mode;
     }
 }
 
