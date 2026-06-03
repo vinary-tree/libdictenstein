@@ -189,8 +189,8 @@ fn remove_one_char(root: &ModelRootSlot, key: u8) -> bool {
                 let cleared = existing.as_non_final_clone();
                 let new_root = current.with_child(key, cleared);
                 match root.compare_exchange(&current, new_root) {
-                    Ok(_) => return true,  // we published the clear
-                    Err(_) => continue,    // CAS lost: rebase + retry (may be absent now)
+                    Ok(_) => return true, // we published the clear
+                    Err(_) => continue,   // CAS lost: rebase + retry (may be absent now)
                 }
             }
             // Already non-final (a bare prefix node) ⇒ absent; do NOT publish a
@@ -437,7 +437,10 @@ fn faultin_double_install_one_wins() {
         // already InMem after losing — idempotent, never an error).
         assert!(r1 && r2, "both faulters must succeed (idempotent)");
         // The writer's sibling is never lost (loser-safe CAS).
-        assert!(rw, "writer's sibling insert must not be lost to a faulter CAS");
+        assert!(
+            rw,
+            "writer's sibling insert must not be lost to a faulter CAS"
+        );
 
         let final_root = root.load();
         // The faulted child is now InMem (XOR OnDisk) and final-correct.
@@ -576,7 +579,9 @@ fn remove_concurrent_with_insert_same_key_is_last_writer_wins() {
         // clears its bit on a fresh copy, never unlinks it), and its finality is a
         // single coherent last-writer value — no torn read.
         let r = root.load().expect("root");
-        let a = r.find_child(b'a').expect("'a' node present (never unlinked)");
+        let a = r
+            .find_child(b'a')
+            .expect("'a' node present (never unlinked)");
         let observed = a.is_final();
         assert_eq!(
             observed,
@@ -683,8 +688,14 @@ fn remove_through_faulted_in_prefix_one_install_clears() {
         let cleared = remover.join().expect("join remover");
         let wrote = writer.join().expect("join writer");
 
-        assert!(cleared, "the remover must fault 'a' in and clear it (Removed)");
-        assert!(wrote, "writer sibling 'z' must not be lost to the remover CAS");
+        assert!(
+            cleared,
+            "the remover must fault 'a' in and clear it (Removed)"
+        );
+        assert!(
+            wrote,
+            "writer sibling 'z' must not be lost to the remover CAS"
+        );
 
         let r = root.load();
         match r.find_child(b'a') {

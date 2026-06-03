@@ -1755,7 +1755,10 @@ mod tests {
             1,
             "as_non_final must RETAIN children (remove \"cat\" keeps \"cats\")"
         );
-        assert!(cleared.has_child(kx), "the retained child must still be found");
+        assert!(
+            cleared.has_child(kx),
+            "the retained child must still be found"
+        );
         assert_eq!(
             cleared.version(),
             v_before + 1,

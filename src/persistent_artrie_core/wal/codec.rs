@@ -835,7 +835,10 @@ mod commit_rank_codec_tests {
         );
         // Remove{ "ab" }: term_len=2 ‖ "ab".
         assert_eq!(
-            WalRecord::Remove { term: b"ab".to_vec() }.serialize_payload(),
+            WalRecord::Remove {
+                term: b"ab".to_vec()
+            }
+            .serialize_payload(),
             vec![2, 0, 0, 0, b'a', b'b']
         );
         // Checkpoint{ lsn=1, ts=2 }: two u64 LE.

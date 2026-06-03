@@ -655,7 +655,11 @@ mod dg0_carry_tests {
         writer.rotate_to_archive(&cfg).expect("rotate");
 
         // The NEW active file CONTINUES the rotated file's floor + regime.
-        assert_eq!(writer.commit_seq_floor(), 777, "commit_seq_floor carried across rotate");
+        assert_eq!(
+            writer.commit_seq_floor(),
+            777,
+            "commit_seq_floor carried across rotate"
+        );
         assert_eq!(
             writer.header.lock().expect("header lock").rank_regime,
             1,

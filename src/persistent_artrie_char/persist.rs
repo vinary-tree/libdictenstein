@@ -1211,7 +1211,9 @@ where
 /// now a production path).
 ///
 /// MAINTENANCE COUPLING: mirrors [`overlay_to_inner`]; keep the two in lockstep.
-pub(super) fn inner_to_overlay<V>(inner: &CharTrieNodeInner<V>) -> super::nodes::PersistentCharNode<V>
+pub(super) fn inner_to_overlay<V>(
+    inner: &CharTrieNodeInner<V>,
+) -> super::nodes::PersistentCharNode<V>
 where
     V: DictionaryValue,
 {
@@ -1542,7 +1544,10 @@ mod overlay_faultin_load_roundtrip {
     /// `V = ()` membership: a final node with several OnDisk children round-trips.
     #[test]
     fn membership_node_load_roundtrip_preserves_structure() {
-        let keys: Vec<u32> = ['a', 'b', 'z', '日', '🎉'].iter().map(|c| *c as u32).collect();
+        let keys: Vec<u32> = ['a', 'b', 'z', '日', '🎉']
+            .iter()
+            .map(|c| *c as u32)
+            .collect();
         roundtrip_one::<()>("faultin-rt-unit", None, &keys);
     }
 

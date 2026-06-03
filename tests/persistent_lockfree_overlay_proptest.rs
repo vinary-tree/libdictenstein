@@ -313,10 +313,20 @@ fn valued_overlay_remove_drops_value_not_zero() {
     let mut oracle: BTreeMap<String, u64> = BTreeMap::new();
 
     // Seed some valued keys via the durable counter path (writes the OVERLAY).
-    for (k, v) in [("apple", 3u64), ("apricot", 10), ("band", 7), ("cherry", 25)] {
-        trie.try_increment_cas_durable(k, v).expect("durable increment");
+    for (k, v) in [
+        ("apple", 3u64),
+        ("apricot", 10),
+        ("band", 7),
+        ("cherry", 25),
+    ] {
+        trie.try_increment_cas_durable(k, v)
+            .expect("durable increment");
         oracle.insert(k.to_string(), v);
-        assert_eq!(trie.get_lockfree(k), Some(v), "seeded overlay value for {k:?}");
+        assert_eq!(
+            trie.get_lockfree(k),
+            Some(v),
+            "seeded overlay value for {k:?}"
+        );
     }
 
     // Remove "apple" and "band" durably; their overlay values must vanish (None,
@@ -353,7 +363,10 @@ fn valued_overlay_remove_drops_value_not_zero() {
     // count), NOT from a phantom Some(0)-vs-None ambiguity — and lands at the
     // delta, proving the value was genuinely dropped, not zeroed-in-place.
     let reinc = trie.try_increment_cas("apple", 5).expect("re-increment");
-    assert_eq!(reinc, 5, "re-incrementing a removed key starts fresh from 0");
+    assert_eq!(
+        reinc, 5,
+        "re-incrementing a removed key starts fresh from 0"
+    );
 }
 
 #[test]

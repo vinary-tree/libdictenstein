@@ -554,7 +554,9 @@ fn treatment_round(
     // reclamation that the §E no-op never did.
     if evict_real {
         for i in 0..COLD_SET_SIZE {
-            let _ = trie.insert_cas_durable(&cold_key(i)).expect("cold-seed insert");
+            let _ = trie
+                .insert_cas_durable(&cold_key(i))
+                .expect("cold-seed insert");
         }
         trie.bench_immutable_checkpoint_with_eviction()
             .expect("treatment cold-seed checkpoint");
@@ -788,8 +790,22 @@ fn run_one_round(
     }
 
     let res = match arm {
-        "control" => control_round(round, is_warmup, &scratch_round, variant, eviction, evict_real),
-        _ => treatment_round(round, is_warmup, &scratch_round, variant, eviction, evict_real),
+        "control" => control_round(
+            round,
+            is_warmup,
+            &scratch_round,
+            variant,
+            eviction,
+            evict_real,
+        ),
+        _ => treatment_round(
+            round,
+            is_warmup,
+            &scratch_round,
+            variant,
+            eviction,
+            evict_real,
+        ),
     };
     let round_dir_bytes = dir_size_bytes(&scratch_round);
     println!("csv,{}", res.csv_line(round_dir_bytes));
@@ -1077,7 +1093,10 @@ fn sf5_correctness_check(base: &Path) {
             trie.enable_eviction(EvictionConfig::without_memory_monitor())
                 .expect("sf5 control enable_eviction");
             for t in cold.iter().chain(live.iter()) {
-                assert!(ARTrie::insert(&trie, t), "sf5 control: insert {t:?} not new");
+                assert!(
+                    ARTrie::insert(&trie, t),
+                    "sf5 control: insert {t:?} not new"
+                );
             }
             ARTrie::checkpoint(&trie).expect("sf5 control checkpoint");
             // MATCHED real eviction (owned tree).

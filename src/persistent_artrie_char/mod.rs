@@ -1560,7 +1560,10 @@ impl<V: DictionaryValue, S: crate::persistent_artrie::block_storage::BlockStorag
 /// `size_bytes` sum of the successfully-evicted nodes (nominal; the peak-RSS pass
 /// is the physical witness). Takes NO lock and uses NO `unsafe`.
 #[cfg(any(test, feature = "bench-internals"))]
-pub(crate) fn evict_overlay_nodes<V: DictionaryValue, S: crate::persistent_artrie::block_storage::BlockStorage>(
+pub(crate) fn evict_overlay_nodes<
+    V: DictionaryValue,
+    S: crate::persistent_artrie::block_storage::BlockStorage,
+>(
     trie: &PersistentARTrieChar<V, S>,
     mut nodes: Vec<(
         u64,

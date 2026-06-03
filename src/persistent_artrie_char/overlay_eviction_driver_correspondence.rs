@@ -28,8 +28,8 @@ use std::thread;
 
 use crate::persistent_artrie::eviction::EvictionConfig;
 use crate::persistent_artrie::WalConfig;
-use crate::persistent_artrie_core::durability::DurabilityPolicy;
 use crate::persistent_artrie_char::PersistentARTrieChar;
+use crate::persistent_artrie_core::durability::DurabilityPolicy;
 use crate::Dictionary;
 
 /// A scratch directory on real disk (`target/test-tmp`), never tmpfs `/tmp`.
@@ -63,10 +63,7 @@ where
     };
     coordinator
         .force_eviction_char(budget_bytes, |cands| {
-            let filtered: Vec<_> = cands
-                .into_iter()
-                .filter(|(_, p, _)| is_cold(p))
-                .collect();
+            let filtered: Vec<_> = cands.into_iter().filter(|(_, p, _)| is_cold(p)).collect();
             super::evict_overlay_nodes(trie, filtered, 4)
         })
         .0
@@ -180,7 +177,11 @@ fn cold_eviction_under_concurrent_writers_reopens_losing_nothing() {
     // REOPEN: every acknowledged term (cold + live + w2) is recovered from the
     // durable image + retained WAL. NOTHING is lost despite real cold eviction.
     let reopened = PersistentARTrieChar::<()>::open(&path).expect("reopen");
-    for t in cold_terms.iter().chain(live_terms.iter()).chain(w2_terms.iter()) {
+    for t in cold_terms
+        .iter()
+        .chain(live_terms.iter())
+        .chain(w2_terms.iter())
+    {
         assert!(
             Dictionary::contains(&reopened, t),
             "term {t:?} LOST after cold overlay eviction + reopen (DATA LOSS)"
@@ -267,7 +268,10 @@ fn reader_concurrent_with_overlay_eviction_sees_consistent_snapshot() {
         evicted > 0,
         "OE2: evictor reclaimed nothing — driver no-op (cannot witness no-UAF)"
     );
-    assert!(total_reads.load(Ordering::Relaxed) > 0, "reader made no reads");
+    assert!(
+        total_reads.load(Ordering::Relaxed) > 0,
+        "reader made no reads"
+    );
     // LIVE still resolvable after the race.
     for t in &live_terms {
         assert!(trie.contains_lockfree(t), "LIVE term {t:?} lost post-race");
@@ -353,10 +357,7 @@ mod oe4 {
     }
 
     fn op_strategy() -> impl Strategy<Value = Op> {
-        prop_oneof![
-            (0u16..32).prop_map(Op::InsertLive),
-            Just(Op::EvictCold),
-        ]
+        prop_oneof![(0u16..32).prop_map(Op::InsertLive), Just(Op::EvictCold),]
     }
 
     proptest! {
@@ -547,7 +548,11 @@ fn evict_then_read_faults_in_exact_value() {
         );
     }
     for (t, v) in &live {
-        assert_eq!(trie.get_lockfree(t), Some(*v), "OE5v: live value wrong {t:?}");
+        assert_eq!(
+            trie.get_lockfree(t),
+            Some(*v),
+            "OE5v: live value wrong {t:?}"
+        );
     }
 }
 
@@ -732,7 +737,9 @@ fn concurrent_reader_writer_evictor_faulter_no_uaf_and_complete() {
     // COLD prefixes (checkpointed, durable, evictable) + a pool of LIVE extension
     // terms the writer adds under those (now-evicted) prefixes during the race.
     let cold_prefixes: Vec<String> = (0..30).map(|i| format!("pre-{i:03}")).collect();
-    let live_extensions: Vec<String> = (0..60).map(|i| format!("pre-{:03}-x{i:03}", i % 30)).collect();
+    let live_extensions: Vec<String> = (0..60)
+        .map(|i| format!("pre-{:03}-x{i:03}", i % 30))
+        .collect();
 
     let mut owned: PersistentARTrieChar<()> =
         PersistentARTrieChar::create_with_config(&path, WalConfig::no_archive()).expect("create");
@@ -788,7 +795,10 @@ fn concurrent_reader_writer_evictor_faulter_no_uaf_and_complete() {
             for t in &exts {
                 // Each ack must succeed (write-path fault-in handles an evicted
                 // prefix). A duplicate (Ok(false)) is impossible here (unique terms).
-                if trie.insert_cas_durable(t).expect("durable insert under race") {
+                if trie
+                    .insert_cas_durable(t)
+                    .expect("durable insert under race")
+                {
                     acked.fetch_add(1, Ordering::Relaxed);
                 }
             }

@@ -1266,8 +1266,7 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
             // Walk top-down, collecting (node, edge) for a possible rebuild, until
             // we either reach the leaf (all InMem ⇒ answer directly), hit a missing
             // edge (absent), or hit an OnDisk edge (fault + CAS + rebase).
-            let mut spine: Vec<(Arc<PersistentCharNode<V>>, u32)> =
-                Vec::with_capacity(chars.len());
+            let mut spine: Vec<(Arc<PersistentCharNode<V>>, u32)> = Vec::with_capacity(chars.len());
             let mut current = Arc::clone(&old_root);
             let mut faulted = false;
 
@@ -1394,7 +1393,8 @@ impl<S: BlockStorage> super::PersistentARTrieChar<u64, S> {
         // value, not a spurious `None`. On I/O error fall through to the
         // non-faulting walk below (best-effort).
         {
-            if let Ok(found) = self.find_leaf_faulting(lockfree_root, &chars, DEFAULT_MAX_FAULTIN_RETRIES)
+            if let Ok(found) =
+                self.find_leaf_faulting(lockfree_root, &chars, DEFAULT_MAX_FAULTIN_RETRIES)
             {
                 return found.and_then(|leaf| leaf.get_value());
             }
@@ -1493,15 +1493,15 @@ impl<S: BlockStorage> super::PersistentARTrieChar<u64, S> {
             // descend without reload (also fixes the pre-existing OnDisk infinite
             // spin in the write step, design §4 read half). Flip F0: un-gated to
             // production.
-            let cur = match self.find_leaf_faulting(lockfree_root, &chars, DEFAULT_MAX_FAULTIN_RETRIES)
-            {
-                Ok(found) => found.and_then(|leaf| leaf.get_value()).unwrap_or(0),
-                // I/O error reading the durable image: fall back to this snapshot.
-                Err(_) => self
-                    .find_leaf_recursive(&root, &chars, 0)
-                    .and_then(|leaf| leaf.get_value())
-                    .unwrap_or(0),
-            };
+            let cur =
+                match self.find_leaf_faulting(lockfree_root, &chars, DEFAULT_MAX_FAULTIN_RETRIES) {
+                    Ok(found) => found.and_then(|leaf| leaf.get_value()).unwrap_or(0),
+                    // I/O error reading the durable image: fall back to this snapshot.
+                    Err(_) => self
+                        .find_leaf_recursive(&root, &chars, 0)
+                        .and_then(|leaf| leaf.get_value())
+                        .unwrap_or(0),
+                };
             // Pre-flip production fallback (commented out, not deleted — F0
             // reversibility): the non-faulting read that returned 0 (silent counter
             // reset) for a term under an evicted prefix.
@@ -2543,7 +2543,9 @@ mod durable_write_tests {
                 "removing an already-absent term returns Ok(false)"
             );
             assert!(
-                !trie.remove_cas_durable("never-present").expect("absent remove"),
+                !trie
+                    .remove_cas_durable("never-present")
+                    .expect("absent remove"),
                 "removing a never-present term returns Ok(false)"
             );
             assert_eq!(
@@ -3104,8 +3106,7 @@ mod durable_write_tests {
 
             // QUIESCED: the overlay's committed-visible state is PRESENT (the
             // insert's CAS was the last writer).
-            let trie =
-                Arc::try_unwrap(trie).unwrap_or_else(|_| panic!("outstanding trie refs"));
+            let trie = Arc::try_unwrap(trie).unwrap_or_else(|_| panic!("outstanding trie refs"));
             assert!(
                 trie.contains_lockfree("s019"),
                 "pre-drop: s019 must be PRESENT (insert is the CAS last-writer); \
@@ -3268,8 +3269,7 @@ mod durable_write_tests {
             tr.join().expect("remove thread");
             ti.join().expect("insert thread");
 
-            let trie =
-                Arc::try_unwrap(trie).unwrap_or_else(|_| panic!("outstanding trie refs"));
+            let trie = Arc::try_unwrap(trie).unwrap_or_else(|_| panic!("outstanding trie refs"));
             assert!(
                 !trie.contains_lockfree("s019"),
                 "pre-drop: s019 must be ABSENT (remove is the CAS last-writer)"
