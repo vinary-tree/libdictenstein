@@ -174,29 +174,40 @@ Reversible hardening (land before owner GO), then the single irreversible flip:
 §1 V1 close (now streaming, §3 here), §2 producer gating, §3 merge reject, §5 H3 predicate, §6 V4
 flip-performs-checkpoint, §7 A6 kill-switch, §8 H4 assert promotion, §10 crash table, §13 char-only.
 
-## 9. Re-red-team verdict (DONE 2026-06-03, code-grounded — replaces the deferred external pass)
+## 9. Re-red-team verdict (DONE 2026-06-03, code-grounded + INDEPENDENTLY VERIFIED by an Explore agent)
 
-The §4 redesign was re-red-teamed against the ACTUAL source (disk_manager.rs, recovery.rs,
-file_header.rs, mmap_ctor.rs). Findings:
+⚠️ **CORRECTION — the §1–§8 §4 premise above (and v2's RA-14) is REFUTED.** An independent Explore-agent
+reachability audit proved **RA-14 is DORMANT/LATENT, NOT a live production bug.** Evidence (file:line):
+- The char `RecoveryManager` (recovery.rs:386 `new(trie_path, wal_config)`) is constructed in exactly ONE
+  place: recovery.rs:814, inside a `#[test]`. **Zero production constructors** in the whole crate; mod.rs:318
+  only re-exports it.
+- The LIVE open path (`mmap_ctor::open_with_recovery_config`:794, `open_with_full_recovery`:1044) imports
+  `detect_corruption` from **`crate::persistent_artrie::recovery`** — the **BYTE** module, which reads the
+  real `DiskManager` `FileHeader` ("PART") correctly. It NEVER calls the char `recovery.rs` readers.
+- The "ARTC" `CharTrieFileHeader` FILE header is **never written to disk in production** (only `#[test]`
+  serializations at dict_impl_char.rs:224/249/305). `serialization_char.rs:423/1198` write the per-NODE
+  `SerializedCharNodeHeader`, not the file header.
+- ∴ `get_checkpoint_lsn`'s byte-misread is real in isolation but **unreachable from any production path** —
+  the char `RecoveryManager` + "ARTC" format is a dormant, test-only subsystem. Production char recovery is
+  mmap_ctor's WAL scan (already correct: checkpoint_lsn from the WAL `Checkpoint` record, mmap_ctor.rs:319).
 
-1. **RA-14 is a CONFIRMED, LIVE, pre-existing data-loss/double-count bug** (NOT merely an S5 risk):
-   `get_checkpoint_lsn` parses the data file's `FileHeader` block 0 as a `CharTrieFileHeader`, reading
-   `checkpoint_lsn` from bytes 24..32 = `block_count` (no magic check); `replay_wal_after_checkpoint`
-   skips all WAL records `lsn ≤ block_count`. `CharTrieFileHeader` is never written to the data file in
-   production. → The early-v3 "put checkpoint_lsn in the header" framing was treating a symptom.
-2. **Redesign: source checkpoint_lsn from the WAL `Checkpoint` record** (the authoritative marker normal
-   open already uses), via a shared `latest_checkpoint_lsn_from_wal` helper; delete the data-file-header
-   read. ZERO on-disk format change, fixes the live bug, unifies the corruption path with normal open.
-3. **The FileHeader-field alternative is sound but unnecessary** — RB-2 (bytes 56..64 free) CONFIRMED,
-   RB-6 (one crash-atomic publish fsync) VALIDATED, back-compat clean (exclude from FNV; round-trip
-   56..64 in BOTH to_bytes/from_bytes or `sync()` zeros it) — recorded as the rejected alternative so the
-   analysis isn't lost.
-4. **RB-1 (normal open uses the WAL record, not any header) CONFIRMED** (mmap_ctor.rs:319,
-   io_uring_ctor.rs:142), which is exactly what makes the redesign correct.
+**What this means for §4 and S5:**
+- **S5-1 is NOT a live-bug fix and is NOT required for the flip.** The §1 WAL-record redesign (and the §0–§8
+  FileHeader analysis) target a dormant API. Fixing `get_checkpoint_lsn` is at most optional dead-code
+  hygiene, clearly labeled dormant — it does NOT gate the flip and must NOT be framed as urgent.
+- **The REAL remaining recovery work for the flip is on the LIVE path:** S0–S4 already made
+  `replay_records_lww` regime-aware. The open question is whether the live archive-rebuild
+  (`mmap_ctor::recover_from_archives`:1167 + core `reconcile_lww`/`rebuild_from_wal_segments`
+  recovery.rs:1469) is regime-aware (the A2 hole) — NOT the dormant char `RecoveryManager::rebuild_from_wal`.
+  v3 §2 must be re-pointed at the LIVE rebuild, and any v2/v3 item that targeted the char `RecoveryManager`
+  is moot.
 
-**Verdict on §4:** SAFE TO IMPLEMENT as a reversible, on-disk-format-free recovery-path fix (S5-1) — and
-it should land regardless of the S5 flip, since RA-14 is a live bug. **Remaining residuals for the final
-pre-FLIP red-team (S5-12 only):** RB-3 (streaming partition cover), RB-4 (mid-rebuild abort safety), RB-5
-(cfg un-gate adds no unsafe), and RB-1-residual (tail-replay crash-window ≡ normal-open semantics). The
-irreversible flip (S5-12) still requires owner GO + the full gate; the reversible hardening subset
-(S5-1…S5-11) is unblocked.
+**Process note (red-teaming multiply-redesigned issues):** §4 went v1→v2→v3, and EACH iteration inherited
+the unverified premise "the char RecoveryManager is on the live recovery path." A reachability audit at v1
+would have collapsed the whole thread. Lesson recorded: for a recovery/format concern, FIRST prove the
+suspect code is reachable from a production entry point (call-graph), THEN design the fix.
+
+**Verdict:** §4/S5-1 as written is moot for production. A corrected, minimal S5 recovery plan — targeting
+ONLY verified-live paths — is being re-derived (Plan agent) and must be red-teamed before any code. The
+non-recovery reversible items (S5-4…S5-8 producer guards/asserts/rejects, S5-9 cfg un-gate, S5-10 overlay
+reestablish) are unaffected by this finding and remain valid pending that re-derivation.
