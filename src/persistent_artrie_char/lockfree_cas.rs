@@ -295,32 +295,13 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     /// the owned tree LAST (RES-7). NOT wired into any production ctor.
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn reestablish_overlay_membership_after_recovery(&mut self) -> Result<()> {
-        use std::collections::BTreeSet;
-        // D1 (CRITICAL): read the recovered OWNED tree via the UN-routed `owned_*`
-        // readers. This runs with `route_overlay()` ALREADY TRUE (the ctor flips
-        // before dispatching reestablish), so the public `iter`/`iter_prefix` would
-        // E1-route to the EMPTY overlay — we'd copy nothing, then clear owned below =
-        // total irreversible loss. The owned readers bypass the route.
-        let mut first_units: BTreeSet<char> = BTreeSet::new();
-        if let Some(all_terms) = self.owned_iter_prefix("")? {
-            for term in &all_terms {
-                if let Some(c) = term.chars().next() {
-                    first_units.insert(c);
-                }
-            }
-        }
-        for c in first_units {
-            let prefix: String = c.to_string();
-            if let Some(chunk) = self.owned_iter_prefix(&prefix)? {
-                for term in &chunk {
-                    self.insert_cas(term);
-                }
-            }
-        }
-        // Clear the owned tree LAST (RES-7: a mid-stream `?` abort leaves it intact).
-        self.root = super::types::CharTrieRoot::Empty;
-        self.len.store(0, std::sync::atomic::Ordering::Release);
-        Ok(())
+        // Genericized: delegates to the SHARED engine's clear-owned-LAST membership
+        // fold (`docs/design/overlay-flip-genericization.md` §2). The D1
+        // data-loss-critical control flow (UN-routed `owned_*` reads, then clear
+        // owned LAST) now lives ONCE in the trait; this is a thin char delegator.
+        use crate::persistent_artrie_core::key_encoding::CharKey;
+        use crate::persistent_artrie_core::overlay::flip::LockFreeOverlay;
+        <Self as LockFreeOverlay<CharKey, V, S>>::reestablish_overlay_membership(self)
     }
 
     /// **S5-12 (V-3) — the compile-safe reestablish dispatch.** The u64 value-carrying
@@ -2076,47 +2057,15 @@ impl<S: BlockStorage> super::PersistentARTrieChar<u64, S> {
     /// once; a single-walk root-child enumeration is a future optimization.)
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn reestablish_overlay_after_recovery(&mut self) -> Result<()> {
-        use std::collections::BTreeSet;
-        // Disjoint first-code-point partition cover of the recovered owned terms; the
-        // empty term ("") has no first char and is its own partition (RES-6).
-        // D1 (CRITICAL): these reads use the UN-routed `owned_*` readers. Reestablish
-        // runs with `route_overlay()` ALREADY TRUE (the ctor flips before dispatching
-        // here), so the public `iter`/`iter_prefix_with_values`/`get_value` would
-        // E1-route to the EMPTY overlay — we'd copy nothing, then clear owned below =
-        // total irreversible loss. The owned readers bypass the route.
-        let mut first_units: BTreeSet<char> = BTreeSet::new();
-        let mut has_empty_term = false;
-        if let Some(all_terms) = self.owned_iter_prefix("")? {
-            for term in &all_terms {
-                match term.chars().next() {
-                    Some(c) => {
-                        first_units.insert(c);
-                    }
-                    None => has_empty_term = true,
-                }
-            }
-        }
-        // Empty-term partition first.
-        if has_empty_term {
-            if let Some(v) = self.owned_get("").copied() {
-                self.increment_cas("", v);
-            }
-        }
-        // One first-unit partition at a time: stream its (term, value) pairs, publish
-        // each via the no-WAL overlay path, drop the chunk before the next unit.
-        for c in first_units {
-            let prefix: String = c.to_string();
-            if let Some(chunk) = self.owned_iter_prefix_with_values(&prefix)? {
-                for (term, value) in &chunk {
-                    self.increment_cas(term, *value);
-                }
-            }
-        }
-        // Clear the owned tree LAST — only after every partition published. A mid-
-        // stream `?` abort above returns Err with the owned tree untouched (RES-7).
-        self.root = super::types::CharTrieRoot::Empty;
-        self.len.store(0, std::sync::atomic::Ordering::Release);
-        Ok(())
+        // Genericized: delegates to the SHARED engine's clear-owned-LAST counter
+        // fold (`docs/design/overlay-flip-genericization.md` §2). The D1
+        // data-loss-critical control flow (UN-routed `owned_*` reads, stream by
+        // first unit, clear owned LAST) now lives ONCE in the trait; this is a thin
+        // char `<u64>` delegator. `CounterValue == u64` for char, so the trait's
+        // value-as-counter re-wrap is the identity on these recovered counters.
+        use crate::persistent_artrie_core::key_encoding::CharKey;
+        use crate::persistent_artrie_core::overlay::flip::LockFreeOverlay;
+        <Self as LockFreeOverlay<CharKey, u64, S>>::reestablish_overlay_counter(self)
     }
 
     /// Merge lock-free values into the persistent trie by summing.

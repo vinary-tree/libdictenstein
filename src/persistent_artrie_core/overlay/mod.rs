@@ -23,6 +23,13 @@
 pub mod atomic_ptr;
 pub mod node;
 
+// The shared lock-free-overlay flip (route + read-engine + flip/kill-switch +
+// reestablish), generic over `K: KeyEncoding` (overlay-flip genericization §2).
+pub(crate) mod flip;
+// The kill-switch enum selecting owned-tree vs lock-free overlay (hoisted from
+// the char variant so the generic `flip` trait can name it — §A).
+pub mod write_mode;
+
 pub use atomic_ptr::AtomicNodePtr;
 pub use node::{flags, Child, OverlayNode};
 

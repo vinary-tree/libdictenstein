@@ -1,178 +1,265 @@
-//! Kill-switch scaffold for the **irreversible** Phase-E write-path flip.
+//! Char seam impl of the shared [`LockFreeOverlay`] flip + thin inherent
+//! wrappers preserving the char public surface.
 //!
-//! The lock-free persistent char ARTrie's Phase-E plan routes production
-//! `insert`/`increment`/`checkpoint` through the Order-A lock-free overlay
-//! (`docs/design/lockfree-cas-artrie.md`, plan
-//! `/home/dylon/.claude/plans/carefully-review-the-staged-iridescent-wind.md`).
-//! That flip is **data-loss-critical and irreversible**, so the plan mandates a
-//! "kill-switch fallback for one release": if the overlay path regresses in
-//! production, an operator must be able to fall back to the proven owned-tree
-//! path WITHOUT a code change/rollback.
+//! The overlay-flip genericization (`docs/design/overlay-flip-genericization.md`
+//! §2, Step 1) extracted the lock-free-overlay flip (route + read-engine +
+//! flip/kill-switch + reestablish) into the SHARED GENERIC
+//! [`LockFreeOverlay`](crate::persistent_artrie_core::overlay::flip::LockFreeOverlay)
+//! trait in `persistent_artrie_core::overlay::flip`. This module now holds only:
 //!
-//! [`OverlayWriteMode`] is that switch, added NOW as **reversible scaffolding**
-//! so the future flip can read it. It is wired as an **inert default**
-//! ([`OverlayWriteMode::OwnedTree`]) that changes NO current behavior: nothing in
-//! the production `insert`/`increment`/`checkpoint` path consults it yet (the
-//! routing is the owner-gated irreversible step, explicitly OUT OF SCOPE for the
-//! reversible hardening). It exists so the flip is a one-line `match` rather than
-//! a new field threaded through all eight constructors at flip time.
+//! 1. a re-export of [`OverlayWriteMode`] (hoisted to
+//!    `persistent_artrie_core::overlay::write_mode`) so the many internal `use
+//!    super::overlay_write_mode::OverlayWriteMode` sites still resolve;
+//! 2. the char SEAM impl `impl LockFreeOverlay<CharKey, V, S> for
+//!    PersistentARTrieChar<V, S>` (the per-variant owned readers / overlay
+//!    publishers / WAL accessors / `CounterValue = u64`);
+//! 3. thin inherent wrappers (`route_overlay`/`flip_to_overlay`/
+//!    `kill_switch_to_owned`/`set_overlay_write_mode`/`overlay_eligible_v`) that
+//!    DELEGATE to the trait, so the ~40 existing inherent-syntax call sites
+//!    (`self.route_overlay()`, …) keep compiling and behaving IDENTICALLY.
+//!
+//! **Byte-identical guarantee.** The trait bodies are a token-for-token port of
+//! the char originals; only the two boundary conversions changed (the overlay
+//! read engine accumulates `Vec<u32>` and the seam converts via
+//! `CharKey::units_to_term`/`units_from_str`, both defined to reproduce the exact
+//! char behavior — `units_to_term` IS `char::from_u32(_).unwrap_or('\u{FFFD}')`
+//! per unit). The existing E1 correspondence suite + the full nextest run are the
+//! oracle.
 
-/// Selects which representation the production write path uses.
-///
-/// Default is [`OwnedTree`](Self::OwnedTree) — the proven, currently-shipping
-/// owned `CharTrieRoot` path. [`LockFreeOverlay`](Self::LockFreeOverlay) is the
-/// Phase-E target (Order-A WAL-then-CAS over the immutable overlay), reserved for
-/// the irreversible flip and its one-release fallback window.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub(crate) enum OverlayWriteMode {
-    /// The production owned-tree write path (`self.write()` + owned
-    /// `CharTrieRoot` mutators + owned-snapshot checkpoint). The current,
-    /// formally-verified default. Selecting this after the flip is the
-    /// one-release kill-switch fallback.
-    #[default]
-    OwnedTree,
-    /// The lock-free overlay write path (Order-A `insert_cas_durable` /
-    /// `try_increment_cas_durable`, checkpoint via `capture_snapshot_immutable`
-    /// reclaiming by the committed watermark). The Phase-E flip target; NOT yet
-    /// wired into the production path (owner go/no-go gated).
-    #[allow(dead_code)] // Constructed only post-flip; the variant is scaffold.
-    LockFreeOverlay,
-}
+// Re-export so `super::overlay_write_mode::OverlayWriteMode` resolves everywhere
+// it was used before the hoist (ctors, persist, atomic_ops, document_tx, …).
+pub(crate) use crate::persistent_artrie_core::overlay::write_mode::OverlayWriteMode;
 
-impl OverlayWriteMode {
-    /// `true` when the production path should use the lock-free overlay. Before
-    /// the flip's default switch (F5) this is `false` for the inert `OwnedTree`
-    /// default; after F5 the constructor sets it to
-    /// [`LockFreeOverlay`](Self::LockFreeOverlay) for `V ∈ {(), u64}`.
-    #[inline]
-    pub(crate) fn uses_overlay(self) -> bool {
-        matches!(self, OverlayWriteMode::LockFreeOverlay)
-    }
-}
+use std::any::TypeId;
+use std::sync::atomic::Ordering;
 
 use crate::persistent_artrie::block_storage::BlockStorage;
+use crate::persistent_artrie::error::Result;
+use crate::persistent_artrie_core::key_encoding::{CharKey, KeyEncoding};
+use crate::persistent_artrie_core::overlay::flip::LockFreeOverlay;
+use crate::persistent_artrie_core::wal::RankRegime;
 use crate::value::DictionaryValue;
 
-impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
-    /// **Flip F0 — the THIN production-write-path router predicate.**
-    ///
-    /// `true` iff the production write path should route to the lock-free overlay
-    /// for THIS trie: the kill-switch mode selects the overlay AND the overlay is
-    /// actually live (`enable_lockfree()` has run, so `lockfree_root` is `Some`).
-    /// Both conjuncts matter: a `LockFreeOverlay` mode with no overlay root (e.g.
-    /// an arbitrary-`V` monomorph that the F5 default flip deliberately does NOT
-    /// enable) correctly falls back to the proven owned tree.
-    ///
-    /// Each production mutator gains ONE top-level `match self.route_overlay()`
-    /// branch whose `false` arm is the verbatim current owned-tree body (the
-    /// one-release fallback) and whose `true` arm wires the proven Order-A overlay
-    /// primitives — NO mutation logic is duplicated (design §2/§6).
-    /// Public flip-state predicate (pairs with [`Self::kill_switch_to_owned`]): `true`
-    /// iff reads/writes/checkpoint take the lock-free overlay path for this trie.
+use super::types::CharTrieRoot;
+
+// ============================================================================
+// Char seam impl of the shared LockFreeOverlay flip
+// ============================================================================
+
+impl<V: DictionaryValue, S: BlockStorage> LockFreeOverlay<CharKey, V, S>
+    for super::PersistentARTrieChar<V, S>
+{
+    /// `u64` — the char counter monomorph (byte's is `i64`).
+    type CounterValue = u64;
+
+    // ---- small accessors ----
+
     #[inline]
-    pub fn route_overlay(&self) -> bool {
-        self.overlay_write_mode.uses_overlay() && self.lockfree_root.is_some()
+    fn lockfree_root(
+        &self,
+    ) -> Option<&crate::persistent_artrie_core::overlay::AtomicNodePtr<CharKey, V>> {
+        // `super::nodes::AtomicNodePtr<V>` IS `overlay::AtomicNodePtr<CharKey, V>`
+        // (a type alias — see `nodes::atomic_ptr`), so this borrow is identity.
+        self.lockfree_root.as_ref()
     }
 
-    /// **Flip §8 — restart-time kill-switch setter.** Select the production
-    /// write-path representation. This is a RESTART-TIME switch (set the mode then
-    /// reopen — the WAL is the shared source of truth, both trees recoverable from
-    /// it), NOT a hot toggle: under `LockFreeOverlay` the owned tree is not
-    /// written, so a hot flip back to `OwnedTree` would read a stale owned tree.
-    /// Used to fall back to the proven owned path for one release if the overlay
-    /// path regresses in production.
+    #[inline]
+    fn overlay_write_mode(&self) -> OverlayWriteMode {
+        self.overlay_write_mode
+    }
+
+    #[inline]
+    fn set_overlay_write_mode(&mut self, mode: OverlayWriteMode) {
+        self.overlay_write_mode = mode;
+    }
+
+    #[inline]
+    fn enable_lockfree(&mut self) {
+        // Delegate to the existing inherent `enable_lockfree` (lockfree_cas.rs),
+        // which sets up the `AtomicNodePtr` root + cache and stamps the WAL Overlay
+        // regime on an EMPTY WAL. Unchanged behavior.
+        super::PersistentARTrieChar::enable_lockfree(self)
+    }
+
+    #[inline]
+    fn wal_current_lsn(&self) -> Option<u64> {
+        self.wal_writer.as_ref().map(|w| w.current_lsn())
+    }
+
+    #[inline]
+    fn wal_is_overlay_regime(&self) -> bool {
+        self.wal_writer
+            .as_ref()
+            .map(|w| w.rank_regime() == RankRegime::Overlay)
+            .unwrap_or(false)
+    }
+
+    fn wal_stamp_overlay_regime(&self) {
+        if let Some(ref writer) = self.wal_writer {
+            if let Err(e) = writer.set_overlay_regime() {
+                log::warn!("flip_to_overlay: could not stamp Overlay regime: {:?}", e);
+            }
+        }
+    }
+
+    fn wal_stamp_owned_regime(&self) {
+        if let Some(ref writer) = self.wal_writer {
+            if let Err(e) = writer.set_owned_regime() {
+                log::warn!("kill_switch_to_owned: could not stamp Owned regime: {:?}", e);
+            }
+        }
+    }
+
+    /// **S5-12 (V-1)** — the char eligible monomorphs `{u64, ()}`.
+    /// `DictionaryValue: 'static` ⇒ `TypeId` is callable.
+    fn overlay_eligible_v() -> bool {
+        TypeId::of::<V>() == TypeId::of::<u64>() || TypeId::of::<V>() == TypeId::of::<()>()
+    }
+
+    // ---- UN-ROUTED owned readers (D1 — read the OWNED tree directly) ----
+
+    fn owned_first_units(&self) -> Result<(Vec<u32>, bool)> {
+        // Disjoint first-code-point cover. D1: `owned_iter_prefix("")` is the
+        // UN-routed owned reader (it walks `self.root`, never the overlay), so it is
+        // safe even when the trie is already in overlay-write mode (the reestablish
+        // caller flips before dispatching).
+        use std::collections::BTreeSet;
+        let mut first_units: BTreeSet<u32> = BTreeSet::new();
+        let mut has_empty_term = false;
+        if let Some(all_terms) = self.owned_iter_prefix("")? {
+            for term in &all_terms {
+                match term.chars().next() {
+                    Some(c) => {
+                        first_units.insert(c as u32);
+                    }
+                    None => has_empty_term = true,
+                }
+            }
+        }
+        Ok((first_units.into_iter().collect(), has_empty_term))
+    }
+
+    fn owned_units_under(&self, prefix: &[u32]) -> Result<Option<Vec<Vec<u32>>>> {
+        // D1: UN-routed owned reader. Convert the single-unit prefix and each
+        // recovered term to/from `Vec<u32>` via the `CharKey` boundary so the
+        // generic fold publishes the SAME terms the char originals did.
+        let prefix_str = CharKey::units_to_term(prefix);
+        Ok(self.owned_iter_prefix(&prefix_str)?.map(|terms| {
+            terms
+                .iter()
+                .map(|t| CharKey::units_from_str(t).into_vec())
+                .collect()
+        }))
+    }
+
+    fn owned_units_with_values_under(
+        &self,
+        prefix: &[u32],
+    ) -> Result<Option<Vec<(Vec<u32>, V)>>> {
+        // D1: UN-routed owned reader.
+        let prefix_str = CharKey::units_to_term(prefix);
+        Ok(self
+            .owned_iter_prefix_with_values(&prefix_str)?
+            .map(|entries| {
+                entries
+                    .into_iter()
+                    .map(|(t, v)| (CharKey::units_from_str(&t).into_vec(), v))
+                    .collect()
+            }))
+    }
+
+    fn owned_has_empty_term_value(&self) -> Option<V> {
+        // D1: UN-routed owned reader (`owned_get` reads `self.root`).
+        self.owned_get("").cloned()
+    }
+
+    fn clear_owned(&mut self) {
+        self.root = CharTrieRoot::Empty;
+        self.len.store(0, Ordering::Release);
+    }
+
+    // ---- overlay publishers (the per-variant write seam) ----
+
+    fn overlay_publish_membership(&self, units: &[u32]) {
+        // No-WAL CAS insert (recovered terms are already durable; re-logging would
+        // double-log). Unchanged from the char membership reestablish.
+        let term = CharKey::units_to_term(units);
+        self.insert_cas(&term);
+    }
+
+    fn overlay_publish_counter(&self, units: &[u32], value: u64) {
+        // `V == u64` in this routed branch (the counter reestablish runs only for
+        // the u64 monomorph via the dispatch). SAFE `Any` downcast to the nameable
+        // `<u64, S>` monomorph, then the no-WAL `increment_cas` — the same pattern
+        // as the char `overlay_get_value`/`reestablish_overlay_dispatch`.
+        use std::any::Any;
+        let term = CharKey::units_to_term(units);
+        if let Some(trie_u64) =
+            (self as &dyn Any).downcast_ref::<super::PersistentARTrieChar<u64, S>>()
+        {
+            trie_u64.increment_cas(&term, value);
+        }
+    }
+
+    fn overlay_counter_get(&self, units: &[u32]) -> Option<u64> {
+        // SAFE `Any` downcast to `<u64, S>` + the lock-free point read.
+        use std::any::Any;
+        let term = CharKey::units_to_term(units);
+        (self as &dyn Any)
+            .downcast_ref::<super::PersistentARTrieChar<u64, S>>()
+            .and_then(|trie_u64| trie_u64.get_lockfree(&term))
+    }
+
+    fn overlay_contains(&self, units: &[u32]) -> bool {
+        let term = CharKey::units_to_term(units);
+        self.contains_lockfree(&term)
+    }
+}
+
+// ============================================================================
+// Thin inherent wrappers — preserve the char public/`pub(crate)` surface by
+// DELEGATING to the trait (so the ~40 existing inherent-syntax call sites and
+// the external `route_overlay` tests keep compiling, behavior identical).
+// ============================================================================
+
+impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
+    /// **Flip F0 — production-write/read-path router.** `true` iff reads/writes/
+    /// checkpoint take the lock-free overlay path for this trie. Thin delegator to
+    /// [`LockFreeOverlay::route_overlay`]. Kept `pub` (external tests call it).
+    #[inline]
+    pub fn route_overlay(&self) -> bool {
+        <Self as LockFreeOverlay<CharKey, V, S>>::route_overlay(self)
+    }
+
+    /// **Restart-time kill-switch setter.** Thin delegator to the seam.
     // S5-12 flip API: exercised by tests; the production caller is the owner-gated
     // flip (not yet wired), so allow dead_code in non-test builds only.
     #[cfg_attr(not(test), allow(dead_code))]
     #[inline]
     pub(crate) fn set_overlay_write_mode(&mut self, mode: OverlayWriteMode) {
-        self.overlay_write_mode = mode;
+        <Self as LockFreeOverlay<CharKey, V, S>>::set_overlay_write_mode(self, mode)
     }
 
-    /// **S5-12 (V-1) — the SOLE expression of the "overlay only for `V ∈ {(), u64}`"
-    /// invariant.** The lock-free overlay's valued path is u64-specialized
-    /// (`build_value_path_recursive`); membership (`()`) needs no value. For any other
-    /// `V` the overlay is write-broken (increment/merge/begin_document reject; batch
-    /// routes to an undefined arbitrary-`V` overlay path), so the flip MUST be a no-op
-    /// and the proven owned path runs. `DictionaryValue: 'static` ⇒ `TypeId` is callable.
+    /// **S5-12 (V-1)** — overlay-eligibility gate (`V ∈ {(), u64}`). Thin delegator.
     #[cfg_attr(not(test), allow(dead_code))]
+    #[inline]
     pub(crate) fn overlay_eligible_v() -> bool {
-        use std::any::TypeId;
-        TypeId::of::<V>() == TypeId::of::<u64>() || TypeId::of::<V>() == TypeId::of::<()>()
+        <Self as LockFreeOverlay<CharKey, V, S>>::overlay_eligible_v()
     }
 
-    /// **S5-10c — flip construction helper (NOT wired into any production ctor; the
-    /// S5-12 owner-GO flip wires it for the `V ∈ {(), u64}` monomorphs).** Make the
-    /// lock-free overlay the live write target: `enable_lockfree()` (which stamps the
-    /// WAL Overlay regime when the WAL is empty) then select `LockFreeOverlay` so
-    /// `route_overlay()` becomes true. Returns the resulting `route_overlay()`.
-    ///
-    /// **V-1 gate:** a NO-OP returning `false` for `V ∉ {(), u64}` — the authoritative
-    /// chokepoint so no caller can enable a broken overlay for arbitrary `V` (the
-    /// design wrongly assumed `enable_lockfree` already refused this; it does not).
+    /// **S5-10c — flip construction helper.** Thin delegator to
+    /// [`LockFreeOverlay::flip_to_overlay`].
     #[cfg_attr(not(test), allow(dead_code))]
+    #[inline]
     pub(crate) fn flip_to_overlay(&mut self) -> bool {
-        if !Self::overlay_eligible_v() {
-            return false; // arbitrary V: never enable the overlay; stay OwnedTree.
-        }
-        self.enable_lockfree();
-        self.set_overlay_write_mode(OverlayWriteMode::LockFreeOverlay);
-        // Re-engaging the overlay after a `kill_switch_to_owned` (which stamped Owned on
-        // a fresh WAL) must restamp Overlay — `enable_lockfree` only stamps on its FIRST
-        // call (it early-returns once `lockfree_root` is set), so a second engage would
-        // otherwise leave the WAL Owned-regime and fail the V-2 stamp check below. Gated
-        // on a fresh WAL (`current_lsn() == 1`); a no-op for the ctor flip (where
-        // `enable_lockfree` already stamped Overlay) and for non-empty WALs.
-        if let Some(ref writer) = self.wal_writer {
-            if writer.current_lsn() == 1
-                && writer.rank_regime() != crate::persistent_artrie_core::wal::RankRegime::Overlay
-            {
-                if let Err(e) = writer.set_overlay_regime() {
-                    log::warn!("flip_to_overlay: could not stamp Overlay regime: {:?}", e);
-                }
-            }
-        }
-        // V-2: `enable_lockfree` only `log::warn!`s if the Overlay-regime stamp failed,
-        // then STILL enables the overlay — so verify the WAL is ACTUALLY Overlay-regime.
-        // An Owned-regime WAL under overlay routing would make recovery KEEP unranked
-        // orphans (resurrection). A trie with no WAL (in-memory) cannot durably flip and
-        // also fails this check. The create-flip caller hard-errors on a `false` return.
-        let stamped_overlay = self
-            .wal_writer
-            .as_ref()
-            .map(|w| w.rank_regime() == crate::persistent_artrie_core::wal::RankRegime::Overlay)
-            .unwrap_or(false);
-        self.route_overlay() && stamped_overlay
+        <Self as LockFreeOverlay<CharKey, V, S>>::flip_to_overlay(self)
     }
 
-    /// **Kill-switch — the public one-release fallback for the S5-12 flip.** Revert the
-    /// production write path from the lock-free overlay back to the proven owned tree:
-    /// after this returns, `route_overlay()` is false, so writes/reads/checkpoint take
-    /// the owned arm (the pre-flip behavior). Use it if the overlay path needs to be
-    /// disabled in a deployed binary without rebuilding.
-    ///
-    /// In-session it takes effect immediately (the next op routes to the owned tree).
-    /// Across a reopen it is RESTART-TIME: it deliberately does NOT restamp the WAL
-    /// regime (`set_owned_regime` is valid only on an EMPTY WAL), so a reopen of a
-    /// non-empty Overlay-regime WAL rebuilds the owned tree and re-flips — the durable
-    /// regime is governed by the WAL, the in-memory mode by this switch.
+    /// **Kill-switch — one-release fallback.** Thin delegator to
+    /// [`LockFreeOverlay::kill_switch_to_owned`]. Kept `pub` (external callers).
+    #[inline]
     pub fn kill_switch_to_owned(&mut self) {
-        self.set_overlay_write_mode(OverlayWriteMode::OwnedTree);
-        // On a still-fresh WAL (no records appended — `current_lsn() == 1`, e.g.
-        // immediately after `create()`), also restamp the durable regime to Owned so a
-        // later reopen STAYS owned (no re-flip) and owned-mode records survive recovery
-        // (otherwise the create-flip's Overlay stamp makes recovery DROP them as
-        // two-append-window orphans). On a NON-empty WAL this is intentionally a no-op —
-        // the documented restart-time semantics: the durable regime is already fixed, so
-        // a reopen rebuilds the owned tree from the Overlay-regime WAL and re-flips. This
-        // mirrors `enable_lockfree`'s `current_lsn() == 1` empty-WAL stamp guard.
-        if let Some(ref writer) = self.wal_writer {
-            if writer.current_lsn() == 1 {
-                if let Err(e) = writer.set_owned_regime() {
-                    log::warn!("kill_switch_to_owned: could not stamp Owned regime: {:?}", e);
-                }
-            }
-        }
+        <Self as LockFreeOverlay<CharKey, V, S>>::kill_switch_to_owned(self)
     }
 }
 
