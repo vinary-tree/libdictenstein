@@ -41,7 +41,21 @@ impl<V: DictionaryValue + serde::Serialize + serde::de::DeserializeOwned, S: Blo
             if let Some(routed) = super::lockfree_value_route::route_increment(self, term, delta) {
                 return routed;
             }
-            // delta < 0 or arbitrary V: fall through to the owned body.
+            // S5-5: a delta < 0 (or arbitrary V) cannot be ranked on the overlay path,
+            // so `route_increment` returns None. REJECT here rather than fall through to
+            // the owned body's UNRANKED `append_to_wal(Increment)` — under the Overlay
+            // WAL regime (coupled to overlay mode at `enable_lockfree`) recovery DROPS
+            // that record as a two-append-window orphan, so the increment is lost on the
+            // next reopen-without-checkpoint, and the owned tree it mutates is not
+            // observed by the overlay read/checkpoint path. `fetch_add` inherits this.
+            // (Arbitrary V never reaches here: the overlay is enabled only for u64/().)
+            return Err(PersistentARTrieError::InvalidOperation(format!(
+                "increment(delta={}) cannot be routed to the lock-free overlay (negative \
+                 deltas and arbitrary value types are unsupported on the overlay write \
+                 path); use OverlayWriteMode::OwnedTree, or a non-negative delta on a u64 \
+                 counter",
+                delta
+            )));
         }
 
         self.preflight_insert_with_value_no_wal(term)?;

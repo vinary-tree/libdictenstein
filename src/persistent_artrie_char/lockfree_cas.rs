@@ -2000,6 +2000,23 @@ impl<S: BlockStorage> super::PersistentARTrieChar<u64, S> {
     ///
     /// The number of entries merged.
     pub fn merge_lockfree_values_to_persistent(&mut self) -> Result<usize> {
+        // S5-6: reject under the overlay. This drains the overlay into the OWNED tree
+        // via an UNRANKED `BatchIncrement` (G-MERGE, below) — but post-flip every
+        // overlay increment is ALREADY per-op durable+visible (Order-A + CommitRank),
+        // so draining would (a) double-count (re-add the values to owned) and (b)
+        // append an unranked record that recovery DROPS as a two-append-window orphan
+        // (the A2 fix). Post-flip the overlay is persisted by the checkpoint
+        // route-split (S5-9), not by a merge-to-owned.
+        if self.route_overlay() {
+            return Err(PersistentARTrieError::InvalidOperation(
+                "merge_lockfree_values_to_persistent is not valid under the lock-free overlay \
+                 write mode (the overlay is already the durable production state; draining it \
+                 to the owned tree would double-count and append an unranked record that \
+                 recovery drops); the overlay is persisted directly by checkpoint"
+                    .to_string(),
+            ));
+        }
+
         use super::nodes::persistent_node::PersistentCharNode;
 
         let entries = {

@@ -150,6 +150,30 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
             return 0;
         }
 
+        // Flip routing (S5-5): under the overlay each entry commits via the proven
+        // per-op Order-A path (already overlay-routed `insert`/`insert_with_value`,
+        // each emitting a CommitRank), NOT a single unranked `BatchInsert` append
+        // that recovery would DROP as a two-append-window orphan (the A2 fix). Mirrors
+        // `insert_batch`; the `_sorted`/`_grouped`/`_arena_grouped` delegators inherit
+        // this. The lossy byte→String conversion matches the owned path's per-entry
+        // apply (`try_insert_impl_no_wal(&term_str)`).
+        if self.route_overlay() {
+            let mut inserted_count = 0;
+            for (term, value) in entries {
+                let term_str = String::from_utf8_lossy(term).into_owned();
+                let result = match value {
+                    Some(v) => self.insert_with_value(&term_str, v.clone()),
+                    None => self.insert(&term_str),
+                };
+                match result {
+                    Ok(true) => inserted_count += 1,
+                    Ok(false) => {}
+                    Err(e) => log::warn!("Failed overlay byte batch insert entry: {:?}", e),
+                }
+            }
+            return inserted_count;
+        }
+
         let mut wal_entries = Vec::with_capacity(entries.len());
         let mut prepared = Vec::with_capacity(entries.len());
         for (term, value) in entries {

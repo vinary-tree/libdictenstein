@@ -26,6 +26,24 @@ use crate::persistent_artrie::TransactionState;
 
 impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     pub fn begin_document(&self, document_id: &str) -> Result<CharDocumentTransaction<V>> {
+        // S5-7: reject under the overlay (symmetry with `commit_document`). A `BeginTx`
+        // append burns an LSN that is NEVER `mark_committed` (verified RES-2), so the
+        // committed-watermark stalls and checkpoint reclaim — which keys on the
+        // watermark, not next_lsn (persist.rs) — cannot advance; and the transaction
+        // body applies to the owned tree, which the overlay read/checkpoint path does
+        // not observe. Callers needing transactions use `OverlayWriteMode::OwnedTree`.
+        if self.route_overlay() {
+            return Err(PersistentARTrieError::InvalidOperation(
+                "document transactions are not supported under the lock-free overlay write \
+                 mode (begin_document burns an un-watermarked BeginTx LSN that stalls \
+                 checkpoint reclaim, and the transaction applies to the owned tree the \
+                 overlay does not observe); use OverlayWriteMode::OwnedTree for \
+                 transactions, or the single-op insert/increment/upsert which route to \
+                 the overlay"
+                    .to_string(),
+            ));
+        }
+
         // Generate a unique transaction ID
         let tx_id = {
             let base = self.next_lsn.load(AtomicOrdering::Acquire);
