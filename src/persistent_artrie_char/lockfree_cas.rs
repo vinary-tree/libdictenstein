@@ -119,8 +119,13 @@ enum LockfreeRemoveResult {
     /// clobbers never TIE).
     Removed(u64),
     /// The term is absent on this snapshot (reached full depth non-final, or a
-    /// missing/null spine edge). No spine was published.
-    AlreadyAbsent,
+    /// missing/null spine edge). No spine was published. Carries the
+    /// **observed-root version** (FIX-A / D2.8): `version()` of the `current_root`
+    /// this remove walked (or `0` for the empty/null-root early return). This op
+    /// took no root CAS, so its commit generation is the causally-bounded observed
+    /// version — `<` any strictly-later same-key insert's published version — keeping
+    /// the idempotent record correctly ordered in the same `root.version` domain.
+    AlreadyAbsent(u64),
     /// CAS failed due to a concurrent modification — re-find and retry.
     Conflict,
     /// WRITE-PATH FAULT-IN (design §3, R-B): a buffer-manager I/O error faulting
@@ -233,8 +238,9 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
                         return false;
                     }
                 }
-                LockfreeInsertResult::AlreadyExists => {
-                    // Term already exists in the trie
+                LockfreeInsertResult::AlreadyExists(_observed_gen) => {
+                    // Term already exists in the trie. Non-durable path: no WAL, no
+                    // rank, so the observed generation is unused here.
                     lockfree_cache.insert(term.to_string(), true);
                     return false;
                 }
@@ -358,16 +364,14 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
                     // commit relative to the other op's commit.
                     #[cfg(test)]
                     commit_rendezvous(RendezvousPhase::AfterCommit);
-                    // §3.6 GENERATION (load-bearing): the commit generation is the
-                    // PUBLISHED-ROOT version captured at THIS op's visibility CAS
-                    // (returned by `try_insert_lockfree_path` from the exact root it
-                    // swapped — no live re-walk). Unlike the leaf `version` (which
-                    // the in-place `try_set_final` finalize does NOT bump, so an
-                    // insert re-finalizing a leaf a remove cleared would TIE the
-                    // remove's generation), the root version is bumped by every
-                    // publication (`with_child` path-copy), so it is STRICTLY
-                    // MONOTONE in the root-CAS order for BOTH insert and remove —
-                    // closing the s019 re-finalize race.
+                    // GENERATION (§3.6): the PUBLISHED-root version captured at THIS
+                    // op's visibility CAS (`root_generation`, read from the exact root
+                    // the CAS swapped — no re-walk). The root version is bumped by every
+                    // publication, so it is strictly monotone in root-CAS order for BOTH
+                    // insert and remove. (S2/FIX-A keeps the real arms on root.version,
+                    // SAME domain as the idempotent observed-version arm below; the
+                    // durable global commit_seq stamp lands at S4 with the Overlay
+                    // regime + idempotent NO-RANK.)
                     let generation = root_generation;
                     lockfree_cache.insert(term.to_string(), true);
                     // Step 2.5 (NEW, Order-A-preserving): bind the durable data
@@ -380,15 +384,21 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
                     self.committed_watermark.mark_committed(rank_lsn);
                     return Ok(newly);
                 }
-                LockfreeInsertResult::AlreadyExists => {
-                    // §3.6 idempotent arm: the term is already published-present (a
-                    // concurrent op finalized it) — this op published NO new root.
-                    // Record the CURRENT published-root version (the generation of
-                    // the last committed publication) under the same pin. If this
-                    // no-op is out-ordered by the real writer, the writer's record
-                    // carries a strictly higher root generation and wins replay —
-                    // harmless (design §3.6).
-                    let generation = lockfree_root.load().map(|r| r.version()).unwrap_or(0);
+                LockfreeInsertResult::AlreadyExists(observed_gen) => {
+                    // FIX-A idempotent arm: the term is already published-present (a
+                    // concurrent op finalized it, or it is present-but-cache-cold) — this
+                    // op took NO root CAS, so it has no position in the CAS order. Rank
+                    // with the OBSERVED-root version (`observed_gen` = `version()` of the
+                    // exact root the walk found the term final in). This is causally
+                    // bounded: the observed-present root precedes (`≺`) any strictly-later
+                    // same-key remove in the CAS chain, so `observed_gen < remove's
+                    // generation`, and the idempotent Insert sorts BEFORE a later Remove
+                    // on replay ⇒ no resurrection. SAME `root.version` domain as the real
+                    // arms (no cross-domain). Uses the OBSERVED root, NOT a second
+                    // `lockfree_root.load()` (which could leapfrog past a later remove —
+                    // RT-1's bug). At S4 this arm converts to NO-RANK + non-faulting
+                    // present-hoist under the Overlay regime.
+                    let generation = observed_gen;
                     // OD4 (test-only): this idempotent commit "decided" here.
                     #[cfg(test)]
                     commit_rendezvous(RendezvousPhase::AfterCommit);
@@ -538,13 +548,11 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
         loop {
             match self.try_remove_lockfree_path(lockfree_root, &chars) {
                 LockfreeRemoveResult::Removed(root_generation) => {
-                    // §3.6 GENERATION (load-bearing): the commit generation is the
-                    // PUBLISHED-ROOT version captured at THIS remove's CAS (from the
-                    // exact root it swapped — no re-walk). The root version is
-                    // bumped by every publication, so it is strictly monotone in
-                    // root-CAS order — the SAME source the insert path uses, so a
-                    // remove and the insert it clobbers (or that clobbers it) never
-                    // TIE on generation.
+                    // GENERATION (§3.6): the PUBLISHED-root version captured at THIS
+                    // remove's CAS (`root_generation`, from the exact root it swapped),
+                    // strictly monotone in root-CAS order — the SAME source the insert
+                    // path uses, so a remove and the insert it clobbers never tie.
+                    // (S2/FIX-A keeps real arms on root.version; commit_seq stamp at S4.)
                     let generation = root_generation;
                     // OD4 (test-only): the clear CAS has won; CommitRank not yet
                     // appended. A test rendezvouses here to order this commit.
@@ -561,18 +569,19 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
                     self.committed_watermark.mark_committed(rank_lsn);
                     return Ok(true);
                 }
-                LockfreeRemoveResult::AlreadyAbsent => {
+                LockfreeRemoveResult::AlreadyAbsent(observed_gen) => {
                     // Raced: a concurrent remove cleared it between our presence
                     // check and the CAS. The Remove LSN is durable; the watermark
                     // must not stall (mirrors insert's AlreadyExists arm). Still
                     // invalidate the cache (the term is absent now).
                     //
-                    // §3.6 idempotent arm: this op published NO new root. Record the
-                    // CURRENT published-root version (the generation of the last
-                    // committed publication) under the same pin. If out-ordered by
-                    // the real writer, the writer carries a strictly higher root
-                    // generation and wins replay — harmless.
-                    let generation = lockfree_root.load().map(|r| r.version()).unwrap_or(0);
+                    // FIX-A idempotent arm: this op took NO root CAS. Rank with the
+                    // OBSERVED-root version (`observed_gen` = version of the root this
+                    // remove walked and found the term absent in) — causally bounded
+                    // (< any strictly-later same-key insert's published version), in the
+                    // SAME root.version domain as the real arms, NOT a second load. (At
+                    // S4 this converts to NO-RANK under the Overlay regime.)
+                    let generation = observed_gen;
                     // OD4 (test-only): this idempotent commit "decided" here.
                     #[cfg(test)]
                     commit_rendezvous(RendezvousPhase::AfterCommit);
@@ -614,7 +623,9 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
         // remove (absent).
         let current_root = match root.load() {
             Some(node) => node,
-            None => return LockfreeRemoveResult::AlreadyAbsent,
+            // Empty/null overlay: nothing was ever present, so generation 0 (sorts
+            // first; an idempotent remove of a never-present term is harmless).
+            None => return LockfreeRemoveResult::AlreadyAbsent(0),
         };
 
         // Build a NEW spine whose leaf is a FRESH cleared copy (as_non_final);
@@ -632,10 +643,17 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
                     Err(_actual) => LockfreeRemoveResult::Conflict,
                 }
             }
-            Err(BuildPathError::AlreadyAbsent) => LockfreeRemoveResult::AlreadyAbsent,
+            // FIX-A: carry the OBSERVED-root version (`current_root` — the exact root
+            // this walk traversed and found the term absent in) so the idempotent
+            // caller ranks causally in the same `root.version` domain.
+            Err(BuildPathError::AlreadyAbsent) => {
+                LockfreeRemoveResult::AlreadyAbsent(current_root.version())
+            }
             // `build_remove_path_recursive` never returns `AlreadyExists`; keep the
             // match total by mapping it to absent (the no-op spine outcome).
-            Err(BuildPathError::AlreadyExists) => LockfreeRemoveResult::AlreadyAbsent,
+            Err(BuildPathError::AlreadyExists) => {
+                LockfreeRemoveResult::AlreadyAbsent(current_root.version())
+            }
             // Flip F0: fault-in I/O error un-gated to production.
             Err(BuildPathError::Io(e)) => LockfreeRemoveResult::IoError(e),
         }
@@ -963,15 +981,21 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
             }
             Err(BuildPathError::AlreadyExists) => {
                 // Term already exists (or, in the production build, an on-disk
-                // reference treated conservatively as present).
-                LockfreeInsertResult::AlreadyExists
+                // reference treated conservatively as present). FIX-A: carry the
+                // OBSERVED-root version (`current.version()` — the exact root this
+                // walk traversed and found the term final in) so the idempotent
+                // caller ranks causally (< any later same-key remove), NOT a second
+                // `lockfree_root.load()` (the leapfrog).
+                LockfreeInsertResult::AlreadyExists(current.version())
             }
             // R-B `AlreadyAbsent` is produced ONLY by the remove path
             // (`build_remove_path_recursive`); the insert path's
             // `build_path_recursive` never returns it. Treat it conservatively as
             // "already exists" so this arm stays total without inventing a new
             // insert outcome (unreachable in practice for inserts).
-            Err(BuildPathError::AlreadyAbsent) => LockfreeInsertResult::AlreadyExists,
+            Err(BuildPathError::AlreadyAbsent) => {
+                LockfreeInsertResult::AlreadyExists(current.version())
+            }
             // WRITE-PATH FAULT-IN I/O error: surface it so the durable caller
             // returns `Err(e)` and the best-effort caller retries / returns false.
             // The durable image is intact (fault-in writes nothing). (Flip F0:
@@ -1677,8 +1701,9 @@ impl<S: BlockStorage> super::PersistentARTrieChar<u64, S> {
                     ));
                 }
             };
-            // §3.6 GENERATION (design C′): the published-root version, captured at
-            // THIS op's visibility CAS — strictly monotone in root-CAS order.
+            // GENERATION (§3.6): the published-root version captured at THIS op's
+            // visibility CAS, monotone in root-CAS order. (S2/FIX-A keeps the real arms
+            // on root.version; the durable commit_seq stamp lands at S4 with Overlay.)
             let generation = new_root.version();
             match lockfree_root.compare_exchange(&root, new_root) {
                 Ok(_) => {
@@ -1777,6 +1802,7 @@ impl<S: BlockStorage> super::PersistentARTrieChar<u64, S> {
                     ));
                 }
             };
+            // GENERATION (§3.6): the published-root version (S2/FIX-A; commit_seq at S4).
             let generation = new_root.version();
             match lockfree_root.compare_exchange(&root, new_root) {
                 Ok(_) => {

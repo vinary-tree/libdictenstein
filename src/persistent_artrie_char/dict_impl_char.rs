@@ -82,8 +82,16 @@ pub(super) enum LockfreeInsertResult<V = ()> {
         Arc<super::nodes::persistent_node::PersistentCharNode<V>>,
         u64,
     ),
-    /// Term already exists in the trie
-    AlreadyExists,
+    /// Term already exists in the trie, carrying the **observed-root version**
+    /// (FIX-A / D2.8): `version()` of the EXACT root in which the walk observed the
+    /// term already-final (`current_root` at `try_insert_lockfree_path` entry), NOT a
+    /// second `lockfree_root.load()`. This op took no root CAS (no position in the
+    /// CAS order), so its commit generation is the causally-bounded observed-present
+    /// version — provably `<` any strictly-later same-key remove's published version
+    /// (the root chain is monotone and `r_obs ≺ r_remove`), so the idempotent record
+    /// sorts BEFORE a later remove on replay (no resurrection), in the SAME
+    /// `root.version` domain as the real arms. Closes RT-1's second-load leapfrog.
+    AlreadyExists(u64),
     /// CAS failed due to concurrent modification (should retry)
     Conflict,
     /// WRITE-PATH FAULT-IN (design §4): a buffer-manager I/O error occurred while
@@ -105,9 +113,10 @@ impl<V: Clone> std::fmt::Debug for LockfreeInsertResult<V> {
                 .field(node)
                 .field(gen)
                 .finish(),
-            LockfreeInsertResult::AlreadyExists => {
-                f.write_str("LockfreeInsertResult::AlreadyExists")
-            }
+            LockfreeInsertResult::AlreadyExists(gen) => f
+                .debug_tuple("LockfreeInsertResult::AlreadyExists")
+                .field(gen)
+                .finish(),
             LockfreeInsertResult::Conflict => f.write_str("LockfreeInsertResult::Conflict"),
             LockfreeInsertResult::IoError(e) => f
                 .debug_tuple("LockfreeInsertResult::IoError")
