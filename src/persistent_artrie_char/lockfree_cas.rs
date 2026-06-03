@@ -1397,7 +1397,15 @@ impl<S: BlockStorage> super::PersistentARTrieChar<u64, S> {
     /// # Panics
     ///
     /// Panics if `enable_lockfree()` was not called first.
-    pub fn try_increment_cas(&self, key: &str, delta: u64) -> Result<u64> {
+    /// Inner increment: like [`Self::try_increment_cas`] but ALSO returns the
+    /// published-root version (the Order-A commit GENERATION, §3.6) of the WINNING
+    /// CAS, so the durable wrapper ([`Self::try_increment_cas_durable`]) can rank the
+    /// delta in the SAME `root.version` domain as the overwrite producers (closes
+    /// hazard D — a `V=u64` key touched by both a ranked overwrite and an unranked
+    /// increment would otherwise cross-domain mis-sort). The generation is captured
+    /// before the winning CAS and returned ONLY from the `Ok` arm (a losing iteration
+    /// discards its `new_root`, so no stale generation leaks).
+    fn try_increment_cas_inner(&self, key: &str, delta: u64) -> Result<(u64, u64)> {
         use super::nodes::persistent_node::PersistentCharNode;
         use std::sync::atomic::Ordering;
 
@@ -1408,7 +1416,7 @@ impl<S: BlockStorage> super::PersistentARTrieChar<u64, S> {
 
         let chars: Vec<u32> = key.chars().map(|c| c as u32).collect();
         if chars.is_empty() {
-            return Ok(0);
+            return Ok((0, 0));
         }
 
         if delta > LOCKFREE_COUNTER_MAX {
@@ -1485,14 +1493,27 @@ impl<S: BlockStorage> super::PersistentARTrieChar<u64, S> {
             // (5) CAS-publish. On success the new value is now visible. On
             // failure another writer won; re-read the higher count and retry so
             // this delta is not lost (it is folded onto the winner's value).
+            // S3 GENERATION: the published-root version (Order-A commit generation,
+            // §3.6) — captured BEFORE the CAS consumes `new_root`, and returned ONLY
+            // from the winning `Ok` arm (the `Err` arm discards this `new_root` and
+            // re-claims next iteration), so a losing iteration never leaks a stale rank.
+            let generation = new_root.version();
             match lockfree_root.compare_exchange(&root, new_root) {
-                Ok(_) => return Ok(new_val),
+                Ok(_) => return Ok((new_val, generation)),
                 Err(_actual) => {
                     self.cas_retries.fetch_add(1, Ordering::Relaxed);
                     continue;
                 }
             }
         }
+    }
+
+    /// Lock-free path-copy increment (non-durable). Thin wrapper over
+    /// [`Self::try_increment_cas_inner`] that drops the commit generation, preserving
+    /// the public signature for the existing callers (the non-durable / increment_cas
+    /// paths and tests do not rank, so they ignore the generation).
+    pub fn try_increment_cas(&self, key: &str, delta: u64) -> Result<u64> {
+        self.try_increment_cas_inner(key, delta).map(|(v, _)| v)
     }
 
     /// **Order-A durable** lock-free increment (Migration Phase E) — the counter
@@ -1591,12 +1612,21 @@ impl<S: BlockStorage> super::PersistentARTrieChar<u64, S> {
         // delta is durably logged but not made visible; this is the documented
         // "durable-but-visible-only-after-reopen" Order-A panic/error window, not a
         // lost write (recovery replays the logged delta).
-        let new_val = self.try_increment_cas(key, delta)?;
+        // S3 increment-rank: call the INNER to obtain the WINNING published-root
+        // version, then bind the durable delta record (`lsn`) to its commit generation
+        // (durable BEFORE ack) so it ranks in the SAME `root.version` domain as the
+        // overwrite producers (closes hazard D). G-OVF: the inner errors BEFORE any CAS
+        // on overflow, so `?` early-returns here leaving the already-appended
+        // BatchIncrement UNRANKED — benign (an accumulate-delta replays in lsn order
+        // under Owned; an unacked drop under Overlay). The rank append is reached ONLY
+        // on the inner's `Ok`.
+        let (new_val, generation) = self.try_increment_cas_inner(key, delta)?;
+        let rank_lsn = self.append_commit_rank(lsn, key.as_bytes(), generation)?;
 
         // Step 3: durable AND visible — advance the committed watermark to include
-        // this LSN so the contiguous prefix does not stall (idempotent; covered if
-        // already drained).
+        // BOTH the data LSN and the rank LSN so the contiguous prefix does not stall.
         self.committed_watermark.mark_committed(lsn);
+        self.committed_watermark.mark_committed(rank_lsn);
         Ok(new_val)
     }
 
@@ -1943,6 +1973,14 @@ impl<S: BlockStorage> super::PersistentARTrieChar<u64, S> {
         let (wal_entries, prepared_values) = self.prepare_lockfree_value_merge(&entries)?;
         let merged_count = wal_entries.len();
 
+        // G-MERGE (S3): this drain-to-owned-tree BatchIncrement is intentionally
+        // UNRANKED — unlike `try_increment_cas_durable` (an Order-A concurrent producer
+        // that ranks its delta), this is a non-Order-A `&mut self` batch drain whose
+        // single record replays in LSN order = its single-threaded commit order, so it
+        // needs no CommitRank under the Owned reconcile. It is the ONE remaining
+        // unranked durable record. ⚠️ S4/Overlay: an Overlay-regime reconcile DROPS
+        // unranked records, so this drain must NOT run on (or be excluded from) an
+        // Overlay-regime file, else a legitimately-acked drain is silently dropped.
         self.append_to_wal(WalRecord::BatchIncrement {
             entries: wal_entries,
         })?;
@@ -2535,6 +2573,66 @@ mod durable_write_tests {
             );
         }
         assert_eq!(trie.get_value("never-incremented"), None);
+    }
+
+    /// S3 hazard-D control (the distinguishing case): a `V=u64` key touched by BOTH a
+    /// ranked overwrite (`insert_cas_with_value_durable`) AND a `try_increment_cas_durable`
+    /// must recover COMMIT-ORDERED after reopen. Here the increment commits FIRST and
+    /// the set OVERWRITES it last ⇒ the recovered value MUST be the set value (5), not
+    /// set+delta (12). The 3 seed writes push the increment's data LSN (=7) ABOVE the
+    /// later set's published-root version (=5) — the magnitude inversion that makes an
+    /// UNRANKED increment (keyed by its lsn) wrongly sort AFTER the set. S3 ranks the
+    /// increment in the same `root.version` domain, so it sorts BEFORE the set (gen 4 <
+    /// 5) and the set wins. This test FAILS (k=12) without S3's increment-rank.
+    #[test]
+    fn s3_increment_then_set_same_key_set_wins_after_reopen() {
+        let dir = scratch("s3-inc-then-set");
+        let path = dir.path().join("t.artc");
+        {
+            let mut trie = PersistentARTrieChar::<u64>::create(&path).expect("create");
+            trie.set_durability_policy(DurabilityPolicy::Immediate);
+            trie.enable_lockfree();
+            // Advance the LSN past the root.version domain (each durable write burns 2
+            // LSNs but bumps root.version by 1), so the increment's data LSN exceeds the
+            // later set's published-root version.
+            for k in ["aa", "bb", "cc"] {
+                trie.insert_cas_with_value_durable(k, 1).expect("seed");
+            }
+            // increment THEN set on the same key: the SET is the last writer. Use
+            // UPSERT (always-write) — `insert_cas_with_value_durable` is insert-only and
+            // would skip a key already made present by the increment.
+            trie.try_increment_cas_durable("k", 7).expect("increment");
+            trie.upsert_cas_durable("k", 5).expect("set");
+            // DROP WITHOUT CHECKPOINT — WAL-only durability.
+        }
+        let trie = PersistentARTrieChar::<u64>::open(&path).expect("reopen");
+        assert_eq!(
+            trie.get_value("k"),
+            Some(5),
+            "increment-then-set: the SET must win (k=5). An UNRANKED increment (keyed \
+             by its larger lsn) would sort after the set → k=12 (hazard D)"
+        );
+    }
+
+    /// S3 coverage twin: set THEN increment ⇒ the increment accumulates onto the set.
+    #[test]
+    fn s3_set_then_increment_same_key_accumulates_after_reopen() {
+        let dir = scratch("s3-set-then-inc");
+        let path = dir.path().join("t.artc");
+        {
+            let mut trie = PersistentARTrieChar::<u64>::create(&path).expect("create");
+            trie.set_durability_policy(DurabilityPolicy::Immediate);
+            trie.enable_lockfree();
+            trie.insert_cas_with_value_durable("k", 5).expect("set");
+            trie.try_increment_cas_durable("k", 1).expect("increment");
+            // DROP WITHOUT CHECKPOINT.
+        }
+        let trie = PersistentARTrieChar::<u64>::open(&path).expect("reopen");
+        assert_eq!(
+            trie.get_value("k"),
+            Some(6),
+            "set(5) then +1 must recover commit-ordered as 6"
+        );
     }
 
     /// The counter Order-A path rejects a non-synchronous policy, exactly as the

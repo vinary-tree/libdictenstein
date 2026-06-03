@@ -348,3 +348,55 @@ The draft's **4 real-arm stamps are correct** (keep). Its **2 idempotent-arm sta
 bug** (must become S2's NO-RANK-via-non-faulting-hoist — an EDIT-FORWARD, not a git revert). The **seed
 is missing** (S1). So the draft EVOLVES into the correct S4 by adding S1 (seed) + S2 (fix idempotent) +
 increment-rank — no git-revert/stash needed; the bad parts are overwritten by forward edits.
+
+## 12. S3 + S4 red-team (2026-06-03, 2 adversarial passes) — VALIDATED + sharpened
+
+After S0–S2 landed, two questions were re-attacked: (S3) can increment-rank land NOW on the `root.version`
+domain, decoupled from the commit_seq/Overlay gate? and (S4) the Overlay-seam + non-faulting-hoist mechanics.
+
+**S3 = increment-rank at `root.version`: SAFE + CORRECT + STANDALONE-COMMITTABLE (do it next).**
+- The rank is ORDER-ONLY: a `BatchIncrement` is a commutative accumulate-delta, so ranking it can NEVER
+  change a recovered sum (pure-counter soaks unaffected); it only fixes the mixed set+increment same-key
+  case (hazard D), by putting the increment in the SAME monotone root-CAS `root.version` chain as the 4 real
+  arms (all 5 producers CAS the one `lockfree_root`; the per-leaf counter was removed in G1/G4).
+- Cross-restart: HARMLESS for increments (deltas commute; lsn tiebreaker is cross-restart-monotone for the
+  set-vs-increment case). Same intra-session limitation as FIX-A — NO new hole; closed uniformly by the
+  commit_seq seed at S4.
+- **Guards (mandatory):** **G-OVF** — append the CommitRank ONLY when the inner returns `Ok`; the overflow
+  check errors BEFORE any CAS, so `let (val,gen)=self.try_increment_cas_inner(..)?;` then unconditional rank
+  leaves the overflow-window `BatchIncrement` unranked (benign: accumulate-delta replays in lsn order under
+  Owned; unacked-drop under Overlay). NEVER pre-append the rank. **Capture site:** `new_root.version()` after
+  `build_value_path_recursive`, returned ONLY from the winning `Ok(_)` CAS arm (never `continue`/`None`/
+  overflow) — guarantees the winning iteration's generation, no losing-iteration leak. **G-MERGE** (document,
+  don't fix): `merge_lockfree_values_to_persistent` stays an unranked `BatchIncrement` — a non-Order-A
+  `&mut self` drain, Owned-only-safe, the one remaining unranked durable record; flag it for the S4 Overlay
+  drop so a legit drain is not silently dropped.
+- **Ship the mixed set+increment same-key reopen test (both polarities) WITH S3** — the existing increment
+  soaks are all commutative/single-delta and give S3 no teeth on hazard D.
+
+**S4 corrections:**
+- **N-S4-1 (HIGH): the Overlay seam is a WAL ROTATION, not an in-place magic restamp.** `enable_lockfree()`
+  runs on a non-empty WAL; an in-place `MAGIC→MAGIC_OVERLAY`+`rank_regime=Overlay` overwrite has (a) a
+  torn-write hazard (magic persists but regime doesn't ⇒ Overlay-magic-Owned-regime ⇒ orphans KEPT ⇒
+  resurrection) and (b) drops the pre-existing Owned unranked records already in the file. SAFE seam: rotate
+  the Owned WAL to archive + open a FRESH active file whose 64-byte header is written ONCE with
+  `MAGIC_OVERLAY`/`rank_regime=Overlay` (reuse `rotate_to_archive`'s regime+floor carry; pre-existing records
+  stay in the Owned archive segment; `next_lsn` continuity preserved). In-place is safe ONLY on a
+  provably-EMPTY WAL. `from_bytes` already dual-accepts both magics; no VERSION bump.
+- **`enable_lockfree→Overlay` is REVERSIBLE-S4** — every caller is `#[cfg(test)]`/opt-in; default ctors set
+  `OwnedTree`; vocab `enable_lockfree` emits zero CommitRank. Guard with a comment/assert at the stamp site:
+  "reversible ONLY while every caller is opt-in/test; a production caller makes this S5."
+- The non-faulting hoist (`find_leaf_lockfree`, NEVER `find_leaf_faulting`) is deadlock-free (no buffer/trie
+  lock, never faults) AND correct under Overlay: a hoist-MISS (term present-under-evicted-prefix) falls
+  through to either a ranked CAS arm or a NO-RANK orphan that the Overlay drop removes ⇒ no resurrection; the
+  fall-through is an optimization-decline, never a wrong result. The NO-RANK arm MUST still
+  `mark_committed(data_lsn)` (liveness; the drop is replay-time + orthogonal to the LSN-contiguous watermark,
+  so it punches no hole).
+- **N-S4-2 (MEDIUM):** `find_leaf_faulting`'s "REVERSIBLE BENCH GATE" doc is STALE (it is un-gated
+  `pub(crate)`, live on production read/remove/value/increment paths) — fix the doc + add a "NEVER call from
+  the insert hoist; use find_leaf_lockfree" marker (deadlock memo). **N-S4-3 (LOW):** re-discharge the
+  lock-order proof for S4's faulting producers (remove/increment/value fault-in) via an isolated
+  `timeout 150` insert‖remove‖increment‖checkpoint‖eviction soak.
+- commit_seq monotonicity holds (NO-RANK idempotent arms emit zero ranks ⇒ strengthen the order); S4 MUST
+  convert all 4 real arms + increment to commit_seq + idempotent→NO-RANK + activate the seed in ONE change
+  (no mixed root.version/commit_seq domain).
