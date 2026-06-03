@@ -297,7 +297,7 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
 
         // Read WAL records for recovery if WAL exists
         let wal_path = path.with_extension("wal");
-        let (recovered_ops, next_lsn, checkpoint_lsn) = if wal_path.exists() {
+        let (recovered_ops, next_lsn, checkpoint_lsn, commit_seq_seed) = if wal_path.exists() {
             // Recover from WAL
             let mut reader =
                 WalReader::new(&wal_path).map_err(|e| PersistentARTrieError::WalError {
@@ -307,6 +307,9 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
             let mut records = Vec::new();
             let mut max_lsn = 0u64;
             let mut checkpoint_lsn = 0u64;
+            // DG-RECON S1 seed: the max CommitRank generation surviving in the WAL.
+            // Combined below with the durable header floor to seed `commit_seq`.
+            let mut max_commit_seq_gen = 0u64;
             while let Some(result) = reader.next_record() {
                 match result {
                     Ok((lsn, record)) => {
@@ -319,6 +322,10 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
                         {
                             checkpoint_lsn = checkpoint_lsn.max(*cp_lsn);
                         }
+                        // Track the max commit generation (DG-RECON S1 seed).
+                        if let WalRecord::CommitRank { generation, .. } = &record {
+                            max_commit_seq_gen = max_commit_seq_gen.max(*generation);
+                        }
                         records.push((lsn, record));
                     }
                     Err(_) => break, // Stop on error
@@ -326,9 +333,16 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
             }
 
             let next_lsn = max_lsn + 1;
-            (records, next_lsn, checkpoint_lsn)
+            // Seed = max(durable header floor, scanned max generation). The floor is
+            // currently 0 until DG2 wires it at checkpoint; scan-max covers the
+            // un-checkpointed tail. A failed header read falls back to scan-max.
+            let floor = WalReader::read_header(&wal_path)
+                .map(|h| h.commit_seq_floor)
+                .unwrap_or(0);
+            let commit_seq_seed = floor.max(max_commit_seq_gen);
+            (records, next_lsn, checkpoint_lsn, commit_seq_seed)
         } else {
-            (Vec::new(), 1, 0)
+            (Vec::new(), 1, 0, 0)
         };
 
         // Create async WAL writer using TOCTOU-safe open_or_create
@@ -377,6 +391,12 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
             lockfree_cache: None,
             cas_retries: std::sync::atomic::AtomicU64::new(0),
         };
+        // DG-RECON S1 seed (inert until S4 stamps producers): raise commit_seq to
+        // out-rank every generation surviving recovery, so a post-reopen claim cannot
+        // collide with a replayed generation (the A.2 cross-restart-order fix).
+        inner
+            .commit_seq
+            .store(commit_seq_seed, std::sync::atomic::Ordering::Release);
 
         // Try to load root from disk if root_ptr != 0
         // Default: lazy loading (eager_depth = None)
@@ -499,7 +519,7 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
 
         // Read WAL records for recovery if WAL exists
         let wal_path = path.with_extension("wal");
-        let (recovered_ops, next_lsn, checkpoint_lsn) = if wal_path.exists() {
+        let (recovered_ops, next_lsn, checkpoint_lsn, commit_seq_seed) = if wal_path.exists() {
             // Recover from WAL
             let mut reader =
                 WalReader::new(&wal_path).map_err(|e| PersistentARTrieError::WalError {
@@ -509,6 +529,9 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
             let mut records = Vec::new();
             let mut max_lsn = 0u64;
             let mut checkpoint_lsn = 0u64;
+            // DG-RECON S1 seed: the max CommitRank generation surviving in the WAL.
+            // Combined below with the durable header floor to seed `commit_seq`.
+            let mut max_commit_seq_gen = 0u64;
             while let Some(result) = reader.next_record() {
                 match result {
                     Ok((lsn, record)) => {
@@ -521,6 +544,10 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
                         {
                             checkpoint_lsn = checkpoint_lsn.max(*cp_lsn);
                         }
+                        // Track the max commit generation (DG-RECON S1 seed).
+                        if let WalRecord::CommitRank { generation, .. } = &record {
+                            max_commit_seq_gen = max_commit_seq_gen.max(*generation);
+                        }
                         records.push((lsn, record));
                     }
                     Err(_) => break, // Stop on error
@@ -528,9 +555,16 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
             }
 
             let next_lsn = max_lsn + 1;
-            (records, next_lsn, checkpoint_lsn)
+            // Seed = max(durable header floor, scanned max generation). The floor is
+            // currently 0 until DG2 wires it at checkpoint; scan-max covers the
+            // un-checkpointed tail. A failed header read falls back to scan-max.
+            let floor = WalReader::read_header(&wal_path)
+                .map(|h| h.commit_seq_floor)
+                .unwrap_or(0);
+            let commit_seq_seed = floor.max(max_commit_seq_gen);
+            (records, next_lsn, checkpoint_lsn, commit_seq_seed)
         } else {
-            (Vec::new(), 1, 0)
+            (Vec::new(), 1, 0, 0)
         };
 
         // Create async WAL writer using TOCTOU-safe open_or_create
@@ -579,6 +613,12 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
             lockfree_cache: None,
             cas_retries: std::sync::atomic::AtomicU64::new(0),
         };
+        // DG-RECON S1 seed (inert until S4 stamps producers): raise commit_seq to
+        // out-rank every generation surviving recovery, so a post-reopen claim cannot
+        // collide with a replayed generation (the A.2 cross-restart-order fix).
+        inner
+            .commit_seq
+            .store(commit_seq_seed, std::sync::atomic::Ordering::Release);
 
         // Try to load root from disk if root_ptr != 0
         let mut loaded_from_disk = false;
