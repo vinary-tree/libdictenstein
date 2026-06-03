@@ -152,5 +152,49 @@ verify-formal-correspondence.sh. Owner GO consumed BETWEEN gate-pass and committ
 - RA-14: §4.3 writes checkpoint_lsn + descriptor in the SAME fsync (verify no reorder).
 - RA-15: §2.4 TypeId stamp-refusal + the §1/lockfree_value_route `Any` downcasts are sound for V=u64.
 
-## 16. Re-red-team findings
-PENDING.
+## 16. Re-red-team findings (2026-06-03) — v2 CLOSER but NOT flip-ready; 1 NEW HIGH hole
+
+VERDICT: NOT safe to reach S5-12 (the irreversible flip) as written. The pure reject/guard/assert
+hardening IS safe to land now; the §4 corruption-rebuild + checkpoint_lsn mechanism is BROKEN and needs
+a from-scratch redesign.
+
+- **RA-14/RA-5 INVALID — NEW HIGH (the headline): the dual on-disk header.** The char DATA file's
+  on-disk header is `FileHeader` ("PART" magic, FNV-checksummed, `disk_manager.rs:76`; opened via
+  `DiskManager::open`, `mmap_ctor.rs:288`), NOT `CharTrieFileHeader` ("ARTC", which is `#[cfg(test)]`-only).
+  In `FileHeader`, bytes 24..32 = `block_count`(u32)+`_pad1`, covered by the FNV checksum. v2 §4.3's
+  "write checkpoint_lsn at bytes 24..32" would CLOBBER `block_count` + invalidate the checksum ⇒ the
+  next `DiskManager::open` fails `verify_checksum` ⇒ UNOPENABLE file; and `get_checkpoint_lsn`
+  (`char recovery.rs:574`) reads `CharTrieFileHeader` (wrong struct) ⇒ garbage. **REDESIGN: put
+  `checkpoint_lsn` into `FileHeader`'s reserved bytes 56..64, INSIDE its FNV checksum; make
+  `get_checkpoint_lsn` read `FileHeader`. NEVER write bytes 24..32. Add a round-trip-through-
+  `DiskManager::open` test (file stays openable).** Single highest-risk residual.
+- **Rebuild I/O-error swallow (MED-HIGH):** `iter_with_values()` does `.ok().unwrap_or_default()`
+  (`mod.rs:625`) ⇒ an I/O fault during the rebuild yields an EMPTY Vec ⇒ overlay left empty, owned
+  cleared ⇒ TOTAL LOSS. `reestablish_overlay_after_recovery` MUST use fallible `iter_prefix_with_values("")?`
+  (or streaming per-first-char) and ABORT open/flip on `Err`.
+- **RA-2 NEEDS-CODE-FIX (showstopper at scale):** eager rebuild = full term Vec + owned + overlay ≈
+  2.5–3× resident + faults EVERY evicted page + O(N) at EVERY open ⇒ OOM/stall near the 32GB cap.
+  Stream the rebuild (chunk+drop) or block S5-12 to small tries until lazy-fault reopen (Phase F).
+- **Overlay-checkpoint fns are `cfg(any(test, bench-internals))`** (`capture_snapshot_immutable`,
+  `publish_immutable_snapshot_retaining_wal[_with_eviction]`, `overlay_to_inner`, `count_overlay_finals`
+  — persist.rs:342/547/654/1142/1250) ⇒ won't compile in prod; S5-9 "un-gate" is a non-trivial subtask
+  + an unsafe-inventory re-run (no NEW unsafe token — `overlay_to_inner`'s `Box::into_raw` is safe).
+- **`set_overlay_regime` has NO length guard today** (sync writer.rs:373 + async :603) — §5's
+  "internally length-guards" is aspirational; must be implemented + the caller enforce `is_empty_after_header()`.
+- **§9 non-faulting-first remove pre-flight NOT implemented** — `remove_cas_durable` still faults-first
+  (`lockfree_cas.rs:553`); the N-S4-3 soak stays mandatory.
+- **NEW LOW: `begin_document` burns an un-watermarked LSN under overlay** (`document_tx.rs:40`, no route
+  guard) ⇒ the committed-watermark stalls there ⇒ checkpoint reclaim can't advance. Reject under
+  `route_overlay()` (symmetry with `commit_document`).
+- **VALIDATED CLOSED:** RA-1 (rebuild durable-free), RA-6 (real removes ranked), RA-7 (LSN monotone
+  across rotate), RA-8 (fresh active == header size), RA-9 (post-flip reads via the §1 suffix), RA-10
+  (Overlay-archive one-way), RA-11 (watermark-after-sync), RA-13 (char-only), RA-15 (TypeId/Any sound).
+  §2/§3 producer-gating enumeration is COMPLETE.
+
+**SAFE TO LAND NOW (reversible, no on-disk-format risk):** S5-4 (file-length flip predicate +
+`is_empty_after_header` + length-guard in set_overlay_regime), S5-5 (`set_owned_regime`), S5-6 (reject
+negative-increment/fetch_add + guard insert_batch_bytes/_sorted/_grouped/arena_grouped + refuse non-{(),u64}
+stamp), S5-7 (merge-drain reject under Overlay, char+byte+vocab), S5-8 (promote the 3 #41 asserts),
++ reject `begin_document` under overlay. These are pure rejects/guards/asserts.
+**NEEDS REDESIGN before S5-12:** S5-1 (FileHeader checkpoint_lsn), S5-3 (the per-record-regime global
+rebuild, which depends on S5-1), the streaming/lazy rebuild (RA-2), the cfg-un-gating (S5-9), §9.
