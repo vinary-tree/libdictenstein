@@ -1178,12 +1178,20 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     /// protected), pure node copies, `Arc` clone/drop, and the EXISTING lazy loader
     /// (called through the safe `&self` `load_overlay_node_from_disk` boundary).
     ///
-    /// REVERSIBLE BENCH GATE: gated `any(test, bench-internals)` (consumes the
-    /// bench/test-gated `load_overlay_node_from_disk`; production read routing is
-    /// untouched until the flip — design §6/§8).
+    /// ⚠️ FAULTING + UN-GATED PRODUCTION: this is a `pub(crate)` fn with NO `#[cfg]` —
+    /// it is live on production read/remove/valued-insert/upsert/increment paths (Flip
+    /// F0 un-gated it; the earlier "REVERSIBLE BENCH GATE" doc was stale). It descends
+    /// `Child::OnDisk` via `load_overlay_node_from_disk → buffer_manager`, so it TAKES
+    /// THE BUFFER-MANAGER LOCK and faults pages in.
+    ///
+    /// 🚫 NEVER call this from `insert_cas_durable`'s present-hoist (or any
+    /// read-BEFORE-append on the hot insert path): a faulting read before the WAL
+    /// append, racing a checkpoint/eviction that holds the buffer lock, is a
+    /// lock-ordering inversion that deadlocked the soak for 75+ minutes (see
+    /// memory `feedback_production-deadlock-is-costly`, 2026-06-03). Use the
+    /// NON-faulting `find_leaf_lockfree` (cache/in-memory only) for any such hoist.
     ///
     /// MAINTENANCE COUPLING: mirrors `evict_overlay_node_at_path`; keep in lockstep.
-    // Flip F0: un-gated to production (the read/write paths route through this).
     pub(crate) fn find_leaf_faulting(
         &self,
         root_slot: &super::nodes::atomic_ptr::AtomicNodePtr<V>,
