@@ -32,6 +32,7 @@ pub mod block_storage;
 pub mod buffer_manager;
 pub mod compact_encoding;
 pub mod concurrency;
+pub mod committed_watermark;
 pub mod dirty_tracker;
 pub mod disk_manager;
 pub mod durability;
