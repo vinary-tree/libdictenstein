@@ -3084,6 +3084,46 @@ mod reconcile_lww_tests {
         assert_eq!(last_effect(&winners, b"b"), Some("ins"));
     }
 
+    /// **S4 Overlay-drop (headline):** an UNRANKED two-append orphan — the redundant
+    /// `Insert` an idempotent producer leaves on a rare present-hoist miss — MUST be
+    /// DROPPED under the Overlay regime, so it cannot resurrect a later-removed term.
+    /// Under Owned the same unranked record is KEPT-@-lsn and (because lsn ≫ the
+    /// remove's small commit_seq generation) sorts LAST ⇒ resurrection. This is exactly
+    /// the safety the S4 idempotent-NO-RANK + Overlay coupling buys.
+    #[test]
+    fn overlay_drops_unranked_orphan_no_resurrection() {
+        let recovered = vec![
+            (10, ins(b"t")),         // UNRANKED orphan (no CommitRank binds lsn 10)
+            (12, rem(b"t")),         // the real remove…
+            (13, rank(12, b"t", 1)), // …ranked at commit_seq 1
+        ];
+        // Overlay: the unranked Insert@10 is DROPPED ⇒ only the Remove applies ⇒ ABSENT.
+        let overlay = reconcile_lww(
+            recovered.clone(),
+            false,
+            0,
+            crate::persistent_artrie_core::wal::RankRegime::Overlay,
+        );
+        assert_eq!(
+            last_effect(&overlay, b"t"),
+            Some("rem"),
+            "Overlay must DROP the unranked orphan ⇒ the term stays removed"
+        );
+        // Owned control: the unranked Insert@10 is KEPT-@-lsn (gen=10) and sorts AFTER
+        // the ranked Remove (gen=1) ⇒ PRESENT = the resurrection Overlay prevents.
+        let owned = reconcile_lww(
+            recovered,
+            false,
+            0,
+            crate::persistent_artrie_core::wal::RankRegime::Owned,
+        );
+        assert_eq!(
+            last_effect(&owned, b"t"),
+            Some("ins"),
+            "Owned KEEPS the orphan @lsn ⇒ it out-sorts the ranked remove ⇒ resurrection (control)"
+        );
+    }
+
     /// **THE s019 fix (headline):** WAL physical order is `Insert@352, Remove@356`
     /// (the remove has the HIGHER lsn), but the durable `CommitRank` markers say
     /// the INSERT committed LATER (generation 5) than the remove (generation 2).

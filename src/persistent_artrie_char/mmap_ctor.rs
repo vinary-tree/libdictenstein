@@ -430,7 +430,13 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
         // checkpoint_lsn are already persisted to disk and are skipped inside
         // `reconcile_lww`. For a rank-less (pre-fix) WAL this is byte-for-byte the
         // old in-order replay (generation_of = lsn).
-        let applied_any = inner.replay_records_lww(recovered_ops, loaded_from_disk, checkpoint_lsn);
+        // S4: the on-disk rank-regime (Overlay for a flipped/overlay file) drives the
+        // reconcile's unranked-orphan DROP; Owned for legacy/base/vocab/un-flipped files.
+        let rank_regime = WalReader::read_header(&wal_path)
+            .map(|h| h.regime())
+            .unwrap_or(crate::persistent_artrie_core::wal::RankRegime::Owned);
+        let applied_any =
+            inner.replay_records_lww(recovered_ops, loaded_from_disk, checkpoint_lsn, rank_regime);
         let skipped_all = !applied_any;
 
         // If we loaded from disk and skipped all WAL records, we can truncate the WAL
@@ -646,7 +652,10 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
         // two cannot drift (no-drift constraint). Per-term last-writer-wins by
         // commit generation; checkpoint-subsumed records skipped inside
         // `reconcile_lww`. Rank-less WAL ⇒ byte-for-byte the old in-order replay.
-        let _ = inner.replay_records_lww(recovered_ops, loaded_from_disk, checkpoint_lsn);
+        let rank_regime = WalReader::read_header(&wal_path)
+            .map(|h| h.regime())
+            .unwrap_or(crate::persistent_artrie_core::wal::RankRegime::Owned);
+        let _ = inner.replay_records_lww(recovered_ops, loaded_from_disk, checkpoint_lsn, rank_regime);
 
         Ok(inner)
     }

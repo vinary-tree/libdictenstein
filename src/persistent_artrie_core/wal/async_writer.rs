@@ -597,6 +597,20 @@ impl AsyncWalWriter {
         }
     }
 
+    /// Stamp the WAL header to the Overlay regime (S4). Delegates to the inner sync
+    /// writer; SAFE ONLY on an empty WAL (the caller guards on emptiness — see
+    /// `WalWriter::set_overlay_regime` + N-S4-1).
+    pub fn set_overlay_regime(&self) -> Result<(), WalError> {
+        let writer = self.writer.lock().expect("WAL writer lock poisoned");
+        writer.set_overlay_regime()
+    }
+
+    /// The header's current rank-regime (S4).
+    pub fn rank_regime(&self) -> super::RankRegime {
+        let writer = self.writer.lock().expect("WAL writer lock poisoned");
+        writer.rank_regime()
+    }
+
     /// Get the path to the WAL file.
     pub fn path(&self) -> &Path {
         &self.path

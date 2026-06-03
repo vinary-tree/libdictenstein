@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 
-use super::{crc32, Lsn, WalConfig, WalError, WalHeader, WalReader, WalRecord};
+use super::{crc32, Lsn, RankRegime, WalConfig, WalError, WalHeader, WalReader, WalRecord};
 
 static ARCHIVE_SEGMENT_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -360,6 +360,37 @@ impl WalWriter {
     pub fn commit_seq_floor(&self) -> u64 {
         let header = self.header.lock().expect("header lock poisoned");
         header.commit_seq_floor
+    }
+
+    /// Stamp the header to the Overlay regime (`MAGIC_OVERLAY` + `rank_regime=Overlay`)
+    /// and persist it (S4 / N-S4-1). **SAFE ONLY when the WAL is EMPTY** (header-only,
+    /// no records) — the caller MUST guarantee this. An in-place magic+regime restamp of
+    /// a NON-empty file would (a) torn-write the magic without the regime ⇒
+    /// Overlay-magic-Owned-regime ⇒ orphans wrongly KEPT, and (b) place pre-existing
+    /// Owned records under the Overlay drop; the non-empty case needs a WAL rotation
+    /// (deferred to the S5 production flip). On an empty WAL there are no records to
+    /// mis-classify, so even a torn header just re-stamps on the next open. Idempotent.
+    pub fn set_overlay_regime(&self) -> Result<(), WalError> {
+        let mut header = self.header.lock().expect("header lock poisoned");
+        if header.rank_regime == RankRegime::Overlay as u8 {
+            return Ok(()); // already Overlay
+        }
+        header.magic = WalHeader::MAGIC_OVERLAY;
+        header.rank_regime = RankRegime::Overlay as u8;
+
+        let mut file = self.file.lock().expect("WAL lock poisoned");
+        file.seek(SeekFrom::Start(0))?;
+        file.write_all(&header.to_bytes())?;
+        file.flush()?;
+        file.get_ref().sync_all()?;
+        file.seek(SeekFrom::End(0))?;
+        Ok(())
+    }
+
+    /// The header's current rank-regime (S4).
+    pub fn rank_regime(&self) -> RankRegime {
+        let header = self.header.lock().expect("header lock poisoned");
+        header.regime()
     }
 
     /// Truncate the WAL file, removing all records.

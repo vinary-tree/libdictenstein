@@ -257,6 +257,7 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
         )>,
         loaded_from_disk: bool,
         checkpoint_lsn: crate::persistent_artrie::wal::Lsn,
+        rank_regime: crate::persistent_artrie_core::wal::RankRegime,
     ) -> bool {
         // Was anything in scope at all (i.e. not entirely below the checkpoint)?
         // Mirrors the pre-fix `skipped_all` flag: true iff every record was
@@ -269,11 +270,11 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
             recovered_ops,
             loaded_from_disk,
             checkpoint_lsn,
-            // INERT until the flip: every current file is Owned, so the regime-gated
-            // drop reduces to KEEP-unranked-@-lsn (unchanged behavior). The flip step
-            // (DG-RECON) threads the actual file regime (`header.regime()`) here so an
-            // Overlay file's unranked two-append orphans are dropped instead of kept.
-            crate::persistent_artrie_core::wal::RankRegime::Owned,
+            // S4 (DG-RECON): the file's ACTUAL regime (`header.regime()`, threaded from
+            // the ctor). Owned ⇒ KEEP-unranked-@-lsn (legacy/base/vocab/un-flipped char);
+            // Overlay ⇒ DROP unranked two-append orphans — the idempotent NO-RANK records
+            // the producers leave on the rare present-hoist miss.
+            rank_regime,
         );
         for op in winners {
             // The applier logs+returns false on a value-deserialize failure

@@ -164,6 +164,23 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
         let root_node = Arc::new(PersistentCharNode::new());
         self.lockfree_root = Some(AtomicNodePtr::new(root_node));
         self.lockfree_cache = Some(DashMap::new());
+
+        // S4: stamp the WAL header to the Overlay regime so recovery DROPS the
+        // idempotent NO-RANK orphans the durable producers may leave (else, under Owned,
+        // an unranked orphan is kept-@-lsn and could resurrect a removed term). SAFE here
+        // ONLY on an EMPTY WAL (`next_lsn == 1` ⇒ no records appended) — an in-place
+        // restamp of a non-empty file is torn-write-unsafe + would drop pre-existing
+        // Owned records (N-S4-1; the non-empty case needs a rotation, deferred to the S5
+        // production flip). REVERSIBLE-S4: every caller of `enable_lockfree` is opt-in/
+        // test today (no production/default ctor reaches it); a PRODUCTION caller would
+        // make this the irreversible S5 flip.
+        if let Some(ref writer) = self.wal_writer {
+            if self.next_lsn.load(std::sync::atomic::Ordering::Acquire) == 1 {
+                if let Err(e) = writer.set_overlay_regime() {
+                    log::warn!("enable_lockfree: could not stamp Overlay regime: {:?}", e);
+                }
+            }
+        }
     }
 
     /// Lock-free insert using CAS operations.
@@ -332,6 +349,21 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
             return Ok(false);
         }
 
+        // S4 §A present-hoist (NON-FAULTING — `find_leaf_lockfree`, NEVER
+        // `find_leaf_faulting`: a faulting read BEFORE the append on the insert hot path
+        // is the 75-minute hang — see `find_leaf_faulting`'s doc +
+        // `feedback_production-deadlock-is-costly`). If the term is already present
+        // IN MEMORY this is a no-op insert: return WITHOUT appending, so it contributes
+        // NO record to replay (the idempotent arm NO-RANKs at S4, so a record left here
+        // would be an unranked orphan). A term under an evicted (OnDisk) prefix reads
+        // absent here ⇒ the hoist MISSES and we fall through to append + the CAS loop
+        // (correct, just unoptimized — the rare race-appended idempotent record is
+        // UNRANKED and DROPPED by the Overlay-regime reconcile, so it cannot resurrect).
+        if self.find_leaf_lockfree(lockfree_root, &chars).is_some() {
+            lockfree_cache.insert(term.to_string(), true);
+            return Ok(false);
+        }
+
         // ORDER A — step 1: append + sync the WAL record DURABLE, before any
         // visibility. The returned LSN is durable-per-policy at this point.
         let lsn = self.append_to_wal_returning_lsn(WalRecord::Insert {
@@ -350,13 +382,20 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
         // re-append (that would burn LSNs and punch holes in the watermark).
         let _epoch = self.epoch_manager.enter_read();
         loop {
+            // S4 commit_seq CLAIM (durable global rank): claimed at the CAS-retry
+            // loop-top, RE-CLAIMED each iteration so a Conflict-retry discards the lost
+            // claim and takes a fresh (higher) one. Every write serializes at the single
+            // root CAS ⇒ the winning iteration's claim is strictly monotone in the global
+            // root-CAS order (CommitSeqMonotone), AND durable across restart (seeded from
+            // max(floor, scan) on open) — the A.2 cross-restart fix root.version couldn't make.
+            let commit_seq = self.commit_seq.fetch_add(1, Ordering::AcqRel) + 1;
             // Durable (1a, D2.8 §1.2): `finalize = true` ⇒ the leaf is published
             // FINAL inside the root CAS (the SOLE linearization point), so the root
             // CAS — not a later `try_set_final` — arbitrates. Reaching the
             // `Inserted` arm means OUR root CAS won ⇒ this op newly published the
             // term (a racer loses the CAS, retries, and sees `AlreadyExists`).
             match self.try_insert_lockfree_path(lockfree_root, &chars, true) {
-                LockfreeInsertResult::Inserted(_node, root_generation) => {
+                LockfreeInsertResult::Inserted(_node, _root_generation) => {
                     // Leaf is already final (built via `as_final`); no try_set_final.
                     let newly = true;
                     // OD4 (test-only): the visibility CAS has won; the CommitRank
@@ -364,15 +403,11 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
                     // commit relative to the other op's commit.
                     #[cfg(test)]
                     commit_rendezvous(RendezvousPhase::AfterCommit);
-                    // GENERATION (§3.6): the PUBLISHED-root version captured at THIS
-                    // op's visibility CAS (`root_generation`, read from the exact root
-                    // the CAS swapped — no re-walk). The root version is bumped by every
-                    // publication, so it is strictly monotone in root-CAS order for BOTH
-                    // insert and remove. (S2/FIX-A keeps the real arms on root.version,
-                    // SAME domain as the idempotent observed-version arm below; the
-                    // durable global commit_seq stamp lands at S4 with the Overlay
-                    // regime + idempotent NO-RANK.)
-                    let generation = root_generation;
+                    // S4 GENERATION: the durable global `commit_seq` claimed at THIS
+                    // iteration's loop-top (NOT the per-lifetime `_root_generation`). Our
+                    // root CAS won, so the claim is strictly monotone in the global
+                    // root-CAS order AND durable across restart (the A.2 fix).
+                    let generation = commit_seq;
                     lockfree_cache.insert(term.to_string(), true);
                     // Step 2.5 (NEW, Order-A-preserving): bind the durable data
                     // record (`lsn`) to its commit generation, durable BEFORE ack.
@@ -384,28 +419,23 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
                     self.committed_watermark.mark_committed(rank_lsn);
                     return Ok(newly);
                 }
-                LockfreeInsertResult::AlreadyExists(observed_gen) => {
-                    // FIX-A idempotent arm: the term is already published-present (a
-                    // concurrent op finalized it, or it is present-but-cache-cold) — this
-                    // op took NO root CAS, so it has no position in the CAS order. Rank
-                    // with the OBSERVED-root version (`observed_gen` = `version()` of the
-                    // exact root the walk found the term final in). This is causally
-                    // bounded: the observed-present root precedes (`≺`) any strictly-later
-                    // same-key remove in the CAS chain, so `observed_gen < remove's
-                    // generation`, and the idempotent Insert sorts BEFORE a later Remove
-                    // on replay ⇒ no resurrection. SAME `root.version` domain as the real
-                    // arms (no cross-domain). Uses the OBSERVED root, NOT a second
-                    // `lockfree_root.load()` (which could leapfrog past a later remove —
-                    // RT-1's bug). At S4 this arm converts to NO-RANK + non-faulting
-                    // present-hoist under the Overlay regime.
-                    let generation = observed_gen;
-                    // OD4 (test-only): this idempotent commit "decided" here.
+                LockfreeInsertResult::AlreadyExists(_observed_gen) => {
+                    // S4 idempotent arm: NO-RANK. The non-faulting present-hoist above
+                    // already returned for terms present-IN-MEMORY; reaching here means
+                    // the term became present AFTER our hoist (a concurrent insert won
+                    // the race, or it was present-under-an-evicted-prefix). Our
+                    // already-appended `Insert@lsn` is then a redundant record that
+                    // acked NO new membership (`Ok(false)`). We do NOT rank it — ranking
+                    // a no-op in the commit_seq domain resurrects (it took no root CAS,
+                    // so it has no causal position; RT-1's bug). Under the Overlay regime
+                    // an UNRANKED record is DROPPED on replay, so it cannot resurrect a
+                    // later-removed term. We STILL `mark_committed(lsn)` for LIVENESS:
+                    // the contiguous watermark must cover the burned LSN or checkpoint
+                    // reclaim stalls; the replay-time drop is orthogonal to the watermark.
                     #[cfg(test)]
                     commit_rendezvous(RendezvousPhase::AfterCommit);
                     lockfree_cache.insert(term.to_string(), true);
-                    let rank_lsn = self.append_commit_rank(lsn, term.as_bytes(), generation)?;
                     self.committed_watermark.mark_committed(lsn);
-                    self.committed_watermark.mark_committed(rank_lsn);
                     return Ok(false);
                 }
                 LockfreeInsertResult::Conflict => {
@@ -546,14 +576,16 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
         // Step 2: the visibility CAS loop. The single root CAS inside
         // `try_remove_lockfree_path` is the SOLE visibility arbiter.
         loop {
+            // S4 commit_seq CLAIM — see `insert_cas_durable`. Loop-top, re-claimed per
+            // iteration; monotone in the global root-CAS order, durable across restart.
+            // The insert and remove paths claim from the SAME `self.commit_seq`.
+            let commit_seq = self.commit_seq.fetch_add(1, Ordering::AcqRel) + 1;
             match self.try_remove_lockfree_path(lockfree_root, &chars) {
-                LockfreeRemoveResult::Removed(root_generation) => {
-                    // GENERATION (§3.6): the PUBLISHED-root version captured at THIS
-                    // remove's CAS (`root_generation`, from the exact root it swapped),
-                    // strictly monotone in root-CAS order — the SAME source the insert
-                    // path uses, so a remove and the insert it clobbers never tie.
-                    // (S2/FIX-A keeps real arms on root.version; commit_seq stamp at S4.)
-                    let generation = root_generation;
+                LockfreeRemoveResult::Removed(_root_generation) => {
+                    // S4 GENERATION: the durable global `commit_seq` claimed at the
+                    // loop-top (NOT `_root_generation`). Our clear CAS won, so the claim
+                    // is monotone in the global root-CAS order AND durable across restart.
+                    let generation = commit_seq;
                     // OD4 (test-only): the clear CAS has won; CommitRank not yet
                     // appended. A test rendezvouses here to order this commit.
                     #[cfg(test)]
@@ -569,26 +601,19 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
                     self.committed_watermark.mark_committed(rank_lsn);
                     return Ok(true);
                 }
-                LockfreeRemoveResult::AlreadyAbsent(observed_gen) => {
-                    // Raced: a concurrent remove cleared it between our presence
-                    // check and the CAS. The Remove LSN is durable; the watermark
-                    // must not stall (mirrors insert's AlreadyExists arm). Still
-                    // invalidate the cache (the term is absent now).
-                    //
-                    // FIX-A idempotent arm: this op took NO root CAS. Rank with the
-                    // OBSERVED-root version (`observed_gen` = version of the root this
-                    // remove walked and found the term absent in) — causally bounded
-                    // (< any strictly-later same-key insert's published version), in the
-                    // SAME root.version domain as the real arms, NOT a second load. (At
-                    // S4 this converts to NO-RANK under the Overlay regime.)
-                    let generation = observed_gen;
-                    // OD4 (test-only): this idempotent commit "decided" here.
+                LockfreeRemoveResult::AlreadyAbsent(_observed_gen) => {
+                    // S4 idempotent arm: NO-RANK. Raced — a concurrent remove cleared
+                    // the term between our present-check and the CAS, so this op took NO
+                    // root CAS and acked NO change (`Ok(false)`). Our already-appended
+                    // `Remove@lsn` is redundant; we do NOT rank it (ranking a no-op in
+                    // the commit_seq domain resurrects — it has no causal CAS position),
+                    // and under the Overlay regime an UNRANKED record is DROPPED on
+                    // replay. We STILL `mark_committed(lsn)` for LIVENESS (cover the
+                    // burned LSN, or checkpoint reclaim stalls) and invalidate the cache.
                     #[cfg(test)]
                     commit_rendezvous(RendezvousPhase::AfterCommit);
                     lockfree_cache.remove(term);
-                    let rank_lsn = self.append_commit_rank(lsn, term.as_bytes(), generation)?;
                     self.committed_watermark.mark_committed(lsn);
-                    self.committed_watermark.mark_committed(rank_lsn);
                     return Ok(false);
                 }
                 LockfreeRemoveResult::Conflict => {
@@ -1437,6 +1462,10 @@ impl<S: BlockStorage> super::PersistentARTrieChar<u64, S> {
         // visibility arbiter — the new leaf's value is published atomically with
         // the new root, so a stale reader never sees a torn count).
         loop {
+            // S4 commit_seq CLAIM (loop-top, re-claimed per iteration) — see
+            // `insert_cas_durable`. The durable wrapper ranks the winning claim; the
+            // non-durable caller discards it (a harmless gap in the global counter).
+            let commit_seq = self.commit_seq.fetch_add(1, Ordering::AcqRel) + 1;
             // (1) Load the current published root (initializing it if null — the
             // same null-init dance the membership path uses).
             let root = match lockfree_root.load() {
@@ -1501,11 +1530,10 @@ impl<S: BlockStorage> super::PersistentARTrieChar<u64, S> {
             // (5) CAS-publish. On success the new value is now visible. On
             // failure another writer won; re-read the higher count and retry so
             // this delta is not lost (it is folded onto the winner's value).
-            // S3 GENERATION: the published-root version (Order-A commit generation,
-            // §3.6) — captured BEFORE the CAS consumes `new_root`, and returned ONLY
-            // from the winning `Ok` arm (the `Err` arm discards this `new_root` and
-            // re-claims next iteration), so a losing iteration never leaks a stale rank.
-            let generation = new_root.version();
+            // S4 GENERATION: the durable global `commit_seq` claimed at the loop-top
+            // (NOT `new_root.version()`). Returned ONLY from the winning `Ok` arm so a
+            // losing iteration never leaks a stale rank; the durable wrapper ranks it.
+            let generation = commit_seq;
             match lockfree_root.compare_exchange(&root, new_root) {
                 Ok(_) => return Ok((new_val, generation)),
                 Err(_actual) => {
@@ -1716,6 +1744,9 @@ impl<S: BlockStorage> super::PersistentARTrieChar<u64, S> {
         // no new commit point is introduced).
         let _epoch = self.epoch_manager.enter_read();
         loop {
+            // S4 commit_seq CLAIM (loop-top, re-claimed per iteration) — see
+            // `insert_cas_durable`. Monotone in the global root-CAS order, durable.
+            let commit_seq = self.commit_seq.fetch_add(1, Ordering::AcqRel) + 1;
             let root = match lockfree_root.load() {
                 Some(r) => r,
                 None => {
@@ -1742,7 +1773,8 @@ impl<S: BlockStorage> super::PersistentARTrieChar<u64, S> {
             // GENERATION (§3.6): the published-root version captured at THIS op's
             // visibility CAS, monotone in root-CAS order. (S2/FIX-A keeps the real arms
             // on root.version; the durable commit_seq stamp lands at S4 with Overlay.)
-            let generation = new_root.version();
+            // S4 GENERATION: durable global commit_seq (loop-top claim).
+            let generation = commit_seq;
             match lockfree_root.compare_exchange(&root, new_root) {
                 Ok(_) => {
                     if let Some(ref cache) = self.lockfree_cache {
@@ -1822,6 +1854,9 @@ impl<S: BlockStorage> super::PersistentARTrieChar<u64, S> {
         // Step 2: publish via the single-root-CAS arbiter (always writes the value).
         let _epoch = self.epoch_manager.enter_read();
         loop {
+            // S4 commit_seq CLAIM (loop-top, re-claimed per iteration) — see
+            // `insert_cas_durable`. Monotone in the global root-CAS order, durable.
+            let commit_seq = self.commit_seq.fetch_add(1, Ordering::AcqRel) + 1;
             let root = match lockfree_root.load() {
                 Some(r) => r,
                 None => {
@@ -1841,7 +1876,8 @@ impl<S: BlockStorage> super::PersistentARTrieChar<u64, S> {
                 }
             };
             // GENERATION (§3.6): the published-root version (S2/FIX-A; commit_seq at S4).
-            let generation = new_root.version();
+            // S4 GENERATION: durable global commit_seq (loop-top claim).
+            let generation = commit_seq;
             match lockfree_root.compare_exchange(&root, new_root) {
                 Ok(_) => {
                     if let Some(ref cache) = self.lockfree_cache {
@@ -2643,6 +2679,47 @@ mod durable_write_tests {
         );
     }
 
+    /// S4 cross-restart commit_seq monotonicity (THE A.2 fix): a key inserted+removed
+    /// in session 1, then RE-INSERTED in session 2 after a reopen, MUST recover PRESENT.
+    /// The session-2 insert's `commit_seq` is SEEDED (S1) above session 1's surviving
+    /// generations, so it out-ranks the session-1 remove. Without the seed the counter
+    /// would reset to 0 ⇒ the session-2 insert collides with session 1's low generations
+    /// and the session-1 remove wins ⇒ the re-insert is wrongly LOST (the A.2 hole that
+    /// `root.version()` — per-lifetime — could not close).
+    #[test]
+    fn s4_cross_restart_reinsert_outranks_prior_remove() {
+        let dir = scratch("s4-cross-restart");
+        let path = dir.path().join("t.artc");
+        // Session 1: insert then remove "k" (k ends absent). Drop-no-checkpoint.
+        {
+            let mut trie = PersistentARTrieChar::<()>::create(&path).expect("create");
+            trie.set_durability_policy(DurabilityPolicy::Immediate);
+            trie.enable_lockfree();
+            assert!(trie.insert_cas_durable("k").expect("insert"));
+            assert!(trie.remove_cas_durable("k").expect("remove"));
+        }
+        // Session 2: reopen (commit_seq SEEDED above session 1's max generation), then
+        // RE-INSERT "k" — a real insert, k is absent. Drop-no-checkpoint.
+        {
+            let mut trie = PersistentARTrieChar::<()>::open(&path).expect("reopen-1");
+            trie.set_durability_policy(DurabilityPolicy::Immediate);
+            trie.enable_lockfree();
+            assert!(
+                !Dictionary::contains(&trie, "k"),
+                "k must be absent at session-2 open (session-1 removed it)"
+            );
+            assert!(trie.insert_cas_durable("k").expect("re-insert"));
+        }
+        // Session 3: reopen + replay all sessions' records. The session-2 insert's
+        // seeded commit_seq out-ranks the session-1 remove ⇒ k PRESENT.
+        let trie = PersistentARTrieChar::<()>::open(&path).expect("reopen-2");
+        assert!(
+            Dictionary::contains(&trie, "k"),
+            "cross-restart: the session-2 re-insert's SEEDED commit_seq must out-rank the \
+             session-1 remove ⇒ k present (without the S1 seed it would reset + collide ⇒ absent)"
+        );
+    }
+
     /// The counter Order-A path rejects a non-synchronous policy, exactly as the
     /// membership path does (the two durable entry points agree).
     #[test]
@@ -3042,7 +3119,18 @@ mod durable_write_tests {
     /// THE OD4 regression: after the s019 interleaving + drop-no-checkpoint +
     /// reopen, the net-present key MUST be recovered present. Fails pre-OD2 (rank
     /// reverted ⇒ LSN-order replay drops it); passes post-OD2.
+    ///
+    /// OBSOLETE UNDER S4 (ignored, NOT deleted — the staging premise is gone BY
+    /// DESIGN): the staged op is an idempotent insert of an already-present term, which
+    /// S4's NON-FAULTING present-hoist now short-circuits to a no-op BEFORE the append —
+    /// so it never appends, never signals `AfterAppend`, and the remove thread's
+    /// `wait_i_appended` deadlocks; and the asserted PRESENT outcome is now ABSENT (an
+    /// idempotent insert cannot "win" — it changes nothing). The rank-over-LSN replay
+    /// property is covered by the `reconcile_lww` unit tests (recovery.rs) + the new S4
+    /// `overlay_drops_unranked_orphan_*` reconcile test; no-resurrection by `fixa_*` +
+    /// `s4_cross_restart_*`.
     #[test]
+    #[ignore = "obsolete under S4: idempotent insert is hoisted to a no-op (no append); see doc"]
     fn replay_orders_by_commit_rank_not_lsn() {
         let dir = stage_s019("od4-s019-present");
         let path = dir.path().join("t.artc");
@@ -3112,7 +3200,14 @@ mod durable_write_tests {
     /// a REMOVE — the Insert APPENDS SECOND (higher LSN) yet the Remove's CAS lands
     /// LAST (higher generation), so the quiesced overlay is ABSENT. Reopen MUST NOT
     /// resurrect it. This guards the opposite direction (no false-present).
+    ///
+    /// OBSOLETE UNDER S4 (ignored, NOT deleted): same cause as the present-polarity
+    /// twin — the staged idempotent insert is hoisted to a no-op (never signals
+    /// `AfterAppend`), deadlocking `wait_i_appended`. The no-resurrection property is
+    /// covered by `fixa_idempotent_cache_cold_*` + the new `s4_cross_restart_*` and
+    /// `overlay_drops_unranked_orphan_*` tests.
     #[test]
+    #[ignore = "obsolete under S4: idempotent insert is hoisted to a no-op (no append); see doc"]
     fn replay_orders_by_commit_rank_not_lsn_resurrection_polarity() {
         use super::{set_commit_rendezvous, RendezvousPhase};
 
