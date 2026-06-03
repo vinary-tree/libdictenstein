@@ -1945,6 +1945,40 @@ mod multi_writer_checkpointer_soak {
         );
     }
 
+    /// **S5-10b membership twin** — `reestablish_overlay_membership_after_recovery`
+    /// rebuilds the overlay (membership, no values) from the recovered owned tree and
+    /// clears the owned tree.
+    #[test]
+    fn s5_10b_reestablish_overlay_membership_from_recovered_owned() {
+        let dir = scratch("s5-10b-membership");
+        let path = dir.path().join("t.artc");
+        let terms: Vec<String> = vec!["a", "ab", "abc", "b", "banana", "z", "日本", "🎉x"]
+            .into_iter()
+            .map(String::from)
+            .collect();
+        {
+            let mut owned = PersistentARTrieChar::<()>::create(&path).expect("create");
+            for t in &terms {
+                owned.insert(t).expect("insert");
+            }
+            owned.checkpoint().expect("checkpoint");
+        }
+        let mut trie = PersistentARTrieChar::<()>::open(&path).expect("reopen");
+        trie.enable_lockfree();
+        trie.reestablish_overlay_membership_after_recovery()
+            .expect("membership reestablish");
+        for t in &terms {
+            assert!(
+                trie.contains_lockfree(t),
+                "overlay missing {t:?} after membership reestablish"
+            );
+        }
+        assert!(
+            !Dictionary::contains(&trie, "a"),
+            "owned tree must be cleared after a successful membership reestablish"
+        );
+    }
+
     /// Membership soak: N writers `insert_cas_durable` disjoint shared-prefix keys
     /// ‖ a checkpointer loops capture+publish; reopen ⇒ every acknowledged term
     /// survives (exact set).

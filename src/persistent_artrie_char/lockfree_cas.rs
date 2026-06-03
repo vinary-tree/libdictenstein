@@ -286,6 +286,36 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
         }
     }
 
+    /// **S5-10b — membership (`V = ()`) overlay reestablish.** The MEMBERSHIP twin of
+    /// [`Self::reestablish_overlay_after_recovery`] (the u64 value-carrying variant in
+    /// `impl<u64, S>`). Re-inserts each recovered owned term into the overlay via the
+    /// no-WAL [`Self::insert_cas`] (no values). Generic over `V` so it compiles for
+    /// any `V`, but it is MEMBERSHIP-ONLY: the S5-12 flip calls THIS for `V = ()` and
+    /// the value-carrying variant for `V = u64`. Streaming by first code-point; clears
+    /// the owned tree LAST (RES-7). NOT wired into any production ctor.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn reestablish_overlay_membership_after_recovery(&mut self) -> Result<()> {
+        use std::collections::BTreeSet;
+        let mut first_units: BTreeSet<char> = BTreeSet::new();
+        for term in self.iter() {
+            if let Some(c) = term.chars().next() {
+                first_units.insert(c);
+            }
+        }
+        for c in first_units {
+            let prefix: String = c.to_string();
+            if let Some(chunk) = self.iter_prefix(&prefix)? {
+                for term in &chunk {
+                    self.insert_cas(term);
+                }
+            }
+        }
+        // Clear the owned tree LAST (RES-7: a mid-stream `?` abort leaves it intact).
+        self.root = super::types::CharTrieRoot::Empty;
+        self.len.store(0, std::sync::atomic::Ordering::Release);
+        Ok(())
+    }
+
     /// **Order-A durable** lock-free insert (Migration Phase E).
     ///
     /// Unlike [`Self::insert_cas`] (which bypasses the WAL), this establishes the
