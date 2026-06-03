@@ -99,8 +99,35 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
         // write guard, atomically DOWNGRADES it to a read guard, then runs
         // `publish_durable_and_reclaim` so concurrent readers proceed during the
         // (fsync-bound) publish phase.
-        let snapshot = self.capture_snapshot()?;
-        self.publish_durable_and_reclaim(snapshot)
+        // S5-9 route-split (RES-4, total-loss guard): under the overlay write mode the
+        // OWNED tree is empty — the live data is in the immutable overlay. Capturing
+        // the owned tree here would checkpoint NOTHING and lose every term on the next
+        // reopen. So under `route_overlay()` capture from the overlay and publish via
+        // the watermark-bounded retaining publisher (which also raises the commit_seq
+        // floor, S5-2). INERT pre-flip: `route_overlay()` is false until S5-12 wires
+        // the production ctors, so the owned arm below is byte-for-byte the prior body.
+        if self.route_overlay() {
+            let snapshot = self.capture_snapshot_immutable()?;
+            if self.eviction_coordinator.is_some() {
+                self.publish_immutable_snapshot_retaining_wal_with_eviction(snapshot)
+            } else {
+                self.publish_immutable_snapshot_retaining_wal(&snapshot)
+            }
+        } else {
+            // S5-8 third assert: never silently checkpoint the owned tree while a
+            // lock-free overlay is the LIVE write target (the RES-4 footgun). Here
+            // `!route_overlay()` is the branch predicate — the assert documents +
+            // tripwires it (NOT `lockfree_root.is_none()`, which would panic the
+            // legitimate kill-switch owned checkpoint, where an overlay root may exist
+            // under `OwnedTree` mode).
+            assert!(
+                !self.route_overlay(),
+                "owned checkpoint reached under an active lock-free overlay write mode \
+                 (RES-4 total-loss guard)"
+            );
+            let snapshot = self.capture_snapshot()?;
+            self.publish_durable_and_reclaim(snapshot)
+        }
     }
 
     /// Checkpoint **Phase B+C** — publish the captured snapshot durably, then
@@ -348,13 +375,11 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     /// reads the value off the node — the former `map_value: Fn(u64) -> V` bridge
     /// is gone. For `V = ()` membership tries the overlay never holds a value.
     ///
-    /// REVERSIBLE BENCH GATE: also exposed under the existing `bench-internals`
-    /// feature (still `pub(crate)`, NOT unconditionally public) so the
-    /// `lockfree_flip_benchmark` can measure the TREATMENT checkpoint path
-    /// (`capture_snapshot_immutable` → `publish_immutable_snapshot_retaining_wal`)
-    /// without performing the Phase-E flip. Removing the `bench-internals`
-    /// disjunct restores the pre-bench `#[cfg(test)]`-only visibility exactly.
-    #[cfg(any(test, feature = "bench-internals"))]
+    /// S5-9: un-gated to production (was `#[cfg(any(test, feature="bench-internals"))]`).
+    /// `checkpoint()` route-splits to this under `route_overlay()` so a post-flip
+    /// checkpoint captures the immutable overlay (the live data) instead of the empty
+    /// owned tree. Adds zero new `unsafe`. Inert until S5-12 flips the production
+    /// ctors (route_overlay() is false pre-flip).
     pub(crate) fn capture_snapshot_immutable(&self) -> Result<CheckpointSnapshot> {
         let next_lsn_at_capture = self.next_lsn.load(AtomicOrdering::Acquire);
 
@@ -575,8 +600,8 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     /// REVERSIBLE BENCH GATE: also exposed under the existing `bench-internals`
     /// feature (still `pub(crate)`) so the `lockfree_flip_benchmark` can drive
     /// the TREATMENT immutable-snapshot publish without the Phase-E flip.
-    /// Removing the `bench-internals` disjunct restores `#[cfg(test)]`-only.
-    #[cfg(any(test, feature = "bench-internals"))]
+    /// S5-9: un-gated to production; `checkpoint()` route-splits to this under
+    /// `route_overlay()`. Inert until the S5-12 flip.
     pub(crate) fn publish_immutable_snapshot_retaining_wal(
         &self,
         snapshot: &CheckpointSnapshot,
@@ -687,14 +712,10 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     /// Some`); an owned-tree snapshot is rejected (its `next_lsn` convention is the
     /// wrong `checkpoint_lsn` here).
     ///
-    /// REVERSIBLE GATE: `cfg(any(test, feature = "bench-internals"))` so the
-    /// `bench_immutable_checkpoint_with_eviction` shim can drive it from a bench
-    /// binary (an external crate that cannot name the `pub(crate)`
-    /// [`CheckpointSnapshot`]). Removing the `bench-internals` disjunct restores
-    /// the pre-bench `#[cfg(test)]`-only visibility exactly. `checkpoint()` + every
-    /// production path stay untouched; this performs NO flip and does NO
-    /// destructive WAL truncation.
-    #[cfg(any(test, feature = "bench-internals"))]
+    /// S5-9: un-gated to production; `checkpoint()` route-splits to this under
+    /// `route_overlay()` when eviction is enabled. This performs NO flip and does NO
+    /// destructive WAL truncation (the retain-WAL semantics are byte-identical to
+    /// `publish_immutable_snapshot_retaining_wal`). Inert until the S5-12 flip.
     pub(crate) fn publish_immutable_snapshot_retaining_wal_with_eviction(
         &self,
         snapshot: CheckpointSnapshot,
@@ -1190,9 +1211,8 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
 /// grown node — captured here to replace `inner.node` (unlike `CharTrieNodeInner`'s
 /// `Clone`, which pre-sizes the tier and can ignore the return).
 ///
-/// REVERSIBLE BENCH GATE: gated `any(test, bench-internals)` so the bench-only
-/// `capture_snapshot_immutable` (which it backs) compiles under `bench-internals`.
-#[cfg(any(test, feature = "bench-internals"))]
+/// S5-9: un-gated to production (backs the now-production `capture_snapshot_immutable`).
+/// Adds no `unsafe` (`Box::into_raw` + `SwizzledPtr::in_memory` are safe).
 fn overlay_to_inner<V>(node: &super::nodes::PersistentCharNode<V>) -> CharTrieNodeInner<V>
 where
     V: DictionaryValue,
@@ -1300,9 +1320,7 @@ where
 /// Count the finalized (terminal) nodes in the overlay subtree — the term count of
 /// the immutable representation (`self.len` tracks the owned tree, not the overlay).
 ///
-/// REVERSIBLE BENCH GATE: gated `any(test, bench-internals)` alongside
-/// `overlay_to_inner` so `capture_snapshot_immutable` compiles under `bench-internals`.
-#[cfg(any(test, feature = "bench-internals"))]
+/// S5-9: un-gated to production (backs the now-production `capture_snapshot_immutable`).
 fn count_overlay_finals<V: DictionaryValue>(node: &super::nodes::PersistentCharNode<V>) -> u64 {
     let mut count = u64::from(node.is_final());
     for (_, child) in node.iter_children() {
@@ -1797,6 +1815,82 @@ mod multi_writer_checkpointer_soak {
             .prefix(prefix)
             .tempdir_in("target/test-tmp")
             .expect("scratch tempdir under target/test-tmp")
+    }
+
+    /// **S5-9 route-split (RES-4 total-loss guard).** Under the overlay write mode,
+    /// `checkpoint()` MUST capture the immutable overlay (the live data), not the
+    /// empty owned tree. SELF-ENFORCING: the owned arm asserts `!route_overlay()`, so
+    /// if `checkpoint()` succeeds under `route_overlay()==true` it provably took the
+    /// overlay arm (else it would panic). Pre-checkpoint the data is overlay-only
+    /// (owned read sees nothing); reopen sees every term ⇒ no loss.
+    #[test]
+    fn s5_9_overlay_checkpoint_captures_overlay_not_empty_owned() {
+        use super::super::overlay_write_mode::OverlayWriteMode;
+        let dir = scratch("s5-9-route-split");
+        let path = dir.path().join("t.artc");
+        let terms: Vec<String> = (0..50u32).map(|i| format!("term{i:03}")).collect();
+        {
+            let mut trie = PersistentARTrieChar::<()>::create(&path).expect("create");
+            trie.set_durability_policy(DurabilityPolicy::Immediate);
+            trie.enable_lockfree();
+            trie.set_overlay_write_mode(OverlayWriteMode::LockFreeOverlay);
+            for t in &terms {
+                trie.insert_cas_durable(t).expect("durable overlay insert");
+            }
+            // The data is OVERLAY-only: the overlay read sees it, the owned read does
+            // not. A checkpoint that captured the owned tree would persist NOTHING.
+            for t in &terms {
+                assert!(trie.contains_lockfree(t), "overlay missing {t:?}");
+                assert!(
+                    !Dictionary::contains(&trie, t),
+                    "owned tree must NOT hold {t:?} (data is overlay-only)"
+                );
+            }
+            // Succeeding here proves the overlay arm was taken (owned arm would panic
+            // its !route_overlay() assert).
+            trie.checkpoint()
+                .expect("overlay checkpoint via S5-9 route-split");
+        }
+        let recovered = PersistentARTrieChar::<()>::open(&path).expect("reopen");
+        for t in &terms {
+            assert!(
+                Dictionary::contains(&recovered, t),
+                "S5-9 route-split lost {t:?} (RES-4 total-loss regression)"
+            );
+        }
+    }
+
+    /// **S5-5/6/7 producer guards** fire under the overlay write mode (and a valid
+    /// op still routes).
+    #[test]
+    fn s5_567_overlay_producer_guards_reject() {
+        use super::super::overlay_write_mode::OverlayWriteMode;
+        let dir = scratch("s5-567-guards");
+        let path = dir.path().join("t.artc");
+        let mut trie = PersistentARTrieChar::<u64>::create(&path).expect("create");
+        trie.set_durability_policy(DurabilityPolicy::Immediate);
+        trie.enable_lockfree();
+        trie.set_overlay_write_mode(OverlayWriteMode::LockFreeOverlay);
+
+        // S5-7 begin_document, S5-6 merge, S5-5 negative increment all REJECT.
+        assert!(
+            trie.begin_document("doc").is_err(),
+            "S5-7: begin_document must reject under the overlay"
+        );
+        assert!(
+            trie.merge_lockfree_values_to_persistent().is_err(),
+            "S5-6: merge_lockfree_values_to_persistent must reject under the overlay"
+        );
+        assert!(
+            trie.increment("k", -1).is_err(),
+            "S5-5: a negative increment must reject under the overlay"
+        );
+        // ...but a non-negative increment ROUTES to the overlay (Ok).
+        assert!(
+            trie.increment("k", 3).is_ok(),
+            "S5-5: a non-negative increment must route to the overlay"
+        );
+        assert_eq!(trie.get_lockfree("k"), Some(3), "routed increment value");
     }
 
     /// Membership soak: N writers `insert_cas_durable` disjoint shared-prefix keys

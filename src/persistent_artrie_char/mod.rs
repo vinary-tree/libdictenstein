@@ -1296,8 +1296,29 @@ impl<V: DictionaryValue> crate::artrie_trait::ARTrie for SharedCharARTrie<V> {
     }
 
     fn checkpoint(&self) -> crate::persistent_artrie::error::Result<()> {
-        // Non-blocking checkpoint: capture the snapshot under an exclusive write
-        // guard (serialization must exclude concurrent inserts), then ATOMICALLY
+        // S5-9 route-split (RES-4, total-loss guard): this non-blocking checkpoint is
+        // a SECOND capture site (besides the inherent `checkpoint()`). Under the
+        // overlay write mode it MUST capture the IMMUTABLE OVERLAY (the live data),
+        // not the empty owned tree, or it serializes nothing and loses every term on
+        // reopen. `capture_snapshot_immutable` is itself lock-free (reads the atomic
+        // root), so it needs NO write-guard-then-downgrade dance — a read guard admits
+        // concurrent readers throughout. INERT pre-flip: `route_overlay()` is false
+        // until S5-12 wires the production ctors, so the owned dance below is
+        // byte-for-byte unchanged. The read guard is scoped so it drops before the
+        // owned path's `self.write()` (no read→write self-deadlock).
+        {
+            let read_guard = self.read();
+            if read_guard.route_overlay() {
+                let snapshot = read_guard.capture_snapshot_immutable()?;
+                return if read_guard.eviction_coordinator.is_some() {
+                    read_guard.publish_immutable_snapshot_retaining_wal_with_eviction(snapshot)
+                } else {
+                    read_guard.publish_immutable_snapshot_retaining_wal(&snapshot)
+                };
+            }
+        }
+        // Non-blocking OWNED-tree checkpoint: capture the snapshot under an exclusive
+        // write guard (serialization must exclude concurrent inserts), then ATOMICALLY
         // downgrade the guard to a read guard so concurrent readers (`contains`/
         // `get_value`) run during the fsync-bound publish phase. The downgrade
         // never releases the lock, so no writer can race in (no GAP_LEDGER #41
