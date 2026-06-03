@@ -1979,6 +1979,37 @@ mod multi_writer_checkpointer_soak {
         );
     }
 
+    /// **S5-12 (V-3)**: `reestablish_overlay_dispatch` routes a u64 trie to the
+    /// VALUE-carrying reestablish (NOT the value-dropping membership twin) — the
+    /// Any-downcast dispatch is correct. Values must survive.
+    #[test]
+    fn s5_12_v3_dispatch_routes_u64_to_value_carrying_reestablish() {
+        let dir = scratch("s5-12-v3-dispatch");
+        let path = dir.path().join("t.artc");
+        let entries: Vec<(String, u64)> = vec![("a", 1u64), ("ab", 22), ("z", 999)]
+            .into_iter()
+            .map(|(t, v)| (t.to_string(), v))
+            .collect();
+        {
+            let mut owned = PersistentARTrieChar::<u64>::create(&path).expect("create");
+            for (t, v) in &entries {
+                owned.insert_with_value(t, *v);
+            }
+            owned.checkpoint().expect("checkpoint");
+        }
+        let mut trie = PersistentARTrieChar::<u64>::open(&path).expect("reopen");
+        trie.enable_lockfree();
+        trie.reestablish_overlay_dispatch()
+            .expect("dispatch reestablish");
+        for (t, v) in &entries {
+            assert_eq!(
+                trie.get_lockfree(t),
+                Some(*v),
+                "V-3 dispatch dropped the value for {t:?} (routed to the membership twin?)"
+            );
+        }
+    }
+
     /// Membership soak: N writers `insert_cas_durable` disjoint shared-prefix keys
     /// ‖ a checkpointer loops capture+publish; reopen ⇒ every acknowledged term
     /// survives (exact set).

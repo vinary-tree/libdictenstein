@@ -115,7 +115,17 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
         }
         self.enable_lockfree();
         self.set_overlay_write_mode(OverlayWriteMode::LockFreeOverlay);
-        self.route_overlay()
+        // V-2: `enable_lockfree` only `log::warn!`s if the Overlay-regime stamp failed,
+        // then STILL enables the overlay — so verify the WAL is ACTUALLY Overlay-regime.
+        // An Owned-regime WAL under overlay routing would make recovery KEEP unranked
+        // orphans (resurrection). A trie with no WAL (in-memory) cannot durably flip and
+        // also fails this check. The create-flip caller hard-errors on a `false` return.
+        let stamped_overlay = self
+            .wal_writer
+            .as_ref()
+            .map(|w| w.rank_regime() == crate::persistent_artrie_core::wal::RankRegime::Overlay)
+            .unwrap_or(false);
+        self.route_overlay() && stamped_overlay
     }
 
     /// **S5-10c — kill-switch construction helper (NOT wired).** Revert the production

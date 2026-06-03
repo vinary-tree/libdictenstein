@@ -316,6 +316,35 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
         Ok(())
     }
 
+    /// **S5-12 (V-3) — the compile-safe reestablish dispatch.** The u64 value-carrying
+    /// [`Self::reestablish_overlay_after_recovery`] lives ONLY in `impl<u64, S>` and is
+    /// NOT name-resolvable from this generic `impl<V>` — a naive
+    /// `if TypeId==u64 { reestablish_overlay_after_recovery() }` would not compile, and
+    /// routing u64 through the membership twin would silently DROP every counter value.
+    /// Dispatch via a SAFE `Any` downcast (no `unsafe`; the same pattern as
+    /// `lockfree_value_route`): u64 ⇒ the value-carrying fn; `()` ⇒ membership;
+    /// ineligible V ⇒ no-op (`overlay_eligible_v` is the gate — no overlay exists to
+    /// reestablish). `S: 'static` so the trie is `Any`.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn reestablish_overlay_dispatch(&mut self) -> Result<()>
+    where
+        S: 'static,
+    {
+        use std::any::{Any, TypeId};
+        if TypeId::of::<V>() == TypeId::of::<u64>() {
+            // SAFE: V == u64 ⇒ the runtime type IS PersistentARTrieChar<u64, S>.
+            let any: &mut dyn Any = self;
+            return any
+                .downcast_mut::<super::PersistentARTrieChar<u64, S>>()
+                .expect("V == u64 ⇒ downcast to <u64, S> succeeds")
+                .reestablish_overlay_after_recovery();
+        }
+        if TypeId::of::<V>() == TypeId::of::<()>() {
+            return self.reestablish_overlay_membership_after_recovery();
+        }
+        Ok(())
+    }
+
     /// **Order-A durable** lock-free insert (Migration Phase E).
     ///
     /// Unlike [`Self::insert_cas`] (which bypasses the WAL), this establishes the
