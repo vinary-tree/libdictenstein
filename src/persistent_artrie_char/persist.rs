@@ -137,7 +137,12 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
         // assert below turns any violation of that invariant (which could
         // archive a racing write out of recovery's reach — the GAP_LEDGER #41
         // footgun) into a loud failure instead of silent data loss.
-        debug_assert_eq!(
+        // S5-8: promoted debug_assert → always-on assert. The #41 footgun (a write
+        // racing the checkpoint ⇒ WAL reclaim archives it out of recovery's reach) is
+        // data-loss-critical; once the overlay is production a fail-stop panic is
+        // strictly safer than silent loss. Order-A + the owned `&mut self` exclusion
+        // guarantee the invariant, so this cannot spuriously fire.
+        assert_eq!(
             self.next_lsn.load(AtomicOrdering::Acquire),
             snapshot.next_lsn_at_capture,
             "checkpoint: next_lsn changed between capture and WAL publish — a \
@@ -461,7 +466,13 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
         // path advances only the WAL writer's, leaving `self.next_lsn` at its
         // initial value, so comparing the watermark against `self.next_lsn` was a
         // domain mismatch that this debug_assert surfaced loudly.
-        debug_assert!(
+        // S5-8: promoted debug_assert → always-on assert. The lock-free analogue of
+        // the owned #41 guard above — a committed watermark beyond the durably-synced
+        // frontier would let WAL reclaim archive an un-synced write. Data-loss-critical
+        // once the overlay is production; Order-A + mark_committed (only after the
+        // append is durable) guarantee `watermark ≤ synced_frontier`, so it cannot
+        // spuriously fire. Fail-stop is strictly safer than silent loss.
+        assert!(
             watermark_at_capture <= synced_frontier_at_capture,
             "capture_snapshot_immutable: committed watermark {watermark_at_capture} \
              exceeds the durably-synced WAL frontier {synced_frontier_at_capture} — \
@@ -469,9 +480,8 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
              reclaiming to this watermark could archive an un-synced write \
              (GAP_LEDGER #41 capture-ordering invariant violated)"
         );
-        // Keep the two captured frontiers live in ALL builds (the `watermark()` and
-        // `synced_lsn()` Acquire loads are the capture-ordering side effects); the
-        // `debug_assert!` itself compiles out in release.
+        // `next_lsn_at_capture` is consumed below; keep it (and the asserted frontiers)
+        // explicitly live so the capture-ordering Acquire loads are never elided.
         let _ = (
             watermark_at_capture,
             synced_frontier_at_capture,
