@@ -175,7 +175,14 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
         // test today (no production/default ctor reaches it); a PRODUCTION caller would
         // make this the irreversible S5 flip.
         if let Some(ref writer) = self.wal_writer {
-            if self.next_lsn.load(std::sync::atomic::Ordering::Acquire) == 1 {
+            // EMPTY-WAL guard: use the WRITER's authoritative next-LSN (incremented by
+            // EVERY append — owned upsert/insert/remove AND the durable producers), NOT
+            // the trie's `self.next_lsn` (which the owned-tree mutations do NOT update;
+            // a stale `==1` there would wrongly stamp a trie that already holds owned
+            // records, silently DROPPING them on reopen under the Overlay regime —
+            // exactly the N-S4-1 non-empty-restamp hazard the `char_lockfree_value_merge`
+            // correspondence test caught).
+            if writer.current_lsn() == 1 {
                 if let Err(e) = writer.set_overlay_regime() {
                     log::warn!("enable_lockfree: could not stamp Overlay regime: {:?}", e);
                 }
@@ -2017,14 +2024,8 @@ impl<S: BlockStorage> super::PersistentARTrieChar<u64, S> {
         let (wal_entries, prepared_values) = self.prepare_lockfree_value_merge(&entries)?;
         let merged_count = wal_entries.len();
 
-        // G-MERGE (S3): this drain-to-owned-tree BatchIncrement is intentionally
-        // UNRANKED — unlike `try_increment_cas_durable` (an Order-A concurrent producer
-        // that ranks its delta), this is a non-Order-A `&mut self` batch drain whose
-        // single record replays in LSN order = its single-threaded commit order, so it
-        // needs no CommitRank under the Owned reconcile. It is the ONE remaining
-        // unranked durable record. ⚠️ S4/Overlay: an Overlay-regime reconcile DROPS
-        // unranked records, so this drain must NOT run on (or be excluded from) an
-        // Overlay-regime file, else a legitimately-acked drain is silently dropped.
+        // G-MERGE: this drain-to-owned-tree BatchIncrement is a non-Order-A `&mut self`
+        // batch drain. (S4 note: it stays UNRANKED; see the merge-vs-Overlay handling.)
         self.append_to_wal(WalRecord::BatchIncrement {
             entries: wal_entries,
         })?;
