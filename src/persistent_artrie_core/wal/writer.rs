@@ -596,3 +596,39 @@ impl WalWriter {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod dg0_carry_tests {
+    use super::{WalConfig, WalWriter};
+    use std::path::Path;
+
+    /// DG0: `rotate_to_archive` must CARRY the active file's commit_seq_floor and
+    /// rank_regime into the fresh active header (not zero them via WalHeader::new).
+    /// REAL-disk scratch (never tmpfs — /tmp is RAM on this host).
+    #[test]
+    fn rotate_carries_floor_and_regime() {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("target/test-tmp/dg0_carry");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("scratch dir");
+        let wal_path = dir.join("wal.log");
+
+        let writer = WalWriter::create(&wal_path).expect("create wal");
+        writer.set_commit_seq_floor(777).expect("set floor");
+        {
+            // Simulate an Overlay-regime active file (DG-RECON sets this via the flip).
+            let mut h = writer.header.lock().expect("header lock");
+            h.rank_regime = 1; // RankRegime::Overlay
+        }
+
+        let cfg = WalConfig::with_archive_dir(dir.join("archive"));
+        writer.rotate_to_archive(&cfg).expect("rotate");
+
+        // The NEW active file CONTINUES the rotated file's floor + regime.
+        assert_eq!(writer.commit_seq_floor(), 777, "commit_seq_floor carried across rotate");
+        assert_eq!(
+            writer.header.lock().expect("header lock").rank_regime,
+            1,
+            "rank_regime carried across rotate"
+        );
+    }
+}
