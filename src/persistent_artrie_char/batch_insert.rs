@@ -20,6 +20,27 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
             return 0;
         }
 
+        // Flip routing (design §2): under the overlay each entry commits via the
+        // proven per-op Order-A path (the overlay's discipline is per-op WAL-then-
+        // CAS, not the owned tree's single-BatchInsert append). Delegate to the
+        // already-routed single-op `insert` / `insert_with_value` so NO mutation
+        // logic is duplicated; arbitrary-V valued entries fall back inside those.
+        if self.route_overlay() {
+            let mut inserted_count = 0;
+            for (term, value) in entries {
+                let result = match value {
+                    Some(v) => self.insert_with_value(term, v.clone()),
+                    None => self.insert(term),
+                };
+                match result {
+                    Ok(true) => inserted_count += 1,
+                    Ok(false) => {}
+                    Err(e) => log::warn!("Failed overlay batch insert entry: {:?}", e),
+                }
+            }
+            return inserted_count;
+        }
+
         let mut wal_entries = Vec::with_capacity(entries.len());
         for (term, value) in entries {
             let preflight = if value.is_some() {

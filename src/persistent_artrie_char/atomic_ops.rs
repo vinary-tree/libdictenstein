@@ -28,7 +28,22 @@ impl<V: DictionaryValue + serde::Serialize + serde::de::DeserializeOwned, S: Blo
     /// # Returns
     ///
     /// The new value after incrementing.
+    ///
+    /// **Flip routing (design §2):** for the `V = u64` monomorph with `delta >= 0`
+    /// and `route_overlay()`, this routes to the proven Order-A
+    /// [`try_increment_cas_durable`](Self::try_increment_cas_durable) (add-only
+    /// `BatchIncrement`, commutative-on-replay). A NEGATIVE delta or arbitrary `V`
+    /// falls back to the owned tree (the design's "negative-delta increment
+    /// unsupported" + "arbitrary V → forced OwnedTree" gaps — dispatched via the
+    /// SAFE `Any` downcast in `lockfree_value_route`, zero unsafe).
     pub fn increment(&mut self, term: &str, delta: i64) -> Result<i64> {
+        if self.route_overlay() {
+            if let Some(routed) = super::lockfree_value_route::route_increment(self, term, delta) {
+                return routed;
+            }
+            // delta < 0 or arbitrary V: fall through to the owned body.
+        }
+
         self.preflight_insert_with_value_no_wal(term)?;
 
         // Get current value
@@ -127,7 +142,19 @@ impl<V: DictionaryValue + serde::Serialize + serde::de::DeserializeOwned, S: Blo
     /// # Returns
     ///
     /// `true` if a new term was inserted, `false` if an existing term was updated.
+    ///
+    /// **Flip routing (design §2):** for the `V = u64` monomorph with
+    /// `route_overlay()`, routes to the thin Order-A
+    /// [`upsert_cas_durable`](Self::upsert_cas_durable) (last-writer = the root-CAS
+    /// winner). Arbitrary `V` falls back to the owned tree (SAFE `Any` dispatch).
     pub fn upsert(&mut self, term: &str, value: V) -> Result<bool> {
+        if self.route_overlay() {
+            if let Some(routed) = super::lockfree_value_route::route_upsert(self, term, &value) {
+                return routed;
+            }
+            // Arbitrary V under LockFreeOverlay: fall through to the owned body.
+        }
+
         self.preflight_insert_with_value_no_wal(term)?;
         let existed = self.contains(term);
 
@@ -160,6 +187,21 @@ impl<V: DictionaryValue + serde::Serialize + serde::de::DeserializeOwned, S: Blo
         expected: Option<V>,
         new_value: V,
     ) -> Result<bool> {
+        // Flip gap (design §1, named residual): the overlay has no value-level
+        // compare-and-swap primitive (only the root-version CAS arbitrates
+        // structural publication, not an expected-value match). Reject under
+        // `route_overlay()` rather than write the owned tree (which the overlay
+        // read/checkpoint path would not observe). Reachable only for the u64
+        // monomorph under the F5 default; arbitrary V keeps `lockfree_root = None`
+        // so `route_overlay()` is false and the owned body runs.
+        if self.route_overlay() {
+            return Err(PersistentARTrieError::InvalidOperation(
+                "compare_and_swap is not supported under the lock-free overlay write mode (no \
+                 value-level CAS primitive); use OverlayWriteMode::OwnedTree"
+                    .to_string(),
+            ));
+        }
+
         self.preflight_insert_with_value_no_wal(term)?;
         let current = self.get(term).cloned();
 
@@ -212,6 +254,17 @@ impl<V: DictionaryValue + serde::Serialize + serde::de::DeserializeOwned, S: Blo
     /// If the term exists, returns its current value.
     /// If not, inserts the default value and returns it.
     pub fn get_or_insert(&mut self, term: &str, default: V) -> Result<V> {
+        // Flip routing (design §2): for the u64 monomorph under `route_overlay()`,
+        // insert-if-absent into the overlay then read the resulting value back.
+        // Arbitrary V falls back to the owned body (SAFE `Any` dispatch).
+        if self.route_overlay() {
+            if let Some(routed) =
+                super::lockfree_value_route::route_get_or_insert(self, term, &default)
+            {
+                return routed;
+            }
+        }
+
         self.preflight_insert_with_value_no_wal(term)?;
 
         if let Some(v) = self.get(term).cloned() {

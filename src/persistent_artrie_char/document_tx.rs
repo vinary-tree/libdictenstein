@@ -310,6 +310,24 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     where
         V: Clone,
     {
+        // Flip gap (design §1, named residual): multi-op document transactions are
+        // UNSUPPORTED under the lock-free overlay — the apply step below writes the
+        // OWNED tree (via `try_insert_impl_no_wal*`), which the overlay-default read
+        // path and the overlay checkpoint would NOT see (silent data loss). Rather
+        // than risk that, reject the commit under `route_overlay()` (PS3-guarded).
+        // Overlay-native document-tx apply ("same WAL records, overlay apply") is a
+        // named follow-on. Callers needing transactions use the OwnedTree kill-
+        // switch mode. `abort_document` stays valid (it applies nothing).
+        if self.route_overlay() {
+            return Err(PersistentARTrieError::InvalidOperation(
+                "document transactions are not supported under the lock-free overlay write mode \
+                 (commit_document applies to the owned tree, which the overlay read/checkpoint \
+                 path does not observe); use OverlayWriteMode::OwnedTree for transactions, or \
+                 the single-op insert/increment/upsert which route to the overlay"
+                    .to_string(),
+            ));
+        }
+
         if tx.state != TransactionState::Active {
             return Err(PersistentARTrieError::InvalidOperation(format!(
                 "Cannot commit a {} transaction",

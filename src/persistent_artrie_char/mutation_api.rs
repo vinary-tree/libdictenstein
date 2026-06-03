@@ -17,8 +17,23 @@ use crate::persistent_artrie::wal::WalRecord;
 use crate::value::DictionaryValue;
 
 impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
-    /// Insert a term with WAL logging
+    /// Insert a term with WAL logging.
+    ///
+    /// **Flip routing (design §2):** when `route_overlay()` (the kill-switch
+    /// selects the lock-free overlay AND it is live), this membership insert
+    /// routes to the proven Order-A [`insert_cas_durable`](Self::insert_cas_durable)
+    /// (value-free, so it is safe for ALL `V`). Otherwise the verbatim owned-tree
+    /// body runs (the one-release fallback — NO mutation logic duplicated).
     pub fn insert(&mut self, term: &str) -> Result<bool> {
+        if self.route_overlay() {
+            // Overlay path: Order-A WAL-then-CAS over the immutable overlay. The
+            // primitive itself does the WAL append (chokepoint =
+            // `invalidate_eviction_registry`), the visibility CAS, and the
+            // committed-watermark advance — so the registry-invalidation contract
+            // and `NoLostWriteUnderLockFreeCommit` hold by construction.
+            return self.insert_cas_durable(term);
+        }
+
         if !self.preflight_insert_no_wal(term)? {
             return Ok(false);
         }
@@ -39,8 +54,25 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
         result
     }
 
-    /// Insert a term with an associated value and WAL logging
+    /// Insert a term with an associated value and WAL logging.
+    ///
+    /// **Flip routing (design §2, per-monomorph guard):** the overlay value-write
+    /// path is hardcoded `<u64>` (arbitrary `V` needs G1), so this routes to the
+    /// overlay ONLY for the `V = u64` monomorph, dispatched via the SAFE `Any`
+    /// downcast in [`super::lockfree_value_route::route_insert_with_value`] (zero
+    /// unsafe). Arbitrary `V` stays on the proven owned tree (the design's
+    /// "arbitrary V → forced OwnedTree" gap).
     pub fn insert_with_value(&mut self, term: &str, value: V) -> Result<bool> {
+        if self.route_overlay() {
+            if let Some(routed) =
+                super::lockfree_value_route::route_insert_with_value(self, term, &value)
+            {
+                return routed;
+            }
+            // Arbitrary V under LockFreeOverlay: fall through to the owned body
+            // (forced OwnedTree — the value write path cannot represent arbitrary V).
+        }
+
         self.preflight_insert_with_value_no_wal(term)?;
 
         // Log to WAL first (routes through group commit if enabled)
@@ -62,8 +94,19 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
         result
     }
 
-    /// Remove a term with WAL logging
+    /// Remove a term with WAL logging.
+    ///
+    /// **Flip routing (design RB6 / §2):** when `route_overlay()`, this routes to
+    /// the PROVEN [`remove_cas_durable`](Self::remove_cas_durable) (R-B: Order-A
+    /// WAL `Remove` → path-copy clearing the leaf's finality → root-CAS →
+    /// mark_committed; loom/proptest/TLA-re-proven, committed). Value-free, so it
+    /// is safe for ALL `V`. RB6 depends on fault-in being a production path (F0
+    /// un-gated it), because remove-under-evicted-prefix needs fault-in.
     pub fn remove(&mut self, term: &str) -> Result<bool> {
+        if self.route_overlay() {
+            return self.remove_cas_durable(term);
+        }
+
         if !self.preflight_remove_no_wal(term)? {
             return Ok(false);
         }
