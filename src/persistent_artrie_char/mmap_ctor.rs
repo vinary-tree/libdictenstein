@@ -853,99 +853,67 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
                 let mut terms_recovered: u64 = 0;
                 let mut segments_used = Vec::new();
 
-                'segments: for segment_path in &segments {
-                    // Create reader for this segment
-                    use crate::persistent_artrie::wal::WalReader;
+                // A2 fix (S5 v4 §1.3): an Overlay archive must DROP never-acked
+                // two-append-window orphans (else a post-flip corruption rebuild
+                // resurrects them) and reorder same-term ops by commit generation.
+                // Route the Overlay case through the canonical regime-aware reconcile
+                // (DRY with `recover_from_archives`); the all-Owned case keeps the
+                // existing inline streaming replay UNCHANGED (INERT pre-flip).
+                let any_overlay = segments.iter().any(|seg| {
+                    crate::persistent_artrie::wal::WalReader::read_header(seg)
+                        .map(|h| h.regime() == crate::persistent_artrie::wal::RankRegime::Overlay)
+                        .unwrap_or(false)
+                });
+                if any_overlay {
+                    let (rr, tr) =
+                        crate::persistent_artrie::recovery::rebuild_from_wal_segments_regime_aware(
+                            &segments,
+                            |op| {
+                                if trie.apply_core_recovered_operation_no_wal(op) {
+                                    Ok(())
+                                } else {
+                                    Err("failed to apply recovered archive operation".to_string())
+                                }
+                            },
+                        )
+                        .map_err(|error| {
+                            PersistentARTrieError::RecoveryError {
+                                reason: error.to_string(),
+                            }
+                        })?;
+                    records_replayed = rr;
+                    terms_recovered = tr;
+                    segments_used = segments.clone();
+                } else {
+                    'segments: for segment_path in &segments {
+                        // Create reader for this segment
+                        use crate::persistent_artrie::wal::WalReader;
 
-                    let reader = match WalReader::new(segment_path) {
-                        Ok(r) => r,
-                        Err(_) => continue, // Skip unreadable segments
-                    };
-
-                    segments_used.push(segment_path.clone());
-
-                    for result in reader.iter() {
-                        let (_lsn, record) = match result {
+                        let reader = match WalReader::new(segment_path) {
                             Ok(r) => r,
-                            Err(e) => {
-                                log::warn!(
+                            Err(_) => continue, // Skip unreadable segments
+                        };
+
+                        segments_used.push(segment_path.clone());
+
+                        for result in reader.iter() {
+                            let (_lsn, record) = match result {
+                                Ok(r) => r,
+                                Err(e) => {
+                                    log::warn!(
                                     "Corrupted WAL record during rebuild; stopping at durable prefix: {:?}",
                                     e
                                 );
-                                break 'segments;
-                            }
-                        };
+                                    break 'segments;
+                                }
+                            };
 
-                        records_replayed += 1;
+                            records_replayed += 1;
 
-                        // Apply the record to the trie
-                        use crate::persistent_artrie::wal::WalRecord;
-                        match record {
-                            WalRecord::Insert { term, value } => {
-                                let term_str = String::from_utf8_lossy(&term);
-                                if let Some(value_bytes) = value {
-                                    if let Ok(v) =
-                                        crate::serialization::bincode_compat::deserialize::<V>(
-                                            &value_bytes,
-                                        )
-                                    {
-                                        trie.insert_impl_no_wal_with_value(&term_str, v);
-                                        terms_recovered += 1;
-                                    }
-                                } else {
-                                    trie.insert_impl_no_wal(&term_str);
-                                    terms_recovered += 1;
-                                }
-                            }
-                            WalRecord::Remove { term } => {
-                                let term_str = String::from_utf8_lossy(&term);
-                                trie.remove_impl_no_wal(&term_str);
-                            }
-                            WalRecord::Increment {
-                                term,
-                                delta: _,
-                                result: val,
-                            } => {
-                                // For increment, store the final result
-                                let term_str = String::from_utf8_lossy(&term);
-                                let value_bytes =
-                                    crate::serialization::bincode_compat::serialize(&val)
-                                        .unwrap_or_default();
-                                if let Ok(v) = crate::serialization::bincode_compat::deserialize::<V>(
-                                    &value_bytes,
-                                ) {
-                                    trie.insert_impl_no_wal_with_value(&term_str, v);
-                                    terms_recovered += 1;
-                                }
-                            }
-                            WalRecord::Upsert { term, value } => {
-                                let term_str = String::from_utf8_lossy(&term);
-                                if let Ok(v) =
-                                    crate::serialization::bincode_compat::deserialize::<V>(&value)
-                                {
-                                    trie.insert_impl_no_wal_with_value(&term_str, v);
-                                    terms_recovered += 1;
-                                }
-                            }
-                            WalRecord::CompareAndSwap {
-                                term,
-                                new_value,
-                                success,
-                                ..
-                            } => {
-                                if success {
-                                    let term_str = String::from_utf8_lossy(&term);
-                                    if let Ok(v) = crate::serialization::bincode_compat::deserialize::<
-                                        V,
-                                    >(&new_value)
-                                    {
-                                        trie.insert_impl_no_wal_with_value(&term_str, v);
-                                        terms_recovered += 1;
-                                    }
-                                }
-                            }
-                            WalRecord::BatchInsert { entries } => {
-                                for (term, value) in entries {
+                            // Apply the record to the trie
+                            use crate::persistent_artrie::wal::WalRecord;
+                            match record {
+                                WalRecord::Insert { term, value } => {
                                     let term_str = String::from_utf8_lossy(&term);
                                     if let Some(value_bytes) = value {
                                         if let Ok(v) =
@@ -961,23 +929,92 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
                                         terms_recovered += 1;
                                     }
                                 }
-                            }
-                            WalRecord::BatchIncrement { entries } => {
-                                for (term, delta) in entries {
+                                WalRecord::Remove { term } => {
                                     let term_str = String::from_utf8_lossy(&term);
-                                    if let Err(error) =
-                                        trie.try_increment_impl_no_wal(&term_str, delta)
+                                    trie.remove_impl_no_wal(&term_str);
+                                }
+                                WalRecord::Increment {
+                                    term,
+                                    delta: _,
+                                    result: val,
+                                } => {
+                                    // For increment, store the final result
+                                    let term_str = String::from_utf8_lossy(&term);
+                                    let value_bytes =
+                                        crate::serialization::bincode_compat::serialize(&val)
+                                            .unwrap_or_default();
+                                    if let Ok(v) =
+                                        crate::serialization::bincode_compat::deserialize::<V>(
+                                            &value_bytes,
+                                        )
                                     {
-                                        log::warn!(
+                                        trie.insert_impl_no_wal_with_value(&term_str, v);
+                                        terms_recovered += 1;
+                                    }
+                                }
+                                WalRecord::Upsert { term, value } => {
+                                    let term_str = String::from_utf8_lossy(&term);
+                                    if let Ok(v) = crate::serialization::bincode_compat::deserialize::<
+                                        V,
+                                    >(&value)
+                                    {
+                                        trie.insert_impl_no_wal_with_value(&term_str, v);
+                                        terms_recovered += 1;
+                                    }
+                                }
+                                WalRecord::CompareAndSwap {
+                                    term,
+                                    new_value,
+                                    success,
+                                    ..
+                                } => {
+                                    if success {
+                                        let term_str = String::from_utf8_lossy(&term);
+                                        if let Ok(v) =
+                                            crate::serialization::bincode_compat::deserialize::<V>(
+                                                &new_value,
+                                            )
+                                        {
+                                            trie.insert_impl_no_wal_with_value(&term_str, v);
+                                            terms_recovered += 1;
+                                        }
+                                    }
+                                }
+                                WalRecord::BatchInsert { entries } => {
+                                    for (term, value) in entries {
+                                        let term_str = String::from_utf8_lossy(&term);
+                                        if let Some(value_bytes) = value {
+                                            if let Ok(v) =
+                                                crate::serialization::bincode_compat::deserialize::<V>(
+                                                    &value_bytes,
+                                                )
+                                            {
+                                                trie.insert_impl_no_wal_with_value(&term_str, v);
+                                                terms_recovered += 1;
+                                            }
+                                        } else {
+                                            trie.insert_impl_no_wal(&term_str);
+                                            terms_recovered += 1;
+                                        }
+                                    }
+                                }
+                                WalRecord::BatchIncrement { entries } => {
+                                    for (term, delta) in entries {
+                                        let term_str = String::from_utf8_lossy(&term);
+                                        if let Err(error) =
+                                            trie.try_increment_impl_no_wal(&term_str, delta)
+                                        {
+                                            log::warn!(
                                             "Invalid WAL batch increment during rebuild; stopping at durable prefix: {:?}",
                                             error
                                         );
-                                        break 'segments;
+                                            break 'segments;
+                                        }
+                                        terms_recovered += 1;
                                     }
-                                    terms_recovered += 1;
                                 }
+                                _ => {} // Skip transaction/checkpoint records
                             }
-                            _ => {} // Skip transaction/checkpoint records
                         }
                     }
                 }
