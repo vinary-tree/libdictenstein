@@ -1605,6 +1605,25 @@ where
         }
     }
 
+    // RES-3 (fail-loud, red-team finding): `recover_from_archives` deletes the base
+    // image and rebuilds from archives with `checkpoint_lsn=0`, so the retained
+    // segments MUST cover the LSN prefix from 1. If `prune_segments_if_needed` removed
+    // the old segments whose records were subsumed by the (now-deleted) base, the
+    // lowest surviving LSN is > 1 and a SILENT incomplete rebuild would lose that
+    // prefix. Detect the gap and FAIL LOUD (a recoverable error) rather than
+    // reconstruct an incomplete set. (`prune` orders by the monotone archive counter ⇒
+    // first-LSN order, so a gap manifests as a raised minimum LSN.)
+    if let Some(min_lsn) = all_records.iter().map(|(lsn, _)| *lsn).min() {
+        if min_lsn > 1 {
+            return Err(RecoveryError::RecoveryFailed(format!(
+                "archive rebuild has a prefix gap: lowest WAL LSN is {min_lsn} (> 1) — the \
+                 pre-{min_lsn} prefix was pruned while the base image is unavailable, so the \
+                 archives cannot fully reconstruct the trie. Refusing a silent incomplete \
+                 rebuild (RES-3)."
+            )));
+        }
+    }
+
     let records_replayed = all_records.len() as u64;
 
     // Reconcile all segments together with their per-segment regime (ONE global
@@ -1720,6 +1739,58 @@ mod tests {
             surviving,
             vec![b"overlay_acked".to_vec(), b"owned_unranked".to_vec()],
             "mixed archive must drop only the Overlay orphan"
+        );
+    }
+
+    /// RES-3 (red-team): a regime-aware archive rebuild whose retained segments have a
+    /// PRUNED PREFIX (lowest LSN > 1) must FAIL LOUD rather than silently reconstruct an
+    /// incomplete set. REAL-disk scratch.
+    #[test]
+    fn res3_rebuild_fails_loud_on_pruned_prefix_gap() {
+        use super::super::wal::{WalConfig, WalRecord, WalWriter};
+        use std::path::Path;
+
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("target/test-tmp/res3_gap");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("scratch dir");
+        let wal_path = dir.join("wal.log");
+        let cfg = WalConfig::with_archive_dir(dir.join("archive"));
+
+        let writer = WalWriter::create(&wal_path).expect("create wal");
+        writer
+            .set_overlay_regime()
+            .expect("stamp Overlay on empty WAL");
+        for t in ["a", "b", "c"] {
+            writer
+                .append(WalRecord::Insert {
+                    term: t.as_bytes().to_vec(),
+                    value: None,
+                })
+                .expect("append");
+        }
+        writer.sync().expect("sync");
+        let seg1 = writer.rotate_to_archive(&cfg).expect("rotate1"); // LSN 1..=3
+        for t in ["d", "e", "f"] {
+            writer
+                .append(WalRecord::Insert {
+                    term: t.as_bytes().to_vec(),
+                    value: None,
+                })
+                .expect("append");
+        }
+        writer.sync().expect("sync");
+        let seg2 = writer.rotate_to_archive(&cfg).expect("rotate2"); // LSN 4..=6
+
+        // Simulate `prune_segments_if_needed` removing the OLDEST segment (the LSN 1..=3
+        // prefix), while `recover_from_archives` has deleted the base image.
+        std::fs::remove_file(&seg1).expect("prune seg1");
+
+        // Rebuild from the survivor (LSN 4..=6) ⇒ prefix gap ⇒ FAIL LOUD (not a silent
+        // incomplete rebuild).
+        let result = rebuild_from_wal_segments_regime_aware(&[seg2], |_op| Ok(()));
+        assert!(
+            matches!(result, Err(RecoveryError::RecoveryFailed(_))),
+            "RES-3: a pruned-prefix Overlay archive must fail loud, got {result:?}"
         );
     }
 
