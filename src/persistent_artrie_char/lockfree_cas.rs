@@ -1994,6 +1994,62 @@ impl<S: BlockStorage> super::PersistentARTrieChar<u64, S> {
             .unwrap_or_else(|error| panic!("lock-free increment_cas failed: {}", error))
     }
 
+    /// **S5-10b — rebuild the immutable overlay from the recovered OWNED tree (u64
+    /// counters).** Streaming by first code point so the heavy per-partition
+    /// `(term, value)` materialization is bounded to one first-unit at a time, not the
+    /// whole trie (RA-2). FALLIBLE: any `iter_prefix_with_values` error ABORTS
+    /// (propagates `Err`) with the owned tree INTACT — the owned tree is cleared ONLY
+    /// as the LAST step, so a mid-stream abort leaves an owned-consistent trie (RES-7).
+    /// Re-inserts via the NO-WAL `increment_cas` (the recovered terms are already
+    /// durable in the WAL; re-logging would double-log). `enable_lockfree()` must
+    /// already have run.
+    ///
+    /// NOT wired into any production ctor — the S5-12 owner-GO flip calls it on an
+    /// Overlay-regime reopen so the production read/checkpoint path sees the recovered
+    /// data in the overlay. (`first_units` from `iter()` materializes the term list
+    /// once; a single-walk root-child enumeration is a future optimization.)
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn reestablish_overlay_after_recovery(&mut self) -> Result<()> {
+        use crate::MappedDictionary;
+        use std::collections::BTreeSet;
+        // Disjoint first-code-point partition cover of the recovered owned terms; the
+        // empty term ("") has no first char and is its own partition (RES-6).
+        // NB: reads (`iter`/`iter_prefix_with_values`/`get_value`) target the OWNED
+        // tree — they are NOT write-routed by `route_overlay()` (the read-flip is the
+        // separate S5-12 E1 step), so they correctly read the recovered data here.
+        let mut first_units: BTreeSet<char> = BTreeSet::new();
+        let mut has_empty_term = false;
+        for term in self.iter() {
+            match term.chars().next() {
+                Some(c) => {
+                    first_units.insert(c);
+                }
+                None => has_empty_term = true,
+            }
+        }
+        // Empty-term partition first.
+        if has_empty_term {
+            if let Some(v) = self.get_value("") {
+                self.increment_cas("", v);
+            }
+        }
+        // One first-unit partition at a time: stream its (term, value) pairs, publish
+        // each via the no-WAL overlay path, drop the chunk before the next unit.
+        for c in first_units {
+            let prefix: String = c.to_string();
+            if let Some(chunk) = self.iter_prefix_with_values(&prefix)? {
+                for (term, value) in &chunk {
+                    self.increment_cas(term, *value);
+                }
+            }
+        }
+        // Clear the owned tree LAST — only after every partition published. A mid-
+        // stream `?` abort above returns Err with the owned tree untouched (RES-7).
+        self.root = super::types::CharTrieRoot::Empty;
+        self.len.store(0, std::sync::atomic::Ordering::Release);
+        Ok(())
+    }
+
     /// Merge lock-free values into the persistent trie by summing.
     ///
     /// Unlike `merge_lockfree_to_persistent()` which does boolean insert,

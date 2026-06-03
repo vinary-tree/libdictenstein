@@ -1893,6 +1893,58 @@ mod multi_writer_checkpointer_soak {
         assert_eq!(trie.get_lockfree("k"), Some(3), "routed increment value");
     }
 
+    /// **S5-10b** — `reestablish_overlay_after_recovery` (u64) rebuilds the immutable
+    /// overlay from the recovered OWNED tree, carries every value, and clears the
+    /// owned tree LAST. Streaming by first code-point incl. multi-byte first units
+    /// (RES-6 disjoint cover). No-WAL (increment_cas is the non-durable overlay
+    /// path), so the recovered terms are not re-logged.
+    #[test]
+    fn s5_10b_reestablish_overlay_from_recovered_owned_u64() {
+        let dir = scratch("s5-10b-reestablish");
+        let path = dir.path().join("t.artc");
+        // NB: the char trie's insert rejects the empty term (`chars.is_empty()`), so
+        // "" is never a stored term — exercise multi-byte first units instead.
+        let entries: Vec<(String, u64)> = vec![
+            ("a", 1u64),
+            ("ab", 2),
+            ("abc", 30),
+            ("b", 4),
+            ("banana", 5000),
+            ("z", 9),
+            ("日本", 42),
+            ("🎉x", 11),
+        ]
+        .into_iter()
+        .map(|(t, v)| (t.to_string(), v))
+        .collect();
+
+        // Build an OWNED u64 trie (no overlay), checkpoint, reopen (recovered owned).
+        {
+            let mut owned = PersistentARTrieChar::<u64>::create(&path).expect("create");
+            for (t, v) in &entries {
+                owned.insert_with_value(t, *v);
+            }
+            owned.checkpoint().expect("checkpoint");
+        }
+        let mut trie = PersistentARTrieChar::<u64>::open(&path).expect("reopen");
+        trie.enable_lockfree(); // empty overlay
+        trie.reestablish_overlay_after_recovery()
+            .expect("reestablish overlay from recovered owned tree");
+
+        // Overlay carries every recovered (term, value); the owned tree is cleared.
+        for (t, v) in &entries {
+            assert_eq!(
+                trie.get_lockfree(t),
+                Some(*v),
+                "overlay value mismatch for {t:?} after reestablish"
+            );
+        }
+        assert!(
+            !Dictionary::contains(&trie, "a") && !Dictionary::contains(&trie, "banana"),
+            "owned tree must be cleared LAST after a successful reestablish"
+        );
+    }
+
     /// Membership soak: N writers `insert_cas_durable` disjoint shared-prefix keys
     /// ‖ a checkpointer loops capture+publish; reopen ⇒ every acknowledged term
     /// survives (exact set).
