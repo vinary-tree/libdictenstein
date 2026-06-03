@@ -323,16 +323,18 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
                 ..
             } => {
                 let term_str = String::from_utf8_lossy(&term);
-                if result == 0 {
-                    self.try_increment_impl_no_wal(&term_str, delta).is_ok()
-                } else {
-                    match Self::value_from_recovered_i64(result) {
+                match result {
+                    // Delta (from BatchIncrement) ⇒ ACCUMULATE `delta` (D6 — was the
+                    // `result == 0` arm, which mis-classified an absolute-set-to-0).
+                    None => self.try_increment_impl_no_wal(&term_str, delta).is_ok(),
+                    // Absolute (single Increment) ⇒ SET the term to `v` (including 0).
+                    Some(v) => match Self::value_from_recovered_i64(v) {
                         Some(value) => {
                             self.insert_impl_no_wal_with_value(&term_str, value);
                             true
                         }
                         None => false,
-                    }
+                    },
                 }
             }
             crate::persistent_artrie::recovery::RecoveredOperation::Upsert {

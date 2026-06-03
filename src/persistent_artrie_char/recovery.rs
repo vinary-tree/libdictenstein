@@ -628,8 +628,10 @@ pub enum RecoveredOperation {
         term: Vec<u8>,
         /// Delta that was added
         delta: i64,
-        /// Resulting value
-        result: i64,
+        /// `Some(v)` = absolute set, `None` = delta (D2.8 D6) — mirrors the core
+        /// `RecoveredOperation::Increment.result`; the conversion at `from_core`
+        /// passes it through unchanged.
+        result: Option<i64>,
     },
     /// Upsert a value
     Upsert {

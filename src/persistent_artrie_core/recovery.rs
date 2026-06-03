@@ -136,8 +136,12 @@ pub enum RecoveredOperation {
         term: Vec<u8>,
         /// Delta that was added
         delta: i64,
-        /// Resulting value after increment
-        result: i64,
+        /// `Some(v)` for an ABSOLUTE op — a single `WalRecord::Increment` carries
+        /// its post-increment value `v` and replay SETS the term to `v` (including
+        /// `Some(0)`). `None` for a DELTA op — a `WalRecord::BatchIncrement`
+        /// accumulates `delta`. This replaces the old `result: i64` `==0` sentinel,
+        /// which collided an absolute-set-to-0 with a delta (D2.8 D6).
+        result: Option<i64>,
     },
     /// Atomic upsert operation
     Upsert {
@@ -318,7 +322,9 @@ pub fn recovered_operations_from_record(lsn: Lsn, record: WalRecord) -> Vec<Reco
             lsn,
             term,
             delta,
-            result,
+            // A single `WalRecord::Increment` carries the ABSOLUTE post-increment
+            // value ⇒ replay SETS the term to it (including 0) — D2.8 D6.
+            result: Some(result),
         }],
         WalRecord::Upsert { term, value } => {
             vec![RecoveredOperation::Upsert { lsn, term, value }]
@@ -350,7 +356,9 @@ pub fn recovered_operations_from_record(lsn: Lsn, record: WalRecord) -> Vec<Reco
                 lsn,
                 term,
                 delta,
-                result: 0,
+                // A `BatchIncrement` entry is a DELTA ⇒ replay ACCUMULATES `delta`
+                // (NOT an absolute set) — this is the D6 fix vs the old `result: 0`.
+                result: None,
             })
             .collect(),
         WalRecord::BeginTx { .. }
@@ -1009,8 +1017,11 @@ where
                 delta: _,
                 result,
             } => {
-                // For increment, we store the final result value
-                let value_bytes = result.to_le_bytes();
+                // Convenience helper: stores the ABSOLUTE result for `Some`. A delta
+                // op (`None`) cannot be accumulated here (no current value); preserve
+                // the prior behavior (store 0). The main char/base appliers handle
+                // deltas via accumulation. D6.
+                let value_bytes = result.unwrap_or(0).to_le_bytes();
                 insert_fn(&term, Some(&value_bytes))?;
                 count += 1;
             }
@@ -3170,9 +3181,54 @@ mod reconcile_lww_tests {
         for op in &winners {
             assert!(matches!(
                 op,
-                RecoveredOperation::Increment { result: 0, delta: 1, .. }
+                RecoveredOperation::Increment { result: None, delta: 1, .. }
             ));
         }
+    }
+
+    /// D6 regression: a single `WalRecord::Increment` whose post-increment value is
+    /// 0 (e.g. `+5` then `-5`) must recover as an ABSOLUTE set-to-0 (`Some(0)`), NOT
+    /// a delta-accumulate — the exact collision the old `result: i64` `==0` sentinel
+    /// had. A `BatchIncrement` (overlay delta) must recover as a delta (`None`).
+    #[test]
+    fn d6_increment_outcome_distinguishes_absolute_zero_from_delta() {
+        let abs = recovered_operations_from_record(
+            7,
+            WalRecord::Increment {
+                term: b"k".to_vec(),
+                delta: -5,
+                result: 0,
+            },
+        );
+        assert!(
+            matches!(
+                abs.as_slice(),
+                [RecoveredOperation::Increment {
+                    result: Some(0),
+                    delta: -5,
+                    ..
+                }]
+            ),
+            "absolute-set-to-0 must recover as Some(0) (set), NOT None (delta-accumulate)"
+        );
+
+        let dlt = recovered_operations_from_record(
+            8,
+            WalRecord::BatchIncrement {
+                entries: vec![(b"k".to_vec(), 3)],
+            },
+        );
+        assert!(
+            matches!(
+                dlt.as_slice(),
+                [RecoveredOperation::Increment {
+                    result: None,
+                    delta: 3,
+                    ..
+                }]
+            ),
+            "a BatchIncrement delta must recover as None (delta-accumulate)"
+        );
     }
 
     /// Distinct raw-byte terms that would lossy-UTF8-collide must NOT share a

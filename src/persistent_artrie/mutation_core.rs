@@ -402,11 +402,15 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
                 result,
                 ..
             } => {
-                let final_value = match if result == 0 {
-                    self.recompute_recovered_increment(&term, delta)
-                } else {
-                    Some(result)
-                } {
+                // D6: a delta op (`None`, from BatchIncrement) ⇒ ACCUMULATE onto the
+                // current value; an absolute op (`Some(v)`, single Increment) ⇒ the
+                // value IS `v` (including 0 — the old `result == 0` arm mis-classified
+                // an absolute-set-to-0 as a delta and accumulated it).
+                let computed = match result {
+                    None => self.recompute_recovered_increment(&term, delta),
+                    Some(v) => Some(v),
+                };
+                let final_value = match computed {
                     Some(value) => value,
                     None => {
                         warn!(
