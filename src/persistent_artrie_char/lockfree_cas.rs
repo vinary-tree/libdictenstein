@@ -2948,6 +2948,60 @@ mod durable_write_tests {
         );
     }
 
+    /// FIX-A (S2) regression: a cache-cold IDEMPOTENT insert reaches the
+    /// `AlreadyExists` arm and ranks its `CommitRank` with the OBSERVED-root version
+    /// (the present-root version), which is `<` a subsequent real remove's published
+    /// version — so after drop-no-checkpoint + reopen the term is recovered ABSENT
+    /// (the remove sorts last and wins), NOT resurrected. Exercises the idempotent
+    /// arm's observed-version path end-to-end through WAL replay. (The fully
+    /// concurrent observe-stale-snapshot race that further distinguishes FIX-A from a
+    /// second-load/global-claim rank is proven by the version-chain argument in
+    /// docs/design/dg-recon-commitseq-stamp-seed-step.md §11; staging it
+    /// deterministically needs finer interleaving control than the OD4 harness
+    /// exposes and is deferred to the S4 Overlay-drop gate.)
+    #[test]
+    fn fixa_idempotent_cache_cold_observed_version_then_remove_stays_absent() {
+        let dir = scratch("fixa-observed-absent");
+        let path = dir.path().join("t.artc");
+        {
+            let mut trie = PersistentARTrieChar::<()>::create(&path).expect("create");
+            trie.set_durability_policy(DurabilityPolicy::Immediate);
+            trie.enable_lockfree();
+            // Seed "obs" PRESENT (newly inserted).
+            assert!(
+                trie.insert_cas_durable("obs").expect("seed insert"),
+                "seed must be newly inserted"
+            );
+            // Drop ONLY its positive-cache entry so the next insert MISSES the
+            // fast-path, appends, and reaches the idempotent AlreadyExists arm (the
+            // term is still final in the overlay).
+            trie.lockfree_cache
+                .as_ref()
+                .expect("cache enabled")
+                .remove("obs");
+            // Idempotent insert: cache-cold ⇒ AlreadyExists arm ⇒ Ok(false). FIX-A
+            // ranks this with the OBSERVED-root version (where "obs" is present).
+            assert!(
+                !trie.insert_cas_durable("obs").expect("idempotent insert"),
+                "the cache-cold re-insert must be a NO-OP (idempotent AlreadyExists arm)"
+            );
+            // A real remove publishes a strictly-higher version (v_rem > v_obs).
+            assert!(
+                trie.remove_cas_durable("obs").expect("remove"),
+                "remove must clear a present 'obs'"
+            );
+            drop(trie); // DROP WITHOUT CHECKPOINT — durability is WAL-only.
+        }
+        // Reopen: pure WAL replay. The idempotent insert's OBSERVED (lower) version
+        // sorts BEFORE the remove's higher version ⇒ obs stays ABSENT.
+        let trie = PersistentARTrieChar::<()>::open(&path).expect("reopen");
+        assert!(
+            !Dictionary::contains(&trie, "obs"),
+            "RESURRECTION: the idempotent insert out-ranked the remove — obs was \
+             wrongly recovered present"
+        );
+    }
+
     /// Resurrection-polarity twin: the same controlled scheduler but the net op is
     /// a REMOVE — the Insert APPENDS SECOND (higher LSN) yet the Remove's CAS lands
     /// LAST (higher generation), so the quiesced overlay is ABSENT. Reopen MUST NOT
