@@ -655,7 +655,8 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
         let rank_regime = WalReader::read_header(&wal_path)
             .map(|h| h.regime())
             .unwrap_or(crate::persistent_artrie_core::wal::RankRegime::Owned);
-        let _ = inner.replay_records_lww(recovered_ops, loaded_from_disk, checkpoint_lsn, rank_regime);
+        let _ =
+            inner.replay_records_lww(recovered_ops, loaded_from_disk, checkpoint_lsn, rank_regime);
 
         Ok(inner)
     }
@@ -1196,7 +1197,13 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
         let mut trie = Self::create_with_config(path, config)?;
 
         let (records_replayed, _) =
-            crate::persistent_artrie::recovery::rebuild_from_wal_segments(&segments, |op| {
+            // A2 fix (S5 v4 §1.5): regime-aware rebuild so a post-flip Overlay
+            // archive DROPS never-acked two-append-window orphans instead of
+            // resurrecting them. INERT for Owned archives (identical to the raw
+            // in-order replay).
+            crate::persistent_artrie::recovery::rebuild_from_wal_segments_regime_aware(
+                &segments,
+                |op| {
                 if trie.apply_core_recovered_operation_no_wal(op) {
                     Ok(())
                 } else {
