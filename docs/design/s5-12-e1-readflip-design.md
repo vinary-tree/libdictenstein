@@ -342,3 +342,24 @@ recovered_owned` + clear-last abort-safety; `systemd-run` resource-limited; 0 ad
 - Overlay enumeration is resident-finals (non-faulting) — exact until overlay eviction is un-gated
   (E1-iter-B prerequisite); eviction is currently `#[cfg(feature=bench-internals)]`/test-only.
 - doc-tx + trie-to-trie merge reject under the overlay (use `kill_switch_to_owned` / `OwnedTree`).
+
+### Formal verification of the D1 fix — DONE (the elevated data-loss gate)
+
+`formal-verification/rocq/Spec/OverlayReestablishSpec.v` (Rocq 9.1.1, registered in the rocq Makefile)
+models reestablish as a fold-of-publish parameterized by its read SOURCE, and proves the D1 guard with a
+**negative control** so the proof genuinely catches the bug rather than restating the code:
+- `reestablish_owned_preserves_recovered` — the OWNED-source fold preserves every recovered value
+  (`published_overlay` agrees with `recovered_owned`).
+- `reestablish_routed_publishes_nothing` — the ROUTED-source fold (the D1 bug: flip-before-reestablish +
+  E1-routed reads on the empty overlay) publishes NOTHING.
+- `d1_routed_reads_lose_every_recovered_value` — the headline contrast: the owned source keeps the value,
+  the routed source loses it, and the two differ. The theorem is provable ONLY because the fix reads the
+  owned source — unprovable for the routed source, exactly the bug the red-team caught.
+- `abort_preserves_owned` / `abort_published_sound` / `then_clear_preserves_recovered_then_clears` —
+  clear-last abort-safety (a mid-stream abort leaves the owned source intact; published-so-far is a sound
+  subset).
+
+All 6 theorems are **"Closed under the global context"** (`Print Assumptions`) — **0 axioms, 0 admits**.
+
+Post-flip hardening (not flip blockers; double-covered by TLC + loom + the empirical gate at the
+witnessing bound): #41 TLAPS unbounded `NoLostWriteUnderLockFreeCommit`, A2 Verus `reconcile_lww`.
