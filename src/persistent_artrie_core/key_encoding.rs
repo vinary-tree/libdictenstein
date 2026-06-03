@@ -30,6 +30,7 @@ pub struct CharKey;
 
 impl KeyEncoding for ByteKey {
     type Unit = u8;
+    type Term = Vec<u8>;
     const KEY_BYTES: usize = 1;
     // From persistent_artrie/arena.rs:43-46:
     const ARENA_MAGIC: u64 = 0x414E4152_41545942; // "BYTARANA" in little-endian
@@ -46,6 +47,10 @@ impl KeyEncoding for ByteKey {
         s.as_bytes().iter().copied().collect()
     }
 
+    fn units_to_term(units: &[u8]) -> Vec<u8> {
+        units.to_vec()
+    }
+
     fn unit_to_le_bytes(unit: Self::Unit) -> [u8; 4] {
         [unit, 0, 0, 0]
     }
@@ -57,6 +62,7 @@ impl KeyEncoding for ByteKey {
 
 impl KeyEncoding for CharKey {
     type Unit = u32;
+    type Term = String;
     const KEY_BYTES: usize = 4;
     // From persistent_artrie_char/arena.rs:43-46:
     const ARENA_MAGIC: u64 = 0x414E5241524148_43; // "CHARARNA" in little-endian
@@ -70,6 +76,13 @@ impl KeyEncoding for CharKey {
 
     fn units_from_str(s: &str) -> SmallVec<[Self::Unit; 32]> {
         s.chars().map(|c| c as u32).collect()
+    }
+
+    fn units_to_term(units: &[u32]) -> String {
+        units
+            .iter()
+            .map(|&u| char::from_u32(u).unwrap_or('\u{FFFD}'))
+            .collect()
     }
 
     fn unit_to_le_bytes(unit: Self::Unit) -> [u8; 4] {
@@ -115,6 +128,42 @@ mod tests {
         assert_eq!(units.as_slice(), &[b'h' as u32, 0x1F600]);
     }
 
+    // The `units_from_str` ∘ `units_to_term` round-trip invariant (the formal
+    // statement that routing reads through the shared engine cannot change terms).
+    #[test]
+    fn char_units_to_term_roundtrips_str() {
+        for s in [
+            "",
+            "hello",
+            "日本語",
+            "h\u{1F600}x",
+            "\u{10FFFF}",
+            "mixed 日 a \u{1F389} b",
+        ] {
+            let units = CharKey::units_from_str(s);
+            assert_eq!(
+                CharKey::units_to_term(&units),
+                s.to_string(),
+                "char str->units->term must round-trip for {s:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn byte_units_to_term_roundtrips_bytes() {
+        for s in ["", "hello", "日本語", "\u{1F600}"] {
+            let units = ByteKey::units_from_str(s);
+            assert_eq!(
+                ByteKey::units_to_term(&units),
+                s.as_bytes().to_vec(),
+                "byte str->units->term must equal s.as_bytes() for {s:?}"
+            );
+        }
+        // Arbitrary (non-UTF-8) byte sequences round-trip too (identity copy).
+        let raw: Vec<u8> = vec![0, 1, 255, 128, 42];
+        assert_eq!(ByteKey::units_to_term(&raw), raw.clone());
+    }
+
     // Note: assertions that ByteKey / CharKey constants match the variant
     // modules' arena ARENA_MAGIC / ARENA_MAGIC_V2 constants live in the
     // variant modules' test suites (persistent_artrie::arena::tests and
@@ -131,6 +180,12 @@ pub trait KeyEncoding: 'static + Copy + Send + Sync + Debug {
     ///
     /// `u8` for byte tries; `u32` (Unicode code points) for char tries.
     type Unit: Copy + Eq + Ord + Hash + Send + Sync + 'static + Debug;
+
+    /// The public term type this encoding reconstructs to: `String` for char
+    /// (Unicode), `Vec<u8>` for byte (arbitrary byte strings). The shared
+    /// overlay-read engine enumerates `Vec<Self::Unit>` and the variant's public
+    /// API converts each to `Self::Term` via [`units_to_term`](Self::units_to_term).
+    type Term: Clone + Debug;
 
     /// Width of `Self::Unit` in bytes (1 for `u8`, 4 for `u32`).
     const KEY_BYTES: usize;
@@ -164,6 +219,15 @@ pub trait KeyEncoding: 'static + Copy + Send + Sync + Debug {
     /// For `ByteKey` this returns `s.as_bytes()`; for `CharKey` it returns
     /// the iterator of Unicode code points as `u32`s.
     fn units_from_str(s: &str) -> SmallVec<[Self::Unit; 32]>;
+
+    /// Reverse of [`units_from_str`](Self::units_from_str): reconstruct the public
+    /// term from a unit sequence. Char maps each code point via
+    /// `char::from_u32(_).unwrap_or('\u{FFFD}')`; byte returns the raw `Vec<u8>`
+    /// (byte terms are arbitrary byte strings — NO UTF-8 re-decode; UTF-8
+    /// interpretation is the caller's concern). Invariant on the valid domain:
+    /// `units_to_term(&units_from_str(s))` equals `s`'s term form (`s` for char,
+    /// `s.as_bytes()` for byte).
+    fn units_to_term(units: &[Self::Unit]) -> Self::Term;
 
     /// Encode `unit` as up to 4 little-endian bytes. `u8` keys pad with
     /// zeros; `u32` keys use the full 4 bytes. Returned slice is always
