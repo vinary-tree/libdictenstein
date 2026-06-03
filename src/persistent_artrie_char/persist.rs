@@ -2010,6 +2010,45 @@ mod multi_writer_checkpointer_soak {
         }
     }
 
+    /// **S5-12 Test A — the A2 end-to-end PRIMARY gate.** An Overlay-regime WAL with a
+    /// RANKED survivor (`insert_cas_durable` ⇒ durable Insert + CommitRank, acked) and a
+    /// durable UNRANKED orphan (an Insert with NO following CommitRank — exactly the
+    /// two-append-window crash state) ⇒ a real reopen DROPS the orphan and KEEPS the
+    /// survivor (the regime-aware reconcile, end-to-end on a real on-disk WAL).
+    #[test]
+    fn s5_12_test_a_overlay_reopen_drops_unranked_orphan_keeps_ranked() {
+        use super::super::overlay_write_mode::OverlayWriteMode;
+        use crate::persistent_artrie_core::wal::WalRecord;
+
+        let dir = scratch("s5-12-test-a");
+        let path = dir.path().join("t.artc");
+        {
+            let mut trie = PersistentARTrieChar::<()>::create(&path).expect("create");
+            trie.set_durability_policy(DurabilityPolicy::Immediate);
+            trie.enable_lockfree();
+            trie.set_overlay_write_mode(OverlayWriteMode::LockFreeOverlay);
+            // RANKED survivor: insert_cas_durable appends Insert + CommitRank (acked).
+            assert!(trie.insert_cas_durable("survivor").expect("durable insert"));
+            // Durable UNRANKED orphan: an Insert with NO following CommitRank — the
+            // two-append-window crash state recovery must drop under Overlay.
+            trie.append_to_wal_returning_lsn(WalRecord::Insert {
+                term: b"orphan".to_vec(),
+                value: None,
+            })
+            .expect("append durable orphan");
+        }
+        // Reopen: the Overlay-regime replay (regime-aware reconcile) DROPS the orphan.
+        let recovered = PersistentARTrieChar::<()>::open(&path).expect("reopen");
+        assert!(
+            Dictionary::contains(&recovered, "survivor"),
+            "the ranked survivor must survive reopen"
+        );
+        assert!(
+            !Dictionary::contains(&recovered, "orphan"),
+            "the unranked orphan must be DROPPED on Overlay reopen (A2, end-to-end)"
+        );
+    }
+
     /// Membership soak: N writers `insert_cas_durable` disjoint shared-prefix keys
     /// ‖ a checkpointer loops capture+publish; reopen ⇒ every acknowledged term
     /// survives (exact set).
