@@ -60,8 +60,17 @@ pub struct WalHeader {
 }
 
 impl WalHeader {
-    /// Magic number for WAL files.
+    /// Magic number for WAL files (the standard / Owned-regime magic).
     pub const MAGIC: [u8; 8] = *b"PARTWAL\0";
+    /// Magic for Overlay-regime WAL files (D2.8 D8-2 dual-magic tripwire). The
+    /// lock-free-overlay flip stamps THIS (alongside `rank_regime = Overlay`) on the
+    /// fresh active file, so an OLD binary that only knows [`Self::MAGIC`] FAIL-CLOSES
+    /// on an Overlay file (magic mismatch) instead of silently mis-reading its ranked
+    /// records — WITHOUT a global VERSION bump, so base/vocab/un-flipped-char files
+    /// (which keep `MAGIC`) are untouched. NEW binaries accept BOTH (see `from_bytes`).
+    /// Greenfield: nothing writes this yet (the flip ctor is a later DG-RECON step), so
+    /// the accept-set is inert until then.
+    pub const MAGIC_OVERLAY: [u8; 8] = *b"PARTWALO";
     /// Current (written) version.
     ///
     /// **Bumped 1 → 2** for the Order-A replay-order fix (design C′, §3.4): a
@@ -111,7 +120,12 @@ impl WalHeader {
     /// Deserialize header from bytes.
     pub fn from_bytes(buf: &[u8; Self::SIZE]) -> Result<Self, WalError> {
         let magic: [u8; 8] = buf[0..8].try_into().unwrap();
-        if magic != Self::MAGIC {
+        // Dual-magic accept-set (D2.8 D8-2): a NEW binary reads BOTH the standard and
+        // the Overlay magic; an OLD binary (only `MAGIC`) fail-closes on an Overlay
+        // file. ADDITIVE — every existing file (`MAGIC`) parses exactly as before, so
+        // base/vocab/char recovery is unchanged. The regime itself is still read from
+        // the `rank_regime` byte (28); the flip writes both consistently.
+        if magic != Self::MAGIC && magic != Self::MAGIC_OVERLAY {
             return Err(WalError::CorruptedRecord("Invalid WAL magic number".into()));
         }
         let version = u32::from_le_bytes(buf[8..12].try_into().unwrap());
@@ -196,5 +210,37 @@ mod dg0_header_tests {
         buf[28] = 0xFF;
         let h = WalHeader::from_bytes(&buf).expect("reads");
         assert_eq!(h.regime(), RankRegime::Owned);
+    }
+
+    /// D8-2 dual-magic: the standard magic STILL parses (additive ⇒ base/vocab/char
+    /// unchanged); an Overlay-magic header parses in a new binary; an unknown magic
+    /// still fail-closes (and, by construction, an OLD binary that only knows MAGIC
+    /// would fail-close on MAGIC_OVERLAY — the tripwire).
+    #[test]
+    fn dual_magic_accept_set() {
+        // Standard MAGIC still parses — the critical "no regression for existing
+        // base/vocab/char files" property.
+        let std = WalHeader::new().to_bytes();
+        assert!(
+            WalHeader::from_bytes(&std).is_ok(),
+            "standard MAGIC must still parse (additive)"
+        );
+
+        // An Overlay-magic header parses in the NEW binary, with Overlay regime.
+        let mut over = WalHeader::new();
+        over.magic = WalHeader::MAGIC_OVERLAY;
+        over.rank_regime = RankRegime::Overlay as u8;
+        let bytes = over.to_bytes();
+        let h = WalHeader::from_bytes(&bytes).expect("MAGIC_OVERLAY must parse in a new binary");
+        assert_eq!(h.magic, WalHeader::MAGIC_OVERLAY);
+        assert_eq!(h.regime(), RankRegime::Overlay);
+
+        // An unknown magic still fail-closes.
+        let mut bad = WalHeader::new().to_bytes();
+        bad[0..8].copy_from_slice(b"NOTAWAL!");
+        assert!(
+            WalHeader::from_bytes(&bad).is_err(),
+            "unknown magic must still fail-close"
+        );
     }
 }
