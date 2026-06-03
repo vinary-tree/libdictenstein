@@ -334,6 +334,34 @@ impl WalWriter {
         header.checkpoint_lsn
     }
 
+    /// Durably raise the commit-sequence floor (D2.8 D4). **Monotone** (raise-only,
+    /// like [`Self::set_min_lsn`]): a lower-domain checkpoint can never lower it.
+    /// Persisted in the header (fsync) so it survives reopen + carries across
+    /// rotate/truncate. Set at checkpoint time (DG2) to the max `commit_seq`
+    /// subsumed by the checkpoint, so a post-checkpoint op out-ranks every
+    /// pre-checkpoint survivor. Mirrors [`Self::checkpoint`]'s header→file lock order.
+    pub fn set_commit_seq_floor(&self, floor: u64) -> Result<(), WalError> {
+        let mut header = self.header.lock().expect("header lock poisoned");
+        if floor <= header.commit_seq_floor {
+            return Ok(()); // monotone: never lower the floor
+        }
+        header.commit_seq_floor = floor;
+
+        let mut file = self.file.lock().expect("WAL lock poisoned");
+        file.seek(SeekFrom::Start(0))?;
+        file.write_all(&header.to_bytes())?;
+        file.flush()?;
+        file.get_ref().sync_all()?;
+        file.seek(SeekFrom::End(0))?;
+        Ok(())
+    }
+
+    /// Get the durable commit-sequence floor (D2.8 D4).
+    pub fn commit_seq_floor(&self) -> u64 {
+        let header = self.header.lock().expect("header lock poisoned");
+        header.commit_seq_floor
+    }
+
     /// Truncate the WAL file, removing all records.
     pub fn truncate(&self) -> Result<(), WalError> {
         let mut file = self.file.lock().expect("WAL lock poisoned");
@@ -455,7 +483,18 @@ impl WalWriter {
 
         let mut writer = BufWriter::new(new_file);
 
-        let header = WalHeader::new();
+        // DG0 carry (D2.8 §2.3): the new active file CONTINUES the rotated file's
+        // regime + floor. `WalHeader::new()` would zero both — losing the durable
+        // commit_seq_floor (⇒ post-checkpoint reseed regression) and the
+        // rank_regime (⇒ a rotated Overlay active mis-reads as Owned). Read the
+        // old header BEFORE swapping it (below) and carry the two fields.
+        let (carried_floor, carried_regime) = {
+            let old = self.header.lock().expect("header lock poisoned");
+            (old.commit_seq_floor, old.rank_regime)
+        };
+        let mut header = WalHeader::new();
+        header.commit_seq_floor = carried_floor;
+        header.rank_regime = carried_regime;
         writer.write_all(&header.to_bytes())?;
         writer.flush()?;
 
