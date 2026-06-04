@@ -26,6 +26,15 @@ pub mod node;
 // The shared lock-free-overlay flip (route + read-engine + flip/kill-switch +
 // reestablish), generic over `K: KeyEncoding` (overlay-flip genericization §2).
 pub(crate) mod flip;
+// The shared Order-A durable-write skeleton (Template Method): the durability
+// gate + the append→publish→mark ordering + the commit-rank/watermark tail +
+// the full increment template, as default methods over per-variant seams
+// (overlay-durable-architecture.md, trait 2).
+pub(crate) mod durable_write;
+// The shared checkpoint route-split skeleton (Template Method): the "capture the
+// LIVE representation (overlay vs owned)" decision + the RES-4 total-loss guard,
+// as a default method over per-variant capture/publish seams (trait 3).
+pub(crate) mod checkpoint;
 // The kill-switch enum selecting owned-tree vs lock-free overlay (hoisted from
 // the char variant so the generic `flip` trait can name it — §A).
 pub mod write_mode;

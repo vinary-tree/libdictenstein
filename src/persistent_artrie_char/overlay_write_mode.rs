@@ -35,11 +35,15 @@ use std::sync::atomic::Ordering;
 
 use crate::persistent_artrie::block_storage::BlockStorage;
 use crate::persistent_artrie::error::Result;
+use crate::persistent_artrie_core::durability::DurabilityPolicy;
 use crate::persistent_artrie_core::key_encoding::{CharKey, KeyEncoding};
+use crate::persistent_artrie_core::overlay::checkpoint::OverlayCheckpoint;
+use crate::persistent_artrie_core::overlay::durable_write::DurableOverlayWrite;
 use crate::persistent_artrie_core::overlay::flip::LockFreeOverlay;
-use crate::persistent_artrie_core::wal::RankRegime;
+use crate::persistent_artrie_core::wal::{Lsn, RankRegime, WalRecord};
 use crate::value::DictionaryValue;
 
+use super::persist::CheckpointSnapshot;
 use super::types::CharTrieRoot;
 
 // ============================================================================
@@ -213,6 +217,138 @@ impl<V: DictionaryValue, S: BlockStorage> LockFreeOverlay<CharKey, V, S>
     fn overlay_contains(&self, units: &[u32]) -> bool {
         let term = CharKey::units_to_term(units);
         self.contains_lockfree(&term)
+    }
+}
+
+// ============================================================================
+// Char seam impl of the shared DurableOverlayWrite (Order-A) skeleton
+// (overlay-durable-architecture.md, trait 2). The generic defaults own the
+// data-loss-critical control flow (the durability gate, the append→publish→mark
+// ORDER, the commit-rank + watermark tail, the full increment template); this
+// impl supplies ONLY the per-variant seams (the WAL/watermark accessors + the
+// increment's u64 value-domain bound / delta-record builder / proven path-copy
+// publish). Byte-identical: each seam delegates to the EXISTING char inherent
+// helper the originals already called.
+// ============================================================================
+
+impl<V: DictionaryValue, S: BlockStorage> DurableOverlayWrite<CharKey, V, S>
+    for super::PersistentARTrieChar<V, S>
+{
+    #[inline]
+    fn durability_policy(&self) -> DurabilityPolicy {
+        // The inherent accessor (wal_helpers.rs) — unchanged value.
+        super::PersistentARTrieChar::durability_policy(self)
+    }
+
+    #[inline]
+    fn append_durable_wal(&self, record: WalRecord) -> Result<Lsn> {
+        // Order-A step 1: char's existing append+sync-durable helper (wal_helpers.rs).
+        self.append_to_wal_returning_lsn(record)
+    }
+
+    #[inline]
+    fn append_commit_rank(&self, data_lsn: Lsn, term: &[u8], generation: u64) -> Result<Lsn> {
+        // Order-A step 2.5: char's existing CommitRank append (wal_helpers.rs).
+        super::PersistentARTrieChar::append_commit_rank(self, data_lsn, term, generation)
+    }
+
+    #[inline]
+    fn mark_committed(&self, lsn: Lsn) {
+        // Order-A step 3: advance the committed watermark — char's existing field.
+        self.committed_watermark.mark_committed(lsn);
+    }
+
+    // ---- increment value-domain seam (char `u64`; byte will reject negative i64) ----
+
+    fn bound_increment_delta(&self, key: &str, delta: u64) -> Result<i64> {
+        // Byte-identical to the char `try_increment_cas_durable` up-front bound:
+        // reject > LOCKFREE_COUNTER_MAX, then `i64::try_from` into the WAL delta
+        // domain (the WAL increment domain is `i64` for every variant).
+        if delta > super::lockfree_cas::LOCKFREE_COUNTER_MAX {
+            return Err(super::PersistentARTrieChar::<u64, S>::lockfree_increment_overflow_error(
+                key, None, delta,
+            ));
+        }
+        i64::try_from(delta).map_err(|_| {
+            crate::persistent_artrie_core::error::PersistentARTrieError::InvalidOperation(format!(
+                "try_increment_cas_durable delta for term {:?} exceeds i64 persistence domain: {}",
+                key, delta
+            ))
+        })
+    }
+
+    #[inline]
+    fn build_increment_record(&self, key_bytes: &[u8], bounded: i64) -> WalRecord {
+        // The exact delta record the char original logged: a single-entry,
+        // delta-based BatchIncrement (commutative on replay).
+        WalRecord::BatchIncrement {
+            entries: vec![(key_bytes.to_vec(), bounded)],
+        }
+    }
+
+    fn increment_publish_inner(&self, key: &str, delta: u64) -> Result<(u64, u64)> {
+        // `try_increment_cas_inner` is u64-specialized (`impl<S> ...<u64, S>`), so
+        // downcast `self` to the nameable `<u64, S>` monomorph via a SAFE `Any`
+        // (the same zero-`unsafe` pattern as `overlay_publish_counter`). The
+        // counter durable path runs only for the u64 monomorph (the value route),
+        // so this downcast always succeeds there; an ineligible `V` returns the
+        // empty result (the durable increment is never reached for non-u64 `V`).
+        use std::any::Any;
+        match (self as &dyn Any).downcast_ref::<super::PersistentARTrieChar<u64, S>>() {
+            Some(trie_u64) => trie_u64.try_increment_cas_inner(key, delta),
+            None => Ok((0, 0)),
+        }
+    }
+}
+
+// ============================================================================
+// Char seam impl of the shared OverlayCheckpoint route-split skeleton
+// (overlay-durable-architecture.md, trait 3). The generic default owns the
+// RES-4 route-split DECISION (capture the LIVE representation — overlay vs owned)
+// + the total-loss-guard assert; this impl supplies ONLY the per-variant capture
+// + publish seams (genuinely per-variant: char arena on-disk format). Each seam
+// delegates to the EXISTING char inherent method, so the route-split is
+// byte-identical to the prior inherent `checkpoint()` body.
+// ============================================================================
+
+impl<V: DictionaryValue, S: BlockStorage> OverlayCheckpoint<CharKey, V, S>
+    for super::PersistentARTrieChar<V, S>
+{
+    type CheckpointSnapshot = CheckpointSnapshot;
+
+    #[inline]
+    fn has_eviction_coordinator(&self) -> bool {
+        self.eviction_coordinator.is_some()
+    }
+
+    #[inline]
+    fn capture_overlay_snapshot(&self) -> Result<CheckpointSnapshot> {
+        // The overlay arm — char's existing immutable-overlay capture (persist.rs)
+        // with its data-loss-critical watermark-before-root capture ordering.
+        self.capture_snapshot_immutable()
+    }
+
+    #[inline]
+    fn publish_overlay_snapshot_retaining(&self, snapshot: &CheckpointSnapshot) -> Result<()> {
+        self.publish_immutable_snapshot_retaining_wal(snapshot)
+    }
+
+    #[inline]
+    fn publish_overlay_snapshot_retaining_with_eviction(
+        &self,
+        snapshot: CheckpointSnapshot,
+    ) -> Result<()> {
+        self.publish_immutable_snapshot_retaining_wal_with_eviction(snapshot)
+    }
+
+    #[inline]
+    fn capture_owned_snapshot(&self) -> Result<CheckpointSnapshot> {
+        self.capture_snapshot()
+    }
+
+    #[inline]
+    fn publish_owned_and_reclaim(&self, snapshot: CheckpointSnapshot) -> Result<()> {
+        self.publish_durable_and_reclaim(snapshot)
     }
 }
 

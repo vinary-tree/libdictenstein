@@ -99,35 +99,23 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
         // write guard, atomically DOWNGRADES it to a read guard, then runs
         // `publish_durable_and_reclaim` so concurrent readers proceed during the
         // (fsync-bound) publish phase.
-        // S5-9 route-split (RES-4, total-loss guard): under the overlay write mode the
-        // OWNED tree is empty — the live data is in the immutable overlay. Capturing
-        // the owned tree here would checkpoint NOTHING and lose every term on the next
-        // reopen. So under `route_overlay()` capture from the overlay and publish via
-        // the watermark-bounded retaining publisher (which also raises the commit_seq
-        // floor, S5-2). INERT pre-flip: `route_overlay()` is false until S5-12 wires
-        // the production ctors, so the owned arm below is byte-for-byte the prior body.
-        if self.route_overlay() {
-            let snapshot = self.capture_snapshot_immutable()?;
-            if self.eviction_coordinator.is_some() {
-                self.publish_immutable_snapshot_retaining_wal_with_eviction(snapshot)
-            } else {
-                self.publish_immutable_snapshot_retaining_wal(&snapshot)
-            }
-        } else {
-            // S5-8 third assert: never silently checkpoint the owned tree while a
-            // lock-free overlay is the LIVE write target (the RES-4 footgun). Here
-            // `!route_overlay()` is the branch predicate — the assert documents +
-            // tripwires it (NOT `lockfree_root.is_none()`, which would panic the
-            // legitimate kill-switch owned checkpoint, where an overlay root may exist
-            // under `OwnedTree` mode).
-            assert!(
-                !self.route_overlay(),
-                "owned checkpoint reached under an active lock-free overlay write mode \
-                 (RES-4 total-loss guard)"
-            );
-            let snapshot = self.capture_snapshot()?;
-            self.publish_durable_and_reclaim(snapshot)
-        }
+        //
+        // **M1 (overlay-durable-architecture.md, trait 3):** the RES-4 route-split
+        // DECISION (under the overlay write mode the OWNED tree is empty — the live
+        // data is in the immutable overlay; capturing the owned tree would checkpoint
+        // NOTHING and lose every term on reopen, so route to the overlay capture +
+        // watermark-bounded retaining publisher) + the total-loss-guard assert now
+        // live ONCE in the SHARED GENERIC
+        // [`OverlayCheckpoint::checkpoint_route_split`]; this method is a thin wrapper
+        // calling it. The per-variant capture/publish seams delegate to the SAME char
+        // inherent methods the prior inline body called, so it is byte-identical.
+        // INERT pre-flip: `route_overlay()` is false until S5-12 wires the production
+        // ctors, so the owned arm is byte-for-byte the prior body.
+        <Self as crate::persistent_artrie_core::overlay::checkpoint::OverlayCheckpoint<
+            crate::persistent_artrie_core::key_encoding::CharKey,
+            V,
+            S,
+        >>::checkpoint_route_split(self)
     }
 
     /// Checkpoint **Phase B+C** — publish the captured snapshot durably, then

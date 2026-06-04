@@ -18,12 +18,13 @@ use std::sync::Arc;
 use crate::persistent_artrie::block_storage::BlockStorage;
 use crate::persistent_artrie::error::{PersistentARTrieError, Result};
 use crate::persistent_artrie::wal::WalRecord;
-use crate::persistent_artrie_core::durability::DurabilityPolicy;
+use crate::persistent_artrie_core::key_encoding::CharKey;
+use crate::persistent_artrie_core::overlay::durable_write::DurableOverlayWrite;
 use crate::value::DictionaryValue;
 
 use super::dict_impl_char::LockfreeInsertResult;
 
-const LOCKFREE_COUNTER_MAX: u64 = i64::MAX as u64;
+pub(super) const LOCKFREE_COUNTER_MAX: u64 = i64::MAX as u64;
 
 /// **OD4 deterministic-regression rendezvous (test-only).** The two phases a
 /// durable lock-free op crosses between Order-A step 1 (WAL append) and the ack:
@@ -370,17 +371,17 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     pub fn insert_cas_durable(&self, term: &str) -> Result<bool> {
         use std::sync::atomic::Ordering;
 
+        // **M1:** the Order-A durability gate is the SHARED GENERIC default
+        // [`DurableOverlayWrite::durable_policy_gate`] (byte-exact message via the
+        // `(method, noun)` reconstruction). The present-hoist + CAS-publish loop
+        // below stay INHERENT (char-node-building seams); only the gate + the
+        // commit-rank/watermark tail are routed through the shared skeleton.
         // "Acknowledged ⇒ durable" only holds under a synchronous policy.
-        match self.durability_policy {
-            DurabilityPolicy::Immediate | DurabilityPolicy::GroupCommit => {}
-            DurabilityPolicy::Periodic | DurabilityPolicy::None => {
-                return Err(PersistentARTrieError::InvalidOperation(
-                    "insert_cas_durable requires Immediate or GroupCommit durability so an \
-                     acknowledged write is guaranteed durable before it becomes visible"
-                        .to_string(),
-                ));
-            }
-        }
+        <Self as DurableOverlayWrite<CharKey, V, S>>::durable_policy_gate(
+            self,
+            "insert_cas_durable",
+            "write",
+        )?;
 
         let lockfree_root = self.lockfree_root.as_ref().ok_or_else(|| {
             PersistentARTrieError::InvalidOperation(
@@ -463,14 +464,14 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
                     // root-CAS order AND durable across restart (the A.2 fix).
                     let generation = commit_seq;
                     lockfree_cache.insert(term.to_string(), true);
-                    // Step 2.5 (NEW, Order-A-preserving): bind the durable data
-                    // record (`lsn`) to its commit generation, durable BEFORE ack.
-                    let rank_lsn = self.append_commit_rank(lsn, term.as_bytes(), generation)?;
-                    // Step 3: the write is now durable AND visible. Advance the
-                    // committed watermark to include BOTH the data LSN and the rank
-                    // LSN so the contiguous prefix does not stall on the rank record.
-                    self.committed_watermark.mark_committed(lsn);
-                    self.committed_watermark.mark_committed(rank_lsn);
+                    // Step 2.5 + 3 (Order-A-preserving): bind the durable data record
+                    // (`lsn`) to its commit generation durable BEFORE ack, then advance
+                    // the committed watermark over BOTH the data LSN and the rank LSN so
+                    // the contiguous prefix does not stall on the rank record. **M1:**
+                    // the SHARED GENERIC committed-arm tail
+                    // [`DurableOverlayWrite::commit_rank_and_mark`] — ONE copy of this
+                    // data-loss-critical ordering, byte-identical to the prior inline.
+                    self.commit_rank_and_mark(lsn, term.as_bytes(), generation)?;
                     return Ok(newly);
                 }
                 LockfreeInsertResult::AlreadyExists(_observed_gen) => {
@@ -489,7 +490,11 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
                     #[cfg(test)]
                     commit_rendezvous(RendezvousPhase::AfterCommit);
                     lockfree_cache.insert(term.to_string(), true);
-                    self.committed_watermark.mark_committed(lsn);
+                    // **M1:** idempotent-arm liveness mark (NO-RANK) — the SHARED
+                    // GENERIC [`DurableOverlayWrite::mark_committed_burned`]. Cover the
+                    // burned LSN so the contiguous watermark does not stall; the record
+                    // stays UNRANKED (dropped on Overlay replay — cannot resurrect).
+                    self.mark_committed_burned(lsn);
                     return Ok(false);
                 }
                 LockfreeInsertResult::Conflict => {
@@ -556,18 +561,18 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     pub fn remove_cas_durable(&self, term: &str) -> Result<bool> {
         use std::sync::atomic::Ordering;
 
-        // "Acknowledged ⇒ durable" only holds under a synchronous policy — reject
-        // the others EXACTLY as `insert_cas_durable` does.
-        match self.durability_policy {
-            DurabilityPolicy::Immediate | DurabilityPolicy::GroupCommit => {}
-            DurabilityPolicy::Periodic | DurabilityPolicy::None => {
-                return Err(PersistentARTrieError::InvalidOperation(
-                    "remove_cas_durable requires Immediate or GroupCommit durability so an \
-                     acknowledged remove is guaranteed durable before it becomes visible"
-                        .to_string(),
-                ));
-            }
-        }
+        // **M1:** the Order-A durability gate is the SHARED GENERIC default
+        // [`DurableOverlayWrite::durable_policy_gate`] (noun `"remove"`), rejecting
+        // a non-synchronous policy EXACTLY as `insert_cas_durable` does. The
+        // absent-fast-path + CAS-publish loop below stay INHERENT (char node
+        // building); only the gate + commit-rank/watermark tail are routed through
+        // the shared skeleton. "Acknowledged ⇒ durable" only holds under a
+        // synchronous policy.
+        <Self as DurableOverlayWrite<CharKey, V, S>>::durable_policy_gate(
+            self,
+            "remove_cas_durable",
+            "remove",
+        )?;
 
         let lockfree_root = self.lockfree_root.as_ref().ok_or_else(|| {
             PersistentARTrieError::InvalidOperation(
@@ -652,11 +657,12 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
                     // term is no longer in the trie, so it must not read present
                     // via the positive cache.
                     lockfree_cache.remove(term);
-                    // Step 2.5 (NEW, Order-A-preserving): bind the durable Remove
-                    // record (`lsn`) to its commit generation, durable BEFORE ack.
-                    let rank_lsn = self.append_commit_rank(lsn, term.as_bytes(), generation)?;
-                    self.committed_watermark.mark_committed(lsn);
-                    self.committed_watermark.mark_committed(rank_lsn);
+                    // Step 2.5 + 3 (Order-A-preserving): bind the durable Remove
+                    // record (`lsn`) to its commit generation durable BEFORE ack, then
+                    // advance the watermark over both LSNs. **M1:** the SHARED GENERIC
+                    // committed-arm tail [`DurableOverlayWrite::commit_rank_and_mark`]
+                    // (ONE copy; byte-identical). Cache-invalidate stays FIRST (above).
+                    self.commit_rank_and_mark(lsn, term.as_bytes(), generation)?;
                     return Ok(true);
                 }
                 LockfreeRemoveResult::AlreadyAbsent(_observed_gen) => {
@@ -671,7 +677,11 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
                     #[cfg(test)]
                     commit_rendezvous(RendezvousPhase::AfterCommit);
                     lockfree_cache.remove(term);
-                    self.committed_watermark.mark_committed(lsn);
+                    // **M1:** idempotent-arm liveness mark (NO-RANK) — the SHARED
+                    // GENERIC [`DurableOverlayWrite::mark_committed_burned`]. Cover the
+                    // burned LSN; the redundant Remove stays UNRANKED (dropped on
+                    // Overlay replay). Cache-invalidate stays FIRST (above).
+                    self.mark_committed_burned(lsn);
                     return Ok(false);
                 }
                 LockfreeRemoveResult::Conflict => {
@@ -1496,7 +1506,7 @@ impl<S: BlockStorage> super::PersistentARTrieChar<u64, S> {
     /// increment would otherwise cross-domain mis-sort). The generation is captured
     /// before the winning CAS and returned ONLY from the `Ok` arm (a losing iteration
     /// discards its `new_root`, so no stale generation leaks).
-    fn try_increment_cas_inner(&self, key: &str, delta: u64) -> Result<(u64, u64)> {
+    pub(super) fn try_increment_cas_inner(&self, key: &str, delta: u64) -> Result<(u64, u64)> {
         use super::nodes::persistent_node::PersistentCharNode;
         use std::sync::atomic::Ordering;
 
@@ -1652,76 +1662,23 @@ impl<S: BlockStorage> super::PersistentARTrieChar<u64, S> {
     ///
     /// Returns the new accumulated count on success.
     pub fn try_increment_cas_durable(&self, key: &str, delta: u64) -> Result<u64> {
-        // "Acknowledged ⇒ durable" only holds under a synchronous policy — reject
-        // the others EXACTLY as `insert_cas_durable` does (copy the discipline so
-        // the two durable entry points agree).
-        match self.durability_policy {
-            DurabilityPolicy::Immediate | DurabilityPolicy::GroupCommit => {}
-            DurabilityPolicy::Periodic | DurabilityPolicy::None => {
-                return Err(PersistentARTrieError::InvalidOperation(
-                    "try_increment_cas_durable requires Immediate or GroupCommit durability so an \
-                     acknowledged increment is guaranteed durable before it becomes visible"
-                        .to_string(),
-                ));
-            }
-        }
-
-        // enable_lockfree() must have run (try_increment_cas would otherwise
-        // panic; surface it as a recoverable error on the durable path instead).
-        if self.lockfree_root.is_none() {
-            return Err(PersistentARTrieError::InvalidOperation(
-                "Lock-free mode not enabled. Call enable_lockfree() first.".to_string(),
-            ));
-        }
-
-        let chars: Vec<u32> = key.chars().map(|c| c as u32).collect();
-        if chars.is_empty() {
-            return Ok(0);
-        }
-
-        // Bound the delta to the i64 persistence domain BEFORE logging it, so the
-        // WAL never records a delta the merge/recovery path cannot represent. This
-        // mirrors `try_increment_cas`'s own up-front overflow guard.
-        if delta > LOCKFREE_COUNTER_MAX {
-            return Err(Self::lockfree_increment_overflow_error(key, None, delta));
-        }
-        let delta_i64 = i64::try_from(delta).map_err(|_| {
-            PersistentARTrieError::InvalidOperation(format!(
-                "try_increment_cas_durable delta for term {:?} exceeds i64 persistence domain: {}",
-                key, delta
-            ))
-        })?;
-
-        // ORDER A — step 1: append + sync the DELTA record DURABLE, before any
-        // visibility. Single-entry `BatchIncrement` (delta-based, commutative on
-        // replay). Returned LSN is durable-per-policy here.
-        let lsn = self.append_to_wal_returning_lsn(WalRecord::BatchIncrement {
-            entries: vec![(key.as_bytes().to_vec(), delta_i64)],
-        })?;
-
-        // Step 2: publish via the PROVEN path-copy increment (its CAS-retry /
-        // re-read-on-conflict loop is the formally-checked no-lost-update arbiter;
-        // we do not re-append the WAL on its internal retries). On overflow at the
-        // accumulated value the increment errors AFTER the durable append — the
-        // delta is durably logged but not made visible; this is the documented
-        // "durable-but-visible-only-after-reopen" Order-A panic/error window, not a
-        // lost write (recovery replays the logged delta).
-        // S3 increment-rank: call the INNER to obtain the WINNING published-root
-        // version, then bind the durable delta record (`lsn`) to its commit generation
-        // (durable BEFORE ack) so it ranks in the SAME `root.version` domain as the
-        // overwrite producers (closes hazard D). G-OVF: the inner errors BEFORE any CAS
-        // on overflow, so `?` early-returns here leaving the already-appended
-        // BatchIncrement UNRANKED — benign (an accumulate-delta replays in lsn order
-        // under Owned; an unacked drop under Overlay). The rank append is reached ONLY
-        // on the inner's `Ok`.
-        let (new_val, generation) = self.try_increment_cas_inner(key, delta)?;
-        let rank_lsn = self.append_commit_rank(lsn, key.as_bytes(), generation)?;
-
-        // Step 3: durable AND visible — advance the committed watermark to include
-        // BOTH the data LSN and the rank LSN so the contiguous prefix does not stall.
-        self.committed_watermark.mark_committed(lsn);
-        self.committed_watermark.mark_committed(rank_lsn);
-        Ok(new_val)
+        // **M1 (overlay-durable-architecture.md, trait 2):** thin wrapper over the
+        // SHARED GENERIC Order-A increment template
+        // [`DurableOverlayWrite::try_increment_cas_durable_default`]. The default
+        // owns the data-loss-critical skeleton (the durability gate, the empty
+        // short-circuit, the value-domain bound via the seam, the append→publish→
+        // commit-rank→mark ORDER); this wrapper supplies only the key-byte boundary
+        // (`key.as_bytes()` — the K boundary) and the empty-key return value (`0`).
+        // BYTE-IDENTICAL to the prior inline body (the seams delegate to the same
+        // char inherent helpers — `try_increment_cas_inner`, `append_*`,
+        // `committed_watermark.mark_committed` — the original called).
+        <Self as DurableOverlayWrite<CharKey, u64, S>>::try_increment_cas_durable_default(
+            self,
+            key,
+            key.as_bytes(),
+            delta,
+            0,
+        )
     }
 
     /// **Flip F0 — thin Order-A durable VALUED insert** (`V = u64`). The valued
@@ -1748,16 +1705,16 @@ impl<S: BlockStorage> super::PersistentARTrieChar<u64, S> {
         use super::nodes::persistent_node::PersistentCharNode;
         use std::sync::atomic::Ordering;
 
-        match self.durability_policy {
-            DurabilityPolicy::Immediate | DurabilityPolicy::GroupCommit => {}
-            DurabilityPolicy::Periodic | DurabilityPolicy::None => {
-                return Err(PersistentARTrieError::InvalidOperation(
-                    "insert_cas_with_value_durable requires Immediate or GroupCommit durability so an \
-                     acknowledged write is guaranteed durable before it becomes visible"
-                        .to_string(),
-                ));
-            }
-        }
+        // **M1:** the Order-A durability gate is the SHARED GENERIC default
+        // [`DurableOverlayWrite::durable_policy_gate`] (noun `"write"`). The valued
+        // present-check (faulting, to reflect a term under an evicted prefix) +
+        // CAS-publish loop stay INHERENT; only the gate + commit-rank/watermark tail
+        // route through the shared skeleton.
+        <Self as DurableOverlayWrite<CharKey, u64, S>>::durable_policy_gate(
+            self,
+            "insert_cas_with_value_durable",
+            "write",
+        )?;
 
         let lockfree_root = self.lockfree_root.as_ref().ok_or_else(|| {
             PersistentARTrieError::InvalidOperation(
@@ -1838,9 +1795,10 @@ impl<S: BlockStorage> super::PersistentARTrieChar<u64, S> {
                     if let Some(ref cache) = self.lockfree_cache {
                         cache.insert(term.to_string(), true);
                     }
-                    let rank_lsn = self.append_commit_rank(lsn, term.as_bytes(), generation)?;
-                    self.committed_watermark.mark_committed(lsn);
-                    self.committed_watermark.mark_committed(rank_lsn);
+                    // **M1:** committed-arm tail — the SHARED GENERIC
+                    // [`DurableOverlayWrite::commit_rank_and_mark`] (ONE copy;
+                    // byte-identical to the prior inline rank+mark+mark).
+                    self.commit_rank_and_mark(lsn, term.as_bytes(), generation)?;
                     return Ok(true);
                 }
                 Err(_actual) => {
@@ -1863,16 +1821,16 @@ impl<S: BlockStorage> super::PersistentARTrieChar<u64, S> {
         use super::nodes::persistent_node::PersistentCharNode;
         use std::sync::atomic::Ordering;
 
-        match self.durability_policy {
-            DurabilityPolicy::Immediate | DurabilityPolicy::GroupCommit => {}
-            DurabilityPolicy::Periodic | DurabilityPolicy::None => {
-                return Err(PersistentARTrieError::InvalidOperation(
-                    "upsert_cas_durable requires Immediate or GroupCommit durability so an \
-                     acknowledged write is guaranteed durable before it becomes visible"
-                        .to_string(),
-                ));
-            }
-        }
+        // **M1:** the Order-A durability gate is the SHARED GENERIC default
+        // [`DurableOverlayWrite::durable_policy_gate`] (noun `"write"`). The
+        // existed-probe (advisory, for the return flag) + always-write CAS-publish
+        // loop stay INHERENT; only the gate + commit-rank/watermark tail route
+        // through the shared skeleton.
+        <Self as DurableOverlayWrite<CharKey, u64, S>>::durable_policy_gate(
+            self,
+            "upsert_cas_durable",
+            "write",
+        )?;
 
         let lockfree_root = self.lockfree_root.as_ref().ok_or_else(|| {
             PersistentARTrieError::InvalidOperation(
@@ -1941,9 +1899,10 @@ impl<S: BlockStorage> super::PersistentARTrieChar<u64, S> {
                     if let Some(ref cache) = self.lockfree_cache {
                         cache.insert(term.to_string(), true);
                     }
-                    let rank_lsn = self.append_commit_rank(lsn, term.as_bytes(), generation)?;
-                    self.committed_watermark.mark_committed(lsn);
-                    self.committed_watermark.mark_committed(rank_lsn);
+                    // **M1:** committed-arm tail — the SHARED GENERIC
+                    // [`DurableOverlayWrite::commit_rank_and_mark`] (ONE copy;
+                    // byte-identical to the prior inline rank+mark+mark).
+                    self.commit_rank_and_mark(lsn, term.as_bytes(), generation)?;
                     return Ok(!existed);
                 }
                 Err(_actual) => {
@@ -2241,7 +2200,7 @@ impl<S: BlockStorage> super::PersistentARTrieChar<u64, S> {
         Ok(term)
     }
 
-    fn lockfree_increment_overflow_error(
+    pub(super) fn lockfree_increment_overflow_error(
         key: &str,
         current: Option<u64>,
         delta: u64,
