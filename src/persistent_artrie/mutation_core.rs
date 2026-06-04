@@ -372,6 +372,122 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
         self.insert_impl_core(term, Some(value));
     }
 
+    /// **M2d — regime-aware crash-recovery replay (the byte twin of char's
+    /// `replay_records_lww`).** Thread the ALREADY-SHARED A2 reconcile
+    /// (`crate::persistent_artrie_core::recovery::reconcile_lww`) through byte's
+    /// single-segment `open` recovery sinks so that, once byte writes an Overlay
+    /// file (M2b `CommitRank`), post-recovery same-term last-writer-wins is
+    /// ordered by commit GENERATION (not physical LSN) and Overlay-regime UNRANKED
+    /// orphans are DROPPED (red-team defect H3). EVERY single-segment owned-tree
+    /// replay sink — the two `mmap_ctor::open*` ctors AND the `io_uring_ctor` ctor
+    /// — routes through THIS one function so they cannot drift (design risk 7).
+    ///
+    /// # Back-compat (the critical inertness proof)
+    ///
+    /// Returns the count of SUCCESSFULLY-applied winners (`replayed_count`) so each
+    /// sink's post-replay WAL-truncation decision (`was_loaded_from_disk &&
+    /// replayed_count == 0`) is byte-for-byte unchanged, and stops at the first
+    /// failed apply ("durable prefix") exactly as the pre-M2d inline loops did.
+    ///
+    /// The dispatch is regime-gated (mirroring char's corruption-rebuild
+    /// `any_overlay` gate):
+    /// * **`Owned`** (every legacy/base/vocab/un-flipped byte file — and ANY
+    ///   rank-less WAL, since the WAL header defaults to `Owned` and only the flip
+    ///   stamps `Overlay`): replay the `RecoveryManager`-produced, TRANSACTION-
+    ///   FILTERED `tx_filtered_ops` in LSN order — i.e. the LITERAL pre-M2d loop.
+    ///   This preserves byte's transaction semantics (aborted-tx data records are
+    ///   already dropped by `RecoveryManager`), which the shared reconcile — being
+    ///   transaction-unaware — would NOT. So for a rank-less WAL the behavior is
+    ///   byte-for-byte the current in-order replay (INERT).
+    /// * **`Overlay`** (a flipped/overlay file, M2b `CommitRank` present, and —
+    ///   by construction — NO transactions, since the durable overlay-write path
+    ///   never runs inside a `document_tx`): reconcile the RAW WAL records through
+    ///   the shared `reconcile_lww` (which builds the `lsn→generation` map from the
+    ///   `CommitRank` markers, orders same-term ops by `(generation, lsn)`, and
+    ///   DROPS unranked two-append-window orphans), then apply the winners. This is
+    ///   what closes H3.
+    ///
+    /// `checkpoint_lsn` is byte's native `Option<Lsn>` (the recovered checkpoint
+    /// frontier, `None` when nothing loaded from disk); it is mapped to the
+    /// reconcile's `(loaded_from_disk, checkpoint_lsn: Lsn)` form internally — the
+    /// `Owned` skip-threshold (`op.lsn() <= threshold` ⟺ `was_loaded_from_disk`)
+    /// and the reconcile's `loaded_from_disk && checkpoint_lsn > 0 && lsn <=
+    /// checkpoint_lsn` guard are equivalent (a `Some(0)` threshold drops only
+    /// `lsn <= 0`, i.e. nothing, exactly as `0 > 0 == false`).
+    ///
+    /// Generic over `S: BlockStorage` so both the `MmapDiskManager` ctors and the
+    /// `IoUringDiskManager` ctor share this one body.
+    pub(super) fn replay_records_lww(
+        &mut self,
+        tx_filtered_ops: Vec<super::recovery::RecoveredOperation>,
+        raw_records: Vec<(super::wal::Lsn, super::wal::WalRecord)>,
+        loaded_from_disk: bool,
+        checkpoint_lsn: Option<super::wal::Lsn>,
+        rank_regime: crate::persistent_artrie_core::wal::RankRegime,
+    ) -> usize {
+        match rank_regime {
+            // Owned (back-compat / INERT): the LITERAL pre-M2d in-order replay of
+            // the transaction-filtered `RecoveryManager` ops. `raw_records` is
+            // intentionally unused here — using the (tx-unaware) reconcile would
+            // resurrect aborted-tx data records (a behavior change byte must NOT
+            // make). For a rank-less WAL this is byte-for-byte the old loop.
+            crate::persistent_artrie_core::wal::RankRegime::Owned => {
+                let _ = raw_records;
+                let skip_threshold = if loaded_from_disk {
+                    checkpoint_lsn
+                } else {
+                    None
+                };
+                let mut replayed_count = 0usize;
+                for op in tx_filtered_ops.into_iter() {
+                    if let Some(threshold) = skip_threshold {
+                        if op.lsn() <= threshold {
+                            continue;
+                        }
+                    }
+                    if self.apply_recovered_operation_no_wal(op) {
+                        replayed_count += 1;
+                    } else {
+                        warn!(
+                            "Recovered operation failed during replay; stopping at durable prefix"
+                        );
+                        break;
+                    }
+                }
+                replayed_count
+            }
+            // Overlay (H3 close): reconcile the RAW records through the SHARED A2
+            // reconcile, then apply the winners. The reconcile builds the
+            // commit-generation map from `CommitRank`, orders same-term ops by
+            // `(generation, lsn)`, and DROPS unranked Overlay orphans. The durable
+            // overlay-write path is never transactional, so the tx-filtered op
+            // stream and the raw records carry the SAME data ops (no aborted-tx
+            // divergence) — the raw form is required only so the reconcile can see
+            // the `CommitRank` markers (which `RecoveryManager` strips).
+            crate::persistent_artrie_core::wal::RankRegime::Overlay => {
+                let _ = tx_filtered_ops;
+                let winners = crate::persistent_artrie_core::recovery::reconcile_lww(
+                    raw_records,
+                    loaded_from_disk,
+                    checkpoint_lsn.unwrap_or(0),
+                    rank_regime,
+                );
+                let mut replayed_count = 0usize;
+                for op in winners.into_iter() {
+                    if self.apply_recovered_operation_no_wal(op) {
+                        replayed_count += 1;
+                    } else {
+                        warn!(
+                            "Recovered operation failed during replay; stopping at durable prefix"
+                        );
+                        break;
+                    }
+                }
+                replayed_count
+            }
+        }
+    }
+
     /// Apply a recovered WAL operation without writing a new WAL record.
     pub(super) fn apply_recovered_operation_no_wal(
         &mut self,

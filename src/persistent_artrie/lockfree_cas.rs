@@ -152,6 +152,33 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
         let root_node = Arc::new(PersistentNode::<V>::new());
         self.lockfree_root = Some(AtomicNodePtr::new(root_node));
         self.lockfree_cache = Some(DashMap::new());
+
+        // S4 / M2d (byte twin of char's `enable_lockfree` regime stamp): stamp the
+        // WAL header to the Overlay regime on an EMPTY WAL so crash recovery DROPS
+        // the idempotent NO-RANK two-append-window orphans the durable producers may
+        // leave (else, under Owned, an unranked orphan is kept-@-lsn and could
+        // RESURRECT a removed term — red-team H3). This is the WRITE-side companion
+        // that makes the regime reach disk so the M2d regime-aware recovery
+        // (`replay_records_lww`) actually takes its Overlay branch; without it the
+        // threading is inert and H3 stays open. SAFE here ONLY on an EMPTY WAL
+        // (`current_lsn() == 1` ⇒ no records appended) — an in-place restamp of a
+        // non-empty file is torn-write-unsafe and would drop pre-existing Owned
+        // records (the non-empty case needs a rotation, deferred to the M4 flip).
+        // REVERSIBLE/opt-in: every `enable_lockfree` caller is opt-in/test today (no
+        // production/default ctor reaches it); a PRODUCTION caller would make this
+        // the irreversible M4 flip.
+        if let Some(ref writer) = self.wal_writer {
+            // EMPTY-WAL guard: use the WRITER's authoritative next-LSN (incremented
+            // by EVERY append — owned insert/remove/upsert AND the durable producers),
+            // NOT the trie's `self.next_lsn` (which owned-tree mutations do NOT
+            // update; a stale `==1` there would wrongly stamp a trie that already
+            // holds owned records, silently DROPPING them on reopen under Overlay).
+            if writer.current_lsn() == 1 {
+                if let Err(e) = writer.set_overlay_regime() {
+                    log::warn!("enable_lockfree: could not stamp Overlay regime: {:?}", e);
+                }
+            }
+        }
     }
 
     /// Lock-free insert using CAS operations.
@@ -1844,6 +1871,220 @@ mod durable_write_tests {
             acknowledged.len(),
             n_threads * per_thread,
             "all disjoint keys should have been newly inserted (one ack each)"
+        );
+    }
+}
+
+#[cfg(test)]
+mod m2d_regime_aware_recovery_tests {
+    //! **M2d — byte regime-aware crash-recovery (the byte twin of char's A2
+    //! end-to-end / s5_12 Test-A gate).** Byte now EMITS `WalRecord::CommitRank`
+    //! (M2b), so post-recovery same-term last-writer-wins MUST order by commit
+    //! GENERATION (not physical LSN) and an Overlay-regime UNRANKED orphan MUST be
+    //! DROPPED — else recovery resurrects a dropped term (red-team defect H3).
+    //! These tests exercise the FULL byte `open` recovery sink (sink 1) on a REAL
+    //! on-disk WAL, proving (a) the Overlay orphan-drop closes H3 and (b) a
+    //! rank-less Owned WAL replays in-order byte-for-byte (the back-compat proof).
+    //!
+    //! NOTE (no M4 here): byte's `open` does NOT create-flip / reestablish, so the
+    //! recovered state lands in the OWNED tree and is read post-reopen via
+    //! `Dictionary::contains` / `MappedDictionary::get_value` (the owned readers) —
+    //! M2d threads the RECONCILE only, not the read route. Scratch is real disk
+    //! (`target/test-tmp`), never `/tmp` (tmpfs — the disk-backed-test gotcha).
+
+    use crate::persistent_artrie::PersistentARTrie;
+    use crate::persistent_artrie_core::durability::DurabilityPolicy;
+    use crate::persistent_artrie_core::overlay::write_mode::OverlayWriteMode;
+    use crate::persistent_artrie_core::wal::WalRecord;
+    use crate::{Dictionary, MappedDictionary};
+
+    fn scratch(prefix: &str) -> tempfile::TempDir {
+        std::fs::create_dir_all("target/test-tmp").ok();
+        tempfile::Builder::new()
+            .prefix(prefix)
+            .tempdir_in("target/test-tmp")
+            .expect("scratch tempdir under target/test-tmp")
+    }
+
+    /// **Test A — the A2 end-to-end PRIMARY gate (byte twin of char's
+    /// `s5_12_test_a_overlay_reopen_drops_unranked_orphan_keeps_ranked`).** An
+    /// Overlay-regime WAL with a RANKED survivor (`insert_cas_durable` ⇒ durable
+    /// Insert + CommitRank, acked) and a durable UNRANKED orphan (a raw Insert with
+    /// NO following CommitRank — exactly the two-append-window crash state) ⇒ a real
+    /// reopen DROPS the orphan and KEEPS the survivor (the SHARED regime-aware
+    /// reconcile threaded through byte's `open` sink, end-to-end on a real WAL).
+    #[test]
+    fn test_a_overlay_reopen_drops_unranked_orphan_keeps_ranked() {
+        let dir = scratch("byte-m2d-test-a");
+        let path = dir.path().join("t.part");
+        {
+            let mut trie = PersistentARTrie::<()>::create(&path).expect("create");
+            trie.set_durability_policy(DurabilityPolicy::Immediate);
+            trie.enable_lockfree();
+            // Stamps the WAL header regime = Overlay.
+            trie.set_overlay_write_mode(OverlayWriteMode::LockFreeOverlay);
+            // RANKED survivor: insert_cas_durable appends Insert + CommitRank (acked).
+            assert!(
+                trie.insert_cas_durable(b"survivor").expect("durable insert"),
+                "survivor is a new term"
+            );
+            // Durable UNRANKED orphan: a raw Insert with NO following CommitRank —
+            // the two-append-window crash state recovery must DROP under Overlay.
+            trie.append_to_wal_returning_lsn(WalRecord::Insert {
+                term: b"orphan".to_vec(),
+                value: None,
+            })
+            .expect("append durable orphan");
+            // DROP WITHOUT CHECKPOINT.
+        }
+        // Reopen: the Overlay-regime replay (the SHARED reconcile) DROPS the orphan.
+        let recovered = PersistentARTrie::<()>::open(&path).expect("reopen");
+        assert!(
+            Dictionary::contains(&recovered, "survivor"),
+            "the ranked survivor must survive reopen"
+        );
+        assert!(
+            !Dictionary::contains(&recovered, "orphan"),
+            "the unranked orphan must be DROPPED on Overlay reopen (A2/H3, end-to-end)"
+        );
+    }
+
+    /// **Test B — no-resurrection (same-term, the H3 data-loss scenario).** Under
+    /// Overlay: durably insert then durably remove a term `t` (both RANKED), then
+    /// leave a raw UNRANKED Insert-`t` orphan (the redundant idempotent producer
+    /// append on a present-hoist miss). A reopen MUST keep `t` ABSENT — the orphan,
+    /// being unranked, is DROPPED under Overlay, so it cannot out-sort the ranked
+    /// remove and resurrect `t`. (Under the OLD dumb in-order replay the orphan's
+    /// high LSN would sort LAST ⇒ `t` resurrected = the bug H3 closes.) End-to-end
+    /// twin of core's `overlay_drops_unranked_orphan_no_resurrection`.
+    #[test]
+    fn test_b_overlay_reopen_unranked_orphan_does_not_resurrect_removed_term() {
+        let dir = scratch("byte-m2d-test-b");
+        let path = dir.path().join("t.part");
+        {
+            let mut trie = PersistentARTrie::<()>::create(&path).expect("create");
+            trie.set_durability_policy(DurabilityPolicy::Immediate);
+            trie.enable_lockfree();
+            trie.set_overlay_write_mode(OverlayWriteMode::LockFreeOverlay);
+            // RANKED insert then RANKED remove of the SAME term `t`.
+            assert!(trie.insert_cas_durable(b"t").expect("durable insert"));
+            assert!(
+                trie.remove_cas_durable(b"t").expect("durable remove"),
+                "removing a present term returns Ok(true)"
+            );
+            // A co-present, never-removed sibling (RANKED) — must survive.
+            assert!(trie.insert_cas_durable(b"keep").expect("durable insert"));
+            // Durable UNRANKED orphan re-inserting `t` (no CommitRank): under Owned
+            // its high LSN would sort AFTER the remove ⇒ resurrection; under Overlay
+            // it is DROPPED.
+            trie.append_to_wal_returning_lsn(WalRecord::Insert {
+                term: b"t".to_vec(),
+                value: None,
+            })
+            .expect("append durable orphan");
+            // DROP WITHOUT CHECKPOINT.
+        }
+        let recovered = PersistentARTrie::<()>::open(&path).expect("reopen");
+        assert!(
+            !Dictionary::contains(&recovered, "t"),
+            "Overlay must DROP the unranked orphan ⇒ the durably-removed term stays ABSENT (H3)"
+        );
+        assert!(
+            Dictionary::contains(&recovered, "keep"),
+            "the ranked, never-removed sibling must survive reopen"
+        );
+    }
+
+    /// **Test C — rank-less Owned back-compat (the INERT proof).** A WAL written via
+    /// the ordinary (non-durable) `insert` API carries NO `CommitRank` and stays the
+    /// default `Owned` regime, so byte's `open` takes the `Owned` branch of
+    /// `replay_records_lww` — the LITERAL pre-M2d in-order replay of the
+    /// transaction-filtered `RecoveryManager` ops. Every inserted term must recover,
+    /// exactly as before M2d (the SHARED reconcile is never consulted here).
+    #[test]
+    fn test_c_owned_rankless_wal_replays_in_order_unchanged() {
+        let dir = scratch("byte-m2d-test-c");
+        let path = dir.path().join("t.part");
+        let terms: [&str; 6] = ["apple", "apricot", "banana", "band", "bandana", "cherry"];
+        {
+            let mut trie = PersistentARTrie::<()>::create(&path).expect("create");
+            trie.set_durability_policy(DurabilityPolicy::Immediate);
+            // NO enable_lockfree / NO set_overlay_write_mode ⇒ the WAL header regime
+            // stays Owned (rank-less).
+            for t in terms {
+                trie.insert(t);
+            }
+            // DROP WITHOUT CHECKPOINT — durability rests on the (Owned) WAL.
+        }
+        let recovered = PersistentARTrie::<()>::open(&path).expect("reopen");
+        for t in terms {
+            assert!(
+                Dictionary::contains(&recovered, t),
+                "Owned rank-less WAL must replay {t:?} in-order (back-compat regression)"
+            );
+        }
+        assert!(!Dictionary::contains(&recovered, "never-inserted"));
+    }
+
+    /// **Test D — Owned in-order last-writer-wins (remove-then-reinsert).** The
+    /// end-to-end twin of core's `rankless_wal_applies_in_lsn_order`: under the
+    /// `Owned` branch the per-term final state is decided by the HIGHEST-LSN op
+    /// (in-order replay). `a` is removed then re-inserted (final = PRESENT); `gone`
+    /// is inserted then removed (final = ABSENT). This proves the Owned branch keeps
+    /// the pre-M2d LSN-ordered semantics — it must NOT borrow the Overlay
+    /// orphan-drop (every op here is unranked, and under Owned unranked ⇒ KEEP).
+    #[test]
+    fn test_d_owned_rankless_in_order_lww_decides_final_state() {
+        let dir = scratch("byte-m2d-test-d");
+        let path = dir.path().join("t.part");
+        {
+            let mut trie = PersistentARTrie::<()>::create(&path).expect("create");
+            trie.set_durability_policy(DurabilityPolicy::Immediate);
+            trie.insert("a"); // a: inserted…
+            trie.insert("gone"); // gone: inserted…
+            assert!(trie.remove("a"), "remove present a");
+            assert!(trie.remove("gone"), "remove present gone");
+            trie.insert("a"); // …a re-inserted at the highest LSN ⇒ final PRESENT.
+            // gone stays removed ⇒ final ABSENT.
+        }
+        let recovered = PersistentARTrie::<()>::open(&path).expect("reopen");
+        assert!(
+            Dictionary::contains(&recovered, "a"),
+            "Owned in-order replay: a's last op is insert ⇒ PRESENT"
+        );
+        assert!(
+            !Dictionary::contains(&recovered, "gone"),
+            "Owned in-order replay: gone's last op is remove ⇒ ABSENT"
+        );
+    }
+
+    /// **Test E — Overlay counter survives (ranked deltas kept, no over/under-count).**
+    /// The existing M2b durable-increment reopen test already covers the happy path;
+    /// this asserts specifically that the new Overlay reconcile does NOT drop the
+    /// RANKED increment data records (each durable increment is Insert/BatchIncrement
+    /// + CommitRank), i.e. the orphan-DROP rule fires ONLY for unranked records. A
+    /// ranked durable counter must recover its exact summed value.
+    #[test]
+    fn test_e_overlay_reopen_keeps_ranked_counter_value() {
+        let dir = scratch("byte-m2d-test-e");
+        let path = dir.path().join("t.part");
+        {
+            let mut trie = PersistentARTrie::<i64>::create(&path).expect("create");
+            trie.set_durability_policy(DurabilityPolicy::Immediate);
+            trie.enable_lockfree();
+            trie.set_overlay_write_mode(OverlayWriteMode::LockFreeOverlay);
+            // 3 ranked +7 deltas ⇒ 21.
+            for _ in 0..3 {
+                trie.try_increment_cas_durable(b"ctr", 7)
+                    .expect("durable increment");
+            }
+            // DROP WITHOUT CHECKPOINT.
+        }
+        let recovered = PersistentARTrie::<i64>::open(&path).expect("reopen");
+        assert_eq!(
+            MappedDictionary::get_value(&recovered, "ctr"),
+            Some(21),
+            "the ranked durable counter must recover its exact summed value (no orphan-drop of ranked records)"
         );
     }
 }

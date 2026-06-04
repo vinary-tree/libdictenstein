@@ -490,30 +490,50 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
             commit_seq: std::sync::atomic::AtomicU64::new(commit_seq_seed),
         };
 
-        // Replay recovered operations
-        // If we loaded from disk, only replay operations AFTER the checkpoint
-        // Determine the LSN threshold for skipping
-        // Operations with LSN <= threshold are already in the on-disk state
-        let skip_threshold = if was_loaded_from_disk {
-            checkpoint_lsn
-        } else {
-            None
+        // Replay recovered operations via the shared M2d regime-aware path
+        // (`replay_records_lww`): for an `Owned` WAL (every legacy/un-flipped byte
+        // file, and ANY rank-less WAL) this is byte-for-byte the pre-M2d in-order
+        // replay of the transaction-filtered `RecoveryManager` ops; for an
+        // `Overlay` WAL (post-flip, M2b `CommitRank`) it threads the SHARED A2
+        // `reconcile_lww` so same-term ops order by commit generation and unranked
+        // two-append-window orphans are DROPPED (red-team H3). The on-disk regime
+        // (`header.regime()`) drives the dispatch; an unreadable header fails safe
+        // to `Owned` (keep, never drop).
+        let rank_regime = {
+            use crate::persistent_artrie_core::wal::WalReader;
+            WalReader::read_header(&wal_path)
+                .map(|h| h.regime())
+                .unwrap_or(crate::persistent_artrie_core::wal::RankRegime::Owned)
         };
-
-        let mut replayed_count = 0;
-        for op in recovered_ops.into_iter() {
-            if let Some(threshold) = skip_threshold {
-                if op.lsn() <= threshold {
-                    continue;
+        // The reconcile needs the RAW WAL records (the `CommitRank` markers that
+        // `RecoveryManager` strips). Collect them ONLY for the rare/cold `Overlay`
+        // post-flip path so the `Owned` hot path keeps exactly its old single
+        // RecoveryManager scan; the `Owned` branch ignores `raw_records`.
+        let raw_records: Vec<(super::wal::Lsn, super::wal::WalRecord)> = if rank_regime
+            == crate::persistent_artrie_core::wal::RankRegime::Overlay
+            && wal_path.exists()
+        {
+            use crate::persistent_artrie_core::wal::WalReader;
+            let mut records = Vec::new();
+            if let Ok(mut reader) = WalReader::new(&wal_path) {
+                while let Some(result) = reader.next_record() {
+                    match result {
+                        Ok((lsn, record)) => records.push((lsn, record)),
+                        Err(_) => break, // stop at the durable prefix
+                    }
                 }
             }
-            if dict.apply_recovered_operation_no_wal(op) {
-                replayed_count += 1;
-            } else {
-                warn!("Recovered operation failed during replay; stopping at durable prefix");
-                break;
-            }
-        }
+            records
+        } else {
+            Vec::new()
+        };
+        let replayed_count = dict.replay_records_lww(
+            recovered_ops,
+            raw_records,
+            was_loaded_from_disk,
+            checkpoint_lsn,
+            rank_regime,
+        );
         // Mark clean after recovery replay
         dict.dirty.store(false, AtomicOrdering::Release);
 
@@ -698,36 +718,67 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
                 let mut terms_recovered: u64 = 0;
                 let mut segments_used = Vec::new();
 
-                'segments: for segment_path in &segments {
-                    let reader = match WalReader::new(segment_path) {
-                        Ok(r) => r,
-                        Err(_) => continue, // Skip unreadable segments
-                    };
-
-                    segments_used.push(segment_path.clone());
-
-                    for result in reader.iter() {
-                        let (lsn, record) = match result {
-                            Ok(r) => r,
-                            Err(e) => {
-                                warn!(
-                                    "Corrupted WAL record during rebuild; stopping at durable prefix: {:?}",
-                                    e
-                                );
-                                break 'segments;
+                // M2d (A2 fix, mirrors char's corruption-rebuild gate): a post-flip
+                // Overlay archive must DROP never-acked two-append-window orphans
+                // (else a corruption rebuild resurrects them) and reorder same-term
+                // ops by commit generation. Route the Overlay case through the
+                // canonical SHARED regime-aware reconcile; the all-`Owned` case keeps
+                // the existing inline streaming replay UNCHANGED (INERT pre-flip —
+                // byte-for-byte the old rebuild for every legacy/rank-less archive).
+                let any_overlay = segments.iter().any(|seg| {
+                    WalReader::read_header(seg)
+                        .map(|h| {
+                            h.regime() == crate::persistent_artrie_core::wal::RankRegime::Overlay
+                        })
+                        .unwrap_or(false)
+                });
+                if any_overlay {
+                    let (rr, tr) =
+                        super::recovery::rebuild_from_wal_segments_regime_aware(&segments, |op| {
+                            if trie.apply_recovered_operation_no_wal(op) {
+                                Ok(())
+                            } else {
+                                Err("failed to apply recovered archive operation".to_string())
                             }
+                        })
+                        .map_err(|error| PersistentARTrieError::RecoveryError {
+                            reason: error.to_string(),
+                        })?;
+                    records_replayed = rr;
+                    terms_recovered = tr;
+                    segments_used = segments.clone();
+                } else {
+                    'segments: for segment_path in &segments {
+                        let reader = match WalReader::new(segment_path) {
+                            Ok(r) => r,
+                            Err(_) => continue, // Skip unreadable segments
                         };
 
-                        records_replayed += 1;
+                        segments_used.push(segment_path.clone());
 
-                        for op in super::recovery::recovered_operations_from_record(lsn, record) {
-                            if trie.apply_recovered_operation_no_wal(op) {
-                                terms_recovered += 1;
-                            } else {
-                                warn!(
-                                    "Recovered operation failed during rebuild; stopping at durable prefix"
-                                );
-                                break 'segments;
+                        for result in reader.iter() {
+                            let (lsn, record) = match result {
+                                Ok(r) => r,
+                                Err(e) => {
+                                    warn!(
+                                        "Corrupted WAL record during rebuild; stopping at durable prefix: {:?}",
+                                        e
+                                    );
+                                    break 'segments;
+                                }
+                            };
+
+                            records_replayed += 1;
+
+                            for op in super::recovery::recovered_operations_from_record(lsn, record) {
+                                if trie.apply_recovered_operation_no_wal(op) {
+                                    terms_recovered += 1;
+                                } else {
+                                    warn!(
+                                        "Recovered operation failed during rebuild; stopping at durable prefix"
+                                    );
+                                    break 'segments;
+                                }
                             }
                         }
                     }

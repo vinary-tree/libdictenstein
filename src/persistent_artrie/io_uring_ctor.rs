@@ -281,26 +281,47 @@ impl<V: DictionaryValue> PersistentARTrie<V, IoUringDiskManager> {
             commit_seq: std::sync::atomic::AtomicU64::new(commit_seq_seed),
         };
 
-        let skip_threshold = if was_loaded_from_disk {
-            checkpoint_lsn
-        } else {
-            None
+        // Replay via the shared M2d regime-aware path (`replay_records_lww`),
+        // identical to the mmap `open` sink (no-drift constraint): `Owned` WAL ⇒
+        // byte-for-byte the pre-M2d in-order replay of the transaction-filtered
+        // `RecoveryManager` ops; `Overlay` WAL ⇒ the SHARED A2 `reconcile_lww`
+        // (orders by commit generation + DROPS unranked orphans, closing H3). The
+        // on-disk `header.regime()` drives the dispatch; unreadable ⇒ `Owned`
+        // (fail-safe keep).
+        let rank_regime = {
+            use crate::persistent_artrie_core::wal::WalReader;
+            WalReader::read_header(&wal_path)
+                .map(|h| h.regime())
+                .unwrap_or(crate::persistent_artrie_core::wal::RankRegime::Owned)
         };
-
-        let mut replayed_count = 0;
-        for op in recovered_ops.into_iter() {
-            if let Some(threshold) = skip_threshold {
-                if op.lsn() <= threshold {
-                    continue;
+        // Raw records (the `CommitRank` markers `RecoveryManager` strips) collected
+        // ONLY for the rare/cold `Overlay` post-flip path; the `Owned` hot path
+        // keeps its single RecoveryManager scan and ignores `raw_records`.
+        let raw_records: Vec<(super::wal::Lsn, super::wal::WalRecord)> = if rank_regime
+            == crate::persistent_artrie_core::wal::RankRegime::Overlay
+            && wal_path.exists()
+        {
+            use crate::persistent_artrie_core::wal::WalReader;
+            let mut records = Vec::new();
+            if let Ok(mut reader) = WalReader::new(&wal_path) {
+                while let Some(result) = reader.next_record() {
+                    match result {
+                        Ok((lsn, record)) => records.push((lsn, record)),
+                        Err(_) => break, // stop at the durable prefix
+                    }
                 }
             }
-            if dict.apply_recovered_operation_no_wal(op) {
-                replayed_count += 1;
-            } else {
-                warn!("Recovered operation failed during replay; stopping at durable prefix");
-                break;
-            }
-        }
+            records
+        } else {
+            Vec::new()
+        };
+        let replayed_count = dict.replay_records_lww(
+            recovered_ops,
+            raw_records,
+            was_loaded_from_disk,
+            checkpoint_lsn,
+            rank_regime,
+        );
 
         dict.dirty.store(false, AtomicOrdering::Release);
 
