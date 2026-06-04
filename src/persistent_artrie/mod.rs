@@ -206,6 +206,11 @@ pub mod compaction_impl;
 // Persistence/durability/stats public API (Phase-5 split out of dict_impl).
 pub mod persistence_api;
 
+// Byte seam impl of the shared OverlayCheckpoint route-split (M2b). INERT
+// pre-flip: `route_overlay()` is false until M4, so the route-split runs the
+// owned arm (byte-identical to the prior checkpoint body).
+pub(crate) mod overlay_checkpoint;
+
 // MmapDiskManager-specific constructors (Phase-5 split out of dict_impl).
 pub mod mmap_ctor;
 

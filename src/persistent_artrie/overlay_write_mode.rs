@@ -61,11 +61,13 @@ use std::sync::atomic::Ordering;
 use super::block_storage::BlockStorage;
 use super::bucket::StringBucket;
 use super::dict_impl::{PersistentARTrie, TrieRoot};
-use super::error::Result;
+use super::error::{PersistentARTrieError, Result};
 use super::transitions::ChildNode;
+use crate::persistent_artrie_core::durability::DurabilityPolicy;
 use crate::persistent_artrie_core::key_encoding::{ByteKey, KeyEncoding};
+use crate::persistent_artrie_core::overlay::durable_write::DurableOverlayWrite;
 use crate::persistent_artrie_core::overlay::flip::LockFreeOverlay;
-use crate::persistent_artrie_core::wal::RankRegime;
+use crate::persistent_artrie_core::wal::{Lsn, RankRegime, WalRecord};
 use crate::value::DictionaryValue;
 
 // ============================================================================
@@ -562,6 +564,107 @@ impl<V: DictionaryValue, S: BlockStorage> LockFreeOverlay<ByteKey, V, S>
 
     fn overlay_contains(&self, units: &[u8]) -> bool {
         self.contains_lockfree(units)
+    }
+}
+
+// ============================================================================
+// Byte seam impl of the shared DurableOverlayWrite (Order-A) skeleton
+// (overlay-durable-architecture.md, trait 2, step M2b). The generic defaults own
+// the data-loss-critical control flow (the durability gate, the append→publish→
+// mark ORDER, the commit-rank + watermark tail, the full increment template);
+// this impl supplies ONLY the per-variant seams: the WAL/watermark accessors + the
+// increment's i64 value-domain bound (C4) / delta-record builder / proven path-copy
+// publish. The byte counter monomorph is `i64` (`CounterValue` from `LockFreeOverlay`),
+// the one divergence from char's `u64`.
+//
+// Byte-identical ORDER: the seams delegate to the EXISTING byte inherent helpers
+// (`append_to_wal_returning_lsn`, `append_commit_rank`, `committed_watermark.mark_committed`,
+// `try_increment_cas_inner`) so the CommitRank/generation/watermark ordering is the
+// SAME proven sequence char uses (TLA-verified in LockFreeDurableCheckpoint.tla).
+// ============================================================================
+
+impl<V: DictionaryValue, S: BlockStorage> DurableOverlayWrite<ByteKey, V, S>
+    for PersistentARTrie<V, S>
+{
+    #[inline]
+    fn durability_policy(&self) -> DurabilityPolicy {
+        // The inherent accessor (persistence_api.rs) — unchanged value.
+        PersistentARTrie::durability_policy(self)
+    }
+
+    #[inline]
+    fn append_durable_wal(&self, record: WalRecord) -> Result<Lsn> {
+        // Order-A step 1: byte's LSN-returning durable append (persistence_api.rs).
+        self.append_to_wal_returning_lsn(record)
+    }
+
+    #[inline]
+    fn append_commit_rank(&self, data_lsn: Lsn, term: &[u8], generation: u64) -> Result<Lsn> {
+        // Order-A step 2.5: byte's CommitRank append (persistence_api.rs).
+        PersistentARTrie::append_commit_rank(self, data_lsn, term, generation)
+    }
+
+    #[inline]
+    fn mark_committed(&self, lsn: Lsn) {
+        // Order-A step 3: advance the committed watermark — byte's M2b field.
+        self.committed_watermark.mark_committed(lsn);
+    }
+
+    // ---- increment value-domain seam (C4 — the byte i64 bound) ----
+
+    fn bound_increment_delta(&self, key: &str, delta: i64) -> Result<i64> {
+        // **C4 (the byte i64 value-domain bound).** The WAL increment domain is
+        // `i64` for every variant, and the byte overlay counter is non-negative
+        // (the leaf stores a non-negative `i64`, the running sum bounded by
+        // `LOCKFREE_COUNTER_MAX = i64::MAX`). `CounterValue = i64`, so a `delta`
+        // already CANNOT exceed `i64::MAX` (that is the char `u64` reject, vacuous
+        // here); the byte reject is the NEGATIVE delta — a negative would, under the
+        // commutative-sum replay, drive the recovered count below 0 (an
+        // un-representable state for a count) or silently subtract, so we FAIL LOUD
+        // rather than wrap/panic. Returns the bounded `i64` the delta WAL record
+        // carries (identity for a valid non-negative delta).
+        if delta < 0 {
+            return Err(PersistentARTrieError::InvalidOperation(format!(
+                "try_increment_cas_durable delta for byte term {:?} must be non-negative \
+                 (the overlay counter domain is a non-negative i64); got {}",
+                key, delta
+            )));
+        }
+        Ok(delta)
+    }
+
+    #[inline]
+    fn build_increment_record(&self, key_bytes: &[u8], bounded: i64) -> WalRecord {
+        // The delta record the proven byte counter merge path logs: a single-entry,
+        // delta-based BatchIncrement (commutative on replay), exactly as char.
+        WalRecord::BatchIncrement {
+            entries: vec![(key_bytes.to_vec(), bounded)],
+        }
+    }
+
+    fn increment_publish_inner(&self, key: &str, delta: i64) -> Result<(i64, u64)> {
+        // `try_increment_cas_inner` is i64-specialized (`impl<S> ...<i64, S>`), so
+        // downcast `self` to the nameable `<i64, S>` monomorph via a SAFE `Any`
+        // (the same zero-`unsafe` pattern as `overlay_publish_counter`). The counter
+        // durable path runs only for the i64 monomorph (the value route), so this
+        // downcast always succeeds there; an ineligible `V` returns the empty result
+        // (the durable increment is never reached for non-i64 `V`).
+        //
+        // Byte's `try_increment_cas_inner` takes `(&[u8], u64)` and returns
+        // `(u64, u64)`. `delta` is non-negative here (C4 `bound_increment_delta`
+        // ran first), so `delta as u64` is lossless; the returned count is bounded by
+        // `LOCKFREE_COUNTER_MAX = i64::MAX`, so the narrow back to `i64` is lossless.
+        // `key.as_bytes()` recovers the raw key bytes (byte's durable increment path
+        // operates on UTF-8 keys — the public wrapper validates this).
+        use std::any::Any;
+        match (self as &dyn Any).downcast_ref::<PersistentARTrie<i64, S>>() {
+            Some(trie_i64) => {
+                let (new_val, generation) =
+                    trie_i64.try_increment_cas_inner(key.as_bytes(), delta as u64)?;
+                Ok((new_val as i64, generation))
+            }
+            None => Ok((0, 0)),
+        }
     }
 }
 

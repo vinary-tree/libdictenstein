@@ -348,6 +348,31 @@ pub struct PersistentARTrie<V: DictionaryValue = (), S: BlockStorage = MmapDiskM
     /// `persistent_artrie` module is `#[cfg(feature = "persistent-artrie")]`, so
     /// (like the char field) this needs no separate cfg gate.
     pub(crate) overlay_write_mode: crate::persistent_artrie_core::overlay::write_mode::OverlayWriteMode,
+
+    // === Order-A durable-overlay write path (M2b) ===
+    /// **Committed-LSN watermark for the lock-free Order-A durable write path**
+    /// (the byte twin of the char field). Under lock-free CAS, writes can commit
+    /// (become visible via the root CAS) out of LSN order, so the contiguous
+    /// committed prefix this tracks — NOT the appended/synced WAL frontier — is
+    /// the only safe `checkpoint_lsn` (GAP_LEDGER #41; TLC-verified in
+    /// `formal-verification/tla+/LockFreeDurableCheckpoint.tla`). Shared, K-agnostic:
+    /// [`crate::persistent_artrie_core::committed_watermark::CommittedWatermark`].
+    /// Seeded on open with the recovered durable WAL frontier (so replayed LSNs are
+    /// treated as already committed), `0` on create. INERT pre-flip — only the
+    /// `*_cas_durable` opt-in writes advance it; no production path reads it until M4.
+    pub(crate) committed_watermark:
+        crate::persistent_artrie_core::committed_watermark::CommittedWatermark,
+
+    /// **Durable global commit sequence** (the byte twin of the char field). The
+    /// monotone visibility-order rank each Order-A durable write claims at its
+    /// root-CAS loop-top (`fetch_add`); the winning iteration's claim is strictly
+    /// monotone in the global root-CAS order AND durable across restart (seeded on
+    /// open from `max(header.commit_seq_floor, scan-max-of-CommitRank-generation)`,
+    /// the A.2 cross-restart fix `root.version()` — per-lifetime — could not make).
+    /// `CommitRank` records bind a data LSN to the generation here so recovery's
+    /// `reconcile_lww` orders same-term replay by commit generation. INERT pre-flip
+    /// (`0` until the first opt-in durable write claims).
+    pub(crate) commit_seq: std::sync::atomic::AtomicU64,
 }
 
 /// Thread-safe wrapper for `PersistentARTrie`.

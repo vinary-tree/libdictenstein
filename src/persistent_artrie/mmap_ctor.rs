@@ -70,6 +70,12 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
             // M2a INERT default (OwnedTree) — changes no byte behavior.
             overlay_write_mode:
                 crate::persistent_artrie_core::overlay::write_mode::OverlayWriteMode::default(),
+            // M2b: fresh in-memory trie — no durable WAL frontier, no prior
+            // generations, so the watermark base + commit_seq are both 0 (INERT
+            // pre-flip; only opt-in `*_cas_durable` writes advance them).
+            committed_watermark:
+                crate::persistent_artrie_core::committed_watermark::CommittedWatermark::new(0),
+            commit_seq: std::sync::atomic::AtomicU64::new(0),
         }
     }
 
@@ -158,6 +164,11 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
             // M2a INERT default (OwnedTree) — changes no byte behavior.
             overlay_write_mode:
                 crate::persistent_artrie_core::overlay::write_mode::OverlayWriteMode::default(),
+            // M2b: fresh on-disk trie (empty WAL) — no durable frontier, no prior
+            // generations ⇒ watermark base + commit_seq both 0 (INERT pre-flip).
+            committed_watermark:
+                crate::persistent_artrie_core::committed_watermark::CommittedWatermark::new(0),
+            commit_seq: std::sync::atomic::AtomicU64::new(0),
         })
     }
 
@@ -250,6 +261,11 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
             // M2a INERT default (OwnedTree) — changes no byte behavior.
             overlay_write_mode:
                 crate::persistent_artrie_core::overlay::write_mode::OverlayWriteMode::default(),
+            // M2b: fresh on-disk trie (empty WAL) — no durable frontier, no prior
+            // generations ⇒ watermark base + commit_seq both 0 (INERT pre-flip).
+            committed_watermark:
+                crate::persistent_artrie_core::committed_watermark::CommittedWatermark::new(0),
+            commit_seq: std::sync::atomic::AtomicU64::new(0),
         })
     }
 
@@ -394,6 +410,43 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
             })?;
         let wal_writer = Arc::new(wal_writer);
 
+        // M2b — Order-A durable-overlay recovery seeding (mirrors char mmap_ctor).
+        //
+        // (1) The committed-watermark BASE is the recovered durable WAL frontier:
+        //     `next_lsn - 1` is the last durably-recovered LSN, so treating
+        //     `1..=base` as already committed is correct (a replayed record is, by
+        //     definition, durable). On a fresh/empty WAL `next_lsn == 1` ⇒ base 0.
+        // (2) The `commit_seq` SEED is `max(durable header floor, max surviving
+        //     CommitRank generation)` — the A.2 cross-restart fix so a post-reopen
+        //     durable op out-ranks every pre-restart survivor (the seeded commit_seq
+        //     is strictly above any generation folded into the recovered state). The
+        //     header floor is currently 0 until the overlay checkpoint raises it; the
+        //     WAL scan covers the un-checkpointed tail. Byte's `open` uses
+        //     `RecoveryManager` (which expands `CommitRank` to nothing), so we do a
+        //     lightweight extra `WalReader` pass for the max generation — one-time,
+        //     on open, exactly as char does. INERT pre-flip: nothing claims/marks
+        //     until an opt-in `*_cas_durable` write runs.
+        let recovered_frontier = next_lsn.saturating_sub(1);
+        let commit_seq_seed = {
+            let mut max_commit_seq_gen = 0u64;
+            if wal_path.exists() {
+                use crate::persistent_artrie_core::wal::{WalReader, WalRecord};
+                if let Ok(mut reader) = WalReader::new(&wal_path) {
+                    while let Some(result) = reader.next_record() {
+                        match result {
+                            Ok((_lsn, WalRecord::CommitRank { generation, .. })) => {
+                                max_commit_seq_gen = max_commit_seq_gen.max(generation);
+                            }
+                            Ok(_) => {}
+                            Err(_) => break, // stop at the durable prefix
+                        }
+                    }
+                }
+            }
+            // Combine with the durable header floor (raise-only, carried across rotate).
+            wal_writer.commit_seq_floor().max(max_commit_seq_gen)
+        };
+
         // Create the dictionary with storage layer
         // Use loaded root if available, otherwise start with empty bucket
         let was_loaded_from_disk = loaded_root.is_some();
@@ -426,6 +479,15 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
             // M2a INERT default (OwnedTree) — changes no byte behavior.
             overlay_write_mode:
                 crate::persistent_artrie_core::overlay::write_mode::OverlayWriteMode::default(),
+            // M2b: seed the watermark base from the recovered durable WAL frontier
+            // (replayed LSNs are already committed) and the commit_seq from
+            // max(header floor, surviving CommitRank generation) — the A.2
+            // cross-restart fix. INERT pre-flip.
+            committed_watermark:
+                crate::persistent_artrie_core::committed_watermark::CommittedWatermark::new(
+                    recovered_frontier,
+                ),
+            commit_seq: std::sync::atomic::AtomicU64::new(commit_seq_seed),
         };
 
         // Replay recovered operations

@@ -99,6 +99,10 @@ impl<V: DictionaryValue> PersistentARTrie<V, IoUringDiskManager> {
             // M2a INERT default (OwnedTree) — changes no byte behavior.
             overlay_write_mode:
                 crate::persistent_artrie_core::overlay::write_mode::OverlayWriteMode::default(),
+            // M2b: fresh on-disk trie (empty WAL) — watermark base + commit_seq 0.
+            committed_watermark:
+                crate::persistent_artrie_core::committed_watermark::CommittedWatermark::new(0),
+            commit_seq: std::sync::atomic::AtomicU64::new(0),
         })
     }
 
@@ -214,6 +218,31 @@ impl<V: DictionaryValue> PersistentARTrie<V, IoUringDiskManager> {
             })?;
         let wal_writer = Arc::new(wal_writer);
 
+        // M2b — Order-A durable-overlay recovery seeding (mirrors mmap `open`):
+        // watermark base = recovered durable WAL frontier (`next_lsn - 1`),
+        // commit_seq seed = max(durable header floor, surviving CommitRank
+        // generation) (the A.2 cross-restart fix). One-time WAL scan on open; INERT
+        // pre-flip. See the mmap `open` body for the full rationale.
+        let recovered_frontier = next_lsn.saturating_sub(1);
+        let commit_seq_seed = {
+            let mut max_commit_seq_gen = 0u64;
+            if wal_path.exists() {
+                use crate::persistent_artrie_core::wal::{WalReader, WalRecord};
+                if let Ok(mut reader) = WalReader::new(&wal_path) {
+                    while let Some(result) = reader.next_record() {
+                        match result {
+                            Ok((_lsn, WalRecord::CommitRank { generation, .. })) => {
+                                max_commit_seq_gen = max_commit_seq_gen.max(generation);
+                            }
+                            Ok(_) => {}
+                            Err(_) => break,
+                        }
+                    }
+                }
+            }
+            wal_writer.commit_seq_floor().max(max_commit_seq_gen)
+        };
+
         let was_loaded_from_disk = loaded_root.is_some();
         let (initial_root, initial_term_count) = match loaded_root {
             Some(root) => (root, loaded_term_count as usize),
@@ -244,6 +273,12 @@ impl<V: DictionaryValue> PersistentARTrie<V, IoUringDiskManager> {
             // M2a INERT default (OwnedTree) — changes no byte behavior.
             overlay_write_mode:
                 crate::persistent_artrie_core::overlay::write_mode::OverlayWriteMode::default(),
+            // M2b: seed watermark base + commit_seq from recovery (INERT pre-flip).
+            committed_watermark:
+                crate::persistent_artrie_core::committed_watermark::CommittedWatermark::new(
+                    recovered_frontier,
+                ),
+            commit_seq: std::sync::atomic::AtomicU64::new(commit_seq_seed),
         };
 
         let skip_threshold = if was_loaded_from_disk {
