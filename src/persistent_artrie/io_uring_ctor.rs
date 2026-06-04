@@ -96,6 +96,9 @@ impl<V: DictionaryValue> PersistentARTrie<V, IoUringDiskManager> {
             lockfree_cache: None,
             #[cfg(feature = "persistent-artrie")]
             cas_retries: std::sync::atomic::AtomicU64::new(0),
+            // M2a INERT default (OwnedTree) — changes no byte behavior.
+            overlay_write_mode:
+                crate::persistent_artrie_core::overlay::write_mode::OverlayWriteMode::default(),
         })
     }
 
@@ -238,6 +241,9 @@ impl<V: DictionaryValue> PersistentARTrie<V, IoUringDiskManager> {
             lockfree_cache: None,
             #[cfg(feature = "persistent-artrie")]
             cas_retries: std::sync::atomic::AtomicU64::new(0),
+            // M2a INERT default (OwnedTree) — changes no byte behavior.
+            overlay_write_mode:
+                crate::persistent_artrie_core::overlay::write_mode::OverlayWriteMode::default(),
         };
 
         let skip_threshold = if was_loaded_from_disk {

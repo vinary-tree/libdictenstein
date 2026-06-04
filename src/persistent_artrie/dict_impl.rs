@@ -334,6 +334,20 @@ pub struct PersistentARTrie<V: DictionaryValue = (), S: BlockStorage = MmapDiskM
     /// Counter for CAS retry attempts (for monitoring contention).
     #[cfg(feature = "persistent-artrie")]
     pub(crate) cas_retries: std::sync::atomic::AtomicU64,
+
+    // === Overlay flip kill-switch (M2a — INERT scaffold) ===
+    /// Kill-switch selecting the production write-path representation
+    /// (owned-tree vs lock-free overlay), the byte twin of the char field.
+    ///
+    /// Wired as the inert
+    /// [`OverlayWriteMode::OwnedTree`](crate::persistent_artrie_core::overlay::write_mode::OverlayWriteMode::OwnedTree)
+    /// default, so it changes NO current byte behavior: `route_overlay()` stays
+    /// `false` until an explicit `flip_to_overlay()` / `set_overlay_write_mode()`
+    /// (opt-in, reversible — M2a). The irreversible production create-flip is a
+    /// later step (M4); no production byte path reads this field yet. The whole
+    /// `persistent_artrie` module is `#[cfg(feature = "persistent-artrie")]`, so
+    /// (like the char field) this needs no separate cfg gate.
+    pub(crate) overlay_write_mode: crate::persistent_artrie_core::overlay::write_mode::OverlayWriteMode,
 }
 
 /// Thread-safe wrapper for `PersistentARTrie`.

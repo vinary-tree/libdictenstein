@@ -169,6 +169,18 @@ pub mod parallel_merge;
 // Lock-free CAS cluster (Phase-5 split out of dict_impl).
 pub mod lockfree_cas;
 
+// Overlay-flip kill-switch + thin production-write-path router (M2a). The byte
+// seam impl of the shared `LockFreeOverlay<ByteKey, V, S>` trait lives here:
+// `route_overlay()` / `flip_to_overlay()` / `kill_switch_to_owned()` + the
+// un-routed owned readers + the overlay publishers. Opt-in, REVERSIBLE; no
+// production byte ctor flips yet (that is M4).
+pub(crate) mod overlay_write_mode;
+
+// M2a byte LockFreeOverlay correspondence + reestablish round-trip (in-crate
+// because the read-engine skins + the `LockFreeOverlay` trait are `pub(crate)`).
+#[cfg(test)]
+mod overlay_correspondence_tests;
+
 // Document-transaction execution methods (Phase-5 split out of dict_impl).
 pub mod document_tx;
 
