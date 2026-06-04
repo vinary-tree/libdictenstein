@@ -46,6 +46,33 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
     where
         V: Clone,
     {
+        // **M3 read-flip (C6).** This is the memory-bounded merge-read chokepoint
+        // (the batched merges + the parallel merge funnel through it). Under
+        // `route_overlay()` enumerate the prefix from the VALUE-CARRYING overlay
+        // (non-faulting, resident-finals; `arena_id` None), then apply the same
+        // cursor (exclusive `> cursor`) + limit the owned collector applies. The
+        // value-carrying route satisfies the audit §C.2 rule (no owned value
+        // re-read). The owned arm below is the verbatim pre-flip cursor walk.
+        if self.route_overlay() {
+            let mut entries: Vec<PrefixTermWithValueAndArena<V>> = self
+                .overlay_iter_prefix_with_values(prefix)
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|(term, _)| match cursor {
+                    Some(c) => bytes_gt(term.as_slice(), c),
+                    None => true,
+                })
+                .map(|(term, value)| PrefixTermWithValueAndArena {
+                    term,
+                    value,
+                    arena_id: None,
+                })
+                .collect();
+            entries.sort_by(|a, b| a.term.cmp(&b.term));
+            entries.truncate(limit);
+            return Ok(entries);
+        }
+
         let mut terms = Vec::with_capacity(limit);
 
         // Collect terms with the cursor filtering

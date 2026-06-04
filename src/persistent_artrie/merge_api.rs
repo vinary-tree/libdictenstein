@@ -21,7 +21,7 @@ use crate::value::DictionaryValue;
 
 use super::block_storage::BlockStorage;
 use super::dict_impl::{PersistentARTrie, PrefixTermWithValueAndArena};
-use super::error::Result;
+use super::error::{PersistentARTrieError, Result};
 
 impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
     /// Merge another trie into this one using a custom merge function.
@@ -29,11 +29,27 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
     /// Uses arena-aware iteration for improved I/O locality. Groups terms by
     /// their disk arena before processing, processing arena groups in sorted
     /// order for sequential I/O patterns.
+    ///
+    /// **M3 reject (BROKEN-BY-DESIGN, audit §B #2 — covers `merge_replace`).** Under
+    /// `route_overlay()` `self.get_value_impl` reads the EMPTY owned tree (None,
+    /// defeating `merge_fn`) and the write `insert_impl` mutates the owned tree the
+    /// overlay read/checkpoint path does NOT observe — a trie-to-trie merge would
+    /// silently REPLACE/DROP the live overlay counts. The overlay IS the durable
+    /// production state; merge-into-it is incoherent. Reject (mirroring
+    /// `merge_lockfree_values_to_persistent`); overlay merge is an E1-iter-B follow-on.
     pub fn merge_from<F>(&mut self, other: &Self, merge_fn: F) -> Result<usize>
     where
         F: Fn(&V, &V) -> V,
         V: Clone,
     {
+        if self.route_overlay() {
+            return Err(PersistentARTrieError::InvalidOperation(
+                "merge_from is not valid under the lock-free overlay write mode (the overlay \
+                 is the durable production state; a trie-to-trie merge would overwrite rather \
+                 than combine accumulated values); use OverlayWriteMode::OwnedTree"
+                    .to_string(),
+            ));
+        }
         let other_terms = match other.iter_prefix_with_values_and_arena(b"")? {
             Some(terms) => terms,
             None => return Ok(0),
@@ -116,6 +132,11 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
     }
 
     /// Internal implementation of batched merge with optional arena grouping.
+    ///
+    /// **M3 reject (BROKEN-BY-DESIGN, audit §B #3 — covers `merge_from_batched` +
+    /// `merge_from_batched_grouped`).** Same hazard as [`merge_from`](Self::merge_from):
+    /// `get_value_impl` + `insert_impl` over the empty owned tree silently
+    /// replaces/drops live overlay counts. Reject under `route_overlay()`.
     fn merge_from_batched_with_options<F>(
         &mut self,
         other: &Self,
@@ -127,6 +148,14 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
         F: Fn(&V, &V) -> V,
         V: Clone,
     {
+        if self.route_overlay() {
+            return Err(PersistentARTrieError::InvalidOperation(
+                "merge_from_batched is not valid under the lock-free overlay write mode (the \
+                 overlay is the durable production state; a trie-to-trie merge would overwrite \
+                 rather than combine accumulated values); use OverlayWriteMode::OwnedTree"
+                    .to_string(),
+            ));
+        }
         let batch_size = if batch_size == 0 { 5_000 } else { batch_size };
         let mut total_processed = 0;
         let mut cursor: Option<Vec<u8>> = None;

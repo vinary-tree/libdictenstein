@@ -357,6 +357,27 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
     ) -> Result<Option<Vec<PrefixTermWithArena>>> {
         const DEFAULT_LIMIT: usize = 100_000;
 
+        // **M3 read-flip (C6).** This is the byte read CHOKEPOINT: `iter` /
+        // `iter_prefix` / `compaction_snapshot` / the merge readers all funnel
+        // through it, so routing it at the TOP routes the whole term-enumeration
+        // surface to the overlay (the audit's "route the ARENA/CURSOR iters at the
+        // public top"). Overlay nodes are all resident (in-memory), so `arena_id` is
+        // `None` for every term — exactly the value the owned path returns for
+        // not-yet-persisted nodes; arena grouping is a disk-page-locality no-op for
+        // the in-memory overlay, but the TERMS are faithful (resident-finals,
+        // non-faulting). The owned arm below is the verbatim pre-flip walk.
+        if self.route_overlay() {
+            return Ok(self.overlay_iter_prefix(prefix).map(|terms| {
+                terms
+                    .into_iter()
+                    .map(|term| PrefixTermWithArena {
+                        term,
+                        arena_id: None,
+                    })
+                    .collect()
+            }));
+        }
+
         match &self.root {
             TrieRoot::Bucket(bucket) => {
                 // For root bucket, collect matching entries
@@ -494,6 +515,15 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
     ///
     /// Returns all (term, value, arena_id) tuples matching the prefix.
     /// This enables page-locality optimized merge operations.
+    ///
+    /// **M3 read-flip (C6 + the audit's §C.2 VALUE-CARRYING rule).** Under
+    /// `route_overlay()` this routes to the VALUE-CARRYING overlay enumerator
+    /// [`overlay_iter_prefix_with_values`](Self::overlay_iter_prefix_with_values) —
+    /// NOT enumerate-overlay-then-value-owned (which would re-read each value from
+    /// the EMPTY owned tree). `arena_id` is `None` for every resident overlay term.
+    /// This is the value-carrying read chokepoint: `iter_prefix_with_values` funnels
+    /// through it, so routing it here routes that surface too. The owned arm below is
+    /// the verbatim pre-flip walk.
     pub fn iter_prefix_with_values_and_arena(
         &self,
         prefix: &[u8],
@@ -502,6 +532,19 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
         V: Clone,
     {
         const DEFAULT_LIMIT: usize = 100_000;
+
+        if self.route_overlay() {
+            return Ok(self.overlay_iter_prefix_with_values(prefix).map(|entries| {
+                entries
+                    .into_iter()
+                    .map(|(term, value)| PrefixTermWithValueAndArena {
+                        term,
+                        value,
+                        arena_id: None,
+                    })
+                    .collect()
+            }));
+        }
 
         match &self.root {
             TrieRoot::Bucket(bucket) => {

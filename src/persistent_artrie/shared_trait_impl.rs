@@ -77,33 +77,57 @@ impl<V: DictionaryValue> ARTrie for SharedARTrie<V> {
     where
         Self::Value: Default,
     {
+        // M3 (C5): delegate to the routed inherent `insert` (routes to
+        // `insert_cas_durable` under the flip), NOT `insert_impl` (owned-only). The
+        // owned default-value insert is preserved by the routed inherent method's
+        // owned arm; under the overlay the durable membership insert is value-free.
         let mut guard = self.write();
+        if guard.route_overlay() {
+            return guard.insert(term);
+        }
         guard.insert_impl(term.as_bytes(), Some(V::default()))
     }
 
     fn insert_with_value(&self, term: &str, value: Self::Value) -> bool {
+        // M3 (C5): route to the routed inherent `insert_with_value` under the flip.
         let mut guard = self.write();
+        if guard.route_overlay() {
+            return guard.insert_with_value(term, value);
+        }
         guard.insert_impl(term.as_bytes(), Some(value))
     }
 
     fn contains(&self, term: &str) -> bool {
+        // M3 (C6): delegate to the routed `contains_bytes` (this read `contains_impl`
+        // directly, bypassing the overlay route).
         let guard = self.read();
-        guard.contains_impl(term.as_bytes())
+        guard.contains_bytes(term.as_bytes())
     }
 
     fn get_value(&self, term: &str) -> Option<Self::Value> {
+        // M3 (C6): delegate to the routed `get_value_bytes` (value-routes to the
+        // overlay incl. the empty-term owned exception), NOT `get_value_impl`.
         let guard = self.read();
-        guard.get_value_impl(term.as_bytes())
+        guard.get_value_bytes(term.as_bytes())
     }
 
     fn remove(&self, term: &str) -> bool {
+        // M3 (C5): route to the routed inherent `remove` (→ `remove_cas_durable`).
         let mut guard = self.write();
+        if guard.route_overlay() {
+            return guard.remove(term);
+        }
         guard.remove_impl(term.as_bytes())
     }
 
     #[inline]
     fn len(&self) -> usize {
+        // M3 (C6): under the overlay count resident finals (the owned `term_count` is
+        // cleared on reopen); this read `term_count` directly, bypassing the route.
         let guard = self.read();
+        if guard.route_overlay() {
+            return guard.overlay_len();
+        }
         guard.term_count.load(AtomicOrdering::Acquire)
     }
 
@@ -120,6 +144,17 @@ impl<V: DictionaryValue> ARTrie for SharedARTrie<V> {
 
     fn remove_prefix(&self, prefix: &str) -> usize {
         let prefix_bytes = prefix.as_bytes();
+
+        // M3 (C5/H4): under the flip the owned `iter_prefix`+`remove_impl` loop would
+        // enumerate the OVERLAY but delete from the EMPTY owned tree = a silent no-op.
+        // Route to the routed inherent `remove_prefix_batched` (overlay remove-CAS).
+        {
+            let mut guard = self.write();
+            if guard.route_overlay() {
+                return guard.remove_prefix_batched(prefix_bytes, 1024);
+            }
+        }
+
         let batch_size = 1024;
         let mut total_removed = 0;
 
@@ -148,6 +183,9 @@ impl<V: DictionaryValue> ARTrie for SharedARTrie<V> {
     }
 
     fn iter_prefix(&self, prefix: &str) -> Option<Box<dyn Iterator<Item = String> + '_>> {
+        // M3 (C6): `iter_prefix_with_arena` is routed at its public top, so this trait
+        // body is overlay-routed automatically under the flip (the terms come from the
+        // overlay; lossy-UTF8 mapping is unchanged).
         let guard = self.read();
         let terms = guard.iter_prefix_with_arena(prefix.as_bytes()).ok()??;
         Some(Box::new(

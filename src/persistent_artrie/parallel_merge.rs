@@ -72,6 +72,20 @@ impl<V: DictionaryValue + Clone + Send + Sync> SharedARTrieParallelExt<V> for Sh
     {
         use rayon::prelude::*;
 
+        // **M3 reject (BROKEN-BY-DESIGN, audit §B #4 — byte's single parallel merge).**
+        // Same hazard as the serial merges: `get_value_impl` + `insert_impl` over the
+        // empty owned tree silently replaces/drops live overlay counts. Reject under
+        // `route_overlay()` (checked once under a short read guard before the parallel
+        // read phase).
+        if self.read().route_overlay() {
+            return Err(crate::persistent_artrie::error::PersistentARTrieError::InvalidOperation(
+                "merge_from_parallel is not valid under the lock-free overlay write mode (the \
+                 overlay is the durable production state; a trie-to-trie merge would overwrite \
+                 rather than combine accumulated values); use OverlayWriteMode::OwnedTree"
+                    .to_string(),
+            ));
+        }
+
         // Partition by first byte (0-255) for parallel processing.
         let partitions: Vec<Vec<(Vec<u8>, V)>> = (0u8..=255u8)
             .into_par_iter()

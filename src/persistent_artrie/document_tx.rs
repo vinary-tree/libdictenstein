@@ -25,6 +25,19 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
     /// can append to. The buffered terms are not visible to the trie
     /// until `commit_document` is called.
     pub fn begin_document(&self, document_id: &str) -> Result<DocumentTransaction<V>> {
+        // **M3 reject (BROKEN-BY-DESIGN, audit §B #8).** Document transactions commit
+        // via `insert_impl_core` — an OWNED absolute write the overlay read/checkpoint
+        // path does not observe under `route_overlay()`. Reject at BOTH entry points
+        // (here + `commit_document`); this also closes `try_tx_increment_bytes`
+        // reachability (it can only be reached on a transaction obtained here).
+        if self.route_overlay() {
+            return Err(PersistentARTrieError::InvalidOperation(
+                "begin_document is not valid under the lock-free overlay write mode (document \
+                 transactions commit an owned-tree absolute write the overlay does not observe); \
+                 use OverlayWriteMode::OwnedTree"
+                    .to_string(),
+            ));
+        }
         let tx_id = {
             let base = self.next_lsn.load(AtomicOrdering::Acquire);
             base ^ (std::time::SystemTime::now()
@@ -168,10 +181,23 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
     }
 
     /// Commit a document transaction, atomically applying all buffered terms.
+    ///
+    /// **M3 reject (BROKEN-BY-DESIGN, audit §B #8).** Applies the buffered terms via
+    /// `insert_impl_core` (owned absolute write). Reject under `route_overlay()` (the
+    /// second entry-point guard; `begin_document` already rejects, but a transaction
+    /// could have been opened on the owned path then flipped — fail loud here too).
     pub fn commit_document(&mut self, mut tx: DocumentTransaction<V>) -> Result<usize>
     where
         V: Clone,
     {
+        if self.route_overlay() {
+            return Err(PersistentARTrieError::InvalidOperation(
+                "commit_document is not valid under the lock-free overlay write mode (it applies \
+                 an owned-tree absolute write the overlay does not observe); use \
+                 OverlayWriteMode::OwnedTree"
+                    .to_string(),
+            ));
+        }
         if tx.state != TransactionState::Active {
             return Err(PersistentARTrieError::InvalidOperation(format!(
                 "Cannot commit a {} transaction",

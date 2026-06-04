@@ -416,7 +416,21 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
     /// Takes entries from the lock-free cache and inserts them into the
     /// persistent trie structure. Call this during checkpoints or before
     /// saving to ensure all entries are persisted.
+    ///
+    /// **M3 reject (BROKEN-BY-DESIGN, audit §B #6).** Under `route_overlay()` this
+    /// drains the overlay CACHE into the owned tree and CLEARS the cache — but the
+    /// overlay IS the durable production state, so draining it to the owned tree
+    /// (which the overlay read/checkpoint path does not observe) DESTROYS durable
+    /// state. Reject; overlay→owned reconciliation is not a flip-mode operation.
     pub fn merge_lockfree_to_persistent(&mut self) -> Result<usize> {
+        if self.route_overlay() {
+            return Err(PersistentARTrieError::InvalidOperation(
+                "merge_lockfree_to_persistent is not valid under the lock-free overlay write \
+                 mode (the overlay is the durable production state; draining it into the owned \
+                 tree would destroy durable state); use OverlayWriteMode::OwnedTree"
+                    .to_string(),
+            ));
+        }
         let entries: Vec<Vec<u8>> = match &self.lockfree_cache {
             Some(cache) => cache.iter().map(|e| e.key().clone()).collect(),
             None => return Ok(0),
@@ -1328,8 +1342,22 @@ impl<S: BlockStorage> PersistentARTrie<i64, S> {
     /// Unlike `merge_lockfree_to_persistent()` which does boolean insert,
     /// this method walks the lock-free trie overlay, collects all
     /// `(key, value)` entries, and adds each value to the persistent trie.
+    ///
+    /// **M3 reject (BROKEN-BY-DESIGN, audit §B #5).** Under `route_overlay()` this
+    /// drains the overlay (`collect_lockfree_entries_recursive`) into the owned tree
+    /// AND clears the overlay root — destroying the durable production state (the
+    /// overlay IS that state under the flip). Reject.
     pub fn merge_lockfree_values_to_persistent(&mut self) -> Result<usize> {
         use super::nodes::PersistentNode;
+
+        if self.route_overlay() {
+            return Err(PersistentARTrieError::InvalidOperation(
+                "merge_lockfree_values_to_persistent is not valid under the lock-free overlay \
+                 write mode (it drains and clears the overlay, which is the durable production \
+                 state); use OverlayWriteMode::OwnedTree"
+                    .to_string(),
+            ));
+        }
 
         let entries = {
             let lockfree_root = match self.lockfree_root.as_ref() {

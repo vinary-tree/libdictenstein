@@ -118,6 +118,23 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
     {
         use std::time::Instant;
 
+        // **M3 reject (CHAR-ABSENT P0, audit §C.1 — the file-replacer).** Compaction
+        // builds a fresh trie from `compaction_snapshot` (which under the flip would
+        // enumerate the overlay terms but read VALUES from the EMPTY owned tree → a
+        // counters-lost image) and then ATOMICALLY RENAMES it over the original,
+        // clobbering the durable WAL/overlay. There is NO internal caller (confirmed
+        // by the audit), so rejecting under `route_overlay()` is safe — fail loud
+        // rather than silently destroy durable state. A route-split-aware overlay
+        // snapshot is an E1-iter-B follow-on.
+        if self.route_overlay() {
+            return Err(PersistentARTrieError::InvalidOperation(
+                "compact is not valid under the lock-free overlay write mode (it rebuilds from \
+                 the owned tree and atomically replaces the file, clobbering the durable \
+                 overlay/WAL with a counters-lost image); use OverlayWriteMode::OwnedTree"
+                    .to_string(),
+            ));
+        }
+
         let start = Instant::now();
 
         let original_path = self

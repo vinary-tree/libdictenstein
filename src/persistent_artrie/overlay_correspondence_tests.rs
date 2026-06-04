@@ -313,11 +313,18 @@ fn m2a_reestablish_membership_round_trip() {
     );
     assert_eq!(trie.overlay_len(), MEMBERSHIP_TERMS.len());
 
-    // Owned tree cleared LAST (term_count zeroed; owned reads now empty).
-    assert_eq!(trie.len(), Some(0), "owned tree cleared after reestablish");
+    // Owned tree cleared LAST (term_count zeroed; owned reads now empty). NB: M3
+    // routes the public `len()`/`contains_bytes()` to the OVERLAY under
+    // `route_overlay()` (which is true here), so the owned-cleared assertion must use
+    // the UNROUTED owned readers (the routed reads now see the reestablished overlay).
+    assert_eq!(
+        trie.term_count.load(std::sync::atomic::Ordering::Acquire),
+        0,
+        "owned tree's term_count zeroed after reestablish"
+    );
     for t in MEMBERSHIP_TERMS {
         assert!(
-            !trie.contains_bytes(t),
+            !trie.unrouted_contains_bytes(t),
             "owned tree must be empty after reestablish for {t:?}"
         );
     }
@@ -402,10 +409,17 @@ fn m2a_reestablish_counter_round_trip() {
     assert_eq!(trie.overlay_get_value(b"banana"), Some(Some(5000)));
     assert_eq!(trie.overlay_get_value(&deep), Some(Some(22)), "deep count");
 
-    // Owned cleared LAST.
-    assert_eq!(trie.len(), Some(0), "owned tree cleared after reestablish");
+    // Owned cleared LAST. NB: M3 routes the public reads to the OVERLAY under
+    // `route_overlay()`, so the owned-cleared assertion uses the UNROUTED owned
+    // readers (a routed `get_value_bytes(b"banana")` would now return the
+    // reestablished overlay count, not the cleared-owned None).
     assert_eq!(
-        trie.get_value_bytes(b"banana"),
+        trie.term_count.load(std::sync::atomic::Ordering::Acquire),
+        0,
+        "owned tree's term_count zeroed after reestablish"
+    );
+    assert_eq!(
+        trie.unrouted_get_value_bytes(b"banana"),
         None,
         "owned tree empty after reestablish"
     );

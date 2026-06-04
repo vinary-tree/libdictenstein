@@ -20,15 +20,33 @@ impl<V: DictionaryValue, S: BlockStorage> Dictionary for PersistentARTrie<V, S> 
     type Node = PersistentARTrieNode<V>;
 
     fn root(&self) -> Self::Node {
+        // M3 DEFER (D8 / E1-iter-B boundary): under the overlay regime this walks the
+        // OWNED tree (empty), so zipper / transducer / fuzzy traversal over a flipped
+        // trie sees an empty dictionary. Overlay-backed `DictionaryNode` traversal is
+        // a follow-on; the warning makes the boundary observable rather than silent.
+        if self.route_overlay() {
+            log::warn!(
+                "root()/zipper traversal under the lock-free overlay returns an EMPTY owned \
+                 tree (M3 DEFER / E1-iter-B: overlay-backed DictionaryNode traversal is not yet \
+                 implemented); use contains / get_value / iter_prefix for overlay reads"
+            );
+        }
         self.get_root_node()
     }
 
     fn contains(&self, term: &str) -> bool {
-        self.contains_impl(term.as_bytes())
+        // M3 (C6): delegate to the routed `contains_bytes` (this trait body read
+        // `contains_impl` directly, bypassing the overlay route).
+        self.contains_bytes(term.as_bytes())
     }
 
     #[inline]
     fn len(&self) -> Option<usize> {
+        // M3 (C6): under the overlay the owned `term_count` is cleared on reopen;
+        // count the overlay's resident finals instead (this read `term_count` direct).
+        if self.route_overlay() {
+            return Some(self.overlay_len());
+        }
         Some(self.term_count.load(AtomicOrdering::Acquire))
     }
 
@@ -41,7 +59,10 @@ impl<V: DictionaryValue, S: BlockStorage> MappedDictionary for PersistentARTrie<
     type Value = V;
 
     fn get_value(&self, term: &str) -> Option<Self::Value> {
-        self.get_value_impl(term.as_bytes())
+        // M3 (C6): delegate to the routed `get_value_bytes` (value-routes to the
+        // overlay, incl. the empty-term owned exception), NOT `get_value_impl`
+        // directly (which reads the empty owned tree under the flip).
+        self.get_value_bytes(term.as_bytes())
     }
 }
 

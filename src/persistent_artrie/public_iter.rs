@@ -32,7 +32,30 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
     /// Iterate over all terms with their values.
     ///
     /// Returns an iterator yielding `(term, Option<value>)` pairs in lexicographic order.
+    ///
+    /// **M3 read-flip (the audit's §C.2 — byte's MIXED-read iterator).** The owned
+    /// body enumerates the terms via the arena iter then re-reads each value via
+    /// `get_value_impl` (owned). Under `route_overlay()` the owned tree is empty, so
+    /// that mixed read would emit every value as `None`. The flip routes through the
+    /// VALUE-CARRYING overlay enumerator
+    /// [`iter_prefix_with_values_and_arena`](Self::iter_prefix_with_values_and_arena)
+    /// (itself overlay-routed to `overlay_iter_prefix_with_values`), NOT
+    /// enumerate-overlay-then-value-owned. The owned arm below is the verbatim
+    /// pre-flip mixed read (INERT until the flip).
     pub fn iter_with_values(&self) -> TermValueIterator<V> {
+        if self.route_overlay() {
+            let mut entries: Vec<(Vec<u8>, Option<V>)> = self
+                .iter_prefix_with_values_and_arena(b"")
+                .ok()
+                .flatten()
+                .unwrap_or_default()
+                .into_iter()
+                .map(|entry| (entry.term, Some(entry.value)))
+                .collect();
+            entries.sort_by(|left, right| left.0.cmp(&right.0));
+            return TermValueIterator::from_terms(entries);
+        }
+
         let mut entries: Vec<_> = self
             .iter_prefix_with_arena(b"")
             .ok()

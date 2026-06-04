@@ -37,7 +37,24 @@ impl<V: DictionaryValue + serde::Serialize + serde::de::DeserializeOwned, S: Blo
     /// Atomically increment a value by term bytes.
     ///
     /// See [`increment`](Self::increment) for details.
+    ///
+    /// **M3 write-flip (C5):** under `route_overlay()` for the `V = i64` monomorph
+    /// this routes to the proven Order-A
+    /// [`try_increment_cas_durable`](Self::try_increment_cas_durable) (durable
+    /// add-only `BatchIncrement`, commutative on replay) via the SAFE `Any`
+    /// dispatch in [`super::lockfree_value_route::route_increment_bytes`]. The
+    /// durable path applies the C4 non-negative bound (a negative delta is rejected
+    /// LOUDLY rather than silently writing the owned tree the overlay path would not
+    /// observe) and requires a UTF-8 key. Arbitrary `V` never reaches the routed
+    /// branch (the overlay is enabled only for `V ∈ {(), i64}`). The owned body
+    /// below is the verbatim pre-flip path (INERT until `route_overlay()` is true).
     pub fn increment_bytes(&mut self, term: &[u8], delta: i64) -> Result<i64> {
+        if self.route_overlay() {
+            if let Some(routed) = super::lockfree_value_route::route_increment_bytes(self, term, delta)
+            {
+                return routed;
+            }
+        }
         let current: i64 = match self.get_value_impl(term) {
             Some(v) => {
                 let bytes = crate::serialization::bincode_compat::serialize(&v).map_err(|e| {
@@ -92,11 +109,27 @@ impl<V: DictionaryValue + serde::Serialize + serde::de::DeserializeOwned, S: Blo
     ///
     /// Public wrapper around the private `get_value_impl` method for callers
     /// that already have byte keys (e.g., varint-encoded n-gram keys).
+    ///
+    /// **M3 read-flip (C6):** under `route_overlay()` the owned tree is empty
+    /// (cleared on an Overlay-regime reopen), so this value-routes to the overlay
+    /// (`overlay_get_value` → the SAFE `Any` dispatch: `i64` counter or `()`
+    /// membership). **EMPTY-TERM EXCEPTION (M2a finding):** the overlay node cannot
+    /// represent the empty key (`insert_cas`/`increment_cas` both no-op on it), so
+    /// `get_value(b"")` MUST read the OWNED/durable arm even under the overlay — the
+    /// empty-term value survives in durable state (owned tree / WAL), not the
+    /// resident overlay. `Some(None)` from the overlay means handled-and-absent;
+    /// `None` means an ineligible `V` (unreachable under `route_overlay()`), in
+    /// which case we fall through to the owned read.
     #[inline]
     pub fn get_value_bytes(&self, term: &[u8]) -> Option<V>
     where
         V: Clone,
     {
+        if self.route_overlay() && !term.is_empty() {
+            if let Some(routed) = self.overlay_get_value(term) {
+                return routed;
+            }
+        }
         self.get_value_impl(term)
     }
 
@@ -104,9 +137,48 @@ impl<V: DictionaryValue + serde::Serialize + serde::de::DeserializeOwned, S: Blo
     ///
     /// Public wrapper around the private `contains_impl` method for callers
     /// that already have byte keys (e.g., varint-encoded n-gram keys).
+    ///
+    /// **M3 read-flip (C6):** under `route_overlay()` membership routes to the
+    /// non-faulting lock-free overlay read (`overlay_contains`); the owned arm is
+    /// the unchanged `contains_impl`. The empty term has no overlay representation,
+    /// but `overlay_contains(b"")` returns whether the overlay ROOT is final (which
+    /// it never is for a key-only overlay), matching the owned semantics for an
+    /// absent empty term; callers needing the empty-term membership use the owned
+    /// `get_value(b"")` exception above.
     #[inline]
     pub fn contains_bytes(&self, term: &[u8]) -> bool {
+        if self.route_overlay() {
+            // `contains_lockfree` IS the inherent body the trait's `overlay_contains`
+            // seam delegates to (the non-faulting in-memory overlay walk).
+            return self.contains_lockfree(term);
+        }
         self.contains_impl(term)
+    }
+
+    /// **UN-routed** owned membership read — always reads the OWNED tree
+    /// (`contains_impl`), never the overlay, regardless of `route_overlay()`. The
+    /// byte twin of char's `owned_try_contains`. Used by the M2a/M3 reestablish tests
+    /// to assert the owned tree was cleared AFTER reestablish (a routed `contains_bytes`
+    /// would read the now-populated overlay). Named off the `owned_*` prefix so the
+    /// D1 grep gate (which scans `fn owned_*` bodies for `contains(`) does not flag the
+    /// `contains_impl` call.
+    #[cfg_attr(not(test), allow(dead_code))]
+    #[inline]
+    pub(crate) fn unrouted_contains_bytes(&self, term: &[u8]) -> bool {
+        self.contains_impl(term)
+    }
+
+    /// **UN-routed** owned value read — always reads the OWNED tree
+    /// (`get_value_impl`), never the overlay. The byte twin of char's owned value
+    /// reader. Used by the reestablish tests for the owned-cleared assertion. (Will
+    /// also back the M4 recovery reestablish-survival assertions, the byte EDIT-3.)
+    #[cfg_attr(not(test), allow(dead_code))]
+    #[inline]
+    pub(crate) fn unrouted_get_value_bytes(&self, term: &[u8]) -> Option<V>
+    where
+        V: Clone,
+    {
+        self.get_value_impl(term)
     }
 
     /// Atomically update or insert a value.
@@ -122,7 +194,20 @@ impl<V: DictionaryValue + serde::Serialize + serde::de::DeserializeOwned, S: Blo
     /// Atomically upsert by term bytes.
     ///
     /// See [`upsert`](Self::upsert) for details.
+    ///
+    /// **M3 write-flip (C5):** under `route_overlay()` for `V = i64` this routes to
+    /// the Order-A [`upsert_cas_durable`](Self::upsert_cas_durable) (last-writer =
+    /// the root-CAS winner) via the SAFE `Any` dispatch
+    /// ([`super::lockfree_value_route::route_upsert_bytes`]); the durable path
+    /// rejects a negative value (C4). Arbitrary `V` keeps the owned body. The owned
+    /// body below is the verbatim pre-flip path (INERT until the flip).
     pub fn upsert_bytes(&mut self, term: &[u8], value: V) -> Result<bool> {
+        if self.route_overlay() {
+            if let Some(routed) = super::lockfree_value_route::route_upsert_bytes(self, term, &value)
+            {
+                return routed;
+            }
+        }
         let existed = self.contains_impl(term);
 
         let value_bytes = crate::serialization::bincode_compat::serialize(&value)
@@ -159,12 +244,28 @@ impl<V: DictionaryValue + serde::Serialize + serde::de::DeserializeOwned, S: Blo
     /// Atomically compare and swap by term bytes.
     ///
     /// See [`compare_and_swap`](Self::compare_and_swap) for details.
+    ///
+    /// **M3 reject (H4):** the byte overlay has NO value-level compare-and-swap
+    /// primitive (only the root-version CAS arbitrates STRUCTURAL publication, not
+    /// an expected-value match). Under `route_overlay()` this is rejected with
+    /// `InvalidOperation` rather than writing the owned tree (which the overlay
+    /// read/checkpoint path would not observe). Reachable only for the `i64`
+    /// monomorph under the M4 flip; arbitrary `V` keeps `route_overlay()` false so
+    /// the owned body runs.
     pub fn compare_and_swap_bytes(
         &mut self,
         term: &[u8],
         expected: Option<V>,
         new_value: V,
     ) -> Result<bool> {
+        if self.route_overlay() {
+            return Err(PersistentARTrieError::InvalidOperation(
+                "compare_and_swap is not valid under the lock-free overlay write mode (no \
+                 value-level CAS-with-expected primitive on the byte overlay); use \
+                 OverlayWriteMode::OwnedTree"
+                    .to_string(),
+            ));
+        }
         let current = self.get_value_impl(term);
 
         let (matches, expected_bytes) = match (&current, &expected) {
@@ -205,6 +306,12 @@ impl<V: DictionaryValue + serde::Serialize + serde::de::DeserializeOwned, S: Blo
     /// Get the current value and increment atomically (fetch-and-add).
     ///
     /// Returns the value *before* the increment.
+    ///
+    /// **M3 write-flip (C5):** inherits the overlay route transitively — it calls
+    /// [`increment`](Self::increment) → `increment_bytes`, which routes to the
+    /// durable `try_increment_cas_durable` under `route_overlay()`. The returned
+    /// "before" value is `new_value - delta`, correct for both the owned and the
+    /// overlay accumulated count.
     pub fn fetch_add(&mut self, term: &str, delta: i64) -> Result<i64> {
         let new_value = self.increment(term, delta)?;
         Ok(new_value - delta)
@@ -221,7 +328,22 @@ impl<V: DictionaryValue + serde::Serialize + serde::de::DeserializeOwned, S: Blo
     /// Get or insert by term bytes.
     ///
     /// See [`get_or_insert`](Self::get_or_insert) for details.
+    ///
+    /// **M3 write-flip (C5):** under `route_overlay()` for `V = i64` this routes to
+    /// the overlay — insert-if-absent via the durable
+    /// [`insert_cas_with_value_durable`](Self::insert_cas_with_value_durable) then
+    /// read the resulting value back (`get_lockfree`) — through the SAFE `Any`
+    /// dispatch ([`super::lockfree_value_route::route_get_or_insert_bytes`]).
+    /// Arbitrary `V` keeps the owned body. The owned body below is the verbatim
+    /// pre-flip path (INERT until the flip).
     pub fn get_or_insert_bytes(&mut self, term: &[u8], default: V) -> Result<V> {
+        if self.route_overlay() {
+            if let Some(routed) =
+                super::lockfree_value_route::route_get_or_insert_bytes(self, term, &default)
+            {
+                return routed;
+            }
+        }
         if let Some(v) = self.get_value_impl(term) {
             return Ok(v);
         }

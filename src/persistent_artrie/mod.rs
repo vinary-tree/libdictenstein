@@ -181,6 +181,18 @@ pub(crate) mod overlay_write_mode;
 #[cfg(test)]
 mod overlay_correspondence_tests;
 
+// M3 byte read/write routing + reject correspondence tests (in-crate: the routed
+// public reads/writes are exercised against the owned oracle under an EXPLICIT
+// opt-in flip; route_overlay() stays false in production until M4's create-flip).
+#[cfg(test)]
+mod overlay_routing_tests;
+
+// M3 per-monomorph value-route for the byte valued mutators (increment_bytes /
+// upsert_bytes / get_or_insert_bytes) under the flip — the byte twin of char's
+// `lockfree_value_route`. SAFE `Any` dispatch to the `<i64, S>` durable
+// primitives; `None` for arbitrary `V` (caller runs the owned body).
+pub(crate) mod lockfree_value_route;
+
 // Document-transaction execution methods (Phase-5 split out of dict_impl).
 pub mod document_tx;
 

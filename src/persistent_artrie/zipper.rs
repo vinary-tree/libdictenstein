@@ -95,7 +95,22 @@ impl<V: DictionaryValue> PersistentARTrieZipper<V> {
     /// The zipper provides read-only navigation through the trie.
     /// For thread-safe concurrent access, wrap the trie in `SharedARTrie`
     /// (i.e., `Arc<RwLock<PersistentARTrie<V>>>`).
+    ///
+    /// **M3 DEFER (audit `root()/zipper/DictionaryNode`).** The zipper navigates the
+    /// OWNED tree (`is_final_at_path`/`has_path` walk `self.root`). Under the lock-free
+    /// overlay regime the owned tree is empty, so zipper / transducer / fuzzy traversal
+    /// over a flipped trie sees an EMPTY dictionary. Overlay-backed zipper traversal is
+    /// an E1-iter-B follow-on; the `log::warn!` makes the boundary observable rather
+    /// than silent. (INERT pre-flip: `route_overlay()` is false in production until M4,
+    /// so the zipper sees the correct owned tree today.)
     pub fn new(trie: SharedARTrie<V>) -> Self {
+        if trie.read().route_overlay() {
+            log::warn!(
+                "PersistentARTrieZipper over a lock-free-overlay trie navigates an EMPTY owned \
+                 tree (M3 DEFER / E1-iter-B: overlay-backed zipper traversal is not yet \
+                 implemented); use contains / get_value / iter_prefix for overlay reads"
+            );
+        }
         PersistentARTrieZipper {
             trie,
             path: Vec::new(),
