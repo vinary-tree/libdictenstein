@@ -252,7 +252,18 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
         }
 
         if term.is_empty() {
-            return false;
+            // Empty-string support (H4): "" is the root; publish membership via the
+            // fresh-root-CAS root publisher (NOT in-place `try_set_final` — a concurrent
+            // non-empty insert's `with_child` root-copy snapshots flags and would
+            // discard an in-place finalize). Non-durable (no WAL). Returns whether THIS
+            // call newly finalized the root.
+            use crate::persistent_artrie_core::overlay::flip::LockFreeOverlay;
+            let _epoch = self.epoch_manager.enter_read();
+            let inserted = self.overlay_publish_root_membership().unwrap_or(false);
+            if inserted {
+                lockfree_cache.insert(Vec::new(), true);
+            }
+            return inserted;
         }
 
         // Enter the read epoch for safe memory access
@@ -599,7 +610,42 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
             return Ok(false);
         }
         if term.is_empty() {
-            return Ok(false);
+            // Empty-string support (H4): "" is the root. Order-A durable membership via
+            // the fresh-root-CAS RANKED publisher (NOT `try_insert_lockfree_path_durable`,
+            // which finalizes in-place — a concurrent non-empty insert's `with_child`
+            // root-copy snapshots flags and would discard an in-place finalize).
+            use crate::persistent_artrie_core::overlay::flip::{LockFreeOverlay, RootPublishOutcome};
+            let _epoch = self.epoch_manager.enter_read();
+            // Present-hoist (pre-WAL, no LSN burn): root already final ⇒ no-op insert.
+            if self.overlay_root_node().map_or(false, |r| r.is_final()) {
+                lockfree_cache.insert(Vec::new(), true);
+                return Ok(false);
+            }
+            // ORDER A — step 1: append + sync the Insert{""} record DURABLE.
+            let lsn = self.append_to_wal_returning_lsn(WalRecord::Insert {
+                term: Vec::new(),
+                value: None,
+            })?;
+            // Step 2: fresh-root-CAS publish (`as_final`), RANKED (generation bound to
+            // the winning CAS iteration, NOT claimed once-before — split-LP safe).
+            match self
+                .publish_root_cas_ranked(|r| Arc::new(r.as_final()), |r| r.is_final())?
+            {
+                RootPublishOutcome::Published(generation) => {
+                    lockfree_cache.insert(Vec::new(), true);
+                    // Step 3: bind the commit rank durable + advance the watermark.
+                    self.commit_rank_and_mark(lsn, b"", generation)?;
+                    return Ok(true);
+                }
+                RootPublishOutcome::AlreadyInState => {
+                    // A concurrent insert finalized the root first: idempotent NO-RANK
+                    // (ranking a no-op resurrects) + `mark_committed` for liveness (the
+                    // Overlay-regime replay drops the unranked record).
+                    lockfree_cache.insert(Vec::new(), true);
+                    self.mark_committed_burned(lsn);
+                    return Ok(false);
+                }
+            }
         }
 
         // Present-hoist (NON-FAULTING — byte has no overlay fault-in; `find_leaf_lockfree`
@@ -697,7 +743,37 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
         })?;
 
         if term.is_empty() {
-            return Ok(false);
+            // Empty-string support (H4): "" is the root. Order-A durable remove via the
+            // fresh-root-CAS RANKED un-publisher (`as_non_final` on a FRESH root, NOT an
+            // in-place clear of the shared root — last-writer-wins with concurrent
+            // inserts via the single root CAS, like every non-empty remove).
+            use crate::persistent_artrie_core::overlay::flip::{LockFreeOverlay, RootPublishOutcome};
+            let _epoch = self.epoch_manager.enter_read();
+            // Absent fast-path (pre-WAL, no LSN burn): root not final ⇒ nothing to remove.
+            if !self.overlay_root_node().map_or(false, |r| r.is_final()) {
+                lockfree_cache.remove(term);
+                return Ok(false);
+            }
+            // ORDER A — step 1: append + sync the Remove{""} record DURABLE.
+            let lsn = self.append_to_wal_returning_lsn(WalRecord::Remove { term: Vec::new() })?;
+            // Step 2: fresh-root-CAS un-publish (`as_non_final`), RANKED.
+            match self
+                .publish_root_cas_ranked(|r| Arc::new(r.as_non_final()), |r| !r.is_final())?
+            {
+                RootPublishOutcome::Published(generation) => {
+                    // CACHE INVALIDATION FIRST (before mark): "" is no longer present.
+                    lockfree_cache.remove(term);
+                    self.commit_rank_and_mark(lsn, b"", generation)?;
+                    return Ok(true);
+                }
+                RootPublishOutcome::AlreadyInState => {
+                    // A concurrent remove cleared the root first: idempotent NO-RANK +
+                    // mark_committed for liveness.
+                    lockfree_cache.remove(term);
+                    self.mark_committed_burned(lsn);
+                    return Ok(false);
+                }
+            }
         }
 
         // ── ABSENT FAST-PATH + WAL AVOIDANCE ── A no-op remove must NOT burn an LSN
@@ -1014,10 +1090,12 @@ impl<S: BlockStorage> PersistentARTrie<i64, S> {
             .as_ref()
             .expect("Lock-free mode not enabled. Call enable_lockfree() first.");
 
-        if key.is_empty() {
-            return Ok((0, 0));
-        }
-
+        // Empty-string support (H4): the empty key "" IS the root; the loop below
+        // reads the root counter via `find_leaf_recursive(root, b"", 0)` (returns the
+        // root iff final → its value, else 0) and republishes via
+        // `build_value_path_recursive(root, b"", 0, ..)` which at depth 0 produces a
+        // FRESH `as_final().with_value` root (fresh-root-CAS, NOT in-place) — so the
+        // root counter RMW is the depth-0 case of the general loop. No rejection.
         if delta > LOCKFREE_COUNTER_MAX {
             return Err(Self::lockfree_increment_overflow_error(key, None, delta));
         }
@@ -1188,7 +1266,7 @@ impl<S: BlockStorage> PersistentARTrie<i64, S> {
             )
         })?;
         <Self as DurableOverlayWrite<ByteKey, i64, S>>::try_increment_cas_durable_default(
-            self, key_str, key, delta, 0,
+            self, key_str, key, delta,
         )
     }
 
@@ -1221,9 +1299,9 @@ impl<S: BlockStorage> PersistentARTrie<i64, S> {
             )
         })?;
 
-        if term.is_empty() {
-            return Ok(false);
-        }
+        // Empty-string support (H4): "" is the root; the present-check + WAL +
+        // `build_value_path_recursive(root, b"", 0, value)` (fresh-root-CAS at depth 0)
+        // below handle "" generically — no rejection.
         // C4: a negative value is un-representable for a non-negative counter.
         if value < 0 {
             return Err(PersistentARTrieError::InvalidOperation(format!(
@@ -1318,9 +1396,9 @@ impl<S: BlockStorage> PersistentARTrie<i64, S> {
             )
         })?;
 
-        if term.is_empty() {
-            return Ok(false);
-        }
+        // Empty-string support (H4): "" is the root; the WAL +
+        // `build_value_path_recursive(root, b"", 0, value)` (fresh-root-CAS at depth 0)
+        // below handle "" generically — no rejection (UPSERT always writes the value).
         if value < 0 {
             return Err(PersistentARTrieError::InvalidOperation(format!(
                 "upsert_cas_durable value for byte term {:?} must be non-negative \
@@ -2496,5 +2574,224 @@ mod m4b_flip_gate_tests {
                 "counter value lost/wrong for {k:?} after reestablish"
             );
         }
+    }
+
+    // ======================================================================
+    // EMPTY-STRING ("") DECISIVE MATRIX (empty-string support P2).
+    // The empty term is now a FULL first-class key carrying a value, round-tripping
+    // write → WAL → checkpoint → reopen (checkpoint-reopen AND pure-WAL-replay) →
+    // read, on the overlay (production) path AND the owned (kill-switched) path.
+    // ======================================================================
+
+    /// **valued "" — overlay checkpoint → reopen.** The headline: an `i64` value on
+    /// the empty term survives a checkpoint + reopen via the overlay root (H4 write +
+    /// H2 capture + H1 serialize/load + H3 reestablish + H5 read).
+    #[test]
+    fn empty_string_valued_overlay_checkpoint_reopen() {
+        let dir = scratch("byte-es-valued-ckpt");
+        let path = dir.path().join("t.part");
+        {
+            let mut trie = PersistentARTrie::<i64>::create(&path).expect("create<i64>");
+            trie.set_durability_policy(DurabilityPolicy::Immediate);
+            assert!(trie.route_overlay());
+            assert!(
+                trie.insert_cas_with_value_durable(b"", 42).expect("valued insert \"\""),
+                "valued insert of \"\" must be newly inserted"
+            );
+            // A couple of non-empty terms so "" coexists with children.
+            trie.insert_cas_with_value_durable(b"a", 1).expect("a");
+            trie.insert_cas_with_value_durable(b"bc", 2).expect("bc");
+            assert_eq!(trie.get_value_bytes(b""), Some(42), "\"\" readable pre-checkpoint");
+            trie.checkpoint().expect("overlay checkpoint");
+        }
+        let recovered = PersistentARTrie::<i64>::open(&path).expect("reopen<i64>");
+        assert!(recovered.route_overlay());
+        assert_eq!(
+            recovered.get_value_bytes(b""),
+            Some(42),
+            "empty-term value lost across checkpoint → reopen"
+        );
+        assert_eq!(recovered.get_value_bytes(b"a"), Some(1), "child 'a' lost");
+        assert_eq!(recovered.get_value_bytes(b"bc"), Some(2), "child 'bc' lost");
+    }
+
+    /// **valued "" — pure WAL replay (NO checkpoint).** Order-A durability: an
+    /// acknowledged valued "" write survives reopen with no checkpoint (WAL replay).
+    #[test]
+    fn empty_string_valued_pure_wal_replay() {
+        let dir = scratch("byte-es-valued-wal");
+        let path = dir.path().join("t.part");
+        {
+            let mut trie = PersistentARTrie::<i64>::create(&path).expect("create<i64>");
+            trie.set_durability_policy(DurabilityPolicy::Immediate);
+            trie.insert_cas_with_value_durable(b"", 7).expect("valued insert \"\"");
+            // NO checkpoint — durability rests on WAL replay.
+        }
+        let recovered = PersistentARTrie::<i64>::open(&path).expect("reopen<i64>");
+        assert_eq!(
+            recovered.get_value_bytes(b""),
+            Some(7),
+            "empty-term value lost on pure-WAL-replay reopen (Order-A durability)"
+        );
+    }
+
+    /// **membership "" — overlay checkpoint → reopen (H3).** The red-team's
+    /// membership-reopen case: `insert("")` (V=()) → reopen → `contains("")` true (the
+    /// reestablish membership fold republishes "" to the root, not drops it).
+    #[test]
+    fn empty_string_membership_overlay_reopen() {
+        let dir = scratch("byte-es-membership");
+        let path = dir.path().join("t.part");
+        {
+            let mut trie = PersistentARTrie::<()>::create(&path).expect("create<()>");
+            trie.set_durability_policy(DurabilityPolicy::Immediate);
+            assert!(trie.insert_cas_durable(b"").expect("membership insert \"\""));
+            trie.insert_cas_durable(b"x").expect("x");
+            assert!(trie.contains_bytes(b""), "\"\" member pre-checkpoint");
+            trie.checkpoint().expect("overlay checkpoint");
+        }
+        let recovered = PersistentARTrie::<()>::open(&path).expect("reopen<()>");
+        assert!(
+            recovered.contains_bytes(b""),
+            "empty-term MEMBERSHIP lost across checkpoint → reopen (H3)"
+        );
+        assert!(recovered.contains_bytes(b"x"), "child 'x' membership lost");
+    }
+
+    /// **increment "" — overlay checkpoint → reopen (the unranked-drop fix).**
+    /// `try_increment_cas_durable("")` ×N accumulates a RANKED durable root counter
+    /// (not the old dropped-as-unranked 0).
+    #[test]
+    fn empty_string_increment_reopen() {
+        let dir = scratch("byte-es-increment");
+        let path = dir.path().join("t.part");
+        {
+            let mut trie = PersistentARTrie::<i64>::create(&path).expect("create<i64>");
+            trie.set_durability_policy(DurabilityPolicy::Immediate);
+            let mut last = 0;
+            for _ in 0..5 {
+                last = trie.try_increment_cas_durable(b"", 3).expect("increment \"\"");
+            }
+            assert_eq!(last, 15, "5×3 increments of \"\" accumulate to 15");
+            trie.checkpoint().expect("overlay checkpoint");
+        }
+        let recovered = PersistentARTrie::<i64>::open(&path).expect("reopen<i64>");
+        assert_eq!(
+            recovered.get_value_bytes(b""),
+            Some(15),
+            "empty-term counter lost/wrong across checkpoint → reopen (unranked-drop fix)"
+        );
+    }
+
+    /// **remove "" — symmetry.** A durably-inserted "" is durably removable;
+    /// `contains("")` is false after reopen.
+    #[test]
+    fn empty_string_remove_reopen() {
+        let dir = scratch("byte-es-remove");
+        let path = dir.path().join("t.part");
+        {
+            let mut trie = PersistentARTrie::<()>::create(&path).expect("create<()>");
+            trie.set_durability_policy(DurabilityPolicy::Immediate);
+            assert!(trie.insert_cas_durable(b"").expect("insert \"\""));
+            assert!(trie.contains_bytes(b""), "\"\" present after insert");
+            assert!(trie.remove_cas_durable(b"").expect("remove \"\""), "remove cleared \"\"");
+            assert!(!trie.contains_bytes(b""), "\"\" absent after remove");
+            trie.checkpoint().expect("overlay checkpoint");
+        }
+        let recovered = PersistentARTrie::<()>::open(&path).expect("reopen<()>");
+        assert!(
+            !recovered.contains_bytes(b""),
+            "empty-term must stay REMOVED across checkpoint → reopen (remove symmetry)"
+        );
+    }
+
+    /// **owned-regime valued "" — checkpoint → reopen (P0/H1 serialize+load).** A
+    /// kill-switched-to-owned trie writes "" via the owned path; the value survives
+    /// via P0's `serialize_root`/load fix (the owned file reopens owned).
+    #[test]
+    fn empty_string_valued_owned_regime_reopen() {
+        use crate::persistent_artrie_core::overlay::flip::LockFreeOverlay;
+        let dir = scratch("byte-es-owned");
+        let path = dir.path().join("t.part");
+        {
+            let mut trie = PersistentARTrie::<i64>::create(&path).expect("create<i64>");
+            trie.kill_switch_to_owned();
+            assert!(!trie.route_overlay(), "kill-switched → owned");
+            trie.upsert_bytes(b"", 88).expect("owned valued upsert \"\"");
+            trie.upsert_bytes(b"k", 9).expect("owned upsert k");
+            assert_eq!(trie.get_value_bytes(b""), Some(88));
+            trie.checkpoint().expect("owned checkpoint");
+        }
+        let recovered = PersistentARTrie::<i64>::open(&path).expect("reopen<i64>");
+        assert_eq!(
+            recovered.get_value_bytes(b""),
+            Some(88),
+            "owned-regime empty-term value lost across checkpoint → reopen (P0/H1)"
+        );
+        assert_eq!(recovered.get_value_bytes(b"k"), Some(9));
+    }
+
+    /// **back-compat — a value-less root reopens with `get_value("")` == None.** A
+    /// trie with only non-empty terms (no "" written) has a value-less root; it must
+    /// reopen unchanged with the empty term absent (the value-less path is unperturbed).
+    #[test]
+    fn empty_string_absent_value_less_root_back_compat() {
+        let dir = scratch("byte-es-backcompat");
+        let path = dir.path().join("t.part");
+        {
+            let mut trie = PersistentARTrie::<i64>::create(&path).expect("create<i64>");
+            trie.set_durability_policy(DurabilityPolicy::Immediate);
+            trie.insert_cas_with_value_durable(b"alpha", 1).expect("alpha");
+            trie.insert_cas_with_value_durable(b"beta", 2).expect("beta");
+            trie.checkpoint().expect("overlay checkpoint");
+        }
+        let recovered = PersistentARTrie::<i64>::open(&path).expect("reopen<i64>");
+        assert_eq!(recovered.get_value_bytes(b""), None, "absent \"\" must read None");
+        assert!(!recovered.contains_bytes(b""), "absent \"\" must not be a member");
+        assert_eq!(recovered.get_value_bytes(b"alpha"), Some(1));
+        assert_eq!(recovered.get_value_bytes(b"beta"), Some(2));
+    }
+
+    /// **concurrent increment of "" (R1 — the root-value race).** N threads each
+    /// increment "" durably; the final count must equal the sum (no lost update —
+    /// the fresh-root-CAS RMW rebases on conflict).
+    #[test]
+    fn empty_string_concurrent_increment_race() {
+        use std::sync::Arc;
+        let dir = scratch("byte-es-concurrent");
+        let path = dir.path().join("t.part");
+        let threads = 4;
+        let per_thread = 25;
+        {
+            let mut trie = PersistentARTrie::<i64>::create(&path).expect("create<i64>");
+            trie.set_durability_policy(DurabilityPolicy::Immediate);
+            let trie = Arc::new(trie);
+            let mut handles = Vec::with_capacity(threads);
+            for _ in 0..threads {
+                let t = Arc::clone(&trie);
+                handles.push(std::thread::spawn(move || {
+                    for _ in 0..per_thread {
+                        t.try_increment_cas_durable(b"", 1).expect("concurrent increment \"\"");
+                    }
+                }));
+            }
+            for h in handles {
+                h.join().expect("join");
+            }
+            assert_eq!(
+                trie.get_value_bytes(b""),
+                Some((threads * per_thread) as i64),
+                "concurrent \"\" increments lost an update (fresh-root-CAS RMW must not)"
+            );
+            // All thread clones dropped on join → sole owner; unwrap for &mut checkpoint.
+            let mut trie = Arc::try_unwrap(trie).ok().expect("sole Arc owner after joins");
+            trie.checkpoint().expect("overlay checkpoint");
+        }
+        let recovered = PersistentARTrie::<i64>::open(&path).expect("reopen<i64>");
+        assert_eq!(
+            recovered.get_value_bytes(b""),
+            Some((threads * per_thread) as i64),
+            "concurrent \"\" count lost across reopen"
+        );
     }
 }

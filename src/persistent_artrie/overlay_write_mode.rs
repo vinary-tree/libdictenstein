@@ -565,6 +565,19 @@ impl<V: DictionaryValue, S: BlockStorage> LockFreeOverlay<ByteKey, V, S>
     fn overlay_contains(&self, units: &[u8]) -> bool {
         self.contains_lockfree(units)
     }
+
+    fn claim_commit_seq(&self) -> u64 {
+        // Empty-string support: the per-iteration commit generation — the SAME
+        // `self.commit_seq` the durable insert/increment paths claim (monotone in
+        // the global root-CAS order, durable across restart).
+        use std::sync::atomic::Ordering;
+        self.commit_seq.fetch_add(1, Ordering::AcqRel) + 1
+    }
+
+    fn note_cas_retry(&self) {
+        use std::sync::atomic::Ordering;
+        self.cas_retries.fetch_add(1, Ordering::Relaxed);
+    }
 }
 
 // ============================================================================

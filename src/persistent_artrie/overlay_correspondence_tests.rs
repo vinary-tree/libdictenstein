@@ -388,22 +388,26 @@ fn m2a_reestablish_counter_round_trip() {
 
     LockFreeOverlay::reestablish_overlay_counter(&mut trie).expect("reestablish counter");
 
-    // Every NON-EMPTY (term, count) reproduced in the overlay; the empty term is
-    // dropped (the shared overlay limitation documented above).
+    // Every (term, count) reproduced in the overlay — INCLUDING the empty term,
+    // which empty-string support (H3) republishes to the overlay ROOT via the
+    // fresh-root-CAS value publisher (it was previously dropped).
     let overlay_after: BTreeMap<Vec<u8>, i64> = trie
         .overlay_iter_prefix_with_values(b"")
         .expect("overlay_iter_prefix_with_values")
         .into_iter()
         .collect();
+    let mut expected_with_empty = nonempty_before.clone();
+    expected_with_empty.insert(Vec::new(), empty_term_count);
     assert_eq!(
-        overlay_after, nonempty_before,
-        "reestablish_counter must reproduce every non-empty (term, count) in the overlay"
+        overlay_after, expected_with_empty,
+        "reestablish_counter must reproduce every (term, count) in the overlay INCLUDING \
+         the empty term (empty-string support H3)"
     );
     assert_eq!(
         trie.overlay_get_value(b""),
-        Some(None),
-        "the empty-term count is DROPPED from the overlay (shared limitation): \
-         overlay handles the i64 route (Some) but the empty key is absent (None)"
+        Some(Some(empty_term_count)),
+        "the empty-term count is republished to the overlay ROOT via fresh-root-CAS \
+         (empty-string support H3 — previously dropped as Some(None))"
     );
     // Spot-check the value-route + the deep partition.
     assert_eq!(trie.overlay_get_value(b"banana"), Some(Some(5000)));

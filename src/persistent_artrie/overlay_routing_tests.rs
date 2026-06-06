@@ -288,38 +288,48 @@ fn m3_counter_routed_reads_correspond_incl_value_carrying_iter() {
     assert!(!after_banana.contains(b"apple".as_slice()));
 }
 
-/// **The empty-term `get_value("")` exception (M2a finding).** Under the overlay
-/// the empty-term value must read the OWNED/durable arm (the overlay node cannot
-/// represent the empty key).
+/// **Empty-term routes to the overlay root (empty-string support H4+H5).** Under
+/// the overlay the empty term "" IS the root: the routed public writer publishes ""
+/// to the root via fresh-root-CAS (H4), and the routed `get_value("")` /
+/// `contains("")` read it back from the root (the former owned-only exception is
+/// removed — H5). Supersedes the old `m3_empty_term_get_value_reads_owned_under_overlay`,
+/// which pinned the now-removed exception.
 #[test]
-fn m3_empty_term_get_value_reads_owned_under_overlay() {
+fn m3_empty_term_routes_to_overlay() {
     let dir = scratch("byte-m3-empty-term");
     let path = dir.path().join("e.part");
 
     let empty_count: i64 = 77;
     let mut trie = PersistentARTrie::<i64>::create(&path).expect("create");
-    // Set the empty-term value on the OWNED tree FIRST (durable), then flip.
-    trie.kill_switch_to_owned();
-    trie.upsert_bytes(b"", empty_count).expect("owned empty upsert");
-    assert_eq!(trie.get_value_bytes(b""), Some(empty_count));
-
-    // Flip; the overlay is empty, but the empty-term value lives in the owned tree.
     trie.flip_to_overlay();
     assert!(trie.route_overlay());
 
-    // The EXCEPTION: `get_value_bytes(b"")` reads the owned arm even under the flip.
+    // The routed public writer publishes "" to the overlay ROOT (durable, H4).
+    assert!(
+        trie.upsert_bytes(b"", empty_count).expect("overlay empty upsert"),
+        "upsert(\"\") newly inserted"
+    );
+    // The routed read reads "" from the overlay root (H5 — no owned exception).
     assert_eq!(
         trie.get_value_bytes(b""),
         Some(empty_count),
-        "empty-term get_value must read the owned/durable arm under the overlay"
+        "empty-term get_value routes to the overlay root (empty-string support H5)"
     );
-    // A non-empty term under the overlay reads the (empty) overlay → None (the
-    // owned tree was not cleared here since we flipped in-session, but the routed
-    // read goes to the overlay for non-empty keys).
+    assert!(
+        trie.contains_bytes(b""),
+        "contains(\"\") reads the overlay root final flag"
+    );
+    // Upsert overwrites the root value (LWW); returns false (updated, not inserted).
+    assert!(
+        !trie.upsert_bytes(b"", 99).expect("overlay empty upsert overwrite"),
+        "second upsert(\"\") updates"
+    );
+    assert_eq!(trie.get_value_bytes(b""), Some(99));
+    // A non-empty absent term routes to the (otherwise-empty) overlay → None.
     assert_eq!(
         trie.get_value_bytes(b"nonexistent"),
         None,
-        "non-empty term routes to the (empty) overlay"
+        "non-empty absent term routes to the overlay → None"
     );
 }
 

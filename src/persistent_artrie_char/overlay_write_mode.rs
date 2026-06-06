@@ -218,6 +218,18 @@ impl<V: DictionaryValue, S: BlockStorage> LockFreeOverlay<CharKey, V, S>
         let term = CharKey::units_to_term(units);
         self.contains_lockfree(&term)
     }
+
+    fn claim_commit_seq(&self) -> u64 {
+        // Empty-string support: the per-iteration commit generation — the SAME
+        // `self.commit_seq` char's durable insert/increment paths claim.
+        use std::sync::atomic::Ordering;
+        self.commit_seq.fetch_add(1, Ordering::AcqRel) + 1
+    }
+
+    fn note_cas_retry(&self) {
+        use std::sync::atomic::Ordering;
+        self.cas_retries.fetch_add(1, Ordering::Relaxed);
+    }
 }
 
 // ============================================================================

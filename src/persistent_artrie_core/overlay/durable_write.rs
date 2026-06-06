@@ -222,7 +222,6 @@ pub(crate) trait DurableOverlayWrite<K: KeyEncoding, V: DictionaryValue, S>:
         key: &str,
         key_bytes: &[u8],
         delta: Self::CounterValue,
-        empty_value: Self::CounterValue,
     ) -> Result<Self::CounterValue> {
         // "Acknowledged ⇒ durable" only holds under a synchronous policy.
         self.durable_policy_gate(
@@ -240,9 +239,14 @@ pub(crate) trait DurableOverlayWrite<K: KeyEncoding, V: DictionaryValue, S>:
             );
         }
 
-        if key.is_empty() {
-            return Ok(empty_value);
-        }
+        // Empty-string support (H4): the empty key "" now flows through the template
+        // like any other key — `increment_publish_inner` → the variant's
+        // `try_increment_cas_inner` handles "" via fresh-root-CAS at depth 0
+        // (`build_value_path_recursive` reads the existing root counter and republishes
+        // a fresh `as_final().with_value` root), and bound/append/rank below are
+        // key-length-agnostic. (The former empty short-circuit + `empty_value` param are
+        // removed — "" now carries a real durable, RANKED root counter, not a dropped 0
+        // that `reconcile_lww` would discard as unranked on reopen.)
 
         // Bound the delta to the i64 persistence domain BEFORE logging it, so the
         // WAL never records a delta the merge/recovery path cannot represent.

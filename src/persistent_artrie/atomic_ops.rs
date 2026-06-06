@@ -113,19 +113,19 @@ impl<V: DictionaryValue + serde::Serialize + serde::de::DeserializeOwned, S: Blo
     /// **M3 read-flip (C6):** under `route_overlay()` the owned tree is empty
     /// (cleared on an Overlay-regime reopen), so this value-routes to the overlay
     /// (`overlay_get_value` → the SAFE `Any` dispatch: `i64` counter or `()`
-    /// membership). **EMPTY-TERM EXCEPTION (M2a finding):** the overlay node cannot
-    /// represent the empty key (`insert_cas`/`increment_cas` both no-op on it), so
-    /// `get_value(b"")` MUST read the OWNED/durable arm even under the overlay — the
-    /// empty-term value survives in durable state (owned tree / WAL), not the
-    /// resident overlay. `Some(None)` from the overlay means handled-and-absent;
-    /// `None` means an ineligible `V` (unreachable under `route_overlay()`), in
-    /// which case we fall through to the owned read.
+    /// membership). **Empty-string support (H5):** the empty term "" IS the overlay
+    /// ROOT — `overlay_get_value(b"")` reads `root.get_value()` / `root.is_final()`
+    /// (the write path publishes "" to the root via fresh-root-CAS, and reestablish
+    /// republishes it on reopen), so "" routes to the overlay like any other term
+    /// (the former owned-only exception is removed). `Some(None)` from the overlay
+    /// means handled-and-absent; `None` means an ineligible `V` (unreachable under
+    /// `route_overlay()`), in which case we fall through to the owned read.
     #[inline]
     pub fn get_value_bytes(&self, term: &[u8]) -> Option<V>
     where
         V: Clone,
     {
-        if self.route_overlay() && !term.is_empty() {
+        if self.route_overlay() {
             if let Some(routed) = self.overlay_get_value(term) {
                 return routed;
             }

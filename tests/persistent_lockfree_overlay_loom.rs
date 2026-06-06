@@ -97,6 +97,19 @@ impl ModelNode {
             children: self.children.clone(),  // SUBTREE RETAINED
         })
     }
+
+    /// **Empty-string support (loom gate):** a FRESH copy with finality SET (1) — the
+    /// model mirror of `OverlayNode::as_final`, the empty-term root publisher's
+    /// transform. Children retained; published ONLY via the root CAS. NEVER an
+    /// in-place `try_set_final` on the shared root: a concurrent `with_child`
+    /// root-copy snapshots `is_final` and would DISCARD the in-place flip (the
+    /// lost-update the negative control below reproduces).
+    fn as_final_clone(&self) -> Arc<Self> {
+        Arc::new(Self {
+            is_final: AtomicBool::new(true), // SET on the FRESH copy
+            children: self.children.clone(), // SUBTREE RETAINED
+        })
+    }
 }
 
 /// Stand-in for the production `AtomicNodePtr` (`arc_swap::ArcSwapOption`), which
@@ -744,6 +757,114 @@ fn reader_snapshot_survives_concurrent_remove_no_uaf() {
         assert!(
             !r.find_child(b'a').expect("'a' present").is_final(),
             "'a' must be cleared (non-final) after the remover completes"
+        );
+    });
+}
+
+// ===========================================================================
+// EMPTY-STRING SUPPORT — the empty-term ("") root-publication gate.
+//
+// "" is the unit-slice `&[]`, which navigates to the ROOT. The root is the UNIQUE
+// node a concurrent non-empty insert COPIES (`with_child` snapshots `is_final`)
+// rather than SHARES — so finalizing the root IN-PLACE (`try_set_final`) is a
+// LOST UPDATE against that copy. The production fix publishes "" via a FRESH-ROOT
+// CAS (`overlay_publish_root_membership` → `publish_root_cas`, model
+// `as_final_clone`). These two schedules are the executable proof:
+//   - POSITIVE: fresh-root-CAS survives a concurrent child insert under EVERY
+//     interleaving (it rebases on the winner and retries).
+//   - NEGATIVE CONTROL: in-place finalize is LOST in some interleaving — loom
+//     finds it, so the test MUST panic (`#[should_panic]`). This is what proves
+//     the fresh-root-CAS publisher (not in-place) is REQUIRED.
+// ===========================================================================
+
+/// POSITIVE: publish "" to the root via FRESH-ROOT CAS (model mirror of
+/// `overlay_publish_root_membership` / `publish_root_cas`). Bounded retry: load the
+/// root, build a fresh `as_final_clone` (children retained), CAS; rebase on conflict.
+fn publish_empty_root_fresh_cas(root: &ModelRootSlot) {
+    loop {
+        let current = root.load().expect("root is initialized");
+        if current.is_final() {
+            return; // "" already present
+        }
+        let new_root = current.as_final_clone();
+        match root.compare_exchange(&current, new_root) {
+            Ok(_) => return,
+            Err(_) => continue, // another writer advanced the root — rebase + retry
+        }
+    }
+}
+
+/// NEGATIVE CONTROL (the V2 lost-update BUG): finalize the root IN-PLACE
+/// (`try_set_final` on the loaded shared root) — NO CAS, NO retry. A concurrent
+/// `insert_one_char` path-copies the root (`with_child` snapshots `is_final`) and
+/// CAS-publishes; if it snapshotted BEFORE this flip and wins the CAS, the flip
+/// lands on the orphaned old root and is LOST.
+fn finalize_empty_root_in_place(root: &ModelRootSlot) {
+    let current = root.load().expect("root is initialized");
+    current.try_set_final();
+}
+
+/// **POSITIVE — fresh-root-CAS publication of "" survives a concurrent child
+/// insert.** Under EVERY interleaving the final root is BOTH final (the empty term)
+/// AND carries the inserted child — neither effect is lost (the single root CAS
+/// linearizes them; the loser rebases + retries).
+#[test]
+fn empty_term_root_fresh_cas_survives_concurrent_child_insert() {
+    loom::model(|| {
+        let root = Arc::new(ModelRootSlot::new(ModelNode::empty()));
+        let t_empty = {
+            let root = Arc::clone(&root);
+            thread::spawn(move || publish_empty_root_fresh_cas(&root))
+        };
+        let t_child = {
+            let root = Arc::clone(&root);
+            thread::spawn(move || {
+                insert_one_char(&root, b'a');
+            })
+        };
+        t_empty.join().expect("empty-publisher join");
+        t_child.join().expect("child-insert join");
+
+        let r = root.load().expect("root");
+        assert!(
+            r.is_final(),
+            "empty term \"\" lost under a concurrent child insert — fresh-root-CAS must NOT lose it"
+        );
+        assert!(
+            r.find_child(b'a').map_or(false, |c| c.is_final()),
+            "child 'a' lost under the concurrent empty-term publication"
+        );
+    });
+}
+
+/// **NEGATIVE CONTROL — in-place root finalize IS lost (this test MUST panic).**
+/// Proves the fresh-root-CAS publisher is required: an in-place `try_set_final` on
+/// the live root is discarded by a concurrent child insert's `with_child` root-copy
+/// in some interleaving, which loom finds → the "root is final" assertion fails.
+#[test]
+#[should_panic]
+fn empty_term_root_in_place_finalize_is_lost_negative_control() {
+    loom::model(|| {
+        let root = Arc::new(ModelRootSlot::new(ModelNode::empty()));
+        let t_empty = {
+            let root = Arc::clone(&root);
+            thread::spawn(move || finalize_empty_root_in_place(&root))
+        };
+        let t_child = {
+            let root = Arc::clone(&root);
+            thread::spawn(move || {
+                insert_one_char(&root, b'a');
+            })
+        };
+        t_empty.join().expect("empty-publisher join");
+        t_child.join().expect("child-insert join");
+
+        let r = root.load().expect("root");
+        // FAILS in the interleaving where the child insert's `with_child` snapshotted
+        // is_final=false before the in-place flip, then won the CAS (the lost update).
+        assert!(
+            r.is_final(),
+            "negative control: in-place root finalize lost under a concurrent child insert"
         );
     });
 }

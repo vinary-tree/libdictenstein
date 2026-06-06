@@ -1665,19 +1665,17 @@ impl<S: BlockStorage> super::PersistentARTrieChar<u64, S> {
         // **M1 (overlay-durable-architecture.md, trait 2):** thin wrapper over the
         // SHARED GENERIC Order-A increment template
         // [`DurableOverlayWrite::try_increment_cas_durable_default`]. The default
-        // owns the data-loss-critical skeleton (the durability gate, the empty
-        // short-circuit, the value-domain bound via the seam, the append→publish→
-        // commit-rank→mark ORDER); this wrapper supplies only the key-byte boundary
-        // (`key.as_bytes()` — the K boundary) and the empty-key return value (`0`).
-        // BYTE-IDENTICAL to the prior inline body (the seams delegate to the same
-        // char inherent helpers — `try_increment_cas_inner`, `append_*`,
-        // `committed_watermark.mark_committed` — the original called).
+        // owns the data-loss-critical skeleton (the durability gate, the value-domain
+        // bound via the seam, the append→publish→commit-rank→mark ORDER); this wrapper
+        // supplies only the key-byte boundary (`key.as_bytes()` — the K boundary).
+        // Empty-string support (H4): the former empty short-circuit / `empty_value`
+        // param are gone — "" flows through the template via `try_increment_cas_inner`'s
+        // fresh-root-CAS at depth 0 (char's guard is removed in P3).
         <Self as DurableOverlayWrite<CharKey, u64, S>>::try_increment_cas_durable_default(
             self,
             key,
             key.as_bytes(),
             delta,
-            0,
         )
     }
 

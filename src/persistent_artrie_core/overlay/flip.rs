@@ -76,6 +76,19 @@ pub(crate) fn unit_as_v<V: DictionaryValue>() -> Option<V> {
 /// `Self: Sized` (the default methods take `&self`/`&mut self` and downcast `self`
 /// via `Any` in the seam) and `Self: 'static` (so `self` can be `Any` for the
 /// value-route seam — guaranteed for the concrete trie monomorphs).
+/// Outcome of a RANKED root publication (the durable empty-term `""` path —
+/// [`LockFreeOverlay::publish_root_cas_ranked`]).
+pub(crate) enum RootPublishOutcome {
+    /// THIS call published a fresh root; carries the WINNING commit generation
+    /// (claimed at the winning CAS iteration), which the durable caller binds via
+    /// `commit_rank_and_mark`.
+    Published(u64),
+    /// The root was already in the target state (a concurrent op won between the
+    /// caller's present-hoist and this CAS) — the caller `mark_committed_burned`s
+    /// the appended LSN (idempotent NO-RANK; ranking a no-op would resurrect).
+    AlreadyInState,
+}
+
 pub(crate) trait LockFreeOverlay<K: KeyEncoding, V: DictionaryValue, S>: Sized + 'static {
     /// The per-variant counter monomorph (`u64` for char, `i64` for byte). THE
     /// divergence that makes the value-route a seam, not a blanket. `Copy` so the
@@ -422,12 +435,17 @@ pub(crate) trait LockFreeOverlay<K: KeyEncoding, V: DictionaryValue, S>: Sized +
     /// we'd copy nothing, then clear owned below = total irreversible loss. The
     /// owned readers bypass the route.
     fn reestablish_overlay_membership(&mut self) -> Result<()> {
-        // Disjoint first-unit partition cover of the recovered owned terms (the
-        // empty term has no first unit; membership ignores it — it carries no
-        // value to publish and the per-unit chunks below re-publish it via
-        // `owned_units_under` only if it surfaces under some unit, which it never
-        // does, matching the char membership fold which also drops `""`).
-        let (first_units, _has_empty_term) = self.owned_first_units()?;
+        // Disjoint first-unit partition cover of the recovered owned terms.
+        let (first_units, has_empty_term) = self.owned_first_units()?;
+        // Empty-string support (H3): the empty term "" has no first unit, so the
+        // per-unit chunks below never surface it — republish its membership to the
+        // overlay ROOT directly (fresh-root-CAS) BEFORE clear_owned, else
+        // `contains("")` is lost on EVERY reopen (the load path rebuilt the owned
+        // tree with the empty-term finality, but `clear_owned` below wipes it and
+        // the overlay — not owned — serves reads under `route_overlay()`).
+        if has_empty_term {
+            self.overlay_publish_root_membership()?;
+        }
         for unit in first_units {
             let prefix = [unit];
             if let Some(chunk) = self.owned_units_under(&prefix)? {
@@ -455,9 +473,13 @@ pub(crate) trait LockFreeOverlay<K: KeyEncoding, V: DictionaryValue, S>: Sized +
     fn reestablish_overlay_counter(&mut self) -> Result<()> {
         let (first_units, has_empty_term) = self.owned_first_units()?;
         // Empty-term partition first (it has no first unit — RES-6).
+        // Empty-string support (H3): publish "" to the overlay ROOT via the
+        // fresh-root-CAS value publisher (NOT `overlay_publish_counter`, which
+        // routes through the guarded `increment_cas` and no-ops on ""). SET the
+        // recovered value directly. Runs BEFORE clear_owned (RES-7).
         if has_empty_term {
-            if let Some(v) = self.overlay_counter_value_of_owned_empty() {
-                self.overlay_publish_counter(&[], v);
+            if let Some(v) = self.owned_has_empty_term_value() {
+                self.overlay_publish_root_value(v)?;
             }
         }
         // One first-unit partition at a time: stream its (term, value) pairs,
@@ -477,15 +499,6 @@ pub(crate) trait LockFreeOverlay<K: KeyEncoding, V: DictionaryValue, S>: Sized +
         // stream `?` abort above returns Err with the owned tree untouched (RES-7).
         self.clear_owned();
         Ok(())
-    }
-
-    /// The owned empty-term value re-expressed as `CounterValue` (for the counter
-    /// reestablish's empty-term partition), or `None` if absent / not a counter
-    /// monomorph. A SAFE `Any` re-wrap on the value (`V`/`CounterValue` both
-    /// `'static`), never on `K`.
-    fn overlay_counter_value_of_owned_empty(&self) -> Option<Self::CounterValue> {
-        let v = self.owned_has_empty_term_value()?;
-        Self::value_as_counter(&v)
     }
 
     /// Re-wrap a `&V` as `CounterValue` via a SAFE `Any` downcast iff `V ==
@@ -531,4 +544,125 @@ pub(crate) trait LockFreeOverlay<K: KeyEncoding, V: DictionaryValue, S>: Sized +
         }
         None
     }
+
+    // ========================================================================
+    // EMPTY-TERM ROOT PUBLISHERS (empty-string support) — the FRESH-ROOT-CAS
+    // discipline, shared by byte + char.
+    //
+    // The empty term "" is the unit-slice `&[]`, which navigates to the overlay
+    // ROOT. The root is the UNIQUE node a concurrent non-empty insert COPIES (via
+    // `with_child`, which snapshots flags into a fresh node) rather than SHARES —
+    // so an in-place `try_set_final`/`try_set_value` on the live root is a LOST
+    // UPDATE against that copy. Therefore every empty-term mutation publishes a
+    // FRESH root (`as_final()`/`.with_value(v)`/`.as_non_final()`) via the root
+    // `compare_exchange` — the SAME single-arbiter CAS every non-empty write uses.
+    // (loom-gated: tests/persistent_lockfree_overlay_loom.rs.)
+    // ========================================================================
+
+    /// Claim the next commit generation (the per-iteration `commit_seq` of the
+    /// durable root CAS). REQUIRED seam: byte/char return
+    /// `self.commit_seq.fetch_add(1, AcqRel) + 1`. Used ONLY by the RANKED
+    /// publisher so the generation binds to the WINNING CAS iteration — NEVER
+    /// claimed once-before (that would mis-order a concurrent insert/remove of ""
+    /// vs the CAS order, the split-LP data loss the ranked loop avoids).
+    fn claim_commit_seq(&self) -> u64;
+
+    /// Note a CAS retry (observability only). Default no-op; byte/char override to
+    /// bump `self.cas_retries`.
+    fn note_cas_retry(&self) {}
+
+    /// UNRANKED fresh-root-CAS loop (no WAL, no commit rank) — the non-durable +
+    /// reestablish empty-term publishers. `needs_publish(root)` short-circuits an
+    /// idempotent no-op (returns `Ok(false)` without a CAS); `transform(root)`
+    /// builds the fresh root published via `compare_exchange`. Bounded-retry
+    /// lock-free; rebases on the freshly-loaded root each iteration.
+    fn publish_root_cas(
+        &self,
+        transform: impl Fn(&OverlayNode<K, V>) -> Arc<OverlayNode<K, V>>,
+        needs_publish: impl Fn(&OverlayNode<K, V>) -> bool,
+    ) -> Result<bool> {
+        let root_ptr = self.lockfree_root().ok_or_else(|| {
+            crate::persistent_artrie_core::error::PersistentARTrieError::InvalidOperation(
+                "Lock-free mode not enabled. Call enable_lockfree() first.".to_string(),
+            )
+        })?;
+        loop {
+            let old = match root_ptr.load() {
+                Some(r) => r,
+                None => {
+                    let _ = root_ptr.try_init(Arc::new(OverlayNode::new()));
+                    continue;
+                }
+            };
+            if !needs_publish(&old) {
+                return Ok(false);
+            }
+            let new = transform(&old);
+            match root_ptr.compare_exchange(&old, new) {
+                Ok(_) => return Ok(true),
+                Err(_) => {
+                    self.note_cas_retry();
+                    continue;
+                }
+            }
+        }
+    }
+
+    /// RANKED fresh-root-CAS loop (the DURABLE empty-term path). Like
+    /// [`Self::publish_root_cas`] but claims a `commit_seq` generation per
+    /// iteration (via [`Self::claim_commit_seq`]) and returns the WINNING
+    /// generation, so the durable caller binds `commit_rank_and_mark`.
+    /// `already_in_state(root)` detects the concurrent-op-won idempotent case (a
+    /// WAL record was appended but acked no change → the caller burns the LSN,
+    /// never ranks it).
+    fn publish_root_cas_ranked(
+        &self,
+        transform: impl Fn(&OverlayNode<K, V>) -> Arc<OverlayNode<K, V>>,
+        already_in_state: impl Fn(&OverlayNode<K, V>) -> bool,
+    ) -> Result<RootPublishOutcome> {
+        let root_ptr = self.lockfree_root().ok_or_else(|| {
+            crate::persistent_artrie_core::error::PersistentARTrieError::InvalidOperation(
+                "Lock-free mode not enabled. Call enable_lockfree() first.".to_string(),
+            )
+        })?;
+        loop {
+            // Per-iteration claim — the WINNING iteration's generation is returned.
+            let generation = self.claim_commit_seq();
+            let old = match root_ptr.load() {
+                Some(r) => r,
+                None => {
+                    let _ = root_ptr.try_init(Arc::new(OverlayNode::new()));
+                    continue;
+                }
+            };
+            if already_in_state(&old) {
+                return Ok(RootPublishOutcome::AlreadyInState);
+            }
+            let new = transform(&old);
+            match root_ptr.compare_exchange(&old, new) {
+                Ok(_) => return Ok(RootPublishOutcome::Published(generation)),
+                Err(_) => {
+                    self.note_cas_retry();
+                    continue;
+                }
+            }
+        }
+    }
+
+    /// Publish membership of the empty term "" (set the root final), NO WAL. Used
+    /// by the non-durable `insert_cas("")` and the reestablish membership fold.
+    /// Returns `Ok(true)` iff this call newly finalized the root.
+    fn overlay_publish_root_membership(&self) -> Result<bool> {
+        self.publish_root_cas(|r| Arc::new(r.as_final()), |r| !r.is_final())
+    }
+
+    /// Publish the empty term "" WITH a value (set the root final + value), NO
+    /// WAL. Used by the reestablish counter fold. ALWAYS publishes (LWW upsert);
+    /// no value-equality short-circuit (`DictionaryValue` does not bound
+    /// `PartialEq`) — a redundant CAS on an identical value is correctness-neutral.
+    fn overlay_publish_root_value(&self, value: V) -> Result<()> {
+        self.publish_root_cas(move |r| Arc::new(r.as_final().with_value(value.clone())), |_| true)
+            .map(|_| ())
+    }
+
 }
