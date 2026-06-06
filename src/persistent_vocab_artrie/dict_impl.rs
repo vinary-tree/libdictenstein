@@ -1046,6 +1046,36 @@ mod tests {
         assert_eq!(vocab.get_term(0), Some("".to_string()));
     }
 
+    /// Empty-string support (P4): the vocab `"" -> index 0` bijection survives a
+    /// checkpoint + reopen. Vocab needs ZERO production change for this — it
+    /// independently round-trips "" via its reverse-index ROOT branch
+    /// (`update_reverse_index`/`rebuild_reverse_index` handle `NodeRef(0,0)`); this
+    /// pins it against regression. Real-disk scratch (`target/test-tmp`), not tmpfs.
+    #[test]
+    fn test_empty_string_survives_checkpoint_reopen() {
+        std::fs::create_dir_all("target/test-tmp").ok();
+        let dir = tempfile::Builder::new()
+            .prefix("vocab-es-reopen")
+            .tempdir_in("target/test-tmp")
+            .expect("scratch under target/test-tmp");
+        let path = dir.path().join("test.vocab");
+        {
+            let mut vocab = PersistentVocabARTrie::create(&path).unwrap();
+            vocab.insert("").expect("insert empty term");
+            vocab.insert("hello").expect("insert hello");
+            vocab.checkpoint().unwrap();
+        }
+        let (vocab, _report) = PersistentVocabARTrie::open_with_recovery(&path).unwrap();
+        assert_eq!(vocab.get_index(""), Some(0), "\"\" -> index 0 lost after reopen");
+        assert_eq!(
+            vocab.get_term(0),
+            Some("".to_string()),
+            "index 0 -> \"\" lost after reopen (reverse-index root branch)"
+        );
+        assert!(vocab.contains(""), "\"\" membership lost after reopen");
+        assert_eq!(vocab.get_index("hello"), Some(1));
+    }
+
     #[test]
     fn test_long_string_insert() {
         let dir = tempdir().unwrap();

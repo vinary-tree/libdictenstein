@@ -2794,4 +2794,53 @@ mod m4b_flip_gate_tests {
             "concurrent \"\" count lost across reopen"
         );
     }
+
+    /// **compaction preserves "" (H8 — owned-mode).** `compact()` rejects under the
+    /// overlay, so this kill-switches to owned, writes a valued "" + non-empty terms,
+    /// compacts (which rebuilds from the owned iterator — H8 verified it enumerates
+    /// ""), and confirms "" + its value survive the rebuild + atomic file replace.
+    #[test]
+    fn empty_string_survives_compaction() {
+        use crate::persistent_artrie_core::overlay::flip::LockFreeOverlay;
+        let dir = scratch("byte-es-compaction");
+        let path = dir.path().join("t.part");
+        let mut trie = PersistentARTrie::<i64>::create(&path).expect("create<i64>");
+        trie.kill_switch_to_owned();
+        assert!(!trie.route_overlay(), "compact() requires owned mode");
+        trie.upsert_bytes(b"", 42).expect("owned valued \"\"");
+        trie.upsert_bytes(b"alpha", 1).expect("alpha");
+        trie.upsert_bytes(b"beta", 2).expect("beta");
+        trie.compact(CompactionConfig::default(), |_| {}).expect("compact");
+        assert_eq!(trie.get_value_bytes(b""), Some(42), "\"\" value lost in compaction (H8)");
+        assert_eq!(trie.get_value_bytes(b"alpha"), Some(1));
+        assert_eq!(trie.get_value_bytes(b"beta"), Some(2));
+    }
+
+    /// **H7 — empty-term value survives a root bucket→ART split (owned-mode /
+    /// WAL-replay-reachable path).** Insert a valued "" then enough distinct terms to
+    /// overflow the root bucket (forcing `convert_bucket_to_art`), and confirm "" keeps
+    /// its value — `convert_bucket_to_art` now threads `result.final_value` (was the
+    /// `value: None` drop the H7 fix closed).
+    #[test]
+    fn empty_string_value_survives_bucket_to_art_split() {
+        use crate::persistent_artrie_core::overlay::flip::LockFreeOverlay;
+        let dir = scratch("byte-es-split");
+        let path = dir.path().join("t.part");
+        let mut trie = PersistentARTrie::<i64>::create(&path).expect("create<i64>");
+        trie.kill_switch_to_owned();
+        trie.upsert_bytes(b"", 99).expect("owned valued \"\"");
+        // Enough distinct terms to overflow the root bucket → ART split.
+        for i in 0..256u32 {
+            trie.upsert_bytes(format!("k{i:04}").as_bytes(), i as i64 + 1)
+                .expect("term");
+        }
+        assert_eq!(
+            trie.get_value_bytes(b""),
+            Some(99),
+            "\"\" value lost in root bucket→ART split (H7 convert_bucket_to_art)"
+        );
+        // Spot-check a few non-empty terms survived the split too.
+        assert_eq!(trie.get_value_bytes(b"k0000"), Some(1));
+        assert_eq!(trie.get_value_bytes(b"k0255"), Some(256));
+    }
 }
