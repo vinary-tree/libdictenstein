@@ -93,6 +93,10 @@ fn byte_lockfree_value_merge_overflow_is_all_or_nothing() {
     let dir = tempdir();
     let path = dir.path().join("byte_merge_overflow.part");
     let mut trie = PersistentARTrie::<i64>::create(&path).expect("create byte trie");
+    // Force the proven owned-tree path (pre-flip behavior) — this test exercises the
+    // owned-tree `merge_lockfree_values_to_persistent` drain (rejected under the M4b
+    // create-flip overlay) via an EXPLICIT enable_lockfree + try_increment_cas.
+    trie.kill_switch_to_owned();
 
     trie.upsert("ok", 10).expect("seed ok");
     trie.upsert("bad", i64::MAX).expect("seed bad");
@@ -148,6 +152,10 @@ fn byte_lockfree_value_merge_appends_one_batch_and_reopens_exact_sums() {
     let dir = tempdir();
     let path = dir.path().join("byte_merge_success.part");
     let mut trie = PersistentARTrie::<i64>::create(&path).expect("create byte trie");
+    // Force the proven owned-tree path (pre-flip behavior) — this test exercises the
+    // owned-tree `merge_lockfree_values_to_persistent` drain (rejected under the M4b
+    // create-flip overlay) via an EXPLICIT enable_lockfree + try_increment_cas.
+    trie.kill_switch_to_owned();
 
     trie.upsert("alpha", 10).expect("seed alpha");
     trie.enable_lockfree();

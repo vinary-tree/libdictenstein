@@ -181,6 +181,55 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
         }
     }
 
+    /// **M4b (the V-3 twin) — the compile-safe reestablish dispatch.** The byte twin
+    /// of char's `reestablish_overlay_dispatch` (persistent_artrie_char/lockfree_cas.rs).
+    /// Routes a recovered Overlay-regime reopen's owned→overlay bootstrap to the
+    /// CORRECT reestablish fold by the runtime value type:
+    /// - `V == i64` ⇒ [`LockFreeOverlay::reestablish_overlay_counter`] (the trait
+    ///   DEFAULT — rebuilds the immutable overlay from the recovered owned `(term,
+    ///   value)` pairs; the byte counter monomorph).
+    /// - `V == ()` ⇒ [`LockFreeOverlay::reestablish_overlay_membership`] (the trait
+    ///   DEFAULT — re-publishes each recovered owned term, no values).
+    /// - ineligible `V` ⇒ a strict no-op (`overlay_eligible_v()` is false, so no
+    ///   overlay was ever installed by the create-flip / open-flip — nothing to
+    ///   reestablish).
+    ///
+    /// Both folds are `LockFreeOverlay<ByteKey, V, S>` defaults visible for ANY `V`
+    /// (byte implements the trait on `impl<V, S>`), so — unlike char's u64-inherent
+    /// `reestablish_overlay_after_recovery`, which lives only in `impl<u64, S>` and
+    /// needs a SAFE `Any` downcast — byte can call the defaults DIRECTLY for the
+    /// monomorph selected by `TypeId`. The counter fold's value seam
+    /// (`value_as_counter`/`overlay_publish_counter`) is itself a SAFE `Any` no-op for
+    /// non-i64 `V`, so the `TypeId` gate is the (redundant) honest selector. `S:
+    /// 'static` keeps parity with char's signature (and is satisfied by both byte
+    /// storage backends).
+    ///
+    /// # D1 (CRITICAL — total-loss guard)
+    ///
+    /// Runs with `route_overlay()` ALREADY TRUE (every call site flips/sets the
+    /// overlay mode BEFORE dispatching). The folds read the recovered OWNED tree via
+    /// the UN-routed `owned_*` seams (`overlay_write_mode.rs`: `owned_first_units` /
+    /// `owned_units_under` / `owned_units_with_values_under`, all over the UNCAPPED
+    /// `unrouted_*` walks of `self.root`), publish to the overlay, and clear the owned
+    /// tree LAST (RES-7). A routed read here would see the EMPTY overlay ⇒ publish
+    /// nothing ⇒ clear owned = irreversible total loss; the un-routed seams are the
+    /// guard byte inherits from the shared trait + the M2a seam impls.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn reestablish_overlay_dispatch(&mut self) -> Result<()>
+    where
+        S: 'static,
+    {
+        use crate::persistent_artrie_core::overlay::flip::LockFreeOverlay;
+        use std::any::TypeId;
+        if TypeId::of::<V>() == TypeId::of::<i64>() {
+            return <Self as LockFreeOverlay<ByteKey, V, S>>::reestablish_overlay_counter(self);
+        }
+        if TypeId::of::<V>() == TypeId::of::<()>() {
+            return <Self as LockFreeOverlay<ByteKey, V, S>>::reestablish_overlay_membership(self);
+        }
+        Ok(())
+    }
+
     /// Lock-free insert using CAS operations.
     ///
     /// This method inserts a term into the lock-free trie structure without
@@ -2161,5 +2210,291 @@ mod m2d_regime_aware_recovery_tests {
             Some(21),
             "the ranked durable counter must recover its exact summed value (no orphan-drop of ranked records)"
         );
+    }
+}
+
+#[cfg(test)]
+mod m4b_flip_gate_tests {
+    //! **M4b — the IRREVERSIBLE byte create-flip gate (the byte twin of char's
+    //! `s5_12_*` gate).** These tests pin the production behavior of the flip that
+    //! made the lock-free overlay byte's DEFAULT for `V ∈ {(), i64}`:
+    //!
+    //! - the create-flip routes a fresh eligible-V `create()` to the overlay and a
+    //!   create→durable-write→reopen survives (via the AUTOMATIC open-flip +
+    //!   reestablish in `open`'s D-SINK-2);
+    //! - an old/Owned-regime file (and an ineligible-V `<String>`) reopens OWNED, with
+    //!   `route_overlay()==false`, data intact, NO flip (back-compat);
+    //! - `compact()` rejects under the overlay;
+    //! - the reestablish SINK round-trips EVERY recovered term back into the overlay on
+    //!   reopen, INCLUDING a >100k-term first-byte partition (the H2 uncapped-enumerator
+    //!   witness — `owned_first_units` / `owned_units_with_values_under` must not cap).
+    //!
+    //! Scratch is real disk (`target/test-tmp`), never `/tmp` (tmpfs — the
+    //! disk-backed-test gotcha).
+
+    use crate::persistent_artrie::{CompactionConfig, PersistentARTrie};
+    use crate::persistent_artrie_core::durability::DurabilityPolicy;
+    use crate::{Dictionary, MappedDictionary};
+
+    fn scratch(prefix: &str) -> tempfile::TempDir {
+        std::fs::create_dir_all("target/test-tmp").ok();
+        tempfile::Builder::new()
+            .prefix(prefix)
+            .tempdir_in("target/test-tmp")
+            .expect("scratch tempdir under target/test-tmp")
+    }
+
+    /// **(a) create → durable VALUED write → reopen, no loss / no double-count.** A
+    /// fresh `create::<i64>()` create-flips (`route_overlay()==true`); durable valued
+    /// writes + a checkpoint; reopen MUST survive with exact counts via the overlay
+    /// (the AUTOMATIC open-flip + reestablish in `open`). The membership (`V=()`) twin
+    /// is also covered.
+    #[test]
+    fn m4b_create_durable_valued_write_reopen_survives() {
+        // Counters (V = i64).
+        {
+            let dir = scratch("byte-m4b-rw-i64");
+            let path = dir.path().join("t.part");
+            let entries: Vec<(Vec<u8>, i64)> =
+                (0..40i64).map(|i| (format!("k{i:03}").into_bytes(), i + 1)).collect();
+            {
+                let mut trie = PersistentARTrie::<i64>::create(&path).expect("create<i64>");
+                trie.set_durability_policy(DurabilityPolicy::Immediate);
+                assert!(trie.route_overlay(), "fresh create<i64> is overlay-routed");
+                for (k, d) in &entries {
+                    // Durable valued insert (overlay path). Distinct values per key so a
+                    // double or drop is detectable.
+                    assert!(
+                        trie.insert_cas_with_value_durable(k, *d).expect("durable valued insert"),
+                        "first valued insert of {k:?} must be newly inserted"
+                    );
+                }
+                trie.checkpoint().expect("overlay checkpoint (route-split)");
+            }
+            let recovered = PersistentARTrie::<i64>::open(&path).expect("reopen<i64>");
+            assert!(
+                recovered.route_overlay(),
+                "an Overlay-regime file must reopen overlay-routed (D-SINK-2)"
+            );
+            for (k, d) in &entries {
+                assert_eq!(
+                    recovered.get_value_bytes(k),
+                    Some(*d),
+                    "counter {k:?} wrong after reopen (loss or double-count)"
+                );
+            }
+        }
+        // Membership (V = ()).
+        {
+            let dir = scratch("byte-m4b-rw-unit");
+            let path = dir.path().join("t.part");
+            let terms: Vec<Vec<u8>> =
+                (0..40u32).map(|i| format!("term{i:03}").into_bytes()).collect();
+            {
+                let mut trie = PersistentARTrie::<()>::create(&path).expect("create<()>");
+                trie.set_durability_policy(DurabilityPolicy::Immediate);
+                assert!(trie.route_overlay(), "fresh create<()> is overlay-routed");
+                for t in &terms {
+                    assert!(
+                        trie.insert_cas_durable(t).expect("durable membership insert"),
+                        "first durable insert of {t:?} must be newly inserted"
+                    );
+                }
+                trie.checkpoint().expect("overlay checkpoint");
+            }
+            let recovered = PersistentARTrie::<()>::open(&path).expect("reopen<()>");
+            assert!(recovered.route_overlay(), "() Overlay file reopens overlay-routed");
+            for t in &terms {
+                assert!(
+                    recovered.contains_bytes(t),
+                    "membership lost {t:?} across create→write→checkpoint→reopen"
+                );
+            }
+        }
+    }
+
+    /// **(b) old-Owned file stays OWNED on reopen (back-compat) + ineligible V never
+    /// flips.** A `<String>` (arbitrary V ⇒ never flips) trie that was created,
+    /// written, and checkpointed produces an OWNED-regime file; reopening it must keep
+    /// it OWNED (`route_overlay()==false`), data intact via the OWNED read path, NO
+    /// flip. Also pins that an eligible-V trie that is `kill_switch_to_owned()`'d after
+    /// create stays Owned across reopen (the restamp-Owned path).
+    #[test]
+    fn m4b_old_owned_file_stays_owned_on_reopen() {
+        // Arbitrary V = String: never flips; reopens Owned with data intact.
+        {
+            let dir = scratch("byte-m4b-owned-string");
+            let path = dir.path().join("t.part");
+            let entries: Vec<(String, String)> = (0..30u32)
+                .map(|i| (format!("w{i:03}"), format!("v{i:03}")))
+                .collect();
+            {
+                let mut trie = PersistentARTrie::<String>::create(&path).expect("create<String>");
+                assert!(!trie.route_overlay(), "String trie must not flip on create");
+                for (k, v) in &entries {
+                    trie.insert_with_value(k, v.clone());
+                }
+                trie.checkpoint().expect("owned checkpoint");
+            }
+            let recovered = PersistentARTrie::<String>::open(&path).expect("reopen<String>");
+            assert!(
+                !recovered.route_overlay(),
+                "an Owned-regime file must STAY owned on reopen (no flip, back-compat)"
+            );
+            for (k, v) in &entries {
+                assert_eq!(
+                    MappedDictionary::get_value(&recovered, k),
+                    Some(v.clone()),
+                    "owned data lost for {k:?} across reopen"
+                );
+            }
+        }
+        // Eligible V = i64, kill-switched to Owned after create: reopens Owned.
+        {
+            let dir = scratch("byte-m4b-owned-i64-ks");
+            let path = dir.path().join("t.part");
+            {
+                let mut trie = PersistentARTrie::<i64>::create(&path).expect("create<i64>");
+                // kill-switch restamps the fresh WAL Owned ⇒ reopen stays Owned.
+                trie.kill_switch_to_owned();
+                assert!(!trie.route_overlay(), "kill-switch reverts to owned");
+                trie.upsert_bytes(b"alpha", 7).expect("owned upsert");
+                trie.upsert_bytes(b"beta", 11).expect("owned upsert");
+                trie.checkpoint().expect("owned checkpoint");
+            }
+            let recovered = PersistentARTrie::<i64>::open(&path).expect("reopen<i64>");
+            assert!(
+                !recovered.route_overlay(),
+                "a kill-switched (Owned-regime) i64 file must STAY owned on reopen"
+            );
+            assert_eq!(recovered.get_value_bytes(b"alpha"), Some(7), "owned alpha intact");
+            assert_eq!(recovered.get_value_bytes(b"beta"), Some(11), "owned beta intact");
+        }
+    }
+
+    /// **(c) `compact()` rejects under the overlay.** A fresh `create::<i64>()` flips,
+    /// so `compact()` must reject with `InvalidOperation` (it would clobber the durable
+    /// overlay/WAL with an owned-image rebuild). The kill-switched owned twin SUCCEEDS
+    /// (proving the reject is overlay-specific).
+    #[test]
+    fn m4b_compact_rejects_under_overlay_but_owned_succeeds() {
+        // Overlay (flipped): compact rejects.
+        {
+            let dir = scratch("byte-m4b-compact-reject");
+            let path = dir.path().join("t.part");
+            let mut trie = PersistentARTrie::<i64>::create(&path).expect("create<i64>");
+            assert!(trie.route_overlay(), "fresh create<i64> is overlay-routed");
+            trie.increment_bytes(b"seed", 1).expect("seed");
+            let result = trie.compact(CompactionConfig::default(), |_| {});
+            assert!(
+                matches!(result, Err(crate::persistent_artrie::error::PersistentARTrieError::InvalidOperation(_))),
+                "compact must reject under the overlay, got {result:?}"
+            );
+        }
+        // Owned (kill-switched): compact succeeds.
+        {
+            let dir = scratch("byte-m4b-compact-owned");
+            let path = dir.path().join("t.part");
+            let mut trie = PersistentARTrie::<i64>::create(&path).expect("create<i64>");
+            trie.kill_switch_to_owned();
+            trie.upsert_bytes(b"alpha", 1).expect("owned upsert");
+            trie.upsert_bytes(b"beta", 2).expect("owned upsert");
+            trie.compact(CompactionConfig::default(), |_| {})
+                .expect("owned compact succeeds");
+            assert_eq!(trie.get_value_bytes(b"alpha"), Some(1));
+            assert_eq!(trie.get_value_bytes(b"beta"), Some(2));
+        }
+    }
+
+    /// **(d) reestablish-survival across reopen, INCLUDING a >100k-term first-byte
+    /// partition (the H2 uncapped-enumerator witness).** Build a flipped overlay trie
+    /// with a LARGE single-first-byte partition (every key starts with `b'a'`, so they
+    /// all fall in ONE `owned_first_units` partition — the worst case for the streaming
+    /// reestablish), durably write + checkpoint, then reopen. On reopen the checkpoint
+    /// image loads into the OWNED tree and `open`'s D-SINK-2 reestablishes owned→overlay
+    /// via `reestablish_overlay_membership` (the `owned_first_units` /
+    /// `owned_units_under` UNCAPPED walks). EVERY term must survive in the overlay — a
+    /// capped enumerator would silently drop the tail (H2).
+    #[test]
+    fn m4b_reestablish_survival_incl_100k_first_byte_partition() {
+        let dir = scratch("byte-m4b-reestablish-100k");
+        let path = dir.path().join("t.part");
+        // >100k terms ALL under the single first byte `a` (one partition). Use a fixed
+        // 5-hex-digit suffix so every key is distinct and shares the `a` first byte.
+        const N: u32 = 100_001;
+        {
+            let mut trie = PersistentARTrie::<()>::create(&path).expect("create<()>");
+            trie.set_durability_policy(DurabilityPolicy::Immediate);
+            assert!(trie.route_overlay(), "fresh create<()> is overlay-routed");
+            // Batch the durable inserts through the overlay membership path. Insert via
+            // the no-WAL `insert_cas` + a SINGLE checkpoint would not be durable across
+            // reopen for the image, so checkpoint AFTER to fold the overlay into the
+            // image (the reopen reads the image, then reestablishes it).
+            for i in 0..N {
+                let key = format!("a{i:05x}");
+                trie.insert_cas(key.as_bytes());
+            }
+            assert_eq!(trie.overlay_len(), N as usize, "all N terms resident pre-checkpoint");
+            // Checkpoint folds the overlay into the durable image (so the reopen reads
+            // them from the image into the owned tree, then reestablishes).
+            trie.checkpoint().expect("overlay checkpoint of the 100k partition");
+        }
+        let recovered = PersistentARTrie::<()>::open(&path).expect("reopen<()>");
+        assert!(
+            recovered.route_overlay(),
+            "the >100k Overlay file must reopen overlay-routed (reestablished)"
+        );
+        // EVERY term must have round-tripped through the reestablish (the H2 witness:
+        // the uncapped first-byte partition enumerator must not drop the tail).
+        assert_eq!(
+            recovered.overlay_len(),
+            N as usize,
+            "reestablish must reproduce ALL {N} terms (H2: no capped-enumerator tail drop)"
+        );
+        // Spot-check the first, a middle, and the LAST term (the tail is the H2 risk).
+        assert!(recovered.contains_bytes(format!("a{:05x}", 0u32).as_bytes()), "first term lost");
+        assert!(
+            recovered.contains_bytes(format!("a{:05x}", N / 2).as_bytes()),
+            "middle term lost"
+        );
+        assert!(
+            recovered.contains_bytes(format!("a{:05x}", N - 1).as_bytes()),
+            "LAST term lost (H2 tail-drop witness)"
+        );
+    }
+
+    /// **(d′) reestablish-survival for COUNTERS (i64) with exact summed values.** The
+    /// value-carrying twin of (d): a moderately-sized flipped i64 overlay, durable
+    /// valued writes + checkpoint, reopen → `reestablish_overlay_counter` must reproduce
+    /// EVERY (term, count) exactly (the `owned_units_with_values_under` uncapped walk).
+    #[test]
+    fn m4b_reestablish_survival_counter_values() {
+        let dir = scratch("byte-m4b-reestablish-ctr");
+        let path = dir.path().join("t.part");
+        let entries: Vec<(Vec<u8>, i64)> =
+            (0..500i64).map(|i| (format!("c{i:04}").into_bytes(), (i % 97) + 1)).collect();
+        {
+            let mut trie = PersistentARTrie::<i64>::create(&path).expect("create<i64>");
+            trie.set_durability_policy(DurabilityPolicy::Immediate);
+            assert!(trie.route_overlay());
+            for (k, d) in &entries {
+                trie.insert_cas_with_value_durable(k, *d).expect("durable valued insert");
+            }
+            trie.checkpoint().expect("overlay checkpoint");
+        }
+        let recovered = PersistentARTrie::<i64>::open(&path).expect("reopen<i64>");
+        assert!(recovered.route_overlay(), "counter Overlay file reopens overlay-routed");
+        assert_eq!(
+            recovered.overlay_len(),
+            entries.len(),
+            "reestablish must reproduce ALL counter terms"
+        );
+        for (k, d) in &entries {
+            assert_eq!(
+                recovered.get_value_bytes(k),
+                Some(*d),
+                "counter value lost/wrong for {k:?} after reestablish"
+            );
+        }
     }
 }

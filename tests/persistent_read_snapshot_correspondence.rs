@@ -213,6 +213,17 @@ fn byte_public_iterators_reopen_to_exact_snapshot() {
 
     {
         let mut trie = PersistentARTrie::<i64>::create(&path).expect("create byte trie");
+        // **M4b REFRAME.** A fresh `create::<i64>()` now create-flips to the overlay,
+        // but this fixture MIXES valued `insert_with_value` with value-less `insert()`
+        // (e.g. "term-only" => None) on an i64 trie. The i64 overlay is value-CARRYING:
+        // its counter reestablish re-publishes only VALUED finals (a value-less
+        // membership term on an i64 trie has no count to carry, so it is not a faithful
+        // overlay round-trip across reopen). This test pins the OWNED public-iterator
+        // reopen snapshot for that mixed valued/value-less usage, so force the owned
+        // path with the kill-switch (the M4b precedent). The kill-switch restamps the
+        // WAL Owned on the fresh trie (current_lsn()==1), so reopen stays Owned and the
+        // value-less "term-only" survives via the owned tree.
+        trie.kill_switch_to_owned();
         for (term, value) in &reference {
             match value {
                 Some(value) => assert!(trie.insert_with_value(term, *value)),

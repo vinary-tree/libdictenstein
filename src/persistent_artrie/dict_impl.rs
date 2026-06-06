@@ -913,6 +913,9 @@ mod tests {
 
             let mut dict: PersistentARTrie<i64> =
                 PersistentARTrie::create(&dict_path).expect("create dict");
+            // M4b: a fresh create::<i64>() create-flips; this test does a NEGATIVE
+            // decrement (-3) which the overlay counter domain rejects. Force owned.
+            dict.kill_switch_to_owned();
 
             // Insert initial value
             dict.upsert("counter", 10i64).expect("upsert");
@@ -1086,6 +1089,9 @@ mod tests {
 
             let mut dict: PersistentARTrie<i64> =
                 PersistentARTrie::create(&dict_path).expect("create dict");
+            // M4b: a fresh create::<i64>() create-flips; document transactions are
+            // rejected under the overlay. Force the owned regime.
+            dict.kill_switch_to_owned();
 
             // Begin a document transaction
             let mut tx = dict.begin_document("doc1").expect("begin transaction");
@@ -1123,6 +1129,9 @@ mod tests {
 
             let mut dict: PersistentARTrie<i64> =
                 PersistentARTrie::create(&dict_path).expect("create dict");
+            // M4b: a fresh create::<i64>() create-flips; document transactions are
+            // rejected under the overlay. Force the owned regime.
+            dict.kill_switch_to_owned();
 
             // Insert one term directly
             dict.insert_with_value("existing", 42);
@@ -1154,6 +1163,9 @@ mod tests {
 
             let mut dict: PersistentARTrie<i64> =
                 PersistentARTrie::create(&dict_path).expect("create dict");
+            // M4b: a fresh create::<i64>() create-flips; document transactions are
+            // rejected under the overlay. Force the owned regime.
+            dict.kill_switch_to_owned();
 
             // Begin and immediately commit an empty transaction
             let tx = dict.begin_document("empty_doc").expect("begin transaction");
@@ -1168,6 +1180,9 @@ mod tests {
 
             let mut dict: PersistentARTrie<i64> =
                 PersistentARTrie::create(&dict_path).expect("create dict");
+            // M4b: a fresh create::<i64>() create-flips; document transactions are
+            // rejected under the overlay. Force the owned regime.
+            dict.kill_switch_to_owned();
 
             let mut tx = dict.begin_document("doc1").expect("begin transaction");
 
@@ -1188,6 +1203,9 @@ mod tests {
 
             let mut dict: PersistentARTrie<i64> =
                 PersistentARTrie::create(&dict_path).expect("create dict");
+            // M4b: a fresh create::<i64>() create-flips; document transactions are
+            // rejected under the overlay. Force the owned regime.
+            dict.kill_switch_to_owned();
 
             // First document - commit
             let mut tx1 = dict.begin_document("doc1").expect("begin tx1");

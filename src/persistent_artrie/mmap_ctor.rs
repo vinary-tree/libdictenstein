@@ -32,6 +32,29 @@ use super::error::{PersistentARTrieError, Result};
 use super::wal::{AsyncWalConfig, AsyncWalWriter, WalConfig};
 
 impl<V: DictionaryValue> PersistentARTrie<V> {
+    /// **M4b EDIT 1 (owner-GO, IRREVERSIBLE): a freshly-created byte trie flips to
+    /// the lock-free overlay for `V ∈ {(), i64}`; a strict NO-OP for arbitrary `V`.**
+    /// The byte twin of char's `apply_create_flip` (persistent_artrie_char/mmap_ctor.rs).
+    ///
+    /// A `create*` ctor builds a FRESH WAL (`current_lsn() == 1`), so
+    /// `flip_to_overlay`'s shared default — `enable_lockfree()` (which stamps the
+    /// Overlay regime on the empty WAL, M2d) + selects `LockFreeOverlay` + the V-2
+    /// stamp re-check — MUST engage. `!flip_to_overlay()` therefore means the stamp
+    /// silently failed (a torn header / no WAL), surfaced as a hard error rather than
+    /// enabling a write-broken or recovery-unsafe overlay. For `V ∉ {(), i64}`
+    /// `overlay_eligible_v()` is false, the gate short-circuits, the trie stays
+    /// `OwnedTree`, and this is a pure no-op (the proven owned path runs unchanged —
+    /// backward-compat for arbitrary V). NB the byte eligible counter monomorph is
+    /// `i64` (char's is `u64`).
+    fn apply_create_flip(mut self) -> Result<Self> {
+        if Self::overlay_eligible_v() && !self.flip_to_overlay() {
+            return Err(PersistentARTrieError::internal(
+                "byte create-flip: flip did not engage on a fresh trie",
+            ));
+        }
+        Ok(self)
+    }
+
     /// Create a new empty in-memory dictionary.
     ///
     /// # Deprecated
@@ -140,7 +163,8 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
         let arena_manager = ArenaManager::with_buffer_manager(Arc::clone(&buffer_manager));
         let arena_manager = Arc::new(RwLock::new(arena_manager));
 
-        Ok(Self {
+        // M4b EDIT 1: flip a fresh eligible-V trie to the overlay (no-op for arbitrary V).
+        Self::apply_create_flip(Self {
             root: TrieRoot::Bucket(StringBucket::with_values()),
             term_count: AtomicUsize::new(0),
             dirty: AtomicBool::new(false),
@@ -161,7 +185,8 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
             lockfree_cache: None,
             #[cfg(feature = "persistent-artrie")]
             cas_retries: std::sync::atomic::AtomicU64::new(0),
-            // M2a INERT default (OwnedTree) — changes no byte behavior.
+            // M2a INERT default (OwnedTree) — flipped to LockFreeOverlay by
+            // apply_create_flip above for eligible V; arbitrary V stays owned.
             overlay_write_mode:
                 crate::persistent_artrie_core::overlay::write_mode::OverlayWriteMode::default(),
             // M2b: fresh on-disk trie (empty WAL) — no durable frontier, no prior
@@ -237,7 +262,8 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
             ArenaManager::with_buffer_manager_and_config(Arc::clone(&buffer_manager), flush_config);
         let arena_manager = Arc::new(RwLock::new(arena_manager));
 
-        Ok(Self {
+        // M4b EDIT 1: flip a fresh eligible-V trie to the overlay (no-op for arbitrary V).
+        Self::apply_create_flip(Self {
             root: TrieRoot::Bucket(StringBucket::with_values()),
             term_count: AtomicUsize::new(0),
             dirty: AtomicBool::new(false),
@@ -549,6 +575,31 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
             }
         }
 
+        // M4b EDIT 2 + REESTABLISH SINK (D-SINK-2 — the NORMAL open path).
+        // `open` does NOT create-flip, so `dict` defaulted to `OwnedTree`; the replay
+        // above rebuilt the recovered terms into the OWNED tree. An already-Overlay
+        // file (post-flip M2b `CommitRank`/MAGIC_OVERLAY) must end with the production
+        // read/checkpoint path routed to the overlay — move the recovered owned tree
+        // into the lock-free overlay + select LockFreeOverlay. Gate on
+        // `rank_regime == Overlay && overlay_eligible_v()` (the SAME `rank_regime` read
+        // from the WAL header that drove the reconcile): an OWNED-regime file (every
+        // legacy/un-flipped/arbitrary-V file, incl. an empty WAL) STAYS owned — no
+        // flip, no rotation, no loss (backward-compat). `flip_to_overlay` on an
+        // already-Overlay (non-empty) WAL: `enable_lockfree` skips the re-stamp
+        // (current_lsn > 1) but the on-disk regime is ALREADY Overlay, so the V-2
+        // re-check passes and the flip returns true. D1: the flip precedes the
+        // dispatch, so `reestablish_overlay_dispatch` reads the recovered OWNED tree
+        // via the UN-routed `owned_*` seams (route already true), publishes to the
+        // overlay, then clears owned LAST (RES-7) — a mid-stream `?` aborts `open`
+        // with the owned tree intact.
+        if rank_regime == crate::persistent_artrie_core::wal::RankRegime::Overlay
+            && Self::overlay_eligible_v()
+        {
+            let took = dict.flip_to_overlay();
+            debug_assert!(took, "Overlay-regime open must flip");
+            dict.reestablish_overlay_dispatch()?;
+        }
+
         Ok(dict)
     }
 
@@ -794,6 +845,26 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
                     segments_used,
                     duration_ms,
                 );
+
+                // M4b REESTABLISH SINK (D-SINK — the corruption-rebuild arm).
+                // `trie` was built by `Self::create(path)` above, which create-flips a
+                // fresh eligible-V trie (`route_overlay()==true`); the replay arms above
+                // then wrote the recovered terms into the OWNED tree via
+                // `apply_recovered_operation_no_wal` (the `*_impl_core` un-routed owned
+                // writers). Without this sink the recovered owned data would NEVER reach
+                // the overlay, and the first post-recovery `checkpoint()` would take the
+                // overlay route and persist the EMPTY overlay = total irreversible loss.
+                // Gate on `route_overlay()` (⟺ an eligible V was create-flipped), NOT on
+                // `any_overlay`: it covers BOTH replay arms (the regime-aware Overlay
+                // path AND the inline Owned-archive streaming path) and is a strict
+                // no-op for arbitrary V (which `create` did not flip ⇒ !route_overlay).
+                // D1: `reestablish_overlay_dispatch` reads the recovered owned tree via
+                // the UN-routed `owned_*` seams (it runs with `route_overlay()` already
+                // true), publishes to the overlay, and clears owned LAST (RES-7); a
+                // mid-stream `?` aborts with the owned tree intact.
+                if trie.route_overlay() {
+                    trie.reestablish_overlay_dispatch()?;
+                }
 
                 Ok((trie, report))
             }

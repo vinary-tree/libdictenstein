@@ -818,6 +818,12 @@ fn test_lockfree_merge_to_persistent() {
     let dict_path = temp_dir.path().join("lockfree_merge.part");
 
     let mut dict: PersistentARTrie<()> = PersistentARTrie::create(&dict_path).expect("create dict");
+    // **M4b REFRAME.** A fresh `create::<()>()` now create-flips to the overlay, but
+    // this test drains the overlay into the owned tree via `merge_lockfree_to_persistent`,
+    // which the flip REJECTS (the overlay IS the durable production state). Force the
+    // owned regime — then the explicit `enable_lockfree` + `insert_cas` + merge exercises
+    // the pre-flip lockfree→persistent merge path this test was written for.
+    dict.kill_switch_to_owned();
 
     // Enable lock-free mode
     dict.enable_lockfree();
@@ -868,6 +874,10 @@ fn test_lockfree_prefix_insert_survives_merge() {
         .expect("scratch tempdir under target/test-tmp (never /tmp — it is tmpfs)");
     let dict_path = temp_dir.path().join("byte_prefix_merge.part");
     let mut dict: PersistentARTrie<()> = PersistentARTrie::create(&dict_path).expect("create dict");
+    // **M4b REFRAME.** A fresh `create::<()>()` now create-flips; this prefix-insert
+    // regression drains the overlay via `merge_lockfree_to_persistent`, rejected under
+    // the flip. Force the owned regime so the explicit-overlay merge path runs.
+    dict.kill_switch_to_owned();
     dict.enable_lockfree();
 
     assert!(dict.insert_cas(b"ab"), "\"ab\" is a new term");

@@ -363,6 +363,12 @@ fn byte_and_char_checked_increment_overflow_preserves_wal_and_memory() {
     let char_path = dir.path().join("char_overflow.artc");
 
     let mut byte_trie = PersistentARTrie::<i64>::create(&byte_path).expect("create byte trie");
+    // **M4b REFRAME.** A fresh byte `create::<i64>()` create-flips to the overlay, but
+    // this test seeds i64::MIN and exercises signed-overflow increment semantics that
+    // the overlay counter domain (non-negative i64) rejects up front. Force the owned
+    // regime. (The char `<i64>` below is INELIGIBLE for the char overlay — char's
+    // eligible V is {(), u64}, not i64 — so it never flips and needs no kill-switch.)
+    byte_trie.kill_switch_to_owned();
     assert!(byte_trie.upsert("high", i64::MAX).expect("upsert high"));
     assert!(byte_trie.upsert("low", i64::MIN).expect("upsert low"));
     let before_byte_wal = wal_len(&byte_path);

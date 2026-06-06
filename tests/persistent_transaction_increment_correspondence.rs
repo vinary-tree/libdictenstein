@@ -59,6 +59,12 @@ fn byte_tx_increment_overflow_poisons_transaction_before_commit_wal() {
     let dir = tempdir().expect("tempdir");
     let path = dir.path().join("byte_tx_overflow.part");
     let mut trie = PersistentARTrie::<i64>::create(&path).expect("create byte trie");
+    // **M4b REFRAME.** A fresh `create::<i64>()` now create-flips to the overlay, but
+    // this test exercises document transactions (begin/commit_document), which the
+    // overlay REJECTS (a doc-tx commits an owned-tree absolute write the overlay does
+    // not observe). Force the owned regime with the kill-switch (the M4b doc-tx
+    // precedent); the kill-switch restamps the WAL Owned on the fresh trie.
+    trie.kill_switch_to_owned();
 
     trie.upsert("counter", i64::MAX).expect("seed counter");
     let mut tx = trie.begin_document("overflow-doc").expect("begin tx");

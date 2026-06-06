@@ -165,6 +165,13 @@ fn byte_atomic_writes_replay_after_reopen() {
     let path = temp_dir.path().join("byte_replay.part");
     {
         let mut trie = PersistentARTrie::<i64>::create(&path).expect("create byte trie");
+        // **M4b REFRAME.** A fresh `create::<i64>()` now create-flips to the overlay,
+        // but this test exercises `compare_and_swap` (value-level CAS-with-expected),
+        // which the byte overlay REJECTS (no value-level CAS primitive on the overlay).
+        // Force the owned regime with the kill-switch (the M4b CAS precedent); the
+        // kill-switch restamps the WAL Owned on the fresh trie, so the reopen below
+        // stays owned and `get_value` reads the owned CAS result.
+        trie.kill_switch_to_owned();
         assert!(trie.upsert("count", 10).expect("upsert"));
         assert_eq!(trie.increment("count", 5).expect("increment"), 15);
         assert_eq!(trie.fetch_add("count", 2).expect("fetch_add"), 15);

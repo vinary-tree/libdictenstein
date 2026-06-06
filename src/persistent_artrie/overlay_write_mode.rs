@@ -677,11 +677,13 @@ impl<V: DictionaryValue, S: BlockStorage> DurableOverlayWrite<ByteKey, V, S>
 impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
     /// **Flip F0 — production-write/read-path router.** `true` iff reads/writes/
     /// checkpoint should take the lock-free overlay path for this trie. Thin
-    /// delegator to [`LockFreeOverlay::route_overlay`]. Inert in M2a (no byte
-    /// ctor flips), so this stays `false` until an explicit opt-in flip.
-    #[cfg_attr(not(test), allow(dead_code))]
+    /// delegator to [`LockFreeOverlay::route_overlay`]. **M4b: `pub` (the flip
+    /// state predicate — char parity).** Since M4b a fresh `create::<()|i64>()`
+    /// create-flips, so this is `true` by default for eligible V (the irreversible
+    /// production flip); arbitrary V and a [`kill_switch_to_owned`](Self::kill_switch_to_owned)'d
+    /// trie stay `false`.
     #[inline]
-    pub(crate) fn route_overlay(&self) -> bool {
+    pub fn route_overlay(&self) -> bool {
         <Self as LockFreeOverlay<ByteKey, V, S>>::route_overlay(self)
     }
 
@@ -710,12 +712,17 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
         <Self as LockFreeOverlay<ByteKey, V, S>>::flip_to_overlay(self)
     }
 
-    /// **Kill-switch — one-release fallback.** Thin delegator to
-    /// [`LockFreeOverlay::kill_switch_to_owned`]. Reverts `route_overlay()` to
-    /// `false` (the owned path).
-    #[cfg_attr(not(test), allow(dead_code))]
+    /// **Kill-switch — the one-release fallback / owned-path escape hatch.** Thin
+    /// delegator to [`LockFreeOverlay::kill_switch_to_owned`]. Reverts
+    /// `route_overlay()` to `false` (the owned path) AND restamps the WAL Owned when
+    /// the trie is still fresh (`current_lsn() == 1`), so a freshly-created (and thus
+    /// create-flipped) eligible-V trie can be fully reverted to the proven owned path.
+    /// **M4b: `pub` (char parity)** — the production fallback if the irreversible flip
+    /// must be backed out for a given trie, and the way owned-path feature tests
+    /// (doc-tx / trie-to-trie merge / compaction / CAS) force the owned regime that
+    /// those features require.
     #[inline]
-    pub(crate) fn kill_switch_to_owned(&mut self) {
+    pub fn kill_switch_to_owned(&mut self) {
         <Self as LockFreeOverlay<ByteKey, V, S>>::kill_switch_to_owned(self)
     }
 
@@ -785,20 +792,40 @@ mod tests {
     }
 
     #[test]
-    fn byte_default_ctor_is_inert_no_route() {
-        // A fresh byte trie does NOT create-flip in M2a: `route_overlay()` is
-        // false until an explicit opt-in flip. This is the INERT-default witness.
+    fn byte_create_flip_eligible_v_routes_ineligible_v_owned() {
+        // **M4b REFRAME (was `byte_default_ctor_is_inert_no_route`).** The M4b
+        // create-flip made the lock-free overlay byte's production DEFAULT for the
+        // eligible monomorphs `{(), i64}`: a fresh `create::<()|i64>()` is now
+        // overlay-routed (`route_overlay()==true`). The M2a INERT-default property no
+        // longer holds for eligible V — that is the irreversible flip. Arbitrary V
+        // (ineligible) STILL stays owned (the flip is a strict no-op there), which this
+        // test now pins as the surviving back-compat invariant.
         use crate::persistent_artrie::PersistentARTrie;
         std::fs::create_dir_all("target/test-tmp").ok();
         let dir = tempfile::Builder::new()
-            .prefix("byte-m2a-inert")
+            .prefix("byte-m4b-create-flip")
             .tempdir_in("target/test-tmp")
             .expect("scratch tempdir under target/test-tmp");
-        let path = dir.path().join("t.part");
-        let trie = PersistentARTrie::<()>::create(&path).expect("create");
+        // Eligible V = (): the create-flip routes to the overlay.
+        let path_unit = dir.path().join("unit.part");
+        let trie_unit = PersistentARTrie::<()>::create(&path_unit).expect("create<()>");
         assert!(
-            !trie.route_overlay(),
-            "M2a: a fresh byte trie must NOT route to the overlay (inert default)"
+            trie_unit.route_overlay(),
+            "M4b: a fresh create::<()>() must flip to the overlay (route_overlay true)"
+        );
+        // Eligible V = i64: the create-flip routes to the overlay.
+        let path_i64 = dir.path().join("i64.part");
+        let trie_i64 = PersistentARTrie::<i64>::create(&path_i64).expect("create<i64>");
+        assert!(
+            trie_i64.route_overlay(),
+            "M4b: a fresh create::<i64>() must flip to the overlay (route_overlay true)"
+        );
+        // Ineligible V = String: the flip is a strict no-op — stays owned (back-compat).
+        let path_str = dir.path().join("str.part");
+        let trie_str = PersistentARTrie::<String>::create(&path_str).expect("create<String>");
+        assert!(
+            !trie_str.route_overlay(),
+            "M4b: arbitrary V must NOT flip (stays on the owned path — back-compat)"
         );
     }
 
@@ -815,30 +842,39 @@ mod tests {
 
     #[test]
     fn byte_flip_then_kill_switch_round_trips_route_overlay() {
-        // Opt-in flip → route; kill-switch → owned; re-flip → route. (M2a explicit
-        // opt-in, NOT a create-flip.)
+        // **M4b PRECONDITION UPDATE.** Post-M4b a fresh `create::<()>()` ALREADY
+        // create-flips (`route_overlay()==true`), so this round-trip starts from the
+        // ROUTED state (not the old M2a inert default). It still proves the
+        // kill-switch ↔ flip round-trip: routed → kill-switch → owned → re-flip →
+        // routed.
         use crate::persistent_artrie::PersistentARTrie;
         std::fs::create_dir_all("target/test-tmp").ok();
         let dir = tempfile::Builder::new()
-            .prefix("byte-m2a-flip")
+            .prefix("byte-m4b-flip")
             .tempdir_in("target/test-tmp")
             .expect("scratch tempdir under target/test-tmp");
         let path = dir.path().join("t.part");
         let mut trie = PersistentARTrie::<()>::create(&path).expect("create");
 
-        assert!(!trie.route_overlay(), "inert default before flip");
         assert!(
-            trie.flip_to_overlay(),
-            "flip_to_overlay must engage the overlay for eligible V=()"
+            trie.route_overlay(),
+            "M4b: a fresh create::<()>() already create-flips to the overlay"
         );
-        assert!(trie.route_overlay(), "post-flip routes to the overlay");
+        // Kill-switch reverts to owned.
         trie.kill_switch_to_owned();
         assert!(
             !trie.route_overlay(),
             "kill_switch_to_owned must revert to the owned path"
         );
-        assert!(trie.flip_to_overlay(), "flip_to_overlay must re-engage");
-        assert!(trie.route_overlay());
+        // Re-flip re-engages the overlay.
+        assert!(
+            trie.flip_to_overlay(),
+            "flip_to_overlay must re-engage the overlay for eligible V=()"
+        );
+        assert!(trie.route_overlay(), "post-re-flip routes to the overlay");
+        // And a second kill-switch reverts again (idempotent round-trip).
+        trie.kill_switch_to_owned();
+        assert!(!trie.route_overlay(), "second kill-switch reverts to owned");
     }
 
     #[test]

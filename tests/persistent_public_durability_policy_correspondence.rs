@@ -38,6 +38,11 @@ fn byte_immediate_public_mutations_ack_only_after_wal_tail_is_synced() {
     let mut trie: PersistentARTrie<i64> =
         PersistentARTrie::create(&path).expect("create byte trie");
 
+    // **M4b REFRAME.** A fresh `create::<i64>()` now create-flips to the overlay, but
+    // this test verifies OWNED-path public-mutation durability (it uses
+    // `begin_document` below, which the overlay rejects). Force the owned regime.
+    trie.kill_switch_to_owned();
+
     trie.set_durability_policy(DurabilityPolicy::Immediate);
 
     assert!(trie.insert_with_value("alpha", 1));
@@ -97,6 +102,12 @@ fn periodic_policy_does_not_overclaim_public_mutation_durability() {
     let mut trie: PersistentARTrie<i64> =
         PersistentARTrie::create(&path).expect("create byte trie");
 
+    // **M4b REFRAME.** A fresh `create::<i64>()` now create-flips to the overlay, but
+    // this test verifies OWNED-path durability under the PERIODIC policy (the overlay's
+    // Order-A durable write requires a SYNCHRONOUS policy — Immediate/GroupCommit — so
+    // a Periodic public write is gated out under the overlay). Force the owned regime.
+    trie.kill_switch_to_owned();
+
     trie.set_durability_policy(DurabilityPolicy::Periodic);
 
     assert!(trie.insert_with_value("periodic", 7));
@@ -113,6 +124,11 @@ fn async_sync_handle_completion_covers_target_lsn() {
     let path = dir.path().join("byte_async.part");
     let mut trie: PersistentARTrie<i64> =
         PersistentARTrie::create(&path).expect("create byte trie");
+
+    // **M4b REFRAME.** A fresh `create::<i64>()` now create-flips to the overlay, but
+    // this test verifies the OWNED-path async sync-handle under the PERIODIC policy
+    // (the overlay's Order-A durable write requires a synchronous policy). Force owned.
+    trie.kill_switch_to_owned();
 
     trie.set_durability_policy(DurabilityPolicy::Periodic);
     assert!(trie.insert_with_value("async-tail", 11));

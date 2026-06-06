@@ -2871,6 +2871,11 @@ mod phase_22_byte_arena_aware_iteration {
             PersistentARTrie::create(&path1).expect("create trie1");
         let mut trie2: PersistentARTrie<i64> =
             PersistentARTrie::create(&path2).expect("create trie2");
+        // **M4b REFRAME.** Fresh `create::<i64>()` create-flips; trie-to-trie
+        // `merge_from` is rejected under the overlay (it would overwrite rather than
+        // combine accumulated values). Force both tries to the owned regime.
+        trie1.kill_switch_to_owned();
+        trie2.kill_switch_to_owned();
 
         // Insert into trie1
         use libdictenstein::MutableMappedDictionary;
@@ -2903,6 +2908,10 @@ mod phase_22_byte_arena_aware_iteration {
             PersistentARTrie::create(&path1).expect("create trie1");
         let mut trie2: PersistentARTrie<i64> =
             PersistentARTrie::create(&path2).expect("create trie2");
+        // **M4b REFRAME.** Fresh `create::<i64>()` create-flips; trie-to-trie
+        // `merge_replace` is rejected under the overlay. Force both to owned.
+        trie1.kill_switch_to_owned();
+        trie2.kill_switch_to_owned();
 
         // Insert into trie1
         use libdictenstein::MutableMappedDictionary;

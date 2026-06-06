@@ -35,6 +35,10 @@ fn byte_trace_survives_checkpoint_compaction_and_reopen() {
 
     {
         let mut trie = PersistentARTrie::<i64>::create(&path).expect("create byte trie");
+        // **M4b REFRAME.** A fresh `create::<i64>()` now create-flips to the overlay,
+        // but this end-to-end trace exercises document transactions (begin/commit_document)
+        // and compaction — BOTH owned-regime features the overlay rejects. Force owned.
+        trie.kill_switch_to_owned();
 
         assert!(trie.insert_with_value("alpha", 1));
         expected.insert("alpha".to_string(), 1);

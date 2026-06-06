@@ -198,6 +198,17 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
         remove_file_if_exists(&stale_wal_backup_path, "compact_remove_stale_wal_backup")?;
 
         let mut new_trie = PersistentARTrie::<V>::create(&temp_path)?;
+        // **M4b:** `create` now create-flips eligible V (`{(), i64}`) to the lock-free
+        // overlay. The compaction STAGING trie must be OWNED: it is populated below via
+        // `insert_impl_no_wal` (owned-tree writes) and then `checkpoint()`ed — under the
+        // overlay the inserts would land in the owned tree while `checkpoint()` captured
+        // the EMPTY overlay, so verification would read 0 terms and every compaction of
+        // an eligible-V trie would fail (silent total loss of the compacted image).
+        // Force the staging trie to the owned regime (the kill-switch also restamps the
+        // fresh temp WAL Owned, so the post-rename reopen of the compacted file stays
+        // owned until the caller's own create-flip path governs it). This keeps the
+        // proven owned compaction pipeline intact for the eligible monomorphs.
+        new_trie.kill_switch_to_owned();
 
         let mut terms_processed = 0u64;
 

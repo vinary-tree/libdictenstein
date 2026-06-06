@@ -31,6 +31,23 @@ use super::wal::{AsyncWalConfig, AsyncWalWriter, WalConfig};
 use super::{IoUringDiskManager, DEFAULT_BUFFER_POOL_SIZE};
 
 impl<V: DictionaryValue> PersistentARTrie<V, IoUringDiskManager> {
+    /// **M4b EDIT 1 (io_uring twin of the mmap `apply_create_flip`).** A freshly
+    /// created io_uring byte trie flips to the lock-free overlay for `V ∈ {(), i64}`;
+    /// a strict NO-OP for arbitrary `V`. The mmap `apply_create_flip` lives in the
+    /// default-`S` (`MmapDiskManager`) impl block and is not visible here, so the
+    /// `IoUringDiskManager` create path needs its own. `flip_to_overlay` /
+    /// `overlay_eligible_v` are on the `<V, S: BlockStorage>` block (visible for any
+    /// `S`). Fresh WAL ⇒ the Overlay stamp MUST take; `!flip_to_overlay()` ⇒ hard
+    /// error (V-2). NB byte's eligible counter monomorph is `i64` (char's is `u64`).
+    fn apply_create_flip(mut self) -> Result<Self> {
+        if Self::overlay_eligible_v() && !self.flip_to_overlay() {
+            return Err(PersistentARTrieError::internal(
+                "byte create-flip (io_uring): flip did not engage on a fresh trie",
+            ));
+        }
+        Ok(self)
+    }
+
     /// Create a new persistent dictionary backed by io_uring + O_DIRECT.
     ///
     /// This uses `IoUringDiskManager` instead of `MmapDiskManager`, which:
@@ -75,7 +92,8 @@ impl<V: DictionaryValue> PersistentARTrie<V, IoUringDiskManager> {
         let arena_manager = ArenaManager::with_buffer_manager(Arc::clone(&buffer_manager));
         let arena_manager = Arc::new(RwLock::new(arena_manager));
 
-        Ok(Self {
+        // M4b EDIT 1: flip a fresh eligible-V trie to the overlay (no-op for arbitrary V).
+        Self::apply_create_flip(Self {
             root: TrieRoot::Bucket(StringBucket::with_values()),
             term_count: AtomicUsize::new(0),
             dirty: AtomicBool::new(false),
@@ -96,7 +114,8 @@ impl<V: DictionaryValue> PersistentARTrie<V, IoUringDiskManager> {
             lockfree_cache: None,
             #[cfg(feature = "persistent-artrie")]
             cas_retries: std::sync::atomic::AtomicU64::new(0),
-            // M2a INERT default (OwnedTree) — changes no byte behavior.
+            // M2a INERT default (OwnedTree) — flipped to LockFreeOverlay by
+            // apply_create_flip above for eligible V; arbitrary V stays owned.
             overlay_write_mode:
                 crate::persistent_artrie_core::overlay::write_mode::OverlayWriteMode::default(),
             // M2b: fresh on-disk trie (empty WAL) — watermark base + commit_seq 0.
@@ -333,6 +352,21 @@ impl<V: DictionaryValue> PersistentARTrie<V, IoUringDiskManager> {
                 wal_writer.set_min_lsn(next_lsn);
                 dict.next_lsn.store(next_lsn, AtomicOrdering::Release);
             }
+        }
+
+        // M4b EDIT 2 + REESTABLISH SINK (D-SINK-2, io_uring twin of the mmap `open`
+        // sink). An already-Overlay file moves the recovered owned tree into the
+        // lock-free overlay (eligible V) + selects LockFreeOverlay; an Owned-regime
+        // file (incl. empty) STAYS owned (backward-compat). `IoUringDiskManager` is
+        // `'static`, so `reestablish_overlay_dispatch`'s `S: 'static` bound holds. D1:
+        // the flip precedes the dispatch, which reads the recovered OWNED tree via the
+        // UN-routed `owned_*` seams, publishes to the overlay, then clears owned LAST.
+        if rank_regime == crate::persistent_artrie_core::wal::RankRegime::Overlay
+            && Self::overlay_eligible_v()
+        {
+            let took = dict.flip_to_overlay();
+            debug_assert!(took, "Overlay-regime open must flip");
+            dict.reestablish_overlay_dispatch()?;
         }
 
         Ok(dict)

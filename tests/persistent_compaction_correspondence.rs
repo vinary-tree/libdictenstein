@@ -108,6 +108,11 @@ fn set_like_term_only_entries_survive_compaction() {
 
     {
         let mut trie = PersistentARTrie::<()>::create(&path).expect("create trie");
+        // **M4b REFRAME.** A fresh `create::<()>()` now create-flips to the overlay,
+        // but this test exercises `compact()`, which the overlay REJECTS (compaction
+        // rebuilds from the owned tree and atomically replaces the file, which would
+        // clobber the durable overlay/WAL). Force the owned regime.
+        trie.kill_switch_to_owned();
         assert!(trie.insert("alpha"));
         assert!(trie.insert("alphabet"));
         assert!(trie.insert("beta"));
@@ -223,6 +228,12 @@ fn crash_before_data_rename_restores_original_wal_for_recovery() {
 
     {
         let mut trie = PersistentARTrie::<i64>::create(&path).expect("create trie");
+        // **M4b REFRAME.** A fresh `create::<i64>()` now create-flips to the overlay,
+        // but this test does a NEGATIVE increment ("counter", -5), which the overlay
+        // counter domain REJECTS (the overlay counter is a non-negative i64; the
+        // Order-A `bound_increment_delta` fails-loud on a negative delta). Force the
+        // owned regime, where decrements are allowed.
+        trie.kill_switch_to_owned();
         assert_eq!(trie.increment("counter", 5).expect("increment to five"), 5);
         trie.checkpoint().expect("checkpoint old data");
         assert_eq!(
@@ -266,6 +277,12 @@ fn crash_after_data_rename_ignores_stale_wal_backup() {
 
     {
         let mut trie = PersistentARTrie::<i64>::create(&path).expect("create trie");
+        // **M4b REFRAME.** A fresh `create::<i64>()` now create-flips to the overlay,
+        // but this test does a NEGATIVE increment ("counter", -5), which the overlay
+        // counter domain REJECTS (the overlay counter is a non-negative i64; the
+        // Order-A `bound_increment_delta` fails-loud on a negative delta). Force the
+        // owned regime, where decrements are allowed.
+        trie.kill_switch_to_owned();
         assert_eq!(trie.increment("counter", 5).expect("increment to five"), 5);
         trie.checkpoint().expect("checkpoint old data");
         assert_eq!(

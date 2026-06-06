@@ -480,8 +480,16 @@ fn m3_inert_pre_flip_owned_arm_unchanged() {
     let other_path = dir.path().join("io.part");
 
     let mut trie = PersistentARTrie::<i64>::create(&path).expect("create");
-    // Default byte trie is owned (no create-flip in M3).
-    assert!(!trie.route_overlay(), "fresh byte trie is owned (inert)");
+    // **M4b REFRAME.** A fresh `create::<i64>()` now create-flips to the overlay, but
+    // THIS test asserts the OWNED arm (the false-arm of the M3 routes) is unchanged —
+    // so force the owned path with the kill-switch (the M4b precedent for owned-path
+    // feature tests). The kill-switch restamps the WAL Owned (the trie is fresh,
+    // current_lsn()==1), so the trie is genuinely owned-regime hereafter.
+    trie.kill_switch_to_owned();
+    assert!(
+        !trie.route_overlay(),
+        "kill_switch_to_owned forces the owned arm (M4b: fresh create flips by default)"
+    );
 
     // Owned writes via the routed public writers (must take the owned arm).
     assert!(trie.insert_with_value("a", 1), "owned insert_with_value");
