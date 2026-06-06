@@ -1687,4 +1687,220 @@ mod tests {
             }
         }
     }
+
+    // =========================================================================
+    // M4a / D-VAL — codec-level value-blob tests (`append_node_value` /
+    // `read_node_value`).
+    //
+    // These exercise the on-disk FORMAT directly — the round-trip + back-compat
+    // properties the durable fix rests on — independent of the full
+    // overlay-checkpoint→reopen pipeline (covered by the lockfree_cas.rs
+    // integration tests `m4a_*`). Cross-validated against an independent
+    // re-derivation of M4a (worktree agent a63d0aa8) that, from a `_with_value`
+    // codec instead of this append/read layer, landed on the IDENTICAL wire
+    // format: HAS_VALUE = 0x20 at encoding-flags byte 7, blob appended last as
+    // `[len: u32 LE][bytes]`, value-less records byte-identical. That agreement
+    // is strong evidence the format (not just one implementation) is correct.
+    // =========================================================================
+
+    /// True iff the record's `HAS_VALUE` encoding-flags bit (byte 7) is set.
+    fn record_has_value_flag(record: &[u8]) -> bool {
+        record.len() > 7 && (record[7] & encoding_flags::HAS_VALUE) != 0
+    }
+
+    /// Build the four node types, each with `child_count` relative-encoded arena
+    /// children (so the record exercises the node-type-byte tail that the value
+    /// blob is appended after). `child_count == 0` covers the childless case.
+    fn sample_nodes_with_children(parent: ArenaSlot, child_count: usize) -> Vec<Node> {
+        let make = |mut add: Box<dyn FnMut(u8, SwizzledPtr)>| {
+            for i in 0..child_count {
+                let slot = ArenaSlot::new(parent.arena_id, parent.slot_id + 1 + i as u32);
+                add(i as u8, SwizzledPtr::from_arena_slot(slot, NodeType::Node4));
+            }
+        };
+
+        let mut n4 = Node4::new();
+        make(Box::new(|k, p| {
+            let _ = n4.add_child(k, p);
+        }));
+        let mut n16 = Node16::new();
+        make(Box::new(|k, p| {
+            let _ = n16.add_child(k, p);
+        }));
+        let mut n48 = Node48::new();
+        make(Box::new(|k, p| {
+            let _ = n48.add_child(k, p);
+        }));
+        let mut n256 = Node256::new();
+        make(Box::new(|k, p| {
+            let _ = n256.add_child(k, p);
+        }));
+
+        vec![
+            Node::N4(Box::new(n4)),
+            Node::N16(Box::new(n16)),
+            Node::N48(Box::new(n48)),
+            Node::N256(Box::new(n256)),
+        ]
+    }
+
+    #[test]
+    fn test_value_blob_roundtrip_all_node_types() {
+        let parent = ArenaSlot::new(2, 10);
+        let ser_ctx = SerializationContext::new(parent);
+        let de_ctx = DeserializationContext::new(parent);
+
+        // Opaque value bytes (bincode-of-i64 is 8 bytes, but the codec treats the
+        // blob as arbitrary bytes); the embedded 0x00 proves it is not mistaken
+        // for a terminator.
+        let value: &[u8] = &[0x2A, 0x00, 0xFF, 0x01, 0x10, 0x20, 0x30, 0x40];
+
+        for child_count in [0usize, 1, 3] {
+            for node in sample_nodes_with_children(parent, child_count) {
+                let node_ty = node.header().node_type;
+                let bytes = v2::append_node_value(
+                    serialize_node_v2(&node, &ser_ctx).expect("serialize"),
+                    Some(value),
+                );
+                assert!(
+                    record_has_value_flag(&bytes),
+                    "HAS_VALUE must be set for a valued record (type {node_ty}, {child_count} children)"
+                );
+                assert_eq!(
+                    v2::read_node_value(&bytes).as_deref(),
+                    Some(value),
+                    "value bytes must round-trip exactly (type {node_ty}, {child_count} children)"
+                );
+                // The structural node still parses — the value blob, appended
+                // after the node-data, never perturbs the node parse.
+                let restored = deserialize_node_v2(&bytes, &de_ctx).expect("deserialize");
+                assert_eq!(
+                    restored.header().num_children,
+                    node.header().num_children,
+                    "structure must survive (type {node_ty}, {child_count} children)"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_value_less_record_byte_identical() {
+        // `append_node_value(.., None)` must return the legacy buffer UNCHANGED —
+        // the back-compat guarantee that pre-M4a files (and every value-less node)
+        // stay byte-for-byte identical on disk, so old binaries still read them.
+        let parent = ArenaSlot::new(5, 100);
+        let ser_ctx = SerializationContext::new(parent);
+
+        for child_count in [0usize, 1, 3, 5] {
+            for node in sample_nodes_with_children(parent, child_count) {
+                let node_ty = node.header().node_type;
+                let legacy = serialize_node_v2(&node, &ser_ctx).expect("legacy serialize");
+                let via_none = v2::append_node_value(legacy.clone(), None);
+                assert_eq!(
+                    legacy, via_none,
+                    "value-less record must be byte-identical to the legacy layout \
+                     (type {node_ty}, {child_count} children)"
+                );
+                assert!(
+                    !record_has_value_flag(&via_none),
+                    "value-less record must NOT set HAS_VALUE (type {node_ty}, {child_count} children)"
+                );
+                assert!(
+                    v2::read_node_value(&via_none).is_none(),
+                    "value-less record must read back no value (type {node_ty}, {child_count} children)"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_legacy_value_less_record_reads_none() {
+        // A record written WITHOUT a value (the only kind any pre-M4a binary ever
+        // wrote) must read back through `read_node_value` as `None`, and still
+        // deserialize structurally.
+        let parent = ArenaSlot::new(0, 7);
+        let ser_ctx = SerializationContext::new(parent);
+        let de_ctx = DeserializationContext::new(parent);
+
+        for child_count in [0usize, 2, 4] {
+            for node in sample_nodes_with_children(parent, child_count) {
+                let node_ty = node.header().node_type;
+                let legacy_bytes = serialize_node_v2(&node, &ser_ctx).expect("legacy serialize");
+                assert!(
+                    v2::read_node_value(&legacy_bytes).is_none(),
+                    "legacy value-less record must read back as no-value (type {node_ty})"
+                );
+                let restored = deserialize_node_v2(&legacy_bytes, &de_ctx).expect("legacy reader");
+                assert_eq!(restored.header().num_children, node.header().num_children);
+            }
+        }
+    }
+
+    #[test]
+    fn test_value_blob_empty_and_large() {
+        let parent = ArenaSlot::new(1, 1);
+        let ser_ctx = SerializationContext::new(parent);
+        let node = Node::N4(Box::new(Node4::new()));
+        let base = serialize_node_v2(&node, &ser_ctx).expect("serialize");
+
+        // Empty value blob: `Some(&[])` must round-trip as `Some(vec![])` — a
+        // present-but-empty value is DISTINCT from absent (`None`).
+        let empty = v2::append_node_value(base.clone(), Some(&[]));
+        assert!(record_has_value_flag(&empty), "empty value still sets HAS_VALUE");
+        assert_eq!(
+            v2::read_node_value(&empty),
+            Some(Vec::new()),
+            "empty value must round-trip as Some(empty), distinct from None"
+        );
+
+        // Large value blob (well past a Node256's ~2KB) must round-trip exactly,
+        // proving the offset/length math holds for multi-KB blobs.
+        let large: Vec<u8> = (0..4096u32).map(|i| (i % 251) as u8).collect();
+        let big = v2::append_node_value(base, Some(&large));
+        assert_eq!(
+            v2::read_node_value(&big).as_deref(),
+            Some(large.as_slice()),
+            "large value must round-trip exactly"
+        );
+    }
+
+    #[test]
+    fn test_valued_record_only_grows_by_value_blob() {
+        // A valued record must be EXACTLY `4 + value_len` bytes longer than the
+        // value-less record (the u32 length prefix + the bytes), and differ ONLY
+        // in the encoding-flags byte (offset 7) gaining HAS_VALUE — i.e. the value
+        // blob is the sole layout change.
+        let parent = ArenaSlot::new(3, 30);
+        let ser_ctx = SerializationContext::new(parent);
+        let value: &[u8] = &[1, 2, 3, 4, 5, 6, 7];
+
+        for node in sample_nodes_with_children(parent, 2) {
+            let node_ty = node.header().node_type;
+            let less = serialize_node_v2(&node, &ser_ctx).expect("value-less");
+            let valued = v2::append_node_value(less.clone(), Some(value));
+            assert_eq!(
+                valued.len(),
+                less.len() + 4 + value.len(),
+                "valued record must grow by exactly the value blob (type {node_ty})"
+            );
+            // Header bytes before encoding_flags (offset 7) are unchanged.
+            assert_eq!(
+                &valued[..7],
+                &less[..7],
+                "header bytes before encoding_flags must be unchanged (type {node_ty})"
+            );
+            assert_eq!(
+                valued[7],
+                less[7] | encoding_flags::HAS_VALUE,
+                "encoding_flags must gain exactly the HAS_VALUE bit (type {node_ty})"
+            );
+            // The structural bytes after the flags byte (rest of header + payload)
+            // are unchanged — the value blob is strictly appended, nothing spliced.
+            assert_eq!(
+                &valued[8..less.len()],
+                &less[8..],
+                "structural bytes after the flags byte must be unchanged (type {node_ty})"
+            );
+        }
+    }
 }
