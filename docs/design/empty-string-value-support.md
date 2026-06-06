@@ -1,8 +1,26 @@
 # Empty-String Key (`""`) Value Support — Across ALL ARTrie Implementations
 
-**Status:** DESIGN ONLY (no code written; owner approval required before implementation). **CONVERGED at V5
-— confirmed by a clean terminating round (Round 4): TWO independent adversarial passes BOTH returned
-CONVERGED with zero blocker/data-loss/high holes, every cited file:line verified exact against live code.**
+**Status:** ✅ **IMPLEMENTED & GATED** (owner-approved 2026-06-06). Designed + 4-round-red-teamed to
+convergence (V5), then implemented phase-by-phase, the full suite + formal-correspondence + 0-new-unsafe
+green at EACH phase. The empty term "" is now a FULL first-class key carrying a value (membership /
+counter / arbitrary-V) on byte, char, and vocab.
+
+**Per-phase commit ledger:**
+| Phase | What | Commit |
+|---|---|---|
+| P0 | byte root-value serialize/load codec + H7 (bucket→ART split) | `43cc671` |
+| P1 | byte overlay checkpoint carries root value (H2) | `8bb44f3` |
+| P2 | byte coupled write+read+reestablish flip (H3+H4+H5) + shared publishers + loom gate | `e9a7384` |
+| P3 | char write-guard reroutes (H4) + char matrix (char = just-H4) | `127f1b0` |
+| P4 | vocab reopen + compaction + bucket→ART-split tests | `864b395` |
+| P5 | stale-doc cleanup + final full gate | (this commit) |
+
+Final gate: `cargo nextest --features persistent-artrie` all green incl. the loom data-loss gate +
+the 107s no-lost-write durable loom; `verify-formal-correspondence.sh` exit 0; 0 new unsafe.
+
+**Design provenance (pre-implementation):** CONVERGED at V5 — confirmed by a clean terminating round
+(Round 4): TWO independent adversarial passes BOTH returned CONVERGED with zero blocker/data-loss/high
+holes, every cited file:line verified exact against live code.
 **Provenance:** V1 (Plan) → red-team (3 blockers) → V2 (trait-unified, all-impls) → red-team Round 1
 (2 data-loss + write-time-drop + clear-owned + proof-gap) → V3 → red-team Round 2 (keystone
 orthogonal-field-preservation VERIFIED sound; 2 narrow data-loss + 2 test-reclassifications) → V4 →

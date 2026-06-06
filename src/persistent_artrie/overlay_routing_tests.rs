@@ -16,8 +16,9 @@
 //! 2. **The value-carrying iter route** (`iter_with_values` /
 //!    `iter_prefix_with_values` /`iter_prefix_with_values_and_arena`) carries the
 //!    overlay value — NOT enumerate-overlay-then-value-owned (audit §C.2).
-//! 3. **The empty-term `get_value("")` exception** reads the OWNED/durable arm even
-//!    under the overlay (the overlay node cannot represent the empty key).
+//! 3. **The empty term routes to the overlay ROOT** (empty-string support H4+H5):
+//!    "" is a first-class key on the overlay root — the routed writer publishes it
+//!    via fresh-root-CAS and the routed `get_value("")` / `contains("")` read it back.
 //! 4. **The reject guards fire** under the overlay (`compact` / the trie-to-trie
 //!    merges / the lockfree drains / doc-tx / `compare_and_swap*`) → `InvalidOperation`.
 //! 5. **Durable writes round-trip** through the ROUTED public writers (`insert` /

@@ -140,11 +140,11 @@ impl<V: DictionaryValue + serde::Serialize + serde::de::DeserializeOwned, S: Blo
     ///
     /// **M3 read-flip (C6):** under `route_overlay()` membership routes to the
     /// non-faulting lock-free overlay read (`overlay_contains`); the owned arm is
-    /// the unchanged `contains_impl`. The empty term has no overlay representation,
-    /// but `overlay_contains(b"")` returns whether the overlay ROOT is final (which
-    /// it never is for a key-only overlay), matching the owned semantics for an
-    /// absent empty term; callers needing the empty-term membership use the owned
-    /// `get_value(b"")` exception above.
+    /// the unchanged `contains_impl`. **Empty-string support (H5):** the empty term ""
+    /// IS the overlay ROOT — `contains_bytes(b"")` routes to `contains_lockfree(b"")`,
+    /// which reads `root.is_final()` (the write path publishes "" to the root via
+    /// fresh-root-CAS, and reestablish republishes it on reopen), so "" is a
+    /// first-class member like any other term.
     #[inline]
     pub fn contains_bytes(&self, term: &[u8]) -> bool {
         if self.route_overlay() {
