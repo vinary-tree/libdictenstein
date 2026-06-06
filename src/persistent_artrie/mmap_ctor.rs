@@ -98,6 +98,7 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
             // pre-flip; only opt-in `*_cas_durable` writes advance them).
             committed_watermark:
                 crate::persistent_artrie_core::committed_watermark::CommittedWatermark::new(0),
+            checkpoint_lock: std::sync::Arc::new(parking_lot::Mutex::new(())),
             commit_seq: std::sync::atomic::AtomicU64::new(0),
         }
     }
@@ -193,6 +194,7 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
             // generations ⇒ watermark base + commit_seq both 0 (INERT pre-flip).
             committed_watermark:
                 crate::persistent_artrie_core::committed_watermark::CommittedWatermark::new(0),
+            checkpoint_lock: std::sync::Arc::new(parking_lot::Mutex::new(())),
             commit_seq: std::sync::atomic::AtomicU64::new(0),
         })
     }
@@ -291,6 +293,7 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
             // generations ⇒ watermark base + commit_seq both 0 (INERT pre-flip).
             committed_watermark:
                 crate::persistent_artrie_core::committed_watermark::CommittedWatermark::new(0),
+            checkpoint_lock: std::sync::Arc::new(parking_lot::Mutex::new(())),
             commit_seq: std::sync::atomic::AtomicU64::new(0),
         })
     }
@@ -513,6 +516,7 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
                 crate::persistent_artrie_core::committed_watermark::CommittedWatermark::new(
                     recovered_frontier,
                 ),
+            checkpoint_lock: std::sync::Arc::new(parking_lot::Mutex::new(())),
             commit_seq: std::sync::atomic::AtomicU64::new(commit_seq_seed),
         };
 

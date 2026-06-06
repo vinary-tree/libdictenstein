@@ -383,6 +383,16 @@ pub struct PersistentARTrieChar<V: DictionaryValue = (), S: crate::persistent_ar
     /// `checkpoint_lsn` under out-of-order lock-free commit. See
     /// [`committed_watermark::CommittedWatermark`].
     pub(crate) committed_watermark: committed_watermark::CommittedWatermark,
+    /// **F3 / NF-3 — serializes concurrent checkpoints.** The overlay-arm
+    /// non-blocking checkpoint holds only `self.read()`, so two concurrent
+    /// `checkpoint()` calls on a `SharedCharARTrie` would otherwise interleave their
+    /// block-0 descriptor / arena writes → a torn on-disk image. This lock is taken
+    /// for the whole checkpoint body (cloned out of a brief read guard so the trie
+    /// `RwLock` is NOT held); readers/writers never touch it → the overlay stays
+    /// lock-free, only checkpoints serialize. `Arc<Mutex>` so it survives the F4
+    /// `Arc<RwLock>`→`Arc` collapse unchanged. Formally verified:
+    /// `formal-verification/tla+/ConcurrentCheckpointSerialization.tla`.
+    pub(crate) checkpoint_lock: std::sync::Arc<parking_lot::Mutex<()>>,
     /// Kill-switch selecting the production write-path representation
     /// (owned-tree vs lock-free overlay). Migration Phase E scaffold — wired as
     /// the inert [`OverlayWriteMode::OwnedTree`](overlay_write_mode::OverlayWriteMode::OwnedTree)
@@ -1330,16 +1340,26 @@ impl<V: DictionaryValue> crate::artrie_trait::ARTrie for SharedCharARTrie<V> {
     }
 
     fn checkpoint(&self) -> crate::persistent_artrie::error::Result<()> {
+        // **F3 / NF-3 — serialize concurrent checkpoints.** The overlay arm below
+        // captures under only `self.read()` (lock-free), so two concurrent
+        // `checkpoint()` calls would otherwise interleave their block-0 descriptor /
+        // arena writes → a torn on-disk image (lost/corrupt terms on reopen). Take
+        // the `checkpoint_lock` for the WHOLE body: clone it out of a brief read
+        // guard (so the trie `RwLock` is NOT held while we lock), then hold it.
+        // Readers/writers never touch this mutex → the overlay stays lock-free; only
+        // checkpoints serialize. Formally verified
+        // (`formal-verification/tla+/ConcurrentCheckpointSerialization.tla`:
+        // USE_LOCK=TRUE holds NoTornDescriptor; USE_LOCK=FALSE negative control fires).
+        let ckpt_lock = self.read().checkpoint_lock.clone();
+        let _ckpt_guard = ckpt_lock.lock();
         // S5-9 route-split (RES-4, total-loss guard): this non-blocking checkpoint is
         // a SECOND capture site (besides the inherent `checkpoint()`). Under the
         // overlay write mode it MUST capture the IMMUTABLE OVERLAY (the live data),
         // not the empty owned tree, or it serializes nothing and loses every term on
         // reopen. `capture_snapshot_immutable` is itself lock-free (reads the atomic
         // root), so it needs NO write-guard-then-downgrade dance — a read guard admits
-        // concurrent readers throughout. INERT pre-flip: `route_overlay()` is false
-        // until S5-12 wires the production ctors, so the owned dance below is
-        // byte-for-byte unchanged. The read guard is scoped so it drops before the
-        // owned path's `self.write()` (no read→write self-deadlock).
+        // concurrent readers throughout. The read guard is scoped so it drops before
+        // the owned path's `self.write()` (no read→write self-deadlock).
         {
             let read_guard = self.read();
             if read_guard.route_overlay() {

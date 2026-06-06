@@ -89,6 +89,7 @@ impl<V: DictionaryValue>
             wal_config: WalConfig::default(),
             next_lsn: std::sync::atomic::AtomicU64::new(1),
             committed_watermark: super::committed_watermark::CommittedWatermark::new(0),
+            checkpoint_lock: std::sync::Arc::new(parking_lot::Mutex::new(())),
             overlay_write_mode: super::overlay_write_mode::OverlayWriteMode::default(),
             file_path: Some(path.to_path_buf()),
             arena_manager: Some(arena_manager),
@@ -206,6 +207,7 @@ impl<V: DictionaryValue>
             committed_watermark: super::committed_watermark::CommittedWatermark::new(
                 next_lsn.saturating_sub(1),
             ),
+            checkpoint_lock: std::sync::Arc::new(parking_lot::Mutex::new(())),
             overlay_write_mode: super::overlay_write_mode::OverlayWriteMode::default(),
             file_path: Some(path.to_path_buf()),
             arena_manager: Some(arena_manager),

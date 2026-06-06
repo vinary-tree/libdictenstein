@@ -121,6 +121,7 @@ impl<V: DictionaryValue> PersistentARTrie<V, IoUringDiskManager> {
             // M2b: fresh on-disk trie (empty WAL) — watermark base + commit_seq 0.
             committed_watermark:
                 crate::persistent_artrie_core::committed_watermark::CommittedWatermark::new(0),
+            checkpoint_lock: std::sync::Arc::new(parking_lot::Mutex::new(())),
             commit_seq: std::sync::atomic::AtomicU64::new(0),
         })
     }
@@ -297,6 +298,7 @@ impl<V: DictionaryValue> PersistentARTrie<V, IoUringDiskManager> {
                 crate::persistent_artrie_core::committed_watermark::CommittedWatermark::new(
                     recovered_frontier,
                 ),
+            checkpoint_lock: std::sync::Arc::new(parking_lot::Mutex::new(())),
             commit_seq: std::sync::atomic::AtomicU64::new(commit_seq_seed),
         };
 

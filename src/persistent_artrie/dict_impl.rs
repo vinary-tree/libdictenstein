@@ -366,6 +366,15 @@ pub struct PersistentARTrie<V: DictionaryValue = (), S: BlockStorage = MmapDiskM
     pub(crate) committed_watermark:
         crate::persistent_artrie_core::committed_watermark::CommittedWatermark,
 
+    /// **F3 / NF-3 — serializes concurrent checkpoints** (byte twin of char's
+    /// field). Today byte's `SharedARTrie` checkpoint holds the outer `self.write()`
+    /// across the whole checkpoint, so checkpoints are already serialized — but the
+    /// F4 `Arc<RwLock>`→`Arc` collapse drops that, so byte needs this lock at F4.
+    /// Cloned out of a brief read guard, held for the checkpoint body; readers/
+    /// writers never touch it. Formally verified
+    /// (`formal-verification/tla+/ConcurrentCheckpointSerialization.tla`).
+    pub(crate) checkpoint_lock: std::sync::Arc<parking_lot::Mutex<()>>,
+
     /// **Durable global commit sequence** (the byte twin of the char field). The
     /// monotone visibility-order rank each Order-A durable write claims at its
     /// root-CAS loop-top (`fetch_add`); the winning iteration's claim is strictly

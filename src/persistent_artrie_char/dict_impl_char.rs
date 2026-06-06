@@ -3000,6 +3000,61 @@ mod tests {
         assert_eq!(trie.read().get("k").copied(), Some(2), "value updated");
     }
 
+    /// **F3 / NF-3 regression gate.** Two threads call `checkpoint()` concurrently on
+    /// a shared overlay-routed trie (u64 auto-flips to the overlay), whose overlay-arm
+    /// checkpoint holds only `self.read()`. Without the `checkpoint_lock` the two
+    /// checkpoints can interleave their block-0 descriptor / arena writes → a torn
+    /// on-disk image → terms lost/corrupt on reopen (the NF-3 data loss, formally
+    /// modeled in `ConcurrentCheckpointSerialization.tla`). With the lock they
+    /// serialize, so EVERY committed term survives the concurrent checkpoints + reopen.
+    /// Real-disk scratch (`ln/`), not tmpfs — this exercises real checkpoint I/O.
+    #[test]
+    fn nf3_concurrent_checkpoints_lose_no_terms_on_reopen() {
+        use crate::artrie_trait::ARTrie;
+        std::fs::create_dir_all("ln").ok();
+        let dir = tempfile::Builder::new()
+            .prefix("nf3-concurrent-ckpt")
+            .tempdir_in("ln")
+            .expect("real-disk scratch under ln");
+        let path = dir.path().join("t.artc");
+        let n = 200usize;
+        {
+            let trie = std::sync::Arc::new(parking_lot::RwLock::new(
+                PersistentARTrieChar::<u64>::create(&path).expect("create"),
+            ));
+            assert!(
+                trie.read().route_overlay(),
+                "u64 trie auto-flips to the overlay (the overlay-arm checkpoint is the NF-3 race site)"
+            );
+            for i in 0..n {
+                trie.insert_with_value(&format!("term{i:04}"), i as u64);
+            }
+            // Two threads checkpoint concurrently; checkpoint_lock must serialize them.
+            let handles: Vec<_> = (0..2)
+                .map(|_| {
+                    let t = std::sync::Arc::clone(&trie);
+                    std::thread::spawn(move || {
+                        for _ in 0..15 {
+                            t.checkpoint().expect("concurrent checkpoint");
+                        }
+                    })
+                })
+                .collect();
+            for h in handles {
+                h.join().expect("join");
+            }
+        }
+        let reopened = PersistentARTrieChar::<u64>::open(&path).expect("reopen");
+        for i in 0..n {
+            assert_eq!(
+                reopened.get_value(&format!("term{i:04}")),
+                Some(i as u64),
+                "term{i} lost/corrupt after two concurrent checkpoints + reopen (NF-3 — \
+                 checkpoint_lock must serialize the descriptor writes)"
+            );
+        }
+    }
+
     #[test]
     fn test_shared_char_trie_sync_persists() {
         use crate::artrie_trait::ARTrie;

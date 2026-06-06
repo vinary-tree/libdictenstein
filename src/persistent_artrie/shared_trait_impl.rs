@@ -132,6 +132,15 @@ impl<V: DictionaryValue> ARTrie for SharedARTrie<V> {
     }
 
     fn checkpoint(&self) -> Result<()> {
+        // **F3 / NF-3 — serialize concurrent checkpoints** (byte twin). Today byte's
+        // checkpoint holds the outer `self.write()` for the whole body, so checkpoints
+        // are ALREADY serialized and this lock is redundant-but-harmless; but the F4
+        // `Arc<RwLock>`→`Arc` collapse drops the write lock, and this `checkpoint_lock`
+        // then becomes the sole serializer (forward-correct; same lock the char arm
+        // uses). Cloned out of a brief read guard so we don't hold the trie lock while
+        // acquiring it. Formally verified (ConcurrentCheckpointSerialization.tla).
+        let ckpt_lock = self.read().checkpoint_lock.clone();
+        let _ckpt_guard = ckpt_lock.lock();
         let mut guard = self.write();
         guard.checkpoint()
     }
