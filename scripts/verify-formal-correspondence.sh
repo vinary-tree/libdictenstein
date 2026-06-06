@@ -250,7 +250,8 @@ if command -v tla2sany >/dev/null 2>&1; then
       EvictionWalkEBR \
       OverlayEvictionCas \
       LockFreeOverlayRemoveCas \
-      LockFreeOverlayDurableReplay
+      LockFreeOverlayDurableReplay \
+      ConcurrentCheckpointSerialization
     do
       run_capped tla2sany "${module}.tla"
     done
@@ -302,7 +303,8 @@ if [ "${RUN_TLC:-0}" = "1" ]; then
       EvictionWalkEBR \
       OverlayEvictionCas \
       LockFreeOverlayRemoveCas \
-      LockFreeOverlayDurableReplay
+      LockFreeOverlayDurableReplay \
+      ConcurrentCheckpointSerialization
     do
       run_capped tlc -workers 1 -config "${module}.cfg" "${module}.tla"
     done
@@ -338,12 +340,18 @@ if [ "${RUN_TLC:-0}" = "1" ]; then
     #     equals CAS/visibility order.
     # If TLC unexpectedly PASSES one of these, the model no longer exhibits the
     # bug it must catch → the negative control is broken → fail the whole gate.
+    #   * ConcurrentCheckpointSerialization sets USE_LOCK = FALSE (no checkpoint_lock —
+    #     the F3/NF-3 bug) and MUST violate `NoTornDescriptor`: two concurrent
+    #     checkpoints interleave their block-0 descriptor writes, leaving fields from
+    #     different generations (a torn descriptor → lost/corrupt terms on reopen) —
+    #     proving the `checkpoint_lock` serialization (design §3.5 / R-NF3) is REQUIRED.
     for unsafe_module in \
       LockFreeDurableCheckpoint \
       LockFreeDurableCheckpointEviction \
       OverlayEvictionCas \
       LockFreeOverlayRemoveCas \
-      LockFreeOverlayDurableReplay
+      LockFreeOverlayDurableReplay \
+      ConcurrentCheckpointSerialization
     do
       echo "== Negative control: ${unsafe_module}_Unsafe.cfg (MUST violate a safety invariant) =="
       if run_capped tlc -workers 1 -config "${unsafe_module}_Unsafe.cfg" "${unsafe_module}.tla"; then

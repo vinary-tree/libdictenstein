@@ -1360,14 +1360,19 @@ impl<V: DictionaryValue> crate::artrie_trait::ARTrie for SharedCharARTrie<V> {
         // checkpoints serialize on the write lock (no separate checkpoint mutex
         // needed).
         let guard = self.write();
-        // C2 invariant: the lock-free overlay (whose `insert_cas` bypasses
-        // `L1.write`) must not be active under the shared durable-checkpoint
-        // path, or a writer could race the snapshot. It is never exposed on
-        // `SharedCharARTrie`; assert it to fail loudly if that ever changes.
+        // C2 invariant (F3 fix — was `lockfree_root.is_none()`): the OWNED-arm
+        // checkpoint runs only when reads/writes are NOT overlay-routed. A
+        // kill-switched-to-owned trie keeps an installed `lockfree_root` (the
+        // overlay is dormant, not torn down), so the old `is_none()` assert would
+        // FALSELY fire on a legitimate kill-switched owned checkpoint. The correct
+        // invariant is `!route_overlay()` — matching the shared OverlayCheckpoint
+        // trait's RES-4 assert (`overlay/checkpoint.rs`). Debug-only (a false
+        // test/debug panic, never production data-loss).
         debug_assert!(
-            guard.lockfree_root.is_none(),
-            "SharedCharARTrie non-blocking checkpoint requires the lock-free \
-             overlay to be disabled (insert_cas would bypass L1.write)"
+            !guard.route_overlay(),
+            "SharedCharARTrie owned-arm non-blocking checkpoint requires \
+             !route_overlay() (writes must not be overlay-routed under the owned \
+             capture, or a lock-free writer could race the snapshot)"
         );
         // Phase A: serialize the in-memory tree into fresh arenas, epoch-pinned
         // so a concurrent prior-round eviction reclaim cannot free a node the
