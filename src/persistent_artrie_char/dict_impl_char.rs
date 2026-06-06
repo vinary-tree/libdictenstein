@@ -3040,7 +3040,7 @@ mod tests {
     }
 
     #[test]
-    fn test_insert_cas_empty_term() {
+    fn test_insert_cas_empty_term_publishes_root() {
         let dir = tempfile::TempDir::new().expect("create temp dir");
         let path = dir.path().join("test_insert_cas_empty.artc");
 
@@ -3048,8 +3048,16 @@ mod tests {
             PersistentARTrieChar::create(&path).expect("create trie");
         trie.enable_lockfree();
 
-        // Empty term should return false (not inserted)
-        assert!(!trie.insert_cas(""));
+        // Empty-string support (P3): "" is a first-class key on the overlay ROOT. The
+        // first insert publishes the root final (returns true → newly inserted); it is
+        // then a member and a second insert is a no-op (returns false). (Was: the old
+        // behavior rejected "" with `!insert_cas("")`.)
+        assert!(trie.insert_cas(""), "first insert_cas(\"\") publishes the root final");
+        assert!(trie.contains_lockfree(""), "\"\" is a member after insert");
+        assert!(
+            !trie.insert_cas(""),
+            "second insert_cas(\"\") is a no-op (already present)"
+        );
     }
 
     #[test]
