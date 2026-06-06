@@ -81,6 +81,44 @@ use crate::persistent_artrie_core::overlay::flip::LockFreeOverlay;
 use crate::persistent_artrie_core::wal::{Lsn, WalRecord};
 use crate::value::DictionaryValue;
 
+/// The write-semantics discriminator the generic value publish seam
+/// ([`DurableOverlayWrite::value_publish_inner`]) honors per CAS iteration
+/// (G5/F0). The three durable value writes share ONE seam (the path-copy +
+/// root-CAS loop), differing only in the per-iteration pre-check this enum
+/// selects — so the data-loss-critical Order-A skeleton stays in ONE place.
+pub(crate) enum ValueWriteMode {
+    /// `insert_with_value` semantics: abort (do NOT overwrite) if the leaf is
+    /// already final — the `entry().or_insert` / insert-once contract. The CAS
+    /// loop re-checks finality on the FRESHLY-loaded root each iteration, so a
+    /// concurrent insert that won is observed and yields
+    /// [`ValuePublishOutcome::NotApplied`] (the caller then burns the appended
+    /// WAL LSN, never ranks it).
+    InsertOnce,
+    /// `upsert` / `insert_with_value`-overwrite semantics: ALWAYS write the value
+    /// (last-writer = the root-CAS winner). Never yields `NotApplied`.
+    Upsert,
+    /// `compare_and_swap` semantics: write only if the leaf's CURRENT value (read
+    /// on the freshly-loaded root each iteration) bincode-serializes to
+    /// `expected_bytes`; otherwise yield [`ValuePublishOutcome::NotApplied`]. The
+    /// comparison is BINCODE BYTES (not `PartialEq` — `DictionaryValue` does not
+    /// bound it). `None` = "expected absent" (matches an absent/non-final leaf).
+    CompareAndSwap { expected_bytes: Option<Vec<u8>> },
+}
+
+/// The outcome of the generic value publish seam ([`DurableOverlayWrite::value_publish_inner`]).
+pub(crate) enum ValuePublishOutcome {
+    /// The root CAS landed; the leaf now carries the value. Carries the WINNING
+    /// commit generation (the durable global `commit_seq` claimed at the winning
+    /// iteration) so the caller binds `commit_rank_and_mark`.
+    Published(u64),
+    /// The mode's per-iteration pre-check refused the write (insert-once: leaf
+    /// already final; CAS: `expected` no longer matches). NO root CAS landed; the
+    /// caller MUST NOT rank the already-appended WAL record (it acked no state
+    /// change → dropped on Overlay-regime replay) but MUST `mark_committed_burned`
+    /// it for watermark liveness.
+    NotApplied,
+}
+
 /// The SHARED GENERIC Order-A durable-write surface (design trait 2).
 ///
 /// `K` is the key encoding (`ByteKey`/`CharKey`), `V` the value, `S` the block
@@ -272,5 +310,245 @@ pub(crate) trait DurableOverlayWrite<K: KeyEncoding, V: DictionaryValue, S>:
         // the committed watermark over both LSNs.
         self.commit_rank_and_mark(lsn, key_bytes, generation)?;
         Ok(new_val)
+    }
+
+    // ========================================================================
+    // G5/F0 — the GENERIC durable VALUE-write surface (arbitrary `V`).
+    //
+    // The value path is path-copy-then-root-CAS, structurally identical to the
+    // membership/counter path the overlay already proves. These defaults own the
+    // data-loss-critical Order-A skeleton (gate → present-hoist → append durable
+    // WAL → publish via the value seam → rank-or-burn); the per-variant node
+    // building lives in the SEAMS below (they name the concrete `OverlayNode<K,V>`
+    // via `build_value_path_recursive`, just like `increment_publish_inner`).
+    //
+    // EMPTY TERM "": carries NO special case here — the seam's
+    // `build_value_path_recursive(&root, &units, 0, value)` at `units == []` IS
+    // the RANKED depth-0 root publish (G5-NEW-4). The UNRANKED
+    // `overlay_publish_root_value` is reserved for the no-WAL reestablish fold.
+    // ========================================================================
+
+    // ---- value seams (variant provides — they touch `OverlayNode<K,V>`) ----
+
+    /// FAULTING-with-fallback presence check for the valued-insert hoist + the
+    /// upsert existed-probe: returns whether `key_bytes` is present (final) in the
+    /// trie, faulting an evicted prefix in so the answer reflects on-disk state
+    /// (the valued path's return value must be exact, unlike the membership hot
+    /// path which is non-faulting). Falls back to the in-memory walk on I/O error.
+    fn value_present_faulting(&self, key_bytes: &[u8]) -> Result<bool>;
+
+    /// FAULTING read of the leaf's current value at `key_bytes` (for the CAS
+    /// compare + `get_or_insert`'s read-your-write). `None` = absent / non-final.
+    fn value_read_faulting(&self, key_bytes: &[u8]) -> Result<Option<V>>;
+
+    /// The PROVEN path-copy value publish inner: the CAS-retry loop that is the
+    /// no-lost-update arbiter, honoring `mode` per iteration on the freshly-loaded
+    /// root. Returns [`ValuePublishOutcome::Published`] (with the winning commit
+    /// generation) or [`ValuePublishOutcome::NotApplied`] (mode pre-check refused).
+    /// Does NOT append WAL — the default owns Order-A step 1.
+    fn value_publish_inner(
+        &self,
+        key_bytes: &[u8],
+        value: V,
+        mode: ValueWriteMode,
+    ) -> Result<ValuePublishOutcome>;
+
+    // ---- generic durable value-write defaults (the Order-A skeleton) ----
+
+    /// **Order-A durable INSERT-with-value (insert-once).** gate → enable-check →
+    /// faulting present-hoist (no-op + NO WAL if already present) → append the
+    /// `Insert` record DURABLE (step 1) → publish via the value seam in
+    /// [`ValueWriteMode::InsertOnce`] (step 2) → rank-or-burn (step 3). Returns
+    /// `Ok(true)` iff this call newly inserted the term; `Ok(false)` if it was
+    /// already present (hoist) or a concurrent insert won the race (NotApplied →
+    /// the appended LSN is burned, never ranked). `key_bytes` is the raw key.
+    fn insert_cas_with_value_durable_default(&self, key_bytes: &[u8], value: V) -> Result<bool> {
+        self.durable_policy_gate("insert_cas_with_value_durable", "write")?;
+        if self.lockfree_root().is_none() {
+            return Err(
+                crate::persistent_artrie_core::error::PersistentARTrieError::InvalidOperation(
+                    "Lock-free mode not enabled. Call enable_lockfree() first.".to_string(),
+                ),
+            );
+        }
+        // INSERT (not upsert): already present ⇒ no-op with NO WAL (don't burn an
+        // LSN / punch a watermark hole). Faulting (the return value must reflect a
+        // term under an evicted prefix).
+        if self.value_present_faulting(key_bytes)? {
+            return Ok(false);
+        }
+        // ORDER A — step 1: append + sync the valued Insert record DURABLE.
+        let value_bytes = crate::serialization::bincode_compat::serialize(&value).map_err(|e| {
+            crate::persistent_artrie_core::error::PersistentARTrieError::internal(format!(
+                "Failed to serialize value: {}",
+                e
+            ))
+        })?;
+        let lsn = self.append_durable_wal(WalRecord::Insert {
+            term: key_bytes.to_vec(),
+            value: Some(value_bytes),
+        })?;
+        // ORDER A — step 2: publish via the value seam (insert-once: re-checks
+        // finality per iteration on the freshly-loaded root).
+        match self.value_publish_inner(key_bytes, value, ValueWriteMode::InsertOnce)? {
+            // ORDER A — step 3: durable AND visible — rank.
+            ValuePublishOutcome::Published(generation) => {
+                self.commit_rank_and_mark(lsn, key_bytes, generation)?;
+                Ok(true)
+            }
+            // Raced: a concurrent insert won. The appended Insert acked NO new
+            // state (Ok(false)); burn the LSN for liveness, NEVER rank it.
+            ValuePublishOutcome::NotApplied => {
+                self.mark_committed_burned(lsn);
+                Ok(false)
+            }
+        }
+    }
+
+    /// **Order-A durable UPSERT (always-write).** Like the insert default but the
+    /// value is ALWAYS written (last-writer-wins = the root-CAS winner). The
+    /// existed-probe is advisory (for the return flag only — the write is
+    /// unconditional, so a race is harmless: the CAS is the linearization point).
+    /// Returns `Ok(true)` iff the term was newly inserted (`false` = updated).
+    fn upsert_cas_durable_default(&self, key_bytes: &[u8], value: V) -> Result<bool> {
+        self.durable_policy_gate("upsert_cas_durable", "write")?;
+        if self.lockfree_root().is_none() {
+            return Err(
+                crate::persistent_artrie_core::error::PersistentARTrieError::InvalidOperation(
+                    "Lock-free mode not enabled. Call enable_lockfree() first.".to_string(),
+                ),
+            );
+        }
+        let existed = self.value_present_faulting(key_bytes)?;
+        // ORDER A — step 1: append + sync the Upsert record DURABLE.
+        let value_bytes = crate::serialization::bincode_compat::serialize(&value).map_err(|e| {
+            crate::persistent_artrie_core::error::PersistentARTrieError::internal(format!(
+                "Failed to serialize value: {}",
+                e
+            ))
+        })?;
+        let lsn = self.append_durable_wal(WalRecord::Upsert {
+            term: key_bytes.to_vec(),
+            value: value_bytes,
+        })?;
+        // ORDER A — step 2: publish (always-write).
+        match self.value_publish_inner(key_bytes, value, ValueWriteMode::Upsert)? {
+            ValuePublishOutcome::Published(generation) => {
+                self.commit_rank_and_mark(lsn, key_bytes, generation)?;
+                Ok(!existed)
+            }
+            // Upsert never refuses; if a publish ever returns NotApplied it would
+            // leave a durable-but-invisible Upsert — surface it (do NOT silently
+            // ack), burning the LSN so the watermark does not stall.
+            ValuePublishOutcome::NotApplied => {
+                self.mark_committed_burned(lsn);
+                Err(crate::persistent_artrie_core::error::PersistentARTrieError::internal(
+                    "upsert_cas_durable: value publish unexpectedly refused (NotApplied); the \
+                     Upsert record is durable and replays on reopen",
+                ))
+            }
+        }
+    }
+
+    /// **Order-A durable compare-and-swap.** Reads the current value (faulting),
+    /// compares it to `expected` by BINCODE BYTES (not `PartialEq`); on mismatch
+    /// returns `Ok(false)` with NO WAL (a failed CAS is a no-op — burns no LSN). On
+    /// match: append the `Upsert{new}` record DURABLE, then publish via the value
+    /// seam in [`ValueWriteMode::CompareAndSwap`] which RE-CHECKS `expected` against
+    /// the freshly-loaded root each iteration (so a concurrent change between the
+    /// initial read and the publish correctly fails the CAS → NotApplied → burn the
+    /// LSN, never rank). Returns `Ok(true)` iff the swap landed.
+    fn compare_and_swap_cas_durable_default(
+        &self,
+        key_bytes: &[u8],
+        expected: Option<V>,
+        new: V,
+    ) -> Result<bool> {
+        self.durable_policy_gate("compare_and_swap", "write")?;
+        if self.lockfree_root().is_none() {
+            return Err(
+                crate::persistent_artrie_core::error::PersistentARTrieError::InvalidOperation(
+                    "Lock-free mode not enabled. Call enable_lockfree() first.".to_string(),
+                ),
+            );
+        }
+        // Read current + bincode both sides (comparison = bytes, NOT PartialEq).
+        let current = self.value_read_faulting(key_bytes)?;
+        let expected_bytes = match &expected {
+            Some(e) => Some(crate::serialization::bincode_compat::serialize(e).map_err(|err| {
+                crate::persistent_artrie_core::error::PersistentARTrieError::internal(format!(
+                    "Failed to serialize value: {}",
+                    err
+                ))
+            })?),
+            None => None,
+        };
+        let current_bytes = match &current {
+            Some(c) => Some(crate::serialization::bincode_compat::serialize(c).map_err(|err| {
+                crate::persistent_artrie_core::error::PersistentARTrieError::internal(format!(
+                    "Failed to serialize value: {}",
+                    err
+                ))
+            })?),
+            None => None,
+        };
+        if current_bytes != expected_bytes {
+            // Mismatch: a failed CAS is a no-op (burns no LSN, punches no hole).
+            return Ok(false);
+        }
+        // ORDER A — step 1: append + sync the Upsert{new} record DURABLE.
+        let new_bytes = crate::serialization::bincode_compat::serialize(&new).map_err(|e| {
+            crate::persistent_artrie_core::error::PersistentARTrieError::internal(format!(
+                "Failed to serialize value: {}",
+                e
+            ))
+        })?;
+        let lsn = self.append_durable_wal(WalRecord::Upsert {
+            term: key_bytes.to_vec(),
+            value: new_bytes,
+        })?;
+        // ORDER A — step 2: publish with the per-iteration expected-recheck.
+        match self.value_publish_inner(
+            key_bytes,
+            new,
+            ValueWriteMode::CompareAndSwap { expected_bytes },
+        )? {
+            ValuePublishOutcome::Published(generation) => {
+                self.commit_rank_and_mark(lsn, key_bytes, generation)?;
+                Ok(true)
+            }
+            // The recheck found `expected` no longer matches (concurrent change):
+            // CAS fails. The appended Upsert acked NO swap → burn (NEVER rank: an
+            // unranked record is dropped on Overlay reopen, so recovery cannot
+            // apply a swap the caller was told failed).
+            ValuePublishOutcome::NotApplied => {
+                self.mark_committed_burned(lsn);
+                Ok(false)
+            }
+        }
+    }
+
+    /// **Order-A durable get-or-insert (insert-once, read-your-write).** Fast path:
+    /// if present (faulting read), return the existing value. Else insert-once via
+    /// [`Self::insert_cas_with_value_durable_default`]: on a win return `default`;
+    /// on a concurrent-insert race (`Ok(false)`) read the WINNER's value back and
+    /// return it — so all racers converge on ONE value and the caller reads its own
+    /// write (the `entry().or_insert` contract).
+    fn get_or_insert_durable_default(&self, key_bytes: &[u8], default: V) -> Result<V> {
+        if let Some(v) = self.value_read_faulting(key_bytes)? {
+            return Ok(v);
+        }
+        if self.insert_cas_with_value_durable_default(key_bytes, default.clone())? {
+            // We inserted it.
+            Ok(default)
+        } else {
+            // Raced: a concurrent insert won. Read its value (faulting, so an
+            // immediately-evicted winner still resolves). Fall back to `default`
+            // only in the (essentially impossible) absent-after-faulting-read case.
+            match self.value_read_faulting(key_bytes)? {
+                Some(v) => Ok(v),
+                None => Ok(default),
+            }
+        }
     }
 }

@@ -30,15 +30,21 @@
 // it was used before the hoist (ctors, persist, atomic_ops, document_tx, …).
 pub(crate) use crate::persistent_artrie_core::overlay::write_mode::OverlayWriteMode;
 
+// Only the feature-OFF eligibility branch uses TypeId (the feature-ON branch is
+// `true`), so gate the import to avoid an unused-import warning when the feature is on.
+#[cfg(not(feature = "overlay-arbitrary-v"))]
 use std::any::TypeId;
 use std::sync::atomic::Ordering;
+use std::sync::Arc;
 
 use crate::persistent_artrie::block_storage::BlockStorage;
 use crate::persistent_artrie::error::Result;
 use crate::persistent_artrie_core::durability::DurabilityPolicy;
 use crate::persistent_artrie_core::key_encoding::{CharKey, KeyEncoding};
 use crate::persistent_artrie_core::overlay::checkpoint::OverlayCheckpoint;
-use crate::persistent_artrie_core::overlay::durable_write::DurableOverlayWrite;
+use crate::persistent_artrie_core::overlay::durable_write::{
+    DurableOverlayWrite, ValuePublishOutcome, ValueWriteMode,
+};
 use crate::persistent_artrie_core::overlay::flip::LockFreeOverlay;
 use crate::persistent_artrie_core::wal::{Lsn, RankRegime, WalRecord};
 use crate::value::DictionaryValue;
@@ -114,10 +120,24 @@ impl<V: DictionaryValue, S: BlockStorage> LockFreeOverlay<CharKey, V, S>
         }
     }
 
-    /// **S5-12 (V-1)** — the char eligible monomorphs `{u64, ()}`.
+    /// **S5-12 (V-1) + F2 (G5)** — overlay eligibility.
+    ///
+    /// With the `overlay-arbitrary-v` Cargo feature, ANY `V: DictionaryValue` is
+    /// eligible — the generic value path (F0 durable write / F1 reestablish + read)
+    /// routes arbitrary `V` through the overlay. WITHOUT it (the production default —
+    /// the F2 flip "lands dark"), only the original `{u64, ()}` monomorphs are
+    /// eligible, so production behavior is BYTE-IDENTICAL until the feature is
+    /// deliberately enabled (the owner-gated production activation — design F2).
     /// `DictionaryValue: 'static` ⇒ `TypeId` is callable.
     fn overlay_eligible_v() -> bool {
-        TypeId::of::<V>() == TypeId::of::<u64>() || TypeId::of::<V>() == TypeId::of::<()>()
+        #[cfg(feature = "overlay-arbitrary-v")]
+        {
+            true
+        }
+        #[cfg(not(feature = "overlay-arbitrary-v"))]
+        {
+            TypeId::of::<V>() == TypeId::of::<u64>() || TypeId::of::<V>() == TypeId::of::<()>()
+        }
     }
 
     // ---- UN-ROUTED owned readers (D1 — read the OWNED tree directly) ----
@@ -219,6 +239,49 @@ impl<V: DictionaryValue, S: BlockStorage> LockFreeOverlay<CharKey, V, S>
         self.contains_lockfree(&term)
     }
 
+    fn overlay_publish_value(&self, units: &[u32], value: V) {
+        // G5/F1: no-WAL path-copy value SET (recovered terms are already durable).
+        // The overlay is FRESH at reestablish, so the path-copy never hits an OnDisk
+        // child and the CAS contends with nothing — but the retry loop is kept for
+        // uniformity with the durable publishers. `units` ARE the chars for char.
+        use super::nodes::persistent_node::PersistentCharNode;
+        let lockfree_root = match self.lockfree_root.as_ref() {
+            Some(r) => r,
+            None => return,
+        };
+        let _epoch = self.epoch_manager.enter_read();
+        loop {
+            let root = match lockfree_root.load() {
+                Some(r) => r,
+                None => {
+                    let _ = lockfree_root.try_init(Arc::new(PersistentCharNode::<V>::new()));
+                    continue;
+                }
+            };
+            match self.build_value_path_recursive(&root, units, 0, value.clone()) {
+                Some(new_root) => match lockfree_root.compare_exchange(&root, new_root) {
+                    Ok(_) => {
+                        if let Some(ref cache) = self.lockfree_cache {
+                            cache.insert(CharKey::units_to_term(units), true);
+                        }
+                        return;
+                    }
+                    Err(_) => continue,
+                },
+                // OnDisk-blocked: impossible on a fresh reestablish overlay; bail.
+                None => return,
+            }
+        }
+    }
+
+    fn overlay_value_get(&self, units: &[u32]) -> Option<V> {
+        // Non-faulting leaf value read (exact: overlay finals never evicted in prod).
+        let lockfree_root = self.lockfree_root.as_ref()?;
+        let _epoch = self.epoch_manager.enter_read();
+        self.find_leaf_lockfree(lockfree_root, units)
+            .and_then(|leaf| leaf.get_value())
+    }
+
     fn claim_commit_seq(&self) -> u64 {
         // Empty-string support: the per-iteration commit generation — the SAME
         // `self.commit_seq` char's durable insert/increment paths claim.
@@ -309,6 +372,161 @@ impl<V: DictionaryValue, S: BlockStorage> DurableOverlayWrite<CharKey, V, S>
         match (self as &dyn Any).downcast_ref::<super::PersistentARTrieChar<u64, S>>() {
             Some(trie_u64) => trie_u64.try_increment_cas_inner(key, delta),
             None => Ok((0, 0)),
+        }
+    }
+
+    // ---- G5/F0 value seams (char): faulting present/read + the mode-aware
+    // path-copy CAS publish. They name the concrete `OverlayNode<CharKey,V>` via
+    // the (now generic) `build_value_path_recursive` / `find_leaf_*`. ----
+
+    fn value_present_faulting(&self, key_bytes: &[u8]) -> Result<bool> {
+        let term = std::str::from_utf8(key_bytes).map_err(|e| {
+            crate::persistent_artrie_core::error::PersistentARTrieError::internal(format!(
+                "char key not valid UTF-8: {}",
+                e
+            ))
+        })?;
+        let chars: Vec<u32> = term.chars().map(|c| c as u32).collect();
+        let lockfree_root = self.lockfree_root.as_ref().ok_or_else(|| {
+            crate::persistent_artrie_core::error::PersistentARTrieError::InvalidOperation(
+                "Lock-free mode not enabled. Call enable_lockfree() first.".to_string(),
+            )
+        })?;
+        let _epoch = self.epoch_manager.enter_read();
+        // FAULTING (the valued return value must reflect a term under an evicted
+        // prefix), with the in-memory fallback on I/O error (mirrors the prior
+        // inline valued-insert hoist).
+        Ok(
+            match self.find_leaf_faulting(
+                lockfree_root,
+                &chars,
+                super::lockfree_cas::DEFAULT_MAX_FAULTIN_RETRIES,
+            ) {
+                Ok(found) => found.is_some(),
+                Err(_) => self.find_leaf_lockfree(lockfree_root, &chars).is_some(),
+            },
+        )
+    }
+
+    fn value_read_faulting(&self, key_bytes: &[u8]) -> Result<Option<V>> {
+        let term = std::str::from_utf8(key_bytes).map_err(|e| {
+            crate::persistent_artrie_core::error::PersistentARTrieError::internal(format!(
+                "char key not valid UTF-8: {}",
+                e
+            ))
+        })?;
+        let chars: Vec<u32> = term.chars().map(|c| c as u32).collect();
+        let lockfree_root = self.lockfree_root.as_ref().ok_or_else(|| {
+            crate::persistent_artrie_core::error::PersistentARTrieError::InvalidOperation(
+                "Lock-free mode not enabled. Call enable_lockfree() first.".to_string(),
+            )
+        })?;
+        let _epoch = self.epoch_manager.enter_read();
+        Ok(
+            match self.find_leaf_faulting(
+                lockfree_root,
+                &chars,
+                super::lockfree_cas::DEFAULT_MAX_FAULTIN_RETRIES,
+            ) {
+                Ok(found) => found.and_then(|leaf| leaf.get_value()),
+                Err(_) => self
+                    .find_leaf_lockfree(lockfree_root, &chars)
+                    .and_then(|leaf| leaf.get_value()),
+            },
+        )
+    }
+
+    fn value_publish_inner(
+        &self,
+        key_bytes: &[u8],
+        value: V,
+        mode: ValueWriteMode,
+    ) -> Result<ValuePublishOutcome> {
+        use super::nodes::persistent_node::PersistentCharNode;
+        let term = std::str::from_utf8(key_bytes).map_err(|e| {
+            crate::persistent_artrie_core::error::PersistentARTrieError::internal(format!(
+                "char key not valid UTF-8: {}",
+                e
+            ))
+        })?;
+        let chars: Vec<u32> = term.chars().map(|c| c as u32).collect();
+        let lockfree_root = self.lockfree_root.as_ref().ok_or_else(|| {
+            crate::persistent_artrie_core::error::PersistentARTrieError::InvalidOperation(
+                "Lock-free mode not enabled. Call enable_lockfree() first.".to_string(),
+            )
+        })?;
+        let _epoch = self.epoch_manager.enter_read();
+        loop {
+            // S4 commit_seq CLAIM (loop-top, re-claimed per iteration) — the winning
+            // claim is strictly monotone in the global root-CAS order + durable.
+            let commit_seq = self.commit_seq.fetch_add(1, Ordering::AcqRel) + 1;
+            let root = match lockfree_root.load() {
+                Some(r) => r,
+                None => {
+                    let new_root = Arc::new(PersistentCharNode::<V>::new());
+                    let _ = lockfree_root.try_init(new_root);
+                    continue;
+                }
+            };
+            // Mode pre-check on the FRESHLY-loaded root (so a concurrent change
+            // between the caller's initial read and this CAS is observed).
+            match &mode {
+                ValueWriteMode::InsertOnce => {
+                    // Already final ⇒ a concurrent insert won (the caller's hoist
+                    // missed it / it raced); do NOT overwrite — insert-once.
+                    if self.find_leaf_recursive(&root, &chars, 0).is_some() {
+                        return Ok(ValuePublishOutcome::NotApplied);
+                    }
+                }
+                ValueWriteMode::Upsert => {}
+                ValueWriteMode::CompareAndSwap { expected_bytes } => {
+                    // Re-check `expected` against the current leaf value (bincode
+                    // bytes, NOT PartialEq). Mismatch ⇒ the CAS fails this round.
+                    let cur = self
+                        .find_leaf_recursive(&root, &chars, 0)
+                        .and_then(|leaf| leaf.get_value());
+                    let cur_bytes = match &cur {
+                        Some(v) => {
+                            Some(crate::serialization::bincode_compat::serialize(v).map_err(|e| {
+                                crate::persistent_artrie_core::error::PersistentARTrieError::internal(
+                                    format!("Failed to serialize value: {}", e),
+                                )
+                            })?)
+                        }
+                        None => None,
+                    };
+                    if &cur_bytes != expected_bytes {
+                        return Ok(ValuePublishOutcome::NotApplied);
+                    }
+                }
+            }
+            // Build the valued spine (clone `value` per iteration — V: Clone — since
+            // build_value_path consumes it and we may retry).
+            let new_root = match self.build_value_path_recursive(&root, &chars, 0, value.clone()) {
+                Some(r) => r,
+                // I/O error faulting an evicted prefix: the WAL record is ALREADY
+                // durable, but we cannot make the write visible. Surface it (the
+                // record replays on reopen) — same as the prior inline valued path.
+                None => {
+                    self.cas_retries.fetch_add(1, Ordering::Relaxed);
+                    return Err(crate::persistent_artrie_core::error::PersistentARTrieError::internal(
+                        "value_publish_inner: could not fault an evicted prefix in to publish the \
+                         valued leaf; the record is durable and replays on reopen",
+                    ));
+                }
+            };
+            match lockfree_root.compare_exchange(&root, new_root) {
+                Ok(_) => {
+                    if let Some(ref cache) = self.lockfree_cache {
+                        cache.insert(term.to_string(), true);
+                    }
+                    return Ok(ValuePublishOutcome::Published(commit_seq));
+                }
+                Err(_actual) => {
+                    self.cas_retries.fetch_add(1, Ordering::Relaxed);
+                    continue;
+                }
+            }
         }
     }
 }

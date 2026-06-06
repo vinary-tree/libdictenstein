@@ -57,81 +57,21 @@ where
     Some(trie_i64.try_increment_cas_durable(term, delta))
 }
 
-/// Route `insert_with_value(term, value)` to the overlay iff `V == i64`.
-///
-/// Returns `Some(result)` when handled by the overlay (`V = i64`), or `None` to
-/// signal the caller should run its owned-tree body (arbitrary `V`). INSERT
-/// semantics (NOT upsert): an existing term is a no-op `Ok(false)` with no WAL —
-/// the durable [`insert_cas_with_value_durable`](super::dict_impl::PersistentARTrie)
-/// does not overwrite an existing value. The durable path rejects a negative value
-/// (C4).
-pub(super) fn route_insert_with_value_bytes<V, S>(
-    trie: &PersistentARTrie<V, S>,
-    term: &[u8],
-    value: &V,
-) -> Option<Result<bool>>
-where
-    V: DictionaryValue,
-    S: BlockStorage,
-{
-    let trie_i64 = (trie as &dyn Any).downcast_ref::<PersistentARTrie<i64, S>>()?;
-    let v_i64 = (value as &dyn Any).downcast_ref::<i64>()?;
-    Some(trie_i64.insert_cas_with_value_durable(term, *v_i64))
-}
-
-/// Route `upsert_bytes(term, value)` to the overlay iff `V == i64` (last-writer-wins).
-///
-/// Returns `Some(Ok(true))` if newly inserted, `Some(Ok(false))` if updated, or
-/// `None` for arbitrary `V` (caller runs the owned body). The durable primitive
-/// rejects a negative value (C4).
-pub(super) fn route_upsert_bytes<V, S>(
-    trie: &PersistentARTrie<V, S>,
-    term: &[u8],
-    value: &V,
-) -> Option<Result<bool>>
-where
-    V: DictionaryValue,
-    S: BlockStorage,
-{
-    let trie_i64 = (trie as &dyn Any).downcast_ref::<PersistentARTrie<i64, S>>()?;
-    let v_i64 = (value as &dyn Any).downcast_ref::<i64>()?;
-    Some(trie_i64.upsert_cas_durable(term, *v_i64))
-}
-
-/// Route `get_or_insert_bytes(term, default)` to the overlay iff `V == i64`.
-///
-/// Insert-if-absent (`insert_cas_with_value_durable` is a no-op + `Ok(false)` on
-/// an existing term, durable), then read the resulting value back via
-/// `get_lockfree`. Returns the current value (existing or the just-inserted
-/// default) re-wrapped as `V`. `None` for arbitrary `V`.
-pub(super) fn route_get_or_insert_bytes<V, S>(
-    trie: &PersistentARTrie<V, S>,
-    term: &[u8],
-    default: &V,
-) -> Option<Result<V>>
-where
-    V: DictionaryValue,
-    S: BlockStorage,
-{
-    let trie_i64 = (trie as &dyn Any).downcast_ref::<PersistentARTrie<i64, S>>()?;
-    let default_i64 = (default as &dyn Any).downcast_ref::<i64>()?;
-    let result: Result<V> = (|| {
-        // Insert the default if absent (no-op + Ok(false) if present, durable).
-        trie_i64.insert_cas_with_value_durable(term, *default_i64)?;
-        // Read the now-present value back (the existing value if it pre-existed,
-        // else the default we just inserted). `get_lockfree` widens the
-        // non-negative i64 count to u64; narrow back losslessly (bounded by
-        // LOCKFREE_COUNTER_MAX = i64::MAX).
-        let v = trie_i64
-            .get_lockfree(term)
-            .map(|count| count as i64)
-            .unwrap_or(*default_i64);
-        // Re-wrap the i64 as V via the SAFE Any path (V == i64 here).
-        let v_as_any: &dyn Any = &v;
-        Ok(v_as_any
-            .downcast_ref::<V>()
-            .cloned()
-            .expect("V == i64 in this routed branch"))
-    })();
-    Some(result)
-}
+// ============================================================================
+// SUPERSEDED in Flip F0 (G5) — byte twin of the char supersession. The valued
+// mutators (`insert_with_value`/`upsert`/`get_or_insert`/`compare_and_swap`/
+// `insert_batch`) now route to the SHARED GENERIC `DurableOverlayWrite::*_default`
+// methods (generic over `V` via the `value_publish_inner` seam), so these
+// i64-downcast helpers are obsolete. Commented out (NOT deleted — F0 is reversible);
+// only `route_increment_bytes` (above) keeps the downcast (counter is i64-only, NH3).
+// The downcast-then-`None`-fallback they did is the NH1 data-loss footgun the design
+// removes (arbitrary `V` → `None` → owned write → unranked → dropped on reopen).
+//
+// pub(super) fn route_insert_with_value_bytes<V, S>(trie, term, value) -> Option<Result<bool>>
+//   { downcast to <i64>; Some(trie_i64.insert_cas_with_value_durable(term, *v_i64)) }
+// pub(super) fn route_upsert_bytes<V, S>(trie, term, value) -> Option<Result<bool>>
+//   { downcast to <i64>; Some(trie_i64.upsert_cas_durable(term, *v_i64)) }
+// pub(super) fn route_get_or_insert_bytes<V, S>(trie, term, default) -> Option<Result<V>>
+//   { downcast to <i64>; insert-if-absent then get_lockfree read-back }
+// (Full bodies in git history; the generic `DurableOverlayWrite` defaults replace them.)
+// ============================================================================

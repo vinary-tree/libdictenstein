@@ -227,6 +227,11 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
         if TypeId::of::<V>() == TypeId::of::<()>() {
             return <Self as LockFreeOverlay<ByteKey, V, S>>::reestablish_overlay_membership(self);
         }
+        // G5/F1: ARBITRARY eligible `V` → the third (value) reestablish fold. Gated
+        // on `overlay_eligible_v()` so it is INERT until the F2 eligibility flip.
+        if Self::overlay_eligible_v() {
+            return <Self as LockFreeOverlay<ByteKey, V, S>>::reestablish_overlay_value(self);
+        }
         Ok(())
     }
 
@@ -520,7 +525,7 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
     ///
     /// Generic helper shared by the membership block and the `<i64>` counter
     /// block (its calls resolve at `V = i64` — same code, different impl).
-    fn find_leaf_lockfree(
+    pub(crate) fn find_leaf_lockfree(
         &self,
         root: &super::nodes::AtomicNodePtr<V>,
         key: &[u8],
@@ -529,8 +534,10 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
         self.find_leaf_recursive(&current, key, 0)
     }
 
-    /// Recursive helper for `find_leaf_lockfree`.
-    fn find_leaf_recursive(
+    /// Recursive helper for `find_leaf_lockfree`. `pub(crate)` so the value seams
+    /// ([`DurableOverlayWrite::value_publish_inner`] in `overlay_write_mode`) can do
+    /// the in-loop InsertOnce/CAS pre-check on the freshly-loaded root.
+    pub(crate) fn find_leaf_recursive(
         &self,
         node: &Arc<super::nodes::PersistentNode<V>>,
         key: &[u8],
@@ -998,6 +1005,49 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
             None => Err(DurableBuildError::AlreadyExists),
         }
     }
+
+    /// Path-copy the `root`→leaf spine for `key`, finalizing the leaf with `value`.
+    /// Returns a new root `Arc` or `None` if an OnDisk child blocks the copy (byte
+    /// overlay has no write-path fault-in). **G5/F0: GENERIC over `V`** (relocated
+    /// here from the `<i64,S>` block; the only `V`-ness is `value`). Shared by the
+    /// value seams (insert/upsert/CAS — [`value_publish_inner`]) AND the i64 counter
+    /// inner. Empty `key` (depth 0 == len 0) is the RANKED empty-term root publish.
+    pub(crate) fn build_value_path_recursive(
+        &self,
+        node: &Arc<super::nodes::PersistentNode<V>>,
+        key: &[u8],
+        depth: usize,
+        value: V,
+    ) -> Option<Arc<super::nodes::PersistentNode<V>>> {
+        use super::nodes::persistent_node::{Child, PersistentNode};
+
+        if depth == key.len() {
+            // Reached the leaf: bake finality + the new value into a fresh copy.
+            return Some(Arc::new(node.as_final().with_value(value)));
+        }
+
+        let k = key[depth];
+        match node.find_child(k) {
+            Some(child) => {
+                // In-memory child: path-copy into it. On-disk → cannot fault in.
+                let child_arc = child.as_in_mem()?;
+                let child_arc = Arc::clone(child_arc);
+                let new_child = self.build_value_path_recursive(&child_arc, key, depth + 1, value)?;
+                Some(Arc::new(node.with_child(k, Child::InMem(new_child))))
+            }
+            None => {
+                // Child absent: build the remaining spine bottom-up, valued leaf
+                // at the bottom.
+                let leaf = Arc::new(PersistentNode::<V>::new().as_final().with_value(value));
+                let mut current = leaf;
+                for &b in key[depth + 1..].iter().rev() {
+                    let parent = PersistentNode::<V>::new().with_child(b, Child::InMem(current));
+                    current = Arc::new(parent);
+                }
+                Some(Arc::new(node.with_child(k, Child::InMem(current))))
+            }
+        }
+    }
 }
 
 // ============================================================================
@@ -1186,44 +1236,6 @@ impl<S: BlockStorage> PersistentARTrie<i64, S> {
     /// (last-writer = the CAS winner); for a new path it creates the spine.
     /// (Verbatim port of char `build_value_path_recursive` with `u32`→`u8` keys
     /// and `u64`→`i64` leaf value.)
-    fn build_value_path_recursive(
-        &self,
-        node: &Arc<super::nodes::PersistentNode<i64>>,
-        key: &[u8],
-        depth: usize,
-        value: i64,
-    ) -> Option<Arc<super::nodes::PersistentNode<i64>>> {
-        use super::nodes::persistent_node::{Child, PersistentNode};
-
-        if depth == key.len() {
-            // Reached the leaf: bake finality + the new value into a fresh copy.
-            return Some(Arc::new(node.as_final().with_value(value)));
-        }
-
-        let k = key[depth];
-        match node.find_child(k) {
-            Some(child) => {
-                // In-memory child: path-copy into it. On-disk → cannot fault in.
-                let child_arc = child.as_in_mem()?;
-                let child_arc = Arc::clone(child_arc);
-                let new_child =
-                    self.build_value_path_recursive(&child_arc, key, depth + 1, value)?;
-                Some(Arc::new(node.with_child(k, Child::InMem(new_child))))
-            }
-            None => {
-                // Child absent: build the remaining spine bottom-up, valued leaf
-                // at the bottom.
-                let leaf = Arc::new(PersistentNode::<i64>::new().as_final().with_value(value));
-                let mut current = leaf;
-                for &b in key[depth + 1..].iter().rev() {
-                    let parent = PersistentNode::<i64>::new().with_child(b, Child::InMem(current));
-                    current = Arc::new(parent);
-                }
-                Some(Arc::new(node.with_child(k, Child::InMem(current))))
-            }
-        }
-    }
-
     /// Lock-free increment: create path if needed, then atomically add delta.
     ///
     /// Panics if the checked counter domain would be exceeded. Use
@@ -1284,25 +1296,13 @@ impl<S: BlockStorage> PersistentARTrie<i64, S> {
     /// CommitRank). Requires a synchronous durability policy and `enable_lockfree()`.
     /// Returns `Ok(true)` iff this call newly inserted the term.
     pub fn insert_cas_with_value_durable(&self, term: &[u8], value: i64) -> Result<bool> {
-        use super::nodes::persistent_node::PersistentNode;
-        use std::sync::atomic::Ordering;
-
-        <Self as DurableOverlayWrite<ByteKey, i64, S>>::durable_policy_gate(
-            self,
-            "insert_cas_with_value_durable",
-            "write",
-        )?;
-
-        let lockfree_root = self.lockfree_root.as_ref().ok_or_else(|| {
-            PersistentARTrieError::InvalidOperation(
-                "Lock-free mode not enabled. Call enable_lockfree() first.".to_string(),
-            )
-        })?;
-
-        // Empty-string support (H4): "" is the root; the present-check + WAL +
-        // `build_value_path_recursive(root, b"", 0, value)` (fresh-root-CAS at depth 0)
-        // below handle "" generically — no rejection.
-        // C4: a negative value is un-representable for a non-negative counter.
+        // **Flip F0 (G5): thin caller of the SHARED GENERIC value-write default.**
+        // The C4 i64-specific guard (the byte overlay counter domain is a
+        // non-negative i64) stays here; EVERYTHING else is the generic Order-A
+        // [`DurableOverlayWrite::insert_cas_with_value_durable_default`] (gate →
+        // present-hoist → append `Insert` DURABLE → value seam publish (insert-once)
+        // → rank-or-burn), shared verbatim with the arbitrary-`V` path. Empty `""`
+        // flows through the value seam's RANKED depth-0 publish (no special case).
         if value < 0 {
             return Err(PersistentARTrieError::InvalidOperation(format!(
                 "insert_cas_with_value_durable value for byte term {:?} must be non-negative \
@@ -1311,68 +1311,9 @@ impl<S: BlockStorage> PersistentARTrie<i64, S> {
                 value
             )));
         }
-
-        // INSERT (not upsert): if already present, no-op with NO WAL (don't burn an
-        // LSN / punch a watermark hole). Consult the trie (non-faulting — byte
-        // overlay), not just the cache.
-        {
-            let _epoch = self.epoch_manager.enter_read();
-            if self.find_leaf_lockfree(lockfree_root, term).is_some() {
-                return Ok(false);
-            }
-        }
-
-        // ORDER A — step 1: append + sync the valued Insert record DURABLE.
-        let value_bytes = crate::serialization::bincode_compat::serialize(&value).map_err(|e| {
-            PersistentARTrieError::internal(format!("Failed to serialize value: {}", e))
-        })?;
-        let lsn = self.append_to_wal_returning_lsn(WalRecord::Insert {
-            term: term.to_vec(),
-            value: Some(value_bytes),
-        })?;
-
-        // Step 2: publish the valued leaf via the single-root-CAS arbiter.
-        let _epoch = self.epoch_manager.enter_read();
-        loop {
-            let commit_seq = self.commit_seq.fetch_add(1, Ordering::AcqRel) + 1;
-            let root = match lockfree_root.load() {
-                Some(r) => r,
-                None => {
-                    let new_root = Arc::new(PersistentNode::<i64>::new());
-                    let _ = lockfree_root.try_init(new_root);
-                    continue;
-                }
-            };
-            let new_root = match self.build_value_path_recursive(&root, term, 0, value) {
-                Some(r) => r,
-                None => {
-                    // An OnDisk child blocked the path-copy: the Insert is ALREADY
-                    // durable but we could not make it visible. Surface it (Order-A
-                    // durable-but-visible-after-reopen window — recovery replays the
-                    // logged Insert); do NOT advance the watermark (the contiguous
-                    // prefix stalls at this LSN). Byte overlay has no fault-in pre-M4.
-                    self.cas_retries.fetch_add(1, Ordering::Relaxed);
-                    return Err(PersistentARTrieError::internal(
-                        "insert_cas_with_value_durable: an on-disk overlay child blocked the \
-                         path-copy; the Insert record is durable and replays on reopen",
-                    ));
-                }
-            };
-            let generation = commit_seq;
-            match lockfree_root.compare_exchange(&root, new_root) {
-                Ok(_) => {
-                    if let Some(ref cache) = self.lockfree_cache {
-                        cache.insert(term.to_vec(), true);
-                    }
-                    self.commit_rank_and_mark(lsn, term, generation)?;
-                    return Ok(true);
-                }
-                Err(_actual) => {
-                    self.cas_retries.fetch_add(1, Ordering::Relaxed);
-                    continue;
-                }
-            }
-        }
+        <Self as DurableOverlayWrite<ByteKey, i64, S>>::insert_cas_with_value_durable_default(
+            self, term, value,
+        )
     }
 
     /// **M2b — Order-A durable UPSERT** (`V = i64`), the byte twin of char's
@@ -1381,24 +1322,12 @@ impl<S: BlockStorage> PersistentARTrie<i64, S> {
     /// or not the term already existed. Returns `Ok(true)` iff the term was newly
     /// inserted (`false` = updated an existing term).
     pub fn upsert_cas_durable(&self, term: &[u8], value: i64) -> Result<bool> {
-        use super::nodes::persistent_node::PersistentNode;
-        use std::sync::atomic::Ordering;
-
-        <Self as DurableOverlayWrite<ByteKey, i64, S>>::durable_policy_gate(
-            self,
-            "upsert_cas_durable",
-            "write",
-        )?;
-
-        let lockfree_root = self.lockfree_root.as_ref().ok_or_else(|| {
-            PersistentARTrieError::InvalidOperation(
-                "Lock-free mode not enabled. Call enable_lockfree() first.".to_string(),
-            )
-        })?;
-
-        // Empty-string support (H4): "" is the root; the WAL +
-        // `build_value_path_recursive(root, b"", 0, value)` (fresh-root-CAS at depth 0)
-        // below handle "" generically — no rejection (UPSERT always writes the value).
+        // **Flip F0 (G5): thin caller of the SHARED GENERIC value-write default.**
+        // C4 i64-specific guard, then the generic
+        // [`DurableOverlayWrite::upsert_cas_durable_default`] (gate → advisory
+        // existed-probe → append `Upsert` DURABLE → value seam publish in Upsert
+        // (always-write) mode → rank). Empty `""` flows through the value seam's
+        // RANKED depth-0 publish (no special case).
         if value < 0 {
             return Err(PersistentARTrieError::InvalidOperation(format!(
                 "upsert_cas_durable value for byte term {:?} must be non-negative \
@@ -1407,61 +1336,7 @@ impl<S: BlockStorage> PersistentARTrie<i64, S> {
                 value
             )));
         }
-
-        // UPSERT returns whether the term was NEWLY inserted: consult the trie BEFORE
-        // the write so the return value is correct (advisory — the write is
-        // unconditional, so a race is harmless; the CAS is the linearization point).
-        let existed = {
-            let _epoch = self.epoch_manager.enter_read();
-            self.find_leaf_lockfree(lockfree_root, term).is_some()
-        };
-
-        // ORDER A — step 1: append + sync the Upsert record DURABLE.
-        let value_bytes = crate::serialization::bincode_compat::serialize(&value).map_err(|e| {
-            PersistentARTrieError::internal(format!("Failed to serialize value: {}", e))
-        })?;
-        let lsn = self.append_to_wal_returning_lsn(WalRecord::Upsert {
-            term: term.to_vec(),
-            value: value_bytes,
-        })?;
-
-        // Step 2: publish via the single-root-CAS arbiter (always writes the value).
-        let _epoch = self.epoch_manager.enter_read();
-        loop {
-            let commit_seq = self.commit_seq.fetch_add(1, Ordering::AcqRel) + 1;
-            let root = match lockfree_root.load() {
-                Some(r) => r,
-                None => {
-                    let new_root = Arc::new(PersistentNode::<i64>::new());
-                    let _ = lockfree_root.try_init(new_root);
-                    continue;
-                }
-            };
-            let new_root = match self.build_value_path_recursive(&root, term, 0, value) {
-                Some(r) => r,
-                None => {
-                    self.cas_retries.fetch_add(1, Ordering::Relaxed);
-                    return Err(PersistentARTrieError::internal(
-                        "upsert_cas_durable: an on-disk overlay child blocked the path-copy; \
-                         the Upsert record is durable and replays on reopen",
-                    ));
-                }
-            };
-            let generation = commit_seq;
-            match lockfree_root.compare_exchange(&root, new_root) {
-                Ok(_) => {
-                    if let Some(ref cache) = self.lockfree_cache {
-                        cache.insert(term.to_vec(), true);
-                    }
-                    self.commit_rank_and_mark(lsn, term, generation)?;
-                    return Ok(!existed);
-                }
-                Err(_actual) => {
-                    self.cas_retries.fetch_add(1, Ordering::Relaxed);
-                    continue;
-                }
-            }
-        }
+        <Self as DurableOverlayWrite<ByteKey, i64, S>>::upsert_cas_durable_default(self, term, value)
     }
 
     /// Merge lock-free values into the persistent trie by summing.

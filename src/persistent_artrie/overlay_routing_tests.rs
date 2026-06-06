@@ -415,7 +415,10 @@ fn m3_routed_writes_round_trip_and_survive_reopen() {
     assert_eq!(reopened.get_value_bytes(b"epsilon"), None, "epsilon removed");
 }
 
-/// **The reject guards fire under the overlay** → `InvalidOperation`.
+/// **The reject guards fire under the overlay** → `InvalidOperation` — EXCEPT
+/// `compare_and_swap`, which Flip F0/G5 (NH2) now SUPPORTS under the overlay via the
+/// generic overlay value-CAS. The merge / compact / doc-tx guards still fire (they
+/// are the F2 carve-outs, unchanged in F0).
 #[test]
 fn m3_reject_guards_fire_under_overlay() {
     let dir = scratch("byte-m3-rejects");
@@ -427,14 +430,25 @@ fn m3_reject_guards_fire_under_overlay() {
     assert!(trie.route_overlay());
     trie.increment_bytes(b"seed", 1).expect("seed");
 
-    // compare_and_swap / _bytes
+    // compare_and_swap / _bytes — Flip F0/G5 (NH2): now WORKS under the overlay (the
+    // generic overlay value-CAS; bincode-byte compare + per-iteration recheck). seed
+    // == 1 (from the increment above), so a matching CAS swaps to 2; a stale CAS no-ops.
     assert!(
-        is_invalid_op(trie.compare_and_swap("seed", Some(1), 2)),
-        "compare_and_swap must reject under overlay"
+        trie.compare_and_swap("seed", Some(1), 2)
+            .expect("CAS should succeed under overlay (NH2)"),
+        "compare_and_swap with matching expected now swaps under overlay"
     );
+    assert_eq!(trie.get_value_bytes(b"seed"), Some(2), "CAS swapped seed 1→2");
     assert!(
-        is_invalid_op(trie.compare_and_swap_bytes(b"seed", Some(1), 2)),
-        "compare_and_swap_bytes must reject under overlay"
+        !trie
+            .compare_and_swap_bytes(b"seed", Some(1), 9)
+            .expect("CAS mismatch returns Ok(false)"),
+        "compare_and_swap_bytes with a now-stale expected (1, current is 2) ⇒ no swap"
+    );
+    assert_eq!(
+        trie.get_value_bytes(b"seed"),
+        Some(2),
+        "failed CAS left seed unchanged"
     );
 
     // merge_from / merge_replace / merge_from_batched (need an `other` trie)

@@ -25,74 +25,49 @@ use crate::persistent_artrie::error::Result;
 use crate::value::DictionaryValue;
 use std::any::Any;
 
-/// Route `insert_with_value(term, value)` to the overlay iff `V == u64`.
-///
-/// Returns `Some(result)` when handled by the overlay (`V = u64`), or `None` to
-/// signal the caller should run its owned-tree body (arbitrary `V`). INSERT
-/// semantics: an existing term is a no-op `Ok(false)` with no WAL.
-pub(super) fn route_insert_with_value<V, S>(
-    trie: &super::PersistentARTrieChar<V, S>,
-    term: &str,
-    value: &V,
-) -> Option<Result<bool>>
-where
-    V: DictionaryValue,
-    S: BlockStorage,
-{
-    let trie_u64 = (trie as &dyn Any).downcast_ref::<super::PersistentARTrieChar<u64, S>>()?;
-    let v_u64 = (value as &dyn Any).downcast_ref::<u64>()?;
-    Some(trie_u64.insert_cas_with_value_durable(term, *v_u64))
-}
-
-/// Route `upsert(term, value)` to the overlay iff `V == u64` (last-writer-wins).
-///
-/// Returns `Some(Ok(true))` if newly inserted, `Some(Ok(false))` if updated, or
-/// `None` for arbitrary `V` (caller runs the owned body).
-pub(super) fn route_upsert<V, S>(
-    trie: &super::PersistentARTrieChar<V, S>,
-    term: &str,
-    value: &V,
-) -> Option<Result<bool>>
-where
-    V: DictionaryValue,
-    S: BlockStorage,
-{
-    let trie_u64 = (trie as &dyn Any).downcast_ref::<super::PersistentARTrieChar<u64, S>>()?;
-    let v_u64 = (value as &dyn Any).downcast_ref::<u64>()?;
-    Some(trie_u64.upsert_cas_durable(term, *v_u64))
-}
-
-/// Route `get_or_insert(term, default)` to the overlay iff `V == u64`.
-///
-/// Insert-if-absent (`insert_cas_with_value_durable` is a no-op on an existing
-/// term), then read the resulting value back via `get_lockfree`. Returns the
-/// current value (existing or the just-inserted default). `None` for arbitrary `V`.
-pub(super) fn route_get_or_insert<V, S>(
-    trie: &super::PersistentARTrieChar<V, S>,
-    term: &str,
-    default: &V,
-) -> Option<Result<V>>
-where
-    V: DictionaryValue,
-    S: BlockStorage,
-{
-    let trie_u64 = (trie as &dyn Any).downcast_ref::<super::PersistentARTrieChar<u64, S>>()?;
-    let default_u64 = (default as &dyn Any).downcast_ref::<u64>()?;
-    let result: Result<V> = (|| {
-        // Insert the default if absent (no-op + Ok(false) if present, durable).
-        trie_u64.insert_cas_with_value_durable(term, *default_u64)?;
-        // Read the now-present value back (the existing value if it pre-existed,
-        // else the default we just inserted).
-        let v = trie_u64.get_lockfree(term).unwrap_or(*default_u64);
-        // Re-wrap the u64 as V via the SAFE Any path (V == u64 here).
-        let v_as_any: &dyn Any = &v;
-        Ok(v_as_any
-            .downcast_ref::<V>()
-            .cloned()
-            .expect("V == u64 in this routed branch"))
-    })();
-    Some(result)
-}
+// ============================================================================
+// SUPERSEDED in Flip F0 (G5) — value routes are now GENERIC, not u64-downcast.
+// `route_insert_with_value` / `route_upsert` / `route_get_or_insert` are commented
+// out (NOT deleted — F0 is reversible) because the VALUED mutators
+// (`insert_with_value`/`upsert`/`get_or_insert`/`compare_and_swap`/`insert_batch`)
+// now route to the SHARED GENERIC `DurableOverlayWrite::*_default` methods, which
+// work for ANY `V` via the `value_publish_inner` seam over the (now generic)
+// `build_value_path_recursive`. The `Any`-downcast-to-u64 they did is the exact
+// NH1 data-loss footgun the design removes: for arbitrary `V` post-flip it returned
+// `None` → the caller fell through to an owned write that is unranked → dropped on
+// Overlay-regime reopen. Only `route_increment` (below) keeps the downcast — the
+// counter RMW is legitimately `{u64,i64}`-only (NH3).
+//
+// /// Route `insert_with_value(term, value)` to the overlay iff `V == u64`.
+// pub(super) fn route_insert_with_value<V, S>(
+//     trie: &super::PersistentARTrieChar<V, S>, term: &str, value: &V,
+// ) -> Option<Result<bool>>
+// where V: DictionaryValue, S: BlockStorage {
+//     let trie_u64 = (trie as &dyn Any).downcast_ref::<super::PersistentARTrieChar<u64, S>>()?;
+//     let v_u64 = (value as &dyn Any).downcast_ref::<u64>()?;
+//     Some(trie_u64.insert_cas_with_value_durable(term, *v_u64))
+// }
+//
+// /// Route `upsert(term, value)` to the overlay iff `V == u64` (last-writer-wins).
+// pub(super) fn route_upsert<V, S>(
+//     trie: &super::PersistentARTrieChar<V, S>, term: &str, value: &V,
+// ) -> Option<Result<bool>>
+// where V: DictionaryValue, S: BlockStorage {
+//     let trie_u64 = (trie as &dyn Any).downcast_ref::<super::PersistentARTrieChar<u64, S>>()?;
+//     let v_u64 = (value as &dyn Any).downcast_ref::<u64>()?;
+//     Some(trie_u64.upsert_cas_durable(term, *v_u64))
+// }
+//
+// /// Route `get_or_insert(term, default)` to the overlay iff `V == u64`.
+// pub(super) fn route_get_or_insert<V, S>(
+//     trie: &super::PersistentARTrieChar<V, S>, term: &str, default: &V,
+// ) -> Option<Result<V>>
+// where V: DictionaryValue, S: BlockStorage {
+//     let trie_u64 = (trie as &dyn Any).downcast_ref::<super::PersistentARTrieChar<u64, S>>()?;
+//     let default_u64 = (default as &dyn Any).downcast_ref::<u64>()?;
+//     ... (insert-if-absent then read-back; see git history / the generic default) ...
+// }
+// ============================================================================
 
 /// Route `increment(term, delta)` to the overlay iff `V == u64` AND `delta >= 0`.
 ///

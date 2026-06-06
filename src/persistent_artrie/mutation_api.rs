@@ -17,6 +17,8 @@
 
 use log::warn;
 
+use crate::persistent_artrie_core::key_encoding::ByteKey;
+use crate::persistent_artrie_core::overlay::durable_write::DurableOverlayWrite;
 use crate::value::DictionaryValue;
 
 use super::block_storage::BlockStorage;
@@ -54,18 +56,22 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
     /// sibling). Arbitrary `V` keeps the owned body. A durable failure is logged and
     /// reported `false` (byte's `bool` signature). The owned arm is verbatim pre-flip.
     pub fn insert_with_value(&mut self, term: &str, value: V) -> bool {
+        // Flip F0/G5 (NH1): under the overlay, route to the SHARED GENERIC durable
+        // valued INSERT (insert-once) for ANY `V` — NEVER fall through to owned (the
+        // NH1 data-loss fix). Eligible V now; arbitrary V at F2.
         if self.route_overlay() {
-            if let Some(routed) =
-                super::lockfree_value_route::route_insert_with_value_bytes(self, term.as_bytes(), &value)
-            {
-                return routed.unwrap_or_else(|e| {
-                    warn!(
-                        "insert_with_value overlay route failed (reporting no-insert): {:?}",
-                        e
-                    );
-                    false
-                });
-            }
+            return <Self as DurableOverlayWrite<ByteKey, V, S>>::insert_cas_with_value_durable_default(
+                self,
+                term.as_bytes(),
+                value,
+            )
+            .unwrap_or_else(|e| {
+                warn!(
+                    "insert_with_value overlay route failed (reporting no-insert): {:?}",
+                    e
+                );
+                false
+            });
         }
         self.insert_impl(term.as_bytes(), Some(value))
     }
@@ -343,17 +349,19 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
     /// is logged and counted as not-inserted (byte's fail-soft batch discipline).
     fn insert_batch_entry_overlay(&self, term: &[u8], value: Option<&V>) -> bool {
         let result: Result<bool> = match value {
-            // Membership (or V=() unit value): durable membership insert.
+            // Membership: durable membership insert.
             None => self.insert_cas_durable(term),
-            Some(v) => {
-                // Valued insert for the i64 monomorph; for V=() the `Some(())` value
-                // carries no count, so fall back to a membership insert (the unit
-                // value is implicit in the overlay final).
-                match super::lockfree_value_route::route_insert_with_value_bytes(self, term, v) {
-                    Some(routed) => routed,
-                    None => self.insert_cas_durable(term),
-                }
-            }
+            // Valued (NH4/G5-NEW-4 fix): route to the SHARED GENERIC durable valued
+            // insert for ANY `V` (was: downcast to i64 and DROP the value for
+            // non-i64 `V` — the data-loss bug). For `V = i64` this is byte-identical
+            // to the prior `route_insert_with_value_bytes`; for `V = ()` it stores a
+            // (trivial) unit value (membership-equivalent); for arbitrary `V` it
+            // preserves the value instead of dropping it.
+            Some(v) => <Self as DurableOverlayWrite<ByteKey, V, S>>::insert_cas_with_value_durable_default(
+                self,
+                term,
+                v.clone(),
+            ),
         };
         result.unwrap_or_else(|e| {
             warn!(

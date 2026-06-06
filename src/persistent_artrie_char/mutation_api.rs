@@ -63,14 +63,18 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     /// unsafe). Arbitrary `V` stays on the proven owned tree (the design's
     /// "arbitrary V → forced OwnedTree" gap).
     pub fn insert_with_value(&mut self, term: &str, value: V) -> Result<bool> {
+        // Flip F0/G5 (NH1): under the overlay, route to the SHARED GENERIC durable
+        // valued INSERT (insert-once) for ANY `V` — NEVER fall through to the owned
+        // tree (a fall-through owned write for arbitrary `V` post-flip would be
+        // unranked → dropped on Overlay reopen = data loss). The currently-eligible
+        // `V` ({(),u64}) takes this now; arbitrary `V` joins at the F2 flip. Empty
+        // `""` flows through the value seam's RANKED depth-0 publish.
         if self.route_overlay() {
-            if let Some(routed) =
-                super::lockfree_value_route::route_insert_with_value(self, term, &value)
-            {
-                return routed;
-            }
-            // Arbitrary V under LockFreeOverlay: fall through to the owned body
-            // (forced OwnedTree — the value write path cannot represent arbitrary V).
+            return <Self as crate::persistent_artrie_core::overlay::durable_write::DurableOverlayWrite<
+                crate::persistent_artrie_core::key_encoding::CharKey,
+                V,
+                S,
+            >>::insert_cas_with_value_durable_default(self, term.as_bytes(), value);
         }
 
         self.preflight_insert_with_value_no_wal(term)?;

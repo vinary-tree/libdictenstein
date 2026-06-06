@@ -55,8 +55,12 @@
 // it is used (mirrors the char module's re-export).
 pub(crate) use crate::persistent_artrie_core::overlay::write_mode::OverlayWriteMode;
 
+// Only the feature-OFF eligibility branch uses TypeId (the feature-ON branch is
+// `true`), so gate the import to avoid an unused-import warning when the feature is on.
+#[cfg(not(feature = "overlay-arbitrary-v"))]
 use std::any::TypeId;
 use std::sync::atomic::Ordering;
+use std::sync::Arc;
 
 use super::block_storage::BlockStorage;
 use super::bucket::StringBucket;
@@ -65,7 +69,9 @@ use super::error::{PersistentARTrieError, Result};
 use super::transitions::ChildNode;
 use crate::persistent_artrie_core::durability::DurabilityPolicy;
 use crate::persistent_artrie_core::key_encoding::{ByteKey, KeyEncoding};
-use crate::persistent_artrie_core::overlay::durable_write::DurableOverlayWrite;
+use crate::persistent_artrie_core::overlay::durable_write::{
+    DurableOverlayWrite, ValuePublishOutcome, ValueWriteMode,
+};
 use crate::persistent_artrie_core::overlay::flip::LockFreeOverlay;
 use crate::persistent_artrie_core::wal::{Lsn, RankRegime, WalRecord};
 use crate::value::DictionaryValue;
@@ -461,10 +467,22 @@ impl<V: DictionaryValue, S: BlockStorage> LockFreeOverlay<ByteKey, V, S>
         }
     }
 
-    /// The byte eligible monomorphs `{(), i64}` (char's are `{(), u64}`).
+    /// The byte eligible monomorphs `{(), i64}` (char's are `{(), u64}`) + F2 (G5).
+    ///
+    /// With the `overlay-arbitrary-v` Cargo feature, ANY `V: DictionaryValue` is
+    /// eligible (the generic value path routes it through the overlay). WITHOUT it
+    /// (production default), only `{(), i64}` — production byte-identical until the
+    /// feature is deliberately enabled (owner-gated activation, design F2).
     /// `DictionaryValue: 'static` ⇒ `TypeId` is callable.
     fn overlay_eligible_v() -> bool {
-        TypeId::of::<V>() == TypeId::of::<i64>() || TypeId::of::<V>() == TypeId::of::<()>()
+        #[cfg(feature = "overlay-arbitrary-v")]
+        {
+            true
+        }
+        #[cfg(not(feature = "overlay-arbitrary-v"))]
+        {
+            TypeId::of::<V>() == TypeId::of::<i64>() || TypeId::of::<V>() == TypeId::of::<()>()
+        }
     }
 
     // ---- UN-ROUTED owned readers (D1 — read the OWNED tree directly) ----
@@ -564,6 +582,47 @@ impl<V: DictionaryValue, S: BlockStorage> LockFreeOverlay<ByteKey, V, S>
 
     fn overlay_contains(&self, units: &[u8]) -> bool {
         self.contains_lockfree(units)
+    }
+
+    fn overlay_publish_value(&self, units: &[u8], value: V) {
+        // G5/F1: no-WAL path-copy value SET (recovered terms are already durable).
+        // Fresh overlay at reestablish ⇒ no OnDisk children, no contention. `units`
+        // ARE the raw key bytes for byte.
+        use super::nodes::persistent_node::PersistentNode;
+        let lockfree_root = match self.lockfree_root.as_ref() {
+            Some(r) => r,
+            None => return,
+        };
+        let _epoch = self.epoch_manager.enter_read();
+        loop {
+            let root = match lockfree_root.load() {
+                Some(r) => r,
+                None => {
+                    let _ = lockfree_root.try_init(Arc::new(PersistentNode::<V>::new()));
+                    continue;
+                }
+            };
+            match self.build_value_path_recursive(&root, units, 0, value.clone()) {
+                Some(new_root) => match lockfree_root.compare_exchange(&root, new_root) {
+                    Ok(_) => {
+                        if let Some(ref cache) = self.lockfree_cache {
+                            cache.insert(units.to_vec(), true);
+                        }
+                        return;
+                    }
+                    Err(_) => continue,
+                },
+                None => return,
+            }
+        }
+    }
+
+    fn overlay_value_get(&self, units: &[u8]) -> Option<V> {
+        // Non-faulting leaf value read (exact: overlay finals never evicted in prod).
+        let lockfree_root = self.lockfree_root.as_ref()?;
+        let _epoch = self.epoch_manager.enter_read();
+        self.find_leaf_lockfree(lockfree_root, units)
+            .and_then(|leaf| leaf.get_value())
     }
 
     fn claim_commit_seq(&self) -> u64 {
@@ -677,6 +736,109 @@ impl<V: DictionaryValue, S: BlockStorage> DurableOverlayWrite<ByteKey, V, S>
                 Ok((new_val as i64, generation))
             }
             None => Ok((0, 0)),
+        }
+    }
+
+    // ---- G5/F0 value seams (byte): byte keys are raw `&[u8]` (no str), the
+    // counter is i64, and the byte overlay has NO write-path fault-in (overlay
+    // finals are never evicted in production — RT5 — so the non-faulting walk is
+    // exact). Mirrors the char seams otherwise. ----
+
+    fn value_present_faulting(&self, key_bytes: &[u8]) -> Result<bool> {
+        let lockfree_root = self.lockfree_root.as_ref().ok_or_else(|| {
+            PersistentARTrieError::InvalidOperation(
+                "Lock-free mode not enabled. Call enable_lockfree() first.".to_string(),
+            )
+        })?;
+        let _epoch = self.epoch_manager.enter_read();
+        Ok(self.find_leaf_lockfree(lockfree_root, key_bytes).is_some())
+    }
+
+    fn value_read_faulting(&self, key_bytes: &[u8]) -> Result<Option<V>> {
+        let lockfree_root = self.lockfree_root.as_ref().ok_or_else(|| {
+            PersistentARTrieError::InvalidOperation(
+                "Lock-free mode not enabled. Call enable_lockfree() first.".to_string(),
+            )
+        })?;
+        let _epoch = self.epoch_manager.enter_read();
+        Ok(self
+            .find_leaf_lockfree(lockfree_root, key_bytes)
+            .and_then(|leaf| leaf.get_value()))
+    }
+
+    fn value_publish_inner(
+        &self,
+        key_bytes: &[u8],
+        value: V,
+        mode: ValueWriteMode,
+    ) -> Result<ValuePublishOutcome> {
+        use super::nodes::persistent_node::PersistentNode;
+        let lockfree_root = self.lockfree_root.as_ref().ok_or_else(|| {
+            PersistentARTrieError::InvalidOperation(
+                "Lock-free mode not enabled. Call enable_lockfree() first.".to_string(),
+            )
+        })?;
+        let _epoch = self.epoch_manager.enter_read();
+        loop {
+            let commit_seq = self.commit_seq.fetch_add(1, Ordering::AcqRel) + 1;
+            let root = match lockfree_root.load() {
+                Some(r) => r,
+                None => {
+                    let new_root = Arc::new(PersistentNode::<V>::new());
+                    let _ = lockfree_root.try_init(new_root);
+                    continue;
+                }
+            };
+            // Mode pre-check on the FRESHLY-loaded root.
+            match &mode {
+                ValueWriteMode::InsertOnce => {
+                    if self.find_leaf_recursive(&root, key_bytes, 0).is_some() {
+                        return Ok(ValuePublishOutcome::NotApplied);
+                    }
+                }
+                ValueWriteMode::Upsert => {}
+                ValueWriteMode::CompareAndSwap { expected_bytes } => {
+                    let cur = self
+                        .find_leaf_recursive(&root, key_bytes, 0)
+                        .and_then(|leaf| leaf.get_value());
+                    let cur_bytes = match &cur {
+                        Some(v) => {
+                            Some(crate::serialization::bincode_compat::serialize(v).map_err(|e| {
+                                PersistentARTrieError::internal(format!(
+                                    "Failed to serialize value: {}",
+                                    e
+                                ))
+                            })?)
+                        }
+                        None => None,
+                    };
+                    if &cur_bytes != expected_bytes {
+                        return Ok(ValuePublishOutcome::NotApplied);
+                    }
+                }
+            }
+            let new_root = match self.build_value_path_recursive(&root, key_bytes, 0, value.clone()) {
+                Some(r) => r,
+                None => {
+                    self.cas_retries.fetch_add(1, Ordering::Relaxed);
+                    return Err(PersistentARTrieError::internal(
+                        "value_publish_inner: an on-disk overlay child blocked the path-copy; \
+                         the record is durable and replays on reopen",
+                    ));
+                }
+            };
+            match lockfree_root.compare_exchange(&root, new_root) {
+                Ok(_) => {
+                    if let Some(ref cache) = self.lockfree_cache {
+                        cache.insert(key_bytes.to_vec(), true);
+                    }
+                    return Ok(ValuePublishOutcome::Published(commit_seq));
+                }
+                Err(_actual) => {
+                    self.cas_retries.fetch_add(1, Ordering::Relaxed);
+                    continue;
+                }
+            }
         }
     }
 }

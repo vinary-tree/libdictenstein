@@ -18,6 +18,8 @@ use super::block_storage::BlockStorage;
 use super::dict_impl::PersistentARTrie;
 use super::error::{PersistentARTrieError, Result};
 use super::wal::WalRecord;
+use crate::persistent_artrie_core::key_encoding::ByteKey;
+use crate::persistent_artrie_core::overlay::durable_write::DurableOverlayWrite;
 use crate::value::DictionaryValue;
 
 impl<V: DictionaryValue + serde::Serialize + serde::de::DeserializeOwned, S: BlockStorage>
@@ -202,11 +204,13 @@ impl<V: DictionaryValue + serde::Serialize + serde::de::DeserializeOwned, S: Blo
     /// rejects a negative value (C4). Arbitrary `V` keeps the owned body. The owned
     /// body below is the verbatim pre-flip path (INERT until the flip).
     pub fn upsert_bytes(&mut self, term: &[u8], value: V) -> Result<bool> {
+        // Flip F0/G5 (NH1): under the overlay, route to the SHARED GENERIC durable
+        // UPSERT (always-write) for ANY V — NEVER fall through to owned. Eligible V
+        // now; arbitrary V at F2.
         if self.route_overlay() {
-            if let Some(routed) = super::lockfree_value_route::route_upsert_bytes(self, term, &value)
-            {
-                return routed;
-            }
+            return <Self as DurableOverlayWrite<ByteKey, V, S>>::upsert_cas_durable_default(
+                self, term, value,
+            );
         }
         let existed = self.contains_impl(term);
 
@@ -258,13 +262,15 @@ impl<V: DictionaryValue + serde::Serialize + serde::de::DeserializeOwned, S: Blo
         expected: Option<V>,
         new_value: V,
     ) -> Result<bool> {
+        // Flip F0/G5 (NH2): under the overlay, route to the SHARED GENERIC overlay
+        // value-CAS (bincode-BYTE compare, per-iteration `expected`-recheck, Order-A
+        // durable). SUPERSEDES the prior reject (the NH2 regression fix): eligible V
+        // ({(),i64}) gets working overlay CAS now, arbitrary V at F2. (Owned body
+        // below runs only when `!route_overlay()`.)
         if self.route_overlay() {
-            return Err(PersistentARTrieError::InvalidOperation(
-                "compare_and_swap is not valid under the lock-free overlay write mode (no \
-                 value-level CAS-with-expected primitive on the byte overlay); use \
-                 OverlayWriteMode::OwnedTree"
-                    .to_string(),
-            ));
+            return <Self as DurableOverlayWrite<ByteKey, V, S>>::compare_and_swap_cas_durable_default(
+                self, term, expected, new_value,
+            );
         }
         let current = self.get_value_impl(term);
 
@@ -337,12 +343,14 @@ impl<V: DictionaryValue + serde::Serialize + serde::de::DeserializeOwned, S: Blo
     /// Arbitrary `V` keeps the owned body. The owned body below is the verbatim
     /// pre-flip path (INERT until the flip).
     pub fn get_or_insert_bytes(&mut self, term: &[u8], default: V) -> Result<V> {
+        // Flip F0/G5 (NH1): under the overlay, route to the SHARED GENERIC insert-once
+        // get-or-insert (read-your-write; NEVER falls through to the owned tree for an
+        // overlay-routed trie — the NH1 data-loss fix). Eligible V now; arbitrary V at
+        // F2. (Owned body below runs only when `!route_overlay()`.)
         if self.route_overlay() {
-            if let Some(routed) =
-                super::lockfree_value_route::route_get_or_insert_bytes(self, term, &default)
-            {
-                return routed;
-            }
+            return <Self as DurableOverlayWrite<ByteKey, V, S>>::get_or_insert_durable_default(
+                self, term, default,
+            );
         }
         if let Some(v) = self.get_value_impl(term) {
             return Ok(v);

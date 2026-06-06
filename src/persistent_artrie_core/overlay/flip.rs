@@ -198,6 +198,22 @@ pub(crate) trait LockFreeOverlay<K: KeyEncoding, V: DictionaryValue, S>: Sized +
     /// `contains_lockfree`).
     fn overlay_contains(&self, units: &[K::Unit]) -> bool;
 
+    /// **G5/F1 — publish an ARBITRARY-`V` value for `units` to the overlay via the
+    /// variant's no-WAL path-copy CAS** (the recovered terms are already durable in
+    /// the WAL; re-logging would double-log). The value twin of
+    /// [`Self::overlay_publish_counter`], used by the third reestablish fold
+    /// [`Self::reestablish_overlay_value`]. SETs the value (last-writer = the CAS
+    /// winner); at reestablish the overlay is fresh, so there is no contention.
+    fn overlay_publish_value(&self, units: &[K::Unit], value: V);
+
+    /// **G5/F1 — read the overlay leaf's ARBITRARY-`V` value at `units`** (the
+    /// variant's non-faulting lock-free point read of the leaf `Option<V>`), or
+    /// `None` if absent/non-final. The value twin of [`Self::overlay_counter_get`],
+    /// used by the arbitrary-`V` arm of [`Self::overlay_route_get_value`].
+    /// NON-FAULTING and exact: overlay finals are never evicted in production
+    /// (§2.4 / RT5), so the resident-finals walk reads the durable value.
+    fn overlay_value_get(&self, units: &[K::Unit]) -> Option<V>;
+
     // ========================================================================
     // DEFAULT-PROVIDED GENERIC METHODS — DO NOT OVERRIDE (they encode D1 +
     // clear-owned-LAST + the non-faulting resident-finals walks).
@@ -501,6 +517,47 @@ pub(crate) trait LockFreeOverlay<K: KeyEncoding, V: DictionaryValue, S>: Sized +
         Ok(())
     }
 
+    /// **G5/F1 — the THIRD reestablish fold: ARBITRARY `V` value.** The value twin
+    /// of [`Self::reestablish_overlay_counter`]: rebuild the immutable overlay from
+    /// the recovered OWNED tree's `(term, V)` pairs, streaming by first unit (RA-2).
+    /// FALLIBLE: any owned-read error ABORTS (propagates `Err`) with the owned tree
+    /// INTACT — cleared ONLY as the LAST step (RES-7). Re-inserts via the no-WAL
+    /// value publisher [`Self::overlay_publish_value`].
+    ///
+    /// # D1 (CRITICAL)
+    ///
+    /// Reads the recovered owned tree via the UN-routed `owned_*` seam readers — the
+    /// SAME `owned_first_units` / `owned_has_empty_term_value` /
+    /// `owned_units_with_values_under` the counter fold uses. It adds NO new `owned_*`
+    /// seam, so the D1 grep gate (`flip.rs` head) is inherited, NOT re-derived.
+    fn reestablish_overlay_value(&mut self) -> Result<()> {
+        let (first_units, has_empty_term) = self.owned_first_units()?;
+        // Empty term "" → the overlay ROOT via the fresh-root-CAS value publisher
+        // (NO WAL at reestablish — the recovered value is already durable). Runs
+        // BEFORE clear_owned (RES-7). The UNRANKED `overlay_publish_root_value` is
+        // CORRECT here (reestablish has no LSN to rank — contrast the durable write
+        // path's RANKED depth-0 publish, §2.2/G5-NEW-4).
+        if has_empty_term {
+            if let Some(v) = self.owned_has_empty_term_value() {
+                self.overlay_publish_root_value(v)?;
+            }
+        }
+        // One first-unit partition at a time: stream its (term, value) pairs, publish
+        // each via the no-WAL value path, drop the chunk before the next unit.
+        for unit in first_units {
+            let prefix = [unit];
+            if let Some(chunk) = self.owned_units_with_values_under(&prefix)? {
+                for (units, value) in &chunk {
+                    self.overlay_publish_value(units, value.clone());
+                }
+            }
+        }
+        // Clear the owned tree LAST — a mid-stream `?` abort returns Err with the
+        // owned tree untouched (RES-7).
+        self.clear_owned();
+        Ok(())
+    }
+
     /// Re-wrap a `&V` as `CounterValue` via a SAFE `Any` downcast iff `V ==
     /// CounterValue`, else `None`. The reestablish counter fold uses this to feed
     /// the typed publisher seam from the generic `V`-valued owned chunk.
@@ -542,7 +599,12 @@ pub(crate) trait LockFreeOverlay<K: KeyEncoding, V: DictionaryValue, S>: Sized +
                 None
             });
         }
-        None
+        // G5/F1: ARBITRARY `V` — read the leaf's `Option<V>` directly (non-faulting,
+        // exact: overlay finals are never evicted in production, §2.4/RT5). `Some(_)`
+        // tells the caller the overlay handled it (NEVER fall through to owned — the
+        // NH1 read-side: a fall-through owned read post-flip sees the empty owned
+        // tree). Unreachable until the F2 eligibility flip (route_overlay() false).
+        Some(self.overlay_value_get(units))
     }
 
     // ========================================================================

@@ -12,6 +12,8 @@
 use crate::persistent_artrie::block_storage::BlockStorage;
 use crate::persistent_artrie::error::{PersistentARTrieError, Result};
 use crate::persistent_artrie::wal::WalRecord;
+use crate::persistent_artrie_core::key_encoding::CharKey;
+use crate::persistent_artrie_core::overlay::durable_write::DurableOverlayWrite;
 use crate::value::DictionaryValue;
 
 impl<V: DictionaryValue + serde::Serialize + serde::de::DeserializeOwned, S: BlockStorage>
@@ -167,11 +169,15 @@ impl<V: DictionaryValue + serde::Serialize + serde::de::DeserializeOwned, S: Blo
     /// [`upsert_cas_durable`](Self::upsert_cas_durable) (last-writer = the root-CAS
     /// winner). Arbitrary `V` falls back to the owned tree (SAFE `Any` dispatch).
     pub fn upsert(&mut self, term: &str, value: V) -> Result<bool> {
+        // Flip F0/G5 (NH1): under the overlay, route to the SHARED GENERIC durable
+        // UPSERT (always-write) for ANY V — NEVER fall through to owned. Eligible V
+        // now; arbitrary V at F2.
         if self.route_overlay() {
-            if let Some(routed) = super::lockfree_value_route::route_upsert(self, term, &value) {
-                return routed;
-            }
-            // Arbitrary V under LockFreeOverlay: fall through to the owned body.
+            return <Self as DurableOverlayWrite<CharKey, V, S>>::upsert_cas_durable_default(
+                self,
+                term.as_bytes(),
+                value,
+            );
         }
 
         self.preflight_insert_with_value_no_wal(term)?;
@@ -206,19 +212,21 @@ impl<V: DictionaryValue + serde::Serialize + serde::de::DeserializeOwned, S: Blo
         expected: Option<V>,
         new_value: V,
     ) -> Result<bool> {
-        // Flip gap (design §1, named residual): the overlay has no value-level
-        // compare-and-swap primitive (only the root-version CAS arbitrates
-        // structural publication, not an expected-value match). Reject under
-        // `route_overlay()` rather than write the owned tree (which the overlay
-        // read/checkpoint path would not observe). Reachable only for the u64
-        // monomorph under the F5 default; arbitrary V keeps `lockfree_root = None`
-        // so `route_overlay()` is false and the owned body runs.
+        // Flip F0/G5 (NH2): under the overlay, route to the SHARED GENERIC overlay
+        // value-CAS — bincode-BYTE comparison (no `PartialEq` on `DictionaryValue`),
+        // a per-iteration `expected`-recheck on the freshly-loaded root, Order-A
+        // durable (append `Upsert{new}` THEN publish, burn the LSN on a recheck
+        // miss). This SUPERSEDES the prior reject (the design's NH2 regression fix):
+        // the currently-eligible `V` ({(),u64}) gets working overlay CAS now, and
+        // arbitrary `V` joins at the F2 eligibility flip. (Owned body below runs only
+        // when `!route_overlay()` — ineligible `V`, or kill-switched.)
         if self.route_overlay() {
-            return Err(PersistentARTrieError::InvalidOperation(
-                "compare_and_swap is not supported under the lock-free overlay write mode (no \
-                 value-level CAS primitive); use OverlayWriteMode::OwnedTree"
-                    .to_string(),
-            ));
+            return <Self as DurableOverlayWrite<CharKey, V, S>>::compare_and_swap_cas_durable_default(
+                self,
+                term.as_bytes(),
+                expected,
+                new_value,
+            );
         }
 
         self.preflight_insert_with_value_no_wal(term)?;
@@ -273,15 +281,20 @@ impl<V: DictionaryValue + serde::Serialize + serde::de::DeserializeOwned, S: Blo
     /// If the term exists, returns its current value.
     /// If not, inserts the default value and returns it.
     pub fn get_or_insert(&mut self, term: &str, default: V) -> Result<V> {
-        // Flip routing (design §2): for the u64 monomorph under `route_overlay()`,
-        // insert-if-absent into the overlay then read the resulting value back.
-        // Arbitrary V falls back to the owned body (SAFE `Any` dispatch).
+        // Flip F0/G5 (NH1): under the overlay, route to the SHARED GENERIC
+        // insert-once get-or-insert (read-your-write: present? return it : insert
+        // the default once, then return; the durable insert is genuinely insert-once
+        // so concurrent racers converge on ONE value). It NEVER falls through to the
+        // owned tree for an overlay-routed trie — that is the NH1 data-loss fix (a
+        // fall-through owned write would be unranked → dropped on Overlay reopen).
+        // The currently-eligible V ({(),u64}) takes this now; arbitrary V at F2.
+        // (Owned body below runs only when `!route_overlay()`.)
         if self.route_overlay() {
-            if let Some(routed) =
-                super::lockfree_value_route::route_get_or_insert(self, term, &default)
-            {
-                return routed;
-            }
+            return <Self as DurableOverlayWrite<CharKey, V, S>>::get_or_insert_durable_default(
+                self,
+                term.as_bytes(),
+                default,
+            );
         }
 
         self.preflight_insert_with_value_no_wal(term)?;

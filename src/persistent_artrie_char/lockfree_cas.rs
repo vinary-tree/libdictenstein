@@ -329,6 +329,7 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     where
         S: 'static,
     {
+        use crate::persistent_artrie_core::overlay::flip::LockFreeOverlay;
         use std::any::{Any, TypeId};
         if TypeId::of::<V>() == TypeId::of::<u64>() {
             // SAFE: V == u64 ⇒ the runtime type IS PersistentARTrieChar<u64, S>.
@@ -340,6 +341,13 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
         }
         if TypeId::of::<V>() == TypeId::of::<()>() {
             return self.reestablish_overlay_membership_after_recovery();
+        }
+        // G5/F1: ARBITRARY eligible `V` → the third (value) reestablish fold. Gated
+        // on `overlay_eligible_v()` so it is INERT until the F2 eligibility flip — an
+        // ineligible `V` has no overlay to reestablish and falls to the `Ok(())`
+        // no-op. `reestablish_overlay_value` is a generic trait method (no downcast).
+        if Self::overlay_eligible_v() {
+            return <Self as LockFreeOverlay<CharKey, V, S>>::reestablish_overlay_value(self);
         }
         Ok(())
     }
@@ -1263,7 +1271,7 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     /// full path exists and the leaf is final. Unlike `find_in_lockfree_trie`
     /// which returns a `bool`, this returns the node itself so the caller can
     /// read or atomically modify its value.
-    fn find_leaf_lockfree(
+    pub(crate) fn find_leaf_lockfree(
         &self,
         root: &super::nodes::atomic_ptr::AtomicNodePtr<V>,
         chars: &[u32],
@@ -1272,8 +1280,10 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
         self.find_leaf_recursive(&current, chars, 0)
     }
 
-    /// Recursive helper for `find_leaf_lockfree`.
-    fn find_leaf_recursive(
+    /// Recursive helper for `find_leaf_lockfree`. `pub(crate)` so the value seams
+    /// ([`DurableOverlayWrite::value_publish_inner`] in `overlay_write_mode`) can do
+    /// the in-loop InsertOnce/CAS pre-check on the freshly-loaded root.
+    pub(crate) fn find_leaf_recursive(
         &self,
         node: &Arc<super::nodes::persistent_node::PersistentCharNode<V>>,
         chars: &[u32],
@@ -1470,6 +1480,70 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     /// Get the number of CAS retries (for monitoring contention).
     pub fn cas_retry_count(&self) -> u64 {
         self.cas_retries.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Path-copy the `root`→leaf spine for `chars`, finalizing the leaf with
+    /// `value`. Returns a new root `Arc` (the published-version candidate) or
+    /// `None` if an on-disk child blocks the copy AND cannot be faulted in (I/O
+    /// error). **G5/F0: GENERIC over `V`** (relocated here from the `<u64,S>` block;
+    /// the only `V`-ness is the `value` parameter — the recursion uses only the
+    /// `<K,V>`-generic node ops `as_final`/`with_value`/`find_child`/`with_child`).
+    /// Shared by the value seams (insert/upsert/CAS — [`value_publish_inner`]) AND
+    /// the u64 counter inner. Empty `chars` (depth 0 == len 0) is the RANKED
+    /// empty-term root publish (the caller is inside its commit_seq CAS loop).
+    ///
+    /// Mirrors the membership `build_path_recursive`, but bakes `as_final().with_value`
+    /// into the leaf so finalization+value publish happen atomically with the root
+    /// CAS (single-phase); for an existing path it replaces the leaf's value
+    /// (last-writer = the CAS winner), for a new path it creates the spine.
+    pub(crate) fn build_value_path_recursive(
+        &self,
+        node: &Arc<super::nodes::persistent_node::PersistentCharNode<V>>,
+        chars: &[u32],
+        depth: usize,
+        value: V,
+    ) -> Option<Arc<super::nodes::persistent_node::PersistentCharNode<V>>> {
+        use super::nodes::persistent_node::{Child, PersistentCharNode};
+
+        if depth == chars.len() {
+            // Reached the leaf: bake finality + the new value into a fresh copy.
+            return Some(Arc::new(node.as_final().with_value(value)));
+        }
+
+        let key = chars[depth];
+        match node.find_child(key) {
+            Some(child) => {
+                // In-memory child: path-copy into it.
+                if let Some(child_arc) = child.as_in_mem() {
+                    let child_arc = Arc::clone(child_arc);
+                    let new_child =
+                        self.build_value_path_recursive(&child_arc, chars, depth + 1, value)?;
+                    return Some(Arc::new(node.with_child(key, Child::InMem(new_child))));
+                }
+                // WRITE-PATH FAULT-IN (design §4): the child was EVICTED to OnDisk.
+                // Fault it back in then descend, splicing it InMem — the single root
+                // CAS stays the sole arbiter. On I/O error return `None` (transient
+                // Conflict → the value seam surfaces it as a durable-but-deferred
+                // error; the counter inner retries).
+                let on_disk = child.as_on_disk().filter(|p| !p.is_null())?;
+                let loaded = self.load_overlay_node_from_disk(on_disk).ok()?;
+                let new_child =
+                    self.build_value_path_recursive(&loaded, chars, depth + 1, value)?;
+                Some(Arc::new(node.with_child(key, Child::InMem(new_child))))
+            }
+            None => {
+                // Child absent: build the remaining spine bottom-up, valued leaf
+                // at the bottom.
+                let leaf = Arc::new(PersistentCharNode::<V>::new().as_final().with_value(value));
+                let mut current = leaf;
+                for &c in chars[depth + 1..].iter().rev() {
+                    let parent =
+                        PersistentCharNode::<V>::new().with_child(c, Child::InMem(current));
+                    current = Arc::new(parent);
+                }
+                Some(Arc::new(node.with_child(key, Child::InMem(current))))
+            }
+        }
     }
 
     // ==================== End Lock-Free CAS Methods ====================
@@ -1763,111 +1837,25 @@ impl<S: BlockStorage> super::PersistentARTrieChar<u64, S> {
     ///
     /// Returns `Ok(true)` iff this call newly inserted the term.
     pub fn insert_cas_with_value_durable(&self, term: &str, value: u64) -> Result<bool> {
-        use super::nodes::persistent_node::PersistentCharNode;
-        use std::sync::atomic::Ordering;
-
-        // **M1:** the Order-A durability gate is the SHARED GENERIC default
-        // [`DurableOverlayWrite::durable_policy_gate`] (noun `"write"`). The valued
-        // present-check (faulting, to reflect a term under an evicted prefix) +
-        // CAS-publish loop stay INHERENT; only the gate + commit-rank/watermark tail
-        // route through the shared skeleton.
-        <Self as DurableOverlayWrite<CharKey, u64, S>>::durable_policy_gate(
-            self,
-            "insert_cas_with_value_durable",
-            "write",
-        )?;
-
-        let lockfree_root = self.lockfree_root.as_ref().ok_or_else(|| {
-            PersistentARTrieError::InvalidOperation(
-                "Lock-free mode not enabled. Call enable_lockfree() first.".to_string(),
-            )
-        })?;
-
-        let chars: Vec<u32> = term.chars().map(|c| c as u32).collect();
-        // Empty-string support (H4): "" is the root; the present-check + WAL +
-        // `build_value_path_recursive(root, &[], 0, value)` (fresh-root-CAS at depth 0)
-        // below handle "" generically — no rejection.
+        // **Flip F0 (G5): thin caller of the SHARED GENERIC value-write default.**
+        // The u64-specific overflow guard stays here (the WAL counter domain is i64,
+        // so a u64 value > LOCKFREE_COUNTER_MAX cannot round-trip); EVERYTHING else
+        // — the Order-A skeleton (gate → faulting present-hoist → append `Insert`
+        // DURABLE → value seam publish in InsertOnce mode → rank-or-burn) — is the
+        // generic [`DurableOverlayWrite::insert_cas_with_value_durable_default`],
+        // shared verbatim with the arbitrary-`V` path. Empty `""` flows through the
+        // value seam's RANKED depth-0 `build_value_path_recursive` publish (no
+        // special case). NB: the generic default is now genuinely insert-once even
+        // under a race (the in-loop finality recheck), strictly more correct than the
+        // prior inline loop which overwrote a concurrent insert.
         if value > LOCKFREE_COUNTER_MAX {
             return Err(Self::lockfree_increment_overflow_error(term, None, value));
         }
-
-        // INSERT (not upsert): if already present, no-op with NO WAL (don't burn an
-        // LSN / punch a watermark hole). Consult the trie (fault-in), not the cache.
-        {
-            let _epoch = self.epoch_manager.enter_read();
-            let present_before =
-                match self.find_leaf_faulting(lockfree_root, &chars, DEFAULT_MAX_FAULTIN_RETRIES) {
-                    Ok(found) => found.is_some(),
-                    Err(_) => self.find_leaf_lockfree(lockfree_root, &chars).is_some(),
-                };
-            if present_before {
-                return Ok(false);
-            }
-        }
-
-        // ORDER A — step 1: append + sync the valued Insert record DURABLE, before
-        // any visibility. One append covers every CAS retry (never re-appended).
-        let value_bytes = crate::serialization::bincode_compat::serialize(&value).map_err(|e| {
-            PersistentARTrieError::internal(format!("Failed to serialize value: {}", e))
-        })?;
-        let lsn = self.append_to_wal_returning_lsn(WalRecord::Insert {
-            term: term.as_bytes().to_vec(),
-            value: Some(value_bytes),
-        })?;
-
-        // Step 2: publish the valued leaf via the single-root-CAS arbiter (the same
-        // path-copy `build_value_path_recursive` the proven counter path uses, so
-        // no new commit point is introduced).
-        let _epoch = self.epoch_manager.enter_read();
-        loop {
-            // S4 commit_seq CLAIM (loop-top, re-claimed per iteration) — see
-            // `insert_cas_durable`. Monotone in the global root-CAS order, durable.
-            let commit_seq = self.commit_seq.fetch_add(1, Ordering::AcqRel) + 1;
-            let root = match lockfree_root.load() {
-                Some(r) => r,
-                None => {
-                    let new_root = Arc::new(PersistentCharNode::<u64>::new());
-                    let _ = lockfree_root.try_init(new_root);
-                    continue;
-                }
-            };
-            let new_root = match self.build_value_path_recursive(&root, &chars, 0, value) {
-                Some(r) => r,
-                // An I/O error faulting an evicted prefix blocked the path-copy: the
-                // WAL record is ALREADY durable, but we could not make the write
-                // visible. Surface it (Order-A durable-but-visible-after-reopen
-                // window — recovery replays the logged Insert); do NOT advance the
-                // watermark (the contiguous prefix stalls at this LSN).
-                None => {
-                    self.cas_retries.fetch_add(1, Ordering::Relaxed);
-                    return Err(PersistentARTrieError::internal(
-                        "insert_cas_with_value_durable: could not fault an evicted prefix in to \
-                         publish the valued leaf; the Insert record is durable and replays on reopen",
-                    ));
-                }
-            };
-            // GENERATION (§3.6): the published-root version captured at THIS op's
-            // visibility CAS, monotone in root-CAS order. (S2/FIX-A keeps the real arms
-            // on root.version; the durable commit_seq stamp lands at S4 with Overlay.)
-            // S4 GENERATION: durable global commit_seq (loop-top claim).
-            let generation = commit_seq;
-            match lockfree_root.compare_exchange(&root, new_root) {
-                Ok(_) => {
-                    if let Some(ref cache) = self.lockfree_cache {
-                        cache.insert(term.to_string(), true);
-                    }
-                    // **M1:** committed-arm tail — the SHARED GENERIC
-                    // [`DurableOverlayWrite::commit_rank_and_mark`] (ONE copy;
-                    // byte-identical to the prior inline rank+mark+mark).
-                    self.commit_rank_and_mark(lsn, term.as_bytes(), generation)?;
-                    return Ok(true);
-                }
-                Err(_actual) => {
-                    self.cas_retries.fetch_add(1, Ordering::Relaxed);
-                    continue;
-                }
-            }
-        }
+        <Self as DurableOverlayWrite<CharKey, u64, S>>::insert_cas_with_value_durable_default(
+            self,
+            term.as_bytes(),
+            value,
+        )
     }
 
     /// **Flip F0 — thin Order-A durable UPSERT** (`V = u64`). Like
@@ -1879,177 +1867,20 @@ impl<S: BlockStorage> super::PersistentARTrieChar<u64, S> {
     /// Returns `Ok(true)` iff the term was newly inserted (`false` = updated an
     /// existing term).
     pub fn upsert_cas_durable(&self, term: &str, value: u64) -> Result<bool> {
-        use super::nodes::persistent_node::PersistentCharNode;
-        use std::sync::atomic::Ordering;
-
-        // **M1:** the Order-A durability gate is the SHARED GENERIC default
-        // [`DurableOverlayWrite::durable_policy_gate`] (noun `"write"`). The
-        // existed-probe (advisory, for the return flag) + always-write CAS-publish
-        // loop stay INHERENT; only the gate + commit-rank/watermark tail route
-        // through the shared skeleton.
-        <Self as DurableOverlayWrite<CharKey, u64, S>>::durable_policy_gate(
-            self,
-            "upsert_cas_durable",
-            "write",
-        )?;
-
-        let lockfree_root = self.lockfree_root.as_ref().ok_or_else(|| {
-            PersistentARTrieError::InvalidOperation(
-                "Lock-free mode not enabled. Call enable_lockfree() first.".to_string(),
-            )
-        })?;
-
-        let chars: Vec<u32> = term.chars().map(|c| c as u32).collect();
-        // Empty-string support (H4): "" is the root; the WAL +
-        // `build_value_path_recursive(root, &[], 0, value)` (fresh-root-CAS at depth 0)
-        // below handle "" generically — no rejection (UPSERT always writes the value).
+        // **Flip F0 (G5): thin caller of the SHARED GENERIC value-write default.**
+        // u64-specific overflow guard, then the generic
+        // [`DurableOverlayWrite::upsert_cas_durable_default`] (gate → advisory
+        // existed-probe → append `Upsert` DURABLE → value seam publish in Upsert
+        // (always-write) mode → rank). Empty `""` flows through the value seam's
+        // RANKED depth-0 publish (no special case).
         if value > LOCKFREE_COUNTER_MAX {
             return Err(Self::lockfree_increment_overflow_error(term, None, value));
         }
-
-        // UPSERT returns whether the term was NEWLY inserted: consult the trie
-        // (fault-in) BEFORE the write so the return value is correct. This read is
-        // advisory for the return flag only (the write is unconditional), so a race
-        // is harmless (the CAS is the linearization point).
-        let existed = {
-            let _epoch = self.epoch_manager.enter_read();
-            match self.find_leaf_faulting(lockfree_root, &chars, DEFAULT_MAX_FAULTIN_RETRIES) {
-                Ok(found) => found.is_some(),
-                Err(_) => self.find_leaf_lockfree(lockfree_root, &chars).is_some(),
-            }
-        };
-
-        // ORDER A — step 1: append + sync the Upsert record DURABLE.
-        let value_bytes = crate::serialization::bincode_compat::serialize(&value).map_err(|e| {
-            PersistentARTrieError::internal(format!("Failed to serialize value: {}", e))
-        })?;
-        let lsn = self.append_to_wal_returning_lsn(WalRecord::Upsert {
-            term: term.as_bytes().to_vec(),
-            value: value_bytes,
-        })?;
-
-        // Step 2: publish via the single-root-CAS arbiter (always writes the value).
-        let _epoch = self.epoch_manager.enter_read();
-        loop {
-            // S4 commit_seq CLAIM (loop-top, re-claimed per iteration) — see
-            // `insert_cas_durable`. Monotone in the global root-CAS order, durable.
-            let commit_seq = self.commit_seq.fetch_add(1, Ordering::AcqRel) + 1;
-            let root = match lockfree_root.load() {
-                Some(r) => r,
-                None => {
-                    let new_root = Arc::new(PersistentCharNode::<u64>::new());
-                    let _ = lockfree_root.try_init(new_root);
-                    continue;
-                }
-            };
-            let new_root = match self.build_value_path_recursive(&root, &chars, 0, value) {
-                Some(r) => r,
-                None => {
-                    self.cas_retries.fetch_add(1, Ordering::Relaxed);
-                    return Err(PersistentARTrieError::internal(
-                        "upsert_cas_durable: could not fault an evicted prefix in to publish the \
-                         valued leaf; the Upsert record is durable and replays on reopen",
-                    ));
-                }
-            };
-            // GENERATION (§3.6): the published-root version (S2/FIX-A; commit_seq at S4).
-            // S4 GENERATION: durable global commit_seq (loop-top claim).
-            let generation = commit_seq;
-            match lockfree_root.compare_exchange(&root, new_root) {
-                Ok(_) => {
-                    if let Some(ref cache) = self.lockfree_cache {
-                        cache.insert(term.to_string(), true);
-                    }
-                    // **M1:** committed-arm tail — the SHARED GENERIC
-                    // [`DurableOverlayWrite::commit_rank_and_mark`] (ONE copy;
-                    // byte-identical to the prior inline rank+mark+mark).
-                    self.commit_rank_and_mark(lsn, term.as_bytes(), generation)?;
-                    return Ok(!existed);
-                }
-                Err(_actual) => {
-                    self.cas_retries.fetch_add(1, Ordering::Relaxed);
-                    continue;
-                }
-            }
-        }
-    }
-
-    /// Path-copy the `root`→leaf spine for `chars`, finalizing the leaf with
-    /// `value`. Returns a new root `Arc` (the published-version candidate) or
-    /// `None` if an on-disk child blocks the copy (cannot be faulted in here).
-    ///
-    /// Mirrors the membership `build_path_recursive`, but instead of returning the
-    /// shared leaf for a later `try_set_final`, it bakes `as_final().with_value`
-    /// into the leaf so finalization+value publish atomically with the root CAS
-    /// (single-phase). For an existing path this replaces the leaf's value
-    /// (last-writer = the CAS winner); for a new path it creates the spine.
-    fn build_value_path_recursive(
-        &self,
-        node: &Arc<super::nodes::persistent_node::PersistentCharNode<u64>>,
-        chars: &[u32],
-        depth: usize,
-        value: u64,
-    ) -> Option<Arc<super::nodes::persistent_node::PersistentCharNode<u64>>> {
-        use super::nodes::persistent_node::{Child, PersistentCharNode};
-
-        if depth == chars.len() {
-            // Reached the leaf: bake finality + the new value into a fresh copy.
-            return Some(Arc::new(node.as_final().with_value(value)));
-        }
-
-        let key = chars[depth];
-        match node.find_child(key) {
-            Some(child) => {
-                // In-memory child: path-copy into it.
-                if let Some(child_arc) = child.as_in_mem() {
-                    let child_arc = Arc::clone(child_arc);
-                    let new_child =
-                        self.build_value_path_recursive(&child_arc, chars, depth + 1, value)?;
-                    return Some(Arc::new(node.with_child(key, Child::InMem(new_child))));
-                }
-                // WRITE-PATH FAULT-IN (design §4): the child was EVICTED to OnDisk.
-                // Fault it back in then descend, splicing it InMem — the single root
-                // CAS in `try_increment_cas` stays the sole arbiter. This also fixes
-                // the PRE-EXISTING infinite-spin: previously an OnDisk child returned
-                // `None` → `try_increment_cas` looped forever re-reading the same
-                // OnDisk root. Now we fault it in (the read step already published a
-                // faulted root, so on the retry this slot is InMem). On I/O error we
-                // return `None` (transient Conflict → bounded by the read step's own
-                // fault-in + retries; never an unbounded spin). Flip F0: un-gated to
-                // production (fixes the pre-existing OnDisk infinite-spin on the
-                // counter write path).
-                {
-                    let on_disk = child.as_on_disk().filter(|p| !p.is_null())?;
-                    let loaded = self.load_overlay_node_from_disk(on_disk).ok()?;
-                    let new_child =
-                        self.build_value_path_recursive(&loaded, chars, depth + 1, value)?;
-                    Some(Arc::new(node.with_child(key, Child::InMem(new_child))))
-                }
-                // Pre-flip production fallback (commented out, not deleted — F0
-                // reversibility): returned `None` for an OnDisk child (which spun
-                // the counter write path forever).
-                // #[cfg(not(any(test, feature = "bench-internals")))]
-                // {
-                //     None
-                // }
-            }
-            None => {
-                // Child absent: build the remaining spine bottom-up, valued leaf
-                // at the bottom.
-                let leaf = Arc::new(
-                    PersistentCharNode::<u64>::new()
-                        .as_final()
-                        .with_value(value),
-                );
-                let mut current = leaf;
-                for &c in chars[depth + 1..].iter().rev() {
-                    let parent =
-                        PersistentCharNode::<u64>::new().with_child(c, Child::InMem(current));
-                    current = Arc::new(parent);
-                }
-                Some(Arc::new(node.with_child(key, Child::InMem(current))))
-            }
-        }
+        <Self as DurableOverlayWrite<CharKey, u64, S>>::upsert_cas_durable_default(
+            self,
+            term.as_bytes(),
+            value,
+        )
     }
 
     /// Lock-free increment: create path if needed, then add `delta`.
@@ -2735,6 +2566,173 @@ mod durable_write_tests {
             );
         }
         assert_eq!(trie.get_value("never-incremented"), None);
+    }
+
+    /// **F0 (G5) — the GENERIC durable value-write path works for an ARBITRARY `V`
+    /// (`String`).** Drives the shared `DurableOverlayWrite::*_default` methods
+    /// DIRECTLY on a `<String>` trie with the overlay manually enabled (String is not
+    /// overlay-ELIGIBLE until F2, so `route_overlay()` is false and the public
+    /// mutators take the owned path; F0 verifies the generic machinery itself
+    /// round-trips for arbitrary `V`). Covers: insert-once (no overwrite on a present
+    /// term), upsert (overwrite), the EMPTY term `""` carrying a value (G5-NEW-4 —
+    /// the RANKED depth-0 publish, NOT the unranked reestablish publisher),
+    /// get_or_insert (present→existing / absent→default), and compare_and_swap
+    /// (bincode-byte compare — `String: !PartialEq`-bound is irrelevant).
+    #[test]
+    fn f0_generic_value_write_arbitrary_v_string() {
+        use crate::persistent_artrie_core::overlay::durable_write::DurableOverlayWrite;
+        let dir = scratch("f0-generic-value-string");
+        let path = dir.path().join("t.artc");
+        let mut trie = PersistentARTrieChar::<String>::create(&path).expect("create");
+        trie.set_durability_policy(DurabilityPolicy::Immediate);
+        trie.enable_lockfree();
+
+        // insert-once: first insert wins, second is a no-op (does NOT overwrite).
+        assert!(
+            trie.insert_cas_with_value_durable_default(b"hello", "world".to_string())
+                .expect("insert"),
+            "newly inserted"
+        );
+        assert!(
+            !trie
+                .insert_cas_with_value_durable_default(b"hello", "OTHER".to_string())
+                .expect("insert2"),
+            "insert-once: already present ⇒ Ok(false), no overwrite"
+        );
+        assert_eq!(
+            trie.value_read_faulting(b"hello").expect("read"),
+            Some("world".to_string()),
+            "insert-once preserved the first value"
+        );
+
+        // upsert: always overwrites.
+        assert!(
+            !trie
+                .upsert_cas_durable_default(b"hello", "world2".to_string())
+                .expect("upsert"),
+            "upsert of an existing term ⇒ Ok(false) (updated, not newly inserted)"
+        );
+        assert_eq!(
+            trie.value_read_faulting(b"hello").expect("read2"),
+            Some("world2".to_string()),
+            "upsert overwrote"
+        );
+
+        // EMPTY term "" carries an arbitrary-V value via the RANKED depth-0 publish
+        // (G5-NEW-4): a real durable, ranked root value — NOT a dropped/unranked one.
+        assert!(
+            trie.insert_cas_with_value_durable_default(b"", "EMPTY".to_string())
+                .expect("insert empty"),
+            "empty term newly inserted"
+        );
+        assert_eq!(
+            trie.value_read_faulting(b"").expect("read empty"),
+            Some("EMPTY".to_string()),
+            "empty-term arbitrary-V value round-trips"
+        );
+
+        // get_or_insert: present ⇒ existing value; absent ⇒ the default.
+        assert_eq!(
+            trie.get_or_insert_durable_default(b"hello", "DEFAULT".to_string())
+                .expect("goi present"),
+            "world2".to_string(),
+            "get_or_insert on a present term returns the EXISTING value"
+        );
+        assert_eq!(
+            trie.get_or_insert_durable_default(b"fresh", "DEFLT".to_string())
+                .expect("goi absent"),
+            "DEFLT".to_string(),
+            "get_or_insert on an absent term inserts + returns the default"
+        );
+        assert_eq!(
+            trie.value_read_faulting(b"fresh").expect("read fresh"),
+            Some("DEFLT".to_string()),
+            "get_or_insert's insert is durable + readable"
+        );
+
+        // compare_and_swap: bincode-byte comparison (no `PartialEq` bound on V).
+        assert!(
+            trie.compare_and_swap_cas_durable_default(
+                b"hello",
+                Some("world2".to_string()),
+                "world3".to_string(),
+            )
+            .expect("cas match"),
+            "CAS with matching expected ⇒ swap"
+        );
+        assert!(
+            !trie
+                .compare_and_swap_cas_durable_default(
+                    b"hello",
+                    Some("WRONG".to_string()),
+                    "world4".to_string(),
+                )
+                .expect("cas mismatch"),
+            "CAS with non-matching expected ⇒ no swap"
+        );
+        assert_eq!(
+            trie.value_read_faulting(b"hello").expect("read3"),
+            Some("world3".to_string()),
+            "only the matching CAS landed"
+        );
+    }
+
+    /// **F1 (G5) — the THIRD reestablish fold + the arbitrary-`V` read route.** Builds
+    /// an OWNED `<String>` tree (incl. the empty term carrying a value), then drives
+    /// `reestablish_overlay_value` (the dispatch gates it on F2 eligibility, so F1
+    /// exercises the fold directly) and verifies every `(term, value)` — INCLUDING
+    /// `""` (republished to the overlay ROOT, H3) — is reproduced in the overlay,
+    /// readable via BOTH the `overlay_value_get` seam AND the public `get_value` read
+    /// route (which now routes to the overlay under `route_overlay()`). Mirrors
+    /// `m2a_reestablish_counter_round_trip` for arbitrary `V`.
+    #[test]
+    fn f1_reestablish_overlay_value_arbitrary_v_string() {
+        use crate::persistent_artrie_core::overlay::flip::LockFreeOverlay;
+        use crate::persistent_artrie_core::overlay::write_mode::OverlayWriteMode;
+        let dir = scratch("f1-reestablish-value-string");
+        let path = dir.path().join("t.artc");
+        let mut trie = PersistentARTrieChar::<String>::create(&path).expect("create");
+        trie.kill_switch_to_owned();
+        // OWNED writes (String is not overlay-eligible ⇒ upsert → owned tree).
+        trie.upsert("", "EMPTY".to_string()).expect("owned empty upsert");
+        trie.upsert("alpha", "A".to_string()).expect("owned upsert");
+        trie.upsert("alps", "B".to_string()).expect("owned upsert");
+        trie.upsert("beta", "C".to_string()).expect("owned upsert");
+        assert_eq!(
+            trie.get_value(""),
+            Some("EMPTY".to_string()),
+            "owned tree holds the empty-term value before reestablish"
+        );
+
+        trie.enable_lockfree();
+        trie.set_overlay_write_mode(OverlayWriteMode::LockFreeOverlay);
+        assert!(trie.route_overlay(), "overlay routed after enable + LockFreeOverlay");
+
+        // Drive the third (value) reestablish fold directly for arbitrary `V`.
+        LockFreeOverlay::reestablish_overlay_value(&mut trie).expect("reestablish value");
+
+        let units = |s: &str| s.chars().map(|c| c as u32).collect::<Vec<u32>>();
+        // Read via the F1 arbitrary-V seam.
+        assert_eq!(trie.overlay_value_get(&units("alpha")), Some("A".to_string()));
+        assert_eq!(trie.overlay_value_get(&units("alps")), Some("B".to_string()));
+        assert_eq!(trie.overlay_value_get(&units("beta")), Some("C".to_string()));
+        assert_eq!(
+            trie.overlay_value_get(&units("")),
+            Some("EMPTY".to_string()),
+            "empty-term value reestablished to the overlay ROOT (H3)"
+        );
+        assert_eq!(trie.overlay_value_get(&units("absent")), None);
+
+        // And the PUBLIC read route now serves from the overlay (route_overlay true) —
+        // the arbitrary-V arm of `overlay_route_get_value`.
+        assert_eq!(trie.get_value("alpha"), Some("A".to_string()));
+        assert_eq!(trie.get_value("beta"), Some("C".to_string()));
+        assert_eq!(
+            trie.get_value(""),
+            Some("EMPTY".to_string()),
+            "public get_value('') routes to the reestablished overlay root value"
+        );
+        assert_eq!(trie.get_value("absent"), None);
     }
 
     /// S3 hazard-D control (the distinguishing case): a `V=u64` key touched by BOTH a
