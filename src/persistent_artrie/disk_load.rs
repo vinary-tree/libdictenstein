@@ -439,13 +439,20 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
 
                 // Load the node and its children using iterative loading
                 // (avoids stack overflow for deep tries)
-                let (node, children) = Self::load_art_node_with_children_from_arena_iterative(
-                    arena_manager,
-                    &node_ptr,
-                )?;
+                let (node, children, root_value_bytes) =
+                    Self::load_art_node_with_children_from_arena_iterative(arena_manager, &node_ptr)?;
 
-                // Value deserialization not yet implemented with arena storage
-                let root_value: Option<V> = None;
+                // Empty-string support (H1): deserialize the root's value blob (the empty
+                // term "" carries its value on the root node record). Propagated, never
+                // swallowed (data-loss path). An old (value-less) file → None — back-compat.
+                let root_value: Option<V> = match root_value_bytes {
+                    Some(vb) => Some(
+                        crate::serialization::bincode_compat::deserialize(&vb).map_err(|e| {
+                            PersistentARTrieError::corrupted(format!("deserialize root value: {e}"))
+                        })?,
+                    ),
+                    None => None,
+                };
 
                 Ok((
                     TrieRoot::ArtNode {
@@ -618,7 +625,7 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
     fn load_single_art_node_data(
         arena_manager: &Arc<RwLock<ArenaManager<S>>>,
         node_ptr: &SwizzledPtr,
-    ) -> Result<(Node, bool, Vec<(u8, SwizzledPtr)>)> {
+    ) -> Result<(Node, bool, Option<Vec<u8>>, Vec<(u8, SwizzledPtr)>)> {
         let disk_loc = node_ptr.disk_location().ok_or_else(|| {
             PersistentARTrieError::corrupted("Invalid node pointer: cannot get disk location")
         })?;
@@ -638,6 +645,13 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
 
         let is_final = node.header().is_final();
 
+        // Empty-string support (H1): capture the root node's optional value blob (the
+        // empty term "" carries its value on the root record) BEFORE `drop(am)` (it
+        // borrows `node_data`, which borrows `am`). A value-less (legacy) root has
+        // HAS_VALUE clear → `read_node_value` returns None — back-compat. This mirrors
+        // `load_single_child_data`, which already reads child values (M4a).
+        let value = serialization::v2::read_node_value(node_data);
+
         // Collect child pointers before dropping the arena lock
         let child_data: Vec<(u8, SwizzledPtr)> = node
             .iter_children()
@@ -647,7 +661,7 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
 
         drop(am);
 
-        Ok((node, is_final, child_data))
+        Ok((node, is_final, value, child_data))
     }
 
     /// Load a single child node's data from arena WITHOUT loading its children.
@@ -730,7 +744,7 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
     fn load_art_node_with_children_from_arena_iterative(
         arena_manager: &Arc<RwLock<ArenaManager<S>>>,
         root_node_ptr: &SwizzledPtr,
-    ) -> Result<(Node, Vec<(u8, ChildNode)>)> {
+    ) -> Result<(Node, Vec<(u8, ChildNode)>, Option<Vec<u8>>)> {
         use std::collections::HashMap;
 
         /// Work item for iterative loading
@@ -747,6 +761,9 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
             RootNode {
                 node: Node,
                 is_final: bool,
+                /// Empty-string support (H1): the root's optional value blob (the empty
+                /// term "" carries its value on the root node record).
+                value: Option<Vec<u8>>,
                 child_ptrs: Vec<(u8, SwizzledPtr)>,
             },
             /// A bucket child (complete, no children to connect)
@@ -779,7 +796,7 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
                         continue;
                     }
 
-                    let (node, is_final, child_ptrs) =
+                    let (node, is_final, value, child_ptrs) =
                         Self::load_single_art_node_data(arena_manager, &ptr)?;
                     let ptrs_to_push: Vec<SwizzledPtr> =
                         child_ptrs.iter().map(|(_, p)| p.clone()).collect();
@@ -788,6 +805,7 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
                         LoadedInfo::RootNode {
                             node,
                             is_final,
+                            value,
                             child_ptrs,
                         },
                         ptrs_to_push,
@@ -896,6 +914,7 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
             LoadedInfo::RootNode {
                 node,
                 is_final: _,
+                value,
                 child_ptrs,
             } => {
                 let mut children: Vec<(u8, ChildNode)> = Vec::with_capacity(child_ptrs.len());
@@ -912,7 +931,8 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
                 }
 
                 let root_node = std::mem::replace(node, Node::new_node4());
-                Ok((root_node, children))
+                // Empty-string support (H1): surface the root's value blob to the caller.
+                Ok((root_node, children, value.take()))
             }
             _ => Err(PersistentARTrieError::corrupted(
                 "First loaded node is not root",

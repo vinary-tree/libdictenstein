@@ -327,17 +327,34 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
     /// Convert root bucket to ART node structure
     fn convert_bucket_to_art(&mut self) {
         if let TrieRoot::Bucket(bucket) = &self.root {
-            if let Some(result) = bucket_to_art_node(bucket).ok() {
+            if let Ok(result) = bucket_to_art_node(bucket) {
                 // bucket_to_art_node now returns ChildNode directly (which may be
-                // buckets or nested ART nodes for overflowed children)
+                // buckets or nested ART nodes for overflowed children).
+                //
+                // Empty-string support (H7): preserve the empty term's root value across
+                // the bucket→ART split (reachable on the WAL-replay recovery path).
+                // `final_value` is bincode(V) bytes (the bucket stores values as Vec<u8>);
+                // deserialize back to Option<V>. A deserialize failure (corruption only)
+                // is log::warn'd, NOT silently dropped — membership survives via `is_final`
+                // regardless, and the loud log avoids a silent data loss.
+                let value: Option<V> = match result.final_value {
+                    Some(vb) => match crate::serialization::bincode_compat::deserialize(&vb) {
+                        Ok(v) => Some(v),
+                        Err(e) => {
+                            log::warn!(
+                                "convert_bucket_to_art: failed to deserialize empty-term root \
+                                 value ({e}); membership preserved, value dropped"
+                            );
+                            None
+                        }
+                    },
+                    None => None,
+                };
                 self.root = TrieRoot::ArtNode {
                     node: result.node,
                     children: result.children,
                     is_final: result.is_final,
-                    // Value cannot be preserved from bucket conversion because
-                    // bucket uses Vec<u8> while TrieRoot uses V. Adding serde
-                    // bounds to DictionaryValue would enable value preservation.
-                    value: None,
+                    value,
                 };
             }
         }

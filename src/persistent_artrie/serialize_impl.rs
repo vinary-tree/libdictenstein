@@ -157,9 +157,19 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
                     }
                 }
 
-                let node_ptr = self.serialize_node_to_disk(&node_copy)?;
-
-                let _ = value;
+                // Empty-string support (H1): serialize the root's `Option<V>` value
+                // (the empty term "") via the M4a node-record HAS_VALUE blob, mirroring
+                // `serialize_root` in overlay_checkpoint.rs. (This `persist_to_disk` path
+                // serves the vocab variant + tests; the production byte checkpoint goes
+                // through `serialize_root`.) Value-less roots stay byte-identical.
+                let value_bytes: Option<Vec<u8>> = match value {
+                    Some(v) => Some(crate::serialization::bincode_compat::serialize(v).map_err(
+                        |e| PersistentARTrieError::internal(format!("serialize root value: {e}")),
+                    )?),
+                    None => None,
+                };
+                let node_ptr =
+                    self.serialize_node_to_disk_with_value(&node_copy, value_bytes.as_deref())?;
 
                 (
                     ROOT_TYPE_ART_NODE,

@@ -371,7 +371,7 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
                 node,
                 children,
                 is_final,
-                value: _,
+                value,
             } => {
                 let mut child_ptrs: Vec<(u8, u64)> = Vec::with_capacity(children.len());
                 for (edge, child) in children {
@@ -385,7 +385,19 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
                         *child_ptr = SwizzledPtr::from_raw(*ptr_raw);
                     }
                 }
-                let node_ptr = self.serialize_node_to_disk(&node_copy)?;
+                // Empty-string support (H1): serialize the root's `Option<V>` value via
+                // the M4a node-record HAS_VALUE blob (the same mechanism the child path
+                // uses), so a valued empty term ("") on the root survives checkpoint →
+                // reopen. Value-less roots stay byte-identical (append_node_value(None)
+                // is a no-op). The error is propagated, never swallowed (data-loss path).
+                let value_bytes: Option<Vec<u8>> = match value {
+                    Some(v) => Some(crate::serialization::bincode_compat::serialize(v).map_err(
+                        |e| PersistentARTrieError::internal(format!("serialize root value: {e}")),
+                    )?),
+                    None => None,
+                };
+                let node_ptr =
+                    self.serialize_node_to_disk_with_value(&node_copy, value_bytes.as_deref())?;
                 Ok((ROOT_TYPE_ART_NODE, node_ptr.to_raw(), *is_final))
             }
         }
