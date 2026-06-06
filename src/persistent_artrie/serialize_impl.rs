@@ -55,6 +55,19 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
     /// Uses v2 serialization with relative offset encoding for child pointers
     /// (and the sequential-sibling encoding when applicable).
     pub(super) fn serialize_node_to_disk(&self, node: &Node) -> Result<SwizzledPtr> {
+        self.serialize_node_to_disk_with_value(node, None)
+    }
+
+    /// Serialize a node to disk, optionally appending a value blob (M4a / D-VAL).
+    /// `value_bytes = None` is byte-identical to the prior value-less path; `Some`
+    /// sets the `HAS_VALUE` flag + appends the value (see
+    /// [`serialization::v2::append_node_value`]), and its size is folded into the
+    /// arena-slot estimate so the `slot == parent_slot` invariant below still holds.
+    pub(super) fn serialize_node_to_disk_with_value(
+        &self,
+        node: &Node,
+        value_bytes: Option<&[u8]>,
+    ) -> Result<SwizzledPtr> {
         let arena_manager = self.arena_manager.as_ref().ok_or_else(|| {
             PersistentARTrieError::internal("No arena manager for disk serialization")
         })?;
@@ -63,7 +76,9 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
 
         let temp_slot = am.next_slot();
         let temp_ctx = SerializationContext::new(temp_slot);
-        let estimated_size = serialization::v2::estimate_serialized_size_v2(node, &temp_ctx);
+        let value_overhead = value_bytes.map_or(0, |vb| 4 + vb.len());
+        let estimated_size =
+            serialization::v2::estimate_serialized_size_v2(node, &temp_ctx) + value_overhead;
 
         let parent_slot = if am.can_fit(estimated_size) {
             am.next_slot()
@@ -79,7 +94,10 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
             SerializationContext::new(parent_slot)
         };
 
-        let node_bytes = serialization::v2::serialize_node_v2(node, &ctx)?;
+        let node_bytes = serialization::v2::append_node_value(
+            serialization::v2::serialize_node_v2(node, &ctx)?,
+            value_bytes,
+        );
 
         let slot = am.allocate(&node_bytes)?;
 
@@ -258,11 +276,14 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
 
                 node_copy.header_mut().set_final(*is_final);
 
-                let node_ptr = self.serialize_node_to_disk(&node_copy)?;
+                // M4a / D-VAL: thread the leaf value (opaque serialized bytes) into
+                // the node record so a valued ART node round-trips (it was dropped
+                // here — `let _ = value;` — which silently lost overlay-checkpoint
+                // counter values; see serialization::v2::append_node_value).
+                let node_ptr =
+                    self.serialize_node_to_disk_with_value(&node_copy, value.as_deref())?;
 
                 self.cache_disk_location(path, node_ptr.clone());
-
-                let _ = value;
 
                 Ok(node_ptr)
             }

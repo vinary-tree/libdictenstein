@@ -100,6 +100,21 @@ pub mod encoding_flags {
     pub const RELATIVE_OFFSETS: u8 = 0x80;
     /// Children are stored sequentially (store first_child + count)
     pub const SEQUENTIAL_SIBLINGS: u8 = 0x40;
+    /// Node record carries an optional value blob appended after the node-type
+    /// data (M4a / D-VAL): a 4-byte little-endian length prefix + that many value
+    /// bytes, at offset `SERIALIZED_HEADER_SIZE + data_size`.
+    ///
+    /// # Back-compat (value-less records stay byte-identical)
+    ///
+    /// This bit lives in the serialization-only `encoding_flags` byte (offset 7;
+    /// dropped after deserialization). Every prior byte node record left it CLEAR,
+    /// and when CLEAR nothing is appended — a value-less node serializes to exactly
+    /// the bytes it always did, so existing files round-trip byte-identically. When
+    /// SET, the appended `value_len: u32` + bytes carry a valued ART leaf's value
+    /// (produced only by the overlay-checkpoint capture). Old binaries never read an
+    /// Overlay-regime file's node arena (the WAL `MAGIC_OVERLAY` tripwire fails them
+    /// closed first), so a SET bit is never presented to a reader predating it.
+    pub const HAS_VALUE: u8 = 0x20;
 }
 
 /// Node type discriminants for serialization
@@ -836,6 +851,49 @@ pub mod v2 {
         }
 
         Ok(buffer)
+    }
+
+    /// Append an optional value blob to a node record produced by
+    /// [`serialize_node_v2`] (M4a / D-VAL). When `value_bytes` is `None` the buffer
+    /// is returned UNCHANGED (the `HAS_VALUE` bit stays clear → value-less records
+    /// are byte-identical to before). When `Some`, set `HAS_VALUE` in the
+    /// `encoding_flags` byte (offset 7) and append `value_len: u32` (LE) + the bytes.
+    /// The value sits AFTER the node-type data, at offset
+    /// `SERIALIZED_HEADER_SIZE + data_size`, so it never perturbs the node parse.
+    pub fn append_node_value(mut node_bytes: Vec<u8>, value_bytes: Option<&[u8]>) -> Vec<u8> {
+        if let Some(vb) = value_bytes {
+            // encoding_flags lives at byte 7 (see SerializedNodeHeader::to_bytes).
+            node_bytes[7] |= encoding_flags::HAS_VALUE;
+            node_bytes.extend_from_slice(&(vb.len() as u32).to_le_bytes());
+            node_bytes.extend_from_slice(vb);
+        }
+        node_bytes
+    }
+
+    /// Read the optional value blob from a node record (the inverse of
+    /// [`append_node_value`]). Returns `None` if the `HAS_VALUE` bit is clear (every
+    /// pre-M4a record) or the trailing bytes are absent/truncated. The value starts
+    /// at `SERIALIZED_HEADER_SIZE + data_size` (`data_size` is the node-data size from
+    /// the header at bytes 12..16; `encoding_flags` is byte 7).
+    pub fn read_node_value(data: &[u8]) -> Option<Vec<u8>> {
+        if data.len() < SERIALIZED_HEADER_SIZE {
+            return None;
+        }
+        if data[7] & encoding_flags::HAS_VALUE == 0 {
+            return None;
+        }
+        let data_size =
+            u32::from_le_bytes([data[12], data[13], data[14], data[15]]) as usize;
+        let off = SERIALIZED_HEADER_SIZE + data_size;
+        if data.len() < off + 4 {
+            return None;
+        }
+        let len = u32::from_le_bytes([data[off], data[off + 1], data[off + 2], data[off + 3]])
+            as usize;
+        if data.len() < off + 4 + len {
+            return None;
+        }
+        Some(data[off + 4..off + 4 + len].to_vec())
     }
 
     /// Deserialize a node with v2 encoding (handles both relative and fixed)

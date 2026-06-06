@@ -307,7 +307,7 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
                 Ok(ChildNode::ArtNode {
                     node,
                     is_final,
-                    value: None, // Value serialization for nested nodes is future work
+                    value: serialization::v2::read_node_value(&node_data),
                     children,
                 })
             }
@@ -571,6 +571,7 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
                         e
                     ))
                 })?;
+                let value = serialization::v2::read_node_value(data);
 
                 // Check if node is final (has IS_FINAL flag set)
                 let is_final = node.header().is_final();
@@ -596,7 +597,7 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
                 Ok(ChildNode::ArtNode {
                     node,
                     is_final,
-                    value: None, // Value serialization for nested nodes is future work
+                    value,
                     children,
                 })
             }
@@ -689,6 +690,10 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
                     ))
                 })?;
 
+                // M4a / D-VAL: capture the leaf value BEFORE `drop(am)` below (it
+                // borrows `data`, which borrows `am`).
+                let value = serialization::v2::read_node_value(data);
+
                 let is_final = node.header().is_final();
 
                 let child_data: Vec<(u8, SwizzledPtr)> = node
@@ -703,6 +708,7 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
                     node,
                     is_final,
                     child_ptrs: child_data,
+                    value,
                 })
             }
             NodeType::CharNode4
@@ -750,6 +756,8 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
                 node: Node,
                 is_final: bool,
                 child_ptrs: Vec<(u8, SwizzledPtr)>,
+                /// M4a / D-VAL: the leaf's optional value blob (opaque bytes).
+                value: Option<Vec<u8>>,
             },
         }
 
@@ -799,6 +807,7 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
                             node,
                             is_final,
                             child_ptrs,
+                            value,
                         } => {
                             let ptrs_to_push: Vec<SwizzledPtr> =
                                 child_ptrs.iter().map(|(_, p)| p.clone()).collect();
@@ -808,6 +817,7 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
                                     node,
                                     is_final,
                                     child_ptrs,
+                                    value,
                                 },
                                 ptrs_to_push,
                             )
@@ -850,6 +860,7 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
                     node,
                     is_final,
                     child_ptrs,
+                    value,
                 } => {
                     // Collect built children
                     let mut children: Vec<(u8, ChildNode)> = Vec::with_capacity(child_ptrs.len());
@@ -871,7 +882,7 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
                     ChildNode::ArtNode {
                         node: node_taken,
                         is_final: *is_final,
-                        value: None,
+                        value: value.take(),
                         children,
                     }
                 }

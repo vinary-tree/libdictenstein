@@ -1716,6 +1716,53 @@ mod durable_write_tests {
         );
     }
 
+    /// **THE D-VAL GATE (M4a).** A valued overlay write, then a CHECKPOINT, then a
+    /// reopen — the i64 value must survive THROUGH THE CHECKPOINT IMAGE, not WAL
+    /// replay: `checkpoint()` advances `checkpoint_lsn`, so recovery skips the WAL
+    /// deltas `≤ checkpoint_lsn` as "already folded into the image", and reopen loads
+    /// the serialized image. This is exactly the red-team's D-VAL scenario: the overlay
+    /// capture emits valued ART nodes whose value `serialize_child_to_disk_with_path`
+    /// previously DROPPED (`let _ = value;`) and `disk_load` reloaded as `None` — a
+    /// silent total counter-value loss. M4a appends the value to the node record (the
+    /// `HAS_VALUE` flag) and reads it back, so it round-trips. WITHOUT M4a this FAILS.
+    #[test]
+    fn m4a_valued_overlay_checkpoint_reopen_preserves_value_through_image() {
+        let dir = scratch("byte-m4a-dval-checkpoint");
+        let path = dir.path().join("t.part");
+        {
+            let mut trie = PersistentARTrie::<i64>::create(&path).expect("create");
+            trie.set_durability_policy(DurabilityPolicy::Immediate);
+            trie.enable_lockfree();
+            trie.set_overlay_write_mode(OverlayWriteMode::LockFreeOverlay);
+            assert!(trie
+                .insert_cas_with_value_durable(b"counter", 42)
+                .expect("valued insert"));
+            assert!(trie
+                .insert_cas_with_value_durable(b"other", 7)
+                .expect("valued insert 2"));
+            assert_eq!(
+                trie.get_lockfree(b"counter"),
+                Some(42),
+                "value present in the overlay pre-checkpoint"
+            );
+            // CHECKPOINT: capture the overlay → serialize the valued ART nodes (the
+            // D-VAL serialization path). Then DROP — the WAL deltas are skip-marked
+            // `≤ checkpoint_lsn`, so the reopen below reads the IMAGE, not WAL replay.
+            trie.checkpoint().expect("overlay checkpoint");
+        }
+        let trie = PersistentARTrie::<i64>::open(&path).expect("reopen");
+        assert_eq!(
+            MappedDictionary::get_value(&trie, "counter"),
+            Some(42),
+            "D-VAL: the i64 value MUST survive the checkpoint-image round-trip (M4a)"
+        );
+        assert_eq!(
+            MappedDictionary::get_value(&trie, "other"),
+            Some(7),
+            "D-VAL: the second i64 value must survive too"
+        );
+    }
+
     /// **THE #41 BYTE WITNESS (remove).** A durable remove clears a present term and
     /// the clear survives a reopen WITH NO CHECKPOINT (the `Remove` record replays over
     /// the recovered tree), while a co-inserted, never-removed sibling survives.

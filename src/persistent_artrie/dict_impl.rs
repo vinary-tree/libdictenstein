@@ -131,6 +131,9 @@ pub(super) enum SingleChildData {
         node: Node,
         is_final: bool,
         child_ptrs: Vec<(u8, SwizzledPtr)>,
+        /// M4a / D-VAL: the leaf's optional value blob (opaque serialized bytes),
+        /// threaded so the batch loader round-trips a valued ART node's value.
+        value: Option<Vec<u8>>,
     },
 }
 
