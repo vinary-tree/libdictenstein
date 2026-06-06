@@ -485,16 +485,16 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
     /// limitation, inherited unchanged).
     fn overlay_root_to_owned(root: &OverlayNode<ByteKey, V>) -> TrieRoot<V> {
         let (node, children, is_final, _value_bytes) = Self::overlay_children_to_owned(root);
-        // The `TrieRoot`/`ChildNode` ART `value` differ: `TrieRoot::ArtNode.value` is
-        // `Option<V>` (deserialized), `ChildNode::ArtNode.value` is `Option<Vec<u8>>`
-        // (serialized). Byte's owned serializer (`serialize_root` / `persist_to_disk`)
-        // IGNORES the root-level value (`value: _` / `let _ = value`) — root/ART-node
-        // value serialization is byte's documented future work — so we pass `None` for
-        // the root `Option<V>` (the converted `_value_bytes` would only matter once
-        // ART-node value serialization lands; it is inherited unchanged from the owned
-        // path, neither regressed nor exceeded). The leaf VALUES (in `ChildNode`s) DO
-        // carry their `Option<Vec<u8>>` for when that path is completed.
-        let root_value: Option<V> = None;
+        // Empty-string support (H2): capture the root's value so the byte overlay
+        // checkpoint preserves a valued empty term ("") through serialize → reopen. Read
+        // it DIRECTLY off the overlay root (`Option<V>`, no bincode round-trip); P0's
+        // `serialize_root` re-serializes it into the root node record and the load path
+        // reads it back. (`_value_bytes` is the bincode form `overlay_children_to_owned`
+        // computes for the `ChildNode` path; the root wants the typed `Option<V>`, which
+        // we get straight from `root.get_value()`.) For membership (`V=()`) this is the
+        // unit value — harmless to carry. Inert until P2's write flip lets `""` carry a
+        // value (until then the overlay root's value is always `None`).
+        let root_value: Option<V> = root.get_value();
         match node {
             Some(node) => TrieRoot::ArtNode {
                 node,
