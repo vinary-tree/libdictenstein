@@ -136,3 +136,5 @@ lcov.info
 cobertura.xml
 
 .pgmcp.toml
+
+.claude/worktrees/

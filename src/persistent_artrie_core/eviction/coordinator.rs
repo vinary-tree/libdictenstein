@@ -9,7 +9,7 @@
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Weak};
-use std::thread::{self, JoinHandle};
+use std::thread::{self, JoinHandle, ThreadId};
 use std::time::{Duration, Instant};
 
 use parking_lot::{Mutex, RwLock};
@@ -399,10 +399,20 @@ impl EvictionCoordinator {
         // The worker polls the `shutdown` flag every 100 ms, so no condvar wake
         // is needed; the join below completes within one poll interval.
         if let Some(handle) = self.eviction_thread.lock().take() {
-            let _ = handle.join();
+            Self::join_eviction_thread(handle);
         }
 
         self.running.store(false, Ordering::SeqCst);
+    }
+
+    fn join_eviction_thread(handle: JoinHandle<()>) {
+        if Self::should_join_thread(handle.thread().id(), thread::current().id()) {
+            let _ = handle.join();
+        }
+    }
+
+    fn should_join_thread(handle_thread_id: ThreadId, current_thread_id: ThreadId) -> bool {
+        handle_thread_id != current_thread_id
     }
 
     /// Check if the coordinator is running.
@@ -664,7 +674,10 @@ impl Drop for EvictionCoordinator {
         // Route through `shutdown()` so teardown is complete (it also stops the
         // memory-pressure monitor) and identical on every drop path. The worker
         // holds only a `Weak<Self>`, so this `Drop` is reachable as soon as the
-        // owning trie releases its `Arc`.
+        // owning trie releases its `Arc`. If the last strong reference is the
+        // worker's per-iteration `Weak::upgrade()`, this `Drop` runs on the
+        // eviction thread itself; `shutdown()` must then detach that handle
+        // instead of joining itself.
         self.shutdown();
     }
 }
@@ -729,6 +742,22 @@ mod tests {
         // Shutdown
         coordinator.shutdown();
         assert!(!coordinator.is_running());
+    }
+
+    #[test]
+    fn test_coordinator_does_not_join_current_thread() {
+        let current = thread::current().id();
+        assert!(
+            !EvictionCoordinator::should_join_thread(current, current),
+            "shutdown must detach, not join, when Drop runs on the worker thread"
+        );
+
+        let handle = thread::spawn(|| thread::current().id());
+        let worker_id = handle.join().expect("worker id");
+        assert!(
+            EvictionCoordinator::should_join_thread(worker_id, current),
+            "shutdown from an owner thread should still join a different worker thread"
+        );
     }
 
     #[test]
