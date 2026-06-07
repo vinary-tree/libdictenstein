@@ -793,12 +793,20 @@ impl crate::artrie_trait::EvictableARTrie for SharedVocabARTrie {
     }
 
     fn disable_eviction(&self) -> crate::persistent_artrie::error::Result<()> {
-        let mut guard = self.write();
-
-        if let Some(coordinator) = guard.eviction_coordinator.take() {
+        // Drop-before-join (live-deadlock fix; red-team R3-2 SWEEP C, the 8th site):
+        // take the coordinator out and RELEASE the write guard BEFORE `shutdown()`
+        // joins the eviction worker. The worker's reclaim callback re-enters via
+        // `trie.write()` (the `enable_eviction` closure), so holding the write guard
+        // across the join deadlocks (worker waits on the guard; the joining thread
+        // waits on the worker). char/byte `disable_eviction` already use this
+        // statement-temporary; vocab was the missed site.
+        let coordinator = {
+            let mut guard = self.write();
+            guard.eviction_coordinator.take()
+        };
+        if let Some(coordinator) = coordinator {
             coordinator.shutdown();
         }
-
         Ok(())
     }
 
