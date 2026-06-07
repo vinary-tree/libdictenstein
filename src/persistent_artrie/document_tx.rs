@@ -15,6 +15,8 @@ use super::dict_impl::PersistentARTrie;
 use super::error::{PersistentARTrieError, Result};
 use super::transactions::{DocumentTransaction, TransactionState};
 use super::wal::WalRecord;
+use crate::persistent_artrie_core::key_encoding::ByteKey;
+use crate::persistent_artrie_core::overlay::durable_write::DurableOverlayWrite;
 use crate::value::DictionaryValue;
 
 impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
@@ -25,19 +27,6 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
     /// can append to. The buffered terms are not visible to the trie
     /// until `commit_document` is called.
     pub fn begin_document(&self, document_id: &str) -> Result<DocumentTransaction<V>> {
-        // **M3 reject (BROKEN-BY-DESIGN, audit §B #8).** Document transactions commit
-        // via `insert_impl_core` — an OWNED absolute write the overlay read/checkpoint
-        // path does not observe under `route_overlay()`. Reject at BOTH entry points
-        // (here + `commit_document`); this also closes `try_tx_increment_bytes`
-        // reachability (it can only be reached on a transaction obtained here).
-        if self.route_overlay() {
-            return Err(PersistentARTrieError::InvalidOperation(
-                "begin_document is not valid under the lock-free overlay write mode (document \
-                 transactions commit an owned-tree absolute write the overlay does not observe); \
-                 use OverlayWriteMode::OwnedTree"
-                    .to_string(),
-            ));
-        }
         let tx_id = {
             let base = self.next_lsn.load(AtomicOrdering::Acquire);
             base ^ (std::time::SystemTime::now()
@@ -46,14 +35,20 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
                 .unwrap_or(0))
         };
 
-        if let Some(ref wal) = self.wal_writer {
-            wal.append(WalRecord::BeginTx { tx_id }).map_err(|e| {
-                PersistentARTrieError::io_error(
-                    "begin_tx",
-                    "WAL",
-                    std::io::Error::new(std::io::ErrorKind::Other, e.to_string()),
-                )
-            })?;
+        // C2 tx-ii: under the overlay, SKIP the orphan BeginTx WAL append — it would
+        // burn an un-`mark_committed` LSN that stalls the committed watermark, and the
+        // overlay `commit_document` is per-op durable (NOT bracketed). The owned arm
+        // keeps BeginTx (reconcile_lww ignores the bracket on replay regardless).
+        if !self.route_overlay() {
+            if let Some(ref wal) = self.wal_writer {
+                wal.append(WalRecord::BeginTx { tx_id }).map_err(|e| {
+                    PersistentARTrieError::io_error(
+                        "begin_tx",
+                        "WAL",
+                        std::io::Error::new(std::io::ErrorKind::Other, e.to_string()),
+                    )
+                })?;
+            }
         }
 
         Ok(DocumentTransaction::new_active(
@@ -190,14 +185,6 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
     where
         V: Clone,
     {
-        if self.route_overlay() {
-            return Err(PersistentARTrieError::InvalidOperation(
-                "commit_document is not valid under the lock-free overlay write mode (it applies \
-                 an owned-tree absolute write the overlay does not observe); use \
-                 OverlayWriteMode::OwnedTree"
-                    .to_string(),
-            ));
-        }
         if tx.state != TransactionState::Active {
             return Err(PersistentARTrieError::InvalidOperation(format!(
                 "Cannot commit a {} transaction",
@@ -215,6 +202,30 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
                 tx.document_id(),
                 reason
             )));
+        }
+
+        // C2 tx-ii (overlay arm): apply each shadow term via the proven Order-A overlay
+        // primitive — upsert for a valued entry, membership insert for `None`. Per-op
+        // durable, NOT batch-atomic (matches the owned path, whose reconcile_lww ignores
+        // tx brackets on replay). DROP BeginTx/CommitTx/sync — each primitive writes its
+        // own durable, ranked record. byte has no `increments` field (increments were
+        // folded into shadow_terms as absolute SETs at buffer time), so this is
+        // upsert(shadow_terms) only.
+        if self.route_overlay() {
+            let mut applied = 0usize;
+            for (term, value) in tx.shadow_terms.drain(..) {
+                let newly = match value {
+                    Some(v) => <Self as DurableOverlayWrite<ByteKey, V, S>>::upsert_cas_durable_default(
+                        self, &term, v,
+                    )?,
+                    None => self.insert_cas_durable(&term)?,
+                };
+                if newly {
+                    applied += 1;
+                }
+            }
+            tx.state = TransactionState::Committed;
+            return Ok(applied);
         }
 
         let count = tx.shadow_terms.len();
@@ -291,15 +302,20 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
             )));
         }
 
-        if let Some(ref wal) = self.wal_writer {
-            wal.append(WalRecord::AbortTx { tx_id: tx.tx_id })
-                .map_err(|e| {
-                    PersistentARTrieError::io_error(
-                        "abort_tx",
-                        "WAL",
-                        std::io::Error::new(std::io::ErrorKind::Other, e.to_string()),
-                    )
-                })?;
+        // C2 tx-ii: under the overlay, skip the AbortTx WAL append — no BeginTx was
+        // written and the overlay tx buffered nothing visible, so there is nothing to
+        // bracket-abort. Owned arm keeps AbortTx.
+        if !self.route_overlay() {
+            if let Some(ref wal) = self.wal_writer {
+                wal.append(WalRecord::AbortTx { tx_id: tx.tx_id })
+                    .map_err(|e| {
+                        PersistentARTrieError::io_error(
+                            "abort_tx",
+                            "WAL",
+                            std::io::Error::new(std::io::ErrorKind::Other, e.to_string()),
+                        )
+                    })?;
+            }
         }
 
         tx.shadow_terms.clear();

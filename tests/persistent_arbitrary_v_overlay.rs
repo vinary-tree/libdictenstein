@@ -311,3 +311,70 @@ fn byte_arbitrary_v_merge_from_overlay_then_reopen() {
     assert_eq!(self_t.get_value("apple"), Some("AX".to_string()), "merged value durable");
     assert_eq!(self_t.get_value("cherry"), Some("C".to_string()));
 }
+
+/// C2 tx-ii: a char document transaction under the overlay applies SETs per-op,
+/// durable across reopen (per-op, NOT all-or-nothing — matches owned recovery).
+#[test]
+fn char_doc_tx_overlay_set_durable_reopen() {
+    let dir = scratch("f2-char-doctx-set");
+    let path = dir.path().join("t.artc");
+    {
+        let mut trie = PersistentARTrieChar::<String>::create(&path).expect("create");
+        let mut tx = trie.begin_document("doc1").expect("begin");
+        trie.tx_insert(&mut tx, "x", Some("X".to_string()));
+        trie.tx_insert(&mut tx, "y", Some("Y".to_string()));
+        let n = trie.commit_document(tx).expect("commit");
+        assert_eq!(n, 2, "2 ops");
+        assert_eq!(trie.get_value("x"), Some("X".to_string()));
+        assert_eq!(trie.get_value("y"), Some("Y".to_string()));
+        trie.sync().expect("sync");
+    }
+    let trie = PersistentARTrieChar::<String>::open(&path).expect("reopen");
+    assert_eq!(trie.get_value("x"), Some("X".to_string()), "doc-tx SET durable");
+    assert_eq!(trie.get_value("y"), Some("Y".to_string()));
+}
+
+/// C2 tx-ii: a char document-tx increment (counter trie) aggregates + applies under the
+/// overlay; a NEGATIVE aggregate rejects the WHOLE commit (the overlay counter is
+/// add-only) BEFORE applying anything.
+#[test]
+fn char_doc_tx_overlay_increment_and_negative_reject() {
+    let dir = scratch("f2-char-doctx-incr");
+    let path = dir.path().join("t.artc");
+    let mut trie = PersistentARTrieChar::<u64>::create(&path).expect("create");
+    // Positive aggregate: +5 then +3 = 8.
+    let mut tx = trie.begin_document("d1").expect("begin");
+    trie.tx_increment(&mut tx, "c", 5);
+    trie.tx_increment(&mut tx, "c", 3);
+    trie.commit_document(tx).expect("commit positive");
+    assert_eq!(trie.get_value("c"), Some(8), "aggregate +5+3 = 8");
+    // Negative aggregate: +5 then -10 = -5 ⇒ reject, apply nothing.
+    let mut tx2 = trie.begin_document("d2").expect("begin2");
+    trie.tx_increment(&mut tx2, "d", 5);
+    trie.tx_increment(&mut tx2, "d", -10);
+    let r = trie.commit_document(tx2);
+    assert!(r.is_err(), "negative aggregate rejects the commit");
+    assert_eq!(trie.get_value("d"), None, "rejected commit applied nothing");
+    assert_eq!(trie.get_value("c"), Some(8), "prior committed value intact");
+}
+
+/// C2 byte twin: a byte document transaction under the overlay applies SETs per-op,
+/// durable across reopen.
+#[test]
+fn byte_doc_tx_overlay_set_durable_reopen() {
+    let dir = scratch("f2-byte-doctx");
+    let path = dir.path().join("t.part");
+    {
+        let mut trie = PersistentARTrie::<String>::create(&path).expect("create");
+        let mut tx = trie.begin_document("doc1").expect("begin");
+        trie.tx_insert(&mut tx, "x", Some("X".to_string()));
+        trie.tx_insert(&mut tx, "y", Some("Y".to_string()));
+        let n = trie.commit_document(tx).expect("commit");
+        assert_eq!(n, 2, "2 ops");
+        assert_eq!(trie.get_value("x"), Some("X".to_string()));
+        trie.sync().expect("sync");
+    }
+    let trie = PersistentARTrie::<String>::open(&path).expect("reopen");
+    assert_eq!(trie.get_value("x"), Some("X".to_string()), "byte doc-tx SET durable");
+    assert_eq!(trie.get_value("y"), Some("Y".to_string()));
+}

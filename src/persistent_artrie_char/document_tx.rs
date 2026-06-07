@@ -19,6 +19,8 @@ use std::sync::atomic::Ordering as AtomicOrdering;
 use crate::persistent_artrie::block_storage::BlockStorage;
 use crate::persistent_artrie::error::{PersistentARTrieError, Result};
 use crate::persistent_artrie::wal::WalRecord;
+use crate::persistent_artrie_core::key_encoding::CharKey;
+use crate::persistent_artrie_core::overlay::durable_write::DurableOverlayWrite;
 use crate::value::DictionaryValue;
 
 use super::transactions::CharDocumentTransaction;
@@ -26,24 +28,6 @@ use crate::persistent_artrie::TransactionState;
 
 impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     pub fn begin_document(&self, document_id: &str) -> Result<CharDocumentTransaction<V>> {
-        // S5-7: reject under the overlay (symmetry with `commit_document`). A `BeginTx`
-        // append burns an LSN that is NEVER `mark_committed` (verified RES-2), so the
-        // committed-watermark stalls and checkpoint reclaim — which keys on the
-        // watermark, not next_lsn (persist.rs) — cannot advance; and the transaction
-        // body applies to the owned tree, which the overlay read/checkpoint path does
-        // not observe. Callers needing transactions use `OverlayWriteMode::OwnedTree`.
-        if self.route_overlay() {
-            return Err(PersistentARTrieError::InvalidOperation(
-                "document transactions are not supported under the lock-free overlay write \
-                 mode (begin_document burns an un-watermarked BeginTx LSN that stalls \
-                 checkpoint reclaim, and the transaction applies to the owned tree the \
-                 overlay does not observe); use OverlayWriteMode::OwnedTree for \
-                 transactions, or the single-op insert/increment/upsert which route to \
-                 the overlay"
-                    .to_string(),
-            ));
-        }
-
         // Generate a unique transaction ID
         let tx_id = {
             let base = self.next_lsn.load(AtomicOrdering::Acquire);
@@ -54,8 +38,14 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
                 .unwrap_or(0))
         };
 
-        // Log BeginTx to WAL (routes through group commit if enabled)
-        self.append_to_wal(WalRecord::BeginTx { tx_id })?;
+        // C2 tx-ii: under the overlay, SKIP the orphan BeginTx WAL append — it would
+        // burn an LSN that is never `mark_committed`, stalling the committed watermark
+        // (and thus checkpoint reclaim). The overlay `commit_document` is per-op durable
+        // (NOT bracketed). The owned arm keeps BeginTx (reconcile_lww ignores it anyway).
+        if !self.route_overlay() {
+            // Log BeginTx to WAL (routes through group commit if enabled)
+            self.append_to_wal(WalRecord::BeginTx { tx_id })?;
+        }
 
         Ok(CharDocumentTransaction {
             tx_id,
@@ -328,24 +318,6 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     where
         V: Clone,
     {
-        // Flip gap (design §1, named residual): multi-op document transactions are
-        // UNSUPPORTED under the lock-free overlay — the apply step below writes the
-        // OWNED tree (via `try_insert_impl_no_wal*`), which the overlay-default read
-        // path and the overlay checkpoint would NOT see (silent data loss). Rather
-        // than risk that, reject the commit under `route_overlay()` (PS3-guarded).
-        // Overlay-native document-tx apply ("same WAL records, overlay apply") is a
-        // named follow-on. Callers needing transactions use the OwnedTree kill-
-        // switch mode. `abort_document` stays valid (it applies nothing).
-        if self.route_overlay() {
-            return Err(PersistentARTrieError::InvalidOperation(
-                "document transactions are not supported under the lock-free overlay write mode \
-                 (commit_document applies to the owned tree, which the overlay read/checkpoint \
-                 path does not observe); use OverlayWriteMode::OwnedTree for transactions, or \
-                 the single-op insert/increment/upsert which route to the overlay"
-                    .to_string(),
-            ));
-        }
-
         if tx.state != TransactionState::Active {
             return Err(PersistentARTrieError::InvalidOperation(format!(
                 "Cannot commit a {} transaction",
@@ -367,6 +339,76 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
 
         let set_count = tx.shadow_terms.len();
         let increment_count = tx.increments.len();
+
+        // C2 tx-ii (overlay arm): per-op durable, NOT batch-atomic. SETs via upsert
+        // (valued) / membership insert; increments via the proven add-only overlay
+        // counter (counter-monomorph only) with a NEGATIVE-aggregate reject preflight
+        // (char's owned aggregation checks overflow only, not sign). DROP
+        // BeginTx/CommitTx/sync. Matches owned recovery (reconcile_lww ignores brackets).
+        if self.route_overlay() {
+            let total_operations = set_count + increment_count;
+            // Aggregate increments + reject a negative aggregate BEFORE applying any SET,
+            // so a rejected commit applies nothing (closer to all-or-nothing on reject).
+            let mut aggregated: HashMap<Vec<u8>, i64> = HashMap::with_capacity(increment_count);
+            for (term_bytes, delta) in &tx.increments {
+                let e = aggregated.entry(term_bytes.clone()).or_insert(0);
+                *e = e.checked_add(*delta).ok_or_else(|| {
+                    PersistentARTrieError::InvalidOperation(format!(
+                        "transaction increment aggregate overflow for term {:?}",
+                        String::from_utf8_lossy(term_bytes)
+                    ))
+                })?;
+            }
+            for (term_bytes, agg) in &aggregated {
+                if *agg < 0 {
+                    return Err(PersistentARTrieError::InvalidOperation(format!(
+                        "overlay document-tx increment aggregate for term {:?} is negative \
+                         ({}); the overlay counter is add-only — use OverlayWriteMode::OwnedTree",
+                        String::from_utf8_lossy(term_bytes),
+                        agg
+                    )));
+                }
+            }
+            // Apply SETs: upsert (valued) / membership insert (None).
+            for (term_bytes, value) in tx.shadow_terms.drain(..) {
+                match value {
+                    Some(v) => {
+                        <Self as DurableOverlayWrite<CharKey, V, S>>::upsert_cas_durable_default(
+                            self,
+                            &term_bytes,
+                            v,
+                        )?;
+                    }
+                    None => {
+                        let term_str = String::from_utf8_lossy(&term_bytes).into_owned();
+                        self.insert_cas_durable(&term_str)?;
+                    }
+                }
+            }
+            // Apply increments (counter-monomorph only; route_increment downcasts to u64
+            // and returns None for a non-counter V).
+            for (term_bytes, agg) in aggregated {
+                if agg == 0 {
+                    continue;
+                }
+                let term_str = String::from_utf8_lossy(&term_bytes).into_owned();
+                match super::lockfree_value_route::route_increment(self, &term_str, agg) {
+                    Some(r) => {
+                        r?;
+                    }
+                    None => {
+                        return Err(PersistentARTrieError::InvalidOperation(
+                            "overlay document-tx increments require a counter value type (u64); \
+                             use OverlayWriteMode::OwnedTree"
+                                .to_string(),
+                        ));
+                    }
+                }
+            }
+            tx.increments.clear();
+            tx.state = TransactionState::Committed;
+            return Ok(total_operations);
+        }
 
         if set_count == 0 && increment_count == 0 {
             // Empty transaction - just log commit (routes through group commit if enabled)
@@ -504,8 +546,12 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
             )));
         }
 
-        // Log AbortTx to WAL (routes through group commit if enabled)
-        self.append_to_wal(WalRecord::AbortTx { tx_id: tx.tx_id })?;
+        // C2 tx-ii: under the overlay, skip the AbortTx WAL append — no BeginTx was
+        // written and the overlay tx buffered nothing visible. Owned arm keeps AbortTx.
+        if !self.route_overlay() {
+            // Log AbortTx to WAL (routes through group commit if enabled)
+            self.append_to_wal(WalRecord::AbortTx { tx_id: tx.tx_id })?;
+        }
 
         // Discard buffered terms (happens automatically via drop)
         tx.state = TransactionState::Aborted;
