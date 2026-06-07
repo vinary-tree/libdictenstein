@@ -21,6 +21,10 @@
 //! with **zero** upward reference. Zero `unsafe` — `Send`/`Sync` auto-derive.
 
 pub mod atomic_ptr;
+// The SAFE object-safe fault-in capability for the overlay-backed `DictionaryNode`
+// (resolves `Child::OnDisk` overlay children during a graph walk without naming `S`
+// and without `unsafe`). See `faulter.rs`.
+pub mod faulter;
 pub mod node;
 
 // The shared lock-free-overlay flip (route + read-engine + flip/kill-switch +
@@ -40,6 +44,7 @@ pub(crate) mod checkpoint;
 pub mod write_mode;
 
 pub use atomic_ptr::AtomicNodePtr;
+pub use faulter::OverlayFaulter;
 pub use node::{flags, Child, OverlayNode};
 
 use std::sync::Arc;

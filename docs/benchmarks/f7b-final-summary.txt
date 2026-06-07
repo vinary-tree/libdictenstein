@@ -1,0 +1,21 @@
+######## STEP 1+2: new tests + existing traversal/zipper/reopen (feature-ON) ########
+    Starting 1 test across 5 binaries (1792 tests skipped)
+        PASS [   0.159s] (1/1) libdictenstein persistent_artrie_char::overlay_dictionary_node_faulting_tests::overlay_dictionary_node_faults_evicted_children_in
+────────────
+     Summary [   0.161s] 1 test run: 1 passed, 1792 skipped
+
+######## same (feature-OFF) ########
+    Starting 1 test across 4 binaries (1788 tests skipped)
+        PASS [   0.157s] (1/1) libdictenstein persistent_artrie_char::overlay_dictionary_node_faulting_tests::overlay_dictionary_node_faults_evicted_children_in
+────────────
+     Summary [   0.159s] 1 test run: 1 passed, 1788 skipped
+######## Integration traversal/zipper/reopen tests (feature-ON) ########
+        PASS [  23.530s] (24/24) libdictenstein::dictionary_node_reopen_traversal_correspondence walk_after_reopen_equals_snapshot
+────────────
+     Summary [  23.530s] 24 tests run: 24 passed, 0 skipped
+
+######## In-crate OnDisk-fault + owned-faulting lib tests (feature-ON) ########
+        PASS [   0.159s] (1/2) libdictenstein persistent_artrie_char::overlay_dictionary_node_faulting_tests::overlay_dictionary_node_faults_evicted_children_in
+        PASS [   1.098s] (2/2) libdictenstein persistent_artrie_char::tests::dictionary_node_traversal_descends_after_forced_eviction
+────────────
+     Summary [   1.100s] 2 tests run: 2 passed, 1767 skipped

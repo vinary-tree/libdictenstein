@@ -223,6 +223,11 @@ pub mod persistence_api;
 // owned arm (byte-identical to the prior checkpoint body).
 pub(crate) mod overlay_checkpoint;
 
+// Byte overlay fault-in primitive (`load_overlay_node_from_disk`) + the SAFE
+// `OverlayFaulter` impl that lets the overlay-backed `DictionaryNode` resolve
+// `Child::OnDisk` overlay children during a graph walk. F7 BLOCKER-1.
+pub(crate) mod overlay_fault;
+
 // MmapDiskManager-specific constructors (Phase-5 split out of dict_impl).
 pub mod mmap_ctor;
 

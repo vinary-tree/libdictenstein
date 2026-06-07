@@ -24,7 +24,9 @@ use std::sync::Arc;
 use super::bucket::StringBucket;
 use super::nodes::{Node, Node4};
 use super::transitions::ChildNode;
-use crate::{value::DictionaryValue, DictionaryNode};
+use crate::persistent_artrie_core::key_encoding::ByteKey;
+use crate::persistent_artrie_core::overlay::{Child, OverlayFaulter, OverlayNode};
+use crate::{value::DictionaryValue, DictionaryNode, MappedDictionaryNode};
 
 /// A node in the Persistent ART that can be either an ART internal node or a bucket leaf.
 ///
@@ -48,8 +50,11 @@ struct BucketPosition {
     suffix_offset: usize,
 }
 
-/// Inner representation of a node
-#[derive(Debug)]
+/// Inner representation of a node.
+///
+/// `Debug` is hand-written (below) so the `Overlay` arm — which carries an
+/// `Arc<dyn OverlayFaulter<..>>` that is not itself `Debug` — can be summarized
+/// rather than derived.
 enum NodeInner<V: DictionaryValue> {
     /// An ART internal node
     ArtNode {
@@ -86,6 +91,53 @@ enum NodeInner<V: DictionaryValue> {
     },
     /// An empty node (used for non-existent transitions)
     Empty,
+    /// A node in the **lock-free overlay** (returned by `root()` under
+    /// `route_overlay()`). Navigates the overlay lazily for the zipper /
+    /// transducer / fuzzy graph walk. Holds an owned `Arc<OverlayNode>` snapshot
+    /// (immutable + reference-counted, so descent needs no pin and no `unsafe`),
+    /// plus an optional SAFE [`OverlayFaulter`] to resolve `Child::OnDisk` overlay
+    /// children (faulted in on demand, never dropped). The overlay is
+    /// un-path-compressed: one node per key byte, no buckets, no consumed prefixes.
+    Overlay {
+        /// The owned overlay node snapshot (keeps its in-memory subtree alive).
+        node: Arc<OverlayNode<ByteKey, V>>,
+        /// Fault-in capability for `Child::OnDisk` overlay children, or `None` for a
+        /// resident-only walk (an owned-trie `root()`, where eviction — hence an
+        /// OnDisk overlay child — is impossible). `Arc<dyn ..>` (owned), so it keeps
+        /// the trie alive for the walk and clones cheaply when the node clones. No
+        /// raw pointer, no `unsafe`.
+        faulter: Option<Arc<dyn OverlayFaulter<ByteKey, V>>>,
+    },
+}
+
+impl<V: DictionaryValue> std::fmt::Debug for NodeInner<V> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            NodeInner::ArtNode {
+                is_final, value, ..
+            } => f
+                .debug_struct("ArtNode")
+                .field("is_final", is_final)
+                .field("has_value", &value.is_some())
+                .finish_non_exhaustive(),
+            NodeInner::Bucket { bucket } => {
+                f.debug_struct("Bucket").field("len", &bucket.len()).finish()
+            }
+            NodeInner::Root {
+                is_final, value, ..
+            } => f
+                .debug_struct("Root")
+                .field("is_final", is_final)
+                .field("has_value", &value.is_some())
+                .finish_non_exhaustive(),
+            NodeInner::Empty => f.write_str("Empty"),
+            NodeInner::Overlay { node, faulter } => f
+                .debug_struct("Overlay")
+                .field("node", node)
+                .field("has_faulter", &faulter.is_some())
+                .finish(),
+        }
+    }
 }
 
 impl<V: DictionaryValue> PersistentARTrieNode<V> {
@@ -161,6 +213,41 @@ impl<V: DictionaryValue> PersistentARTrieNode<V> {
         }
     }
 
+    /// Create an **overlay-backed** node (the `root()` node under
+    /// `route_overlay()`). Navigates the lock-free overlay lazily. `faulter` is the
+    /// SAFE fault-in capability for `Child::OnDisk` overlay children (or `None` for
+    /// a resident-only walk).
+    pub(crate) fn new_overlay(
+        node: Arc<OverlayNode<ByteKey, V>>,
+        faulter: Option<Arc<dyn OverlayFaulter<ByteKey, V>>>,
+    ) -> Self {
+        Self {
+            inner: Arc::new(NodeInner::Overlay { node, faulter }),
+            bucket_position: None,
+        }
+    }
+
+    /// Resolve an overlay child slot into a child overlay node, faulting an
+    /// `Child::OnDisk` slot in via `faulter` (never dropping it). Returns `None`
+    /// for a null/absent slot, or an OnDisk slot that cannot be faulted in (no
+    /// faulter / I/O error) — the same conservative degrade the production
+    /// point-read uses (liveness-only, never a fabricated term).
+    fn overlay_child_node(
+        child: &Child<ByteKey, V>,
+        faulter: &Option<Arc<dyn OverlayFaulter<ByteKey, V>>>,
+    ) -> Option<Self> {
+        if let Some(child_arc) = child.as_in_mem() {
+            return Some(Self::new_overlay(Arc::clone(child_arc), faulter.clone()));
+        }
+        if let Some(on_disk) = child.as_on_disk() {
+            if !on_disk.is_null() {
+                let loaded = faulter.as_ref()?.fault_overlay_slot(on_disk)?;
+                return Some(Self::new_overlay(loaded, faulter.clone()));
+            }
+        }
+        None
+    }
+
     /// Create a bucket node at a specific position
     fn new_bucket_at_position(bucket: Arc<NodeInner<V>>, position: BucketPosition) -> Self {
         Self {
@@ -182,11 +269,18 @@ impl<V: DictionaryValue> PersistentARTrieNode<V> {
         matches!(&*self.inner, NodeInner::Empty)
     }
 
-    /// Get the associated value (for mapped dictionaries)
+    /// Get the associated value (for mapped dictionaries).
+    ///
+    /// Returns a borrow; the overlay arm cannot (its `get_value()` yields an owned
+    /// `Option<V>`), so the overlay value is exposed via the owned-returning
+    /// [`MappedDictionaryNode::value`] impl below — this borrow accessor returns
+    /// `None` for the overlay arm (callers that need the overlay value use the
+    /// `MappedDictionaryNode` trait method, which is what the transducer drives).
     pub fn value(&self) -> Option<&V> {
         match &*self.inner {
             NodeInner::ArtNode { value, .. } => value.as_ref(),
             NodeInner::Root { value, .. } => value.as_ref(),
+            NodeInner::Overlay { .. } => None,
             NodeInner::Bucket { bucket } => {
                 if let Some(ref pos) = self.bucket_position {
                     if pos.suffix_offset == pos.suffix.len() {
@@ -292,6 +386,7 @@ impl<V: DictionaryValue> DictionaryNode for PersistentARTrieNode<V> {
         match &*self.inner {
             NodeInner::ArtNode { is_final, .. } => *is_final,
             NodeInner::Root { is_final, .. } => *is_final,
+            NodeInner::Overlay { node, .. } => node.is_final(),
             NodeInner::Bucket { bucket } => {
                 if let Some(ref pos) = self.bucket_position {
                     // Final if we've consumed the entire suffix
@@ -307,6 +402,12 @@ impl<V: DictionaryValue> DictionaryNode for PersistentARTrieNode<V> {
 
     fn transition(&self, label: Self::Unit) -> Option<Self> {
         match &*self.inner {
+            NodeInner::Overlay { node, faulter } => {
+                // Overlay is un-path-compressed: one byte per edge. Find the child
+                // for `label`; InMem ⇒ wrap directly, OnDisk ⇒ fault in (never drop).
+                let child = node.find_child(label)?;
+                Self::overlay_child_node(child, faulter)
+            }
             NodeInner::ArtNode { children, .. } | NodeInner::Root { children, .. } => {
                 // Linear scan over real children (each node holds at most 256
                 // entries; the inner Vec is sorted by insertion order, not by
@@ -359,6 +460,17 @@ impl<V: DictionaryValue> DictionaryNode for PersistentARTrieNode<V> {
 
     fn edges(&self) -> Box<dyn Iterator<Item = (Self::Unit, Self)> + '_> {
         match &*self.inner {
+            NodeInner::Overlay { node, faulter } => {
+                // One edge per overlay child slot (InMem direct, OnDisk faulted in —
+                // never dropped). Preallocated to the known child count.
+                let mut edges = Vec::with_capacity(node.num_children());
+                for (&edge, child) in node.iter_children() {
+                    if let Some(child_node) = Self::overlay_child_node(child, faulter) {
+                        edges.push((edge, child_node));
+                    }
+                }
+                Box::new(edges.into_iter())
+            }
             NodeInner::ArtNode { children, .. } | NodeInner::Root { children, .. } => {
                 Box::new(self.art_edges(children).into_iter())
             }
@@ -391,6 +503,7 @@ impl<V: DictionaryValue> DictionaryNode for PersistentARTrieNode<V> {
 
     fn edge_count(&self) -> Option<usize> {
         match &*self.inner {
+            NodeInner::Overlay { node, .. } => Some(node.num_children()),
             NodeInner::ArtNode { node, .. } | NodeInner::Root { node, .. } => {
                 Some(node.header().num_children as usize)
             }
@@ -415,6 +528,25 @@ impl<V: DictionaryValue> DictionaryNode for PersistentARTrieNode<V> {
                 }
             }
             NodeInner::Empty => Some(0),
+        }
+    }
+}
+
+impl<V: DictionaryValue> MappedDictionaryNode for PersistentARTrieNode<V> {
+    type Value = V;
+
+    /// The value at this node if it terminates a term. For the **overlay** arm this
+    /// reads the overlay leaf's `Option<V>` directly (unlocking liblevenshtein's
+    /// value-aware transducer queries over a flipped byte trie). The owned arms
+    /// expose the value they already carry (the `ArtNode`/`Root` `value` field; a
+    /// `Bucket`'s value is not materialized at this layer — `None`, the prior
+    /// behavior of the borrow accessor). `None` for a non-final / value-less node.
+    fn value(&self) -> Option<V> {
+        match &*self.inner {
+            NodeInner::Overlay { node, .. } => node.get_value(),
+            NodeInner::ArtNode { value, .. } => value.clone(),
+            NodeInner::Root { value, .. } => value.clone(),
+            NodeInner::Bucket { .. } | NodeInner::Empty => None,
         }
     }
 }

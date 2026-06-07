@@ -1,0 +1,264 @@
+   Compiling libdictenstein v0.1.0 (/home/dylon/Workspace/f1r3fly.io/libdictenstein)
+warning: method `serialize_node_to_disk` is never used
+  --> src/persistent_artrie/serialize_impl.rs:57:19
+   |
+36 | impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
+   | ---------------------------------------------------------------- method in this implementation
+...
+57 |     pub(super) fn serialize_node_to_disk(&self, node: &Node) -> Result<SwizzledPtr> {
+   |                   ^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: variant `Empty` is never constructed
+  --> src/persistent_artrie/node_impl.rs:93:5
+   |
+58 | enum NodeInner<V: DictionaryValue> {
+   |      --------- variant in this enum
+...
+93 |     Empty,
+   |     ^^^^^
+
+warning: associated function `empty` is never used
+   --> src/persistent_artrie/node_impl.rs:260:8
+    |
+143 | impl<V: DictionaryValue> PersistentARTrieNode<V> {
+    | ------------------------------------------------ associated function in this implementation
+...
+260 |     fn empty() -> Self {
+    |        ^^^^^
+
+warning: field `commit_seq_by_data_lsn` is never read
+   --> src/persistent_artrie_char/mod.rs:508:16
+    |
+372 | pub struct PersistentARTrieChar<V: DictionaryValue = (), S: crate::persistent_artrie::block_storage::BlockStorage = crate::persiste...
+    |            -------------------- field in this struct
+...
+508 |     pub(crate) commit_seq_by_data_lsn: std::sync::Mutex<std::collections::BTreeMap<u64, u64>>,
+    |                ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: method `pending_len` is never used
+  --> src/persistent_artrie_char/reclaim.rs:59:19
+   |
+44 | impl<V: DictionaryValue> CharRetireList<V> {
+   | ------------------------------------------ method in this implementation
+...
+59 |     pub(crate) fn pending_len(&self) -> usize {
+   |                   ^^^^^^^^^^^
+
+warning: method `checkpoint_path` is never used
+   --> src/persistent_artrie_core/epoch.rs:776:8
+    |
+447 | impl CheckpointManager {
+    | ---------------------- method in this implementation
+...
+776 |     fn checkpoint_path(&self, epoch: EpochId) -> PathBuf {
+    |        ^^^^^^^^^^^^^^^
+
+warning: struct `PendingTransaction` is never constructed
+   --> src/persistent_artrie_core/recovery.rs:439:8
+    |
+439 | struct PendingTransaction {
+    |        ^^^^^^^^^^^^^^^^^^
+
+warning: field `archive_config` is never read
+   --> src/persistent_artrie_core/wal/async_writer.rs:383:5
+    |
+371 | pub struct AsyncWalWriter {
+    |            -------------- field in this struct
+...
+383 |     archive_config: WalConfig,
+    |     ^^^^^^^^^^^^^^
+
+warning: associated function `placeholder` is never used
+   --> src/persistent_vocab_artrie/mod.rs:267:8
+    |
+256 | impl VocabTrieNodeRef {
+    | --------------------- associated function in this implementation
+...
+267 |     fn placeholder() -> Self {
+    |        ^^^^^^^^^^^
+
+warning: constant `DEFAULT_VOCAB_BUFFER_POOL_SIZE` is never used
+  --> src/persistent_vocab_artrie/dict_impl.rs:73:7
+   |
+73 | const DEFAULT_VOCAB_BUFFER_POOL_SIZE: usize = 64;
+   |       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: field `shutdown` is never read
+   --> src/persistent_vocab_artrie/concurrent.rs:132:5
+    |
+100 | pub struct ConcurrentVocabARTrie {
+    |            --------------------- field in this struct
+...
+132 |     shutdown: AtomicBool,
+    |     ^^^^^^^^
+
+warning: type alias `ScdawgNode` is never used
+  --> src/scdawg.rs:74:6
+   |
+74 | type ScdawgNode<V = ()> = crate::scdawg_core::ScdawgNode<u8, V>;
+   |      ^^^^^^^^^^
+
+warning: type alias `ScdawgCharNode` is never used
+  --> src/scdawg_char.rs:66:6
+   |
+66 | type ScdawgCharNode<V = ()> = crate::scdawg_core::ScdawgNode<char, V>;
+   |      ^^^^^^^^^^^^^^
+
+warning: type alias `SuffixNode` is never used
+   --> src/suffix_automaton.rs:150:17
+    |
+150 | pub(crate) type SuffixNode<V = ()> = crate::suffix_automaton_core::SuffixNode<u8, V>;
+    |                 ^^^^^^^^^^
+
+warning: type alias `SuffixNodeChar` is never used
+   --> src/suffix_automaton_char.rs:149:17
+    |
+149 | pub(crate) type SuffixNodeChar<V = ()> = crate::suffix_automaton_core::SuffixNode<char, V>;
+    |                 ^^^^^^^^^^^^^^
+
+warning: unused `std::result::Result` that must be used
+   --> src/persistent_artrie_char/mod.rs:711:13
+    |
+711 |             trie.insert(&term);
+    |             ^^^^^^^^^^^^^^^^^^
+    |
+    = note: this `Result` may be an `Err` variant, which should be handled
+    = note: `#[warn(unused_must_use)]` (part of `#[warn(unused)]`) on by default
+help: use `let _ = ...` to ignore the resulting value
+    |
+711 |             let _ = trie.insert(&term);
+    |             +++++++
+
+warning: unused `std::result::Result` that must be used
+   --> src/persistent_artrie_char/mod.rs:722:13
+    |
+722 |             trie.insert(term);
+    |             ^^^^^^^^^^^^^^^^^
+    |
+    = note: this `Result` may be an `Err` variant, which should be handled
+help: use `let _ = ...` to ignore the resulting value
+    |
+722 |             let _ = trie.insert(term);
+    |             +++++++
+
+warning: `libdictenstein` (lib) generated 17 warnings
+warning: function `alphanumeric_term` is never used
+  --> tests/common/strategies.rs:38:8
+   |
+38 | pub fn alphanumeric_term(min_len: usize, max_len: usize) -> impl Strategy<Value = String> {
+   |        ^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `prefix_clustered_terms` is never used
+  --> tests/common/strategies.rs:53:8
+   |
+53 | pub fn prefix_clustered_terms(count: usize) -> impl Strategy<Value = Vec<String>> {
+   |        ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `suffix_clustered_terms` is never used
+  --> tests/common/strategies.rs:78:8
+   |
+78 | pub fn suffix_clustered_terms(count: usize) -> impl Strategy<Value = Vec<String>> {
+   |        ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `first_byte_clustered_terms` is never used
+   --> tests/common/strategies.rs:100:8
+    |
+100 | pub fn first_byte_clustered_terms(count: usize) -> impl Strategy<Value = Vec<String>> {
+    |        ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `edge_case_terms` is never used
+   --> tests/common/strategies.rs:131:8
+    |
+131 | pub fn edge_case_terms() -> impl Strategy<Value = Vec<String>> {
+    |        ^^^^^^^^^^^^^^^
+
+warning: function `byte_sequence` is never used
+   --> tests/common/strategies.rs:161:8
+    |
+161 | pub fn byte_sequence(min_len: usize, max_len: usize) -> impl Strategy<Value = Vec<u8>> {
+    |        ^^^^^^^^^^^^^
+
+warning: enum `DictOp` is never used
+   --> tests/common/strategies.rs:172:10
+    |
+172 | pub enum DictOp<V: Clone + std::fmt::Debug> {
+    |          ^^^^^^
+
+warning: function `dict_ops_strategy` is never used
+   --> tests/common/strategies.rs:186:8
+    |
+186 | pub fn dict_ops_strategy<V>(
+    |        ^^^^^^^^^^^^^^^^^
+
+warning: function `insert_remove_ops` is never used
+   --> tests/common/strategies.rs:209:8
+    |
+209 | pub fn insert_remove_ops(count: usize) -> impl Strategy<Value = Vec<DictOp<()>>> {
+    |        ^^^^^^^^^^^^^^^^^
+
+warning: function `u32_value` is never used
+   --> tests/common/strategies.rs:218:8
+    |
+218 | pub fn u32_value() -> impl Strategy<Value = u32> {
+    |        ^^^^^^^^^
+
+warning: function `i64_value` is never used
+   --> tests/common/strategies.rs:223:8
+    |
+223 | pub fn i64_value() -> impl Strategy<Value = i64> {
+    |        ^^^^^^^^^
+
+warning: function `string_value` is never used
+   --> tests/common/strategies.rs:228:8
+    |
+228 | pub fn string_value() -> impl Strategy<Value = String> {
+    |        ^^^^^^^^^^^^
+
+warning: function `three_term_sets` is never used
+   --> tests/common/strategies.rs:272:8
+    |
+272 | pub fn three_term_sets(
+    |        ^^^^^^^^^^^^^^^
+
+warning: function `dedupe_terms` is never used
+   --> tests/common/strategies.rs:294:8
+    |
+294 | pub fn dedupe_terms(terms: Vec<String>) -> Vec<String> {
+    |        ^^^^^^^^^^^^
+
+warning: function `sets_equal` is never used
+   --> tests/common/strategies.rs:303:8
+    |
+303 | pub fn sets_equal<T: Eq + std::hash::Hash>(a: &[T], b: &[T]) -> bool {
+    |        ^^^^^^^^^^
+
+warning: `libdictenstein` (test "zipper_language_correspondence") generated 15 warnings
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.24s
+────────────
+ Nextest run ID 55629c58-9493-4528-8460-d43b961bd021 with nextest profile: default
+    Starting 19 tests across 4 binaries
+        PASS [   0.005s] ( 1/19) libdictenstein::zipper_language_correspondence scdawg_handles_refine_exact_and_substring_queries
+        PASS [   0.006s] ( 2/19) libdictenstein::zipper_language_correspondence prefix_and_excluding_zippers_refine_filtered_reference_languages
+        PASS [   0.006s] ( 3/19) libdictenstein::zipper_language_correspondence value_diff_zipper_refines_reference_map_difference
+        PASS [   0.023s] ( 4/19) libdictenstein::zipper_language_correspondence persistent::persistent_zippers_refine_reference_languages
+        PASS [   0.007s] ( 5/19) libdictenstein::zipper_language_correspondence suffix_automaton_zippers_refine_substring_reference_languages
+        PASS [   0.069s] ( 6/19) libdictenstein::zipper_language_correspondence byte_zipper_set_combinators_refine_reference_algebra
+        PASS [   0.074s] ( 7/19) libdictenstein::zipper_language_correspondence valued_byte_zippers_refine_reference_maps
+        PASS [   0.086s] ( 8/19) libdictenstein::zipper_language_correspondence byte_backend_zippers_refine_exact_reference_language
+        PASS [   0.072s] ( 9/19) libdictenstein::zipper_language_correspondence char_backend_zippers_refine_exact_reference_language
+        PASS [   0.108s] (10/19) libdictenstein::root_descriptor_reopen_correspondence char_invalid_root_descriptor_replays_wal_without_checkpoint_skip
+        PASS [   0.111s] (11/19) libdictenstein::root_descriptor_reopen_correspondence char_lazy_load_errors_are_result_errors_and_public_reads_fail_closed
+        PASS [   0.115s] (12/19) libdictenstein::root_descriptor_reopen_correspondence byte_descriptor_reopen_roundtrip_preserves_reference_map
+        PASS [   0.116s] (13/19) libdictenstein::root_descriptor_reopen_correspondence byte_invalid_root_descriptor_replays_wal_without_checkpoint_skip
+        PASS [   0.117s] (14/19) libdictenstein::dictionary_node_reopen_traversal_correspondence walk_after_reopen_matches_inserted_utf8_values
+        PASS [   0.118s] (15/19) libdictenstein::dictionary_node_reopen_traversal_correspondence resident_walk_equals_reopened_walk
+        PASS [   0.157s] (16/19) libdictenstein::root_descriptor_reopen_correspondence char_descriptor_reopen_roundtrip_preserves_reference_map_across_depths
+        PASS [   0.203s] (17/19) libdictenstein::root_descriptor_reopen_correspondence invalid_arena_count_replays_wal_instead_of_trusting_checkpoint
+        PASS [   0.216s] (18/19) libdictenstein::persistent_char_ebr_correspondence walk_concurrent_with_eviction_is_safe_and_complete
+        PASS [  23.428s] (19/19) libdictenstein::dictionary_node_reopen_traversal_correspondence walk_after_reopen_equals_snapshot
+────────────
+     Summary [  23.428s] 19 tests run: 19 passed, 0 skipped
