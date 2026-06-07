@@ -1127,9 +1127,21 @@ impl<V: DictionaryValue + Clone> MutableMappedDictionary for SharedCharARTrie<V>
         F: Fn(&Self::Value, &Self::Value) -> Self::Value,
         Self::Value: Clone,
     {
-        let other_guard = other.read();
+        // C2 deadlock fix (AB/BA, red-team R3-1/R4-1 BLOCKER): snapshot `other`'s
+        // entries under its read lock and DROP that guard BEFORE taking `self`'s write
+        // lock, then merge via the shared funnel — NEVER holding two `RwLock`s at once.
+        // The old body held `other.read()` across `self.write()`, deadlocking
+        // `A.union_with(&B)` ‖ `B.union_with(&A)`. Mirrors the vocab `union_with`
+        // snapshot-then-release pattern (persistent_vocab_artrie/mod.rs:476).
+        let entries: Vec<(String, V)> = {
+            let other_guard = other.read();
+            match other_guard.iter_prefix_with_values_and_arena("") {
+                Ok(Some(terms)) => terms.into_iter().map(|i| (i.term, i.value)).collect(),
+                _ => Vec::new(),
+            }
+        };
         let mut self_guard = self.write();
-        self_guard.merge_from(&*other_guard, merge_fn).unwrap_or(0)
+        self_guard.merge_entries(entries, merge_fn).unwrap_or(0)
     }
 
     fn update_or_insert<F>(&self, term: &str, default_value: V, update_fn: F) -> bool

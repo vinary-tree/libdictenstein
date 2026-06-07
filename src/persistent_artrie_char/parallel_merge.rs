@@ -29,16 +29,17 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
         F: Fn(&V, &V) -> V + Sync + Send,
         V: Clone + Send + Sync,
     {
-        // BROKEN-BY-DESIGN under the overlay (see `merge_api::merge_from`): the
-        // overlay `upsert` overwrites rather than combines; reject.
+        // C2: under the overlay the parallel WRITE is illusory — the shared per-key CAS
+        // funnel re-reads `self` fresh each iteration, so any value computed in a rayon
+        // partition is immediately re-resolved. Collect `other`'s entries and apply
+        // SERIALLY via the shared overlay merge funnel (phantom-safe CAS-retry). The
+        // owned arm below keeps the parallel write phase.
         if self.route_overlay() {
-            return Err(
-                crate::persistent_artrie::error::PersistentARTrieError::InvalidOperation(
-                    "merge_from_parallel is not valid under the lock-free overlay write mode (a \
-                     trie-to-trie merge would overwrite rather than combine accumulated values)"
-                        .to_string(),
-                ),
-            );
+            let entries: Vec<(String, V)> = match other.iter_prefix_with_values_and_arena("")? {
+                Some(terms) => terms.into_iter().map(|i| (i.term, i.value)).collect(),
+                None => return Ok(0),
+            };
+            return self.merge_entries_overlay(entries, merge_fn);
         }
 
         use rayon::prelude::*;
@@ -125,16 +126,15 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
         F: Fn(&V, &V) -> V + Sync + Send,
         V: Clone + Send + Sync,
     {
-        // BROKEN-BY-DESIGN under the overlay (see `merge_api::merge_from`): reject.
+        // C2: under the overlay, apply SERIALLY via the shared overlay merge funnel
+        // (the parallel write is illusory — the CAS re-reads self each iteration). The
+        // owned arm below keeps batched parallel writes.
         if self.route_overlay() {
-            return Err(
-                crate::persistent_artrie::error::PersistentARTrieError::InvalidOperation(
-                    "merge_from_batched_parallel is not valid under the lock-free overlay write \
-                     mode (a trie-to-trie merge would overwrite rather than combine accumulated \
-                     values)"
-                        .to_string(),
-                ),
-            );
+            let entries: Vec<(String, V)> = match other.iter_prefix_with_values_and_arena("")? {
+                Some(terms) => terms.into_iter().map(|i| (i.term, i.value)).collect(),
+                None => return Ok(0),
+            };
+            return self.merge_entries_overlay(entries, merge_fn);
         }
 
         use rayon::prelude::*;

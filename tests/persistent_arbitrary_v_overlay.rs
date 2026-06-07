@@ -21,8 +21,8 @@
 #![cfg(all(feature = "persistent-artrie", feature = "overlay-arbitrary-v"))]
 
 use libdictenstein::persistent_artrie::PersistentARTrie;
-use libdictenstein::persistent_artrie_char::PersistentARTrieChar;
-use libdictenstein::MappedDictionary;
+use libdictenstein::persistent_artrie_char::{PersistentARTrieChar, SharedCharTrie};
+use libdictenstein::{ARTrie, MappedDictionary, MutableMappedDictionary};
 use std::sync::Arc;
 
 fn scratch(tag: &str) -> tempfile::TempDir {
@@ -149,6 +149,43 @@ fn char_arbitrary_v_value_ops_then_reopen() {
     assert_eq!(trie.get_value("fresh"), Some("DEF".to_string()));
 }
 
+/// C2: `merge_from` on a flipped arbitrary-`V` (String + concat) trie combines via
+/// `merge_fn` reading the OVERLAY self (NOT the empty owned tree — the original
+/// merge-into-overlay bug), inserts other-only terms, and the merged values survive a
+/// reopen. Reads use `get_value` (the borrow `get` is `None` under the overlay).
+#[test]
+fn char_arbitrary_v_merge_from_overlay_then_reopen() {
+    let dir = scratch("f2-char-merge");
+    let path = dir.path().join("self.artc");
+    let opath = dir.path().join("other.artc");
+    {
+        let mut self_t = PersistentARTrieChar::<String>::create(&path).expect("create self");
+        let mut other = PersistentARTrieChar::<String>::create(&opath).expect("create other");
+        assert!(self_t.route_overlay() && other.route_overlay(), "both flipped to overlay");
+        self_t.insert_with_value("apple", "A".to_string()).expect("ins");
+        self_t.insert_with_value("banana", "B".to_string()).expect("ins");
+        other.insert_with_value("apple", "X".to_string()).expect("ins"); // overlap
+        other.insert_with_value("cherry", "C".to_string()).expect("ins"); // other-only
+        // Concat on overlap (proves merge_fn sees the OVERLAY self value); insert on absent.
+        let processed = self_t
+            .merge_from(&other, |a, b| format!("{a}{b}"))
+            .expect("overlay merge");
+        assert_eq!(processed, 2, "both other terms processed");
+        assert_eq!(
+            self_t.get_value("apple"),
+            Some("AX".to_string()),
+            "overlap combined via merge_fn over the overlay self-read"
+        );
+        assert_eq!(self_t.get_value("banana"), Some("B".to_string()), "self-only unchanged");
+        assert_eq!(self_t.get_value("cherry"), Some("C".to_string()), "other-only inserted");
+        self_t.sync().expect("sync");
+    }
+    let self_t = PersistentARTrieChar::<String>::open(&path).expect("reopen");
+    assert_eq!(self_t.get_value("apple"), Some("AX".to_string()), "merged value durable");
+    assert_eq!(self_t.get_value("banana"), Some("B".to_string()));
+    assert_eq!(self_t.get_value("cherry"), Some("C".to_string()));
+}
+
 /// Byte twin: a `String`-valued BYTE trie under the feature round-trips through a
 /// checkpoint+reopen (incl. the empty term).
 #[test]
@@ -215,4 +252,32 @@ fn char_arbitrary_v_concurrent_writers_all_survive() {
             );
         }
     }
+}
+
+/// C2: `A.union_with(&B)` ‖ `B.union_with(&A)` must NOT deadlock — the AB/BA fix
+/// snapshots `other` and releases its read lock BEFORE taking `self`'s write lock, so
+/// no two `RwLock`s are ever held at once. A regression hangs both joins (the harness
+/// times out). The returned counts prove each merge ran to completion.
+#[test]
+fn char_union_with_no_ab_ba_deadlock() {
+    use std::thread;
+    let dir = scratch("f2-union-deadlock");
+    let a: SharedCharTrie<u64> =
+        SharedCharTrie::create(&dir.path().join("a.artc")).expect("create a");
+    let b: SharedCharTrie<u64> =
+        SharedCharTrie::create(&dir.path().join("b.artc")).expect("create b");
+    a.write().insert_with_value("shared", 1).expect("a ins");
+    a.write().insert_with_value("a_only", 10).expect("a ins2");
+    b.write().insert_with_value("shared", 2).expect("b ins");
+    b.write().insert_with_value("b_only", 20).expect("b ins2");
+
+    let (a1, b1) = (a.clone(), b.clone());
+    let (a2, b2) = (a.clone(), b.clone());
+    let h1 = thread::spawn(move || a1.union_with(&b1, |x, y| x + y));
+    let h2 = thread::spawn(move || b2.union_with(&a2, |x, y| x + y));
+    // If the AB/BA cross-instance deadlock regressed, these joins hang forever.
+    let n1 = h1.join().expect("A.union_with(&B) completed (no deadlock)");
+    let n2 = h2.join().expect("B.union_with(&A) completed (no deadlock)");
+    assert_eq!(n1, 2, "A processed both of B's terms");
+    assert_eq!(n2, 2, "B processed both of A's terms");
 }

@@ -13,6 +13,91 @@ use crate::persistent_artrie::error::Result;
 use crate::value::DictionaryValue;
 
 impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
+    /// Overlay merge core (C2): apply pre-collected `(term, value)` entries into the
+    /// lock-free overlay via a per-key read→merge→CAS-retry loop reusing the proven,
+    /// phantom-safe [`compare_and_swap_cas_durable`](crate::persistent_artrie_core::overlay::durable_write::DurableOverlayWrite::compare_and_swap_cas_durable_default).
+    ///
+    /// Self is read via the overlay seam `value_read_faulting` (NOT `self.get`, which is
+    /// `None` under the overlay — the original merge-into-overlay bug). An absent key
+    /// INSERTS `other`'s value WITHOUT calling `merge_fn` (the owned merge contract). A
+    /// lost CAS (a concurrent change between the read and the publish) burns an UNRANKED
+    /// record — dropped on Overlay reopen, so it is phantom-safe — and retries. Per-key
+    /// durable, NOT batch-atomic (matches the owned merge). Pre-F4 the Shared `RwLock`
+    /// write serializes all writers so the CAS wins first try; the retry loop is
+    /// forward-compatible with the F4 lock collapse (merge_lock is an F4 concern).
+    pub(crate) fn merge_entries_overlay<F>(
+        &self,
+        entries: Vec<(String, V)>,
+        merge_fn: F,
+    ) -> Result<usize>
+    where
+        F: Fn(&V, &V) -> V,
+        V: Clone,
+    {
+        use crate::persistent_artrie_core::key_encoding::CharKey;
+        use crate::persistent_artrie_core::overlay::durable_write::DurableOverlayWrite;
+        let mut processed = 0usize;
+        for (term, other_value) in entries {
+            let key = term.as_bytes();
+            let mut spins = 0u32;
+            loop {
+                let self_val =
+                    <Self as DurableOverlayWrite<CharKey, V, S>>::value_read_faulting(self, key)?;
+                let merged = match &self_val {
+                    Some(s) => merge_fn(s, &other_value),
+                    None => other_value.clone(),
+                };
+                if <Self as DurableOverlayWrite<CharKey, V, S>>::compare_and_swap_cas_durable_default(
+                    self, key, self_val, merged,
+                )? {
+                    break;
+                }
+                // Ok(false): a concurrent writer changed the value between the read and
+                // the publish CAS; the durable record just appended was burned (unranked
+                // → dropped on Overlay reopen). Re-read + re-merge + retry
+                // (obstruction-free backoff). Pre-F4 this never fires.
+                spins += 1;
+                if spins < 32 {
+                    std::hint::spin_loop();
+                } else {
+                    std::thread::yield_now();
+                }
+            }
+            processed += 1;
+        }
+        Ok(processed)
+    }
+
+    /// Merge pre-collected `(term, value)` entries into this trie (C2 shared funnel for
+    /// the deadlock-safe `SharedCharARTrie::union_with`). Routes to the overlay
+    /// [`Self::merge_entries_overlay`] under `route_overlay()`, else an owned
+    /// get/merge/upsert loop. `union_with` snapshots `other` and drops its read lock
+    /// BEFORE taking `self`'s write lock, then calls this — never holding two `RwLock`s
+    /// at once (the AB/BA cross-instance deadlock fix; mirrors the vocab pattern).
+    pub(crate) fn merge_entries<F>(
+        &mut self,
+        entries: Vec<(String, V)>,
+        merge_fn: F,
+    ) -> Result<usize>
+    where
+        F: Fn(&V, &V) -> V,
+        V: Clone,
+    {
+        if self.route_overlay() {
+            return self.merge_entries_overlay(entries, merge_fn);
+        }
+        let mut processed = 0usize;
+        for (term, other_value) in entries {
+            let merged = match self.get(&term) {
+                Some(self_value) => merge_fn(self_value, &other_value),
+                None => other_value,
+            };
+            self.upsert(&term, merged)?;
+            processed += 1;
+        }
+        Ok(processed)
+    }
+
     /// Merge another trie into this one using a custom merge function.
     ///
     /// This method iterates over all terms in `other` and merges them into `self`:
@@ -45,21 +130,17 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
         F: Fn(&V, &V) -> V,
         V: Clone,
     {
-        // BROKEN-BY-DESIGN under the overlay (reachability audit): `self.get` would
-        // return None (defeating `merge_fn`) and `self.upsert` is last-writer-wins
-        // OVERWRITE, not additive — a merge would silently REPLACE the live overlay
-        // counts. Reject, mirroring `merge_lockfree_values_to_persistent` (the overlay
-        // IS the durable production state; merge-into-it is incoherent). Overlay merge
-        // is an E1-iter-B follow-on.
+        // C2: under the overlay, route to the shared per-key CAS-retry merge funnel —
+        // reads self via the overlay seam (NOT `self.get`, which is None under overlay),
+        // combines via `merge_fn`, and publishes phantom-safely. Arena grouping below is
+        // an owned-tree I/O-locality optimization, semantically inert for the merge
+        // result, so a flat collect is correct for the overlay.
         if self.route_overlay() {
-            return Err(
-                crate::persistent_artrie::error::PersistentARTrieError::InvalidOperation(
-                    "merge_from is not valid under the lock-free overlay write mode (the overlay \
-                     is the durable production state; a trie-to-trie merge would overwrite rather \
-                     than combine accumulated values)"
-                        .to_string(),
-                ),
-            );
+            let entries: Vec<(String, V)> = match other.iter_prefix_with_values_and_arena("")? {
+                Some(terms) => terms.into_iter().map(|i| (i.term, i.value)).collect(),
+                None => return Ok(0),
+            };
+            return self.merge_entries_overlay(entries, merge_fn);
         }
 
         use std::collections::HashMap;
@@ -216,17 +297,15 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
         F: Fn(&V, &V) -> V,
         V: Clone,
     {
-        // BROKEN-BY-DESIGN under the overlay (see `merge_from`): reject — `self.upsert`
-        // overwrites rather than combines.
+        // C2: under the overlay, route to the shared per-key CAS-retry merge funnel.
+        // Batching/arena-grouping are owned-tree memory/I/O optimizations, inert for the
+        // overlay; collect flat (merge is bulk/rare — acceptable). See `merge_from`.
         if self.route_overlay() {
-            return Err(
-                crate::persistent_artrie::error::PersistentARTrieError::InvalidOperation(
-                    "merge_from_batched is not valid under the lock-free overlay write mode (the \
-                     overlay is the durable production state; a trie-to-trie merge would overwrite \
-                     rather than combine accumulated values)"
-                        .to_string(),
-                ),
-            );
+            let entries: Vec<(String, V)> = match other.iter_prefix_with_values_and_arena("")? {
+                Some(terms) => terms.into_iter().map(|i| (i.term, i.value)).collect(),
+                None => return Ok(0),
+            };
+            return self.merge_entries_overlay(entries, merge_fn);
         }
 
         let batch_size = if batch_size == 0 { 5_000 } else { batch_size };
