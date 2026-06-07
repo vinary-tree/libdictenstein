@@ -251,6 +251,7 @@ if command -v tla2sany >/dev/null 2>&1; then
       OverlayEvictionCas \
       LockFreeOverlayRemoveCas \
       LockFreeOverlayDurableReplay \
+      LockFreeOverlayValueCas \
       ConcurrentCheckpointSerialization
     do
       run_capped tla2sany "${module}.tla"
@@ -304,6 +305,7 @@ if [ "${RUN_TLC:-0}" = "1" ]; then
       OverlayEvictionCas \
       LockFreeOverlayRemoveCas \
       LockFreeOverlayDurableReplay \
+      LockFreeOverlayValueCas \
       ConcurrentCheckpointSerialization
     do
       run_capped tlc -workers 1 -config "${module}.cfg" "${module}.tla"
@@ -345,12 +347,20 @@ if [ "${RUN_TLC:-0}" = "1" ]; then
     #     checkpoints interleave their block-0 descriptor writes, leaving fields from
     #     different generations (a torn descriptor → lost/corrupt terms on reopen) —
     #     proving the `checkpoint_lock` serialization (design §3.5 / R-NF3) is REQUIRED.
+    #   * LockFreeOverlayValueCas sets USE_BURN_ON_LOSS = FALSE (the "forgot to burn"
+    #     bug: a refused conditional write's already-durable Upsert record is RANKED
+    #     instead of burned) and MUST violate `NoPhantomConditionalWrite`: a crash-
+    #     recover resurrects a value the caller was told Ok(false) (the append-before-
+    #     failed-CAS phantom behind compare_and_swap + the C2 merge CAS-retry loop) —
+    #     proving the `mark_committed_burned` (UNRANKED, dropped on Overlay reopen)
+    #     choice is REQUIRED.
     for unsafe_module in \
       LockFreeDurableCheckpoint \
       LockFreeDurableCheckpointEviction \
       OverlayEvictionCas \
       LockFreeOverlayRemoveCas \
       LockFreeOverlayDurableReplay \
+      LockFreeOverlayValueCas \
       ConcurrentCheckpointSerialization
     do
       echo "== Negative control: ${unsafe_module}_Unsafe.cfg (MUST violate a safety invariant) =="

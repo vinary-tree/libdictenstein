@@ -21,7 +21,7 @@ use crate::value::DictionaryValue;
 
 use super::block_storage::BlockStorage;
 use super::dict_impl::{PersistentARTrie, PrefixTermWithValueAndArena};
-use super::error::{PersistentARTrieError, Result};
+use super::error::Result;
 
 impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
     /// Overlay merge core (C2): apply pre-collected `(term, value)` byte entries into
