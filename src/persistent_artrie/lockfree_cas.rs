@@ -181,6 +181,60 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
         }
     }
 
+    /// **F5 — install a PRE-BUILT overlay root** (the dense→overlay walk-converter's
+    /// output) as the live lock-free overlay, instead of [`Self::enable_lockfree`]'s
+    /// EMPTY root (the byte twin of char's `install_prebuilt_overlay_root_inherent`).
+    /// Sets `lockfree_root = Some(AtomicNodePtr::new(root))` + a fresh empty lookup
+    /// cache. Idempotent (only installs if NOT already enabled). Does NOT stamp the WAL
+    /// regime (the generic [`LockFreeOverlay::install_prebuilt_overlay_root`] does that
+    /// AFTER this seam) and does NOT touch the owned tree (F5 adds ALONGSIDE). NO new
+    /// `unsafe`.
+    pub(crate) fn install_prebuilt_overlay_root_inherent(
+        &mut self,
+        root: Arc<super::nodes::persistent_node::PersistentNode<V>>,
+    ) {
+        use super::nodes::atomic_ptr::AtomicNodePtr;
+        use dashmap::DashMap;
+        if self.lockfree_root.is_some() {
+            return; // Already enabled — never clobber a live overlay.
+        }
+        self.lockfree_root = Some(AtomicNodePtr::new(root));
+        self.lockfree_cache = Some(DashMap::new());
+    }
+
+    /// **F5 — NO-WAL overlay remove of the NON-EMPTY term `term`** (the
+    /// `overlay_try_remove_path` seam for the data-loss-critical reopen WAL-tail
+    /// applier — byte twin of char's `overlay_remove_no_wal`). Clear membership via the
+    /// EXISTING single-arbiter [`Self::try_remove_lockfree_path`] (path-copy + root
+    /// CAS) in a bounded-retry loop, and invalidate the positive cache. NO WAL, NO
+    /// commit-rank, NO watermark — the Remove is ALREADY durable in the WAL being
+    /// replayed. NEVER called with an empty slice (the generic `overlay_remove` handles
+    /// "" via the root publisher). Byte's `try_remove_lockfree_path` has no fault-in
+    /// I/O arm, so the loop only retries on `Conflict`.
+    pub(crate) fn overlay_remove_no_wal(&self, term: &[u8]) {
+        use std::sync::atomic::Ordering;
+        debug_assert!(!term.is_empty(), "overlay_remove_no_wal: empty term handled by root publisher");
+        let lockfree_root = match self.lockfree_root.as_ref() {
+            Some(r) => r,
+            None => return,
+        };
+        let _epoch = self.epoch_manager.enter_read();
+        loop {
+            match self.try_remove_lockfree_path(lockfree_root, term) {
+                LockfreeRemoveResult::Removed | LockfreeRemoveResult::AlreadyAbsent => {
+                    if let Some(ref cache) = self.lockfree_cache {
+                        cache.remove(term);
+                    }
+                    return;
+                }
+                LockfreeRemoveResult::Conflict => {
+                    self.cas_retries.fetch_add(1, Ordering::Relaxed);
+                    continue;
+                }
+            }
+        }
+    }
+
     /// **M4b (the V-3 twin) — the compile-safe reestablish dispatch.** The byte twin
     /// of char's `reestablish_overlay_dispatch` (persistent_artrie_char/lockfree_cas.rs).
     /// Routes a recovered Overlay-regime reopen's owned→overlay bootstrap to the

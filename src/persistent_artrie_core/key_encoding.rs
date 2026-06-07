@@ -47,6 +47,11 @@ impl KeyEncoding for ByteKey {
         s.as_bytes().iter().copied().collect()
     }
 
+    fn units_from_bytes(bytes: &[u8]) -> Option<SmallVec<[Self::Unit; 32]>> {
+        // Byte keys ARE the raw bytes — identity copy, always valid.
+        Some(bytes.iter().copied().collect())
+    }
+
     fn units_to_term(units: &[u8]) -> Vec<u8> {
         units.to_vec()
     }
@@ -76,6 +81,15 @@ impl KeyEncoding for CharKey {
 
     fn units_from_str(s: &str) -> SmallVec<[Self::Unit; 32]> {
         s.chars().map(|c| c as u32).collect()
+    }
+
+    fn units_from_bytes(bytes: &[u8]) -> Option<SmallVec<[Self::Unit; 32]>> {
+        // Char keys are stored as UTF-8 in the WAL (writers log `term.as_bytes()`).
+        // Decode back to code points; a non-UTF-8 byte sequence cannot have been
+        // produced by a char-trie writer (None ⇒ the F5 applier skips it).
+        std::str::from_utf8(bytes)
+            .ok()
+            .map(|s| s.chars().map(|c| c as u32).collect())
     }
 
     fn units_to_term(units: &[u32]) -> String {
@@ -219,6 +233,15 @@ pub trait KeyEncoding: 'static + Copy + Send + Sync + Debug {
     /// For `ByteKey` this returns `s.as_bytes()`; for `CharKey` it returns
     /// the iterator of Unicode code points as `u32`s.
     fn units_from_str(s: &str) -> SmallVec<[Self::Unit; 32]>;
+
+    /// Decode RAW WAL key bytes into a sequence of edge units, or `None` if the
+    /// bytes are not a valid key for this encoding (F5 WAL-tail-into-overlay applier).
+    ///
+    /// For `ByteKey` the key bytes ARE the units (identity copy, always `Some`); for
+    /// `CharKey` the WAL stores the term as UTF-8 (writers log `term.as_bytes()`), so
+    /// this decodes UTF-8 → code points and returns `None` for a non-UTF-8 sequence
+    /// (which a char-trie writer cannot have produced — the applier skips it).
+    fn units_from_bytes(bytes: &[u8]) -> Option<SmallVec<[Self::Unit; 32]>>;
 
     /// Reverse of [`units_from_str`](Self::units_from_str): reconstruct the public
     /// term from a unit sequence. Char maps each code point via

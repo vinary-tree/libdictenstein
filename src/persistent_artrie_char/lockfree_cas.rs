@@ -191,6 +191,67 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
         }
     }
 
+    /// **F5 — install a PRE-BUILT overlay root** (the dense→overlay walk-converter's
+    /// output) as the live lock-free overlay, instead of [`Self::enable_lockfree`]'s
+    /// EMPTY root. Sets `lockfree_root = Some(AtomicNodePtr::new(root))` + a fresh
+    /// empty lookup cache. Idempotent (only installs if the overlay is NOT already
+    /// enabled — a fresh reopen trie never has it set). Does NOT stamp the WAL regime
+    /// (the generic [`LockFreeOverlay::install_prebuilt_overlay_root`] does that, the
+    /// SAME way `flip_to_overlay` does, AFTER this seam runs). Does NOT touch the
+    /// owned tree (F5 adds ALONGSIDE; F7 deletes owned). NO new `unsafe`.
+    pub(crate) fn install_prebuilt_overlay_root_inherent(
+        &mut self,
+        root: Arc<super::nodes::persistent_node::PersistentCharNode<V>>,
+    ) {
+        use super::nodes::atomic_ptr::AtomicNodePtr;
+        use dashmap::DashMap;
+        if self.lockfree_root.is_some() {
+            return; // Already enabled — never clobber a live overlay.
+        }
+        self.lockfree_root = Some(AtomicNodePtr::new(root));
+        self.lockfree_cache = Some(DashMap::new());
+    }
+
+    /// **F5 — NO-WAL overlay remove of the NON-EMPTY term `chars`** (the
+    /// `overlay_try_remove_path` seam for the data-loss-critical reopen WAL-tail
+    /// applier). Clear the term's membership via the EXISTING single-arbiter
+    /// [`Self::try_remove_lockfree_path`] (path-copy + root CAS — NOT an in-place
+    /// clear) in a bounded-retry loop, and invalidate the positive lookup cache. NO
+    /// WAL append, NO commit-rank, NO watermark advance — the Remove is ALREADY
+    /// durable in the WAL being replayed; re-logging would double-log + punch a
+    /// watermark hole. A fault-in I/O error is best-effort skipped (the durable image
+    /// already reflects the remove; a later reopen retries). NEVER called with an
+    /// empty slice (the generic `overlay_remove` handles "" via the root publisher).
+    pub(crate) fn overlay_remove_no_wal(&self, chars: &[u32]) {
+        use crate::persistent_artrie_core::key_encoding::{CharKey, KeyEncoding};
+        use std::sync::atomic::Ordering;
+        debug_assert!(!chars.is_empty(), "overlay_remove_no_wal: empty term handled by root publisher");
+        let lockfree_root = match self.lockfree_root.as_ref() {
+            Some(r) => r,
+            None => return,
+        };
+        let _epoch = self.epoch_manager.enter_read();
+        loop {
+            match self.try_remove_lockfree_path(lockfree_root, chars) {
+                LockfreeRemoveResult::Removed(_) | LockfreeRemoveResult::AlreadyAbsent(_) => {
+                    if let Some(ref cache) = self.lockfree_cache {
+                        cache.remove(&CharKey::units_to_term(chars));
+                    }
+                    return;
+                }
+                LockfreeRemoveResult::Conflict => {
+                    self.cas_retries.fetch_add(1, Ordering::Relaxed);
+                    continue;
+                }
+                // Best-effort: the durable image already reflects the remove.
+                LockfreeRemoveResult::IoError(_) => {
+                    self.cas_retries.fetch_add(1, Ordering::Relaxed);
+                    return;
+                }
+            }
+        }
+    }
+
     /// Lock-free insert using CAS operations.
     ///
     /// This method inserts a term into the lock-free trie structure without

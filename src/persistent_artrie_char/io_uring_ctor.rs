@@ -239,54 +239,78 @@ impl<V: DictionaryValue>
             .commit_seq
             .store(commit_seq_seed, std::sync::atomic::Ordering::Release);
 
-        // Try to load root from disk if root_ptr != 0
-        let mut loaded_from_disk = false;
-        if root_ptr != 0 {
-            let root_swizzled = SwizzledPtr::from_raw(root_ptr);
-            match inner.load_root_from_disk(&buffer_manager, &root_swizzled, None) {
-                Ok((root, len)) => {
-                    *inner.root.get_mut() = root;
-                    inner.len.store(len, AtomicOrdering::Release);
-                    loaded_from_disk = true;
-                }
-                Err(e) => {
-                    log::warn!("Failed to load root from disk: {:?}", e);
-                }
-            }
-        }
+        // F5 trait methods resolve through the seam.
+        use crate::persistent_artrie_core::key_encoding::CharKey;
+        use crate::persistent_artrie_core::overlay::flip::LockFreeOverlay;
 
-        // Ensure arena manager validity after loading
-        if let Some(ref arena_manager) = inner.arena_manager {
-            arena_manager.write().ensure_valid();
-        }
-
-        // Replay WAL records that came after the checkpoint via the SAME shared
-        // Order-A reconcile (design C′) the mmap ctors use (no-drift constraint):
-        // per-term last-writer-wins by commit generation, checkpoint-subsumed
-        // records skipped inside `reconcile_lww`. Rank-less WAL ⇒ byte-for-byte
-        // the old in-order replay.
-        // S4: the on-disk rank-regime drives the reconcile's unranked-orphan DROP.
+        // The on-disk rank-regime, read up-front so the F5 gate can decide BEFORE the
+        // legacy owned dense-load (no-drift with the mmap ctors).
         let rank_regime = WalReader::read_header(&wal_path)
             .map(|h| h.regime())
             .unwrap_or(crate::persistent_artrie_core::wal::RankRegime::Owned);
-        let applied_any =
-            inner.replay_records_lww(recovered_ops, loaded_from_disk, checkpoint_lsn, rank_regime);
-        let skipped_all = !applied_any;
+        // F5 honors the SAME gate (no per-ctor drift). `IoUringDiskManager` is the `S`.
+        let use_f5 = <Self as LockFreeOverlay<CharKey, V, crate::persistent_artrie::IoUringDiskManager>>::USE_F5_REOPEN_LOADER
+            && rank_regime == crate::persistent_artrie_core::wal::RankRegime::Overlay
+            && Self::overlay_eligible_v();
 
-        if loaded_from_disk && skipped_all {
-            inner.dirty.store(false, AtomicOrdering::Release);
-        }
+        if use_f5 {
+            // ===== F5 PATH (direct dense→overlay; owned tree NOT materialized) =====
+            inner.load_root_immutable(&buffer_manager, root_ptr)?;
+            if let Some(ref arena_manager) = inner.arena_manager {
+                arena_manager.write().ensure_valid();
+            }
+            let _applied = inner.replay_records_lww_overlay(
+                recovered_ops,
+                /* loaded_from_disk */ root_ptr != 0,
+                checkpoint_lsn,
+                rank_regime,
+            );
+        } else {
+            // ===== LEGACY PATH (unchanged) =====
+            let mut loaded_from_disk = false;
+            if root_ptr != 0 {
+                let root_swizzled = SwizzledPtr::from_raw(root_ptr);
+                match inner.load_root_from_disk(&buffer_manager, &root_swizzled, None) {
+                    Ok((root, len)) => {
+                        *inner.root.get_mut() = root;
+                        inner.len.store(len, AtomicOrdering::Release);
+                        loaded_from_disk = true;
+                    }
+                    Err(e) => {
+                        log::warn!("Failed to load root from disk: {:?}", e);
+                    }
+                }
+            }
 
-        // S5-12 EDIT 2 (IRREVERSIBLE, io_uring twin): an already-Overlay file moves the
-        // recovered owned tree into the lock-free overlay (eligible V) + selects
-        // LockFreeOverlay; Owned-regime (incl. empty) STAYS owned. `IoUringDiskManager`
-        // is `'static`, so `reestablish_overlay_dispatch`'s `S: 'static` bound holds.
-        if rank_regime == crate::persistent_artrie_core::wal::RankRegime::Overlay
-            && Self::overlay_eligible_v()
-        {
-            let took = inner.flip_to_overlay();
-            debug_assert!(took, "Overlay-regime open must flip");
-            inner.reestablish_overlay_dispatch()?;
+            // Ensure arena manager validity after loading
+            if let Some(ref arena_manager) = inner.arena_manager {
+                arena_manager.write().ensure_valid();
+            }
+
+            // Replay WAL records that came after the checkpoint via the SAME shared
+            // Order-A reconcile (design C′) the mmap ctors use (no-drift constraint).
+            let applied_any = inner.replay_records_lww(
+                recovered_ops,
+                loaded_from_disk,
+                checkpoint_lsn,
+                rank_regime,
+            );
+            let skipped_all = !applied_any;
+
+            if loaded_from_disk && skipped_all {
+                inner.dirty.store(false, AtomicOrdering::Release);
+            }
+
+            // S5-12 EDIT 2 (IRREVERSIBLE, io_uring twin): an already-Overlay file moves
+            // the recovered owned tree into the lock-free overlay (eligible V) + selects
+            // LockFreeOverlay; Owned-regime (incl. empty) STAYS owned.
+            if rank_regime == crate::persistent_artrie_core::wal::RankRegime::Overlay
+                && Self::overlay_eligible_v()
+            {
+                let took = inner.flip_to_overlay();
+                debug_assert!(took, "Overlay-regime open must flip");
+                inner.reestablish_overlay_dispatch()?;
+            }
         }
 
         Ok(inner)

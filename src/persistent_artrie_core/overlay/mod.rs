@@ -42,6 +42,9 @@ pub(crate) mod checkpoint;
 // The kill-switch enum selecting owned-tree vs lock-free overlay (hoisted from
 // the char variant so the generic `flip` trait can name it — §A).
 pub mod write_mode;
+// F5 (Slice 3): the generic, compression-aware dense→overlay builder
+// (`build_overlay_root_from_terms`) used by `LockFreeOverlay::build_overlay_root_from_owned`.
+pub(crate) mod f5_build;
 
 pub use atomic_ptr::AtomicNodePtr;
 pub use faulter::OverlayFaulter;

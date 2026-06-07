@@ -1,0 +1,14 @@
+== Unsafe boundary inventory ==
+Unsafe boundary inventory, contract tags, and coverage metadata match formal-verification ledgers
+== Rust feature profile compile checks ==
+   Compiling libdictenstein v0.1.0 (/home/dylon/Workspace/f1r3fly.io/libdictenstein)
+warning: type alias `ScdawgNode` is never used
+  --> src/scdawg.rs:74:6
+   |
+74 | type ScdawgNode<V = ()> = crate::scdawg_core::ScdawgNode<u8, V>;
+...
+[full TLA+/Rocq/correspondence parse+run output elided — see scripts/verify-formal-correspondence.sh]
+...
+Semantic processing of module ConcurrentCheckpointSerialization
+Skipping TLC model checking; set RUN_TLC=1 to enable bounded TLC runs
+FORMAL_EXIT=0

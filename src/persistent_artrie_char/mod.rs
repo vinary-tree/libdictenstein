@@ -198,6 +198,12 @@ pub mod mutation_api;
 // Core mutation implementations (_no_wal helpers) — Phase-6 split.
 pub mod mutation_core;
 
+// F5 (Slice 3): the direct dense→overlay reopen loader — `load_root_immutable`
+// (eager-load owned + iterative walk-converter owned→overlay) + the per-variant
+// glue for the generic WAL-tail-into-overlay applier. Gated OFF by default
+// (`LockFreeOverlay::USE_F5_REOPEN_LOADER`); see `docs/design/slice3-f5-loader-impl.md`.
+pub(crate) mod f5_loader;
+
 /// Epoch-deferred reclamation of evicted subtrees (eviction-safety for the
 /// lock-free `DictionaryNode` walk).
 pub(crate) mod reclaim;

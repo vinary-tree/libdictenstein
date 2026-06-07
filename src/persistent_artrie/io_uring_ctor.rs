@@ -265,8 +265,26 @@ impl<V: DictionaryValue> PersistentARTrie<V, IoUringDiskManager> {
             wal_writer.commit_seq_floor().max(max_commit_seq_gen)
         };
 
+        // The on-disk rank-regime + the F5 gate (read up-front so F5 can avoid
+        // installing the owned dense tree). No-drift with the byte mmap ctor.
+        let rank_regime = {
+            use crate::persistent_artrie_core::wal::WalReader;
+            WalReader::read_header(&wal_path)
+                .map(|h| h.regime())
+                .unwrap_or(crate::persistent_artrie_core::wal::RankRegime::Owned)
+        };
+        let use_f5 = {
+            use crate::persistent_artrie_core::overlay::flip::LockFreeOverlay;
+            <Self as LockFreeOverlay<crate::persistent_artrie_core::key_encoding::ByteKey, V, IoUringDiskManager>>::USE_F5_REOPEN_LOADER
+                && rank_regime == crate::persistent_artrie_core::wal::RankRegime::Overlay
+                && Self::overlay_eligible_v()
+        };
+
         let was_loaded_from_disk = loaded_root.is_some();
         let (initial_root, initial_term_count) = match loaded_root {
+            // F5: DROP the loaded owned root; `dict.root` stays empty (F5 builds the
+            // overlay directly from the dense image via `load_root_immutable`).
+            Some(_) if use_f5 => (TrieRoot::Bucket(StringBucket::with_values()), 0),
             Some(root) => (root, loaded_term_count as usize),
             None => (TrieRoot::Bucket(StringBucket::with_values()), 0),
         };
@@ -306,73 +324,88 @@ impl<V: DictionaryValue> PersistentARTrie<V, IoUringDiskManager> {
             commit_seq: std::sync::atomic::AtomicU64::new(commit_seq_seed),
         };
 
-        // Replay via the shared M2d regime-aware path (`replay_records_lww`),
-        // identical to the mmap `open` sink (no-drift constraint): `Owned` WAL ⇒
-        // byte-for-byte the pre-M2d in-order replay of the transaction-filtered
-        // `RecoveryManager` ops; `Overlay` WAL ⇒ the SHARED A2 `reconcile_lww`
-        // (orders by commit generation + DROPS unranked orphans, closing H3). The
-        // on-disk `header.regime()` drives the dispatch; unreadable ⇒ `Owned`
-        // (fail-safe keep).
-        let rank_regime = {
-            use crate::persistent_artrie_core::wal::WalReader;
-            WalReader::read_header(&wal_path)
-                .map(|h| h.regime())
-                .unwrap_or(crate::persistent_artrie_core::wal::RankRegime::Owned)
-        };
-        // Raw records (the `CommitRank` markers `RecoveryManager` strips) collected
-        // ONLY for the rare/cold `Overlay` post-flip path; the `Owned` hot path
-        // keeps its single RecoveryManager scan and ignores `raw_records`.
-        let raw_records: Vec<(super::wal::Lsn, super::wal::WalRecord)> = if rank_regime
-            == crate::persistent_artrie_core::wal::RankRegime::Overlay
-            && wal_path.exists()
-        {
-            use crate::persistent_artrie_core::wal::WalReader;
-            let mut records = Vec::new();
-            if let Ok(mut reader) = WalReader::new(&wal_path) {
-                while let Some(result) = reader.next_record() {
-                    match result {
-                        Ok((lsn, record)) => records.push((lsn, record)),
-                        Err(_) => break, // stop at the durable prefix
+        // F5 trait methods resolve through the seam.
+        #[allow(unused_imports)]
+        use crate::persistent_artrie_core::overlay::flip::LockFreeOverlay;
+
+        if use_f5 {
+            // ===== F5 PATH (direct dense→overlay; owned tree NOT installed) =====
+            dict.load_root_immutable(root_ptr)?;
+            let raw_records: Vec<(super::wal::Lsn, super::wal::WalRecord)> = if wal_path.exists() {
+                use crate::persistent_artrie_core::wal::WalReader;
+                let mut records = Vec::new();
+                if let Ok(mut reader) = WalReader::new(&wal_path) {
+                    while let Some(result) = reader.next_record() {
+                        match result {
+                            Ok((lsn, record)) => records.push((lsn, record)),
+                            Err(_) => break, // stop at the durable prefix
+                        }
                     }
                 }
-            }
-            records
+                records
+            } else {
+                Vec::new()
+            };
+            let _ = recovered_ops; // F5 reconciles the RAW records (carry CommitRank).
+            let _applied = dict.replay_records_lww_overlay(
+                raw_records,
+                /* loaded_from_disk */ was_loaded_from_disk,
+                checkpoint_lsn.unwrap_or(0),
+                rank_regime,
+            );
+            dict.dirty.store(false, AtomicOrdering::Release);
         } else {
-            Vec::new()
-        };
-        let replayed_count = dict.replay_records_lww(
-            recovered_ops,
-            raw_records,
-            was_loaded_from_disk,
-            checkpoint_lsn,
-            rank_regime,
-        );
+            // ===== LEGACY PATH (unchanged) =====
+            // Replay via the shared M2d regime-aware path (`replay_records_lww`),
+            // identical to the mmap `open` sink (no-drift constraint).
+            let raw_records: Vec<(super::wal::Lsn, super::wal::WalRecord)> = if rank_regime
+                == crate::persistent_artrie_core::wal::RankRegime::Overlay
+                && wal_path.exists()
+            {
+                use crate::persistent_artrie_core::wal::WalReader;
+                let mut records = Vec::new();
+                if let Ok(mut reader) = WalReader::new(&wal_path) {
+                    while let Some(result) = reader.next_record() {
+                        match result {
+                            Ok((lsn, record)) => records.push((lsn, record)),
+                            Err(_) => break, // stop at the durable prefix
+                        }
+                    }
+                }
+                records
+            } else {
+                Vec::new()
+            };
+            let replayed_count = dict.replay_records_lww(
+                recovered_ops,
+                raw_records,
+                was_loaded_from_disk,
+                checkpoint_lsn,
+                rank_regime,
+            );
 
-        dict.dirty.store(false, AtomicOrdering::Release);
+            dict.dirty.store(false, AtomicOrdering::Release);
 
-        if was_loaded_from_disk && replayed_count == 0 {
-            if let Err(e) = wal_writer.truncate() {
-                warn!("Failed to truncate WAL after recovery: {:?}", e);
-            } else if let Some(threshold) = checkpoint_lsn {
-                let next_lsn = threshold.saturating_add(1);
-                wal_writer.set_min_lsn(next_lsn);
-                dict.next_lsn.store(next_lsn, AtomicOrdering::Release);
+            if was_loaded_from_disk && replayed_count == 0 {
+                if let Err(e) = wal_writer.truncate() {
+                    warn!("Failed to truncate WAL after recovery: {:?}", e);
+                } else if let Some(threshold) = checkpoint_lsn {
+                    let next_lsn = threshold.saturating_add(1);
+                    wal_writer.set_min_lsn(next_lsn);
+                    dict.next_lsn.store(next_lsn, AtomicOrdering::Release);
+                }
             }
-        }
 
-        // M4b EDIT 2 + REESTABLISH SINK (D-SINK-2, io_uring twin of the mmap `open`
-        // sink). An already-Overlay file moves the recovered owned tree into the
-        // lock-free overlay (eligible V) + selects LockFreeOverlay; an Owned-regime
-        // file (incl. empty) STAYS owned (backward-compat). `IoUringDiskManager` is
-        // `'static`, so `reestablish_overlay_dispatch`'s `S: 'static` bound holds. D1:
-        // the flip precedes the dispatch, which reads the recovered OWNED tree via the
-        // UN-routed `owned_*` seams, publishes to the overlay, then clears owned LAST.
-        if rank_regime == crate::persistent_artrie_core::wal::RankRegime::Overlay
-            && Self::overlay_eligible_v()
-        {
-            let took = dict.flip_to_overlay();
-            debug_assert!(took, "Overlay-regime open must flip");
-            dict.reestablish_overlay_dispatch()?;
+            // M4b EDIT 2 + REESTABLISH SINK (D-SINK-2, io_uring twin of the mmap `open`
+            // sink). An already-Overlay file moves the recovered owned tree into the
+            // overlay (eligible V); an Owned-regime file STAYS owned (backward-compat).
+            if rank_regime == crate::persistent_artrie_core::wal::RankRegime::Overlay
+                && Self::overlay_eligible_v()
+            {
+                let took = dict.flip_to_overlay();
+                debug_assert!(took, "Overlay-regime open must flip");
+                dict.reestablish_overlay_dispatch()?;
+            }
         }
 
         Ok(dict)

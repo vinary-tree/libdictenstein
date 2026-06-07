@@ -92,8 +92,11 @@ pub(crate) enum RootPublishOutcome {
 pub(crate) trait LockFreeOverlay<K: KeyEncoding, V: DictionaryValue, S>: Sized + 'static {
     /// The per-variant counter monomorph (`u64` for char, `i64` for byte). THE
     /// divergence that makes the value-route a seam, not a blanket. `Copy` so the
-    /// publisher/getter seams can pass it by value.
-    type CounterValue: 'static + Copy;
+    /// publisher/getter seams can pass it by value. `Serialize + DeserializeOwned` so
+    /// the F5 WAL-tail applier can re-encode a recovered absolute-`i64` counter as the
+    /// typed `CounterValue` via bincode (`counter_value_from_i64`) — both `u64` and
+    /// `i64` satisfy it.
+    type CounterValue: 'static + Copy + serde::Serialize + serde::de::DeserializeOwned;
 
     // ========================================================================
     // REQUIRED SEAM (variant provides) — small accessors + the un-routed owned
@@ -217,6 +220,22 @@ pub(crate) trait LockFreeOverlay<K: KeyEncoding, V: DictionaryValue, S>: Sized +
     /// NON-FAULTING and exact: overlay finals are never evicted in production
     /// (§2.4 / RT5), so the resident-finals walk reads the durable value.
     fn overlay_value_get(&self, units: &[K::Unit]) -> Option<V>;
+
+    /// **F5 — NO-WAL overlay remove of the NON-EMPTY term `units`** (the data-loss-
+    /// critical reopen WAL-tail-into-overlay path's Remove arm — see
+    /// [`Self::apply_recovered_operation_overlay`]). Clear the term's membership in
+    /// the live overlay via the variant's existing single-arbiter `try_remove`
+    /// path-copy + root CAS, in a bounded-retry loop, and invalidate the positive
+    /// lookup cache. NO WAL append, NO commit-rank, NO watermark advance — the Remove
+    /// is ALREADY durable in the WAL being replayed; re-logging would double-log and
+    /// punch a watermark hole. The empty term "" is handled by the generic
+    /// [`Self::overlay_remove`] default (the root non-final publisher), so this seam
+    /// is NEVER called with an empty slice (the default asserts it). The MEMBERSHIP/
+    /// VALUE distinction does not matter for remove (both clear finality + value), so
+    /// this is generic over `V` (no counter monomorph). On a fault-in I/O error the
+    /// removal is best-effort skipped (the durable image already reflects the remove —
+    /// a later reopen retries); the durable record is intact.
+    fn overlay_try_remove_path(&self, units: &[K::Unit]);
 
     // ========================================================================
     // DEFAULT-PROVIDED GENERIC METHODS — DO NOT OVERRIDE (they encode D1 +
@@ -743,6 +762,404 @@ pub(crate) trait LockFreeOverlay<K: KeyEncoding, V: DictionaryValue, S>: Sized +
     fn overlay_publish_root_value(&self, value: V) -> Result<()> {
         self.publish_root_cas(move |r| Arc::new(r.as_final().with_value(value.clone())), |_| true)
             .map(|_| ())
+    }
+
+    // ========================================================================
+    // F5 — direct dense→overlay reopen loader: the GENERIC pieces (the
+    // WAL-tail-into-overlay applier + the no-WAL overlay remove). The per-variant
+    // walk-converter (`build_overlay_root_from_owned` / `load_root_immutable`) lives
+    // in each variant module (it walks the variant's owned `CharTrieRoot`/`TrieRoot`)
+    // and installs the pre-built root via `install_prebuilt_overlay_root` below.
+    // See `docs/design/slice3-f5-loader-impl.md`.
+    // ========================================================================
+
+    /// **F5 GATE (S3: SWITCHED ON).** When `true` (the current S3 state), the reopen
+    /// Overlay-regime branch uses the F5 direct dense→overlay loader
+    /// (`load_root_immutable` + `replay_records_lww_overlay`): reopen builds the lock-
+    /// free overlay DIRECTLY from the dense image + replays the WAL tail INTO the
+    /// overlay, never materializing the owned tree into `self.root` (the F7
+    /// prerequisite). When `false` (the S1/S2 dormant state), reopen uses the LEGACY
+    /// path (owned `load_root_from_disk` + owned `replay_records_lww` + `flip` +
+    /// `reestablish_overlay_dispatch`). **REVERSIBLE** — flip back to `false` to
+    /// restore the proven legacy path with zero other changes. The
+    /// `tests/persistent_f5_both_loaders_correspondence.rs` `open_with_f5_loader` ctors
+    /// drive F5 regardless of this gate, so they stay a stable oracle either way.
+    ///
+    /// F5 runs ONLY for `RankRegime::Overlay`, overlay-eligible files (an Owned-regime
+    /// file — legacy/un-flipped — keeps the owned loader). The
+    /// `checkpoint_lsn = committed-watermark` capture ordering is UNTOUCHED (F5 is
+    /// reopen-side only).
+    const USE_F5_REOPEN_LOADER: bool = true;
+
+    /// **F5 — install a PRE-BUILT overlay root** (the walk-converter's output) as the
+    /// live lock-free overlay, instead of `enable_lockfree`'s EMPTY root. Sets
+    /// `lockfree_root = Some(AtomicNodePtr::new(root))` + a fresh lookup cache via the
+    /// variant seam [`Self::install_prebuilt_overlay_root_seam`], then selects
+    /// `LockFreeOverlay` and stamps/verifies the WAL Overlay regime EXACTLY as
+    /// [`Self::flip_to_overlay`] does (re-using its WAL-regime stamp logic), returning
+    /// the resulting `route_overlay() && stamped_overlay`. Does NOT touch the owned
+    /// tree (F5 adds ALONGSIDE; F7 deletes owned).
+    ///
+    /// **V-1 gate:** a NO-OP returning `false` for `V ∉ {(), CounterValue}`? No — F2
+    /// made ALL `V` overlay-eligible, so this engages for any `V` (the same as
+    /// `flip_to_overlay`). It mirrors `flip_to_overlay`'s V-2 stamp re-check so an
+    /// Owned-regime WAL under overlay routing (which would KEEP unranked orphans on a
+    /// later reopen) is surfaced as `false` (the caller hard-errors).
+    fn install_prebuilt_overlay_root(&mut self, root: Arc<OverlayNode<K, V>>) -> bool {
+        if !Self::overlay_eligible_v() {
+            return false;
+        }
+        // Install the pre-built root + fresh cache (variant seam — it owns the
+        // concrete `AtomicNodePtr`/cache field types). Idempotent guard inside the
+        // seam: it only installs when `lockfree_root` is not already set (a fresh
+        // reopen trie never has it set).
+        self.install_prebuilt_overlay_root_seam(root);
+        self.set_overlay_write_mode(OverlayWriteMode::LockFreeOverlay);
+        // Mirror `flip_to_overlay`'s empty-WAL restamp guard: F5 runs on an
+        // already-Overlay (non-empty) WAL, so the stamp is normally already Overlay;
+        // restamp only on the fresh-WAL edge case (defensive, matches flip).
+        if self.wal_current_lsn() == Some(1) && !self.wal_is_overlay_regime() {
+            self.wal_stamp_overlay_regime();
+        }
+        // V-2: verify the WAL is ACTUALLY Overlay-regime (an Owned-regime WAL under
+        // overlay routing would resurrect unranked orphans on a later reopen).
+        let stamped_overlay = self.wal_current_lsn().is_some() && self.wal_is_overlay_regime();
+        self.route_overlay() && stamped_overlay
+    }
+
+    /// Variant seam for [`Self::install_prebuilt_overlay_root`]: set the concrete
+    /// `lockfree_root` to `AtomicNodePtr::new(root)` and a fresh empty lookup cache.
+    /// Idempotent (only installs if not already enabled). The variant owns the field
+    /// types, so the install lives in the variant's `lockfree_cas.rs`.
+    fn install_prebuilt_overlay_root_seam(&mut self, root: Arc<OverlayNode<K, V>>);
+
+    /// **F5 — build the overlay root from the (already eager-loaded) OWNED tree.**
+    /// The COMPRESSION-AWARE, generic dense→overlay walk-converter: it enumerates every
+    /// owned `(term-units, Option<V>)` + the empty term "" via the SAME D1 un-routed owned
+    /// seam readers (`owned_first_units` / `owned_units_under` /
+    /// `owned_units_with_values_under` / `owned_has_empty_term_value`) the reestablish
+    /// folds use — those readers EXPAND `StringBucket` suffixes + compressed ART-node
+    /// prefixes, so this handles BOTH an un-path-compressed Overlay image AND a
+    /// path-compressed COMPACTED Overlay image (C-opt-1) without re-deriving the
+    /// expansion. The enumeration is fed to the iterative, deep-term-safe
+    /// [`build_overlay_root_from_terms`](crate::persistent_artrie_core::overlay::f5_build::build_overlay_root_from_terms).
+    ///
+    /// # D1 (CRITICAL)
+    ///
+    /// Reads the OWNED tree via the UN-routed `owned_*` seams (the SAME ones
+    /// `reestablish_overlay_*` use). The F5 caller (`load_root_immutable`) calls this
+    /// BEFORE installing the overlay (so `route_overlay()` is still false here — but the
+    /// owned readers bypass the route regardless, so it is safe either way). It does NOT
+    /// clear the owned tree (the caller decides; F5 leaves owned intact, F7 deletes it).
+    ///
+    /// # Membership + value (mixed)
+    ///
+    /// An owned trie may hold TERM-ONLY members MIXED with valued terms (e.g. a counter
+    /// trie with a bare `insert(t)`, or any `()`/arbitrary-`V` trie). The membership
+    /// stream (`owned_units_under`) carries EVERY final (incl. term-only); the value
+    /// stream (`owned_units_with_values_under`) carries only valued finals. We union them
+    /// so a term-only member is kept as membership and a valued term carries its value —
+    /// the SAME flag-2 fix `reestablish_overlay_value` applies. (This is why F5 keeps a
+    /// term-only counter member that the legacy `reestablish_overlay_counter` dropped —
+    /// strictly more correct, no data loss.)
+    fn build_overlay_root_from_owned(&self) -> Result<Arc<OverlayNode<K, V>>> {
+        use crate::persistent_artrie_core::overlay::f5_build::build_overlay_root_from_terms;
+        use std::collections::BTreeMap;
+
+        let (first_units, has_empty_term) = self.owned_first_units()?;
+
+        // Collect (units → Option<V>) for every non-empty owned final, streaming by first
+        // unit (RA-2 — bound the per-partition materialization). A `BTreeMap` per term so
+        // a value (set second) overrides a bare membership entry for the same term.
+        let mut terms: BTreeMap<Vec<K::Unit>, Option<V>> = BTreeMap::new();
+        for unit in first_units {
+            let prefix = [unit];
+            // (1) Membership for EVERY final under this unit (incl. term-only).
+            if let Some(chunk) = self.owned_units_under(&prefix)? {
+                for units in chunk {
+                    terms.entry(units).or_insert(None);
+                }
+            }
+            // (2) Value for each valued final (overrides the bare membership above).
+            if let Some(chunk) = self.owned_units_with_values_under(&prefix)? {
+                for (units, value) in chunk {
+                    terms.insert(units, Some(value));
+                }
+            }
+        }
+
+        // The empty term "": Some(Some(v)) valued, Some(None) membership, None absent.
+        let empty_term: Option<Option<V>> = if has_empty_term {
+            Some(self.owned_has_empty_term_value())
+        } else {
+            None
+        };
+
+        Ok(build_overlay_root_from_terms::<K, V, _>(terms, empty_term))
+    }
+
+    /// **F5 — NO-WAL overlay remove of `units` (any term, incl. "")**. The empty term
+    /// "" → publish a FRESH non-final root via [`Self::publish_root_cas`] (the no-WAL,
+    /// no-rank twin of `remove_cas_durable`'s empty-term arm — `as_non_final` on a
+    /// fresh root, the single-arbiter root CAS, NOT an in-place clear). A non-empty
+    /// term → the variant seam [`Self::overlay_try_remove_path`]. Used ONLY by the F5
+    /// WAL-tail applier for a `Remove` winner (a term inserted-into-the-dense-image
+    /// then removed in the un-checkpointed WAL tail — it MUST be cleared from the
+    /// rebuilt overlay or it RESURRECTS, the exact data-loss class F5 must not
+    /// introduce). Errors from the empty-term root CAS are logged + swallowed
+    /// (best-effort: the durable image already reflects the remove).
+    fn overlay_remove(&self, units: &[K::Unit]) {
+        if units.is_empty() {
+            // Empty term "": clear root finality via a fresh non-final root CAS
+            // (publish only if currently final — `needs_publish = is_final`).
+            if let Err(e) =
+                self.publish_root_cas(|r| Arc::new(r.as_non_final()), |r| r.is_final())
+            {
+                log::warn!("F5 overlay_remove(\"\"): root non-final CAS failed: {:?}", e);
+            }
+            return;
+        }
+        self.overlay_try_remove_path(units);
+    }
+
+    /// **F5 (THE data-loss-critical path) — apply ONE reconciled
+    /// [`RecoveredOperation`] INTO THE OVERLAY** (no WAL), via the SAME no-WAL
+    /// publishers [`Self::reestablish_overlay_value`] uses. The overlay twin of the
+    /// owned `apply_*_recovered_operation_no_wal`: where the owned applier mutates
+    /// `self.root`, this publishes into the live lock-free overlay (which already
+    /// holds the dense/checkpoint state from `load_root_immutable`). Returns `true`
+    /// iff the op was applied (a value-deserialize failure logs + returns `false`,
+    /// the SAME best-effort the owned applier has — it does NOT abort the replay).
+    ///
+    /// # Winners are applied in commit-visibility order
+    ///
+    /// [`Self::replay_records_lww_overlay`] feeds the winners in `(generation, lsn)`
+    /// order, so applying them here reproduces the last-writer-wins final state —
+    /// IDENTICAL to the owned applier consuming the SAME winner list. Single-threaded
+    /// at reopen (no concurrent writers), so each publisher's root CAS is uncontended.
+    ///
+    /// # Per-op mapping (mirrors the owned applier exactly)
+    ///
+    /// * `Insert{value: Some}` / `Upsert` / successful `CompareAndSwap` → deserialize
+    ///   `V`, then `overlay_publish_value` (non-empty) / `overlay_publish_root_value`
+    ///   (""). A VALUE set, last-writer-wins.
+    /// * `Insert{value: None}` → membership: `overlay_publish_membership` (non-empty) /
+    ///   `overlay_publish_root_membership` ("").
+    /// * `Remove` → `overlay_remove` (clear membership/value; "" via the root non-final
+    ///   publisher). REQUIRED for correctness (else an inserted-then-removed-in-tail
+    ///   term resurrects).
+    /// * `Increment{result: Some(v)}` (a single absolute `Increment`) → SET to `v` via
+    ///   the counter publisher (`overlay_publish_counter` / the root value publisher).
+    /// * `Increment{result: None}` (a `BatchIncrement` DELTA) → ACCUMULATE `delta` onto
+    ///   the overlay's current counter via `overlay_publish_counter` (whose seam routes
+    ///   through the counter-monomorph `increment_cas`, which ADDS). For "" the counter
+    ///   path no-ops (the durable counter path never logs a "" increment), so a ""
+    ///   delta is dropped — matching the owned applier's empty-term increment behavior.
+    ///   `value_as_counter`/`counter_as_value` bridge the typed `CounterValue`.
+    ///
+    /// The empty-term "" branches use the RANKED/fresh-root-CAS root publishers
+    /// (`overlay_publish_root_value`/`_membership` + the `overlay_remove` non-final
+    /// root CAS), NEVER an in-place root mutation — the §2.2/G5-NEW-4 data-loss fix.
+    fn apply_recovered_operation_overlay(
+        &self,
+        op: crate::persistent_artrie_core::recovery::RecoveredOperation,
+    ) -> bool {
+        use crate::persistent_artrie_core::recovery::RecoveredOperation as Op;
+        // Decode the raw key bytes into this encoding's units once, up front. A key
+        // that is not valid for the encoding (e.g. a non-UTF-8 byte sequence for the
+        // char trie) cannot have been produced by this trie's writers — skip it
+        // (best-effort, the owned applier's `String::from_utf8_lossy` is equally
+        // lenient; we DROP rather than lossily-mangle so a bogus key never
+        // materializes a wrong term).
+        let units = match K::units_from_bytes(op.term()) {
+            Some(u) => u,
+            None => {
+                log::warn!("F5 overlay replay: undecodable key for this encoding; skipping op");
+                return false;
+            }
+        };
+        let units: &[K::Unit] = units.as_slice();
+        match op {
+            Op::Insert { value, .. } => match value {
+                Some(value_bytes) => {
+                    match crate::serialization::bincode_compat::deserialize::<V>(&value_bytes) {
+                        Ok(v) => {
+                            self.overlay_publish_value_any(units, v);
+                            true
+                        }
+                        Err(error) => {
+                            log::warn!("F5 overlay replay: insert value deserialize failed: {:?}", error);
+                            false
+                        }
+                    }
+                }
+                None => {
+                    self.overlay_publish_membership_any(units);
+                    true
+                }
+            },
+            Op::Remove { .. } => {
+                self.overlay_remove(units);
+                true
+            }
+            Op::Upsert { value, .. } => {
+                match crate::serialization::bincode_compat::deserialize::<V>(&value) {
+                    Ok(v) => {
+                        self.overlay_publish_value_any(units, v);
+                        true
+                    }
+                    Err(error) => {
+                        log::warn!("F5 overlay replay: upsert value deserialize failed: {:?}", error);
+                        false
+                    }
+                }
+            }
+            Op::CompareAndSwap { new_value, success, .. } => {
+                if !success {
+                    return false;
+                }
+                match crate::serialization::bincode_compat::deserialize::<V>(&new_value) {
+                    Ok(v) => {
+                        self.overlay_publish_value_any(units, v);
+                        true
+                    }
+                    Err(error) => {
+                        log::warn!("F5 overlay replay: CAS value deserialize failed: {:?}", error);
+                        false
+                    }
+                }
+            }
+            Op::Increment { delta, result, .. } => {
+                match result {
+                    // Absolute (single Increment): SET the counter to `v` (incl. 0).
+                    Some(v) => {
+                        // The reconcile carries the absolute value as i64. Re-encode it
+                        // as the typed `V` (the counter monomorph), then publish as a
+                        // value SET so an absolute-set-to-0 is honored (NOT accumulated).
+                        match Self::counter_value_from_i64(v) {
+                            Some(cv) => {
+                                // For "" the counter publisher no-ops (durable counter
+                                // path never logs ""); route "" through the value publisher
+                                // so an absolute "" still SETs. counter_as_value re-wraps.
+                                if units.is_empty() {
+                                    if let Some(vv) = Self::counter_as_value(cv) {
+                                        if let Err(e) = self.overlay_publish_root_value(vv) {
+                                            log::warn!("F5 overlay replay: root counter set failed: {:?}", e);
+                                            return false;
+                                        }
+                                    }
+                                } else {
+                                    self.overlay_publish_counter(units, cv);
+                                }
+                                true
+                            }
+                            None => {
+                                log::warn!("F5 overlay replay: increment-absolute value not a counter for this V; skipping");
+                                false
+                            }
+                        }
+                    }
+                    // Delta (BatchIncrement entry): ACCUMULATE `delta` (commutative on
+                    // replay). `overlay_publish_counter`'s seam routes through the
+                    // counter-monomorph `increment_cas`, which ADDS the delta to the
+                    // overlay's current value. A non-positive/overflowing delta is
+                    // handled inside the seam's bound (same as the durable path). For ""
+                    // there is no counter increment path → drop (owned applier parity).
+                    None => {
+                        if units.is_empty() {
+                            // No durable "" delta is ever logged; nothing to accumulate.
+                            return true;
+                        }
+                        match Self::counter_value_from_i64(delta) {
+                            Some(cv) => {
+                                self.overlay_publish_counter(units, cv);
+                                true
+                            }
+                            None => {
+                                log::warn!("F5 overlay replay: increment-delta not a counter for this V; skipping");
+                                false
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// `V`-generic membership publish: non-empty → `overlay_publish_membership`,
+    /// empty "" → `overlay_publish_root_membership` (the fresh-root-CAS root
+    /// publisher). The empty-term split the per-unit publishers cannot express.
+    fn overlay_publish_membership_any(&self, units: &[K::Unit]) {
+        if units.is_empty() {
+            if let Err(e) = self.overlay_publish_root_membership() {
+                log::warn!("F5 overlay replay: root membership publish failed: {:?}", e);
+            }
+        } else {
+            self.overlay_publish_membership(units);
+        }
+    }
+
+    /// `V`-generic value publish: non-empty → `overlay_publish_value`, empty "" →
+    /// `overlay_publish_root_value` (the fresh-root-CAS root value publisher — the
+    /// §2.2/G5-NEW-4 data-loss fix; NOT an in-place root mutation).
+    fn overlay_publish_value_any(&self, units: &[K::Unit], value: V) {
+        if units.is_empty() {
+            if let Err(e) = self.overlay_publish_root_value(value) {
+                log::warn!("F5 overlay replay: root value publish failed: {:?}", e);
+            }
+        } else {
+            self.overlay_publish_value(units, value);
+        }
+    }
+
+    /// Re-encode a recovered absolute-`i64` counter as the typed `CounterValue` via
+    /// bincode (the SAME bridge the owned char/byte appliers use:
+    /// `value_from_recovered_i64` / `value_from_i64`). `None` if `V`'s counter domain
+    /// cannot hold it (e.g. a negative for char's `u64`).
+    fn counter_value_from_i64(v: i64) -> Option<Self::CounterValue> {
+        let bytes = crate::serialization::bincode_compat::serialize(&v).ok()?;
+        crate::serialization::bincode_compat::deserialize::<Self::CounterValue>(&bytes).ok()
+    }
+
+    /// **F5 (THE data-loss-critical path) — replay the WAL tail INTO THE OVERLAY**
+    /// (the overlay twin of the owned `replay_records_lww`). Reconcile the raw
+    /// recovered records through the EXISTING [`reconcile_lww`] (the SAME call the
+    /// owned replay makes) to get the per-term last-writer winners, then apply each
+    /// INTO THE OVERLAY via [`Self::apply_recovered_operation_overlay`].
+    ///
+    /// `rank_regime` MUST be `Overlay` here (F5 runs only for Overlay-regime files —
+    /// the S3 switch gate), so the reconcile's **unranked-orphan DROP is INHERITED**
+    /// (a never-acked two-append-window orphan is dropped, resurrecting nothing) and
+    /// the checkpoint-subsumed skip (`lsn <= checkpoint_lsn` when `loaded_from_disk`)
+    /// is likewise inherited — we do NOT re-derive either. Returns the number of
+    /// winners applied.
+    ///
+    /// Self-contained (no `&mut self`): the overlay is mutated only through the
+    /// lock-free publishers (which take `&self`), so `replay_records_lww_overlay` is
+    /// `&self` — unlike the owned `replay_records_lww` (`&mut self` for `self.root`).
+    fn replay_records_lww_overlay(
+        &self,
+        recovered_ops: Vec<(
+            crate::persistent_artrie_core::wal::Lsn,
+            crate::persistent_artrie_core::wal::WalRecord,
+        )>,
+        loaded_from_disk: bool,
+        checkpoint_lsn: crate::persistent_artrie_core::wal::Lsn,
+        rank_regime: crate::persistent_artrie_core::wal::RankRegime,
+    ) -> usize {
+        let winners = crate::persistent_artrie_core::recovery::reconcile_lww(
+            recovered_ops,
+            loaded_from_disk,
+            checkpoint_lsn,
+            rank_regime,
+        );
+        let mut applied = 0usize;
+        for op in winners {
+            if self.apply_recovered_operation_overlay(op) {
+                applied += 1;
+            }
+        }
+        applied
     }
 
 }

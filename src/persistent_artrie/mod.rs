@@ -262,6 +262,11 @@ pub mod query_impl;
 // Core mutation implementation (insert/remove/convert_bucket_to_art + _no_wal variants).
 pub mod mutation_core;
 
+// F5 (Slice 3): the direct dense→overlay reopen loader — `load_root_immutable`
+// (eager-load owned + iterative walk-converter owned→overlay). Gated OFF by default
+// (`LockFreeOverlay::USE_F5_REOPEN_LOADER`); see `docs/design/slice3-f5-loader-impl.md`.
+pub(crate) mod f5_loader;
+
 // Page-aware prefix-iteration result types (Phase-5 split out of dict_impl).
 pub mod prefix_term;
 

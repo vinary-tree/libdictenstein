@@ -282,6 +282,22 @@ impl<V: DictionaryValue, S: BlockStorage> LockFreeOverlay<CharKey, V, S>
         use std::sync::atomic::Ordering;
         self.cas_retries.fetch_add(1, Ordering::Relaxed);
     }
+
+    fn install_prebuilt_overlay_root_seam(
+        &mut self,
+        root: Arc<crate::persistent_artrie_core::overlay::node::OverlayNode<CharKey, V>>,
+    ) {
+        // `OverlayNode<CharKey, V>` IS `PersistentCharNode<V>` (a type alias — see
+        // `nodes::persistent_node`), so this is an identity install. Delegates to the
+        // inherent F5 helper (same module as the private `lockfree_root` field).
+        self.install_prebuilt_overlay_root_inherent(root)
+    }
+
+    fn overlay_try_remove_path(&self, units: &[u32]) {
+        // F5 WAL-tail Remove arm: no-WAL overlay remove via the inherent helper
+        // (which uses the existing single-arbiter `try_remove_lockfree_path`).
+        self.overlay_remove_no_wal(units)
+    }
 }
 
 // ============================================================================
