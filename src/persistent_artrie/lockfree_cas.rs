@@ -2300,11 +2300,10 @@ mod m4b_flip_gate_tests {
     fn m4b_old_owned_file_stays_owned_on_reopen() {
         // Arbitrary V = String: an Owned-regime file reopens Owned with data intact.
         //
-        // F2-migrate: Bucket D (cfg-split). WITHOUT `overlay-arbitrary-v`, `String` is
-        // ineligible so `create` produces an Owned-regime file directly. WITH the
-        // feature `String` is eligible and a fresh `create` create-flips, so kill-switch
-        // it to the Owned regime (the same pattern as the i64 block below) to still
-        // exercise the back-compat "an Owned-regime file stays owned on reopen" path.
+        // Arbitrary-V overlay routing is the default, so a fresh `create::<String>()`
+        // create-flips; kill-switch it to the Owned regime (the same pattern as the
+        // i64 block below) to exercise the "an Owned-regime file stays owned on
+        // reopen" path.
         {
             let dir = scratch("byte-m4b-owned-string");
             let path = dir.path().join("t.part");
@@ -2313,9 +2312,6 @@ mod m4b_flip_gate_tests {
                 .collect();
             {
                 let mut trie = PersistentARTrie::<String>::create(&path).expect("create<String>");
-                #[cfg(not(feature = "overlay-arbitrary-v"))]
-                assert!(!trie.route_overlay(), "String trie must not flip on create");
-                #[cfg(feature = "overlay-arbitrary-v")]
                 trie.kill_switch_to_owned();
                 assert!(!trie.route_overlay(), "String trie is on the owned path");
                 for (k, v) in &entries {

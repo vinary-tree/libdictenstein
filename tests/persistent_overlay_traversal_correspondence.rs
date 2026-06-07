@@ -15,9 +15,8 @@
 //! `iter`/`iter_with_values` (the `iter_prefix("")`) oracle.
 //!
 //! Membership uses `V = ()` and valued uses the per-variant counter monomorph
-//! (`i64` for byte, `u64` for char) so the trie is overlay-routed in BOTH the
-//! feature-on and feature-off suites (those Vs are overlay-eligible without
-//! `overlay-arbitrary-v`); the assertions are identical in both.
+//! (`i64` for byte, `u64` for char); these (like all `V`) are overlay-eligible, so the
+//! trie is overlay-routed.
 //!
 //! ## A pre-existing asymmetry this test surfaced (byte owned-walk gap)
 //!

@@ -113,12 +113,6 @@ lling-llang = ["dep:lling-llang"]
 io-uring-backend = ["persistent-artrie", "dep:io-uring", "dep:libc"]
 # Expose internal APIs for benchmarks (not in default features)
 bench-internals = ["io-uring-backend"]
-# G5 / Phase F2: route ARBITRARY `V` (not just {(), counter}) through the lock-free
-# overlay. DEFAULT OFF — the F2 eligibility flip "lands dark" so production behavior
-# is byte-identical until this is deliberately enabled (the owner-gated production
-# activation). With it on, `overlay_eligible_v()` returns true for all `V` and the
-# generic value path (F0 durable write / F1 reestablish + read route) activates.
-overlay-arbitrary-v = ["persistent-artrie"]
 
 [lib]
 name = "libdictenstein"

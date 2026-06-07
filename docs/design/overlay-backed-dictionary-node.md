@@ -186,9 +186,11 @@ directly onto the overlay node API:
    same set as the owned twin AND as `iter_prefix("")`. Gold-standard proof that
    overlay traversal ≡ owned traversal.
 2. Existing transducer / fuzzy / zipper / reopen-traversal tests.
-3. Full suite feature-ON
-   (`--features "persistent-artrie overlay-arbitrary-v parallel-merge"`).
-4. Full suite feature-OFF (`--features persistent-artrie`).
+3. Full suite with arbitrary-V overlay routing (historically `--features
+   "persistent-artrie overlay-arbitrary-v parallel-merge"`; since the F2-default-on
+   flip the `overlay-arbitrary-v` feature was removed and this is the default — run
+   `--features "persistent-artrie parallel-merge"`).
+4. Full suite (`--features persistent-artrie`).
 5. `scripts/verify-formal-correspondence.sh` (incl. the strict unsafe-inventory
    set-equality gate — 0 unsafe added).
 
@@ -235,11 +237,12 @@ directly onto the overlay node API:
   (`dictionary_node_reopen_traversal_correspondence`, `persistent_char_ebr_*`,
   `zipper_language_correspondence` incl. the persistent zipper case,
   `root_descriptor_reopen_*`).
-- **Full suite feature-ON** (`--features "persistent-artrie overlay-arbitrary-v
-  parallel-merge"`): 2639 passed, 0 failed, 3 skipped. **Full lib subset incl. the
-  new in-crate test:** 1767 passed.
-- **Full suite feature-OFF** (`--features persistent-artrie`): 2624 passed, 0
-  failed, 3 skipped.
+- **Full suite with arbitrary-V overlay routing** (historically run feature-ON via
+  `--features "persistent-artrie overlay-arbitrary-v parallel-merge"`; the
+  `overlay-arbitrary-v` feature was later removed by the F2-default-on flip — this is
+  now the default for `--features "persistent-artrie parallel-merge"`): 2639 passed, 0
+  failed, 3 skipped. **Full lib subset incl. the new in-crate test:** 1767 passed.
+- **Full suite** (`--features persistent-artrie`): 2624 passed, 0 failed, 3 skipped.
 - **Formal gate** `scripts/verify-formal-correspondence.sh`: exit 0 (unsafe-inventory
   set-equality gate matches; Rocq builds 0 Admitted / 0 Axiom; TLA specs parse; all
   in-gate Rust correspondence tests pass).

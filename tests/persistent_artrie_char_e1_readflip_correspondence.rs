@@ -1,7 +1,7 @@
 //! **S5-12 E1 read-flip correspondence.** The read-flip routes the public read API
 //! (`contains`/`len`/`is_empty`/`get_value`/`iter`/`iter_prefix*`) to the immutable
-//! lock-free overlay when `route_overlay()` is true (the production default for
-//! `V ∈ {(), u64}` after the create-flip). This suite proves the overlay read answers
+//! lock-free overlay when `route_overlay()` is true (the production default for ALL
+//! `V` after the create-flip). This suite proves the overlay read answers
 //! IDENTICALLY to the proven owned-tree read for the same data: build two tries from
 //! the same terms — one forced to the owned path (`kill_switch_to_owned`), one left on
 //! the default overlay path — and assert their public reads agree. It also pins the
@@ -209,26 +209,19 @@ fn e1_deep_key_overlay_reads_no_stack_overflow() {
     assert_eq!(under, vec![deep.clone()], "deep prefix walk");
 }
 
-/// E1 is INERT for ineligible `V` (never overlay-routed): a `String`-valued trie does
-/// not create-flip, so its reads take the owned path unchanged. This is the negative
-/// control proving the read-flip touches only the eligible monomorphs.
+/// E1 read fidelity on the OWNED read path: a `String`-valued trie that has been
+/// `kill_switch_to_owned()`'d serves its reads from the owned tree unchanged. Arbitrary-V
+/// overlay routing is the default (so `String` create-flips), so the kill-switch is the
+/// supported way to force the owned read path; this is the owned-path control for the
+/// overlay read-flip.
 #[test]
-fn e1_inert_for_ineligible_v() {
+fn e1_owned_read_path_after_kill_switch() {
     let dir = scratch("e1-inert");
     let path = dir.path().join("ineligible.artc");
 
     let mut trie = PersistentARTrieChar::<String>::create(&path).expect("create");
-    // F2-migrate: Bucket D (cfg-split). WITHOUT `overlay-arbitrary-v`, `String` is
-    // ineligible and never create-flips, so this is the negative control proving the
-    // read-flip touches only the eligible monomorphs. WITH the feature `String` is
-    // eligible and create-flips; kill-switch it to the owned path so this test still
-    // exercises the inert owned read path it is named for.
-    #[cfg(not(feature = "overlay-arbitrary-v"))]
-    assert!(
-        !trie.route_overlay(),
-        "an ineligible V (String) must NOT create-flip — reads stay on the owned path"
-    );
-    #[cfg(feature = "overlay-arbitrary-v")]
+    // Arbitrary-V overlay routing is the default, so `String` create-flips; kill-switch
+    // it to the owned path so this test exercises the inert owned read path.
     trie.kill_switch_to_owned();
     assert!(!trie.route_overlay(), "reads stay on the owned path");
     trie.upsert("hello", "world".to_string()).expect("upsert");

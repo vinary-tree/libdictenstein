@@ -424,9 +424,8 @@ fn m3_routed_writes_round_trip_and_survive_reopen() {
 /// (`merge_lockfree_to_persistent`/`merge_lockfree_values_to_persistent`) — draining the
 /// durable overlay back into the owned tree would destroy durable state.
 ///
-/// F2-migrate: Bucket D (UNCONDITIONAL — C2 made these succeed for the eligible byte
-/// counter `i64` regardless of the `overlay-arbitrary-v` feature, so the old reject
-/// assertions were stale in BOTH feature configs).
+/// C2 made these succeed for the byte counter `i64` (overlay-eligible like all `V`),
+/// so the old reject assertions were stale.
 #[test]
 fn m3_reject_guards_fire_under_overlay() {
     let dir = scratch("byte-m3-rejects");

@@ -55,10 +55,6 @@
 // it is used (mirrors the char module's re-export).
 pub(crate) use crate::persistent_artrie_core::overlay::write_mode::OverlayWriteMode;
 
-// Only the feature-OFF eligibility branch uses TypeId (the feature-ON branch is
-// `true`), so gate the import to avoid an unused-import warning when the feature is on.
-#[cfg(not(feature = "overlay-arbitrary-v"))]
-use std::any::TypeId;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
@@ -467,22 +463,13 @@ impl<V: DictionaryValue, S: BlockStorage> LockFreeOverlay<ByteKey, V, S>
         }
     }
 
-    /// The byte eligible monomorphs `{(), i64}` (char's are `{(), u64}`) + F2 (G5).
+    /// ANY `V: DictionaryValue` is overlay-eligible (F2, design G5).
     ///
-    /// With the `overlay-arbitrary-v` Cargo feature, ANY `V: DictionaryValue` is
-    /// eligible (the generic value path routes it through the overlay). WITHOUT it
-    /// (production default), only `{(), i64}` — production byte-identical until the
-    /// feature is deliberately enabled (owner-gated activation, design F2).
-    /// `DictionaryValue: 'static` ⇒ `TypeId` is callable.
+    /// Arbitrary-V overlay routing is the production default: the generic value
+    /// path routes every `V` through the lock-free overlay. (The kill-switch
+    /// remains the per-trie runtime fallback to the owned tree.)
     fn overlay_eligible_v() -> bool {
-        #[cfg(feature = "overlay-arbitrary-v")]
-        {
-            true
-        }
-        #[cfg(not(feature = "overlay-arbitrary-v"))]
-        {
-            TypeId::of::<V>() == TypeId::of::<i64>() || TypeId::of::<V>() == TypeId::of::<()>()
-        }
+        true
     }
 
     // ---- UN-ROUTED owned readers (D1 — read the OWNED tree directly) ----
@@ -995,19 +982,13 @@ mod tests {
             trie_i64.route_overlay(),
             "M4b: a fresh create::<i64>() must flip to the overlay (route_overlay true)"
         );
-        // F2-migrate: Bucket D (cfg-split). Ineligible V = String stays owned WITHOUT
-        // `overlay-arbitrary-v`; WITH the feature it becomes eligible and create-flips.
+        // Arbitrary V = String is overlay-eligible (the default): a fresh
+        // `create::<String>()` create-flips to the overlay.
         let path_str = dir.path().join("str.part");
         let trie_str = PersistentARTrie::<String>::create(&path_str).expect("create<String>");
-        #[cfg(not(feature = "overlay-arbitrary-v"))]
-        assert!(
-            !trie_str.route_overlay(),
-            "M4b: arbitrary V must NOT flip (stays on the owned path — back-compat)"
-        );
-        #[cfg(feature = "overlay-arbitrary-v")]
         assert!(
             trie_str.route_overlay(),
-            "with overlay-arbitrary-v, arbitrary V (String) create-flips to the overlay"
+            "arbitrary V (String) create-flips to the overlay (default)"
         );
     }
 
@@ -1019,20 +1000,10 @@ mod tests {
         assert!(PersistentARTrie::<()>::overlay_eligible_v());
         assert!(PersistentARTrie::<i64>::overlay_eligible_v());
 
-        // F2-migrate: Bucket D (cfg-split). The `overlay-arbitrary-v` feature makes ANY
-        // `V` overlay-eligible; WITHOUT it only the `{(), i64}` monomorphs are eligible
-        // (arbitrary V — `u64` is byte-arbitrary since byte's counter is i64 — stays
-        // owned). Assert the eligibility contract for the active feature config.
-        #[cfg(feature = "overlay-arbitrary-v")]
-        {
-            assert!(PersistentARTrie::<u64>::overlay_eligible_v());
-            assert!(PersistentARTrie::<String>::overlay_eligible_v());
-        }
-        #[cfg(not(feature = "overlay-arbitrary-v"))]
-        {
-            assert!(!PersistentARTrie::<u64>::overlay_eligible_v());
-            assert!(!PersistentARTrie::<String>::overlay_eligible_v());
-        }
+        // Arbitrary-V overlay routing is the default: ANY `V` is overlay-eligible
+        // (`u64` is byte-arbitrary since byte's counter is i64, and `String`).
+        assert!(PersistentARTrie::<u64>::overlay_eligible_v());
+        assert!(PersistentARTrie::<String>::overlay_eligible_v());
     }
 
     #[test]
@@ -1073,40 +1044,21 @@ mod tests {
     }
 
     #[test]
-    fn byte_flip_is_noop_for_ineligible_v() {
-        // V-1 gate: `flip_to_overlay` is a NO-OP for arbitrary V (which would
-        // otherwise get a write-broken overlay). Arbitrary V stays owned.
-        //
-        // F2-migrate: Bucket D (cfg-split). WITHOUT `overlay-arbitrary-v`, `String` is
-        // ineligible — the flip is a strict no-op and the trie stays owned. WITH the
-        // feature, `String` is eligible — a fresh `create::<String>()` already
-        // create-flips, so the trie is overlay-routed.
+    fn byte_arbitrary_v_create_flips_to_overlay() {
+        // Arbitrary-V overlay routing is the default: `String` is eligible, so a
+        // fresh `create::<String>()` already create-flips and the trie is
+        // overlay-routed. (The kill-switch is the runtime fallback to owned.)
         use crate::persistent_artrie::PersistentARTrie;
         std::fs::create_dir_all("target/test-tmp").ok();
         let dir = tempfile::Builder::new()
-            .prefix("byte-m2a-ineligible")
+            .prefix("byte-arbitrary-v")
             .tempdir_in("target/test-tmp")
             .expect("scratch tempdir under target/test-tmp");
         let path = dir.path().join("t.part");
-        #[cfg(not(feature = "overlay-arbitrary-v"))]
-        {
-            let mut trie = PersistentARTrie::<String>::create(&path).expect("create");
-            assert!(
-                !trie.flip_to_overlay(),
-                "flip_to_overlay must be a no-op for arbitrary V"
-            );
-            assert!(
-                !trie.route_overlay(),
-                "an arbitrary-V trie must stay on the owned path (no broken overlay)"
-            );
-        }
-        #[cfg(feature = "overlay-arbitrary-v")]
-        {
-            let trie = PersistentARTrie::<String>::create(&path).expect("create");
-            assert!(
-                trie.route_overlay(),
-                "with overlay-arbitrary-v, a String trie create-flips to the overlay"
-            );
-        }
+        let trie = PersistentARTrie::<String>::create(&path).expect("create");
+        assert!(
+            trie.route_overlay(),
+            "a String trie create-flips to the overlay (default)"
+        );
     }
 }

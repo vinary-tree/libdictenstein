@@ -1,7 +1,7 @@
 //! G5 / Phase F2 — arbitrary-`V` lock-free overlay PRODUCTION-PATH correspondence.
 //!
-//! Gated on `overlay-arbitrary-v`: with the feature, ANY `V: DictionaryValue` is
-//! overlay-eligible, so a `String`-valued trie's `create()` auto-flips to the
+//! Arbitrary-`V` overlay routing is the production default: ANY `V: DictionaryValue`
+//! is overlay-eligible, so a `String`-valued trie's `create()` auto-flips to the
 //! lock-free overlay and every valued mutation routes through the generic G5 value
 //! path (F0 durable write / F1 reestablish + read route). These tests exercise the
 //! FULL production path for a NON-counter `V` (`String`):
@@ -13,12 +13,12 @@
 //!     depth-0 publish, durable across reopen);
 //!   - concurrent writers (the overlay root-CAS arbitrates).
 //!
-//! Run with: `cargo test --features "persistent-artrie overlay-arbitrary-v"`.
+//! Run with: `cargo test --features persistent-artrie`.
 //!
 //! Real-disk scratch under `ln/` (NOT tmpfs `tempdir()`), per the project's
 //! disk-backed-test discipline.
 
-#![cfg(all(feature = "persistent-artrie", feature = "overlay-arbitrary-v"))]
+#![cfg(feature = "persistent-artrie")]
 
 use libdictenstein::persistent_artrie::PersistentARTrie;
 use libdictenstein::persistent_artrie_char::{PersistentARTrieChar, SharedCharTrie};
@@ -43,7 +43,7 @@ fn char_arbitrary_v_value_roundtrip_checkpoint_reopen() {
         let mut trie = PersistentARTrieChar::<String>::create(&path).expect("create");
         assert!(
             trie.route_overlay(),
-            "feature on ⇒ a String trie auto-flips to the overlay at create"
+            "arbitrary-V overlay routing is the default ⇒ a String trie auto-flips to the overlay at create"
         );
         assert!(trie.insert_with_value("alpha", "A".to_string()).expect("ins"));
         assert!(trie
@@ -196,7 +196,7 @@ fn byte_arbitrary_v_value_roundtrip_checkpoint_reopen() {
         let mut trie = PersistentARTrie::<String>::create(&path).expect("create");
         assert!(
             trie.route_overlay(),
-            "feature on ⇒ a String byte trie auto-flips to the overlay at create"
+            "arbitrary-V overlay routing is the default ⇒ a String byte trie auto-flips to the overlay at create"
         );
         assert!(trie.insert_with_value("alpha", "A".to_string()));
         assert!(trie.insert_with_value("", "EMPTY".to_string()));
