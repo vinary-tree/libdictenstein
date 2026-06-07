@@ -281,3 +281,33 @@ fn char_union_with_no_ab_ba_deadlock() {
     assert_eq!(n1, 2, "A processed both of B's terms");
     assert_eq!(n2, 2, "B processed both of A's terms");
 }
+
+/// C2 byte twin: byte `merge_from` on a flipped String trie combines via `merge_fn`
+/// over the overlay self-read (NOT `get_value_impl` over the empty owned tree), inserts
+/// other-only terms, and the merged values survive a reopen.
+#[test]
+fn byte_arbitrary_v_merge_from_overlay_then_reopen() {
+    let dir = scratch("f2-byte-merge");
+    let path = dir.path().join("self.part");
+    let opath = dir.path().join("other.part");
+    {
+        let mut self_t = PersistentARTrie::<String>::create(&path).expect("create self");
+        let mut other = PersistentARTrie::<String>::create(&opath).expect("create other");
+        assert!(self_t.route_overlay() && other.route_overlay(), "both flipped to overlay");
+        self_t.insert_with_value("apple", "A".to_string()); // byte returns bool
+        self_t.insert_with_value("banana", "B".to_string());
+        other.insert_with_value("apple", "X".to_string()); // overlap
+        other.insert_with_value("cherry", "C".to_string()); // other-only
+        let processed = self_t
+            .merge_from(&other, |a, b| format!("{a}{b}"))
+            .expect("overlay merge");
+        assert_eq!(processed, 2, "both other terms processed");
+        assert_eq!(self_t.get_value("apple"), Some("AX".to_string()), "overlap combined");
+        assert_eq!(self_t.get_value("banana"), Some("B".to_string()), "self-only unchanged");
+        assert_eq!(self_t.get_value("cherry"), Some("C".to_string()), "other-only inserted");
+        self_t.sync().expect("sync");
+    }
+    let self_t = PersistentARTrie::<String>::open(&path).expect("reopen");
+    assert_eq!(self_t.get_value("apple"), Some("AX".to_string()), "merged value durable");
+    assert_eq!(self_t.get_value("cherry"), Some("C".to_string()));
+}

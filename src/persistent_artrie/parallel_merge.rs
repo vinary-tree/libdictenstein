@@ -72,18 +72,24 @@ impl<V: DictionaryValue + Clone + Send + Sync> SharedARTrieParallelExt<V> for Sh
     {
         use rayon::prelude::*;
 
-        // **M3 reject (BROKEN-BY-DESIGN, audit §B #4 — byte's single parallel merge).**
-        // Same hazard as the serial merges: `get_value_impl` + `insert_impl` over the
-        // empty owned tree silently replaces/drops live overlay counts. Reject under
-        // `route_overlay()` (checked once under a short read guard before the parallel
-        // read phase).
+        // C2: under the overlay, snapshot `other` (release its read lock) then apply
+        // SERIALLY under `self.write()` via the shared overlay merge funnel. The
+        // parallel WRITE is illusory under the overlay (the per-key CAS re-reads self
+        // each iteration), and snapshot-then-write avoids the cross-instance AB/BA
+        // deadlock the owned parallel phase risks (holding `other.read()` per partition
+        // across a pending `self.write()` — red-team R4-1). The owned parallel arm below
+        // is unchanged (its latent owned-mode deadlock is the cross-instance sweep,
+        // task #35).
         if self.read().route_overlay() {
-            return Err(crate::persistent_artrie::error::PersistentARTrieError::InvalidOperation(
-                "merge_from_parallel is not valid under the lock-free overlay write mode (the \
-                 overlay is the durable production state; a trie-to-trie merge would overwrite \
-                 rather than combine accumulated values); use OverlayWriteMode::OwnedTree"
-                    .to_string(),
-            ));
+            let entries: Vec<(Vec<u8>, V)> = {
+                let other_guard = other.read();
+                match other_guard.iter_prefix_with_values_and_arena(b"") {
+                    Ok(Some(terms)) => terms.into_iter().map(|t| (t.term, t.value)).collect(),
+                    _ => Vec::new(),
+                }
+            };
+            let guard = self.write();
+            return guard.merge_entries_overlay(entries, merge_fn);
         }
 
         // Partition by first byte (0-255) for parallel processing.
