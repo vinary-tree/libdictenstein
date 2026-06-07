@@ -256,10 +256,13 @@ impl<K: KeyEncoding, V> std::fmt::Debug for ChildStore<K, V> {
     }
 }
 
-impl<K: KeyEncoding, V: Clone> ChildStore<K, V> {
-    /// Create an empty inline child store.
+// Bound-free helpers (no `V: Clone`) — required by `OverlayNode`'s iterative `Drop`,
+// which cannot add a `V: Clone` bound the struct lacks (E0367).
+impl<K: KeyEncoding, V> ChildStore<K, V> {
+    /// Create an empty inline child store WITHOUT requiring `V: Clone`. The body
+    /// needs no `V` (it uses `K::UNIT_ZERO` + the bound-free `Child::empty()`).
     #[inline]
-    fn new() -> Self {
+    fn empty_inline() -> Self {
         ChildStore::Inline {
             count: 0,
             keys: [K::UNIT_ZERO; INLINE_CAPACITY],
@@ -270,6 +273,52 @@ impl<K: KeyEncoding, V: Clone> ChildStore<K, V> {
                 Child::empty(),
             ],
         }
+    }
+
+    /// Replace this store with an empty inline store, returning the old store by
+    /// value so its owned `Child`s can be consumed without recursion. Used by
+    /// `OverlayNode`'s iterative `Drop` to move a node's children out BEFORE the
+    /// node's own field-drop runs (which then sees an empty store).
+    #[inline]
+    fn take(&mut self) -> Self {
+        std::mem::replace(self, Self::empty_inline())
+    }
+
+    /// Consume this store, pushing every owned in-memory child `Arc` into `out`
+    /// (on-disk children own no heap allocation, so they drop here cheaply). `self`
+    /// is taken by value so the `Child`s MOVE out — refcounts unchanged (no clone),
+    /// the property the reclaim/leak witnesses depend on. No `unsafe`.
+    fn drain_in_mem_into(self, out: &mut Vec<Arc<OverlayNode<K, V>>>) {
+        match self {
+            ChildStore::Inline {
+                count, children, ..
+            } => {
+                // Move only the valid prefix; array `into_iter()` (edition 2021)
+                // yields each `Child` by value.
+                for child in children.into_iter().take(count as usize) {
+                    if let Child::InMem(arc) = child {
+                        out.push(arc);
+                    }
+                }
+            }
+            ChildStore::Heap { children, .. } => {
+                for child in children {
+                    if let Child::InMem(arc) = child {
+                        out.push(arc);
+                    }
+                }
+            }
+        }
+    }
+}
+
+impl<K: KeyEncoding, V: Clone> ChildStore<K, V> {
+    /// Create an empty inline child store. Delegates to the bound-free
+    /// [`Self::empty_inline`] so the iterative `Drop` (which cannot require
+    /// `V: Clone`) builds the SAME empty store.
+    #[inline]
+    fn new() -> Self {
+        Self::empty_inline()
     }
 
     /// Number of children.
@@ -925,6 +974,47 @@ impl<K: KeyEncoding, V: Clone> Clone for OverlayNode<K, V> {
             value: self.value.clone(),
             prefix: self.prefix.clone(),
             prefix_len: self.prefix_len,
+        }
+    }
+}
+
+// Iterative Drop — dismantle the (possibly deep) Arc-linked overlay spine WITHOUT
+// recursion. The overlay spine is UN-path-compressed (one node per key unit), so a
+// long key builds a spine hundreds of levels deep; the compiler-generated drop is
+// recursive (drop node → drop its `store` → drop each `Child::InMem(Arc)` → last
+// owner recursively drops that node → …), one stack frame per level, and a ~500-deep
+// spine OVERFLOWS the stack. This explicit `Drop` flattens the descent onto a heap
+// worklist.
+//
+// SAFETY / CORRECTNESS (zero `unsafe`): reclamation is driven purely by `Arc`
+// refcounting via `Arc::try_unwrap`:
+//   * SOLE owner of a child `Arc` ⇒ `try_unwrap` yields the node by value; we drain
+//     ITS children onto the worklist and let the now-childless node drop (its `store`
+//     is empty ⇒ the re-entrant `drop` hits the `is_empty()` early return — at most
+//     ONE extra frame, never a chain).
+//   * SHARED `Arc` (a concurrent reader / another root version still holds it) ⇒
+//     `try_unwrap` returns `Err(arc)`; the `Arc` just drops, decrementing the count.
+//     Whoever becomes the last owner dismantles it later by this same routine.
+// No node is freed while referenced (no UAF), none twice (each `Arc` has exactly one
+// last owner), none leaked. This is what `reclaim_tests` (`strong_count == 1` after
+// drop) witnesses. `V` is untouched (only dropped with its node); `V: Clone` is
+// required solely because `ChildStore::new`/`take` live on the `V: Clone` impl.
+impl<K: KeyEncoding, V> Drop for OverlayNode<K, V> {
+    fn drop(&mut self) {
+        // Move our own children out so this node's subsequent field-drop sees an empty
+        // store (and thus does not recurse). A leaf yields an empty store ⇒ the drain
+        // pushes nothing ⇒ the loop is a no-op; `Vec::new()` does not allocate until
+        // the first push, so leaf drops stay allocation-free.
+        let mut worklist: Vec<Arc<OverlayNode<K, V>>> = Vec::new();
+        self.store.take().drain_in_mem_into(&mut worklist);
+        while let Some(arc) = worklist.pop() {
+            // Become the sole owner if we can; otherwise the Arc drops (refcount--).
+            if let Ok(mut node) = Arc::try_unwrap(arc) {
+                // Empty the node's store BEFORE it drops, pushing grandchildren onto
+                // the worklist; the node then drops with an empty store → the
+                // re-entrant `drop` finds nothing (no deep recursion).
+                node.store.take().drain_in_mem_into(&mut worklist);
+            }
         }
     }
 }
