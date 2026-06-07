@@ -807,6 +807,9 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
         };
         use super::wal::WalReader;
         use std::time::Instant;
+        // F7-R1: the structural owned→overlay converter resolves through the seam.
+        use crate::persistent_artrie_core::key_encoding::ByteKey;
+        use crate::persistent_artrie_core::overlay::flip::LockFreeOverlay;
 
         let path = path.as_ref();
         let start_time = Instant::now();
@@ -956,12 +959,20 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
                 // `any_overlay`: it covers BOTH replay arms (the regime-aware Overlay
                 // path AND the inline Owned-archive streaming path) and is a strict
                 // no-op for arbitrary V (which `create` did not flip ⇒ !route_overlay).
-                // D1: `reestablish_overlay_dispatch` reads the recovered owned tree via
-                // the UN-routed `owned_*` seams (it runs with `route_overlay()` already
-                // true), publishes to the overlay, and clears owned LAST (RES-7); a
-                // mid-stream `?` aborts with the owned tree intact.
+                // D1/F7-R1: `reestablish_overlay_from_owned` reads the recovered owned
+                // tree via the UN-routed `owned_*` seams (it runs with `route_overlay()`
+                // already true), STRUCTURALLY builds the overlay root via
+                // `build_overlay_root_from_owned`, FORCE-REPLACES the empty create-flip
+                // overlay root (the F5 structural converter, equivalent to the legacy
+                // per-term `reestablish_overlay_dispatch` but strictly more correct on a
+                // term-only counter member), and clears owned LAST (RES-7); a mid-stream
+                // `?` aborts with the owned tree intact.
                 if trie.route_overlay() {
-                    trie.reestablish_overlay_dispatch()?;
+                    <Self as LockFreeOverlay<
+                        ByteKey,
+                        V,
+                        super::disk_manager::MmapDiskManager,
+                    >>::reestablish_overlay_from_owned(&mut trie)?;
                 }
 
                 Ok((trie, report))

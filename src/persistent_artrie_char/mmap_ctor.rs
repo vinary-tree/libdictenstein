@@ -996,6 +996,9 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
             collect_retained_wal_segments_for_rebuild, detect_corruption, RecoveryReport,
         };
         use std::time::Instant;
+        // F7-R1: the structural owned→overlay converter resolves through the seam.
+        use crate::persistent_artrie_core::key_encoding::CharKey;
+        use crate::persistent_artrie_core::overlay::flip::LockFreeOverlay;
 
         let path = path.as_ref();
         let start_time = Instant::now();
@@ -1240,8 +1243,15 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
                 // →overlay move is required for the OVERLAY-MODE trie regardless of the
                 // archives' regime. A `?` aborts with the owned tree intact (RES-7); a
                 // pure no-op for arbitrary V (which create did not flip ⇒ !route_overlay).
+                // F7-R1: the STRUCTURAL converter `reestablish_overlay_from_owned`
+                // (build_overlay_root_from_owned + FORCE-REPLACE the empty create-flip
+                // root + clear owned LAST) replaces the legacy per-term
+                // `reestablish_overlay_dispatch` — same overlay (term-set + values, incl.
+                // u64 > i64::MAX + ""), strictly more correct on a term-only counter.
                 if trie.route_overlay() {
-                    trie.reestablish_overlay_dispatch()?;
+                    <Self as LockFreeOverlay<CharKey, V, DiskManager>>::reestablish_overlay_from_owned(
+                        &mut trie,
+                    )?;
                 }
 
                 let duration_ms = start_time.elapsed().as_millis() as u64;
@@ -1434,6 +1444,9 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
     ) -> Result<(Self, EnhancedRecoveryStats)> {
         use super::recovery::find_wal_archive_segments;
         use std::time::Instant;
+        // F7-R1: the structural owned→overlay converter resolves through the seam.
+        use crate::persistent_artrie_core::key_encoding::CharKey;
+        use crate::persistent_artrie_core::overlay::flip::LockFreeOverlay;
 
         let path = path.as_ref();
         let start_time = Instant::now();
@@ -1485,8 +1498,15 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
         // for the overlay-mode trie regardless of archive regime; the orphan-drop is the
         // reconcile's responsibility above. A `?` aborts with the owned tree intact
         // (RES-7); a pure no-op for arbitrary V (create did not flip ⇒ !route_overlay).
+        // F7-R1: the STRUCTURAL converter `reestablish_overlay_from_owned`
+        // (build_overlay_root_from_owned + FORCE-REPLACE the empty create-flip root +
+        // clear owned LAST) replaces the legacy per-term `reestablish_overlay_dispatch`
+        // — same overlay (term-set + values, incl. u64 > i64::MAX + ""), strictly more
+        // correct on a term-only counter.
         if trie.route_overlay() {
-            trie.reestablish_overlay_dispatch()?;
+            <Self as LockFreeOverlay<CharKey, V, DiskManager>>::reestablish_overlay_from_owned(
+                &mut trie,
+            )?;
         }
 
         Ok((

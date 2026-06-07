@@ -907,6 +907,64 @@ pub(crate) trait LockFreeOverlay<K: KeyEncoding, V: DictionaryValue, S>:
         Ok(build_overlay_root_from_terms::<K, V, _>(terms, empty_term))
     }
 
+    /// **F5/F7 (R1) — STRUCTURAL owned→overlay reestablish for the RECOVERY-FAMILY
+    /// ctors.** The structural-converter replacement for the per-term-publishing
+    /// [`reestablish_overlay_dispatch`](crate::persistent_artrie_char::PersistentARTrieChar::reestablish_overlay_dispatch)
+    /// in the create-flip + rebuild-in-memory recovery path (the `RebuildFromWal` /
+    /// `recover_from_archives` ctors). It produces the SAME overlay (same term-set +
+    /// same values, incl. counters > `i64::MAX` and the empty term "") because it
+    /// reads the owned tree via the SAME un-routed `owned_*` seams via
+    /// [`Self::build_overlay_root_from_owned`] — the strictly-more-correct membership∪
+    /// value union (it keeps a term-only counter member the legacy
+    /// `reestablish_overlay_counter` dropped).
+    ///
+    /// # Precondition (THE recovery-ctor invariant)
+    ///
+    /// Called from the recovery-family ctors UNDER the existing `route_overlay()`
+    /// guard, so the overlay is ALREADY installed (`create`/`create_with_config` →
+    /// `apply_create_flip` → `flip_to_overlay` set `lockfree_root = Some(EMPTY)`,
+    /// selected `LockFreeOverlay`, and stamped the WAL Overlay regime) and the owned
+    /// tree has just been REBUILT IN MEMORY (into `self.root`) from the WAL/archives.
+    ///
+    /// # The force-replace (and why it is data-loss-safe)
+    ///
+    /// [`Self::install_prebuilt_overlay_root`] NO-OPs here (its variant seam refuses
+    /// to clobber an already-set `lockfree_root`), so this OVERWRITES the empty
+    /// create-flip root via [`AtomicNodePtr::store`] — the unconditional, genuinely-
+    /// atomic `ArcSwapOption` replace (old `Arc` dropped normally). This is safe
+    /// because the overlay is EMPTY at this point: NOTHING has been published since
+    /// the create-flip (the recovery ctor wrote ONLY the owned tree, never the
+    /// overlay), so replacing the root loses no overlay data. The empty positive/
+    /// negative `lockfree_cache` `flip_to_overlay` created stays valid (it holds no
+    /// stale entries; the resident-finals walk is authoritative).
+    ///
+    /// Does NOT touch the WAL regime or the write mode — both were set by the
+    /// create-flip and `reestablish_overlay_dispatch` does not touch them either, so
+    /// the end state is identical. Clears the owned tree LAST (RES-7), matching the
+    /// `reestablish_overlay_*` folds (a mid-stream `?` from `build_*` aborts with the
+    /// owned tree INTACT, so the recovery ctor's data is recoverable). After this,
+    /// the overlay root == the structural conversion of the rebuilt owned tree.
+    fn reestablish_overlay_from_owned(&mut self) -> Result<()> {
+        // (1) Build the overlay root structurally from the rebuilt-in-memory owned
+        // tree (un-routed `owned_*` seams; a `?` aborts with owned INTACT — RES-7).
+        let root = self.build_overlay_root_from_owned()?;
+        // (2) FORCE-REPLACE the empty create-flip overlay root (the
+        // `install_prebuilt_overlay_root` seam would NO-OP — `lockfree_root` is
+        // already `Some`). `store` is the unconditional atomic `ArcSwapOption`
+        // replace; safe because the overlay is empty (nothing published since the
+        // create-flip), so no overlay data is lost.
+        let root_ptr = self.lockfree_root().ok_or_else(|| {
+            crate::persistent_artrie_core::error::PersistentARTrieError::internal(
+                "reestablish_overlay_from_owned: overlay not installed (route_overlay() guard violated)",
+            )
+        })?;
+        root_ptr.store(root);
+        // (3) Clear the owned tree LAST (RES-7) — only after the overlay root is
+        // published, so a mid-stream abort above leaves owned intact.
+        self.clear_owned();
+        Ok(())
+    }
+
     /// **F5 — NO-WAL overlay remove of `units` (any term, incl. "")**. The empty term
     /// "" → publish a FRESH non-final root via [`Self::publish_root_cas`] (the no-WAL,
     /// no-rank twin of `remove_cas_durable`'s empty-term arm — `as_non_final` on a
