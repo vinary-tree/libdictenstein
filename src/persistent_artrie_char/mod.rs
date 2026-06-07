@@ -1484,7 +1484,11 @@ impl<V: DictionaryValue + Clone> MutableMappedDictionary for SharedCharARTrie<V>
         F: FnOnce(&mut V),
     {
         let guard = self.write();
-        if let Some(existing) = guard.get(term) {
+        // MUST route the read to the overlay (`get_value`, NOT the legacy `get`): under
+        // the overlay default `get` returned None for a present term, so this took the
+        // insert branch and OVERWROTE the existing value with `default_value` (silent
+        // data corruption). `get_value`/`upsert`/`insert_with_value` all overlay-route.
+        if let Some(existing) = guard.get_value(term) {
             let mut value = existing;
             update_fn(&mut value);
             guard.upsert(term, value).unwrap_or(false);

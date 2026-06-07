@@ -153,12 +153,18 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     where
         V: Clone,
     {
-        // E1 read-flip: the overlay value is computed, not stored in `self.root`, so it
-        // cannot be returned as a borrow `&V`. Under the overlay regime this reference-
-        // returning getter reports absence; callers needing the value use `get_value`
-        // (owned `Option<V>`), which value-routes to the overlay.
+        // Under the overlay regime, route to the overlay value read via the canonical
+        // `get_value` (→ `overlay_route_get_value`, the shared `LockFreeOverlay` driver
+        // that handles the i64/u64 counter, `()` membership, AND arbitrary `V`).
+        // `get`/`try_get` return an OWNED `Option<V>` (the F4 collapse), so there is NO
+        // borrow-into-owned-tree constraint — the prior `Ok(None)` short-circuit
+        // silently DROPPED overlay values (it predated the overlay-default flip and
+        // lost, e.g., n-gram counts read via `get`). The overlay read is
+        // non-faulting/infallible (hence `Ok(..)`); only the owned arm can surface a
+        // lazy-load I/O `Err`. At F7-S9 (`route_overlay()` → const-true) this collapses
+        // to `Ok(self.get_value(term))`.
         if self.route_overlay() {
-            return Ok(None);
+            return Ok(self.get_value(term));
         }
         self.owned_try_get(term)
     }
