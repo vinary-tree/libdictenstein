@@ -458,20 +458,21 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
         let (root_type, root_ptr, is_final, entry_count) = match overlay_root {
             None => (ROOT_TYPE_EMPTY, 0u64, false, 0u64),
             Some(root) => {
-                let inner_root = overlay_to_inner::<V>(&root);
-                let mut path: Vec<char> = Vec::new();
-                let ptr = self.serialize_char_node_to_disk(
-                    &inner_root,
-                    &mut path,
-                    eviction_registry.as_mut(),
-                )?;
+                // F6 flag-1b: serialize the overlay DIRECTLY with an ITERATIVE
+                // post-order walk (no deep intermediate `CharTrieNodeInner` tree,
+                // no recursive serialize, no recursive `Drop`), so a ~500-char term
+                // (a ~500-deep un-path-compressed overlay spine) does not overflow
+                // the stack. The on-disk image is byte-identical to the prior
+                // `serialize_char_node_to_disk(&overlay_to_inner(&root), ...)` (both
+                // funnel each node through the shared NON-recursive
+                // `serialize_one_char_node_to_disk`). `count_overlay_finals` is
+                // iterative too (same reason). The root's finality is the overlay
+                // root's finality (`overlay_to_inner` set the inner root's final
+                // flag from `root.is_final()`).
+                let ptr = self
+                    .serialize_overlay_to_disk_iterative(&root, eviction_registry.as_mut())?;
                 let entry_count = count_overlay_finals(&root);
-                (
-                    ROOT_TYPE_NODE,
-                    ptr.to_raw(),
-                    inner_root.node.is_final(),
-                    entry_count,
-                )
+                (ROOT_TYPE_NODE, ptr.to_raw(), root.is_final(), entry_count)
             }
         };
 
@@ -967,17 +968,15 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
         path: &mut Vec<char>,
         mut registry: Option<&mut DiskLocationRegistry>,
     ) -> Result<SwizzledPtr> {
-        use super::relative_encoding::SerializationContext;
-        use super::serialization_char::serialize_char_node_v2;
-
-        let arena_manager = self.arena_manager.as_ref().ok_or_else(|| {
-            PersistentARTrieError::internal("No arena manager for disk serialization")
-        })?;
-
-        // Get the predicted parent slot for sequential sibling check
-        let parent_arena_id = arena_manager.read().next_slot().arena_id;
-
-        // First, recursively serialize all children and collect their disk pointers
+        // First, recursively serialize all children and collect their disk pointers.
+        // (RETAINED for shallow callers — the correspondence/fault-in unit tests
+        // serialize single leaves through this path. The PRODUCTION overlay capture
+        // uses the ITERATIVE [`Self::serialize_overlay_to_disk_iterative`] instead, to
+        // avoid recursing with key length on the un-path-compressed overlay spine —
+        // F6 flag-1b. BOTH paths funnel the per-node encoding through the shared
+        // NON-recursive [`Self::serialize_one_char_node_to_disk`], so the on-disk image
+        // is byte-identical regardless of which driver builds it.)
+        //
         // Note: We handle both in-memory children (need serialization) and disk-backed
         // children (already have a disk pointer, just reuse it).
         let mut child_disk_ptrs: Vec<(u32, SwizzledPtr)> = Vec::with_capacity(node.num_children());
@@ -1009,6 +1008,41 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
             // (should not happen in normal operation)
         }
 
+        // Delegate the per-node encoding to the shared NON-recursive core.
+        self.serialize_one_char_node_to_disk(node, &child_disk_ptrs, path, registry)
+    }
+
+    /// Serialize ONE `CharTrieNodeInner` whose children are ALREADY resolved to disk
+    /// `SwizzledPtr`s — the NON-recursive per-node encoding core, shared by the
+    /// (shallow) recursive [`Self::serialize_char_node_to_disk`] and the production
+    /// ITERATIVE [`Self::serialize_overlay_to_disk_iterative`]. This is the exact tail
+    /// of the former `serialize_char_node_to_disk` (the predicted-slot read, the
+    /// sequential/relative/full encoding-mode decision, `build_disk_char_node`, the v2
+    /// node+value serialization, the arena-overflow re-serialize, and the eviction-
+    /// registry record) factored out verbatim, so the on-disk bytes are identical.
+    ///
+    /// `child_disk_ptrs` MUST be in `node.node.iter_children()` (sorted-ascending)
+    /// order — the order the recursive walk produced them — so the encoding decisions
+    /// (sequential-sibling detection, relative offsets) and child layout match. `path`
+    /// is this node's full key path (for the eviction registry); the caller maintains
+    /// it. No `unsafe` (the children are disk ptrs; nothing is dereferenced).
+    fn serialize_one_char_node_to_disk(
+        &self,
+        node: &CharTrieNodeInner<V>,
+        child_disk_ptrs: &[(u32, SwizzledPtr)],
+        path: &[char],
+        mut registry: Option<&mut DiskLocationRegistry>,
+    ) -> Result<SwizzledPtr> {
+        use super::relative_encoding::SerializationContext;
+        use super::serialization_char::serialize_char_node_v2;
+
+        let arena_manager = self.arena_manager.as_ref().ok_or_else(|| {
+            PersistentARTrieError::internal("No arena manager for disk serialization")
+        })?;
+
+        // Get the predicted parent slot for sequential sibling check
+        let parent_arena_id = arena_manager.read().next_slot().arena_id;
+
         // Get the predicted parent slot and arena node count for encoding children
         let (parent_slot, arena_node_count) = {
             let mgr = arena_manager.read();
@@ -1034,7 +1068,7 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
             // Use full encoding to avoid relative offset underflow during decode
             SerializationContext::full_encoding(parent_slot)
         } else if let Some(first_child) = Self::check_sequential_char_children(
-            &child_disk_ptrs,
+            child_disk_ptrs,
             parent_arena_id,
             arena_node_count,
         ) {
@@ -1046,7 +1080,7 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
         };
 
         // Build a CharNode with disk pointers for serialization
-        let disk_node = self.build_disk_char_node(&node.node, &child_disk_ptrs)?;
+        let disk_node = self.build_disk_char_node(&node.node, child_disk_ptrs)?;
 
         // Serialize the value using bincode (needed regardless of encoding)
         let value_bytes: Vec<u8> = if let Some(ref value) = node.value {
@@ -1117,7 +1151,7 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
         // identical whether or not the registry is present.
         if let Some(reg) = registry.as_deref_mut() {
             reg.register_char(
-                path.clone(),
+                path.to_vec(),
                 result_ptr.clone(),
                 data.len(),
                 path.len(),
@@ -1188,6 +1222,227 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
             CharNode::Bucket(_) => NodeType::CharBucket,
         }
     }
+
+    /// Serialize the IMMUTABLE overlay rooted at `root` to disk with an ITERATIVE
+    /// post-order walk, returning the disk `SwizzledPtr` of the serialized root —
+    /// the production-capture replacement for the recursive
+    /// `overlay_to_inner(root)` + `serialize_char_node_to_disk(...)` pipeline.
+    ///
+    /// # Why iterative (F6 flag-1b)
+    ///
+    /// The overlay (`PersistentCharNode`) spine is UN-path-compressed (one node per
+    /// key unit), so a ~500-char term builds a ~500-deep Arc spine. The prior
+    /// pipeline recursed THREE times with key length — `overlay_to_inner` (build the
+    /// deep intermediate `CharTrieNodeInner` tree), `serialize_char_node_to_disk`
+    /// (serialize it), and the `CharTrieNodeInner` `Drop` (free it via
+    /// `unsafe { Box::from_raw }`) — and overflowed the stack. This single iterative
+    /// post-order walk builds NO deep intermediate tree: it serializes each overlay
+    /// node AFTER its in-mem children (whose disk ptrs are then known) into a
+    /// SINGLE-node `CharTrieNodeInner` whose children are `Child::OnDisk` ptrs, then
+    /// encodes it via the shared NON-recursive [`Self::serialize_one_char_node_to_disk`].
+    ///
+    /// # Image-equivalence
+    ///
+    /// For each node the prior recursive path produced `child_disk_ptrs` (in
+    /// `iter_children()` order) and fed them, with `node.node` (type/header/prefix)
+    /// and `node.value`, into the SAME `serialize_one_char_node_to_disk` core. This
+    /// walk produces the SAME `child_disk_ptrs` in the SAME order and the SAME
+    /// post-order arena-allocation sequence, and builds the per-node
+    /// `CharTrieNodeInner` via [`overlay_inner_single_node`] (the single-node
+    /// projection of `overlay_to_inner`: same finality, same value, same
+    /// `add_child_growing` tier selection — only the children are disk ptrs from the
+    /// start). So the on-disk bytes are byte-identical.
+    ///
+    /// # Drop safety
+    ///
+    /// Each transient single-node `CharTrieNodeInner` holds only `Child::OnDisk`
+    /// children, so its `Drop` (`types.rs`) finds NO in-mem children
+    /// (`as_ptr::<CharTrieNodeInner>()` is `None` for disk ptrs) and frees nothing
+    /// recursively — no deep `Drop` chain, no added `unsafe`.
+    ///
+    /// `path` is threaded for the eviction registry exactly as the recursive walk
+    /// threaded it (edge char pushed on descent into each in-mem child, popped on
+    /// completion).
+    fn serialize_overlay_to_disk_iterative(
+        &self,
+        root: &std::sync::Arc<super::nodes::PersistentCharNode<V>>,
+        mut registry: Option<&mut DiskLocationRegistry>,
+    ) -> Result<SwizzledPtr> {
+        use std::sync::Arc;
+
+        // A pending child slot in a parent frame: the edge `key` awaiting the disk
+        // ptr its in-mem subtree will produce (`None` until that subtree completes).
+        struct PendingChild {
+            key: u32,
+            ptr: Option<SwizzledPtr>,
+        }
+        // A work-stack frame: one overlay node mid-descent. Holds the node by OWNED
+        // `Arc` (not a borrow) — children are reached only through `Arc<..>` clones,
+        // and a borrow would not outlive the transient owned `Arc` it points into.
+        struct Frame<V: DictionaryValue> {
+            node: Arc<super::nodes::PersistentCharNode<V>>,
+            // The edge `key` from this frame's PARENT to this node (`None` for the
+            // subtree root) + whether that edge was path-pushed (a valid codepoint),
+            // so the path is popped symmetrically when this frame finishes.
+            parent_key: Option<u32>,
+            parent_pushed_path: bool,
+            // In-mem children still to descend into, REVERSED so `pop()` yields
+            // ascending `iter_children()` order (matches the recursive DFS).
+            pending_in_mem: Vec<(u32, Arc<super::nodes::PersistentCharNode<V>>)>,
+            // All child slots in `iter_children()` (sorted-ascending) order; in-mem
+            // slots start `ptr: None`, on-disk slots are pre-filled. NULL on-disk
+            // fillers are skipped (the recursive walk's `is_null` continue).
+            slots: Vec<PendingChild>,
+        }
+
+        // Build a frame for an overlay node: pre-fill on-disk child slots, queue the
+        // in-mem children for descent, preserving `iter_children()` ordering.
+        fn make_frame<V: DictionaryValue>(
+            node: Arc<super::nodes::PersistentCharNode<V>>,
+            parent_key: Option<u32>,
+            parent_pushed_path: bool,
+        ) -> Frame<V> {
+            let n = node.num_children();
+            let mut slots: Vec<PendingChild> = Vec::with_capacity(n);
+            let mut pending_in_mem: Vec<(u32, Arc<super::nodes::PersistentCharNode<V>>)> =
+                Vec::with_capacity(n);
+            for (&key, child) in node.iter_children() {
+                if let Some(child_arc) = child.as_in_mem() {
+                    slots.push(PendingChild { key, ptr: None });
+                    pending_in_mem.push((key, Arc::clone(child_arc)));
+                } else if let Some(on_disk) = child.as_on_disk() {
+                    if !on_disk.is_null() {
+                        slots.push(PendingChild {
+                            key,
+                            ptr: Some(on_disk.clone()),
+                        });
+                    }
+                }
+            }
+            // Reverse so `pop()` descends in ascending edge order (the recursive DFS
+            // visited children in ascending `iter_children()` order).
+            pending_in_mem.reverse();
+            Frame {
+                node,
+                parent_key,
+                parent_pushed_path,
+                pending_in_mem,
+                slots,
+            }
+        }
+
+        // The full key path of the CURRENT node, maintained exactly as the recursive
+        // walk did (edge char pushed before descending into an in-mem child).
+        let mut path: Vec<char> = Vec::new();
+        let mut stack: Vec<Frame<V>> = Vec::new();
+        stack.push(make_frame(Arc::clone(root), None, false));
+        // The (parent_key, disk_ptr) produced by the most-recently-completed child
+        // subtree, to be recorded into its parent frame's matching pending slot.
+        let mut completed: Option<(u32, SwizzledPtr)> = None;
+
+        loop {
+            let frame = stack
+                .last_mut()
+                .expect("serialize_overlay_to_disk_iterative: non-empty work-stack");
+
+            // Record a just-completed child subtree's ptr into this frame's slot.
+            if let Some((key, ptr)) = completed.take() {
+                let slot = frame
+                    .slots
+                    .iter_mut()
+                    .find(|s| s.key == key && s.ptr.is_none())
+                    .expect("completed child key has a matching unfilled parent slot");
+                slot.ptr = Some(ptr);
+            }
+
+            // Descend into the next in-mem child, if any remain. Push its edge char
+            // onto `path` first (invalid codepoints — never present in a char trie —
+            // skip path-tracking for that subtree, mirroring the recursive walk).
+            if let Some((key, child_arc)) = frame.pending_in_mem.pop() {
+                let pushed = char::from_u32(key).map(|ch| path.push(ch)).is_some();
+                stack.push(make_frame(child_arc, Some(key), pushed));
+                continue;
+            }
+
+            // All children of this frame are resolved → serialize THIS node.
+            let frame = stack
+                .pop()
+                .expect("serialize_overlay_to_disk_iterative: frame to finalize");
+            let child_disk_ptrs: Vec<(u32, SwizzledPtr)> = frame
+                .slots
+                .into_iter()
+                .map(|s| {
+                    (
+                        s.key,
+                        s.ptr.expect(
+                            "every in-mem child slot is filled before its parent node is \
+                             serialized (post-order invariant)",
+                        ),
+                    )
+                })
+                .collect();
+            // Build the single-node `CharTrieNodeInner` (disk children) and encode it
+            // through the shared NON-recursive core at THIS node's path.
+            let inner = overlay_inner_single_node::<V>(frame.node.as_ref(), &child_disk_ptrs);
+            let node_ptr = self.serialize_one_char_node_to_disk(
+                &inner,
+                &child_disk_ptrs,
+                &path,
+                registry.as_deref_mut(),
+            )?;
+
+            // Pop this node's edge char from the path (symmetric with the descent
+            // push) before bubbling up.
+            if frame.parent_pushed_path {
+                path.pop();
+            }
+            match frame.parent_key {
+                // Bubble this node's ptr up to its parent frame, keyed by the edge the
+                // parent used to reach it (strict DFS ⇒ that slot is unfilled).
+                Some(key) => {
+                    completed = Some((key, node_ptr));
+                }
+                // Subtree root → return its disk ptr.
+                None => return Ok(node_ptr),
+            }
+        }
+    }
+}
+
+/// Build the SINGLE-node `CharTrieNodeInner<V>` projection of an overlay node, with
+/// its children already resolved to disk `SwizzledPtr`s. The single-node twin of
+/// [`overlay_to_inner`]: same finality (`set_final`), same value (read straight off
+/// the overlay node), same child-tier selection (`add_child_growing`, capturing the
+/// grown node) — the ONLY difference is the children are `Child::OnDisk` ptrs from
+/// the start (so the resulting node's `Drop` frees nothing recursively). Used by the
+/// ITERATIVE [`PersistentARTrieChar::serialize_overlay_to_disk_iterative`].
+///
+/// `child_disk_ptrs` MUST be in `node.iter_children()` (sorted-ascending) order so
+/// the rebuilt `CharNode`'s child layout matches what `overlay_to_inner` would have
+/// produced (and hence the downstream encoding). Adds no `unsafe` (the children are
+/// disk ptrs added via `add_child_growing`; nothing is `Box::into_raw`'d).
+fn overlay_inner_single_node<V>(
+    node: &super::nodes::PersistentCharNode<V>,
+    child_disk_ptrs: &[(u32, SwizzledPtr)],
+) -> CharTrieNodeInner<V>
+where
+    V: DictionaryValue,
+{
+    let mut inner = CharTrieNodeInner::<V>::default();
+    inner.node.header_mut().set_final(node.is_final());
+    // G1: the overlay node carries `Option<V>` directly (no `u64 → V` bridge). For
+    // `V = ()` membership the overlay never stores a value, so this is `None`.
+    inner.value = node.get_value();
+    for &(key, ref ptr) in child_disk_ptrs {
+        if let Some(grown) = inner
+            .node
+            .add_child_growing(key, ptr.clone())
+            .expect("overlay_inner_single_node: add on-disk child within capacity")
+        {
+            inner.node = grown;
+        }
+    }
+    inner
 }
 
 /// Convert an immutable lock-free overlay node (`PersistentCharNode`) into an
@@ -1199,8 +1454,22 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
 /// grown node — captured here to replace `inner.node` (unlike `CharTrieNodeInner`'s
 /// `Clone`, which pre-sizes the tier and can ignore the return).
 ///
-/// S5-9: un-gated to production (backs the now-production `capture_snapshot_immutable`).
+/// S5-9: un-gated to production (backed the then-production `capture_snapshot_immutable`).
 /// Adds no `unsafe` (`Box::into_raw` + `SwizzledPtr::in_memory` are safe).
+///
+/// **F6 flag-1b: no longer on the production capture path.** The production overlay
+/// capture is now the ITERATIVE
+/// [`PersistentARTrieChar::serialize_overlay_to_disk_iterative`] (which builds NO deep
+/// intermediate `CharTrieNodeInner` tree, to avoid recursing — and overflowing — with
+/// key length on the un-path-compressed overlay spine). This recursive builder is
+/// RETAINED only as the reference used by the (shallow-node) fault-in / round-trip
+/// correspondence tests, so it is `dead_code` in a non-test build — hence the
+/// `cfg_attr(not(test), allow(dead_code))`. Both `overlay_to_inner` (whole-subtree)
+/// and [`overlay_inner_single_node`] (single-node, the iterative path's builder)
+/// project the SAME finality / value / `add_child_growing` tier per node, so the
+/// shallow-node test exercise of this function still validates the per-node projection
+/// the iterative path relies on.
+#[cfg_attr(not(test), allow(dead_code))]
 fn overlay_to_inner<V>(node: &super::nodes::PersistentCharNode<V>) -> CharTrieNodeInner<V>
 where
     V: DictionaryValue,
@@ -1309,11 +1578,21 @@ where
 /// the immutable representation (`self.len` tracks the owned tree, not the overlay).
 ///
 /// S5-9: un-gated to production (backs the now-production `capture_snapshot_immutable`).
+/// **ITERATIVE** (explicit work-stack over `Child::InMem`) so it does not recurse
+/// with key length — the un-path-compressed overlay spine is ~key-length deep, so the
+/// prior recursion overflowed the stack on large terms (F6 flag-1b).
 fn count_overlay_finals<V: DictionaryValue>(node: &super::nodes::PersistentCharNode<V>) -> u64 {
-    let mut count = u64::from(node.is_final());
-    for (_, child) in node.iter_children() {
-        if let Some(child_arc) = child.as_in_mem() {
-            count += count_overlay_finals(child_arc);
+    let mut count = 0u64;
+    let mut stack: Vec<&super::nodes::PersistentCharNode<V>> = Vec::new();
+    stack.push(node);
+    while let Some(current) = stack.pop() {
+        if current.is_final() {
+            count += 1;
+        }
+        for (_, child) in current.iter_children() {
+            if let Some(child_arc) = child.as_in_mem() {
+                stack.push(child_arc.as_ref());
+            }
         }
     }
     count

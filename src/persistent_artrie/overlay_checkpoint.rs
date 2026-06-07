@@ -21,7 +21,7 @@
 //!
 //! [`PersistentARTrie::capture_overlay_snapshot`] walks the immutable overlay root
 //! (`OverlayNode<ByteKey, V>`) and converts each node into byte's OWNED on-disk node
-//! representation ([`ChildNode`] / [`Node`] / value), then serializes it through the
+//! representation ([`ChildNode`](super::transitions::ChildNode) / [`Node`] / value), then serializes it through the
 //! EXISTING owned serializer ([`PersistentARTrie::serialize_child_to_disk_with_path`]
 //! / [`PersistentARTrie::serialize_node_to_disk`]). So for the same logical data the
 //! on-disk image is equivalent by construction to a `capture_owned_snapshot()` of an
@@ -44,7 +44,6 @@ use super::dict_impl::{
 use super::error::{PersistentARTrieError, Result};
 use super::nodes::{ArtNode, Node, Node4};
 use super::swizzled_ptr::{NodeType, SwizzledPtr};
-use super::transitions::ChildNode;
 use super::wal::WalRecord;
 use crate::persistent_artrie_core::key_encoding::ByteKey;
 use crate::persistent_artrie_core::overlay::checkpoint::OverlayCheckpoint;
@@ -235,13 +234,21 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
         let (root_type, root_ptr, is_final, term_count) = match overlay_root {
             None => (ROOT_TYPE_EMPTY, 0u64, false, 0u64),
             Some(root) => {
-                // Convert the overlay root → byte's owned `TrieRoot` representation,
-                // then serialize via the EXISTING owned serializer (the same path
-                // `persist_to_disk` uses), so the on-disk image is equivalent by
-                // construction to an owned snapshot of the same terms.
-                let owned_root = Self::overlay_root_to_owned(&root);
+                // Serialize the overlay root DIRECTLY with an ITERATIVE post-order
+                // walk (no deep intermediate owned tree), so the on-disk image is
+                // equivalent by construction to an owned snapshot of the same terms
+                // WITHOUT recursing with key length. The overlay spine is
+                // UN-path-compressed (one node per key unit), so a ~500-char term
+                // builds a ~500-deep Arc spine; the prior recursive
+                // `overlay_root_to_owned` ⇄ `overlay_node_to_child` +
+                // `serialize_child_to_disk_with_path` pipeline overflowed the stack
+                // (F6 flag-1b). [`Self::serialize_overlay_root_iterative`] flattens
+                // the descent onto a heap work-stack and reuses the NON-recursive
+                // single-node serializer [`Self::serialize_node_to_disk_with_value`],
+                // producing the byte-identical image. `count_overlay_finals` is now
+                // iterative too (same reason).
                 let entry_count = count_overlay_finals::<V>(&root);
-                let (rt, rp, isf) = self.serialize_root(&owned_root)?;
+                let (rt, rp, isf) = self.serialize_overlay_root_iterative(&root)?;
                 (rt, rp, isf, entry_count)
             }
         };
@@ -472,145 +479,360 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
     }
 
     // ====================================================================
-    // Overlay → owned conversion (the genuinely per-variant seam).
+    // Overlay → disk serialization (ITERATIVE — the genuinely per-variant seam).
+    //
+    // F6 flag-1b: serialize the immutable overlay DIRECTLY with an iterative
+    // post-order walk, instead of building a deep intermediate owned `ChildNode`
+    // tree (`overlay_root_to_owned` ⇄ `overlay_node_to_child`) and serializing it
+    // with the recursive `serialize_child_to_disk_with_path`. The overlay spine is
+    // UN-path-compressed (one node per key unit), so a ~500-char term builds a
+    // ~500-deep Arc spine; the prior recursive conversion + serialize + the
+    // intermediate-tree drop each recursed with key length and OVERFLOWED the
+    // stack. This single iterative post-order walk eliminates ALL THREE recursions
+    // at once: it serializes each node AFTER its in-mem children (so their disk
+    // `SwizzledPtr`s are known), reusing the NON-recursive single-node serializer
+    // [`Self::serialize_node_to_disk_with_value`]. The produced on-disk image is
+    // byte-identical to the prior pipeline: same children order
+    // (`iter_children()`, sorted ascending), same post-order arena-allocation
+    // order, same node size-class selection, same finality flags, same value
+    // blobs, same root-branch handling — exactly as the correspondence tests
+    // assert.
     // ====================================================================
 
-    /// Convert the IMMUTABLE overlay root (`OverlayNode<ByteKey, V>`) into byte's
-    /// owned `TrieRoot` representation, ready for the EXISTING owned serializer. The
-    /// byte twin of char's `overlay_to_inner` (which builds a `CharTrieNodeInner`).
-    /// Mirrors byte's owned node format EXACTLY (children carried in both the `Node`
-    /// child slots — for `find_child_mut` during serialize — and the `children` Vec),
-    /// so the produced image is equivalent by construction to an owned snapshot of the
-    /// same terms (including byte's documented ART-node value-serialization
-    /// limitation, inherited unchanged).
-    fn overlay_root_to_owned(root: &OverlayNode<ByteKey, V>) -> TrieRoot<V> {
-        let (node, children, is_final, _value_bytes) = Self::overlay_children_to_owned(root);
-        // Empty-string support (H2): capture the root's value so the byte overlay
-        // checkpoint preserves a valued empty term ("") through serialize → reopen. Read
-        // it DIRECTLY off the overlay root (`Option<V>`, no bincode round-trip); P0's
-        // `serialize_root` re-serializes it into the root node record and the load path
-        // reads it back. (`_value_bytes` is the bincode form `overlay_children_to_owned`
-        // computes for the `ChildNode` path; the root wants the typed `Option<V>`, which
-        // we get straight from `root.get_value()`.) For membership (`V=()`) this is the
-        // unit value — harmless to carry. Inert until P2's write flip lets `""` carry a
-        // value (until then the overlay root's value is always `None`).
+    /// Serialize the IMMUTABLE overlay root iteratively and return the root
+    /// descriptor `(root_type, root_ptr, is_final)` — the iterative twin of the
+    /// prior `serialize_root(&overlay_root_to_owned(root))`. Reproduces
+    /// `overlay_root_to_owned`'s three root branches AND `serialize_root`'s
+    /// per-branch on-disk encoding EXACTLY:
+    ///
+    /// * root WITH children → `ROOT_TYPE_ART_NODE`: serialize each in-mem child
+    ///   subtree (iteratively) to its disk ptr + reuse any on-disk child ptr
+    ///   verbatim, build the owned `Node` of the right size class with those child
+    ///   ptrs patched in, then serialize the root node WITH its typed `Option<V>`
+    ///   value blob (the H1/H2 empty-"" support — propagated with `?`, NOT
+    ///   swallowed, matching `serialize_root`). The root node record's final flag
+    ///   is NOT set (the prior root path never set it on the node — finality rides
+    ///   in the descriptor's `is_final`).
+    /// * childless + final root → a childless `Node4` ART root marked final in the
+    ///   descriptor (node record final flag still unset), carrying the root value.
+    /// * childless + non-final root → `ROOT_TYPE_BUCKET` (an empty values-bucket),
+    ///   byte-identical to `overlay_root_to_owned`'s `Bucket` arm.
+    fn serialize_overlay_root_iterative(
+        &self,
+        root: &OverlayNode<ByteKey, V>,
+    ) -> Result<(u8, u64, bool)> {
+        let is_final = root.is_final();
+        // Empty-string support (H2): the root's value is read DIRECTLY off the
+        // overlay root as the typed `Option<V>` (no bincode round-trip), exactly
+        // as `overlay_root_to_owned` did; `serialize_node_to_disk_with_value`
+        // re-serializes it into the root node record's HAS_VALUE blob and the load
+        // path reads it back. For membership (`V = ()`) this is `None`. The
+        // serialize error is PROPAGATED (`?`), never swallowed — this is the
+        // data-loss-critical root value, so it matches `serialize_root`'s `?`.
         let root_value: Option<V> = root.get_value();
-        match node {
-            Some(node) => TrieRoot::ArtNode {
-                node,
-                children,
-                is_final,
-                value: root_value,
-            },
-            // A childless root: the overlay root with no children and not final is the
-            // empty trie (empty root bucket); if final, byte represents the empty term
-            // in the root node, so we produce a childless ART root marked final.
-            None => {
-                if is_final {
-                    TrieRoot::ArtNode {
-                        node: Node::N4(Box::new(Node4::new())),
-                        children: Vec::new(),
-                        is_final,
-                        value: root_value,
-                    }
-                } else {
-                    TrieRoot::Bucket(StringBucket::with_values())
-                }
+
+        // Resolve the root's DIRECT children to disk ptrs (each in-mem child via the
+        // iterative subtree serializer; each on-disk child reused verbatim), in
+        // `iter_children()` (sorted-ascending) order — the same order
+        // `overlay_children_to_owned` collected them, so arena-allocation order is
+        // preserved.
+        let child_ptrs = self.serialize_overlay_children_iterative(root)?;
+
+        if child_ptrs.is_empty() {
+            // Childless root. `overlay_root_to_owned`: final ⇒ childless ART root
+            // marked final (in the descriptor); non-final ⇒ empty bucket root.
+            if is_final {
+                let node = Node::N4(Box::new(Node4::new()));
+                let value_bytes = Self::serialize_root_value_bytes(root_value.as_ref())?;
+                let node_ptr =
+                    self.serialize_node_to_disk_with_value(&node, value_bytes.as_deref())?;
+                return Ok((ROOT_TYPE_ART_NODE, node_ptr.to_raw(), is_final));
             }
+            let ptr = self.serialize_bucket_to_disk(&StringBucket::with_values())?;
+            return Ok((ROOT_TYPE_BUCKET, ptr.to_raw(), false));
         }
+
+        // Root WITH children: build the owned `Node` of the right size class with the
+        // resolved child ptrs patched in, then serialize the node WITH the root value
+        // blob — byte-identical to `serialize_root`'s `ArtNode` arm.
+        let node = Self::build_owned_node_with_child_ptrs(&child_ptrs);
+        let value_bytes = Self::serialize_root_value_bytes(root_value.as_ref())?;
+        let node_ptr = self.serialize_node_to_disk_with_value(&node, value_bytes.as_deref())?;
+        Ok((ROOT_TYPE_ART_NODE, node_ptr.to_raw(), is_final))
     }
 
-    /// Convert a single overlay node's children into byte's owned `(Node, children
-    /// Vec, is_final, value)` tuple. `Node` is `None` when the node has no children
-    /// (the caller decides the leaf representation). Recursive.
-    fn overlay_children_to_owned(
+    /// Serialize the in-mem children of `node` (each to a disk `SwizzledPtr` via the
+    /// iterative subtree serializer) and reuse any on-disk child ptr verbatim,
+    /// returning `(edge, disk_ptr)` pairs in `iter_children()` (sorted-ascending)
+    /// order. Shared by the root path and the per-node iterative builder.
+    fn serialize_overlay_children_iterative(
+        &self,
         node: &OverlayNode<ByteKey, V>,
-    ) -> (Option<Node>, Vec<(u8, ChildNode)>, bool, Option<Vec<u8>>) {
-        let is_final = node.is_final();
-        let value: Option<Vec<u8>> = node.get_value().and_then(|v| {
-            crate::serialization::bincode_compat::serialize(&v).ok()
-        });
-
-        // Collect converted children (recursively).
-        let mut children: Vec<(u8, ChildNode)> = Vec::new();
+    ) -> Result<Vec<(u8, SwizzledPtr)>> {
+        let mut child_ptrs: Vec<(u8, SwizzledPtr)> = Vec::with_capacity(node.num_children());
         for (&edge, child) in node.iter_children() {
             if let Some(child_arc) = child.as_in_mem() {
-                let owned_child = Self::overlay_node_to_child(child_arc);
-                children.push((edge, owned_child));
+                let ptr = self.serialize_overlay_subtree_iterative(child_arc)?;
+                child_ptrs.push((edge, ptr));
             } else if let Some(on_disk) = child.as_on_disk() {
                 // On-disk overlay children (a future fault-in/eviction path) carry an
-                // already-serialized location; reuse it directly as a DiskRef. Null
-                // fillers are never yielded by `iter_children`, but guard defensively.
+                // already-serialized location; reuse it directly (the prior
+                // `ChildNode::DiskRef` path did the same). Null fillers are never
+                // yielded by `iter_children`, but guard defensively.
                 if !on_disk.is_null() {
-                    children.push((edge, ChildNode::DiskRef { ptr: on_disk.clone() }));
+                    child_ptrs.push((edge, on_disk.clone()));
                 }
             }
         }
-
-        if children.is_empty() {
-            return (None, children, is_final, value);
-        }
-
-        // Build the `Node` of the appropriate size class with a slot per child edge
-        // (null ptr — the serializer patches the real ptr via `find_child_mut`). The
-        // exact byte node-building pattern from `transitions.rs::bucket_to_art`.
-        let base = Node4::new();
-        let node_enum: Node = if children.len() <= 4 {
-            let mut n = base;
-            for (edge, _) in &children {
-                let _ = n.add_child(*edge, SwizzledPtr::null());
-            }
-            Node::N4(Box::new(n))
-        } else if children.len() <= 16 {
-            let mut n = base.grow();
-            for (edge, _) in &children {
-                let _ = n.add_child(*edge, SwizzledPtr::null());
-            }
-            Node::N16(Box::new(n))
-        } else if children.len() <= 48 {
-            let mut n = base.grow().grow();
-            for (edge, _) in &children {
-                let _ = n.add_child(*edge, SwizzledPtr::null());
-            }
-            Node::N48(Box::new(n))
-        } else {
-            let mut n = base.grow().grow().grow();
-            for (edge, _) in &children {
-                let _ = n.add_child(*edge, SwizzledPtr::null());
-            }
-            Node::N256(Box::new(n))
-        };
-
-        (Some(node_enum), children, is_final, value)
+        Ok(child_ptrs)
     }
 
-    /// Convert a single non-root overlay node into a byte owned `ChildNode`. A node
-    /// with children becomes a `ChildNode::ArtNode` (with the `Node` child slots + the
-    /// `children` Vec); a childless node becomes a `ChildNode::ArtNode` with empty
-    /// children (a final/non-final leaf), so finality + value carry exactly as byte's
-    /// owned ART leaves do.
-    fn overlay_node_to_child(node: &OverlayNode<ByteKey, V>) -> ChildNode {
-        let (maybe_node, children, is_final, value) = Self::overlay_children_to_owned(node);
-        let node = maybe_node.unwrap_or_else(|| Node::N4(Box::new(Node4::new())));
-        ChildNode::ArtNode {
-            node,
-            is_final,
-            value,
-            children,
+    /// Serialize ONE non-root overlay subtree iteratively (post-order) and return
+    /// the disk `SwizzledPtr` of its top node — the iterative twin of the prior
+    /// `serialize_child_to_disk_with_path(&overlay_node_to_child(node), path)`,
+    /// WITHOUT recursing with key length.
+    ///
+    /// # Work-stack post-order
+    ///
+    /// Each frame holds an overlay node, the in-mem children still to descend into
+    /// (in REVERSE `iter_children()` order so they pop ascending — matching the
+    /// recursive DFS's child visitation, hence the arena-allocation order), and the
+    /// `(edge, disk_ptr)` slots resolved so far (on-disk children recorded
+    /// immediately, in-mem children filled when their subtree frame completes). When
+    /// a frame's children are all resolved, its owned `Node` is built + the node
+    /// serialized via the NON-recursive [`Self::serialize_node_to_disk_with_value`],
+    /// and the resulting ptr bubbles up to the parent frame's pending slot.
+    fn serialize_overlay_subtree_iterative(
+        &self,
+        root_arc: &std::sync::Arc<OverlayNode<ByteKey, V>>,
+    ) -> Result<SwizzledPtr> {
+        // A pending child slot in a parent frame: an `edge` byte awaiting the disk
+        // ptr its in-mem subtree will produce (`None` until that subtree completes).
+        struct PendingChild {
+            edge: u8,
+            ptr: Option<SwizzledPtr>,
+        }
+        // A work-stack frame: one overlay node mid-descent.
+        struct Frame<'a, V: DictionaryValue> {
+            node: &'a OverlayNode<ByteKey, V>,
+            // The edge byte from this frame's PARENT to this node (`None` for the
+            // subtree root). Used to fill the parent's matching slot when this frame
+            // finishes — strict DFS means the parent's slot for `parent_edge` is the
+            // one to set.
+            parent_edge: Option<u8>,
+            // In-mem children still to descend into, REVERSED so `pop()` yields
+            // ascending `iter_children()` order (matches the recursive DFS).
+            pending_in_mem: Vec<(u8, &'a std::sync::Arc<OverlayNode<ByteKey, V>>)>,
+            // All child slots in `iter_children()` (sorted-ascending) order; in-mem
+            // slots start `ptr: None` and are filled as their subtrees finish,
+            // on-disk slots are pre-filled.
+            slots: Vec<PendingChild>,
+        }
+
+        // Build a frame for an overlay node: pre-fill on-disk child slots, queue the
+        // in-mem children for descent, preserving `iter_children()` ordering.
+        fn make_frame<'a, V: DictionaryValue>(
+            node: &'a OverlayNode<ByteKey, V>,
+            parent_edge: Option<u8>,
+        ) -> Frame<'a, V> {
+            let n = node.num_children();
+            let mut slots: Vec<PendingChild> = Vec::with_capacity(n);
+            let mut pending_in_mem: Vec<(u8, &'a std::sync::Arc<OverlayNode<ByteKey, V>>)> =
+                Vec::with_capacity(n);
+            for (&edge, child) in node.iter_children() {
+                if let Some(child_arc) = child.as_in_mem() {
+                    slots.push(PendingChild { edge, ptr: None });
+                    pending_in_mem.push((edge, child_arc));
+                } else if let Some(on_disk) = child.as_on_disk() {
+                    if !on_disk.is_null() {
+                        slots.push(PendingChild {
+                            edge,
+                            ptr: Some(on_disk.clone()),
+                        });
+                    }
+                }
+            }
+            // Reverse so `pop()` descends in ascending edge order (the recursive DFS
+            // visited children in ascending `iter_children()` order).
+            pending_in_mem.reverse();
+            Frame {
+                node,
+                parent_edge,
+                pending_in_mem,
+                slots,
+            }
+        }
+
+        let mut stack: Vec<Frame<'_, V>> = Vec::new();
+        stack.push(make_frame(root_arc.as_ref(), None));
+        // The (parent_edge, disk_ptr) produced by the most-recently-completed child
+        // subtree, to be recorded into its parent frame's matching pending slot.
+        let mut completed: Option<(u8, SwizzledPtr)> = None;
+
+        loop {
+            let frame = stack
+                .last_mut()
+                .expect("serialize_overlay_subtree_iterative: non-empty work-stack");
+
+            // Record a just-completed child subtree's ptr into this frame's slot.
+            if let Some((edge, ptr)) = completed.take() {
+                let slot = frame
+                    .slots
+                    .iter_mut()
+                    .find(|s| s.edge == edge && s.ptr.is_none())
+                    .expect("completed child edge has a matching unfilled parent slot");
+                slot.ptr = Some(ptr);
+            }
+
+            // Descend into the next in-mem child, if any remain.
+            if let Some((edge, child_arc)) = frame.pending_in_mem.pop() {
+                stack.push(make_frame(child_arc.as_ref(), Some(edge)));
+                continue;
+            }
+
+            // All children of this frame are resolved → serialize THIS node.
+            let frame = stack
+                .pop()
+                .expect("serialize_overlay_subtree_iterative: frame to finalize");
+            let child_ptrs: Vec<(u8, SwizzledPtr)> = frame
+                .slots
+                .into_iter()
+                .map(|s| {
+                    (
+                        s.edge,
+                        s.ptr.expect(
+                            "every in-mem child slot is filled before its parent node is \
+                             serialized (post-order invariant)",
+                        ),
+                    )
+                })
+                .collect();
+            let node_ptr = self.serialize_overlay_node_to_disk(frame.node, &child_ptrs)?;
+
+            match frame.parent_edge {
+                // Bubble this node's ptr up to its parent frame, keyed by the edge
+                // the parent used to reach it (strict DFS ⇒ that slot is unfilled).
+                Some(edge) => {
+                    completed = Some((edge, node_ptr));
+                }
+                // Subtree root → return its disk ptr.
+                None => return Ok(node_ptr),
+            }
+        }
+    }
+
+    /// Serialize ONE overlay node (root-or-non-root distinction is the caller's)
+    /// into byte's owned single-node disk record, given its children ALREADY
+    /// resolved to disk `SwizzledPtr`s. The NON-recursive core that the iterative
+    /// walk calls per node — the exact body of the prior
+    /// `serialize_child_to_disk_with_path`'s `ArtNode` arm minus the recursion +
+    /// dirty-tracking (the overlay capture builds a fresh image; the recursive
+    /// path's `needs_persistence()`/cache shortcut never fires for a fresh
+    /// overlay-converted node, so omitting it is image-equivalent).
+    ///
+    /// Builds the owned `Node` of the right size class with the child ptrs patched
+    /// in, sets the node's final flag from the overlay node, serializes the node's
+    /// `Option<V>` value blob (via `.ok()` — matching the prior child path, which
+    /// swallowed a child value serialize error rather than propagating; the root
+    /// path uses `?` separately), and serializes via the NON-recursive
+    /// [`Self::serialize_node_to_disk_with_value`].
+    fn serialize_overlay_node_to_disk(
+        &self,
+        node: &OverlayNode<ByteKey, V>,
+        child_ptrs: &[(u8, SwizzledPtr)],
+    ) -> Result<SwizzledPtr> {
+        // A childless overlay node became a `ChildNode::ArtNode` with an empty
+        // `children` Vec and `node = Node4::new()` (`overlay_node_to_child`'s
+        // `unwrap_or_else`), so a leaf serializes as an empty Node4.
+        let mut node_copy = if child_ptrs.is_empty() {
+            Node::N4(Box::new(Node4::new()))
+        } else {
+            Self::build_owned_node_with_child_ptrs(child_ptrs)
+        };
+
+        // Final flag: the prior `serialize_child_to_disk_with_path` set it from the
+        // `ChildNode::ArtNode { is_final }` (= the overlay node's finality).
+        node_copy.header_mut().set_final(node.is_final());
+
+        // Value blob: the prior child path computed the bincode of the overlay
+        // node's value with `.ok()` (swallowing a serialize error → `None`), so
+        // reproduce that exactly here (NOT `?` — that is the root path's behavior).
+        let value_bytes: Option<Vec<u8>> = node
+            .get_value()
+            .and_then(|v| crate::serialization::bincode_compat::serialize(&v).ok());
+
+        self.serialize_node_to_disk_with_value(&node_copy, value_bytes.as_deref())
+    }
+
+    /// Build an owned byte `Node` of the appropriate size class with one child slot
+    /// per `(edge, ptr)` (the real disk ptr installed). The size-class selection +
+    /// the `Node4::new().grow()...` build sequence are byte-identical to the prior
+    /// `overlay_children_to_owned` (which built the node with null slots then patched
+    /// via `find_child_mut`) followed by `serialize_*`'s patch step — here we install
+    /// the ptr directly via `add_child`, producing the same node.
+    fn build_owned_node_with_child_ptrs(child_ptrs: &[(u8, SwizzledPtr)]) -> Node {
+        let base = Node4::new();
+        let n = child_ptrs.len();
+        if n <= 4 {
+            let mut node = base;
+            for (edge, ptr) in child_ptrs {
+                let _ = node.add_child(*edge, ptr.clone());
+            }
+            Node::N4(Box::new(node))
+        } else if n <= 16 {
+            let mut node = base.grow();
+            for (edge, ptr) in child_ptrs {
+                let _ = node.add_child(*edge, ptr.clone());
+            }
+            Node::N16(Box::new(node))
+        } else if n <= 48 {
+            let mut node = base.grow().grow();
+            for (edge, ptr) in child_ptrs {
+                let _ = node.add_child(*edge, ptr.clone());
+            }
+            Node::N48(Box::new(node))
+        } else {
+            let mut node = base.grow().grow().grow();
+            for (edge, ptr) in child_ptrs {
+                let _ = node.add_child(*edge, ptr.clone());
+            }
+            Node::N256(Box::new(node))
+        }
+    }
+
+    /// Serialize the ROOT's typed `Option<V>` value to the node-record value blob,
+    /// PROPAGATING any error (`?`) — the data-loss-critical empty-"" root value path,
+    /// matching `serialize_root`'s `value_bytes` handling exactly (NOT the child
+    /// path's `.ok()`).
+    fn serialize_root_value_bytes(value: Option<&V>) -> Result<Option<Vec<u8>>> {
+        match value {
+            Some(v) => Ok(Some(
+                crate::serialization::bincode_compat::serialize(v).map_err(|e| {
+                    PersistentARTrieError::internal(format!("serialize root value: {e}"))
+                })?,
+            )),
+            None => Ok(None),
         }
     }
 }
 
 /// Count the final (terminal) overlay nodes reachable from `root` — the overlay
-/// term count. The byte twin of char's `count_overlay_finals`.
+/// term count. The byte twin of char's `count_overlay_finals`. **ITERATIVE**
+/// (explicit work-stack over `Child::InMem`) so it does not recurse with key
+/// length — the un-path-compressed overlay spine is ~key-length deep, so the prior
+/// recursion overflowed the stack on large terms (F6 flag-1b).
 fn count_overlay_finals<V: DictionaryValue>(root: &OverlayNode<ByteKey, V>) -> u64 {
     let mut count = 0u64;
-    if root.is_final() {
-        count += 1;
-    }
-    for (_edge, child) in root.iter_children() {
-        if let Some(child_arc) = child.as_in_mem() {
-            count += count_overlay_finals::<V>(child_arc);
+    let mut stack: Vec<&OverlayNode<ByteKey, V>> = Vec::new();
+    stack.push(root);
+    while let Some(node) = stack.pop() {
+        if node.is_final() {
+            count += 1;
+        }
+        for (_edge, child) in node.iter_children() {
+            if let Some(child_arc) = child.as_in_mem() {
+                stack.push(child_arc.as_ref());
+            }
         }
     }
     count
