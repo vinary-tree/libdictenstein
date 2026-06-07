@@ -165,7 +165,12 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
 
         // Group commit handles syncing internally via append_with_sync.
         #[cfg(feature = "group-commit")]
-        if self.group_commit.lock().expect("group_commit mutex poisoned").is_some() {
+        if self
+            .group_commit
+            .lock()
+            .expect("group_commit mutex poisoned")
+            .is_some()
+        {
             return Ok(());
         }
 
@@ -188,7 +193,12 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
 
         // Group commit handles syncing internally via append_with_sync.
         #[cfg(feature = "group-commit")]
-        if self.group_commit.lock().expect("group_commit mutex poisoned").is_some() {
+        if self
+            .group_commit
+            .lock()
+            .expect("group_commit mutex poisoned")
+            .is_some()
+        {
             return self.verify_full_policy_sync_coverage(appended_lsn);
         }
 

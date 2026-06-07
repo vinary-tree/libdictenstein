@@ -12,9 +12,9 @@
 #![cfg(feature = "persistent-artrie")]
 
 use libdictenstein::artrie_trait::{ARTrie, EvictableARTrie};
-use libdictenstein::persistent_artrie_core::shared_access::SharedTrieAccess;
 use libdictenstein::persistent_artrie::eviction::EvictionConfig;
 use libdictenstein::persistent_artrie_char::{PersistentARTrieChar, SharedCharARTrie};
+use libdictenstein::persistent_artrie_core::shared_access::SharedTrieAccess;
 use libdictenstein::{DictionaryNode, MappedDictionaryNode, MutableMappedDictionary};
 use proptest::prelude::*;
 use std::collections::HashMap;

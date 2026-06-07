@@ -120,9 +120,10 @@ impl<V: DictionaryValue> std::fmt::Debug for NodeInner<V> {
                 .field("is_final", is_final)
                 .field("has_value", &value.is_some())
                 .finish_non_exhaustive(),
-            NodeInner::Bucket { bucket } => {
-                f.debug_struct("Bucket").field("len", &bucket.len()).finish()
-            }
+            NodeInner::Bucket { bucket } => f
+                .debug_struct("Bucket")
+                .field("len", &bucket.len())
+                .finish(),
             NodeInner::Root {
                 is_final, value, ..
             } => f

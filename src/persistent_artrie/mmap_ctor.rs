@@ -78,7 +78,9 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
             next_lsn: std::sync::atomic::AtomicU64::new(0),
             prefetcher: super::prefetch::Prefetcher::disabled(),
             arena_manager: None,
-            durability_policy: crate::persistent_artrie_core::shared_access::AtomicEnumCell::new(DurabilityPolicy::default()),
+            durability_policy: crate::persistent_artrie_core::shared_access::AtomicEnumCell::new(
+                DurabilityPolicy::default(),
+            ),
             epoch_manager: super::concurrency::EpochManager::new(),
             stats: Arc::new(super::concurrency::TrieStats::new()),
             eviction_coordinator: std::sync::Mutex::new(None),
@@ -176,7 +178,9 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
             next_lsn: std::sync::atomic::AtomicU64::new(1), // Start at 1, 0 reserved for "no LSN"
             prefetcher: super::prefetch::Prefetcher::new(),
             arena_manager: Some(arena_manager),
-            durability_policy: crate::persistent_artrie_core::shared_access::AtomicEnumCell::new(DurabilityPolicy::default()),
+            durability_policy: crate::persistent_artrie_core::shared_access::AtomicEnumCell::new(
+                DurabilityPolicy::default(),
+            ),
             epoch_manager: super::concurrency::EpochManager::new(),
             stats: Arc::new(super::concurrency::TrieStats::new()),
             eviction_coordinator: std::sync::Mutex::new(None),
@@ -278,7 +282,9 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
             next_lsn: std::sync::atomic::AtomicU64::new(1), // Start at 1, 0 reserved for "no LSN"
             prefetcher: super::prefetch::Prefetcher::new(),
             arena_manager: Some(arena_manager),
-            durability_policy: crate::persistent_artrie_core::shared_access::AtomicEnumCell::new(DurabilityPolicy::default()),
+            durability_policy: crate::persistent_artrie_core::shared_access::AtomicEnumCell::new(
+                DurabilityPolicy::default(),
+            ),
             epoch_manager: super::concurrency::EpochManager::new(),
             stats: Arc::new(super::concurrency::TrieStats::new()),
             eviction_coordinator: std::sync::Mutex::new(None),
@@ -551,7 +557,9 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
             next_lsn: std::sync::atomic::AtomicU64::new(next_lsn),
             prefetcher: super::prefetch::Prefetcher::new(),
             arena_manager: Some(arena_manager),
-            durability_policy: crate::persistent_artrie_core::shared_access::AtomicEnumCell::new(DurabilityPolicy::default()),
+            durability_policy: crate::persistent_artrie_core::shared_access::AtomicEnumCell::new(
+                DurabilityPolicy::default(),
+            ),
             epoch_manager: super::concurrency::EpochManager::new(),
             stats: Arc::new(super::concurrency::TrieStats::new()),
             eviction_coordinator: std::sync::Mutex::new(None),
@@ -594,8 +602,7 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
             // checkpoint frontier, so checkpoint-subsumed records are skipped by
             // `reconcile_lww` exactly as the owned replay skips them. The Overlay regime
             // drives the unranked-orphan DROP (inherited).
-            let raw_records: Vec<(super::wal::Lsn, super::wal::WalRecord)> = if wal_path.exists()
-            {
+            let raw_records: Vec<(super::wal::Lsn, super::wal::WalRecord)> = if wal_path.exists() {
                 use crate::persistent_artrie_core::wal::WalReader;
                 let mut records = Vec::new();
                 if let Ok(mut reader) = WalReader::new(&wal_path) {
@@ -880,8 +887,10 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
                                 Err("failed to apply recovered archive operation".to_string())
                             }
                         })
-                        .map_err(|error| PersistentARTrieError::RecoveryError {
-                            reason: error.to_string(),
+                        .map_err(|error| {
+                            PersistentARTrieError::RecoveryError {
+                                reason: error.to_string(),
+                            }
                         })?;
                     records_replayed = rr;
                     terms_recovered = tr;
@@ -909,7 +918,8 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
 
                             records_replayed += 1;
 
-                            for op in super::recovery::recovered_operations_from_record(lsn, record) {
+                            for op in super::recovery::recovered_operations_from_record(lsn, record)
+                            {
                                 if trie.apply_recovered_operation_no_wal(op) {
                                     terms_recovered += 1;
                                 } else {

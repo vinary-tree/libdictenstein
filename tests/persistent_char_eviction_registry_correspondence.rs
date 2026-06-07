@@ -13,9 +13,9 @@
 //! those properties through its public API.
 
 use libdictenstein::artrie_trait::{ARTrie, EvictableARTrie};
-use libdictenstein::persistent_artrie_core::shared_access::SharedTrieAccess;
 use libdictenstein::persistent_artrie::eviction::EvictionConfig;
 use libdictenstein::persistent_artrie_char::SharedCharARTrie;
+use libdictenstein::persistent_artrie_core::shared_access::SharedTrieAccess;
 use libdictenstein::MutableMappedDictionary;
 use std::path::Path;
 use tempfile::tempdir;

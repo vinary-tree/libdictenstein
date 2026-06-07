@@ -57,8 +57,10 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     /// `CharKey::units_to_term` (reproducing the exact prior `char::from_u32` output).
     pub(crate) fn overlay_iter_prefix(&self, prefix: &str) -> Result<Option<Vec<String>>> {
         let prefix_units = CharKey::units_from_str(prefix);
-        Ok(<Self as LockFreeOverlay<CharKey, V, S>>::overlay_collect_units(self, &prefix_units)
-            .map(|seqs| seqs.iter().map(|u| CharKey::units_to_term(u)).collect()))
+        Ok(
+            <Self as LockFreeOverlay<CharKey, V, S>>::overlay_collect_units(self, &prefix_units)
+                .map(|seqs| seqs.iter().map(|u| CharKey::units_to_term(u)).collect()),
+        )
     }
 
     /// Overlay analogue of `iter_prefix_with_values`. For `V = u64` each final's

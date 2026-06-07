@@ -75,8 +75,7 @@ fn byte_immediate_public_mutations_ack_only_after_wal_tail_is_synced() {
 fn byte_group_commit_policy_public_mutation_ack_is_synced() {
     let dir = tempdir().expect("temp dir");
     let path = dir.path().join("byte_group.part");
-    let trie: PersistentARTrie<i64> =
-        PersistentARTrie::create(&path).expect("create byte trie");
+    let trie: PersistentARTrie<i64> = PersistentARTrie::create(&path).expect("create byte trie");
 
     trie.set_durability_policy(DurabilityPolicy::GroupCommit);
 
@@ -99,8 +98,7 @@ fn byte_group_commit_policy_public_mutation_ack_is_synced() {
 fn periodic_policy_does_not_overclaim_public_mutation_durability() {
     let dir = tempdir().expect("temp dir");
     let path = dir.path().join("byte_periodic.part");
-    let trie: PersistentARTrie<i64> =
-        PersistentARTrie::create(&path).expect("create byte trie");
+    let trie: PersistentARTrie<i64> = PersistentARTrie::create(&path).expect("create byte trie");
 
     // **M4b REFRAME.** A fresh `create::<i64>()` now create-flips to the overlay, but
     // this test verifies OWNED-path durability under the PERIODIC policy (the overlay's
@@ -122,8 +120,7 @@ fn periodic_policy_does_not_overclaim_public_mutation_durability() {
 fn async_sync_handle_completion_covers_target_lsn() {
     let dir = tempdir().expect("temp dir");
     let path = dir.path().join("byte_async.part");
-    let trie: PersistentARTrie<i64> =
-        PersistentARTrie::create(&path).expect("create byte trie");
+    let trie: PersistentARTrie<i64> = PersistentARTrie::create(&path).expect("create byte trie");
 
     // **M4b REFRAME.** A fresh `create::<i64>()` now create-flips to the overlay, but
     // this test verifies the OWNED-path async sync-handle under the PERIODIC policy

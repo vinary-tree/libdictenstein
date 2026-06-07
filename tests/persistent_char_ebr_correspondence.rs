@@ -19,11 +19,11 @@
 #![cfg(feature = "persistent-artrie")]
 
 use libdictenstein::artrie_trait::EvictableARTrie;
-use libdictenstein::persistent_artrie_core::shared_access::SharedTrieAccess;
 use libdictenstein::persistent_artrie::eviction::EvictionConfig;
 use libdictenstein::persistent_artrie_char::{
     PersistentARTrieChar, PersistentARTrieCharNode, SharedCharARTrie,
 };
+use libdictenstein::persistent_artrie_core::shared_access::SharedTrieAccess;
 use libdictenstein::{Dictionary, DictionaryNode, MappedDictionaryNode};
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -84,9 +84,8 @@ fn walk_concurrent_with_eviction_is_safe_and_complete() {
     }
 
     // Reopen (children swizzled), publish an eviction registry, enable eviction.
-    let shared: SharedCharARTrie<i32> = Arc::new(
-        PersistentARTrieChar::<i32>::open(&path).expect("open"),
-        );
+    let shared: SharedCharARTrie<i32> =
+        Arc::new(PersistentARTrieChar::<i32>::open(&path).expect("open"));
     shared.write().checkpoint().expect("post-reopen checkpoint");
     shared
         .enable_eviction(EvictionConfig::without_memory_monitor())

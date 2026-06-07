@@ -61,14 +61,8 @@ const MEMBERSHIP_TERMS: &[&[u8]] = &[
 // Prefixes covering: present-with-finals, present-internal, the empty prefix
 // (= all), and absent (no in-memory edge — must be `None`, not `Some(empty)`).
 const PROBE_PREFIXES: &[&[u8]] = &[
-    b"app",
-    b"ban",
-    b"b",
-    b"", // all
-    b"xyz",
-    b"appz",
-    b"\x00",
-    b"\xff",
+    b"app", b"ban", b"b", b"", // all
+    b"xyz", b"appz", b"\x00", b"\xff",
 ];
 
 /// `V = ()` membership: the trait overlay reads must equal the owned reads for
@@ -159,15 +153,16 @@ fn m2a_membership_reads_correspond_overlay_vs_owned() {
     assert_eq!(all, expected, "overlay_iter_prefix(\"\") == full term set");
 }
 
-/// `V = i64` counters: the trait overlay reads must equal the owned reads for
+/// `V = u64` counters: the trait overlay reads must equal the owned reads for
 /// `overlay_get_value` and `overlay_iter_prefix_with_values`, plus `overlay_len`.
+/// (Byte's counter monomorph is now `u64`, post-u64-restoration.)
 #[test]
 fn m2a_counter_reads_correspond_overlay_vs_owned() {
     let dir = scratch("byte-m2a-counter");
     let owned_path = dir.path().join("owned.part");
     let overlay_path = dir.path().join("overlay.part");
 
-    let entries: Vec<(&[u8], i64)> = vec![
+    let entries: Vec<(&[u8], u64)> = vec![
         (b"apple", 3),
         (b"application", 17),
         (b"apply", 1),
@@ -177,8 +172,8 @@ fn m2a_counter_reads_correspond_overlay_vs_owned() {
         (b"party", 99),
     ];
 
-    // Owned oracle (i64 counters via upsert_bytes — sets the owned value directly).
-    let owned = PersistentARTrie::<i64>::create(&owned_path).expect("create owned");
+    // Owned oracle (u64 counters via upsert_bytes — sets the owned value directly).
+    let owned = PersistentARTrie::<u64>::create(&owned_path).expect("create owned");
     owned.kill_switch_to_owned();
     for (t, v) in &entries {
         owned.upsert_bytes(t, *v).expect("owned upsert_bytes");
@@ -187,13 +182,13 @@ fn m2a_counter_reads_correspond_overlay_vs_owned() {
 
     // Overlay trie: explicit opt-in; publish the same counts via `increment_cas`
     // (single increment from 0 == the count). `increment_cas` lives on
-    // `<i64, S>`, which is this monomorph.
-    let mut overlay = PersistentARTrie::<i64>::create(&overlay_path).expect("create overlay");
+    // `<u64, S>`, which is this monomorph.
+    let mut overlay = PersistentARTrie::<u64>::create(&overlay_path).expect("create overlay");
     overlay.enable_lockfree();
     overlay.set_overlay_write_mode(OverlayWriteMode::LockFreeOverlay);
-    assert!(overlay.route_overlay(), "i64 explicit flip must route");
+    assert!(overlay.route_overlay(), "u64 explicit flip must route");
     for (t, v) in &entries {
-        overlay.increment_cas(t, *v as u64);
+        overlay.increment_cas(t, *v);
     }
 
     assert_eq!(overlay.overlay_len(), owned.len().unwrap(), "len mismatch");
@@ -225,8 +220,8 @@ fn m2a_counter_reads_correspond_overlay_vs_owned() {
             v.is_none(),
             "None-vs-Some shape mismatch for {p:?}"
         );
-        let o_map: Option<BTreeMap<Vec<u8>, i64>> = o.map(|v| v.into_iter().collect());
-        let v_map: Option<BTreeMap<Vec<u8>, i64>> = v.map(|v| v.into_iter().collect());
+        let o_map: Option<BTreeMap<Vec<u8>, u64>> = o.map(|v| v.into_iter().collect());
+        let v_map: Option<BTreeMap<Vec<u8>, u64>> = v.map(|v| v.into_iter().collect());
         assert_eq!(
             o_map, v_map,
             "overlay_iter_prefix_with_values({p:?}) mismatch"
@@ -245,7 +240,7 @@ fn m2a_deep_key_overlay_reads_no_stack_overflow() {
 
     let deep: Vec<u8> = vec![b'a'; 500];
 
-    let mut overlay = PersistentARTrie::<i64>::create(&path).expect("create");
+    let mut overlay = PersistentARTrie::<u64>::create(&path).expect("create");
     overlay.enable_lockfree();
     overlay.set_overlay_write_mode(OverlayWriteMode::LockFreeOverlay);
     assert!(overlay.route_overlay());
@@ -356,8 +351,8 @@ fn m2a_reestablish_counter_round_trip() {
     let path = dir.path().join("r.part");
 
     let deep: Vec<u8> = vec![b'z'; 300];
-    let empty_term_count: i64 = 13;
-    let nonempty_entries: Vec<(Vec<u8>, i64)> = vec![
+    let empty_term_count: u64 = 13;
+    let nonempty_entries: Vec<(Vec<u8>, u64)> = vec![
         (b"apple".to_vec(), 3),
         (b"application".to_vec(), 17),
         (b"banana".to_vec(), 5000),
@@ -365,7 +360,7 @@ fn m2a_reestablish_counter_round_trip() {
         (deep.clone(), 22),
     ];
 
-    let mut trie = PersistentARTrie::<i64>::create(&path).expect("create");
+    let mut trie = PersistentARTrie::<u64>::create(&path).expect("create");
     trie.kill_switch_to_owned();
     // The empty-term count lives in the owned tree (root value) before reestablish.
     trie.upsert_bytes(b"", empty_term_count)
@@ -379,7 +374,7 @@ fn m2a_reestablish_counter_round_trip() {
         Some(empty_term_count),
         "owned tree holds the empty-term count before reestablish"
     );
-    let nonempty_before: BTreeMap<Vec<u8>, i64> = nonempty_entries.iter().cloned().collect();
+    let nonempty_before: BTreeMap<Vec<u8>, u64> = nonempty_entries.iter().cloned().collect();
 
     trie.enable_lockfree();
     trie.set_overlay_write_mode(OverlayWriteMode::LockFreeOverlay);
@@ -391,7 +386,7 @@ fn m2a_reestablish_counter_round_trip() {
     // Every (term, count) reproduced in the overlay — INCLUDING the empty term,
     // which empty-string support (H3) republishes to the overlay ROOT via the
     // fresh-root-CAS value publisher (it was previously dropped).
-    let overlay_after: BTreeMap<Vec<u8>, i64> = trie
+    let overlay_after: BTreeMap<Vec<u8>, u64> = trie
         .overlay_iter_prefix_with_values(b"")
         .expect("overlay_iter_prefix_with_values")
         .into_iter()
@@ -443,16 +438,13 @@ fn m2a_reestablish_counter_round_trip() {
 //     this is the same alignment the char E1 suite relies on.
 // ---------------------------------------------------------------------------
 
-fn owned_iter_prefix_terms(
-    trie: &PersistentARTrie<()>,
-    prefix: &[u8],
-) -> Option<Vec<Vec<u8>>> {
+fn owned_iter_prefix_terms(trie: &PersistentARTrie<()>, prefix: &[u8]) -> Option<Vec<Vec<u8>>> {
     trie.iter_prefix(prefix).map(|it| it.collect())
 }
 
 fn owned_iter_prefix_values(
-    trie: &PersistentARTrie<i64>,
+    trie: &PersistentARTrie<u64>,
     prefix: &[u8],
-) -> Option<Vec<(Vec<u8>, i64)>> {
+) -> Option<Vec<(Vec<u8>, u64)>> {
     trie.iter_prefix_with_values(prefix).map(|it| it.collect())
 }

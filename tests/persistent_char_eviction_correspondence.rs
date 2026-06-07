@@ -32,11 +32,11 @@
 //! raw byte-for-byte file compare is confounded by the checkpoint timestamp.
 
 use libdictenstein::artrie_trait::{ARTrie, EvictableARTrie};
-use libdictenstein::persistent_artrie_core::shared_access::SharedTrieAccess;
 use libdictenstein::persistent_artrie::eviction::EvictionConfig;
 use libdictenstein::persistent_artrie_char::{
     PersistentARTrieChar, PersistentARTrieCharNode, SharedCharARTrie,
 };
+use libdictenstein::persistent_artrie_core::shared_access::SharedTrieAccess;
 use libdictenstein::{DictionaryNode, MappedDictionaryNode, MutableMappedDictionary};
 use std::path::Path;
 use tempfile::tempdir;

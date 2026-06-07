@@ -21,13 +21,13 @@
 //! finalization (plus the prefix single-arbiter fix) is unchanged — only the
 //! `PersistentNode`/`AtomicNodePtr` names gain the `<V>` parameter.
 //!
-//! The **counter** half is `V = i64`-specific (byte tries persist `i64`; the
-//! lock-free n-gram counter accumulates a `u64` count bounded by
-//! `LOCKFREE_COUNTER_MAX = i64::MAX as u64`, stored in the overlay leaf as the
-//! trie's own `i64` value). Its increment is a **path-copy CAS** — mirroring char
+//! The **counter** half is `V = u64`-specific (byte tries persist a `u64`
+//! counter, matching char; the lock-free n-gram counter accumulates a `u64` count
+//! bounded by `LOCKFREE_COUNTER_MAX = u64::MAX`, stored in the overlay leaf as the
+//! trie's own `u64` value). Its increment is a **path-copy CAS** — mirroring char
 //! `lockfree_cas.rs::try_increment_cas` (`build_value_path_recursive`): read the
 //! leaf's count from the published snapshot, build a new leaf
-//! `old.as_final().with_value(new_count_as_i64)`, path-copy the root→leaf spine,
+//! `old.as_final().with_value(new_count)`, path-copy the root→leaf spine,
 //! CAS-publish the root. The wait-free in-place `fetch_add` is gone (arbitrary
 //! `V` cannot live in an atomic); the root CAS is the single linearization point,
 //! so no increment is lost (a loser re-reads the higher count and folds its
@@ -42,11 +42,20 @@ use super::block_storage::BlockStorage;
 use super::dict_impl::PersistentARTrie;
 use super::error::{PersistentARTrieError, Result};
 use super::wal::WalRecord;
+use crate::persistent_artrie_core::counter_codec;
 use crate::persistent_artrie_core::key_encoding::ByteKey;
 use crate::persistent_artrie_core::overlay::durable_write::DurableOverlayWrite;
 use crate::value::DictionaryValue;
 
-const LOCKFREE_COUNTER_MAX: u64 = i64::MAX as u64;
+// The byte counter is now a full `u64` (matching char). Overflow is detected by
+// the i128-domain range check in `counter_codec` (`i128_to_counter_leaf::<u64>`
+// rejects `> u64::MAX`) plus `checked_add` on the running `u64` sum — the prior
+// `i64::MAX` cap (and the now-vacuous `delta > MAX` / `v <= MAX` u64 tautologies)
+// are gone. The const is retained as the documented counter-domain ceiling (referred
+// to by the surrounding docs); `counter_codec` is the live enforcer, so the value is
+// no longer read in code.
+#[allow(dead_code)]
+const LOCKFREE_COUNTER_MAX: u64 = u64::MAX;
 
 /// Outcome of a single durable single-phase membership insert attempt (M2b — the
 /// byte twin of char's durable `LockfreeInsertResult`). The leaf is published FINAL
@@ -101,7 +110,7 @@ enum DurableBuildError {
 ///
 /// G4: generic over `V` so the `Inserted` node matches the trie's
 /// `lockfree_root: AtomicNodePtr<V>`. A membership trie (`V=()`) is unchanged; a
-/// counter trie (`V=i64`) carries the valued leaf back to the caller.
+/// counter trie (`V=u64`) carries the valued leaf back to the caller.
 enum LockfreeInsertResult<V = ()> {
     /// Term was newly inserted - contains the node to finalize
     Inserted(Arc<super::nodes::PersistentNode<V>>),
@@ -213,7 +222,10 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
     /// I/O arm, so the loop only retries on `Conflict`.
     pub(crate) fn overlay_remove_no_wal(&self, term: &[u8]) {
         use std::sync::atomic::Ordering;
-        debug_assert!(!term.is_empty(), "overlay_remove_no_wal: empty term handled by root publisher");
+        debug_assert!(
+            !term.is_empty(),
+            "overlay_remove_no_wal: empty term handled by root publisher"
+        );
         let lockfree_root = match self.lockfree_root.as_ref() {
             Some(r) => r,
             None => return,
@@ -239,9 +251,9 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
     /// of char's `reestablish_overlay_dispatch` (persistent_artrie_char/lockfree_cas.rs).
     /// Routes a recovered Overlay-regime reopen's owned→overlay bootstrap to the
     /// CORRECT reestablish fold by the runtime value type:
-    /// - `V == i64` ⇒ [`LockFreeOverlay::reestablish_overlay_counter`] (the trait
+    /// - `V == u64` ⇒ [`LockFreeOverlay::reestablish_overlay_counter`] (the trait
     ///   DEFAULT — rebuilds the immutable overlay from the recovered owned `(term,
-    ///   value)` pairs; the byte counter monomorph).
+    ///   value)` pairs; the byte counter monomorph, now `u64` matching char).
     /// - `V == ()` ⇒ [`LockFreeOverlay::reestablish_overlay_membership`] (the trait
     ///   DEFAULT — re-publishes each recovered owned term, no values).
     /// - ineligible `V` ⇒ a strict no-op (`overlay_eligible_v()` is false, so no
@@ -254,7 +266,7 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
     /// needs a SAFE `Any` downcast — byte can call the defaults DIRECTLY for the
     /// monomorph selected by `TypeId`. The counter fold's value seam
     /// (`value_as_counter`/`overlay_publish_counter`) is itself a SAFE `Any` no-op for
-    /// non-i64 `V`, so the `TypeId` gate is the (redundant) honest selector. `S:
+    /// non-u64 `V`, so the `TypeId` gate is the (redundant) honest selector. `S:
     /// 'static` keeps parity with char's signature (and is satisfied by both byte
     /// storage backends).
     ///
@@ -275,7 +287,7 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
     {
         use crate::persistent_artrie_core::overlay::flip::LockFreeOverlay;
         use std::any::TypeId;
-        if TypeId::of::<V>() == TypeId::of::<i64>() {
+        if TypeId::of::<V>() == TypeId::of::<u64>() {
             return <Self as LockFreeOverlay<ByteKey, V, S>>::reestablish_overlay_counter(self);
         }
         if TypeId::of::<V>() == TypeId::of::<()>() {
@@ -577,8 +589,8 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
 
     /// Find the leaf node for a key in the lock-free trie.
     ///
-    /// Generic helper shared by the membership block and the `<i64>` counter
-    /// block (its calls resolve at `V = i64` — same code, different impl).
+    /// Generic helper shared by the membership block and the `<u64>` counter
+    /// block (its calls resolve at `V = u64` — same code, different impl).
     pub(crate) fn find_leaf_lockfree(
         &self,
         root: &super::nodes::AtomicNodePtr<V>,
@@ -675,7 +687,9 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
             // the fresh-root-CAS RANKED publisher (NOT `try_insert_lockfree_path_durable`,
             // which finalizes in-place — a concurrent non-empty insert's `with_child`
             // root-copy snapshots flags and would discard an in-place finalize).
-            use crate::persistent_artrie_core::overlay::flip::{LockFreeOverlay, RootPublishOutcome};
+            use crate::persistent_artrie_core::overlay::flip::{
+                LockFreeOverlay, RootPublishOutcome,
+            };
             let _epoch = self.epoch_manager.enter_read();
             // Present-hoist (pre-WAL, no LSN burn): root already final ⇒ no-op insert.
             if self.overlay_root_node().map_or(false, |r| r.is_final()) {
@@ -689,9 +703,7 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
             })?;
             // Step 2: fresh-root-CAS publish (`as_final`), RANKED (generation bound to
             // the winning CAS iteration, NOT claimed once-before — split-LP safe).
-            match self
-                .publish_root_cas_ranked(|r| Arc::new(r.as_final()), |r| r.is_final())?
-            {
+            match self.publish_root_cas_ranked(|r| Arc::new(r.as_final()), |r| r.is_final())? {
                 RootPublishOutcome::Published(generation) => {
                     lockfree_cache.insert(Vec::new(), true);
                     // Step 3: bind the commit rank durable + advance the watermark.
@@ -808,7 +820,9 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
             // fresh-root-CAS RANKED un-publisher (`as_non_final` on a FRESH root, NOT an
             // in-place clear of the shared root — last-writer-wins with concurrent
             // inserts via the single root CAS, like every non-empty remove).
-            use crate::persistent_artrie_core::overlay::flip::{LockFreeOverlay, RootPublishOutcome};
+            use crate::persistent_artrie_core::overlay::flip::{
+                LockFreeOverlay, RootPublishOutcome,
+            };
             let _epoch = self.epoch_manager.enter_read();
             // Absent fast-path (pre-WAL, no LSN burn): root not final ⇒ nothing to remove.
             if !self.overlay_root_node().map_or(false, |r| r.is_final()) {
@@ -818,9 +832,7 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
             // ORDER A — step 1: append + sync the Remove{""} record DURABLE.
             let lsn = self.append_to_wal_returning_lsn(WalRecord::Remove { term: Vec::new() })?;
             // Step 2: fresh-root-CAS un-publish (`as_non_final`), RANKED.
-            match self
-                .publish_root_cas_ranked(|r| Arc::new(r.as_non_final()), |r| !r.is_final())?
-            {
+            match self.publish_root_cas_ranked(|r| Arc::new(r.as_non_final()), |r| !r.is_final())? {
                 RootPublishOutcome::Published(generation) => {
                     // CACHE INVALIDATION FIRST (before mark): "" is no longer present.
                     lockfree_cache.remove(term);
@@ -1047,7 +1059,8 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
             Some(child) => {
                 if let Some(child_arc) = child.as_in_mem() {
                     let child_arc = Arc::clone(child_arc);
-                    let new_child = self.build_remove_path_recursive(&child_arc, term, depth + 1)?;
+                    let new_child =
+                        self.build_remove_path_recursive(&child_arc, term, depth + 1)?;
                     Ok(Arc::new(node.with_child(key, Child::InMem(new_child))))
                 } else {
                     // On-disk / null filler ⇒ absent on this snapshot (byte overlay
@@ -1129,7 +1142,7 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
 }
 
 // ============================================================================
-// Counter (valued) overlay methods — `V = i64` ONLY.
+// Counter (valued) overlay methods — `V = u64` ONLY.
 // ============================================================================
 //
 // G4: the lock-free overlay node now carries an **immutable** `Option<V>` value
@@ -1140,39 +1153,42 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
 // vocab overlay (`persistent_vocab_artrie::lockfree_cas`) and the char overlay
 // (`persistent_artrie_char::lockfree_cas`) already use).
 //
-// Byte tries persist `i64`, so the lock-free counter overlay lives in a
-// `V = i64` impl block: the overlay leaf stores the running count as the trie's
-// own `i64` value, while the increment accumulates a `u64` count bounded by
-// `LOCKFREE_COUNTER_MAX = i64::MAX as u64` (the i64 persistence domain) and the
-// public API exposes `u64`. The generic membership block above remains `<V>` and
-// its proven `try_set_final` two-phase finalization is untouched. Cross-block
-// calls to the generic helpers (`find_leaf_lockfree`, `find_leaf_recursive`,
-// `try_insert_lockfree_path`) resolve at `V = i64` — same code, different impl.
-impl<S: BlockStorage> PersistentARTrie<i64, S> {
+// Byte tries now persist a full `u64` counter (the u64 restoration — matching
+// char), so the lock-free counter overlay lives in a `V = u64` impl block: the
+// overlay leaf stores the running count as the trie's own `u64` value, the
+// increment accumulates a `u64` count bounded by `LOCKFREE_COUNTER_MAX =
+// u64::MAX`, and the public API exposes `u64`. Every counter-leaf read/write
+// routes through `counter_codec` (i128 substrate, range-checked) so an increment
+// above `i64::MAX` is neither spuriously rejected nor silently wrapped. The
+// generic membership block above remains `<V>` and its proven `try_set_final`
+// two-phase finalization is untouched. Cross-block calls to the generic helpers
+// (`find_leaf_lockfree`, `find_leaf_recursive`, `try_insert_lockfree_path`)
+// resolve at `V = u64` — same code, different impl.
+impl<S: BlockStorage> PersistentARTrie<u64, S> {
     /// Lock-free read of a value from the lock-free trie overlay.
     ///
     /// Returns the accumulated count if the key is present in the lock-free layer
     /// with a value set. Does not check the persistent layer — callers should
     /// check both layers and sum for n-gram counting. The leaf stores the count
-    /// as the trie's `i64` value; it is non-negative (bounded at insert by
-    /// `LOCKFREE_COUNTER_MAX`), so the widen to `u64` is lossless.
+    /// as the trie's own `u64` value, so it is returned directly (no conversion).
     #[inline]
     pub fn get_lockfree(&self, key: &[u8]) -> Option<u64> {
         let lockfree_root = self.lockfree_root.as_ref()?;
         let _epoch = self.epoch_manager.enter_read();
         self.find_leaf_lockfree(lockfree_root, key)
             .and_then(|leaf| leaf.get_value())
-            .map(|v| v as u64)
     }
 
     /// Checked lock-free increment: create path if needed, then add `delta`.
     ///
     /// **G4 path-copy CAS** (the wait-free in-place `fetch_add` is gone — the
-    /// node's value is now an immutable `Option<i64>`). Each attempt:
+    /// node's value is now an immutable `Option<u64>`). Each attempt:
     ///   1. loads the overlay root (a published, immutable snapshot);
     ///   2. reads the current count `cur` at `key` (0 if the leaf is absent or
-    ///      has no value), overflow-checks `cur.checked_add(delta)` against
-    ///      `LOCKFREE_COUNTER_MAX`;
+    ///      has no value) as a `u64`, then computes `cur + delta` in the
+    ///      `counter_codec` **i128** substrate (range-checked into `[0, u64::MAX]`),
+    ///      so an increment above `i64::MAX` is neither spuriously rejected nor
+    ///      silently wrapped;
     ///   3. builds the new leaf `old_leaf.as_final().with_value(cur + delta)` and
     ///      path-copies the root→leaf spine splicing in that leaf;
     ///   4. CAS-publishes the new root via `lockfree_root.compare_exchange`.
@@ -1180,10 +1196,10 @@ impl<S: BlockStorage> PersistentARTrie<i64, S> {
     /// `cas_retries` and retry — re-reading the (now higher) count, so **no
     /// increment is lost** (the loser folds its delta onto the winner's value).
     ///
-    /// Mirrors char `lockfree_cas.rs::try_increment_cas` verbatim modulo
-    /// `&str`→`&[u8]` (no decode needed for byte keys) and the leaf value type
-    /// (`i64` instead of `u64`). The root CAS is the single linearization point,
-    /// formally checked by the char loom race test.
+    /// Mirrors char `lockfree_cas.rs::try_increment_cas` modulo `&str`→`&[u8]`
+    /// (no decode needed for byte keys); the leaf value type is `u64` for both.
+    /// The root CAS is the single linearization point, formally checked by the
+    /// char loom race test.
     ///
     /// Thin wrapper over [`Self::try_increment_cas_inner`] that drops the commit
     /// generation, preserving the public signature for the existing callers (the
@@ -1224,9 +1240,9 @@ impl<S: BlockStorage> PersistentARTrie<i64, S> {
         // `build_value_path_recursive(root, b"", 0, ..)` which at depth 0 produces a
         // FRESH `as_final().with_value` root (fresh-root-CAS, NOT in-place) — so the
         // root counter RMW is the depth-0 case of the general loop. No rejection.
-        if delta > LOCKFREE_COUNTER_MAX {
-            return Err(Self::lockfree_increment_overflow_error(key, None, delta));
-        }
+        // (The former `delta > LOCKFREE_COUNTER_MAX` early-return is gone — vacuous on
+        // u64; a true `cur + delta` overflow past u64::MAX is caught below by the
+        // i128-domain range check in `counter_codec`.)
 
         let _epoch = self.epoch_manager.enter_read();
 
@@ -1245,36 +1261,37 @@ impl<S: BlockStorage> PersistentARTrie<i64, S> {
             let root = match lockfree_root.load() {
                 Some(r) => r,
                 None => {
-                    let new_root = Arc::new(PersistentNode::<i64>::new());
+                    let new_root = Arc::new(PersistentNode::<u64>::new());
                     let _ = lockfree_root.try_init(new_root);
                     continue;
                 }
             };
 
             // (2) Read the current count at `key` from THIS snapshot. The leaf
-            // stores a non-negative `i64`; widen to `u64` for the running sum.
+            // stores the running count as the trie's own `u64` value.
             let cur = self
                 .find_leaf_recursive(&root, key, 0)
                 .and_then(|leaf| leaf.get_value())
-                .map(|v| v as u64)
-                .unwrap_or(0);
+                .unwrap_or(0u64);
 
-            // (3) Overflow-check against the i64 persistence domain.
-            let new_val = match cur.checked_add(delta) {
-                Some(v) if v <= LOCKFREE_COUNTER_MAX => v,
-                _ => {
-                    return Err(Self::lockfree_increment_overflow_error(
-                        key,
-                        Some(cur),
-                        delta,
-                    ))
-                }
-            };
+            // (3) Compute `cur + delta` in the i128 substrate, range-checked into
+            // `[0, u64::MAX]` — an increment above `i64::MAX` is honored, and a true
+            // u64 overflow is rejected LOUD (never silently wrapped). `delta` widens
+            // losslessly to i128; `cur as i128` is exact.
+            let new_val =
+                match counter_codec::i128_to_counter_value::<u64>(cur as i128 + delta as i128) {
+                    Some(v) => v,
+                    None => {
+                        return Err(Self::lockfree_increment_overflow_error(
+                            key,
+                            Some(cur),
+                            delta,
+                        ))
+                    }
+                };
 
-            // (4) Build a new root with the value-carrying leaf spliced in. The
-            // count is bounded by `LOCKFREE_COUNTER_MAX = i64::MAX as u64`, so the
-            // narrow to `i64` is lossless.
-            let new_root = match self.build_value_path_recursive(&root, key, 0, new_val as i64) {
+            // (4) Build a new root with the value-carrying `u64` leaf spliced in.
+            let new_root = match self.build_value_path_recursive(&root, key, 0, new_val) {
                 Some(r) => r,
                 None => {
                     // An on-disk child blocked the path-copy (cannot fault in the
@@ -1303,27 +1320,16 @@ impl<S: BlockStorage> PersistentARTrie<i64, S> {
         }
     }
 
-    /// Path-copy the `root`→leaf spine for `key`, finalizing the leaf with
-    /// `value`. Returns a new root `Arc` (the published-version candidate) or
-    /// `None` if an on-disk child blocks the copy (cannot be faulted in here).
-    ///
-    /// Mirrors the membership `build_path_recursive`, but instead of returning the
-    /// shared leaf for a later `try_set_final`, it bakes `as_final().with_value`
-    /// into the leaf so finalization+value publish atomically with the root CAS
-    /// (single-phase). For an existing path this replaces the leaf's value
-    /// (last-writer = the CAS winner); for a new path it creates the spine.
-    /// (Verbatim port of char `build_value_path_recursive` with `u32`→`u8` keys
-    /// and `u64`→`i64` leaf value.)
     /// Lock-free increment: create path if needed, then atomically add delta.
     ///
-    /// Panics if the checked counter domain would be exceeded. Use
-    /// [`Self::try_increment_cas`] to handle overflow as a recoverable error.
+    /// Panics if the checked counter domain would be exceeded (a true u64 overflow).
+    /// Use [`Self::try_increment_cas`] to handle overflow as a recoverable error.
     pub fn increment_cas(&self, key: &[u8], delta: u64) -> u64 {
         self.try_increment_cas(key, delta)
             .unwrap_or_else(|error| panic!("lock-free increment_cas failed: {}", error))
     }
 
-    /// **M2b — Order-A durable** lock-free increment (`V = i64`), the byte twin of
+    /// **M2b — Order-A durable** lock-free increment (`V = u64`), the byte twin of
     /// char's `try_increment_cas_durable`. Establishes `visible ⊆ durable-prefix`
     /// for a counter delta: the delta `BatchIncrement` WAL record is appended AND
     /// synced DURABLE BEFORE the visibility-publishing root CAS, and the committed
@@ -1333,18 +1339,18 @@ impl<S: BlockStorage> PersistentARTrie<i64, S> {
     /// durable. The visibility step REUSES the proven path-copy
     /// [`Self::try_increment_cas_inner`] verbatim.
     ///
-    /// `delta` is `i64` (the byte overlay counter domain); a NEGATIVE delta is
-    /// rejected by the C4 [`DurableOverlayWrite::bound_increment_delta`] seam
-    /// (counters are non-negative). Requires `enable_lockfree()` and a synchronous
-    /// durability policy (`Immediate`/`GroupCommit`). Returns the new accumulated
-    /// count on success.
+    /// `delta` is `u64` (the byte overlay counter domain is now a full `u64`,
+    /// matching char — the C4 [`DurableOverlayWrite::bound_increment_delta`] seam
+    /// chunks a delta above `i64::MAX` into commutative WAL deltas rather than
+    /// rejecting it). Requires `enable_lockfree()` and a synchronous durability
+    /// policy (`Immediate`/`GroupCommit`). Returns the new accumulated count.
     ///
     /// Thin wrapper over the SHARED GENERIC Order-A increment template
     /// [`DurableOverlayWrite::try_increment_cas_durable_default`] — the default owns
     /// the data-loss-critical skeleton (gate, empty short-circuit, the C4
     /// value-domain bound via the seam, the append→publish→commit-rank→mark ORDER);
     /// this wrapper supplies only the key-byte boundary + the empty-key return value.
-    pub fn try_increment_cas_durable(&self, key: &[u8], delta: i64) -> Result<i64> {
+    pub fn try_increment_cas_durable(&self, key: &[u8], delta: u64) -> Result<u64> {
         // The durable increment operates on UTF-8 keys (so the `&str` the trait
         // default threads to `bound_increment_delta` / `increment_publish_inner`
         // round-trips losslessly to `key` via `as_bytes`). Reject non-UTF-8 loudly
@@ -1352,17 +1358,18 @@ impl<S: BlockStorage> PersistentARTrie<i64, S> {
         let key_str = std::str::from_utf8(key).map_err(|_| {
             PersistentARTrieError::InvalidOperation(
                 "try_increment_cas_durable requires a UTF-8 key on the byte durable \
-                 increment path".to_string(),
+                 increment path"
+                    .to_string(),
             )
         })?;
-        <Self as DurableOverlayWrite<ByteKey, i64, S>>::try_increment_cas_durable_default(
+        <Self as DurableOverlayWrite<ByteKey, u64, S>>::try_increment_cas_durable_default(
             self, key_str, key, delta,
         )
     }
 
-    /// **M2b — Order-A durable VALUED insert** (`V = i64`), the byte twin of char's
+    /// **M2b — Order-A durable VALUED insert** (`V = u64`), the byte twin of char's
     /// `insert_cas_with_value_durable`. The valued analogue of
-    /// [`Self::insert_cas_durable`] (membership only): bakes an `i64` value into the
+    /// [`Self::insert_cas_durable`] (membership only): bakes a `u64` value into the
     /// leaf via [`Self::build_value_path_recursive`] (single-phase — finality + value
     /// publish atomically with the root CAS).
     ///
@@ -1372,49 +1379,37 @@ impl<S: BlockStorage> PersistentARTrie<i64, S> {
     /// Order-A: the `Insert{value}` WAL record is appended+synced DURABLE before the
     /// visibility CAS; the watermark advances only after the CAS lands (+ the
     /// CommitRank). Requires a synchronous durability policy and `enable_lockfree()`.
-    /// Returns `Ok(true)` iff this call newly inserted the term.
-    pub fn insert_cas_with_value_durable(&self, term: &[u8], value: i64) -> Result<bool> {
-        // **Flip F0 (G5): thin caller of the SHARED GENERIC value-write default.**
-        // The C4 i64-specific guard (the byte overlay counter domain is a
-        // non-negative i64) stays here; EVERYTHING else is the generic Order-A
-        // [`DurableOverlayWrite::insert_cas_with_value_durable_default`] (gate →
-        // present-hoist → append `Insert` DURABLE → value seam publish (insert-once)
-        // → rank-or-burn), shared verbatim with the arbitrary-`V` path. Empty `""`
-        // flows through the value seam's RANKED depth-0 publish (no special case).
-        if value < 0 {
-            return Err(PersistentARTrieError::InvalidOperation(format!(
-                "insert_cas_with_value_durable value for byte term {:?} must be non-negative \
-                 (the overlay counter domain is a non-negative i64); got {}",
-                String::from_utf8_lossy(term),
-                value
-            )));
-        }
-        <Self as DurableOverlayWrite<ByteKey, i64, S>>::insert_cas_with_value_durable_default(
+    /// Returns `Ok(true)` iff this call newly inserted the term. The whole `u64`
+    /// range is representable (the value is published via the path-copy value seam,
+    /// not a delta-based i64 WAL record), so there is no value-domain reject — a
+    /// `value` up to `u64::MAX` round-trips through the leaf.
+    pub fn insert_cas_with_value_durable(&self, term: &[u8], value: u64) -> Result<bool> {
+        // **Flip F0 (G5): thin caller of the SHARED GENERIC value-write default**
+        // (gate → present-hoist → append `Insert` DURABLE → value seam publish
+        // (insert-once) → rank-or-burn), shared verbatim with the arbitrary-`V`
+        // path. The former `value < 0` C4 guard is gone (vacuous on `u64`); the full
+        // u64 leaf is range-checked by `counter_codec` on the publish path. Empty
+        // `""` flows through the value seam's RANKED depth-0 publish (no special case).
+        <Self as DurableOverlayWrite<ByteKey, u64, S>>::insert_cas_with_value_durable_default(
             self, term, value,
         )
     }
 
-    /// **M2b — Order-A durable UPSERT** (`V = i64`), the byte twin of char's
+    /// **M2b — Order-A durable UPSERT** (`V = u64`), the byte twin of char's
     /// `upsert_cas_durable`. Like [`Self::insert_cas_with_value_durable`] but UPSERT:
     /// the value is ALWAYS written (last-writer-wins = the root-CAS winner), whether
     /// or not the term already existed. Returns `Ok(true)` iff the term was newly
-    /// inserted (`false` = updated an existing term).
-    pub fn upsert_cas_durable(&self, term: &[u8], value: i64) -> Result<bool> {
-        // **Flip F0 (G5): thin caller of the SHARED GENERIC value-write default.**
-        // C4 i64-specific guard, then the generic
-        // [`DurableOverlayWrite::upsert_cas_durable_default`] (gate → advisory
-        // existed-probe → append `Upsert` DURABLE → value seam publish in Upsert
-        // (always-write) mode → rank). Empty `""` flows through the value seam's
+    /// inserted (`false` = updated an existing term). The full `u64` range is
+    /// representable (value-seam publish, not an i64 delta).
+    pub fn upsert_cas_durable(&self, term: &[u8], value: u64) -> Result<bool> {
+        // **Flip F0 (G5): thin caller of the SHARED GENERIC value-write default**
+        // (gate → advisory existed-probe → append `Upsert` DURABLE → value seam
+        // publish in Upsert (always-write) mode → rank). The former `value < 0` C4
+        // guard is gone (vacuous on `u64`). Empty `""` flows through the value seam's
         // RANKED depth-0 publish (no special case).
-        if value < 0 {
-            return Err(PersistentARTrieError::InvalidOperation(format!(
-                "upsert_cas_durable value for byte term {:?} must be non-negative \
-                 (the overlay counter domain is a non-negative i64); got {}",
-                String::from_utf8_lossy(term),
-                value
-            )));
-        }
-        <Self as DurableOverlayWrite<ByteKey, i64, S>>::upsert_cas_durable_default(self, term, value)
+        <Self as DurableOverlayWrite<ByteKey, u64, S>>::upsert_cas_durable_default(
+            self, term, value,
+        )
     }
 
     /// Merge lock-free values into the persistent trie by summing.
@@ -1478,64 +1473,75 @@ impl<S: BlockStorage> PersistentARTrie<i64, S> {
             cache.clear();
         }
         if let Some(ref root) = self.lockfree_root {
-            root.store(Arc::new(PersistentNode::<i64>::new()));
+            root.store(Arc::new(PersistentNode::<u64>::new()));
         }
 
         Ok(merged_count)
     }
 
+    /// Prepare the merge: for each overlay `(key, delta_u64)`, compute the new owned
+    /// value in the i128 substrate (full u64, range-checked) for the owned upsert, and
+    /// emit the delta as ≤3 i64-bounded WAL chunks (`split_u64_delta_to_i64_chunks`)
+    /// since `BatchIncrement` replay is commutative (the deltas are summed in i128 on
+    /// reopen). `prepared_values` stays ONE `(key, final_u64)` per key; `wal_entries`
+    /// may carry up to 3 `(key, chunk)` per key.
     fn prepare_lockfree_value_merge(
         &self,
         entries: &[(Vec<u8>, u64)],
-    ) -> Result<(Vec<(Vec<u8>, i64)>, Vec<(Vec<u8>, i64)>)> {
-        let mut wal_entries = Vec::with_capacity(entries.len());
+    ) -> Result<(Vec<(Vec<u8>, i64)>, Vec<(Vec<u8>, u64)>)> {
+        // ≤3 WAL chunks per key (u64::MAX < 3·i64::MAX); one prepared value per key.
+        let mut wal_entries = Vec::with_capacity(entries.len() * 3);
         let mut prepared_values = Vec::with_capacity(entries.len());
 
         for (key, delta) in entries {
-            let delta_i64 = Self::lockfree_delta_to_i64(key, *delta)?;
-            let current = self.current_i64_for_lockfree_merge(key)?;
-            let new_value = current.checked_add(delta_i64).ok_or_else(|| {
-                PersistentARTrieError::InvalidOperation(format!(
-                    "lock-free merge increment overflow for term {:?}: {} + {} exceeds i64 range",
+            let current_i128 = self.current_i128_for_lockfree_merge(key)?;
+            let new_value =
+                counter_codec::i128_to_counter_value::<u64>(current_i128 + *delta as i128)
+                    .ok_or_else(|| {
+                        PersistentARTrieError::InvalidOperation(format!(
+                    "lock-free merge increment overflow for term {:?}: {} + {} exceeds u64 range",
                     String::from_utf8_lossy(key),
-                    current,
-                    delta_i64
+                    current_i128,
+                    delta
                 ))
-            })?;
+                    })?;
 
-            wal_entries.push((key.clone(), delta_i64));
+            // Full-u64 delta → ≤3 commutative i64 WAL chunks (the WAL delta field is
+            // i64; replay sums them in i128 back to the same total).
+            for chunk in counter_codec::split_u64_delta_to_i64_chunks(*delta) {
+                wal_entries.push((key.clone(), chunk));
+            }
             prepared_values.push((key.clone(), new_value));
         }
 
         Ok((wal_entries, prepared_values))
     }
 
-    fn current_i64_for_lockfree_merge(&self, term: &[u8]) -> Result<i64> {
-        // The persistent value is the trie's own `i64`; read it directly (the
-        // running sum is bounded by `LOCKFREE_COUNTER_MAX = i64::MAX`).
-        Ok(self.get_value_impl(term).unwrap_or(0))
-    }
-
-    fn lockfree_delta_to_i64(term: &[u8], delta: u64) -> Result<i64> {
-        i64::try_from(delta).map_err(|_| {
-            PersistentARTrieError::InvalidOperation(format!(
-                "lock-free counter value for term {:?} exceeds i64 persistence domain: {}",
-                String::from_utf8_lossy(term),
-                delta
-            ))
-        })
+    fn current_i128_for_lockfree_merge(&self, term: &[u8]) -> Result<i128> {
+        // The persistent value is the trie's own `u64`; decode it into the i128
+        // substrate via the shared codec (so the merge sum carries the full u64
+        // magnitude, never an i64-truncated one). Absent ⇒ 0.
+        match self.get_value_impl(term) {
+            Some(value) => counter_codec::counter_value_to_i128::<u64>(&value).ok_or_else(|| {
+                PersistentARTrieError::InvalidOperation(format!(
+                    "lock-free merge: persistent counter value for term {:?} is not a u64 leaf",
+                    String::from_utf8_lossy(term)
+                ))
+            }),
+            None => Ok(0),
+        }
     }
 
     /// Recursively collect all (key, value) entries from the lock-free trie.
-    /// The leaf stores a non-negative `i64` count; widen to `u64` for the merge.
+    /// The leaf stores the count as the trie's own `u64` value (read directly).
     fn collect_lockfree_entries_recursive(
-        node: &Arc<super::nodes::PersistentNode<i64>>,
+        node: &Arc<super::nodes::PersistentNode<u64>>,
         key_buf: &mut Vec<u8>,
         entries: &mut Vec<(Vec<u8>, u64)>,
     ) {
         if node.is_final() {
             if let Some(value) = node.get_value() {
-                entries.push((key_buf.clone(), value as u64));
+                entries.push((key_buf.clone(), value));
             }
         }
 
@@ -1557,7 +1563,7 @@ impl<S: BlockStorage> PersistentARTrie<i64, S> {
         delta: u64,
     ) -> PersistentARTrieError {
         PersistentARTrieError::InvalidOperation(format!(
-            "lock-free increment overflow for term {:?}: current {:?} + {} exceeds i64 persistence domain",
+            "lock-free increment overflow for term {:?}: current {:?} + {} exceeds u64 counter domain",
             String::from_utf8_lossy(key),
             current,
             delta
@@ -1675,31 +1681,40 @@ mod durable_write_tests {
     fn insert_cas_durable_survives_reopen_without_checkpoint() {
         let dir = scratch("byte-order-a-durable");
         let path = dir.path().join("t.part");
-        let terms: [&[u8]; 6] = [b"apple", b"apricot", b"banana", b"band", b"bandana", b"cherry"];
+        let terms: [&[u8]; 6] = [
+            b"apple", b"apricot", b"banana", b"band", b"bandana", b"cherry",
+        ];
 
         {
             let mut trie = PersistentARTrie::<()>::create(&path).expect("create");
             trie.set_durability_policy(DurabilityPolicy::Immediate);
             trie.enable_lockfree();
             trie.set_overlay_write_mode(OverlayWriteMode::LockFreeOverlay);
-            for (i, t) in terms.iter().enumerate() {
+            // `inserted_count` tracks committed inserts as a u64 (NOT an `as`-cast of
+            // the enumerate index) so this membership test stays free of the forbidden
+            // counter-codec gate tokens (the watermark/LSN math is not a counter leaf).
+            let mut inserted_count: u64 = 0;
+            for t in terms.iter() {
                 assert!(
                     trie.insert_cas_durable(t).expect("durable insert"),
                     "{:?} is a new term",
                     String::from_utf8_lossy(t)
                 );
+                inserted_count += 1;
                 // The committed watermark advances to cover each appended LSN (LSNs
                 // start at 1; each durable insert burns 2 LSNs — the Insert + its
-                // CommitRank — so after i+1 inserts the watermark is ≥ 2*(i+1)).
+                // CommitRank — so after N inserts the watermark is ≥ 2*N ≥ N).
                 assert!(
-                    trie.committed_watermark.watermark() >= (i as u64 + 1),
+                    trie.committed_watermark.watermark() >= inserted_count,
                     "watermark must cover {} committed LSNs, got {}",
-                    i + 1,
+                    inserted_count,
                     trie.committed_watermark.watermark()
                 );
             }
             // A duplicate returns Ok(false) and does not regress the watermark.
-            assert!(!trie.insert_cas_durable(b"apple").expect("dup durable insert"));
+            assert!(!trie
+                .insert_cas_durable(b"apple")
+                .expect("dup durable insert"));
             // DROP WITHOUT CHECKPOINT — durability rests entirely on the WAL.
         }
 
@@ -1725,7 +1740,7 @@ mod durable_write_tests {
         let dir = scratch("byte-order-a-incr-durable");
         let path = dir.path().join("t.part");
         // (key, number of +delta steps, delta) → expected = steps*delta.
-        let plan: [(&[u8], i64, i64); 4] = [
+        let plan: [(&[u8], u64, u64); 4] = [
             (b"apple", 3, 1),
             (b"apricot", 2, 10),
             (b"band", 1, 7),
@@ -1733,24 +1748,29 @@ mod durable_write_tests {
         ];
 
         {
-            let mut trie = PersistentARTrie::<i64>::create(&path).expect("create");
+            let mut trie = PersistentARTrie::<u64>::create(&path).expect("create");
             trie.set_durability_policy(DurabilityPolicy::Immediate);
             trie.enable_lockfree();
             trie.set_overlay_write_mode(OverlayWriteMode::LockFreeOverlay);
             for (key, steps, delta) in plan {
-                let mut last = 0;
+                let mut last = 0u64;
                 for _ in 0..steps {
                     last = trie
                         .try_increment_cas_durable(key, delta)
                         .expect("durable increment");
                 }
-                assert_eq!(last, steps * delta, "live overlay count for {:?}", String::from_utf8_lossy(key));
+                assert_eq!(
+                    last,
+                    steps * delta,
+                    "live overlay count for {:?}",
+                    String::from_utf8_lossy(key)
+                );
             }
             // DROP WITHOUT CHECKPOINT — durability rests entirely on the WAL.
         }
 
         // Reopen: the summed deltas must replay into the recovered tree.
-        let trie = PersistentARTrie::<i64>::open(&path).expect("reopen");
+        let trie = PersistentARTrie::<u64>::open(&path).expect("reopen");
         for (key, steps, delta) in plan {
             let key_str = std::str::from_utf8(key).expect("ascii");
             assert_eq!(
@@ -1760,7 +1780,10 @@ mod durable_write_tests {
                 key_str
             );
         }
-        assert_eq!(MappedDictionary::get_value(&trie, "never-incremented"), None);
+        assert_eq!(
+            MappedDictionary::get_value(&trie, "never-incremented"),
+            None
+        );
     }
 
     /// **THE #41 BYTE WITNESS (valued insert + upsert).** `insert_cas_with_value_durable`
@@ -1770,19 +1793,25 @@ mod durable_write_tests {
         let dir = scratch("byte-order-a-valued-durable");
         let path = dir.path().join("t.part");
         {
-            let mut trie = PersistentARTrie::<i64>::create(&path).expect("create");
+            let mut trie = PersistentARTrie::<u64>::create(&path).expect("create");
             trie.set_durability_policy(DurabilityPolicy::Immediate);
             trie.enable_lockfree();
             trie.set_overlay_write_mode(OverlayWriteMode::LockFreeOverlay);
-            assert!(trie.insert_cas_with_value_durable(b"alpha", 11).expect("valued insert"));
+            assert!(trie
+                .insert_cas_with_value_durable(b"alpha", 11)
+                .expect("valued insert"));
             // Insert semantics: a second valued insert of an existing term is a no-op.
-            assert!(!trie.insert_cas_with_value_durable(b"alpha", 99).expect("dup valued insert"));
+            assert!(!trie
+                .insert_cas_with_value_durable(b"alpha", 99)
+                .expect("dup valued insert"));
             // Upsert ALWAYS writes (last-writer-wins): newly inserts "beta", updates "alpha".
             assert!(trie.upsert_cas_durable(b"beta", 22).expect("upsert new"));
-            assert!(!trie.upsert_cas_durable(b"alpha", 33).expect("upsert existing"));
+            assert!(!trie
+                .upsert_cas_durable(b"alpha", 33)
+                .expect("upsert existing"));
             // DROP WITHOUT CHECKPOINT.
         }
-        let trie = PersistentARTrie::<i64>::open(&path).expect("reopen");
+        let trie = PersistentARTrie::<u64>::open(&path).expect("reopen");
         // "alpha": inserted 11, the dup insert was a no-op (11 retained), then upsert→33.
         assert_eq!(
             MappedDictionary::get_value(&trie, "alpha"),
@@ -1810,7 +1839,7 @@ mod durable_write_tests {
         let dir = scratch("byte-m4a-dval-checkpoint");
         let path = dir.path().join("t.part");
         {
-            let mut trie = PersistentARTrie::<i64>::create(&path).expect("create");
+            let mut trie = PersistentARTrie::<u64>::create(&path).expect("create");
             trie.set_durability_policy(DurabilityPolicy::Immediate);
             trie.enable_lockfree();
             trie.set_overlay_write_mode(OverlayWriteMode::LockFreeOverlay);
@@ -1830,7 +1859,7 @@ mod durable_write_tests {
             // `≤ checkpoint_lsn`, so the reopen below reads the IMAGE, not WAL replay.
             trie.checkpoint().expect("overlay checkpoint");
         }
-        let trie = PersistentARTrie::<i64>::open(&path).expect("reopen");
+        let trie = PersistentARTrie::<u64>::open(&path).expect("reopen");
         assert_eq!(
             MappedDictionary::get_value(&trie, "counter"),
             Some(42),
@@ -1881,8 +1910,12 @@ mod durable_write_tests {
             // A no-op remove (already absent) must NOT append a WAL record / move the
             // watermark.
             let wm_noop = trie.committed_watermark.watermark();
-            assert!(!trie.remove_cas_durable(b"apple").expect("idempotent remove"));
-            assert!(!trie.remove_cas_durable(b"never-present").expect("absent remove"));
+            assert!(!trie
+                .remove_cas_durable(b"apple")
+                .expect("idempotent remove"));
+            assert!(!trie
+                .remove_cas_durable(b"never-present")
+                .expect("absent remove"));
             assert_eq!(
                 trie.committed_watermark.watermark(),
                 wm_noop,
@@ -1901,42 +1934,89 @@ mod durable_write_tests {
         );
     }
 
-    /// **C4 NEGATIVE-REJECT (the byte i64 value-domain guard).** A negative `i64`
-    /// delta/value is REJECTED (not wrapped/panicked) — the overlay counter domain is
-    /// a non-negative i64. Covers the increment, valued-insert, and upsert durable
-    /// paths.
+    /// **C4 VALUE-DOMAIN REJECT (the byte u64 counter domain).** After the u64
+    /// restoration the byte counter is a full `u64`, so the old "negative i64 value"
+    /// reject is reframed to the surviving u64 value-domain rejects, each of which
+    /// must FAIL LOUD (not wrap, not panic):
+    ///
+    /// 1. the durable add-only increment seam (`bound_increment_delta`) rejects a
+    ///    SINGLE delta > `i64::MAX` (the WAL increment domain is one i64 chunk per
+    ///    durable call — a magnitude above i64::MAX is reachable only via the merge
+    ///    chunker / multiple calls, not a single durable delta);
+    /// 2. a below-zero DECREMENT (the PUBLIC `increment` takes a signed `i64`; a
+    ///    negative delta routes to the value-CAS path, which rejects a result < 0);
+    /// 3. a u64 OVERFLOW on the value-CAS path (`u64::MAX + positive`) is rejected.
     #[test]
     fn c4_negative_value_is_rejected_not_wrapped() {
         let dir = scratch("byte-order-a-c4-negative");
         let path = dir.path().join("t.part");
-        let mut trie = PersistentARTrie::<i64>::create(&path).expect("create");
+        let mut trie = PersistentARTrie::<u64>::create(&path).expect("create");
         trie.set_durability_policy(DurabilityPolicy::Immediate);
         trie.enable_lockfree();
         trie.set_overlay_write_mode(OverlayWriteMode::LockFreeOverlay);
 
-        // A negative increment delta must be rejected (the C4 bound), not wrapped.
-        let inc = trie.try_increment_cas_durable(b"neg", -1);
+        // (1) A single durable delta above i64::MAX must be rejected by the seam
+        // (one i64 WAL chunk cannot carry it), not wrapped. `(u64::MAX / 2) + 1`
+        // equals the first u64 that overflows an i64, written WITHOUT a numeric cast
+        // to keep the counter-codec gate clean.
+        let over_i64_delta: u64 = (u64::MAX / 2) + 1;
+        let inc = trie.try_increment_cas_durable(b"big", over_i64_delta);
         assert!(
             inc.is_err(),
-            "a negative i64 increment delta must be rejected (C4), got {:?}",
+            "a single durable delta > i64::MAX must be rejected (C4 i64-WAL-chunk bound), got {:?}",
             inc
         );
-        // A negative valued-insert value must be rejected.
-        assert!(
-            trie.insert_cas_with_value_durable(b"neg", -5).is_err(),
-            "a negative i64 insert value must be rejected (C4)"
+        assert_eq!(
+            MappedDictionary::get_value(&trie, "big"),
+            None,
+            "the rejected over-i64 delta left no durable record"
         );
-        // A negative upsert value must be rejected.
-        assert!(
-            trie.upsert_cas_durable(b"neg", -7).is_err(),
-            "a negative i64 upsert value must be rejected (C4)"
+
+        // (2) A below-zero decrement via the PUBLIC signed `increment` must be
+        // rejected (the value-CAS path refuses a result < 0), not wrapped.
+        assert_eq!(
+            trie.increment_bytes(b"ctr", 5).expect("seed +5"),
+            5,
+            "seed the counter to 5"
         );
-        // None of the rejected writes left a durable record: the key never became
-        // present, and a reopen sees nothing (no panic, no wrap, no partial state).
-        assert_eq!(MappedDictionary::get_value(&trie, "neg"), None);
+        let dec = trie.increment_bytes(b"ctr", -10);
+        assert!(
+            dec.is_err(),
+            "a decrement below zero must be rejected (no u64 underflow wrap), got {:?}",
+            dec
+        );
+        assert_eq!(
+            trie.get_value_bytes(b"ctr"),
+            Some(5),
+            "the rejected below-zero decrement left the counter unchanged"
+        );
+
+        // (3) A u64 overflow on the value-CAS path must be rejected (not wrapped).
+        trie.upsert_cas_durable(b"max", u64::MAX)
+            .expect("set u64::MAX");
+        let over = trie.increment_bytes(b"max", 1);
+        assert!(
+            over.is_err(),
+            "incrementing past u64::MAX must be rejected (no wrap), got {:?}",
+            over
+        );
+        assert_eq!(
+            trie.get_value_bytes(b"max"),
+            Some(u64::MAX),
+            "the rejected u64 overflow left the counter at u64::MAX"
+        );
+
         // A non-negative increment still works (the bound passes 0 and positives).
-        assert_eq!(trie.try_increment_cas_durable(b"pos", 0).expect("zero delta"), 0);
-        assert_eq!(trie.try_increment_cas_durable(b"pos", 5).expect("pos delta"), 5);
+        assert_eq!(
+            trie.try_increment_cas_durable(b"pos", 0)
+                .expect("zero delta"),
+            0
+        );
+        assert_eq!(
+            trie.try_increment_cas_durable(b"pos", 5)
+                .expect("pos delta"),
+            5
+        );
     }
 
     /// The durable entry points reject a non-synchronous durability policy (an
@@ -1945,7 +2025,7 @@ mod durable_write_tests {
     fn durable_writes_reject_non_synchronous_policy() {
         let dir = scratch("byte-order-a-reject");
         let path = dir.path().join("t.part");
-        let mut trie = PersistentARTrie::<i64>::create(&path).expect("create");
+        let mut trie = PersistentARTrie::<u64>::create(&path).expect("create");
         trie.set_durability_policy(DurabilityPolicy::None);
         trie.enable_lockfree();
         trie.set_overlay_write_mode(OverlayWriteMode::LockFreeOverlay);
@@ -2080,7 +2160,8 @@ mod m2d_regime_aware_recovery_tests {
             trie.set_overlay_write_mode(OverlayWriteMode::LockFreeOverlay);
             // RANKED survivor: insert_cas_durable appends Insert + CommitRank (acked).
             assert!(
-                trie.insert_cas_durable(b"survivor").expect("durable insert"),
+                trie.insert_cas_durable(b"survivor")
+                    .expect("durable insert"),
                 "survivor is a new term"
             );
             // Durable UNRANKED orphan: a raw Insert with NO following CommitRank —
@@ -2200,7 +2281,7 @@ mod m2d_regime_aware_recovery_tests {
             assert!(trie.remove("a"), "remove present a");
             assert!(trie.remove("gone"), "remove present gone");
             trie.insert("a"); // …a re-inserted at the highest LSN ⇒ final PRESENT.
-            // gone stays removed ⇒ final ABSENT.
+                              // gone stays removed ⇒ final ABSENT.
         }
         let recovered = PersistentARTrie::<()>::open(&path).expect("reopen");
         assert!(
@@ -2224,7 +2305,7 @@ mod m2d_regime_aware_recovery_tests {
         let dir = scratch("byte-m2d-test-e");
         let path = dir.path().join("t.part");
         {
-            let mut trie = PersistentARTrie::<i64>::create(&path).expect("create");
+            let mut trie = PersistentARTrie::<u64>::create(&path).expect("create");
             trie.set_durability_policy(DurabilityPolicy::Immediate);
             trie.enable_lockfree();
             trie.set_overlay_write_mode(OverlayWriteMode::LockFreeOverlay);
@@ -2235,7 +2316,7 @@ mod m2d_regime_aware_recovery_tests {
             }
             // DROP WITHOUT CHECKPOINT.
         }
-        let recovered = PersistentARTrie::<i64>::open(&path).expect("reopen");
+        let recovered = PersistentARTrie::<u64>::open(&path).expect("reopen");
         assert_eq!(
             MappedDictionary::get_value(&recovered, "ctr"),
             Some(21),
@@ -2276,33 +2357,35 @@ mod m4b_flip_gate_tests {
     }
 
     /// **(a) create → durable VALUED write → reopen, no loss / no double-count.** A
-    /// fresh `create::<i64>()` create-flips (`route_overlay()==true`); durable valued
+    /// fresh `create::<u64>()` create-flips (`route_overlay()==true`); durable valued
     /// writes + a checkpoint; reopen MUST survive with exact counts via the overlay
     /// (the AUTOMATIC open-flip + reestablish in `open`). The membership (`V=()`) twin
     /// is also covered.
     #[test]
     fn m4b_create_durable_valued_write_reopen_survives() {
-        // Counters (V = i64).
+        // Counters (V = u64).
         {
-            let dir = scratch("byte-m4b-rw-i64");
+            let dir = scratch("byte-m4b-rw-u64");
             let path = dir.path().join("t.part");
-            let entries: Vec<(Vec<u8>, i64)> =
-                (0..40i64).map(|i| (format!("k{i:03}").into_bytes(), i + 1)).collect();
+            let entries: Vec<(Vec<u8>, u64)> = (0..40u64)
+                .map(|i| (format!("k{i:03}").into_bytes(), i + 1))
+                .collect();
             {
-                let trie = PersistentARTrie::<i64>::create(&path).expect("create<i64>");
+                let trie = PersistentARTrie::<u64>::create(&path).expect("create<u64>");
                 trie.set_durability_policy(DurabilityPolicy::Immediate);
-                assert!(trie.route_overlay(), "fresh create<i64> is overlay-routed");
+                assert!(trie.route_overlay(), "fresh create<u64> is overlay-routed");
                 for (k, d) in &entries {
                     // Durable valued insert (overlay path). Distinct values per key so a
                     // double or drop is detectable.
                     assert!(
-                        trie.insert_cas_with_value_durable(k, *d).expect("durable valued insert"),
+                        trie.insert_cas_with_value_durable(k, *d)
+                            .expect("durable valued insert"),
                         "first valued insert of {k:?} must be newly inserted"
                     );
                 }
                 trie.checkpoint().expect("overlay checkpoint (route-split)");
             }
-            let recovered = PersistentARTrie::<i64>::open(&path).expect("reopen<i64>");
+            let recovered = PersistentARTrie::<u64>::open(&path).expect("reopen<u64>");
             assert!(
                 recovered.route_overlay(),
                 "an Overlay-regime file must reopen overlay-routed (D-SINK-2)"
@@ -2319,22 +2402,27 @@ mod m4b_flip_gate_tests {
         {
             let dir = scratch("byte-m4b-rw-unit");
             let path = dir.path().join("t.part");
-            let terms: Vec<Vec<u8>> =
-                (0..40u32).map(|i| format!("term{i:03}").into_bytes()).collect();
+            let terms: Vec<Vec<u8>> = (0..40u32)
+                .map(|i| format!("term{i:03}").into_bytes())
+                .collect();
             {
                 let trie = PersistentARTrie::<()>::create(&path).expect("create<()>");
                 trie.set_durability_policy(DurabilityPolicy::Immediate);
                 assert!(trie.route_overlay(), "fresh create<()> is overlay-routed");
                 for t in &terms {
                     assert!(
-                        trie.insert_cas_durable(t).expect("durable membership insert"),
+                        trie.insert_cas_durable(t)
+                            .expect("durable membership insert"),
                         "first durable insert of {t:?} must be newly inserted"
                     );
                 }
                 trie.checkpoint().expect("overlay checkpoint");
             }
             let recovered = PersistentARTrie::<()>::open(&path).expect("reopen<()>");
-            assert!(recovered.route_overlay(), "() Overlay file reopens overlay-routed");
+            assert!(
+                recovered.route_overlay(),
+                "() Overlay file reopens overlay-routed"
+            );
             for t in &terms {
                 assert!(
                     recovered.contains_bytes(t),
@@ -2391,7 +2479,7 @@ mod m4b_flip_gate_tests {
             let dir = scratch("byte-m4b-owned-i64-ks");
             let path = dir.path().join("t.part");
             {
-                let trie = PersistentARTrie::<i64>::create(&path).expect("create<i64>");
+                let trie = PersistentARTrie::<u64>::create(&path).expect("create<u64>");
                 // kill-switch restamps the fresh WAL Owned ⇒ reopen stays Owned.
                 trie.kill_switch_to_owned();
                 assert!(!trie.route_overlay(), "kill-switch reverts to owned");
@@ -2399,17 +2487,25 @@ mod m4b_flip_gate_tests {
                 trie.upsert_bytes(b"beta", 11).expect("owned upsert");
                 trie.checkpoint().expect("owned checkpoint");
             }
-            let recovered = PersistentARTrie::<i64>::open(&path).expect("reopen<i64>");
+            let recovered = PersistentARTrie::<u64>::open(&path).expect("reopen<u64>");
             assert!(
                 !recovered.route_overlay(),
                 "a kill-switched (Owned-regime) i64 file must STAY owned on reopen"
             );
-            assert_eq!(recovered.get_value_bytes(b"alpha"), Some(7), "owned alpha intact");
-            assert_eq!(recovered.get_value_bytes(b"beta"), Some(11), "owned beta intact");
+            assert_eq!(
+                recovered.get_value_bytes(b"alpha"),
+                Some(7),
+                "owned alpha intact"
+            );
+            assert_eq!(
+                recovered.get_value_bytes(b"beta"),
+                Some(11),
+                "owned beta intact"
+            );
         }
     }
 
-    /// **(c) `compact()` SUCCEEDS under the overlay (F6).** A fresh `create::<i64>()`
+    /// **(c) `compact()` SUCCEEDS under the overlay (F6).** A fresh `create::<u64>()`
     /// flips; `compact()` now sources the snapshot from the overlay (enumeration AND
     /// values), rebuilds a dense owned image, and RE-FLIPS to preserve the overlay
     /// regime — data and routing survive. The kill-switched owned twin succeeds via the
@@ -2420,8 +2516,8 @@ mod m4b_flip_gate_tests {
         {
             let dir = scratch("byte-m4b-compact-overlay");
             let path = dir.path().join("t.part");
-            let mut trie = PersistentARTrie::<i64>::create(&path).expect("create<i64>");
-            assert!(trie.route_overlay(), "fresh create<i64> is overlay-routed");
+            let mut trie = PersistentARTrie::<u64>::create(&path).expect("create<u64>");
+            assert!(trie.route_overlay(), "fresh create<u64> is overlay-routed");
             trie.increment_bytes(b"seed", 1).expect("seed");
             trie.compact(CompactionConfig::default(), |_| {})
                 .expect("F6: compact succeeds under the overlay");
@@ -2439,7 +2535,7 @@ mod m4b_flip_gate_tests {
         {
             let dir = scratch("byte-m4b-compact-owned");
             let path = dir.path().join("t.part");
-            let mut trie = PersistentARTrie::<i64>::create(&path).expect("create<i64>");
+            let mut trie = PersistentARTrie::<u64>::create(&path).expect("create<u64>");
             trie.kill_switch_to_owned();
             trie.upsert_bytes(b"alpha", 1).expect("owned upsert");
             trie.upsert_bytes(b"beta", 2).expect("owned upsert");
@@ -2478,10 +2574,15 @@ mod m4b_flip_gate_tests {
                 let key = format!("a{i:05x}");
                 trie.insert_cas(key.as_bytes());
             }
-            assert_eq!(trie.overlay_len(), N as usize, "all N terms resident pre-checkpoint");
+            assert_eq!(
+                trie.overlay_len(),
+                N as usize,
+                "all N terms resident pre-checkpoint"
+            );
             // Checkpoint folds the overlay into the durable image (so the reopen reads
             // them from the image into the owned tree, then reestablishes).
-            trie.checkpoint().expect("overlay checkpoint of the 100k partition");
+            trie.checkpoint()
+                .expect("overlay checkpoint of the 100k partition");
         }
         let recovered = PersistentARTrie::<()>::open(&path).expect("reopen<()>");
         assert!(
@@ -2496,7 +2597,10 @@ mod m4b_flip_gate_tests {
             "reestablish must reproduce ALL {N} terms (H2: no capped-enumerator tail drop)"
         );
         // Spot-check the first, a middle, and the LAST term (the tail is the H2 risk).
-        assert!(recovered.contains_bytes(format!("a{:05x}", 0u32).as_bytes()), "first term lost");
+        assert!(
+            recovered.contains_bytes(format!("a{:05x}", 0u32).as_bytes()),
+            "first term lost"
+        );
         assert!(
             recovered.contains_bytes(format!("a{:05x}", N / 2).as_bytes()),
             "middle term lost"
@@ -2507,27 +2611,32 @@ mod m4b_flip_gate_tests {
         );
     }
 
-    /// **(d′) reestablish-survival for COUNTERS (i64) with exact summed values.** The
-    /// value-carrying twin of (d): a moderately-sized flipped i64 overlay, durable
+    /// **(d′) reestablish-survival for COUNTERS (u64) with exact summed values.** The
+    /// value-carrying twin of (d): a moderately-sized flipped u64 overlay, durable
     /// valued writes + checkpoint, reopen → `reestablish_overlay_counter` must reproduce
     /// EVERY (term, count) exactly (the `owned_units_with_values_under` uncapped walk).
     #[test]
     fn m4b_reestablish_survival_counter_values() {
         let dir = scratch("byte-m4b-reestablish-ctr");
         let path = dir.path().join("t.part");
-        let entries: Vec<(Vec<u8>, i64)> =
-            (0..500i64).map(|i| (format!("c{i:04}").into_bytes(), (i % 97) + 1)).collect();
+        let entries: Vec<(Vec<u8>, u64)> = (0..500u64)
+            .map(|i| (format!("c{i:04}").into_bytes(), (i % 97) + 1))
+            .collect();
         {
-            let trie = PersistentARTrie::<i64>::create(&path).expect("create<i64>");
+            let trie = PersistentARTrie::<u64>::create(&path).expect("create<u64>");
             trie.set_durability_policy(DurabilityPolicy::Immediate);
             assert!(trie.route_overlay());
             for (k, d) in &entries {
-                trie.insert_cas_with_value_durable(k, *d).expect("durable valued insert");
+                trie.insert_cas_with_value_durable(k, *d)
+                    .expect("durable valued insert");
             }
             trie.checkpoint().expect("overlay checkpoint");
         }
-        let recovered = PersistentARTrie::<i64>::open(&path).expect("reopen<i64>");
-        assert!(recovered.route_overlay(), "counter Overlay file reopens overlay-routed");
+        let recovered = PersistentARTrie::<u64>::open(&path).expect("reopen<u64>");
+        assert!(
+            recovered.route_overlay(),
+            "counter Overlay file reopens overlay-routed"
+        );
         assert_eq!(
             recovered.overlay_len(),
             entries.len(),
@@ -2557,20 +2666,25 @@ mod m4b_flip_gate_tests {
         let dir = scratch("byte-es-valued-ckpt");
         let path = dir.path().join("t.part");
         {
-            let trie = PersistentARTrie::<i64>::create(&path).expect("create<i64>");
+            let trie = PersistentARTrie::<u64>::create(&path).expect("create<u64>");
             trie.set_durability_policy(DurabilityPolicy::Immediate);
             assert!(trie.route_overlay());
             assert!(
-                trie.insert_cas_with_value_durable(b"", 42).expect("valued insert \"\""),
+                trie.insert_cas_with_value_durable(b"", 42)
+                    .expect("valued insert \"\""),
                 "valued insert of \"\" must be newly inserted"
             );
             // A couple of non-empty terms so "" coexists with children.
             trie.insert_cas_with_value_durable(b"a", 1).expect("a");
             trie.insert_cas_with_value_durable(b"bc", 2).expect("bc");
-            assert_eq!(trie.get_value_bytes(b""), Some(42), "\"\" readable pre-checkpoint");
+            assert_eq!(
+                trie.get_value_bytes(b""),
+                Some(42),
+                "\"\" readable pre-checkpoint"
+            );
             trie.checkpoint().expect("overlay checkpoint");
         }
-        let recovered = PersistentARTrie::<i64>::open(&path).expect("reopen<i64>");
+        let recovered = PersistentARTrie::<u64>::open(&path).expect("reopen<u64>");
         assert!(recovered.route_overlay());
         assert_eq!(
             recovered.get_value_bytes(b""),
@@ -2588,12 +2702,13 @@ mod m4b_flip_gate_tests {
         let dir = scratch("byte-es-valued-wal");
         let path = dir.path().join("t.part");
         {
-            let trie = PersistentARTrie::<i64>::create(&path).expect("create<i64>");
+            let trie = PersistentARTrie::<u64>::create(&path).expect("create<u64>");
             trie.set_durability_policy(DurabilityPolicy::Immediate);
-            trie.insert_cas_with_value_durable(b"", 7).expect("valued insert \"\"");
+            trie.insert_cas_with_value_durable(b"", 7)
+                .expect("valued insert \"\"");
             // NO checkpoint — durability rests on WAL replay.
         }
-        let recovered = PersistentARTrie::<i64>::open(&path).expect("reopen<i64>");
+        let recovered = PersistentARTrie::<u64>::open(&path).expect("reopen<u64>");
         assert_eq!(
             recovered.get_value_bytes(b""),
             Some(7),
@@ -2611,7 +2726,9 @@ mod m4b_flip_gate_tests {
         {
             let trie = PersistentARTrie::<()>::create(&path).expect("create<()>");
             trie.set_durability_policy(DurabilityPolicy::Immediate);
-            assert!(trie.insert_cas_durable(b"").expect("membership insert \"\""));
+            assert!(trie
+                .insert_cas_durable(b"")
+                .expect("membership insert \"\""));
             trie.insert_cas_durable(b"x").expect("x");
             assert!(trie.contains_bytes(b""), "\"\" member pre-checkpoint");
             trie.checkpoint().expect("overlay checkpoint");
@@ -2632,16 +2749,18 @@ mod m4b_flip_gate_tests {
         let dir = scratch("byte-es-increment");
         let path = dir.path().join("t.part");
         {
-            let trie = PersistentARTrie::<i64>::create(&path).expect("create<i64>");
+            let trie = PersistentARTrie::<u64>::create(&path).expect("create<u64>");
             trie.set_durability_policy(DurabilityPolicy::Immediate);
             let mut last = 0;
             for _ in 0..5 {
-                last = trie.try_increment_cas_durable(b"", 3).expect("increment \"\"");
+                last = trie
+                    .try_increment_cas_durable(b"", 3)
+                    .expect("increment \"\"");
             }
             assert_eq!(last, 15, "5×3 increments of \"\" accumulate to 15");
             trie.checkpoint().expect("overlay checkpoint");
         }
-        let recovered = PersistentARTrie::<i64>::open(&path).expect("reopen<i64>");
+        let recovered = PersistentARTrie::<u64>::open(&path).expect("reopen<u64>");
         assert_eq!(
             recovered.get_value_bytes(b""),
             Some(15),
@@ -2660,7 +2779,10 @@ mod m4b_flip_gate_tests {
             trie.set_durability_policy(DurabilityPolicy::Immediate);
             assert!(trie.insert_cas_durable(b"").expect("insert \"\""));
             assert!(trie.contains_bytes(b""), "\"\" present after insert");
-            assert!(trie.remove_cas_durable(b"").expect("remove \"\""), "remove cleared \"\"");
+            assert!(
+                trie.remove_cas_durable(b"").expect("remove \"\""),
+                "remove cleared \"\""
+            );
             assert!(!trie.contains_bytes(b""), "\"\" absent after remove");
             trie.checkpoint().expect("overlay checkpoint");
         }
@@ -2680,15 +2802,16 @@ mod m4b_flip_gate_tests {
         let dir = scratch("byte-es-owned");
         let path = dir.path().join("t.part");
         {
-            let trie = PersistentARTrie::<i64>::create(&path).expect("create<i64>");
+            let trie = PersistentARTrie::<u64>::create(&path).expect("create<u64>");
             trie.kill_switch_to_owned();
             assert!(!trie.route_overlay(), "kill-switched → owned");
-            trie.upsert_bytes(b"", 88).expect("owned valued upsert \"\"");
+            trie.upsert_bytes(b"", 88)
+                .expect("owned valued upsert \"\"");
             trie.upsert_bytes(b"k", 9).expect("owned upsert k");
             assert_eq!(trie.get_value_bytes(b""), Some(88));
             trie.checkpoint().expect("owned checkpoint");
         }
-        let recovered = PersistentARTrie::<i64>::open(&path).expect("reopen<i64>");
+        let recovered = PersistentARTrie::<u64>::open(&path).expect("reopen<u64>");
         assert_eq!(
             recovered.get_value_bytes(b""),
             Some(88),
@@ -2705,15 +2828,24 @@ mod m4b_flip_gate_tests {
         let dir = scratch("byte-es-backcompat");
         let path = dir.path().join("t.part");
         {
-            let trie = PersistentARTrie::<i64>::create(&path).expect("create<i64>");
+            let trie = PersistentARTrie::<u64>::create(&path).expect("create<u64>");
             trie.set_durability_policy(DurabilityPolicy::Immediate);
-            trie.insert_cas_with_value_durable(b"alpha", 1).expect("alpha");
-            trie.insert_cas_with_value_durable(b"beta", 2).expect("beta");
+            trie.insert_cas_with_value_durable(b"alpha", 1)
+                .expect("alpha");
+            trie.insert_cas_with_value_durable(b"beta", 2)
+                .expect("beta");
             trie.checkpoint().expect("overlay checkpoint");
         }
-        let recovered = PersistentARTrie::<i64>::open(&path).expect("reopen<i64>");
-        assert_eq!(recovered.get_value_bytes(b""), None, "absent \"\" must read None");
-        assert!(!recovered.contains_bytes(b""), "absent \"\" must not be a member");
+        let recovered = PersistentARTrie::<u64>::open(&path).expect("reopen<u64>");
+        assert_eq!(
+            recovered.get_value_bytes(b""),
+            None,
+            "absent \"\" must read None"
+        );
+        assert!(
+            !recovered.contains_bytes(b""),
+            "absent \"\" must not be a member"
+        );
         assert_eq!(recovered.get_value_bytes(b"alpha"), Some(1));
         assert_eq!(recovered.get_value_bytes(b"beta"), Some(2));
     }
@@ -2726,10 +2858,16 @@ mod m4b_flip_gate_tests {
         use std::sync::Arc;
         let dir = scratch("byte-es-concurrent");
         let path = dir.path().join("t.part");
-        let threads = 4;
-        let per_thread = 25;
+        let threads: usize = 4;
+        let per_thread: usize = 25;
+        // Expected final count as the native u64 counter type. Declared with u64
+        // literals (NOT a numeric cast of the usize loop bounds) so no numeric cast
+        // appears in this file — keeps the v6 counter-codec gate clean.
+        let threads_u64: u64 = 4;
+        let per_thread_u64: u64 = 25;
+        let expected_sum: u64 = threads_u64 * per_thread_u64;
         {
-            let trie = PersistentARTrie::<i64>::create(&path).expect("create<i64>");
+            let trie = PersistentARTrie::<u64>::create(&path).expect("create<u64>");
             trie.set_durability_policy(DurabilityPolicy::Immediate);
             let trie = Arc::new(trie);
             let mut handles = Vec::with_capacity(threads);
@@ -2737,7 +2875,8 @@ mod m4b_flip_gate_tests {
                 let t = Arc::clone(&trie);
                 handles.push(std::thread::spawn(move || {
                     for _ in 0..per_thread {
-                        t.try_increment_cas_durable(b"", 1).expect("concurrent increment \"\"");
+                        t.try_increment_cas_durable(b"", 1)
+                            .expect("concurrent increment \"\"");
                     }
                 }));
             }
@@ -2746,17 +2885,19 @@ mod m4b_flip_gate_tests {
             }
             assert_eq!(
                 trie.get_value_bytes(b""),
-                Some((threads * per_thread) as i64),
+                Some(expected_sum),
                 "concurrent \"\" increments lost an update (fresh-root-CAS RMW must not)"
             );
             // All thread clones dropped on join → sole owner; unwrap for &mut checkpoint.
-            let trie = Arc::try_unwrap(trie).ok().expect("sole Arc owner after joins");
+            let trie = Arc::try_unwrap(trie)
+                .ok()
+                .expect("sole Arc owner after joins");
             trie.checkpoint().expect("overlay checkpoint");
         }
-        let recovered = PersistentARTrie::<i64>::open(&path).expect("reopen<i64>");
+        let recovered = PersistentARTrie::<u64>::open(&path).expect("reopen<u64>");
         assert_eq!(
             recovered.get_value_bytes(b""),
-            Some((threads * per_thread) as i64),
+            Some(expected_sum),
             "concurrent \"\" count lost across reopen"
         );
     }
@@ -2770,14 +2911,19 @@ mod m4b_flip_gate_tests {
         use crate::persistent_artrie_core::overlay::flip::LockFreeOverlay;
         let dir = scratch("byte-es-compaction");
         let path = dir.path().join("t.part");
-        let mut trie = PersistentARTrie::<i64>::create(&path).expect("create<i64>");
+        let mut trie = PersistentARTrie::<u64>::create(&path).expect("create<u64>");
         trie.kill_switch_to_owned();
         assert!(!trie.route_overlay(), "compact() requires owned mode");
         trie.upsert_bytes(b"", 42).expect("owned valued \"\"");
         trie.upsert_bytes(b"alpha", 1).expect("alpha");
         trie.upsert_bytes(b"beta", 2).expect("beta");
-        trie.compact(CompactionConfig::default(), |_| {}).expect("compact");
-        assert_eq!(trie.get_value_bytes(b""), Some(42), "\"\" value lost in compaction (H8)");
+        trie.compact(CompactionConfig::default(), |_| {})
+            .expect("compact");
+        assert_eq!(
+            trie.get_value_bytes(b""),
+            Some(42),
+            "\"\" value lost in compaction (H8)"
+        );
         assert_eq!(trie.get_value_bytes(b"alpha"), Some(1));
         assert_eq!(trie.get_value_bytes(b"beta"), Some(2));
     }
@@ -2792,12 +2938,14 @@ mod m4b_flip_gate_tests {
         use crate::persistent_artrie_core::overlay::flip::LockFreeOverlay;
         let dir = scratch("byte-es-split");
         let path = dir.path().join("t.part");
-        let trie = PersistentARTrie::<i64>::create(&path).expect("create<i64>");
+        let trie = PersistentARTrie::<u64>::create(&path).expect("create<u64>");
         trie.kill_switch_to_owned();
         trie.upsert_bytes(b"", 99).expect("owned valued \"\"");
-        // Enough distinct terms to overflow the root bucket → ART split.
-        for i in 0..256u32 {
-            trie.upsert_bytes(format!("k{i:04}").as_bytes(), i as i64 + 1)
+        // Enough distinct terms to overflow the root bucket → ART split. Iterate
+        // `i` over a u64 range so the value `i + 1` is the native counter type with no
+        // numeric cast (keeps the v6 counter-codec gate clean).
+        for i in 0..256u64 {
+            trie.upsert_bytes(format!("k{i:04}").as_bytes(), i + 1)
                 .expect("term");
         }
         assert_eq!(

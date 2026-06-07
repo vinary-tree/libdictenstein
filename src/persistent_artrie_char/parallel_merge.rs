@@ -14,7 +14,6 @@
 
 #![cfg(feature = "parallel-merge")]
 
-
 use rayon::prelude::*;
 
 use crate::persistent_artrie::block_storage::BlockStorage;

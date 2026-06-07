@@ -68,7 +68,11 @@ fn e1_membership_reads_correspond_overlay_vs_owned() {
 
     // Counts.
     assert_eq!(owned.len(), overlay.len(), "len mismatch");
-    assert_eq!(owned.len(), MEMBERSHIP_TERMS.len(), "len should be term count");
+    assert_eq!(
+        owned.len(),
+        MEMBERSHIP_TERMS.len(),
+        "len should be term count"
+    );
     assert_eq!(owned.is_empty(), overlay.is_empty(), "is_empty mismatch");
     assert!(!overlay.is_empty());
 
@@ -103,7 +107,10 @@ fn e1_membership_reads_correspond_overlay_vs_owned() {
         .into_iter()
         .collect();
     let expected: BTreeSet<String> = MEMBERSHIP_TERMS.iter().map(|s| s.to_string()).collect();
-    assert_eq!(all, expected, "iter_prefix(\"\") must equal the full term set");
+    assert_eq!(
+        all, expected,
+        "iter_prefix(\"\") must equal the full term set"
+    );
 }
 
 /// `V = u64` counters: overlay reads must equal owned reads for `get_value` and
@@ -131,7 +138,10 @@ fn e1_counter_reads_correspond_overlay_vs_owned() {
     }
 
     let overlay = PersistentARTrieChar::<u64>::create(&overlay_path).expect("create overlay");
-    assert!(overlay.route_overlay(), "u64 create must route to the overlay");
+    assert!(
+        overlay.route_overlay(),
+        "u64 create must route to the overlay"
+    );
     for (t, v) in &entries {
         overlay.upsert(t, *v).expect("overlay upsert");
     }
@@ -181,7 +191,9 @@ fn e1_deep_key_overlay_reads_no_stack_overflow() {
     let overlay = PersistentARTrieChar::<u64>::create(&path).expect("create");
     assert!(overlay.route_overlay());
     overlay.upsert(&deep, 11).expect("deep insert");
-    overlay.upsert(&deep_unicode, 22).expect("deep unicode insert");
+    overlay
+        .upsert(&deep_unicode, 22)
+        .expect("deep unicode insert");
 
     // Count / membership / value walks at depth 500 must not overflow.
     assert_eq!(overlay.len(), 2);

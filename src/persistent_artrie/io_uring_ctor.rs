@@ -102,7 +102,9 @@ impl<V: DictionaryValue> PersistentARTrie<V, IoUringDiskManager> {
             next_lsn: std::sync::atomic::AtomicU64::new(1),
             prefetcher: super::prefetch::Prefetcher::new(),
             arena_manager: Some(arena_manager),
-            durability_policy: crate::persistent_artrie_core::shared_access::AtomicEnumCell::new(DurabilityPolicy::default()),
+            durability_policy: crate::persistent_artrie_core::shared_access::AtomicEnumCell::new(
+                DurabilityPolicy::default(),
+            ),
             epoch_manager: super::concurrency::EpochManager::new(),
             stats: Arc::new(super::concurrency::TrieStats::new()),
             eviction_coordinator: std::sync::Mutex::new(None),
@@ -275,7 +277,11 @@ impl<V: DictionaryValue> PersistentARTrie<V, IoUringDiskManager> {
         };
         let use_f5 = {
             use crate::persistent_artrie_core::overlay::flip::LockFreeOverlay;
-            <Self as LockFreeOverlay<crate::persistent_artrie_core::key_encoding::ByteKey, V, IoUringDiskManager>>::USE_F5_REOPEN_LOADER
+            <Self as LockFreeOverlay<
+                crate::persistent_artrie_core::key_encoding::ByteKey,
+                V,
+                IoUringDiskManager,
+            >>::USE_F5_REOPEN_LOADER
                 && rank_regime == crate::persistent_artrie_core::wal::RankRegime::Overlay
                 && Self::overlay_eligible_v()
         };
@@ -298,7 +304,9 @@ impl<V: DictionaryValue> PersistentARTrie<V, IoUringDiskManager> {
             next_lsn: std::sync::atomic::AtomicU64::new(next_lsn),
             prefetcher: super::prefetch::Prefetcher::new(),
             arena_manager: Some(arena_manager),
-            durability_policy: crate::persistent_artrie_core::shared_access::AtomicEnumCell::new(DurabilityPolicy::default()),
+            durability_policy: crate::persistent_artrie_core::shared_access::AtomicEnumCell::new(
+                DurabilityPolicy::default(),
+            ),
             epoch_manager: super::concurrency::EpochManager::new(),
             stats: Arc::new(super::concurrency::TrieStats::new()),
             eviction_coordinator: std::sync::Mutex::new(None),

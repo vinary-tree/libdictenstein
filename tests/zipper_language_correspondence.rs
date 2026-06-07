@@ -524,7 +524,7 @@ mod persistent {
     use libdictenstein::persistent_artrie_char::{
         PersistentARTrieChar, PersistentARTrieCharZipper,
     };
-    
+
     use std::sync::Arc;
 
     #[test]

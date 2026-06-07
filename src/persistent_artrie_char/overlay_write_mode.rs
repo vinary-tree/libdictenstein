@@ -111,7 +111,10 @@ impl<V: DictionaryValue, S: BlockStorage> LockFreeOverlay<CharKey, V, S>
     fn wal_stamp_owned_regime(&self) {
         if let Some(ref writer) = self.wal_writer {
             if let Err(e) = writer.set_owned_regime() {
-                log::warn!("kill_switch_to_owned: could not stamp Owned regime: {:?}", e);
+                log::warn!(
+                    "kill_switch_to_owned: could not stamp Owned regime: {:?}",
+                    e
+                );
             }
         }
     }
@@ -162,10 +165,7 @@ impl<V: DictionaryValue, S: BlockStorage> LockFreeOverlay<CharKey, V, S>
         }))
     }
 
-    fn owned_units_with_values_under(
-        &self,
-        prefix: &[u32],
-    ) -> Result<Option<Vec<(Vec<u32>, V)>>> {
+    fn owned_units_with_values_under(&self, prefix: &[u32]) -> Result<Option<Vec<(Vec<u32>, V)>>> {
         // D1: UN-routed owned reader.
         let prefix_str = CharKey::units_to_term(prefix);
         Ok(self
@@ -338,20 +338,20 @@ impl<V: DictionaryValue, S: BlockStorage> DurableOverlayWrite<CharKey, V, S>
         self.committed_watermark.mark_committed(lsn);
     }
 
-    // ---- increment value-domain seam (char `u64`; byte will reject negative i64) ----
+    // ---- increment value-domain seam (counter `u64`; byte + char identical) ----
 
     fn bound_increment_delta(&self, key: &str, delta: u64) -> Result<i64> {
-        // Byte-identical to the char `try_increment_cas_durable` up-front bound:
-        // reject > LOCKFREE_COUNTER_MAX, then `i64::try_from` into the WAL delta
-        // domain (the WAL increment domain is `i64` for every variant).
-        if delta > super::lockfree_cas::LOCKFREE_COUNTER_MAX {
-            return Err(super::PersistentARTrieChar::<u64, S>::lockfree_increment_overflow_error(
-                key, None, delta,
-            ));
-        }
+        // A SINGLE durable `BatchIncrement` delta is carried in ONE `i64` WAL chunk,
+        // so a `delta > i64::MAX` cannot be logged by one durable call (a magnitude
+        // above `i64::MAX` is reachable via the merge chunker
+        // `split_u64_delta_to_i64_chunks` or multiple durable increments, NOT a single
+        // delta). The former `delta > LOCKFREE_COUNTER_MAX` check is gone (vacuous now
+        // that `LOCKFREE_COUNTER_MAX == u64::MAX`); the `i64::try_from` reject IS the
+        // real per-call WAL-delta-domain bound — FAIL LOUD rather than wrap.
         i64::try_from(delta).map_err(|_| {
             crate::persistent_artrie_core::error::PersistentARTrieError::InvalidOperation(format!(
-                "try_increment_cas_durable delta for term {:?} exceeds i64 persistence domain: {}",
+                "try_increment_cas_durable delta for term {:?} exceeds the i64 per-call WAL delta \
+                 domain: {}",
                 key, delta
             ))
         })
@@ -553,7 +553,10 @@ impl<V: DictionaryValue, S: BlockStorage> OverlayCheckpoint<CharKey, V, S>
 
     #[inline]
     fn has_eviction_coordinator(&self) -> bool {
-        self.eviction_coordinator.lock().expect("eviction_coordinator mutex poisoned").is_some()
+        self.eviction_coordinator
+            .lock()
+            .expect("eviction_coordinator mutex poisoned")
+            .is_some()
     }
 
     #[inline]

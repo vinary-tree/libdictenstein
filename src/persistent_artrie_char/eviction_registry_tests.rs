@@ -21,9 +21,9 @@ use parking_lot::RwLock;
 use crate::artrie_trait::{ARTrie, EvictableARTrie};
 use crate::persistent_artrie::eviction::{EvictionConfig, EvictionUrgency};
 // F4: the `.read()/.write()` compat shim on the collapsed handle.
-use crate::persistent_artrie_core::shared_access::SharedTrieAccess;
 use crate::persistent_artrie_char::types::{CharTrieNodeInner, CharTrieRoot};
 use crate::persistent_artrie_char::SharedCharARTrie;
+use crate::persistent_artrie_core::shared_access::SharedTrieAccess;
 use crate::MutableMappedDictionary;
 
 /// Insert via the explicit `MutableMappedDictionary` method (both it and `ARTrie`

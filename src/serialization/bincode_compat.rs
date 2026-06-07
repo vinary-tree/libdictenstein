@@ -8,9 +8,14 @@
 //! can migrate one call-site at a time without re-architecting the
 //! error chain.
 //!
-//! The default config is `bincode::config::standard()`, which matches
-//! the bincode 1.x wire format closely (little-endian, varint length
-//! prefixes, default-strict trailing-bytes check).
+//! The config used everywhere here is `bincode::config::legacy()`, which
+//! is **fixed-int little-endian** (NOT `standard()`'s varint encoding):
+//! every integer is written as its full little-endian byte image (a `u64`/
+//! `i64` is exactly 8 LE bytes), with the bincode-1.x default-strict
+//! trailing-bytes check. This fixint-LE layout is load-bearing for the
+//! persistent ART-trie counter leaf, which the `counter_codec` module
+//! decodes as exactly 8 little-endian bytes (so a non-negative `u64` and
+//! an `i64` of the same value are byte-identical on disk).
 
 #![cfg(feature = "serialization")]
 

@@ -76,11 +76,10 @@ fn f4_lock_collapse_soak_no_deadlock_no_lost_write() {
             while !stop.load(Ordering::Relaxed) {
                 let term = format!("w{w}-{i:08}");
                 // `insert_with_value` is now `&self` (collapsed handle) — overlay CAS.
-                let ok = MappedDictionary::get_value(&trie, &term).is_some()
-                    || {
-                        use libdictenstein::MutableMappedDictionary;
-                        MutableMappedDictionary::insert_with_value(&trie, &term, i)
-                    };
+                let ok = MappedDictionary::get_value(&trie, &term).is_some() || {
+                    use libdictenstein::MutableMappedDictionary;
+                    MutableMappedDictionary::insert_with_value(&trie, &term, i)
+                };
                 if ok {
                     acked.lock().expect("acked").insert(term);
                 }
@@ -146,7 +145,8 @@ fn f4_lock_collapse_soak_no_deadlock_no_lost_write() {
                     // force one synchronous reclaim pass (callback takes OR>EC)
                     let _ = trie.force_eviction(1 << 16);
                     // disable: the drop-before-join discipline (EC released before join)
-                    trie.disable_eviction().expect("disable must not error/hang");
+                    trie.disable_eviction()
+                        .expect("disable must not error/hang");
                     cycles += 1;
                 }
                 std::thread::sleep(Duration::from_millis(7));

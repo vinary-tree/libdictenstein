@@ -18,6 +18,7 @@ use super::block_storage::BlockStorage;
 use super::dict_impl::PersistentARTrie;
 use super::error::{PersistentARTrieError, Result};
 use super::wal::WalRecord;
+use crate::persistent_artrie_core::counter_codec;
 use crate::persistent_artrie_core::key_encoding::ByteKey;
 use crate::persistent_artrie_core::overlay::durable_write::DurableOverlayWrite;
 use crate::value::DictionaryValue;
@@ -28,11 +29,14 @@ impl<V: DictionaryValue + serde::Serialize + serde::de::DeserializeOwned, S: Blo
     /// Atomically increment a numeric value associated with a term.
     ///
     /// If the term doesn't exist, inserts it with `delta` as the initial value.
-    /// If the term exists but the value cannot be interpreted as i64, returns an error.
+    /// Returns the new value as the native counter type `V` (`u64` for the byte
+    /// counter; `i64` for an `i64`-typed trie) — NOT a lossy `i64` bit-pattern.
+    /// `delta` stays a signed `i64` (a negative delta decrements; only a NEGATIVE
+    /// RESULT, or a true `u64` overflow, is rejected).
     ///
     /// This operation is atomic: the read-modify-write is performed under a lock,
     /// and the result is logged to WAL before returning.
-    pub fn increment(&mut self, term: &str, delta: i64) -> Result<i64>
+    pub fn increment(&mut self, term: &str, delta: i64) -> Result<V>
     where
         V: crate::value::Counter,
     {
@@ -41,138 +45,140 @@ impl<V: DictionaryValue + serde::Serialize + serde::de::DeserializeOwned, S: Blo
 
     /// Atomically increment a value by term bytes.
     ///
-    /// See [`increment`](Self::increment) for details.
+    /// See [`increment`](Self::increment) for details. Returns the new value as the
+    /// native counter type `V`.
     ///
-    /// **M3 write-flip (C5):** under `route_overlay()` for the `V = i64` monomorph
-    /// this routes to the proven Order-A
+    /// **M3 write-flip (C5):** under `route_overlay()` for the `V = u64` monomorph
+    /// with a non-negative delta this routes to the proven Order-A
     /// [`try_increment_cas_durable`](Self::try_increment_cas_durable) (durable
-    /// add-only `BatchIncrement`, commutative on replay) via the SAFE `Any`
-    /// dispatch in [`super::lockfree_value_route::route_increment_bytes`]. The
-    /// durable path applies the C4 non-negative bound (a negative delta is rejected
-    /// LOUDLY rather than silently writing the owned tree the overlay path would not
-    /// observe) and requires a UTF-8 key. Arbitrary `V` never reaches the routed
-    /// branch (the overlay is enabled only for `V ∈ {(), i64}`). The owned body
-    /// below is the verbatim pre-flip path (INERT until `route_overlay()` is true).
-    pub fn increment_bytes(&mut self, term: &[u8], delta: i64) -> Result<i64>
+    /// add-only `BatchIncrement`, commutative on replay) via the SAFE `Any` dispatch
+    /// in [`super::lockfree_value_route::route_increment_bytes`], whose `i128` count
+    /// is re-encoded into `V`. A `u64` byte counter DECREMENT, an `i64` counter, or
+    /// arbitrary `V` routes to the general value-CAS path (no dropped functionality;
+    /// it replaces the prior FALL-THROUGH to the owned body — an unranked owned write
+    /// dropped on Overlay reopen = data loss). The owned body below is the verbatim
+    /// pre-flip path (INERT until `route_overlay()` is true). Every counter-leaf
+    /// read/write routes through `counter_codec` (the i128 substrate).
+    pub fn increment_bytes(&mut self, term: &[u8], delta: i64) -> Result<V>
     where
         V: crate::value::Counter,
     {
         if self.route_overlay() {
-            if let Some(routed) = super::lockfree_value_route::route_increment_bytes(self, term, delta)
+            if let Some(routed) =
+                super::lockfree_value_route::route_increment_bytes(self, term, delta)
             {
-                return routed;
+                // The route returns the new count as an i128; re-encode it into the
+                // native counter type `V` (range-checked). An out-of-range count is an
+                // overflow → LOUD error (never a silent wrap).
+                return routed.and_then(|count_i128| {
+                    counter_codec::i128_to_counter_value::<V>(count_i128).ok_or_else(|| {
+                        PersistentARTrieError::InvalidOperation(format!(
+                            "increment overflow for term {:?}: new count {} is out of range for \
+                             the counter value type",
+                            String::from_utf8_lossy(term),
+                            count_i128
+                        ))
+                    })
+                });
             }
-            // F2: the fast path is the i64 add-only seam (byte counter = i64 +
-            // non-negative). A `u64` byte counter or a DECREMENT routes to the general
-            // value-CAS path — no dropped functionality, and it replaces the prior
-            // FALL-THROUGH to the owned body (an unranked owned write dropped on Overlay
-            // reopen = data loss). `fetch_add` inherits it.
+            // A decrement / `i64` counter / arbitrary `V` → the general value-CAS path.
             return self.increment_bytes_via_value_cas(term, delta);
         }
-        let current: i64 = match self.get_value_impl(term) {
-            Some(v) => {
-                let bytes = crate::serialization::bincode_compat::serialize(&v).map_err(|e| {
-                    PersistentARTrieError::internal(format!("Serialization error: {}", e))
-                })?;
-                if bytes.len() == 8 {
-                    i64::from_le_bytes(bytes.try_into().expect("expected 8 bytes"))
-                } else {
-                    crate::serialization::bincode_compat::deserialize::<i64>(&bytes).map_err(
-                        |e| {
-                            PersistentARTrieError::internal(format!(
-                                "Value cannot be interpreted as i64: {}",
-                                e
-                            ))
-                        },
-                    )?
-                }
-            }
+        // OWNED path. Read the current count into the i128 substrate (confines the
+        // bincode round-trip to `counter_codec`), add `delta` in i128, then re-encode
+        // the new value into `V` (range-checked — an out-of-range result is a LOUD
+        // overflow, never a silent wrap).
+        let cur_i128: i128 = match self.get_value_impl(term) {
+            Some(v) => counter_codec::counter_value_to_i128::<V>(&v).ok_or_else(|| {
+                PersistentARTrieError::internal(
+                    "increment: existing value is not an 8-byte counter leaf".to_string(),
+                )
+            })?,
             None => 0,
         };
 
-        let new_value = current.checked_add(delta).ok_or_else(|| {
+        let new_i128 = cur_i128.checked_add(delta as i128).ok_or_else(|| {
             PersistentARTrieError::InvalidOperation(format!(
-                "increment overflow for term {:?}: {} + {} exceeds i64 range",
+                "increment overflow for term {:?}: {} + {} overflows i128",
                 String::from_utf8_lossy(term),
-                current,
+                cur_i128,
                 delta
             ))
         })?;
-
-        let value_bytes = crate::serialization::bincode_compat::serialize(&new_value)
-            .map_err(|e| PersistentARTrieError::internal(format!("Serialization error: {}", e)))?;
-        let v: V =
-            crate::serialization::bincode_compat::deserialize(&value_bytes).map_err(|e| {
-                PersistentARTrieError::internal(format!("Cannot create value from i64: {}", e))
+        let new_value: V =
+            counter_codec::i128_to_counter_value::<V>(new_i128).ok_or_else(|| {
+                PersistentARTrieError::InvalidOperation(format!(
+                "increment overflow for term {:?}: new count {} is out of range for the counter \
+                 value type",
+                String::from_utf8_lossy(term),
+                new_i128
+            ))
             })?;
 
+        // The WAL `Increment.result` field is `i64` (informational — recovery
+        // recomputes via the delta); carry the i64 bit-pattern of the new count.
         let record = WalRecord::Increment {
             term: term.to_vec(),
             delta,
-            result: new_value,
+            result: counter_codec::counter_return_i64(new_i128),
         };
         self.append_mutation_wal_record(record, "increment")?;
 
         self.remove_impl_core(term);
-        self.insert_impl_core(term, Some(v));
+        self.insert_impl_core(term, Some(new_value.clone()));
 
         Ok(new_value)
     }
 
     /// **F2 — general byte overlay increment via the value-CAS path** (Counter-bound).
     /// Byte twin of char's `increment_via_value_cas`: the `route_increment_bytes` fast
-    /// path is the i64 add-only seam (byte counter = i64 + non-negative); a `u64` byte
-    /// counter or a decrement routes here — read → `cur + delta` → CAS retry over the
+    /// path is the u64 add-only seam (byte counter = u64 + non-negative); an `i64`
+    /// counter or a DECREMENT routes here — read → `cur + delta` → CAS retry over the
     /// proven `compare_and_swap_cas_durable` (phantom-safe per `LockFreeOverlayValueCas`).
     /// Preserves the owned increment for all Counter types (the prior overlay fall-through
-    /// to the owned tree was an unranked write dropped on reopen = data loss).
-    fn increment_bytes_via_value_cas(&mut self, term: &[u8], delta: i64) -> Result<i64>
+    /// to the owned tree was an unranked write dropped on reopen = data loss). Returns
+    /// the new value as the native counter type `V`. Every counter-leaf read/write
+    /// routes through the `counter_codec` i128 substrate (range-checked), so a count
+    /// above `i64::MAX` is honored and a below-zero / overflow result fails LOUD.
+    fn increment_bytes_via_value_cas(&mut self, term: &[u8], delta: i64) -> Result<V>
     where
         V: crate::value::Counter,
     {
         loop {
             let cur_v: Option<V> =
                 <Self as DurableOverlayWrite<ByteKey, V, S>>::value_read_faulting(self, term)?;
-            let cur_i64: i64 = match &cur_v {
-                Some(v) => {
-                    let bytes = crate::serialization::bincode_compat::serialize(v).map_err(|e| {
-                        PersistentARTrieError::internal(format!("Serialization error: {}", e))
-                    })?;
-                    if bytes.len() == 8 {
-                        i64::from_le_bytes(bytes.try_into().expect("expected 8 bytes"))
-                    } else {
-                        crate::serialization::bincode_compat::deserialize::<i64>(&bytes).map_err(
-                            |e| {
-                                PersistentARTrieError::internal(format!(
-                                    "Value cannot be interpreted as i64: {}",
-                                    e
-                                ))
-                            },
-                        )?
-                    }
-                }
+            let cur_i128: i128 = match &cur_v {
+                Some(v) => counter_codec::counter_value_to_i128::<V>(v).ok_or_else(|| {
+                    PersistentARTrieError::internal(
+                        "increment: existing value is not an 8-byte counter leaf".to_string(),
+                    )
+                })?,
                 None => 0,
             };
-            let new_i64 = cur_i64.checked_add(delta).ok_or_else(|| {
+            let new_i128 = cur_i128.checked_add(delta as i128).ok_or_else(|| {
                 PersistentARTrieError::InvalidOperation(format!(
-                    "increment overflow for term {:?}: {} + {} exceeds i64 range",
+                    "increment overflow for term {:?}: {} + {} overflows i128",
                     String::from_utf8_lossy(term),
-                    cur_i64,
+                    cur_i128,
                     delta
                 ))
             })?;
-            let new_bytes =
-                crate::serialization::bincode_compat::serialize(&new_i64).map_err(|e| {
-                    PersistentARTrieError::internal(format!("Serialization error: {}", e))
-                })?;
-            let new_v: V = crate::serialization::bincode_compat::deserialize(&new_bytes)
-                .map_err(|e| {
-                    PersistentARTrieError::internal(format!("Cannot create value from i64: {}", e))
+            let new_v: V =
+                counter_codec::i128_to_counter_value::<V>(new_i128).ok_or_else(|| {
+                    PersistentARTrieError::InvalidOperation(format!(
+                        "increment overflow for term {:?}: new count {} is out of range for the \
+                     counter value type",
+                        String::from_utf8_lossy(term),
+                        new_i128
+                    ))
                 })?;
             match <Self as DurableOverlayWrite<ByteKey, V, S>>::compare_and_swap_cas_durable_default(
-                self, term, cur_v, new_v,
+                self,
+                term,
+                cur_v,
+                new_v.clone(),
             )? {
-                true => return Ok(new_i64),
+                true => return Ok(new_v),
                 false => {
                     std::hint::spin_loop();
                 }
@@ -384,19 +390,30 @@ impl<V: DictionaryValue + serde::Serialize + serde::de::DeserializeOwned, S: Blo
 
     /// Get the current value and increment atomically (fetch-and-add).
     ///
-    /// Returns the value *before* the increment.
+    /// Returns the value *before* the increment, as the native counter type `V`.
     ///
     /// **M3 write-flip (C5):** inherits the overlay route transitively — it calls
     /// [`increment`](Self::increment) → `increment_bytes`, which routes to the
     /// durable `try_increment_cas_durable` under `route_overlay()`. The returned
-    /// "before" value is `new_value - delta`, correct for both the owned and the
-    /// overlay accumulated count.
-    pub fn fetch_add(&mut self, term: &str, delta: i64) -> Result<i64>
+    /// "before" value is `new_value - delta`, computed in the `counter_codec` i128
+    /// substrate and re-encoded into `V` (range-checked), correct for both the owned
+    /// and the overlay accumulated count.
+    pub fn fetch_add(&mut self, term: &str, delta: i64) -> Result<V>
     where
         V: crate::value::Counter,
     {
-        let new_value = self.increment(term, delta)?;
-        Ok(new_value - delta)
+        let new_v = self.increment(term, delta)?;
+        let new_i128 = counter_codec::counter_value_to_i128::<V>(&new_v).ok_or_else(|| {
+            PersistentARTrieError::internal(
+                "fetch_add: increment result is not an 8-byte counter leaf".to_string(),
+            )
+        })?;
+        counter_codec::i128_to_counter_value::<V>(new_i128 - delta as i128).ok_or_else(|| {
+            PersistentARTrieError::InvalidOperation(format!(
+                "fetch_add: pre-increment value {} is out of range for the counter value type",
+                new_i128 - delta as i128
+            ))
+        })
     }
 
     /// Get or insert a default value atomically.

@@ -33,9 +33,10 @@ impl<V: DictionaryValue, S: BlockStorage> Dictionary for PersistentARTrie<V, S> 
             use crate::persistent_artrie_core::overlay::flip::LockFreeOverlay;
             let root = <Self as LockFreeOverlay<ByteKey, V, S>>::overlay_root_node(self)
                 .unwrap_or_else(|| {
-                    std::sync::Arc::new(
-                        crate::persistent_artrie_core::overlay::OverlayNode::<ByteKey, V>::new(),
-                    )
+                    std::sync::Arc::new(crate::persistent_artrie_core::overlay::OverlayNode::<
+                        ByteKey,
+                        V,
+                    >::new())
                 });
             // Faulter is `None` on the inherent `&self` root path: eviction (the only
             // source of an `OnDisk` overlay child) is impossible on a non-`Shared`

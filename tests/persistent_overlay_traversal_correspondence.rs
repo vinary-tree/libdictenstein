@@ -66,8 +66,12 @@ type WalkEntry<V> = (bool, Option<V>);
 ///
 /// `push_unit` appends one edge label to the running term (byte → one `u8`; char →
 /// one `char`).
-fn collect_walk<N, V, F>(node: &N, prefix: &mut Vec<N::Unit>, push: &F, out: &mut BTreeMap<Vec<u8>, WalkEntry<V>>)
-where
+fn collect_walk<N, V, F>(
+    node: &N,
+    prefix: &mut Vec<N::Unit>,
+    push: &F,
+    out: &mut BTreeMap<Vec<u8>, WalkEntry<V>>,
+) where
     N: DictionaryNode + MappedDictionaryNode<Value = V>,
     N::Unit: Copy,
     V: Clone,
@@ -101,14 +105,21 @@ where
 // ===========================================================================
 
 /// Walk a byte trie via the `DictionaryNode` surface into `term(Vec<u8>) -> (is_final, value)`.
-fn byte_walk<V>(trie: &PersistentARTrie<V, impl libdictenstein::persistent_artrie::block_storage::BlockStorage>) -> BTreeMap<Vec<u8>, WalkEntry<V>>
+fn byte_walk<V>(
+    trie: &PersistentARTrie<V, impl libdictenstein::persistent_artrie::block_storage::BlockStorage>,
+) -> BTreeMap<Vec<u8>, WalkEntry<V>>
 where
     V: libdictenstein::value::DictionaryValue + Clone,
 {
     let mut out = BTreeMap::new();
     let mut prefix: Vec<u8> = Vec::new();
     // byte edge labels ARE the term bytes — identity.
-    collect_walk(&trie.root(), &mut prefix, &(|p: &[u8]| p.to_vec()), &mut out);
+    collect_walk(
+        &trie.root(),
+        &mut prefix,
+        &(|p: &[u8]| p.to_vec()),
+        &mut out,
+    );
     out
 }
 
@@ -134,7 +145,10 @@ fn byte_membership_case(name: &str, terms: &[&str]) {
     let owned_path = dir.path().join("owned.art");
     let owned = PersistentARTrie::<()>::create(&owned_path).expect("create owned");
     owned.kill_switch_to_owned();
-    assert!(!owned.route_overlay(), "{name}: owned twin must NOT route overlay");
+    assert!(
+        !owned.route_overlay(),
+        "{name}: owned twin must NOT route overlay"
+    );
     for t in terms {
         owned.insert(t);
     }
@@ -169,10 +183,14 @@ fn byte_membership_case(name: &str, terms: &[&str]) {
     for t in terms {
         let node = descend(&root, t.as_bytes())
             .unwrap_or_else(|| panic!("{name}: byte transition descent lost term {t:?}"));
-        assert!(node.is_final(), "{name}: byte term {t:?} terminal not final");
+        assert!(
+            node.is_final(),
+            "{name}: byte term {t:?} terminal not final"
+        );
     }
     assert!(
-        root.transition(0xFF).is_none() || terms.iter().any(|t| t.as_bytes().first() == Some(&0xFF)),
+        root.transition(0xFF).is_none()
+            || terms.iter().any(|t| t.as_bytes().first() == Some(&0xFF)),
         "{name}: byte spurious transition for an absent first byte"
     );
 }
@@ -280,7 +298,10 @@ fn char_membership_case(name: &str, terms: &[&str]) {
     let owned_path = dir.path().join("owned.artc");
     let owned = PersistentARTrieChar::<()>::create(&owned_path).expect("create owned");
     owned.kill_switch_to_owned();
-    assert!(!owned.route_overlay(), "{name}: char owned twin must NOT route overlay");
+    assert!(
+        !owned.route_overlay(),
+        "{name}: char owned twin must NOT route overlay"
+    );
     for t in terms {
         owned.insert(t).expect("insert owned");
     }
@@ -307,7 +328,10 @@ fn char_membership_case(name: &str, terms: &[&str]) {
         let units: Vec<char> = t.chars().collect();
         let node = descend(&root, &units)
             .unwrap_or_else(|| panic!("{name}: char transition descent lost term {t:?}"));
-        assert!(node.is_final(), "{name}: char term {t:?} terminal not final");
+        assert!(
+            node.is_final(),
+            "{name}: char term {t:?} terminal not final"
+        );
     }
     // An absent edge yields no transition.
     assert!(
@@ -374,8 +398,34 @@ fn char_valued_case(name: &str, entries: &[(&str, u64)]) {
 /// Terms covering: a single char, a wide root fan-out (>4 forces the overlay Heap
 /// tier), deep shared spines, and proper-prefix terms (cat ⊂ cats ⊂ ...).
 const MEMBERSHIP_TERMS: &[&str] = &[
-    "a", "ab", "abc", "abd", "abe", "b", "ban", "banana", "bandana", "cat", "cats", "cathedral",
-    "d", "do", "dog", "dot", "z", "zoo", "zebra", "m", "n", "o", "p", "q", "r", "s", "t", "u",
+    "a",
+    "ab",
+    "abc",
+    "abd",
+    "abe",
+    "b",
+    "ban",
+    "banana",
+    "bandana",
+    "cat",
+    "cats",
+    "cathedral",
+    "d",
+    "do",
+    "dog",
+    "dot",
+    "z",
+    "zoo",
+    "zebra",
+    "m",
+    "n",
+    "o",
+    "p",
+    "q",
+    "r",
+    "s",
+    "t",
+    "u",
 ];
 
 #[test]
@@ -426,7 +476,10 @@ fn byte_overlay_walk_with_empty_string_final() {
         .iter_with_values()
         .map(|(t, v)| (t, (true, v)))
         .collect();
-    assert_eq!(oracle, owned_oracle, "byte empty-string overlay vs owned data");
+    assert_eq!(
+        oracle, owned_oracle,
+        "byte empty-string overlay vs owned data"
+    );
 
     // The root itself is final and carries the empty-term value.
     let root = overlay.root();
@@ -451,8 +504,19 @@ fn char_overlay_walk_equals_owned_membership() {
 fn char_overlay_walk_equals_owned_membership_unicode() {
     // Multi-byte UTF-8 + beyond-BMP scalars + shared Unicode spines.
     let terms = &[
-        "café", "caffeine", "日本", "日本語", "日記", "emoji😀", "emoji😁", "naïve", "résumé",
-        "Ωmega", "Ωmicron", "a", "ab",
+        "café",
+        "caffeine",
+        "日本",
+        "日本語",
+        "日記",
+        "emoji😀",
+        "emoji😁",
+        "naïve",
+        "résumé",
+        "Ωmega",
+        "Ωmicron",
+        "a",
+        "ab",
     ];
     char_membership_case("char_unicode", terms);
 }
@@ -460,7 +524,14 @@ fn char_overlay_walk_equals_owned_membership_unicode() {
 #[test]
 fn char_overlay_walk_equals_owned_valued() {
     let entries: Vec<(&str, u64)> = [
-        "café", "caffeine", "日本", "日本語", "emoji😀", "receive", "recipe", "recital",
+        "café",
+        "caffeine",
+        "日本",
+        "日本語",
+        "emoji😀",
+        "receive",
+        "recipe",
+        "recital",
     ]
     .iter()
     .enumerate()
@@ -487,7 +558,10 @@ fn char_overlay_walk_with_empty_string_final() {
 
     let overlay_walk = char_walk(&overlay);
     let owned_walk = char_walk(&owned);
-    assert_eq!(overlay_walk, owned_walk, "char empty-string overlay != owned");
+    assert_eq!(
+        overlay_walk, owned_walk,
+        "char empty-string overlay != owned"
+    );
 
     let root = overlay.root();
     assert!(root.is_final(), "char root must be final ('' present)");
@@ -508,8 +582,15 @@ fn byte_overlay_walk_empty_dictionary() {
     assert!(overlay.route_overlay());
     let root = overlay.root();
     assert!(!root.is_final(), "empty byte dict root must not be final");
-    assert_eq!(root.edges().count(), 0, "empty byte dict root must have no edges");
-    assert!(byte_walk(&overlay).is_empty(), "empty byte dict walk must be empty");
+    assert_eq!(
+        root.edges().count(),
+        0,
+        "empty byte dict root must have no edges"
+    );
+    assert!(
+        byte_walk(&overlay).is_empty(),
+        "empty byte dict walk must be empty"
+    );
 }
 
 #[test]
@@ -520,8 +601,15 @@ fn char_overlay_walk_empty_dictionary() {
     assert!(overlay.route_overlay());
     let root = overlay.root();
     assert!(!root.is_final(), "empty char dict root must not be final");
-    assert_eq!(root.edges().count(), 0, "empty char dict root must have no edges");
-    assert!(char_walk(&overlay).is_empty(), "empty char dict walk must be empty");
+    assert_eq!(
+        root.edges().count(),
+        0,
+        "empty char dict root must have no edges"
+    );
+    assert!(
+        char_walk(&overlay).is_empty(),
+        "empty char dict walk must be empty"
+    );
 }
 
 #[test]

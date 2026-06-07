@@ -25,6 +25,7 @@ use std::sync::atomic::Ordering as AtomicOrdering;
 
 use log::warn;
 
+use crate::persistent_artrie_core::counter_codec;
 use crate::value::DictionaryValue;
 
 use super::block_storage::BlockStorage;
@@ -111,7 +112,9 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
     fn insert_into_root(
         &self,
         root: &mut TrieRoot<V>,
-        buffer_manager: Option<&std::sync::Arc<crate::sync_compat::RwLock<super::buffer_manager::BufferManager<S>>>>,
+        buffer_manager: Option<
+            &std::sync::Arc<crate::sync_compat::RwLock<super::buffer_manager::BufferManager<S>>>,
+        >,
         term: &[u8],
         value: Option<V>,
     ) -> bool {
@@ -296,7 +299,9 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
     /// Reentrancy-safe core of [`Self::remove_impl_core`].
     fn remove_from_root(
         root: &mut TrieRoot<V>,
-        buffer_manager: Option<&std::sync::Arc<crate::sync_compat::RwLock<super::buffer_manager::BufferManager<S>>>>,
+        buffer_manager: Option<
+            &std::sync::Arc<crate::sync_compat::RwLock<super::buffer_manager::BufferManager<S>>>,
+        >,
         term: &[u8],
     ) -> bool {
         match root {
@@ -590,22 +595,39 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
                 // current value; an absolute op (`Some(v)`, single Increment) ⇒ the
                 // value IS `v` (including 0 — the old `result == 0` arm mis-classified
                 // an absolute-set-to-0 as a delta and accumulated it).
-                let computed = match result {
-                    None => self.recompute_recovered_increment(&term, delta),
-                    Some(v) => Some(v),
-                };
-                let final_value = match computed {
-                    Some(value) => value,
-                    None => {
-                        warn!(
-                            "Recovered increment overflow for term {:?}; stopping replay at durable prefix",
-                            String::from_utf8_lossy(&term)
-                        );
-                        return false;
-                    }
+                //
+                // The arithmetic runs in the `counter_codec` i128 substrate (full u64,
+                // range-checked). For an ABSOLUTE result the WAL `result` i64 field
+                // carries the COUNTER LEAF BIT-PATTERN (`counter_return_i64` on the
+                // write side), so it is decoded via the leaf path (`counter_leaf_to_i128`
+                // of its LE bytes) — for a `u64` count > i64::MAX the i64 field is
+                // negative, and the bit-pattern decode recovers the true magnitude
+                // (a naive `result as i128` widen would wrongly stay negative).
+                let final_i128 = match result {
+                    None => match self.recompute_recovered_increment(&term, delta) {
+                        Some(value) => value,
+                        None => {
+                            warn!(
+                                "Recovered increment overflow for term {:?}; stopping replay at durable prefix",
+                                String::from_utf8_lossy(&term)
+                            );
+                            return false;
+                        }
+                    },
+                    Some(v) => match counter_codec::counter_leaf_to_i128::<V>(&v.to_le_bytes()) {
+                        Some(n) => n,
+                        None => {
+                            warn!(
+                                "Recovered absolute increment for term {:?} is not a counter leaf; \
+                                 stopping replay at durable prefix",
+                                String::from_utf8_lossy(&term)
+                            );
+                            return false;
+                        }
+                    },
                 };
 
-                match Self::value_from_i64(final_value) {
+                match counter_codec::i128_to_counter_value::<V>(final_i128) {
                     Some(value) => {
                         self.upsert_impl_no_wal(&term, value);
                         true
@@ -649,26 +671,16 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
         }
     }
 
-    fn recompute_recovered_increment(&self, term: &[u8], delta: i64) -> Option<i64> {
-        let current = self
-            .get_value_impl(term)
-            .and_then(|value| Self::i64_from_value(&value))
-            .unwrap_or(0);
-        current.checked_add(delta)
-    }
-
-    fn i64_from_value(value: &V) -> Option<i64> {
-        let bytes = crate::serialization::bincode_compat::serialize(value).ok()?;
-        if bytes.len() == 8 {
-            let raw: [u8; 8] = bytes.try_into().ok()?;
-            Some(i64::from_le_bytes(raw))
-        } else {
-            crate::serialization::bincode_compat::deserialize::<i64>(&bytes).ok()
-        }
-    }
-
-    fn value_from_i64(value: i64) -> Option<V> {
-        let bytes = crate::serialization::bincode_compat::serialize(&value).ok()?;
-        crate::serialization::bincode_compat::deserialize(&bytes).ok()
+    /// Accumulate a recovered BatchIncrement `delta` onto the current counter,
+    /// entirely in the `counter_codec` i128 substrate (full u64, range-checked). The
+    /// current value is decoded via `counter_value_to_i128::<V>` (confines the bincode
+    /// round-trip to the helper); `delta` widens losslessly to i128. `None` only on a
+    /// non-counter current value (corruption) — the caller stops at the durable prefix.
+    fn recompute_recovered_increment(&self, term: &[u8], delta: i64) -> Option<i128> {
+        let current_i128 = match self.get_value_impl(term) {
+            Some(value) => counter_codec::counter_value_to_i128::<V>(&value)?,
+            None => 0,
+        };
+        Some(current_i128 + delta as i128)
     }
 }

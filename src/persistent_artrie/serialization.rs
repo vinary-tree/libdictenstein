@@ -882,14 +882,13 @@ pub mod v2 {
         if data[7] & encoding_flags::HAS_VALUE == 0 {
             return None;
         }
-        let data_size =
-            u32::from_le_bytes([data[12], data[13], data[14], data[15]]) as usize;
+        let data_size = u32::from_le_bytes([data[12], data[13], data[14], data[15]]) as usize;
         let off = SERIALIZED_HEADER_SIZE + data_size;
         if data.len() < off + 4 {
             return None;
         }
-        let len = u32::from_le_bytes([data[off], data[off + 1], data[off + 2], data[off + 3]])
-            as usize;
+        let len =
+            u32::from_le_bytes([data[off], data[off + 1], data[off + 2], data[off + 3]]) as usize;
         if data.len() < off + 4 + len {
             return None;
         }
@@ -1846,7 +1845,10 @@ mod tests {
         // Empty value blob: `Some(&[])` must round-trip as `Some(vec![])` — a
         // present-but-empty value is DISTINCT from absent (`None`).
         let empty = v2::append_node_value(base.clone(), Some(&[]));
-        assert!(record_has_value_flag(&empty), "empty value still sets HAS_VALUE");
+        assert!(
+            record_has_value_flag(&empty),
+            "empty value still sets HAS_VALUE"
+        );
         assert_eq!(
             v2::read_node_value(&empty),
             Some(Vec::new()),

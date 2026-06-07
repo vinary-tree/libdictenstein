@@ -74,11 +74,7 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     /// get/merge/upsert loop. `union_with` snapshots `other` and drops its read lock
     /// BEFORE taking `self`'s write lock, then calls this — never holding two `RwLock`s
     /// at once (the AB/BA cross-instance deadlock fix; mirrors the vocab pattern).
-    pub(crate) fn merge_entries<F>(
-        &self,
-        entries: Vec<(String, V)>,
-        merge_fn: F,
-    ) -> Result<usize>
+    pub(crate) fn merge_entries<F>(&self, entries: Vec<(String, V)>, merge_fn: F) -> Result<usize>
     where
         F: Fn(&V, &V) -> V,
         V: Clone,

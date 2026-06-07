@@ -20,7 +20,6 @@ mod tests {
     //! `overlay::AtomicNodePtr<ByteKey, _>` and behaves. Exhaustive CAS coverage
     //! lives in `persistent_artrie_core::overlay::atomic_ptr::tests`.
 
-    
     use std::sync::Arc;
 
     // Pin the default `<()>` membership instantiation.

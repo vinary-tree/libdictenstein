@@ -86,7 +86,10 @@ fn build_membership() -> (
     // writers (so this exercises the M3 write routes, not the raw overlay CAS).
     let mut overlay = PersistentARTrie::<()>::create(&overlay_path).expect("create overlay");
     overlay.flip_to_overlay();
-    assert!(overlay.route_overlay(), "explicit flip routes to the overlay");
+    assert!(
+        overlay.route_overlay(),
+        "explicit flip routes to the overlay"
+    );
     for t in MEMBERSHIP_TERMS {
         // Route the public `insert` (str) for the UTF-8 ones; `upsert_bytes`/`insert`
         // both route to the durable overlay membership write. Use `insert` via bytes
@@ -99,7 +102,9 @@ fn build_membership() -> (
                 // Non-UTF-8 membership: the public `insert` takes &str, so use the
                 // routed `insert_cas_durable` directly (the byte audit routes
                 // `insert`→`insert_cas_durable`; this is that same durable write).
-                overlay.insert_cas_durable(t).expect("durable membership insert");
+                overlay
+                    .insert_cas_durable(t)
+                    .expect("durable membership insert");
             }
         }
     }
@@ -153,10 +158,8 @@ fn m3_membership_routed_reads_correspond() {
 
     // `iter_prefix` set + None-vs-Some(empty) shape for each probe prefix.
     for p in PROBE_PREFIXES {
-        let o: Option<BTreeSet<Vec<u8>>> =
-            owned.iter_prefix(p).map(|it| it.collect());
-        let v: Option<BTreeSet<Vec<u8>>> =
-            overlay.iter_prefix(p).map(|it| it.collect());
+        let o: Option<BTreeSet<Vec<u8>>> = owned.iter_prefix(p).map(|it| it.collect());
+        let v: Option<BTreeSet<Vec<u8>>> = overlay.iter_prefix(p).map(|it| it.collect());
         assert_eq!(
             o.is_none(),
             v.is_none(),
@@ -169,16 +172,16 @@ fn m3_membership_routed_reads_correspond() {
 /// Build an `i64`-counter overlay-routed trie + owned oracle, written through the
 /// ROUTED public writers (`increment_bytes` / `upsert_bytes`).
 fn build_counters() -> (
-    PersistentARTrie<i64>,
-    PersistentARTrie<i64>,
-    Vec<(Vec<u8>, i64)>,
+    PersistentARTrie<u64>,
+    PersistentARTrie<u64>,
+    Vec<(Vec<u8>, u64)>,
     tempfile::TempDir,
 ) {
     let dir = scratch("byte-m3-counter");
     let owned_path = dir.path().join("owned.part");
     let overlay_path = dir.path().join("overlay.part");
 
-    let entries: Vec<(Vec<u8>, i64)> = vec![
+    let entries: Vec<(Vec<u8>, u64)> = vec![
         (b"apple".to_vec(), 3),
         (b"application".to_vec(), 17),
         (b"apply".to_vec(), 1),
@@ -187,20 +190,25 @@ fn build_counters() -> (
         (b"party".to_vec(), 99),
     ];
 
-    let owned = PersistentARTrie::<i64>::create(&owned_path).expect("create owned");
+    let owned = PersistentARTrie::<u64>::create(&owned_path).expect("create owned");
     owned.kill_switch_to_owned();
     for (t, v) in &entries {
         owned.upsert_bytes(t, *v).expect("owned upsert_bytes");
     }
     assert!(!owned.route_overlay());
 
-    let mut overlay = PersistentARTrie::<i64>::create(&overlay_path).expect("create overlay");
+    let mut overlay = PersistentARTrie::<u64>::create(&overlay_path).expect("create overlay");
     overlay.flip_to_overlay();
-    assert!(overlay.route_overlay(), "i64 flip routes");
+    assert!(overlay.route_overlay(), "u64 flip routes");
     // Route the public `increment_bytes` (the durable add-only path); single
-    // increment from 0 == the count.
+    // increment from 0 == the count. The public delta is a signed `i64` (decrement
+    // capable), so convert each non-negative `u64` count via `i64::try_from` (these
+    // fixtures are all small); `increment_bytes` returns the new `u64` count.
     for (t, v) in &entries {
-        let got = overlay.increment_bytes(t, *v).expect("routed increment_bytes");
+        let delta = i64::try_from(*v).expect("fixture count fits i64");
+        let got = overlay
+            .increment_bytes(t, delta)
+            .expect("routed increment_bytes");
         assert_eq!(got, *v, "increment_bytes returns the new accumulated count");
     }
     (overlay, owned, entries, dir)
@@ -238,8 +246,8 @@ fn m3_counter_routed_reads_correspond_incl_value_carrying_iter() {
 
     // VALUE-CARRYING iter route (audit §C.2): `iter_with_values` must carry the
     // OVERLAY value, not re-read None from the empty owned tree.
-    let overlay_map: BTreeMap<Vec<u8>, Option<i64>> = overlay.iter_with_values().collect();
-    let owned_map: BTreeMap<Vec<u8>, Option<i64>> = owned.iter_with_values().collect();
+    let overlay_map: BTreeMap<Vec<u8>, Option<u64>> = overlay.iter_with_values().collect();
+    let owned_map: BTreeMap<Vec<u8>, Option<u64>> = owned.iter_with_values().collect();
     assert_eq!(
         overlay_map, owned_map,
         "iter_with_values overlay vs owned (value-carrying)"
@@ -253,12 +261,10 @@ fn m3_counter_routed_reads_correspond_incl_value_carrying_iter() {
 
     // `iter_prefix_with_values` (value-carrying chokepoint) per prefix.
     for p in PROBE_PREFIXES {
-        let o: Option<BTreeMap<Vec<u8>, i64>> = owned
-            .iter_prefix_with_values(p)
-            .map(|it| it.collect());
-        let v: Option<BTreeMap<Vec<u8>, i64>> = overlay
-            .iter_prefix_with_values(p)
-            .map(|it| it.collect());
+        let o: Option<BTreeMap<Vec<u8>, u64>> =
+            owned.iter_prefix_with_values(p).map(|it| it.collect());
+        let v: Option<BTreeMap<Vec<u8>, u64>> =
+            overlay.iter_prefix_with_values(p).map(|it| it.collect());
         assert_eq!(
             o.is_none(),
             v.is_none(),
@@ -269,14 +275,17 @@ fn m3_counter_routed_reads_correspond_incl_value_carrying_iter() {
 
     // `iter_prefix_from_cursor` (merge-read chokepoint): the full prefix from a
     // None cursor == the value-carrying overlay enumeration.
-    let from_cursor: BTreeMap<Vec<u8>, i64> = overlay
+    let from_cursor: BTreeMap<Vec<u8>, u64> = overlay
         .iter_prefix_from_cursor(b"", None, usize::MAX)
         .expect("iter_prefix_from_cursor")
         .into_iter()
         .map(|e| (e.term, e.value))
         .collect();
-    let expected: BTreeMap<Vec<u8>, i64> = entries.iter().cloned().collect();
-    assert_eq!(from_cursor, expected, "iter_prefix_from_cursor value-carrying");
+    let expected: BTreeMap<Vec<u8>, u64> = entries.iter().cloned().collect();
+    assert_eq!(
+        from_cursor, expected,
+        "iter_prefix_from_cursor value-carrying"
+    );
     // A cursor strictly after "banana" excludes "banana"/"apple"/... and keeps "party".
     let after_banana: BTreeSet<Vec<u8>> = overlay
         .iter_prefix_from_cursor(b"", Some(b"banana"), usize::MAX)
@@ -300,14 +309,15 @@ fn m3_empty_term_routes_to_overlay() {
     let dir = scratch("byte-m3-empty-term");
     let path = dir.path().join("e.part");
 
-    let empty_count: i64 = 77;
-    let mut trie = PersistentARTrie::<i64>::create(&path).expect("create");
+    let empty_count: u64 = 77;
+    let mut trie = PersistentARTrie::<u64>::create(&path).expect("create");
     trie.flip_to_overlay();
     assert!(trie.route_overlay());
 
     // The routed public writer publishes "" to the overlay ROOT (durable, H4).
     assert!(
-        trie.upsert_bytes(b"", empty_count).expect("overlay empty upsert"),
+        trie.upsert_bytes(b"", empty_count)
+            .expect("overlay empty upsert"),
         "upsert(\"\") newly inserted"
     );
     // The routed read reads "" from the overlay root (H5 — no owned exception).
@@ -322,7 +332,9 @@ fn m3_empty_term_routes_to_overlay() {
     );
     // Upsert overwrites the root value (LWW); returns false (updated, not inserted).
     assert!(
-        !trie.upsert_bytes(b"", 99).expect("overlay empty upsert overwrite"),
+        !trie
+            .upsert_bytes(b"", 99)
+            .expect("overlay empty upsert overwrite"),
         "second upsert(\"\") updates"
     );
     assert_eq!(trie.get_value_bytes(b""), Some(99));
@@ -346,13 +358,16 @@ fn m3_routed_writes_round_trip_and_survive_reopen() {
     let path = dir.path().join("w.part");
 
     {
-        let mut trie = PersistentARTrie::<i64>::create(&path).expect("create");
+        let mut trie = PersistentARTrie::<u64>::create(&path).expect("create");
         trie.flip_to_overlay();
         assert!(trie.route_overlay());
 
         // Each routed public writer. `insert_with_value` returns `bool` (byte
         // signature), the durable failure-soft path reports false on error.
-        assert!(trie.insert_with_value("alpha", 10), "insert_with_value newly inserted");
+        assert!(
+            trie.insert_with_value("alpha", 10),
+            "insert_with_value newly inserted"
+        );
         assert!(
             !trie.insert_with_value("alpha", 999),
             "insert_with_value is INSERT (no-op on existing)"
@@ -361,11 +376,13 @@ fn m3_routed_writes_round_trip_and_survive_reopen() {
         assert!(trie.upsert_bytes(b"beta", 20).expect("upsert new")); // newly inserted
         assert_eq!(trie.increment_bytes(b"beta", 5).expect("increment"), 25);
         assert_eq!(
-            trie.get_or_insert_bytes(b"gamma", 7).expect("get_or_insert"),
+            trie.get_or_insert_bytes(b"gamma", 7)
+                .expect("get_or_insert"),
             7
         );
         assert_eq!(
-            trie.get_or_insert_bytes(b"gamma", 100).expect("get_or_insert existing"),
+            trie.get_or_insert_bytes(b"gamma", 100)
+                .expect("get_or_insert existing"),
             7
         );
         // insert_batch (routes per-entry to the durable overlay).
@@ -397,7 +414,7 @@ fn m3_routed_writes_round_trip_and_survive_reopen() {
     // tree; the reopened trie is owned-regime since flip_to_overlay on a fresh WAL
     // stamps Overlay, but the reopen rebuilds owned + would re-flip at M4). We read
     // the surviving terms via the public reads.
-    let reopened = PersistentARTrie::<i64>::open(&path).expect("reopen");
+    let reopened = PersistentARTrie::<u64>::open(&path).expect("reopen");
     // The acked writes survived (alpha=11 after upsert, beta=25 after increment,
     // gamma=7, delta+epsilon removed).
     assert_eq!(
@@ -412,7 +429,11 @@ fn m3_routed_writes_round_trip_and_survive_reopen() {
     );
     assert_eq!(reopened.get_value_bytes(b"gamma"), Some(7));
     assert_eq!(reopened.get_value_bytes(b"delta"), None, "delta removed");
-    assert_eq!(reopened.get_value_bytes(b"epsilon"), None, "epsilon removed");
+    assert_eq!(
+        reopened.get_value_bytes(b"epsilon"),
+        None,
+        "epsilon removed"
+    );
 }
 
 /// **The reject guards under the overlay.** F0/G5 (NH2) supports `compare_and_swap`,
@@ -432,7 +453,7 @@ fn m3_reject_guards_fire_under_overlay() {
     let path = dir.path().join("r.part");
     let other_path = dir.path().join("other.part");
 
-    let mut trie = PersistentARTrie::<i64>::create(&path).expect("create");
+    let mut trie = PersistentARTrie::<u64>::create(&path).expect("create");
     trie.flip_to_overlay();
     assert!(trie.route_overlay());
     trie.increment_bytes(b"seed", 1).expect("seed");
@@ -445,7 +466,11 @@ fn m3_reject_guards_fire_under_overlay() {
             .expect("CAS should succeed under overlay (NH2)"),
         "compare_and_swap with matching expected now swaps under overlay"
     );
-    assert_eq!(trie.get_value_bytes(b"seed"), Some(2), "CAS swapped seed 1→2");
+    assert_eq!(
+        trie.get_value_bytes(b"seed"),
+        Some(2),
+        "CAS swapped seed 1→2"
+    );
     assert!(
         !trie
             .compare_and_swap_bytes(b"seed", Some(1), 9)
@@ -461,17 +486,23 @@ fn m3_reject_guards_fire_under_overlay() {
     // F2-migrate: C2 routes the trie-to-trie merges through the overlay — they now
     // SUCCEED (read self via the overlay seam, combine via merge_fn, publish). `other`
     // holds `x=100`; `seed=2` (from the CAS above), no overlap, so each merge inserts x.
-    let mut other = PersistentARTrie::<i64>::create(&other_path).expect("create other");
+    let mut other = PersistentARTrie::<u64>::create(&other_path).expect("create other");
     other.flip_to_overlay();
     other.increment_bytes(b"x", 100).expect("other seed");
     assert_eq!(
-        trie.merge_from(&other, |a, _| *a).expect("merge_from succeeds under overlay (C2)"),
+        trie.merge_from(&other, |a, _| *a)
+            .expect("merge_from succeeds under overlay (C2)"),
         1,
         "merge_from now processes the one other-only term under the overlay"
     );
-    assert_eq!(trie.get_value_bytes(b"x"), Some(100), "merge_from inserted x");
     assert_eq!(
-        trie.merge_replace(&other).expect("merge_replace succeeds under overlay (C2)"),
+        trie.get_value_bytes(b"x"),
+        Some(100),
+        "merge_from inserted x"
+    );
+    assert_eq!(
+        trie.merge_replace(&other)
+            .expect("merge_replace succeeds under overlay (C2)"),
         1,
         "merge_replace now processes the overlapping term under the overlay"
     );
@@ -499,7 +530,9 @@ fn m3_reject_guards_fire_under_overlay() {
 
     // doc-tx: C2 made begin_document succeed under the overlay (it skips the orphan
     // BeginTx WAL append; commit_document is per-op durable).
-    let tx = trie.begin_document("doc").expect("begin_document succeeds under overlay (C2)");
+    let tx = trie
+        .begin_document("doc")
+        .expect("begin_document succeeds under overlay (C2)");
     assert_eq!(
         trie.commit_document(tx).expect("empty commit"),
         0,
@@ -528,7 +561,7 @@ fn m3_inert_pre_flip_owned_arm_unchanged() {
     let path = dir.path().join("i.part");
     let other_path = dir.path().join("io.part");
 
-    let mut trie = PersistentARTrie::<i64>::create(&path).expect("create");
+    let mut trie = PersistentARTrie::<u64>::create(&path).expect("create");
     // **M4b REFRAME.** A fresh `create::<i64>()` now create-flips to the overlay, but
     // THIS test asserts the OWNED arm (the false-arm of the M3 routes) is unchanged —
     // so force the owned path with the kill-switch (the M4b precedent for owned-path
@@ -556,21 +589,28 @@ fn m3_inert_pre_flip_owned_arm_unchanged() {
     // The "broken-under-overlay" operations SUCCEED on the owned path (false-arm =
     // verbatim owned body — no reject leaks into the owned regime).
     assert!(
-        trie.compare_and_swap_bytes(b"a", Some(5), 6).expect("owned CAS"),
+        trie.compare_and_swap_bytes(b"a", Some(5), 6)
+            .expect("owned CAS"),
         "compare_and_swap works on the owned path (inert)"
     );
     assert_eq!(trie.get_value_bytes(b"a"), Some(6));
 
-    let other = PersistentARTrie::<i64>::create(&other_path).expect("create other");
+    let other = PersistentARTrie::<u64>::create(&other_path).expect("create other");
     other.kill_switch_to_owned();
     other.upsert_bytes(b"x", 100).expect("other upsert");
-    let merged = trie.merge_replace(&other).expect("owned merge_replace works");
+    let merged = trie
+        .merge_replace(&other)
+        .expect("owned merge_replace works");
     assert_eq!(merged, 1, "owned merge processed 1 term (inert)");
     assert_eq!(trie.get_value_bytes(b"x"), Some(100));
 
     // doc-tx works on the owned path.
-    let tx = trie.begin_document("doc").expect("owned begin_document works");
-    let committed = trie.commit_document(tx).expect("owned commit_document works");
+    let tx = trie
+        .begin_document("doc")
+        .expect("owned begin_document works");
+    let committed = trie
+        .commit_document(tx)
+        .expect("owned commit_document works");
     assert_eq!(committed, 0, "empty doc-tx commits 0 (inert)");
 
     // A durability policy that the durable overlay would reject is irrelevant on
@@ -591,7 +631,7 @@ fn m3_deep_key_routed_reads_no_stack_overflow() {
     let path = dir.path().join("deep.part");
 
     let deep: Vec<u8> = vec![b'a'; 500];
-    let mut trie = PersistentARTrie::<i64>::create(&path).expect("create");
+    let mut trie = PersistentARTrie::<u64>::create(&path).expect("create");
     trie.flip_to_overlay();
     assert!(trie.route_overlay());
     trie.increment_bytes(&deep, 11).expect("deep increment");
@@ -600,16 +640,14 @@ fn m3_deep_key_routed_reads_no_stack_overflow() {
     assert_eq!(trie.get_value_bytes(&deep), Some(11));
     let all: BTreeSet<Vec<u8>> = trie.iter().collect();
     assert!(all.contains(&deep));
-    let with_values: BTreeMap<Vec<u8>, Option<i64>> = trie.iter_with_values().collect();
+    let with_values: BTreeMap<Vec<u8>, Option<u64>> = trie.iter_with_values().collect();
     assert_eq!(with_values.get(&deep), Some(&Some(11)));
 }
 
 // ---------------------------------------------------------------------------
 // Helper: did the call reject with InvalidOperation?
 // ---------------------------------------------------------------------------
-fn is_invalid_op<T>(
-    r: crate::persistent_artrie::error::Result<T>,
-) -> bool {
+fn is_invalid_op<T>(r: crate::persistent_artrie::error::Result<T>) -> bool {
     matches!(
         r,
         Err(crate::persistent_artrie::error::PersistentARTrieError::InvalidOperation(_))

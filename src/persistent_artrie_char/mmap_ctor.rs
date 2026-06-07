@@ -52,7 +52,9 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
             committed_watermark: super::committed_watermark::CommittedWatermark::new(0),
             checkpoint_lock: std::sync::Arc::new(parking_lot::Mutex::new(())),
             merge_lock: std::sync::Arc::new(parking_lot::Mutex::new(())),
-            overlay_write_mode: crate::persistent_artrie_core::shared_access::AtomicEnumCell::new(super::overlay_write_mode::OverlayWriteMode::default()),
+            overlay_write_mode: crate::persistent_artrie_core::shared_access::AtomicEnumCell::new(
+                super::overlay_write_mode::OverlayWriteMode::default(),
+            ),
             file_path: None,
             arena_manager: None,
             version: OptimisticVersion::new(),
@@ -65,7 +67,9 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
             memory_monitor: std::sync::Mutex::new(None),
             cache_stats: CacheStats::default(),
             checkpoint_manager: std::sync::Mutex::new(None),
-            durability_policy: crate::persistent_artrie_core::shared_access::AtomicEnumCell::new(DurabilityPolicy::default()),
+            durability_policy: crate::persistent_artrie_core::shared_access::AtomicEnumCell::new(
+                DurabilityPolicy::default(),
+            ),
             eviction_coordinator: std::sync::Mutex::new(None),
             prefetcher: crate::persistent_artrie::prefetch::Prefetcher::disabled(),
             _phantom: std::marker::PhantomData,
@@ -132,7 +136,9 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
             committed_watermark: super::committed_watermark::CommittedWatermark::new(0),
             checkpoint_lock: std::sync::Arc::new(parking_lot::Mutex::new(())),
             merge_lock: std::sync::Arc::new(parking_lot::Mutex::new(())),
-            overlay_write_mode: crate::persistent_artrie_core::shared_access::AtomicEnumCell::new(super::overlay_write_mode::OverlayWriteMode::default()),
+            overlay_write_mode: crate::persistent_artrie_core::shared_access::AtomicEnumCell::new(
+                super::overlay_write_mode::OverlayWriteMode::default(),
+            ),
             file_path: Some(path.to_path_buf()),
             arena_manager: Some(arena_manager),
             version: OptimisticVersion::new(),
@@ -145,7 +151,9 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
             memory_monitor: std::sync::Mutex::new(None),
             cache_stats: CacheStats::default(),
             checkpoint_manager: std::sync::Mutex::new(None),
-            durability_policy: crate::persistent_artrie_core::shared_access::AtomicEnumCell::new(DurabilityPolicy::default()),
+            durability_policy: crate::persistent_artrie_core::shared_access::AtomicEnumCell::new(
+                DurabilityPolicy::default(),
+            ),
             eviction_coordinator: std::sync::Mutex::new(None),
             prefetcher: crate::persistent_artrie::prefetch::Prefetcher::new(),
             _phantom: std::marker::PhantomData,
@@ -203,7 +211,9 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
             committed_watermark: super::committed_watermark::CommittedWatermark::new(0),
             checkpoint_lock: std::sync::Arc::new(parking_lot::Mutex::new(())),
             merge_lock: std::sync::Arc::new(parking_lot::Mutex::new(())),
-            overlay_write_mode: crate::persistent_artrie_core::shared_access::AtomicEnumCell::new(super::overlay_write_mode::OverlayWriteMode::default()),
+            overlay_write_mode: crate::persistent_artrie_core::shared_access::AtomicEnumCell::new(
+                super::overlay_write_mode::OverlayWriteMode::default(),
+            ),
             file_path: Some(path.to_path_buf()),
             arena_manager: Some(arena_manager),
             version: OptimisticVersion::new(),
@@ -216,7 +226,9 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
             memory_monitor: std::sync::Mutex::new(None),
             cache_stats: CacheStats::default(),
             checkpoint_manager: std::sync::Mutex::new(None),
-            durability_policy: crate::persistent_artrie_core::shared_access::AtomicEnumCell::new(DurabilityPolicy::default()),
+            durability_policy: crate::persistent_artrie_core::shared_access::AtomicEnumCell::new(
+                DurabilityPolicy::default(),
+            ),
             eviction_coordinator: std::sync::Mutex::new(None),
             prefetcher: crate::persistent_artrie::prefetch::Prefetcher::new(),
             _phantom: std::marker::PhantomData,
@@ -284,7 +296,9 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
             committed_watermark: super::committed_watermark::CommittedWatermark::new(0),
             checkpoint_lock: std::sync::Arc::new(parking_lot::Mutex::new(())),
             merge_lock: std::sync::Arc::new(parking_lot::Mutex::new(())),
-            overlay_write_mode: crate::persistent_artrie_core::shared_access::AtomicEnumCell::new(super::overlay_write_mode::OverlayWriteMode::default()),
+            overlay_write_mode: crate::persistent_artrie_core::shared_access::AtomicEnumCell::new(
+                super::overlay_write_mode::OverlayWriteMode::default(),
+            ),
             file_path: Some(path.to_path_buf()),
             arena_manager: Some(arena_manager),
             version: OptimisticVersion::new(),
@@ -297,7 +311,9 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
             memory_monitor: std::sync::Mutex::new(None),
             cache_stats: CacheStats::default(),
             checkpoint_manager: std::sync::Mutex::new(None),
-            durability_policy: crate::persistent_artrie_core::shared_access::AtomicEnumCell::new(DurabilityPolicy::default()),
+            durability_policy: crate::persistent_artrie_core::shared_access::AtomicEnumCell::new(
+                DurabilityPolicy::default(),
+            ),
             eviction_coordinator: std::sync::Mutex::new(None),
             prefetcher: crate::persistent_artrie::prefetch::Prefetcher::new(),
             _phantom: std::marker::PhantomData,
@@ -439,7 +455,9 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
             ),
             checkpoint_lock: std::sync::Arc::new(parking_lot::Mutex::new(())),
             merge_lock: std::sync::Arc::new(parking_lot::Mutex::new(())),
-            overlay_write_mode: crate::persistent_artrie_core::shared_access::AtomicEnumCell::new(super::overlay_write_mode::OverlayWriteMode::default()),
+            overlay_write_mode: crate::persistent_artrie_core::shared_access::AtomicEnumCell::new(
+                super::overlay_write_mode::OverlayWriteMode::default(),
+            ),
             file_path: Some(path.to_path_buf()),
             arena_manager: Some(arena_manager),
             version: OptimisticVersion::new(),
@@ -452,7 +470,9 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
             memory_monitor: std::sync::Mutex::new(None),
             cache_stats: CacheStats::default(),
             checkpoint_manager: std::sync::Mutex::new(None),
-            durability_policy: crate::persistent_artrie_core::shared_access::AtomicEnumCell::new(DurabilityPolicy::default()),
+            durability_policy: crate::persistent_artrie_core::shared_access::AtomicEnumCell::new(
+                DurabilityPolicy::default(),
+            ),
             eviction_coordinator: std::sync::Mutex::new(None),
             prefetcher: crate::persistent_artrie::prefetch::Prefetcher::new(),
             _phantom: std::marker::PhantomData,
@@ -729,7 +749,9 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
             ),
             checkpoint_lock: std::sync::Arc::new(parking_lot::Mutex::new(())),
             merge_lock: std::sync::Arc::new(parking_lot::Mutex::new(())),
-            overlay_write_mode: crate::persistent_artrie_core::shared_access::AtomicEnumCell::new(super::overlay_write_mode::OverlayWriteMode::default()),
+            overlay_write_mode: crate::persistent_artrie_core::shared_access::AtomicEnumCell::new(
+                super::overlay_write_mode::OverlayWriteMode::default(),
+            ),
             file_path: Some(path.to_path_buf()),
             arena_manager: Some(arena_manager),
             version: OptimisticVersion::new(),
@@ -742,7 +764,9 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
             memory_monitor: std::sync::Mutex::new(None),
             cache_stats: CacheStats::default(),
             checkpoint_manager: std::sync::Mutex::new(None),
-            durability_policy: crate::persistent_artrie_core::shared_access::AtomicEnumCell::new(DurabilityPolicy::default()),
+            durability_policy: crate::persistent_artrie_core::shared_access::AtomicEnumCell::new(
+                DurabilityPolicy::default(),
+            ),
             eviction_coordinator: std::sync::Mutex::new(None),
             prefetcher: crate::persistent_artrie::prefetch::Prefetcher::new(),
             _phantom: std::marker::PhantomData,
@@ -1114,14 +1138,23 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
                                     delta: _,
                                     result: val,
                                 } => {
-                                    // For increment, store the final result
+                                    // For increment, store the final (absolute) result.
+                                    // `val` is the i64 BIT-PATTERN of the count
+                                    // (`counter_return_i64` on write) — NEGATIVE for a
+                                    // `u64` count > i64::MAX. Decode via the LEAF BYTES
+                                    // through the shared `counter_codec` helper (the
+                                    // bit-pattern-faithful path the owned/overlay
+                                    // appliers use) so a u64 count round-trips correctly
+                                    // and the v6 gate holds (no raw counter-leaf bincode
+                                    // outside `counter_codec`). A non-counter `V` yields
+                                    // `None` (skip), matching the prior deserialize-fail.
                                     let term_str = String::from_utf8_lossy(&term);
-                                    let value_bytes =
-                                        crate::serialization::bincode_compat::serialize(&val)
-                                            .unwrap_or_default();
-                                    if let Ok(v) =
-                                        crate::serialization::bincode_compat::deserialize::<V>(
-                                            &value_bytes,
+                                    if let Some(v) =
+                                        crate::persistent_artrie_core::counter_codec::counter_leaf_to_i128::<V>(
+                                            &val.to_le_bytes(),
+                                        )
+                                        .and_then(
+                                            crate::persistent_artrie_core::counter_codec::i128_to_counter_value::<V>,
                                         )
                                     {
                                         trie.insert_impl_no_wal_with_value(&term_str, v);
@@ -1554,7 +1587,8 @@ mod s5_12_flip_ctor_gate {
                 "create<String> WAL header is stamped MAGIC_OVERLAY when arbitrary V is eligible"
             );
             // The overlay value path works for arbitrary V.
-            trie.insert_with_value("hello", "world".to_string()).expect("overlay insert");
+            trie.insert_with_value("hello", "world".to_string())
+                .expect("overlay insert");
             assert_eq!(
                 MappedDictionary::get_value(&trie, "hello"),
                 Some("world".to_string()),
@@ -1608,8 +1642,9 @@ mod s5_12_flip_ctor_gate {
             let dir = scratch("s5-12-rw-u64");
             let path = dir.path().join("t.artc");
             // Distinct deltas so a double-count or drop is detectable per key.
-            let entries: Vec<(String, u64)> =
-                (0..40u32).map(|i| (format!("k{i:03}"), (i as u64) + 1)).collect();
+            let entries: Vec<(String, u64)> = (0..40u32)
+                .map(|i| (format!("k{i:03}"), (i as u64) + 1))
+                .collect();
             {
                 let trie = PersistentARTrieChar::<u64>::create(&path).expect("create<u64>");
                 trie.set_durability_policy(
@@ -1617,13 +1652,18 @@ mod s5_12_flip_ctor_gate {
                 );
                 assert!(trie.route_overlay(), "fresh create<u64> is overlay-routed");
                 for (k, d) in &entries {
-                    let v = trie.try_increment_cas_durable(k, *d).expect("durable increment");
+                    let v = trie
+                        .try_increment_cas_durable(k, *d)
+                        .expect("durable increment");
                     assert_eq!(v, *d, "first increment of {k:?} must equal its delta");
                 }
                 trie.checkpoint().expect("overlay checkpoint (route-split)");
             }
             let recovered = PersistentARTrieChar::<u64>::open(&path).expect("reopen<u64>");
-            assert!(recovered.route_overlay(), "u64 Overlay file reopens overlay-routed");
+            assert!(
+                recovered.route_overlay(),
+                "u64 Overlay file reopens overlay-routed"
+            );
             for (k, d) in &entries {
                 assert_eq!(
                     recovered.get_lockfree(k),
@@ -1691,18 +1731,18 @@ mod s5_12_flip_ctor_gate {
     fn s5_12_mixed_monomorph_reopen_no_panic_no_corruption() {
         let dir = scratch("s5-12-mixed-mono");
         let path = dir.path().join("t.artc");
-        let entries: Vec<(String, u64)> =
-            vec![("alpha", 7u64), ("beta", 11), ("gamma", 13)]
-                .into_iter()
-                .map(|(t, v)| (t.to_string(), v))
-                .collect();
+        let entries: Vec<(String, u64)> = vec![("alpha", 7u64), ("beta", 11), ("gamma", 13)]
+            .into_iter()
+            .map(|(t, v)| (t.to_string(), v))
+            .collect();
         {
             let trie = PersistentARTrieChar::<u64>::create(&path).expect("create<u64>");
             trie.set_durability_policy(
                 crate::persistent_artrie_core::durability::DurabilityPolicy::Immediate,
             );
             for (k, d) in &entries {
-                trie.try_increment_cas_durable(k, *d).expect("durable increment");
+                trie.try_increment_cas_durable(k, *d)
+                    .expect("durable increment");
             }
             trie.checkpoint().expect("overlay checkpoint");
         }

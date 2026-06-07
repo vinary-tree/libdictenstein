@@ -86,7 +86,8 @@ pub(crate) trait OverlayCheckpoint<K: KeyEncoding, V: DictionaryValue, S>:
     /// on-disk image + record `checkpoint_lsn = committed watermark` while RETAINING
     /// the WAL (non-double-counting via the `Checkpoint` record; raises the commit_seq
     /// floor). Char `publish_immutable_snapshot_retaining_wal`. Borrows the snapshot.
-    fn publish_overlay_snapshot_retaining(&self, snapshot: &Self::CheckpointSnapshot) -> Result<()>;
+    fn publish_overlay_snapshot_retaining(&self, snapshot: &Self::CheckpointSnapshot)
+        -> Result<()>;
 
     /// **Overlay arm — publish (eviction-on).** As [`Self::publish_overlay_snapshot_retaining`]
     /// PLUS eviction-registry publication (publish-after-verify). Consumes the snapshot

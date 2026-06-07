@@ -440,7 +440,10 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
                 // Load the node and its children using iterative loading
                 // (avoids stack overflow for deep tries)
                 let (node, children, root_value_bytes) =
-                    Self::load_art_node_with_children_from_arena_iterative(arena_manager, &node_ptr)?;
+                    Self::load_art_node_with_children_from_arena_iterative(
+                        arena_manager,
+                        &node_ptr,
+                    )?;
 
                 // Empty-string support (H1): deserialize the root's value blob (the empty
                 // term "" carries its value on the root node record). Propagated, never

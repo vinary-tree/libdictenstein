@@ -56,8 +56,7 @@ fn test_concurrent_readers() {
     let dict_path = temp_dir.path().join("concurrent_readers.part");
 
     // Create and populate dictionary
-    let dict: PersistentARTrie<i32> =
-        PersistentARTrie::create(&dict_path).expect("create dict");
+    let dict: PersistentARTrie<i32> = PersistentARTrie::create(&dict_path).expect("create dict");
 
     // Insert test terms with values
     let terms: Vec<String> = generate_terms(100, "term");
@@ -123,8 +122,7 @@ fn test_single_writer_multiple_readers() {
     let dict_path = temp_dir.path().join("writer_readers.part");
 
     // Create dictionary with initial terms
-    let dict: PersistentARTrie<i32> =
-        PersistentARTrie::create(&dict_path).expect("create dict");
+    let dict: PersistentARTrie<i32> = PersistentARTrie::create(&dict_path).expect("create dict");
 
     // Insert some initial terms
     let initial_terms: Vec<String> = generate_terms(50, "init");
@@ -211,8 +209,7 @@ fn test_reader_during_checkpoint() {
     let dict_path = temp_dir.path().join("checkpoint_readers.part");
 
     // Create and populate dictionary
-    let dict: PersistentARTrie<i32> =
-        PersistentARTrie::create(&dict_path).expect("create dict");
+    let dict: PersistentARTrie<i32> = PersistentARTrie::create(&dict_path).expect("create dict");
 
     let terms: Vec<String> = generate_terms(100, "chkp");
     for (i, term) in terms.iter().enumerate() {
@@ -281,8 +278,7 @@ fn test_concurrent_value_lookups() {
     let dict_path = temp_dir.path().join("value_lookups.part");
 
     // Create and populate dictionary with values
-    let dict: PersistentARTrie<i32> =
-        PersistentARTrie::create(&dict_path).expect("create dict");
+    let dict: PersistentARTrie<i32> = PersistentARTrie::create(&dict_path).expect("create dict");
 
     let terms: Vec<(String, i32)> = (0..100)
         .map(|i| (format!("value{:05}", i), i * 10))
@@ -400,8 +396,7 @@ fn test_read_write_interleaving() {
     let dict_path = temp_dir.path().join("interleaving.part");
 
     // Pre-populate with some terms
-    let dict: PersistentARTrie<i32> =
-        PersistentARTrie::create(&dict_path).expect("create dict");
+    let dict: PersistentARTrie<i32> = PersistentARTrie::create(&dict_path).expect("create dict");
 
     let initial_terms: Vec<String> = generate_terms(50, "pre_");
     for (i, term) in initial_terms.iter().enumerate() {
@@ -478,8 +473,7 @@ fn test_many_short_lived_threads() {
     let temp_dir = TempDir::new().expect("create temp dir");
     let dict_path = temp_dir.path().join("short_lived.part");
 
-    let dict: PersistentARTrie<i32> =
-        PersistentARTrie::create(&dict_path).expect("create dict");
+    let dict: PersistentARTrie<i32> = PersistentARTrie::create(&dict_path).expect("create dict");
 
     // Pre-populate
     for i in 0..50 {
@@ -547,8 +541,7 @@ fn test_shared_artrie_shares_state() {
     let temp_dir = TempDir::new().expect("create temp dir");
     let dict_path = temp_dir.path().join("shared_state.part");
 
-    let dict: PersistentARTrie<i32> =
-        PersistentARTrie::create(&dict_path).expect("create dict");
+    let dict: PersistentARTrie<i32> = PersistentARTrie::create(&dict_path).expect("create dict");
 
     // Insert via original handle
     let _ = dict.insert_with_value("hello", 42);
@@ -591,8 +584,7 @@ fn test_sync_from_multiple_threads() {
     let temp_dir = TempDir::new().expect("create temp dir");
     let dict_path = temp_dir.path().join("multi_sync.part");
 
-    let dict: PersistentARTrie<i32> =
-        PersistentARTrie::create(&dict_path).expect("create dict");
+    let dict: PersistentARTrie<i32> = PersistentARTrie::create(&dict_path).expect("create dict");
 
     // Insert some data
     for i in 0..50 {

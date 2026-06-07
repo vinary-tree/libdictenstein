@@ -72,15 +72,16 @@ use std::any::Any;
 /// Route `increment(term, delta)` to the overlay iff `V == u64` AND `delta >= 0`.
 ///
 /// The overlay counter is add-only `BatchIncrement`, so a NEGATIVE delta returns
-/// `None` (caller falls back to the owned tree — the design's "negative-delta
-/// increment unsupported" gap). On success the new accumulated `u64` is widened to
-/// `i64` (bounded by `LOCKFREE_COUNTER_MAX = i64::MAX`, so the widening never
-/// overflows). Returns `None` for arbitrary `V`.
+/// `None` (the caller falls to the value-CAS path `increment_via_value_cas`, which
+/// handles the decrement / below-zero reject). On success the new accumulated `u64`
+/// is widened to `i128` (lossless — the ONE cast the counter-codec gate sanctions) so
+/// the V-aware caller in `atomic_ops` re-encodes it via `i128_to_counter_value::<V>`.
+/// Returns `None` for arbitrary `V`.
 pub(super) fn route_increment<V, S>(
     trie: &super::PersistentARTrieChar<V, S>,
     term: &str,
     delta: i64,
-) -> Option<Result<i64>>
+) -> Option<Result<i128>>
 where
     V: DictionaryValue,
     S: BlockStorage,
@@ -88,15 +89,15 @@ where
     let trie_u64 = (trie as &dyn Any).downcast_ref::<super::PersistentARTrieChar<u64, S>>()?;
     if delta < 0 {
         // Negative delta: the overlay counter cannot decrement — fall back to the
-        // owned tree (documented gap; PS3-guarded).
+        // value-CAS path (documented gap; PS3-guarded).
         return None;
     }
-    let delta_u64 = delta as u64;
+    let delta_u64 = u64::try_from(delta).ok()?;
     Some(
         trie_u64
             .try_increment_cas_durable(term, delta_u64)
-            // The overlay value domain is bounded by i64::MAX, so the widening is
-            // always lossless.
-            .map(|v| v as i64),
+            // Widen the new u64 count to i128 (lossless) so the V-aware caller
+            // converts via `i128_to_counter_value::<V>`.
+            .map(|count| count as i128),
     )
 }

@@ -60,11 +60,7 @@ fn wal_len(path: &Path) -> u64 {
 
 fn assert_char_value(dict: &PersistentARTrieChar<i32>, term: &str, value: i32) {
     assert!(dict.contains(term), "expected char term: {term}");
-    assert_eq!(
-        dict.get(term),
-        Some(value),
-        "char value for {term}"
-    );
+    assert_eq!(dict.get(term), Some(value), "char value for {term}");
 }
 
 fn build_checkpointed_char_trie(path: &Path) {

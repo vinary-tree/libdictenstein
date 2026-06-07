@@ -1940,8 +1940,7 @@ mod phase_21_char_prefix_operations {
 
         // Create, populate, and remove prefix
         {
-            let trie =
-                PersistentARTrieChar::<()>::create(&path).expect("Failed to create trie");
+            let trie = PersistentARTrieChar::<()>::create(&path).expect("Failed to create trie");
             trie.insert("apple").expect("insert failed");
             trie.insert("application").expect("insert failed");
             trie.insert("apply").expect("insert failed");
@@ -1977,8 +1976,7 @@ mod phase_21_char_prefix_operations {
 
         // Create and populate
         {
-            let trie =
-                PersistentARTrieChar::<()>::create(&path).expect("Failed to create trie");
+            let trie = PersistentARTrieChar::<()>::create(&path).expect("Failed to create trie");
             trie.insert("apple").expect("insert failed");
             trie.insert("application").expect("insert failed");
             trie.insert("banana").expect("insert failed");
@@ -2203,7 +2201,11 @@ mod phase_22_merge_operations {
         // Verify merged values
         // F2-migrate: Bucket A — `get()` returns None under the overlay (the C2 merge
         // routes through the overlay); read merged values via `get_value`.
-        assert_eq!(trie1.get_value("apple"), Some(12), "apple should be 5 + 7 = 12");
+        assert_eq!(
+            trie1.get_value("apple"),
+            Some(12),
+            "apple should be 5 + 7 = 12"
+        );
         assert_eq!(trie1.get_value("banana"), Some(3), "banana should remain 3");
         assert_eq!(
             trie1.get_value("cherry"),
@@ -2266,7 +2268,11 @@ mod phase_22_merge_operations {
         assert_eq!(processed, 2, "Should process 2 terms");
         assert_eq!(trie1.len(), 2, "trie1 should still have 2 terms");
         // F2-migrate: Bucket A — read merged values via `get_value` (overlay-routed).
-        assert_eq!(trie1.get_value("apple"), Some(15), "apple should be 10 + 5 = 15");
+        assert_eq!(
+            trie1.get_value("apple"),
+            Some(15),
+            "apple should be 10 + 5 = 15"
+        );
         assert_eq!(
             trie1.get_value("banana"),
             Some(30),
@@ -2324,8 +2330,16 @@ mod phase_22_merge_operations {
             Some(999),
             "apple should be replaced with 999"
         );
-        assert_eq!(trie1.get_value("banana"), Some(200), "banana should remain 200");
-        assert_eq!(trie1.get_value("cherry"), Some(300), "cherry should be added");
+        assert_eq!(
+            trie1.get_value("banana"),
+            Some(200),
+            "banana should remain 200"
+        );
+        assert_eq!(
+            trie1.get_value("cherry"),
+            Some(300),
+            "cherry should be added"
+        );
     }
 
     #[test]
@@ -2395,7 +2409,11 @@ mod phase_22_merge_operations {
 
             // F2-migrate: Bucket A — `get()` returns None under the overlay; the merged
             // values survive a normal `open_with_recovery` reopen and read via `get_value`.
-            assert_eq!(trie1.get_value("apple"), Some(12), "Merged apple should persist");
+            assert_eq!(
+                trie1.get_value("apple"),
+                Some(12),
+                "Merged apple should persist"
+            );
             assert_eq!(
                 trie1.get_value("banana"),
                 Some(3),
@@ -2689,8 +2707,7 @@ mod phase_22_merge_operations {
         let worker_paths: Vec<_> = (0..4)
             .map(|worker_id| {
                 let path = dir.path().join(format!("worker_{}.artrie", worker_id));
-                let trie =
-                    PersistentARTrieChar::<i64>::create(&path).expect("create worker trie");
+                let trie = PersistentARTrieChar::<i64>::create(&path).expect("create worker trie");
 
                 // All workers see the same n-grams (like "the|quick|brown")
                 for i in 0..10 {
@@ -2891,8 +2908,7 @@ mod phase_22_byte_arena_aware_iteration {
 
         let mut trie1: PersistentARTrie<i64> =
             PersistentARTrie::create(&path1).expect("create trie1");
-        let trie2: PersistentARTrie<i64> =
-            PersistentARTrie::create(&path2).expect("create trie2");
+        let trie2: PersistentARTrie<i64> = PersistentARTrie::create(&path2).expect("create trie2");
         // **M4b REFRAME.** Fresh `create::<i64>()` create-flips; trie-to-trie
         // `merge_from` is rejected under the overlay (it would overwrite rather than
         // combine accumulated values). Force both tries to the owned regime.
@@ -2928,8 +2944,7 @@ mod phase_22_byte_arena_aware_iteration {
 
         let mut trie1: PersistentARTrie<i64> =
             PersistentARTrie::create(&path1).expect("create trie1");
-        let trie2: PersistentARTrie<i64> =
-            PersistentARTrie::create(&path2).expect("create trie2");
+        let trie2: PersistentARTrie<i64> = PersistentARTrie::create(&path2).expect("create trie2");
         // **M4b REFRAME.** Fresh `create::<i64>()` create-flips; trie-to-trie
         // `merge_replace` is rejected under the overlay. Force both to owned.
         trie1.kill_switch_to_owned();

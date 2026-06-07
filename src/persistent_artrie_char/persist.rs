@@ -141,7 +141,12 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
         // pressure or an explicit force_eviction. Built only when eviction is
         // enabled; a no-op otherwise.
         if let Some(registry) = snapshot.eviction_registry {
-            if let Some(coordinator) = self.eviction_coordinator.lock().expect("eviction_coordinator mutex poisoned").as_ref() {
+            if let Some(coordinator) = self
+                .eviction_coordinator
+                .lock()
+                .expect("eviction_coordinator mutex poisoned")
+                .as_ref()
+            {
                 coordinator.update_disk_registry(registry);
             }
         }
@@ -476,8 +481,8 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
                 // iterative too (same reason). The root's finality is the overlay
                 // root's finality (`overlay_to_inner` set the inner root's final
                 // flag from `root.is_final()`).
-                let ptr = self
-                    .serialize_overlay_to_disk_iterative(&root, eviction_registry.as_mut())?;
+                let ptr =
+                    self.serialize_overlay_to_disk_iterative(&root, eviction_registry.as_mut())?;
                 let entry_count = count_overlay_finals(&root);
                 (ROOT_TYPE_NODE, ptr.to_raw(), root.is_final(), entry_count)
             }
@@ -740,7 +745,12 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
         //     `RwLock::write` swap with ZERO fsync (no per-checkpoint fsync-count
         //     asymmetry vs the eviction-OFF publisher).
         if let Some(registry) = snapshot.eviction_registry {
-            if let Some(coordinator) = self.eviction_coordinator.lock().expect("eviction_coordinator mutex poisoned").as_ref() {
+            if let Some(coordinator) = self
+                .eviction_coordinator
+                .lock()
+                .expect("eviction_coordinator mutex poisoned")
+                .as_ref()
+            {
                 coordinator.update_disk_registry(registry);
             }
         }
@@ -1074,11 +1084,9 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
             // Parent slot is near the start of an arena - children likely in previous arena
             // Use full encoding to avoid relative offset underflow during decode
             SerializationContext::full_encoding(parent_slot)
-        } else if let Some(first_child) = Self::check_sequential_char_children(
-            child_disk_ptrs,
-            parent_arena_id,
-            arena_node_count,
-        ) {
+        } else if let Some(first_child) =
+            Self::check_sequential_char_children(child_disk_ptrs, parent_arena_id, arena_node_count)
+        {
             // Children are consecutive in same arena: use sequential sibling encoding
             SerializationContext::sequential(parent_slot, first_child)
         } else {
@@ -2551,9 +2559,9 @@ mod immutable_eviction_checkpoint_correspondence {
     use crate::artrie_trait::EvictableARTrie;
     use crate::persistent_artrie::eviction::EvictionConfig;
     // F4: the `.read()/.write()` compat shim on the collapsed handle.
-    use crate::persistent_artrie_core::shared_access::SharedTrieAccess;
     use crate::persistent_artrie_char::{PersistentARTrieChar, SharedCharARTrie};
     use crate::persistent_artrie_core::durability::DurabilityPolicy;
+    use crate::persistent_artrie_core::shared_access::SharedTrieAccess;
     use crate::Dictionary;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, Barrier};

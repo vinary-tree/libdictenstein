@@ -231,11 +231,7 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     /// (V11.3 site 9) ensures a re-enable joins the OLD monitor thread WITHOUT
     /// holding the field mutex (its callback can re-enter the trie → force_eviction
     /// → OR/EC, so joining under the field mutex would deadlock).
-    pub fn enable_memory_monitor<F>(
-        &self,
-        config: MemoryPressureConfig,
-        callback: F,
-    ) -> Result<()>
+    pub fn enable_memory_monitor<F>(&self, config: MemoryPressureConfig, callback: F) -> Result<()>
     where
         F: Fn(MemoryPressureLevel, &MemoryStats) + Send + Sync + 'static,
     {

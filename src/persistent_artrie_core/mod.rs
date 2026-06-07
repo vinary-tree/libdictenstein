@@ -30,9 +30,13 @@ pub mod adaptive_pool;
 pub mod arena_slot;
 pub mod block_storage;
 pub mod buffer_manager;
+pub mod committed_watermark;
 pub mod compact_encoding;
 pub mod concurrency;
-pub mod committed_watermark;
+/// The shared `{i64, u64}` counter-leaf codec — the single `i128`-domain arithmetic
+/// substrate every counter-leaf read/write routes through (the u64 restoration). See
+/// `docs/design/counter-u64-restoration.md` and the module-level docs for the gate.
+pub mod counter_codec;
 pub mod dirty_tracker;
 pub mod disk_manager;
 pub mod durability;

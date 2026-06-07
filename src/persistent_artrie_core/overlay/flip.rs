@@ -89,7 +89,9 @@ pub(crate) enum RootPublishOutcome {
     AlreadyInState,
 }
 
-pub(crate) trait LockFreeOverlay<K: KeyEncoding, V: DictionaryValue, S>: Sized + 'static {
+pub(crate) trait LockFreeOverlay<K: KeyEncoding, V: DictionaryValue, S>:
+    Sized + 'static
+{
     /// The per-variant counter monomorph (`u64` for char, `i64` for byte). THE
     /// divergence that makes the value-route a seam, not a blanket. `Copy` so the
     /// publisher/getter seams can pass it by value. `Serialize + DeserializeOwned` so
@@ -105,9 +107,8 @@ pub(crate) trait LockFreeOverlay<K: KeyEncoding, V: DictionaryValue, S>: Sized +
 
     /// The lock-free overlay's atomic root pointer, or `None` if the overlay is
     /// not installed (`enable_lockfree()` not yet run for this trie).
-    fn lockfree_root(
-        &self,
-    ) -> Option<&crate::persistent_artrie_core::overlay::AtomicNodePtr<K, V>>;
+    fn lockfree_root(&self)
+        -> Option<&crate::persistent_artrie_core::overlay::AtomicNodePtr<K, V>>;
 
     /// The current kill-switch mode for this trie.
     fn overlay_write_mode(&self) -> OverlayWriteMode;
@@ -599,7 +600,9 @@ pub(crate) trait LockFreeOverlay<K: KeyEncoding, V: DictionaryValue, S>: Sized +
     /// CounterValue`, else `None`. The reestablish counter fold uses this to feed
     /// the typed publisher seam from the generic `V`-valued owned chunk.
     fn value_as_counter(value: &V) -> Option<Self::CounterValue> {
-        (value as &dyn Any).downcast_ref::<Self::CounterValue>().copied()
+        (value as &dyn Any)
+            .downcast_ref::<Self::CounterValue>()
+            .copied()
     }
 
     /// Re-wrap a `CounterValue` as `V` via a SAFE `Any` downcast iff `V ==
@@ -626,7 +629,10 @@ pub(crate) trait LockFreeOverlay<K: KeyEncoding, V: DictionaryValue, S>: Sized +
         use std::any::TypeId;
         // `V == CounterValue`: read the counter via the seam, re-wrap as `V`.
         if TypeId::of::<V>() == TypeId::of::<Self::CounterValue>() {
-            return Some(self.overlay_counter_get(units).and_then(Self::counter_as_value));
+            return Some(
+                self.overlay_counter_get(units)
+                    .and_then(Self::counter_as_value),
+            );
         }
         // `V == ()`: membership — present ⇒ `Some(())` re-wrapped as `V`.
         if TypeId::of::<V>() == TypeId::of::<()>() {
@@ -760,8 +766,11 @@ pub(crate) trait LockFreeOverlay<K: KeyEncoding, V: DictionaryValue, S>: Sized +
     /// no value-equality short-circuit (`DictionaryValue` does not bound
     /// `PartialEq`) — a redundant CAS on an identical value is correctness-neutral.
     fn overlay_publish_root_value(&self, value: V) -> Result<()> {
-        self.publish_root_cas(move |r| Arc::new(r.as_final().with_value(value.clone())), |_| true)
-            .map(|_| ())
+        self.publish_root_cas(
+            move |r| Arc::new(r.as_final().with_value(value.clone())),
+            |_| true,
+        )
+        .map(|_| ())
     }
 
     // ========================================================================
@@ -912,10 +921,12 @@ pub(crate) trait LockFreeOverlay<K: KeyEncoding, V: DictionaryValue, S>: Sized +
         if units.is_empty() {
             // Empty term "": clear root finality via a fresh non-final root CAS
             // (publish only if currently final — `needs_publish = is_final`).
-            if let Err(e) =
-                self.publish_root_cas(|r| Arc::new(r.as_non_final()), |r| r.is_final())
+            if let Err(e) = self.publish_root_cas(|r| Arc::new(r.as_non_final()), |r| r.is_final())
             {
-                log::warn!("F5 overlay_remove(\"\"): root non-final CAS failed: {:?}", e);
+                log::warn!(
+                    "F5 overlay_remove(\"\"): root non-final CAS failed: {:?}",
+                    e
+                );
             }
             return;
         }
@@ -988,7 +999,10 @@ pub(crate) trait LockFreeOverlay<K: KeyEncoding, V: DictionaryValue, S>: Sized +
                             true
                         }
                         Err(error) => {
-                            log::warn!("F5 overlay replay: insert value deserialize failed: {:?}", error);
+                            log::warn!(
+                                "F5 overlay replay: insert value deserialize failed: {:?}",
+                                error
+                            );
                             false
                         }
                     }
@@ -1009,12 +1023,17 @@ pub(crate) trait LockFreeOverlay<K: KeyEncoding, V: DictionaryValue, S>: Sized +
                         true
                     }
                     Err(error) => {
-                        log::warn!("F5 overlay replay: upsert value deserialize failed: {:?}", error);
+                        log::warn!(
+                            "F5 overlay replay: upsert value deserialize failed: {:?}",
+                            error
+                        );
                         false
                     }
                 }
             }
-            Op::CompareAndSwap { new_value, success, .. } => {
+            Op::CompareAndSwap {
+                new_value, success, ..
+            } => {
                 if !success {
                     return false;
                 }
@@ -1024,7 +1043,10 @@ pub(crate) trait LockFreeOverlay<K: KeyEncoding, V: DictionaryValue, S>: Sized +
                         true
                     }
                     Err(error) => {
-                        log::warn!("F5 overlay replay: CAS value deserialize failed: {:?}", error);
+                        log::warn!(
+                            "F5 overlay replay: CAS value deserialize failed: {:?}",
+                            error
+                        );
                         false
                     }
                 }
@@ -1033,9 +1055,10 @@ pub(crate) trait LockFreeOverlay<K: KeyEncoding, V: DictionaryValue, S>: Sized +
                 match result {
                     // Absolute (single Increment): SET the counter to `v` (incl. 0).
                     Some(v) => {
-                        // The reconcile carries the absolute value as i64. Re-encode it
-                        // as the typed `V` (the counter monomorph), then publish as a
-                        // value SET so an absolute-set-to-0 is honored (NOT accumulated).
+                        // The reconcile carries the absolute value in the i64 WAL field.
+                        // Re-encode it as the typed `V` (the counter monomorph), then
+                        // publish as a value SET so an absolute-set-to-0 is honored
+                        // (NOT accumulated).
                         match Self::counter_value_from_i64(v) {
                             Some(cv) => {
                                 // For "" the counter publisher no-ops (durable counter
@@ -1044,7 +1067,10 @@ pub(crate) trait LockFreeOverlay<K: KeyEncoding, V: DictionaryValue, S>: Sized +
                                 if units.is_empty() {
                                     if let Some(vv) = Self::counter_as_value(cv) {
                                         if let Err(e) = self.overlay_publish_root_value(vv) {
-                                            log::warn!("F5 overlay replay: root counter set failed: {:?}", e);
+                                            log::warn!(
+                                                "F5 overlay replay: root counter set failed: {:?}",
+                                                e
+                                            );
                                             return false;
                                         }
                                     }
@@ -1112,13 +1138,29 @@ pub(crate) trait LockFreeOverlay<K: KeyEncoding, V: DictionaryValue, S>: Sized +
         }
     }
 
-    /// Re-encode a recovered absolute-`i64` counter as the typed `CounterValue` via
-    /// bincode (the SAME bridge the owned char/byte appliers use:
-    /// `value_from_recovered_i64` / `value_from_i64`). `None` if `V`'s counter domain
-    /// cannot hold it (e.g. a negative for char's `u64`).
+    /// Re-encode a recovered counter (carried as an `i64` in the reconcile stream) as
+    /// the typed `CounterValue`, routed through the shared `counter_codec` i128
+    /// substrate by decoding via the LEAF BYTES
+    /// (`counter_leaf_to_i128(&v.to_le_bytes())`) — the SAME bit-pattern-faithful decode
+    /// the owned char/byte appliers use (`value_from_recovered_i64` / `value_from_i64`).
+    ///
+    /// **Why leaf-bytes, NOT `v as i128`:** the absolute-`Increment` caller feeds the
+    /// `WalRecord::Increment.result` field, which the write path fills with
+    /// `counter_return_i64(new_count)` — the i64 BIT-PATTERN of the count, which is
+    /// NEGATIVE for a `u64` count > `i64::MAX`. `v as i128` would keep it negative and
+    /// `i128_to_counter_value::<u64>` would reject it (`None`), so the absolute increment
+    /// would be DROPPED on Overlay-regime reopen = silent data loss (the counter reverts
+    /// to its last checkpoint value). Decoding via the leaf bytes recovers the true
+    /// `u64` magnitude (the 8 LE bytes of a negative i64 ARE the 8 LE bytes of the u64
+    /// it represents — `bincode legacy`/fixint). For the DELTA caller (`v` a non-negative
+    /// i64 chunk) both decodes agree, so the leaf decode is correct for BOTH call sites.
+    /// The helper then range-checks into `CounterValue` (`None` for a non-counter `V`),
+    /// confining the bincode round-trip to `counter_codec` so the v6 gate holds.
     fn counter_value_from_i64(v: i64) -> Option<Self::CounterValue> {
-        let bytes = crate::serialization::bincode_compat::serialize(&v).ok()?;
-        crate::serialization::bincode_compat::deserialize::<Self::CounterValue>(&bytes).ok()
+        use crate::persistent_artrie_core::counter_codec;
+        let magnitude =
+            counter_codec::counter_leaf_to_i128::<Self::CounterValue>(&v.to_le_bytes())?;
+        counter_codec::i128_to_counter_value::<Self::CounterValue>(magnitude)
     }
 
     /// **F5 (THE data-loss-critical path) — replay the WAL tail INTO THE OVERLAY**
@@ -1161,5 +1203,4 @@ pub(crate) trait LockFreeOverlay<K: KeyEncoding, V: DictionaryValue, S>: Sized +
         }
         applied
     }
-
 }

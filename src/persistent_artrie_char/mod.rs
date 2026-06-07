@@ -140,8 +140,8 @@ pub mod query_api;
 pub mod prefix_helpers;
 
 // Public prefix iter + remove API (Phase-6 split out of dict_impl_char).
-pub mod prefix_api;
 pub mod overlay_read;
+pub mod prefix_api;
 
 // Char overlay fault-in handles (`OverlayFaulter` impls) that let the
 // overlay-backed `DictionaryNode` resolve `Child::OnDisk` overlay children during a
@@ -744,7 +744,10 @@ impl<V: DictionaryValue, S: crate::persistent_artrie::block_storage::BlockStorag
             use crate::persistent_artrie_core::overlay::flip::LockFreeOverlay;
             let root = <Self as LockFreeOverlay<CharKey, V, S>>::overlay_root_node(self)
                 .unwrap_or_else(|| {
-                    Arc::new(crate::persistent_artrie_core::overlay::OverlayNode::<CharKey, V>::new())
+                    Arc::new(crate::persistent_artrie_core::overlay::OverlayNode::<
+                        CharKey,
+                        V,
+                    >::new())
                 });
             return PersistentARTrieCharNode::from_overlay_root(root, None);
         }
@@ -1378,12 +1381,16 @@ impl<V: DictionaryValue> Dictionary for SharedCharARTrie<V> {
         // dropping it. No raw pointer, no `unsafe` in this arm.
         if guard.route_overlay() {
             use crate::persistent_artrie_core::overlay::flip::LockFreeOverlay;
-            let root = <PersistentARTrieChar<V> as LockFreeOverlay<CharKey, V, _>>::overlay_root_node(
-                &guard,
-            )
-            .unwrap_or_else(|| {
-                Arc::new(crate::persistent_artrie_core::overlay::OverlayNode::<CharKey, V>::new())
-            });
+            let root =
+                <PersistentARTrieChar<V> as LockFreeOverlay<CharKey, V, _>>::overlay_root_node(
+                    &guard,
+                )
+                .unwrap_or_else(|| {
+                    Arc::new(crate::persistent_artrie_core::overlay::OverlayNode::<
+                        CharKey,
+                        V,
+                    >::new())
+                });
             drop(guard);
             let faulter: Arc<
                 dyn crate::persistent_artrie_core::overlay::OverlayFaulter<CharKey, V>,
@@ -2019,7 +2026,12 @@ pub(crate) fn evict_overlay_nodes<
                     bytes_freed += 256;
                     // Drop the LRU entry so a later (re)insert of this cold path
                     // starts fresh (parity with `evict_char_nodes`).
-                    if let Some(coordinator) = trie.eviction_coordinator.lock().expect("eviction_coordinator mutex poisoned").as_ref() {
+                    if let Some(coordinator) = trie
+                        .eviction_coordinator
+                        .lock()
+                        .expect("eviction_coordinator mutex poisoned")
+                        .as_ref()
+                    {
                         use crate::persistent_artrie::eviction::lru_tracker::hash_char_path;
                         coordinator
                             .lru_registry()
@@ -2328,7 +2340,12 @@ impl<V: DictionaryValue, S: crate::persistent_artrie::block_storage::BlockStorag
         // violation (which would dangle the handle's raw pointer) as a loud failure.
         self.structural_generation
             .fetch_add(1, std::sync::atomic::Ordering::Release);
-        if let Some(coordinator) = self.eviction_coordinator.lock().expect("eviction_coordinator mutex poisoned").as_ref() {
+        if let Some(coordinator) = self
+            .eviction_coordinator
+            .lock()
+            .expect("eviction_coordinator mutex poisoned")
+            .as_ref()
+        {
             coordinator.invalidate_registry();
         }
     }
@@ -2661,7 +2678,7 @@ mod tests {
     #[test]
     fn dictionary_node_traversal_descends_after_forced_eviction() {
         use crate::{Dictionary, DictionaryNode, EvictableARTrie};
-        
+
         use std::sync::Arc;
 
         let dir = tempfile::tempdir().expect("tempdir");

@@ -97,8 +97,7 @@ fn wal_len(path: &Path) -> u64 {
 fn byte_value_insert_serialization_failure_preserves_memory_and_wal() {
     let temp_dir = TempDir::new().expect("tempdir");
     let path = temp_dir.path().join("byte_insert.part");
-    let trie =
-        PersistentARTrie::<FailingSerializeValue>::create(&path).expect("create byte trie");
+    let trie = PersistentARTrie::<FailingSerializeValue>::create(&path).expect("create byte trie");
     let before_wal = wal_len(&path);
 
     assert!(!trie.insert_with_value("bad", FailingSerializeValue(7)));

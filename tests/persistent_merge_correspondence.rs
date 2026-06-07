@@ -9,9 +9,9 @@
 #![allow(deprecated)]
 
 use libdictenstein::persistent_artrie::PersistentARTrie;
-use libdictenstein::persistent_artrie_core::shared_access::SharedTrieAccess;
 #[cfg(feature = "parallel-merge")]
 use libdictenstein::persistent_artrie::{SharedARTrie, SharedARTrieParallelExt};
+use libdictenstein::persistent_artrie_core::shared_access::SharedTrieAccess;
 #[cfg(feature = "parallel-merge")]
 use libdictenstein::ARTrie;
 use libdictenstein::{Dictionary, MappedDictionary};

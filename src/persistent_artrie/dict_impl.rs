@@ -1310,7 +1310,7 @@ mod tests {
 
     mod sequential_siblings_tests {
         use super::*;
-        
+
         use crate::persistent_artrie::nodes::{ChildStorage, Node, Node4};
         use crate::persistent_artrie::swizzled_ptr::SwizzledPtr;
 
@@ -1918,17 +1918,41 @@ mod tests {
         let dict: PersistentARTrie = PersistentARTrie::new();
 
         // Initially, no dirty paths
-        assert!(dict.dirty_prefixes.lock().expect("dirty_prefixes mutex poisoned").is_empty());
+        assert!(dict
+            .dirty_prefixes
+            .lock()
+            .expect("dirty_prefixes mutex poisoned")
+            .is_empty());
 
         // Insert a term - should record the path
         dict.insert("apple");
 
         // Check that path prefixes are recorded
-        assert!(dict.dirty_prefixes.lock().expect("dirty_prefixes mutex poisoned").contains(&vec![])); // Root
-        assert!(dict.dirty_prefixes.lock().expect("dirty_prefixes mutex poisoned").contains(&vec![b'a']));
-        assert!(dict.dirty_prefixes.lock().expect("dirty_prefixes mutex poisoned").contains(&vec![b'a', b'p']));
-        assert!(dict.dirty_prefixes.lock().expect("dirty_prefixes mutex poisoned").contains(&vec![b'a', b'p', b'p']));
-        assert!(dict.dirty_prefixes.lock().expect("dirty_prefixes mutex poisoned").contains(&vec![b'a', b'p', b'p', b'l']));
+        assert!(dict
+            .dirty_prefixes
+            .lock()
+            .expect("dirty_prefixes mutex poisoned")
+            .contains(&vec![])); // Root
+        assert!(dict
+            .dirty_prefixes
+            .lock()
+            .expect("dirty_prefixes mutex poisoned")
+            .contains(&vec![b'a']));
+        assert!(dict
+            .dirty_prefixes
+            .lock()
+            .expect("dirty_prefixes mutex poisoned")
+            .contains(&vec![b'a', b'p']));
+        assert!(dict
+            .dirty_prefixes
+            .lock()
+            .expect("dirty_prefixes mutex poisoned")
+            .contains(&vec![b'a', b'p', b'p']));
+        assert!(dict
+            .dirty_prefixes
+            .lock()
+            .expect("dirty_prefixes mutex poisoned")
+            .contains(&vec![b'a', b'p', b'p', b'l']));
         assert!(dict
             .dirty_prefixes
             .lock()
@@ -1945,10 +1969,22 @@ mod tests {
         dict.insert("apricot");
 
         // Both share "ap" prefix, so paths should include both
-        assert!(dict.dirty_prefixes.lock().expect("dirty_prefixes mutex poisoned").contains(&vec![b'a', b'p']));
+        assert!(dict
+            .dirty_prefixes
+            .lock()
+            .expect("dirty_prefixes mutex poisoned")
+            .contains(&vec![b'a', b'p']));
         // Each has its own suffix paths
-        assert!(dict.dirty_prefixes.lock().expect("dirty_prefixes mutex poisoned").contains(&vec![b'a', b'p', b'p'])); // apple
-        assert!(dict.dirty_prefixes.lock().expect("dirty_prefixes mutex poisoned").contains(&vec![b'a', b'p', b'r'])); // apricot
+        assert!(dict
+            .dirty_prefixes
+            .lock()
+            .expect("dirty_prefixes mutex poisoned")
+            .contains(&vec![b'a', b'p', b'p'])); // apple
+        assert!(dict
+            .dirty_prefixes
+            .lock()
+            .expect("dirty_prefixes mutex poisoned")
+            .contains(&vec![b'a', b'p', b'r'])); // apricot
     }
 
     #[test]
@@ -1956,7 +1992,10 @@ mod tests {
         let dict: PersistentARTrie = PersistentARTrie::new();
 
         dict.insert("apple");
-        dict.dirty_prefixes.lock().expect("dirty_prefixes mutex poisoned").clear(); // Clear after insert
+        dict.dirty_prefixes
+            .lock()
+            .expect("dirty_prefixes mutex poisoned")
+            .clear(); // Clear after insert
 
         // Remove should also record the path
         dict.remove("apple");
@@ -1974,7 +2013,11 @@ mod tests {
         dict.insert("apple");
         dict.insert("banana");
 
-        assert!(!dict.dirty_prefixes.lock().expect("dirty_prefixes mutex poisoned").is_empty());
+        assert!(!dict
+            .dirty_prefixes
+            .lock()
+            .expect("dirty_prefixes mutex poisoned")
+            .is_empty());
 
         // Manually add a cached location to verify it's NOT cleared
         // (This simulates what happens after serialization)
@@ -1986,7 +2029,11 @@ mod tests {
         // Clear should reset dirty_prefixes but PRESERVE persisted_disk_locations
         dict.clear_dirty_tracking_state();
 
-        assert!(dict.dirty_prefixes.lock().expect("dirty_prefixes mutex poisoned").is_empty());
+        assert!(dict
+            .dirty_prefixes
+            .lock()
+            .expect("dirty_prefixes mutex poisoned")
+            .is_empty());
         // persisted_disk_locations should NOT be cleared - we preserve cached locations
         // for subsequent checkpoints to skip clean subtrees
         assert!(!dict.persisted_disk_locations.read().is_empty());

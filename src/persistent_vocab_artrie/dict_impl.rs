@@ -1066,7 +1066,11 @@ mod tests {
             vocab.checkpoint().unwrap();
         }
         let (vocab, _report) = PersistentVocabARTrie::open_with_recovery(&path).unwrap();
-        assert_eq!(vocab.get_index(""), Some(0), "\"\" -> index 0 lost after reopen");
+        assert_eq!(
+            vocab.get_index(""),
+            Some(0),
+            "\"\" -> index 0 lost after reopen"
+        );
         assert_eq!(
             vocab.get_term(0),
             Some("".to_string()),

@@ -14,7 +14,7 @@
 //!    `super::overlay_write_mode::OverlayWriteMode` site resolves;
 //! 2. the byte SEAM impl `impl LockFreeOverlay<ByteKey, V, S> for
 //!    PersistentARTrie<V, S>` (per-variant owned readers / overlay publishers /
-//!    WAL accessors / `CounterValue = i64`);
+//!    WAL accessors / `CounterValue = u64`, matching char post-u64-restoration);
 //! 3. thin inherent wrappers (`route_overlay` / `flip_to_overlay` /
 //!    `kill_switch_to_owned` / `set_overlay_write_mode` / `overlay_eligible_v`)
 //!    that DELEGATE to the trait, so the byte call sites and the byte
@@ -177,7 +177,11 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
                 for (edge, grandchild) in children {
                     let mut child_prefix = prefix.clone();
                     child_prefix.push(*edge);
-                    self.unrouted_collect_terms_with_values_under_child(grandchild, child_prefix, out);
+                    self.unrouted_collect_terms_with_values_under_child(
+                        grandchild,
+                        child_prefix,
+                        out,
+                    );
                 }
             }
             ChildNode::DiskRef { ptr } => {
@@ -268,7 +272,11 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
                         }
                     }
                     for (edge, child) in children {
-                        self.unrouted_collect_terms_with_values_under_child(child, vec![*edge], &mut out);
+                        self.unrouted_collect_terms_with_values_under_child(
+                            child,
+                            vec![*edge],
+                            &mut out,
+                        );
                     }
                     return Some(out);
                 }
@@ -382,7 +390,9 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
                     }),
                 Err(_) => None,
             },
-            TrieRoot::ArtNode { is_final, value, .. } => {
+            TrieRoot::ArtNode {
+                is_final, value, ..
+            } => {
                 if *is_final {
                     value.clone()
                 } else {
@@ -400,11 +410,10 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
 impl<V: DictionaryValue, S: BlockStorage> LockFreeOverlay<ByteKey, V, S>
     for PersistentARTrie<V, S>
 {
-    /// `i64` — the byte counter monomorph (char's is `u64`). The overlay leaf
-    /// stores a non-negative `i64` (bounded by `LOCKFREE_COUNTER_MAX = i64::MAX`),
-    /// so the i64↔u64 boundary conversion in `overlay_publish_counter` /
-    /// `overlay_counter_get` is lossless.
-    type CounterValue = i64;
+    /// `u64` — the byte counter monomorph (matching char, post-u64-restoration). The
+    /// overlay leaf stores the count as the trie's own `u64` value, so
+    /// `overlay_publish_counter` / `overlay_counter_get` need no boundary conversion.
+    type CounterValue = u64;
 
     // ---- small accessors ----
 
@@ -462,7 +471,10 @@ impl<V: DictionaryValue, S: BlockStorage> LockFreeOverlay<ByteKey, V, S>
     fn wal_stamp_owned_regime(&self) {
         if let Some(ref writer) = self.wal_writer {
             if let Err(e) = writer.set_owned_regime() {
-                log::warn!("kill_switch_to_owned: could not stamp Owned regime: {:?}", e);
+                log::warn!(
+                    "kill_switch_to_owned: could not stamp Owned regime: {:?}",
+                    e
+                );
             }
         }
     }
@@ -532,45 +544,26 @@ impl<V: DictionaryValue, S: BlockStorage> LockFreeOverlay<ByteKey, V, S>
         self.insert_cas(units);
     }
 
-    fn overlay_publish_counter(&self, units: &[u8], value: i64) {
-        // `V == i64` in this routed branch (the counter reestablish runs only for
-        // the i64 monomorph via the dispatch). SAFE `Any` downcast to the nameable
-        // `<i64, S>` monomorph (where `increment_cas` lives), then the no-WAL
-        // increment. The leaf stores i64; the publisher API takes the delta as
-        // `u64`, so widen the non-negative i64 count losslessly. A negative here
-        // is a bug (the counter is non-negative, bounded by LOCKFREE_COUNTER_MAX;
-        // M2b's value-bound rejects negatives upstream) — guard defensively.
+    fn overlay_publish_counter(&self, units: &[u8], value: u64) {
+        // `V == u64` in this routed branch (the counter reestablish runs only for
+        // the u64 monomorph via the dispatch). SAFE `Any` downcast to the nameable
+        // `<u64, S>` monomorph (where `increment_cas` lives), then the no-WAL
+        // increment. The leaf stores the count as the trie's own `u64` value, and
+        // `increment_cas` takes the delta as `u64`, so the publish is direct (no
+        // boundary conversion, no sign guard — `u64` is non-negative by type).
         use std::any::Any;
-        debug_assert!(
-            value >= 0,
-            "overlay_publish_counter: negative counter {} for byte term {:?} (counters are non-negative)",
-            value,
-            units
-        );
-        if value < 0 {
-            log::warn!(
-                "overlay_publish_counter: dropping negative counter {} for byte term {:?} (counters are non-negative)",
-                value,
-                units
-            );
-            return;
-        }
-        if let Some(trie_i64) =
-            (self as &dyn Any).downcast_ref::<PersistentARTrie<i64, S>>()
-        {
-            trie_i64.increment_cas(units, value as u64);
+        if let Some(trie_u64) = (self as &dyn Any).downcast_ref::<PersistentARTrie<u64, S>>() {
+            trie_u64.increment_cas(units, value);
         }
     }
 
-    fn overlay_counter_get(&self, units: &[u8]) -> Option<i64> {
-        // SAFE `Any` downcast to `<i64, S>` + the lock-free point read.
-        // `get_lockfree` returns the count widened to `u64` (non-negative,
-        // bounded by i64::MAX), so the narrow back to `i64` is lossless.
+    fn overlay_counter_get(&self, units: &[u8]) -> Option<u64> {
+        // SAFE `Any` downcast to `<u64, S>` + the lock-free point read.
+        // `get_lockfree` returns the count as the trie's own `u64` value (direct).
         use std::any::Any;
         (self as &dyn Any)
-            .downcast_ref::<PersistentARTrie<i64, S>>()
-            .and_then(|trie_i64| trie_i64.get_lockfree(units))
-            .map(|count| count as i64)
+            .downcast_ref::<PersistentARTrie<u64, S>>()
+            .and_then(|trie_u64| trie_u64.get_lockfree(units))
     }
 
     fn overlay_contains(&self, units: &[u8]) -> bool {
@@ -693,25 +686,24 @@ impl<V: DictionaryValue, S: BlockStorage> DurableOverlayWrite<ByteKey, V, S>
 
     // ---- increment value-domain seam (C4 — the byte i64 bound) ----
 
-    fn bound_increment_delta(&self, key: &str, delta: i64) -> Result<i64> {
-        // **C4 (the byte i64 value-domain bound).** The WAL increment domain is
-        // `i64` for every variant, and the byte overlay counter is non-negative
-        // (the leaf stores a non-negative `i64`, the running sum bounded by
-        // `LOCKFREE_COUNTER_MAX = i64::MAX`). `CounterValue = i64`, so a `delta`
-        // already CANNOT exceed `i64::MAX` (that is the char `u64` reject, vacuous
-        // here); the byte reject is the NEGATIVE delta — a negative would, under the
-        // commutative-sum replay, drive the recovered count below 0 (an
-        // un-representable state for a count) or silently subtract, so we FAIL LOUD
-        // rather than wrap/panic. Returns the bounded `i64` the delta WAL record
-        // carries (identity for a valid non-negative delta).
-        if delta < 0 {
-            return Err(PersistentARTrieError::InvalidOperation(format!(
-                "try_increment_cas_durable delta for byte term {:?} must be non-negative \
-                 (the overlay counter domain is a non-negative i64); got {}",
+    fn bound_increment_delta(&self, key: &str, delta: u64) -> Result<i64> {
+        // **C4 (the byte counter value-domain bound).** Byte-identical to char now
+        // that the byte counter is a full `u64`: a SINGLE durable `BatchIncrement`
+        // delta is carried in ONE `i64` WAL chunk, so a `delta > i64::MAX` cannot be
+        // logged by one durable call (a magnitude above `i64::MAX` is reachable via
+        // the merge chunker `split_u64_delta_to_i64_chunks` or multiple durable
+        // increments, NOT a single delta). The negative-delta case is filtered
+        // UPSTREAM by `route_increment_bytes` (a signed public `delta < 0` routes to
+        // the value-CAS path), so by construction `delta` here is a non-negative
+        // `u64`. We reject `> i64::MAX` LOUD rather than wrap. Returns the bounded
+        // `i64` the delta WAL record carries.
+        i64::try_from(delta).map_err(|_| {
+            PersistentARTrieError::InvalidOperation(format!(
+                "try_increment_cas_durable delta for byte term {:?} exceeds the i64 per-call WAL \
+                 delta domain: {}",
                 key, delta
-            )));
-        }
-        Ok(delta)
+            ))
+        })
     }
 
     #[inline]
@@ -723,27 +715,22 @@ impl<V: DictionaryValue, S: BlockStorage> DurableOverlayWrite<ByteKey, V, S>
         }
     }
 
-    fn increment_publish_inner(&self, key: &str, delta: i64) -> Result<(i64, u64)> {
-        // `try_increment_cas_inner` is i64-specialized (`impl<S> ...<i64, S>`), so
-        // downcast `self` to the nameable `<i64, S>` monomorph via a SAFE `Any`
+    fn increment_publish_inner(&self, key: &str, delta: u64) -> Result<(u64, u64)> {
+        // `try_increment_cas_inner` is u64-specialized (`impl<S> ...<u64, S>`), so
+        // downcast `self` to the nameable `<u64, S>` monomorph via a SAFE `Any`
         // (the same zero-`unsafe` pattern as `overlay_publish_counter`). The counter
-        // durable path runs only for the i64 monomorph (the value route), so this
+        // durable path runs only for the u64 monomorph (the value route), so this
         // downcast always succeeds there; an ineligible `V` returns the empty result
-        // (the durable increment is never reached for non-i64 `V`).
+        // (the durable increment is never reached for non-u64 `V`).
         //
-        // Byte's `try_increment_cas_inner` takes `(&[u8], u64)` and returns
-        // `(u64, u64)`. `delta` is non-negative here (C4 `bound_increment_delta`
-        // ran first), so `delta as u64` is lossless; the returned count is bounded by
-        // `LOCKFREE_COUNTER_MAX = i64::MAX`, so the narrow back to `i64` is lossless.
+        // Byte's `try_increment_cas_inner` now takes `(&[u8], u64)` and returns
+        // `(u64, u64)` — the byte counter is `u64`, so `delta` (already
+        // `CounterValue = u64`) and the returned count flow through with NO cast.
         // `key.as_bytes()` recovers the raw key bytes (byte's durable increment path
         // operates on UTF-8 keys — the public wrapper validates this).
         use std::any::Any;
-        match (self as &dyn Any).downcast_ref::<PersistentARTrie<i64, S>>() {
-            Some(trie_i64) => {
-                let (new_val, generation) =
-                    trie_i64.try_increment_cas_inner(key.as_bytes(), delta as u64)?;
-                Ok((new_val as i64, generation))
-            }
+        match (self as &dyn Any).downcast_ref::<PersistentARTrie<u64, S>>() {
+            Some(trie_u64) => trie_u64.try_increment_cas_inner(key.as_bytes(), delta),
             None => Ok((0, 0)),
         }
     }
@@ -811,14 +798,14 @@ impl<V: DictionaryValue, S: BlockStorage> DurableOverlayWrite<ByteKey, V, S>
                         .find_leaf_recursive(&root, key_bytes, 0)
                         .and_then(|leaf| leaf.get_value());
                     let cur_bytes = match &cur {
-                        Some(v) => {
-                            Some(crate::serialization::bincode_compat::serialize(v).map_err(|e| {
+                        Some(v) => Some(
+                            crate::serialization::bincode_compat::serialize(v).map_err(|e| {
                                 PersistentARTrieError::internal(format!(
                                     "Failed to serialize value: {}",
                                     e
                                 ))
-                            })?)
-                        }
+                            })?,
+                        ),
                         None => None,
                     };
                     if &cur_bytes != expected_bytes {
@@ -826,7 +813,8 @@ impl<V: DictionaryValue, S: BlockStorage> DurableOverlayWrite<ByteKey, V, S>
                     }
                 }
             }
-            let new_root = match self.build_value_path_recursive(&root, key_bytes, 0, value.clone()) {
+            let new_root = match self.build_value_path_recursive(&root, key_bytes, 0, value.clone())
+            {
                 Some(r) => r,
                 None => {
                     self.cas_retries.fetch_add(1, Ordering::Relaxed);
@@ -1016,15 +1004,14 @@ mod tests {
 
     #[test]
     fn byte_eligible_v_gate() {
-        // The original byte eligible monomorphs are `{(), i64}` (NOT u64 — byte's
-        // counter is i64) — always eligible.
+        // Arbitrary-V overlay routing is the default: ANY `V` is overlay-eligible.
+        // The byte counter monomorph is now `u64` (matching char, post-u64-
+        // restoration); `()` is membership, and every other `V` (incl. `i64` and
+        // `String`) is arbitrary-V — all eligible.
         use crate::persistent_artrie::PersistentARTrie;
         assert!(PersistentARTrie::<()>::overlay_eligible_v());
-        assert!(PersistentARTrie::<i64>::overlay_eligible_v());
-
-        // Arbitrary-V overlay routing is the default: ANY `V` is overlay-eligible
-        // (`u64` is byte-arbitrary since byte's counter is i64, and `String`).
         assert!(PersistentARTrie::<u64>::overlay_eligible_v());
+        assert!(PersistentARTrie::<i64>::overlay_eligible_v());
         assert!(PersistentARTrie::<String>::overlay_eligible_v());
     }
 

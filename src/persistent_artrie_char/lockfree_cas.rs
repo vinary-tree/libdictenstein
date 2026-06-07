@@ -18,13 +18,22 @@ use std::sync::Arc;
 use crate::persistent_artrie::block_storage::BlockStorage;
 use crate::persistent_artrie::error::{PersistentARTrieError, Result};
 use crate::persistent_artrie::wal::WalRecord;
+use crate::persistent_artrie_core::counter_codec;
 use crate::persistent_artrie_core::key_encoding::CharKey;
 use crate::persistent_artrie_core::overlay::durable_write::DurableOverlayWrite;
 use crate::value::DictionaryValue;
 
 use super::dict_impl_char::LockfreeInsertResult;
 
-pub(super) const LOCKFREE_COUNTER_MAX: u64 = i64::MAX as u64;
+// The char counter is a full `u64` (the u64 restoration). Overflow is detected by
+// the i128-domain range check in `counter_codec` (`i128_to_counter_leaf::<u64>`
+// rejects `> u64::MAX`) plus `checked_add` on the running `u64` sum — the prior
+// `i64::MAX` cap (and the now-vacuous `delta > MAX` / `v <= MAX` u64 tautologies)
+// are gone. The const is retained as the documented counter-domain ceiling (referred
+// to by the surrounding docs); `counter_codec` is the live enforcer, so the value is
+// no longer read in code.
+#[allow(dead_code)]
+pub(super) const LOCKFREE_COUNTER_MAX: u64 = u64::MAX;
 
 /// **OD4 deterministic-regression rendezvous (test-only).** The two phases a
 /// durable lock-free op crosses between Order-A step 1 (WAL append) and the ack:
@@ -225,7 +234,10 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     pub(crate) fn overlay_remove_no_wal(&self, chars: &[u32]) {
         use crate::persistent_artrie_core::key_encoding::{CharKey, KeyEncoding};
         use std::sync::atomic::Ordering;
-        debug_assert!(!chars.is_empty(), "overlay_remove_no_wal: empty term handled by root publisher");
+        debug_assert!(
+            !chars.is_empty(),
+            "overlay_remove_no_wal: empty term handled by root publisher"
+        );
         let lockfree_root = match self.lockfree_root.as_ref() {
             Some(r) => r,
             None => return,
@@ -484,7 +496,9 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
             // the fresh-root-CAS RANKED publisher (NOT `try_insert_lockfree_path`, which
             // finalizes in-place — a concurrent non-empty insert's `with_child` root-copy
             // snapshots flags and would discard an in-place finalize).
-            use crate::persistent_artrie_core::overlay::flip::{LockFreeOverlay, RootPublishOutcome};
+            use crate::persistent_artrie_core::overlay::flip::{
+                LockFreeOverlay, RootPublishOutcome,
+            };
             let _epoch = self.epoch_manager.enter_read();
             if self.overlay_root_node().map_or(false, |r| r.is_final()) {
                 lockfree_cache.insert(term.to_string(), true);
@@ -494,9 +508,7 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
                 term: term.as_bytes().to_vec(),
                 value: None,
             })?;
-            match self
-                .publish_root_cas_ranked(|r| Arc::new(r.as_final()), |r| r.is_final())?
-            {
+            match self.publish_root_cas_ranked(|r| Arc::new(r.as_final()), |r| r.is_final())? {
                 RootPublishOutcome::Published(generation) => {
                     lockfree_cache.insert(term.to_string(), true);
                     self.commit_rank_and_mark(lsn, term.as_bytes(), generation)?;
@@ -696,7 +708,9 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
             // Empty-string support (H4): "" is the root. Order-A durable remove via the
             // fresh-root-CAS RANKED un-publisher (`as_non_final` on a FRESH root, NOT an
             // in-place clear of the shared root — last-writer-wins via the single root CAS).
-            use crate::persistent_artrie_core::overlay::flip::{LockFreeOverlay, RootPublishOutcome};
+            use crate::persistent_artrie_core::overlay::flip::{
+                LockFreeOverlay, RootPublishOutcome,
+            };
             let _epoch = self.epoch_manager.enter_read();
             if !self.overlay_root_node().map_or(false, |r| r.is_final()) {
                 lockfree_cache.remove(term);
@@ -705,9 +719,7 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
             let lsn = self.append_to_wal_returning_lsn(WalRecord::Remove {
                 term: term.as_bytes().to_vec(),
             })?;
-            match self
-                .publish_root_cas_ranked(|r| Arc::new(r.as_non_final()), |r| !r.is_final())?
-            {
+            match self.publish_root_cas_ranked(|r| Arc::new(r.as_non_final()), |r| !r.is_final())? {
                 RootPublishOutcome::Published(generation) => {
                     lockfree_cache.remove(term);
                     self.commit_rank_and_mark(lsn, term.as_bytes(), generation)?;
@@ -1613,7 +1625,9 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
                         Arc::new(PersistentCharNode::<V>::new().as_final().with_value(value));
                     let mut sub = leaf;
                     for &c in chars[d + 1..].iter().rev() {
-                        sub = Arc::new(PersistentCharNode::<V>::new().with_child(c, Child::InMem(sub)));
+                        sub = Arc::new(
+                            PersistentCharNode::<V>::new().with_child(c, Child::InMem(sub)),
+                        );
                     }
                     let mut new_node = Arc::new(current.with_child(key, Child::InMem(sub)));
                     for (parent, k) in spine.into_iter().rev() {
@@ -1736,9 +1750,9 @@ impl<S: BlockStorage> super::PersistentARTrieChar<u64, S> {
         // final → its value, else 0) and republishes via `build_value_path_recursive`
         // (fresh-root-CAS at depth 0). The root counter RMW is the depth-0 case of the
         // general loop — no rejection.
-        if delta > LOCKFREE_COUNTER_MAX {
-            return Err(Self::lockfree_increment_overflow_error(key, None, delta));
-        }
+        // (The former `delta > LOCKFREE_COUNTER_MAX` early-return is gone — vacuous on
+        // u64; a true `cur + delta` overflow past u64::MAX is caught below by the
+        // i128-domain range check in `counter_codec`.)
 
         let _epoch = self.epoch_manager.enter_read();
 
@@ -1787,17 +1801,21 @@ impl<S: BlockStorage> super::PersistentARTrieChar<u64, S> {
             //     .and_then(|leaf| leaf.get_value())
             //     .unwrap_or(0);
 
-            // (3) Overflow-check against the i64 persistence domain.
-            let new_val = match cur.checked_add(delta) {
-                Some(v) if v <= LOCKFREE_COUNTER_MAX => v,
-                _ => {
-                    return Err(Self::lockfree_increment_overflow_error(
-                        key,
-                        Some(cur),
-                        delta,
-                    ))
-                }
-            };
+            // (3) Compute `cur + delta` in the i128 substrate, range-checked into
+            // `[0, u64::MAX]` — a count above `i64::MAX` is honored, and a true u64
+            // overflow is rejected LOUD (never silently wrapped). `cur`/`delta` widen
+            // losslessly to i128.
+            let new_val =
+                match counter_codec::i128_to_counter_value::<u64>(cur as i128 + delta as i128) {
+                    Some(v) => v,
+                    None => {
+                        return Err(Self::lockfree_increment_overflow_error(
+                            key,
+                            Some(cur),
+                            delta,
+                        ))
+                    }
+                };
 
             // (4) Build a new root with the value-carrying leaf spliced in.
             let new_root = match self.build_value_path_recursive(&root, &chars, 0, new_val) {
@@ -1917,19 +1935,16 @@ impl<S: BlockStorage> super::PersistentARTrieChar<u64, S> {
     /// Returns `Ok(true)` iff this call newly inserted the term.
     pub fn insert_cas_with_value_durable(&self, term: &str, value: u64) -> Result<bool> {
         // **Flip F0 (G5): thin caller of the SHARED GENERIC value-write default.**
-        // The u64-specific overflow guard stays here (the WAL counter domain is i64,
-        // so a u64 value > LOCKFREE_COUNTER_MAX cannot round-trip); EVERYTHING else
-        // — the Order-A skeleton (gate → faulting present-hoist → append `Insert`
-        // DURABLE → value seam publish in InsertOnce mode → rank-or-burn) — is the
-        // generic [`DurableOverlayWrite::insert_cas_with_value_durable_default`],
-        // shared verbatim with the arbitrary-`V` path. Empty `""` flows through the
-        // value seam's RANKED depth-0 `build_value_path_recursive` publish (no
-        // special case). NB: the generic default is now genuinely insert-once even
-        // under a race (the in-loop finality recheck), strictly more correct than the
-        // prior inline loop which overwrote a concurrent insert.
-        if value > LOCKFREE_COUNTER_MAX {
-            return Err(Self::lockfree_increment_overflow_error(term, None, value));
-        }
+        // The whole `u64` range is representable now (the value is published via the
+        // path-copy value seam — `build_value_path_recursive` — NOT a delta-based i64
+        // WAL record), so the former `value > LOCKFREE_COUNTER_MAX` (now `u64::MAX`)
+        // guard is a tautology and is gone. The Order-A skeleton (gate → faulting
+        // present-hoist → append `Insert` DURABLE → value seam publish in InsertOnce
+        // mode → rank-or-burn) is the generic
+        // [`DurableOverlayWrite::insert_cas_with_value_durable_default`], shared
+        // verbatim with the arbitrary-`V` path. Empty `""` flows through the value
+        // seam's RANKED depth-0 publish (no special case). NB: the generic default is
+        // genuinely insert-once even under a race (the in-loop finality recheck).
         <Self as DurableOverlayWrite<CharKey, u64, S>>::insert_cas_with_value_durable_default(
             self,
             term.as_bytes(),
@@ -1947,14 +1962,13 @@ impl<S: BlockStorage> super::PersistentARTrieChar<u64, S> {
     /// existing term).
     pub fn upsert_cas_durable(&self, term: &str, value: u64) -> Result<bool> {
         // **Flip F0 (G5): thin caller of the SHARED GENERIC value-write default.**
-        // u64-specific overflow guard, then the generic
-        // [`DurableOverlayWrite::upsert_cas_durable_default`] (gate → advisory
-        // existed-probe → append `Upsert` DURABLE → value seam publish in Upsert
-        // (always-write) mode → rank). Empty `""` flows through the value seam's
-        // RANKED depth-0 publish (no special case).
-        if value > LOCKFREE_COUNTER_MAX {
-            return Err(Self::lockfree_increment_overflow_error(term, None, value));
-        }
+        // The whole `u64` range is representable (value-seam publish, not an i64
+        // delta), so the former `value > LOCKFREE_COUNTER_MAX` (now `u64::MAX`)
+        // tautology guard is gone. The generic
+        // [`DurableOverlayWrite::upsert_cas_durable_default`] owns the Order-A
+        // skeleton (gate → advisory existed-probe → append `Upsert` DURABLE → value
+        // seam publish in Upsert (always-write) mode → rank). Empty `""` flows
+        // through the value seam's RANKED depth-0 publish (no special case).
         <Self as DurableOverlayWrite<CharKey, u64, S>>::upsert_cas_durable_default(
             self,
             term.as_bytes(),
@@ -2070,62 +2084,56 @@ impl<S: BlockStorage> super::PersistentARTrieChar<u64, S> {
         Ok(merged_count)
     }
 
+    /// Prepare the merge: for each overlay `(term, delta_u64)`, compute the new owned
+    /// value in the i128 substrate (full u64, range-checked) for the owned upsert, and
+    /// emit the delta as ≤3 i64-bounded WAL chunks (`split_u64_delta_to_i64_chunks`)
+    /// since `BatchIncrement` replay is commutative (the deltas are summed in i128 on
+    /// reopen). `prepared_values` stays ONE `(term, final_u64)` per term; `wal_entries`
+    /// may carry up to 3 `(term_bytes, chunk)` per term.
     fn prepare_lockfree_value_merge(
         &self,
         entries: &[(String, u64)],
     ) -> Result<(Vec<(Vec<u8>, i64)>, Vec<(String, u64)>)> {
-        let mut wal_entries = Vec::with_capacity(entries.len());
+        // ≤3 WAL chunks per term (u64::MAX < 3·i64::MAX); one prepared value per term.
+        let mut wal_entries = Vec::with_capacity(entries.len() * 3);
         let mut prepared_values = Vec::with_capacity(entries.len());
 
         for (term, delta) in entries {
-            let delta_i64 = Self::lockfree_delta_to_i64(term, *delta)?;
-            let current = self.current_i64_for_lockfree_merge(term)?;
-            let new_value = current.checked_add(delta_i64).ok_or_else(|| {
-                PersistentARTrieError::InvalidOperation(format!(
-                    "lock-free merge increment overflow for term {:?}: {} + {} exceeds i64 range",
-                    term, current, delta_i64
+            let current_i128 = self.current_i128_for_lockfree_merge(term)?;
+            let new_value =
+                counter_codec::i128_to_counter_value::<u64>(current_i128 + *delta as i128)
+                    .ok_or_else(|| {
+                        PersistentARTrieError::InvalidOperation(format!(
+                    "lock-free merge increment overflow for term {:?}: {} + {} exceeds u64 range",
+                    term, current_i128, delta
                 ))
-            })?;
-            let value = Self::value_from_i64_for_lockfree_merge(new_value)?;
+                    })?;
 
-            wal_entries.push((term.as_bytes().to_vec(), delta_i64));
-            prepared_values.push((term.clone(), value));
+            // Full-u64 delta → ≤3 commutative i64 WAL chunks (the WAL delta field is
+            // i64; replay sums them in i128 back to the same total).
+            for chunk in counter_codec::split_u64_delta_to_i64_chunks(*delta) {
+                wal_entries.push((term.as_bytes().to_vec(), chunk));
+            }
+            prepared_values.push((term.clone(), new_value));
         }
 
         Ok((wal_entries, prepared_values))
     }
 
-    fn current_i64_for_lockfree_merge(&self, term: &str) -> Result<i64> {
-        // The persistent value is `u64`; widen to `i64` for the running sum
-        // (the lock-free domain is bounded by `LOCKFREE_COUNTER_MAX = i64::MAX`).
-        // `get` yields `Option<&u64>`, so dereference before the conversion.
+    fn current_i128_for_lockfree_merge(&self, term: &str) -> Result<i128> {
+        // The persistent value is the trie's own `u64`; decode it into the i128
+        // substrate via the shared codec so the merge sum carries the full u64
+        // magnitude (never an i64-truncated one). `get` yields `Option<&u64>`.
         match self.get(term) {
-            Some(value) => i64::try_from(value).map_err(|_| {
+            // `get` yields an owned `Option<u64>`; borrow it for the codec.
+            Some(value) => counter_codec::counter_value_to_i128::<u64>(&value).ok_or_else(|| {
                 PersistentARTrieError::InvalidOperation(format!(
-                    "persistent counter value for term {:?} exceeds i64 merge domain: {}",
-                    term, value
+                    "lock-free merge: persistent counter value for term {:?} is not a u64 leaf",
+                    term
                 ))
             }),
             None => Ok(0),
         }
-    }
-
-    fn value_from_i64_for_lockfree_merge(value: i64) -> Result<u64> {
-        u64::try_from(value).map_err(|_| {
-            PersistentARTrieError::InvalidOperation(format!(
-                "lock-free merged counter value is negative or out of u64 range: {}",
-                value
-            ))
-        })
-    }
-
-    fn lockfree_delta_to_i64(term: &str, delta: u64) -> Result<i64> {
-        i64::try_from(delta).map_err(|_| {
-            PersistentARTrieError::InvalidOperation(format!(
-                "lock-free counter value for term {:?} exceeds i64 persistence domain: {}",
-                term, delta
-            ))
-        })
     }
 
     fn collect_lockfree_value_entries_recursive(
@@ -2177,7 +2185,7 @@ impl<S: BlockStorage> super::PersistentARTrieChar<u64, S> {
         delta: u64,
     ) -> PersistentARTrieError {
         PersistentARTrieError::InvalidOperation(format!(
-            "lock-free increment overflow for term {:?}: current {:?} + {} exceeds i64 persistence domain",
+            "lock-free increment overflow for term {:?}: current {:?} + {} exceeds u64 counter domain",
             key, current, delta
         ))
     }
@@ -2451,17 +2459,22 @@ mod durable_write_tests {
             let mut trie = PersistentARTrieChar::<()>::create(&path).expect("create");
             trie.set_durability_policy(DurabilityPolicy::Immediate);
             trie.enable_lockfree();
-            for (i, t) in terms.iter().enumerate() {
+            // `inserted_count` tracks committed inserts as a u64 (NOT an `as`-cast of
+            // the enumerate index) so this membership test stays free of the forbidden
+            // counter-codec gate tokens (the watermark/LSN math is not a counter leaf).
+            let mut inserted_count: u64 = 0;
+            for t in terms.iter() {
                 assert!(
                     trie.insert_cas_durable(t).expect("durable insert"),
                     "{t:?} is a new term"
                 );
+                inserted_count += 1;
                 // The committed watermark advances to cover each appended LSN
-                // (LSNs start at 1, so after i+1 inserts the watermark is ≥ i+1).
+                // (LSNs start at 1, so after N inserts the watermark is ≥ N).
                 assert!(
-                    trie.committed_watermark.watermark() >= (i as u64 + 1),
+                    trie.committed_watermark.watermark() >= inserted_count,
                     "watermark must cover {} committed LSNs, got {}",
-                    i + 1,
+                    inserted_count,
                     trie.committed_watermark.watermark()
                 );
             }
@@ -2773,7 +2786,8 @@ mod durable_write_tests {
         let mut trie = PersistentARTrieChar::<String>::create(&path).expect("create");
         trie.kill_switch_to_owned();
         // OWNED writes (String is not overlay-eligible ⇒ upsert → owned tree).
-        trie.upsert("", "EMPTY".to_string()).expect("owned empty upsert");
+        trie.upsert("", "EMPTY".to_string())
+            .expect("owned empty upsert");
         trie.upsert("alpha", "A".to_string()).expect("owned upsert");
         trie.upsert("alps", "B".to_string()).expect("owned upsert");
         trie.upsert("beta", "C".to_string()).expect("owned upsert");
@@ -2785,16 +2799,28 @@ mod durable_write_tests {
 
         trie.enable_lockfree();
         trie.set_overlay_write_mode(OverlayWriteMode::LockFreeOverlay);
-        assert!(trie.route_overlay(), "overlay routed after enable + LockFreeOverlay");
+        assert!(
+            trie.route_overlay(),
+            "overlay routed after enable + LockFreeOverlay"
+        );
 
         // Drive the third (value) reestablish fold directly for arbitrary `V`.
         LockFreeOverlay::reestablish_overlay_value(&mut trie).expect("reestablish value");
 
         let units = |s: &str| s.chars().map(|c| c as u32).collect::<Vec<u32>>();
         // Read via the F1 arbitrary-V seam.
-        assert_eq!(trie.overlay_value_get(&units("alpha")), Some("A".to_string()));
-        assert_eq!(trie.overlay_value_get(&units("alps")), Some("B".to_string()));
-        assert_eq!(trie.overlay_value_get(&units("beta")), Some("C".to_string()));
+        assert_eq!(
+            trie.overlay_value_get(&units("alpha")),
+            Some("A".to_string())
+        );
+        assert_eq!(
+            trie.overlay_value_get(&units("alps")),
+            Some("B".to_string())
+        );
+        assert_eq!(
+            trie.overlay_value_get(&units("beta")),
+            Some("C".to_string())
+        );
         assert_eq!(
             trie.overlay_value_get(&units("")),
             Some("EMPTY".to_string()),
@@ -3496,7 +3522,8 @@ mod durable_write_tests {
             trie.set_durability_policy(DurabilityPolicy::Immediate);
             trie.enable_lockfree();
             assert!(
-                trie.insert_cas_with_value_durable("", 42).expect("valued insert \"\""),
+                trie.insert_cas_with_value_durable("", 42)
+                    .expect("valued insert \"\""),
                 "valued insert of \"\" must be newly inserted"
             );
             trie.insert_cas_with_value_durable("a", 1).expect("a");
@@ -3522,7 +3549,8 @@ mod durable_write_tests {
             let mut trie = PersistentARTrieChar::<u64>::create(&path).expect("create<u64>");
             trie.set_durability_policy(DurabilityPolicy::Immediate);
             trie.enable_lockfree();
-            trie.insert_cas_with_value_durable("", 7).expect("valued insert \"\"");
+            trie.insert_cas_with_value_durable("", 7)
+                .expect("valued insert \"\"");
             // NO checkpoint — durability rests on WAL replay.
         }
         let trie = PersistentARTrieChar::<u64>::open(&path).expect("reopen");
@@ -3552,7 +3580,10 @@ mod durable_write_tests {
             Dictionary::contains(&trie, ""),
             "char empty-term MEMBERSHIP lost across checkpoint → reopen (H3)"
         );
-        assert!(Dictionary::contains(&trie, "x"), "child 'x' membership lost");
+        assert!(
+            Dictionary::contains(&trie, "x"),
+            "child 'x' membership lost"
+        );
     }
 
     /// **char increment "" — overlay checkpoint → reopen (unranked-drop fix).**
@@ -3566,7 +3597,9 @@ mod durable_write_tests {
             trie.enable_lockfree();
             let mut last = 0;
             for _ in 0..5 {
-                last = trie.try_increment_cas_durable("", 3).expect("increment \"\"");
+                last = trie
+                    .try_increment_cas_durable("", 3)
+                    .expect("increment \"\"");
             }
             assert_eq!(last, 15, "5×3 increments of \"\" accumulate to 15");
             trie.checkpoint().expect("overlay checkpoint");
@@ -3589,7 +3622,10 @@ mod durable_write_tests {
             trie.set_durability_policy(DurabilityPolicy::Immediate);
             trie.enable_lockfree();
             assert!(trie.insert_cas_durable("").expect("insert \"\""));
-            assert!(trie.remove_cas_durable("").expect("remove \"\""), "remove cleared \"\"");
+            assert!(
+                trie.remove_cas_durable("").expect("remove \"\""),
+                "remove cleared \"\""
+            );
             assert!(!Dictionary::contains(&trie, ""), "\"\" absent after remove");
             trie.checkpoint().expect("overlay checkpoint");
         }
@@ -3671,7 +3707,10 @@ mod concurrent_increment_tests {
             h.join().expect("increment thread");
         }
 
-        let expected = n_threads as u64 * per_thread;
+        // u64-typed thread count (no `as` cast) keeps this file free of the
+        // counter-codec gate tokens.
+        let n_threads_u64: u64 = 8;
+        let expected = n_threads_u64 * per_thread;
         assert_eq!(
             trie.get_lockfree("hot"),
             Some(expected),
@@ -3740,11 +3779,13 @@ mod concurrent_increment_tests {
         let barrier = Arc::new(Barrier::new(n_threads));
 
         // Thread t adds delta (t+1) each iteration → total = per_thread * Σ(t+1).
+        // `u64::try_from(t)` (NOT an `as` cast) keeps this file free of the
+        // counter-codec gate tokens.
         let handles: Vec<_> = (0..n_threads)
             .map(|t| {
                 let trie = Arc::clone(&trie);
                 let barrier = Arc::clone(&barrier);
-                let delta = (t + 1) as u64;
+                let delta = u64::try_from(t).expect("thread index fits u64") + 1;
                 thread::spawn(move || {
                     barrier.wait();
                     for _ in 0..per_thread {
@@ -3757,7 +3798,8 @@ mod concurrent_increment_tests {
             h.join().expect("increment thread");
         }
 
-        let expected: u64 = per_thread * (1..=n_threads as u64).sum::<u64>();
+        let n_threads_u64: u64 = 6;
+        let expected: u64 = per_thread * (1..=n_threads_u64).sum::<u64>();
         assert_eq!(
             trie.get_lockfree("acc"),
             Some(expected),

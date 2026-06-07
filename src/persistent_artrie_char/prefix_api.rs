@@ -134,11 +134,10 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
             Some(g) => g,
             None => return Ok(None),
         };
-        let (node, prefix_arena) =
-            match self.navigate_to_prefix_with_arena(&root_guard, prefix)? {
-                Some(pair) => pair,
-                None => return Ok(None),
-            };
+        let (node, prefix_arena) = match self.navigate_to_prefix_with_arena(&root_guard, prefix)? {
+            Some(pair) => pair,
+            None => return Ok(None),
+        };
 
         let mut terms = Vec::new();
         self.collect_terms_with_arena(
@@ -191,27 +190,28 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     {
         // E1: see `iter_prefix_with_arena` — overlay terms are resident, `arena_id` None.
         if self.route_overlay() {
-            return Ok(self.overlay_iter_prefix_with_values(prefix)?.map(|entries| {
-                entries
-                    .into_iter()
-                    .map(|(term, value)| PrefixTermWithValueAndArena {
-                        term,
-                        value,
-                        arena_id: None,
-                    })
-                    .collect()
-            }));
+            return Ok(self
+                .overlay_iter_prefix_with_values(prefix)?
+                .map(|entries| {
+                    entries
+                        .into_iter()
+                        .map(|(term, value)| PrefixTermWithValueAndArena {
+                            term,
+                            value,
+                            arena_id: None,
+                        })
+                        .collect()
+                }));
         }
         // F4: OR read guard held across the owned walk+collect.
         let root_guard = match self.owned_root_guard() {
             Some(g) => g,
             None => return Ok(None),
         };
-        let (node, prefix_arena) =
-            match self.navigate_to_prefix_with_arena(&root_guard, prefix)? {
-                Some(pair) => pair,
-                None => return Ok(None),
-            };
+        let (node, prefix_arena) = match self.navigate_to_prefix_with_arena(&root_guard, prefix)? {
+            Some(pair) => pair,
+            None => return Ok(None),
+        };
 
         let mut terms = Vec::new();
         self.collect_terms_with_values_and_arena(

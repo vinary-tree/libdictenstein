@@ -201,14 +201,14 @@ pub(crate) trait DurableOverlayWrite<K: KeyEncoding, V: DictionaryValue, S>:
     fn durable_policy_gate(&self, method: &str, noun: &str) -> Result<()> {
         match self.durability_policy() {
             DurabilityPolicy::Immediate | DurabilityPolicy::GroupCommit => Ok(()),
-            DurabilityPolicy::Periodic | DurabilityPolicy::None => {
-                Err(crate::persistent_artrie_core::error::PersistentARTrieError::InvalidOperation(
+            DurabilityPolicy::Periodic | DurabilityPolicy::None => Err(
+                crate::persistent_artrie_core::error::PersistentARTrieError::InvalidOperation(
                     format!(
                         "{method} requires Immediate or GroupCommit durability so an \
                          acknowledged {noun} is guaranteed durable before it becomes visible"
                     ),
-                ))
-            }
+                ),
+            ),
         }
     }
 
@@ -262,10 +262,7 @@ pub(crate) trait DurableOverlayWrite<K: KeyEncoding, V: DictionaryValue, S>:
         delta: Self::CounterValue,
     ) -> Result<Self::CounterValue> {
         // "Acknowledged ⇒ durable" only holds under a synchronous policy.
-        self.durable_policy_gate(
-            "try_increment_cas_durable",
-            "increment",
-        )?;
+        self.durable_policy_gate("try_increment_cas_durable", "increment")?;
 
         // enable_lockfree() must have run (the inner would otherwise panic; surface
         // it as a recoverable error on the durable path instead).
@@ -442,10 +439,12 @@ pub(crate) trait DurableOverlayWrite<K: KeyEncoding, V: DictionaryValue, S>:
             // ack), burning the LSN so the watermark does not stall.
             ValuePublishOutcome::NotApplied => {
                 self.mark_committed_burned(lsn);
-                Err(crate::persistent_artrie_core::error::PersistentARTrieError::internal(
-                    "upsert_cas_durable: value publish unexpectedly refused (NotApplied); the \
+                Err(
+                    crate::persistent_artrie_core::error::PersistentARTrieError::internal(
+                        "upsert_cas_durable: value publish unexpectedly refused (NotApplied); the \
                      Upsert record is durable and replays on reopen",
-                ))
+                    ),
+                )
             }
         }
     }
@@ -475,21 +474,25 @@ pub(crate) trait DurableOverlayWrite<K: KeyEncoding, V: DictionaryValue, S>:
         // Read current + bincode both sides (comparison = bytes, NOT PartialEq).
         let current = self.value_read_faulting(key_bytes)?;
         let expected_bytes = match &expected {
-            Some(e) => Some(crate::serialization::bincode_compat::serialize(e).map_err(|err| {
-                crate::persistent_artrie_core::error::PersistentARTrieError::internal(format!(
-                    "Failed to serialize value: {}",
-                    err
-                ))
-            })?),
+            Some(e) => Some(
+                crate::serialization::bincode_compat::serialize(e).map_err(|err| {
+                    crate::persistent_artrie_core::error::PersistentARTrieError::internal(format!(
+                        "Failed to serialize value: {}",
+                        err
+                    ))
+                })?,
+            ),
             None => None,
         };
         let current_bytes = match &current {
-            Some(c) => Some(crate::serialization::bincode_compat::serialize(c).map_err(|err| {
-                crate::persistent_artrie_core::error::PersistentARTrieError::internal(format!(
-                    "Failed to serialize value: {}",
-                    err
-                ))
-            })?),
+            Some(c) => Some(
+                crate::serialization::bincode_compat::serialize(c).map_err(|err| {
+                    crate::persistent_artrie_core::error::PersistentARTrieError::internal(format!(
+                        "Failed to serialize value: {}",
+                        err
+                    ))
+                })?,
+            ),
             None => None,
         };
         if current_bytes != expected_bytes {

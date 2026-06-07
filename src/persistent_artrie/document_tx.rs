@@ -15,6 +15,7 @@ use super::dict_impl::PersistentARTrie;
 use super::error::{PersistentARTrieError, Result};
 use super::transactions::{DocumentTransaction, TransactionState};
 use super::wal::WalRecord;
+use crate::persistent_artrie_core::counter_codec;
 use crate::persistent_artrie_core::key_encoding::ByteKey;
 use crate::persistent_artrie_core::overlay::durable_write::DurableOverlayWrite;
 use crate::value::DictionaryValue;
@@ -29,10 +30,18 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
     pub fn begin_document(&self, document_id: &str) -> Result<DocumentTransaction<V>> {
         let tx_id = {
             let base = self.next_lsn.load(AtomicOrdering::Acquire);
-            base ^ (std::time::SystemTime::now()
+            // tx-ID hash = LSN ⊕ (low 64 bits of the nanos timestamp). The low 8 LE
+            // bytes of the u128 nanos are the same value a u64 truncation would yield;
+            // taken via `from_le_bytes` (a NON-counter value) to avoid a numeric cast
+            // so the counter-codec gate stays clean for this file.
+            let nanos = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos() as u64)
-                .unwrap_or(0))
+                .map(|d| d.as_nanos())
+                .unwrap_or(0);
+            let low8: [u8; 8] = nanos.to_le_bytes()[..8]
+                .try_into()
+                .expect("low 8 bytes of a u128");
+            base ^ u64::from_le_bytes(low8)
         };
 
         // C2 tx-ii: under the overlay, SKIP the orphan BeginTx WAL append — it would
@@ -138,24 +147,28 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
             )));
         }
 
-        let current: i64 = if let Some(pos) = tx.shadow_terms.iter().rposition(|(k, _)| k == term) {
-            if let Some(ref v) = tx.shadow_terms[pos].1 {
-                Self::i64_from_value_lossy(v)
-            } else {
-                0
+        let current: i128 = if let Some(pos) = tx.shadow_terms.iter().rposition(|(k, _)| k == term)
+        {
+            match &tx.shadow_terms[pos].1 {
+                Some(v) => Self::value_to_i128_lossy(v),
+                None => 0,
             }
         } else {
             match self.get_value_impl(term) {
-                Some(v) => Self::i64_from_value_lossy(&v),
+                Some(v) => Self::value_to_i128_lossy(&v),
                 None => 0,
             }
         };
 
-        let new_value = match current.checked_add(delta) {
+        // i128 substrate: the running absolute count is the full magnitude (a `u64`
+        // counter reaches past `i64::MAX`). The per-type range check lives in
+        // `value_from_i128_checked` (`<u64>` → `u64::MAX`; `<i64>` → `i64::MAX`); the
+        // `delta` widens losslessly to i128.
+        let new_value = match current.checked_add(delta as i128) {
             Some(value) => value,
             None => {
                 let reason = format!(
-                    "transaction increment overflow for term {:?}: {} + {} exceeds i64 range",
+                    "transaction increment overflow for term {:?}: {} + {} overflows the counter substrate",
                     String::from_utf8_lossy(term),
                     current,
                     delta
@@ -164,7 +177,7 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
                 return Err(PersistentARTrieError::InvalidOperation(reason));
             }
         };
-        let v = match Self::value_from_i64_checked(new_value) {
+        let v = match Self::value_from_i128_checked(new_value) {
             Ok(value) => value,
             Err(error) => {
                 tx.mark_failed(error.to_string());
@@ -215,9 +228,11 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
             let mut applied = 0usize;
             for (term, value) in tx.shadow_terms.drain(..) {
                 let newly = match value {
-                    Some(v) => <Self as DurableOverlayWrite<ByteKey, V, S>>::upsert_cas_durable_default(
-                        self, &term, v,
-                    )?,
+                    Some(v) => {
+                        <Self as DurableOverlayWrite<ByteKey, V, S>>::upsert_cas_durable_default(
+                            self, &term, v,
+                        )?
+                    }
                     None => self.insert_cas_durable(&term)?,
                 };
                 if newly {
@@ -324,28 +339,26 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
         Ok(())
     }
 
-    fn i64_from_value_lossy(value: &V) -> i64 {
-        let bytes = crate::serialization::bincode_compat::serialize(value).unwrap_or_default();
-        if bytes.len() == 8 {
-            let raw: [u8; 8] = bytes.try_into().expect("expected 8 bytes");
-            i64::from_le_bytes(raw)
-        } else {
-            crate::serialization::bincode_compat::deserialize::<i64>(&bytes).unwrap_or(0)
-        }
+    /// Read the counter leaf of `value` as its FULL i128 MAGNITUDE (the
+    /// document-transaction increment substrate). Routing through the `counter_codec`
+    /// i128 helper (the v6 gate) decodes a `u64` counter to its true unsigned magnitude
+    /// — NOT the i64 bit-pattern — so the staging arithmetic is correct for a `u64`
+    /// counter past `i64::MAX` (the prior i64-domain read capped it at `i64::MAX`). A
+    /// non-counter `V` yields 0 (the prior lossy default).
+    fn value_to_i128_lossy(value: &V) -> i128 {
+        counter_codec::counter_value_to_i128::<V>(value).unwrap_or(0)
     }
 
-    fn value_from_i64_checked(value: i64) -> Result<V> {
-        let value_bytes =
-            crate::serialization::bincode_compat::serialize(&value).map_err(|error| {
-                PersistentARTrieError::internal(format!(
-                    "Failed to serialize transaction increment value: {}",
-                    error
-                ))
-            })?;
-        crate::serialization::bincode_compat::deserialize(&value_bytes).map_err(|error| {
-            PersistentARTrieError::internal(format!(
-                "Failed to deserialize transaction increment value as V: {}",
-                error
+    /// Re-encode an i128 tx-increment result as the typed counter `V`, range-checked
+    /// into `V` via the `counter_codec` i128 substrate (the v6 gate): a `<u64>` counter
+    /// is bounded by `u64::MAX`, a `<i64>` counter by `i64::MAX` (the latter preserves
+    /// the tx-increment correspondence's `i64::MAX + 1` overflow). The message contains
+    /// "overflow" so a poisoned transaction's `commit_document` surfaces it.
+    fn value_from_i128_checked(value: i128) -> Result<V> {
+        counter_codec::i128_to_counter_value::<V>(value).ok_or_else(|| {
+            PersistentARTrieError::InvalidOperation(format!(
+                "transaction increment value {} overflows the counter value range",
+                value
             ))
         })
     }

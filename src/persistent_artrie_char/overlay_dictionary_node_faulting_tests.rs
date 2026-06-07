@@ -19,11 +19,13 @@ use std::sync::Arc;
 use crate::persistent_artrie::eviction::EvictionConfig;
 use crate::persistent_artrie::WalConfig;
 // F4: the `.read()/.write()` compat shim on the collapsed handle.
-use crate::persistent_artrie_core::shared_access::SharedTrieAccess;
 use crate::persistent_artrie_char::overlay_fault::SharedOverlayFaulter;
-use crate::persistent_artrie_char::{PersistentARTrieChar, PersistentARTrieCharNode, SharedCharARTrie};
+use crate::persistent_artrie_char::{
+    PersistentARTrieChar, PersistentARTrieCharNode, SharedCharARTrie,
+};
 use crate::persistent_artrie_core::durability::DurabilityPolicy;
 use crate::persistent_artrie_core::overlay::OverlayFaulter;
+use crate::persistent_artrie_core::shared_access::SharedTrieAccess;
 use crate::{Dictionary, DictionaryNode};
 
 fn scratch(prefix: &str) -> tempfile::TempDir {
@@ -46,7 +48,12 @@ where
     V: crate::value::DictionaryValue,
     S: crate::persistent_artrie::block_storage::BlockStorage,
 {
-    let coordinator = match trie.eviction_coordinator.lock().expect("eviction_coordinator mutex poisoned").as_ref() {
+    let coordinator = match trie
+        .eviction_coordinator
+        .lock()
+        .expect("eviction_coordinator mutex poisoned")
+        .as_ref()
+    {
         Some(c) => std::sync::Arc::clone(c),
         None => return 0,
     };
@@ -80,7 +87,9 @@ fn walk_terms(node: &PersistentARTrieCharNode<()>) -> BTreeSet<String> {
 /// flip, but constructed here so the test can choose faulter / no-faulter.
 fn overlay_root_with_faulter<S: crate::persistent_artrie::block_storage::BlockStorage>(
     trie: &PersistentARTrieChar<(), S>,
-    faulter: Option<Arc<dyn OverlayFaulter<crate::persistent_artrie_core::key_encoding::CharKey, ()>>>,
+    faulter: Option<
+        Arc<dyn OverlayFaulter<crate::persistent_artrie_core::key_encoding::CharKey, ()>>,
+    >,
 ) -> PersistentARTrieCharNode<()> {
     use crate::persistent_artrie_core::overlay::flip::LockFreeOverlay;
     let root = <PersistentARTrieChar<(), S> as LockFreeOverlay<
@@ -105,7 +114,11 @@ fn overlay_dictionary_node_faults_evicted_children_in() {
 
     let cold_terms: Vec<String> = (0..30).map(|i| format!("cold-{i:04}")).collect();
     let live_terms: Vec<String> = (0..30).map(|i| format!("warm-{i:04}")).collect();
-    let all: BTreeSet<String> = cold_terms.iter().chain(live_terms.iter()).cloned().collect();
+    let all: BTreeSet<String> = cold_terms
+        .iter()
+        .chain(live_terms.iter())
+        .cloned()
+        .collect();
 
     let mut owned: PersistentARTrieChar<()> =
         PersistentARTrieChar::create_with_config(&path, WalConfig::no_archive()).expect("create");
@@ -132,7 +145,10 @@ fn overlay_dictionary_node_faults_evicted_children_in() {
     // BEFORE eviction: the overlay is fully resident; a no-faulter walk already sees
     // everything (a baseline that proves the eviction below is what creates OnDisk).
     let pre_resident = walk_terms(&overlay_root_with_faulter(&owned, None));
-    assert_eq!(pre_resident, all, "pre-eviction resident walk must see all terms");
+    assert_eq!(
+        pre_resident, all,
+        "pre-eviction resident walk must see all terms"
+    );
 
     // Evict the COLD subtrees to OnDisk.
     let mut evicted = 0usize;
@@ -188,8 +204,9 @@ fn overlay_dictionary_node_faults_evicted_children_in() {
 
     // `transition`-driven descent of a cold term also faults its spine in.
     let guard = trie_arc.read();
-    let faulter2: Arc<dyn OverlayFaulter<crate::persistent_artrie_core::key_encoding::CharKey, ()>> =
-        Arc::new(SharedOverlayFaulter::new(Arc::clone(&trie_arc)));
+    let faulter2: Arc<
+        dyn OverlayFaulter<crate::persistent_artrie_core::key_encoding::CharKey, ()>,
+    > = Arc::new(SharedOverlayFaulter::new(Arc::clone(&trie_arc)));
     let root = overlay_root_with_faulter(&guard, Some(faulter2));
     let cold0: Vec<char> = cold_terms[0].chars().collect();
     let mut node = root;

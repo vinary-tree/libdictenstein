@@ -19,6 +19,7 @@ use log::warn;
 
 use crate::persistent_artrie::block_storage::BlockStorage;
 use crate::persistent_artrie::error::Result;
+use crate::persistent_artrie_core::counter_codec;
 use crate::value::DictionaryValue;
 
 use super::types::{CharTrieNodeInner, CharTrieRoot};
@@ -131,11 +132,7 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     }
 
     /// Insert a term with value (internal, no WAL logging)
-    pub(super) fn try_insert_impl_no_wal_with_value(
-        &self,
-        term: &str,
-        value: V,
-    ) -> Result<bool> {
+    pub(super) fn try_insert_impl_no_wal_with_value(&self, term: &str, value: V) -> Result<bool> {
         // **F4:** `&self` + OR write guard (see `try_insert_impl_no_wal`).
         let mut root_guard = self.root.write();
         // Ensure we have a root node
@@ -403,8 +400,15 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
         }
     }
 
+    /// Decode a recovered ABSOLUTE counter (the WAL `Increment.result` i64 field,
+    /// which carries the COUNTER LEAF BIT-PATTERN written via `counter_return_i64`)
+    /// back into the typed counter `V`, routed through the `counter_codec` i128
+    /// substrate (the v6 gate). The i64 is reinterpreted as the 8-byte leaf
+    /// (`counter_leaf_to_i128` of its LE bytes) so a `u64` count > i64::MAX (whose
+    /// i64 field is negative) recovers its true magnitude — a naive `value as i128`
+    /// widen would wrongly stay negative and reject. `None` on a non-counter `V`.
     fn value_from_recovered_i64(value: i64) -> Option<V> {
-        let bytes = crate::serialization::bincode_compat::serialize(&value).ok()?;
-        crate::serialization::bincode_compat::deserialize(&bytes).ok()
+        let n = counter_codec::counter_leaf_to_i128::<V>(&value.to_le_bytes())?;
+        counter_codec::i128_to_counter_value::<V>(n)
     }
 }

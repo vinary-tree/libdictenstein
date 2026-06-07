@@ -91,7 +91,9 @@ impl<V: DictionaryValue>
             committed_watermark: super::committed_watermark::CommittedWatermark::new(0),
             checkpoint_lock: std::sync::Arc::new(parking_lot::Mutex::new(())),
             merge_lock: std::sync::Arc::new(parking_lot::Mutex::new(())),
-            overlay_write_mode: crate::persistent_artrie_core::shared_access::AtomicEnumCell::new(super::overlay_write_mode::OverlayWriteMode::default()),
+            overlay_write_mode: crate::persistent_artrie_core::shared_access::AtomicEnumCell::new(
+                super::overlay_write_mode::OverlayWriteMode::default(),
+            ),
             file_path: Some(path.to_path_buf()),
             arena_manager: Some(arena_manager),
             version: OptimisticVersion::new(),
@@ -104,7 +106,9 @@ impl<V: DictionaryValue>
             memory_monitor: std::sync::Mutex::new(None),
             cache_stats: CacheStats::default(),
             checkpoint_manager: std::sync::Mutex::new(None),
-            durability_policy: crate::persistent_artrie_core::shared_access::AtomicEnumCell::new(DurabilityPolicy::default()),
+            durability_policy: crate::persistent_artrie_core::shared_access::AtomicEnumCell::new(
+                DurabilityPolicy::default(),
+            ),
             eviction_coordinator: std::sync::Mutex::new(None),
             prefetcher: crate::persistent_artrie::prefetch::Prefetcher::new(),
             _phantom: std::marker::PhantomData,
@@ -210,7 +214,9 @@ impl<V: DictionaryValue>
             ),
             checkpoint_lock: std::sync::Arc::new(parking_lot::Mutex::new(())),
             merge_lock: std::sync::Arc::new(parking_lot::Mutex::new(())),
-            overlay_write_mode: crate::persistent_artrie_core::shared_access::AtomicEnumCell::new(super::overlay_write_mode::OverlayWriteMode::default()),
+            overlay_write_mode: crate::persistent_artrie_core::shared_access::AtomicEnumCell::new(
+                super::overlay_write_mode::OverlayWriteMode::default(),
+            ),
             file_path: Some(path.to_path_buf()),
             arena_manager: Some(arena_manager),
             version: OptimisticVersion::new(),
@@ -223,7 +229,9 @@ impl<V: DictionaryValue>
             memory_monitor: std::sync::Mutex::new(None),
             cache_stats: CacheStats::default(),
             checkpoint_manager: std::sync::Mutex::new(None),
-            durability_policy: crate::persistent_artrie_core::shared_access::AtomicEnumCell::new(DurabilityPolicy::default()),
+            durability_policy: crate::persistent_artrie_core::shared_access::AtomicEnumCell::new(
+                DurabilityPolicy::default(),
+            ),
             eviction_coordinator: std::sync::Mutex::new(None),
             prefetcher: crate::persistent_artrie::prefetch::Prefetcher::new(),
             _phantom: std::marker::PhantomData,
@@ -249,7 +257,11 @@ impl<V: DictionaryValue>
             .map(|h| h.regime())
             .unwrap_or(crate::persistent_artrie_core::wal::RankRegime::Owned);
         // F5 honors the SAME gate (no per-ctor drift). `IoUringDiskManager` is the `S`.
-        let use_f5 = <Self as LockFreeOverlay<CharKey, V, crate::persistent_artrie::IoUringDiskManager>>::USE_F5_REOPEN_LOADER
+        let use_f5 = <Self as LockFreeOverlay<
+            CharKey,
+            V,
+            crate::persistent_artrie::IoUringDiskManager,
+        >>::USE_F5_REOPEN_LOADER
             && rank_regime == crate::persistent_artrie_core::wal::RankRegime::Overlay
             && Self::overlay_eligible_v();
 
