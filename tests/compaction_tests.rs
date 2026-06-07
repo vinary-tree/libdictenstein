@@ -22,11 +22,9 @@ fn test_compact_empty_trie() {
 
     let mut trie: PersistentARTrie<u64> =
         PersistentARTrie::create(&path).expect("Failed to create trie");
-    // F2-migrate: Bucket C — `compact()` rejects under the lock-free overlay write mode
-    // (overlay compaction is the pending F6 phase). Feature-on, a `u64` byte trie
-    // create-flips to the overlay, so pin it to the proven OwnedTree path to exercise
-    // owned compaction. Inert feature-off (`u64` is byte-arbitrary-V ⇒ stays owned).
-    trie.kill_switch_to_owned();
+    // F6: overlay compaction implemented — feature-on this trie is
+    // overlay-routed and compact() exercises the overlay snapshot path;
+    // feature-off it stays owned. (Former OwnedTree pin removed.)
 
     // Compact empty trie
     let mut progress_calls = 0;
@@ -50,11 +48,9 @@ fn test_compact_preserves_all_data() {
 
     let mut trie: PersistentARTrie<u64> =
         PersistentARTrie::create(&path).expect("Failed to create trie");
-    // F2-migrate: Bucket C — `compact()` rejects under the lock-free overlay write mode
-    // (overlay compaction is the pending F6 phase). Feature-on, a `u64` byte trie
-    // create-flips to the overlay, so pin it to the proven OwnedTree path to exercise
-    // owned compaction. Inert feature-off (`u64` is byte-arbitrary-V ⇒ stays owned).
-    trie.kill_switch_to_owned();
+    // F6: overlay compaction implemented — feature-on this trie is
+    // overlay-routed and compact() exercises the overlay snapshot path;
+    // feature-off it stays owned. (Former OwnedTree pin removed.)
 
     // Insert test data
     let test_terms = vec![
@@ -110,11 +106,9 @@ fn test_compact_after_modifications() {
 
     let mut trie: PersistentARTrie<u64> =
         PersistentARTrie::create(&path).expect("Failed to create trie");
-    // F2-migrate: Bucket C — `compact()` rejects under the lock-free overlay write mode
-    // (overlay compaction is the pending F6 phase). Feature-on, a `u64` byte trie
-    // create-flips to the overlay, so pin it to the proven OwnedTree path to exercise
-    // owned compaction. Inert feature-off (`u64` is byte-arbitrary-V ⇒ stays owned).
-    trie.kill_switch_to_owned();
+    // F6: overlay compaction implemented — feature-on this trie is
+    // overlay-routed and compact() exercises the overlay snapshot path;
+    // feature-off it stays owned. (Former OwnedTree pin removed.)
 
     // Insert initial terms
     for i in 0..100 {
@@ -179,11 +173,9 @@ fn test_compact_multiple_checkpoints() {
 
     let mut trie: PersistentARTrie<u64> =
         PersistentARTrie::create(&path).expect("Failed to create trie");
-    // F2-migrate: Bucket C — `compact()` rejects under the lock-free overlay write mode
-    // (overlay compaction is the pending F6 phase). Feature-on, a `u64` byte trie
-    // create-flips to the overlay, so pin it to the proven OwnedTree path to exercise
-    // owned compaction. Inert feature-off (`u64` is byte-arbitrary-V ⇒ stays owned).
-    trie.kill_switch_to_owned();
+    // F6: overlay compaction implemented — feature-on this trie is
+    // overlay-routed and compact() exercises the overlay snapshot path;
+    // feature-off it stays owned. (Former OwnedTree pin removed.)
 
     // First batch
     for i in 0..50 {
@@ -235,9 +227,9 @@ fn test_compact_to_new_file() {
 
     let mut trie: PersistentARTrie<u64> =
         PersistentARTrie::create(&original_path).expect("Failed to create trie");
-    // F2-migrate: Bucket C — pin to OwnedTree so `compact()` exercises owned compaction
-    // (overlay compaction is the pending F6 phase); feature-off this is a no-op.
-    trie.kill_switch_to_owned();
+    // F6: overlay compaction implemented — feature-on this trie is
+    // overlay-routed and compact() exercises the overlay snapshot path;
+    // feature-off it stays owned. (Former OwnedTree pin removed.)
 
     // Insert test data
     for i in 0..100 {
@@ -284,11 +276,9 @@ fn test_compact_progress_callback() {
 
     let mut trie: PersistentARTrie<u64> =
         PersistentARTrie::create(&path).expect("Failed to create trie");
-    // F2-migrate: Bucket C — `compact()` rejects under the lock-free overlay write mode
-    // (overlay compaction is the pending F6 phase). Feature-on, a `u64` byte trie
-    // create-flips to the overlay, so pin it to the proven OwnedTree path to exercise
-    // owned compaction. Inert feature-off (`u64` is byte-arbitrary-V ⇒ stays owned).
-    trie.kill_switch_to_owned();
+    // F6: overlay compaction implemented — feature-on this trie is
+    // overlay-routed and compact() exercises the overlay snapshot path;
+    // feature-off it stays owned. (Former OwnedTree pin removed.)
 
     // Insert enough terms to trigger progress callbacks
     for i in 0..50 {
@@ -350,11 +340,9 @@ fn test_compact_without_verification() {
 
     let mut trie: PersistentARTrie<u64> =
         PersistentARTrie::create(&path).expect("Failed to create trie");
-    // F2-migrate: Bucket C — `compact()` rejects under the lock-free overlay write mode
-    // (overlay compaction is the pending F6 phase). Feature-on, a `u64` byte trie
-    // create-flips to the overlay, so pin it to the proven OwnedTree path to exercise
-    // owned compaction. Inert feature-off (`u64` is byte-arbitrary-V ⇒ stays owned).
-    trie.kill_switch_to_owned();
+    // F6: overlay compaction implemented — feature-on this trie is
+    // overlay-routed and compact() exercises the overlay snapshot path;
+    // feature-off it stays owned. (Former OwnedTree pin removed.)
 
     for i in 0..20 {
         trie.insert_with_value(&format!("term_{:02}", i), i as u64);
@@ -400,11 +388,9 @@ fn test_compact_single_term() {
 
     let mut trie: PersistentARTrie<u64> =
         PersistentARTrie::create(&path).expect("Failed to create trie");
-    // F2-migrate: Bucket C — `compact()` rejects under the lock-free overlay write mode
-    // (overlay compaction is the pending F6 phase). Feature-on, a `u64` byte trie
-    // create-flips to the overlay, so pin it to the proven OwnedTree path to exercise
-    // owned compaction. Inert feature-off (`u64` is byte-arbitrary-V ⇒ stays owned).
-    trie.kill_switch_to_owned();
+    // F6: overlay compaction implemented — feature-on this trie is
+    // overlay-routed and compact() exercises the overlay snapshot path;
+    // feature-off it stays owned. (Former OwnedTree pin removed.)
 
     trie.insert_with_value("single", 42);
     trie.checkpoint().expect("Failed to checkpoint");
@@ -425,10 +411,9 @@ fn test_compact_large_values() {
 
     let mut trie: PersistentARTrie<String> =
         PersistentARTrie::create(&path).expect("Failed to create trie");
-    // F2-migrate: Bucket C — pin to OwnedTree so `compact()` exercises owned compaction
-    // (overlay compaction is the pending F6 phase). Feature-on a String trie create-flips
-    // to the overlay (arbitrary-V eligible); feature-off it already stays owned.
-    trie.kill_switch_to_owned();
+    // F6: overlay compaction implemented — feature-on this trie is
+    // overlay-routed and compact() exercises the overlay snapshot path;
+    // feature-off it stays owned. (Former OwnedTree pin removed.)
 
     // Insert terms with large string values
     // Use shorter keys to avoid potential bucket overflow issues
@@ -467,11 +452,9 @@ fn test_compact_stats_accuracy() {
 
     let mut trie: PersistentARTrie<u64> =
         PersistentARTrie::create(&path).expect("Failed to create trie");
-    // F2-migrate: Bucket C — `compact()` rejects under the lock-free overlay write mode
-    // (overlay compaction is the pending F6 phase). Feature-on, a `u64` byte trie
-    // create-flips to the overlay, so pin it to the proven OwnedTree path to exercise
-    // owned compaction. Inert feature-off (`u64` is byte-arbitrary-V ⇒ stays owned).
-    trie.kill_switch_to_owned();
+    // F6: overlay compaction implemented — feature-on this trie is
+    // overlay-routed and compact() exercises the overlay snapshot path;
+    // feature-off it stays owned. (Former OwnedTree pin removed.)
 
     for i in 0..100 {
         trie.insert_with_value(&format!("term_{:03}", i), i as u64);
@@ -520,11 +503,9 @@ fn test_compact_cleans_up_stale_temp_file() {
 
     let mut trie: PersistentARTrie<u64> =
         PersistentARTrie::create(&path).expect("Failed to create trie");
-    // F2-migrate: Bucket C — `compact()` rejects under the lock-free overlay write mode
-    // (overlay compaction is the pending F6 phase). Feature-on, a `u64` byte trie
-    // create-flips to the overlay, so pin it to the proven OwnedTree path to exercise
-    // owned compaction. Inert feature-off (`u64` is byte-arbitrary-V ⇒ stays owned).
-    trie.kill_switch_to_owned();
+    // F6: overlay compaction implemented — feature-on this trie is
+    // overlay-routed and compact() exercises the overlay snapshot path;
+    // feature-off it stays owned. (Former OwnedTree pin removed.)
 
     trie.insert_with_value("test", 1);
     trie.checkpoint().expect("Failed to checkpoint");

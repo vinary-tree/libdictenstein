@@ -118,22 +118,20 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
     {
         use std::time::Instant;
 
-        // **M3 reject (CHAR-ABSENT P0, audit §C.1 — the file-replacer).** Compaction
-        // builds a fresh trie from `compaction_snapshot` (which under the flip would
-        // enumerate the overlay terms but read VALUES from the EMPTY owned tree → a
-        // counters-lost image) and then ATOMICALLY RENAMES it over the original,
-        // clobbering the durable WAL/overlay. There is NO internal caller (confirmed
-        // by the audit), so rejecting under `route_overlay()` is safe — fail loud
-        // rather than silently destroy durable state. A route-split-aware overlay
-        // snapshot is an E1-iter-B follow-on.
-        if self.route_overlay() {
-            return Err(PersistentARTrieError::InvalidOperation(
-                "compact is not valid under the lock-free overlay write mode (it rebuilds from \
-                 the owned tree and atomically replaces the file, clobbering the durable \
-                 overlay/WAL with a counters-lost image); use OverlayWriteMode::OwnedTree"
-                    .to_string(),
-            ));
-        }
+        // **F6 — overlay-aware compaction** (replaces the M3 fail-loud reject).
+        // `compaction_snapshot` now sources BOTH the term enumeration AND the values
+        // from the overlay when it serves reads (the enumeration already routes via the
+        // `iter_prefix_with_arena` chokepoint; the value read is routed below through
+        // `overlay_get_value`), so the rebuilt image is FAITHFUL — not the former
+        // "counters-lost empty-owned-tree" image the reject guarded against. The
+        // STAGING trie stays OWNED (path-compressed ⇒ dense; the overlay's
+        // un-path-compressed one-node-per-unit spine would BLOAT the compacted file),
+        // and the in-place reopen RE-FLIPS to the overlay so the write regime is
+        // preserved across compaction (mirrors `open`'s reestablish, mmap_ctor.rs).
+        // `compact` takes `&mut self` ⇒ EXCLUSIVE access ⇒ no concurrent writers ⇒ the
+        // snapshot captures every committed term and there is NO past-snapshot WAL tail
+        // to lose on the atomic rename (the data-loss footgun the reject feared).
+        let was_overlay = self.route_overlay();
 
         let start = Instant::now();
 
@@ -331,6 +329,23 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
             remove_file_if_exists(&stale_wal_backup_path, "compact_remove_stale_wal_backup")?;
 
             *self = Self::open(&original_path)?;
+
+            // F6: the staging trie was OWNED (for path-compressed density), so the
+            // dense image `*self` just reopened is `OwnedTree`. If the trie was
+            // overlay-routed before compaction, RE-FLIP to preserve the regime — the
+            // SAME two calls `open` uses for an Overlay-regime file (mmap_ctor.rs:602):
+            // `flip_to_overlay` (restamps the fresh post-reopen WAL Overlay, lsn==1)
+            // then `reestablish_overlay_dispatch` (publishes the recovered owned tree
+            // into the overlay, clears owned LAST). Durable: the next reopen sees the
+            // Overlay stamp and auto-flips.
+            if was_overlay {
+                let took = self.flip_to_overlay();
+                debug_assert!(
+                    took,
+                    "F6: compact in-place must re-flip eligible-V to overlay"
+                );
+                self.reestablish_overlay_dispatch()?;
+            }
         }
 
         let duration_ms = start.elapsed().as_millis() as u64;
@@ -365,7 +380,18 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
         Ok(terms
             .into_iter()
             .map(|term| {
-                let value = self.get_value_impl(&term);
+                // F6: route the VALUE read to the overlay when it serves reads (the
+                // enumeration above already routed via `iter_prefix_with_arena`).
+                // `overlay_get_value` returns `Some(Option<V>)` when the overlay
+                // handled the term — including `Some(None)` for a term-only member
+                // (membership preserved, value absent) — and `None` only for an
+                // ineligible `V`, where the owned read is the correct fallback.
+                let value = if self.route_overlay() {
+                    self.overlay_get_value(&term)
+                        .unwrap_or_else(|| self.get_value_impl(&term))
+                } else {
+                    self.get_value_impl(&term)
+                };
                 (term, value)
             })
             .collect())
@@ -379,14 +405,28 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
 
         for (term, value) in terms {
             let serialized = match value {
-                Some(value) => Some(crate::serialization::bincode_compat::serialize(value).map_err(
-                    |e| PersistentARTrieError::CheckpointVerificationFailed {
-                        reason: format!(
-                            "Failed to serialize value for term {:?} during compaction verification: {}",
-                            term, e
-                        ),
-                    },
-                )?),
+                Some(value) => {
+                    let bytes = crate::serialization::bincode_compat::serialize(value).map_err(
+                        |e| PersistentARTrieError::CheckpointVerificationFailed {
+                            reason: format!(
+                                "Failed to serialize value for term {:?} during compaction verification: {}",
+                                term, e
+                            ),
+                        },
+                    )?;
+                    // F6: an EMPTY value blob (only `()`/unit serializes to 0 bytes) is
+                    // indistinguishable from "no value" on disk — the owned store
+                    // re-reads it as `None`. Normalize it here so the verify compares
+                    // DISK-FAITHFUL representations: the overlay reads a `V=()` member as
+                    // `Some(())` (membership-as-unit), but it persists (and reopens) as
+                    // `None`. Non-`()` values never serialize empty, so this is a no-op
+                    // for counters / arbitrary `V`.
+                    if bytes.is_empty() {
+                        None
+                    } else {
+                        Some(bytes)
+                    }
+                }
                 None => None,
             };
             snapshot.insert(term.clone(), serialized);

@@ -2359,23 +2359,30 @@ mod m4b_flip_gate_tests {
         }
     }
 
-    /// **(c) `compact()` rejects under the overlay.** A fresh `create::<i64>()` flips,
-    /// so `compact()` must reject with `InvalidOperation` (it would clobber the durable
-    /// overlay/WAL with an owned-image rebuild). The kill-switched owned twin SUCCEEDS
-    /// (proving the reject is overlay-specific).
+    /// **(c) `compact()` SUCCEEDS under the overlay (F6).** A fresh `create::<i64>()`
+    /// flips; `compact()` now sources the snapshot from the overlay (enumeration AND
+    /// values), rebuilds a dense owned image, and RE-FLIPS to preserve the overlay
+    /// regime — data and routing survive. The kill-switched owned twin succeeds via the
+    /// proven owned path.
     #[test]
-    fn m4b_compact_rejects_under_overlay_but_owned_succeeds() {
-        // Overlay (flipped): compact rejects.
+    fn m4b_compact_succeeds_under_overlay_and_owned() {
+        // Overlay (flipped): compact succeeds, preserves data, STAYS overlay.
         {
-            let dir = scratch("byte-m4b-compact-reject");
+            let dir = scratch("byte-m4b-compact-overlay");
             let path = dir.path().join("t.part");
             let mut trie = PersistentARTrie::<i64>::create(&path).expect("create<i64>");
             assert!(trie.route_overlay(), "fresh create<i64> is overlay-routed");
             trie.increment_bytes(b"seed", 1).expect("seed");
-            let result = trie.compact(CompactionConfig::default(), |_| {});
+            trie.compact(CompactionConfig::default(), |_| {})
+                .expect("F6: compact succeeds under the overlay");
             assert!(
-                matches!(result, Err(crate::persistent_artrie::error::PersistentARTrieError::InvalidOperation(_))),
-                "compact must reject under the overlay, got {result:?}"
+                trie.route_overlay(),
+                "F6: compact must PRESERVE the overlay regime (re-flip after reopen)"
+            );
+            assert_eq!(
+                trie.get_value_bytes(b"seed"),
+                Some(1),
+                "F6: data preserved across overlay compaction"
             );
         }
         // Owned (kill-switched): compact succeeds.

@@ -416,11 +416,13 @@ fn m3_routed_writes_round_trip_and_survive_reopen() {
 }
 
 /// **The reject guards under the overlay.** F0/G5 (NH2) supports `compare_and_swap`,
-/// and C2 now routes the trie-to-trie merges (`merge_from`/`merge_replace`/
+/// C2 now routes the trie-to-trie merges (`merge_from`/`merge_replace`/
 /// `merge_from_batched`/`merge_from_batched_grouped`) and `begin_document` through the
-/// overlay (they SUCCEED). The guards that STILL fire are the owned-tree drains
-/// (`merge_lockfree_to_persistent`/`merge_lockfree_values_to_persistent`) and `compact`
-/// (the file-replacer; overlay compaction is the pending F6 phase).
+/// overlay (they SUCCEED), and F6 makes `compact` succeed under the overlay too (it
+/// sources the snapshot from the overlay and re-flips to preserve the regime). The only
+/// guards that STILL fire are the owned-tree DRAINS
+/// (`merge_lockfree_to_persistent`/`merge_lockfree_values_to_persistent`) — draining the
+/// durable overlay back into the owned tree would destroy durable state.
 ///
 /// F2-migrate: Bucket D (UNCONDITIONAL — C2 made these succeed for the eligible byte
 /// counter `i64` regardless of the `overlay-arbitrary-v` feature, so the old reject
@@ -505,11 +507,15 @@ fn m3_reject_guards_fire_under_overlay() {
         "an empty doc-tx commits 0 ops under the overlay"
     );
 
-    // compact (file-replacer) STILL rejects under the overlay (the pending F6 phase).
+    // compact (file-replacer) now SUCCEEDS under the overlay (F6): it sources the
+    // snapshot from the overlay (enumeration AND values), rebuilds a dense owned image,
+    // and RE-FLIPS to preserve the regime — no longer a reject.
     let cfg = crate::persistent_artrie::CompactionConfig::default();
+    trie.compact(cfg, |_| {})
+        .expect("F6: compact succeeds under the overlay");
     assert!(
-        is_invalid_op(trie.compact(cfg, |_| {})),
-        "compact must reject under overlay"
+        trie.route_overlay(),
+        "F6: compact preserves the overlay regime (re-flip after reopen)"
     );
 }
 
