@@ -46,21 +46,15 @@ impl<V: DictionaryValue + serde::Serialize + serde::de::DeserializeOwned, S: Blo
             if let Some(routed) = super::lockfree_value_route::route_increment(self, term, delta) {
                 return routed;
             }
-            // S5-5: a delta < 0 (or arbitrary V) cannot be ranked on the overlay path,
-            // so `route_increment` returns None. REJECT here rather than fall through to
-            // the owned body's UNRANKED `append_to_wal(Increment)` — under the Overlay
-            // WAL regime (coupled to overlay mode at `enable_lockfree`) recovery DROPS
-            // that record as a two-append-window orphan, so the increment is lost on the
-            // next reopen-without-checkpoint, and the owned tree it mutates is not
-            // observed by the overlay read/checkpoint path. `fetch_add` inherits this.
-            // (Arbitrary V never reaches here: the overlay is enabled only for u64/().)
-            return Err(PersistentARTrieError::InvalidOperation(format!(
-                "increment(delta={}) cannot be routed to the lock-free overlay (negative \
-                 deltas and arbitrary value types are unsupported on the overlay write \
-                 path); use OverlayWriteMode::OwnedTree, or a non-negative delta on a u64 \
-                 counter",
-                delta
-            )));
+            // F2: the `route_increment` fast path is the u64 ADD-ONLY commutative seam
+            // (`V = u64` + non-negative delta). Any OTHER Counter increment — an `i64`
+            // counter, or a DECREMENT — routes to the general value-CAS path
+            // ([`Self::increment_via_value_cas`]): a read → `cur + delta` → CAS retry
+            // over the proven `compare_and_swap` (phantom-safe per
+            // `LockFreeOverlayValueCas.tla`). This preserves the owned path's
+            // i64-arithmetic increment for ALL Counter types on the overlay (no dropped
+            // functionality); `fetch_add` inherits it.
+            return self.increment_via_value_cas(term, delta);
         }
 
         self.preflight_insert_with_value_no_wal(term)?;
@@ -110,6 +104,83 @@ impl<V: DictionaryValue + serde::Serialize + serde::de::DeserializeOwned, S: Blo
         self.try_insert_impl_no_wal_with_value(term, v)?;
 
         Ok(new_value)
+    }
+
+    /// **F2 — general overlay increment via the value-CAS path** (Counter-bound).
+    ///
+    /// The fast `route_increment` seam only handles `V = u64` with a non-negative delta
+    /// (the add-only commutative `BatchIncrement`). To avoid dropping the owned path's
+    /// increment for `i64` counters and for decrements, this routes any other Counter
+    /// increment through a read → `cur + delta` → CAS retry loop over the proven
+    /// `compare_and_swap` (overlay-routed to `compare_and_swap_cas_durable`, phantom-safe
+    /// per `LockFreeOverlayValueCas.tla` — a lost CAS burns an unranked record dropped on
+    /// reopen). The value is read/written as an 8-byte LE `i64` (valid for `{i64, u64}`),
+    /// matching the owned increment's i64-arithmetic semantics exactly (incl. the same
+    /// `i64::MAX`-bounded counter domain).
+    fn increment_via_value_cas(&mut self, term: &str, delta: i64) -> Result<i64>
+    where
+        V: crate::value::Counter,
+    {
+        let key = term.as_bytes();
+        loop {
+            let cur_v: Option<V> = <Self as DurableOverlayWrite<CharKey, V, S>>::value_read_faulting(
+                self, key,
+            )?;
+            let cur_i64: i64 = match &cur_v {
+                Some(v) => {
+                    let bytes =
+                        crate::serialization::bincode_compat::serialize(v).map_err(|e| {
+                            PersistentARTrieError::internal(format!(
+                                "Failed to serialize value: {}",
+                                e
+                            ))
+                        })?;
+                    if bytes.len() == 8 {
+                        i64::from_le_bytes(bytes.try_into().expect("expected 8 bytes"))
+                    } else {
+                        crate::serialization::bincode_compat::deserialize::<i64>(&bytes).map_err(
+                            |e| {
+                                PersistentARTrieError::internal(format!(
+                                    "value cannot be interpreted as i64: {}",
+                                    e
+                                ))
+                            },
+                        )?
+                    }
+                }
+                None => 0,
+            };
+            let new_i64 = cur_i64.checked_add(delta).ok_or_else(|| {
+                PersistentARTrieError::InvalidOperation(format!(
+                    "increment overflow for term {:?}: {} + {} exceeds i64 range",
+                    term, cur_i64, delta
+                ))
+            })?;
+            // i64 -> V (Counter): an 8-byte LE word reinterpreted as the counter type
+            // (matches the owned increment); for u64 this carries the i64 bit pattern,
+            // identical to the owned path's domain.
+            let new_bytes =
+                crate::serialization::bincode_compat::serialize(&new_i64).map_err(|e| {
+                    PersistentARTrieError::internal(format!(
+                        "Failed to serialize new value: {}",
+                        e
+                    ))
+                })?;
+            let new_v: V = crate::serialization::bincode_compat::deserialize(&new_bytes)
+                .map_err(|e| {
+                    PersistentARTrieError::internal(format!(
+                        "increment result {} cannot be stored as the value type: {}",
+                        new_i64, e
+                    ))
+                })?;
+            // CAS the recomputed value (expected = the value just read). A concurrent
+            // change fails the CAS -> Ok(false) -> re-read + recompute + retry; the
+            // burned durable record is dropped on Overlay reopen.
+            if self.compare_and_swap(term, cur_v, new_v)? {
+                return Ok(new_i64);
+            }
+            std::hint::spin_loop();
+        }
     }
 
     /// Internal increment without WAL logging (for batch operations).

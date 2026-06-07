@@ -62,6 +62,12 @@ impl<V: DictionaryValue + serde::Serialize + serde::de::DeserializeOwned, S: Blo
             {
                 return routed;
             }
+            // F2: the fast path is the i64 add-only seam (byte counter = i64 +
+            // non-negative). A `u64` byte counter or a DECREMENT routes to the general
+            // value-CAS path — no dropped functionality, and it replaces the prior
+            // FALL-THROUGH to the owned body (an unranked owned write dropped on Overlay
+            // reopen = data loss). `fetch_add` inherits it.
+            return self.increment_bytes_via_value_cas(term, delta);
         }
         let current: i64 = match self.get_value_impl(term) {
             Some(v) => {
@@ -111,6 +117,67 @@ impl<V: DictionaryValue + serde::Serialize + serde::de::DeserializeOwned, S: Blo
         self.insert_impl_core(term, Some(v));
 
         Ok(new_value)
+    }
+
+    /// **F2 — general byte overlay increment via the value-CAS path** (Counter-bound).
+    /// Byte twin of char's `increment_via_value_cas`: the `route_increment_bytes` fast
+    /// path is the i64 add-only seam (byte counter = i64 + non-negative); a `u64` byte
+    /// counter or a decrement routes here — read → `cur + delta` → CAS retry over the
+    /// proven `compare_and_swap_cas_durable` (phantom-safe per `LockFreeOverlayValueCas`).
+    /// Preserves the owned increment for all Counter types (the prior overlay fall-through
+    /// to the owned tree was an unranked write dropped on reopen = data loss).
+    fn increment_bytes_via_value_cas(&mut self, term: &[u8], delta: i64) -> Result<i64>
+    where
+        V: crate::value::Counter,
+    {
+        loop {
+            let cur_v: Option<V> =
+                <Self as DurableOverlayWrite<ByteKey, V, S>>::value_read_faulting(self, term)?;
+            let cur_i64: i64 = match &cur_v {
+                Some(v) => {
+                    let bytes = crate::serialization::bincode_compat::serialize(v).map_err(|e| {
+                        PersistentARTrieError::internal(format!("Serialization error: {}", e))
+                    })?;
+                    if bytes.len() == 8 {
+                        i64::from_le_bytes(bytes.try_into().expect("expected 8 bytes"))
+                    } else {
+                        crate::serialization::bincode_compat::deserialize::<i64>(&bytes).map_err(
+                            |e| {
+                                PersistentARTrieError::internal(format!(
+                                    "Value cannot be interpreted as i64: {}",
+                                    e
+                                ))
+                            },
+                        )?
+                    }
+                }
+                None => 0,
+            };
+            let new_i64 = cur_i64.checked_add(delta).ok_or_else(|| {
+                PersistentARTrieError::InvalidOperation(format!(
+                    "increment overflow for term {:?}: {} + {} exceeds i64 range",
+                    String::from_utf8_lossy(term),
+                    cur_i64,
+                    delta
+                ))
+            })?;
+            let new_bytes =
+                crate::serialization::bincode_compat::serialize(&new_i64).map_err(|e| {
+                    PersistentARTrieError::internal(format!("Serialization error: {}", e))
+                })?;
+            let new_v: V = crate::serialization::bincode_compat::deserialize(&new_bytes)
+                .map_err(|e| {
+                    PersistentARTrieError::internal(format!("Cannot create value from i64: {}", e))
+                })?;
+            match <Self as DurableOverlayWrite<ByteKey, V, S>>::compare_and_swap_cas_durable_default(
+                self, term, cur_v, new_v,
+            )? {
+                true => return Ok(new_i64),
+                false => {
+                    std::hint::spin_loop();
+                }
+            }
+        }
     }
 
     /// Get value by raw byte key.
