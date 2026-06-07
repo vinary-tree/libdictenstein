@@ -1,0 +1,2007 @@
+   Compiling libdictenstein v0.1.0 (/home/dylon/Workspace/f1r3fly.io/libdictenstein)
+warning: unused import: `super::*`
+  --> src/persistent_artrie/nodes/atomic_ptr.rs:23:9
+   |
+23 |     use super::*;
+   |         ^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `crate::persistent_artrie::arena_manager::ArenaSlot`
+    --> src/persistent_artrie/dict_impl.rs:1254:13
+     |
+1254 |         use crate::persistent_artrie::arena_manager::ArenaSlot;
+     |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `super::*`
+  --> src/persistent_artrie_char/nodes/atomic_ptr.rs:23:9
+   |
+23 |     use super::*;
+   |         ^^^^^^^^
+
+warning: unused import: `super::super::SharedCharTrie`
+   --> src/persistent_artrie_char/dict_impl_char.rs:206:9
+    |
+206 |     use super::super::SharedCharTrie;
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `crate::persistent_artrie::epoch::EpochConfig`
+    --> src/persistent_artrie_char/dict_impl_char.rs:2510:13
+     |
+2510 |         use crate::persistent_artrie::epoch::EpochConfig;
+     |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: method `serialize_node_to_disk` is never used
+  --> src/persistent_artrie/serialize_impl.rs:57:19
+   |
+36 | impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
+   | ---------------------------------------------------------------- method in this implementation
+...
+57 |     pub(super) fn serialize_node_to_disk(&self, node: &Node) -> Result<SwizzledPtr> {
+   |                   ^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: variant `Empty` is never constructed
+  --> src/persistent_artrie/node_impl.rs:88:5
+   |
+53 | enum NodeInner<V: DictionaryValue> {
+   |      --------- variant in this enum
+...
+88 |     Empty,
+   |     ^^^^^
+   |
+   = note: `NodeInner` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: associated function `empty` is never used
+   --> src/persistent_artrie/node_impl.rs:173:8
+    |
+ 91 | impl<V: DictionaryValue> PersistentARTrieNode<V> {
+    | ------------------------------------------------ associated function in this implementation
+...
+173 |     fn empty() -> Self {
+    |        ^^^^^
+
+warning: field `commit_seq_by_data_lsn` is never read
+   --> src/persistent_artrie_char/mod.rs:502:16
+    |
+366 | pub struct PersistentARTrieChar<V: DictionaryValue = (), S: crate::persistent_artrie::block_storage::BlockStorage = crate::persiste...
+    |            -------------------- field in this struct
+...
+502 |     pub(crate) commit_seq_by_data_lsn: std::sync::Mutex<std::collections::BTreeMap<u64, u64>>,
+    |                ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: field `is_root` is never read
+   --> src/persistent_artrie_char/mod.rs:823:5
+    |
+819 | pub struct PersistentARTrieCharNode<V: DictionaryValue = ()> {
+    |            ------------------------ field in this struct
+...
+823 |     is_root: bool,
+    |     ^^^^^^^
+    |
+    = note: `PersistentARTrieCharNode` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: method `pending_len` is never used
+  --> src/persistent_artrie_char/reclaim.rs:59:19
+   |
+44 | impl<V: DictionaryValue> CharRetireList<V> {
+   | ------------------------------------------ method in this implementation
+...
+59 |     pub(crate) fn pending_len(&self) -> usize {
+   |                   ^^^^^^^^^^^
+
+warning: method `checkpoint_path` is never used
+   --> src/persistent_artrie_core/epoch.rs:776:8
+    |
+447 | impl CheckpointManager {
+    | ---------------------- method in this implementation
+...
+776 |     fn checkpoint_path(&self, epoch: EpochId) -> PathBuf {
+    |        ^^^^^^^^^^^^^^^
+
+warning: struct `PendingTransaction` is never constructed
+   --> src/persistent_artrie_core/recovery.rs:439:8
+    |
+439 | struct PendingTransaction {
+    |        ^^^^^^^^^^^^^^^^^^
+
+warning: field `archive_config` is never read
+   --> src/persistent_artrie_core/wal/async_writer.rs:383:5
+    |
+371 | pub struct AsyncWalWriter {
+    |            -------------- field in this struct
+...
+383 |     archive_config: WalConfig,
+    |     ^^^^^^^^^^^^^^
+
+warning: associated function `placeholder` is never used
+   --> src/persistent_vocab_artrie/mod.rs:267:8
+    |
+256 | impl VocabTrieNodeRef {
+    | --------------------- associated function in this implementation
+...
+267 |     fn placeholder() -> Self {
+    |        ^^^^^^^^^^^
+
+warning: constant `DEFAULT_VOCAB_BUFFER_POOL_SIZE` is never used
+  --> src/persistent_vocab_artrie/dict_impl.rs:73:7
+   |
+73 | const DEFAULT_VOCAB_BUFFER_POOL_SIZE: usize = 64;
+   |       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: field `shutdown` is never read
+   --> src/persistent_vocab_artrie/concurrent.rs:132:5
+    |
+100 | pub struct ConcurrentVocabARTrie {
+    |            --------------------- field in this struct
+...
+132 |     shutdown: AtomicBool,
+    |     ^^^^^^^^
+
+warning: type alias `ScdawgNode` is never used
+  --> src/scdawg.rs:74:6
+   |
+74 | type ScdawgNode<V = ()> = crate::scdawg_core::ScdawgNode<u8, V>;
+   |      ^^^^^^^^^^
+
+warning: type alias `ScdawgCharNode` is never used
+  --> src/scdawg_char.rs:66:6
+   |
+66 | type ScdawgCharNode<V = ()> = crate::scdawg_core::ScdawgNode<char, V>;
+   |      ^^^^^^^^^^^^^^
+
+warning: type alias `SuffixNode` is never used
+   --> src/suffix_automaton.rs:150:17
+    |
+150 | pub(crate) type SuffixNode<V = ()> = crate::suffix_automaton_core::SuffixNode<u8, V>;
+    |                 ^^^^^^^^^^
+
+warning: type alias `SuffixNodeChar` is never used
+   --> src/suffix_automaton_char.rs:149:17
+    |
+149 | pub(crate) type SuffixNodeChar<V = ()> = crate::suffix_automaton_core::SuffixNode<char, V>;
+    |                 ^^^^^^^^^^^^^^
+
+warning: unused `std::result::Result` that must be used
+   --> src/persistent_artrie_char/mod.rs:698:13
+    |
+698 |             trie.insert(&term);
+    |             ^^^^^^^^^^^^^^^^^^
+    |
+    = note: this `Result` may be an `Err` variant, which should be handled
+    = note: `#[warn(unused_must_use)]` (part of `#[warn(unused)]`) on by default
+help: use `let _ = ...` to ignore the resulting value
+    |
+698 |             let _ = trie.insert(&term);
+    |             +++++++
+
+warning: unused `std::result::Result` that must be used
+   --> src/persistent_artrie_char/mod.rs:709:13
+    |
+709 |             trie.insert(term);
+    |             ^^^^^^^^^^^^^^^^^
+    |
+    = note: this `Result` may be an `Err` variant, which should be handled
+help: use `let _ = ...` to ignore the resulting value
+    |
+709 |             let _ = trie.insert(term);
+    |             +++++++
+
+warning: use of deprecated associated function `persistent_artrie::mmap_ctor::<impl persistent_artrie::dict_impl::PersistentARTrie<V>>::new`: Use `create()` or `open()` for disk persistence. For in-memory tries, use DoubleArrayTrie or DynamicDawg instead.
+   --> src/persistent_artrie/dict_impl.rs:575:56
+    |
+575 |         let dict: PersistentARTrie = PersistentARTrie::new();
+    |                                                        ^^^
+    |
+    = note: `#[warn(deprecated)]` on by default
+
+warning: use of deprecated associated function `persistent_artrie::mmap_ctor::<impl persistent_artrie::dict_impl::PersistentARTrie<V>>::new`: Use `create()` or `open()` for disk persistence. For in-memory tries, use DoubleArrayTrie or DynamicDawg instead.
+   --> src/persistent_artrie/dict_impl.rs:582:60
+    |
+582 |         let mut dict: PersistentARTrie = PersistentARTrie::new();
+    |                                                            ^^^
+
+warning: use of deprecated associated function `persistent_artrie::mmap_ctor::<impl persistent_artrie::dict_impl::PersistentARTrie<V>>::new`: Use `create()` or `open()` for disk persistence. For in-memory tries, use DoubleArrayTrie or DynamicDawg instead.
+   --> src/persistent_artrie/dict_impl.rs:599:60
+    |
+599 |         let mut dict: PersistentARTrie = PersistentARTrie::new();
+    |                                                            ^^^
+
+warning: use of deprecated associated function `persistent_artrie::mmap_ctor::<impl persistent_artrie::dict_impl::PersistentARTrie<V>>::new`: Use `create()` or `open()` for disk persistence. For in-memory tries, use DoubleArrayTrie or DynamicDawg instead.
+   --> src/persistent_artrie/dict_impl.rs:609:60
+    |
+609 |         let mut dict: PersistentARTrie = PersistentARTrie::new();
+    |                                                            ^^^
+
+warning: use of deprecated associated function `persistent_artrie::mmap_ctor::<impl persistent_artrie::dict_impl::PersistentARTrie<V>>::new`: Use `create()` or `open()` for disk persistence. For in-memory tries, use DoubleArrayTrie or DynamicDawg instead.
+   --> src/persistent_artrie/dict_impl.rs:623:60
+    |
+623 |         let mut dict: PersistentARTrie = PersistentARTrie::new();
+    |                                                            ^^^
+
+warning: use of deprecated associated function `persistent_artrie::mmap_ctor::<impl persistent_artrie::dict_impl::PersistentARTrie<V>>::new`: Use `create()` or `open()` for disk persistence. For in-memory tries, use DoubleArrayTrie or DynamicDawg instead.
+   --> src/persistent_artrie/dict_impl.rs:633:60
+    |
+633 |         let mut dict: PersistentARTrie = PersistentARTrie::new();
+    |                                                            ^^^
+
+warning: use of deprecated associated function `persistent_artrie::mmap_ctor::<impl persistent_artrie::dict_impl::PersistentARTrie<V>>::new`: Use `create()` or `open()` for disk persistence. For in-memory tries, use DoubleArrayTrie or DynamicDawg instead.
+   --> src/persistent_artrie/dict_impl.rs:645:60
+    |
+645 |         let mut dict: PersistentARTrie = PersistentARTrie::new();
+    |                                                            ^^^
+
+warning: use of deprecated associated function `persistent_artrie::mmap_ctor::<impl persistent_artrie::dict_impl::PersistentARTrie<V>>::new`: Use `create()` or `open()` for disk persistence. For in-memory tries, use DoubleArrayTrie or DynamicDawg instead.
+   --> src/persistent_artrie/dict_impl.rs:658:60
+    |
+658 |         let mut dict: PersistentARTrie = PersistentARTrie::new();
+    |                                                            ^^^
+
+warning: use of deprecated associated function `persistent_artrie::mmap_ctor::<impl persistent_artrie::dict_impl::PersistentARTrie<V>>::new`: Use `create()` or `open()` for disk persistence. For in-memory tries, use DoubleArrayTrie or DynamicDawg instead.
+   --> src/persistent_artrie/dict_impl.rs:669:60
+    |
+669 |         let mut dict: PersistentARTrie = PersistentARTrie::new();
+    |                                                            ^^^
+
+warning: use of deprecated associated function `persistent_artrie::mmap_ctor::<impl persistent_artrie::dict_impl::PersistentARTrie<V>>::new`: Use `create()` or `open()` for disk persistence. For in-memory tries, use DoubleArrayTrie or DynamicDawg instead.
+   --> src/persistent_artrie/dict_impl.rs:686:56
+    |
+686 |         let dict: PersistentARTrie = PersistentARTrie::new();
+    |                                                        ^^^
+
+warning: use of deprecated associated function `persistent_artrie::mmap_ctor::<impl persistent_artrie::dict_impl::PersistentARTrie<V>>::new`: Use `create()` or `open()` for disk persistence. For in-memory tries, use DoubleArrayTrie or DynamicDawg instead.
+   --> src/persistent_artrie/dict_impl.rs:692:56
+    |
+692 |         let dict: PersistentARTrie = PersistentARTrie::new();
+    |                                                        ^^^
+
+warning: use of deprecated associated function `persistent_artrie::mmap_ctor::<impl persistent_artrie::dict_impl::PersistentARTrie<V>>::new`: Use `create()` or `open()` for disk persistence. For in-memory tries, use DoubleArrayTrie or DynamicDawg instead.
+   --> src/persistent_artrie/dict_impl.rs:699:60
+    |
+699 |         let mut dict: PersistentARTrie = PersistentARTrie::new();
+    |                                                            ^^^
+
+warning: use of deprecated associated function `persistent_artrie::mmap_ctor::<impl persistent_artrie::dict_impl::PersistentARTrie<V>>::new`: Use `create()` or `open()` for disk persistence. For in-memory tries, use DoubleArrayTrie or DynamicDawg instead.
+   --> src/persistent_artrie/dict_impl.rs:709:60
+    |
+709 |         let mut dict: PersistentARTrie = PersistentARTrie::new();
+    |                                                            ^^^
+
+warning: use of deprecated associated function `persistent_artrie::mmap_ctor::<impl persistent_artrie::dict_impl::PersistentARTrie<V>>::new`: Use `create()` or `open()` for disk persistence. For in-memory tries, use DoubleArrayTrie or DynamicDawg instead.
+   --> src/persistent_artrie/dict_impl.rs:725:60
+    |
+725 |         let mut dict: PersistentARTrie = PersistentARTrie::new();
+    |                                                            ^^^
+
+warning: use of deprecated associated function `persistent_artrie::mmap_ctor::<impl persistent_artrie::dict_impl::PersistentARTrie<V>>::new`: Use `create()` or `open()` for disk persistence. For in-memory tries, use DoubleArrayTrie or DynamicDawg instead.
+   --> src/persistent_artrie/dict_impl.rs:737:60
+    |
+737 |         let mut dict: PersistentARTrie = PersistentARTrie::new();
+    |                                                            ^^^
+
+warning: use of deprecated associated function `persistent_artrie::mmap_ctor::<impl persistent_artrie::dict_impl::PersistentARTrie<V>>::new`: Use `create()` or `open()` for disk persistence. For in-memory tries, use DoubleArrayTrie or DynamicDawg instead.
+   --> src/persistent_artrie/dict_impl.rs:753:60
+    |
+753 |         let mut dict: PersistentARTrie = PersistentARTrie::new();
+    |                                                            ^^^
+
+warning: use of deprecated associated function `persistent_artrie::mmap_ctor::<impl persistent_artrie::dict_impl::PersistentARTrie<V>>::new`: Use `create()` or `open()` for disk persistence. For in-memory tries, use DoubleArrayTrie or DynamicDawg instead.
+    --> src/persistent_artrie/dict_impl.rs:1527:71
+     |
+1527 |             let mut source: PersistentARTrie<u32> = PersistentARTrie::new();
+     |                                                                       ^^^
+
+warning: use of deprecated associated function `persistent_artrie::mmap_ctor::<impl persistent_artrie::dict_impl::PersistentARTrie<V>>::new`: Use `create()` or `open()` for disk persistence. For in-memory tries, use DoubleArrayTrie or DynamicDawg instead.
+    --> src/persistent_artrie/dict_impl.rs:1535:71
+     |
+1535 |             let mut target: PersistentARTrie<u32> = PersistentARTrie::new();
+     |                                                                       ^^^
+
+warning: use of deprecated associated function `persistent_artrie::mmap_ctor::<impl persistent_artrie::dict_impl::PersistentARTrie<V>>::new`: Use `create()` or `open()` for disk persistence. For in-memory tries, use DoubleArrayTrie or DynamicDawg instead.
+    --> src/persistent_artrie/dict_impl.rs:1557:71
+     |
+1557 |             let mut source: PersistentARTrie<u32> = PersistentARTrie::new();
+     |                                                                       ^^^
+
+warning: use of deprecated associated function `persistent_artrie::mmap_ctor::<impl persistent_artrie::dict_impl::PersistentARTrie<V>>::new`: Use `create()` or `open()` for disk persistence. For in-memory tries, use DoubleArrayTrie or DynamicDawg instead.
+    --> src/persistent_artrie/dict_impl.rs:1564:71
+     |
+1564 |             let mut target: PersistentARTrie<u32> = PersistentARTrie::new();
+     |                                                                       ^^^
+
+warning: use of deprecated associated function `persistent_artrie::mmap_ctor::<impl persistent_artrie::dict_impl::PersistentARTrie<V>>::new`: Use `create()` or `open()` for disk persistence. For in-memory tries, use DoubleArrayTrie or DynamicDawg instead.
+    --> src/persistent_artrie/dict_impl.rs:1585:69
+     |
+1585 |             let mut trie: PersistentARTrie<u32> = PersistentARTrie::new();
+     |                                                                     ^^^
+
+warning: use of deprecated associated function `persistent_artrie::mmap_ctor::<impl persistent_artrie::dict_impl::PersistentARTrie<V>>::new`: Use `create()` or `open()` for disk persistence. For in-memory tries, use DoubleArrayTrie or DynamicDawg instead.
+    --> src/persistent_artrie/dict_impl.rs:1612:69
+     |
+1612 |             let mut trie: PersistentARTrie<u32> = PersistentARTrie::new();
+     |                                                                     ^^^
+
+warning: use of deprecated associated function `persistent_artrie::mmap_ctor::<impl persistent_artrie::dict_impl::PersistentARTrie<V>>::new`: Use `create()` or `open()` for disk persistence. For in-memory tries, use DoubleArrayTrie or DynamicDawg instead.
+    --> src/persistent_artrie/dict_impl.rs:1634:69
+     |
+1634 |             let mut trie: PersistentARTrie<u32> = PersistentARTrie::new();
+     |                                                                     ^^^
+
+warning: use of deprecated associated function `persistent_artrie::mmap_ctor::<impl persistent_artrie::dict_impl::PersistentARTrie<V>>::new`: Use `create()` or `open()` for disk persistence. For in-memory tries, use DoubleArrayTrie or DynamicDawg instead.
+    --> src/persistent_artrie/dict_impl.rs:1644:72
+     |
+1644 |             let mut trie: PersistentARTrie<String> = PersistentARTrie::new();
+     |                                                                        ^^^
+
+warning: use of deprecated associated function `persistent_artrie::mmap_ctor::<impl persistent_artrie::dict_impl::PersistentARTrie<V>>::new`: Use `create()` or `open()` for disk persistence. For in-memory tries, use DoubleArrayTrie or DynamicDawg instead.
+    --> src/persistent_artrie/dict_impl.rs:1705:65
+     |
+1705 |             let dict: PersistentARTrie<i32> = PersistentARTrie::new();
+     |                                                                 ^^^
+
+warning: use of deprecated associated function `persistent_artrie::mmap_ctor::<impl persistent_artrie::dict_impl::PersistentARTrie<V>>::new`: Use `create()` or `open()` for disk persistence. For in-memory tries, use DoubleArrayTrie or DynamicDawg instead.
+    --> src/persistent_artrie/dict_impl.rs:1753:65
+     |
+1753 |             let dict: PersistentARTrie<i32> = PersistentARTrie::new();
+     |                                                                 ^^^
+
+warning: use of deprecated associated function `persistent_artrie::mmap_ctor::<impl persistent_artrie::dict_impl::PersistentARTrie<V>>::new`: Use `create()` or `open()` for disk persistence. For in-memory tries, use DoubleArrayTrie or DynamicDawg instead.
+    --> src/persistent_artrie/dict_impl.rs:1859:60
+     |
+1859 |         let mut dict: PersistentARTrie = PersistentARTrie::new();
+     |                                                            ^^^
+
+warning: use of deprecated associated function `persistent_artrie::mmap_ctor::<impl persistent_artrie::dict_impl::PersistentARTrie<V>>::new`: Use `create()` or `open()` for disk persistence. For in-memory tries, use DoubleArrayTrie or DynamicDawg instead.
+    --> src/persistent_artrie/dict_impl.rs:1880:60
+     |
+1880 |         let mut dict: PersistentARTrie = PersistentARTrie::new();
+     |                                                            ^^^
+
+warning: use of deprecated associated function `persistent_artrie::mmap_ctor::<impl persistent_artrie::dict_impl::PersistentARTrie<V>>::new`: Use `create()` or `open()` for disk persistence. For in-memory tries, use DoubleArrayTrie or DynamicDawg instead.
+    --> src/persistent_artrie/dict_impl.rs:1895:60
+     |
+1895 |         let mut dict: PersistentARTrie = PersistentARTrie::new();
+     |                                                            ^^^
+
+warning: use of deprecated associated function `persistent_artrie::mmap_ctor::<impl persistent_artrie::dict_impl::PersistentARTrie<V>>::new`: Use `create()` or `open()` for disk persistence. For in-memory tries, use DoubleArrayTrie or DynamicDawg instead.
+    --> src/persistent_artrie/dict_impl.rs:1909:60
+     |
+1909 |         let mut dict: PersistentARTrie = PersistentARTrie::new();
+     |                                                            ^^^
+
+warning: use of deprecated associated function `persistent_artrie::mmap_ctor::<impl persistent_artrie::dict_impl::PersistentARTrie<V>>::new`: Use `create()` or `open()` for disk persistence. For in-memory tries, use DoubleArrayTrie or DynamicDawg instead.
+    --> src/persistent_artrie/dict_impl.rs:1938:60
+     |
+1938 |         let mut dict: PersistentARTrie = PersistentARTrie::new();
+     |                                                            ^^^
+
+warning: use of deprecated associated function `persistent_artrie::mmap_ctor::<impl persistent_artrie::dict_impl::PersistentARTrie<V>>::new`: Use `create()` or `open()` for disk persistence. For in-memory tries, use DoubleArrayTrie or DynamicDawg instead.
+    --> src/persistent_artrie/dict_impl.rs:1970:60
+     |
+1970 |         let mut dict: PersistentARTrie = PersistentARTrie::new();
+     |                                                            ^^^
+
+warning: use of deprecated associated function `persistent_artrie::mmap_ctor::<impl persistent_artrie::dict_impl::PersistentARTrie<V>>::new`: Use `create()` or `open()` for disk persistence. For in-memory tries, use DoubleArrayTrie or DynamicDawg instead.
+    --> src/persistent_artrie/dict_impl.rs:2002:60
+     |
+2002 |         let mut dict: PersistentARTrie = PersistentARTrie::new();
+     |                                                            ^^^
+
+warning: use of deprecated associated function `persistent_artrie::mmap_ctor::<impl persistent_artrie::dict_impl::PersistentARTrie<V>>::new`: Use `create()` or `open()` for disk persistence. For in-memory tries, use DoubleArrayTrie or DynamicDawg instead.
+    --> src/persistent_artrie/dict_impl.rs:2020:60
+     |
+2020 |         let mut dict: PersistentARTrie = PersistentARTrie::new();
+     |                                                            ^^^
+
+warning: use of deprecated associated function `persistent_artrie::mmap_ctor::<impl persistent_artrie::dict_impl::PersistentARTrie<V>>::new`: Use `create()` or `open()` for disk persistence. For in-memory tries, use DoubleArrayTrie or DynamicDawg instead.
+   --> src/persistent_artrie/zipper.rs:478:64
+    |
+478 |         let mut dict: PersistentARTrie<()> = PersistentARTrie::new();
+    |                                                                ^^^
+
+warning: use of deprecated associated function `persistent_artrie::mmap_ctor::<impl persistent_artrie::dict_impl::PersistentARTrie<V>>::new`: Use `create()` or `open()` for disk persistence. For in-memory tries, use DoubleArrayTrie or DynamicDawg instead.
+   --> src/persistent_artrie/zipper.rs:487:64
+    |
+487 |         let mut dict: PersistentARTrie<()> = PersistentARTrie::new();
+    |                                                                ^^^
+
+warning: use of deprecated associated function `persistent_artrie::mmap_ctor::<impl persistent_artrie::dict_impl::PersistentARTrie<V>>::new`: Use `create()` or `open()` for disk persistence. For in-memory tries, use DoubleArrayTrie or DynamicDawg instead.
+   --> src/persistent_artrie/zipper.rs:501:64
+    |
+501 |         let mut dict: PersistentARTrie<()> = PersistentARTrie::new();
+    |                                                                ^^^
+
+warning: use of deprecated associated function `persistent_artrie::mmap_ctor::<impl persistent_artrie::dict_impl::PersistentARTrie<V>>::new`: Use `create()` or `open()` for disk persistence. For in-memory tries, use DoubleArrayTrie or DynamicDawg instead.
+   --> src/persistent_artrie/zipper.rs:511:64
+    |
+511 |         let mut dict: PersistentARTrie<()> = PersistentARTrie::new();
+    |                                                                ^^^
+
+warning: use of deprecated associated function `persistent_artrie::mmap_ctor::<impl persistent_artrie::dict_impl::PersistentARTrie<V>>::new`: Use `create()` or `open()` for disk persistence. For in-memory tries, use DoubleArrayTrie or DynamicDawg instead.
+   --> src/persistent_artrie/zipper.rs:526:64
+    |
+526 |         let mut dict: PersistentARTrie<()> = PersistentARTrie::new();
+    |                                                                ^^^
+
+warning: use of deprecated associated function `persistent_artrie::mmap_ctor::<impl persistent_artrie::dict_impl::PersistentARTrie<V>>::new`: Use `create()` or `open()` for disk persistence. For in-memory tries, use DoubleArrayTrie or DynamicDawg instead.
+   --> src/persistent_artrie/zipper.rs:541:64
+    |
+541 |         let mut dict: PersistentARTrie<()> = PersistentARTrie::new();
+    |                                                                ^^^
+
+warning: use of deprecated associated function `persistent_artrie::mmap_ctor::<impl persistent_artrie::dict_impl::PersistentARTrie<V>>::new`: Use `create()` or `open()` for disk persistence. For in-memory tries, use DoubleArrayTrie or DynamicDawg instead.
+   --> src/persistent_artrie/zipper.rs:551:64
+    |
+551 |         let mut dict: PersistentARTrie<()> = PersistentARTrie::new();
+    |                                                                ^^^
+
+warning: use of deprecated associated function `persistent_artrie::mmap_ctor::<impl persistent_artrie::dict_impl::PersistentARTrie<V>>::new`: Use `create()` or `open()` for disk persistence. For in-memory tries, use DoubleArrayTrie or DynamicDawg instead.
+   --> src/persistent_artrie/zipper.rs:565:64
+    |
+565 |         let mut dict: PersistentARTrie<()> = PersistentARTrie::new();
+    |                                                                ^^^
+
+warning: use of deprecated associated function `persistent_artrie::mmap_ctor::<impl persistent_artrie::dict_impl::PersistentARTrie<V>>::new`: Use `create()` or `open()` for disk persistence. For in-memory tries, use DoubleArrayTrie or DynamicDawg instead.
+   --> src/persistent_artrie/zipper.rs:585:64
+    |
+585 |         let mut dict: PersistentARTrie<()> = PersistentARTrie::new();
+    |                                                                ^^^
+
+warning: use of deprecated associated function `persistent_artrie::mmap_ctor::<impl persistent_artrie::dict_impl::PersistentARTrie<V>>::new`: Use `create()` or `open()` for disk persistence. For in-memory tries, use DoubleArrayTrie or DynamicDawg instead.
+   --> src/persistent_artrie/zipper.rs:604:64
+    |
+604 |         let mut dict: PersistentARTrie<()> = PersistentARTrie::new();
+    |                                                                ^^^
+
+warning: use of deprecated associated function `persistent_artrie::mmap_ctor::<impl persistent_artrie::dict_impl::PersistentARTrie<V>>::new`: Use `create()` or `open()` for disk persistence. For in-memory tries, use DoubleArrayTrie or DynamicDawg instead.
+   --> src/persistent_artrie/zipper.rs:618:64
+    |
+618 |         let mut dict: PersistentARTrie<()> = PersistentARTrie::new();
+    |                                                                ^^^
+
+warning: use of deprecated associated function `persistent_artrie::mmap_ctor::<impl persistent_artrie::dict_impl::PersistentARTrie<V>>::new`: Use `create()` or `open()` for disk persistence. For in-memory tries, use DoubleArrayTrie or DynamicDawg instead.
+   --> src/persistent_artrie/zipper.rs:639:64
+    |
+639 |         let mut dict: PersistentARTrie<()> = PersistentARTrie::new();
+    |                                                                ^^^
+
+warning: use of deprecated associated function `persistent_artrie::mmap_ctor::<impl persistent_artrie::dict_impl::PersistentARTrie<V>>::new`: Use `create()` or `open()` for disk persistence. For in-memory tries, use DoubleArrayTrie or DynamicDawg instead.
+   --> src/persistent_artrie/zipper.rs:662:64
+    |
+662 |         let mut dict: PersistentARTrie<()> = PersistentARTrie::new();
+    |                                                                ^^^
+
+warning: unused import: `MappedDictionary`
+    --> src/persistent_artrie_char/lockfree_cas.rs:2353:29
+     |
+2353 |     use crate::{Dictionary, MappedDictionary};
+     |                             ^^^^^^^^^^^^^^^^
+
+warning: unused import: `MappedDictionary`
+    --> src/persistent_artrie_char/persist.rs:1333:29
+     |
+1333 |     use crate::{Dictionary, MappedDictionary};
+     |                             ^^^^^^^^^^^^^^^^
+
+warning: unused import: `MappedDictionary`
+    --> src/persistent_artrie_char/persist.rs:1647:29
+     |
+1647 |     use crate::{Dictionary, MappedDictionary};
+     |                             ^^^^^^^^^^^^^^^^
+
+warning: unused import: `MappedDictionary`
+    --> src/persistent_artrie_char/persist.rs:1787:29
+     |
+1787 |     use crate::{Dictionary, MappedDictionary};
+     |                             ^^^^^^^^^^^^^^^^
+
+warning: unused import: `crate::ARTrie`
+   --> src/persistent_artrie_char/dict_impl_char.rs:208:9
+    |
+208 |     use crate::ARTrie;
+    |         ^^^^^^^^^^^^^
+
+warning: unused import: `Dictionary`
+    --> src/persistent_artrie/lockfree_cas.rs:2190:17
+     |
+2190 |     use crate::{Dictionary, MappedDictionary};
+     |                 ^^^^^^^^^^
+
+warning: unused import: `crate::persistent_artrie_core::overlay::flip::LockFreeOverlay`
+    --> src/persistent_artrie/lockfree_cas.rs:2588:13
+     |
+2588 |         use crate::persistent_artrie_core::overlay::flip::LockFreeOverlay;
+     |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `crate::persistent_artrie_core::overlay::flip::LockFreeOverlay`
+    --> src/persistent_artrie/lockfree_cas.rs:2679:13
+     |
+2679 |         use crate::persistent_artrie_core::overlay::flip::LockFreeOverlay;
+     |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `crate::persistent_artrie_core::overlay::flip::LockFreeOverlay`
+    --> src/persistent_artrie/lockfree_cas.rs:2701:13
+     |
+2701 |         use crate::persistent_artrie_core::overlay::flip::LockFreeOverlay;
+     |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: `libdictenstein` (lib) generated 18 warnings
+warning: function `alphanumeric_term` is never used
+  --> tests/common/strategies.rs:38:8
+   |
+38 | pub fn alphanumeric_term(min_len: usize, max_len: usize) -> impl Strategy<Value = String> {
+   |        ^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `prefix_clustered_terms` is never used
+  --> tests/common/strategies.rs:53:8
+   |
+53 | pub fn prefix_clustered_terms(count: usize) -> impl Strategy<Value = Vec<String>> {
+   |        ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `suffix_clustered_terms` is never used
+  --> tests/common/strategies.rs:78:8
+   |
+78 | pub fn suffix_clustered_terms(count: usize) -> impl Strategy<Value = Vec<String>> {
+   |        ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `first_byte_clustered_terms` is never used
+   --> tests/common/strategies.rs:100:8
+    |
+100 | pub fn first_byte_clustered_terms(count: usize) -> impl Strategy<Value = Vec<String>> {
+    |        ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `edge_case_terms` is never used
+   --> tests/common/strategies.rs:131:8
+    |
+131 | pub fn edge_case_terms() -> impl Strategy<Value = Vec<String>> {
+    |        ^^^^^^^^^^^^^^^
+
+warning: function `byte_sequence` is never used
+   --> tests/common/strategies.rs:161:8
+    |
+161 | pub fn byte_sequence(min_len: usize, max_len: usize) -> impl Strategy<Value = Vec<u8>> {
+    |        ^^^^^^^^^^^^^
+
+warning: enum `DictOp` is never used
+   --> tests/common/strategies.rs:172:10
+    |
+172 | pub enum DictOp<V: Clone + std::fmt::Debug> {
+    |          ^^^^^^
+
+warning: function `dict_ops_strategy` is never used
+   --> tests/common/strategies.rs:186:8
+    |
+186 | pub fn dict_ops_strategy<V>(
+    |        ^^^^^^^^^^^^^^^^^
+
+warning: function `insert_remove_ops` is never used
+   --> tests/common/strategies.rs:209:8
+    |
+209 | pub fn insert_remove_ops(count: usize) -> impl Strategy<Value = Vec<DictOp<()>>> {
+    |        ^^^^^^^^^^^^^^^^^
+
+warning: function `u32_value` is never used
+   --> tests/common/strategies.rs:218:8
+    |
+218 | pub fn u32_value() -> impl Strategy<Value = u32> {
+    |        ^^^^^^^^^
+
+warning: function `i64_value` is never used
+   --> tests/common/strategies.rs:223:8
+    |
+223 | pub fn i64_value() -> impl Strategy<Value = i64> {
+    |        ^^^^^^^^^
+
+warning: function `string_value` is never used
+   --> tests/common/strategies.rs:228:8
+    |
+228 | pub fn string_value() -> impl Strategy<Value = String> {
+    |        ^^^^^^^^^^^^
+
+warning: function `overlapping_term_sets` is never used
+   --> tests/common/strategies.rs:241:8
+    |
+241 | pub fn overlapping_term_sets(
+    |        ^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `three_term_sets` is never used
+   --> tests/common/strategies.rs:272:8
+    |
+272 | pub fn three_term_sets(
+    |        ^^^^^^^^^^^^^^^
+
+warning: function `dedupe_terms` is never used
+   --> tests/common/strategies.rs:294:8
+    |
+294 | pub fn dedupe_terms(terms: Vec<String>) -> Vec<String> {
+    |        ^^^^^^^^^^^^
+
+warning: function `sets_equal` is never used
+   --> tests/common/strategies.rs:303:8
+    |
+303 | pub fn sets_equal<T: Eq + std::hash::Hash>(a: &[T], b: &[T]) -> bool {
+    |        ^^^^^^^^^^
+
+warning: function `create_test_trie` is never used
+  --> tests/persistent_artrie_acid_tests.rs:20:4
+   |
+20 | fn create_test_trie(name: &str) -> (PersistentARTrie<u64>, PathBuf) {
+   |    ^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `cleanup_test_files` is never used
+  --> tests/persistent_artrie_acid_tests.rs:31:4
+   |
+31 | fn cleanup_test_files(path: &PathBuf) {
+   |    ^^^^^^^^^^^^^^^^^^
+
+warning: function `unicode_term` is never used
+  --> tests/common/strategies.rs:28:8
+   |
+28 | pub fn unicode_term(min_len: usize, max_len: usize) -> impl Strategy<Value = String> {
+   |        ^^^^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `alphanumeric_term` is never used
+  --> tests/common/strategies.rs:38:8
+   |
+38 | pub fn alphanumeric_term(min_len: usize, max_len: usize) -> impl Strategy<Value = String> {
+   |        ^^^^^^^^^^^^^^^^^
+
+warning: unused `Result` that must be used
+  --> tests/bijective_trait_invariant.rs:60:13
+   |
+60 |             vocab.insert(t);
+   |             ^^^^^^^^^^^^^^^
+   |
+   = note: this `Result` may be an `Err` variant, which should be handled
+   = note: `#[warn(unused_must_use)]` (part of `#[warn(unused)]`) on by default
+help: use `let _ = ...` to ignore the resulting value
+   |
+60 |             let _ = vocab.insert(t);
+   |             +++++++
+
+warning: unused `Result` that must be used
+   --> tests/bijective_trait_invariant.rs:107:17
+    |
+107 |                 g.insert(t);
+    |                 ^^^^^^^^^^^
+    |
+    = note: this `Result` may be an `Err` variant, which should be handled
+help: use `let _ = ...` to ignore the resulting value
+    |
+107 |                 let _ = g.insert(t);
+    |                 +++++++
+
+warning: use of deprecated type alias `libdictenstein::persistent_artrie_char::SharedCharTrie`: Use SharedCharARTrie instead
+    --> tests/persistent_artrie_recovery_tests.rs:2166:49
+     |
+2166 |     use libdictenstein::persistent_artrie_char::SharedCharTrie;
+     |                                                 ^^^^^^^^^^^^^^
+     |
+     = note: `#[warn(deprecated)]` on by default
+
+warning: use of deprecated type alias `libdictenstein::persistent_artrie_char::SharedCharTrie`: Use SharedCharARTrie instead
+    --> tests/persistent_artrie_recovery_tests.rs:2501:41
+     |
+2501 |         let trie: SharedCharTrie<i64> = SharedCharTrie::create(&path).expect("create shared trie");
+     |                                         ^^^^^^^^^^^^^^
+
+warning: use of deprecated type alias `libdictenstein::persistent_artrie_char::SharedCharTrie`: Use SharedCharARTrie instead
+    --> tests/persistent_artrie_recovery_tests.rs:2501:19
+     |
+2501 |         let trie: SharedCharTrie<i64> = SharedCharTrie::create(&path).expect("create shared trie");
+     |                   ^^^^^^^^^^^^^^
+
+warning: use of deprecated type alias `libdictenstein::persistent_artrie_char::SharedCharTrie`: Use SharedCharARTrie instead
+    --> tests/persistent_artrie_recovery_tests.rs:2534:41
+     |
+2534 |         let trie: SharedCharTrie<i64> = SharedCharTrie::create(&path).expect("create shared trie");
+     |                                         ^^^^^^^^^^^^^^
+
+warning: use of deprecated type alias `libdictenstein::persistent_artrie_char::SharedCharTrie`: Use SharedCharARTrie instead
+    --> tests/persistent_artrie_recovery_tests.rs:2534:19
+     |
+2534 |         let trie: SharedCharTrie<i64> = SharedCharTrie::create(&path).expect("create shared trie");
+     |                   ^^^^^^^^^^^^^^
+
+warning: use of deprecated type alias `libdictenstein::persistent_artrie_char::SharedCharTrie`: Use SharedCharARTrie instead
+    --> tests/persistent_artrie_recovery_tests.rs:2561:41
+     |
+2561 |         let trie: SharedCharTrie<i64> = SharedCharTrie::create(&path).expect("create shared trie");
+     |                                         ^^^^^^^^^^^^^^
+
+warning: use of deprecated type alias `libdictenstein::persistent_artrie_char::SharedCharTrie`: Use SharedCharARTrie instead
+    --> tests/persistent_artrie_recovery_tests.rs:2561:19
+     |
+2561 |         let trie: SharedCharTrie<i64> = SharedCharTrie::create(&path).expect("create shared trie");
+     |                   ^^^^^^^^^^^^^^
+
+warning: use of deprecated associated function `libdictenstein::persistent_artrie::mmap_ctor::<impl libdictenstein::PersistentARTrie<V>>::new`: Use `create()` or `open()` for disk persistence. For in-memory tries, use DoubleArrayTrie or DynamicDawg instead.
+    --> tests/persistent_artrie_recovery_tests.rs:1359:64
+     |
+1359 |         let mut trie: PersistentARTrie<()> = PersistentARTrie::new();
+     |                                                                ^^^
+
+warning: use of deprecated associated function `libdictenstein::persistent_artrie::mmap_ctor::<impl libdictenstein::PersistentARTrie<V>>::new`: Use `create()` or `open()` for disk persistence. For in-memory tries, use DoubleArrayTrie or DynamicDawg instead.
+    --> tests/persistent_artrie_recovery_tests.rs:1382:64
+     |
+1382 |         let mut trie: PersistentARTrie<()> = PersistentARTrie::new();
+     |                                                                ^^^
+
+warning: use of deprecated associated function `libdictenstein::persistent_artrie::mmap_ctor::<impl libdictenstein::PersistentARTrie<V>>::new`: Use `create()` or `open()` for disk persistence. For in-memory tries, use DoubleArrayTrie or DynamicDawg instead.
+    --> tests/persistent_artrie_recovery_tests.rs:1395:64
+     |
+1395 |         let mut trie: PersistentARTrie<()> = PersistentARTrie::new();
+     |                                                                ^^^
+
+warning: use of deprecated associated function `libdictenstein::persistent_artrie::mmap_ctor::<impl libdictenstein::PersistentARTrie<V>>::new`: Use `create()` or `open()` for disk persistence. For in-memory tries, use DoubleArrayTrie or DynamicDawg instead.
+    --> tests/persistent_artrie_recovery_tests.rs:1407:64
+     |
+1407 |         let mut trie: PersistentARTrie<()> = PersistentARTrie::new();
+     |                                                                ^^^
+
+warning: use of deprecated associated function `libdictenstein::persistent_artrie::mmap_ctor::<impl libdictenstein::PersistentARTrie<V>>::new`: Use `create()` or `open()` for disk persistence. For in-memory tries, use DoubleArrayTrie or DynamicDawg instead.
+    --> tests/persistent_artrie_recovery_tests.rs:1422:65
+     |
+1422 |         let mut trie: PersistentARTrie<i32> = PersistentARTrie::new();
+     |                                                                 ^^^
+
+warning: use of deprecated associated function `libdictenstein::persistent_artrie::mmap_ctor::<impl libdictenstein::PersistentARTrie<V>>::new`: Use `create()` or `open()` for disk persistence. For in-memory tries, use DoubleArrayTrie or DynamicDawg instead.
+    --> tests/persistent_artrie_recovery_tests.rs:1441:64
+     |
+1441 |         let mut trie: PersistentARTrie<()> = PersistentARTrie::new();
+     |                                                                ^^^
+
+warning: use of deprecated associated function `libdictenstein::persistent_artrie::mmap_ctor::<impl libdictenstein::PersistentARTrie<V>>::new`: Use `create()` or `open()` for disk persistence. For in-memory tries, use DoubleArrayTrie or DynamicDawg instead.
+    --> tests/persistent_artrie_recovery_tests.rs:1464:64
+     |
+1464 |         let mut trie: PersistentARTrie<()> = PersistentARTrie::new();
+     |                                                                ^^^
+
+warning: use of deprecated associated function `libdictenstein::persistent_artrie::mmap_ctor::<impl libdictenstein::PersistentARTrie<V>>::new`: Use `create()` or `open()` for disk persistence. For in-memory tries, use DoubleArrayTrie or DynamicDawg instead.
+    --> tests/persistent_artrie_recovery_tests.rs:1479:64
+     |
+1479 |         let mut trie: PersistentARTrie<()> = PersistentARTrie::new();
+     |                                                                ^^^
+
+warning: use of deprecated associated function `libdictenstein::persistent_artrie::mmap_ctor::<impl libdictenstein::PersistentARTrie<V>>::new`: Use `create()` or `open()` for disk persistence. For in-memory tries, use DoubleArrayTrie or DynamicDawg instead.
+    --> tests/persistent_artrie_recovery_tests.rs:1498:64
+     |
+1498 |         let mut trie: PersistentARTrie<()> = PersistentARTrie::new();
+     |                                                                ^^^
+
+warning: use of deprecated associated function `libdictenstein::persistent_artrie::mmap_ctor::<impl libdictenstein::PersistentARTrie<V>>::new`: Use `create()` or `open()` for disk persistence. For in-memory tries, use DoubleArrayTrie or DynamicDawg instead.
+    --> tests/persistent_artrie_recovery_tests.rs:1577:64
+     |
+1577 |         let mut trie: PersistentARTrie<()> = PersistentARTrie::new();
+     |                                                                ^^^
+
+warning: use of deprecated associated function `libdictenstein::persistent_artrie::mmap_ctor::<impl libdictenstein::PersistentARTrie<V>>::new`: Use `create()` or `open()` for disk persistence. For in-memory tries, use DoubleArrayTrie or DynamicDawg instead.
+    --> tests/persistent_artrie_recovery_tests.rs:1600:64
+     |
+1600 |         let mut trie: PersistentARTrie<()> = PersistentARTrie::new();
+     |                                                                ^^^
+
+error[E0599]: no method named `increment` found for struct `Arc<lock_api::rwlock::RwLock<parking_lot::raw_rwlock::RawRwLock, PersistentARTrieChar<i64>>>` in the current scope
+    --> tests/persistent_artrie_recovery_tests.rs:2537:25
+     |
+2537 |         let val1 = trie.increment("counter", 5).expect("increment");
+     |                         ^^^^^^^^^ method not found in `Arc<lock_api::rwlock::RwLock<parking_lot::raw_rwlock::RawRwLock, PersistentARTrieChar<i64>>>`
+
+error[E0599]: no method named `increment` found for struct `Arc<lock_api::rwlock::RwLock<parking_lot::raw_rwlock::RawRwLock, PersistentARTrieChar<i64>>>` in the current scope
+    --> tests/persistent_artrie_recovery_tests.rs:2541:25
+     |
+2541 |         let val2 = trie.increment("counter", 10).expect("increment");
+     |                         ^^^^^^^^^ method not found in `Arc<lock_api::rwlock::RwLock<parking_lot::raw_rwlock::RawRwLock, PersistentARTrieChar<i64>>>`
+
+error[E0599]: no method named `increment` found for struct `Arc<lock_api::rwlock::RwLock<parking_lot::raw_rwlock::RawRwLock, PersistentARTrieChar<i64>>>` in the current scope
+    --> tests/persistent_artrie_recovery_tests.rs:2545:25
+     |
+2545 |         let val3 = trie.increment("counter", -3).expect("decrement");
+     |                         ^^^^^^^^^ method not found in `Arc<lock_api::rwlock::RwLock<parking_lot::raw_rwlock::RawRwLock, PersistentARTrieChar<i64>>>`
+
+warning: unused import: `libdictenstein::ARTrie`
+    --> tests/persistent_artrie_recovery_tests.rs:2167:9
+     |
+2167 |     use libdictenstein::ARTrie;
+     |         ^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `Dictionary`
+    --> tests/persistent_artrie_recovery_tests.rs:2754:26
+     |
+2754 |     use libdictenstein::{Dictionary, MappedDictionary};
+     |                          ^^^^^^^^^^
+
+warning: unused import: `libdictenstein::MutableMappedDictionary`
+    --> tests/persistent_artrie_recovery_tests.rs:2836:13
+     |
+2836 |         use libdictenstein::MutableMappedDictionary;
+     |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `libdictenstein::MutableMappedDictionary`
+    --> tests/persistent_artrie_recovery_tests.rs:2881:13
+     |
+2881 |         use libdictenstein::MutableMappedDictionary;
+     |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `libdictenstein::MutableMappedDictionary`
+    --> tests/persistent_artrie_recovery_tests.rs:2917:13
+     |
+2917 |         use libdictenstein::MutableMappedDictionary;
+     |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+For more information about this error, try `rustc --explain E0599`.
+warning: `libdictenstein` (test "persistent_artrie_recovery_tests") generated 23 warnings
+error: could not compile `libdictenstein` (test "persistent_artrie_recovery_tests") due to 3 previous errors; 23 warnings emitted
+warning: build failed, waiting for other jobs to finish...
+warning: variable does not need to be mutable
+    --> src/persistent_artrie/serialization.rs:1489:13
+     |
+1489 |         let mut header = SerializedNodeHeader {
+     |             ----^^^^^^
+     |             |
+     |             help: remove this `mut`
+     |
+     = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: variable does not need to be mutable
+    --> src/persistent_artrie/serialization.rs:1511:13
+     |
+1511 |         let mut header = SerializedNodeHeader {
+     |             ----^^^^^^
+     |             |
+     |             help: remove this `mut`
+
+warning: variable does not need to be mutable
+    --> src/persistent_artrie/serialization.rs:1533:13
+     |
+1533 |         let mut header = SerializedNodeHeader {
+     |             ----^^^^^^
+     |             |
+     |             help: remove this `mut`
+
+warning: variable does not need to be mutable
+    --> src/persistent_artrie/serialization.rs:1601:13
+     |
+1601 |         let mut header = SerializedNodeHeader {
+     |             ----^^^^^^
+     |             |
+     |             help: remove this `mut`
+
+warning: unused variable: `after`
+    --> src/persistent_artrie_char/arena_manager.rs:1555:13
+     |
+1555 |         let after = manager.ensure_valid();
+     |             ^^^^^ help: if this is intentional, prefix it with an underscore: `_after`
+     |
+     = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: `libdictenstein` (test "bijective_trait_invariant") generated 2 warnings
+warning: variable does not need to be mutable
+    --> src/persistent_artrie_char/persist.rs:1565:13
+     |
+1565 |         let mut trie = PersistentARTrieChar::<V>::create(&path).expect("create disk-backed trie");
+     |             ----^^^^
+     |             |
+     |             help: remove this `mut`
+
+warning: `libdictenstein` (test "serialization_correspondence") generated 16 warnings
+warning: `libdictenstein` (test "double_array_trie_correspondence") generated 17 warnings (15 duplicates)
+warning: `libdictenstein` (test "persistent_artrie_acid_tests") generated 2 warnings
+warning: variable `failures` is assigned to, but never used
+    --> src/persistent_artrie_core/concurrency.rs:1444:13
+     |
+1444 |         let mut failures = 0;
+     |             ^^^^^^^^^^^^
+     |
+     = note: consider using `_failures` instead
+
+warning: value assigned to `failures` is never read
+    --> src/persistent_artrie_core/concurrency.rs:1447:17
+     |
+1447 |                 failures += 1;
+     |                 ^^^^^^^^^^^^^
+     |
+     = help: maybe it is overwritten before being read?
+     = note: `#[warn(unused_assignments)]` (part of `#[warn(unused)]`) on by default
+
+warning: `libdictenstein` (test "proptest_zipper_operations") generated 15 warnings (15 duplicates)
+warning: unused variable: `nt`
+    --> src/persistent_artrie_core/overlay/node.rs:1787:54
+     |
+1787 |     fn check_as_non_final_deep_child<K: KeyEncoding>(nt: NodeType)
+     |                                                      ^^ help: if this is intentional, prefix it with an underscore: `_nt`
+
+warning: `libdictenstein` (test "proptest_serialization") generated 16 warnings (16 duplicates)
+warning: unused variable: `v2`
+   --> src/persistent_artrie_core/version_checkpoint.rs:676:13
+    |
+676 |         let v2 = manager.create_version(200, 75);
+    |             ^^ help: if this is intentional, prefix it with an underscore: `_v2`
+
+warning: unused variable: `report`
+    --> src/persistent_vocab_artrie/dict_impl.rs:1398:25
+     |
+1398 |             let (vocab, report) = PersistentVocabARTrie::open_with_recovery(&path).unwrap();
+     |                         ^^^^^^ help: if this is intentional, prefix it with an underscore: `_report`
+
+warning: unused `std::result::Result` that must be used
+    --> src/double_array_trie_char.rs:1124:9
+     |
+1124 |         pat.insert_with_value("apple", 1);
+     |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = note: this `Result` may be an `Err` variant, which should be handled
+     = note: `#[warn(unused_must_use)]` (part of `#[warn(unused)]`) on by default
+help: use `let _ = ...` to ignore the resulting value
+     |
+1124 |         let _ = pat.insert_with_value("apple", 1);
+     |         +++++++
+
+warning: unused `std::result::Result` that must be used
+    --> src/double_array_trie_char.rs:1125:9
+     |
+1125 |         pat.insert_with_value("banana", 2);
+     |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = note: this `Result` may be an `Err` variant, which should be handled
+help: use `let _ = ...` to ignore the resulting value
+     |
+1125 |         let _ = pat.insert_with_value("banana", 2);
+     |         +++++++
+
+warning: unused `std::result::Result` that must be used
+    --> src/double_array_trie_char.rs:1126:9
+     |
+1126 |         pat.insert_with_value("cherry", 3);
+     |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = note: this `Result` may be an `Err` variant, which should be handled
+help: use `let _ = ...` to ignore the resulting value
+     |
+1126 |         let _ = pat.insert_with_value("cherry", 3);
+     |         +++++++
+
+warning: unused `std::result::Result` that must be used
+    --> src/double_array_trie_char.rs:1140:9
+     |
+1140 |         pat.insert_with_value("café", 10);
+     |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = note: this `Result` may be an `Err` variant, which should be handled
+help: use `let _ = ...` to ignore the resulting value
+     |
+1140 |         let _ = pat.insert_with_value("café", 10);
+     |         +++++++
+
+warning: unused `std::result::Result` that must be used
+    --> src/double_array_trie_char.rs:1141:9
+     |
+1141 |         pat.insert_with_value("日本語", 20);
+     |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = note: this `Result` may be an `Err` variant, which should be handled
+help: use `let _ = ...` to ignore the resulting value
+     |
+1141 |         let _ = pat.insert_with_value("日本語", 20);
+     |         +++++++
+
+warning: unused `std::result::Result` that must be used
+    --> src/double_array_trie_char.rs:1142:9
+     |
+1142 |         pat.insert_with_value("🎉", 30);
+     |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = note: this `Result` may be an `Err` variant, which should be handled
+help: use `let _ = ...` to ignore the resulting value
+     |
+1142 |         let _ = pat.insert_with_value("🎉", 30);
+     |         +++++++
+
+warning: unused `std::result::Result` that must be used
+    --> src/double_array_trie_char.rs:1155:9
+     |
+1155 |         pat.insert_with_value("test", 42);
+     |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = note: this `Result` may be an `Err` variant, which should be handled
+help: use `let _ = ...` to ignore the resulting value
+     |
+1155 |         let _ = pat.insert_with_value("test", 42);
+     |         +++++++
+
+warning: unused `std::result::Result` that must be used
+    --> src/double_array_trie_char.rs:1176:13
+     |
+1176 |             pat.insert_with_value(term, value.to_string());
+     |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = note: this `Result` may be an `Err` variant, which should be handled
+help: use `let _ = ...` to ignore the resulting value
+     |
+1176 |             let _ = pat.insert_with_value(term, value.to_string());
+     |             +++++++
+
+warning: unused `std::result::Result` that must be used
+    --> src/double_array_trie_char.rs:1191:9
+     |
+1191 |         pat.insert_with_value("cat", 1);
+     |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = note: this `Result` may be an `Err` variant, which should be handled
+help: use `let _ = ...` to ignore the resulting value
+     |
+1191 |         let _ = pat.insert_with_value("cat", 1);
+     |         +++++++
+
+warning: unused `std::result::Result` that must be used
+    --> src/double_array_trie_char.rs:1192:9
+     |
+1192 |         pat.insert_with_value("car", 2);
+     |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = note: this `Result` may be an `Err` variant, which should be handled
+help: use `let _ = ...` to ignore the resulting value
+     |
+1192 |         let _ = pat.insert_with_value("car", 2);
+     |         +++++++
+
+warning: unused `std::result::Result` that must be used
+    --> src/double_array_trie_char.rs:1193:9
+     |
+1193 |         pat.insert_with_value("cart", 3);
+     |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = note: this `Result` may be an `Err` variant, which should be handled
+help: use `let _ = ...` to ignore the resulting value
+     |
+1193 |         let _ = pat.insert_with_value("cart", 3);
+     |         +++++++
+
+warning: unused `std::result::Result` that must be used
+    --> src/double_array_trie_char.rs:1194:9
+     |
+1194 |         pat.insert_with_value("card", 4);
+     |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = note: this `Result` may be an `Err` variant, which should be handled
+help: use `let _ = ...` to ignore the resulting value
+     |
+1194 |         let _ = pat.insert_with_value("card", 4);
+     |         +++++++
+
+warning: comparison is useless due to type limits
+    --> src/persistent_artrie/arena_manager.rs:1905:17
+     |
+1905 |         assert!(stats.dirty_arenas >= 0);
+     |                 ^^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = note: `#[warn(unused_comparisons)]` on by default
+
+warning: unused `std::result::Result` that must be used
+   --> src/persistent_artrie_char/mod.rs:698:13
+    |
+698 |             trie.insert(&term);
+    |             ^^^^^^^^^^^^^^^^^^
+    |
+    = note: this `Result` may be an `Err` variant, which should be handled
+help: use `let _ = ...` to ignore the resulting value
+    |
+698 |             let _ = trie.insert(&term);
+    |             +++++++
+
+warning: unused `std::result::Result` that must be used
+    --> src/persistent_artrie_char/dict_impl_char.rs:2949:9
+     |
+2949 |         trie.write().insert("hello");
+     |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = note: this `Result` may be an `Err` variant, which should be handled
+help: use `let _ = ...` to ignore the resulting value
+     |
+2949 |         let _ = trie.write().insert("hello");
+     |         +++++++
+
+warning: unused `std::result::Result` that must be used
+    --> src/persistent_artrie_char/dict_impl_char.rs:2963:9
+     |
+2963 |         trie.write().insert("hello");
+     |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = note: this `Result` may be an `Err` variant, which should be handled
+help: use `let _ = ...` to ignore the resulting value
+     |
+2963 |         let _ = trie.write().insert("hello");
+     |         +++++++
+
+warning: unused `std::result::Result` that must be used
+    --> src/persistent_artrie_char/dict_impl_char.rs:3066:9
+     |
+3066 |         trie.write().insert("persistent");
+     |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = note: this `Result` may be an `Err` variant, which should be handled
+help: use `let _ = ...` to ignore the resulting value
+     |
+3066 |         let _ = trie.write().insert("persistent");
+     |         +++++++
+
+warning: unused `std::result::Result` that must be used
+    --> src/persistent_artrie_char/mmap_ctor.rs:1437:13
+     |
+1437 |             trie.insert_with_value("hello", "world".to_string());
+     |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = note: this `Result` may be an `Err` variant, which should be handled
+help: use `let _ = ...` to ignore the resulting value
+     |
+1437 |             let _ = trie.insert_with_value("hello", "world".to_string());
+     |             +++++++
+
+warning: unused `std::result::Result` that must be used
+    --> src/persistent_artrie_char/mmap_ctor.rs:1534:17
+     |
+1534 |                 trie.insert_with_value(k, v.clone());
+     |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = note: this `Result` may be an `Err` variant, which should be handled
+help: use `let _ = ...` to ignore the resulting value
+     |
+1534 |                 let _ = trie.insert_with_value(k, v.clone());
+     |                 +++++++
+
+warning: unused `std::result::Result` that must be used
+    --> src/persistent_artrie_char/persist.rs:1446:17
+     |
+1446 |                 owned.insert_with_value(t, *v);
+     |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = note: this `Result` may be an `Err` variant, which should be handled
+help: use `let _ = ...` to ignore the resulting value
+     |
+1446 |                 let _ = owned.insert_with_value(t, *v);
+     |                 +++++++
+
+warning: unused `std::result::Result` that must be used
+    --> src/persistent_artrie_char/persist.rs:1727:17
+     |
+1727 |                 owned.insert_with_value(t, *v);
+     |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = note: this `Result` may be an `Err` variant, which should be handled
+help: use `let _ = ...` to ignore the resulting value
+     |
+1727 |                 let _ = owned.insert_with_value(t, *v);
+     |                 +++++++
+
+warning: unused `std::result::Result` that must be used
+    --> src/persistent_artrie_char/persist.rs:1908:17
+     |
+1908 |                 owned.insert_with_value(t, *v);
+     |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = note: this `Result` may be an `Err` variant, which should be handled
+help: use `let _ = ...` to ignore the resulting value
+     |
+1908 |                 let _ = owned.insert_with_value(t, *v);
+     |                 +++++++
+
+warning: unused `std::result::Result` that must be used
+    --> src/persistent_artrie_char/persist.rs:1982:17
+     |
+1982 |                 owned.insert_with_value(t, *v);
+     |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = note: this `Result` may be an `Err` variant, which should be handled
+help: use `let _ = ...` to ignore the resulting value
+     |
+1982 |                 let _ = owned.insert_with_value(t, *v);
+     |                 +++++++
+
+warning: comparison is useless due to type limits
+   --> src/persistent_artrie_core/prefetch.rs:532:17
+    |
+532 |         assert!(stats.requests >= 0);
+    |                 ^^^^^^^^^^^^^^^^^^^
+
+warning: unused `std::result::Result` that must be used
+   --> src/persistent_vocab_artrie/dict_impl.rs:318:9
+    |
+318 |         vocab.insert("apple");
+    |         ^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: this `Result` may be an `Err` variant, which should be handled
+help: use `let _ = ...` to ignore the resulting value
+    |
+318 |         let _ = vocab.insert("apple");
+    |         +++++++
+
+warning: unused `std::result::Result` that must be used
+   --> src/persistent_vocab_artrie/dict_impl.rs:319:9
+    |
+319 |         vocab.insert("banana");
+    |         ^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: this `Result` may be an `Err` variant, which should be handled
+help: use `let _ = ...` to ignore the resulting value
+    |
+319 |         let _ = vocab.insert("banana");
+    |         +++++++
+
+warning: unused `std::result::Result` that must be used
+   --> src/persistent_vocab_artrie/dict_impl.rs:320:9
+    |
+320 |         vocab.insert("cherry");
+    |         ^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: this `Result` may be an `Err` variant, which should be handled
+help: use `let _ = ...` to ignore the resulting value
+    |
+320 |         let _ = vocab.insert("cherry");
+    |         +++++++
+
+warning: unused `std::result::Result` that must be used
+   --> src/persistent_vocab_artrie/dict_impl.rs:334:9
+    |
+334 |         vocab.insert("apple");
+    |         ^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: this `Result` may be an `Err` variant, which should be handled
+help: use `let _ = ...` to ignore the resulting value
+    |
+334 |         let _ = vocab.insert("apple");
+    |         +++++++
+
+warning: unused `std::result::Result` that must be used
+   --> src/persistent_vocab_artrie/dict_impl.rs:335:9
+    |
+335 |         vocab.insert("banana");
+    |         ^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: this `Result` may be an `Err` variant, which should be handled
+help: use `let _ = ...` to ignore the resulting value
+    |
+335 |         let _ = vocab.insert("banana");
+    |         +++++++
+
+warning: unused `std::result::Result` that must be used
+   --> src/persistent_vocab_artrie/dict_impl.rs:336:9
+    |
+336 |         vocab.insert("cherry");
+    |         ^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: this `Result` may be an `Err` variant, which should be handled
+help: use `let _ = ...` to ignore the resulting value
+    |
+336 |         let _ = vocab.insert("cherry");
+    |         +++++++
+
+warning: unused `std::result::Result` that must be used
+   --> src/persistent_vocab_artrie/dict_impl.rs:387:13
+    |
+387 |             vocab.insert("hello");
+    |             ^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: this `Result` may be an `Err` variant, which should be handled
+help: use `let _ = ...` to ignore the resulting value
+    |
+387 |             let _ = vocab.insert("hello");
+    |             +++++++
+
+warning: unused `std::result::Result` that must be used
+   --> src/persistent_vocab_artrie/dict_impl.rs:388:13
+    |
+388 |             vocab.insert("world");
+    |             ^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: this `Result` may be an `Err` variant, which should be handled
+help: use `let _ = ...` to ignore the resulting value
+    |
+388 |             let _ = vocab.insert("world");
+    |             +++++++
+
+warning: unused `std::result::Result` that must be used
+   --> src/persistent_vocab_artrie/dict_impl.rs:389:13
+    |
+389 |             vocab.insert("test");
+    |             ^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: this `Result` may be an `Err` variant, which should be handled
+help: use `let _ = ...` to ignore the resulting value
+    |
+389 |             let _ = vocab.insert("test");
+    |             +++++++
+
+warning: unused `std::result::Result` that must be used
+   --> src/persistent_vocab_artrie/dict_impl.rs:414:13
+    |
+414 |             vocab.insert("apple");
+    |             ^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: this `Result` may be an `Err` variant, which should be handled
+help: use `let _ = ...` to ignore the resulting value
+    |
+414 |             let _ = vocab.insert("apple");
+    |             +++++++
+
+warning: unused `std::result::Result` that must be used
+   --> src/persistent_vocab_artrie/dict_impl.rs:415:13
+    |
+415 |             vocab.insert("banana");
+    |             ^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: this `Result` may be an `Err` variant, which should be handled
+help: use `let _ = ...` to ignore the resulting value
+    |
+415 |             let _ = vocab.insert("banana");
+    |             +++++++
+
+warning: unused `std::result::Result` that must be used
+   --> src/persistent_vocab_artrie/dict_impl.rs:423:13
+    |
+423 |             vocab.insert("cherry");
+    |             ^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: this `Result` may be an `Err` variant, which should be handled
+help: use `let _ = ...` to ignore the resulting value
+    |
+423 |             let _ = vocab.insert("cherry");
+    |             +++++++
+
+warning: unused `std::result::Result` that must be used
+   --> src/persistent_vocab_artrie/dict_impl.rs:424:13
+    |
+424 |             vocab.insert("durian");
+    |             ^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: this `Result` may be an `Err` variant, which should be handled
+help: use `let _ = ...` to ignore the resulting value
+    |
+424 |             let _ = vocab.insert("durian");
+    |             +++++++
+
+warning: unused `std::result::Result` that must be used
+   --> src/persistent_vocab_artrie/dict_impl.rs:445:9
+    |
+445 |         vocab.insert("present");
+    |         ^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: this `Result` may be an `Err` variant, which should be handled
+help: use `let _ = ...` to ignore the resulting value
+    |
+445 |         let _ = vocab.insert("present");
+    |         +++++++
+
+warning: unused `std::result::Result` that must be used
+   --> src/persistent_vocab_artrie/dict_impl.rs:467:9
+    |
+467 |         vocab.insert("test");
+    |         ^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: this `Result` may be an `Err` variant, which should be handled
+help: use `let _ = ...` to ignore the resulting value
+    |
+467 |         let _ = vocab.insert("test");
+    |         +++++++
+
+warning: unused `std::result::Result` that must be used
+   --> src/persistent_vocab_artrie/dict_impl.rs:498:13
+    |
+498 |             vocab.insert("term1");
+    |             ^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: this `Result` may be an `Err` variant, which should be handled
+help: use `let _ = ...` to ignore the resulting value
+    |
+498 |             let _ = vocab.insert("term1");
+    |             +++++++
+
+warning: unused `std::result::Result` that must be used
+   --> src/persistent_vocab_artrie/dict_impl.rs:499:13
+    |
+499 |             vocab.insert("term2");
+    |             ^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: this `Result` may be an `Err` variant, which should be handled
+help: use `let _ = ...` to ignore the resulting value
+    |
+499 |             let _ = vocab.insert("term2");
+    |             +++++++
+
+warning: unused `std::result::Result` that must be used
+   --> src/persistent_vocab_artrie/dict_impl.rs:500:13
+    |
+500 |             vocab.insert("term3");
+    |             ^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: this `Result` may be an `Err` variant, which should be handled
+help: use `let _ = ...` to ignore the resulting value
+    |
+500 |             let _ = vocab.insert("term3");
+    |             +++++++
+
+warning: unused `std::result::Result` that must be used
+   --> src/persistent_vocab_artrie/dict_impl.rs:524:13
+    |
+524 |             vocab.insert("apple");
+    |             ^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: this `Result` may be an `Err` variant, which should be handled
+help: use `let _ = ...` to ignore the resulting value
+    |
+524 |             let _ = vocab.insert("apple");
+    |             +++++++
+
+warning: unused `std::result::Result` that must be used
+   --> src/persistent_vocab_artrie/dict_impl.rs:525:13
+    |
+525 |             vocab.insert("banana");
+    |             ^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: this `Result` may be an `Err` variant, which should be handled
+help: use `let _ = ...` to ignore the resulting value
+    |
+525 |             let _ = vocab.insert("banana");
+    |             +++++++
+
+warning: unused `std::result::Result` that must be used
+   --> src/persistent_vocab_artrie/dict_impl.rs:532:13
+    |
+532 |             vocab.insert("cherry");
+    |             ^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: this `Result` may be an `Err` variant, which should be handled
+help: use `let _ = ...` to ignore the resulting value
+    |
+532 |             let _ = vocab.insert("cherry");
+    |             +++++++
+
+warning: unused `std::result::Result` that must be used
+   --> src/persistent_vocab_artrie/dict_impl.rs:533:13
+    |
+533 |             vocab.insert("durian");
+    |             ^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: this `Result` may be an `Err` variant, which should be handled
+help: use `let _ = ...` to ignore the resulting value
+    |
+533 |             let _ = vocab.insert("durian");
+    |             +++++++
+
+warning: unused `std::result::Result` that must be used
+   --> src/persistent_vocab_artrie/dict_impl.rs:743:13
+    |
+743 |             vocab.insert("with_value_1");
+    |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: this `Result` may be an `Err` variant, which should be handled
+help: use `let _ = ...` to ignore the resulting value
+    |
+743 |             let _ = vocab.insert("with_value_1");
+    |             +++++++
+
+warning: unused `std::result::Result` that must be used
+   --> src/persistent_vocab_artrie/dict_impl.rs:744:13
+    |
+744 |             vocab.insert("with_value_2");
+    |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: this `Result` may be an `Err` variant, which should be handled
+help: use `let _ = ...` to ignore the resulting value
+    |
+744 |             let _ = vocab.insert("with_value_2");
+    |             +++++++
+
+warning: unused `std::result::Result` that must be used
+   --> src/persistent_vocab_artrie/dict_impl.rs:745:13
+    |
+745 |             vocab.insert("with_value_3");
+    |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: this `Result` may be an `Err` variant, which should be handled
+help: use `let _ = ...` to ignore the resulting value
+    |
+745 |             let _ = vocab.insert("with_value_3");
+    |             +++++++
+
+warning: unused `std::result::Result` that must be used
+   --> src/persistent_vocab_artrie/dict_impl.rs:797:9
+    |
+797 |         vocab.write().insert("hello");
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: this `Result` may be an `Err` variant, which should be handled
+help: use `let _ = ...` to ignore the resulting value
+    |
+797 |         let _ = vocab.write().insert("hello");
+    |         +++++++
+
+warning: unused `std::result::Result` that must be used
+   --> src/persistent_vocab_artrie/dict_impl.rs:809:9
+    |
+809 |         vocab.write().insert("world");
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: this `Result` may be an `Err` variant, which should be handled
+help: use `let _ = ...` to ignore the resulting value
+    |
+809 |         let _ = vocab.write().insert("world");
+    |         +++++++
+
+warning: unused `std::result::Result` that must be used
+   --> src/persistent_vocab_artrie/dict_impl.rs:825:9
+    |
+825 |         vocab.insert("hello");
+    |         ^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: this `Result` may be an `Err` variant, which should be handled
+help: use `let _ = ...` to ignore the resulting value
+    |
+825 |         let _ = vocab.insert("hello");
+    |         +++++++
+
+warning: unused `std::result::Result` that must be used
+   --> src/persistent_vocab_artrie/dict_impl.rs:833:9
+    |
+833 |         vocab.insert("world");
+    |         ^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: this `Result` may be an `Err` variant, which should be handled
+help: use `let _ = ...` to ignore the resulting value
+    |
+833 |         let _ = vocab.insert("world");
+    |         +++++++
+
+warning: unused `std::result::Result` that must be used
+   --> src/persistent_vocab_artrie/dict_impl.rs:857:17
+    |
+857 |                 vocab.insert(&format!("word{}", i));
+    |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: this `Result` may be an `Err` variant, which should be handled
+help: use `let _ = ...` to ignore the resulting value
+    |
+857 |                 let _ = vocab.insert(&format!("word{}", i));
+    |                 +++++++
+
+warning: unused `std::result::Result` that must be used
+   --> src/persistent_vocab_artrie/dict_impl.rs:886:9
+    |
+886 |         vocab.insert("hello");
+    |         ^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: this `Result` may be an `Err` variant, which should be handled
+help: use `let _ = ...` to ignore the resulting value
+    |
+886 |         let _ = vocab.insert("hello");
+    |         +++++++
+
+warning: unused `std::result::Result` that must be used
+   --> src/persistent_vocab_artrie/dict_impl.rs:889:9
+    |
+889 |         vocab.insert("world");
+    |         ^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: this `Result` may be an `Err` variant, which should be handled
+help: use `let _ = ...` to ignore the resulting value
+    |
+889 |         let _ = vocab.insert("world");
+    |         +++++++
+
+warning: unused `std::result::Result` that must be used
+   --> src/persistent_vocab_artrie/dict_impl.rs:921:13
+    |
+921 |             vocab.insert("hello");
+    |             ^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: this `Result` may be an `Err` variant, which should be handled
+help: use `let _ = ...` to ignore the resulting value
+    |
+921 |             let _ = vocab.insert("hello");
+    |             +++++++
+
+warning: unused `std::result::Result` that must be used
+   --> src/persistent_vocab_artrie/dict_impl.rs:922:13
+    |
+922 |             vocab.insert("world");
+    |             ^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: this `Result` may be an `Err` variant, which should be handled
+help: use `let _ = ...` to ignore the resulting value
+    |
+922 |             let _ = vocab.insert("world");
+    |             +++++++
+
+warning: unused `std::result::Result` that must be used
+   --> src/persistent_vocab_artrie/dict_impl.rs:958:13
+    |
+958 |             vocab.write().insert(&format!("initial_{}", i));
+    |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: this `Result` may be an `Err` variant, which should be handled
+help: use `let _ = ...` to ignore the resulting value
+    |
+958 |             let _ = vocab.write().insert(&format!("initial_{}", i));
+    |             +++++++
+
+warning: unused `std::result::Result` that must be used
+   --> src/persistent_vocab_artrie/dict_impl.rs:979:17
+    |
+979 |                 vocab_clone2.write().insert(&format!("concurrent_{}", i));
+    |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: this `Result` may be an `Err` variant, which should be handled
+help: use `let _ = ...` to ignore the resulting value
+    |
+979 |                 let _ = vocab_clone2.write().insert(&format!("concurrent_{}", i));
+    |                 +++++++
+
+warning: unused `std::result::Result` that must be used
+    --> src/persistent_vocab_artrie/dict_impl.rs:1012:9
+     |
+1012 |         vocab.insert("test");
+     |         ^^^^^^^^^^^^^^^^^^^^
+     |
+     = note: this `Result` may be an `Err` variant, which should be handled
+help: use `let _ = ...` to ignore the resulting value
+     |
+1012 |         let _ = vocab.insert("test");
+     |         +++++++
+
+warning: unused `std::result::Result` that must be used
+    --> src/persistent_vocab_artrie/dict_impl.rs:1160:13
+     |
+1160 |             vocab.insert("simple");
+     |             ^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = note: this `Result` may be an `Err` variant, which should be handled
+help: use `let _ = ...` to ignore the resulting value
+     |
+1160 |             let _ = vocab.insert("simple");
+     |             +++++++
+
+warning: unused `std::result::Result` that must be used
+    --> src/persistent_vocab_artrie/dict_impl.rs:1161:13
+     |
+1161 |             vocab.insert("日本語");
+     |             ^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = note: this `Result` may be an `Err` variant, which should be handled
+help: use `let _ = ...` to ignore the resulting value
+     |
+1161 |             let _ = vocab.insert("日本語");
+     |             +++++++
+
+warning: unused `std::result::Result` that must be used
+    --> src/persistent_vocab_artrie/dict_impl.rs:1162:13
+     |
+1162 |             vocab.insert("");
+     |             ^^^^^^^^^^^^^^^^
+     |
+     = note: this `Result` may be an `Err` variant, which should be handled
+help: use `let _ = ...` to ignore the resulting value
+     |
+1162 |             let _ = vocab.insert("");
+     |             +++++++
+
+warning: unused `std::result::Result` that must be used
+    --> src/persistent_vocab_artrie/dict_impl.rs:1163:13
+     |
+1163 |             vocab.insert("with spaces and punctuation!");
+     |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = note: this `Result` may be an `Err` variant, which should be handled
+help: use `let _ = ...` to ignore the resulting value
+     |
+1163 |             let _ = vocab.insert("with spaces and punctuation!");
+     |             +++++++
+
+warning: unused `std::result::Result` that must be used
+    --> src/persistent_vocab_artrie/dict_impl.rs:1164:13
+     |
+1164 |             vocab.insert(&"x".repeat(100));
+     |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = note: this `Result` may be an `Err` variant, which should be handled
+help: use `let _ = ...` to ignore the resulting value
+     |
+1164 |             let _ = vocab.insert(&"x".repeat(100));
+     |             +++++++
+
+warning: unused `std::result::Result` that must be used
+    --> src/persistent_vocab_artrie/dict_impl.rs:1202:17
+     |
+1202 |                 vocab.insert(&format!("term_{:05}", i));
+     |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = note: this `Result` may be an `Err` variant, which should be handled
+help: use `let _ = ...` to ignore the resulting value
+     |
+1202 |                 let _ = vocab.insert(&format!("term_{:05}", i));
+     |                 +++++++
+
+warning: unused `std::result::Result` that must be used
+    --> src/persistent_vocab_artrie/dict_impl.rs:1231:9
+     |
+1231 |         vocab.insert("test");
+     |         ^^^^^^^^^^^^^^^^^^^^
+     |
+     = note: this `Result` may be an `Err` variant, which should be handled
+help: use `let _ = ...` to ignore the resulting value
+     |
+1231 |         let _ = vocab.insert("test");
+     |         +++++++
+
+warning: unused `std::result::Result` that must be used
+    --> src/persistent_vocab_artrie/dict_impl.rs:1244:9
+     |
+1244 |         vocab.insert("test");
+     |         ^^^^^^^^^^^^^^^^^^^^
+     |
+     = note: this `Result` may be an `Err` variant, which should be handled
+help: use `let _ = ...` to ignore the resulting value
+     |
+1244 |         let _ = vocab.insert("test");
+     |         +++++++
+
+warning: unused `std::result::Result` that must be used
+    --> src/persistent_vocab_artrie/dict_impl.rs:1262:9
+     |
+1262 |         vocab.insert("test");
+     |         ^^^^^^^^^^^^^^^^^^^^
+     |
+     = note: this `Result` may be an `Err` variant, which should be handled
+help: use `let _ = ...` to ignore the resulting value
+     |
+1262 |         let _ = vocab.insert("test");
+     |         +++++++
+
+warning: unused `std::result::Result` that must be used
+    --> src/persistent_vocab_artrie/dict_impl.rs:1283:9
+     |
+1283 |         vocab.insert("first");
+     |         ^^^^^^^^^^^^^^^^^^^^^
+     |
+     = note: this `Result` may be an `Err` variant, which should be handled
+help: use `let _ = ...` to ignore the resulting value
+     |
+1283 |         let _ = vocab.insert("first");
+     |         +++++++
+
+warning: unused `std::result::Result` that must be used
+    --> src/persistent_vocab_artrie/dict_impl.rs:1286:9
+     |
+1286 |         vocab.insert("second");
+     |         ^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = note: this `Result` may be an `Err` variant, which should be handled
+help: use `let _ = ...` to ignore the resulting value
+     |
+1286 |         let _ = vocab.insert("second");
+     |         +++++++
+
+warning: unused `std::result::Result` that must be used
+    --> src/persistent_vocab_artrie/dict_impl.rs:1290:9
+     |
+1290 |         vocab.insert("first");
+     |         ^^^^^^^^^^^^^^^^^^^^^
+     |
+     = note: this `Result` may be an `Err` variant, which should be handled
+help: use `let _ = ...` to ignore the resulting value
+     |
+1290 |         let _ = vocab.insert("first");
+     |         +++++++
+
+warning: unused `std::result::Result` that must be used
+    --> src/persistent_vocab_artrie/dict_impl.rs:1302:13
+     |
+1302 |             vocab.insert("test");
+     |             ^^^^^^^^^^^^^^^^^^^^
+     |
+     = note: this `Result` may be an `Err` variant, which should be handled
+help: use `let _ = ...` to ignore the resulting value
+     |
+1302 |             let _ = vocab.insert("test");
+     |             +++++++
+
+warning: unused `std::result::Result` that must be used
+    --> src/persistent_vocab_artrie/dict_impl.rs:1354:9
+     |
+1354 |         vocab.insert("apple");
+     |         ^^^^^^^^^^^^^^^^^^^^^
+     |
+     = note: this `Result` may be an `Err` variant, which should be handled
+help: use `let _ = ...` to ignore the resulting value
+     |
+1354 |         let _ = vocab.insert("apple");
+     |         +++++++
+
+warning: unused `std::result::Result` that must be used
+    --> src/persistent_vocab_artrie/dict_impl.rs:1355:9
+     |
+1355 |         vocab.insert("banana");
+     |         ^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = note: this `Result` may be an `Err` variant, which should be handled
+help: use `let _ = ...` to ignore the resulting value
+     |
+1355 |         let _ = vocab.insert("banana");
+     |         +++++++
+
+warning: unused `std::result::Result` that must be used
+    --> src/persistent_vocab_artrie/dict_impl.rs:1426:9
+     |
+1426 |         vocab.insert("hello");
+     |         ^^^^^^^^^^^^^^^^^^^^^
+     |
+     = note: this `Result` may be an `Err` variant, which should be handled
+help: use `let _ = ...` to ignore the resulting value
+     |
+1426 |         let _ = vocab.insert("hello");
+     |         +++++++
+
+warning: unused `std::result::Result` that must be used
+    --> src/persistent_vocab_artrie/dict_impl.rs:1427:9
+     |
+1427 |         vocab.insert("world");
+     |         ^^^^^^^^^^^^^^^^^^^^^
+     |
+     = note: this `Result` may be an `Err` variant, which should be handled
+help: use `let _ = ...` to ignore the resulting value
+     |
+1427 |         let _ = vocab.insert("world");
+     |         +++++++
+
+warning: unused `std::result::Result` that must be used
+    --> src/persistent_vocab_artrie/dict_impl.rs:1448:13
+     |
+1448 |             vocab.insert("apple");
+     |             ^^^^^^^^^^^^^^^^^^^^^
+     |
+     = note: this `Result` may be an `Err` variant, which should be handled
+help: use `let _ = ...` to ignore the resulting value
+     |
+1448 |             let _ = vocab.insert("apple");
+     |             +++++++
+
+warning: unused `std::result::Result` that must be used
+    --> src/persistent_vocab_artrie/dict_impl.rs:1449:13
+     |
+1449 |             vocab.insert("banana");
+     |             ^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = note: this `Result` may be an `Err` variant, which should be handled
+help: use `let _ = ...` to ignore the resulting value
+     |
+1449 |             let _ = vocab.insert("banana");
+     |             +++++++
+
+warning: unused `std::result::Result` that must be used
+    --> src/persistent_vocab_artrie/dict_impl.rs:1474:9
+     |
+1474 |         vocab.insert_batch(&["apple", "banana"]);
+     |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = note: this `Result` may be an `Err` variant, which should be handled
+help: use `let _ = ...` to ignore the resulting value
+     |
+1474 |         let _ = vocab.insert_batch(&["apple", "banana"]);
+     |         +++++++
+
+warning: unused `std::result::Result` that must be used
+    --> src/persistent_vocab_artrie/dict_impl.rs:1477:9
+     |
+1477 |         vocab.insert_batch(&["cherry", "date"]);
+     |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = note: this `Result` may be an `Err` variant, which should be handled
+help: use `let _ = ...` to ignore the resulting value
+     |
+1477 |         let _ = vocab.insert_batch(&["cherry", "date"]);
+     |         +++++++
+
+warning: unused `std::result::Result` that must be used
+    --> src/persistent_vocab_artrie/dict_impl.rs:1480:9
+     |
+1480 |         vocab.insert_batch(&["elderberry"]);
+     |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = note: this `Result` may be an `Err` variant, which should be handled
+help: use `let _ = ...` to ignore the resulting value
+     |
+1480 |         let _ = vocab.insert_batch(&["elderberry"]);
+     |         +++++++
+
+warning: unused `std::result::Result` that must be used
+    --> src/persistent_vocab_artrie/mod.rs:1151:9
+     |
+1151 |         vocab.insert("日本語");
+     |         ^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = note: this `Result` may be an `Err` variant, which should be handled
+help: use `let _ = ...` to ignore the resulting value
+     |
+1151 |         let _ = vocab.insert("日本語");
+     |         +++++++
+
+warning: unused `std::result::Result` that must be used
+    --> src/persistent_vocab_artrie/mod.rs:1152:9
+     |
+1152 |         vocab.insert("中文");
+     |         ^^^^^^^^^^^^^^^^^^^^
+     |
+     = note: this `Result` may be an `Err` variant, which should be handled
+help: use `let _ = ...` to ignore the resulting value
+     |
+1152 |         let _ = vocab.insert("中文");
+     |         +++++++
+
+warning: unused `std::result::Result` that must be used
+    --> src/persistent_vocab_artrie/mod.rs:1153:9
+     |
+1153 |         vocab.insert("한글");
+     |         ^^^^^^^^^^^^^^^^^^^^
+     |
+     = note: this `Result` may be an `Err` variant, which should be handled
+help: use `let _ = ...` to ignore the resulting value
+     |
+1153 |         let _ = vocab.insert("한글");
+     |         +++++++
+
+warning: unused `std::result::Result` that must be used
+    --> src/persistent_vocab_artrie/mod.rs:1154:9
+     |
+1154 |         vocab.insert("العربية");
+     |         ^^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = note: this `Result` may be an `Err` variant, which should be handled
+help: use `let _ = ...` to ignore the resulting value
+     |
+1154 |         let _ = vocab.insert("العربية");
+     |         +++++++
+
+warning: unused `std::result::Result` that must be used
+    --> src/persistent_vocab_artrie/mod.rs:1155:9
+     |
+1155 |         vocab.insert("emoji😀");
+     |         ^^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = note: this `Result` may be an `Err` variant, which should be handled
+help: use `let _ = ...` to ignore the resulting value
+     |
+1155 |         let _ = vocab.insert("emoji😀");
+     |         +++++++
+
+warning: unused `std::result::Result` that must be used
+    --> src/persistent_vocab_artrie/mod.rs:1211:9
+     |
+1211 |         vocab.insert("test");
+     |         ^^^^^^^^^^^^^^^^^^^^
+     |
+     = note: this `Result` may be an `Err` variant, which should be handled
+help: use `let _ = ...` to ignore the resulting value
+     |
+1211 |         let _ = vocab.insert("test");
+     |         +++++++
+
+warning: unused `std::result::Result` that must be used
+    --> src/persistent_vocab_artrie/mod.rs:1253:9
+     |
+1253 |         vocab.insert("test");
+     |         ^^^^^^^^^^^^^^^^^^^^
+     |
+     = note: this `Result` may be an `Err` variant, which should be handled
+help: use `let _ = ...` to ignore the resulting value
+     |
+1253 |         let _ = vocab.insert("test");
+     |         +++++++
+
+warning: `libdictenstein` (lib test) generated 177 warnings (15 duplicates) (run `cargo fix --lib -p libdictenstein --tests` to apply 14 suggestions)

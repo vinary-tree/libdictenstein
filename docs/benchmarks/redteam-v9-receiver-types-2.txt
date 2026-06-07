@@ -1,0 +1,37 @@
+=== tests/persistent_bulk_mutation_correspondence.rs ===
+11:    PersistentARTrie, SwizzledPtr, WalHeader, WalReader, WalRecord, WalWriter, BLOCK_SIZE,
+17:    ArenaSlot as CharArenaSlot, CharNodeArena, PersistentARTrieChar,
+59:    let mut trie = PersistentARTrieChar::<i32>::create(path).expect("create char trie");
+67:    let trie = PersistentARTrieChar::<i32>::open(path).expect("open char trie");
+154:            let mut trie = PersistentARTrieChar::<i32>::open(&path).expect("open char trie");
+182:        let mut trie = PersistentARTrieChar::<i32>::open(&path).expect("open char trie");
+269:    let mut trie = PersistentARTrieChar::<i32>::create(path).expect("create char trie");
+339:    let mut reopened = PersistentARTrieChar::<i32>::open(&path).expect("lazy reopen char trie");
+365:    let mut byte_trie = PersistentARTrie::<i64>::create(&byte_path).expect("create byte trie");
+386:    let mut char_trie = PersistentARTrieChar::<i64>::create(&char_path).expect("create char trie");
+=== tests/persistent_artrie_recovery_tests.rs ===
+1://! Crash recovery integration tests for PersistentARTrie.
+8:use libdictenstein::persistent_artrie::PersistentARTrie;
+23:        let mut dict: PersistentARTrie<()> =
+24:            PersistentARTrie::create(&dict_path).expect("create dictionary");
+36:        let dict: PersistentARTrie<()> =
+37:            PersistentARTrie::open(&dict_path).expect("open dictionary");
+60:        let mut dict: PersistentARTrie<()> =
+61:            PersistentARTrie::create(&dict_path).expect("create dictionary");
+73:        let dict: PersistentARTrie<()> =
+74:            PersistentARTrie::open(&dict_path).expect("open dictionary");
+96:        let mut dict: PersistentARTrie<()> =
+97:            PersistentARTrie::create(&dict_path).expect("create dictionary");
+112:        let dict: PersistentARTrie<()> =
+113:            PersistentARTrie::open(&dict_path).expect("open dictionary");
+148:        let mut dict: PersistentARTrie<()> =
+149:            PersistentARTrie::create(&dict_path).expect("create dictionary");
+170:        let dict: PersistentARTrie<()> =
+171:            PersistentARTrie::open(&dict_path).expect("open dictionary");
+206:        let mut dict: PersistentARTrie<()> =
+207:            PersistentARTrie::create(&dict_path).expect("create dictionary");
+230:        let result = PersistentARTrie::<()>::open(&dict_path);
+265:        let mut dict: PersistentARTrie<()> =
+266:            PersistentARTrie::create(&dict_path).expect("create dictionary");
+275:        let mut dict: PersistentARTrie<()> =
+276:            PersistentARTrie::open(&dict_path).expect("open dictionary cycle 2");

@@ -1,0 +1,35 @@
+=== SWEEP A: insert_cas_with_value_durable_default call sites ===
+src/persistent_artrie_core/overlay/durable_write.rs:365:    fn insert_cas_with_value_durable_default(&self, key_bytes: &[u8], value: V) -> Result<bool> {
+src/persistent_artrie_core/overlay/durable_write.rs:533:    /// [`Self::insert_cas_with_value_durable_default`]: on a win return `default`;
+src/persistent_artrie_core/overlay/durable_write.rs:541:        if self.insert_cas_with_value_durable_default(key_bytes, default.clone())? {
+src/persistent_artrie_char/lockfree_cas.rs:1845:        // generic [`DurableOverlayWrite::insert_cas_with_value_durable_default`],
+src/persistent_artrie_char/lockfree_cas.rs:1854:        <Self as DurableOverlayWrite<CharKey, u64, S>>::insert_cas_with_value_durable_default(
+src/persistent_artrie_char/lockfree_cas.rs:2592:            trie.insert_cas_with_value_durable_default(b"hello", "world".to_string())
+src/persistent_artrie_char/lockfree_cas.rs:2598:                .insert_cas_with_value_durable_default(b"hello", "OTHER".to_string())
+src/persistent_artrie_char/lockfree_cas.rs:2624:            trie.insert_cas_with_value_durable_default(b"", "EMPTY".to_string())
+src/persistent_artrie_char/mutation_api.rs:77:            >>::insert_cas_with_value_durable_default(self, term.as_bytes(), value);
+src/persistent_artrie/lockfree_cas.rs:1302:        // [`DurableOverlayWrite::insert_cas_with_value_durable_default`] (gate →
+src/persistent_artrie/lockfree_cas.rs:1314:        <Self as DurableOverlayWrite<ByteKey, i64, S>>::insert_cas_with_value_durable_default(
+src/persistent_artrie/mutation_api.rs:63:            return <Self as DurableOverlayWrite<ByteKey, V, S>>::insert_cas_with_value_durable_default(
+src/persistent_artrie/mutation_api.rs:360:            Some(v) => <Self as DurableOverlayWrite<ByteKey, V, S>>::insert_cas_with_value_durable_default(
+src/persistent_artrie/lockfree_cas.rs:1308:                "insert_cas_with_value_durable value for byte term {:?} must be non-negative \
+src/persistent_artrie/lockfree_cas.rs:1699:            assert!(trie.insert_cas_with_value_durable(b"alpha", 11).expect("valued insert"));
+src/persistent_artrie/lockfree_cas.rs:1701:            assert!(!trie.insert_cas_with_value_durable(b"alpha", 99).expect("dup valued insert"));
+src/persistent_artrie/lockfree_cas.rs:1740:                .insert_cas_with_value_durable(b"counter", 42)
+src/persistent_artrie/lockfree_cas.rs:1743:                .insert_cas_with_value_durable(b"other", 7)
+src/persistent_artrie/lockfree_cas.rs:1848:            trie.insert_cas_with_value_durable(b"neg", -5).is_err(),
+src/persistent_artrie/lockfree_cas.rs:2221:                        trie.insert_cas_with_value_durable(k, *d).expect("durable valued insert"),
+src/persistent_artrie/lockfree_cas.rs:2434:                trie.insert_cas_with_value_durable(k, *d).expect("durable valued insert");
+src/persistent_artrie/lockfree_cas.rs:2473:                trie.insert_cas_with_value_durable(b"", 42).expect("valued insert \"\""),
+src/persistent_artrie/lockfree_cas.rs:2477:            trie.insert_cas_with_value_durable(b"a", 1).expect("a");
+src/persistent_artrie/lockfree_cas.rs:2478:            trie.insert_cas_with_value_durable(b"bc", 2).expect("bc");
+src/persistent_artrie/lockfree_cas.rs:2502:            trie.insert_cas_with_value_durable(b"", 7).expect("valued insert \"\"");
+src/persistent_artrie/lockfree_cas.rs:2619:            trie.insert_cas_with_value_durable(b"alpha", 1).expect("alpha");
+src/persistent_artrie/lockfree_cas.rs:2620:            trie.insert_cas_with_value_durable(b"beta", 2).expect("beta");
+src/persistent_artrie_char/lockfree_cas.rs:2759:                trie.insert_cas_with_value_durable(k, 1).expect("seed");
+src/persistent_artrie_char/lockfree_cas.rs:2786:            trie.insert_cas_with_value_durable("k", 5).expect("set");
+src/persistent_artrie_char/lockfree_cas.rs:3420:                trie.insert_cas_with_value_durable("", 42).expect("valued insert \"\""),
+src/persistent_artrie_char/lockfree_cas.rs:3423:            trie.insert_cas_with_value_durable("a", 1).expect("a");
+src/persistent_artrie_char/lockfree_cas.rs:3424:            trie.insert_cas_with_value_durable("bc", 2).expect("bc");
+src/persistent_artrie_char/lockfree_cas.rs:3446:            trie.insert_cas_with_value_durable("", 7).expect("valued insert \"\"");
+src/persistent_artrie_core/overlay/durable_write.rs:366:        self.durable_policy_gate("insert_cas_with_value_durable", "write")?;

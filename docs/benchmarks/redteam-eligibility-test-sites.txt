@@ -1,0 +1,26 @@
+tests/persistent_artrie_char_e1_readflip_correspondence.rs:216:fn e1_inert_for_ineligible_v() {
+src/persistent_artrie_char/io_uring_ctor.rs:41:        if Self::overlay_eligible_v() && !self.flip_to_overlay() {
+src/persistent_artrie_char/io_uring_ctor.rs:283:            && Self::overlay_eligible_v()
+src/persistent_artrie_core/overlay/flip.rs:394:        if !Self::overlay_eligible_v() {
+src/persistent_artrie/io_uring_ctor.rs:43:        if Self::overlay_eligible_v() && !self.flip_to_overlay() {
+src/persistent_artrie/io_uring_ctor.rs:367:            && Self::overlay_eligible_v()
+src/persistent_artrie_char/mmap_ctor.rs:91:        if Self::overlay_eligible_v() && !self.flip_to_overlay() {
+src/persistent_artrie_char/mmap_ctor.rs:483:            && Self::overlay_eligible_v()
+src/persistent_artrie_char/mmap_ctor.rs:711:            && Self::overlay_eligible_v()
+src/persistent_artrie_char/mmap_ctor.rs:1391:    fn s5_12_create_flip_eligible_v_overlay_arbitrary_v_owned() {
+src/persistent_artrie_char/overlay_write_mode.rs:613:        <Self as LockFreeOverlay<CharKey, V, S>>::overlay_eligible_v()
+src/persistent_artrie_char/overlay_write_mode.rs:686:        assert!(PersistentARTrieChar::<u64>::overlay_eligible_v());
+src/persistent_artrie_char/overlay_write_mode.rs:687:        assert!(PersistentARTrieChar::<()>::overlay_eligible_v());
+src/persistent_artrie_char/overlay_write_mode.rs:688:        assert!(!PersistentARTrieChar::<String>::overlay_eligible_v());
+src/persistent_artrie_char/lockfree_cas.rs:349:        if Self::overlay_eligible_v() {
+src/persistent_artrie/mmap_ctor.rs:50:        if Self::overlay_eligible_v() && !self.flip_to_overlay() {
+src/persistent_artrie/mmap_ctor.rs:600:            && Self::overlay_eligible_v()
+src/persistent_artrie/overlay_write_mode.rs:876:        <Self as LockFreeOverlay<ByteKey, V, S>>::overlay_eligible_v()
+src/persistent_artrie/overlay_write_mode.rs:970:    fn byte_create_flip_eligible_v_routes_ineligible_v_owned() {
+src/persistent_artrie/overlay_write_mode.rs:1008:    fn byte_eligible_v_gate() {
+src/persistent_artrie/overlay_write_mode.rs:1012:        assert!(PersistentARTrie::<()>::overlay_eligible_v());
+src/persistent_artrie/overlay_write_mode.rs:1013:        assert!(PersistentARTrie::<i64>::overlay_eligible_v());
+src/persistent_artrie/overlay_write_mode.rs:1014:        assert!(!PersistentARTrie::<u64>::overlay_eligible_v());
+src/persistent_artrie/overlay_write_mode.rs:1015:        assert!(!PersistentARTrie::<String>::overlay_eligible_v());
+src/persistent_artrie/overlay_write_mode.rs:1056:    fn byte_flip_is_noop_for_ineligible_v() {
+src/persistent_artrie/lockfree_cas.rs:232:        if Self::overlay_eligible_v() {

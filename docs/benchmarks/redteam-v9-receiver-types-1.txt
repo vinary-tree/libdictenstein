@@ -1,0 +1,60 @@
+=== tests/persistent_wal_atomicity_correspondence.rs ===
+101:        PersistentARTrie::<FailingSerializeValue>::create(&path).expect("create byte trie");
+119:    let mut trie = PersistentARTrie::<MaybeFailValue>::create(&path).expect("create byte trie");
+147:        PersistentARTrie::<FailingSerializeValue>::create(&path).expect("create byte trie");
+158:        PersistentARTrie::<FailingSerializeValue>::open(&path).expect("reopen byte trie");
+167:        let mut trie = PersistentARTrie::<i64>::create(&path).expect("create byte trie");
+168:        // **M4b REFRAME.** A fresh `create::<i64>()` now create-flips to the overlay,
+185:    let reopened = PersistentARTrie::<i64>::open(&path).expect("reopen byte trie");
+195:        PersistentARTrieChar::<FailingSerializeValue>::create(&path).expect("create char trie");
+215:    let mut trie = PersistentARTrieChar::<MaybeFailValue>::create(&path).expect("create char trie");
+245:        PersistentARTrieChar::<FailingSerializeValue>::create(&path).expect("create char trie");
+256:        PersistentARTrieChar::<FailingSerializeValue>::open(&path).expect("reopen char trie");
+265:        let mut trie = PersistentARTrieChar::<i64>::create(&path).expect("create char trie");
+276:    let reopened = PersistentARTrieChar::<i64>::open(&path).expect("reopen char trie");
+=== tests/persistent_public_durability_policy_correspondence.rs ===
+38:    let mut trie: PersistentARTrie<i64> =
+39:        PersistentARTrie::create(&path).expect("create byte trie");
+41:    // **M4b REFRAME.** A fresh `create::<i64>()` now create-flips to the overlay, but
+78:    let mut trie: PersistentARTrie<i64> =
+79:        PersistentARTrie::create(&path).expect("create byte trie");
+102:    let mut trie: PersistentARTrie<i64> =
+103:        PersistentARTrie::create(&path).expect("create byte trie");
+105:    // **M4b REFRAME.** A fresh `create::<i64>()` now create-flips to the overlay, but
+125:    let mut trie: PersistentARTrie<i64> =
+126:        PersistentARTrie::create(&path).expect("create byte trie");
+128:    // **M4b REFRAME.** A fresh `create::<i64>()` now create-flips to the overlay, but
+155:    let mut trie: PersistentARTrieChar<i64> =
+156:        PersistentARTrieChar::create(&path).expect("create char trie");
+177:    let mut trie: PersistentARTrieChar<i64> =
+178:        PersistentARTrieChar::create(&path).expect("create char trie");
+194:    let mut vocab = PersistentVocabARTrie::create(&path).expect("create vocab trie");
+212:    let mut vocab = PersistentVocabARTrie::create(&path).expect("create vocab trie");
+=== tests/persistent_end_to_end_trace_correspondence.rs ===
+37:        let mut trie = PersistentARTrie::<i64>::create(&path).expect("create byte trie");
+38:        // **M4b REFRAME.** A fresh `create::<i64>()` now create-flips to the overlay,
+89:    let reopened = PersistentARTrie::<i64>::open(&path).expect("reopen byte trie");
+102:        let mut trie = PersistentARTrieChar::<i64>::create(&path).expect("create char trie");
+140:    let reopened = PersistentARTrieChar::<i64>::open(&path).expect("reopen char trie");
+159:        let mut vocab = PersistentVocabARTrie::create(&path).expect("create vocab trie");
+=== tests/persistent_compaction_correspondence.rs ===
+38:fn create_compacted_counter_snapshot(path: &Path, value: i64) {
+39:    let mut compacted = PersistentARTrie::<i64>::create(path).expect("create compacted snapshot");
+52:        let mut trie = PersistentARTrie::<u64>::create(&path).expect("create trie");
+65:    let reopened = PersistentARTrie::<u64>::open(&path).expect("reopen compacted trie");
+78:        let mut trie = PersistentARTrie::<u64>::create(&path).expect("create trie");
+100:    let reopened = PersistentARTrie::<u64>::open(&path).expect("reopen original trie");
+110:        let mut trie = PersistentARTrie::<()>::create(&path).expect("create trie");
+111:        // **M4b REFRAME.** A fresh `create::<()>()` now create-flips to the overlay,
+128:    let reopened = PersistentARTrie::<()>::open(&path).expect("reopen compacted set trie");
+141:        let mut trie = PersistentARTrie::<u64>::create(&path).expect("create trie");
+155:    let reopened = PersistentARTrie::<u64>::open(&path).expect("reopen compacted byte-key trie");
+166:        let mut trie = PersistentARTrie::<u64>::create(&path).expect("create trie");
+182:    let reopened = PersistentARTrie::<u64>::open(&path).expect("reopen after stale WAL compact");
+201:    let mut trie = PersistentARTrie::<u64>::create(&original_path).expect("create trie");
+216:    let compacted = PersistentARTrie::<u64>::open(&compacted_path).expect("open output snapshot");
+230:        let mut trie = PersistentARTrie::<i64>::create(&path).expect("create trie");
+231:        // **M4b REFRAME.** A fresh `create::<i64>()` now create-flips to the overlay,
+246:    create_compacted_counter_snapshot(&temp_path, 0);
+250:    let reopened = PersistentARTrie::<i64>::open(&path).expect("reopen before data rename");
+279:        let mut trie = PersistentARTrie::<i64>::create(&path).expect("create trie");

@@ -1,0 +1,380 @@
+3982:    thread 'persistent_artrie::lockfree_cas::m4b_flip_gate_tests::m4b_old_owned_file_stays_owned_on_reopen' (3797388) panicked at src/persistent_artrie/lockfree_cas.rs:2286:17:
+3983-    String trie must not flip on create
+--
+4153:    thread 'persistent_artrie::overlay_write_mode::tests::byte_eligible_v_gate' (3797607) panicked at src/persistent_artrie/overlay_write_mode.rs:1014:9:
+4154-    assertion failed: !PersistentARTrie::<u64>::overlay_eligible_v()
+--
+4221:    thread 'persistent_artrie::overlay_write_mode::tests::byte_flip_is_noop_for_ineligible_v' (3797614) panicked at src/persistent_artrie/overlay_write_mode.rs:1067:9:
+4222-    flip_to_overlay must be a no-op for arbitrary V
+--
+4341:    thread 'persistent_artrie::overlay_write_mode::tests::byte_create_flip_eligible_v_routes_ineligible_v_owned' (3797623) panicked at src/persistent_artrie/overlay_write_mode.rs:1001:9:
+4342-    M4b: arbitrary V must NOT flip (stays on the owned path — back-compat)
+--
+4400:    thread 'persistent_artrie_char::dict_impl_char::tests::test_atomic_ops_with_checkpoint' (3798026) panicked at src/persistent_artrie_char/dict_impl_char.rs:1018:47:
+4401-    increment: InvalidOperation("increment(delta=100) cannot be routed to the lock-free overlay (negative deltas and arbitrary value types are unsupported on the overlay write path); use OverlayWriteMode::OwnedTree, or a non-negative delta on a u64 counter")
+--
+4469:    thread 'persistent_artrie_char::dict_impl_char::tests::test_atomic_ops_recovery' (3798064) panicked at src/persistent_artrie_char/dict_impl_char.rs:987:46:
+4470-    increment: InvalidOperation("increment(delta=100) cannot be routed to the lock-free overlay (negative deltas and arbitrary value types are unsupported on the overlay write path); use OverlayWriteMode::OwnedTree, or a non-negative delta on a u64 counter")
+--
+4507:    thread 'persistent_artrie_char::dict_impl_char::tests::test_document_transaction_recovery' (3798065) panicked at src/persistent_artrie_char/dict_impl_char.rs:1426:63:
+4508-    begin: InvalidOperation("document transactions are not supported under the lock-free overlay write mode (begin_document burns an un-watermarked BeginTx LSN that stalls checkpoint reclaim, and the transaction applies to the owned tree the overlay does not observe); use OverlayWriteMode::OwnedTree for transactions, or the single-op insert/increment/upsert which route to the overlay")
+--
+4544:    thread 'persistent_artrie_char::dict_impl_char::tests::test_increment_with_wal' (3798143) panicked at src/persistent_artrie_char/dict_impl_char.rs:813:57:
+4545-    increment: InvalidOperation("increment(delta=10) cannot be routed to the lock-free overlay (negative deltas and arbitrary value types are unsupported on the overlay write path); use OverlayWriteMode::OwnedTree, or a non-negative delta on a u64 counter")
+--
+4585:    thread 'persistent_artrie_char::dict_impl_char::tests::test_document_transaction_unicode' (3798081) panicked at src/persistent_artrie_char/dict_impl_char.rs:1372:58:
+4586-    begin: InvalidOperation("document transactions are not supported under the lock-free overlay write mode (begin_document burns an un-watermarked BeginTx LSN that stalls checkpoint reclaim, and the transaction applies to the owned tree the overlay does not observe); use OverlayWriteMode::OwnedTree for transactions, or the single-op insert/increment/upsert which route to the overlay")
+--
+4633:    thread 'persistent_artrie_char::dict_impl_char::tests::test_fetch_add_with_wal' (3798122) panicked at src/persistent_artrie_char/dict_impl_char.rs:916:54:
+4634-    fetch_add: InvalidOperation("increment(delta=10) cannot be routed to the lock-free overlay (negative deltas and arbitrary value types are unsupported on the overlay write path); use OverlayWriteMode::OwnedTree, or a non-negative delta on a u64 counter")
+--
+4669:    thread 'persistent_artrie_char::dict_impl_char::tests::test_merge_from_batched_basic' (3798234) panicked at src/persistent_artrie_char/dict_impl_char.rs:1953:36:
+4670-    increment: InvalidOperation("increment(delta=10) cannot be routed to the lock-free overlay (negative deltas and arbitrary value types are unsupported on the overlay write path); use OverlayWriteMode::OwnedTree, or a non-negative delta on a u64 counter")
+--
+4713:    thread 'persistent_artrie_char::dict_impl_char::tests::test_merge_from_batched_unicode' (3798229) panicked at src/persistent_artrie_char/dict_impl_char.rs:1988:36:
+4714-    increment: InvalidOperation("increment(delta=1) cannot be routed to the lock-free overlay (negative deltas and arbitrary value types are unsupported on the overlay write path); use OverlayWriteMode::OwnedTree, or a non-negative delta on a u64 counter")
+--
+4751:    thread 'persistent_artrie_char::dict_impl_char::tests::test_optimistic_get' (3798258) panicked at src/persistent_artrie_char/dict_impl_char.rs:1099:41:
+4752-    increment: InvalidOperation("increment(delta=100) cannot be routed to the lock-free overlay (negative deltas and arbitrary value types are unsupported on the overlay write path); use OverlayWriteMode::OwnedTree, or a non-negative delta on a u64 counter")
+--
+4787:    thread 'persistent_artrie_char::dict_impl_char::tests::test_unicode_atomic_ops' (3798308) panicked at src/persistent_artrie_char/dict_impl_char.rs:1046:47:
+4788-    increment: InvalidOperation("increment(delta=10) cannot be routed to the lock-free overlay (negative deltas and arbitrary value types are unsupported on the overlay write path); use OverlayWriteMode::OwnedTree, or a non-negative delta on a u64 counter")
+--
+4823:    thread 'persistent_artrie_char::dict_impl_char::tests::test_shared_char_trie_upsert' (3798291) panicked at src/persistent_artrie_char/dict_impl_char.rs:3000:9:
+4824-    assertion `left == right` failed: value updated
+--
+4866:    thread 'persistent_artrie_char::dict_impl_char::tests::test_merge_from_batched_empty' (3798227) panicked at src/persistent_artrie_char/dict_impl_char.rs:2023:40:
+4867-    increment: InvalidOperation("increment(delta=100) cannot be routed to the lock-free overlay (negative deltas and arbitrary value types are unsupported on the overlay write path); use OverlayWriteMode::OwnedTree, or a non-negative delta on a u64 counter")
+--
+4927:    thread 'persistent_artrie_char::eviction_registry_tests::force_eviction_unswizzles_a_live_slot_to_disk' (3798321) panicked at src/persistent_artrie_char/eviction_registry_tests.rs:98:9:
+4928-    assertion `left == right` failed: every chain slot should be in-memory before eviction
+--
+5027:    thread 'persistent_artrie_char::mmap_ctor::s5_12_flip_ctor_gate::s5_12_old_owned_file_stays_owned_on_reopen' (3798495) panicked at src/persistent_artrie_char/mmap_ctor.rs:1532:13:
+5028-    String trie must not flip on create
+--
+5059:    thread 'persistent_artrie_char::overlay_write_mode::tests::v1_typeid_gate_flip_is_noop_for_arbitrary_v' (3798646) panicked at src/persistent_artrie_char/overlay_write_mode.rs:688:9:
+5060-    assertion failed: !PersistentARTrieChar::<String>::overlay_eligible_v()
+--
+5099:    thread 'persistent_artrie_char::mmap_ctor::s5_12_flip_ctor_gate::s5_12_create_flip_eligible_v_overlay_arbitrary_v_owned' (3798481) panicked at src/persistent_artrie_char/mmap_ctor.rs:1427:13:
+5100-    create<String> must NOT flip (arbitrary V stays on the owned path)
+--
+5443:    thread 'persistent_artrie_char::tests::dictionary_node_traversal_descends_after_reopen' (3798889) panicked at src/persistent_artrie_char/mod.rs:2231:9:
+5444-    root edges empty after reopen — swizzle-fault regression
+--
+6052:    thread 'test_compact_preserves_all_data' (3800786) panicked at tests/compaction_tests.rs:73:10:
+6053-    Failed to compact: InvalidOperation("compact is not valid under the lock-free overlay write mode (it rebuilds from the owned tree and atomically replaces the file, clobbering the durable overlay/WAL with a counters-lost image); use OverlayWriteMode::OwnedTree")
+--
+6088:    thread 'test_compact_empty_trie' (3800783) panicked at tests/compaction_tests.rs:32:10:
+6089-    Failed to compact: InvalidOperation("compact is not valid under the lock-free overlay write mode (it rebuilds from the owned tree and atomically replaces the file, clobbering the durable overlay/WAL with a counters-lost image); use OverlayWriteMode::OwnedTree")
+--
+6126:    thread 'test_compact_single_term' (3800791) panicked at tests/compaction_tests.rs:376:10:
+6127-    Failed to compact: InvalidOperation("compact is not valid under the lock-free overlay write mode (it rebuilds from the owned tree and atomically replaces the file, clobbering the durable overlay/WAL with a counters-lost image); use OverlayWriteMode::OwnedTree")
+--
+6162:    thread 'test_compact_large_values' (3800784) panicked at tests/compaction_tests.rs:406:46:
+6163-    Failed to compact: InvalidOperation("compact is not valid under the lock-free overlay write mode (it rebuilds from the owned tree and atomically replaces the file, clobbering the durable overlay/WAL with a counters-lost image); use OverlayWriteMode::OwnedTree")
+--
+6198:    thread 'test_compact_to_new_file' (3800785) panicked at tests/compaction_tests.rs:235:47:
+6199-    Failed to compact: InvalidOperation("compact is not valid under the lock-free overlay write mode (it rebuilds from the owned tree and atomically replaces the file, clobbering the durable overlay/WAL with a counters-lost image); use OverlayWriteMode::OwnedTree")
+--
+6234:    thread 'test_compact_cleans_up_stale_temp_file' (3800779) panicked at tests/compaction_tests.rs:483:10:
+6235-    Failed to compact: InvalidOperation("compact is not valid under the lock-free overlay write mode (it rebuilds from the owned tree and atomically replaces the file, clobbering the durable overlay/WAL with a counters-lost image); use OverlayWriteMode::OwnedTree")
+--
+6270:    thread 'test_compact_after_modifications' (3800778) panicked at tests/compaction_tests.rs:134:10:
+6271-    Failed to compact: InvalidOperation("compact is not valid under the lock-free overlay write mode (it rebuilds from the owned tree and atomically replaces the file, clobbering the durable overlay/WAL with a counters-lost image); use OverlayWriteMode::OwnedTree")
+--
+6307:    thread 'test_compact_multiple_checkpoints' (3800792) panicked at tests/compaction_tests.rs:196:10:
+6308-    Failed to compact: InvalidOperation("compact is not valid under the lock-free overlay write mode (it rebuilds from the owned tree and atomically replaces the file, clobbering the durable overlay/WAL with a counters-lost image); use OverlayWriteMode::OwnedTree")
+--
+6343:    thread 'test_compact_without_verification' (3800793) panicked at tests/compaction_tests.rs:344:10:
+6344-    Failed to compact: InvalidOperation("compact is not valid under the lock-free overlay write mode (it rebuilds from the owned tree and atomically replaces the file, clobbering the durable overlay/WAL with a counters-lost image); use OverlayWriteMode::OwnedTree")
+--
+6381:    thread 'test_compact_stats_accuracy' (3800790) panicked at tests/compaction_tests.rs:439:10:
+6382-    Failed to compact: InvalidOperation("compact is not valid under the lock-free overlay write mode (it rebuilds from the owned tree and atomically replaces the file, clobbering the durable overlay/WAL with a counters-lost image); use OverlayWriteMode::OwnedTree")
+--
+6423:    thread 'test_compact_progress_callback' (3800787) panicked at tests/compaction_tests.rs:287:10:
+6424-    Failed to compact: InvalidOperation("compact is not valid under the lock-free overlay write mode (it rebuilds from the owned tree and atomically replaces the file, clobbering the durable overlay/WAL with a counters-lost image); use OverlayWriteMode::OwnedTree")
+--
+6487:    thread 'char_corruption_rebuild_replays_archived_checkpoint_and_active_tail' (3800777) panicked at tests/checkpoint_retention_correspondence.rs:96:5:
+6488-    assertion `left == right` failed
+--
+6530:    thread 'persistent::persistent_artrie_public_map_laws_match_reference' (3800888) panicked at tests/dictionary_law_correspondence.rs:443:66:
+6531-    called `Result::unwrap()` on an `Err` value: Fail(Reason("assertion failed: `(left == right)` \n  left: `Some(1)`, \n right: `Some(7)`: value lookup must match reference map for alpha at tests/dictionary_law_correspondence.rs:82"))
+--
+6595:    thread 'public_mutations_record_epoch_wal_bytes_without_manual_calls' (3800980) panicked at tests/epoch_checkpoint_recovery_correspondence.rs:57:5:
+6596-    assertion `left == right` failed: public WAL-backed mutations should advance epoch accounting
+--
+6634:    thread 'resident_walk_equals_reopened_walk' (3800909) panicked at tests/dictionary_node_reopen_traversal_correspondence.rs:142:5:
+6635-    assertion `left == right` failed
+--
+6673:    thread 'test_durability_committed_data_persists' (3801067) panicked at tests/persistent_artrie_acid_tests.rs:60:54:
+6674-    Failed to begin tx: InvalidOperation("begin_document is not valid under the lock-free overlay write mode (document transactions commit an owned-tree absolute write the overlay does not observe); use OverlayWriteMode::OwnedTree")
+--
+6709:    thread 'test_atomicity_commit_inserts_all_terms' (3801072) panicked at tests/persistent_artrie_acid_tests.rs:172:46:
+6710-    Failed to begin tx: InvalidOperation("begin_document is not valid under the lock-free overlay write mode (document transactions commit an owned-tree absolute write the overlay does not observe); use OverlayWriteMode::OwnedTree")
+--
+6745:    thread 'test_atomicity_abort_discards_all_terms' (3801074) panicked at tests/persistent_artrie_acid_tests.rs:124:46:
+6746-    Failed to begin tx: InvalidOperation("begin_document is not valid under the lock-free overlay write mode (document transactions commit an owned-tree absolute write the overlay does not observe); use OverlayWriteMode::OwnedTree")
+--
+6782:    thread 'walk_after_reopen_matches_inserted_utf8_values' (3800913) panicked at tests/dictionary_node_reopen_traversal_correspondence.rs:84:5:
+6783-    root edges empty after reopen — swizzle-fault regression
+--
+6814:    thread 'corrupt_epoch_metadata_fails_closed_while_trie_checkpoint_recovers' (3800973) panicked at tests/epoch_checkpoint_recovery_correspondence.rs:125:5:
+6815-    assertion `left == right` failed
+--
+6853:    thread 'test_durability_policy_none_for_testing' (3801073) panicked at tests/persistent_artrie_acid_tests.rs:102:50:
+6854-    Failed to begin tx: InvalidOperation("begin_document is not valid under the lock-free overlay write mode (document transactions commit an owned-tree absolute write the overlay does not observe); use OverlayWriteMode::OwnedTree")
+--
+6889:    thread 'test_atomicity_cannot_commit_twice' (3801071) panicked at tests/persistent_artrie_acid_tests.rs:198:46:
+6890-    Failed to begin tx: InvalidOperation("begin_document is not valid under the lock-free overlay write mode (document transactions commit an owned-tree absolute write the overlay does not observe); use OverlayWriteMode::OwnedTree")
+--
+6926:    thread 'test_consistency_trie_invariants_maintained' (3801070) panicked at tests/persistent_artrie_acid_tests.rs:289:46:
+6927-    Failed to begin tx: InvalidOperation("begin_document is not valid under the lock-free overlay write mode (document transactions commit an owned-tree absolute write the overlay does not observe); use OverlayWriteMode::OwnedTree")
+--
+6968:    thread 'char_descriptor_publication_before_wal_truncation_reopens_with_wal_tail' (3800917) panicked at tests/dirty_checkpoint_correspondence.rs:458:5:
+6969-    assertion `left == right` failed
+--
+7022:    thread 'test_isolation_no_dirty_reads' (3801096) panicked at tests/persistent_artrie_acid_tests.rs:260:10:
+7023-    Failed to begin tx: InvalidOperation("begin_document is not valid under the lock-free overlay write mode (document transactions commit an owned-tree absolute write the overlay does not observe); use OverlayWriteMode::OwnedTree")
+--
+7064:    thread 'test_stats_tracking' (3801111) panicked at tests/persistent_artrie_acid_tests.rs:328:46:
+7065-    Failed to begin tx: InvalidOperation("begin_document is not valid under the lock-free overlay write mode (document transactions commit an owned-tree absolute write the overlay does not observe); use OverlayWriteMode::OwnedTree")
+--
+7100:    thread 'test_isolation_concurrent_reads_dont_block' (3801085) panicked at tests/persistent_artrie_acid_tests.rs:219:46:
+7101-    Failed to begin tx: InvalidOperation("begin_document is not valid under the lock-free overlay write mode (document transactions commit an owned-tree absolute write the overlay does not observe); use OverlayWriteMode::OwnedTree")
+--
+7140:    thread 'e1_inert_for_ineligible_v' (3801117) panicked at tests/persistent_artrie_char_e1_readflip_correspondence.rs:221:5:
+7141-    an ineligible V (String) must NOT create-flip — reads stay on the owned path
+--
+7248:    thread 'document_transaction_visibility_matches_tla_model' (3801459) panicked at tests/persistent_artrie_formal_correspondence.rs:1177:47:
+7249-    begin tx: InvalidOperation("begin_document is not valid under the lock-free overlay write mode (document transactions commit an owned-tree absolute write the overlay does not observe); use OverlayWriteMode::OwnedTree")
+--
+7286:    thread 'deterministic_reopen_trace_matches_btreemap_reference' (3801455) panicked at tests/persistent_artrie_formal_correspondence.rs:115:9:
+7287-    assertion `left == right` failed: value for doc-47-002
+--
+7326:    thread 'deterministic_large_trace_matches_btreemap_reference' (3801456) panicked at tests/persistent_artrie_formal_correspondence.rs:115:9:
+7327-    assertion `left == right` failed: value for bucket-02-400
+--
+7369:    thread 'persistent_dictionary_law_trace_matches_reference_map' (3801479) panicked at tests/persistent_artrie_formal_correspondence.rs:1714:5:
+7370-    assertion `left == right` failed
+--
+7414:    thread 'proof_carrying_trace_certificate_replays_reference' (3801492) panicked at tests/persistent_artrie_formal_correspondence.rs:115:9:
+7415-    assertion `left == right` failed: value for alpha
+--
+7456:    thread 'persistent_artrie_char::tests::dictionary_node_traversal_descends_after_forced_eviction' (3798894) panicked at src/persistent_artrie_char/mod.rs:2294:9:
+7457-    root edges empty after eviction — re-fault regression
+--
+7504:    thread 'regression_tests::regression_value_update' (3801730) panicked at tests/persistent_artrie_proptest.rs:939:9:
+7505-    assertion `left == right` failed
+--
+7600:    thread 'phase_22_merge_operations::test_char_trie_merge_from_all_overlapping' (3802073) panicked at tests/persistent_artrie_recovery_tests.rs:2256:14:
+7601-    merge failed: InvalidOperation("merge_from is not valid under the lock-free overlay write mode (the overlay is the durable production state; a trie-to-trie merge would overwrite rather than combine accumulated values)")
+--
+7636:    thread 'phase_22_merge_operations::test_char_trie_merge_from_all_new' (3802070) panicked at tests/persistent_artrie_recovery_tests.rs:2227:14:
+7637-    merge failed: InvalidOperation("merge_from is not valid under the lock-free overlay write mode (the overlay is the durable production state; a trie-to-trie merge would overwrite rather than combine accumulated values)")
+--
+7672:    thread 'phase_22_merge_operations::test_char_trie_merge_from_basic' (3802074) panicked at tests/persistent_artrie_recovery_tests.rs:2194:14:
+7673-    merge failed: InvalidOperation("merge_from is not valid under the lock-free overlay write mode (the overlay is the durable production state; a trie-to-trie merge would overwrite rather than combine accumulated values)")
+--
+7708:    thread 'phase_22_merge_operations::test_char_trie_merge_from_empty_source' (3802085) panicked at tests/persistent_artrie_recovery_tests.rs:2284:14:
+7709-    merge failed: InvalidOperation("merge_from is not valid under the lock-free overlay write mode (the overlay is the durable production state; a trie-to-trie merge would overwrite rather than combine accumulated values)")
+--
+7748:    thread 'phase_22_merge_operations::test_char_trie_merge_from_unicode' (3802118) panicked at tests/persistent_artrie_recovery_tests.rs:2339:14:
+7749-    merge failed: InvalidOperation("merge_from is not valid under the lock-free overlay write mode (the overlay is the durable production state; a trie-to-trie merge would overwrite rather than combine accumulated values)")
+--
+7784:    thread 'phase_22_merge_operations::test_char_trie_merge_replace' (3802129) panicked at tests/persistent_artrie_recovery_tests.rs:2308:53:
+7785-    merge failed: InvalidOperation("merge_from is not valid under the lock-free overlay write mode (the overlay is the durable production state; a trie-to-trie merge would overwrite rather than combine accumulated values)")
+--
+7821:    thread 'phase_22_merge_operations::test_char_trie_merge_with_persistence' (3802142) panicked at tests/persistent_artrie_recovery_tests.rs:2375:18:
+7822-    merge failed: InvalidOperation("merge_from is not valid under the lock-free overlay write mode (the overlay is the durable production state; a trie-to-trie merge would overwrite rather than combine accumulated values)")
+--
+7858:    thread 'phase_22_merge_operations::test_shared_char_trie_increment' (3802217) panicked at tests/persistent_artrie_recovery_tests.rs:2537:49:
+7859-    increment: InvalidOperation("increment(delta=5) cannot be routed to the lock-free overlay (negative deltas and arbitrary value types are unsupported on the overlay write path); use OverlayWriteMode::OwnedTree, or a non-negative delta on a u64 counter")
+--
+7898:    thread 'phase_22_merge_operations::test_parallel_merge_pattern' (3802168) panicked at tests/persistent_artrie_recovery_tests.rs:2647:18:
+7899-    merge failed: InvalidOperation("merge_from is not valid under the lock-free overlay write mode (the overlay is the durable production state; a trie-to-trie merge would overwrite rather than combine accumulated values)")
+--
+7940:    thread 'phase_22_merge_operations::test_parallel_merge_with_overlaps' (3802189) panicked at tests/persistent_artrie_recovery_tests.rs:2704:18:
+7941-    merge failed: InvalidOperation("merge_from is not valid under the lock-free overlay write mode (the overlay is the durable production state; a trie-to-trie merge would overwrite rather than combine accumulated values)")
+--
+7983:    thread 'test_mixed_value_recovery' (3802342) panicked at tests/persistent_artrie_recovery_tests.rs:593:9:
+7984-    assertion failed: dict.contains("no_value_1")
+--
+8026:    thread 'test_value_update_persistence' (3802406) panicked at tests/persistent_artrie_recovery_tests.rs:632:9:
+8027-    assertion `left == right` failed: counter should have updated value 100
+--
+8067:    thread 'byte_and_char_checked_increment_overflow_preserves_wal_and_memory' (3802552) panicked at tests/persistent_bulk_mutation_correspondence.rs:393:5:
+8068-    assertion `left == right` failed
+--
+8105:    thread 'char_remove_prefix_batched_replays_every_durable_wal_prefix' (3802578) panicked at tests/persistent_bulk_mutation_correspondence.rs:204:22:
+8106-    unexpected bulk-delete WAL record after baseline: CommitRank { data_lsn: 24, term: [97, 112, 112], generation: 12 }
+--
+8159:    thread 'char_remove_prefix_lazy_collection_error_preserves_wal_and_unaffected_terms' (3802609) panicked at tests/persistent_bulk_mutation_correspondence.rs:339:65:
+8160-    lazy reopen char trie: InvalidMagic { expected: 4411969, found: 0 }
+--
+8198:    thread '<unnamed>' (3802691) panicked at tests/persistent_char_ebr_correspondence.rs:104:17:
+8199-    assertion `left == right` failed: a walk did not reach the full snapshot under concurrent eviction
+--
+8215:    thread '<unnamed>' (3802692) panicked at tests/persistent_char_ebr_correspondence.rs:104:17:
+8216-    assertion `left == right` failed: a walk did not reach the full snapshot under concurrent eviction
+--
+8232:    thread '<unnamed>' (3802689) panicked at tests/persistent_char_ebr_correspondence.rs:104:17:
+8233-    assertion `left == right` failed: a walk did not reach the full snapshot under concurrent eviction
+--
+8249:    thread '<unnamed>' (3802690) panicked at tests/persistent_char_ebr_correspondence.rs:104:17:
+8250-    assertion `left == right` failed: a walk did not reach the full snapshot under concurrent eviction
+--
+8266:    thread 'walk_concurrent_with_eviction_is_safe_and_complete' (3802634) panicked at tests/persistent_char_ebr_correspondence.rs:130:23:
+8267-    reader thread: Any { .. }
+--
+8302:    thread 'char_remove_prefix_batched_survives_reopen_without_checkpoint_for_batch_sizes' (3802599) panicked at tests/persistent_bulk_mutation_correspondence.rs:72:9:
+8303-    assertion `left == right` failed: value for ""
+--
+8357:    thread 'empty_trie_checkpoint_registers_nothing' (3802655) panicked at tests/persistent_char_eviction_correspondence.rs:219:5:
+8358-    assertion `left == right` failed
+--
+8395:    thread 'force_eviction_char_reclaims_and_key_reloads' (3802664) panicked at tests/persistent_char_eviction_correspondence.rs:109:5:
+8396-    assertion `left == right` failed
+--
+8447:    thread 'post_checkpoint_write_invalidates_registry' (3802709) panicked at tests/persistent_char_eviction_correspondence.rs:163:5:
+8448-    fresh registry should yield evictions
+--
+8479:    thread 'reopen_identical_with_and_without_eviction' (3802734) panicked at tests/persistent_char_eviction_correspondence.rs:246:9:
+8480-    assertion failed: shared.force_eviction(1 << 20).expect("force").0 >= 1
+--
+8513:    thread 'value_at_reloads_after_eviction' (3802733) panicked at tests/persistent_char_eviction_correspondence.rs:322:5:
+8514-    expected at least one node evicted
+--
+8545:    thread 'value_survives_eviction_via_get' (3802754) panicked at tests/persistent_char_eviction_correspondence.rs:366:5:
+8546-    assertion failed: shared.force_eviction(1 << 20).expect("force").0 >= 1
+--
+8579:    thread 'compaction_rejects_wal_sidecar_collision_without_losing_recovery_wal' (3802877) panicked at tests/persistent_compaction_correspondence.rs:90:9:
+8580-    unexpected error: Invalid operation: compact is not valid under the lock-free overlay write mode (it rebuilds from the owned tree and atomically replaces the file, clobbering the durable overlay/WAL with a counters-lost image); use OverlayWriteMode::OwnedTree
+--
+8612:    thread 'recovery_independent_of_registry' (3802804) panicked at tests/persistent_char_eviction_registry_correspondence.rs:145:9:
+8613-    assertion failed: shared.force_eviction(1 << 20).expect("force").0 >= 1
+--
+8646:    thread 'evicted_entries_reference_durable_data' (3802802) panicked at tests/persistent_char_eviction_registry_correspondence.rs:87:9:
+8647-    expected real reclamation, got 0
+--
+8678:    thread 'in_place_compaction_preserves_unsynced_wal_values_after_reopen' (3802905) panicked at tests/persistent_compaction_correspondence.rs:58:14:
+8679-    compact unsynced values: InvalidOperation("compact is not valid under the lock-free overlay write mode (it rebuilds from the owned tree and atomically replaces the file, clobbering the durable overlay/WAL with a counters-lost image); use OverlayWriteMode::OwnedTree")
+--
+8714:    thread 'non_utf8_byte_keys_survive_compaction' (3802907) panicked at tests/persistent_compaction_correspondence.rs:149:14:
+8715-    compact byte-key trie: InvalidOperation("compact is not valid under the lock-free overlay write mode (it rebuilds from the owned tree and atomically replaces the file, clobbering the durable overlay/WAL with a counters-lost image); use OverlayWriteMode::OwnedTree")
+--
+8750:    thread 'write_invalidates_published_registry' (3802817) panicked at tests/persistent_char_eviction_registry_correspondence.rs:114:5:
+8751-    assertion failed: shared.force_eviction(1 << 20).expect("force").0 >= 1
+--
+8784:    thread 'registry_empty_until_verified_checkpoint' (3802815) panicked at tests/persistent_char_eviction_registry_correspondence.rs:66:5:
+8785-    assertion failed: shared.force_eviction(1 << 20).expect("force").0 >= 1
+--
+8819:    thread 'output_file_compaction_preserves_key_value_snapshot' (3802930) panicked at tests/persistent_compaction_correspondence.rs:211:10:
+8820-    compact to output file: InvalidOperation("compact is not valid under the lock-free overlay write mode (it rebuilds from the owned tree and atomically replaces the file, clobbering the durable overlay/WAL with a counters-lost image); use OverlayWriteMode::OwnedTree")
+--
+8856:    thread 'successful_in_place_compaction_does_not_replay_stale_original_wal' (3802943) panicked at tests/persistent_compaction_correspondence.rs:175:14:
+8857-    compact with stale WAL history: InvalidOperation("compact is not valid under the lock-free overlay write mode (it rebuilds from the owned tree and atomically replaces the file, clobbering the durable overlay/WAL with a counters-lost image); use OverlayWriteMode::OwnedTree")
+--
+8893:    thread 'char_trace_survives_checkpoint_and_wal_tail_reopen' (3802958) panicked at tests/persistent_end_to_end_trace_correspondence.rs:114:46:
+8894-    increment café: InvalidOperation("increment(delta=4) cannot be routed to the lock-free overlay (negative deltas and arbitrary value types are unsupported on the overlay write path); use OverlayWriteMode::OwnedTree, or a non-negative delta on a u64 counter")
+--
+8932:    thread 'char_lazy_duplicate_insert_is_noop_without_wal_append' (3802969) panicked at tests/persistent_lazy_mutation_correspondence.rs:63:5:
+8933-    assertion `left == right` failed: char value for alpha
+--
+8972:    thread 'char_lazy_insert_error_returns_err_before_wal_append' (3802970) panicked at tests/persistent_lazy_mutation_correspondence.rs:142:65:
+8973-    lazy reopen char trie: InvalidMagic { expected: 4411969, found: 0 }
+--
+9008:    thread 'char_lazy_value_insert_and_remove_errors_do_not_append_wal' (3802977) panicked at tests/persistent_lazy_mutation_correspondence.rs:174:65:
+9009-    lazy reopen char trie: InvalidMagic { expected: 4411969, found: 0 }
+--
+9049:    thread 'char_successful_lazy_mutations_replay_after_reopen' (3802986) panicked at tests/persistent_lazy_mutation_correspondence.rs:63:5:
+9050-    assertion `left == right` failed: char value for alpha
+--
+9115:    thread 'disk_backed_prefix_semantics_survive_sync_reopen_and_deletion' (3803248) panicked at tests/persistent_prefix_correspondence.rs:126:9:
+9116-    assertion `left == right` failed: value for ""
+--
+9156:    thread 'char_full_policy_public_mutations_ack_only_after_wal_tail_is_synced' (3803322) panicked at tests/persistent_public_durability_policy_correspondence.rs:163:43:
+9157-    increment: InvalidOperation("increment(delta=2) cannot be routed to the lock-free overlay (negative deltas and arbitrary value types are unsupported on the overlay write path); use OverlayWriteMode::OwnedTree, or a non-negative delta on a u64 counter")
+--
+9200:    thread 'char_public_open_replays_unicode_checkpoint_plus_synced_tail' (3803379) panicked at tests/persistent_public_lifecycle_correspondence.rs:75:5:
+9201-    assertion `left == right` failed
+--
+9240:    thread 'char_persist_to_disk_alone_does_not_clear_checkpoint_dirty_state' (3803467) panicked at tests/persistent_rewrite_compaction_correspondence.rs:97:5:
+9241-    mutation should mark trie dirty
+--
+9272:    thread 'char_failed_wal_archive_after_rewrite_keeps_dirty_until_retry' (3803465) panicked at tests/persistent_rewrite_compaction_correspondence.rs:126:10:
+9273-    checkpoint must fail while archive dir is blocked: ()
+--
+9308:    thread 'char_lazy_traversal_failure_is_error_and_does_not_append_wal' (3803433) panicked at tests/persistent_read_snapshot_correspondence.rs:325:61:
+9309-    lazy reopen char trie: InvalidMagic { expected: 4411969, found: 0 }
+--
+9345:    thread 'char_checkpoint_rewrite_keeps_post_checkpoint_wal_tail_replayable' (3803463) panicked at tests/persistent_rewrite_compaction_correspondence.rs:32:5:
+9346-    assertion `left == right` failed: unexpected char value for "checkpointed"
+--
+9386:    thread 'char_rewrite_checkpoint_preserves_unicode_values_lazy_and_eager_reopen' (3803479) panicked at tests/persistent_rewrite_compaction_correspondence.rs:32:5:
+9387-    assertion `left == right` failed: unexpected char value for "alpha"
+--
+9428:    thread 'char_shared_checkpoint_racing_insert_reopens' (3803530) panicked at tests/persistent_shared_concurrency_correspondence.rs:110:9:
+9429-    assertion `left == right` failed
+--
+9466:    thread 'char_archive_recovery_stops_before_overflowed_batch_increment_suffix' (3803589) panicked at tests/persistent_transaction_increment_correspondence.rs:204:5:
+9467-    assertion `left == right` failed
+--
+9505:    thread 'char_tx_increment_aggregate_overflow_poisons_transaction' (3803606) panicked at tests/persistent_transaction_increment_correspondence.rs:119:54:
+9506-    begin tx: InvalidOperation("document transactions are not supported under the lock-free overlay write mode (begin_document burns an un-watermarked BeginTx LSN that stalls checkpoint reclaim, and the transaction applies to the owned tree the overlay does not observe); use OverlayWriteMode::OwnedTree for transactions, or the single-op insert/increment/upsert which route to the overlay")
+--
+9542:    thread 'char_tx_increment_current_overflow_fails_before_batch_wal' (3803617) panicked at tests/persistent_transaction_increment_correspondence.rs:97:54:
+9543-    begin tx: InvalidOperation("document transactions are not supported under the lock-free overlay write mode (begin_document burns an un-watermarked BeginTx LSN that stalls checkpoint reclaim, and the transaction applies to the owned tree the overlay does not observe); use OverlayWriteMode::OwnedTree for transactions, or the single-op insert/increment/upsert which route to the overlay")
+--
+9595:    thread 'nonblocking_checkpoint_preserves_data_under_concurrent_reads_writes' (3803245) panicked at tests/persistent_nonblocking_checkpoint_correspondence.rs:144:13:
+9596-    assertion `left == right` failed: write lost after reopen (round 0, i 0)
+--
+9636:    thread 'byte_document_commit_serialization_failure_preserves_memory_and_wal' (3803900) panicked at tests/persistent_wal_atomicity_correspondence.rs:148:45:
+9637-    begin tx: InvalidOperation("begin_document is not valid under the lock-free overlay write mode (document transactions commit an owned-tree absolute write the overlay does not observe); use OverlayWriteMode::OwnedTree")
+--
+9686:    thread 'char_atomic_serialization_failures_preserve_memory_and_wal' (3803925) panicked at tests/persistent_wal_atomicity_correspondence.rs:236:5:
+9687-    assertion `left == right` failed
+--
+9734:    thread 'char_atomic_writes_replay_after_reopen' (3803931) panicked at tests/persistent_wal_atomicity_correspondence.rs:267:47:
+9735-    increment: InvalidOperation("increment(delta=5) cannot be routed to the lock-free overlay (negative deltas and arbitrary value types are unsupported on the overlay write path); use OverlayWriteMode::OwnedTree, or a non-negative delta on a u64 counter")
+--
+9774:    thread 'char_document_commit_serialization_failure_preserves_memory_and_wal' (3803943) panicked at tests/persistent_wal_atomicity_correspondence.rs:246:45:
+9775-    begin tx: InvalidOperation("document transactions are not supported under the lock-free overlay write mode (begin_document burns an un-watermarked BeginTx LSN that stalls checkpoint reclaim, and the transaction applies to the owned tree the overlay does not observe); use OverlayWriteMode::OwnedTree for transactions, or the single-op insert/increment/upsert which route to the overlay")
+--
+9901:    thread 'char_archive_recovery_replays_every_mutating_variant_without_relogging' (3804397) panicked at tests/recovery_replay_completeness_correspondence.rs:278:5:
+9902-    assertion `left == right` failed
+--
+9939:    thread 'char_archive_recovery_stops_at_first_corrupt_record' (3804404) panicked at tests/recovery_replay_completeness_correspondence.rs:323:5:
+9940-    assertion `left == right` failed
+--
+9977:    thread 'byte_corruption_rebuild_uses_only_durable_wal_prefix' (3804368) panicked at tests/recovery_planner_correspondence.rs:176:5:
+9978-    assertion `left == right` failed
+--
+10018:    thread 'char_corruption_rebuild_uses_only_durable_wal_prefix' (3804379) panicked at tests/recovery_planner_correspondence.rs:202:5:
+10019-    assertion `left == right` failed
+--
+10073:    thread 'char_descriptor_reopen_roundtrip_preserves_reference_map_across_depths' (3804431) panicked at tests/root_descriptor_reopen_correspondence.rs:93:5:
+10074-    assertion `left == right` failed: char value for alpha
+--
+10160:    thread 'char_lazy_load_errors_are_result_errors_and_public_reads_fail_closed' (3804462) panicked at tests/root_descriptor_reopen_correspondence.rs:321:61:
+10161-    lazy reopen char trie: InvalidMagic { expected: 4411969, found: 0 }
+--
+10303:    thread 'walk_after_reopen_equals_snapshot' (3800912) panicked at tests/dictionary_node_reopen_traversal_correspondence.rs:147:1:
+10304-    Test failed: assertion failed: `(left == right)` 
+--
+10349:    thread 'persistent_artrie_trace_matches_btreemap' (3801477) panicked at tests/persistent_artrie_formal_correspondence.rs:708:1:
+10350-    Test failed: assertion failed: `(left == right)` 
+--
+10397:    thread 'persistent_artrie_char::eviction_registry_tests::async_request_eviction_reclaims_registered_nodes' (3798320) panicked at src/persistent_artrie_char/eviction_registry_tests.rs:168:9:
+10398-    async eviction did not reclaim any node within the timeout
+--
+10434:    thread 'prop_reclaim_is_lossless' (3802760) panicked at tests/persistent_char_eviction_proptest.rs:65:1:
+10435-    Test failed: assertion failed: `(left == right)` 
+--
+10476:    thread 'prop_post_checkpoint_write_invalidates' (3802753) panicked at tests/persistent_char_eviction_proptest.rs:65:1:
+10477-    Test failed: assertion failed: `(left == right)` 
+--
+10518:    thread 'prop_eviction_preserves_recovery' (3802757) panicked at tests/persistent_char_eviction_proptest.rs:65:1:
+10519-    Test failed: assertion failed: `(left == right)` 
+--
+10562:    thread 'prop_len_matches_count' (3801653) panicked at tests/persistent_artrie_proptest.rs:64:1:
+10563-    Test failed: assertion failed: `(left == right)` 

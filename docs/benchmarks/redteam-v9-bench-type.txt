@@ -1,0 +1,22 @@
+    let mut group = c.benchmark_group("char_atomic_ops");
+    group.sample_size(30);
+
+    // Test increment performance
+    let terms: Vec<String> = (0..100).map(|i| format!("counter_{}", i)).collect();
+
+    group.throughput(Throughput::Elements(100));
+    group.bench_function("increment", |b| {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("atomic.chartrie");
+        let mut dict = PersistentARTrieChar::<i64>::create(&path).expect("create dict");
+
+        // Pre-populate
+        for term in &terms {
+            let _ = dict.increment(term, 0);
+        }
+
+        b.iter(|| {
+            for term in &terms {
+                let _ = dict.increment(bb(term), 1);
+            }
+            black_box(())

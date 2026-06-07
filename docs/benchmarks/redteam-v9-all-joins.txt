@@ -1,0 +1,84 @@
+src/dynamic_dawg_zipper.rs:            assert!(handlen.unwrap());
+src/dynamic_dawg_char_zipper.rs:            assert!(handlen.unwrap());
+src/persistent_vocab_artrie/lockfree.rs://! for h in handles { hn.unwrap(); }
+src/persistent_vocab_artrie/lockfree.rs:            .flat_map(|h| hn.expect("thread"))
+src/persistent_vocab_artrie/lockfree.rs:            .map(|h| hn.expect("thread"))
+src/persistent_vocab_artrie/dict_impl.rs:        reader_handlen.expect("Reader thread panicked");
+src/persistent_vocab_artrie/dict_impl.rs:        writer_handlen.expect("Writer thread panicked");
+src/persistent_vocab_artrie/dict_impl.rs:            .flat_map(|h| hn.expect("thread"))
+src/persistent_vocab_artrie/lockfree_cas.rs:    /// for h in handles { hn.unwrap(); }
+src/persistent_artrie_core/swizzled_ptr.rs:                handlen.expect("thread should complete");
+src/persistent_artrie_core/swizzled_ptr.rs:                .map(|h| hn.expect("thread should complete"))
+src/persistent_artrie_core/swizzled_ptr.rs:                .map(|h| hn.expect("thread should complete"))
+src/persistent_artrie_core/io_uring_disk_manager.rs:            .flat_map(|h| hn.expect("thread panicked"))
+src/persistent_vocab_artrie/concurrent.rs:            .map(|h| hn.expect("thread complete"))
+src/persistent_vocab_artrie/concurrent.rs:            .map(|h| hn.expect("thread complete"))
+src/persistent_artrie_core/memory_monitor.rs:            let _ = handlen;
+src/dynamic_dawg_u64_zipper.rs:            assert!(handlen.unwrap());
+src/dynamic_dawg_u64_zipper.rs:            let read_count = readern.unwrap();
+src/dynamic_dawg_u64_zipper.rs:        writern.unwrap();
+src/dynamic_dawg_u64_zipper.rs:        let read_count = readern.unwrap();
+src/persistent_artrie_core/disk_manager.rs:            .flat_map(|h| hn.expect("Thread panicked"))
+src/persistent_artrie_core/disk_manager.rs:            let ids = handlen.expect("Allocator thread panicked");
+src/persistent_artrie_core/disk_manager.rs:            let reads = handlen.expect("Accessor thread panicked");
+src/persistent_artrie_core/concurrency.rs:        writern.expect("writer panicked");
+src/persistent_artrie_core/concurrency.rs:        let max_seen = readern.expect("reader panicked");
+src/persistent_artrie_core/concurrency.rs:        let observed = reader_handlen.expect("reader thread should complete");
+src/persistent_artrie_core/concurrency.rs:        reader_handlen.expect("reader should complete");
+src/persistent_artrie_core/concurrency.rs:        writern.expect("writer should complete");
+src/persistent_artrie_core/adaptive_pool.rs:            let _ = handlen;
+src/persistent_artrie_core/wal/async_writer.rs:            let _ = hn;
+src/persistent_artrie_core/version_gc.rs:            let _ = handlen;
+src/suffix_automaton_zipper.rs:            assert!(handlen.unwrap());
+src/dynamic_dawg_u64.rs:///     assert!(hn.unwrap());
+src/dynamic_dawg_u64.rs:            hn.unwrap();
+src/dynamic_dawg_u64.rs:            hn.unwrap();
+src/dynamic_dawg_u64.rs:            handlen.expect("Reader thread panicked");
+src/dynamic_dawg_u64.rs:            handlen.expect("Writer thread panicked");
+src/dynamic_dawg_u64.rs:            .map(|h| hn.expect("Reader thread panicked"))
+src/dynamic_dawg_u64.rs:            handlen.expect("Writer thread panicked");
+src/dynamic_dawg_u64.rs:            handlen.expect("Writer thread panicked");
+src/dynamic_dawg_u64.rs:            handlen.expect("Writer thread panicked");
+src/dynamic_dawg_u64.rs:            handlen.expect("Remover thread panicked");
+src/dynamic_dawg_u64.rs:            handlen.expect("Reader thread panicked");
+src/dynamic_dawg_u64.rs:            handlen.expect("Writer thread panicked");
+src/dynamic_dawg_u64.rs:        let iterations = iter_handlen.expect("Iterator thread panicked");
+src/persistent_artrie_core/committed_watermark.rs:            hn.expect("committer thread");
+src/persistent_artrie_core/eviction/coordinator.rs:            let _ = handlen;
+src/persistent_artrie_core/eviction/coordinator.rs:        let worker_id = handlen.expect("worker id");
+src/persistent_artrie_core/wal.rs:        let open_result = open_handlen.unwrap();
+src/persistent_artrie_core/wal.rs:        let delete_result = delete_handlen.unwrap();
+src/persistent_artrie_core/epoch.rs:            let _ = handlen;
+src/persistent_artrie_core/eviction/tests.rs:        handlen.expect("thread panicked");
+src/persistent_artrie_core/overlay/atomic_ptr.rs:            .map(|h| hn.expect("thread join"))
+src/persistent_artrie_core/group_commit.rs:            let _ = handlen;
+src/persistent_artrie_core/group_commit.rs:            handlen.expect("thread join");
+src/persistent_artrie_core/eviction/lru_tracker.rs:            handlen.expect("thread panicked");
+src/suffix_automaton_char_zipper.rs:            assert!(handlen.unwrap());
+src/persistent_artrie/lockfree_cas.rs:                all.extend(hn.expect("durable writer thread"));
+src/persistent_artrie/lockfree_cas.rs:                hn.expect("join");
+src/persistent_artrie/nodes/mod.rs:            .map(|h| hn.expect("thread should complete"))
+src/persistent_artrie_char/lockfree_cas.rs:                .flat_map(|h| hn.expect("writer thread"))
+src/persistent_artrie_char/lockfree_cas.rs:                hn.expect("worker thread");
+src/persistent_artrie_char/lockfree_cas.rs:            let _i_added = tin.expect("insert thread");
+src/persistent_artrie_char/lockfree_cas.rs:            let _r_removed = trn.expect("remove thread");
+src/persistent_artrie_char/lockfree_cas.rs:            trn.expect("remove thread");
+src/persistent_artrie_char/lockfree_cas.rs:            tin.expect("insert thread");
+src/persistent_artrie_char/lockfree_cas.rs:            hn.expect("increment thread");
+src/persistent_artrie_char/lockfree_cas.rs:            hn.expect("increment thread");
+src/persistent_artrie_char/lockfree_cas.rs:            hn.expect("increment thread");
+src/persistent_artrie_char/overlay_eviction_driver_correspondence.rs:            wn.expect("writer join");
+src/persistent_artrie_char/overlay_eviction_driver_correspondence.rs:    let evicted = evictorn.expect("evictor join");
+src/persistent_artrie_char/overlay_eviction_driver_correspondence.rs:    readern.expect("reader join");
+src/persistent_artrie_char/overlay_eviction_driver_correspondence.rs:    writern.expect("writer join");
+src/persistent_artrie_char/overlay_eviction_driver_correspondence.rs:    let _evicted = evictorn.expect("evictor join");
+src/persistent_artrie_char/overlay_eviction_driver_correspondence.rs:    let _reads = readern.expect("reader join");
+src/persistent_artrie_char/persist.rs:                .flat_map(|h| hn.expect("writer thread"))
+src/persistent_artrie_char/persist.rs:            checkpointern.expect("checkpointer thread");
+src/persistent_artrie_char/persist.rs:                hn.expect("writer thread");
+src/persistent_artrie_char/persist.rs:            checkpointern.expect("checkpointer thread");
+src/persistent_artrie_char/persist.rs:                .flat_map(|h| hn.expect("writer thread"))
+src/persistent_artrie_char/persist.rs:            checkpointern.expect("checkpointer thread");
+src/persistent_artrie_char/dict_impl_char.rs:            let (thread_id, found) = handlen.expect("thread join");
+src/persistent_artrie_char/dict_impl_char.rs:                hn.expect("join");
+src/persistent_artrie_char/dict_impl_char.rs:            .map(|h| hn.expect("thread join"))

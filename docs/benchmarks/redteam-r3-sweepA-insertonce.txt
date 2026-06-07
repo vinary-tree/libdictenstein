@@ -1,0 +1,9 @@
+=== ValueWriteMode::InsertOnce direct uses ===
+src/persistent_artrie/overlay_write_mode.rs:794:                ValueWriteMode::InsertOnce => {
+src/persistent_artrie/lockfree_cas.rs:539:    /// the in-loop InsertOnce/CAS pre-check on the freshly-loaded root.
+src/persistent_artrie_char/overlay_write_mode.rs:474:                ValueWriteMode::InsertOnce => {
+src/persistent_artrie_char/lockfree_cas.rs:1285:    /// the in-loop InsertOnce/CAS pre-check on the freshly-loaded root.
+src/persistent_artrie_char/lockfree_cas.rs:1844:        // DURABLE → value seam publish in InsertOnce mode → rank-or-burn) — is the
+src/persistent_artrie_core/overlay/durable_write.rs:96:    InsertOnce,
+src/persistent_artrie_core/overlay/durable_write.rs:361:    /// [`ValueWriteMode::InsertOnce`] (step 2) → rank-or-burn (step 3). Returns
+src/persistent_artrie_core/overlay/durable_write.rs:393:        match self.value_publish_inner(key_bytes, value, ValueWriteMode::InsertOnce)? {

@@ -1,0 +1,74 @@
+=== SWEEP B: .increment( callers across src+tests+benches+examples ===
+benches/persistent_artrie_char_benchmarks.rs:609:            let _ = dict.increment(term, 0);
+benches/persistent_artrie_char_benchmarks.rs:614:                let _ = dict.increment(bb(term), 1);
+tests/persistent_wal_atomicity_correspondence.rs:176:        assert_eq!(trie.increment("count", 5).expect("increment"), 15);
+tests/persistent_wal_atomicity_correspondence.rs:267:        assert_eq!(trie.increment("count", 5).expect("increment"), 15);
+tests/persistent_bulk_mutation_correspondence.rs:376:    assert!(byte_trie.increment("high", 1).is_err());
+tests/persistent_bulk_mutation_correspondence.rs:391:    assert!(char_trie.increment("high", 1).is_err());
+src/persistent_artrie_char/dict_impl_char.rs:813:            let result = inner.increment("counter", 10).expect("increment");
+src/persistent_artrie_char/dict_impl_char.rs:817:            let result = inner.increment("counter", 5).expect("increment");
+src/persistent_artrie_char/dict_impl_char.rs:821:            let result = inner.increment("counter", -3).expect("increment");
+src/persistent_artrie_char/dict_impl_char.rs:987:            inner.increment("counter1", 100).expect("increment");
+src/persistent_artrie_char/dict_impl_char.rs:988:            inner.increment("counter1", 50).expect("increment");
+src/persistent_artrie_char/dict_impl_char.rs:1018:            inner.increment("before_cp", 100).expect("increment");
+src/persistent_artrie_char/dict_impl_char.rs:1021:            inner.increment("after_cp", 200).expect("increment");
+src/persistent_artrie_char/dict_impl_char.rs:1046:            inner.increment("カウンター", 10).expect("increment");
+src/persistent_artrie_char/dict_impl_char.rs:1047:            inner.increment("计数器", 20).expect("increment");
+src/persistent_artrie_char/dict_impl_char.rs:1048:            inner.increment("🔢", 30).expect("increment");
+src/persistent_artrie_char/dict_impl_char.rs:1099:        inner.increment("counter", 100).expect("increment");
+src/persistent_artrie_char/dict_impl_char.rs:1550:        inner.increment("term_a", 100).expect("initial increment");
+src/persistent_artrie_char/dict_impl_char.rs:1551:        inner.increment("term_b", 50).expect("initial increment");
+src/persistent_artrie_char/dict_impl_char.rs:1632:            inner.increment("existing", 100).expect("initial");
+src/persistent_artrie_char/dict_impl_char.rs:1953:        src.increment("apple", 10).expect("increment");
+src/persistent_artrie_char/dict_impl_char.rs:1954:        src.increment("banana", 20).expect("increment");
+src/persistent_artrie_char/dict_impl_char.rs:1955:        src.increment("cherry", 30).expect("increment");
+src/persistent_artrie_char/dict_impl_char.rs:1960:        dst.increment("apple", 5).expect("increment");
+src/persistent_artrie_char/dict_impl_char.rs:1961:        dst.increment("date", 40).expect("increment");
+src/persistent_artrie_char/dict_impl_char.rs:1988:        src.increment("日本語", 1).expect("increment");
+src/persistent_artrie_char/dict_impl_char.rs:1989:        src.increment("中文", 2).expect("increment");
+src/persistent_artrie_char/dict_impl_char.rs:1990:        src.increment("한글", 3).expect("increment");
+src/persistent_artrie_char/dict_impl_char.rs:1995:        dst.increment("日本語", 100).expect("increment");
+src/persistent_artrie_char/dict_impl_char.rs:2023:        dst.increment("existing", 100).expect("increment");
+src/persistent_artrie_char/dict_impl_char.rs:2046:            src.increment(&format!("term_{:03}", i), i as i64)
+src/persistent_artrie_char/dict_impl_char.rs:2054:            dst.increment(&format!("term_{:03}", i), 1000)
+src/persistent_artrie_char/dict_impl_char.rs:2082:            src.increment(&format!("key_{:02}", i), i as i64)
+src/persistent_artrie_char/dict_impl_char.rs:2089:        dst.increment("key_00", 1000).expect("increment");
+src/persistent_artrie_char/dict_impl_char.rs:2111:        src.increment("日本語_001", 1).expect("increment");
+src/persistent_artrie_char/dict_impl_char.rs:2112:        src.increment("日本語_002", 2).expect("increment");
+src/persistent_artrie_char/dict_impl_char.rs:2113:        src.increment("中文_001", 3).expect("increment");
+src/persistent_artrie_char/dict_impl_char.rs:2114:        src.increment("한글_001", 4).expect("increment");
+src/persistent_artrie_char/dict_impl_char.rs:2115:        src.increment("🎉_emoji", 5).expect("increment");
+src/persistent_artrie_char/dict_impl_char.rs:2116:        src.increment("ascii_test", 6).expect("increment");
+src/persistent_artrie_char/dict_impl_char.rs:2266:            trie.increment(&format!("counter_{}", i), 1)
+src/persistent_artrie_char/mod.rs:1465:        guard.increment(term, delta)
+tests/persistent_public_durability_policy_correspondence.rs:51:    assert_eq!(trie.increment("alpha", 2).expect("increment"), 3);
+tests/persistent_public_durability_policy_correspondence.rs:163:    assert_eq!(trie.increment("alpha", 2).expect("increment"), 3);
+tests/persistent_end_to_end_trace_correspondence.rs:49:        assert_eq!(trie.increment("alpha", 4).expect("increment alpha"), 5);
+tests/persistent_end_to_end_trace_correspondence.rs:76:        assert_eq!(trie.increment("beta", 5).expect("increment beta"), 12);
+tests/persistent_end_to_end_trace_correspondence.rs:114:        assert_eq!(trie.increment("café", 4).expect("increment café"), 7);
+tests/persistent_artrie_recovery_tests.rs:2537:        let val1 = trie.increment("counter", 5).expect("increment");
+tests/persistent_artrie_recovery_tests.rs:2541:        let val2 = trie.increment("counter", 10).expect("increment");
+tests/persistent_artrie_recovery_tests.rs:2545:        let val3 = trie.increment("counter", -3).expect("decrement");
+tests/persistent_compaction_correspondence.rs:237:        assert_eq!(trie.increment("counter", 5).expect("increment to five"), 5);
+tests/persistent_compaction_correspondence.rs:240:            trie.increment("counter", -5)
+tests/persistent_compaction_correspondence.rs:286:        assert_eq!(trie.increment("counter", 5).expect("increment to five"), 5);
+tests/persistent_compaction_correspondence.rs:289:            trie.increment("counter", -5)
+tests/persistent_artrie_loom_correspondence.rs:1038:                overlay.increment(1);
+tests/persistent_artrie_loom_correspondence.rs:1061:            thread::spawn(move || overlay.increment(1))
+tests/persistent_artrie_loom_correspondence.rs:1066:            thread::spawn(move || overlay.increment(2))
+tests/persistent_artrie_loom_correspondence.rs:1093:            thread::spawn(move || overlay.increment(1))
+tests/persistent_artrie_loom_correspondence.rs:1098:            thread::spawn(move || overlay.increment(2))
+tests/persistent_artrie_loom_correspondence.rs:1152:                overlay.increment(1);
+tests/persistent_artrie_loom_correspondence.rs:1154:                overlay.increment(1);
+src/persistent_artrie_char/atomic_ops.rs:275:        let new_value = self.increment(term, delta)?;
+src/artrie_trait.rs:528:    /// let new_val = trie.increment("count", 1)?;  // Creates "count" = 1
+src/artrie_trait.rs:529:    /// let new_val = trie.increment("count", 5)?;  // Updates to 6
+src/artrie_trait.rs:530:    /// let new_val = trie.increment("count", -2)?; // Updates to 4
+src/persistent_artrie_char/persist.rs:1868:            trie.increment("k", -1).is_err(),
+src/persistent_artrie_char/persist.rs:1873:            trie.increment("k", 3).is_ok(),
+src/persistent_artrie/dict_impl.rs:911:            let result = dict.increment("counter", 1).expect("increment");
+src/persistent_artrie/dict_impl.rs:933:            let result = dict.increment("counter", 5).expect("increment");
+src/persistent_artrie/dict_impl.rs:937:            let result = dict.increment("counter", -3).expect("decrement");
+src/persistent_artrie/dict_impl.rs:1054:            let new_val = dict.increment("counter", 0).expect("read");
+src/persistent_artrie/shared_trait_impl.rs:234:        guard.increment(term, delta)
+src/persistent_artrie/atomic_ops.rs:322:        let new_value = self.increment(term, delta)?;

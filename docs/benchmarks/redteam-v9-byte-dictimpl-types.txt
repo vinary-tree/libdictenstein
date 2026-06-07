@@ -1,0 +1,19 @@
+909-
+910-            // First increment creates the entry with the delta value
+911:            let result = dict.increment("counter", 1).expect("increment");
+--
+931-
+932-            // Increment
+933:            let result = dict.increment("counter", 5).expect("increment");
+--
+935-
+936-            // Negative increment (decrement)
+937:            let result = dict.increment("counter", -3).expect("decrement");
+--
+1048-
+1049-            // fetch_add returns old value
+1050:            let old = dict.fetch_add("counter", 5).expect("fetch_add");
+--
+1052-
+1053-            // Verify new value
+1054:            let new_val = dict.increment("counter", 0).expect("read");

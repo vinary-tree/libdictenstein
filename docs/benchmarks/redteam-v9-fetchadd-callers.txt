@@ -1,0 +1,11 @@
+tests/persistent_wal_atomicity_correspondence.rs:177:        assert_eq!(trie.fetch_add("count", 2).expect("fetch_add"), 15);
+tests/persistent_wal_atomicity_correspondence.rs:268:        assert_eq!(trie.fetch_add("count", 2).expect("fetch_add"), 15);
+tests/persistent_bulk_mutation_correspondence.rs:377:    assert!(byte_trie.fetch_add("low", -1).is_err());
+tests/persistent_bulk_mutation_correspondence.rs:392:    assert!(char_trie.fetch_add("low", -1).is_err());
+src/persistent_artrie_char/dict_impl_char.rs:916:            let old = inner.fetch_add("counter", 10).expect("fetch_add");
+src/persistent_artrie_char/dict_impl_char.rs:920:            let old = inner.fetch_add("counter", 5).expect("fetch_add");
+src/persistent_artrie_char/dict_impl_char.rs:924:            let old = inner.fetch_add("counter", -3).expect("fetch_add");
+src/persistent_artrie_char/dict_impl_char.rs:991:            inner.fetch_add("counter2", 200).expect("fetch_add");
+src/persistent_artrie_char/dict_impl_char.rs:992:            inner.fetch_add("counter2", 25).expect("fetch_add");
+src/persistent_artrie_core/overlay/flip.rs:626:    /// `self.commit_seq.fetch_add(1, AcqRel) + 1`. Used ONLY by the RANKED
+src/persistent_artrie/dict_impl.rs:1050:            let old = dict.fetch_add("counter", 5).expect("fetch_add");

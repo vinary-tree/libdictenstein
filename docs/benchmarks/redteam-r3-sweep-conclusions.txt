@@ -1,0 +1,45 @@
+RED-TEAM ROUND 3 — EXHAUSTIVE COMPLETENESS SWEEPS (vs round 2 sampling)
+======================================================================
+
+SWEEP A — insert-once-where-upsert-correct (insert_cas_with_value_durable_default)
+Production call sites (6 total; tests excluded):
+  1. byte mutation_api.rs:63   insert_with_value           -> BUG (must be upsert) [round2 KNOWN]
+  2. byte mutation_api.rs:360  insert_batch_entry_overlay  -> BUG (must be upsert) [round2 KNOWN, V10.3]
+  3. byte lockfree_cas.rs:1314 insert_cas_with_value_durable (public primitive body) -> LEGITIMATE
+  4. char mutation_api.rs:77   insert_with_value           -> BUG (must be upsert) [round2 KNOWN]
+  5. char lockfree_cas.rs:1854 insert_cas_with_value_durable (public primitive body) -> LEGITIMATE
+  6. core durable_write.rs:541 get_or_insert_durable_default body -> LEGITIMATE (insert-if-absent IS contract)
+Char insert_batch / insert_batch_bytes: delegate to self.insert_with_value -> AUTO-INHERIT the fix (NOT separate sites). Confirmed batch_insert.rs:32, :165.
+Byte insert_batch / insert_batch_bytes: route via insert_batch_entry_overlay (#2) -> the ONLY byte batch site.
+Vocab: NO value-write overlay path (insert_with_value/upsert are warn-stubs; value=auto index). ZERO insert-once sites.
+document_tx (byte+char): currently REJECT under route_overlay (no insert-once today). When §2.2 wires overlay arms they MUST use upsert_cas_durable (forward-looking).
+=> ROUND 2 LIST WAS COMPLETE. 3 BUG sites (byte:63, byte:360, char:77); 3 LEGITIMATE.
+
+SWEEP B — trait/dyn/UFCS/Shared-handle .increment()/.fetch_add() callers
+impl ARTrie for: SharedARTrie<V> (shared_trait_impl.rs:27), SharedCharARTrie<V> (mod.rs ~1463), SharedVocabARTrie (mod.rs:708). All 3 must drop fn increment together. (DoubleArrayTrieChar does NOT impl ARTrie.)
+TRAIT-resolving callers (break on removal):
+  1. tests/persistent_artrie_recovery_tests.rs:2537/2541/2545 — recv SharedCharTrie<i64> (line 2534) -> TRAIT [round2 KNOWN]
+  2. tests/vocab_trait_honesty.rs:203 — ARTrie::increment(&shared,..) UFCS -> TRAIT [round2 KNOWN]
+ALL other .increment()/.fetch_add() callers resolve to INHERENT on concrete PersistentARTrie<{i64}> / PersistentARTrieChar<{i64,u64}>:
+  wal_atomicity:176/267, bulk_mutation:376/377/391/392 (byte_trie/char_trie=<i64>), public_durability:51/163, end_to_end:49/76/114, compaction:237/240/286/289 (<i64>/<u64>), bench char:609/614 (<i64>), all in-src dict_impl/dict_impl_char/persist/atomic_ops tests (<i64>/<u64>/<()> but only <i64>/<u64> call increment).
+  loom:1038/1061/1066/1093/1098/1152/1154 — recv ModelValueOverlay (test harness, increment(usize)) -> NEITHER (unrelated).
+  atomic_ops fetch_add bodies (char:275, byte:322) call self.increment on concrete -> INHERENT (Counter-bounded with increment).
+  artrie_trait.rs:722 _test_generic_usage<T:ARTrie> calls len/is_empty/contains ONLY, NOT increment -> no generic increment caller.
+Counter={i64,u64} empirically sufficient: every inherent increment/fetch_add caller uses i64 or u64. No <()>/<i32> trie calls increment.
+=> ROUND 2 LIST WAS COMPLETE (exactly the 2 trait callers). No 3rd trait caller.
+
+SWEEP C — join-under-lock reachable from trie &self/&mut self/Drop/disable_*/force_*/compact
+Production teardown surface (8 invocations / 6 methods). Tier-2 fields: byte=5{root,eviction_coordinator,overlay_write_mode,durability_policy,dirty_prefixes}; char=7{+memory_monitor,checkpoint_manager,group_commit}. CONFIRMED.
+  (1) byte disable_eviction shared_trait_impl.rs:290-298 — statement-temp -> eviction join; F4: guard EC. SAFE if temp kept. [round2 KNOWN]
+  (2) char disable_eviction mod.rs:1852-1862 — statement-temp -> eviction join; F4: guard EC. SAFE if temp kept. [round2 KNOWN]
+  (3) byte close() dict_impl.rs:537-557 — BARE field read `if let Some(ref c)=self.eviction_coordinator` -> eviction join; runs on EVERY Drop. F4: MUST get temp. [round2 KNOWN = 5th site]
+  (4) char close() mod.rs:567-577 — BARE field reads -> eviction join (569) + monitor.shutdown flag-only (572) + wal join (575); EVERY Drop. F4: eviction read MUST get temp. [round2 KNOWN = 5th site]
+  (5) char disable_memory_monitor observability.rs:223-225 — self.memory_monitor=None -> Drop-triggered join; callback CAN re-enter (force_eviction). F4: MUST take()+drop. [round2 KNOWN GAP-2]
+  (6) char disable_group_commit observability.rs:148-156 — self.group_commit=None -> Drop-triggered join. F4: MUST take()+drop. [round2 KNOWN GAP-2]
+  (7) char disable_epoch_checkpointing epoch_checkpointing.rs:102-104 — self.checkpoint_manager=None -> Drop-triggered join. F4: MUST take()+drop. [round2 KNOWN GAP-2]
+  byte/char compact wal_writer=None (compaction_impl.rs:295/309; char none) — WAL join, no trie re-entry, wal_writer NOT Tier-2 -> BENIGN. [round2 KNOWN]
+  byte/char close() wal stop_sync (dict_impl.rs:549, mod.rs:575) — WAL join, no re-entry, NOT Tier-2 -> BENIGN.
+
+ROUND 2 MISSED (2 sites/classes):
+  *** 7th SITE: vocab disable_eviction mod.rs:795-803 — `let mut guard=self.write(); if let Some(c)=guard.eviction_coordinator.take(){c.shutdown()}` holds the OUTER write guard LIVE across the joining shutdown(); the vocab eviction callback re-enters via trie.write() (mod.rs enable_eviction start_char closure line ~23). LATENT DEADLOCK TODAY if an eviction cycle is in-flight (worker blocked on trie.write() can't see shutdown flag -> join hangs). byte/char avoid it with a statement-temporary; vocab does NOT. Severity MAJOR. Not in V10 (F4 scope=byte+char), but it is a real re-entrant join-under-lock reachable from a trie method.
+  *** 7th CLASS: enable_* re-arm replacement drops the OLD Arc -> Drop-triggered worker join. Sites: char enable_memory_monitor observability.rs:208 (self.memory_monitor=Some), enable_group_commit :138, enable_epoch_checkpointing :73, enable_eviction byte shared_trait_impl.rs:285 / char mod.rs:1847,2050. Post-F4 naive `*self.field.lock()=Some(new)` drops old under guard -> join under lock; memory_monitor with re-entrant callback = deadlock on re-arm. Severity MAJOR (lower likelihood: re-arm of already-enabled subsystem). V10.4 enumerates only disable_*/close/Drop/compact -> MISSES the enable_*-replace path. SAME drop-before-replace temporary fix needed.

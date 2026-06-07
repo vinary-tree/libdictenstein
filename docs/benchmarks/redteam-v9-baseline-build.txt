@@ -1,0 +1,5 @@
+warning: `libdictenstein` (test "dynamic_dawg_mutation_correspondence") generated 16 warnings (16 duplicates)
+warning: `libdictenstein` (test "proptest_zipper_operations") generated 15 warnings (15 duplicates)
+warning: `libdictenstein` (test "dictionary_law_correspondence") generated 13 warnings (13 duplicates)
+warning: `libdictenstein` (lib test) generated 177 warnings (15 duplicates) (run `cargo fix --lib -p libdictenstein --tests` to apply 14 suggestions)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 3.75s

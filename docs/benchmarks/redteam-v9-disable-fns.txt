@@ -1,0 +1,12 @@
+src/persistent_vocab_artrie/mod.rs:    n(&self) -> crate::persistent_artrie::error::Result<()> {
+src/persistent_artrie_core/memory_monitor.rs:    pub n(&self) {
+src/artrie_trait.rs:    n(&self) -> Result<()>;
+src/persistent_artrie_core/eviction/coordinator.rs:    pub n(&self) {
+src/persistent_artrie/shared_trait_impl.rs:    n(&self) -> Result<()> {
+src/persistent_artrie_core/version_gc.rs:    pub n(&self) {
+src/persistent_artrie/dict_impl.rs:    pub n(&self) {
+src/persistent_artrie_char/mod.rs:    pub n(&self) {
+src/persistent_artrie_char/mod.rs:    n(&self) -> crate::persistent_artrie::error::Result<()> {
+src/persistent_artrie_char/epoch_checkpointing.rs:    pub n(&mut self) {
+src/persistent_artrie_char/observability.rs:    pub n(&mut self) -> Result<()> {
+src/persistent_artrie_char/observability.rs:    pub n(&mut self) {

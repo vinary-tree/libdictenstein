@@ -1,0 +1,6 @@
+96:pub trait ARTrie: Clone + Send + Sync {
+325:    fn get_value(&self, term: &str) -> Option<Self::Value>;
+532:    fn increment(&self, term: &str, delta: i64) -> Result<i64>;
+561:// pub trait ARTrieAtomicOps: ARTrie
+565://     fn increment(&self, term: &str, delta: i64) -> std::result::Result<i64, String>;
+585:pub trait ARTrieAtomicOps: ARTrie {}
