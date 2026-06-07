@@ -19,12 +19,12 @@
 #![cfg(feature = "persistent-artrie")]
 
 use libdictenstein::artrie_trait::EvictableARTrie;
+use libdictenstein::persistent_artrie_core::shared_access::SharedTrieAccess;
 use libdictenstein::persistent_artrie::eviction::EvictionConfig;
 use libdictenstein::persistent_artrie_char::{
     PersistentARTrieChar, PersistentARTrieCharNode, SharedCharARTrie,
 };
 use libdictenstein::{Dictionary, DictionaryNode, MappedDictionaryNode};
-use parking_lot::RwLock;
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -75,7 +75,7 @@ fn walk_concurrent_with_eviction_is_safe_and_complete() {
     // ⇒ the reopen stays owned and the on-disk owned image is the walk's source of
     // truth). Feature-off (`i32` ineligible) this is a no-op.
     {
-        let mut trie = PersistentARTrieChar::<i32>::create(&path).expect("create");
+        let trie = PersistentARTrieChar::<i32>::create(&path).expect("create");
         trie.kill_switch_to_owned();
         for (term, value) in &fixture {
             trie.insert_with_value(term, *value).expect("insert");
@@ -84,9 +84,9 @@ fn walk_concurrent_with_eviction_is_safe_and_complete() {
     }
 
     // Reopen (children swizzled), publish an eviction registry, enable eviction.
-    let shared: SharedCharARTrie<i32> = Arc::new(RwLock::new(
+    let shared: SharedCharARTrie<i32> = Arc::new(
         PersistentARTrieChar::<i32>::open(&path).expect("open"),
-    ));
+        );
     shared.write().checkpoint().expect("post-reopen checkpoint");
     shared
         .enable_eviction(EvictionConfig::without_memory_monitor())

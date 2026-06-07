@@ -92,7 +92,8 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
     where
         V: Clone,
     {
-        match &self.root {
+        // F4 (OR read): owned read path takes the inner `root` RwLock for read.
+        match &*self.root.read() {
             TrieRoot::Bucket(bucket) => {
                 // For root bucket, collect matching entries
                 let mut entries: Vec<_> = (0..bucket.len())

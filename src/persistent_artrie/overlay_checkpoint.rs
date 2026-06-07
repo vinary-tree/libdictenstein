@@ -107,7 +107,11 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
         }
         let next_lsn_at_capture = self.next_lsn.load(AtomicOrdering::Acquire);
 
-        let (root_type, root_ptr, is_final) = self.serialize_root(&self.root)?;
+        // F4 (OR read): the owned-arm checkpoint capture reads the owned tree under
+        // the inner `root` RwLock for read (admits concurrent owned readers, excludes
+        // owned writers). Held only for the serialize; CK is held by the caller.
+        let owned_root = self.root.read();
+        let (root_type, root_ptr, is_final) = self.serialize_root(&owned_root)?;
         let arena_count = self.flush_and_count_arenas()?;
         let term_count = self.term_count.load(AtomicOrdering::Acquire) as u64;
 
@@ -849,7 +853,11 @@ impl<V: DictionaryValue, S: BlockStorage> OverlayCheckpoint<ByteKey, V, S>
 
     #[inline]
     fn has_eviction_coordinator(&self) -> bool {
-        self.eviction_coordinator.is_some()
+        // F4 (EC leaf): brief lock, immediately released — never held across CK/OR.
+        self.eviction_coordinator
+            .lock()
+            .expect("eviction_coordinator mutex poisoned")
+            .is_some()
     }
 
     #[inline]

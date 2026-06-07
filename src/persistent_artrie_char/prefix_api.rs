@@ -32,7 +32,13 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     /// recovery/reestablish bootstrap (D1 — reads the recovered owned tree even while
     /// `route_overlay()` is true).
     pub(crate) fn owned_iter_prefix(&self, prefix: &str) -> Result<Option<Vec<String>>> {
-        let node = match self.navigate_to_prefix(prefix)? {
+        // F4: hold the OR read guard for the whole owned walk+collect (the root
+        // borrow ties to it; no unsafe — see `navigate_to_prefix_from`).
+        let root_guard = match self.owned_root_guard() {
+            Some(g) => g,
+            None => return Ok(None),
+        };
+        let node = match self.navigate_to_prefix_from(&root_guard, prefix)? {
             Some(n) => n,
             None => return Ok(None),
         };
@@ -67,7 +73,12 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     where
         V: Clone,
     {
-        let node = match self.navigate_to_prefix(prefix)? {
+        // F4: OR read guard held across the owned walk+collect (see above).
+        let root_guard = match self.owned_root_guard() {
+            Some(g) => g,
+            None => return Ok(None),
+        };
+        let node = match self.navigate_to_prefix_from(&root_guard, prefix)? {
             Some(n) => n,
             None => return Ok(None),
         };
@@ -118,10 +129,16 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
                     .collect()
             }));
         }
-        let (node, prefix_arena) = match self.navigate_to_prefix_with_arena(prefix)? {
-            Some(pair) => pair,
+        // F4: OR read guard held across the owned walk+collect (see `owned_iter_prefix`).
+        let root_guard = match self.owned_root_guard() {
+            Some(g) => g,
             None => return Ok(None),
         };
+        let (node, prefix_arena) =
+            match self.navigate_to_prefix_with_arena(&root_guard, prefix)? {
+                Some(pair) => pair,
+                None => return Ok(None),
+            };
 
         let mut terms = Vec::new();
         self.collect_terms_with_arena(
@@ -185,10 +202,16 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
                     .collect()
             }));
         }
-        let (node, prefix_arena) = match self.navigate_to_prefix_with_arena(prefix)? {
-            Some(pair) => pair,
+        // F4: OR read guard held across the owned walk+collect.
+        let root_guard = match self.owned_root_guard() {
+            Some(g) => g,
             None => return Ok(None),
         };
+        let (node, prefix_arena) =
+            match self.navigate_to_prefix_with_arena(&root_guard, prefix)? {
+                Some(pair) => pair,
+                None => return Ok(None),
+            };
 
         let mut terms = Vec::new();
         self.collect_terms_with_values_and_arena(
@@ -209,7 +232,7 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     /// # Returns
     ///
     /// The number of terms removed.
-    pub fn remove_prefix(&mut self, prefix: &str) -> Result<usize> {
+    pub fn remove_prefix(&self, prefix: &str) -> Result<usize> {
         self.remove_prefix_batched(prefix, 1024)
     }
 
@@ -218,7 +241,7 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     /// each term via the Order-A `remove_cas_durable` path. Durable, so reopen sees the
     /// removals (the WAL-recovery test). Resident-finals semantics: exact while no
     /// overlay node is evicted (E1-iter-A), consistent with `overlay_iter_prefix`.
-    fn remove_prefix_overlay(&mut self, prefix: &str) -> Result<usize> {
+    fn remove_prefix_overlay(&self, prefix: &str) -> Result<usize> {
         // Snapshot the matching terms first (one resident enumeration), then remove
         // each — `remove_cas_durable` republishes the overlay root per call, so we must
         // not hold a borrow of the tree across the removals.
@@ -249,7 +272,7 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     /// # Returns
     ///
     /// The number of terms removed.
-    pub fn remove_prefix_batched(&mut self, prefix: &str, batch_size: usize) -> Result<usize> {
+    pub fn remove_prefix_batched(&self, prefix: &str, batch_size: usize) -> Result<usize> {
         use std::collections::HashMap;
 
         // E1: under the overlay regime there is no owned arena to group by, so the
@@ -266,12 +289,19 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
         let mut total_removed = 0;
 
         loop {
-            // Collect a batch of terms WITH arena information
+            // Collect a batch of terms WITH arena information. F4: the OR read guard
+            // is scoped to THIS inner block (dropped before the removal phase below,
+            // which takes OR-write — so collect and remove never hold OR together).
             let batch: Vec<PrefixTermWithArena> = {
-                let (node, prefix_arena) = match self.navigate_to_prefix_with_arena(prefix)? {
-                    Some(pair) => pair,
-                    None => break, // Prefix no longer exists
+                let root_guard = match self.owned_root_guard() {
+                    Some(g) => g,
+                    None => break, // Owned tree empty
                 };
+                let (node, prefix_arena) =
+                    match self.navigate_to_prefix_with_arena(&root_guard, prefix)? {
+                        Some(pair) => pair,
+                        None => break, // Prefix no longer exists
+                    };
 
                 let mut terms = Vec::with_capacity(batch_size);
                 self.collect_terms_with_arena(

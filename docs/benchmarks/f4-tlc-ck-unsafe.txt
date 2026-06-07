@@ -1,0 +1,90 @@
+Running as unit: run-p3318963-i74525164.scope; invocation ID: 15374ca487c14eb1a1daf7b13e4adc2f
+TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)
+Warning: Please run the Java VM which executes TLC with a throughput optimized garbage collector by passing the "-XX:+UseParallelGC" property.
+(Use the -nowarning option to disable this warning.)
+Running breadth-first search Model-Checking with fp 28 and seed 3286466836126797706 with 1 worker on 8 cores with 4096MB heap and 64MB offheap memory [pid: 3318963] (Linux 7.0.10-arch1-1 amd64, Arch Linux 26.0.1 x86_64, MSBDiskFPSet, DiskStateQueue).
+Parsing file /home/dylon/Workspace/f1r3fly.io/libdictenstein/formal-verification/tla+/ConcurrentCheckpointSerialization.tla
+Parsing file /tmp/Naturals.tla
+Parsing file /tmp/FiniteSets.tla
+Parsing file /tmp/TLC.tla
+Parsing file /tmp/Sequences.tla
+Semantic processing of module Naturals
+Semantic processing of module Sequences
+Semantic processing of module FiniteSets
+Semantic processing of module TLC
+Semantic processing of module ConcurrentCheckpointSerialization
+Starting... (2026-06-07 07:44:57)
+Computing initial states...
+Finished computing initial states: 1 distinct state generated at 2026-06-07 07:44:57.
+Error: Invariant NoTornDescriptor is violated.
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+/\ step = (c1 :> 1 @@ c2 :> 1)
+/\ phase = (c1 :> "Idle" @@ c2 :> "Idle")
+/\ desc = <<0, 0, 0>>
+/\ lockHolder = 0
+
+State 2: <Begin line 63, col 5 to line 68, col 21 of module ConcurrentCheckpointSerialization>
+/\ step = (c1 :> 1 @@ c2 :> 1)
+/\ phase = (c1 :> "Writing" @@ c2 :> "Idle")
+/\ desc = <<0, 0, 0>>
+/\ lockHolder = 0
+
+State 3: <WriteField line 73, col 5 to line 77, col 38 of module ConcurrentCheckpointSerialization>
+/\ step = (c1 :> 2 @@ c2 :> 1)
+/\ phase = (c1 :> "Writing" @@ c2 :> "Idle")
+/\ desc = <<c1, 0, 0>>
+/\ lockHolder = 0
+
+State 4: <WriteField line 73, col 5 to line 77, col 38 of module ConcurrentCheckpointSerialization>
+/\ step = (c1 :> 3 @@ c2 :> 1)
+/\ phase = (c1 :> "Writing" @@ c2 :> "Idle")
+/\ desc = <<c1, c1, 0>>
+/\ lockHolder = 0
+
+State 5: <Begin line 63, col 5 to line 68, col 21 of module ConcurrentCheckpointSerialization>
+/\ step = (c1 :> 3 @@ c2 :> 1)
+/\ phase = (c1 :> "Writing" @@ c2 :> "Writing")
+/\ desc = <<c1, c1, 0>>
+/\ lockHolder = 0
+
+State 6: <WriteField line 73, col 5 to line 77, col 38 of module ConcurrentCheckpointSerialization>
+/\ step = (c1 :> 3 @@ c2 :> 2)
+/\ phase = (c1 :> "Writing" @@ c2 :> "Writing")
+/\ desc = <<c2, c1, 0>>
+/\ lockHolder = 0
+
+State 7: <WriteField line 73, col 5 to line 77, col 38 of module ConcurrentCheckpointSerialization>
+/\ step = (c1 :> 3 @@ c2 :> 3)
+/\ phase = (c1 :> "Writing" @@ c2 :> "Writing")
+/\ desc = <<c2, c2, 0>>
+/\ lockHolder = 0
+
+State 8: <WriteField line 73, col 5 to line 77, col 38 of module ConcurrentCheckpointSerialization>
+/\ step = (c1 :> 3 @@ c2 :> 4)
+/\ phase = (c1 :> "Writing" @@ c2 :> "Writing")
+/\ desc = <<c2, c2, c2>>
+/\ lockHolder = 0
+
+State 9: <WriteField line 73, col 5 to line 77, col 38 of module ConcurrentCheckpointSerialization>
+/\ step = (c1 :> 4 @@ c2 :> 4)
+/\ phase = (c1 :> "Writing" @@ c2 :> "Writing")
+/\ desc = <<c2, c2, c1>>
+/\ lockHolder = 0
+
+State 10: <Finish line 81, col 5 to line 85, col 31 of module ConcurrentCheckpointSerialization>
+/\ step = (c1 :> 4 @@ c2 :> 4)
+/\ phase = (c1 :> "Done" @@ c2 :> "Writing")
+/\ desc = <<c2, c2, c1>>
+/\ lockHolder = 0
+
+State 11: <Finish line 81, col 5 to line 85, col 31 of module ConcurrentCheckpointSerialization>
+/\ step = (c1 :> 4 @@ c2 :> 4)
+/\ phase = (c1 :> "Done" @@ c2 :> "Done")
+/\ desc = <<c2, c2, c1>>
+/\ lockHolder = 0
+
+112 states generated, 80 distinct states found, 14 states left on queue.
+The depth of the complete state graph search is 11.
+The average outdegree of the complete state graph is 1 (minimum is 0, the maximum 2 and the 95th percentile is 2).
+Finished in 00s at (2026-06-07 07:44:57)

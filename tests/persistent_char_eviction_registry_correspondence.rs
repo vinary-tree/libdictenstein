@@ -13,6 +13,7 @@
 //! those properties through its public API.
 
 use libdictenstein::artrie_trait::{ARTrie, EvictableARTrie};
+use libdictenstein::persistent_artrie_core::shared_access::SharedTrieAccess;
 use libdictenstein::persistent_artrie::eviction::EvictionConfig;
 use libdictenstein::persistent_artrie_char::SharedCharARTrie;
 use libdictenstein::MutableMappedDictionary;
@@ -24,7 +25,7 @@ fn put(shared: &SharedCharARTrie<i32>, term: &str, value: i32) -> bool {
 }
 
 fn value_of(shared: &SharedCharARTrie<i32>, term: &str) -> Option<i32> {
-    shared.read().get(term).copied()
+    shared.read().get(term)
 }
 
 const KEYS: [(&str, i32); 5] = [

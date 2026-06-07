@@ -69,7 +69,7 @@ fn walk_after_reopen_matches_inserted_utf8_values() {
 
     // Build + checkpoint + DROP so only the on-disk image remains.
     {
-        let mut trie = PersistentARTrieChar::<i32>::create(&path).expect("create");
+        let trie = PersistentARTrieChar::<i32>::create(&path).expect("create");
         // F2-migrate: Bucket B — these tests walk the OWNED `DictionaryNode` graph
         // (`walk_map` over `self.root`), faulting swizzled owned children. Under the
         // lock-free overlay the owned tree is cleared on reopen (empty walk), so pin the
@@ -134,7 +134,7 @@ fn resident_walk_equals_reopened_walk() {
     let dir = tempdir().expect("tempdir");
     let path = dir.path().join("resident_vs_reopen.artc");
 
-    let mut resident = PersistentARTrieChar::<i32>::create(&path).expect("create");
+    let resident = PersistentARTrieChar::<i32>::create(&path).expect("create");
     // F2-migrate: Bucket B — owned `DictionaryNode` walk (resident + reopened). Pin the
     // Owned regime so both the resident walk and the reopened (swizzled) walk read the
     // owned tree. No-op feature-off.
@@ -174,7 +174,7 @@ proptest! {
         let dir = tempdir().expect("tempdir");
         let path = dir.path().join("prop_walk.artc");
         {
-            let mut trie = PersistentARTrieChar::<i32>::create(&path).expect("create");
+            let trie = PersistentARTrieChar::<i32>::create(&path).expect("create");
             // F2-migrate: Bucket B — owned `DictionaryNode` walk after reopen. Pin the
             // Owned regime so the on-disk owned image drives the faulting walk. No-op
             // feature-off.

@@ -262,7 +262,7 @@ impl<V: DictionaryValue + serde::Serialize + serde::de::DeserializeOwned, S: Blo
     /// This is atomic: the operation is logged to WAL before returning.
     ///
     /// Returns `true` if a new term was inserted, `false` if an existing term was updated.
-    pub fn upsert(&mut self, term: &str, value: V) -> Result<bool> {
+    pub fn upsert(&self, term: &str, value: V) -> Result<bool> {
         self.upsert_bytes(term.as_bytes(), value)
     }
 
@@ -276,7 +276,7 @@ impl<V: DictionaryValue + serde::Serialize + serde::de::DeserializeOwned, S: Blo
     /// ([`super::lockfree_value_route::route_upsert_bytes`]); the durable path
     /// rejects a negative value (C4). Arbitrary `V` keeps the owned body. The owned
     /// body below is the verbatim pre-flip path (INERT until the flip).
-    pub fn upsert_bytes(&mut self, term: &[u8], value: V) -> Result<bool> {
+    pub fn upsert_bytes(&self, term: &[u8], value: V) -> Result<bool> {
         // Flip F0/G5 (NH1): under the overlay, route to the SHARED GENERIC durable
         // UPSERT (always-write) for ANY V — NEVER fall through to owned. Eligible V
         // now; arbitrary V at F2.

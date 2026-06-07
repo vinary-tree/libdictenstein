@@ -59,7 +59,10 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     /// };
     /// trie.enable_epoch_checkpointing(config)?;
     /// ```
-    pub fn enable_epoch_checkpointing(&mut self, config: EpochConfig) -> Result<()> {
+    ///
+    /// **F4:** `&self` (subsystem family). Manager built outside the field lock;
+    /// re-arm = take-old-then-drop-guard-then-drop-old (V11.3 site 9).
+    pub fn enable_epoch_checkpointing(&self, config: EpochConfig) -> Result<()> {
         // Create epoch subdirectory based on the trie's file path
         let epoch_dir = if let Some(ref path) = self.file_path {
             path.with_extension("epoch")
@@ -69,13 +72,20 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
             ));
         };
 
-        let manager = CheckpointManager::new(&epoch_dir, config)?;
-        self.checkpoint_manager = Some(Arc::new(manager));
+        let manager = Arc::new(CheckpointManager::new(&epoch_dir, config)?);
+        let old = {
+            let mut slot = self
+                .checkpoint_manager
+                .lock()
+                .expect("checkpoint_manager mutex poisoned");
+            slot.replace(manager)
+        };
+        drop(old);
         Ok(())
     }
 
     /// Enables epoch-based checkpoint tracking with default configuration.
-    pub fn enable_epoch_checkpointing_default(&mut self) -> Result<()> {
+    pub fn enable_epoch_checkpointing_default(&self) -> Result<()> {
         self.enable_epoch_checkpointing(EpochConfig::default())
     }
 
@@ -83,7 +93,7 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     ///
     /// Uses longer epochs and higher operation limits, suitable for
     /// batch processing workloads.
-    pub fn enable_epoch_checkpointing_high_throughput(&mut self) -> Result<()> {
+    pub fn enable_epoch_checkpointing_high_throughput(&self) -> Result<()> {
         self.enable_epoch_checkpointing(EpochConfig::high_throughput())
     }
 
@@ -91,7 +101,7 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     ///
     /// Uses shorter epochs for lower-latency epoch rotation, suitable for
     /// real-time tracking.
-    pub fn enable_epoch_checkpointing_low_latency(&mut self) -> Result<()> {
+    pub fn enable_epoch_checkpointing_low_latency(&self) -> Result<()> {
         self.enable_epoch_checkpointing(EpochConfig::low_latency())
     }
 
@@ -99,13 +109,24 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     ///
     /// The checkpoint manager is stopped and dropped. Any pending
     /// checkpoint operations complete before this returns.
-    pub fn disable_epoch_checkpointing(&mut self) {
-        self.checkpoint_manager = None;
+    ///
+    /// **F4 drop-before-join (V11.3 site 7):** take the manager into a temporary so
+    /// the field-mutex guard DROPS before the old `Arc`'s `Drop` joins its thread.
+    pub fn disable_epoch_checkpointing(&self) {
+        let old = self
+            .checkpoint_manager
+            .lock()
+            .expect("checkpoint_manager mutex poisoned")
+            .take();
+        drop(old);
     }
 
     /// Returns whether epoch-based checkpointing is enabled.
     pub fn has_epoch_checkpointing(&self) -> bool {
-        self.checkpoint_manager.is_some()
+        self.checkpoint_manager
+            .lock()
+            .expect("checkpoint_manager mutex poisoned")
+            .is_some()
     }
 
     /// Records an externally managed operation in the current epoch.
@@ -119,6 +140,8 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     /// The current epoch ID, or None if checkpointing is not enabled.
     pub fn record_epoch_operation(&self, wal_bytes: usize) -> Option<EpochId> {
         self.checkpoint_manager
+            .lock()
+            .expect("checkpoint_manager mutex poisoned")
             .as_ref()
             .map(|cm| cm.record_operation(wal_bytes))
     }
@@ -126,6 +149,8 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     /// Returns the current epoch ID.
     pub fn current_epoch_id(&self) -> Option<EpochId> {
         self.checkpoint_manager
+            .lock()
+            .expect("checkpoint_manager mutex poisoned")
             .as_ref()
             .map(|cm| cm.current_epoch_id())
     }
@@ -141,8 +166,17 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     /// * `Some(Ok(epoch_id))` - The new current epoch ID after checkpoint publication
     /// * `Some(Err(_))` - The trie checkpoint or epoch metadata publication failed
     /// * `None` - Checkpoint manager not enabled
-    pub fn force_epoch_checkpoint(&mut self) -> Option<Result<EpochId>> {
-        let checkpoint_manager = self.checkpoint_manager.as_ref().cloned()?;
+    ///
+    /// **F4:** `&self` — clones the manager Arc out under a BRIEF lock (released
+    /// before `self.checkpoint()`, which takes CK + OR — never under the
+    /// checkpoint-manager field mutex).
+    pub fn force_epoch_checkpoint(&self) -> Option<Result<EpochId>> {
+        let checkpoint_manager = self
+            .checkpoint_manager
+            .lock()
+            .expect("checkpoint_manager mutex poisoned")
+            .as_ref()
+            .cloned()?;
         Some((|| {
             self.checkpoint()?;
             checkpoint_manager.force_checkpoint()
@@ -152,24 +186,39 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     /// Returns the last durable (fully checkpointed) epoch ID.
     pub fn last_durable_epoch(&self) -> Option<EpochId> {
         self.checkpoint_manager
+            .lock()
+            .expect("checkpoint_manager mutex poisoned")
             .as_ref()
             .and_then(|cm| cm.last_durable_epoch())
     }
 
     /// Returns epoch statistics.
     pub fn epoch_stats(&self) -> Option<EpochStats> {
-        self.checkpoint_manager.as_ref().map(|cm| cm.stats())
+        self.checkpoint_manager
+            .lock()
+            .expect("checkpoint_manager mutex poisoned")
+            .as_ref()
+            .map(|cm| cm.stats())
     }
 
     /// Returns metadata for recent epochs.
     pub fn epoch_metadata(&self) -> Option<Vec<EpochMetadata>> {
         self.checkpoint_manager
+            .lock()
+            .expect("checkpoint_manager mutex poisoned")
             .as_ref()
             .map(|cm| cm.epoch_metadata())
     }
 
     /// Returns the configuration for epoch checkpointing.
-    pub fn epoch_config(&self) -> Option<&EpochConfig> {
-        self.checkpoint_manager.as_ref().map(|cm| cm.config())
+    ///
+    /// **F4:** returns an OWNED `EpochConfig` (clone) — the field is now behind a
+    /// `Mutex`, so a `&EpochConfig` borrow into it can't outlive the guard.
+    pub fn epoch_config(&self) -> Option<EpochConfig> {
+        self.checkpoint_manager
+            .lock()
+            .expect("checkpoint_manager mutex poisoned")
+            .as_ref()
+            .map(|cm| cm.config().clone())
     }
 }

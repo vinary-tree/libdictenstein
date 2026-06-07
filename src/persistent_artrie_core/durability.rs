@@ -47,3 +47,25 @@ pub enum DurabilityPolicy {
     /// lost on any system failure. Use only for testing or ephemeral data.
     None,
 }
+
+impl crate::persistent_artrie_core::shared_access::U8Enum for DurabilityPolicy {
+    #[inline]
+    fn as_u8(self) -> u8 {
+        match self {
+            DurabilityPolicy::Immediate => 0,
+            DurabilityPolicy::GroupCommit => 1,
+            DurabilityPolicy::Periodic => 2,
+            DurabilityPolicy::None => 3,
+        }
+    }
+
+    #[inline]
+    fn from_u8(v: u8) -> Self {
+        match v {
+            1 => DurabilityPolicy::GroupCommit,
+            2 => DurabilityPolicy::Periodic,
+            3 => DurabilityPolicy::None,
+            _ => DurabilityPolicy::Immediate,
+        }
+    }
+}

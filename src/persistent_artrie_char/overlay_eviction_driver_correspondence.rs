@@ -57,8 +57,8 @@ where
     V: crate::value::DictionaryValue,
     S: crate::persistent_artrie::block_storage::BlockStorage,
 {
-    let coordinator = match trie.eviction_coordinator.as_ref() {
-        Some(c) => c,
+    let coordinator = match trie.eviction_coordinator.lock().expect("eviction_coordinator mutex poisoned").as_ref() {
+        Some(c) => std::sync::Arc::clone(c),
         None => return 0,
     };
     coordinator
@@ -666,7 +666,7 @@ fn evict_then_write_under_evicted_prefix_reopen_loses_nothing() {
         let mut evicted = 0usize;
         for _ in 0..16 {
             evicted += {
-                let coordinator = trie.eviction_coordinator.as_ref().expect("coordinator");
+                let coordinator = trie.eviction_coordinator.lock().expect("eviction_coordinator mutex poisoned").as_ref().map(std::sync::Arc::clone).expect("coordinator");
                 coordinator
                     .force_eviction_char(1 << 20, |cands| {
                         let filtered: Vec<_> = cands
@@ -815,8 +815,8 @@ fn concurrent_reader_writer_evictor_faulter_no_uaf_and_complete() {
             let mut evicted = 0usize;
             for _ in 0..40 {
                 evicted += {
-                    let coordinator = match trie.eviction_coordinator.as_ref() {
-                        Some(c) => c,
+                    let coordinator = match trie.eviction_coordinator.lock().expect("eviction_coordinator mutex poisoned").as_ref() {
+                        Some(c) => std::sync::Arc::clone(c),
                         None => break,
                     };
                     coordinator

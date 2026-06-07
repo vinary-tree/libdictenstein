@@ -40,8 +40,12 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     ///   - `Some(n)`: Load n levels eagerly, rest lazy
     ///   - `Some(usize::MAX)`: Fully eager loading (all levels)
 
-    fn preflight_existing_terminal_is_final(&mut self, term: &str) -> Result<Option<bool>> {
-        let root = match &mut self.root {
+    fn preflight_existing_terminal_is_final(&self, term: &str) -> Result<Option<bool>> {
+        // **F4:** `&self` taking the OR write lock — the lock is the exclusivity
+        // anchor that replaces the old `&mut self` for the raw-pointer walk (no NEW
+        // unsafe; the same raw-pointer pattern, now under the OR guard).
+        let mut root_guard = self.root.write();
+        let root = match &mut *root_guard {
             CharTrieRoot::Node(node) => node.as_mut(),
             CharTrieRoot::Empty => return Ok(None),
         };
@@ -49,7 +53,8 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
         let mut current = root as *mut CharTrieNodeInner<V>;
         let mut terminal_is_final = root.is_final();
         for c in term.chars() {
-            // Safety: current is valid and we have exclusive access through &mut self.
+            // Safety: current is valid and we hold exclusive access via the OR write
+            // guard (single owned writer).
             let node = unsafe { &mut *current };
             let Some(ptr) = node.node.find_child(c as u32) else {
                 return Ok(None);
@@ -65,19 +70,19 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
         Ok(Some(terminal_is_final))
     }
 
-    pub(super) fn preflight_insert_no_wal(&mut self, term: &str) -> Result<bool> {
+    pub(super) fn preflight_insert_no_wal(&self, term: &str) -> Result<bool> {
         match self.preflight_existing_terminal_is_final(term)? {
             Some(is_final) => Ok(!is_final),
             None => Ok(true),
         }
     }
 
-    pub(super) fn preflight_insert_with_value_no_wal(&mut self, term: &str) -> Result<()> {
+    pub(super) fn preflight_insert_with_value_no_wal(&self, term: &str) -> Result<()> {
         let _ = self.preflight_existing_terminal_is_final(term)?;
         Ok(())
     }
 
-    pub(super) fn preflight_remove_no_wal(&mut self, term: &str) -> Result<bool> {
+    pub(super) fn preflight_remove_no_wal(&self, term: &str) -> Result<bool> {
         match self.preflight_existing_terminal_is_final(term)? {
             Some(is_final) => Ok(is_final),
             None => Ok(false),
@@ -85,22 +90,27 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     }
 
     /// Insert a term (internal, no WAL logging)
-    pub(super) fn try_insert_impl_no_wal(&mut self, term: &str) -> Result<bool> {
+    ///
+    /// **F4:** `&self` taking the OR write lock once. The guard is held for the
+    /// whole raw-pointer walk (its target owns the nodes the pointers reference);
+    /// the lock provides the single-owned-writer exclusivity that replaces the old
+    /// `&mut self` for the unsafe walk (no NEW unsafe).
+    pub(super) fn try_insert_impl_no_wal(&self, term: &str) -> Result<bool> {
+        let mut root_guard = self.root.write();
         // Ensure we have a root node
-        if matches!(self.root, CharTrieRoot::Empty) {
-            self.root = CharTrieRoot::Node(Box::new(CharTrieNodeInner::new()));
+        if matches!(&*root_guard, CharTrieRoot::Empty) {
+            *root_guard = CharTrieRoot::Node(Box::new(CharTrieNodeInner::new()));
         }
 
-        // Navigate to the insertion point using raw pointer for traversal
-        // This is safe because we maintain exclusive access through &mut self
-        let root = match &mut self.root {
+        // Navigate to the insertion point using raw pointer for traversal.
+        let root = match &mut *root_guard {
             CharTrieRoot::Node(node) => node.as_mut() as *mut CharTrieNodeInner<V>,
             CharTrieRoot::Empty => unreachable!(),
         };
 
         let mut current = root;
         for c in term.chars() {
-            // Safety: current is valid and we have exclusive access through &mut self
+            // Safety: current is valid; exclusivity via the held OR write guard.
             let node = unsafe { &mut *current };
             current = self.get_or_create_child_lazy_ptr(node, c)?;
         }
@@ -122,24 +132,26 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
 
     /// Insert a term with value (internal, no WAL logging)
     pub(super) fn try_insert_impl_no_wal_with_value(
-        &mut self,
+        &self,
         term: &str,
         value: V,
     ) -> Result<bool> {
+        // **F4:** `&self` + OR write guard (see `try_insert_impl_no_wal`).
+        let mut root_guard = self.root.write();
         // Ensure we have a root node
-        if matches!(self.root, CharTrieRoot::Empty) {
-            self.root = CharTrieRoot::Node(Box::new(CharTrieNodeInner::new()));
+        if matches!(&*root_guard, CharTrieRoot::Empty) {
+            *root_guard = CharTrieRoot::Node(Box::new(CharTrieNodeInner::new()));
         }
 
         // Navigate to the insertion point using raw pointer for traversal
-        let root = match &mut self.root {
+        let root = match &mut *root_guard {
             CharTrieRoot::Node(node) => node.as_mut() as *mut CharTrieNodeInner<V>,
             CharTrieRoot::Empty => unreachable!(),
         };
 
         let mut current = root;
         for c in term.chars() {
-            // Safety: current is valid and we have exclusive access through &mut self
+            // Safety: current is valid; exclusivity via the held OR write guard.
             let node = unsafe { &mut *current };
             current = self.get_or_create_child_lazy_ptr(node, c)?;
         }
@@ -165,8 +177,10 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     /// Insert a term with value (internal, no WAL logging)
 
     /// Remove a term (internal, no WAL logging)
-    pub(super) fn try_remove_impl_no_wal(&mut self, term: &str) -> Result<bool> {
-        let root = match &mut self.root {
+    pub(super) fn try_remove_impl_no_wal(&self, term: &str) -> Result<bool> {
+        // **F4:** `&self` + OR write guard (see `try_insert_impl_no_wal`).
+        let mut root_guard = self.root.write();
+        let root = match &mut *root_guard {
             CharTrieRoot::Node(node) => node.as_mut() as *mut CharTrieNodeInner<V>,
             CharTrieRoot::Empty => return Ok(false),
         };
@@ -175,7 +189,7 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
         let chars: Vec<char> = term.chars().collect();
         let mut current = root;
         for &c in &chars {
-            // Safety: current is valid and we have exclusive access through &mut self
+            // Safety: current is valid; exclusivity via the held OR write guard.
             let node = unsafe { &*current };
             match self.get_child_mut_lazy(node, c) {
                 Ok(Some(child)) => current = child as *mut CharTrieNodeInner<V>,
@@ -200,7 +214,7 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
         Ok(true)
     }
 
-    pub(super) fn insert_impl_no_wal(&mut self, term: &str) -> bool {
+    pub(super) fn insert_impl_no_wal(&self, term: &str) -> bool {
         self.try_insert_impl_no_wal(term).unwrap_or_else(|error| {
             warn!(
                 "I/O error during lazy loading in insert replay: {:?}",
@@ -210,7 +224,7 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
         })
     }
 
-    pub(super) fn insert_impl_no_wal_with_value(&mut self, term: &str, value: V) -> bool {
+    pub(super) fn insert_impl_no_wal_with_value(&self, term: &str, value: V) -> bool {
         self.try_insert_impl_no_wal_with_value(term, value)
             .unwrap_or_else(|error| {
                 warn!(
@@ -221,7 +235,7 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
             })
     }
 
-    pub(super) fn remove_impl_no_wal(&mut self, term: &str) -> bool {
+    pub(super) fn remove_impl_no_wal(&self, term: &str) -> bool {
         self.try_remove_impl_no_wal(term).unwrap_or_else(|error| {
             warn!(
                 "I/O error during lazy loading in remove replay: {:?}",

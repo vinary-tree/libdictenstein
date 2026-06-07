@@ -50,14 +50,14 @@ fn e1_membership_reads_correspond_overlay_vs_owned() {
     let overlay_path = dir.path().join("overlay.artc");
 
     // Owned trie: force the proven owned path so its reads are the pre-flip oracle.
-    let mut owned = PersistentARTrieChar::<()>::create(&owned_path).expect("create owned");
+    let owned = PersistentARTrieChar::<()>::create(&owned_path).expect("create owned");
     owned.kill_switch_to_owned();
     for t in MEMBERSHIP_TERMS {
         owned.insert(t).expect("owned insert");
     }
 
     // Overlay trie: the default create-flip routes writes (and now reads) to the overlay.
-    let mut overlay = PersistentARTrieChar::<()>::create(&overlay_path).expect("create overlay");
+    let overlay = PersistentARTrieChar::<()>::create(&overlay_path).expect("create overlay");
     assert!(
         overlay.route_overlay(),
         "an eligible-V (`()`) create must route to the overlay"
@@ -124,13 +124,13 @@ fn e1_counter_reads_correspond_overlay_vs_owned() {
         ("🎉party", 99),
     ];
 
-    let mut owned = PersistentARTrieChar::<u64>::create(&owned_path).expect("create owned");
+    let owned = PersistentARTrieChar::<u64>::create(&owned_path).expect("create owned");
     owned.kill_switch_to_owned();
     for (t, v) in &entries {
         owned.upsert(t, *v).expect("owned upsert");
     }
 
-    let mut overlay = PersistentARTrieChar::<u64>::create(&overlay_path).expect("create overlay");
+    let overlay = PersistentARTrieChar::<u64>::create(&overlay_path).expect("create overlay");
     assert!(overlay.route_overlay(), "u64 create must route to the overlay");
     for (t, v) in &entries {
         overlay.upsert(t, *v).expect("overlay upsert");
@@ -178,7 +178,7 @@ fn e1_deep_key_overlay_reads_no_stack_overflow() {
     let deep: String = "a".repeat(500);
     let deep_unicode: String = "日".repeat(500);
 
-    let mut overlay = PersistentARTrieChar::<u64>::create(&path).expect("create");
+    let overlay = PersistentARTrieChar::<u64>::create(&path).expect("create");
     assert!(overlay.route_overlay());
     overlay.upsert(&deep, 11).expect("deep insert");
     overlay.upsert(&deep_unicode, 22).expect("deep unicode insert");
@@ -219,7 +219,7 @@ fn e1_owned_read_path_after_kill_switch() {
     let dir = scratch("e1-inert");
     let path = dir.path().join("ineligible.artc");
 
-    let mut trie = PersistentARTrieChar::<String>::create(&path).expect("create");
+    let trie = PersistentARTrieChar::<String>::create(&path).expect("create");
     // Arbitrary-V overlay routing is the default, so `String` create-flips; kill-switch
     // it to the owned path so this test exercises the inert owned read path.
     trie.kill_switch_to_owned();

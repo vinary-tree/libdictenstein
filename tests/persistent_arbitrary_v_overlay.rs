@@ -21,6 +21,7 @@
 #![cfg(feature = "persistent-artrie")]
 
 use libdictenstein::persistent_artrie::PersistentARTrie;
+use libdictenstein::persistent_artrie_core::shared_access::SharedTrieAccess;
 use libdictenstein::persistent_artrie_char::{PersistentARTrieChar, SharedCharTrie};
 use libdictenstein::{ARTrie, MappedDictionary, MutableMappedDictionary};
 use std::sync::Arc;
@@ -40,7 +41,7 @@ fn char_arbitrary_v_value_roundtrip_checkpoint_reopen() {
     let dir = scratch("f2-char-ckpt");
     let path = dir.path().join("t.artc");
     {
-        let mut trie = PersistentARTrieChar::<String>::create(&path).expect("create");
+        let trie = PersistentARTrieChar::<String>::create(&path).expect("create");
         assert!(
             trie.route_overlay(),
             "arbitrary-V overlay routing is the default ⇒ a String trie auto-flips to the overlay at create"
@@ -79,7 +80,7 @@ fn char_arbitrary_v_value_survives_wal_replay_reopen_no_checkpoint() {
     let dir = scratch("f2-char-walreplay");
     let path = dir.path().join("t.artc");
     {
-        let mut trie = PersistentARTrieChar::<String>::create(&path).expect("create");
+        let trie = PersistentARTrieChar::<String>::create(&path).expect("create");
         for (k, v) in [("apple", "red"), ("banana", "yellow"), ("cherry", "dark")] {
             assert!(trie.insert_with_value(k, v.to_string()).expect("ins"));
         }
@@ -160,7 +161,7 @@ fn char_arbitrary_v_merge_from_overlay_then_reopen() {
     let opath = dir.path().join("other.artc");
     {
         let mut self_t = PersistentARTrieChar::<String>::create(&path).expect("create self");
-        let mut other = PersistentARTrieChar::<String>::create(&opath).expect("create other");
+        let other = PersistentARTrieChar::<String>::create(&opath).expect("create other");
         assert!(self_t.route_overlay() && other.route_overlay(), "both flipped to overlay");
         self_t.insert_with_value("apple", "A".to_string()).expect("ins");
         self_t.insert_with_value("banana", "B".to_string()).expect("ins");
@@ -193,7 +194,7 @@ fn byte_arbitrary_v_value_roundtrip_checkpoint_reopen() {
     let dir = scratch("f2-byte-ckpt");
     let path = dir.path().join("t.part");
     {
-        let mut trie = PersistentARTrie::<String>::create(&path).expect("create");
+        let trie = PersistentARTrie::<String>::create(&path).expect("create");
         assert!(
             trie.route_overlay(),
             "arbitrary-V overlay routing is the default ⇒ a String byte trie auto-flips to the overlay at create"
@@ -297,7 +298,7 @@ fn byte_arbitrary_v_merge_from_overlay_then_reopen() {
     let opath = dir.path().join("other.part");
     {
         let mut self_t = PersistentARTrie::<String>::create(&path).expect("create self");
-        let mut other = PersistentARTrie::<String>::create(&opath).expect("create other");
+        let other = PersistentARTrie::<String>::create(&opath).expect("create other");
         assert!(self_t.route_overlay() && other.route_overlay(), "both flipped to overlay");
         self_t.insert_with_value("apple", "A".to_string()); // byte returns bool
         self_t.insert_with_value("banana", "B".to_string());

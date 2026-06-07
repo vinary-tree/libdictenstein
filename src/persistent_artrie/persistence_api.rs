@@ -40,7 +40,7 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
 
     /// Mark the dictionary as clean (after flushing to disk).
     #[inline]
-    pub fn mark_clean(&mut self) {
+    pub fn mark_clean(&self) {
         self.dirty.store(false, AtomicOrdering::Release);
     }
 
@@ -51,7 +51,7 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
     /// Honors [`DurabilityPolicy`] for flush behavior.
     pub fn sync(&self) -> Result<()> {
         if let Some(ref wal_writer) = self.wal_writer {
-            match self.durability_policy {
+            match self.durability_policy.load() {
                 DurabilityPolicy::Immediate | DurabilityPolicy::GroupCommit => {
                     wal_writer.sync().map_err(|e| {
                         PersistentARTrieError::io_error(
@@ -124,12 +124,15 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
 
     /// Get the current durability policy.
     pub fn durability_policy(&self) -> DurabilityPolicy {
-        self.durability_policy
+        self.durability_policy.load()
     }
 
     /// Set the durability policy for this trie.
-    pub fn set_durability_policy(&mut self, policy: DurabilityPolicy) {
-        self.durability_policy = policy;
+    ///
+    /// **F4:** `&self` — the field is an `AtomicEnumCell`. Configured pre-share in
+    /// practice, but `&self` is harmless and keeps the collapse compiling.
+    pub fn set_durability_policy(&self, policy: DurabilityPolicy) {
+        self.durability_policy.store(policy);
     }
 
     pub(super) fn append_mutation_wal_record(
@@ -220,7 +223,7 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
             return Ok(());
         }
 
-        match self.durability_policy {
+        match self.durability_policy.load() {
             DurabilityPolicy::Immediate | DurabilityPolicy::GroupCommit => {
                 let Some(ref wal_writer) = self.wal_writer else {
                     return Ok(());
@@ -287,7 +290,10 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
     /// runs — byte-for-byte the prior `persist_to_disk` + WAL-truncate body (plus the
     /// `&mut`-only dirty-tracking clear below, which the prior `persist_to_disk`
     /// performed inline and which the `&self` owned-arm seam cannot).
-    pub fn checkpoint(&mut self) -> Result<()> {
+    pub fn checkpoint(&self) -> Result<()> {
+        // **F4:** `&self`. Concurrent checkpoints are serialized by the `Shared*`
+        // trait `checkpoint()` (the CK `checkpoint_lock`); the owned arm takes OR-read
+        // for capture inside `checkpoint_route_split` → `capture_owned_snapshot`.
         let routed_overlay = self.route_overlay();
         <Self as crate::persistent_artrie_core::overlay::checkpoint::OverlayCheckpoint<
             crate::persistent_artrie_core::key_encoding::ByteKey,

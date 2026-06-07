@@ -53,6 +53,11 @@ pub mod mvcc;
 pub mod overlay;
 pub mod prefetch;
 pub mod recovery;
+/// F4 lock-collapse compat shim (`SharedTrieAccess` `.read()/.write()` on `Arc<T>`)
+/// + the `AtomicEnumCell` used to wrap the `Copy`-enum Tier-2 fields. Dependency-
+/// free, so unconditional (the `DurabilityPolicy` `U8Enum` impl lives in the
+/// always-compiled `durability` module).
+pub mod shared_access;
 pub mod swizzled_ptr;
 pub mod traversal_context;
 pub mod version_checkpoint;

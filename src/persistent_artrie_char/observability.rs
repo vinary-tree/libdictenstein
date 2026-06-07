@@ -29,7 +29,7 @@ use crate::value::DictionaryValue;
 
 impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     /// Sync changes to disk
-    pub fn sync(&mut self) -> Result<()> {
+    pub fn sync(&self) -> Result<()> {
         if let Some(ref wal_writer) = self.wal_writer {
             wal_writer
                 .sync()
@@ -120,9 +120,17 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     /// // Or use a throughput-optimized config
     /// trie.enable_group_commit(GroupCommitConfig::high_throughput())?;
     /// ```
+    ///
+    /// **F4:** `&self` (subsystem family). The coordinator builds OUTSIDE the field
+    /// lock; install under a brief lock. Already-enabled ⇒ error (no old to join).
     #[cfg(feature = "group-commit")]
-    pub fn enable_group_commit(&mut self, config: GroupCommitConfig) -> Result<()> {
-        if self.group_commit.is_some() {
+    pub fn enable_group_commit(&self, config: GroupCommitConfig) -> Result<()> {
+        if self
+            .group_commit
+            .lock()
+            .expect("group_commit mutex poisoned")
+            .is_some()
+        {
             return Err(PersistentARTrieError::InvalidOperation(
                 "Group commit is already enabled".to_string(),
             ));
@@ -134,9 +142,17 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
             )
         })?;
 
-        let coordinator = GroupCommitCoordinator::new(Arc::clone(wal_writer), config)?;
-        self.group_commit = Some(Arc::new(coordinator));
-
+        let coordinator = Arc::new(GroupCommitCoordinator::new(Arc::clone(wal_writer), config)?);
+        let mut slot = self
+            .group_commit
+            .lock()
+            .expect("group_commit mutex poisoned");
+        if slot.is_some() {
+            return Err(PersistentARTrieError::InvalidOperation(
+                "Group commit is already enabled".to_string(),
+            ));
+        }
+        *slot = Some(coordinator);
         Ok(())
     }
 
@@ -144,21 +160,30 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     ///
     /// This flushes any pending writes and shuts down the group commit coordinator.
     /// After this call, all WAL writes will be performed directly.
+    ///
+    /// **F4 drop-before-join (V11.3 site 5):** take the coordinator into a
+    /// statement-temporary so the field-mutex guard DROPS before the old `Arc` is
+    /// dropped (its `Drop` flushes + joins the coordinator thread — joining under
+    /// the held field mutex could deadlock if the coordinator re-enters).
     #[cfg(feature = "group-commit")]
-    pub fn disable_group_commit(&mut self) -> Result<()> {
-        if self.group_commit.is_none() {
-            return Ok(()); // Already disabled
-        }
-
-        // The coordinator will flush pending writes when dropped
-        self.group_commit = None;
+    pub fn disable_group_commit(&self) -> Result<()> {
+        let old = self
+            .group_commit
+            .lock()
+            .expect("group_commit mutex poisoned")
+            .take();
+        // Field-mutex guard dropped here; THEN drop the old Arc (flush + join).
+        drop(old);
         Ok(())
     }
 
     /// Check if group commit is enabled.
     #[cfg(feature = "group-commit")]
     pub fn is_group_commit_enabled(&self) -> bool {
-        self.group_commit.is_some()
+        self.group_commit
+            .lock()
+            .expect("group_commit mutex poisoned")
+            .is_some()
     }
 
     /// Get group commit statistics.
@@ -168,7 +193,11 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     pub fn group_commit_stats(
         &self,
     ) -> Option<crate::persistent_artrie::group_commit::GroupCommitStats> {
-        self.group_commit.as_ref().map(|gc| gc.stats())
+        self.group_commit
+            .lock()
+            .expect("group_commit mutex poisoned")
+            .as_ref()
+            .map(|gc| gc.stats())
     }
 
     // ==================== Performance Infrastructure Methods ====================
@@ -196,16 +225,31 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     ///     }
     /// )?;
     /// ```
+    ///
+    /// **F4:** `&self` (subsystem family). The monitor STARTS (spawns its thread)
+    /// outside the field lock; the take-old-then-drop-guard-then-drop-old re-arm
+    /// (V11.3 site 9) ensures a re-enable joins the OLD monitor thread WITHOUT
+    /// holding the field mutex (its callback can re-enter the trie → force_eviction
+    /// → OR/EC, so joining under the field mutex would deadlock).
     pub fn enable_memory_monitor<F>(
-        &mut self,
+        &self,
         config: MemoryPressureConfig,
         callback: F,
     ) -> Result<()>
     where
         F: Fn(MemoryPressureLevel, &MemoryStats) + Send + Sync + 'static,
     {
-        let monitor = MemoryPressureMonitor::start(config, callback)?;
-        self.memory_monitor = Some(Arc::new(monitor));
+        let monitor = Arc::new(MemoryPressureMonitor::start(config, callback)?);
+        let old = {
+            let mut slot = self
+                .memory_monitor
+                .lock()
+                .expect("memory_monitor mutex poisoned");
+            slot.replace(monitor)
+        };
+        // Field-mutex guard dropped; THEN drop the old monitor (joins its thread —
+        // safe: not under the field mutex, so a re-entrant callback can't deadlock).
+        drop(old);
         Ok(())
     }
 
@@ -213,30 +257,51 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     ///
     /// Use this when you only want to query memory stats periodically
     /// without receiving pressure change notifications.
-    pub fn enable_memory_monitor_default(&mut self) -> Result<()> {
+    pub fn enable_memory_monitor_default(&self) -> Result<()> {
         self.enable_memory_monitor(MemoryPressureConfig::default(), |_level, _stats| {})
     }
 
     /// Disables memory pressure monitoring.
     ///
     /// The monitor thread is stopped when the Arc is dropped.
-    pub fn disable_memory_monitor(&mut self) {
-        self.memory_monitor = None;
+    ///
+    /// **F4 drop-before-join (V11.3 GAP 2):** take the monitor into a
+    /// statement-temporary so the field-mutex guard DROPS before the old `Arc`'s
+    /// `Drop` joins the monitor thread — its callback can re-enter the trie, so a
+    /// join under the field mutex would deadlock.
+    pub fn disable_memory_monitor(&self) {
+        let old = self
+            .memory_monitor
+            .lock()
+            .expect("memory_monitor mutex poisoned")
+            .take();
+        drop(old);
     }
 
     /// Returns whether memory monitoring is enabled.
     pub fn has_memory_monitor(&self) -> bool {
-        self.memory_monitor.is_some()
+        self.memory_monitor
+            .lock()
+            .expect("memory_monitor mutex poisoned")
+            .is_some()
     }
 
     /// Returns current memory statistics if monitoring is enabled.
     pub fn memory_stats(&self) -> Option<MemoryStats> {
-        self.memory_monitor.as_ref().map(|m| m.current_stats())
+        self.memory_monitor
+            .lock()
+            .expect("memory_monitor mutex poisoned")
+            .as_ref()
+            .map(|m| m.current_stats())
     }
 
     /// Returns current memory pressure level if monitoring is enabled.
     pub fn memory_pressure_level(&self) -> Option<MemoryPressureLevel> {
-        self.memory_monitor.as_ref().map(|m| m.current_level())
+        self.memory_monitor
+            .lock()
+            .expect("memory_monitor mutex poisoned")
+            .as_ref()
+            .map(|m| m.current_level())
     }
 
     // -------------------- Cache Statistics --------------------

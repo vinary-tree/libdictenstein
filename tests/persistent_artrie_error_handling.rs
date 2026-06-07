@@ -33,7 +33,7 @@ fn test_corrupted_wal_truncated() {
 
     // Create dictionary and insert some data
     {
-        let mut dict: PersistentARTrie<()> =
+        let dict: PersistentARTrie<()> =
             PersistentARTrie::create(&dict_path).expect("create dict");
         for i in 0..10 {
             let _ = dict.insert(&format!("term{:03}", i));
@@ -90,7 +90,7 @@ fn test_corrupted_wal_garbage_bytes() {
 
     // Create dictionary
     {
-        let mut dict: PersistentARTrie<()> =
+        let dict: PersistentARTrie<()> =
             PersistentARTrie::create(&dict_path).expect("create dict");
         for i in 0..5 {
             let _ = dict.insert(&format!("term{:03}", i));
@@ -142,7 +142,7 @@ fn test_corrupted_wal_header() {
 
     // Create dictionary
     {
-        let mut dict: PersistentARTrie<()> =
+        let dict: PersistentARTrie<()> =
             PersistentARTrie::create(&dict_path).expect("create dict");
         let _ = dict.insert("test");
         dict.sync().expect("sync");
@@ -188,7 +188,7 @@ fn test_corrupted_wal_checksum() {
 
     // Create dictionary with checkpoint
     {
-        let mut dict: PersistentARTrie<()> =
+        let dict: PersistentARTrie<()> =
             PersistentARTrie::create(&dict_path).expect("create dict");
         for i in 0..10 {
             let _ = dict.insert(&format!("term{:03}", i));
@@ -377,7 +377,7 @@ fn test_zero_filled_wal() {
 
     // Create dictionary
     {
-        let mut dict: PersistentARTrie<()> =
+        let dict: PersistentARTrie<()> =
             PersistentARTrie::create(&dict_path).expect("create dict");
         let _ = dict.insert("test");
         dict.sync().expect("sync");
@@ -421,7 +421,7 @@ fn test_recovery_with_only_removes() {
 
     // Create dictionary, insert, remove, and checkpoint
     {
-        let mut dict: PersistentARTrie<()> =
+        let dict: PersistentARTrie<()> =
             PersistentARTrie::create(&dict_path).expect("create dict");
 
         for i in 0..5 {
@@ -448,7 +448,7 @@ fn test_recovery_interleaved_insert_remove() {
 
     // Create with interleaved operations
     {
-        let mut dict: PersistentARTrie<()> =
+        let dict: PersistentARTrie<()> =
             PersistentARTrie::create(&dict_path).expect("create dict");
 
         let _ = dict.insert("keep1");
@@ -479,7 +479,7 @@ fn test_recovery_duplicate_inserts() {
 
     // Insert same term multiple times
     {
-        let mut dict: PersistentARTrie<()> =
+        let dict: PersistentARTrie<()> =
             PersistentARTrie::create(&dict_path).expect("create dict");
 
         // First insert succeeds
@@ -504,7 +504,7 @@ fn test_recovery_remove_nonexistent() {
     let dict_path = temp_dir.path().join("remove_nonexistent.part");
 
     {
-        let mut dict: PersistentARTrie<()> =
+        let dict: PersistentARTrie<()> =
             PersistentARTrie::create(&dict_path).expect("create dict");
 
         let _ = dict.insert("exists");
@@ -531,7 +531,7 @@ fn test_checkpoint_empty_dictionary() {
     let dict_path = temp_dir.path().join("empty_checkpoint.part");
 
     {
-        let mut dict: PersistentARTrie<()> =
+        let dict: PersistentARTrie<()> =
             PersistentARTrie::create(&dict_path).expect("create dict");
 
         // Checkpoint empty dictionary
@@ -550,7 +550,7 @@ fn test_multiple_checkpoints_empty() {
     let dict_path = temp_dir.path().join("multi_empty_checkpoint.part");
 
     {
-        let mut dict: PersistentARTrie<()> =
+        let dict: PersistentARTrie<()> =
             PersistentARTrie::create(&dict_path).expect("create dict");
 
         // Multiple checkpoints on empty dictionary
@@ -571,7 +571,7 @@ fn test_checkpoint_after_all_removed() {
     let dict_path = temp_dir.path().join("all_removed_checkpoint.part");
 
     {
-        let mut dict: PersistentARTrie<()> =
+        let dict: PersistentARTrie<()> =
             PersistentARTrie::create(&dict_path).expect("create dict");
 
         // Insert and remove all
@@ -618,7 +618,7 @@ fn test_moderately_large_term() {
     let temp_dir = TempDir::new().expect("create temp dir");
     let dict_path = temp_dir.path().join("large_term.part");
 
-    let mut dict: PersistentARTrie<()> = PersistentARTrie::create(&dict_path).expect("create dict");
+    let dict: PersistentARTrie<()> = PersistentARTrie::create(&dict_path).expect("create dict");
 
     // Try to insert a moderately large term (1KB - safe for stack)
     // Note: Very large terms (64KB+) can cause stack overflow due to
@@ -652,7 +652,7 @@ fn test_checkpoint_no_changes() {
     let temp_dir = TempDir::new().expect("create temp dir");
     let dict_path = temp_dir.path().join("checkpoint_no_changes.part");
 
-    let mut dict: PersistentARTrie<()> = PersistentARTrie::create(&dict_path).expect("create dict");
+    let dict: PersistentARTrie<()> = PersistentARTrie::create(&dict_path).expect("create dict");
 
     // Insert, checkpoint, then checkpoint again without changes
     let _ = dict.insert("term");

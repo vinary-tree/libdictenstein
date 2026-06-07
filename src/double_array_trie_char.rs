@@ -1120,7 +1120,7 @@ mod persistent_artrie_conversion_tests {
 
     #[test]
     fn test_from_persistent_artrie_basic() {
-        let mut pat: PersistentARTrieChar<i32> = PersistentARTrieChar::new();
+        let pat: PersistentARTrieChar<i32> = PersistentARTrieChar::new();
         pat.insert_with_value("apple", 1);
         pat.insert_with_value("banana", 2);
         pat.insert_with_value("cherry", 3);
@@ -1136,7 +1136,7 @@ mod persistent_artrie_conversion_tests {
 
     #[test]
     fn test_from_persistent_artrie_unicode() {
-        let mut pat: PersistentARTrieChar<i32> = PersistentARTrieChar::new();
+        let pat: PersistentARTrieChar<i32> = PersistentARTrieChar::new();
         pat.insert_with_value("café", 10);
         pat.insert_with_value("日本語", 20);
         pat.insert_with_value("🎉", 30);
@@ -1151,7 +1151,7 @@ mod persistent_artrie_conversion_tests {
 
     #[test]
     fn test_from_persistent_artrie_by_value() {
-        let mut pat: PersistentARTrieChar<i32> = PersistentARTrieChar::new();
+        let pat: PersistentARTrieChar<i32> = PersistentARTrieChar::new();
         pat.insert_with_value("test", 42);
 
         // Test conversion by value (not reference)
@@ -1164,7 +1164,7 @@ mod persistent_artrie_conversion_tests {
     #[test]
     fn test_from_persistent_artrie_roundtrip_values() {
         // Verify all values survive the conversion
-        let mut pat: PersistentARTrieChar<String> = PersistentARTrieChar::new();
+        let pat: PersistentARTrieChar<String> = PersistentARTrieChar::new();
         let terms = vec![
             ("alpha", "A"),
             ("beta", "B"),
@@ -1187,7 +1187,7 @@ mod persistent_artrie_conversion_tests {
     #[test]
     fn test_from_persistent_artrie_iteration_order() {
         // Verify the DAT can be iterated and contains all original terms
-        let mut pat: PersistentARTrieChar<i32> = PersistentARTrieChar::new();
+        let pat: PersistentARTrieChar<i32> = PersistentARTrieChar::new();
         pat.insert_with_value("cat", 1);
         pat.insert_with_value("car", 2);
         pat.insert_with_value("cart", 3);

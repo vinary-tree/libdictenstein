@@ -29,6 +29,8 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use libdictenstein::persistent_artrie_char::SharedCharARTrie;
+// F4: the `.read()/.write()` compat shim on the collapsed handle.
+use libdictenstein::persistent_artrie_core::shared_access::SharedTrieAccess;
 use libdictenstein::{ARTrie, Dictionary};
 
 const KEY_COUNT: usize = 5_000;

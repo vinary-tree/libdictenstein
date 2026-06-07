@@ -52,6 +52,24 @@ impl OverlayWriteMode {
     }
 }
 
+impl crate::persistent_artrie_core::shared_access::U8Enum for OverlayWriteMode {
+    #[inline]
+    fn as_u8(self) -> u8 {
+        match self {
+            OverlayWriteMode::OwnedTree => 0,
+            OverlayWriteMode::LockFreeOverlay => 1,
+        }
+    }
+
+    #[inline]
+    fn from_u8(v: u8) -> Self {
+        match v {
+            1 => OverlayWriteMode::LockFreeOverlay,
+            _ => OverlayWriteMode::OwnedTree,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::OverlayWriteMode;

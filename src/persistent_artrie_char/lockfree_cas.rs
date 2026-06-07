@@ -2039,7 +2039,7 @@ impl<S: BlockStorage> super::PersistentARTrieChar<u64, S> {
         // (the lock-free domain is bounded by `LOCKFREE_COUNTER_MAX = i64::MAX`).
         // `get` yields `Option<&u64>`, so dereference before the conversion.
         match self.get(term) {
-            Some(&value) => i64::try_from(value).map_err(|_| {
+            Some(value) => i64::try_from(value).map_err(|_| {
                 PersistentARTrieError::InvalidOperation(format!(
                     "persistent counter value for term {:?} exceeds i64 merge domain: {}",
                     term, value

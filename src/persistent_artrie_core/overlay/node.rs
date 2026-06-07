@@ -1874,7 +1874,7 @@ mod tests {
 
     /// Deep-child retention: a node "cat" cleared via `as_non_final` must keep its
     /// "cats" descendant final and reachable (the prefix-of-a-longer-term case).
-    fn check_as_non_final_deep_child<K: KeyEncoding>(nt: NodeType)
+    fn check_as_non_final_deep_child<K: KeyEncoding>(_nt: NodeType)
     where
         K::Unit: TryFrom<u32>,
         <K::Unit as TryFrom<u32>>::Error: std::fmt::Debug,

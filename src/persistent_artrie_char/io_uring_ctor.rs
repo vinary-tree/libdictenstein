@@ -81,7 +81,7 @@ impl<V: DictionaryValue>
 
         // S5-12 EDIT 1: flip a fresh eligible-V trie to the overlay (no-op for arbitrary V).
         Self::apply_create_flip(Self {
-            root: CharTrieRoot::Empty,
+            root: parking_lot::RwLock::new(CharTrieRoot::Empty),
             len: AtomicUsize::new(0),
             dirty: AtomicBool::new(false),
             buffer_manager: Some(buffer_manager),
@@ -90,7 +90,8 @@ impl<V: DictionaryValue>
             next_lsn: std::sync::atomic::AtomicU64::new(1),
             committed_watermark: super::committed_watermark::CommittedWatermark::new(0),
             checkpoint_lock: std::sync::Arc::new(parking_lot::Mutex::new(())),
-            overlay_write_mode: super::overlay_write_mode::OverlayWriteMode::default(),
+            merge_lock: std::sync::Arc::new(parking_lot::Mutex::new(())),
+            overlay_write_mode: crate::persistent_artrie_core::shared_access::AtomicEnumCell::new(super::overlay_write_mode::OverlayWriteMode::default()),
             file_path: Some(path.to_path_buf()),
             arena_manager: Some(arena_manager),
             version: OptimisticVersion::new(),
@@ -99,12 +100,12 @@ impl<V: DictionaryValue>
             structural_generation: std::sync::atomic::AtomicU64::new(0),
             retry_stats: RetryStats::new(),
             #[cfg(feature = "group-commit")]
-            group_commit: None,
-            memory_monitor: None,
+            group_commit: std::sync::Mutex::new(None),
+            memory_monitor: std::sync::Mutex::new(None),
             cache_stats: CacheStats::default(),
-            checkpoint_manager: None,
-            durability_policy: DurabilityPolicy::default(),
-            eviction_coordinator: None,
+            checkpoint_manager: std::sync::Mutex::new(None),
+            durability_policy: crate::persistent_artrie_core::shared_access::AtomicEnumCell::new(DurabilityPolicy::default()),
+            eviction_coordinator: std::sync::Mutex::new(None),
             prefetcher: crate::persistent_artrie::prefetch::Prefetcher::new(),
             _phantom: std::marker::PhantomData,
             lockfree_root: None,
@@ -197,7 +198,7 @@ impl<V: DictionaryValue>
         let arena_manager = Arc::new(RwLock::new(arena_manager));
 
         let mut inner = Self {
-            root: CharTrieRoot::Empty,
+            root: parking_lot::RwLock::new(CharTrieRoot::Empty),
             len: AtomicUsize::new(0),
             dirty: AtomicBool::new(false),
             buffer_manager: Some(buffer_manager.clone()),
@@ -208,7 +209,8 @@ impl<V: DictionaryValue>
                 next_lsn.saturating_sub(1),
             ),
             checkpoint_lock: std::sync::Arc::new(parking_lot::Mutex::new(())),
-            overlay_write_mode: super::overlay_write_mode::OverlayWriteMode::default(),
+            merge_lock: std::sync::Arc::new(parking_lot::Mutex::new(())),
+            overlay_write_mode: crate::persistent_artrie_core::shared_access::AtomicEnumCell::new(super::overlay_write_mode::OverlayWriteMode::default()),
             file_path: Some(path.to_path_buf()),
             arena_manager: Some(arena_manager),
             version: OptimisticVersion::new(),
@@ -217,12 +219,12 @@ impl<V: DictionaryValue>
             structural_generation: std::sync::atomic::AtomicU64::new(0),
             retry_stats: RetryStats::new(),
             #[cfg(feature = "group-commit")]
-            group_commit: None,
-            memory_monitor: None,
+            group_commit: std::sync::Mutex::new(None),
+            memory_monitor: std::sync::Mutex::new(None),
             cache_stats: CacheStats::default(),
-            checkpoint_manager: None,
-            durability_policy: DurabilityPolicy::default(),
-            eviction_coordinator: None,
+            checkpoint_manager: std::sync::Mutex::new(None),
+            durability_policy: crate::persistent_artrie_core::shared_access::AtomicEnumCell::new(DurabilityPolicy::default()),
+            eviction_coordinator: std::sync::Mutex::new(None),
             prefetcher: crate::persistent_artrie::prefetch::Prefetcher::new(),
             _phantom: std::marker::PhantomData,
             lockfree_root: None,
@@ -243,7 +245,7 @@ impl<V: DictionaryValue>
             let root_swizzled = SwizzledPtr::from_raw(root_ptr);
             match inner.load_root_from_disk(&buffer_manager, &root_swizzled, None) {
                 Ok((root, len)) => {
-                    inner.root = root;
+                    *inner.root.get_mut() = root;
                     inner.len.store(len, AtomicOrdering::Release);
                     loaded_from_disk = true;
                 }

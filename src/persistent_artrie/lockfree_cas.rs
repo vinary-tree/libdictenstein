@@ -2108,7 +2108,7 @@ mod m2d_regime_aware_recovery_tests {
         let path = dir.path().join("t.part");
         let terms: [&str; 6] = ["apple", "apricot", "banana", "band", "bandana", "cherry"];
         {
-            let mut trie = PersistentARTrie::<()>::create(&path).expect("create");
+            let trie = PersistentARTrie::<()>::create(&path).expect("create");
             trie.set_durability_policy(DurabilityPolicy::Immediate);
             // NO enable_lockfree / NO set_overlay_write_mode ⇒ the WAL header regime
             // stays Owned (rank-less).
@@ -2139,7 +2139,7 @@ mod m2d_regime_aware_recovery_tests {
         let dir = scratch("byte-m2d-test-d");
         let path = dir.path().join("t.part");
         {
-            let mut trie = PersistentARTrie::<()>::create(&path).expect("create");
+            let trie = PersistentARTrie::<()>::create(&path).expect("create");
             trie.set_durability_policy(DurabilityPolicy::Immediate);
             trie.insert("a"); // a: inserted…
             trie.insert("gone"); // gone: inserted…
@@ -2235,7 +2235,7 @@ mod m4b_flip_gate_tests {
             let entries: Vec<(Vec<u8>, i64)> =
                 (0..40i64).map(|i| (format!("k{i:03}").into_bytes(), i + 1)).collect();
             {
-                let mut trie = PersistentARTrie::<i64>::create(&path).expect("create<i64>");
+                let trie = PersistentARTrie::<i64>::create(&path).expect("create<i64>");
                 trie.set_durability_policy(DurabilityPolicy::Immediate);
                 assert!(trie.route_overlay(), "fresh create<i64> is overlay-routed");
                 for (k, d) in &entries {
@@ -2268,7 +2268,7 @@ mod m4b_flip_gate_tests {
             let terms: Vec<Vec<u8>> =
                 (0..40u32).map(|i| format!("term{i:03}").into_bytes()).collect();
             {
-                let mut trie = PersistentARTrie::<()>::create(&path).expect("create<()>");
+                let trie = PersistentARTrie::<()>::create(&path).expect("create<()>");
                 trie.set_durability_policy(DurabilityPolicy::Immediate);
                 assert!(trie.route_overlay(), "fresh create<()> is overlay-routed");
                 for t in &terms {
@@ -2311,7 +2311,7 @@ mod m4b_flip_gate_tests {
                 .map(|i| (format!("w{i:03}"), format!("v{i:03}")))
                 .collect();
             {
-                let mut trie = PersistentARTrie::<String>::create(&path).expect("create<String>");
+                let trie = PersistentARTrie::<String>::create(&path).expect("create<String>");
                 trie.kill_switch_to_owned();
                 assert!(!trie.route_overlay(), "String trie is on the owned path");
                 for (k, v) in &entries {
@@ -2337,7 +2337,7 @@ mod m4b_flip_gate_tests {
             let dir = scratch("byte-m4b-owned-i64-ks");
             let path = dir.path().join("t.part");
             {
-                let mut trie = PersistentARTrie::<i64>::create(&path).expect("create<i64>");
+                let trie = PersistentARTrie::<i64>::create(&path).expect("create<i64>");
                 // kill-switch restamps the fresh WAL Owned ⇒ reopen stays Owned.
                 trie.kill_switch_to_owned();
                 assert!(!trie.route_overlay(), "kill-switch reverts to owned");
@@ -2413,7 +2413,7 @@ mod m4b_flip_gate_tests {
         // 5-hex-digit suffix so every key is distinct and shares the `a` first byte.
         const N: u32 = 100_001;
         {
-            let mut trie = PersistentARTrie::<()>::create(&path).expect("create<()>");
+            let trie = PersistentARTrie::<()>::create(&path).expect("create<()>");
             trie.set_durability_policy(DurabilityPolicy::Immediate);
             assert!(trie.route_overlay(), "fresh create<()> is overlay-routed");
             // Batch the durable inserts through the overlay membership path. Insert via
@@ -2464,7 +2464,7 @@ mod m4b_flip_gate_tests {
         let entries: Vec<(Vec<u8>, i64)> =
             (0..500i64).map(|i| (format!("c{i:04}").into_bytes(), (i % 97) + 1)).collect();
         {
-            let mut trie = PersistentARTrie::<i64>::create(&path).expect("create<i64>");
+            let trie = PersistentARTrie::<i64>::create(&path).expect("create<i64>");
             trie.set_durability_policy(DurabilityPolicy::Immediate);
             assert!(trie.route_overlay());
             for (k, d) in &entries {
@@ -2503,7 +2503,7 @@ mod m4b_flip_gate_tests {
         let dir = scratch("byte-es-valued-ckpt");
         let path = dir.path().join("t.part");
         {
-            let mut trie = PersistentARTrie::<i64>::create(&path).expect("create<i64>");
+            let trie = PersistentARTrie::<i64>::create(&path).expect("create<i64>");
             trie.set_durability_policy(DurabilityPolicy::Immediate);
             assert!(trie.route_overlay());
             assert!(
@@ -2534,7 +2534,7 @@ mod m4b_flip_gate_tests {
         let dir = scratch("byte-es-valued-wal");
         let path = dir.path().join("t.part");
         {
-            let mut trie = PersistentARTrie::<i64>::create(&path).expect("create<i64>");
+            let trie = PersistentARTrie::<i64>::create(&path).expect("create<i64>");
             trie.set_durability_policy(DurabilityPolicy::Immediate);
             trie.insert_cas_with_value_durable(b"", 7).expect("valued insert \"\"");
             // NO checkpoint — durability rests on WAL replay.
@@ -2555,7 +2555,7 @@ mod m4b_flip_gate_tests {
         let dir = scratch("byte-es-membership");
         let path = dir.path().join("t.part");
         {
-            let mut trie = PersistentARTrie::<()>::create(&path).expect("create<()>");
+            let trie = PersistentARTrie::<()>::create(&path).expect("create<()>");
             trie.set_durability_policy(DurabilityPolicy::Immediate);
             assert!(trie.insert_cas_durable(b"").expect("membership insert \"\""));
             trie.insert_cas_durable(b"x").expect("x");
@@ -2578,7 +2578,7 @@ mod m4b_flip_gate_tests {
         let dir = scratch("byte-es-increment");
         let path = dir.path().join("t.part");
         {
-            let mut trie = PersistentARTrie::<i64>::create(&path).expect("create<i64>");
+            let trie = PersistentARTrie::<i64>::create(&path).expect("create<i64>");
             trie.set_durability_policy(DurabilityPolicy::Immediate);
             let mut last = 0;
             for _ in 0..5 {
@@ -2602,7 +2602,7 @@ mod m4b_flip_gate_tests {
         let dir = scratch("byte-es-remove");
         let path = dir.path().join("t.part");
         {
-            let mut trie = PersistentARTrie::<()>::create(&path).expect("create<()>");
+            let trie = PersistentARTrie::<()>::create(&path).expect("create<()>");
             trie.set_durability_policy(DurabilityPolicy::Immediate);
             assert!(trie.insert_cas_durable(b"").expect("insert \"\""));
             assert!(trie.contains_bytes(b""), "\"\" present after insert");
@@ -2626,7 +2626,7 @@ mod m4b_flip_gate_tests {
         let dir = scratch("byte-es-owned");
         let path = dir.path().join("t.part");
         {
-            let mut trie = PersistentARTrie::<i64>::create(&path).expect("create<i64>");
+            let trie = PersistentARTrie::<i64>::create(&path).expect("create<i64>");
             trie.kill_switch_to_owned();
             assert!(!trie.route_overlay(), "kill-switched → owned");
             trie.upsert_bytes(b"", 88).expect("owned valued upsert \"\"");
@@ -2651,7 +2651,7 @@ mod m4b_flip_gate_tests {
         let dir = scratch("byte-es-backcompat");
         let path = dir.path().join("t.part");
         {
-            let mut trie = PersistentARTrie::<i64>::create(&path).expect("create<i64>");
+            let trie = PersistentARTrie::<i64>::create(&path).expect("create<i64>");
             trie.set_durability_policy(DurabilityPolicy::Immediate);
             trie.insert_cas_with_value_durable(b"alpha", 1).expect("alpha");
             trie.insert_cas_with_value_durable(b"beta", 2).expect("beta");
@@ -2675,7 +2675,7 @@ mod m4b_flip_gate_tests {
         let threads = 4;
         let per_thread = 25;
         {
-            let mut trie = PersistentARTrie::<i64>::create(&path).expect("create<i64>");
+            let trie = PersistentARTrie::<i64>::create(&path).expect("create<i64>");
             trie.set_durability_policy(DurabilityPolicy::Immediate);
             let trie = Arc::new(trie);
             let mut handles = Vec::with_capacity(threads);
@@ -2696,7 +2696,7 @@ mod m4b_flip_gate_tests {
                 "concurrent \"\" increments lost an update (fresh-root-CAS RMW must not)"
             );
             // All thread clones dropped on join → sole owner; unwrap for &mut checkpoint.
-            let mut trie = Arc::try_unwrap(trie).ok().expect("sole Arc owner after joins");
+            let trie = Arc::try_unwrap(trie).ok().expect("sole Arc owner after joins");
             trie.checkpoint().expect("overlay checkpoint");
         }
         let recovered = PersistentARTrie::<i64>::open(&path).expect("reopen<i64>");
@@ -2738,7 +2738,7 @@ mod m4b_flip_gate_tests {
         use crate::persistent_artrie_core::overlay::flip::LockFreeOverlay;
         let dir = scratch("byte-es-split");
         let path = dir.path().join("t.part");
-        let mut trie = PersistentARTrie::<i64>::create(&path).expect("create<i64>");
+        let trie = PersistentARTrie::<i64>::create(&path).expect("create<i64>");
         trie.kill_switch_to_owned();
         trie.upsert_bytes(b"", 99).expect("owned valued \"\"");
         // Enough distinct terms to overflow the root bucket → ART split.

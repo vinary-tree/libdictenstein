@@ -13,7 +13,8 @@ use crate::artrie_trait::{ARTrie, EvictableARTrie};
 use crate::persistent_artrie_core::concurrency::EpochManager;
 use crate::persistent_artrie_core::durability::DurabilityPolicy;
 use crate::persistent_artrie_core::eviction::{EvictionConfig, EvictionCoordinator, EvictionStats};
-use crate::sync_compat::RwLock;
+// F4: the `.read()/.write()` compat shim on the collapsed `Arc<PersistentARTrie>`.
+use crate::persistent_artrie_core::shared_access::SharedTrieAccess;
 use crate::value::DictionaryValue;
 
 use super::block_storage::BlockStorage;
@@ -29,23 +30,23 @@ impl<V: DictionaryValue> ARTrie for SharedARTrie<V> {
     type Value = V;
 
     fn create<P: AsRef<Path>>(path: P) -> Result<Self> {
-        PersistentARTrie::create(path).map(|t| Arc::new(RwLock::new(t)))
+        PersistentARTrie::create(path).map(Arc::new)
     }
 
     fn create_with_slot_tracking<P: AsRef<Path>>(path: P) -> Result<Self> {
-        PersistentARTrie::create_with_slot_tracking(path).map(|t| Arc::new(RwLock::new(t)))
+        PersistentARTrie::create_with_slot_tracking(path).map(Arc::new)
     }
 
     fn open<P: AsRef<Path>>(path: P) -> Result<Self> {
-        PersistentARTrie::open(path).map(|t| Arc::new(RwLock::new(t)))
+        PersistentARTrie::open(path).map(Arc::new)
     }
 
     fn open_with_slot_tracking<P: AsRef<Path>>(path: P) -> Result<Self> {
-        PersistentARTrie::open_with_slot_tracking(path).map(|t| Arc::new(RwLock::new(t)))
+        PersistentARTrie::open_with_slot_tracking(path).map(Arc::new)
     }
 
     fn open_with_recovery<P: AsRef<Path>>(path: P) -> Result<(Self, RecoveryReport)> {
-        PersistentARTrie::open_with_recovery(path).map(|(t, r)| (Arc::new(RwLock::new(t)), r))
+        PersistentARTrie::open_with_recovery(path).map(|(t, r)| (Arc::new(t), r))
     }
 
     fn open_with_recovery_and_slot_tracking<P: AsRef<Path>>(
@@ -55,7 +56,7 @@ impl<V: DictionaryValue> ARTrie for SharedARTrie<V> {
         if let Some(ref am) = trie.arena_manager {
             am.write().enable_slot_tracking();
         }
-        Ok((Arc::new(RwLock::new(trie)), report))
+        Ok((Arc::new(trie), report))
     }
 
     fn enable_slot_tracking(&self) {
@@ -81,7 +82,7 @@ impl<V: DictionaryValue> ARTrie for SharedARTrie<V> {
         // `insert_cas_durable` under the flip), NOT `insert_impl` (owned-only). The
         // owned default-value insert is preserved by the routed inherent method's
         // owned arm; under the overlay the durable membership insert is value-free.
-        let mut guard = self.write();
+        let guard = self.write();
         if guard.route_overlay() {
             return guard.insert(term);
         }
@@ -90,7 +91,7 @@ impl<V: DictionaryValue> ARTrie for SharedARTrie<V> {
 
     fn insert_with_value(&self, term: &str, value: Self::Value) -> bool {
         // M3 (C5): route to the routed inherent `insert_with_value` under the flip.
-        let mut guard = self.write();
+        let guard = self.write();
         if guard.route_overlay() {
             return guard.insert_with_value(term, value);
         }
@@ -113,7 +114,7 @@ impl<V: DictionaryValue> ARTrie for SharedARTrie<V> {
 
     fn remove(&self, term: &str) -> bool {
         // M3 (C5): route to the routed inherent `remove` (→ `remove_cas_durable`).
-        let mut guard = self.write();
+        let guard = self.write();
         if guard.route_overlay() {
             return guard.remove(term);
         }
@@ -141,7 +142,7 @@ impl<V: DictionaryValue> ARTrie for SharedARTrie<V> {
         // acquiring it. Formally verified (ConcurrentCheckpointSerialization.tla).
         let ckpt_lock = self.read().checkpoint_lock.clone();
         let _ckpt_guard = ckpt_lock.lock();
-        let mut guard = self.write();
+        let guard = self.write();
         guard.checkpoint()
     }
 
@@ -158,7 +159,7 @@ impl<V: DictionaryValue> ARTrie for SharedARTrie<V> {
         // enumerate the OVERLAY but delete from the EMPTY owned tree = a silent no-op.
         // Route to the routed inherent `remove_prefix_batched` (overlay remove-CAS).
         {
-            let mut guard = self.write();
+            let guard = self.write();
             if guard.route_overlay() {
                 return guard.remove_prefix_batched(prefix_bytes, 1024);
             }
@@ -180,7 +181,7 @@ impl<V: DictionaryValue> ARTrie for SharedARTrie<V> {
                 break;
             }
 
-            let mut guard = self.write();
+            let guard = self.write();
             for term in batch {
                 if guard.remove_impl(&term) {
                     total_removed += 1;
@@ -225,7 +226,7 @@ impl<V: DictionaryValue> ARTrie for SharedARTrie<V> {
     }
 
     fn upsert(&self, term: &str, value: Self::Value) -> Result<bool> {
-        let mut guard = self.write();
+        let guard = self.write();
         guard.upsert(term, value)
     }
 
@@ -234,7 +235,7 @@ impl<V: DictionaryValue> ARTrie for SharedARTrie<V> {
     // convention; counter callers use the inner inherent method, e.g.
     // `trie.write().increment(..)` on a `<i64>`/`<u64>` trie.
     // fn increment(&self, term: &str, delta: i64) -> Result<i64> {
-    //     let mut guard = self.write();
+    //     let guard = self.write();
     //     guard.increment(term, delta)
     // }
 }
@@ -245,16 +246,21 @@ impl<V: DictionaryValue> EvictableARTrie for SharedARTrie<V> {
             .validate()
             .map_err(|e| PersistentARTrieError::internal(&e))?;
 
-        let mut guard = self.write();
-
-        if guard.eviction_coordinator.is_some() {
+        // F4 (EC leaf): the coordinator field is a `Mutex<Option<Arc<…>>>`. Check +
+        // install under a BRIEF EC lock; the coordinator is fully built + started
+        // OUTSIDE the lock so EC is never held across thread spawns or any other
+        // lock. Already-enabled ⇒ error (no old Arc to drop, so no re-arm join).
+        if self
+            .eviction_coordinator
+            .lock()
+            .expect("eviction_coordinator mutex poisoned")
+            .is_some()
+        {
             return Err(PersistentARTrieError::internal("Eviction already enabled"));
         }
 
         let epoch_manager = Arc::new(EpochManager::new());
-
         let coordinator = EvictionCoordinator::new(config.clone(), epoch_manager);
-
         let self_weak = Arc::downgrade(self);
 
         coordinator
@@ -262,22 +268,32 @@ impl<V: DictionaryValue> EvictableARTrie for SharedARTrie<V> {
                 let Some(trie) = self_weak.upgrade() else {
                     return (0, 0);
                 };
-
-                let mut guard = trie.write();
+                // Clone the coordinator Arc out under a BRIEF EC lock (leaf), then
+                // release EC BEFORE taking OR (the lock order is OR > EC, so we must
+                // not hold EC while `evict_node_at_path` takes the OR root lock).
+                let coordinator = {
+                    match trie
+                        .eviction_coordinator
+                        .lock()
+                        .expect("eviction_coordinator mutex poisoned")
+                        .as_ref()
+                    {
+                        Some(c) => Arc::clone(c),
+                        None => return (0, 0),
+                    }
+                };
                 let mut evicted_count = 0;
                 let mut bytes_freed = 0;
-
                 for (_path_hash, path, disk_ptr) in nodes_to_evict {
-                    if guard.evict_node_at_path(&path, disk_ptr.clone()) {
+                    // `evict_node_at_path` takes the OR write lock internally (the
+                    // owned-tree unswizzle); the LRU removal hits the already-cloned
+                    // coordinator (no EC re-lock under OR).
+                    if trie.evict_node_at_path(&path, disk_ptr.clone()) {
                         evicted_count += 1;
                         bytes_freed += 256;
-
-                        if let Some(ref coordinator) = guard.eviction_coordinator {
-                            coordinator.lru_registry().remove(&path);
-                        }
+                        coordinator.lru_registry().remove(&path);
                     }
                 }
-
                 (evicted_count, bytes_freed)
             })
             .map_err(|e| PersistentARTrieError::internal(&e))?;
@@ -286,17 +302,33 @@ impl<V: DictionaryValue> EvictableARTrie for SharedARTrie<V> {
             .start_memory_monitor()
             .map_err(|e| PersistentARTrieError::internal(&e))?;
 
-        guard.eviction_coordinator = Some(coordinator);
-
+        // Install under a brief EC lock (re-check in case of a concurrent enable —
+        // first writer wins; a loser shuts its own coordinator down outside EC).
+        let mut slot = self
+            .eviction_coordinator
+            .lock()
+            .expect("eviction_coordinator mutex poisoned");
+        if slot.is_some() {
+            drop(slot);
+            coordinator.shutdown();
+            return Err(PersistentARTrieError::internal("Eviction already enabled"));
+        }
+        *slot = Some(coordinator);
         Ok(())
     }
 
     fn disable_eviction(&self) -> Result<()> {
-        // Take the coordinator out under a short-lived write guard, then RELEASE
-        // the guard before `shutdown()` joins the eviction thread: the eviction
-        // callback itself takes `trie.write()`, so joining while holding the trie
-        // lock deadlocks (the same rule `force_eviction` already documents).
-        let coordinator = self.write().eviction_coordinator.take();
+        // **F4 drop-before-join (GAP 1 / V11.3 site 1):** take the coordinator out
+        // of the EC `Mutex` into a statement-temporary so the EC guard DROPS before
+        // `shutdown()` joins the eviction thread — the eviction callback takes OR
+        // (and briefly EC), so joining while holding EC would deadlock (the worker
+        // waits on EC; disable holds EC + joins).
+        let coordinator = self
+            .eviction_coordinator
+            .lock()
+            .expect("eviction_coordinator mutex poisoned")
+            .take();
+        // EC guard dropped here.
         if let Some(coordinator) = coordinator {
             coordinator.shutdown();
         }
@@ -304,32 +336,45 @@ impl<V: DictionaryValue> EvictableARTrie for SharedARTrie<V> {
     }
 
     fn eviction_enabled(&self) -> bool {
-        let guard = self.read();
-        guard.eviction_coordinator.is_some()
+        self.eviction_coordinator
+            .lock()
+            .expect("eviction_coordinator mutex poisoned")
+            .is_some()
     }
 
     fn eviction_stats(&self) -> EvictionStats {
-        let guard = self.read();
-        guard
-            .eviction_coordinator
+        self.eviction_coordinator
+            .lock()
+            .expect("eviction_coordinator mutex poisoned")
             .as_ref()
             .map(|c| c.stats())
             .unwrap_or_default()
     }
 
     fn force_eviction(&self, target_bytes: usize) -> Result<(usize, usize)> {
-        let guard = self.read();
-
-        let Some(coordinator) = &guard.eviction_coordinator else {
-            return Ok((0, 0));
+        // Clone the coordinator Arc out under a BRIEF EC lock, then release EC
+        // before `force_eviction` (whose reclaim callback takes OR — order OR > EC).
+        let coordinator = {
+            match self
+                .eviction_coordinator
+                .lock()
+                .expect("eviction_coordinator mutex poisoned")
+                .as_ref()
+            {
+                Some(c) => Arc::clone(c),
+                None => return Ok((0, 0)),
+            }
         };
-
         Ok(coordinator.force_eviction(target_bytes))
     }
 
     fn touch_node(&self, path: &[Self::Unit]) {
-        let guard = self.read();
-        if let Some(coordinator) = &guard.eviction_coordinator {
+        if let Some(coordinator) = self
+            .eviction_coordinator
+            .lock()
+            .expect("eviction_coordinator mutex poisoned")
+            .as_ref()
+        {
             coordinator.lru_registry().touch(path);
         }
     }
@@ -345,7 +390,9 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
     ///
     /// This method should only be called after epoch quiescence has been
     /// achieved, ensuring no readers from the old epoch are active.
-    pub(crate) fn evict_node_at_path(&mut self, path: &[u8], disk_ptr: SwizzledPtr) -> bool {
+    pub(crate) fn evict_node_at_path(&self, path: &[u8], disk_ptr: SwizzledPtr) -> bool {
+        // **F4:** `&self` taking the OR write lock once. `find_parent_in_root`
+        // operates on the held guard's `&mut TrieRoot` (no re-lock).
         if path.is_empty() {
             return false;
         }
@@ -353,7 +400,8 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
         let parent_path = &path[..path.len() - 1];
         let target_edge = path[path.len() - 1];
 
-        match self.find_parent_mut(parent_path) {
+        let mut root = self.root.write();
+        match Self::find_parent_in_root(&mut root, parent_path) {
             Some(children) => {
                 for (edge, child) in children.iter_mut() {
                     if *edge == target_edge {
@@ -374,18 +422,22 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
         }
     }
 
-    /// Find the children vector of the node at the given path.
+    /// Find the children vector of the node at the given path, within an
+    /// explicitly-held `root` (the OR guard's target — no re-lock).
     ///
     /// Returns `Some(&mut Vec<(u8, ChildNode)>)` if found, `None` if the path
     /// doesn't exist or leads to a bucket/disk ref.
-    fn find_parent_mut(&mut self, path: &[u8]) -> Option<&mut Vec<(u8, ChildNode)>> {
+    fn find_parent_in_root<'r>(
+        root: &'r mut TrieRoot<V>,
+        path: &[u8],
+    ) -> Option<&'r mut Vec<(u8, ChildNode)>> {
         if path.is_empty() {
-            match &mut self.root {
+            match root {
                 TrieRoot::Bucket(_) => None,
                 TrieRoot::ArtNode { children, .. } => Some(children),
             }
         } else {
-            let mut current_children = match &mut self.root {
+            let mut current_children = match root {
                 TrieRoot::Bucket(_) => return None,
                 TrieRoot::ArtNode { children, .. } => children,
             };

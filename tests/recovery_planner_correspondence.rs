@@ -157,7 +157,7 @@ fn byte_corruption_rebuild_uses_only_durable_wal_prefix() {
     let dir = tempdir().expect("tempdir");
     let path = dir.path().join("byte_prefix.part");
     {
-        let mut trie = PersistentARTrie::<i32>::create(&path).expect("create byte trie");
+        let trie = PersistentARTrie::<i32>::create(&path).expect("create byte trie");
         // F2-migrate: Bucket B — this test corrupts a WAL record CRC + the header magic
         // and asserts the rebuild replays ONLY the durable WAL prefix. That is the
         // OWNED-tree WAL recovery contract (per-record Insert replay). Feature-on a fresh
@@ -191,7 +191,7 @@ fn char_corruption_rebuild_uses_only_durable_wal_prefix() {
     let dir = tempdir().expect("tempdir");
     let path = dir.path().join("char_prefix.artc");
     {
-        let mut trie = PersistentARTrieChar::<i32>::create(&path).expect("create char trie");
+        let trie = PersistentARTrieChar::<i32>::create(&path).expect("create char trie");
         // F2-migrate: Bucket B — corrupts a WAL record CRC + header magic and asserts the
         // rebuild replays ONLY the durable WAL prefix (the OWNED-tree per-record recovery
         // contract). Feature-on a fresh `i32` char trie create-flips and writes an

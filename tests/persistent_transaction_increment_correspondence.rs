@@ -114,7 +114,7 @@ fn char_tx_increment_current_overflow_fails_before_batch_wal() {
         "unexpected error: {error}"
     );
     assert_eq!(wal_len(&path), before_commit_wal);
-    assert_eq!(trie.get("counter").copied(), Some(i64::MAX));
+    assert_eq!(trie.get("counter"), Some(i64::MAX));
 }
 
 #[test]

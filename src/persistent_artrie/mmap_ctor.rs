@@ -70,7 +70,7 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
     )]
     pub fn new() -> Self {
         Self {
-            root: TrieRoot::Bucket(StringBucket::with_values()),
+            root: RwLock::new(TrieRoot::Bucket(StringBucket::with_values())),
             term_count: AtomicUsize::new(0),
             dirty: AtomicBool::new(false),
             buffer_manager: None,
@@ -78,11 +78,11 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
             next_lsn: std::sync::atomic::AtomicU64::new(0),
             prefetcher: super::prefetch::Prefetcher::disabled(),
             arena_manager: None,
-            durability_policy: DurabilityPolicy::default(),
+            durability_policy: crate::persistent_artrie_core::shared_access::AtomicEnumCell::new(DurabilityPolicy::default()),
             epoch_manager: super::concurrency::EpochManager::new(),
             stats: Arc::new(super::concurrency::TrieStats::new()),
-            eviction_coordinator: None,
-            dirty_prefixes: HashSet::new(),
+            eviction_coordinator: std::sync::Mutex::new(None),
+            dirty_prefixes: std::sync::Mutex::new(HashSet::new()),
             persisted_disk_locations: RwLock::new(HashMap::new()),
             #[cfg(feature = "persistent-artrie")]
             lockfree_root: None,
@@ -91,14 +91,16 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
             #[cfg(feature = "persistent-artrie")]
             cas_retries: std::sync::atomic::AtomicU64::new(0),
             // M2a INERT default (OwnedTree) — changes no byte behavior.
-            overlay_write_mode:
+            overlay_write_mode: crate::persistent_artrie_core::shared_access::AtomicEnumCell::new(
                 crate::persistent_artrie_core::overlay::write_mode::OverlayWriteMode::default(),
+            ),
             // M2b: fresh in-memory trie — no durable WAL frontier, no prior
             // generations, so the watermark base + commit_seq are both 0 (INERT
             // pre-flip; only opt-in `*_cas_durable` writes advance them).
             committed_watermark:
                 crate::persistent_artrie_core::committed_watermark::CommittedWatermark::new(0),
             checkpoint_lock: std::sync::Arc::new(parking_lot::Mutex::new(())),
+            merge_lock: std::sync::Arc::new(parking_lot::Mutex::new(())),
             commit_seq: std::sync::atomic::AtomicU64::new(0),
         }
     }
@@ -166,7 +168,7 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
 
         // M4b EDIT 1: flip a fresh eligible-V trie to the overlay (no-op for arbitrary V).
         Self::apply_create_flip(Self {
-            root: TrieRoot::Bucket(StringBucket::with_values()),
+            root: RwLock::new(TrieRoot::Bucket(StringBucket::with_values())),
             term_count: AtomicUsize::new(0),
             dirty: AtomicBool::new(false),
             buffer_manager: Some(buffer_manager),
@@ -174,11 +176,11 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
             next_lsn: std::sync::atomic::AtomicU64::new(1), // Start at 1, 0 reserved for "no LSN"
             prefetcher: super::prefetch::Prefetcher::new(),
             arena_manager: Some(arena_manager),
-            durability_policy: DurabilityPolicy::default(),
+            durability_policy: crate::persistent_artrie_core::shared_access::AtomicEnumCell::new(DurabilityPolicy::default()),
             epoch_manager: super::concurrency::EpochManager::new(),
             stats: Arc::new(super::concurrency::TrieStats::new()),
-            eviction_coordinator: None,
-            dirty_prefixes: HashSet::new(),
+            eviction_coordinator: std::sync::Mutex::new(None),
+            dirty_prefixes: std::sync::Mutex::new(HashSet::new()),
             persisted_disk_locations: RwLock::new(HashMap::new()),
             #[cfg(feature = "persistent-artrie")]
             lockfree_root: None,
@@ -188,13 +190,15 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
             cas_retries: std::sync::atomic::AtomicU64::new(0),
             // M2a INERT default (OwnedTree) — flipped to LockFreeOverlay by
             // apply_create_flip above for eligible V; arbitrary V stays owned.
-            overlay_write_mode:
+            overlay_write_mode: crate::persistent_artrie_core::shared_access::AtomicEnumCell::new(
                 crate::persistent_artrie_core::overlay::write_mode::OverlayWriteMode::default(),
+            ),
             // M2b: fresh on-disk trie (empty WAL) — no durable frontier, no prior
             // generations ⇒ watermark base + commit_seq both 0 (INERT pre-flip).
             committed_watermark:
                 crate::persistent_artrie_core::committed_watermark::CommittedWatermark::new(0),
             checkpoint_lock: std::sync::Arc::new(parking_lot::Mutex::new(())),
+            merge_lock: std::sync::Arc::new(parking_lot::Mutex::new(())),
             commit_seq: std::sync::atomic::AtomicU64::new(0),
         })
     }
@@ -266,7 +270,7 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
 
         // M4b EDIT 1: flip a fresh eligible-V trie to the overlay (no-op for arbitrary V).
         Self::apply_create_flip(Self {
-            root: TrieRoot::Bucket(StringBucket::with_values()),
+            root: RwLock::new(TrieRoot::Bucket(StringBucket::with_values())),
             term_count: AtomicUsize::new(0),
             dirty: AtomicBool::new(false),
             buffer_manager: Some(buffer_manager),
@@ -274,11 +278,11 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
             next_lsn: std::sync::atomic::AtomicU64::new(1), // Start at 1, 0 reserved for "no LSN"
             prefetcher: super::prefetch::Prefetcher::new(),
             arena_manager: Some(arena_manager),
-            durability_policy: DurabilityPolicy::default(),
+            durability_policy: crate::persistent_artrie_core::shared_access::AtomicEnumCell::new(DurabilityPolicy::default()),
             epoch_manager: super::concurrency::EpochManager::new(),
             stats: Arc::new(super::concurrency::TrieStats::new()),
-            eviction_coordinator: None,
-            dirty_prefixes: HashSet::new(),
+            eviction_coordinator: std::sync::Mutex::new(None),
+            dirty_prefixes: std::sync::Mutex::new(HashSet::new()),
             persisted_disk_locations: RwLock::new(HashMap::new()),
             #[cfg(feature = "persistent-artrie")]
             lockfree_root: None,
@@ -287,13 +291,15 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
             #[cfg(feature = "persistent-artrie")]
             cas_retries: std::sync::atomic::AtomicU64::new(0),
             // M2a INERT default (OwnedTree) — changes no byte behavior.
-            overlay_write_mode:
+            overlay_write_mode: crate::persistent_artrie_core::shared_access::AtomicEnumCell::new(
                 crate::persistent_artrie_core::overlay::write_mode::OverlayWriteMode::default(),
+            ),
             // M2b: fresh on-disk trie (empty WAL) — no durable frontier, no prior
             // generations ⇒ watermark base + commit_seq both 0 (INERT pre-flip).
             committed_watermark:
                 crate::persistent_artrie_core::committed_watermark::CommittedWatermark::new(0),
             checkpoint_lock: std::sync::Arc::new(parking_lot::Mutex::new(())),
+            merge_lock: std::sync::Arc::new(parking_lot::Mutex::new(())),
             commit_seq: std::sync::atomic::AtomicU64::new(0),
         })
     }
@@ -485,7 +491,7 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
         };
 
         let mut dict = Self {
-            root: initial_root,
+            root: RwLock::new(initial_root),
             term_count: AtomicUsize::new(initial_term_count),
             dirty: AtomicBool::new(false),
             buffer_manager: Some(buffer_manager),
@@ -493,11 +499,11 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
             next_lsn: std::sync::atomic::AtomicU64::new(next_lsn),
             prefetcher: super::prefetch::Prefetcher::new(),
             arena_manager: Some(arena_manager),
-            durability_policy: DurabilityPolicy::default(),
+            durability_policy: crate::persistent_artrie_core::shared_access::AtomicEnumCell::new(DurabilityPolicy::default()),
             epoch_manager: super::concurrency::EpochManager::new(),
             stats: Arc::new(super::concurrency::TrieStats::new()),
-            eviction_coordinator: None,
-            dirty_prefixes: HashSet::new(),
+            eviction_coordinator: std::sync::Mutex::new(None),
+            dirty_prefixes: std::sync::Mutex::new(HashSet::new()),
             persisted_disk_locations: RwLock::new(HashMap::new()),
             #[cfg(feature = "persistent-artrie")]
             lockfree_root: None,
@@ -506,8 +512,9 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
             #[cfg(feature = "persistent-artrie")]
             cas_retries: std::sync::atomic::AtomicU64::new(0),
             // M2a INERT default (OwnedTree) — changes no byte behavior.
-            overlay_write_mode:
+            overlay_write_mode: crate::persistent_artrie_core::shared_access::AtomicEnumCell::new(
                 crate::persistent_artrie_core::overlay::write_mode::OverlayWriteMode::default(),
+            ),
             // M2b: seed the watermark base from the recovered durable WAL frontier
             // (replayed LSNs are already committed) and the commit_seq from
             // max(header floor, surviving CommitRank generation) — the A.2
@@ -517,6 +524,7 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
                     recovered_frontier,
                 ),
             checkpoint_lock: std::sync::Arc::new(parking_lot::Mutex::new(())),
+            merge_lock: std::sync::Arc::new(parking_lot::Mutex::new(())),
             commit_seq: std::sync::atomic::AtomicU64::new(commit_seq_seed),
         };
 

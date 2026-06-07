@@ -140,8 +140,8 @@ fn char_lockfree_value_merge_overflow_is_all_or_nothing() {
         .expect_err("overflowing merge must fail");
     assert!(error.to_string().contains("overflow"));
     assert_eq!(wal_len(&path), before_wal);
-    assert_eq!(trie.get("ok").copied(), Some(10));
-    assert_eq!(trie.get("bad").copied(), Some(i64::MAX as u64));
+    assert_eq!(trie.get("ok"), Some(10));
+    assert_eq!(trie.get("bad"), Some(i64::MAX as u64));
     assert_eq!(trie.get_lockfree("ok"), Some(5));
     assert_eq!(trie.get_lockfree("bad"), Some(1));
     assert!(batch_increment_terms(&path).is_empty());
@@ -206,8 +206,8 @@ fn char_lockfree_value_merge_appends_one_batch_and_reopens_exact_sums() {
             .expect("merge lockfree values"),
         2
     );
-    assert_eq!(trie.get("alpha").copied(), Some(15));
-    assert_eq!(trie.get("日本").copied(), Some(7));
+    assert_eq!(trie.get("alpha"), Some(15));
+    assert_eq!(trie.get("日本"), Some(7));
     assert_eq!(trie.get_lockfree("alpha"), None);
     assert_eq!(trie.get_lockfree("日本"), None);
 
@@ -221,6 +221,6 @@ fn char_lockfree_value_merge_appends_one_batch_and_reopens_exact_sums() {
     ));
 
     let reopened = PersistentARTrieChar::<u64>::open(&path).expect("reopen char trie");
-    assert_eq!(reopened.get("alpha").copied(), Some(15));
-    assert_eq!(reopened.get("日本").copied(), Some(7));
+    assert_eq!(reopened.get("alpha"), Some(15));
+    assert_eq!(reopened.get("日本"), Some(7));
 }

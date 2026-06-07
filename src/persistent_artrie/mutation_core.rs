@@ -41,7 +41,11 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
     /// `crate::persistent_artrie::parallel_merge` (gated on the
     /// `parallel-merge` feature) can call it during the
     /// sequential-write phase of `merge_from_parallel`.
-    pub(super) fn insert_impl(&mut self, term: &[u8], value: Option<V>) -> bool {
+    pub(super) fn insert_impl(&self, term: &[u8], value: Option<V>) -> bool {
+        // **F4:** `&self` (the kill-switched-owned runtime arm of the trait
+        // `insert`; also reachable from the pre-share WAL-replay `&mut self`
+        // callers — a `&mut self` caller may call this `&self` method). The owned
+        // mutation takes the inner OR write lock inside `insert_impl_core`.
         let serialized_value = match value.as_ref() {
             Some(v) => match crate::serialization::bincode_compat::serialize(v) {
                 Ok(bytes) => Some(bytes),
@@ -55,6 +59,8 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
 
         // Log new terms and value updates before applying them in memory.
         // Duplicate term-only inserts are no-ops and do not need WAL traffic.
+        // (`contains_impl` takes + drops a short OR read guard; released before the
+        // OR write guard in `insert_impl_core` — no nested self-lock.)
         let needs_wal = value.is_some() || !self.contains_impl(term);
         if needs_wal {
             use super::wal::WalRecord;
@@ -73,13 +79,44 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
     }
 
     /// Core insert implementation without WAL logging.
-    pub(super) fn insert_impl_core(&mut self, term: &[u8], value: Option<V>) -> bool {
-        // Clone buffer manager reference before mutable borrow of self.root
-        // This is needed to resolve DiskRef nodes during mutation
+    ///
+    /// **F4:** `&self` — acquires the **OR** write lock ONCE and delegates to the
+    /// reentrancy-safe [`Self::insert_into_root`], which takes `root: &mut
+    /// TrieRoot<V>` so its bucket→ART conversion + retry recursion all operate on
+    /// the single held guard (parking_lot is non-reentrant — re-locking inside the
+    /// recursion would self-deadlock).
+    pub(super) fn insert_impl_core(&self, term: &[u8], value: Option<V>) -> bool {
         let buffer_manager = self.buffer_manager.clone();
+        let mut root = self.root.write();
+        let inserted = self.insert_into_root(&mut root, buffer_manager.as_ref(), term, value);
+        // `propagate_dirty_to_root` mutates the SAME root under the held guard.
+        if inserted {
+            if let TrieRoot::ArtNode { node, .. } = &mut *root {
+                node.header_mut().set_has_dirty_descendants(true);
+            }
+        }
+        drop(root); // release OR before touching the dirty-prefix Mutex (lock order)
+        if inserted {
+            self.term_count.fetch_add(1, AtomicOrdering::Relaxed);
+            self.dirty.store(true, AtomicOrdering::Release);
+            self.record_dirty_path(term);
+        }
+        inserted
+    }
 
-        let inserted = match &mut self.root {
-            TrieRoot::Bucket(bucket) => {
+    /// Reentrancy-safe core of [`Self::insert_impl_core`]: insert `term` into an
+    /// explicitly-borrowed `root` (the held OR guard's target). Recurses + converts
+    /// bucket→ART without re-locking. Returns whether a NEW term was inserted (the
+    /// caller does the dirty/count bookkeeping).
+    fn insert_into_root(
+        &self,
+        root: &mut TrieRoot<V>,
+        buffer_manager: Option<&std::sync::Arc<crate::sync_compat::RwLock<super::buffer_manager::BufferManager<S>>>>,
+        term: &[u8],
+        value: Option<V>,
+    ) -> bool {
+        match root {
+            TrieRoot::Bucket(_) => {
                 // Clone value here in case we need to retry after bucket conversion
                 let value_for_retry = value.clone();
 
@@ -87,25 +124,35 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
                 let serialized_value: Option<Vec<u8>> =
                     value.and_then(|v| crate::serialization::bincode_compat::serialize(&v).ok());
 
-                let result = if let Some(ref val_bytes) = serialized_value {
-                    bucket.insert(term, val_bytes)
-                } else {
-                    bucket.insert_key(term)
+                // Insert into the bucket in an inner scope so the `&mut bucket`
+                // borrow of `*root` ENDS before we (possibly) convert `root`
+                // bucket→ART and retry — keeping a single OR guard, no re-lock.
+                let (result, should_split) = {
+                    let TrieRoot::Bucket(bucket) = &mut *root else {
+                        unreachable!("matched Bucket above");
+                    };
+                    let result = if let Some(ref val_bytes) = serialized_value {
+                        bucket.insert(term, val_bytes)
+                    } else {
+                        bucket.insert_key(term)
+                    };
+                    let should_split = result.is_ok() && bucket.header().should_split();
+                    (result, should_split)
                 };
 
                 match result {
                     Ok(inserted) => {
-                        // Check if bucket needs to be converted to ART
-                        if bucket.header().should_split() {
-                            self.convert_bucket_to_art();
+                        if should_split {
+                            Self::convert_root_bucket_to_art(root);
                         }
                         inserted
                     }
                     Err(_) => {
                         // Bucket is full, convert to ART and retry
-                        self.convert_bucket_to_art();
-                        // Retry insert in the new ART structure (no double WAL logging)
-                        self.insert_impl_core(term, value_for_retry);
+                        Self::convert_root_bucket_to_art(root);
+                        // Retry insert in the new ART structure (no double WAL logging,
+                        // same held OR guard via the `root` reborrow).
+                        self.insert_into_root(root, buffer_manager, term, value_for_retry);
                         true
                     }
                 }
@@ -143,10 +190,8 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
 
                     if let Some(idx) = child_idx {
                         // Resolve DiskRef if needed before mutation
-                        if !resolve_child_for_mutation_with_bm(
-                            &mut children[idx].1,
-                            buffer_manager.as_ref(),
-                        ) {
+                        if !resolve_child_for_mutation_with_bm(&mut children[idx].1, buffer_manager)
+                        {
                             return false; // Resolution failed (logged in resolve_child_for_mutation_with_bm)
                         }
                         // Use insert_with_value which handles bucket overflow recursively
@@ -203,21 +248,13 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
                     }
                 }
             }
-        };
-
-        if inserted {
-            self.term_count.fetch_add(1, AtomicOrdering::Relaxed);
-            self.dirty.store(true, AtomicOrdering::Release);
-            // Record the path as dirty for selective persistence
-            self.record_dirty_path(term);
-            self.propagate_dirty_to_root();
         }
-
-        inserted
     }
 
     /// Remove implementation with WAL logging (for persistent mode).
-    pub(super) fn remove_impl(&mut self, term: &[u8]) -> bool {
+    ///
+    /// **F4:** `&self` (kill-switched-owned runtime arm + pre-share replay caller).
+    pub(super) fn remove_impl(&self, term: &[u8]) -> bool {
         if !self.contains_impl(term) {
             return false;
         }
@@ -235,12 +272,34 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
     }
 
     /// Core remove implementation without WAL logging.
-    pub(super) fn remove_impl_core(&mut self, term: &[u8]) -> bool {
-        // Clone buffer manager reference before mutable borrow of self.root
-        // This is needed to resolve DiskRef nodes during mutation
+    ///
+    /// **F4:** `&self` — takes the OR write lock once and delegates to the
+    /// reentrancy-safe [`Self::remove_from_root`] (`root: &mut TrieRoot<V>`).
+    pub(super) fn remove_impl_core(&self, term: &[u8]) -> bool {
         let buffer_manager = self.buffer_manager.clone();
+        let mut root = self.root.write();
+        let removed = Self::remove_from_root(&mut root, buffer_manager.as_ref(), term);
+        if removed {
+            if let TrieRoot::ArtNode { node, .. } = &mut *root {
+                node.header_mut().set_has_dirty_descendants(true);
+            }
+        }
+        drop(root);
+        if removed {
+            self.term_count.fetch_sub(1, AtomicOrdering::Relaxed);
+            self.dirty.store(true, AtomicOrdering::Release);
+            self.record_dirty_path(term);
+        }
+        removed
+    }
 
-        let removed = match &mut self.root {
+    /// Reentrancy-safe core of [`Self::remove_impl_core`].
+    fn remove_from_root(
+        root: &mut TrieRoot<V>,
+        buffer_manager: Option<&std::sync::Arc<crate::sync_compat::RwLock<super::buffer_manager::BufferManager<S>>>>,
+        term: &[u8],
+    ) -> bool {
+        match root {
             TrieRoot::Bucket(bucket) => bucket.remove(term).is_some(),
             TrieRoot::ArtNode {
                 node: _,
@@ -264,10 +323,8 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
 
                     if let Some(idx) = child_idx {
                         // Resolve DiskRef if needed before mutation
-                        if !resolve_child_for_mutation_with_bm(
-                            &mut children[idx].1,
-                            buffer_manager.as_ref(),
-                        ) {
+                        if !resolve_child_for_mutation_with_bm(&mut children[idx].1, buffer_manager)
+                        {
                             return false; // Resolution failed (logged in resolve_child_for_mutation_with_bm)
                         }
                         match &mut children[idx].1 {
@@ -311,22 +368,13 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
                     }
                 }
             }
-        };
-
-        if removed {
-            self.term_count.fetch_sub(1, AtomicOrdering::Relaxed);
-            self.dirty.store(true, AtomicOrdering::Release);
-            // Record the path as dirty for selective persistence
-            self.record_dirty_path(term);
-            self.propagate_dirty_to_root();
         }
-
-        removed
     }
 
-    /// Convert root bucket to ART node structure
-    fn convert_bucket_to_art(&mut self) {
-        if let TrieRoot::Bucket(bucket) = &self.root {
+    /// Convert root bucket to ART node structure (operates on an explicitly-held
+    /// `root`, so the owned-mutator recursion never re-locks the OR `RwLock`).
+    fn convert_root_bucket_to_art(root: &mut TrieRoot<V>) {
+        if let TrieRoot::Bucket(bucket) = &*root {
             if let Ok(result) = bucket_to_art_node(bucket) {
                 // bucket_to_art_node now returns ChildNode directly (which may be
                 // buckets or nested ART nodes for overflowed children).
@@ -350,7 +398,7 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
                     },
                     None => None,
                 };
-                self.root = TrieRoot::ArtNode {
+                *root = TrieRoot::ArtNode {
                     node: result.node,
                     children: result.children,
                     is_final: result.is_final,
@@ -363,8 +411,9 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
     /// Insert implementation without WAL logging (for recovery replay).
     ///
     /// This is used during WAL recovery to avoid re-logging operations
-    /// that are already in the WAL.
-    pub(super) fn insert_impl_no_wal(&mut self, term: &[u8], value: Option<V>) -> bool {
+    /// that are already in the WAL. **F4:** `&self` (delegates to the `&self`
+    /// core; callable from the `&mut self` pre-share replay sinks).
+    pub(super) fn insert_impl_no_wal(&self, term: &[u8], value: Option<V>) -> bool {
         // Call core implementation directly to skip WAL logging
         self.insert_impl_core(term, value)
     }
@@ -372,8 +421,8 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
     /// Remove implementation without WAL logging (for recovery replay).
     ///
     /// This is used during WAL recovery to avoid re-logging operations
-    /// that are already in the WAL.
-    pub(super) fn remove_impl_no_wal(&mut self, term: &[u8]) -> bool {
+    /// that are already in the WAL. **F4:** `&self`.
+    pub(super) fn remove_impl_no_wal(&self, term: &[u8]) -> bool {
         // Call core implementation directly to skip WAL logging
         self.remove_impl_core(term)
     }
@@ -382,7 +431,9 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
     ///
     /// This updates the value if the term exists, or inserts if it doesn't.
     /// Used during WAL recovery to replay Upsert, Increment, and CAS operations.
-    pub(super) fn upsert_impl_no_wal(&mut self, term: &[u8], value: V) {
+    /// **F4:** `&self`. (Two sequential OR critical sections — remove then insert
+    /// — exactly as before; the owned path is single-writer under the kill-switch.)
+    pub(super) fn upsert_impl_no_wal(&self, term: &[u8], value: V) {
         // First remove existing entry (if any) to allow update
         self.remove_impl_core(term);
         // Then insert with new value

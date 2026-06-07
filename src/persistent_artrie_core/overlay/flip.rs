@@ -110,7 +110,11 @@ pub(crate) trait LockFreeOverlay<K: KeyEncoding, V: DictionaryValue, S>: Sized +
     fn overlay_write_mode(&self) -> OverlayWriteMode;
 
     /// Set the kill-switch mode (restart-time switch; see `kill_switch_to_owned`).
-    fn set_overlay_write_mode(&mut self, mode: OverlayWriteMode);
+    ///
+    /// **F4:** `&self` — the field is an `AtomicEnumCell`, so the runtime kill-switch
+    /// (`kill_switch_to_owned`, Tier-2) and the ctor-time `flip_to_overlay` (Tier-1)
+    /// both write it without the outer trie lock.
+    fn set_overlay_write_mode(&self, mode: OverlayWriteMode);
 
     /// Install the lock-free overlay (an empty `AtomicNodePtr` root + lookup
     /// cache), stamping the WAL Overlay regime when the WAL is empty. Idempotent.
@@ -429,7 +433,9 @@ pub(crate) trait LockFreeOverlay<K: KeyEncoding, V: DictionaryValue, S>: Sized +
     /// fixed, so a reopen rebuilds the owned tree from the Overlay-regime WAL and
     /// re-flips). Mirrors `enable_lockfree`'s `current_lsn() == 1` empty-WAL stamp
     /// guard.
-    fn kill_switch_to_owned(&mut self) {
+    fn kill_switch_to_owned(&self) {
+        // **F4:** `&self` (Tier-2 runtime fallback). All callees are `&self`: the
+        // `AtomicEnumCell` store + the WAL stamp helpers. No outer trie lock.
         self.set_overlay_write_mode(OverlayWriteMode::OwnedTree);
         if self.wal_current_lsn() == Some(1) {
             self.wal_stamp_owned_regime();

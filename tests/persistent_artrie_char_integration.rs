@@ -26,7 +26,7 @@ use libdictenstein::{DictionaryNode, MappedDictionary};
 
 #[test]
 fn test_basic_unicode_insertion() {
-    let mut trie: PersistentARTrieChar<()> = PersistentARTrieChar::new();
+    let trie: PersistentARTrieChar<()> = PersistentARTrieChar::new();
 
     // Insert various Unicode strings
     trie.insert("café");
@@ -42,7 +42,7 @@ fn test_basic_unicode_insertion() {
 
 #[test]
 fn test_cjk_characters() {
-    let mut trie: PersistentARTrieChar<()> = PersistentARTrieChar::new();
+    let trie: PersistentARTrieChar<()> = PersistentARTrieChar::new();
 
     // Chinese characters
     trie.insert("中文");
@@ -67,7 +67,7 @@ fn test_cjk_characters() {
 
 #[test]
 fn test_emoji_handling() {
-    let mut trie: PersistentARTrieChar<()> = PersistentARTrieChar::new();
+    let trie: PersistentARTrieChar<()> = PersistentARTrieChar::new();
 
     // Single emoji
     trie.insert("🎉");
@@ -94,7 +94,7 @@ fn test_emoji_handling() {
 
 #[test]
 fn test_combining_characters() {
-    let mut trie: PersistentARTrieChar<()> = PersistentARTrieChar::new();
+    let trie: PersistentARTrieChar<()> = PersistentARTrieChar::new();
 
     // Precomposed vs decomposed forms
     // Note: Rust strings are UTF-8 byte sequences, not normalized
@@ -114,7 +114,7 @@ fn test_combining_characters() {
 
 #[test]
 fn test_rtl_text() {
-    let mut trie: PersistentARTrieChar<()> = PersistentARTrieChar::new();
+    let trie: PersistentARTrieChar<()> = PersistentARTrieChar::new();
 
     // Arabic
     trie.insert("مرحبا");
@@ -131,7 +131,7 @@ fn test_rtl_text() {
 
 #[test]
 fn test_mixed_scripts() {
-    let mut trie: PersistentARTrieChar<()> = PersistentARTrieChar::new();
+    let trie: PersistentARTrieChar<()> = PersistentARTrieChar::new();
 
     // Mixed script strings
     trie.insert("Café 中文");
@@ -146,7 +146,7 @@ fn test_mixed_scripts() {
 
 #[test]
 fn test_special_unicode_categories() {
-    let mut trie: PersistentARTrieChar<()> = PersistentARTrieChar::new();
+    let trie: PersistentARTrieChar<()> = PersistentARTrieChar::new();
 
     // Mathematical symbols
     trie.insert("∑∏∫∂");
@@ -172,7 +172,7 @@ fn test_special_unicode_categories() {
 
 #[test]
 fn test_unicode_keys_with_values() {
-    let mut trie: PersistentARTrieChar<i32> = PersistentARTrieChar::new();
+    let trie: PersistentARTrieChar<i32> = PersistentARTrieChar::new();
 
     trie.insert_with_value("café", 1);
     trie.insert_with_value("中文", 2);
@@ -186,7 +186,7 @@ fn test_unicode_keys_with_values() {
 
 #[test]
 fn test_unicode_keys_with_string_values() {
-    let mut trie: PersistentARTrieChar<String> = PersistentARTrieChar::new();
+    let trie: PersistentARTrieChar<String> = PersistentARTrieChar::new();
 
     trie.insert_with_value("hello", "greeting".to_string());
     trie.insert_with_value("世界", "world".to_string());
@@ -203,7 +203,7 @@ fn test_unicode_keys_with_string_values() {
 
 #[test]
 fn test_zipper_unicode_navigation() {
-    let mut trie: PersistentARTrieChar<()> = PersistentARTrieChar::new();
+    let trie: PersistentARTrieChar<()> = PersistentARTrieChar::new();
 
     trie.insert("café");
     trie.insert("cat");
@@ -228,7 +228,7 @@ fn test_zipper_unicode_navigation() {
 
 #[test]
 fn test_zipper_cjk_navigation() {
-    let mut trie: PersistentARTrieChar<()> = PersistentARTrieChar::new();
+    let trie: PersistentARTrieChar<()> = PersistentARTrieChar::new();
 
     trie.insert("中文");
 
@@ -245,7 +245,7 @@ fn test_zipper_cjk_navigation() {
 
 #[test]
 fn test_zipper_children_with_unicode() {
-    let mut trie: PersistentARTrieChar<()> = PersistentARTrieChar::new();
+    let trie: PersistentARTrieChar<()> = PersistentARTrieChar::new();
 
     // Insert terms with different second characters
     trie.insert("ab");
@@ -272,7 +272,7 @@ fn test_zipper_children_with_unicode() {
 
 #[test]
 fn test_dictionary_trait_unicode() {
-    let mut trie: PersistentARTrieChar<()> = PersistentARTrieChar::new();
+    let trie: PersistentARTrieChar<()> = PersistentARTrieChar::new();
 
     trie.insert("hello");
     trie.insert("世界");
@@ -290,7 +290,7 @@ fn test_dictionary_trait_unicode() {
 
 #[test]
 fn test_dictionary_node_trait_unicode() {
-    let mut trie: PersistentARTrieChar<()> = PersistentARTrieChar::new();
+    let trie: PersistentARTrieChar<()> = PersistentARTrieChar::new();
 
     trie.insert("abc");
     trie.insert("aéc");
@@ -344,7 +344,7 @@ fn test_from_iterator_owned_strings() {
 
 #[test]
 fn test_iterator_unicode() {
-    let mut trie: PersistentARTrieChar<()> = PersistentARTrieChar::new();
+    let trie: PersistentARTrieChar<()> = PersistentARTrieChar::new();
 
     trie.insert("aaa");
     trie.insert("café");
@@ -365,7 +365,7 @@ fn test_iterator_unicode() {
 
 #[test]
 fn test_unicode_prefix_sharing() {
-    let mut trie: PersistentARTrieChar<()> = PersistentARTrieChar::new();
+    let trie: PersistentARTrieChar<()> = PersistentARTrieChar::new();
 
     // Terms sharing Unicode prefixes
     trie.insert("中文");
@@ -380,7 +380,7 @@ fn test_unicode_prefix_sharing() {
 
 #[test]
 fn test_emoji_prefix_sharing() {
-    let mut trie: PersistentARTrieChar<()> = PersistentARTrieChar::new();
+    let trie: PersistentARTrieChar<()> = PersistentARTrieChar::new();
 
     // Emoji with common prefix
     trie.insert("🎉🎊");
@@ -403,7 +403,7 @@ fn test_emoji_prefix_sharing() {
 
 #[test]
 fn test_empty_string() {
-    let mut trie: PersistentARTrieChar<()> = PersistentARTrieChar::new();
+    let trie: PersistentARTrieChar<()> = PersistentARTrieChar::new();
 
     // Empty string should be insertable
     trie.insert("");
@@ -414,7 +414,7 @@ fn test_empty_string() {
 
 #[test]
 fn test_single_character_unicode() {
-    let mut trie: PersistentARTrieChar<()> = PersistentARTrieChar::new();
+    let trie: PersistentARTrieChar<()> = PersistentARTrieChar::new();
 
     // Single character terms of various types
     trie.insert("a");
@@ -431,7 +431,7 @@ fn test_single_character_unicode() {
 
 #[test]
 fn test_long_unicode_string() {
-    let mut trie: PersistentARTrieChar<()> = PersistentARTrieChar::new();
+    let trie: PersistentARTrieChar<()> = PersistentARTrieChar::new();
 
     // Long Unicode string
     let long_unicode = "这是一个非常长的中文字符串，包含很多字符";
@@ -443,7 +443,7 @@ fn test_long_unicode_string() {
 
 #[test]
 fn test_duplicate_unicode_insertion() {
-    let mut trie: PersistentARTrieChar<()> = PersistentARTrieChar::new();
+    let trie: PersistentARTrieChar<()> = PersistentARTrieChar::new();
 
     assert!(trie.insert("café").expect("insert failed"));
     assert!(!trie.insert("café").expect("insert failed")); // Duplicate should return false
@@ -459,7 +459,7 @@ fn test_concurrent_unicode_reads() {
     use std::sync::Arc;
     use std::thread;
 
-    let mut trie: PersistentARTrieChar<()> = PersistentARTrieChar::new();
+    let trie: PersistentARTrieChar<()> = PersistentARTrieChar::new();
 
     // Insert Unicode terms
     let terms = vec!["café", "中文", "🎉", "日本語", "한국어"];
@@ -504,7 +504,7 @@ fn test_concurrent_unicode_reads() {
 
 #[test]
 fn test_mapped_dictionary_unicode() {
-    let mut trie: PersistentARTrieChar<i32> = PersistentARTrieChar::new();
+    let trie: PersistentARTrieChar<i32> = PersistentARTrieChar::new();
 
     trie.insert_with_value("one", 1);
     trie.insert_with_value("一", 1); // Chinese for "one"
@@ -522,7 +522,7 @@ fn test_mapped_dictionary_unicode() {
 
 #[test]
 fn test_supplementary_plane_characters() {
-    let mut trie: PersistentARTrieChar<()> = PersistentARTrieChar::new();
+    let trie: PersistentARTrieChar<()> = PersistentARTrieChar::new();
 
     // Characters outside Basic Multilingual Plane (BMP)
     // These require surrogate pairs in UTF-16 but are single code points in Rust
@@ -552,7 +552,7 @@ fn test_supplementary_plane_characters() {
 
 #[test]
 fn test_zero_width_characters() {
-    let mut trie: PersistentARTrieChar<()> = PersistentARTrieChar::new();
+    let trie: PersistentARTrieChar<()> = PersistentARTrieChar::new();
 
     // Zero-width joiner (ZWJ) and zero-width non-joiner (ZWNJ)
     let with_zwj = "a\u{200D}b"; // a + ZWJ + b
@@ -576,7 +576,7 @@ fn test_zero_width_characters() {
 
 #[test]
 fn test_unicode_whitespace() {
-    let mut trie: PersistentARTrieChar<()> = PersistentARTrieChar::new();
+    let trie: PersistentARTrieChar<()> = PersistentARTrieChar::new();
 
     // Different types of spaces
     trie.insert("hello world"); // Regular space
@@ -614,7 +614,7 @@ fn test_deep_trie_no_stack_overflow() {
     let string_length = 500usize; // Deeper than default stack limit for many recursive calls
 
     {
-        let mut trie = PersistentARTrieChar::<u64>::create(&path).expect("Failed to create trie");
+        let trie = PersistentARTrieChar::<u64>::create(&path).expect("Failed to create trie");
 
         for i in 0..num_strings {
             // Generate a long string with varying characters
@@ -699,9 +699,9 @@ fn test_deep_trie_no_stack_overflow() {
             i
         );
 
-        // Verify the value via get()
+        // Verify the value via get() (F4: `get` now returns an owned `Option<V>`).
         if let Some(value) = reopened.get(&long_key) {
-            assert_eq!(*value, i as u64, "Value for string {} should match", i);
+            assert_eq!(value, i as u64, "Value for string {} should match", i);
         }
     }
 }
@@ -719,7 +719,7 @@ fn test_deep_unicode_trie_no_stack_overflow() {
     let string_length = 300usize; // Fewer characters but still deep
 
     {
-        let mut trie = PersistentARTrieChar::<u64>::create(&path).expect("Failed to create trie");
+        let trie = PersistentARTrieChar::<u64>::create(&path).expect("Failed to create trie");
 
         for i in 0..num_strings {
             // Generate a long Unicode string with CJK characters

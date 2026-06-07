@@ -36,7 +36,7 @@ fn stale_wal_backup_path(original_wal_path: &Path) -> PathBuf {
 }
 
 fn create_compacted_counter_snapshot(path: &Path, value: i64) {
-    let mut compacted = PersistentARTrie::<i64>::create(path).expect("create compacted snapshot");
+    let compacted = PersistentARTrie::<i64>::create(path).expect("create compacted snapshot");
     assert!(compacted.insert_with_value("counter", value));
     compacted
         .checkpoint()

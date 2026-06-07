@@ -184,7 +184,7 @@ fn byte_descriptor_reopen_roundtrip_preserves_reference_map() {
     let path = dir.path().join("byte_roundtrip.part");
 
     {
-        let mut trie = PersistentARTrie::<i32>::create(&path).expect("create byte trie");
+        let trie = PersistentARTrie::<i32>::create(&path).expect("create byte trie");
         assert!(trie.insert_with_value("alpha", 10));
         assert!(trie.insert_with_value("beta", 20));
         assert!(trie.insert_with_value("alpine", 30));
@@ -204,7 +204,7 @@ fn char_descriptor_reopen_roundtrip_preserves_reference_map_across_depths() {
     let path = dir.path().join("char_roundtrip.part");
 
     {
-        let mut trie = PersistentARTrieChar::<i32>::create(&path).expect("create char trie");
+        let trie = PersistentARTrieChar::<i32>::create(&path).expect("create char trie");
         trie.insert_with_value("alpha", 1).expect("insert alpha");
         trie.insert_with_value("beta", 2).expect("insert beta");
         trie.insert_with_value("café", 3).expect("insert cafe");
@@ -237,7 +237,7 @@ fn byte_invalid_root_descriptor_replays_wal_without_checkpoint_skip() {
     let path = dir.path().join("byte_bad_descriptor.part");
 
     {
-        let mut trie = PersistentARTrie::<i32>::create(&path).expect("create byte trie");
+        let trie = PersistentARTrie::<i32>::create(&path).expect("create byte trie");
         assert!(trie.insert_with_value("disk-only", 1));
         trie.checkpoint().expect("checkpoint byte trie");
     }
@@ -259,7 +259,7 @@ fn char_invalid_root_descriptor_replays_wal_without_checkpoint_skip() {
     let path = dir.path().join("char_bad_descriptor.part");
 
     {
-        let mut trie = PersistentARTrieChar::<i32>::create(&path).expect("create char trie");
+        let trie = PersistentARTrieChar::<i32>::create(&path).expect("create char trie");
         trie.insert_with_value("disk-only", 1)
             .expect("insert disk-only");
         trie.checkpoint().expect("checkpoint char trie");
@@ -283,7 +283,7 @@ fn invalid_arena_count_replays_wal_instead_of_trusting_checkpoint() {
     let char_path = dir.path().join("char_bad_arena_count.part");
 
     {
-        let mut trie = PersistentARTrie::<i32>::create(&byte_path).expect("create byte trie");
+        let trie = PersistentARTrie::<i32>::create(&byte_path).expect("create byte trie");
         assert!(trie.insert_with_value("disk-only", 1));
         trie.checkpoint().expect("checkpoint byte trie");
     }
@@ -293,7 +293,7 @@ fn invalid_arena_count_replays_wal_instead_of_trusting_checkpoint() {
     assert_byte_value(&reopened, "wal-only", 11);
 
     {
-        let mut trie = PersistentARTrieChar::<i32>::create(&char_path).expect("create char trie");
+        let trie = PersistentARTrieChar::<i32>::create(&char_path).expect("create char trie");
         trie.insert_with_value("disk-only", 1)
             .expect("insert disk-only");
         trie.checkpoint().expect("checkpoint char trie");
@@ -310,7 +310,7 @@ fn char_lazy_load_errors_are_result_errors_and_public_reads_fail_closed() {
     let path = dir.path().join("char_lazy_corrupt.part");
 
     {
-        let mut trie = PersistentARTrieChar::<i32>::create(&path).expect("create char trie");
+        let trie = PersistentARTrieChar::<i32>::create(&path).expect("create char trie");
         // F2-migrate: Bucket B — `corrupt_first_lazy_char_child` corrupts an on-disk
         // OWNED lazy child; the reopen must lazily fault owned children and surface the
         // corruption as an error. Pin the Owned regime so the owned-tree layout exists on

@@ -14,7 +14,6 @@
 
 #![cfg(feature = "parallel-merge")]
 
-use std::collections::HashMap;
 
 use rayon::prelude::*;
 
@@ -74,7 +73,7 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
                 for (term, other_value) in terms {
                     // Note: Reading from self is a concurrent read - safe because we're not mutating
                     let merged_value = if let Some(self_value) = self.get(&term) {
-                        merge_fn(self_value, &other_value)
+                        merge_fn(&self_value, &other_value)
                     } else {
                         other_value
                     };
@@ -156,7 +155,7 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
                 .par_iter()
                 .map(|item| {
                     let merged_value = if let Some(self_value) = self.get(&item.term) {
-                        merge_fn(self_value, &item.value)
+                        merge_fn(&self_value, &item.value)
                     } else {
                         item.value.clone()
                     };

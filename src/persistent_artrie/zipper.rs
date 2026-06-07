@@ -13,6 +13,8 @@ use super::bucket::StringBucket;
 use super::dict_impl::{PersistentARTrie, TrieRoot};
 use super::transitions::ChildNode;
 use super::SharedARTrie;
+// F4: the `.read()` compat shim on the collapsed `Arc<PersistentARTrie>` handle.
+use crate::persistent_artrie_core::shared_access::SharedTrieAccess;
 use crate::value::DictionaryValue;
 use crate::zipper::{DictZipper, ValuedDictZipper};
 
@@ -186,7 +188,7 @@ impl<V: DictionaryValue> DictZipper for PersistentARTrieZipper<V> {
 impl<V: DictionaryValue> PersistentARTrieZipper<V> {
     /// Check if a path exists in the trie, resolving DiskRefs as needed.
     fn has_path(&self, inner: &PersistentARTrie<V>, path: &[u8]) -> bool {
-        match &inner.root {
+        match &*inner.root.read() {
             TrieRoot::Bucket(bucket) => {
                 // For bucket root, check if any entry starts with or equals this path
                 self.bucket_has_path(bucket, path)
@@ -230,7 +232,7 @@ impl<V: DictionaryValue> PersistentARTrieZipper<V> {
 
     /// Check if position is final, resolving DiskRefs as needed.
     fn is_final_at_path(&self, inner: &PersistentARTrie<V>, path: &[u8]) -> bool {
-        match &inner.root {
+        match &*inner.root.read() {
             TrieRoot::Bucket(bucket) => bucket.contains(path),
             TrieRoot::ArtNode {
                 children, is_final, ..
@@ -254,7 +256,7 @@ impl<V: DictionaryValue> PersistentARTrieZipper<V> {
 
     /// Get all children (edge labels) at current path, resolving DiskRefs as needed.
     fn get_children_at_path(&self, inner: &PersistentARTrie<V>, path: &[u8]) -> Vec<u8> {
-        match &inner.root {
+        match &*inner.root.read() {
             TrieRoot::Bucket(bucket) => self.get_bucket_children(bucket, path),
             TrieRoot::ArtNode { children, .. } => {
                 if path.is_empty() {
@@ -469,13 +471,13 @@ mod tests {
 
     /// Helper function to create a zipper from a dict for tests.
     fn make_zipper<V: DictionaryValue>(dict: PersistentARTrie<V>) -> PersistentARTrieZipper<V> {
-        let shared: SharedARTrie<V> = Arc::new(RwLock::new(dict));
+        let shared: SharedARTrie<V> = Arc::new(dict);
         PersistentARTrieZipper::new(shared)
     }
 
     #[test]
     fn test_root_zipper_not_final() {
-        let mut dict: PersistentARTrie<()> = PersistentARTrie::new();
+        let dict: PersistentARTrie<()> = PersistentARTrie::new();
         dict.insert("test");
 
         let zipper = make_zipper(dict);
@@ -484,7 +486,7 @@ mod tests {
 
     #[test]
     fn test_descend_single_term() {
-        let mut dict: PersistentARTrie<()> = PersistentARTrie::new();
+        let dict: PersistentARTrie<()> = PersistentARTrie::new();
         dict.insert("cat");
 
         let zipper = make_zipper(dict);
@@ -498,7 +500,7 @@ mod tests {
 
     #[test]
     fn test_descend_nonexistent() {
-        let mut dict: PersistentARTrie<()> = PersistentARTrie::new();
+        let dict: PersistentARTrie<()> = PersistentARTrie::new();
         dict.insert("cat");
 
         let zipper = make_zipper(dict);
@@ -508,7 +510,7 @@ mod tests {
 
     #[test]
     fn test_children() {
-        let mut dict: PersistentARTrie<()> = PersistentARTrie::new();
+        let dict: PersistentARTrie<()> = PersistentARTrie::new();
         dict.insert("cat");
         dict.insert("car");
         dict.insert("can");
@@ -523,7 +525,7 @@ mod tests {
 
     #[test]
     fn test_path() {
-        let mut dict: PersistentARTrie<()> = PersistentARTrie::new();
+        let dict: PersistentARTrie<()> = PersistentARTrie::new();
         dict.insert("cat");
 
         let zipper = make_zipper(dict);
@@ -538,7 +540,7 @@ mod tests {
 
     #[test]
     fn test_empty_string() {
-        let mut dict: PersistentARTrie<()> = PersistentARTrie::new();
+        let dict: PersistentARTrie<()> = PersistentARTrie::new();
         dict.insert("");
         dict.insert("test");
 
@@ -548,7 +550,7 @@ mod tests {
 
     #[test]
     fn test_clone() {
-        let mut dict: PersistentARTrie<()> = PersistentARTrie::new();
+        let dict: PersistentARTrie<()> = PersistentARTrie::new();
         dict.insert("test");
 
         let zipper1 = make_zipper(dict);
@@ -562,7 +564,7 @@ mod tests {
     fn test_resolve_child_returns_borrowed_for_bucket() {
         use std::borrow::Cow;
 
-        let mut dict: PersistentARTrie<()> = PersistentARTrie::new();
+        let dict: PersistentARTrie<()> = PersistentARTrie::new();
         dict.insert("test");
 
         let bucket = super::StringBucket::new();
@@ -582,7 +584,7 @@ mod tests {
         use super::super::nodes::{Node, Node4};
         use std::borrow::Cow;
 
-        let mut dict: PersistentARTrie<()> = PersistentARTrie::new();
+        let dict: PersistentARTrie<()> = PersistentARTrie::new();
         dict.insert("test");
 
         let node = Node::N4(Box::new(Node4::new()));
@@ -601,7 +603,7 @@ mod tests {
     fn test_resolve_child_returns_none_for_disk_ref_without_manager() {
         use super::super::swizzled_ptr::SwizzledPtr;
 
-        let mut dict: PersistentARTrie<()> = PersistentARTrie::new();
+        let dict: PersistentARTrie<()> = PersistentARTrie::new();
         dict.insert("test");
 
         let ptr = SwizzledPtr::null();
@@ -615,7 +617,7 @@ mod tests {
     #[test]
     fn test_deep_navigation_with_many_terms() {
         // Test that navigation works correctly through deeply nested ART structures
-        let mut dict: PersistentARTrie<()> = PersistentARTrie::new();
+        let dict: PersistentARTrie<()> = PersistentARTrie::new();
 
         // Insert terms that will create nested ART nodes
         for i in 0..100 {
@@ -636,7 +638,7 @@ mod tests {
     #[test]
     fn test_children_with_many_terms() {
         // Test that children() correctly returns all child edges
-        let mut dict: PersistentARTrie<()> = PersistentARTrie::new();
+        let dict: PersistentARTrie<()> = PersistentARTrie::new();
 
         // Insert terms with different first bytes
         dict.insert("apple");
@@ -659,7 +661,7 @@ mod tests {
     #[test]
     fn test_recursive_has_path_through_nested_art() {
         // Ensure has_path works through multiple levels of ART nodes
-        let mut dict: PersistentARTrie<()> = PersistentARTrie::new();
+        let dict: PersistentARTrie<()> = PersistentARTrie::new();
 
         // Create terms that will generate nested ART structure
         for prefix in &["aa", "ab", "ac", "ad"] {

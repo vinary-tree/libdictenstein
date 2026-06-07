@@ -423,7 +423,7 @@ mod persistent {
     fn persistent_artrie_public_map_laws_match_reference() {
         let dir = tempdir().expect("tempdir");
         let path = dir.path().join("dict.part");
-        let mut trie = PersistentARTrie::<i32>::create(&path).expect("create trie");
+        let trie = PersistentARTrie::<i32>::create(&path).expect("create trie");
 
         let mut expected = BTreeMap::new();
         let mut probes = absent_probes();

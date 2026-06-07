@@ -42,7 +42,7 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
     /// Create a new empty trie (in-memory mode)
     pub fn new() -> Self {
         Self {
-            root: CharTrieRoot::Empty,
+            root: parking_lot::RwLock::new(CharTrieRoot::Empty),
             len: AtomicUsize::new(0),
             dirty: AtomicBool::new(false),
             buffer_manager: None,
@@ -51,7 +51,8 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
             next_lsn: std::sync::atomic::AtomicU64::new(1),
             committed_watermark: super::committed_watermark::CommittedWatermark::new(0),
             checkpoint_lock: std::sync::Arc::new(parking_lot::Mutex::new(())),
-            overlay_write_mode: super::overlay_write_mode::OverlayWriteMode::default(),
+            merge_lock: std::sync::Arc::new(parking_lot::Mutex::new(())),
+            overlay_write_mode: crate::persistent_artrie_core::shared_access::AtomicEnumCell::new(super::overlay_write_mode::OverlayWriteMode::default()),
             file_path: None,
             arena_manager: None,
             version: OptimisticVersion::new(),
@@ -60,12 +61,12 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
             structural_generation: std::sync::atomic::AtomicU64::new(0),
             retry_stats: RetryStats::new(),
             #[cfg(feature = "group-commit")]
-            group_commit: None,
-            memory_monitor: None,
+            group_commit: std::sync::Mutex::new(None),
+            memory_monitor: std::sync::Mutex::new(None),
             cache_stats: CacheStats::default(),
-            checkpoint_manager: None,
-            durability_policy: DurabilityPolicy::default(),
-            eviction_coordinator: None,
+            checkpoint_manager: std::sync::Mutex::new(None),
+            durability_policy: crate::persistent_artrie_core::shared_access::AtomicEnumCell::new(DurabilityPolicy::default()),
+            eviction_coordinator: std::sync::Mutex::new(None),
             prefetcher: crate::persistent_artrie::prefetch::Prefetcher::disabled(),
             _phantom: std::marker::PhantomData,
             lockfree_root: None,
@@ -121,7 +122,7 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
 
         // S5-12 EDIT 1: flip a fresh eligible-V trie to the overlay (no-op for arbitrary V).
         Self::apply_create_flip(Self {
-            root: CharTrieRoot::Empty,
+            root: parking_lot::RwLock::new(CharTrieRoot::Empty),
             len: AtomicUsize::new(0),
             dirty: AtomicBool::new(false),
             buffer_manager: Some(buffer_manager),
@@ -130,7 +131,8 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
             next_lsn: std::sync::atomic::AtomicU64::new(1),
             committed_watermark: super::committed_watermark::CommittedWatermark::new(0),
             checkpoint_lock: std::sync::Arc::new(parking_lot::Mutex::new(())),
-            overlay_write_mode: super::overlay_write_mode::OverlayWriteMode::default(),
+            merge_lock: std::sync::Arc::new(parking_lot::Mutex::new(())),
+            overlay_write_mode: crate::persistent_artrie_core::shared_access::AtomicEnumCell::new(super::overlay_write_mode::OverlayWriteMode::default()),
             file_path: Some(path.to_path_buf()),
             arena_manager: Some(arena_manager),
             version: OptimisticVersion::new(),
@@ -139,12 +141,12 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
             structural_generation: std::sync::atomic::AtomicU64::new(0),
             retry_stats: RetryStats::new(),
             #[cfg(feature = "group-commit")]
-            group_commit: None,
-            memory_monitor: None,
+            group_commit: std::sync::Mutex::new(None),
+            memory_monitor: std::sync::Mutex::new(None),
             cache_stats: CacheStats::default(),
-            checkpoint_manager: None,
-            durability_policy: DurabilityPolicy::default(),
-            eviction_coordinator: None,
+            checkpoint_manager: std::sync::Mutex::new(None),
+            durability_policy: crate::persistent_artrie_core::shared_access::AtomicEnumCell::new(DurabilityPolicy::default()),
+            eviction_coordinator: std::sync::Mutex::new(None),
             prefetcher: crate::persistent_artrie::prefetch::Prefetcher::new(),
             _phantom: std::marker::PhantomData,
             lockfree_root: None,
@@ -191,7 +193,7 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
 
         // S5-12 EDIT 1: flip a fresh eligible-V trie to the overlay (no-op for arbitrary V).
         Self::apply_create_flip(Self {
-            root: CharTrieRoot::Empty,
+            root: parking_lot::RwLock::new(CharTrieRoot::Empty),
             len: AtomicUsize::new(0),
             dirty: AtomicBool::new(false),
             buffer_manager: Some(buffer_manager),
@@ -200,7 +202,8 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
             next_lsn: std::sync::atomic::AtomicU64::new(1),
             committed_watermark: super::committed_watermark::CommittedWatermark::new(0),
             checkpoint_lock: std::sync::Arc::new(parking_lot::Mutex::new(())),
-            overlay_write_mode: super::overlay_write_mode::OverlayWriteMode::default(),
+            merge_lock: std::sync::Arc::new(parking_lot::Mutex::new(())),
+            overlay_write_mode: crate::persistent_artrie_core::shared_access::AtomicEnumCell::new(super::overlay_write_mode::OverlayWriteMode::default()),
             file_path: Some(path.to_path_buf()),
             arena_manager: Some(arena_manager),
             version: OptimisticVersion::new(),
@@ -209,12 +212,12 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
             structural_generation: std::sync::atomic::AtomicU64::new(0),
             retry_stats: RetryStats::new(),
             #[cfg(feature = "group-commit")]
-            group_commit: None,
-            memory_monitor: None,
+            group_commit: std::sync::Mutex::new(None),
+            memory_monitor: std::sync::Mutex::new(None),
             cache_stats: CacheStats::default(),
-            checkpoint_manager: None,
-            durability_policy: DurabilityPolicy::default(),
-            eviction_coordinator: None,
+            checkpoint_manager: std::sync::Mutex::new(None),
+            durability_policy: crate::persistent_artrie_core::shared_access::AtomicEnumCell::new(DurabilityPolicy::default()),
+            eviction_coordinator: std::sync::Mutex::new(None),
             prefetcher: crate::persistent_artrie::prefetch::Prefetcher::new(),
             _phantom: std::marker::PhantomData,
             lockfree_root: None,
@@ -271,7 +274,7 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
 
         // S5-12 EDIT 1: flip a fresh eligible-V trie to the overlay (no-op for arbitrary V).
         Self::apply_create_flip(Self {
-            root: CharTrieRoot::Empty,
+            root: parking_lot::RwLock::new(CharTrieRoot::Empty),
             len: AtomicUsize::new(0),
             dirty: AtomicBool::new(false),
             buffer_manager: Some(buffer_manager),
@@ -280,7 +283,8 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
             next_lsn: std::sync::atomic::AtomicU64::new(1),
             committed_watermark: super::committed_watermark::CommittedWatermark::new(0),
             checkpoint_lock: std::sync::Arc::new(parking_lot::Mutex::new(())),
-            overlay_write_mode: super::overlay_write_mode::OverlayWriteMode::default(),
+            merge_lock: std::sync::Arc::new(parking_lot::Mutex::new(())),
+            overlay_write_mode: crate::persistent_artrie_core::shared_access::AtomicEnumCell::new(super::overlay_write_mode::OverlayWriteMode::default()),
             file_path: Some(path.to_path_buf()),
             arena_manager: Some(arena_manager),
             version: OptimisticVersion::new(),
@@ -289,12 +293,12 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
             structural_generation: std::sync::atomic::AtomicU64::new(0),
             retry_stats: RetryStats::new(),
             #[cfg(feature = "group-commit")]
-            group_commit: None,
-            memory_monitor: None,
+            group_commit: std::sync::Mutex::new(None),
+            memory_monitor: std::sync::Mutex::new(None),
             cache_stats: CacheStats::default(),
-            checkpoint_manager: None,
-            durability_policy: DurabilityPolicy::default(),
-            eviction_coordinator: None,
+            checkpoint_manager: std::sync::Mutex::new(None),
+            durability_policy: crate::persistent_artrie_core::shared_access::AtomicEnumCell::new(DurabilityPolicy::default()),
+            eviction_coordinator: std::sync::Mutex::new(None),
             prefetcher: crate::persistent_artrie::prefetch::Prefetcher::new(),
             _phantom: std::marker::PhantomData,
             lockfree_root: None,
@@ -385,7 +389,7 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
         let arena_manager = Arc::new(RwLock::new(arena_manager));
 
         let mut inner = Self {
-            root: CharTrieRoot::Empty,
+            root: parking_lot::RwLock::new(CharTrieRoot::Empty),
             len: AtomicUsize::new(0), // Updated from disk or WAL replay
             dirty: AtomicBool::new(false),
             buffer_manager: Some(buffer_manager.clone()),
@@ -396,7 +400,8 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
                 next_lsn.saturating_sub(1),
             ),
             checkpoint_lock: std::sync::Arc::new(parking_lot::Mutex::new(())),
-            overlay_write_mode: super::overlay_write_mode::OverlayWriteMode::default(),
+            merge_lock: std::sync::Arc::new(parking_lot::Mutex::new(())),
+            overlay_write_mode: crate::persistent_artrie_core::shared_access::AtomicEnumCell::new(super::overlay_write_mode::OverlayWriteMode::default()),
             file_path: Some(path.to_path_buf()),
             arena_manager: Some(arena_manager),
             version: OptimisticVersion::new(),
@@ -405,12 +410,12 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
             structural_generation: std::sync::atomic::AtomicU64::new(0),
             retry_stats: RetryStats::new(),
             #[cfg(feature = "group-commit")]
-            group_commit: None,
-            memory_monitor: None,
+            group_commit: std::sync::Mutex::new(None),
+            memory_monitor: std::sync::Mutex::new(None),
             cache_stats: CacheStats::default(),
-            checkpoint_manager: None,
-            durability_policy: DurabilityPolicy::default(),
-            eviction_coordinator: None,
+            checkpoint_manager: std::sync::Mutex::new(None),
+            durability_policy: crate::persistent_artrie_core::shared_access::AtomicEnumCell::new(DurabilityPolicy::default()),
+            eviction_coordinator: std::sync::Mutex::new(None),
             prefetcher: crate::persistent_artrie::prefetch::Prefetcher::new(),
             _phantom: std::marker::PhantomData,
             lockfree_root: None,
@@ -433,7 +438,7 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
             let root_swizzled = SwizzledPtr::from_raw(root_ptr);
             match inner.load_root_from_disk(&buffer_manager, &root_swizzled, None) {
                 Ok((root, len)) => {
-                    inner.root = root;
+                    *inner.root.get_mut() = root;
                     inner.len.store(len, AtomicOrdering::Release);
                     loaded_from_disk = true;
                 }
@@ -632,7 +637,7 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
         let arena_manager = Arc::new(RwLock::new(arena_manager));
 
         let mut inner = Self {
-            root: CharTrieRoot::Empty,
+            root: parking_lot::RwLock::new(CharTrieRoot::Empty),
             len: AtomicUsize::new(0), // Updated from disk or WAL replay
             dirty: AtomicBool::new(false),
             buffer_manager: Some(buffer_manager.clone()),
@@ -643,7 +648,8 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
                 next_lsn.saturating_sub(1),
             ),
             checkpoint_lock: std::sync::Arc::new(parking_lot::Mutex::new(())),
-            overlay_write_mode: super::overlay_write_mode::OverlayWriteMode::default(),
+            merge_lock: std::sync::Arc::new(parking_lot::Mutex::new(())),
+            overlay_write_mode: crate::persistent_artrie_core::shared_access::AtomicEnumCell::new(super::overlay_write_mode::OverlayWriteMode::default()),
             file_path: Some(path.to_path_buf()),
             arena_manager: Some(arena_manager),
             version: OptimisticVersion::new(),
@@ -652,12 +658,12 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
             structural_generation: std::sync::atomic::AtomicU64::new(0),
             retry_stats: RetryStats::new(),
             #[cfg(feature = "group-commit")]
-            group_commit: None,
-            memory_monitor: None,
+            group_commit: std::sync::Mutex::new(None),
+            memory_monitor: std::sync::Mutex::new(None),
             cache_stats: CacheStats::default(),
-            checkpoint_manager: None,
-            durability_policy: DurabilityPolicy::default(),
-            eviction_coordinator: None,
+            checkpoint_manager: std::sync::Mutex::new(None),
+            durability_policy: crate::persistent_artrie_core::shared_access::AtomicEnumCell::new(DurabilityPolicy::default()),
+            eviction_coordinator: std::sync::Mutex::new(None),
             prefetcher: crate::persistent_artrie::prefetch::Prefetcher::new(),
             _phantom: std::marker::PhantomData,
             lockfree_root: None,
@@ -679,7 +685,7 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
             let root_swizzled = SwizzledPtr::from_raw(root_ptr);
             match inner.load_root_from_disk(&buffer_manager, &root_swizzled, eager_depth) {
                 Ok((root, len)) => {
-                    inner.root = root;
+                    *inner.root.get_mut() = root;
                     inner.len.store(len, AtomicOrdering::Release);
                     loaded_from_disk = true;
                 }
@@ -1424,7 +1430,7 @@ mod s5_12_flip_ctor_gate {
         {
             let dir = scratch("s5-12-create-string");
             let path = dir.path().join("t.artc");
-            let mut trie = PersistentARTrieChar::<String>::create(&path).expect("create<String>");
+            let trie = PersistentARTrieChar::<String>::create(&path).expect("create<String>");
             assert!(
                 trie.route_overlay(),
                 "create<String> flips to the overlay (arbitrary V is the default)"
@@ -1457,7 +1463,7 @@ mod s5_12_flip_ctor_gate {
             let path = dir.path().join("t.artc");
             let terms: Vec<String> = (0..40u32).map(|i| format!("term{i:03}")).collect();
             {
-                let mut trie = PersistentARTrieChar::<()>::create(&path).expect("create<()>");
+                let trie = PersistentARTrieChar::<()>::create(&path).expect("create<()>");
                 // create-flip already ran enable_lockfree + LockFreeOverlay; default
                 // durability is Immediate (set it explicitly to match S5 conventions).
                 trie.set_durability_policy(
@@ -1492,7 +1498,7 @@ mod s5_12_flip_ctor_gate {
             let entries: Vec<(String, u64)> =
                 (0..40u32).map(|i| (format!("k{i:03}"), (i as u64) + 1)).collect();
             {
-                let mut trie = PersistentARTrieChar::<u64>::create(&path).expect("create<u64>");
+                let trie = PersistentARTrieChar::<u64>::create(&path).expect("create<u64>");
                 trie.set_durability_policy(
                     crate::persistent_artrie_core::durability::DurabilityPolicy::Immediate,
                 );
@@ -1531,7 +1537,7 @@ mod s5_12_flip_ctor_gate {
             .map(|i| (format!("w{i:03}"), format!("v{i:03}")))
             .collect();
         {
-            let mut trie = PersistentARTrieChar::<String>::create(&path).expect("create<String>");
+            let trie = PersistentARTrieChar::<String>::create(&path).expect("create<String>");
             trie.kill_switch_to_owned();
             assert!(!trie.route_overlay(), "String trie is on the owned path");
             for (k, v) in &entries {
@@ -1578,7 +1584,7 @@ mod s5_12_flip_ctor_gate {
                 .map(|(t, v)| (t.to_string(), v))
                 .collect();
         {
-            let mut trie = PersistentARTrieChar::<u64>::create(&path).expect("create<u64>");
+            let trie = PersistentARTrieChar::<u64>::create(&path).expect("create<u64>");
             trie.set_durability_policy(
                 crate::persistent_artrie_core::durability::DurabilityPolicy::Immediate,
             );

@@ -91,14 +91,11 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     ///
     /// If verification fails at step 2, the WAL is NOT truncated,
     /// allowing recovery from the existing WAL on next open.
-    pub fn checkpoint(&mut self) -> Result<()> {
-        // Owned/blocking checkpoint: the whole sequence runs under the caller's
-        // exclusive `&mut self` borrow (= the trie write lock held throughout
-        // when reached via `SharedCharARTrie`'s write guard). The non-blocking
-        // `SharedCharARTrie::checkpoint` instead captures the snapshot under a
-        // write guard, atomically DOWNGRADES it to a read guard, then runs
-        // `publish_durable_and_reclaim` so concurrent readers proceed during the
-        // (fsync-bound) publish phase.
+    pub fn checkpoint(&self) -> Result<()> {
+        // **F4:** `&self` — delegates to the now-`&self`
+        // `checkpoint_route_split`. The owned capture takes OR-read internally; the
+        // `Shared*` trait `checkpoint()` wrapper holds CK to serialize concurrent
+        // checkpoints. (Reachable on owned tries + via `force_epoch_checkpoint`.)
         //
         // **M1 (overlay-durable-architecture.md, trait 3):** the RES-4 route-split
         // DECISION (under the overlay write mode the OWNED tree is empty — the live
@@ -144,7 +141,7 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
         // pressure or an explicit force_eviction. Built only when eviction is
         // enabled; a no-op otherwise.
         if let Some(registry) = snapshot.eviction_registry {
-            if let Some(ref coordinator) = self.eviction_coordinator {
+            if let Some(coordinator) = self.eviction_coordinator.lock().expect("eviction_coordinator mutex poisoned").as_ref() {
                 coordinator.update_disk_registry(registry);
             }
         }
@@ -286,11 +283,18 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
 
         let mut eviction_registry = self
             .eviction_coordinator
+            .lock()
+            .expect("eviction_coordinator mutex poisoned")
             .as_ref()
             .map(|_| DiskLocationRegistry::new());
 
-        // Serialize the trie root and get a descriptor
-        let (root_type, root_ptr, is_final) = match &self.root {
+        // Serialize the trie root and get a descriptor. **F4 (OR read):** the
+        // owned-arm capture reads the owned tree under the inner `root` RwLock for
+        // READ — admits concurrent owned readers, excludes concurrent owned writers
+        // (the exclusion the deleted write→read downgrade used to provide). Held only
+        // for the recursive serialize; released after the match.
+        let owned_root = self.root.read();
+        let (root_type, root_ptr, is_final) = match &*owned_root {
             CharTrieRoot::Empty => (ROOT_TYPE_EMPTY, 0u64, false),
             CharTrieRoot::Node(node) => {
                 // Recursively serialize the node and all children. `path` tracks
@@ -305,6 +309,7 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
                 (ROOT_TYPE_NODE, ptr.to_raw(), node.is_final())
             }
         };
+        drop(owned_root);
 
         // Flush arenas to disk FIRST to get their block_ids
         // (writes dirty arenas to buffer manager)
@@ -373,6 +378,8 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
 
         let mut eviction_registry = self
             .eviction_coordinator
+            .lock()
+            .expect("eviction_coordinator mutex poisoned")
             .as_ref()
             .map(|_| DiskLocationRegistry::new());
 
@@ -733,7 +740,7 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
         //     `RwLock::write` swap with ZERO fsync (no per-checkpoint fsync-count
         //     asymmetry vs the eviction-OFF publisher).
         if let Some(registry) = snapshot.eviction_registry {
-            if let Some(ref coordinator) = self.eviction_coordinator {
+            if let Some(coordinator) = self.eviction_coordinator.lock().expect("eviction_coordinator mutex poisoned").as_ref() {
                 coordinator.update_disk_registry(registry);
             }
         }
@@ -1640,7 +1647,7 @@ mod immutable_checkpoint_correspondence {
         let dir_o = scratch("imm-ckpt-owned");
         let path_o = dir_o.path().join("owned.artc");
         {
-            let mut owned = PersistentARTrieChar::<()>::create(&path_o).expect("create owned");
+            let owned = PersistentARTrieChar::<()>::create(&path_o).expect("create owned");
             for t in &terms {
                 owned.insert(t).expect("owned insert");
             }
@@ -1720,7 +1727,7 @@ mod immutable_checkpoint_correspondence {
         let dir_o = scratch("imm-ckpt-owned-u64");
         let path_o = dir_o.path().join("owned.artc");
         {
-            let mut owned = PersistentARTrieChar::<u64>::create(&path_o).expect("create owned u64");
+            let owned = PersistentARTrieChar::<u64>::create(&path_o).expect("create owned u64");
             for (t, v) in &entries {
                 owned.insert_with_value(t, *v);
             }
@@ -1841,7 +1848,7 @@ mod overlay_faultin_load_roundtrip {
     {
         let dir = scratch(prefix);
         let path = dir.path().join("t.artc");
-        let mut trie = PersistentARTrieChar::<V>::create(&path).expect("create disk-backed trie");
+        let trie = PersistentARTrieChar::<V>::create(&path).expect("create disk-backed trie");
 
         // Serialize standalone child leaves to obtain real OnDisk SwizzledPtrs.
         let mut original = PersistentCharNode::<V>::new().as_final();
@@ -1948,7 +1955,7 @@ mod immutable_recovery_correspondence {
         let dir = scratch("phase-c-membership");
         let path = dir.path().join("t.artc");
         {
-            let mut owned = PersistentARTrieChar::<()>::create(&path).expect("create");
+            let owned = PersistentARTrieChar::<()>::create(&path).expect("create");
             for t in &terms {
                 owned.insert(t).expect("insert");
             }
@@ -2001,7 +2008,7 @@ mod immutable_recovery_correspondence {
         let dir = scratch("phase-c-counter");
         let path = dir.path().join("t.artc");
         {
-            let mut owned = PersistentARTrieChar::<u64>::create(&path).expect("create");
+            let owned = PersistentARTrieChar::<u64>::create(&path).expect("create");
             for (t, v) in &entries {
                 owned.insert_with_value(t, *v);
             }
@@ -2190,7 +2197,7 @@ mod multi_writer_checkpointer_soak {
 
         // Build an OWNED u64 trie (no overlay), checkpoint, reopen (recovered owned).
         {
-            let mut owned = PersistentARTrieChar::<u64>::create(&path).expect("create");
+            let owned = PersistentARTrieChar::<u64>::create(&path).expect("create");
             for (t, v) in &entries {
                 owned.insert_with_value(t, *v);
             }
@@ -2229,7 +2236,7 @@ mod multi_writer_checkpointer_soak {
             .map(String::from)
             .collect();
         {
-            let mut owned = PersistentARTrieChar::<()>::create(&path).expect("create");
+            let owned = PersistentARTrieChar::<()>::create(&path).expect("create");
             for t in &terms {
                 owned.insert(t).expect("insert");
             }
@@ -2264,7 +2271,7 @@ mod multi_writer_checkpointer_soak {
             .map(|(t, v)| (t.to_string(), v))
             .collect();
         {
-            let mut owned = PersistentARTrieChar::<u64>::create(&path).expect("create");
+            let owned = PersistentARTrieChar::<u64>::create(&path).expect("create");
             for (t, v) in &entries {
                 owned.insert_with_value(t, *v);
             }
@@ -2543,6 +2550,8 @@ mod immutable_eviction_checkpoint_correspondence {
 
     use crate::artrie_trait::EvictableARTrie;
     use crate::persistent_artrie::eviction::EvictionConfig;
+    // F4: the `.read()/.write()` compat shim on the collapsed handle.
+    use crate::persistent_artrie_core::shared_access::SharedTrieAccess;
     use crate::persistent_artrie_char::{PersistentARTrieChar, SharedCharARTrie};
     use crate::persistent_artrie_core::durability::DurabilityPolicy;
     use crate::Dictionary;
@@ -2582,15 +2591,16 @@ mod immutable_eviction_checkpoint_correspondence {
         }
 
         let acknowledged: Vec<String> = {
-            // Build the trie via the production `SharedCharARTrie` handle so the
-            // `EvictableARTrie` surface (enable/force/observe) is reachable.
-            let shared: SharedCharARTrie<()> =
-                crate::artrie_trait::ARTrie::create(&path).expect("create eviction overlay trie");
-            {
-                let mut guard = shared.write();
-                guard.set_durability_policy(DurabilityPolicy::Immediate);
-                guard.enable_lockfree();
-            }
+            // F4: `enable_lockfree` is a Tier-1 PRE-SHARE configurator (`&mut self`),
+            // so configure the OWNED trie BEFORE wrapping it in the `Arc` handle.
+            // `set_durability_policy` is now `&self`, but doing both pre-share keeps
+            // the lifecycle explicit. Then the `EvictableARTrie` surface
+            // (enable/force/observe) is reachable on the shared handle.
+            let mut owned: PersistentARTrieChar<()> =
+                PersistentARTrieChar::create(&path).expect("create eviction overlay trie");
+            owned.set_durability_policy(DurabilityPolicy::Immediate);
+            owned.enable_lockfree();
+            let shared: SharedCharARTrie<()> = std::sync::Arc::new(owned);
             // Enable eviction (production wiring: shares the trie epoch manager).
             shared
                 .enable_eviction(EvictionConfig::without_memory_monitor())
@@ -2706,13 +2716,13 @@ mod immutable_eviction_checkpoint_correspondence {
         let per_writer = 80usize; // 320 keys — bounded, seconds.
 
         let acknowledged: Vec<String> = {
-            let shared: SharedCharARTrie<()> =
-                crate::artrie_trait::ARTrie::create(&path).expect("create");
-            {
-                let mut guard = shared.write();
-                guard.set_durability_policy(DurabilityPolicy::Immediate);
-                guard.enable_lockfree();
-            }
+            // F4: configure the OWNED trie pre-share (`enable_lockfree` is Tier-1
+            // `&mut self`), then wrap in the `Arc` handle.
+            let mut owned: PersistentARTrieChar<()> =
+                PersistentARTrieChar::create(&path).expect("create");
+            owned.set_durability_policy(DurabilityPolicy::Immediate);
+            owned.enable_lockfree();
+            let shared: SharedCharARTrie<()> = std::sync::Arc::new(owned);
             shared
                 .enable_eviction(EvictionConfig::without_memory_monitor())
                 .expect("enable eviction");

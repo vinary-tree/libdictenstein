@@ -1395,7 +1395,7 @@ mod tests {
 
         // Phase 2: Reopen and verify WAL recovery replayed batch insert
         {
-            let (vocab, report) = PersistentVocabARTrie::open_with_recovery(&path).unwrap();
+            let (vocab, _report) = PersistentVocabARTrie::open_with_recovery(&path).unwrap();
 
             // Should have recovered all 3 terms from WAL
             assert_eq!(vocab.len(), 3, "WAL recovery should restore all 3 terms");

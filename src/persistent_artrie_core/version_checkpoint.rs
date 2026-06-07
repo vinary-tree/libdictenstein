@@ -673,7 +673,7 @@ mod tests {
         let v1 = manager.create_version(100, 50);
         manager.mark_durable(v1, 0x1234);
 
-        let v2 = manager.create_version(200, 75);
+        let _v2 = manager.create_version(200, 75);
         // v2 not durable - simulates crash before sync
 
         let recovered = manager

@@ -61,14 +61,14 @@ fn wal_len(path: &Path) -> u64 {
 fn assert_char_value(dict: &PersistentARTrieChar<i32>, term: &str, value: i32) {
     assert!(dict.contains(term), "expected char term: {term}");
     assert_eq!(
-        dict.get(term).copied(),
+        dict.get(term),
         Some(value),
         "char value for {term}"
     );
 }
 
 fn build_checkpointed_char_trie(path: &Path) {
-    let mut trie = PersistentARTrieChar::<i32>::create(path).expect("create char trie");
+    let trie = PersistentARTrieChar::<i32>::create(path).expect("create char trie");
     // F2-migrate: Bucket B — this whole suite exercises the OWNED-tree lazy-load path
     // (`corrupt_first_lazy_char_child` navigates the on-disk owned arena; the reopen must
     // lazily fault owned children + surface their corruption). Under the lock-free
@@ -146,7 +146,7 @@ fn char_lazy_insert_error_returns_err_before_wal_append() {
     let new_term = format!("{corrupted_query}-new");
     let wal_len_before = wal_len(&path);
 
-    let mut reopened = PersistentARTrieChar::<i32>::open(&path).expect("lazy reopen char trie");
+    let reopened = PersistentARTrieChar::<i32>::open(&path).expect("lazy reopen char trie");
     assert!(
         reopened.insert(&new_term).is_err(),
         "insert should surface lazy-load corruption"
@@ -178,7 +178,7 @@ fn char_lazy_value_insert_and_remove_errors_do_not_append_wal() {
     let new_term = format!("{corrupted_query}-valued");
     let wal_len_before = wal_len(&path);
 
-    let mut reopened = PersistentARTrieChar::<i32>::open(&path).expect("lazy reopen char trie");
+    let reopened = PersistentARTrieChar::<i32>::open(&path).expect("lazy reopen char trie");
     assert!(
         reopened.insert_with_value(&new_term, 99).is_err(),
         "value insert should surface lazy-load corruption"
@@ -207,7 +207,7 @@ fn char_lazy_duplicate_insert_is_noop_without_wal_append() {
     build_checkpointed_char_trie(&path);
     let wal_len_before = wal_len(&path);
 
-    let mut reopened = PersistentARTrieChar::<i32>::open(&path).expect("lazy reopen char trie");
+    let reopened = PersistentARTrieChar::<i32>::open(&path).expect("lazy reopen char trie");
     assert_eq!(
         reopened.insert("alpha").expect("duplicate insert"),
         false,
@@ -228,7 +228,7 @@ fn char_successful_lazy_mutations_replay_after_reopen() {
     build_checkpointed_char_trie(&path);
 
     {
-        let mut reopened = PersistentARTrieChar::<i32>::open(&path).expect("lazy reopen char trie");
+        let reopened = PersistentARTrieChar::<i32>::open(&path).expect("lazy reopen char trie");
         assert_eq!(
             reopened
                 .insert_with_value("alphabet", 10)

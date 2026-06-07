@@ -56,7 +56,7 @@ fn wal_len(path: &Path) -> u64 {
 }
 
 fn seed_checkpointed_char_trie(path: &Path, reference: &BTreeMap<String, i32>) {
-    let mut trie = PersistentARTrieChar::<i32>::create(path).expect("create char trie");
+    let trie = PersistentARTrieChar::<i32>::create(path).expect("create char trie");
     for (term, value) in reference {
         trie.upsert(term, *value).expect("seed char trie");
     }
@@ -153,7 +153,7 @@ fn char_remove_prefix_batched_survives_reopen_without_checkpoint_for_batch_sizes
         seed_checkpointed_char_trie(&path, &expected);
 
         {
-            let mut trie = PersistentARTrieChar::<i32>::open(&path).expect("open char trie");
+            let trie = PersistentARTrieChar::<i32>::open(&path).expect("open char trie");
             let removed = trie
                 .remove_prefix_batched("app", batch_size)
                 .expect("remove prefix");
@@ -183,7 +183,7 @@ fn char_remove_prefix_batched_replays_every_durable_wal_prefix() {
     // Bucket-A `survives_reopen` test, which legitimately runs on the overlay, so this
     // pin is inlined here rather than applied to the shared helper.)
     {
-        let mut trie = PersistentARTrieChar::<i32>::create(&path).expect("create char trie");
+        let trie = PersistentARTrieChar::<i32>::create(&path).expect("create char trie");
         trie.kill_switch_to_owned();
         for (term, value) in &reference {
             trie.upsert(term, *value).expect("seed char trie");
@@ -196,7 +196,7 @@ fn char_remove_prefix_batched_replays_every_durable_wal_prefix() {
     let base_record_count = wal_record_spans(&base_wal_bytes).len();
 
     {
-        let mut trie = PersistentARTrieChar::<i32>::open(&path).expect("open char trie");
+        let trie = PersistentARTrieChar::<i32>::open(&path).expect("open char trie");
         let expected_removed = reference
             .keys()
             .filter(|term| term.starts_with("app"))
@@ -283,7 +283,7 @@ fn write_block(path: &Path, block_id: u32, block: &[u8]) {
 }
 
 fn build_checkpointed_lazy_fixture(path: &Path) {
-    let mut trie = PersistentARTrieChar::<i32>::create(path).expect("create char trie");
+    let trie = PersistentARTrieChar::<i32>::create(path).expect("create char trie");
     // F2-migrate: Bucket B — the sole caller corrupts an on-disk OWNED lazy child and
     // asserts the lazy prefix collection surfaces the error before any WAL append. Pin
     // the Owned regime so the owned-tree layout exists and the reopen stays owned. No-op
@@ -358,7 +358,7 @@ fn char_remove_prefix_lazy_collection_error_preserves_wal_and_unaffected_terms()
         .to_string();
     let before_wal = wal_len(&path);
 
-    let mut reopened = PersistentARTrieChar::<i32>::open(&path).expect("lazy reopen char trie");
+    let reopened = PersistentARTrieChar::<i32>::open(&path).expect("lazy reopen char trie");
     assert!(
         reopened.remove_prefix_batched(&prefix, 1).is_err(),
         "prefix removal should surface lazy collection corruption"
@@ -375,7 +375,7 @@ fn char_remove_prefix_lazy_collection_error_preserves_wal_and_unaffected_terms()
         ("alpha", 1)
     };
     assert!(reopened.contains(unaffected.0), "unaffected term remains");
-    assert_eq!(reopened.get(unaffected.0).copied(), Some(unaffected.1));
+    assert_eq!(reopened.get(unaffected.0), Some(unaffected.1));
 }
 
 #[test]

@@ -40,7 +40,7 @@ fn byte_corruption_rebuild_retains_active_wal_batch_and_remove() {
     let path = dir.path().join("byte_active.part");
 
     {
-        let mut trie = PersistentARTrie::<i32>::create(&path).expect("create byte trie");
+        let trie = PersistentARTrie::<i32>::create(&path).expect("create byte trie");
         let inserted = trie.insert_batch(&[
             ("keep".to_string(), Some(10)),
             ("remove-me".to_string(), Some(20)),

@@ -9,6 +9,7 @@
 #![allow(deprecated)]
 
 use libdictenstein::persistent_artrie::PersistentARTrie;
+use libdictenstein::persistent_artrie_core::shared_access::SharedTrieAccess;
 #[cfg(feature = "parallel-merge")]
 use libdictenstein::persistent_artrie::{SharedARTrie, SharedARTrieParallelExt};
 #[cfg(feature = "parallel-merge")]
@@ -28,7 +29,7 @@ fn map_from(entries: &[(&str, i32)]) -> BTreeMap<String, i32> {
 }
 
 fn build_trie(entries: &BTreeMap<String, i32>) -> PersistentARTrie<i32> {
-    let mut trie = PersistentARTrie::new();
+    let trie = PersistentARTrie::new();
     for (term, value) in entries {
         trie.insert_with_value(term, *value);
     }
@@ -218,7 +219,7 @@ fn grouped_batched_merge_matches_ordinary_batched_merge() {
 fn build_shared_trie(path: &Path, entries: &BTreeMap<String, i32>) -> SharedARTrie<i32> {
     let trie = SharedARTrie::create(path).expect("create shared trie");
     {
-        let mut guard = trie.write();
+        let guard = trie.write();
         for (term, value) in entries {
             guard.insert_with_value(term, *value);
         }

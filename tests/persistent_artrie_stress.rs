@@ -95,7 +95,7 @@ fn test_stress_6k_diverse_terms() {
     let unique_terms: HashSet<_> = terms.iter().cloned().collect();
 
     {
-        let mut dict = PersistentARTrie::<i32>::create(&path).expect("create dict");
+        let dict = PersistentARTrie::<i32>::create(&path).expect("create dict");
 
         // Insert all terms
         for (i, term) in unique_terms.iter().enumerate() {
@@ -158,7 +158,7 @@ fn test_stress_highly_diverse_terms() {
     let terms = generate_diverse_terms(6_500);
 
     {
-        let mut dict = PersistentARTrie::<()>::create(&path).expect("create dict");
+        let dict = PersistentARTrie::<()>::create(&path).expect("create dict");
 
         for term in &terms {
             dict.insert(term);
@@ -195,7 +195,7 @@ fn test_stress_mixed_operations() {
     let temp_dir = TempDir::new().expect("temp dir");
     let path = temp_dir.path().join("stress_mixed");
 
-    let mut dict = PersistentARTrie::<i32>::create(&path).expect("create dict");
+    let dict = PersistentARTrie::<i32>::create(&path).expect("create dict");
 
     let mut expected: HashSet<String> = HashSet::new();
 
@@ -253,7 +253,7 @@ fn test_stress_checkpoint_cycles() {
 
     for cycle in 0..25 {
         {
-            let mut dict = if cycle == 0 {
+            let dict = if cycle == 0 {
                 PersistentARTrie::<i32>::create(&path).expect("create dict")
             } else {
                 PersistentARTrie::<i32>::open(&path).expect("reopen dict")
@@ -315,7 +315,7 @@ fn test_stress_rapid_checkpoints() {
     let temp_dir = TempDir::new().expect("temp dir");
     let path = temp_dir.path().join("stress_rapid");
 
-    let mut dict = PersistentARTrie::<i32>::create(&path).expect("create dict");
+    let dict = PersistentARTrie::<i32>::create(&path).expect("create dict");
 
     let alphabet: Vec<char> = ('a'..='z').collect();
 
@@ -354,7 +354,7 @@ fn test_stress_large_terms() {
     let temp_dir = TempDir::new().expect("temp dir");
     let path = temp_dir.path().join("stress_large");
 
-    let mut dict = PersistentARTrie::<i32>::create(&path).expect("create dict");
+    let dict = PersistentARTrie::<i32>::create(&path).expect("create dict");
     // F2 flag-1: the overlay spine is UN-path-compressed (one node per char), so a
     // 500-char term builds a ~500-deep structure. The value-write INSERT
     // (`build_value_path_recursive`) is ITERATIVE (no stack growth with term length),
@@ -407,7 +407,7 @@ fn test_stress_shared_prefix() {
     let temp_dir = TempDir::new().expect("temp dir");
     let path = temp_dir.path().join("stress_prefix");
 
-    let mut dict = PersistentARTrie::<i32>::create(&path).expect("create dict");
+    let dict = PersistentARTrie::<i32>::create(&path).expect("create dict");
 
     // Insert 200 terms with shared prefix (within bucket capacity)
     let terms = generate_shared_prefix_terms("common_prefix_", 200);
@@ -447,7 +447,7 @@ fn test_stress_wal_recovery() {
 
     // Insert without checkpoint
     {
-        let mut dict = PersistentARTrie::<i32>::create(&path).expect("create dict");
+        let dict = PersistentARTrie::<i32>::create(&path).expect("create dict");
 
         for (i, term) in terms.iter().enumerate() {
             let _ = dict.insert_with_value(term, i as i32);
@@ -483,7 +483,7 @@ fn test_stress_bulk_delete() {
     let temp_dir = TempDir::new().expect("temp dir");
     let path = temp_dir.path().join("stress_delete");
 
-    let mut dict = PersistentARTrie::<()>::create(&path).expect("create dict");
+    let dict = PersistentARTrie::<()>::create(&path).expect("create dict");
 
     // Insert 2,000 terms with 2-char diversity (within single level of splitting)
     let terms = generate_diverse_terms(2_000);
@@ -526,7 +526,7 @@ fn test_stress_reinsert_after_delete() {
     let temp_dir = TempDir::new().expect("temp dir");
     let path = temp_dir.path().join("stress_reinsert");
 
-    let mut dict = PersistentARTrie::<i32>::create(&path).expect("create dict");
+    let dict = PersistentARTrie::<i32>::create(&path).expect("create dict");
 
     let terms = generate_diverse_terms(3_000);
 

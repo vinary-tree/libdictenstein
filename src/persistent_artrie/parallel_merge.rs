@@ -15,6 +15,8 @@
 
 use super::SharedARTrie;
 use crate::persistent_artrie::error::Result;
+// F4: the `.read()/.write()` compat shim on the collapsed `Arc<PersistentARTrie>`.
+use crate::persistent_artrie_core::shared_access::SharedTrieAccess;
 use crate::value::DictionaryValue;
 
 /// Extension trait for parallel merge operations on [`SharedARTrie`].
@@ -71,6 +73,16 @@ impl<V: DictionaryValue + Clone + Send + Sync> SharedARTrieParallelExt<V> for Sh
         F: Fn(&V, &V) -> V + Sync + Send,
     {
         use rayon::prelude::*;
+
+        // **F4 / V11.2 — merge_lock (the merge‖merge serializer).** This is the only
+        // `Shared*`-reachable merge driver, so it is the single `merge_lock`
+        // acquisition site. It is a near-leaf in the hierarchy `CK > merge_lock > OR
+        // > EC`: the body takes OR (owned arm) / runs lock-free CAS (overlay arm)
+        // UNDER merge_lock, never the reverse, and never CK. Cloned out of a brief
+        // read borrow so we don't hold the handle. Kills merge‖merge livelock; other
+        // writers stay obstruction-free.
+        let merge_lock = self.read().merge_lock.clone();
+        let _merge_guard = merge_lock.lock();
 
         // C2: under the overlay, snapshot `other` (release its read lock) then apply
         // SERIALLY under `self.write()` via the shared overlay merge funnel. The
@@ -147,7 +159,7 @@ impl<V: DictionaryValue + Clone + Send + Sync> SharedARTrieParallelExt<V> for Sh
 
         // Sequential write phase — batch insert all partitions.
         let mut total_processed = 0;
-        let mut guard = self.write();
+        let guard = self.write();
 
         for partition in partitions {
             for (term, value) in partition {

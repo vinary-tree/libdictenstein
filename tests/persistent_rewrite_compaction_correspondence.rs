@@ -44,7 +44,7 @@ fn char_rewrite_checkpoint_preserves_unicode_values_lazy_and_eager_reopen() {
     let path = dir.path().join("char_unicode_rewrite.part");
 
     {
-        let mut trie = PersistentARTrieChar::<i32>::create(&path).expect("create char trie");
+        let trie = PersistentARTrieChar::<i32>::create(&path).expect("create char trie");
         trie.insert_with_value("alpha", 1).expect("insert alpha");
         trie.insert_with_value("café", 2).expect("insert cafe");
         trie.insert_with_value("東京", 3).expect("insert tokyo");
@@ -73,7 +73,7 @@ fn char_checkpoint_rewrite_keeps_post_checkpoint_wal_tail_replayable() {
     let path = dir.path().join("char_rewrite_tail.part");
 
     {
-        let mut trie = PersistentARTrieChar::<i32>::create(&path).expect("create char trie");
+        let trie = PersistentARTrieChar::<i32>::create(&path).expect("create char trie");
         trie.insert_with_value("checkpointed", 10)
             .expect("insert checkpointed");
         trie.checkpoint().expect("checkpoint char trie");
@@ -121,7 +121,7 @@ fn char_failed_wal_archive_after_rewrite_keeps_dirty_until_retry() {
     let archive_dir = dir.path().join(archive_dir_name);
     let wal_config = WalConfig::with_archive_dir(archive_dir_name);
 
-    let mut trie =
+    let trie =
         PersistentARTrieChar::<i32>::create_with_config(&path, wal_config).expect("create trie");
     // F2-migrate: Bucket B — failed-WAL-archive dirty-retry is an OWNED-tree checkpoint
     // concept (the overlay does not gate visibility on the owned dirty flag). Pin

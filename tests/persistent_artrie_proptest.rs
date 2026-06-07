@@ -73,7 +73,7 @@ proptest! {
         let path = temp_dir.path().join("test_dict");
 
         {
-            let mut dict = PersistentARTrie::<i32>::create(&path)
+            let dict = PersistentARTrie::<i32>::create(&path)
                 .expect("create dict");
 
             // Deduplicate terms for testing
@@ -111,7 +111,7 @@ proptest! {
         let path = temp_dir.path().join("test_dict");
 
         {
-            let mut dict = PersistentARTrie::<i32>::create(&path)
+            let dict = PersistentARTrie::<i32>::create(&path)
                 .expect("create dict");
 
             // Deduplicate terms
@@ -170,7 +170,7 @@ proptest! {
         let path = temp_dir.path().join("test_dict");
 
         {
-            let mut dict = PersistentARTrie::<i32>::create(&path)
+            let dict = PersistentARTrie::<i32>::create(&path)
                 .expect("create dict");
 
             // Track expected state manually
@@ -227,7 +227,7 @@ proptest! {
 
         // Phase 1: Insert and checkpoint
         {
-            let mut dict = PersistentARTrie::<i32>::create(&path)
+            let dict = PersistentARTrie::<i32>::create(&path)
                 .expect("create dict");
 
             for (term, value) in &expected {
@@ -279,7 +279,7 @@ proptest! {
 
         // Phase 1: Insert and sync (no checkpoint)
         {
-            let mut dict = PersistentARTrie::<i32>::create(&path)
+            let dict = PersistentARTrie::<i32>::create(&path)
                 .expect("create dict");
 
             for (term, value) in &expected {
@@ -329,7 +329,7 @@ proptest! {
         let unique_terms: Vec<_> = byte_terms.into_iter().collect::<HashSet<_>>().into_iter().collect();
 
         {
-            let mut dict = PersistentARTrie::<i32>::create(&path)
+            let dict = PersistentARTrie::<i32>::create(&path)
                 .expect("create dict");
 
             // Insert all byte sequences as UTF-8 strings (lossy conversion)
@@ -367,7 +367,7 @@ proptest! {
         let unique_terms: HashSet<_> = terms.iter().cloned().collect();
 
         {
-            let mut dict = PersistentARTrie::<i32>::create(&path)
+            let dict = PersistentARTrie::<i32>::create(&path)
                 .expect("create dict");
 
             // Insert all terms
@@ -409,7 +409,7 @@ proptest! {
         let unique_terms: Vec<_> = terms.into_iter().collect::<HashSet<_>>().into_iter().collect();
 
         {
-            let mut dict = PersistentARTrie::<i32>::create(&path)
+            let dict = PersistentARTrie::<i32>::create(&path)
                 .expect("create dict");
 
             // Phase 1: Insert with value 1
@@ -461,7 +461,7 @@ proptest! {
         let mut all_terms: HashSet<String> = HashSet::new();
 
         {
-            let mut dict = PersistentARTrie::<i32>::create(&path)
+            let dict = PersistentARTrie::<i32>::create(&path)
                 .expect("create dict");
 
             for (batch_idx, batch) in batches.iter().enumerate() {
@@ -522,7 +522,7 @@ proptest! {
         let path = temp_dir.path().join("test_dict");
 
         {
-            let mut dict = PersistentARTrie::<i32>::create(&path)
+            let dict = PersistentARTrie::<i32>::create(&path)
                 .expect("create dict");
 
             // Insert terms with diverse prefixes to trigger node growth
@@ -559,7 +559,7 @@ proptest! {
         let path = temp_dir.path().join("test_dict");
 
         {
-            let mut dict = PersistentARTrie::<i32>::create(&path)
+            let dict = PersistentARTrie::<i32>::create(&path)
                 .expect("create dict");
 
             // Insert terms starting with every lowercase letter
@@ -601,7 +601,7 @@ proptest! {
         let unique_terms: HashSet<_> = terms.iter().cloned().collect();
 
         {
-            let mut dict = PersistentARTrie::<i32>::create(&path)
+            let dict = PersistentARTrie::<i32>::create(&path)
                 .expect("create dict");
 
             // Insert many terms to trigger bucket splits
@@ -640,7 +640,7 @@ proptest! {
         let unique_terms: Vec<_> = terms.into_iter().collect::<HashSet<_>>().into_iter().collect();
 
         {
-            let mut dict = PersistentARTrie::<i32>::create(&path)
+            let dict = PersistentARTrie::<i32>::create(&path)
                 .expect("create dict");
 
             // Insert all
@@ -694,7 +694,7 @@ proptest! {
         let expected: HashSet<String> = terms.iter().cloned().collect();
 
         {
-            let mut dict = PersistentARTrie::<i32>::create(&path)
+            let dict = PersistentARTrie::<i32>::create(&path)
                 .expect("create dict");
 
             for (i, term) in expected.iter().enumerate() {
@@ -723,7 +723,7 @@ proptest! {
         let expected: std::collections::HashMap<String, i32> = pairs.into_iter().collect();
 
         {
-            let mut dict = PersistentARTrie::<i32>::create(&path)
+            let dict = PersistentARTrie::<i32>::create(&path)
                 .expect("create dict");
 
             for (term, value) in &expected {
@@ -769,7 +769,7 @@ proptest! {
             .collect();
 
         {
-            let mut dict = PersistentARTrie::<i32>::create(&path)
+            let dict = PersistentARTrie::<i32>::create(&path)
                 .expect("create dict");
 
             // Insert matching terms
@@ -824,7 +824,7 @@ proptest! {
 
         // Phase 1: Insert initial terms and checkpoint
         {
-            let mut dict = PersistentARTrie::<i32>::create(&path)
+            let dict = PersistentARTrie::<i32>::create(&path)
                 .expect("create dict");
 
             for (i, term) in initial_set.iter().enumerate() {
@@ -836,7 +836,7 @@ proptest! {
 
         // Phase 2: Insert additional terms WITHOUT checkpoint (simulate crash before checkpoint)
         {
-            let mut dict = PersistentARTrie::<i32>::open(&path)
+            let dict = PersistentARTrie::<i32>::open(&path)
                 .expect("open dict");
 
             for (i, term) in additional_set.iter().enumerate() {
@@ -893,7 +893,7 @@ mod regression_tests {
         let temp_dir = TempDir::new().expect("temp dir");
         let path = temp_dir.path().join("test_dict");
 
-        let mut dict = PersistentARTrie::<i32>::create(&path).expect("create dict");
+        let dict = PersistentARTrie::<i32>::create(&path).expect("create dict");
 
         assert!(!dict.contains("test"));
         let _ = dict.insert_with_value("test", 42);
@@ -910,7 +910,7 @@ mod regression_tests {
         let temp_dir = TempDir::new().expect("temp dir");
         let path = temp_dir.path().join("test_dict");
 
-        let mut dict = PersistentARTrie::<i32>::create(&path).expect("create dict");
+        let dict = PersistentARTrie::<i32>::create(&path).expect("create dict");
 
         let _ = dict.insert_with_value("test", 1);
         let _ = dict.insert_with_value("testing", 2);
@@ -930,7 +930,7 @@ mod regression_tests {
         let temp_dir = TempDir::new().expect("temp dir");
         let path = temp_dir.path().join("test_dict");
 
-        let mut dict = PersistentARTrie::<i32>::create(&path).expect("create dict");
+        let dict = PersistentARTrie::<i32>::create(&path).expect("create dict");
 
         let _ = dict.insert_with_value("key", 1);
         assert_eq!(dict.get_value("key"), Some(1));

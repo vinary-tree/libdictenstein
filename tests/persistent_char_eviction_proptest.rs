@@ -12,6 +12,7 @@
 #![cfg(feature = "persistent-artrie")]
 
 use libdictenstein::artrie_trait::{ARTrie, EvictableARTrie};
+use libdictenstein::persistent_artrie_core::shared_access::SharedTrieAccess;
 use libdictenstein::persistent_artrie::eviction::EvictionConfig;
 use libdictenstein::persistent_artrie_char::{PersistentARTrieChar, SharedCharARTrie};
 use libdictenstein::{DictionaryNode, MappedDictionaryNode, MutableMappedDictionary};
@@ -50,7 +51,7 @@ fn put(shared: &SharedCharARTrie<i32>, term: &str, value: i32) -> bool {
 
 /// Read through the reloading `get` path (unambiguous inherent method).
 fn value_of(shared: &SharedCharARTrie<i32>, term: &str) -> Option<i32> {
-    shared.read().get(term).copied()
+    shared.read().get(term)
 }
 
 fn build_disk_trie(map: &HashMap<String, i32>) -> (TempDir, SharedCharARTrie<i32>) {
@@ -159,7 +160,7 @@ proptest! {
     /// (`MappedDictionaryNode::value()`), and an unrelated absent path yields None.
     #[test]
     fn prop_value_roundtrip(map in char_map_strategy()) {
-        let mut trie: PersistentARTrieChar<i32> = PersistentARTrieChar::new();
+        let trie: PersistentARTrieChar<i32> = PersistentARTrieChar::new();
         for (k, v) in &map {
             trie.insert_with_value(k, *v).expect("insert");
         }

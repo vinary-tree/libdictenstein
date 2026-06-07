@@ -265,8 +265,19 @@ pub(super) fn resolve_child_for_mutation_with_bm<S: BlockStorage>(
 /// assert!(!dict.contains("hi"));
 /// ```
 pub struct PersistentARTrie<V: DictionaryValue = (), S: BlockStorage = MmapDiskManager> {
-    /// Root node of the trie (starts as a bucket, grows to ART)
-    pub(crate) root: TrieRoot<V>,
+    /// Root node of the trie (starts as a bucket, grows to ART).
+    ///
+    /// **F4 (PF-1, OR lock):** wrapped in a `RwLock` so the now-`&self` owned
+    /// mutators (the dormant kill-switched-owned path + Option-B WAL-replay) keep
+    /// SAFE interior mutability after the outer `Arc<RwLock>`→`Arc` collapse — NO
+    /// new `unsafe`. This is the **OR** lock in the `CK > merge_lock > OR > EC`
+    /// hierarchy: taken only on the owned path (overlay writes are lock-free CAS and
+    /// never touch it). Ctor-time `&mut self`/single-threaded-at-open writes use
+    /// `root.get_mut()` (no lock needed before the `Arc` is shared); runtime owned
+    /// mutators take `root.write()`; the owned-arm checkpoint takes `root.read()`
+    /// for capture (admits concurrent owned readers, excludes owned writers — the
+    /// old write→read `downgrade` is DELETED with the outer lock it used).
+    pub(crate) root: RwLock<TrieRoot<V>>,
     /// Number of terms in the dictionary (atomic for lock-free increment_cas)
     pub(crate) term_count: AtomicUsize,
     /// Whether the dictionary has been modified (atomic for lock-free increment_cas)
@@ -285,16 +296,31 @@ pub struct PersistentARTrie<V: DictionaryValue = (), S: BlockStorage = MmapDiskM
     /// Arena manager for space-efficient node storage
     /// Packs multiple nodes into 256KB blocks instead of one node per block
     pub(crate) arena_manager: Option<Arc<RwLock<ArenaManager<S>>>>,
-    /// Durability policy for WAL synchronization
-    pub(crate) durability_policy: DurabilityPolicy,
+    /// Durability policy for WAL synchronization.
+    ///
+    /// **F4:** an `AtomicEnumCell` (a single `AtomicU8`) so the now-`&self`
+    /// `set_durability_policy` writes it and the write-path reader loads it
+    /// lock-free after the collapse — strictly cheaper than the old
+    /// `RwLock`-guarded field read.
+    pub(crate) durability_policy:
+        crate::persistent_artrie_core::shared_access::AtomicEnumCell<DurabilityPolicy>,
     /// Epoch manager for MVCC-Lite snapshot isolation
     pub(crate) epoch_manager: super::concurrency::EpochManager,
     /// Atomic statistics for monitoring
     pub(crate) stats: Arc<super::concurrency::TrieStats>,
 
     // === Eviction Support ===
-    /// Eviction coordinator for memory pressure-driven eviction
-    pub(crate) eviction_coordinator: Option<Arc<super::eviction::EvictionCoordinator>>,
+    /// Eviction coordinator for memory pressure-driven eviction.
+    ///
+    /// **F4 (EC leaf lock):** wrapped in a `Mutex` so `enable_eviction` /
+    /// `disable_eviction` (already `&self` via `EvictableARTrie`) toggle it after
+    /// the collapse. This is the **EC** lock — a strict LEAF in `CK > merge_lock >
+    /// OR > EC`: never held across acquiring CK/merge_lock/OR, and (critically) NEVER
+    /// held across the worker `.join()` — `disable_eviction`/`close`/`Drop` use the
+    /// drop-before-join statement-temporary (`lock().take()` → drop guard →
+    /// `shutdown()`).
+    pub(crate) eviction_coordinator:
+        std::sync::Mutex<Option<Arc<super::eviction::EvictionCoordinator>>>,
 
     // === Selective Dirty Subtree Traversal ===
     /// Prefixes modified since last checkpoint (for selective traversal).
@@ -303,7 +329,13 @@ pub struct PersistentARTrie<V: DictionaryValue = (), S: BlockStorage = MmapDiskM
     /// root to the modified node are recorded here. This enables `persist_to_disk()`
     /// to skip clean subtrees entirely, reducing checkpoint time from O(N) to
     /// O(D × H) where D = dirty nodes, H = average depth.
-    pub(crate) dirty_prefixes: HashSet<Vec<u8>>,
+    /// **F4 (folded into the OR-state Mutex):** the owned dirty-prefix set is
+    /// written by the owned mutators (via `record_dirty_path`) and the
+    /// owned-checkpoint clear. Post-collapse those run through `&self`, so the set
+    /// gets its own `Mutex` (a sibling of the OR root lock — both guard the dormant
+    /// owned representation; taken only on the owned path, never on the lock-free
+    /// overlay write path).
+    pub(crate) dirty_prefixes: std::sync::Mutex<HashSet<Vec<u8>>>,
 
     /// Disk locations of persisted nodes (keyed by path).
     ///
@@ -350,7 +382,13 @@ pub struct PersistentARTrie<V: DictionaryValue = (), S: BlockStorage = MmapDiskM
     /// later step (M4); no production byte path reads this field yet. The whole
     /// `persistent_artrie` module is `#[cfg(feature = "persistent-artrie")]`, so
     /// (like the char field) this needs no separate cfg gate.
-    pub(crate) overlay_write_mode: crate::persistent_artrie_core::overlay::write_mode::OverlayWriteMode,
+    ///
+    /// **F4:** an `AtomicEnumCell` so the now-`&self` `kill_switch_to_owned` /
+    /// `set_overlay_write_mode` / `flip_to_overlay` write it and the hot
+    /// `route_overlay()` predicate loads it lock-free after the collapse.
+    pub(crate) overlay_write_mode: crate::persistent_artrie_core::shared_access::AtomicEnumCell<
+        crate::persistent_artrie_core::overlay::write_mode::OverlayWriteMode,
+    >,
 
     // === Order-A durable-overlay write path (M2b) ===
     /// **Committed-LSN watermark for the lock-free Order-A durable write path**
@@ -374,6 +412,19 @@ pub struct PersistentARTrie<V: DictionaryValue = (), S: BlockStorage = MmapDiskM
     /// writers never touch it. Formally verified
     /// (`formal-verification/tla+/ConcurrentCheckpointSerialization.tla`).
     pub(crate) checkpoint_lock: std::sync::Arc<parking_lot::Mutex<()>>,
+
+    /// **F4 / V11.2 — serializes concurrent merge drivers** (the byte twin of the
+    /// char field). The per-key merge CAS-retry loop is obstruction-free; this lock
+    /// kills merge‖merge livelock by serializing the whole-trie merge entry points
+    /// (`merge_from`/`merge_replace`/`merge_from_batched*`/`merge_from_parallel`).
+    /// A dedicated **leaf-ish** lock in the hierarchy `CK > merge_lock > OR > EC`:
+    /// the merge driver takes `merge_lock` then (on the owned path) OR, never the
+    /// reverse; checkpoint (CK) snapshots the lock-free root concurrently as
+    /// designed and never holds `merge_lock`. `Arc<Mutex>` so it survives a future
+    /// handle clone unchanged, mirroring `checkpoint_lock` EXACTLY. Single
+    /// acquisition site (the innermost private driver); public wrappers must NOT
+    /// re-take it (parking_lot is non-reentrant).
+    pub(crate) merge_lock: std::sync::Arc<parking_lot::Mutex<()>>,
 
     /// **Durable global commit sequence** (the byte twin of the char field). The
     /// monotone visibility-order rank each Order-A durable write claims at its
@@ -465,7 +516,8 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
     /// `PersistentARTrie::contains` / `get_value` which go through
     /// `resolve_disk_ref` directly.
     pub(super) fn get_root_node(&self) -> PersistentARTrieNode<V> {
-        match &self.root {
+        // F4 (OR read): clones the owned root out under the inner `root` RwLock.
+        match &*self.root.read() {
             TrieRoot::Bucket(bucket) => PersistentARTrieNode::new_bucket(bucket.clone()),
             TrieRoot::ArtNode {
                 node,
@@ -534,10 +586,17 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
     /// relying on `Arc`-refcount drop order. The workers hold only a `Weak`, so
     /// this teardown — and the managers' own `Drop` backstops — actually run.
     pub fn close(&self) {
-        // Shut down the eviction coordinator first (it also stops the memory
-        // monitor). Its callback takes the trie write lock, but `close` holds
-        // no such lock while joining, so this cannot deadlock.
-        if let Some(ref coordinator) = self.eviction_coordinator {
+        // **F4 drop-before-join (V11.3 site 3, byte):** take the coordinator OUT of
+        // the EC `Mutex` into a statement-temporary so the EC guard DROPS before
+        // `shutdown()` joins the eviction thread — the eviction callback takes OR
+        // (and briefly EC), so joining while holding EC would deadlock. Runs on
+        // every teardown.
+        let coordinator = self
+            .eviction_coordinator
+            .lock()
+            .expect("eviction_coordinator mutex poisoned")
+            .take();
+        if let Some(coordinator) = coordinator {
             coordinator.shutdown();
         }
 
@@ -579,7 +638,7 @@ mod tests {
 
     #[test]
     fn test_insert_and_contains() {
-        let mut dict: PersistentARTrie = PersistentARTrie::new();
+        let dict: PersistentARTrie = PersistentARTrie::new();
 
         assert!(dict.insert("apple"));
         assert!(dict.insert("banana"));
@@ -596,7 +655,7 @@ mod tests {
 
     #[test]
     fn test_duplicate_insert() {
-        let mut dict: PersistentARTrie = PersistentARTrie::new();
+        let dict: PersistentARTrie = PersistentARTrie::new();
 
         assert!(dict.insert("test"));
         assert!(!dict.insert("test")); // Duplicate
@@ -606,7 +665,7 @@ mod tests {
 
     #[test]
     fn test_remove() {
-        let mut dict: PersistentARTrie = PersistentARTrie::new();
+        let dict: PersistentARTrie = PersistentARTrie::new();
 
         dict.insert("apple");
         dict.insert("banana");
@@ -620,7 +679,7 @@ mod tests {
 
     #[test]
     fn test_remove_not_found() {
-        let mut dict: PersistentARTrie = PersistentARTrie::new();
+        let dict: PersistentARTrie = PersistentARTrie::new();
 
         dict.insert("apple");
 
@@ -630,7 +689,7 @@ mod tests {
 
     #[test]
     fn test_empty_string() {
-        let mut dict: PersistentARTrie = PersistentARTrie::new();
+        let dict: PersistentARTrie = PersistentARTrie::new();
 
         assert!(dict.insert(""));
         assert!(dict.contains(""));
@@ -642,7 +701,7 @@ mod tests {
 
     #[test]
     fn test_dictionary_trait() {
-        let mut dict: PersistentARTrie = PersistentARTrie::new();
+        let dict: PersistentARTrie = PersistentARTrie::new();
 
         dict.insert("hello");
         dict.insert("world");
@@ -655,7 +714,7 @@ mod tests {
 
     #[test]
     fn test_mark_clean() {
-        let mut dict: PersistentARTrie = PersistentARTrie::new();
+        let dict: PersistentARTrie = PersistentARTrie::new();
 
         dict.insert("test");
         assert!(dict.is_dirty());
@@ -666,7 +725,7 @@ mod tests {
 
     #[test]
     fn test_many_insertions() {
-        let mut dict: PersistentARTrie = PersistentARTrie::new();
+        let dict: PersistentARTrie = PersistentARTrie::new();
 
         // Insert many terms to trigger bucket conversion
         for i in 0..100 {
@@ -696,7 +755,7 @@ mod tests {
 
     #[test]
     fn test_iter_single() {
-        let mut dict: PersistentARTrie = PersistentARTrie::new();
+        let dict: PersistentARTrie = PersistentARTrie::new();
         dict.insert("hello");
 
         let terms: Vec<_> = dict.iter().collect();
@@ -706,7 +765,7 @@ mod tests {
 
     #[test]
     fn test_iter_multiple() {
-        let mut dict: PersistentARTrie = PersistentARTrie::new();
+        let dict: PersistentARTrie = PersistentARTrie::new();
         dict.insert("apple");
         dict.insert("banana");
         dict.insert("cherry");
@@ -722,7 +781,7 @@ mod tests {
 
     #[test]
     fn test_iter_with_empty_string() {
-        let mut dict: PersistentARTrie = PersistentARTrie::new();
+        let dict: PersistentARTrie = PersistentARTrie::new();
         dict.insert("");
         dict.insert("hello");
 
@@ -734,7 +793,7 @@ mod tests {
 
     #[test]
     fn test_iter_common_prefix() {
-        let mut dict: PersistentARTrie = PersistentARTrie::new();
+        let dict: PersistentARTrie = PersistentARTrie::new();
         dict.insert("test");
         dict.insert("testing");
         dict.insert("tested");
@@ -750,7 +809,7 @@ mod tests {
 
     #[test]
     fn test_iter_preserves_order() {
-        let mut dict: PersistentARTrie = PersistentARTrie::new();
+        let dict: PersistentARTrie = PersistentARTrie::new();
         // Insert in random order
         dict.insert("cherry");
         dict.insert("apple");
@@ -776,7 +835,7 @@ mod tests {
 
             // Create new dictionary
             {
-                let mut dict: PersistentARTrie<()> =
+                let dict: PersistentARTrie<()> =
                     PersistentARTrie::create(&dict_path).expect("create dict");
                 dict.insert("hello");
                 dict.insert("world");
@@ -822,7 +881,7 @@ mod tests {
 
             // Create dictionary and insert data
             {
-                let mut dict: PersistentARTrie<()> =
+                let dict: PersistentARTrie<()> =
                     PersistentARTrie::create(&dict_path).expect("create dict");
                 dict.insert("apple");
                 dict.insert("banana");
@@ -845,7 +904,7 @@ mod tests {
             let temp_dir = TempDir::new().expect("create temp dir");
             let dict_path = temp_dir.path().join("test.part");
 
-            let mut dict: PersistentARTrie<()> =
+            let dict: PersistentARTrie<()> =
                 PersistentARTrie::create(&dict_path).expect("create dict");
             dict.insert("test");
             dict.checkpoint().expect("checkpoint");
@@ -856,7 +915,7 @@ mod tests {
             let temp_dir = TempDir::new().expect("create temp dir");
             let dict_path = temp_dir.path().join("test.part");
 
-            let mut dict: PersistentARTrie<()> =
+            let dict: PersistentARTrie<()> =
                 PersistentARTrie::create(&dict_path).expect("create dict");
             dict.insert("test");
             dict.sync().expect("sync");
@@ -869,7 +928,7 @@ mod tests {
 
             // Create and insert many terms
             {
-                let mut dict: PersistentARTrie<()> =
+                let dict: PersistentARTrie<()> =
                     PersistentARTrie::create(&dict_path).expect("create dict");
                 for i in 0..50 {
                     dict.insert(&format!("word{:03}", i));
@@ -943,7 +1002,7 @@ mod tests {
             let dir = tempdir().expect("create temp dir");
             let dict_path = dir.path().join("atomic_test.part");
 
-            let mut dict: PersistentARTrie<String> =
+            let dict: PersistentARTrie<String> =
                 PersistentARTrie::create(&dict_path).expect("create dict");
 
             // Insert new term
@@ -962,7 +1021,7 @@ mod tests {
             let dir = tempdir().expect("create temp dir");
             let dict_path = dir.path().join("atomic_test.part");
 
-            let mut dict: PersistentARTrie<String> =
+            let dict: PersistentARTrie<String> =
                 PersistentARTrie::create(&dict_path).expect("create dict");
 
             // Insert initial value
@@ -1136,7 +1195,7 @@ mod tests {
             let dir = tempdir().expect("create temp dir");
             let dict_path = dir.path().join("tx_test.part");
 
-            let mut dict: PersistentARTrie<i64> =
+            let dict: PersistentARTrie<i64> =
                 PersistentARTrie::create(&dict_path).expect("create dict");
             // M4b: a fresh create::<i64>() create-flips; document transactions are
             // rejected under the overlay. Force the owned regime.
@@ -1251,7 +1310,7 @@ mod tests {
 
     mod sequential_siblings_tests {
         use super::*;
-        use crate::persistent_artrie::arena_manager::ArenaSlot;
+        
         use crate::persistent_artrie::nodes::{ChildStorage, Node, Node4};
         use crate::persistent_artrie::swizzled_ptr::SwizzledPtr;
 
@@ -1524,7 +1583,7 @@ mod tests {
         #[test]
         fn test_merge_arena_sorting_preserves_correctness() {
             // Create source trie with entries
-            let mut source: PersistentARTrie<u32> = PersistentARTrie::new();
+            let source: PersistentARTrie<u32> = PersistentARTrie::new();
             source.insert_with_value("apple", 1);
             source.insert_with_value("banana", 2);
             source.insert_with_value("cherry", 3);
@@ -1554,7 +1613,7 @@ mod tests {
         #[test]
         fn test_merge_arena_grouped_ordering() {
             // Create source trie
-            let mut source: PersistentARTrie<u32> = PersistentARTrie::new();
+            let source: PersistentARTrie<u32> = PersistentARTrie::new();
             for i in 0..100 {
                 let term = format!("term{:03}", i);
                 source.insert_with_value(&term, i);
@@ -1582,7 +1641,7 @@ mod tests {
 
         #[test]
         fn test_insert_batch_arena_grouped_ordering() {
-            let mut trie: PersistentARTrie<u32> = PersistentARTrie::new();
+            let trie: PersistentARTrie<u32> = PersistentARTrie::new();
 
             // Create entries with various first bytes
             let entries: Vec<(Vec<u8>, Option<u32>)> = vec![
@@ -1609,7 +1668,7 @@ mod tests {
 
         #[test]
         fn test_insert_batch_grouped_string_variant() {
-            let mut trie: PersistentARTrie<u32> = PersistentARTrie::new();
+            let trie: PersistentARTrie<u32> = PersistentARTrie::new();
 
             let entries: Vec<(String, Option<u32>)> = vec![
                 ("zebra".to_string(), Some(1)),
@@ -1631,7 +1690,7 @@ mod tests {
 
         #[test]
         fn test_insert_batch_arena_grouped_empty() {
-            let mut trie: PersistentARTrie<u32> = PersistentARTrie::new();
+            let trie: PersistentARTrie<u32> = PersistentARTrie::new();
 
             let entries: Vec<(Vec<u8>, Option<u32>)> = vec![];
             let count = trie.insert_batch_arena_grouped(entries);
@@ -1641,7 +1700,7 @@ mod tests {
 
         #[test]
         fn test_insert_batch_grouped_preserves_values() {
-            let mut trie: PersistentARTrie<String> = PersistentARTrie::new();
+            let trie: PersistentARTrie<String> = PersistentARTrie::new();
 
             let entries: Vec<(String, Option<String>)> = vec![
                 ("key1".to_string(), Some("value1".to_string())),
@@ -1711,7 +1770,7 @@ mod tests {
             let dir = tempdir().expect("create temp dir");
             let dict_path = dir.path().join("lsn_test.part");
 
-            let mut dict: PersistentARTrie<i32> =
+            let dict: PersistentARTrie<i32> =
                 PersistentARTrie::create(&dict_path).expect("create dict");
 
             let before = dict.current_lsn();
@@ -1731,7 +1790,7 @@ mod tests {
             let dir = tempdir().expect("create temp dir");
             let dict_path = dir.path().join("lsn_test.part");
 
-            let mut dict: PersistentARTrie<i32> =
+            let dict: PersistentARTrie<i32> =
                 PersistentARTrie::create(&dict_path).expect("create dict");
 
             dict.insert_with_value("key1", 42);
@@ -1762,7 +1821,7 @@ mod tests {
             let dir = tempdir().expect("create temp dir");
             let dict_path = dir.path().join("lsn_test.part");
 
-            let mut dict: PersistentARTrie<i32> =
+            let dict: PersistentARTrie<i32> =
                 PersistentARTrie::create(&dict_path).expect("create dict");
 
             // Insert some data
@@ -1800,7 +1859,7 @@ mod tests {
             let dir = tempdir().expect("create temp dir");
             let dict_path = dir.path().join("lsn_test.part");
 
-            let mut dict: PersistentARTrie<i32> =
+            let dict: PersistentARTrie<i32> =
                 PersistentARTrie::create(&dict_path).expect("create dict");
 
             // Insert and sync
@@ -1830,7 +1889,7 @@ mod tests {
             let dir = tempdir().expect("create temp dir");
             let dict_path = dir.path().join("lsn_test.part");
 
-            let mut dict: PersistentARTrie<i32> =
+            let dict: PersistentARTrie<i32> =
                 PersistentARTrie::create(&dict_path).expect("create dict");
 
             let mut prev_lsn = dict.current_lsn();
@@ -1856,62 +1915,66 @@ mod tests {
 
     #[test]
     fn test_dirty_path_recording() {
-        let mut dict: PersistentARTrie = PersistentARTrie::new();
+        let dict: PersistentARTrie = PersistentARTrie::new();
 
         // Initially, no dirty paths
-        assert!(dict.dirty_prefixes.is_empty());
+        assert!(dict.dirty_prefixes.lock().expect("dirty_prefixes mutex poisoned").is_empty());
 
         // Insert a term - should record the path
         dict.insert("apple");
 
         // Check that path prefixes are recorded
-        assert!(dict.dirty_prefixes.contains(&vec![])); // Root
-        assert!(dict.dirty_prefixes.contains(&vec![b'a']));
-        assert!(dict.dirty_prefixes.contains(&vec![b'a', b'p']));
-        assert!(dict.dirty_prefixes.contains(&vec![b'a', b'p', b'p']));
-        assert!(dict.dirty_prefixes.contains(&vec![b'a', b'p', b'p', b'l']));
+        assert!(dict.dirty_prefixes.lock().expect("dirty_prefixes mutex poisoned").contains(&vec![])); // Root
+        assert!(dict.dirty_prefixes.lock().expect("dirty_prefixes mutex poisoned").contains(&vec![b'a']));
+        assert!(dict.dirty_prefixes.lock().expect("dirty_prefixes mutex poisoned").contains(&vec![b'a', b'p']));
+        assert!(dict.dirty_prefixes.lock().expect("dirty_prefixes mutex poisoned").contains(&vec![b'a', b'p', b'p']));
+        assert!(dict.dirty_prefixes.lock().expect("dirty_prefixes mutex poisoned").contains(&vec![b'a', b'p', b'p', b'l']));
         assert!(dict
             .dirty_prefixes
+            .lock()
+            .expect("dirty_prefixes mutex poisoned")
             .contains(&vec![b'a', b'p', b'p', b'l', b'e']));
     }
 
     #[test]
     fn test_dirty_path_recording_multiple_terms() {
-        let mut dict: PersistentARTrie = PersistentARTrie::new();
+        let dict: PersistentARTrie = PersistentARTrie::new();
 
         // Insert multiple terms with shared prefix
         dict.insert("apple");
         dict.insert("apricot");
 
         // Both share "ap" prefix, so paths should include both
-        assert!(dict.dirty_prefixes.contains(&vec![b'a', b'p']));
+        assert!(dict.dirty_prefixes.lock().expect("dirty_prefixes mutex poisoned").contains(&vec![b'a', b'p']));
         // Each has its own suffix paths
-        assert!(dict.dirty_prefixes.contains(&vec![b'a', b'p', b'p'])); // apple
-        assert!(dict.dirty_prefixes.contains(&vec![b'a', b'p', b'r'])); // apricot
+        assert!(dict.dirty_prefixes.lock().expect("dirty_prefixes mutex poisoned").contains(&vec![b'a', b'p', b'p'])); // apple
+        assert!(dict.dirty_prefixes.lock().expect("dirty_prefixes mutex poisoned").contains(&vec![b'a', b'p', b'r'])); // apricot
     }
 
     #[test]
     fn test_dirty_path_recording_on_remove() {
-        let mut dict: PersistentARTrie = PersistentARTrie::new();
+        let dict: PersistentARTrie = PersistentARTrie::new();
 
         dict.insert("apple");
-        dict.dirty_prefixes.clear(); // Clear after insert
+        dict.dirty_prefixes.lock().expect("dirty_prefixes mutex poisoned").clear(); // Clear after insert
 
         // Remove should also record the path
         dict.remove("apple");
         assert!(dict
             .dirty_prefixes
+            .lock()
+            .expect("dirty_prefixes mutex poisoned")
             .contains(&vec![b'a', b'p', b'p', b'l', b'e']));
     }
 
     #[test]
     fn test_dirty_tracking_state_clear() {
-        let mut dict: PersistentARTrie = PersistentARTrie::new();
+        let dict: PersistentARTrie = PersistentARTrie::new();
 
         dict.insert("apple");
         dict.insert("banana");
 
-        assert!(!dict.dirty_prefixes.is_empty());
+        assert!(!dict.dirty_prefixes.lock().expect("dirty_prefixes mutex poisoned").is_empty());
 
         // Manually add a cached location to verify it's NOT cleared
         // (This simulates what happens after serialization)
@@ -1923,7 +1986,7 @@ mod tests {
         // Clear should reset dirty_prefixes but PRESERVE persisted_disk_locations
         dict.clear_dirty_tracking_state();
 
-        assert!(dict.dirty_prefixes.is_empty());
+        assert!(dict.dirty_prefixes.lock().expect("dirty_prefixes mutex poisoned").is_empty());
         // persisted_disk_locations should NOT be cleared - we preserve cached locations
         // for subsequent checkpoints to skip clean subtrees
         assert!(!dict.persisted_disk_locations.read().is_empty());
@@ -1935,7 +1998,7 @@ mod tests {
 
     #[test]
     fn test_dirty_path_invalidates_cache() {
-        let mut dict: PersistentARTrie = PersistentARTrie::new();
+        let dict: PersistentARTrie = PersistentARTrie::new();
 
         // Manually populate the cache with some locations
         dict.persisted_disk_locations
@@ -1967,7 +2030,7 @@ mod tests {
 
     #[test]
     fn test_dirty_root_flag_propagation() {
-        let mut dict: PersistentARTrie = PersistentARTrie::new();
+        let dict: PersistentARTrie = PersistentARTrie::new();
 
         // Insert enough terms to trigger bucket-to-ART conversion
         for i in 0..100 {
@@ -1975,17 +2038,21 @@ mod tests {
         }
 
         // Root should have HAS_DIRTY_DESCENDANTS flag set
-        if let TrieRoot::ArtNode { node, .. } = &dict.root {
-            assert!(
-                node.header().has_dirty_descendants(),
-                "Root should have HAS_DIRTY_DESCENDANTS flag after inserts"
-            );
+        {
+            let root_guard = dict.root.read();
+            if let TrieRoot::ArtNode { node, .. } = &*root_guard {
+                assert!(
+                    node.header().has_dirty_descendants(),
+                    "Root should have HAS_DIRTY_DESCENDANTS flag after inserts"
+                );
+            }
         }
 
         // After clearing dirty state, flags should be reset
         dict.clear_dirty_tracking_state();
 
-        if let TrieRoot::ArtNode { node, .. } = &dict.root {
+        let root_guard = dict.root.read();
+        if let TrieRoot::ArtNode { node, .. } = &*root_guard {
             assert!(
                 !node.header().has_dirty_descendants(),
                 "Root should not have HAS_DIRTY_DESCENDANTS flag after clear"
@@ -1999,7 +2066,7 @@ mod tests {
 
     #[test]
     fn test_path_needs_persistence() {
-        let mut dict: PersistentARTrie = PersistentARTrie::new();
+        let dict: PersistentARTrie = PersistentARTrie::new();
 
         dict.insert("apple");
 
@@ -2017,7 +2084,7 @@ mod tests {
 
     #[test]
     fn test_disk_location_caching() {
-        let mut dict: PersistentARTrie = PersistentARTrie::new();
+        let dict: PersistentARTrie = PersistentARTrie::new();
 
         // Cache a disk location
         let test_ptr = SwizzledPtr::on_disk(1, 100, NodeType::Node4);
@@ -2265,7 +2332,7 @@ mod tests {
             let temp_dir = TempDir::new().expect("create temp dir");
             let dict_path = temp_dir.path().join("new.part");
 
-            let mut dict: PersistentARTrie<()> =
+            let dict: PersistentARTrie<()> =
                 PersistentARTrie::create(&dict_path).expect("create dict");
 
             // Checkpoint with no changes should succeed
@@ -2280,7 +2347,7 @@ mod tests {
 
             // First create a trie
             {
-                let mut dict: PersistentARTrie<()> =
+                let dict: PersistentARTrie<()> =
                     PersistentARTrie::create(&dict_path).expect("create dict");
                 dict.insert("test");
                 dict.sync().expect("sync");

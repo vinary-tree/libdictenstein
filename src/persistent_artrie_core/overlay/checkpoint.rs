@@ -125,7 +125,12 @@ pub(crate) trait OverlayCheckpoint<K: KeyEncoding, V: DictionaryValue, S>:
     /// INERT pre-flip: `route_overlay()` is false until the production ctors flip, so
     /// the owned arm is byte-for-byte the prior checkpoint body. The variant's public
     /// `checkpoint()` is a thin wrapper calling this default.
-    fn checkpoint_route_split(&mut self) -> Result<()> {
+    ///
+    /// **F4:** `&self` (all capture/publish seams are already `&self`). The
+    /// concurrent-checkpoint serialization (`checkpoint_lock`, CK) is taken by the
+    /// `Shared*` trait `checkpoint()` wrapper; the owned-arm capture takes the inner
+    /// `root` RwLock for read (OR), giving the hierarchy `CK > OR`.
+    fn checkpoint_route_split(&self) -> Result<()> {
         if self.route_overlay() {
             let snapshot = self.capture_overlay_snapshot()?;
             if self.has_eviction_coordinator() {

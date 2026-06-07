@@ -32,7 +32,8 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
     /// - Lazy loading of DiskRef children
     /// - Multi-level prefetching of sibling nodes for better I/O performance
     pub(super) fn contains_impl(&self, term: &[u8]) -> bool {
-        match &self.root {
+        // F4 (OR read): owned read path takes the inner `root` RwLock for read.
+        match &*self.root.read() {
             TrieRoot::Bucket(bucket) => bucket.contains(term),
             TrieRoot::ArtNode {
                 children, is_final, ..
@@ -68,7 +69,8 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
     /// `pub(super)` for the parallel-merge extension trait (see also
     /// `insert_impl` above).
     pub(super) fn get_value_impl(&self, term: &[u8]) -> Option<V> {
-        match &self.root {
+        // F4 (OR read): owned read path takes the inner `root` RwLock for read.
+        match &*self.root.read() {
             TrieRoot::Bucket(bucket) => {
                 // Search for the term in the bucket
                 match bucket.search(term) {

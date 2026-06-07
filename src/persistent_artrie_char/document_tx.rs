@@ -559,7 +559,7 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     }
 
     fn current_i64_for_increment(&self, term: &str) -> i64 {
-        self.get(term).map(Self::i64_from_value_lossy).unwrap_or(0)
+        self.get(term).map(|v| Self::i64_from_value_lossy(&v)).unwrap_or(0)
     }
 
     fn i64_from_value_lossy(value: &V) -> i64 {

@@ -34,7 +34,7 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
     /// durable failure (wrong policy / on-disk-child-blocked) is logged and reported
     /// as `false` (no insert) rather than panicking — consistent with `insert_batch`'s
     /// fail-soft WAL handling. The owned arm is the verbatim pre-flip body.
-    pub fn insert(&mut self, term: &str) -> bool {
+    pub fn insert(&self, term: &str) -> bool {
         if self.route_overlay() {
             return self
                 .insert_cas_durable(term.as_bytes())
@@ -61,7 +61,7 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
     /// `insert_cas_with_value_durable_default`, diverging from the owned overwrite
     /// semantics — a silent overlay↔owned mismatch on duplicate keys.) A durable
     /// failure is logged and reported `false` (byte's `bool` signature).
-    pub fn insert_with_value(&mut self, term: &str, value: V) -> bool {
+    pub fn insert_with_value(&self, term: &str, value: V) -> bool {
         if self.route_overlay() {
             return <Self as DurableOverlayWrite<ByteKey, V, S>>::upsert_cas_durable_default(
                 self,
@@ -96,7 +96,7 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
     /// [`insert_cas_durable`](Self::insert_cas_durable); an `i64` value →
     /// [`insert_cas_with_value_durable`](Self::insert_cas_with_value_durable). The
     /// owned arm below is the verbatim pre-flip batch path.
-    pub fn insert_batch(&mut self, entries: &[(String, Option<V>)]) -> usize {
+    pub fn insert_batch(&self, entries: &[(String, Option<V>)]) -> usize {
         if entries.is_empty() {
             return 0;
         }
@@ -149,7 +149,7 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
     /// **M3 write-flip (C5):** under `route_overlay()` each entry routes to the
     /// proven Order-A durable overlay insert (per-record; see [`insert_batch`](Self::insert_batch)).
     /// The owned arm below is the verbatim pre-flip batch path.
-    pub fn insert_batch_bytes(&mut self, entries: &[(&[u8], Option<V>)]) -> usize {
+    pub fn insert_batch_bytes(&self, entries: &[(&[u8], Option<V>)]) -> usize {
         if entries.is_empty() {
             return 0;
         }
@@ -199,7 +199,7 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
     /// This method sorts the entries lexicographically before inserting them,
     /// which improves cache hit rates since consecutive terms share trie prefix
     /// paths. For large batches, this can improve throughput by 5-20%.
-    pub fn insert_batch_sorted(&mut self, mut entries: Vec<(String, Option<V>)>) -> usize {
+    pub fn insert_batch_sorted(&self, mut entries: Vec<(String, Option<V>)>) -> usize {
         if entries.is_empty() {
             return 0;
         }
@@ -211,7 +211,7 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
     }
 
     /// Insert multiple byte terms with optional values in sorted order for cache locality.
-    pub fn insert_batch_bytes_sorted(&mut self, mut entries: Vec<(Vec<u8>, Option<V>)>) -> usize {
+    pub fn insert_batch_bytes_sorted(&self, mut entries: Vec<(Vec<u8>, Option<V>)>) -> usize {
         if entries.is_empty() {
             return 0;
         }
@@ -231,7 +231,7 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
     /// which improves I/O locality for disk-resident tries. Terms with the same
     /// first byte tend to land in nearby arenas because arenas fill sequentially
     /// during loading.
-    pub fn insert_batch_arena_grouped(&mut self, mut entries: Vec<(Vec<u8>, Option<V>)>) -> usize {
+    pub fn insert_batch_arena_grouped(&self, mut entries: Vec<(Vec<u8>, Option<V>)>) -> usize {
         if entries.is_empty() {
             return 0;
         }
@@ -250,7 +250,7 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
     }
 
     /// Insert multiple string terms grouped by first character for arena locality.
-    pub fn insert_batch_grouped(&mut self, mut entries: Vec<(String, Option<V>)>) -> usize {
+    pub fn insert_batch_grouped(&self, mut entries: Vec<(String, Option<V>)>) -> usize {
         if entries.is_empty() {
             return 0;
         }
@@ -271,7 +271,7 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
     /// `Remove` → path-copy clearing the leaf's finality → root-CAS → mark_committed;
     /// value-free, safe for ALL `V`). The public `bool` signature reports a durable
     /// failure as `false` (no remove) with a log. The owned arm is verbatim pre-flip.
-    pub fn remove(&mut self, term: &str) -> bool {
+    pub fn remove(&self, term: &str) -> bool {
         if self.route_overlay() {
             return self
                 .remove_cas_durable(term.as_bytes())
@@ -287,7 +287,7 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
     ///
     /// Returns the number of terms removed. Each removal is logged to WAL
     /// individually for crash recovery safety (no batch WAL record type).
-    pub fn remove_prefix(&mut self, prefix: &[u8]) -> usize {
+    pub fn remove_prefix(&self, prefix: &[u8]) -> usize {
         self.remove_prefix_batched(prefix, 1024)
     }
 
@@ -306,7 +306,7 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
     /// each term. Durable, NOT a no-op, NO data loss. Arena page-locality grouping is
     /// an owned-tree disk-layout optimization with no overlay analogue; the removal
     /// SEMANTICS are fully preserved. The owned arm below is verbatim pre-flip.
-    pub fn remove_prefix_batched(&mut self, prefix: &[u8], batch_size: usize) -> usize {
+    pub fn remove_prefix_batched(&self, prefix: &[u8], batch_size: usize) -> usize {
         if self.route_overlay() {
             return self.remove_prefix_overlay(prefix);
         }
@@ -383,7 +383,7 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
     /// — a reopen sees the removals (WAL recovery). The overlay republishes its root
     /// per `remove_cas_durable`, so the matching terms are SNAPSHOT first (one
     /// resident enumeration) before any removal. Returns the number removed.
-    fn remove_prefix_overlay(&mut self, prefix: &[u8]) -> usize {
+    fn remove_prefix_overlay(&self, prefix: &[u8]) -> usize {
         let terms = match self.overlay_iter_prefix(prefix) {
             Some(terms) => terms,
             None => return 0,

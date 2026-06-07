@@ -85,7 +85,7 @@ fn m2a_membership_reads_correspond_overlay_vs_owned() {
     // terms BYTE-EXACT via `upsert_bytes` (byte keys are arbitrary bytes, incl.
     // the non-UTF-8 MEMBERSHIP_TERMS), with the unit value `()`. `kill_switch_to_owned`
     // is defensive (M2a never flips a fresh ctor anyway).
-    let mut owned = PersistentARTrie::<()>::create(&owned_path).expect("create owned");
+    let owned = PersistentARTrie::<()>::create(&owned_path).expect("create owned");
     owned.kill_switch_to_owned();
     assert!(!owned.route_overlay(), "default byte trie is owned in M2a");
     for t in MEMBERSHIP_TERMS {
@@ -178,7 +178,7 @@ fn m2a_counter_reads_correspond_overlay_vs_owned() {
     ];
 
     // Owned oracle (i64 counters via upsert_bytes — sets the owned value directly).
-    let mut owned = PersistentARTrie::<i64>::create(&owned_path).expect("create owned");
+    let owned = PersistentARTrie::<i64>::create(&owned_path).expect("create owned");
     owned.kill_switch_to_owned();
     for (t, v) in &entries {
         owned.upsert_bytes(t, *v).expect("owned upsert_bytes");

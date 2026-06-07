@@ -24,7 +24,7 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     /// routes to the proven Order-A [`insert_cas_durable`](Self::insert_cas_durable)
     /// (value-free, so it is safe for ALL `V`). Otherwise the verbatim owned-tree
     /// body runs (the one-release fallback — NO mutation logic duplicated).
-    pub fn insert(&mut self, term: &str) -> Result<bool> {
+    pub fn insert(&self, term: &str) -> Result<bool> {
         if self.route_overlay() {
             // Overlay path: Order-A WAL-then-CAS over the immutable overlay. The
             // primitive itself does the WAL append (chokepoint =
@@ -72,7 +72,7 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     /// value seam's RANKED depth-0 publish. (C0 fix: this previously routed to the
     /// insert-once `insert_cas_with_value_durable_default`, diverging from the owned
     /// overwrite semantics — a silent overlay↔owned mismatch on duplicate keys.)
-    pub fn insert_with_value(&mut self, term: &str, value: V) -> Result<bool> {
+    pub fn insert_with_value(&self, term: &str, value: V) -> Result<bool> {
         if self.route_overlay() {
             return <Self as crate::persistent_artrie_core::overlay::durable_write::DurableOverlayWrite<
                 crate::persistent_artrie_core::key_encoding::CharKey,
@@ -110,7 +110,7 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     /// mark_committed; loom/proptest/TLA-re-proven, committed). Value-free, so it
     /// is safe for ALL `V`. RB6 depends on fault-in being a production path (F0
     /// un-gated it), because remove-under-evicted-prefix needs fault-in.
-    pub fn remove(&mut self, term: &str) -> Result<bool> {
+    pub fn remove(&self, term: &str) -> Result<bool> {
         if self.route_overlay() {
             return self.remove_cas_durable(term);
         }

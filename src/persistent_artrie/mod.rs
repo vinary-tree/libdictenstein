@@ -367,12 +367,48 @@ pub use dict_impl::{PersistentARTrie, TermIterator, TermValueIterator};
 #[cfg(feature = "parallel-merge")]
 pub use dict_impl::SharedARTrieParallelExt;
 
-/// Thread-safe wrapper for `PersistentARTrie`.
+/// Thread-safe handle for `PersistentARTrie`.
 ///
-/// This type alias provides `Arc<RwLock<...>>` semantics for concurrent access
-/// to the disk-backed byte-level trie.
-pub type SharedARTrie<V, S = MmapDiskManager> =
-    std::sync::Arc<parking_lot::RwLock<PersistentARTrie<V, S>>>;
+/// **F4 (the lock collapse):** this is now a bare `Arc<PersistentARTrie<V,S>>` —
+/// the outer `RwLock` is DELETED. Overlay reads AND writes are fully lock-free;
+/// the only operations that still need mutual exclusion take dedicated inner locks
+/// (`checkpoint_lock`, the wrapped `root` `RwLock` for the dormant owned path, the
+/// `eviction_coordinator` `Mutex`, `merge_lock`) — never the handle. A
+/// backward-compatible `.read()`/`.write()` API is preserved by
+/// [`SharedTrieAccess`](crate::persistent_artrie_core::shared_access::SharedTrieAccess)
+/// (both return a transparent guard that derefs to `&T`; there is no lock), so the
+/// ~270 historical call sites and the `liblevenshtein-rust` sibling compile
+/// unchanged against the collapsed type.
+pub type SharedARTrie<V, S = MmapDiskManager> = std::sync::Arc<PersistentARTrie<V, S>>;
+
+#[doc(inline)]
+pub use crate::persistent_artrie_core::shared_access::SharedTrieAccess;
+
+// F4: the concrete `.read()/.write()` shim impl on the collapsed byte handle.
+// CONCRETE (not a blanket `Arc<T>`) so it never shadows the inherent
+// `RwLock::{read,write}` on the crate's `Arc<RwLock<…>>` manager handles.
+impl<V: crate::value::DictionaryValue, S: BlockStorage>
+    crate::persistent_artrie_core::shared_access::SharedTrieAccess
+    for std::sync::Arc<PersistentARTrie<V, S>>
+{
+    type Target = PersistentARTrie<V, S>;
+
+    #[inline]
+    fn read(
+        &self,
+    ) -> crate::persistent_artrie_core::shared_access::TrieAccessGuard<'_, PersistentARTrie<V, S>>
+    {
+        crate::persistent_artrie_core::shared_access::TrieAccessGuard::from_ref(self.as_ref())
+    }
+
+    #[inline]
+    fn write(
+        &self,
+    ) -> crate::persistent_artrie_core::shared_access::TrieAccessGuard<'_, PersistentARTrie<V, S>>
+    {
+        crate::persistent_artrie_core::shared_access::TrieAccessGuard::from_ref(self.as_ref())
+    }
+}
 
 // Arena-aware iteration types
 pub use dict_impl::{PrefixTermWithArena, PrefixTermWithValueAndArena};

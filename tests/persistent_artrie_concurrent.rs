@@ -22,8 +22,8 @@
 #![cfg(feature = "persistent-artrie")]
 
 use libdictenstein::persistent_artrie::{PersistentARTrie, SharedARTrie};
+use libdictenstein::persistent_artrie_core::shared_access::SharedTrieAccess;
 use libdictenstein::Dictionary;
-use parking_lot::RwLock;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Barrier};
 use std::thread;
@@ -43,7 +43,7 @@ fn generate_terms(count: usize, prefix: &str) -> Vec<String> {
 
 /// Helper to create a SharedARTrie from a PersistentARTrie
 fn make_shared<V: libdictenstein::DictionaryValue>(trie: PersistentARTrie<V>) -> SharedARTrie<V> {
-    Arc::new(RwLock::new(trie))
+    Arc::new(trie)
 }
 
 // =============================================================================
@@ -56,7 +56,7 @@ fn test_concurrent_readers() {
     let dict_path = temp_dir.path().join("concurrent_readers.part");
 
     // Create and populate dictionary
-    let mut dict: PersistentARTrie<i32> =
+    let dict: PersistentARTrie<i32> =
         PersistentARTrie::create(&dict_path).expect("create dict");
 
     // Insert test terms with values
@@ -123,7 +123,7 @@ fn test_single_writer_multiple_readers() {
     let dict_path = temp_dir.path().join("writer_readers.part");
 
     // Create dictionary with initial terms
-    let mut dict: PersistentARTrie<i32> =
+    let dict: PersistentARTrie<i32> =
         PersistentARTrie::create(&dict_path).expect("create dict");
 
     // Insert some initial terms
@@ -168,7 +168,7 @@ fn test_single_writer_multiple_readers() {
     let writer_dict = Arc::clone(&shared_dict);
     let writer_handle = thread::spawn(move || {
         for (i, term) in new_terms.iter().enumerate() {
-            let mut dict_guard = writer_dict.write();
+            let dict_guard = writer_dict.write();
             let _ = dict_guard.insert_with_value(term, (i + 1000) as i32);
             drop(dict_guard);
             thread::sleep(Duration::from_micros(100));
@@ -211,7 +211,7 @@ fn test_reader_during_checkpoint() {
     let dict_path = temp_dir.path().join("checkpoint_readers.part");
 
     // Create and populate dictionary
-    let mut dict: PersistentARTrie<i32> =
+    let dict: PersistentARTrie<i32> =
         PersistentARTrie::create(&dict_path).expect("create dict");
 
     let terms: Vec<String> = generate_terms(100, "chkp");
@@ -251,7 +251,7 @@ fn test_reader_during_checkpoint() {
 
     // Perform checkpoints while readers are active
     for _ in 0..3 {
-        let mut dict_guard = shared_dict.write();
+        let dict_guard = shared_dict.write();
         dict_guard.checkpoint().expect("checkpoint");
         drop(dict_guard);
         thread::sleep(Duration::from_millis(10));
@@ -281,7 +281,7 @@ fn test_concurrent_value_lookups() {
     let dict_path = temp_dir.path().join("value_lookups.part");
 
     // Create and populate dictionary with values
-    let mut dict: PersistentARTrie<i32> =
+    let dict: PersistentARTrie<i32> =
         PersistentARTrie::create(&dict_path).expect("create dict");
 
     let terms: Vec<(String, i32)> = (0..100)
@@ -363,7 +363,7 @@ fn test_writer_contention() {
                 let prefix = format!("t{}_", thread_id);
                 for i in 0..25 {
                     let term = format!("{}{:03}", prefix, i);
-                    let mut dict_guard = dict_clone.write();
+                    let dict_guard = dict_clone.write();
                     if dict_guard.insert_with_value(&term, (thread_id * 100 + i) as i32) {
                         inserts.fetch_add(1, Ordering::Relaxed);
                     }
@@ -400,7 +400,7 @@ fn test_read_write_interleaving() {
     let dict_path = temp_dir.path().join("interleaving.part");
 
     // Pre-populate with some terms
-    let mut dict: PersistentARTrie<i32> =
+    let dict: PersistentARTrie<i32> =
         PersistentARTrie::create(&dict_path).expect("create dict");
 
     let initial_terms: Vec<String> = generate_terms(50, "pre_");
@@ -434,7 +434,7 @@ fn test_read_write_interleaving() {
                         let _ = dict_guard.contains(term);
                     } else {
                         // Write operation
-                        let mut dict_guard = dict_clone.write();
+                        let dict_guard = dict_clone.write();
                         let term = format!("new_t{}_{:04}", thread_id, local_ops);
                         let _ = dict_guard.insert_with_value(&term, local_ops as i32);
                     }
@@ -478,7 +478,7 @@ fn test_many_short_lived_threads() {
     let temp_dir = TempDir::new().expect("create temp dir");
     let dict_path = temp_dir.path().join("short_lived.part");
 
-    let mut dict: PersistentARTrie<i32> =
+    let dict: PersistentARTrie<i32> =
         PersistentARTrie::create(&dict_path).expect("create dict");
 
     // Pre-populate
@@ -547,7 +547,7 @@ fn test_shared_artrie_shares_state() {
     let temp_dir = TempDir::new().expect("create temp dir");
     let dict_path = temp_dir.path().join("shared_state.part");
 
-    let mut dict: PersistentARTrie<i32> =
+    let dict: PersistentARTrie<i32> =
         PersistentARTrie::create(&dict_path).expect("create dict");
 
     // Insert via original handle
@@ -568,7 +568,7 @@ fn test_shared_artrie_shares_state() {
 
     // Insert via clone
     {
-        let mut dict_guard = dict_clone.write();
+        let dict_guard = dict_clone.write();
         let _ = dict_guard.insert_with_value("world", 100);
     }
 
@@ -591,7 +591,7 @@ fn test_sync_from_multiple_threads() {
     let temp_dir = TempDir::new().expect("create temp dir");
     let dict_path = temp_dir.path().join("multi_sync.part");
 
-    let mut dict: PersistentARTrie<i32> =
+    let dict: PersistentARTrie<i32> =
         PersistentARTrie::create(&dict_path).expect("create dict");
 
     // Insert some data

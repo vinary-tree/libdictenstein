@@ -203,9 +203,11 @@ pub(super) const ROOT_TYPE_NODE: u8 = 1;
 #[allow(deprecated)]
 mod tests {
     use super::super::PersistentARTrieChar;
-    use super::super::SharedCharTrie;
+    
     use super::*;
     use crate::ARTrie;
+    // F4: the `.read()/.write()` compat shim on the collapsed handle.
+    use crate::persistent_artrie_core::shared_access::SharedTrieAccess;
 
     #[test]
     fn test_file_header_roundtrip() {
@@ -333,7 +335,7 @@ mod tests {
         let inner: PersistentARTrieChar<()> = PersistentARTrieChar::new();
         assert_eq!(inner.len.load(AtomicOrdering::Acquire), 0);
         assert!(!inner.dirty.load(AtomicOrdering::Acquire));
-        assert!(matches!(inner.root, CharTrieRoot::Empty));
+        assert!(matches!(*inner.root.read(), CharTrieRoot::Empty));
     }
 
     #[test]
@@ -345,7 +347,7 @@ mod tests {
 
         // Create a new trie
         {
-            let mut inner: PersistentARTrieChar<()> =
+            let inner: PersistentARTrieChar<()> =
                 PersistentARTrieChar::create(&path).expect("create");
             inner.insert("hello").expect("insert");
             inner.insert("world").expect("insert");
@@ -362,7 +364,7 @@ mod tests {
 
     #[test]
     fn test_insert_and_contains() {
-        let mut inner: PersistentARTrieChar<()> = PersistentARTrieChar::new();
+        let inner: PersistentARTrieChar<()> = PersistentARTrieChar::new();
 
         // Insert some terms
         assert!(inner.insert_impl_no_wal("hello"));
@@ -381,7 +383,7 @@ mod tests {
 
     #[test]
     fn test_insert_duplicate() {
-        let mut inner: PersistentARTrieChar<()> = PersistentARTrieChar::new();
+        let inner: PersistentARTrieChar<()> = PersistentARTrieChar::new();
 
         // First insert should succeed
         assert!(inner.insert_impl_no_wal("hello"));
@@ -395,7 +397,7 @@ mod tests {
 
     #[test]
     fn test_remove() {
-        let mut inner: PersistentARTrieChar<()> = PersistentARTrieChar::new();
+        let inner: PersistentARTrieChar<()> = PersistentARTrieChar::new();
 
         // Insert some terms
         inner.insert_impl_no_wal("hello");
@@ -418,7 +420,7 @@ mod tests {
 
     #[test]
     fn test_unicode_support() {
-        let mut inner: PersistentARTrieChar<()> = PersistentARTrieChar::new();
+        let inner: PersistentARTrieChar<()> = PersistentARTrieChar::new();
 
         // Test various Unicode characters
         let terms = vec![
@@ -451,7 +453,7 @@ mod tests {
 
     #[test]
     fn test_prefix_sharing() {
-        let mut inner: PersistentARTrieChar<()> = PersistentARTrieChar::new();
+        let inner: PersistentARTrieChar<()> = PersistentARTrieChar::new();
 
         // Terms that share prefixes
         inner.insert_impl_no_wal("a");
@@ -475,7 +477,7 @@ mod tests {
 
     #[test]
     fn test_empty_string() {
-        let mut inner: PersistentARTrieChar<()> = PersistentARTrieChar::new();
+        let inner: PersistentARTrieChar<()> = PersistentARTrieChar::new();
 
         // Empty string is valid
         assert!(inner.insert_impl_no_wal(""));
@@ -491,29 +493,29 @@ mod tests {
 
     #[test]
     fn test_get_value() {
-        let mut inner: PersistentARTrieChar<i32> = PersistentARTrieChar::new();
+        let inner: PersistentARTrieChar<i32> = PersistentARTrieChar::new();
 
         inner.insert_impl_no_wal_with_value("one", 1);
         inner.insert_impl_no_wal_with_value("two", 2);
         inner.insert_impl_no_wal_with_value("three", 3);
 
-        assert_eq!(inner.get("one"), Some(&1));
-        assert_eq!(inner.get("two"), Some(&2));
-        assert_eq!(inner.get("three"), Some(&3));
+        assert_eq!(inner.get("one"), Some(1));
+        assert_eq!(inner.get("two"), Some(2));
+        assert_eq!(inner.get("three"), Some(3));
         assert_eq!(inner.get("four"), None);
     }
 
     #[test]
     fn test_value_update() {
-        let mut inner: PersistentARTrieChar<i32> = PersistentARTrieChar::new();
+        let inner: PersistentARTrieChar<i32> = PersistentARTrieChar::new();
 
         // First insert
         assert!(inner.insert_impl_no_wal_with_value("key", 100));
-        assert_eq!(inner.get("key"), Some(&100));
+        assert_eq!(inner.get("key"), Some(100));
 
         // Update (insert returns false but value is updated)
         assert!(!inner.insert_impl_no_wal_with_value("key", 200));
-        assert_eq!(inner.get("key"), Some(&200));
+        assert_eq!(inner.get("key"), Some(200));
 
         // Length unchanged
         assert_eq!(inner.len(), 1);
@@ -528,7 +530,7 @@ mod tests {
 
         // Create and insert with values
         {
-            let mut inner: PersistentARTrieChar<()> =
+            let inner: PersistentARTrieChar<()> =
                 PersistentARTrieChar::create(&path).expect("create");
             inner.insert("alpha").expect("insert");
             inner.insert("beta").expect("insert");
@@ -556,7 +558,7 @@ mod tests {
 
         // Create with mixed insert/remove
         {
-            let mut inner: PersistentARTrieChar<()> =
+            let inner: PersistentARTrieChar<()> =
                 PersistentARTrieChar::create(&path).expect("create");
             inner.insert("a").expect("insert");
             inner.insert("b").expect("insert");
@@ -587,7 +589,7 @@ mod tests {
         // Create, insert terms, and checkpoint
         let root_ptr_after_checkpoint;
         {
-            let mut inner: PersistentARTrieChar<()> =
+            let inner: PersistentARTrieChar<()> =
                 PersistentARTrieChar::create(&path).expect("create");
             inner.insert("apple").expect("insert");
             inner.insert("banana").expect("insert");
@@ -651,7 +653,7 @@ mod tests {
 
         // Create with Unicode terms and checkpoint
         {
-            let mut inner: PersistentARTrieChar<()> =
+            let inner: PersistentARTrieChar<()> =
                 PersistentARTrieChar::create(&path).expect("create");
             inner.insert("こんにちは").expect("insert");
             inner.insert("你好").expect("insert");
@@ -680,7 +682,7 @@ mod tests {
 
         // Create, checkpoint, then add more
         {
-            let mut inner: PersistentARTrieChar<()> =
+            let inner: PersistentARTrieChar<()> =
                 PersistentARTrieChar::create(&path).expect("create");
             inner.insert("first").expect("insert");
             inner.insert("second").expect("insert");
@@ -712,7 +714,7 @@ mod tests {
 
         // Create empty trie and checkpoint
         {
-            let mut inner: PersistentARTrieChar<()> =
+            let inner: PersistentARTrieChar<()> =
                 PersistentARTrieChar::create(&path).expect("create");
             inner.checkpoint().expect("checkpoint");
         }
@@ -734,7 +736,7 @@ mod tests {
 
         // Create with multiple checkpoint cycles
         {
-            let mut inner: PersistentARTrieChar<()> =
+            let inner: PersistentARTrieChar<()> =
                 PersistentARTrieChar::create(&path).expect("create");
 
             inner.insert("one").expect("insert");
@@ -766,7 +768,7 @@ mod tests {
 
         // Create with deeply nested terms
         {
-            let mut inner: PersistentARTrieChar<()> =
+            let inner: PersistentARTrieChar<()> =
                 PersistentARTrieChar::create(&path).expect("create");
             inner.insert("a").expect("insert");
             inner.insert("ab").expect("insert");
@@ -840,7 +842,7 @@ mod tests {
 
         // Create and upsert
         {
-            let mut inner: PersistentARTrieChar<String> =
+            let inner: PersistentARTrieChar<String> =
                 PersistentARTrieChar::create(&path).expect("create");
 
             // First upsert inserts
@@ -943,7 +945,7 @@ mod tests {
 
         // Create and get_or_insert
         {
-            let mut inner: PersistentARTrieChar<String> =
+            let inner: PersistentARTrieChar<String> =
                 PersistentARTrieChar::create(&path).expect("create");
 
             // First get_or_insert inserts
@@ -1069,7 +1071,7 @@ mod tests {
         let dir = tempdir().expect("create temp dir");
         let path = dir.path().join("test_optimistic_contains.trie");
 
-        let mut inner: PersistentARTrieChar<()> =
+        let inner: PersistentARTrieChar<()> =
             PersistentARTrieChar::create(&path).expect("create");
 
         inner.insert("hello").expect("insert");
@@ -1116,7 +1118,7 @@ mod tests {
         let dir = tempdir().expect("create temp dir");
         let path = dir.path().join("test_version.trie");
 
-        let mut inner: PersistentARTrieChar<()> =
+        let inner: PersistentARTrieChar<()> =
             PersistentARTrieChar::create(&path).expect("create");
         // Force the proven owned-tree path (pre-flip behavior) — this test exercises an owned/transaction/merge/archive feature that the create-flip would otherwise route to the lock-free overlay.
         inner.kill_switch_to_owned();
@@ -1180,7 +1182,7 @@ mod tests {
         let dir = tempdir().expect("create temp dir");
         let path = dir.path().join("test_stats.trie");
 
-        let mut inner: PersistentARTrieChar<()> =
+        let inner: PersistentARTrieChar<()> =
             PersistentARTrieChar::create(&path).expect("create");
 
         inner.insert("test").expect("insert");
@@ -1207,7 +1209,7 @@ mod tests {
 
         // Create and populate
         {
-            let mut inner: PersistentARTrieChar<()> =
+            let inner: PersistentARTrieChar<()> =
                 PersistentARTrieChar::create(&path).expect("create");
 
             for i in 0..100 {
@@ -1248,7 +1250,7 @@ mod tests {
         let dir = tempdir().expect("create temp dir");
         let path = dir.path().join("test_try_contains.trie");
 
-        let mut inner: PersistentARTrieChar<()> =
+        let inner: PersistentARTrieChar<()> =
             PersistentARTrieChar::create(&path).expect("create");
 
         inner.insert("apple").expect("insert");
@@ -1268,7 +1270,7 @@ mod tests {
         let dir = tempdir().expect("create temp dir");
         let path = dir.path().join("test_unicode_optimistic.trie");
 
-        let mut inner: PersistentARTrieChar<()> =
+        let inner: PersistentARTrieChar<()> =
             PersistentARTrieChar::create(&path).expect("create");
 
         inner.insert("日本語").expect("insert");
@@ -1334,7 +1336,7 @@ mod tests {
         let dir = tempdir().expect("create temp dir");
         let path = dir.path().join("test_doc_tx_abort.trie");
 
-        let mut inner: PersistentARTrieChar<u64> =
+        let inner: PersistentARTrieChar<u64> =
             PersistentARTrieChar::create(&path).expect("create");
         // Force the proven owned-tree path (pre-flip behavior) — this test exercises an owned/transaction/merge/archive feature that the create-flip would otherwise route to the lock-free overlay.
         inner.kill_switch_to_owned();
@@ -1564,8 +1566,8 @@ mod tests {
         assert_eq!(tx.len(), 4);
 
         // Values should NOT be updated yet
-        assert_eq!(inner.get("term_a"), Some(&100u64));
-        assert_eq!(inner.get("term_b"), Some(&50u64));
+        assert_eq!(inner.get("term_a"), Some(100u64));
+        assert_eq!(inner.get("term_b"), Some(50u64));
         assert!(inner.get("term_c").is_none());
 
         // Commit the transaction
@@ -1574,11 +1576,11 @@ mod tests {
 
         // Values should be updated now (increments aggregated)
         // term_a: 100 + 25 + 5 = 130
-        assert_eq!(inner.get("term_a"), Some(&130u64));
+        assert_eq!(inner.get("term_a"), Some(130u64));
         // term_b: 50 + 10 = 60
-        assert_eq!(inner.get("term_b"), Some(&60u64));
+        assert_eq!(inner.get("term_b"), Some(60u64));
         // term_c: 0 + 75 = 75
-        assert_eq!(inner.get("term_c"), Some(&75u64));
+        assert_eq!(inner.get("term_c"), Some(75u64));
     }
 
     #[test]
@@ -1611,8 +1613,8 @@ mod tests {
         assert_eq!(count, 2);
 
         // Verify results
-        assert_eq!(inner.get("set_term"), Some(&100u64));
-        assert_eq!(inner.get("inc_term"), Some(&50u64));
+        assert_eq!(inner.get("set_term"), Some(100u64));
+        assert_eq!(inner.get("inc_term"), Some(50u64));
     }
 
     #[test]
@@ -1637,8 +1639,8 @@ mod tests {
             inner.commit_document(tx).expect("commit");
 
             // Values should be correct before close
-            assert_eq!(inner.get("existing"), Some(&150u64));
-            assert_eq!(inner.get("new_term"), Some(&75u64));
+            assert_eq!(inner.get("existing"), Some(150u64));
+            assert_eq!(inner.get("new_term"), Some(75u64));
         }
 
         // Phase 2: Reopen and verify recovery
@@ -1646,8 +1648,8 @@ mod tests {
             let inner: PersistentARTrieChar<u64> = PersistentARTrieChar::open(&path).expect("open");
 
             // Values should survive recovery
-            assert_eq!(inner.get("existing"), Some(&150u64));
-            assert_eq!(inner.get("new_term"), Some(&75u64));
+            assert_eq!(inner.get("existing"), Some(150u64));
+            assert_eq!(inner.get("new_term"), Some(75u64));
         }
     }
 
@@ -2442,7 +2444,7 @@ mod tests {
         let dir = tempdir().expect("create temp dir");
         let path = dir.path().join("test_memory_monitor.trie");
 
-        let mut trie: PersistentARTrieChar<()> =
+        let trie: PersistentARTrieChar<()> =
             PersistentARTrieChar::create(&path).expect("create");
 
         // Initially no monitor
@@ -2485,7 +2487,7 @@ mod tests {
         let dir = tempdir().expect("create temp dir");
         let path = dir.path().join("test_memory_default.trie");
 
-        let mut trie: PersistentARTrieChar<()> =
+        let trie: PersistentARTrieChar<()> =
             PersistentARTrieChar::create(&path).expect("create");
 
         // Enable with default config (no-op callback)
@@ -2507,13 +2509,13 @@ mod tests {
 
     #[test]
     fn test_epoch_checkpointing_enable_disable() {
-        use crate::persistent_artrie::epoch::EpochConfig;
+        
         use tempfile::tempdir;
 
         let dir = tempdir().expect("create temp dir");
         let path = dir.path().join("test_epoch_checkpointing.trie");
 
-        let mut trie: PersistentARTrieChar<()> =
+        let trie: PersistentARTrieChar<()> =
             PersistentARTrieChar::create(&path).expect("create");
 
         // Initially no checkpoint manager
@@ -2549,7 +2551,7 @@ mod tests {
         let dir = tempdir().expect("create temp dir");
         let path = dir.path().join("test_epoch_record_ops.trie");
 
-        let mut trie: PersistentARTrieChar<()> =
+        let trie: PersistentARTrieChar<()> =
             PersistentARTrieChar::create(&path).expect("create");
 
         // Enable checkpoint manager
@@ -2594,7 +2596,7 @@ mod tests {
         let dir = tempdir().expect("create temp dir");
         let path = dir.path().join("test_epoch_high_throughput.trie");
 
-        let mut trie: PersistentARTrieChar<()> =
+        let trie: PersistentARTrieChar<()> =
             PersistentARTrieChar::create(&path).expect("create");
 
         // Enable with high-throughput config
@@ -2620,7 +2622,7 @@ mod tests {
         let dir = tempdir().expect("create temp dir");
         let path = dir.path().join("test_epoch_low_latency.trie");
 
-        let mut trie: PersistentARTrieChar<()> =
+        let trie: PersistentARTrieChar<()> =
             PersistentARTrieChar::create(&path).expect("create");
 
         // Enable with low-latency config
@@ -2647,7 +2649,7 @@ mod tests {
         let dir = tempdir().expect("create temp dir");
         let path = dir.path().join("test_epoch_metadata.trie");
 
-        let mut trie: PersistentARTrieChar<()> =
+        let trie: PersistentARTrieChar<()> =
             PersistentARTrieChar::create(&path).expect("create");
 
         trie.enable_epoch_checkpointing_default().expect("enable");
@@ -2726,7 +2728,7 @@ mod tests {
 
         // Create and populate trie first
         {
-            let mut trie: PersistentARTrieChar<()> =
+            let trie: PersistentARTrieChar<()> =
                 PersistentARTrieChar::create(&path).expect("create");
             // Force the proven owned-tree path (pre-flip behavior) — this test exercises an owned/transaction/merge/archive feature that the create-flip would otherwise route to the lock-free overlay.
             trie.kill_switch_to_owned();
@@ -2798,7 +2800,7 @@ mod tests {
             let dir = tempdir().expect("create temp dir");
             let path = dir.path().join("lsn_test.trie");
 
-            let mut inner: PersistentARTrieChar<i32> =
+            let inner: PersistentARTrieChar<i32> =
                 PersistentARTrieChar::create(&path).expect("create");
 
             let before = inner.current_lsn();
@@ -2818,7 +2820,7 @@ mod tests {
             let dir = tempdir().expect("create temp dir");
             let path = dir.path().join("lsn_test.trie");
 
-            let mut inner: PersistentARTrieChar<i32> =
+            let inner: PersistentARTrieChar<i32> =
                 PersistentARTrieChar::create(&path).expect("create");
 
             inner.upsert("key1", 42).expect("upsert");
@@ -2849,7 +2851,7 @@ mod tests {
             let dir = tempdir().expect("create temp dir");
             let path = dir.path().join("lsn_test.trie");
 
-            let mut inner: PersistentARTrieChar<i32> =
+            let inner: PersistentARTrieChar<i32> =
                 PersistentARTrieChar::create(&path).expect("create");
 
             // Insert some data
@@ -2887,7 +2889,7 @@ mod tests {
             let dir = tempdir().expect("create temp dir");
             let path = dir.path().join("lsn_test.trie");
 
-            let mut inner: PersistentARTrieChar<i32> =
+            let inner: PersistentARTrieChar<i32> =
                 PersistentARTrieChar::create(&path).expect("create");
 
             // Insert and sync
@@ -2917,7 +2919,7 @@ mod tests {
             let dir = tempdir().expect("create temp dir");
             let path = dir.path().join("lsn_test.trie");
 
-            let mut inner: PersistentARTrieChar<i32> =
+            let inner: PersistentARTrieChar<i32> =
                 PersistentARTrieChar::create(&path).expect("create");
 
             let mut prev_lsn = inner.current_lsn();
@@ -2942,9 +2944,9 @@ mod tests {
         use crate::artrie_trait::ARTrie;
         let dir = tempfile::TempDir::new().expect("temp dir");
         let path = dir.path().join("test_shared_lsn.artc");
-        let trie = std::sync::Arc::new(parking_lot::RwLock::new(
+        let trie = std::sync::Arc::new(
             PersistentARTrieChar::<()>::create(&path).expect("create trie"),
-        ));
+            );
         let lsn0 = trie.current_lsn();
         trie.write().insert("hello");
         let lsn1 = trie.current_lsn();
@@ -2956,9 +2958,9 @@ mod tests {
         use crate::artrie_trait::ARTrie;
         let dir = tempfile::TempDir::new().expect("temp dir");
         let path = dir.path().join("test_shared_synced.artc");
-        let trie = std::sync::Arc::new(parking_lot::RwLock::new(
+        let trie = std::sync::Arc::new(
             PersistentARTrieChar::<()>::create(&path).expect("create trie"),
-        ));
+            );
         let synced_before = trie.synced_lsn();
         trie.write().insert("hello");
         let current_after_insert = trie.current_lsn();
@@ -2986,9 +2988,9 @@ mod tests {
         use crate::artrie_trait::ARTrie;
         let dir = tempfile::TempDir::new().expect("temp dir");
         let path = dir.path().join("test_shared_upsert.artc");
-        let trie = std::sync::Arc::new(parking_lot::RwLock::new(
+        let trie = std::sync::Arc::new(
             PersistentARTrieChar::<i64>::create(&path).expect("create trie"),
-        ));
+            );
         assert!(
             trie.upsert("k", 1).expect("upsert"),
             "first upsert reports insert"
@@ -3021,9 +3023,9 @@ mod tests {
         let path = dir.path().join("t.artc");
         let n = 200usize;
         {
-            let trie = std::sync::Arc::new(parking_lot::RwLock::new(
+            let trie = std::sync::Arc::new(
                 PersistentARTrieChar::<u64>::create(&path).expect("create"),
-            ));
+                );
             assert!(
                 trie.read().route_overlay(),
                 "u64 trie auto-flips to the overlay (the overlay-arm checkpoint is the NF-3 race site)"
@@ -3062,9 +3064,9 @@ mod tests {
         use crate::artrie_trait::ARTrie;
         let dir = tempfile::TempDir::new().expect("temp dir");
         let path = dir.path().join("test_shared_sync.artc");
-        let trie = std::sync::Arc::new(parking_lot::RwLock::new(
+        let trie = std::sync::Arc::new(
             PersistentARTrieChar::<()>::create(&path).expect("create trie"),
-        ));
+            );
         trie.write().insert("persistent");
         trie.sync().expect("sync");
         drop(trie);

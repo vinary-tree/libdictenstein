@@ -203,7 +203,9 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
     /// Reads only `self.root` (the OWNED tree); never the overlay, never a routed
     /// public read. See the module-level D1 note.
     fn unrouted_collect_under(&self, prefix: &[u8]) -> Option<Vec<Vec<u8>>> {
-        match &self.root {
+        // F4 (OR read): the owned readers take the inner `root` RwLock for read.
+        // Called only pre-share by `reestablish_*` (single-threaded, uncontended).
+        match &*self.root.read() {
             TrieRoot::Bucket(bucket) => {
                 Self::unrouted_collect_bucket_terms(bucket, prefix).filter(|v| {
                     // Match the arena iterator's `None`-vs-`Some(empty)` shape:
@@ -246,7 +248,8 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
     where
         V: Clone,
     {
-        match &self.root {
+        // F4 (OR read): owned reader, pre-share only.
+        match &*self.root.read() {
             TrieRoot::Bucket(bucket) => {
                 Self::unrouted_collect_bucket_terms_with_values(bucket, prefix)
                     .filter(|v| !v.is_empty())
@@ -368,7 +371,8 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
     ///
     /// Reads only `self.root` (the OWNED tree); never the overlay.
     fn unrouted_empty_term_value(&self) -> Option<V> {
-        match &self.root {
+        // F4 (OR read): owned reader, pre-share only.
+        match &*self.root.read() {
             TrieRoot::Bucket(bucket) => match bucket.search(&[]) {
                 Ok(idx) => bucket
                     .get_entry(idx)
@@ -415,12 +419,12 @@ impl<V: DictionaryValue, S: BlockStorage> LockFreeOverlay<ByteKey, V, S>
 
     #[inline]
     fn overlay_write_mode(&self) -> OverlayWriteMode {
-        self.overlay_write_mode
+        self.overlay_write_mode.load()
     }
 
     #[inline]
-    fn set_overlay_write_mode(&mut self, mode: OverlayWriteMode) {
-        self.overlay_write_mode = mode;
+    fn set_overlay_write_mode(&self, mode: OverlayWriteMode) {
+        self.overlay_write_mode.store(mode);
     }
 
     #[inline]
@@ -514,7 +518,9 @@ impl<V: DictionaryValue, S: BlockStorage> LockFreeOverlay<ByteKey, V, S>
     }
 
     fn clear_owned(&mut self) {
-        self.root = TrieRoot::Bucket(StringBucket::with_values());
+        // F4: Tier-1, `&mut self` (called only by `reestablish_*` pre-share). Use
+        // `get_mut()` on the OR lock — exclusive access, no lock needed.
+        *self.root.get_mut() = TrieRoot::Bucket(StringBucket::with_values());
         self.term_count.store(0, Ordering::Release);
     }
 
@@ -852,7 +858,7 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
     /// **Restart-time kill-switch setter.** Thin delegator to the seam.
     #[cfg_attr(not(test), allow(dead_code))]
     #[inline]
-    pub(crate) fn set_overlay_write_mode(&mut self, mode: OverlayWriteMode) {
+    pub(crate) fn set_overlay_write_mode(&self, mode: OverlayWriteMode) {
         <Self as LockFreeOverlay<ByteKey, V, S>>::set_overlay_write_mode(self, mode)
     }
 
@@ -884,7 +890,7 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
     /// (doc-tx / trie-to-trie merge / compaction / CAS) force the owned regime that
     /// those features require.
     #[inline]
-    pub fn kill_switch_to_owned(&mut self) {
+    pub fn kill_switch_to_owned(&self) {
         <Self as LockFreeOverlay<ByteKey, V, S>>::kill_switch_to_owned(self)
     }
 

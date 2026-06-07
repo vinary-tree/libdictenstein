@@ -139,7 +139,7 @@ fn wal_len(path: &Path) -> u64 {
 }
 
 fn build_checkpointed_char_trie(path: &Path) {
-    let mut trie = PersistentARTrieChar::<i64>::create(path).expect("create char trie");
+    let trie = PersistentARTrieChar::<i64>::create(path).expect("create char trie");
     // F2-migrate: Bucket B — the sole caller corrupts an on-disk OWNED lazy child and
     // asserts the lazy traversal surfaces the error. Pin the Owned regime so the
     // owned-tree layout exists and the reopen stays owned. No-op feature-off.
@@ -216,7 +216,7 @@ fn byte_public_iterators_reopen_to_exact_snapshot() {
     let reference = byte_fixture();
 
     {
-        let mut trie = PersistentARTrie::<i64>::create(&path).expect("create byte trie");
+        let trie = PersistentARTrie::<i64>::create(&path).expect("create byte trie");
         // **M4b REFRAME.** A fresh `create::<i64>()` now create-flips to the overlay,
         // but this fixture MIXES valued `insert_with_value` with value-less `insert()`
         // (e.g. "term-only" => None) on an i64 trie. The i64 overlay is value-CARRYING:
@@ -274,7 +274,7 @@ fn char_public_iterators_reopen_lazy_snapshot_exactly() {
     let reference = char_fixture();
 
     {
-        let mut trie = PersistentARTrieChar::<i64>::create(&path).expect("create char trie");
+        let trie = PersistentARTrieChar::<i64>::create(&path).expect("create char trie");
         for (term, value) in &reference {
             trie.insert_with_value(term, *value)
                 .expect("insert char value");

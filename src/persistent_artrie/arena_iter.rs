@@ -33,6 +33,15 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
     // Arena-aware iteration and merge operations
     // =========================================================================
 
+    // **F4: DISABLED (not deleted).** `navigate_to_prefix_with_arena` returned a
+    // `&ChildNode` borrowed directly out of `self.root`. After the lock collapse
+    // `root` is a `RwLock<TrieRoot<V>>`, so a borrow into it would have to outlive a
+    // read-guard temporary (untenable without also returning the guard). This byte
+    // method has ZERO callers crate-wide (the `prefix_api.rs` callers are the
+    // DISTINCT *char* `navigate_to_prefix_with_arena`), so it is commented out
+    // rather than refactored. If revived, it must either return a guard alongside
+    // the borrow or clone the `ChildNode` out of a scoped `self.root.read()`.
+    /*
     /// Navigate to a prefix node, returning the child and its arena ID.
     ///
     /// This variant of prefix navigation also tracks the arena ID from the
@@ -117,6 +126,7 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
             }
         }
     }
+    */
 
     /// Collect terms with arena information for page-aware batch operations.
     ///
@@ -378,7 +388,8 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
             }));
         }
 
-        match &self.root {
+        // F4 (OR read): owned read path takes the inner `root` RwLock for read.
+        match &*self.root.read() {
             TrieRoot::Bucket(bucket) => {
                 // For root bucket, collect matching entries
                 let mut terms = Vec::new();
@@ -546,7 +557,8 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
             }));
         }
 
-        match &self.root {
+        // F4 (OR read): owned read path takes the inner `root` RwLock for read.
+        match &*self.root.read() {
             TrieRoot::Bucket(bucket) => {
                 // For root bucket, collect matching entries with values
                 let mut terms = Vec::new();

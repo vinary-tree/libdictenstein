@@ -242,7 +242,7 @@ impl<V: DictionaryValue + serde::Serialize + serde::de::DeserializeOwned, S: Blo
     /// `route_overlay()`, routes to the thin Order-A
     /// [`upsert_cas_durable`](Self::upsert_cas_durable) (last-writer = the root-CAS
     /// winner). Arbitrary `V` falls back to the owned tree (SAFE `Any` dispatch).
-    pub fn upsert(&mut self, term: &str, value: V) -> Result<bool> {
+    pub fn upsert(&self, term: &str, value: V) -> Result<bool> {
         // Flip F0/G5 (NH1): under the overlay, route to the SHARED GENERIC durable
         // UPSERT (always-write) for ANY V — NEVER fall through to owned. Eligible V
         // now; arbitrary V at F2.
@@ -304,7 +304,7 @@ impl<V: DictionaryValue + serde::Serialize + serde::de::DeserializeOwned, S: Blo
         }
 
         self.preflight_insert_with_value_no_wal(term)?;
-        let current = self.get(term).cloned();
+        let current = self.get(term);
 
         // Check if current matches expected
         let (matches, expected_bytes) = match (&current, &expected) {
@@ -357,7 +357,7 @@ impl<V: DictionaryValue + serde::Serialize + serde::de::DeserializeOwned, S: Blo
     ///
     /// If the term exists, returns its current value.
     /// If not, inserts the default value and returns it.
-    pub fn get_or_insert(&mut self, term: &str, default: V) -> Result<V> {
+    pub fn get_or_insert(&self, term: &str, default: V) -> Result<V> {
         // Flip F0/G5 (NH1): under the overlay, route to the SHARED GENERIC
         // insert-once get-or-insert (read-your-write: present? return it : insert
         // the default once, then return; the durable insert is genuinely insert-once
@@ -376,7 +376,7 @@ impl<V: DictionaryValue + serde::Serialize + serde::de::DeserializeOwned, S: Blo
 
         self.preflight_insert_with_value_no_wal(term)?;
 
-        if let Some(v) = self.get(term).cloned() {
+        if let Some(v) = self.get(term) {
             return Ok(v);
         }
 

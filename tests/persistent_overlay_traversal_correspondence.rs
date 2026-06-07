@@ -121,7 +121,7 @@ fn byte_membership_case(name: &str, terms: &[&str]) {
 
     // Overlay-routed (create-flips for V = () by default).
     let overlay_path = dir.path().join("overlay.art");
-    let mut overlay = PersistentARTrie::<()>::create(&overlay_path).expect("create overlay");
+    let overlay = PersistentARTrie::<()>::create(&overlay_path).expect("create overlay");
     assert!(
         overlay.route_overlay(),
         "{name}: byte () trie must be overlay-routed by default"
@@ -132,7 +132,7 @@ fn byte_membership_case(name: &str, terms: &[&str]) {
 
     // Owned twin (kill-switched to the proven owned path).
     let owned_path = dir.path().join("owned.art");
-    let mut owned = PersistentARTrie::<()>::create(&owned_path).expect("create owned");
+    let owned = PersistentARTrie::<()>::create(&owned_path).expect("create owned");
     owned.kill_switch_to_owned();
     assert!(!owned.route_overlay(), "{name}: owned twin must NOT route overlay");
     for t in terms {
@@ -184,7 +184,7 @@ fn byte_valued_case(name: &str, entries: &[(&str, i64)]) {
     let dir = scratch(name);
 
     let overlay_path = dir.path().join("overlay.art");
-    let mut overlay = PersistentARTrie::<i64>::create(&overlay_path).expect("create overlay");
+    let overlay = PersistentARTrie::<i64>::create(&overlay_path).expect("create overlay");
     assert!(
         overlay.route_overlay(),
         "{name}: byte i64 trie must be overlay-routed by default"
@@ -194,7 +194,7 @@ fn byte_valued_case(name: &str, entries: &[(&str, i64)]) {
     }
 
     let owned_path = dir.path().join("owned.art");
-    let mut owned = PersistentARTrie::<i64>::create(&owned_path).expect("create owned");
+    let owned = PersistentARTrie::<i64>::create(&owned_path).expect("create owned");
     owned.kill_switch_to_owned();
     for (t, v) in entries {
         owned.insert_with_value(t, *v);
@@ -268,7 +268,7 @@ fn char_membership_case(name: &str, terms: &[&str]) {
     let dir = scratch(name);
 
     let overlay_path = dir.path().join("overlay.artc");
-    let mut overlay = PersistentARTrieChar::<()>::create(&overlay_path).expect("create overlay");
+    let overlay = PersistentARTrieChar::<()>::create(&overlay_path).expect("create overlay");
     assert!(
         overlay.route_overlay(),
         "{name}: char () trie must be overlay-routed by default"
@@ -278,7 +278,7 @@ fn char_membership_case(name: &str, terms: &[&str]) {
     }
 
     let owned_path = dir.path().join("owned.artc");
-    let mut owned = PersistentARTrieChar::<()>::create(&owned_path).expect("create owned");
+    let owned = PersistentARTrieChar::<()>::create(&owned_path).expect("create owned");
     owned.kill_switch_to_owned();
     assert!(!owned.route_overlay(), "{name}: char owned twin must NOT route overlay");
     for t in terms {
@@ -321,7 +321,7 @@ fn char_valued_case(name: &str, entries: &[(&str, u64)]) {
     let dir = scratch(name);
 
     let overlay_path = dir.path().join("overlay.artc");
-    let mut overlay = PersistentARTrieChar::<u64>::create(&overlay_path).expect("create overlay");
+    let overlay = PersistentARTrieChar::<u64>::create(&overlay_path).expect("create overlay");
     assert!(
         overlay.route_overlay(),
         "{name}: char u64 trie must be overlay-routed by default"
@@ -331,7 +331,7 @@ fn char_valued_case(name: &str, entries: &[(&str, u64)]) {
     }
 
     let owned_path = dir.path().join("owned.artc");
-    let mut owned = PersistentARTrieChar::<u64>::create(&owned_path).expect("create owned");
+    let owned = PersistentARTrieChar::<u64>::create(&owned_path).expect("create owned");
     owned.kill_switch_to_owned();
     for (t, v) in entries {
         owned.insert_with_value(t, *v).expect("insert owned");
@@ -398,13 +398,13 @@ fn byte_overlay_walk_with_empty_string_final() {
     // Empty string is a first-class final (carries its value on the root).
     let dir = scratch("byte_empty");
     let path = dir.path().join("overlay.art");
-    let mut overlay = PersistentARTrie::<i64>::create(&path).expect("create");
+    let overlay = PersistentARTrie::<i64>::create(&path).expect("create");
     overlay.insert_with_value("", 42);
     overlay.insert_with_value("x", 1);
     overlay.insert_with_value("xy", 2);
 
     let owned_path = dir.path().join("owned.art");
-    let mut owned = PersistentARTrie::<i64>::create(&owned_path).expect("create owned");
+    let owned = PersistentARTrie::<i64>::create(&owned_path).expect("create owned");
     owned.kill_switch_to_owned();
     owned.insert_with_value("", 42);
     owned.insert_with_value("x", 1);
@@ -473,13 +473,13 @@ fn char_overlay_walk_equals_owned_valued() {
 fn char_overlay_walk_with_empty_string_final() {
     let dir = scratch("char_empty");
     let path = dir.path().join("overlay.artc");
-    let mut overlay = PersistentARTrieChar::<u64>::create(&path).expect("create");
+    let overlay = PersistentARTrieChar::<u64>::create(&path).expect("create");
     overlay.insert_with_value("", 7).expect("insert");
     overlay.insert_with_value("日", 1).expect("insert");
     overlay.insert_with_value("日本", 2).expect("insert");
 
     let owned_path = dir.path().join("owned.artc");
-    let mut owned = PersistentARTrieChar::<u64>::create(&owned_path).expect("create owned");
+    let owned = PersistentARTrieChar::<u64>::create(&owned_path).expect("create owned");
     owned.kill_switch_to_owned();
     owned.insert_with_value("", 7).expect("insert");
     owned.insert_with_value("日", 1).expect("insert");
@@ -529,7 +529,7 @@ fn edge_count_matches_edges_len_byte() {
     // `edge_count()` must agree with the number of `edges()` for the overlay arm.
     let dir = scratch("byte_edge_count");
     let path = dir.path().join("overlay.art");
-    let mut overlay = PersistentARTrie::<()>::create(&path).expect("create");
+    let overlay = PersistentARTrie::<()>::create(&path).expect("create");
     for t in MEMBERSHIP_TERMS {
         overlay.insert(t);
     }
@@ -551,7 +551,7 @@ fn edge_count_matches_edges_len_byte() {
 fn edge_count_matches_edges_len_char() {
     let dir = scratch("char_edge_count");
     let path = dir.path().join("overlay.artc");
-    let mut overlay = PersistentARTrieChar::<()>::create(&path).expect("create");
+    let overlay = PersistentARTrieChar::<()>::create(&path).expect("create");
     for t in &["café", "caffeine", "日本", "日本語", "a", "ab", "abc"] {
         overlay.insert(t).expect("insert");
     }

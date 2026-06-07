@@ -32,6 +32,7 @@
 //! raw byte-for-byte file compare is confounded by the checkpoint timestamp.
 
 use libdictenstein::artrie_trait::{ARTrie, EvictableARTrie};
+use libdictenstein::persistent_artrie_core::shared_access::SharedTrieAccess;
 use libdictenstein::persistent_artrie::eviction::EvictionConfig;
 use libdictenstein::persistent_artrie_char::{
     PersistentARTrieChar, PersistentARTrieCharNode, SharedCharARTrie,
@@ -43,7 +44,7 @@ use tempfile::tempdir;
 /// Read a value through the reloading `get` path (unambiguous inherent method;
 /// both `MappedDictionary` and `ARTrie` also expose a `get_value`).
 fn value_of(shared: &SharedCharARTrie<i32>, term: &str) -> Option<i32> {
-    shared.read().get(term).copied()
+    shared.read().get(term)
 }
 
 /// Insert via the explicit `MutableMappedDictionary` method (both it and `ARTrie`
@@ -299,7 +300,7 @@ fn value_at(trie: &PersistentARTrieChar<i32>, term: &str) -> (bool, Option<i32>)
 
 #[test]
 fn value_at_terminal_and_nonterminal_nodes() {
-    let mut trie: PersistentARTrieChar<i32> = PersistentARTrieChar::new();
+    let trie: PersistentARTrieChar<i32> = PersistentARTrieChar::new();
     trie.insert_with_value("test", 123).expect("insert test");
     trie.insert_with_value("tea", 7).expect("insert tea");
 

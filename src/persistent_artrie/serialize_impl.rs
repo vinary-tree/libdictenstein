@@ -122,12 +122,16 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
     /// This method walks through the trie structure and serializes all
     /// in-memory nodes to disk, then updates the file header with the
     /// root pointer.
-    pub fn persist_to_disk(&mut self) -> Result<()> {
+    pub fn persist_to_disk(&self) -> Result<()> {
+        // **F4:** `&self` (the owned/vocab+test serialize path). The owned root is
+        // serialized under the inner `root` RwLock for read (OR); released before
+        // `clear_dirty_tracking_state` (lock order).
         let buffer_manager = self.buffer_manager.as_ref().ok_or_else(|| {
             PersistentARTrieError::internal("No buffer manager for disk serialization")
         })?;
 
-        let (root_type, root_ptr, is_final, term_count) = match &self.root {
+        let owned_root = self.root.read();
+        let (root_type, root_ptr, is_final, term_count) = match &*owned_root {
             TrieRoot::Bucket(bucket) => {
                 let ptr = self.serialize_bucket_to_disk(bucket)?;
                 (
@@ -179,6 +183,9 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
                 )
             }
         };
+        // Release the OR read guard now — the rest (arena flush, descriptor write,
+        // `clear_dirty_tracking_state` which takes OR for write) must not hold it.
+        drop(owned_root);
 
         if let Some(ref arena_manager) = self.arena_manager {
             let stats = arena_manager.write().flush_dirty_slots()?;

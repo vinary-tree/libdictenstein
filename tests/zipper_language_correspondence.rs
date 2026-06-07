@@ -524,7 +524,7 @@ mod persistent {
     use libdictenstein::persistent_artrie_char::{
         PersistentARTrieChar, PersistentARTrieCharZipper,
     };
-    use parking_lot::RwLock;
+    
     use std::sync::Arc;
 
     #[test]
@@ -535,11 +535,12 @@ mod persistent {
             "beta".to_string(),
         ]);
         #[allow(deprecated)]
-        let mut byte_trie = PersistentARTrie::<()>::new();
+        let byte_trie = PersistentARTrie::<()>::new();
         for term in &byte_terms {
             assert!(byte_trie.insert(term), "insert byte term: {term}");
         }
-        let shared: SharedARTrie<()> = Arc::new(RwLock::new(byte_trie));
+        // F4: `SharedARTrie` is now a bare `Arc<…>` (the outer `RwLock` is deleted).
+        let shared: SharedARTrie<()> = Arc::new(byte_trie);
         assert_byte_zipper_language(
             PersistentARTrieZipper::new(shared),
             &byte_terms,
@@ -549,7 +550,7 @@ mod persistent {
 
         let char_terms =
             BTreeSet::from(["cafe".to_string(), "cane".to_string(), "delta".to_string()]);
-        let mut char_trie = PersistentARTrieChar::<()>::new();
+        let char_trie = PersistentARTrieChar::<()>::new();
         for term in &char_terms {
             char_trie.insert(term).expect("insert char term");
         }

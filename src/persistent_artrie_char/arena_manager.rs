@@ -1552,7 +1552,7 @@ mod tests {
 
         let before = manager.active_arena;
         manager.ensure_valid();
-        let after = manager.ensure_valid();
+        let _after = manager.ensure_valid();
 
         // Should be no change when already valid
         assert_eq!(before, manager.active_arena);

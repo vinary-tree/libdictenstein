@@ -19,7 +19,7 @@ fn byte_public_open_replays_synced_wal_tail_without_checkpoint() {
     let path = dir.path().join("byte_tail.part");
 
     {
-        let mut trie: PersistentARTrie<i64> =
+        let trie: PersistentARTrie<i64> =
             PersistentARTrie::create(&path).expect("create byte trie");
         assert!(trie.insert_with_value("alpha", 11));
         assert!(trie.insert_with_value("beta", 22));
@@ -37,7 +37,7 @@ fn byte_public_open_replays_checkpoint_plus_synced_tail() {
     let path = dir.path().join("byte_checkpoint_tail.part");
 
     {
-        let mut trie: PersistentARTrie<i64> =
+        let trie: PersistentARTrie<i64> =
             PersistentARTrie::create(&path).expect("create byte trie");
         assert!(trie.insert_with_value("checkpointed", 1));
         trie.sync().expect("sync checkpointed record");
@@ -60,7 +60,7 @@ fn char_public_open_replays_unicode_checkpoint_plus_synced_tail() {
     let path = dir.path().join("char_checkpoint_tail.part");
 
     {
-        let mut trie: PersistentARTrieChar<i64> =
+        let trie: PersistentARTrieChar<i64> =
             PersistentARTrieChar::create(&path).expect("create char trie");
         assert!(trie.insert_with_value("café", 7).expect("insert café"));
         trie.sync().expect("sync checkpointed char record");

@@ -33,12 +33,21 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
     /// Records all prefixes of the given path in `dirty_prefixes` and
     /// invalidates corresponding cached disk locations, since those nodes
     /// will need re-serialization.
+    ///
+    /// **F4:** `&self` — the dirty-prefix set is now a `Mutex`. Take the
+    /// `persisted_disk_locations` `RwLock` and the `dirty_prefixes` `Mutex` in that
+    /// order; never held across the OR root lock (the owned mutators DROP the OR
+    /// guard before calling this).
     #[inline]
-    pub(super) fn record_dirty_path(&mut self, path: &[u8]) {
+    pub(super) fn record_dirty_path(&self, path: &[u8]) {
         let mut cache = self.persisted_disk_locations.write();
+        let mut dirty = self
+            .dirty_prefixes
+            .lock()
+            .expect("dirty_prefixes mutex poisoned");
         for len in 0..=path.len() {
             let prefix = path[..len].to_vec();
-            self.dirty_prefixes.insert(prefix.clone());
+            dirty.insert(prefix.clone());
             cache.remove(&prefix);
         }
     }
@@ -46,7 +55,10 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
     /// Check if a path needs persistence.
     #[inline]
     pub(super) fn path_needs_persistence(&self, path: &[u8]) -> bool {
-        self.dirty_prefixes.contains(path)
+        self.dirty_prefixes
+            .lock()
+            .expect("dirty_prefixes mutex poisoned")
+            .contains(path)
     }
 
     /// Propagate dirty flags up the ancestor chain.
@@ -54,8 +66,13 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
     /// Sets the HAS_DIRTY_DESCENDANTS flag on the root node when any
     /// modification is made. For nested ART nodes along the path, the
     /// flag propagation happens during the serialization phase.
-    pub(super) fn propagate_dirty_to_root(&mut self) {
-        if let TrieRoot::ArtNode { node, .. } = &mut self.root {
+    ///
+    /// **F4:** `&self` taking the OR write lock. The hot owned-insert/remove paths
+    /// fold this inline (under their already-held OR guard, to avoid re-locking);
+    /// this stand-alone form is retained for any other caller.
+    #[allow(dead_code)]
+    pub(super) fn propagate_dirty_to_root(&self) {
+        if let TrieRoot::ArtNode { node, .. } = &mut *self.root.write() {
             node.header_mut().set_has_dirty_descendants(true);
         }
     }
@@ -71,7 +88,12 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
     /// Get a cached disk location for a path if it exists and the subtree is clean.
     #[inline]
     pub(super) fn get_cached_disk_location(&self, path: &[u8]) -> Option<SwizzledPtr> {
-        if self.dirty_prefixes.contains(path) {
+        if self
+            .dirty_prefixes
+            .lock()
+            .expect("dirty_prefixes mutex poisoned")
+            .contains(path)
+        {
             None
         } else {
             self.persisted_disk_locations.read().get(path).cloned()
@@ -81,7 +103,7 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
     /// Resolve a DiskRef child for mutation, caching the original location.
     #[allow(dead_code)]
     pub(super) fn resolve_and_cache_disk_location(
-        &mut self,
+        &self,
         child: &mut ChildNode,
         path: &[u8],
     ) -> bool {
@@ -93,14 +115,23 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
     }
 
     /// Clear dirty tracking state after a successful checkpoint.
-    pub(super) fn clear_dirty_tracking_state(&mut self) {
-        self.dirty_prefixes.clear();
+    ///
+    /// **F4:** `&self` — clears the `dirty_prefixes` `Mutex` then the in-tree flags
+    /// under the OR write lock. Released-and-reacquired (the Mutex first, then OR)
+    /// — never both at once.
+    pub(super) fn clear_dirty_tracking_state(&self) {
+        self.dirty_prefixes
+            .lock()
+            .expect("dirty_prefixes mutex poisoned")
+            .clear();
         self.clear_dirty_flags_recursive();
     }
 
     /// Recursively clear dirty flags on all nodes in the trie.
-    fn clear_dirty_flags_recursive(&mut self) {
-        match &mut self.root {
+    ///
+    /// **F4:** `&self` taking the OR write lock for the recursive flag clear.
+    fn clear_dirty_flags_recursive(&self) {
+        match &mut *self.root.write() {
             TrieRoot::Bucket(_) => {}
             TrieRoot::ArtNode { node, children, .. } => {
                 node.header_mut().clear_dirty_flags();

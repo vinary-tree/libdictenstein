@@ -75,7 +75,7 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     /// BEFORE taking `self`'s write lock, then calls this — never holding two `RwLock`s
     /// at once (the AB/BA cross-instance deadlock fix; mirrors the vocab pattern).
     pub(crate) fn merge_entries<F>(
-        &mut self,
+        &self,
         entries: Vec<(String, V)>,
         merge_fn: F,
     ) -> Result<usize>
@@ -83,13 +83,15 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
         F: Fn(&V, &V) -> V,
         V: Clone,
     {
+        // **F4:** `&self` (routes to `&self` overlay funnel / owned `upsert`). The
+        // `Shared*` `union_with` driver that reaches this takes `merge_lock`.
         if self.route_overlay() {
             return self.merge_entries_overlay(entries, merge_fn);
         }
         let mut processed = 0usize;
         for (term, other_value) in entries {
             let merged = match self.get(&term) {
-                Some(self_value) => merge_fn(self_value, &other_value),
+                Some(self_value) => merge_fn(&self_value, &other_value),
                 None => other_value,
             };
             self.upsert(&term, merged)?;
@@ -174,7 +176,7 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
 
                     // Check if term exists in self and merge values
                     let merged_value = if let Some(self_value) = self.get(&term) {
-                        merge_fn(self_value, &other_value)
+                        merge_fn(&self_value, &other_value)
                     } else {
                         other_value
                     };
@@ -337,7 +339,7 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
             for item in batch {
                 // Check if term exists in self and merge values
                 let merged_value = if let Some(self_value) = self.get(&item.term) {
-                    merge_fn(self_value, &item.value)
+                    merge_fn(&self_value, &item.value)
                 } else {
                     item.value.clone()
                 };

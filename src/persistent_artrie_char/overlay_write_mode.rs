@@ -71,12 +71,12 @@ impl<V: DictionaryValue, S: BlockStorage> LockFreeOverlay<CharKey, V, S>
 
     #[inline]
     fn overlay_write_mode(&self) -> OverlayWriteMode {
-        self.overlay_write_mode
+        self.overlay_write_mode.load()
     }
 
     #[inline]
-    fn set_overlay_write_mode(&mut self, mode: OverlayWriteMode) {
-        self.overlay_write_mode = mode;
+    fn set_overlay_write_mode(&self, mode: OverlayWriteMode) {
+        self.overlay_write_mode.store(mode);
     }
 
     #[inline]
@@ -179,12 +179,15 @@ impl<V: DictionaryValue, S: BlockStorage> LockFreeOverlay<CharKey, V, S>
     }
 
     fn owned_has_empty_term_value(&self) -> Option<V> {
-        // D1: UN-routed owned reader (`owned_get` reads `self.root`).
-        self.owned_get("").cloned()
+        // D1: UN-routed owned reader (`owned_get` reads `self.root`). F4: `owned_get`
+        // already returns an owned `Option<V>`.
+        self.owned_get("")
     }
 
     fn clear_owned(&mut self) {
-        self.root = CharTrieRoot::Empty;
+        // F4: Tier-1, `&mut self` (reestablish pre-share). `get_mut()` on the OR
+        // lock — exclusive access, no lock needed.
+        *self.root.get_mut() = CharTrieRoot::Empty;
         self.len.store(0, Ordering::Release);
     }
 
@@ -534,7 +537,7 @@ impl<V: DictionaryValue, S: BlockStorage> OverlayCheckpoint<CharKey, V, S>
 
     #[inline]
     fn has_eviction_coordinator(&self) -> bool {
-        self.eviction_coordinator.is_some()
+        self.eviction_coordinator.lock().expect("eviction_coordinator mutex poisoned").is_some()
     }
 
     #[inline]
@@ -588,7 +591,7 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     // flip (not yet wired), so allow dead_code in non-test builds only.
     #[cfg_attr(not(test), allow(dead_code))]
     #[inline]
-    pub(crate) fn set_overlay_write_mode(&mut self, mode: OverlayWriteMode) {
+    pub(crate) fn set_overlay_write_mode(&self, mode: OverlayWriteMode) {
         <Self as LockFreeOverlay<CharKey, V, S>>::set_overlay_write_mode(self, mode)
     }
 
@@ -610,7 +613,7 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     /// **Kill-switch — one-release fallback.** Thin delegator to
     /// [`LockFreeOverlay::kill_switch_to_owned`]. Kept `pub` (external callers).
     #[inline]
-    pub fn kill_switch_to_owned(&mut self) {
+    pub fn kill_switch_to_owned(&self) {
         <Self as LockFreeOverlay<CharKey, V, S>>::kill_switch_to_owned(self)
     }
 }

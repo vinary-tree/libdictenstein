@@ -355,16 +355,50 @@ use crate::{
     Dictionary, DictionaryNode, MappedDictionary, MappedDictionaryNode, MutableMappedDictionary,
 };
 
-/// Thread-safe wrapper for `PersistentARTrieChar`.
+/// Thread-safe handle for `PersistentARTrieChar`.
 ///
-/// This type alias provides `Arc<RwLock<...>>` semantics for concurrent access
-/// to the disk-backed character trie.
+/// **F4 (the lock collapse):** now a bare `Arc<PersistentARTrieChar<V,S>>` — the
+/// outer `RwLock` is DELETED. Overlay reads AND writes are fully lock-free; the
+/// only operations needing mutual exclusion take dedicated inner locks
+/// (`checkpoint_lock`, the wrapped `root` `RwLock`, the `eviction_coordinator`
+/// `Mutex`, `merge_lock`) — never the handle. A backward-compatible
+/// `.read()`/`.write()` API is preserved by
+/// [`SharedTrieAccess`](crate::persistent_artrie_core::shared_access::SharedTrieAccess)
+/// (both return a transparent guard that derefs to `&T`; no lock).
 pub type SharedCharARTrie<V, S = crate::persistent_artrie::disk_manager::MmapDiskManager> =
-    Arc<RwLock<PersistentARTrieChar<V, S>>>;
+    Arc<PersistentARTrieChar<V, S>>;
 
 /// Deprecated alias for backward compatibility.
 #[deprecated(since = "0.9.0", note = "Use SharedCharARTrie instead")]
 pub type SharedCharTrie<V> = SharedCharARTrie<V>;
+
+#[doc(inline)]
+pub use crate::persistent_artrie_core::shared_access::SharedTrieAccess;
+
+// F4: the concrete `.read()/.write()` shim impl on the collapsed char handle
+// (CONCRETE, never a blanket `Arc<T>` — see the byte twin + the trait docs).
+impl<V: DictionaryValue, S: crate::persistent_artrie::block_storage::BlockStorage>
+    crate::persistent_artrie_core::shared_access::SharedTrieAccess
+    for Arc<PersistentARTrieChar<V, S>>
+{
+    type Target = PersistentARTrieChar<V, S>;
+
+    #[inline]
+    fn read(
+        &self,
+    ) -> crate::persistent_artrie_core::shared_access::TrieAccessGuard<'_, PersistentARTrieChar<V, S>>
+    {
+        crate::persistent_artrie_core::shared_access::TrieAccessGuard::from_ref(self.as_ref())
+    }
+
+    #[inline]
+    fn write(
+        &self,
+    ) -> crate::persistent_artrie_core::shared_access::TrieAccessGuard<'_, PersistentARTrieChar<V, S>>
+    {
+        crate::persistent_artrie_core::shared_access::TrieAccessGuard::from_ref(self.as_ref())
+    }
+}
 
 /// Character-level Persistent Adaptive Radix Trie for Unicode support.
 ///
@@ -377,8 +411,16 @@ pub type SharedCharTrie<V> = SharedCharARTrie<V>;
 /// This type provides interior mutability via RwLock. For concurrent access,
 /// use `SharedCharTrie<V>` which is `Arc<RwLock<PersistentARTrieChar<V>>>`.
 pub struct PersistentARTrieChar<V: DictionaryValue = (), S: crate::persistent_artrie::block_storage::BlockStorage = crate::persistent_artrie::disk_manager::MmapDiskManager> {
-    /// Root of the trie
-    pub(crate) root: CharTrieRoot<V>,
+    /// Root of the trie.
+    ///
+    /// **F4 (PF-1, OR lock):** wrapped in a `RwLock` (the byte twin's rationale) so
+    /// the now-`&self` owned mutators / WAL-replay keep SAFE interior mutability
+    /// after the `Arc<RwLock>`→`Arc` collapse — NO new `unsafe`. The **OR** lock in
+    /// `CK > merge_lock > OR > EC`: owned path only (overlay writes are lock-free
+    /// CAS). `get_mut()` at open (single-threaded), `write()` for runtime owned
+    /// mutators, `read()` for owned-checkpoint capture. The old write→read
+    /// `downgrade` is DELETED with the outer lock.
+    pub(crate) root: RwLock<CharTrieRoot<V>>,
     /// Number of terms (atomic for lock-free access)
     pub(crate) len: AtomicUsize,
     /// Dirty flag (atomic for lock-free access)
@@ -406,12 +448,27 @@ pub struct PersistentARTrieChar<V: DictionaryValue = (), S: crate::persistent_ar
     /// `Arc<RwLock>`→`Arc` collapse unchanged. Formally verified:
     /// `formal-verification/tla+/ConcurrentCheckpointSerialization.tla`.
     pub(crate) checkpoint_lock: std::sync::Arc<parking_lot::Mutex<()>>,
+    /// **F4 / V11.2 — serializes concurrent merge drivers** (mirrors
+    /// `checkpoint_lock` EXACTLY). The per-key merge CAS-retry loop is
+    /// obstruction-free; this lock kills merge‖merge livelock by serializing the
+    /// whole-trie merge entry points. A dedicated lock in `CK > merge_lock > OR >
+    /// EC`: the merge driver takes `merge_lock` then (owned path) OR, never the
+    /// reverse; checkpoint (CK) snapshots the lock-free root concurrently and never
+    /// holds `merge_lock`. Single acquisition site; public wrappers must NOT re-take
+    /// it (parking_lot is non-reentrant).
+    pub(crate) merge_lock: std::sync::Arc<parking_lot::Mutex<()>>,
     /// Kill-switch selecting the production write-path representation
     /// (owned-tree vs lock-free overlay). Migration Phase E scaffold — wired as
     /// the inert [`OverlayWriteMode::OwnedTree`](overlay_write_mode::OverlayWriteMode::OwnedTree)
     /// default so it changes NO current behavior; the irreversible flip flips it
     /// and gains a one-release fallback. No production path reads it yet.
-    pub(crate) overlay_write_mode: overlay_write_mode::OverlayWriteMode,
+    /// **F4:** an `AtomicEnumCell` so the now-`&self` `kill_switch_to_owned` /
+    /// `set_overlay_write_mode` / `flip_to_overlay` write it and the hot
+    /// `route_overlay()` predicate loads it lock-free after the collapse.
+    pub(crate) overlay_write_mode:
+        crate::persistent_artrie_core::shared_access::AtomicEnumCell<
+            overlay_write_mode::OverlayWriteMode,
+        >,
     pub(crate) file_path: Option<std::path::PathBuf>,
     /// Arena manager for space-efficient node storage
     /// Packs multiple nodes into 256KB blocks instead of one node per block
@@ -451,12 +508,22 @@ pub struct PersistentARTrieChar<V: DictionaryValue = (), S: crate::persistent_ar
     #[cfg(feature = "group-commit")]
     /// Group commit coordinator for WAL write batching.
     /// When enabled, WAL writes are batched for better throughput.
-    pub(crate) group_commit: Option<Arc<crate::persistent_artrie::group_commit::GroupCommitCoordinator>>,
+    ///
+    /// **F4 (subsystem family, uniform):** `Mutex<Option<Arc<…>>>` so the now-`&self`
+    /// `enable/disable_group_commit` toggle it; drop-before-join on disable + the
+    /// take-old-then-drop re-arm on enable (V11.3).
+    pub(crate) group_commit:
+        std::sync::Mutex<Option<Arc<crate::persistent_artrie::group_commit::GroupCommitCoordinator>>>,
 
     // Performance infrastructure
     /// Memory pressure monitor for adaptive memory management.
     /// When enabled, automatically adjusts buffer pool size based on system memory pressure.
-    pub(crate) memory_monitor: Option<Arc<crate::persistent_artrie::memory_monitor::MemoryPressureMonitor>>,
+    ///
+    /// **F4 (subsystem family, uniform):** `Mutex<Option<Arc<…>>>` (`&self`
+    /// enable/disable; drop-before-join — its callback can re-enter the trie, so
+    /// holding the field mutex across the join would deadlock, V11.3 GAP 2).
+    pub(crate) memory_monitor:
+        std::sync::Mutex<Option<Arc<crate::persistent_artrie::memory_monitor::MemoryPressureMonitor>>>,
     /// Cache statistics for monitoring buffer pool performance.
     pub(crate) cache_stats: crate::persistent_artrie::adaptive_pool::CacheStats,
     /// Epoch-based checkpoint manager for WAL/metadata tracking.
@@ -464,14 +531,27 @@ pub struct PersistentARTrieChar<V: DictionaryValue = (), S: crate::persistent_ar
     /// When enabled, the checkpoint manager tracks operation counts and WAL size,
     /// advancing epoch metadata based on configurable thresholds. Explicit
     /// forced epoch checkpoints publish trie data before durable metadata.
-    pub(crate) checkpoint_manager: Option<Arc<crate::persistent_artrie::epoch::CheckpointManager>>,
+    ///
+    /// **F4 (subsystem family, uniform):** `Mutex<Option<Arc<…>>>` (`&self`
+    /// enable/disable; drop-before-join on disable, V11.3).
+    pub(crate) checkpoint_manager:
+        std::sync::Mutex<Option<Arc<crate::persistent_artrie::epoch::CheckpointManager>>>,
     /// Durability policy for WAL synchronization.
     /// Controls when fsync is called after WAL writes.
-    pub(crate) durability_policy: DurabilityPolicy,
+    ///
+    /// **F4:** an `AtomicEnumCell` (`&self` `set_durability_policy`; lock-free read
+    /// on the write path).
+    pub(crate) durability_policy:
+        crate::persistent_artrie_core::shared_access::AtomicEnumCell<DurabilityPolicy>,
 
     // === Eviction Support ===
-    /// Eviction coordinator for memory pressure-driven eviction
-    pub(crate) eviction_coordinator: Option<Arc<crate::persistent_artrie::eviction::EvictionCoordinator>>,
+    /// Eviction coordinator for memory pressure-driven eviction.
+    ///
+    /// **F4 (EC leaf lock):** `Mutex<Option<Arc<…>>>` — the **EC** leaf in
+    /// `CK > merge_lock > OR > EC`: never held across CK/merge_lock/OR, NEVER across
+    /// a worker `.join()` (drop-before-join in `disable_eviction`/`close`/`Drop`).
+    pub(crate) eviction_coordinator:
+        std::sync::Mutex<Option<Arc<crate::persistent_artrie::eviction::EvictionCoordinator>>>,
 
     // === Prefetching Support ===
     /// Prefetcher for multi-level I/O optimization.
@@ -578,10 +658,25 @@ impl<V: DictionaryValue, S: crate::persistent_artrie::block_storage::BlockStorag
     /// hold only a `Weak`, so this teardown — and the managers' own `Drop`
     /// backstops — actually run.
     pub fn close(&self) {
-        if let Some(coordinator) = &self.eviction_coordinator {
+        // **F4 drop-before-join (V11.3 sites 3+5):** take each background
+        // coordinator OUT of its field `Mutex` into a statement-temporary so the
+        // field guard DROPS before `shutdown()`/`Drop` joins the worker thread — the
+        // eviction + memory-monitor callbacks re-enter the trie (OR/EC), so joining
+        // while holding the field mutex would deadlock. Runs on EVERY teardown.
+        let coordinator = self
+            .eviction_coordinator
+            .lock()
+            .expect("eviction_coordinator mutex poisoned")
+            .take();
+        if let Some(coordinator) = coordinator {
             coordinator.shutdown();
         }
-        if let Some(monitor) = &self.memory_monitor {
+        let monitor = self
+            .memory_monitor
+            .lock()
+            .expect("memory_monitor mutex poisoned")
+            .take();
+        if let Some(monitor) = monitor {
             monitor.shutdown();
         }
         if let Some(wal) = &self.wal_writer {
@@ -713,7 +808,7 @@ impl<V: DictionaryValue, S: crate::persistent_artrie::block_storage::BlockStorag
 impl<V: DictionaryValue + Default> FromIterator<String> for PersistentARTrieChar<V> {
     #[allow(deprecated)]
     fn from_iter<I: IntoIterator<Item = String>>(iter: I) -> Self {
-        let mut trie = Self::new();
+        let trie = Self::new();
         for term in iter {
             trie.insert(&term);
         }
@@ -724,7 +819,7 @@ impl<V: DictionaryValue + Default> FromIterator<String> for PersistentARTrieChar
 impl<'a, V: DictionaryValue + Default> FromIterator<&'a str> for PersistentARTrieChar<V> {
     #[allow(deprecated)]
     fn from_iter<I: IntoIterator<Item = &'a str>>(iter: I) -> Self {
-        let mut trie = Self::new();
+        let trie = Self::new();
         for term in iter {
             trie.insert(term);
         }
@@ -931,9 +1026,22 @@ impl<V: DictionaryValue> PersistentARTrieCharNode<V> {
         let faulter: Option<*const dyn CharNodeFaulter<V>> =
             Some(trie as &dyn CharNodeFaulter<V> as *const dyn CharNodeFaulter<V>);
         // `pin` is `None` here; `SharedCharARTrie::root` attaches the walk pin
-        // after building the root node (only it has the owning `Arc<RwLock>`).
-        match &trie.root {
-            CharTrieRoot::Empty => Self {
+        // after building the root node (only it has the owning `Arc`).
+        //
+        // **F4:** capture the owned root's raw pointer under a BRIEF OR read guard.
+        // The root `Box`'s heap address is stable while the `Node` variant lives
+        // (owned mutators mutate in place / only `Empty → Node`), so the captured
+        // `*const` stays valid for the walk's `&self`/trie lifetime — the same
+        // stability the rest of this raw-pointer `DictionaryNode` walk relies on.
+        let root_node_ptr: Option<*const types::CharTrieNodeInner<V>> = {
+            let guard = trie.root.read();
+            match &*guard {
+                types::CharTrieRoot::Empty => None,
+                types::CharTrieRoot::Node(node) => Some(node.as_ref() as *const _),
+            }
+        };
+        match root_node_ptr {
+            None => Self {
                 node: None,
                 is_root: true,
                 root_empty: true,
@@ -942,8 +1050,8 @@ impl<V: DictionaryValue> PersistentARTrieCharNode<V> {
                 faulter,
                 pin: None,
             },
-            CharTrieRoot::Node(node) => Self {
-                node: Some(node.as_ref() as *const _),
+            Some(ptr) => Self {
+                node: Some(ptr),
                 is_root: true,
                 root_empty: false,
                 overlay: None,
@@ -1326,7 +1434,7 @@ impl<V: DictionaryValue + Clone> MappedDictionary for SharedCharARTrie<V> {
 
 impl<V: DictionaryValue + Clone> MutableMappedDictionary for SharedCharARTrie<V> {
     fn insert_with_value(&self, term: &str, value: V) -> bool {
-        let mut guard = self.write();
+        let guard = self.write();
         guard.insert_with_value(term, value).unwrap_or(false)
     }
 
@@ -1348,16 +1456,22 @@ impl<V: DictionaryValue + Clone> MutableMappedDictionary for SharedCharARTrie<V>
                 _ => Vec::new(),
             }
         };
-        let mut self_guard = self.write();
-        self_guard.merge_entries(entries, merge_fn).unwrap_or(0)
+        // **F4 / V11.2 — merge_lock (merge‖merge serializer).** `union_with` is a
+        // `Shared*`-reachable merge driver, so it takes `merge_lock` (a near-leaf in
+        // `CK > merge_lock > OR > EC`: `merge_entries` takes OR / runs lock-free CAS
+        // UNDER it, never the reverse). `other`'s guard is already dropped (snapshot
+        // above), so this never holds two trie locks at once (the AB/BA fix).
+        let merge_lock = self.merge_lock.clone();
+        let _merge_guard = merge_lock.lock();
+        self.merge_entries(entries, merge_fn).unwrap_or(0)
     }
 
     fn update_or_insert<F>(&self, term: &str, default_value: V, update_fn: F) -> bool
     where
         F: FnOnce(&mut V),
     {
-        let mut guard = self.write();
-        if let Some(existing) = guard.get(term).cloned() {
+        let guard = self.write();
+        if let Some(existing) = guard.get(term) {
             let mut value = existing;
             update_fn(&mut value);
             guard.upsert(term, value).unwrap_or(false);
@@ -1464,23 +1578,23 @@ impl<V: DictionaryValue> crate::artrie_trait::ARTrie for SharedCharARTrie<V> {
     type Value = V;
 
     fn create<P: AsRef<std::path::Path>>(path: P) -> crate::persistent_artrie::error::Result<Self> {
-        PersistentARTrieChar::create(path).map(|t| Arc::new(RwLock::new(t)))
+        PersistentARTrieChar::create(path).map(Arc::new)
     }
 
     fn create_with_slot_tracking<P: AsRef<std::path::Path>>(
         path: P,
     ) -> crate::persistent_artrie::error::Result<Self> {
-        PersistentARTrieChar::create_with_slot_tracking(path).map(|t| Arc::new(RwLock::new(t)))
+        PersistentARTrieChar::create_with_slot_tracking(path).map(Arc::new)
     }
 
     fn open<P: AsRef<std::path::Path>>(path: P) -> crate::persistent_artrie::error::Result<Self> {
-        PersistentARTrieChar::open(path).map(|t| Arc::new(RwLock::new(t)))
+        PersistentARTrieChar::open(path).map(Arc::new)
     }
 
     fn open_with_slot_tracking<P: AsRef<std::path::Path>>(
         path: P,
     ) -> crate::persistent_artrie::error::Result<Self> {
-        PersistentARTrieChar::open_with_slot_tracking(path).map(|t| Arc::new(RwLock::new(t)))
+        PersistentARTrieChar::open_with_slot_tracking(path).map(Arc::new)
     }
 
     fn open_with_recovery<P: AsRef<std::path::Path>>(
@@ -1489,7 +1603,7 @@ impl<V: DictionaryValue> crate::artrie_trait::ARTrie for SharedCharARTrie<V> {
         Self,
         crate::persistent_artrie::recovery::RecoveryReport,
     )> {
-        PersistentARTrieChar::open_with_recovery(path).map(|(t, r)| (Arc::new(RwLock::new(t)), r))
+        PersistentARTrieChar::open_with_recovery(path).map(|(t, r)| (Arc::new(t), r))
     }
 
     fn open_with_recovery_and_slot_tracking<P: AsRef<std::path::Path>>(
@@ -1502,7 +1616,7 @@ impl<V: DictionaryValue> crate::artrie_trait::ARTrie for SharedCharARTrie<V> {
         if let Some(ref am) = trie.arena_manager {
             am.write().enable_slot_tracking();
         }
-        Ok((Arc::new(RwLock::new(trie)), report))
+        Ok((Arc::new(trie), report))
     }
 
     fn enable_slot_tracking(&self) {
@@ -1524,12 +1638,12 @@ impl<V: DictionaryValue> crate::artrie_trait::ARTrie for SharedCharARTrie<V> {
     where
         Self::Value: Default,
     {
-        let mut guard = self.write();
+        let guard = self.write();
         guard.insert(term).unwrap_or(false)
     }
 
     fn insert_with_value(&self, term: &str, value: Self::Value) -> bool {
-        let mut guard = self.write();
+        let guard = self.write();
         guard.insert_with_value(term, value).unwrap_or(false)
     }
 
@@ -1548,7 +1662,7 @@ impl<V: DictionaryValue> crate::artrie_trait::ARTrie for SharedCharARTrie<V> {
     }
 
     fn remove(&self, term: &str) -> bool {
-        let mut guard = self.write();
+        let guard = self.write();
         guard.remove(term).unwrap_or(false)
     }
 
@@ -1570,65 +1684,64 @@ impl<V: DictionaryValue> crate::artrie_trait::ARTrie for SharedCharARTrie<V> {
         // checkpoints serialize. Formally verified
         // (`formal-verification/tla+/ConcurrentCheckpointSerialization.tla`:
         // USE_LOCK=TRUE holds NoTornDescriptor; USE_LOCK=FALSE negative control fires).
-        let ckpt_lock = self.read().checkpoint_lock.clone();
+        // **F4:** there is no outer trie lock. `checkpoint_lock` (CK) is the SOLE
+        // concurrent-checkpoint serializer. `self.read()`/`self.write()` are the
+        // no-lock shim (return `&T`); they exist only to keep the historical call
+        // shape — the real exclusion is CK (here) + OR-read (inside the owned
+        // capture). Lock order: CK > OR.
+        let ckpt_lock = self.checkpoint_lock.clone();
         let _ckpt_guard = ckpt_lock.lock();
-        // S5-9 route-split (RES-4, total-loss guard): this non-blocking checkpoint is
-        // a SECOND capture site (besides the inherent `checkpoint()`). Under the
-        // overlay write mode it MUST capture the IMMUTABLE OVERLAY (the live data),
-        // not the empty owned tree, or it serializes nothing and loses every term on
-        // reopen. `capture_snapshot_immutable` is itself lock-free (reads the atomic
-        // root), so it needs NO write-guard-then-downgrade dance — a read guard admits
-        // concurrent readers throughout. The read guard is scoped so it drops before
-        // the owned path's `self.write()` (no read→write self-deadlock).
-        {
-            let read_guard = self.read();
-            if read_guard.route_overlay() {
-                let snapshot = read_guard.capture_snapshot_immutable()?;
-                return if read_guard.eviction_coordinator.is_some() {
-                    read_guard.publish_immutable_snapshot_retaining_wal_with_eviction(snapshot)
-                } else {
-                    read_guard.publish_immutable_snapshot_retaining_wal(&snapshot)
-                };
-            }
+        // S5-9 route-split (RES-4, total-loss guard): under the overlay write mode the
+        // checkpoint MUST capture the IMMUTABLE OVERLAY (the live data), not the empty
+        // owned tree. `capture_snapshot_immutable` is lock-free (reads the atomic
+        // overlay root) — no guard needed for memory safety; CK serializes the
+        // descriptor/arena publish.
+        if self.route_overlay() {
+            let snapshot = self.capture_snapshot_immutable()?;
+            return if self
+                .eviction_coordinator
+                .lock()
+                .expect("eviction_coordinator mutex poisoned")
+                .is_some()
+            {
+                self.publish_immutable_snapshot_retaining_wal_with_eviction(snapshot)
+            } else {
+                self.publish_immutable_snapshot_retaining_wal(&snapshot)
+            };
         }
-        // Non-blocking OWNED-tree checkpoint: capture the snapshot under an exclusive
-        // write guard (serialization must exclude concurrent inserts), then ATOMICALLY
-        // downgrade the guard to a read guard so concurrent readers (`contains`/
-        // `get_value`) run during the fsync-bound publish phase. The downgrade
-        // never releases the lock, so no writer can race in (no GAP_LEDGER #41
-        // window): writers stay excluded for the whole checkpoint, and two
-        // checkpoints serialize on the write lock (no separate checkpoint mutex
-        // needed).
-        let guard = self.write();
-        // C2 invariant (F3 fix — was `lockfree_root.is_none()`): the OWNED-arm
-        // checkpoint runs only when reads/writes are NOT overlay-routed. A
-        // kill-switched-to-owned trie keeps an installed `lockfree_root` (the
-        // overlay is dormant, not torn down), so the old `is_none()` assert would
-        // FALSELY fire on a legitimate kill-switched owned checkpoint. The correct
-        // invariant is `!route_overlay()` — matching the shared OverlayCheckpoint
-        // trait's RES-4 assert (`overlay/checkpoint.rs`). Debug-only (a false
-        // test/debug panic, never production data-loss).
+        // Non-blocking OWNED-tree checkpoint (dormant / kill-switch-only post-flip).
+        // **F4 (NF-2):** the old write→read `downgrade` is DELETED with the outer
+        // lock it operated on. The owned capture now takes the inner `root` RwLock
+        // for READ (OR), which admits concurrent owned readers and excludes concurrent
+        // owned writers — exactly the exclusion the downgrade used to provide, scoped
+        // to the owned representation. No GAP_LEDGER #41 window: an owned writer takes
+        // `root.write()`, which the capture's `root.read()` excludes for the snapshot.
+        //
+        // C2 invariant (F3 fix; RES-4): the OWNED arm runs only when NOT
+        // overlay-routed. `!route_overlay()` is the branch predicate (NOT
+        // `lockfree_root.is_none()`, which would FALSELY panic a legitimate
+        // kill-switched-owned checkpoint whose dormant overlay root is still
+        // installed). Debug-only.
         debug_assert!(
-            !guard.route_overlay(),
+            !self.route_overlay(),
             "SharedCharARTrie owned-arm non-blocking checkpoint requires \
              !route_overlay() (writes must not be overlay-routed under the owned \
              capture, or a lock-free writer could race the snapshot)"
         );
-        // Phase A: serialize the in-memory tree into fresh arenas, epoch-pinned
-        // so a concurrent prior-round eviction reclaim cannot free a node the
-        // walk dereferences. The pin is dropped before the downgrade — Phase B/C
-        // touch only the serialized arena image, never in-memory node pointers.
+        // Phase A: capture (serialize the in-memory owned tree into fresh arenas),
+        // epoch-pinned so a concurrent prior-round eviction reclaim cannot free a
+        // node the walk dereferences. `capture_snapshot` reads the owned tree under
+        // OR-read internally.
         let snapshot = {
             let _pin = crate::persistent_artrie_core::mvcc::EpochGuard::new(Arc::clone(
-                &guard.epoch_manager,
+                &self.epoch_manager,
             ));
-            guard.capture_snapshot()?
+            self.capture_snapshot()?
         };
-        // Atomic write -> read downgrade (parking_lot guarantees no intermediate
-        // state a waiting writer can acquire). Readers admitted; writers excluded.
-        let read_guard = parking_lot::RwLockWriteGuard::downgrade(guard);
-        // Phase B + C under the read guard: durable publish + WAL reclaim.
-        read_guard.publish_durable_and_reclaim(snapshot)
+        // Phase B + C: durable publish + WAL reclaim (touch only the serialized arena
+        // image, never in-memory node pointers; lock-free — owned readers run
+        // concurrently).
+        self.publish_durable_and_reclaim(snapshot)
     }
 
     fn is_dirty(&self) -> bool {
@@ -1637,7 +1750,7 @@ impl<V: DictionaryValue> crate::artrie_trait::ARTrie for SharedCharARTrie<V> {
     }
 
     fn remove_prefix(&self, prefix: &str) -> usize {
-        let mut guard = self.write();
+        let guard = self.write();
         guard.remove_prefix(prefix).unwrap_or(0)
     }
 
@@ -1652,7 +1765,7 @@ impl<V: DictionaryValue> crate::artrie_trait::ARTrie for SharedCharARTrie<V> {
     }
 
     fn sync(&self) -> crate::persistent_artrie::error::Result<()> {
-        let mut guard = self.write();
+        let guard = self.write();
         guard.sync()
     }
 
@@ -1676,7 +1789,7 @@ impl<V: DictionaryValue> crate::artrie_trait::ARTrie for SharedCharARTrie<V> {
         term: &str,
         value: Self::Value,
     ) -> crate::persistent_artrie::error::Result<bool> {
-        let mut guard = self.write();
+        let guard = self.write();
         guard.upsert(term, value)
     }
 
@@ -1684,7 +1797,7 @@ impl<V: DictionaryValue> crate::artrie_trait::ARTrie for SharedCharARTrie<V> {
     // method on PersistentARTrieChar). Delegation commented out (not deleted) per
     // convention; counter callers use the inner inherent method.
     // fn increment(&self, term: &str, delta: i64) -> crate::persistent_artrie::error::Result<i64> {
-    //     let mut guard = self.write();
+    //     let guard = self.write();
     //     guard.increment(term, delta)
     // }
 }
@@ -1900,7 +2013,7 @@ pub(crate) fn evict_overlay_nodes<
                     bytes_freed += 256;
                     // Drop the LRU entry so a later (re)insert of this cold path
                     // starts fresh (parity with `evict_char_nodes`).
-                    if let Some(ref coordinator) = trie.eviction_coordinator {
+                    if let Some(coordinator) = trie.eviction_coordinator.lock().expect("eviction_coordinator mutex poisoned").as_ref() {
                         use crate::persistent_artrie::eviction::lru_tracker::hash_char_path;
                         coordinator
                             .lru_registry()
@@ -1972,18 +2085,26 @@ fn evict_char_nodes<V: DictionaryValue>(
         )
     };
 
-    // Phase 1: unlink + retire under the write lock.
+    // Phase 1: unlink + retire. **F4:** `evict_node_at_path` takes the OR write lock
+    // internally per call; the LRU removal hits the coordinator Arc cloned out under
+    // a BRIEF EC lock FIRST (released before any OR acquisition — order OR > EC).
+    let coordinator = {
+        trie.eviction_coordinator
+            .lock()
+            .expect("eviction_coordinator mutex poisoned")
+            .as_ref()
+            .map(Arc::clone)
+    };
     let (evicted_count, bytes_freed) = {
-        let mut guard = trie.write();
         let mut evicted_count = 0;
         let mut bytes_freed = 0;
         for (_path_hash, path, disk_ptr) in nodes_to_evict {
-            if guard.evict_node_at_path(&path, disk_ptr.clone()) {
+            if trie.evict_node_at_path(&path, disk_ptr.clone()) {
                 evicted_count += 1;
                 bytes_freed += 256; // Estimate ~256 bytes per node
 
                 // Remove from LRU tracking so a later reload starts fresh.
-                if let Some(ref coordinator) = guard.eviction_coordinator {
+                if let Some(ref coordinator) = coordinator {
                     use crate::persistent_artrie::eviction::lru_tracker::hash_char_path;
                     coordinator
                         .lru_registry()
@@ -1992,7 +2113,7 @@ fn evict_char_nodes<V: DictionaryValue>(
             }
         }
         (evicted_count, bytes_freed)
-    }; // write lock released here
+    };
 
     // Phase 2 (NO lock held): drain, then reclaim.
     std::sync::atomic::fence(std::sync::atomic::Ordering::SeqCst);
@@ -2022,10 +2143,14 @@ impl<V: DictionaryValue> crate::artrie_trait::EvictableARTrie for SharedCharARTr
             .validate()
             .map_err(|e| PersistentARTrieError::internal(&e))?;
 
-        let mut guard = self.write();
-
-        // Check if eviction is already enabled
-        if guard.eviction_coordinator.is_some() {
+        // F4 (EC leaf): check + install under a BRIEF EC lock; build/start the
+        // coordinator OUTSIDE the lock. Already-enabled ⇒ error (no old to join).
+        if self
+            .eviction_coordinator
+            .lock()
+            .expect("eviction_coordinator mutex poisoned")
+            .is_some()
+        {
             return Err(PersistentARTrieError::internal("Eviction already enabled"));
         }
 
@@ -2034,13 +2159,11 @@ impl<V: DictionaryValue> crate::artrie_trait::EvictableARTrie for SharedCharARTr
         let quiescence_timeout = config.quiescence_timeout;
         let quiescence_poll = config.quiescence_poll_interval;
 
-        // Share the trie's OWN epoch manager with the coordinator. Previously this
-        // minted a FRESH manager, so the coordinator's `wait_for_quiescence` drained
-        // a counter no reader ever incremented (vacuous quiescence) — eviction could
-        // then free a node a live `DictionaryNode` walk still held. A walk pins this
-        // same manager via `CharWalkGuard`, so the coordinator now genuinely waits
-        // for active walks to drain before reclaiming.
-        let epoch_manager = Arc::clone(&guard.epoch_manager);
+        // Share the trie's OWN epoch manager with the coordinator (the field is a
+        // bare `Arc`, already interior-mutable — no wrap). A walk pins this same
+        // manager via `CharWalkGuard`, so the coordinator genuinely waits for active
+        // walks to drain before reclaiming.
+        let epoch_manager = Arc::clone(&self.epoch_manager);
 
         // Create the eviction coordinator
         let coordinator = crate::persistent_artrie::eviction::EvictionCoordinator::new(
@@ -2067,17 +2190,31 @@ impl<V: DictionaryValue> crate::artrie_trait::EvictableARTrie for SharedCharARTr
             .start_memory_monitor()
             .map_err(|e| PersistentARTrieError::internal(&e))?;
 
-        guard.eviction_coordinator = Some(coordinator);
-
+        // Install under a brief EC lock; re-check (first writer wins; a loser shuts
+        // its own coordinator down OUTSIDE the lock — drop-before-join).
+        let mut slot = self
+            .eviction_coordinator
+            .lock()
+            .expect("eviction_coordinator mutex poisoned");
+        if slot.is_some() {
+            drop(slot);
+            coordinator.shutdown();
+            return Err(PersistentARTrieError::internal("Eviction already enabled"));
+        }
+        *slot = Some(coordinator);
         Ok(())
     }
 
     fn disable_eviction(&self) -> crate::persistent_artrie::error::Result<()> {
-        // Take the coordinator out under a short-lived write guard, then RELEASE
-        // the guard before `shutdown()` joins the eviction thread: the eviction
-        // callback itself takes `trie.write()`, so joining while holding the trie
-        // lock deadlocks (the same rule `force_eviction` already documents).
-        let coordinator = self.write().eviction_coordinator.take();
+        // **F4 drop-before-join (V11.3 site 2):** take the coordinator into a
+        // statement-temporary so the EC guard DROPS before `shutdown()` joins the
+        // eviction thread — the callback takes OR (and briefly EC), so joining while
+        // holding EC would deadlock.
+        let coordinator = self
+            .eviction_coordinator
+            .lock()
+            .expect("eviction_coordinator mutex poisoned")
+            .take();
         if let Some(coordinator) = coordinator {
             coordinator.shutdown();
         }
@@ -2085,14 +2222,16 @@ impl<V: DictionaryValue> crate::artrie_trait::EvictableARTrie for SharedCharARTr
     }
 
     fn eviction_enabled(&self) -> bool {
-        let guard = self.read();
-        guard.eviction_coordinator.is_some()
+        self.eviction_coordinator
+            .lock()
+            .expect("eviction_coordinator mutex poisoned")
+            .is_some()
     }
 
     fn eviction_stats(&self) -> crate::persistent_artrie::eviction::EvictionStats {
-        let guard = self.read();
-        guard
-            .eviction_coordinator
+        self.eviction_coordinator
+            .lock()
+            .expect("eviction_coordinator mutex poisoned")
             .as_ref()
             .map(|c| c.stats())
             .unwrap_or_default()
@@ -2102,13 +2241,16 @@ impl<V: DictionaryValue> crate::artrie_trait::EvictableARTrie for SharedCharARTr
         &self,
         target_bytes: usize,
     ) -> crate::persistent_artrie::error::Result<(usize, usize)> {
-        // Clone the coordinator Arc out under a short-lived read guard, then
-        // release the guard before reclaiming: the reclaim callback takes the
-        // trie WRITE lock and parking_lot's RwLock is not re-entrant, so no trie
-        // lock may be held across `force_eviction_char`.
+        // Clone the coordinator Arc out under a BRIEF EC lock, then release EC before
+        // reclaiming: the reclaim callback takes OR (order OR > EC; parking_lot is
+        // non-reentrant — no lock held across `force_eviction_char`).
         let coordinator = {
-            let guard = self.read();
-            match &guard.eviction_coordinator {
+            match self
+                .eviction_coordinator
+                .lock()
+                .expect("eviction_coordinator mutex poisoned")
+                .as_ref()
+            {
                 Some(c) => Arc::clone(c),
                 None => return Ok((0, 0)),
             }
@@ -2129,8 +2271,12 @@ impl<V: DictionaryValue> crate::artrie_trait::EvictableARTrie for SharedCharARTr
     }
 
     fn touch_node(&self, path: &[Self::Unit]) {
-        let guard = self.read();
-        if let Some(coordinator) = &guard.eviction_coordinator {
+        if let Some(coordinator) = self
+            .eviction_coordinator
+            .lock()
+            .expect("eviction_coordinator mutex poisoned")
+            .as_ref()
+        {
             use crate::persistent_artrie::eviction::lru_tracker::hash_char_path;
             coordinator.lru_registry().touch_hash(hash_char_path(path));
         }
@@ -2176,7 +2322,7 @@ impl<V: DictionaryValue, S: crate::persistent_artrie::block_storage::BlockStorag
         // violation (which would dangle the handle's raw pointer) as a loud failure.
         self.structural_generation
             .fetch_add(1, std::sync::atomic::Ordering::Release);
-        if let Some(ref coordinator) = self.eviction_coordinator {
+        if let Some(coordinator) = self.eviction_coordinator.lock().expect("eviction_coordinator mutex poisoned").as_ref() {
             coordinator.invalidate_registry();
         }
     }
@@ -2193,6 +2339,8 @@ impl<V: DictionaryValue, S: crate::persistent_artrie::block_storage::BlockStorag
     /// returning `(0, 0)`; the count is refreshed by the next checkpoint.
     pub fn evictable_node_count(&self) -> Option<usize> {
         self.eviction_coordinator
+            .lock()
+            .expect("eviction_coordinator mutex poisoned")
             .as_ref()
             .map(|c| c.disk_registry_char_len())
     }
@@ -2247,7 +2395,12 @@ impl<V: DictionaryValue, S: crate::persistent_artrie::block_storage::BlockStorag
             .validate()
             .map_err(|e| PersistentARTrieError::internal(&e))?;
 
-        if self.eviction_coordinator.is_some() {
+        if self
+            .eviction_coordinator
+            .lock()
+            .expect("eviction_coordinator mutex poisoned")
+            .is_some()
+        {
             return Err(PersistentARTrieError::internal("Eviction already enabled"));
         }
 
@@ -2270,7 +2423,10 @@ impl<V: DictionaryValue, S: crate::persistent_artrie::block_storage::BlockStorag
             .start_memory_monitor()
             .map_err(|e| PersistentARTrieError::internal(&e))?;
 
-        self.eviction_coordinator = Some(coordinator);
+        *self
+            .eviction_coordinator
+            .lock()
+            .expect("eviction_coordinator mutex poisoned") = Some(coordinator);
         Ok(())
     }
 
@@ -2303,8 +2459,15 @@ impl<V: DictionaryValue, S: crate::persistent_artrie::block_storage::BlockStorag
     where
         F: Fn(&[char]) -> bool,
     {
-        let coordinator = match self.eviction_coordinator.as_ref() {
-            Some(c) => c,
+        // F4 (EC leaf): clone the coordinator Arc out under a brief lock; release
+        // EC before `force_eviction_char` (its callback takes OR — order OR > EC).
+        let coordinator = match self
+            .eviction_coordinator
+            .lock()
+            .expect("eviction_coordinator mutex poisoned")
+            .as_ref()
+        {
+            Some(c) => Arc::clone(c),
             None => return 0,
         };
         coordinator
@@ -2335,10 +2498,14 @@ impl<V: DictionaryValue, S: crate::persistent_artrie::block_storage::BlockStorag
     /// caller-supplied `disk_ptr` does not actually encode a disk location,
     /// or the CAS-based `unswizzle` raced and lost.
     pub(crate) fn evict_node_at_path(
-        &mut self,
+        &self,
         path: &[char],
         disk_ptr: crate::persistent_artrie::swizzled_ptr::SwizzledPtr,
     ) -> bool {
+        // **F4:** `&self` taking the OR write lock — the guard provides the
+        // single-owned-writer exclusivity the raw-pointer descent below relies on
+        // (no NEW unsafe; the lock replaces the old `&mut self` anchor). The guard
+        // is held for the whole walk + unswizzle.
         if path.is_empty() {
             return false; // The root is never evicted via this path.
         }
@@ -2348,17 +2515,18 @@ impl<V: DictionaryValue, S: crate::persistent_artrie::block_storage::BlockStorag
             None => return false,
         };
 
-        let root_node: &mut types::CharTrieNodeInner<V> = match self.root {
-            types::CharTrieRoot::Node(ref mut boxed) => boxed.as_mut(),
+        let mut root_guard = self.root.write();
+        let root_node: &mut types::CharTrieNodeInner<V> = match &mut *root_guard {
+            types::CharTrieRoot::Node(boxed) => boxed.as_mut(),
             types::CharTrieRoot::Empty => return false,
         };
 
         // Walk to the parent of the target. The borrow checker would refuse
         // a fully safe descent through chained `find_child_mut` lifetimes;
-        // we hold `&mut self`, so the chain of `*mut CharTrieNodeInner`
+        // we hold the OR write guard, so the chain of `*mut CharTrieNodeInner`
         // raw-pointer hops below is sound: each pointer comes from a
-        // SwizzledPtr we just verified is in-memory, and `&mut self`
-        // guarantees no concurrent access.
+        // SwizzledPtr we just verified is in-memory, and the OR write lock
+        // guarantees no concurrent owned writer.
         let mut current: *mut types::CharTrieNodeInner<V> = root_node;
         let descent: &[char] = &path[..path.len() - 1];
         for &edge in descent {
@@ -2439,7 +2607,7 @@ mod tests {
         // Build + checkpoint + DROP so the in-memory node boxes are released and
         // only the on-disk image remains.
         {
-            let mut trie = PersistentARTrieChar::<i32>::create(&path).expect("create");
+            let trie = PersistentARTrieChar::<i32>::create(&path).expect("create");
             // F2-migrate: Bucket B — drives the OWNED `DictionaryNode` faulting walk
             // (`root().edges()`/`transition`). Under the lock-free overlay the owned tree
             // is cleared on reopen (empty walk), so pin the Owned regime so the on-disk
@@ -2487,13 +2655,13 @@ mod tests {
     #[test]
     fn dictionary_node_traversal_descends_after_forced_eviction() {
         use crate::{Dictionary, DictionaryNode, EvictableARTrie};
-        use parking_lot::RwLock;
+        
         use std::sync::Arc;
 
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("evict_traversal.artc");
         {
-            let mut trie = PersistentARTrieChar::<i32>::create(&path).expect("create");
+            let trie = PersistentARTrieChar::<i32>::create(&path).expect("create");
             // F2-migrate: Bucket B — forced-eviction re-fault of the OWNED `DictionaryNode`
             // walk. Under the lock-free overlay the owned tree is empty, so pin the Owned
             // regime so eviction has owned nodes to swizzle and the walk re-faults them.
@@ -2511,9 +2679,8 @@ mod tests {
             trie.checkpoint().expect("checkpoint");
         }
 
-        let shared: SharedCharARTrie<i32> = Arc::new(RwLock::new(
-            PersistentARTrieChar::<i32>::open(&path).expect("open"),
-        ));
+        let shared: SharedCharARTrie<i32> =
+            Arc::new(PersistentARTrieChar::<i32>::open(&path).expect("open"));
 
         // Enable eviction + checkpoint to populate the disk-location registry,
         // force a one-shot reclaim, then stop the background thread BEFORE
@@ -2548,7 +2715,7 @@ mod tests {
     #[test]
     #[allow(deprecated)]
     fn test_insert_ascii() {
-        let mut trie: PersistentARTrieChar<()> = PersistentARTrieChar::new();
+        let trie: PersistentARTrieChar<()> = PersistentARTrieChar::new();
         assert!(trie.insert("hello").expect("insert failed"));
         assert!(trie.insert("world").expect("insert failed"));
         assert!(!trie.insert("hello").expect("insert failed")); // Duplicate
@@ -2558,7 +2725,7 @@ mod tests {
     #[test]
     #[allow(deprecated)]
     fn test_insert_unicode() {
-        let mut trie: PersistentARTrieChar<()> = PersistentARTrieChar::new();
+        let trie: PersistentARTrieChar<()> = PersistentARTrieChar::new();
         assert!(trie.insert("héllo").expect("insert failed")); // é is one character
         assert!(trie.insert("日本語").expect("insert failed")); // Japanese characters
         assert!(trie.insert("emoji😀").expect("insert failed")); // Emoji
@@ -2568,7 +2735,7 @@ mod tests {
     #[test]
     #[allow(deprecated)]
     fn test_contains() {
-        let mut trie: PersistentARTrieChar<()> = PersistentARTrieChar::new();
+        let trie: PersistentARTrieChar<()> = PersistentARTrieChar::new();
         let _ = trie.insert("hello");
         let _ = trie.insert("héllo");
 
@@ -2581,14 +2748,14 @@ mod tests {
     #[test]
     #[allow(deprecated)]
     fn test_value_storage() {
-        let mut trie: PersistentARTrieChar<i32> = PersistentARTrieChar::new();
+        let trie: PersistentARTrieChar<i32> = PersistentARTrieChar::new();
         let _ = trie.insert_with_value("one", 1);
         let _ = trie.insert_with_value("two", 2);
         let _ = trie.insert_with_value("three", 3);
 
-        assert_eq!(trie.get("one"), Some(&1));
-        assert_eq!(trie.get("two"), Some(&2));
-        assert_eq!(trie.get("three"), Some(&3));
+        assert_eq!(trie.get("one"), Some(1));
+        assert_eq!(trie.get("two"), Some(2));
+        assert_eq!(trie.get("three"), Some(3));
         assert_eq!(trie.get("four"), None);
     }
 
@@ -2596,7 +2763,7 @@ mod tests {
     #[allow(deprecated)]
     fn test_unicode_correctness() {
         // This test verifies that multi-byte characters are treated as single units
-        let mut trie: PersistentARTrieChar<()> = PersistentARTrieChar::new();
+        let trie: PersistentARTrieChar<()> = PersistentARTrieChar::new();
         let _ = trie.insert("¡");
 
         let root = trie.root();
@@ -2620,7 +2787,7 @@ mod tests {
     #[test]
     #[allow(deprecated)]
     fn test_zipper() {
-        let mut trie: PersistentARTrieChar<()> = PersistentARTrieChar::new();
+        let trie: PersistentARTrieChar<()> = PersistentARTrieChar::new();
         let _ = trie.insert("hello");
         let _ = trie.insert("help");
 
@@ -2636,7 +2803,7 @@ mod tests {
     #[test]
     #[allow(deprecated)]
     fn test_iter() {
-        let mut trie: PersistentARTrieChar<()> = PersistentARTrieChar::new();
+        let trie: PersistentARTrieChar<()> = PersistentARTrieChar::new();
         let _ = trie.insert("apple");
         let _ = trie.insert("banana");
         let _ = trie.insert("cherry");

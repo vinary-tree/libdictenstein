@@ -779,7 +779,7 @@ proptest! {
     ) {
         let temp_dir = TempDir::new().expect("temp dir");
         let path = temp_dir.path().join("trace.part");
-        let mut dict = PersistentARTrie::<i32>::create(&path).expect("create trie");
+        let dict = PersistentARTrie::<i32>::create(&path).expect("create trie");
         let mut expected = BTreeMap::new();
         let mut seen = BTreeSet::new();
 
@@ -817,7 +817,7 @@ proptest! {
 fn deterministic_large_trace_matches_btreemap_reference() {
     let temp_dir = TempDir::new().expect("temp dir");
     let path = temp_dir.path().join("large_trace.part");
-    let mut dict = PersistentARTrie::<i32>::create(&path).expect("create trie");
+    let dict = PersistentARTrie::<i32>::create(&path).expect("create trie");
     let mut expected = BTreeMap::new();
     let mut seen = BTreeSet::new();
     let mut rng = StdRng::seed_from_u64(0xA7_71E5_2026);
@@ -858,7 +858,7 @@ fn deterministic_reopen_trace_matches_btreemap_reference() {
     let mut rng = StdRng::seed_from_u64(0xC0_55EC_7ED);
 
     {
-        let mut dict = PersistentARTrie::<i32>::create(&path).expect("create trie");
+        let dict = PersistentARTrie::<i32>::create(&path).expect("create trie");
 
         for step in 0..768 {
             let term = deterministic_trace_key(&mut rng, step * 13);
@@ -1133,7 +1133,7 @@ fn proof_carrying_trace_certificate_replays_reference() {
 
     let temp_dir = TempDir::new().expect("temp dir");
     let path = temp_dir.path().join("certified_trace.part");
-    let mut dict = PersistentARTrie::<i32>::create(&path).expect("create trie");
+    let dict = PersistentARTrie::<i32>::create(&path).expect("create trie");
     let mut seen = BTreeSet::new();
 
     for step in &trace {
@@ -1544,7 +1544,7 @@ fn persistent_reopen_ignores_torn_wal_header_after_durable_prefix() {
     let mut seen = BTreeSet::new();
 
     {
-        let mut dict = PersistentARTrie::<i32>::create(&path).expect("create trie");
+        let dict = PersistentARTrie::<i32>::create(&path).expect("create trie");
         for (term, value) in [("alpha", 1), ("beta", 2), ("gamma", 3)] {
             dict.insert_with_value(term, value);
             expected.insert(term.to_string(), value);
@@ -1689,7 +1689,7 @@ fn persistent_reopen_replays_only_committed_wal_transactions() {
 fn persistent_dictionary_law_trace_matches_reference_map() {
     let temp_dir = TempDir::new().expect("temp dir");
     let path = temp_dir.path().join("dictionary_laws.part");
-    let mut dict = PersistentARTrie::<i32>::create(&path).expect("create trie");
+    let dict = PersistentARTrie::<i32>::create(&path).expect("create trie");
     let mut expected = BTreeMap::new();
     let mut seen = BTreeSet::new();
 

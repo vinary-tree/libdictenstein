@@ -20,6 +20,8 @@ use parking_lot::RwLock;
 
 use crate::artrie_trait::{ARTrie, EvictableARTrie};
 use crate::persistent_artrie::eviction::{EvictionConfig, EvictionUrgency};
+// F4: the `.read()/.write()` compat shim on the collapsed handle.
+use crate::persistent_artrie_core::shared_access::SharedTrieAccess;
 use crate::persistent_artrie_char::types::{CharTrieNodeInner, CharTrieRoot};
 use crate::persistent_artrie_char::SharedCharARTrie;
 use crate::MutableMappedDictionary;
@@ -98,14 +100,14 @@ fn force_eviction_unswizzles_a_live_slot_to_disk() {
     // Before checkpoint: the whole chain is in memory (swizzled).
     {
         let guard = shared.read();
-        let swizzled_before = chain_swizzled_slot_count(&guard.root, chain);
+        let swizzled_before = chain_swizzled_slot_count(&*guard.root.read(), chain);
         assert_eq!(
             swizzled_before,
             chain.len(),
             "every chain slot should be in-memory before eviction"
         );
         assert!(
-            !chain_has_on_disk_slot(&guard.root, chain),
+            !chain_has_on_disk_slot(&*guard.root.read(), chain),
             "no slot should be on-disk before eviction"
         );
     }
@@ -121,13 +123,13 @@ fn force_eviction_unswizzles_a_live_slot_to_disk() {
     {
         let guard = shared.read();
         assert!(
-            chain_has_on_disk_slot(&guard.root, chain),
+            chain_has_on_disk_slot(&*guard.root.read(), chain),
             "force_eviction must leave >=1 chain slot on-disk (real reclamation)"
         );
     }
 
     // And the key still resolves via reload-from-disk.
-    assert_eq!(shared.read().get(chain).copied(), Some(42));
+    assert_eq!(shared.read().get(chain), Some(42));
 
     shared.disable_eviction().expect("disable");
 }
@@ -159,6 +161,8 @@ fn async_request_eviction_reclaims_registered_nodes() {
     let coordinator = shared
         .read()
         .eviction_coordinator
+        .lock()
+        .expect("eviction_coordinator mutex poisoned")
         .clone()
         .expect("eviction enabled");
     assert!(coordinator.disk_registry_char_len() > 0);
@@ -185,7 +189,7 @@ fn async_request_eviction_reclaims_registered_nodes() {
         .iter()
         .enumerate()
     {
-        assert_eq!(shared.read().get(term).copied(), Some(i as i32));
+        assert_eq!(shared.read().get(term), Some(i as i32));
     }
 
     shared.disable_eviction().expect("disable");
@@ -210,6 +214,8 @@ fn force_eviction_char_invoked_directly_on_coordinator() {
     let coordinator = shared
         .read()
         .eviction_coordinator
+        .lock()
+        .expect("eviction_coordinator mutex poisoned")
         .clone()
         .expect("eviction enabled");
 

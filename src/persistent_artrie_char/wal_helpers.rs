@@ -7,6 +7,9 @@
 //! - `append_to_wal` (pub(super); routes through group commit when enabled)
 //! - `sync_wal` (pub(super); respects full durability policies)
 
+#[cfg(feature = "group-commit")]
+use std::sync::Arc;
+
 use crate::persistent_artrie::block_storage::BlockStorage;
 use crate::persistent_artrie::dict_impl::DurabilityPolicy;
 use crate::persistent_artrie::error::{PersistentARTrieError, Result};
@@ -19,7 +22,7 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     /// The durability policy controls when fsync is called after WAL writes.
     /// See [`DurabilityPolicy`] for available options and their trade-offs.
     pub fn durability_policy(&self) -> DurabilityPolicy {
-        self.durability_policy
+        self.durability_policy.load()
     }
 
     /// Set the durability policy for this trie.
@@ -44,8 +47,8 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     /// # Ok(())
     /// # }
     /// ```
-    pub fn set_durability_policy(&mut self, policy: DurabilityPolicy) {
-        self.durability_policy = policy;
+    pub fn set_durability_policy(&self, policy: DurabilityPolicy) {
+        self.durability_policy.store(policy);
     }
 
     // ==================== End Epoch-Based Checkpointing Methods ====================
@@ -110,17 +113,27 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
 
         let wal_bytes = record.serialized_size();
 
-        // Check if group commit is enabled first
+        // Check if group commit is enabled first. F4: clone the coordinator Arc out
+        // under a BRIEF lock then RELEASE it before `append_with_sync` (which may
+        // block on fsync) — never hold the subsystem mutex across I/O.
         #[cfg(feature = "group-commit")]
-        if let Some(ref gc) = self.group_commit {
-            let appended_lsn =
-                gc.append_with_sync(record)
-                    .map_err(|e| PersistentARTrieError::WalError {
-                        reason: format!("{:?}", e),
-                    })?;
-            self.record_epoch_operation(wal_bytes);
-            self.verify_full_policy_sync_coverage(appended_lsn)?;
-            return Ok(appended_lsn);
+        {
+            let gc = self
+                .group_commit
+                .lock()
+                .expect("group_commit mutex poisoned")
+                .as_ref()
+                .map(Arc::clone);
+            if let Some(gc) = gc {
+                let appended_lsn =
+                    gc.append_with_sync(record)
+                        .map_err(|e| PersistentARTrieError::WalError {
+                            reason: format!("{:?}", e),
+                        })?;
+                self.record_epoch_operation(wal_bytes);
+                self.verify_full_policy_sync_coverage(appended_lsn)?;
+                return Ok(appended_lsn);
+            }
         }
 
         // Fall back to direct WAL write
@@ -145,14 +158,14 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     /// has already waited for the submitted LSN; otherwise this direct WAL
     /// fallback performs a blocking sync.
     pub(super) fn sync_wal(&self) -> Result<()> {
-        match self.durability_policy {
+        match self.durability_policy.load() {
             DurabilityPolicy::Immediate | DurabilityPolicy::GroupCommit => {}
             DurabilityPolicy::Periodic | DurabilityPolicy::None => return Ok(()),
         }
 
         // Group commit handles syncing internally via append_with_sync.
         #[cfg(feature = "group-commit")]
-        if self.group_commit.is_some() {
+        if self.group_commit.lock().expect("group_commit mutex poisoned").is_some() {
             return Ok(());
         }
 
@@ -168,14 +181,14 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     }
 
     fn sync_wal_after_append(&self, appended_lsn: u64) -> Result<()> {
-        match self.durability_policy {
+        match self.durability_policy.load() {
             DurabilityPolicy::Immediate | DurabilityPolicy::GroupCommit => {}
             DurabilityPolicy::Periodic | DurabilityPolicy::None => return Ok(()),
         }
 
         // Group commit handles syncing internally via append_with_sync.
         #[cfg(feature = "group-commit")]
-        if self.group_commit.is_some() {
+        if self.group_commit.lock().expect("group_commit mutex poisoned").is_some() {
             return self.verify_full_policy_sync_coverage(appended_lsn);
         }
 
@@ -196,7 +209,7 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
 
     #[cfg(feature = "group-commit")]
     fn verify_full_policy_sync_coverage(&self, appended_lsn: u64) -> Result<()> {
-        match self.durability_policy {
+        match self.durability_policy.load() {
             DurabilityPolicy::Immediate | DurabilityPolicy::GroupCommit => {}
             DurabilityPolicy::Periodic | DurabilityPolicy::None => return Ok(()),
         }

@@ -22,19 +22,50 @@ use super::prefix_term::{PrefixTermWithArena, PrefixTermWithValueAndArena};
 use super::types::{CharTrieNodeInner, CharTrieRoot};
 
 impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
-    pub(super) fn navigate_to_prefix(&self, prefix: &str) -> Result<Option<&CharTrieNodeInner<V>>> {
-        let root = match &self.root {
-            CharTrieRoot::Node(node) => node.as_ref(),
-            CharTrieRoot::Empty => return Ok(None),
-        };
+    /// **F4 owned-root read accessor (NO new unsafe).** Acquire the OR read guard
+    /// and `map` it to the owned root node, or `None` when the owned tree is
+    /// `Empty`. The returned `MappedRwLockReadGuard` keeps the OR lock held (so the
+    /// owned tree is stable for the duration of an owned read/walk) and derefs to
+    /// `&CharTrieNodeInner<V>`. Replaces the borrow-returning `&self.root` reads the
+    /// owned readers did pre-F4 — with the lock now wrapping `root`, the guard must
+    /// travel with the borrow, which `map` expresses safely.
+    #[inline]
+    pub(super) fn owned_root_guard(
+        &self,
+    ) -> Option<parking_lot::MappedRwLockReadGuard<'_, CharTrieNodeInner<V>>> {
+        parking_lot::RwLockReadGuard::try_map(self.root.read(), |root| match root {
+            CharTrieRoot::Node(node) => Some(node.as_ref()),
+            CharTrieRoot::Empty => None,
+        })
+        .ok()
+    }
 
-        let mut current = root;
+    /// Navigate to a prefix from an explicitly-borrowed owned `root` node.
+    ///
+    /// **F4 (NO new unsafe):** the owned root now lives behind the OR `RwLock`, so
+    /// the caller acquires the read guard and passes `&*guard`-reached `root` here.
+    /// The returned borrow is tied to the ROOT's lifetime `'g` (= the caller's held
+    /// guard), NOT `&self`. The deeper `get_child_lazy` walk returns `&self`-tied
+    /// refs, which COERCE to `'g` because `&self` outlives the guard (`'self: 'g`) —
+    /// so no raw-pointer / `unsafe` is needed for the root, only the EXISTING
+    /// (unchanged) `get_child_lazy` internal unsafe for the fault-in walk.
+    pub(super) fn navigate_to_prefix_from<'s, 'g>(
+        &'s self,
+        root: &'g CharTrieNodeInner<V>,
+        prefix: &str,
+    ) -> Result<Option<&'g CharTrieNodeInner<V>>>
+    where
+        's: 'g,
+    {
+        let mut current: &'g CharTrieNodeInner<V> = root;
         let mut depth = 0u16;
         for c in prefix.chars() {
             // Prefetch siblings before descending (multi-level prefetch)
             self.prefetch_disk_refs_bounded(current.node.iter_children(), depth);
 
             match self.get_child_lazy(current, c)? {
+                // `get_child_lazy` returns a `&self`-tied ref; `&self` outlives the
+                // guard, so it coerces to `'g` (covariance). No `unsafe` here.
                 Some(child) => {
                     current = child;
                     depth = depth.saturating_add(1);
@@ -59,16 +90,15 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     /// - `Ok(Some((node, arena_id)))` - The node at the prefix and its arena location
     /// - `Ok(None)` - The prefix path doesn't exist
     /// - `Err` - An I/O error occurred during lazy loading
-    pub(super) fn navigate_to_prefix_with_arena(
-        &self,
+    pub(super) fn navigate_to_prefix_with_arena<'s, 'g>(
+        &'s self,
+        root: &'g CharTrieNodeInner<V>,
         prefix: &str,
-    ) -> Result<Option<(&CharTrieNodeInner<V>, Option<u32>)>> {
-        let root = match &self.root {
-            CharTrieRoot::Node(node) => node.as_ref(),
-            CharTrieRoot::Empty => return Ok(None),
-        };
-
-        let mut current = root;
+    ) -> Result<Option<(&'g CharTrieNodeInner<V>, Option<u32>)>>
+    where
+        's: 'g,
+    {
+        let mut current: &'g CharTrieNodeInner<V> = root;
         let mut current_arena: Option<u32> = None; // Root has no incoming pointer
         let mut depth = 0u16;
 

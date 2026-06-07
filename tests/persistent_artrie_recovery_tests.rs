@@ -20,7 +20,7 @@ fn test_recovery_after_clean_shutdown() {
 
     // Create dictionary and insert terms
     {
-        let mut dict: PersistentARTrie<()> =
+        let dict: PersistentARTrie<()> =
             PersistentARTrie::create(&dict_path).expect("create dictionary");
 
         for term in &terms {
@@ -57,7 +57,7 @@ fn test_recovery_after_crash_no_sync() {
 
     // Create dictionary and insert terms (no explicit sync before drop)
     {
-        let mut dict: PersistentARTrie<()> =
+        let dict: PersistentARTrie<()> =
             PersistentARTrie::create(&dict_path).expect("create dictionary");
 
         for term in &terms {
@@ -93,7 +93,7 @@ fn test_mixed_insert_remove_recovery() {
 
     // Create and perform mixed operations
     {
-        let mut dict: PersistentARTrie<()> =
+        let dict: PersistentARTrie<()> =
             PersistentARTrie::create(&dict_path).expect("create dictionary");
 
         dict.insert("alpha");
@@ -145,7 +145,7 @@ fn test_checkpoint_and_recovery() {
 
     // Create dictionary, insert terms, checkpoint, insert more
     {
-        let mut dict: PersistentARTrie<()> =
+        let dict: PersistentARTrie<()> =
             PersistentARTrie::create(&dict_path).expect("create dictionary");
 
         // Insert pre-checkpoint terms
@@ -203,7 +203,7 @@ fn test_corrupted_wal_graceful_degradation() {
 
     // Create dictionary and insert terms
     {
-        let mut dict: PersistentARTrie<()> =
+        let dict: PersistentARTrie<()> =
             PersistentARTrie::create(&dict_path).expect("create dictionary");
 
         dict.insert("valid_term_1");
@@ -262,7 +262,7 @@ fn test_multiple_reopen_cycles() {
 
     // Cycle 1: Create and add initial terms
     {
-        let mut dict: PersistentARTrie<()> =
+        let dict: PersistentARTrie<()> =
             PersistentARTrie::create(&dict_path).expect("create dictionary");
 
         dict.insert("cycle1_a");
@@ -272,7 +272,7 @@ fn test_multiple_reopen_cycles() {
 
     // Cycle 2: Reopen, verify previous terms, add more
     {
-        let mut dict: PersistentARTrie<()> =
+        let dict: PersistentARTrie<()> =
             PersistentARTrie::open(&dict_path).expect("open dictionary cycle 2");
 
         assert!(
@@ -291,7 +291,7 @@ fn test_multiple_reopen_cycles() {
 
     // Cycle 3: Reopen, verify all terms, add more
     {
-        let mut dict: PersistentARTrie<()> =
+        let dict: PersistentARTrie<()> =
             PersistentARTrie::open(&dict_path).expect("open dictionary cycle 3");
 
         assert!(
@@ -343,7 +343,7 @@ fn test_large_scale_recovery() {
 
     // Create and insert many terms
     {
-        let mut dict: PersistentARTrie<()> =
+        let dict: PersistentARTrie<()> =
             PersistentARTrie::create(&dict_path).expect("create dictionary");
 
         for term in &terms {
@@ -419,7 +419,7 @@ fn test_value_persistence_clean_shutdown() {
 
     // Create dictionary and insert terms with values
     {
-        let mut dict: PersistentARTrie<u32> =
+        let dict: PersistentARTrie<u32> =
             PersistentARTrie::create(&dict_path).expect("create dictionary");
 
         dict.insert_with_value("apple", 1);
@@ -467,7 +467,7 @@ fn test_value_persistence_crash_recovery() {
 
     // Create dictionary and insert terms with values (no sync before drop)
     {
-        let mut dict: PersistentARTrie<u32> =
+        let dict: PersistentARTrie<u32> =
             PersistentARTrie::create(&dict_path).expect("create dictionary");
 
         dict.insert_with_value("foo", 42);
@@ -530,7 +530,7 @@ fn test_complex_value_persistence() {
 
     // Create dictionary with complex values
     {
-        let mut dict: PersistentARTrie<TestValue> =
+        let dict: PersistentARTrie<TestValue> =
             PersistentARTrie::create(&dict_path).expect("create dictionary");
 
         for (term, value) in &values {
@@ -566,7 +566,7 @@ fn test_mixed_value_recovery() {
 
     // Create dictionary with mixed inserts
     {
-        let mut dict: PersistentARTrie<u32> =
+        let dict: PersistentARTrie<u32> =
             PersistentARTrie::create(&dict_path).expect("create dictionary");
         // flag-2 FIXED: this test mixes VALUED inserts with TERM-ONLY inserts (`insert()`
         // with no value) and asserts both survive a reopen. The arbitrary-`V` overlay
@@ -612,7 +612,7 @@ fn test_value_update_persistence() {
 
     // Create and insert initial values
     {
-        let mut dict: PersistentARTrie<u32> =
+        let dict: PersistentARTrie<u32> =
             PersistentARTrie::create(&dict_path).expect("create dictionary");
 
         dict.insert_with_value("counter", 1);
@@ -621,7 +621,7 @@ fn test_value_update_persistence() {
 
     // Reopen and update the value
     {
-        let mut dict: PersistentARTrie<u32> =
+        let dict: PersistentARTrie<u32> =
             PersistentARTrie::open(&dict_path).expect("open dictionary");
 
         // Update the value
@@ -671,7 +671,7 @@ fn test_art_node_bucket_split_persistence() {
 
     // Create dictionary and insert enough terms to trigger ART node creation
     {
-        let mut dict: PersistentARTrie<()> =
+        let dict: PersistentARTrie<()> =
             PersistentARTrie::create(&dict_path).expect("create dictionary");
 
         for term in &terms {
@@ -722,7 +722,7 @@ fn test_art_node_diverse_prefixes_persistence() {
     // 26 letters * 20 iterations = 520 terms
 
     {
-        let mut dict: PersistentARTrie<()> =
+        let dict: PersistentARTrie<()> =
             PersistentARTrie::create(&dict_path).expect("create dictionary");
 
         for term in &terms {
@@ -771,7 +771,7 @@ fn test_art_node_with_values_persistence() {
     terms_with_values.truncate(400);
 
     {
-        let mut dict: PersistentARTrie<u32> =
+        let dict: PersistentARTrie<u32> =
             PersistentARTrie::create(&dict_path).expect("create dictionary");
 
         for (term, value) in &terms_with_values {
@@ -820,7 +820,7 @@ fn test_art_node_wal_only_recovery() {
 
     // Create and insert without explicit checkpoint
     {
-        let mut dict: PersistentARTrie<()> =
+        let dict: PersistentARTrie<()> =
             PersistentARTrie::create(&dict_path).expect("create dictionary");
 
         for term in &terms {
@@ -1033,7 +1033,7 @@ mod archive_mode_tests {
 
         // Create trie with archive mode enabled (default)
         {
-            let mut trie = PersistentARTrieChar::<()>::create(&path).expect("create trie");
+            let trie = PersistentARTrieChar::<()>::create(&path).expect("create trie");
             // Force the proven owned-tree path (pre-flip behavior) — this test exercises an owned/transaction/merge/archive feature that the create-flip would otherwise route to the lock-free overlay.
             trie.kill_switch_to_owned();
 
@@ -1091,7 +1091,7 @@ mod archive_mode_tests {
         // Create trie with archive mode disabled
         {
             let config = WalConfig::no_archive();
-            let mut trie =
+            let trie =
                 PersistentARTrieChar::<()>::create_with_config(&path, config).expect("create trie");
 
             // Insert some data
@@ -1119,7 +1119,7 @@ mod archive_mode_tests {
 
         // Create trie
         {
-            let mut trie = PersistentARTrieChar::<()>::create(&path).expect("create trie");
+            let trie = PersistentARTrieChar::<()>::create(&path).expect("create trie");
             trie.insert("hello").expect("insert");
             trie.checkpoint().expect("checkpoint");
         }
@@ -1132,7 +1132,7 @@ mod archive_mode_tests {
                 max_segments: 5,
                 max_archive_bytes: 1 << 30, // 1 GB
             };
-            let mut trie =
+            let trie =
                 PersistentARTrieChar::<()>::open_with_config(&path, config).expect("open trie");
 
             // Insert and checkpoint
@@ -1156,7 +1156,7 @@ mod archive_mode_tests {
 
         // Create and populate
         {
-            let mut trie = PersistentARTrieChar::<()>::create(&path).expect("create trie");
+            let trie = PersistentARTrieChar::<()>::create(&path).expect("create trie");
 
             for round in 0..5 {
                 for i in 0..20 {
@@ -1204,7 +1204,7 @@ mod open_with_recovery_tests {
         let path = dir.path().join("new_file.artc");
 
         // open_with_recovery on non-existent file should create it
-        let (mut trie, report) = PersistentARTrieChar::<()>::open_with_recovery(&path)
+        let (trie, report) = PersistentARTrieChar::<()>::open_with_recovery(&path)
             .expect("open_with_recovery should succeed");
 
         assert_eq!(
@@ -1227,7 +1227,7 @@ mod open_with_recovery_tests {
 
         // Create and populate a trie normally
         {
-            let mut trie = PersistentARTrieChar::<()>::create(&path).expect("create trie");
+            let trie = PersistentARTrieChar::<()>::create(&path).expect("create trie");
 
             for i in 0..10 {
                 let term = format!("term{}", i);
@@ -1271,7 +1271,7 @@ mod open_with_recovery_tests {
 
         // First, create and populate with checkpoints to generate archive segments
         {
-            let mut trie = PersistentARTrieChar::<()>::create_with_config(&path, config.clone())
+            let trie = PersistentARTrieChar::<()>::create_with_config(&path, config.clone())
                 .expect("create trie");
             // Force the proven owned-tree path (pre-flip behavior) — this test exercises an owned/transaction/merge/archive feature that the create-flip would otherwise route to the lock-free overlay.
             trie.kill_switch_to_owned();
@@ -1361,7 +1361,7 @@ mod phase_20_prefix_operations {
         let dir = tempdir().expect("Failed to create temp dir");
         let _path = dir.path().join("test.artrie");
 
-        let mut trie: PersistentARTrie<()> = PersistentARTrie::new();
+        let trie: PersistentARTrie<()> = PersistentARTrie::new();
         trie.insert("apple");
         trie.insert("application");
         trie.insert("apply");
@@ -1384,7 +1384,7 @@ mod phase_20_prefix_operations {
 
     #[test]
     fn test_iter_prefix_not_found() {
-        let mut trie: PersistentARTrie<()> = PersistentARTrie::new();
+        let trie: PersistentARTrie<()> = PersistentARTrie::new();
         trie.insert("apple");
         trie.insert("banana");
 
@@ -1397,7 +1397,7 @@ mod phase_20_prefix_operations {
 
     #[test]
     fn test_iter_prefix_exact_term() {
-        let mut trie: PersistentARTrie<()> = PersistentARTrie::new();
+        let trie: PersistentARTrie<()> = PersistentARTrie::new();
         trie.insert("app");
         trie.insert("apple");
         trie.insert("application");
@@ -1409,7 +1409,7 @@ mod phase_20_prefix_operations {
 
     #[test]
     fn test_iter_prefix_empty_prefix() {
-        let mut trie: PersistentARTrie<()> = PersistentARTrie::new();
+        let trie: PersistentARTrie<()> = PersistentARTrie::new();
         trie.insert("apple");
         trie.insert("banana");
         trie.insert("cherry");
@@ -1424,7 +1424,7 @@ mod phase_20_prefix_operations {
 
     #[test]
     fn test_iter_prefix_with_values() {
-        let mut trie: PersistentARTrie<i32> = PersistentARTrie::new();
+        let trie: PersistentARTrie<i32> = PersistentARTrie::new();
         trie.insert_with_value("apple", 1);
         trie.insert_with_value("application", 2);
         trie.insert_with_value("apply", 3);
@@ -1443,7 +1443,7 @@ mod phase_20_prefix_operations {
 
     #[test]
     fn test_remove_prefix() {
-        let mut trie: PersistentARTrie<()> = PersistentARTrie::new();
+        let trie: PersistentARTrie<()> = PersistentARTrie::new();
         trie.insert("apple");
         trie.insert("application");
         trie.insert("apply");
@@ -1466,7 +1466,7 @@ mod phase_20_prefix_operations {
 
     #[test]
     fn test_remove_prefix_not_found() {
-        let mut trie: PersistentARTrie<()> = PersistentARTrie::new();
+        let trie: PersistentARTrie<()> = PersistentARTrie::new();
         trie.insert("apple");
         trie.insert("banana");
 
@@ -1481,7 +1481,7 @@ mod phase_20_prefix_operations {
 
     #[test]
     fn test_remove_prefix_exact_match() {
-        let mut trie: PersistentARTrie<()> = PersistentARTrie::new();
+        let trie: PersistentARTrie<()> = PersistentARTrie::new();
         trie.insert("app");
         trie.insert("apple");
         trie.insert("application");
@@ -1500,7 +1500,7 @@ mod phase_20_prefix_operations {
 
     #[test]
     fn test_remove_prefix_empty_prefix() {
-        let mut trie: PersistentARTrie<()> = PersistentARTrie::new();
+        let trie: PersistentARTrie<()> = PersistentARTrie::new();
         trie.insert("apple");
         trie.insert("banana");
         trie.insert("cherry");
@@ -1522,7 +1522,7 @@ mod phase_20_prefix_operations {
 
         // Create and populate
         {
-            let mut trie = PersistentARTrie::<()>::create(&path).expect("Failed to create trie");
+            let trie = PersistentARTrie::<()>::create(&path).expect("Failed to create trie");
             trie.insert("apple");
             trie.insert("application");
             trie.insert("banana");
@@ -1549,7 +1549,7 @@ mod phase_20_prefix_operations {
 
         // Create, populate, and remove prefix
         {
-            let mut trie = PersistentARTrie::<()>::create(&path).expect("Failed to create trie");
+            let trie = PersistentARTrie::<()>::create(&path).expect("Failed to create trie");
             trie.insert("apple");
             trie.insert("application");
             trie.insert("apply");
@@ -1579,7 +1579,7 @@ mod phase_20_prefix_operations {
 
     #[test]
     fn test_remove_prefix_batched() {
-        let mut trie: PersistentARTrie<()> = PersistentARTrie::new();
+        let trie: PersistentARTrie<()> = PersistentARTrie::new();
 
         // Insert many terms with common prefix
         for i in 0..100 {
@@ -1602,7 +1602,7 @@ mod phase_20_prefix_operations {
 
     #[test]
     fn test_remove_prefix_batched_tiny_batch() {
-        let mut trie: PersistentARTrie<()> = PersistentARTrie::new();
+        let trie: PersistentARTrie<()> = PersistentARTrie::new();
         trie.insert("aa");
         trie.insert("ab");
         trie.insert("ac");
@@ -1630,7 +1630,7 @@ mod phase_21_char_prefix_operations {
 
     #[test]
     fn test_char_iter_prefix() {
-        let mut trie: PersistentARTrieChar<()> = PersistentARTrieChar::new();
+        let trie: PersistentARTrieChar<()> = PersistentARTrieChar::new();
         trie.insert("apple");
         trie.insert("application");
         trie.insert("apply");
@@ -1651,7 +1651,7 @@ mod phase_21_char_prefix_operations {
 
     #[test]
     fn test_char_iter_prefix_not_found() {
-        let mut trie: PersistentARTrieChar<()> = PersistentARTrieChar::new();
+        let trie: PersistentARTrieChar<()> = PersistentARTrieChar::new();
         trie.insert("apple");
         trie.insert("banana");
 
@@ -1664,7 +1664,7 @@ mod phase_21_char_prefix_operations {
 
     #[test]
     fn test_char_iter_prefix_unicode() {
-        let mut trie: PersistentARTrieChar<()> = PersistentARTrieChar::new();
+        let trie: PersistentARTrieChar<()> = PersistentARTrieChar::new();
         trie.insert("日本語");
         trie.insert("日本人");
         trie.insert("日曜日");
@@ -1683,7 +1683,7 @@ mod phase_21_char_prefix_operations {
 
     #[test]
     fn test_char_iter_prefix_with_values() {
-        let mut trie: PersistentARTrieChar<i32> = PersistentARTrieChar::new();
+        let trie: PersistentARTrieChar<i32> = PersistentARTrieChar::new();
         trie.insert_with_value("apple", 1);
         trie.insert_with_value("application", 2);
         trie.insert_with_value("apply", 3);
@@ -1705,7 +1705,7 @@ mod phase_21_char_prefix_operations {
 
     #[test]
     fn test_char_remove_prefix() {
-        let mut trie: PersistentARTrieChar<()> = PersistentARTrieChar::new();
+        let trie: PersistentARTrieChar<()> = PersistentARTrieChar::new();
         trie.insert("apple");
         trie.insert("application");
         trie.insert("apply");
@@ -1728,7 +1728,7 @@ mod phase_21_char_prefix_operations {
 
     #[test]
     fn test_char_remove_prefix_unicode() {
-        let mut trie: PersistentARTrieChar<()> = PersistentARTrieChar::new();
+        let trie: PersistentARTrieChar<()> = PersistentARTrieChar::new();
         trie.insert("日本語");
         trie.insert("日本人");
         trie.insert("日曜日");
@@ -1746,7 +1746,7 @@ mod phase_21_char_prefix_operations {
 
     #[test]
     fn test_char_remove_prefix_batched() {
-        let mut trie: PersistentARTrieChar<()> = PersistentARTrieChar::new();
+        let trie: PersistentARTrieChar<()> = PersistentARTrieChar::new();
 
         // Insert many terms with common prefix
         for i in 0..100 {
@@ -1778,7 +1778,7 @@ mod phase_21_char_prefix_operations {
         let dir = tempdir().expect("Failed to create temp dir");
         let path = dir.path().join("test.artrie");
 
-        let mut trie = PersistentARTrieChar::<()>::create(&path).expect("Failed to create trie");
+        let trie = PersistentARTrieChar::<()>::create(&path).expect("Failed to create trie");
         trie.insert("apple").expect("insert failed");
         trie.insert("application").expect("insert failed");
         trie.insert("apply").expect("insert failed");
@@ -1801,7 +1801,7 @@ mod phase_21_char_prefix_operations {
         let dir = tempdir().expect("Failed to create temp dir");
         let path = dir.path().join("test.artrie");
 
-        let mut trie = PersistentARTrieChar::<()>::create(&path).expect("Failed to create trie");
+        let trie = PersistentARTrieChar::<()>::create(&path).expect("Failed to create trie");
         trie.insert("apple").expect("insert failed");
         trie.insert("banana").expect("insert failed");
 
@@ -1815,7 +1815,7 @@ mod phase_21_char_prefix_operations {
         let dir = tempdir().expect("Failed to create temp dir");
         let path = dir.path().join("test.artrie");
 
-        let mut trie = PersistentARTrieChar::<()>::create(&path).expect("Failed to create trie");
+        let trie = PersistentARTrieChar::<()>::create(&path).expect("Failed to create trie");
         trie.insert("日本語").expect("insert failed");
         trie.insert("日本人").expect("insert failed");
         trie.insert("日曜日").expect("insert failed");
@@ -1837,7 +1837,7 @@ mod phase_21_char_prefix_operations {
         let dir = tempdir().expect("Failed to create temp dir");
         let path = dir.path().join("test.artrie");
 
-        let mut trie = PersistentARTrieChar::<i32>::create(&path).expect("Failed to create trie");
+        let trie = PersistentARTrieChar::<i32>::create(&path).expect("Failed to create trie");
         trie.upsert("apple", 1).expect("upsert failed");
         trie.upsert("application", 2).expect("upsert failed");
         trie.upsert("apply", 3).expect("upsert failed");
@@ -1862,7 +1862,7 @@ mod phase_21_char_prefix_operations {
         let dir = tempdir().expect("Failed to create temp dir");
         let path = dir.path().join("test.artrie");
 
-        let mut trie = PersistentARTrieChar::<()>::create(&path).expect("Failed to create trie");
+        let trie = PersistentARTrieChar::<()>::create(&path).expect("Failed to create trie");
         trie.insert("apple").expect("insert failed");
         trie.insert("application").expect("insert failed");
         trie.insert("apply").expect("insert failed");
@@ -1888,7 +1888,7 @@ mod phase_21_char_prefix_operations {
         let dir = tempdir().expect("Failed to create temp dir");
         let path = dir.path().join("test.artrie");
 
-        let mut trie = PersistentARTrieChar::<()>::create(&path).expect("Failed to create trie");
+        let trie = PersistentARTrieChar::<()>::create(&path).expect("Failed to create trie");
         trie.insert("日本語").expect("insert failed");
         trie.insert("日本人").expect("insert failed");
         trie.insert("日曜日").expect("insert failed");
@@ -1909,7 +1909,7 @@ mod phase_21_char_prefix_operations {
         let dir = tempdir().expect("Failed to create temp dir");
         let path = dir.path().join("test.artrie");
 
-        let mut trie = PersistentARTrieChar::<()>::create(&path).expect("Failed to create trie");
+        let trie = PersistentARTrieChar::<()>::create(&path).expect("Failed to create trie");
 
         // Insert many terms with common prefix
         for i in 0..50 {
@@ -1940,7 +1940,7 @@ mod phase_21_char_prefix_operations {
 
         // Create, populate, and remove prefix
         {
-            let mut trie =
+            let trie =
                 PersistentARTrieChar::<()>::create(&path).expect("Failed to create trie");
             trie.insert("apple").expect("insert failed");
             trie.insert("application").expect("insert failed");
@@ -1977,7 +1977,7 @@ mod phase_21_char_prefix_operations {
 
         // Create and populate
         {
-            let mut trie =
+            let trie =
                 PersistentARTrieChar::<()>::create(&path).expect("Failed to create trie");
             trie.insert("apple").expect("insert failed");
             trie.insert("application").expect("insert failed");
@@ -2011,7 +2011,7 @@ mod phase_21_char_prefix_operations {
         let dir = tempdir().expect("Failed to create temp dir");
         let path = dir.path().join("test.artrie");
 
-        let mut trie = PersistentARTrieChar::<()>::create(&path).expect("Failed to create trie");
+        let trie = PersistentARTrieChar::<()>::create(&path).expect("Failed to create trie");
 
         // Insert terms that will share arenas (terms with common prefixes)
         trie.insert("apple").expect("insert failed");
@@ -2045,7 +2045,7 @@ mod phase_21_char_prefix_operations {
         let dir = tempdir().expect("Failed to create temp dir");
         let path = dir.path().join("test.artrie");
 
-        let mut trie = PersistentARTrieChar::<()>::create(&path).expect("Failed to create trie");
+        let trie = PersistentARTrieChar::<()>::create(&path).expect("Failed to create trie");
 
         // Insert many terms with common prefix
         for i in 0..50 {
@@ -2092,7 +2092,7 @@ mod phase_21_char_prefix_operations {
         let dir = tempdir().expect("Failed to create temp dir");
         let path = dir.path().join("test.artrie");
 
-        let mut trie = PersistentARTrieChar::<()>::create(&path).expect("Failed to create trie");
+        let trie = PersistentARTrieChar::<()>::create(&path).expect("Failed to create trie");
 
         // Insert many terms
         for i in 0..100 {
@@ -2122,7 +2122,7 @@ mod phase_21_char_prefix_operations {
         let dir = tempdir().expect("Failed to create temp dir");
         let path = dir.path().join("test.artrie");
 
-        let mut trie = PersistentARTrieChar::<()>::create(&path).expect("Failed to create trie");
+        let trie = PersistentARTrieChar::<()>::create(&path).expect("Failed to create trie");
 
         trie.insert("apple").expect("insert failed");
         trie.sync().expect("sync failed");
@@ -2137,7 +2137,7 @@ mod phase_21_char_prefix_operations {
         let dir = tempdir().expect("Failed to create temp dir");
         let path = dir.path().join("test.artrie");
 
-        let mut trie = PersistentARTrieChar::<()>::create(&path).expect("Failed to create trie");
+        let trie = PersistentARTrieChar::<()>::create(&path).expect("Failed to create trie");
 
         trie.insert("日本語").expect("insert failed");
         trie.insert("日本人").expect("insert failed");
@@ -2189,7 +2189,7 @@ mod phase_22_merge_operations {
         trie1.upsert("banana", 3).expect("upsert failed");
 
         // Create second trie with overlapping and new terms
-        let mut trie2 = PersistentARTrieChar::<i64>::create(&path2).expect("create trie2");
+        let trie2 = PersistentARTrieChar::<i64>::create(&path2).expect("create trie2");
         trie2.upsert("apple", 7).expect("upsert failed"); // Overlap
         trie2.upsert("cherry", 2).expect("upsert failed"); // New
 
@@ -2223,7 +2223,7 @@ mod phase_22_merge_operations {
         trie1.upsert("apple", 1).expect("upsert failed");
 
         // Create second trie with completely different terms
-        let mut trie2 = PersistentARTrieChar::<i64>::create(&path2).expect("create trie2");
+        let trie2 = PersistentARTrieChar::<i64>::create(&path2).expect("create trie2");
         trie2.upsert("banana", 2).expect("upsert failed");
         trie2.upsert("cherry", 3).expect("upsert failed");
         trie2.upsert("date", 4).expect("upsert failed");
@@ -2254,7 +2254,7 @@ mod phase_22_merge_operations {
         trie1.upsert("banana", 20).expect("upsert failed");
 
         // Create second trie with same terms
-        let mut trie2 = PersistentARTrieChar::<i64>::create(&path2).expect("create trie2");
+        let trie2 = PersistentARTrieChar::<i64>::create(&path2).expect("create trie2");
         trie2.upsert("apple", 5).expect("upsert failed");
         trie2.upsert("banana", 10).expect("upsert failed");
 
@@ -2310,7 +2310,7 @@ mod phase_22_merge_operations {
         trie1.upsert("banana", 200).expect("upsert failed");
 
         // Create second trie with overlapping term
-        let mut trie2 = PersistentARTrieChar::<i64>::create(&path2).expect("create trie2");
+        let trie2 = PersistentARTrieChar::<i64>::create(&path2).expect("create trie2");
         trie2.upsert("apple", 999).expect("upsert failed"); // Will replace
         trie2.upsert("cherry", 300).expect("upsert failed"); // New
 
@@ -2340,7 +2340,7 @@ mod phase_22_merge_operations {
         trie1.upsert("中文", 20).expect("upsert failed");
 
         // Create second trie
-        let mut trie2 = PersistentARTrieChar::<i64>::create(&path2).expect("create trie2");
+        let trie2 = PersistentARTrieChar::<i64>::create(&path2).expect("create trie2");
         trie2.upsert("日本語", 5).expect("upsert failed"); // Overlap
         trie2.upsert("한국어", 15).expect("upsert failed"); // New
 
@@ -2376,7 +2376,7 @@ mod phase_22_merge_operations {
             trie1.upsert("apple", 5).expect("upsert failed");
             trie1.sync().expect("sync failed");
 
-            let mut trie2 = PersistentARTrieChar::<i64>::create(&path2).expect("create trie2");
+            let trie2 = PersistentARTrieChar::<i64>::create(&path2).expect("create trie2");
             trie2.upsert("apple", 7).expect("upsert failed");
             trie2.upsert("banana", 3).expect("upsert failed");
             trie2.sync().expect("sync failed");
@@ -2413,7 +2413,7 @@ mod phase_22_merge_operations {
         let dir = tempdir().expect("create temp dir");
         let path = dir.path().join("test.artrie");
 
-        let mut trie = PersistentARTrieChar::<i64>::create(&path).expect("create trie");
+        let trie = PersistentARTrieChar::<i64>::create(&path).expect("create trie");
         trie.upsert("apple", 1).expect("upsert failed");
         trie.upsert("application", 2).expect("upsert failed");
         trie.upsert("apply", 3).expect("upsert failed");
@@ -2444,7 +2444,7 @@ mod phase_22_merge_operations {
         let dir = tempdir().expect("create temp dir");
         let path = dir.path().join("test.artrie");
 
-        let mut trie = PersistentARTrieChar::<i64>::create(&path).expect("create trie");
+        let trie = PersistentARTrieChar::<i64>::create(&path).expect("create trie");
 
         // Insert many terms
         for i in 0..50 {
@@ -2490,7 +2490,7 @@ mod phase_22_merge_operations {
         let dir = tempdir().expect("create temp dir");
         let path = dir.path().join("test.artrie");
 
-        let mut trie = PersistentARTrieChar::<i64>::create(&path).expect("create trie");
+        let trie = PersistentARTrieChar::<i64>::create(&path).expect("create trie");
         trie.upsert("apple", 1).expect("upsert failed");
 
         // Non-existent prefix
@@ -2545,20 +2545,24 @@ mod phase_22_merge_operations {
         let dir = tempdir().expect("create temp dir");
         let path = dir.path().join("shared_incr.artrie");
 
-        let trie: SharedCharTrie<i64> = SharedCharTrie::create(&path).expect("create shared trie");
+        // C1 / F4 (V11.4 sweep B): `increment` is an inherent `V: Counter`
+        // ({i64,u64}) method on the OWNED `PersistentARTrieChar` (removed from the
+        // `ARTrie` trait / `Shared*` handle, and it stays `&mut self` — owned-only).
+        // F4 collapsed `SharedCharTrie` to `Arc<…>` whose `.write()` no longer hands
+        // out `&mut`, so this counter test now drives the owned trie directly
+        // (the canonical way to reach `increment` post-F4).
+        let mut trie: PersistentARTrieChar<i64> =
+            PersistentARTrieChar::create(&path).expect("create owned trie");
 
-        // C1: `increment` is now an inherent `V: Counter` ({i64,u64}) method on the
-        // inner PersistentARTrieChar (removed from the ARTrie trait / Shared handle);
-        // counter callers reach it through the write guard.
-        let val1 = trie.write().increment("counter", 5).expect("increment");
+        let val1 = trie.increment("counter", 5).expect("increment");
         assert_eq!(val1, 5);
 
         // Increment adds to existing value
-        let val2 = trie.write().increment("counter", 10).expect("increment");
+        let val2 = trie.increment("counter", 10).expect("increment");
         assert_eq!(val2, 15);
 
         // Decrement (negative delta)
-        let val3 = trie.write().increment("counter", -3).expect("decrement");
+        let val3 = trie.increment("counter", -3).expect("decrement");
         assert_eq!(val3, 12);
 
         // Verify via get_value
@@ -2627,7 +2631,7 @@ mod phase_22_merge_operations {
             .map(|worker_id| {
                 let worker_path = dir.path().join(format!("worker_{}.artrie", worker_id));
                 thread::spawn(move || {
-                    let mut trie = PersistentARTrieChar::<i64>::create(&worker_path)
+                    let trie = PersistentARTrieChar::<i64>::create(&worker_path)
                         .expect("create worker trie");
 
                     // Each worker inserts unique terms
@@ -2685,7 +2689,7 @@ mod phase_22_merge_operations {
         let worker_paths: Vec<_> = (0..4)
             .map(|worker_id| {
                 let path = dir.path().join(format!("worker_{}.artrie", worker_id));
-                let mut trie =
+                let trie =
                     PersistentARTrieChar::<i64>::create(&path).expect("create worker trie");
 
                 // All workers see the same n-grams (like "the|quick|brown")
@@ -2777,7 +2781,7 @@ mod phase_22_byte_arena_aware_iteration {
         let dir = tempdir().expect("create temp dir");
         let path = dir.path().join("test.artrie");
 
-        let mut trie: PersistentARTrie<i32> = PersistentARTrie::create(&path).expect("create trie");
+        let trie: PersistentARTrie<i32> = PersistentARTrie::create(&path).expect("create trie");
 
         // Insert terms with common prefix
         trie.insert("apple");
@@ -2808,7 +2812,7 @@ mod phase_22_byte_arena_aware_iteration {
         let dir = tempdir().expect("create temp dir");
         let path = dir.path().join("test.artrie");
 
-        let mut trie: PersistentARTrie<()> = PersistentARTrie::create(&path).expect("create trie");
+        let trie: PersistentARTrie<()> = PersistentARTrie::create(&path).expect("create trie");
 
         // Insert some terms
         trie.insert("hello");
@@ -2829,7 +2833,7 @@ mod phase_22_byte_arena_aware_iteration {
         let dir = tempdir().expect("create temp dir");
         let path = dir.path().join("test.artrie");
 
-        let mut trie: PersistentARTrie<()> = PersistentARTrie::create(&path).expect("create trie");
+        let trie: PersistentARTrie<()> = PersistentARTrie::create(&path).expect("create trie");
 
         trie.insert("apple");
         trie.insert("banana");
@@ -2848,7 +2852,7 @@ mod phase_22_byte_arena_aware_iteration {
         let dir = tempdir().expect("create temp dir");
         let path = dir.path().join("test.artrie");
 
-        let mut trie: PersistentARTrie<i32> = PersistentARTrie::create(&path).expect("create trie");
+        let trie: PersistentARTrie<i32> = PersistentARTrie::create(&path).expect("create trie");
 
         // Insert terms with values
         use libdictenstein::MutableMappedDictionary;
@@ -2887,7 +2891,7 @@ mod phase_22_byte_arena_aware_iteration {
 
         let mut trie1: PersistentARTrie<i64> =
             PersistentARTrie::create(&path1).expect("create trie1");
-        let mut trie2: PersistentARTrie<i64> =
+        let trie2: PersistentARTrie<i64> =
             PersistentARTrie::create(&path2).expect("create trie2");
         // **M4b REFRAME.** Fresh `create::<i64>()` create-flips; trie-to-trie
         // `merge_from` is rejected under the overlay (it would overwrite rather than
@@ -2924,7 +2928,7 @@ mod phase_22_byte_arena_aware_iteration {
 
         let mut trie1: PersistentARTrie<i64> =
             PersistentARTrie::create(&path1).expect("create trie1");
-        let mut trie2: PersistentARTrie<i64> =
+        let trie2: PersistentARTrie<i64> =
             PersistentARTrie::create(&path2).expect("create trie2");
         // **M4b REFRAME.** Fresh `create::<i64>()` create-flips; trie-to-trie
         // `merge_replace` is rejected under the overlay. Force both to owned.
@@ -2958,7 +2962,7 @@ mod phase_22_byte_arena_aware_iteration {
         let dir = tempdir().expect("create temp dir");
         let path = dir.path().join("test.artrie");
 
-        let mut trie: PersistentARTrie<()> = PersistentARTrie::create(&path).expect("create trie");
+        let trie: PersistentARTrie<()> = PersistentARTrie::create(&path).expect("create trie");
 
         // Insert many terms with common prefix
         for i in 0..50 {

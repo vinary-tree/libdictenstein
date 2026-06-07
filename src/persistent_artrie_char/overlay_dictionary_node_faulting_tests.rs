@@ -16,10 +16,10 @@
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
-use parking_lot::RwLock;
-
 use crate::persistent_artrie::eviction::EvictionConfig;
 use crate::persistent_artrie::WalConfig;
+// F4: the `.read()/.write()` compat shim on the collapsed handle.
+use crate::persistent_artrie_core::shared_access::SharedTrieAccess;
 use crate::persistent_artrie_char::overlay_fault::SharedOverlayFaulter;
 use crate::persistent_artrie_char::{PersistentARTrieChar, PersistentARTrieCharNode, SharedCharARTrie};
 use crate::persistent_artrie_core::durability::DurabilityPolicy;
@@ -46,8 +46,8 @@ where
     V: crate::value::DictionaryValue,
     S: crate::persistent_artrie::block_storage::BlockStorage,
 {
-    let coordinator = match trie.eviction_coordinator.as_ref() {
-        Some(c) => c,
+    let coordinator = match trie.eviction_coordinator.lock().expect("eviction_coordinator mutex poisoned").as_ref() {
+        Some(c) => std::sync::Arc::clone(c),
         None => return 0,
     };
     coordinator
@@ -147,7 +147,7 @@ fn overlay_dictionary_node_faults_evicted_children_in() {
 
     // (1) WITH a faulter: the walk faults the evicted cold children back in and
     // recovers EVERY term — cold AND live. This is the no-drop guarantee.
-    let trie_arc: SharedCharARTrie<()> = Arc::new(RwLock::new(owned));
+    let trie_arc: SharedCharARTrie<()> = Arc::new(owned);
     let faulter: Arc<dyn OverlayFaulter<crate::persistent_artrie_core::key_encoding::CharKey, ()>> =
         Arc::new(SharedOverlayFaulter::new(Arc::clone(&trie_arc)));
     let faulted_walk = {

@@ -39,7 +39,7 @@ fn public_mutations_record_epoch_wal_bytes_without_manual_calls() {
     let dir = tempdir().expect("temp dir");
     let path = dir.path().join("epoch_accounting.trie");
 
-    let mut trie: PersistentARTrieChar<i64> = PersistentARTrieChar::create(&path).expect("create");
+    let trie: PersistentARTrieChar<i64> = PersistentARTrieChar::create(&path).expect("create");
     // F2-migrate: Bucket B — epoch `operation_count` accounting counts OWNED-tree WAL
     // mutation records (the overlay write path emits a different record shape/count per
     // op). Pin OwnedTree so the per-op accounting matches the owned contract. No-op
@@ -77,7 +77,7 @@ fn forced_epoch_checkpoint_reopens_without_wal_tail() {
     let dir = tempdir().expect("temp dir");
     let path = dir.path().join("force_checkpoint.trie");
 
-    let mut trie: PersistentARTrieChar<i64> = PersistentARTrieChar::create(&path).expect("create");
+    let trie: PersistentARTrieChar<i64> = PersistentARTrieChar::create(&path).expect("create");
     trie.enable_epoch_checkpointing(correspondence_epoch_config())
         .expect("enable epoch checkpointing");
 
@@ -101,8 +101,8 @@ fn forced_epoch_checkpoint_reopens_without_wal_tail() {
     remove_dir_if_exists(&dir.path().join("wal_archive"));
 
     let reopened: PersistentARTrieChar<i64> = PersistentARTrieChar::open(&path).expect("reopen");
-    assert_eq!(reopened.get("durable").copied(), Some(42));
-    assert_eq!(reopened.get("removed").copied(), None);
+    assert_eq!(reopened.get("durable"), Some(42));
+    assert_eq!(reopened.get("removed"), None);
 }
 
 #[test]
@@ -110,7 +110,7 @@ fn corrupt_epoch_metadata_fails_closed_while_trie_checkpoint_recovers() {
     let dir = tempdir().expect("temp dir");
     let path = dir.path().join("corrupt_epoch_meta.trie");
 
-    let mut trie: PersistentARTrieChar<i64> = PersistentARTrieChar::create(&path).expect("create");
+    let trie: PersistentARTrieChar<i64> = PersistentARTrieChar::create(&path).expect("create");
     trie.enable_epoch_checkpointing(correspondence_epoch_config())
         .expect("enable epoch checkpointing");
     assert!(trie.insert_with_value("survives", 7).expect("insert"));
@@ -125,7 +125,7 @@ fn corrupt_epoch_metadata_fails_closed_while_trie_checkpoint_recovers() {
         .join("checkpoint.meta");
     std::fs::write(&meta_path, b"not valid checkpoint metadata").expect("corrupt metadata");
 
-    let mut reopened: PersistentARTrieChar<i64> =
+    let reopened: PersistentARTrieChar<i64> =
         PersistentARTrieChar::open(&path).expect("reopen trie");
     // F2-migrate: Bucket A — `get()` returns None under the overlay; read via `get_value`.
     assert_eq!(reopened.get_value("survives"), Some(7));

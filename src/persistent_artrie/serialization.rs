@@ -1486,7 +1486,7 @@ mod tests {
     #[test]
     fn test_deserialize_unsupported_version() {
         // Create valid header with future version
-        let mut header = SerializedNodeHeader {
+        let header = SerializedNodeHeader {
             magic: NODE_MAGIC,
             version: 255, // Future version
             node_type: node_types::NODE4,
@@ -1508,7 +1508,7 @@ mod tests {
     #[test]
     fn test_deserialize_invalid_node_type() {
         // Valid header but invalid node type
-        let mut header = SerializedNodeHeader {
+        let header = SerializedNodeHeader {
             magic: NODE_MAGIC,
             version: FORMAT_VERSION,
             node_type: 99, // Invalid type
@@ -1530,7 +1530,7 @@ mod tests {
     #[test]
     fn test_deserialize_truncated_prefix() {
         // Header claims prefix_len=8 but data is truncated
-        let mut header = SerializedNodeHeader {
+        let header = SerializedNodeHeader {
             magic: NODE_MAGIC,
             version: FORMAT_VERSION,
             node_type: node_types::NODE4,
@@ -1598,7 +1598,7 @@ mod tests {
     #[test]
     fn test_deserialize_invalid_prefix_len() {
         // prefix_len > MAX_PREFIX_LEN (8)
-        let mut header = SerializedNodeHeader {
+        let header = SerializedNodeHeader {
             magic: NODE_MAGIC,
             version: FORMAT_VERSION,
             node_type: node_types::NODE4,

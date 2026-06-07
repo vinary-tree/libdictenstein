@@ -75,7 +75,7 @@ fn build_membership() -> (
     let overlay_path = dir.path().join("overlay.part");
 
     // Owned oracle (default byte trie is owned in M3 — no create-flip yet).
-    let mut owned = PersistentARTrie::<()>::create(&owned_path).expect("create owned");
+    let owned = PersistentARTrie::<()>::create(&owned_path).expect("create owned");
     owned.kill_switch_to_owned();
     assert!(!owned.route_overlay(), "default byte trie is owned in M3");
     for t in MEMBERSHIP_TERMS {
@@ -187,7 +187,7 @@ fn build_counters() -> (
         (b"party".to_vec(), 99),
     ];
 
-    let mut owned = PersistentARTrie::<i64>::create(&owned_path).expect("create owned");
+    let owned = PersistentARTrie::<i64>::create(&owned_path).expect("create owned");
     owned.kill_switch_to_owned();
     for (t, v) in &entries {
         owned.upsert_bytes(t, *v).expect("owned upsert_bytes");
@@ -561,7 +561,7 @@ fn m3_inert_pre_flip_owned_arm_unchanged() {
     );
     assert_eq!(trie.get_value_bytes(b"a"), Some(6));
 
-    let mut other = PersistentARTrie::<i64>::create(&other_path).expect("create other");
+    let other = PersistentARTrie::<i64>::create(&other_path).expect("create other");
     other.kill_switch_to_owned();
     other.upsert_bytes(b"x", 100).expect("other upsert");
     let merged = trie.merge_replace(&other).expect("owned merge_replace works");

@@ -425,7 +425,7 @@ fn byte_descriptor_publication_before_wal_truncation_reopens_with_wal_tail() {
     let path = dir.path().join("byte_descriptor_before_truncate.part");
 
     {
-        let mut trie = PersistentARTrie::<i32>::create(&path).expect("create byte trie");
+        let trie = PersistentARTrie::<i32>::create(&path).expect("create byte trie");
         assert!(trie.insert_with_value("descriptor", 10));
         trie.persist_to_disk().expect("publish descriptor only");
 

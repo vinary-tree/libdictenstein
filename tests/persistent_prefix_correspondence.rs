@@ -43,7 +43,7 @@ fn reference_map() -> BTreeMap<String, i32> {
 }
 
 fn build_trie(reference: &BTreeMap<String, i32>) -> PersistentARTrieChar<i32> {
-    let mut trie = PersistentARTrieChar::new();
+    let trie = PersistentARTrieChar::new();
     for (term, value) in reference {
         trie.insert_with_value(term, *value)
             .expect("insert value into char trie");
@@ -160,7 +160,7 @@ fn remove_prefix_batched_matches_reference_deletion_for_all_batch_sizes() {
                 .keys()
                 .filter(|term| term.starts_with(prefix))
                 .count();
-            let mut trie = build_trie(&reference);
+            let trie = build_trie(&reference);
 
             let removed = trie
                 .remove_prefix_batched(prefix, batch_size)
@@ -196,7 +196,7 @@ fn remove_prefix_default_matches_reference_deletion() {
             .keys()
             .filter(|term| term.starts_with(prefix))
             .count();
-        let mut trie = build_trie(&reference);
+        let trie = build_trie(&reference);
 
         let removed = trie.remove_prefix(prefix).expect("remove_prefix");
         reference.retain(|term, _| !term.starts_with(prefix));
@@ -213,7 +213,7 @@ fn disk_backed_prefix_semantics_survive_sync_reopen_and_deletion() {
     let mut reference = reference_map();
 
     {
-        let mut trie = PersistentARTrieChar::<i32>::create(&path).expect("create trie");
+        let trie = PersistentARTrieChar::<i32>::create(&path).expect("create trie");
         for (term, value) in &reference {
             trie.upsert(term, *value).expect("upsert value");
         }
@@ -221,7 +221,7 @@ fn disk_backed_prefix_semantics_survive_sync_reopen_and_deletion() {
     }
 
     {
-        let mut trie = PersistentARTrieChar::<i32>::open(&path).expect("open trie");
+        let trie = PersistentARTrieChar::<i32>::open(&path).expect("open trie");
         for prefix in ["", "app", "emoji🙂", "日本", "missing"] {
             assert_prefix_views(&trie, &reference, prefix);
         }
