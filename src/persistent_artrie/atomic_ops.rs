@@ -32,7 +32,10 @@ impl<V: DictionaryValue + serde::Serialize + serde::de::DeserializeOwned, S: Blo
     ///
     /// This operation is atomic: the read-modify-write is performed under a lock,
     /// and the result is logged to WAL before returning.
-    pub fn increment(&mut self, term: &str, delta: i64) -> Result<i64> {
+    pub fn increment(&mut self, term: &str, delta: i64) -> Result<i64>
+    where
+        V: crate::value::Counter,
+    {
         self.increment_bytes(term.as_bytes(), delta)
     }
 
@@ -50,7 +53,10 @@ impl<V: DictionaryValue + serde::Serialize + serde::de::DeserializeOwned, S: Blo
     /// observe) and requires a UTF-8 key. Arbitrary `V` never reaches the routed
     /// branch (the overlay is enabled only for `V ∈ {(), i64}`). The owned body
     /// below is the verbatim pre-flip path (INERT until `route_overlay()` is true).
-    pub fn increment_bytes(&mut self, term: &[u8], delta: i64) -> Result<i64> {
+    pub fn increment_bytes(&mut self, term: &[u8], delta: i64) -> Result<i64>
+    where
+        V: crate::value::Counter,
+    {
         if self.route_overlay() {
             if let Some(routed) = super::lockfree_value_route::route_increment_bytes(self, term, delta)
             {
@@ -318,7 +324,10 @@ impl<V: DictionaryValue + serde::Serialize + serde::de::DeserializeOwned, S: Blo
     /// durable `try_increment_cas_durable` under `route_overlay()`. The returned
     /// "before" value is `new_value - delta`, correct for both the owned and the
     /// overlay accumulated count.
-    pub fn fetch_add(&mut self, term: &str, delta: i64) -> Result<i64> {
+    pub fn fetch_add(&mut self, term: &str, delta: i64) -> Result<i64>
+    where
+        V: crate::value::Counter,
+    {
         let new_value = self.increment(term, delta)?;
         Ok(new_value - delta)
     }

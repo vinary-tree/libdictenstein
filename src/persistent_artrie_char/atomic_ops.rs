@@ -38,7 +38,10 @@ impl<V: DictionaryValue + serde::Serialize + serde::de::DeserializeOwned, S: Blo
     /// falls back to the owned tree (the design's "negative-delta increment
     /// unsupported" + "arbitrary V → forced OwnedTree" gaps — dispatched via the
     /// SAFE `Any` downcast in `lockfree_value_route`, zero unsafe).
-    pub fn increment(&mut self, term: &str, delta: i64) -> Result<i64> {
+    pub fn increment(&mut self, term: &str, delta: i64) -> Result<i64>
+    where
+        V: crate::value::Counter,
+    {
         if self.route_overlay() {
             if let Some(routed) = super::lockfree_value_route::route_increment(self, term, delta) {
                 return routed;
@@ -271,7 +274,10 @@ impl<V: DictionaryValue + serde::Serialize + serde::de::DeserializeOwned, S: Blo
     /// Get the current value and increment atomically (fetch-and-add).
     ///
     /// Returns the value *before* the increment.
-    pub fn fetch_add(&mut self, term: &str, delta: i64) -> Result<i64> {
+    pub fn fetch_add(&mut self, term: &str, delta: i64) -> Result<i64>
+    where
+        V: crate::value::Counter,
+    {
         let new_value = self.increment(term, delta)?;
         Ok(new_value - delta)
     }

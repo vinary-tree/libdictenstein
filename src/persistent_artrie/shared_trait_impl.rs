@@ -229,10 +229,14 @@ impl<V: DictionaryValue> ARTrie for SharedARTrie<V> {
         guard.upsert(term, value)
     }
 
-    fn increment(&self, term: &str, delta: i64) -> Result<i64> {
-        let mut guard = self.write();
-        guard.increment(term, delta)
-    }
+    // C1: `increment` removed from the `ARTrie` trait (now an inherent `V: Counter`
+    // method on PersistentARTrie). Delegation commented out (not deleted) per
+    // convention; counter callers use the inner inherent method, e.g.
+    // `trie.write().increment(..)` on a `<i64>`/`<u64>` trie.
+    // fn increment(&self, term: &str, delta: i64) -> Result<i64> {
+    //     let mut guard = self.write();
+    //     guard.increment(term, delta)
+    // }
 }
 
 impl<V: DictionaryValue> EvictableARTrie for SharedARTrie<V> {

@@ -2533,16 +2533,18 @@ mod phase_22_merge_operations {
 
         let trie: SharedCharTrie<i64> = SharedCharTrie::create(&path).expect("create shared trie");
 
-        // Increment creates term with delta value
-        let val1 = trie.increment("counter", 5).expect("increment");
+        // C1: `increment` is now an inherent `V: Counter` ({i64,u64}) method on the
+        // inner PersistentARTrieChar (removed from the ARTrie trait / Shared handle);
+        // counter callers reach it through the write guard.
+        let val1 = trie.write().increment("counter", 5).expect("increment");
         assert_eq!(val1, 5);
 
         // Increment adds to existing value
-        let val2 = trie.increment("counter", 10).expect("increment");
+        let val2 = trie.write().increment("counter", 10).expect("increment");
         assert_eq!(val2, 15);
 
         // Decrement (negative delta)
-        let val3 = trie.increment("counter", -3).expect("decrement");
+        let val3 = trie.write().increment("counter", -3).expect("decrement");
         assert_eq!(val3, 12);
 
         // Verify via get_value

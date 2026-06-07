@@ -504,32 +504,20 @@ pub trait ARTrie: Clone + Send + Sync {
     /// ```
     fn upsert(&self, term: &str, value: Self::Value) -> Result<bool>;
 
-    /// Atomically increment a numeric value.
-    ///
-    /// If the term doesn't exist, it's created with the delta as its initial value.
-    /// Requires the value type to be convertible to/from i64.
-    ///
-    /// # Arguments
-    ///
-    /// * `term` - The term whose value to increment
-    /// * `delta` - The amount to add (can be negative for decrement)
-    ///
-    /// # Returns
-    ///
-    /// The new value after incrementing.
-    ///
-    /// # Example
-    ///
-    /// ```text
-    /// use libdictenstein::ARTrie;
-    /// use libdictenstein::persistent_artrie_char::PersistentARTrieChar;
-    ///
-    /// let mut trie = PersistentARTrieChar::<i64>::create("counts.artc")?;
-    /// let new_val = trie.increment("count", 1)?;  // Creates "count" = 1
-    /// let new_val = trie.increment("count", 5)?;  // Updates to 6
-    /// let new_val = trie.increment("count", -2)?; // Updates to 4
-    /// ```
-    fn increment(&self, term: &str, delta: i64) -> Result<i64>;
+    // C1 (increment Counter-specialization): `increment` is REMOVED from the generic
+    // `ARTrie` trait and re-homed as an INHERENT method gated by `V: Counter`
+    // ({i64, u64}) on the persistent counter tries. It was never a working
+    // arbitrary-V trait method — the body reinterprets the value's bincode bytes as
+    // i64 and errors at runtime for non-counter V; compile-time specialization
+    // replaces that runtime reject (`PersistentARTrieChar::<String>::increment` no
+    // longer exists). Verified ZERO generic `T: ARTrie` / `dyn ARTrie` callers
+    // (red-team A1 + R3-2 SWEEP B); the two `Shared*`-handle test callers were
+    // migrated to the inherent method. Kept as a comment, not deleted, per the
+    // project's "never delete to disable" convention.
+    //
+    // /// Atomically increment a numeric value (counter-only; now inherent on
+    // /// PersistentARTrie<i64|u64> / PersistentARTrieChar<i64|u64>).
+    // fn increment(&self, term: &str, delta: i64) -> Result<i64>;
 }
 
 // === Atomic Operations Extension (requires serde) — DEPRECATED ===

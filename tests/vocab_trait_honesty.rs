@@ -192,20 +192,23 @@ fn shared_vocab_artrie_remove_prefix_unconditionally_zero() {
 }
 
 #[test]
-fn shared_vocab_artrie_increment_returns_err() {
+fn shared_vocab_artrie_has_no_increment() {
+    // C1: `increment` was removed from the `ARTrie` trait and re-homed as an inherent
+    // `V: Counter` ({i64, u64}) method on the persistent COUNTER tries. A vocab value
+    // is an auto-assigned index, not a counter, so vocab has NO `increment` at all —
+    // `ARTrie::increment(&shared, ..)` / `shared.write().increment(..)` is now a COMPILE
+    // error (more honest than the old runtime `InvalidOperation` reject; the
+    // compile-time absence is pinned by the `compile_fail` doc-test on
+    // `libdictenstein::value::Counter`). Here we assert the supported index path works.
     let dir = tempdir().unwrap();
     let shared = fresh_shared(&dir.path().join("vocab.dict"));
     {
         let mut g = shared.write();
         g.insert("counter");
     }
-
-    let r = ARTrie::increment(&shared, "counter", 1);
-    assert!(r.is_err(), "vocab does not support increment");
-    let msg = r.unwrap_err().to_string();
     assert!(
-        msg.contains("increment") || msg.contains("auto-assigned"),
-        "error message should explain why increment is unsupported, got {msg:?}"
+        shared.read().contains("counter"),
+        "vocab supports its auto-assigned-index ops (increment is compile-time-absent)"
     );
 }
 

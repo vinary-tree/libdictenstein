@@ -80,6 +80,45 @@ pub trait DictionaryValue:
     }
 }
 
+/// Sealed marker for the value types usable as atomic counters.
+#[cfg(feature = "persistent-artrie")]
+mod counter_sealed {
+    pub trait Sealed {}
+    impl Sealed for i64 {}
+    impl Sealed for u64 {}
+}
+
+/// Marker trait for value types usable as atomic counters via `increment` /
+/// `fetch_add` on the persistent ART tries (C1 specialization).
+///
+/// **Sealed** — implemented only for `i64` and `u64`: the integer types whose
+/// `bincode` representation is the 8-byte little-endian word the increment path
+/// reinterprets as `i64` (read current → `i64::from_le_bytes` → checked-add the
+/// `delta` → write back as `V`). Bounding `increment`/`fetch_add` with `V: Counter`
+/// turns the former *runtime* "value cannot be interpreted as i64" reject into a
+/// COMPILE-TIME guarantee: `PersistentARTrieChar::<String>::increment` simply does
+/// not exist. A counter is a *specialization* of the value trie, not a universal
+/// `ARTrie` operation, so `increment` is no longer on the generic `ARTrie` trait
+/// (separate concerns + specialize — the owner-approved carve-out).
+///
+/// # Compile-time specialization (pinned)
+///
+/// A non-counter value type is rejected at compile time, not runtime:
+///
+/// ```compile_fail
+/// use libdictenstein::value::Counter;
+/// fn requires_counter<T: Counter>() {}
+/// requires_counter::<String>(); // ERROR: `String: !Counter` (only i64/u64 are counters)
+/// ```
+#[cfg(feature = "persistent-artrie")]
+pub trait Counter: counter_sealed::Sealed {}
+
+#[cfg(feature = "persistent-artrie")]
+impl Counter for i64 {}
+
+#[cfg(feature = "persistent-artrie")]
+impl Counter for u64 {}
+
 /// Marker trait for types that can be stored as dictionary values.
 ///
 /// Any type implementing `DictionaryValue` can be associated with terms in a dictionary.

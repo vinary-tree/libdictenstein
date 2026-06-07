@@ -705,15 +705,15 @@ impl crate::artrie_trait::ARTrie for SharedVocabARTrie {
         Ok(guard.len() > old_count)
     }
 
-    fn increment(&self, _term: &str, _delta: i64) -> Result<i64> {
-        // Vocabulary tries don't support increment (indices are fixed)
-        Err(
-            crate::persistent_artrie::error::PersistentARTrieError::InvalidOperation(
-                "PersistentVocabARTrie does not support increment - indices are auto-assigned"
-                    .into(),
-            ),
-        )
-    }
+    // C1: `increment` removed from the `ARTrie` trait. Vocab never supported it
+    // (indices are auto-assigned); the former runtime reject is now simply the
+    // method's ABSENCE (more honest than a runtime Err). Commented out (not deleted)
+    // per convention.
+    // fn increment(&self, _term: &str, _delta: i64) -> Result<i64> {
+    //     Err(crate::persistent_artrie::error::PersistentARTrieError::InvalidOperation(
+    //         "PersistentVocabARTrie does not support increment - indices are auto-assigned".into(),
+    //     ))
+    // }
 }
 
 // ============================================================================
