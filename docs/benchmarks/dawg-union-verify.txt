@@ -1,0 +1,445 @@
+   Compiling libdictenstein v0.1.0 (/home/dylon/Workspace/f1r3fly.io/libdictenstein)
+warning: type alias `ScdawgNode` is never used
+  --> src/scdawg.rs:74:6
+   |
+74 | type ScdawgNode<V = ()> = crate::scdawg_core::ScdawgNode<u8, V>;
+   |      ^^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: type alias `ScdawgCharNode` is never used
+  --> src/scdawg_char.rs:66:6
+   |
+66 | type ScdawgCharNode<V = ()> = crate::scdawg_core::ScdawgNode<char, V>;
+   |      ^^^^^^^^^^^^^^
+
+warning: type alias `SuffixNode` is never used
+   --> src/suffix_automaton.rs:150:17
+    |
+150 | pub(crate) type SuffixNode<V = ()> = crate::suffix_automaton_core::SuffixNode<u8, V>;
+    |                 ^^^^^^^^^^
+
+warning: type alias `SuffixNodeChar` is never used
+   --> src/suffix_automaton_char.rs:149:17
+    |
+149 | pub(crate) type SuffixNodeChar<V = ()> = crate::suffix_automaton_core::SuffixNode<char, V>;
+    |                 ^^^^^^^^^^^^^^
+
+warning: `libdictenstein` (lib) generated 4 warnings
+warning: unused import: `libdictenstein::Dictionary`
+  --> tests/proptest_bijective.rs:11:5
+   |
+11 | use libdictenstein::Dictionary;
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `alphanumeric_term` is never used
+  --> tests/common/strategies.rs:38:8
+   |
+38 | pub fn alphanumeric_term(min_len: usize, max_len: usize) -> impl Strategy<Value = String> {
+   |        ^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `prefix_clustered_terms` is never used
+  --> tests/common/strategies.rs:53:8
+   |
+53 | pub fn prefix_clustered_terms(count: usize) -> impl Strategy<Value = Vec<String>> {
+   |        ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `suffix_clustered_terms` is never used
+  --> tests/common/strategies.rs:78:8
+   |
+78 | pub fn suffix_clustered_terms(count: usize) -> impl Strategy<Value = Vec<String>> {
+   |        ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `first_byte_clustered_terms` is never used
+   --> tests/common/strategies.rs:100:8
+    |
+100 | pub fn first_byte_clustered_terms(count: usize) -> impl Strategy<Value = Vec<String>> {
+    |        ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `edge_case_terms` is never used
+   --> tests/common/strategies.rs:131:8
+    |
+131 | pub fn edge_case_terms() -> impl Strategy<Value = Vec<String>> {
+    |        ^^^^^^^^^^^^^^^
+
+warning: function `byte_sequence` is never used
+   --> tests/common/strategies.rs:161:8
+    |
+161 | pub fn byte_sequence(min_len: usize, max_len: usize) -> impl Strategy<Value = Vec<u8>> {
+    |        ^^^^^^^^^^^^^
+
+warning: enum `DictOp` is never used
+   --> tests/common/strategies.rs:172:10
+    |
+172 | pub enum DictOp<V: Clone + std::fmt::Debug> {
+    |          ^^^^^^
+
+warning: function `dict_ops_strategy` is never used
+   --> tests/common/strategies.rs:186:8
+    |
+186 | pub fn dict_ops_strategy<V>(
+    |        ^^^^^^^^^^^^^^^^^
+
+warning: function `insert_remove_ops` is never used
+   --> tests/common/strategies.rs:209:8
+    |
+209 | pub fn insert_remove_ops(count: usize) -> impl Strategy<Value = Vec<DictOp<()>>> {
+    |        ^^^^^^^^^^^^^^^^^
+
+warning: function `u32_value` is never used
+   --> tests/common/strategies.rs:218:8
+    |
+218 | pub fn u32_value() -> impl Strategy<Value = u32> {
+    |        ^^^^^^^^^
+
+warning: function `i64_value` is never used
+   --> tests/common/strategies.rs:223:8
+    |
+223 | pub fn i64_value() -> impl Strategy<Value = i64> {
+    |        ^^^^^^^^^
+
+warning: function `overlapping_term_sets` is never used
+   --> tests/common/strategies.rs:241:8
+    |
+241 | pub fn overlapping_term_sets(
+    |        ^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `three_term_sets` is never used
+   --> tests/common/strategies.rs:272:8
+    |
+272 | pub fn three_term_sets(
+    |        ^^^^^^^^^^^^^^^
+
+warning: function `dedupe_terms` is never used
+   --> tests/common/strategies.rs:294:8
+    |
+294 | pub fn dedupe_terms(terms: Vec<String>) -> Vec<String> {
+    |        ^^^^^^^^^^^^
+
+warning: function `sets_equal` is never used
+   --> tests/common/strategies.rs:303:8
+    |
+303 | pub fn sets_equal<T: Eq + std::hash::Hash>(a: &[T], b: &[T]) -> bool {
+    |        ^^^^^^^^^^
+
+warning: function `unicode_term` is never used
+  --> tests/common/strategies.rs:28:8
+   |
+28 | pub fn unicode_term(min_len: usize, max_len: usize) -> impl Strategy<Value = String> {
+   |        ^^^^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `alphanumeric_term` is never used
+  --> tests/common/strategies.rs:38:8
+   |
+38 | pub fn alphanumeric_term(min_len: usize, max_len: usize) -> impl Strategy<Value = String> {
+   |        ^^^^^^^^^^^^^^^^^
+
+warning: function `string_value` is never used
+   --> tests/common/strategies.rs:228:8
+    |
+228 | pub fn string_value() -> impl Strategy<Value = String> {
+    |        ^^^^^^^^^^^^
+
+warning: unused import: `CompactableDictionary`
+  --> tests/proptest_core_dictionaries.rs:17:22
+   |
+17 | use libdictenstein::{CompactableDictionary, Dictionary};
+   |                      ^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `libdictenstein::MappedDictionary`
+   --> tests/common/macros.rs:263:29
+    |
+263 |                           use libdictenstein::MappedDictionary;
+    |                               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+   ::: tests/proptest_trait_macros.rs:35:1
+    |
+ 35 | / test_mapped_dictionary!(
+ 36 | |     dawg_mapped => DynamicDawg::<u32>::new(),
+ 37 | |     dawg_char_mapped => DynamicDawgChar::<u32>::new(),
+ 38 | | );
+    | |_- in this macro invocation
+    |
+    = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+    = note: this warning originates in the macro `test_mapped_dictionary` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: unused import: `libdictenstein::MappedDictionary`
+   --> tests/common/macros.rs:236:29
+    |
+236 |                           use libdictenstein::MappedDictionary;
+    |                               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+   ::: tests/proptest_trait_macros.rs:35:1
+    |
+ 35 | / test_mapped_dictionary!(
+ 36 | |     dawg_mapped => DynamicDawg::<u32>::new(),
+ 37 | |     dawg_char_mapped => DynamicDawgChar::<u32>::new(),
+ 38 | | );
+    | |_- in this macro invocation
+    |
+    = note: this warning originates in the macro `test_mapped_dictionary` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: unused import: `libdictenstein::MappedDictionary`
+  --> tests/proptest_trait_macros.rs:14:5
+   |
+14 | use libdictenstein::MappedDictionary;
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `libdictenstein::MappedDictionary`
+   --> tests/common/macros.rs:263:29
+    |
+263 |                           use libdictenstein::MappedDictionary;
+    |                               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+   ::: tests/proptest_trait_macros.rs:35:1
+    |
+ 35 | / test_mapped_dictionary!(
+ 36 | |     dawg_mapped => DynamicDawg::<u32>::new(),
+ 37 | |     dawg_char_mapped => DynamicDawgChar::<u32>::new(),
+ 38 | | );
+    | |_- in this macro invocation
+    |
+    = note: this warning originates in the macro `test_mapped_dictionary` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: unused import: `libdictenstein::SubstringDictionary`
+  --> tests/scdawg_core_parity.rs:14:5
+   |
+14 | use libdictenstein::SubstringDictionary;
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: `libdictenstein` (test "proptest_bijective") generated 16 warnings
+warning: `libdictenstein` (test "double_array_trie_correspondence") generated 17 warnings (14 duplicates)
+warning: unused import: `libdictenstein::MappedDictionary`
+  --> tests/bijective_trait_invariant.rs:20:5
+   |
+20 | use libdictenstein::MappedDictionary;
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: `libdictenstein` (test "dynamic_dawg_mutation_correspondence") generated 16 warnings (16 duplicates)
+warning: `libdictenstein` (test "scdawg_core_parity") generated 1 warning
+warning: `libdictenstein` (test "bijective_trait_invariant") generated 1 warning
+warning: `libdictenstein` (test "proptest_zipper_operations") generated 15 warnings (15 duplicates)
+warning: `libdictenstein` (test "valued_set_combinator_correspondence") generated 17 warnings (17 duplicates)
+warning: `libdictenstein` (test "proptest_core_dictionaries") generated 14 warnings (13 duplicates)
+warning: `libdictenstein` (test "dynamic_dawg_u64_correspondence") generated 17 warnings (17 duplicates)
+warning: `libdictenstein` (test "proptest_trait_macros") generated 21 warnings (17 duplicates)
+warning: `libdictenstein` (test "dictionary_law_correspondence") generated 13 warnings (13 duplicates)
+warning: `libdictenstein` (test "zipper_language_correspondence") generated 15 warnings (15 duplicates)
+warning: `libdictenstein` (lib test) generated 4 warnings (4 duplicates)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.19s
+────────────
+ Nextest run ID ea935af1-5234-4096-9760-32505c005ced with nextest profile: default
+    Starting 199 tests across 86 binaries (552 tests skipped)
+        PASS [   0.005s] (  1/199) libdictenstein dynamic_dawg::tests::test_minimize_empty
+        PASS [   0.005s] (  2/199) libdictenstein dynamic_dawg::tests::test_minimize_basic
+        PASS [   0.005s] (  3/199) libdictenstein dynamic_dawg::tests::test_minimize_idempotent
+        PASS [   0.005s] (  4/199) libdictenstein dynamic_dawg::tests::test_minimize_no_false_positives
+        PASS [   0.005s] (  5/199) libdictenstein dynamic_dawg::tests::test_minimize_single_term
+        PASS [   0.006s] (  6/199) libdictenstein dynamic_dawg::tests::test_batch_remove_many
+        PASS [   0.006s] (  7/199) libdictenstein dynamic_dawg::tests::test_minimize_after_deletions
+        PASS [   0.006s] (  8/199) libdictenstein dynamic_dawg::tests::test_compaction_flag
+        PASS [   0.006s] (  9/199) libdictenstein dynamic_dawg::tests::test_dynamic_dawg_compact
+        PASS [   0.005s] ( 10/199) libdictenstein dynamic_dawg_char::tests::test_dynamic_dawg_compact
+        PASS [   0.006s] ( 11/199) libdictenstein dynamic_dawg::tests::test_compact_no_false_positives
+        PASS [   0.006s] ( 12/199) libdictenstein dynamic_dawg_char::tests::test_minimize_no_false_positives
+        PASS [   0.006s] ( 13/199) libdictenstein dynamic_dawg::tests::test_dynamic_dawg_remove
+        PASS [   0.006s] ( 14/199) libdictenstein dynamic_dawg::tests::test_dynamic_dawg_insert
+        PASS [   0.006s] ( 15/199) libdictenstein dynamic_dawg::tests::test_batch_extend
+        PASS [   0.007s] ( 16/199) libdictenstein dynamic_dawg::tests::test_minimize_with_shared_suffixes
+        PASS [   0.006s] ( 17/199) libdictenstein dynamic_dawg::tests::test_minimize_vs_compact
+        PASS [   0.006s] ( 18/199) libdictenstein dynamic_dawg_char::tests::test_minimize_after_deletions
+        PASS [   0.006s] ( 19/199) libdictenstein dynamic_dawg_char::tests::test_dynamic_dawg_insert
+        PASS [   0.007s] ( 20/199) libdictenstein dynamic_dawg::tests::test_mapped_dictionary_trait
+        PASS [   0.006s] ( 21/199) libdictenstein dynamic_dawg::tests::test_valued_dawg_basic
+        PASS [   0.006s] ( 22/199) libdictenstein dynamic_dawg_char::tests::test_mapped_dictionary_trait
+        PASS [   0.007s] ( 23/199) libdictenstein dynamic_dawg::tests::test_valued_dawg_with_remove
+        PASS [   0.007s] ( 24/199) libdictenstein dynamic_dawg_char::tests::test_compaction_flag
+        PASS [   0.007s] ( 25/199) libdictenstein dynamic_dawg_char::tests::test_minimize_idempotent
+        PASS [   0.007s] ( 26/199) libdictenstein dynamic_dawg_char::tests::test_compact_no_false_positives
+        PASS [   0.007s] ( 27/199) libdictenstein dynamic_dawg_char::tests::test_batch_remove_many
+        PASS [   0.008s] ( 28/199) libdictenstein dynamic_dawg_char::tests::test_minimize_single_term
+        PASS [   0.008s] ( 29/199) libdictenstein dynamic_dawg_char::tests::test_minimize_basic
+        PASS [   0.008s] ( 30/199) libdictenstein dynamic_dawg_char::tests::test_minimize_empty
+        PASS [   0.008s] ( 31/199) libdictenstein dynamic_dawg_char::tests::test_batch_extend
+        PASS [   0.005s] ( 32/199) libdictenstein dynamic_dawg_char_zipper::tests::test_children_iteration
+        PASS [   0.005s] ( 33/199) libdictenstein dynamic_dawg_char_zipper::tests::test_descend_nonexistent
+        PASS [   0.005s] ( 34/199) libdictenstein dynamic_dawg_char::tests::test_valued_dawg_with_remove
+        PASS [   0.009s] ( 35/199) libdictenstein dynamic_dawg_char::tests::test_dynamic_dawg_remove
+        PASS [   0.006s] ( 36/199) libdictenstein dynamic_dawg_char::tests::test_minimize_with_shared_suffixes
+        PASS [   0.005s] ( 37/199) libdictenstein dynamic_dawg_char::tests::test_valued_dawg_basic
+        PASS [   0.005s] ( 38/199) libdictenstein dynamic_dawg_char_zipper::tests::test_path_tracking
+        PASS [   0.005s] ( 39/199) libdictenstein dynamic_dawg_char_zipper::tests::test_root_zipper_not_final
+        PASS [   0.005s] ( 40/199) libdictenstein dynamic_dawg_char_zipper::tests::test_concurrent_access
+        PASS [   0.006s] ( 41/199) libdictenstein dynamic_dawg_char_zipper::tests::test_clone_independence
+        PASS [   0.005s] ( 42/199) libdictenstein dynamic_dawg_u64::tests::test_clone
+        PASS [   0.006s] ( 43/199) libdictenstein dynamic_dawg_char_zipper::tests::test_empty_dictionary
+        PASS [   0.005s] ( 44/199) libdictenstein dynamic_dawg_char_zipper::tests::test_value_none_for_non_final
+        PASS [   0.005s] ( 45/199) libdictenstein dynamic_dawg_char_zipper::tests::test_valued_zipper
+        PASS [   0.005s] ( 46/199) libdictenstein dynamic_dawg_u64::tests::test_contains_sequence
+        PASS [   0.007s] ( 47/199) libdictenstein dynamic_dawg_char::tests::test_minimize_vs_compact
+        PASS [   0.006s] ( 48/199) libdictenstein dynamic_dawg_char_zipper::tests::test_unicode_navigation
+        PASS [   0.007s] ( 49/199) libdictenstein dynamic_dawg_char_zipper::tests::test_descend_and_finality
+        PASS [   0.005s] ( 50/199) libdictenstein dynamic_dawg_u64::tests::test_f64_edge_cases
+        PASS [   0.005s] ( 51/199) libdictenstein dynamic_dawg_u64::tests::test_dictionary_trait
+        PASS [   0.005s] ( 52/199) libdictenstein dynamic_dawg_u64::tests::test_from_terms
+        PASS [   0.005s] ( 53/199) libdictenstein dynamic_dawg_u64::tests::test_insert_sequence
+        PASS [   0.006s] ( 54/199) libdictenstein dynamic_dawg_u64::tests::test_f64_api
+        PASS [   0.007s] ( 55/199) libdictenstein dynamic_dawg_char_zipper::tests::test_unicode_valued_zipper
+        PASS [   0.005s] ( 56/199) libdictenstein dynamic_dawg_u64::tests::test_new_dawg_is_empty
+        PASS [   0.007s] ( 57/199) libdictenstein dynamic_dawg_u64::tests::test_extend
+        PASS [   0.008s] ( 58/199) libdictenstein dynamic_dawg_u64::tests::test_empty_sequence
+        PASS [   0.007s] ( 59/199) libdictenstein dynamic_dawg_u64::tests::test_remove_sequence
+        PASS [   0.007s] ( 60/199) libdictenstein dynamic_dawg_u64::tests::test_node_count
+        PASS [   0.007s] ( 61/199) libdictenstein dynamic_dawg_u64::tests::test_prefix_sharing
+        PASS [   0.007s] ( 62/199) libdictenstein dynamic_dawg_u64_zipper::tests::test_f64_navigation
+        PASS [   0.008s] ( 63/199) libdictenstein dynamic_dawg_u64_zipper::tests::test_children_iteration
+        PASS [   0.008s] ( 64/199) libdictenstein dynamic_dawg_u64_zipper::tests::test_descend_nonexistent
+        PASS [   0.008s] ( 65/199) libdictenstein dynamic_dawg_u64::tests::test_string_api
+        PASS [   0.006s] ( 66/199) libdictenstein dynamic_dawg_zipper::tests::test_clone_independence
+        PASS [   0.008s] ( 67/199) libdictenstein dynamic_dawg_u64_zipper::tests::test_descend_and_finality
+        PASS [   0.013s] ( 68/199) libdictenstein dynamic_dawg_u64::tests::test_concurrent_reads_and_writes
+        PASS [   0.025s] ( 69/199) libdictenstein dynamic_dawg_u64::tests::test_stress_50_writers_same_keys
+        PASS [   0.016s] ( 70/199) libdictenstein dynamic_dawg_zipper::tests::test_value_none_for_non_final
+        PASS [   0.021s] ( 71/199) libdictenstein dynamic_dawg_zipper::tests::test_concurrent_access
+        PASS [   0.023s] ( 72/199) libdictenstein dynamic_dawg_u64_zipper::tests::test_path_tracking
+        PASS [   0.019s] ( 73/199) libdictenstein dynamic_dawg_zipper::tests::test_root_zipper_not_final
+        PASS [   0.023s] ( 74/199) libdictenstein dynamic_dawg_u64_zipper::tests::test_f64_valued_zipper
+        PASS [   0.013s] ( 75/199) libdictenstein suffix_automaton::tests::test_union_with_conflicts_max
+        PASS [   0.023s] ( 76/199) libdictenstein dynamic_dawg_u64_zipper::tests::test_value_none_for_non_final
+        PASS [   0.017s] ( 77/199) libdictenstein dynamic_dawg_zipper::tests::test_empty_dictionary
+        PASS [   0.024s] ( 78/199) libdictenstein dynamic_dawg_u64::tests::test_valued_dawg
+        PASS [   0.012s] ( 79/199) libdictenstein dynamic_dawg_zipper::tests::test_valued_zipper
+        PASS [   0.024s] ( 80/199) libdictenstein dynamic_dawg_u64_zipper::tests::test_clone_independence
+        PASS [   0.023s] ( 81/199) libdictenstein dynamic_dawg_u64_zipper::tests::test_root_zipper_not_final
+        PASS [   0.024s] ( 82/199) libdictenstein dynamic_dawg_u64_zipper::tests::test_concurrent_access
+        PASS [   0.023s] ( 83/199) libdictenstein dynamic_dawg_u64_zipper::tests::test_valued_zipper
+        PASS [   0.029s] ( 84/199) libdictenstein dynamic_dawg_u64::tests::test_concurrent_inserts
+        PASS [   0.020s] ( 85/199) libdictenstein dynamic_dawg_zipper::tests::test_descend_and_finality
+        PASS [   0.022s] ( 86/199) libdictenstein dynamic_dawg_zipper::tests::test_children_iteration
+        PASS [   0.024s] ( 87/199) libdictenstein dynamic_dawg_u64_zipper::tests::test_f64_edge_cases
+        PASS [   0.016s] ( 88/199) libdictenstein suffix_automaton::tests::test_union_with_both_empty
+        PASS [   0.014s] ( 89/199) libdictenstein suffix_automaton::tests::test_union_with_no_conflicts
+        PASS [   0.035s] ( 90/199) libdictenstein dynamic_dawg_u64_zipper::tests::test_empty_dictionary
+        PASS [   0.020s] ( 91/199) libdictenstein factory::tests::test_factory_dynamic_dawg
+        PASS [   0.020s] ( 92/199) libdictenstein suffix_automaton::tests::test_union_with_conflicts_sum
+        PASS [   0.012s] ( 93/199) libdictenstein suffix_automaton_char::tests::test_union_with_conflicts_sum
+        PASS [   0.015s] ( 94/199) libdictenstein suffix_automaton_char::tests::test_union_with_no_conflicts
+        PASS [   0.018s] ( 95/199) libdictenstein union_zipper::tests::test_lattice_bool
+        PASS [   0.022s] ( 96/199) libdictenstein union_zipper::tests::test_lattice_hashset_disjoint
+        PASS [   0.044s] ( 97/199) libdictenstein dynamic_dawg_zipper::tests::test_descend_nonexistent
+        PASS [   0.019s] ( 98/199) libdictenstein symmetric_difference_zipper::tests::test_property_symmetric_difference_equals_difference_union
+        PASS [   0.049s] ( 99/199) libdictenstein dynamic_dawg_u64_zipper::tests::test_wait_free_reads_during_writes
+        PASS [   0.022s] (100/199) libdictenstein union_zipper::tests::test_lattice_hashset
+        PASS [   0.018s] (101/199) libdictenstein union_zipper::tests::test_lattice_join_three_dicts
+        PASS [   0.022s] (102/199) libdictenstein union_zipper::tests::test_lattice_join_strategy_hashset
+        PASS [   0.026s] (103/199) libdictenstein suffix_automaton::tests::test_union_with_other_empty
+        PASS [   0.022s] (104/199) libdictenstein union_zipper::tests::test_dictionary_count
+        PASS [   0.020s] (105/199) libdictenstein union_zipper::tests::test_lattice_meet_strategy_hashset
+        PASS [   0.034s] (106/199) libdictenstein suffix_automaton::tests::test_union_with_partial_conflicts
+        PASS [   0.037s] (107/199) libdictenstein suffix_automaton_char::tests::test_union_with_both_empty
+        PASS [   0.031s] (108/199) libdictenstein suffix_automaton_char::tests::test_union_with_other_empty
+        PASS [   0.039s] (109/199) libdictenstein suffix_automaton::tests::test_union_with_self_empty
+        PASS [   0.023s] (110/199) libdictenstein union_zipper::tests::test_lattice_meet_three_dicts
+        PASS [   0.042s] (111/199) libdictenstein suffix_automaton_char::tests::test_union_with_conflicts_max
+        PASS [   0.035s] (112/199) libdictenstein union_zipper::tests::test_lattice_join_strategy_numeric
+        PASS [   0.025s] (113/199) libdictenstein union_zipper::tests::test_lattice_meet_with_bool
+        PASS [   0.043s] (114/199) libdictenstein symmetric_difference_zipper::tests::test_property_symmetric_difference_equals_union_minus_intersection
+        PASS [   0.017s] (115/199) libdictenstein union_zipper::tests::test_union_empty_dictionaries
+        PASS [   0.020s] (116/199) libdictenstein union_zipper::tests::test_lattice_vec_preserves_order
+        PASS [   0.046s] (117/199) libdictenstein union_zipper::tests::test_custom_merge_strategy
+        PASS [   0.013s] (118/199) libdictenstein union_zipper::tests::test_union_nonexistent_path
+        PASS [   0.023s] (119/199) libdictenstein union_zipper::tests::test_lattice_numeric_u32
+        PASS [   0.023s] (120/199) libdictenstein union_zipper::tests::test_lattice_option
+        PASS [   0.024s] (121/199) libdictenstein union_zipper::tests::test_union_descend
+        PASS [   0.023s] (122/199) libdictenstein union_zipper::tests::test_union_all
+        PASS [   0.045s] (123/199) libdictenstein suffix_automaton_char::tests::test_union_with_unicode
+        PASS [   0.013s] (124/199) libdictenstein union_zipper::tests::test_union_one_empty
+        PASS [   0.026s] (125/199) libdictenstein union_zipper::tests::test_lattice_vec
+        PASS [   0.038s] (126/199) libdictenstein union_zipper::tests::test_lattice_meet_strategy_numeric
+        PASS [   0.021s] (127/199) libdictenstein union_zipper::tests::test_union_is_final
+        PASS [   0.017s] (128/199) libdictenstein union_zipper::tests::test_union_with_overlap
+        PASS [   0.044s] (129/199) libdictenstein union_zipper::tests::test_lattice_join_with_bool
+        PASS [   0.009s] (130/199) libdictenstein::dictionary_iterator_tests dynamic_dawg_tests::test_into_iterator
+        PASS [   0.013s] (131/199) libdictenstein::bloom_filter_correspondence bloom_backed_dynamic_dawg_lookup_never_rejects_inserted_terms
+        PASS [   0.059s] (132/199) libdictenstein suffix_automaton_char::tests::test_union_with_self_empty
+        PASS [   0.056s] (133/199) libdictenstein suffix_automaton_char::tests::test_union_with_partial_conflicts
+        PASS [   0.021s] (134/199) libdictenstein::dictionary_iterator_tests dynamic_dawg_char_tests::test_iter_chars_unicode
+        PASS [   0.023s] (135/199) libdictenstein::dictionary_iterator_tests dynamic_dawg_tests::test_iter_bytes_with_values
+        PASS [   0.047s] (136/199) libdictenstein union_zipper::tests::test_lattice_numeric_i32
+        PASS [   0.095s] (137/199) libdictenstein dynamic_dawg_u64::tests::test_stress_iterator_during_writes
+        PASS [   0.095s] (138/199) libdictenstein dynamic_dawg_u64::tests::test_stress_valued_concurrent_writes
+        PASS [   0.024s] (139/199) libdictenstein::dictionary_iterator_tests dynamic_dawg_char_tests::test_into_iterator_char
+        PASS [   0.023s] (140/199) libdictenstein::dictionary_iterator_tests dynamic_dawg_tests::test_iter_after_insert
+        PASS [   0.021s] (141/199) libdictenstein::dynamic_dawg_mutation_correspondence bloom_backed_dynamic_dawg_has_no_false_negatives_after_rebuilds
+        PASS [   0.045s] (142/199) libdictenstein union_zipper::tests::test_union_basic
+        PASS [   0.047s] (143/199) libdictenstein union_zipper::tests::test_lattice_numeric_f64
+        PASS [   0.011s] (144/199) libdictenstein::union_zipper_tests test_union_dawg_basic
+        PASS [   0.041s] (145/199) libdictenstein union_zipper::tests::test_valued_union_last_wins
+        PASS [   0.042s] (146/199) libdictenstein union_zipper::tests::test_valued_union_iterator
+        PASS [   0.017s] (147/199) libdictenstein::union_zipper_tests test_union_char_overlap
+        PASS [   0.033s] (148/199) libdictenstein::proptest_zipper_operations distribution_union_over_intersection
+        PASS [   0.017s] (149/199) libdictenstein::union_zipper_tests test_union_dawg_with_overlap
+        PASS [   0.050s] (150/199) libdictenstein union_zipper::tests::test_valued_union_first_wins
+        PASS [   0.018s] (151/199) libdictenstein::union_zipper_tests test_union_char_with_prefix_zipper
+        PASS [   0.018s] (152/199) libdictenstein::union_zipper_tests test_union_char_dictionaries
+        PASS [   0.030s] (153/199) libdictenstein::union_zipper_tests test_basic_union_two_dictionaries
+        PASS [   0.020s] (154/199) libdictenstein::union_zipper_tests test_union_descend_exists_in_both
+        PASS [   0.010s] (155/199) libdictenstein::union_zipper_tests test_union_first_empty
+        PASS [   0.022s] (156/199) libdictenstein::union_zipper_tests test_union_count_with_prefix
+        PASS [   0.023s] (157/199) libdictenstein::union_zipper_tests test_union_both_empty
+        PASS [   0.011s] (158/199) libdictenstein::union_zipper_tests test_union_descend_nonexistent
+        PASS [   0.027s] (159/199) libdictenstein::union_zipper_tests test_union_char_navigation
+        PASS [   0.011s] (160/199) libdictenstein::union_zipper_tests test_union_identical_dictionaries
+        PASS [   0.010s] (161/199) libdictenstein::union_zipper_tests test_union_n_dictionaries
+        PASS [   0.009s] (162/199) libdictenstein::union_zipper_tests test_union_second_empty
+        PASS [   0.029s] (163/199) libdictenstein::union_zipper_tests test_union_dawg_char
+        PASS [   0.048s] (164/199) libdictenstein::proptest_zipper_operations de_morgan_union
+        PASS [   0.009s] (165/199) libdictenstein::union_zipper_tests test_union_with_overlapping_terms
+        PASS [   0.011s] (166/199) libdictenstein::union_zipper_tests test_union_single_character_terms
+        PASS [   0.016s] (167/199) libdictenstein::union_zipper_tests test_union_is_final
+        PASS [   0.027s] (168/199) libdictenstein::union_zipper_tests test_union_descend_exists_in_one
+        PASS [   0.016s] (169/199) libdictenstein::union_zipper_tests test_union_single_dictionary
+        PASS [   0.015s] (170/199) libdictenstein::union_zipper_tests test_union_very_long_terms
+        PASS [   0.134s] (171/199) libdictenstein dynamic_dawg_u64::tests::test_stress_remove_while_reading
+        PASS [   0.010s] (172/199) libdictenstein::union_zipper_tests test_valued_union_custom_strategy
+        PASS [   0.020s] (173/199) libdictenstein::union_zipper_tests test_union_prefix_overlap
+        PASS [   0.010s] (174/199) libdictenstein::union_zipper_tests test_valued_union_iterator
+        PASS [   0.011s] (175/199) libdictenstein::union_zipper_tests test_valued_union_first_wins
+        PASS [   0.015s] (176/199) libdictenstein::union_zipper_tests test_union_with_prefix_zipper_nonexistent
+        PASS [   0.019s] (177/199) libdictenstein::union_zipper_tests test_union_with_prefix_zipper
+        PASS [   0.015s] (178/199) libdictenstein::union_zipper_tests test_union_with_prefix_zipper_partial_match
+        PASS [   0.055s] (179/199) libdictenstein::proptest_zipper_operations union_self_idempotent
+        PASS [   0.026s] (180/199) libdictenstein::union_zipper_tests test_union_path_tracking
+        PASS [   0.062s] (181/199) libdictenstein::proptest_zipper_operations distribution_intersection_over_union
+        PASS [   0.028s] (182/199) libdictenstein::union_zipper_tests test_union_large_dictionaries
+        PASS [   0.016s] (183/199) libdictenstein::union_zipper_tests test_valued_union_last_wins
+        PASS [   0.015s] (184/199) libdictenstein::valued_set_combinator_correspondence dynamic_dawg_zippers_match_reference_fold
+        PASS [   0.016s] (185/199) libdictenstein::valued_set_combinator_correspondence byte_union_strategies_match_reference_fold
+        PASS [   0.068s] (186/199) libdictenstein::proptest_zipper_operations union_empty_identity
+        PASS [   0.152s] (187/199) libdictenstein dynamic_dawg_u64::tests::test_stress_readers_and_writers
+        PASS [   0.095s] (188/199) libdictenstein::proptest_zipper_operations symmetric_difference_via_union_intersection
+        PASS [   0.121s] (189/199) libdictenstein::dictionary_law_correspondence dynamic_dawg_char_mutation_trace_matches_reference_map
+        PASS [   0.145s] (190/199) libdictenstein::dictionary_law_correspondence dynamic_dawg_mutation_trace_matches_reference_map
+        PASS [   0.160s] (191/199) libdictenstein::proptest_zipper_operations union_associativity
+        PASS [   0.115s] (192/199) libdictenstein::valued_set_combinator_correspondence generated_byte_union_matches_reference_fold
+        PASS [   0.265s] (193/199) libdictenstein dynamic_dawg_u64::tests::test_stress_100_concurrent_readers
+        PASS [   0.388s] (194/199) libdictenstein::proptest_zipper_operations union_commutativity
+        PASS [   0.557s] (195/199) libdictenstein::dynamic_dawg_mutation_correspondence char_dynamic_dawg_mapped_mutations_refine_reference_map
+        PASS [   0.639s] (196/199) libdictenstein::dynamic_dawg_mutation_correspondence char_dynamic_dawg_batch_set_mutations_refine_reference_set
+        PASS [   0.693s] (197/199) libdictenstein::dynamic_dawg_mutation_correspondence byte_dynamic_dawg_mapped_mutations_refine_reference_map
+        PASS [   0.706s] (198/199) libdictenstein::dynamic_dawg_mutation_correspondence byte_dynamic_dawg_batch_set_mutations_refine_reference_set
+        PASS [   1.376s] (199/199) libdictenstein dynamic_dawg_u64::tests::test_stress_50_writers_disjoint_keys
+────────────
+     Summary [   1.387s] 199 tests run: 199 passed, 552 skipped

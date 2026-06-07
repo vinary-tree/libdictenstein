@@ -847,41 +847,47 @@ impl<V: DictionaryValue> crate::MutableMappedDictionary for DynamicDawgChar<V> {
         F: Fn(&Self::Value, &Self::Value) -> Self::Value,
         Self::Value: Clone,
     {
-        let other_inner = other.inner.read();
-        let mut processed = 0;
-
-        // DFS traversal to extract all terms with values from other
-        let mut stack: Vec<(usize, Vec<char>)> = vec![(0, Vec::new())];
-
-        while let Some((node_idx, path)) = stack.pop() {
-            let node = &other_inner.nodes[node_idx];
-
-            // If this is a final node, we have a complete term
-            if node.is_final {
-                let term: String = path.iter().collect();
-                processed += 1;
-
-                if let Some(other_value) = &node.value {
-                    // Check if term exists in self
-                    if let Some(self_value) = self.get_value(&term) {
-                        // Merge values
-                        let merged = merge_fn(&self_value, other_value);
-                        self.insert_with_value(&term, merged);
-                    } else {
-                        // Insert new term
-                        self.insert_with_value(&term, other_value.clone());
-                    }
+        // Snapshot `other`'s final terms under its read lock, then DROP that lock BEFORE
+        // merging into `self` — never holding `other.inner.read()` while
+        // `self.insert_with_value` takes `self.inner.write()`. Holding both is an AB/BA
+        // cross-instance deadlock: `A.union_with(&B)` ‖ `B.union_with(&A)` each hold the
+        // OTHER's read lock and then wait on their OWN write lock (red-team R4-1). Mirrors
+        // the persistent vocab/char `union_with` snapshot-then-release pattern.
+        let entries: Vec<(String, Option<Self::Value>)> = {
+            let other_inner = other.inner.read();
+            let mut out = Vec::new();
+            // DFS traversal to extract all final terms (with their optional value).
+            let mut stack: Vec<(usize, Vec<char>)> = vec![(0, Vec::new())];
+            while let Some((node_idx, path)) = stack.pop() {
+                let node = &other_inner.nodes[node_idx];
+                if node.is_final {
+                    let term: String = path.iter().collect();
+                    out.push((term, node.value.clone()));
+                }
+                // Push children onto stack (in reverse for consistent ordering)
+                for &(label, target_idx) in node.edges.iter().rev() {
+                    let mut child_path = path.clone();
+                    child_path.push(label);
+                    stack.push((target_idx, child_path));
                 }
             }
+            out
+        }; // `other_inner` read lock released here — no two locks held at once
 
-            // Push children onto stack (in reverse for consistent ordering)
-            for &(label, target_idx) in node.edges.iter().rev() {
-                let mut child_path = path.clone();
-                child_path.push(label);
-                stack.push((target_idx, child_path));
+        let mut processed = 0;
+        for (term, other_value) in entries {
+            // `processed` counts every final term (preserving the original semantics);
+            // only valued terms are merged into `self`.
+            processed += 1;
+            if let Some(other_value) = other_value {
+                if let Some(self_value) = self.get_value(&term) {
+                    let merged = merge_fn(&self_value, &other_value);
+                    self.insert_with_value(&term, merged);
+                } else {
+                    self.insert_with_value(&term, other_value);
+                }
             }
         }
-
         processed
     }
 
