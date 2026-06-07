@@ -532,20 +532,32 @@ pub(crate) trait LockFreeOverlay<K: KeyEncoding, V: DictionaryValue, S>: Sized +
     /// seam, so the D1 grep gate (`flip.rs` head) is inherited, NOT re-derived.
     fn reestablish_overlay_value(&mut self) -> Result<()> {
         let (first_units, has_empty_term) = self.owned_first_units()?;
-        // Empty term "" → the overlay ROOT via the fresh-root-CAS value publisher
-        // (NO WAL at reestablish — the recovered value is already durable). Runs
-        // BEFORE clear_owned (RES-7). The UNRANKED `overlay_publish_root_value` is
-        // CORRECT here (reestablish has no LSN to rank — contrast the durable write
-        // path's RANKED depth-0 publish, §2.2/G5-NEW-4).
+        // Empty term "" → the overlay ROOT (NO WAL at reestablish — already durable;
+        // UNRANKED publish is correct, no LSN to rank). A VALUED "" publishes the value;
+        // a TERM-ONLY "" (membership, no value) publishes root membership. Runs BEFORE
+        // clear_owned (RES-7).
         if has_empty_term {
             if let Some(v) = self.owned_has_empty_term_value() {
                 self.overlay_publish_root_value(v)?;
+            } else {
+                self.overlay_publish_root_membership()?;
             }
         }
-        // One first-unit partition at a time: stream its (term, value) pairs, publish
-        // each via the no-WAL value path, drop the chunk before the next unit.
+        // One first-unit partition at a time. flag-2 fix: an arbitrary-`V` trie may hold
+        // TERM-ONLY members (`insert()` with no value) MIXED with valued terms; the value
+        // stream below carries only valued terms, so term-only members were DROPPED on
+        // reopen. Republish MEMBERSHIP for every recovered final first (carries the
+        // term-only ones), THEN set the value on each valued final (`overlay_publish_value`
+        // re-finalizes + carries the value, idempotent on the membership just published).
         for unit in first_units {
             let prefix = [unit];
+            // (1) Membership for EVERY final under this unit (incl. term-only).
+            if let Some(chunk) = self.owned_units_under(&prefix)? {
+                for units in &chunk {
+                    self.overlay_publish_membership(units);
+                }
+            }
+            // (2) Value for each valued final (set last so it is never wiped).
             if let Some(chunk) = self.owned_units_with_values_under(&prefix)? {
                 for (units, value) in &chunk {
                     self.overlay_publish_value(units, value.clone());

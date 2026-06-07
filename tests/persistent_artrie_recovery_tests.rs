@@ -568,13 +568,11 @@ fn test_mixed_value_recovery() {
     {
         let mut dict: PersistentARTrie<u32> =
             PersistentARTrie::create(&dict_path).expect("create dictionary");
-        // F2-migrate: Bucket B — this test mixes VALUED inserts with TERM-ONLY inserts
-        // (`insert()` with no value) and asserts both survive a reopen. The overlay
-        // reestablish path for an arbitrary-V (non-counter) trie does not currently carry
-        // term-only entries across a reopen (the valued entries do survive). Pin the
-        // proven OwnedTree mixed-recovery path. Feature-off (`u32` is byte-arbitrary-V)
-        // this is a no-op.
-        dict.kill_switch_to_owned();
+        // flag-2 FIXED: this test mixes VALUED inserts with TERM-ONLY inserts (`insert()`
+        // with no value) and asserts both survive a reopen. The arbitrary-`V` overlay
+        // reestablish now republishes MEMBERSHIP for every recovered final (not just the
+        // valued ones), so term-only members survive — this runs on the overlay feature-on
+        // (`u32` flips) and the owned tree feature-off, no kill-switch needed.
 
         // Insert some with values
         dict.insert_with_value("with_value_1", 10);
