@@ -56,25 +56,29 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
 
     /// Insert a term with an associated value and WAL logging.
     ///
-    /// **Flip routing (design §2, per-monomorph guard):** the overlay value-write
-    /// path is hardcoded `<u64>` (arbitrary `V` needs G1), so this routes to the
-    /// overlay ONLY for the `V = u64` monomorph, dispatched via the SAFE `Any`
-    /// downcast in [`super::lockfree_value_route::route_insert_with_value`] (zero
-    /// unsafe). Arbitrary `V` stays on the proven owned tree (the design's
-    /// "arbitrary V → forced OwnedTree" gap).
+    /// **Semantics — UPSERT (overwrite on duplicate):** `insert_with_value` is the
+    /// canonical map "insert or update" (see [`crate::MutableMappedDictionary`]); the
+    /// owned body overwrites an existing term's value
+    /// ([`super::mutation_core`]'s `try_insert_impl_no_wal_with_value` returns
+    /// `Ok(false)` *after* writing the new value), matching every other backend and the
+    /// dictionary map laws. Returns `Ok(true)` iff the term was newly inserted
+    /// (`Ok(false)` = an existing term's value was overwritten).
+    ///
+    /// **Flip routing (design §2 + C0):** under `route_overlay()` this routes to the
+    /// generic Order-A [`upsert_cas_durable_default`](crate::persistent_artrie_core::overlay::durable_write::DurableOverlayWrite::upsert_cas_durable_default)
+    /// for ANY `V` (overwrite = last-writer-wins root-CAS) — NEVER falling through to
+    /// the owned tree (a fall-through owned write for arbitrary `V` post-flip would be
+    /// unranked → dropped on Overlay reopen = data loss). Empty `""` flows through the
+    /// value seam's RANKED depth-0 publish. (C0 fix: this previously routed to the
+    /// insert-once `insert_cas_with_value_durable_default`, diverging from the owned
+    /// overwrite semantics — a silent overlay↔owned mismatch on duplicate keys.)
     pub fn insert_with_value(&mut self, term: &str, value: V) -> Result<bool> {
-        // Flip F0/G5 (NH1): under the overlay, route to the SHARED GENERIC durable
-        // valued INSERT (insert-once) for ANY `V` — NEVER fall through to the owned
-        // tree (a fall-through owned write for arbitrary `V` post-flip would be
-        // unranked → dropped on Overlay reopen = data loss). The currently-eligible
-        // `V` ({(),u64}) takes this now; arbitrary `V` joins at the F2 flip. Empty
-        // `""` flows through the value seam's RANKED depth-0 publish.
         if self.route_overlay() {
             return <Self as crate::persistent_artrie_core::overlay::durable_write::DurableOverlayWrite<
                 crate::persistent_artrie_core::key_encoding::CharKey,
                 V,
                 S,
-            >>::insert_cas_with_value_durable_default(self, term.as_bytes(), value);
+            >>::upsert_cas_durable_default(self, term.as_bytes(), value);
         }
 
         self.preflight_insert_with_value_no_wal(term)?;

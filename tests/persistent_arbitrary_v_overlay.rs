@@ -109,9 +109,13 @@ fn char_arbitrary_v_value_ops_then_reopen() {
         assert!(trie.insert_with_value("k", "v1".to_string()).expect("ins"));
         assert!(
             !trie.insert_with_value("k", "v2".to_string()).expect("ins2"),
-            "insert-once: present ⇒ Ok(false), no overwrite"
+            "insert_with_value of an existing term ⇒ Ok(false) (updated, not newly inserted)"
         );
-        assert_eq!(trie.get_value("k"), Some("v1".to_string()));
+        assert_eq!(
+            trie.get_value("k"),
+            Some("v2".to_string()),
+            "C0: insert_with_value OVERWRITES on duplicate (upsert semantics, matches owned + map laws)"
+        );
         assert!(
             !trie.upsert("k", "v3".to_string()).expect("upsert"),
             "upsert of an existing term ⇒ Ok(false) (updated)"

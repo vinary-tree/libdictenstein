@@ -48,19 +48,22 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
 
     /// Insert a term with an associated value.
     ///
-    /// **M3 write-flip (C5):** under `route_overlay()` for `V = i64` this routes to
-    /// the Order-A [`insert_cas_with_value_durable`](Self::insert_cas_with_value_durable)
-    /// (INSERT semantics: no-op on an existing term) via the SAFE `Any` dispatch
-    /// ([`super::lockfree_value_route::route_upsert_bytes`] is UPSERT; here we need
-    /// INSERT, so route through the durable valued-insert directly via the helper's
-    /// sibling). Arbitrary `V` keeps the owned body. A durable failure is logged and
-    /// reported `false` (byte's `bool` signature). The owned arm is verbatim pre-flip.
+    /// **Semantics — UPSERT (overwrite on duplicate):** the canonical map "insert or
+    /// update" ([`crate::MutableMappedDictionary`]); the owned body overwrites an
+    /// existing term's value, matching every other backend and the map laws. Returns
+    /// `true` iff the term was newly inserted (`false` = an existing value overwritten,
+    /// or a durable error logged as no-insert).
+    ///
+    /// **Flip routing (design §2 + C0):** under `route_overlay()` this routes to the
+    /// generic Order-A [`upsert_cas_durable_default`](DurableOverlayWrite::upsert_cas_durable_default)
+    /// for ANY `V` (overwrite = last-writer-wins root-CAS) — NEVER falling through to
+    /// owned (the NH1 data-loss fix). (C0 fix: previously routed to the insert-once
+    /// `insert_cas_with_value_durable_default`, diverging from the owned overwrite
+    /// semantics — a silent overlay↔owned mismatch on duplicate keys.) A durable
+    /// failure is logged and reported `false` (byte's `bool` signature).
     pub fn insert_with_value(&mut self, term: &str, value: V) -> bool {
-        // Flip F0/G5 (NH1): under the overlay, route to the SHARED GENERIC durable
-        // valued INSERT (insert-once) for ANY `V` — NEVER fall through to owned (the
-        // NH1 data-loss fix). Eligible V now; arbitrary V at F2.
         if self.route_overlay() {
-            return <Self as DurableOverlayWrite<ByteKey, V, S>>::insert_cas_with_value_durable_default(
+            return <Self as DurableOverlayWrite<ByteKey, V, S>>::upsert_cas_durable_default(
                 self,
                 term.as_bytes(),
                 value,
@@ -351,13 +354,15 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
         let result: Result<bool> = match value {
             // Membership: durable membership insert.
             None => self.insert_cas_durable(term),
-            // Valued (NH4/G5-NEW-4 fix): route to the SHARED GENERIC durable valued
-            // insert for ANY `V` (was: downcast to i64 and DROP the value for
-            // non-i64 `V` — the data-loss bug). For `V = i64` this is byte-identical
-            // to the prior `route_insert_with_value_bytes`; for `V = ()` it stores a
-            // (trivial) unit value (membership-equivalent); for arbitrary `V` it
-            // preserves the value instead of dropping it.
-            Some(v) => <Self as DurableOverlayWrite<ByteKey, V, S>>::insert_cas_with_value_durable_default(
+            // Valued (C0 fix): route to the SHARED GENERIC durable UPSERT for ANY `V`
+            // (overwrite on duplicate). The owned batch overwrites per entry, so the
+            // overlay batch must too — routing the valued arm to the insert-once
+            // `insert_cas_with_value_durable_default` left byte batch insert-once while
+            // single `insert_with_value` became upsert (a silent divergence).
+            // `upsert_cas_durable` returns `Ok(true)` iff newly inserted, preserving
+            // the "newly inserted" count; for `V = ()` it stores a (trivial) unit value
+            // (membership-equivalent); for arbitrary `V` it preserves the value.
+            Some(v) => <Self as DurableOverlayWrite<ByteKey, V, S>>::upsert_cas_durable_default(
                 self,
                 term,
                 v.clone(),
