@@ -1021,30 +1021,54 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
     ) -> Option<Arc<super::nodes::PersistentNode<V>>> {
         use super::nodes::persistent_node::{Child, PersistentNode};
 
-        if depth == key.len() {
-            // Reached the leaf: bake finality + the new value into a fresh copy.
-            return Some(Arc::new(node.as_final().with_value(value)));
-        }
-
-        let k = key[depth];
-        match node.find_child(k) {
-            Some(child) => {
-                // In-memory child: path-copy into it. On-disk → cannot fault in.
-                let child_arc = child.as_in_mem()?;
-                let child_arc = Arc::clone(child_arc);
-                let new_child = self.build_value_path_recursive(&child_arc, key, depth + 1, value)?;
-                Some(Arc::new(node.with_child(k, Child::InMem(new_child))))
-            }
-            None => {
-                // Child absent: build the remaining spine bottom-up, valued leaf
-                // at the bottom.
-                let leaf = Arc::new(PersistentNode::<V>::new().as_final().with_value(value));
-                let mut current = leaf;
-                for &b in key[depth + 1..].iter().rev() {
-                    let parent = PersistentNode::<V>::new().with_child(b, Child::InMem(current));
-                    current = Arc::new(parent);
+        // ITERATIVE (was recursive — recursion depth == key length, which overflows the
+        // stack for very long keys because the overlay spine is UN-path-compressed, one
+        // node per byte). Descend from `depth` collecting the (parent, byte) spine, then
+        // rebuild it bottom-up. Same path-copy / absent-spine / valued-leaf semantics as
+        // the prior recursion; byte does NOT fault OnDisk children in on the write path
+        // (an OnDisk child returns `None`, exactly as the prior `as_in_mem()?` did).
+        let mut spine: Vec<(Arc<PersistentNode<V>>, u8)> =
+            Vec::with_capacity(key.len().saturating_sub(depth));
+        let mut current = Arc::clone(node);
+        let mut d = depth;
+        loop {
+            if d == key.len() {
+                // Reached the leaf: bake finality + value into a fresh copy, then rebuild
+                // every ancestor bottom-up (the path copy).
+                let mut new_node = Arc::new(current.as_final().with_value(value));
+                for (parent, b) in spine.into_iter().rev() {
+                    new_node = Arc::new(parent.with_child(b, Child::InMem(new_node)));
                 }
-                Some(Arc::new(node.with_child(k, Child::InMem(current))))
+                return Some(new_node);
+            }
+
+            let k = key[d];
+            match current.find_child(k) {
+                Some(child) => {
+                    // In-memory child: descend (path-copy on the way back up). On-disk →
+                    // cannot fault in on the write path; return None (the caller retries).
+                    let child_arc = match child.as_in_mem() {
+                        Some(c) => Arc::clone(c),
+                        None => return None,
+                    };
+                    spine.push((current, k));
+                    current = child_arc;
+                    d += 1;
+                }
+                None => {
+                    // Child absent: build the remaining spine bottom-up (valued leaf),
+                    // splice at `k`, then rebuild the collected spine.
+                    let leaf = Arc::new(PersistentNode::<V>::new().as_final().with_value(value));
+                    let mut sub = leaf;
+                    for &b in key[d + 1..].iter().rev() {
+                        sub = Arc::new(PersistentNode::<V>::new().with_child(b, Child::InMem(sub)));
+                    }
+                    let mut new_node = Arc::new(current.with_child(k, Child::InMem(sub)));
+                    for (parent, b) in spine.into_iter().rev() {
+                        new_node = Arc::new(parent.with_child(b, Child::InMem(new_node)));
+                    }
+                    return Some(new_node);
+                }
             }
         }
     }

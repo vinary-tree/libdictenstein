@@ -275,11 +275,16 @@ fn char_union_with_no_ab_ba_deadlock() {
     let (a2, b2) = (a.clone(), b.clone());
     let h1 = thread::spawn(move || a1.union_with(&b1, |x, y| x + y));
     let h2 = thread::spawn(move || b2.union_with(&a2, |x, y| x + y));
-    // If the AB/BA cross-instance deadlock regressed, these joins hang forever.
-    let n1 = h1.join().expect("A.union_with(&B) completed (no deadlock)");
-    let n2 = h2.join().expect("B.union_with(&A) completed (no deadlock)");
-    assert_eq!(n1, 2, "A processed both of B's terms");
-    assert_eq!(n2, 2, "B processed both of A's terms");
+    // Deadlock-freedom is the assertion here: a regression hangs these joins forever. The
+    // exact processed-COUNT is non-deterministic under concurrency (each side snapshots
+    // `other` point-in-time, so it may also observe a term the other side just merged in),
+    // so assert the DETERMINISTIC post-condition instead: each trie absorbed the OTHER's
+    // exclusive starting term (always present in the other's original snapshot), keeping
+    // its value.
+    h1.join().expect("A.union_with(&B) completed (no deadlock)");
+    h2.join().expect("B.union_with(&A) completed (no deadlock)");
+    assert_eq!(a.read().get_value("b_only"), Some(20), "A absorbed B's exclusive term");
+    assert_eq!(b.read().get_value("a_only"), Some(10), "B absorbed A's exclusive term");
 }
 
 /// C2 byte twin: byte `merge_from` on a flipped String trie combines via `merge_fn`

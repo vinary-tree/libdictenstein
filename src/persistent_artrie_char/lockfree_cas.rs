@@ -1505,43 +1505,61 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     ) -> Option<Arc<super::nodes::persistent_node::PersistentCharNode<V>>> {
         use super::nodes::persistent_node::{Child, PersistentCharNode};
 
-        if depth == chars.len() {
-            // Reached the leaf: bake finality + the new value into a fresh copy.
-            return Some(Arc::new(node.as_final().with_value(value)));
-        }
-
-        let key = chars[depth];
-        match node.find_child(key) {
-            Some(child) => {
-                // In-memory child: path-copy into it.
-                if let Some(child_arc) = child.as_in_mem() {
-                    let child_arc = Arc::clone(child_arc);
-                    let new_child =
-                        self.build_value_path_recursive(&child_arc, chars, depth + 1, value)?;
-                    return Some(Arc::new(node.with_child(key, Child::InMem(new_child))));
+        // ITERATIVE (was recursive — recursion depth == term length, which overflows the
+        // stack for very long terms because the overlay spine is UN-path-compressed, one
+        // node per char). Descend from `depth` collecting the (parent, key) spine
+        // (faulting OnDisk children in along the way), then rebuild it bottom-up. Exact
+        // same path-copy / write-path fault-in / absent-spine / valued-leaf semantics as
+        // the prior recursion — only the call stack is replaced by an explicit Vec.
+        let mut spine: Vec<(Arc<PersistentCharNode<V>>, u32)> =
+            Vec::with_capacity(chars.len().saturating_sub(depth));
+        let mut current = Arc::clone(node);
+        let mut d = depth;
+        loop {
+            if d == chars.len() {
+                // Reached the leaf: bake finality + the new value into a fresh copy, then
+                // rebuild every ancestor bottom-up (the path copy).
+                let mut new_node = Arc::new(current.as_final().with_value(value));
+                for (parent, key) in spine.into_iter().rev() {
+                    new_node = Arc::new(parent.with_child(key, Child::InMem(new_node)));
                 }
-                // WRITE-PATH FAULT-IN (design §4): the child was EVICTED to OnDisk.
-                // Fault it back in then descend, splicing it InMem — the single root
-                // CAS stays the sole arbiter. On I/O error return `None` (transient
-                // Conflict → the value seam surfaces it as a durable-but-deferred
-                // error; the counter inner retries).
-                let on_disk = child.as_on_disk().filter(|p| !p.is_null())?;
-                let loaded = self.load_overlay_node_from_disk(on_disk).ok()?;
-                let new_child =
-                    self.build_value_path_recursive(&loaded, chars, depth + 1, value)?;
-                Some(Arc::new(node.with_child(key, Child::InMem(new_child))))
+                return Some(new_node);
             }
-            None => {
-                // Child absent: build the remaining spine bottom-up, valued leaf
-                // at the bottom.
-                let leaf = Arc::new(PersistentCharNode::<V>::new().as_final().with_value(value));
-                let mut current = leaf;
-                for &c in chars[depth + 1..].iter().rev() {
-                    let parent =
-                        PersistentCharNode::<V>::new().with_child(c, Child::InMem(current));
-                    current = Arc::new(parent);
+
+            let key = chars[d];
+            match current.find_child(key) {
+                Some(child) => {
+                    let child_arc = if let Some(child_arc) = child.as_in_mem() {
+                        // In-memory child: descend (path-copy on the way back up).
+                        Arc::clone(child_arc)
+                    } else {
+                        // WRITE-PATH FAULT-IN (design §4): the child was EVICTED to
+                        // OnDisk. Fault it back in then descend, splicing it InMem — the
+                        // single root CAS stays the sole arbiter. On I/O error return
+                        // `None` (transient Conflict → the value seam surfaces it as a
+                        // durable-but-deferred error; the counter inner retries).
+                        let on_disk = child.as_on_disk().filter(|p| !p.is_null())?;
+                        self.load_overlay_node_from_disk(on_disk).ok()?
+                    };
+                    spine.push((current, key));
+                    current = child_arc;
+                    d += 1;
                 }
-                Some(Arc::new(node.with_child(key, Child::InMem(current))))
+                None => {
+                    // Child absent: build the remaining spine bottom-up (valued leaf at
+                    // the bottom), splice it at `key`, then rebuild the collected spine.
+                    let leaf =
+                        Arc::new(PersistentCharNode::<V>::new().as_final().with_value(value));
+                    let mut sub = leaf;
+                    for &c in chars[d + 1..].iter().rev() {
+                        sub = Arc::new(PersistentCharNode::<V>::new().with_child(c, Child::InMem(sub)));
+                    }
+                    let mut new_node = Arc::new(current.with_child(key, Child::InMem(sub)));
+                    for (parent, k) in spine.into_iter().rev() {
+                        new_node = Arc::new(parent.with_child(k, Child::InMem(new_node)));
+                    }
+                    return Some(new_node);
+                }
             }
         }
     }
