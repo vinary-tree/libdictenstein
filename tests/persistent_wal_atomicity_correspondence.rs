@@ -233,7 +233,9 @@ fn char_atomic_serialization_failures_preserve_memory_and_wal() {
 
     assert!(!trie.contains("bad"));
     assert!(!trie.contains("default"));
-    assert_eq!(trie.get("key").map(|value| value.value), Some(1));
+    // F2-migrate: Bucket A — `get()` returns None under the overlay; read the surviving
+    // value via `get_value` (owned `Option<V>`).
+    assert_eq!(trie.get_value("key").map(|value| value.value), Some(1));
     assert_eq!(wal_len(&path), before_wal);
 }
 
@@ -274,6 +276,7 @@ fn char_atomic_writes_replay_after_reopen() {
     }
 
     let reopened = PersistentARTrieChar::<i64>::open(&path).expect("reopen char trie");
-    assert_eq!(reopened.get("count").copied(), Some(20));
-    assert_eq!(reopened.get("new").copied(), Some(7));
+    // F2-migrate: Bucket A — `get()` returns None under the overlay; read via `get_value`.
+    assert_eq!(reopened.get_value("count"), Some(20));
+    assert_eq!(reopened.get_value("new"), Some(7));
 }

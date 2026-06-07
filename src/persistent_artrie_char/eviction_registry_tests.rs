@@ -85,6 +85,10 @@ fn force_eviction_unswizzles_a_live_slot_to_disk() {
     // A single linear chain so eviction has unambiguous, navigable nodes.
     let chain = "abcdefgh";
     let shared: SharedCharARTrie<i32> = ARTrie::create(&path).expect("create");
+    // F2-migrate: Bucket B — white-box over the OWNED tree (`chain_swizzled_slot_count`
+    // walks `guard.root`; eviction unswizzles owned slots). Under the lock-free overlay
+    // the owned tree is empty, so pin the Owned regime. No-op feature-off.
+    shared.write().kill_switch_to_owned();
     assert!(put(&shared, chain, 42));
 
     shared
@@ -134,6 +138,10 @@ fn async_request_eviction_reclaims_registered_nodes() {
     let path = dir.path().join("async.trie");
 
     let shared: SharedCharARTrie<i32> = ARTrie::create(&path).expect("create");
+    // F2-migrate: Bucket B — exercises the async OWNED-node reclamation path. Under the
+    // lock-free overlay the owned tree is empty (nothing to reclaim), so pin the Owned
+    // regime. No-op feature-off.
+    shared.write().kill_switch_to_owned();
     for (i, term) in ["alpha", "alphabet", "alpine", "zenith", "zephyr"]
         .iter()
         .enumerate()

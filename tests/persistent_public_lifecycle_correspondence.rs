@@ -72,9 +72,11 @@ fn char_public_open_replays_unicode_checkpoint_plus_synced_tail() {
     }
 
     let reopened = PersistentARTrieChar::<i64>::open(&path).expect("reopen char trie");
-    assert_eq!(reopened.get("café").copied(), Some(7));
-    assert_eq!(reopened.get("東京").copied(), Some(8));
-    assert_eq!(reopened.get("emoji😀").copied(), Some(9));
+    // F2-migrate: Bucket A — under the overlay `get()` returns None (it cannot lend a
+    // reference out of the lock-free overlay); read owned values via `get_value`.
+    assert_eq!(reopened.get_value("café"), Some(7));
+    assert_eq!(reopened.get_value("東京"), Some(8));
+    assert_eq!(reopened.get_value("emoji😀"), Some(9));
 }
 
 #[test]

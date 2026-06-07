@@ -2232,6 +2232,11 @@ mod tests {
         // only the on-disk image remains.
         {
             let mut trie = PersistentARTrieChar::<i32>::create(&path).expect("create");
+            // F2-migrate: Bucket B — drives the OWNED `DictionaryNode` faulting walk
+            // (`root().edges()`/`transition`). Under the lock-free overlay the owned tree
+            // is cleared on reopen (empty walk), so pin the Owned regime so the on-disk
+            // owned image is the walk's source of truth. No-op feature-off.
+            trie.kill_switch_to_owned();
             trie.insert_with_value("receive", 1).expect("insert");
             trie.insert_with_value("recipe", 2).expect("insert");
             trie.insert_with_value("decide", 3).expect("insert");
@@ -2281,6 +2286,11 @@ mod tests {
         let path = dir.path().join("evict_traversal.artc");
         {
             let mut trie = PersistentARTrieChar::<i32>::create(&path).expect("create");
+            // F2-migrate: Bucket B — forced-eviction re-fault of the OWNED `DictionaryNode`
+            // walk. Under the lock-free overlay the owned tree is empty, so pin the Owned
+            // regime so eviction has owned nodes to swizzle and the walk re-faults them.
+            // No-op feature-off.
+            trie.kill_switch_to_owned();
             for (t, v) in [
                 ("receive", 1),
                 ("recipe", 2),

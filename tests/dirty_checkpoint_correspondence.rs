@@ -455,6 +455,7 @@ fn char_descriptor_publication_before_wal_truncation_reopens_with_wal_tail() {
     }
 
     let reopened = PersistentARTrieChar::<i32>::open(&path).expect("reopen char trie");
-    assert_eq!(reopened.get("descriptor").copied(), Some(10));
-    assert_eq!(reopened.get("wal-tail").copied(), Some(20));
+    // F2-migrate: Bucket A — `get()` returns None under the overlay; read via `get_value`.
+    assert_eq!(reopened.get_value("descriptor"), Some(10));
+    assert_eq!(reopened.get_value("wal-tail"), Some(20));
 }

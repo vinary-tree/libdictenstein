@@ -140,6 +140,10 @@ fn wal_len(path: &Path) -> u64 {
 
 fn build_checkpointed_char_trie(path: &Path) {
     let mut trie = PersistentARTrieChar::<i64>::create(path).expect("create char trie");
+    // F2-migrate: Bucket B — the sole caller corrupts an on-disk OWNED lazy child and
+    // asserts the lazy traversal surfaces the error. Pin the Owned regime so the
+    // owned-tree layout exists and the reopen stays owned. No-op feature-off.
+    trie.kill_switch_to_owned();
     for (term, value) in char_fixture() {
         trie.insert_with_value(&term, value)
             .expect("insert char value");

@@ -1,0 +1,2 @@
+persistent_artrie_char::persist::multi_writer_checkpointer_soak::s5_567_overlay_producer_guards_reject
+persistent_artrie::overlay_routing_tests::m3_reject_guards_fire_under_overlay

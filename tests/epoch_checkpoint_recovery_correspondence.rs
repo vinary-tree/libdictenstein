@@ -40,6 +40,11 @@ fn public_mutations_record_epoch_wal_bytes_without_manual_calls() {
     let path = dir.path().join("epoch_accounting.trie");
 
     let mut trie: PersistentARTrieChar<i64> = PersistentARTrieChar::create(&path).expect("create");
+    // F2-migrate: Bucket B — epoch `operation_count` accounting counts OWNED-tree WAL
+    // mutation records (the overlay write path emits a different record shape/count per
+    // op). Pin OwnedTree so the per-op accounting matches the owned contract. No-op
+    // feature-off (`i64` is char-arbitrary-V and stays owned).
+    trie.kill_switch_to_owned();
     trie.enable_epoch_checkpointing(correspondence_epoch_config())
         .expect("enable epoch checkpointing");
 
@@ -122,7 +127,8 @@ fn corrupt_epoch_metadata_fails_closed_while_trie_checkpoint_recovers() {
 
     let mut reopened: PersistentARTrieChar<i64> =
         PersistentARTrieChar::open(&path).expect("reopen trie");
-    assert_eq!(reopened.get("survives").copied(), Some(7));
+    // F2-migrate: Bucket A — `get()` returns None under the overlay; read via `get_value`.
+    assert_eq!(reopened.get_value("survives"), Some(7));
 
     reopened
         .enable_epoch_checkpointing(correspondence_epoch_config())

@@ -1,0 +1,470 @@
+=====TEST=====
+    thread 'persistent_artrie::lockfree_cas::m4b_flip_gate_tests::m4b_old_owned_file_stays_owned_on_reopen' (441556) panicked at src/persistent_artrie/lockfree_cas.rs:2286:17:
+    String trie must not flip on create
+    stack backtrace:
+       0: __rustc::rust_begin_unwind
+=====TEST=====
+    thread 'persistent_artrie::overlay_write_mode::tests::byte_flip_is_noop_for_ineligible_v' (441761) panicked at src/persistent_artrie/overlay_write_mode.rs:1067:9:
+    flip_to_overlay must be a no-op for arbitrary V
+    stack backtrace:
+       0: __rustc::rust_begin_unwind
+=====TEST=====
+    thread 'persistent_artrie::overlay_write_mode::tests::byte_eligible_v_gate' (441757) panicked at src/persistent_artrie/overlay_write_mode.rs:1014:9:
+    assertion failed: !PersistentARTrie::<u64>::overlay_eligible_v()
+    stack backtrace:
+       0: __rustc::rust_begin_unwind
+=====TEST=====
+    thread 'persistent_artrie::overlay_routing_tests::m3_reject_guards_fire_under_overlay' (441750) panicked at src/persistent_artrie/overlay_routing_tests.rs:456:5:
+    merge_from must reject under overlay
+    stack backtrace:
+       0: __rustc::rust_begin_unwind
+=====TEST=====
+    thread 'persistent_artrie::overlay_write_mode::tests::byte_create_flip_eligible_v_routes_ineligible_v_owned' (441738) panicked at src/persistent_artrie/overlay_write_mode.rs:1001:9:
+    M4b: arbitrary V must NOT flip (stays on the owned path — back-compat)
+    stack backtrace:
+       0: __rustc::rust_begin_unwind
+=====TEST=====
+    thread 'persistent_artrie_char::dict_impl_char::tests::test_shared_char_trie_upsert' (442435) panicked at src/persistent_artrie_char/dict_impl_char.rs:3000:9:
+    assertion `left == right` failed: value updated
+      left: None
+     right: Some(2)
+=====TEST=====
+    thread 'persistent_artrie_char::eviction_registry_tests::force_eviction_unswizzles_a_live_slot_to_disk' (442460) panicked at src/persistent_artrie_char/eviction_registry_tests.rs:98:9:
+    assertion `left == right` failed: every chain slot should be in-memory before eviction
+      left: 0
+     right: 8
+=====TEST=====
+    thread 'persistent_artrie_char::mmap_ctor::s5_12_flip_ctor_gate::s5_12_old_owned_file_stays_owned_on_reopen' (442610) panicked at src/persistent_artrie_char/mmap_ctor.rs:1532:13:
+    String trie must not flip on create
+    stack backtrace:
+       0: __rustc::rust_begin_unwind
+=====TEST=====
+    thread 'persistent_artrie_char::overlay_write_mode::tests::v1_typeid_gate_flip_is_noop_for_arbitrary_v' (442747) panicked at src/persistent_artrie_char/overlay_write_mode.rs:688:9:
+    assertion failed: !PersistentARTrieChar::<String>::overlay_eligible_v()
+    stack backtrace:
+       0: __rustc::rust_begin_unwind
+=====TEST=====
+    thread 'persistent_artrie_char::mmap_ctor::s5_12_flip_ctor_gate::s5_12_create_flip_eligible_v_overlay_arbitrary_v_owned' (442588) panicked at src/persistent_artrie_char/mmap_ctor.rs:1427:13:
+    create<String> must NOT flip (arbitrary V stays on the owned path)
+    stack backtrace:
+       0: __rustc::rust_begin_unwind
+=====TEST=====
+    thread 'persistent_artrie_char::persist::multi_writer_checkpointer_soak::s5_567_overlay_producer_guards_reject' (442843) panicked at src/persistent_artrie_char/persist.rs:1859:9:
+    S5-7: begin_document must reject under the overlay
+    stack backtrace:
+       0: __rustc::rust_begin_unwind
+=====TEST=====
+    thread 'persistent_artrie_char::tests::dictionary_node_traversal_descends_after_reopen' (442997) panicked at src/persistent_artrie_char/mod.rs:2246:9:
+    root edges empty after reopen — swizzle-fault regression
+    stack backtrace:
+       0: __rustc::rust_begin_unwind
+=====TEST=====
+    thread 'test_compact_preserves_all_data' (444885) panicked at tests/compaction_tests.rs:73:10:
+    Failed to compact: InvalidOperation("compact is not valid under the lock-free overlay write mode (it rebuilds from the owned tree and atomically replaces the file, clobbering the durable overlay/WAL with a counters-lost image); use OverlayWriteMode::OwnedTree")
+    stack backtrace:
+       0: __rustc::rust_begin_unwind
+=====TEST=====
+    thread 'test_compact_to_new_file' (444887) panicked at tests/compaction_tests.rs:235:47:
+    Failed to compact: InvalidOperation("compact is not valid under the lock-free overlay write mode (it rebuilds from the owned tree and atomically replaces the file, clobbering the durable overlay/WAL with a counters-lost image); use OverlayWriteMode::OwnedTree")
+    stack backtrace:
+       0: __rustc::rust_begin_unwind
+=====TEST=====
+    thread 'test_compact_single_term' (444886) panicked at tests/compaction_tests.rs:376:10:
+    Failed to compact: InvalidOperation("compact is not valid under the lock-free overlay write mode (it rebuilds from the owned tree and atomically replaces the file, clobbering the durable overlay/WAL with a counters-lost image); use OverlayWriteMode::OwnedTree")
+    stack backtrace:
+       0: __rustc::rust_begin_unwind
+=====TEST=====
+    thread 'test_compact_large_values' (444881) panicked at tests/compaction_tests.rs:406:46:
+    Failed to compact: InvalidOperation("compact is not valid under the lock-free overlay write mode (it rebuilds from the owned tree and atomically replaces the file, clobbering the durable overlay/WAL with a counters-lost image); use OverlayWriteMode::OwnedTree")
+    stack backtrace:
+       0: __rustc::rust_begin_unwind
+=====TEST=====
+    thread 'test_compact_progress_callback' (444884) panicked at tests/compaction_tests.rs:287:10:
+    Failed to compact: InvalidOperation("compact is not valid under the lock-free overlay write mode (it rebuilds from the owned tree and atomically replaces the file, clobbering the durable overlay/WAL with a counters-lost image); use OverlayWriteMode::OwnedTree")
+    stack backtrace:
+       0: __rustc::rust_begin_unwind
+=====TEST=====
+    thread 'test_compact_multiple_checkpoints' (444883) panicked at tests/compaction_tests.rs:196:10:
+    Failed to compact: InvalidOperation("compact is not valid under the lock-free overlay write mode (it rebuilds from the owned tree and atomically replaces the file, clobbering the durable overlay/WAL with a counters-lost image); use OverlayWriteMode::OwnedTree")
+    stack backtrace:
+       0: __rustc::rust_begin_unwind
+=====TEST=====
+    thread 'test_compact_empty_trie' (444877) panicked at tests/compaction_tests.rs:32:10:
+    Failed to compact: InvalidOperation("compact is not valid under the lock-free overlay write mode (it rebuilds from the owned tree and atomically replaces the file, clobbering the durable overlay/WAL with a counters-lost image); use OverlayWriteMode::OwnedTree")
+    stack backtrace:
+       0: __rustc::rust_begin_unwind
+=====TEST=====
+    thread 'test_compact_without_verification' (444894) panicked at tests/compaction_tests.rs:344:10:
+    Failed to compact: InvalidOperation("compact is not valid under the lock-free overlay write mode (it rebuilds from the owned tree and atomically replaces the file, clobbering the durable overlay/WAL with a counters-lost image); use OverlayWriteMode::OwnedTree")
+    stack backtrace:
+       0: __rustc::rust_begin_unwind
+=====TEST=====
+    thread 'test_compact_cleans_up_stale_temp_file' (444880) panicked at tests/compaction_tests.rs:483:10:
+    Failed to compact: InvalidOperation("compact is not valid under the lock-free overlay write mode (it rebuilds from the owned tree and atomically replaces the file, clobbering the durable overlay/WAL with a counters-lost image); use OverlayWriteMode::OwnedTree")
+    stack backtrace:
+       0: __rustc::rust_begin_unwind
+=====TEST=====
+    thread 'test_compact_after_modifications' (444870) panicked at tests/compaction_tests.rs:134:10:
+    Failed to compact: InvalidOperation("compact is not valid under the lock-free overlay write mode (it rebuilds from the owned tree and atomically replaces the file, clobbering the durable overlay/WAL with a counters-lost image); use OverlayWriteMode::OwnedTree")
+    stack backtrace:
+       0: __rustc::rust_begin_unwind
+=====TEST=====
+    thread 'test_compact_stats_accuracy' (444892) panicked at tests/compaction_tests.rs:439:10:
+    Failed to compact: InvalidOperation("compact is not valid under the lock-free overlay write mode (it rebuilds from the owned tree and atomically replaces the file, clobbering the durable overlay/WAL with a counters-lost image); use OverlayWriteMode::OwnedTree")
+    stack backtrace:
+       0: __rustc::rust_begin_unwind
+=====TEST=====
+    thread 'char_corruption_rebuild_replays_archived_checkpoint_and_active_tail' (444869) panicked at tests/checkpoint_retention_correspondence.rs:96:5:
+    assertion `left == right` failed
+      left: None
+     right: Some(1)
+=====TEST=====
+    thread 'public_mutations_record_epoch_wal_bytes_without_manual_calls' (445080) panicked at tests/epoch_checkpoint_recovery_correspondence.rs:57:5:
+    assertion `left == right` failed: public WAL-backed mutations should advance epoch accounting
+      left: 6
+     right: 3
+=====TEST=====
+    thread 'char_descriptor_publication_before_wal_truncation_reopens_with_wal_tail' (445017) panicked at tests/dirty_checkpoint_correspondence.rs:458:5:
+    assertion `left == right` failed
+      left: None
+     right: Some(10)
+=====TEST=====
+    thread 'resident_walk_equals_reopened_walk' (445011) panicked at tests/dictionary_node_reopen_traversal_correspondence.rs:142:5:
+    assertion `left == right` failed
+      left: {}
+     right: {"alpha": 1, "alpine": 2, "beta": 3}
+=====TEST=====
+    thread 'walk_after_reopen_matches_inserted_utf8_values' (445018) panicked at tests/dictionary_node_reopen_traversal_correspondence.rs:84:5:
+    root edges empty after reopen — swizzle-fault regression
+    stack backtrace:
+       0: __rustc::rust_begin_unwind
+=====TEST=====
+    thread 'corrupt_epoch_metadata_fails_closed_while_trie_checkpoint_recovers' (445079) panicked at tests/epoch_checkpoint_recovery_correspondence.rs:125:5:
+    assertion `left == right` failed
+      left: None
+     right: Some(7)
+=====TEST=====
+    thread 'test_durability_policy_none_for_testing' (445212) panicked at tests/persistent_artrie_acid_tests.rs:104:42:
+    Failed to commit: InvalidOperation("upsert_cas_durable requires Immediate or GroupCommit durability so an acknowledged write is guaranteed durable before it becomes visible")
+    stack backtrace:
+       0: __rustc::rust_begin_unwind
+=====TEST=====
+    thread 'e1_inert_for_ineligible_v' (445242) panicked at tests/persistent_artrie_char_e1_readflip_correspondence.rs:221:5:
+    an ineligible V (String) must NOT create-flip — reads stay on the owned path
+    stack backtrace:
+       0: __rustc::rust_begin_unwind
+=====TEST=====
+    thread 'persistent_artrie_char::tests::dictionary_node_traversal_descends_after_forced_eviction' (443002) panicked at src/persistent_artrie_char/mod.rs:2309:9:
+    root edges empty after eviction — re-fault regression
+    stack backtrace:
+       0: __rustc::rust_begin_unwind
+=====TEST=====
+    thread 'phase_22_merge_operations::test_char_trie_merge_from_all_overlapping' (446200) panicked at tests/persistent_artrie_recovery_tests.rs:2260:9:
+    assertion `left == right` failed: apple should be 10 + 5 = 15
+      left: None
+     right: Some(15)
+=====TEST=====
+    thread 'phase_22_merge_operations::test_char_trie_merge_from_all_new' (446202) panicked at tests/persistent_artrie_recovery_tests.rs:2231:9:
+    assertion `left == right` failed
+      left: None
+     right: Some(1)
+=====TEST=====
+    thread 'phase_22_merge_operations::test_char_trie_merge_from_empty_source' (446225) panicked at tests/persistent_artrie_recovery_tests.rs:2288:9:
+    assertion `left == right` failed: apple should remain 5
+      left: None
+     right: Some(5)
+=====TEST=====
+    thread 'phase_22_merge_operations::test_char_trie_merge_from_basic' (446221) panicked at tests/persistent_artrie_recovery_tests.rs:2199:9:
+    assertion `left == right` failed: apple should be 5 + 7 = 12
+      left: None
+     right: Some(12)
+=====TEST=====
+    thread 'phase_22_merge_operations::test_char_trie_merge_from_unicode' (446251) panicked at tests/persistent_artrie_recovery_tests.rs:2342:9:
+    assertion `left == right` failed: 日本語 should be 10 + 5 = 15
+      left: None
+     right: Some(15)
+=====TEST=====
+    thread 'phase_22_merge_operations::test_char_trie_merge_replace' (446258) panicked at tests/persistent_artrie_recovery_tests.rs:2311:9:
+    assertion `left == right` failed: apple should be replaced with 999
+      left: None
+     right: Some(999)
+=====TEST=====
+    thread 'phase_22_merge_operations::test_char_trie_merge_with_persistence' (446273) panicked at tests/persistent_artrie_recovery_tests.rs:2384:13:
+    assertion `left == right` failed: Merged apple should persist
+      left: None
+     right: Some(12)
+=====TEST=====
+    thread 'test_mixed_value_recovery' (446481) panicked at tests/persistent_artrie_recovery_tests.rs:593:9:
+    assertion failed: dict.contains("no_value_1")
+    stack backtrace:
+       0: __rustc::rust_begin_unwind
+=====TEST=====
+    thread 'phase_22_merge_operations::test_parallel_merge_with_overlaps' (446329) panicked at tests/persistent_artrie_recovery_tests.rs:2712:13:
+    assertion `left == right` failed: common n-gram 'common_ngram_0' should have count 4
+      left: None
+     right: Some(4)
+=====TEST=====
+    thread 'char_remove_prefix_batched_replays_every_durable_wal_prefix' (446686) panicked at tests/persistent_bulk_mutation_correspondence.rs:204:22:
+    unexpected bulk-delete WAL record after baseline: CommitRank { data_lsn: 24, term: [97, 112, 112], generation: 12 }
+    stack backtrace:
+       0: __rustc::rust_begin_unwind
+=====TEST=====
+    thread 'byte_and_char_checked_increment_overflow_preserves_wal_and_memory' (446679) panicked at tests/persistent_bulk_mutation_correspondence.rs:393:5:
+    assertion `left == right` failed
+      left: None
+     right: Some(9223372036854775807)
+=====TEST=====
+    thread 'char_remove_prefix_batched_survives_reopen_without_checkpoint_for_batch_sizes' (446688) panicked at tests/persistent_bulk_mutation_correspondence.rs:72:9:
+    assertion `left == right` failed: value for ""
+      left: None
+     right: Some(0)
+=====TEST=====
+    thread 'char_remove_prefix_lazy_collection_error_preserves_wal_and_unaffected_terms' (446722) panicked at tests/persistent_bulk_mutation_correspondence.rs:339:65:
+    lazy reopen char trie: InvalidMagic { expected: 4411969, found: 0 }
+    stack backtrace:
+       0: __rustc::rust_begin_unwind
+=====TEST=====
+    thread '<unnamed>' (446805) panicked at tests/persistent_char_ebr_correspondence.rs:104:17:
+    assertion `left == right` failed: a walk did not reach the full snapshot under concurrent eviction
+      left: {}
+     right: {"term00a": 0, "term01bb": 1, "term02ccc": 2, "term03café": 3, "term04日本": 4, "term05x😀": 5, "term06a": 6, "term07bb": 7, "term08ccc": 8, "term09café": 9, "term10日本": 10, "term11x😀": 11, "term12a": 12, "term13bb": 13, "term14ccc": 14, "term15café": 15, "term16日本": 16, "term17x😀": 17, "term18a": 18, "term19bb": 19, "term20ccc": 20, "term21café": 21, "term22日本": 22, "term23x😀": 23, "term24a": 24, "term25bb": 25, "term26ccc": 26, "term27café": 27, "term28日本": 28, "term29x😀": 29, "term30a": 30, "term31bb": 31, "term32ccc": 32, "term33café": 33, "term34日本": 34, "term35x😀": 35, "term36a": 36, "term37bb": 37, "term38ccc": 38, "term39café": 39, "term40日本": 40, "term41x😀": 41, "term42a": 42, "term43bb": 43, "term44ccc": 44, "term45café": 45, "term46日本": 46, "term47x😀": 47}
+=====TEST=====
+    thread '<unnamed>' (446804) panicked at tests/persistent_char_ebr_correspondence.rs:104:17:
+    assertion `left == right` failed: a walk did not reach the full snapshot under concurrent eviction
+      left: {}
+     right: {"term00a": 0, "term01bb": 1, "term02ccc": 2, "term03café": 3, "term04日本": 4, "term05x😀": 5, "term06a": 6, "term07bb": 7, "term08ccc": 8, "term09café": 9, "term10日本": 10, "term11x😀": 11, "term12a": 12, "term13bb": 13, "term14ccc": 14, "term15café": 15, "term16日本": 16, "term17x😀": 17, "term18a": 18, "term19bb": 19, "term20ccc": 20, "term21café": 21, "term22日本": 22, "term23x😀": 23, "term24a": 24, "term25bb": 25, "term26ccc": 26, "term27café": 27, "term28日本": 28, "term29x😀": 29, "term30a": 30, "term31bb": 31, "term32ccc": 32, "term33café": 33, "term34日本": 34, "term35x😀": 35, "term36a": 36, "term37bb": 37, "term38ccc": 38, "term39café": 39, "term40日本": 40, "term41x😀": 41, "term42a": 42, "term43bb": 43, "term44ccc": 44, "term45café": 45, "term46日本": 46, "term47x😀": 47}
+=====TEST=====
+    thread '<unnamed>' (446806) panicked at tests/persistent_char_ebr_correspondence.rs:104:17:
+    assertion `left == right` failed: a walk did not reach the full snapshot under concurrent eviction
+      left: {}
+     right: {"term00a": 0, "term01bb": 1, "term02ccc": 2, "term03café": 3, "term04日本": 4, "term05x😀": 5, "term06a": 6, "term07bb": 7, "term08ccc": 8, "term09café": 9, "term10日本": 10, "term11x😀": 11, "term12a": 12, "term13bb": 13, "term14ccc": 14, "term15café": 15, "term16日本": 16, "term17x😀": 17, "term18a": 18, "term19bb": 19, "term20ccc": 20, "term21café": 21, "term22日本": 22, "term23x😀": 23, "term24a": 24, "term25bb": 25, "term26ccc": 26, "term27café": 27, "term28日本": 28, "term29x😀": 29, "term30a": 30, "term31bb": 31, "term32ccc": 32, "term33café": 33, "term34日本": 34, "term35x😀": 35, "term36a": 36, "term37bb": 37, "term38ccc": 38, "term39café": 39, "term40日本": 40, "term41x😀": 41, "term42a": 42, "term43bb": 43, "term44ccc": 44, "term45café": 45, "term46日本": 46, "term47x😀": 47}
+=====TEST=====
+    thread '<unnamed>' (446803) panicked at tests/persistent_char_ebr_correspondence.rs:104:17:
+    assertion `left == right` failed: a walk did not reach the full snapshot under concurrent eviction
+      left: {}
+     right: {"term00a": 0, "term01bb": 1, "term02ccc": 2, "term03café": 3, "term04日本": 4, "term05x😀": 5, "term06a": 6, "term07bb": 7, "term08ccc": 8, "term09café": 9, "term10日本": 10, "term11x😀": 11, "term12a": 12, "term13bb": 13, "term14ccc": 14, "term15café": 15, "term16日本": 16, "term17x😀": 17, "term18a": 18, "term19bb": 19, "term20ccc": 20, "term21café": 21, "term22日本": 22, "term23x😀": 23, "term24a": 24, "term25bb": 25, "term26ccc": 26, "term27café": 27, "term28日本": 28, "term29x😀": 29, "term30a": 30, "term31bb": 31, "term32ccc": 32, "term33café": 33, "term34日本": 34, "term35x😀": 35, "term36a": 36, "term37bb": 37, "term38ccc": 38, "term39café": 39, "term40日本": 40, "term41x😀": 41, "term42a": 42, "term43bb": 43, "term44ccc": 44, "term45café": 45, "term46日本": 46, "term47x😀": 47}
+=====TEST=====
+    thread 'walk_concurrent_with_eviction_is_safe_and_complete' (446749) panicked at tests/persistent_char_ebr_correspondence.rs:130:23:
+    reader thread: Any { .. }
+    stack backtrace:
+       0: __rustc::rust_begin_unwind
+=====TEST=====
+    thread 'empty_trie_checkpoint_registers_nothing' (446751) panicked at tests/persistent_char_eviction_correspondence.rs:219:5:
+    assertion `left == right` failed
+      left: Some(1)
+     right: Some(0)
+=====TEST=====
+    thread 'force_eviction_char_reclaims_and_key_reloads' (446787) panicked at tests/persistent_char_eviction_correspondence.rs:109:5:
+    assertion `left == right` failed
+      left: [None, None, None, None, None]
+     right: [Some(1), Some(2), Some(3), Some(4), None]
+=====TEST=====
+    thread 'reopen_identical_with_and_without_eviction' (446825) panicked at tests/persistent_char_eviction_correspondence.rs:246:9:
+    assertion failed: shared.force_eviction(1 << 20).expect("force").0 >= 1
+    stack backtrace:
+       0: __rustc::rust_begin_unwind
+=====TEST=====
+    thread 'post_checkpoint_write_invalidates_registry' (446827) panicked at tests/persistent_char_eviction_correspondence.rs:163:5:
+    fresh registry should yield evictions
+    stack backtrace:
+       0: __rustc::rust_begin_unwind
+=====TEST=====
+    thread 'value_at_reloads_after_eviction' (446832) panicked at tests/persistent_char_eviction_correspondence.rs:322:5:
+    expected at least one node evicted
+    stack backtrace:
+       0: __rustc::rust_begin_unwind
+=====TEST=====
+    thread 'value_survives_eviction_via_get' (446861) panicked at tests/persistent_char_eviction_correspondence.rs:366:5:
+    assertion failed: shared.force_eviction(1 << 20).expect("force").0 >= 1
+    stack backtrace:
+       0: __rustc::rust_begin_unwind
+=====TEST=====
+    thread 'compaction_rejects_wal_sidecar_collision_without_losing_recovery_wal' (446982) panicked at tests/persistent_compaction_correspondence.rs:90:9:
+    unexpected error: Invalid operation: compact is not valid under the lock-free overlay write mode (it rebuilds from the owned tree and atomically replaces the file, clobbering the durable overlay/WAL with a counters-lost image); use OverlayWriteMode::OwnedTree
+    stack backtrace:
+       0: __rustc::rust_begin_unwind
+=====TEST=====
+    thread 'in_place_compaction_preserves_unsynced_wal_values_after_reopen' (447009) panicked at tests/persistent_compaction_correspondence.rs:58:14:
+    compact unsynced values: InvalidOperation("compact is not valid under the lock-free overlay write mode (it rebuilds from the owned tree and atomically replaces the file, clobbering the durable overlay/WAL with a counters-lost image); use OverlayWriteMode::OwnedTree")
+    stack backtrace:
+       0: __rustc::rust_begin_unwind
+=====TEST=====
+    thread 'evicted_entries_reference_durable_data' (446911) panicked at tests/persistent_char_eviction_registry_correspondence.rs:87:9:
+    expected real reclamation, got 0
+    stack backtrace:
+       0: __rustc::rust_begin_unwind
+=====TEST=====
+    thread 'recovery_independent_of_registry' (446916) panicked at tests/persistent_char_eviction_registry_correspondence.rs:145:9:
+    assertion failed: shared.force_eviction(1 << 20).expect("force").0 >= 1
+    stack backtrace:
+       0: __rustc::rust_begin_unwind
+=====TEST=====
+    thread 'registry_empty_until_verified_checkpoint' (446925) panicked at tests/persistent_char_eviction_registry_correspondence.rs:66:5:
+    assertion failed: shared.force_eviction(1 << 20).expect("force").0 >= 1
+    stack backtrace:
+       0: __rustc::rust_begin_unwind
+=====TEST=====
+    thread 'non_utf8_byte_keys_survive_compaction' (447026) panicked at tests/persistent_compaction_correspondence.rs:149:14:
+    compact byte-key trie: InvalidOperation("compact is not valid under the lock-free overlay write mode (it rebuilds from the owned tree and atomically replaces the file, clobbering the durable overlay/WAL with a counters-lost image); use OverlayWriteMode::OwnedTree")
+    stack backtrace:
+       0: __rustc::rust_begin_unwind
+=====TEST=====
+    thread 'write_invalidates_published_registry' (446931) panicked at tests/persistent_char_eviction_registry_correspondence.rs:114:5:
+    assertion failed: shared.force_eviction(1 << 20).expect("force").0 >= 1
+    stack backtrace:
+       0: __rustc::rust_begin_unwind
+=====TEST=====
+    thread 'output_file_compaction_preserves_key_value_snapshot' (447050) panicked at tests/persistent_compaction_correspondence.rs:211:10:
+    compact to output file: InvalidOperation("compact is not valid under the lock-free overlay write mode (it rebuilds from the owned tree and atomically replaces the file, clobbering the durable overlay/WAL with a counters-lost image); use OverlayWriteMode::OwnedTree")
+    stack backtrace:
+       0: __rustc::rust_begin_unwind
+=====TEST=====
+    thread 'successful_in_place_compaction_does_not_replay_stale_original_wal' (447069) panicked at tests/persistent_compaction_correspondence.rs:175:14:
+    compact with stale WAL history: InvalidOperation("compact is not valid under the lock-free overlay write mode (it rebuilds from the owned tree and atomically replaces the file, clobbering the durable overlay/WAL with a counters-lost image); use OverlayWriteMode::OwnedTree")
+    stack backtrace:
+       0: __rustc::rust_begin_unwind
+=====TEST=====
+    thread 'char_trace_survives_checkpoint_and_wal_tail_reopen' (447077) panicked at tests/persistent_end_to_end_trace_correspondence.rs:142:9:
+    assertion `left == right` failed: char trie value mismatch for "café"
+      left: None
+     right: Some(7)
+=====TEST=====
+    thread 'char_lazy_duplicate_insert_is_noop_without_wal_append' (447086) panicked at tests/persistent_lazy_mutation_correspondence.rs:63:5:
+    assertion `left == right` failed: char value for alpha
+      left: None
+     right: Some(1)
+=====TEST=====
+    thread 'char_lazy_insert_error_returns_err_before_wal_append' (447087) panicked at tests/persistent_lazy_mutation_correspondence.rs:142:65:
+    lazy reopen char trie: InvalidMagic { expected: 4411969, found: 0 }
+    stack backtrace:
+       0: __rustc::rust_begin_unwind
+=====TEST=====
+    thread 'char_lazy_value_insert_and_remove_errors_do_not_append_wal' (447097) panicked at tests/persistent_lazy_mutation_correspondence.rs:174:65:
+    lazy reopen char trie: InvalidMagic { expected: 4411969, found: 0 }
+    stack backtrace:
+       0: __rustc::rust_begin_unwind
+=====TEST=====
+    thread 'char_successful_lazy_mutations_replay_after_reopen' (447104) panicked at tests/persistent_lazy_mutation_correspondence.rs:63:5:
+    assertion `left == right` failed: char value for alpha
+      left: None
+     right: Some(11)
+=====TEST=====
+    thread 'disk_backed_prefix_semantics_survive_sync_reopen_and_deletion' (447344) panicked at tests/persistent_prefix_correspondence.rs:126:9:
+    assertion `left == right` failed: value for ""
+      left: None
+     right: Some(0)
+=====TEST=====
+    thread 'char_public_open_replays_unicode_checkpoint_plus_synced_tail' (447442) panicked at tests/persistent_public_lifecycle_correspondence.rs:75:5:
+    assertion `left == right` failed
+      left: None
+     right: Some(7)
+=====TEST=====
+    thread 'char_failed_wal_archive_after_rewrite_keeps_dirty_until_retry' (447513) panicked at tests/persistent_rewrite_compaction_correspondence.rs:126:10:
+    checkpoint must fail while archive dir is blocked: ()
+    stack backtrace:
+       0: __rustc::rust_begin_unwind
+=====TEST=====
+    thread 'char_persist_to_disk_alone_does_not_clear_checkpoint_dirty_state' (447518) panicked at tests/persistent_rewrite_compaction_correspondence.rs:97:5:
+    mutation should mark trie dirty
+    stack backtrace:
+       0: __rustc::rust_begin_unwind
+=====TEST=====
+    thread 'char_lazy_traversal_failure_is_error_and_does_not_append_wal' (447496) panicked at tests/persistent_read_snapshot_correspondence.rs:325:61:
+    lazy reopen char trie: InvalidMagic { expected: 4411969, found: 0 }
+    stack backtrace:
+       0: __rustc::rust_begin_unwind
+=====TEST=====
+    thread 'char_checkpoint_rewrite_keeps_post_checkpoint_wal_tail_replayable' (447512) panicked at tests/persistent_rewrite_compaction_correspondence.rs:32:5:
+    assertion `left == right` failed: unexpected char value for "checkpointed"
+      left: None
+     right: Some(10)
+=====TEST=====
+    thread 'char_rewrite_checkpoint_preserves_unicode_values_lazy_and_eager_reopen' (447526) panicked at tests/persistent_rewrite_compaction_correspondence.rs:32:5:
+    assertion `left == right` failed: unexpected char value for "alpha"
+      left: None
+     right: Some(1)
+=====TEST=====
+    thread 'nonblocking_checkpoint_preserves_data_under_concurrent_reads_writes' (447328) panicked at tests/persistent_nonblocking_checkpoint_correspondence.rs:144:13:
+    assertion `left == right` failed: write lost after reopen (round 0, i 0)
+      left: None
+     right: Some(1000)
+=====TEST=====
+    thread 'char_shared_checkpoint_racing_insert_reopens' (447584) panicked at tests/persistent_shared_concurrency_correspondence.rs:110:9:
+    assertion `left == right` failed
+      left: None
+     right: Some(20000)
+=====TEST=====
+    thread 'char_archive_recovery_stops_before_overflowed_batch_increment_suffix' (447635) panicked at tests/persistent_transaction_increment_correspondence.rs:204:5:
+    assertion `left == right` failed
+      left: None
+     right: Some(9223372036854775807)
+=====TEST=====
+    thread 'char_tx_increment_current_overflow_fails_before_batch_wal' (447656) panicked at tests/persistent_transaction_increment_correspondence.rs:105:5:
+    unexpected error: Invalid operation: overlay document-tx increments require a counter value type (u64); use OverlayWriteMode::OwnedTree
+    stack backtrace:
+       0: __rustc::rust_begin_unwind
+=====TEST=====
+    thread 'char_atomic_serialization_failures_preserve_memory_and_wal' (447879) panicked at tests/persistent_wal_atomicity_correspondence.rs:236:5:
+    assertion `left == right` failed
+      left: None
+     right: Some(1)
+=====TEST=====
+    thread 'char_atomic_writes_replay_after_reopen' (447890) panicked at tests/persistent_wal_atomicity_correspondence.rs:277:5:
+    assertion `left == right` failed
+      left: None
+     right: Some(20)
+=====TEST=====
+    thread 'char_archive_recovery_stops_at_first_corrupt_record' (448316) panicked at tests/recovery_replay_completeness_correspondence.rs:323:5:
+    assertion `left == right` failed
+      left: None
+     right: Some(1)
+=====TEST=====
+    thread 'char_archive_recovery_replays_every_mutating_variant_without_relogging' (448307) panicked at tests/recovery_replay_completeness_correspondence.rs:278:5:
+    assertion `left == right` failed
+      left: None
+     right: Some(1)
+=====TEST=====
+    thread 'byte_corruption_rebuild_uses_only_durable_wal_prefix' (448292) panicked at tests/recovery_planner_correspondence.rs:176:5:
+    assertion `left == right` failed
+      left: None
+     right: Some(1)
+=====TEST=====
+    thread 'char_corruption_rebuild_uses_only_durable_wal_prefix' (448296) panicked at tests/recovery_planner_correspondence.rs:202:5:
+    assertion `left == right` failed
+      left: None
+     right: Some(1)
+=====TEST=====
+    thread 'char_descriptor_reopen_roundtrip_preserves_reference_map_across_depths' (448347) panicked at tests/root_descriptor_reopen_correspondence.rs:93:5:
+    assertion `left == right` failed: char value for alpha
+      left: None
+     right: Some(1)
+=====TEST=====
+    thread 'char_lazy_load_errors_are_result_errors_and_public_reads_fail_closed' (448359) panicked at tests/root_descriptor_reopen_correspondence.rs:321:61:
+    lazy reopen char trie: InvalidMagic { expected: 4411969, found: 0 }
+    stack backtrace:
+       0: __rustc::rust_begin_unwind
+=====TEST=====
+    thread 'walk_after_reopen_equals_snapshot' (445008) panicked at tests/dictionary_node_reopen_traversal_correspondence.rs:147:1:
+    Test failed: assertion failed: `(left == right)` 
+      left: `{}`,
+     right: `{"日": 0}` at tests/dictionary_node_reopen_traversal_correspondence.rs:178.
+=====TEST=====
+    thread 'persistent_artrie_char::eviction_registry_tests::async_request_eviction_reclaims_registered_nodes' (442455) panicked at src/persistent_artrie_char/eviction_registry_tests.rs:168:9:
+    async eviction did not reclaim any node within the timeout
+    stack backtrace:
+       0: __rustc::rust_begin_unwind
+=====TEST=====
+    thread 'prop_reclaim_is_lossless' (446896) panicked at tests/persistent_char_eviction_proptest.rs:65:1:
+    Test failed: assertion failed: `(left == right)` 
+      left: `None`, 
+     right: `Some(0)`: lost key "a" after eviction at tests/persistent_char_eviction_proptest.rs:83.
+=====TEST=====
+    thread 'prop_post_checkpoint_write_invalidates' (446872) panicked at tests/persistent_char_eviction_proptest.rs:65:1:
+    Test failed: assertion failed: `(left == right)` 
+      left: `None`,
+     right: `Some(12345)` at tests/persistent_char_eviction_proptest.rs:118.
+=====TEST=====
+    thread 'prop_eviction_preserves_recovery' (446866) panicked at tests/persistent_char_eviction_proptest.rs:65:1:
+    Test failed: assertion failed: `(left == right)` 
+      left: `None`, 
+     right: `Some(0)`: recovery lost "a" at tests/persistent_char_eviction_proptest.rs:144.

@@ -1419,7 +1419,11 @@ mod s5_12_flip_ctor_gate {
                 "create<()> WAL header must be stamped MAGIC_OVERLAY"
             );
         }
-        // V = String (arbitrary): NO flip, standard MAGIC, owned path still works.
+        // V = String (arbitrary).
+        // F2-migrate: Bucket D (cfg-split). WITHOUT `overlay-arbitrary-v`: NO flip,
+        // standard MAGIC, owned path works. WITH the feature: String is eligible, so
+        // create-flips + stamps MAGIC_OVERLAY and the overlay value path works.
+        #[cfg(not(feature = "overlay-arbitrary-v"))]
         {
             let dir = scratch("s5-12-create-string");
             let path = dir.path().join("t.artc");
@@ -1439,6 +1443,28 @@ mod s5_12_flip_ctor_gate {
                 MappedDictionary::get_value(&trie, "hello"),
                 Some("world".to_string()),
                 "owned insert_with_value must work for arbitrary V after the no-op flip"
+            );
+        }
+        #[cfg(feature = "overlay-arbitrary-v")]
+        {
+            let dir = scratch("s5-12-create-string");
+            let path = dir.path().join("t.artc");
+            let mut trie = PersistentARTrieChar::<String>::create(&path).expect("create<String>");
+            assert!(
+                trie.route_overlay(),
+                "with overlay-arbitrary-v, create<String> flips to the overlay"
+            );
+            assert_eq!(
+                wal_header(&path).magic,
+                WalHeader::MAGIC_OVERLAY,
+                "create<String> WAL header is stamped MAGIC_OVERLAY when arbitrary V is eligible"
+            );
+            // The overlay value path works for arbitrary V.
+            trie.insert_with_value("hello", "world".to_string()).expect("overlay insert");
+            assert_eq!(
+                MappedDictionary::get_value(&trie, "hello"),
+                Some("world".to_string()),
+                "overlay insert_with_value must work for arbitrary V"
             );
         }
     }
@@ -1520,6 +1546,11 @@ mod s5_12_flip_ctor_gate {
     /// checkpointed produces an OWNED-regime file. Reopening it (EDIT 2) must keep it
     /// Owned: `route_overlay()==false`, data intact via the OWNED read path, header
     /// still standard `MAGIC`. (Backward-compat: an Owned file never silently flips.)
+    /// F2-migrate: Bucket D (cfg-split). WITHOUT `overlay-arbitrary-v`, `String` is
+    /// ineligible so `create` yields an Owned-regime file directly. WITH the feature
+    /// `String` create-flips, so kill-switch it to the Owned regime to still exercise
+    /// the back-compat "an Owned-regime file stays owned on reopen" path. Either way the
+    /// reopened trie is owned-regime and the owned data survives.
     #[test]
     fn s5_12_old_owned_file_stays_owned_on_reopen() {
         let dir = scratch("s5-12-owned-stays");
@@ -1529,7 +1560,11 @@ mod s5_12_flip_ctor_gate {
             .collect();
         {
             let mut trie = PersistentARTrieChar::<String>::create(&path).expect("create<String>");
+            #[cfg(not(feature = "overlay-arbitrary-v"))]
             assert!(!trie.route_overlay(), "String trie must not flip on create");
+            #[cfg(feature = "overlay-arbitrary-v")]
+            trie.kill_switch_to_owned();
+            assert!(!trie.route_overlay(), "String trie is on the owned path");
             for (k, v) in &entries {
                 trie.insert_with_value(k, v.clone());
             }

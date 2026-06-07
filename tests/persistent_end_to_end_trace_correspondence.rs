@@ -138,14 +138,16 @@ fn char_trace_survives_checkpoint_and_wal_tail_reopen() {
     }
 
     let reopened = PersistentARTrieChar::<i64>::open(&path).expect("reopen char trie");
+    // F2-migrate: Bucket A — `get()` returns None under the overlay; the checkpointed +
+    // WAL-tail trace survives a normal reopen and reads via `get_value`.
     for (term, value) in &expected {
         assert_eq!(
-            reopened.get(term).copied(),
+            reopened.get_value(term),
             Some(*value),
             "char trie value mismatch for {term:?}"
         );
     }
-    assert_eq!(reopened.get("東京").copied(), None);
+    assert_eq!(reopened.get_value("東京"), None);
     assert_eq!(reopened.len(), expected.len());
 }
 

@@ -275,10 +275,13 @@ fn char_archive_recovery_replays_every_mutating_variant_without_relogging() {
             .expect("recover char trie from archives");
 
     assert_eq!(stats.records_replayed, 4);
-    assert_eq!(recovered.get("alpha").copied(), Some(1));
+    // F2-migrate: Bucket A — the archive holds OWNED-format records (BatchInsert/Remove/
+    // BatchIncrement/CompareAndSwap); the recovered trie create-flips on rebuild, so read
+    // the recovered values via `get_value` (the overlay returns None from `get`).
+    assert_eq!(recovered.get_value("alpha"), Some(1));
     assert!(!recovered.contains("remove-me"));
-    assert_eq!(recovered.get("counter").copied(), Some(5));
-    assert_eq!(recovered.get("cas").copied(), Some(8));
+    assert_eq!(recovered.get_value("counter"), Some(5));
+    assert_eq!(recovered.get_value("cas"), Some(8));
 
     let active_records =
         libdictenstein::persistent_artrie::WalReader::new(path.with_extension("wal"))
@@ -320,7 +323,9 @@ fn char_archive_recovery_stops_at_first_corrupt_record() {
             .expect("recover durable archive prefix");
 
     assert_eq!(stats.records_replayed, 1);
-    assert_eq!(recovered.get("before").copied(), Some(1));
+    // F2-migrate: Bucket A — the recovered char trie create-flips on rebuild; read via
+    // `get_value` (the overlay returns None from `get`).
+    assert_eq!(recovered.get_value("before"), Some(1));
     assert!(!recovered.contains("corrupt"));
     assert!(!recovered.contains("after"));
 }

@@ -123,7 +123,8 @@ fn assert_full_map(trie: &PersistentARTrieChar<i32>, reference: &BTreeMap<String
 
     for (term, value) in reference {
         assert!(trie.contains(term), "missing term {term:?}");
-        assert_eq!(trie.get(term).copied(), Some(*value), "value for {term:?}");
+        // F2-migrate: Bucket A — `get()` returns None under the overlay; read via `get_value`.
+        assert_eq!(trie.get_value(term), Some(*value), "value for {term:?}");
     }
 }
 

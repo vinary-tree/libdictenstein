@@ -415,10 +415,16 @@ fn m3_routed_writes_round_trip_and_survive_reopen() {
     assert_eq!(reopened.get_value_bytes(b"epsilon"), None, "epsilon removed");
 }
 
-/// **The reject guards fire under the overlay** → `InvalidOperation` — EXCEPT
-/// `compare_and_swap`, which Flip F0/G5 (NH2) now SUPPORTS under the overlay via the
-/// generic overlay value-CAS. The merge / compact / doc-tx guards still fire (they
-/// are the F2 carve-outs, unchanged in F0).
+/// **The reject guards under the overlay.** F0/G5 (NH2) supports `compare_and_swap`,
+/// and C2 now routes the trie-to-trie merges (`merge_from`/`merge_replace`/
+/// `merge_from_batched`/`merge_from_batched_grouped`) and `begin_document` through the
+/// overlay (they SUCCEED). The guards that STILL fire are the owned-tree drains
+/// (`merge_lockfree_to_persistent`/`merge_lockfree_values_to_persistent`) and `compact`
+/// (the file-replacer; overlay compaction is the pending F6 phase).
+///
+/// F2-migrate: Bucket D (UNCONDITIONAL — C2 made these succeed for the eligible byte
+/// counter `i64` regardless of the `overlay-arbitrary-v` feature, so the old reject
+/// assertions were stale in BOTH feature configs).
 #[test]
 fn m3_reject_guards_fire_under_overlay() {
     let dir = scratch("byte-m3-rejects");
@@ -451,26 +457,36 @@ fn m3_reject_guards_fire_under_overlay() {
         "failed CAS left seed unchanged"
     );
 
-    // merge_from / merge_replace / merge_from_batched (need an `other` trie)
-    let other = PersistentARTrie::<i64>::create(&other_path).expect("create other");
-    assert!(
-        is_invalid_op(trie.merge_from(&other, |a, _| *a)),
-        "merge_from must reject under overlay"
+    // F2-migrate: C2 routes the trie-to-trie merges through the overlay — they now
+    // SUCCEED (read self via the overlay seam, combine via merge_fn, publish). `other`
+    // holds `x=100`; `seed=2` (from the CAS above), no overlap, so each merge inserts x.
+    let mut other = PersistentARTrie::<i64>::create(&other_path).expect("create other");
+    other.flip_to_overlay();
+    other.increment_bytes(b"x", 100).expect("other seed");
+    assert_eq!(
+        trie.merge_from(&other, |a, _| *a).expect("merge_from succeeds under overlay (C2)"),
+        1,
+        "merge_from now processes the one other-only term under the overlay"
     );
-    assert!(
-        is_invalid_op(trie.merge_replace(&other)),
-        "merge_replace must reject under overlay"
+    assert_eq!(trie.get_value_bytes(b"x"), Some(100), "merge_from inserted x");
+    assert_eq!(
+        trie.merge_replace(&other).expect("merge_replace succeeds under overlay (C2)"),
+        1,
+        "merge_replace now processes the overlapping term under the overlay"
     );
-    assert!(
-        is_invalid_op(trie.merge_from_batched(&other, |a, _| *a, 100)),
-        "merge_from_batched must reject under overlay"
+    assert_eq!(
+        trie.merge_from_batched(&other, |a, _| *a, 100)
+            .expect("merge_from_batched succeeds under overlay (C2)"),
+        1
     );
-    assert!(
-        is_invalid_op(trie.merge_from_batched_grouped(&other, |a, _| *a, 100)),
-        "merge_from_batched_grouped must reject under overlay"
+    assert_eq!(
+        trie.merge_from_batched_grouped(&other, |a, _| *a, 100)
+            .expect("merge_from_batched_grouped succeeds under overlay (C2)"),
+        1
     );
 
-    // merge_lockfree_to_persistent / merge_lockfree_values_to_persistent
+    // The owned-tree DRAINS still reject under the overlay (draining the durable
+    // overlay into the owned tree would destroy durable state).
     assert!(
         is_invalid_op(trie.merge_lockfree_to_persistent()),
         "merge_lockfree_to_persistent must reject under overlay"
@@ -480,13 +496,16 @@ fn m3_reject_guards_fire_under_overlay() {
         "merge_lockfree_values_to_persistent must reject under overlay"
     );
 
-    // doc-tx: begin_document + commit_document
-    assert!(
-        is_invalid_op(trie.begin_document("doc")),
-        "begin_document must reject under overlay"
+    // doc-tx: C2 made begin_document succeed under the overlay (it skips the orphan
+    // BeginTx WAL append; commit_document is per-op durable).
+    let tx = trie.begin_document("doc").expect("begin_document succeeds under overlay (C2)");
+    assert_eq!(
+        trie.commit_document(tx).expect("empty commit"),
+        0,
+        "an empty doc-tx commits 0 ops under the overlay"
     );
 
-    // compact (file-replacer)
+    // compact (file-replacer) STILL rejects under the overlay (the pending F6 phase).
     let cfg = crate::persistent_artrie::CompactionConfig::default();
     assert!(
         is_invalid_op(trie.compact(cfg, |_| {})),

@@ -107,7 +107,8 @@ fn char_shared_checkpoint_racing_insert_reopens() {
 
         drop(trie);
         let reopened = PersistentARTrieChar::<i64>::open(&path).expect("reopen char trie");
-        assert_eq!(reopened.get(&racing_term).copied(), Some(racing_value));
+        // F2-migrate: Bucket A — `get()` returns None under the overlay; read via `get_value`.
+        assert_eq!(reopened.get_value(&racing_term), Some(racing_value));
     }
 }
 

@@ -69,6 +69,13 @@ fn assert_char_value(dict: &PersistentARTrieChar<i32>, term: &str, value: i32) {
 
 fn build_checkpointed_char_trie(path: &Path) {
     let mut trie = PersistentARTrieChar::<i32>::create(path).expect("create char trie");
+    // F2-migrate: Bucket B — this whole suite exercises the OWNED-tree lazy-load path
+    // (`corrupt_first_lazy_char_child` navigates the on-disk owned arena; the reopen must
+    // lazily fault owned children + surface their corruption). Under the lock-free
+    // overlay the owned tree is empty/unused, so pin the Owned regime (stamps an Owned
+    // WAL ⇒ every reopen stays owned, and `get`/`assert_char_value` read the owned tree).
+    // No-op feature-off (`i32` is ineligible and stays owned anyway).
+    trie.kill_switch_to_owned();
     trie.insert_with_value("alpha", 1).expect("insert alpha");
     trie.insert_with_value("alpine", 2).expect("insert alpine");
     trie.insert_with_value("beta", 3).expect("insert beta");

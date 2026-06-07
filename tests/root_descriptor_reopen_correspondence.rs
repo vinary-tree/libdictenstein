@@ -90,11 +90,11 @@ fn assert_byte_value(dict: &PersistentARTrie<i32>, term: &str, value: i32) {
 
 fn assert_char_value(dict: &PersistentARTrieChar<i32>, term: &str, value: i32) {
     assert!(dict.contains(term), "expected char term: {term}");
-    assert_eq!(
-        dict.get(term).copied(),
-        Some(value),
-        "char value for {term}"
-    );
+    // F2-migrate: Bucket A — `get()` lends no reference out of the lock-free overlay
+    // (returns None under `route_overlay()`); read the value via `get_value` (owned
+    // `Option<V>`, overlay-routed). In owned mode it falls through to the owned tree, so
+    // this is correct for both the overlay-routed and owned-pinned callers.
+    assert_eq!(dict.get_value(term), Some(value), "char value for {term}");
 }
 
 fn read_block(path: &Path, block_id: u32) -> Vec<u8> {
@@ -311,6 +311,11 @@ fn char_lazy_load_errors_are_result_errors_and_public_reads_fail_closed() {
 
     {
         let mut trie = PersistentARTrieChar::<i32>::create(&path).expect("create char trie");
+        // F2-migrate: Bucket B — `corrupt_first_lazy_char_child` corrupts an on-disk
+        // OWNED lazy child; the reopen must lazily fault owned children and surface the
+        // corruption as an error. Pin the Owned regime so the owned-tree layout exists on
+        // disk and the reopen stays owned. No-op feature-off.
+        trie.kill_switch_to_owned();
         trie.insert_with_value("alpha", 1).expect("insert alpha");
         trie.insert_with_value("alpine", 2).expect("insert alpine");
         trie.insert_with_value("beta", 3).expect("insert beta");

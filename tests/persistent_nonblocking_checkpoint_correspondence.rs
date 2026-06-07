@@ -141,8 +141,9 @@ fn nonblocking_checkpoint_preserves_data_under_concurrent_reads_writes() {
             );
         }
         for i in 0..WRITES {
+            // F2-migrate: Bucket A — `get()` returns None under the overlay; read via `get_value`.
             assert_eq!(
-                reopened.get(&format!("w-{round}-{i}")).copied(),
+                reopened.get_value(&format!("w-{round}-{i}")),
                 Some(1000 + i as i64),
                 "write lost after reopen (round {round}, i {i})"
             );

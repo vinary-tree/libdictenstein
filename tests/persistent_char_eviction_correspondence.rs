@@ -56,6 +56,11 @@ fn put(shared: &SharedCharARTrie<i32>, term: &str, value: i32) -> bool {
 /// many nodes sit at depth >= 1 (the default `min_eviction_depth`).
 fn deep_shared_trie(path: &Path) -> SharedCharARTrie<i32> {
     let shared: SharedCharARTrie<i32> = ARTrie::create(path).expect("create char trie");
+    // F2-migrate: Bucket B — these tests are white-box over the OWNED tree (eviction
+    // registry / `force_eviction` / faulting node-walk). Under the lock-free overlay the
+    // owned tree is empty, so pin OwnedTree right after create (before any insert) to
+    // exercise the owned eviction path. Feature-off (`i32` ineligible) this is a no-op.
+    shared.write().kill_switch_to_owned();
     assert!(put(&shared, "alpha", 1));
     assert!(put(&shared, "alphabet", 2));
     assert!(put(&shared, "alpine", 3));
@@ -212,6 +217,9 @@ fn empty_trie_checkpoint_registers_nothing() {
     let dir = tempdir().expect("tempdir");
     let path = dir.path().join("empty.trie");
     let shared: SharedCharARTrie<i32> = ARTrie::create(&path).expect("create");
+    // F2-migrate: Bucket B — owned-rep eviction registry; pin OwnedTree (the overlay
+    // root would otherwise register a node even for an empty trie). No-op feature-off.
+    shared.write().kill_switch_to_owned();
     shared
         .enable_eviction(EvictionConfig::without_memory_monitor())
         .expect("enable");

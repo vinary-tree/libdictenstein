@@ -68,8 +68,15 @@ fn walk_concurrent_with_eviction_is_safe_and_complete() {
     let path = dir.path().join("ebr_concurrent.artc");
 
     // Build + checkpoint + DROP so the on-disk image is the source of truth.
+    // F2-migrate: Bucket B — the reader threads walk the OWNED `DictionaryNode` graph
+    // (`collect_walk(&shared.root())`), which faults swizzled OWNED children back in.
+    // Under the lock-free overlay the owned tree is cleared on reopen (the walk would
+    // see an empty subtree), so pin the source to the Owned regime (stamps an Owned WAL
+    // ⇒ the reopen stays owned and the on-disk owned image is the walk's source of
+    // truth). Feature-off (`i32` ineligible) this is a no-op.
     {
         let mut trie = PersistentARTrieChar::<i32>::create(&path).expect("create");
+        trie.kill_switch_to_owned();
         for (term, value) in &fixture {
             trie.insert_with_value(term, *value).expect("insert");
         }

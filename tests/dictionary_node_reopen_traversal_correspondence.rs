@@ -70,6 +70,12 @@ fn walk_after_reopen_matches_inserted_utf8_values() {
     // Build + checkpoint + DROP so only the on-disk image remains.
     {
         let mut trie = PersistentARTrieChar::<i32>::create(&path).expect("create");
+        // F2-migrate: Bucket B — these tests walk the OWNED `DictionaryNode` graph
+        // (`walk_map` over `self.root`), faulting swizzled owned children. Under the
+        // lock-free overlay the owned tree is cleared on reopen (empty walk), so pin the
+        // source to the Owned regime so the on-disk owned image drives the walk. No-op
+        // feature-off (`i32` is ineligible and stays owned anyway).
+        trie.kill_switch_to_owned();
         for (term, value) in &fixture {
             trie.insert_with_value(term, *value).expect("insert");
         }
@@ -129,6 +135,10 @@ fn resident_walk_equals_reopened_walk() {
     let path = dir.path().join("resident_vs_reopen.artc");
 
     let mut resident = PersistentARTrieChar::<i32>::create(&path).expect("create");
+    // F2-migrate: Bucket B — owned `DictionaryNode` walk (resident + reopened). Pin the
+    // Owned regime so both the resident walk and the reopened (swizzled) walk read the
+    // owned tree. No-op feature-off.
+    resident.kill_switch_to_owned();
     for (term, value) in &fixture {
         resident.insert_with_value(term, *value).expect("insert");
     }
@@ -165,6 +175,10 @@ proptest! {
         let path = dir.path().join("prop_walk.artc");
         {
             let mut trie = PersistentARTrieChar::<i32>::create(&path).expect("create");
+            // F2-migrate: Bucket B — owned `DictionaryNode` walk after reopen. Pin the
+            // Owned regime so the on-disk owned image drives the faulting walk. No-op
+            // feature-off.
+            trie.kill_switch_to_owned();
             for (k, v) in &expected {
                 trie.insert_with_value(k, *v).expect("insert");
             }

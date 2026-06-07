@@ -29,8 +29,10 @@ fn vocab_wal_record_count(path: &Path) -> usize {
 }
 
 fn assert_char_value(dict: &PersistentARTrieChar<i32>, term: &str, value: i32) {
+    // F2-migrate: Bucket A — `get()` returns None under the overlay; read via `get_value`
+    // (correct in owned mode too — falls through to the owned tree).
     assert_eq!(
-        dict.get(term).copied(),
+        dict.get_value(term),
         Some(value),
         "unexpected char value for {term:?}"
     );
@@ -92,6 +94,10 @@ fn char_persist_to_disk_alone_does_not_clear_checkpoint_dirty_state() {
     let path = dir.path().join("char_persist_only.part");
 
     let mut trie = PersistentARTrieChar::<i32>::create(&path).expect("create char trie");
+    // F2-migrate: Bucket B — `is_dirty()`/`persist_to_disk`/checkpoint dirty-state is an
+    // OWNED-tree checkpoint concept (the overlay tracks durability via its own WAL
+    // watermark, not the owned dirty flag). Pin OwnedTree. No-op feature-off.
+    trie.kill_switch_to_owned();
     trie.insert_with_value("descriptor", 10)
         .expect("insert descriptor term");
     assert!(trie.is_dirty(), "mutation should mark trie dirty");
@@ -117,6 +123,10 @@ fn char_failed_wal_archive_after_rewrite_keeps_dirty_until_retry() {
 
     let mut trie =
         PersistentARTrieChar::<i32>::create_with_config(&path, wal_config).expect("create trie");
+    // F2-migrate: Bucket B — failed-WAL-archive dirty-retry is an OWNED-tree checkpoint
+    // concept (the overlay does not gate visibility on the owned dirty flag). Pin
+    // OwnedTree. No-op feature-off.
+    trie.kill_switch_to_owned();
     trie.insert_with_value("alpha", 1).expect("insert alpha");
 
     fs::remove_dir(&archive_dir).expect("remove empty archive dir");

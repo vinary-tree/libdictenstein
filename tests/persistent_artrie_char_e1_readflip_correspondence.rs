@@ -218,10 +218,19 @@ fn e1_inert_for_ineligible_v() {
     let path = dir.path().join("ineligible.artc");
 
     let mut trie = PersistentARTrieChar::<String>::create(&path).expect("create");
+    // F2-migrate: Bucket D (cfg-split). WITHOUT `overlay-arbitrary-v`, `String` is
+    // ineligible and never create-flips, so this is the negative control proving the
+    // read-flip touches only the eligible monomorphs. WITH the feature `String` is
+    // eligible and create-flips; kill-switch it to the owned path so this test still
+    // exercises the inert owned read path it is named for.
+    #[cfg(not(feature = "overlay-arbitrary-v"))]
     assert!(
         !trie.route_overlay(),
         "an ineligible V (String) must NOT create-flip — reads stay on the owned path"
     );
+    #[cfg(feature = "overlay-arbitrary-v")]
+    trie.kill_switch_to_owned();
+    assert!(!trie.route_overlay(), "reads stay on the owned path");
     trie.upsert("hello", "world".to_string()).expect("upsert");
     trie.upsert("help", "me".to_string()).expect("upsert");
 

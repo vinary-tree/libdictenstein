@@ -50,6 +50,10 @@ fn in_place_compaction_preserves_unsynced_wal_values_after_reopen() {
 
     {
         let mut trie = PersistentARTrie::<u64>::create(&path).expect("create trie");
+        // F2-migrate: Bucket C — `compact()` rejects under the lock-free overlay write
+        // mode (overlay compaction is the pending F6 phase). Feature-on a `u64` byte
+        // trie create-flips to the overlay, so pin OwnedTree to test owned compaction.
+        trie.kill_switch_to_owned();
         assert!(trie.insert_with_value("alpha", 1));
         assert!(trie.insert_with_value("beta", 2));
         assert!(trie.insert_with_value("gamma", 3));
@@ -76,6 +80,10 @@ fn compaction_rejects_wal_sidecar_collision_without_losing_recovery_wal() {
 
     {
         let mut trie = PersistentARTrie::<u64>::create(&path).expect("create trie");
+        // F2-migrate: Bucket C — `compact()` rejects under the lock-free overlay write
+        // mode (overlay compaction is the pending F6 phase). Feature-on a `u64` byte
+        // trie create-flips to the overlay, so pin OwnedTree to test owned compaction.
+        trie.kill_switch_to_owned();
         assert!(trie.insert_with_value("wal-only", 7));
         assert!(path.with_extension("wal").exists());
 
@@ -139,6 +147,10 @@ fn non_utf8_byte_keys_survive_compaction() {
 
     {
         let mut trie = PersistentARTrie::<u64>::create(&path).expect("create trie");
+        // F2-migrate: Bucket C — `compact()` rejects under the lock-free overlay write
+        // mode (overlay compaction is the pending F6 phase). Feature-on a `u64` byte
+        // trie create-flips to the overlay, so pin OwnedTree to test owned compaction.
+        trie.kill_switch_to_owned();
         let inserted = trie.insert_batch_bytes(&[
             (b"ascii".as_slice(), Some(1)),
             (raw_key.as_slice(), Some(2)),
@@ -164,6 +176,10 @@ fn successful_in_place_compaction_does_not_replay_stale_original_wal() {
 
     {
         let mut trie = PersistentARTrie::<u64>::create(&path).expect("create trie");
+        // F2-migrate: Bucket C — `compact()` rejects under the lock-free overlay write
+        // mode (overlay compaction is the pending F6 phase). Feature-on a `u64` byte
+        // trie create-flips to the overlay, so pin OwnedTree to test owned compaction.
+        trie.kill_switch_to_owned();
         assert!(trie.insert_with_value("original", 1));
         trie.checkpoint().expect("checkpoint original");
 
@@ -199,6 +215,9 @@ fn output_file_compaction_preserves_key_value_snapshot() {
     let compacted_path = dir.path().join("snapshot.artrie");
 
     let mut trie = PersistentARTrie::<u64>::create(&original_path).expect("create trie");
+    // F2-migrate: Bucket C — pin OwnedTree so `compact()` tests owned compaction
+    // (overlay compaction is the pending F6 phase); feature-off this is a no-op.
+    trie.kill_switch_to_owned();
     assert!(trie.insert_with_value("alpha", 10));
     assert!(trie.insert_with_value("beta", 20));
     assert!(!trie.insert_with_value("alpha", 11));

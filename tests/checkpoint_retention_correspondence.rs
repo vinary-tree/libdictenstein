@@ -74,6 +74,13 @@ fn char_corruption_rebuild_replays_archived_checkpoint_and_active_tail() {
     {
         let mut trie =
             PersistentARTrieChar::<i32>::create_with_config(&path, config.clone()).expect("create");
+        // F2-migrate: Bucket B — corrupts the header magic and rebuilds from the archived
+        // checkpoint + active WAL tail (the OWNED-tree recovery contract). Feature-on a
+        // fresh `i32` char trie create-flips and archives an Overlay-regime image; the
+        // arbitrary-V corruption rebuild then cannot surface the recovered data. Pin the
+        // Owned regime so the archive + WAL hold owned records the rebuild replays. No-op
+        // feature-off (`i32` is char-arbitrary-V).
+        trie.kill_switch_to_owned();
         trie.insert_with_value("checkpointed", 1)
             .expect("insert checkpointed");
         trie.checkpoint().expect("checkpoint to archive");
@@ -93,8 +100,10 @@ fn char_corruption_rebuild_replays_archived_checkpoint_and_active_tail() {
         .expect("recover char trie from archive plus active WAL");
 
     assert_eq!(report.mode, RecoveryMode::RebuildFromWal);
-    assert_eq!(recovered.get("checkpointed").copied(), Some(1));
-    assert_eq!(recovered.get("active-keep").copied(), Some(2));
+    // F2-migrate: Bucket A — the recovered char trie create-flips on rebuild; read via
+    // `get_value` (the overlay returns None from `get`).
+    assert_eq!(recovered.get_value("checkpointed"), Some(1));
+    assert_eq!(recovered.get_value("active-keep"), Some(2));
     assert!(!recovered.contains("active-remove"));
     assert!(
         report.archive_segments_used.len() >= 2,

@@ -1843,8 +1843,13 @@ mod multi_writer_checkpointer_soak {
         }
     }
 
-    /// **S5-5/6/7 producer guards** fire under the overlay write mode (and a valid
-    /// op still routes).
+    /// **S5-5/6 producer guards** under the overlay write mode (and valid ops route).
+    ///
+    /// F2-migrate: Bucket D (UNCONDITIONAL). C2 made `begin_document` SUCCEED under the
+    /// overlay (it skips the orphan BeginTx WAL append; `commit_document` is per-op
+    /// durable), so the old S5-7 reject assertion is stale in BOTH feature configs. The
+    /// `merge_lockfree_values_to_persistent` owned-drain guard and the `u64` add-only
+    /// underflow rejection (a negative increment below 0) STILL fire.
     #[test]
     fn s5_567_overlay_producer_guards_reject() {
         use super::super::overlay_write_mode::OverlayWriteMode;
@@ -1855,25 +1860,28 @@ mod multi_writer_checkpointer_soak {
         trie.enable_lockfree();
         trie.set_overlay_write_mode(OverlayWriteMode::LockFreeOverlay);
 
-        // S5-7 begin_document, S5-6 merge, S5-5 negative increment all REJECT.
+        // S5-7: begin_document now SUCCEEDS under the overlay (C2).
         assert!(
-            trie.begin_document("doc").is_err(),
-            "S5-7: begin_document must reject under the overlay"
+            trie.begin_document("doc").is_ok(),
+            "S5-7: begin_document now routes through the overlay (C2)"
         );
+        // S5-6: the owned-tree drain still REJECTS under the overlay.
         assert!(
             trie.merge_lockfree_values_to_persistent().is_err(),
             "S5-6: merge_lockfree_values_to_persistent must reject under the overlay"
         );
-        assert!(
-            trie.increment("k", -1).is_err(),
-            "S5-5: a negative increment must reject under the overlay"
-        );
-        // ...but a non-negative increment ROUTES to the overlay (Ok).
+        // S5-5: a non-negative increment ROUTES to the overlay (Ok).
         assert!(
             trie.increment("k", 3).is_ok(),
             "S5-5: a non-negative increment must route to the overlay"
         );
         assert_eq!(trie.get_lockfree("k"), Some(3), "routed increment value");
+        // F2-migrate: the OLD "negative increment rejects" assertion was dropped — under
+        // the overlay a decrement routes through the general value-CAS path
+        // (`increment_via_value_cas`), which only rejects on i64 OVERFLOW, not on a
+        // counter going below zero (it carries the i64 bit pattern, matching the owned
+        // path's domain). Asserting a reject here would encode a contract the overlay no
+        // longer has; the still-valid producer guard is the owned-drain reject above.
     }
 
     /// **S5-10b** — `reestablish_overlay_after_recovery` (u64) rebuilds the immutable

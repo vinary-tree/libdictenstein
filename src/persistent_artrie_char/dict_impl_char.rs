@@ -2997,7 +2997,9 @@ mod tests {
             !trie.upsert("k", 2).expect("upsert"),
             "second upsert reports update"
         );
-        assert_eq!(trie.read().get("k").copied(), Some(2), "value updated");
+        // F2-migrate: Bucket A — `get()` returns None under the overlay (a fresh `i64`
+        // trie create-flips); read the updated value via `get_value`.
+        assert_eq!(trie.read().get_value("k"), Some(2), "value updated");
     }
 
     /// **F3 / NF-3 regression gate.** Two threads call `checkpoint()` concurrently on

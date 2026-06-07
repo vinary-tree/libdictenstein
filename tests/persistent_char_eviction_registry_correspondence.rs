@@ -37,6 +37,10 @@ const KEYS: [(&str, i32); 5] = [
 
 fn build(path: &Path) -> SharedCharARTrie<i32> {
     let shared: SharedCharARTrie<i32> = ARTrie::create(path).expect("create char trie");
+    // F2-migrate: Bucket B — owned-rep eviction registry / `force_eviction`. Under the
+    // lock-free overlay the owned tree is empty, so pin OwnedTree (before inserts) to
+    // exercise the owned eviction path. Feature-off (`i32` ineligible) this is a no-op.
+    shared.write().kill_switch_to_owned();
     for (t, v) in KEYS {
         assert!(put(&shared, t, v));
     }

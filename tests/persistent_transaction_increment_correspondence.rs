@@ -92,6 +92,13 @@ fn char_tx_increment_current_overflow_fails_before_batch_wal() {
     let dir = tempdir().expect("tempdir");
     let path = dir.path().join("char_tx_current_overflow.artc");
     let mut trie = PersistentARTrieChar::<i64>::create(&path).expect("create char trie");
+    // F2-migrate: Bucket C — this test exercises a document-tx i64 increment that must
+    // reject on OVERFLOW. The overlay's doc-tx increment is u64-only (it rejects an i64
+    // counter with a different "requires a counter value type (u64)" error), so pin the
+    // proven OwnedTree doc-tx path (the byte twin above does the same). The kill-switch
+    // restamps the WAL Owned on the fresh trie. No-op feature-off (`i64`... is byte's
+    // counter, but char's counter is u64, so `i64` is char-arbitrary-V and stays owned).
+    trie.kill_switch_to_owned();
 
     trie.upsert("counter", i64::MAX).expect("seed counter");
     let mut tx = trie.begin_document("overflow-doc").expect("begin tx");
@@ -201,6 +208,9 @@ fn char_archive_recovery_stops_before_overflowed_batch_increment_suffix() {
             .expect("recover durable archive prefix");
 
     assert_eq!(stats.records_replayed, 2);
-    assert_eq!(recovered.get("counter").copied(), Some(i64::MAX));
+    // F2-migrate: Bucket A — the archive holds OWNED-format records; the recovered char
+    // trie create-flips on rebuild, so read the recovered value via `get_value` (the
+    // overlay returns None from `get`).
+    assert_eq!(recovered.get_value("counter"), Some(i64::MAX));
     assert!(!recovered.contains("after"));
 }

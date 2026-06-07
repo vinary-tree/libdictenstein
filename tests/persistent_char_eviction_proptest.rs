@@ -56,6 +56,9 @@ fn value_of(shared: &SharedCharARTrie<i32>, term: &str) -> Option<i32> {
 fn build_disk_trie(map: &HashMap<String, i32>) -> (TempDir, SharedCharARTrie<i32>) {
     let dir = TempDir::new().expect("tempdir");
     let shared: SharedCharARTrie<i32> = ARTrie::create(dir.path().join("p.trie")).expect("create");
+    // F2-migrate: Bucket B — owned-rep eviction/reclamation; pin OwnedTree (before
+    // inserts) so the owned eviction path is exercised. No-op feature-off.
+    shared.write().kill_switch_to_owned();
     for (k, v) in map {
         assert!(put(&shared, k, *v));
     }
@@ -128,6 +131,8 @@ proptest! {
         let path = dir.path().join("recover.trie");
         {
             let shared: SharedCharARTrie<i32> = ARTrie::create(&path).expect("create");
+            // F2-migrate: Bucket B — owned-rep eviction; pin OwnedTree before inserts.
+            shared.write().kill_switch_to_owned();
             for (k, v) in &map {
                 assert!(put(&shared, k, *v));
             }

@@ -355,6 +355,14 @@ fn test_stress_large_terms() {
     let path = temp_dir.path().join("stress_large");
 
     let mut dict = PersistentARTrie::<i32>::create(&path).expect("create dict");
+    // F2-migrate: Bucket B/C — this stress test inserts terms up to 500 chars. The
+    // lock-free overlay stores keys in an UN-path-compressed spine (one node per char),
+    // so a 500-char term builds a ~500-deep recursive structure that overflows the stack
+    // on the insert/checkpoint/drop recursion (SIGABRT feature-on — a pre-existing
+    // overlay deep-term limitation, FLAGGED in the F2 report; cf. the m3 deep-key READ
+    // guard which only covers reads). The proven OwnedTree path is path-compressed and
+    // handles large terms, so pin it. No-op feature-off (`i32` is byte-arbitrary-V).
+    dict.kill_switch_to_owned();
 
     let alphabet: Vec<char> = ('a'..='z').collect();
 

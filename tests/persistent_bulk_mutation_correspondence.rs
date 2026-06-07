@@ -69,7 +69,9 @@ fn assert_char_map(path: &Path, expected: &BTreeMap<String, i32>) {
 
     for (term, value) in expected {
         assert!(trie.contains(term), "expected term {term:?}");
-        assert_eq!(trie.get(term).copied(), Some(*value), "value for {term:?}");
+        // F2-migrate: Bucket A — `get()` returns None under the lock-free overlay; read
+        // values via `get_value` (also correct in owned mode — falls through to owned).
+        assert_eq!(trie.get_value(term), Some(*value), "value for {term:?}");
     }
 
     for term in bulk_reference().keys() {
@@ -172,7 +174,22 @@ fn char_remove_prefix_batched_replays_every_durable_wal_prefix() {
     let dir = tempdir().expect("tempdir");
     let path = dir.path().join("durable_prefix.artc");
     let reference = bulk_reference();
-    seed_checkpointed_char_trie(&path, &reference);
+    // F2-migrate: Bucket B — this test inspects the per-record WAL shape of a bulk
+    // prefix delete (it asserts `WalRecord::Remove` records and truncates the WAL at
+    // record boundaries to replay every durable prefix). That is the OWNED-tree WAL
+    // contract; under the lock-free overlay a delete is published as `CommitRank`. Pin
+    // the Owned regime (inlined seed) so the reopen below stays owned and emits Remove
+    // records. No-op feature-off. (Note: `seed_checkpointed_char_trie` is shared with the
+    // Bucket-A `survives_reopen` test, which legitimately runs on the overlay, so this
+    // pin is inlined here rather than applied to the shared helper.)
+    {
+        let mut trie = PersistentARTrieChar::<i32>::create(&path).expect("create char trie");
+        trie.kill_switch_to_owned();
+        for (term, value) in &reference {
+            trie.upsert(term, *value).expect("seed char trie");
+        }
+        trie.checkpoint().expect("checkpoint seed trie");
+    }
 
     let base_file_bytes = fs::read(&path).expect("read checkpointed data file");
     let base_wal_bytes = fs::read(wal_path(&path)).expect("read checkpointed WAL");
@@ -267,6 +284,11 @@ fn write_block(path: &Path, block_id: u32, block: &[u8]) {
 
 fn build_checkpointed_lazy_fixture(path: &Path) {
     let mut trie = PersistentARTrieChar::<i32>::create(path).expect("create char trie");
+    // F2-migrate: Bucket B — the sole caller corrupts an on-disk OWNED lazy child and
+    // asserts the lazy prefix collection surfaces the error before any WAL append. Pin
+    // the Owned regime so the owned-tree layout exists and the reopen stays owned. No-op
+    // feature-off.
+    trie.kill_switch_to_owned();
     trie.insert_with_value("alpha", 1).expect("insert alpha");
     trie.insert_with_value("alpine", 2).expect("insert alpine");
     trie.insert_with_value("beta", 3).expect("insert beta");
@@ -390,8 +412,9 @@ fn byte_and_char_checked_increment_overflow_preserves_wal_and_memory() {
 
     assert!(char_trie.increment("high", 1).is_err());
     assert!(char_trie.fetch_add("low", -1).is_err());
-    assert_eq!(char_trie.get("high").copied(), Some(i64::MAX));
-    assert_eq!(char_trie.get("low").copied(), Some(i64::MIN));
+    // F2-migrate: Bucket A — `get()` returns None under the overlay; read via `get_value`.
+    assert_eq!(char_trie.get_value("high"), Some(i64::MAX));
+    assert_eq!(char_trie.get_value("low"), Some(i64::MIN));
     assert_eq!(
         wal_len(&char_path),
         before_char_wal,

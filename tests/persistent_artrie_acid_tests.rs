@@ -93,6 +93,12 @@ fn test_durability_policy_none_for_testing() {
 
     let mut trie: PersistentARTrie<u64> =
         PersistentARTrie::create(&path).expect("Failed to create trie");
+    // F2-migrate: Bucket C — `DurabilityPolicy::None` is an OwnedTree-only testing mode:
+    // the lock-free overlay requires Immediate/GroupCommit so an acknowledged write is
+    // durable before it becomes visible (`upsert_cas_durable` rejects None). A fresh
+    // `u64` byte trie create-flips feature-on, so pin OwnedTree. No-op feature-off
+    // (`u64` is byte-arbitrary-V and stays owned).
+    trie.kill_switch_to_owned();
 
     // Set to None policy (testing only)
     trie.set_durability_policy(DurabilityPolicy::None);

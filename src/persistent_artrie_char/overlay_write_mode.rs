@@ -677,15 +677,17 @@ mod tests {
         assert!(trie.route_overlay());
     }
 
-    /// S5-12 (V-1): the TypeId gate — `overlay_eligible_v()` is true only for
-    /// `{u64, ()}`, and `flip_to_overlay` is a NO-OP for arbitrary `V` (which would
-    /// otherwise get a write-broken overlay). Arbitrary V stays on the owned path.
+    /// S5-12 (V-1): the TypeId gate — `overlay_eligible_v()` is true for `{u64, ()}`
+    /// (always), plus ANY `V` when `overlay-arbitrary-v` is on. `flip_to_overlay` is a
+    /// NO-OP for ineligible `V` (which would otherwise get a write-broken overlay).
+    ///
+    /// F2-migrate: Bucket D (cfg-split). WITH `overlay-arbitrary-v`, `String` is eligible
+    /// and a fresh `create::<String>()` create-flips; WITHOUT it `String` stays owned.
     #[test]
     fn v1_typeid_gate_flip_is_noop_for_arbitrary_v() {
         use crate::persistent_artrie_char::PersistentARTrieChar;
         assert!(PersistentARTrieChar::<u64>::overlay_eligible_v());
         assert!(PersistentARTrieChar::<()>::overlay_eligible_v());
-        assert!(!PersistentARTrieChar::<String>::overlay_eligible_v());
 
         std::fs::create_dir_all("target/test-tmp").ok();
         let dir = tempfile::Builder::new()
@@ -693,14 +695,27 @@ mod tests {
             .tempdir_in("target/test-tmp")
             .expect("scratch tempdir under target/test-tmp");
         let path = dir.path().join("t.artc");
-        let mut trie = PersistentARTrieChar::<String>::create(&path).expect("create");
-        assert!(
-            !trie.flip_to_overlay(),
-            "flip_to_overlay must be a no-op for arbitrary V"
-        );
-        assert!(
-            !trie.route_overlay(),
-            "an arbitrary-V trie must stay on the owned path (no broken overlay)"
-        );
+        #[cfg(not(feature = "overlay-arbitrary-v"))]
+        {
+            assert!(!PersistentARTrieChar::<String>::overlay_eligible_v());
+            let mut trie = PersistentARTrieChar::<String>::create(&path).expect("create");
+            assert!(
+                !trie.flip_to_overlay(),
+                "flip_to_overlay must be a no-op for arbitrary V"
+            );
+            assert!(
+                !trie.route_overlay(),
+                "an arbitrary-V trie must stay on the owned path (no broken overlay)"
+            );
+        }
+        #[cfg(feature = "overlay-arbitrary-v")]
+        {
+            assert!(PersistentARTrieChar::<String>::overlay_eligible_v());
+            let trie = PersistentARTrieChar::<String>::create(&path).expect("create");
+            assert!(
+                trie.route_overlay(),
+                "with overlay-arbitrary-v, a String trie create-flips to the overlay"
+            );
+        }
     }
 }
