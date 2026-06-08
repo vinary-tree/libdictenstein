@@ -1609,7 +1609,14 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
         // (= the path the uncompressed serializer + the evictor walk), threaded for the registry.
         let mut path: Vec<char> = Vec::new();
         let mut stack: Vec<Frame<V>> = Vec::new();
-        stack.push(make_frame(Arc::clone(root), None, Vec::new(), Vec::new(), 0, 0));
+        stack.push(make_frame(
+            Arc::clone(root),
+            None,
+            Vec::new(),
+            Vec::new(),
+            0,
+            0,
+        ));
         let mut completed: Option<(u32, SwizzledPtr)> = None;
 
         loop {
@@ -3658,7 +3665,10 @@ mod cx_compressed_serialize {
             "CX #6: the chain term must survive evict→refault (compressed span lossless)"
         );
         assert!(trie.contains("ab"), "sibling term survives");
-        assert!(!trie.contains("zqqq"), "a non-member prefix is not manufactured");
+        assert!(
+            !trie.contains("zqqq"),
+            "a non-member prefix is not manufactured"
+        );
     }
 
     /// **CX #6 (F.3 — the gate no-op) load-side `prefix_len>0` stamp gate.** A faulted node gets a

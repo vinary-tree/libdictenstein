@@ -1086,6 +1086,268 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
         Ok(result_ptr)
     }
 
+    /// CX (#43): serialize ONE already-built owned `Node` record to disk and, when `registry` is
+    /// `Some`, REGISTER it at `path` — but DO NOT stamp any overlay node. The byte twin of char's
+    /// `serialize_one_char_node_to_disk` (register WITHOUT stamp). The compressed serializer stamps
+    /// the LIVE top-of-span / terminus nodes MANUALLY (a chunk node is SYNTHETIC — it has no live
+    /// overlay node), so unlike [`Self::serialize_overlay_node_record_registering`] this MUST NOT
+    /// stamp. `result_ptr` + the bytes written are identical whether or not the registry is present.
+    fn serialize_one_byte_node_to_disk(
+        &self,
+        node_record: &Node,
+        value_bytes: Option<&[u8]>,
+        path: &[u8],
+        registry: Option<&mut crate::persistent_artrie::eviction::DiskLocationRegistry>,
+    ) -> Result<SwizzledPtr> {
+        let (result_ptr, data_len) =
+            self.serialize_node_to_disk_with_value_len(node_record, value_bytes)?;
+        if let Some(reg) = registry {
+            let node_type = match node_record {
+                Node::N4(_) => NodeType::Node4,
+                Node::N16(_) => NodeType::Node16,
+                Node::N48(_) => NodeType::Node48,
+                Node::N256(_) => NodeType::Node256,
+            };
+            reg.register(
+                path.to_vec(),
+                result_ptr.clone(),
+                data_len,
+                path.len(),
+                node_type,
+            );
+        }
+        Ok(result_ptr)
+    }
+
+    /// CX (#43): the BYTE path-compressing overlay→disk serializer — the twin of char's
+    /// [`PersistentARTrieChar::serialize_overlay_snapshot_compressed`]. ITERATIVE post-order: each
+    /// in-mem child is descended via [`peel_chain_byte`], which collapses a maximal single-child
+    /// non-final no-value chain into `(chain_prefix, live_spine, terminus)`. The terminus serializes
+    /// as a plain (prefix-less) node; the peeled `chain_prefix` collapses into a stack of dense chunk
+    /// nodes ABOVE it via the proven [`crate::persistent_artrie_core::overlay::codec::chain_chunks`]
+    /// (width `MAX_PREFIX_LEN + 1` — `<= MAX_PREFIX_LEN` prefix bytes + 1 out-edge per chunk; NEVER
+    /// truncates — chains longer runs across multiple chunk nodes).
+    ///
+    /// `path` is the full root→node byte sequence in the EXPANDED (uncompressed) tree — the path the
+    /// evictor + the uncompressed serializer walk. EVICTION-ON (`registry = Some`): each emitted node
+    /// registers at its TRUE expanded depth (the terminus at `path.len()`; chunk `c` at
+    /// `ends[c] = base + 1 + Σ_{i<c}(|P_i|+1)`, a prefix-slice of `path`) and `set_durable_stamp`s the
+    /// corresponding LIVE node (the terminus → `frame.node`; chunk `c` → `live_spine[ends[c]-base-1]`),
+    /// so the evictor can reclaim the whole compressed span as one `Child::OnDisk`. EVICTION-OFF
+    /// (`None`): a pure structural serialize (the round-trip / density tests).
+    pub(crate) fn serialize_overlay_snapshot_compressed(
+        &self,
+        root: &std::sync::Arc<OverlayNode<ByteKey, V>>,
+        mut registry: Option<&mut crate::persistent_artrie::eviction::DiskLocationRegistry>,
+    ) -> Result<SwizzledPtr> {
+        use std::sync::Arc;
+
+        struct PendingChild {
+            key: u8,
+            ptr: Option<SwizzledPtr>,
+        }
+        // A frame is a TERMINUS node (a non-prefix-link) plus the peeled chain ABOVE it.
+        struct Frame<V: DictionaryValue> {
+            node: Arc<OverlayNode<ByteKey, V>>,
+            parent_key: Option<u8>,
+            // The peeled chain `Lp` above this terminus (empty ⇒ the terminus is keyed directly by
+            // `parent_key`). Collapsed into a chunk stack when this frame finalizes.
+            chain_prefix: Vec<u8>,
+            // CX/#6: the LIVE chain-link nodes (`live[Σ_{i<c}(|P_i|+1)]` = chunk c's top-of-span,
+            // stamped with chunk c's disk_ptr for eviction). Length == chain_prefix.len().
+            live_spine: Vec<Arc<OverlayNode<ByteKey, V>>>,
+            // CX/#6: `path.len()` BEFORE this frame's segment was pushed (its parent's logical depth).
+            base_depth: usize,
+            // CX/#6: count of `[edge] ++ chain_prefix` units pushed onto `path` (for the symmetric pop).
+            pushed_units: usize,
+            pending_in_mem: Vec<(u8, Arc<OverlayNode<ByteKey, V>>)>,
+            slots: Vec<PendingChild>,
+        }
+
+        #[allow(clippy::too_many_arguments)]
+        fn make_frame<V: DictionaryValue>(
+            node: Arc<OverlayNode<ByteKey, V>>,
+            parent_key: Option<u8>,
+            chain_prefix: Vec<u8>,
+            live_spine: Vec<Arc<OverlayNode<ByteKey, V>>>,
+            base_depth: usize,
+            pushed_units: usize,
+        ) -> Frame<V> {
+            let n = node.num_children();
+            let mut slots: Vec<PendingChild> = Vec::with_capacity(n);
+            let mut pending: Vec<(u8, Arc<OverlayNode<ByteKey, V>>)> = Vec::with_capacity(n);
+            for (&key, child) in node.iter_children() {
+                if let Some(arc) = child.as_in_mem() {
+                    slots.push(PendingChild { key, ptr: None });
+                    pending.push((key, Arc::clone(arc)));
+                } else if let Some(od) = child.as_on_disk() {
+                    if !od.is_null() {
+                        slots.push(PendingChild {
+                            key,
+                            ptr: Some(od.clone()),
+                        });
+                    }
+                }
+            }
+            pending.reverse();
+            Frame {
+                node,
+                parent_key,
+                chain_prefix,
+                live_spine,
+                base_depth,
+                pushed_units,
+                pending_in_mem: pending,
+                slots,
+            }
+        }
+
+        // The ROOT is its own terminus (no incoming edge to absorb into a prefix); its children's
+        // chains collapse below it. `path` is the full root→node byte sequence in the EXPANDED tree.
+        let mut path: Vec<u8> = Vec::new();
+        let mut stack: Vec<Frame<V>> = Vec::new();
+        stack.push(make_frame(
+            Arc::clone(root),
+            None,
+            Vec::new(),
+            Vec::new(),
+            0,
+            0,
+        ));
+        let mut completed: Option<(u8, SwizzledPtr)> = None;
+
+        loop {
+            let frame = stack
+                .last_mut()
+                .expect("serialize_compressed: non-empty stack");
+
+            if let Some((key, ptr)) = completed.take() {
+                let slot = frame
+                    .slots
+                    .iter_mut()
+                    .find(|s| s.key == key && s.ptr.is_none())
+                    .expect("completed child key has a matching unfilled slot");
+                slot.ptr = Some(ptr);
+            }
+
+            // Descend into the next in-mem child — PEELING its chain first. Push the WHOLE consumed
+            // segment `[edge] ++ chain_prefix` onto `path` ONCE (the out-edge is never double-counted).
+            if let Some((edge, child_arc)) = frame.pending_in_mem.pop() {
+                let (chain_prefix, live_spine, terminus) = peel_chain_byte::<V>(child_arc);
+                let base_depth = path.len();
+                let mut pushed = 0usize;
+                for &u in std::iter::once(&edge).chain(chain_prefix.iter()) {
+                    path.push(u);
+                    pushed += 1;
+                }
+                stack.push(make_frame(
+                    terminus,
+                    Some(edge),
+                    chain_prefix,
+                    live_spine,
+                    base_depth,
+                    pushed,
+                ));
+                continue;
+            }
+
+            // All children resolved → serialize THIS terminus, then collapse its peeled chain.
+            let frame = stack
+                .pop()
+                .expect("serialize_compressed: frame to finalize");
+            let child_disk_ptrs: Vec<(u8, SwizzledPtr)> = frame
+                .slots
+                .into_iter()
+                .map(|s| (s.key, s.ptr.expect("post-order: every in-mem slot filled")))
+                .collect();
+
+            // (1) The terminus node — finality + value + children, NO prefix. Registers at the FULL
+            // `path`. CX/#6: 1c-stamp the LIVE terminus (gated on eviction-ON). The value blob is
+            // `?`-propagated (data-loss-critical), matching char's `serialize_one_char_node_to_disk`.
+            let mut term_node = if child_disk_ptrs.is_empty() {
+                Node::N4(Box::new(Node4::new()))
+            } else {
+                Self::build_owned_node_with_child_ptrs(&child_disk_ptrs)
+            };
+            term_node.header_mut().set_final(frame.node.is_final());
+            let term_value: Option<Vec<u8>> = match frame.node.get_value() {
+                Some(v) => Some(crate::serialization::bincode_compat::serialize(&v).map_err(
+                    |e| PersistentARTrieError::internal(&format!("serialize overlay value: {e}")),
+                )?),
+                None => None,
+            };
+            let terminus_ptr = self.serialize_one_byte_node_to_disk(
+                &term_node,
+                term_value.as_deref(),
+                &path,
+                registry.as_deref_mut(),
+            )?;
+            if registry.is_some() {
+                frame.node.set_durable_stamp(terminus_ptr.to_raw());
+            }
+
+            // (2) Collapse the peeled chain `Lp` into a chunk stack ABOVE the terminus. Bottom-up:
+            // the lowest chunk's edge points at the terminus; each chunk node carries `prefix`
+            // (<= MAX_PREFIX_LEN bytes, the inter-edges) + one out-edge. Empty chain ⇒ terminus is top.
+            // CX/#6: each chunk registers at `ends[c] = base+1+Σ_{i<c}(|P_i|+1)` + 1c-stamps its LIVE
+            // top-of-span node `live_spine[ends[c]-base-1]`.
+            let top_ptr = if frame.chain_prefix.is_empty() {
+                terminus_ptr
+            } else {
+                let chunks = crate::persistent_artrie_core::overlay::codec::chain_chunks(
+                    &frame.chain_prefix,
+                    super::nodes::MAX_PREFIX_LEN,
+                );
+                let chain_head = frame.base_depth + 1;
+                let mut ends: Vec<usize> = Vec::with_capacity(chunks.len());
+                let mut acc = chain_head;
+                for ch in &chunks {
+                    ends.push(acc);
+                    acc += ch.prefix.len() + 1;
+                }
+                debug_assert_eq!(
+                    acc,
+                    frame.base_depth + 1 + frame.chain_prefix.len(),
+                    "CX #6: Σ chunk widths must equal the chain length (no-truncation witness)"
+                );
+                let mut child_ptr = terminus_ptr;
+                for (c, chunk) in chunks.iter().enumerate().rev() {
+                    let mut chunk_node =
+                        Self::build_owned_node_with_child_ptrs(&[(chunk.edge, child_ptr.clone())]);
+                    chunk_node.header_mut().prefix_len = chunk.prefix.len() as u8;
+                    *chunk_node.prefix_mut() =
+                        super::nodes::CompressedPrefix::from_bytes(chunk.prefix);
+                    let chunk_path = &path[..ends[c]];
+                    let next_ptr = self.serialize_one_byte_node_to_disk(
+                        &chunk_node,
+                        None,
+                        chunk_path,
+                        registry.as_deref_mut(),
+                    )?;
+                    if registry.is_some() {
+                        // idx = ends[c] - base - 1 = Σ_{i<c}(|P_i|+1) = this chunk's top-of-span live node.
+                        let idx = ends[c] - frame.base_depth - 1;
+                        if let Some(top_live) = frame.live_spine.get(idx) {
+                            top_live.set_durable_stamp(next_ptr.to_raw());
+                        }
+                    }
+                    child_ptr = next_ptr;
+                }
+                child_ptr
+            };
+
+            // Symmetric pop of THIS frame's pushed `[edge] ++ chain_prefix` segment.
+            for _ in 0..frame.pushed_units {
+                path.pop();
+            }
+
+            match frame.parent_key {
+                Some(key) => completed = Some((key, top_ptr)),
+                None => return Ok(top_ptr),
+            }
+        }
+    }
+
     /// Build an owned byte `Node` of the appropriate size class with one child slot
     /// per `(edge, ptr)` (the real disk ptr installed). The size-class selection +
     /// the `Node4::new().grow()...` build sequence are byte-identical to the prior
@@ -1160,6 +1422,51 @@ fn count_overlay_finals<V: DictionaryValue>(root: &OverlayNode<ByteKey, V>) -> u
     count
 }
 
+/// CX (#43): peel a maximal **single-child non-final no-value** chain starting at `start`, returning
+/// `(chain_units, live_spine, terminus)` — the BYTE twin of char's `peel_chain`. `chain_units` is the
+/// edge byte-string of the peeled links (the `Lp` fed to
+/// [`crate::persistent_artrie_core::overlay::codec::chain_chunks`]); EMPTY iff `start` is itself the
+/// terminus. `live_spine[j]` is the live chain-link reached by `chain_units[j-1]` (`live_spine[0]` =
+/// the chain head), used to stamp each chunk's TOP-of-span node at serialize time. The terminus is the
+/// first node that is NOT a prefix-link — final, valued, `!= 1` child, OR whose sole child is `OnDisk`
+/// (the serializer NEVER faults disk: an OnDisk sole child ends the chain, its ptr passing through
+/// verbatim). ITERATIVE (walks the ~key-length-deep uncompressed spine) so it does not recurse with
+/// key length.
+fn peel_chain_byte<V: DictionaryValue>(
+    start: std::sync::Arc<OverlayNode<ByteKey, V>>,
+) -> (
+    Vec<u8>,
+    Vec<std::sync::Arc<OverlayNode<ByteKey, V>>>,
+    std::sync::Arc<OverlayNode<ByteKey, V>>,
+) {
+    let mut units: Vec<u8> = Vec::new();
+    let mut live: Vec<std::sync::Arc<OverlayNode<ByteKey, V>>> = Vec::new();
+    let mut cur = start;
+    loop {
+        // A prefix-link: exactly one child, not final, no value.
+        if cur.num_children() != 1 || cur.is_final() || cur.has_value() {
+            return (units, live, cur);
+        }
+        // Its sole child — continue ONLY while it is InMem (never fault disk during serialize).
+        let sole = {
+            let mut it = cur.iter_children();
+            let (&edge, child) = it.next().expect("num_children() == 1 ⇒ exactly one child");
+            child
+                .as_in_mem()
+                .map(|arc| (edge, std::sync::Arc::clone(arc)))
+        };
+        match sole {
+            Some((edge, child_arc)) => {
+                live.push(std::sync::Arc::clone(&cur));
+                units.push(edge);
+                cur = child_arc;
+            }
+            // Sole child is OnDisk ⇒ `cur` is the terminus (its OnDisk child passes through).
+            None => return (units, live, cur),
+        }
+    }
+}
+
 // ============================================================================
 // Byte seam impl of the shared OverlayCheckpoint route-split skeleton.
 // ============================================================================
@@ -1204,5 +1511,301 @@ impl<V: DictionaryValue, S: BlockStorage> OverlayCheckpoint<ByteKey, V, S>
     #[inline]
     fn publish_owned_and_reclaim(&self, snapshot: CheckpointSnapshot) -> Result<()> {
         PersistentARTrie::publish_owned_and_reclaim(self, snapshot)
+    }
+}
+
+#[cfg(test)]
+mod cx_compressed_serialize_byte {
+    //! CX (#43) — the BYTE twin of char's `persist::cx_compressed_serialize`. Round-trip
+    //! term-exactness (incl. a chain longer than `MAX_PREFIX_LEN` ⇒ multi-node chunking, the
+    //! no-truncation codec end-to-end), density (compressed dense-node count + bytes < uncompressed),
+    //! and the #6 eviction-ON tests: F.1 evict-then-refault a compressed chunk, F.3 the load-side
+    //! `prefix_len>0` stamp gate (uncompressed no-op = #39 unchanged; compressed stamped = re-evictable).
+    //! Scratch is real disk (`target/test-tmp`), never tmpfs `/tmp`.
+    use crate::persistent_artrie::eviction::{DiskLocationRegistry, EvictionConfig};
+    use crate::persistent_artrie::overlay_fault::evict_overlay_nodes;
+    use crate::persistent_artrie::PersistentARTrie;
+    use crate::persistent_artrie_core::block_storage::BlockStorage;
+    use crate::persistent_artrie_core::durability::DurabilityPolicy;
+    use crate::persistent_artrie_core::key_encoding::ByteKey;
+    use crate::persistent_artrie_core::overlay::node::Child;
+    use crate::persistent_artrie_core::overlay::write_mode::OverlayWriteMode;
+    use crate::persistent_artrie_core::overlay::OverlayNode;
+    use std::sync::Arc;
+
+    fn scratch(prefix: &str) -> tempfile::TempDir {
+        std::fs::create_dir_all("target/test-tmp").ok();
+        tempfile::Builder::new()
+            .prefix(prefix)
+            .tempdir_in("target/test-tmp")
+            .expect("scratch dir under target/test-tmp")
+    }
+
+    /// Build an UNCOMPRESSED overlay (one node per byte) for the given terms — the shape the overlay
+    /// write path builds. Shared prefixes share nodes (immutable path-copy via `with_child`).
+    fn build_overlay(terms: &[&str]) -> Arc<OverlayNode<ByteKey, ()>> {
+        fn insert(
+            node: Arc<OverlayNode<ByteKey, ()>>,
+            bytes: &[u8],
+        ) -> Arc<OverlayNode<ByteKey, ()>> {
+            match bytes.split_first() {
+                None => Arc::new((*node).clone().as_final()),
+                Some((&edge, rest)) => {
+                    let child = match node.find_child(edge).and_then(|c| c.as_in_mem()) {
+                        Some(existing) => insert(existing.clone(), rest),
+                        None => insert(Arc::new(OverlayNode::<ByteKey, ()>::new()), rest),
+                    };
+                    Arc::new((*node).clone().with_child(edge, Child::InMem(child)))
+                }
+            }
+        }
+        let mut root = Arc::new(OverlayNode::<ByteKey, ()>::new());
+        for t in terms {
+            root = insert(root, t.as_bytes());
+        }
+        root
+    }
+
+    /// Fault-walk the loaded overlay (resolving OnDisk children) and collect every term.
+    fn collect_terms<S: BlockStorage>(
+        trie: &PersistentARTrie<(), S>,
+        node: &Arc<OverlayNode<ByteKey, ()>>,
+        pfx: &mut Vec<u8>,
+        out: &mut Vec<String>,
+    ) {
+        if node.is_final() {
+            out.push(String::from_utf8(pfx.clone()).expect("utf8 term"));
+        }
+        let kids: Vec<(u8, Arc<OverlayNode<ByteKey, ()>>)> = node
+            .iter_children()
+            .map(|(&k, child)| {
+                let n = match child.as_in_mem() {
+                    Some(a) => a.clone(),
+                    None => trie
+                        .load_overlay_node_from_disk(child.as_on_disk().expect("on-disk child"))
+                        .expect("fault child"),
+                };
+                (k, n)
+            })
+            .collect();
+        for (k, child) in kids {
+            pfx.push(k);
+            collect_terms(trie, &child, pfx, out);
+            pfx.pop();
+        }
+    }
+
+    fn roundtrip(name: &str, terms: &[&str]) {
+        let dir = scratch(name);
+        let trie = PersistentARTrie::<()>::create(&dir.path().join("t.artb")).expect("create");
+        let root = build_overlay(terms);
+        let root_ptr = trie
+            .serialize_overlay_snapshot_compressed(&root, None)
+            .expect("serialize compressed");
+        let loaded = trie
+            .load_overlay_node_from_disk(&root_ptr)
+            .expect("load compressed root");
+        let mut got = Vec::new();
+        collect_terms(&trie, &loaded, &mut Vec::new(), &mut got);
+        got.sort();
+        let mut expect: Vec<String> = terms.iter().map(|s| s.to_string()).collect();
+        expect.sort();
+        expect.dedup();
+        assert_eq!(
+            got, expect,
+            "byte compressed round-trip term set mismatch for {name}"
+        );
+    }
+
+    #[test]
+    fn cx_roundtrip_long_chain_no_truncation() {
+        // 26-byte chain (> MAX_PREFIX_LEN=12 ⇒ ≥2 chunk nodes) — the no-truncation codec end-to-end.
+        roundtrip("byte-cx-chain", &["abcdefghijklmnopqrstuvwxyz"]);
+    }
+
+    #[test]
+    fn cx_roundtrip_branching_and_shared_prefix() {
+        // A chain ("cdefghijklmnop") below a FINAL branching node ("b"), shared prefixes, siblings.
+        roundtrip(
+            "byte-cx-branch",
+            &["a", "ab", "abc", "abd", "b", "bcdefghijklmnop", "xyz"],
+        );
+    }
+
+    #[test]
+    fn cx_roundtrip_single_and_empty() {
+        roundtrip("byte-cx-single", &["solo"]);
+        roundtrip("byte-cx-empty-term", &[""]); // the empty string ⇒ a final root, no children
+    }
+
+    /// Density: the compressed serializer emits FEWER + SMALLER dense nodes than the uncompressed
+    /// `serialize_overlay_root_iterative` for a chain (the compression WITNESS — not trivially
+    /// uncompressed). Measured via the eviction registry, which records one entry per dense node at
+    /// serialize time (BEFORE the loader expands chunks back into a chain).
+    #[test]
+    fn cx_density_lt_uncompressed_for_chains() {
+        let dir = scratch("byte-cx-density");
+        let trie = PersistentARTrie::<()>::create(&dir.path().join("t.artb")).expect("create");
+        let overlay = build_overlay(&["abcdefghijklmnopqrstuvwxyz"]);
+        let mut reg_c = DiskLocationRegistry::new();
+        trie.serialize_overlay_snapshot_compressed(&overlay, Some(&mut reg_c))
+            .expect("compressed serialize");
+        let mut reg_u = DiskLocationRegistry::new();
+        trie.serialize_overlay_root_iterative(overlay.as_ref(), Some(&mut reg_u))
+            .expect("uncompressed serialize");
+        assert!(
+            reg_c.len() < reg_u.len(),
+            "compressed dense-node count {} must be < uncompressed {}",
+            reg_c.len(),
+            reg_u.len()
+        );
+        assert!(
+            reg_c.total_size_bytes() < reg_u.total_size_bytes(),
+            "compressed dense bytes {} must be < uncompressed {}",
+            reg_c.total_size_bytes(),
+            reg_u.total_size_bytes()
+        );
+    }
+
+    /// **CX #6 (F.1 — headline) evict-then-refault a COMPRESSED chunk node (byte).** Serialize the LIVE
+    /// overlay COMPRESSED with an eviction registry, publish it, evict, then read the chain back. The
+    /// chunk MUST evict (a wrong `ends[c]` depth / stamp ⇒ `NotEvictable` ⇒ a #6/#39 regression) AND
+    /// the prefix must refault LOSSLESSLY. V=u64 so `get_lockfree` reads the exact value back.
+    #[test]
+    fn cx_6_evict_then_refault_compressed_chunk() {
+        let dir = scratch("byte-cx6-evict-refault");
+        let path = dir.path().join("t.artb");
+        let mut trie = PersistentARTrie::<u64>::create(&path).expect("create");
+        trie.set_durability_policy(DurabilityPolicy::Immediate);
+        trie.enable_lockfree();
+        trie.set_overlay_write_mode(OverlayWriteMode::LockFreeOverlay);
+        trie.bench_enable_eviction(EvictionConfig::without_memory_monitor())
+            .expect("enable eviction");
+        // A long single-byte-child chain (≥2 chunks) below a branch ('a' chain + 'b' sibling).
+        let chain_term = "aqqqqqqqqqqqqqqqqqqqq"; // 'a' + 20×'q' → a multi-chunk chain
+        trie.try_increment_cas_durable(chain_term.as_bytes(), 777)
+            .expect("durable increment chain");
+        trie.try_increment_cas_durable(b"b", 1)
+            .expect("durable increment sibling");
+        let trie = Arc::new(trie);
+
+        // Build a COMPRESSED image + eviction registry from the LIVE overlay.
+        let root = trie
+            .lockfree_root
+            .as_ref()
+            .and_then(|r| r.load())
+            .expect("overlay root present");
+        let mut registry = DiskLocationRegistry::new();
+        trie.serialize_overlay_snapshot_compressed(&root, Some(&mut registry))
+            .expect("serialize compressed (eviction-ON)");
+
+        // Publish the compressed registry to the coordinator.
+        let coordinator = trie
+            .eviction_coordinator
+            .lock()
+            .expect("coordinator mutex")
+            .as_ref()
+            .expect("eviction enabled")
+            .clone();
+        coordinator.update_disk_registry(registry);
+        assert!(
+            trie.evictable_node_count().unwrap_or(0) > 0,
+            "the compressed registry must be published"
+        );
+
+        // Evict everything reachable.
+        let (evicted, _) = coordinator
+            .force_eviction_bytes(usize::MAX, |cands| evict_overlay_nodes(&*trie, cands, 4));
+        assert!(
+            evicted > 0,
+            "CX #6: a compressed chunk node MUST evict (NotEvictable ⇒ wrong registry depth/stamp = #39 regression)"
+        );
+
+        // Refault: reading faults the evicted compressed chunk(s) + expands the span losslessly.
+        assert_eq!(
+            trie.get_lockfree(chain_term.as_bytes()),
+            Some(777),
+            "CX #6: the chain term VALUE must survive evict→refault (compressed span lossless)"
+        );
+        assert_eq!(trie.get_lockfree(b"b"), Some(1), "sibling term survives");
+    }
+
+    /// **CX #6 (F.3 — the gate no-op) load-side `prefix_len>0` stamp gate (byte).** A faulted node gets
+    /// a `durable_stamp` IFF it was a compressed (`prefix_len>0`) chunk on disk: (a) an UNCOMPRESSED
+    /// image yields ZERO stamps on fault (the pre-#6 production no-op ⇒ #39 unchanged); (b) a COMPRESSED
+    /// chunk's expanded top carries `stamp == its disk_ptr` (the predicate the evictor needs to
+    /// RE-evict a refaulted chunk).
+    #[test]
+    fn cx_6_load_stamp_gate_uncompressed_noop_compressed_stamps() {
+        fn walk<S: BlockStorage>(
+            trie: &PersistentARTrie<(), S>,
+            node: &Arc<OverlayNode<ByteKey, ()>>,
+            stamped: &mut usize,
+            unstamped: &mut usize,
+        ) {
+            let kids: Vec<Child<ByteKey>> = node.iter_children().map(|(_, c)| c.clone()).collect();
+            for child in kids {
+                if let Some(on_disk) = child.as_on_disk() {
+                    let raw = on_disk.to_raw();
+                    let faulted = trie
+                        .load_overlay_node_from_disk(on_disk)
+                        .expect("fault child");
+                    match faulted.durable_stamp() {
+                        0 => *unstamped += 1,
+                        stamp => {
+                            assert_eq!(
+                                stamp, raw,
+                                "a stamped (compressed-chunk) node's stamp must equal the disk_ptr it faulted from"
+                            );
+                            *stamped += 1;
+                        }
+                    }
+                    walk(trie, &faulted, stamped, unstamped);
+                } else if let Some(in_mem) = child.as_in_mem() {
+                    walk(trie, in_mem, stamped, unstamped);
+                }
+            }
+        }
+
+        // (a) UNCOMPRESSED: all-short branching terms → every chunk prefix_len=0 → ZERO stamps.
+        let dir = scratch("byte-cx6-noop-uncompressed");
+        let trie = PersistentARTrie::<()>::create(&dir.path().join("t.artb")).expect("create");
+        let root = build_overlay(&["a", "b", "ca", "cb"]);
+        let root_ptr = trie
+            .serialize_overlay_snapshot_compressed(&root, None)
+            .expect("serialize uncompressed");
+        let loaded = trie
+            .load_overlay_node_from_disk(&root_ptr)
+            .expect("load uncompressed root");
+        assert_eq!(
+            loaded.durable_stamp(),
+            0,
+            "the uncompressed root itself must be unstamped on fault"
+        );
+        let (mut s, mut u) = (0usize, 0usize);
+        walk(&trie, &loaded, &mut s, &mut u);
+        assert_eq!(
+            s, 0,
+            "CX #6: an UNCOMPRESSED (prefix_len=0) image must yield ZERO durable stamps on fault (production no-op)"
+        );
+        assert!(u > 0, "sanity: at least one node was faulted");
+
+        // (b) COMPRESSED: a long chain below a branch → ≥1 prefix_len>0 chunk → ≥1 stamp == its disk_ptr.
+        let dir2 = scratch("byte-cx6-stamp-compressed");
+        let trie2 = PersistentARTrie::<()>::create(&dir2.path().join("t.artb")).expect("create");
+        let root2 = build_overlay(&["aqqqqqqqqqqqqqqqqqqqq", "b"]); // 'a' + 20×'q' chain + 'b' sibling
+        let root2_ptr = trie2
+            .serialize_overlay_snapshot_compressed(&root2, None)
+            .expect("serialize compressed");
+        let loaded2 = trie2
+            .load_overlay_node_from_disk(&root2_ptr)
+            .expect("load compressed root");
+        let (mut s2, mut u2) = (0usize, 0usize);
+        walk(&trie2, &loaded2, &mut s2, &mut u2);
+        assert!(
+            s2 > 0,
+            "CX #6: a COMPRESSED (prefix_len>0) chunk must be stamped == its disk_ptr on fault (re-evictable)"
+        );
+        let _ = u2;
     }
 }

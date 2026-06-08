@@ -134,6 +134,15 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
                 "CX #43 (4A): an expanded prefix intermediate must be prefix_len=0, non-final, single-child"
             );
         }
+        // CX/#43 (#6 eviction-ON): stamp the TOP-of-span node (`cur` = the head of the expanded
+        // chain, or `real` itself when p==0) with `disk_ptr` IFF this was a COMPRESSED node
+        // (`prefix_len > 0`), so a fault-then-evict re-installs `Child::OnDisk` for the WHOLE
+        // re-expanded span (the evictor walks to this top node + checks `durable_stamp == disk_ptr`).
+        // NO-OP for `prefix_len == 0` (every current production image), so the production fault path
+        // + #39 eviction stay byte-for-byte unchanged. The byte twin of char's `disk_io.rs` stamp.
+        if prefix_len > 0 {
+            cur.set_durable_stamp(disk_ptr.to_raw());
+        }
         Ok(Arc::new(cur))
     }
 }
