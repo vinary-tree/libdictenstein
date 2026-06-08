@@ -412,7 +412,7 @@ impl<V: DictionaryValue, S: BlockStorage> LockFreeOverlay<ByteKey, V, S>
 {
     /// `u64` — the byte counter monomorph (matching char, post-u64-restoration). The
     /// overlay leaf stores the count as the trie's own `u64` value, so
-    /// `overlay_publish_counter` / `overlay_counter_get` need no boundary conversion.
+    /// `overlay_counter_get` needs no boundary conversion.
     type CounterValue = u64;
 
     // ---- small accessors ----
@@ -542,19 +542,6 @@ impl<V: DictionaryValue, S: BlockStorage> LockFreeOverlay<ByteKey, V, S>
         // No-WAL CAS insert (recovered terms are already durable in the WAL;
         // re-logging would double-log). `units` IS the byte term.
         self.insert_cas(units);
-    }
-
-    fn overlay_publish_counter(&self, units: &[u8], value: u64) {
-        // `V == u64` in this routed branch (the counter reestablish runs only for
-        // the u64 monomorph via the dispatch). SAFE `Any` downcast to the nameable
-        // `<u64, S>` monomorph (where `increment_cas` lives), then the no-WAL
-        // increment. The leaf stores the count as the trie's own `u64` value, and
-        // `increment_cas` takes the delta as `u64`, so the publish is direct (no
-        // boundary conversion, no sign guard — `u64` is non-negative by type).
-        use std::any::Any;
-        if let Some(trie_u64) = (self as &dyn Any).downcast_ref::<PersistentARTrie<u64, S>>() {
-            trie_u64.increment_cas(units, value);
-        }
     }
 
     fn overlay_counter_get(&self, units: &[u8]) -> Option<u64> {
@@ -730,7 +717,7 @@ impl<V: DictionaryValue, S: BlockStorage> DurableOverlayWrite<ByteKey, V, S>
     fn increment_publish_inner(&self, key: &str, delta: u64) -> Result<(u64, u64)> {
         // `try_increment_cas_inner` is u64-specialized (`impl<S> ...<u64, S>`), so
         // downcast `self` to the nameable `<u64, S>` monomorph via a SAFE `Any`
-        // (the same zero-`unsafe` pattern as `overlay_publish_counter`). The counter
+        // (the same zero-`unsafe` pattern as `overlay_counter_get`). The counter
         // durable path runs only for the u64 monomorph (the value route), so this
         // downcast always succeeds there; an ineligible `V` returns the empty result
         // (the durable increment is never reached for non-u64 `V`).

@@ -203,20 +203,6 @@ impl<V: DictionaryValue, S: BlockStorage> LockFreeOverlay<CharKey, V, S>
         self.insert_cas(&term);
     }
 
-    fn overlay_publish_counter(&self, units: &[u32], value: u64) {
-        // `V == u64` in this routed branch (the counter reestablish runs only for
-        // the u64 monomorph via the dispatch). SAFE `Any` downcast to the nameable
-        // `<u64, S>` monomorph, then the no-WAL `increment_cas` — the same pattern
-        // as the char `overlay_get_value`/`reestablish_overlay_dispatch`.
-        use std::any::Any;
-        let term = CharKey::units_to_term(units);
-        if let Some(trie_u64) =
-            (self as &dyn Any).downcast_ref::<super::PersistentARTrieChar<u64, S>>()
-        {
-            trie_u64.increment_cas(&term, value);
-        }
-    }
-
     fn overlay_counter_get(&self, units: &[u32]) -> Option<u64> {
         // SAFE `Any` downcast to `<u64, S>` + the lock-free point read.
         use std::any::Any;
@@ -406,7 +392,7 @@ impl<V: DictionaryValue, S: BlockStorage> DurableOverlayWrite<CharKey, V, S>
     fn increment_publish_inner(&self, key: &str, delta: u64) -> Result<(u64, u64)> {
         // `try_increment_cas_inner` is u64-specialized (`impl<S> ...<u64, S>`), so
         // downcast `self` to the nameable `<u64, S>` monomorph via a SAFE `Any`
-        // (the same zero-`unsafe` pattern as `overlay_publish_counter`). The
+        // (the same zero-`unsafe` pattern as `overlay_counter_get`). The
         // counter durable path runs only for the u64 monomorph (the value route),
         // so this downcast always succeeds there; an ineligible `V` returns the
         // empty result (the durable increment is never reached for non-u64 `V`).

@@ -189,8 +189,8 @@ pub(crate) trait LockFreeOverlay<K: KeyEncoding, V: DictionaryValue, S>:
     /// divergence that makes the value-route a seam, not a blanket. `Copy` so the
     /// publisher/getter seams can pass it by value. `Serialize + DeserializeOwned` so
     /// the F5 WAL-tail applier can re-encode a recovered absolute-`i64` counter as the
-    /// typed `CounterValue` via bincode (`counter_value_from_i64`) — both `u64` and
-    /// `i64` satisfy it.
+    /// typed `CounterValue` via the shared `counter_codec` (`counter_leaf_to_i128` →
+    /// `i128_to_counter_value`) — both `u64` and `i64` satisfy it.
     type CounterValue: 'static + Copy + serde::Serialize + serde::de::DeserializeOwned;
 
     // ========================================================================
@@ -287,10 +287,6 @@ pub(crate) trait LockFreeOverlay<K: KeyEncoding, V: DictionaryValue, S>:
     /// would double-log).
     fn overlay_publish_membership(&self, units: &[K::Unit]);
 
-    /// Publish the counter `value` for `units` to the overlay via the variant's
-    /// no-WAL CAS increment.
-    fn overlay_publish_counter(&self, units: &[K::Unit], value: Self::CounterValue);
-
     /// Read the overlay counter at `units` (the variant's `<CounterValue>`-downcast
     /// + lock-free point read), or `None` if absent.
     fn overlay_counter_get(&self, units: &[K::Unit]) -> Option<Self::CounterValue>;
@@ -301,10 +297,11 @@ pub(crate) trait LockFreeOverlay<K: KeyEncoding, V: DictionaryValue, S>:
 
     /// **G5/F1 — publish an ARBITRARY-`V` value for `units` to the overlay via the
     /// variant's no-WAL path-copy CAS** (the recovered terms are already durable in
-    /// the WAL; re-logging would double-log). The value twin of
-    /// [`Self::overlay_publish_counter`], used by the F5 WAL-tail applier
-    /// ([`Self::apply_recovered_operation_overlay`]). SETs the value (last-writer = the CAS
-    /// winner); at reestablish/replay the overlay is uncontended.
+    /// the WAL; re-logging would double-log). The single generic value publisher used by
+    /// the F5 WAL-tail applier ([`Self::apply_recovered_operation_overlay`]) for value
+    /// inserts, CAS, AND counter increments (both absolute and the accumulated delta total —
+    /// see the `Op::Increment` arms). SETs the value (last-writer = the CAS winner); at
+    /// reestablish/replay the overlay is uncontended.
     fn overlay_publish_value(&self, units: &[K::Unit], value: V);
 
     /// **G5/F1 — read the overlay leaf's ARBITRARY-`V` value at `units`** (the
@@ -1016,14 +1013,18 @@ pub(crate) trait LockFreeOverlay<K: KeyEncoding, V: DictionaryValue, S>:
     /// * `Remove` → `overlay_remove` (clear membership/value; "" via the root non-final
     ///   publisher). REQUIRED for correctness (else an inserted-then-removed-in-tail
     ///   term resurrects).
-    /// * `Increment{result: Some(v)}` (a single absolute `Increment`) → SET to `v` via
-    ///   the counter publisher (`overlay_publish_counter` / the root value publisher).
-    /// * `Increment{result: None}` (a `BatchIncrement` DELTA) → ACCUMULATE `delta` onto
-    ///   the overlay's current counter via `overlay_publish_counter` (whose seam routes
-    ///   through the counter-monomorph `increment_cas`, which ADDS). For "" the counter
-    ///   path no-ops (the durable counter path never logs a "" increment), so a ""
-    ///   delta is dropped — matching the owned applier's empty-term increment behavior.
-    ///   `value_as_counter`/`counter_as_value` bridge the typed `CounterValue`.
+    /// * `Increment{result: Some(v)}` (a single absolute `Increment`) → decode `v` into `V`
+    ///   via the shared `counter_codec` (`counter_leaf_to_i128::<V>` → `i128_to_counter_value`)
+    ///   and SET via `overlay_publish_value` / `overlay_publish_root_value` ("") — a VALUE set,
+    ///   NEVER an accumulate (an absolute `Increment` carries the post-increment count, incl. a
+    ///   decrement).
+    /// * `Increment{result: None}` (a `BatchIncrement` DELTA) → ACCUMULATE `delta`: a V-GENERIC
+    ///   read-modify-write — read the current value (`overlay_value_get`, 0 if absent), add
+    ///   `delta` in the i128 `counter_codec` substrate, and SET the total via
+    ///   `overlay_publish_value`. This is generic over EVERY counter `V` (`i64` as well as the
+    ///   `u64` monomorph); it does NOT use a `u64`-only `Any`-downcast seam. For "" the counter
+    ///   path no-ops (the durable counter path never logs a "" increment), so a "" delta is
+    ///   dropped — matching the owned applier's empty-term increment behavior.
     ///
     /// The empty-term "" branches use the RANKED/fresh-root-CAS root publishers
     /// (`overlay_publish_root_value`/`_membership` + the `overlay_remove` non-final
@@ -1127,10 +1128,9 @@ pub(crate) trait LockFreeOverlay<K: KeyEncoding, V: DictionaryValue, S>:
                         // `u64` counter monomorph); the codec returns `None` for a non-counter
                         // `V`, which can never carry an Increment record. Then publish it as a
                         // VALUE SET via `overlay_publish_value` / `overlay_publish_root_value`
-                        // (path-copy / fresh-root CAS, last-writer = SET) — NOT
-                        // `overlay_publish_counter` (whose seam ADDS via `increment_cas`,
-                        // mis-accumulating an absolute set, e.g. leaving 5 instead of 0 for a
-                        // 5 → 0 decrement, AND only handling the `u64` monomorph). The counter
+                        // (path-copy / fresh-root CAS, last-writer = SET) — NOT an ADD /
+                        // accumulate, which would mis-handle an absolute set, e.g. leaving 5
+                        // instead of 0 for a 5 → 0 decrement. The counter
                         // is stored in the leaf value, so the value SET and the counter/value
                         // read address the SAME slot.
                         use crate::persistent_artrie_core::counter_codec;
@@ -1157,24 +1157,52 @@ pub(crate) trait LockFreeOverlay<K: KeyEncoding, V: DictionaryValue, S>:
                             }
                         }
                     }
-                    // Delta (BatchIncrement entry): ACCUMULATE `delta` (commutative on
-                    // replay). `overlay_publish_counter`'s seam routes through the
-                    // counter-monomorph `increment_cas`, which ADDS the delta to the
-                    // overlay's current value. A non-positive/overflowing delta is
-                    // handled inside the seam's bound (same as the durable path). For ""
-                    // there is no counter increment path → drop (owned applier parity).
+                    // Delta (BatchIncrement entry): ACCUMULATE `delta` onto the current value
+                    // (commutative on replay). This is a V-GENERIC READ-MODIFY-WRITE — the overlay
+                    // twin of the owned `recompute_recovered_increment` + `upsert_impl_no_wal`
+                    // (mutation_core.rs): read the current counter value GENERICALLY
+                    // (`overlay_value_get`, 0 if absent), add `delta` in the i128 `counter_codec`
+                    // substrate, then SET the total via the generic `overlay_publish_value`
+                    // (path-copy SET, last-writer). It REPLACES the prior `overlay_publish_counter`,
+                    // an `Any`-downcast seam to the `<u64,S>` monomorph that SILENTLY DROPPED the
+                    // delta for every counter `V != u64` (e.g. `i64`) — a PRODUCTION data-loss bug:
+                    // this arm is `drain_segments_into_overlay`'s sink (reached by the normal
+                    // Overlay-regime reopen via `reconcile_and_drain_overlay`, the F7 converter, and
+                    // the L1 recovery redirect), and the dropped op still returned `true`, so the
+                    // recovery watermark seed over-claimed it as durably covered ⇒ the next
+                    // `checkpoint()` made the reopen drain-skip the archived delta = PERMANENT loss.
+                    // Recovery/drain replay is single-threaded, so the RMW is race-free (the same
+                    // single-thread reopen invariant the owned applier relied on). Failure semantics
+                    // mirror the owned applier EXACTLY (non-counter current value or out-of-range
+                    // total → `false` = stop replay at the durable prefix). For "" there is no
+                    // counter increment path → drop (owned-applier parity, red-team-confirmed: no
+                    // durable "" delta is ever logged).
                     None => {
                         if units.is_empty() {
                             // No durable "" delta is ever logged; nothing to accumulate.
                             return true;
                         }
-                        match Self::counter_value_from_i64(delta) {
-                            Some(cv) => {
-                                self.overlay_publish_counter(units, cv);
+                        use crate::persistent_artrie_core::counter_codec;
+                        let current_i128 = match self.overlay_value_get(units) {
+                            Some(value) => {
+                                match counter_codec::counter_value_to_i128::<V>(&value) {
+                                    Some(n) => n,
+                                    None => {
+                                        log::warn!("F5 overlay replay: increment-delta current value is not a counter leaf for this V; stopping at durable prefix");
+                                        return false;
+                                    }
+                                }
+                            }
+                            None => 0,
+                        };
+                        let final_i128 = current_i128 + delta as i128;
+                        match counter_codec::i128_to_counter_value::<V>(final_i128) {
+                            Some(value) => {
+                                self.overlay_publish_value(units, value);
                                 true
                             }
                             None => {
-                                log::warn!("F5 overlay replay: increment-delta not a counter for this V; skipping");
+                                log::warn!("F5 overlay replay: increment-delta total is out of range for this V; stopping at durable prefix");
                                 false
                             }
                         }
@@ -1208,31 +1236,6 @@ pub(crate) trait LockFreeOverlay<K: KeyEncoding, V: DictionaryValue, S>:
         } else {
             self.overlay_publish_value(units, value);
         }
-    }
-
-    /// Re-encode a recovered counter (carried as an `i64` in the reconcile stream) as
-    /// the typed `CounterValue`, routed through the shared `counter_codec` i128
-    /// substrate by decoding via the LEAF BYTES
-    /// (`counter_leaf_to_i128(&v.to_le_bytes())`) — the SAME bit-pattern-faithful decode
-    /// the owned char/byte appliers use (`value_from_recovered_i64` / `value_from_i64`).
-    ///
-    /// **Why leaf-bytes, NOT `v as i128`:** the absolute-`Increment` caller feeds the
-    /// `WalRecord::Increment.result` field, which the write path fills with
-    /// `counter_return_i64(new_count)` — the i64 BIT-PATTERN of the count, which is
-    /// NEGATIVE for a `u64` count > `i64::MAX`. `v as i128` would keep it negative and
-    /// `i128_to_counter_value::<u64>` would reject it (`None`), so the absolute increment
-    /// would be DROPPED on Overlay-regime reopen = silent data loss (the counter reverts
-    /// to its last checkpoint value). Decoding via the leaf bytes recovers the true
-    /// `u64` magnitude (the 8 LE bytes of a negative i64 ARE the 8 LE bytes of the u64
-    /// it represents — `bincode legacy`/fixint). For the DELTA caller (`v` a non-negative
-    /// i64 chunk) both decodes agree, so the leaf decode is correct for BOTH call sites.
-    /// The helper then range-checks into `CounterValue` (`None` for a non-counter `V`),
-    /// confining the bincode round-trip to `counter_codec` so the v6 gate holds.
-    fn counter_value_from_i64(v: i64) -> Option<Self::CounterValue> {
-        use crate::persistent_artrie_core::counter_codec;
-        let magnitude =
-            counter_codec::counter_leaf_to_i128::<Self::CounterValue>(&v.to_le_bytes())?;
-        counter_codec::i128_to_counter_value::<Self::CounterValue>(magnitude)
     }
 
     // ========================================================================
