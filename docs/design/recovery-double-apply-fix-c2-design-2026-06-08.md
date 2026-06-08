@@ -1,8 +1,13 @@
 # Fix design (C2) for the recovery→checkpoint→reopen counter double-apply (2026-06-08)
 
 > Companion to `recovery-checkpoint-reopen-double-apply-bug-2026-06-08.md` (the confirmed bug).
-> **Status: design+red-team round-1 CONVERGED on Direction C2; ONE confirming red-team round
-> pending (crash-point 3a), then implement BY HAND.** Source: Plan+red-team agent pass.
+> **Status: IMPLEMENTED (commit d023074) — full gate green. 2 red-team rounds; the confirming round
+> caught a silent-LOSS inversion (use `max_applied_lsn`, NOT `max_lsn_in_segments`) — adopted. 3a is a
+> separate pre-existing bug (task #48). One simplification vs the round-1 plan: the `image_coverage_lsn`
+> lives in `CommittedWatermark` (its `new()` inits it ⇒ ZERO trie-literal edits) and is read-cleared
+> directly in `publish` (no `CheckpointSnapshot` field needed; checkpoints are serialized so "first
+> post-recovery checkpoint only" still holds). C2 fixes the bug WITHOUT the L1 generic-V delta arm (it
+> makes the reopen SKIP the archive, so the delta arm is never reached).** Source: Plan+red-team passes.
 
 ## The keystone insight
 `checkpoint_lsn` conflates TWO distinct facts the #41 design happened to unify:
