@@ -84,6 +84,16 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
             .filter(|(_, ptr)| !ptr.is_null())
             .map(|(key, ptr)| (key, ptr.clone()))
             .collect();
+        // CX/#43 (4A): capture the path-compression prefix BEFORE dropping the arena lock (`node`
+        // borrows `node_data` borrows `am`). The prior code built `OverlayNode::new()` and DROPPED
+        // the prefix, so a compressed node lost its prefix on fault-in (silent key-data loss). No-op
+        // for `prefix_len == 0` (every current production image), so #39 eviction / reopen unchanged.
+        let prefix_len = node.header().prefix_len as usize;
+        let prefix_bytes: Vec<u8> = if prefix_len > 0 {
+            node.prefix().bytes[..prefix_len].to_vec()
+        } else {
+            Vec::new()
+        };
         drop(am);
 
         // Deserialize the value blob into `V` (propagate errors — data-loss path).
@@ -96,20 +106,35 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
             None => None,
         };
 
-        // Build the overlay node: prefix is always empty for the overlay
-        // representation (the overlay is un-path-compressed), finality + value from
-        // the durable image, children kept `Child::OnDisk` (lazy).
-        let mut overlay = OverlayNode::<ByteKey, V>::new();
+        // Build the REAL (terminus) node: finality + value from the durable image, children kept
+        // `Child::OnDisk` (lazy). It carries NO prefix (prefix_len = 0).
+        let mut real = OverlayNode::<ByteKey, V>::new();
         if is_final {
-            overlay = overlay.as_final();
+            real = real.as_final();
         }
         if let Some(v) = value {
-            overlay = overlay.with_value(v);
+            real = real.with_value(v);
         }
         for (edge, ptr) in child_ptrs {
-            overlay = overlay.with_child(edge, Child::OnDisk(ptr));
+            real = real.with_child(edge, Child::OnDisk(ptr));
         }
-        Ok(Arc::new(overlay))
+
+        // CX/#43 (4A): EXPAND `prefix_len = p` into a chain of `p` single-child prefix_len=0
+        // intermediates ABOVE `real` — the uncompressed shape the write path builds, since the
+        // overlay traversal is prefix-UNAWARE. The prefix bytes are the intermediates' child-edges
+        // (parent reaches intermediate_0 by the dense node's incoming edge; intermediate_i reaches
+        // intermediate_{i+1} by prefix[i]; the last reaches `real` by prefix[p-1]). p == 0 ⇒ no-op
+        // (real only — the prior behavior for every uncompressed image). Mirrors char `inner_to_overlay`.
+        let mut cur = real;
+        for i in (0..prefix_len).rev() {
+            cur = OverlayNode::<ByteKey, V>::new()
+                .with_child(prefix_bytes[i], Child::InMem(Arc::new(cur)));
+            debug_assert!(
+                cur.prefix_len() == 0 && !cur.is_final() && cur.num_children() == 1,
+                "CX #43 (4A): an expanded prefix intermediate must be prefix_len=0, non-final, single-child"
+            );
+        }
+        Ok(Arc::new(cur))
     }
 }
 
