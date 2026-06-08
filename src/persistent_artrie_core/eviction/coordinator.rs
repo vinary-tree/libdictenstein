@@ -456,7 +456,8 @@ impl EvictionCoordinator {
             .map(|(hash, node)| (hash, node.path, node.disk_ptr))
             .collect();
         drop(disk_registry);
-        callback(eviction_list)
+        let start = Instant::now();
+        self.record_resident_eviction(start, callback(eviction_list))
     }
 
     /// The CHECKPOINT-TAIL budget arity (byte) — the `Vec<u8>`-path twin of
@@ -500,7 +501,8 @@ impl EvictionCoordinator {
             .map(|(hash, node)| (hash, node.path, node.disk_ptr))
             .collect();
         drop(disk_registry);
-        callback(eviction_list)
+        let start = Instant::now();
+        self.record_resident_eviction(start, callback(eviction_list))
     }
 
     /// The configured resident-heap budget (on-disk-equivalent bytes), or `None` if
@@ -557,9 +559,39 @@ impl EvictionCoordinator {
         *self.disk_registry.write() = registry;
     }
 
-    /// Get a snapshot of eviction statistics.
+    /// Get a snapshot of eviction statistics, including the live resident-overlay heap
+    /// gauge (`resident_bytes`) folded in from the disk registry — the atomic counters
+    /// alone cannot supply it. This is the single point that makes the `eviction_stats()`
+    /// trait method report resident bytes for byte, char, and vocab uniformly.
     pub fn stats(&self) -> EvictionStats {
-        self.stats.snapshot()
+        let mut snapshot = self.stats.snapshot();
+        snapshot.resident_bytes = self.resident_estimate_bytes() as u64;
+        snapshot
+    }
+
+    /// Total resident-overlay heap estimate (byte + char paths) in on-disk-equivalent
+    /// bytes, under one registry read-lock. A given trie populates only one key path, so
+    /// the sum is that path's estimate (the other is 0); this key-agnostic accessor lets
+    /// `stats()` report resident bytes without knowing the trie's key type.
+    pub fn resident_estimate_bytes(&self) -> usize {
+        let registry = self.disk_registry.read();
+        registry.byte_resident_estimate_bytes() + registry.char_resident_estimate_bytes()
+    }
+
+    /// Record a synchronous (checkpoint-tail) resident-budget eviction into
+    /// `EvictionStats`, mirroring what the async eviction loops do for the pressure
+    /// path. Shared by both key-path `force_eviction_*_resident` arities so neither
+    /// under-reports `nodes_evicted`/`bytes_freed`.
+    fn record_resident_eviction(&self, start: Instant, evicted: (usize, usize)) -> (usize, usize) {
+        let (nodes_evicted, bytes_freed) = evicted;
+        if nodes_evicted > 0 {
+            self.stats.record_eviction(
+                nodes_evicted as u64,
+                bytes_freed as u64,
+                start.elapsed().as_millis() as u64,
+            );
+        }
+        evicted
     }
 
     /// Reset statistics.

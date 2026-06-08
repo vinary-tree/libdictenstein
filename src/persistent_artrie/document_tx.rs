@@ -194,7 +194,11 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
     /// `insert_impl_core` (owned absolute write). Reject under `route_overlay()` (the
     /// second entry-point guard; `begin_document` already rejects, but a transaction
     /// could have been opened on the owned path then flipped — fail loud here too).
-    pub fn commit_document(&mut self, mut tx: DocumentTransaction<V>) -> Result<usize>
+    /// Takes `&self` (not `&mut self`): both the overlay arm (the production default)
+    /// and the owned arm apply via interior mutability, so an `Arc<PersistentARTrie>`
+    /// can commit chunked transactions without exclusive access — required by lock-free
+    /// embedders that also arm `enable_eviction` (which needs a bare `Arc`, not `&mut`).
+    pub fn commit_document(&self, mut tx: DocumentTransaction<V>) -> Result<usize>
     where
         V: Clone,
     {

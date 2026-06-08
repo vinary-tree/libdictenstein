@@ -357,6 +357,9 @@ impl EvictionStatsAtomic {
             eviction_requests: self.eviction_requests.load(Ordering::Relaxed),
             skipped_evictions: self.skipped_evictions.load(Ordering::Relaxed),
             quiescence_timeouts: self.quiescence_timeouts.load(Ordering::Relaxed),
+            // The atomic counters have no registry handle; the resident gauge is filled
+            // in by `EvictionCoordinator::stats()`, which does have the disk registry.
+            resident_bytes: 0,
         }
     }
 
@@ -389,6 +392,13 @@ pub struct EvictionStats {
     pub skipped_evictions: u64,
     /// Number of times quiescence wait timed out.
     pub quiescence_timeouts: u64,
+    /// Current resident-overlay heap estimate in on-disk-equivalent bytes (a gauge,
+    /// not a cumulative counter). Reflects the live overlay heap the resident-budget
+    /// checkpoint tail bounds; 0 when no coordinator/registry is populated. Filled in
+    /// by [`EvictionCoordinator::stats`], which has the disk registry the atomic
+    /// counters lack — so the existing `eviction_stats()` trait method carries it for
+    /// byte, char, and vocab with no per-variant code.
+    pub resident_bytes: u64,
 }
 
 impl EvictionStats {

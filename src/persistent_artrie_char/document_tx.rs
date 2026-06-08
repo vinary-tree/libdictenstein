@@ -322,7 +322,11 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     /// Returns an error if:
     /// - The transaction is not in Active state
     /// - WAL write fails
-    pub fn commit_document(&mut self, mut tx: CharDocumentTransaction<V>) -> Result<usize>
+    /// Takes `&self` (not `&mut self`): both the overlay arm (the production default)
+    /// and the owned arm apply via interior mutability, so an `Arc<PersistentARTrieChar>`
+    /// can commit chunked transactions without exclusive access — required by lock-free
+    /// embedders that also arm `enable_eviction` (which needs a bare `Arc`, not `&mut`).
+    pub fn commit_document(&self, mut tx: CharDocumentTransaction<V>) -> Result<usize>
     where
         V: Clone,
     {
