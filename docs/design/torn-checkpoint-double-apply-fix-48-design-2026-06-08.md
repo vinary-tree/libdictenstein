@@ -30,8 +30,21 @@ self-describing artifact is required.
 char persist.rs:638 — the #47/C2 line). Reusing it inherits #47's `max_applied_lsn` correctness (NO new
 over-claim surface). NEVER re-derive from a file scan.
 
+## ⚠️ DESIGN CORRECTION (verified 2026-06-08, before implementation): it is ONE SHARED format change
+The agent assumed char uses its own `CharTrieFileHeader` (with a checkpoint_lsn already in the CRC). **FALSE
+— `CharTrieFileHeader` is DEAD/unused** (grep: it is referenced ONLY in file_header.rs; nothing writes/reads
+it on disk). The char trie uses the SAME shared `persistent_artrie_core::disk_manager::FileHeader` as byte
+(its `dm.set_root_ptr`/`dm.set_entry_count` in char `persist.rs::publish_snapshot` write that shared header).
+⇒ **#48 is ONE shared `FileHeader` change** (add the version-gated checksummed `image_checkpoint_lsn`), and
+BOTH variants' publishers call the same `dm.set_image_checkpoint_lsn(...)` + both reopens call the same
+`dm.image_checkpoint_lsn()`. Simpler than the per-variant plan below; the byte `FileHeader` edits in
+disk_manager.rs are the single format change, shared by char. (Disregard the agent's "char already has the
+field" claim; do NOT touch the dead `CharTrieFileHeader`.) Locate the shared header at
+`src/persistent_artrie_core/disk_manager.rs` (`struct FileHeader`, `compute_checksum`, `set_root_ptr`/
+`set_entry_count`, `sync`).
+
 ## Per-site edits
-### CHAR (simplest — `CharTrieFileHeader.checkpoint_lsn` ALREADY exists + is in the V2 CRC, file_header.rs:48/101; the overlay path just never writes/reads it)
+### CHAR (simplest — `CharTrieFileHeader.checkpoint_lsn` ALREADY exists + is in the V2 CRC, file_header.rs:48/101; the overlay path just never writes/reads it) — SUPERSEDED by the correction above; char uses the shared FileHeader.
 - `persist.rs` `publish_snapshot` (:904): add `image_checkpoint_lsn: u64` param; set the header's
   `checkpoint_lsn` BEFORE `dm.sync()` (:943) — rides the same fsync. `publish_immutable_snapshot_retaining_wal`
   (:606) + `_with_eviction` (:728): compute `checkpoint_lsn` BEFORE `publish_snapshot`, pass it in.
