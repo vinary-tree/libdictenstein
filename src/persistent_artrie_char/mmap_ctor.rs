@@ -524,6 +524,24 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
             && rank_regime == crate::persistent_artrie_core::wal::RankRegime::Owned
             && Self::overlay_eligible_v();
 
+        // #48: the loaded image self-describes its IMAGE-COVERAGE frontier (the max WAL LSN folded
+        // into it), durable ATOMICALLY with the image. Take max(WAL Checkpoint record, image
+        // coverage) so a TORN WAL `Checkpoint` record (stale/absent after a crash in the
+        // publisher's image-fsync ↔ record-fsync window) cannot poison the drain-skip — the durable
+        // image's own coverage backstops it. 0 when no image loaded (root_ptr == 0) or for a v1
+        // image ⇒ max = the WAL record = today's behavior.
+        let effective_checkpoint_lsn = if root_ptr != 0 {
+            checkpoint_lsn.max(
+                buffer_manager
+                    .read()
+                    .storage()
+                    .image_checkpoint_lsn()
+                    .unwrap_or(0),
+            )
+        } else {
+            checkpoint_lsn
+        };
+
         if convert_owned {
             // ===== F7 CONVERT PATH (Owned-regime eligible → overlay) =====
             // Rotate-if-records-non-empty → stamp Overlay (+ fsync, OBL-1) → F5 build from
@@ -537,7 +555,7 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
             inner.convert_owned_to_overlay_on_reopen(
                 root_ptr,
                 /* was_loaded_from_disk */ root_ptr != 0,
-                checkpoint_lsn,
+                effective_checkpoint_lsn,
                 &archive_config,
             )?;
             if let Some(ref arena_manager) = inner.arena_manager {
@@ -574,7 +592,11 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
             let _applied = inner.reconcile_and_drain_overlay(
                 &archive_config,
                 /* loaded_from_disk */ effective_loaded,
-                if effective_loaded { checkpoint_lsn } else { 0 },
+                if effective_loaded {
+                    effective_checkpoint_lsn
+                } else {
+                    0
+                },
             )?;
         } else {
             // ===== LEGACY PATH (ineligible V stays owned; OR the legacy-loader ORACLE) ====
@@ -611,7 +633,7 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
             let applied_any = inner.replay_records_lww(
                 recovered_ops,
                 loaded_from_disk,
-                checkpoint_lsn,
+                effective_checkpoint_lsn,
                 rank_regime,
             );
             let skipped_all = !applied_any;
@@ -869,6 +891,20 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
             && rank_regime == crate::persistent_artrie_core::wal::RankRegime::Owned
             && Self::overlay_eligible_v();
 
+        // #48: take max(WAL Checkpoint record, the loaded image's self-described coverage) so a
+        // torn WAL `Checkpoint` record cannot poison the drain-skip (see `open_inner`).
+        let effective_checkpoint_lsn = if root_ptr != 0 {
+            checkpoint_lsn.max(
+                buffer_manager
+                    .read()
+                    .storage()
+                    .image_checkpoint_lsn()
+                    .unwrap_or(0),
+            )
+        } else {
+            checkpoint_lsn
+        };
+
         if convert_owned {
             // ===== F7 CONVERT PATH (Owned-regime eligible → overlay) =====
             // The `eager_depth` hint is moot for the converter (the dense→overlay build
@@ -881,7 +917,7 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
             inner.convert_owned_to_overlay_on_reopen(
                 root_ptr,
                 /* was_loaded_from_disk */ root_ptr != 0,
-                checkpoint_lsn,
+                effective_checkpoint_lsn,
                 &archive_config,
             )?;
             if let Some(ref arena_manager) = inner.arena_manager {
@@ -904,7 +940,11 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
             let _applied = inner.reconcile_and_drain_overlay(
                 &archive_config,
                 /* loaded_from_disk */ effective_loaded,
-                if effective_loaded { checkpoint_lsn } else { 0 },
+                if effective_loaded {
+                    effective_checkpoint_lsn
+                } else {
+                    0
+                },
             )?;
         } else {
             // ===== LEGACY PATH (ineligible V stays owned; honors `eager_depth`) =====
@@ -935,7 +975,7 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
             let _ = inner.replay_records_lww(
                 recovered_ops,
                 loaded_from_disk,
-                checkpoint_lsn,
+                effective_checkpoint_lsn,
                 rank_regime,
             );
             // Ineligible V cannot overlay → stays owned. (An eligible Owned file converts

@@ -626,6 +626,29 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
             commit_seq: std::sync::atomic::AtomicU64::new(commit_seq_seed),
         };
 
+        // #48: the loaded image self-describes its IMAGE-COVERAGE frontier (the max WAL LSN whose
+        // effects are folded into it), durable ATOMICALLY with the image. Take max(WAL Checkpoint
+        // record, image coverage) so a TORN WAL `Checkpoint` record (stale/absent after a crash in
+        // the publisher's image-fsync ↔ record-fsync window) cannot poison the drain-skip — the
+        // durable image's own coverage backstops it. 0 when not loaded-from-disk or for a v1 image
+        // ⇒ max = the WAL record = today's behavior.
+        let effective_checkpoint_lsn: Option<super::wal::Lsn> = {
+            let image_cov = if was_loaded_from_disk {
+                dict.buffer_manager
+                    .as_ref()
+                    .and_then(|bm| bm.read().storage().image_checkpoint_lsn().ok())
+                    .unwrap_or(0)
+            } else {
+                0
+            };
+            let eff = checkpoint_lsn.unwrap_or(0).max(image_cov);
+            if eff == 0 {
+                None
+            } else {
+                Some(eff)
+            }
+        };
+
         if convert_owned {
             // ===== F7 CONVERT PATH (Owned-regime eligible file → overlay) =====
             // Rotate-if-records-non-empty → stamp Overlay (+ fsync, OBL-1) → F5 build from
@@ -640,7 +663,7 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
             dict.convert_owned_to_overlay_on_reopen(
                 effective_root_ptr,
                 was_loaded_from_disk,
-                checkpoint_lsn.unwrap_or(0),
+                effective_checkpoint_lsn.unwrap_or(0),
                 &archive_config,
             )?;
             dict.dirty.store(false, AtomicOrdering::Release);
@@ -669,7 +692,7 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
             let _applied = dict.reconcile_and_drain_overlay(
                 &archive_config,
                 /* loaded_from_disk */ was_loaded_from_disk,
-                checkpoint_lsn.unwrap_or(0),
+                effective_checkpoint_lsn.unwrap_or(0),
             )?;
             dict.dirty.store(false, AtomicOrdering::Release);
         } else {
@@ -704,7 +727,7 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
                 recovered_ops,
                 raw_records,
                 was_loaded_from_disk,
-                checkpoint_lsn,
+                effective_checkpoint_lsn,
                 rank_regime,
             );
             // Mark clean after recovery replay
@@ -715,7 +738,7 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
             if was_loaded_from_disk && replayed_count == 0 {
                 if let Err(e) = wal_writer.truncate() {
                     warn!("Failed to truncate WAL after recovery: {:?}", e);
-                } else if let Some(threshold) = checkpoint_lsn {
+                } else if let Some(threshold) = effective_checkpoint_lsn {
                     let next_lsn = threshold.saturating_add(1);
                     wal_writer.set_min_lsn(next_lsn);
                     dict.next_lsn.store(next_lsn, AtomicOrdering::Release);

@@ -1,6 +1,15 @@
 # Fix design (#48) — torn-checkpoint counter-delta double-apply (2026-06-08)
 
-> **Status: CONVERGED (design + 1 thorough red-team, "safe to implement"). Direction I.**
+> **Status: IMPLEMENTED + VERIFIED (full gate green: 2729 suite incl. the lock-free durable loom proof,
+> 751 feature-off, 147 doctests, formal + unsafe + fmt + downstream liblevenshtein). Direction I.**
+> Regression battery (this file's T1–T8) landed in `tests/persistent_recovery_watermark_seed_l14.rs` +
+> 3 `FileHeader` unit tests in `disk_manager.rs`. T1/T2 RED→GREEN-confirmed (neuter→`Some(8)`,
+> restore→`Some(4)`). T3 (i64) is SUBSUMED — `try_increment_cas_durable` lives in `impl
+> PersistentARTrieChar<u64>` (u64-only by type), so an i64 trie has NO durable-counter-delta surface to
+> double-apply; the bug is u64-specific by construction. The T5 #41-no-panic test additionally EXPOSED a
+> distinct pre-existing data-loss bug **#49** (steady-state checkpoint-record LSN gap stalls the
+> committed watermark), fixed alongside — see
+> docs/design/checkpoint-record-lsn-watermark-gap-49-design-2026-06-08.md. Direction I.
 > The bug: the retain-WAL overlay checkpoint publisher fsyncs the IMAGE descriptor BEFORE the
 > WAL `Checkpoint` record — a crash between them with a durable BatchIncrement DELTA at LSN N
 > (folded into the image) leaves the reopen reading the PREVIOUS `checkpoint_lsn=P<N` → the

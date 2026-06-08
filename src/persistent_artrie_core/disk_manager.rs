@@ -64,8 +64,13 @@ pub const MAX_BLOCK_COUNT: u32 = 1 << 24;
 /// "PART" in ASCII + version nibbles
 pub const MAGIC_NUMBER: u64 = 0x5041_5254_0001_0000; // "PART" + v1.0
 
-/// Current file format version
-pub const FORMAT_VERSION: u32 = 1;
+/// Current file format version.
+///
+/// **v2 (#48):** the formerly-reserved header bytes 56..64 now carry the IMAGE-COVERAGE
+/// frontier (`image_checkpoint_lsn`), folded into the checksum only for v2+ files. v1 files
+/// validate byte-identically (the fold is version-gated); v2 files fail-closed on a v1 binary
+/// (the same forward-incompat contract as the WAL VERSION bump + char-header V2).
+pub const FORMAT_VERSION: u32 = 2;
 
 /// File header structure (stored at block 0)
 ///
@@ -92,6 +97,14 @@ pub struct FileHeader {
     pub entry_count: AtomicU64,
     /// CRC-64 checksum of header (excluding this field)
     pub checksum: u64,
+    /// **#48 (FORMAT_VERSION >= 2) — IMAGE-COVERAGE frontier.** The max WAL LSN whose effects
+    /// are folded into THIS on-disk image (the durable descriptor at offset 64). Written
+    /// ATOMICALLY with the image in `publish_snapshot` (same `dm.sync()`), so a torn WAL
+    /// `Checkpoint` record cannot poison the reopen drain-skip — the image self-describes its
+    /// coverage and the reopen takes `max(wal_record, this)`. Stored in the (formerly reserved)
+    /// bytes 56..64; folded into the checksum ONLY for v2+ files. It is an IMAGE-COVERAGE fact,
+    /// NOT the in-memory committed watermark (#41 untouched).
+    pub image_checkpoint_lsn: AtomicU64,
 }
 
 impl FileHeader {
@@ -107,6 +120,7 @@ impl FileHeader {
             free_list_head: AtomicU64::new(0),
             entry_count: AtomicU64::new(0),
             checksum: 0,
+            image_checkpoint_lsn: AtomicU64::new(0),
         }
     }
 
@@ -163,6 +177,21 @@ impl FileHeader {
             hash = hash.wrapping_mul(prime);
         }
 
+        // #48: fold the image-coverage frontier into the checksum ONLY for v2+ files, so a v1
+        // file (which wrote 0 in bytes 56..64 and checksummed WITHOUT it) still validates
+        // byte-identically. A torn coverage write thus fails the checksum (fail-closed) rather
+        // than yielding a plausible-but-wrong coverage = silent loss.
+        if self.version >= 2 {
+            for byte in self
+                .image_checkpoint_lsn
+                .load(Ordering::SeqCst)
+                .to_le_bytes()
+            {
+                hash ^= byte as u64;
+                hash = hash.wrapping_mul(prime);
+            }
+        }
+
         hash
     }
 
@@ -188,7 +217,13 @@ impl FileHeader {
         bytes[32..40].copy_from_slice(&self.free_list_head.load(Ordering::SeqCst).to_le_bytes());
         bytes[40..48].copy_from_slice(&self.entry_count.load(Ordering::SeqCst).to_le_bytes());
         bytes[48..56].copy_from_slice(&self.checksum.to_le_bytes());
-        // bytes[56..64] remain zero (reserved)
+        // #48: bytes[56..64] carry the image-coverage frontier (0 for v1; in the v2 checksum).
+        bytes[56..64].copy_from_slice(
+            &self
+                .image_checkpoint_lsn
+                .load(Ordering::SeqCst)
+                .to_le_bytes(),
+        );
         bytes
     }
 
@@ -204,6 +239,9 @@ impl FileHeader {
             free_list_head: AtomicU64::new(u64::from_le_bytes(bytes[32..40].try_into().unwrap())),
             entry_count: AtomicU64::new(u64::from_le_bytes(bytes[40..48].try_into().unwrap())),
             checksum: u64::from_le_bytes(bytes[48..56].try_into().unwrap()),
+            image_checkpoint_lsn: AtomicU64::new(u64::from_le_bytes(
+                bytes[56..64].try_into().unwrap(),
+            )),
         }
     }
 }
@@ -1296,6 +1334,31 @@ impl MmapDiskManager {
         Ok(())
     }
 
+    /// **#48** — get the IMAGE-COVERAGE frontier (the max WAL LSN folded into this image). `0`
+    /// for v1 files (the formerly-reserved bytes) and for a fresh v2 image with no coverage yet.
+    pub fn image_checkpoint_lsn(&self) -> Result<u64> {
+        let header = self.read_header()?;
+        Ok(header.image_checkpoint_lsn.load(Ordering::SeqCst))
+    }
+
+    /// **#48** — set the IMAGE-COVERAGE frontier and UPGRADE the header to v2 so the value is
+    /// folded into the checksum (fail-closed; a torn write fails validation rather than yielding a
+    /// plausible-wrong coverage = silent loss). Mirrors `set_entry_count`. Called by
+    /// `publish_snapshot` AFTER `set_root_ptr`/`set_entry_count` and BEFORE `sync()`, so the value
+    /// lands in block-0 ATOMICALLY with the image (the single final `sync()` is the linearization
+    /// point). Upgrading v1→v2 is the intended forward-incompat #48 contract.
+    pub fn set_image_checkpoint_lsn(&self, lsn: u64) -> Result<()> {
+        let header = self.read_header()?;
+        header.image_checkpoint_lsn.store(lsn, Ordering::SeqCst);
+
+        let mut updated_header = header;
+        updated_header.version = FORMAT_VERSION;
+        updated_header.checksum = updated_header.compute_checksum();
+        self.write_header(&updated_header)?;
+
+        Ok(())
+    }
+
     /// Write raw header bytes to block 0 offset 0.
     ///
     /// This is a convenience method for writing custom header formats
@@ -1417,6 +1480,14 @@ impl BlockStorage for MmapDiskManager {
         MmapDiskManager::set_entry_count(self, count)
     }
 
+    fn image_checkpoint_lsn(&self) -> Result<u64> {
+        MmapDiskManager::image_checkpoint_lsn(self)
+    }
+
+    fn set_image_checkpoint_lsn(&self, lsn: u64) -> Result<()> {
+        MmapDiskManager::set_image_checkpoint_lsn(self, lsn)
+    }
+
     fn file_size(&self) -> u64 {
         MmapDiskManager::file_size(self)
     }
@@ -1468,6 +1539,62 @@ mod tests {
         // Update checksum and verify it passes again
         header.update_checksum();
         assert!(header.verify_checksum());
+    }
+
+    /// **#48** — the image-coverage frontier survives `to_bytes`/`from_bytes` and stays inside the
+    /// v2 checksum (the `bytes[56..64]` round-trip).
+    #[test]
+    fn image_checkpoint_lsn_round_trips_through_v2_bytes() {
+        let mut header = FileHeader::new();
+        assert_eq!(header.version, FORMAT_VERSION, "new headers are v2");
+        header.image_checkpoint_lsn.store(42, Ordering::SeqCst);
+        header.update_checksum();
+        let restored = FileHeader::from_bytes(&header.to_bytes());
+        assert_eq!(
+            restored.image_checkpoint_lsn.load(Ordering::SeqCst),
+            42,
+            "image_checkpoint_lsn must round-trip through bytes[56..64]"
+        );
+        assert!(
+            restored.verify_checksum(),
+            "the round-tripped v2 checksum must verify"
+        );
+    }
+
+    /// **#48 constraint #1 (fail-closed)** — a torn coverage write must FAIL the checksum, never
+    /// yield a plausible-but-wrong coverage. Modifying the field after `update_checksum`
+    /// invalidates the v2 header.
+    #[test]
+    fn image_checkpoint_lsn_is_covered_by_the_v2_checksum() {
+        let mut header = FileHeader::new();
+        header.image_checkpoint_lsn.store(7, Ordering::SeqCst);
+        header.update_checksum();
+        assert!(header.verify_checksum());
+        // Simulate a torn/garbled coverage write (the post-image-fsync crash window).
+        header.image_checkpoint_lsn.store(9, Ordering::SeqCst);
+        assert!(
+            !header.verify_checksum(),
+            "#48: the image-coverage frontier must be inside the v2 checksum (fail-closed on a torn write)"
+        );
+    }
+
+    /// **#48 back-compat** — a v1 file checksummed WITHOUT the coverage field must validate
+    /// byte-identically regardless of `bytes[56..64]`, so old files (created before #48, whose
+    /// reserved bytes are unconstrained) still open. The `version >= 2` gate in `compute_checksum`
+    /// is what makes the v1 checksum independent of the field.
+    #[test]
+    fn v1_header_excludes_image_checkpoint_lsn_from_checksum() {
+        let mut h0 = FileHeader::new();
+        h0.version = 1;
+        h0.image_checkpoint_lsn.store(0, Ordering::SeqCst);
+        let mut h99 = FileHeader::new();
+        h99.version = 1;
+        h99.image_checkpoint_lsn.store(99, Ordering::SeqCst);
+        assert_eq!(
+            h0.compute_checksum(),
+            h99.compute_checksum(),
+            "a v1 checksum must NOT depend on the coverage field (byte-identical to pre-#48)"
+        );
     }
 
     #[test]

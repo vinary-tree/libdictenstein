@@ -129,7 +129,8 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
         use std::time::{SystemTime, UNIX_EPOCH};
 
         // Phase B: publish the snapshot to disk and fsync (linearization point).
-        self.publish_snapshot(&snapshot)?;
+        // #48: owned/non-retaining publisher ⇒ no image-coverage needed (no torn-window re-drain).
+        self.publish_snapshot(&snapshot, None)?;
 
         // Verify checkpoint - re-read header and verify checksum. Ensures the
         // sync() actually succeeded and the data is durable.
@@ -268,7 +269,8 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
         // Phase A: capture a frozen snapshot (serialize tree -> fresh arenas).
         let snapshot = self.capture_snapshot()?;
         // Phase B: publish the snapshot durably (descriptor + flush + sync).
-        self.publish_snapshot(&snapshot)?;
+        // #48: owned/non-retaining publisher ⇒ no image-coverage needed (no torn-window re-drain).
+        self.publish_snapshot(&snapshot, None)?;
 
         Ok(snapshot.eviction_registry)
     }
@@ -638,8 +640,9 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
         let checkpoint_lsn =
             base_watermark.max(self.committed_watermark.take_recovery_image_coverage());
 
-        // (1) Durable descriptor publish (the on-disk linearization point) + verify.
-        self.publish_snapshot(snapshot)?;
+        // (1) Durable descriptor publish (the on-disk linearization point) + verify. #48: the
+        // image self-describes its coverage (`checkpoint_lsn`), fsync'd atomically with it.
+        self.publish_snapshot(snapshot, Some(checkpoint_lsn))?;
         self.verify_checkpoint()?;
 
         // (2) Record `checkpoint_lsn = watermark` so recovery skips deltas ≤ it
@@ -649,7 +652,7 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
                 .duration_since(UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_secs();
-            wal_writer
+            let checkpoint_record_lsn = wal_writer
                 .append(WalRecord::Checkpoint {
                     checkpoint_lsn,
                     timestamp,
@@ -662,6 +665,17 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
                 .map_err(|e| PersistentARTrieError::WalError {
                     reason: format!("{:?}", e),
                 })?;
+            // #49: the `Checkpoint` record consumed a WAL LSN; mark it committed (it is durable via
+            // the `sync()` above) so the contiguous committed-watermark prefix does NOT stall behind
+            // it. Otherwise every later steady-state checkpoint captures a watermark frozen at the
+            // first checkpoint's predecessor LSN → under-claims image coverage → post-checkpoint
+            // counter deltas re-drain on reopen (double-apply). Marking restores `watermark ==
+            // committed-write frontier` (the `LockFreeDurableCheckpoint.tla` assumption). Safe: synced
+            // BEFORE marking (#41 `watermark ≤ synced_frontier` holds) and a control record is nothing
+            // to lose, so the no-lost-write proof is untouched. See
+            // docs/design/checkpoint-record-lsn-watermark-gap-49-design-2026-06-08.md.
+            self.committed_watermark
+                .mark_committed(checkpoint_record_lsn);
             // S5-2 (A3 floor): durably raise the WAL commit_seq floor to the value
             // captured in the watermark window, so a post-checkpoint overlay op
             // out-ranks every pre-checkpoint survivor across a later rotate. Monotone
@@ -748,7 +762,8 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
 
         // (1) Durable descriptor publish (the on-disk linearization point) + verify.
         //     `publish_snapshot(&snapshot)` BORROWS the snapshot before the move below.
-        self.publish_snapshot(&snapshot)?;
+        // #48: the image self-describes its coverage, fsync'd atomically with it.
+        self.publish_snapshot(&snapshot, Some(checkpoint_lsn))?;
         self.verify_checkpoint()?;
 
         // (2) Publish the eviction registry — ONLY AFTER verify proves the image
@@ -776,7 +791,7 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
                 .duration_since(UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_secs();
-            wal_writer
+            let checkpoint_record_lsn = wal_writer
                 .append(WalRecord::Checkpoint {
                     checkpoint_lsn,
                     timestamp,
@@ -789,6 +804,12 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
                 .map_err(|e| PersistentARTrieError::WalError {
                     reason: format!("{:?}", e),
                 })?;
+            // #49: mark the `Checkpoint` record's LSN committed (durable via the `sync()` above) so
+            // the contiguous committed-watermark prefix does not stall behind it — identical to
+            // `publish_immutable_snapshot_retaining_wal`. See
+            // docs/design/checkpoint-record-lsn-watermark-gap-49-design-2026-06-08.md.
+            self.committed_watermark
+                .mark_committed(checkpoint_record_lsn);
             // S5-2 (A3 floor): raise the WAL commit_seq floor (same as the
             // retaining-WAL publisher). `commit_seq_at_capture` is `Copy`, so it
             // survives the earlier `eviction_registry` partial-move.
@@ -901,7 +922,11 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     /// file. This is the on-disk linearization point of the checkpoint.
     /// Checkpoint-level dirty state is cleared only after the WAL
     /// checkpoint/rotation step succeeds in `checkpoint()`. Takes `&self`.
-    fn publish_snapshot(&self, snapshot: &CheckpointSnapshot) -> Result<()> {
+    fn publish_snapshot(
+        &self,
+        snapshot: &CheckpointSnapshot,
+        image_checkpoint_lsn: Option<u64>,
+    ) -> Result<()> {
         let buffer_manager = self.buffer_manager.as_ref().ok_or_else(|| {
             PersistentARTrieError::internal("No buffer manager for disk serialization")
         })?;
@@ -935,6 +960,13 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
             SwizzledPtr::on_disk(0, DESCRIPTOR_OFFSET as u32, NodeType::Bucket);
         dm.set_root_ptr(root_descriptor_ptr.to_raw())?;
         dm.set_entry_count(snapshot.entry_count)?;
+        // C2/#48: record the IMAGE-COVERAGE frontier in block-0 ATOMICALLY with the image (rides
+        // the same `dm.sync()` below), so a torn WAL `Checkpoint` record cannot poison the reopen
+        // drain-skip (the image self-describes its coverage). Overlay retaining publishers pass
+        // Some(_); the owned arm passes None (it truncates ⇒ no re-drain). See the byte twin.
+        if let Some(cov) = image_checkpoint_lsn {
+            dm.set_image_checkpoint_lsn(cov)?;
+        }
 
         // Flush all pages to ensure durability. This publishes the root
         // descriptor, but checkpoint-level dirty state is cleared only after

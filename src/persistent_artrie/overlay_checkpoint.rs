@@ -151,7 +151,8 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
     pub(crate) fn publish_owned_and_reclaim(&self, snapshot: CheckpointSnapshot) -> Result<()> {
         // Phase B: publish the descriptor + flush + fsync (the on-disk linearization
         // point) + clear the dirty flag.
-        self.publish_snapshot(&snapshot)?;
+        // #48: the owned arm truncates the WAL (no torn-window re-drain) ⇒ no image-coverage needed.
+        self.publish_snapshot(&snapshot, None)?;
 
         // C2 invariant (the byte twin of char's `publish_durable_and_reclaim` assert):
         // under the owned `&mut self` checkpoint no `L1.write` mutator can run between
@@ -346,8 +347,9 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
         let checkpoint_lsn =
             base_watermark.max(self.committed_watermark.take_recovery_image_coverage());
 
-        // (1) Durable descriptor publish (the on-disk linearization point) + verify.
-        self.publish_snapshot(snapshot)?;
+        // (1) Durable descriptor publish (the on-disk linearization point) + verify. #48: the
+        // image self-describes its coverage (`checkpoint_lsn`), fsync'd atomically with it.
+        self.publish_snapshot(snapshot, Some(checkpoint_lsn))?;
         self.verify_checkpoint_header()?;
 
         // (2) Record `checkpoint_lsn = watermark` so recovery skips deltas ≤ it, then
@@ -357,7 +359,7 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_secs();
-            wal_writer
+            let checkpoint_record_lsn = wal_writer
                 .append(WalRecord::Checkpoint {
                     checkpoint_lsn,
                     timestamp,
@@ -376,6 +378,15 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
                     std::io::Error::new(std::io::ErrorKind::Other, e.to_string()),
                 )
             })?;
+            // #49: mark the `Checkpoint` record's LSN committed (durable via the `sync()` above) so
+            // the contiguous committed-watermark prefix does NOT stall behind it. Otherwise every
+            // later steady-state checkpoint captures a watermark frozen at the first checkpoint's
+            // predecessor LSN → under-claims image coverage → post-checkpoint counter deltas re-drain
+            // on reopen (double-apply). Marking restores `watermark == committed-write frontier`. Safe:
+            // synced BEFORE marking (#41 `watermark ≤ synced_frontier` holds), a control record is
+            // nothing to lose. See docs/design/checkpoint-record-lsn-watermark-gap-49-design-2026-06-08.md.
+            self.committed_watermark
+                .mark_committed(checkpoint_record_lsn);
             // A3 floor: durably raise the WAL commit_seq floor to the value captured
             // in the watermark window, so a post-checkpoint overlay op out-ranks every
             // pre-checkpoint survivor across a later rotate.
@@ -428,7 +439,8 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
 
         // (1) Durable descriptor publish (the on-disk linearization point) + verify.
         //     `publish_snapshot(&snapshot)` BORROWS the snapshot before the move below.
-        self.publish_snapshot(&snapshot)?;
+        // #48: the image self-describes its coverage, fsync'd atomically with it.
+        self.publish_snapshot(&snapshot, Some(checkpoint_lsn))?;
         self.verify_checkpoint_header()?;
 
         // (2) Publish the eviction registry — ONLY AFTER verify proves the image durable
@@ -455,7 +467,7 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_secs();
-            wal_writer
+            let checkpoint_record_lsn = wal_writer
                 .append(WalRecord::Checkpoint {
                     checkpoint_lsn,
                     timestamp,
@@ -474,6 +486,12 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
                     std::io::Error::new(std::io::ErrorKind::Other, e.to_string()),
                 )
             })?;
+            // #49: mark the `Checkpoint` record's LSN committed (durable via the `sync()` above) so
+            // the contiguous committed-watermark prefix does not stall behind it — identical to
+            // `publish_overlay_snapshot_retaining`. See
+            // docs/design/checkpoint-record-lsn-watermark-gap-49-design-2026-06-08.md.
+            self.committed_watermark
+                .mark_committed(checkpoint_record_lsn);
             if let Some(floor) = snapshot.commit_seq_at_capture {
                 wal_writer.set_commit_seq_floor(floor).map_err(|e| {
                     PersistentARTrieError::io_error(
@@ -585,7 +603,11 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
     /// linearization point), and clear the dirty flag. Shared by both arms. The byte
     /// twin of char's `publish_snapshot`; byte-identical to `persist_to_disk`'s
     /// descriptor-write tail.
-    fn publish_snapshot(&self, snapshot: &CheckpointSnapshot) -> Result<()> {
+    fn publish_snapshot(
+        &self,
+        snapshot: &CheckpointSnapshot,
+        image_checkpoint_lsn: Option<u64>,
+    ) -> Result<()> {
         let buffer_manager = self.buffer_manager.as_ref().ok_or_else(|| {
             PersistentARTrieError::internal("No buffer manager for disk serialization")
         })?;
@@ -606,6 +628,14 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
             SwizzledPtr::on_disk(0, DESCRIPTOR_OFFSET as u32, NodeType::Bucket);
         dm.set_root_ptr(root_descriptor_ptr.to_raw())?;
         dm.set_entry_count(snapshot.term_count)?;
+        // C2/#48: record the IMAGE-COVERAGE frontier in block-0, ATOMICALLY with the image (it
+        // rides the same `dm.sync()` below). The overlay retaining publishers pass Some(_) so a
+        // torn WAL `Checkpoint` record cannot poison the reopen drain-skip (the image
+        // self-describes its coverage; reopen takes max(wal_record, this)). The owned arm passes
+        // None — it truncates the WAL ⇒ no re-drain ⇒ no torn-window bug; byte-identical, no v2 upgrade.
+        if let Some(cov) = image_checkpoint_lsn {
+            dm.set_image_checkpoint_lsn(cov)?;
+        }
 
         bm.flush_all()?;
         dm.sync()?;

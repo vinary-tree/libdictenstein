@@ -226,6 +226,20 @@ pub trait BlockStorage: Send + Sync + 'static {
     /// Set the entry count in the file header.
     fn set_entry_count(&self, count: u64) -> Result<()>;
 
+    /// **#48** — get the IMAGE-COVERAGE frontier from the file header (the max WAL LSN folded
+    /// into the on-disk image; 0 for v1 files / fresh images). Default `Ok(0)` for header-less
+    /// backends (test mocks) ⇒ the reopen's `max(wal_record, 0)` = the WAL record (no change).
+    fn image_checkpoint_lsn(&self) -> Result<u64> {
+        Ok(0)
+    }
+
+    /// **#48** — set the IMAGE-COVERAGE frontier in the file header (+ upgrade it to v2 so the
+    /// value is inside the checksum, fail-closed). Written ATOMICALLY with the image in
+    /// `publish_snapshot`. Default no-op for header-less backends.
+    fn set_image_checkpoint_lsn(&self, _lsn: u64) -> Result<()> {
+        Ok(())
+    }
+
     /// Get the current file size in bytes.
     fn file_size(&self) -> u64;
 
