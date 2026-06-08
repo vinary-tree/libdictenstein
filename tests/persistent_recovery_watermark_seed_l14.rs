@@ -2,22 +2,33 @@
 //! trie carrying a BatchIncrement DELTA must NOT double-apply the delta across
 //! `recovery → checkpoint() → drop → reopen`.
 //!
-//! ## Why this exists (and why it is GREEN, not a TODO)
-//! The L1 design pass hypothesized (by code-reading, from the open_inner "F7 FIX C"
-//! precedent) that the recovery ctors needed a watermark base-seed
-//! (`mark_committed(max_lsn_in_segments(...))`), or `checkpoint_lsn=0` would let the
-//! surviving archive RE-DRAIN on reopen and double-apply the delta. **This test
-//! REFUTES that hypothesis empirically** (the scientific method overriding the
-//! code-reading): `open_with_recovery_config` returns the apply-loop trie directly
-//! with `watermark()==0` (mmap_ctor.rs:1029, no re-open / no FIX-C seed), yet the
-//! reopen yields the correct value. The post-recovery `checkpoint()` captures every
-//! recovered record into the image at a HIGHER reconcile generation, so the older
-//! archived segment loses the LWW reconcile and the delta is applied EXACTLY ONCE.
-//! ⇒ the recovery ctors do NOT need a watermark seed; L1.4 was dropped. This test is
-//! retained as the regression guard that pins the property (incl. across the L1
-//! applier-redirect: it must STAY green).
+//! ## ⚠️ Why these are GREEN for V=i64 — a MASKING ARTIFACT, not correctness
+//! These guards use `V=i64` and CURRENTLY PASS, but **only because the overlay
+//! BatchIncrement-DELTA applier (`apply_recovered_operation_overlay`, flip.rs:1166) is
+//! u64-monomorph-only** (`overlay_publish_counter` `Any`-downcasts to `<u64,S>`,
+//! overlay_write_mode.rs:547) and **silently NO-OPS for i64** — so the reopen's archive
+//! re-drain of the delta is dropped, leaving the counter at the checkpoint-image value
+//! (4). The "no double-apply" is the bug masking the bug.
 //!
-//! Uses a BARE BatchIncrement (no preceding SET) so a re-drain WOULD be visible
+//! ## CONFIRMED PRODUCTION DATA-LOSS BUG (u64 counter monomorph)
+//! For `V=u64` (libgrammstein's n-gram count monomorph) the delta arm ALWAYS works
+//! (`increment_cas`), so it is NOT masked. A `diag` run confirmed: u64
+//! `open_with_recovery_config` → `checkpoint()` → reopen yields **Some(8)** for a
+//! recovered `+4` (DOUBLE-APPLIED). Root cause: the recovery ctors lack the open_inner
+//! "F7 FIX C" watermark seed, so the post-recovery checkpoint records `checkpoint_lsn=0`
+//! and the surviving archive RE-DRAINS the delta on reopen. The naive seed
+//! `mark_committed(max_lsn_in_segments)` is INVALID here — it violates the #41
+//! capture-ordering invariant (`watermark ≤ synced WAL frontier`; the recovery ctor's
+//! fresh WAL frontier is 0), panicking at overlay_checkpoint.rs:295. The fix is a deep,
+//! #41-aware watermark/archive-lifecycle change (its own red-team). See
+//! docs/design/slice3-l1-recovery-redirect-design-2026-06-08.md +
+//! docs/design/recovery-checkpoint-reopen-double-apply-bug-2026-06-08.md.
+//!
+//! These i64 guards are retained: they currently pass via the masking no-op, and will
+//! FLIP TO RED the moment the overlay delta arm is genericized over V (the L1 redirect
+//! precondition) — correctly catching the double-apply until the #41-aware seed lands.
+//!
+//! Uses a BARE BatchIncrement (no preceding SET) so a re-drain IS visible
 //! (a `[SET, +delta]` archive self-cancels because the re-drained SET masks the delta).
 #![cfg(feature = "persistent-artrie")]
 

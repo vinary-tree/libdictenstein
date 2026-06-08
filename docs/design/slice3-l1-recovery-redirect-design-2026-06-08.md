@@ -1,8 +1,17 @@
 # Slice 3 / Level 3 — L1 recovery-redirect: converged design + red-team (2026-06-08)
 
-> **Status: REDIRECT BLOCKED — needs a generic-V overlay-counter fix FIRST (its own red-team). L1.4 refuted
-> + dropped. Regression guards written + GREEN. The naive applier-swap was tried, FAILED a committed oracle,
-> and was reverted.**
+> **Status: REDIRECT BLOCKED on a COUPLED PACKAGE: (1) genericize the overlay counter applier over V, AND
+> (2) a #41-aware recovery-checkpoint-reopen watermark fix. Both data-loss-critical, each needs its own
+> red-team. The investigation UNCOVERED A CONFIRMED PRODUCTION DATA-LOSS BUG (u64 recovery→checkpoint→reopen
+> doubles counter deltas) — see docs/design/recovery-checkpoint-reopen-double-apply-bug-2026-06-08.md.**
+>
+> **⚠️ CORRECTION — "L1.4 refuted" (below) was ITSELF wrong (a masking artifact).** My first TDD pass found
+> the i64 guards GREEN and concluded L1.4 (watermark seed) was unnecessary. WRONG: the green was because the
+> u64-only overlay delta applier NO-OPS for i64 (the bug masking the bug). The generic-V applier fix unmasks
+> it, AND a `u64` diagnostic CONFIRMED the double-apply is real in production (`Some(8)` for a recovered `+4`).
+> So **L1.4 (a watermark fix) IS genuinely required** — but the naive `mark_committed(max_lsn_in_segments)`
+> seed violates the #41 capture-ordering invariant (`watermark ≤ synced frontier`; fresh-WAL frontier=0 →
+> panic at overlay_checkpoint.rs:295), so the real fix is the deep #41-aware change in the bug doc.
 >
 > **⛔ REDIRECT BLOCKER (2026-06-08, TDD-caught — the agent's "parity" claim was empirically FALSE):** the
 > naive swap `apply_recovered_operation_no_wal` → `apply_recovered_operation_overlay` (L1.1) was implemented
