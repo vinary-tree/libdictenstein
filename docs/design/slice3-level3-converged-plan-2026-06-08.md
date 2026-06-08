@@ -8,6 +8,31 @@ Process (owner directive): plan → red-team → refine until convergence → +1
 each step green + committable. The 8 data-loss-critical steps (flagged ⚠️RT) each get a dedicated adversarial red-team
 BEFORE implementation. Implementation is by hand (plan/explore/red-team agents allowed; no work delegation).
 
+## REFINEMENT R1 (confirming red-team af13fe7 — 2026-06-08): L0.3 RETRACTED; OR-lock collapse → L3.3
+The +1 confirming red-team on the converged L0 found a BLOCKER the prior passes missed: the owned `&self` WRITE
+mutators were never enumerated. **L0.3 (collapse OR RwLock → bare field) CANNOT happen at Level 0** — RETRACTED:
+- byte insert_impl_core/remove_impl_core + dirty_tracking clear_dirty_flags_recursive/propagate_dirty_to_root, and
+  char try_insert_impl_no_wal/_with_value/try_remove_impl_no_wal/preflight_existing_terminal_is_final all take
+  self.root.WRITE() through `&self` (the OR lock's raison d'être). They are LOAD-BEARING (compaction staging via
+  insert_impl_no_wal until L2.1; reestablish/recovery/staging until L3.x); the plan deletes them only at L2.2/L3.3.
+- A bare field cannot express `&self` writes (won't compile); removing the lock is a data race — commit_document is
+  now `&self` (e44a877), so an Arc embedder can kill_switch_to_owned + concurrently commit_document[owned write] +
+  contains[owned read] + enable_eviction[owned evict], serialized today ONLY by OR. persistent_lockfree_f4_lock_
+  hierarchy_loom.rs EMPIRICALLY proves OR serializes a concurrent insert_impl_core.
+
+**Resolution:** the OR RwLock + owned root field persist UNTIL **L3.3** deletes the field OUTRIGHT (after every `&self`
+owned writer/reader is gone via L2.2 + L3.3). NO intermediate bare-field state — "collapse" == "delete at L3.3". L3.3
+additionally deletes clear_dirty_flags_recursive/propagate_dirty_to_root and must RETIRE/REWRITE the loom suite (its
+OR-lock premise evaporates). **Level 0 is now ONLY L0.1 + L0.2**, with these RT-confirmed corrections:
+- L0.1 commit must ALSO, in the same commit, migrate the owned-eviction tests: src/persistent_artrie_char/
+  eviction_registry_tests.rs; the persist.rs ~2725 region; the owned-arm assertions in tests/persistent_char_eviction_
+  {correspondence,proptest,registry_correspondence}.rs (re-assert vs the overlay registry / drop the kill-switched-
+  owned-evict scenario); confirm tests/persistent_artrie_loom_correspondence.rs:1748 is comment-only.
+- L0.2 must UNWRAP each route_overlay() guard (not merely delete the tail — else missing return → won't compile),
+  delete collect_terms_with_cursor_and_arena (cursor_iter.rs:195) alongside collect_terms_from_cursor, and route/delete
+  the byte iter_prefix_with_arena/iter_prefix_with_values_and_arena owned tails (arena_iter.rs:392/561).
+- L0.1/L0.2 are RT-CLEARED (mechanical, no further red-team). The OR-lock collapse (now folded into L3.3) keeps its ⚠️RT.
+
 ## 5 ground-truth corrections (each load-bearing for ordering)
 1. **Normal reopen is ALREADY overlay-drained.** open_inner production arms use convert_owned_to_overlay_on_reopen
    (Owned regime) / reconcile_and_drain_overlay (Overlay regime) — neither touches self.root. The owned

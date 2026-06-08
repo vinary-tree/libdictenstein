@@ -204,10 +204,6 @@ pub mod mutation_core;
 // (`LockFreeOverlay::USE_F5_REOPEN_LOADER`); see `docs/design/slice3-f5-loader-impl.md`.
 pub(crate) mod f5_loader;
 
-/// Epoch-deferred reclamation of evicted subtrees (eviction-safety for the
-/// lock-free `DictionaryNode` walk).
-pub(crate) mod reclaim;
-
 // In-crate white-box tests for the eviction-registry wiring (commit f10c43e):
 // state oracle (slot swizzled -> on-disk) + the async eviction path, both of
 // which need private node/coordinator internals.
@@ -492,11 +488,6 @@ pub struct PersistentARTrieChar<V: DictionaryValue = (), S: crate::persistent_ar
     /// counter, or quiescence is vacuous and eviction frees nodes out from under a
     /// live walk.
     pub(crate) epoch_manager: Arc<crate::persistent_artrie::concurrency::EpochManager>,
-    /// Epoch-deferred retire list for evicted subtrees. Eviction `unswizzle`s a
-    /// subtree's parent slot then retires the subtree root here instead of freeing
-    /// it inline; the reclaimer frees it only after a quiescence drain proves no
-    /// live `DictionaryNode` walk holds a pointer into it. See [`reclaim`].
-    pub(crate) retire_list: Arc<reclaim::CharRetireList<V>>,
     /// Monotonic counter bumped on every durable in-place structural mutation (via
     /// `invalidate_eviction_registry` at the `append_to_wal` chokepoint). A
     /// `DictionaryNode` walk snapshots it at `root()`; in debug builds each handle
@@ -1826,8 +1817,7 @@ impl<V: DictionaryValue> crate::artrie_trait::ARTrie for SharedCharARTrie<V> {
 // `cfg(any(test, feature = "bench-internals"))` — NOT a production path. This is
 // the reversible driver that makes the eviction-ON benchmark's TREATMENT arm do
 // REAL in-memory reclamation of COLD overlay subtrees (vs the §E structural
-// no-op). It is the OVERLAY analogue of `evict_node_at_path`/`evict_char_nodes`
-// (which act on the OWNED `self.root`, Empty in the overlay arm): it path-copies
+// no-op): it path-copies
 // the `lockfree_root` spine and swaps a COLD in-memory child for an `OnDisk`
 // reference via a loser-safe root CAS. ZERO `unsafe` (reuses the proven Phase-D
 // safe `Arc`/`arc-swap` primitive). The CAS-arbitration safety (loser-safe,
@@ -1907,8 +1897,8 @@ impl<V: DictionaryValue, S: crate::persistent_artrie::block_storage::BlockStorag
     }
 }
 
-/// Reclaim a batch of COLD OVERLAY nodes (the overlay analogue of
-/// [`evict_char_nodes`]). Evicts LEAF-FIRST (descending depth) so a node is
+/// Reclaim a batch of COLD OVERLAY nodes (the overlay evictor). Evicts
+/// LEAF-FIRST (descending depth) so a node is
 /// evicted before any ancestor — keeping each victim's parent spine in memory at
 /// eviction time (a later shallower candidate whose spine now passes through an
 /// already-on-disk slot is reported `NotEvictable` and skipped). Each victim gets
@@ -1991,99 +1981,6 @@ pub(crate) fn evict_overlay_nodes<
 // EvictableARTrie Trait Implementation (on SharedCharARTrie)
 // ============================================================================
 
-/// Reclaim a batch of in-memory char nodes via non-blocking epoch-based
-/// reclamation. Shared by the asynchronous eviction loop (started in
-/// [`SharedCharARTrie::enable_eviction`]) and the synchronous
-/// [`force_eviction`](crate::artrie_trait::EvictableARTrie::force_eviction) path,
-/// so both reclaim identically. Returns `(nodes_evicted, bytes_freed)`.
-///
-/// Ordering (the heart of the eviction-vs-walk safety):
-/// 1. **Unlink + retire under the write lock.** Each victim's parent slot is
-///    `unswizzle`d (so the subtree is unreachable to NEW readers) and the subtree
-///    root is RETIRED — never freed inline.
-/// 2. **Release the write lock**, then **drain**. Holding the write lock across the
-///    drain would block `root()`'s read lock, so readers could never enter/exit and
-///    `active_readers` could never reach zero — a stall. The `fence(SeqCst)` orders
-///    the unlinks before the reader-count read (pairing with readers' `SeqCst`
-///    `enter_read`): either we observe an active reader (and defer), or any such
-///    reader observes the unlink and re-faults a fresh node instead of the retired
-///    one.
-/// 3. **Free only when no reader is active** (inline fast path) **or after a
-///    successful quiescence drain**. On a timed-out drain, leave the retirees for a
-///    later cycle — NEVER free under a possibly-live reader. Because the drain is to
-///    ZERO readers, a successful drain authorizes freeing the WHOLE accumulated
-///    retire list (no live reader holds any retired pointer), so no per-generation
-///    bookkeeping is needed.
-///
-/// Callers MUST NOT hold any trie or eviction-registry lock when invoking it
-/// (parking_lot locks are not re-entrant).
-fn evict_char_nodes<V: DictionaryValue>(
-    trie: &SharedCharARTrie<V>,
-    nodes_to_evict: Vec<(
-        u64,
-        Vec<char>,
-        crate::persistent_artrie::swizzled_ptr::SwizzledPtr,
-    )>,
-    quiescence_timeout: std::time::Duration,
-    quiescence_poll: std::time::Duration,
-) -> (usize, usize) {
-    // Clone the shared epoch manager + retire list out under a brief read lock so
-    // the drain and the (possibly O(subtree)) reclaim hold NO trie lock.
-    let (epoch_manager, retire_list) = {
-        let guard = trie.read();
-        (
-            Arc::clone(&guard.epoch_manager),
-            Arc::clone(&guard.retire_list),
-        )
-    };
-
-    // Phase 1: unlink + retire. **F4:** `evict_node_at_path` takes the OR write lock
-    // internally per call; the LRU removal hits the coordinator Arc cloned out under
-    // a BRIEF EC lock FIRST (released before any OR acquisition — order OR > EC).
-    let coordinator = {
-        trie.eviction_coordinator
-            .lock()
-            .expect("eviction_coordinator mutex poisoned")
-            .as_ref()
-            .map(Arc::clone)
-    };
-    let (evicted_count, bytes_freed) = {
-        let mut evicted_count = 0;
-        let mut bytes_freed = 0;
-        for (_path_hash, path, disk_ptr) in nodes_to_evict {
-            if trie.evict_node_at_path(&path, disk_ptr.clone()) {
-                evicted_count += 1;
-                bytes_freed += 256; // Estimate ~256 bytes per node
-
-                // Remove from LRU tracking so a later reload starts fresh.
-                if let Some(ref coordinator) = coordinator {
-                    use crate::persistent_artrie::eviction::lru_tracker::hash_char_path;
-                    coordinator
-                        .lru_registry()
-                        .remove_hash(hash_char_path(&path));
-                }
-            }
-        }
-        (evicted_count, bytes_freed)
-    };
-
-    // Phase 2 (NO lock held): drain, then reclaim.
-    std::sync::atomic::fence(std::sync::atomic::Ordering::SeqCst);
-    let drained = epoch_manager.active_reader_count() == 0
-        || epoch_manager
-            .wait_for_quiescence(quiescence_timeout, quiescence_poll)
-            .is_ok();
-    if drained {
-        // SAFETY: a zero-reader observation (inline or via a successful drain),
-        // ordered after the unlinks by the `SeqCst` fence + readers' `SeqCst`
-        // `enter_read`, guarantees no live walk holds a pointer into ANY retired
-        // subtree. Freeing the unlinked, now-private subtrees is sound.
-        unsafe { retire_list.reclaim_all() };
-    }
-
-    (evicted_count, bytes_freed)
-}
-
 impl<V: DictionaryValue> crate::artrie_trait::EvictableARTrie for SharedCharARTrie<V> {
     fn enable_eviction(
         &self,
@@ -2105,11 +2002,6 @@ impl<V: DictionaryValue> crate::artrie_trait::EvictableARTrie for SharedCharARTr
         {
             return Err(PersistentARTrieError::internal("Eviction already enabled"));
         }
-
-        // Capture the quiescence parameters for the reclaim path: the eviction
-        // callback drains this shared epoch before freeing retired subtrees.
-        let quiescence_timeout = config.quiescence_timeout;
-        let quiescence_poll = config.quiescence_poll_interval;
 
         // Share the trie's OWN epoch manager with the coordinator (the field is a
         // bare `Arc`, already interior-mutable — no wrap). A walk pins this same
@@ -2133,16 +2025,11 @@ impl<V: DictionaryValue> crate::artrie_trait::EvictableARTrie for SharedCharARTr
                 let Some(trie) = self_weak.upgrade() else {
                     return (0, 0);
                 };
-                // Phase 7.5: route_overlay-GATED. Under the overlay regime reclaim the
-                // OVERLAY (evict_char_nodes acts on the EMPTY owned tree = a no-op there);
-                // in owned mode keep the proven owned-tree evictor (preserves owned +
-                // ineligible-V eviction). Same eviction_coordinator lock discipline as
-                // evict_char_nodes (both lock EC for the LRU remove; the loop holds no EC).
-                if trie.route_overlay() {
-                    evict_overlay_nodes(&trie, nodes_to_evict, 4)
-                } else {
-                    evict_char_nodes(&trie, nodes_to_evict, quiescence_timeout, quiescence_poll)
-                }
+                // L0.1: owned-eviction arm DELETED — always reclaim the overlay (the owned
+                // arm was reachable only via `kill_switch_to_owned`, which never evicts in
+                // production). `evict_overlay_nodes` locks EC for its LRU remove; safe here
+                // (this callback holds no EC).
+                evict_overlay_nodes(&trie, nodes_to_evict, 4)
             })
             .map_err(|e| PersistentARTrieError::internal(&e))?;
 
@@ -2217,22 +2104,14 @@ impl<V: DictionaryValue> crate::artrie_trait::EvictableARTrie for SharedCharARTr
             }
         };
 
-        // Route to the char-aware path: the byte `force_eviction` reads the byte
-        // `locations` map and would always return (0, 0) for a char trie, whose
-        // nodes are registered in `char_locations`. `force_eviction_char` selects
-        // from `char_locations` and reclaims inline via `evict_char_nodes`.
-        // The eviction callback drains the shared epoch (after unlinking) before
-        // freeing retired subtrees; pass the quiescence parameters from the config.
-        let quiescence_timeout = coordinator.quiescence_timeout();
-        let quiescence_poll = coordinator.quiescence_poll_interval();
+        // Route to the char-aware path: the byte `force_eviction_bytes` reads the byte
+        // `locations` map and would always return (0, 0) for a char trie, whose nodes are
+        // registered in `char_locations`. `force_eviction_char` selects from
+        // `char_locations` and reclaims inline via the overlay evictor.
         let trie = Arc::clone(self);
         Ok(coordinator.force_eviction_char(target_bytes, move |nodes| {
-            // Phase 7.5: route_overlay-GATED (see the async callback in enable_eviction).
-            if trie.route_overlay() {
-                evict_overlay_nodes(&trie, nodes, 4)
-            } else {
-                evict_char_nodes(&trie, nodes, quiescence_timeout, quiescence_poll)
-            }
+            // L0.1: owned-eviction arm DELETED — always reclaim the overlay.
+            evict_overlay_nodes(&trie, nodes, 4)
         }))
     }
 
@@ -2452,107 +2331,6 @@ impl<V: DictionaryValue, S: crate::persistent_artrie::block_storage::BlockStorag
                 evict_overlay_nodes(self, filtered, 4)
             })
             .0
-    }
-
-    /// Evict a single node at the given path, replacing it with a DiskRef.
-    ///
-    /// Walks `path` from the root: descends through `path[..path.len()-1]`
-    /// edges to reach the parent node (refusing to descend through any slot
-    /// that is itself already on-disk, since the in-memory chain we hold has
-    /// to be intact), then atomically `unswizzle`s the slot for `path.last()`
-    /// to the disk location encoded in `disk_ptr`. On success the orphaned
-    /// in-memory node is reclaimed (its `Box` is dropped); on race or
-    /// already-on-disk the parent slot is left unchanged.
-    ///
-    /// Returns `true` if the slot was successfully unswizzled, `false` if
-    /// the path could not be navigated, the slot was already on disk, the
-    /// caller-supplied `disk_ptr` does not actually encode a disk location,
-    /// or the CAS-based `unswizzle` raced and lost.
-    pub(crate) fn evict_node_at_path(
-        &self,
-        path: &[char],
-        disk_ptr: crate::persistent_artrie::swizzled_ptr::SwizzledPtr,
-    ) -> bool {
-        // **F4:** `&self` taking the OR write lock — the guard provides the
-        // single-owned-writer exclusivity the raw-pointer descent below relies on
-        // (no NEW unsafe; the lock replaces the old `&mut self` anchor). The guard
-        // is held for the whole walk + unswizzle.
-        if path.is_empty() {
-            return false; // The root is never evicted via this path.
-        }
-
-        let target_loc = match disk_ptr.disk_location() {
-            Some(loc) => loc,
-            None => return false,
-        };
-
-        let mut root_guard = self.root.write();
-        let root_node: &mut types::CharTrieNodeInner<V> = match &mut *root_guard {
-            types::CharTrieRoot::Node(boxed) => boxed.as_mut(),
-            types::CharTrieRoot::Empty => return false,
-        };
-
-        // Walk to the parent of the target. The borrow checker would refuse
-        // a fully safe descent through chained `find_child_mut` lifetimes;
-        // we hold the OR write guard, so the chain of `*mut CharTrieNodeInner`
-        // raw-pointer hops below is sound: each pointer comes from a
-        // SwizzledPtr we just verified is in-memory, and the OR write lock
-        // guarantees no concurrent owned writer.
-        let mut current: *mut types::CharTrieNodeInner<V> = root_node;
-        let descent: &[char] = &path[..path.len() - 1];
-        for &edge in descent {
-            // SAFETY: `current` was derived from `&mut root_node` (first
-            // iteration) or from a SwizzledPtr we already proved to be
-            // in-memory and dereferenced as `&mut CharTrieNodeInner<V>`
-            // (subsequent iterations). `&mut self` precludes concurrent use.
-            let node = unsafe { &mut *current };
-            let child_slot = match node.node.find_child(edge as u32) {
-                Some(slot) => slot,
-                None => return false,
-            };
-            if !child_slot.is_swizzled() {
-                return false; // Cannot descend through an on-disk parent slot.
-            }
-            let child_raw = match child_slot.as_ptr::<types::CharTrieNodeInner<V>>() {
-                Some(p) => p,
-                None => return false,
-            };
-            current = child_raw as *mut types::CharTrieNodeInner<V>;
-        }
-
-        // SAFETY: same invariant as above; we now hold &mut access to the
-        // parent of the target node.
-        let parent = unsafe { &mut *current };
-        let last_edge = *path.last().expect("non-empty path verified above");
-        let slot = match parent.node.find_child_mut(last_edge as u32) {
-            Some(s) => s,
-            None => return false,
-        };
-        if !slot.is_swizzled() {
-            return false; // Already on disk.
-        }
-
-        match slot.unswizzle::<types::CharTrieNodeInner<V>>(
-            target_loc.block_id,
-            target_loc.offset,
-            target_loc.node_type,
-        ) {
-            Ok(raw_ptr) => {
-                // Do NOT free inline. The slot was just `unswizzle`d to an on-disk
-                // reference, so this (possibly non-leaf) subtree is now UNLINKED —
-                // unreachable to any NEW reader, which re-faults a fresh box from
-                // disk. But a concurrent lock-free `DictionaryNode` walk may still
-                // hold a raw pointer to this node or one of its resident
-                // descendants. RETIRE the subtree root; the reclaimer
-                // (`evict_char_nodes`) frees the whole now-private subtree via its
-                // recursive `Drop` only after a quiescence drain proves no reader
-                // active-at-unlink remains. See [`reclaim`].
-                self.retire_list
-                    .retire(raw_ptr as *mut types::CharTrieNodeInner<V>);
-                true
-            }
-            Err(_) => false,
-        }
     }
 }
 

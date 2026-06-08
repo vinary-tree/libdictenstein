@@ -16,12 +16,9 @@ use crate::persistent_artrie_core::eviction::{EvictionConfig, EvictionCoordinato
 use crate::persistent_artrie_core::shared_access::SharedTrieAccess;
 use crate::value::DictionaryValue;
 
-use super::block_storage::BlockStorage;
-use super::dict_impl::{PersistentARTrie, TrieRoot};
+use super::dict_impl::PersistentARTrie;
 use super::error::{PersistentARTrieError, Result};
 use super::recovery::RecoveryReport;
-use super::swizzled_ptr::SwizzledPtr;
-use super::transitions::ChildNode;
 use super::SharedARTrie;
 
 impl<V: DictionaryValue> ARTrie for SharedARTrie<V> {
@@ -281,40 +278,15 @@ impl<V: DictionaryValue> EvictableARTrie for SharedARTrie<V> {
                 // (preserves owned + ineligible-V eviction). evict_overlay_nodes locks EC
                 // for its LRU remove — safe here (the loop holds no EC, same as the owned
                 // loop's EC discipline).
-                if trie.route_overlay() {
-                    return crate::persistent_artrie::overlay_fault::evict_overlay_nodes(
-                        &trie,
-                        nodes_to_evict,
-                        4,
-                    );
-                }
-                // Clone the coordinator Arc out under a BRIEF EC lock (leaf), then
-                // release EC BEFORE taking OR (the lock order is OR > EC, so we must
-                // not hold EC while `evict_node_at_path` takes the OR root lock).
-                let coordinator = {
-                    match trie
-                        .eviction_coordinator
-                        .lock()
-                        .expect("eviction_coordinator mutex poisoned")
-                        .as_ref()
-                    {
-                        Some(c) => Arc::clone(c),
-                        None => return (0, 0),
-                    }
-                };
-                let mut evicted_count = 0;
-                let mut bytes_freed = 0;
-                for (_path_hash, path, disk_ptr) in nodes_to_evict {
-                    // `evict_node_at_path` takes the OR write lock internally (the
-                    // owned-tree unswizzle); the LRU removal hits the already-cloned
-                    // coordinator (no EC re-lock under OR).
-                    if trie.evict_node_at_path(&path, disk_ptr.clone()) {
-                        evicted_count += 1;
-                        bytes_freed += 256;
-                        coordinator.lru_registry().remove(&path);
-                    }
-                }
-                (evicted_count, bytes_freed)
+                // L0.1: the owned-eviction arm is DELETED — production always routes the
+                // overlay (the owned arm was reachable only via `kill_switch_to_owned`,
+                // which never evicts in production). `evict_overlay_nodes` locks EC for its
+                // LRU remove; safe here (this callback holds no EC).
+                crate::persistent_artrie::overlay_fault::evict_overlay_nodes(
+                    &trie,
+                    nodes_to_evict,
+                    4,
+                )
             })
             .map_err(|e| PersistentARTrieError::internal(&e))?;
 
@@ -385,20 +357,14 @@ impl<V: DictionaryValue> EvictableARTrie for SharedARTrie<V> {
                 None => return Ok((0, 0)),
             }
         };
-        // Phase 7.5: route_overlay-GATED. Overlay regime → reclaim the OVERLAY via the
-        // callback arity (the owned `force_eviction` only select-counts, a no-op for the
-        // overlay; this returns the EVICTED count, not the candidate count). Owned mode →
-        // preserve the existing select-and-count behavior unchanged.
-        if self.route_overlay() {
-            let trie = Arc::clone(self);
-            Ok(
-                coordinator.force_eviction_bytes(target_bytes, move |nodes| {
-                    crate::persistent_artrie::overlay_fault::evict_overlay_nodes(&trie, nodes, 4)
-                }),
-            )
-        } else {
-            Ok(coordinator.force_eviction(target_bytes))
-        }
+        // L0.1: always reclaim the OVERLAY (the owned select-and-count arm was deleted).
+        // `force_eviction_bytes` returns the EVICTED count, not the candidate count.
+        let trie = Arc::clone(self);
+        Ok(
+            coordinator.force_eviction_bytes(target_bytes, move |nodes| {
+                crate::persistent_artrie::overlay_fault::evict_overlay_nodes(&trie, nodes, 4)
+            }),
+        )
     }
 
     fn touch_node(&self, path: &[Self::Unit]) {
@@ -409,94 +375,6 @@ impl<V: DictionaryValue> EvictableARTrie for SharedARTrie<V> {
             .as_ref()
         {
             coordinator.lru_registry().touch(path);
-        }
-    }
-}
-
-impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
-    /// Evict a single node at the given path, replacing it with a DiskRef.
-    ///
-    /// Returns `true` if the node was successfully evicted, `false` if the
-    /// node was not found or was already a DiskRef.
-    ///
-    /// # Safety
-    ///
-    /// This method should only be called after epoch quiescence has been
-    /// achieved, ensuring no readers from the old epoch are active.
-    pub(crate) fn evict_node_at_path(&self, path: &[u8], disk_ptr: SwizzledPtr) -> bool {
-        // **F4:** `&self` taking the OR write lock once. `find_parent_in_root`
-        // operates on the held guard's `&mut TrieRoot` (no re-lock).
-        if path.is_empty() {
-            return false;
-        }
-
-        let parent_path = &path[..path.len() - 1];
-        let target_edge = path[path.len() - 1];
-
-        let mut root = self.root.write();
-        match Self::find_parent_in_root(&mut root, parent_path) {
-            Some(children) => {
-                for (edge, child) in children.iter_mut() {
-                    if *edge == target_edge {
-                        match child {
-                            ChildNode::DiskRef { .. } => {
-                                return false;
-                            }
-                            ChildNode::Bucket(_) | ChildNode::ArtNode { .. } => {
-                                *child = ChildNode::DiskRef { ptr: disk_ptr };
-                                return true;
-                            }
-                        }
-                    }
-                }
-                false
-            }
-            None => false,
-        }
-    }
-
-    /// Find the children vector of the node at the given path, within an
-    /// explicitly-held `root` (the OR guard's target — no re-lock).
-    ///
-    /// Returns `Some(&mut Vec<(u8, ChildNode)>)` if found, `None` if the path
-    /// doesn't exist or leads to a bucket/disk ref.
-    fn find_parent_in_root<'r>(
-        root: &'r mut TrieRoot<V>,
-        path: &[u8],
-    ) -> Option<&'r mut Vec<(u8, ChildNode)>> {
-        if path.is_empty() {
-            match root {
-                TrieRoot::Bucket(_) => None,
-                TrieRoot::ArtNode { children, .. } => Some(children),
-            }
-        } else {
-            let mut current_children = match root {
-                TrieRoot::Bucket(_) => return None,
-                TrieRoot::ArtNode { children, .. } => children,
-            };
-
-            for &edge in &path[..path.len().saturating_sub(1)] {
-                let found = current_children.iter_mut().find(|(e, _)| *e == edge);
-
-                match found {
-                    Some((_, ChildNode::ArtNode { children, .. })) => {
-                        current_children = children;
-                    }
-                    _ => return None,
-                }
-            }
-
-            if path.is_empty() {
-                return Some(current_children);
-            }
-
-            let last_edge = path[path.len() - 1];
-            let found = current_children.iter_mut().find(|(e, _)| *e == last_edge);
-
-            match found {
-                Some((_, ChildNode::ArtNode { children, .. })) => Some(children),
-                _ => None,
-            }
         }
     }
 }
