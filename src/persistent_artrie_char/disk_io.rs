@@ -368,6 +368,15 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
         result.set_final(is_final);
         result.value = value;
 
+        // CX/#43 (4A): preserve the path-compression prefix the v2 decoder put on `char_node`.
+        // The prior code built a fresh `CharTrieNodeInner::new()` and never copied the prefix, so a
+        // compressed node (`prefix_len > 0`) silently LOST its prefix on fault-in — the keys under
+        // it would be shortened/mis-keyed. No-op for `prefix_len == 0` (every current production
+        // image), so existing reopen / #39 eviction are byte-for-byte unchanged. `inner_to_overlay`
+        // then EXPANDS this prefix into a chain (traversal is prefix-unaware).
+        result.node.header_mut().prefix_len = char_node.header().prefix_len;
+        *result.node.prefix_mut() = *char_node.prefix();
+
         // Insert children using insert_child_ptr (stores raw SwizzledPtrs without loading)
         for (c, child_ptr) in child_data {
             // If there's an old in-memory pointer, we'd need to free it,

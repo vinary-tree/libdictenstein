@@ -1643,10 +1643,15 @@ where
 /// themselves faulted (the lazy discipline; one fetch per node per eviction
 /// epoch). `iter_children` never yields null fillers, but we guard defensively.
 ///
-/// Prefix: the overlay representation that `overlay_to_inner` serializes never
-/// path-compresses (it builds via `add_child_growing`, which leaves the prefix
-/// empty), so on the round-trip the prefix is empty; we still propagate any
-/// non-empty prefix faithfully so the builder is a total inverse.
+/// Prefix (CX/#43 — Finding 4A): the in-memory overlay traversal is prefix-UNAWARE
+/// (`match_prefix`/`prefix_matches` have no traversal callers), so a `prefix_len = p > 0`
+/// dense node is EXPANDED here into a chain of `p` single-child prefix_len=0 non-final
+/// no-value intermediates above the real node — exactly the uncompressed shape the overlay
+/// WRITE path builds, so traversal works unchanged. For `p == 0` (every current production
+/// image — the overlay serializer has never emitted a prefix) this is a no-op (the real node
+/// only), byte-for-byte the prior behavior; so #39 eviction + existing reopen are unchanged.
+/// (The prior `with_prefix` single-node form was a LATENT BUG — it leaked a prefix the
+/// traversal cannot read; harmless only because no producer emitted `prefix_len > 0`.)
 ///
 /// **Flip F0:** un-gated to production (the fault-in primitive that consumes it is
 /// now a production path).
@@ -1658,31 +1663,47 @@ pub(super) fn inner_to_overlay<V>(
 where
     V: DictionaryValue,
 {
-    // Start from the (possibly non-empty) prefix. The overlay round-trip path
-    // produces empty prefixes, but propagate faithfully for a total inverse.
-    let prefix_len = inner.node.header().prefix_len as usize;
-    let mut node = if prefix_len > 0 {
-        super::nodes::PersistentCharNode::<V>::with_prefix(inner.node.prefix().as_slice(prefix_len))
-    } else {
-        super::nodes::PersistentCharNode::<V>::new()
-    };
-
+    // Build the REAL (terminus) node first: finality, value, and OnDisk children verbatim
+    // (lazy — grandchildren stay on disk). It carries NO prefix (prefix_len = 0); the dense
+    // node's prefix becomes the chain of intermediates wrapped around it below.
+    let mut real = super::nodes::PersistentCharNode::<V>::new();
     if inner.is_final() {
-        node = node.as_final();
+        real = real.as_final();
     }
     // G1: the overlay node carries `Option<V>` directly (no `u64 → V` bridge).
     if let Some(v) = inner.value.clone() {
-        node = node.with_value(v);
+        real = real.with_value(v);
     }
     for (key, ptr) in inner.node.iter_children() {
         if !ptr.is_null() {
-            node = node.with_child(
+            real = real.with_child(
                 key,
                 super::nodes::persistent_node::Child::OnDisk(ptr.clone()),
             );
         }
     }
-    node
+
+    // CX/#43 (4A): EXPAND `prefix_len = p` into a chain of `p` single-child prefix_len=0
+    // intermediates ABOVE `real`. The prefix units are the intermediates' child-edges: the
+    // parent reaches intermediate_0 by the dense node's incoming edge (the parent's child-key),
+    // intermediate_i reaches intermediate_{i+1} by `prefix[i]`, and the last intermediate reaches
+    // `real` by `prefix[p-1]`. p == 0 ⇒ zero intermediates ⇒ `real` only (no-op; the prior
+    // behavior for every uncompressed production image). Built bottom-up so the returned node is
+    // intermediate_0 (what the parent points to).
+    let prefix_len = inner.node.header().prefix_len as usize;
+    let prefix = inner.node.prefix().as_slice(prefix_len);
+    let mut cur = real;
+    for i in (0..prefix_len).rev() {
+        cur = super::nodes::PersistentCharNode::<V>::new().with_child(
+            prefix[i],
+            super::nodes::persistent_node::Child::InMem(std::sync::Arc::new(cur)),
+        );
+        debug_assert!(
+            cur.prefix_len() == 0 && !cur.is_final() && cur.num_children() == 1,
+            "CX #43 (4A): an expanded prefix intermediate must be prefix_len=0, non-final, single-child"
+        );
+    }
+    cur
 }
 
 /// Count the finalized (terminal) nodes in the overlay subtree — the term count of
@@ -2928,5 +2949,58 @@ mod immutable_eviction_checkpoint_correspondence {
             );
         }
         assert!(!Dictionary::contains(&reopened, "never-acknowledged"));
+    }
+}
+
+#[cfg(test)]
+mod cx_expand_load {
+    //! CX (#43, Finding 4A): `inner_to_overlay` must EXPAND a dense node's `prefix_len = p` into a
+    //! chain of `p` single-child prefix_len=0 intermediates above the real node, so the in-memory
+    //! overlay stays uncompressed (the prefix-unaware traversal works) and the pre-existing
+    //! prefix-drop bug is fixed. The `p == 0` no-op is covered by the 152 existing fault/reopen
+    //! tests staying green.
+    use super::inner_to_overlay;
+    use crate::persistent_artrie_char::nodes::CharCompressedPrefix;
+    use crate::persistent_artrie_char::types::CharTrieNodeInner;
+
+    #[test]
+    fn inner_to_overlay_expands_prefix_into_uncompressed_chain() {
+        // A compressed dense node: prefix "xyz" (3 units), FINAL terminus, no children.
+        let mut inner = CharTrieNodeInner::<()>::new();
+        inner.set_final(true);
+        inner.node.header_mut().prefix_len = 3;
+        *inner.node.prefix_mut() =
+            CharCompressedPrefix::from_chars(&['x' as u32, 'y' as u32, 'z' as u32]);
+
+        let top = inner_to_overlay::<()>(&inner);
+
+        // Walk top --x--> i1 --y--> i2 --z--> real(final): each intermediate is prefix_len 0,
+        // non-final, exactly one child keyed by the prefix unit.
+        let edges = ['x' as u32, 'y' as u32, 'z' as u32];
+        let mut cur = std::sync::Arc::new(top);
+        for (depth, &e) in edges.iter().enumerate() {
+            assert_eq!(cur.prefix_len(), 0, "intermediate {depth} prefix_len");
+            assert!(!cur.is_final(), "intermediate {depth} must be non-final");
+            assert_eq!(cur.num_children(), 1, "intermediate {depth} child count");
+            let child = cur
+                .find_child(e)
+                .expect("single child keyed by the prefix unit");
+            cur = child.as_in_mem().expect("InMem intermediate").clone();
+        }
+        // The terminus (real node): final, prefix_len 0, no children.
+        assert!(cur.is_final(), "the terminus must be final");
+        assert_eq!(cur.prefix_len(), 0, "terminus prefix_len");
+        assert_eq!(cur.num_children(), 0, "terminus has no children");
+    }
+
+    #[test]
+    fn inner_to_overlay_prefix_zero_is_single_node_noop() {
+        // prefix_len == 0 ⇒ no intermediates ⇒ the real node only (the production no-op path).
+        let mut inner = CharTrieNodeInner::<()>::new();
+        inner.set_final(true);
+        let node = inner_to_overlay::<()>(&inner);
+        assert_eq!(node.prefix_len(), 0);
+        assert!(node.is_final());
+        assert_eq!(node.num_children(), 0);
     }
 }
