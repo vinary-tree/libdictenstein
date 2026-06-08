@@ -82,7 +82,9 @@ mod tests {
             let width = max_prefix + 1;
             for len in 0..=128usize {
                 // Distinct units so any drop/duplicate/reorder is detectable.
-                let units: Vec<u32> = (0..len as u32).map(|i| i.wrapping_mul(2_654_435_761)).collect();
+                let units: Vec<u32> = (0..len as u32)
+                    .map(|i| i.wrapping_mul(2_654_435_761))
+                    .collect();
                 let chunks = chain_chunks(&units, max_prefix);
 
                 // (1) NO-TRUNCATION: concat(prefix ++ [edge]) == units, exactly.
@@ -113,7 +115,10 @@ mod tests {
 
                 // (4) Total path units covered = sum(prefix.len()+1) = len (cross-check of (1)).
                 let covered: usize = chunks.iter().map(|c| c.prefix.len() + 1).sum();
-                assert_eq!(covered, len, "covered != len at len={len} max_prefix={max_prefix}");
+                assert_eq!(
+                    covered, len,
+                    "covered != len at len={len} max_prefix={max_prefix}"
+                );
             }
         }
     }

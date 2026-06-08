@@ -418,7 +418,18 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
             PersistentARTrieError::internal("No buffer manager for overlay fault-in load")
         })?;
         let inner = self.load_char_node_from_disk_lazy(bm, disk_ptr)?;
-        Ok(Arc::new(super::persist::inner_to_overlay::<V>(&inner)))
+        let top = super::persist::inner_to_overlay::<V>(&inner);
+        // CX/#43 (#6 eviction-ON): stamp the TOP-of-span node with `disk_ptr` IFF this is a COMPRESSED
+        // node (`prefix_len > 0`), so a fault-then-evict re-installs `Child::OnDisk` for the whole
+        // re-expanded span (the evictor walks to the top intermediate + checks
+        // `durable_stamp == disk_ptr`). NO-OP for `prefix_len == 0` (every current production image),
+        // so the production fault path + #39 eviction stay byte-for-byte unchanged (the prior code
+        // stamped nothing here). Red-team-confirmed safe: the registry is rebuilt+replaced wholesale
+        // each checkpoint, so a faulted node's `disk_ptr` matches the live registry's ptr.
+        if inner.node.header().prefix_len > 0 {
+            top.set_durable_stamp(disk_ptr.to_raw());
+        }
+        Ok(Arc::new(top))
     }
 
     /// Load a single CharTrieNodeInner's data from disk WITHOUT loading children.

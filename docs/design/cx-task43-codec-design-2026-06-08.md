@@ -1,11 +1,14 @@
 # Task #43 (CX) — Path-Compressing Overlay↔Dense Codec — converged design (2026-06-08)
 
-> **Status: RED-TEAMED (pass 1) → REFINED; re-red-team PENDING before the serialize/load impl. CX.1
-> no-truncation core LANDED + PROVEN (Rust exhaustive test + Coq `Model/PrefixChunking.v`, 0 admits).**
-> Red-team #1 verdict: the **chunker math is SOUND** (the owner's truncation fear is NOT realized in
-> the chunker — exhaustively verified), and the wire format **already round-trips `prefix_len>0`**
-> correctly (fail-closed validation + a passing layout test). It raised **2 blocking design
-> refinements** (now folded in below) + several non-blocking gates.
+> **Status: RED-TEAMED ×2 → refining (round 3). CX.1 no-truncation core LANDED + PROVEN (Rust
+> exhaustive + Coq `Model/PrefixChunking.v`, 0 admits, committed 22539a8).** Pass 1: chunker SOUND;
+> 2 blocking refinements (edge↔prefix convention + faithful Rocq model) → CLOSED. Pass 2 (confirmation):
+> BLOCKING-1/2 CONFIRMED CLOSED, but found **a real architectural gap on the LOAD side (Finding 4A)** —
+> the lazy fault-in loader drops the prefix, so deferred (OnDisk) grandchildren of a compressed image
+> would lose key data on fault-in. Plus an eviction↔compression interaction (#6) needing design. Fix
+> directions folded in below ("re-red-team #2"). A 3rd confirmation pass is warranted after the 4A/#6
+> design lands. The wire format already round-trips `prefix_len>0` (fail-closed validate + passing
+> layout test) — no format change.
 >
 > **Refinement (chunk width = `max_prefix + 1`, NOT `W`).** Each dense chain-node packs at most
 > `max_prefix` prefix units PLUS one outgoing edge unit, so the optimal lossless chunk width is
@@ -180,3 +183,102 @@ boundary). FIX (now normative):
   whether a non-scalar prefix unit on load is a corruption ERROR or a `U+FFFD` substitution (the
   existing `units_to_term` silently substitutes — CX should choose deliberately).
 - (#1) invariant to assert in the serializer: `sum(chunk_widths) == path_len(head→terminus inclusive)`.
+
+## Re-red-team #2 result + round-3 refinements (2026-06-08)
+**Verdict: BLOCKING-1 + BLOCKING-2 CONFIRMED CLOSED** (edge↔prefix convention is faithful to
+`build_overlay_root_from_terms`/`build_disk_char_node`; the Rocq `keys_de = …prefix ++ [e] ++ k…` model
+composes into T1 via the *landed* `Model/PrefixChunking.v` — all bridge lemmas provable, `well_chunked`
+decidable, 0 admits achievable). **New blocker + tightenings:**
+
+**4A (BLOCKING) — expand must happen at SINGLE-NODE FAULT granularity, not only at root-load.** The
+lazy fault loaders DROP the prefix (`disk_io.rs:357-378` reads `is_final`/value/children but never
+`prefix_len`/`prefix`; byte `overlay_fault.rs:99` builds `OverlayNode::new()`, "prefix is always
+empty"). The design's root-only `load_overlay_root_compressed` leaves grandchildren `Child::OnDisk`;
+the FIRST read that faults such a (compressed) grandchild loses its prefix → keys shortened by `k` /
+mis-keyed → **silent key-data loss on fault-in** (the owner's fear, displaced to the loader). **FIX
+(option i — also fixes the pre-existing prefix-drop bug + the byte twin):** make the SHARED single-node
+fault loader compressed-aware — `load_char_node_from_disk_lazy` reads `prefix_len=p` + the `p` prefix
+units off the `CharNode`, and the `inner→overlay` step EXPANDS them into the `p`-intermediate chain
+(grandchildren stay OnDisk). `p=0` (every current production image) ⇒ zero intermediates ⇒
+byte-identical to today (no-op for uncompressed; safe even though dormant). `load_overlay_root_compressed`
+then is just "fault the root ptr through this same loader." Every fault (root or grandchild) expands.
+Mirror in the byte `overlay_fault.rs`. **The round-trip/differential test MUST force full expansion
+(recursively fault every OnDisk child) before diffing** — a lazy diff would pass while fault-in loses
+data (closes 1c).
+
+**#6 (promote to blocking) — `durable_stamp` + registry path across a compressed node's expansion.**
+The eviction registry `path` is a HASH KEY + a depth, not just a number; a compressed chunk node maps
+to multiple expanded overlay nodes but ONE `disk_ptr`. Design: (a) the registry path for chunk node `j`
+= its FULL logical root-path (so depth + identity are correct; do NOT under-count by `k` nor
+double-count the shared out-edge — the out-edge is pushed once by the existing descend-before-recurse
+discipline, the `k` prefix units are pushed before encoding the node). (b) `durable_stamp = disk_ptr_j`
+is carried by the **TOP node of chunk j's span** — set on the live top-of-span node at serialize (so
+evict-after-checkpoint replaces that one node's Arc with `OnDisk(disk_ptr_j)`, dropping the whole span
+by refcount) AND on the re-expanded TOP intermediate at fault (so fault-then-evict works); the lower
+intermediates + the real node carry stamp 0 (internal to the fault; eviction reclaims only at the top).
+**Mandatory test: evict-then-refault a compressed chunk node — assert it evicts (not stuck
+`NotEvictable` ⇒ #39 regression) AND refaults its prefix losslessly** (not merely that the path length
+is right).
+
+**Tightenings:** (1c) differential test forces full expansion + pins the `terms` source + compares
+edge-key order (ascending, both sides). (2b) instantiate the Rocq `keys_de` chunking at `w = W+1`
+(char 7 / byte 13), matching `codec.rs:46`; verify the mixed `From Stdlib` (PrefixChunking.v) + `Coq.…`
+(PathCompression.v) imports co-compile under the pinned Rocq. (5d) a corrupt non-scalar prefix `u32`
+(surrogate D800–DFFF or > 10FFFF) on load MUST be a **fail-closed corruption ERROR**, not a `U+FFFD`
+substitution (a structural prefix unit determines child paths; substituting would corrupt every term
+under the node) — add a per-prefix-unit `char::from_u32(...).ok_or(Corrupted)` in the loader (the header
+validate only checks `prefix_len ≤ 6`, not scalar-validity). (#4) confirmed adequate; (#7) confirmed.
+
+**The block is entirely on the LOAD/FAULT/EVICT side** — the serialize-side chunker (CX.1) is proven
+and untouched. Round-3 closes 4A + #6 in the design, then a 3rd confirmation red-team before the impl.
+
+## #6 eviction-ON design + the #39 SURFACE (2026-06-08, pending confirmation red-team)
+The dormant compressed serializer was committed (134c1a4) EVICTION-OFF (registry=None, empty path).
+Per the owner ("defer nothing; no unplanned technical debt; surface anything that materially changes
+#39 eviction"), the eviction-ON path is now designed (Plan pass) — being red-teamed before impl.
+
+**Design (concrete):**
+- `serialize_overlay_snapshot_compressed` gains a `registry` param + threads a live `path: Vec<char>`.
+  On descent it pushes `[edge] ++ chain_prefix` ONCE; each chunk node registers at `path[..ends[c]]`
+  where `ends[c] = base_depth + 1 + Σ_{i<c}(|P_i|+1)` (its TRUE expanded logical depth — NOT its bare
+  out-edge), the terminus at the full `path`. The out-edge is pushed once (shared with the child
+  descend-push) — never double-counted. Reuses the proven `serialize_one_char_node_to_disk`
+  `register_char(path, ptr, size, path.len(), type)`.
+- `peel_chain` is changed to also return the live spine `Vec<Arc<OverlayNode>>`. Chunk `c` stamps
+  `live_spine[ends[c]-base_depth-1].set_durable_stamp(chunk_c_ptr)` (its TOP-of-span live node);
+  the terminus stamps `terminus_ptr`; interior intermediates keep stamp 0.
+- At FAULT time, `inner_to_overlay` (char) + `load_overlay_node_from_disk` (byte) stamp the TOP
+  re-expanded intermediate with the source disk_ptr (so fault-then-evict re-installs `OnDisk` for the
+  whole span). Eviction uses the UNCHANGED shared `evict_overlay_node_at_path` (walk to top-of-span,
+  1c guard `durable_stamp==disk_ptr`, CAS to `Child::OnDisk` → drop the span by refcount).
+- BYTE twin: identical threading (`Vec<u8>` path, `register` not `register_char`, `MAX_PREFIX_LEN=12`).
+
+**#39 no-regression (no-op for `prefix_len==0`):** the compressed serializer is DORMANT (no production
+caller; production capture = the untouched uncompressed `serialize_overlay_to_disk_iterative`), and the
+overlay WRITE path never emits `prefix_len>0`, so NO chain is ever collapsed in production. The ONLY
+production-reachable edit is the fault-time top-of-span stamp; for `prefix_len==0` it is the same node +
+the same stamp the existing fault-then-evict path already requires (reconcile against the current
+loader stamping — Flag 1). An executable `no-op-for-uncompressed` test asserts the compressed registry ≡
+the uncompressed registry + identical durable_stamps when no chain collapses.
+
+**THE #39 SURFACE — what changes the day L2/L3 eviction-enables a COMPRESSED image (today: NOTHING):**
+1. Registry CARDINALITY drops: one entry per CHUNK (absorbing ≤7 char / ≤13 byte units) instead of one
+   per spine node ⇒ `resident_bytes()` (#45) reports LOWER for a compressed tree (fewer registered
+   nodes — the intended compression win, NOT a leak).
+2. Eviction GRANULARITY becomes per-span: evicting one chunk reclaims the whole expanded span below it
+   in one CAS ⇒ frees more heap per eviction. `bytes_freed` (nominal 256/node) UNDER-reports the true
+   reclaim for compressed spans (the RSS pass is the physical witness; the resident-budget loop uses the
+   registry estimate, not `bytes_freed`, so convergence is unaffected).
+3. `min_eviction_depth` filtering keys on the TRUE expanded depth (because chunks register at full
+   depth) ⇒ which logical depths are evictable is UNCHANGED (only the node-count representation differs).
+   The off-by-one trap (registering at the out-edge depth) is explicitly AVOIDED.
+4. Fault-in faults a whole chunk's prefix back in one decode (cheaper read amplification), still lazy at
+   the chunk's out-edge.
+5. NO change to safety semantics (1c guard, root-CAS loser-safety, no-UAF, no-lost-write) — the SAME
+   shared `evict_overlay_node_at_path`, unmodified.
+
+Flags for the owner: (1) the fault-time stamp must land on the TOP-of-span (not the bottom `real`) for
+`prefix_len>0` — verify the existing loader doesn't stamp `real` (else compressed spans silently become
+non-re-evictable = #39 liveness loss); (2) `bytes_freed` under-reports for compressed spans (telemetry,
+not correctness); (3) the resident-estimate shift (#1) changes the numbers `resident_bytes()` reports for
+a compressed image (intended). NONE of these affect production today (all dormant).

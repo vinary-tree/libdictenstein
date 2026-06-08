@@ -214,6 +214,16 @@ Dense On-Disk (CURRENTLY uncompressed; prefix_len=0 on every node)
 
 ## 5. EXISTING DENSE→OVERLAY LOAD PATH (F5 — Fault-in loader)
 
+> **⚠️ CORRECTION (re-red-team #2, 2026-06-08): §5's "CURRENT ASSUMPTION" below + the DELTA-table row
+> "load_char_node_from_disk_lazy() reads prefix_len correctly" are FALSE.** Verified: the lazy fault
+> loader (`disk_io.rs:357-378`) reads `is_final`/`value`/children but **NEVER reads
+> `char_node.prefix()`/`header.prefix_len`** — the prefix is DROPPED. The byte twin
+> (`overlay_fault.rs:99`) explicitly builds `OverlayNode::new()` with the comment "prefix is always
+> empty for the overlay." So the EXISTING fault-in path is prefix-lossy, and the CX loader CANNOT reuse
+> it for compressed images — it must EXPAND `prefix_len>0` at the single-node fault granularity (see the
+> codec-design doc's "re-red-team #2" / Finding 4A). The codec-design doc (its §"Ground truth" + Load
+> section) is authoritative.
+
 ### Lazy Deserializer: `load_char_node_from_disk_lazy`
 
 **Location:** `/home/dylon/Workspace/f1r3fly.io/libdictenstein/src/persistent_artrie_char/disk_io.rs:296–412`
