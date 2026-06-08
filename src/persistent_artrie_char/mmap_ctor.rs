@@ -1174,7 +1174,7 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
                 let _ = std::fs::remove_file(&wal_path);
 
                 // Create fresh trie
-                let mut trie = Self::create_with_config(path, config.clone())?;
+                let trie = Self::create_with_config(path, config.clone())?;
 
                 // Rebuild from WAL archive segments
                 let mut records_replayed: u64 = 0;
@@ -1203,7 +1203,12 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
                             &segments,
                             |op| {
                                 let op_lsn = op.lsn();
-                                if trie.apply_core_recovered_operation_no_wal(op) {
+                                // L1: replay DIRECTLY into the overlay (the create-flip installed an
+                                // empty overlay before this loop), NOT the owned tree — eliminating
+                                // the owned applier + the `reestablish_overlay_from_owned` conversion
+                                // below (deleted in the same commit, R2). Same bool ⇒ the
+                                // `max_applied_lsn` / `had_apply_failure` bookkeeping is unchanged.
+                                if <Self as LockFreeOverlay<CharKey, V, DiskManager>>::apply_recovered_operation_overlay(&trie, op) {
                                     if op_lsn > max_applied_lsn {
                                         max_applied_lsn = op_lsn;
                                     }
@@ -1248,120 +1253,30 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
 
                             records_replayed += 1;
 
-                            // Apply the record to the trie
-                            use crate::persistent_artrie::wal::WalRecord;
-                            match record {
-                                WalRecord::Insert { term, value } => {
-                                    let term_str = String::from_utf8_lossy(&term);
-                                    if let Some(value_bytes) = value {
-                                        if let Ok(v) =
-                                            crate::serialization::bincode_compat::deserialize::<V>(
-                                                &value_bytes,
-                                            )
-                                        {
-                                            trie.insert_impl_no_wal_with_value(&term_str, v);
-                                            terms_recovered += 1;
-                                        }
-                                    } else {
-                                        trie.insert_impl_no_wal(&term_str);
-                                        terms_recovered += 1;
-                                    }
+                            // L1: replay DIRECTLY into the overlay via the shared op-mapper +
+                            // the overlay applier (DRY with byte's owned arm + the Overlay arm
+                            // above) — NOT the owned `*_impl_no_wal` mutators.
+                            // `recovered_operations_from_record` yields the SAME ops in the SAME
+                            // order the hand-rolled match applied (red-team-verified);
+                            // `apply_recovered_operation_overlay` returns the same bool, so
+                            // `terms_recovered` / `had_apply_failure` track per applied op. Byte
+                            // parity: a deserialize/overflow failure now STOPS at the durable prefix
+                            // (the overlay applier returns `false`) rather than silently skipping,
+                            // and a `Remove` is counted like any other applied op.
+                            for op in
+                                crate::persistent_artrie::recovery::recovered_operations_from_record(
+                                    lsn, record,
+                                )
+                            {
+                                if <Self as LockFreeOverlay<CharKey, V, DiskManager>>::apply_recovered_operation_overlay(&trie, op) {
+                                    terms_recovered += 1;
+                                } else {
+                                    had_apply_failure = true;
+                                    log::warn!(
+                                        "Recovered operation failed during rebuild; stopping at durable prefix"
+                                    );
+                                    break 'segments;
                                 }
-                                WalRecord::Remove { term } => {
-                                    let term_str = String::from_utf8_lossy(&term);
-                                    trie.remove_impl_no_wal(&term_str);
-                                }
-                                WalRecord::Increment {
-                                    term,
-                                    delta: _,
-                                    result: val,
-                                } => {
-                                    // For increment, store the final (absolute) result.
-                                    // `val` is the i64 BIT-PATTERN of the count
-                                    // (`counter_return_i64` on write) — NEGATIVE for a
-                                    // `u64` count > i64::MAX. Decode via the LEAF BYTES
-                                    // through the shared `counter_codec` helper (the
-                                    // bit-pattern-faithful path the owned/overlay
-                                    // appliers use) so a u64 count round-trips correctly
-                                    // and the v6 gate holds (no raw counter-leaf bincode
-                                    // outside `counter_codec`). A non-counter `V` yields
-                                    // `None` (skip), matching the prior deserialize-fail.
-                                    let term_str = String::from_utf8_lossy(&term);
-                                    if let Some(v) =
-                                        crate::persistent_artrie_core::counter_codec::counter_leaf_to_i128::<V>(
-                                            &val.to_le_bytes(),
-                                        )
-                                        .and_then(
-                                            crate::persistent_artrie_core::counter_codec::i128_to_counter_value::<V>,
-                                        )
-                                    {
-                                        trie.insert_impl_no_wal_with_value(&term_str, v);
-                                        terms_recovered += 1;
-                                    }
-                                }
-                                WalRecord::Upsert { term, value } => {
-                                    let term_str = String::from_utf8_lossy(&term);
-                                    if let Ok(v) = crate::serialization::bincode_compat::deserialize::<
-                                        V,
-                                    >(&value)
-                                    {
-                                        trie.insert_impl_no_wal_with_value(&term_str, v);
-                                        terms_recovered += 1;
-                                    }
-                                }
-                                WalRecord::CompareAndSwap {
-                                    term,
-                                    new_value,
-                                    success,
-                                    ..
-                                } => {
-                                    if success {
-                                        let term_str = String::from_utf8_lossy(&term);
-                                        if let Ok(v) =
-                                            crate::serialization::bincode_compat::deserialize::<V>(
-                                                &new_value,
-                                            )
-                                        {
-                                            trie.insert_impl_no_wal_with_value(&term_str, v);
-                                            terms_recovered += 1;
-                                        }
-                                    }
-                                }
-                                WalRecord::BatchInsert { entries } => {
-                                    for (term, value) in entries {
-                                        let term_str = String::from_utf8_lossy(&term);
-                                        if let Some(value_bytes) = value {
-                                            if let Ok(v) =
-                                                crate::serialization::bincode_compat::deserialize::<V>(
-                                                    &value_bytes,
-                                                )
-                                            {
-                                                trie.insert_impl_no_wal_with_value(&term_str, v);
-                                                terms_recovered += 1;
-                                            }
-                                        } else {
-                                            trie.insert_impl_no_wal(&term_str);
-                                            terms_recovered += 1;
-                                        }
-                                    }
-                                }
-                                WalRecord::BatchIncrement { entries } => {
-                                    for (term, delta) in entries {
-                                        let term_str = String::from_utf8_lossy(&term);
-                                        if let Err(error) =
-                                            trie.try_increment_impl_no_wal(&term_str, delta)
-                                        {
-                                            log::warn!(
-                                            "Invalid WAL batch increment during rebuild; stopping at durable prefix: {:?}",
-                                            error
-                                        );
-                                            had_apply_failure = true;
-                                            break 'segments;
-                                        }
-                                        terms_recovered += 1;
-                                    }
-                                }
-                                _ => {} // Skip transaction/checkpoint records
                             }
                             // C2: this record applied (no `break` above) — advance the
                             // image-coverage frontier (records stream in LSN order).
@@ -1384,28 +1299,11 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
                         max_applied_lsn
                     });
 
-                // S5-12 EDIT 3 (IRREVERSIBLE): the rebuild above repopulated the OWNED
-                // tree (the no-WAL recovery path is owned-targeted). But after EDIT 1 the
-                // fresh `trie` from `create_with_config` is ALREADY in LockFreeOverlay
-                // mode for eligible V (with an empty overlay), so returning it as-is would
-                // make the next checkpoint route-split capture the EMPTY overlay and lose
-                // every rebuilt term (total loss). Move the rebuilt owned tree into the
-                // overlay whenever the trie is overlay-routed (⟺ eligible V was create-
-                // flipped). Gate on `route_overlay()`, NOT `any_overlay`: the orphan-drop
-                // is the reconcile's job (regime-aware vs inline above), whereas the owned
-                // →overlay move is required for the OVERLAY-MODE trie regardless of the
-                // archives' regime. A `?` aborts with the owned tree intact (RES-7); a
-                // pure no-op for arbitrary V (which create did not flip ⇒ !route_overlay).
-                // F7-R1: the STRUCTURAL converter `reestablish_overlay_from_owned`
-                // (build_overlay_root_from_owned + FORCE-REPLACE the empty create-flip
-                // root + clear owned LAST) replaces the legacy per-term
-                // `reestablish_overlay_dispatch` — same overlay (term-set + values, incl.
-                // u64 > i64::MAX + ""), strictly more correct on a term-only counter.
-                if trie.route_overlay() {
-                    <Self as LockFreeOverlay<CharKey, V, DiskManager>>::reestablish_overlay_from_owned(
-                        &mut trie,
-                    )?;
-                }
+                // L1: the recovered ops were replayed DIRECTLY into the overlay (the apply arms
+                // above), so the owned tree stays empty and there is NO owned→overlay conversion —
+                // the former `reestablish_overlay_from_owned` sink is DELETED. The deletion is ATOMIC
+                // with the applier-swap (R2): keeping it would build an EMPTY overlay root from the
+                // empty owned tree and FORCE-REPLACE the just-populated overlay = 100% silent loss.
 
                 let duration_ms = start_time.elapsed().as_millis() as u64;
 
@@ -1622,7 +1520,7 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
         let _ = std::fs::remove_file(&wal_path);
 
         // Create fresh trie
-        let mut trie = Self::create_with_config(path, config)?;
+        let trie = Self::create_with_config(path, config)?;
 
         // C2 (recovery double-apply fix): track the max LSN ACTUALLY applied + failure.
         let mut max_applied_lsn: u64 = 0;
@@ -1636,7 +1534,9 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
                 &segments,
                 |op| {
                 let op_lsn = op.lsn();
-                if trie.apply_core_recovered_operation_no_wal(op) {
+                // L1: replay DIRECTLY into the overlay (NOT the owned tree); the
+                // `reestablish_overlay_from_owned` conversion below is DELETED in the same commit (R2).
+                if <Self as LockFreeOverlay<CharKey, V, DiskManager>>::apply_recovered_operation_overlay(&trie, op) {
                     if op_lsn > max_applied_lsn {
                         max_applied_lsn = op_lsn;
                     }
@@ -1659,25 +1559,10 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
                 max_applied_lsn
             });
 
-        // S5-12 EDIT 3 (IRREVERSIBLE, recover_from_archives twin): the regime-aware
-        // rebuild repopulated the OWNED tree. After EDIT 1 the fresh `trie` from
-        // `create_with_config` is ALREADY overlay-routed for eligible V (empty overlay),
-        // so without this move the next checkpoint would capture the empty overlay and
-        // lose every rebuilt term. Gate on `route_overlay()` (⟺ eligible V was create-
-        // flipped) rather than the archives' regime — the owned→overlay move is required
-        // for the overlay-mode trie regardless of archive regime; the orphan-drop is the
-        // reconcile's responsibility above. A `?` aborts with the owned tree intact
-        // (RES-7); a pure no-op for arbitrary V (create did not flip ⇒ !route_overlay).
-        // F7-R1: the STRUCTURAL converter `reestablish_overlay_from_owned`
-        // (build_overlay_root_from_owned + FORCE-REPLACE the empty create-flip root +
-        // clear owned LAST) replaces the legacy per-term `reestablish_overlay_dispatch`
-        // — same overlay (term-set + values, incl. u64 > i64::MAX + ""), strictly more
-        // correct on a term-only counter.
-        if trie.route_overlay() {
-            <Self as LockFreeOverlay<CharKey, V, DiskManager>>::reestablish_overlay_from_owned(
-                &mut trie,
-            )?;
-        }
+        // L1 (recover_from_archives twin): the recovered ops were replayed DIRECTLY into the overlay
+        // (the apply sink above), so the owned tree stays empty and the former
+        // `reestablish_overlay_from_owned` sink is DELETED — ATOMIC with the applier-swap (R2): keeping
+        // it would build an EMPTY overlay root and FORCE-REPLACE the just-populated overlay = total loss.
 
         Ok((
             trie,

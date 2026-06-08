@@ -934,7 +934,7 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
                 let _ = std::fs::remove_file(&wal_path);
 
                 // Create fresh trie
-                let mut trie = Self::create(path)?;
+                let trie = Self::create(path)?;
 
                 // Rebuild from WAL archive segments
                 let mut records_replayed: u64 = 0;
@@ -965,7 +965,21 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
                     let (rr, tr) =
                         super::recovery::rebuild_from_wal_segments_regime_aware(&segments, |op| {
                             let op_lsn = op.lsn();
-                            if trie.apply_recovered_operation_no_wal(op) {
+                            // L1: replay DIRECTLY into the overlay (the create-flip installed an
+                            // empty overlay before this loop, so `route_overlay()==true`), NOT into
+                            // the owned tree — eliminating the owned applier + the
+                            // `reestablish_overlay_from_owned` conversion below (deleted in the same
+                            // commit, R2). The overlay applier returns the same bool, so the
+                            // `max_applied_lsn` / `had_apply_failure` image-coverage bookkeeping is
+                            // unchanged (L1.0 made the BatchIncrement-delta arm return `false` on the
+                            // same stop conditions the owned applier did).
+                            if <Self as LockFreeOverlay<
+                                ByteKey,
+                                V,
+                                super::disk_manager::MmapDiskManager,
+                            >>::apply_recovered_operation_overlay(
+                                &trie, op
+                            ) {
                                 if op_lsn > max_applied_lsn {
                                     max_applied_lsn = op_lsn;
                                 }
@@ -1008,7 +1022,14 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
 
                             for op in super::recovery::recovered_operations_from_record(lsn, record)
                             {
-                                if trie.apply_recovered_operation_no_wal(op) {
+                                // L1: replay DIRECTLY into the overlay (see the Overlay arm above).
+                                if <Self as LockFreeOverlay<
+                                    ByteKey,
+                                    V,
+                                    super::disk_manager::MmapDiskManager,
+                                >>::apply_recovered_operation_overlay(
+                                    &trie, op
+                                ) {
                                     terms_recovered += 1;
                                 } else {
                                     had_apply_failure = true;
@@ -1053,33 +1074,11 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
                     duration_ms,
                 );
 
-                // M4b REESTABLISH SINK (D-SINK — the corruption-rebuild arm).
-                // `trie` was built by `Self::create(path)` above, which create-flips a
-                // fresh eligible-V trie (`route_overlay()==true`); the replay arms above
-                // then wrote the recovered terms into the OWNED tree via
-                // `apply_recovered_operation_no_wal` (the `*_impl_core` un-routed owned
-                // writers). Without this sink the recovered owned data would NEVER reach
-                // the overlay, and the first post-recovery `checkpoint()` would take the
-                // overlay route and persist the EMPTY overlay = total irreversible loss.
-                // Gate on `route_overlay()` (⟺ an eligible V was create-flipped), NOT on
-                // `any_overlay`: it covers BOTH replay arms (the regime-aware Overlay
-                // path AND the inline Owned-archive streaming path) and is a strict
-                // no-op for arbitrary V (which `create` did not flip ⇒ !route_overlay).
-                // D1/F7-R1: `reestablish_overlay_from_owned` reads the recovered owned
-                // tree via the UN-routed `owned_*` seams (it runs with `route_overlay()`
-                // already true), STRUCTURALLY builds the overlay root via
-                // `build_overlay_root_from_owned`, FORCE-REPLACES the empty create-flip
-                // overlay root (the F5 structural converter, equivalent to the legacy
-                // per-term `reestablish_overlay_dispatch` but strictly more correct on a
-                // term-only counter member), and clears owned LAST (RES-7); a mid-stream
-                // `?` aborts with the owned tree intact.
-                if trie.route_overlay() {
-                    <Self as LockFreeOverlay<
-                        ByteKey,
-                        V,
-                        super::disk_manager::MmapDiskManager,
-                    >>::reestablish_overlay_from_owned(&mut trie)?;
-                }
+                // L1: the recovered ops were replayed DIRECTLY into the overlay (the apply sinks
+                // above), so the owned tree stays empty and there is NO owned→overlay conversion —
+                // the former `reestablish_overlay_from_owned` sink is DELETED. The deletion is
+                // ATOMIC with the applier-swap (R2): keeping it would `build_overlay_root_from_owned`
+                // an EMPTY root and FORCE-REPLACE the just-populated overlay root = 100% silent loss.
 
                 Ok((trie, report))
             }
