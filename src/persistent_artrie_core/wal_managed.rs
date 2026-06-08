@@ -448,6 +448,74 @@ pub trait WalManaged {
             Ok(None)
         }
     }
+
+    /// **F7 (FIX A/FIX D) — RECORDS-EMPTY-ON-DISK** (on-disk WAL file ==
+    /// `WalHeader::SIZE`). `false` when there is no WAL (an in-memory trie cannot be
+    /// records-empty-on-disk in a meaningful sense; the F7 converter only runs on
+    /// disk-backed reopen, so this branch is moot there).
+    fn wal_records_empty_on_disk(&self) -> bool {
+        self.wal_writer()
+            .map(|wal| wal.records_empty_on_disk())
+            .unwrap_or(false)
+    }
+
+    /// **F7 (S1+S2) — rotate the Owned tail to archive + RE-STAMP Overlay + re-assert
+    /// floor + fsync (OBL-1).** Delegates to [`AsyncWalWriter::rotate_and_restamp_overlay`].
+    /// Returns the archived Owned-tail segment path (for the FIX-B drain), or `None` if no
+    /// WAL is configured.
+    fn wal_rotate_and_restamp_overlay(
+        &self,
+        config: &WalConfig,
+    ) -> Result<Option<std::path::PathBuf>> {
+        if let Some(wal) = self.wal_writer() {
+            let path = wal.rotate_and_restamp_overlay(config).map_err(|e| {
+                PersistentARTrieError::io_error(
+                    "wal_rotate_and_restamp_overlay",
+                    "WAL",
+                    std::io::Error::new(std::io::ErrorKind::Other, e.to_string()),
+                )
+            })?;
+            Ok(path)
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// **F7 (FIX A widening) — stamp Overlay gated on RECORDS-EMPTY-ON-DISK** (not the
+    /// `next_lsn==1` counter). The converter's CHEAP path uses this to stamp a header-only
+    /// active that may carry a HIGH `next_lsn` (post-crash-after-rotate, post-checkpoint).
+    /// Returns the `Result` from [`AsyncWalWriter::set_overlay_regime_records_empty`]; an
+    /// `Err` (records present, or no WAL) is surfaced to the caller. `Ok(())` when no WAL
+    /// is configured (an in-memory trie is never on the convert path).
+    fn wal_stamp_overlay_regime_records_empty(&self) -> Result<()> {
+        if let Some(wal) = self.wal_writer() {
+            wal.set_overlay_regime_records_empty().map_err(|e| {
+                PersistentARTrieError::io_error(
+                    "wal_stamp_overlay_regime_records_empty",
+                    "WAL",
+                    std::io::Error::new(std::io::ErrorKind::Other, e.to_string()),
+                )
+            })?;
+        }
+        Ok(())
+    }
+
+    /// **F7 (FIX B/FIX C) — collect all WAL segments (archive + active), LSN-ordered.**
+    /// Empty when no WAL is configured.
+    fn wal_collect_segments(&self, config: &WalConfig) -> Result<Vec<std::path::PathBuf>> {
+        if let Some(wal) = self.wal_writer() {
+            let segments = wal.collect_wal_segments(config).map_err(|e| {
+                PersistentARTrieError::io_error(
+                    "wal_collect_segments",
+                    "WAL",
+                    std::io::Error::new(std::io::ErrorKind::Other, e.to_string()),
+                )
+            })?;
+            Ok(segments)
+        } else {
+            Ok(Vec::new())
+        }
+    }
 }
 
 /// Helper to create an AsyncWalWriter with standard configuration.

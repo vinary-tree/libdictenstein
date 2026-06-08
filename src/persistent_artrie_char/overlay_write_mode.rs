@@ -298,6 +298,23 @@ impl<V: DictionaryValue, S: BlockStorage> LockFreeOverlay<CharKey, V, S>
         // (which uses the existing single-arbiter `try_remove_lockfree_path`).
         self.overlay_remove_no_wal(units)
     }
+
+    fn load_root_immutable_seam(&mut self, root_ptr: u64) -> Result<bool> {
+        // F7 — the char `load_root_immutable` takes `(buffer_manager, root_ptr)`. Clone
+        // the `Arc<RwLock<BufferManager>>` out of `self` first to release the immutable
+        // borrow before the `&mut self` call. PRECONDITION (converter): the WAL is already
+        // Overlay-regime, so the V-2 install check inside passes. char's `load_root_immutable`
+        // gracefully falls back to an EMPTY image on a corrupt load and returns
+        // `image_loaded`, which we forward (so the converter's drain skips nothing the absent
+        // image fails to cover).
+        let buffer_manager = self.buffer_manager.clone().ok_or_else(|| {
+            crate::persistent_artrie_core::error::PersistentARTrieError::internal(
+                "F7 load_root_immutable_seam: no buffer manager",
+            )
+        })?;
+        let (_term_count, image_loaded) = self.load_root_immutable(&buffer_manager, root_ptr)?;
+        Ok(image_loaded)
+    }
 }
 
 // ============================================================================

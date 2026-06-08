@@ -66,17 +66,39 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
         &mut self,
         buffer_manager: &Arc<RwLock<crate::persistent_artrie::buffer_manager::BufferManager<S>>>,
         root_ptr: u64,
-    ) -> Result<usize> {
+    ) -> Result<(usize, bool)> {
         // (1) Eager-load the dense image into the TRANSIENT owned tree.
-        let term_count = if root_ptr == 0 {
-            0usize
+        //
+        // **F7 corrupt-image fallback.** If the dense image fails to load (a corrupt root
+        // descriptor / arena), FALL BACK to an EMPTY image — exactly as the legacy owned
+        // reopen does (`load_root_from_disk` error ⇒ `loaded_from_disk = false` ⇒ rebuild
+        // from the WAL). The caller (the F5 arm / the F7 converter) then recovers everything
+        // from the WAL drain. Refusing to trust a malformed image avoids fabricating
+        // checkpointed contents from corrupt bytes. Returns `image_loaded` so the caller can
+        // pass `loaded_from_disk = false` + `image_checkpoint_lsn = 0` to the drain when the
+        // image is absent/corrupt (else the drain would wrongly SKIP WAL records `<= the
+        // active Checkpoint record's lsn`, dropping data the absent image does NOT cover).
+        let (term_count, image_loaded) = if root_ptr == 0 {
+            (0usize, false)
         } else {
             let root_swizzled = SwizzledPtr::from_raw(root_ptr);
-            let (owned_root, len) =
-                self.load_root_from_disk(buffer_manager, &root_swizzled, Some(usize::MAX))?;
-            *self.root.get_mut() = owned_root;
-            self.len.store(len, std::sync::atomic::Ordering::Release);
-            len
+            match self.load_root_from_disk(buffer_manager, &root_swizzled, Some(usize::MAX)) {
+                Ok((owned_root, len)) => {
+                    *self.root.get_mut() = owned_root;
+                    self.len.store(len, std::sync::atomic::Ordering::Release);
+                    (len, true)
+                }
+                Err(e) => {
+                    log::warn!(
+                        "F7 load_root_immutable: dense image load failed ({:?}); falling back to \
+                         an EMPTY image + WAL drain (legacy fallback parity)",
+                        e
+                    );
+                    *self.root.get_mut() = CharTrieRoot::Empty;
+                    self.len.store(0, std::sync::atomic::Ordering::Release);
+                    (0usize, false)
+                }
+            }
         };
 
         // (2) Build the overlay root from the owned tree (compression-aware, iterative).
@@ -99,7 +121,7 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
         *self.root.get_mut() = CharTrieRoot::Empty;
         self.len.store(0, std::sync::atomic::Ordering::Release);
 
-        Ok(term_count)
+        Ok((term_count, image_loaded))
     }
 }
 

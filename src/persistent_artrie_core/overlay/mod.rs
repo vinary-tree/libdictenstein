@@ -49,6 +49,12 @@ pub(crate) mod f5_build;
 pub use atomic_ptr::AtomicNodePtr;
 pub use faulter::OverlayFaulter;
 pub use node::{flags, Child, OverlayNode};
+// F7 — the crash-injection fail points for the Owned→Overlay conversion crash-safety
+// proptest (`tests/persistent_owned_to_overlay_conversion_crash.rs`). Re-exported `pub`
+// from the `pub(crate)` `flip` module so the integration test can arm/disarm them;
+// DISARMED by default (a single `Relaxed`/`SeqCst` atomic load on the cold reopen-convert
+// path = zero production effect).
+pub use flip::f7_failpoint;
 
 use std::sync::Arc;
 

@@ -329,9 +329,18 @@ impl SegmentSyncManager {
                         archive_path.display(),
                         e
                     );
-                } else if let Err(e) =
-                    WalWriter::prune_segments_if_needed(&archive_dir, &self.archive_config)
-                {
+                } else if let Err(e) = WalWriter::prune_segments_if_needed(
+                    &archive_dir,
+                    &self.archive_config,
+                    // F7: the background SYNC-rotation pruner has no checkpoint/image
+                    // frontier in scope (the `SegmentSyncManager` tracks only the synced
+                    // LSN, not the dense-image checkpoint). Pass `Lsn::MAX` so it keeps its
+                    // PRE-F7 count/size-only pruning behavior here (every segment treated as
+                    // subsumable) — this path is orthogonal to the F7 converter's foreground
+                    // `rotate_to_archive`, which DOES pass the real carried `checkpoint_lsn`
+                    // to honor the un-subsumed exemption (FIX-D belt-and-suspenders).
+                    Lsn::MAX,
+                ) {
                     log::warn!("Failed to prune WAL archive segments: {}", e);
                 }
             }
@@ -619,6 +628,17 @@ impl AsyncWalWriter {
         writer.set_overlay_regime()
     }
 
+    /// **F7 (FIX A widening) — stamp Overlay gated on RECORDS-EMPTY-ON-DISK** (not the
+    /// `next_lsn==1` counter). Delegates to [`WalWriter::set_overlay_regime_records_empty`].
+    /// Used by the converter's CHEAP path on a header-only active that may carry a HIGH
+    /// `next_lsn` (post-crash-after-rotate, or post-owned-checkpoint `set_min_lsn`). NOTE:
+    /// does NOT consult the async counter (which is precisely the high value the cheap path
+    /// must accept); the inner records-empty-on-disk check is authoritative.
+    pub fn set_overlay_regime_records_empty(&self) -> Result<(), WalError> {
+        let writer = self.writer.lock().expect("WAL writer lock poisoned");
+        writer.set_overlay_regime_records_empty()
+    }
+
     /// The header's current rank-regime (S4).
     pub fn rank_regime(&self) -> super::RankRegime {
         let writer = self.writer.lock().expect("WAL writer lock poisoned");
@@ -690,6 +710,75 @@ impl AsyncWalWriter {
         let writer = self.writer.lock().expect("WAL writer lock poisoned");
         let path = writer.rotate_to_archive(config)?;
         Ok(Some(path))
+    }
+
+    /// **F7 (FIX A/FIX D) — RECORDS-EMPTY-ON-DISK predicate.** Delegates to the inner
+    /// sync writer's [`WalWriter::records_empty_on_disk`] (on-disk file length ==
+    /// `WalHeader::SIZE`), the counter-independent emptiness check the F7 converter uses
+    /// for its cheap-vs-rotate decision and the post-rotate Overlay stamp gate.
+    pub fn records_empty_on_disk(&self) -> bool {
+        let writer = self.writer.lock().expect("WAL writer lock poisoned");
+        writer.records_empty_on_disk()
+    }
+
+    /// **F7 (S1+S2) — rotate the Owned tail to archive + RE-STAMP the fresh active
+    /// Overlay + re-assert the carried floor + fsync the Overlay header (OBL-1).**
+    ///
+    /// The async twin of [`WalWriter::rotate_and_restamp_overlay`]: holds the writer lock
+    /// across the rotate→stamp→floor→fsync sequence (so no concurrent append can slip a
+    /// record onto the fresh header-only active before the stamp), then re-syncs the async
+    /// `next_lsn`/`synced_lsn` atoms from the inner writer (which carried the high
+    /// post-rotate counters — DG0). The async counters are NOT reset to 1: the fresh
+    /// active continues the LSN domain (archive LSNs stay strictly below all future active
+    /// LSNs), and the records-empty-on-disk gate (not the counter) authorizes the stamp.
+    ///
+    /// Returns the archived segment path (the just-rotated Owned tail) for the caller's
+    /// FIX-B drain. Falls back to `truncate` (and `Ok(None)`) when archiving is disabled —
+    /// but the F7 converter always runs with archiving enabled (the recovery default).
+    pub fn rotate_and_restamp_overlay(
+        &self,
+        config: &WalConfig,
+    ) -> Result<Option<PathBuf>, AsyncWalError> {
+        if !config.archive_enabled {
+            // No archive: cannot preserve the Owned tail by renaming. The converter only
+            // calls this on a records-non-empty active, so a truncate here would LOSE the
+            // tail. Refuse loudly rather than silently drop committed data.
+            return Err(AsyncWalError::RotationFailed {
+                reason: "rotate_and_restamp_overlay requires archive_enabled (would lose the \
+                         Owned tail otherwise)"
+                    .to_string(),
+                source: None,
+            });
+        }
+        let writer = self.writer.lock().expect("WAL writer lock poisoned");
+        let path = writer.rotate_and_restamp_overlay(config)?;
+        // Re-sync the async counters from the inner writer (carried high next_lsn — DG0).
+        self.next_lsn.store(writer.current_lsn(), Ordering::Release);
+        let synced = writer.synced_lsn();
+        self.synced_lsn.store(synced, Ordering::Release);
+        self.sync_manager
+            .global_synced_lsn
+            .store(synced, Ordering::Release);
+        Ok(Some(path))
+    }
+
+    /// **F7 (FIX B/FIX C) — collect all WAL segments (archived + active), LSN-ordered.**
+    /// Delegates to the inner [`WalWriter::collect_wal_segments`] (archive_dir from
+    /// `config` + the active file iff it carries records). The shared archive-aware
+    /// overlay drain reconciles these; the watermark base (FIX C) is the max LSN over
+    /// them.
+    pub fn collect_wal_segments(&self, config: &WalConfig) -> Result<Vec<PathBuf>, WalError> {
+        let writer = self.writer.lock().expect("WAL writer lock poisoned");
+        writer.collect_wal_segments(config)
+    }
+
+    /// **F7 (FIX C) — the max LSN over a segment set.** Delegates to
+    /// [`WalWriter::max_lsn_in_segments`] (a free function on the sync writer). Used to
+    /// seed the committed-watermark BASE from the FULL segment set (archive + active) at
+    /// reopen so `watermark() >= tail_max` before the first post-conversion checkpoint
+    /// (so the checkpoint-subsumed skip applies the BatchIncrement delta EXACTLY ONCE).
+    pub fn max_lsn_in_segments(segments: &[PathBuf]) -> Option<Lsn> {
+        WalWriter::max_lsn_in_segments(segments)
     }
 
     /// Convert the async writer back to a synchronous writer.

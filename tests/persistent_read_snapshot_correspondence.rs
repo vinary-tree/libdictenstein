@@ -326,7 +326,11 @@ fn char_lazy_traversal_failure_is_error_and_does_not_append_wal() {
     let corrupted_query = corrupt_first_lazy_char_child(&path);
     let wal_len_before = wal_len(&path);
 
-    let reopened = PersistentARTrieChar::<i64>::open(&path).expect("lazy reopen char trie");
+    // **F7:** production `open` CONVERTS by EAGERLY materializing the dense image (hitting
+    // the corrupt child at convert time). The LAZY owned-tree traversal corruption-on-access
+    // contract is preserved by the RETAINED `open_with_legacy_loader` (does NOT convert).
+    let reopened = PersistentARTrieChar::<i64>::open_with_legacy_loader(&path)
+        .expect("lazy reopen char trie (legacy owned-lazy loader)");
     assert!(
         reopened.iter_prefix(&corrupted_query).is_err(),
         "prefix traversal should surface lazy-load corruption"

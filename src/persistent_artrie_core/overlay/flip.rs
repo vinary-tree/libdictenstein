@@ -23,14 +23,15 @@
 //!
 //! # D1 — the #1 data-loss risk (READ THIS BEFORE EDITING A SEAM IMPL)
 //!
-//! The `owned_*` seam methods MUST read the OWNED tree directly. The reestablish
-//! folds (`reestablish_overlay_membership`/`_counter`) run while `route_overlay()`
-//! is ALREADY TRUE (the ctor flips before dispatching reestablish), so routing an
-//! owned read through the public `iter_prefix`/`get`/`contains`/`get_value` would
-//! read the EMPTY overlay, publish nothing, then clear the owned tree LAST =
-//! TOTAL IRREVERSIBLE LOSS. Each `owned_*` seam carries a `# Safety (data-loss)`
-//! contract; a CI grep gate (contract §6(a)) FAILS if any `owned_*` seam body
-//! references `route_overlay`/`iter_prefix(`/`self.get(`/`get_value(`/`contains(`.
+//! The `owned_*` seam methods MUST read the OWNED tree directly. The structural
+//! converter `build_overlay_root_from_owned` (used by `reestablish_overlay_from_owned`
+//! and the F7 reopen converter) reads them while `route_overlay()` may ALREADY be TRUE
+//! (the ctor flips before reestablishing), so routing an owned read through the public
+//! `iter_prefix`/`get`/`contains`/`get_value` would read the EMPTY overlay, publish
+//! nothing, then clear the owned tree LAST = TOTAL IRREVERSIBLE LOSS. Each `owned_*`
+//! seam carries a `# Safety (data-loss)` contract; a CI grep gate (contract §6(a)) FAILS
+//! if any `owned_*` seam body references
+//! `route_overlay`/`iter_prefix(`/`self.get(`/`get_value(`/`contains(`.
 //!
 //! # NON-FAULTING read engine — DO NOT add disk fault-in
 //!
@@ -51,6 +52,97 @@ use crate::persistent_artrie_core::overlay::node::OverlayNode;
 use crate::persistent_artrie_core::overlay::write_mode::OverlayWriteMode;
 use crate::value::DictionaryValue;
 use std::sync::Arc;
+
+// ============================================================================
+// F7 — crash-injection FAIL POINTS for the Owned→Overlay conversion (crash-safety
+// proptest, `tests/persistent_owned_to_overlay_conversion_crash.rs`).
+//
+// `convert_owned_to_overlay_on_reopen` consults [`f7_failpoint::armed`] BETWEEN each
+// durable step and returns a simulated-crash `Err` when the armed point matches —
+// modeling a power-cut at that point (the durable WAL/disk artifacts up to that step
+// survive; the trie construction aborts, and the test reopens to assert recovery).
+//
+// This is a RUNTIME atomic (default DISARMED = `None`), ALWAYS compiled: the only
+// consult site is the cold reopen-conversion path, so the cost in production is a single
+// `Relaxed` load per Owned→Overlay reopen (negligible; never on the hot read/write path).
+// Disarmed it is a strict no-op. The test arms it via [`f7_failpoint::arm`] / disarms via
+// [`f7_failpoint::disarm`] around each reopen.
+// ============================================================================
+
+/// F7 conversion crash-injection fail points (see module doc).
+pub mod f7_failpoint {
+    use std::sync::atomic::{AtomicU8, Ordering};
+
+    /// The conversion steps a crash can be injected BEFORE. `None` (0) = disarmed.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum FailPoint {
+        /// Disarmed — no crash injected (production default).
+        None,
+        /// Crash BEFORE the rotate (records-non-empty path) — i.e. before any durable
+        /// conversion side effect. (On the cheap path: before the in-place Overlay stamp.)
+        BeforeRotate,
+        /// Crash AFTER the rotate/in-place-stamp's DURABLE side effect but BEFORE the
+        /// Overlay header is durably stamped+fsync'd. On the ROTATE path this is the
+        /// torn window the v4 FIX-D crash-loop targets (the tail is archived; the fresh
+        /// active is records-empty + Owned-regime, not yet Overlay).
+        AfterRotateBeforeStamp,
+        /// Crash AFTER the Overlay stamp+fsync (the S2 durable commit point) but BEFORE
+        /// the overlay is built from the dense image (`load_root_immutable_seam`).
+        AfterStampBeforeBuild,
+        /// Crash DURING the archive-aware drain (after the overlay is built + installed,
+        /// before the drain applies the tail).
+        DuringDrain,
+    }
+
+    impl FailPoint {
+        fn as_u8(self) -> u8 {
+            match self {
+                FailPoint::None => 0,
+                FailPoint::BeforeRotate => 1,
+                FailPoint::AfterRotateBeforeStamp => 2,
+                FailPoint::AfterStampBeforeBuild => 3,
+                FailPoint::DuringDrain => 4,
+            }
+        }
+        fn from_u8(v: u8) -> FailPoint {
+            match v {
+                1 => FailPoint::BeforeRotate,
+                2 => FailPoint::AfterRotateBeforeStamp,
+                3 => FailPoint::AfterStampBeforeBuild,
+                4 => FailPoint::DuringDrain,
+                _ => FailPoint::None,
+            }
+        }
+    }
+
+    static ARMED: AtomicU8 = AtomicU8::new(0);
+
+    /// Arm the converter to simulate a crash BEFORE `fp` (test-only). Returns a guard
+    /// that DISARMS on drop, so a `?`-early-return in the test still resets the global.
+    pub fn arm(fp: FailPoint) -> ArmGuard {
+        ARMED.store(fp.as_u8(), Ordering::SeqCst);
+        ArmGuard
+    }
+
+    /// Disarm (back to production no-op behavior).
+    pub fn disarm() {
+        ARMED.store(0, Ordering::SeqCst);
+    }
+
+    /// The currently-armed fail point (`None` when disarmed = production).
+    pub fn armed() -> FailPoint {
+        FailPoint::from_u8(ARMED.load(Ordering::SeqCst))
+    }
+
+    /// RAII guard returned by [`arm`]; disarms on drop.
+    #[must_use]
+    pub struct ArmGuard;
+    impl Drop for ArmGuard {
+        fn drop(&mut self) {
+            disarm();
+        }
+    }
+}
 
 /// `Some(())` re-wrapped as `V` iff `V == ()`, else `None`.
 ///
@@ -209,9 +301,9 @@ pub(crate) trait LockFreeOverlay<K: KeyEncoding, V: DictionaryValue, S>:
     /// **G5/F1 — publish an ARBITRARY-`V` value for `units` to the overlay via the
     /// variant's no-WAL path-copy CAS** (the recovered terms are already durable in
     /// the WAL; re-logging would double-log). The value twin of
-    /// [`Self::overlay_publish_counter`], used by the third reestablish fold
-    /// [`Self::reestablish_overlay_value`]. SETs the value (last-writer = the CAS
-    /// winner); at reestablish the overlay is fresh, so there is no contention.
+    /// [`Self::overlay_publish_counter`], used by the F5 WAL-tail applier
+    /// ([`Self::apply_recovered_operation_overlay`]). SETs the value (last-writer = the CAS
+    /// winner); at reestablish/replay the overlay is uncontended.
     fn overlay_publish_value(&self, units: &[K::Unit], value: V);
 
     /// **G5/F1 — read the overlay leaf's ARBITRARY-`V` value at `units`** (the
@@ -462,152 +554,26 @@ pub(crate) trait LockFreeOverlay<K: KeyEncoding, V: DictionaryValue, S>:
         }
     }
 
-    // ===== reestablish (the data-loss-critical clear-owned-LAST folds) =====
-
-    /// **Membership (`V = ()`) overlay reestablish.** Re-insert each recovered
-    /// owned term into the overlay via the no-WAL publisher, streaming by first
-    /// unit; clear the owned tree LAST (RES-7). The MEMBERSHIP twin of
-    /// [`Self::reestablish_overlay_counter`].
-    ///
-    /// # D1 (CRITICAL)
-    ///
-    /// Reads the recovered OWNED tree via the UN-routed `owned_*` seam readers.
-    /// This runs with `route_overlay()` ALREADY TRUE (the ctor flips before
-    /// dispatching reestablish), so a routed read would see the EMPTY overlay —
-    /// we'd copy nothing, then clear owned below = total irreversible loss. The
-    /// owned readers bypass the route.
-    fn reestablish_overlay_membership(&mut self) -> Result<()> {
-        // Disjoint first-unit partition cover of the recovered owned terms.
-        let (first_units, has_empty_term) = self.owned_first_units()?;
-        // Empty-string support (H3): the empty term "" has no first unit, so the
-        // per-unit chunks below never surface it — republish its membership to the
-        // overlay ROOT directly (fresh-root-CAS) BEFORE clear_owned, else
-        // `contains("")` is lost on EVERY reopen (the load path rebuilt the owned
-        // tree with the empty-term finality, but `clear_owned` below wipes it and
-        // the overlay — not owned — serves reads under `route_overlay()`).
-        if has_empty_term {
-            self.overlay_publish_root_membership()?;
-        }
-        for unit in first_units {
-            let prefix = [unit];
-            if let Some(chunk) = self.owned_units_under(&prefix)? {
-                for units in &chunk {
-                    self.overlay_publish_membership(units);
-                }
-            }
-        }
-        // Clear the owned tree LAST (RES-7: a mid-stream `?` abort leaves it intact).
-        self.clear_owned();
-        Ok(())
-    }
-
-    /// **Counter overlay reestablish.** Rebuild the immutable overlay from the
-    /// recovered OWNED tree's `(term, value)` pairs, streaming by first unit so the
-    /// heavy per-partition materialization is bounded to one first-unit at a time
-    /// (RA-2). FALLIBLE: any owned-read error ABORTS (propagates `Err`) with the
-    /// owned tree INTACT — the owned tree is cleared ONLY as the LAST step (RES-7).
-    /// Re-inserts via the no-WAL counter publisher.
-    ///
-    /// # D1 (CRITICAL)
-    ///
-    /// See [`Self::reestablish_overlay_membership`] — reads the recovered owned
-    /// tree via the UN-routed `owned_*` seam readers.
-    fn reestablish_overlay_counter(&mut self) -> Result<()> {
-        let (first_units, has_empty_term) = self.owned_first_units()?;
-        // Empty-term partition first (it has no first unit — RES-6).
-        // Empty-string support (H3): publish "" to the overlay ROOT via the
-        // fresh-root-CAS value publisher (NOT `overlay_publish_counter`, which
-        // routes through the guarded `increment_cas` and no-ops on ""). SET the
-        // recovered value directly. Runs BEFORE clear_owned (RES-7).
-        if has_empty_term {
-            if let Some(v) = self.owned_has_empty_term_value() {
-                self.overlay_publish_root_value(v)?;
-            }
-        }
-        // One first-unit partition at a time: stream its (term, value) pairs,
-        // publish each via the no-WAL overlay path, drop the chunk before the next
-        // unit.
-        for unit in first_units {
-            let prefix = [unit];
-            if let Some(chunk) = self.owned_units_with_values_under(&prefix)? {
-                for (units, value) in &chunk {
-                    if let Some(cv) = Self::value_as_counter(value) {
-                        self.overlay_publish_counter(units, cv);
-                    }
-                }
-            }
-        }
-        // Clear the owned tree LAST — only after every partition published. A mid-
-        // stream `?` abort above returns Err with the owned tree untouched (RES-7).
-        self.clear_owned();
-        Ok(())
-    }
-
-    /// **G5/F1 — the THIRD reestablish fold: ARBITRARY `V` value.** The value twin
-    /// of [`Self::reestablish_overlay_counter`]: rebuild the immutable overlay from
-    /// the recovered OWNED tree's `(term, V)` pairs, streaming by first unit (RA-2).
-    /// FALLIBLE: any owned-read error ABORTS (propagates `Err`) with the owned tree
-    /// INTACT — cleared ONLY as the LAST step (RES-7). Re-inserts via the no-WAL
-    /// value publisher [`Self::overlay_publish_value`].
-    ///
-    /// # D1 (CRITICAL)
-    ///
-    /// Reads the recovered owned tree via the UN-routed `owned_*` seam readers — the
-    /// SAME `owned_first_units` / `owned_has_empty_term_value` /
-    /// `owned_units_with_values_under` the counter fold uses. It adds NO new `owned_*`
-    /// seam, so the D1 grep gate (`flip.rs` head) is inherited, NOT re-derived.
-    fn reestablish_overlay_value(&mut self) -> Result<()> {
-        let (first_units, has_empty_term) = self.owned_first_units()?;
-        // Empty term "" → the overlay ROOT (NO WAL at reestablish — already durable;
-        // UNRANKED publish is correct, no LSN to rank). A VALUED "" publishes the value;
-        // a TERM-ONLY "" (membership, no value) publishes root membership. Runs BEFORE
-        // clear_owned (RES-7).
-        if has_empty_term {
-            if let Some(v) = self.owned_has_empty_term_value() {
-                self.overlay_publish_root_value(v)?;
-            } else {
-                self.overlay_publish_root_membership()?;
-            }
-        }
-        // One first-unit partition at a time. flag-2 fix: an arbitrary-`V` trie may hold
-        // TERM-ONLY members (`insert()` with no value) MIXED with valued terms; the value
-        // stream below carries only valued terms, so term-only members were DROPPED on
-        // reopen. Republish MEMBERSHIP for every recovered final first (carries the
-        // term-only ones), THEN set the value on each valued final (`overlay_publish_value`
-        // re-finalizes + carries the value, idempotent on the membership just published).
-        for unit in first_units {
-            let prefix = [unit];
-            // (1) Membership for EVERY final under this unit (incl. term-only).
-            if let Some(chunk) = self.owned_units_under(&prefix)? {
-                for units in &chunk {
-                    self.overlay_publish_membership(units);
-                }
-            }
-            // (2) Value for each valued final (set last so it is never wiped).
-            if let Some(chunk) = self.owned_units_with_values_under(&prefix)? {
-                for (units, value) in &chunk {
-                    self.overlay_publish_value(units, value.clone());
-                }
-            }
-        }
-        // Clear the owned tree LAST — a mid-stream `?` abort returns Err with the
-        // owned tree untouched (RES-7).
-        self.clear_owned();
-        Ok(())
-    }
-
-    /// Re-wrap a `&V` as `CounterValue` via a SAFE `Any` downcast iff `V ==
-    /// CounterValue`, else `None`. The reestablish counter fold uses this to feed
-    /// the typed publisher seam from the generic `V`-valued owned chunk.
-    fn value_as_counter(value: &V) -> Option<Self::CounterValue> {
-        (value as &dyn Any)
-            .downcast_ref::<Self::CounterValue>()
-            .copied()
-    }
+    // ===== reestablish =====
+    //
+    // **F7 — the three per-term reestablish folds (`reestablish_overlay_membership` /
+    // `reestablish_overlay_counter` / `reestablish_overlay_value`) and the
+    // `value_as_counter` helper they used were DELETED.** They are superseded by the KEPT
+    // STRUCTURAL converter [`Self::reestablish_overlay_from_owned`] (which calls
+    // [`Self::build_overlay_root_from_owned`]): it reproduces the SAME overlay (same
+    // term-set + values, incl. counters > i64::MAX and the empty term "") via the SAME D1
+    // un-routed `owned_*` seams, force-replaces the root, and clears owned LAST (RES-7) —
+    // and is strictly MORE correct (it keeps a term-only counter member the per-term
+    // counter fold dropped). The F7 reopen converter, the legacy-loader oracle, the
+    // recovery-family ctors, and byte compaction all route through
+    // `reestablish_overlay_from_owned` / `build_overlay_root_from_owned` now. The
+    // membership-∪-value union the value fold pioneered (the "flag-2 fix") lives on in
+    // `build_overlay_root_from_owned`.
 
     /// Re-wrap a `CounterValue` as `V` via a SAFE `Any` downcast iff `V ==
-    /// CounterValue`, else `None`. The inverse of [`Self::value_as_counter`];
-    /// re-wraps an overlay counter read into the public `V` for the value-route.
+    /// CounterValue`, else `None`. Re-wraps an overlay counter read into the public `V`
+    /// for the value-route ([`Self::overlay_route_get_value`]) and the F5 absolute-counter
+    /// apply path.
     fn counter_as_value(counter: Self::CounterValue) -> Option<V> {
         (&counter as &dyn Any).downcast_ref::<V>().cloned()
     }
@@ -784,13 +750,13 @@ pub(crate) trait LockFreeOverlay<K: KeyEncoding, V: DictionaryValue, S>:
 
     /// **F5 GATE (S3: SWITCHED ON).** When `true` (the current S3 state), the reopen
     /// Overlay-regime branch uses the F5 direct dense→overlay loader
-    /// (`load_root_immutable` + `replay_records_lww_overlay`): reopen builds the lock-
-    /// free overlay DIRECTLY from the dense image + replays the WAL tail INTO the
-    /// overlay, never materializing the owned tree into `self.root` (the F7
-    /// prerequisite). When `false` (the S1/S2 dormant state), reopen uses the LEGACY
-    /// path (owned `load_root_from_disk` + owned `replay_records_lww` + `flip` +
-    /// `reestablish_overlay_dispatch`). **REVERSIBLE** — flip back to `false` to
-    /// restore the proven legacy path with zero other changes. The
+    /// (`load_root_immutable` + the archive-aware [`Self::reconcile_and_drain_overlay`]):
+    /// reopen builds the lock-free overlay DIRECTLY from the dense image + drains the WAL
+    /// tail (active + archived segments, FIX B) INTO the overlay, never materializing the
+    /// owned tree into `self.root` (the F7 prerequisite). When `false` (the legacy oracle
+    /// state, used by `open_with_legacy_loader`), reopen uses the LEGACY path (owned
+    /// `load_root_from_disk` + owned `replay_records_lww` + `flip` +
+    /// `reestablish_overlay_from_owned`). The
     /// `tests/persistent_f5_both_loaders_correspondence.rs` `open_with_f5_loader` ctors
     /// drive F5 regardless of this gate, so they stay a stable oracle either way.
     ///
@@ -909,8 +875,8 @@ pub(crate) trait LockFreeOverlay<K: KeyEncoding, V: DictionaryValue, S>:
 
     /// **F5/F7 (R1) — STRUCTURAL owned→overlay reestablish for the RECOVERY-FAMILY
     /// ctors.** The structural-converter replacement for the per-term-publishing
-    /// [`reestablish_overlay_dispatch`](crate::persistent_artrie_char::PersistentARTrieChar::reestablish_overlay_dispatch)
-    /// in the create-flip + rebuild-in-memory recovery path (the `RebuildFromWal` /
+    /// `reestablish_overlay_dispatch` (DELETED in F7) in the create-flip +
+    /// rebuild-in-memory recovery path (the `RebuildFromWal` /
     /// `recover_from_archives` ctors). It produces the SAME overlay (same term-set +
     /// same values, incl. counters > `i64::MAX` and the empty term "") because it
     /// reads the owned tree via the SAME un-routed `owned_*` seams via
@@ -993,7 +959,7 @@ pub(crate) trait LockFreeOverlay<K: KeyEncoding, V: DictionaryValue, S>:
 
     /// **F5 (THE data-loss-critical path) — apply ONE reconciled
     /// [`RecoveredOperation`] INTO THE OVERLAY** (no WAL), via the SAME no-WAL
-    /// publishers [`Self::reestablish_overlay_value`] uses. The overlay twin of the
+    /// publishers [`Self::build_overlay_root_from_owned`] uses. The overlay twin of the
     /// owned `apply_*_recovered_operation_no_wal`: where the owned applier mutates
     /// `self.root`, this publishes into the live lock-free overlay (which already
     /// holds the dense/checkpoint state from `load_root_immutable`). Returns `true`
@@ -1002,7 +968,7 @@ pub(crate) trait LockFreeOverlay<K: KeyEncoding, V: DictionaryValue, S>:
     ///
     /// # Winners are applied in commit-visibility order
     ///
-    /// [`Self::replay_records_lww_overlay`] feeds the winners in `(generation, lsn)`
+    /// [`Self::drain_segments_into_overlay`] feeds the winners in `(generation, lsn)`
     /// order, so applying them here reproduces the last-writer-wins final state —
     /// IDENTICAL to the owned applier consuming the SAME winner list. Single-threaded
     /// at reopen (no concurrent writers), so each publisher's root CAS is uncontended.
@@ -1111,29 +1077,44 @@ pub(crate) trait LockFreeOverlay<K: KeyEncoding, V: DictionaryValue, S>:
             }
             Op::Increment { delta, result, .. } => {
                 match result {
-                    // Absolute (single Increment): SET the counter to `v` (incl. 0).
+                    // Absolute (single Increment): SET the counter to `v` (incl. 0). A single
+                    // `WalRecord::Increment` carries the ABSOLUTE post-increment value (the
+                    // owned write path logs the resulting count, NOT a delta), so replay must
+                    // OVERWRITE the counter to `v` — NEVER accumulate. (Owned files can log
+                    // an absolute Increment that DECREASES the count, e.g. 5 → 0 via a
+                    // negative delta; the F7 converter routes such Owned tails into the
+                    // overlay, so the absolute SET must be honored.)
                     Some(v) => {
-                        // The reconcile carries the absolute value in the i64 WAL field.
-                        // Re-encode it as the typed `V` (the counter monomorph), then
-                        // publish as a value SET so an absolute-set-to-0 is honored
-                        // (NOT accumulated).
-                        match Self::counter_value_from_i64(v) {
-                            Some(cv) => {
-                                // For "" the counter publisher no-ops (durable counter
-                                // path never logs ""); route "" through the value publisher
-                                // so an absolute "" still SETs. counter_as_value re-wraps.
+                        // Decode the absolute value into `V` DIRECTLY via the shared
+                        // `counter_codec` (the SAME path the owned applier
+                        // `apply_recovered_operation_no_wal` uses: `counter_leaf_to_i128::<V>`
+                        // of the i64 leaf bit-pattern → `i128_to_counter_value::<V>`). This
+                        // decodes into the TRIE's value type `V` — NOT `Self::CounterValue` —
+                        // so it is correct for ANY `Counter` V (`i64` as well as the overlay's
+                        // `u64` counter monomorph); the codec returns `None` for a non-counter
+                        // `V`, which can never carry an Increment record. Then publish it as a
+                        // VALUE SET via `overlay_publish_value` / `overlay_publish_root_value`
+                        // (path-copy / fresh-root CAS, last-writer = SET) — NOT
+                        // `overlay_publish_counter` (whose seam ADDS via `increment_cas`,
+                        // mis-accumulating an absolute set, e.g. leaving 5 instead of 0 for a
+                        // 5 → 0 decrement, AND only handling the `u64` monomorph). The counter
+                        // is stored in the leaf value, so the value SET and the counter/value
+                        // read address the SAME slot.
+                        use crate::persistent_artrie_core::counter_codec;
+                        let decoded = counter_codec::counter_leaf_to_i128::<V>(&v.to_le_bytes())
+                            .and_then(counter_codec::i128_to_counter_value::<V>);
+                        match decoded {
+                            Some(vv) => {
                                 if units.is_empty() {
-                                    if let Some(vv) = Self::counter_as_value(cv) {
-                                        if let Err(e) = self.overlay_publish_root_value(vv) {
-                                            log::warn!(
-                                                "F5 overlay replay: root counter set failed: {:?}",
-                                                e
-                                            );
-                                            return false;
-                                        }
+                                    if let Err(e) = self.overlay_publish_root_value(vv) {
+                                        log::warn!(
+                                            "F5 overlay replay: root counter set failed: {:?}",
+                                            e
+                                        );
+                                        return false;
                                     }
                                 } else {
-                                    self.overlay_publish_counter(units, cv);
+                                    self.overlay_publish_value(units, vv);
                                 }
                                 true
                             }
@@ -1221,37 +1202,189 @@ pub(crate) trait LockFreeOverlay<K: KeyEncoding, V: DictionaryValue, S>:
         counter_codec::i128_to_counter_value::<Self::CounterValue>(magnitude)
     }
 
-    /// **F5 (THE data-loss-critical path) — replay the WAL tail INTO THE OVERLAY**
-    /// (the overlay twin of the owned `replay_records_lww`). Reconcile the raw
-    /// recovered records through the EXISTING [`reconcile_lww`] (the SAME call the
-    /// owned replay makes) to get the per-term last-writer winners, then apply each
-    /// INTO THE OVERLAY via [`Self::apply_recovered_operation_overlay`].
+    // ========================================================================
+    // F7 — crash-safe Owned→Overlay conversion-on-reopen + the shared
+    // archive-aware FIX-B drain. See `docs/design/f7-owned-to-overlay-rotation.md`
+    // (v4 / Round-5 CONVERGED).
+    // ========================================================================
+
+    /// **F7 seam — install the dense image as the live overlay** (the variant's
+    /// `load_root_immutable`). The byte variant calls its 1-arg
+    /// `load_root_immutable(root_ptr)`; the char variant calls its 2-arg
+    /// `load_root_immutable(buffer_manager, root_ptr)` (it owns the concrete
+    /// `BufferManager<S>` field). PRECONDITION: the WAL is already Overlay-regime (the
+    /// V-2 `install_prebuilt_overlay_root` check fails otherwise), so the converter
+    /// rotate-and-stamps BEFORE calling this.
     ///
-    /// `rank_regime` MUST be `Overlay` here (F5 runs only for Overlay-regime files —
-    /// the S3 switch gate), so the reconcile's **unranked-orphan DROP is INHERITED**
-    /// (a never-acked two-append-window orphan is dropped, resurrecting nothing) and
-    /// the checkpoint-subsumed skip (`lsn <= checkpoint_lsn` when `loaded_from_disk`)
-    /// is likewise inherited — we do NOT re-derive either. Returns the number of
-    /// winners applied.
+    /// Returns `image_loaded`: `true` iff a VALID dense image was loaded; `false` iff the
+    /// image was absent (`root_ptr == 0`) or corrupt (fell back to an empty image). The
+    /// converter uses this to thread `loaded_from_disk = false` + `image_checkpoint_lsn = 0`
+    /// into the drain when the image is absent/corrupt — otherwise the drain would SKIP WAL
+    /// records `<= the active Checkpoint record's lsn` that the (absent) image does NOT
+    /// actually cover, dropping committed data (the corrupt-descriptor fallback parity).
+    fn load_root_immutable_seam(&mut self, root_ptr: u64) -> Result<bool>;
+
+    /// **F7 (FIX B + FIX E) — drain a set of WAL segments INTO THE OVERLAY**, applying
+    /// each per-segment regime, with the RES-3 prefix-gap guard.
     ///
-    /// Self-contained (no `&mut self`): the overlay is mutated only through the
-    /// lock-free publishers (which take `&self`), so `replay_records_lww_overlay` is
-    /// `&self` — unlike the owned `replay_records_lww` (`&mut self` for `self.root`).
-    fn replay_records_lww_overlay(
+    /// `segments` are LSN-ordered (`collect_wal_segments`). Each segment header carries
+    /// its own regime: a converted Owned tail → `Owned` (KEEP unranked, orphan-KEEP); an
+    /// Overlay tail archived under load → `Overlay` (DROP unranked orphans). Records are
+    /// reconciled through [`reconcile_lww_with_regime`] with the per-LSN regime closure
+    /// and the REAL `(loaded_from_disk, image_checkpoint_lsn)` (OBL-2 — the dense-image
+    /// redo frontier, NOT the active-WAL Checkpoint record which is 0 post-rotate), then
+    /// applied via [`Self::apply_recovered_operation_overlay`].
+    ///
+    /// # FIX E (RES-3 fail-loud)
+    ///
+    /// If a committed prefix is missing — the min surviving record LSN leaves a gap above
+    /// `image_checkpoint_lsn` (`min_surviving_lsn > image_checkpoint_lsn + 1`) — return a
+    /// corruption error rather than silently rebuild an incomplete trie. The image covers
+    /// `1..=image_checkpoint_lsn`; the segments must cover the contiguous tail from
+    /// `image_checkpoint_lsn + 1`. A raised minimum (a pruned un-subsumed prefix) is the
+    /// data-loss the guard catches.
+    ///
+    /// `&self` — the overlay is mutated only through the lock-free publishers.
+    fn drain_segments_into_overlay(
         &self,
-        recovered_ops: Vec<(
-            crate::persistent_artrie_core::wal::Lsn,
-            crate::persistent_artrie_core::wal::WalRecord,
-        )>,
+        segments: &[std::path::PathBuf],
         loaded_from_disk: bool,
-        checkpoint_lsn: crate::persistent_artrie_core::wal::Lsn,
-        rank_regime: crate::persistent_artrie_core::wal::RankRegime,
-    ) -> usize {
-        let winners = crate::persistent_artrie_core::recovery::reconcile_lww(
-            recovered_ops,
+        image_checkpoint_lsn: crate::persistent_artrie_core::wal::Lsn,
+    ) -> Result<usize> {
+        use crate::persistent_artrie_core::recovery::RecoveryManager;
+        use crate::persistent_artrie_core::wal::{Lsn, RankRegime, WalReader, WalRecord};
+        use std::collections::{HashMap, HashSet};
+
+        let mut all_records: Vec<(Lsn, WalRecord)> = Vec::new();
+        let mut regime_by_lsn: HashMap<Lsn, RankRegime> = HashMap::new();
+        // The lowest PHYSICALLY-present record LSN across all segments (BEFORE tx-filtering).
+        // The RES-3 prefix-gap guard uses THIS, not the tx-surviving min: a record dropped
+        // by Owned tx-resolution (an incomplete/aborted tx) is intentionally discarded, NOT
+        // a pruned-prefix gap, so it must not trip the guard.
+        let mut physical_min_lsn: Option<Lsn> = None;
+
+        for segment_path in segments {
+            // Per-segment regime from the WAL header; an unreadable header defaults to
+            // Owned (the SAFE direction — keep, never drop).
+            let seg_regime = WalReader::read_header(segment_path)
+                .map(|h| h.regime())
+                .unwrap_or(RankRegime::Owned);
+
+            // **TRANSACTION FILTERING (Owned segments only).** An OWNED-regime segment may
+            // carry document-transaction records (`BeginTx`/`CommitTx`/`AbortTx`); records
+            // inside an INCOMPLETE or ABORTED transaction must be DROPPED, exactly as the
+            // legacy owned reopen does (`replay_records_lww`'s Owned arm uses the
+            // tx-FILTERED `RecoveryManager` ops, NOT the tx-unaware raw reconcile — see its
+            // doc: "using the (tx-unaware) reconcile would resurrect aborted-tx data
+            // records"). So for an Owned segment we resolve transactions via
+            // `RecoveryManager` (which reads the segment as a WAL file) and keep ONLY the
+            // raw records whose LSN survives tx-resolution. An OVERLAY-regime segment is
+            // NEVER transactional (the durable overlay-write path emits no tx records), so
+            // it keeps ALL its raw records (the CommitRank-aware `reconcile_lww` handles
+            // the rest). `None` ⇒ keep all (the SAFE direction on a resolve error).
+            let tx_surviving_lsns: Option<HashSet<Lsn>> = match seg_regime {
+                RankRegime::Owned => match RecoveryManager::new(segment_path).recover() {
+                    Ok(state) => Some(state.into_operations().iter().map(|op| op.lsn()).collect()),
+                    Err(_) => None, // resolve error → keep all (SAFE: never silently drop)
+                },
+                RankRegime::Overlay => None,
+            };
+
+            let reader = match WalReader::new(segment_path) {
+                Ok(r) => r,
+                Err(_) => continue, // skip an unreadable segment (matches the raw rebuild)
+            };
+            for result in reader.iter() {
+                let (lsn, record) = match result {
+                    Ok(r) => r,
+                    Err(_) => break, // stop at this segment's durable (CRC-valid) prefix
+                };
+                // Track the physical prefix minimum (before any tx-filter drop) for RES-3.
+                physical_min_lsn = Some(physical_min_lsn.map_or(lsn, |m| m.min(lsn)));
+                // Drop a data record whose LSN did NOT survive Owned tx-resolution. Keep
+                // CommitRank markers regardless (they carry no membership effect and the
+                // reconcile consumes them; an Owned segment has none anyway). Transaction
+                // control records (`BeginTx`/`CommitTx`/`AbortTx`) are replay no-ops in
+                // `recovered_operations_from_record`, so keeping or dropping them is inert —
+                // we keep them for fidelity.
+                if let Some(ref surviving) = tx_surviving_lsns {
+                    let is_data = !matches!(
+                        record,
+                        WalRecord::BeginTx { .. }
+                            | WalRecord::CommitTx { .. }
+                            | WalRecord::AbortTx { .. }
+                            | WalRecord::Checkpoint { .. }
+                            | WalRecord::CommitRank { .. }
+                            | WalRecord::VersionUpdate { .. }
+                            | WalRecord::VersionDurable { .. }
+                            | WalRecord::VersionGc { .. }
+                    );
+                    if is_data && !surviving.contains(&lsn) {
+                        continue; // a data record inside an incomplete/aborted tx → DROP
+                    }
+                }
+                regime_by_lsn.insert(lsn, seg_regime);
+                all_records.push((lsn, record));
+            }
+        }
+
+        // FIX E (RES-3): refuse a SILENT incomplete rebuild when a committed prefix is
+        // missing. The image covers `[1, frontier]`; the surviving segments must continue
+        // contiguously from `frontier + 1`. A pruned un-subsumed prefix raises the lowest
+        // surviving LSN above `frontier + 1` → fail LOUD (a corruption error) instead of
+        // dropping the prefix.
+        //
+        // **The frontier source (OBL-2 caveat).** The ideal frontier is the LOADED IMAGE's
+        // redo frontier, but the on-disk descriptor does not record it; the only durable
+        // source is the WAL `Checkpoint` record, which an OWNED checkpoint TRUNCATES away
+        // (so `image_checkpoint_lsn == 0` for a converted file even though the image covers a
+        // non-empty prefix). To avoid a FALSE-positive on a legitimately-checkpointed image
+        // whose WAL records start above 1, we apply the loud guard ONLY to the NO-IMAGE
+        // archive-rebuild case (`loaded_from_disk == false`), where the segments MUST cover
+        // from LSN 1 (the original `rebuild_from_wal_segments_regime_aware` RES-3 rule, which
+        // is reliable — no image means nothing covers `[1, min_lsn)`). When an image IS
+        // present, the WAL-lifecycle invariant (records live strictly ABOVE the checkpoint
+        // frontier after `set_min_lsn(frontier + 1)`) means the image covers `[1, min_lsn - 1]`,
+        // so a high `min_lsn` is NORMAL, not a gap; and FIX-D's prune exemption already
+        // prevents an un-subsumed segment from being pruned in the first place (the primary
+        // defense — this loud guard is the belt-and-suspenders for the no-image rebuild).
+        if let Some(min_lsn) = physical_min_lsn {
+            let guard_applies = !loaded_from_disk;
+            let frontier = if loaded_from_disk {
+                image_checkpoint_lsn.max(min_lsn.saturating_sub(1))
+            } else {
+                0
+            };
+            if guard_applies && min_lsn > frontier.saturating_add(1) {
+                return Err(
+                    crate::persistent_artrie_core::error::PersistentARTrieError::corrupted(
+                        format!(
+                        "F7 archive drain has a prefix gap: lowest surviving WAL LSN is {min_lsn} \
+                         (> {} ) with NO dense image to cover the prefix — the {}..{min_lsn} prefix \
+                         was pruned, so the segments cannot fully reconstruct the trie. Refusing a \
+                         silent incomplete rebuild (RES-3 / FIX-E).",
+                        frontier.saturating_add(1),
+                        frontier.saturating_add(1)
+                    ),
+                    ),
+                );
+            }
+        }
+
+        // FIX B: ONE global (generation, lsn) reconcile over all segments with the
+        // per-segment regime, threading the REAL (loaded_from_disk, image_checkpoint_lsn)
+        // (OBL-2). LSNs are globally monotone across rotate, so the single sort linearizes
+        // same-term ops by commit generation regardless of which segment each came from.
+        let winners = crate::persistent_artrie_core::recovery::reconcile_lww_with_regime(
+            all_records,
             loaded_from_disk,
-            checkpoint_lsn,
-            rank_regime,
+            image_checkpoint_lsn,
+            |lsn| {
+                regime_by_lsn
+                    .get(&lsn)
+                    .copied()
+                    .unwrap_or(RankRegime::Owned)
+            },
         );
         let mut applied = 0usize;
         for op in winners {
@@ -1259,6 +1392,173 @@ pub(crate) trait LockFreeOverlay<K: KeyEncoding, V: DictionaryValue, S>:
                 applied += 1;
             }
         }
-        applied
+        Ok(applied)
     }
+
+    /// **F7 (FIX B/FIX C orchestrator) — collect all WAL segments (archive + active) and
+    /// drain them INTO THE OVERLAY** via [`Self::drain_segments_into_overlay`]. The single
+    /// shared archive-aware reconcile for BOTH the Overlay-regime reopen arm (it now drains
+    /// the archive, not just the active) AND the converter's post-stamp drain (FIX B).
+    ///
+    /// `image_checkpoint_lsn` MUST be the LOADED IMAGE/DESCRIPTOR redo frontier (OBL-2),
+    /// NOT the active-WAL Checkpoint record (0 post-rotate). The watermark-base seed (FIX
+    /// C) is the caller's responsibility (it constructs the trie with
+    /// `CommittedWatermark::new(max_lsn_in_segments(...))`).
+    ///
+    /// Requires `Self: WalManaged` for `wal_collect_segments`.
+    fn reconcile_and_drain_overlay(
+        &self,
+        config: &crate::persistent_artrie_core::wal::WalConfig,
+        loaded_from_disk: bool,
+        image_checkpoint_lsn: crate::persistent_artrie_core::wal::Lsn,
+    ) -> Result<usize>
+    where
+        Self: crate::persistent_artrie_core::wal_managed::WalManaged,
+    {
+        let segments = self.wal_collect_segments(config)?;
+        self.drain_segments_into_overlay(&segments, loaded_from_disk, image_checkpoint_lsn)
+    }
+
+    /// **F7 — crash-safe Owned→Overlay conversion-on-reopen (the converter).** Replaces
+    /// the legacy stay-Owned reopen arm: an Owned-regime eligible file (compaction image,
+    /// kill-switched, legacy) reopens INTO the overlay. Called by the reopen ctors when
+    /// `rank == Owned`.
+    ///
+    /// Sequence (v4 / Round-5):
+    /// - if [`WalManaged::wal_records_empty_on_disk`] (header-only — incl. a post-crash
+    ///   high-`next_lsn` active AND a never-written kill-switched/created Owned file):
+    ///   **CHEAP path** — stamp Overlay IN PLACE (no rotate; the records-empty gate) +
+    ///   fsync, then F5 `load_root_immutable_seam(root_ptr)`, then drain ANY EXISTING
+    ///   archive (a prior crash's tail) via FIX B. NO new rotate ⇒ NO empty segment minted
+    ///   ⇒ the crash-loop never accumulates segments (FIX D).
+    /// - else (records-NON-empty active — a genuine first conversion with un-archived
+    ///   writes): **ROTATE** the tail to archive + re-stamp Overlay + re-assert floor +
+    ///   fsync (OBL-1) via [`WalManaged::wal_rotate_and_restamp_overlay`], then F5
+    ///   `load_root_immutable_seam(root_ptr)`, then drain the archived tail (+ any prior
+    ///   archive) via FIX B. At most ONE rotate per conversion; a crash after this lands on
+    ///   the CHEAP path next reopen.
+    ///
+    /// `image_checkpoint_lsn` is the LOADED IMAGE redo frontier (OBL-2). `was_loaded_from_disk`
+    /// is `root_ptr != 0` (a dense image is present).
+    ///
+    /// A `?` at any step aborts `open` with the durable state intact (the cheap stamp is
+    /// idempotent; the rotate is an additive archive rename; `load_root_immutable_seam`
+    /// leaves the owned scratch intact on `Err`).
+    ///
+    /// Requires `Self: WalManaged`.
+    fn convert_owned_to_overlay_on_reopen(
+        &mut self,
+        root_ptr: u64,
+        was_loaded_from_disk: bool,
+        image_checkpoint_lsn: crate::persistent_artrie_core::wal::Lsn,
+        config: &crate::persistent_artrie_core::wal::WalConfig,
+    ) -> Result<()>
+    where
+        Self: crate::persistent_artrie_core::wal_managed::WalManaged,
+    {
+        use crate::persistent_artrie_core::error::PersistentARTrieError;
+        use f7_failpoint::FailPoint;
+
+        if !Self::overlay_eligible_v() {
+            // Defensive: the ctor gate (overlay_eligible_v) should already exclude this.
+            // An ineligible V cannot route the overlay, so there is nothing to convert —
+            // the file legitimately stays Owned. Return Ok (no-op).
+            return Ok(());
+        }
+
+        // F7 crash-injection (test-only; disarmed = strict no-op): a simulated power-cut
+        // BEFORE any durable conversion side effect. Reopen reads Owned → re-runs the
+        // converter; converges.
+        if f7_failpoint::armed() == FailPoint::BeforeRotate {
+            return Err(PersistentARTrieError::corrupted(
+                "F7 fail-point BeforeRotate (simulated crash before any conversion side effect)",
+            ));
+        }
+
+        if self.wal_records_empty_on_disk() {
+            // ===== CHEAP path (records-empty active — incl. post-crash high-next_lsn,
+            // never-written kill-switched/created Owned) — NO rotate (FIX D). =====
+            // Stamp Overlay in place gated on RECORDS-EMPTY-ON-DISK (FIX A widening) + fsync.
+            // We must NOT use the `next_lsn==1`-gated `wal_stamp_overlay_regime` here: a
+            // post-crash-after-rotate (or post-owned-checkpoint `set_min_lsn`) active is
+            // records-empty BUT carries a HIGH `next_lsn`, which that gate would wrongly
+            // reject — leaving the WAL Owned and resurrecting orphans on a later reopen.
+            self.wal_stamp_overlay_regime_records_empty()?;
+            // Verify the WAL is now Overlay-regime; if not, refuse (an Owned WAL under
+            // overlay routing would resurrect orphans).
+            if !self.wal_is_overlay_regime() {
+                return Err(PersistentARTrieError::internal(
+                    "F7 convert (cheap): Overlay regime stamp did not take on a records-empty active",
+                ));
+            }
+        } else {
+            // ===== ROTATE path (records-non-empty active — first conversion). =====
+            // S1+S2: archive the Owned tail + re-stamp Overlay + re-assert floor + fsync
+            // (OBL-1). The fresh active carries the high next_lsn (DG0 monotonicity). The
+            // `AfterRotateBeforeStamp` fail point is consulted INSIDE
+            // `WalWriter::rotate_and_restamp_overlay` (between the durable rename and the
+            // stamp) so the torn window is exactly the v4 FIX-D scenario.
+            let _archived = self.wal_rotate_and_restamp_overlay(config)?;
+            if !self.wal_is_overlay_regime() {
+                return Err(PersistentARTrieError::internal(
+                    "F7 convert (rotate): Overlay regime stamp did not take after rotate",
+                ));
+            }
+        }
+
+        // F7 crash-injection: a simulated power-cut AFTER the Overlay stamp+fsync (the S2
+        // durable commit point) but BEFORE the overlay is built. Reopen now reads Overlay
+        // (durable) → the F5 arm drains the archive (OBLIGATION-A); converges.
+        if f7_failpoint::armed() == FailPoint::AfterStampBeforeBuild {
+            return Err(PersistentARTrieError::corrupted(
+                "F7 fail-point AfterStampBeforeBuild (simulated crash after the Overlay stamp+fsync)",
+            ));
+        }
+
+        // S3: build the overlay DIRECTLY from the dense image (the WAL is now durably
+        // Overlay-regime, so install_prebuilt_overlay_root's V-2 check passes). Clears the
+        // transient owned scratch. A `?` aborts with the durable image intact. `image_loaded`
+        // is `false` if the image was absent/corrupt (fell back to an empty overlay) — the
+        // drain below then uses `loaded_from_disk = false` + frontier 0 so it does NOT skip
+        // WAL records the absent image fails to cover (corrupt-descriptor fallback parity).
+        let image_loaded = self.load_root_immutable_seam(root_ptr)?;
+
+        // F7 crash-injection: a simulated power-cut DURING the drain (overlay built +
+        // installed in memory, but the in-memory overlay is discarded by the abort — the
+        // durable WAL/image are untouched). Reopen reads Overlay → the F5 arm rebuilds +
+        // drains; converges. (S3/S4 use only NO-WAL publishers, so nothing was logged.)
+        if f7_failpoint::armed() == FailPoint::DuringDrain {
+            return Err(PersistentARTrieError::corrupted(
+                "F7 fail-point DuringDrain (simulated crash after build, before/during drain)",
+            ));
+        }
+
+        // S4 / FIX B: drain ALL segments (the just-archived Owned tail under the ROTATE
+        // path, OR any pre-existing archive under the CHEAP path, PLUS the now-Overlay
+        // active which is records-empty so contributes nothing) into the overlay, with the
+        // per-segment regime (converted Owned tail → KEEP) and the REAL
+        // (loaded_from_disk, image_checkpoint_lsn) (OBL-2). The `loaded_from_disk` /
+        // frontier reflect the ACTUAL image: a valid image subsumes records `<= frontier`;
+        // an absent/corrupt image (image_loaded == false) subsumes nothing (frontier 0), so
+        // every WAL record is replayed (corrupt-descriptor fallback parity). RES-3 fail-loud
+        // on a real prefix gap.
+        let effective_loaded = was_loaded_from_disk && image_loaded;
+        let effective_ckpt = if effective_loaded {
+            image_checkpoint_lsn
+        } else {
+            0
+        };
+        let _applied =
+            self.reconcile_and_drain_overlay(config, effective_loaded, effective_ckpt)?;
+        Ok(())
+    }
+
+    // **F7 — `replay_records_lww_overlay` (the ACTIVE-only WAL-tail-into-overlay replay)
+    // DELETED.** It is fully superseded by the archive-aware [`Self::drain_segments_into_overlay`]
+    // / [`Self::reconcile_and_drain_overlay`]: the drain treats the ACTIVE file as one
+    // segment among the archived segments (`collect_wal_segments` includes both), applies
+    // each segment's own header regime (the active is Overlay here, so the unranked-orphan
+    // DROP + checkpoint-subsumed skip are inherited exactly as before), and additionally
+    // recovers an archived Owned/Overlay tail (OBLIGATION-A / FIX B). All four reopen arms
+    // route through `reconcile_and_drain_overlay` now.
 }

@@ -247,59 +247,12 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
         }
     }
 
-    /// **M4b (the V-3 twin) — the compile-safe reestablish dispatch.** The byte twin
-    /// of char's `reestablish_overlay_dispatch` (persistent_artrie_char/lockfree_cas.rs).
-    /// Routes a recovered Overlay-regime reopen's owned→overlay bootstrap to the
-    /// CORRECT reestablish fold by the runtime value type:
-    /// - `V == u64` ⇒ [`LockFreeOverlay::reestablish_overlay_counter`] (the trait
-    ///   DEFAULT — rebuilds the immutable overlay from the recovered owned `(term,
-    ///   value)` pairs; the byte counter monomorph, now `u64` matching char).
-    /// - `V == ()` ⇒ [`LockFreeOverlay::reestablish_overlay_membership`] (the trait
-    ///   DEFAULT — re-publishes each recovered owned term, no values).
-    /// - ineligible `V` ⇒ a strict no-op (`overlay_eligible_v()` is false, so no
-    ///   overlay was ever installed by the create-flip / open-flip — nothing to
-    ///   reestablish).
-    ///
-    /// Both folds are `LockFreeOverlay<ByteKey, V, S>` defaults visible for ANY `V`
-    /// (byte implements the trait on `impl<V, S>`), so — unlike char's u64-inherent
-    /// `reestablish_overlay_after_recovery`, which lives only in `impl<u64, S>` and
-    /// needs a SAFE `Any` downcast — byte can call the defaults DIRECTLY for the
-    /// monomorph selected by `TypeId`. The counter fold's value seam
-    /// (`value_as_counter`/`overlay_publish_counter`) is itself a SAFE `Any` no-op for
-    /// non-u64 `V`, so the `TypeId` gate is the (redundant) honest selector. `S:
-    /// 'static` keeps parity with char's signature (and is satisfied by both byte
-    /// storage backends).
-    ///
-    /// # D1 (CRITICAL — total-loss guard)
-    ///
-    /// Runs with `route_overlay()` ALREADY TRUE (every call site flips/sets the
-    /// overlay mode BEFORE dispatching). The folds read the recovered OWNED tree via
-    /// the UN-routed `owned_*` seams (`overlay_write_mode.rs`: `owned_first_units` /
-    /// `owned_units_under` / `owned_units_with_values_under`, all over the UNCAPPED
-    /// `unrouted_*` walks of `self.root`), publish to the overlay, and clear the owned
-    /// tree LAST (RES-7). A routed read here would see the EMPTY overlay ⇒ publish
-    /// nothing ⇒ clear owned = irreversible total loss; the un-routed seams are the
-    /// guard byte inherits from the shared trait + the M2a seam impls.
-    #[cfg_attr(not(test), allow(dead_code))]
-    pub(crate) fn reestablish_overlay_dispatch(&mut self) -> Result<()>
-    where
-        S: 'static,
-    {
-        use crate::persistent_artrie_core::overlay::flip::LockFreeOverlay;
-        use std::any::TypeId;
-        if TypeId::of::<V>() == TypeId::of::<u64>() {
-            return <Self as LockFreeOverlay<ByteKey, V, S>>::reestablish_overlay_counter(self);
-        }
-        if TypeId::of::<V>() == TypeId::of::<()>() {
-            return <Self as LockFreeOverlay<ByteKey, V, S>>::reestablish_overlay_membership(self);
-        }
-        // G5/F1: ARBITRARY eligible `V` → the third (value) reestablish fold. Gated
-        // on `overlay_eligible_v()` so it is INERT until the F2 eligibility flip.
-        if Self::overlay_eligible_v() {
-            return <Self as LockFreeOverlay<ByteKey, V, S>>::reestablish_overlay_value(self);
-        }
-        Ok(())
-    }
+    // **F7 — `reestablish_overlay_dispatch` DELETED.** The per-term owned→overlay
+    // reestablish dispatch (membership/counter/value folds) is superseded by the KEPT
+    // structural converter `LockFreeOverlay::reestablish_overlay_from_owned`
+    // (`build_overlay_root_from_owned`), which the F7 reopen converter + the legacy-loader
+    // oracle + compaction now use. Same overlay, strictly more correct (keeps a term-only
+    // counter member the counter fold dropped).
 
     /// Lock-free insert using CAS operations.
     ///
@@ -2432,20 +2385,19 @@ mod m4b_flip_gate_tests {
         }
     }
 
-    /// **(b) old-Owned file stays OWNED on reopen (back-compat) + ineligible V never
-    /// flips.** A `<String>` (arbitrary V ⇒ never flips) trie that was created,
-    /// written, and checkpointed produces an OWNED-regime file; reopening it must keep
-    /// it OWNED (`route_overlay()==false`), data intact via the OWNED read path, NO
-    /// flip. Also pins that an eligible-V trie that is `kill_switch_to_owned()`'d after
-    /// create stays Owned across reopen (the restamp-Owned path).
+    /// **(b) F7: an old Owned-regime ELIGIBLE file CONVERTS to the overlay on reopen,
+    /// data intact; the legacy-loader oracle stays Owned.** Pre-F7 an Owned-regime file
+    /// stayed Owned on reopen; F7 (Owned→Overlay conversion-on-reopen) CONVERTS any
+    /// overlay-eligible Owned file (compaction image / kill-switched / legacy) INTO the
+    /// overlay so the production read/checkpoint path is overlay-routed. The data must
+    /// survive the conversion (`route_overlay()==true` after `open`), and the pre-F7
+    /// owned-reopen behavior is preserved by `open_with_legacy_loader` (the oracle that
+    /// STAYS Owned and reads the owned tree) — exercised by the
+    /// `persistent_owned_to_overlay_correspondence` suite.
     #[test]
     fn m4b_old_owned_file_stays_owned_on_reopen() {
-        // Arbitrary V = String: an Owned-regime file reopens Owned with data intact.
-        //
-        // Arbitrary-V overlay routing is the default, so a fresh `create::<String>()`
-        // create-flips; kill-switch it to the Owned regime (the same pattern as the
-        // i64 block below) to exercise the "an Owned-regime file stays owned on
-        // reopen" path.
+        // Arbitrary V = String: an Owned-regime file CONVERTS to the overlay on `open`;
+        // `open_with_legacy_loader` is the stay-Owned oracle.
         {
             let dir = scratch("byte-m4b-owned-string");
             let path = dir.path().join("t.part");
@@ -2461,26 +2413,29 @@ mod m4b_flip_gate_tests {
                 }
                 trie.checkpoint().expect("owned checkpoint");
             }
+            // F7: production `open` CONVERTS the Owned-regime file into the overlay.
+            // (The pre-F7 stay-Owned oracle is covered by the dedicated
+            // `persistent_owned_to_overlay_correspondence` suite, which builds a SEPARATE
+            // fixture per loader since the converting `open` mutates the file to Overlay.)
             let recovered = PersistentARTrie::<String>::open(&path).expect("reopen<String>");
             assert!(
-                !recovered.route_overlay(),
-                "an Owned-regime file must STAY owned on reopen (no flip, back-compat)"
+                recovered.route_overlay(),
+                "F7: an Owned-regime eligible file CONVERTS to the overlay on reopen"
             );
             for (k, v) in &entries {
                 assert_eq!(
                     MappedDictionary::get_value(&recovered, k),
                     Some(v.clone()),
-                    "owned data lost for {k:?} across reopen"
+                    "converted data lost for {k:?} across reopen"
                 );
             }
         }
-        // Eligible V = i64, kill-switched to Owned after create: reopens Owned.
+        // Eligible V = u64, kill-switched to Owned after create: CONVERTS on reopen.
         {
             let dir = scratch("byte-m4b-owned-i64-ks");
             let path = dir.path().join("t.part");
             {
                 let trie = PersistentARTrie::<u64>::create(&path).expect("create<u64>");
-                // kill-switch restamps the fresh WAL Owned ⇒ reopen stays Owned.
                 trie.kill_switch_to_owned();
                 assert!(!trie.route_overlay(), "kill-switch reverts to owned");
                 trie.upsert_bytes(b"alpha", 7).expect("owned upsert");
@@ -2489,18 +2444,18 @@ mod m4b_flip_gate_tests {
             }
             let recovered = PersistentARTrie::<u64>::open(&path).expect("reopen<u64>");
             assert!(
-                !recovered.route_overlay(),
-                "a kill-switched (Owned-regime) i64 file must STAY owned on reopen"
+                recovered.route_overlay(),
+                "F7: a kill-switched (Owned-regime) u64 file CONVERTS to the overlay on reopen"
             );
             assert_eq!(
                 recovered.get_value_bytes(b"alpha"),
                 Some(7),
-                "owned alpha intact"
+                "converted alpha intact"
             );
             assert_eq!(
                 recovered.get_value_bytes(b"beta"),
                 Some(11),
-                "owned beta intact"
+                "converted beta intact"
             );
         }
     }

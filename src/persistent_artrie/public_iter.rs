@@ -43,27 +43,27 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
     /// enumerate-overlay-then-value-owned. The owned arm below is the verbatim
     /// pre-flip mixed read (INERT until the flip).
     pub fn iter_with_values(&self) -> TermValueIterator<V> {
-        if self.route_overlay() {
-            let mut entries: Vec<(Vec<u8>, Option<V>)> = self
-                .iter_prefix_with_values_and_arena(b"")
-                .ok()
-                .flatten()
-                .unwrap_or_default()
-                .into_iter()
-                .map(|entry| (entry.term, Some(entry.value)))
-                .collect();
-            entries.sort_by(|left, right| left.0.cmp(&right.0));
-            return TermValueIterator::from_terms(entries);
-        }
-
-        let mut entries: Vec<_> = self
+        // **F7 fix (term-only membership preservation).** BOTH the overlay and owned arms
+        // ENUMERATE every term (membership-complete via `iter_prefix_with_arena`, which
+        // includes value-less "term-only" members) and then look the value up PER TERM
+        // (`get_value_impl`, overlay-routed under `route_overlay()`), yielding `(term,
+        // None)` for a term-only member. The previous overlay arm used the value-CARRYING
+        // `iter_prefix_with_values_and_arena` enumerator, whose `PrefixTermWithValueAndArena`
+        // cannot represent a value-less final, so it SILENTLY DROPPED term-only members on a
+        // mixed valued/value-less trie that routes the overlay (the data-loss-in-observation
+        // F7's converter exposed when an Owned mixed-usage trie now reopens INTO the overlay).
+        // The enumerate-then-lookup shape matches the proven owned arm exactly.
+        let mut entries: Vec<(Vec<u8>, Option<V>)> = self
             .iter_prefix_with_arena(b"")
             .ok()
             .flatten()
             .unwrap_or_default()
             .into_iter()
             .map(|entry| {
-                let value = self.get_value_impl(&entry.term);
+                // `get_value_bytes` is overlay-ROUTED (reads the overlay value under
+                // `route_overlay()`, falls back to the owned tree otherwise), so a term-only
+                // member yields `None` and a valued term yields `Some(v)` on BOTH paths.
+                let value = self.get_value_bytes(&entry.term);
                 (entry.term, value)
             })
             .collect();

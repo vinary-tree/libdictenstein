@@ -57,3 +57,18 @@ compaction_impl.rs:209; + the high-concurrency real-disk soak (#41 witness)).**
 Per-commit gate: nextest feature-on AND feature-off; doctests; verify-formal-correspondence.sh
 exit 0; verify-unsafe-boundary-inventory.sh (set-equality); fmt --check; cross-repo READ-ONLY
 build-check; state the #41 watermark-ordering guard.
+
+# === S4 BLOCKER + owner decision (A): Owned->Overlay rotation-on-reopen ===
+S4 (delete owned reopen, no residual) requires Owned-regime files (compaction images +
+legacy/kill-switched) to reopen INTO the overlay. F5 cannot convert a NON-EMPTY Owned
+WAL: `install_prebuilt_overlay_root`'s V-2 check refuses a non-Overlay WAL, and
+`WalWriter::set_overlay_regime()` formally REJECTS in-place stamping of a non-empty Owned
+WAL (orphan-keep vs orphan-drop correctness; torn-magic). In-tree counterexample: byte
+`compact()` reopens an Owned dense image (compaction_impl.rs:331) then re-flips.
+OWNER DECISION (A): build a crash-safe **Owned->Overlay WAL-rotation-on-reopen** primitive
+(archive Owned tail -> recreate Overlay-stamped active -> F5-build from image -> replay the
+archived Owned tail INTO the overlay with Owned orphan-KEEP semantics), carrying the
+committed-watermark / commit_seq_floor across the rotation. Data-loss-critical: full
+Plan -> red-team-to-convergence -> implement -> verify BEFORE the S4 deletions. Then S4
+deletes reestablish_dispatch + folds + clear_owned (re-pointed) + the legacy reopen arm.
+Also re-point byte compaction (compaction_impl.rs:341-348) onto the rotation/converter.

@@ -557,7 +557,16 @@ mod tests {
             max_archive_bytes: u64::MAX,
         };
 
-        // Create WAL and rotate many times
+        // Create WAL and rotate many times.
+        //
+        // **F7 FIX-D exemption:** `prune_segments_if_needed` NEVER prunes an UN-SUBSUMED
+        // segment (`first_lsn > checkpoint_lsn`) — committed records the dense image does
+        // not cover must be retained until a checkpoint subsumes them. So to exercise
+        // count-pruning we must ADVANCE the durable checkpoint frontier above each rotated
+        // segment's records BEFORE rotating: append a record, `checkpoint(current_lsn)` so
+        // the segment's records become subsumed (`first_lsn <= checkpoint_lsn`), THEN
+        // rotate. The rotate carries the checkpoint frontier and prunes the now-subsumed
+        // OLDEST segments down to `max_segments`.
         let wal = WalWriter::create(&wal_path).expect("create WAL");
 
         for i in 0..6 {
@@ -567,22 +576,25 @@ mod tests {
             })
             .expect("append");
             wal.sync().expect("sync");
+            // Subsume everything written so far (the rotate prunes only subsumed segments).
+            let frontier = wal.current_lsn().saturating_sub(1);
+            wal.checkpoint(frontier).expect("checkpoint");
             wal.rotate_to_archive(&config).expect("rotate");
             // Small delay to ensure unique timestamps for segment naming
             std::thread::sleep(std::time::Duration::from_millis(2));
         }
 
-        // Count segments in archive
+        // Count segments in archive.
         let segments: Vec<_> = std::fs::read_dir(&archive_dir)
             .expect("read archive dir")
             .filter_map(|e| e.ok())
             .filter(|e| e.path().extension().map_or(false, |ext| ext == "segment"))
             .collect();
 
-        // Should have pruned down to max_segments (3)
+        // Subsumed segments are pruned down to max_segments (3).
         assert!(
             segments.len() <= config.max_segments,
-            "Should have at most {} segments, found {}",
+            "Should have at most {} subsumed segments, found {}",
             config.max_segments,
             segments.len()
         );

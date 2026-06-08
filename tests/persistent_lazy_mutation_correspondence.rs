@@ -142,7 +142,12 @@ fn char_lazy_insert_error_returns_err_before_wal_append() {
     let new_term = format!("{corrupted_query}-new");
     let wal_len_before = wal_len(&path);
 
-    let reopened = PersistentARTrieChar::<i32>::open(&path).expect("lazy reopen char trie");
+    // **F7:** production `open` CONVERTS by EAGERLY materializing the dense image (hitting
+    // the corrupt child at convert time). The LAZY owned corruption-fault-on-access contract
+    // is preserved by the RETAINED `open_with_legacy_loader` (does NOT convert; lazily faults
+    // owned children). Verify the capability via that loader.
+    let reopened = PersistentARTrieChar::<i32>::open_with_legacy_loader(&path)
+        .expect("lazy reopen char trie (legacy owned-lazy loader)");
     assert!(
         reopened.insert(&new_term).is_err(),
         "insert should surface lazy-load corruption"
@@ -174,7 +179,10 @@ fn char_lazy_value_insert_and_remove_errors_do_not_append_wal() {
     let new_term = format!("{corrupted_query}-valued");
     let wal_len_before = wal_len(&path);
 
-    let reopened = PersistentARTrieChar::<i32>::open(&path).expect("lazy reopen char trie");
+    // **F7:** see the sibling test — the LAZY owned corruption contract is preserved by the
+    // RETAINED `open_with_legacy_loader` (production `open` eagerly converts).
+    let reopened = PersistentARTrieChar::<i32>::open_with_legacy_loader(&path)
+        .expect("lazy reopen char trie (legacy owned-lazy loader)");
     assert!(
         reopened.insert_with_value(&new_term, 99).is_err(),
         "value insert should surface lazy-load corruption"

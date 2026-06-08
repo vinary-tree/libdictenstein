@@ -323,7 +323,13 @@ fn char_lazy_load_errors_are_result_errors_and_public_reads_fail_closed() {
     }
 
     let corrupted_query = corrupt_first_lazy_char_child(&path);
-    let reopened = PersistentARTrieChar::<i32>::open(&path).expect("lazy reopen char trie");
+    // **F7:** production `open` CONVERTS an Owned-regime file by EAGERLY materializing the
+    // dense image (hitting the corrupt child at convert time, not on lazy access). The LAZY
+    // owned-tree corruption contract (open succeeds; corruption surfaces on ACCESS; reads
+    // fail closed) is preserved by the RETAINED `open_with_legacy_loader` (the pre-F7
+    // owned-lazy reopen that does NOT convert). Verify the capability via that loader.
+    let reopened = PersistentARTrieChar::<i32>::open_with_legacy_loader(&path)
+        .expect("lazy reopen char trie (legacy owned-lazy loader)");
 
     assert!(
         reopened.try_contains(&corrupted_query).is_err(),

@@ -269,8 +269,9 @@ fn m2a_deep_key_overlay_reads_no_stack_overflow() {
 
 /// **Reestablish round-trip (membership).** Build OWNED, `enable_lockfree` (the
 /// overlay is empty), set LockFreeOverlay (route true), then
-/// `reestablish_overlay_membership` (D1: reads the recovered owned tree via the
-/// un-routed `owned_*` seams while `route_overlay()` is already true) must
+/// `reestablish_overlay_from_owned` (F7 — the KEPT structural converter that REPLACED the
+/// deleted per-term `reestablish_overlay_membership` fold; D1: reads the recovered owned
+/// tree via the un-routed `owned_*` seams while `route_overlay()` is already true) must
 /// reproduce every owned term in the overlay and clear the owned tree LAST.
 #[test]
 fn m2a_reestablish_membership_round_trip() {
@@ -292,9 +293,12 @@ fn m2a_reestablish_membership_round_trip() {
     // Overlay is empty until reestablish; the owned tree still holds the data.
     assert_eq!(trie.overlay_len(), 0, "overlay empty before reestablish");
 
-    // The D1-critical fold: read owned via un-routed seams, publish to overlay,
-    // clear owned LAST.
-    LockFreeOverlay::reestablish_overlay_membership(&mut trie).expect("reestablish membership");
+    // **F7:** the per-term folds (`reestablish_overlay_membership`) were DELETED; the KEPT
+    // structural converter `reestablish_overlay_from_owned` (the production replacement)
+    // produces the SAME overlay — D1-critical: it reads owned via the un-routed `owned_*`
+    // seams (`build_overlay_root_from_owned`), force-replaces the empty installed root, and
+    // clears owned LAST.
+    LockFreeOverlay::reestablish_overlay_from_owned(&mut trie).expect("reestablish from owned");
 
     // Overlay now holds every owned term.
     let overlay_after: BTreeSet<Vec<u8>> = trie
@@ -325,26 +329,12 @@ fn m2a_reestablish_membership_round_trip() {
     }
 }
 
-/// **Reestablish round-trip (counter).** The i64 twin: build OWNED counters,
-/// install+route the empty overlay, `reestablish_overlay_counter` must reproduce
-/// every NON-EMPTY (term, count) in the overlay and clear owned LAST. Includes a
-/// deep key.
-///
-/// # Empty-term limitation (shared with char)
-///
-/// The lock-free overlay node represents only NON-empty keys (the byte
-/// `insert_cas`/`increment_cas` and the char `insert_cas`/`try_increment_cas`
-/// both guard `key.is_empty()` and no-op): the empty term has no edge path to a
-/// final node. So the generic `reestablish_overlay_counter` ATTEMPTS to publish
-/// the empty-term's count (the RES-6 empty-term partition) via
-/// `overlay_publish_counter(&[], v)`, but the overlay primitive drops it. This is
-/// a documented overlay property identical across variants (char's counter
-/// reestablish behaves the same; its test suite simply never exercised an
-/// empty-term counter). The empty-term count therefore survives in DURABLE state
-/// (the owned tree / the WAL), NOT in the resident overlay — and a routed public
-/// `get_value("")` under the M3 flip will read the owned arm / durable record,
-/// not the overlay. We assert the empty term is DROPPED from the overlay (the
-/// honest behavior) and that every non-empty term round-trips.
+/// **Reestablish round-trip (counter).** The u64 twin: build OWNED counters,
+/// install+route the empty overlay, `reestablish_overlay_from_owned` (F7 — the KEPT
+/// structural converter that REPLACED the deleted per-term `reestablish_overlay_counter`
+/// fold) must reproduce every (term, count) in the overlay — INCLUDING the empty term via
+/// the root value publisher (`build_overlay_root_from_owned` carries the empty term) — and
+/// clear owned LAST. Includes a deep key.
 #[test]
 fn m2a_reestablish_counter_round_trip() {
     let dir = scratch("byte-m2a-reestablish-ctr");
@@ -381,7 +371,11 @@ fn m2a_reestablish_counter_round_trip() {
     assert!(trie.route_overlay());
     assert_eq!(trie.overlay_len(), 0, "overlay empty before reestablish");
 
-    LockFreeOverlay::reestablish_overlay_counter(&mut trie).expect("reestablish counter");
+    // **F7:** the per-term folds (`reestablish_overlay_counter`) were DELETED; the KEPT
+    // structural converter `reestablish_overlay_from_owned` produces the SAME overlay
+    // (same non-empty (term, count) set + the empty-term count via the root value
+    // publisher), clearing owned LAST.
+    LockFreeOverlay::reestablish_overlay_from_owned(&mut trie).expect("reestablish from owned");
 
     // Every (term, count) reproduced in the overlay — INCLUDING the empty term,
     // which empty-string support (H3) republishes to the overlay ROOT via the

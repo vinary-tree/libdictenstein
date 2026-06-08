@@ -442,6 +442,22 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
         let arena_manager = ArenaManager::with_buffer_manager(Arc::clone(&buffer_manager));
         let arena_manager = Arc::new(RwLock::new(arena_manager));
 
+        // **F7 FIX C:** watermark base = max LSN over ALL segments (archive + active), so a
+        // converted/under-load file's archived committed tail is covered before the first
+        // post-conversion checkpoint (else a BatchIncrement delta double-applies). Falls
+        // back to the active-only frontier when no segments are enumerable. Computed BEFORE
+        // `wal_writer` is moved into the struct.
+        let recovered_frontier = {
+            let archive_config_for_base = WalConfig::default();
+            let full_max = wal_writer
+                .collect_wal_segments(&archive_config_for_base)
+                .ok()
+                .and_then(|segments| AsyncWalWriter::max_lsn_in_segments(&segments));
+            full_max
+                .unwrap_or_else(|| next_lsn.saturating_sub(1))
+                .max(next_lsn.saturating_sub(1))
+        };
+
         let mut inner = Self {
             root: parking_lot::RwLock::new(CharTrieRoot::Empty),
             len: AtomicUsize::new(0), // Updated from disk or WAL replay
@@ -451,7 +467,7 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
             wal_config: WalConfig::default(),
             next_lsn: std::sync::atomic::AtomicU64::new(next_lsn),
             committed_watermark: super::committed_watermark::CommittedWatermark::new(
-                next_lsn.saturating_sub(1),
+                recovered_frontier,
             ),
             checkpoint_lock: std::sync::Arc::new(parking_lot::Mutex::new(())),
             merge_lock: std::sync::Arc::new(parking_lot::Mutex::new(())),
@@ -505,15 +521,43 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
         let use_f5 = force_f5
             && rank_regime == crate::persistent_artrie_core::wal::RankRegime::Overlay
             && Self::overlay_eligible_v();
+        // **F7 convert gate:** an OWNED-regime, overlay-eligible file on the PRODUCTION path
+        // (`force_f5` — `open`/`open_with_f5_loader`) is CONVERTED into the overlay.
+        // `open_with_legacy_loader` (`force_f5 == false`) keeps the legacy owned-loader
+        // stay-owned path (the pre-F7 owned-reopen ORACLE).
+        let convert_owned = force_f5
+            && rank_regime == crate::persistent_artrie_core::wal::RankRegime::Owned
+            && Self::overlay_eligible_v();
 
-        if use_f5 {
-            // ===== F5 PATH (direct dense→overlay; owned tree NOT materialized into
-            // `inner.root`) =====
+        if convert_owned {
+            // ===== F7 CONVERT PATH (Owned-regime eligible → overlay) =====
+            // Rotate-if-records-non-empty → stamp Overlay (+ fsync, OBL-1) → F5 build from
+            // the dense image → archive-aware drain (FIX B) with the REAL (loaded_from_disk,
+            // image checkpoint_lsn) (OBL-2; `checkpoint_lsn` is the recovery value read
+            // PRE-rotate = the image redo frontier). A `?` aborts open with the durable
+            // state intact. The converter's seam `load_root_immutable_seam` reaches the
+            // buffer manager via `self`.
+            let _ = recovered_ops;
+            let archive_config = WalConfig::default();
+            inner.convert_owned_to_overlay_on_reopen(
+                root_ptr,
+                /* was_loaded_from_disk */ root_ptr != 0,
+                checkpoint_lsn,
+                &archive_config,
+            )?;
+            if let Some(ref arena_manager) = inner.arena_manager {
+                arena_manager.write().ensure_valid();
+            }
+        } else if use_f5 {
+            // ===== F5 PATH (Overlay-regime; direct dense→overlay; owned tree NOT
+            // materialized into `inner.root`) =====
             // (1) Build the overlay root DIRECTLY from the dense image (eager-load owned
             // as transient scratch → walk-convert → install pre-built root + select
             // LockFreeOverlay + verify Overlay regime). A `?` aborts open; `inner.root`
-            // stays `Empty` (untouched) and the durable image is intact.
-            inner.load_root_immutable(&buffer_manager, root_ptr)?;
+            // stays `Empty` (untouched) and the durable image is intact. `image_loaded` is
+            // `false` if the image was absent/corrupt (fell back to empty) — then the drain
+            // must NOT skip records the absent image fails to cover (fallback parity).
+            let (_lc, image_loaded) = inner.load_root_immutable(&buffer_manager, root_ptr)?;
 
             // ensure_valid() restores the arena manager invariant after the eager load
             // (the buggy_clear_recovery theorem — same as the legacy path).
@@ -521,19 +565,24 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
                 arena_manager.write().ensure_valid();
             }
 
-            // (2) Replay the WAL tail INTO THE OVERLAY (NOT the owned tree) via the
-            // reconcile-into-overlay applier. `loaded_from_disk = (root_ptr != 0)`: the
-            // dense image is the checkpoint frontier, so checkpoint-subsumed records are
-            // skipped by `reconcile_lww` exactly as the owned replay skips them. The
-            // Overlay regime drives the unranked-orphan DROP (inherited).
-            let _applied = inner.replay_records_lww_overlay(
-                recovered_ops,
-                /* loaded_from_disk */ root_ptr != 0,
-                checkpoint_lsn,
-                rank_regime,
-            );
+            // (2) **F7 FIX B:** drain ALL WAL segments (archive + active) INTO THE OVERLAY,
+            // not just the active file (OBLIGATION-A) — so an Overlay tail archived under
+            // load (or a post-S2-crash converted file reopened as Overlay) recovers its
+            // archived tail. OBL-2: `image_checkpoint_lsn = checkpoint_lsn` (the recovery
+            // value = the image redo frontier) WHEN a valid image loaded; 0 + not-loaded on
+            // a corrupt/absent image so the drain replays every WAL record. The per-segment
+            // regime drops Overlay orphans and keeps a converted Owned tail. A `?` (RES-3
+            // prefix gap, FIX E) aborts open loudly.
+            let _ = recovered_ops;
+            let archive_config = WalConfig::default();
+            let effective_loaded = (root_ptr != 0) && image_loaded;
+            let _applied = inner.reconcile_and_drain_overlay(
+                &archive_config,
+                /* loaded_from_disk */ effective_loaded,
+                if effective_loaded { checkpoint_lsn } else { 0 },
+            )?;
         } else {
-            // ===== LEGACY PATH (unchanged) =====
+            // ===== LEGACY PATH (ineligible V stays owned; OR the legacy-loader ORACLE) ====
             // Try to load root from disk if root_ptr != 0 (default: lazy loading).
             let mut loaded_from_disk = false;
             if root_ptr != 0 {
@@ -579,21 +628,25 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
                 // For now, just note that we could truncate
             }
 
-            // S5-12 EDIT 2 (IRREVERSIBLE): an already-Overlay file ⇒ move the recovered
-            // owned tree into the lock-free overlay + select LockFreeOverlay so the
-            // production read/checkpoint path sees it. Owned-regime (incl. an empty WAL)
-            // ⇒ STAY owned (backward-compat: no flip, no rotation, no loss).
+            // **F7 — LEGACY-LOADER ORACLE Overlay branch (force_f5 == false ONLY).**
+            // Reachable solely via `open_with_legacy_loader` on an Overlay file (production
+            // routes Overlay → F5 and Owned → convert above). Keeps the legacy
+            // reopen-into-overlay behavior so the both-loaders correspondence test stays a
+            // meaningful F5-vs-legacy oracle. `reestablish_overlay_from_owned` (the KEPT
+            // structural converter that REPLACES the deleted per-term
+            // `reestablish_overlay_dispatch` — same overlay, strictly more correct) reads
+            // the recovered OWNED tree via the UN-routed `owned_*` seams, builds + installs
+            // the overlay root, then clears owned LAST (RES-7).
             if rank_regime == crate::persistent_artrie_core::wal::RankRegime::Overlay
                 && Self::overlay_eligible_v()
             {
-                // flip_to_overlay on an already-Overlay (non-empty) WAL: enable_lockfree
-                // skips the re-stamp (current_lsn > 1) but the regime is ALREADY
-                // Overlay, so the V-2 re-check passes and flip returns true.
                 let took = inner.flip_to_overlay();
                 debug_assert!(took, "Overlay-regime open must flip");
-                // owned → overlay (value-carrying for u64, membership for ()); a
-                // mid-stream `?` aborts open with the owned tree INTACT (RES-7).
-                inner.reestablish_overlay_dispatch()?;
+                <Self as crate::persistent_artrie_core::overlay::flip::LockFreeOverlay<
+                    crate::persistent_artrie_core::key_encoding::CharKey,
+                    V,
+                    DiskManager,
+                >>::reestablish_overlay_from_owned(&mut inner)?;
             }
         }
 
@@ -736,6 +789,22 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
         let arena_manager = ArenaManager::with_buffer_manager(Arc::clone(&buffer_manager));
         let arena_manager = Arc::new(RwLock::new(arena_manager));
 
+        // **F7 FIX C:** watermark base = max LSN over ALL segments (archive + active), so a
+        // converted/under-load file's archived committed tail is covered before the first
+        // post-conversion checkpoint (else a BatchIncrement delta double-applies). Falls
+        // back to the active-only frontier when no segments are enumerable. Computed BEFORE
+        // `wal_writer` is moved into the struct.
+        let recovered_frontier = {
+            let archive_config_for_base = WalConfig::default();
+            let full_max = wal_writer
+                .collect_wal_segments(&archive_config_for_base)
+                .ok()
+                .and_then(|segments| AsyncWalWriter::max_lsn_in_segments(&segments));
+            full_max
+                .unwrap_or_else(|| next_lsn.saturating_sub(1))
+                .max(next_lsn.saturating_sub(1))
+        };
+
         let mut inner = Self {
             root: parking_lot::RwLock::new(CharTrieRoot::Empty),
             len: AtomicUsize::new(0), // Updated from disk or WAL replay
@@ -745,7 +814,7 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
             wal_config: WalConfig::default(),
             next_lsn: std::sync::atomic::AtomicU64::new(next_lsn),
             committed_watermark: super::committed_watermark::CommittedWatermark::new(
-                next_lsn.saturating_sub(1),
+                recovered_frontier,
             ),
             checkpoint_lock: std::sync::Arc::new(parking_lot::Mutex::new(())),
             merge_lock: std::sync::Arc::new(parking_lot::Mutex::new(())),
@@ -800,21 +869,51 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
         let use_f5 = <Self as LockFreeOverlay<CharKey, V, DiskManager>>::USE_F5_REOPEN_LOADER
             && rank_regime == crate::persistent_artrie_core::wal::RankRegime::Overlay
             && Self::overlay_eligible_v();
+        // **F7 convert gate** (open_with_depth has no `force_f5` test ctor, so it is gated
+        // on the F5 const directly — always true): an Owned-regime eligible file converts.
+        let convert_owned = <Self as LockFreeOverlay<CharKey, V, DiskManager>>::USE_F5_REOPEN_LOADER
+            && rank_regime == crate::persistent_artrie_core::wal::RankRegime::Owned
+            && Self::overlay_eligible_v();
 
-        if use_f5 {
-            // ===== F5 PATH (direct dense→overlay; owned tree NOT materialized) =====
-            inner.load_root_immutable(&buffer_manager, root_ptr)?;
+        if convert_owned {
+            // ===== F7 CONVERT PATH (Owned-regime eligible → overlay) =====
+            // The `eager_depth` hint is moot for the converter (the dense→overlay build
+            // always materializes the whole tree). Rotate-if-records-non-empty → stamp
+            // Overlay (+ fsync, OBL-1) → F5 build → archive-aware drain (FIX B). OBL-2:
+            // image_checkpoint_lsn = the recovery `checkpoint_lsn` (read PRE-rotate).
+            let _ = recovered_ops;
+            let _ = eager_depth;
+            let archive_config = WalConfig::default();
+            inner.convert_owned_to_overlay_on_reopen(
+                root_ptr,
+                /* was_loaded_from_disk */ root_ptr != 0,
+                checkpoint_lsn,
+                &archive_config,
+            )?;
             if let Some(ref arena_manager) = inner.arena_manager {
                 arena_manager.write().ensure_valid();
             }
-            let _applied = inner.replay_records_lww_overlay(
-                recovered_ops,
-                /* loaded_from_disk */ root_ptr != 0,
-                checkpoint_lsn,
-                rank_regime,
-            );
+        } else if use_f5 {
+            // ===== F5 PATH (Overlay-regime; direct dense→overlay; owned tree NOT
+            // materialized) =====
+            let (_lc, image_loaded) = inner.load_root_immutable(&buffer_manager, root_ptr)?;
+            if let Some(ref arena_manager) = inner.arena_manager {
+                arena_manager.write().ensure_valid();
+            }
+            // **F7 FIX B:** drain ALL segments (archive + active) into the overlay (not
+            // active-only — OBLIGATION-A). OBL-2: image_checkpoint_lsn = checkpoint_lsn when
+            // a valid image loaded; 0 + not-loaded on a corrupt/absent image (fallback
+            // parity). RES-3 fail-loud (FIX E).
+            let _ = recovered_ops;
+            let archive_config = WalConfig::default();
+            let effective_loaded = (root_ptr != 0) && image_loaded;
+            let _applied = inner.reconcile_and_drain_overlay(
+                &archive_config,
+                /* loaded_from_disk */ effective_loaded,
+                if effective_loaded { checkpoint_lsn } else { 0 },
+            )?;
         } else {
-            // ===== LEGACY PATH (unchanged; honors `eager_depth`) =====
+            // ===== LEGACY PATH (ineligible V stays owned; honors `eager_depth`) =====
             let mut loaded_from_disk = false;
             if root_ptr != 0 {
                 let root_swizzled = SwizzledPtr::from_raw(root_ptr);
@@ -845,17 +944,9 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
                 checkpoint_lsn,
                 rank_regime,
             );
-
-            // S5-12 EDIT 2 (IRREVERSIBLE): identical to `open` — an already-Overlay file
-            // moves the recovered owned tree into the overlay (eligible V); Owned-regime
-            // stays owned.
-            if rank_regime == crate::persistent_artrie_core::wal::RankRegime::Overlay
-                && Self::overlay_eligible_v()
-            {
-                let took = inner.flip_to_overlay();
-                debug_assert!(took, "Overlay-regime open must flip");
-                inner.reestablish_overlay_dispatch()?;
-            }
+            // Ineligible V cannot overlay → stays owned. (An eligible Owned file converts
+            // and an eligible Overlay file takes F5 above; this arm is the ineligible-V
+            // owned reopen.)
         }
 
         Ok(inner)
@@ -1718,27 +1809,34 @@ mod s5_12_flip_ctor_gate {
             }
             trie.checkpoint().expect("owned checkpoint");
         }
+        // **F7:** production `open` CONVERTS an Owned-regime eligible file INTO the overlay
+        // (Owned→Overlay conversion-on-reopen). The data must survive (`route_overlay()`
+        // true after `open`); the on-disk WAL is re-stamped Overlay (the durable conversion
+        // commit). The pre-F7 stay-Owned behavior is preserved by the legacy-loader oracle.
         let recovered = PersistentARTrieChar::<String>::open(&path).expect("reopen<String>");
         assert!(
-            !recovered.route_overlay(),
-            "an Owned-regime file must STAY owned on reopen (no flip, backward-compat)"
+            recovered.route_overlay(),
+            "F7: an Owned-regime eligible file CONVERTS to the overlay on reopen"
         );
         assert_eq!(
             wal_header(&path).magic,
-            WalHeader::MAGIC,
-            "an Owned file's WAL header must stay the standard MAGIC across reopen"
+            WalHeader::MAGIC_OVERLAY,
+            "F7: a converted file's WAL header is re-stamped to the Overlay MAGIC"
         );
         for (k, v) in &entries {
             assert_eq!(
                 MappedDictionary::get_value(&recovered, k),
                 Some(v.clone()),
-                "owned data lost for {k:?} across reopen"
+                "converted data lost for {k:?} across reopen"
             );
             assert!(
                 Dictionary::contains(&recovered, k),
-                "owned membership lost for {k:?} (data must stay in the owned tree)"
+                "converted membership lost for {k:?}"
             );
         }
+        // (The pre-F7 stay-Owned oracle is covered by the dedicated
+        // `persistent_owned_to_overlay_correspondence` suite, which builds a SEPARATE
+        // fixture per loader since the converting `open` mutates the file to Overlay.)
     }
 
     // ─────────────────── Gate 4: mixed-monomorph reopen (V-4, no panic) ───────────────────

@@ -371,6 +371,36 @@ impl WalWriter {
         self.next_lsn.load(Ordering::Acquire) == 1
     }
 
+    /// **F7 (FIX A/FIX D) — RECORDS-EMPTY-ON-DISK predicate.** Returns `true` iff the
+    /// on-disk WAL file is exactly header-sized (`len == WalHeader::SIZE`), i.e. it
+    /// carries NO records — regardless of the `next_lsn` counter.
+    ///
+    /// This is the load-bearing distinction from [`Self::is_empty_after_header`]
+    /// (`next_lsn == 1`): after a crash-AFTER-rotate-BEFORE-stamp, `rotate_to_archive`
+    /// restores the OLD (high) `next_lsn` onto the fresh header-only active, so
+    /// `is_empty_after_header()` is FALSE even though the file has no records. The F7
+    /// converter must classify that file as RECORDS-EMPTY (the cheap path) to avoid the
+    /// crash-loop that mints an empty archive segment per reopen (v4 FIX D). It is also
+    /// the gate for the post-rotate Overlay stamp (FIX A — admit a header-only,
+    /// HIGH-`next_lsn` active without resetting `next_lsn`).
+    ///
+    /// Flushes the `BufWriter` first so the on-disk length reflects any buffered records
+    /// (a buffered-but-unsynced append makes the file non-empty). Safe on the post-rotate
+    /// active (no buffered records possible in that window — the design's soundness
+    /// argument), and conservative everywhere else (it reports non-empty if anything was
+    /// written). On a flush/metadata error it returns `false` (the SAFE direction:
+    /// "assume records present", so the converter rotates rather than stamps-in-place).
+    pub fn records_empty_on_disk(&self) -> bool {
+        let mut file = self.file.lock().expect("WAL lock poisoned");
+        if file.flush().is_err() {
+            return false; // SAFE: assume records present on a flush error.
+        }
+        match file.get_ref().metadata() {
+            Ok(meta) => meta.len() == WalHeader::SIZE as u64,
+            Err(_) => false, // SAFE: assume records present if we cannot stat.
+        }
+    }
+
     /// Stamp the header to the Overlay regime (`MAGIC_OVERLAY` + `rank_regime=Overlay`)
     /// and persist it (S4 / N-S4-1). **ENFORCED to be EMPTY** (S5-3): an in-place
     /// magic+regime restamp of a NON-empty file would (a) torn-write the magic without
@@ -383,6 +413,44 @@ impl WalWriter {
         if !self.is_empty_after_header() {
             return Err(WalError::InvalidRegimeStamp(
                 "set_overlay_regime on a non-empty WAL (records already appended); \
+                 the non-empty Owned→Overlay transition requires a rotation"
+                    .to_string(),
+            ));
+        }
+        let mut header = self.header.lock().expect("header lock poisoned");
+        if header.rank_regime == RankRegime::Overlay as u8 {
+            return Ok(()); // already Overlay
+        }
+        header.magic = WalHeader::MAGIC_OVERLAY;
+        header.rank_regime = RankRegime::Overlay as u8;
+
+        let mut file = self.file.lock().expect("WAL lock poisoned");
+        file.seek(SeekFrom::Start(0))?;
+        file.write_all(&header.to_bytes())?;
+        file.flush()?;
+        file.get_ref().sync_all()?;
+        file.seek(SeekFrom::End(0))?;
+        debug_assert_eq!(header.rank_regime, RankRegime::Overlay as u8);
+        Ok(())
+    }
+
+    /// **F7 (FIX A widening) — stamp the header to the Overlay regime gated on
+    /// RECORDS-EMPTY-ON-DISK** (file len == `WalHeader::SIZE`), NOT on the `next_lsn==1`
+    /// counter that [`Self::set_overlay_regime`] uses.
+    ///
+    /// The converter's CHEAP path lands on a header-only active that may carry a HIGH
+    /// `next_lsn` (a post-crash-after-rotate active restores the OLD counter via
+    /// `rotate_to_archive`; a post-owned-checkpoint active was `set_min_lsn`'d above 1).
+    /// `set_overlay_regime`'s `next_lsn==1` gate would WRONGLY reject such an active even
+    /// though it is genuinely records-empty (no records to mis-interpret under the Overlay
+    /// drop rule). This method gates on the on-disk record-emptiness instead and stamps the
+    /// header directly + fsyncs (the cheap-path durable commit point). Idempotent on an
+    /// already-Overlay header. Returns [`WalError::InvalidRegimeStamp`] if the file carries
+    /// records.
+    pub fn set_overlay_regime_records_empty(&self) -> Result<(), WalError> {
+        if !self.records_empty_on_disk() {
+            return Err(WalError::InvalidRegimeStamp(
+                "set_overlay_regime_records_empty on a WAL that carries records on disk; \
                  the non-empty Owned→Overlay transition requires a rotation"
                     .to_string(),
             ));
@@ -504,6 +572,22 @@ impl WalWriter {
         });
     }
 
+    /// First-LSN sort for the `(path, size)` tuples the pruner uses (F7). Same ordering as
+    /// [`Self::sort_segments_by_first_lsn`]: ascending first LSN; an unreadable first LSN
+    /// sorts LAST (treated as newest = keep, the SAFE direction for the prune exemption).
+    fn sort_segments_by_first_lsn_tagged(segments: &mut [(PathBuf, u64)]) {
+        segments.sort_by(|a, b| {
+            let lsn_a = Self::segment_first_lsn(&a.0);
+            let lsn_b = Self::segment_first_lsn(&b.0);
+            match (lsn_a, lsn_b) {
+                (Some(lsn_a), Some(lsn_b)) => lsn_a.cmp(&lsn_b).then_with(|| a.0.cmp(&b.0)),
+                (Some(_), None) => std::cmp::Ordering::Less,
+                (None, Some(_)) => std::cmp::Ordering::Greater,
+                (None, None) => a.0.cmp(&b.0),
+            }
+        });
+    }
+
     pub(super) fn max_lsn_in_segments(segments: &[PathBuf]) -> Option<Lsn> {
         let mut max_lsn = None;
         for path in segments {
@@ -568,9 +652,9 @@ impl WalWriter {
         // commit_seq_floor (⇒ post-checkpoint reseed regression) and the
         // rank_regime (⇒ a rotated Overlay active mis-reads as Owned). Read the
         // old header BEFORE swapping it (below) and carry the two fields.
-        let (carried_floor, carried_regime) = {
+        let (carried_floor, carried_regime, carried_checkpoint_lsn) = {
             let old = self.header.lock().expect("header lock poisoned");
-            (old.commit_seq_floor, old.rank_regime)
+            (old.commit_seq_floor, old.rank_regime, old.checkpoint_lsn)
         };
         let mut header = WalHeader::new();
         header.commit_seq_floor = carried_floor;
@@ -585,7 +669,97 @@ impl WalWriter {
             .store(synced_lsn_after_rotation, Ordering::Release);
         *self.header.lock().expect("header lock poisoned") = header;
 
-        let _ = Self::prune_segments_if_needed(&archive_dir, config);
+        // F7 FIX-D belt-and-suspenders: prune with the OLD header's `checkpoint_lsn` (the
+        // durable image redo frontier at rotation time) so un-subsumed segments
+        // (`first_lsn > checkpoint_lsn`) are NEVER pruned. (`carried_checkpoint_lsn == 0`
+        // when no durable frontier is known — e.g. the converter's rotate or a
+        // post-owned-truncate active — which conservatively retains ALL segments.)
+        let _ = Self::prune_segments_if_needed(&archive_dir, config, carried_checkpoint_lsn);
+
+        Ok(archive_path)
+    }
+
+    /// **F7 (S1+S2) — rotate the Owned tail to archive, then RE-STAMP the fresh active
+    /// to the Overlay regime and re-assert the carried commit-seq floor, fsyncing the
+    /// fresh Overlay header (the DURABLE COMMIT POINT).**
+    ///
+    /// The non-empty-Owned-WAL conversion primitive. Under the (caller-held) writer lock
+    /// the converter runs:
+    ///
+    /// 1. [`Self::rotate_to_archive`] — archives the Owned tail and recreates a
+    ///    header-only active that CARRIES the OLD (high) `next_lsn` (DG0 monotonicity — do
+    ///    NOT reset; archive LSNs stay strictly below all future active LSNs), the
+    ///    `commit_seq_floor`, and the `rank_regime` (still Owned here). After this the
+    ///    fresh active is RECORDS-EMPTY-ON-DISK (header-only) even though `next_lsn` is high.
+    /// 2. [`Self::set_overlay_regime`] gated on [`Self::records_empty_on_disk`] (FIX A —
+    ///    a header-only-but-high-`next_lsn` active is a legitimate stamp target; the
+    ///    `next_lsn`-counter gate in `set_overlay_regime` would wrongly reject it, so we
+    ///    re-stamp the header directly here after asserting records-empty).
+    /// 3. re-assert [`Self::set_commit_seq_floor`] with the carried floor (idempotent;
+    ///    `rotate_to_archive` already carried it, but a defensive re-assert costs one
+    ///    header write and guarantees the floor survives even if a future rotate impl
+    ///    changes the carry).
+    /// 4. **`sync_all()` the fresh Overlay header** (OBL-1 — `rotate_to_archive` only
+    ///    `flush()`es the fresh header; the EMPTY-Overlay header is the S2 durable commit
+    ///    point and MUST be fsync-durable across a power cut).
+    ///
+    /// Returns the archived segment path (the just-rotated Owned tail) so the caller's
+    /// FIX-B drain can scan it.
+    pub fn rotate_and_restamp_overlay(&self, config: &WalConfig) -> Result<PathBuf, WalError> {
+        // S1: archive the Owned tail; the fresh active carries the high next_lsn + floor
+        // + (Owned) regime.
+        let archive_path = self.rotate_to_archive(config)?;
+
+        // F7 crash-injection (test-only; disarmed = no-op): simulate a power-cut AFTER the
+        // durable archive rename but BEFORE the Overlay stamp+fsync — the v4 FIX-D torn
+        // window (the fresh active is records-empty + still Owned-regime, carrying the high
+        // next_lsn). The converter must classify this as records-empty on the next reopen
+        // (the CHEAP path) and NOT re-rotate, so the crash-loop never prunes the real tail.
+        if crate::persistent_artrie_core::overlay::flip::f7_failpoint::armed()
+            == crate::persistent_artrie_core::overlay::flip::f7_failpoint::FailPoint::AfterRotateBeforeStamp
+        {
+            return Err(WalError::InvalidRegimeStamp(
+                "F7 fail-point AfterRotateBeforeStamp (simulated crash after rotate, before stamp)"
+                    .to_string(),
+            ));
+        }
+
+        // The fresh active MUST be records-empty-on-disk now (header-only). If not, a
+        // concurrent append slipped in (the caller must hold the writer lock — this is a
+        // defensive guard); refuse rather than mis-stamp.
+        if !self.records_empty_on_disk() {
+            return Err(WalError::InvalidRegimeStamp(
+                "rotate_and_restamp_overlay: fresh active is not records-empty after rotate \
+                 (records appended concurrently?); refusing the Overlay stamp"
+                    .to_string(),
+            ));
+        }
+
+        // S2a: stamp the fresh (records-empty, possibly high-next_lsn) active to Overlay.
+        // Stamp the header DIRECTLY here (not via `set_overlay_regime`, whose `next_lsn==1`
+        // gate would reject the carried high counter — FIX A). Records-empty-on-disk has
+        // been asserted, so stamping Overlay is unambiguous (no Owned records to
+        // mis-interpret under the Overlay drop rule).
+        let carried_floor = {
+            let mut header = self.header.lock().expect("header lock poisoned");
+            header.magic = WalHeader::MAGIC_OVERLAY;
+            header.rank_regime = RankRegime::Overlay as u8;
+            // S2b: re-assert the carried floor on the same in-memory header.
+            let floor = header.commit_seq_floor;
+            let mut file = self.file.lock().expect("WAL lock poisoned");
+            file.seek(SeekFrom::Start(0))?;
+            file.write_all(&header.to_bytes())?;
+            file.flush()?;
+            // OBL-1: fsync the fresh Overlay header — the S2 durable commit point.
+            file.get_ref().sync_all()?;
+            file.seek(SeekFrom::End(0))?;
+            floor
+        };
+
+        // S2c: defensive idempotent re-assert of the floor (monotone raise-only; a no-op
+        // because the carried floor was just written, but guards against a future rotate
+        // impl that drops the carry). `set_commit_seq_floor` fsyncs again.
+        self.set_commit_seq_floor(carried_floor)?;
 
         Ok(archive_path)
     }
@@ -629,6 +803,7 @@ impl WalWriter {
     pub(super) fn prune_segments_if_needed(
         archive_dir: &Path,
         config: &WalConfig,
+        checkpoint_lsn: Lsn,
     ) -> Result<(), WalError> {
         if !archive_dir.exists() {
             return Ok(());
@@ -644,7 +819,12 @@ impl WalWriter {
             }
         }
 
-        segments.sort_by(|a, b| a.0.cmp(&b.0));
+        // Order by FIRST LSN (oldest committed data first) so "oldest-first" pruning + the
+        // F7 un-subsumed exemption's "break on the first un-subsumed segment" are sound (an
+        // unreadable first LSN sorts last = treated as newest/keep). Path order
+        // (`wal_{nanos}_{pid}_{counter}`) is usually first-LSN order, but sort explicitly so
+        // the exemption never mis-classifies a segment.
+        Self::sort_segments_by_first_lsn_tagged(&mut segments);
 
         let total_size: u64 = segments.iter().map(|(_, size)| size).sum();
 
@@ -655,6 +835,26 @@ impl WalWriter {
             let remaining_count = segments.len() - i;
 
             if remaining_count <= 1 {
+                break;
+            }
+
+            // **F7 FIX-D belt-and-suspenders — NEVER prune an UN-SUBSUMED segment.** A
+            // segment whose FIRST LSN is above the durable image redo frontier
+            // (`first_lsn > checkpoint_lsn`) holds committed records the dense image does
+            // NOT cover; pruning it would silently lose the converted/under-load tail (the
+            // crash-loop data-loss class the cheap-vs-rotate FIX D already prevents — this
+            // is the second line of defense). A `checkpoint_lsn == 0` (no durable frontier
+            // known, e.g. post-owned-truncate) treats EVERY segment as un-subsumed, so
+            // nothing is pruned — the SAFE direction (retain committed data; correctness
+            // rests on the reconcile's lsn-skip, not on removal). Pruning resumes once a
+            // later checkpoint raises the frontier above a segment's first LSN.
+            let first_lsn = Self::segment_first_lsn(path);
+            let subsumed =
+                matches!(first_lsn, Some(fl) if fl <= checkpoint_lsn) && checkpoint_lsn > 0;
+            if !subsumed {
+                // Un-subsumed (or unreadable first LSN — the SAFE keep direction): never
+                // prune. Segments are first-LSN-ordered, so once we hit an un-subsumed one
+                // every later (higher-LSN) segment is also un-subsumed — stop scanning.
                 break;
             }
 

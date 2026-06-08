@@ -247,7 +247,21 @@ impl<V: DictionaryValue> PersistentARTrie<V, IoUringDiskManager> {
         // commit_seq seed = max(durable header floor, surviving CommitRank
         // generation) (the A.2 cross-restart fix). One-time WAL scan on open; INERT
         // pre-flip. See the mmap `open` body for the full rationale.
-        let recovered_frontier = next_lsn.saturating_sub(1);
+        // F7 FIX C: watermark base = max LSN over ALL segments (archive + active), so a
+        // converted/under-load file's archived committed tail is covered before the first
+        // post-conversion checkpoint (else a BatchIncrement delta double-applies). Falls
+        // back to the active-only frontier when no segments are enumerable. (io_uring twin
+        // of the mmap ctor's FIX-C seed.)
+        let recovered_frontier = {
+            let archive_config_for_base = WalConfig::default();
+            let full_max = wal_writer
+                .collect_wal_segments(&archive_config_for_base)
+                .ok()
+                .and_then(|segments| AsyncWalWriter::max_lsn_in_segments(&segments));
+            full_max
+                .unwrap_or_else(|| next_lsn.saturating_sub(1))
+                .max(next_lsn.saturating_sub(1))
+        };
         let commit_seq_seed = {
             let mut max_commit_seq_gen = 0u64;
             if wal_path.exists() {
@@ -285,12 +299,33 @@ impl<V: DictionaryValue> PersistentARTrie<V, IoUringDiskManager> {
                 && rank_regime == crate::persistent_artrie_core::wal::RankRegime::Overlay
                 && Self::overlay_eligible_v()
         };
+        // **F7 convert gate** (io_uring twin): an Owned-regime eligible file is CONVERTED
+        // into the overlay (rotate-if-records-non-empty → stamp → F5 build → archive-aware
+        // drain). io_uring has no legacy/f5 test ctors, so the convert is gated on the F5
+        // const directly (always true). Ineligible V stays owned.
+        let convert_owned = {
+            use crate::persistent_artrie_core::overlay::flip::LockFreeOverlay;
+            <Self as LockFreeOverlay<
+                crate::persistent_artrie_core::key_encoding::ByteKey,
+                V,
+                IoUringDiskManager,
+            >>::USE_F5_REOPEN_LOADER
+                && rank_regime == crate::persistent_artrie_core::wal::RankRegime::Owned
+                && Self::overlay_eligible_v()
+        };
 
         let was_loaded_from_disk = loaded_root.is_some();
+        // F7 corrupt-image fallback (io_uring twin of the mmap ctor): a corrupt descriptor
+        // makes the eager pre-load fail (`loaded_root == None`) even with `root_ptr != 0`;
+        // pass `0` to the overlay builder so it installs an EMPTY overlay and recovers from
+        // the WAL drain (legacy fallback parity), rather than re-failing the image load.
+        let effective_root_ptr = if was_loaded_from_disk { root_ptr } else { 0 };
         let (initial_root, initial_term_count) = match loaded_root {
-            // F5: DROP the loaded owned root; `dict.root` stays empty (F5 builds the
-            // overlay directly from the dense image via `load_root_immutable`).
-            Some(_) if use_f5 => (TrieRoot::Bucket(StringBucket::with_values()), 0),
+            // F5 / CONVERT: DROP the loaded owned root; `dict.root` stays empty (the overlay
+            // is built directly from the dense image via `load_root_immutable`).
+            Some(_) if use_f5 || convert_owned => {
+                (TrieRoot::Bucket(StringBucket::with_values()), 0)
+            }
             Some(root) => (root, loaded_term_count as usize),
             None => (TrieRoot::Bucket(StringBucket::with_values()), 0),
         };
@@ -336,36 +371,43 @@ impl<V: DictionaryValue> PersistentARTrie<V, IoUringDiskManager> {
         #[allow(unused_imports)]
         use crate::persistent_artrie_core::overlay::flip::LockFreeOverlay;
 
-        if use_f5 {
-            // ===== F5 PATH (direct dense→overlay; owned tree NOT installed) =====
-            dict.load_root_immutable(root_ptr)?;
-            let raw_records: Vec<(super::wal::Lsn, super::wal::WalRecord)> = if wal_path.exists() {
-                use crate::persistent_artrie_core::wal::WalReader;
-                let mut records = Vec::new();
-                if let Ok(mut reader) = WalReader::new(&wal_path) {
-                    while let Some(result) = reader.next_record() {
-                        match result {
-                            Ok((lsn, record)) => records.push((lsn, record)),
-                            Err(_) => break, // stop at the durable prefix
-                        }
-                    }
-                }
-                records
-            } else {
-                Vec::new()
-            };
-            let _ = recovered_ops; // F5 reconciles the RAW records (carry CommitRank).
-            let _applied = dict.replay_records_lww_overlay(
-                raw_records,
+        if convert_owned {
+            // ===== F7 CONVERT PATH (Owned-regime eligible → overlay; io_uring twin) =====
+            // Rotate-if-records-non-empty → stamp Overlay (+ fsync, OBL-1) → F5 build →
+            // archive-aware drain (FIX B) with the REAL (loaded_from_disk, image
+            // checkpoint_lsn) (OBL-2; `checkpoint_lsn` is read PRE-rotate = the image redo
+            // frontier). A `?` aborts open with the durable state intact.
+            let _ = recovered_ops;
+            let archive_config = WalConfig::default();
+            dict.convert_owned_to_overlay_on_reopen(
+                effective_root_ptr,
+                was_loaded_from_disk,
+                checkpoint_lsn.unwrap_or(0),
+                &archive_config,
+            )?;
+            dict.dirty.store(false, AtomicOrdering::Release);
+        } else if use_f5 {
+            // ===== F5 PATH (Overlay-regime; direct dense→overlay) =====
+            // A corrupt image (eager pre-load failed ⇒ effective_root_ptr == 0) → empty
+            // overlay + WAL drain (legacy fallback parity).
+            dict.load_root_immutable(effective_root_ptr)?;
+            // **F7 FIX B:** drain ALL segments (archive + active) into the overlay (not
+            // active-only), so an Overlay tail archived under load (or a post-S2-crash
+            // converted file reopened as Overlay) recovers its archived tail. OBL-2:
+            // image_checkpoint_lsn = the recovery `checkpoint_lsn`. RES-3 fail-loud (FIX E).
+            let _ = recovered_ops;
+            let archive_config = WalConfig::default();
+            let _applied = dict.reconcile_and_drain_overlay(
+                &archive_config,
                 /* loaded_from_disk */ was_loaded_from_disk,
                 checkpoint_lsn.unwrap_or(0),
-                rank_regime,
-            );
+            )?;
             dict.dirty.store(false, AtomicOrdering::Release);
         } else {
-            // ===== LEGACY PATH (unchanged) =====
-            // Replay via the shared M2d regime-aware path (`replay_records_lww`),
-            // identical to the mmap `open` sink (no-drift constraint).
+            // ===== LEGACY PATH (ineligible V → STAY OWNED). =====
+            // Reachable only for an ineligible-`V` file (an eligible Owned file converts and
+            // an eligible Overlay file takes F5 above). Replay via the shared regime-aware
+            // owned path; no flip, no conversion (an ineligible V cannot overlay).
             let raw_records: Vec<(super::wal::Lsn, super::wal::WalRecord)> = if rank_regime
                 == crate::persistent_artrie_core::wal::RankRegime::Overlay
                 && wal_path.exists()
@@ -402,17 +444,6 @@ impl<V: DictionaryValue> PersistentARTrie<V, IoUringDiskManager> {
                     wal_writer.set_min_lsn(next_lsn);
                     dict.next_lsn.store(next_lsn, AtomicOrdering::Release);
                 }
-            }
-
-            // M4b EDIT 2 + REESTABLISH SINK (D-SINK-2, io_uring twin of the mmap `open`
-            // sink). An already-Overlay file moves the recovered owned tree into the
-            // overlay (eligible V); an Owned-regime file STAYS owned (backward-compat).
-            if rank_regime == crate::persistent_artrie_core::wal::RankRegime::Overlay
-                && Self::overlay_eligible_v()
-            {
-                let took = dict.flip_to_overlay();
-                debug_assert!(took, "Overlay-regime open must flip");
-                dict.reestablish_overlay_dispatch()?;
             }
         }
 

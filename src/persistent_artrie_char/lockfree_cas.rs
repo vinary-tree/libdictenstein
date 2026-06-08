@@ -370,60 +370,12 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
         }
     }
 
-    /// **S5-10b — membership (`V = ()`) overlay reestablish.** The MEMBERSHIP twin of
-    /// [`Self::reestablish_overlay_after_recovery`] (the u64 value-carrying variant in
-    /// `impl<u64, S>`). Re-inserts each recovered owned term into the overlay via the
-    /// no-WAL [`Self::insert_cas`] (no values). Generic over `V` so it compiles for
-    /// any `V`, but it is MEMBERSHIP-ONLY: the S5-12 flip calls THIS for `V = ()` and
-    /// the value-carrying variant for `V = u64`. Streaming by first code-point; clears
-    /// the owned tree LAST (RES-7). NOT wired into any production ctor.
-    #[cfg_attr(not(test), allow(dead_code))]
-    pub(crate) fn reestablish_overlay_membership_after_recovery(&mut self) -> Result<()> {
-        // Genericized: delegates to the SHARED engine's clear-owned-LAST membership
-        // fold (`docs/design/overlay-flip-genericization.md` §2). The D1
-        // data-loss-critical control flow (UN-routed `owned_*` reads, then clear
-        // owned LAST) now lives ONCE in the trait; this is a thin char delegator.
-        use crate::persistent_artrie_core::key_encoding::CharKey;
-        use crate::persistent_artrie_core::overlay::flip::LockFreeOverlay;
-        <Self as LockFreeOverlay<CharKey, V, S>>::reestablish_overlay_membership(self)
-    }
-
-    /// **S5-12 (V-3) — the compile-safe reestablish dispatch.** The u64 value-carrying
-    /// [`Self::reestablish_overlay_after_recovery`] lives ONLY in `impl<u64, S>` and is
-    /// NOT name-resolvable from this generic `impl<V>` — a naive
-    /// `if TypeId==u64 { reestablish_overlay_after_recovery() }` would not compile, and
-    /// routing u64 through the membership twin would silently DROP every counter value.
-    /// Dispatch via a SAFE `Any` downcast (no `unsafe`; the same pattern as
-    /// `lockfree_value_route`): u64 ⇒ the value-carrying fn; `()` ⇒ membership;
-    /// ineligible V ⇒ no-op (`overlay_eligible_v` is the gate — no overlay exists to
-    /// reestablish). `S: 'static` so the trie is `Any`.
-    #[cfg_attr(not(test), allow(dead_code))]
-    pub(crate) fn reestablish_overlay_dispatch(&mut self) -> Result<()>
-    where
-        S: 'static,
-    {
-        use crate::persistent_artrie_core::overlay::flip::LockFreeOverlay;
-        use std::any::{Any, TypeId};
-        if TypeId::of::<V>() == TypeId::of::<u64>() {
-            // SAFE: V == u64 ⇒ the runtime type IS PersistentARTrieChar<u64, S>.
-            let any: &mut dyn Any = self;
-            return any
-                .downcast_mut::<super::PersistentARTrieChar<u64, S>>()
-                .expect("V == u64 ⇒ downcast to <u64, S> succeeds")
-                .reestablish_overlay_after_recovery();
-        }
-        if TypeId::of::<V>() == TypeId::of::<()>() {
-            return self.reestablish_overlay_membership_after_recovery();
-        }
-        // G5/F1: ARBITRARY eligible `V` → the third (value) reestablish fold. Gated
-        // on `overlay_eligible_v()` so it is INERT until the F2 eligibility flip — an
-        // ineligible `V` has no overlay to reestablish and falls to the `Ok(())`
-        // no-op. `reestablish_overlay_value` is a generic trait method (no downcast).
-        if Self::overlay_eligible_v() {
-            return <Self as LockFreeOverlay<CharKey, V, S>>::reestablish_overlay_value(self);
-        }
-        Ok(())
-    }
+    // **F7 — `reestablish_overlay_membership_after_recovery` + `reestablish_overlay_dispatch`
+    // DELETED.** The per-term owned→overlay reestablish dispatch (membership/counter/value
+    // folds) is superseded by the KEPT structural converter
+    // `LockFreeOverlay::reestablish_overlay_from_owned` (`build_overlay_root_from_owned`),
+    // which the F7 reopen converter + the legacy-loader oracle now use. Same overlay,
+    // strictly more correct.
 
     /// **Order-A durable** lock-free insert (Migration Phase E).
     ///
@@ -1985,32 +1937,11 @@ impl<S: BlockStorage> super::PersistentARTrieChar<u64, S> {
             .unwrap_or_else(|error| panic!("lock-free increment_cas failed: {}", error))
     }
 
-    /// **S5-10b — rebuild the immutable overlay from the recovered OWNED tree (u64
-    /// counters).** Streaming by first code point so the heavy per-partition
-    /// `(term, value)` materialization is bounded to one first-unit at a time, not the
-    /// whole trie (RA-2). FALLIBLE: any `iter_prefix_with_values` error ABORTS
-    /// (propagates `Err`) with the owned tree INTACT — the owned tree is cleared ONLY
-    /// as the LAST step, so a mid-stream abort leaves an owned-consistent trie (RES-7).
-    /// Re-inserts via the NO-WAL `increment_cas` (the recovered terms are already
-    /// durable in the WAL; re-logging would double-log). `enable_lockfree()` must
-    /// already have run.
-    ///
-    /// NOT wired into any production ctor — the S5-12 owner-GO flip calls it on an
-    /// Overlay-regime reopen so the production read/checkpoint path sees the recovered
-    /// data in the overlay. (`first_units` from `iter()` materializes the term list
-    /// once; a single-walk root-child enumeration is a future optimization.)
-    #[cfg_attr(not(test), allow(dead_code))]
-    pub(crate) fn reestablish_overlay_after_recovery(&mut self) -> Result<()> {
-        // Genericized: delegates to the SHARED engine's clear-owned-LAST counter
-        // fold (`docs/design/overlay-flip-genericization.md` §2). The D1
-        // data-loss-critical control flow (UN-routed `owned_*` reads, stream by
-        // first unit, clear owned LAST) now lives ONCE in the trait; this is a thin
-        // char `<u64>` delegator. `CounterValue == u64` for char, so the trait's
-        // value-as-counter re-wrap is the identity on these recovered counters.
-        use crate::persistent_artrie_core::key_encoding::CharKey;
-        use crate::persistent_artrie_core::overlay::flip::LockFreeOverlay;
-        <Self as LockFreeOverlay<CharKey, u64, S>>::reestablish_overlay_counter(self)
-    }
+    // **F7 — `reestablish_overlay_after_recovery` (u64 inherent counter fold) DELETED.**
+    // Superseded by the KEPT structural converter
+    // `LockFreeOverlay::reestablish_overlay_from_owned` (`build_overlay_root_from_owned`,
+    // value-carrying for u64). Its only caller was the now-deleted
+    // `reestablish_overlay_dispatch`.
 
     /// Merge lock-free values into the persistent trie by summing.
     ///
@@ -2769,11 +2700,12 @@ mod durable_write_tests {
         );
     }
 
-    /// **F1 (G5) — the THIRD reestablish fold + the arbitrary-`V` read route.** Builds
-    /// an OWNED `<String>` tree (incl. the empty term carrying a value), then drives
-    /// `reestablish_overlay_value` (the dispatch gates it on F2 eligibility, so F1
-    /// exercises the fold directly) and verifies every `(term, value)` — INCLUDING
-    /// `""` (republished to the overlay ROOT, H3) — is reproduced in the overlay,
+    /// **F1 (G5) — arbitrary-`V` reestablish + read route.** Builds an OWNED `<String>`
+    /// tree (incl. the empty term carrying a value), then drives
+    /// `reestablish_overlay_from_owned` (F7 — the KEPT structural converter that REPLACED
+    /// the deleted per-term `reestablish_overlay_value` fold; it routes arbitrary `V`
+    /// through `build_overlay_root_from_owned`) and verifies every `(term, value)` —
+    /// INCLUDING `""` (republished to the overlay ROOT, H3) — is reproduced in the overlay,
     /// readable via BOTH the `overlay_value_get` seam AND the public `get_value` read
     /// route (which now routes to the overlay under `route_overlay()`). Mirrors
     /// `m2a_reestablish_counter_round_trip` for arbitrary `V`.
@@ -2804,8 +2736,8 @@ mod durable_write_tests {
             "overlay routed after enable + LockFreeOverlay"
         );
 
-        // Drive the third (value) reestablish fold directly for arbitrary `V`.
-        LockFreeOverlay::reestablish_overlay_value(&mut trie).expect("reestablish value");
+        // Drive the KEPT structural converter (replaces the deleted per-term value fold).
+        LockFreeOverlay::reestablish_overlay_from_owned(&mut trie).expect("reestablish from owned");
 
         let units = |s: &str| s.chars().map(|c| c as u32).collect::<Vec<u32>>();
         // Read via the F1 arbitrary-V seam.

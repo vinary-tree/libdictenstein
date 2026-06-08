@@ -328,24 +328,29 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
             remove_file_if_exists(&original_wal_path, "compact_remove_stale_wal")?;
             remove_file_if_exists(&stale_wal_backup_path, "compact_remove_stale_wal_backup")?;
 
+            // **F7 compaction re-point.** The compacted image was written by the OWNED
+            // staging trie (kill-switched to Owned above for path-compressed density) and
+            // its WAL was removed (line ~293), so the post-rename file is an Owned-regime
+            // dense image with a FRESH (records-empty) WAL. `Self::open` now does the clean
+            // in-memory Owned→Overlay conversion ITSELF for an eligible `V`:
+            // `convert_owned_to_overlay_on_reopen` sees the records-empty active and takes
+            // the CHEAP path — stamp Overlay IN PLACE (no rotation) + F5-build the overlay
+            // from the dense image + drain the (empty) archive. This is exactly the
+            // "clean Overlay stamp, no rotation" the design calls for, replacing the old
+            // reopen-Owned-image + `flip_to_overlay` + `reestablish_overlay_dispatch`
+            // sequence. (Durable: the converter fsync'd the Overlay stamp, so the next
+            // reopen sees Overlay.)
             *self = Self::open(&original_path)?;
 
-            // F6: the staging trie was OWNED (for path-compressed density), so the
-            // dense image `*self` just reopened is `OwnedTree`. If the trie was
-            // overlay-routed before compaction, RE-FLIP to preserve the regime — the
-            // SAME two calls `open` uses for an Overlay-regime file (mmap_ctor.rs:602):
-            // `flip_to_overlay` (restamps the fresh post-reopen WAL Overlay, lsn==1)
-            // then `reestablish_overlay_dispatch` (publishes the recovered owned tree
-            // into the overlay, clears owned LAST). Durable: the next reopen sees the
-            // Overlay stamp and auto-flips.
-            if was_overlay {
-                let took = self.flip_to_overlay();
-                debug_assert!(
-                    took,
-                    "F6: compact in-place must re-flip eligible-V to overlay"
-                );
-                self.reestablish_overlay_dispatch()?;
-            }
+            // For an eligible `V` that was overlay-routed before compaction, `Self::open`'s
+            // converter has already re-established the overlay (records-empty cheap path).
+            // No explicit re-flip / reestablish is needed (and would be wrong — the owned
+            // scratch is cleared post-convert). An ineligible `V` legitimately stays owned.
+            debug_assert!(
+                !was_overlay || self.route_overlay() || !Self::overlay_eligible_v(),
+                "F7: compact in-place must leave an eligible overlay-routed trie overlay-routed \
+                 after reopen (the converter handles it)"
+            );
         }
 
         let duration_ms = start.elapsed().as_millis() as u64;

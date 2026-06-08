@@ -2211,9 +2211,12 @@ mod multi_writer_checkpointer_soak {
             }
             owned.checkpoint().expect("checkpoint");
         }
-        // The Overlay-regime reopen AUTOMATICALLY runs `reestablish_overlay_after_recovery`
-        // (via `reestablish_overlay_dispatch`, u64 → the value-carrying variant — the
-        // function under test). A second manual call would be redundant + double-rebuild.
+        // **F7:** the Overlay-regime reopen now takes the F5 dense→overlay loader +
+        // archive-aware drain (`reconcile_and_drain_overlay`), which builds the overlay
+        // DIRECTLY from the checkpoint image (carrying every (term, value)) and drains the
+        // WAL tail — the per-term `reestablish_overlay_after_recovery`/dispatch folds were
+        // DELETED. The recovered overlay state is identical (this test's assertions are
+        // loader-agnostic).
         let trie = PersistentARTrieChar::<u64>::open(&path).expect("reopen");
 
         // Overlay carries every recovered (term, value); the owned tree is cleared.
@@ -2232,9 +2235,11 @@ mod multi_writer_checkpointer_soak {
         );
     }
 
-    /// **S5-10b membership twin** — `reestablish_overlay_membership_after_recovery`
-    /// rebuilds the overlay (membership, no values) from the recovered owned tree and
-    /// clears the owned tree.
+    /// **S5-10b membership twin** — an Overlay-regime `()` reopen rebuilds the overlay
+    /// (membership, no values) from the recovered checkpoint image and clears the owned
+    /// tree. **F7:** the reopen now uses the F5 loader + archive-aware drain (the per-term
+    /// membership reestablish fold was DELETED); the recovered overlay membership is
+    /// identical.
     #[test]
     fn s5_10b_reestablish_overlay_membership_from_recovered_owned() {
         let dir = scratch("s5-10b-membership");
@@ -2250,9 +2255,9 @@ mod multi_writer_checkpointer_soak {
             }
             owned.checkpoint().expect("checkpoint");
         }
-        // The Overlay-regime reopen AUTOMATICALLY runs the membership reestablish (via
-        // `reestablish_overlay_dispatch`, () → the membership twin — the function under
-        // test). A second manual call would be redundant.
+        // **F7:** the Overlay-regime reopen now takes the F5 loader + archive-aware drain
+        // (`reconcile_and_drain_overlay`); the per-term membership reestablish fold was
+        // DELETED. The recovered overlay membership is identical (loader-agnostic).
         let trie = PersistentARTrieChar::<()>::open(&path).expect("reopen");
         for t in &terms {
             assert!(
@@ -2267,33 +2272,40 @@ mod multi_writer_checkpointer_soak {
         );
     }
 
-    /// **S5-12 (V-3)**: `reestablish_overlay_dispatch` routes a u64 trie to the
-    /// VALUE-carrying reestablish (NOT the value-dropping membership twin) — the
-    /// Any-downcast dispatch is correct. Values must survive.
+    /// **S5-12 (V-3)**: the structural reestablish carries u64 VALUES (NOT the
+    /// value-dropping membership-only path) — values must survive. **F7:** the per-term
+    /// `reestablish_overlay_dispatch` (Any-downcast u64→value-carrying) was DELETED; its
+    /// replacement `reestablish_overlay_from_owned` (`build_overlay_root_from_owned`) is
+    /// value-carrying by construction. Drive it on a freshly-built OWNED u64 tree (so the
+    /// owned tree is populated when reestablish reads it) and assert values round-trip.
     #[test]
     fn s5_12_v3_dispatch_routes_u64_to_value_carrying_reestablish() {
+        use crate::persistent_artrie_core::overlay::flip::LockFreeOverlay;
+        use crate::persistent_artrie_core::overlay::write_mode::OverlayWriteMode;
         let dir = scratch("s5-12-v3-dispatch");
         let path = dir.path().join("t.artc");
         let entries: Vec<(String, u64)> = vec![("a", 1u64), ("ab", 22), ("z", 999)]
             .into_iter()
             .map(|(t, v)| (t.to_string(), v))
             .collect();
-        {
-            let owned = PersistentARTrieChar::<u64>::create(&path).expect("create");
-            for (t, v) in &entries {
-                owned.insert_with_value(t, *v);
-            }
-            owned.checkpoint().expect("checkpoint");
+        // Build an OWNED u64 tree (kill-switch to owned so upserts populate the owned tree,
+        // not the overlay), then install + route the empty overlay — the exact
+        // pre-reestablish state.
+        let mut trie = PersistentARTrieChar::<u64>::create(&path).expect("create");
+        trie.kill_switch_to_owned();
+        for (t, v) in &entries {
+            trie.upsert(t, *v).expect("owned upsert");
         }
-        let mut trie = PersistentARTrieChar::<u64>::open(&path).expect("reopen");
         trie.enable_lockfree();
-        trie.reestablish_overlay_dispatch()
-            .expect("dispatch reestablish");
+        trie.set_overlay_write_mode(OverlayWriteMode::LockFreeOverlay);
+        assert!(trie.route_overlay(), "overlay routed before reestablish");
+        // The KEPT structural converter (value-carrying) replaces the deleted dispatch.
+        LockFreeOverlay::reestablish_overlay_from_owned(&mut trie).expect("reestablish from owned");
         for (t, v) in &entries {
             assert_eq!(
                 trie.get_lockfree(t),
                 Some(*v),
-                "V-3 dispatch dropped the value for {t:?} (routed to the membership twin?)"
+                "V-3 reestablish dropped the value for {t:?} (routed to a membership-only path?)"
             );
         }
     }

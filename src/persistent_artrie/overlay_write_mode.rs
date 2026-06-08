@@ -639,6 +639,18 @@ impl<V: DictionaryValue, S: BlockStorage> LockFreeOverlay<ByteKey, V, S>
         // (which uses the existing single-arbiter `try_remove_lockfree_path`).
         self.overlay_remove_no_wal(units)
     }
+
+    fn load_root_immutable_seam(&mut self, root_ptr: u64) -> Result<bool> {
+        // F7 — the byte `load_root_immutable` takes only `root_ptr` (it reaches the
+        // buffer/arena managers via `self`). PRECONDITION (converter): the WAL is already
+        // Overlay-regime, so the V-2 install check inside passes. The byte CONVERTER passes
+        // `effective_root_ptr = 0` when the eager pre-load failed (corrupt image), so
+        // `root_ptr != 0` here is the faithful "valid image was loaded" signal (byte's
+        // `load_root_immutable` builds an EMPTY overlay for `root_ptr == 0` and only loads —
+        // and could only fail — for a non-zero ptr the pre-load already validated).
+        self.load_root_immutable(root_ptr)?;
+        Ok(root_ptr != 0)
+    }
 }
 
 // ============================================================================

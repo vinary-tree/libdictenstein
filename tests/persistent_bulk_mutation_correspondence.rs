@@ -177,11 +177,12 @@ fn char_remove_prefix_batched_replays_every_durable_wal_prefix() {
     // F2-migrate: Bucket B — this test inspects the per-record WAL shape of a bulk
     // prefix delete (it asserts `WalRecord::Remove` records and truncates the WAL at
     // record boundaries to replay every durable prefix). That is the OWNED-tree WAL
-    // contract; under the lock-free overlay a delete is published as `CommitRank`. Pin
-    // the Owned regime (inlined seed) so the reopen below stays owned and emits Remove
-    // records. No-op feature-off. (Note: `seed_checkpointed_char_trie` is shared with the
-    // Bucket-A `survives_reopen` test, which legitimately runs on the overlay, so this
-    // pin is inlined here rather than applied to the shared helper.)
+    // contract; under the lock-free overlay a delete is published as `CommitRank`.
+    // **F7:** production `open` now CONVERTS an Owned-regime eligible file INTO the overlay
+    // (so the post-reopen write path is overlay-routed and would emit `CommitRank`). To keep
+    // exercising the OWNED Remove-record WAL shape, reopen via `open_with_legacy_loader` —
+    // the pre-F7 owned-reopen ORACLE that STAYS owned (does NOT convert) — so the owned
+    // remove path emits `Remove` records as before.
     {
         let trie = PersistentARTrieChar::<i32>::create(&path).expect("create char trie");
         trie.kill_switch_to_owned();
@@ -196,7 +197,8 @@ fn char_remove_prefix_batched_replays_every_durable_wal_prefix() {
     let base_record_count = wal_record_spans(&base_wal_bytes).len();
 
     {
-        let trie = PersistentARTrieChar::<i32>::open(&path).expect("open char trie");
+        let trie = PersistentARTrieChar::<i32>::open_with_legacy_loader(&path)
+            .expect("open char trie (legacy owned oracle — stays Owned for the Remove shape)");
         let expected_removed = reference
             .keys()
             .filter(|term| term.starts_with("app"))
@@ -358,7 +360,15 @@ fn char_remove_prefix_lazy_collection_error_preserves_wal_and_unaffected_terms()
         .to_string();
     let before_wal = wal_len(&path);
 
-    let reopened = PersistentARTrieChar::<i32>::open(&path).expect("lazy reopen char trie");
+    // **F7:** production `open` CONVERTS an Owned-regime eligible file INTO the overlay by
+    // EAGERLY materializing the dense image — which would hit the corrupt child at convert
+    // time (no lazy fault-on-access). The LAZY owned-tree corruption-isolation contract this
+    // test verifies (open succeeds; corruption surfaces on ACCESS; unaffected terms remain;
+    // no WAL append on the failed op) is the OWNED-tree behavior, preserved by the
+    // RETAINED `open_with_legacy_loader` (the pre-F7 owned-lazy reopen — it does NOT convert,
+    // so it lazily faults owned children on access). Verify the capability via that loader.
+    let reopened = PersistentARTrieChar::<i32>::open_with_legacy_loader(&path)
+        .expect("lazy reopen char trie (legacy owned-lazy loader)");
     assert!(
         reopened.remove_prefix_batched(&prefix, 1).is_err(),
         "prefix removal should surface lazy collection corruption"
