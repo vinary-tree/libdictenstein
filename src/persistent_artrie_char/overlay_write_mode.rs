@@ -267,11 +267,28 @@ impl<V: DictionaryValue, S: BlockStorage> LockFreeOverlay<CharKey, V, S>
     }
 
     fn overlay_value_get(&self, units: &[u32]) -> Option<V> {
-        // Non-faulting leaf value read (exact: overlay finals never evicted in prod).
+        // BUG #46 FIX: FAULT in OnDisk nodes, exactly as the counter
+        // (`overlay_counter_get` -> `get_lockfree`) and membership (`overlay_contains` ->
+        // `contains_lockfree`) reads already do. The prior `find_leaf_lockfree` was
+        // NON-faulting on the false premise "overlay finals are never evicted in prod" —
+        // in-process eviction CAN flip an interior node (whose subtree holds finals) to
+        // `OnDisk`, so a non-faulting arbitrary-V value read returned `None` for every
+        // term under it until the trie was reopened (the on-disk image was always intact).
+        // On an I/O error fall back to the non-faulting walk (best-effort, liveness-only —
+        // matches `contains_lockfree`). Regression-pinned by
+        // tests/overlay_eviction_arbitrary_v_bug46.rs.
         let lockfree_root = self.lockfree_root.as_ref()?;
         let _epoch = self.epoch_manager.enter_read();
-        self.find_leaf_lockfree(lockfree_root, units)
-            .and_then(|leaf| leaf.get_value())
+        match self.find_leaf_faulting(
+            lockfree_root,
+            units,
+            super::lockfree_cas::DEFAULT_MAX_FAULTIN_RETRIES,
+        ) {
+            Ok(found) => found.and_then(|leaf| leaf.get_value()),
+            Err(_) => self
+                .find_leaf_lockfree(lockfree_root, units)
+                .and_then(|leaf| leaf.get_value()),
+        }
     }
 
     fn claim_commit_seq(&self) -> u64 {

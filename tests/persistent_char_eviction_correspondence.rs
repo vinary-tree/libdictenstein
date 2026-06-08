@@ -138,7 +138,8 @@ fn post_checkpoint_write_invalidates_registry() {
         "a post-checkpoint write must invalidate the eviction registry"
     );
 
-    // A fresh checkpoint rebuilds + republishes; eviction works again.
+    // A fresh checkpoint rebuilds + republishes; eviction works again, and the newly
+    // inserted key survives eviction via fault-in (#46 fixed).
     shared.write().checkpoint().expect("checkpoint 3");
     assert!(
         shared
@@ -147,7 +148,7 @@ fn post_checkpoint_write_invalidates_registry() {
             .0
             >= 1
     );
-    // (value_of("newkey") after eviction omitted — BUG #46, arbitrary-V fault-in.)
+    assert_eq!(value_of(&shared, "newkey"), Some(99));
 
     shared.disable_eviction().expect("disable");
 }

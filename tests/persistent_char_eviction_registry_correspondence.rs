@@ -90,8 +90,13 @@ fn evicted_entries_reference_durable_data() {
 
         let evicted = shared.force_eviction(1 << 20).expect("force").0;
         assert!(evicted >= 1, "expected real reclamation, got {evicted}");
-        // (In-process value-after-eviction reads omitted — subject to BUG #46 for
-        // arbitrary V; the reopen check below is the durable-data proof this test asserts.)
+
+        // Reload path: every key still resolves to its value after eviction (#46 fixed —
+        // the arbitrary-V read now faults evicted nodes; regression in
+        // tests/overlay_eviction_arbitrary_v_bug46.rs).
+        for (t, v) in KEYS {
+            assert_eq!(value_of(&shared, t), Some(v));
+        }
         shared.disable_eviction().expect("disable");
     }
     // A fresh reopen reads only the durable on-disk image and agrees.
@@ -123,7 +128,7 @@ fn write_invalidates_published_registry() {
     // The next checkpoint republishes; eviction works again.
     shared.write().checkpoint().expect("checkpoint 3");
     assert!(shared.force_eviction(1 << 20).expect("force").0 >= 1);
-    // (value_of("newcomer") after eviction omitted — BUG #46, arbitrary-V fault-in.)
+    assert_eq!(value_of(&shared, "newcomer"), Some(99));
 
     shared.disable_eviction().expect("disable");
 }

@@ -1,28 +1,17 @@
-//! CHARACTERIZATION test for BUG #46 (pre-existing, data-loss-ADJACENT, surfaced by
-//! the L0.1 owned-eviction-deletion test migration). It PINS the current behavior so
-//! the suite stays green and the bug stays VISIBLE; it FAILS LOUDLY the moment #46 is
-//! fixed (forcing this file to be flipped to the correctness assertions), so it can
-//! never silently mask the bug.
+//! REGRESSION test for BUG #46 (FIXED): arbitrary-V (non-`u64`) char overlay reads must
+//! FAULT evicted nodes back in. Surfaced by the L0.1 owned-eviction-deletion test
+//! migration; fixed in `overlay_write_mode.rs::overlay_value_get`.
 //!
-//! ## The bug
+//! ## The bug (now fixed)
 //! After an in-process overlay eviction (`force_eviction` → `evict_overlay_nodes` flips
 //! resident overlay children to `OnDisk`), reading an evicted node of an ARBITRARY value
-//! type (e.g. `i32`) via the lazy single-node fault-in (`load_char_node_from_disk_lazy`)
-//! restores the node's own value+finality but DROPS ITS CHILDREN — so deeper terms under
-//! it read back as `None` until the trie is reopened:
-//!   insert {alpha:1, alphabet:2, alpine:3, zenith:4} → checkpoint → force_eviction → get
-//!     i32 : [Some(1), None, None, None]      ← children of the evicted node are lost
-//!     u64 : [Some(1), Some(2), Some(3), Some(4)]  ← counter value type is UNAFFECTED
-//!
-//! ## Why it is NOT permanent loss
-//! A full REOPEN recovers every i32 value — the on-disk checkpoint image is correct; only
-//! the in-process single-node fault path mis-handles arbitrary-V records. So the data is
-//! safe across restarts; the defect is wrong in-process reads after eviction for non-u64 V.
-//!
-//! ## Scope / fix
-//! u64 (the libgrammstein counter use case) is unaffected. MUST be fixed before L3.1, which
-//! removes the owned reopen scratch — the only recovery path. Production read path +
-//! data-loss → plan→red-team→implement rigor. See task #46.
+//! type (e.g. `i32`) dropped the node's children: deeper terms read back as `None` until
+//! the trie was reopened. The arbitrary-V value-route arm (`overlay_value_get`) used a
+//! NON-faulting walk (`find_leaf_lockfree`) on the false premise "overlay finals are never
+//! evicted", while the `u64`-counter (`overlay_counter_get`) and `()`-membership
+//! (`overlay_contains`) arms already faulted. The fix routes the arbitrary-V read through
+//! `find_leaf_faulting` like the other two arms. (`u64`/libgrammstein were never affected;
+//! the on-disk image was always intact, so a reopen always recovered the data.)
 //!
 //! Scratch is REAL DISK (`target/test-tmp`), never tmpfs `/tmp`.
 #![cfg(feature = "persistent-artrie")]
@@ -35,7 +24,9 @@ use libdictenstein::persistent_artrie::WalConfig;
 use libdictenstein::persistent_artrie_char::{PersistentARTrieChar, SharedCharARTrie};
 use libdictenstein::persistent_artrie_core::durability::DurabilityPolicy;
 use libdictenstein::persistent_artrie_core::shared_access::SharedTrieAccess;
-use libdictenstein::{MappedDictionary, MutableMappedDictionary};
+use libdictenstein::{
+    Dictionary, DictionaryNode, MappedDictionary, MappedDictionaryNode, MutableMappedDictionary,
+};
 
 fn scratch(prefix: &str) -> tempfile::TempDir {
     std::fs::create_dir_all("target/test-tmp").ok();
@@ -47,16 +38,11 @@ fn scratch(prefix: &str) -> tempfile::TempDir {
 
 const KEYS: [&str; 4] = ["alpha", "alphabet", "alpine", "zenith"];
 fn expected_i32() -> Vec<Option<i32>> {
-    (1..=4).map(|v| Some(v)).collect()
+    (1..=4).map(Some).collect()
 }
 
-/// PIN: arbitrary-V (i32) fault-in currently LOSES the evicted node's children in-process,
-/// but a REOPEN recovers them (disk image intact). When #46 is fixed, `after_fault` will
-/// equal `before` and the first assertion below will fail — flip this file to assert
-/// full in-process survival at that point.
-#[test]
-fn bug46_arbitrary_v_faultin_loses_children_but_reopen_recovers() {
-    let dir = scratch("bug46-i32");
+fn build_evicted_i32(prefix: &str) -> (tempfile::TempDir, SharedCharARTrie<i32>) {
+    let dir = scratch(prefix);
     let path = dir.path().join("b46.artc");
     let shared: SharedCharARTrie<i32> = ARTrie::create(&path).expect("create");
     for (i, t) in KEYS.iter().enumerate() {
@@ -71,36 +57,91 @@ fn bug46_arbitrary_v_faultin_loses_children_but_reopen_recovers() {
         .expect("enable");
     shared.write().checkpoint().expect("checkpoint");
     let before: Vec<Option<i32>> = KEYS.iter().map(|t| shared.read().get(t)).collect();
-    assert_eq!(
-        before,
-        expected_i32(),
-        "values must be present before eviction"
-    );
-
+    assert_eq!(before, expected_i32(), "values present before eviction");
     let (evicted, _) = shared.force_eviction(1 << 20).expect("force");
     assert!(evicted >= 1, "expected >=1 node evicted, got {evicted}");
-    let after_fault: Vec<Option<i32>> = KEYS.iter().map(|t| shared.read().get(t)).collect();
     shared.disable_eviction().ok();
-    drop(shared);
+    (dir, shared)
+}
 
+/// #46 — the value-read face: `get()` (→ `overlay_value_get`) must FAULT evicted
+/// arbitrary-V nodes back in and yield every value in-process (no reopen).
+#[test]
+fn bug46_get_faults_evicted_arbitrary_v_value() {
+    let (_dir, shared) = build_evicted_i32("bug46-i32-get");
+    let after_fault: Vec<Option<i32>> = KEYS.iter().map(|t| shared.read().get(t)).collect();
+    assert_eq!(
+        after_fault,
+        expected_i32(),
+        "#46: arbitrary-V get() must fault evicted nodes and yield every value in-process"
+    );
+}
+
+/// #46 — the node-walk face: the `DictionaryNode` walk (`root()`/`transition`/`value()`,
+/// the value-aware transducer API) must ALSO fault evicted arbitrary-V nodes. Exercised
+/// on a FRESH evicted trie (no prior `get` to fault things back first).
+#[test]
+fn bug46_node_walk_faults_evicted_arbitrary_v_value() {
+    let (_dir, shared) = build_evicted_i32("bug46-i32-walk");
+    // PRODUCTION transducer path: the `Dictionary` trait root on the Arc'd trie carries
+    // the SAFE overlay faulter. (The inherent `PersistentARTrieChar::root()` is non-faulting
+    // by design — it has only `&self`, no `Arc` to keep the trie + buffers alive across the
+    // lazy fault loads; the canonical `DictionaryNode` walk goes through `Dictionary::root`.)
+    for (i, t) in KEYS.iter().enumerate() {
+        let mut node = Dictionary::root(&shared);
+        let mut reached = true;
+        for c in t.chars() {
+            match node.transition(c) {
+                Some(next) => node = next,
+                None => {
+                    reached = false;
+                    break;
+                }
+            }
+        }
+        assert!(
+            reached && node.is_final() && node.value() == Some((i + 1) as i32),
+            "#46: node-walk must fault the evicted arbitrary-V node for {t:?} \
+             (reached={reached} value={:?})",
+            if reached { node.value() } else { None }
+        );
+    }
+}
+
+/// #46 — never permanent loss: a reopen always recovers every arbitrary-V value (the
+/// on-disk checkpoint image is intact; only the in-process fault path was at fault).
+#[test]
+fn bug46_reopen_recovers_arbitrary_v_value() {
+    let dir = scratch("bug46-i32-reopen");
+    let path = dir.path().join("b46.artc");
+    {
+        let shared: SharedCharARTrie<i32> = ARTrie::create(&path).expect("create");
+        for (i, t) in KEYS.iter().enumerate() {
+            assert!(MutableMappedDictionary::insert_with_value(
+                &shared,
+                t,
+                (i + 1) as i32
+            ));
+        }
+        shared
+            .enable_eviction(EvictionConfig::without_memory_monitor())
+            .expect("enable");
+        shared.write().checkpoint().expect("checkpoint");
+        assert!(shared.force_eviction(1 << 20).expect("force").0 >= 1);
+        shared.disable_eviction().ok();
+    }
     let reopened: SharedCharARTrie<i32> = ARTrie::open(&path).expect("reopen");
     let after_reopen: Vec<Option<i32>> = KEYS.iter().map(|t| reopened.read().get(t)).collect();
-
-    // PIN the bug. This MUST be flipped to `assert_eq!(after_fault, before)` when #46 lands.
-    assert_ne!(
-        after_fault, before,
-        "BUG #46 appears FIXED (arbitrary-V fault-in preserved children) — flip this \
-         characterization test to assert full in-process survival (see task #46)."
-    );
-    // The data is never permanently lost: reopen recovers it from the disk image.
     assert_eq!(
-        after_reopen, before,
-        "reopen MUST recover every value (on-disk checkpoint image is intact)"
+        after_reopen,
+        expected_i32(),
+        "reopen must recover every value"
     );
 }
 
 /// BASELINE: the same eviction + in-process fault-in path on a u64 counter trie preserves
-/// every value — proving #46 is specific to non-u64 value types (not a general fault bug).
+/// every value — the counter read arm always faulted (this is the parity the #46 fix
+/// brings to the arbitrary-V arm).
 #[test]
 fn bug46_baseline_u64_faultin_preserves_values() {
     let dir = scratch("bug46-u64");
@@ -130,6 +171,6 @@ fn bug46_baseline_u64_faultin_preserves_values() {
     trie.disable_eviction().ok();
     assert_eq!(
         after_fault, before,
-        "u64 baseline: in-process fault-in must preserve all values"
+        "u64 baseline: fault-in preserves all values"
     );
 }
