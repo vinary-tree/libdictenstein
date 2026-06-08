@@ -52,6 +52,9 @@ pub mod write_mode;
 // F5 (Slice 3): the generic, compression-aware dense→overlay builder
 // (`build_overlay_root_from_terms`) used by `LockFreeOverlay::build_overlay_root_from_owned`.
 pub(crate) mod f5_build;
+// CX (task #43): the path-compressing overlay↔dense codec's shared, K-generic, PURE
+// no-truncation core (`chain_chunks`). DORMANT until L2/L3 wire the codec.
+pub(crate) mod codec;
 
 pub use atomic_ptr::AtomicNodePtr;
 pub use faulter::OverlayFaulter;
