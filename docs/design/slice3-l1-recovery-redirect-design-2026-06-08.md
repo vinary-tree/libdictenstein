@@ -1,8 +1,48 @@
 # Slice 3 / Level 3 — L1 recovery-redirect: converged design + red-team (2026-06-08)
 
-> **Status: DESIGN FULLY CONVERGED (plan + red-team + confirming red-team DONE) → implement BY HAND next.**
+> **Status: REDIRECT BLOCKED — needs a generic-V overlay-counter fix FIRST (its own red-team). L1.4 refuted
+> + dropped. Regression guards written + GREEN. The naive applier-swap was tried, FAILED a committed oracle,
+> and was reverted.**
 >
-> **Confirming red-team (2026-06-08) — L1.4 gap CONFIRMED REAL + seed correct:** the
+> **⛔ REDIRECT BLOCKER (2026-06-08, TDD-caught — the agent's "parity" claim was empirically FALSE):** the
+> naive swap `apply_recovered_operation_no_wal` → `apply_recovered_operation_overlay` (L1.1) was implemented
+> and **FAILED the committed oracle `byte_corruption_rebuild_replays_batch_increment_and_cas`** (i64
+> insert+increment → expected 5, got dropped). Root cause: `overlay_eligible_v()==true` unconditionally
+> (overlay_write_mode.rs:487), so a byte `V=i64` trie DOES flip to the overlay, but
+> `apply_recovered_operation_overlay`'s Increment-DELTA arm (flip.rs:1166) routes through
+> `overlay_publish_counter` / `overlay_counter_get`, which are **hardcoded to the `<u64, S>` monomorph via an
+> `Any` downcast** (overlay_write_mode.rs:547/561) and **silently NO-OP for `V=i64`** (and any non-`u64`
+> counter). The OLD path (owned `apply_recovered_operation_no_wal` + the STRUCTURAL
+> `reestablish_overlay_from_owned`/`build_overlay_root_from_owned`) was generic over V, masking this; the
+> redirect's PER-OP overlay counter applier is u64-only. (Normal non-recovery i64 increments work — they use
+> the generic `increment_cas` directly; only the RECOVERY/reestablish per-op counter path is u64-specialized.)
+> **⇒ PRECONDITION:** make `apply_recovered_operation_overlay`'s Increment-delta (and the absolute arm's
+> `overlay_publish_counter` use) GENERIC over V — read the current leaf value generically (0 if absent), add
+> the delta via the i128 `counter_codec`, publish via `overlay_publish_value` (generic). This touches the
+> i128 counter codec (a DOCUMENTED past BLOCKER — see memory `counter-u64-restoration-done`) AND the SHARED
+> applier (the normal-reopen Overlay arm uses it too), so it is **data-loss-critical and needs its own
+> red-team** before the redirect lands. **The owned applier `apply_recovered_operation_no_wal` therefore
+> CANNOT be deleted at L1.3 yet** — it is the generic-V recovery path until the overlay counter applier is
+> genericized (this also touches the G1–G5 overlay-V-genericization track). Reverted commit-clean; guards
+> retained (`tests/persistent_recovery_watermark_seed_l14.rs` — they PIN both the no-double-apply AND the
+> create-on-missing/i64 properties the redirect must preserve).
+>
+> **(SUPERSEDED design assumption) L1.4 EMPIRICALLY REFUTED + DROPPED:**
+>
+> **⚠️ L1.4 REFUTED (2026-06-08, the headline correction):** the confirming-red-team "confirmation" below
+> was a CODE-READING FALSE POSITIVE. The TDD regression test (`tests/persistent_recovery_watermark_seed_l14.rs`,
+> a BARE BatchIncrement that avoids the SET-masks-delta self-cancel) shows BOTH recovery ctors
+> (`open_with_recovery_config` byte + `recover_from_archives` char) apply the delta EXACTLY ONCE across
+> recovery→checkpoint→reopen **even with `watermark()==0`**. Root cause the hypothesis missed:
+> `open_with_recovery_config` returns the apply-loop trie directly (mmap_ctor.rs:1029 — no re-open, no FIX-C
+> seed), but the post-recovery `checkpoint()` captures every recovered record into the image at a HIGHER
+> reconcile GENERATION, so the older archived segment loses the LWW reconcile on reopen → no re-drain, no
+> double-apply. (FIX-C is needed for the open_inner CONVERSION path because its committed tail is an
+> un-checkpointed rotated segment; the recovery path's records are fully checkpoint-subsumed.) **⇒ DROP L1.4**
+> (no watermark seed). The GREEN test is retained as the regression guard that the property holds across the
+> L1 applier-redirect. Binding conditions reduce to R2 + R1 (below).
+>
+> **(SUPERSEDED) Confirming red-team (2026-06-08) — claimed L1.4 gap real:** the
 > watermark base-seed (`max_lsn_in_segments(archive+active)`) exists ONLY in `open_inner`
 > (the normal-reopen path, byte mmap_ctor.rs:486-514 "F7 FIX C"). The corruption/archive-rebuild
 > ctor `open_with_recovery_config` (:852-1038) has NO such seed → post-recovery `watermark()==0`
