@@ -917,6 +917,12 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
                 let mut records_replayed: u64 = 0;
                 let mut terms_recovered: u64 = 0;
                 let mut segments_used = Vec::new();
+                // C2 (recovery double-apply fix): track the max LSN ACTUALLY applied + whether
+                // any apply failed, to compute the image-coverage frontier safely (see the set
+                // below). NEVER derived from `max_lsn_in_segments` (which reads past interior
+                // corruption → over-claim → reopen would SKIP un-applied records = silent LOSS).
+                let mut max_applied_lsn: u64 = 0;
+                let mut had_apply_failure = false;
 
                 // M2d (A2 fix, mirrors char's corruption-rebuild gate): a post-flip
                 // Overlay archive must DROP never-acked two-append-window orphans
@@ -935,9 +941,14 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
                 if any_overlay {
                     let (rr, tr) =
                         super::recovery::rebuild_from_wal_segments_regime_aware(&segments, |op| {
+                            let op_lsn = op.lsn();
                             if trie.apply_recovered_operation_no_wal(op) {
+                                if op_lsn > max_applied_lsn {
+                                    max_applied_lsn = op_lsn;
+                                }
                                 Ok(())
                             } else {
+                                had_apply_failure = true;
                                 Err("failed to apply recovered archive operation".to_string())
                             }
                         })
@@ -977,15 +988,36 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
                                 if trie.apply_recovered_operation_no_wal(op) {
                                     terms_recovered += 1;
                                 } else {
+                                    had_apply_failure = true;
                                     warn!(
                                         "Recovered operation failed during rebuild; stopping at durable prefix"
                                     );
                                     break 'segments;
                                 }
                             }
+                            // C2: this record applied IN FULL (no `break` above) — advance the
+                            // image-coverage frontier. Records stream in LSN order, so this is a
+                            // safe prefix bound.
+                            if lsn > max_applied_lsn {
+                                max_applied_lsn = lsn;
+                            }
                         }
                     }
                 }
+
+                // C2 (recovery double-apply fix): record the IMAGE-COVERAGE frontier = the max
+                // LSN ACTUALLY applied (0 on any apply failure — conservative; an over-claim
+                // would make the reopen drain-skip SKIP un-applied records = silent LOSS). The
+                // first post-recovery `checkpoint()` folds this into the on-disk
+                // `Checkpoint.checkpoint_lsn` WITHOUT inflating the durability watermark (the #41
+                // capture assert is untouched). 0 ⇒ no override (the rare apply-failure path
+                // keeps the prior re-drain behavior — a recoverable double-apply, not loss).
+                trie.committed_watermark
+                    .set_recovery_image_coverage(if had_apply_failure {
+                        0
+                    } else {
+                        max_applied_lsn
+                    });
 
                 let duration_ms = start_time.elapsed().as_millis() as u64;
 

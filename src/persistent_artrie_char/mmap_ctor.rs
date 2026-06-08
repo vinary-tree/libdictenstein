@@ -1140,6 +1140,11 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
                 let mut records_replayed: u64 = 0;
                 let mut terms_recovered: u64 = 0;
                 let mut segments_used = Vec::new();
+                // C2 (recovery double-apply fix): track the max LSN ACTUALLY applied + whether
+                // any apply failed → the safe image-coverage frontier (set after the arms).
+                // NEVER `max_lsn_in_segments` (reads past interior corruption → over-claim → loss).
+                let mut max_applied_lsn: u64 = 0;
+                let mut had_apply_failure = false;
 
                 // A2 fix (S5 v4 §1.3): an Overlay archive must DROP never-acked
                 // two-append-window orphans (else a post-flip corruption rebuild
@@ -1157,9 +1162,14 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
                         crate::persistent_artrie::recovery::rebuild_from_wal_segments_regime_aware(
                             &segments,
                             |op| {
+                                let op_lsn = op.lsn();
                                 if trie.apply_core_recovered_operation_no_wal(op) {
+                                    if op_lsn > max_applied_lsn {
+                                        max_applied_lsn = op_lsn;
+                                    }
                                     Ok(())
                                 } else {
+                                    had_apply_failure = true;
                                     Err("failed to apply recovered archive operation".to_string())
                                 }
                             },
@@ -1185,7 +1195,7 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
                         segments_used.push(segment_path.clone());
 
                         for result in reader.iter() {
-                            let (_lsn, record) = match result {
+                            let (lsn, record) = match result {
                                 Ok(r) => r,
                                 Err(e) => {
                                     log::warn!(
@@ -1305,6 +1315,7 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
                                             "Invalid WAL batch increment during rebuild; stopping at durable prefix: {:?}",
                                             error
                                         );
+                                            had_apply_failure = true;
                                             break 'segments;
                                         }
                                         terms_recovered += 1;
@@ -1312,9 +1323,26 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
                                 }
                                 _ => {} // Skip transaction/checkpoint records
                             }
+                            // C2: this record applied (no `break` above) — advance the
+                            // image-coverage frontier (records stream in LSN order).
+                            if lsn > max_applied_lsn {
+                                max_applied_lsn = lsn;
+                            }
                         }
                     }
                 }
+
+                // C2 (recovery double-apply fix): record the IMAGE-COVERAGE frontier = the max
+                // LSN ACTUALLY applied (0 on any apply failure — conservative; an over-claim
+                // would make the reopen drain-skip SKIP un-applied records = silent LOSS). The
+                // first post-recovery `checkpoint()` folds this into the on-disk
+                // `Checkpoint.checkpoint_lsn` WITHOUT inflating the durability watermark.
+                trie.committed_watermark
+                    .set_recovery_image_coverage(if had_apply_failure {
+                        0
+                    } else {
+                        max_applied_lsn
+                    });
 
                 // S5-12 EDIT 3 (IRREVERSIBLE): the rebuild above repopulated the OWNED
                 // tree (the no-WAL recovery path is owned-targeted). But after EDIT 1 the
@@ -1556,6 +1584,9 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
         // Create fresh trie
         let mut trie = Self::create_with_config(path, config)?;
 
+        // C2 (recovery double-apply fix): track the max LSN ACTUALLY applied + failure.
+        let mut max_applied_lsn: u64 = 0;
+        let mut had_apply_failure = false;
         let (records_replayed, _) =
             // A2 fix (S5 v4 §1.5): regime-aware rebuild so a post-flip Overlay
             // archive DROPS never-acked two-append-window orphans instead of
@@ -1564,15 +1595,29 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
             crate::persistent_artrie::recovery::rebuild_from_wal_segments_regime_aware(
                 &segments,
                 |op| {
+                let op_lsn = op.lsn();
                 if trie.apply_core_recovered_operation_no_wal(op) {
+                    if op_lsn > max_applied_lsn {
+                        max_applied_lsn = op_lsn;
+                    }
                     Ok(())
                 } else {
+                    had_apply_failure = true;
                     Err("failed to apply recovered archive operation".to_string())
                 }
             })
             .map_err(|error| PersistentARTrieError::RecoveryError {
                 reason: error.to_string(),
             })?;
+        // C2: record the IMAGE-COVERAGE frontier (max applied LSN; 0 on failure — never
+        // over-claim → never silent loss). The first post-recovery checkpoint folds it into
+        // the on-disk `Checkpoint.checkpoint_lsn` WITHOUT inflating the durability watermark.
+        trie.committed_watermark
+            .set_recovery_image_coverage(if had_apply_failure {
+                0
+            } else {
+                max_applied_lsn
+            });
 
         // S5-12 EDIT 3 (IRREVERSIBLE, recover_from_archives twin): the regime-aware
         // rebuild repopulated the OWNED tree. After EDIT 1 the fresh `trie` from

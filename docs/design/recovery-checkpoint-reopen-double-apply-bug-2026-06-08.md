@@ -1,8 +1,12 @@
 # CONFIRMED production data-loss bug: recovery → checkpoint → reopen DOUBLE-APPLIES counter deltas (2026-06-08)
 
-> **Status: CONFIRMED + reproduced (u64), root-caused. NOT yet fixed (the fix is deep,
-> #41-capture-ordering-aware, and needs its own red-team). Uncovered during the Slice-3 L1
-> recovery-redirect investigation; it is INDEPENDENT of (and pre-dates) that work.**
+> **Status: FIXED (C2) — implemented + full gate green. The fix design + 2-round red-team is in
+> `recovery-double-apply-fix-c2-design-2026-06-08.md`; the implementation = `CommittedWatermark`'s
+> `image_coverage_lsn` (set from `max_applied_lsn` by the 3 recovery ctors, read-cleared by the first
+> post-recovery checkpoint into the on-disk `Checkpoint.checkpoint_lsn`, WITHOUT inflating the watermark).
+> u64+i64 RED→GREEN guards in `tests/persistent_recovery_watermark_seed_l14.rs`; 2717-test suite green;
+> unsafe-inventory 0-delta. Uncovered during the Slice-3 L1 recovery-redirect investigation; INDEPENDENT of
+> (and pre-dated) that work. The related steady-state torn-checkpoint variant is the separate task #48.**
 
 ## Symptom (confirmed empirically)
 A `PersistentARTrie::<u64>` (the byte counter monomorph — **libgrammstein's n-gram count type**)

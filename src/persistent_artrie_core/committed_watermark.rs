@@ -41,6 +41,18 @@ pub struct CommittedWatermark {
     /// Out-of-order committed LSNs above `contiguous`, awaiting prefix closure.
     /// Bounded by the number of concurrently in-flight writers.
     pending: Mutex<BTreeSet<u64>>,
+    /// **C2 (recovery double-apply fix) — the IMAGE-COVERAGE frontier, DECOUPLED from the
+    /// durability watermark.** A one-shot hint set by the corruption/archive-rebuild ctors
+    /// to the max LSN they ACTUALLY applied. The recovered records are folded into the
+    /// overlay (hence into the first post-recovery checkpoint's image), but they were
+    /// applied NO-WAL — they are NOT in this fresh WAL's synced frontier — so the
+    /// durability `contiguous`/`watermark()` MUST stay 0 (the #41 capture-ordering assert
+    /// `watermark ≤ synced_frontier` guards exactly that). The first post-recovery
+    /// `checkpoint()` reads-and-clears this into the on-disk WAL `Checkpoint.checkpoint_lsn`
+    /// (the IMAGE-coverage fact that drives the reopen drain-skip), WITHOUT inflating the
+    /// watermark. 0 ⇒ no override (every non-recovery construction path; it is `new(0)` for
+    /// all 14 trie literals). See docs/design/recovery-double-apply-fix-c2-design-2026-06-08.md.
+    image_coverage_lsn: AtomicU64,
 }
 
 impl CommittedWatermark {
@@ -51,7 +63,28 @@ impl CommittedWatermark {
         Self {
             contiguous: AtomicU64::new(base),
             pending: Mutex::new(BTreeSet::new()),
+            image_coverage_lsn: AtomicU64::new(0),
         }
+    }
+
+    /// **C2** — record the recovery IMAGE-COVERAGE frontier (the max LSN the rebuild
+    /// ACTUALLY applied) WITHOUT advancing the durability watermark. Monotone (`fetch_max`),
+    /// so each rebuild arm (inline + regime-aware) may contribute its applied max. Does NOT
+    /// touch `contiguous`, so `watermark()` — and therefore the #41 `watermark ≤
+    /// synced_frontier` capture assert — is unaffected. Consumed once by the first
+    /// post-recovery checkpoint via [`take_recovery_image_coverage`](Self::take_recovery_image_coverage).
+    pub fn set_recovery_image_coverage(&self, lsn: u64) {
+        self.image_coverage_lsn.fetch_max(lsn, Ordering::AcqRel);
+    }
+
+    /// **C2** — read-and-clear the recovery image-coverage frontier (`0` if none). Called by
+    /// the post-recovery checkpoint publisher: the FIRST checkpoint after a rebuild records
+    /// `checkpoint_lsn = max(watermark, this)` so the reopen drain-skip drops the
+    /// already-checkpointed archive deltas exactly once; the swap-to-0 ensures subsequent
+    /// checkpoints (whose real watermark now covers the data via real durable writes) record
+    /// `checkpoint_lsn = watermark` as usual.
+    pub fn take_recovery_image_coverage(&self) -> u64 {
+        self.image_coverage_lsn.swap(0, Ordering::AcqRel)
     }
 
     /// The committed watermark: the largest `L` such that every LSN in `1..=L`

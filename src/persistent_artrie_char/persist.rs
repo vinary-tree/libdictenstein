@@ -623,12 +623,20 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
         );
 
         // The safe `checkpoint_lsn` is the watermark captured before the root load.
-        let checkpoint_lsn = snapshot.committed_watermark_at_capture.ok_or_else(|| {
+        let base_watermark = snapshot.committed_watermark_at_capture.ok_or_else(|| {
             PersistentARTrieError::internal(
                 "publish_immutable_snapshot_retaining_wal requires an immutable-overlay \
                  snapshot (committed_watermark_at_capture = Some); got an owned-tree snapshot",
             )
         })?;
+        // C2 (recovery double-apply fix): the on-disk `Checkpoint.checkpoint_lsn` is an
+        // IMAGE-COVERAGE fact (drives the reopen drain-skip), NOT the durability watermark. A
+        // post-recovery rebuild folds archived records into this image but applies them NO-WAL,
+        // so record max(watermark, coverage) WITHOUT inflating the watermark — the #41 capture
+        // assert is untouched. `take` is one-shot (first post-recovery checkpoint only); 0 for
+        // every normal checkpoint ⇒ byte-identical to before.
+        let checkpoint_lsn =
+            base_watermark.max(self.committed_watermark.take_recovery_image_coverage());
 
         // (1) Durable descriptor publish (the on-disk linearization point) + verify.
         self.publish_snapshot(snapshot)?;
@@ -726,13 +734,17 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
         // The safe `checkpoint_lsn` is the committed watermark captured BEFORE the
         // root load (the data-loss-critical invariant); an owned-tree snapshot
         // (`None`) is the wrong convention here and is rejected.
-        let checkpoint_lsn = snapshot.committed_watermark_at_capture.ok_or_else(|| {
+        let base_watermark = snapshot.committed_watermark_at_capture.ok_or_else(|| {
             PersistentARTrieError::internal(
                 "publish_immutable_snapshot_retaining_wal_with_eviction requires an \
                  immutable-overlay snapshot (committed_watermark_at_capture = Some); \
                  got an owned-tree snapshot",
             )
         })?;
+        // C2 (see `publish_immutable_snapshot_retaining_wal`): image-coverage frontier,
+        // one-shot, does not inflate the watermark.
+        let checkpoint_lsn =
+            base_watermark.max(self.committed_watermark.take_recovery_image_coverage());
 
         // (1) Durable descriptor publish (the on-disk linearization point) + verify.
         //     `publish_snapshot(&snapshot)` BORROWS the snapshot before the move below.
