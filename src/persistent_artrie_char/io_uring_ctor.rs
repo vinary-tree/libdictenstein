@@ -8,7 +8,7 @@
 #![cfg(feature = "io-uring-backend")]
 
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering as AtomicOrdering};
+use std::sync::atomic::{AtomicBool, AtomicUsize};
 use std::sync::Arc;
 
 use crate::persistent_artrie::adaptive_pool::CacheStats;
@@ -19,7 +19,6 @@ use crate::persistent_artrie::dict_impl::DurabilityPolicy;
 use crate::persistent_artrie::error::{PersistentARTrieError, Result};
 use crate::persistent_artrie::wal::{WalConfig, WalReader, WalRecord};
 use crate::persistent_artrie::wal_managed::{create_async_wal, open_or_create_async_wal};
-use crate::persistent_artrie::IoUringDiskManager;
 use crate::sync_compat::RwLock;
 use crate::value::DictionaryValue;
 
@@ -127,7 +126,6 @@ impl<V: DictionaryValue>
     /// # Arguments
     /// * `path` - Path to the trie file (must exist)
     pub fn open_with_io_uring<P: AsRef<Path>>(path: P) -> Result<Self> {
-        use crate::persistent_artrie::swizzled_ptr::SwizzledPtr;
         use crate::persistent_artrie::IoUringDiskManager;
 
         let path = path.as_ref();
@@ -322,43 +320,6 @@ impl<V: DictionaryValue>
                 /* loaded_from_disk */ effective_loaded,
                 if effective_loaded { checkpoint_lsn } else { 0 },
             )?;
-        } else {
-            // ===== LEGACY PATH (ineligible V stays owned) =====
-            let mut loaded_from_disk = false;
-            if root_ptr != 0 {
-                let root_swizzled = SwizzledPtr::from_raw(root_ptr);
-                match inner.load_root_from_disk(&buffer_manager, &root_swizzled, None) {
-                    Ok((root, len)) => {
-                        *inner.root.get_mut() = root;
-                        inner.len.store(len, AtomicOrdering::Release);
-                        loaded_from_disk = true;
-                    }
-                    Err(e) => {
-                        log::warn!("Failed to load root from disk: {:?}", e);
-                    }
-                }
-            }
-
-            // Ensure arena manager validity after loading
-            if let Some(ref arena_manager) = inner.arena_manager {
-                arena_manager.write().ensure_valid();
-            }
-
-            // Replay WAL records that came after the checkpoint via the SAME shared
-            // Order-A reconcile (design C′) the mmap ctors use (no-drift constraint).
-            let applied_any = inner.replay_records_lww(
-                recovered_ops,
-                loaded_from_disk,
-                checkpoint_lsn,
-                rank_regime,
-            );
-            let skipped_all = !applied_any;
-
-            if loaded_from_disk && skipped_all {
-                inner.dirty.store(false, AtomicOrdering::Release);
-            }
-            // Ineligible V cannot overlay → stays owned (an eligible Owned file converts and
-            // an eligible Overlay file takes F5 above).
         }
 
         Ok(inner)

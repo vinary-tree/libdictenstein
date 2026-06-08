@@ -174,6 +174,7 @@ impl<V: DictionaryValue + serde::Serialize + serde::de::DeserializeOwned, S: Blo
     /// # Returns
     ///
     /// The new value after incrementing.
+    #[allow(dead_code)] // L1.3: production-dead (the recovery appliers that called it are gone); retained for the in-crate owned white-box tests + L2/L3 owned-staging; removed with the owned path at L3.3
     pub(super) fn try_increment_impl_no_wal(&mut self, term: &str, delta: i64) -> Result<i64> {
         // Get current value. MUST be the OWNED read (not the E1-routed `get`): this
         // read-modify-write rebuilds the OWNED tree during crash recovery

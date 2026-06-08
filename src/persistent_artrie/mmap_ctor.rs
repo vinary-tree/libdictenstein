@@ -341,14 +341,6 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
         Self::open_inner(path.as_ref(), true)
     }
 
-    /// **F5 (S2 test surface) — reopen via the LEGACY owned-loader→reestablish path**,
-    /// regardless of the [`Self::USE_F5_REOPEN_LOADER`] gate (byte twin of char's
-    /// `open_with_legacy_loader`). Keeps the both-loaders proptest a meaningful
-    /// legacy-vs-F5 oracle whether the gate is ON or OFF.
-    pub fn open_with_legacy_loader<P: AsRef<Path>>(path: P) -> Result<Self> {
-        Self::open_inner(path.as_ref(), false)
-    }
-
     /// Shared `open` body. `force_f5` selects the F5 dense→overlay loader for an
     /// Overlay-regime file (the gate value from `open`, or `true` from
     /// `open_with_f5_loader`); an Owned-regime file ignores it.
@@ -695,78 +687,6 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
                 effective_checkpoint_lsn.unwrap_or(0),
             )?;
             dict.dirty.store(false, AtomicOrdering::Release);
-        } else {
-            // ===== LEGACY PATH (unchanged) =====
-            // Replay recovered operations via the shared M2d regime-aware path
-            // (`replay_records_lww`): for an `Owned` WAL this is byte-for-byte the
-            // pre-M2d in-order replay of the transaction-filtered `RecoveryManager` ops;
-            // for an `Overlay` WAL it threads the SHARED A2 `reconcile_lww` (same-term
-            // ops by commit generation; unranked orphans DROPPED).
-            // The reconcile needs the RAW WAL records (the `CommitRank` markers that
-            // `RecoveryManager` strips). Collect them ONLY for the rare/cold `Overlay`
-            // post-flip path so the `Owned` hot path keeps its old single scan.
-            let raw_records: Vec<(super::wal::Lsn, super::wal::WalRecord)> = if rank_regime
-                == crate::persistent_artrie_core::wal::RankRegime::Overlay
-                && wal_path.exists()
-            {
-                use crate::persistent_artrie_core::wal::WalReader;
-                let mut records = Vec::new();
-                if let Ok(mut reader) = WalReader::new(&wal_path) {
-                    while let Some(result) = reader.next_record() {
-                        match result {
-                            Ok((lsn, record)) => records.push((lsn, record)),
-                            Err(_) => break, // stop at the durable prefix
-                        }
-                    }
-                }
-                records
-            } else {
-                Vec::new()
-            };
-            let replayed_count = dict.replay_records_lww(
-                recovered_ops,
-                raw_records,
-                was_loaded_from_disk,
-                effective_checkpoint_lsn,
-                rank_regime,
-            );
-            // Mark clean after recovery replay
-            dict.dirty.store(false, AtomicOrdering::Release);
-
-            // If we loaded from disk AND replayed no operations, we can truncate the WAL
-            // (all operations were already persisted to disk before the checkpoint)
-            if was_loaded_from_disk && replayed_count == 0 {
-                if let Err(e) = wal_writer.truncate() {
-                    warn!("Failed to truncate WAL after recovery: {:?}", e);
-                } else if let Some(threshold) = effective_checkpoint_lsn {
-                    let next_lsn = threshold.saturating_add(1);
-                    wal_writer.set_min_lsn(next_lsn);
-                    dict.next_lsn.store(next_lsn, AtomicOrdering::Release);
-                }
-            }
-
-            // **F7 — LEGACY-LOADER ORACLE Overlay branch (force_f5 == false ONLY).** This
-            // arm is now reachable solely via `open_with_legacy_loader` on an Overlay file
-            // (the production path routes Overlay → F5 and Owned → convert above). It keeps
-            // the legacy reopen-into-overlay behavior so the both-loaders correspondence
-            // test stays a meaningful F5-vs-legacy oracle. D1: the flip precedes the
-            // structural reestablish, so `reestablish_overlay_from_owned` (the KEPT converter
-            // that REPLACES the deleted per-term `reestablish_overlay_dispatch` — same
-            // overlay, strictly more correct) reads the recovered OWNED tree via the UN-routed
-            // `owned_*` seams, builds + installs the overlay root, then clears owned LAST
-            // (RES-7) — a mid-stream `?` aborts `open` with the owned tree intact.
-            if rank_regime == crate::persistent_artrie_core::wal::RankRegime::Overlay
-                && Self::overlay_eligible_v()
-            {
-                use crate::persistent_artrie_core::overlay::flip::LockFreeOverlay;
-                let took = dict.flip_to_overlay();
-                debug_assert!(took, "Overlay-regime open must flip");
-                <Self as LockFreeOverlay<
-                    crate::persistent_artrie_core::key_encoding::ByteKey,
-                    V,
-                    super::disk_manager::MmapDiskManager,
-                >>::reestablish_overlay_from_owned(&mut dict)?;
-            }
         }
 
         Ok(dict)

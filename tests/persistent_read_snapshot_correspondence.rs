@@ -319,41 +319,6 @@ fn char_public_iterators_reopen_lazy_snapshot_exactly() {
 }
 
 #[test]
-fn char_lazy_traversal_failure_is_error_and_does_not_append_wal() {
-    let dir = tempdir().expect("temp dir");
-    let path = dir.path().join("char_lazy_read_failure.part");
-    build_checkpointed_char_trie(&path);
-    let corrupted_query = corrupt_first_lazy_char_child(&path);
-    let wal_len_before = wal_len(&path);
-
-    // **F7:** production `open` CONVERTS by EAGERLY materializing the dense image (hitting
-    // the corrupt child at convert time). The LAZY owned-tree traversal corruption-on-access
-    // contract is preserved by the RETAINED `open_with_legacy_loader` (does NOT convert).
-    let reopened = PersistentARTrieChar::<i64>::open_with_legacy_loader(&path)
-        .expect("lazy reopen char trie (legacy owned-lazy loader)");
-    assert!(
-        reopened.iter_prefix(&corrupted_query).is_err(),
-        "prefix traversal should surface lazy-load corruption"
-    );
-    assert!(
-        reopened.iter_prefix_with_values(&corrupted_query).is_err(),
-        "valued prefix traversal should surface lazy-load corruption"
-    );
-    assert_eq!(
-        wal_len(&path),
-        wal_len_before,
-        "failed public read traversal must not append WAL"
-    );
-
-    let public_snapshot = string_set(reopened.iter());
-    let reference_terms: BTreeSet<String> = char_fixture().keys().cloned().collect();
-    assert!(
-        public_snapshot.is_subset(&reference_terms),
-        "fail-closed public iteration must not fabricate terms"
-    );
-}
-
-#[test]
 fn vocab_public_iterators_reopen_to_exact_snapshot() {
     let dir = tempdir().expect("temp dir");
     let path = dir.path().join("vocab_read_snapshot.vocab");

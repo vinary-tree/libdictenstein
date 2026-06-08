@@ -171,22 +171,16 @@ fn byte_correspond<V>(tag: &str, pre: &[(Vec<u8>, Option<V>)], tail: &[(Vec<u8>,
 where
     V: DictionaryValue + Serialize + Clone + PartialEq,
 {
-    // Oracle: a byte-identical fixture reopened via the LEGACY owned loader (stays Owned,
-    // reads the owned tree) — the pre-F7 owned-reopen observable state.
-    let dir_oracle = scratch(&format!("{tag}-oracle"));
-    let path_oracle = dir_oracle.path().join("t.part");
-    byte_build_owned::<V>(&path_oracle, pre, tail);
-    let oracle = {
-        let trie = PersistentARTrie::<V>::open_with_legacy_loader(&path_oracle)
-            .expect("byte legacy (oracle) reopen");
-        // The oracle stays Owned (no conversion).
-        assert_regime(
-            &path_oracle,
-            RankRegime::Owned,
-            &format!("{tag}: oracle stays Owned"),
-        );
-        byte_snapshot(&trie)
-    };
+    // L1.3: the legacy owned-loader oracle reopen is GONE. Oracle = the LWW-folded fixture content
+    // (the logical state, loader-independent): apply `pre` then `tail`, last-writer-wins per term,
+    // each value normalized exactly as `byte_snapshot` does (`()`/empty-bytes → membership `None`).
+    let mut oracle: BTreeMap<Vec<u8>, Option<Vec<u8>>> = BTreeMap::new();
+    for (t, v) in pre.iter().chain(tail.iter()) {
+        let enc = v.as_ref().map(|v| {
+            libdictenstein::serialization::bincode_compat::serialize(v).expect("model enc")
+        });
+        oracle.insert(t.clone(), normalize_value(enc));
+    }
 
     // Converted: a byte-identical fixture reopened via production `open` (converts the
     // Owned-regime eligible file INTO the overlay; reads via the overlay).
@@ -213,19 +207,15 @@ fn char_correspond<V>(tag: &str, pre: &[(String, Option<V>)], tail: &[(String, O
 where
     V: DictionaryValue + Serialize + Clone + PartialEq,
 {
-    let dir_oracle = scratch(&format!("{tag}-oracle"));
-    let path_oracle = dir_oracle.path().join("t.artc");
-    char_build_owned::<V>(&path_oracle, pre, tail);
-    let oracle = {
-        let trie = PersistentARTrieChar::<V>::open_with_legacy_loader(&path_oracle)
-            .expect("char legacy (oracle) reopen");
-        assert_regime(
-            &path_oracle,
-            RankRegime::Owned,
-            &format!("{tag}: oracle stays Owned"),
-        );
-        char_snapshot(&trie)
-    };
+    // L1.3: the legacy owned-loader oracle reopen is GONE. Oracle = the LWW-folded fixture content
+    // (see `byte_correspond`); char terms are `String` → key bytes via `into_bytes`.
+    let mut oracle: BTreeMap<Vec<u8>, Option<Vec<u8>>> = BTreeMap::new();
+    for (t, v) in pre.iter().chain(tail.iter()) {
+        let enc = v.as_ref().map(|v| {
+            libdictenstein::serialization::bincode_compat::serialize(v).expect("model enc")
+        });
+        oracle.insert(t.clone().into_bytes(), normalize_value(enc));
+    }
 
     let dir_conv = scratch(&format!("{tag}-conv"));
     let path_conv = dir_conv.path().join("t.artc");

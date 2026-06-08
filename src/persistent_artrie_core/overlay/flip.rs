@@ -278,6 +278,7 @@ pub(crate) trait LockFreeOverlay<K: KeyEncoding, V: DictionaryValue, S>:
     /// Clear the owned tree (set it empty + zero the owned length). The reestablish
     /// folds call this LAST, after every partition has been published to the
     /// overlay (RES-7 — a mid-stream `?` abort leaves the owned tree intact).
+    #[allow(dead_code)] // L1.3: production-dead (recovery redirect deleted the appliers/legacy arms that called it); retained for the in-crate owned→overlay correspondence tests; removed with the owned converter at L3.3
     fn clear_owned(&mut self);
 
     // ---- overlay publishers (the per-variant write seam) ----
@@ -940,6 +941,7 @@ pub(crate) trait LockFreeOverlay<K: KeyEncoding, V: DictionaryValue, S>:
     /// `reestablish_overlay_*` folds (a mid-stream `?` from `build_*` aborts with the
     /// owned tree INTACT, so the recovery ctor's data is recoverable). After this,
     /// the overlay root == the structural conversion of the rebuilt owned tree.
+    #[allow(dead_code)] // L1.3: production-dead (recovery redirect deleted the appliers/legacy arms that called it); retained for the in-crate owned→overlay correspondence tests; removed with the owned converter at L3.3
     fn reestablish_overlay_from_owned(&mut self) -> Result<()> {
         // (1) Build the overlay root structurally from the rebuilt-in-memory owned
         // tree (un-routed `owned_*` seams; a `?` aborts with owned INTACT — RES-7).

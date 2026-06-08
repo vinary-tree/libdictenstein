@@ -58,13 +58,8 @@ fn char_rewrite_checkpoint_preserves_unicode_values_lazy_and_eager_reopen() {
     assert_char_value(&lazy, "café", 2);
     assert_char_value(&lazy, "東京", 3);
     assert_char_value(&lazy, "emoji😀", 4);
-
-    let eager = PersistentARTrieChar::<i32>::open_with_depth(&path, Some(usize::MAX))
-        .expect("eager reopen char trie");
-    assert_char_value(&eager, "alpha", 1);
-    assert_char_value(&eager, "café", 2);
-    assert_char_value(&eager, "東京", 3);
-    assert_char_value(&eager, "emoji😀", 4);
+    // L1.3: the eager-depth `open_with_depth` reopen was deleted (F5 materializes the whole overlay,
+    // so eager depth is moot); the lazy `open()` reopen above is the production path.
 }
 
 #[test]

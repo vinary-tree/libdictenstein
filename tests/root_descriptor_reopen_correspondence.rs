@@ -220,15 +220,8 @@ fn char_descriptor_reopen_roundtrip_preserves_reference_map_across_depths() {
         assert_char_value(&reopened, "東京", 4);
         assert!(!reopened.contains("missing"));
     }
-
-    {
-        let reopened = PersistentARTrieChar::<i32>::open_with_depth(&path, Some(usize::MAX))
-            .expect("eager reopen char trie");
-        assert_char_value(&reopened, "alpha", 1);
-        assert_char_value(&reopened, "beta", 2);
-        assert_char_value(&reopened, "café", 3);
-        assert_char_value(&reopened, "東京", 4);
-    }
+    // L1.3: the eager-depth `open_with_depth` reopen block was deleted (F5 always materializes the
+    // whole overlay, so eager depth is moot); the lazy `open()` reopen above is the production path.
 }
 
 #[test]
@@ -302,50 +295,4 @@ fn invalid_arena_count_replays_wal_instead_of_trusting_checkpoint() {
     write_descriptor_arena_count(&char_path, storage_block_count(&char_path));
     let reopened = PersistentARTrieChar::<i32>::open(&char_path).expect("char WAL fallback");
     assert_char_value(&reopened, "wal-only", 12);
-}
-
-#[test]
-fn char_lazy_load_errors_are_result_errors_and_public_reads_fail_closed() {
-    let dir = tempdir().expect("tempdir");
-    let path = dir.path().join("char_lazy_corrupt.part");
-
-    {
-        let trie = PersistentARTrieChar::<i32>::create(&path).expect("create char trie");
-        // F2-migrate: Bucket B — `corrupt_first_lazy_char_child` corrupts an on-disk
-        // OWNED lazy child; the reopen must lazily fault owned children and surface the
-        // corruption as an error. Pin the Owned regime so the owned-tree layout exists on
-        // disk and the reopen stays owned. No-op feature-off.
-        trie.kill_switch_to_owned();
-        trie.insert_with_value("alpha", 1).expect("insert alpha");
-        trie.insert_with_value("alpine", 2).expect("insert alpine");
-        trie.insert_with_value("beta", 3).expect("insert beta");
-        trie.checkpoint().expect("checkpoint char trie");
-    }
-
-    let corrupted_query = corrupt_first_lazy_char_child(&path);
-    // **F7:** production `open` CONVERTS an Owned-regime file by EAGERLY materializing the
-    // dense image (hitting the corrupt child at convert time, not on lazy access). The LAZY
-    // owned-tree corruption contract (open succeeds; corruption surfaces on ACCESS; reads
-    // fail closed) is preserved by the RETAINED `open_with_legacy_loader` (the pre-F7
-    // owned-lazy reopen that does NOT convert). Verify the capability via that loader.
-    let reopened = PersistentARTrieChar::<i32>::open_with_legacy_loader(&path)
-        .expect("lazy reopen char trie (legacy owned-lazy loader)");
-
-    assert!(
-        reopened.try_contains(&corrupted_query).is_err(),
-        "try_contains should surface lazy-load corruption"
-    );
-    assert!(
-        reopened.try_get(&corrupted_query).is_err(),
-        "try_get should surface lazy-load corruption"
-    );
-    assert!(
-        !reopened.contains(&corrupted_query),
-        "public contains should fail closed"
-    );
-    assert_eq!(
-        reopened.get(&corrupted_query),
-        None,
-        "public get should fail closed"
-    );
 }

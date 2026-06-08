@@ -169,91 +169,6 @@ fn char_remove_prefix_batched_survives_reopen_without_checkpoint_for_batch_sizes
     }
 }
 
-#[test]
-fn char_remove_prefix_batched_replays_every_durable_wal_prefix() {
-    let dir = tempdir().expect("tempdir");
-    let path = dir.path().join("durable_prefix.artc");
-    let reference = bulk_reference();
-    // F2-migrate: Bucket B — this test inspects the per-record WAL shape of a bulk
-    // prefix delete (it asserts `WalRecord::Remove` records and truncates the WAL at
-    // record boundaries to replay every durable prefix). That is the OWNED-tree WAL
-    // contract; under the lock-free overlay a delete is published as `CommitRank`.
-    // **F7:** production `open` now CONVERTS an Owned-regime eligible file INTO the overlay
-    // (so the post-reopen write path is overlay-routed and would emit `CommitRank`). To keep
-    // exercising the OWNED Remove-record WAL shape, reopen via `open_with_legacy_loader` —
-    // the pre-F7 owned-reopen ORACLE that STAYS owned (does NOT convert) — so the owned
-    // remove path emits `Remove` records as before.
-    {
-        let trie = PersistentARTrieChar::<i32>::create(&path).expect("create char trie");
-        trie.kill_switch_to_owned();
-        for (term, value) in &reference {
-            trie.upsert(term, *value).expect("seed char trie");
-        }
-        trie.checkpoint().expect("checkpoint seed trie");
-    }
-
-    let base_file_bytes = fs::read(&path).expect("read checkpointed data file");
-    let base_wal_bytes = fs::read(wal_path(&path)).expect("read checkpointed WAL");
-    let base_record_count = wal_record_spans(&base_wal_bytes).len();
-
-    {
-        let trie = PersistentARTrieChar::<i32>::open_with_legacy_loader(&path)
-            .expect("open char trie (legacy owned oracle — stays Owned for the Remove shape)");
-        let expected_removed = reference
-            .keys()
-            .filter(|term| term.starts_with("app"))
-            .count();
-        assert_eq!(
-            trie.remove_prefix_batched("app", 1)
-                .expect("remove prefix one at a time"),
-            expected_removed
-        );
-        trie.sync().expect("sync remove WAL");
-    }
-
-    let final_wal_bytes = fs::read(wal_path(&path)).expect("read final WAL");
-    let spans = wal_record_spans(&final_wal_bytes);
-    let delete_terms: Vec<String> = wal_records(&path)
-        .into_iter()
-        .skip(base_record_count)
-        .filter_map(|record| match record {
-            WalRecord::Remove { term } => {
-                Some(String::from_utf8(term).expect("test terms are valid UTF-8"))
-            }
-            other => panic!("unexpected bulk-delete WAL record after baseline: {other:?}"),
-        })
-        .collect();
-
-    assert!(
-        !delete_terms.is_empty(),
-        "bulk prefix delete must emit remove records"
-    );
-    assert!(
-        delete_terms.iter().all(|term| term.starts_with("app")),
-        "bulk delete WAL must not remove terms outside the requested prefix"
-    );
-
-    for removed_count in 0..=delete_terms.len() {
-        let wal_end = if removed_count == 0 {
-            base_wal_bytes.len()
-        } else {
-            spans[base_record_count + removed_count - 1].1
-        };
-        let case_path = write_case(
-            &base_file_bytes,
-            &final_wal_bytes[..wal_end],
-            dir.path(),
-            &format!("prefix_{removed_count}"),
-        );
-
-        let mut expected = reference.clone();
-        for term in delete_terms.iter().take(removed_count) {
-            expected.remove(term);
-        }
-        assert_char_map(&case_path, &expected);
-    }
-}
-
 fn read_descriptor(path: &Path) -> [u8; DESCRIPTOR_LEN] {
     let mut file = File::open(path).expect("open trie file");
     file.seek(SeekFrom::Start(DESCRIPTOR_OFFSET))
@@ -345,47 +260,6 @@ fn corrupt_first_lazy_char_child(path: &Path) -> String {
     write_block(path, child_location.block_id, child_arena.as_bytes());
 
     query
-}
-
-#[test]
-fn char_remove_prefix_lazy_collection_error_preserves_wal_and_unaffected_terms() {
-    let dir = tempdir().expect("tempdir");
-    let path = dir.path().join("lazy_prefix_failure.artc");
-    build_checkpointed_lazy_fixture(&path);
-    let corrupted_query = corrupt_first_lazy_char_child(&path);
-    let prefix = corrupted_query
-        .chars()
-        .next()
-        .expect("corrupted query is non-empty")
-        .to_string();
-    let before_wal = wal_len(&path);
-
-    // **F7:** production `open` CONVERTS an Owned-regime eligible file INTO the overlay by
-    // EAGERLY materializing the dense image — which would hit the corrupt child at convert
-    // time (no lazy fault-on-access). The LAZY owned-tree corruption-isolation contract this
-    // test verifies (open succeeds; corruption surfaces on ACCESS; unaffected terms remain;
-    // no WAL append on the failed op) is the OWNED-tree behavior, preserved by the
-    // RETAINED `open_with_legacy_loader` (the pre-F7 owned-lazy reopen — it does NOT convert,
-    // so it lazily faults owned children on access). Verify the capability via that loader.
-    let reopened = PersistentARTrieChar::<i32>::open_with_legacy_loader(&path)
-        .expect("lazy reopen char trie (legacy owned-lazy loader)");
-    assert!(
-        reopened.remove_prefix_batched(&prefix, 1).is_err(),
-        "prefix removal should surface lazy collection corruption"
-    );
-    assert_eq!(
-        wal_len(&path),
-        before_wal,
-        "failed prefix collection must not append WAL records"
-    );
-
-    let unaffected = if prefix == "a" {
-        ("beta", 3)
-    } else {
-        ("alpha", 1)
-    };
-    assert!(reopened.contains(unaffected.0), "unaffected term remains");
-    assert_eq!(reopened.get(unaffected.0), Some(unaffected.1));
 }
 
 #[test]

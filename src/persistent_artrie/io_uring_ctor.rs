@@ -403,48 +403,6 @@ impl<V: DictionaryValue> PersistentARTrie<V, IoUringDiskManager> {
                 checkpoint_lsn.unwrap_or(0),
             )?;
             dict.dirty.store(false, AtomicOrdering::Release);
-        } else {
-            // ===== LEGACY PATH (ineligible V → STAY OWNED). =====
-            // Reachable only for an ineligible-`V` file (an eligible Owned file converts and
-            // an eligible Overlay file takes F5 above). Replay via the shared regime-aware
-            // owned path; no flip, no conversion (an ineligible V cannot overlay).
-            let raw_records: Vec<(super::wal::Lsn, super::wal::WalRecord)> = if rank_regime
-                == crate::persistent_artrie_core::wal::RankRegime::Overlay
-                && wal_path.exists()
-            {
-                use crate::persistent_artrie_core::wal::WalReader;
-                let mut records = Vec::new();
-                if let Ok(mut reader) = WalReader::new(&wal_path) {
-                    while let Some(result) = reader.next_record() {
-                        match result {
-                            Ok((lsn, record)) => records.push((lsn, record)),
-                            Err(_) => break, // stop at the durable prefix
-                        }
-                    }
-                }
-                records
-            } else {
-                Vec::new()
-            };
-            let replayed_count = dict.replay_records_lww(
-                recovered_ops,
-                raw_records,
-                was_loaded_from_disk,
-                checkpoint_lsn,
-                rank_regime,
-            );
-
-            dict.dirty.store(false, AtomicOrdering::Release);
-
-            if was_loaded_from_disk && replayed_count == 0 {
-                if let Err(e) = wal_writer.truncate() {
-                    warn!("Failed to truncate WAL after recovery: {:?}", e);
-                } else if let Some(threshold) = checkpoint_lsn {
-                    let next_lsn = threshold.saturating_add(1);
-                    wal_writer.set_min_lsn(next_lsn);
-                    dict.next_lsn.store(next_lsn, AtomicOrdering::Release);
-                }
-            }
         }
 
         Ok(dict)

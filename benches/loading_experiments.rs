@@ -376,11 +376,8 @@ fn bench_open_time_depth(c: &mut Criterion) {
             &(&dataset, depth),
             |b, (dataset, depth)| {
                 b.iter(|| {
-                    let trie = PersistentARTrieChar::<u64>::open_with_depth(
-                        &dataset.trie_path,
-                        Some(*depth),
-                    )
-                    .expect("Failed to open trie");
+                    let trie = PersistentARTrieChar::<u64>::open(&dataset.trie_path)
+                        .expect("Failed to open trie");
                     black_box(trie)
                 });
             },
@@ -411,11 +408,8 @@ fn bench_first_lookup_depth(c: &mut Criterion) {
             &(&dataset, &first_term, depth),
             |b, (dataset, term, depth)| {
                 b.iter(|| {
-                    let trie = PersistentARTrieChar::<u64>::open_with_depth(
-                        &dataset.trie_path,
-                        Some(*depth),
-                    )
-                    .expect("Failed to open trie");
+                    let trie = PersistentARTrieChar::<u64>::open(&dataset.trie_path)
+                        .expect("Failed to open trie");
                     let result = trie.contains(term);
                     black_box(result)
                 });
@@ -442,8 +436,8 @@ fn bench_bulk_lookup_depth(c: &mut Criterion) {
     // Test different depths
     for depth in [3usize, 5, 10, 20] {
         // Open trie once for steady-state measurement
-        let trie = PersistentARTrieChar::<u64>::open_with_depth(&dataset.trie_path, Some(depth))
-            .expect("Failed to open trie");
+        let trie =
+            PersistentARTrieChar::<u64>::open(&dataset.trie_path).expect("Failed to open trie");
 
         group.throughput(Throughput::Elements(dataset.queries.len() as u64));
         group.bench_with_input(
