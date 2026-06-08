@@ -3380,4 +3380,138 @@ mod cx_compressed_serialize {
             "the chain head must be a COMPRESSED chunk node carrying a full prefix"
         );
     }
+
+    /// Count the dense on-disk nodes reachable from `root_ptr` (raw fault-walk; iterative — no
+    /// recursion with depth).
+    fn count_dense_nodes<S: BlockStorage>(
+        trie: &PersistentARTrieChar<(), S>,
+        root_ptr: &crate::persistent_artrie::swizzled_ptr::SwizzledPtr,
+    ) -> usize {
+        let bm = trie.buffer_manager.as_ref().expect("buffer manager");
+        let mut count = 0usize;
+        let mut stack = vec![root_ptr.clone()];
+        while let Some(ptr) = stack.pop() {
+            if ptr.is_null() {
+                continue;
+            }
+            let inner = trie
+                .load_char_node_from_disk_lazy(bm, &ptr)
+                .expect("raw node");
+            count += 1;
+            for (_k, child) in inner.node.iter_children() {
+                stack.push(child.clone());
+            }
+        }
+        count
+    }
+
+    /// **Density gate (red-team #7, `≤`):** the compressed image must use STRICTLY FEWER dense nodes
+    /// than the uncompressed serializer for a chain-heavy overlay — the space win that lets L2/L3 drop
+    /// the owned tree without regression. A 26-char chain: uncompressed = 27 nodes (root + 26);
+    /// compressed = root + ceil(25/7)=4 chunks + the final terminus = 6.
+    #[test]
+    fn cx_density_lt_uncompressed_for_chains() {
+        let dir = scratch("cx-density");
+        let trie = PersistentARTrieChar::<()>::create(&dir.path().join("t.artc")).expect("create");
+        let overlay = build_overlay(&["abcdefghijklmnopqrstuvwxyz"]);
+        let compressed = trie
+            .serialize_overlay_snapshot_compressed(&overlay)
+            .expect("compressed");
+        let uncompressed = trie
+            .serialize_overlay_to_disk_iterative(&overlay, None)
+            .expect("uncompressed");
+        let nc = count_dense_nodes(&trie, &compressed);
+        let nu = count_dense_nodes(&trie, &uncompressed);
+        assert_eq!(nu, 27, "uncompressed 26-char chain = root + 26 nodes");
+        assert_eq!(nc, 6, "compressed = root + 4 chunk nodes + terminus");
+        assert!(
+            nc < nu,
+            "compressed {nc} dense nodes must be < uncompressed {nu}"
+        );
+    }
+
+    /// Recursively fault the loaded overlay and assert it is STRUCTURALLY IDENTICAL to `oracle` (a
+    /// fully-InMem uncompressed overlay): same finality, same child-edge set, and `prefix_len == 0`
+    /// at EVERY node (the expanded overlay must be uncompressed). Catches any edge↔prefix convention
+    /// drift the term-set check might miss (red-team B1).
+    fn assert_expanded_eq<S: BlockStorage>(
+        trie: &PersistentARTrieChar<(), S>,
+        loaded: &Arc<PersistentCharNode<()>>,
+        oracle: &Arc<PersistentCharNode<()>>,
+    ) {
+        assert_eq!(
+            loaded.prefix_len(),
+            0,
+            "expanded overlay node must be uncompressed"
+        );
+        assert_eq!(loaded.is_final(), oracle.is_final(), "finality mismatch");
+        use std::collections::BTreeSet;
+        let lk: BTreeSet<u32> = loaded.iter_children().map(|(&k, _)| k).collect();
+        let ok: BTreeSet<u32> = oracle.iter_children().map(|(&k, _)| k).collect();
+        assert_eq!(lk, ok, "child-edge set mismatch");
+        for &k in &lk {
+            let lc = match loaded.find_child(k).expect("loaded child").as_in_mem() {
+                Some(a) => a.clone(),
+                None => trie
+                    .load_overlay_node_from_disk(
+                        loaded
+                            .find_child(k)
+                            .expect("loaded child")
+                            .as_on_disk()
+                            .expect("on-disk"),
+                    )
+                    .expect("fault child"),
+            };
+            let oc = oracle
+                .find_child(k)
+                .expect("oracle child")
+                .as_in_mem()
+                .expect("oracle is fully InMem")
+                .clone();
+            assert_expanded_eq(trie, &lc, &oc);
+        }
+    }
+
+    /// **B1 structural differential test:** serialize→load→fully-expand must be node-for-node
+    /// identical to the PROVEN, INDEPENDENT term-level builder
+    /// [`crate::persistent_artrie_core::overlay::f5_build::build_overlay_root_from_terms`] on the same
+    /// terms — catching an edge↔prefix off-by-one directly (not merely via the term set).
+    #[test]
+    fn cx_b1_structural_diff_vs_term_builder() {
+        let terms = [
+            "a",
+            "ab",
+            "abc",
+            "abd",
+            "b",
+            "ban",
+            "banana",
+            "bandana",
+            "x",
+            "xyz",
+            "deeppathwaybeyondthelimit",
+        ];
+        let dir = scratch("cx-b1");
+        let trie = PersistentARTrieChar::<()>::create(&dir.path().join("t.artc")).expect("create");
+        let overlay = build_overlay(&terms);
+        let root_ptr = trie
+            .serialize_overlay_snapshot_compressed(&overlay)
+            .expect("serialize compressed");
+        let loaded = trie
+            .load_overlay_node_from_disk(&root_ptr)
+            .expect("load compressed");
+        // The PROVEN term-builder as the independent oracle (membership: value None per term).
+        let oracle =
+            crate::persistent_artrie_core::overlay::f5_build::build_overlay_root_from_terms::<
+                crate::persistent_artrie_core::key_encoding::CharKey,
+                (),
+                _,
+            >(
+                terms
+                    .iter()
+                    .map(|s| (s.chars().map(|c| c as u32).collect::<Vec<u32>>(), None)),
+                None,
+            );
+        assert_expanded_eq(&trie, &loaded, &oracle);
+    }
 }
