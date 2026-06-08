@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 use parking_lot::{Mutex, RwLock};
 
 use super::config::{EvictionConfig, EvictionStats, EvictionStatsAtomic, EvictionUrgency};
-use super::disk_registry::DiskLocationRegistry;
+use super::disk_registry::{DiskLocationRegistry, STRUCT_OVERHEAD_BYTE, STRUCT_OVERHEAD_CHAR};
 use super::lru_tracker::LruRegistry;
 use crate::persistent_artrie_core::concurrency::EpochManager;
 use crate::persistent_artrie_core::memory_monitor::{
@@ -297,6 +297,7 @@ impl EvictionCoordinator {
             &self.lru_registry,
             self.config.min_eviction_depth,
             self.config.batch_size,
+            0, // on-disk-unit target (async/public-batch path; resident overhead added only by the budget tail)
         );
 
         // Return the candidates info for the caller to perform actual eviction
@@ -338,6 +339,7 @@ impl EvictionCoordinator {
             &self.lru_registry,
             self.config.min_eviction_depth,
             self.config.batch_size,
+            0, // on-disk-unit target (async/public-batch path; resident overhead added only by the budget tail)
         );
 
         if candidates.is_empty() {
@@ -356,6 +358,172 @@ impl EvictionCoordinator {
         callback(eviction_list)
     }
 
+    /// Synchronously evict cold *byte* nodes, invoking `callback` inline on the
+    /// calling thread to reclaim them — the BYTE twin of
+    /// [`force_eviction_char`](Self::force_eviction_char) (Phase 6).
+    ///
+    /// The byte-map `force_eviction` only *selects and counts*; this method also
+    /// *performs reclamation* by invoking `callback` (the overlay evict driver), giving a
+    /// deterministic single-threaded eviction path with no eviction thread / quiescence
+    /// wait / cooldown. Selection reads the published `locations` (byte) map, refuses an
+    /// invalidated registry (`is_valid()` → `(0, 0)` = liveness-not-safety), and respects
+    /// `min_eviction_depth`. The registry read lock is released BEFORE `callback` runs
+    /// (the callback may take other locks). Returns `(nodes_evicted, bytes_freed)` as
+    /// reported by `callback`. `callback` receives `(path_hash, path: Vec<u8>, disk_ptr)`
+    /// per candidate.
+    pub fn force_eviction_bytes<F>(&self, target_bytes: usize, callback: F) -> (usize, usize)
+    where
+        F: Fn(Vec<(u64, Vec<u8>, SwizzledPtr)>) -> (usize, usize),
+    {
+        let disk_registry = self.disk_registry.read();
+        if !disk_registry.is_valid() {
+            return (0, 0);
+        }
+
+        let candidates = disk_registry.select_for_eviction(
+            target_bytes,
+            &self.lru_registry,
+            self.config.min_eviction_depth,
+            self.config.batch_size,
+            0, // on-disk-unit target (async/public-batch path; resident overhead added only by the budget tail)
+        );
+
+        if candidates.is_empty() {
+            return (0, 0);
+        }
+
+        let eviction_list: Vec<_> = candidates
+            .into_iter()
+            .map(|(hash, node)| (hash, node.path, node.disk_ptr))
+            .collect();
+
+        // Release the registry lock before reclaiming (parking_lot is not re-entrant).
+        drop(disk_registry);
+
+        callback(eviction_list)
+    }
+
+    /// The CHECKPOINT-TAIL budget arity (char): evict the COLDEST char overlay nodes
+    /// down to a RESIDENT-unit budget. `target_bytes` is in resident units (the
+    /// checkpoint computes `char_resident_estimate_bytes() - budget`); `STRUCT_OVERHEAD_CHAR`
+    /// is added per node so the accumulation matches that target. `max_count` bounds the
+    /// per-pass node count — pass `resident_budget_eviction_cap.unwrap_or(usize::MAX)`
+    /// (uncapped = budget-precise one-time large first pass; an opt-in cap bounds the
+    /// `checkpoint_lock`-held latency but must be ≥ per-checkpoint cold growth or the
+    /// budget never converges). Lock discipline mirrors [`force_eviction_char`]. If the
+    /// eligible (≥ `min_eviction_depth`) cold set is exhausted below `target_bytes`
+    /// WITHOUT hitting the cap, the budget is unreachable (shallow nodes are pinned) —
+    /// evict all eligible and `log::warn` (no silent cap).
+    pub fn force_eviction_char_resident<F>(
+        &self,
+        target_bytes: usize,
+        max_count: usize,
+        callback: F,
+    ) -> (usize, usize)
+    where
+        F: Fn(Vec<(u64, Vec<char>, SwizzledPtr)>) -> (usize, usize),
+    {
+        let disk_registry = self.disk_registry.read();
+        if !disk_registry.is_valid() {
+            return (0, 0);
+        }
+        let candidates = disk_registry.select_char_for_eviction(
+            target_bytes,
+            &self.lru_registry,
+            self.config.min_eviction_depth,
+            max_count,
+            STRUCT_OVERHEAD_CHAR,
+        );
+        // No-silent-cap: if we exhausted the eligible set (did NOT hit `max_count`) yet
+        // its resident sum is below the target, the `min_eviction_depth` floor pins the
+        // remainder — the budget cannot be met without lowering the floor.
+        let selected: usize = candidates
+            .iter()
+            .map(|(_, n)| n.size_bytes + STRUCT_OVERHEAD_CHAR)
+            .sum();
+        if selected < target_bytes && candidates.len() < max_count {
+            log::warn!(
+                "overlay eviction: char resident budget unreachable — evicted all eligible \
+                 {selected}B < target {target_bytes}B (min_eviction_depth={} pins shallow nodes)",
+                self.config.min_eviction_depth
+            );
+        }
+        if candidates.is_empty() {
+            return (0, 0);
+        }
+        let eviction_list: Vec<_> = candidates
+            .into_iter()
+            .map(|(hash, node)| (hash, node.path, node.disk_ptr))
+            .collect();
+        drop(disk_registry);
+        callback(eviction_list)
+    }
+
+    /// The CHECKPOINT-TAIL budget arity (byte) — the `Vec<u8>`-path twin of
+    /// [`force_eviction_char_resident`]. `STRUCT_OVERHEAD_BYTE` per node.
+    pub fn force_eviction_bytes_resident<F>(
+        &self,
+        target_bytes: usize,
+        max_count: usize,
+        callback: F,
+    ) -> (usize, usize)
+    where
+        F: Fn(Vec<(u64, Vec<u8>, SwizzledPtr)>) -> (usize, usize),
+    {
+        let disk_registry = self.disk_registry.read();
+        if !disk_registry.is_valid() {
+            return (0, 0);
+        }
+        let candidates = disk_registry.select_for_eviction(
+            target_bytes,
+            &self.lru_registry,
+            self.config.min_eviction_depth,
+            max_count,
+            STRUCT_OVERHEAD_BYTE,
+        );
+        let selected: usize = candidates
+            .iter()
+            .map(|(_, n)| n.size_bytes + STRUCT_OVERHEAD_BYTE)
+            .sum();
+        if selected < target_bytes && candidates.len() < max_count {
+            log::warn!(
+                "overlay eviction: byte resident budget unreachable — evicted all eligible \
+                 {selected}B < target {target_bytes}B (min_eviction_depth={} pins shallow nodes)",
+                self.config.min_eviction_depth
+            );
+        }
+        if candidates.is_empty() {
+            return (0, 0);
+        }
+        let eviction_list: Vec<_> = candidates
+            .into_iter()
+            .map(|(hash, node)| (hash, node.path, node.disk_ptr))
+            .collect();
+        drop(disk_registry);
+        callback(eviction_list)
+    }
+
+    /// The configured resident-heap budget (on-disk-equivalent bytes), or `None` if
+    /// unbounded (the default — the checkpoint tail evicts nothing).
+    pub fn resident_budget_bytes(&self) -> Option<usize> {
+        self.config.resident_budget_bytes
+    }
+
+    /// The configured per-checkpoint eviction node-cap (`None` = uncapped).
+    pub fn resident_budget_eviction_cap(&self) -> Option<usize> {
+        self.config.resident_budget_eviction_cap
+    }
+
+    /// Resident-heap estimate over the CHAR map (pass-through to the published registry).
+    pub fn char_resident_estimate_bytes(&self) -> usize {
+        self.disk_registry.read().char_resident_estimate_bytes()
+    }
+
+    /// Resident-heap estimate over the BYTE map (pass-through to the published registry).
+    pub fn byte_resident_estimate_bytes(&self) -> usize {
+        self.disk_registry.read().byte_resident_estimate_bytes()
+    }
+
     /// Number of char nodes currently tracked in the published disk-location
     /// registry (i.e. nodes eligible for eviction, before the `min_eviction_depth`
     /// filter). This is the count populated by `serialize_char_node_to_disk` via
@@ -365,6 +533,15 @@ impl EvictionCoordinator {
     /// checkpoint→publish path.
     pub fn disk_registry_char_len(&self) -> usize {
         self.disk_registry.read().char_len()
+    }
+
+    /// Number of BYTE nodes currently tracked in the published disk-location registry
+    /// (the byte twin of [`disk_registry_char_len`](Self::disk_registry_char_len),
+    /// Phase 6). Populated by byte's `serialize_overlay_node_to_disk` via `register` at
+    /// the eviction-on checkpoint. Returns 0 before the first checkpoint or after
+    /// invalidate-then-clear. For observability of the byte checkpoint→publish path.
+    pub fn disk_registry_len(&self) -> usize {
+        self.disk_registry.read().len()
     }
 
     /// Get the LRU registry for access tracking.
@@ -608,6 +785,7 @@ impl EvictionCoordinator {
             &self.lru_registry,
             self.config.min_eviction_depth,
             batch_size,
+            0, // on-disk-unit target (async pressure path)
         );
 
         if candidates.is_empty() {
@@ -652,6 +830,7 @@ impl EvictionCoordinator {
             &self.lru_registry,
             self.config.min_eviction_depth,
             batch_size,
+            0, // on-disk-unit target (async pressure path)
         );
 
         if candidates.is_empty() {

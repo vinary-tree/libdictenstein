@@ -68,6 +68,23 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
         node: &Node,
         value_bytes: Option<&[u8]>,
     ) -> Result<SwizzledPtr> {
+        // Thin wrapper over the length-returning variant (drops the on-disk byte length,
+        // which only the Phase-6 overlay registration path needs).
+        self.serialize_node_to_disk_with_value_len(node, value_bytes)
+            .map(|(ptr, _len)| ptr)
+    }
+
+    /// As [`Self::serialize_node_to_disk_with_value`] but ALSO returns the on-disk
+    /// serialized byte length of the node record — the byte twin of what char's
+    /// `serialize_one_char_node_to_disk` measures as `data.len()` for its eviction
+    /// registry `size_bytes`. Phase 6: the overlay registration path
+    /// (`serialize_overlay_node_to_disk`) uses the length so byte's registry entries
+    /// carry the same on-disk-equivalent size char's do.
+    pub(super) fn serialize_node_to_disk_with_value_len(
+        &self,
+        node: &Node,
+        value_bytes: Option<&[u8]>,
+    ) -> Result<(SwizzledPtr, usize)> {
         let arena_manager = self.arena_manager.as_ref().ok_or_else(|| {
             PersistentARTrieError::internal("No arena manager for disk serialization")
         })?;
@@ -98,6 +115,7 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
             serialization::v2::serialize_node_v2(node, &ctx)?,
             value_bytes,
         );
+        let data_len = node_bytes.len();
 
         let slot = am.allocate(&node_bytes)?;
 
@@ -114,7 +132,7 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
             Node::N256(_) => NodeType::Node256,
         };
 
-        Ok(SwizzledPtr::from_arena_slot(slot, node_type))
+        Ok((SwizzledPtr::from_arena_slot(slot, node_type), data_len))
     }
 
     /// Persist all modified nodes in the trie to disk.

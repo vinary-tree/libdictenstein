@@ -30,6 +30,10 @@ use crate::persistent_artrie::eviction::EvictionConfig;
 use crate::persistent_artrie::WalConfig;
 use crate::persistent_artrie_char::PersistentARTrieChar;
 use crate::persistent_artrie_core::durability::DurabilityPolicy;
+// Phase 4 (DRY K-generic lift): `evict_overlay_node_at_path` (called directly in the
+// OE5 1c-guard witness) is now a default method of the shared `OverlayEvictable`
+// trait — bring it into scope so `owned.evict_overlay_node_at_path(..)` resolves.
+use crate::persistent_artrie_core::overlay::evict::OverlayEvictable;
 use crate::Dictionary;
 
 /// A scratch directory on real disk (`target/test-tmp`), never tmpfs `/tmp`.
@@ -885,4 +889,285 @@ fn concurrent_reader_writer_evictor_faulter_no_uaf_and_complete() {
             "OE7: committed term {t:?} lost after race + reopen"
         );
     }
+}
+
+// ───────────────── OE5 (the 1c overwrite-guard witness — M-2a serial_disk_ptr) ─────────────────
+
+/// **OE5 — the round-3 1c lost-update guard (the M-2a `serial_disk_ptr` stamp).**
+/// DETERMINISTIC witness that `evict_overlay_node_at_path` REFUSES to evict a node that
+/// was OVERWRITTEN since the checkpoint that registered it — preventing the evictor from
+/// unswizzling the NEWER in-memory value onto the OLDER on-disk image (the lost update).
+///
+/// - **Positive control:** an UN-overwritten registered cold node still evicts
+///   (`Evicted`) and faults back to its exact value → the guard does not over-reject.
+/// - **The witness:** after overwriting a registered cold node (a counter increment
+///   path-copies its leaf into a fresh `stamp == 0` node), evicting it to its STALE
+///   registry `disk_ptr` returns `NotEvictable`, and the NEW value survives. WITHOUT the
+///   guard this returns `Evicted` and the new value is lost on reopen — exactly the
+///   round-3 race. (The full suite passing WITH the guard + this asserting `NotEvictable`
+///   is the discriminating proof the guard is load-bearing.)
+#[test]
+fn oe5_overwrite_since_checkpoint_is_not_evicted_to_stale_image() {
+    use super::OverlayEvictOutcome;
+
+    let dir = scratch("oe5-overwrite-guard");
+    let path = dir.path().join("oe5.artc");
+
+    let mut owned: PersistentARTrieChar<u64> =
+        PersistentARTrieChar::create_with_config(&path, WalConfig::no_archive()).expect("create");
+    owned.set_durability_policy(DurabilityPolicy::Immediate);
+    owned.enable_lockfree();
+    owned
+        .bench_enable_eviction(EvictionConfig::without_memory_monitor())
+        .expect("bench_enable_eviction");
+
+    // Two cold counter terms; checkpoint-with-eviction STAMPS + registers every node.
+    owned
+        .try_increment_cas_durable("cold-stable", 10)
+        .expect("inc stable");
+    owned
+        .try_increment_cas_durable("cold-rewritten", 20)
+        .expect("inc rewritten");
+    owned
+        .bench_immutable_checkpoint_with_eviction()
+        .expect("checkpoint with eviction");
+
+    // Capture each LEAF node's registry `disk_ptr` WITHOUT evicting (callback → (0,0)).
+    let coordinator = owned
+        .eviction_coordinator
+        .lock()
+        .expect("eviction_coordinator mutex poisoned")
+        .as_ref()
+        .map(std::sync::Arc::clone)
+        .expect("coordinator present");
+    let captured: std::cell::RefCell<
+        std::collections::HashMap<String, crate::persistent_artrie::swizzled_ptr::SwizzledPtr>,
+    > = std::cell::RefCell::new(std::collections::HashMap::new());
+    coordinator.force_eviction_char(1 << 20, |cands| {
+        for (_, p, ptr) in cands {
+            captured
+                .borrow_mut()
+                .insert(p.iter().collect::<String>(), ptr);
+        }
+        (0, 0)
+    });
+    let caps = captured.into_inner();
+    let stable_ptr = caps
+        .get("cold-stable")
+        .expect("cold-stable leaf registered")
+        .clone();
+    let rewritten_ptr = caps
+        .get("cold-rewritten")
+        .expect("cold-rewritten leaf registered")
+        .clone();
+
+    let to_u32 = |s: &str| -> Vec<u32> { s.chars().map(|c| c as u32).collect() };
+
+    // OVERWRITE cold-rewritten (counter +5 ⇒ path-copy ⇒ fresh stamp-0 leaf at its path).
+    owned
+        .try_increment_cas_durable("cold-rewritten", 5)
+        .expect("overwrite");
+    assert_eq!(
+        owned.get_value("cold-rewritten"),
+        Some(25),
+        "overwrite stuck (20+5)"
+    );
+
+    // THE WITNESS: evicting the overwritten node to its STALE disk_ptr is REFUSED.
+    assert_eq!(
+        owned.evict_overlay_node_at_path(&to_u32("cold-rewritten"), rewritten_ptr),
+        OverlayEvictOutcome::NotEvictable,
+        "1c guard: a node overwritten since checkpoint must NOT be evicted to its stale image"
+    );
+    assert_eq!(
+        owned.get_value("cold-rewritten"),
+        Some(25),
+        "the NEW value survives (not lost to a stale-image eviction)"
+    );
+
+    // POSITIVE CONTROL: the UN-overwritten node still evicts and faults back exactly.
+    assert_eq!(
+        owned.evict_overlay_node_at_path(&to_u32("cold-stable"), stable_ptr),
+        OverlayEvictOutcome::Evicted,
+        "an un-overwritten registered node still evicts (guard does not over-reject)"
+    );
+    assert_eq!(
+        owned.get_value("cold-stable"),
+        Some(10),
+        "the evicted node faults back to its exact durable value"
+    );
+}
+
+// ───────────── OE9 (Phase A — prefix-fault: iter_prefix faults evicted subtrees) ─────────────
+
+/// **OE9 — the Phase-A prefix-fault witness.** Once eviction is live, the production
+/// prefix path (`iter_prefix`/`iter_prefix_with_values` → shared `overlay_navigate` +
+/// `overlay_collect_*`) MUST fault OnDisk children READ-ONLY, else it silently
+/// UNDER-REPORTS evicted subtrees. Discriminating: evict the shared interior "abc"
+/// node + its subtree, then `iter_prefix("ab")` must still return all 4 terms (faulted)
+/// — WITHOUT the fix it returns only "abxy" (the one branch that stayed in memory).
+/// Also pins scoping (sibling "az" excluded) and that the faulting walk TERMINATES.
+#[test]
+fn oe9_iter_prefix_faults_evicted_subtree_no_under_report() {
+    let dir = scratch("oe9-prefix-fault");
+    let path = dir.path().join("oe9.artc");
+    let mut owned: PersistentARTrieChar<u64> =
+        PersistentARTrieChar::create_with_config(&path, WalConfig::no_archive()).expect("create");
+    owned.set_durability_policy(DurabilityPolicy::Immediate);
+    owned.enable_lockfree();
+    owned
+        .bench_enable_eviction(EvictionConfig::without_memory_monitor())
+        .expect("bench_enable_eviction");
+
+    // Under prefix "ab": "abc{d,e,fg}" share the interior "abc"; "abxy" branches at "ab".
+    // "az" is a SIBLING outside "ab". Distinct counter values.
+    let under_ab: [(&str, u64); 4] = [("abcd", 1), ("abce", 2), ("abcfg", 3), ("abxy", 4)];
+    for (t, v) in under_ab.iter() {
+        owned.try_increment_cas_durable(t, *v).expect("inc");
+    }
+    owned.try_increment_cas_durable("az", 99).expect("sibling");
+    owned
+        .bench_immutable_checkpoint_with_eviction()
+        .expect("checkpoint with eviction");
+
+    // Evict the whole "abc" interior subtree (paths starting a,b,c) → abcd/abce/abcfg
+    // now sit under an OnDisk interior "abc" child of the in-memory "ab".
+    let coordinator = owned
+        .eviction_coordinator
+        .lock()
+        .expect("eviction_coordinator mutex poisoned")
+        .as_ref()
+        .map(std::sync::Arc::clone)
+        .expect("coordinator present");
+    let evicted = coordinator
+        .force_eviction_char(1 << 20, |cands| {
+            let filtered: Vec<_> = cands
+                .into_iter()
+                .filter(|(_, p, _)| p.starts_with(&['a', 'b', 'c']))
+                .collect();
+            super::evict_overlay_nodes(&owned, filtered, 4)
+        })
+        .0;
+    assert!(
+        evicted > 0,
+        "OE9: expected to evict the 'abc' subtree (got 0 = driver no-op)"
+    );
+
+    // iter_prefix("ab") MUST fault the evicted subtree and return ALL 4 terms.
+    let mut got: Vec<String> = owned
+        .iter_prefix("ab")
+        .expect("iter_prefix ok")
+        .expect("prefix 'ab' present");
+    got.sort();
+    assert_eq!(
+        got,
+        vec![
+            "abcd".to_string(),
+            "abce".to_string(),
+            "abcfg".to_string(),
+            "abxy".to_string()
+        ],
+        "iter_prefix MUST fault the evicted subtree (no under-report)"
+    );
+    assert!(
+        !got.iter().any(|t| t == "az"),
+        "prefix scoping: 'az' is outside 'ab' and must be excluded"
+    );
+
+    // iter_prefix_with_values faults identically — values are exact.
+    let mut gv: Vec<(String, u64)> = owned
+        .iter_prefix_with_values("ab")
+        .expect("iter_prefix_with_values ok")
+        .expect("prefix present");
+    gv.sort();
+    assert_eq!(
+        gv,
+        vec![
+            ("abcd".to_string(), 1),
+            ("abce".to_string(), 2),
+            ("abcfg".to_string(), 3),
+            ("abxy".to_string(), 4)
+        ],
+        "iter_prefix_with_values MUST fault evicted finals with exact counters"
+    );
+}
+
+// ───────────── Phase 7 (budget ACTIVATION — checkpoint tail evicts to resident_budget_bytes) ─────────────
+
+/// **Phase 7 GO-LIVE witness.** With `resident_budget_bytes = Some(small)`, the
+/// checkpoint TAIL must evict the COLDEST registered overlay nodes down to budget —
+/// LOSSLESSLY (terms fault back). Observable: a SECOND checkpoint (no writes between)
+/// re-registers only the still-resident nodes, so `evictable_node_count` shrinks after
+/// the tail eviction. Discriminating: with `None` (control) the count is unchanged.
+#[test]
+fn phase7_resident_budget_checkpoint_tail_evicts_to_budget() {
+    use crate::persistent_artrie::eviction::EvictionConfig;
+
+    fn run(budget: Option<usize>) -> (usize, usize, bool) {
+        let dir = scratch("phase7-budget");
+        let path = dir.path().join("p7.artc");
+        let mut owned: PersistentARTrieChar<u64> =
+            PersistentARTrieChar::create_with_config(&path, WalConfig::no_archive())
+                .expect("create");
+        owned.set_durability_policy(DurabilityPolicy::Immediate);
+        owned.enable_lockfree();
+        let config = EvictionConfig {
+            resident_budget_bytes: budget,
+            ..EvictionConfig::without_memory_monitor()
+        };
+        owned
+            .bench_enable_eviction(config)
+            .expect("bench_enable_eviction");
+
+        // ~40 multi-char terms → hundreds of overlay nodes, well above a tiny budget.
+        let terms: Vec<String> = (0..40).map(|i| format!("ngram-{i:03}")).collect();
+        for (i, t) in terms.iter().enumerate() {
+            owned
+                .try_increment_cas_durable(t, (i + 1) as u64)
+                .expect("inc");
+        }
+        // Checkpoint #1: the tail evicts cold nodes down to budget (registry #1, published
+        // BEFORE the tail eviction, still lists the full set).
+        owned
+            .bench_immutable_checkpoint_with_eviction()
+            .expect("ckpt1");
+        let count1 = owned.evictable_node_count().unwrap_or(0);
+        // Checkpoint #2 (no writes): re-registers only the still-resident nodes — the
+        // evicted (OnDisk) nodes are reused-by-ptr, NOT re-registered → registry shrinks.
+        owned
+            .bench_immutable_checkpoint_with_eviction()
+            .expect("ckpt2");
+        let count2 = owned.evictable_node_count().unwrap_or(0);
+
+        // Lossless: every term still readable (faults back from disk).
+        let all_present = terms
+            .iter()
+            .enumerate()
+            .all(|(i, t)| owned.get_value(t) == Some((i + 1) as u64));
+        (count1, count2, all_present)
+    }
+
+    // Treatment: a tiny budget → the tail evicts → registry shrinks at checkpoint #2.
+    let (t1, t2, t_lossless) = run(Some(2000));
+    assert!(t1 > 0, "checkpoint #1 must register the full overlay");
+    assert!(
+        t2 < t1,
+        "budget tail must evict cold nodes (registry shrank {t1} → {t2}); 0 shrink = tail no-op"
+    );
+    assert!(
+        t_lossless,
+        "budget eviction must be LOSSLESS (all terms fault back)"
+    );
+
+    // Control: no budget → no tail eviction → registry unchanged between checkpoints.
+    let (c1, c2, c_lossless) = run(None);
+    assert_eq!(
+        c1, c2,
+        "with no budget the tail evicts nothing (registry unchanged)"
+    );
+    assert!(c_lossless, "control: all terms present");
+    assert!(
+        t2 < c2,
+        "the budgeted run must retain fewer resident nodes than the unbudgeted control ({t2} < {c2})"
+    );
 }

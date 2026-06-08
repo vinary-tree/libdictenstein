@@ -41,6 +41,9 @@ use crate::persistent_artrie_core::overlay::checkpoint::OverlayCheckpoint;
 use crate::persistent_artrie_core::overlay::durable_write::{
     DurableOverlayWrite, ValuePublishOutcome, ValueWriteMode,
 };
+// Phase 4 (DRY K-generic lift): `find_leaf_faulting` (called on the value read-fault
+// path below) is now a default method of the shared `OverlayEvictable` trait.
+use crate::persistent_artrie_core::overlay::evict::OverlayEvictable;
 use crate::persistent_artrie_core::overlay::flip::LockFreeOverlay;
 use crate::persistent_artrie_core::wal::{Lsn, RankRegime, WalRecord};
 use crate::value::DictionaryValue;

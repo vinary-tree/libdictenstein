@@ -39,6 +39,13 @@ pub(crate) mod durable_write;
 // LIVE representation (overlay vs owned)" decision + the RES-4 total-loss guard,
 // as a default method over per-variant capture/publish seams (trait 3).
 pub(crate) mod checkpoint;
+// The shared overlay-eviction + read-fault primitives (the 1c overwrite-race-safe
+// single-node evict + the read-path single-level fault-in walk), lifted K-generic
+// over `OverlayNode<K, V>` from char's proven impl via the `OverlayEvictable`
+// subtrait of `OverlayFaulter` (overlay-eviction-v4 design §4). The per-attempt
+// primitives are default methods over three variant-specific accessors; the
+// loaders + registry plumbing + batch driver stay variant-specific.
+pub(crate) mod evict;
 // The kill-switch enum selecting owned-tree vs lock-free overlay (hoisted from
 // the char variant so the generic `flip` trait can name it — §A).
 pub mod write_mode;

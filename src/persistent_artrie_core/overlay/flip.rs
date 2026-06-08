@@ -48,6 +48,7 @@ use std::any::Any;
 
 use crate::persistent_artrie_core::error::Result;
 use crate::persistent_artrie_core::key_encoding::KeyEncoding;
+use crate::persistent_artrie_core::overlay::faulter::OverlayFaulter;
 use crate::persistent_artrie_core::overlay::node::OverlayNode;
 use crate::persistent_artrie_core::overlay::write_mode::OverlayWriteMode;
 use crate::value::DictionaryValue;
@@ -182,7 +183,7 @@ pub(crate) enum RootPublishOutcome {
 }
 
 pub(crate) trait LockFreeOverlay<K: KeyEncoding, V: DictionaryValue, S>:
-    Sized + 'static
+    OverlayFaulter<K, V> + Sized + 'static
 {
     /// The per-variant counter monomorph (`u64` for char, `i64` for byte). THE
     /// divergence that makes the value-route a seam, not a blanket. `Copy` so the
@@ -411,8 +412,16 @@ pub(crate) trait LockFreeOverlay<K: KeyEncoding, V: DictionaryValue, S>:
         let mut node = self.overlay_root_node()?;
         for &unit in prefix {
             let child = node.find_child(unit)?;
-            let child_arc = child.as_in_mem()?;
-            node = Arc::clone(child_arc);
+            // Phase A (prefix-fault): descend an OnDisk prefix-path node READ-ONLY —
+            // load the durable image via `fault_overlay_slot` (writes nothing, advances
+            // no watermark) and continue into the transient `Arc`; NO install/CAS. A
+            // null/unresolvable/failed slot returns `None` → absent path, exactly the
+            // prior `as_in_mem()?` semantics, now extended over evicted prefixes so
+            // enumeration does not under-report a subtree under an evicted node.
+            node = match child.as_in_mem() {
+                Some(c) => Arc::clone(c),
+                None => self.fault_overlay_slot(child.as_on_disk()?)?,
+            };
         }
         Some(node)
     }
@@ -426,7 +435,7 @@ pub(crate) trait LockFreeOverlay<K: KeyEncoding, V: DictionaryValue, S>:
             None => None,
             Some(node) => {
                 let mut terms = Vec::new();
-                Self::overlay_collect_finals(&node, prefix.to_vec(), &mut terms);
+                self.overlay_collect_finals(&node, prefix.to_vec(), &mut terms);
                 Some(terms)
             }
         }
@@ -438,6 +447,7 @@ pub(crate) trait LockFreeOverlay<K: KeyEncoding, V: DictionaryValue, S>:
     /// converts units→term at the public boundary). Recurses by key length;
     /// depth-safe at the production point-read bound.
     fn overlay_collect_finals(
+        &self,
         node: &Arc<OverlayNode<K, V>>,
         prefix: Vec<K::Unit>,
         out: &mut Vec<Vec<K::Unit>>,
@@ -446,11 +456,23 @@ pub(crate) trait LockFreeOverlay<K: KeyEncoding, V: DictionaryValue, S>:
             out.push(prefix.clone());
         }
         for (key, child) in node.iter_children() {
-            if let Some(child_arc) = child.as_in_mem() {
-                let mut child_prefix = prefix.clone();
-                child_prefix.push(*key);
-                Self::overlay_collect_finals(child_arc, child_prefix, out);
-            }
+            // Phase A (prefix-fault): fault an OnDisk child READ-ONLY (load the durable
+            // image, recurse into the transient `Arc`; NO install/CAS — enumeration must
+            // not bloat the overlay or un-evict). A null/failed slot is skipped
+            // (fail-closed, point-read parity: a transient miss, never a fabricated term).
+            let child_arc = match child.as_in_mem() {
+                Some(c) => Arc::clone(c),
+                None => match child
+                    .as_on_disk()
+                    .and_then(|ptr| self.fault_overlay_slot(ptr))
+                {
+                    Some(loaded) => loaded,
+                    None => continue,
+                },
+            };
+            let mut child_prefix = prefix.clone();
+            child_prefix.push(*key);
+            self.overlay_collect_finals(&child_arc, child_prefix, out);
         }
     }
 
@@ -466,13 +488,14 @@ pub(crate) trait LockFreeOverlay<K: KeyEncoding, V: DictionaryValue, S>:
             None => None,
             Some(node) => {
                 let mut entries = Vec::new();
-                Self::overlay_collect_with_values(&node, prefix.to_vec(), &mut entries);
+                self.overlay_collect_with_values(&node, prefix.to_vec(), &mut entries);
                 Some(entries)
             }
         }
     }
 
     fn overlay_collect_with_values(
+        &self,
         node: &Arc<OverlayNode<K, V>>,
         prefix: Vec<K::Unit>,
         out: &mut Vec<(Vec<K::Unit>, V)>,
@@ -488,11 +511,21 @@ pub(crate) trait LockFreeOverlay<K: KeyEncoding, V: DictionaryValue, S>:
             }
         }
         for (key, child) in node.iter_children() {
-            if let Some(child_arc) = child.as_in_mem() {
-                let mut child_prefix = prefix.clone();
-                child_prefix.push(*key);
-                Self::overlay_collect_with_values(child_arc, child_prefix, out);
-            }
+            // Phase A (prefix-fault): fault an OnDisk child READ-ONLY (load + recurse
+            // transiently, no install/CAS; null/failed → skip, point-read parity).
+            let child_arc = match child.as_in_mem() {
+                Some(c) => Arc::clone(c),
+                None => match child
+                    .as_on_disk()
+                    .and_then(|ptr| self.fault_overlay_slot(ptr))
+                {
+                    Some(loaded) => loaded,
+                    None => continue,
+                },
+            };
+            let mut child_prefix = prefix.clone();
+            child_prefix.push(*key);
+            self.overlay_collect_with_values(&child_arc, child_prefix, out);
         }
     }
 

@@ -21,6 +21,19 @@ use crate::persistent_artrie::wal::WalRecord;
 use crate::persistent_artrie_core::counter_codec;
 use crate::persistent_artrie_core::key_encoding::CharKey;
 use crate::persistent_artrie_core::overlay::durable_write::DurableOverlayWrite;
+// Phase 4 (DRY K-generic lift): the read-path fault-in walk `find_leaf_faulting`
+// (and the per-attempt evict primitive) now live as default methods of the
+// `OverlayEvictable<CharKey, V, S>` subtrait of `OverlayFaulter`, lifted K-generic
+// into `persistent_artrie_core::overlay::evict`. Bringing the trait into module
+// scope routes every `self.find_leaf_faulting(...)` call below (the value/membership
+// reads + the counter inner) to the shared default — behavior-identical to the prior
+// char-only inherent method. The loader stays char-specific (the
+// `OverlayFaulter<CharKey, V>` impl over `load_overlay_node_from_disk`). NOT
+// `#[cfg]`-gated: `find_leaf_faulting` is on the UN-GATED production read/remove/
+// valued-insert/increment paths (Flip F0 un-gated it), so the trait + char's impl
+// of it must be available in non-test builds. Only the per-node EVICT primitive's
+// production caller + the batch driver `evict_overlay_nodes` stay gated.
+use crate::persistent_artrie_core::overlay::evict::OverlayEvictable;
 use crate::value::DictionaryValue;
 
 use super::dict_impl_char::LockfreeInsertResult;
@@ -1329,178 +1342,20 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
         self.find_leaf_recursive(&Arc::clone(child_arc), chars, depth + 1)
     }
 
-    /// **Read-path fault-in (design §3).** Find the leaf for `chars`, FAULTING any
-    /// `OnDisk` spine slot back into memory along the way, so a term under an
-    /// evicted prefix is no longer reported absent. Returns `Ok(Some(leaf))` iff the
-    /// full path exists and the leaf is final, `Ok(None)` if the term is genuinely
-    /// absent, and `Err(_)` only on a buffer-manager I/O error while loading an
-    /// `OnDisk` node.
-    ///
-    /// This is the dual of [`Self::evict_overlay_node_at_path`]
-    /// (`mod.rs`): where eviction path-copies the spine swapping an in-memory child
-    /// for `Child::OnDisk`, fault-in path-copies the spine swapping an `OnDisk`
-    /// child for `Child::InMem(loaded)` and CAS-publishes a new root. It mirrors
-    /// `resolve_swizzled_ptr`'s settle-and-reread, with an `arc-swap` root CAS
-    /// instead of a swizzle.
-    ///
-    /// Per attempt (bounded by `max_faultin_retries`):
-    ///   1. `enter_read()` (epoch parity) and `load()` the published root;
-    ///   2. walk `chars` top-down collecting the `(node, edge)` spine. At each edge:
-    ///      `None` ⇒ the term is absent (`Ok(None)`); `InMem` ⇒ descend; **`OnDisk`
-    ///      ⇒ fault**: `load_overlay_node_from_disk(ptr)`, rebuild the spine
-    ///      bottom-up splicing `Child::InMem(loaded)` at that edge (every shallower
-    ///      ancestor re-linked `InMem`), then `compare_exchange(&old_root, new_root)`.
-    ///      On CAS success: rebase from the just-published root and continue the
-    ///      walk (the faulted child is now `InMem`); on CAS failure (a concurrent
-    ///      writer/evictor/faulter won): drop our loaded `Arc` (refcount) and rebase
-    ///      from a fresh root load — never clobbering the racer (loser-safe);
-    ///   3. terminal: leaf-by-`is_final` (as [`Self::find_leaf_recursive`]).
-    ///
-    /// **Idempotent / loser-safe:** two faulters each load their own `Arc`; exactly
-    /// one install CAS wins (`Arc::ptr_eq` arbitration in `AtomicNodePtr`), the loser
-    /// drops + re-reads the now-`InMem` child. **Single arbiter:** the `lockfree_root`
-    /// slot totally orders every version; every published root has each node
-    /// `InMem` XOR `OnDisk` (`LinkedAndOnDiskDisjoint`). **Liveness:** on retry
-    /// exhaustion we do ONE final read-only walk of the fresh root — a still-`OnDisk`
-    /// slot there reads absent (durable; a later read retries), never spins.
-    ///
-    /// ZERO new `unsafe`: only `AtomicNodePtr::{load,compare_exchange}` (hazard-
-    /// protected), pure node copies, `Arc` clone/drop, and the EXISTING lazy loader
-    /// (called through the safe `&self` `load_overlay_node_from_disk` boundary).
-    ///
-    /// ⚠️ FAULTING + UN-GATED PRODUCTION: this is a `pub(crate)` fn with NO `#[cfg]` —
-    /// it is live on production read/remove/valued-insert/upsert/increment paths (Flip
-    /// F0 un-gated it; the earlier "REVERSIBLE BENCH GATE" doc was stale). It descends
-    /// `Child::OnDisk` via `load_overlay_node_from_disk → buffer_manager`, so it TAKES
-    /// THE BUFFER-MANAGER LOCK and faults pages in.
-    ///
-    /// 🚫 NEVER call this from `insert_cas_durable`'s present-hoist (or any
-    /// read-BEFORE-append on the hot insert path): a faulting read before the WAL
-    /// append, racing a checkpoint/eviction that holds the buffer lock, is a
-    /// lock-ordering inversion that deadlocked the soak for 75+ minutes (see
-    /// memory `feedback_production-deadlock-is-costly`, 2026-06-03). Use the
-    /// NON-faulting `find_leaf_lockfree` (cache/in-memory only) for any such hoist.
-    ///
-    /// MAINTENANCE COUPLING: mirrors `evict_overlay_node_at_path`; keep in lockstep.
-    pub(crate) fn find_leaf_faulting(
-        &self,
-        root_slot: &super::nodes::atomic_ptr::AtomicNodePtr<V>,
-        chars: &[u32],
-        max_faultin_retries: usize,
-    ) -> Result<Option<Arc<super::nodes::persistent_node::PersistentCharNode<V>>>> {
-        use super::nodes::persistent_node::{Child, PersistentCharNode};
-
-        // One read-only walk of `root` (no faulting): used for the empty-key leaf
-        // and the post-exhaustion liveness fallback. A still-OnDisk slot reads
-        // absent (durable; a later call retries) — never spins.
-        fn walk_no_fault<V: DictionaryValue>(
-            root: &Arc<PersistentCharNode<V>>,
-            chars: &[u32],
-        ) -> Option<Arc<PersistentCharNode<V>>> {
-            let mut current = Arc::clone(root);
-            for &edge in chars {
-                let child = current.find_child(edge)?;
-                let child_arc = child.as_in_mem()?;
-                let next = Arc::clone(child_arc);
-                current = next;
-            }
-            if current.is_final() {
-                Some(current)
-            } else {
-                None
-            }
-        }
-
-        // +1 so we always get at least one fresh-root liveness walk even when
-        // `max_faultin_retries == 0`.
-        for _attempt in 0..=max_faultin_retries {
-            let _epoch = self.epoch_manager.enter_read();
-
-            let old_root = match root_slot.load() {
-                Some(r) => r,
-                None => return Ok(None), // empty overlay
-            };
-
-            // Walk top-down, collecting (node, edge) for a possible rebuild, until
-            // we either reach the leaf (all InMem ⇒ answer directly), hit a missing
-            // edge (absent), or hit an OnDisk edge (fault + CAS + rebase).
-            let mut spine: Vec<(Arc<PersistentCharNode<V>>, u32)> = Vec::with_capacity(chars.len());
-            let mut current = Arc::clone(&old_root);
-            let mut faulted = false;
-
-            let mut idx = 0usize;
-            while idx < chars.len() {
-                let edge = chars[idx];
-                let child = match current.find_child(edge) {
-                    Some(c) => c,
-                    None => return Ok(None), // genuinely absent on this snapshot
-                };
-                match child {
-                    Child::InMem(child_arc) => {
-                        let next = Arc::clone(child_arc);
-                        spine.push((Arc::clone(&current), edge));
-                        current = next;
-                        idx += 1;
-                    }
-                    Child::OnDisk(ptr) if !ptr.is_null() => {
-                        // FAULT: load the OnDisk child back into memory, then rebuild
-                        // the spine bottom-up splicing it InMem at THIS edge.
-                        let loaded = self.load_overlay_node_from_disk(ptr)?;
-
-                        // The deepest rebuilt node is `current` with its `edge` child
-                        // replaced by InMem(loaded); each shallower ancestor in
-                        // `spine` is re-linked InMem around the rebuilt child.
-                        let mut new_child =
-                            Arc::new(current.with_child(edge, Child::InMem(loaded)));
-                        for (ancestor, anc_edge) in spine.iter().rev() {
-                            new_child =
-                                Arc::new(ancestor.with_child(*anc_edge, Child::InMem(new_child)));
-                        }
-
-                        // Loser-safe install CAS against the snapshot root.
-                        match root_slot.compare_exchange(&old_root, new_child) {
-                            Ok(_) => {
-                                self.cas_retries
-                                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                            }
-                            Err(_actual) => {
-                                self.cas_retries
-                                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                            }
-                        }
-                        // Whether we won (published) or lost (a racer advanced the
-                        // root, possibly already faulting this node), rebase: break
-                        // to the outer loop and re-walk from a fresh root load.
-                        faulted = true;
-                        break;
-                    }
-                    // Null filler (never yielded as a real child) ⇒ absent.
-                    Child::OnDisk(_) => return Ok(None),
-                }
-            }
-
-            if faulted {
-                // Re-walk from a freshly-published root on the next attempt.
-                continue;
-            }
-
-            // Reached the terminal depth with an all-InMem spine: answer directly.
-            return Ok(if current.is_final() {
-                Some(current)
-            } else {
-                None
-            });
-        }
-
-        // Retry budget exhausted: ONE final read-only walk of the freshest root.
-        // A still-OnDisk slot reads absent (liveness-only; durable, a later read
-        // faults it). Never spins.
-        let final_root = match root_slot.load() {
-            Some(r) => r,
-            None => return Ok(None),
-        };
-        Ok(walk_no_fault(&final_root, chars))
-    }
+    // Phase 4 (DRY K-generic lift): `find_leaf_faulting` — the read-path single-level
+    // fault-in walk (the dual of `evict_overlay_node_at_path`) — now lives ONCE,
+    // K-generic, as a default method of
+    // `persistent_artrie_core::overlay::evict::OverlayEvictable<CharKey, V, S>`
+    // (imported at module top). The `self.find_leaf_faulting(lockfree_root, &chars,
+    // DEFAULT_MAX_FAULTIN_RETRIES)` calls on the read/remove/valued-insert/increment
+    // paths resolve to that shared default — behavior-identical to the prior char-only
+    // inherent method (the `cas_retries` bump on the fault install-CAS is preserved via
+    // the trait's `note_faultin_cas` hook char overrides). The char-specific loader
+    // (`load_overlay_node_from_disk`, routed through char's `OverlayFaulter<CharKey, V>`
+    // impl) is unchanged. See the trait doc + the v4 design §4.
+    //
+    // 🚫 The "never call from the present-hoist (75-minute hang)" rule still holds:
+    // every hot-insert present-hoist uses the NON-faulting `find_leaf_lockfree`.
 
     /// Get the number of CAS retries (for monitoring contention).
     pub fn cas_retry_count(&self) -> u64 {

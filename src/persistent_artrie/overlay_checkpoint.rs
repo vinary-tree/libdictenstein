@@ -84,6 +84,17 @@ pub(crate) struct CheckpointSnapshot {
     /// WAL `commit_seq_floor` to this so a post-checkpoint overlay op out-ranks every
     /// pre-checkpoint survivor on a later rebuild.
     commit_seq_at_capture: Option<u64>,
+    /// **Overlay-arm capture only, eviction-ON (Phase 6 — the byte twin of char's
+    /// `CheckpointSnapshot.eviction_registry`).** The freshly-built per-node disk-location
+    /// registry, populated during the overlay serialize (`register` per InMem node, with
+    /// `set_durable_stamp` stamping each live overlay node — the M-2a eviction-safety
+    /// lynchpin). `Some(reg)` ONLY when an eviction coordinator is installed at
+    /// [`PersistentARTrie::capture_overlay_snapshot`]; `None` on the owned arm AND on the
+    /// eviction-OFF overlay arm (the existing byte opt-in durable tests are the named
+    /// regression gate that it stays `None` there). The eviction-on retaining publisher
+    /// moves it into the coordinator AFTER `verify_checkpoint_header` (publish-after-verify).
+    /// NEVER serialized to disk (a runtime side-table; recovery never reads it).
+    eviction_registry: Option<crate::persistent_artrie::eviction::DiskLocationRegistry>,
 }
 
 impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
@@ -124,6 +135,10 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
             next_lsn_at_capture,
             committed_watermark_at_capture: None,
             commit_seq_at_capture: None,
+            // Owned arm: never publishes an eviction registry (the owned-tree evictor
+            // acts on `self.root`, not the overlay registry). M-5a regression gate: the
+            // existing byte opt-in durable tests confirm this stays `None`.
+            eviction_registry: None,
         })
     }
 
@@ -215,6 +230,19 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
         }
         let next_lsn_at_capture = self.next_lsn.load(AtomicOrdering::Acquire);
 
+        // Phase 6 (byte serialize-time registration, byte twin of char persist.rs:289):
+        // build a FRESH per-trie disk-location registry IFF an eviction coordinator is
+        // installed. `serialize_overlay_node_to_disk` `register`s each InMem node into it
+        // (and `set_durable_stamp`s the live overlay node — the M-2a lynchpin). It stays
+        // `None` on the eviction-OFF arm — the existing byte opt-in durable tests are the
+        // M-5a regression gate that an eviction-OFF checkpoint publishes no registry.
+        let mut eviction_registry = self
+            .eviction_coordinator
+            .lock()
+            .expect("eviction_coordinator mutex poisoned")
+            .as_ref()
+            .map(|_| crate::persistent_artrie::eviction::DiskLocationRegistry::new());
+
         // ═══════════════════════════════════════════════════════════════════
         //  THE SNAPSHOT-LSN CAPTURE ORDERING (the byte twin of char's "single most
         //  dangerous line"). The committed watermark + commit_seq are read `Acquire`
@@ -252,7 +280,8 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
                 // producing the byte-identical image. `count_overlay_finals` is now
                 // iterative too (same reason).
                 let entry_count = count_overlay_finals::<V>(&root);
-                let (rt, rp, isf) = self.serialize_overlay_root_iterative(&root)?;
+                let (rt, rp, isf) =
+                    self.serialize_overlay_root_iterative(&root, eviction_registry.as_mut())?;
                 (rt, rp, isf, entry_count)
             }
         };
@@ -283,6 +312,10 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
             next_lsn_at_capture,
             committed_watermark_at_capture: Some(watermark_at_capture),
             commit_seq_at_capture: Some(commit_seq_at_capture),
+            // Phase 6: the registry built above (populated by the serialize walk) when a
+            // coordinator is installed; `None` otherwise. The eviction-on publisher moves
+            // it into the coordinator after `verify_checkpoint_header` (publish-after-verify).
+            eviction_registry,
         })
     }
 
@@ -351,17 +384,124 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
         Ok(())
     }
 
-    /// **Overlay arm — publish (eviction-on).** Byte has no eviction-registry path on
-    /// the overlay snapshot yet (`eviction_coordinator` is always `None` for byte —
-    /// see the ctors), so this is identical to
-    /// [`Self::publish_overlay_snapshot_retaining`] (the byte twin of char's
-    /// `publish_immutable_snapshot_retaining_wal_with_eviction`, minus the registry
-    /// publication char does — a Phase-D concern not yet wired for byte).
+    /// **Overlay arm — publish (eviction-on).** Phase 6: the byte twin of char's
+    /// `publish_immutable_snapshot_retaining_wal_with_eviction`. As
+    /// [`Self::publish_overlay_snapshot_retaining`] PLUS publishing the eviction registry
+    /// into the coordinator — ONLY AFTER `verify_checkpoint_header` proves the on-disk
+    /// image durable (the publish-after-verify ordering: an evictor must never unswizzle a
+    /// node onto a not-yet-durable location). CONSUMES the snapshot (the registry MOVES
+    /// into the coordinator). The registry publication is an in-memory `RwLock::write`
+    /// swap with ZERO fsync (no per-checkpoint fsync-count asymmetry vs the eviction-OFF
+    /// publisher). Requires an immutable-overlay snapshot (`committed_watermark_at_capture
+    /// = Some`); an owned-tree snapshot is rejected.
+    ///
+    /// SAFETY (the #41 + 1c chain): victims come ONLY from this post-verify registry
+    /// (nodes durable ≤ the captured committed watermark), and the per-node `durable_stamp`
+    /// guard (M-2a) refuses to evict any node overwritten since this checkpoint. A
+    /// post-checkpoint durable write INVALIDATES the registry at the
+    /// `append_mutation_wal_record` chokepoint (Phase 6 byte invalidation) BEFORE its
+    /// visibility, so eviction then reclaims nothing from a dirtied registry (liveness,
+    /// not safety).
     pub(crate) fn publish_overlay_snapshot_retaining_with_eviction(
         &self,
         snapshot: CheckpointSnapshot,
     ) -> Result<()> {
-        self.publish_overlay_snapshot_retaining(&snapshot)
+        let checkpoint_lsn = snapshot.committed_watermark_at_capture.ok_or_else(|| {
+            PersistentARTrieError::internal(
+                "publish_overlay_snapshot_retaining_with_eviction requires an immutable-overlay \
+                 snapshot (committed_watermark_at_capture = Some); got an owned-tree snapshot",
+            )
+        })?;
+
+        // (1) Durable descriptor publish (the on-disk linearization point) + verify.
+        //     `publish_snapshot(&snapshot)` BORROWS the snapshot before the move below.
+        self.publish_snapshot(&snapshot)?;
+        self.verify_checkpoint_header()?;
+
+        // (2) Publish the eviction registry — ONLY AFTER verify proves the image durable
+        //     (publish-after-verify). The registry CONSUMES (moves) here;
+        //     `update_disk_registry` is an in-memory `RwLock::write` swap with ZERO fsync.
+        //     The byte twin of char's `update_disk_registry(registry)` tail. `register`
+        //     (byte map) populated it; `force_eviction`'s `select_for_eviction` reads it.
+        if let Some(registry) = snapshot.eviction_registry {
+            if let Some(coordinator) = self
+                .eviction_coordinator
+                .lock()
+                .expect("eviction_coordinator mutex poisoned")
+                .as_ref()
+            {
+                coordinator.update_disk_registry(registry);
+            }
+        }
+
+        // (3) Record `checkpoint_lsn = watermark` so recovery skips deltas ≤ it, then
+        //     sync — but RETAIN the WAL (no rotate/truncate). Byte-identical to
+        //     `publish_overlay_snapshot_retaining`'s WAL tail.
+        if let Some(ref wal_writer) = self.wal_writer {
+            let timestamp = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+            wal_writer
+                .append(WalRecord::Checkpoint {
+                    checkpoint_lsn,
+                    timestamp,
+                })
+                .map_err(|e| {
+                    PersistentARTrieError::io_error(
+                        "overlay_checkpoint_append",
+                        "WAL",
+                        std::io::Error::new(std::io::ErrorKind::Other, e.to_string()),
+                    )
+                })?;
+            wal_writer.sync().map_err(|e| {
+                PersistentARTrieError::io_error(
+                    "overlay_checkpoint_sync",
+                    "WAL",
+                    std::io::Error::new(std::io::ErrorKind::Other, e.to_string()),
+                )
+            })?;
+            if let Some(floor) = snapshot.commit_seq_at_capture {
+                wal_writer.set_commit_seq_floor(floor).map_err(|e| {
+                    PersistentARTrieError::io_error(
+                        "overlay_checkpoint_floor",
+                        "WAL",
+                        std::io::Error::new(std::io::ErrorKind::Other, e.to_string()),
+                    )
+                })?;
+            }
+            // Deliberately NO rotate/truncate (retain-WAL → reversible + non-double-counting).
+        }
+
+        // (4) RESIDENT-BUDGET TAIL (Phase 7.5 — GO-LIVE; byte twin of char's). After
+        //     publish+verify (1), registry-publish (2), and WAL Checkpoint sync (3) — so
+        //     every registered disk_ptr is durable — evict the COLDEST registered byte
+        //     overlay nodes down to the configured resident budget. Non-blocking
+        //     loser-safe root-CAS; the 1c stamp guard + registry is_valid() gate keep it
+        //     safe under concurrent writers. DEADLOCK-SAFETY: the coordinator is bound in
+        //     a `let` so the eviction_coordinator guard drops at the `;` BEFORE the
+        //     callback (`evict_overlay_nodes`) re-locks it for LRU bookkeeping (see char).
+        let coordinator = self
+            .eviction_coordinator
+            .lock()
+            .expect("eviction_coordinator mutex poisoned")
+            .as_ref()
+            .map(std::sync::Arc::clone);
+        if let Some(coordinator) = coordinator {
+            if let Some(budget) = coordinator.resident_budget_bytes() {
+                let resident = coordinator.byte_resident_estimate_bytes();
+                if resident > budget {
+                    let target = resident - budget;
+                    let max_count = coordinator
+                        .resident_budget_eviction_cap()
+                        .unwrap_or(usize::MAX);
+                    coordinator.force_eviction_bytes_resident(target, max_count, |nodes| {
+                        crate::persistent_artrie::overlay_fault::evict_overlay_nodes(self, nodes, 4)
+                    });
+                }
+            }
+        }
+        Ok(())
     }
 
     // ====================================================================
@@ -521,9 +661,15 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
     ///   descriptor (node record final flag still unset), carrying the root value.
     /// * childless + non-final root → `ROOT_TYPE_BUCKET` (an empty values-bucket),
     ///   byte-identical to `overlay_root_to_owned`'s `Bucket` arm.
+    ///
+    /// Phase 6 (M-5a): `registry` is threaded through the whole walk; when `Some`, each
+    /// serialized InMem node is `register`ed at its full path (the root at `[]`) and its
+    /// live overlay node `set_durable_stamp`ed — the byte twin of char's
+    /// `serialize_overlay_to_disk_iterative`. The root's path is the empty `Vec<u8>`.
     fn serialize_overlay_root_iterative(
         &self,
         root: &OverlayNode<ByteKey, V>,
+        mut registry: Option<&mut crate::persistent_artrie::eviction::DiskLocationRegistry>,
     ) -> Result<(u8, u64, bool)> {
         let is_final = root.is_final();
         // Empty-string support (H2): the root's value is read DIRECTLY off the
@@ -535,12 +681,18 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
         // data-loss-critical root value, so it matches `serialize_root`'s `?`.
         let root_value: Option<V> = root.get_value();
 
+        // The root's full key path is empty (`[]`); children descend from it. Maintained
+        // exactly as char's iterative walk maintains its `path` (push on descent into an
+        // in-mem child, pop on completion) so each node registers at its real path.
+        let mut path: Vec<u8> = Vec::new();
+
         // Resolve the root's DIRECT children to disk ptrs (each in-mem child via the
         // iterative subtree serializer; each on-disk child reused verbatim), in
         // `iter_children()` (sorted-ascending) order — the same order
         // `overlay_children_to_owned` collected them, so arena-allocation order is
         // preserved.
-        let child_ptrs = self.serialize_overlay_children_iterative(root)?;
+        let child_ptrs =
+            self.serialize_overlay_children_iterative(root, &mut path, registry.as_deref_mut())?;
 
         if child_ptrs.is_empty() {
             // Childless root. `overlay_root_to_owned`: final ⇒ childless ART root
@@ -548,8 +700,17 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
             if is_final {
                 let node = Node::N4(Box::new(Node4::new()));
                 let value_bytes = Self::serialize_root_value_bytes(root_value.as_ref())?;
-                let node_ptr =
-                    self.serialize_node_to_disk_with_value(&node, value_bytes.as_deref())?;
+                // Register the (childless final) root at path `[]` + stamp it. The bucket
+                // arm below is NOT registered (it is a values-bucket, not an overlay node
+                // the evictor unswizzles — char's childless-non-final root is likewise not
+                // a registered overlay node).
+                let node_ptr = self.serialize_overlay_node_record_registering(
+                    &node,
+                    value_bytes.as_deref(),
+                    root,
+                    &path,
+                    registry.as_deref_mut(),
+                )?;
                 return Ok((ROOT_TYPE_ART_NODE, node_ptr.to_raw(), is_final));
             }
             let ptr = self.serialize_bucket_to_disk(&StringBucket::with_values())?;
@@ -558,10 +719,17 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
 
         // Root WITH children: build the owned `Node` of the right size class with the
         // resolved child ptrs patched in, then serialize the node WITH the root value
-        // blob — byte-identical to `serialize_root`'s `ArtNode` arm.
+        // blob — byte-identical to `serialize_root`'s `ArtNode` arm. Register the root at
+        // path `[]` + stamp it.
         let node = Self::build_owned_node_with_child_ptrs(&child_ptrs);
         let value_bytes = Self::serialize_root_value_bytes(root_value.as_ref())?;
-        let node_ptr = self.serialize_node_to_disk_with_value(&node, value_bytes.as_deref())?;
+        let node_ptr = self.serialize_overlay_node_record_registering(
+            &node,
+            value_bytes.as_deref(),
+            root,
+            &path,
+            registry.as_deref_mut(),
+        )?;
         Ok((ROOT_TYPE_ART_NODE, node_ptr.to_raw(), is_final))
     }
 
@@ -569,20 +737,34 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
     /// iterative subtree serializer) and reuse any on-disk child ptr verbatim,
     /// returning `(edge, disk_ptr)` pairs in `iter_children()` (sorted-ascending)
     /// order. Shared by the root path and the per-node iterative builder.
+    ///
+    /// Phase 6 (M-5a): `path` is the full key path to `node` (the root passes `[]`);
+    /// before descending into each in-mem child the child's edge is pushed, popped after
+    /// the subtree completes — so every descendant registers at its real path.
     fn serialize_overlay_children_iterative(
         &self,
         node: &OverlayNode<ByteKey, V>,
+        path: &mut Vec<u8>,
+        mut registry: Option<&mut crate::persistent_artrie::eviction::DiskLocationRegistry>,
     ) -> Result<Vec<(u8, SwizzledPtr)>> {
         let mut child_ptrs: Vec<(u8, SwizzledPtr)> = Vec::with_capacity(node.num_children());
         for (&edge, child) in node.iter_children() {
             if let Some(child_arc) = child.as_in_mem() {
-                let ptr = self.serialize_overlay_subtree_iterative(child_arc)?;
-                child_ptrs.push((edge, ptr));
+                path.push(edge);
+                let ptr = self.serialize_overlay_subtree_iterative(
+                    child_arc,
+                    path,
+                    registry.as_deref_mut(),
+                );
+                path.pop();
+                child_ptrs.push((edge, ptr?));
             } else if let Some(on_disk) = child.as_on_disk() {
-                // On-disk overlay children (a future fault-in/eviction path) carry an
+                // On-disk overlay children (a fault-in/eviction path) carry an
                 // already-serialized location; reuse it directly (the prior
-                // `ChildNode::DiskRef` path did the same). Null fillers are never
-                // yielded by `iter_children`, but guard defensively.
+                // `ChildNode::DiskRef` path did the same). NOT re-registered (the OnDisk
+                // subtree is reused verbatim — convergence preserved, mirroring char's
+                // `serialize_overlay_to_disk_iterative` which skips OnDisk children). Null
+                // fillers are never yielded by `iter_children`, but guard defensively.
                 if !on_disk.is_null() {
                     child_ptrs.push((edge, on_disk.clone()));
                 }
@@ -606,9 +788,19 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
     /// a frame's children are all resolved, its owned `Node` is built + the node
     /// serialized via the NON-recursive [`Self::serialize_node_to_disk_with_value`],
     /// and the resulting ptr bubbles up to the parent frame's pending slot.
+    ///
+    /// Phase 6 (M-5a): `path` arrives holding the FULL key path to `root_arc` (the
+    /// caller pushed the subtree-root edge before calling, and pops it after). Inside
+    /// the walk the SAME `path` is maintained symmetrically (push on descent into a
+    /// child, pop when that child frame finalizes), exactly as char's
+    /// `serialize_overlay_to_disk_iterative` maintains its `Vec<char>` path; `registry`
+    /// (when `Some`) is threaded to `serialize_overlay_node_to_disk` for per-node
+    /// `register` + `set_durable_stamp`.
     fn serialize_overlay_subtree_iterative(
         &self,
         root_arc: &std::sync::Arc<OverlayNode<ByteKey, V>>,
+        path: &mut Vec<u8>,
+        mut registry: Option<&mut crate::persistent_artrie::eviction::DiskLocationRegistry>,
     ) -> Result<SwizzledPtr> {
         // A pending child slot in a parent frame: an `edge` byte awaiting the disk
         // ptr its in-mem subtree will produce (`None` until that subtree completes).
@@ -624,6 +816,10 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
             // finishes — strict DFS means the parent's slot for `parent_edge` is the
             // one to set.
             parent_edge: Option<u8>,
+            // Whether THIS walk pushed `parent_edge` onto `path` on descent (so it is
+            // popped symmetrically on finalize). `false` for the subtree root (its edge
+            // was pushed by the caller, who pops it). Mirrors char's `parent_pushed_path`.
+            parent_pushed_path: bool,
             // In-mem children still to descend into, REVERSED so `pop()` yields
             // ascending `iter_children()` order (matches the recursive DFS).
             pending_in_mem: Vec<(u8, &'a std::sync::Arc<OverlayNode<ByteKey, V>>)>,
@@ -638,6 +834,7 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
         fn make_frame<'a, V: DictionaryValue>(
             node: &'a OverlayNode<ByteKey, V>,
             parent_edge: Option<u8>,
+            parent_pushed_path: bool,
         ) -> Frame<'a, V> {
             let n = node.num_children();
             let mut slots: Vec<PendingChild> = Vec::with_capacity(n);
@@ -662,13 +859,16 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
             Frame {
                 node,
                 parent_edge,
+                parent_pushed_path,
                 pending_in_mem,
                 slots,
             }
         }
 
         let mut stack: Vec<Frame<'_, V>> = Vec::new();
-        stack.push(make_frame(root_arc.as_ref(), None));
+        // The subtree root's edge is already on `path` (the caller pushed it); this
+        // frame did not push it ⇒ `parent_pushed_path = false`.
+        stack.push(make_frame(root_arc.as_ref(), None, false));
         // The (parent_edge, disk_ptr) produced by the most-recently-completed child
         // subtree, to be recorded into its parent frame's matching pending slot.
         let mut completed: Option<(u8, SwizzledPtr)> = None;
@@ -688,9 +888,12 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
                 slot.ptr = Some(ptr);
             }
 
-            // Descend into the next in-mem child, if any remain.
+            // Descend into the next in-mem child, if any remain. Push its edge onto
+            // `path` first (every u8 edge is a valid path unit) so the descended frame
+            // registers at its real path; that frame records it pushed (pops on finalize).
             if let Some((edge, child_arc)) = frame.pending_in_mem.pop() {
-                stack.push(make_frame(child_arc.as_ref(), Some(edge)));
+                path.push(edge);
+                stack.push(make_frame(child_arc.as_ref(), Some(edge), true));
                 continue;
             }
 
@@ -711,7 +914,17 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
                     )
                 })
                 .collect();
-            let node_ptr = self.serialize_overlay_node_to_disk(frame.node, &child_ptrs)?;
+            // Serialize + register THIS node at its current `path` (which includes its
+            // own edge from the parent), then pop that edge before bubbling up.
+            let node_ptr = self.serialize_overlay_node_to_disk(
+                frame.node,
+                &child_ptrs,
+                path,
+                registry.as_deref_mut(),
+            )?;
+            if frame.parent_pushed_path {
+                path.pop();
+            }
 
             match frame.parent_edge {
                 // Bubble this node's ptr up to its parent frame, keyed by the edge
@@ -740,10 +953,17 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
     /// swallowed a child value serialize error rather than propagating; the root
     /// path uses `?` separately), and serializes via the NON-recursive
     /// [`Self::serialize_node_to_disk_with_value`].
+    ///
+    /// Phase 6 (M-5a): given `path` (the full key path to this node) and `registry`
+    /// (when `Some`), the serialized node is `register`ed at `path` and its LIVE overlay
+    /// node `set_durable_stamp`ed — the byte twin of char's
+    /// `serialize_one_char_node_to_disk` register + stamp.
     fn serialize_overlay_node_to_disk(
         &self,
         node: &OverlayNode<ByteKey, V>,
         child_ptrs: &[(u8, SwizzledPtr)],
+        path: &[u8],
+        registry: Option<&mut crate::persistent_artrie::eviction::DiskLocationRegistry>,
     ) -> Result<SwizzledPtr> {
         // A childless overlay node became a `ChildNode::ArtNode` with an empty
         // `children` Vec and `node = Node4::new()` (`overlay_node_to_child`'s
@@ -765,7 +985,62 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
             .get_value()
             .and_then(|v| crate::serialization::bincode_compat::serialize(&v).ok());
 
-        self.serialize_node_to_disk_with_value(&node_copy, value_bytes.as_deref())
+        self.serialize_overlay_node_record_registering(
+            &node_copy,
+            value_bytes.as_deref(),
+            node,
+            path,
+            registry,
+        )
+    }
+
+    /// Serialize ONE already-built owned `Node` record (with its optional value blob) to
+    /// disk and, when `registry` is `Some`, REGISTER it at `path` + `set_durable_stamp`
+    /// the LIVE overlay node `overlay` — the single Phase-6 registration site (the byte
+    /// twin of char's `register_char` + `frame.node.set_durable_stamp(...)` at
+    /// `serialize_one_char_node_to_disk`). Shared by the root node path (which builds the
+    /// owned `Node` itself) and `serialize_overlay_node_to_disk` (non-root nodes).
+    ///
+    /// The registration is a pure side-effect: `result_ptr` and the bytes written are
+    /// identical whether or not the registry is present (so the on-disk image — and the
+    /// no-eviction tests — are byte-for-byte unaffected). `register` uses the BYTE map
+    /// (NOT `register_char`). The `set_durable_stamp` is gated on `registry.is_some()` so
+    /// a node is stamped IFF it was just registered (eviction enabled); the `Release`
+    /// pairs with the evictor's `Acquire` via the registry-publish edge (M-2a).
+    fn serialize_overlay_node_record_registering(
+        &self,
+        node_record: &Node,
+        value_bytes: Option<&[u8]>,
+        overlay: &OverlayNode<ByteKey, V>,
+        path: &[u8],
+        registry: Option<&mut crate::persistent_artrie::eviction::DiskLocationRegistry>,
+    ) -> Result<SwizzledPtr> {
+        let (result_ptr, data_len) =
+            self.serialize_node_to_disk_with_value_len(node_record, value_bytes)?;
+
+        if let Some(reg) = registry {
+            let node_type = match node_record {
+                Node::N4(_) => NodeType::Node4,
+                Node::N16(_) => NodeType::Node16,
+                Node::N48(_) => NodeType::Node48,
+                Node::N256(_) => NodeType::Node256,
+            };
+            reg.register(
+                path.to_vec(),
+                result_ptr.clone(),
+                data_len,
+                path.len(),
+                node_type,
+            );
+            // M-2a durable stamp: record on the LIVE overlay node that this exact content
+            // is now durable at `result_ptr`. The eviction guard later evicts this node
+            // ONLY while `durable_stamp() == result_ptr.to_raw()` (i.e. while it has not
+            // been overwritten since now — any overwrite path-copies it into a fresh
+            // stamp-0 node). The byte twin of char's `frame.node.set_durable_stamp(...)`.
+            overlay.set_durable_stamp(result_ptr.to_raw());
+        }
+
+        Ok(result_ptr)
     }
 
     /// Build an owned byte `Node` of the appropriate size class with one child slot

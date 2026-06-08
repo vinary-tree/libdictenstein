@@ -187,6 +187,14 @@ mod overlay_correspondence_tests;
 #[cfg(test)]
 mod overlay_routing_tests;
 
+// Phase 5/6 byte overlay-eviction correspondence tests (OE3/OE5/OE8 twins of char's
+// `overlay_eviction_driver_correspondence`). In-crate because they drive the lifted
+// `pub(crate)` `OverlayEvictable` primitives + the `pub(crate)` `evict_overlay_nodes`
+// byte driver + the `bench_*` eviction surface, and inspect the overlay-internal state
+// (an OnDisk overlay child after eviction, the M-2a stamp 1c guard).
+#[cfg(test)]
+mod overlay_eviction_byte_tests;
+
 // M3 per-monomorph value-route for the byte valued mutators (increment_bytes /
 // upsert_bytes / get_or_insert_bytes) under the flip — the byte twin of char's
 // `lockfree_value_route`. SAFE `Any` dispatch to the `<i64, S>` durable

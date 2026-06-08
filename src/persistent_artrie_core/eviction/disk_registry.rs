@@ -8,6 +8,22 @@ use std::collections::HashMap;
 use super::lru_tracker::LruRegistry;
 use crate::persistent_artrie_core::swizzled_ptr::{NodeType, SwizzledPtr};
 
+/// Per-node IN-MEMORY residual NOT captured by a registered node's on-disk `size_bytes`
+/// (which counts only the serialized bytes): the `Arc` control block, the overlay node's
+/// `version`/`serial_disk_ptr` atomics + flags, the inline `ChildStore` arrays, and the
+/// prefix `Arc` allocation. Added to each node's on-disk size to estimate its RESIDENT
+/// footprint. These are the SINGLE source of truth shared by `select_*_for_eviction`'s
+/// resident accumulation AND `*_resident_estimate_bytes` — keep them in lockstep so the
+/// budget target and the eviction accumulation are in the same unit.
+///
+/// ANALYTIC PLACEHOLDERS — to be CALIBRATED by the Phase-8 massif bench (the physical
+/// witness; see docs/benchmarks/). Byte (`K::Unit = u8`, MAX_PREFIX_LEN 12) and char
+/// (`K::Unit = u32`, MAX_PREFIX_LEN 6) differ in the inline-array width; the estimate is
+/// approximate (the 2-tier ChildStore makes the true residual count-dependent), so the
+/// budget is a soft target with a massif-calibrated safety margin, never an exact bound.
+pub const STRUCT_OVERHEAD_BYTE: usize = 128;
+pub const STRUCT_OVERHEAD_CHAR: usize = 160;
+
 /// Information about an evictable node.
 #[derive(Debug, Clone)]
 pub struct EvictableNode {
@@ -315,12 +331,18 @@ impl DiskLocationRegistry {
     /// * `lru_registry` - LRU registry for coldness scoring
     /// * `min_depth` - Minimum depth to evict
     /// * `max_count` - Maximum number of nodes to return
+    /// * `overhead` - per-node residual added to each node's on-disk `size_bytes`
+    ///   when accumulating toward `target_bytes`. Pass `0` for an ON-DISK-unit target
+    ///   (the async/public-batch path); pass `STRUCT_OVERHEAD_BYTE` for a RESIDENT-unit
+    ///   target (the checkpoint-tail budget path) so the accumulation matches a
+    ///   resident-bytes `target_bytes` computed via [`Self::byte_resident_estimate_bytes`].
     pub fn select_for_eviction(
         &self,
         target_bytes: usize,
         lru_registry: &LruRegistry,
         min_depth: usize,
         max_count: usize,
+        overhead: usize,
     ) -> Vec<(u64, EvictableNode)> {
         if !self.valid || self.locations.is_empty() {
             return Vec::new();
@@ -348,7 +370,7 @@ impl DiskLocationRegistry {
             if result.len() >= max_count {
                 break;
             }
-            total_bytes += node.size_bytes;
+            total_bytes += node.size_bytes + overhead;
             result.push((hash, node));
 
             if total_bytes >= target_bytes {
@@ -359,13 +381,16 @@ impl DiskLocationRegistry {
         result
     }
 
-    /// Select char nodes for eviction up to a target size.
+    /// Select char nodes for eviction up to a target size. `overhead` matches
+    /// [`Self::select_for_eviction`]: `0` for an on-disk-unit target, `STRUCT_OVERHEAD_CHAR`
+    /// for a resident-unit target (the checkpoint-tail budget path).
     pub fn select_char_for_eviction(
         &self,
         target_bytes: usize,
         lru_registry: &LruRegistry,
         min_depth: usize,
         max_count: usize,
+        overhead: usize,
     ) -> Vec<(u64, EvictableCharNode)> {
         if !self.valid || self.char_locations.is_empty() {
             return Vec::new();
@@ -390,7 +415,7 @@ impl DiskLocationRegistry {
             if result.len() >= max_count {
                 break;
             }
-            total_bytes += node.size_bytes;
+            total_bytes += node.size_bytes + overhead;
             result.push((hash, node));
 
             if total_bytes >= target_bytes {
@@ -399,6 +424,26 @@ impl DiskLocationRegistry {
         }
 
         result
+    }
+
+    /// Resident-heap estimate over the BYTE map only: Σ(on-disk `size_bytes` +
+    /// [`STRUCT_OVERHEAD_BYTE`]). The per-trie resident budget compares against THIS;
+    /// a trie is byte XOR char so the two maps never mix. APPROXIMATE (the overhead is
+    /// a calibrated constant) — massif is the physical witness (Phase 8).
+    pub fn byte_resident_estimate_bytes(&self) -> usize {
+        self.locations
+            .values()
+            .map(|n| n.size_bytes + STRUCT_OVERHEAD_BYTE)
+            .sum()
+    }
+
+    /// Resident-heap estimate over the CHAR map only: Σ(on-disk `size_bytes` +
+    /// [`STRUCT_OVERHEAD_CHAR`]).
+    pub fn char_resident_estimate_bytes(&self) -> usize {
+        self.char_locations
+            .values()
+            .map(|n| n.size_bytes + STRUCT_OVERHEAD_CHAR)
+            .sum()
     }
 }
 
@@ -550,7 +595,7 @@ mod tests {
         }
 
         // Select nodes to free 500 bytes
-        let selected = registry.select_for_eviction(500, &lru, 1, 5);
+        let selected = registry.select_for_eviction(500, &lru, 1, 5, 0);
 
         // Should select coldest nodes first
         assert!(!selected.is_empty());

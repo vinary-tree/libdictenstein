@@ -868,3 +868,141 @@ fn empty_term_root_in_place_finalize_is_lost_negative_control() {
         );
     });
 }
+
+// ═══════════════════ 1c STAMP GUARD — overwrite ‖ guarded-evict (Phase 7 R1) ═══════════════════
+//
+// The round-3 lost-update guard at the MEMORY-ORDERING level (the TLA
+// `OverlayEvictionStale` proves the version logic; this confirms the stamp's
+// snapshot-read + the root CAS arbitrate it under loom's bounded schedules).
+//
+// Pre-state: a leaf stamped at the durable image v1 (stamp == 1), value-version 1
+// (acked). A WRITER overwrites it to v2 (path-copy → a FRESH leaf with stamp CLEARED
+// to 0, re-linked) via a root-version CAS. An EVICTOR concurrently tries to evict the
+// leaf to its v1 on-disk image, GUARDED by `stamp == 1`, committed by a root CAS that
+// FAILS if the writer bumped the root since the evictor's snapshot. The acked v2 must
+// ALWAYS remain observable — never replaced on disk by the stale v1 image:
+//   * writer wins the CAS first → evictor's CAS fails → leaf stays v2;
+//   * evictor evicts first (stamp was still 1) → writer re-links v2 (its CAS retries);
+//   * the dangerous window (evictor reads stamp==1, writer overwrites, evictor commits)
+//     → the evictor's CAS on the stale root-version FAILS → no stale evict.
+// This is exactly the production `evict_overlay_node_at_path` guard
+// (`durable_stamp() == disk_ptr.to_raw()`) + its loser-safe root CAS.
+mod stamp_guard_model {
+    use loom::sync::{Arc, RwLock};
+    use loom::thread;
+
+    #[derive(Clone, Debug)]
+    struct StampLeaf {
+        /// `serial_disk_ptr`: `0` = fresh/no-image (a write/evict copy); `1` = the v1 durable image.
+        stamp: u64,
+        /// value-version of the leaf (acked == this after a write).
+        version: u64,
+    }
+
+    struct SlotInner {
+        root_version: u64,
+        leaf: Option<StampLeaf>, // Some = InMem; None = evicted (OnDisk)
+        evicted_to: u64,         // the image version the slot was unswizzled to
+    }
+
+    /// Stand-in for the arc-swap `lockfree_root` (a single atomic CAS publishing the
+    /// whole new node graph) — a `RwLock` whose `root_version` is the CAS witness.
+    struct StampSlot {
+        inner: RwLock<SlotInner>,
+    }
+
+    impl StampSlot {
+        fn new() -> Self {
+            Self {
+                inner: RwLock::new(SlotInner {
+                    root_version: 1,
+                    leaf: Some(StampLeaf {
+                        stamp: 1,
+                        version: 1,
+                    }), // checkpointed at v1
+                    evicted_to: 0,
+                }),
+            }
+        }
+
+        /// `load_full` analogue: the current root version + the leaf snapshot.
+        fn snapshot(&self) -> (u64, Option<StampLeaf>) {
+            let g = self.inner.read().expect("slot read");
+            (g.root_version, g.leaf.clone())
+        }
+
+        /// `compare_exchange` analogue: publish iff the root has not advanced since
+        /// `expected_rv` (loser-safe; bumps the version on success).
+        fn cas(&self, expected_rv: u64, leaf: Option<StampLeaf>, evicted_to: u64) -> bool {
+            let mut g = self.inner.write().expect("slot write");
+            if g.root_version == expected_rv {
+                g.leaf = leaf;
+                g.evicted_to = evicted_to;
+                g.root_version += 1;
+                true
+            } else {
+                false
+            }
+        }
+    }
+
+    #[test]
+    fn overwrite_during_guarded_evict_never_stale_evicts() {
+        let mut builder = loom::model::Builder::new();
+        builder.preemption_bound = Some(3);
+        builder.check(|| {
+            let slot = Arc::new(StampSlot::new());
+
+            // WRITER: overwrite to v2 (fresh stamp-0 leaf, re-linked) via a retrying CAS.
+            let writer = {
+                let slot = Arc::clone(&slot);
+                thread::spawn(move || loop {
+                    let (rv, _) = slot.snapshot();
+                    if slot.cas(
+                        rv,
+                        Some(StampLeaf {
+                            stamp: 0,
+                            version: 2,
+                        }),
+                        0,
+                    ) {
+                        break;
+                    }
+                })
+            };
+
+            // EVICTOR: guarded evict to the v1 image (stamp==1), committed by root CAS.
+            let evictor = {
+                let slot = Arc::clone(&slot);
+                thread::spawn(move || {
+                    let (rv, leaf) = slot.snapshot();
+                    if let Some(l) = leaf {
+                        if l.stamp == 1 {
+                            // The guard passed on the snapshot; the CAS arbitrates a
+                            // concurrent overwrite (fails if the root advanced).
+                            let _ = slot.cas(rv, None, 1);
+                        }
+                    }
+                })
+            };
+
+            writer.join().expect("writer join");
+            evictor.join().expect("evictor join");
+
+            // The writer always commits v2 (its CAS retries to success), so v2 is acked.
+            // NoStaleEvict: v2 must be observable — leaf present at v2, OR evicted to v2
+            // (never to the stale v1 image).
+            let g = slot.inner.read().expect("final read");
+            let observable = match &g.leaf {
+                Some(l) => l.version == 2,
+                None => g.evicted_to == 2,
+            };
+            assert!(
+                observable,
+                "1c STALE-EVICT: acked v2 not observable (leaf={:?}, evicted_to={})",
+                g.leaf.as_ref().map(|l| l.version),
+                g.evicted_to
+            );
+        });
+    }
+}

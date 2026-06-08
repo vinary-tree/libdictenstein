@@ -135,11 +135,45 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
         self.durability_policy.store(policy);
     }
 
+    /// Invalidate the published eviction registry on a durable in-place mutation
+    /// (Phase 6 — the byte twin of char's `invalidate_eviction_registry`).
+    ///
+    /// A durable mutation diverges the in-memory trie from the last checkpoint's on-disk
+    /// image, so any published eviction registry now references potentially-stale on-disk
+    /// data. Marking the registry invalid makes the coordinator refuse to select any node
+    /// for eviction (`force_eviction`/`select_for_eviction` gate on `is_valid()`) until
+    /// the next checkpoint rebuilds and republishes a fresh, durable registry.
+    ///
+    /// This is the coarse early-out; the CORRECTNESS mechanism is the per-node M-2a
+    /// `serial_disk_ptr` guard (invalidation alone can't catch a mid-eviction-list
+    /// overwrite — the stamp guard does). No-op when eviction is disabled. Byte has no
+    /// `structural_generation` (char-only — the owned `DictionaryNode` walk detector), so
+    /// this only invalidates the coordinator's registry.
+    pub(crate) fn invalidate_eviction_registry(&self) {
+        if let Some(coordinator) = self
+            .eviction_coordinator
+            .lock()
+            .expect("eviction_coordinator mutex poisoned")
+            .as_ref()
+        {
+            coordinator.invalidate_registry();
+        }
+    }
+
     pub(super) fn append_mutation_wal_record(
         &self,
         record: WalRecord,
         operation: &'static str,
     ) -> Result<Lsn> {
+        // Phase 6 (byte invalidation, byte twin of char's `append_to_wal_inner` head):
+        // a durable mutation is being logged → the in-memory trie diverges from the last
+        // checkpoint's on-disk image, so invalidate any published eviction registry HERE
+        // — the single chokepoint every byte overlay durable mutation funnels through —
+        // BEFORE the WAL append/visibility, so eviction cannot unswizzle a freshly-
+        // overwritten live node onto its STALE pre-write disk ptr. No-op when eviction is
+        // disabled.
+        self.invalidate_eviction_registry();
+
         let Some(ref wal_writer) = self.wal_writer else {
             return Ok(0);
         };

@@ -45,7 +45,20 @@ use super::wal::WalRecord;
 use crate::persistent_artrie_core::counter_codec;
 use crate::persistent_artrie_core::key_encoding::ByteKey;
 use crate::persistent_artrie_core::overlay::durable_write::DurableOverlayWrite;
+// Phase 5 (byte fault-in): the read-path single-level fault-in walk `find_leaf_faulting`
+// is the K-generic default of `OverlayEvictable<ByteKey, V, S>` (lifted in Phase 4).
+// Bringing the trait into module scope routes the byte read/counter `self.find_leaf_faulting(..)`
+// calls below to the shared default (byte's `OverlayFaulter<ByteKey, V>` loader supplies
+// the OnDisk-child load). Behavior mirrors char EXACTLY.
+use crate::persistent_artrie_core::overlay::evict::OverlayEvictable;
 use crate::value::DictionaryValue;
+
+/// Default bound on read/write fault-in install-CAS retries before falling back to a
+/// single read-only walk (the byte twin of char's `DEFAULT_MAX_FAULTIN_RETRIES`;
+/// design §3 liveness bound — the byte OE8-twin regression-guards termination).
+/// Generous: each retry rebases off a freshly-published root, so contention is the
+/// only reason to loop, and the fallback is correct (durable) anyway.
+pub(crate) const DEFAULT_MAX_FAULTIN_RETRIES: usize = 16;
 
 // The byte counter is now a full `u64` (matching char). Overflow is detected by
 // the i128-domain range check in `counter_codec` (`i128_to_counter_leaf::<u64>`
@@ -381,19 +394,29 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
 
         match node.find_child(key) {
             Some(child_ptr) => {
-                // In-memory child: path-copy into it. An on-disk child means this
-                // path lives in the persistent trie, which the lock-free overlay
-                // cannot fault in here — treat it (and the impossible null filler)
-                // as a conflict to force a re-check. Zero `unsafe`: `as_in_mem`
-                // borrows the owned child `Arc` and `Child::InMem` re-wraps the
-                // path-copied replacement.
+                // Zero `unsafe`: `as_in_mem`/`as_on_disk` borrow the owned child `Arc`
+                // and `Child::InMem` re-wraps the path-copied replacement.
                 if let Some(child_arc) = child_ptr.as_in_mem() {
+                    // In-memory child: path-copy into it.
                     let child_arc = Arc::clone(child_arc);
                     let (new_child, leaf) =
                         self.build_path_recursive(&child_arc, term, depth + 1)?;
                     let new_node = Arc::new(node.with_child(key, Child::InMem(new_child)));
                     Ok((new_node, leaf))
+                } else if let Some(on_disk) = child_ptr.as_on_disk().filter(|p| !p.is_null()) {
+                    // WRITE-PATH FAULT-IN (design §3.2/§4, byte twin of char's
+                    // `build_path_recursive` OnDisk arm): the child was EVICTED to OnDisk.
+                    // Fault it back in, then DESCEND, splicing `Child::InMem(faulted)` at
+                    // `key` — the single root CAS in `insert_lockfree_recursive` stays the
+                    // SOLE arbiter (no new commit point). An I/O error maps to `Err(())`
+                    // (= conflict → the caller retries from a fresh root load), the same
+                    // bare-`()` "force a re-check" the prior OnDisk arm returned.
+                    let loaded = self.load_overlay_node_from_disk(on_disk).map_err(|_| ())?;
+                    let (new_child, leaf) = self.build_path_recursive(&loaded, term, depth + 1)?;
+                    let new_node = Arc::new(node.with_child(key, Child::InMem(new_child)));
+                    Ok((new_node, leaf))
                 } else {
+                    // Null filler (never a real child) — conflict to force a re-check.
                     Err(())
                 }
             }
@@ -464,8 +487,20 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
         }
 
         if let Some(ref root) = self.lockfree_root {
-            if let Some(root_node) = root.load() {
-                return self.find_in_lockfree_trie(&root_node, term, 0);
+            // READ-PATH FAULT-IN (design §3.2, byte twin of char's `contains_lockfree`):
+            // route through `find_leaf_faulting` so a term under an EVICTED (OnDisk)
+            // prefix is faulted back and reported present instead of spuriously absent
+            // (the silent read-loss the design closes). On an I/O error fall back to the
+            // non-faulting `find_in_lockfree_trie` (best-effort; liveness-only). `term`
+            // is already `&[u8]` (= `&[ByteKey::Unit]`); no key conversion needed.
+            match self.find_leaf_faulting(root, term, DEFAULT_MAX_FAULTIN_RETRIES) {
+                Ok(found) => return found.is_some(),
+                Err(_) => {
+                    if let Some(root_node) = root.load() {
+                        return self.find_in_lockfree_trie(&root_node, term, 0);
+                    }
+                    return false;
+                }
             }
         }
 
@@ -674,11 +709,19 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
             }
         }
 
-        // Present-hoist (NON-FAULTING — byte has no overlay fault-in; `find_leaf_lockfree`
-        // walks the in-memory overlay). If the term is already present IN MEMORY this
-        // is a no-op insert: return WITHOUT appending, so it contributes NO record to
-        // replay (the idempotent arm NO-RANKs, so a record left here would be an
-        // unranked orphan dropped under the Overlay regime).
+        // Present-hoist — DELIBERATELY NON-FAULTING (`find_leaf_lockfree` walks only the
+        // in-memory overlay). Phase 5 added byte fault-in (`find_leaf_faulting`) to the
+        // read/write/counter paths, but this present-hoist MUST stay non-faulting: a
+        // faulting read BEFORE the WAL append, racing a checkpoint/eviction holding the
+        // arena/buffer lock, is char's documented "75-minute hang" lock-ordering
+        // inversion (see `find_leaf_faulting`'s doc + memory
+        // `feedback_production-deadlock-is-costly`). A false-absent here only skips a
+        // no-op-insert fast path (the term-under-an-evicted-prefix case still inserts
+        // correctly below via the write-path fault-in + root CAS), so it never loses a
+        // write. If the term is already present IN MEMORY this is a no-op insert: return
+        // WITHOUT appending, so it contributes NO record to replay (the idempotent arm
+        // NO-RANKs, so a record left here would be an unranked orphan dropped under the
+        // Overlay regime).
         let _epoch = self.epoch_manager.enter_read();
         if self.find_leaf_lockfree(lockfree_root, term).is_some() {
             lockfree_cache.insert(term.to_vec(), true);
@@ -919,9 +962,24 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
                     let child_arc = Arc::clone(child_arc);
                     let new_child = self.build_final_path_recursive(&child_arc, term, depth + 1)?;
                     Ok(Arc::new(node.with_child(key, Child::InMem(new_child))))
+                } else if let Some(on_disk) = child.as_on_disk().filter(|p| !p.is_null()) {
+                    // WRITE-PATH FAULT-IN (design §3.2/§4, DATA-LOSS-CRITICAL; byte twin of
+                    // char's `build_path_recursive` OnDisk arm): the child was EVICTED to
+                    // OnDisk. WITHOUT faulting it in, a NEW term under this evicted prefix
+                    // returned `Conflict` and SPUN forever (the retry re-finds the same
+                    // OnDisk child; nothing installs it). FAULT it back in, then DESCEND,
+                    // splicing `Child::InMem(faulted+extended)` at `key` — identical in
+                    // shape to an in-memory child, so the single root CAS in
+                    // `try_insert_lockfree_path_durable` stays the SOLE arbiter (no new
+                    // commit point). An I/O error faulting the durable image maps to
+                    // `Conflict` (transient → the caller retries from a fresh root load).
+                    let loaded = self
+                        .load_overlay_node_from_disk(on_disk)
+                        .map_err(|_| DurableBuildError::Conflict)?;
+                    let new_child = self.build_final_path_recursive(&loaded, term, depth + 1)?;
+                    Ok(Arc::new(node.with_child(key, Child::InMem(new_child))))
                 } else {
-                    // On-disk (or null filler) child: cannot fault in here (byte
-                    // overlay, pre-M4). Transient conflict → retry.
+                    // Null filler (never a real child): conservative transient conflict.
                     Err(DurableBuildError::Conflict)
                 }
             }
@@ -1015,9 +1073,24 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
                     let new_child =
                         self.build_remove_path_recursive(&child_arc, term, depth + 1)?;
                     Ok(Arc::new(node.with_child(key, Child::InMem(new_child))))
+                } else if let Some(on_disk) = child.as_on_disk().filter(|p| !p.is_null()) {
+                    // WRITE-PATH FAULT-IN (design §3.2/§4, DATA-CORRECTNESS; byte twin of
+                    // char's remove `build_remove_path_recursive` OnDisk arm): the prefix
+                    // child was EVICTED to OnDisk. WITHOUT faulting it in, removing a term
+                    // under this evicted prefix returned `AlreadyExists` (= "already
+                    // absent") and the acknowledged remove was SILENTLY DROPPED (a LOST
+                    // REMOVE — a correctness bug, not just liveness). FAULT it in, then
+                    // DESCEND, splicing `Child::InMem(faulted)` at `key` — the single root
+                    // CAS stays the SOLE arbiter for the 1→0 clear. An I/O error faulting
+                    // the durable image maps to `Conflict` (transient → retry on a fresh
+                    // root load), NOT `AlreadyExists` (which would drop the remove).
+                    let loaded = self
+                        .load_overlay_node_from_disk(on_disk)
+                        .map_err(|_| DurableBuildError::Conflict)?;
+                    let new_child = self.build_remove_path_recursive(&loaded, term, depth + 1)?;
+                    Ok(Arc::new(node.with_child(key, Child::InMem(new_child))))
                 } else {
-                    // On-disk / null filler ⇒ absent on this snapshot (byte overlay
-                    // has no fault-in pre-M4).
+                    // Null filler (never a real child) ⇒ absent on this snapshot.
                     Err(DurableBuildError::AlreadyExists)
                 }
             }
@@ -1065,11 +1138,19 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
             let k = key[d];
             match current.find_child(k) {
                 Some(child) => {
-                    // In-memory child: descend (path-copy on the way back up). On-disk →
-                    // cannot fault in on the write path; return None (the caller retries).
-                    let child_arc = match child.as_in_mem() {
-                        Some(c) => Arc::clone(c),
-                        None => return None,
+                    let child_arc = if let Some(child_arc) = child.as_in_mem() {
+                        // In-memory child: descend (path-copy on the way back up).
+                        Arc::clone(child_arc)
+                    } else {
+                        // WRITE-PATH FAULT-IN (design §3.3/§4, byte twin of char's
+                        // `build_value_path_recursive` OnDisk arm): the child was EVICTED to
+                        // OnDisk. Fault it back in then descend, splicing it InMem — the
+                        // single root CAS stays the sole arbiter. WITHOUT this the counter
+                        // step-4 returned `None` → spun (and, with the §3.3 read half, an
+                        // evicted counter reset to 0+delta). On I/O error return `None` (the
+                        // counter inner treats it as a transient conflict and retries).
+                        let on_disk = child.as_on_disk().filter(|p| !p.is_null())?;
+                        self.load_overlay_node_from_disk(on_disk).ok()?
                     };
                     spine.push((current, k));
                     current = child_arc;
@@ -1128,6 +1209,16 @@ impl<S: BlockStorage> PersistentARTrie<u64, S> {
     pub fn get_lockfree(&self, key: &[u8]) -> Option<u64> {
         let lockfree_root = self.lockfree_root.as_ref()?;
         let _epoch = self.epoch_manager.enter_read();
+
+        // READ-PATH FAULT-IN (design §3.2, byte twin of char's `get_lockfree`): fault
+        // an evicted (OnDisk) prefix back in so the value is the durable value, not a
+        // spurious `None` (the silent counter-reset bug the design closes). On an I/O
+        // error fall through to the non-faulting walk below (best-effort).
+        match self.find_leaf_faulting(lockfree_root, key, DEFAULT_MAX_FAULTIN_RETRIES) {
+            Ok(found) => return found.and_then(|leaf| leaf.get_value()),
+            Err(_) => {}
+        }
+
         self.find_leaf_lockfree(lockfree_root, key)
             .and_then(|leaf| leaf.get_value())
     }
@@ -1220,12 +1311,26 @@ impl<S: BlockStorage> PersistentARTrie<u64, S> {
                 }
             };
 
-            // (2) Read the current count at `key` from THIS snapshot. The leaf
-            // stores the running count as the trie's own `u64` value.
-            let cur = self
-                .find_leaf_recursive(&root, key, 0)
-                .and_then(|leaf| leaf.get_value())
-                .unwrap_or(0u64);
+            // (2) Read the current count at `key`. COUNTER BOTH-HALVES, READ HALF
+            // (design §3.3, byte twin of char's `try_increment_cas_inner` step-2):
+            // route through `find_leaf_faulting` so a term under an EVICTED (OnDisk)
+            // prefix faults its durable value back in — WITHOUT this, an evicted
+            // counter silently reads 0 and RESETS to `0 + delta` (the data-loss bug).
+            // The fault-in may publish a newer root; the path-copy CAS below is against
+            // THIS snapshot `root`, so a fault that advanced the root simply makes that
+            // CAS lose → we retry from the now-faulted root (this is also the read half
+            // of the write-path OnDisk fix — step 4's `build_value_path_recursive` faults
+            // the spine in). On an I/O error reading the durable image, fall back to this
+            // snapshot (non-faulting). The leaf stores the running count as the trie's
+            // own `u64` value.
+            let cur = match self.find_leaf_faulting(lockfree_root, key, DEFAULT_MAX_FAULTIN_RETRIES)
+            {
+                Ok(found) => found.and_then(|leaf| leaf.get_value()).unwrap_or(0u64),
+                Err(_) => self
+                    .find_leaf_recursive(&root, key, 0)
+                    .and_then(|leaf| leaf.get_value())
+                    .unwrap_or(0u64),
+            };
 
             // (3) Compute `cur + delta` in the i128 substrate, range-checked into
             // `[0, u64::MAX]` — an increment above `i64::MAX` is honored, and a true
@@ -1487,6 +1592,17 @@ impl<S: BlockStorage> PersistentARTrie<u64, S> {
 
     /// Recursively collect all (key, value) entries from the lock-free trie.
     /// The leaf stores the count as the trie's own `u64` value (read directly).
+    ///
+    /// **OnDisk children are SKIPPED — intentionally, mirroring char's
+    /// `collect_lockfree_value_entries_recursive` EXACTLY** (design §3.3 "mirror char's
+    /// PROVEN patterns"). This enumeration is reached ONLY from
+    /// `merge_lockfree_values_to_persistent`, which REJECTS under `route_overlay()` (the
+    /// production overlay mode where eviction — and thus any `Child::OnDisk` overlay
+    /// child — can occur). So in `OwnedTree` mode (the only mode this runs in) eviction
+    /// is OFF and no OnDisk overlay child exists. Faulting here would DIVERGE from char's
+    /// twin (which also skips); the read-path fault-in that closes the silent-read-loss
+    /// gap is on the production point-read paths (`contains_lockfree`/`get_lockfree`/the
+    /// counter read), not on this merge-only owned-mode enumeration.
     fn collect_lockfree_entries_recursive(
         node: &Arc<super::nodes::PersistentNode<u64>>,
         key_buf: &mut Vec<u8>,
@@ -1500,7 +1616,9 @@ impl<S: BlockStorage> PersistentARTrie<u64, S> {
 
         for (&child_key, child_ptr) in node.iter_children() {
             // Skip on-disk refs in the lock-free overlay; recurse into in-memory
-            // children (borrowed owned `Arc`, no `unsafe`).
+            // children (borrowed owned `Arc`, no `unsafe`). See the method doc: this is
+            // merge-only / owned-mode, so no OnDisk overlay child occurs (char's twin
+            // skips identically).
             if let Some(child_arc) = child_ptr.as_in_mem() {
                 let child_arc = Arc::clone(child_arc);
                 key_buf.push(child_key);

@@ -970,6 +970,14 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     /// # Safety
     ///
     /// The caller must ensure exclusive access to the node.
+    // clippy::mut_from_ref: the `&mut` from `&self` is INTENTIONAL — this resolves a
+    // `SwizzledPtr` to the node's in-memory box via an `unsafe` raw-ptr deref, gated on
+    // the documented Safety contract above (the caller guarantees exclusive access). The
+    // `&self` receiver is the lazy-load idiom (mutation goes through the raw ptr, not
+    // `self`); a `&mut self` signature would over-constrain the faulting callers.
+    // Exclusivity is enforced by the contract, not the borrow checker, so the lint's
+    // aliasing concern does not apply.
+    #[allow(clippy::mut_from_ref)]
     pub(super) fn resolve_swizzled_ptr_mut(
         &self,
         ptr: &SwizzledPtr,

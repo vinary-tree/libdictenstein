@@ -10,7 +10,6 @@ use std::sync::atomic::Ordering as AtomicOrdering;
 use std::sync::Arc;
 
 use crate::artrie_trait::{ARTrie, EvictableARTrie};
-use crate::persistent_artrie_core::concurrency::EpochManager;
 use crate::persistent_artrie_core::durability::DurabilityPolicy;
 use crate::persistent_artrie_core::eviction::{EvictionConfig, EvictionCoordinator, EvictionStats};
 // F4: the `.read()/.write()` compat shim on the collapsed `Arc<PersistentARTrie>`.
@@ -259,7 +258,15 @@ impl<V: DictionaryValue> EvictableARTrie for SharedARTrie<V> {
             return Err(PersistentARTrieError::internal("Eviction already enabled"));
         }
 
-        let epoch_manager = Arc::new(EpochManager::new());
+        // Phase 6 (byte epoch-share, mirror char): SHARE this trie's OWN epoch manager
+        // with the coordinator (was a SEPARATE `Arc::new(EpochManager::new())`). The
+        // field is now `Arc<EpochManager>`, and `SharedARTrie = Arc<PersistentARTrie>`
+        // derefs to it directly. The overlay read/write paths + the lifted overlay
+        // evictor (`OverlayEvictable::{find_leaf_faulting, evict_overlay_node_at_path}`)
+        // pin THIS same manager via `enter_read`, so the coordinator's quiescence drain
+        // genuinely waits on the live overlay readers (honest reader accounting; not a
+        // correctness change — overlay reclamation is by `Arc` refcount, not EBR).
+        let epoch_manager = Arc::clone(&self.epoch_manager);
         let coordinator = EvictionCoordinator::new(config.clone(), epoch_manager);
         let self_weak = Arc::downgrade(self);
 
@@ -268,6 +275,19 @@ impl<V: DictionaryValue> EvictableARTrie for SharedARTrie<V> {
                 let Some(trie) = self_weak.upgrade() else {
                     return (0, 0);
                 };
+                // Phase 7.5: route_overlay-GATED. Under the overlay regime reclaim the
+                // OVERLAY (the inline evict_node_at_path owned loop below is a no-op on the
+                // EMPTY owned tree there); in owned mode keep the proven owned-tree loop
+                // (preserves owned + ineligible-V eviction). evict_overlay_nodes locks EC
+                // for its LRU remove — safe here (the loop holds no EC, same as the owned
+                // loop's EC discipline).
+                if trie.route_overlay() {
+                    return crate::persistent_artrie::overlay_fault::evict_overlay_nodes(
+                        &trie,
+                        nodes_to_evict,
+                        4,
+                    );
+                }
                 // Clone the coordinator Arc out under a BRIEF EC lock (leaf), then
                 // release EC BEFORE taking OR (the lock order is OR > EC, so we must
                 // not hold EC while `evict_node_at_path` takes the OR root lock).
@@ -365,7 +385,20 @@ impl<V: DictionaryValue> EvictableARTrie for SharedARTrie<V> {
                 None => return Ok((0, 0)),
             }
         };
-        Ok(coordinator.force_eviction(target_bytes))
+        // Phase 7.5: route_overlay-GATED. Overlay regime → reclaim the OVERLAY via the
+        // callback arity (the owned `force_eviction` only select-counts, a no-op for the
+        // overlay; this returns the EVICTED count, not the candidate count). Owned mode →
+        // preserve the existing select-and-count behavior unchanged.
+        if self.route_overlay() {
+            let trie = Arc::clone(self);
+            Ok(
+                coordinator.force_eviction_bytes(target_bytes, move |nodes| {
+                    crate::persistent_artrie::overlay_fault::evict_overlay_nodes(&trie, nodes, 4)
+                }),
+            )
+        } else {
+            Ok(coordinator.force_eviction(target_bytes))
+        }
     }
 
     fn touch_node(&self, path: &[Self::Unit]) {

@@ -790,6 +790,46 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
             // Deliberately NO rotate_to_archive: destructive watermark-bounded WAL
             // truncation is the owner-gated IRREVERSIBLE flip, out of scope here.
         }
+
+        // (4) RESIDENT-BUDGET TAIL (Phase 7.5 — GO-LIVE). The registry is published
+        //     (step 2) and the WAL Checkpoint is synced (step 3), so every registered
+        //     disk_ptr is durable. If a resident budget is configured and the estimate
+        //     exceeds it, evict the COLDEST registered char overlay nodes down to budget
+        //     in ONE pass. The eviction is non-blocking loser-safe root-CAS (no write
+        //     lock); the 1c `durable_stamp` guard + the registry `is_valid()` gate keep it
+        //     safe under concurrent writers. This is the OVERLAY publisher, and
+        //     `evict_overlay_nodes` is a no-op `(0,0)` with no overlay root, so no
+        //     `route_overlay()` gate is needed here.
+        //
+        //     DEADLOCK-SAFETY: bind the coordinator in a `let` so the
+        //     `eviction_coordinator` mutex guard is dropped AT THE `;` — the eviction
+        //     callback (`evict_overlay_nodes`) re-locks `eviction_coordinator` for its LRU
+        //     bookkeeping, and an `if let Some(c) = self.eviction_coordinator.lock()…`
+        //     would hold the guard across the callback (if-let temporary lifetime) =
+        //     a self-deadlock.
+        let coordinator = self
+            .eviction_coordinator
+            .lock()
+            .expect("eviction_coordinator mutex poisoned")
+            .as_ref()
+            .map(std::sync::Arc::clone);
+        if let Some(coordinator) = coordinator {
+            if let Some(budget) = coordinator.resident_budget_bytes() {
+                let resident = coordinator.char_resident_estimate_bytes();
+                if resident > budget {
+                    let target = resident - budget;
+                    // UNCAPPED (budget-precise) by default; an opt-in cap bounds the
+                    // one-time first-over-budget-checkpoint latency (it MUST be >= the
+                    // per-checkpoint cold growth or the budget never converges).
+                    let max_count = coordinator
+                        .resident_budget_eviction_cap()
+                        .unwrap_or(usize::MAX);
+                    coordinator.force_eviction_char_resident(target, max_count, |nodes| {
+                        super::evict_overlay_nodes(self, nodes, 4)
+                    });
+                }
+            }
+        }
         Ok(())
     }
 
@@ -1405,6 +1445,18 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
                 &path,
                 registry.as_deref_mut(),
             )?;
+
+            // M-2a durable stamp: record on the LIVE overlay node (`frame.node` is an
+            // `Arc::clone` of the published node — same allocation) that this exact
+            // content is now durable at `node_ptr`. The eviction guard later evicts this
+            // node ONLY while `durable_stamp() == node_ptr.to_raw()` — i.e. while it has
+            // not been overwritten since now (any overwrite path-copies it into a fresh
+            // stamp-0 node). Gated on `registry.is_some()` so the stamp is written iff
+            // this node was just `register_char`'d (eviction enabled); the `Release`
+            // here pairs with the evictor's `Acquire` via the registry-publish edge.
+            if registry.is_some() {
+                frame.node.set_durable_stamp(node_ptr.to_raw());
+            }
 
             // Pop this node's edge char from the path (symmetric with the descent
             // push) before bubbling up.
@@ -2665,28 +2717,25 @@ mod immutable_eviction_checkpoint_correspondence {
                  (evictable_node_count == 0)"
             );
 
-            // Force an eviction over the published registry. The registry IS the
-            // selectable pool (`evictable_node_count() > 0` above), and selection
-            // finds candidates; but the actual unswizzle (`evict_node_at_path`)
-            // walks the OWNED `self.root` tree, which is `Empty` on a pure lock-free
-            // overlay trie (the data lives in `lockfree_root`). So over an overlay
-            // trie `force_eviction` is structurally a clean NO-OP — there are no
-            // OWNED in-memory node boxes to reclaim — and must not error or panic.
-            // (This is the honest architectural truth of the reversible bench path:
-            // the registry-publication GAP is closed — asserted above — while
-            // in-memory reclamation of overlay nodes is a Phase-E flip concern that
-            // wires the overlay into the owned eviction walk. The eviction-OFF
-            // CONTROL/owned-tree path DOES reclaim; see eviction_registry_tests.rs.)
+            // Force an eviction over the published registry. Phase 7.5 (GO-LIVE): under
+            // route_overlay() `force_eviction` now reclaims the OVERLAY — the
+            // route_overlay-gated callback routes to `evict_overlay_nodes`, which
+            // path-copies the `lockfree_root` spine InMem→OnDisk via loser-safe root CAS
+            // (the 1c `durable_stamp` guard keeps it safe under concurrent writers). The
+            // OWNED `self.root` is `Empty` here, so the OLD owned walk (`evict_char_nodes`)
+            // was a no-op; the new overlay evictor actually reclaims. (The eviction-OFF /
+            // owned-tree path still uses `evict_char_nodes`; see eviction_registry_tests.rs.)
             let (evicted, _bytes) = shared.force_eviction(1 << 20).expect("force eviction");
-            assert_eq!(
-                evicted, 0,
-                "force_eviction over a lock-free OVERLAY trie should be a structural \
-                 no-op (owned self.root is Empty); got {evicted} — if the overlay was \
-                 wired into the owned eviction walk this expectation must be revisited"
+            assert!(
+                evicted > 0,
+                "force_eviction over a lock-free OVERLAY trie must now reclaim overlay \
+                 nodes (Phase 7.5 wired the route_overlay-gated overlay evictor); got 0 \
+                 = the overlay reclaim regressed to a no-op"
             );
 
-            // Every term still resolves through the overlay (the registry publish +
-            // the no-op eviction left the overlay membership intact).
+            // Every term still resolves through the overlay — LOSSLESS eviction: the
+            // evicted (OnDisk) nodes fault back on read (`contains_lockfree` routes
+            // through `find_leaf_faulting`).
             for t in &terms {
                 assert!(
                     shared.read().contains_lockfree(t),

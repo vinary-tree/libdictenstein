@@ -105,7 +105,7 @@ impl<V: DictionaryValue> PersistentARTrie<V, IoUringDiskManager> {
             durability_policy: crate::persistent_artrie_core::shared_access::AtomicEnumCell::new(
                 DurabilityPolicy::default(),
             ),
-            epoch_manager: super::concurrency::EpochManager::new(),
+            epoch_manager: Arc::new(super::concurrency::EpochManager::new()),
             stats: Arc::new(super::concurrency::TrieStats::new()),
             eviction_coordinator: std::sync::Mutex::new(None),
             dirty_prefixes: std::sync::Mutex::new(HashSet::new()),
@@ -342,7 +342,7 @@ impl<V: DictionaryValue> PersistentARTrie<V, IoUringDiskManager> {
             durability_policy: crate::persistent_artrie_core::shared_access::AtomicEnumCell::new(
                 DurabilityPolicy::default(),
             ),
-            epoch_manager: super::concurrency::EpochManager::new(),
+            epoch_manager: Arc::new(super::concurrency::EpochManager::new()),
             stats: Arc::new(super::concurrency::TrieStats::new()),
             eviction_coordinator: std::sync::Mutex::new(None),
             dirty_prefixes: std::sync::Mutex::new(HashSet::new()),

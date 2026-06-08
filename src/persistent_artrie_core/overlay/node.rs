@@ -650,6 +650,21 @@ pub struct OverlayNode<K: KeyEncoding, V = ()> {
     /// Monotonic version counter (incremented on each modification)
     version: AtomicU64,
 
+    /// Durable on-disk location stamp (`SwizzledPtr::to_raw()`) recording WHERE this
+    /// exact immutable node content was last serialized into a checkpoint image;
+    /// `0` = none. Written `Release` ONLY by [`Self::set_durable_stamp`] at the
+    /// serialize/register site (on the live node the checkpoint just proved durable).
+    /// EVERY other construction path — `new`, all `with_*`/`as_*` path-copies, `Clone`,
+    /// fault-in, recovery — leaves it `0`. This is the eviction-safety lynchpin (M-2a):
+    /// a node is safe to unswizzle to its registered `disk_ptr` IFF its stamp still
+    /// equals `disk_ptr.to_raw()` (⟺, by the immutable path-copy invariant that any
+    /// write bumps every ancestor, neither it nor any descendant was overwritten since
+    /// that checkpoint). A write OR evict path-copy yields a fresh node with stamp `0`
+    /// ⇒ correctly non-evictable until re-serialized. Placed next to `version` (both
+    /// write-churned, rarely read on the hot path) to keep them off the hot-read
+    /// `store`/`value`/`prefix` line. NEVER serialized to disk (runtime-only).
+    serial_disk_ptr: AtomicU64,
+
     /// Tiered child storage (Inline for 0-4 children, Heap for 5+)
     store: ChildStore<K, V>,
 
@@ -689,6 +704,7 @@ impl<K: KeyEncoding, V: Clone> OverlayNode<K, V> {
     pub fn new() -> Self {
         Self {
             version: AtomicU64::new(0),
+            serial_disk_ptr: AtomicU64::new(0),
             store: ChildStore::new(),
             flags: AtomicU8::new(0),
             value: None,
@@ -704,6 +720,7 @@ impl<K: KeyEncoding, V: Clone> OverlayNode<K, V> {
 
         Self {
             version: AtomicU64::new(0),
+            serial_disk_ptr: AtomicU64::new(0),
             store: ChildStore::new(),
             flags: AtomicU8::new(0),
             value: None,
@@ -716,6 +733,29 @@ impl<K: KeyEncoding, V: Clone> OverlayNode<K, V> {
     #[inline]
     pub fn version(&self) -> u64 {
         self.version.load(Ordering::Acquire)
+    }
+
+    /// Read the durable-location stamp (`Acquire`): the `SwizzledPtr::to_raw()` of the
+    /// checkpoint image this exact node content lives at, or `0` if this node has not
+    /// been serialized as-is (any write/evict path-copy, fault-in, or fresh node).
+    ///
+    /// The eviction guard (M-2a) evicts a node to its registered `disk_ptr` ONLY when
+    /// `durable_stamp() == disk_ptr.to_raw()` — see [`Self::set_durable_stamp`].
+    #[inline]
+    pub fn durable_stamp(&self) -> u64 {
+        self.serial_disk_ptr.load(Ordering::Acquire)
+    }
+
+    /// Record (`Release`) that this exact node content was serialized to `raw`
+    /// (= `SwizzledPtr::to_raw()` of its on-disk image). Called ONLY at the
+    /// serialize/register site, on the live node the checkpoint just proved durable.
+    /// MUST NOT be called from any other construction path (doing so would falsely
+    /// authorize eviction to a location not in the current registry — the M-2a hazard).
+    /// The `Release` here pairs with the `Acquire` in [`Self::durable_stamp`] and rides
+    /// the checkpoint's registry-publish happens-before edge to the evictor.
+    #[inline]
+    pub fn set_durable_stamp(&self, raw: u64) {
+        self.serial_disk_ptr.store(raw, Ordering::Release);
     }
 
     /// Get the number of children.
@@ -772,7 +812,20 @@ impl<K: KeyEncoding, V: Clone> OverlayNode<K, V> {
     #[inline]
     pub fn try_set_final(&self) -> bool {
         let old = self.flags.fetch_or(flags::IS_FINAL, Ordering::AcqRel);
-        (old & flags::IS_FINAL) == 0
+        let newly_final = (old & flags::IS_FINAL) == 0;
+        if newly_final {
+            // M-2a (defensive close of the non-durable-insert NIT): an IN-PLACE
+            // finalization (the only stamp-non-clearing mutation — used by the
+            // non-durable `insert_cas` proper-prefix path) makes this live node DIVERGE
+            // from its durable image (which had IS_FINAL=0). Clear the stamp so the
+            // eviction guard (`durable_stamp() == disk_ptr.to_raw()`) REFUSES to evict
+            // it to the now-stale on-disk image until it is re-serialized. Release pairs
+            // with the evictor's Acquire read. (Durable writes already path-copy via
+            // `as_final`, a fresh stamp-0 node, so this only matters for the non-durable
+            // API mixed with eviction; cheap + robust regardless.)
+            self.serial_disk_ptr.store(0, Ordering::Release);
+        }
+        newly_final
     }
 
     /// Find a child by key (lock-free read).
@@ -814,6 +867,8 @@ impl<K: KeyEncoding, V: Clone> OverlayNode<K, V> {
     pub fn with_child(&self, key: K::Unit, child: Child<K, V>) -> Self {
         Self {
             version: AtomicU64::new(self.version.load(Ordering::Acquire) + 1),
+            // M-2a: a path-copy is NOT a durable image — never evictable until re-serialized.
+            serial_disk_ptr: AtomicU64::new(0),
             store: self.store.with_child(key, child),
             flags: AtomicU8::new(self.flags.load(Ordering::Acquire)),
             value: self.value.clone(),
@@ -831,6 +886,8 @@ impl<K: KeyEncoding, V: Clone> OverlayNode<K, V> {
     pub fn without_child(&self, key: K::Unit) -> Option<Self> {
         self.store.without_child(key).map(|new_store| Self {
             version: AtomicU64::new(self.version.load(Ordering::Acquire) + 1),
+            // M-2a: a path-copy is NOT a durable image — never evictable until re-serialized.
+            serial_disk_ptr: AtomicU64::new(0),
             store: new_store,
             flags: AtomicU8::new(self.flags.load(Ordering::Acquire)),
             value: self.value.clone(),
@@ -846,6 +903,8 @@ impl<K: KeyEncoding, V: Clone> OverlayNode<K, V> {
 
         Self {
             version: AtomicU64::new(self.version.load(Ordering::Acquire) + 1),
+            // M-2a: a path-copy is NOT a durable image — never evictable until re-serialized.
+            serial_disk_ptr: AtomicU64::new(0),
             store: self.store.clone(),
             flags: AtomicU8::new(self.flags.load(Ordering::Acquire)),
             value: self.value.clone(),
@@ -858,6 +917,8 @@ impl<K: KeyEncoding, V: Clone> OverlayNode<K, V> {
     pub fn as_final(&self) -> Self {
         Self {
             version: AtomicU64::new(self.version.load(Ordering::Acquire) + 1),
+            // M-2a: a path-copy is NOT a durable image — never evictable until re-serialized.
+            serial_disk_ptr: AtomicU64::new(0),
             store: self.store.clone(),
             flags: AtomicU8::new(self.flags.load(Ordering::Acquire) | flags::IS_FINAL),
             value: self.value.clone(),
@@ -899,6 +960,8 @@ impl<K: KeyEncoding, V: Clone> OverlayNode<K, V> {
     pub fn as_non_final(&self) -> Self {
         Self {
             version: AtomicU64::new(self.version.load(Ordering::Acquire) + 1),
+            // M-2a: a path-copy is NOT a durable image — never evictable until re-serialized.
+            serial_disk_ptr: AtomicU64::new(0),
             // SUBTREE RETAINED: remove "cat" must keep "cats" reachable.
             store: self.store.clone(),
             flags: AtomicU8::new(
@@ -915,6 +978,8 @@ impl<K: KeyEncoding, V: Clone> OverlayNode<K, V> {
     pub fn with_value(&self, value: V) -> Self {
         Self {
             version: AtomicU64::new(self.version.load(Ordering::Acquire) + 1),
+            // M-2a: a path-copy is NOT a durable image — never evictable until re-serialized.
+            serial_disk_ptr: AtomicU64::new(0),
             store: self.store.clone(),
             flags: AtomicU8::new(self.flags.load(Ordering::Acquire) | flags::HAS_VALUE),
             value: Some(value),
@@ -969,6 +1034,8 @@ impl<K: KeyEncoding, V: Clone> Clone for OverlayNode<K, V> {
     fn clone(&self) -> Self {
         Self {
             version: AtomicU64::new(self.version.load(Ordering::Acquire)),
+            // M-2a: a Clone is a fresh node, not a re-serialized durable image → stamp 0.
+            serial_disk_ptr: AtomicU64::new(0),
             store: self.store.clone(),
             flags: AtomicU8::new(self.flags.load(Ordering::Acquire)),
             value: self.value.clone(),
@@ -1055,6 +1122,71 @@ mod tests {
         let cnode = CharNode::new();
         assert_eq!(cnode.num_children(), 0);
         assert!(cnode.is_empty());
+    }
+
+    /// M-2a (eviction-safety lynchpin): the durable stamp is `0` on EVERY construction
+    /// path (`new`/`with_prefix`/all path-copies/`Clone`); ONLY `set_durable_stamp`
+    /// writes a non-zero value; and a path-copy of a stamped node yields stamp `0` (so a
+    /// write/evict copy is never mistaken for the durable image). The eviction guard
+    /// relies on this exactly: evict iff `durable_stamp() == disk_ptr.to_raw()`. Run at
+    /// both K instantiations.
+    fn check_durable_stamp_invariant<K: KeyEncoding>(nt: NodeType, edge: K::Unit) {
+        // Fresh nodes carry stamp 0.
+        let node = OverlayNode::<K, u64>::new();
+        assert_eq!(node.durable_stamp(), 0, "new() stamp must be 0");
+        assert_eq!(
+            OverlayNode::<K, u64>::with_prefix(&[]).durable_stamp(),
+            0,
+            "with_prefix() stamp must be 0"
+        );
+
+        // set_durable_stamp writes; durable_stamp reads back.
+        let raw = SwizzledPtr::on_disk(1, 100, nt).to_raw();
+        assert_ne!(raw, 0, "test ptr must be non-zero");
+        node.set_durable_stamp(raw);
+        assert_eq!(node.durable_stamp(), raw, "stamp must round-trip");
+
+        // EVERY path-copy of the STAMPED node clears the stamp to 0 (the lynchpin).
+        let child = Child::OnDisk(SwizzledPtr::on_disk(2, 200, nt));
+        assert_eq!(
+            node.with_child(edge, child).durable_stamp(),
+            0,
+            "with_child copy must clear the stamp"
+        );
+        assert_eq!(node.as_final().durable_stamp(), 0, "as_final copy clears");
+        assert_eq!(
+            node.as_non_final().durable_stamp(),
+            0,
+            "as_non_final copy clears"
+        );
+        assert_eq!(
+            node.with_value(7).durable_stamp(),
+            0,
+            "with_value copy clears"
+        );
+        assert_eq!(
+            node.with_prefix_replaced(&[]).durable_stamp(),
+            0,
+            "with_prefix_replaced copy clears"
+        );
+        assert_eq!(node.clone().durable_stamp(), 0, "Clone clears");
+
+        // without_child also clears (re-stamp first since the prior copy is stamp-0).
+        let parent = node.with_child(edge, Child::OnDisk(SwizzledPtr::on_disk(3, 300, nt)));
+        parent.set_durable_stamp(raw);
+        if let Some(removed) = parent.without_child(edge) {
+            assert_eq!(removed.durable_stamp(), 0, "without_child copy clears");
+        }
+    }
+
+    #[test]
+    fn durable_stamp_invariant_byte() {
+        check_durable_stamp_invariant::<ByteKey>(NodeType::Node4, b'a');
+    }
+
+    #[test]
+    fn durable_stamp_invariant_char() {
+        check_durable_stamp_invariant::<CharKey>(NodeType::CharNode4, 'a' as u32);
     }
 
     #[test]

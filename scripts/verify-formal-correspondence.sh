@@ -249,6 +249,7 @@ if command -v tla2sany >/dev/null 2>&1; then
       PublicDictionaryNodeTraversal \
       EvictionWalkEBR \
       OverlayEvictionCas \
+      OverlayEvictionStale \
       LockFreeOverlayRemoveCas \
       LockFreeOverlayDurableReplay \
       LockFreeOverlayValueCas \
@@ -303,6 +304,7 @@ if [ "${RUN_TLC:-0}" = "1" ]; then
       PublicDictionaryNodeTraversal \
       EvictionWalkEBR \
       OverlayEvictionCas \
+      OverlayEvictionStale \
       LockFreeOverlayRemoveCas \
       LockFreeOverlayDurableReplay \
       LockFreeOverlayValueCas \
@@ -358,6 +360,7 @@ if [ "${RUN_TLC:-0}" = "1" ]; then
       LockFreeDurableCheckpoint \
       LockFreeDurableCheckpointEviction \
       OverlayEvictionCas \
+      OverlayEvictionStale \
       LockFreeOverlayRemoveCas \
       LockFreeOverlayDurableReplay \
       LockFreeOverlayValueCas \

@@ -79,7 +79,7 @@ fn test_disk_registry_eviction_selection() {
     }
 
     // Select with min_depth = 1 (should exclude depth 0 nodes)
-    let selected = registry.select_for_eviction(1024, &lru, 1, 5);
+    let selected = registry.select_for_eviction(1024, &lru, 1, 5, 0);
 
     // Should have selected some nodes
     assert!(!selected.is_empty());
@@ -246,7 +246,7 @@ fn test_eviction_respects_min_depth() {
     }
 
     // Select with min_depth=1
-    let selected = registry.select_for_eviction(10000, &lru, 1, 100);
+    let selected = registry.select_for_eviction(10000, &lru, 1, 100, 0);
 
     // Should only have depth 2 nodes
     assert_eq!(selected.len(), 5);
@@ -388,7 +388,7 @@ fn test_char_disk_registry_eviction_selection() {
     }
 
     // Select with min_depth = 1 (should exclude depth 0 nodes)
-    let selected = registry.select_char_for_eviction(1024, &lru, 1, 5);
+    let selected = registry.select_char_for_eviction(1024, &lru, 1, 5, 0);
 
     // Should have selected some nodes
     assert!(!selected.is_empty());

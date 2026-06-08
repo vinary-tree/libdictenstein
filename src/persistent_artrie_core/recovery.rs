@@ -676,15 +676,15 @@ impl RecoveryManager {
             Err(_) => return Ok(false), // Can't open WAL, no recovery needed
         };
 
-        // If we can read at least one record, we need recovery
-        for result in wal_reader.iter() {
-            match result {
-                Ok(_) => return Ok(true),
-                Err(_) => return Ok(false), // Empty or corrupted WAL
-            }
+        // If we can read at least one record, we need recovery. Only the FIRST
+        // record matters: a readable record ⇒ recovery; a read error or no records
+        // ⇒ none. (Was a `for` over `.iter()` that always returned on iteration 1 —
+        // `.next()` is the same behavior without tripping clippy::never_loop.)
+        match wal_reader.iter().next() {
+            Some(Ok(_)) => Ok(true),
+            Some(Err(_)) => Ok(false), // corrupted first record
+            None => Ok(false),         // empty WAL
         }
-
-        Ok(false)
     }
 
     /// Perform recovery and return recovered state.

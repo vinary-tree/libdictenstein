@@ -108,6 +108,37 @@ pub struct EvictionConfig {
     /// Default: `None` (use default thresholds)
     pub memory_pressure_config:
         Option<crate::persistent_artrie::memory_monitor::MemoryPressureConfig>,
+
+    /// Optional resident-heap budget (in on-disk-equivalent + per-node-overhead bytes,
+    /// the `*_resident_estimate_bytes` unit). `None` (default) = today's UNBOUNDED
+    /// behavior (full back-compat; overlay nodes are reclaimed only via the async
+    /// memory-pressure loop / explicit `force_eviction`). `Some(b)` = after every
+    /// checkpoint, the tail evicts the COLDEST registered overlay nodes down to `b`.
+    ///
+    /// NOTE: this bounds the POST-CHECKPOINT cold/quiescent resident set. A hot working
+    /// set continuously overwritten cannot be evicted (the 1c stamp guard refuses a
+    /// node overwritten since its checkpoint), and the inter-checkpoint transient
+    /// (superseded path-copy versions, freed lazily) rides above `b` until the next
+    /// checkpoint — size `b` below the process limit by that margin (checkpoint more
+    /// frequently to shrink it).
+    ///
+    /// Default: `None`
+    pub resident_budget_bytes: Option<usize>,
+
+    /// Optional per-checkpoint cap on how many overlay nodes the budget tail evicts in
+    /// ONE pass (a NODE count = the `max_count` of the cold-set selection, which bounds
+    /// the O(depth) spine-rebuild + root-CAS work done while `checkpoint_lock` is held).
+    /// `None` (default) = UNCAPPED (`usize::MAX`): one pass evicts the entire coldest set
+    /// down to the budget — budget-precise, but the FIRST over-budget checkpoint after a
+    /// bulk load may hold `checkpoint_lock` for the duration of that one-time large
+    /// eviction (the eviction itself is non-blocking loser-safe root-CAS, so concurrent
+    /// writers proceed). `Some(n)` = a latency limiter for operators who MEASURED their
+    /// per-checkpoint cold growth: it converges over checkpoints ONLY IF `n` ≥ that
+    /// growth, else resident accumulates unbounded (the budget never converges). Set it
+    /// from a measured number, not a guess.
+    ///
+    /// Default: `None` (uncapped)
+    pub resident_budget_eviction_cap: Option<usize>,
 }
 
 impl Default for EvictionConfig {
@@ -123,6 +154,8 @@ impl Default for EvictionConfig {
             use_lru_tracking: true,
             enable_memory_pressure_monitor: true,
             memory_pressure_config: None,
+            resident_budget_bytes: None,
+            resident_budget_eviction_cap: None,
         }
     }
 }
@@ -158,6 +191,8 @@ impl EvictionConfig {
                     ..Default::default()
                 },
             ),
+            resident_budget_bytes: None,
+            resident_budget_eviction_cap: None,
         }
     }
 
@@ -176,6 +211,8 @@ impl EvictionConfig {
             use_lru_tracking: true,
             enable_memory_pressure_monitor: true,
             memory_pressure_config: None,
+            resident_budget_bytes: None,
+            resident_budget_eviction_cap: None,
         }
     }
 

@@ -304,8 +304,15 @@ pub struct PersistentARTrie<V: DictionaryValue = (), S: BlockStorage = MmapDiskM
     /// `RwLock`-guarded field read.
     pub(crate) durability_policy:
         crate::persistent_artrie_core::shared_access::AtomicEnumCell<DurabilityPolicy>,
-    /// Epoch manager for MVCC-Lite snapshot isolation
-    pub(crate) epoch_manager: super::concurrency::EpochManager,
+    /// Epoch manager for MVCC-Lite snapshot isolation.
+    ///
+    /// Phase 6: an `Arc<EpochManager>` (was a bare `EpochManager`) so byte's
+    /// `enable_eviction` can SHARE this exact manager with the eviction coordinator
+    /// (`Arc::clone`), mirroring char — the overlay evictor's quiescence drain then
+    /// genuinely waits on the same readers the overlay read/write paths pin (honest
+    /// reader accounting). All existing `self.epoch_manager.enter_read()` calls are
+    /// unchanged (they deref through the `Arc`).
+    pub(crate) epoch_manager: Arc<super::concurrency::EpochManager>,
     /// Atomic statistics for monitoring
     pub(crate) stats: Arc<super::concurrency::TrieStats>,
 
