@@ -23,15 +23,19 @@ mutators were never enumerated. **L0.3 (collapse OR RwLock → bare field) CANNO
 **Resolution:** the OR RwLock + owned root field persist UNTIL **L3.3** deletes the field OUTRIGHT (after every `&self`
 owned writer/reader is gone via L2.2 + L3.3). NO intermediate bare-field state — "collapse" == "delete at L3.3". L3.3
 additionally deletes clear_dirty_flags_recursive/propagate_dirty_to_root and must RETIRE/REWRITE the loom suite (its
-OR-lock premise evaporates). **Level 0 is now ONLY L0.1 + L0.2**, with these RT-confirmed corrections:
+OR-lock premise evaporates). **Level 0 is now ONLY L0.1** (L0.2 MOVED to L3.2 — see below), with these corrections:
 - L0.1 commit must ALSO, in the same commit, migrate the owned-eviction tests: src/persistent_artrie_char/
   eviction_registry_tests.rs; the persist.rs ~2725 region; the owned-arm assertions in tests/persistent_char_eviction_
   {correspondence,proptest,registry_correspondence}.rs (re-assert vs the overlay registry / drop the kill-switched-
-  owned-evict scenario); confirm tests/persistent_artrie_loom_correspondence.rs:1748 is comment-only.
-- L0.2 must UNWRAP each route_overlay() guard (not merely delete the tail — else missing return → won't compile),
-  delete collect_terms_with_cursor_and_arena (cursor_iter.rs:195) alongside collect_terms_from_cursor, and route/delete
-  the byte iter_prefix_with_arena/iter_prefix_with_values_and_arena owned tails (arena_iter.rs:392/561).
-- L0.1/L0.2 are RT-CLEARED (mechanical, no further red-team). The OR-lock collapse (now folded into L3.3) keeps its ⚠️RT.
+  owned-evict scenario); confirm tests/persistent_artrie_loom_correspondence.rs:1748 is comment-only. **DONE+COMMITTED (5aa6fc3).**
+- **L0.2 ROLLED BACK + MOVED to L3.2 (2026-06-08).** The original L0.2 (delete owned READ tails) was UNSOUND: it assumed
+  the owned read arm was reachable only via `kill_switch_to_owned`, but in-memory `::new()` tries (a PUBLIC API) are
+  permanently `route_overlay()==false` and use the owned read path — collapsing the reads broke 76 tests (44 basic
+  `::new()` char_integration tests, ZERO kill_switch). The read-tail deletion is causally DOWNSTREAM of the L3.2
+  `::new()`→overlay flip + struct-zipper re-point, so it is now FUSED into L3.2. Full retrospective + the rejected
+  "flip `::new()` early" Strategy-B viability analysis: **docs/design/slice3-l02-rollback-2026-06-08.md**.
+- L0.1 is RT-CLEARED (mechanical). The OR-lock collapse + the former L0.2 read-tail deletion both live at L3 now
+  (L3.3 / L3.2 respectively) and inherit L3's ⚠️RT.
 
 ## 5 ground-truth corrections (each load-bearing for ordering)
 1. **Normal reopen is ALREADY overlay-drained.** open_inner production arms use convert_owned_to_overlay_on_reopen
@@ -78,12 +82,12 @@ them — `if route_overlay(){return X} <tail>` borrow-checks the tail), then col
   arm; char mod.rs start_char (~2141-2145) + force_eviction (~2231-2235) → drop the evict_char_nodes else + unused
   quiescence locals. Now-dead → delete: byte evict_node_at_path (+find_parent_in_root), char evict_char_nodes +
   evict_node_at_path (+inline relink). KEEP vocab evict_node_at_path (persistent_vocab_artrie/mod.rs:767/869 — distinct type).
-- **L0.2 — delete route_overlay-false owned READ tails** (RT:no). Char: try_contains/get_value/try_get
-  (query_api.rs) + iter_prefix*/merge-read (prefix_api.rs) owned tails. Byte: iter_prefix_from_cursor owned tail +
-  DELETE collect_terms_from_cursor (cursor_iter.rs — gap b RESOLVED: it's the route_overlay-gated owned arm, a clean
-  deletion). KEEP (D1 seams, switch to &self.root at L0.3): byte contains_impl/get_value_impl (query_impl.rs:34/71 —
-  called by unrouted_contains_bytes/unrouted_get_value_bytes atomic_ops.rs:248/262 + compaction_snapshot fallback +
-  recompute_recovered_increment); char owned_try_contains/owned_get/owned_try_get + owned_root_guard + navigate_to_prefix_from.
+- **L0.2 — ❌ ROLLED BACK + MOVED to L3.2** (2026-06-08; was "delete route_overlay-false owned READ tails", RT:no).
+  UNSOUND at L0: in-memory `::new()` tries are permanently `route_overlay()==false` (public API) and use the owned read
+  path, so deleting the read tails before the L3.2 `::new()`→overlay flip broke 76 tests. The read-tail deletion (char
+  try_contains/get_value/try_get + iter_prefix*; byte iter_prefix_from_cursor + collect_terms_from_cursor) is now FUSED
+  into L3.2. KEPT-as-was (D1 seams): byte contains_impl/get_value_impl + unrouted_*; char owned_try_*/owned_root_guard/
+  navigate_to_prefix_from. Retrospective: docs/design/slice3-l02-rollback-2026-06-08.md.
 - **L0.3 — collapse OR RwLock→bare field** ⚠️RT (data-loss-critical: lock-collapse soundness). root: RwLock<TrieRoot<V>>
   → TrieRoot<V> (dict_impl.rs:280); char RwLock<CharTrieRoot<V>> → CharTrieRoot<V> (mod.rs:429). Surviving self.root
   accesses after L0.1/L0.2: (i) ctor/reopen scratch (f5_loader get_mut, &mut); (ii) D1 converter seam readers;
@@ -155,12 +159,20 @@ red-team #1 proved it subsumes counter semantics incl. u64>i64::MAX (counter_lea
 - **L3.1 flip F5 reopen scratch onto CX.2/CX.3** ⚠️RT. load_root_immutable_seam (flip.rs:1557) + the F5 Overlay arm →
   load_overlay_root_compressed (no TrieRoot scratch). Keep corrupt-image→empty+WAL fallback. **Red-team:** every normal
   reopen now reads via the new codec with NO owned fallback (the brick-risk; CX back-compat proof is the precondition).
-- **L3.2 re-point the struct zipper onto the overlay** ⚠️RT (4th consumer). zipper.rs has_path/is_final_at_path/
-  get_children_at_path (+ char twin): replace inner.root.read() navigation with the overlay-backed root()/DictionaryNode
-  (NodeInner::Overlay; fault OnDisk via fault_overlay_slot). Delete the log::warn! stub. ::new() must install an empty
-  overlay (or adjust the in-memory zipper tests). Update zipper_language_correspondence to not rely on owned.
+- **L3.2 re-point the struct zipper onto the overlay + `::new()`→empty overlay + ABSORB the former L0.2 read-tail
+  collapse** ⚠️RT (4th consumer). zipper.rs has_path/is_final_at_path/get_children_at_path (+ char twin): replace
+  inner.root.read() navigation with the overlay-backed root()/DictionaryNode (NodeInner::Overlay; fault OnDisk via
+  fault_overlay_slot). Delete the log::warn! stub. **`::new()` MUST install an empty overlay** so `route_overlay()` is
+  universally true (this is the PRECONDITION the rolled-back L0.2 lacked — see slice3-l02-rollback-2026-06-08.md +
+  the durability spike below). In the SAME fused commit, collapse the public read-method owned arms (the former L0.2:
+  char try_contains/get_value/try_get + iter_prefix*; byte iter_prefix_from_cursor) — once `::new()` is overlay-backed
+  these arms are dead. Update zipper_language_correspondence to not rely on owned. **Durability spike (do FIRST,
+  reversible):** `::new()`→overlay must resolve the WAL-less-write question (flip_to_overlay hard-requires a WAL;
+  insert_cas_durable forbids acknowledging a 0-LSN as durable) — prove a WAL-less in-memory overlay is
+  correctness-equivalent to the owned tree for insert/contains/get/iter/zipper across arbitrary V before this lands.
   **Red-team:** the formal gate's PublicDictionaryNodeTraversal + zipper correspondence (wrong overlay-zipper = silent
-  wrong query results).
+  wrong query results); + the `::new()`-overlay equivalence across V∈{(),i32,String,u64}; + no green-gate window where
+  reads are overlay-only while any ctor still yields route_overlay()==false.
 - **L3.3 delete owned root field + holder TYPES + owned readers/converters** ⚠️RT (biggest risk). Delete: root field
   (dict_impl.rs:280, mod.rs:429); TrieRoot/CharTrieRoot/CharTrieNodeInner; owned loaders load_root_from_disk(_with_arena);
   D1 seams (owned_first_units/owned_units_under/owned_units_with_values_under/owned_has_empty_term_value/clear_owned);
