@@ -681,12 +681,9 @@ impl<V: DictionaryValue, S: crate::persistent_artrie::block_storage::BlockStorag
     /// Get the number of terms in the dictionary.
     #[inline]
     pub fn len(&self) -> usize {
-        // E1 read-flip: `self.len` tracks the OWNED tree, which is cleared under the
-        // overlay regime; count the overlay's resident finals instead.
-        if self.route_overlay() {
-            return self.overlay_len();
-        }
-        self.len.load(AtomicOrdering::Acquire)
+        // L3.3: the overlay is the sole representation; count its resident finals (the
+        // owned `self.len` counter is moribund under the overlay regime).
+        self.overlay_len()
     }
 
     /// Get the number of terms in the dictionary (alias for `len()`).
@@ -698,39 +695,31 @@ impl<V: DictionaryValue, S: crate::persistent_artrie::block_storage::BlockStorag
     /// Check if the dictionary is empty.
     #[inline]
     pub fn is_empty(&self) -> bool {
-        // E1 read-flip: cheap any-final early-out over the overlay (not `overlay_len()
-        // == 0`, which would be O(N)).
-        if self.route_overlay() {
-            return self.overlay_is_empty();
-        }
-        self.len.load(AtomicOrdering::Acquire) == 0
+        // L3.3: cheap any-final early-out over the overlay (not `overlay_len() == 0`,
+        // which would be O(N)).
+        self.overlay_is_empty()
     }
 
     /// Get the root node for dictionary traversal.
     ///
-    /// F7 BLOCKER-1: under the lock-free overlay regime this returns an
-    /// OVERLAY-backed `DictionaryNode` that navigates the overlay lazily, so zipper /
-    /// transducer / fuzzy traversal works on a flipped trie (was: an EMPTY owned tree
-    /// + a `log::warn!` deferral). Additive + reversible — the owned arm is unchanged
-    /// and returned whenever `!route_overlay()`.
+    /// L3.3: the overlay is the sole representation, so this returns an OVERLAY-backed
+    /// `DictionaryNode` that navigates the overlay lazily, so zipper / transducer / fuzzy
+    /// traversal works (was: an EMPTY owned tree + a `log::warn!` deferral).
     ///
     /// The inherent `&self` path passes **no** overlay faulter: eviction (the only
     /// source of an `OnDisk` overlay child) is impossible on a non-`Shared` owned
     /// trie, so the overlay handed out here is fully `Child::InMem`. The
     /// eviction-capable `SharedCharARTrie::root` attaches a faulter.
     pub fn root(&self) -> PersistentARTrieCharNode<V> {
-        if self.route_overlay() {
-            use crate::persistent_artrie_core::overlay::flip::LockFreeOverlay;
-            let root = <Self as LockFreeOverlay<CharKey, V, S>>::overlay_root_node(self)
-                .unwrap_or_else(|| {
-                    Arc::new(crate::persistent_artrie_core::overlay::OverlayNode::<
-                        CharKey,
-                        V,
-                    >::new())
-                });
-            return PersistentARTrieCharNode::from_overlay_root(root, None);
-        }
-        PersistentARTrieCharNode::from_trie(self)
+        use crate::persistent_artrie_core::overlay::flip::LockFreeOverlay;
+        let root = <Self as LockFreeOverlay<CharKey, V, S>>::overlay_root_node(self)
+            .unwrap_or_else(|| {
+                Arc::new(crate::persistent_artrie_core::overlay::OverlayNode::<
+                    CharKey,
+                    V,
+                >::new())
+            });
+        PersistentARTrieCharNode::from_overlay_root(root, None)
     }
 
     /// Iterate over all terms in the dictionary.

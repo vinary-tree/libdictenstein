@@ -20,12 +20,9 @@ use super::prefix_term::{PrefixTermWithArena, PrefixTermWithValueAndArena};
 
 impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     pub fn iter_prefix(&self, prefix: &str) -> Result<Option<Vec<String>>> {
-        // E1 read-flip: under the overlay regime the owned tree is empty; enumerate
-        // the immutable overlay (non-faulting, resident-finals — see `overlay_read`).
-        if self.route_overlay() {
-            return self.overlay_iter_prefix(prefix);
-        }
-        self.owned_iter_prefix(prefix)
+        // L3.3: the overlay is the sole representation; enumerate the immutable overlay
+        // (non-faulting, resident-finals — see `overlay_read`).
+        self.overlay_iter_prefix(prefix)
     }
 
     /// Owned-tree prefix iteration (UN-routed). E1 `false`-arm AND the
@@ -56,12 +53,9 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     where
         V: Clone,
     {
-        // E1 read-flip: enumerate the overlay (the `u64` counter per final, or the
-        // synthesized `()` for membership — see `overlay_read`).
-        if self.route_overlay() {
-            return self.overlay_iter_prefix_with_values(prefix);
-        }
-        self.owned_iter_prefix_with_values(prefix)
+        // L3.3: the overlay is the sole representation; enumerate it (the `u64` counter
+        // per final, or the synthesized `()` for membership — see `overlay_read`).
+        self.overlay_iter_prefix_with_values(prefix)
     }
 
     /// Owned-tree (term, value) prefix iteration (UN-routed). E1 `false`-arm + the

@@ -39,12 +39,9 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     /// This version returns a `Result` for lazy loading I/O errors.
     /// For disk-backed tries, prefetches children at each level for improved I/O performance.
     pub fn try_contains(&self, term: &str) -> Result<bool> {
-        // E1 read-flip: under the overlay regime the owned tree is empty (cleared on
-        // reopen), so route membership to the non-faulting lock-free read.
-        if self.route_overlay() {
-            return Ok(self.contains_lockfree(term));
-        }
-        self.owned_try_contains(term)
+        // L3.3: the overlay is the sole representation; route membership to the
+        // non-faulting lock-free read.
+        Ok(self.contains_lockfree(term))
     }
 
     /// Owned-tree membership read (UN-routed). This is the E1 `false`-arm body AND
@@ -153,20 +150,11 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     where
         V: Clone,
     {
-        // Under the overlay regime, route to the overlay value read via the canonical
-        // `get_value` (→ `overlay_route_get_value`, the shared `LockFreeOverlay` driver
-        // that handles the i64/u64 counter, `()` membership, AND arbitrary `V`).
-        // `get`/`try_get` return an OWNED `Option<V>` (the F4 collapse), so there is NO
-        // borrow-into-owned-tree constraint — the prior `Ok(None)` short-circuit
-        // silently DROPPED overlay values (it predated the overlay-default flip and
-        // lost, e.g., n-gram counts read via `get`). The overlay read is
-        // non-faulting/infallible (hence `Ok(..)`); only the owned arm can surface a
-        // lazy-load I/O `Err`. At F7-S9 (`route_overlay()` → const-true) this collapses
-        // to `Ok(self.get_value(term))`.
-        if self.route_overlay() {
-            return Ok(self.get_value(term));
-        }
-        self.owned_try_get(term)
+        // L3.3: the overlay is the sole representation; route to the overlay value read
+        // via the canonical `get_value` (→ `overlay_route_get_value`, the shared
+        // `LockFreeOverlay` driver handling the i64/u64 counter, `()` membership, AND
+        // arbitrary `V`). The overlay read is non-faulting/infallible, hence `Ok(..)`.
+        Ok(self.get_value(term))
     }
 
     /// Owned-tree value read returning a borrow (UN-routed). E1 `false`-arm + the
