@@ -21,6 +21,10 @@
 //! with **zero** upward reference. Zero `unsafe` — `Send`/`Sync` auto-derive.
 
 pub mod atomic_ptr;
+// G5.1 — the shared, key-encoding-generic overlay-backed `DictionaryNode` handle
+// (`OverlayDictionaryNode<K, V>`), aliased by both variants as `PersistentARTrieNode`
+// (byte) / `PersistentARTrieCharNode` (char). Auto-derives Send/Sync (no `unsafe`).
+pub mod dict_node;
 // The SAFE object-safe fault-in capability for the overlay-backed `DictionaryNode`
 // (resolves `Child::OnDisk` overlay children during a graph walk without naming `S`
 // and without `unsafe`). See `faulter.rs`.
@@ -54,6 +58,7 @@ pub(crate) mod f5_build;
 pub(crate) mod codec;
 
 pub use atomic_ptr::AtomicNodePtr;
+pub use dict_node::OverlayDictionaryNode;
 pub use faulter::OverlayFaulter;
 pub use node::{flags, Child, OverlayNode};
 // F7 — the crash-injection fail points for the Owned→Overlay conversion crash-safety

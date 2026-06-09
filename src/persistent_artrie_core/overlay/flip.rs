@@ -48,7 +48,13 @@ use std::any::Any;
 
 use crate::persistent_artrie_core::error::Result;
 use crate::persistent_artrie_core::key_encoding::KeyEncoding;
-use crate::persistent_artrie_core::overlay::faulter::OverlayFaulter;
+// G5.2 (RT-1): the shared faulting read-fault default + its retry budget, so
+// `overlay_value_get` is a single FAULTING default (BUG #46 parity for byte+char).
+// `OverlayEvictable<K, V, S>: OverlayFaulter<K, V>` — the prior `OverlayFaulter`
+// supertrait of `LockFreeOverlay` is now reached transitively through it.
+use crate::persistent_artrie_core::overlay::evict::{
+    OverlayEvictable, DEFAULT_MAX_FAULTIN_RETRIES,
+};
 use crate::persistent_artrie_core::overlay::node::OverlayNode;
 use crate::value::DictionaryValue;
 use std::sync::Arc;
@@ -182,7 +188,7 @@ pub(crate) enum RootPublishOutcome {
 }
 
 pub(crate) trait LockFreeOverlay<K: KeyEncoding, V: DictionaryValue, S>:
-    OverlayFaulter<K, V> + Sized + 'static
+    OverlayEvictable<K, V, S> + Sized + 'static
 {
     /// The per-variant counter monomorph (`u64` for char, `i64` for byte). THE
     /// divergence that makes the value-route a seam, not a blanket. `Copy` so the
@@ -244,13 +250,43 @@ pub(crate) trait LockFreeOverlay<K: KeyEncoding, V: DictionaryValue, S>:
     /// reestablish/replay the overlay is uncontended.
     fn overlay_publish_value(&self, units: &[K::Unit], value: V);
 
-    /// **G5/F1 — read the overlay leaf's ARBITRARY-`V` value at `units`** (the
-    /// variant's non-faulting lock-free point read of the leaf `Option<V>`), or
-    /// `None` if absent/non-final. The value twin of [`Self::overlay_counter_get`],
-    /// used by the arbitrary-`V` arm of [`Self::overlay_route_get_value`].
-    /// NON-FAULTING and exact: overlay finals are never evicted in production
-    /// (§2.4 / RT5), so the resident-finals walk reads the durable value.
-    fn overlay_value_get(&self, units: &[K::Unit]) -> Option<V>;
+    /// **G5/F1 + G5.2/RT-1 — read the overlay leaf's ARBITRARY-`V` value at `units`**,
+    /// FAULTING any `OnDisk` (evicted) interior node back in along the way, or `None`
+    /// if absent/non-final. The value twin of [`Self::overlay_counter_get`], used by
+    /// the arbitrary-`V` arm of [`Self::overlay_route_get_value`].
+    ///
+    /// **A shared FAULTING DEFAULT (was a per-variant seam).** This is the BUG #46 fix
+    /// (regression-pinned by `tests/overlay_eviction_arbitrary_v_bug46.rs`): an
+    /// in-process eviction CAN flip an interior overlay node (whose subtree holds
+    /// finals) to `OnDisk`, so a NON-faulting walk returned `None` for every term under
+    /// it until reopen. The counter (`overlay_counter_get` → `get_lockfree`) and
+    /// membership (`overlay_contains` → `contains_lockfree`) arms ALREADY faulted; G5.2
+    /// brings the arbitrary-`V` arm to the SAME faulting walk via the shared
+    /// [`OverlayEvictable::find_leaf_faulting`] (the supertrait), making byte + char
+    /// IDENTICAL here. `find_leaf_faulting` is infallible-in-practice — every branch
+    /// returns `Ok` (it does its own bounded loser-safe install-CAS rebases + a final
+    /// read-only liveness walk; a loader I/O error degrades to `Ok(None)`), so the
+    /// `Err`-arm fallback is currently unreachable, preserving char's exact prior
+    /// behavior while ALSO fixing byte's latent #46 (byte arbitrary-`V` value reads
+    /// were non-faulting; no byte test asserted that — this is a strict improvement).
+    ///
+    /// SAFE on the READ path: this is the `get_value` route (no WAL lock held), NOT a
+    /// pre-WAL-append insert present-hoist — so it does not trip the documented
+    /// "faulting read before the WAL append racing checkpoint/eviction" lock-ordering
+    /// inversion (the "75-minute hang"); the hot-insert hoists keep their NON-faulting
+    /// walks.
+    fn overlay_value_get(&self, units: &[K::Unit]) -> Option<V> {
+        let root_slot = match self.lockfree_root() {
+            Some(r) => r,
+            None => return None,
+        };
+        match self.find_leaf_faulting(root_slot, units, DEFAULT_MAX_FAULTIN_RETRIES) {
+            Ok(found) => found.and_then(|leaf| leaf.get_value()),
+            // Unreachable in the current `find_leaf_faulting` (it returns `Ok` on every
+            // path incl. a loader error). Kept as the conservative liveness degrade.
+            Err(_) => None,
+        }
+    }
 
     /// **F5 — NO-WAL overlay remove of the NON-EMPTY term `units`** (the data-loss-
     /// critical reopen WAL-tail-into-overlay path's Remove arm — see

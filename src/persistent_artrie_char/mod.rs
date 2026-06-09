@@ -789,166 +789,28 @@ impl<'a, V: DictionaryValue + Default> FromIterator<&'a str> for PersistentARTri
 
 /// Node in the character-level trie for the `DictionaryNode` trait.
 ///
-/// L3.3 — the overlay is the sole representation. The handle holds an owned
-/// `Arc<OverlayNode>` snapshot (immutable + reference-counted, so descent needs no
-/// pin and no `unsafe`; the `Arc` keeps the node + its in-memory subtree alive) plus
-/// an optional SAFE [`OverlayFaulter`] for `Child::OnDisk` overlay children.
+/// **G5.1 (DRY unification).** This is now a thin alias of the shared, key-encoding-
+/// generic [`OverlayDictionaryNode<CharKey, V>`](crate::persistent_artrie_core::overlay::OverlayDictionaryNode)
+/// in `persistent_artrie_core`. The byte and char overlay-backed `DictionaryNode`
+/// handles were token-for-token identical modulo the key encoding (`CharKey` vs
+/// `ByteKey`) and the public unit presented (`char` vs `u8`); G5.1 collapses both
+/// into the one generic handle. The public name `PersistentARTrieCharNode<V>` is
+/// PRESERVED (downstream `liblevenshtein` / `libgrammstein` depend on it), and
+/// `DictionaryNode::Unit = char` is preserved exactly (`K::Token = char` for
+/// `CharKey`).
 ///
-/// `Clone` is derived (both fields are `Clone`); `Debug` is hand-written (below)
-/// because `Arc<dyn OverlayFaulter>` is not `Debug`.
-#[derive(Clone)]
-pub struct PersistentARTrieCharNode<V: DictionaryValue = ()> {
-    /// Owned overlay node snapshot — the handle navigates the lock-free overlay
-    /// (returned by `root()`). The `Arc` keeps the node + its in-memory subtree
-    /// alive, so descent needs no pin/`unsafe`. `Some` for every constructed handle;
-    /// `None` is the inert default a method returns its empty value for.
-    overlay: Option<Arc<crate::persistent_artrie_core::overlay::OverlayNode<CharKey, V>>>,
-    /// SAFE fault-in capability for `Child::OnDisk` overlay children, or `None` for a
-    /// resident-only walk (the inherent `PersistentARTrieChar::root`, where eviction —
-    /// hence an OnDisk overlay child — is impossible). `Arc<dyn ..>` (owned), so it
-    /// keeps the trie alive for the walk and clones cheaply. No raw pointer, no `unsafe`.
-    overlay_faulter:
-        Option<Arc<dyn crate::persistent_artrie_core::overlay::OverlayFaulter<CharKey, V>>>,
-}
-
-// Hand-written `Debug` (the derived one cannot see through `Arc<dyn OverlayFaulter>`):
-// summarize whichever arm is active without recursing or dereferencing raw pointers.
-impl<V: DictionaryValue> std::fmt::Debug for PersistentARTrieCharNode<V> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("PersistentARTrieCharNode")
-            .field("overlay", &self.overlay)
-            .field("has_faulter", &self.overlay_faulter.is_some())
-            .finish()
-    }
-}
-
-// Safety: the handle holds only owned `Arc`s — an `Arc<OverlayNode>` snapshot and an
-// optional `Arc<dyn OverlayFaulter<CharKey, V>>`; no raw pointers are stored. These
-// manual `unsafe impl`s are retained because `Arc<dyn OverlayFaulter<CharKey, V>>`
-// (the trait object carries no `Send`/`Sync` supertrait bound) does not auto-derive
-// `Send`/`Sync`. The sole concrete faulter, `SharedOverlayFaulter`, holds only an
-// `Arc<trie>` whose `T: Send + Sync`, so it is itself `Send`/`Sync` and handing the
-// handle across threads is sound. Reads form only `&`-references; an `OnDisk` overlay
-// child faults in via atomic CAS through the SAFE `OverlayFaulter`.
-unsafe impl<V: DictionaryValue> Send for PersistentARTrieCharNode<V> {}
-unsafe impl<V: DictionaryValue> Sync for PersistentARTrieCharNode<V> {}
-
-impl<V: DictionaryValue> PersistentARTrieCharNode<V> {
-    /// Create an **overlay-backed** root node (the node returned by `root()`).
-    /// Navigates the lock-free overlay lazily. `overlay_faulter` is the SAFE fault-in
-    /// capability for `Child::OnDisk` overlay children (or `None` for a resident-only
-    /// walk).
-    fn from_overlay_root(
-        node: Arc<crate::persistent_artrie_core::overlay::OverlayNode<CharKey, V>>,
-        overlay_faulter: Option<
-            Arc<dyn crate::persistent_artrie_core::overlay::OverlayFaulter<CharKey, V>>,
-        >,
-    ) -> Self {
-        Self {
-            overlay: Some(node),
-            overlay_faulter,
-        }
-    }
-
-    /// Create an overlay child node, inheriting the parent's overlay faulter.
-    fn from_overlay_node(
-        node: Arc<crate::persistent_artrie_core::overlay::OverlayNode<CharKey, V>>,
-        overlay_faulter: Option<
-            Arc<dyn crate::persistent_artrie_core::overlay::OverlayFaulter<CharKey, V>>,
-        >,
-    ) -> Self {
-        Self {
-            overlay: Some(node),
-            overlay_faulter,
-        }
-    }
-
-    /// Resolve an overlay child slot into a child overlay node, faulting a
-    /// `Child::OnDisk` slot in via `overlay_faulter` (never dropping it). Returns
-    /// `None` for a null/absent slot, or an OnDisk slot that cannot be faulted in
-    /// (no faulter / I/O error) — the same conservative degrade the production
-    /// point-read uses (liveness-only, never a fabricated term).
-    fn overlay_child_node(
-        child: &crate::persistent_artrie_core::overlay::Child<CharKey, V>,
-        overlay_faulter: &Option<
-            Arc<dyn crate::persistent_artrie_core::overlay::OverlayFaulter<CharKey, V>>,
-        >,
-    ) -> Option<Self> {
-        if let Some(child_arc) = child.as_in_mem() {
-            return Some(Self::from_overlay_node(
-                Arc::clone(child_arc),
-                overlay_faulter.clone(),
-            ));
-        }
-        if let Some(on_disk) = child.as_on_disk() {
-            if !on_disk.is_null() {
-                let loaded = overlay_faulter.as_ref()?.fault_overlay_slot(on_disk)?;
-                return Some(Self::from_overlay_node(loaded, overlay_faulter.clone()));
-            }
-        }
-        None
-    }
-}
-
-impl<V: DictionaryValue> DictionaryNode for PersistentARTrieCharNode<V> {
-    type Unit = char;
-
-    fn is_final(&self) -> bool {
-        // L3.3 — overlay-only: pure owned-`Arc` read, no pin / no `unsafe`.
-        match &self.overlay {
-            Some(node) => node.is_final(),
-            None => false,
-        }
-    }
-
-    fn transition(&self, label: char) -> Option<Self> {
-        // L3.3 — overlay-only: one `u32` edge per overlay child (un-path-compressed).
-        // InMem ⇒ wrap directly; OnDisk ⇒ fault in via the SAFE overlay faulter
-        // (never dropped). No pin / no `unsafe`.
-        let node = self.overlay.as_ref()?;
-        let child = node.find_child(label as u32)?;
-        Self::overlay_child_node(child, &self.overlay_faulter)
-    }
-
-    fn edges(&self) -> Box<dyn Iterator<Item = (char, Self)> + '_> {
-        // L3.3 — overlay-only: one edge per overlay child slot (InMem direct, OnDisk
-        // faulted in — never dropped). Keys are `u32`; an unmappable scalar
-        // (impossible for real data) is skipped. Preallocated to the known child
-        // count. No `unsafe`.
-        let Some(node) = &self.overlay else {
-            return Box::new(std::iter::empty());
-        };
-        let mut edges = Vec::with_capacity(node.num_children());
-        for (&key, child) in node.iter_children() {
-            let Some(c) = char::from_u32(key) else {
-                continue;
-            };
-            if let Some(child_node) = Self::overlay_child_node(child, &self.overlay_faulter) {
-                edges.push((c, child_node));
-            }
-        }
-        Box::new(edges.into_iter())
-    }
-
-    fn edge_count(&self) -> Option<usize> {
-        // L3.3 — overlay-only: the overlay node's child count is exact and O(1).
-        self.overlay.as_ref().map(|node| node.num_children())
-    }
-}
-
-impl<V: DictionaryValue> MappedDictionaryNode for PersistentARTrieCharNode<V> {
-    type Value = V;
-
-    /// The value stored at this node (if it terminates a key). Reads the
-    /// node's `value` field directly — this unlocks liblevenshtein's
-    /// value-aware transducer queries (value-yielding + `query_filtered` /
-    /// `query_by_value_set`) over the persistent char trie.
-    fn value(&self) -> Option<V> {
-        // L3.3 — overlay-only: read the overlay leaf's `Option<V>` directly (owned
-        // `Arc`, no pin / no `unsafe`). For `V = ()` membership finals this is `None`.
-        self.overlay.as_ref().and_then(|node| node.get_value())
-    }
-}
+/// The handle holds an owned `Arc<OverlayNode>` snapshot (immutable + reference-
+/// counted, so descent needs no pin and no `unsafe`; the `Arc` keeps the node + its
+/// in-memory subtree alive) plus an optional SAFE [`OverlayFaulter`] for
+/// `Child::OnDisk` overlay children. **The two former hand-written
+/// `unsafe impl Send/Sync for PersistentARTrieCharNode` are GONE** — the shared
+/// `OverlayDictionaryNode` AUTO-DERIVES `Send`/`Sync` (the `OverlayFaulter` trait
+/// object carries a `Send + Sync` supertrait bound), a clean `−2` against the
+/// unsafe-inventory gate with zero new `unsafe`. `value()` reads the overlay leaf's
+/// `Option<V>` directly, unlocking liblevenshtein's value-aware transducer queries
+/// (value-yielding + `query_filtered` / `query_by_value_set`) over the char trie.
+pub type PersistentARTrieCharNode<V = ()> =
+    crate::persistent_artrie_core::overlay::OverlayDictionaryNode<CharKey, V>;
 
 impl<V: DictionaryValue, S: crate::persistent_artrie::block_storage::BlockStorage> Dictionary
     for PersistentARTrieChar<V, S>

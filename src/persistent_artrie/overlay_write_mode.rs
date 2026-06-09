@@ -165,13 +165,11 @@ impl<V: DictionaryValue, S: BlockStorage> LockFreeOverlay<ByteKey, V, S>
         }
     }
 
-    fn overlay_value_get(&self, units: &[u8]) -> Option<V> {
-        // Non-faulting leaf value read (exact: overlay finals never evicted in prod).
-        let lockfree_root = self.lockfree_root.as_ref()?;
-        let _epoch = self.epoch_manager.enter_read();
-        self.find_leaf_lockfree(lockfree_root, units)
-            .and_then(|leaf| leaf.get_value())
-    }
+    // G5.2 (RT-1): `overlay_value_get` is now a shared FAULTING default on
+    // `LockFreeOverlay` (the BUG #46 fix, byte+char identical, via
+    // `OverlayEvictable::find_leaf_faulting`). The byte non-faulting seam impl is
+    // REMOVED — byte arbitrary-`V` value reads now fault evicted interior nodes back
+    // in (a latent #46 fix; byte's counter/membership arms already faulted).
 
     fn claim_commit_seq(&self) -> u64 {
         // Empty-string support: the per-iteration commit generation — the SAME

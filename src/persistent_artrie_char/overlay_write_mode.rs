@@ -166,30 +166,13 @@ impl<V: DictionaryValue, S: BlockStorage> LockFreeOverlay<CharKey, V, S>
         }
     }
 
-    fn overlay_value_get(&self, units: &[u32]) -> Option<V> {
-        // BUG #46 FIX: FAULT in OnDisk nodes, exactly as the counter
-        // (`overlay_counter_get` -> `get_lockfree`) and membership (`overlay_contains` ->
-        // `contains_lockfree`) reads already do. The prior `find_leaf_lockfree` was
-        // NON-faulting on the false premise "overlay finals are never evicted in prod" —
-        // in-process eviction CAN flip an interior node (whose subtree holds finals) to
-        // `OnDisk`, so a non-faulting arbitrary-V value read returned `None` for every
-        // term under it until the trie was reopened (the on-disk image was always intact).
-        // On an I/O error fall back to the non-faulting walk (best-effort, liveness-only —
-        // matches `contains_lockfree`). Regression-pinned by
-        // tests/overlay_eviction_arbitrary_v_bug46.rs.
-        let lockfree_root = self.lockfree_root.as_ref()?;
-        let _epoch = self.epoch_manager.enter_read();
-        match self.find_leaf_faulting(
-            lockfree_root,
-            units,
-            super::lockfree_cas::DEFAULT_MAX_FAULTIN_RETRIES,
-        ) {
-            Ok(found) => found.and_then(|leaf| leaf.get_value()),
-            Err(_) => self
-                .find_leaf_lockfree(lockfree_root, units)
-                .and_then(|leaf| leaf.get_value()),
-        }
-    }
+    // G5.2 (RT-1): `overlay_value_get` (the BUG #46 FAULTING fix) is now the shared
+    // default on `LockFreeOverlay` (via `OverlayEvictable::find_leaf_faulting`), byte +
+    // char IDENTICAL. The char seam impl is REMOVED. The prior char Err-arm fell back
+    // to the non-faulting `find_leaf_lockfree`; `find_leaf_faulting` is infallible in
+    // practice (it returns `Ok` on every branch, doing its own liveness walk on
+    // exhaustion), so that arm was unreachable — behavior is byte-for-byte preserved.
+    // Regression still pinned by tests/overlay_eviction_arbitrary_v_bug46.rs.
 
     fn claim_commit_seq(&self) -> u64 {
         // Empty-string support: the per-iteration commit generation — the SAME

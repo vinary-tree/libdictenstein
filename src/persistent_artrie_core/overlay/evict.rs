@@ -53,6 +53,14 @@ use crate::persistent_artrie_core::overlay::node::{Child, OverlayNode};
 use crate::persistent_artrie_core::swizzled_ptr::SwizzledPtr;
 use crate::value::DictionaryValue;
 
+/// Default fault-in retry budget for the shared read-fault default
+/// ([`OverlayEvictable::find_leaf_faulting`]) used by
+/// `LockFreeOverlay::overlay_value_get`. Equals both variants' per-variant
+/// `lockfree_cas::DEFAULT_MAX_FAULTIN_RETRIES` (`16`): after this many loser-safe
+/// install-CAS rebases, ONE final read-only walk answers (a still-`OnDisk` slot
+/// reads absent — durable; a later read faults it — never spins).
+pub(crate) const DEFAULT_MAX_FAULTIN_RETRIES: usize = 16;
+
 /// Outcome of an attempt to evict ONE overlay node to an on-disk reference. The
 /// SHARED GENERIC outcome — both variants re-export it so their `#[cfg]`-gated
 /// drivers + tests name a single type (char keeps `pub(crate) use ... as

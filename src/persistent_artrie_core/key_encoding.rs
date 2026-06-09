@@ -31,6 +31,7 @@ pub struct CharKey;
 impl KeyEncoding for ByteKey {
     type Unit = u8;
     type Term = Vec<u8>;
+    type Token = u8;
     const KEY_BYTES: usize = 1;
     // From persistent_artrie/arena.rs:43-46:
     const ARENA_MAGIC: u64 = 0x414E4152_41545942; // "BYTARANA" in little-endian
@@ -56,6 +57,16 @@ impl KeyEncoding for ByteKey {
         units.to_vec()
     }
 
+    #[inline]
+    fn token_to_unit(token: u8) -> u8 {
+        token
+    }
+
+    #[inline]
+    fn unit_to_token(unit: u8) -> Option<u8> {
+        Some(unit)
+    }
+
     fn unit_to_le_bytes(unit: Self::Unit) -> [u8; 4] {
         [unit, 0, 0, 0]
     }
@@ -68,6 +79,7 @@ impl KeyEncoding for ByteKey {
 impl KeyEncoding for CharKey {
     type Unit = u32;
     type Term = String;
+    type Token = char;
     const KEY_BYTES: usize = 4;
     // From persistent_artrie_char/arena.rs:43-46:
     const ARENA_MAGIC: u64 = 0x414E5241524148_43; // "CHARARNA" in little-endian
@@ -97,6 +109,16 @@ impl KeyEncoding for CharKey {
             .iter()
             .map(|&u| char::from_u32(u).unwrap_or('\u{FFFD}'))
             .collect()
+    }
+
+    #[inline]
+    fn token_to_unit(token: char) -> u32 {
+        token as u32
+    }
+
+    #[inline]
+    fn unit_to_token(unit: u32) -> Option<char> {
+        char::from_u32(unit)
     }
 
     fn unit_to_le_bytes(unit: Self::Unit) -> [u8; 4] {
@@ -140,6 +162,36 @@ mod tests {
     fn char_key_units_from_str() {
         let units = CharKey::units_from_str("h\u{1F600}");
         assert_eq!(units.as_slice(), &[b'h' as u32, 0x1F600]);
+    }
+
+    // G5.0: `Token` ↔ `Unit` conversions for the shared `OverlayDictionaryNode`.
+    #[test]
+    fn byte_key_token_unit_roundtrip() {
+        for u in 0u8..=255 {
+            assert_eq!(ByteKey::token_to_unit(u), u);
+            assert_eq!(ByteKey::unit_to_token(u), Some(u));
+        }
+    }
+
+    #[test]
+    fn char_key_token_unit_roundtrip() {
+        for c in [
+            'a',
+            'Z',
+            '\u{E9}',
+            '\u{65E5}',
+            '\u{1F980}',
+            '\u{0}',
+            '\u{10FFFF}',
+        ] {
+            let u = CharKey::token_to_unit(c);
+            assert_eq!(u, c as u32);
+            assert_eq!(CharKey::unit_to_token(u), Some(c));
+        }
+        // Surrogate code points are not valid tokens → skipped (`None`), exactly
+        // as the prior char `edges()` `char::from_u32` filter did.
+        assert_eq!(CharKey::unit_to_token(0xD800), None);
+        assert_eq!(CharKey::unit_to_token(0xDFFF), None);
     }
 
     // The `units_from_str` ∘ `units_to_term` round-trip invariant (the formal
@@ -201,6 +253,19 @@ pub trait KeyEncoding: 'static + Copy + Send + Sync + Debug {
     /// API converts each to `Self::Term` via [`units_to_term`](Self::units_to_term).
     type Term: Clone + Debug;
 
+    /// The PUBLIC `DictionaryNode::Unit` token a caller (transducer / zipper)
+    /// traverses by. For byte this equals [`Unit`](Self::Unit) (`u8`); for char it
+    /// is `char` while `Unit` is the `u32` code point. The split lets the shared
+    /// `OverlayDictionaryNode<K, V>` present each variant's natural public unit
+    /// while storing the compact internal `Unit` in the overlay child map.
+    ///
+    /// Bound by [`CharUnit`](crate::char_unit::CharUnit) because the shared
+    /// `OverlayDictionaryNode`'s `DictionaryNode::Unit = Self::Token`, and
+    /// `DictionaryNode::Unit: CharUnit`. Both `u8` (`ByteKey`) and `char` (`CharKey`)
+    /// implement `CharUnit`, so this is exactly the prior per-variant `Unit = u8` /
+    /// `Unit = char` bound — no new constraint on any real implementor.
+    type Token: crate::char_unit::CharUnit;
+
     /// Width of `Self::Unit` in bytes (1 for `u8`, 4 for `u32`).
     const KEY_BYTES: usize;
 
@@ -251,6 +316,18 @@ pub trait KeyEncoding: 'static + Copy + Send + Sync + Debug {
     /// `units_to_term(&units_from_str(s))` equals `s`'s term form (`s` for char,
     /// `s.as_bytes()` for byte).
     fn units_to_term(units: &[Self::Unit]) -> Self::Term;
+
+    /// Lower a public [`Token`](Self::Token) to the internal storage
+    /// [`Unit`](Self::Unit) (the overlay child-map key). Byte: identity; char:
+    /// `token as u32`. Total — every token has a unit.
+    fn token_to_unit(token: Self::Token) -> Self::Unit;
+
+    /// Raise an internal [`Unit`](Self::Unit) back to a public
+    /// [`Token`](Self::Token), or `None` when the unit is not a valid token (a
+    /// `u32` that is not a Unicode scalar value — a surrogate). `None` units are
+    /// SKIPPED by the shared node's `edges()` (never fabricated into a transition),
+    /// preserving the prior char `char::from_u32` filter. Byte: always `Some`.
+    fn unit_to_token(unit: Self::Unit) -> Option<Self::Token>;
 
     /// Encode `unit` as up to 4 little-endian bytes. `u8` keys pad with
     /// zeros; `u32` keys use the full 4 bytes. Returned slice is always

@@ -466,7 +466,7 @@ impl<V: DictionaryValue, S: BlockStorage> WalManaged for PersistentARTrie<V, S> 
 // L3.3c: removed — `get_root_node` was the SOLE owned root constructor (it read the
 // deleted `self.root` / `TrieRoot` and produced the deleted owned `PersistentARTrieNode`
 // `Root`/`Bucket` variants). `Dictionary::root()` now returns the overlay-backed node
-// (`node_impl::PersistentARTrieNode::new_overlay`) directly.
+// (G5.1: `OverlayDictionaryNode::from_overlay_root`) directly.
 
 impl<V: DictionaryValue> Default for PersistentARTrie<V> {
     #[allow(deprecated)]

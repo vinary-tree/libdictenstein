@@ -1,8 +1,6 @@
 # path	kind	pattern	count	contract
 src/persistent_artrie/dict_impl.rs	unsafe_block	unsafe {	1	persistent-artrie-mmap-open
 src/persistent_artrie/nodes/node16.rs	unsafe_block	unsafe {	1	byte-node16-prefix-copy
-src/persistent_artrie_char/mod.rs	unsafe_impl	unsafe impl<V: DictionaryValue> Send for PersistentARTrieCharNode<V> {}	1	char-public-node-thread-contract
-src/persistent_artrie_char/mod.rs	unsafe_impl	unsafe impl<V: DictionaryValue> Sync for PersistentARTrieCharNode<V> {}	1	char-public-node-thread-contract
 src/persistent_artrie_char/nodes/node16_char.rs	unsafe_block	unsafe {	1	char-node16-prefix-copy
 src/persistent_artrie_char/types.rs	unsafe_block	Some(unsafe { Box::from_raw(ptr as *mut CharTrieNodeInner<V>) })	1	char-child-box-reclaim
 src/persistent_artrie_char/types.rs	unsafe_block	let child_ref = unsafe { &*p };	1	char-child-read-only-traversal

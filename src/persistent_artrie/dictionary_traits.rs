@@ -37,7 +37,7 @@ impl<V: DictionaryValue, S: BlockStorage> Dictionary for PersistentARTrie<V, S> 
         // Faulter is `None` on the inherent `&self` root path: eviction (the only source
         // of an `OnDisk` overlay child) is impossible on a non-`Shared` owned trie, so
         // the overlay handed out here is fully `Child::InMem`.
-        PersistentARTrieNode::new_overlay(root, None)
+        PersistentARTrieNode::from_overlay_root(root, None)
     }
 
     fn contains(&self, term: &str) -> bool {
