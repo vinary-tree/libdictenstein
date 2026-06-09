@@ -5,7 +5,6 @@
 
 #[allow(unused_imports)]
 use crate::sync_compat::RwLock;
-use std::borrow::Cow;
 #[allow(unused_imports)]
 use std::sync::Arc;
 
@@ -191,25 +190,6 @@ impl<V: DictionaryValue> PersistentARTrieZipper<V> {
         inner.overlay_navigate(path).is_some()
     }
 
-    /// Check if bucket has entries starting with path
-    fn bucket_has_path(&self, bucket: &StringBucket, path: &[u8]) -> bool {
-        // Empty path always matches (root of bucket)
-        if path.is_empty() {
-            return true;
-        }
-
-        // Check if any entry starts with this path
-        for i in 0..bucket.len() {
-            if let Some(entry) = bucket.get_entry(i) {
-                let suffix = bucket.get_suffix(&entry);
-                if suffix.starts_with(path) || suffix == path {
-                    return true;
-                }
-            }
-        }
-        false
-    }
-
     /// Check if the position is final (a term). **L3.2:** overlay-backed (see [`Self::has_path`]).
     fn is_final_at_path(&self, inner: &PersistentARTrie<V>, path: &[u8]) -> bool {
         inner.overlay_navigate(path).is_some_and(|n| n.is_final())
@@ -222,182 +202,6 @@ impl<V: DictionaryValue> PersistentARTrieZipper<V> {
         match inner.overlay_navigate(path) {
             Some(node) => node.iter_children().map(|(k, _)| *k).collect(),
             None => Vec::new(),
-        }
-    }
-
-    /// Get children from bucket at given prefix
-    fn get_bucket_children(&self, bucket: &StringBucket, prefix: &[u8]) -> Vec<u8> {
-        let mut seen = [false; 256];
-        let mut children = Vec::new();
-
-        for i in 0..bucket.len() {
-            if let Some(entry) = bucket.get_entry(i) {
-                let suffix = bucket.get_suffix(&entry);
-                if suffix.starts_with(prefix) && suffix.len() > prefix.len() {
-                    let next_byte = suffix[prefix.len()];
-                    if !seen[next_byte as usize] {
-                        seen[next_byte as usize] = true;
-                        children.push(next_byte);
-                    }
-                }
-            }
-        }
-
-        children
-    }
-
-    /// Resolve a DiskRef child to its actual node content.
-    ///
-    /// Returns `Cow::Borrowed` for already-loaded nodes (no allocation),
-    /// and `Cow::Owned` for newly resolved disk refs.
-    ///
-    /// # Arguments
-    ///
-    /// * `inner` - The trie inner structure containing the buffer manager
-    /// * `child` - The child node to potentially resolve
-    ///
-    /// # Returns
-    ///
-    /// `Some(Cow::Borrowed(child))` for in-memory nodes,
-    /// `Some(Cow::Owned(resolved))` for successfully resolved disk refs,
-    /// `None` for failed disk ref resolution.
-    fn resolve_child<'a>(
-        inner: &PersistentARTrie<V>,
-        child: &'a ChildNode,
-    ) -> Option<Cow<'a, ChildNode>> {
-        match child {
-            ChildNode::DiskRef { ptr } => {
-                if let Some(disk_location) = ptr.disk_location() {
-                    match inner.resolve_disk_ref(&disk_location) {
-                        Ok(resolved) => Some(Cow::Owned(resolved)),
-                        Err(e) => {
-                            log::warn!(
-                                "Failed to resolve disk ref at block {}, offset {}: {}",
-                                disk_location.block_id,
-                                disk_location.offset,
-                                e
-                            );
-                            None
-                        }
-                    }
-                } else {
-                    None
-                }
-            }
-            _ => Some(Cow::Borrowed(child)),
-        }
-    }
-
-    /// Resolve a DiskRef child to its actual node content (non-persistent variant).
-    ///
-    /// Without the persistent-artrie feature, DiskRef nodes cannot be resolved
-    /// and return None.
-
-    /// Check if a path exists within a child node, resolving DiskRefs as needed.
-    fn has_path_in_child(
-        &self,
-        inner: &PersistentARTrie<V>,
-        child: &ChildNode,
-        remaining: &[u8],
-    ) -> bool {
-        let resolved = match Self::resolve_child(inner, child) {
-            Some(cow) => cow,
-            None => return false,
-        };
-
-        match &*resolved {
-            ChildNode::Bucket(bucket) => self.bucket_has_path(bucket, remaining),
-            ChildNode::ArtNode { children, .. } => {
-                if remaining.is_empty() {
-                    true
-                } else {
-                    let next_byte = remaining[0];
-                    let next_remaining = &remaining[1..];
-                    for (b, nc) in children {
-                        if *b == next_byte {
-                            return self.has_path_in_child(inner, nc, next_remaining);
-                        }
-                    }
-                    false
-                }
-            }
-            ChildNode::DiskRef { .. } => {
-                // Should not reach here after resolution, but handle gracefully
-                false
-            }
-        }
-    }
-
-    /// Check if a path leads to a final state within a child node, resolving DiskRefs as needed.
-    fn is_final_in_child(
-        &self,
-        inner: &PersistentARTrie<V>,
-        child: &ChildNode,
-        remaining: &[u8],
-    ) -> bool {
-        let resolved = match Self::resolve_child(inner, child) {
-            Some(cow) => cow,
-            None => return false,
-        };
-
-        match &*resolved {
-            ChildNode::Bucket(bucket) => bucket.contains(remaining),
-            ChildNode::ArtNode {
-                is_final, children, ..
-            } => {
-                if remaining.is_empty() {
-                    *is_final
-                } else {
-                    let next_byte = remaining[0];
-                    let next_remaining = &remaining[1..];
-                    for (b, nc) in children {
-                        if *b == next_byte {
-                            return self.is_final_in_child(inner, nc, next_remaining);
-                        }
-                    }
-                    false
-                }
-            }
-            ChildNode::DiskRef { .. } => {
-                // Should not reach here after resolution, but handle gracefully
-                false
-            }
-        }
-    }
-
-    /// Get children at a path within a child node, resolving DiskRefs as needed.
-    fn get_children_in_child(
-        &self,
-        inner: &PersistentARTrie<V>,
-        child: &ChildNode,
-        path: &[u8],
-    ) -> Vec<u8> {
-        let resolved = match Self::resolve_child(inner, child) {
-            Some(cow) => cow,
-            None => return Vec::new(),
-        };
-
-        match &*resolved {
-            ChildNode::Bucket(bucket) => self.get_bucket_children(bucket, path),
-            ChildNode::ArtNode { children, .. } => {
-                if path.is_empty() {
-                    // At this node, return its direct children
-                    children.iter().map(|(b, _)| *b).collect()
-                } else {
-                    let next_byte = path[0];
-                    let next_path = &path[1..];
-                    for (b, nc) in children {
-                        if *b == next_byte {
-                            return self.get_children_in_child(inner, nc, next_path);
-                        }
-                    }
-                    Vec::new()
-                }
-            }
-            ChildNode::DiskRef { .. } => {
-                // Should not reach here after resolution, but handle gracefully
-                Vec::new()
-            }
         }
     }
 }
@@ -506,60 +310,6 @@ mod tests {
 
         assert_eq!(zipper1.path(), zipper2.path());
         assert_eq!(zipper1.is_final(), zipper2.is_final());
-    }
-
-    #[test]
-    fn test_resolve_child_returns_borrowed_for_bucket() {
-        use std::borrow::Cow;
-
-        let dict: PersistentARTrie<()> = PersistentARTrie::new();
-        dict.insert("test");
-
-        let bucket = super::StringBucket::new();
-        let child = ChildNode::Bucket(bucket);
-
-        let resolved = PersistentARTrieZipper::<()>::resolve_child(&dict, &child);
-        assert!(resolved.is_some());
-
-        // Should return borrowed (no clone needed for in-memory nodes)
-        if let Some(cow) = resolved {
-            assert!(matches!(cow, Cow::Borrowed(_)));
-        }
-    }
-
-    #[test]
-    fn test_resolve_child_returns_borrowed_for_art_node() {
-        use super::super::nodes::{Node, Node4};
-        use std::borrow::Cow;
-
-        let dict: PersistentARTrie<()> = PersistentARTrie::new();
-        dict.insert("test");
-
-        let node = Node::N4(Box::new(Node4::new()));
-        let child = ChildNode::art_node(node, false, None);
-
-        let resolved = PersistentARTrieZipper::<()>::resolve_child(&dict, &child);
-        assert!(resolved.is_some());
-
-        // Should return borrowed (no clone needed for in-memory nodes)
-        if let Some(cow) = resolved {
-            assert!(matches!(cow, Cow::Borrowed(_)));
-        }
-    }
-
-    #[test]
-    fn test_resolve_child_returns_none_for_disk_ref_without_manager() {
-        use super::super::swizzled_ptr::SwizzledPtr;
-
-        let dict: PersistentARTrie<()> = PersistentARTrie::new();
-        dict.insert("test");
-
-        let ptr = SwizzledPtr::null();
-        let child = ChildNode::disk_ref(ptr);
-
-        // Without a buffer manager, DiskRef resolution should return None
-        let resolved = PersistentARTrieZipper::<()>::resolve_child(&dict, &child);
-        assert!(resolved.is_none());
     }
 
     #[test]
