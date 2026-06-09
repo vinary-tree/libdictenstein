@@ -133,13 +133,15 @@ enum BuildPathError {
 /// result is returned).
 enum LockfreeRemoveResult {
     /// The term was present and cleared: a new root with the freshly-cleared
-    /// (non-final) leaf was published via the root CAS. Carries the
-    /// **published-root version** — the Order-A commit GENERATION (design C′,
-    /// §3.6), read from the EXACT root the CAS swapped (NOT a re-walk). The root
-    /// version is bumped by the spine path-copy on every publication, so it is
-    /// strictly monotone in root-CAS order for both insert and remove (the same
-    /// generation source the insert path uses — so an insert and the remove it
-    /// clobbers never TIE).
+    /// (non-final) leaf was published via the root CAS. Carries a
+    /// **published-root version** field that is **SUPERSEDED + DROPPED by the durable
+    /// caller** (G5.3' / S4 FIX 1): the durable remove recovery generation is the
+    /// durable global `commit_seq`
+    /// ([`OverlayCasWalk::claim_generation`](crate::persistent_artrie_core::overlay::cas_walk::OverlayCasWalk::claim_generation)),
+    /// NOT this `root.version()` (which resets on restart → the A.2 cross-restart
+    /// resurrection bug). The char `try_remove_path_attempt` hook discards this field
+    /// at the `RemoveAttempt` boundary; the skeleton ranks the caller-claimed
+    /// `commit_seq`. Retained only for the (now caller-DROPPED) signature.
     Removed(u64),
     /// The term is absent on this snapshot (reached full depth non-final, or a
     /// missing/null spine edge). No spine was published. Carries the
@@ -425,8 +427,6 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     ///
     /// Returns `Ok(true)` iff this call newly inserted the term.
     pub fn insert_cas_durable(&self, term: &str) -> Result<bool> {
-        use std::sync::atomic::Ordering;
-
         // **M1:** the Order-A durability gate is the SHARED GENERIC default
         // [`DurableOverlayWrite::durable_policy_gate`] (byte-exact message via the
         // `(method, noun)` reconstruction). The present-hoist + CAS-publish loop
@@ -515,92 +515,28 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
         #[cfg(test)]
         commit_rendezvous(RendezvousPhase::AfterAppend);
 
-        // Step 2: the existing lock-free CAS publication (the visibility point).
-        // The single durable append above covers every CAS retry — we never
-        // re-append (that would burn LSNs and punch holes in the watermark).
+        // Step 2 + 3: the visibility CAS loop (publishing a FRESH FINAL leaf inside
+        // the root CAS — the SOLE LP, single-phase, NO `try_set_final`) + the Order-A
+        // commit-rank/watermark tail are now the SHARED GENERIC
+        // [`OverlayCasWalk::drive_insert_cas`] (G5.3' P3). The driver claims the
+        // generation PER ITERATION via `claim_generation` (FIX 1 — the durable global
+        // `commit_seq`, NEVER the walk's `root.version()`; the char
+        // `try_insert_path_attempt` hook DROPS the per-attempt node + version at the
+        // `InsertAttempt` boundary), caches the term present on both arms, and binds
+        // the caller-claimed generation via `commit_rank_and_mark`.
+        //
+        // The read epoch is entered HERE (it must span every CAS retry inside the
+        // driver) — the driver itself does not enter the epoch. (The OD4 `AfterCommit`
+        // test rendezvous on the durable-INSERT path is dropped — it fed ONLY the
+        // `#[ignore]`d, obsolete-under-S4 `replay_orders_by_commit_rank_not_lsn*`
+        // staging tests; `AfterAppend` stays in this caller above. Production never
+        // referenced it — `#[cfg(test)]`.)
         let _epoch = self.epoch_manager.enter_read();
-        loop {
-            // S4 commit_seq CLAIM (durable global rank): claimed at the CAS-retry
-            // loop-top, RE-CLAIMED each iteration so a Conflict-retry discards the lost
-            // claim and takes a fresh (higher) one. Every write serializes at the single
-            // root CAS ⇒ the winning iteration's claim is strictly monotone in the global
-            // root-CAS order (CommitSeqMonotone), AND durable across restart (seeded from
-            // max(floor, scan) on open) — the A.2 cross-restart fix root.version couldn't make.
-            let commit_seq = self.commit_seq.fetch_add(1, Ordering::AcqRel) + 1;
-            // Durable (1a, D2.8 §1.2): `finalize = true` ⇒ the leaf is published
-            // FINAL inside the root CAS (the SOLE linearization point), so the root
-            // CAS — not a later `try_set_final` — arbitrates. Reaching the
-            // `Inserted` arm means OUR root CAS won ⇒ this op newly published the
-            // term (a racer loses the CAS, retries, and sees `AlreadyExists`).
-            match self.try_insert_lockfree_path(lockfree_root, &chars, true) {
-                LockfreeInsertResult::Inserted(_node, _root_generation) => {
-                    // Leaf is already final (built via `as_final`); no try_set_final.
-                    let newly = true;
-                    // OD4 (test-only): the visibility CAS has won; the CommitRank
-                    // is not yet appended. A test rendezvouses here to order this
-                    // commit relative to the other op's commit.
-                    #[cfg(test)]
-                    commit_rendezvous(RendezvousPhase::AfterCommit);
-                    // S4 GENERATION: the durable global `commit_seq` claimed at THIS
-                    // iteration's loop-top (NOT the per-lifetime `_root_generation`). Our
-                    // root CAS won, so the claim is strictly monotone in the global
-                    // root-CAS order AND durable across restart (the A.2 fix).
-                    let generation = commit_seq;
-                    lockfree_cache.insert(term.to_string(), true);
-                    // Step 2.5 + 3 (Order-A-preserving): bind the durable data record
-                    // (`lsn`) to its commit generation durable BEFORE ack, then advance
-                    // the committed watermark over BOTH the data LSN and the rank LSN so
-                    // the contiguous prefix does not stall on the rank record. **M1:**
-                    // the SHARED GENERIC committed-arm tail
-                    // [`DurableOverlayWrite::commit_rank_and_mark`] — ONE copy of this
-                    // data-loss-critical ordering, byte-identical to the prior inline.
-                    self.commit_rank_and_mark(lsn, term.as_bytes(), generation)?;
-                    return Ok(newly);
-                }
-                LockfreeInsertResult::AlreadyExists(_observed_gen) => {
-                    // S4 idempotent arm: NO-RANK. The non-faulting present-hoist above
-                    // already returned for terms present-IN-MEMORY; reaching here means
-                    // the term became present AFTER our hoist (a concurrent insert won
-                    // the race, or it was present-under-an-evicted-prefix). Our
-                    // already-appended `Insert@lsn` is then a redundant record that
-                    // acked NO new membership (`Ok(false)`). We do NOT rank it — ranking
-                    // a no-op in the commit_seq domain resurrects (it took no root CAS,
-                    // so it has no causal position; RT-1's bug). Under the Overlay regime
-                    // an UNRANKED record is DROPPED on replay, so it cannot resurrect a
-                    // later-removed term. We STILL `mark_committed(lsn)` for LIVENESS:
-                    // the contiguous watermark must cover the burned LSN or checkpoint
-                    // reclaim stalls; the replay-time drop is orthogonal to the watermark.
-                    #[cfg(test)]
-                    commit_rendezvous(RendezvousPhase::AfterCommit);
-                    lockfree_cache.insert(term.to_string(), true);
-                    // **M1:** idempotent-arm liveness mark (NO-RANK) — the SHARED
-                    // GENERIC [`DurableOverlayWrite::mark_committed_burned`]. Cover the
-                    // burned LSN so the contiguous watermark does not stall; the record
-                    // stays UNRANKED (dropped on Overlay replay — cannot resurrect).
-                    self.mark_committed_burned(lsn);
-                    return Ok(false);
-                }
-                LockfreeInsertResult::Conflict => {
-                    // Retry visibility only; the WAL record is already durable.
-                    self.cas_retries.fetch_add(1, Ordering::Relaxed);
-                    continue;
-                }
-                // WRITE-PATH FAULT-IN I/O error (design §4): the WAL record is
-                // ALREADY durable (Order-A step 1), but we could not fault the
-                // evicted prefix in to make the write VISIBLE. Surface the error.
-                // This is the documented Order-A "durable-but-visible-only-after-
-                // reopen" window, NOT a lost write: recovery replays the logged
-                // Insert. We do NOT advance the committed watermark (the write is
-                // not yet visible), so the contiguous prefix correctly stalls at
-                // this LSN until a later retry (or recovery) completes it. (Flip F0:
-                // un-gated to production.)
-                LockfreeInsertResult::IoError(e) => {
-                    self.cas_retries.fetch_add(1, Ordering::Relaxed);
-                    let _ = lsn;
-                    return Err(e);
-                }
-            }
-        }
+        <Self as crate::persistent_artrie_core::overlay::cas_walk::OverlayCasWalk<CharKey, V, S>>::drive_insert_cas(
+            self,
+            term.as_bytes(),
+            lsn,
+        )
     }
 
     /// **Order-A durable** lock-free REMOVE (design "R-B") — the proven mirror of
@@ -642,8 +578,6 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     /// (that routing is the later flip's RB6, which depends on fault-in being
     /// un-gated to production — design §6).
     pub fn remove_cas_durable(&self, term: &str) -> Result<bool> {
-        use std::sync::atomic::Ordering;
-
         // **M1:** the Order-A durability gate is the SHARED GENERIC default
         // [`DurableOverlayWrite::durable_policy_gate`] (noun `"remove"`), rejecting
         // a non-synchronous policy EXACTLY as `insert_cas_durable` does. The
@@ -744,73 +678,25 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
         #[cfg(test)]
         commit_rendezvous(RendezvousPhase::AfterAppend);
 
-        // Step 2: the visibility CAS loop. The single root CAS inside
-        // `try_remove_lockfree_path` is the SOLE visibility arbiter.
-        loop {
-            // S4 commit_seq CLAIM — see `insert_cas_durable`. Loop-top, re-claimed per
-            // iteration; monotone in the global root-CAS order, durable across restart.
-            // The insert and remove paths claim from the SAME `self.commit_seq`.
-            let commit_seq = self.commit_seq.fetch_add(1, Ordering::AcqRel) + 1;
-            match self.try_remove_lockfree_path(lockfree_root, &chars) {
-                LockfreeRemoveResult::Removed(_root_generation) => {
-                    // S4 GENERATION: the durable global `commit_seq` claimed at the
-                    // loop-top (NOT `_root_generation`). Our clear CAS won, so the claim
-                    // is monotone in the global root-CAS order AND durable across restart.
-                    let generation = commit_seq;
-                    // OD4 (test-only): the clear CAS has won; CommitRank not yet
-                    // appended. A test rendezvouses here to order this commit.
-                    #[cfg(test)]
-                    commit_rendezvous(RendezvousPhase::AfterCommit);
-                    // §3.4 CACHE INVALIDATION (FIRST, before mark_committed): the
-                    // term is no longer in the trie, so it must not read present
-                    // via the positive cache.
-                    lockfree_cache.remove(term);
-                    // Step 2.5 + 3 (Order-A-preserving): bind the durable Remove
-                    // record (`lsn`) to its commit generation durable BEFORE ack, then
-                    // advance the watermark over both LSNs. **M1:** the SHARED GENERIC
-                    // committed-arm tail [`DurableOverlayWrite::commit_rank_and_mark`]
-                    // (ONE copy; byte-identical). Cache-invalidate stays FIRST (above).
-                    self.commit_rank_and_mark(lsn, term.as_bytes(), generation)?;
-                    return Ok(true);
-                }
-                LockfreeRemoveResult::AlreadyAbsent(_observed_gen) => {
-                    // S4 idempotent arm: NO-RANK. Raced — a concurrent remove cleared
-                    // the term between our present-check and the CAS, so this op took NO
-                    // root CAS and acked NO change (`Ok(false)`). Our already-appended
-                    // `Remove@lsn` is redundant; we do NOT rank it (ranking a no-op in
-                    // the commit_seq domain resurrects — it has no causal CAS position),
-                    // and under the Overlay regime an UNRANKED record is DROPPED on
-                    // replay. We STILL `mark_committed(lsn)` for LIVENESS (cover the
-                    // burned LSN, or checkpoint reclaim stalls) and invalidate the cache.
-                    #[cfg(test)]
-                    commit_rendezvous(RendezvousPhase::AfterCommit);
-                    lockfree_cache.remove(term);
-                    // **M1:** idempotent-arm liveness mark (NO-RANK) — the SHARED
-                    // GENERIC [`DurableOverlayWrite::mark_committed_burned`]. Cover the
-                    // burned LSN; the redundant Remove stays UNRANKED (dropped on
-                    // Overlay replay). Cache-invalidate stays FIRST (above).
-                    self.mark_committed_burned(lsn);
-                    return Ok(false);
-                }
-                LockfreeRemoveResult::Conflict => {
-                    self.cas_retries.fetch_add(1, Ordering::Relaxed);
-                    continue;
-                }
-                // WRITE-PATH FAULT-IN I/O error (fault-in builds only): the Remove
-                // record is ALREADY durable (step 1) but we could not fault the
-                // evicted prefix in to make the clear VISIBLE. Surface the error;
-                // do NOT advance the watermark (the contiguous prefix correctly
-                // stalls at this LSN until a later retry / recovery completes it).
-                // This is the documented Order-A "durable-but-visible-after-reopen"
-                // window — recovery replays the logged Remove, NOT a lost write.
-                // (Flip F0: un-gated to production.)
-                LockfreeRemoveResult::IoError(e) => {
-                    self.cas_retries.fetch_add(1, Ordering::Relaxed);
-                    let _ = lsn;
-                    return Err(e);
-                }
-            }
-        }
+        // Step 2 + 3: the visibility CAS loop + the Order-A commit-rank/watermark
+        // tail are now the SHARED GENERIC [`OverlayCasWalk::drive_remove_cas`]
+        // (G5.3' P2). The driver claims the generation PER ITERATION via
+        // `claim_generation` (FIX 1 — the durable global `commit_seq`, NEVER the
+        // walk's `root.version()`; the char `try_remove_path_attempt` hook DROPS the
+        // per-attempt version at the `RemoveAttempt` boundary), invalidates the
+        // positive cache FIRST on every state-changing arm (§3.4), and binds the
+        // caller-claimed generation via `commit_rank_and_mark`. `term.as_bytes()` is
+        // the raw key the durable `Remove@lsn` record mutated.
+        //
+        // (The OD4 `AfterCommit` test rendezvous on the durable-REMOVE path is
+        // dropped — it fed ONLY the `#[ignore]`d, obsolete-under-S4
+        // `replay_orders_by_commit_rank_not_lsn*` staging tests; `AfterAppend` stays
+        // in this caller above. Production never referenced it — `#[cfg(test)]`.)
+        <Self as crate::persistent_artrie_core::overlay::cas_walk::OverlayCasWalk<CharKey, V, S>>::drive_remove_cas(
+            self,
+            term.as_bytes(),
+            lsn,
+        )
     }
 
     /// Attempt to clear a term's membership in the lock-free overlay via a single
@@ -908,49 +794,32 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
 
         let key = chars[depth];
 
-        match node.find_child(key) {
-            Some(child) => {
-                if let Some(child_arc) = child.as_in_mem() {
-                    // In-memory child: descend + path-copy. Thread the cleared
-                    // leaf up unchanged.
-                    let child_arc = Arc::clone(child_arc);
-                    let (new_child, leaf) =
-                        self.build_remove_path_recursive(&child_arc, chars, depth + 1)?;
-                    let new_node = Arc::new(node.with_child(key, Child::InMem(new_child)));
-                    Ok((new_node, leaf))
-                } else if let Some(on_disk) = child.as_on_disk().filter(|p| !p.is_null()) {
-                    // WRITE-PATH FAULT-IN (design §3, R-B): the prefix child was
-                    // EVICTED to OnDisk. Fault it in first, then descend, splicing
-                    // `Child::InMem(faulted)` — identical in shape to an in-memory
-                    // child, so the single root CAS stays the SOLE arbiter (no new
-                    // commit point). Flip F0: un-gated to production (RB6 depends on
-                    // fault-in being a production path — remove-under-evicted-prefix
-                    // needs it).
-                    {
-                        let loaded = match self.load_overlay_node_from_disk(on_disk) {
-                            Ok(n) => n,
-                            Err(e) => return Err(BuildPathError::Io(e)),
-                        };
-                        let (new_child, leaf) =
-                            self.build_remove_path_recursive(&loaded, chars, depth + 1)?;
-                        let new_node = Arc::new(node.with_child(key, Child::InMem(new_child)));
-                        return Ok((new_node, leaf));
-                    }
-                    // Pre-flip production fallback (commented out, not deleted — F0
-                    // reversibility): an OnDisk prefix couldn't be faulted in, so the
-                    // overlay remove treated it as absent.
-                    // #[cfg(not(any(test, feature = "bench-internals")))]
-                    // {
-                    //     let _ = on_disk;
-                    //     Err(BuildPathError::AlreadyAbsent)
-                    // }
-                } else {
-                    // Null filler (never a real child) ⇒ absent.
-                    Err(BuildPathError::AlreadyAbsent)
-                }
+        // **G5.3' P1 (FIX 2):** resolve through the shared
+        // [`cas_walk::resolve_or_fault`], then map to char REMOVE's per-cell behavior
+        // (see the mapping table — char is uniform: fault-in, only a real I/O failure
+        // surfaces):
+        //   InMem / Faulted → DESCEND + path-copy, threading the cleared leaf up
+        //     unchanged (fault-in splices `Child::InMem` so the single root CAS stays
+        //     the SOLE arbiter for the 1→0 clear — RB6 remove-under-evicted-prefix);
+        //   FaultFailed(e) → `BuildPathError::Io(*e)` ⇒ `LockfreeRemoveResult::IoError`
+        //     (the real I/O error is unboxed + carried out, NOT a uniform Conflict);
+        //   Null / Absent → `AlreadyAbsent` (no no-op spine published).
+        use crate::persistent_artrie_core::overlay::cas_walk::{
+            resolve_or_fault, ChildResolution, FaultMode,
+        };
+        match resolve_or_fault::<CharKey, V, _>(node, key, FaultMode::Fault, |p| {
+            self.load_overlay_node_from_disk(p)
+        }) {
+            ChildResolution::InMem(child_arc) | ChildResolution::Faulted(child_arc) => {
+                let (new_child, leaf) =
+                    self.build_remove_path_recursive(&child_arc, chars, depth + 1)?;
+                let new_node = Arc::new(node.with_child(key, Child::InMem(new_child)));
+                Ok((new_node, leaf))
             }
-            // Missing edge ⇒ the term is absent on this snapshot.
-            None => Err(BuildPathError::AlreadyAbsent),
+            // Surface the real I/O error (unbox) — char's `IoError`, NOT Conflict.
+            ChildResolution::FaultFailed(e) => Err(BuildPathError::Io(*e)),
+            // Null filler / missing edge ⇒ absent on this snapshot (no no-op spine).
+            ChildResolution::Null | ChildResolution::Absent => Err(BuildPathError::AlreadyAbsent),
         }
     }
 
@@ -1037,65 +906,38 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
 
         let key = chars[depth];
 
-        match node.find_child(key) {
-            Some(child) => {
-                // In-memory child: path-copy into it. `as_in_mem` borrows the owned
-                // child `Arc` and `Child::InMem` re-wraps the path-copied
-                // replacement (zero `unsafe`).
-                if let Some(child_arc) = child.as_in_mem() {
-                    let child_arc = Arc::clone(child_arc);
-
-                    // Recursively build path in child
-                    let (new_child, leaf) =
-                        self.build_path_recursive(&child_arc, chars, depth + 1, finalize)?;
-
-                    // Create new version of this node with the updated child
-                    let new_node = Arc::new(node.with_child(key, Child::InMem(new_child)));
-
-                    Ok((new_node, leaf))
-                } else if let Some(on_disk) = child.as_on_disk().filter(|p| !p.is_null()) {
-                    // WRITE-PATH FAULT-IN (design §4, DATA-LOSS-CRITICAL): the child
-                    // was EVICTED to OnDisk. Without faulting it in, a NEW term under
-                    // this evicted prefix would return `AlreadyExists` (false) and be
-                    // SILENTLY DROPPED (never cached, never merged). FAULT it back in,
-                    // then DESCEND, splicing `Child::InMem(faulted+extended)` at `key`
-                    // — identical in shape to an in-memory child, so the single root
-                    // CAS in `insert_lockfree_recursive` remains the SOLE arbiter (NO
-                    // new commit point is introduced here).
-                    //
-                    // Flip F0: un-gated to production. The flip routes production
-                    // inserts through the overlay, so a NEW term under an evicted
-                    // prefix MUST fault the prefix in rather than be silently dropped
-                    // (the data-loss-critical write-path half, design §4).
-                    {
-                        let loaded = match self.load_overlay_node_from_disk(on_disk) {
-                            Ok(n) => n,
-                            Err(e) => return Err(BuildPathError::Io(e)),
-                        };
-                        let (new_child, leaf) =
-                            self.build_path_recursive(&loaded, chars, depth + 1, finalize)?;
-                        let new_node = Arc::new(node.with_child(key, Child::InMem(new_child)));
-                        return Ok((new_node, leaf));
-                    }
-                    // Pre-flip production fallback (commented out, not deleted — F0
-                    // reversibility): treated an OnDisk child as already-present
-                    // (forcing a cache/persistent re-check), which silently dropped a
-                    // new term under an evicted prefix.
-                    // #[cfg(not(any(test, feature = "bench-internals")))]
-                    // {
-                    //     let _ = on_disk;
-                    //     Err(BuildPathError::AlreadyExists)
-                    // }
-                } else {
-                    // Null filler (never a real child) — conservative AlreadyExists.
-                    Err(BuildPathError::AlreadyExists)
-                }
+        // **G5.3' P1 (FIX 2):** resolve through the shared
+        // [`cas_walk::resolve_or_fault`], then map to char INSERT's per-cell behavior
+        // (see the mapping table — char is uniform: every OnDisk arm faults-in, only
+        // a real I/O failure surfaces):
+        //   InMem / Faulted → DESCEND (fault-in splices `Child::InMem` so the single
+        //     root CAS in `insert_lockfree_recursive` stays the SOLE arbiter —
+        //     DATA-LOSS-CRITICAL: WITHOUT it a NEW term under an evicted prefix would
+        //     return `AlreadyExists` (false) and be SILENTLY DROPPED);
+        //   FaultFailed(e) → `BuildPathError::Io(*e)` ⇒ `LockfreeInsertResult::IoError`
+        //     (the durable-but-visible-after-reopen window; the rich error is unboxed
+        //     and carried out — char keeps its real I/O error, NOT a uniform Conflict);
+        //   Null → `AlreadyExists` (conservative — never a real child);
+        //   Absent → build the remaining spine (`create_lockfree_path(finalize)`).
+        use crate::persistent_artrie_core::overlay::cas_walk::{
+            resolve_or_fault, ChildResolution, FaultMode,
+        };
+        match resolve_or_fault::<CharKey, V, _>(node, key, FaultMode::Fault, |p| {
+            self.load_overlay_node_from_disk(p)
+        }) {
+            ChildResolution::InMem(child_arc) | ChildResolution::Faulted(child_arc) => {
+                let (new_child, leaf) =
+                    self.build_path_recursive(&child_arc, chars, depth + 1, finalize)?;
+                let new_node = Arc::new(node.with_child(key, Child::InMem(new_child)));
+                Ok((new_node, leaf))
             }
-            None => {
-                // Child doesn't exist - create entire remaining path
+            // Surface the real I/O error (unbox) — char's `IoError`, NOT Conflict.
+            ChildResolution::FaultFailed(e) => Err(BuildPathError::Io(*e)),
+            // Null filler — conservative AlreadyExists.
+            ChildResolution::Null => Err(BuildPathError::AlreadyExists),
+            ChildResolution::Absent => {
                 let (new_subtree, leaf) = self.create_lockfree_path(&chars[depth + 1..], finalize);
                 let new_node = Arc::new(node.with_child(key, Child::InMem(new_subtree)));
-
                 Ok((new_node, leaf))
             }
         }
@@ -1111,6 +953,13 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     /// A tuple of (subtree_root, leaf_node) where:
     /// - subtree_root is the top of the new path (to be attached as a child)
     /// - leaf_node is the final node (to have try_set_final called on it)
+    ///
+    /// **G5.3' P1:** a thin shim over the shared generic [`cas_walk::create_spine`]
+    /// (SAME reverse-iteration bottom-up build order — format-preserving). The
+    /// `finalize` flag selects the leaf-maker closure: a FINAL leaf for the durable
+    /// (1a) path (published final inside the root CAS — the sole LP), a NON-final
+    /// leaf for the non-durable path (the caller's `try_set_final` arbitrates,
+    /// UNCHANGED). `&self` is no longer read (spine building needs no trie state).
     fn create_lockfree_path(
         &self,
         chars: &[u32],
@@ -1119,32 +968,17 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
         Arc<super::nodes::persistent_node::PersistentCharNode<V>>,
         Arc<super::nodes::persistent_node::PersistentCharNode<V>>,
     ) {
-        use super::nodes::persistent_node::{Child, PersistentCharNode};
-
-        // The leaf: for the durable (1a) path `finalize == true` it is published
-        // FINAL inside the root CAS (the sole LP); for the non-durable path it is
-        // non-final and the caller's `try_set_final` is the arbiter (unchanged).
-        let leaf = Arc::new(if finalize {
-            PersistentCharNode::new().as_final()
-        } else {
-            PersistentCharNode::new()
-        });
-
-        if chars.is_empty() {
-            // No more characters - leaf is also the root
-            return (leaf.clone(), leaf);
-        }
-
-        // Build path bottom-up
-        let mut current = leaf.clone();
-
-        for &c in chars.iter().rev() {
-            // Each parent owns its child by `Arc` (no raw-pointer smuggling).
-            let parent = PersistentCharNode::new().with_child(c, Child::InMem(current));
-            current = Arc::new(parent);
-        }
-
-        (current, leaf)
+        use super::nodes::persistent_node::PersistentCharNode;
+        crate::persistent_artrie_core::overlay::cas_walk::create_spine::<CharKey, V, _>(
+            chars,
+            || {
+                Arc::new(if finalize {
+                    PersistentCharNode::new().as_final()
+                } else {
+                    PersistentCharNode::new()
+                })
+            },
+        )
     }
 
     /// Attempt to insert a path using CAS. Called from insert_cas retry loop.
@@ -1229,7 +1063,7 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
                     Ok(found) => return found.is_some(),
                     Err(_) => {
                         if let Some(root_node) = root.load() {
-                            return self.find_in_lockfree_trie(&root_node, &chars, 0);
+                            return Self::find_in_lockfree_trie(&root_node, &chars, 0);
                         }
                         return false;
                     }
@@ -1249,27 +1083,20 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     }
 
     /// Navigate the lock-free trie to find a term.
+    ///
+    /// **G5.3' P1:** a thin shim over the shared generic
+    /// [`cas_walk::find_in_lockfree_trie`] (`PersistentCharNode<V>` IS
+    /// `OverlayNode<CharKey, V>`, a type alias, so the delegation is type-identical
+    /// and behavior-identical). `&self` is no longer read (the walk needs no trie
+    /// state — it is in-memory-only), so it is dropped.
     fn find_in_lockfree_trie(
-        &self,
         node: &Arc<super::nodes::persistent_node::PersistentCharNode<V>>,
         chars: &[u32],
         depth: usize,
     ) -> bool {
-        if depth >= chars.len() {
-            return node.is_final();
-        }
-
-        let key = chars[depth];
-        if let Some(child) = node.find_child(key) {
-            // On-disk references can't be traversed in the lock-free overlay; the
-            // persistent trie would need to be checked instead. In-memory children
-            // are borrowed and recursed into (owned `Arc`, no `unsafe`).
-            if let Some(child_arc) = child.as_in_mem() {
-                return self.find_in_lockfree_trie(&Arc::clone(child_arc), chars, depth + 1);
-            }
-        }
-
-        false
+        crate::persistent_artrie_core::overlay::cas_walk::find_in_lockfree_trie::<CharKey, V>(
+            node, chars, depth,
+        )
     }
 
     /// Find the leaf node for a key in the lock-free trie.
@@ -1290,25 +1117,21 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     /// Recursive helper for `find_leaf_lockfree`. `pub(crate)` so the value seams
     /// ([`DurableOverlayWrite::value_publish_inner`] in `overlay_write_mode`) can do
     /// the in-loop InsertOnce/CAS pre-check on the freshly-loaded root.
+    ///
+    /// **G5.3' P1:** a thin shim over the shared generic
+    /// [`cas_walk::find_leaf_recursive`]. The `pub(crate)` NAME + the `&self`
+    /// receiver are PRESERVED (the value seams call it as `self.find_leaf_recursive`);
+    /// `&self` is no longer read (the walk needs no trie state). Behavior-identical:
+    /// `PersistentCharNode<V>` IS `OverlayNode<CharKey, V>` (a type alias).
     pub(crate) fn find_leaf_recursive(
         &self,
         node: &Arc<super::nodes::persistent_node::PersistentCharNode<V>>,
         chars: &[u32],
         depth: usize,
     ) -> Option<Arc<super::nodes::persistent_node::PersistentCharNode<V>>> {
-        if depth == chars.len() {
-            return if node.is_final() {
-                Some(Arc::clone(node))
-            } else {
-                None
-            };
-        }
-
-        let child = node.find_child(chars[depth])?;
-        // Can't traverse disk refs in the lock-free overlay; `as_in_mem` returns
-        // `None` for an on-disk child, short-circuiting via `?` (owned `Arc`).
-        let child_arc = child.as_in_mem()?;
-        self.find_leaf_recursive(&Arc::clone(child_arc), chars, depth + 1)
+        crate::persistent_artrie_core::overlay::cas_walk::find_leaf_recursive::<CharKey, V>(
+            node, chars, depth,
+        )
     }
 
     // Phase 4 (DRY K-generic lift): `find_leaf_faulting` — the read-path single-level
@@ -1352,70 +1175,115 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
         depth: usize,
         value: V,
     ) -> Option<Arc<super::nodes::persistent_node::PersistentCharNode<V>>> {
-        use super::nodes::persistent_node::{Child, PersistentCharNode};
+        // **G5.3' P1:** a thin shim over the shared generic
+        // [`cas_walk::build_value_spine`] in [`FaultMode::Fault`] (char faults an
+        // evicted OnDisk prefix in; an I/O error / null collapses to `None` exactly
+        // as the prior `as_in_mem()? ` / `.ok()? `). The `pub(crate)` NAME +
+        // `&self`-syntax call sites (value seams + the counter inner) are PRESERVED.
+        // `PersistentCharNode<V>` IS `OverlayNode<CharKey, V>` (a type alias), so the
+        // descent + bottom-up build order are byte-identical (format-preserving).
+        use crate::persistent_artrie_core::overlay::cas_walk::{build_value_spine, FaultMode};
+        build_value_spine::<CharKey, V, _>(node, chars, depth, value, FaultMode::Fault, |p| {
+            self.load_overlay_node_from_disk(p)
+        })
+    }
 
-        // ITERATIVE (was recursive — recursion depth == term length, which overflows the
-        // stack for very long terms because the overlay spine is UN-path-compressed, one
-        // node per char). Descend from `depth` collecting the (parent, key) spine
-        // (faulting OnDisk children in along the way), then rebuild it bottom-up. Exact
-        // same path-copy / write-path fault-in / absent-spine / valued-leaf semantics as
-        // the prior recursion — only the call stack is replaced by an explicit Vec.
-        let mut spine: Vec<(Arc<PersistentCharNode<V>>, u32)> =
-            Vec::with_capacity(chars.len().saturating_sub(depth));
-        let mut current = Arc::clone(node);
-        let mut d = depth;
-        loop {
-            if d == chars.len() {
-                // Reached the leaf: bake finality + the new value into a fresh copy, then
-                // rebuild every ancestor bottom-up (the path copy).
-                let mut new_node = Arc::new(current.as_final().with_value(value));
-                for (parent, key) in spine.into_iter().rev() {
-                    new_node = Arc::new(parent.with_child(key, Child::InMem(new_node)));
-                }
-                return Some(new_node);
-            }
+    // ==================== End Lock-Free CAS Methods ====================
+}
 
-            let key = chars[d];
-            match current.find_child(key) {
-                Some(child) => {
-                    let child_arc = if let Some(child_arc) = child.as_in_mem() {
-                        // In-memory child: descend (path-copy on the way back up).
-                        Arc::clone(child_arc)
-                    } else {
-                        // WRITE-PATH FAULT-IN (design §4): the child was EVICTED to
-                        // OnDisk. Fault it back in then descend, splicing it InMem — the
-                        // single root CAS stays the sole arbiter. On I/O error return
-                        // `None` (transient Conflict → the value seam surfaces it as a
-                        // durable-but-deferred error; the counter inner retries).
-                        let on_disk = child.as_on_disk().filter(|p| !p.is_null())?;
-                        self.load_overlay_node_from_disk(on_disk).ok()?
-                    };
-                    spine.push((current, key));
-                    current = child_arc;
-                    d += 1;
-                }
-                None => {
-                    // Child absent: build the remaining spine bottom-up (valued leaf at
-                    // the bottom), splice it at `key`, then rebuild the collected spine.
-                    let leaf =
-                        Arc::new(PersistentCharNode::<V>::new().as_final().with_value(value));
-                    let mut sub = leaf;
-                    for &c in chars[d + 1..].iter().rev() {
-                        sub = Arc::new(
-                            PersistentCharNode::<V>::new().with_child(c, Child::InMem(sub)),
-                        );
-                    }
-                    let mut new_node = Arc::new(current.with_child(key, Child::InMem(sub)));
-                    for (parent, k) in spine.into_iter().rev() {
-                        new_node = Arc::new(parent.with_child(k, Child::InMem(new_node)));
-                    }
-                    return Some(new_node);
-                }
+// ============================================================================
+// G5.3' P2 — char seam impl of the shared OverlayCasWalk skeleton.
+//
+// Supplies the two durable-remove hooks the shared `drive_remove_cas` default
+// calls. The `claim_generation` default (= `claim_commit_seq`) is INHERITED — it
+// is the FIX-1 generation source (the durable global `commit_seq`, NOT the walk's
+// `root.version()`). `try_remove_path_attempt` DROPS `try_remove_lockfree_path`'s
+// per-attempt `root.version()` at the `RemoveAttempt` boundary, so the skeleton
+// can only rank the caller-claimed generation.
+// ============================================================================
+impl<V: DictionaryValue, S: BlockStorage>
+    crate::persistent_artrie_core::overlay::cas_walk::OverlayCasWalk<CharKey, V, S>
+    for super::PersistentARTrieChar<V, S>
+{
+    fn try_remove_path_attempt(
+        &self,
+        key_bytes: &[u8],
+    ) -> crate::persistent_artrie_core::overlay::cas_walk::RemoveAttempt {
+        use crate::persistent_artrie_core::overlay::cas_walk::RemoveAttempt;
+        let lockfree_root = match self.lockfree_root.as_ref() {
+            Some(r) => r,
+            // No overlay installed ⇒ nothing to remove (absent). The durable caller
+            // only reaches here after its enable-check, so this is defensive.
+            None => return RemoveAttempt::AlreadyAbsent,
+        };
+        // The char key bytes are UTF-8 (the writers log `term.as_bytes()`); decode to
+        // code points. A non-UTF-8 sequence cannot have been produced by this trie ⇒
+        // treat as absent (best-effort, no panic — never reached on the durable path,
+        // whose caller passes `term.as_bytes()` of a real `&str`).
+        let chars: Vec<u32> = match std::str::from_utf8(key_bytes) {
+            Ok(s) => s.chars().map(|c| c as u32).collect(),
+            Err(_) => return RemoveAttempt::AlreadyAbsent,
+        };
+        // ONE single-arbiter path-copy + root CAS. FIX 1: the `Removed(_version)` /
+        // `AlreadyAbsent(_version)` per-attempt versions are DROPPED at this boundary
+        // (the skeleton ranks the caller-claimed `commit_seq`).
+        match self.try_remove_lockfree_path(lockfree_root, &chars) {
+            LockfreeRemoveResult::Removed(_version) => RemoveAttempt::Removed,
+            LockfreeRemoveResult::AlreadyAbsent(_version) => RemoveAttempt::AlreadyAbsent,
+            LockfreeRemoveResult::Conflict => RemoveAttempt::Conflict,
+            LockfreeRemoveResult::IoError(e) => RemoveAttempt::IoError(Box::new(e)),
+        }
+    }
+
+    fn invalidate_positive_cache(&self, key_bytes: &[u8]) {
+        if let Some(ref cache) = self.lockfree_cache {
+            // The positive cache is keyed by the public `String` term. A non-UTF-8
+            // key never entered the cache, so a decode miss is a harmless no-op.
+            if let Ok(term) = std::str::from_utf8(key_bytes) {
+                cache.remove(term);
             }
         }
     }
 
-    // ==================== End Lock-Free CAS Methods ====================
+    fn try_insert_path_attempt(
+        &self,
+        key_bytes: &[u8],
+    ) -> crate::persistent_artrie_core::overlay::cas_walk::InsertAttempt {
+        use crate::persistent_artrie_core::overlay::cas_walk::InsertAttempt;
+        let lockfree_root = match self.lockfree_root.as_ref() {
+            Some(r) => r,
+            // No overlay installed — defensive (the durable caller enable-checks).
+            // An absent overlay cannot hold the term ⇒ treat as a transient conflict
+            // so the caller's enable-check (not reached here) governs; never silently
+            // "AlreadyExists". In practice unreachable on the durable path.
+            None => return InsertAttempt::Conflict,
+        };
+        let chars: Vec<u32> = match std::str::from_utf8(key_bytes) {
+            Ok(s) => s.chars().map(|c| c as u32).collect(),
+            // A non-UTF-8 key cannot have been produced by this trie; never reached
+            // on the durable path (the caller passes a real `&str`'s bytes).
+            Err(_) => return InsertAttempt::Conflict,
+        };
+        // DURABLE single-phase: `finalize = true` ⇒ the leaf is published FINAL
+        // inside the root CAS (the SOLE LP — REC 3, no caller-level `try_set_final`).
+        // FIX 1: the `Inserted(_node, _root_generation)` per-attempt node + version
+        // are DROPPED at this boundary (the skeleton ranks the caller-claimed
+        // `commit_seq`; the durable path needs no leaf for a `try_set_final`).
+        match self.try_insert_lockfree_path(lockfree_root, &chars, true) {
+            LockfreeInsertResult::Inserted(_node, _root_generation) => InsertAttempt::Inserted,
+            LockfreeInsertResult::AlreadyExists(_observed_gen) => InsertAttempt::AlreadyExists,
+            LockfreeInsertResult::Conflict => InsertAttempt::Conflict,
+            LockfreeInsertResult::IoError(e) => InsertAttempt::IoError(Box::new(e)),
+        }
+    }
+
+    fn mark_positive_cache(&self, key_bytes: &[u8]) {
+        if let Some(ref cache) = self.lockfree_cache {
+            if let Ok(term) = std::str::from_utf8(key_bytes) {
+                cache.insert(term.to_string(), true);
+            }
+        }
+    }
 }
 
 // ============================================================================

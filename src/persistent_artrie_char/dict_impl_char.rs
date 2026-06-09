@@ -68,16 +68,21 @@ pub use super::recovery_stats::EnhancedRecoveryMode;
 /// membership trie (`V=()`) is unchanged; a counter trie (`V=u64`) carries the
 /// `u64`-valued leaf back to the caller.
 pub(super) enum LockfreeInsertResult<V = ()> {
-    /// Successfully inserted a new term, returning the target leaf node AND the
-    /// **published-root version** — the Order-A commit GENERATION (design C′,
-    /// §3.6). The root the visibility CAS published carries `version =
-    /// old_root.version + 1` (its top-level `with_child` path-copy bumps it), so
-    /// across successful publications the value is STRICTLY MONOTONE in the
-    /// root-CAS linearization order, for BOTH insert and remove — unlike the leaf
-    /// `version`, which the in-place `try_set_final` finalize does NOT bump (so an
-    /// insert re-finalizing a leaf a remove cleared would otherwise TIE the
-    /// remove's generation and lose the s019 race). The generation is read from
-    /// the EXACT root the CAS swapped (no live re-walk / stale read).
+    /// Successfully inserted a new term, returning the target leaf node AND a
+    /// **published-root version** field.
+    ///
+    /// **G5.3' / S4 (FIX 1) — the `u64` field is SUPERSEDED + DROPPED by every
+    /// durable caller.** It carries the published root's `version()` (a per-lifetime,
+    /// per-attempt counter), but the durable insert/remove/increment recovery
+    /// generation is the durable global `commit_seq` (restart-seeded; see
+    /// [`OverlayCasWalk::claim_generation`](crate::persistent_artrie_core::overlay::cas_walk::OverlayCasWalk::claim_generation)),
+    /// which `reconcile_lww` orders replay by. The `root.version()` is RESET on
+    /// restart, so ranking with it re-opens the A.2 cross-restart resurrection bug —
+    /// hence the durable skeleton DROPS this field (the char `try_insert_path_attempt`
+    /// hook discards it at the `InsertAttempt` boundary) and ranks the
+    /// caller-claimed `commit_seq`. The non-durable `insert_cas` ignores it entirely
+    /// (it has no replay key). Retained ONLY for the (now caller-DROPPED) signature +
+    /// the leaf the non-durable two-phase `try_set_final` arbiter needs.
     Inserted(
         Arc<super::nodes::persistent_node::PersistentCharNode<V>>,
         u64,

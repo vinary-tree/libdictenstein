@@ -63,10 +63,11 @@
 //!     [`Self::append_commit_rank`], [`Self::mark_committed`] — the WAL/watermark
 //!     accessors.
 //!   - [`Self::bound_increment_delta`] / [`Self::build_increment_record`] /
-//!     [`Self::increment_publish_inner`] — the increment's value-domain bound (char
-//!     `u64`: `delta > LOCKFREE_COUNTER_MAX` reject + `i64::try_from`; byte will reject
-//!     a negative `i64` here), the delta `WalRecord` builder, and the proven
-//!     path-copy publish (char `try_increment_cas_inner`).
+//!     [`Self::increment_publish_inner`] — the increment's value-domain bound (BOTH
+//!     variants' counter is now `u64`; `bound_increment_delta` is `i64::try_from(delta)`
+//!     for both — rejecting a single WAL `BatchIncrement` delta `> i64::MAX`, the
+//!     `i64` being only the WAL DELTA domain, never the leaf type), the delta
+//!     `WalRecord` builder, and the proven path-copy publish (`try_increment_cas_inner`).
 //!
 //! The insert / remove / valued-insert / upsert public methods stay INHERENT on the
 //! variant (their CAS-publish loops + per-op present-hoists are char-node-building
@@ -123,9 +124,13 @@ pub(crate) enum ValuePublishOutcome {
 ///
 /// `K` is the key encoding (`ByteKey`/`CharKey`), `V` the value, `S` the block
 /// storage. `Self::CounterValue` (inherited from [`LockFreeOverlay`]) is the
-/// per-variant counter monomorph (`u64` for char, `i64` for byte) — the one
-/// divergence that makes the value-domain bound + increment publish seams, not
-/// blanket defaults.
+/// per-variant counter monomorph — `u64` for BOTH byte and char now (the
+/// u64-restoration; see `overlay_write_mode.rs`). The increment publish seam stays
+/// per-variant only because `try_increment_cas_inner` is `<u64,S>`-specialized
+/// (named via a SAFE `Any` downcast), not because the counter types differ. The
+/// `i64` here is ONLY the WAL `BatchIncrement` DELTA domain (`bound_increment_delta`
+/// — both variants `i64::try_from(delta)`, rejecting a single delta `> i64::MAX`),
+/// NOT the leaf counter type.
 pub(crate) trait DurableOverlayWrite<K: KeyEncoding, V: DictionaryValue, S>:
     LockFreeOverlay<K, V, S>
 {

@@ -56,6 +56,13 @@ pub(crate) mod f5_build;
 // CX (task #43): the path-compressing overlay↔dense codec's shared, K-generic, PURE
 // no-truncation core (`chain_chunks`). DORMANT until L2/L3 wire the codec.
 pub(crate) mod codec;
+// G5.3' — the shared lock-free CAS-walk SKELETON (free generic-over-`<K,V>` COMMON
+// descent helpers + the `OverlayCasWalk<K,V,S>` trait with per-variant
+// specialization hooks + DEFAULT skeleton methods). The COMMON descent
+// (find/spine/resolve_or_fault) is shared; the result/error enums + the
+// `try_set_final` two-phase publish stay per-variant. See
+// `docs/design/slice3-g5-overlay-genericization-2026-06-09.md` §G5.3'.
+pub(crate) mod cas_walk;
 
 pub use atomic_ptr::AtomicNodePtr;
 pub use dict_node::OverlayDictionaryNode;

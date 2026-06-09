@@ -39,15 +39,48 @@ Collapse the line-identical `LockFreeOverlay`/`DurableOverlayWrite`/`OverlayChec
 to trait defaults; route str↔units via `K::units_to_term`/`units_from_bytes`. Adopt the FAULTING
 `overlay_value_get` (RT-1). KEEP the counter `Any`-downcast seams per-variant (they name `<u64,S>`).
 
-## G5.3 — unify the `lockfree_cas.rs` private DFS CAS primitives (hot path, loom-gated)
-Lift `build_path_recursive`/`create_lockfree_path`/`build_value_path_recursive`/`build_remove_path_recursive`/
-`find_leaf_recursive`/`try_{insert,remove}_lockfree_path`/`insert_lockfree_recursive` into a `pub(crate)`
-trait default-method family over `OverlayNode<K,V>`+`OverlayFaulter` (token-identical modulo `&[K::Unit]`).
-Adopt char's `finalize: bool` + `BuildPathError{AlreadyExists,Io}` (promote to core), mapping byte's
-bare-`Err(())` to preserve its conflict-RETRY semantics (RT-5). Public entry points stay per-variant
-3-line `&str`/`&[u8]`→`&[K::Unit]` skins. Do NOT change node-build order (feeds the serializer — RT-4).
+## STATUS (2026-06-09): G5.0+G5.1+G5.2 COMMITTED 906b4cf
+G5.0 (KeyEncoding `Token`), G5.1 (`OverlayDictionaryNode<K,V>` + byte/char aliases, char `unsafe impl
+Send/Sync` removed → −2 inventory/−1 contract), G5.2 (`overlay_value_get` unified to one FAULTING default;
+byte latent BUG#46 fix). nextest 2708/0/3, loom (overlay 12/f4 3/durable 3), unsafe set-eq 0, format untouched.
 
-## G5.4 — unify the faulter newtype + `Shared*::root` wiring
+## G5.3' — generic CAS-WALK SKELETON + per-variant specialization hooks (REVISED per OWNER DECISION)
+The original G5.3 premise ("lift token-identical, adopt char's finalize form for byte") was REFUTED by code:
+byte uses LSN-order recovery (NO CommitRank) + a DUAL-method (non-durable two-phase `try_set_final` + a
+separate durable single-phase) + no-generation result types; char uses D2.8 generation-ranked recovery + a
+single `finalize`-flag method + generation-bearing results. Forcing one form onto the other re-architects a
+loom-verified data-loss-critical path. OWNER DECISION (3 clarifications): "unify where they share OR SHOULD
+share logic; allow optimized, specialized operations per data type." → the design:
+
+- NEW `pub(crate) mod cas_walk` (core): free generic-over-`<K,V>` COMMON fns — `find_leaf_recursive`,
+  `find_in_lockfree_trie`, `create_spine` (bottom-up build w/ a leaf-maker closure), `build_value_spine`,
+  `resolve_or_fault` (the OnDisk write-path fault-in, copy-pasted ~7× today).
+- `trait OverlayCasWalk<K,V,S>: LockFreeOverlay<K,V,S>` with SPECIALIZATION HOOKS: assoc
+  `InsertResult`/`RemoveResult`/`BuildErr`; `make_insert_*`/`make_remove_*` (build the per-variant result —
+  WITH char's generation / WITHOUT byte's); `claim_generation` (char=`claim_commit_seq`, byte=default,
+  vocab=`next_index.fetch_add`); `insert_terminal_leaf(node, WalkCtx)` (byte-dual vs char-finalize, via a
+  `Copy WalkCtx::{Membership{finalize},Value,IndexAlloc}`); `fault_in`; + DEFAULT skeleton
+  `build_insert_spine`/`try_insert_path`/`build_remove_spine`/`try_remove_path` (shared descent + the SINGLE
+  root-CAS + retry structure). Result/error enums STAY per-variant.
+- Each variant impls the hooks in its `overlay_write_mode.rs`; NEITHER adopts the other's form. byte keeps
+  no-generation/dual-method (I/O→Conflict); char keeps generation-ranked/finalize-flag.
+- MUST stay specialized: the key-decode boundary, char generation-ranking, byte dual-method, error
+  cardinality, remove terminal semantics, vocab index-alloc + bloom side-effect.
+- "Should-share" wins: `resolve_or_fault` (×7 dedup), a `drive_cas` retry-loop driver, `create_spine`.
+
+### Phasing (each: build + nextest + --no-default + doctests + formal + unsafe + fmt + 3 loom [overlay/f4/durable] + soak; reversible until Phase 6; ZERO unsafe/format/build-order delta)
+P0 dormant scaffold · P1 lift pure find/spine helpers (delegation) · P2 char remove · P3 char insert ·
+P4 byte remove + non-durable insert · P5 byte durable single-phase · P6 shared `drive_cas` (LAND).
+P7 (separate — the payoff): vocab plugs in `impl OverlayCasWalk<CharKey,u64,S>` (`WalkCtx::IndexAlloc`) — zero new shared code.
+
+### Red-team focus (data-loss-critical)
+generation captured at the EXACT linearization point + handed to `make_insert_inserted` (no stale gen →
+correct `reconcile_lww` order) · proper-prefix `finalize:false`→`Arc::clone(node)` (the `try_set_final`
+arbiter) un-cross-wireable · byte dual-method preserved as 2 `WalkCtx` behaviors · `resolve_or_fault`
+preserves byte's I/O→Conflict mapping · exactly ONE root-CAS/attempt · hooks monomorphized (no `dyn`) ·
+`create_spine` build-order unchanged.
+
+## G5.4 — STOPPED (byte's Shared-root `faulter=None` is a DELIBERATE specialization — retain; changing it alters byte's read behavior). Share only the faulter NEWTYPE if cleanly common.
 
 ## DEFER G5.5 — sharing the serialize/enumerate codec SPINE (on-disk-format drift risk; out of scope)
 
