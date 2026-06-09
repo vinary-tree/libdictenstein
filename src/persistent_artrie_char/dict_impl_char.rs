@@ -3144,34 +3144,4 @@ mod tests {
         assert!(trie.contains_lockfree("banana"));
         assert!(!trie.contains_lockfree("cherry"));
     }
-
-    #[test]
-    fn test_merge_lockfree_to_persistent() {
-        let dir = tempfile::TempDir::new().expect("create temp dir");
-        let path = dir.path().join("test_merge_lockfree.artc");
-
-        let mut trie: PersistentARTrieChar<()> =
-            PersistentARTrieChar::create(&path).expect("create trie");
-        trie.enable_lockfree();
-
-        // Insert into lock-free trie
-        trie.insert_cas("alpha");
-        trie.insert_cas("beta");
-        trie.insert_cas("gamma");
-
-        // Merge to persistent
-        let count = trie.merge_lockfree_to_persistent().expect("merge lockfree");
-        assert_eq!(count, 3);
-
-        // The terms should now be in the persistent trie
-        assert!(trie.contains("alpha"));
-        assert!(trie.contains("beta"));
-        assert!(trie.contains("gamma"));
-
-        // Lock-free cache should be cleared (check cache is empty)
-        // Note: contains_lockfree still finds terms in trie structure, which is correct
-        if let Some(ref cache) = trie.lockfree_cache {
-            assert!(cache.is_empty(), "cache should be cleared after merge");
-        }
-    }
 }

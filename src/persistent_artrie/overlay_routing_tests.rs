@@ -11,9 +11,8 @@
 //! 2. **Durable writes round-trip** through the routed public writers (`insert` /
 //!    `insert_with_value` / `upsert_bytes` / `increment_bytes` / `get_or_insert_bytes`
 //!    / `remove` / `insert_batch` / `remove_prefix`) and survive reopen.
-//! 3. **The overlay-incompatible owned DRAINS still reject** under the overlay
-//!    (`merge_lockfree_to_persistent` / `merge_lockfree_values_to_persistent`), while
-//!    CAS / the trie-to-trie merges / doc-tx / `compact` all SUCCEED (C2/F6).
+//! 3. **CAS / the trie-to-trie merges / doc-tx / `compact` all SUCCEED** under the
+//!    overlay (C2/F6). (L3.3b B6 deleted the owned-tree drains entirely.)
 //! 4. **Deep key** — a length-500 (un-path-compressed) overlay spine must not overflow
 //!    the routed public reads' DFS.
 //!
@@ -172,19 +171,15 @@ fn m3_routed_writes_round_trip_and_survive_reopen() {
     );
 }
 
-/// **The reject guards under the overlay.** F0/G5 (NH2) supports `compare_and_swap`,
-/// C2 now routes the trie-to-trie merges (`merge_from`/`merge_replace`/
-/// `merge_from_batched`/`merge_from_batched_grouped`) and `begin_document` through the
-/// overlay (they SUCCEED), and F6 makes `compact` succeed under the overlay too (it
-/// sources the snapshot from the overlay and re-flips to preserve the regime). The only
-/// guards that STILL fire are the owned-tree DRAINS
-/// (`merge_lockfree_to_persistent`/`merge_lockfree_values_to_persistent`) — draining the
-/// durable overlay back into the owned tree would destroy durable state.
-///
-/// C2 made these succeed for the byte counter `i64` (overlay-eligible like all `V`),
-/// so the old reject assertions were stale.
+/// **Overlay-routed ops all SUCCEED.** F0/G5 (NH2) supports `compare_and_swap`, C2
+/// routes the trie-to-trie merges (`merge_from`/`merge_replace`/`merge_from_batched`/
+/// `merge_from_batched_grouped`) and `begin_document` through the overlay, and F6 makes
+/// `compact` succeed under the overlay too (it sources the snapshot from the overlay and
+/// re-flips to preserve the regime). (L3.3b B6 deleted the owned-tree drains
+/// `merge_lockfree_{,values_}to_persistent` entirely, so their former reject assertions
+/// are gone with them.)
 #[test]
-fn m3_reject_guards_fire_under_overlay() {
+fn m3_overlay_routed_ops_succeed() {
     let dir = scratch("byte-m3-rejects");
     let path = dir.path().join("r.part");
     let other_path = dir.path().join("other.part");
@@ -253,17 +248,6 @@ fn m3_reject_guards_fire_under_overlay() {
         1
     );
 
-    // The owned-tree DRAINS still reject under the overlay (draining the durable
-    // overlay into the owned tree would destroy durable state).
-    assert!(
-        is_invalid_op(trie.merge_lockfree_to_persistent()),
-        "merge_lockfree_to_persistent must reject under overlay"
-    );
-    assert!(
-        is_invalid_op(trie.merge_lockfree_values_to_persistent()),
-        "merge_lockfree_values_to_persistent must reject under overlay"
-    );
-
     // doc-tx: C2 made begin_document succeed under the overlay (it skips the orphan
     // BeginTx WAL append; commit_document is per-op durable).
     let tx = trie
@@ -307,14 +291,4 @@ fn m3_deep_key_routed_reads_no_stack_overflow() {
     assert!(all.contains(&deep));
     let with_values: BTreeMap<Vec<u8>, Option<u64>> = trie.iter_with_values().collect();
     assert_eq!(with_values.get(&deep), Some(&Some(11)));
-}
-
-// ---------------------------------------------------------------------------
-// Helper: did the call reject with InvalidOperation?
-// ---------------------------------------------------------------------------
-fn is_invalid_op<T>(r: crate::persistent_artrie::error::Result<T>) -> bool {
-    matches!(
-        r,
-        Err(crate::persistent_artrie::error::PersistentARTrieError::InvalidOperation(_))
-    )
 }

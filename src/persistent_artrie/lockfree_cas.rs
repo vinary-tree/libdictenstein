@@ -530,45 +530,6 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
         false
     }
 
-    /// Merge lock-free entries into the persistent trie.
-    ///
-    /// Takes entries from the lock-free cache and inserts them into the
-    /// persistent trie structure. Call this during checkpoints or before
-    /// saving to ensure all entries are persisted.
-    ///
-    /// **M3 reject (BROKEN-BY-DESIGN, audit §B #6).** Under `route_overlay()` this
-    /// drains the overlay CACHE into the owned tree and CLEARS the cache — but the
-    /// overlay IS the durable production state, so draining it to the owned tree
-    /// (which the overlay read/checkpoint path does not observe) DESTROYS durable
-    /// state. Reject; overlay→owned reconciliation is not a flip-mode operation.
-    pub fn merge_lockfree_to_persistent(&mut self) -> Result<usize> {
-        if self.route_overlay() {
-            return Err(PersistentARTrieError::InvalidOperation(
-                "merge_lockfree_to_persistent is not valid under the lock-free overlay (the \
-                 overlay is the durable production state; draining it into the owned tree \
-                 would destroy durable state)"
-                    .to_string(),
-            ));
-        }
-        let entries: Vec<Vec<u8>> = match &self.lockfree_cache {
-            Some(cache) => cache.iter().map(|e| e.key().clone()).collect(),
-            None => return Ok(0),
-        };
-
-        let mut count = 0;
-        for term in entries {
-            if self.insert_impl(&term, None) {
-                count += 1;
-            }
-        }
-
-        if let Some(ref cache) = self.lockfree_cache {
-            cache.clear();
-        }
-
-        Ok(count)
-    }
-
     /// Get the number of CAS retries (for monitoring contention).
     #[inline]
     pub fn cas_retry_count(&self) -> u64 {
@@ -1468,72 +1429,6 @@ impl<S: BlockStorage> PersistentARTrie<u64, S> {
         <Self as DurableOverlayWrite<ByteKey, u64, S>>::upsert_cas_durable_default(
             self, term, value,
         )
-    }
-
-    /// Merge lock-free values into the persistent trie by summing.
-    ///
-    /// Unlike `merge_lockfree_to_persistent()` which does boolean insert,
-    /// this method walks the lock-free trie overlay, collects all
-    /// `(key, value)` entries, and adds each value to the persistent trie.
-    ///
-    /// **M3 reject (BROKEN-BY-DESIGN, audit §B #5).** Under `route_overlay()` this
-    /// drains the overlay (`collect_lockfree_entries_recursive`) into the owned tree
-    /// AND clears the overlay root — destroying the durable production state (the
-    /// overlay IS that state under the flip). Reject.
-    pub fn merge_lockfree_values_to_persistent(&mut self) -> Result<usize> {
-        use super::nodes::PersistentNode;
-
-        if self.route_overlay() {
-            return Err(PersistentARTrieError::InvalidOperation(
-                "merge_lockfree_values_to_persistent is not valid under the lock-free overlay \
-                 (it drains and clears the overlay, which is the durable production state)"
-                    .to_string(),
-            ));
-        }
-
-        let entries = {
-            let lockfree_root = match self.lockfree_root.as_ref() {
-                Some(root) => root,
-                None => return Ok(0),
-            };
-
-            let root_node = match lockfree_root.load() {
-                Some(node) => node,
-                None => return Ok(0),
-            };
-
-            let mut entries: Vec<(Vec<u8>, u64)> = Vec::new();
-            let mut key_buf: Vec<u8> = Vec::new();
-            Self::collect_lockfree_entries_recursive(&root_node, &mut key_buf, &mut entries);
-            entries
-        };
-
-        if entries.is_empty() {
-            return Ok(0);
-        }
-
-        let (wal_entries, prepared_values) = self.prepare_lockfree_value_merge(&entries)?;
-        let merged_count = wal_entries.len();
-
-        self.append_mutation_wal_record(
-            WalRecord::BatchIncrement {
-                entries: wal_entries,
-            },
-            "lockfree_value_merge",
-        )?;
-
-        for (key, value) in prepared_values {
-            self.upsert_impl_no_wal(&key, value);
-        }
-
-        if let Some(ref cache) = self.lockfree_cache {
-            cache.clear();
-        }
-        if let Some(ref root) = self.lockfree_root {
-            root.store(Arc::new(PersistentNode::<u64>::new()));
-        }
-
-        Ok(merged_count)
     }
 
     /// Prepare the merge: for each overlay `(key, delta_u64)`, compute the new owned

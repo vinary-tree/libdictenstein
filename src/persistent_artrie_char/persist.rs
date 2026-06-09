@@ -2557,8 +2557,7 @@ mod multi_writer_checkpointer_soak {
     /// F2-migrate: Bucket D (UNCONDITIONAL). C2 made `begin_document` SUCCEED under the
     /// overlay (it skips the orphan BeginTx WAL append; `commit_document` is per-op
     /// durable), so the old S5-7 reject assertion is stale in BOTH feature configs. The
-    /// `merge_lockfree_values_to_persistent` owned-drain guard and the `u64` add-only
-    /// underflow rejection (a negative increment below 0) STILL fire.
+    /// `u64` add-only underflow rejection (a negative increment below 0) STILL fires.
     #[test]
     fn s5_567_overlay_producer_guards_reject() {
         let dir = scratch("s5-567-guards");
@@ -2571,11 +2570,6 @@ mod multi_writer_checkpointer_soak {
         assert!(
             trie.begin_document("doc").is_ok(),
             "S5-7: begin_document now routes through the overlay (C2)"
-        );
-        // S5-6: the owned-tree drain still REJECTS under the overlay.
-        assert!(
-            trie.merge_lockfree_values_to_persistent().is_err(),
-            "S5-6: merge_lockfree_values_to_persistent must reject under the overlay"
         );
         // S5-5: a non-negative increment ROUTES to the overlay (Ok).
         assert!(
