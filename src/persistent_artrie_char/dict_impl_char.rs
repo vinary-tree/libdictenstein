@@ -367,9 +367,9 @@ mod tests {
         let inner: PersistentARTrieChar<()> = PersistentARTrieChar::new();
 
         // Insert some terms
-        assert!(inner.insert_impl_no_wal("hello"));
-        assert!(inner.insert_impl_no_wal("world"));
-        assert!(inner.insert_impl_no_wal("hello world"));
+        assert!(inner.insert("hello").expect("ins"));
+        assert!(inner.insert("world").expect("ins"));
+        assert!(inner.insert("hello world").expect("ins"));
 
         // Verify contains
         assert!(inner.contains("hello"));
@@ -386,10 +386,10 @@ mod tests {
         let inner: PersistentARTrieChar<()> = PersistentARTrieChar::new();
 
         // First insert should succeed
-        assert!(inner.insert_impl_no_wal("hello"));
+        assert!(inner.insert("hello").expect("ins"));
 
         // Duplicate insert should fail
-        assert!(!inner.insert_impl_no_wal("hello"));
+        assert!(!inner.insert("hello").expect("ins"));
 
         // Length should still be 1
         assert_eq!(inner.len(), 1);
@@ -400,21 +400,21 @@ mod tests {
         let inner: PersistentARTrieChar<()> = PersistentARTrieChar::new();
 
         // Insert some terms
-        inner.insert_impl_no_wal("hello");
-        inner.insert_impl_no_wal("world");
+        inner.insert("hello").expect("ins");
+        inner.insert("world").expect("ins");
         assert_eq!(inner.len(), 2);
 
         // Remove one
-        assert!(inner.remove_impl_no_wal("hello"));
+        assert!(inner.remove("hello").expect("rm"));
         assert_eq!(inner.len(), 1);
         assert!(!inner.contains("hello"));
         assert!(inner.contains("world"));
 
         // Remove again should fail
-        assert!(!inner.remove_impl_no_wal("hello"));
+        assert!(!inner.remove("hello").expect("rm"));
 
         // Remove the other
-        assert!(inner.remove_impl_no_wal("world"));
+        assert!(inner.remove("world").expect("rm"));
         assert_eq!(inner.len(), 0);
     }
 
@@ -435,7 +435,7 @@ mod tests {
         ];
 
         for term in &terms {
-            assert!(inner.insert_impl_no_wal(term), "should insert: {}", term);
+            assert!(inner.insert(term).expect("ins"), "should insert: {}", term);
         }
 
         assert_eq!(inner.len(), terms.len());
@@ -456,11 +456,11 @@ mod tests {
         let inner: PersistentARTrieChar<()> = PersistentARTrieChar::new();
 
         // Terms that share prefixes
-        inner.insert_impl_no_wal("a");
-        inner.insert_impl_no_wal("ab");
-        inner.insert_impl_no_wal("abc");
-        inner.insert_impl_no_wal("abd");
-        inner.insert_impl_no_wal("abcd");
+        inner.insert("a").expect("ins");
+        inner.insert("ab").expect("ins");
+        inner.insert("abc").expect("ins");
+        inner.insert("abd").expect("ins");
+        inner.insert("abcd").expect("ins");
 
         assert_eq!(inner.len(), 5);
 
@@ -480,12 +480,12 @@ mod tests {
         let inner: PersistentARTrieChar<()> = PersistentARTrieChar::new();
 
         // Empty string is valid
-        assert!(inner.insert_impl_no_wal(""));
+        assert!(inner.insert("").expect("ins"));
         assert!(inner.contains(""));
         assert_eq!(inner.len(), 1);
 
         // Add another term
-        inner.insert_impl_no_wal("hello");
+        inner.insert("hello").expect("ins");
         assert_eq!(inner.len(), 2);
         assert!(inner.contains(""));
         assert!(inner.contains("hello"));
@@ -495,9 +495,9 @@ mod tests {
     fn test_get_value() {
         let inner: PersistentARTrieChar<i32> = PersistentARTrieChar::new();
 
-        inner.insert_impl_no_wal_with_value("one", 1);
-        inner.insert_impl_no_wal_with_value("two", 2);
-        inner.insert_impl_no_wal_with_value("three", 3);
+        inner.insert_with_value("one", 1).expect("ins");
+        inner.insert_with_value("two", 2).expect("ins");
+        inner.insert_with_value("three", 3).expect("ins");
 
         assert_eq!(inner.get("one"), Some(1));
         assert_eq!(inner.get("two"), Some(2));
@@ -510,11 +510,11 @@ mod tests {
         let inner: PersistentARTrieChar<i32> = PersistentARTrieChar::new();
 
         // First insert
-        assert!(inner.insert_impl_no_wal_with_value("key", 100));
+        assert!(inner.insert_with_value("key", 100).expect("ins"));
         assert_eq!(inner.get("key"), Some(100));
 
         // Update (insert returns false but value is updated)
-        assert!(!inner.insert_impl_no_wal_with_value("key", 200));
+        assert!(!inner.insert_with_value("key", 200).expect("ins"));
         assert_eq!(inner.get("key"), Some(200));
 
         // Length unchanged
@@ -2718,7 +2718,7 @@ mod tests {
                 PersistentARTrieChar::create(&path).expect("create");
             // Force the proven owned-tree path (pre-flip behavior) — this test exercises an owned/transaction/merge/archive feature that the create-flip would otherwise route to the lock-free overlay.
             trie.kill_switch_to_owned();
-            trie.insert_impl_no_wal("hello");
+            trie.insert("hello").expect("ins");
             trie.checkpoint().expect("checkpoint");
         }
 

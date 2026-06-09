@@ -69,7 +69,7 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
         note = "Use `create()` or `open()` for disk persistence. For in-memory tries, use DoubleArrayTrie or DynamicDawg instead."
     )]
     pub fn new() -> Self {
-        Self {
+        let mut trie = Self {
             root: RwLock::new(TrieRoot::Bucket(StringBucket::with_values())),
             term_count: AtomicUsize::new(0),
             dirty: AtomicBool::new(false),
@@ -104,7 +104,20 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
             checkpoint_lock: std::sync::Arc::new(parking_lot::Mutex::new(())),
             merge_lock: std::sync::Arc::new(parking_lot::Mutex::new(())),
             commit_seq: std::sync::atomic::AtomicU64::new(0),
-        }
+        };
+        // **L3.2:** an in-memory `::new()` trie installs an empty lock-free overlay (WAL-less —
+        // `enable_lockfree`'s WAL stamp is a no-op without a `wal_writer`), so `route_overlay()`
+        // is UNIVERSALLY true across every constructor (the precondition for deleting the owned
+        // tree at L3.3). Writes degrade to a non-durable in-memory CAS (the durable path's WAL
+        // append returns LSN 0 under `Immediate`; `mark_committed(0)` is a no-op); reads + the
+        // zipper walk the overlay. `checkpoint()` still errors (no buffer manager). This does NOT
+        // route through `flip_to_overlay` (which hard-requires a WAL) — just the two WAL-less
+        // primitives.
+        trie.enable_lockfree();
+        trie.set_overlay_write_mode(
+            crate::persistent_artrie_core::overlay::write_mode::OverlayWriteMode::LockFreeOverlay,
+        );
+        trie
     }
 
     /// Create a new persistent dictionary at the given path.

@@ -657,7 +657,8 @@ mod tests {
         assert!(!dict.contains("date"));
 
         assert_eq!(dict.len(), Some(3));
-        assert!(dict.is_dirty());
+        // (L3.2: the owned `is_dirty()` flag is NOT set by the overlay-routed public `insert`;
+        // owned dirty-tracking is covered by the owned-mutator tests + removed at L3.3.)
     }
 
     #[test]
@@ -723,7 +724,9 @@ mod tests {
     fn test_mark_clean() {
         let dict: PersistentARTrie = PersistentARTrie::new();
 
-        dict.insert("test");
+        // L3.2: owned dirty-tracking — drive the owned mutator (sets the owned dirty flag); the
+        // overlay-routed public `insert` does not. (Owned dirty-tracking is removed at L3.3.)
+        dict.insert_impl(b"test", None);
         assert!(dict.is_dirty());
 
         dict.mark_clean();
@@ -1931,8 +1934,11 @@ mod tests {
             .expect("dirty_prefixes mutex poisoned")
             .is_empty());
 
-        // Insert a term - should record the path
-        dict.insert("apple");
+        // **L3.2:** this tests the OWNED dirty-tracking (`dict.dirty_prefixes`), which only the
+        // OWNED mutator (`insert_impl`) records — the public `insert` is now overlay-routed and
+        // does not touch `dirty_prefixes`. So drive the owned mutator directly. (The owned
+        // dirty-tracking machinery + this test are removed at L3.3.)
+        dict.insert_impl(b"apple", None);
 
         // Check that path prefixes are recorded
         assert!(dict
@@ -1971,9 +1977,9 @@ mod tests {
     fn test_dirty_path_recording_multiple_terms() {
         let dict: PersistentARTrie = PersistentARTrie::new();
 
-        // Insert multiple terms with shared prefix
-        dict.insert("apple");
-        dict.insert("apricot");
+        // L3.2: owned dirty-tracking — drive the owned mutator (see test_dirty_path_recording).
+        dict.insert_impl(b"apple", None);
+        dict.insert_impl(b"apricot", None);
 
         // Both share "ap" prefix, so paths should include both
         assert!(dict
@@ -1998,14 +2004,14 @@ mod tests {
     fn test_dirty_path_recording_on_remove() {
         let dict: PersistentARTrie = PersistentARTrie::new();
 
-        dict.insert("apple");
+        dict.insert_impl(b"apple", None);
         dict.dirty_prefixes
             .lock()
             .expect("dirty_prefixes mutex poisoned")
             .clear(); // Clear after insert
 
-        // Remove should also record the path
-        dict.remove("apple");
+        // L3.2: owned dirty-tracking — drive the owned remove mutator (records the path).
+        dict.remove_impl(b"apple");
         assert!(dict
             .dirty_prefixes
             .lock()
@@ -2017,8 +2023,9 @@ mod tests {
     fn test_dirty_tracking_state_clear() {
         let dict: PersistentARTrie = PersistentARTrie::new();
 
-        dict.insert("apple");
-        dict.insert("banana");
+        // L3.2: owned dirty-tracking — drive the owned mutator (see test_dirty_path_recording).
+        dict.insert_impl(b"apple", None);
+        dict.insert_impl(b"banana", None);
 
         assert!(!dict
             .dirty_prefixes
@@ -2122,7 +2129,8 @@ mod tests {
     fn test_path_needs_persistence() {
         let dict: PersistentARTrie = PersistentARTrie::new();
 
-        dict.insert("apple");
+        // L3.2: owned dirty-tracking — drive the owned mutator (records dirty paths).
+        dict.insert_impl(b"apple", None);
 
         // Paths along "apple" should need persistence
         assert!(dict.path_needs_persistence(b""));

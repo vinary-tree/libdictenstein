@@ -41,7 +41,7 @@ use super::DEFAULT_CHAR_BUFFER_POOL_SIZE;
 impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
     /// Create a new empty trie (in-memory mode)
     pub fn new() -> Self {
-        Self {
+        let mut trie = Self {
             root: parking_lot::RwLock::new(CharTrieRoot::Empty),
             len: AtomicUsize::new(0),
             dirty: AtomicBool::new(false),
@@ -77,7 +77,16 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
             commit_seq_by_data_lsn: std::sync::Mutex::new(std::collections::BTreeMap::new()),
             lockfree_cache: None,
             cas_retries: std::sync::atomic::AtomicU64::new(0),
-        }
+        };
+        // **L3.2:** an in-memory `::new()` trie installs an empty lock-free overlay (WAL-less —
+        // `enable_lockfree`'s WAL stamp is a no-op without a `wal_writer`), so `route_overlay()`
+        // is UNIVERSALLY true across every constructor (the precondition for deleting the owned
+        // tree at L3.3). Writes degrade to a non-durable in-memory CAS (the durable path's WAL
+        // append returns LSN 0 under `Immediate`; `mark_committed(0)` is a no-op); reads + the
+        // zipper walk the overlay. Does NOT route through `flip_to_overlay` (which needs a WAL).
+        trie.enable_lockfree();
+        trie.set_overlay_write_mode(super::overlay_write_mode::OverlayWriteMode::LockFreeOverlay);
+        trie
     }
 
     /// **S5-12 EDIT 1 (owner-GO, IRREVERSIBLE): a freshly-created trie flips to the

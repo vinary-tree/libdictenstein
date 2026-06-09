@@ -577,6 +577,15 @@ pub(crate) trait LockFreeOverlay<K: KeyEncoding, V: DictionaryValue, S>:
     /// re-flips). Mirrors `enable_lockfree`'s `current_lsn() == 1` empty-WAL stamp
     /// guard.
     fn kill_switch_to_owned(&self) {
+        // **L3.2 guard (data-loss):** a WAL-less in-memory `::new()` trie (no `wal_writer` ⇒
+        // `wal_current_lsn() == None`) routes its writes to the overlay and has an EMPTY owned
+        // tree, so flipping it to Owned would route reads to the empty owned tree = silent total
+        // data loss. There is no durable owned image to fall back to, so kill-switch is a NO-OP
+        // for the in-memory trie (the overlay stays engaged). Disk-backed (`create`/`open`) tries
+        // always have a WAL, so this never affects the real kill-switch fallback.
+        if self.wal_current_lsn().is_none() {
+            return;
+        }
         // **F4:** `&self` (Tier-2 runtime fallback). All callees are `&self`: the
         // `AtomicEnumCell` store + the WAL stamp helpers. No outer trie lock.
         self.set_overlay_write_mode(OverlayWriteMode::OwnedTree);

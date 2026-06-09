@@ -9,12 +9,16 @@ use std::borrow::Cow;
 #[allow(unused_imports)]
 use std::sync::Arc;
 
+#[allow(unused_imports)]
 use super::bucket::StringBucket;
-use super::dict_impl::{PersistentARTrie, TrieRoot};
+use super::dict_impl::PersistentARTrie;
+#[allow(unused_imports)]
 use super::transitions::ChildNode;
 use super::SharedARTrie;
 // F4: the `.read()` compat shim on the collapsed `Arc<PersistentARTrie>` handle.
 use crate::persistent_artrie_core::shared_access::SharedTrieAccess;
+// **L3.2:** overlay-backed zipper navigation.
+use crate::persistent_artrie_core::overlay::flip::LockFreeOverlay;
 use crate::value::DictionaryValue;
 use crate::zipper::{DictZipper, ValuedDictZipper};
 
@@ -98,21 +102,11 @@ impl<V: DictionaryValue> PersistentARTrieZipper<V> {
     /// For thread-safe concurrent access, wrap the trie in `SharedARTrie`
     /// (i.e., `Arc<RwLock<PersistentARTrie<V>>>`).
     ///
-    /// **M3 DEFER (audit `root()/zipper/DictionaryNode`).** The zipper navigates the
-    /// OWNED tree (`is_final_at_path`/`has_path` walk `self.root`). Under the lock-free
-    /// overlay regime the owned tree is empty, so zipper / transducer / fuzzy traversal
-    /// over a flipped trie sees an EMPTY dictionary. Overlay-backed zipper traversal is
-    /// an E1-iter-B follow-on; the `log::warn!` makes the boundary observable rather
-    /// than silent. (INERT pre-flip: `route_overlay()` is false in production until M4,
-    /// so the zipper sees the correct owned tree today.)
+    /// **L3.2:** overlay-backed — `has_path`/`is_final_at_path`/`get_children_at_path` navigate
+    /// the lock-free overlay (the production rep), so the zipper sees the live dictionary on every
+    /// (now universally overlay-routed) trie. (Replaces the M3-DEFER `log::warn!` "navigates an
+    /// EMPTY owned tree" stub — overlay traversal is now implemented.)
     pub fn new(trie: SharedARTrie<V>) -> Self {
-        if trie.read().route_overlay() {
-            log::warn!(
-                "PersistentARTrieZipper over a lock-free-overlay trie navigates an EMPTY owned \
-                 tree (M3 DEFER / E1-iter-B: overlay-backed zipper traversal is not yet \
-                 implemented); use contains / get_value / iter_prefix for overlay reads"
-            );
-        }
         PersistentARTrieZipper {
             trie,
             path: Vec::new(),
@@ -186,29 +180,15 @@ impl<V: DictionaryValue> DictZipper for PersistentARTrieZipper<V> {
 }
 
 impl<V: DictionaryValue> PersistentARTrieZipper<V> {
-    /// Check if a path exists in the trie, resolving DiskRefs as needed.
+    /// Check if a path exists in the trie.
+    ///
+    /// **L3.2:** the struct zipper navigates the lock-free OVERLAY (the production rep), not the
+    /// owned tree — every trie is overlay-routed now (`route_overlay()` universal). `overlay_navigate`
+    /// descends unit-by-unit (the live overlay is un-path-compressed) and faults OnDisk prefix
+    /// nodes READ-ONLY, so `is_some()` ⇔ the path is a strict-prefix-or-final member — matching the
+    /// prior owned `bucket_has_path`'s `suffix.starts_with(path)` semantics.
     fn has_path(&self, inner: &PersistentARTrie<V>, path: &[u8]) -> bool {
-        match &*inner.root.read() {
-            TrieRoot::Bucket(bucket) => {
-                // For bucket root, check if any entry starts with or equals this path
-                self.bucket_has_path(bucket, path)
-            }
-            TrieRoot::ArtNode { children, .. } => {
-                if path.is_empty() {
-                    true // Root always exists
-                } else {
-                    let first_byte = path[0];
-                    let remaining = &path[1..];
-
-                    for (b, child) in children {
-                        if *b == first_byte {
-                            return self.has_path_in_child(inner, child, remaining);
-                        }
-                    }
-                    false
-                }
-            }
-        }
+        inner.overlay_navigate(path).is_some()
     }
 
     /// Check if bucket has entries starting with path
@@ -230,50 +210,18 @@ impl<V: DictionaryValue> PersistentARTrieZipper<V> {
         false
     }
 
-    /// Check if position is final, resolving DiskRefs as needed.
+    /// Check if the position is final (a term). **L3.2:** overlay-backed (see [`Self::has_path`]).
     fn is_final_at_path(&self, inner: &PersistentARTrie<V>, path: &[u8]) -> bool {
-        match &*inner.root.read() {
-            TrieRoot::Bucket(bucket) => bucket.contains(path),
-            TrieRoot::ArtNode {
-                children, is_final, ..
-            } => {
-                if path.is_empty() {
-                    return *is_final;
-                }
-
-                let first_byte = path[0];
-                let remaining = &path[1..];
-
-                for (b, child) in children {
-                    if *b == first_byte {
-                        return self.is_final_in_child(inner, child, remaining);
-                    }
-                }
-                false
-            }
-        }
+        inner.overlay_navigate(path).is_some_and(|n| n.is_final())
     }
 
-    /// Get all children (edge labels) at current path, resolving DiskRefs as needed.
+    /// Get all child edge labels at the current path. **L3.2:** overlay-backed (see
+    /// [`Self::has_path`]). Children are returned in the overlay's ascending key order; the
+    /// consumers (DictZipper / set-combinators) treat children as a set, so order is unobserved.
     fn get_children_at_path(&self, inner: &PersistentARTrie<V>, path: &[u8]) -> Vec<u8> {
-        match &*inner.root.read() {
-            TrieRoot::Bucket(bucket) => self.get_bucket_children(bucket, path),
-            TrieRoot::ArtNode { children, .. } => {
-                if path.is_empty() {
-                    // At root, return all first-level children
-                    children.iter().map(|(b, _)| *b).collect()
-                } else {
-                    let first_byte = path[0];
-                    let remaining = &path[1..];
-
-                    for (b, child) in children {
-                        if *b == first_byte {
-                            return self.get_children_in_child(inner, child, remaining);
-                        }
-                    }
-                    Vec::new()
-                }
-            }
+        match inner.overlay_navigate(path) {
+            Some(node) => node.iter_children().map(|(k, _)| *k).collect(),
+            None => Vec::new(),
         }
     }
 
