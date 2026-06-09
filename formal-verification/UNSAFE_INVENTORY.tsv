@@ -1,25 +1,9 @@
 # path	kind	pattern	count	contract
 src/persistent_artrie/dict_impl.rs	unsafe_block	unsafe {	1	persistent-artrie-mmap-open
 src/persistent_artrie/nodes/node16.rs	unsafe_block	unsafe {	1	byte-node16-prefix-copy
-src/persistent_artrie_char/disk_io.rs	unsafe_block	Ok(()) => return Ok(unsafe { &*raw_ptr }),	1	char-disk-swizzled-pointer-resolution
-src/persistent_artrie_char/disk_io.rs	unsafe_block	Ok(unsafe {	1	char-disk-swizzled-pointer-resolution
-src/persistent_artrie_char/disk_io.rs	unsafe_block	Ok(unsafe { &mut *raw_ptr })	1	char-disk-node-map-resolution
-src/persistent_artrie_char/disk_io.rs	unsafe_block	return Ok(unsafe { &*p });	1	char-disk-node-map-resolution
-src/persistent_artrie_char/disk_io.rs	unsafe_block	return Ok(unsafe { &mut *(p as *mut CharTrieNodeInner<V>) });	1	char-disk-node-map-resolution
-src/persistent_artrie_char/disk_io.rs	unsafe_block	unsafe {	3	char-disk-box-ownership
-src/persistent_artrie_char/disk_io.rs	unsafe_block	unsafe { drop(Box::from_raw(raw_ptr)) };	2	char-disk-box-ownership
-src/persistent_artrie_char/mod.rs	unsafe_block	let current = unsafe { (*faulter).structural_generation() };	1	char-walk-guard-faulter-traversal
-src/persistent_artrie_char/mod.rs	unsafe_block	let faulter_ref = unsafe { &*faulter };	2	char-walk-guard-faulter-traversal
-src/persistent_artrie_char/mod.rs	unsafe_block	let node_ref = unsafe { &*ptr };	2	char-public-node-traversal
-src/persistent_artrie_char/mod.rs	unsafe_block	self.node.and_then(|ptr| unsafe { (*ptr).value.clone() })	1	char-public-node-traversal
-src/persistent_artrie_char/mod.rs	unsafe_block	unsafe { (*ptr).is_final() }	1	char-public-node-traversal
-src/persistent_artrie_char/mod.rs	unsafe_block	unsafe { (*ptr).value.clone() }	1	char-public-node-traversal
 src/persistent_artrie_char/mod.rs	unsafe_impl	unsafe impl<V: DictionaryValue> Send for PersistentARTrieCharNode<V> {}	1	char-public-node-thread-contract
 src/persistent_artrie_char/mod.rs	unsafe_impl	unsafe impl<V: DictionaryValue> Sync for PersistentARTrieCharNode<V> {}	1	char-public-node-thread-contract
-src/persistent_artrie_char/mutation_core.rs	unsafe_block	let node = unsafe { &*current };	1	char-mutation-core-traversal
-src/persistent_artrie_char/mutation_core.rs	unsafe_block	let node = unsafe { &mut *current };	6	char-mutation-core-unique-borrow
 src/persistent_artrie_char/nodes/node16_char.rs	unsafe_block	unsafe {	1	char-node16-prefix-copy
-src/persistent_artrie_char/persist.rs	unsafe_block	let child = unsafe { &*child_raw };	1	char-persist-child-serialization
 src/persistent_artrie_char/types.rs	unsafe_block	Some(unsafe { Box::from_raw(ptr as *mut CharTrieNodeInner<V>) })	1	char-child-box-reclaim
 src/persistent_artrie_char/types.rs	unsafe_block	let child_ref = unsafe { &*p };	1	char-child-read-only-traversal
 src/persistent_artrie_char/types.rs	unsafe_block	let child_ref = unsafe { &*ptr };	1	char-child-read-only-traversal

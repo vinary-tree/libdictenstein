@@ -14,7 +14,6 @@
 //! generic methods (any `BlockStorage` backend) stay in
 //! `dict_impl.rs`.
 
-use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering as AtomicOrdering};
 use std::sync::Arc;
@@ -25,8 +24,7 @@ use crate::sync_compat::RwLock;
 use crate::value::DictionaryValue;
 
 use super::arena_manager::ArenaManager;
-use super::bucket::StringBucket;
-use super::dict_impl::{DurabilityPolicy, PersistentARTrie, TrieRoot};
+use super::dict_impl::{DurabilityPolicy, PersistentARTrie};
 use super::disk_load::read_root_descriptor_arena_count;
 use super::error::{PersistentARTrieError, Result};
 use super::wal::{AsyncWalConfig, AsyncWalWriter, WalConfig};
@@ -70,7 +68,6 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
     )]
     pub fn new() -> Self {
         let mut trie = Self {
-            root: RwLock::new(TrieRoot::Bucket(StringBucket::with_values())),
             term_count: AtomicUsize::new(0),
             dirty: AtomicBool::new(false),
             buffer_manager: None,
@@ -84,8 +81,6 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
             epoch_manager: Arc::new(super::concurrency::EpochManager::new()),
             stats: Arc::new(super::concurrency::TrieStats::new()),
             eviction_coordinator: std::sync::Mutex::new(None),
-            dirty_prefixes: std::sync::Mutex::new(HashSet::new()),
-            persisted_disk_locations: RwLock::new(HashMap::new()),
             #[cfg(feature = "persistent-artrie")]
             lockfree_root: None,
             #[cfg(feature = "persistent-artrie")]
@@ -175,7 +170,6 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
 
         // M4b EDIT 1: flip a fresh eligible-V trie to the overlay (no-op for arbitrary V).
         Self::apply_create_flip(Self {
-            root: RwLock::new(TrieRoot::Bucket(StringBucket::with_values())),
             term_count: AtomicUsize::new(0),
             dirty: AtomicBool::new(false),
             buffer_manager: Some(buffer_manager),
@@ -189,8 +183,6 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
             epoch_manager: Arc::new(super::concurrency::EpochManager::new()),
             stats: Arc::new(super::concurrency::TrieStats::new()),
             eviction_coordinator: std::sync::Mutex::new(None),
-            dirty_prefixes: std::sync::Mutex::new(HashSet::new()),
-            persisted_disk_locations: RwLock::new(HashMap::new()),
             #[cfg(feature = "persistent-artrie")]
             lockfree_root: None,
             #[cfg(feature = "persistent-artrie")]
@@ -275,7 +267,6 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
 
         // M4b EDIT 1: flip a fresh eligible-V trie to the overlay (no-op for arbitrary V).
         Self::apply_create_flip(Self {
-            root: RwLock::new(TrieRoot::Bucket(StringBucket::with_values())),
             term_count: AtomicUsize::new(0),
             dirty: AtomicBool::new(false),
             buffer_manager: Some(buffer_manager),
@@ -289,8 +280,6 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
             epoch_manager: Arc::new(super::concurrency::EpochManager::new()),
             stats: Arc::new(super::concurrency::TrieStats::new()),
             eviction_coordinator: std::sync::Mutex::new(None),
-            dirty_prefixes: std::sync::Mutex::new(HashSet::new()),
-            persisted_disk_locations: RwLock::new(HashMap::new()),
             #[cfg(feature = "persistent-artrie")]
             lockfree_root: None,
             #[cfg(feature = "persistent-artrie")]
@@ -545,11 +534,11 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
         // REAL codec `image_loaded` (with the in-loader Err→empty fallback) drives the WAL
         // drain-skip — NOT a separate eager probe that could disagree with the codec on a
         // valid-descriptor + corrupt-NODE image and brick the reopen (the BLOCKER#4 footgun).
-        let (initial_root, initial_term_count) =
-            (TrieRoot::Bucket(StringBucket::with_values()), 0usize);
+        // L3.3c: the owned root is gone; the overlay (built below via `load_root_immutable`)
+        // is the sole representation. The legacy owned term counter starts at 0.
+        let initial_term_count = 0usize;
 
         let mut dict = Self {
-            root: RwLock::new(initial_root),
             term_count: AtomicUsize::new(initial_term_count),
             dirty: AtomicBool::new(false),
             buffer_manager: Some(buffer_manager),
@@ -563,8 +552,6 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
             epoch_manager: Arc::new(super::concurrency::EpochManager::new()),
             stats: Arc::new(super::concurrency::TrieStats::new()),
             eviction_coordinator: std::sync::Mutex::new(None),
-            dirty_prefixes: std::sync::Mutex::new(HashSet::new()),
-            persisted_disk_locations: RwLock::new(HashMap::new()),
             #[cfg(feature = "persistent-artrie")]
             lockfree_root: None,
             #[cfg(feature = "persistent-artrie")]

@@ -36,7 +36,6 @@ use crate::sync_compat::RwLock;
 use crate::value::DictionaryValue;
 
 use super::nodes::persistent_node::PersistentCharNode;
-use super::types::CharTrieRoot;
 
 impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     /// **F5 — load the dense image into a pre-built lock-free overlay root** (the owned
@@ -82,9 +81,7 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
             ));
         }
 
-        // The owned `root` scratch is never materialized now — leave it empty (it is not the
-        // production rep under the overlay; it is deleted at L3.3).
-        *self.root.get_mut() = CharTrieRoot::Empty;
+        // L3.3c: the owned tree is deleted; the overlay is the sole representation.
         self.len.store(0, std::sync::atomic::Ordering::Release);
 
         Ok((term_count, image_loaded))

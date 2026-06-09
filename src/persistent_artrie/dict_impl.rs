@@ -17,7 +17,6 @@
 
 use crate::sync_compat::RwLock;
 use log::warn;
-use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, AtomicUsize};
 use std::sync::Arc;
 
@@ -32,7 +31,6 @@ use crate::{Dictionary, MappedDictionary, SyncStrategy};
 // pulled in by the test module via `use super::*`. The cargo dead-code
 // pass doesn't see through that. Suppress the false-positive warning
 // at the imports themselves.
-use super::node_impl::PersistentARTrieNode;
 #[allow(unused_imports)]
 use super::nodes::ArtNode;
 use super::nodes::Node;
@@ -46,9 +44,6 @@ use super::buffer_manager::BufferManager;
 use super::disk_manager::MmapDiskManager;
 use super::wal::AsyncWalWriter;
 use super::wal_managed::WalManaged;
-
-#[cfg(feature = "parallel-merge")]
-use rayon::prelude::*;
 
 /// SIMD-accelerated lexicographic comparison of byte slices.
 /// Returns Ordering::Less if a < b, Ordering::Equal if a == b, Ordering::Greater if a > b.
@@ -101,7 +96,15 @@ fn simd_cmp_bytes(a: &[u8], b: &[u8]) -> std::cmp::Ordering {
     a.cmp(b)
 }
 
-/// Check if a <= b using SIMD-accelerated comparison.
+// L3.3c: removed — `bytes_le` was used only by the deleted owned cursor collector
+// (`cursor_iter::collect_terms_from_cursor`). `bytes_gt` below is still used by the
+// overlay-routed `iter_prefix_from_cursor`. `bytes_le` is retained `#[cfg(test)]`-only:
+// its sole production caller was the deleted owned cursor collector, but the inline
+// "SIMD Comparison Edge Case Tests" still exercise it as a `simd_cmp_bytes` witness.
+
+/// Check if a <= b using SIMD-accelerated comparison. Test-only since L3.3c (the owned
+/// cursor collector that used it in production was deleted; the SIMD edge-case tests keep it).
+#[cfg(test)]
 #[inline]
 pub(super) fn bytes_le(a: &[u8], b: &[u8]) -> bool {
     matches!(
@@ -116,9 +119,10 @@ pub(super) fn bytes_gt(a: &[u8], b: &[u8]) -> bool {
     matches!(simd_cmp_bytes(a, b), std::cmp::Ordering::Greater)
 }
 
-/// Maximum buffer size for reading serialized ART nodes (4KB should be ample).
-/// Largest node is Node256 at ~2KB, so 4KB provides good margin.
-pub(super) const ART_NODE_BUFFER_SIZE: usize = 4096;
+// L3.3c: removed — `ART_NODE_BUFFER_SIZE` was the read-buffer bound for the deleted
+// owned block-reading loaders (`load_root_from_disk` / `load_art_node_with_children`).
+// The surviving arena-slot readers (`load_single_*` / `enumerate_terms_from_disk`) read
+// exact slot lengths, not a fixed buffer.
 
 /// Result of loading a single child node's data without loading its children.
 ///
@@ -265,19 +269,11 @@ pub(super) fn resolve_child_for_mutation_with_bm<S: BlockStorage>(
 /// assert!(!dict.contains("hi"));
 /// ```
 pub struct PersistentARTrie<V: DictionaryValue = (), S: BlockStorage = MmapDiskManager> {
-    /// Root node of the trie (starts as a bucket, grows to ART).
-    ///
-    /// **F4 (PF-1, OR lock):** wrapped in a `RwLock` so the now-`&self` owned
-    /// mutators (the dormant kill-switched-owned path + Option-B WAL-replay) keep
-    /// SAFE interior mutability after the outer `Arc<RwLock>`→`Arc` collapse — NO
-    /// new `unsafe`. This is the **OR** lock in the `CK > merge_lock > OR > EC`
-    /// hierarchy: taken only on the owned path (overlay writes are lock-free CAS and
-    /// never touch it). Ctor-time `&mut self`/single-threaded-at-open writes use
-    /// `root.get_mut()` (no lock needed before the `Arc` is shared); runtime owned
-    /// mutators take `root.write()`; the owned-arm checkpoint takes `root.read()`
-    /// for capture (admits concurrent owned readers, excludes owned writers — the
-    /// old write→read `downgrade` is DELETED with the outer lock it used).
-    pub(crate) root: RwLock<TrieRoot<V>>,
+    // L3.3c: the owned `root: RwLock<TrieRoot<V>>` field (the inner "OR" lock of the
+    // former `CK > merge_lock > OR > EC` hierarchy) is DELETED. The lock-free overlay
+    // (`lockfree_root`, below) is the SOLE representation; deleting the field deletes the
+    // OR lock. All reads/writes are lock-free CAS or take the dedicated `checkpoint_lock`
+    // / `merge_lock` / `eviction_coordinator` locks — never an owned-root lock.
     /// Number of terms in the dictionary (atomic for lock-free increment_cas)
     pub(crate) term_count: AtomicUsize,
     /// Whether the dictionary has been modified (atomic for lock-free increment_cas)
@@ -329,29 +325,17 @@ pub struct PersistentARTrie<V: DictionaryValue = (), S: BlockStorage = MmapDiskM
     pub(crate) eviction_coordinator:
         std::sync::Mutex<Option<Arc<super::eviction::EvictionCoordinator>>>,
 
-    // === Selective Dirty Subtree Traversal ===
-    /// Prefixes modified since last checkpoint (for selective traversal).
-    ///
-    /// When a term is inserted or removed, all prefixes along the path from
-    /// root to the modified node are recorded here. This enables `persist_to_disk()`
-    /// to skip clean subtrees entirely, reducing checkpoint time from O(N) to
-    /// O(D × H) where D = dirty nodes, H = average depth.
-    /// **F4 (folded into the OR-state Mutex):** the owned dirty-prefix set is
-    /// written by the owned mutators (via `record_dirty_path`) and the
-    /// owned-checkpoint clear. Post-collapse those run through `&self`, so the set
-    /// gets its own `Mutex` (a sibling of the OR root lock — both guard the dormant
-    /// owned representation; taken only on the owned path, never on the lock-free
-    /// overlay write path).
-    pub(crate) dirty_prefixes: std::sync::Mutex<HashSet<Vec<u8>>>,
+    // L3.3c: the owned `dirty_prefixes: Mutex<HashSet<Vec<u8>>>` field (the
+    // selective-dirty-subtree set written by the deleted owned mutators) is DELETED with
+    // the owned tree. The overlay write path tracks nothing here; the overlay checkpoint
+    // captures the immutable overlay root directly.
 
-    /// Disk locations of persisted nodes (keyed by path).
-    ///
-    /// Populated during serialization, preserved across checkpoints.
-    /// Invalidated when paths become dirty (on insert/remove).
-    /// Uses `RwLock` for interior mutability since serialization methods
-    /// take `&self` but need to update this cache. `RwLock` (unlike `RefCell`)
-    /// is `Sync`, allowing the struct to remain thread-safe.
-    pub(crate) persisted_disk_locations: RwLock<HashMap<Vec<u8>, SwizzledPtr>>,
+    // L3.3c: the owned `persisted_disk_locations: RwLock<HashMap<Vec<u8>, SwizzledPtr>>`
+    // disk-location cache is DELETED with the owned tree. It was populated by the deleted
+    // owned serialize path (`serialize_child_to_disk_with_path`) and the deleted
+    // dirty-tracking (`cache_disk_location` / `record_dirty_path` / `clear_dirty_tracking_state`);
+    // no surviving path reads or writes it. The overlay checkpoint serializes the immutable
+    // overlay root directly (fresh arena slots each capture; no clean-subtree-skip cache).
 
     // === Lock-Free Layer ===
     /// Lock-free root pointer for CAS-based concurrent inserts.
@@ -460,22 +444,12 @@ pub use super::compaction::{CompactionConfig, CompactionProgress, CompactionStat
 // here under its original path.
 pub use super::transactions::DocumentTransaction;
 
-/// The root of the trie can be either a bucket or an ART node
-pub(crate) enum TrieRoot<V: DictionaryValue> {
-    /// Root is a single bucket (for small dictionaries)
-    Bucket(StringBucket),
-    /// Root is an ART node (for larger dictionaries)
-    ArtNode {
-        /// The root ART node
-        node: Node,
-        /// Child nodes (bucket or sub-ART)
-        children: Vec<(u8, ChildNode)>,
-        /// Whether empty string is in dictionary
-        is_final: bool,
-        /// Value for empty string
-        value: Option<V>,
-    },
-}
+// L3.3c: the owned `TrieRoot<V>` enum (the `Bucket` / `ArtNode` owned root union) is
+// DELETED. It was the type of the deleted `self.root` field; the lock-free overlay
+// (`OverlayNode<ByteKey, V>`) is the sole root representation. The on-disk ROOT_TYPE_*
+// descriptor constants (read by `enumerate_terms_from_disk` / written by the overlay
+// checkpoint) survive below — they describe the dense IMAGE format, not the in-memory
+// owned enum.
 
 // === WalManaged Trait Implementation ===
 
@@ -489,37 +463,10 @@ impl<V: DictionaryValue, S: BlockStorage> WalManaged for PersistentARTrie<V, S> 
 
 // === Generic methods (work with any BlockStorage backend) ===
 
-impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
-    /// Insert a term into the dictionary (without value)
-
-    /// Get a snapshot node for traversal.
-    ///
-    /// For `TrieRoot::ArtNode`, threads the real `children: Vec<(u8, ChildNode)>`
-    /// into the `PersistentARTrieNode` so the `DictionaryNode::transition`
-    /// path returns correct in-memory transitions rather than synthetic
-    /// empty Node4 placeholders. On-disk children (`ChildNode::DiskRef`) are
-    /// not resolved here — the `DictionaryNode` traversal API skips them,
-    /// and callers needing disk-resident traversal should use
-    /// `PersistentARTrie::contains` / `get_value` which go through
-    /// `resolve_disk_ref` directly.
-    pub(super) fn get_root_node(&self) -> PersistentARTrieNode<V> {
-        // F4 (OR read): clones the owned root out under the inner `root` RwLock.
-        match &*self.root.read() {
-            TrieRoot::Bucket(bucket) => PersistentARTrieNode::new_bucket(bucket.clone()),
-            TrieRoot::ArtNode {
-                node,
-                is_final,
-                value,
-                children,
-            } => PersistentARTrieNode::new_root_with_children(
-                node.clone(),
-                *is_final,
-                value.clone(),
-                children.clone(),
-            ),
-        }
-    }
-}
+// L3.3c: removed — `get_root_node` was the SOLE owned root constructor (it read the
+// deleted `self.root` / `TrieRoot` and produced the deleted owned `PersistentARTrieNode`
+// `Root`/`Bucket` variants). `Dictionary::root()` now returns the overlay-backed node
+// (`node_impl::PersistentARTrieNode::new_overlay`) directly.
 
 impl<V: DictionaryValue> Default for PersistentARTrie<V> {
     #[allow(deprecated)]
@@ -700,18 +647,9 @@ mod tests {
         assert!(!dict_ref.contains("hi"));
     }
 
-    #[test]
-    fn test_mark_clean() {
-        let dict: PersistentARTrie = PersistentARTrie::new();
-
-        // L3.2: owned dirty-tracking — drive the owned mutator (sets the owned dirty flag); the
-        // overlay-routed public `insert` does not. (Owned dirty-tracking is removed at L3.3.)
-        dict.insert_impl(b"test", None);
-        assert!(dict.is_dirty());
-
-        dict.mark_clean();
-        assert!(!dict.is_dirty());
-    }
+    // L3.3c: removed — test_mark_clean asserted the OWNED dirty flag set by the deleted
+    // owned `insert_impl` mutator; the overlay write path does not set `self.dirty`, so
+    // the owned dirty-flag-on-insert behavior it tested no longer exists.
 
     #[test]
     fn test_many_insertions() {
@@ -1861,246 +1799,14 @@ mod tests {
         }
     }
 
-    // =========================================================================
-    // Selective Dirty Subtree Traversal Tests
-    // =========================================================================
-
-    #[test]
-    fn test_dirty_path_recording() {
-        let dict: PersistentARTrie = PersistentARTrie::new();
-
-        // Initially, no dirty paths
-        assert!(dict
-            .dirty_prefixes
-            .lock()
-            .expect("dirty_prefixes mutex poisoned")
-            .is_empty());
-
-        // **L3.2:** this tests the OWNED dirty-tracking (`dict.dirty_prefixes`), which only the
-        // OWNED mutator (`insert_impl`) records — the public `insert` is now overlay-routed and
-        // does not touch `dirty_prefixes`. So drive the owned mutator directly. (The owned
-        // dirty-tracking machinery + this test are removed at L3.3.)
-        dict.insert_impl(b"apple", None);
-
-        // Check that path prefixes are recorded
-        assert!(dict
-            .dirty_prefixes
-            .lock()
-            .expect("dirty_prefixes mutex poisoned")
-            .contains(&vec![])); // Root
-        assert!(dict
-            .dirty_prefixes
-            .lock()
-            .expect("dirty_prefixes mutex poisoned")
-            .contains(&vec![b'a']));
-        assert!(dict
-            .dirty_prefixes
-            .lock()
-            .expect("dirty_prefixes mutex poisoned")
-            .contains(&vec![b'a', b'p']));
-        assert!(dict
-            .dirty_prefixes
-            .lock()
-            .expect("dirty_prefixes mutex poisoned")
-            .contains(&vec![b'a', b'p', b'p']));
-        assert!(dict
-            .dirty_prefixes
-            .lock()
-            .expect("dirty_prefixes mutex poisoned")
-            .contains(&vec![b'a', b'p', b'p', b'l']));
-        assert!(dict
-            .dirty_prefixes
-            .lock()
-            .expect("dirty_prefixes mutex poisoned")
-            .contains(&vec![b'a', b'p', b'p', b'l', b'e']));
-    }
-
-    #[test]
-    fn test_dirty_path_recording_multiple_terms() {
-        let dict: PersistentARTrie = PersistentARTrie::new();
-
-        // L3.2: owned dirty-tracking — drive the owned mutator (see test_dirty_path_recording).
-        dict.insert_impl(b"apple", None);
-        dict.insert_impl(b"apricot", None);
-
-        // Both share "ap" prefix, so paths should include both
-        assert!(dict
-            .dirty_prefixes
-            .lock()
-            .expect("dirty_prefixes mutex poisoned")
-            .contains(&vec![b'a', b'p']));
-        // Each has its own suffix paths
-        assert!(dict
-            .dirty_prefixes
-            .lock()
-            .expect("dirty_prefixes mutex poisoned")
-            .contains(&vec![b'a', b'p', b'p'])); // apple
-        assert!(dict
-            .dirty_prefixes
-            .lock()
-            .expect("dirty_prefixes mutex poisoned")
-            .contains(&vec![b'a', b'p', b'r'])); // apricot
-    }
-
-    #[test]
-    fn test_dirty_path_recording_on_remove() {
-        let dict: PersistentARTrie = PersistentARTrie::new();
-
-        dict.insert_impl(b"apple", None);
-        dict.dirty_prefixes
-            .lock()
-            .expect("dirty_prefixes mutex poisoned")
-            .clear(); // Clear after insert
-
-        // L3.2: owned dirty-tracking — drive the owned remove mutator (records the path).
-        dict.remove_impl(b"apple");
-        assert!(dict
-            .dirty_prefixes
-            .lock()
-            .expect("dirty_prefixes mutex poisoned")
-            .contains(&vec![b'a', b'p', b'p', b'l', b'e']));
-    }
-
-    #[test]
-    fn test_dirty_tracking_state_clear() {
-        let dict: PersistentARTrie = PersistentARTrie::new();
-
-        // L3.2: owned dirty-tracking — drive the owned mutator (see test_dirty_path_recording).
-        dict.insert_impl(b"apple", None);
-        dict.insert_impl(b"banana", None);
-
-        assert!(!dict
-            .dirty_prefixes
-            .lock()
-            .expect("dirty_prefixes mutex poisoned")
-            .is_empty());
-
-        // Manually add a cached location to verify it's NOT cleared
-        // (This simulates what happens after serialization)
-        let dummy_ptr = SwizzledPtr::null();
-        dict.persisted_disk_locations
-            .write()
-            .insert(vec![b'a'], dummy_ptr);
-
-        // Clear should reset dirty_prefixes but PRESERVE persisted_disk_locations
-        dict.clear_dirty_tracking_state();
-
-        assert!(dict
-            .dirty_prefixes
-            .lock()
-            .expect("dirty_prefixes mutex poisoned")
-            .is_empty());
-        // persisted_disk_locations should NOT be cleared - we preserve cached locations
-        // for subsequent checkpoints to skip clean subtrees
-        assert!(!dict.persisted_disk_locations.read().is_empty());
-        assert!(dict
-            .persisted_disk_locations
-            .read()
-            .contains_key(&vec![b'a']));
-    }
-
-    #[test]
-    fn test_dirty_path_invalidates_cache() {
-        let dict: PersistentARTrie = PersistentARTrie::new();
-
-        // Manually populate the cache with some locations
-        dict.persisted_disk_locations
-            .write()
-            .insert(vec![b'a'], SwizzledPtr::null());
-        dict.persisted_disk_locations
-            .write()
-            .insert(vec![b'a', b'p'], SwizzledPtr::null());
-        dict.persisted_disk_locations
-            .write()
-            .insert(vec![b'a', b'p', b'p'], SwizzledPtr::null());
-        dict.persisted_disk_locations
-            .write()
-            .insert(vec![b'b'], SwizzledPtr::null());
-
-        // Recording a dirty path should invalidate cache entries along that path
-        dict.record_dirty_path(b"ap");
-
-        // Cache entries along the dirty path should be removed
-        let cache = dict.persisted_disk_locations.read();
-        assert!(!cache.contains_key(&vec![])); // Root prefix is now dirty
-        assert!(!cache.contains_key(&vec![b'a'])); // 'a' prefix is dirty
-        assert!(!cache.contains_key(&vec![b'a', b'p'])); // 'ap' prefix is dirty
-
-        // Unrelated entries should remain
-        assert!(cache.contains_key(&vec![b'a', b'p', b'p'])); // 'app' not on dirty path
-        assert!(cache.contains_key(&vec![b'b'])); // 'b' not on dirty path
-    }
-
-    #[test]
-    fn test_dirty_root_flag_propagation() {
-        let dict: PersistentARTrie = PersistentARTrie::new();
-
-        // Insert enough terms to trigger bucket-to-ART conversion
-        for i in 0..100 {
-            dict.insert(&format!("term{:03}", i));
-        }
-
-        // Root should have HAS_DIRTY_DESCENDANTS flag set
-        {
-            let root_guard = dict.root.read();
-            if let TrieRoot::ArtNode { node, .. } = &*root_guard {
-                assert!(
-                    node.header().has_dirty_descendants(),
-                    "Root should have HAS_DIRTY_DESCENDANTS flag after inserts"
-                );
-            }
-        }
-
-        // After clearing dirty state, flags should be reset
-        dict.clear_dirty_tracking_state();
-
-        let root_guard = dict.root.read();
-        if let TrieRoot::ArtNode { node, .. } = &*root_guard {
-            assert!(
-                !node.header().has_dirty_descendants(),
-                "Root should not have HAS_DIRTY_DESCENDANTS flag after clear"
-            );
-            assert!(
-                !node.header().is_dirty(),
-                "Root should not have IS_DIRTY flag after clear"
-            );
-        }
-    }
-
-    #[test]
-    fn test_path_needs_persistence() {
-        let dict: PersistentARTrie = PersistentARTrie::new();
-
-        // L3.2: owned dirty-tracking — drive the owned mutator (records dirty paths).
-        dict.insert_impl(b"apple", None);
-
-        // Paths along "apple" should need persistence
-        assert!(dict.path_needs_persistence(b""));
-        assert!(dict.path_needs_persistence(b"a"));
-        assert!(dict.path_needs_persistence(b"ap"));
-        assert!(dict.path_needs_persistence(b"apple"));
-
-        // Paths not along "apple" should not need persistence
-        assert!(!dict.path_needs_persistence(b"b"));
-        assert!(!dict.path_needs_persistence(b"banana"));
-        assert!(!dict.path_needs_persistence(b"ax"));
-    }
-
-    #[test]
-    fn test_disk_location_caching() {
-        let dict: PersistentARTrie = PersistentARTrie::new();
-
-        // Cache a disk location
-        let test_ptr = SwizzledPtr::on_disk(1, 100, NodeType::Node4);
-        dict.cache_disk_location(b"test", test_ptr.clone());
-
-        // Should be retrievable if path is not dirty
-        assert!(dict.get_cached_disk_location(b"test").is_some());
-
-        // After marking path as dirty, should not return cached location
-        dict.record_dirty_path(b"test");
-        assert!(dict.get_cached_disk_location(b"test").is_none());
-    }
+    // L3.3c: removed — the "Selective Dirty Subtree Traversal Tests" section
+    // (test_dirty_path_recording{,_multiple_terms,_on_remove}, test_dirty_tracking_state_clear,
+    // test_dirty_path_invalidates_cache, test_dirty_root_flag_propagation,
+    // test_path_needs_persistence, test_disk_location_caching) tested the deleted owned
+    // dirty-tracking representation (`dict.dirty_prefixes`, `record_dirty_path`,
+    // `clear_dirty_tracking_state`, `path_needs_persistence`, `cache_disk_location`) and
+    // the deleted owned root (`dict.root` / `TrieRoot::ArtNode`), populating via the
+    // deleted owned `insert_impl`/`remove_impl` mutators.
 
     // =========================================================================
     // SIMD Comparison Edge Case Tests

@@ -72,8 +72,6 @@ impl<V: DictionaryValue + Clone + Send + Sync> SharedARTrieParallelExt<V> for Sh
     where
         F: Fn(&V, &V) -> V + Sync + Send,
     {
-        use rayon::prelude::*;
-
         // **F4 / V11.2 — merge_lock (the merge‖merge serializer).** This is the only
         // `Shared*`-reachable merge driver, so it is the single `merge_lock`
         // acquisition site. It is a near-leaf in the hierarchy `CK > merge_lock > OR
@@ -84,90 +82,20 @@ impl<V: DictionaryValue + Clone + Send + Sync> SharedARTrieParallelExt<V> for Sh
         let merge_lock = self.read().merge_lock.clone();
         let _merge_guard = merge_lock.lock();
 
-        // C2: under the overlay, snapshot `other` (release its read lock) then apply
-        // SERIALLY under `self.write()` via the shared overlay merge funnel. The
-        // parallel WRITE is illusory under the overlay (the per-key CAS re-reads self
-        // each iteration), and snapshot-then-write avoids the cross-instance AB/BA
-        // deadlock the owned parallel phase risks (holding `other.read()` per partition
-        // across a pending `self.write()` — red-team R4-1). The owned parallel arm below
-        // is unchanged (its latent owned-mode deadlock is the cross-instance sweep,
-        // task #35).
-        if self.read().route_overlay() {
-            let entries: Vec<(Vec<u8>, V)> = {
-                let other_guard = other.read();
-                match other_guard.iter_prefix_with_values_and_arena(b"") {
-                    Ok(Some(terms)) => terms.into_iter().map(|t| (t.term, t.value)).collect(),
-                    _ => Vec::new(),
-                }
-            };
-            let guard = self.write();
-            return guard.merge_entries_overlay(entries, merge_fn);
-        }
-
-        // Partition by first byte (0-255) for parallel processing.
-        let partitions: Vec<Vec<(Vec<u8>, V)>> = (0u8..=255u8)
-            .into_par_iter()
-            .map(|prefix_byte| {
-                let prefix = [prefix_byte];
-                let other_guard = other.read();
-
-                let mut partition_terms = Vec::new();
-                let mut cursor: Option<Vec<u8>> = None;
-                let batch_size = 10_000;
-
-                loop {
-                    let batch = match other_guard.iter_prefix_from_cursor(
-                        &prefix,
-                        cursor.as_deref(),
-                        batch_size,
-                    ) {
-                        Ok(b) => b,
-                        Err(_) => break,
-                    };
-
-                    if batch.is_empty() {
-                        break;
-                    }
-
-                    let batch_len = batch.len();
-                    let last_term = batch.last().map(|t| t.term.clone());
-
-                    for term_info in batch {
-                        let self_guard = self.read();
-                        let existing_value = self_guard.get_value_impl(&term_info.term);
-                        drop(self_guard);
-
-                        let merged_value = if let Some(ref self_value) = existing_value {
-                            merge_fn(self_value, &term_info.value)
-                        } else {
-                            term_info.value
-                        };
-
-                        partition_terms.push((term_info.term, merged_value));
-                    }
-
-                    if batch_len < batch_size {
-                        break;
-                    }
-
-                    cursor = last_term;
-                }
-
-                partition_terms
-            })
-            .collect();
-
-        // Sequential write phase — batch insert all partitions.
-        let mut total_processed = 0;
-        let guard = self.write();
-
-        for partition in partitions {
-            for (term, value) in partition {
-                guard.insert_impl(&term, Some(value));
-                total_processed += 1;
+        // L3.3: the overlay is the sole representation. Snapshot `other` (releasing its
+        // read lock) then apply SERIALLY under `self.write()` via the shared overlay merge
+        // funnel. The "parallel WRITE" was illusory under the overlay (the per-key CAS
+        // re-reads self each iteration), and snapshot-then-write avoids the cross-instance
+        // AB/BA deadlock the owned parallel phase risked (holding `other.read()` per
+        // partition across a pending `self.write()`).
+        let entries: Vec<(Vec<u8>, V)> = {
+            let other_guard = other.read();
+            match other_guard.iter_prefix_with_values_and_arena(b"") {
+                Ok(Some(terms)) => terms.into_iter().map(|t| (t.term, t.value)).collect(),
+                _ => Vec::new(),
             }
-        }
-
-        Ok(total_processed)
+        };
+        let guard = self.write();
+        guard.merge_entries_overlay(entries, merge_fn)
     }
 }

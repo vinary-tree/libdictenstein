@@ -153,11 +153,6 @@ pub use crate::persistent_artrie::DurabilityPolicy;
 // re-exported here under its original path.
 pub use super::transactions::CharDocumentTransaction;
 
-// CharTrieRoot is used by the test module below via `use super::*`.
-// CharTrieNodeInner is no longer referenced from this file.
-#[allow(unused_imports)]
-use super::types::CharTrieRoot;
-
 // Note: Debug implementation is in mod.rs on PersistentARTrieChar directly
 
 // =============================================================================
@@ -335,7 +330,8 @@ mod tests {
         let inner: PersistentARTrieChar<()> = PersistentARTrieChar::new();
         assert_eq!(inner.len.load(AtomicOrdering::Acquire), 0);
         assert!(!inner.dirty.load(AtomicOrdering::Acquire));
-        assert!(matches!(*inner.root.read(), CharTrieRoot::Empty));
+        // L3.3: the owned root field is gone; a fresh trie is empty via the overlay.
+        assert_eq!(inner.len(), 0, "fresh trie is empty (overlay-backed)");
     }
 
     #[test]

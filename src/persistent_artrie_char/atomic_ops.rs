@@ -114,53 +114,6 @@ impl<V: DictionaryValue + serde::Serialize + serde::de::DeserializeOwned, S: Blo
         }
     }
 
-    /// Internal increment without WAL logging (for batch operations).
-    ///
-    /// This is used by `commit_document()` for BatchIncrement operations where
-    /// the WAL record has already been written.
-    ///
-    /// # Returns
-    ///
-    /// The new value after incrementing.
-    #[allow(dead_code)] // L1.3: production-dead (the recovery appliers that called it are gone); retained for the in-crate owned white-box tests + L2/L3 owned-staging; removed with the owned path at L3.3
-    pub(super) fn try_increment_impl_no_wal(&mut self, term: &str, delta: i64) -> Result<i64> {
-        // Get current value. MUST be the OWNED read (not the E1-routed `get`): this
-        // read-modify-write rebuilds the OWNED tree during crash recovery
-        // (`apply_core_recovered_operation_no_wal` → BatchIncrement), and that rebuild
-        // runs with `route_overlay()` already true (the trie was create-flipped before
-        // the replay loop). Routing this read to the empty overlay would accumulate
-        // every recovered delta from 0 — a silent counter under-count on reopen.
-        //
-        // The arithmetic runs in the `counter_codec` i128 substrate (full u64,
-        // range-checked); the bincode round-trip is confined to the helper. The return
-        // is the i64 bit-pattern of the new count (the caller only checks `.is_ok()`).
-        // `owned_get` yields an owned `Option<V>`; borrow it.
-        let current_i128: i128 = match self.owned_get(term) {
-            Some(v) => counter_codec::counter_value_to_i128::<V>(&v).unwrap_or(0),
-            None => 0,
-        };
-
-        let new_i128 = current_i128.checked_add(delta as i128).ok_or_else(|| {
-            PersistentARTrieError::InvalidOperation(format!(
-                "increment overflow for term {:?}: {} + {} overflows i128",
-                term, current_i128, delta
-            ))
-        })?;
-        let new_value: V =
-            counter_codec::i128_to_counter_value::<V>(new_i128).ok_or_else(|| {
-                PersistentARTrieError::InvalidOperation(format!(
-                "increment overflow for term {:?}: new count {} is out of range for the counter \
-                 value type",
-                term, new_i128
-            ))
-            })?;
-
-        // Update the trie (no WAL logging)
-        self.try_insert_impl_no_wal_with_value(term, new_value)?;
-
-        Ok(counter_codec::counter_return_i64(new_i128))
-    }
-
     /// Atomically update or insert a value.
     ///
     /// # Returns

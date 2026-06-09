@@ -60,8 +60,6 @@ pub(crate) struct CheckpointSnapshot {
     arena_count: u32,
     /// Raw `SwizzledPtr` of the serialized root.
     root_ptr: u64,
-    /// `next_lsn` observed at capture (owned arm reclaims by this convention).
-    next_lsn_at_capture: u64,
     /// **Overlay-arm capture only.** The committed watermark captured (`Acquire`)
     /// BEFORE the root load — the capture-ordering invariant (snapshot ⊆
     /// committed-durable-prefix). `Some(w)` for [`PersistentARTrie::capture_overlay_snapshot`];
@@ -109,7 +107,6 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
                 "No buffer manager for disk serialization",
             ));
         }
-        let next_lsn_at_capture = self.next_lsn.load(AtomicOrdering::Acquire);
 
         // Phase 6 (byte serialize-time registration, byte twin of char persist.rs:289):
         // build a FRESH per-trie disk-location registry IFF an eviction coordinator is
@@ -180,7 +177,6 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
              yet durable (Order-A / mark_committed misuse); reclaiming to this watermark could \
              archive an un-synced write (GAP_LEDGER #41 capture-ordering invariant violated)"
         );
-        let _ = (next_lsn_at_capture, synced_frontier_at_capture);
 
         let arena_count = self.flush_and_count_arenas()?;
 
@@ -190,7 +186,6 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
             term_count,
             arena_count,
             root_ptr,
-            next_lsn_at_capture,
             committed_watermark_at_capture: Some(watermark_at_capture),
             commit_seq_at_capture: Some(commit_seq_at_capture),
             // Phase 6: the registry built above (populated by the serialize walk) when a
@@ -509,7 +504,6 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
             term_count,
             arena_count,
             root_ptr: root_ptr_raw,
-            next_lsn_at_capture: self.next_lsn.load(AtomicOrdering::Acquire),
             committed_watermark_at_capture: None,
             commit_seq_at_capture: None,
             eviction_registry: None,
@@ -529,7 +523,6 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
             term_count,
             arena_count,
             root_ptr: bucket_ptr.to_raw(),
-            next_lsn_at_capture: self.next_lsn.load(AtomicOrdering::Acquire),
             committed_watermark_at_capture: None,
             commit_seq_at_capture: None,
             eviction_registry: None,
@@ -1781,7 +1774,6 @@ mod format3_legacy_bucket_reopen {
                 term_count: entries.len() as u64,
                 arena_count,
                 root_ptr: bucket_ptr.to_raw(),
-                next_lsn_at_capture: 1, // inert: publish_snapshot never persists it.
                 committed_watermark_at_capture: None,
                 commit_seq_at_capture: None,
                 eviction_registry: None,

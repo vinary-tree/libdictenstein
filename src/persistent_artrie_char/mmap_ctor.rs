@@ -35,14 +35,12 @@ use crate::value::DictionaryValue;
 
 use super::arena_manager::ArenaManager;
 use super::recovery_stats::{EnhancedRecoveryMode, EnhancedRecoveryStats};
-use super::types::CharTrieRoot;
 use super::DEFAULT_CHAR_BUFFER_POOL_SIZE;
 
 impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
     /// Create a new empty trie (in-memory mode)
     pub fn new() -> Self {
         let mut trie = Self {
-            root: parking_lot::RwLock::new(CharTrieRoot::Empty),
             len: AtomicUsize::new(0),
             dirty: AtomicBool::new(false),
             buffer_manager: None,
@@ -130,7 +128,6 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
 
         // S5-12 EDIT 1: flip a fresh eligible-V trie to the overlay (no-op for arbitrary V).
         Self::apply_create_flip(Self {
-            root: parking_lot::RwLock::new(CharTrieRoot::Empty),
             len: AtomicUsize::new(0),
             dirty: AtomicBool::new(false),
             buffer_manager: Some(buffer_manager),
@@ -201,7 +198,6 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
 
         // S5-12 EDIT 1: flip a fresh eligible-V trie to the overlay (no-op for arbitrary V).
         Self::apply_create_flip(Self {
-            root: parking_lot::RwLock::new(CharTrieRoot::Empty),
             len: AtomicUsize::new(0),
             dirty: AtomicBool::new(false),
             buffer_manager: Some(buffer_manager),
@@ -282,7 +278,6 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
 
         // S5-12 EDIT 1: flip a fresh eligible-V trie to the overlay (no-op for arbitrary V).
         Self::apply_create_flip(Self {
-            root: parking_lot::RwLock::new(CharTrieRoot::Empty),
             len: AtomicUsize::new(0),
             dirty: AtomicBool::new(false),
             buffer_manager: Some(buffer_manager),
@@ -442,7 +437,6 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
         };
 
         let mut inner = Self {
-            root: parking_lot::RwLock::new(CharTrieRoot::Empty),
             len: AtomicUsize::new(0), // Updated from disk or WAL replay
             dirty: AtomicBool::new(false),
             buffer_manager: Some(buffer_manager.clone()),

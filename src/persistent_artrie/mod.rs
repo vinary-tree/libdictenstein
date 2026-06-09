@@ -257,17 +257,8 @@ pub mod serialize_impl;
 // iter_prefix_with_arena, iter_prefix_with_values_and_arena) — Phase-5 split out of dict_impl.
 pub mod arena_iter;
 
-// Cursor-based prefix iteration (iter_prefix_from_cursor + collectors) — Phase-5 split.
+// Cursor-based prefix iteration (iter_prefix_from_cursor) — Phase-5 split.
 pub mod cursor_iter;
-
-// Dirty-path tracking for selective persistence — Phase-5 split out of dict_impl.
-pub mod dirty_tracking;
-
-// Read-path query implementation (contains_impl / get_value_impl + helpers) — Phase-5 split.
-pub mod query_impl;
-
-// Core mutation implementation (insert/remove/convert_bucket_to_art + _no_wal variants).
-pub mod mutation_core;
 
 // F5 (Slice 3): the direct dense→overlay reopen loader — `load_root_immutable`
 // (eager-load owned + iterative walk-converter owned→overlay). Gated OFF by default
@@ -364,10 +355,12 @@ pub use bucket::{
 };
 
 // Transition types
-pub use transitions::{
-    art_node_to_bucket, bucket_to_art_node, should_convert_bucket_to_art,
-    should_merge_art_to_bucket, ArtToBucketResult, BucketToArtResult, ChildNode, TransitionError,
-};
+//
+// L3.3c: the owned bucket↔ART transition surface (`art_node_to_bucket`,
+// `bucket_to_art_node`, `should_convert_bucket_to_art`, `should_merge_art_to_bucket`,
+// `ArtToBucketResult`, `BucketToArtResult`, `TransitionError`) was deleted with the
+// owned tree. `ChildNode` (the disk-decode child pointer) survives.
+pub use transitions::ChildNode;
 
 // Node types
 pub use node_impl::PersistentARTrieNode;

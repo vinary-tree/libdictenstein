@@ -1431,96 +1431,10 @@ impl<S: BlockStorage> PersistentARTrie<u64, S> {
         )
     }
 
-    /// Prepare the merge: for each overlay `(key, delta_u64)`, compute the new owned
-    /// value in the i128 substrate (full u64, range-checked) for the owned upsert, and
-    /// emit the delta as ≤3 i64-bounded WAL chunks (`split_u64_delta_to_i64_chunks`)
-    /// since `BatchIncrement` replay is commutative (the deltas are summed in i128 on
-    /// reopen). `prepared_values` stays ONE `(key, final_u64)` per key; `wal_entries`
-    /// may carry up to 3 `(key, chunk)` per key.
-    fn prepare_lockfree_value_merge(
-        &self,
-        entries: &[(Vec<u8>, u64)],
-    ) -> Result<(Vec<(Vec<u8>, i64)>, Vec<(Vec<u8>, u64)>)> {
-        // ≤3 WAL chunks per key (u64::MAX < 3·i64::MAX); one prepared value per key.
-        let mut wal_entries = Vec::with_capacity(entries.len() * 3);
-        let mut prepared_values = Vec::with_capacity(entries.len());
-
-        for (key, delta) in entries {
-            let current_i128 = self.current_i128_for_lockfree_merge(key)?;
-            let new_value =
-                counter_codec::i128_to_counter_value::<u64>(current_i128 + *delta as i128)
-                    .ok_or_else(|| {
-                        PersistentARTrieError::InvalidOperation(format!(
-                    "lock-free merge increment overflow for term {:?}: {} + {} exceeds u64 range",
-                    String::from_utf8_lossy(key),
-                    current_i128,
-                    delta
-                ))
-                    })?;
-
-            // Full-u64 delta → ≤3 commutative i64 WAL chunks (the WAL delta field is
-            // i64; replay sums them in i128 back to the same total).
-            for chunk in counter_codec::split_u64_delta_to_i64_chunks(*delta) {
-                wal_entries.push((key.clone(), chunk));
-            }
-            prepared_values.push((key.clone(), new_value));
-        }
-
-        Ok((wal_entries, prepared_values))
-    }
-
-    fn current_i128_for_lockfree_merge(&self, term: &[u8]) -> Result<i128> {
-        // The persistent value is the trie's own `u64`; decode it into the i128
-        // substrate via the shared codec (so the merge sum carries the full u64
-        // magnitude, never an i64-truncated one). Absent ⇒ 0.
-        match self.get_value_impl(term) {
-            Some(value) => counter_codec::counter_value_to_i128::<u64>(&value).ok_or_else(|| {
-                PersistentARTrieError::InvalidOperation(format!(
-                    "lock-free merge: persistent counter value for term {:?} is not a u64 leaf",
-                    String::from_utf8_lossy(term)
-                ))
-            }),
-            None => Ok(0),
-        }
-    }
-
-    /// Recursively collect all (key, value) entries from the lock-free trie.
-    /// The leaf stores the count as the trie's own `u64` value (read directly).
-    ///
-    /// **OnDisk children are SKIPPED — intentionally, mirroring char's
-    /// `collect_lockfree_value_entries_recursive` EXACTLY** (design §3.3 "mirror char's
-    /// PROVEN patterns"). This enumeration is reached ONLY from
-    /// `merge_lockfree_values_to_persistent`, which REJECTS under `route_overlay()` (the
-    /// production overlay mode where eviction — and thus any `Child::OnDisk` overlay
-    /// child — can occur). So in `OwnedTree` mode (the only mode this runs in) eviction
-    /// is OFF and no OnDisk overlay child exists. Faulting here would DIVERGE from char's
-    /// twin (which also skips); the read-path fault-in that closes the silent-read-loss
-    /// gap is on the production point-read paths (`contains_lockfree`/`get_lockfree`/the
-    /// counter read), not on this merge-only owned-mode enumeration.
-    fn collect_lockfree_entries_recursive(
-        node: &Arc<super::nodes::PersistentNode<u64>>,
-        key_buf: &mut Vec<u8>,
-        entries: &mut Vec<(Vec<u8>, u64)>,
-    ) {
-        if node.is_final() {
-            if let Some(value) = node.get_value() {
-                entries.push((key_buf.clone(), value));
-            }
-        }
-
-        for (&child_key, child_ptr) in node.iter_children() {
-            // Skip on-disk refs in the lock-free overlay; recurse into in-memory
-            // children (borrowed owned `Arc`, no `unsafe`). See the method doc: this is
-            // merge-only / owned-mode, so no OnDisk overlay child occurs (char's twin
-            // skips identically).
-            if let Some(child_arc) = child_ptr.as_in_mem() {
-                let child_arc = Arc::clone(child_arc);
-                key_buf.push(child_key);
-                Self::collect_lockfree_entries_recursive(&child_arc, key_buf, entries);
-                key_buf.pop();
-            }
-        }
-    }
+    // L3.3c: removed — `prepare_lockfree_value_merge` / `current_i128_for_lockfree_merge`
+    // / `collect_lockfree_entries_recursive` were the owned lock-free→persistent merge
+    // helpers (`merge_lockfree_values_to_persistent`'s machinery, gone with the owned
+    // tree); `current_i128_for_lockfree_merge` read the deleted owned `get_value_impl`.
 
     fn lockfree_increment_overflow_error(
         key: &[u8],

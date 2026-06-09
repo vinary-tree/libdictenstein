@@ -53,18 +53,7 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
 
     // ==================== End Epoch-Based Checkpointing Methods ====================
 
-    /// Internal helper: Append a record to the WAL, routing through group commit if enabled.
-    ///
-    /// When group commit is enabled, the record is submitted to the group commit
-    /// coordinator which batches writes and reduces fsync overhead. Otherwise,
-    /// the record is written directly to the WAL. After a successful append,
-    /// epoch checkpointing records the exact WAL bytes written so epoch
-    /// metadata stays aligned with public mutations.
-    pub(super) fn append_to_wal(&self, record: WalRecord) -> Result<()> {
-        self.append_to_wal_inner(record).map(|_| ())
-    }
-
-    /// Like [`Self::append_to_wal`], but returns the assigned WAL **LSN** (in the
+    /// Append a record to the WAL, returning the assigned WAL **LSN** (in the
     /// WAL-writer LSN domain — the same domain `WalRecord::Checkpoint` and
     /// recovery use). This is the foundation of the lock-free **Order-A** durable
     /// write path: the returned LSN is durable-per-policy at return (group-commit
@@ -149,40 +138,6 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
             return Ok(appended_lsn);
         }
         Ok(0)
-    }
-
-    /// Internal helper: Sync the WAL based on durability policy.
-    ///
-    /// Immediate and GroupCommit both expose full durability acknowledgement
-    /// semantics. If a group commit coordinator is installed, the append path
-    /// has already waited for the submitted LSN; otherwise this direct WAL
-    /// fallback performs a blocking sync.
-    pub(super) fn sync_wal(&self) -> Result<()> {
-        match self.durability_policy.load() {
-            DurabilityPolicy::Immediate | DurabilityPolicy::GroupCommit => {}
-            DurabilityPolicy::Periodic | DurabilityPolicy::None => return Ok(()),
-        }
-
-        // Group commit handles syncing internally via append_with_sync.
-        #[cfg(feature = "group-commit")]
-        if self
-            .group_commit
-            .lock()
-            .expect("group_commit mutex poisoned")
-            .is_some()
-        {
-            return Ok(());
-        }
-
-        // Direct WAL sync
-        if let Some(ref wal_writer) = self.wal_writer {
-            wal_writer
-                .sync()
-                .map_err(|e| PersistentARTrieError::WalError {
-                    reason: format!("{:?}", e),
-                })?;
-        }
-        Ok(())
     }
 
     fn sync_wal_after_append(&self, appended_lsn: u64) -> Result<()> {

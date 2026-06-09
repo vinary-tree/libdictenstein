@@ -23,7 +23,6 @@ use crate::sync_compat::RwLock;
 use crate::value::DictionaryValue;
 
 use super::arena_manager::ArenaManager;
-use super::types::CharTrieRoot;
 use super::DEFAULT_CHAR_BUFFER_POOL_SIZE;
 
 impl<V: DictionaryValue>
@@ -80,7 +79,6 @@ impl<V: DictionaryValue>
 
         // S5-12 EDIT 1: flip a fresh eligible-V trie to the overlay (no-op for arbitrary V).
         Self::apply_create_flip(Self {
-            root: parking_lot::RwLock::new(CharTrieRoot::Empty),
             len: AtomicUsize::new(0),
             dirty: AtomicBool::new(false),
             buffer_manager: Some(buffer_manager),
@@ -212,7 +210,6 @@ impl<V: DictionaryValue>
         };
 
         let mut inner = Self {
-            root: parking_lot::RwLock::new(CharTrieRoot::Empty),
             len: AtomicUsize::new(0),
             dirty: AtomicBool::new(false),
             buffer_manager: Some(buffer_manager.clone()),

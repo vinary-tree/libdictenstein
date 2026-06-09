@@ -23,7 +23,7 @@ use crate::value::DictionaryValue;
 
 use super::dict_impl_char::{ROOT_TYPE_EMPTY, ROOT_TYPE_NODE};
 use super::nodes::CharNode;
-use super::types::{CharTrieNodeInner, CharTrieRoot};
+use super::types::CharTrieNodeInner;
 
 /// An immutable, self-consistent checkpoint snapshot captured during checkpoint
 /// **Phase A** (serialize the in-memory tree into freshly-allocated arena slots
@@ -47,13 +47,6 @@ pub(crate) struct CheckpointSnapshot {
     arena_count: u32,
     /// Raw `SwizzledPtr` of the serialized root.
     root_ptr: u64,
-    /// `next_lsn` observed at capture. The WAL `Checkpoint` record uses
-    /// `next_lsn` at publish time; under the write-then-downgraded-read guard no
-    /// `L1.write` mutator can run, so `next_lsn` cannot change — we
-    /// `debug_assert_eq!` this at publish to fail loudly if that invariant is
-    /// ever violated (e.g. a lock-free WAL-appending writer is exposed on the
-    /// shared handle), which would otherwise risk a lost write.
-    next_lsn_at_capture: u64,
     /// **Migration Phase E (immutable-overlay capture only).** The committed
     /// watermark captured (Acquire) BEFORE the root load (the capture-ordering
     /// invariant). `Some(w)` for [`Self::capture_snapshot_immutable`]; `None` for
@@ -115,100 +108,6 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
         >>::checkpoint_route_split(self)
     }
 
-    /// Checkpoint **Phase B+C** — publish the captured snapshot durably, then
-    /// record + reclaim the WAL.
-    ///
-    /// Takes `&self` so it can run under either the owned `&mut self` checkpoint
-    /// or a downgraded read guard (the non-blocking path). Consumes the snapshot
-    /// (moves the eviction registry into the coordinator). The sequence is
-    /// byte-identical to the prior blocking checkpoint tail: publish descriptor
-    /// + flush + fsync (the linearization point) → verify header checksum →
-    /// publish the eviction registry → WAL `Checkpoint` append + sync +
-    /// archive/truncate → clear the dirty flag.
-    pub(crate) fn publish_durable_and_reclaim(&self, snapshot: CheckpointSnapshot) -> Result<()> {
-        use std::time::{SystemTime, UNIX_EPOCH};
-
-        // Phase B: publish the snapshot to disk and fsync (linearization point).
-        // #48: owned/non-retaining publisher ⇒ no image-coverage needed (no torn-window re-drain).
-        self.publish_snapshot(&snapshot, None)?;
-
-        // Verify checkpoint - re-read header and verify checksum. Ensures the
-        // sync() actually succeeded and the data is durable.
-        self.verify_checkpoint()?;
-
-        // Durability verified: publish the freshly-built disk-location registry
-        // to the eviction coordinator. Eviction can then reclaim in-memory node
-        // boxes (unswizzling them to these on-disk locations) under memory
-        // pressure or an explicit force_eviction. Built only when eviction is
-        // enabled; a no-op otherwise.
-        if let Some(registry) = snapshot.eviction_registry {
-            if let Some(coordinator) = self
-                .eviction_coordinator
-                .lock()
-                .expect("eviction_coordinator mutex poisoned")
-                .as_ref()
-            {
-                coordinator.update_disk_registry(registry);
-            }
-        }
-
-        // Phase C: WAL operations (only after verification passes).
-        //
-        // `checkpoint_lsn` is read here as `next_lsn` (the original convention).
-        // Under the write-then-downgraded-read guard of the non-blocking path —
-        // and trivially under the owned `&mut self` path — no `L1.write` mutator
-        // can run between capture and here, so `next_lsn` is unchanged from
-        // capture; the WAL frontier and the descriptor's snapshot therefore
-        // agree, and `rotate_to_archive` only ever archives covered records. The
-        // assert below turns any violation of that invariant (which could
-        // archive a racing write out of recovery's reach — the GAP_LEDGER #41
-        // footgun) into a loud failure instead of silent data loss.
-        // S5-8: promoted debug_assert → always-on assert. The #41 footgun (a write
-        // racing the checkpoint ⇒ WAL reclaim archives it out of recovery's reach) is
-        // data-loss-critical; once the overlay is production a fail-stop panic is
-        // strictly safer than silent loss. Order-A + the owned `&mut self` exclusion
-        // guarantee the invariant, so this cannot spuriously fire.
-        assert_eq!(
-            self.next_lsn.load(AtomicOrdering::Acquire),
-            snapshot.next_lsn_at_capture,
-            "checkpoint: next_lsn changed between capture and WAL publish — a \
-             writer raced the checkpoint (C2 invariant violated); the WAL \
-             reclaim could lose that write"
-        );
-        if let Some(ref wal_writer) = self.wal_writer {
-            let timestamp = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs();
-            let record = WalRecord::Checkpoint {
-                checkpoint_lsn: self.next_lsn.load(AtomicOrdering::Acquire),
-                timestamp,
-            };
-            // Write checkpoint record
-            wal_writer
-                .append(record)
-                .map_err(|e| PersistentARTrieError::WalError {
-                    reason: format!("{:?}", e),
-                })?;
-            // Sync WAL
-            wal_writer
-                .sync()
-                .map_err(|e| PersistentARTrieError::WalError {
-                    reason: format!("{:?}", e),
-                })?;
-            // Archive or truncate WAL based on configuration
-            // If archive mode is enabled, rotate to archive; otherwise truncate
-            wal_writer
-                .rotate_to_archive(&self.wal_config)
-                .map_err(|e| PersistentARTrieError::WalError {
-                    reason: format!("{:?}", e),
-                })?;
-        }
-
-        self.dirty.store(false, AtomicOrdering::Release);
-        Ok(())
-    }
-
     /// Verify checkpoint data integrity after persist_to_disk()
     ///
     /// Re-reads the file header from disk and verifies its checksum.
@@ -241,124 +140,6 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
         Ok(())
     }
 
-    /// Persist the entire trie to disk
-    ///
-    /// This serializes the trie structure and writes it to the data file,
-    /// updating the file header with the root pointer.
-    pub fn persist_to_disk(&mut self) -> Result<()> {
-        self.persist_to_disk_tracked().map(|_| ())
-    }
-
-    /// Like [`Self::persist_to_disk`], but when eviction is enabled it also
-    /// builds a fresh [`DiskLocationRegistry`] mapping every serialized node's
-    /// char-path to its on-disk location, returning it so the caller can publish
-    /// it to the eviction coordinator once durability is verified. Returns `None`
-    /// when eviction is disabled — zero overhead, no registry is built. The
-    /// registry is a pure side-effect: the serialized bytes and the file header
-    /// are identical whether or not it is collected, so recovery is unaffected.
-    fn persist_to_disk_tracked(&mut self) -> Result<Option<DiskLocationRegistry>> {
-        // Disk serialization requires a buffer manager (disk-backed mode).
-        // Checked up-front so an in-memory-only trie errors before any arena
-        // serialization side effects, preserving the prior behavior.
-        if self.buffer_manager.is_none() {
-            return Err(PersistentARTrieError::internal(
-                "No buffer manager for disk serialization",
-            ));
-        }
-
-        // Phase A: capture a frozen snapshot (serialize tree -> fresh arenas).
-        let snapshot = self.capture_snapshot()?;
-        // Phase B: publish the snapshot durably (descriptor + flush + sync).
-        // #48: owned/non-retaining publisher ⇒ no image-coverage needed (no torn-window re-drain).
-        self.publish_snapshot(&snapshot, None)?;
-
-        Ok(snapshot.eviction_registry)
-    }
-
-    /// Checkpoint **Phase A** — capture a frozen, self-consistent snapshot.
-    ///
-    /// Serializes the in-memory tree into freshly-allocated arena slots
-    /// (copy-on-serialize: every node gets a new slot, so the produced
-    /// `root_ptr` + arena image is immutable and self-consistent for this
-    /// checkpoint) and flushes dirty arena slots to buffer-manager pages.
-    /// Returns the descriptor values the publish phase needs. Takes `&self`
-    /// (all mutation goes through the interior-mutable arena/buffer managers),
-    /// which lets a later phase run this under a shared trie borrow.
-    pub(crate) fn capture_snapshot(&self) -> Result<CheckpointSnapshot> {
-        // `next_lsn` at capture; asserted unchanged at publish (see field doc).
-        let next_lsn_at_capture = self.next_lsn.load(AtomicOrdering::Acquire);
-
-        let mut eviction_registry = self
-            .eviction_coordinator
-            .lock()
-            .expect("eviction_coordinator mutex poisoned")
-            .as_ref()
-            .map(|_| DiskLocationRegistry::new());
-
-        // Serialize the trie root and get a descriptor. **F4 (OR read):** the
-        // owned-arm capture reads the owned tree under the inner `root` RwLock for
-        // READ — admits concurrent owned readers, excludes concurrent owned writers
-        // (the exclusion the deleted write→read downgrade used to provide). Held only
-        // for the recursive serialize; released after the match.
-        let owned_root = self.root.read();
-        let (root_type, root_ptr, is_final) = match &*owned_root {
-            CharTrieRoot::Empty => (ROOT_TYPE_EMPTY, 0u64, false),
-            CharTrieRoot::Node(node) => {
-                // Recursively serialize the node and all children. `path` tracks
-                // the char key-sequence from the root so each node registers its
-                // disk location at its full path (eviction locates nodes by path).
-                let mut path: Vec<char> = Vec::new();
-                let ptr = self.serialize_char_node_to_disk(
-                    node.as_ref(),
-                    &mut path,
-                    eviction_registry.as_mut(),
-                )?;
-                (ROOT_TYPE_NODE, ptr.to_raw(), node.is_final())
-            }
-        };
-        drop(owned_root);
-
-        // Flush arenas to disk FIRST to get their block_ids
-        // (writes dirty arenas to buffer manager)
-        // Uses slot-level incremental flush if configured, otherwise full arena flush
-        if let Some(ref arena_manager) = self.arena_manager {
-            let stats = arena_manager.write().flush_dirty_slots()?;
-            if stats.partial_writes > 0 {
-                log::debug!(
-                    "Char incremental flush: {} full arenas, {} partial, {} slots, {} bytes written, {} bytes saved",
-                    stats.full_arena_writes, stats.partial_writes, stats.slots_written,
-                    stats.bytes_written, stats.bytes_saved
-                );
-            }
-        }
-
-        // Get arena count after flushing (block IDs are derived from sequential allocation)
-        let arena_count: u32 = if let Some(ref arena_manager) = self.arena_manager {
-            arena_manager.read().arena_count() as u32
-        } else {
-            0
-        };
-
-        // Capture the term count ONCE so the descriptor's term_count and the
-        // header entry_count are guaranteed to agree for this snapshot.
-        let entry_count = self.len.load(AtomicOrdering::Acquire) as u64;
-
-        Ok(CheckpointSnapshot {
-            root_type,
-            is_final,
-            entry_count,
-            arena_count,
-            root_ptr,
-            next_lsn_at_capture,
-            // Owned-tree capture reclaims by the `next_lsn` convention, not a
-            // watermark (writers are excluded by the write lock), so this is None.
-            committed_watermark_at_capture: None,
-            // Owned capture never advances `commit_seq` (S5-2) ⇒ no floor to raise.
-            commit_seq_at_capture: None,
-            eviction_registry,
-        })
-    }
-
     /// **Migration Phase B (test-only):** capture a checkpoint snapshot from the
     /// IMMUTABLE lock-free overlay representation instead of the owned tree.
     ///
@@ -381,8 +162,6 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     /// owned tree. Adds zero new `unsafe`. Inert until S5-12 flips the production
     /// ctors (route_overlay() is false pre-flip).
     pub(crate) fn capture_snapshot_immutable(&self) -> Result<CheckpointSnapshot> {
-        let next_lsn_at_capture = self.next_lsn.load(AtomicOrdering::Acquire);
-
         let mut eviction_registry = self
             .eviction_coordinator
             .lock()
@@ -527,13 +306,9 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
              reclaiming to this watermark could archive an un-synced write \
              (GAP_LEDGER #41 capture-ordering invariant violated)"
         );
-        // `next_lsn_at_capture` is consumed below; keep it (and the asserted frontiers)
-        // explicitly live so the capture-ordering Acquire loads are never elided.
-        let _ = (
-            watermark_at_capture,
-            synced_frontier_at_capture,
-            next_lsn_at_capture,
-        );
+        // Keep the asserted frontiers explicitly live so the capture-ordering
+        // Acquire loads are never elided.
+        let _ = (watermark_at_capture, synced_frontier_at_capture);
 
         if let Some(ref arena_manager) = self.arena_manager {
             arena_manager.write().flush_dirty_slots()?;
@@ -550,7 +325,6 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
             entry_count,
             arena_count,
             root_ptr,
-            next_lsn_at_capture,
             // The watermark captured BEFORE the root load — the safe `checkpoint_lsn`
             // the retaining-WAL publisher records so recovery skips deltas ≤ it.
             committed_watermark_at_capture: Some(watermark_at_capture),
@@ -1046,71 +820,6 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
         }
 
         Some(first)
-    }
-
-    /// Serialize a CharTrieNodeInner to disk and return its SwizzledPtr
-    ///
-    /// Uses arena allocation for space-efficient storage. Multiple nodes are
-    /// packed into each 256KB arena block instead of wasting one block per node.
-    ///
-    /// Node format on disk:
-    /// ```text
-    /// [CharNode serialized - 16-byte header + type-specific data]
-    /// [value_len: u32]
-    /// [value_bytes if value_len > 0]
-    /// ```
-    ///
-    /// The SwizzledPtr uses:
-    /// - arena_id as block_id (23 bits, up to 8M arenas)
-    /// - slot_id as offset (22 bits, up to 4M slots per arena)
-    fn serialize_char_node_to_disk(
-        &self,
-        node: &CharTrieNodeInner<V>,
-        path: &mut Vec<char>,
-        mut registry: Option<&mut DiskLocationRegistry>,
-    ) -> Result<SwizzledPtr> {
-        // First, recursively serialize all children and collect their disk pointers.
-        // (RETAINED for shallow callers — the correspondence/fault-in unit tests
-        // serialize single leaves through this path. The PRODUCTION overlay capture
-        // uses the ITERATIVE [`Self::serialize_overlay_to_disk_iterative`] instead, to
-        // avoid recursing with key length on the un-path-compressed overlay spine —
-        // F6 flag-1b. BOTH paths funnel the per-node encoding through the shared
-        // NON-recursive [`Self::serialize_one_char_node_to_disk`], so the on-disk image
-        // is byte-identical regardless of which driver builds it.)
-        //
-        // Note: We handle both in-memory children (need serialization) and disk-backed
-        // children (already have a disk pointer, just reuse it).
-        let mut child_disk_ptrs: Vec<(u32, SwizzledPtr)> = Vec::with_capacity(node.num_children());
-        for (key, child_ptr) in node.node.iter_children() {
-            if child_ptr.is_null() {
-                continue;
-            }
-
-            // Check if the child is already on disk (DiskRef) - just reuse its pointer
-            if child_ptr.disk_location().is_some() {
-                // Clone the SwizzledPtr to preserve its disk location
-                child_disk_ptrs.push((key, child_ptr.clone()));
-            } else if let Some(child_raw) = child_ptr.as_ptr::<CharTrieNodeInner<V>>() {
-                // Child is in memory - serialize it recursively
-                // Safety: ptr was created via Box::into_raw() from CharTrieNodeInner<V>
-                let child = unsafe { &*child_raw };
-                // Extend the path by this edge's char so the child registers its
-                // own disk location at its full key path. Invalid codepoints
-                // (should not occur in a char trie) skip path-tracking for that
-                // subtree rather than corrupt the registry.
-                let pushed = char::from_u32(key).map(|ch| path.push(ch)).is_some();
-                let ptr = self.serialize_char_node_to_disk(child, path, registry.as_deref_mut())?;
-                if pushed {
-                    path.pop();
-                }
-                child_disk_ptrs.push((key, ptr));
-            }
-            // If neither disk_location nor as_ptr succeeds, skip this child
-            // (should not happen in normal operation)
-        }
-
-        // Delegate the per-node encoding to the shared NON-recursive core.
-        self.serialize_one_char_node_to_disk(node, &child_disk_ptrs, path, registry)
     }
 
     /// Serialize ONE `CharTrieNodeInner` whose children are ALREADY resolved to disk
@@ -1856,70 +1565,6 @@ fn peel_chain<V: DictionaryValue>(
     }
 }
 
-/// Convert an immutable lock-free overlay node (`PersistentCharNode`) into an
-/// owned production `CharTrieNodeInner<V>` subtree, recursively (Phase-B helper).
-///
-/// The conversion lets the immutable overlay be checkpointed through the EXISTING
-/// `serialize_char_node_to_disk` (equivalence by construction). Children are added
-/// via `add_child_growing`, which grows the ART tier (N4→N16→…) and returns the
-/// grown node — captured here to replace `inner.node` (unlike `CharTrieNodeInner`'s
-/// `Clone`, which pre-sizes the tier and can ignore the return).
-///
-/// S5-9: un-gated to production (backed the then-production `capture_snapshot_immutable`).
-/// Adds no `unsafe` (`Box::into_raw` + `SwizzledPtr::in_memory` are safe).
-///
-/// **F6 flag-1b: no longer on the production capture path.** The production overlay
-/// capture is now the ITERATIVE
-/// [`PersistentARTrieChar::serialize_overlay_to_disk_iterative`] (which builds NO deep
-/// intermediate `CharTrieNodeInner` tree, to avoid recursing — and overflowing — with
-/// key length on the un-path-compressed overlay spine). This recursive builder is
-/// RETAINED only as the reference used by the (shallow-node) fault-in / round-trip
-/// correspondence tests, so it is `dead_code` in a non-test build — hence the
-/// `cfg_attr(not(test), allow(dead_code))`. Both `overlay_to_inner` (whole-subtree)
-/// and [`overlay_inner_single_node`] (single-node, the iterative path's builder)
-/// project the SAME finality / value / `add_child_growing` tier per node, so the
-/// shallow-node test exercise of this function still validates the per-node projection
-/// the iterative path relies on.
-#[cfg_attr(not(test), allow(dead_code))]
-fn overlay_to_inner<V>(node: &super::nodes::PersistentCharNode<V>) -> CharTrieNodeInner<V>
-where
-    V: DictionaryValue,
-{
-    let mut inner = CharTrieNodeInner::<V>::default();
-    inner.node.header_mut().set_final(node.is_final());
-    // G1: the overlay node now carries `Option<V>` directly, so the value is read
-    // straight off the node — no `u64 → V` (`map_value`) bridge. For `V = ()`
-    // membership the overlay never stores a value, so this is `None`.
-    inner.value = node.get_value();
-    for (&key, child) in node.iter_children() {
-        if let Some(child_arc) = child.as_in_mem() {
-            let child_inner = overlay_to_inner::<V>(child_arc);
-            let child_ptr = SwizzledPtr::in_memory(Box::into_raw(Box::new(child_inner)));
-            if let Some(grown) = inner
-                .node
-                .add_child_growing(key, child_ptr)
-                .expect("overlay_to_inner: add in-memory child within capacity")
-            {
-                inner.node = grown;
-            }
-        } else if let Some(on_disk) = child.as_on_disk() {
-            // On-disk overlay children (from a future fault-in/eviction path) carry
-            // an already-serialized location; reuse it directly. Null fillers are
-            // never yielded by `iter_children`, but guard defensively.
-            if !on_disk.is_null() {
-                if let Some(grown) = inner
-                    .node
-                    .add_child_growing(key, on_disk.clone())
-                    .expect("overlay_to_inner: add on-disk child within capacity")
-                {
-                    inner.node = grown;
-                }
-            }
-        }
-    }
-    inner
-}
-
 /// Convert ONE owned production `CharTrieNodeInner<V>` back into an immutable
 /// lock-free overlay node (`PersistentCharNode<V>`), keeping its children as
 /// `Child::OnDisk(SwizzledPtr)` references (single-level / lazy — exactly the
@@ -2028,316 +1673,6 @@ fn count_overlay_finals<V: DictionaryValue>(node: &super::nodes::PersistentCharN
         }
     }
     count
-}
-
-#[cfg(test)]
-mod immutable_checkpoint_correspondence {
-    //! **Migration Phase B correspondence.** A checkpoint captured from the
-    //! IMMUTABLE lock-free overlay representation (`capture_snapshot_immutable`)
-    //! must reopen to a dictionary equal to one captured from the owned tree
-    //! (`checkpoint`) built from the same terms. This proves the immutable
-    //! representation is a sound checkpoint source — the foundation for later
-    //! making it the default (Phases C–F). Scratch lives on real disk
-    //! (`target/test-tmp`), never `/tmp` (tmpfs).
-
-    use crate::persistent_artrie_char::PersistentARTrieChar;
-    use crate::{Dictionary, MappedDictionary};
-
-    fn scratch(prefix: &str) -> tempfile::TempDir {
-        std::fs::create_dir_all("target/test-tmp").ok();
-        tempfile::Builder::new()
-            .prefix(prefix)
-            .tempdir_in("target/test-tmp")
-            .expect("scratch tempdir under target/test-tmp")
-    }
-
-    /// `V = ()` membership: build the two reps from the same terms, checkpoint each
-    /// via its own path, reopen both, and assert identical membership.
-    #[test]
-    fn membership_immutable_checkpoint_reopens_equal_to_owned() {
-        // Terms spanning every ART tier (N4/N16/N48/Bucket via the wide fan) +
-        // shared spines + Unicode, so the converter exercises tier growth.
-        let mut terms: Vec<String> = vec![
-            "a", "ab", "abc", "abd", "abe", "b", "ban", "banana", "bandana", "z", "日本", "🎉",
-        ]
-        .into_iter()
-        .map(String::from)
-        .collect();
-        // A wide fan under "w" to force N4→N16→N48→Bucket growth in the converter.
-        for i in 0..60u32 {
-            terms.push(format!("w{i:02}"));
-        }
-
-        // Owned representation.
-        let dir_o = scratch("imm-ckpt-owned");
-        let path_o = dir_o.path().join("owned.artc");
-        {
-            let owned = PersistentARTrieChar::<()>::create(&path_o).expect("create owned");
-            for t in &terms {
-                owned.insert(t).expect("owned insert");
-            }
-            owned.checkpoint().expect("owned checkpoint");
-        }
-
-        // Immutable (lock-free overlay) representation.
-        let dir_i = scratch("imm-ckpt-immutable");
-        let path_i = dir_i.path().join("immutable.artc");
-        let (snap_entry_count, snap_root_type) = {
-            let mut imm = PersistentARTrieChar::<()>::create(&path_i).expect("create immutable");
-            imm.enable_lockfree();
-            for t in &terms {
-                imm.insert_cas(t);
-            }
-            let snapshot = imm
-                .capture_snapshot_immutable()
-                .expect("capture immutable snapshot");
-            let counts = (snapshot.entry_count, snapshot.root_type);
-            imm.publish_durable_and_reclaim(snapshot)
-                .expect("publish immutable snapshot");
-            counts
-        };
-        assert_eq!(
-            snap_entry_count,
-            terms.len() as u64,
-            "immutable snapshot term count must equal the inserted-term count"
-        );
-        assert_ne!(snap_root_type, 0, "non-empty trie must have a node root");
-
-        // Reopen both and compare membership.
-        let owned = PersistentARTrieChar::<()>::open(&path_o).expect("reopen owned");
-        let imm = PersistentARTrieChar::<()>::open(&path_i).expect("reopen immutable");
-        for t in &terms {
-            assert!(
-                Dictionary::contains(&owned, t),
-                "owned reopen missing term {t:?}"
-            );
-            assert!(
-                Dictionary::contains(&imm, t),
-                "immutable-checkpoint reopen missing term {t:?} (Phase-B equivalence broken)"
-            );
-        }
-        assert!(!Dictionary::contains(&imm, "absent-term"));
-        assert!(!Dictionary::contains(&imm, "w"));
-        assert_eq!(
-            Dictionary::len(&owned),
-            Dictionary::len(&imm),
-            "owned vs immutable-checkpoint reopen term counts differ"
-        );
-    }
-
-    /// `V = u64` counters: the value blob (`bincode(u64)`) must round-trip
-    /// identically through the immutable-rep checkpoint. G1: the overlay leaf
-    /// carries the count directly in `Option<u64>`; `capture_snapshot_immutable()`
-    /// copies it onto the converted node, which the existing serializer writes as
-    /// the appended value blob — exactly as the owned tree does.
-    #[test]
-    fn counter_immutable_checkpoint_reopens_equal_to_owned() {
-        let entries: Vec<(String, u64)> = vec![
-            ("a", 1u64),
-            ("ab", 2),
-            ("abc", 30),
-            ("abd", 0), // a final node whose count is 0 (still HAS_VALUE)
-            ("b", 4),
-            ("banana", 5000),
-            ("bandana", 7),
-            ("z", 9),
-            ("日本", 42),
-            ("🎉", 100),
-        ]
-        .into_iter()
-        .map(|(t, v)| (t.to_string(), v))
-        .collect();
-
-        // Owned representation (V = u64).
-        let dir_o = scratch("imm-ckpt-owned-u64");
-        let path_o = dir_o.path().join("owned.artc");
-        {
-            let owned = PersistentARTrieChar::<u64>::create(&path_o).expect("create owned u64");
-            for (t, v) in &entries {
-                owned.insert_with_value(t, *v);
-            }
-            owned.checkpoint().expect("owned checkpoint");
-        }
-
-        // Immutable (overlay) representation: set each count to its value via a
-        // single increment from 0, then checkpoint from the immutable snapshot.
-        let dir_i = scratch("imm-ckpt-immutable-u64");
-        let path_i = dir_i.path().join("immutable.artc");
-        {
-            let mut imm =
-                PersistentARTrieChar::<u64>::create(&path_i).expect("create immutable u64");
-            imm.enable_lockfree();
-            for (t, v) in &entries {
-                imm.increment_cas(t, *v);
-            }
-            let snapshot = imm
-                .capture_snapshot_immutable()
-                .expect("capture immutable u64 snapshot");
-            assert_eq!(snapshot.entry_count, entries.len() as u64);
-            imm.publish_durable_and_reclaim(snapshot)
-                .expect("publish immutable u64 snapshot");
-        }
-
-        // Reopen both and compare values.
-        let owned = PersistentARTrieChar::<u64>::open(&path_o).expect("reopen owned u64");
-        let imm = PersistentARTrieChar::<u64>::open(&path_i).expect("reopen immutable u64");
-        for (t, v) in &entries {
-            assert_eq!(
-                owned.get_value(t),
-                Some(*v),
-                "owned reopen value mismatch for {t:?}"
-            );
-            assert_eq!(
-                imm.get_value(t),
-                Some(*v),
-                "immutable-checkpoint reopen value mismatch for {t:?} (Phase-B value-blob equivalence broken)"
-            );
-        }
-        assert_eq!(imm.get_value("absent"), None);
-    }
-}
-
-#[cfg(test)]
-mod overlay_faultin_load_roundtrip {
-    //! **Fault-in Phase 2 — load+converter round-trip (design §2).** The fault-in
-    //! load primitive [`super::super::PersistentARTrieChar::load_overlay_node_from_disk`]
-    //! must satisfy `load(serialize(overlay_to_inner(n))) ≡ n` for finality /
-    //! value / child-set, where `serialize` is the EXISTING production
-    //! `serialize_char_node_to_disk` and `load` reuses the EXISTING lazy decoder
-    //! `load_char_node_from_disk_lazy`. This pins the round-trip equivalence that
-    //! makes "a faulted node equals its durable bytes" true (the TLA
-    //! `FaultEqualsDurable` witness), so fault-in can never manufacture or drop a
-    //! term. Both `V = ()` (membership) and `V = u64` (the bincode value blob)
-    //! are exercised. Scratch is real disk (`target/test-tmp`), never `/tmp`.
-
-    use crate::persistent_artrie_char::nodes::persistent_node::{Child, PersistentCharNode};
-    use crate::persistent_artrie_char::PersistentARTrieChar;
-    use crate::persistent_artrie_core::overlay::node::OverlayNode;
-    use crate::value::DictionaryValue;
-
-    fn scratch(prefix: &str) -> tempfile::TempDir {
-        std::fs::create_dir_all("target/test-tmp").ok();
-        tempfile::Builder::new()
-            .prefix(prefix)
-            .tempdir_in("target/test-tmp")
-            .expect("scratch tempdir under target/test-tmp")
-    }
-
-    /// Compare the public structure (finality, value, child key-set, per-child
-    /// OnDisk discriminant) of two overlay nodes — the equivalence the round-trip
-    /// must preserve at single-node (lazy) granularity. The loaded node's children
-    /// are always `OnDisk` (lazy); the original's children we build as `OnDisk`
-    /// too, so the discriminant matches.
-    fn assert_overlay_node_eq<V: DictionaryValue + PartialEq + std::fmt::Debug>(
-        loaded: &OverlayNode<crate::persistent_artrie_core::key_encoding::CharKey, V>,
-        original: &OverlayNode<crate::persistent_artrie_core::key_encoding::CharKey, V>,
-    ) {
-        assert_eq!(
-            loaded.is_final(),
-            original.is_final(),
-            "fault-in round-trip: finality diverged"
-        );
-        assert_eq!(
-            loaded.get_value(),
-            original.get_value(),
-            "fault-in round-trip: value diverged"
-        );
-        let mut loaded_keys: Vec<u32> = loaded.iter_children().map(|(k, _)| *k).collect();
-        let mut orig_keys: Vec<u32> = original.iter_children().map(|(k, _)| *k).collect();
-        loaded_keys.sort_unstable();
-        orig_keys.sort_unstable();
-        assert_eq!(
-            loaded_keys, orig_keys,
-            "fault-in round-trip: child key-set diverged"
-        );
-        for (k, child) in loaded.iter_children() {
-            assert!(
-                child.as_on_disk().is_some(),
-                "fault-in round-trip: loaded child {k} must stay OnDisk (lazy)"
-            );
-        }
-    }
-
-    /// Build an overlay node, serialize it through the production
-    /// `serialize_char_node_to_disk`, then fault it back in via
-    /// `load_overlay_node_from_disk` and assert structural equivalence.
-    ///
-    /// To produce real on-disk child SwizzledPtrs for the parent's child slots,
-    /// we first serialize a couple of standalone child leaves (getting their disk
-    /// ptrs), then attach those ptrs as `Child::OnDisk` on the parent's overlay
-    /// node before serializing the parent. This mirrors exactly what eviction +
-    /// the lazy serializer produce for an overlay node whose children are on disk.
-    fn roundtrip_one<V>(prefix: &str, value: Option<V>, child_keys: &[u32])
-    where
-        V: DictionaryValue + PartialEq + std::fmt::Debug,
-    {
-        let dir = scratch(prefix);
-        let path = dir.path().join("t.artc");
-        let trie = PersistentARTrieChar::<V>::create(&path).expect("create disk-backed trie");
-
-        // Serialize standalone child leaves to obtain real OnDisk SwizzledPtrs.
-        let mut original = PersistentCharNode::<V>::new().as_final();
-        if let Some(v) = value.clone() {
-            original = original.with_value(v);
-        }
-        for &k in child_keys {
-            // A minimal final child leaf; serialize it to disk and capture its ptr.
-            let child_overlay = PersistentCharNode::<V>::new().as_final();
-            let child_inner = super::overlay_to_inner::<V>(&child_overlay);
-            let mut p: Vec<char> = Vec::new();
-            let child_ptr = trie
-                .serialize_char_node_to_disk(&child_inner, &mut p, None)
-                .expect("serialize child leaf to disk");
-            assert!(
-                child_ptr.disk_location().is_some(),
-                "serialized child must have a disk location"
-            );
-            original = original.with_child(k, Child::OnDisk(child_ptr));
-        }
-
-        // Serialize the parent overlay node (via overlay_to_inner -> production
-        // serializer), then fault it back in.
-        let parent_inner = super::overlay_to_inner::<V>(&original);
-        let mut pp: Vec<char> = Vec::new();
-        let parent_ptr = trie
-            .serialize_char_node_to_disk(&parent_inner, &mut pp, None)
-            .expect("serialize parent overlay node to disk");
-        assert!(parent_ptr.disk_location().is_some());
-
-        let loaded = trie
-            .load_overlay_node_from_disk(&parent_ptr)
-            .expect("fault-in load_overlay_node_from_disk");
-
-        assert_overlay_node_eq::<V>(&loaded, &original);
-    }
-
-    /// `V = ()` membership: a final node with several OnDisk children round-trips.
-    #[test]
-    fn membership_node_load_roundtrip_preserves_structure() {
-        let keys: Vec<u32> = ['a', 'b', 'z', '日', '🎉']
-            .iter()
-            .map(|c| *c as u32)
-            .collect();
-        roundtrip_one::<()>("faultin-rt-unit", None, &keys);
-    }
-
-    /// `V = u64` valued: the bincode value blob must round-trip identically,
-    /// including a value of 0 on a final node (HAS_VALUE set, value == 0).
-    #[test]
-    fn valued_node_load_roundtrip_preserves_value_and_structure() {
-        let keys: Vec<u32> = ['x', 'y'].iter().map(|c| *c as u32).collect();
-        roundtrip_one::<u64>("faultin-rt-u64", Some(4242u64), &keys);
-        // Edge: value 0 on a final node.
-        roundtrip_one::<u64>("faultin-rt-u64-zero", Some(0u64), &['q' as u32]);
-    }
-
-    /// A leaf with NO children (the common terminal case) round-trips: finality
-    /// preserved, empty child-set.
-    #[test]
-    fn childless_final_leaf_load_roundtrip() {
-        roundtrip_one::<()>("faultin-rt-leaf", None, &[]);
-        roundtrip_one::<u64>("faultin-rt-leaf-u64", Some(7u64), &[]);
-    }
 }
 
 #[cfg(test)]
@@ -2530,13 +1865,6 @@ mod multi_writer_checkpointer_soak {
             // not. A checkpoint that captured the owned tree would persist NOTHING.
             for t in &terms {
                 assert!(trie.contains_lockfree(t), "overlay missing {t:?}");
-                // E1: `Dictionary::contains` now routes to the overlay (the read-flip),
-                // so peek the OWNED tree directly via the un-routed reader to prove the
-                // data is overlay-only (the owned tree never received it).
-                assert!(
-                    !trie.owned_try_contains(t).expect("owned read"),
-                    "owned tree must NOT hold {t:?} (data is overlay-only)"
-                );
             }
             // Succeeding here proves the overlay arm was taken (owned arm would panic
             // its !route_overlay() assert).
@@ -2634,12 +1962,6 @@ mod multi_writer_checkpointer_soak {
                 "overlay value mismatch for {t:?} after reestablish"
             );
         }
-        // E1: `Dictionary::contains` routes to the overlay; check the owned tree directly.
-        assert!(
-            !trie.owned_try_contains("a").expect("owned read")
-                && !trie.owned_try_contains("banana").expect("owned read"),
-            "owned tree must be cleared LAST after a successful reestablish"
-        );
     }
 
     /// **S5-10b membership twin** — an Overlay-regime `()` reopen rebuilds the overlay
@@ -2672,11 +1994,6 @@ mod multi_writer_checkpointer_soak {
                 "overlay missing {t:?} after membership reestablish"
             );
         }
-        // E1: `Dictionary::contains` routes to the overlay; check the owned tree directly.
-        assert!(
-            !trie.owned_try_contains("a").expect("owned read"),
-            "owned tree must be cleared after a successful membership reestablish"
-        );
     }
 
     /// **S5-12 Test A — the A2 end-to-end PRIMARY gate.** An Overlay-regime WAL with a

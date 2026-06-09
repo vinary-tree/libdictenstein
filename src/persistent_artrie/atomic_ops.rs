@@ -138,21 +138,15 @@ impl<V: DictionaryValue + serde::Serialize + serde::de::DeserializeOwned, S: Blo
         }
     }
 
-    /// Get value by raw byte key.
+    /// Get value by raw byte key, for callers that already have byte keys (e.g.,
+    /// varint-encoded n-gram keys).
     ///
-    /// Public wrapper around the private `get_value_impl` method for callers
-    /// that already have byte keys (e.g., varint-encoded n-gram keys).
-    ///
-    /// **M3 read-flip (C6):** under `route_overlay()` the owned tree is empty
-    /// (cleared on an Overlay-regime reopen), so this value-routes to the overlay
-    /// (`overlay_get_value` → the SAFE `Any` dispatch: `i64` counter or `()`
-    /// membership). **Empty-string support (H5):** the empty term "" IS the overlay
-    /// ROOT — `overlay_get_value(b"")` reads `root.get_value()` / `root.is_final()`
-    /// (the write path publishes "" to the root via fresh-root-CAS, and reestablish
-    /// republishes it on reopen), so "" routes to the overlay like any other term
-    /// (the former owned-only exception is removed). `Some(None)` from the overlay
-    /// means handled-and-absent; `None` means an ineligible `V` (unreachable under
-    /// `route_overlay()`), in which case we fall through to the owned read.
+    /// **L3.3c:** the overlay is the sole representation, so this value-routes to the
+    /// overlay (`overlay_get_value` → the SAFE `Any` dispatch). **Empty-string support
+    /// (H5):** the empty term "" IS the overlay ROOT — `overlay_get_value(b"")` reads
+    /// `root.get_value()` / `root.is_final()` (the write path publishes "" to the root
+    /// via fresh-root-CAS, and reestablish republishes it on reopen), so "" routes to
+    /// the overlay like any other term.
     #[inline]
     pub fn get_value_bytes(&self, term: &[u8]) -> Option<V>
     where
@@ -164,18 +158,15 @@ impl<V: DictionaryValue + serde::Serialize + serde::de::DeserializeOwned, S: Blo
         self.overlay_get_value(term).flatten()
     }
 
-    /// Check containment by raw byte key.
+    /// Check containment by raw byte key, for callers that already have byte keys
+    /// (e.g., varint-encoded n-gram keys).
     ///
-    /// Public wrapper around the private `contains_impl` method for callers
-    /// that already have byte keys (e.g., varint-encoded n-gram keys).
-    ///
-    /// **M3 read-flip (C6):** under `route_overlay()` membership routes to the
-    /// non-faulting lock-free overlay read (`overlay_contains`); the owned arm is
-    /// the unchanged `contains_impl`. **Empty-string support (H5):** the empty term ""
-    /// IS the overlay ROOT — `contains_bytes(b"")` routes to `contains_lockfree(b"")`,
-    /// which reads `root.is_final()` (the write path publishes "" to the root via
-    /// fresh-root-CAS, and reestablish republishes it on reopen), so "" is a
-    /// first-class member like any other term.
+    /// **L3.3c:** the overlay is the sole representation, so membership routes to the
+    /// non-faulting lock-free overlay read (`contains_lockfree`). **Empty-string support
+    /// (H5):** the empty term "" IS the overlay ROOT — `contains_bytes(b"")` routes to
+    /// `contains_lockfree(b"")`, which reads `root.is_final()` (the write path publishes
+    /// "" to the root via fresh-root-CAS, and reestablish republishes it on reopen), so
+    /// "" is a first-class member like any other term.
     #[inline]
     pub fn contains_bytes(&self, term: &[u8]) -> bool {
         // `contains_lockfree` IS the inherent body the trait's `overlay_contains`
@@ -183,31 +174,10 @@ impl<V: DictionaryValue + serde::Serialize + serde::de::DeserializeOwned, S: Blo
         self.contains_lockfree(term)
     }
 
-    /// **UN-routed** owned membership read — always reads the OWNED tree
-    /// (`contains_impl`), never the overlay, regardless of `route_overlay()`. The
-    /// byte twin of char's `owned_try_contains`. Used by the M2a/M3 reestablish tests
-    /// to assert the owned tree was cleared AFTER reestablish (a routed `contains_bytes`
-    /// would read the now-populated overlay). Named off the `owned_*` prefix so the
-    /// D1 grep gate (which scans `fn owned_*` bodies for `contains(`) does not flag the
-    /// `contains_impl` call.
-    #[cfg_attr(not(test), allow(dead_code))]
-    #[inline]
-    pub(crate) fn unrouted_contains_bytes(&self, term: &[u8]) -> bool {
-        self.contains_impl(term)
-    }
-
-    /// **UN-routed** owned value read — always reads the OWNED tree
-    /// (`get_value_impl`), never the overlay. The byte twin of char's owned value
-    /// reader. Used by the reestablish tests for the owned-cleared assertion. (Will
-    /// also back the M4 recovery reestablish-survival assertions, the byte EDIT-3.)
-    #[cfg_attr(not(test), allow(dead_code))]
-    #[inline]
-    pub(crate) fn unrouted_get_value_bytes(&self, term: &[u8]) -> Option<V>
-    where
-        V: Clone,
-    {
-        self.get_value_impl(term)
-    }
+    // L3.3c: removed — `unrouted_contains_bytes` / `unrouted_get_value_bytes` read the
+    // deleted owned tree (`contains_impl` / `get_value_impl`); with the owned tree gone
+    // there is nothing un-routed to read (the reestablish-cleared assertions they backed
+    // are obsolete now that the owned representation no longer exists).
 
     /// Atomically update or insert a value.
     ///

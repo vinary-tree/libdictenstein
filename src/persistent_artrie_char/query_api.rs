@@ -17,8 +17,6 @@ use crate::persistent_artrie::concurrency::{EpochGuard, OptimisticReadGuard};
 use crate::persistent_artrie::error::Result;
 use crate::value::DictionaryValue;
 
-use super::types::CharTrieNodeInner;
-
 impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     ///
     /// For persistent tries with lazy loading, this will load nodes on-demand.
@@ -44,37 +42,6 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
         Ok(self.contains_lockfree(term))
     }
 
-    /// Owned-tree membership read (UN-routed). This is the E1 `false`-arm body AND
-    /// the read the recovery/reestablish bootstrap must use directly: that bootstrap
-    /// runs with `route_overlay()` already true yet must read the recovered OWNED tree
-    /// (routing it would read the empty overlay — total data loss; D1).
-    pub(crate) fn owned_try_contains(&self, term: &str) -> Result<bool> {
-        // F4: hold the OR read guard for the whole owned walk (returns `bool` — no
-        // borrow escapes; no unsafe). The walk's `get_child_lazy` produces
-        // `&self`-tied refs (its existing internal unsafe), which coerce to the
-        // guard lifetime `'g`.
-        let root_guard = match self.owned_root_guard() {
-            Some(g) => g,
-            None => return Ok(false),
-        };
-        let mut current: &CharTrieNodeInner<V> = &root_guard;
-        let mut depth = 0u16;
-        for c in term.chars() {
-            // Prefetch siblings before descending (multi-level prefetch)
-            self.prefetch_disk_refs_bounded(current.node.iter_children(), depth);
-
-            match self.get_child_lazy(current, c)? {
-                Some(child) => {
-                    current = child;
-                    depth = depth.saturating_add(1);
-                }
-                None => return Ok(false),
-            }
-        }
-
-        Ok(current.is_final())
-    }
-
     /// Get a value by term.
     ///
     /// For persistent tries with lazy loading, this will load nodes on-demand.
@@ -94,30 +61,6 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
             Ok(result) => result,
             Err(error) => {
                 log::warn!("I/O error during lazy loading in get(): {:?}", error);
-                None
-            }
-        }
-    }
-
-    /// Owned-tree value read returning a borrow (UN-routed). Mirrors `get` but always
-    /// reads `self.root`. Used by the recovery/reestablish bootstrap (D1) and by
-    /// `try_increment_impl_no_wal` — the `BatchIncrement` read-modify-write that runs
-    /// during a corruption-recovery rebuild, which executes with `route_overlay()`
-    /// already true (the trie was create-flipped) yet must read the OWNED tree it is
-    /// rebuilding, or recovered counters silently accumulate from 0.
-    ///
-    /// **F4:** returns an OWNED `Option<V>` (clone) — the owned tree is now behind
-    /// the OR `RwLock`, so a `&V` borrow can't outlive the read guard. Every caller
-    /// already `.cloned()`/reads the value, so this is net-zero. (`V: Clone` is
-    /// implied by `DictionaryValue`.)
-    pub(crate) fn owned_get(&self, term: &str) -> Option<V>
-    where
-        V: Clone,
-    {
-        match self.owned_try_get(term) {
-            Ok(result) => result,
-            Err(error) => {
-                log::warn!("I/O error during lazy loading in owned_get(): {:?}", error);
                 None
             }
         }
@@ -155,42 +98,6 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
         // `LockFreeOverlay` driver handling the i64/u64 counter, `()` membership, AND
         // arbitrary `V`). The overlay read is non-faulting/infallible, hence `Ok(..)`.
         Ok(self.get_value(term))
-    }
-
-    /// Owned-tree value read returning a borrow (UN-routed). E1 `false`-arm + the
-    /// recovery/reestablish bootstrap (D1 — must read the recovered owned tree even
-    /// while `route_overlay()` is true).
-    pub(crate) fn owned_try_get(&self, term: &str) -> Result<Option<V>>
-    where
-        V: Clone,
-    {
-        // F4: hold the OR read guard for the whole owned walk, clone the value out
-        // (owned `Option<V>` — no borrow escapes; no unsafe). `get_child_lazy`'s
-        // `&self`-tied result coerces to the guard lifetime.
-        let root_guard = match self.owned_root_guard() {
-            Some(g) => g,
-            None => return Ok(None),
-        };
-        let mut current: &CharTrieNodeInner<V> = &root_guard;
-        let mut depth = 0u16;
-        for c in term.chars() {
-            // Prefetch siblings before descending (multi-level prefetch)
-            self.prefetch_disk_refs_bounded(current.node.iter_children(), depth);
-
-            match self.get_child_lazy(current, c)? {
-                Some(child) => {
-                    current = child;
-                    depth = depth.saturating_add(1);
-                }
-                None => return Ok(None),
-            }
-        }
-
-        if current.is_final() {
-            Ok(current.value.clone())
-        } else {
-            Ok(None)
-        }
     }
 
     // ==================== Optimistic Concurrency Methods ====================

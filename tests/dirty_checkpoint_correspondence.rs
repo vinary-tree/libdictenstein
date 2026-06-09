@@ -427,7 +427,11 @@ fn byte_descriptor_publication_before_wal_truncation_reopens_with_wal_tail() {
     {
         let trie = PersistentARTrie::<i32>::create(&path).expect("create byte trie");
         assert!(trie.insert_with_value("descriptor", 10));
-        trie.persist_to_disk().expect("publish descriptor only");
+        // L3.3: the owned `persist_to_disk` descriptor-only publish is gone; the
+        // overlay `checkpoint()` publishes the image and RETAINS the WAL tail
+        // (watermark-bounded), so a post-checkpoint insert still replays on reopen.
+        trie.checkpoint()
+            .expect("checkpoint: publish image + retain WAL tail");
 
         assert!(trie.insert_with_value("wal-tail", 20));
         trie.sync().expect("sync WAL tail");
@@ -447,7 +451,11 @@ fn char_descriptor_publication_before_wal_truncation_reopens_with_wal_tail() {
         let mut trie = PersistentARTrieChar::<i32>::create(&path).expect("create char trie");
         trie.insert_with_value("descriptor", 10)
             .expect("insert descriptor term");
-        trie.persist_to_disk().expect("publish descriptor only");
+        // L3.3: the owned `persist_to_disk` descriptor-only publish is gone; the
+        // overlay `checkpoint()` publishes the image and RETAINS the WAL tail
+        // (watermark-bounded), so a post-checkpoint insert still replays on reopen.
+        trie.checkpoint()
+            .expect("checkpoint: publish image + retain WAL tail");
 
         trie.insert_with_value("wal-tail", 20)
             .expect("insert WAL tail term");

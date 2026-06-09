@@ -1,37 +1,27 @@
 //! On-disk serialization helpers for `PersistentARTrie<V, S>`.
 //!
-//! Split out of byte `dict_impl.rs` (lines ~1155-1501, ~347 LOC) as
-//! the twenty-first Phase-5 byte sub-module. Methods covered:
+//! Split out of byte `dict_impl.rs` (Phase-5 byte sub-module). The surviving
+//! single-node serialize primitives the overlay checkpoint path drives:
 //!
 //! - `serialize_bucket_to_disk` — allocates an arena slot for a bucket
-//! - `serialize_node_to_disk` — v2 serialization with relative-offset
-//!   encoding (and sequential-sibling encoding when applicable)
-//! - `persist_to_disk` — walks the trie, serializes root + children,
-//!   writes the root descriptor, flushes arenas + buffer pool, syncs
-//!   the disk manager
-//! - `serialize_child_to_disk` / `serialize_child_to_disk_with_path` —
-//!   per-`ChildNode` serialization with selective dirty-subtree
-//!   traversal
+//! - `serialize_node_to_disk_with_value_len` — v2 single-node serialization with
+//!   relative-offset (and sequential-sibling) encoding + optional value blob,
+//!   returning the on-disk byte length for the eviction registry
 //!
-//! Dirty-tracking helpers (`cache_disk_location`,
-//! `path_needs_persistence`, `get_cached_disk_location`,
-//! `clear_dirty_tracking_state`, `record_dirty_path`,
-//! `propagate_dirty_to_root`) are widened to `pub(super)` in
-//! `dict_impl.rs` so this module can call them.
-
-use std::sync::atomic::Ordering as AtomicOrdering;
+//! **L3.3c:** the owned-tree serializers (`persist_to_disk`, the recursive
+//! `serialize_child_to_disk*`, the `serialize_node_to_disk` no-value wrappers) and the
+//! dirty-tracking cache were deleted with the owned tree.
 
 use crate::value::DictionaryValue;
 
 use super::arena_manager::ArenaSlot;
 use super::block_storage::BlockStorage;
 use super::bucket::StringBucket;
-use super::dict_impl::{PersistentARTrie, TrieRoot, ROOT_TYPE_ART_NODE, ROOT_TYPE_BUCKET};
+use super::dict_impl::PersistentARTrie;
 use super::error::{PersistentARTrieError, Result};
 use super::nodes::Node;
 use super::serialization::{self, v2::SerializationContext};
 use super::swizzled_ptr::{NodeType, SwizzledPtr};
-use super::transitions::ChildNode;
 
 impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
     /// Serialize a bucket to disk and return a SwizzledPtr to its location.
@@ -50,36 +40,20 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
         Ok(SwizzledPtr::from_arena_slot(slot, NodeType::Bucket))
     }
 
-    /// Serialize an ART node to disk and return a SwizzledPtr to its location.
-    ///
-    /// Uses v2 serialization with relative offset encoding for child pointers
-    /// (and the sequential-sibling encoding when applicable).
-    pub(super) fn serialize_node_to_disk(&self, node: &Node) -> Result<SwizzledPtr> {
-        self.serialize_node_to_disk_with_value(node, None)
-    }
+    // L3.3c: removed — `serialize_node_to_disk` (no-value wrapper) +
+    // `serialize_node_to_disk_with_value` (length-dropping wrapper) were the owned
+    // serialize entry points. The overlay checkpoint path calls the length-returning
+    // `serialize_node_to_disk_with_value_len` below DIRECTLY.
 
-    /// Serialize a node to disk, optionally appending a value blob (M4a / D-VAL).
-    /// `value_bytes = None` is byte-identical to the prior value-less path; `Some`
-    /// sets the `HAS_VALUE` flag + appends the value (see
+    /// Serialize a node to disk, optionally appending a value blob (M4a / D-VAL), and
+    /// ALSO return the on-disk serialized byte length of the node record — the byte twin
+    /// of what char's `serialize_one_char_node_to_disk` measures as `data.len()` for its
+    /// eviction registry `size_bytes`. `value_bytes = None` is byte-identical to the
+    /// value-less path; `Some` sets the `HAS_VALUE` flag + appends the value (see
     /// [`serialization::v2::append_node_value`]), and its size is folded into the
     /// arena-slot estimate so the `slot == parent_slot` invariant below still holds.
-    pub(super) fn serialize_node_to_disk_with_value(
-        &self,
-        node: &Node,
-        value_bytes: Option<&[u8]>,
-    ) -> Result<SwizzledPtr> {
-        // Thin wrapper over the length-returning variant (drops the on-disk byte length,
-        // which only the Phase-6 overlay registration path needs).
-        self.serialize_node_to_disk_with_value_len(node, value_bytes)
-            .map(|(ptr, _len)| ptr)
-    }
-
-    /// As [`Self::serialize_node_to_disk_with_value`] but ALSO returns the on-disk
-    /// serialized byte length of the node record — the byte twin of what char's
-    /// `serialize_one_char_node_to_disk` measures as `data.len()` for its eviction
-    /// registry `size_bytes`. Phase 6: the overlay registration path
-    /// (`serialize_overlay_node_to_disk`) uses the length so byte's registry entries
-    /// carry the same on-disk-equivalent size char's do.
+    /// Phase 6: the overlay registration path (`serialize_overlay_node_to_disk`) uses the
+    /// length so byte's registry entries carry the same on-disk-equivalent size char's do.
     pub(super) fn serialize_node_to_disk_with_value_len(
         &self,
         node: &Node,
@@ -135,197 +109,10 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
         Ok((SwizzledPtr::from_arena_slot(slot, node_type), data_len))
     }
 
-    /// Persist all modified nodes in the trie to disk.
-    ///
-    /// This method walks through the trie structure and serializes all
-    /// in-memory nodes to disk, then updates the file header with the
-    /// root pointer.
-    pub fn persist_to_disk(&self) -> Result<()> {
-        // **F4:** `&self` (the owned/vocab+test serialize path). The owned root is
-        // serialized under the inner `root` RwLock for read (OR); released before
-        // `clear_dirty_tracking_state` (lock order).
-        let buffer_manager = self.buffer_manager.as_ref().ok_or_else(|| {
-            PersistentARTrieError::internal("No buffer manager for disk serialization")
-        })?;
-
-        let owned_root = self.root.read();
-        let (root_type, root_ptr, is_final, term_count) = match &*owned_root {
-            TrieRoot::Bucket(bucket) => {
-                let ptr = self.serialize_bucket_to_disk(bucket)?;
-                (
-                    ROOT_TYPE_BUCKET,
-                    ptr.to_raw(),
-                    false,
-                    self.term_count.load(AtomicOrdering::Acquire),
-                )
-            }
-            TrieRoot::ArtNode {
-                node,
-                children,
-                is_final,
-                value,
-            } => {
-                let mut child_ptrs: Vec<(u8, u64)> = Vec::with_capacity(children.len());
-                for (edge, child) in children {
-                    let child_path = [*edge];
-                    let ptr = self.serialize_child_to_disk_with_path(child, &child_path)?;
-                    child_ptrs.push((*edge, ptr.to_raw()));
-                }
-
-                let mut node_copy = node.clone();
-                for (edge, ptr_raw) in &child_ptrs {
-                    if let Some(child_ptr) = node_copy.find_child_mut(*edge) {
-                        *child_ptr = SwizzledPtr::from_raw(*ptr_raw);
-                    }
-                }
-
-                // Empty-string support (H1): serialize the root's `Option<V>` value
-                // (the empty term "") via the M4a node-record HAS_VALUE blob, mirroring
-                // `serialize_root` in overlay_checkpoint.rs. (This `persist_to_disk` path
-                // serves the vocab variant + tests; the production byte checkpoint goes
-                // through `serialize_root`.) Value-less roots stay byte-identical.
-                let value_bytes: Option<Vec<u8>> = match value {
-                    Some(v) => Some(crate::serialization::bincode_compat::serialize(v).map_err(
-                        |e| PersistentARTrieError::internal(format!("serialize root value: {e}")),
-                    )?),
-                    None => None,
-                };
-                let node_ptr =
-                    self.serialize_node_to_disk_with_value(&node_copy, value_bytes.as_deref())?;
-
-                (
-                    ROOT_TYPE_ART_NODE,
-                    node_ptr.to_raw(),
-                    *is_final,
-                    self.term_count.load(AtomicOrdering::Acquire),
-                )
-            }
-        };
-        // Release the OR read guard now — the rest (arena flush, descriptor write,
-        // `clear_dirty_tracking_state` which takes OR for write) must not hold it.
-        drop(owned_root);
-
-        if let Some(ref arena_manager) = self.arena_manager {
-            let stats = arena_manager.write().flush_dirty_slots()?;
-            if stats.partial_writes > 0 {
-                log::debug!(
-                    "Incremental flush: {} full arenas, {} partial, {} slots, {} bytes written, {} bytes saved",
-                    stats.full_arena_writes,
-                    stats.partial_writes,
-                    stats.slots_written,
-                    stats.bytes_written,
-                    stats.bytes_saved
-                );
-            }
-        }
-
-        let arena_count: u32 = if let Some(ref arena_manager) = self.arena_manager {
-            arena_manager.read().arena_count() as u32
-        } else {
-            0
-        };
-
-        let mut descriptor = [0u8; 18];
-        descriptor[0] = root_type;
-        descriptor[1] = if is_final { 1 } else { 0 };
-        descriptor[2..6].copy_from_slice(&(term_count as u32).to_le_bytes());
-        descriptor[6..10].copy_from_slice(&arena_count.to_le_bytes());
-        descriptor[10..18].copy_from_slice(&root_ptr.to_le_bytes());
-
-        const DESCRIPTOR_OFFSET: usize = 64;
-        let bm = buffer_manager.write();
-        let dm = bm.storage();
-        dm.write_bytes(0, DESCRIPTOR_OFFSET, &descriptor)?;
-
-        let root_descriptor_ptr =
-            SwizzledPtr::on_disk(0, DESCRIPTOR_OFFSET as u32, NodeType::Bucket);
-        dm.set_root_ptr(root_descriptor_ptr.to_raw())?;
-        dm.set_entry_count(term_count as u64)?;
-
-        bm.flush_all()?;
-        dm.sync()?;
-
-        self.dirty.store(false, AtomicOrdering::Release);
-
-        drop(bm);
-        self.clear_dirty_tracking_state();
-
-        Ok(())
-    }
-
-    /// Serialize a ChildNode to disk and return its SwizzledPtr.
-    ///
-    /// This is a convenience wrapper around `serialize_child_to_disk_with_path`
-    /// that uses an empty path (legacy behavior).
-    #[allow(dead_code)]
-    pub(super) fn serialize_child_to_disk(&self, child: &ChildNode) -> Result<SwizzledPtr> {
-        self.serialize_child_to_disk_with_path(child, &[])
-    }
-
-    /// Serialize a ChildNode to disk with path tracking for selective persistence.
-    pub(super) fn serialize_child_to_disk_with_path(
-        &self,
-        child: &ChildNode,
-        path: &[u8],
-    ) -> Result<SwizzledPtr> {
-        match child {
-            ChildNode::Bucket(bucket) => {
-                let ptr = self.serialize_bucket_to_disk(bucket)?;
-                self.cache_disk_location(path, ptr.clone());
-                Ok(ptr)
-            }
-            ChildNode::ArtNode {
-                node,
-                is_final,
-                value,
-                children,
-            } => {
-                let needs_persist =
-                    node.header().needs_persistence() || self.path_needs_persistence(path);
-
-                if !needs_persist {
-                    if let Some(cached_ptr) = self.get_cached_disk_location(path) {
-                        log::trace!(
-                            "Skipping clean subtree at path {:?} (using cached disk location)",
-                            String::from_utf8_lossy(path)
-                        );
-                        return Ok(cached_ptr);
-                    }
-                }
-
-                let mut child_ptrs: Vec<(u8, u64)> = Vec::with_capacity(children.len());
-                for (edge, child) in children {
-                    let mut child_path = path.to_vec();
-                    child_path.push(*edge);
-
-                    let ptr = self.serialize_child_to_disk_with_path(child, &child_path)?;
-                    child_ptrs.push((*edge, ptr.to_raw()));
-                }
-
-                let mut node_copy = node.clone();
-                for (edge, ptr_raw) in &child_ptrs {
-                    if let Some(child_ptr) = node_copy.find_child_mut(*edge) {
-                        *child_ptr = SwizzledPtr::from_raw(*ptr_raw);
-                    }
-                }
-
-                node_copy.header_mut().set_final(*is_final);
-
-                // M4a / D-VAL: thread the leaf value (opaque serialized bytes) into
-                // the node record so a valued ART node round-trips (it was dropped
-                // here — `let _ = value;` — which silently lost overlay-checkpoint
-                // counter values; see serialization::v2::append_node_value).
-                let node_ptr =
-                    self.serialize_node_to_disk_with_value(&node_copy, value.as_deref())?;
-
-                self.cache_disk_location(path, node_ptr.clone());
-
-                Ok(node_ptr)
-            }
-            ChildNode::DiskRef { ptr } => {
-                self.cache_disk_location(path, ptr.clone());
-                Ok(ptr.clone())
-            }
-        }
-    }
+    // L3.3c: removed — `persist_to_disk` (owned-tree disk serializer) +
+    // `serialize_child_to_disk` / `serialize_child_to_disk_with_path` (recursive owned
+    // `ChildNode` serializers) walked the deleted owned `self.root` / `TrieRoot` /
+    // `ChildNode` representation and used the deleted dirty-tracking cache. The overlay
+    // checkpoint path (`overlay_checkpoint.rs`) serializes the immutable overlay
+    // directly via `serialize_bucket_to_disk` + `serialize_node_to_disk_with_value_len`.
 }

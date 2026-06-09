@@ -749,41 +749,6 @@ impl<V: DictionaryValue> CharTrieNodeInner<V> {
     }
 }
 
-/// Root node type for char trie
-pub enum CharTrieRoot<V: DictionaryValue> {
-    /// Empty trie (no root yet)
-    Empty,
-    /// Root is a trie node
-    Node(Box<CharTrieNodeInner<V>>),
-}
-
-// Manual Debug implementation to avoid requiring Debug on V
-impl<V: DictionaryValue> std::fmt::Debug for CharTrieRoot<V> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            CharTrieRoot::Empty => write!(f, "CharTrieRoot::Empty"),
-            CharTrieRoot::Node(node) => {
-                write!(f, "CharTrieRoot::Node({} children)", node.num_children())
-            }
-        }
-    }
-}
-
-impl<V: DictionaryValue> Default for CharTrieRoot<V> {
-    fn default() -> Self {
-        CharTrieRoot::Empty
-    }
-}
-
-impl<V: DictionaryValue> Clone for CharTrieRoot<V> {
-    fn clone(&self) -> Self {
-        match self {
-            CharTrieRoot::Empty => CharTrieRoot::Empty,
-            CharTrieRoot::Node(node) => CharTrieRoot::Node(Box::new((**node).clone())),
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -829,15 +794,5 @@ mod tests {
         let removed = root.remove_child('a');
         assert!(removed.is_some());
         assert_eq!(root.num_children(), 1);
-    }
-
-    #[test]
-    fn test_char_trie_root() {
-        let root: CharTrieRoot<i32> = CharTrieRoot::Empty;
-        assert!(matches!(root, CharTrieRoot::Empty));
-
-        let node: CharTrieNodeInner<i32> = CharTrieNodeInner::new();
-        let root = CharTrieRoot::Node(Box::new(node));
-        assert!(matches!(root, CharTrieRoot::Node(_)));
     }
 }

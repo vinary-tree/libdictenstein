@@ -38,9 +38,6 @@ use crate::persistent_artrie_core::overlay::flip::LockFreeOverlay;
 use crate::persistent_artrie_core::overlay::node::OverlayNode;
 use crate::value::DictionaryValue;
 
-use super::bucket::StringBucket;
-use super::dict_impl::TrieRoot;
-
 impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrie<V, S> {
     /// **F5/BLOCKER#4 — load the dense image DIRECTLY into a pre-built lock-free overlay
     /// root** (NO transient owned `TrieRoot`; the owned `self.root` is left empty).
@@ -77,9 +74,9 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrie<V, S> {
             ));
         }
 
-        // The owned `root` scratch is never materialized now — leave it the empty placeholder the
-        // ctor installed (it is not the production rep under the overlay; it is deleted at L3.3).
-        *self.root.get_mut() = TrieRoot::Bucket(StringBucket::with_values());
+        // L3.3c: the owned `root` field is deleted — the overlay (installed above) is the sole
+        // representation. The owned term count is meaningless under the overlay (overlay finals are
+        // counted directly), so reset the legacy counter to 0.
         self.term_count
             .store(0, std::sync::atomic::Ordering::Release);
 

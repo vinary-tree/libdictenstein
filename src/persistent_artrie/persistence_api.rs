@@ -228,26 +228,6 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
         })
     }
 
-    pub(super) fn append_batch_mutation_wal_record(
-        &self,
-        entries: &[(Vec<u8>, Option<Vec<u8>>)],
-        operation: &'static str,
-    ) -> Result<Lsn> {
-        let Some(ref wal_writer) = self.wal_writer else {
-            return Ok(0);
-        };
-
-        let appended_lsn = wal_writer.append_batch(entries).map_err(|e| {
-            PersistentARTrieError::io_error(
-                operation,
-                "WAL",
-                std::io::Error::new(std::io::ErrorKind::Other, e.to_string()),
-            )
-        })?;
-        self.sync_wal_after_append(appended_lsn, operation)?;
-        Ok(appended_lsn)
-    }
-
     pub(super) fn sync_wal_after_append(
         &self,
         appended_lsn: Lsn,
@@ -312,35 +292,24 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
     /// removed after recovery.
     ///
     /// **M2b (overlay-durable-architecture.md, trait 3):** the RES-4 route-split
-    /// DECISION (under the overlay write mode the OWNED tree is empty — the live data
-    /// is in the immutable overlay; capturing the owned tree would checkpoint NOTHING
-    /// and lose every term on reopen, so route to the overlay capture +
-    /// watermark-bounded retaining publisher) + the total-loss-guard assert now live
-    /// ONCE in the SHARED GENERIC
+    /// DECISION (the OWNED tree is gone — the live data is in the immutable overlay,
+    /// so route to the overlay capture + watermark-bounded retaining publisher) + the
+    /// total-loss-guard assert live ONCE in the SHARED GENERIC
     /// [`OverlayCheckpoint::checkpoint_route_split`](crate::persistent_artrie_core::overlay::checkpoint::OverlayCheckpoint::checkpoint_route_split);
     /// this method is a thin wrapper calling it. The per-variant capture/publish seams
-    /// (`overlay_checkpoint.rs`) delegate to byte's serialize path. INERT pre-flip:
-    /// `route_overlay()` is false until M4 wires the production ctors, so the owned arm
-    /// runs — byte-for-byte the prior `persist_to_disk` + WAL-truncate body (plus the
-    /// `&mut`-only dirty-tracking clear below, which the prior `persist_to_disk`
-    /// performed inline and which the `&self` owned-arm seam cannot).
+    /// (`overlay_checkpoint.rs`) delegate to byte's overlay serialize path.
+    ///
+    /// **L3.3c:** the owned tree (and its `dirty_prefixes` flags) is deleted, so the
+    /// former `if !route_overlay() { clear_dirty_tracking_state() }` owned post-step is
+    /// gone — every checkpoint now takes the overlay arm.
     pub fn checkpoint(&self) -> Result<()> {
         // **F4:** `&self`. Concurrent checkpoints are serialized by the `Shared*`
-        // trait `checkpoint()` (the CK `checkpoint_lock`); the owned arm takes OR-read
-        // for capture inside `checkpoint_route_split` → `capture_owned_snapshot`.
-        let routed_overlay = self.route_overlay();
+        // trait `checkpoint()` (the CK `checkpoint_lock`).
         <Self as crate::persistent_artrie_core::overlay::checkpoint::OverlayCheckpoint<
             crate::persistent_artrie_core::key_encoding::ByteKey,
             V,
             S,
         >>::checkpoint_route_split(self)?;
-        // The owned arm's `&self` publish seam cannot run the `&mut`-only
-        // dirty-tracking clear that the prior `persist_to_disk` did inline; do it here
-        // (owned arm only — the overlay arm has no owned dirty flags). Preserves the
-        // exact prior `checkpoint()` post-state.
-        if !routed_overlay {
-            self.clear_dirty_tracking_state();
-        }
         Ok(())
     }
 

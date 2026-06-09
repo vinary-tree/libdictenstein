@@ -60,6 +60,52 @@ fn durable_lockfree_trie(prefix: &str) -> (TempDir, PersistentARTrieChar<()>) {
     (dir, trie)
 }
 
+/// **Regression — proper-prefix insert survives live AND across checkpoint+reopen.**
+///
+/// The Phase-A lock-free data-loss bug: `insert_cas` of a proper-PREFIX term — e.g.
+/// inserting `"cat"` AFTER `"catnip"`/`"cats"` already made the `"cat"` node a NON-final
+/// path intermediary — wrongly observed an existing node, reported a duplicate, and
+/// DROPPED the term (it returned `false` AND skipped the cache). The fix routes the
+/// duplicate decision through the single `try_set_final` arbiter on the shared node.
+///
+/// This is the deterministic successor to the two deleted L3.3a witnesses
+/// (`prefix_insert_survives_merge_into_persistent_trie` /
+/// `contended_prefix_inserts_finalize_once_and_survive_merge`), which exercised the now-
+/// removed lockfree→owned MERGE drain. Here we exercise the SURVIVING path: insert the
+/// longer terms first, THEN each proper prefix (the exact bug trigger), durably; assert
+/// every term is present live, then checkpoint + reopen through the codec-only reopen
+/// path (`enumerate_terms_from_disk` → `build_overlay_root_from_terms`) and assert every
+/// term — longer and proper-prefix alike — survives.
+#[test]
+fn proper_prefix_insert_survives_live_and_reopen() {
+    let (dir, trie) = durable_lockfree_trie("overlay-prefix-regression");
+    let path = dir.path().join("overlay.artc");
+    // Insert order is the bug trigger: each proper prefix is inserted AFTER a longer
+    // term that already created it as a NON-final path intermediary.
+    let terms = ["catnip", "cats", "cat", "ca", "c", "dax", "da", "d", ""];
+    for t in &terms {
+        trie.insert_cas_durable(t).expect("durable overlay insert");
+    }
+    // Live: every term — the longer ones AND their later-inserted proper prefixes
+    // (incl. the empty term "") — is present (none dropped as a false duplicate).
+    for t in &terms {
+        assert!(
+            trie.contains_lockfree(t),
+            "live overlay missing {t:?} — proper-prefix insert dropped (Phase-A data-loss regression)"
+        );
+    }
+    trie.checkpoint().expect("overlay checkpoint");
+    drop(trie);
+    // Reopen via the codec-only path (no owned tree) and confirm every term survived.
+    let reopened = PersistentARTrieChar::<()>::open(&path).expect("reopen");
+    for t in &terms {
+        assert!(
+            reopened.contains(t),
+            "reopened overlay missing {t:?} — proper-prefix term lost across checkpoint+reopen"
+        );
+    }
+}
+
 #[derive(Debug, Clone)]
 enum Op {
     /// Insert via CAS; must return `true` iff the term was not already present.
