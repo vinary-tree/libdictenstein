@@ -173,6 +173,218 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
         }
     }
 
+    /// **L3.1 — read ONE char node RECORD's fields (no `CharTrieNodeInner`).**
+    /// `load_char_node_from_disk_lazy` minus the owned-node construction: decode the dense
+    /// `CharNode` record via the proven `deserialize_char_node_v2`, read its value blob, and
+    /// extract `(is_final, value, prefix_units, child_edges+ptrs)`. `prefix_units` are the
+    /// node's CX compressed-prefix code points (`prefix_len == 0` for every current char image —
+    /// char has no `compact()` — so the fold is a defensive no-op, but it mirrors
+    /// `load_char_node_from_disk_lazy`'s CX-#43 prefix preservation). Edges/prefix are `u32`
+    /// (`CharKey::Unit`).
+    #[allow(clippy::type_complexity)]
+    fn read_char_record_fields(
+        &self,
+        node_ptr: &SwizzledPtr,
+    ) -> Result<(bool, Option<V>, Vec<u32>, Vec<(u32, SwizzledPtr)>)> {
+        use super::arena_manager::ArenaSlot;
+        use super::serialization_char::{deserialize_char_node_v2, DeserializationContext};
+        use std::io::Cursor;
+
+        let arena_manager = self.arena_manager.as_ref().ok_or_else(|| {
+            PersistentARTrieError::internal("L3.1 char enumerate: no arena manager")
+        })?;
+        let disk_loc = node_ptr.disk_location().ok_or_else(|| {
+            PersistentARTrieError::corrupted("L3.1 char enumerate: swizzled/null node ptr")
+        })?;
+        let arena_id = disk_loc.block_id.checked_sub(1).ok_or_else(|| {
+            PersistentARTrieError::corrupted(
+                "L3.1 char enumerate: invalid block_id 0 for arena node",
+            )
+        })?;
+        let slot = ArenaSlot::new(arena_id, disk_loc.offset);
+
+        let am = arena_manager.read();
+        let node_data = am.read(slot)?;
+
+        let deser_ctx = DeserializationContext::new(slot);
+        let mut cursor = Cursor::new(node_data);
+        let char_node = deserialize_char_node_v2(&mut cursor, &deser_ctx)?;
+
+        // Value blob follows the node bytes (variable-size v2): [value_len:u32][value_bytes].
+        let offset = cursor.position() as usize;
+        if offset + 4 > node_data.len() {
+            return Err(PersistentARTrieError::corrupted(
+                "L3.1 char enumerate: value_len extends past node record",
+            ));
+        }
+        let value_len = u32::from_le_bytes([
+            node_data[offset],
+            node_data[offset + 1],
+            node_data[offset + 2],
+            node_data[offset + 3],
+        ]) as usize;
+        let value: Option<V> = if value_len > 0 {
+            let value_start = offset + 4;
+            let value_end = value_start.checked_add(value_len).ok_or_else(|| {
+                PersistentARTrieError::corrupted("L3.1 char enumerate: value length overflow")
+            })?;
+            if value_end > node_data.len() {
+                return Err(PersistentARTrieError::corrupted(
+                    "L3.1 char enumerate: value bytes extend past node record",
+                ));
+            }
+            Some(
+                crate::serialization::bincode_compat::deserialize(
+                    &node_data[value_start..value_end],
+                )
+                .map_err(|e| {
+                    PersistentARTrieError::corrupted(format!(
+                        "L3.1 char enumerate: value deserialize failed: {}",
+                        e
+                    ))
+                })?,
+            )
+        } else {
+            None
+        };
+
+        let is_final = char_node.is_final();
+        let plen = char_node.header().prefix_len as usize;
+        let prefix_units: Vec<u32> = char_node.prefix().chars[..plen].to_vec();
+        let children: Vec<(u32, SwizzledPtr)> = char_node
+            .iter_children()
+            .filter(|(_, ptr)| !ptr.is_null())
+            .map(|(key, ptr)| (key, ptr.clone()))
+            .collect();
+
+        drop(am);
+        Ok((is_final, value, prefix_units, children))
+    }
+
+    /// **L3.1 — direct dense→(term, value) enumerator (NO `CharTrieRoot`/`CharTrieNodeInner`).**
+    ///
+    /// The char twin of byte `enumerate_terms_from_disk`. Reads the dense char image (root
+    /// descriptor + `CharNode` records — char has NO `compact()`/node-prefix format-1 and NO
+    /// suffix-bucket: `CharBucket` is a single-char-edge FAN-OUT node decoded natively by
+    /// `deserialize_char_node_v2`) DIRECTLY into a `(Vec<u32> → Option<V>)` map + the empty term
+    /// "", WITHOUT materializing a `CharTrieRoot`. Fed to `build_overlay_root_from_terms` it
+    /// yields the resident overlay root; at L3.3 it lets `load_root_from_disk` + `CharTrieRoot` +
+    /// `CharTrieNodeInner` + the char owned readers be deleted.
+    ///
+    /// ONE eager DFS (explicit work-stack). UNIFORM root+child handling: every node reads its
+    /// `(is_final, value, prefix, children)` from its RECORD (char root finality/value live on
+    /// the record, NOT the descriptor — matching `load_root_from_disk`'s `CharTrieRoot::Node`),
+    /// folds its prefix into the path, yields its value-or-`None` ONCE (membership∪value
+    /// intrinsic), and pushes children at `+edge`. Loads the arenas first (the char ctor does
+    /// NOT — only `load_root_from_disk` did, which this replaces).
+    pub(super) fn enumerate_char_terms_from_disk(
+        &self,
+        buffer_manager: &Arc<RwLock<BufferManager<S>>>,
+        root_ptr: u64,
+    ) -> Result<(
+        std::collections::BTreeMap<Vec<u32>, Option<V>>,
+        Option<Option<V>>,
+        u64,
+    )> {
+        use std::collections::BTreeMap;
+
+        // (1) Read + parse the 18-byte root descriptor (block 0 offset 64) — mirror
+        // `load_root_from_disk`'s prologue.
+        let root_desc = SwizzledPtr::from_raw(root_ptr);
+        let disk_loc = root_desc.disk_location().ok_or_else(|| {
+            PersistentARTrieError::internal("L3.1 char enumerate: swizzled/null root ptr")
+        })?;
+        if disk_loc.block_id != 0 || disk_loc.offset as usize != ROOT_DESCRIPTOR_OFFSET {
+            return Err(PersistentARTrieError::corrupted(format!(
+                "L3.1 char enumerate: root descriptor must target block 0 offset {}, got block {} offset {}",
+                ROOT_DESCRIPTOR_OFFSET, disk_loc.block_id, disk_loc.offset
+            )));
+        }
+        let (root_type, term_count, arena_count, data_ptr) = {
+            let bm = buffer_manager.read();
+            let page_guard = bm.fetch_page(disk_loc.block_id)?;
+            let page_data = page_guard.data();
+            let offset = disk_loc.offset as usize;
+            let end = offset.checked_add(ROOT_DESCRIPTOR_LEN).ok_or_else(|| {
+                PersistentARTrieError::corrupted("L3.1 char enumerate: descriptor offset overflow")
+            })?;
+            if end > page_data.len() {
+                return Err(PersistentARTrieError::corrupted(
+                    "L3.1 char enumerate: descriptor extends past header block",
+                ));
+            }
+            let mut d = [0u8; ROOT_DESCRIPTOR_LEN];
+            d.copy_from_slice(&page_data[offset..end]);
+            if d[1] > 1 {
+                return Err(PersistentARTrieError::corrupted(format!(
+                    "L3.1 char enumerate: invalid root final flag {}",
+                    d[1]
+                )));
+            }
+            let term_count = u32::from_le_bytes([d[2], d[3], d[4], d[5]]) as u64;
+            let arena_count = u32::from_le_bytes([d[6], d[7], d[8], d[9]]);
+            let data_ptr =
+                u64::from_le_bytes([d[10], d[11], d[12], d[13], d[14], d[15], d[16], d[17]]);
+            let storage_block_count = bm.storage().block_count()?;
+            if arena_count > storage_block_count.saturating_sub(1) {
+                return Err(PersistentARTrieError::corrupted(format!(
+                    "L3.1 char enumerate: arena_count {} exceeds available arena blocks {}",
+                    arena_count,
+                    storage_block_count.saturating_sub(1)
+                )));
+            }
+            (d[0], term_count, arena_count, data_ptr)
+        };
+
+        // (2) Load the arenas (mirror `load_root_from_disk`:118-134) — the char ctor does not.
+        if arena_count > 0 {
+            if let Some(ref arena_manager) = self.arena_manager {
+                let mut am = arena_manager.write();
+                am.clear_for_loading();
+                for block_id in 1..=arena_count {
+                    am.load_arena(block_id)?;
+                }
+                let count = am.arena_count();
+                am.set_active_arena(count.saturating_sub(1));
+            }
+        }
+
+        // (3) Walk.
+        let mut all: BTreeMap<Vec<u32>, Option<V>> = BTreeMap::new();
+        match root_type {
+            ROOT_TYPE_EMPTY => { /* no records, no terms */ }
+            ROOT_TYPE_NODE => {
+                // UNIFORM DFS from the root record. A frame is `(node_ptr, path-to-this-node)`.
+                let mut stack: Vec<(SwizzledPtr, Vec<u32>)> =
+                    vec![(SwizzledPtr::from_raw(data_ptr), Vec::new())];
+                while let Some((ptr, parent_path)) = stack.pop() {
+                    let (is_final, value, prefix_units, children) =
+                        self.read_char_record_fields(&ptr)?;
+                    let mut here = parent_path;
+                    here.extend_from_slice(&prefix_units);
+                    if is_final {
+                        all.insert(here.clone(), value);
+                    }
+                    for (edge, child_ptr) in children.into_iter().rev() {
+                        let mut p = here.clone();
+                        p.push(edge);
+                        stack.push((child_ptr, p));
+                    }
+                }
+            }
+            other => {
+                return Err(PersistentARTrieError::corrupted(format!(
+                    "L3.1 char enumerate: unknown root type {}",
+                    other
+                )));
+            }
+        }
+
+        // (4) Split out the empty term "".
+        let empty_term: Option<Option<V>> = all.remove(&Vec::<u32>::new());
+        Ok((all, empty_term, term_count))
+    }
+
     /// Load a CharTrieNodeInner from disk
     ///
     /// Uses arena allocation for space-efficient reading. Nodes are packed

@@ -1,39 +1,35 @@
-//! **F5 (Slice 3) — the direct dense→overlay reopen loader (char variant).**
+//! **L3.1 — the DIRECT dense→overlay reopen codec loader (char variant).**
 //!
-//! `load_root_immutable` is the F5-B loader: it reuses the EXISTING owned loader
-//! [`PersistentARTrieChar::load_root_from_disk`] **EAGER** (fully materialize) to decode
-//! the dense disk image into the owned `CharTrieRoot<V>` (a TRANSIENT scratch in
-//! `self.root`), then the generic, COMPRESSION-AWARE converter
-//! [`crate::persistent_artrie_core::overlay::flip::LockFreeOverlay::build_overlay_root_from_owned`]
-//! turns it into a single `Arc<PersistentCharNode<V>>` (deep-term-safe, iterative). The
-//! result is installed as the live lock-free overlay via `install_prebuilt_overlay_root`,
-//! and the transient owned tree is CLEARED — so reopen does not leave the owned tree
-//! materialized as a production representation, and the WAL tail is replayed INTO THE
-//! OVERLAY (not the owned tree) by the generic `replay_records_lww_overlay`.
+//! `load_root_immutable` (the reopen chokepoint, both reopen arms) delegates to
+//! [`PersistentARTrieChar::load_overlay_char_root_compressed`], which reads the dense char
+//! image DIRECTLY into a fully-resident `Arc<PersistentCharNode<V>>`
+//! (= `OverlayNode<CharKey, V>`) via [`PersistentARTrieChar::enumerate_char_terms_from_disk`]
+//! + the proven iterative
+//! [`build_overlay_root_from_terms`](crate::persistent_artrie_core::overlay::f5_build::build_overlay_root_from_terms)
+//! — **NO transient owned `CharTrieRoot`/`CharTrieNodeInner`**. This lets L3.3 delete
+//! `load_root_from_disk` + `CharTrieRoot` + `CharTrieNodeInner` + the char owned readers.
+//! A corrupt/absent image falls back IN-LOADER to an EMPTY root + `image_loaded = false`
+//! (the caller drains the WAL from frontier 0), never aborting `open()`.
 //!
-//! F5 ADDS this loader ALONGSIDE the existing reopen path; it is **gated** by
-//! [`LockFreeOverlay::USE_F5_REOPEN_LOADER`] and exercised by the S2 tests via
-//! `open_with_f5_loader`. The owned tree / mutators / legacy reopen path are NOT deleted
-//! (that is F7).
+//! # The single dense-image walk (char is simpler than byte)
 //!
-//! # Why the converter goes through the OWNED-term enumeration (not a node walk)
-//!
-//! An Overlay-regime dense image is USUALLY un-path-compressed (the overlay serializer
-//! writes one node per unit), but a **COMPACTED** Overlay file is PATH-COMPRESSED
-//! (C-opt-1: `compact()` rebuilds a dense owned image via the owned-staging path —
-//! `StringBucket` + compressed prefixes — then re-stamps the Overlay regime). A
-//! node-structural converter on the raw owned nodes would have to re-implement
-//! bucket/prefix expansion (new data-loss-critical code). Instead the generic converter
-//! enumerates the owned tree via the proven D1 owned readers (which already expand all
-//! compression) and builds the overlay from the `(term-units, value)` enumeration — the
-//! compression handling lives ONCE in the existing readers. See
-//! `docs/design/slice3-f5-loader-impl.md`.
+//! [`PersistentARTrieChar::enumerate_char_terms_from_disk`] is one eager iterative DFS over
+//! the arena records yielding `(term-units: Vec<u32>, Option<V>)` + the empty term "". Char
+//! has NO `compact()` (no node-prefix format-1) and NO suffix-bucket — a `CharBucket` is a
+//! single-char-edge FAN-OUT node decoded natively by `deserialize_char_node_v2` — so the walk
+//! is UNIFORM: every node (root included; char root finality/value live on the RECORD, not the
+//! descriptor) reads `(is_final, value, prefix, children)` from its record, yields its
+//! `value`-or-`None` ONCE (membership∪value intrinsic), and pushes children at `+edge`. The
+//! enumerator loads the arenas first (the char ctor does NOT — only `load_root_from_disk` did,
+//! which this replaces). **Equivalence to the proven path is the GOLD-STANDARD GATE**
+//! (`l31_char_differential_tests`): byte-exact vs
+//! `build_overlay_root_from_owned(load_root_from_disk(image))` over format × `V` × Unicode ×
+//! shape — run NOW while the oracle exists (it retires at L3.3).
 
 use std::sync::Arc;
 
 use crate::persistent_artrie::block_storage::BlockStorage;
 use crate::persistent_artrie::error::{PersistentARTrieError, Result};
-use crate::persistent_artrie::swizzled_ptr::SwizzledPtr;
 use crate::persistent_artrie_core::key_encoding::CharKey;
 use crate::persistent_artrie_core::overlay::flip::LockFreeOverlay;
 use crate::sync_compat::RwLock;
@@ -67,47 +63,18 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
         buffer_manager: &Arc<RwLock<crate::persistent_artrie::buffer_manager::BufferManager<S>>>,
         root_ptr: u64,
     ) -> Result<(usize, bool)> {
-        // (1) Eager-load the dense image into the TRANSIENT owned tree.
-        //
-        // **F7 corrupt-image fallback.** If the dense image fails to load (a corrupt root
-        // descriptor / arena), FALL BACK to an EMPTY image — exactly as the legacy owned
-        // reopen does (`load_root_from_disk` error ⇒ `loaded_from_disk = false` ⇒ rebuild
-        // from the WAL). The caller (the F5 arm / the F7 converter) then recovers everything
-        // from the WAL drain. Refusing to trust a malformed image avoids fabricating
-        // checkpointed contents from corrupt bytes. Returns `image_loaded` so the caller can
-        // pass `loaded_from_disk = false` + `image_checkpoint_lsn = 0` to the drain when the
-        // image is absent/corrupt (else the drain would wrongly SKIP WAL records `<= the
-        // active Checkpoint record's lsn`, dropping data the absent image does NOT cover).
-        let (term_count, image_loaded) = if root_ptr == 0 {
-            (0usize, false)
-        } else {
-            let root_swizzled = SwizzledPtr::from_raw(root_ptr);
-            match self.load_root_from_disk(buffer_manager, &root_swizzled, Some(usize::MAX)) {
-                Ok((owned_root, len)) => {
-                    *self.root.get_mut() = owned_root;
-                    self.len.store(len, std::sync::atomic::Ordering::Release);
-                    (len, true)
-                }
-                Err(e) => {
-                    log::warn!(
-                        "F7 load_root_immutable: dense image load failed ({:?}); falling back to \
-                         an EMPTY image + WAL drain (legacy fallback parity)",
-                        e
-                    );
-                    *self.root.get_mut() = CharTrieRoot::Empty;
-                    self.len.store(0, std::sync::atomic::Ordering::Release);
-                    (0usize, false)
-                }
-            }
-        };
+        // **L3.1:** build the overlay root DIRECTLY from the dense image via the codec loader —
+        // NO transient owned `CharTrieRoot`. (`load_root_from_disk` + `CharTrieRoot`/
+        // `CharTrieNodeInner` + `build_overlay_root_from_owned` + the char D1 readers survive only
+        // as the L3.1 differential-test ORACLE; all die at L3.3.) Preserves char's IN-LOADER
+        // corrupt-image fallback (`image_loaded = false` ⇒ the caller drains the WAL from
+        // frontier 0, covering everything the absent/corrupt image does not).
+        let (overlay_root, term_count, image_loaded) =
+            self.load_overlay_char_root_compressed(buffer_manager, root_ptr)?;
 
-        // (2) Build the overlay root from the owned tree (compression-aware, iterative).
-        let overlay_root: Arc<PersistentCharNode<V>> =
-            <Self as LockFreeOverlay<CharKey, V, S>>::build_overlay_root_from_owned(self)?;
-
-        // (3) Install the pre-built overlay root + select LockFreeOverlay + verify the
-        // Overlay regime (V-2). A `false` ⇒ an Owned-regime WAL under overlay routing
-        // (recovery would KEEP unranked orphans = resurrection); refuse.
+        // Install the pre-built overlay root + select LockFreeOverlay + verify the Overlay
+        // regime (V-2). A `false` ⇒ an Owned-regime WAL under overlay routing (recovery would
+        // KEEP unranked orphans = resurrection); refuse.
         if !self.install_prebuilt_overlay_root(overlay_root) {
             return Err(PersistentARTrieError::internal(
                 "F5 load_root_immutable: install_prebuilt_overlay_root did not engage \
@@ -115,13 +82,58 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
             ));
         }
 
-        // (4) Clear the transient owned tree — F5 does not leave it materialized. (The
-        // production read/checkpoint path is now overlay-routed; the owned tree was only
-        // the decode scratch the converter read.)
+        // The owned `root` scratch is never materialized now — leave it empty (it is not the
+        // production rep under the overlay; it is deleted at L3.3).
         *self.root.get_mut() = CharTrieRoot::Empty;
         self.len.store(0, std::sync::atomic::Ordering::Release);
 
         Ok((term_count, image_loaded))
+    }
+
+    /// **L3.1 — the direct dense→overlay codec loader, char (NO `CharTrieRoot`).**
+    ///
+    /// Enumerates `(term-units, Option<V>)` + the empty term "" DIRECTLY from the dense char
+    /// image via [`PersistentARTrieChar::enumerate_char_terms_from_disk`] (char has no
+    /// `compact()`/node-prefix format-1 and no suffix-bucket — `CharBucket` is a fan-out node),
+    /// then builds the fully-resident (every child `Child::InMem`) overlay root via the proven
+    /// iterative [`build_overlay_root_from_terms`](crate::persistent_artrie_core::overlay::f5_build::build_overlay_root_from_terms).
+    /// Returns `(root, term_count, image_loaded)`. `root_ptr == 0` OR a decode error ⇒ an EMPTY
+    /// overlay root + `image_loaded = false` (char's in-loader corrupt-image fallback — a corrupt
+    /// image must drain the WAL, NOT abort `open()`).
+    pub(crate) fn load_overlay_char_root_compressed(
+        &self,
+        buffer_manager: &Arc<RwLock<crate::persistent_artrie::buffer_manager::BufferManager<S>>>,
+        root_ptr: u64,
+    ) -> Result<(Arc<PersistentCharNode<V>>, usize, bool)> {
+        use crate::persistent_artrie_core::overlay::f5_build::build_overlay_root_from_terms;
+
+        if root_ptr == 0 {
+            let empty = build_overlay_root_from_terms::<CharKey, V, _>(
+                std::collections::BTreeMap::new(),
+                None,
+            );
+            return Ok((empty, 0, false));
+        }
+
+        match self.enumerate_char_terms_from_disk(buffer_manager, root_ptr) {
+            Ok((terms, empty_term, term_count)) => {
+                let root = build_overlay_root_from_terms::<CharKey, V, _>(terms, empty_term);
+                Ok((root, term_count as usize, true))
+            }
+            Err(e) => {
+                // In-loader corrupt-image fallback (char parity with the prior loader).
+                log::warn!(
+                    "L3.1 char codec loader: dense image load failed ({:?}); falling back to an \
+                     EMPTY image + WAL drain (corrupt-image parity)",
+                    e
+                );
+                let empty = build_overlay_root_from_terms::<CharKey, V, _>(
+                    std::collections::BTreeMap::new(),
+                    None,
+                );
+                Ok((empty, 0, false))
+            }
+        }
     }
 }
 
@@ -161,5 +173,184 @@ mod deep_term_converter_tests {
         // Drop the deep spine (both builder + OverlayNode Drops are iterative).
         drop(cur);
         drop(root);
+    }
+}
+
+#[cfg(test)]
+mod l31_char_differential_tests {
+    //! **L3.1 GOLD-STANDARD GATE (char).** `load_overlay_char_root_compressed` (no
+    //! `CharTrieRoot`) produces a STRUCTURALLY-IDENTICAL overlay to the owned-scratch oracle
+    //! `build_overlay_root_from_owned(load_root_from_disk(image))` — over both char on-disk
+    //! formats (format-2 un-compressed overlay, format-3 legacy owned; char has NO `compact()`/
+    //! format-1) × `V` × {valued, term-only, "" valued, "" membership, UNICODE, deep key}. Both
+    //! readers consume the SAME dense image ⇒ byte-exact equivalence. Run NOW while the oracle
+    //! exists; it retires at L3.3. Real-disk scratch (`target/test-tmp`), never tmpfs.
+    use super::*;
+    use crate::persistent_artrie::swizzled_ptr::SwizzledPtr;
+    use crate::persistent_artrie_char::PersistentARTrieChar;
+    use std::collections::BTreeMap;
+
+    fn scratch(tag: &str) -> tempfile::TempDir {
+        std::fs::create_dir_all("target/test-tmp").ok();
+        tempfile::Builder::new()
+            .prefix(tag)
+            .tempdir_in("target/test-tmp")
+            .expect("real-disk scratch under target/test-tmp")
+    }
+
+    fn overlay_eq<V: DictionaryValue + PartialEq>(
+        a: &Arc<PersistentCharNode<V>>,
+        b: &Arc<PersistentCharNode<V>>,
+    ) -> bool {
+        if a.is_final() != b.is_final()
+            || a.get_value() != b.get_value()
+            || a.num_children() != b.num_children()
+        {
+            return false;
+        }
+        let mut bchildren: BTreeMap<u32, Arc<PersistentCharNode<V>>> = BTreeMap::new();
+        for (e, c) in b.iter_children() {
+            match c.as_in_mem() {
+                Some(arc) => {
+                    bchildren.insert(*e, arc.clone());
+                }
+                None => return false,
+            }
+        }
+        for (e, c) in a.iter_children() {
+            let ac = match c.as_in_mem() {
+                Some(arc) => arc,
+                None => return false,
+            };
+            match bchildren.get(e) {
+                Some(bc) => {
+                    if !overlay_eq(ac, bc) {
+                        return false;
+                    }
+                }
+                None => return false,
+            }
+        }
+        true
+    }
+
+    fn assert_new_eq_oracle<V: DictionaryValue + PartialEq>(
+        t: &mut PersistentARTrieChar<V>,
+        tag: &str,
+    ) {
+        let bm = t.buffer_manager.clone().expect("buffer manager");
+        let root_ptr = bm.read().storage().root_ptr().expect("root_ptr");
+
+        // NEW direct char codec loader (no CharTrieRoot).
+        let (new_root, _, _) = t
+            .load_overlay_char_root_compressed(&bm, root_ptr)
+            .expect("new char codec loader");
+
+        // OLD owned-scratch oracle.
+        let (owned, _) = t
+            .load_root_from_disk(&bm, &SwizzledPtr::from_raw(root_ptr), Some(usize::MAX))
+            .expect("owned decode");
+        *t.root.get_mut() = owned;
+        let oracle_root = t.build_overlay_root_from_owned().expect("oracle build");
+        *t.root.get_mut() = CharTrieRoot::Empty;
+
+        assert!(
+            overlay_eq(&new_root, &oracle_root),
+            "{tag}: char codec loader overlay != owned-scratch oracle overlay"
+        );
+    }
+
+    fn create<V: DictionaryValue>(tag: &str) -> (tempfile::TempDir, PersistentARTrieChar<V>) {
+        let dir = scratch(tag);
+        let trie = PersistentARTrieChar::<V>::create(&dir.path().join("t.artc")).expect("create");
+        (dir, trie)
+    }
+
+    // ---- format-2 (un-compressed overlay checkpoint) ----
+    #[test]
+    fn diff_char_format2_overlay_u64() {
+        let (_d, mut t) = create::<u64>("l31c-f2-u64");
+        for (term, v) in [("apple", 1u64), ("application", 2), ("banana", 3)] {
+            assert!(t.insert_with_value(term, v).expect("ins"));
+        }
+        assert!(t.insert("member").expect("ins"));
+        assert!(t.insert_with_value("", 999).expect("ins"));
+        t.checkpoint().expect("checkpoint");
+        assert_new_eq_oracle(&mut t, "char-format2-u64");
+    }
+
+    #[test]
+    fn diff_char_format2_overlay_unicode_string() {
+        let (_d, mut t) = create::<String>("l31c-f2-uni");
+        // Unicode terms (char's domain): accents, CJK, emoji.
+        for (term, v) in [
+            ("café", "x"),
+            ("caffè", "y"),
+            ("日本語", "z"),
+            ("🦀rust", "w"),
+        ] {
+            assert!(t.insert_with_value(term, v.to_string()).expect("ins"));
+        }
+        assert!(t.insert("naïve").expect("ins")); // term-only Unicode
+        t.checkpoint().expect("checkpoint");
+        assert_new_eq_oracle(&mut t, "char-format2-unicode");
+    }
+
+    // ---- format-3 (legacy owned) ----
+    #[test]
+    fn diff_char_format3_owned_u64() {
+        let (_d, mut t) = create::<u64>("l31c-f3-u64");
+        t.kill_switch_to_owned();
+        for (term, v) in [("apple", 1u64), ("apply", 2), ("apricot", 3), ("banana", 4)] {
+            assert!(t.insert_with_value(term, v).expect("ins"));
+        }
+        assert!(t.insert("member").expect("ins"));
+        assert!(t.insert_with_value("", 555).expect("ins"));
+        t.checkpoint().expect("checkpoint");
+        assert_new_eq_oracle(&mut t, "char-format3-u64");
+    }
+
+    #[test]
+    fn diff_char_format3_owned_unicode_string() {
+        let (_d, mut t) = create::<String>("l31c-f3-uni");
+        t.kill_switch_to_owned();
+        for (term, v) in [
+            ("café", "A"),
+            ("caférot", "B"),
+            ("日本", "C"),
+            ("日本語", "D"),
+        ] {
+            assert!(t.insert_with_value(term, v.to_string()).expect("ins"));
+        }
+        assert!(t.insert("bare").expect("ins"));
+        assert!(t.insert_with_value("", "empty".to_string()).expect("ins"));
+        t.checkpoint().expect("checkpoint");
+        assert_new_eq_oracle(&mut t, "char-format3-unicode");
+    }
+
+    #[test]
+    fn diff_char_format3_owned_unit() {
+        let (_d, mut t) = create::<()>("l31c-f3-unit");
+        t.kill_switch_to_owned();
+        for term in ["red", "redder", "blue"] {
+            assert!(t.insert(term).expect("ins"));
+        }
+        assert!(t.insert_with_value("valued", ()).expect("ins"));
+        assert!(t.insert("").expect("ins")); // "" membership
+        t.checkpoint().expect("checkpoint");
+        assert_new_eq_oracle(&mut t, "char-format3-unit");
+    }
+
+    #[test]
+    fn diff_char_format3_deep_and_branching() {
+        let (_d, mut t) = create::<u64>("l31c-f3-deep");
+        t.kill_switch_to_owned();
+        let deep: String = "葉".repeat(250); // deep Unicode key
+        assert!(t.insert_with_value(&deep, 1).expect("ins"));
+        for (term, v) in [("ban", 2u64), ("banana", 3), ("bandana", 4), ("band", 5)] {
+            assert!(t.insert_with_value(term, v).expect("ins"));
+        }
+        t.checkpoint().expect("checkpoint");
+        assert_new_eq_oracle(&mut t, "char-format3-deep-branching");
     }
 }
