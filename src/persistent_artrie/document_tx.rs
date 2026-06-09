@@ -228,84 +228,28 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
         // own durable, ranked record. byte has no `increments` field (increments were
         // folded into shadow_terms as absolute SETs at buffer time), so this is
         // upsert(shadow_terms) only.
-        if self.route_overlay() {
-            let mut applied = 0usize;
-            for (term, value) in tx.shadow_terms.drain(..) {
-                let newly = match value {
-                    Some(v) => {
-                        <Self as DurableOverlayWrite<ByteKey, V, S>>::upsert_cas_durable_default(
-                            self, &term, v,
-                        )?
-                    }
-                    None => self.insert_cas_durable(&term)?,
-                };
-                if newly {
-                    applied += 1;
-                }
-            }
-            tx.state = TransactionState::Committed;
-            return Ok(applied);
-        }
-
-        let count = tx.shadow_terms.len();
-
-        if count == 0 {
-            if let Some(ref wal) = self.wal_writer {
-                let commit_lsn = wal
-                    .append(WalRecord::CommitTx { tx_id: tx.tx_id })
-                    .map_err(|e| {
-                        PersistentARTrieError::io_error(
-                            "commit_tx",
-                            "WAL",
-                            std::io::Error::new(std::io::ErrorKind::Other, e.to_string()),
-                        )
-                    })?;
-                self.sync_wal_after_append(commit_lsn, "commit_tx_sync")?;
-            }
-            tx.state = TransactionState::Committed;
-            return Ok(0);
-        }
-
-        let mut wal_entries = Vec::with_capacity(count);
-        for (term, value) in &tx.shadow_terms {
-            let value_bytes = match value.as_ref() {
-                Some(v) => Some(crate::serialization::bincode_compat::serialize(v).map_err(
-                    |e| PersistentARTrieError::internal(format!("Serialization error: {}", e)),
-                )?),
-                None => None,
-            };
-            wal_entries.push((term.clone(), value_bytes));
-        }
-
-        if let Some(ref wal) = self.wal_writer {
-            wal.append_batch(&wal_entries).map_err(|e| {
-                PersistentARTrieError::io_error(
-                    "commit_tx_batch",
-                    "WAL",
-                    std::io::Error::new(std::io::ErrorKind::Other, e.to_string()),
-                )
-            })?;
-            let commit_lsn = wal
-                .append(WalRecord::CommitTx { tx_id: tx.tx_id })
-                .map_err(|e| {
-                    PersistentARTrieError::io_error(
-                        "commit_tx",
-                        "WAL",
-                        std::io::Error::new(std::io::ErrorKind::Other, e.to_string()),
-                    )
-                })?;
-            self.sync_wal_after_append(commit_lsn, "commit_tx_sync")?;
-        }
-
-        let mut inserted = 0;
+        // C2 tx-ii: apply each shadow term via the proven Order-A overlay primitive —
+        // upsert for a valued entry, membership insert for `None`. Per-op durable, NOT
+        // batch-atomic (matches the owned reconcile_lww, which ignores tx brackets on
+        // replay); each primitive writes its own durable, ranked record (no BeginTx/
+        // CommitTx/sync). byte folded increments into shadow_terms as absolute SETs at
+        // buffer time, so this is upsert(shadow_terms) only.
+        let mut applied = 0usize;
         for (term, value) in tx.shadow_terms.drain(..) {
-            if self.insert_impl_core(&term, value) {
-                inserted += 1;
+            let newly = match value {
+                Some(v) => {
+                    <Self as DurableOverlayWrite<ByteKey, V, S>>::upsert_cas_durable_default(
+                        self, &term, v,
+                    )?
+                }
+                None => self.insert_cas_durable(&term)?,
+            };
+            if newly {
+                applied += 1;
             }
         }
-
         tx.state = TransactionState::Committed;
-        Ok(inserted)
+        Ok(applied)
     }
 
     /// Abort a document transaction, discarding all buffered terms.
