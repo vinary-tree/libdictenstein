@@ -17,7 +17,6 @@
 use super::block_storage::BlockStorage;
 use super::dict_impl::PersistentARTrie;
 use super::error::{PersistentARTrieError, Result};
-use super::wal::WalRecord;
 use crate::persistent_artrie_core::counter_codec;
 use crate::persistent_artrie_core::key_encoding::ByteKey;
 use crate::persistent_artrie_core::overlay::durable_write::DurableOverlayWrite;
@@ -63,71 +62,24 @@ impl<V: DictionaryValue + serde::Serialize + serde::de::DeserializeOwned, S: Blo
     where
         V: crate::value::Counter,
     {
-        if self.route_overlay() {
-            if let Some(routed) =
-                super::lockfree_value_route::route_increment_bytes(self, term, delta)
-            {
-                // The route returns the new count as an i128; re-encode it into the
-                // native counter type `V` (range-checked). An out-of-range count is an
-                // overflow → LOUD error (never a silent wrap).
-                return routed.and_then(|count_i128| {
-                    counter_codec::i128_to_counter_value::<V>(count_i128).ok_or_else(|| {
-                        PersistentARTrieError::InvalidOperation(format!(
-                            "increment overflow for term {:?}: new count {} is out of range for \
-                             the counter value type",
-                            String::from_utf8_lossy(term),
-                            count_i128
-                        ))
-                    })
-                });
-            }
-            // A decrement / `i64` counter / arbitrary `V` → the general value-CAS path.
-            return self.increment_bytes_via_value_cas(term, delta);
+        if let Some(routed) = super::lockfree_value_route::route_increment_bytes(self, term, delta)
+        {
+            // The route returns the new count as an i128; re-encode it into the
+            // native counter type `V` (range-checked). An out-of-range count is an
+            // overflow → LOUD error (never a silent wrap).
+            return routed.and_then(|count_i128| {
+                counter_codec::i128_to_counter_value::<V>(count_i128).ok_or_else(|| {
+                    PersistentARTrieError::InvalidOperation(format!(
+                        "increment overflow for term {:?}: new count {} is out of range for \
+                         the counter value type",
+                        String::from_utf8_lossy(term),
+                        count_i128
+                    ))
+                })
+            });
         }
-        // OWNED path. Read the current count into the i128 substrate (confines the
-        // bincode round-trip to `counter_codec`), add `delta` in i128, then re-encode
-        // the new value into `V` (range-checked — an out-of-range result is a LOUD
-        // overflow, never a silent wrap).
-        let cur_i128: i128 = match self.get_value_impl(term) {
-            Some(v) => counter_codec::counter_value_to_i128::<V>(&v).ok_or_else(|| {
-                PersistentARTrieError::internal(
-                    "increment: existing value is not an 8-byte counter leaf".to_string(),
-                )
-            })?,
-            None => 0,
-        };
-
-        let new_i128 = cur_i128.checked_add(delta as i128).ok_or_else(|| {
-            PersistentARTrieError::InvalidOperation(format!(
-                "increment overflow for term {:?}: {} + {} overflows i128",
-                String::from_utf8_lossy(term),
-                cur_i128,
-                delta
-            ))
-        })?;
-        let new_value: V =
-            counter_codec::i128_to_counter_value::<V>(new_i128).ok_or_else(|| {
-                PersistentARTrieError::InvalidOperation(format!(
-                "increment overflow for term {:?}: new count {} is out of range for the counter \
-                 value type",
-                String::from_utf8_lossy(term),
-                new_i128
-            ))
-            })?;
-
-        // The WAL `Increment.result` field is `i64` (informational — recovery
-        // recomputes via the delta); carry the i64 bit-pattern of the new count.
-        let record = WalRecord::Increment {
-            term: term.to_vec(),
-            delta,
-            result: counter_codec::counter_return_i64(new_i128),
-        };
-        self.append_mutation_wal_record(record, "increment")?;
-
-        self.remove_impl_core(term);
-        self.insert_impl_core(term, Some(new_value.clone()));
-
-        Ok(new_value)
+        // A decrement / `i64` counter / arbitrary `V` → the general value-CAS path.
+        self.increment_bytes_via_value_cas(term, delta)
     }
 
     /// **F2 — general byte overlay increment via the value-CAS path** (Counter-bound).
@@ -206,10 +158,8 @@ impl<V: DictionaryValue + serde::Serialize + serde::de::DeserializeOwned, S: Blo
     where
         V: Clone,
     {
-        if self.route_overlay() {
-            if let Some(routed) = self.overlay_get_value(term) {
-                return routed;
-            }
+        if let Some(routed) = self.overlay_get_value(term) {
+            return routed;
         }
         self.get_value_impl(term)
     }
@@ -228,12 +178,9 @@ impl<V: DictionaryValue + serde::Serialize + serde::de::DeserializeOwned, S: Blo
     /// first-class member like any other term.
     #[inline]
     pub fn contains_bytes(&self, term: &[u8]) -> bool {
-        if self.route_overlay() {
-            // `contains_lockfree` IS the inherent body the trait's `overlay_contains`
-            // seam delegates to (the non-faulting in-memory overlay walk).
-            return self.contains_lockfree(term);
-        }
-        self.contains_impl(term)
+        // `contains_lockfree` IS the inherent body the trait's `overlay_contains`
+        // seam delegates to (the non-faulting in-memory overlay walk).
+        self.contains_lockfree(term)
     }
 
     /// **UN-routed** owned membership read — always reads the OWNED tree
@@ -286,26 +233,7 @@ impl<V: DictionaryValue + serde::Serialize + serde::de::DeserializeOwned, S: Blo
         // Flip F0/G5 (NH1): under the overlay, route to the SHARED GENERIC durable
         // UPSERT (always-write) for ANY V — NEVER fall through to owned. Eligible V
         // now; arbitrary V at F2.
-        if self.route_overlay() {
-            return <Self as DurableOverlayWrite<ByteKey, V, S>>::upsert_cas_durable_default(
-                self, term, value,
-            );
-        }
-        let existed = self.contains_impl(term);
-
-        let value_bytes = crate::serialization::bincode_compat::serialize(&value)
-            .map_err(|e| PersistentARTrieError::internal(format!("Serialization error: {}", e)))?;
-
-        let record = WalRecord::Upsert {
-            term: term.to_vec(),
-            value: value_bytes,
-        };
-        self.append_mutation_wal_record(record, "upsert")?;
-
-        self.remove_impl_core(term);
-        self.insert_impl_core(term, Some(value));
-
-        Ok(!existed)
+        <Self as DurableOverlayWrite<ByteKey, V, S>>::upsert_cas_durable_default(self, term, value)
     }
 
     /// Atomically compare and swap a value.
@@ -346,46 +274,9 @@ impl<V: DictionaryValue + serde::Serialize + serde::de::DeserializeOwned, S: Blo
         // durable). SUPERSEDES the prior reject (the NH2 regression fix): eligible V
         // ({(),i64}) gets working overlay CAS now, arbitrary V at F2. (Owned body
         // below runs only when `!route_overlay()`.)
-        if self.route_overlay() {
-            return <Self as DurableOverlayWrite<ByteKey, V, S>>::compare_and_swap_cas_durable_default(
-                self, term, expected, new_value,
-            );
-        }
-        let current = self.get_value_impl(term);
-
-        let (matches, expected_bytes) = match (&current, &expected) {
-            (None, None) => (true, None),
-            (Some(c), Some(e)) => {
-                let c_bytes = crate::serialization::bincode_compat::serialize(c).map_err(|e| {
-                    PersistentARTrieError::internal(format!("Serialization error: {}", e))
-                })?;
-                let e_bytes = crate::serialization::bincode_compat::serialize(e).map_err(|e| {
-                    PersistentARTrieError::internal(format!("Serialization error: {}", e))
-                })?;
-                (c_bytes == e_bytes, Some(e_bytes))
-            }
-            _ => (false, None),
-        };
-
-        if !matches {
-            return Ok(false);
-        }
-
-        let new_value_bytes = crate::serialization::bincode_compat::serialize(&new_value)
-            .map_err(|e| PersistentARTrieError::internal(format!("Serialization error: {}", e)))?;
-
-        let record = WalRecord::CompareAndSwap {
-            term: term.to_vec(),
-            expected: expected_bytes,
-            new_value: new_value_bytes,
-            success: true,
-        };
-        self.append_mutation_wal_record(record, "compare_and_swap")?;
-
-        self.remove_impl_core(term);
-        self.insert_impl_core(term, Some(new_value));
-
-        Ok(true)
+        <Self as DurableOverlayWrite<ByteKey, V, S>>::compare_and_swap_cas_durable_default(
+            self, term, expected, new_value,
+        )
     }
 
     /// Get the current value and increment atomically (fetch-and-add).
@@ -440,26 +331,8 @@ impl<V: DictionaryValue + serde::Serialize + serde::de::DeserializeOwned, S: Blo
         // get-or-insert (read-your-write; NEVER falls through to the owned tree for an
         // overlay-routed trie — the NH1 data-loss fix). Eligible V now; arbitrary V at
         // F2. (Owned body below runs only when `!route_overlay()`.)
-        if self.route_overlay() {
-            return <Self as DurableOverlayWrite<ByteKey, V, S>>::get_or_insert_durable_default(
-                self, term, default,
-            );
-        }
-        if let Some(v) = self.get_value_impl(term) {
-            return Ok(v);
-        }
-
-        let value_bytes = crate::serialization::bincode_compat::serialize(&default)
-            .map_err(|e| PersistentARTrieError::internal(format!("Serialization error: {}", e)))?;
-
-        let record = WalRecord::Upsert {
-            term: term.to_vec(),
-            value: value_bytes,
-        };
-        self.append_mutation_wal_record(record, "get_or_insert")?;
-
-        self.insert_impl_core(term, Some(default.clone()));
-
-        Ok(default)
+        <Self as DurableOverlayWrite<ByteKey, V, S>>::get_or_insert_durable_default(
+            self, term, default,
+        )
     }
 }

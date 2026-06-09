@@ -11,16 +11,15 @@
 //!   for sequential I/O on disk-resident tries
 //!
 //! The private `merge_from_batched_with_options` shared by the two
-//! batched paths lives here too. They call `get_value_impl` /
-//! `insert_impl` / `iter_prefix_with_values_and_arena` /
-//! `iter_prefix_from_cursor` on `PersistentARTrie`.
-
-use std::collections::BTreeMap;
+//! batched paths lives here too. Since L3.3 the overlay is the sole
+//! representation, so all of these route through the per-key CAS-retry
+//! overlay merge funnel `merge_entries_overlay` (the owned arena-grouped
+//! merge was deleted with the owned tree at L3.3b).
 
 use crate::value::DictionaryValue;
 
 use super::block_storage::BlockStorage;
-use super::dict_impl::{PersistentARTrie, PrefixTermWithValueAndArena};
+use super::dict_impl::PersistentARTrie;
 use super::error::Result;
 
 impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
@@ -96,45 +95,11 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
         // reads self via the overlay seam (NOT get_value_impl over the empty owned
         // tree), combines via merge_fn, publishes phantom-safely. Arena grouping below
         // is an owned-tree I/O-locality optimization, inert for the overlay.
-        if self.route_overlay() {
-            let entries: Vec<(Vec<u8>, V)> = match other.iter_prefix_with_values_and_arena(b"")? {
-                Some(terms) => terms.into_iter().map(|t| (t.term, t.value)).collect(),
-                None => return Ok(0),
-            };
-            return self.merge_entries_overlay(entries, merge_fn);
-        }
-        let other_terms = match other.iter_prefix_with_values_and_arena(b"")? {
-            Some(terms) => terms,
+        let entries: Vec<(Vec<u8>, V)> = match other.iter_prefix_with_values_and_arena(b"")? {
+            Some(terms) => terms.into_iter().map(|t| (t.term, t.value)).collect(),
             None => return Ok(0),
         };
-
-        let mut by_arena: BTreeMap<Option<u32>, Vec<PrefixTermWithValueAndArena<V>>> =
-            BTreeMap::new();
-        for term_info in other_terms {
-            by_arena
-                .entry(term_info.arena_id)
-                .or_default()
-                .push(term_info);
-        }
-
-        let mut processed = 0;
-
-        for (_arena_id, arena_terms) in by_arena {
-            for term_info in arena_terms {
-                processed += 1;
-
-                let existing_value = self.get_value_impl(&term_info.term);
-                let merged_value = if let Some(ref self_value) = existing_value {
-                    merge_fn(self_value, &term_info.value)
-                } else {
-                    term_info.value
-                };
-
-                self.insert_impl(&term_info.term, Some(merged_value));
-            }
-        }
-
-        Ok(processed)
+        self.merge_entries_overlay(entries, merge_fn)
     }
 
     /// Merge another trie into this one, replacing values on conflict.
@@ -204,55 +169,13 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
         // C2: under the overlay, route to the shared per-key CAS-retry merge funnel
         // (batching/grouping are owned-tree memory/I/O optimizations, inert for the
         // overlay; collect flat — merge is bulk/rare). See `merge_from`.
-        if self.route_overlay() {
-            let entries: Vec<(Vec<u8>, V)> = match other.iter_prefix_with_values_and_arena(b"")? {
-                Some(terms) => terms.into_iter().map(|t| (t.term, t.value)).collect(),
-                None => return Ok(0),
-            };
-            return self.merge_entries_overlay(entries, merge_fn);
-        }
-        let batch_size = if batch_size == 0 { 5_000 } else { batch_size };
-        let mut total_processed = 0;
-        let mut cursor: Option<Vec<u8>> = None;
-
-        loop {
-            let mut batch = other.iter_prefix_from_cursor(b"", cursor.as_deref(), batch_size)?;
-
-            if batch.is_empty() {
-                break;
-            }
-
-            let batch_len = batch.len();
-            let last_term = batch.last().map(|t| t.term.clone());
-
-            if arena_grouped {
-                batch.sort_by(|a, b| match (a.arena_id, b.arena_id) {
-                    (Some(a_id), Some(b_id)) => a_id.cmp(&b_id).then_with(|| a.term.cmp(&b.term)),
-                    (Some(_), None) => std::cmp::Ordering::Less,
-                    (None, Some(_)) => std::cmp::Ordering::Greater,
-                    (None, None) => a.term.cmp(&b.term),
-                });
-            }
-
-            for term_info in batch {
-                let existing_value = self.get_value_impl(&term_info.term);
-                let merged_value = if let Some(ref self_value) = existing_value {
-                    merge_fn(self_value, &term_info.value)
-                } else {
-                    term_info.value
-                };
-
-                self.insert_impl(&term_info.term, Some(merged_value));
-                total_processed += 1;
-            }
-
-            if batch_len < batch_size {
-                break;
-            }
-
-            cursor = last_term;
-        }
-
-        Ok(total_processed)
+        // `batch_size` / `arena_grouped` were owned-tree I/O-locality knobs, inert for
+        // the overlay merge funnel (collect flat — merge is bulk/rare).
+        let _ = (batch_size, arena_grouped);
+        let entries: Vec<(Vec<u8>, V)> = match other.iter_prefix_with_values_and_arena(b"")? {
+            Some(terms) => terms.into_iter().map(|t| (t.term, t.value)).collect(),
+            None => return Ok(0),
+        };
+        self.merge_entries_overlay(entries, merge_fn)
     }
 }
