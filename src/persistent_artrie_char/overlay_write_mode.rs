@@ -47,7 +47,6 @@ use crate::persistent_artrie_core::wal::{Lsn, RankRegime, WalRecord};
 use crate::value::DictionaryValue;
 
 use super::persist::CheckpointSnapshot;
-use super::types::CharTrieRoot;
 
 // ============================================================================
 // Char seam impl of the shared LockFreeOverlay flip
@@ -107,68 +106,6 @@ impl<V: DictionaryValue, S: BlockStorage> LockFreeOverlay<CharKey, V, S>
     /// SOLE representation.
     fn overlay_eligible_v() -> bool {
         true
-    }
-
-    // ---- UN-ROUTED owned readers (D1 — read the OWNED tree directly) ----
-
-    fn owned_first_units(&self) -> Result<(Vec<u32>, bool)> {
-        // Disjoint first-code-point cover. D1: `owned_iter_prefix("")` is the
-        // UN-routed owned reader (it walks `self.root`, never the overlay), so it is
-        // safe even when the trie is already in overlay-write mode (the reestablish
-        // caller flips before dispatching).
-        use std::collections::BTreeSet;
-        let mut first_units: BTreeSet<u32> = BTreeSet::new();
-        let mut has_empty_term = false;
-        if let Some(all_terms) = self.owned_iter_prefix("")? {
-            for term in &all_terms {
-                match term.chars().next() {
-                    Some(c) => {
-                        first_units.insert(c as u32);
-                    }
-                    None => has_empty_term = true,
-                }
-            }
-        }
-        Ok((first_units.into_iter().collect(), has_empty_term))
-    }
-
-    fn owned_units_under(&self, prefix: &[u32]) -> Result<Option<Vec<Vec<u32>>>> {
-        // D1: UN-routed owned reader. Convert the single-unit prefix and each
-        // recovered term to/from `Vec<u32>` via the `CharKey` boundary so the
-        // generic fold publishes the SAME terms the char originals did.
-        let prefix_str = CharKey::units_to_term(prefix);
-        Ok(self.owned_iter_prefix(&prefix_str)?.map(|terms| {
-            terms
-                .iter()
-                .map(|t| CharKey::units_from_str(t).into_vec())
-                .collect()
-        }))
-    }
-
-    fn owned_units_with_values_under(&self, prefix: &[u32]) -> Result<Option<Vec<(Vec<u32>, V)>>> {
-        // D1: UN-routed owned reader.
-        let prefix_str = CharKey::units_to_term(prefix);
-        Ok(self
-            .owned_iter_prefix_with_values(&prefix_str)?
-            .map(|entries| {
-                entries
-                    .into_iter()
-                    .map(|(t, v)| (CharKey::units_from_str(&t).into_vec(), v))
-                    .collect()
-            }))
-    }
-
-    fn owned_has_empty_term_value(&self) -> Option<V> {
-        // D1: UN-routed owned reader (`owned_get` reads `self.root`). F4: `owned_get`
-        // already returns an owned `Option<V>`.
-        self.owned_get("")
-    }
-
-    fn clear_owned(&mut self) {
-        // F4: Tier-1, `&mut self` (reestablish pre-share). `get_mut()` on the OR
-        // lock — exclusive access, no lock needed.
-        *self.root.get_mut() = CharTrieRoot::Empty;
-        self.len.store(0, Ordering::Release);
     }
 
     // ---- overlay publishers (the per-variant write seam) ----

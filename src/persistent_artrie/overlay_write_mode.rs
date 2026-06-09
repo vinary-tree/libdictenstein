@@ -482,54 +482,6 @@ impl<V: DictionaryValue, S: BlockStorage> LockFreeOverlay<ByteKey, V, S>
         true
     }
 
-    // ---- UN-ROUTED owned readers (D1 — read the OWNED tree directly) ----
-
-    fn owned_first_units(&self) -> Result<(Vec<u8>, bool)> {
-        // Disjoint first-byte cover. D1: `unrouted_collect_under(&[])` is the
-        // UN-routed, UNCAPPED owned reader (it walks `self.root`, never the
-        // overlay), so it is safe even with `route_overlay()` already true.
-        use std::collections::BTreeSet;
-        let mut first_units: BTreeSet<u8> = BTreeSet::new();
-        let mut has_empty_term = false;
-        if let Some(all_terms) = self.unrouted_collect_under(&[]) {
-            for term in &all_terms {
-                match term.first() {
-                    Some(&b) => {
-                        first_units.insert(b);
-                    }
-                    None => has_empty_term = true,
-                }
-            }
-        }
-        Ok((first_units.into_iter().collect(), has_empty_term))
-    }
-
-    fn owned_units_under(&self, prefix: &[u8]) -> Result<Option<Vec<Vec<u8>>>> {
-        // D1: UN-routed, UNCAPPED owned reader. The byte unit IS the public term
-        // byte, so no boundary conversion is needed (`ByteKey::units_to_term` is
-        // the identity `to_vec`).
-        Ok(self.unrouted_collect_under(prefix))
-    }
-
-    fn owned_units_with_values_under(&self, prefix: &[u8]) -> Result<Option<Vec<(Vec<u8>, V)>>> {
-        // D1: UN-routed, UNCAPPED owned reader.
-        Ok(self.unrouted_collect_with_values_under(prefix))
-    }
-
-    fn owned_has_empty_term_value(&self) -> Option<V> {
-        // D1: UN-routed owned reader. Delegates to the `unrouted_*` helper (which
-        // reads `self.root` directly) so this seam body stays free of the bare
-        // forbidden tokens the D1 grep gate scans for.
-        self.unrouted_empty_term_value()
-    }
-
-    fn clear_owned(&mut self) {
-        // F4: Tier-1, `&mut self` (called only by `reestablish_*` pre-share). Use
-        // `get_mut()` on the OR lock — exclusive access, no lock needed.
-        *self.root.get_mut() = TrieRoot::Bucket(StringBucket::with_values());
-        self.term_count.store(0, Ordering::Release);
-    }
-
     // ---- overlay publishers (the per-variant write seam) ----
 
     fn overlay_publish_membership(&self, units: &[u8]) {
