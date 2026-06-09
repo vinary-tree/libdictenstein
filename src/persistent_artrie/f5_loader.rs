@@ -19,13 +19,16 @@
 //!
 //! An Overlay-regime byte file's dense image is USUALLY un-path-compressed (the byte
 //! overlay serializer writes N4/N16/N48/N256 nodes, one per unit, no `StringBucket`), but
-//! a **COMPACTED** Overlay file is PATH-COMPRESSED (C-opt-1: `compact()` rebuilds a dense
-//! owned image via the owned-staging path — buckets + compressed prefixes — then re-stamps
-//! the Overlay regime). The generic converter enumerates the owned tree via the proven D1
-//! owned readers (which EXPAND `StringBucket` suffixes + compressed prefixes) and builds
-//! the overlay from the `(term-units, value)` enumeration, so the compression handling
-//! lives ONCE in the existing readers — no new data-loss-critical expansion code. See
-//! `docs/design/slice3-f5-loader-impl.md`.
+//! a **COMPACTED** Overlay file is PATH-COMPRESSED. As of **L2.1**, `compact()` serializes
+//! the live overlay DIRECTLY via the CX path-compressing serializer
+//! ([`PersistentARTrie::serialize_overlay_snapshot_compressed`]), which emits **node-header
+//! prefix** chunks (`header.prefix_len > 0` + a `CompressedPrefix`) — NOT the owned-staging
+//! bucket form (that path now serves only the ineligible-`V` / kill-switched fallback). The
+//! generic converter enumerates the decoded owned tree via the proven D1 owned readers, which
+//! EXPAND BOTH `StringBucket` suffixes AND node-header compressed prefixes (the latter folded
+//! in `unrouted_collect_terms_*_under_child`, mirroring [`Self::load_overlay_node_from_disk`]),
+//! so the compression handling lives ONCE in the existing readers — no new data-loss-critical
+//! expansion code. See `docs/design/slice3-f5-loader-impl.md`.
 
 use crate::persistent_artrie::block_storage::BlockStorage;
 use crate::persistent_artrie::error::{PersistentARTrieError, Result};

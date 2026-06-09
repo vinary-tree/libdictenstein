@@ -196,27 +196,29 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
         remove_file_if_exists(&stale_wal_backup_path, "compact_remove_stale_wal_backup")?;
 
         let mut new_trie = PersistentARTrie::<V>::create(&temp_path)?;
-        // **M4b:** `create` now create-flips eligible V (`{(), i64}`) to the lock-free
-        // overlay. The compaction STAGING trie must be OWNED: it is populated below via
-        // `insert_impl_no_wal` (owned-tree writes) and then `checkpoint()`ed — under the
-        // overlay the inserts would land in the owned tree while `checkpoint()` captured
-        // the EMPTY overlay, so verification would read 0 terms and every compaction of
-        // an eligible-V trie would fail (silent total loss of the compacted image).
-        // Force the staging trie to the owned regime (the kill-switch also restamps the
-        // fresh temp WAL Owned, so the post-rename reopen of the compacted file stays
-        // owned until the caller's own create-flip path governs it). This keeps the
-        // proven owned compaction pipeline intact for the eligible monomorphs.
-        new_trie.kill_switch_to_owned();
-
-        let mut terms_processed = 0u64;
 
         let terms_to_copy = self.compaction_snapshot()?;
         let expected_snapshot = Self::serialized_snapshot_from_terms(&terms_to_copy)?;
+        let terms_processed = terms_to_copy.len() as u64;
 
-        for (term, value) in terms_to_copy {
-            if let Some(ref value) = value {
+        // **Copy phase.** `compaction_snapshot()` above already read the ENTIRE source term-set
+        // (the "copy" from the live trie); the CX overlay-snapshot serialize (and the owned
+        // fallback) then writes it into the new image as ONE bulk operation rather than
+        // term-by-term. Emit a single "copying" progress tick for the whole set so the public
+        // `CompactionProgress` phase contract (copying → checkpointing → verifying → finalizing)
+        // is preserved regardless of which serialize path runs.
+        progress(CompactionProgress {
+            phase: "copying",
+            terms_processed,
+            estimated_total,
+            percent_complete: 100.0,
+        });
+
+        // Value-serialize PRE-CHECK (data-loss guard): fail BEFORE publishing if any value blob
+        // cannot serialize (preserves the old per-term insert-loop guard, but up-front).
+        for (term, value) in &terms_to_copy {
+            if let Some(value) = value {
                 if let Err(e) = crate::serialization::bincode_compat::serialize(value) {
-                    drop(new_trie);
                     let _ = remove_file_if_exists(&temp_path, "compact_cleanup_temp");
                     let _ = remove_file_if_exists(&temp_wal_path, "compact_cleanup_temp_wal");
                     return Err(PersistentARTrieError::CheckpointVerificationFailed {
@@ -227,32 +229,6 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
                     });
                 }
             }
-
-            if !new_trie.insert_impl_no_wal(&term, value) {
-                drop(new_trie);
-                let _ = remove_file_if_exists(&temp_path, "compact_cleanup_temp");
-                let _ = remove_file_if_exists(&temp_wal_path, "compact_cleanup_temp_wal");
-                return Err(PersistentARTrieError::CheckpointVerificationFailed {
-                    reason: format!("Failed to copy term {:?} during compaction", term),
-                });
-            }
-            terms_processed += 1;
-
-            if config.progress_interval > 0
-                && terms_processed % config.progress_interval as u64 == 0
-            {
-                let percent = if estimated_total > 0 {
-                    (terms_processed as f32 / estimated_total as f32) * 100.0
-                } else {
-                    100.0
-                };
-                progress(CompactionProgress {
-                    phase: "copying",
-                    terms_processed,
-                    estimated_total,
-                    percent_complete: percent,
-                });
-            }
         }
 
         progress(CompactionProgress {
@@ -261,9 +237,49 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
             estimated_total,
             percent_complete: 100.0,
         });
-        new_trie.checkpoint()?;
+
+        // **L2.1 — CX path.** When the SOURCE is overlay-routed (every eligible-V trie after a normal
+        // `create`), serialize its overlay snapshot DIRECTLY into the staging file via the
+        // path-compressing CX serializer + publish the descriptor (the audited `publish_snapshot`
+        // tail) — NO owned staging tree, NO `insert_impl_no_wal`, density preserved. An owned-routed
+        // (ineligible-V / kill-switched) source keeps the proven owned-staging pipeline.
+        if was_overlay {
+            match self.lockfree_root.as_ref().and_then(|r| r.load()) {
+                Some(source_root) => {
+                    new_trie.compact_publish_compressed_overlay(&source_root, terms_processed)?;
+                }
+                None => {
+                    // Empty overlay (0 terms) → an empty values-bucket image (owned-arm parity).
+                    debug_assert_eq!(terms_processed, 0, "empty overlay root implies 0 terms");
+                    new_trie.compact_publish_empty(terms_processed)?;
+                }
+            }
+        } else {
+            // OWNED-SOURCE FALLBACK — the proven owned-staging pipeline (path-compressed dense image).
+            // The staging trie must be OWNED (kill-switch) so its `checkpoint()` captures the inserts.
+            new_trie.kill_switch_to_owned();
+            for (term, value) in terms_to_copy {
+                if !new_trie.insert_impl_no_wal(&term, value) {
+                    drop(new_trie);
+                    let _ = remove_file_if_exists(&temp_path, "compact_cleanup_temp");
+                    let _ = remove_file_if_exists(&temp_wal_path, "compact_cleanup_temp_wal");
+                    return Err(PersistentARTrieError::CheckpointVerificationFailed {
+                        reason: format!("Failed to copy term {:?} during compaction", term),
+                    });
+                }
+            }
+            new_trie.checkpoint()?;
+        }
 
         let compacted_bytes = std::fs::metadata(&temp_path).map(|m| m.len()).unwrap_or(0);
+
+        // Release the staging trie's handles + remove its (records-empty) WAL BEFORE verifying, so the
+        // verify-reopen + the post-rename reopen both see a clean dense image. The CX path wrote ONLY
+        // the arena (the staging trie's in-memory overlay/owned root stays EMPTY), so the verify MUST
+        // reopen the published file — an in-process read would see 0 terms and FALSELY fail.
+        new_trie.wal_writer = None;
+        remove_file_if_exists(&temp_wal_path, "compact_remove_temp_wal")?;
+        drop(new_trie);
 
         if config.verify_after_compact {
             progress(CompactionProgress {
@@ -273,12 +289,17 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
                 percent_complete: 100.0,
             });
 
-            let compacted_snapshot = new_trie.compaction_serialized_snapshot()?;
+            // Reopen-correspondence: the published dense image must reopen to EXACTLY the source
+            // term-set+values. Stronger than an in-process compare — it exercises the real descriptor
+            // read + arena load + dense→overlay rebuild that production reopen uses (the first
+            // end-to-end production exercise of the CX serialize→publish→reopen cycle).
+            let reopened = PersistentARTrie::<V>::open(&temp_path)?;
+            let compacted_snapshot = reopened.compaction_serialized_snapshot()?;
+            drop(reopened);
 
             if expected_snapshot != compacted_snapshot {
-                drop(new_trie);
-                let _ = std::fs::remove_file(&temp_path);
-                let _ = std::fs::remove_file(&temp_wal_path);
+                let _ = remove_file_if_exists(&temp_path, "compact_cleanup_temp");
+                let _ = remove_file_if_exists(&temp_wal_path, "compact_cleanup_temp_wal");
 
                 return Err(PersistentARTrieError::CheckpointVerificationFailed {
                     reason: format!(
@@ -290,9 +311,6 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
             }
         }
 
-        new_trie.wal_writer = None;
-        remove_file_if_exists(&temp_wal_path, "compact_remove_temp_wal")?;
-
         if is_in_place {
             progress(CompactionProgress {
                 phase: "finalizing",
@@ -300,8 +318,6 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
                 estimated_total,
                 percent_complete: 100.0,
             });
-
-            drop(new_trie);
 
             self.buffer_manager = None;
             self.wal_writer = None;

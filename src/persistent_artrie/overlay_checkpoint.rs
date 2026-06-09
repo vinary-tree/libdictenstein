@@ -643,6 +643,66 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
         Ok(())
     }
 
+    /// **L2.1 — CX compaction publish.** Serialize `source_root` (the SOURCE trie's overlay
+    /// snapshot) COMPRESSED into THIS (staging) trie's arena via the path-compressing
+    /// [`Self::serialize_overlay_snapshot_compressed`], then durably publish it as the block-0 root
+    /// descriptor through the SAME audited [`Self::publish_snapshot`] tail `checkpoint()` uses — with
+    /// NO owned staging tree, NO `insert_impl_no_wal`. The first production caller of the CX codec.
+    ///
+    /// Root-descriptor fields mirror [`Self::serialize_overlay_root_iterative`]'s heuristic: a
+    /// childless non-final root ("" never a member, no children) → `ROOT_TYPE_BUCKET` (an empty
+    /// values-bucket, byte-identical to the owned/iterative arm); otherwise `ROOT_TYPE_ART_NODE` with
+    /// the CX serializer's root ptr (a branching or childless-final root). Finality rides the
+    /// descriptor (`is_final`), the same as the owned image. The image-checkpoint-lsn is `None` (the
+    /// staging WAL is discarded pre-rename — the owned-arm convention).
+    pub(crate) fn compact_publish_compressed_overlay(
+        &self,
+        source_root: &std::sync::Arc<OverlayNode<ByteKey, V>>,
+        term_count: u64,
+    ) -> Result<()> {
+        let root_ptr = self.serialize_overlay_snapshot_compressed(source_root, None)?;
+        let is_final = source_root.is_final();
+        let (root_type, root_ptr_raw) = if source_root.num_children() == 0 && !is_final {
+            let bucket_ptr = self.serialize_bucket_to_disk(&StringBucket::with_values())?;
+            (ROOT_TYPE_BUCKET, bucket_ptr.to_raw())
+        } else {
+            (ROOT_TYPE_ART_NODE, root_ptr.to_raw())
+        };
+        let arena_count = self.flush_and_count_arenas()?;
+        let snapshot = CheckpointSnapshot {
+            root_type,
+            is_final,
+            term_count,
+            arena_count,
+            root_ptr: root_ptr_raw,
+            next_lsn_at_capture: self.next_lsn.load(AtomicOrdering::Acquire),
+            committed_watermark_at_capture: None,
+            commit_seq_at_capture: None,
+            eviction_registry: None,
+        };
+        self.publish_snapshot(&snapshot, None)
+    }
+
+    /// **L2.1 — CX compaction publish of an EMPTY source** (0 terms / no overlay root). Publishes an
+    /// empty values-bucket root, byte-identical to what the owned-staging arm's `checkpoint()` of an
+    /// empty owned tree produces (`ROOT_TYPE_BUCKET`), without an owned staging tree.
+    pub(crate) fn compact_publish_empty(&self, term_count: u64) -> Result<()> {
+        let bucket_ptr = self.serialize_bucket_to_disk(&StringBucket::with_values())?;
+        let arena_count = self.flush_and_count_arenas()?;
+        let snapshot = CheckpointSnapshot {
+            root_type: ROOT_TYPE_BUCKET,
+            is_final: false,
+            term_count,
+            arena_count,
+            root_ptr: bucket_ptr.to_raw(),
+            next_lsn_at_capture: self.next_lsn.load(AtomicOrdering::Acquire),
+            committed_watermark_at_capture: None,
+            commit_seq_at_capture: None,
+            eviction_registry: None,
+        };
+        self.publish_snapshot(&snapshot, None)
+    }
+
     /// Re-read the file header from disk and verify its checksum (the overlay arm's
     /// durability check, before retaining the WAL). The byte twin of char's
     /// `verify_checkpoint`.
@@ -1135,6 +1195,18 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
     /// corresponding LIVE node (the terminus → `frame.node`; chunk `c` → `live_spine[ends[c]-base-1]`),
     /// so the evictor can reclaim the whole compressed span as one `Child::OnDisk`. EVICTION-OFF
     /// (`None`): a pure structural serialize (the round-trip / density tests).
+    ///
+    /// **INVARIANT (data-loss-critical).** The emitted image uses **node-header prefix
+    /// compression** (`header.prefix_len > 0`). It MUST only ever be read back via a
+    /// prefix-AWARE loader: the overlay fault loader [`Self::load_overlay_node_from_disk`], or
+    /// the F5 reopen path (`load_root_immutable` → `build_overlay_root_from_owned`, whose
+    /// `unrouted_collect_terms_*_under_child` collectors fold `node.prefix()`). The OTHER owned
+    /// readers (`arena_iter::collect_terms_*`, `query_impl`, `cursor_iter`, `zipper`) are
+    /// prefix-BLIND (the byte owned write path never sets `prefix_len > 0`, so they were never
+    /// taught to expand it) and would SILENTLY TRUNCATE every compressed term. They are safe
+    /// today only because a CX image is always Overlay-regime + eligible-`V`, so it never
+    /// reaches an owned-routed (`route_overlay() == false`) read. Do NOT route a CX image
+    /// through them without first making them prefix-aware.
     pub(crate) fn serialize_overlay_snapshot_compressed(
         &self,
         root: &std::sync::Arc<OverlayNode<ByteKey, V>>,

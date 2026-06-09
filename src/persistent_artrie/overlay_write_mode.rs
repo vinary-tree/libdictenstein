@@ -92,7 +92,7 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
     fn unrouted_collect_terms_under_child(
         &self,
         child: &ChildNode,
-        prefix: Vec<u8>,
+        mut prefix: Vec<u8>,
         out: &mut Vec<Vec<u8>>,
     ) {
         match child {
@@ -107,8 +107,24 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
                 }
             }
             ChildNode::ArtNode {
-                is_final, children, ..
+                node,
+                is_final,
+                children,
+                ..
             } => {
+                // CX (#43 / L2.1): fold THIS node's compressed prefix into the path BEFORE
+                // recording finality or descending. `prefix` on entry already carries the
+                // incoming edge to this node; a path-compressed image (the CX-serialized
+                // compacted overlay) stores a chunk's inter-edges as `node.prefix()`, so they
+                // MUST be appended here or the reconstructed term is truncated (data loss — the
+                // chunk prefix would be dropped, e.g. "single" → "se"). A NORMAL owned image
+                // never sets `prefix_len > 0` (the owned write path compresses via StringBucket
+                // suffixes, never node-header prefixes), so for every non-CX tree this is a
+                // strict no-op. Mirrors the proven `load_overlay_node_from_disk` expansion.
+                let plen = node.header().prefix_len as usize;
+                if plen > 0 {
+                    prefix.extend_from_slice(&node.prefix().bytes[..plen]);
+                }
                 if *is_final {
                     out.push(prefix.clone());
                 }
@@ -137,7 +153,7 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
     fn unrouted_collect_terms_with_values_under_child(
         &self,
         child: &ChildNode,
-        prefix: Vec<u8>,
+        mut prefix: Vec<u8>,
         out: &mut Vec<(Vec<u8>, V)>,
     ) where
         V: Clone,
@@ -160,11 +176,20 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
                 }
             }
             ChildNode::ArtNode {
+                node,
                 is_final,
                 value,
                 children,
-                ..
             } => {
+                // CX (#43 / L2.1): fold THIS node's compressed prefix into the path BEFORE
+                // recording the value or descending — the value twin of the membership
+                // collector's fold. Without this a CX-compacted chunk prefix is dropped and the
+                // value is attributed to the truncated term (data loss: the real term reopens
+                // as `Some(None)`). No-op for normal owned images (`prefix_len == 0`).
+                let plen = node.header().prefix_len as usize;
+                if plen > 0 {
+                    prefix.extend_from_slice(&node.prefix().bytes[..plen]);
+                }
                 if *is_final {
                     if let Some(value_bytes) = value {
                         if let Ok(v) =
