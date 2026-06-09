@@ -54,6 +54,10 @@ pub struct DocumentTransaction<V: DictionaryValue> {
     pub document_id: String,
     /// Buffered terms to be applied on commit
     pub(crate) shadow_terms: Vec<(Vec<u8>, Option<V>)>,
+    /// Buffered counter increments `(term, raw delta)`. Applied on commit via the
+    /// add-only overlay counter (ACCUMULATE — owner decision 2026-06-09), NOT folded
+    /// into `shadow_terms` as absolute SETs (which silently overwrote the live count).
+    pub(crate) increments: Vec<(Vec<u8>, i64)>,
     /// Deferred failure for compatibility methods that cannot return `Result`.
     pub(crate) failure: Option<String>,
     /// Current state of the transaction
@@ -70,6 +74,7 @@ impl<V: DictionaryValue> DocumentTransaction<V> {
             tx_id,
             document_id,
             shadow_terms: Vec::new(),
+            increments: Vec::new(),
             failure: None,
             state: TransactionState::Active,
         }

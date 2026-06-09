@@ -14,7 +14,6 @@ use super::block_storage::BlockStorage;
 use super::dict_impl::PersistentARTrie;
 use super::error::{PersistentARTrieError, Result};
 use super::transactions::{DocumentTransaction, TransactionState};
-use crate::persistent_artrie_core::counter_codec;
 use crate::persistent_artrie_core::key_encoding::ByteKey;
 use crate::persistent_artrie_core::overlay::durable_write::DurableOverlayWrite;
 use crate::value::DictionaryValue;
@@ -133,44 +132,38 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
             )));
         }
 
-        let current: i128 = if let Some(pos) = tx.shadow_terms.iter().rposition(|(k, _)| k == term)
-        {
-            match &tx.shadow_terms[pos].1 {
-                Some(v) => Self::value_to_i128_lossy(v),
-                None => 0,
-            }
-        } else {
-            match self.get_value_impl(term) {
-                Some(v) => Self::value_to_i128_lossy(&v),
-                None => 0,
-            }
-        };
-
-        // i128 substrate: the running absolute count is the full magnitude (a `u64`
-        // counter reaches past `i64::MAX`). The per-type range check lives in
-        // `value_from_i128_checked` (`<u64>` → `u64::MAX`; `<i64>` → `i64::MAX`); the
-        // `delta` widens losslessly to i128.
-        let new_value = match current.checked_add(delta as i128) {
+        // Mirror char: aggregate the per-term deltas already buffered in THIS tx + the new
+        // delta and pre-check overflow while staging (a poisoned tx must not commit), then
+        // buffer the RAW delta. Accumulation happens at COMMIT via the proven add-only
+        // overlay counter (`route_increment_bytes`) reading the LIVE overlay value — NOT an
+        // owned read (the owned tree is empty under the overlay, so the prior
+        // `get_value_impl` base read 0 and the folded absolute SET silently overwrote the
+        // live count). Two documents incrementing one counter now ACCUMULATE (owner decision
+        // 2026-06-09), concurrency-safe (the commit-time CAS read-modify-write), matching
+        // char doc-tx + the single-op `increment`.
+        let pending_delta =
+            tx.increments
+                .iter()
+                .try_fold(0_i64, |acc, (existing_term, existing_delta)| {
+                    if existing_term == term {
+                        acc.checked_add(*existing_delta)
+                    } else {
+                        Some(acc)
+                    }
+                });
+        let aggregate = match pending_delta.and_then(|pending| pending.checked_add(delta)) {
             Some(value) => value,
             None => {
                 let reason = format!(
-                    "transaction increment overflow for term {:?}: {} + {} overflows the counter substrate",
-                    String::from_utf8_lossy(term),
-                    current,
-                    delta
+                    "transaction increment aggregate overflow for term {:?}",
+                    String::from_utf8_lossy(term)
                 );
                 tx.mark_failed(reason.clone());
                 return Err(PersistentARTrieError::InvalidOperation(reason));
             }
         };
-        let v = match Self::value_from_i128_checked(new_value) {
-            Ok(value) => value,
-            Err(error) => {
-                tx.mark_failed(error.to_string());
-                return Err(error);
-            }
-        };
-        tx.shadow_terms.push((term.to_vec(), Some(v)));
+        let _ = aggregate;
+        tx.increments.push((term.to_vec(), delta));
         Ok(())
     }
 
@@ -207,35 +200,70 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
             )));
         }
 
-        // C2 tx-ii (overlay arm): apply each shadow term via the proven Order-A overlay
-        // primitive — upsert for a valued entry, membership insert for `None`. Per-op
-        // durable, NOT batch-atomic (matches the owned path, whose reconcile_lww ignores
-        // tx brackets on replay). DROP BeginTx/CommitTx/sync — each primitive writes its
-        // own durable, ranked record. byte has no `increments` field (increments were
-        // folded into shadow_terms as absolute SETs at buffer time), so this is
-        // upsert(shadow_terms) only.
-        // C2 tx-ii: apply each shadow term via the proven Order-A overlay primitive —
-        // upsert for a valued entry, membership insert for `None`. Per-op durable, NOT
-        // batch-atomic (matches the owned reconcile_lww, which ignores tx brackets on
-        // replay); each primitive writes its own durable, ranked record (no BeginTx/
-        // CommitTx/sync). byte folded increments into shadow_terms as absolute SETs at
-        // buffer time, so this is upsert(shadow_terms) only.
-        let mut applied = 0usize;
+        // Per-op durable, NOT batch-atomic (no BeginTx/CommitTx/sync — each primitive
+        // writes its own durable, ranked record). SETs via upsert (valued) / membership
+        // insert; increments ACCUMULATE via the proven add-only overlay counter
+        // (`route_increment_bytes` — counter-monomorph u64 only, the `&self`-commit
+        // constraint shared with char; a non-counter `V` or a NET-NEGATIVE aggregate is
+        // rejected). The negative-aggregate reject runs BEFORE any SET so a rejected commit
+        // applies nothing (closer to all-or-nothing on reject). (Owner decision 2026-06-09:
+        // cross-document increments to one counter accumulate — the prior SET-from-empty-
+        // owned-base silently overwrote the live count.)
+        let set_count = tx.shadow_terms.len();
+        let increment_count = tx.increments.len();
+        let total_operations = set_count + increment_count;
+
+        let mut aggregated: std::collections::HashMap<Vec<u8>, i64> =
+            std::collections::HashMap::with_capacity(increment_count);
+        for (term, delta) in &tx.increments {
+            let entry = aggregated.entry(term.clone()).or_insert(0);
+            *entry = entry.checked_add(*delta).ok_or_else(|| {
+                PersistentARTrieError::InvalidOperation(format!(
+                    "transaction increment aggregate overflow for term {:?}",
+                    String::from_utf8_lossy(term)
+                ))
+            })?;
+        }
+        for (term, agg) in &aggregated {
+            if *agg < 0 {
+                return Err(PersistentARTrieError::InvalidOperation(format!(
+                    "document-tx increment aggregate for term {:?} is negative ({}); the overlay \
+                     counter is add-only",
+                    String::from_utf8_lossy(term),
+                    agg
+                )));
+            }
+        }
         for (term, value) in tx.shadow_terms.drain(..) {
-            let newly = match value {
+            match value {
                 Some(v) => {
                     <Self as DurableOverlayWrite<ByteKey, V, S>>::upsert_cas_durable_default(
                         self, &term, v,
-                    )?
+                    )?;
                 }
-                None => self.insert_cas_durable(&term)?,
-            };
-            if newly {
-                applied += 1;
+                None => {
+                    self.insert_cas_durable(&term)?;
+                }
             }
         }
+        for (term, agg) in aggregated {
+            if agg == 0 {
+                continue;
+            }
+            match super::lockfree_value_route::route_increment_bytes(self, &term, agg) {
+                Some(r) => {
+                    r?;
+                }
+                None => {
+                    return Err(PersistentARTrieError::InvalidOperation(
+                        "document-tx increments require a counter value type (u64)".to_string(),
+                    ));
+                }
+            }
+        }
+        tx.increments.clear();
         tx.state = TransactionState::Committed;
-        Ok(applied)
+        Ok(total_operations)
     }
 
     /// Abort a document transaction, discarding all buffered terms.
@@ -251,35 +279,12 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
             )));
         }
 
-        // L3.3: the overlay tx buffered nothing visible (no BeginTx written), so there
-        // is nothing to bracket-abort — just discard the shadow.
+        // L3.3: the overlay tx buffered nothing visible (no BeginTx written), so there is
+        // nothing to bracket-abort — just discard the shadow + increments.
         tx.shadow_terms.clear();
+        tx.increments.clear();
         tx.state = TransactionState::Aborted;
 
         Ok(())
-    }
-
-    /// Read the counter leaf of `value` as its FULL i128 MAGNITUDE (the
-    /// document-transaction increment substrate). Routing through the `counter_codec`
-    /// i128 helper (the v6 gate) decodes a `u64` counter to its true unsigned magnitude
-    /// — NOT the i64 bit-pattern — so the staging arithmetic is correct for a `u64`
-    /// counter past `i64::MAX` (the prior i64-domain read capped it at `i64::MAX`). A
-    /// non-counter `V` yields 0 (the prior lossy default).
-    fn value_to_i128_lossy(value: &V) -> i128 {
-        counter_codec::counter_value_to_i128::<V>(value).unwrap_or(0)
-    }
-
-    /// Re-encode an i128 tx-increment result as the typed counter `V`, range-checked
-    /// into `V` via the `counter_codec` i128 substrate (the v6 gate): a `<u64>` counter
-    /// is bounded by `u64::MAX`, a `<i64>` counter by `i64::MAX` (the latter preserves
-    /// the tx-increment correspondence's `i64::MAX + 1` overflow). The message contains
-    /// "overflow" so a poisoned transaction's `commit_document` surfaces it.
-    fn value_from_i128_checked(value: i128) -> Result<V> {
-        counter_codec::i128_to_counter_value::<V>(value).ok_or_else(|| {
-            PersistentARTrieError::InvalidOperation(format!(
-                "transaction increment value {} overflows the counter value range",
-                value
-            ))
-        })
     }
 }

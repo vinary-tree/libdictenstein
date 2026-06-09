@@ -461,3 +461,58 @@ fn byte_doc_tx_overlay_set_durable_reopen() {
     );
     assert_eq!(trie.get_value("y"), Some("Y".to_string()));
 }
+
+/// **Owner decision (2026-06-09): byte doc-tx counter increments ACCUMULATE.** Two
+/// SEPARATE documents incrementing one counter ADD to the live overlay count (the prior
+/// `try_tx_increment_bytes` read an EMPTY owned base via `get_value_impl` and the folded
+/// absolute SET silently OVERWROTE the live count). Within-tx deltas aggregate; a
+/// net-negative aggregate rejects the whole commit (the overlay counter is add-only).
+/// RED→GREEN: pre-fix, doc B would have SET `c` to 4 (overwriting 8); the fix accumulates
+/// to 12.
+#[test]
+fn byte_doc_tx_overlay_increment_accumulates_across_documents() {
+    let dir = scratch("byte-doctx-incr-accum");
+    let path = dir.path().join("t.part");
+    let trie = PersistentARTrie::<u64>::create(&path).expect("create");
+
+    // Document A: within-tx aggregation (+5 +3) over an empty counter → 8.
+    let mut tx_a = trie.begin_document("doc-A").expect("begin A");
+    trie.tx_increment(&mut tx_a, "c", 5);
+    trie.tx_increment(&mut tx_a, "c", 3);
+    assert_eq!(
+        trie.commit_document(tx_a).expect("commit A"),
+        2,
+        "2 increment ops"
+    );
+    assert_eq!(trie.get_value("c"), Some(8), "within-tx aggregate +5+3 = 8");
+
+    // Document B: a SEPARATE document increments the SAME counter → ACCUMULATE over the
+    // live value 8 (the prior SET-from-empty-owned-base overwrote it to 4). 8 + 4 = 12.
+    let mut tx_b = trie.begin_document("doc-B").expect("begin B");
+    trie.tx_increment(&mut tx_b, "c", 4);
+    assert_eq!(
+        trie.commit_document(tx_b).expect("commit B"),
+        1,
+        "1 increment op"
+    );
+    assert_eq!(
+        trie.get_value("c"),
+        Some(12),
+        "cross-document ACCUMULATE: 8 + 4 = 12 (NOT the prior overwrite to 4)"
+    );
+
+    // A net-negative aggregate rejects the whole commit; nothing is applied.
+    let mut tx_neg = trie.begin_document("doc-neg").expect("begin neg");
+    trie.tx_increment(&mut tx_neg, "d", 5);
+    trie.tx_increment(&mut tx_neg, "d", -10);
+    assert!(
+        trie.commit_document(tx_neg).is_err(),
+        "net-negative aggregate rejects the commit"
+    );
+    assert_eq!(trie.get_value("d"), None, "rejected commit applied nothing");
+    assert_eq!(
+        trie.get_value("c"),
+        Some(12),
+        "prior committed counter intact"
+    );
+}
