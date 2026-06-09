@@ -158,10 +158,10 @@ impl<V: DictionaryValue + serde::Serialize + serde::de::DeserializeOwned, S: Blo
     where
         V: Clone,
     {
-        if let Some(routed) = self.overlay_get_value(term) {
-            return routed;
-        }
-        self.get_value_impl(term)
+        // L3.3c: the overlay is the sole representation. `Some(inner)` is the answer; an
+        // outer `None` (overlay-ineligible `V`) is unreachable since `overlay_eligible_v()
+        // == true ∀V`, so `.flatten()` is exact.
+        self.overlay_get_value(term).flatten()
     }
 
     /// Check containment by raw byte key.

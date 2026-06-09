@@ -131,12 +131,12 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     /// inherent method shadows the trait method of the same name in `.get_value()`
     /// call syntax, so `self.get_value(..)` from a trait body calls THIS (no recursion).
     pub fn get_value(&self, term: &str) -> Option<V> {
-        if self.route_overlay() {
-            if let Some(result) = self.overlay_get_value(term) {
-                return result;
-            }
-        }
-        self.owned_get(term)
+        // L3.3c: the overlay is the sole representation; route to the overlay value read
+        // (`overlay_get_value` → the shared LockFreeOverlay driver handling the i64/u64
+        // counter, `()` membership, AND arbitrary `V`). `Some(inner)` is the answer; an outer
+        // `None` (overlay-ineligible `V`) is impossible since `overlay_eligible_v() == true
+        // ∀V`, so `.flatten()` (treating the impossible `None` as absent) is exact.
+        self.overlay_get_value(term).flatten()
     }
 
     /// Get a value by term with explicit error handling.

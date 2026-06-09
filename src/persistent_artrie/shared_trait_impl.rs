@@ -74,24 +74,14 @@ impl<V: DictionaryValue> ARTrie for SharedARTrie<V> {
     where
         Self::Value: Default,
     {
-        // M3 (C5): delegate to the routed inherent `insert` (routes to
-        // `insert_cas_durable` under the flip), NOT `insert_impl` (owned-only). The
-        // owned default-value insert is preserved by the routed inherent method's
-        // owned arm; under the overlay the durable membership insert is value-free.
-        let guard = self.write();
-        if guard.route_overlay() {
-            return guard.insert(term);
-        }
-        guard.insert_impl(term.as_bytes(), Some(V::default()))
+        // L3.3c: the overlay is the sole representation; route to the routed inherent
+        // `insert` (→ `insert_cas_durable`). The durable membership insert is value-free.
+        self.write().insert(term)
     }
 
     fn insert_with_value(&self, term: &str, value: Self::Value) -> bool {
-        // M3 (C5): route to the routed inherent `insert_with_value` under the flip.
-        let guard = self.write();
-        if guard.route_overlay() {
-            return guard.insert_with_value(term, value);
-        }
-        guard.insert_impl(term.as_bytes(), Some(value))
+        // L3.3c: route to the routed inherent `insert_with_value` (overlay upsert).
+        self.write().insert_with_value(term, value)
     }
 
     fn contains(&self, term: &str) -> bool {
@@ -109,12 +99,8 @@ impl<V: DictionaryValue> ARTrie for SharedARTrie<V> {
     }
 
     fn remove(&self, term: &str) -> bool {
-        // M3 (C5): route to the routed inherent `remove` (→ `remove_cas_durable`).
-        let guard = self.write();
-        if guard.route_overlay() {
-            return guard.remove(term);
-        }
-        guard.remove_impl(term.as_bytes())
+        // L3.3c: route to the routed inherent `remove` (→ `remove_cas_durable`).
+        self.write().remove(term)
     }
 
     #[inline]
@@ -149,43 +135,9 @@ impl<V: DictionaryValue> ARTrie for SharedARTrie<V> {
     }
 
     fn remove_prefix(&self, prefix: &str) -> usize {
-        let prefix_bytes = prefix.as_bytes();
-
-        // M3 (C5/H4): under the flip the owned `iter_prefix`+`remove_impl` loop would
-        // enumerate the OVERLAY but delete from the EMPTY owned tree = a silent no-op.
-        // Route to the routed inherent `remove_prefix_batched` (overlay remove-CAS).
-        {
-            let guard = self.write();
-            if guard.route_overlay() {
-                return guard.remove_prefix_batched(prefix_bytes, 1024);
-            }
-        }
-
-        let batch_size = 1024;
-        let mut total_removed = 0;
-
-        loop {
-            let batch: Vec<Vec<u8>> = {
-                let guard = self.read();
-                guard
-                    .iter_prefix(prefix_bytes)
-                    .map(|iter| iter.take(batch_size).collect())
-                    .unwrap_or_default()
-            };
-
-            if batch.is_empty() {
-                break;
-            }
-
-            let guard = self.write();
-            for term in batch {
-                if guard.remove_impl(&term) {
-                    total_removed += 1;
-                }
-            }
-        }
-
-        total_removed
+        // L3.3c: the overlay is the sole representation; route to the routed inherent
+        // `remove_prefix_batched` (overlay remove-CAS).
+        self.write().remove_prefix_batched(prefix.as_bytes(), 1024)
     }
 
     fn iter_prefix(&self, prefix: &str) -> Option<Box<dyn Iterator<Item = String> + '_>> {
