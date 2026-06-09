@@ -11,7 +11,6 @@
 //! - `insert_batch_arena_grouped` (alias for byte_grouped)
 
 use crate::persistent_artrie::block_storage::BlockStorage;
-use crate::persistent_artrie::wal::WalRecord;
 use crate::value::DictionaryValue;
 
 impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
@@ -20,77 +19,22 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
             return 0;
         }
 
-        // Flip routing (design §2): under the overlay each entry commits via the
-        // proven per-op Order-A path (the overlay's discipline is per-op WAL-then-
-        // CAS, not the owned tree's single-BatchInsert append). Delegate to the
-        // already-routed single-op `insert` / `insert_with_value` so NO mutation
-        // logic is duplicated; arbitrary-V valued entries fall back inside those.
-        if self.route_overlay() {
-            let mut inserted_count = 0;
-            for (term, value) in entries {
-                let result = match value {
-                    Some(v) => self.insert_with_value(term, v.clone()),
-                    None => self.insert(term),
-                };
-                match result {
-                    Ok(true) => inserted_count += 1,
-                    Ok(false) => {}
-                    Err(e) => log::warn!("Failed overlay batch insert entry: {:?}", e),
-                }
-            }
-            return inserted_count;
-        }
-
-        let mut wal_entries = Vec::with_capacity(entries.len());
-        for (term, value) in entries {
-            let preflight = if value.is_some() {
-                self.preflight_insert_with_value_no_wal(term).map(|_| true)
-            } else {
-                self.preflight_insert_no_wal(term)
-            };
-            if let Err(e) = preflight {
-                log::warn!("Failed to preflight batch insert: {:?}", e);
-                return 0;
-            }
-
-            let value_bytes = match value.as_ref() {
-                Some(v) => match crate::serialization::bincode_compat::serialize(v) {
-                    Ok(bytes) => Some(bytes),
-                    Err(e) => {
-                        log::warn!("Failed to serialize batch insert value for WAL: {:?}", e);
-                        return 0;
-                    }
-                },
-                None => None,
-            };
-            wal_entries.push((term.as_bytes().to_vec(), value_bytes));
-        }
-
-        let batch_record = WalRecord::BatchInsert {
-            entries: wal_entries,
-        };
-        if let Err(e) = self.append_to_wal(batch_record) {
-            log::warn!("Failed to log batch insert to WAL: {:?}", e);
-            return 0;
-        }
-
-        // Then insert each entry without individual WAL logging
+        // L3.3: the overlay is the sole representation. Each entry commits via the
+        // proven per-op Order-A path (per-op WAL-then-CAS, NOT a single owned-tree
+        // BatchInsert append). Delegate to the already-routed single-op `insert` /
+        // `insert_with_value` so NO mutation logic is duplicated.
         let mut inserted_count = 0;
         for (term, value) in entries {
-            let result = if let Some(v) = value {
-                self.try_insert_impl_no_wal_with_value(term, v.clone())
-            } else {
-                self.try_insert_impl_no_wal(term)
+            let result = match value {
+                Some(v) => self.insert_with_value(term, v.clone()),
+                None => self.insert(term),
             };
             match result {
                 Ok(true) => inserted_count += 1,
                 Ok(false) => {}
-                Err(e) => {
-                    log::warn!("Failed to apply batch insert after WAL append: {:?}", e);
-                }
-            };
+                Err(e) => log::warn!("Failed overlay batch insert entry: {:?}", e),
+            }
         }
-
         inserted_count
     }
 
@@ -150,90 +94,25 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
             return 0;
         }
 
-        // Flip routing (S5-5): under the overlay each entry commits via the proven
-        // per-op Order-A path (already overlay-routed `insert`/`insert_with_value`,
-        // each emitting a CommitRank), NOT a single unranked `BatchInsert` append
-        // that recovery would DROP as a two-append-window orphan (the A2 fix). Mirrors
+        // L3.3: the overlay is the sole representation. Each entry commits via the
+        // proven per-op Order-A path (already overlay-routed `insert`/`insert_with_value`,
+        // each emitting a CommitRank), NOT a single unranked `BatchInsert` append that
+        // recovery would DROP as a two-append-window orphan (the A2 fix). Mirrors
         // `insert_batch`; the `_sorted`/`_grouped`/`_arena_grouped` delegators inherit
-        // this. The lossy byte→String conversion matches the owned path's per-entry
-        // apply (`try_insert_impl_no_wal(&term_str)`).
-        if self.route_overlay() {
-            let mut inserted_count = 0;
-            for (term, value) in entries {
-                let term_str = String::from_utf8_lossy(term).into_owned();
-                let result = match value {
-                    Some(v) => self.insert_with_value(&term_str, v.clone()),
-                    None => self.insert(&term_str),
-                };
-                match result {
-                    Ok(true) => inserted_count += 1,
-                    Ok(false) => {}
-                    Err(e) => log::warn!("Failed overlay byte batch insert entry: {:?}", e),
-                }
-            }
-            return inserted_count;
-        }
-
-        let mut wal_entries = Vec::with_capacity(entries.len());
-        let mut prepared = Vec::with_capacity(entries.len());
+        // this. The lossy byte→String conversion matches the owned per-entry apply.
+        let mut inserted_count = 0;
         for (term, value) in entries {
             let term_str = String::from_utf8_lossy(term).into_owned();
-            let preflight = if value.is_some() {
-                self.preflight_insert_with_value_no_wal(&term_str)
-                    .map(|_| true)
-            } else {
-                self.preflight_insert_no_wal(&term_str)
-            };
-            if let Err(e) = preflight {
-                log::warn!("Failed to preflight byte batch insert: {:?}", e);
-                return 0;
-            }
-
-            let value_bytes = match value.as_ref() {
-                Some(v) => match crate::serialization::bincode_compat::serialize(v) {
-                    Ok(bytes) => Some(bytes),
-                    Err(e) => {
-                        log::warn!(
-                            "Failed to serialize byte batch insert value for WAL: {:?}",
-                            e
-                        );
-                        return 0;
-                    }
-                },
-                None => None,
-            };
-            wal_entries.push((term.to_vec(), value_bytes));
-            prepared.push((term_str, value.clone()));
-        }
-
-        let batch_record = WalRecord::BatchInsert {
-            entries: wal_entries,
-        };
-        if let Err(e) = self.append_to_wal(batch_record) {
-            log::warn!("Failed to log batch insert to WAL: {:?}", e);
-            return 0;
-        }
-
-        // Then insert each entry without individual WAL logging
-        let mut inserted_count = 0;
-        for (term, value) in prepared {
-            let result = if let Some(v) = value {
-                self.try_insert_impl_no_wal_with_value(&term, v)
-            } else {
-                self.try_insert_impl_no_wal(&term)
+            let result = match value {
+                Some(v) => self.insert_with_value(&term_str, v.clone()),
+                None => self.insert(&term_str),
             };
             match result {
                 Ok(true) => inserted_count += 1,
                 Ok(false) => {}
-                Err(e) => {
-                    log::warn!(
-                        "Failed to apply byte batch insert after WAL append: {:?}",
-                        e
-                    );
-                }
-            };
+                Err(e) => log::warn!("Failed overlay byte batch insert entry: {:?}", e),
+            }
         }
-
         inserted_count
     }
 

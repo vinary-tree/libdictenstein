@@ -79,21 +79,11 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
         F: Fn(&V, &V) -> V,
         V: Clone,
     {
-        // **F4:** `&self` (routes to `&self` overlay funnel / owned `upsert`). The
-        // `Shared*` `union_with` driver that reaches this takes `merge_lock`.
-        if self.route_overlay() {
-            return self.merge_entries_overlay(entries, merge_fn);
-        }
-        let mut processed = 0usize;
-        for (term, other_value) in entries {
-            let merged = match self.get(&term) {
-                Some(self_value) => merge_fn(&self_value, &other_value),
-                None => other_value,
-            };
-            self.upsert(&term, merged)?;
-            processed += 1;
-        }
-        Ok(processed)
+        // L3.3: the overlay is the sole representation; route to the shared per-key
+        // CAS-retry merge funnel (reads self via the overlay seam, combines via
+        // `merge_fn`, publishes phantom-safely). The `Shared*` `union_with` driver that
+        // reaches this takes `merge_lock`.
+        self.merge_entries_overlay(entries, merge_fn)
     }
 
     /// Merge another trie into this one using a custom merge function.
@@ -128,62 +118,16 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
         F: Fn(&V, &V) -> V,
         V: Clone,
     {
-        // C2: under the overlay, route to the shared per-key CAS-retry merge funnel —
-        // reads self via the overlay seam (NOT `self.get`, which is None under overlay),
-        // combines via `merge_fn`, and publishes phantom-safely. Arena grouping below is
-        // an owned-tree I/O-locality optimization, semantically inert for the merge
-        // result, so a flat collect is correct for the overlay.
-        if self.route_overlay() {
-            let entries: Vec<(String, V)> = match other.iter_prefix_with_values_and_arena("")? {
-                Some(terms) => terms.into_iter().map(|i| (i.term, i.value)).collect(),
-                None => return Ok(0),
-            };
-            return self.merge_entries_overlay(entries, merge_fn);
-        }
-
-        use std::collections::HashMap;
-
-        let mut processed = 0;
-
-        // Collect all terms with arena info for page-locality optimization
-        let terms_with_arena = match other.iter_prefix_with_values_and_arena("")? {
-            Some(terms) => terms,
-            None => return Ok(0), // Empty trie
+        // L3.3: the overlay is the sole representation. Route to the shared per-key
+        // CAS-retry merge funnel — reads self via the overlay seam (NOT `self.get`),
+        // combines via `merge_fn`, publishes phantom-safely. Arena grouping was an
+        // owned-tree I/O-locality optimization, semantically inert for the merge result,
+        // so a flat collect is correct.
+        let entries: Vec<(String, V)> = match other.iter_prefix_with_values_and_arena("")? {
+            Some(terms) => terms.into_iter().map(|i| (i.term, i.value)).collect(),
+            None => return Ok(0),
         };
-
-        // GROUP BY ARENA for read cache locality on the source trie
-        let mut arena_groups: HashMap<Option<u32>, Vec<(String, V)>> = HashMap::new();
-        for item in terms_with_arena {
-            arena_groups
-                .entry(item.arena_id)
-                .or_insert_with(Vec::new)
-                .push((item.term, item.value));
-        }
-
-        // Sort arena IDs for sequential I/O (None = in-memory first)
-        let mut arena_ids: Vec<_> = arena_groups.keys().copied().collect();
-        arena_ids.sort();
-
-        // Process each arena's terms together (page-locality aware)
-        for arena_id in arena_ids {
-            if let Some(terms) = arena_groups.remove(&arena_id) {
-                for (term, other_value) in terms {
-                    processed += 1;
-
-                    // Check if term exists in self and merge values
-                    let merged_value = if let Some(self_value) = self.get(&term) {
-                        merge_fn(&self_value, &other_value)
-                    } else {
-                        other_value
-                    };
-
-                    // Upsert the merged value
-                    self.upsert(&term, merged_value)?;
-                }
-            }
-        }
-
-        Ok(processed)
+        self.merge_entries_overlay(entries, merge_fn)
     }
 
     /// Merge another trie into this one, replacing existing values.
@@ -288,67 +232,21 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
         &mut self,
         other: &Self,
         merge_fn: F,
-        batch_size: usize,
-        arena_grouped: bool,
+        _batch_size: usize,
+        _arena_grouped: bool,
     ) -> Result<usize>
     where
         F: Fn(&V, &V) -> V,
         V: Clone,
     {
-        // C2: under the overlay, route to the shared per-key CAS-retry merge funnel.
-        // Batching/arena-grouping are owned-tree memory/I/O optimizations, inert for the
-        // overlay; collect flat (merge is bulk/rare — acceptable). See `merge_from`.
-        if self.route_overlay() {
-            let entries: Vec<(String, V)> = match other.iter_prefix_with_values_and_arena("")? {
-                Some(terms) => terms.into_iter().map(|i| (i.term, i.value)).collect(),
-                None => return Ok(0),
-            };
-            return self.merge_entries_overlay(entries, merge_fn);
-        }
-
-        let batch_size = if batch_size == 0 { 5_000 } else { batch_size };
-
-        // Collect all terms with arena info for page-locality optimization
-        let terms_with_arena = match other.iter_prefix_with_values_and_arena("")? {
-            Some(terms) => terms,
-            None => return Ok(0), // Empty trie
+        // L3.3: the overlay is the sole representation. Route to the shared per-key
+        // CAS-retry merge funnel. Batching/arena-grouping were owned-tree memory/I/O
+        // optimizations, inert for the overlay; collect flat (merge is bulk/rare). See
+        // `merge_from`.
+        let entries: Vec<(String, V)> = match other.iter_prefix_with_values_and_arena("")? {
+            Some(terms) => terms.into_iter().map(|i| (i.term, i.value)).collect(),
+            None => return Ok(0),
         };
-
-        let mut total_processed = 0;
-
-        // Process in batches
-        for chunk in terms_with_arena.chunks(batch_size) {
-            // Sort batch by arena_id for sequential I/O if requested
-            let batch: Vec<_> = if arena_grouped {
-                let mut sorted_batch: Vec<_> = chunk.to_vec();
-                sorted_batch.sort_by(|a, b| match (a.arena_id, b.arena_id) {
-                    (Some(a_id), Some(b_id)) => a_id.cmp(&b_id).then_with(|| a.term.cmp(&b.term)),
-                    (Some(_), None) => std::cmp::Ordering::Less,
-                    (None, Some(_)) => std::cmp::Ordering::Greater,
-                    (None, None) => a.term.cmp(&b.term),
-                });
-                sorted_batch
-            } else {
-                chunk.to_vec()
-            };
-
-            for item in batch {
-                // Check if term exists in self and merge values
-                let merged_value = if let Some(self_value) = self.get(&item.term) {
-                    merge_fn(&self_value, &item.value)
-                } else {
-                    item.value.clone()
-                };
-
-                // Upsert the merged value
-                self.upsert(&item.term, merged_value)?;
-                total_processed += 1;
-            }
-
-            // Optional: sync after each batch for durability
-            // self.sync()?;
-        }
-
-        Ok(total_processed)
+        self.merge_entries_overlay(entries, merge_fn)
     }
 }
