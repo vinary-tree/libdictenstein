@@ -21,29 +21,23 @@ impl<V: DictionaryValue, S: BlockStorage> Dictionary for PersistentARTrie<V, S> 
     type Node = PersistentARTrieNode<V>;
 
     fn root(&self) -> Self::Node {
-        // F7 BLOCKER-1: under the overlay regime, return an OVERLAY-backed
-        // `DictionaryNode` that navigates the lock-free overlay lazily, so zipper /
-        // transducer / fuzzy traversal works on a flipped trie (was: an EMPTY owned
-        // tree + a `log::warn!` deferral). Additive + reversible — the owned arm is
-        // unchanged and returned whenever `!route_overlay()`.
-        if self.route_overlay() {
-            // `overlay_root_node()` is the hazard-protected immutable root snapshot;
-            // an empty/absent overlay yields a fresh empty node (a childless,
-            // non-final root — the correct empty-dictionary view).
-            use crate::persistent_artrie_core::overlay::flip::LockFreeOverlay;
-            let root = <Self as LockFreeOverlay<ByteKey, V, S>>::overlay_root_node(self)
-                .unwrap_or_else(|| {
-                    std::sync::Arc::new(crate::persistent_artrie_core::overlay::OverlayNode::<
-                        ByteKey,
-                        V,
-                    >::new())
-                });
-            // Faulter is `None` on the inherent `&self` root path: eviction (the only
-            // source of an `OnDisk` overlay child) is impossible on a non-`Shared`
-            // owned trie, so the overlay handed out here is fully `Child::InMem`.
-            return PersistentARTrieNode::new_overlay(root, None);
-        }
-        self.get_root_node()
+        // F7 BLOCKER-1 / L3.3: return an OVERLAY-backed `DictionaryNode` that navigates
+        // the lock-free overlay lazily (the owned tree is gone), so zipper / transducer /
+        // fuzzy traversal works. `overlay_root_node()` is the hazard-protected immutable
+        // root snapshot; an empty/absent overlay yields a fresh empty node (a childless,
+        // non-final root — the correct empty-dictionary view).
+        use crate::persistent_artrie_core::overlay::flip::LockFreeOverlay;
+        let root = <Self as LockFreeOverlay<ByteKey, V, S>>::overlay_root_node(self)
+            .unwrap_or_else(|| {
+                std::sync::Arc::new(crate::persistent_artrie_core::overlay::OverlayNode::<
+                    ByteKey,
+                    V,
+                >::new())
+            });
+        // Faulter is `None` on the inherent `&self` root path: eviction (the only source
+        // of an `OnDisk` overlay child) is impossible on a non-`Shared` owned trie, so
+        // the overlay handed out here is fully `Child::InMem`.
+        PersistentARTrieNode::new_overlay(root, None)
     }
 
     fn contains(&self, term: &str) -> bool {
@@ -54,12 +48,8 @@ impl<V: DictionaryValue, S: BlockStorage> Dictionary for PersistentARTrie<V, S> 
 
     #[inline]
     fn len(&self) -> Option<usize> {
-        // M3 (C6): under the overlay the owned `term_count` is cleared on reopen;
-        // count the overlay's resident finals instead (this read `term_count` direct).
-        if self.route_overlay() {
-            return Some(self.overlay_len());
-        }
-        Some(self.term_count.load(AtomicOrdering::Acquire))
+        // L3.3: the overlay is the sole representation; count its resident finals.
+        Some(self.overlay_len())
     }
 
     fn sync_strategy(&self) -> SyncStrategy {

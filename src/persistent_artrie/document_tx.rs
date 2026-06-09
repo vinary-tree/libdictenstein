@@ -14,7 +14,6 @@ use super::block_storage::BlockStorage;
 use super::dict_impl::PersistentARTrie;
 use super::error::{PersistentARTrieError, Result};
 use super::transactions::{DocumentTransaction, TransactionState};
-use super::wal::WalRecord;
 use crate::persistent_artrie_core::counter_codec;
 use crate::persistent_artrie_core::key_encoding::ByteKey;
 use crate::persistent_artrie_core::overlay::durable_write::DurableOverlayWrite;
@@ -44,22 +43,9 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
             base ^ u64::from_le_bytes(low8)
         };
 
-        // C2 tx-ii: under the overlay, SKIP the orphan BeginTx WAL append — it would
-        // burn an un-`mark_committed` LSN that stalls the committed watermark, and the
-        // overlay `commit_document` is per-op durable (NOT bracketed). The owned arm
-        // keeps BeginTx (reconcile_lww ignores the bracket on replay regardless).
-        if !self.route_overlay() {
-            if let Some(ref wal) = self.wal_writer {
-                wal.append(WalRecord::BeginTx { tx_id }).map_err(|e| {
-                    PersistentARTrieError::io_error(
-                        "begin_tx",
-                        "WAL",
-                        std::io::Error::new(std::io::ErrorKind::Other, e.to_string()),
-                    )
-                })?;
-            }
-        }
-
+        // L3.3: the overlay `commit_document` is per-op durable (NOT bracketed), so no
+        // orphan BeginTx WAL append (it would burn an un-`mark_committed` LSN that
+        // stalls the committed watermark).
         Ok(DocumentTransaction::new_active(
             tx_id,
             document_id.to_string(),
@@ -265,22 +251,8 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
             )));
         }
 
-        // C2 tx-ii: under the overlay, skip the AbortTx WAL append — no BeginTx was
-        // written and the overlay tx buffered nothing visible, so there is nothing to
-        // bracket-abort. Owned arm keeps AbortTx.
-        if !self.route_overlay() {
-            if let Some(ref wal) = self.wal_writer {
-                wal.append(WalRecord::AbortTx { tx_id: tx.tx_id })
-                    .map_err(|e| {
-                        PersistentARTrieError::io_error(
-                            "abort_tx",
-                            "WAL",
-                            std::io::Error::new(std::io::ErrorKind::Other, e.to_string()),
-                        )
-                    })?;
-            }
-        }
-
+        // L3.3: the overlay tx buffered nothing visible (no BeginTx written), so there
+        // is nothing to bracket-abort — just discard the shadow.
         tx.shadow_terms.clear();
         tx.state = TransactionState::Aborted;
 
