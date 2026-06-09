@@ -35,15 +35,11 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
     /// as `false` (no insert) rather than panicking — consistent with `insert_batch`'s
     /// fail-soft WAL handling. The owned arm is the verbatim pre-flip body.
     pub fn insert(&self, term: &str) -> bool {
-        if self.route_overlay() {
-            return self
-                .insert_cas_durable(term.as_bytes())
-                .unwrap_or_else(|e| {
-                    warn!("insert overlay route failed (reporting no-insert): {:?}", e);
-                    false
-                });
-        }
-        self.insert_impl(term.as_bytes(), None)
+        self.insert_cas_durable(term.as_bytes())
+            .unwrap_or_else(|e| {
+                warn!("insert overlay route failed (reporting no-insert): {:?}", e);
+                false
+            })
     }
 
     /// Insert a term with an associated value.
@@ -62,21 +58,18 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
     /// semantics — a silent overlay↔owned mismatch on duplicate keys.) A durable
     /// failure is logged and reported `false` (byte's `bool` signature).
     pub fn insert_with_value(&self, term: &str, value: V) -> bool {
-        if self.route_overlay() {
-            return <Self as DurableOverlayWrite<ByteKey, V, S>>::upsert_cas_durable_default(
-                self,
-                term.as_bytes(),
-                value,
-            )
-            .unwrap_or_else(|e| {
-                warn!(
-                    "insert_with_value overlay route failed (reporting no-insert): {:?}",
-                    e
-                );
-                false
-            });
-        }
-        self.insert_impl(term.as_bytes(), Some(value))
+        <Self as DurableOverlayWrite<ByteKey, V, S>>::upsert_cas_durable_default(
+            self,
+            term.as_bytes(),
+            value,
+        )
+        .unwrap_or_else(|e| {
+            warn!(
+                "insert_with_value overlay route failed (reporting no-insert): {:?}",
+                e
+            );
+            false
+        })
     }
 
     /// Insert multiple terms in a single batch operation.
@@ -101,44 +94,13 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
             return 0;
         }
 
-        if self.route_overlay() {
-            let mut inserted = 0usize;
-            for (term, value) in entries {
-                if self.insert_batch_entry_overlay(term.as_bytes(), value.as_ref()) {
-                    inserted += 1;
-                }
-            }
-            return inserted;
-        }
-
-        let mut wal_entries = Vec::with_capacity(entries.len());
+        let mut inserted = 0usize;
         for (term, value) in entries {
-            let value_bytes = match value.as_ref() {
-                Some(v) => match crate::serialization::bincode_compat::serialize(v) {
-                    Ok(bytes) => Some(bytes),
-                    Err(e) => {
-                        warn!("Failed to serialize batch insert value for WAL: {:?}", e);
-                        return 0;
-                    }
-                },
-                None => None,
-            };
-            wal_entries.push((term.as_bytes().to_vec(), value_bytes));
-        }
-
-        if let Err(e) = self.append_batch_mutation_wal_record(&wal_entries, "batch_insert") {
-            warn!("Failed to log batch insert to WAL: {:?}", e);
-            return 0;
-        }
-
-        let mut inserted_count = 0;
-        for (term, value) in entries {
-            if self.insert_impl_core(term.as_bytes(), value.clone()) {
-                inserted_count += 1;
+            if self.insert_batch_entry_overlay(term.as_bytes(), value.as_ref()) {
+                inserted += 1;
             }
         }
-
-        inserted_count
+        inserted
     }
 
     /// Insert multiple byte-slice terms in a single batch operation.
@@ -154,44 +116,13 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
             return 0;
         }
 
-        if self.route_overlay() {
-            let mut inserted = 0usize;
-            for (term, value) in entries {
-                if self.insert_batch_entry_overlay(term, value.as_ref()) {
-                    inserted += 1;
-                }
-            }
-            return inserted;
-        }
-
-        let mut wal_entries = Vec::with_capacity(entries.len());
+        let mut inserted = 0usize;
         for (term, value) in entries {
-            let value_bytes = match value.as_ref() {
-                Some(v) => match crate::serialization::bincode_compat::serialize(v) {
-                    Ok(bytes) => Some(bytes),
-                    Err(e) => {
-                        warn!("Failed to serialize batch insert value for WAL: {:?}", e);
-                        return 0;
-                    }
-                },
-                None => None,
-            };
-            wal_entries.push((term.to_vec(), value_bytes));
-        }
-
-        if let Err(e) = self.append_batch_mutation_wal_record(&wal_entries, "batch_insert_bytes") {
-            warn!("Failed to log batch insert to WAL: {:?}", e);
-            return 0;
-        }
-
-        let mut inserted_count = 0;
-        for (term, value) in entries {
-            if self.insert_impl_core(term, value.clone()) {
-                inserted_count += 1;
+            if self.insert_batch_entry_overlay(term, value.as_ref()) {
+                inserted += 1;
             }
         }
-
-        inserted_count
+        inserted
     }
 
     /// Insert multiple terms with optional values in sorted order for cache locality.
@@ -272,15 +203,11 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
     /// value-free, safe for ALL `V`). The public `bool` signature reports a durable
     /// failure as `false` (no remove) with a log. The owned arm is verbatim pre-flip.
     pub fn remove(&self, term: &str) -> bool {
-        if self.route_overlay() {
-            return self
-                .remove_cas_durable(term.as_bytes())
-                .unwrap_or_else(|e| {
-                    warn!("remove overlay route failed (reporting no-remove): {:?}", e);
-                    false
-                });
-        }
-        self.remove_impl(term.as_bytes())
+        self.remove_cas_durable(term.as_bytes())
+            .unwrap_or_else(|e| {
+                warn!("remove overlay route failed (reporting no-remove): {:?}", e);
+                false
+            })
     }
 
     /// Remove all terms with the given prefix (batched for memory efficiency).
@@ -306,38 +233,8 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
     /// each term. Durable, NOT a no-op, NO data loss. Arena page-locality grouping is
     /// an owned-tree disk-layout optimization with no overlay analogue; the removal
     /// SEMANTICS are fully preserved. The owned arm below is verbatim pre-flip.
-    pub fn remove_prefix_batched(&self, prefix: &[u8], batch_size: usize) -> usize {
-        if self.route_overlay() {
-            return self.remove_prefix_overlay(prefix);
-        }
-
-        let batch_size = batch_size.max(1);
-        let mut total_removed = 0;
-
-        loop {
-            let batch: Vec<Vec<u8>> = self
-                .iter_prefix(prefix)
-                .map(|iter| iter.take(batch_size).collect())
-                .unwrap_or_default();
-
-            if batch.is_empty() {
-                break;
-            }
-
-            let mut removed_this_round = 0;
-            for term in batch {
-                if self.remove_impl(&term) {
-                    total_removed += 1;
-                    removed_this_round += 1;
-                }
-            }
-
-            if removed_this_round == 0 {
-                break;
-            }
-        }
-
-        total_removed
+    pub fn remove_prefix_batched(&self, prefix: &[u8], _batch_size: usize) -> usize {
+        self.remove_prefix_overlay(prefix)
     }
 
     // ====================================================================
