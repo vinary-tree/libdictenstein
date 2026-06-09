@@ -119,19 +119,17 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
         use std::time::Instant;
 
         // **F6 — overlay-aware compaction** (replaces the M3 fail-loud reject).
-        // `compaction_snapshot` now sources BOTH the term enumeration AND the values
-        // from the overlay when it serves reads (the enumeration already routes via the
-        // `iter_prefix_with_arena` chokepoint; the value read is routed below through
-        // `overlay_get_value`), so the rebuilt image is FAITHFUL — not the former
-        // "counters-lost empty-owned-tree" image the reject guarded against. The
-        // STAGING trie stays OWNED (path-compressed ⇒ dense; the overlay's
-        // un-path-compressed one-node-per-unit spine would BLOAT the compacted file),
-        // and the in-place reopen RE-FLIPS to the overlay so the write regime is
-        // preserved across compaction (mirrors `open`'s reestablish, mmap_ctor.rs).
-        // `compact` takes `&mut self` ⇒ EXCLUSIVE access ⇒ no concurrent writers ⇒ the
-        // snapshot captures every committed term and there is NO past-snapshot WAL tail
+        // `compaction_snapshot` sources BOTH the term enumeration AND the values from the
+        // overlay (the enumeration routes via the `iter_prefix_with_arena` chokepoint; the
+        // value read via `overlay_get_value`), so the rebuilt image is FAITHFUL — not the
+        // former "counters-lost empty-owned-tree" image the reject guarded against. Since
+        // L3.3 deleted the owned tree, the source is ALWAYS overlay-routed: the CX
+        // path-compressing serializer (`compact_publish_compressed_overlay`) writes the
+        // overlay snapshot DIRECTLY into the staging file as ONE dense (path-compressed)
+        // image — no owned staging trie, no `kill_switch_to_owned`, no `insert_impl_no_wal`
+        // loop. `compact` takes `&mut self` ⇒ EXCLUSIVE access ⇒ no concurrent writers ⇒
+        // the snapshot captures every committed term and there is NO past-snapshot WAL tail
         // to lose on the atomic rename (the data-loss footgun the reject feared).
-        let was_overlay = self.route_overlay();
 
         let start = Instant::now();
 
@@ -238,37 +236,20 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
             percent_complete: 100.0,
         });
 
-        // **L2.1 — CX path.** When the SOURCE is overlay-routed (every eligible-V trie after a normal
-        // `create`), serialize its overlay snapshot DIRECTLY into the staging file via the
+        // **L3.3 — CX serialize (unconditional).** The source is ALWAYS overlay-routed (the owned
+        // tree is gone), so serialize its overlay snapshot DIRECTLY into the staging file via the
         // path-compressing CX serializer + publish the descriptor (the audited `publish_snapshot`
-        // tail) — NO owned staging tree, NO `insert_impl_no_wal`, density preserved. An owned-routed
-        // (ineligible-V / kill-switched) source keeps the proven owned-staging pipeline.
-        if was_overlay {
-            match self.lockfree_root.as_ref().and_then(|r| r.load()) {
-                Some(source_root) => {
-                    new_trie.compact_publish_compressed_overlay(&source_root, terms_processed)?;
-                }
-                None => {
-                    // Empty overlay (0 terms) → an empty values-bucket image (owned-arm parity).
-                    debug_assert_eq!(terms_processed, 0, "empty overlay root implies 0 terms");
-                    new_trie.compact_publish_empty(terms_processed)?;
-                }
+        // tail) — NO owned staging tree, NO `kill_switch_to_owned`, NO `insert_impl_no_wal`, density
+        // preserved.
+        match self.lockfree_root.as_ref().and_then(|r| r.load()) {
+            Some(source_root) => {
+                new_trie.compact_publish_compressed_overlay(&source_root, terms_processed)?;
             }
-        } else {
-            // OWNED-SOURCE FALLBACK — the proven owned-staging pipeline (path-compressed dense image).
-            // The staging trie must be OWNED (kill-switch) so its `checkpoint()` captures the inserts.
-            new_trie.kill_switch_to_owned();
-            for (term, value) in terms_to_copy {
-                if !new_trie.insert_impl_no_wal(&term, value) {
-                    drop(new_trie);
-                    let _ = remove_file_if_exists(&temp_path, "compact_cleanup_temp");
-                    let _ = remove_file_if_exists(&temp_wal_path, "compact_cleanup_temp_wal");
-                    return Err(PersistentARTrieError::CheckpointVerificationFailed {
-                        reason: format!("Failed to copy term {:?} during compaction", term),
-                    });
-                }
+            None => {
+                // Empty overlay (0 terms) → an empty values-bucket image.
+                debug_assert_eq!(terms_processed, 0, "empty overlay root implies 0 terms");
+                new_trie.compact_publish_empty(terms_processed)?;
             }
-            new_trie.checkpoint()?;
         }
 
         let compacted_bytes = std::fs::metadata(&temp_path).map(|m| m.len()).unwrap_or(0);
@@ -344,28 +325,19 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
             remove_file_if_exists(&original_wal_path, "compact_remove_stale_wal")?;
             remove_file_if_exists(&stale_wal_backup_path, "compact_remove_stale_wal_backup")?;
 
-            // **F7 compaction re-point.** The compacted image was written by the OWNED
-            // staging trie (kill-switched to Owned above for path-compressed density) and
-            // its WAL was removed (line ~293), so the post-rename file is an Owned-regime
-            // dense image with a FRESH (records-empty) WAL. `Self::open` now does the clean
-            // in-memory Owned→Overlay conversion ITSELF for an eligible `V`:
-            // `convert_owned_to_overlay_on_reopen` sees the records-empty active and takes
-            // the CHEAP path — stamp Overlay IN PLACE (no rotation) + F5-build the overlay
-            // from the dense image + drain the (empty) archive. This is exactly the
-            // "clean Overlay stamp, no rotation" the design calls for, replacing the old
-            // reopen-Owned-image + `flip_to_overlay` + `reestablish_overlay_dispatch`
-            // sequence. (Durable: the converter fsync'd the Overlay stamp, so the next
-            // reopen sees Overlay.)
+            // **L3.3 compaction re-point.** The compacted image was written by the CX
+            // path-compressing serializer (a dense overlay-regime image) and its staging
+            // WAL was removed (line ~293), so the post-rename file is an overlay-regime
+            // dense image with a FRESH (records-empty) WAL. `Self::open` reopens it directly
+            // onto the overlay via the F5 dense→overlay loader — no Owned→Overlay conversion
+            // (the owned tree is gone), no `flip_to_overlay`, no reestablish.
             *self = Self::open(&original_path)?;
 
-            // For an eligible `V` that was overlay-routed before compaction, `Self::open`'s
-            // converter has already re-established the overlay (records-empty cheap path).
-            // No explicit re-flip / reestablish is needed (and would be wrong — the owned
-            // scratch is cleared post-convert). An ineligible `V` legitimately stays owned.
+            // Post-reopen the trie is overlay-routed unconditionally (every ctor installs the
+            // overlay; the owned tree no longer exists).
             debug_assert!(
-                !was_overlay || self.route_overlay() || !Self::overlay_eligible_v(),
-                "F7: compact in-place must leave an eligible overlay-routed trie overlay-routed \
-                 after reopen (the converter handles it)"
+                self.route_overlay(),
+                "L3.3: compact in-place must leave the trie overlay-routed after reopen"
             );
         }
 
@@ -401,18 +373,12 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
         Ok(terms
             .into_iter()
             .map(|term| {
-                // F6: route the VALUE read to the overlay when it serves reads (the
-                // enumeration above already routed via `iter_prefix_with_arena`).
-                // `overlay_get_value` returns `Some(Option<V>)` when the overlay
-                // handled the term — including `Some(None)` for a term-only member
-                // (membership preserved, value absent) — and `None` only for an
-                // ineligible `V`, where the owned read is the correct fallback.
-                let value = if self.route_overlay() {
-                    self.overlay_get_value(&term)
-                        .unwrap_or_else(|| self.get_value_impl(&term))
-                } else {
-                    self.get_value_impl(&term)
-                };
+                // L3.3: the VALUE read routes to the overlay unconditionally (the owned
+                // tree is gone; every `V` is overlay-eligible). `overlay_get_value` returns
+                // `Some(Option<V>)` — `Some(None)` for a term-only member (membership
+                // preserved, value absent). The outer `None` (overlay didn't handle it) is
+                // unreachable for an eligible `V`; default it to "no value".
+                let value = self.overlay_get_value(&term).unwrap_or(None);
                 (term, value)
             })
             .collect())

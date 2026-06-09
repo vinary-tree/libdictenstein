@@ -1111,32 +1111,6 @@ mod tests {
     }
 
     #[test]
-    fn test_version_tracking() {
-        use tempfile::tempdir;
-
-        let dir = tempdir().expect("create temp dir");
-        let path = dir.path().join("test_version.trie");
-
-        let inner: PersistentARTrieChar<()> = PersistentARTrieChar::create(&path).expect("create");
-        // Force the proven owned-tree path (pre-flip behavior) — this test exercises an owned/transaction/merge/archive feature that the create-flip would otherwise route to the lock-free overlay.
-        inner.kill_switch_to_owned();
-
-        let v0 = inner.current_version();
-        assert_eq!(v0, 0); // Initial version
-
-        inner.insert("a").expect("insert");
-        let v1 = inner.current_version();
-        assert_eq!(v1, 2); // After one write (begin + end = +2)
-
-        inner.insert("b").expect("insert");
-        let v2 = inner.current_version();
-        assert_eq!(v2, 4); // After two writes
-
-        // Not write-locked when idle
-        assert!(!inner.is_write_locked());
-    }
-
-    #[test]
     fn test_epoch_management() {
         use tempfile::tempdir;
 
@@ -1290,10 +1264,7 @@ mod tests {
         let dir = tempdir().expect("create temp dir");
         let path = dir.path().join("test_doc_tx_basic.trie");
 
-        let mut inner: PersistentARTrieChar<u64> =
-            PersistentARTrieChar::create(&path).expect("create");
-        // Force the proven owned-tree path (pre-flip behavior) — this test exercises an owned/transaction/merge/archive feature that the create-flip would otherwise route to the lock-free overlay.
-        inner.kill_switch_to_owned();
+        let inner: PersistentARTrieChar<u64> = PersistentARTrieChar::create(&path).expect("create");
 
         // Start a transaction
         let mut tx = inner.begin_document("doc_001").expect("begin");
@@ -1332,8 +1303,6 @@ mod tests {
         let path = dir.path().join("test_doc_tx_abort.trie");
 
         let inner: PersistentARTrieChar<u64> = PersistentARTrieChar::create(&path).expect("create");
-        // Force the proven owned-tree path (pre-flip behavior) — this test exercises an owned/transaction/merge/archive feature that the create-flip would otherwise route to the lock-free overlay.
-        inner.kill_switch_to_owned();
 
         // Insert a baseline term
         inner.insert("existing").expect("insert");
@@ -1362,8 +1331,7 @@ mod tests {
         let dir = tempdir().expect("create temp dir");
         let path = dir.path().join("test_doc_tx_unicode.trie");
 
-        let mut inner: PersistentARTrieChar<i64> =
-            PersistentARTrieChar::create(&path).expect("create");
+        let inner: PersistentARTrieChar<i64> = PersistentARTrieChar::create(&path).expect("create");
 
         let mut tx = inner.begin_document("unicode_doc").expect("begin");
 
@@ -1394,10 +1362,7 @@ mod tests {
         let dir = tempdir().expect("create temp dir");
         let path = dir.path().join("test_doc_tx_empty.trie");
 
-        let mut inner: PersistentARTrieChar<()> =
-            PersistentARTrieChar::create(&path).expect("create");
-        // Force the proven owned-tree path (pre-flip behavior) — this test exercises an owned/transaction/merge/archive feature that the create-flip would otherwise route to the lock-free overlay.
-        inner.kill_switch_to_owned();
+        let inner: PersistentARTrieChar<()> = PersistentARTrieChar::create(&path).expect("create");
 
         // Create and commit an empty transaction
         let tx = inner.begin_document("empty_doc").expect("begin");
@@ -1416,7 +1381,7 @@ mod tests {
 
         // Create and commit a transaction
         {
-            let mut inner: PersistentARTrieChar<i64> =
+            let inner: PersistentARTrieChar<i64> =
                 PersistentARTrieChar::create(&path).expect("create");
 
             let mut tx = inner.begin_document("recovery_doc").expect("begin");
@@ -1450,10 +1415,7 @@ mod tests {
         let dir = tempdir().expect("create temp dir");
         let path = dir.path().join("test_doc_tx_commit_twice.trie");
 
-        let mut inner: PersistentARTrieChar<()> =
-            PersistentARTrieChar::create(&path).expect("create");
-        // Force the proven owned-tree path (pre-flip behavior) — this test exercises an owned/transaction/merge/archive feature that the create-flip would otherwise route to the lock-free overlay.
-        inner.kill_switch_to_owned();
+        let inner: PersistentARTrieChar<()> = PersistentARTrieChar::create(&path).expect("create");
 
         // First transaction succeeds
         let mut tx = inner.begin_document("test").expect("begin");
@@ -1472,10 +1434,7 @@ mod tests {
         let dir = tempdir().expect("create temp dir");
         let path = dir.path().join("test_doc_tx_sequential.trie");
 
-        let mut inner: PersistentARTrieChar<u64> =
-            PersistentARTrieChar::create(&path).expect("create");
-        // Force the proven owned-tree path (pre-flip behavior) — this test exercises an owned/transaction/merge/archive feature that the create-flip would otherwise route to the lock-free overlay.
-        inner.kill_switch_to_owned();
+        let inner: PersistentARTrieChar<u64> = PersistentARTrieChar::create(&path).expect("create");
 
         // First document
         let mut tx1 = inner.begin_document("doc1").expect("begin");
@@ -1510,10 +1469,7 @@ mod tests {
         let dir = tempdir().expect("create temp dir");
         let path = dir.path().join("test_doc_tx_bytes.trie");
 
-        let mut inner: PersistentARTrieChar<u64> =
-            PersistentARTrieChar::create(&path).expect("create");
-        // Force the proven owned-tree path (pre-flip behavior) — this test exercises an owned/transaction/merge/archive feature that the create-flip would otherwise route to the lock-free overlay.
-        inner.kill_switch_to_owned();
+        let inner: PersistentARTrieChar<u64> = PersistentARTrieChar::create(&path).expect("create");
 
         let mut tx = inner.begin_document("bytes_doc").expect("begin");
 
@@ -1539,8 +1495,6 @@ mod tests {
 
         let mut inner: PersistentARTrieChar<u64> =
             PersistentARTrieChar::create(&path).expect("create");
-        // Force the proven owned-tree path (pre-flip behavior) — this test exercises an owned/transaction/merge/archive feature that the create-flip would otherwise route to the lock-free overlay.
-        inner.kill_switch_to_owned();
 
         // Insert some initial values
         inner.increment("term_a", 100).expect("initial increment");
@@ -1584,10 +1538,7 @@ mod tests {
         let dir = tempdir().expect("create temp dir");
         let path = dir.path().join("test_doc_tx_mixed.trie");
 
-        let mut inner: PersistentARTrieChar<u64> =
-            PersistentARTrieChar::create(&path).expect("create");
-        // Force the proven owned-tree path (pre-flip behavior) — this test exercises an owned/transaction/merge/archive feature that the create-flip would otherwise route to the lock-free overlay.
-        inner.kill_switch_to_owned();
+        let inner: PersistentARTrieChar<u64> = PersistentARTrieChar::create(&path).expect("create");
 
         // Create a transaction with both inserts and increments
         let mut tx = inner.begin_document("mixed_doc").expect("begin");
@@ -1622,8 +1573,6 @@ mod tests {
         {
             let mut inner: PersistentARTrieChar<u64> =
                 PersistentARTrieChar::create(&path).expect("create");
-            // Force the proven owned-tree path (pre-flip behavior) — this test exercises an owned/transaction/merge/archive feature that the create-flip would otherwise route to the lock-free overlay.
-            inner.kill_switch_to_owned();
 
             inner.increment("existing", 100).expect("initial");
 
@@ -2716,8 +2665,6 @@ mod tests {
         {
             let trie: PersistentARTrieChar<()> =
                 PersistentARTrieChar::create(&path).expect("create");
-            // Force the proven owned-tree path (pre-flip behavior) — this test exercises an owned/transaction/merge/archive feature that the create-flip would otherwise route to the lock-free overlay.
-            trie.kill_switch_to_owned();
             trie.insert("hello").expect("ins");
             trie.checkpoint().expect("checkpoint");
         }

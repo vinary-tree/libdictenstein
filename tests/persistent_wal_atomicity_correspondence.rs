@@ -142,8 +142,7 @@ fn byte_atomic_serialization_failures_preserve_memory_and_wal() {
 fn byte_document_commit_serialization_failure_preserves_memory_and_wal() {
     let temp_dir = TempDir::new().expect("tempdir");
     let path = temp_dir.path().join("byte_document.part");
-    let mut trie =
-        PersistentARTrie::<FailingSerializeValue>::create(&path).expect("create byte trie");
+    let trie = PersistentARTrie::<FailingSerializeValue>::create(&path).expect("create byte trie");
     let mut tx = trie.begin_document("doc").expect("begin tx");
     trie.tx_insert(&mut tx, "bad", Some(FailingSerializeValue(9)));
     let before_commit_wal = wal_len(&path);
@@ -156,34 +155,6 @@ fn byte_document_commit_serialization_failure_preserves_memory_and_wal() {
     let reopened =
         PersistentARTrie::<FailingSerializeValue>::open(&path).expect("reopen byte trie");
     assert!(!reopened.contains("bad"));
-}
-
-#[test]
-fn byte_atomic_writes_replay_after_reopen() {
-    let temp_dir = TempDir::new().expect("tempdir");
-    let path = temp_dir.path().join("byte_replay.part");
-    {
-        let mut trie = PersistentARTrie::<i64>::create(&path).expect("create byte trie");
-        // **M4b REFRAME.** A fresh `create::<i64>()` now create-flips to the overlay,
-        // but this test exercises `compare_and_swap` (value-level CAS-with-expected),
-        // which the byte overlay REJECTS (no value-level CAS primitive on the overlay).
-        // Force the owned regime with the kill-switch (the M4b CAS precedent); the
-        // kill-switch restamps the WAL Owned on the fresh trie, so the reopen below
-        // stays owned and `get_value` reads the owned CAS result.
-        trie.kill_switch_to_owned();
-        assert!(trie.upsert("count", 10).expect("upsert"));
-        assert_eq!(trie.increment("count", 5).expect("increment"), 15);
-        assert_eq!(trie.fetch_add("count", 2).expect("fetch_add"), 15);
-        assert!(trie.compare_and_swap("count", Some(17), 20).expect("cas"));
-        assert!(!trie
-            .compare_and_swap("count", Some(999), 0)
-            .expect("cas miss"));
-        assert_eq!(trie.get_or_insert("new", 7).expect("get_or_insert"), 7);
-    }
-
-    let reopened = PersistentARTrie::<i64>::open(&path).expect("reopen byte trie");
-    assert_eq!(reopened.get_value("count"), Some(20));
-    assert_eq!(reopened.get_value("new"), Some(7));
 }
 
 #[test]
@@ -242,7 +213,7 @@ fn char_atomic_serialization_failures_preserve_memory_and_wal() {
 fn char_document_commit_serialization_failure_preserves_memory_and_wal() {
     let temp_dir = TempDir::new().expect("tempdir");
     let path = temp_dir.path().join("char_document.artc");
-    let mut trie =
+    let trie =
         PersistentARTrieChar::<FailingSerializeValue>::create(&path).expect("create char trie");
     let mut tx = trie.begin_document("doc").expect("begin tx");
     trie.tx_insert(&mut tx, "bad", Some(FailingSerializeValue(9)));

@@ -47,17 +47,17 @@ run_capped cargo test --features persistent-artrie --test persistent_artrie_form
 run_capped cargo test --features persistent-artrie --test persistent_prefix_correspondence
 run_capped cargo test --features persistent-artrie --test persistent_read_snapshot_correspondence
 run_capped cargo test --features persistent-artrie --test persistent_char_node_layout_correspondence
+# L3.3: the owned-machinery correspondence tests (persistent_char_ebr / persistent_lazy_mutation /
+# persistent_bulk_mutation / persistent_lockfree_merge / persistent_char_eviction_proptest) were
+# retired with the owned tree — their owned-walk EBR / owned lazy-load / owned-drain / owned-rep
+# eviction behavior no longer exists; the overlay equivalents are covered by the surviving suites.
 run_capped cargo test --features persistent-artrie --test dictionary_node_reopen_traversal_correspondence
-run_capped cargo test --features persistent-artrie --test persistent_char_ebr_correspondence
 run_capped cargo test --features persistent-artrie --test relative_encoding_correspondence
 run_capped cargo test --features persistent-artrie --test arena_manager_correspondence
 run_capped cargo test --features persistent-artrie --test dedup_arena_correspondence
 run_capped cargo test --features persistent-artrie --test root_descriptor_reopen_correspondence
-run_capped cargo test --features persistent-artrie --test persistent_lazy_mutation_correspondence
 run_capped cargo test --features persistent-artrie --test persistent_wal_atomicity_correspondence
-run_capped cargo test --features persistent-artrie --test persistent_bulk_mutation_correspondence
 run_capped cargo test --features persistent-artrie --test persistent_transaction_increment_correspondence
-run_capped cargo test --features persistent-artrie --test persistent_lockfree_merge_correspondence
 run_capped cargo test --features persistent-artrie --test persistent_lockfree_overlay_proptest
 run_capped cargo test --features persistent-artrie --test checkpoint_retention_correspondence
 run_capped cargo test --features persistent-artrie --test dirty_checkpoint_correspondence
@@ -71,7 +71,6 @@ run_capped cargo test --features persistent-artrie --test persistent_vocab_check
 run_capped cargo test --features persistent-artrie --test concurrent_checkpoint_publication_correspondence
 run_capped cargo test --features persistent-artrie --test persistent_char_eviction_correspondence
 run_capped cargo test --features persistent-artrie --test persistent_char_eviction_registry_correspondence
-run_capped cargo test --features persistent-artrie --test persistent_char_eviction_proptest
 run_capped cargo test \
   --features persistent-artrie \
   --lib \

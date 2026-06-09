@@ -278,10 +278,9 @@ impl<V: DictionaryValue> EvictableARTrie for SharedARTrie<V> {
                 // (preserves owned + ineligible-V eviction). evict_overlay_nodes locks EC
                 // for its LRU remove — safe here (the loop holds no EC, same as the owned
                 // loop's EC discipline).
-                // L0.1: the owned-eviction arm is DELETED — production always routes the
-                // overlay (the owned arm was reachable only via `kill_switch_to_owned`,
-                // which never evicts in production). `evict_overlay_nodes` locks EC for its
-                // LRU remove; safe here (this callback holds no EC).
+                // L0.1/L3.3: always reclaim the overlay (the owned tree is gone).
+                // `evict_overlay_nodes` locks EC for its LRU remove; safe here (this
+                // callback holds no EC).
                 crate::persistent_artrie::overlay_fault::evict_overlay_nodes(
                     &trie,
                     nodes_to_evict,

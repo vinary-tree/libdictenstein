@@ -1172,7 +1172,7 @@ fn proof_carrying_trace_rejects_corrupt_certificate() {
 fn document_transaction_visibility_matches_tla_model() {
     let temp_dir = TempDir::new().expect("temp dir");
     let path = temp_dir.path().join("document_tx.part");
-    let mut dict = PersistentARTrie::<i32>::create(&path).expect("create trie");
+    let dict = PersistentARTrie::<i32>::create(&path).expect("create trie");
 
     let mut tx = dict.begin_document("doc-1").expect("begin tx");
     dict.tx_insert(&mut tx, "alpha", Some(1));

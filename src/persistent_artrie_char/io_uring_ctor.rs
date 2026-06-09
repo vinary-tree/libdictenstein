@@ -90,9 +90,6 @@ impl<V: DictionaryValue>
             committed_watermark: super::committed_watermark::CommittedWatermark::new(0),
             checkpoint_lock: std::sync::Arc::new(parking_lot::Mutex::new(())),
             merge_lock: std::sync::Arc::new(parking_lot::Mutex::new(())),
-            overlay_write_mode: crate::persistent_artrie_core::shared_access::AtomicEnumCell::new(
-                super::overlay_write_mode::OverlayWriteMode::default(),
-            ),
             file_path: Some(path.to_path_buf()),
             arena_manager: Some(arena_manager),
             version: OptimisticVersion::new(),
@@ -227,9 +224,6 @@ impl<V: DictionaryValue>
             ),
             checkpoint_lock: std::sync::Arc::new(parking_lot::Mutex::new(())),
             merge_lock: std::sync::Arc::new(parking_lot::Mutex::new(())),
-            overlay_write_mode: crate::persistent_artrie_core::shared_access::AtomicEnumCell::new(
-                super::overlay_write_mode::OverlayWriteMode::default(),
-            ),
             file_path: Some(path.to_path_buf()),
             arena_manager: Some(arena_manager),
             version: OptimisticVersion::new(),

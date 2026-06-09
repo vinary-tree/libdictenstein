@@ -2516,7 +2516,6 @@ mod multi_writer_checkpointer_soak {
     /// (owned read sees nothing); reopen sees every term ⇒ no loss.
     #[test]
     fn s5_9_overlay_checkpoint_captures_overlay_not_empty_owned() {
-        use super::super::overlay_write_mode::OverlayWriteMode;
         let dir = scratch("s5-9-route-split");
         let path = dir.path().join("t.artc");
         let terms: Vec<String> = (0..50u32).map(|i| format!("term{i:03}")).collect();
@@ -2524,7 +2523,6 @@ mod multi_writer_checkpointer_soak {
             let mut trie = PersistentARTrieChar::<()>::create(&path).expect("create");
             trie.set_durability_policy(DurabilityPolicy::Immediate);
             trie.enable_lockfree();
-            trie.set_overlay_write_mode(OverlayWriteMode::LockFreeOverlay);
             for t in &terms {
                 trie.insert_cas_durable(t).expect("durable overlay insert");
             }
@@ -2563,13 +2561,11 @@ mod multi_writer_checkpointer_soak {
     /// underflow rejection (a negative increment below 0) STILL fire.
     #[test]
     fn s5_567_overlay_producer_guards_reject() {
-        use super::super::overlay_write_mode::OverlayWriteMode;
         let dir = scratch("s5-567-guards");
         let path = dir.path().join("t.artc");
         let mut trie = PersistentARTrieChar::<u64>::create(&path).expect("create");
         trie.set_durability_policy(DurabilityPolicy::Immediate);
         trie.enable_lockfree();
-        trie.set_overlay_write_mode(OverlayWriteMode::LockFreeOverlay);
 
         // S5-7: begin_document now SUCCEEDS under the overlay (C2).
         assert!(
@@ -2689,44 +2685,6 @@ mod multi_writer_checkpointer_soak {
         );
     }
 
-    /// **S5-12 (V-3)**: the structural reestablish carries u64 VALUES (NOT the
-    /// value-dropping membership-only path) — values must survive. **F7:** the per-term
-    /// `reestablish_overlay_dispatch` (Any-downcast u64→value-carrying) was DELETED; its
-    /// replacement `reestablish_overlay_from_owned` (`build_overlay_root_from_owned`) is
-    /// value-carrying by construction. Drive it on a freshly-built OWNED u64 tree (so the
-    /// owned tree is populated when reestablish reads it) and assert values round-trip.
-    #[test]
-    fn s5_12_v3_dispatch_routes_u64_to_value_carrying_reestablish() {
-        use crate::persistent_artrie_core::overlay::flip::LockFreeOverlay;
-        use crate::persistent_artrie_core::overlay::write_mode::OverlayWriteMode;
-        let dir = scratch("s5-12-v3-dispatch");
-        let path = dir.path().join("t.artc");
-        let entries: Vec<(String, u64)> = vec![("a", 1u64), ("ab", 22), ("z", 999)]
-            .into_iter()
-            .map(|(t, v)| (t.to_string(), v))
-            .collect();
-        // Build an OWNED u64 tree (kill-switch to owned so upserts populate the owned tree,
-        // not the overlay), then install + route the empty overlay — the exact
-        // pre-reestablish state.
-        let mut trie = PersistentARTrieChar::<u64>::create(&path).expect("create");
-        trie.kill_switch_to_owned();
-        for (t, v) in &entries {
-            trie.upsert(t, *v).expect("owned upsert");
-        }
-        trie.enable_lockfree();
-        trie.set_overlay_write_mode(OverlayWriteMode::LockFreeOverlay);
-        assert!(trie.route_overlay(), "overlay routed before reestablish");
-        // The KEPT structural converter (value-carrying) replaces the deleted dispatch.
-        LockFreeOverlay::reestablish_overlay_from_owned(&mut trie).expect("reestablish from owned");
-        for (t, v) in &entries {
-            assert_eq!(
-                trie.get_lockfree(t),
-                Some(*v),
-                "V-3 reestablish dropped the value for {t:?} (routed to a membership-only path?)"
-            );
-        }
-    }
-
     /// **S5-12 Test A — the A2 end-to-end PRIMARY gate.** An Overlay-regime WAL with a
     /// RANKED survivor (`insert_cas_durable` ⇒ durable Insert + CommitRank, acked) and a
     /// durable UNRANKED orphan (an Insert with NO following CommitRank — exactly the
@@ -2734,7 +2692,6 @@ mod multi_writer_checkpointer_soak {
     /// survivor (the regime-aware reconcile, end-to-end on a real on-disk WAL).
     #[test]
     fn s5_12_test_a_overlay_reopen_drops_unranked_orphan_keeps_ranked() {
-        use super::super::overlay_write_mode::OverlayWriteMode;
         use crate::persistent_artrie_core::wal::WalRecord;
 
         let dir = scratch("s5-12-test-a");
@@ -2743,7 +2700,6 @@ mod multi_writer_checkpointer_soak {
             let mut trie = PersistentARTrieChar::<()>::create(&path).expect("create");
             trie.set_durability_policy(DurabilityPolicy::Immediate);
             trie.enable_lockfree();
-            trie.set_overlay_write_mode(OverlayWriteMode::LockFreeOverlay);
             // RANKED survivor: insert_cas_durable appends Insert + CommitRank (acked).
             assert!(trie.insert_cas_durable("survivor").expect("durable insert"));
             // Durable UNRANKED orphan: an Insert with NO following CommitRank — the

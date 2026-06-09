@@ -52,9 +52,6 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
             committed_watermark: super::committed_watermark::CommittedWatermark::new(0),
             checkpoint_lock: std::sync::Arc::new(parking_lot::Mutex::new(())),
             merge_lock: std::sync::Arc::new(parking_lot::Mutex::new(())),
-            overlay_write_mode: crate::persistent_artrie_core::shared_access::AtomicEnumCell::new(
-                super::overlay_write_mode::OverlayWriteMode::default(),
-            ),
             file_path: None,
             arena_manager: None,
             version: OptimisticVersion::new(),
@@ -78,14 +75,13 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
             lockfree_cache: None,
             cas_retries: std::sync::atomic::AtomicU64::new(0),
         };
-        // **L3.2:** an in-memory `::new()` trie installs an empty lock-free overlay (WAL-less —
+        // **L3.3:** an in-memory `::new()` trie installs an empty lock-free overlay (WAL-less —
         // `enable_lockfree`'s WAL stamp is a no-op without a `wal_writer`), so `route_overlay()`
-        // is UNIVERSALLY true across every constructor (the precondition for deleting the owned
-        // tree at L3.3). Writes degrade to a non-durable in-memory CAS (the durable path's WAL
-        // append returns LSN 0 under `Immediate`; `mark_committed(0)` is a no-op); reads + the
-        // zipper walk the overlay. Does NOT route through `flip_to_overlay` (which needs a WAL).
+        // is UNIVERSALLY true across every constructor (the owned tree is gone). Writes degrade to
+        // a non-durable in-memory CAS (the durable path's WAL append returns LSN 0 under
+        // `Immediate`; `mark_committed(0)` is a no-op); reads + the zipper walk the overlay. Does
+        // NOT route through `flip_to_overlay` (which needs a WAL).
         trie.enable_lockfree();
-        trie.set_overlay_write_mode(super::overlay_write_mode::OverlayWriteMode::LockFreeOverlay);
         trie
     }
 
@@ -144,9 +140,6 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
             committed_watermark: super::committed_watermark::CommittedWatermark::new(0),
             checkpoint_lock: std::sync::Arc::new(parking_lot::Mutex::new(())),
             merge_lock: std::sync::Arc::new(parking_lot::Mutex::new(())),
-            overlay_write_mode: crate::persistent_artrie_core::shared_access::AtomicEnumCell::new(
-                super::overlay_write_mode::OverlayWriteMode::default(),
-            ),
             file_path: Some(path.to_path_buf()),
             arena_manager: Some(arena_manager),
             version: OptimisticVersion::new(),
@@ -218,9 +211,6 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
             committed_watermark: super::committed_watermark::CommittedWatermark::new(0),
             checkpoint_lock: std::sync::Arc::new(parking_lot::Mutex::new(())),
             merge_lock: std::sync::Arc::new(parking_lot::Mutex::new(())),
-            overlay_write_mode: crate::persistent_artrie_core::shared_access::AtomicEnumCell::new(
-                super::overlay_write_mode::OverlayWriteMode::default(),
-            ),
             file_path: Some(path.to_path_buf()),
             arena_manager: Some(arena_manager),
             version: OptimisticVersion::new(),
@@ -302,9 +292,6 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
             committed_watermark: super::committed_watermark::CommittedWatermark::new(0),
             checkpoint_lock: std::sync::Arc::new(parking_lot::Mutex::new(())),
             merge_lock: std::sync::Arc::new(parking_lot::Mutex::new(())),
-            overlay_write_mode: crate::persistent_artrie_core::shared_access::AtomicEnumCell::new(
-                super::overlay_write_mode::OverlayWriteMode::default(),
-            ),
             file_path: Some(path.to_path_buf()),
             arena_manager: Some(arena_manager),
             version: OptimisticVersion::new(),
@@ -467,9 +454,6 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
             ),
             checkpoint_lock: std::sync::Arc::new(parking_lot::Mutex::new(())),
             merge_lock: std::sync::Arc::new(parking_lot::Mutex::new(())),
-            overlay_write_mode: crate::persistent_artrie_core::shared_access::AtomicEnumCell::new(
-                super::overlay_write_mode::OverlayWriteMode::default(),
-            ),
             file_path: Some(path.to_path_buf()),
             arena_manager: Some(arena_manager),
             version: OptimisticVersion::new(),
@@ -1243,7 +1227,7 @@ mod s5_12_flip_ctor_gate {
     use super::*;
     use crate::persistent_artrie::wal::{WalHeader, WalReader};
     use crate::persistent_artrie_char::PersistentARTrieChar;
-    use crate::{Dictionary, MappedDictionary};
+    use crate::MappedDictionary;
 
     fn scratch(prefix: &str) -> tempfile::TempDir {
         std::fs::create_dir_all("target/test-tmp").ok();
@@ -1401,58 +1385,6 @@ mod s5_12_flip_ctor_gate {
     }
 
     // ──────────────────── Gate 3: old-Owned file stays Owned on reopen ────────────────────
-
-    /// An OWNED-regime file must stay Owned on reopen: `route_overlay()==false`, data
-    /// intact via the OWNED read path, header still standard `MAGIC`. (Backward-compat:
-    /// an Owned file never silently flips.) Arbitrary-V overlay routing is the default,
-    /// so a fresh `create::<String>()` create-flips; kill-switch it to the Owned regime
-    /// to produce the Owned-regime file and exercise the "an Owned-regime file stays
-    /// owned on reopen" path.
-    #[test]
-    fn s5_12_old_owned_file_stays_owned_on_reopen() {
-        let dir = scratch("s5-12-owned-stays");
-        let path = dir.path().join("t.artc");
-        let entries: Vec<(String, String)> = (0..30u32)
-            .map(|i| (format!("w{i:03}"), format!("v{i:03}")))
-            .collect();
-        {
-            let trie = PersistentARTrieChar::<String>::create(&path).expect("create<String>");
-            trie.kill_switch_to_owned();
-            assert!(!trie.route_overlay(), "String trie is on the owned path");
-            for (k, v) in &entries {
-                trie.insert_with_value(k, v.clone());
-            }
-            trie.checkpoint().expect("owned checkpoint");
-        }
-        // **F7:** production `open` CONVERTS an Owned-regime eligible file INTO the overlay
-        // (Owned→Overlay conversion-on-reopen). The data must survive (`route_overlay()`
-        // true after `open`); the on-disk WAL is re-stamped Overlay (the durable conversion
-        // commit). The pre-F7 stay-Owned behavior is preserved by the legacy-loader oracle.
-        let recovered = PersistentARTrieChar::<String>::open(&path).expect("reopen<String>");
-        assert!(
-            recovered.route_overlay(),
-            "F7: an Owned-regime eligible file CONVERTS to the overlay on reopen"
-        );
-        assert_eq!(
-            wal_header(&path).magic,
-            WalHeader::MAGIC_OVERLAY,
-            "F7: a converted file's WAL header is re-stamped to the Overlay MAGIC"
-        );
-        for (k, v) in &entries {
-            assert_eq!(
-                MappedDictionary::get_value(&recovered, k),
-                Some(v.clone()),
-                "converted data lost for {k:?} across reopen"
-            );
-            assert!(
-                Dictionary::contains(&recovered, k),
-                "converted membership lost for {k:?}"
-            );
-        }
-        // (The pre-F7 stay-Owned oracle is covered by the dedicated
-        // `persistent_owned_to_overlay_correspondence` suite, which builds a SEPARATE
-        // fixture per loader since the converting `open` mutates the file to Overlay.)
-    }
 
     // ─────────────────── Gate 4: mixed-monomorph reopen (V-4, no panic) ───────────────────
 

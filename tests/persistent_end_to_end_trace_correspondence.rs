@@ -9,7 +9,7 @@
 
 #![cfg(feature = "persistent-artrie")]
 
-use libdictenstein::persistent_artrie::{CompactionConfig, PersistentARTrie};
+use libdictenstein::persistent_artrie::PersistentARTrie;
 use libdictenstein::persistent_artrie_char::PersistentARTrieChar;
 use libdictenstein::persistent_vocab_artrie::PersistentVocabARTrie;
 use libdictenstein::{Dictionary, MappedDictionary};
@@ -25,71 +25,6 @@ fn assert_byte_trie_matches(expected: &BTreeMap<String, i64>, trie: &PersistentA
         );
     }
     assert_eq!(trie.len(), Some(expected.len()));
-}
-
-#[test]
-fn byte_trace_survives_checkpoint_compaction_and_reopen() {
-    let dir = tempdir().expect("temp dir");
-    let path = dir.path().join("byte_end_to_end.part");
-    let mut expected = BTreeMap::new();
-
-    {
-        let mut trie = PersistentARTrie::<i64>::create(&path).expect("create byte trie");
-        // **M4b REFRAME.** A fresh `create::<i64>()` now create-flips to the overlay,
-        // but this end-to-end trace exercises document transactions (begin/commit_document)
-        // and compaction — BOTH owned-regime features the overlay rejects. Force owned.
-        trie.kill_switch_to_owned();
-
-        assert!(trie.insert_with_value("alpha", 1));
-        expected.insert("alpha".to_string(), 1);
-
-        assert!(trie.insert_with_value("app", 2));
-        expected.insert("app".to_string(), 2);
-
-        assert_eq!(trie.increment("alpha", 4).expect("increment alpha"), 5);
-        expected.insert("alpha".to_string(), 5);
-
-        let mut tx = trie.begin_document("doc").expect("begin document");
-        trie.tx_insert(&mut tx, "beta", Some(7));
-        trie.tx_insert(&mut tx, "gamma", Some(9));
-        assert_eq!(trie.commit_document(tx).expect("commit document"), 2);
-        expected.insert("beta".to_string(), 7);
-        expected.insert("gamma".to_string(), 9);
-
-        assert!(trie.remove("app"));
-        expected.remove("app");
-
-        let batch = vec![
-            ("delta".to_string(), Some(11)),
-            ("epsilon".to_string(), Some(13)),
-        ];
-        assert_eq!(trie.insert_batch(&batch), 2);
-        expected.insert("delta".to_string(), 11);
-        expected.insert("epsilon".to_string(), 13);
-
-        trie.sync().expect("sync pre-checkpoint byte trace");
-        trie.checkpoint().expect("checkpoint byte trace");
-
-        assert!(trie.insert_with_value("tail", 17));
-        expected.insert("tail".to_string(), 17);
-
-        assert_eq!(trie.increment("beta", 5).expect("increment beta"), 12);
-        expected.insert("beta".to_string(), 12);
-
-        assert!(trie.remove("gamma"));
-        expected.remove("gamma");
-
-        trie.sync().expect("sync post-checkpoint byte tail");
-        trie.compact(CompactionConfig::default(), |_| {})
-            .expect("compact byte trace");
-
-        assert_byte_trie_matches(&expected, &trie);
-    }
-
-    let reopened = PersistentARTrie::<i64>::open(&path).expect("reopen byte trie");
-    assert_byte_trie_matches(&expected, &reopened);
-    assert_eq!(reopened.get_value("app"), None);
-    assert_eq!(reopened.get_value("gamma"), None);
 }
 
 #[test]

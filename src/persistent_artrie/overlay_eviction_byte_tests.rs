@@ -30,7 +30,6 @@ use crate::persistent_artrie::overlay_fault::evict_overlay_nodes;
 use crate::persistent_artrie::PersistentARTrie;
 use crate::persistent_artrie_core::durability::DurabilityPolicy;
 use crate::persistent_artrie_core::overlay::evict::OverlayEvictable;
-use crate::persistent_artrie_core::overlay::write_mode::OverlayWriteMode;
 use crate::MappedDictionary;
 
 /// A scratch directory on real disk (`target/test-tmp`), never tmpfs `/tmp`.
@@ -95,7 +94,6 @@ fn byte_evict_then_reload_returns_exact_values() {
         let mut trie = PersistentARTrie::<u64>::create(&path).expect("create");
         trie.set_durability_policy(DurabilityPolicy::Immediate);
         trie.enable_lockfree();
-        trie.set_overlay_write_mode(OverlayWriteMode::LockFreeOverlay);
         trie.bench_enable_eviction(EvictionConfig::without_memory_monitor())
             .expect("bench_enable_eviction");
 
@@ -158,7 +156,6 @@ fn byte_overwrite_since_checkpoint_is_not_evicted_to_stale_image() {
     let mut trie = PersistentARTrie::<u64>::create(&path).expect("create");
     trie.set_durability_policy(DurabilityPolicy::Immediate);
     trie.enable_lockfree();
-    trie.set_overlay_write_mode(OverlayWriteMode::LockFreeOverlay);
     trie.bench_enable_eviction(EvictionConfig::without_memory_monitor())
         .expect("bench_enable_eviction");
 
@@ -250,7 +247,6 @@ fn byte_evict_faultin_evict_thrash_terminates() {
     let mut trie = PersistentARTrie::<u64>::create(&path).expect("create");
     trie.set_durability_policy(DurabilityPolicy::Immediate);
     trie.enable_lockfree();
-    trie.set_overlay_write_mode(OverlayWriteMode::LockFreeOverlay);
     trie.bench_enable_eviction(EvictionConfig::without_memory_monitor())
         .expect("bench_enable_eviction");
     for (t, v) in &cold {
@@ -298,7 +294,6 @@ fn oe9_byte_iter_prefix_faults_evicted_subtree_no_under_report() {
     let mut owned = PersistentARTrie::<u64>::create(&path).expect("create");
     owned.set_durability_policy(DurabilityPolicy::Immediate);
     owned.enable_lockfree();
-    owned.set_overlay_write_mode(OverlayWriteMode::LockFreeOverlay);
     owned
         .bench_enable_eviction(EvictionConfig::without_memory_monitor())
         .expect("bench_enable_eviction");
@@ -383,7 +378,6 @@ fn phase7_byte_resident_budget_checkpoint_tail_evicts_to_budget() {
         let mut owned = PersistentARTrie::<u64>::create(&path).expect("create");
         owned.set_durability_policy(DurabilityPolicy::Immediate);
         owned.enable_lockfree();
-        owned.set_overlay_write_mode(OverlayWriteMode::LockFreeOverlay);
         let config = EvictionConfig {
             resident_budget_bytes: budget,
             ..EvictionConfig::without_memory_monitor()

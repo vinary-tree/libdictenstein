@@ -59,9 +59,8 @@ pub trait U8Enum: Copy {
 
 /// An interior-mutable cell holding a [`U8Enum`] as an `AtomicU8`.
 ///
-/// F4: replaces a plain `Copy`-enum field (`overlay_write_mode` /
-/// `durability_policy`) so the now-`&self` lifecycle setters (`kill_switch_to_owned`,
-/// `set_durability_policy`) and the hot-path readers (`route_overlay`,
+/// F4: replaces a plain `Copy`-enum field (`durability_policy`) so the now-`&self`
+/// lifecycle setter (`set_durability_policy`) and the hot-path readers (`route_overlay`,
 /// `durability_policy`) work without the outer trie `RwLock`. A single relaxed
 /// atomic load/store — strictly cheaper than the old `RwLock`-guarded field read.
 #[derive(Debug)]

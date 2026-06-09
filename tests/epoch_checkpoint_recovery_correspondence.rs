@@ -35,44 +35,6 @@ fn remove_dir_if_exists(path: &Path) {
 }
 
 #[test]
-fn public_mutations_record_epoch_wal_bytes_without_manual_calls() {
-    let dir = tempdir().expect("temp dir");
-    let path = dir.path().join("epoch_accounting.trie");
-
-    let trie: PersistentARTrieChar<i64> = PersistentARTrieChar::create(&path).expect("create");
-    // F2-migrate: Bucket B — epoch `operation_count` accounting counts OWNED-tree WAL
-    // mutation records (the overlay write path emits a different record shape/count per
-    // op). Pin OwnedTree so the per-op accounting matches the owned contract. No-op
-    // feature-off (`i64` is char-arbitrary-V and stays owned).
-    trie.kill_switch_to_owned();
-    trie.enable_epoch_checkpointing(correspondence_epoch_config())
-        .expect("enable epoch checkpointing");
-
-    let epoch = trie.current_epoch_id().expect("current epoch");
-    assert!(trie.insert_with_value("alpha", 10).expect("insert alpha"));
-    assert!(trie.insert_with_value("beta", 20).expect("insert beta"));
-    assert!(trie.remove("alpha").expect("remove alpha"));
-
-    let metadata = trie.epoch_metadata().expect("epoch metadata");
-    let current = metadata
-        .iter()
-        .find(|entry| entry.id == epoch)
-        .expect("current epoch metadata");
-
-    assert_eq!(
-        current.operation_count, 3,
-        "public WAL-backed mutations should advance epoch accounting"
-    );
-    assert!(
-        current.wal_size_bytes >= 3 * 17,
-        "epoch WAL byte accounting should include serialized WAL records"
-    );
-
-    let stats = trie.epoch_stats().expect("epoch stats");
-    assert_eq!(stats.current_total_wal_bytes, current.wal_size_bytes);
-}
-
-#[test]
 fn forced_epoch_checkpoint_reopens_without_wal_tail() {
     let dir = tempdir().expect("temp dir");
     let path = dir.path().join("force_checkpoint.trie");

@@ -53,7 +53,7 @@ fn test_durability_committed_data_persists() {
 
     // Create trie, insert data, and commit
     {
-        let mut trie: PersistentARTrie<u64> =
+        let trie: PersistentARTrie<u64> =
             PersistentARTrie::create(&path).expect("Failed to create trie");
 
         // Start a transaction
@@ -84,34 +84,6 @@ fn test_durability_committed_data_persists() {
         assert!(trie.contains("world"), "world should persist after reopen");
         assert!(trie.contains("test"), "test should persist after reopen");
     }
-}
-
-#[test]
-fn test_durability_policy_none_for_testing() {
-    let dir = tempdir().expect("Failed to create temp dir");
-    let path = dir.path().join("policy_none_test.part");
-
-    let mut trie: PersistentARTrie<u64> =
-        PersistentARTrie::create(&path).expect("Failed to create trie");
-    // F2-migrate: Bucket C — `DurabilityPolicy::None` is an OwnedTree-only testing mode:
-    // the lock-free overlay requires Immediate/GroupCommit so an acknowledged write is
-    // durable before it becomes visible (`upsert_cas_durable` rejects None). A fresh
-    // `u64` byte trie create-flips feature-on, so pin OwnedTree. No-op feature-off
-    // (`u64` is byte-arbitrary-V and stays owned).
-    trie.kill_switch_to_owned();
-
-    // Set to None policy (testing only)
-    trie.set_durability_policy(DurabilityPolicy::None);
-    assert_eq!(trie.durability_policy(), DurabilityPolicy::None);
-
-    // Transactions should still work, just without fsync
-    let mut tx = trie.begin_document("test_doc").expect("Failed to begin tx");
-    trie.tx_insert(&mut tx, "test", Some(42));
-    let count = trie.commit_document(tx).expect("Failed to commit");
-    assert_eq!(count, 1);
-
-    // Data should be in memory
-    assert!(trie.contains("test"));
 }
 
 // =============================================================================
@@ -171,7 +143,7 @@ fn test_atomicity_commit_inserts_all_terms() {
     let dir = tempdir().expect("Failed to create temp dir");
     let path = dir.path().join("atomicity_commit_test.part");
 
-    let mut trie: PersistentARTrie<u64> =
+    let trie: PersistentARTrie<u64> =
         PersistentARTrie::create(&path).expect("Failed to create trie");
 
     // Start a transaction
@@ -197,7 +169,7 @@ fn test_atomicity_cannot_commit_twice() {
     let dir = tempdir().expect("Failed to create temp dir");
     let path = dir.path().join("atomicity_double_commit_test.part");
 
-    let mut trie: PersistentARTrie<u64> =
+    let trie: PersistentARTrie<u64> =
         PersistentARTrie::create(&path).expect("Failed to create trie");
 
     // Start and commit a transaction
@@ -218,7 +190,7 @@ fn test_isolation_concurrent_reads_dont_block() {
     let dir = tempdir().expect("Failed to create temp dir");
     let path = dir.path().join("isolation_concurrent_reads.part");
 
-    let mut trie: PersistentARTrie<u64> =
+    let trie: PersistentARTrie<u64> =
         PersistentARTrie::create(&path).expect("Failed to create trie");
 
     // Insert some initial data
@@ -288,7 +260,7 @@ fn test_consistency_trie_invariants_maintained() {
     let dir = tempdir().expect("Failed to create temp dir");
     let path = dir.path().join("consistency_invariants.part");
 
-    let mut trie: PersistentARTrie<u64> =
+    let trie: PersistentARTrie<u64> =
         PersistentARTrie::create(&path).expect("Failed to create trie");
 
     // Insert many terms with various patterns
@@ -324,7 +296,7 @@ fn test_stats_tracking() {
     let dir = tempdir().expect("Failed to create temp dir");
     let path = dir.path().join("stats_test.part");
 
-    let mut trie: PersistentARTrie<u64> =
+    let trie: PersistentARTrie<u64> =
         PersistentARTrie::create(&path).expect("Failed to create trie");
 
     // Get initial stats

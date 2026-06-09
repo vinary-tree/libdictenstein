@@ -7,7 +7,7 @@
 
 #![cfg(feature = "persistent-artrie")]
 
-use libdictenstein::persistent_artrie::wal::{WalConfig, WalReader};
+use libdictenstein::persistent_artrie::wal::WalReader;
 use libdictenstein::persistent_artrie_char::PersistentARTrieChar;
 use libdictenstein::persistent_vocab_artrie::PersistentVocabARTrie;
 use std::fs;
@@ -81,70 +81,6 @@ fn char_checkpoint_rewrite_keeps_post_checkpoint_wal_tail_replayable() {
     let reopened = PersistentARTrieChar::<i32>::open(&path).expect("reopen char trie");
     assert_char_value(&reopened, "checkpointed", 10);
     assert_char_value(&reopened, "wal-tail", 20);
-}
-
-#[test]
-fn char_persist_to_disk_alone_does_not_clear_checkpoint_dirty_state() {
-    let dir = tempdir().expect("temp dir");
-    let path = dir.path().join("char_persist_only.part");
-
-    let mut trie = PersistentARTrieChar::<i32>::create(&path).expect("create char trie");
-    // F2-migrate: Bucket B — `is_dirty()`/`persist_to_disk`/checkpoint dirty-state is an
-    // OWNED-tree checkpoint concept (the overlay tracks durability via its own WAL
-    // watermark, not the owned dirty flag). Pin OwnedTree. No-op feature-off.
-    trie.kill_switch_to_owned();
-    trie.insert_with_value("descriptor", 10)
-        .expect("insert descriptor term");
-    assert!(trie.is_dirty(), "mutation should mark trie dirty");
-
-    trie.persist_to_disk().expect("publish descriptor only");
-    assert!(
-        trie.is_dirty(),
-        "persist_to_disk is not full checkpoint publication"
-    );
-
-    trie.checkpoint()
-        .expect("checkpoint after descriptor publish");
-    assert!(!trie.is_dirty(), "checkpoint should clear dirty");
-}
-
-#[test]
-fn char_failed_wal_archive_after_rewrite_keeps_dirty_until_retry() {
-    let dir = tempdir().expect("temp dir");
-    let path = dir.path().join("char_archive_retry.part");
-    let archive_dir_name = "char_archive_retry";
-    let archive_dir = dir.path().join(archive_dir_name);
-    let wal_config = WalConfig::with_archive_dir(archive_dir_name);
-
-    let trie =
-        PersistentARTrieChar::<i32>::create_with_config(&path, wal_config).expect("create trie");
-    // F2-migrate: Bucket B — failed-WAL-archive dirty-retry is an OWNED-tree checkpoint
-    // concept (the overlay does not gate visibility on the owned dirty flag). Pin
-    // OwnedTree. No-op feature-off.
-    trie.kill_switch_to_owned();
-    trie.insert_with_value("alpha", 1).expect("insert alpha");
-
-    fs::remove_dir(&archive_dir).expect("remove empty archive dir");
-    fs::write(&archive_dir, b"not a directory").expect("block archive directory");
-
-    trie.checkpoint()
-        .expect_err("checkpoint must fail while archive dir is blocked");
-    assert!(
-        trie.is_dirty(),
-        "failed WAL archive after rewrite must leave checkpoint dirty"
-    );
-    assert!(
-        char_wal_record_count(&path) > 0,
-        "failed checkpoint must leave active WAL replay evidence"
-    );
-
-    fs::remove_file(&archive_dir).expect("remove archive blocker");
-    trie.checkpoint().expect("retry checkpoint");
-    assert!(!trie.is_dirty(), "retry checkpoint should clear dirty");
-    drop(trie);
-
-    let reopened = PersistentARTrieChar::<i32>::open(&path).expect("reopen char trie");
-    assert_char_value(&reopened, "alpha", 1);
 }
 
 #[test]

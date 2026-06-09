@@ -92,10 +92,6 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
             lockfree_cache: None,
             #[cfg(feature = "persistent-artrie")]
             cas_retries: std::sync::atomic::AtomicU64::new(0),
-            // M2a INERT default (OwnedTree) — changes no byte behavior.
-            overlay_write_mode: crate::persistent_artrie_core::shared_access::AtomicEnumCell::new(
-                crate::persistent_artrie_core::overlay::write_mode::OverlayWriteMode::default(),
-            ),
             // M2b: fresh in-memory trie — no durable WAL frontier, no prior
             // generations, so the watermark base + commit_seq are both 0 (INERT
             // pre-flip; only opt-in `*_cas_durable` writes advance them).
@@ -105,18 +101,14 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
             merge_lock: std::sync::Arc::new(parking_lot::Mutex::new(())),
             commit_seq: std::sync::atomic::AtomicU64::new(0),
         };
-        // **L3.2:** an in-memory `::new()` trie installs an empty lock-free overlay (WAL-less —
+        // **L3.3:** an in-memory `::new()` trie installs an empty lock-free overlay (WAL-less —
         // `enable_lockfree`'s WAL stamp is a no-op without a `wal_writer`), so `route_overlay()`
-        // is UNIVERSALLY true across every constructor (the precondition for deleting the owned
-        // tree at L3.3). Writes degrade to a non-durable in-memory CAS (the durable path's WAL
-        // append returns LSN 0 under `Immediate`; `mark_committed(0)` is a no-op); reads + the
-        // zipper walk the overlay. `checkpoint()` still errors (no buffer manager). This does NOT
-        // route through `flip_to_overlay` (which hard-requires a WAL) — just the two WAL-less
-        // primitives.
+        // is UNIVERSALLY true across every constructor (the owned tree is gone). Writes degrade to
+        // a non-durable in-memory CAS (the durable path's WAL append returns LSN 0 under
+        // `Immediate`; `mark_committed(0)` is a no-op); reads + the zipper walk the overlay.
+        // `checkpoint()` still errors (no buffer manager). This does NOT route through
+        // `flip_to_overlay` (which hard-requires a WAL) — just the two WAL-less primitives.
         trie.enable_lockfree();
-        trie.set_overlay_write_mode(
-            crate::persistent_artrie_core::overlay::write_mode::OverlayWriteMode::LockFreeOverlay,
-        );
         trie
     }
 
@@ -205,11 +197,7 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
             lockfree_cache: None,
             #[cfg(feature = "persistent-artrie")]
             cas_retries: std::sync::atomic::AtomicU64::new(0),
-            // M2a INERT default (OwnedTree) — flipped to LockFreeOverlay by
             // apply_create_flip above for eligible V; arbitrary V stays owned.
-            overlay_write_mode: crate::persistent_artrie_core::shared_access::AtomicEnumCell::new(
-                crate::persistent_artrie_core::overlay::write_mode::OverlayWriteMode::default(),
-            ),
             // M2b: fresh on-disk trie (empty WAL) — no durable frontier, no prior
             // generations ⇒ watermark base + commit_seq both 0 (INERT pre-flip).
             committed_watermark:
@@ -309,10 +297,6 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
             lockfree_cache: None,
             #[cfg(feature = "persistent-artrie")]
             cas_retries: std::sync::atomic::AtomicU64::new(0),
-            // M2a INERT default (OwnedTree) — changes no byte behavior.
-            overlay_write_mode: crate::persistent_artrie_core::shared_access::AtomicEnumCell::new(
-                crate::persistent_artrie_core::overlay::write_mode::OverlayWriteMode::default(),
-            ),
             // M2b: fresh on-disk trie (empty WAL) — no durable frontier, no prior
             // generations ⇒ watermark base + commit_seq both 0 (INERT pre-flip).
             committed_watermark:
@@ -614,10 +598,6 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
             lockfree_cache: None,
             #[cfg(feature = "persistent-artrie")]
             cas_retries: std::sync::atomic::AtomicU64::new(0),
-            // M2a INERT default (OwnedTree) — changes no byte behavior.
-            overlay_write_mode: crate::persistent_artrie_core::shared_access::AtomicEnumCell::new(
-                crate::persistent_artrie_core::overlay::write_mode::OverlayWriteMode::default(),
-            ),
             // M2b: seed the watermark base from the recovered durable WAL frontier
             // (replayed LSNs are already committed) and the commit_seq from
             // max(header floor, surviving CommitRank generation) — the A.2

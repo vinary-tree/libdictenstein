@@ -18,7 +18,7 @@
 #![cfg(feature = "persistent-artrie")]
 
 use libdictenstein::persistent_artrie_char::PersistentARTrieChar;
-use libdictenstein::{Dictionary, MutableMappedDictionary};
+use libdictenstein::MutableMappedDictionary;
 
 fn scratch(prefix: &str) -> tempfile::TempDir {
     std::fs::create_dir_all("target/test-tmp").ok();
@@ -91,7 +91,7 @@ fn char_unit_membership_get_routes_to_overlay() {
     let dir = scratch("char-get-unit");
     let path = dir.path().join("test.artrie");
     {
-        let mut trie = PersistentARTrieChar::<()>::create(&path).expect("create");
+        let trie = PersistentARTrieChar::<()>::create(&path).expect("create");
         trie.insert("alpha").expect("insert");
         trie.insert("beta").expect("insert");
         assert_eq!(trie.get("alpha"), Some(()), "membership get live");
@@ -110,7 +110,7 @@ fn char_string_value_get_routes_to_overlay() {
     let dir = scratch("char-get-string");
     let path = dir.path().join("test.artrie");
     {
-        let mut trie = PersistentARTrieChar::<String>::create(&path).expect("create");
+        let trie = PersistentARTrieChar::<String>::create(&path).expect("create");
         trie.upsert("key", "value".to_string()).expect("upsert");
         assert_eq!(
             trie.get("key"),

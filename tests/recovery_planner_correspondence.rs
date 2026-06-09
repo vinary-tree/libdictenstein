@@ -7,11 +7,10 @@
 #![cfg(feature = "persistent-artrie")]
 
 use libdictenstein::persistent_artrie::{
-    rebuild_from_wal_segments, IncrementalRecovery, PersistentARTrie, RecoveredOperation,
-    RecoveryManager, RecoveryMode, WalConfig, WalHeader, WalRecord, WalWriter,
+    rebuild_from_wal_segments, IncrementalRecovery, RecoveredOperation, RecoveryManager, WalConfig,
+    WalHeader, WalRecord, WalWriter,
 };
-use libdictenstein::persistent_artrie_char::PersistentARTrieChar;
-use libdictenstein::{Dictionary, MappedDictionary};
+use libdictenstein::Dictionary;
 use std::fs::OpenOptions;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
@@ -150,73 +149,4 @@ fn incremental_recovery_stops_permanently_at_first_corrupt_record() {
             .is_none(),
         "later calls must not read suffix records after corruption"
     );
-}
-
-#[test]
-fn byte_corruption_rebuild_uses_only_durable_wal_prefix() {
-    let dir = tempdir().expect("tempdir");
-    let path = dir.path().join("byte_prefix.part");
-    {
-        let trie = PersistentARTrie::<i32>::create(&path).expect("create byte trie");
-        // F2-migrate: Bucket B — this test corrupts a WAL record CRC + the header magic
-        // and asserts the rebuild replays ONLY the durable WAL prefix. That is the
-        // OWNED-tree WAL recovery contract (per-record Insert replay). Feature-on a fresh
-        // `i32` byte trie create-flips and writes an Overlay-regime WAL (CommitRank
-        // records); the corruption rebuild's arbitrary-V reestablish then cannot surface
-        // the recovered data. Pin the Owned regime so the source WAL holds Insert records
-        // the rebuild replays exactly. No-op feature-off (`i32` is byte-arbitrary-V).
-        trie.kill_switch_to_owned();
-        assert!(trie.insert_with_value("before", 1));
-        assert!(trie.insert_with_value("corrupt", 2));
-        assert!(trie.insert_with_value("after", 3));
-        trie.sync().expect("sync byte WAL");
-    }
-
-    corrupt_record_crc(&path.with_extension("wal"), 1);
-    corrupt_header_magic(&path);
-
-    let (recovered, report) =
-        PersistentARTrie::<i32>::open_with_recovery_config(&path, recovery_config())
-            .expect("rebuild byte trie");
-
-    assert_eq!(report.mode, RecoveryMode::RebuildFromWal);
-    assert_eq!(report.records_replayed, 1);
-    assert_eq!(recovered.get_value("before"), Some(1));
-    assert!(!recovered.contains("corrupt"));
-    assert!(!recovered.contains("after"));
-}
-
-#[test]
-fn char_corruption_rebuild_uses_only_durable_wal_prefix() {
-    let dir = tempdir().expect("tempdir");
-    let path = dir.path().join("char_prefix.artc");
-    {
-        let trie = PersistentARTrieChar::<i32>::create(&path).expect("create char trie");
-        // F2-migrate: Bucket B — corrupts a WAL record CRC + header magic and asserts the
-        // rebuild replays ONLY the durable WAL prefix (the OWNED-tree per-record recovery
-        // contract). Feature-on a fresh `i32` char trie create-flips and writes an
-        // Overlay-regime WAL; the corruption rebuild's arbitrary-V reestablish then cannot
-        // surface the recovered data. Pin the Owned regime so the WAL holds Insert records
-        // the rebuild replays exactly. No-op feature-off (`i32` is char-arbitrary-V).
-        trie.kill_switch_to_owned();
-        trie.insert_with_value("before", 1).expect("before");
-        trie.insert_with_value("corrupt", 2).expect("corrupt");
-        trie.insert_with_value("after", 3).expect("after");
-        trie.sync().expect("sync char WAL");
-    }
-
-    corrupt_record_crc(&path.with_extension("wal"), 1);
-    corrupt_header_magic(&path);
-
-    let (recovered, report) =
-        PersistentARTrieChar::<i32>::open_with_recovery_config(&path, recovery_config())
-            .expect("rebuild char trie");
-
-    assert_eq!(report.mode, RecoveryMode::RebuildFromWal);
-    assert_eq!(report.records_replayed, 1);
-    // F2-migrate: Bucket A — the recovered char trie create-flips on rebuild, so read the
-    // recovered value via `get_value` (the overlay returns None from `get`).
-    assert_eq!(recovered.get_value("before"), Some(1));
-    assert!(!recovered.contains("corrupt"));
-    assert!(!recovered.contains("after"));
 }

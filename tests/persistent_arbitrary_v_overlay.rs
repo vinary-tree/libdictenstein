@@ -394,7 +394,7 @@ fn char_doc_tx_overlay_set_durable_reopen() {
     let dir = scratch("f2-char-doctx-set");
     let path = dir.path().join("t.artc");
     {
-        let mut trie = PersistentARTrieChar::<String>::create(&path).expect("create");
+        let trie = PersistentARTrieChar::<String>::create(&path).expect("create");
         let mut tx = trie.begin_document("doc1").expect("begin");
         trie.tx_insert(&mut tx, "x", Some("X".to_string()));
         trie.tx_insert(&mut tx, "y", Some("Y".to_string()));
@@ -420,7 +420,7 @@ fn char_doc_tx_overlay_set_durable_reopen() {
 fn char_doc_tx_overlay_increment_and_negative_reject() {
     let dir = scratch("f2-char-doctx-incr");
     let path = dir.path().join("t.artc");
-    let mut trie = PersistentARTrieChar::<u64>::create(&path).expect("create");
+    let trie = PersistentARTrieChar::<u64>::create(&path).expect("create");
     // Positive aggregate: +5 then +3 = 8.
     let mut tx = trie.begin_document("d1").expect("begin");
     trie.tx_increment(&mut tx, "c", 5);
@@ -444,7 +444,7 @@ fn byte_doc_tx_overlay_set_durable_reopen() {
     let dir = scratch("f2-byte-doctx");
     let path = dir.path().join("t.part");
     {
-        let mut trie = PersistentARTrie::<String>::create(&path).expect("create");
+        let trie = PersistentARTrie::<String>::create(&path).expect("create");
         let mut tx = trie.begin_document("doc1").expect("begin");
         trie.tx_insert(&mut tx, "x", Some("X".to_string()));
         trie.tx_insert(&mut tx, "y", Some("Y".to_string()));

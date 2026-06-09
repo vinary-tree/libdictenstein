@@ -8,7 +8,6 @@
 
 use libdictenstein::persistent_artrie::recovery::RecoveryMode;
 use libdictenstein::persistent_artrie::{PersistentARTrie, WalConfig};
-use libdictenstein::persistent_artrie_char::PersistentARTrieChar;
 use libdictenstein::{Dictionary, MappedDictionary};
 use std::fs::OpenOptions;
 use std::io::{Seek, SeekFrom, Write};
@@ -62,51 +61,5 @@ fn byte_corruption_rebuild_retains_active_wal_batch_and_remove() {
     assert!(
         report.archive_segments_used.len() >= 1,
         "active WAL should be preserved as a rebuild segment"
-    );
-}
-
-#[test]
-fn char_corruption_rebuild_replays_archived_checkpoint_and_active_tail() {
-    let dir = tempdir().expect("tempdir");
-    let path = dir.path().join("char_active.artc");
-    let config = recovery_config();
-
-    {
-        let mut trie =
-            PersistentARTrieChar::<i32>::create_with_config(&path, config.clone()).expect("create");
-        // F2-migrate: Bucket B — corrupts the header magic and rebuilds from the archived
-        // checkpoint + active WAL tail (the OWNED-tree recovery contract). Feature-on a
-        // fresh `i32` char trie create-flips and archives an Overlay-regime image; the
-        // arbitrary-V corruption rebuild then cannot surface the recovered data. Pin the
-        // Owned regime so the archive + WAL hold owned records the rebuild replays. No-op
-        // feature-off (`i32` is char-arbitrary-V).
-        trie.kill_switch_to_owned();
-        trie.insert_with_value("checkpointed", 1)
-            .expect("insert checkpointed");
-        trie.checkpoint().expect("checkpoint to archive");
-
-        let inserted = trie.insert_batch(&[
-            ("active-keep".to_string(), Some(2)),
-            ("active-remove".to_string(), Some(3)),
-        ]);
-        assert_eq!(inserted, 2);
-        assert!(trie.remove("active-remove").expect("remove active"));
-        trie.sync().expect("sync active WAL");
-    }
-
-    corrupt_header_magic(&path);
-
-    let (recovered, report) = PersistentARTrieChar::<i32>::open_with_recovery_config(&path, config)
-        .expect("recover char trie from archive plus active WAL");
-
-    assert_eq!(report.mode, RecoveryMode::RebuildFromWal);
-    // F2-migrate: Bucket A — the recovered char trie create-flips on rebuild; read via
-    // `get_value` (the overlay returns None from `get`).
-    assert_eq!(recovered.get_value("checkpointed"), Some(1));
-    assert_eq!(recovered.get_value("active-keep"), Some(2));
-    assert!(!recovered.contains("active-remove"));
-    assert!(
-        report.archive_segments_used.len() >= 2,
-        "rebuild should consume both archived checkpoint and active tail"
     );
 }

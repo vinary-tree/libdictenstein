@@ -1025,63 +1025,6 @@ mod archive_mode_tests {
     use std::path::PathBuf;
     use tempfile::tempdir;
 
-    /// Test 18.1: Archive mode creates WAL segments on checkpoint.
-    #[test]
-    fn test_archive_mode_creates_segments() {
-        let dir = tempdir().expect("create temp dir");
-        let path = dir.path().join("archive_test.artrie");
-
-        // Create trie with archive mode enabled (default)
-        {
-            let trie = PersistentARTrieChar::<()>::create(&path).expect("create trie");
-            // Force the proven owned-tree path (pre-flip behavior) — this test exercises an owned/transaction/merge/archive feature that the create-flip would otherwise route to the lock-free overlay.
-            trie.kill_switch_to_owned();
-
-            // Insert some data
-            for i in 0..100 {
-                trie.insert(&format!("term{}", i)).expect("insert");
-            }
-
-            // First checkpoint - should create an archive segment
-            trie.checkpoint().expect("checkpoint 1");
-
-            // Insert more data
-            for i in 100..200 {
-                trie.insert(&format!("term{}", i)).expect("insert");
-            }
-
-            // Second checkpoint - should create another archive segment
-            trie.checkpoint().expect("checkpoint 2");
-        }
-
-        // Verify archive directory was created
-        let archive_dir = dir.path().join("wal_archive");
-        assert!(archive_dir.exists(), "Archive directory should exist");
-
-        // Verify archive segments were created
-        let segments: Vec<_> = std::fs::read_dir(&archive_dir)
-            .expect("read archive dir")
-            .filter_map(|e| e.ok())
-            .collect();
-
-        assert!(
-            segments.len() >= 1,
-            "Should have at least 1 archive segment, found {}",
-            segments.len()
-        );
-
-        // Verify segments have .segment extension
-        for entry in &segments {
-            let path = entry.path();
-            let ext = path.extension().and_then(|e| e.to_str());
-            assert_eq!(
-                ext,
-                Some("segment"),
-                "Archive segments should have .segment extension"
-            );
-        }
-    }
-
     /// Test 18.2: Archive mode disabled skips archiving.
     #[test]
     fn test_archive_mode_disabled() {
@@ -1193,9 +1136,9 @@ mod archive_mode_tests {
 
 mod open_with_recovery_tests {
     use libdictenstein::persistent_artrie::recovery::RecoveryMode;
-    use libdictenstein::persistent_artrie::wal::WalConfig;
+
     use libdictenstein::persistent_artrie_char::PersistentARTrieChar;
-    use std::path::PathBuf;
+
     use tempfile::tempdir;
 
     #[test]
@@ -1253,79 +1196,6 @@ mod open_with_recovery_tests {
         for i in 0..10 {
             let term = format!("term{}", i);
             assert!(trie.contains(&term), "Term '{}' should exist", term);
-        }
-    }
-
-    #[test]
-    fn test_open_with_recovery_with_wal_archive() {
-        let dir = tempdir().expect("create tempdir");
-        let path = dir.path().join("with_archive.artc");
-
-        // Create trie with archive mode enabled
-        let config = WalConfig {
-            archive_enabled: true,
-            archive_dir: PathBuf::from("wal_archive"),
-            max_segments: 10,
-            max_archive_bytes: 1024 * 1024,
-        };
-
-        // First, create and populate with checkpoints to generate archive segments
-        {
-            let trie = PersistentARTrieChar::<()>::create_with_config(&path, config.clone())
-                .expect("create trie");
-            // Force the proven owned-tree path (pre-flip behavior) — this test exercises an owned/transaction/merge/archive feature that the create-flip would otherwise route to the lock-free overlay.
-            trie.kill_switch_to_owned();
-
-            for round in 0..3 {
-                for i in 0..5 {
-                    let term = format!("round{}item{}", round, i);
-                    trie.insert(&term).expect("insert");
-                }
-                trie.checkpoint().expect("checkpoint");
-            }
-        }
-
-        // Verify archive segments were created
-        let archive_dir = dir.path().join("wal_archive");
-        assert!(archive_dir.exists(), "Archive directory should exist");
-
-        // Count archive segments (files have .segment extension, e.g., wal_12345.segment)
-        let segment_count = std::fs::read_dir(&archive_dir)
-            .expect("read archive dir")
-            .filter(|e| {
-                e.as_ref()
-                    .map(|entry| {
-                        let path = entry.path();
-                        path.extension().and_then(|e| e.to_str()) == Some("segment")
-                    })
-                    .unwrap_or(false)
-            })
-            .count();
-
-        // With 3 checkpoint rounds, we should have 3 archive segments
-        assert!(
-            segment_count >= 2,
-            "Should have at least 2 archive segments (got {})",
-            segment_count
-        );
-
-        // Now open with recovery - should succeed with Normal mode (no corruption)
-        let (trie, report) =
-            PersistentARTrieChar::<()>::open_with_recovery_config(&path, config.clone())
-                .expect("open_with_recovery should succeed");
-
-        assert_eq!(
-            report.mode,
-            RecoveryMode::Normal,
-            "Should report Normal mode for clean file"
-        );
-
-        // Verify all data is present
-        for round in 0..3 {
-            for i in 0..5 {
-                let term = format!("round{}item{}", round, i);
-                assert!(trie.contains(&term), "Term '{}' should exist", term);
-            }
         }
     }
 
@@ -2790,7 +2660,7 @@ mod phase_22_merge_operations {
 mod phase_22_byte_arena_aware_iteration {
     use super::*;
     use libdictenstein::persistent_artrie::PersistentARTrie;
-    use libdictenstein::{Dictionary, MappedDictionary};
+    use libdictenstein::Dictionary;
     use std::collections::HashMap;
 
     #[test]
@@ -2897,79 +2767,6 @@ mod phase_22_byte_arena_aware_iteration {
 
         assert_eq!(values.get("apple"), Some(&1));
         assert_eq!(values.get("application"), Some(&2));
-    }
-
-    #[test]
-    fn test_merge_from_basic() {
-        let dir1 = tempdir().expect("create temp dir 1");
-        let dir2 = tempdir().expect("create temp dir 2");
-        let path1 = dir1.path().join("trie1.artrie");
-        let path2 = dir2.path().join("trie2.artrie");
-
-        let mut trie1: PersistentARTrie<i64> =
-            PersistentARTrie::create(&path1).expect("create trie1");
-        let trie2: PersistentARTrie<i64> = PersistentARTrie::create(&path2).expect("create trie2");
-        // **M4b REFRAME.** Fresh `create::<i64>()` create-flips; trie-to-trie
-        // `merge_from` is rejected under the overlay (it would overwrite rather than
-        // combine accumulated values). Force both tries to the owned regime.
-        trie1.kill_switch_to_owned();
-        trie2.kill_switch_to_owned();
-
-        // Insert into trie1
-        use libdictenstein::MutableMappedDictionary;
-        trie1.insert_with_value("apple", 1);
-        trie1.insert_with_value("banana", 2);
-
-        // Insert into trie2
-        trie2.insert_with_value("cherry", 3);
-        trie2.insert_with_value("apple", 10); // Conflict
-
-        // Merge trie2 into trie1 with sum on conflict
-        let processed = trie1
-            .merge_from(&trie2, |a, b| a + b)
-            .expect("merge should succeed");
-
-        assert_eq!(processed, 2, "Should process 2 terms from trie2");
-        assert_eq!(trie1.get_value("apple"), Some(11), "apple: 1 + 10 = 11");
-        assert_eq!(trie1.get_value("banana"), Some(2), "banana unchanged");
-        assert_eq!(trie1.get_value("cherry"), Some(3), "cherry added");
-    }
-
-    #[test]
-    fn test_merge_replace() {
-        let dir1 = tempdir().expect("create temp dir 1");
-        let dir2 = tempdir().expect("create temp dir 2");
-        let path1 = dir1.path().join("trie1.artrie");
-        let path2 = dir2.path().join("trie2.artrie");
-
-        let mut trie1: PersistentARTrie<i64> =
-            PersistentARTrie::create(&path1).expect("create trie1");
-        let trie2: PersistentARTrie<i64> = PersistentARTrie::create(&path2).expect("create trie2");
-        // **M4b REFRAME.** Fresh `create::<i64>()` create-flips; trie-to-trie
-        // `merge_replace` is rejected under the overlay. Force both to owned.
-        trie1.kill_switch_to_owned();
-        trie2.kill_switch_to_owned();
-
-        // Insert into trie1
-        use libdictenstein::MutableMappedDictionary;
-        trie1.insert_with_value("apple", 1);
-        trie1.insert_with_value("banana", 2);
-
-        // Insert into trie2
-        trie2.insert_with_value("apple", 100); // Should replace
-        trie2.insert_with_value("cherry", 3);
-
-        // Merge with replace semantics
-        let processed = trie1.merge_replace(&trie2).expect("merge should succeed");
-
-        assert_eq!(processed, 2, "Should process 2 terms from trie2");
-        assert_eq!(
-            trie1.get_value("apple"),
-            Some(100),
-            "apple replaced with 100"
-        );
-        assert_eq!(trie1.get_value("banana"), Some(2), "banana unchanged");
-        assert_eq!(trie1.get_value("cherry"), Some(3), "cherry added");
     }
 
     #[test]

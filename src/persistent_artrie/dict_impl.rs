@@ -377,26 +377,6 @@ pub struct PersistentARTrie<V: DictionaryValue = (), S: BlockStorage = MmapDiskM
     #[cfg(feature = "persistent-artrie")]
     pub(crate) cas_retries: std::sync::atomic::AtomicU64,
 
-    // === Overlay flip kill-switch (M2a — INERT scaffold) ===
-    /// Kill-switch selecting the production write-path representation
-    /// (owned-tree vs lock-free overlay), the byte twin of the char field.
-    ///
-    /// Wired as the inert
-    /// [`OverlayWriteMode::OwnedTree`](crate::persistent_artrie_core::overlay::write_mode::OverlayWriteMode::OwnedTree)
-    /// default, so it changes NO current byte behavior: `route_overlay()` stays
-    /// `false` until an explicit `flip_to_overlay()` / `set_overlay_write_mode()`
-    /// (opt-in, reversible — M2a). The irreversible production create-flip is a
-    /// later step (M4); no production byte path reads this field yet. The whole
-    /// `persistent_artrie` module is `#[cfg(feature = "persistent-artrie")]`, so
-    /// (like the char field) this needs no separate cfg gate.
-    ///
-    /// **F4:** an `AtomicEnumCell` so the now-`&self` `kill_switch_to_owned` /
-    /// `set_overlay_write_mode` / `flip_to_overlay` write it and the hot
-    /// `route_overlay()` predicate loads it lock-free after the collapse.
-    pub(crate) overlay_write_mode: crate::persistent_artrie_core::shared_access::AtomicEnumCell<
-        crate::persistent_artrie_core::overlay::write_mode::OverlayWriteMode,
-    >,
-
     // === Order-A durable-overlay write path (M2b) ===
     /// **Committed-LSN watermark for the lock-free Order-A durable write path**
     /// (the byte twin of the char field). Under lock-free CAS, writes can commit
@@ -985,29 +965,6 @@ mod tests {
         }
 
         #[test]
-        fn test_increment_existing_term() {
-            let dir = tempdir().expect("create temp dir");
-            let dict_path = dir.path().join("atomic_test.part");
-
-            let mut dict: PersistentARTrie<i64> =
-                PersistentARTrie::create(&dict_path).expect("create dict");
-            // M4b: a fresh create::<i64>() create-flips; this test does a NEGATIVE
-            // decrement (-3) which the overlay counter domain rejects. Force owned.
-            dict.kill_switch_to_owned();
-
-            // Insert initial value
-            dict.upsert("counter", 10i64).expect("upsert");
-
-            // Increment
-            let result = dict.increment("counter", 5).expect("increment");
-            assert_eq!(result, 15);
-
-            // Negative increment (decrement)
-            let result = dict.increment("counter", -3).expect("decrement");
-            assert_eq!(result, 12);
-        }
-
-        #[test]
         fn test_upsert_new_term() {
             let dir = tempdir().expect("create temp dir");
             let dict_path = dir.path().join("atomic_test.part");
@@ -1165,11 +1122,8 @@ mod tests {
             let dir = tempdir().expect("create temp dir");
             let dict_path = dir.path().join("tx_test.part");
 
-            let mut dict: PersistentARTrie<i64> =
+            let dict: PersistentARTrie<i64> =
                 PersistentARTrie::create(&dict_path).expect("create dict");
-            // M4b: a fresh create::<i64>() create-flips; document transactions are
-            // rejected under the overlay. Force the owned regime.
-            dict.kill_switch_to_owned();
 
             // Begin a document transaction
             let mut tx = dict.begin_document("doc1").expect("begin transaction");
@@ -1207,9 +1161,6 @@ mod tests {
 
             let dict: PersistentARTrie<i64> =
                 PersistentARTrie::create(&dict_path).expect("create dict");
-            // M4b: a fresh create::<i64>() create-flips; document transactions are
-            // rejected under the overlay. Force the owned regime.
-            dict.kill_switch_to_owned();
 
             // Insert one term directly
             dict.insert_with_value("existing", 42);
@@ -1239,11 +1190,8 @@ mod tests {
             let dir = tempdir().expect("create temp dir");
             let dict_path = dir.path().join("tx_test.part");
 
-            let mut dict: PersistentARTrie<i64> =
+            let dict: PersistentARTrie<i64> =
                 PersistentARTrie::create(&dict_path).expect("create dict");
-            // M4b: a fresh create::<i64>() create-flips; document transactions are
-            // rejected under the overlay. Force the owned regime.
-            dict.kill_switch_to_owned();
 
             // Begin and immediately commit an empty transaction
             let tx = dict.begin_document("empty_doc").expect("begin transaction");
@@ -1256,11 +1204,8 @@ mod tests {
             let dir = tempdir().expect("create temp dir");
             let dict_path = dir.path().join("tx_test.part");
 
-            let mut dict: PersistentARTrie<i64> =
+            let dict: PersistentARTrie<i64> =
                 PersistentARTrie::create(&dict_path).expect("create dict");
-            // M4b: a fresh create::<i64>() create-flips; document transactions are
-            // rejected under the overlay. Force the owned regime.
-            dict.kill_switch_to_owned();
 
             let mut tx = dict.begin_document("doc1").expect("begin transaction");
 
@@ -1279,11 +1224,8 @@ mod tests {
             let dir = tempdir().expect("create temp dir");
             let dict_path = dir.path().join("tx_test.part");
 
-            let mut dict: PersistentARTrie<i64> =
+            let dict: PersistentARTrie<i64> =
                 PersistentARTrie::create(&dict_path).expect("create dict");
-            // M4b: a fresh create::<i64>() create-flips; document transactions are
-            // rejected under the overlay. Force the owned regime.
-            dict.kill_switch_to_owned();
 
             // First document - commit
             let mut tx1 = dict.begin_document("doc1").expect("begin tx1");

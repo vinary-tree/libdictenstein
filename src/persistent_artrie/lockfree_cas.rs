@@ -544,9 +544,9 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
     pub fn merge_lockfree_to_persistent(&mut self) -> Result<usize> {
         if self.route_overlay() {
             return Err(PersistentARTrieError::InvalidOperation(
-                "merge_lockfree_to_persistent is not valid under the lock-free overlay write \
-                 mode (the overlay is the durable production state; draining it into the owned \
-                 tree would destroy durable state); use OverlayWriteMode::OwnedTree"
+                "merge_lockfree_to_persistent is not valid under the lock-free overlay (the \
+                 overlay is the durable production state; draining it into the owned tree \
+                 would destroy durable state)"
                     .to_string(),
             ));
         }
@@ -1486,8 +1486,7 @@ impl<S: BlockStorage> PersistentARTrie<u64, S> {
         if self.route_overlay() {
             return Err(PersistentARTrieError::InvalidOperation(
                 "merge_lockfree_values_to_persistent is not valid under the lock-free overlay \
-                 write mode (it drains and clears the overlay, which is the durable production \
-                 state); use OverlayWriteMode::OwnedTree"
+                 (it drains and clears the overlay, which is the durable production state)"
                     .to_string(),
             ));
         }
@@ -1730,7 +1729,6 @@ mod durable_write_tests {
 
     use crate::persistent_artrie::PersistentARTrie;
     use crate::persistent_artrie_core::durability::DurabilityPolicy;
-    use crate::persistent_artrie_core::overlay::write_mode::OverlayWriteMode;
     use crate::{Dictionary, MappedDictionary};
     use std::sync::{Arc, Barrier};
     use std::thread;
@@ -1760,7 +1758,6 @@ mod durable_write_tests {
             let mut trie = PersistentARTrie::<()>::create(&path).expect("create");
             trie.set_durability_policy(DurabilityPolicy::Immediate);
             trie.enable_lockfree();
-            trie.set_overlay_write_mode(OverlayWriteMode::LockFreeOverlay);
             // `inserted_count` tracks committed inserts as a u64 (NOT an `as`-cast of
             // the enumerate index) so this membership test stays free of the forbidden
             // counter-codec gate tokens (the watermark/LSN math is not a counter leaf).
@@ -1822,7 +1819,6 @@ mod durable_write_tests {
             let mut trie = PersistentARTrie::<u64>::create(&path).expect("create");
             trie.set_durability_policy(DurabilityPolicy::Immediate);
             trie.enable_lockfree();
-            trie.set_overlay_write_mode(OverlayWriteMode::LockFreeOverlay);
             for (key, steps, delta) in plan {
                 let mut last = 0u64;
                 for _ in 0..steps {
@@ -1867,7 +1863,6 @@ mod durable_write_tests {
             let mut trie = PersistentARTrie::<u64>::create(&path).expect("create");
             trie.set_durability_policy(DurabilityPolicy::Immediate);
             trie.enable_lockfree();
-            trie.set_overlay_write_mode(OverlayWriteMode::LockFreeOverlay);
             assert!(trie
                 .insert_cas_with_value_durable(b"alpha", 11)
                 .expect("valued insert"));
@@ -1913,7 +1908,6 @@ mod durable_write_tests {
             let mut trie = PersistentARTrie::<u64>::create(&path).expect("create");
             trie.set_durability_policy(DurabilityPolicy::Immediate);
             trie.enable_lockfree();
-            trie.set_overlay_write_mode(OverlayWriteMode::LockFreeOverlay);
             assert!(trie
                 .insert_cas_with_value_durable(b"counter", 42)
                 .expect("valued insert"));
@@ -1954,7 +1948,6 @@ mod durable_write_tests {
             let mut trie = PersistentARTrie::<()>::create(&path).expect("create");
             trie.set_durability_policy(DurabilityPolicy::Immediate);
             trie.enable_lockfree();
-            trie.set_overlay_write_mode(OverlayWriteMode::LockFreeOverlay);
             // "apple"/"apricot" share the "ap" prefix; removing "apple" retains "apricot".
             assert!(trie.insert_cas_durable(b"apple").expect("durable insert"));
             assert!(trie.insert_cas_durable(b"apricot").expect("durable insert"));
@@ -2024,7 +2017,6 @@ mod durable_write_tests {
         let mut trie = PersistentARTrie::<u64>::create(&path).expect("create");
         trie.set_durability_policy(DurabilityPolicy::Immediate);
         trie.enable_lockfree();
-        trie.set_overlay_write_mode(OverlayWriteMode::LockFreeOverlay);
 
         // (1) A single durable delta above i64::MAX must be rejected by the seam
         // (one i64 WAL chunk cannot carry it), not wrapped. `(u64::MAX / 2) + 1`
@@ -2099,7 +2091,6 @@ mod durable_write_tests {
         let mut trie = PersistentARTrie::<u64>::create(&path).expect("create");
         trie.set_durability_policy(DurabilityPolicy::None);
         trie.enable_lockfree();
-        trie.set_overlay_write_mode(OverlayWriteMode::LockFreeOverlay);
         assert!(
             trie.insert_cas_durable(b"x").is_err(),
             "insert_cas_durable must reject a non-synchronous policy"
@@ -2133,7 +2124,6 @@ mod durable_write_tests {
             let mut trie = PersistentARTrie::<()>::create(&path).expect("create");
             trie.set_durability_policy(DurabilityPolicy::Immediate);
             trie.enable_lockfree();
-            trie.set_overlay_write_mode(OverlayWriteMode::LockFreeOverlay);
             let trie = Arc::new(trie);
             let barrier = Arc::new(Barrier::new(n_threads));
 
@@ -2200,7 +2190,6 @@ mod m2d_regime_aware_recovery_tests {
 
     use crate::persistent_artrie::PersistentARTrie;
     use crate::persistent_artrie_core::durability::DurabilityPolicy;
-    use crate::persistent_artrie_core::overlay::write_mode::OverlayWriteMode;
     use crate::persistent_artrie_core::wal::WalRecord;
     use crate::{Dictionary, MappedDictionary};
 
@@ -2228,7 +2217,6 @@ mod m2d_regime_aware_recovery_tests {
             trie.set_durability_policy(DurabilityPolicy::Immediate);
             trie.enable_lockfree();
             // Stamps the WAL header regime = Overlay.
-            trie.set_overlay_write_mode(OverlayWriteMode::LockFreeOverlay);
             // RANKED survivor: insert_cas_durable appends Insert + CommitRank (acked).
             assert!(
                 trie.insert_cas_durable(b"survivor")
@@ -2272,7 +2260,6 @@ mod m2d_regime_aware_recovery_tests {
             let mut trie = PersistentARTrie::<()>::create(&path).expect("create");
             trie.set_durability_policy(DurabilityPolicy::Immediate);
             trie.enable_lockfree();
-            trie.set_overlay_write_mode(OverlayWriteMode::LockFreeOverlay);
             // RANKED insert then RANKED remove of the SAME term `t`.
             assert!(trie.insert_cas_durable(b"t").expect("durable insert"));
             assert!(
@@ -2379,7 +2366,6 @@ mod m2d_regime_aware_recovery_tests {
             let mut trie = PersistentARTrie::<u64>::create(&path).expect("create");
             trie.set_durability_policy(DurabilityPolicy::Immediate);
             trie.enable_lockfree();
-            trie.set_overlay_write_mode(OverlayWriteMode::LockFreeOverlay);
             // 3 ranked +7 deltas ⇒ 21.
             for _ in 0..3 {
                 trie.try_increment_cas_durable(b"ctr", 7)
@@ -2417,7 +2403,7 @@ mod m4b_flip_gate_tests {
 
     use crate::persistent_artrie::{CompactionConfig, PersistentARTrie};
     use crate::persistent_artrie_core::durability::DurabilityPolicy;
-    use crate::{Dictionary, MappedDictionary};
+    use crate::Dictionary;
 
     fn scratch(prefix: &str) -> tempfile::TempDir {
         std::fs::create_dir_all("target/test-tmp").ok();
@@ -2503,120 +2489,32 @@ mod m4b_flip_gate_tests {
         }
     }
 
-    /// **(b) F7: an old Owned-regime ELIGIBLE file CONVERTS to the overlay on reopen,
-    /// data intact; the legacy-loader oracle stays Owned.** Pre-F7 an Owned-regime file
-    /// stayed Owned on reopen; F7 (Owned→Overlay conversion-on-reopen) CONVERTS any
-    /// overlay-eligible Owned file (compaction image / kill-switched / legacy) INTO the
-    /// overlay so the production read/checkpoint path is overlay-routed. The data must
-    /// survive the conversion (`route_overlay()==true` after `open`), and the pre-F7
-    /// owned-reopen behavior is preserved by `open_with_legacy_loader` (the oracle that
-    /// STAYS Owned and reads the owned tree) — exercised by the
-    /// `persistent_owned_to_overlay_correspondence` suite.
-    #[test]
-    fn m4b_old_owned_file_stays_owned_on_reopen() {
-        // Arbitrary V = String: an Owned-regime file CONVERTS to the overlay on `open`;
-        // `open_with_legacy_loader` is the stay-Owned oracle.
-        {
-            let dir = scratch("byte-m4b-owned-string");
-            let path = dir.path().join("t.part");
-            let entries: Vec<(String, String)> = (0..30u32)
-                .map(|i| (format!("w{i:03}"), format!("v{i:03}")))
-                .collect();
-            {
-                let trie = PersistentARTrie::<String>::create(&path).expect("create<String>");
-                trie.kill_switch_to_owned();
-                assert!(!trie.route_overlay(), "String trie is on the owned path");
-                for (k, v) in &entries {
-                    trie.insert_with_value(k, v.clone());
-                }
-                trie.checkpoint().expect("owned checkpoint");
-            }
-            // F7: production `open` CONVERTS the Owned-regime file into the overlay.
-            // (The pre-F7 stay-Owned oracle is covered by the dedicated
-            // `persistent_owned_to_overlay_correspondence` suite, which builds a SEPARATE
-            // fixture per loader since the converting `open` mutates the file to Overlay.)
-            let recovered = PersistentARTrie::<String>::open(&path).expect("reopen<String>");
-            assert!(
-                recovered.route_overlay(),
-                "F7: an Owned-regime eligible file CONVERTS to the overlay on reopen"
-            );
-            for (k, v) in &entries {
-                assert_eq!(
-                    MappedDictionary::get_value(&recovered, k),
-                    Some(v.clone()),
-                    "converted data lost for {k:?} across reopen"
-                );
-            }
-        }
-        // Eligible V = u64, kill-switched to Owned after create: CONVERTS on reopen.
-        {
-            let dir = scratch("byte-m4b-owned-i64-ks");
-            let path = dir.path().join("t.part");
-            {
-                let trie = PersistentARTrie::<u64>::create(&path).expect("create<u64>");
-                trie.kill_switch_to_owned();
-                assert!(!trie.route_overlay(), "kill-switch reverts to owned");
-                trie.upsert_bytes(b"alpha", 7).expect("owned upsert");
-                trie.upsert_bytes(b"beta", 11).expect("owned upsert");
-                trie.checkpoint().expect("owned checkpoint");
-            }
-            let recovered = PersistentARTrie::<u64>::open(&path).expect("reopen<u64>");
-            assert!(
-                recovered.route_overlay(),
-                "F7: a kill-switched (Owned-regime) u64 file CONVERTS to the overlay on reopen"
-            );
-            assert_eq!(
-                recovered.get_value_bytes(b"alpha"),
-                Some(7),
-                "converted alpha intact"
-            );
-            assert_eq!(
-                recovered.get_value_bytes(b"beta"),
-                Some(11),
-                "converted beta intact"
-            );
-        }
-    }
-
     /// **(c) `compact()` SUCCEEDS under the overlay (F6).** A fresh `create::<u64>()`
-    /// flips; `compact()` now sources the snapshot from the overlay (enumeration AND
-    /// values), rebuilds a dense owned image, and RE-FLIPS to preserve the overlay
-    /// regime — data and routing survive. The kill-switched owned twin succeeds via the
-    /// proven owned path.
+    /// flips; `compact()` sources the snapshot from the overlay (enumeration AND
+    /// values), rebuilds a dense image via the CX serializer, and reopens overlay-routed
+    /// — data and routing survive.
     #[test]
-    fn m4b_compact_succeeds_under_overlay_and_owned() {
-        // Overlay (flipped): compact succeeds, preserves data, STAYS overlay.
-        {
-            let dir = scratch("byte-m4b-compact-overlay");
-            let path = dir.path().join("t.part");
-            let mut trie = PersistentARTrie::<u64>::create(&path).expect("create<u64>");
-            assert!(trie.route_overlay(), "fresh create<u64> is overlay-routed");
-            trie.increment_bytes(b"seed", 1).expect("seed");
-            trie.compact(CompactionConfig::default(), |_| {})
-                .expect("F6: compact succeeds under the overlay");
-            assert!(
-                trie.route_overlay(),
-                "F6: compact must PRESERVE the overlay regime (re-flip after reopen)"
-            );
-            assert_eq!(
-                trie.get_value_bytes(b"seed"),
-                Some(1),
-                "F6: data preserved across overlay compaction"
-            );
-        }
-        // Owned (kill-switched): compact succeeds.
-        {
-            let dir = scratch("byte-m4b-compact-owned");
-            let path = dir.path().join("t.part");
-            let mut trie = PersistentARTrie::<u64>::create(&path).expect("create<u64>");
-            trie.kill_switch_to_owned();
-            trie.upsert_bytes(b"alpha", 1).expect("owned upsert");
-            trie.upsert_bytes(b"beta", 2).expect("owned upsert");
-            trie.compact(CompactionConfig::default(), |_| {})
-                .expect("owned compact succeeds");
-            assert_eq!(trie.get_value_bytes(b"alpha"), Some(1));
-            assert_eq!(trie.get_value_bytes(b"beta"), Some(2));
-        }
+    fn m4b_compact_succeeds_under_overlay() {
+        let dir = scratch("byte-m4b-compact-overlay");
+        let path = dir.path().join("t.part");
+        let mut trie = PersistentARTrie::<u64>::create(&path).expect("create<u64>");
+        assert!(trie.route_overlay(), "fresh create<u64> is overlay-routed");
+        trie.increment_bytes(b"seed", 1).expect("seed");
+        trie.upsert_bytes(b"alpha", 1).expect("upsert alpha");
+        trie.upsert_bytes(b"beta", 2).expect("upsert beta");
+        trie.compact(CompactionConfig::default(), |_| {})
+            .expect("F6: compact succeeds under the overlay");
+        assert!(
+            trie.route_overlay(),
+            "F6: compact must PRESERVE the overlay regime (reopen overlay-routed)"
+        );
+        assert_eq!(
+            trie.get_value_bytes(b"seed"),
+            Some(1),
+            "F6: data preserved across overlay compaction"
+        );
+        assert_eq!(trie.get_value_bytes(b"alpha"), Some(1));
+        assert_eq!(trie.get_value_bytes(b"beta"), Some(2));
     }
 
     /// **(d) reestablish-survival across reopen, INCLUDING a >100k-term first-byte
@@ -2866,33 +2764,6 @@ mod m4b_flip_gate_tests {
         );
     }
 
-    /// **owned-regime valued "" — checkpoint → reopen (P0/H1 serialize+load).** A
-    /// kill-switched-to-owned trie writes "" via the owned path; the value survives
-    /// via P0's `serialize_root`/load fix (the owned file reopens owned).
-    #[test]
-    fn empty_string_valued_owned_regime_reopen() {
-        use crate::persistent_artrie_core::overlay::flip::LockFreeOverlay;
-        let dir = scratch("byte-es-owned");
-        let path = dir.path().join("t.part");
-        {
-            let trie = PersistentARTrie::<u64>::create(&path).expect("create<u64>");
-            trie.kill_switch_to_owned();
-            assert!(!trie.route_overlay(), "kill-switched → owned");
-            trie.upsert_bytes(b"", 88)
-                .expect("owned valued upsert \"\"");
-            trie.upsert_bytes(b"k", 9).expect("owned upsert k");
-            assert_eq!(trie.get_value_bytes(b""), Some(88));
-            trie.checkpoint().expect("owned checkpoint");
-        }
-        let recovered = PersistentARTrie::<u64>::open(&path).expect("reopen<u64>");
-        assert_eq!(
-            recovered.get_value_bytes(b""),
-            Some(88),
-            "owned-regime empty-term value lost across checkpoint → reopen (P0/H1)"
-        );
-        assert_eq!(recovered.get_value_bytes(b"k"), Some(9));
-    }
-
     /// **back-compat — a value-less root reopens with `get_value("")` == None.** A
     /// trie with only non-empty terms (no "" written) has a value-less root; it must
     /// reopen unchanged with the empty term absent (the value-less path is unperturbed).
@@ -2975,19 +2846,15 @@ mod m4b_flip_gate_tests {
         );
     }
 
-    /// **compaction preserves "" (H8 — owned-mode).** `compact()` rejects under the
-    /// overlay, so this kill-switches to owned, writes a valued "" + non-empty terms,
-    /// compacts (which rebuilds from the owned iterator — H8 verified it enumerates
-    /// ""), and confirms "" + its value survive the rebuild + atomic file replace.
+    /// **compaction preserves "" (H8).** Writes a valued "" + non-empty terms to the
+    /// overlay, compacts (the CX serializer enumerates "" from the overlay snapshot),
+    /// and confirms "" + its value survive the rebuild + atomic file replace.
     #[test]
     fn empty_string_survives_compaction() {
-        use crate::persistent_artrie_core::overlay::flip::LockFreeOverlay;
         let dir = scratch("byte-es-compaction");
         let path = dir.path().join("t.part");
         let mut trie = PersistentARTrie::<u64>::create(&path).expect("create<u64>");
-        trie.kill_switch_to_owned();
-        assert!(!trie.route_overlay(), "compact() requires owned mode");
-        trie.upsert_bytes(b"", 42).expect("owned valued \"\"");
+        trie.upsert_bytes(b"", 42).expect("valued \"\"");
         trie.upsert_bytes(b"alpha", 1).expect("alpha");
         trie.upsert_bytes(b"beta", 2).expect("beta");
         trie.compact(CompactionConfig::default(), |_| {})
@@ -2999,35 +2866,5 @@ mod m4b_flip_gate_tests {
         );
         assert_eq!(trie.get_value_bytes(b"alpha"), Some(1));
         assert_eq!(trie.get_value_bytes(b"beta"), Some(2));
-    }
-
-    /// **H7 — empty-term value survives a root bucket→ART split (owned-mode /
-    /// WAL-replay-reachable path).** Insert a valued "" then enough distinct terms to
-    /// overflow the root bucket (forcing `convert_bucket_to_art`), and confirm "" keeps
-    /// its value — `convert_bucket_to_art` now threads `result.final_value` (was the
-    /// `value: None` drop the H7 fix closed).
-    #[test]
-    fn empty_string_value_survives_bucket_to_art_split() {
-        use crate::persistent_artrie_core::overlay::flip::LockFreeOverlay;
-        let dir = scratch("byte-es-split");
-        let path = dir.path().join("t.part");
-        let trie = PersistentARTrie::<u64>::create(&path).expect("create<u64>");
-        trie.kill_switch_to_owned();
-        trie.upsert_bytes(b"", 99).expect("owned valued \"\"");
-        // Enough distinct terms to overflow the root bucket → ART split. Iterate
-        // `i` over a u64 range so the value `i + 1` is the native counter type with no
-        // numeric cast (keeps the v6 counter-codec gate clean).
-        for i in 0..256u64 {
-            trie.upsert_bytes(format!("k{i:04}").as_bytes(), i + 1)
-                .expect("term");
-        }
-        assert_eq!(
-            trie.get_value_bytes(b""),
-            Some(99),
-            "\"\" value lost in root bucket→ART split (H7 convert_bucket_to_art)"
-        );
-        // Spot-check a few non-empty terms survived the split too.
-        assert_eq!(trie.get_value_bytes(b"k0000"), Some(1));
-        assert_eq!(trie.get_value_bytes(b"k0255"), Some(256));
     }
 }

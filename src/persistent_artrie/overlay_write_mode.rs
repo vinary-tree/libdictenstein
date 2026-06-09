@@ -1,32 +1,26 @@
-//! Byte seam impl of the shared [`LockFreeOverlay`] flip (M2a) + thin inherent
+//! Byte seam impl of the shared [`LockFreeOverlay`] flip + thin inherent
 //! wrappers preserving the byte public surface.
 //!
 //! This is the BYTE twin of `persistent_artrie_char::overlay_write_mode`. The
-//! overlay-flip genericization (`docs/design/overlay-durable-architecture.md`,
-//! step M2a) extracted the lock-free-overlay flip (route predicate +
-//! non-faulting RCU read engine + flip/kill-switch + reestablish folds) into the
-//! SHARED GENERIC
+//! overlay-flip genericization (`docs/design/overlay-durable-architecture.md`)
+//! extracted the lock-free-overlay flip (route predicate + non-faulting RCU read
+//! engine + flip + reestablish folds) into the SHARED GENERIC
 //! [`LockFreeOverlay`](crate::persistent_artrie_core::overlay::flip::LockFreeOverlay)
 //! trait. This module holds only:
 //!
-//! 1. a re-export of [`OverlayWriteMode`] (shared in
-//!    `persistent_artrie_core::overlay::write_mode`) so any internal
-//!    `super::overlay_write_mode::OverlayWriteMode` site resolves;
-//! 2. the byte SEAM impl `impl LockFreeOverlay<ByteKey, V, S> for
+//! 1. the byte SEAM impl `impl LockFreeOverlay<ByteKey, V, S> for
 //!    PersistentARTrie<V, S>` (per-variant owned readers / overlay publishers /
 //!    WAL accessors / `CounterValue = u64`, matching char post-u64-restoration);
-//! 3. thin inherent wrappers (`route_overlay` / `flip_to_overlay` /
-//!    `kill_switch_to_owned` / `set_overlay_write_mode` / `overlay_eligible_v`)
-//!    that DELEGATE to the trait, so the byte call sites and the byte
-//!    correspondence tests can use inherent syntax.
+//! 2. thin inherent wrappers (`route_overlay` / `flip_to_overlay` /
+//!    `overlay_eligible_v`) that DELEGATE to the trait, so the byte call sites and
+//!    the byte correspondence tests can use inherent syntax.
 //!
-//! **M2a scope (opt-in, REVERSIBLE).** No production byte ctor flips (the byte
-//! field defaults to the inert [`OverlayWriteMode::OwnedTree`]); the durable
-//! write/checkpoint skeletons (`DurableOverlayWrite`/`OverlayCheckpoint`) and the
-//! production read/write routing are LATER steps (M2b/M3/M4). This module gives
-//! byte ONLY the trait DEFAULTS: the route predicate, the read engine
-//! (`overlay_len`/`overlay_iter_prefix*`/`overlay_get_value`), the flip /
-//! kill-switch, and the no-WAL reestablish folds.
+//! **L3.3 — the overlay is the SOLE representation.** Every byte constructor
+//! installs the lock-free overlay, so `route_overlay()` is universally true; the
+//! owned tree, the `OverlayWriteMode` kill-switch enum, and `kill_switch_to_owned`
+//! were deleted. This module gives byte the trait DEFAULTS: the route predicate,
+//! the read engine (`overlay_len`/`overlay_iter_prefix*`/`overlay_get_value`), the
+//! flip, and the no-WAL reestablish folds.
 //!
 //! # D1 — the #1 data-loss risk (READ BEFORE EDITING A SEAM IMPL)
 //!
@@ -50,10 +44,6 @@
 //! the routed path. So the `owned_*` seams instead use the PRIVATE, UN-routed,
 //! UNCAPPED walks below — a fresh DFS of `self.root` to completion, no limit, no
 //! arena tracking, no `route_overlay()` check.
-
-// Re-export so `super::overlay_write_mode::OverlayWriteMode` resolves everywhere
-// it is used (mirrors the char module's re-export).
-pub(crate) use crate::persistent_artrie_core::overlay::write_mode::OverlayWriteMode;
 
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -452,16 +442,6 @@ impl<V: DictionaryValue, S: BlockStorage> LockFreeOverlay<ByteKey, V, S>
     }
 
     #[inline]
-    fn overlay_write_mode(&self) -> OverlayWriteMode {
-        self.overlay_write_mode.load()
-    }
-
-    #[inline]
-    fn set_overlay_write_mode(&self, mode: OverlayWriteMode) {
-        self.overlay_write_mode.store(mode);
-    }
-
-    #[inline]
     fn enable_lockfree(&mut self) {
         // Delegate to the existing inherent `enable_lockfree` (lockfree_cas.rs),
         // which installs the `AtomicNodePtr` root + cache. NB byte's
@@ -493,22 +473,11 @@ impl<V: DictionaryValue, S: BlockStorage> LockFreeOverlay<ByteKey, V, S>
         }
     }
 
-    fn wal_stamp_owned_regime(&self) {
-        if let Some(ref writer) = self.wal_writer {
-            if let Err(e) = writer.set_owned_regime() {
-                log::warn!(
-                    "kill_switch_to_owned: could not stamp Owned regime: {:?}",
-                    e
-                );
-            }
-        }
-    }
-
     /// ANY `V: DictionaryValue` is overlay-eligible (F2, design G5).
     ///
     /// Arbitrary-V overlay routing is the production default: the generic value
-    /// path routes every `V` through the lock-free overlay. (The kill-switch
-    /// remains the per-trie runtime fallback to the owned tree.)
+    /// path routes every `V` through the lock-free overlay. Since L3.3 deleted the
+    /// owned tree, the overlay is the SOLE representation.
     fn overlay_eligible_v() -> bool {
         true
     }
@@ -872,22 +841,12 @@ impl<V: DictionaryValue, S: BlockStorage> DurableOverlayWrite<ByteKey, V, S>
 
 impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
     /// **Flip F0 — production-write/read-path router.** `true` iff reads/writes/
-    /// checkpoint should take the lock-free overlay path for this trie. Thin
-    /// delegator to [`LockFreeOverlay::route_overlay`]. **M4b: `pub` (the flip
-    /// state predicate — char parity).** Since M4b a fresh `create::<()|i64>()`
-    /// create-flips, so this is `true` by default for eligible V (the irreversible
-    /// production flip); arbitrary V and a [`kill_switch_to_owned`](Self::kill_switch_to_owned)'d
-    /// trie stay `false`.
+    /// checkpoint take the lock-free overlay path for this trie. Thin delegator to
+    /// [`LockFreeOverlay::route_overlay`]. Since L3.3 deleted the owned tree, every
+    /// constructor installs the overlay, so this is universally `true`.
     #[inline]
     pub fn route_overlay(&self) -> bool {
         <Self as LockFreeOverlay<ByteKey, V, S>>::route_overlay(self)
-    }
-
-    /// **Restart-time kill-switch setter.** Thin delegator to the seam.
-    #[cfg_attr(not(test), allow(dead_code))]
-    #[inline]
-    pub(crate) fn set_overlay_write_mode(&self, mode: OverlayWriteMode) {
-        <Self as LockFreeOverlay<ByteKey, V, S>>::set_overlay_write_mode(self, mode)
     }
 
     /// Overlay-eligibility gate (`V ∈ {(), i64}` for byte). Thin delegator.
@@ -906,20 +865,6 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
     #[inline]
     pub(crate) fn flip_to_overlay(&mut self) -> bool {
         <Self as LockFreeOverlay<ByteKey, V, S>>::flip_to_overlay(self)
-    }
-
-    /// **Kill-switch — the one-release fallback / owned-path escape hatch.** Thin
-    /// delegator to [`LockFreeOverlay::kill_switch_to_owned`]. Reverts
-    /// `route_overlay()` to `false` (the owned path) AND restamps the WAL Owned when
-    /// the trie is still fresh (`current_lsn() == 1`), so a freshly-created (and thus
-    /// create-flipped) eligible-V trie can be fully reverted to the proven owned path.
-    /// **M4b: `pub` (char parity)** — the production fallback if the irreversible flip
-    /// must be backed out for a given trie, and the way owned-path feature tests
-    /// (doc-tx / trie-to-trie merge / compaction / CAS) force the owned regime that
-    /// those features require.
-    #[inline]
-    pub fn kill_switch_to_owned(&self) {
-        <Self as LockFreeOverlay<ByteKey, V, S>>::kill_switch_to_owned(self)
     }
 
     // ---- inherent skins over the trait read engine (used by the M2a test) ----
@@ -977,25 +922,13 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
 
 #[cfg(test)]
 mod tests {
-    use super::OverlayWriteMode;
-
     #[test]
-    fn default_is_owned_tree_and_inert() {
-        // The byte scaffold MUST default to the proven owned path and report that
-        // the overlay is not in use — proving it changes no current behavior.
-        assert_eq!(OverlayWriteMode::default(), OverlayWriteMode::OwnedTree);
-        assert!(!OverlayWriteMode::default().uses_overlay());
-    }
-
-    #[test]
-    fn byte_create_flip_eligible_v_routes_ineligible_v_owned() {
-        // **M4b REFRAME (was `byte_default_ctor_is_inert_no_route`).** The M4b
-        // create-flip made the lock-free overlay byte's production DEFAULT for the
-        // eligible monomorphs `{(), i64}`: a fresh `create::<()|i64>()` is now
-        // overlay-routed (`route_overlay()==true`). The M2a INERT-default property no
-        // longer holds for eligible V — that is the irreversible flip. Arbitrary V
-        // (ineligible) STILL stays owned (the flip is a strict no-op there), which this
-        // test now pins as the surviving back-compat invariant.
+    fn byte_create_flips_all_v_to_overlay() {
+        // L3.3: the lock-free overlay is byte's SOLE representation — every
+        // constructor installs it, so a fresh `create::<V>()` is overlay-routed
+        // (`route_overlay()==true`) for ALL `V` (the owned tree is gone). Pins the
+        // overlay-routing default across membership (`()`), counter (`i64`), and
+        // arbitrary (`String`) value types.
         use crate::persistent_artrie::PersistentARTrie;
         std::fs::create_dir_all("target/test-tmp").ok();
         let dir = tempfile::Builder::new()
@@ -1040,47 +973,10 @@ mod tests {
     }
 
     #[test]
-    fn byte_flip_then_kill_switch_round_trips_route_overlay() {
-        // **M4b PRECONDITION UPDATE.** Post-M4b a fresh `create::<()>()` ALREADY
-        // create-flips (`route_overlay()==true`), so this round-trip starts from the
-        // ROUTED state (not the old M2a inert default). It still proves the
-        // kill-switch ↔ flip round-trip: routed → kill-switch → owned → re-flip →
-        // routed.
-        use crate::persistent_artrie::PersistentARTrie;
-        std::fs::create_dir_all("target/test-tmp").ok();
-        let dir = tempfile::Builder::new()
-            .prefix("byte-m4b-flip")
-            .tempdir_in("target/test-tmp")
-            .expect("scratch tempdir under target/test-tmp");
-        let path = dir.path().join("t.part");
-        let mut trie = PersistentARTrie::<()>::create(&path).expect("create");
-
-        assert!(
-            trie.route_overlay(),
-            "M4b: a fresh create::<()>() already create-flips to the overlay"
-        );
-        // Kill-switch reverts to owned.
-        trie.kill_switch_to_owned();
-        assert!(
-            !trie.route_overlay(),
-            "kill_switch_to_owned must revert to the owned path"
-        );
-        // Re-flip re-engages the overlay.
-        assert!(
-            trie.flip_to_overlay(),
-            "flip_to_overlay must re-engage the overlay for eligible V=()"
-        );
-        assert!(trie.route_overlay(), "post-re-flip routes to the overlay");
-        // And a second kill-switch reverts again (idempotent round-trip).
-        trie.kill_switch_to_owned();
-        assert!(!trie.route_overlay(), "second kill-switch reverts to owned");
-    }
-
-    #[test]
     fn byte_arbitrary_v_create_flips_to_overlay() {
         // Arbitrary-V overlay routing is the default: `String` is eligible, so a
-        // fresh `create::<String>()` already create-flips and the trie is
-        // overlay-routed. (The kill-switch is the runtime fallback to owned.)
+        // fresh `create::<String>()` is overlay-routed (the overlay is the sole
+        // representation since L3.3 deleted the owned tree).
         use crate::persistent_artrie::PersistentARTrie;
         std::fs::create_dir_all("target/test-tmp").ok();
         let dir = tempfile::Builder::new()

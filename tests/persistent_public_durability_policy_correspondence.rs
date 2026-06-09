@@ -32,46 +32,6 @@ fn assert_synced_before_tail(label: &str, next_lsn: u64, synced_lsn: Option<u64>
 }
 
 #[test]
-fn byte_immediate_public_mutations_ack_only_after_wal_tail_is_synced() {
-    let dir = tempdir().expect("temp dir");
-    let path = dir.path().join("byte_immediate.part");
-    let mut trie: PersistentARTrie<i64> =
-        PersistentARTrie::create(&path).expect("create byte trie");
-
-    // **M4b REFRAME.** A fresh `create::<i64>()` now create-flips to the overlay, but
-    // this test verifies OWNED-path public-mutation durability (it uses
-    // `begin_document` below, which the overlay rejects). Force the owned regime.
-    trie.kill_switch_to_owned();
-
-    trie.set_durability_policy(DurabilityPolicy::Immediate);
-
-    assert!(trie.insert_with_value("alpha", 1));
-    assert_synced_covers_tail("byte insert", trie.current_lsn(), trie.synced_lsn());
-
-    assert_eq!(trie.increment("alpha", 2).expect("increment"), 3);
-    assert_synced_covers_tail("byte increment", trie.current_lsn(), trie.synced_lsn());
-
-    let entries = vec![
-        ("beta".to_string(), Some(4)),
-        ("gamma".to_string(), Some(5)),
-    ];
-    assert_eq!(trie.insert_batch(&entries), 2);
-    assert_synced_covers_tail("byte batch", trie.current_lsn(), trie.synced_lsn());
-
-    let mut tx = trie.begin_document("doc").expect("begin tx");
-    trie.tx_insert(&mut tx, "delta", Some(6));
-    assert_eq!(trie.commit_document(tx).expect("commit tx"), 1);
-    assert_synced_covers_tail(
-        "byte transaction commit",
-        trie.current_lsn(),
-        trie.synced_lsn(),
-    );
-
-    assert!(trie.remove("beta"));
-    assert_synced_covers_tail("byte remove", trie.current_lsn(), trie.synced_lsn());
-}
-
-#[test]
 fn byte_group_commit_policy_public_mutation_ack_is_synced() {
     let dir = tempdir().expect("temp dir");
     let path = dir.path().join("byte_group.part");
@@ -89,57 +49,6 @@ fn byte_group_commit_policy_public_mutation_ack_is_synced() {
     trie.sync().expect("blocking sync");
     assert_synced_covers_tail(
         "byte group-commit sync",
-        trie.current_lsn(),
-        trie.synced_lsn(),
-    );
-}
-
-#[test]
-fn periodic_policy_does_not_overclaim_public_mutation_durability() {
-    let dir = tempdir().expect("temp dir");
-    let path = dir.path().join("byte_periodic.part");
-    let trie: PersistentARTrie<i64> = PersistentARTrie::create(&path).expect("create byte trie");
-
-    // **M4b REFRAME.** A fresh `create::<i64>()` now create-flips to the overlay, but
-    // this test verifies OWNED-path durability under the PERIODIC policy (the overlay's
-    // Order-A durable write requires a SYNCHRONOUS policy — Immediate/GroupCommit — so
-    // a Periodic public write is gated out under the overlay). Force the owned regime.
-    trie.kill_switch_to_owned();
-
-    trie.set_durability_policy(DurabilityPolicy::Periodic);
-
-    assert!(trie.insert_with_value("periodic", 7));
-    assert_synced_before_tail(
-        "byte periodic insert",
-        trie.current_lsn(),
-        trie.synced_lsn(),
-    );
-}
-
-#[test]
-fn async_sync_handle_completion_covers_target_lsn() {
-    let dir = tempdir().expect("temp dir");
-    let path = dir.path().join("byte_async.part");
-    let trie: PersistentARTrie<i64> = PersistentARTrie::create(&path).expect("create byte trie");
-
-    // **M4b REFRAME.** A fresh `create::<i64>()` now create-flips to the overlay, but
-    // this test verifies the OWNED-path async sync-handle under the PERIODIC policy
-    // (the overlay's Order-A durable write requires a synchronous policy). Force owned.
-    trie.kill_switch_to_owned();
-
-    trie.set_durability_policy(DurabilityPolicy::Periodic);
-    assert!(trie.insert_with_value("async-tail", 11));
-    let target_lsn = trie.current_lsn().saturating_sub(1);
-
-    let handle = trie
-        .sync_async()
-        .expect("start async sync")
-        .expect("WAL-backed trie returns a sync handle");
-    assert_eq!(handle.target_lsn(), target_lsn);
-    handle.wait().expect("wait for async sync");
-
-    assert_synced_covers_tail(
-        "byte async sync handle",
         trie.current_lsn(),
         trie.synced_lsn(),
     );

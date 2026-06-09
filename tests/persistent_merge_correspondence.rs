@@ -11,6 +11,7 @@
 use libdictenstein::persistent_artrie::PersistentARTrie;
 #[cfg(feature = "parallel-merge")]
 use libdictenstein::persistent_artrie::{SharedARTrie, SharedARTrieParallelExt};
+#[cfg(feature = "parallel-merge")]
 use libdictenstein::persistent_artrie_core::shared_access::SharedTrieAccess;
 #[cfg(feature = "parallel-merge")]
 use libdictenstein::ARTrie;

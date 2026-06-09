@@ -116,11 +116,7 @@ impl<V: DictionaryValue> PersistentARTrie<V, IoUringDiskManager> {
             lockfree_cache: None,
             #[cfg(feature = "persistent-artrie")]
             cas_retries: std::sync::atomic::AtomicU64::new(0),
-            // M2a INERT default (OwnedTree) — flipped to LockFreeOverlay by
             // apply_create_flip above for eligible V; arbitrary V stays owned.
-            overlay_write_mode: crate::persistent_artrie_core::shared_access::AtomicEnumCell::new(
-                crate::persistent_artrie_core::overlay::write_mode::OverlayWriteMode::default(),
-            ),
             // M2b: fresh on-disk trie (empty WAL) — watermark base + commit_seq 0.
             committed_watermark:
                 crate::persistent_artrie_core::committed_watermark::CommittedWatermark::new(0),
@@ -353,10 +349,6 @@ impl<V: DictionaryValue> PersistentARTrie<V, IoUringDiskManager> {
             lockfree_cache: None,
             #[cfg(feature = "persistent-artrie")]
             cas_retries: std::sync::atomic::AtomicU64::new(0),
-            // M2a INERT default (OwnedTree) — changes no byte behavior.
-            overlay_write_mode: crate::persistent_artrie_core::shared_access::AtomicEnumCell::new(
-                crate::persistent_artrie_core::overlay::write_mode::OverlayWriteMode::default(),
-            ),
             // M2b: seed watermark base + commit_seq from recovery (INERT pre-flip).
             committed_watermark:
                 crate::persistent_artrie_core::committed_watermark::CommittedWatermark::new(

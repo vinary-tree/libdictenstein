@@ -153,6 +153,23 @@ red-team #1 proved it subsumes counter semantics incl. u64>i64::MAX (counter_lea
   kill_switch_to_owned test callers as a GROUP (this commit). Prune any byte owned-walk UNSAFE rows + UNSAFE_CONTRACTS
   entries (set-equality). **Red-team:** with the owned arm gone, prove by construction lockfree_root().is_some() at every
   reachable checkpoint (the only counterexample was the kill-switched staging trie, now deleted).
+  - **⚠️ FINDING (2026-06-08, Plan + red-team — L2.2 IS NOT INDEPENDENTLY DOABLE; its substantive deletions are FORCED to
+    L3.3).** L2.1 is DONE (73fc8eb). For L2.2: eligibility IS universal (`overlay_eligible_v()==true ∀V`, byte+char), so a
+    *created* trie is always overlay-routed and the L2.1 owned-staging compaction fallback is dead-for-created-tries. BUT
+    `OverlayWriteMode` + `kill_switch_to_owned` + the `route_overlay()` body + the shared `checkpoint_route_split` else-arm
+    are **SHARED byte/char surfaces**: `kill_switch_to_owned` is the shared `LockFreeOverlay` default (flip.rs:577) that
+    char's ~20 `#[cfg(test)]` callers + char's owned-checkpoint coverage NEED until char flips. A "byte-local SHAPE-1"
+    (delete byte owned *sinks* — compaction owned arm, owned checkpoint arm — while keeping the kill-switch) is BROKEN:
+    `kill_switch_to_owned()` only flips the mode (NOT `lockfree_root`), so a kill-switched byte trie writes to `self.root`
+    then checkpoints/compacts via the owned arm (green guards `m4b_old_owned_file_stays_owned_on_reopen`,
+    `empty_string_valued_owned_regime_reopen`). Deleting the sinks while the kill-switch lives = compaction reads the
+    EMPTY `lockfree_root` (data loss) + `checkpoint()` Err regresses durability. **So byte owned-staging removal MUST land
+    WITH the global `kill_switch_to_owned` removal — which requires char to flip first.** ⇒ **L2.2 is ABSORBED into L3.3**
+    (mirrors L0.2→L3.2, L0.3→L3.3). Corrections to the above L2.2 line for when it executes at L3.3: do NOT delete
+    `insert_impl_core`/`remove_impl_core`/`upsert_impl_no_wal` (LIVE byte writers — die at L3.3 anyway, but as owned-root
+    deletion not "staging"); NO UNSAFE delta at L2.2-scope (rows 23-24 are CHAR `types.rs`, die at L3.3); `serialize_root`
+    sole caller is `capture_owned_snapshot` (NOT `persist_to_disk`); KEEP `serialize_root_value_bytes` (used by the live
+    iterative overlay serializer). **L2 effectively = L2.1 only; NEXT real step = L3.1.**
 
 ---
 ## LEVEL 3 — keystone: reopen-scratch onto codec; re-point zipper; delete owned root field + holder types

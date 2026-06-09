@@ -169,23 +169,6 @@ fn force_eviction_respects_min_depth() {
     shared.disable_eviction().expect("disable");
 }
 
-#[test]
-fn empty_trie_checkpoint_registers_nothing() {
-    let dir = tempdir().expect("tempdir");
-    let path = dir.path().join("empty.trie");
-    let shared: SharedCharARTrie<i32> = ARTrie::create(&path).expect("create");
-    // F2-migrate: Bucket B — owned-rep eviction registry; pin OwnedTree (the overlay
-    // root would otherwise register a node even for an empty trie). No-op feature-off.
-    shared.write().kill_switch_to_owned();
-    shared
-        .enable_eviction(EvictionConfig::without_memory_monitor())
-        .expect("enable");
-    shared.write().checkpoint().expect("checkpoint empty");
-    assert_eq!(shared.read().evictable_node_count(), Some(0));
-    assert_eq!(shared.force_eviction(1 << 20).expect("force"), (0, 0));
-    shared.disable_eviction().expect("disable");
-}
-
 // ============================ G6: recovery unaffected ============================
 
 #[test]

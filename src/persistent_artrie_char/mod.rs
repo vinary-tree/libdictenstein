@@ -183,8 +183,8 @@ pub mod wal_helpers;
 // (Migration Phase E; the executable refinement of LockFreeDurableCheckpoint.tla).
 pub(crate) mod committed_watermark;
 
-// Kill-switch scaffold + thin production-write-path router for the lock-free
-// flip. `route_overlay()` + `set_overlay_write_mode()` live here.
+// Thin production-write-path router for the lock-free overlay (the SOLE
+// representation since L3.3). `route_overlay()` + `flip_to_overlay()` live here.
 pub(crate) mod overlay_write_mode;
 
 // Per-monomorph routing for the valued production mutators (insert_with_value /
@@ -459,18 +459,6 @@ pub struct PersistentARTrieChar<V: DictionaryValue = (), S: crate::persistent_ar
     /// holds `merge_lock`. Single acquisition site; public wrappers must NOT re-take
     /// it (parking_lot is non-reentrant).
     pub(crate) merge_lock: std::sync::Arc<parking_lot::Mutex<()>>,
-    /// Kill-switch selecting the production write-path representation
-    /// (owned-tree vs lock-free overlay). Migration Phase E scaffold — wired as
-    /// the inert [`OverlayWriteMode::OwnedTree`](overlay_write_mode::OverlayWriteMode::OwnedTree)
-    /// default so it changes NO current behavior; the irreversible flip flips it
-    /// and gains a one-release fallback. No production path reads it yet.
-    /// **F4:** an `AtomicEnumCell` so the now-`&self` `kill_switch_to_owned` /
-    /// `set_overlay_write_mode` / `flip_to_overlay` write it and the hot
-    /// `route_overlay()` predicate loads it lock-free after the collapse.
-    pub(crate) overlay_write_mode:
-        crate::persistent_artrie_core::shared_access::AtomicEnumCell<
-            overlay_write_mode::OverlayWriteMode,
-        >,
     pub(crate) file_path: Option<std::path::PathBuf>,
     /// Arena manager for space-efficient node storage
     /// Packs multiple nodes into 256KB blocks instead of one node per block
@@ -2025,9 +2013,8 @@ impl<V: DictionaryValue> crate::artrie_trait::EvictableARTrie for SharedCharARTr
                 let Some(trie) = self_weak.upgrade() else {
                     return (0, 0);
                 };
-                // L0.1: owned-eviction arm DELETED — always reclaim the overlay (the owned
-                // arm was reachable only via `kill_switch_to_owned`, which never evicts in
-                // production). `evict_overlay_nodes` locks EC for its LRU remove; safe here
+                // L0.1/L3.3: always reclaim the overlay (the owned tree is gone).
+                // `evict_overlay_nodes` locks EC for its LRU remove; safe here
                 // (this callback holds no EC).
                 evict_overlay_nodes(&trie, nodes_to_evict, 4)
             })
@@ -2357,11 +2344,9 @@ mod tests {
         // only the on-disk image remains.
         {
             let trie = PersistentARTrieChar::<i32>::create(&path).expect("create");
-            // F2-migrate: Bucket B — drives the OWNED `DictionaryNode` faulting walk
-            // (`root().edges()`/`transition`). Under the lock-free overlay the owned tree
-            // is cleared on reopen (empty walk), so pin the Owned regime so the on-disk
-            // owned image is the walk's source of truth. No-op feature-off.
-            trie.kill_switch_to_owned();
+            // L3.2/L3.3: the `DictionaryNode` faulting walk (`root().edges()`/`transition`)
+            // reads the lock-free overlay (the owned tree is gone). Reopen rebuilds the
+            // overlay from the dense on-disk image, so the walk descends it directly.
             trie.insert_with_value("receive", 1).expect("insert");
             trie.insert_with_value("recipe", 2).expect("insert");
             trie.insert_with_value("decide", 3).expect("insert");
@@ -2411,11 +2396,9 @@ mod tests {
         let path = dir.path().join("evict_traversal.artc");
         {
             let trie = PersistentARTrieChar::<i32>::create(&path).expect("create");
-            // F2-migrate: Bucket B — forced-eviction re-fault of the OWNED `DictionaryNode`
-            // walk. Under the lock-free overlay the owned tree is empty, so pin the Owned
-            // regime so eviction has owned nodes to swizzle and the walk re-faults them.
-            // No-op feature-off.
-            trie.kill_switch_to_owned();
+            // L3.2/L3.3: forced-eviction re-fault of the `DictionaryNode` walk over the
+            // lock-free overlay (the owned tree is gone). Eviction unswizzles overlay nodes
+            // to disk; the walk re-faults them on descent.
             for (t, v) in [
                 ("receive", 1),
                 ("recipe", 2),
