@@ -1703,3 +1703,127 @@ mod cx_compressed_serialize_byte {
         let _ = u2;
     }
 }
+
+#[cfg(test)]
+mod format3_legacy_bucket_reopen {
+    //! **B2 (L3.3b PRECONDITION)** — pins `enumerate_terms_from_disk`'s legacy
+    //! **ROOT_TYPE_BUCKET-with-terms** decode branch (`disk_load.rs:~600`) as TESTED
+    //! before L3.3b's B3 retires the differential oracle (`l31_differential_tests`) that
+    //! currently covers it.
+    //!
+    //! "format-3" = a root `StringBucket` holding the whole (small) dictionary as suffix
+    //! entries. It was produced ONLY by the now-collapsed owned serialize path; the
+    //! production overlay serializers (`serialize_overlay_root_iterative`,
+    //! `serialize_overlay_snapshot_compressed`) emit `ROOT_TYPE_BUCKET` ONLY for an EMPTY
+    //! root (0 terms, childless, non-final), so a POPULATED root bucket can no longer be
+    //! written in-process. This fixture hand-constructs one via the KEPT low-level
+    //! primitives (`serialize_bucket_to_disk` + a hand-written `ROOT_TYPE_BUCKET`
+    //! descriptor through `publish_snapshot`), then reopens through the PUBLIC `open()`
+    //! path and asserts every term — including the empty string `""` — survives, and that
+    //! the next `checkpoint()` rewrites the legacy image to the modern ART format
+    //! losslessly. Both reopen regimes (Owned ⇒ `convert_owned_to_overlay_on_reopen`,
+    //! Overlay ⇒ `load_root_immutable`) route through `load_overlay_root_compressed` →
+    //! `enumerate_terms_from_disk`, so the ROOT_TYPE_BUCKET branch is covered regardless.
+    //!
+    //! Scratch is real disk (`target/test-tmp`), never tmpfs `/tmp` (disk-backed reopen).
+    use super::CheckpointSnapshot;
+    use crate::persistent_artrie::bucket::StringBucket;
+    use crate::persistent_artrie::dict_impl::ROOT_TYPE_BUCKET;
+    use crate::persistent_artrie::PersistentARTrie;
+    use crate::serialization::bincode_compat;
+
+    fn scratch(prefix: &str) -> tempfile::TempDir {
+        std::fs::create_dir_all("target/test-tmp").ok();
+        tempfile::Builder::new()
+            .prefix(prefix)
+            .tempdir_in("target/test-tmp")
+            .expect("scratch dir under target/test-tmp")
+    }
+
+    #[test]
+    fn legacy_root_bucket_reopens_with_all_terms_incl_empty() {
+        // (suffix, value) entries of the legacy root bucket. `""` is a first-class bucket
+        // entry (empty suffix → the empty-string term; H2 empty-string-value support).
+        let entries: [(&[u8], u64); 4] = [(b"", 7), (b"alpha", 11), (b"beta", 22), (b"gamma", 33)];
+
+        let dir = scratch("byte-fmt3-bucket-reopen");
+        let path = dir.path().join("fmt3.artb");
+
+        // --- Construct a legacy format-3 image ------------------------------------
+        {
+            // A live trie purely to borrow its buffer/arena managers for serialization.
+            let trie = PersistentARTrie::<u64>::create(&path).expect("create");
+
+            // Build the populated root StringBucket. Values are bincode-encoded `V`,
+            // matching `enumerate_terms_from_disk`'s `deser` (bincode_compat::deserialize).
+            let mut bucket = StringBucket::with_values();
+            for (suffix, value) in entries {
+                let value_bytes = bincode_compat::serialize(&value).expect("encode value");
+                bucket
+                    .insert(suffix, &value_bytes)
+                    .expect("bucket insert (empty suffix is valid)");
+            }
+
+            // Serialize the bucket into a fresh arena slot, flush, and count arenas (the
+            // descriptor's arena_count drives the reopen eager-preload validation).
+            let bucket_ptr = trie
+                .serialize_bucket_to_disk(&bucket)
+                .expect("serialize bucket to disk");
+            let arena_count = trie.flush_and_count_arenas().expect("flush + count arenas");
+
+            // Publish a ROOT_TYPE_BUCKET block-0 descriptor (owned-arm convention: no
+            // overlay watermark / commit_seq / eviction registry, and `None`
+            // image-checkpoint-lsn so the WAL is untouched). This is the ONLY way to emit
+            // a POPULATED root bucket after the owned serialize path was collapsed.
+            let snapshot = CheckpointSnapshot {
+                root_type: ROOT_TYPE_BUCKET,
+                is_final: false, // `""` rides a bucket ENTRY, not the root's finality.
+                term_count: entries.len() as u64,
+                arena_count,
+                root_ptr: bucket_ptr.to_raw(),
+                next_lsn_at_capture: 1, // inert: publish_snapshot never persists it.
+                committed_watermark_at_capture: None,
+                commit_seq_at_capture: None,
+                eviction_registry: None,
+            };
+            trie.publish_snapshot(&snapshot, None)
+                .expect("publish ROOT_TYPE_BUCKET descriptor");
+            // drop(trie) → close(): syncs the WAL + flushes already-clean buffer pages; it
+            // does NOT re-checkpoint or re-serialize the (empty) in-memory overlay, so the
+            // hand-published block-0 bucket descriptor is preserved on disk.
+        }
+
+        // --- Reopen via the public path -------------------------------------------
+        // The block-0 descriptor is the source of truth; the term-empty WAL replays
+        // nothing. enumerate_terms_from_disk's ROOT_TYPE_BUCKET branch runs here.
+        let reopened = PersistentARTrie::<u64>::open(&path).expect("reopen legacy bucket image");
+        for (suffix, value) in entries {
+            assert!(
+                reopened.contains_bytes(suffix),
+                "legacy bucket term {:?} missing after reopen",
+                String::from_utf8_lossy(suffix)
+            );
+            assert_eq!(
+                reopened.get_value_bytes(suffix),
+                Some(value),
+                "legacy bucket value for {:?} wrong after reopen",
+                String::from_utf8_lossy(suffix)
+            );
+        }
+
+        // --- The next checkpoint rewrites the legacy image to the modern ART format -
+        reopened
+            .checkpoint()
+            .expect("checkpoint rewrites the legacy bucket image");
+        drop(reopened);
+        let rewritten = PersistentARTrie::<u64>::open(&path).expect("reopen after rewrite");
+        for (suffix, value) in entries {
+            assert_eq!(
+                rewritten.get_value_bytes(suffix),
+                Some(value),
+                "term {:?} lost when the legacy bucket image was rewritten to ART format",
+                String::from_utf8_lossy(suffix)
+            );
+        }
+    }
+}
