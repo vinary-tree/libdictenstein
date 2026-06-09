@@ -193,18 +193,6 @@ impl<V: DictionaryValue> PersistentARTrie<V, IoUringDiskManager> {
             }
         }
 
-        let (loaded_root, loaded_term_count) = if root_ptr != 0 {
-            match Self::load_root_from_disk_with_arena(&buffer_manager, &arena_manager, root_ptr) {
-                Ok((root, count)) => (Some(root), count),
-                Err(e) => {
-                    warn!("Failed to load trie from disk: {:?}", e);
-                    (None, 0)
-                }
-            }
-        } else {
-            (None, 0)
-        };
-
         let wal_path = path.with_extension("wal");
         let (recovered_ops, next_lsn, checkpoint_lsn) = if wal_path.exists() {
             let recovery_manager = RecoveryManager::new(&wal_path);
@@ -310,21 +298,12 @@ impl<V: DictionaryValue> PersistentARTrie<V, IoUringDiskManager> {
                 && Self::overlay_eligible_v()
         };
 
-        let was_loaded_from_disk = loaded_root.is_some();
-        // F7 corrupt-image fallback (io_uring twin of the mmap ctor): a corrupt descriptor
-        // makes the eager pre-load fail (`loaded_root == None`) even with `root_ptr != 0`;
-        // pass `0` to the overlay builder so it installs an EMPTY overlay and recovers from
-        // the WAL drain (legacy fallback parity), rather than re-failing the image load.
-        let effective_root_ptr = if was_loaded_from_disk { root_ptr } else { 0 };
-        let (initial_root, initial_term_count) = match loaded_root {
-            // F5 / CONVERT: DROP the loaded owned root; `dict.root` stays empty (the overlay
-            // is built directly from the dense image via `load_root_immutable`).
-            Some(_) if use_f5 || convert_owned => {
-                (TrieRoot::Bucket(StringBucket::with_values()), 0)
-            }
-            Some(root) => (root, loaded_term_count as usize),
-            None => (TrieRoot::Bucket(StringBucket::with_values()), 0),
-        };
+        // L3.3c (BLOCKER#4, io_uring twin): no eager owned pre-load; the owned `dict.root` is a
+        // vestigial EMPTY placeholder (deleted at L3.3c-C2). The REAL codec `image_loaded` (with
+        // the in-loader Err→empty fallback) drives the WAL drain-skip — not a separate eager
+        // probe that could disagree with the codec on a corrupt-NODE image and brick the reopen.
+        let (initial_root, initial_term_count) =
+            (TrieRoot::Bucket(StringBucket::with_values()), 0usize);
 
         let mut dict = Self {
             root: RwLock::new(initial_root),
@@ -372,17 +351,18 @@ impl<V: DictionaryValue> PersistentARTrie<V, IoUringDiskManager> {
             let _ = recovered_ops;
             let archive_config = WalConfig::default();
             dict.convert_owned_to_overlay_on_reopen(
-                effective_root_ptr,
-                was_loaded_from_disk,
+                root_ptr,
+                /* was_loaded_from_disk */ root_ptr != 0,
                 checkpoint_lsn.unwrap_or(0),
                 &archive_config,
             )?;
             dict.dirty.store(false, AtomicOrdering::Release);
         } else if use_f5 {
             // ===== F5 PATH (Overlay-regime; direct dense→overlay) =====
-            // A corrupt image (eager pre-load failed ⇒ effective_root_ptr == 0) → empty
-            // overlay + WAL drain (legacy fallback parity).
-            dict.load_root_immutable(effective_root_ptr)?;
+            // A corrupt/absent image ⇒ `image_loaded = false` (in-loader fallback) ⇒ empty
+            // overlay + full WAL drain (corrupt-descriptor parity).
+            let (_lc, image_loaded) = dict.load_root_immutable(root_ptr)?;
+            let effective_loaded = (root_ptr != 0) && image_loaded;
             // **F7 FIX B:** drain ALL segments (archive + active) into the overlay (not
             // active-only), so an Overlay tail archived under load (or a post-S2-crash
             // converted file reopened as Overlay) recovers its archived tail. OBL-2:
@@ -391,8 +371,12 @@ impl<V: DictionaryValue> PersistentARTrie<V, IoUringDiskManager> {
             let archive_config = WalConfig::default();
             let _applied = dict.reconcile_and_drain_overlay(
                 &archive_config,
-                /* loaded_from_disk */ was_loaded_from_disk,
-                checkpoint_lsn.unwrap_or(0),
+                /* loaded_from_disk */ effective_loaded,
+                if effective_loaded {
+                    checkpoint_lsn.unwrap_or(0)
+                } else {
+                    0
+                },
             )?;
             dict.dirty.store(false, AtomicOrdering::Release);
         }

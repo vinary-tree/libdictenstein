@@ -574,15 +574,13 @@ impl<V: DictionaryValue, S: BlockStorage> LockFreeOverlay<ByteKey, V, S>
     }
 
     fn load_root_immutable_seam(&mut self, root_ptr: u64) -> Result<bool> {
-        // F7 — the byte `load_root_immutable` takes only `root_ptr` (it reaches the
-        // buffer/arena managers via `self`). PRECONDITION (converter): the WAL is already
-        // Overlay-regime, so the V-2 install check inside passes. The byte CONVERTER passes
-        // `effective_root_ptr = 0` when the eager pre-load failed (corrupt image), so
-        // `root_ptr != 0` here is the faithful "valid image was loaded" signal (byte's
-        // `load_root_immutable` builds an EMPTY overlay for `root_ptr == 0` and only loads —
-        // and could only fail — for a non-zero ptr the pre-load already validated).
-        self.load_root_immutable(root_ptr)?;
-        Ok(root_ptr != 0)
+        // F7/BLOCKER#4 — forward the REAL `image_loaded` from the byte codec
+        // `load_root_immutable` (which falls back to an EMPTY overlay + `image_loaded = false`
+        // on a corrupt/absent dense image), so the converter's drain skips nothing the absent
+        // image fails to cover (corrupt-descriptor fallback parity, mirroring char). PRECONDITION
+        // (converter): the WAL is already Overlay-regime, so the V-2 install check inside passes.
+        let (_term_count, image_loaded) = self.load_root_immutable(root_ptr)?;
+        Ok(image_loaded)
     }
 }
 

@@ -42,27 +42,32 @@ use super::bucket::StringBucket;
 use super::dict_impl::TrieRoot;
 
 impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrie<V, S> {
-    /// **F5 — load the dense image into a pre-built lock-free overlay root** (the owned
-    /// tree is a TRANSIENT decode scratch, cleared after conversion).
+    /// **F5/BLOCKER#4 — load the dense image DIRECTLY into a pre-built lock-free overlay
+    /// root** (NO transient owned `TrieRoot`; the owned `self.root` is left empty).
     ///
-    /// 1. Eager-load the dense image via the EXISTING (fully-eager)
-    ///    `load_root_from_disk_with_arena` INTO `self.root`.
-    /// 2. Build the overlay root from the owned tree via the generic, COMPRESSION-AWARE
-    ///    [`LockFreeOverlay::build_overlay_root_from_owned`].
-    /// 3. Install it (`install_prebuilt_overlay_root`: select LockFreeOverlay + verify the
+    /// 1. Build the overlay root from the dense image via the codec
+    ///    [`Self::load_overlay_root_compressed`] (`enumerate_terms_from_disk` +
+    ///    `build_overlay_root_from_terms`), which falls back to an EMPTY overlay +
+    ///    `image_loaded = false` on a corrupt/absent image (the in-loader fallback).
+    /// 2. Install it (`install_prebuilt_overlay_root`: select LockFreeOverlay + verify the
     ///    Overlay regime — V-2; HARD-ERROR on a `false`).
-    /// 4. CLEAR the transient owned tree.
     ///
-    /// `&mut self`. Returns the dense-image term count (NOT incl. the WAL tail — the
-    /// caller replays the tail via `replay_records_lww_overlay` after).
+    /// `&mut self`. Returns `(dense-image term count, image_loaded)` — NOT incl. the WAL
+    /// tail (the caller drains it via `reconcile_and_drain_overlay` after, from frontier 0
+    /// when `image_loaded == false`).
     ///
-    /// **`root_ptr == 0`** (empty dense image): install an EMPTY overlay root.
-    pub(crate) fn load_root_immutable(&mut self, root_ptr: u64) -> Result<usize> {
-        // **L3.1:** build the overlay root DIRECTLY from the dense image via the codec loader —
-        // NO transient owned `TrieRoot`. (The owned decoder `load_root_from_disk_with_arena` +
-        // the D1 readers + `build_overlay_root_from_owned` survive only as the L3.1
-        // differential-test ORACLE; all of them, plus `TrieRoot`, die at L3.3.)
-        let (overlay_root, term_count) = self.load_overlay_root_compressed(root_ptr)?;
+    /// **`root_ptr == 0`** (empty/absent dense image): install an EMPTY overlay root +
+    /// `image_loaded = false`.
+    pub(crate) fn load_root_immutable(&mut self, root_ptr: u64) -> Result<(usize, bool)> {
+        // **L3.1/BLOCKER#4:** build the overlay root DIRECTLY from the dense image via the codec
+        // loader (NO transient owned `TrieRoot`), with an IN-LOADER corrupt-image fallback: a
+        // corrupt/absent image yields an EMPTY overlay + `image_loaded = false` (the caller then
+        // drains the WAL from frontier 0, recovering everything the absent image fails to cover)
+        // rather than `?`-aborting `open()`. Returns `(term_count, image_loaded)` — byte twin of
+        // char's signature. (The owned decoder `load_root_from_disk_with_arena` + `TrieRoot` die
+        // at L3.3c-C2.)
+        let (overlay_root, term_count, image_loaded) =
+            self.load_overlay_root_compressed(root_ptr)?;
 
         // Install + select LockFreeOverlay + verify the Overlay regime (V-2).
         if !self.install_prebuilt_overlay_root(overlay_root) {
@@ -78,7 +83,7 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrie<V, S> {
         self.term_count
             .store(0, std::sync::atomic::Ordering::Release);
 
-        Ok(term_count)
+        Ok((term_count, image_loaded))
     }
 
     /// **L3.1 — the direct dense→overlay codec loader (NO `TrieRoot`).**
@@ -100,15 +105,16 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrie<V, S> {
     pub(crate) fn load_overlay_root_compressed(
         &self,
         root_ptr: u64,
-    ) -> Result<(Arc<OverlayNode<ByteKey, V>>, usize)> {
+    ) -> Result<(Arc<OverlayNode<ByteKey, V>>, usize, bool)> {
         use crate::persistent_artrie_core::overlay::f5_build::build_overlay_root_from_terms;
 
+        // `root_ptr == 0` ⇒ an EMPTY overlay + `image_loaded = false` (no dense image present).
         if root_ptr == 0 {
             let empty = build_overlay_root_from_terms::<ByteKey, V, _>(
                 std::collections::BTreeMap::new(),
                 None,
             );
-            return Ok((empty, 0));
+            return Ok((empty, 0, false));
         }
 
         let buffer_manager = self.buffer_manager.as_ref().ok_or_else(|| {
@@ -118,9 +124,28 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrie<V, S> {
             PersistentARTrieError::internal("L3.1 load_overlay_root_compressed: no arena manager")
         })?;
 
-        let (terms, empty_term, term_count) =
-            Self::enumerate_terms_from_disk(buffer_manager, arena_manager, root_ptr)?;
-        let overlay_root = build_overlay_root_from_terms::<ByteKey, V, _>(terms, empty_term);
-        Ok((overlay_root, term_count as usize))
+        // BLOCKER#4 in-loader fallback (mirror char): a corrupt dense image (decode error) ⇒ an
+        // EMPTY overlay + `image_loaded = false`, so the caller drains the WAL from frontier 0
+        // rather than `?`-aborting `open()`. A valid image ⇒ `image_loaded = true`.
+        match Self::enumerate_terms_from_disk(buffer_manager, arena_manager, root_ptr) {
+            Ok((terms, empty_term, term_count)) => {
+                let overlay_root =
+                    build_overlay_root_from_terms::<ByteKey, V, _>(terms, empty_term);
+                Ok((overlay_root, term_count as usize, true))
+            }
+            Err(e) => {
+                log::warn!(
+                    "L3.1 load_overlay_root_compressed: corrupt dense image at root_ptr {:#x}: \
+                     {:?}; falling back to an empty overlay (the WAL drain recovers from frontier 0)",
+                    root_ptr,
+                    e
+                );
+                let empty = build_overlay_root_from_terms::<ByteKey, V, _>(
+                    std::collections::BTreeMap::new(),
+                    None,
+                );
+                Ok((empty, 0, false))
+            }
+        }
     }
 }

@@ -418,19 +418,6 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
             }
         }
 
-        // Now load trie from disk using the arena manager
-        let (loaded_root, loaded_term_count) = if root_ptr != 0 {
-            match Self::load_root_from_disk_with_arena(&buffer_manager, &arena_manager, root_ptr) {
-                Ok((root, count)) => (Some(root), count),
-                Err(e) => {
-                    warn!("Failed to load trie from disk: {:?}", e);
-                    (None, 0)
-                }
-            }
-        } else {
-            (None, 0)
-        };
-
         // Recover from WAL if it exists
         let wal_path = path.with_extension("wal");
         let (recovered_ops, next_lsn, checkpoint_lsn) = if wal_path.exists() {
@@ -552,28 +539,14 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
             && Self::overlay_eligible_v();
 
         // Create the dictionary with storage layer.
-        // LEGACY: install the loaded dense root into `dict.root`. F5 + CONVERT: start with
-        // an EMPTY bucket — the overlay is built directly from the dense image
-        // (`load_root_immutable` re-loads it as transient scratch + converts; the eager
-        // `loaded_root` above is dropped). The `was_loaded_from_disk` flag stays the
-        // dense-image-present signal for the WAL checkpoint-skip in ALL paths.
-        let was_loaded_from_disk = loaded_root.is_some();
-        // **F7 corrupt-image fallback.** The dense image (`root_ptr`) is loaded ONLY if the
-        // eager pre-load above SUCCEEDED. A corrupt/unreadable descriptor makes the eager
-        // load fail (`loaded_root == None`) even though `root_ptr != 0`; the legacy owned
-        // path then FALLS BACK to WAL replay (it does not trust the bad image). The F5/
-        // converter path must do the same: pass `root_ptr = 0` to the overlay builder so it
-        // installs an EMPTY overlay and recovers everything from the WAL drain, rather than
-        // re-attempting the failing image load and propagating the error.
-        let effective_root_ptr = if was_loaded_from_disk { root_ptr } else { 0 };
-        let (initial_root, initial_term_count) = match loaded_root {
-            // F5 / CONVERT: DROP the loaded owned root; `dict.root` stays an empty bucket.
-            Some(_) if use_f5 || convert_owned => {
-                (TrieRoot::Bucket(StringBucket::with_values()), 0)
-            }
-            Some(root) => (root, loaded_term_count as usize),
-            None => (TrieRoot::Bucket(StringBucket::with_values()), 0),
-        };
+        // L3.3c (BLOCKER#4): the overlay is built DIRECTLY from the dense image via the codec
+        // `load_root_immutable` (it reads the arenas itself); there is NO eager owned pre-load,
+        // and the owned `dict.root` is a vestigial EMPTY placeholder (deleted at L3.3c-C2). The
+        // REAL codec `image_loaded` (with the in-loader Err→empty fallback) drives the WAL
+        // drain-skip — NOT a separate eager probe that could disagree with the codec on a
+        // valid-descriptor + corrupt-NODE image and brick the reopen (the BLOCKER#4 footgun).
+        let (initial_root, initial_term_count) =
+            (TrieRoot::Bucket(StringBucket::with_values()), 0usize);
 
         let mut dict = Self {
             root: RwLock::new(initial_root),
@@ -618,7 +591,7 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
         // durable image's own coverage backstops it. 0 when not loaded-from-disk or for a v1 image
         // ⇒ max = the WAL record = today's behavior.
         let effective_checkpoint_lsn: Option<super::wal::Lsn> = {
-            let image_cov = if was_loaded_from_disk {
+            let image_cov = if root_ptr != 0 {
                 dict.buffer_manager
                     .as_ref()
                     .and_then(|bm| bm.read().storage().image_checkpoint_lsn().ok())
@@ -646,8 +619,8 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
             let _ = recovered_ops;
             let archive_config = WalConfig::default();
             dict.convert_owned_to_overlay_on_reopen(
-                effective_root_ptr,
-                was_loaded_from_disk,
+                root_ptr,
+                /* was_loaded_from_disk */ root_ptr != 0,
                 effective_checkpoint_lsn.unwrap_or(0),
                 &archive_config,
             )?;
@@ -661,7 +634,8 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
             // stays the empty bucket and the durable image is intact. A corrupt image
             // (eager pre-load failed ⇒ `effective_root_ptr == 0`) installs an EMPTY overlay
             // and recovers from the WAL drain below (the legacy fallback parity).
-            dict.load_root_immutable(effective_root_ptr)?;
+            let (_lc, image_loaded) = dict.load_root_immutable(root_ptr)?;
+            let effective_loaded = (root_ptr != 0) && image_loaded;
 
             // (2) **F7 FIX B:** drain ALL WAL segments (archive + active) INTO THE OVERLAY,
             // not just the active file. A normal Overlay file's archive is checkpoint-
@@ -676,8 +650,12 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
             let archive_config = WalConfig::default();
             let _applied = dict.reconcile_and_drain_overlay(
                 &archive_config,
-                /* loaded_from_disk */ was_loaded_from_disk,
-                effective_checkpoint_lsn.unwrap_or(0),
+                /* loaded_from_disk */ effective_loaded,
+                if effective_loaded {
+                    effective_checkpoint_lsn.unwrap_or(0)
+                } else {
+                    0
+                },
             )?;
             dict.dirty.store(false, AtomicOrdering::Release);
         }
