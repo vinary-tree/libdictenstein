@@ -132,6 +132,12 @@ impl PersistentVocabARTrie<crate::persistent_artrie::IoUringDiskManager> {
             lockfree_root: None,
             lockfree_cache: None,
             cas_retries: AtomicU64::new(0),
+            // V1.1 Order-A substrate (INERT until the overlay is the default).
+            commit_seq: AtomicU64::new(0),
+            committed_watermark:
+                crate::persistent_artrie_core::committed_watermark::CommittedWatermark::new(0),
+            epoch_manager: Arc::new(crate::persistent_artrie_core::concurrency::EpochManager::new()),
+            reverse_term_map: None,
         })
     }
 
@@ -259,6 +265,12 @@ impl PersistentVocabARTrie<crate::persistent_artrie::IoUringDiskManager> {
             lockfree_root: None,
             lockfree_cache: None,
             cas_retries: AtomicU64::new(0),
+            // V1.1 Order-A substrate (INERT until the overlay is the default).
+            commit_seq: AtomicU64::new(0),
+            committed_watermark:
+                crate::persistent_artrie_core::committed_watermark::CommittedWatermark::new(0),
+            epoch_manager: Arc::new(crate::persistent_artrie_core::concurrency::EpochManager::new()),
+            reverse_term_map: None,
         };
 
         // Rebuild reverse_index with fresh NodeRefs after loading.

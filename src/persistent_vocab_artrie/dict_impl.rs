@@ -197,6 +197,25 @@ pub struct PersistentVocabARTrie<S: BlockStorage = MmapDiskManager> {
 
     /// Statistics: CAS retries for monitoring contention.
     pub(super) cas_retries: AtomicU64,
+
+    // === Order-A durable substrate (V1.1 — the overlay flip). Vocab lacked these (unlike
+    // byte/char, which carried them pre-flip). INERT until the overlay becomes the default. ===
+    /// Durable global commit-sequence counter — the CommitRank generation `reconcile_lww`
+    /// orders replay by (NOT the per-node `root.version()`). Claimed per durable insert via
+    /// `claim_commit_seq`; restart-seeded from `max(wal commit_seq_floor, max replayed
+    /// CommitRank generation)`. SEPARATE from the vocabulary id (the id rides in the leaf value).
+    pub(crate) commit_seq: AtomicU64,
+    /// The durably-committed LSN watermark (Order-A step 3 advances it; recovery seeds it).
+    pub(crate) committed_watermark:
+        crate::persistent_artrie_core::committed_watermark::CommittedWatermark,
+    /// Epoch manager guarding lock-free overlay reads against concurrent reclamation.
+    pub(crate) epoch_manager: Arc<crate::persistent_artrie_core::concurrency::EpochManager>,
+
+    /// Option-D reverse id→term map: the NON-BLOCKING derived inverse of the forward overlay
+    /// (which stores `value = id`). The overlay is the source of truth; this is a rebuildable
+    /// accelerator, checkpoint-emitted to the mmap cache (V2). `DashMap` keeps the lock-free
+    /// insert path fully non-blocking. `Some` once the overlay is enabled.
+    pub(super) reverse_term_map: Option<DashMap<u64, String>>,
 }
 
 // ============================================================================
@@ -264,6 +283,14 @@ impl<S: BlockStorage> Clone for PersistentVocabARTrie<S> {
             lockfree_root: None,  // Cannot clone lock-free root
             lockfree_cache: None, // Cannot clone lock-free cache
             cas_retries: AtomicU64::new(0),
+            // V1.1 Order-A substrate: carry the commit_seq value; fresh watermark + epoch
+            // (these are not deep-cloned — they gate the lock-free overlay, re-established by
+            // the clone's own ctor/recovery, mirroring byte/char `clone`).
+            commit_seq: AtomicU64::new(self.commit_seq.load(Ordering::Acquire)),
+            committed_watermark:
+                crate::persistent_artrie_core::committed_watermark::CommittedWatermark::new(0),
+            epoch_manager: Arc::new(crate::persistent_artrie_core::concurrency::EpochManager::new()),
+            reverse_term_map: None, // rebuilt from the overlay on the clone's first use
         }
     }
 }
