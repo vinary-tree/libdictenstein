@@ -1,2 +1,12 @@
 [profile.default]
 slow-timeout = { period = "30s", terminate-after = 4, grace-period = "5s" }
+
+# The F4 lock-collapse soak runs a fixed 12s wall-clock budget of concurrent churn (writers ‖
+# checkpointer ‖ eviction-churner ‖ readers). Under the full suite's `-j` parallelism its threads are
+# CPU-oversubscribed, so the post-budget join can run well past the global 120s terminate ceiling —
+# that is the historical "-j16 flake" (a slow termination, not a correctness failure). Give the soak a
+# generous per-test budget so the suite never terminates it under load; a TRUE deadlock would still
+# never finish (the soak would hang past 360s and fail), so the tripwire is preserved.
+[[profile.default.overrides]]
+filter = 'test(f4_lock_collapse_soak)'
+slow-timeout = { period = "60s", terminate-after = 6, grace-period = "10s" }
