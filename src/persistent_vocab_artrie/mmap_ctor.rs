@@ -35,7 +35,7 @@ use super::reverse_cache::VocabReverseCache;
 use super::reverse_index::VocabReverseIndex;
 use super::types::{
     NodeRef, VocabTrieFileHeader, VocabTrieNode, VocabTrieRoot, DEFAULT_REVERSE_CACHE_SIZE,
-    DEFAULT_VOCAB_BUFFER_POOL_SIZE,
+    DEFAULT_VOCAB_BUFFER_POOL_SIZE, VOCAB_HEADER_VERSION_V2,
 };
 
 impl PersistentVocabARTrie {
@@ -260,13 +260,18 @@ impl PersistentVocabARTrie {
             (Some(Arc::new(wal)), lsn)
         };
 
-        // Load root from disk if present
-        let (root, node_map, next_slot) = if header.root_ptr != 0 {
+        // V5 flip routing: a version-2 header is the OVERLAY image (root_ptr is a SwizzledPtr,
+        // NOT an owned ArenaSlot) — the owned tree is NOT loaded; the overlay is reestablished
+        // after the struct is built. v1 (legacy owned) loads the owned tree as before.
+        let is_overlay = header.version == VOCAB_HEADER_VERSION_V2;
+
+        // Load root from disk if present (owned v1 only).
+        let (root, node_map, next_slot) = if !is_overlay && header.root_ptr != 0 {
             // Load the entire trie from disk
             let slot = ArenaSlot::from_u64(header.root_ptr);
             Self::load_trie_from_disk(&arena_manager, &buffer_manager, slot)?
         } else {
-            // Create new empty root
+            // Empty owned root (overlay v2, or v1-empty).
             let root_node = VocabTrieNode::new();
             let root_ref = NodeRef::new(0, 0);
 
@@ -314,30 +319,26 @@ impl PersistentVocabARTrie {
             reverse_term_map: None,
         };
 
-        // Rebuild reverse_index with fresh NodeRefs after loading.
-        // This is necessary because load_trie_from_disk assigns new NodeRefs
-        // that don't match old NodeRefs from any previous sidecar.
-        if header.root_ptr != 0 {
-            trie.rebuild_reverse_index()?;
-        }
-
-        // Load bloom filter from disk, or rebuild if missing
-        match Self::load_bloom_filter(&trie.path) {
-            Ok(Some(bloom)) => {
-                trie.bloom_filter = Some(bloom);
+        if is_overlay {
+            // V5: build the in-memory overlay from the dense v2 image (+ reverse map + stamp the
+            // Overlay regime so route_overlay() -> true). No owned reverse_index/bloom rebuild —
+            // the overlay's reverse_term_map is authoritative + lock-free reads skip the bloom.
+            trie.reestablish_overlay_from_image(header.root_ptr)?;
+        } else {
+            // Owned (legacy v1): rebuild reverse_index with fresh NodeRefs (load_trie_from_disk
+            // assigns new NodeRefs that don't match any previous sidecar) + the bloom filter.
+            if header.root_ptr != 0 {
+                trie.rebuild_reverse_index()?;
             }
-            Ok(None) => {
-                // Bloom filter file doesn't exist - rebuild from vocabulary
-                let count = trie.entry_count.load(Ordering::Acquire);
-                if count > 0 {
-                    trie.rebuild_bloom_filter(count);
+            match Self::load_bloom_filter(&trie.path) {
+                Ok(Some(bloom)) => {
+                    trie.bloom_filter = Some(bloom);
                 }
-            }
-            Err(_) => {
-                // Bloom filter file corrupted - rebuild from vocabulary
-                let count = trie.entry_count.load(Ordering::Acquire);
-                if count > 0 {
-                    trie.rebuild_bloom_filter(count);
+                Ok(None) | Err(_) => {
+                    let count = trie.entry_count.load(Ordering::Acquire);
+                    if count > 0 {
+                        trie.rebuild_bloom_filter(count);
+                    }
                 }
             }
         }
@@ -373,46 +374,35 @@ impl PersistentVocabARTrie {
         let checkpoint_lsn = trie.synced_lsn.load(Ordering::Acquire);
 
         if wal_path.exists() {
-            let reader = WalReader::new(&wal_path)?;
-            for record_result in reader.iter() {
-                let (lsn, record) = record_result?;
+            if trie.route_overlay() {
+                // V3: rank-aware overlay replay — apply only ranked Inserts into the overlay (a
+                // torn Insert-without-CommitRank is uncommitted -> dropped); restore id/seq floors.
+                let (seen, applied) =
+                    trie.replay_wal_into_overlay_rank_aware(&wal_path, checkpoint_lsn)?;
+                records_replayed = seen;
+                inserts_replayed = applied;
+            } else {
+                let reader = WalReader::new(&wal_path)?;
+                for record_result in reader.iter() {
+                    let (lsn, record) = record_result?;
 
-                // Skip records that were already applied before the checkpoint
-                if lsn <= checkpoint_lsn {
-                    continue;
-                }
-
-                records_replayed += 1;
-
-                match record {
-                    WalRecord::Insert { term, value } => {
-                        // Replay insert
-                        let term_str = String::from_utf8(term).map_err(|e| {
-                            PersistentARTrieError::CorruptedFile {
-                                reason: format!("Invalid UTF-8 in WAL term: {}", e),
-                            }
-                        })?;
-
-                        // Extract index from value bytes
-                        if let Some(value_bytes) = value {
-                            if value_bytes.len() >= 8 {
-                                let index = u64::from_le_bytes(
-                                    value_bytes[..8].try_into().expect("checked length"),
-                                );
-                                trie.replay_insert(&term_str, index)?;
-                                inserts_replayed += 1;
-                            }
-                        }
+                    // Skip records that were already applied before the checkpoint
+                    if lsn <= checkpoint_lsn {
+                        continue;
                     }
-                    WalRecord::BatchInsert { entries } => {
-                        // Replay batch insert
-                        for (term, value) in entries {
+
+                    records_replayed += 1;
+
+                    match record {
+                        WalRecord::Insert { term, value } => {
+                            // Replay insert
                             let term_str = String::from_utf8(term).map_err(|e| {
                                 PersistentARTrieError::CorruptedFile {
-                                    reason: format!("Invalid UTF-8 in WAL batch term: {}", e),
+                                    reason: format!("Invalid UTF-8 in WAL term: {}", e),
                                 }
                             })?;
 
+                            // Extract index from value bytes
                             if let Some(value_bytes) = value {
                                 if value_bytes.len() >= 8 {
                                     let index = u64::from_le_bytes(
@@ -423,21 +413,41 @@ impl PersistentVocabARTrie {
                                 }
                             }
                         }
-                    }
-                    WalRecord::Checkpoint {
-                        checkpoint_lsn: new_lsn,
-                        ..
-                    } => {
-                        // Update synced LSN
-                        trie.synced_lsn.store(new_lsn, Ordering::Release);
-                    }
-                    _ => {
-                        // Other record types not used by vocabulary trie
-                    }
-                }
+                        WalRecord::BatchInsert { entries } => {
+                            // Replay batch insert
+                            for (term, value) in entries {
+                                let term_str = String::from_utf8(term).map_err(|e| {
+                                    PersistentARTrieError::CorruptedFile {
+                                        reason: format!("Invalid UTF-8 in WAL batch term: {}", e),
+                                    }
+                                })?;
 
-                // Update next LSN (monotonic high-water mark)
-                trie.next_lsn.fetch_max(lsn + 1, Ordering::AcqRel);
+                                if let Some(value_bytes) = value {
+                                    if value_bytes.len() >= 8 {
+                                        let index = u64::from_le_bytes(
+                                            value_bytes[..8].try_into().expect("checked length"),
+                                        );
+                                        trie.replay_insert(&term_str, index)?;
+                                        inserts_replayed += 1;
+                                    }
+                                }
+                            }
+                        }
+                        WalRecord::Checkpoint {
+                            checkpoint_lsn: new_lsn,
+                            ..
+                        } => {
+                            // Update synced LSN
+                            trie.synced_lsn.store(new_lsn, Ordering::Release);
+                        }
+                        _ => {
+                            // Other record types not used by vocabulary trie
+                        }
+                    }
+
+                    // Update next LSN (monotonic high-water mark)
+                    trie.next_lsn.fetch_max(lsn + 1, Ordering::AcqRel);
+                }
             }
         }
 

@@ -357,6 +357,128 @@ impl<S: BlockStorage> super::dict_impl::PersistentVocabARTrie<S> {
         let empty_term: Option<Option<u64>> = all.remove(&Vec::<u32>::new());
         Ok((all, empty_term))
     }
+
+    /// Reestablish the in-memory overlay from the on-disk v2 image (the V5 reopen seam):
+    /// enumerate the dense image, build the overlay root + the reverse map (id->term) in one
+    /// pass, install both, and stamp the Overlay regime so `route_overlay()` -> true. The arenas
+    /// must already be loaded by the caller.
+    pub(super) fn reestablish_overlay_from_image(&mut self, root_ptr: u64) -> Result<()> {
+        use crate::persistent_artrie_core::key_encoding::CharKey;
+        use crate::persistent_artrie_core::overlay::f5_build::build_overlay_root_from_terms;
+
+        let (terms, empty) = self.enumerate_overlay_terms_from_disk(root_ptr)?;
+        let rev = dashmap::DashMap::new();
+        let mut entries: Vec<(Vec<u32>, Option<u64>)> = Vec::with_capacity(terms.len());
+        for (units, id_opt) in terms {
+            if let Some(id) = id_opt {
+                let term: String = units.iter().filter_map(|&u| char::from_u32(u)).collect();
+                rev.insert(id, term);
+            }
+            entries.push((units, id_opt));
+        }
+        if let Some(Some(id)) = empty {
+            rev.insert(id, String::new());
+        }
+        let overlay_root = build_overlay_root_from_terms::<CharKey, u64, _>(entries, empty);
+        self.install_prebuilt_overlay_root_inherent(overlay_root);
+        self.reverse_term_map = Some(rev);
+        if let Some(ref wal) = self.wal_writer {
+            if let Err(e) = wal.set_overlay_regime() {
+                log::warn!(
+                    "vocab reestablish_overlay: could not stamp Overlay regime: {:?}",
+                    e
+                );
+            }
+        }
+        Ok(())
+    }
+
+    /// V3 — rank-aware overlay WAL replay (the flip crash-recovery seam). Drains WAL records
+    /// `>` `checkpoint_lsn` (earlier are already in the image): applies ONLY Inserts that have a
+    /// durable `CommitRank` (a torn Insert-without-rank never committed -> DROPPED), into the
+    /// overlay (no-WAL, idempotent — re-applying an image term is a no-op), and restores the id +
+    /// commit_seq floors (`next_index` > every replayed id; `commit_seq` >= every generation).
+    /// Returns `(records_seen, inserts_applied)`.
+    pub(super) fn replay_wal_into_overlay_rank_aware(
+        &mut self,
+        wal_path: &std::path::Path,
+        checkpoint_lsn: u64,
+    ) -> Result<(usize, usize)> {
+        use crate::persistent_artrie::wal::{WalReader, WalRecord};
+        use crate::persistent_artrie_core::overlay::flip::LockFreeOverlay;
+        use std::collections::HashSet;
+        use std::sync::atomic::Ordering;
+
+        let reader = WalReader::new(wal_path)?;
+        let mut pending: Vec<(u64, String, u64)> = Vec::new();
+        let mut ranked: HashSet<u64> = HashSet::new();
+        let mut max_generation: u64 = 0;
+        let mut records_seen = 0usize;
+        for rr in reader.iter() {
+            let (lsn, record) = rr?;
+            if lsn <= checkpoint_lsn {
+                continue;
+            }
+            records_seen += 1;
+            match record {
+                WalRecord::Insert { term, value } => {
+                    if let Some(vb) = value {
+                        if vb.len() >= 8 {
+                            let id = u64::from_le_bytes(vb[..8].try_into().expect("len>=8"));
+                            let t = String::from_utf8(term).map_err(|e| {
+                                PersistentARTrieError::corrupted(format!(
+                                    "vocab overlay replay: invalid UTF-8 term: {e}"
+                                ))
+                            })?;
+                            pending.push((lsn, t, id));
+                        }
+                    }
+                }
+                WalRecord::CommitRank {
+                    data_lsn,
+                    generation,
+                    ..
+                } => {
+                    ranked.insert(data_lsn);
+                    max_generation = max_generation.max(generation);
+                }
+                WalRecord::Checkpoint {
+                    checkpoint_lsn: new_lsn,
+                    ..
+                } => {
+                    self.synced_lsn.fetch_max(new_lsn, Ordering::AcqRel);
+                }
+                _ => {}
+            }
+            self.next_lsn.fetch_max(lsn + 1, Ordering::AcqRel);
+        }
+
+        // Apply ONLY ranked Inserts (idempotent vs the image; count only genuinely-new terms).
+        let mut applied = 0usize;
+        let mut max_id: u64 = 0;
+        for (lsn, term, id) in pending {
+            if !ranked.contains(&lsn) {
+                continue; // torn Insert without a durable CommitRank -> uncommitted -> drop
+            }
+            max_id = max_id.max(id);
+            if self.get_index_lockfree(&term).is_none() {
+                let units: Vec<u32> = term.chars().map(|c| c as u32).collect();
+                self.overlay_publish_value(&units, id);
+                if let Some(ref rev) = self.reverse_term_map {
+                    rev.insert(id, term);
+                }
+                self.entry_count.fetch_add(1, Ordering::AcqRel);
+                applied += 1;
+            }
+        }
+
+        // Restore the floors so post-restart inserts neither reuse an id nor under-rank.
+        if max_id > 0 {
+            self.next_index.fetch_max(max_id + 1, Ordering::AcqRel);
+        }
+        self.commit_seq.fetch_max(max_generation, Ordering::AcqRel);
+        Ok((records_seen, applied))
+    }
 }
 
 /// Build the single-node `CharTrieNodeInner<u64>` (disk children added) for an overlay node —
@@ -472,5 +594,135 @@ mod tests {
         }
 
         let _ = std::fs::remove_file(&path);
+    }
+
+    /// End-to-end flip round-trip: a manually-flipped vocab inserts (lock-free Order-A overlay),
+    /// checkpoints (v2 overlay image), drops, and reopens — the reestablished overlay must serve
+    /// every term->id forward AND id->term reverse, with the right entry_count. Validates V4b
+    /// (checkpoint_overlay) + V5 (open v2-routing + reestablish_overlay_from_image). The global
+    /// create-flip is the single-lock-free closing task; here the flip is manual so existing v1
+    /// tests are untouched.
+    #[test]
+    fn flip_checkpoint_reopen_roundtrip() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target/test-scratch");
+        std::fs::create_dir_all(&dir).expect("scratch dir");
+        let path = dir.join(format!("vocab_flip_rt_{}.vocab", std::process::id()));
+        let cleanup = |p: &std::path::Path| {
+            let _ = std::fs::remove_file(p);
+            let _ = std::fs::remove_file(p.with_extension("vocab.wal"));
+            let _ = std::fs::remove_file(p.with_extension("vocab.idx"));
+        };
+        cleanup(&path);
+
+        let terms = ["alpha", "beta", "al", "alp", "gamma", "be", "alphabet"];
+        let mut expected: Vec<(String, u64)> = Vec::with_capacity(terms.len());
+        {
+            let mut vocab = PersistentVocabARTrie::create(&path).expect("create");
+            assert!(vocab.flip_to_overlay(), "flip engaged on a fresh trie");
+            assert!(vocab.route_overlay(), "overlay is the live rep after flip");
+            for t in &terms {
+                let id = vocab.insert(t).expect("overlay insert"); // routes to insert_overlay
+                expected.push((t.to_string(), id));
+            }
+            for (t, id) in &expected {
+                assert_eq!(vocab.get_index(t), Some(*id), "in-mem forward");
+                assert_eq!(
+                    vocab.get_term(*id).as_deref(),
+                    Some(t.as_str()),
+                    "in-mem reverse"
+                );
+            }
+            vocab.checkpoint().expect("checkpoint_overlay"); // -> v2 image
+        }
+
+        let (vocab, _report) =
+            PersistentVocabARTrie::open_with_recovery(&path).expect("reopen v2 image");
+        assert!(
+            vocab.route_overlay(),
+            "overlay is the live rep after reopen"
+        );
+        for (t, id) in &expected {
+            assert_eq!(vocab.get_index(t), Some(*id), "reopened forward {t:?}");
+            assert_eq!(
+                vocab.get_term(*id).as_deref(),
+                Some(t.as_str()),
+                "reopened reverse id {id}"
+            );
+        }
+        assert_eq!(vocab.len(), terms.len(), "reopened entry_count");
+        drop(vocab);
+        cleanup(&path);
+    }
+
+    /// Crash recovery (V3): inserts AFTER a checkpoint live only in the WAL. A crash snapshot
+    /// (file copy taken BEFORE the drop-checkpoint folds them into the image) reopened via
+    /// open_with_recovery must replay the ranked WAL tail into the overlay so EVERY term (pre-
+    /// and post-checkpoint) survives, and the id floor must be restored (no post-recovery id
+    /// collision). Validates V3 (replay_wal_into_overlay_rank_aware).
+    #[test]
+    fn flip_crash_recovery_replays_wal_tail() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target/test-scratch");
+        std::fs::create_dir_all(&dir).expect("scratch dir");
+        let pid = std::process::id();
+        let path_a = dir.join(format!("vocab_crash_a_{}.vocab", pid));
+        let path_b = dir.join(format!("vocab_crash_b_{}.vocab", pid));
+        let cleanup = |p: &std::path::Path| {
+            let _ = std::fs::remove_file(p);
+            let _ = std::fs::remove_file(p.with_extension("vocab.wal"));
+            let _ = std::fs::remove_file(p.with_extension("vocab.idx"));
+        };
+        cleanup(&path_a);
+        cleanup(&path_b);
+
+        let first = ["aa", "ab", "ba", "bb"];
+        let second = ["car", "cat", "dog", "do"]; // post-checkpoint, WAL-only
+        let mut expected: Vec<(String, u64)> = Vec::new();
+        {
+            let mut vocab = PersistentVocabARTrie::create(&path_a).expect("create");
+            assert!(vocab.flip_to_overlay(), "flip");
+            for t in &first {
+                expected.push((t.to_string(), vocab.insert(t).expect("insert")));
+            }
+            vocab.checkpoint().expect("checkpoint"); // image = first batch only
+            for t in &second {
+                expected.push((t.to_string(), vocab.insert(t).expect("insert")));
+            }
+            vocab.sync().expect("sync WAL"); // post-checkpoint records durable in the WAL
+                                             // Crash snapshot: copy image + WAL BEFORE the drop-checkpoint folds the tail in.
+            std::fs::copy(&path_a, &path_b).expect("copy image");
+            std::fs::copy(
+                path_a.with_extension("vocab.wal"),
+                path_b.with_extension("vocab.wal"),
+            )
+            .expect("copy wal");
+            // vocab A drops here (checkpoints A; irrelevant to the B snapshot).
+        }
+
+        let (mut vocab, _report) =
+            PersistentVocabARTrie::open_with_recovery(&path_b).expect("crash recovery reopen");
+        assert!(vocab.route_overlay(), "overlay live after crash recovery");
+        // EVERY term survives — the post-checkpoint batch ONLY via the V3 WAL-tail replay.
+        for (t, id) in &expected {
+            assert_eq!(vocab.get_index(t), Some(*id), "recovered forward {t:?}");
+            assert_eq!(
+                vocab.get_term(*id).as_deref(),
+                Some(t.as_str()),
+                "recovered reverse {id}"
+            );
+        }
+        assert_eq!(
+            vocab.len(),
+            first.len() + second.len(),
+            "recovered entry_count"
+        );
+        // id floor restored: a fresh insert must not collide with any recovered id.
+        let new_id = vocab.insert("zzz").expect("post-recovery insert");
+        assert!(
+            expected.iter().all(|(_, id)| *id != new_id),
+            "post-recovery id {new_id} collided with a recovered id"
+        );
+        drop(vocab);
+        cleanup(&path_a);
+        cleanup(&path_b);
     }
 }

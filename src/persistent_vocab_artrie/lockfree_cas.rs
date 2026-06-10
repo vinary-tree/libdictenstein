@@ -52,6 +52,9 @@ impl<S: crate::persistent_artrie::block_storage::BlockStorage>
         let root = Arc::new(PersistentCharNode::new());
         self.lockfree_root = Some(AtomicNodePtr::new(root));
         self.lockfree_cache = Some(DashMap::new());
+        // The overlay's reverse index (id -> term) — the NON-BLOCKING inverse used by `get_term`
+        // under `route_overlay()`. Populated by `insert_overlay`; rebuilt from the image on reopen.
+        self.reverse_term_map = Some(DashMap::new());
 
         // NB the WAL Overlay-regime stamp is intentionally NOT done here (unlike char,
         // whose `enable_lockfree` IS the flip). In V1 the owned tree is still the

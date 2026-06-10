@@ -173,6 +173,12 @@ impl<S: BlockStorage> super::dict_impl::PersistentVocabARTrie<S> {
             Some(root) if entry_count > 0 => self.serialize_overlay_to_disk(&root)?.to_raw(),
             _ => 0,
         };
+        // Flush the arenas to disk so block_count reflects the serialized overlay nodes (mirrors
+        // the owned persist_to_disk's arena flush; without it block_count stays at the create-time
+        // value and reopen skips arena loading -> "arena has 0 nodes").
+        if let Some(ref arena_manager) = self.arena_manager {
+            arena_manager.write().flush()?;
+        }
 
         // (2) Write the VOCB header (version 2 = overlay image; no owned reverse index).
         let buffer_manager = self.buffer_manager.as_ref().ok_or_else(|| {
