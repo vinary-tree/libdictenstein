@@ -157,7 +157,9 @@ impl PersistentVocabARTrie {
             commit_seq: AtomicU64::new(0),
             committed_watermark:
                 crate::persistent_artrie_core::committed_watermark::CommittedWatermark::new(0),
-            epoch_manager: Arc::new(crate::persistent_artrie_core::concurrency::EpochManager::new()),
+            epoch_manager: Arc::new(
+                crate::persistent_artrie_core::concurrency::EpochManager::new(),
+            ),
             reverse_term_map: None,
         })
     }
@@ -306,7 +308,9 @@ impl PersistentVocabARTrie {
             commit_seq: AtomicU64::new(0),
             committed_watermark:
                 crate::persistent_artrie_core::committed_watermark::CommittedWatermark::new(0),
-            epoch_manager: Arc::new(crate::persistent_artrie_core::concurrency::EpochManager::new()),
+            epoch_manager: Arc::new(
+                crate::persistent_artrie_core::concurrency::EpochManager::new(),
+            ),
             reverse_term_map: None,
         };
 

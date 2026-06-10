@@ -27,7 +27,9 @@ type Child = ChildGeneric<u64>;
 type AtomicNodePtr = AtomicNodePtrGeneric<u64>;
 type PersistentCharNode = PersistentCharNodeGeneric<u64>;
 
-impl super::dict_impl::PersistentVocabARTrie {
+impl<S: crate::persistent_artrie::block_storage::BlockStorage>
+    super::dict_impl::PersistentVocabARTrie<S>
+{
     // =========================================================================
     // Lock-Free CAS Insert (per plan Phase 5)
     // =========================================================================
@@ -50,6 +52,14 @@ impl super::dict_impl::PersistentVocabARTrie {
         let root = Arc::new(PersistentCharNode::new());
         self.lockfree_root = Some(AtomicNodePtr::new(root));
         self.lockfree_cache = Some(DashMap::new());
+
+        // NB the WAL Overlay-regime stamp is intentionally NOT done here (unlike char,
+        // whose `enable_lockfree` IS the flip). In V1 the owned tree is still the
+        // default, so the WAL stays in the owned/LSN-order regime until the production
+        // FLIP (V4 — `flip_to_overlay` → `wal_stamp_overlay_regime`), at which point the
+        // insert is ALSO routed to the overlay (Order-A, emitting CommitRank). Stamping
+        // the Overlay regime here would make the still-active owned inserts' UNRANKED
+        // WAL records get dropped on reopen (Overlay-regime recovery drops unranked).
 
         true
     }
@@ -189,7 +199,7 @@ impl super::dict_impl::PersistentVocabARTrie {
     /// Try to create a new root with the term inserted (lock-free version).
     ///
     /// Returns `Ok(new_root)` if successful, `Err(existing_idx)` if term already exists.
-    fn try_insert_lockfree_path(
+    pub(super) fn try_insert_lockfree_path(
         &self,
         root: &Arc<PersistentCharNode>,
         chars: &[u32],
@@ -283,7 +293,11 @@ impl super::dict_impl::PersistentVocabARTrie {
     }
 
     /// Find a term in the lock-free trie, returning its index if found.
-    fn find_in_lockfree_trie(&self, root: &Arc<PersistentCharNode>, chars: &[u32]) -> Option<u64> {
+    pub(super) fn find_in_lockfree_trie(
+        &self,
+        root: &Arc<PersistentCharNode>,
+        chars: &[u32],
+    ) -> Option<u64> {
         let mut current = root.clone();
 
         for &c in chars {

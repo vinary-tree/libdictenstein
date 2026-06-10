@@ -215,6 +215,8 @@ pub struct PersistentVocabARTrie<S: BlockStorage = MmapDiskManager> {
     /// (which stores `value = id`). The overlay is the source of truth; this is a rebuildable
     /// accelerator, checkpoint-emitted to the mmap cache (V2). `DashMap` keeps the lock-free
     /// insert path fully non-blocking. `Some` once the overlay is enabled.
+    // V1 forward-declaration: wired into the lock-free insert + `get_term` at V4 (the flip).
+    #[allow(dead_code)]
     pub(super) reverse_term_map: Option<DashMap<u64, String>>,
 }
 
@@ -289,7 +291,9 @@ impl<S: BlockStorage> Clone for PersistentVocabARTrie<S> {
             commit_seq: AtomicU64::new(self.commit_seq.load(Ordering::Acquire)),
             committed_watermark:
                 crate::persistent_artrie_core::committed_watermark::CommittedWatermark::new(0),
-            epoch_manager: Arc::new(crate::persistent_artrie_core::concurrency::EpochManager::new()),
+            epoch_manager: Arc::new(
+                crate::persistent_artrie_core::concurrency::EpochManager::new(),
+            ),
             reverse_term_map: None, // rebuilt from the overlay on the clone's first use
         }
     }

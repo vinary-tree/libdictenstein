@@ -126,6 +126,9 @@ pub mod mmap_ctor;
 // Lock-free CAS-based concurrent inserts (Phase-6 split out of dict_impl).
 pub mod lockfree_cas;
 
+// Vocab overlay-flip seam impls (V1 — the shared overlay traits at V=u64).
+pub(crate) mod overlay_write_mode;
+
 // Persistence/durability/observability API (Phase-6 split out of dict_impl).
 pub mod persistence_api;
 
@@ -1053,6 +1056,14 @@ mod tests {
             lockfree_root: None,
             lockfree_cache: None,
             cas_retries: AtomicU64::new(0),
+            // V1.1 Order-A substrate (INERT until the overlay is the default).
+            commit_seq: AtomicU64::new(0),
+            committed_watermark:
+                crate::persistent_artrie_core::committed_watermark::CommittedWatermark::new(0),
+            epoch_manager: Arc::new(
+                crate::persistent_artrie_core::concurrency::EpochManager::new(),
+            ),
+            reverse_term_map: None,
         }
     }
 
