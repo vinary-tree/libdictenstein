@@ -57,7 +57,7 @@ fn bench_sequential_merge(c: &mut Criterion) {
                     // Keep temp dirs alive
                     (_source_dir, source, _target_dir, target)
                 },
-                |(_sd, source, _td, target)| {
+                |(_sd, source, _td, mut target)| {
                     target.merge_from(&source, |a, b| a + b).expect("merge");
                 },
             );
@@ -67,8 +67,13 @@ fn bench_sequential_merge(c: &mut Criterion) {
     group.finish();
 }
 
-/// Benchmark parallel merge (optimization under test)
-#[cfg(feature = "parallel-merge")]
+/// Benchmark parallel merge — OBSOLETE, disabled (not deleted, per the no-delete policy).
+///
+/// `merge_from_parallel`'s public inherent method was removed when parallel merge collapsed
+/// to the overlay funnel (C2 / L3.3b): merge is now a single overlay-funneled path, so a
+/// parallel-vs-sequential comparison is moot. `cfg(any())` disables it while keeping the code
+/// for history; it is also dropped from the `criterion_group!` below.
+#[cfg(any())]
 fn bench_parallel_merge(c: &mut Criterion) {
     let mut group = c.benchmark_group("parallel_merge_parallel");
     group.measurement_time(Duration::from_secs(15));
@@ -90,7 +95,7 @@ fn bench_parallel_merge(c: &mut Criterion) {
                     // Keep temp dirs alive
                     (_source_dir, source, _target_dir, target)
                 },
-                |(_sd, source, _td, target)| {
+                |(_sd, source, _td, mut target)| {
                     target
                         .merge_from_parallel(&source, |a, b| a + b)
                         .expect("merge");
@@ -123,13 +128,14 @@ fn bench_direct_comparison(c: &mut Criterion) {
                 let (_target_dir, target) = create_populated_trie(&target_terms);
                 (_source_dir, source, _target_dir, target)
             },
-            |(_sd, source, _td, target)| {
+            |(_sd, source, _td, mut target)| {
                 target.merge_from(&source, |a, b| a + b).expect("merge");
             },
         );
     });
 
-    #[cfg(feature = "parallel-merge")]
+    // OBSOLETE: `merge_from_parallel` removed (overlay-funneled merge, C2/L3.3b); disabled.
+    #[cfg(any())]
     group.bench_function("parallel", |b| {
         b.iter_with_setup(
             || {
@@ -137,7 +143,7 @@ fn bench_direct_comparison(c: &mut Criterion) {
                 let (_target_dir, target) = create_populated_trie(&target_terms);
                 (_source_dir, source, _target_dir, target)
             },
-            |(_sd, source, _td, target)| {
+            |(_sd, source, _td, mut target)| {
                 target
                     .merge_from_parallel(&source, |a, b| a + b)
                     .expect("merge");
@@ -169,13 +175,14 @@ fn bench_direct_comparison_50k(c: &mut Criterion) {
                 let (_target_dir, target) = create_populated_trie(&target_terms);
                 (_source_dir, source, _target_dir, target)
             },
-            |(_sd, source, _td, target)| {
+            |(_sd, source, _td, mut target)| {
                 target.merge_from(&source, |a, b| a + b).expect("merge");
             },
         );
     });
 
-    #[cfg(feature = "parallel-merge")]
+    // OBSOLETE: `merge_from_parallel` removed (overlay-funneled merge, C2/L3.3b); disabled.
+    #[cfg(any())]
     group.bench_function("parallel", |b| {
         b.iter_with_setup(
             || {
@@ -183,7 +190,7 @@ fn bench_direct_comparison_50k(c: &mut Criterion) {
                 let (_target_dir, target) = create_populated_trie(&target_terms);
                 (_source_dir, source, _target_dir, target)
             },
-            |(_sd, source, _td, target)| {
+            |(_sd, source, _td, mut target)| {
                 target
                     .merge_from_parallel(&source, |a, b| a + b)
                     .expect("merge");
@@ -364,17 +371,9 @@ fn bench_merge_arena_grouped(c: &mut Criterion) {
     group.finish();
 }
 
-#[cfg(feature = "parallel-merge")]
-criterion_group!(
-    benches,
-    bench_sequential_merge,
-    bench_parallel_merge,
-    bench_direct_comparison,
-    bench_direct_comparison_50k,
-    bench_merge_arena_grouped,
-);
-
-#[cfg(not(feature = "parallel-merge"))]
+// `bench_parallel_merge` is OBSOLETE (merge_from_parallel removed — overlay-funneled merge,
+// C2/L3.3b) and disabled via `cfg(any())` above; the group no longer references it. A single
+// un-cfg'd group keeps the bench building with or without the `parallel-merge` feature.
 criterion_group!(
     benches,
     bench_sequential_merge,
