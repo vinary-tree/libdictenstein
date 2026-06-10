@@ -13,15 +13,24 @@
 
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use libdictenstein::persistent_artrie::{
-    GroupCommitConfig, GroupCommitCoordinator, WalRecord, WalWriter,
+    AsyncWalConfig, AsyncWalWriter, GroupCommitConfig, GroupCommitCoordinator, WalConfig,
+    WalRecord, WalWriter,
 };
-use parking_lot::RwLock;
 use std::sync::Arc;
 use std::thread;
 use tempfile::tempdir;
 
 /// Number of operations per benchmark iteration
 const OPS_PER_ITER: u64 = 100;
+
+/// Build an `Arc<AsyncWalWriter>` for the `GroupCommitCoordinator` (which takes the async WAL). Pending
+/// segments live under the bench tempdir (the relative default `pending_dir`).
+fn make_async_wal(wal_path: &std::path::Path) -> Arc<AsyncWalWriter> {
+    Arc::new(
+        AsyncWalWriter::create(wal_path, AsyncWalConfig::default(), WalConfig::default())
+            .expect("create async WAL"),
+    )
+}
 
 /// Benchmark single-threaded WAL writes without group commit (baseline).
 fn bench_wal_direct(c: &mut Criterion) {
@@ -66,7 +75,6 @@ fn bench_wal_direct(c: &mut Criterion) {
 }
 
 /// Benchmark group commit with varying batch sizes (multi-threaded to actually trigger batching).
-#[cfg(any())] // DISABLED: GroupCommitCoordinator::new now takes Arc<AsyncWalWriter>; this bench uses the legacy sync WalWriter. Port to the async WAL to re-enable (the bench_wal_direct baseline still runs).
 fn bench_group_commit_batch_sizes(c: &mut Criterion) {
     let mut group = c.benchmark_group("group_commit_batch_size");
     let num_threads = 4;
@@ -80,9 +88,7 @@ fn bench_group_commit_batch_sizes(c: &mut Criterion) {
             |b, &batch_size| {
                 let dir = tempdir().expect("create temp dir");
                 let wal_path = dir.path().join("bench.wal");
-                let wal = Arc::new(RwLock::new(
-                    WalWriter::create(&wal_path).expect("create WAL"),
-                ));
+                let wal = make_async_wal(&wal_path);
 
                 let config = GroupCommitConfig {
                     max_batch_size: batch_size,
@@ -123,7 +129,6 @@ fn bench_group_commit_batch_sizes(c: &mut Criterion) {
 }
 
 /// Benchmark group commit with varying thread counts.
-#[cfg(any())] // DISABLED: GroupCommitCoordinator::new now takes Arc<AsyncWalWriter>; this bench uses the legacy sync WalWriter. Port to the async WAL to re-enable (the bench_wal_direct baseline still runs).
 fn bench_group_commit_concurrency(c: &mut Criterion) {
     let mut group = c.benchmark_group("group_commit_concurrency");
     let ops_per_thread = 50; // Smaller for faster benchmarks
@@ -138,9 +143,7 @@ fn bench_group_commit_concurrency(c: &mut Criterion) {
             |b, &num_threads| {
                 let dir = tempdir().expect("create temp dir");
                 let wal_path = dir.path().join("bench.wal");
-                let wal = Arc::new(RwLock::new(
-                    WalWriter::create(&wal_path).expect("create WAL"),
-                ));
+                let wal = make_async_wal(&wal_path);
 
                 let config = GroupCommitConfig {
                     max_batch_size: 100,
@@ -183,7 +186,6 @@ fn bench_group_commit_concurrency(c: &mut Criterion) {
 }
 
 /// Benchmark adaptive vs non-adaptive batching (multi-threaded).
-#[cfg(any())] // DISABLED: GroupCommitCoordinator::new now takes Arc<AsyncWalWriter>; this bench uses the legacy sync WalWriter. Port to the async WAL to re-enable (the bench_wal_direct baseline still runs).
 fn bench_adaptive_batching(c: &mut Criterion) {
     let mut group = c.benchmark_group("group_commit_adaptive");
     let num_threads = 4;
@@ -196,9 +198,7 @@ fn bench_adaptive_batching(c: &mut Criterion) {
         group.bench_function(name, |b| {
             let dir = tempdir().expect("create temp dir");
             let wal_path = dir.path().join("bench.wal");
-            let wal = Arc::new(RwLock::new(
-                WalWriter::create(&wal_path).expect("create WAL"),
-            ));
+            let wal = make_async_wal(&wal_path);
 
             let config = GroupCommitConfig {
                 max_batch_size: 100,
@@ -239,7 +239,6 @@ fn bench_adaptive_batching(c: &mut Criterion) {
 }
 
 /// Benchmark batching efficiency (records per fsync).
-#[cfg(any())] // DISABLED: GroupCommitCoordinator::new now takes Arc<AsyncWalWriter>; this bench uses the legacy sync WalWriter. Port to the async WAL to re-enable (the bench_wal_direct baseline still runs).
 fn bench_batching_efficiency(c: &mut Criterion) {
     let mut group = c.benchmark_group("batching_efficiency");
     let num_threads = 8;
@@ -254,9 +253,7 @@ fn bench_batching_efficiency(c: &mut Criterion) {
             for _ in 0..iters {
                 let dir = tempdir().expect("create temp dir");
                 let wal_path = dir.path().join("bench.wal");
-                let wal = Arc::new(RwLock::new(
-                    WalWriter::create(&wal_path).expect("create WAL"),
-                ));
+                let wal = make_async_wal(&wal_path);
 
                 let config = GroupCommitConfig {
                     max_batch_size: 100,
@@ -306,6 +303,13 @@ fn bench_batching_efficiency(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_wal_direct); // 4 group-commit benches disabled (async-WAL drift)
+criterion_group!(
+    benches,
+    bench_wal_direct,
+    bench_group_commit_batch_sizes,
+    bench_group_commit_concurrency,
+    bench_adaptive_batching,
+    bench_batching_efficiency,
+);
 
 criterion_main!(benches);
