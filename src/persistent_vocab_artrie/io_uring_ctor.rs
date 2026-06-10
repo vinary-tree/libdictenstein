@@ -80,6 +80,8 @@ impl PersistentVocabARTrie<crate::persistent_artrie::IoUringDiskManager> {
             let bm = buffer_manager.write();
             let dm = bm.storage();
             let mut header = VocabTrieFileHeader::with_start_index(start_index);
+            // V4c (io_uring): overlay format from creation (mirror mmap).
+            header.version = super::types::VOCAB_HEADER_VERSION_V2;
             dm.write_header_bytes(&header.to_bytes_with_checksum())?;
             dm.sync()?;
         }
@@ -109,7 +111,7 @@ impl PersistentVocabARTrie<crate::persistent_artrie::IoUringDiskManager> {
 
         let root = VocabTrieRoot::Node(unsafe { Box::from_raw(root_ptr) });
 
-        Ok(Self {
+        let mut trie = Self {
             path,
             root,
             entry_count: AtomicUsize::new(0),
@@ -140,7 +142,14 @@ impl PersistentVocabARTrie<crate::persistent_artrie::IoUringDiskManager> {
                 crate::persistent_artrie_core::concurrency::EpochManager::new(),
             ),
             reverse_term_map: None,
-        })
+        };
+        // V4c FLIP (io_uring): overlay is the LIVE rep from construction (mirror mmap).
+        if !trie.flip_to_overlay() {
+            return Err(PersistentARTrieError::internal(
+                "vocab create_with_io_uring: flip_to_overlay did not engage on a fresh trie",
+            ));
+        }
+        Ok(trie)
     }
 
     /// Open an existing vocabulary trie using io_uring + O_DIRECT.
@@ -225,8 +234,12 @@ impl PersistentVocabARTrie<crate::persistent_artrie::IoUringDiskManager> {
             (Some(Arc::new(wal)), lsn)
         };
 
-        // Load root from disk if present
-        let (root, node_map, next_slot) = if header.root_ptr != 0 {
+        // V5 flip routing: v2 header = overlay image (root_ptr is a SwizzledPtr, NOT an owned
+        // ArenaSlot) — skip the owned load; the overlay is reestablished after the struct.
+        let is_overlay = header.version == super::types::VOCAB_HEADER_VERSION_V2;
+
+        // Load root from disk if present (owned v1 only).
+        let (root, node_map, next_slot) = if !is_overlay && header.root_ptr != 0 {
             let slot = ArenaSlot::from_u64(header.root_ptr);
             Self::load_trie_from_disk(&arena_manager, &buffer_manager, slot)?
         } else {
@@ -277,26 +290,29 @@ impl PersistentVocabARTrie<crate::persistent_artrie::IoUringDiskManager> {
             reverse_term_map: None,
         };
 
-        // Rebuild reverse_index with fresh NodeRefs after loading.
-        if header.root_ptr != 0 {
-            trie.rebuild_reverse_index()?;
-        }
-
-        // Load bloom filter from disk, or rebuild if missing
-        match Self::load_bloom_filter(&trie.path) {
-            Ok(Some(bloom)) => {
-                trie.bloom_filter = Some(bloom);
+        if is_overlay {
+            // V5+V3 (io_uring): reestablish the overlay from the v2 image + drain the WAL tail
+            // rank-aware (the overlay needs the recovery for crash-safety).
+            trie.reestablish_overlay_from_image(header.root_ptr)?;
+            let wal_path = trie.path.with_extension("vocab.wal");
+            if wal_path.exists() {
+                let checkpoint_lsn = trie.synced_lsn.load(Ordering::Acquire);
+                trie.replay_wal_into_overlay_rank_aware(&wal_path, checkpoint_lsn)?;
             }
-            Ok(None) => {
-                let count = trie.entry_count.load(Ordering::Acquire);
-                if count > 0 {
-                    trie.rebuild_bloom_filter(count);
+        } else {
+            // Owned (legacy v1): rebuild reverse_index with fresh NodeRefs + the bloom filter.
+            if header.root_ptr != 0 {
+                trie.rebuild_reverse_index()?;
+            }
+            match Self::load_bloom_filter(&trie.path) {
+                Ok(Some(bloom)) => {
+                    trie.bloom_filter = Some(bloom);
                 }
-            }
-            Err(_) => {
-                let count = trie.entry_count.load(Ordering::Acquire);
-                if count > 0 {
-                    trie.rebuild_bloom_filter(count);
+                Ok(None) | Err(_) => {
+                    let count = trie.entry_count.load(Ordering::Acquire);
+                    if count > 0 {
+                        trie.rebuild_bloom_filter(count);
+                    }
                 }
             }
         }
