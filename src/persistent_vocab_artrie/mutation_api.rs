@@ -476,6 +476,7 @@ mod tests {
     use tempfile::tempdir;
 
     #[test]
+    #[ignore = "no-WAL insert; the single-lock-free overlay makes the WAL mandatory (durable inserts need it), so this no-WAL scenario is unsupported; removed at V6/single-lock-free"]
     fn insert_without_wal_writer_preserves_state_and_allocator() {
         let dir = tempdir().expect("temp dir");
         let path = dir.path().join("wal_missing_insert.vocab");

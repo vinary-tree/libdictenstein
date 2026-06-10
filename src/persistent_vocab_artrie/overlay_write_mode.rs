@@ -90,17 +90,9 @@ impl<S: BlockStorage> LockFreeOverlay<CharKey, u64, S> for PersistentVocabARTrie
     /// The vocabulary index is a `u64`.
     type CounterValue = u64;
 
-    /// **Vocab override (flip vs toggle):** the overlay is the LIVE rep only after the FLIP,
-    /// which stamps the Overlay WAL regime — NOT merely after `enable_lockfree` (the legacy
-    /// toggle that sets `lockfree_root` for the `insert_cas`/`merge_to_persistent` flow WITHOUT
-    /// flipping). The trait default (`lockfree_root().is_some()`) suffices for char/byte (whose
-    /// only `lockfree_root` setter IS the flip), but vocab still has the separate toggle path, so
-    /// it must additionally require the regime. (Becomes equivalent to the default once
-    /// `enable_lockfree` is removed — the campaign's closing single-lock-free task.)
-    #[inline]
-    fn route_overlay(&self) -> bool {
-        self.lockfree_root().is_some() && self.wal_is_overlay_regime()
-    }
+    // route_overlay() uses the trait default (lockfree_root().is_some()) — single lock-free impl:
+    // ALL production ctors (mmap + io_uring create/open) flip at construction, so the overlay is
+    // the sole representation; there is no toggle path that sets lockfree_root without flipping.
 
     #[inline]
     fn lockfree_root(&self) -> Option<&AtomicNodePtr<CharKey, u64>> {
