@@ -55,8 +55,8 @@ formal-verification/
 │   ├── PART.cfg               # TLC configuration (no crash)
 │   └── PART_crash.cfg         # TLC configuration (with crash)
 │
-└── rocq/                      # Rocq/Coq proofs (58 .v files, 24,405 LOC,
-    │                            1,192 theorem/lemma/corollary propositions,
+└── rocq/                      # Rocq/Coq proofs (65 .v files, 26,019 LOC,
+    │                            1,265 theorem/lemma/corollary propositions,
     │                            0 Admitted / 0 Axiom / 0 Parameter)
     ├── Makefile               # Build system
     ├── Spec/                  # Specifications
@@ -455,7 +455,7 @@ make check-Model/Key
 ### Proof Status
 
 As of 2026-05-26: all modules **Complete** — 0 `Admitted` / 0 `Axiom` /
-0 `Parameter` across the 58 .v files (verified by grep, see
+0 `Parameter` across the 65 .v files (verified by grep, see
 [VERIFICATION_RESULTS.md](VERIFICATION_RESULTS.md) for the per-file tally).
 
 | Module | Status | Description |

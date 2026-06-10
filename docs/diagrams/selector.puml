@@ -1,0 +1,50 @@
+@startuml selector
+' ============================================================================
+' Backend selector — "which libdictenstein backend should I reach for?"
+' Color key:  green = always-on in-memory   amber = feature `pathmap-backend`
+'             blue  = feature `persistent-artrie` (disk-backed)
+' ============================================================================
+skinparam backgroundColor #FFFFFF
+skinparam defaultFontName "DejaVu Sans"
+skinparam ArrowColor #37474F
+skinparam ActivityDiamondBackgroundColor #FFF9C4
+skinparam ActivityDiamondBorderColor #F9A825
+skinparam ActivityBorderColor #37474F
+
+title Choosing a libdictenstein backend
+
+start
+:Store a set of terms\n(optionally term → value);
+
+if (Match **substrings** (anywhere),\nnot just prefixes?) then (yes)
+  if (Corpus is **static** (build once)?) then (yes)
+    :**Scdawg / ScdawgChar**\ncompact symmetric DAWG\n(bidirectional substring index);<<#C8E6C9>>
+  else (mutable)
+    :**SuffixAutomaton(Char)**\nonline substring automaton\n(≤ 2·n − 1 states);<<#C8E6C9>>
+  endif
+  stop
+else (prefix / whole-word)
+  if (Must **persist to disk**\nand survive crashes?) then (yes)
+    if (Map **term ↔ u64** id\n(a vocabulary)?) then (yes)
+      :**PersistentVocabARTrie**\nbijective term ↔ id;<<#BBDEFB>>
+    else (key → value)
+      :**PersistentARTrie / …Char**\nlock-free **durable** ART\n(mmap or io_uring);<<#BBDEFB>>
+    endif
+    stop
+  else (in-memory)
+    if (Need **remove()** at runtime?) then (yes)
+      :**DynamicDawg / …Char / …U64**\nthread-safe insert + remove\n(suffix-sharing);<<#C8E6C9>>
+    else (insert-only / read-mostly)
+      :**DoubleArrayTrie / …Char**\nfastest lookup, most compact\n(BASE/CHECK arrays);<<#C8E6C9>>
+    endif
+    stop
+  endif
+endif
+
+legend right
+| Color | Family |
+|<#C8E6C9>| in-memory (always on) |
+|<#FFF59D>| feature pathmap-backend |
+|<#BBDEFB>| feature persistent-artrie (disk) |
+endlegend
+@enduml

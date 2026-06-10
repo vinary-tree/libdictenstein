@@ -1,0 +1,64 @@
+@startuml architecture
+' ============================================================================
+' Trait layer over backend families.  Color key:
+'   purple = traits   grey = unit abstraction   green = in-memory
+'   amber = pathmap-backend   blue = persistent-artrie   teal = entry points
+' ============================================================================
+skinparam backgroundColor #FFFFFF
+skinparam defaultFontName "DejaVu Sans"
+skinparam ArrowColor #37474F
+skinparam packageStyle rectangle
+title libdictenstein — one trait API, many backends
+
+package "Trait layer" #E1BEE7 {
+  rectangle "**Dictionary**\ncontains · root · len" as Dict
+  rectangle "**MappedDictionary**\nget_value (term → V)" as Mapped
+  rectangle "**BijectiveDictionary**\nterm ↔ value" as Bij
+  rectangle "**MutableDictionary**\ninsert · remove" as Mut
+  rectangle "**CompactableDictionary**\ncompact · minimize" as Compact
+  rectangle "**DictionaryNode**\ntransition · edges · is_final" as Node
+  Dict <|-- Mapped
+  Mapped <|-- Bij
+  Dict <|-- Mut
+  Mut <|-- Compact
+}
+
+package "Unit abstraction" #CFD8DC {
+  rectangle "**CharUnit**\nu8 · char · u64" as CU
+  rectangle "**KeyEncoding**\nByteKey · CharKey" as KE
+}
+
+package "In-memory backends (always on)" #C8E6C9 {
+  rectangle "DoubleArrayTrie / …Char" as DAT
+  rectangle "DynamicDawg / …Char / …U64" as DD
+  rectangle "SuffixAutomaton / …Char" as SA
+  rectangle "Scdawg / …Char" as SC
+}
+
+package "feature pathmap-backend" #FFF59D {
+  rectangle "PathMapDictionary / …Char" as PM
+}
+
+package "feature persistent-artrie (disk-backed)" #BBDEFB {
+  rectangle "PersistentARTrie / …Char" as PA
+  rectangle "PersistentVocabARTrie" as PV
+}
+
+package "Entry points" #B2DFDB {
+  rectangle "DictionaryFactory\n(11 in-memory backends)" as Fac
+  rectangle "prelude" as Pre
+}
+
+DAT ..|> Dict
+DD  ..|> Dict
+SA  ..|> Dict
+SC  ..|> Dict
+PM  ..|> Dict
+PA  ..|> Dict
+PV  ..|> Bij
+Node <.. Dict
+DAT ..> CU  : labels
+PA  ..> KE  : keys
+Fac ..> DAT : builds
+Pre ..> Dict : re-exports
+@enduml

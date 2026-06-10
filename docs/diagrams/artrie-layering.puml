@@ -1,0 +1,34 @@
+@startuml artrie-layering
+' ============================================================================
+' PersistentARTrie durability stack.  Color key:
+'   blue = client/API   orange = lock-free overlay (the hot layer)
+'   red = WAL/durability   grey = block storage
+' ============================================================================
+skinparam backgroundColor #FFFFFF
+skinparam defaultFontName "DejaVu Sans"
+skinparam ArrowColor #37474F
+title PersistentARTrie — the lock-free **durable** write stack
+
+rectangle "**Client API**\nARTrie · MutableMappedDictionary\ninsert_with_value · upsert · get · iter_prefix" as Client #BBDEFB
+
+rectangle "**Lock-free overlay**  (the *sole* in-memory representation)\narc-swap root · adaptive ART nodes (Node4/16/48/256)\npath compression · copy-on-write structural sharing" as Overlay #FFE0B2
+
+rectangle "**Durability — Order-A** (data-loss-critical ordering)\n① append + fsync WAL record   ② publish via root-CAS\n③ CommitRank + mark_committed → committed-prefix watermark\nepoch-based reclamation (EBR)" as Dur #FFCDD2
+
+rectangle "**Block storage**\nmmap (default)  |  io_uring + O_DIRECT (feature)\n256 KB arenas · swizzled (offset) pointers" as Store #CFD8DC
+
+Client --> Overlay : "read / write"
+Overlay --> Dur : "publish"
+Dur --> Store : "persist · fault-in"
+Store ..> Overlay : "reopen → rebuild overlay\n(dense image + WAL replay)"
+
+note right of Dur
+  **acknowledged ⟹ durable**
+  a write becomes visible only AFTER its
+  WAL record is fsync-durable (Order-A).
+  Linearization point = the winning CAS.
+  Watermark is the only safe checkpoint LSN
+  under out-of-order lock-free commit.
+  (TLA+ checked: no lost writes)
+end note
+@enduml

@@ -1,7 +1,10 @@
-//! High-performance dictionary backends for fuzzy string matching.
+//! High-performance dictionary data structures — tries, DAWGs, double-array tries, suffix
+//! automata, and a lock-free durable Adaptive Radix Tree — unified behind one trait API.
 //!
-//! This crate provides multiple dictionary implementations (tries, DAWGs, suffix automata,
-//! persistent ARTs) optimized for different use cases with Levenshtein automata.
+//! libdictenstein provides the *container* half of approximate string matching: efficient,
+//! traversable collections of terms. The *query* half — a Levenshtein-automaton transducer —
+//! lives in the companion crate [`liblevenshtein`](https://github.com/universal-automata/liblevenshtein-rust),
+//! which walks any type implementing [`Dictionary`]. This crate contains no fuzzy-matching code itself.
 //!
 //! # Choosing a Dictionary Backend
 //!

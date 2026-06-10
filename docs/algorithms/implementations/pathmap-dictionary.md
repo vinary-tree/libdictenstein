@@ -169,7 +169,7 @@ PathMapDictionary is a thin wrapper that:
 `PathMapDictionary` uses **two separate** `Arc<RwLock<...>>` instances internally, making `.clone()` a **shallow copy** that shares all underlying data. The clone behavior is similar to `DynamicDawg`, but with dual Arc-wrapped components:
 
 ```rust
-use liblevenshtein::dictionary::pathmap::PathMapDictionary;
+use libdictenstein::pathmap::PathMapDictionary;
 
 let dict1: PathMapDictionary = PathMapDictionary::from_terms(vec!["test", "testing"]);
 let dict2 = dict1.clone();  // O(1) - increments TWO Arc refcounts
@@ -470,7 +470,7 @@ Where n = number of terms, m = dictionary size (grows with insertions)
 Create an empty dictionary for incremental updates:
 
 ```rust
-use liblevenshtein::dictionary::pathmap::PathMapDictionary;
+use libdictenstein::pathmap::PathMapDictionary;
 
 // Create empty dictionary
 let dict: PathMapDictionary = PathMapDictionary::new();
@@ -500,7 +500,7 @@ valued_dict.insert_with_value("banana", 200);
 Build from iterator of terms:
 
 ```rust
-use liblevenshtein::dictionary::pathmap::PathMapDictionary;
+use libdictenstein::pathmap::PathMapDictionary;
 
 // From Vec
 let terms = vec!["test", "testing", "tester"];
@@ -522,7 +522,7 @@ let dict = PathMapDictionary::from_terms(term_set);
 Build with associated values (frequencies, IDs, etc.):
 
 ```rust
-use liblevenshtein::dictionary::pathmap::PathMapDictionary;
+use libdictenstein::pathmap::PathMapDictionary;
 
 type ContextId = u32;
 
@@ -699,7 +699,7 @@ PathMapDictionary accessor methods have **simpler** implementations but **slower
 ### Quick Reference
 
 ```rust
-use liblevenshtein::dictionary::pathmap::PathMapDictionary;
+use libdictenstein::pathmap::PathMapDictionary;
 
 let dict = PathMapDictionary::from_terms(vec!["test", "testing", "tested"]);
 
@@ -723,7 +723,7 @@ assert!(!dict.is_empty());
 // No needs_compaction() (not applicable to PathMap)
 
 // Traversal (via Dictionary trait)
-use liblevenshtein::dictionary::{Dictionary, DictionaryNode};
+use libdictenstein::{Dictionary, DictionaryNode};
 let root = dict.root();
 // ... navigate via transition() as with other backends
 ```
@@ -871,8 +871,8 @@ pub fn join_into<V: Lattice>(&mut self, other: &PathMap<V>) { ... }
 ### Example 1: Sum Aggregation
 
 ```rust
-use liblevenshtein::dictionary::pathmap::PathMapDictionary;
-use liblevenshtein::dictionary::MutableMappedDictionary;
+use libdictenstein::pathmap::PathMapDictionary;
+use libdictenstein::MutableMappedDictionary;
 
 // First dataset: term frequencies
 let dict1: PathMapDictionary<u32> = PathMapDictionary::new();
@@ -901,8 +901,8 @@ assert_eq!(processed, 2);
 Demonstrates typical use case of layering configurations:
 
 ```rust
-use liblevenshtein::dictionary::pathmap::PathMapDictionary;
-use liblevenshtein::dictionary::MutableMappedDictionary;
+use libdictenstein::pathmap::PathMapDictionary;
+use libdictenstein::MutableMappedDictionary;
 
 // System defaults
 let defaults: PathMapDictionary<String> = PathMapDictionary::new();
@@ -932,8 +932,8 @@ assert_eq!(defaults.get_value("font_size"), Some("12".to_string()));
 Merge lists of associated data:
 
 ```rust
-use liblevenshtein::dictionary::pathmap::PathMapDictionary;
-use liblevenshtein::dictionary::MutableMappedDictionary;
+use libdictenstein::pathmap::PathMapDictionary;
+use libdictenstein::MutableMappedDictionary;
 
 let dict1: PathMapDictionary<Vec<u32>> = PathMapDictionary::new();
 dict1.insert_with_value("rust", vec![1, 2, 3]);
@@ -971,8 +971,8 @@ where
 
 **Example**:
 ```rust
-use liblevenshtein::dictionary::pathmap::PathMapDictionary;
-use liblevenshtein::dictionary::MutableMappedDictionary;
+use libdictenstein::pathmap::PathMapDictionary;
+use libdictenstein::MutableMappedDictionary;
 
 let dict1: PathMapDictionary<&str> = PathMapDictionary::new();
 dict1.insert_with_value("status", "draft");
@@ -1124,7 +1124,7 @@ dict1.union_with(&dict2, |a, b| a + b);
 ### Example 1: Basic Usage
 
 ```rust
-use liblevenshtein::dictionary::pathmap::PathMapDictionary;
+use libdictenstein::pathmap::PathMapDictionary;
 
 // Create empty dictionary
 let dict: PathMapDictionary<()> = PathMapDictionary::new();
@@ -1146,7 +1146,7 @@ assert_eq!(dict.len(), Some(2));
 ### Example 2: From Existing Terms
 
 ```rust
-use liblevenshtein::dictionary::pathmap::PathMapDictionary;
+use libdictenstein::pathmap::PathMapDictionary;
 
 let dict = PathMapDictionary::from_terms(vec![
     "algorithm",
@@ -1165,8 +1165,8 @@ assert_eq!(dict.len(), Some(4));
 ### Example 3: With Values
 
 ```rust
-use liblevenshtein::dictionary::pathmap::PathMapDictionary;
-use liblevenshtein::dictionary::MappedDictionary;
+use libdictenstein::pathmap::PathMapDictionary;
+use libdictenstein::MappedDictionary;
 
 // Map terms to category IDs
 let dict: PathMapDictionary<u32> = PathMapDictionary::from_terms_with_values(vec![
@@ -1187,7 +1187,7 @@ assert_eq!(dict.get_value("test"), Some(99));
 ### Example 4: Fuzzy Search
 
 ```rust
-use liblevenshtein::dictionary::pathmap::PathMapDictionary;
+use libdictenstein::pathmap::PathMapDictionary;
 use liblevenshtein::levenshtein::Algorithm;
 use liblevenshtein::levenshtein_automaton::LevenshteinAutomaton;
 
@@ -1206,7 +1206,7 @@ println!("{:?}", results);
 ### Example 5: Thread-Safe Updates
 
 ```rust
-use liblevenshtein::dictionary::pathmap::PathMapDictionary;
+use libdictenstein::pathmap::PathMapDictionary;
 use std::sync::Arc;
 use std::thread;
 
@@ -1235,7 +1235,7 @@ for handle in handles {
 ### Example 6: Dynamic User Dictionary
 
 ```rust
-use liblevenshtein::dictionary::pathmap::PathMapDictionary;
+use libdictenstein::pathmap::PathMapDictionary;
 
 // User's personal dictionary
 let user_dict = PathMapDictionary::new();
@@ -1259,8 +1259,8 @@ assert!(!user_dict.contains("debugging"));
 ### Example 7: Metadata Storage
 
 ```rust
-use liblevenshtein::dictionary::pathmap::PathMapDictionary;
-use liblevenshtein::dictionary::MappedDictionary;
+use libdictenstein::pathmap::PathMapDictionary;
+use libdictenstein::MappedDictionary;
 
 #[derive(Clone, Debug)]
 struct TermMetadata {
@@ -1268,7 +1268,7 @@ struct TermMetadata {
     last_used: u64,
 }
 
-impl liblevenshtein::dictionary::DictionaryValue for TermMetadata {}
+impl libdictenstein::DictionaryValue for TermMetadata {}
 
 let dict: PathMapDictionary<TermMetadata> = PathMapDictionary::new();
 
@@ -1292,7 +1292,7 @@ if let Some(meta) = dict.get_value("test") {
 ### Example 8: Prototyping
 
 ```rust
-use liblevenshtein::dictionary::pathmap::PathMapDictionary;
+use libdictenstein::pathmap::PathMapDictionary;
 use liblevenshtein::levenshtein::Algorithm;
 use liblevenshtein::levenshtein_automaton::LevenshteinAutomaton;
 

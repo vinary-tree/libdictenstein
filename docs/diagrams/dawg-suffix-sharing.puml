@@ -1,0 +1,54 @@
+@startuml dawg-suffix-sharing
+' ============================================================================
+' A DAWG (minimal acyclic DFA) shares SUFFIXES, not just prefixes.
+' Example term set: { cats, bats }.  ✓ marks an accepting (final) state.
+'   pink  = plain trie (prefix sharing only)
+'   green = minimized DAWG (prefix + suffix sharing)
+' ============================================================================
+skinparam backgroundColor #FFFFFF
+skinparam defaultFontName "DejaVu Sans"
+skinparam ArrowColor #37474F
+title A DAWG shares **suffixes** too — terms { cats, bats }
+
+state "Trie — prefix sharing only · 8 nodes" as Trie #FFEBEE {
+  state "·" as r1
+  state "c" as c1
+  state "a" as a1
+  state "t" as t1
+  state "s ✓" as s1
+  state "b" as b1
+  state "a " as a1b
+  state "t " as t1b
+  state "s ✓ " as s1b
+  r1 --> c1 : c
+  c1 --> a1 : a
+  a1 --> t1 : t
+  t1 --> s1 : s
+  r1 --> b1 : b
+  b1 --> a1b : a
+  a1b --> t1b : t
+  t1b --> s1b : s
+}
+
+state "DAWG — prefix + suffix sharing · 5 nodes" as Dawg #E8F5E9 {
+  state "·" as r2
+  state "c" as c2
+  state "b" as b2
+  state "a" as a2
+  state "t" as t2
+  state "s ✓" as s2
+  r2 --> c2 : c
+  r2 --> b2 : b
+  c2 --> a2 : a
+  b2 --> a2 : a
+  a2 --> t2 : t
+  t2 --> s2 : s
+}
+
+note bottom of Dawg
+  The shared suffix "ats✓" is stored **once**:
+  both c and b transition into the same node a.
+  Minimization merges states with equal *right language*
+  (set of strings leading to acceptance).
+end note
+@enduml

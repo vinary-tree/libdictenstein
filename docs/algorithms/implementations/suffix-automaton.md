@@ -337,7 +337,7 @@ fn insert(&self, text: &str) {
 ### Example 1: Basic Substring Search
 
 ```rust
-use liblevenshtein::dictionary::suffix_automaton::SuffixAutomaton;
+use libdictenstein::suffix_automaton::SuffixAutomaton;
 
 let text = "the quick brown fox jumps over the lazy dog";
 let dict = SuffixAutomaton::from_text(text);
@@ -353,7 +353,7 @@ assert!(!dict.contains("fast"));       // ❌ Not in text
 ### Example 2: Code Search
 
 ```rust
-use liblevenshtein::dictionary::suffix_automaton::SuffixAutomaton;
+use libdictenstein::suffix_automaton::SuffixAutomaton;
 use liblevenshtein::levenshtein::Algorithm;
 use liblevenshtein::levenshtein_automaton::LevenshteinAutomaton;
 
@@ -380,7 +380,7 @@ println!("{:?}", results);
 ### Example 3: Multi-Document Search
 
 ```rust
-use liblevenshtein::dictionary::suffix_automaton::SuffixAutomaton;
+use libdictenstein::suffix_automaton::SuffixAutomaton;
 
 let documents = vec![
     "Levenshtein automata for approximate matching",
@@ -400,7 +400,7 @@ assert!(dict.contains("for"));          // All docs (common word)
 ### Example 4: Position Tracking
 
 ```rust
-use liblevenshtein::dictionary::suffix_automaton::SuffixAutomaton;
+use libdictenstein::suffix_automaton::SuffixAutomaton;
 
 let text = "banana";
 let dict = SuffixAutomaton::from_text(text);
@@ -419,7 +419,7 @@ println!("'ana' appears at positions: {:?}", positions);
 ### Example 5: Dynamic Updates
 
 ```rust
-use liblevenshtein::dictionary::suffix_automaton::SuffixAutomaton;
+use libdictenstein::suffix_automaton::SuffixAutomaton;
 
 let dict = SuffixAutomaton::new();
 
@@ -442,7 +442,7 @@ if dict.needs_compaction() {
 ### Example 6: Log Analysis
 
 ```rust
-use liblevenshtein::dictionary::suffix_automaton::SuffixAutomaton;
+use libdictenstein::suffix_automaton::SuffixAutomaton;
 use liblevenshtein::levenshtein::Algorithm;
 use liblevenshtein::levenshtein_automaton::LevenshteinAutomaton;
 
@@ -466,7 +466,7 @@ println!("Error codes found: {:?}", results);
 ### Example 7: DNA Sequence Search
 
 ```rust
-use liblevenshtein::dictionary::suffix_automaton::SuffixAutomaton;
+use libdictenstein::suffix_automaton::SuffixAutomaton;
 
 let dna_sequence = "ATCGATCGATCGATCGTAGCTAGCTAGCT";
 let dict = SuffixAutomaton::from_text(dna_sequence);
@@ -486,7 +486,7 @@ println!("Motifs (distance ≤1): {:?}", results);
 ### Example 8: Incremental Indexing
 
 ```rust
-use liblevenshtein::dictionary::suffix_automaton::SuffixAutomaton;
+use libdictenstein::suffix_automaton::SuffixAutomaton;
 
 let dict = SuffixAutomaton::new();
 
@@ -633,7 +633,7 @@ Substring matching? ❌             ✅           ❌          ✅
 
 3. **Inenaga, S., Hoshino, H., Shinohara, A., Takeda, M., & Arikawa, S. (2005)**. "On-line construction of symmetric compact directed acyclic word graphs"
    - *Discrete Applied Mathematics*, 146(2), 156-179
-   - DOI: [10.1016/j.dam.2004.05.007](https://doi.org/10.1016/j.dam.2004.05.007)
+   - DOI: [10.1016/j.dam.2004.04.012](https://doi.org/10.1016/j.dam.2004.04.012)
    - 📄 Generalized suffix automaton
 
 ### Textbooks

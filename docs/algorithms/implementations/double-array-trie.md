@@ -439,7 +439,7 @@ impl DictionaryNode for DATNode {
 DoubleArrayTrie supports associating arbitrary values with terms:
 
 ```rust
-use liblevenshtein::dictionary::double_array_trie::DoubleArrayTrie;
+use libdictenstein::double_array_trie::DoubleArrayTrie;
 
 // Create dictionary with scope IDs
 let dict = DoubleArrayTrie::from_terms_with_values(vec![
@@ -504,7 +504,7 @@ See [Value Storage Guide](../../09-value-storage/README.md) for comprehensive do
 ### Example 1: Basic Dictionary
 
 ```rust
-use liblevenshtein::dictionary::double_array_trie::DoubleArrayTrie;
+use libdictenstein::double_array_trie::DoubleArrayTrie;
 
 // Create from terms
 let dict = DoubleArrayTrie::from_terms(vec![
@@ -525,7 +525,7 @@ assert_eq!(dict.len(), Some(4));
 ### Example 2: Append-Only Updates
 
 ```rust
-use liblevenshtein::dictionary::double_array_trie::DoubleArrayTrie;
+use libdictenstein::double_array_trie::DoubleArrayTrie;
 
 // Start with initial terms
 let mut dict = DoubleArrayTrie::from_terms(vec![
@@ -544,7 +544,7 @@ assert!(dict.contains("runtime"));
 ### Example 3: Fuzzy Search
 
 ```rust
-use liblevenshtein::dictionary::double_array_trie::DoubleArrayTrie;
+use libdictenstein::double_array_trie::DoubleArrayTrie;
 use liblevenshtein::levenshtein::Algorithm;
 use liblevenshtein::levenshtein_automaton::LevenshteinAutomaton;
 
@@ -563,7 +563,7 @@ println!("{:?}", results);
 ### Example 4: Value-Based Filtering
 
 ```rust
-use liblevenshtein::dictionary::double_array_trie::DoubleArrayTrie;
+use libdictenstein::double_array_trie::DoubleArrayTrie;
 use liblevenshtein::levenshtein::Algorithm;
 use liblevenshtein::levenshtein_automaton::LevenshteinAutomaton;
 
@@ -588,7 +588,7 @@ let results: Vec<String> = automaton.query(&dict).collect();
 ### Example 5: Builder Pattern
 
 ```rust
-use liblevenshtein::dictionary::double_array_trie::DoubleArrayTrieBuilder;
+use libdictenstein::double_array_trie::DoubleArrayTrieBuilder;
 
 let mut builder = DoubleArrayTrieBuilder::new();
 
@@ -606,7 +606,7 @@ assert_eq!(dict.get_value("second"), Some(2));
 ### Example 6: Thread-Safe Concurrent Queries
 
 ```rust
-use liblevenshtein::dictionary::double_array_trie::DoubleArrayTrie;
+use libdictenstein::double_array_trie::DoubleArrayTrie;
 use std::sync::Arc;
 use std::thread;
 
@@ -632,7 +632,7 @@ for handle in handles {
 ### Example 7: Serialization
 
 ```rust
-use liblevenshtein::dictionary::double_array_trie::DoubleArrayTrie;
+use libdictenstein::double_array_trie::DoubleArrayTrie;
 use bincode;
 
 let dict = DoubleArrayTrie::from_terms(vec!["save", "load"]);
@@ -651,7 +651,7 @@ assert!(loaded.contains("save"));
 ### Example 8: Large Dictionary
 
 ```rust
-use liblevenshtein::dictionary::double_array_trie::DoubleArrayTrie;
+use libdictenstein::double_array_trie::DoubleArrayTrie;
 use std::fs;
 
 // Load dictionary from file (e.g., /usr/share/dict/words)
@@ -803,7 +803,7 @@ Working Set Size  │  Cache Level  │  Query Time
 Any type implementing `DictionaryValue` can be stored:
 
 ```rust
-use liblevenshtein::dictionary::double_array_trie::DoubleArrayTrie;
+use libdictenstein::double_array_trie::DoubleArrayTrie;
 use serde::{Serialize, Deserialize};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -813,7 +813,7 @@ struct Metadata {
     timestamp: u64,
 }
 
-impl liblevenshtein::dictionary::DictionaryValue for Metadata {}
+impl libdictenstein::DictionaryValue for Metadata {}
 
 let dict = DoubleArrayTrie::from_terms_with_values(vec![
     ("term1", Metadata {
@@ -831,7 +831,7 @@ let dict = DoubleArrayTrie::from_terms_with_values(vec![
 For append-only use cases, use the builder:
 
 ```rust
-use liblevenshtein::dictionary::double_array_trie::DoubleArrayTrieBuilder;
+use libdictenstein::double_array_trie::DoubleArrayTrieBuilder;
 use std::sync::{Arc, RwLock};
 
 struct AppendOnlyDict {
@@ -867,9 +867,9 @@ impl AppendOnlyDict {
 Use zippers for hierarchical navigation with value access:
 
 ```rust
-use liblevenshtein::dictionary::double_array_trie::DoubleArrayTrie;
-use liblevenshtein::dictionary::double_array_trie_zipper::DoubleArrayTrieZipper;
-use liblevenshtein::dictionary::zipper::{DictZipper, ValuedDictZipper};
+use libdictenstein::double_array_trie::DoubleArrayTrie;
+use libdictenstein::double_array_trie_zipper::DoubleArrayTrieZipper;
+use libdictenstein::zipper::{DictZipper, ValuedDictZipper};
 
 let dict = DoubleArrayTrie::from_terms_with_values(vec![
     ("test", 1),
@@ -908,7 +908,7 @@ See [Zipper Navigation](../../06-zipper-navigation/README.md) for details.
 #### Redis-backed Dictionary
 
 ```rust
-use liblevenshtein::dictionary::double_array_trie::DoubleArrayTrie;
+use libdictenstein::double_array_trie::DoubleArrayTrie;
 use redis::Commands;
 
 fn load_from_redis() -> DoubleArrayTrie {
@@ -930,7 +930,7 @@ fn save_to_redis(dict: &DoubleArrayTrie) {
 #### Database-backed Dictionary
 
 ```rust
-use liblevenshtein::dictionary::double_array_trie::DoubleArrayTrie;
+use libdictenstein::double_array_trie::DoubleArrayTrie;
 use sqlx::PgPool;
 
 async fn load_from_postgres(pool: &PgPool) -> DoubleArrayTrie<u32> {
@@ -954,7 +954,7 @@ async fn load_from_postgres(pool: &PgPool) -> DoubleArrayTrie<u32> {
 For very large dictionaries, use memory mapping:
 
 ```rust
-use liblevenshtein::dictionary::double_array_trie::DoubleArrayTrie;
+use libdictenstein::double_array_trie::DoubleArrayTrie;
 use memmap2::Mmap;
 use std::fs::File;
 
@@ -986,12 +986,12 @@ let dict: DoubleArrayTrie = bincode::deserialize(&mmap).unwrap();
 
 2. **Yata, S., Oono, M., Morita, K., Fuketa, M., Sumitomo, T., & Aoe, J. (2007)**. "A compact static double-array keeping character codes"
    - *Information Processing & Management*, 43(1), 237-247
-   - DOI: [10.1016/j.ipm.2006.06.001](https://doi.org/10.1016/j.ipm.2006.06.001)
+   - DOI: [10.1016/j.ipm.2006.04.004](https://doi.org/10.1016/j.ipm.2006.04.004)
    - 📄 **Optimization techniques**
 
-3. **Yata, S., Morita, K., Fuketa, M., & Aoe, J. (2009)**. "Fast String Matching with Space-Efficient Word Graphs"
-   - *Innovations in Information Technology*, 79-83
-   - DOI: [10.1109/IIT.2009.5413739](https://doi.org/10.1109/IIT.2009.5413739)
+3. **Yata, S., Morita, K., Fuketa, M., & Aoe, J. (2008)**. "Fast String Matching with Space-Efficient Word Graphs"
+   - *Innovations in Information Technology (IIT)*, 79-83
+   - DOI: [10.1109/INNOVATIONS.2008.4781726](https://doi.org/10.1109/INNOVATIONS.2008.4781726)
    - 📄 **Space optimizations**
 
 ### Open Access Resources

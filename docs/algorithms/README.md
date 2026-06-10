@@ -4,7 +4,7 @@
 
 ## Overview
 
-The Dictionary Layer forms the foundation of liblevenshtein's fuzzy matching capabilities. It provides pluggable backend implementations for storing and traversing collections of terms, optimized for efficient character-by-character navigation required by Levenshtein automata.
+The Dictionary Layer is the family of dictionary backends provided by **libdictenstein**. It supplies pluggable implementations for storing and traversing collections of terms, optimized for the efficient character-by-character navigation a Levenshtein-automaton transducer (such as the companion **liblevenshtein** crate) performs. libdictenstein itself contains no fuzzy-matching code — it is the container half that such a transducer walks.
 
 This layer abstracts over different data structures (tries, DAWGs, double-array tries) through common traits, allowing you to choose the best backend for your specific use case while maintaining a consistent API.
 
@@ -128,7 +128,7 @@ let dict_chars = DoubleArrayTrieChar::from_terms(vec!["café"]);
 **Best for**: General-purpose applications
 
 ```rust
-use liblevenshtein::dictionary::double_array_trie::DoubleArrayTrie;
+use libdictenstein::double_array_trie::DoubleArrayTrie;
 
 let mut dict = DoubleArrayTrie::from_terms(vec![
     "algorithm", "approximate", "automaton"
@@ -149,7 +149,7 @@ dict.insert("analysis");  // Supports runtime insertions
 **Best for**: Multi-language applications with proper Unicode handling
 
 ```rust
-use liblevenshtein::dictionary::double_array_trie_char::DoubleArrayTrieChar;
+use libdictenstein::double_array_trie_char::DoubleArrayTrieChar;
 
 let mut dict = DoubleArrayTrieChar::from_terms(vec![
     "café", "naïve", "中文", "🎉"
@@ -170,7 +170,7 @@ dict.insert("新しい");
 **Best for**: Applications requiring both insert and remove operations
 
 ```rust
-use liblevenshtein::dictionary::dynamic_dawg::DynamicDawg;
+use libdictenstein::dynamic_dawg::DynamicDawg;
 
 let dict = DynamicDawg::from_terms(vec!["initial", "terms"]);
 dict.insert("new_term");  // ✅ Thread-safe
@@ -190,7 +190,7 @@ dict.remove("old_term");  // ✅ Supports removal
 **Best for**: Unicode applications with full dynamic updates
 
 ```rust
-use liblevenshtein::dictionary::dynamic_dawg_char::DynamicDawgChar;
+use libdictenstein::dynamic_dawg_char::DynamicDawgChar;
 
 let dict = DynamicDawgChar::from_terms(vec!["café", "中文"]);
 dict.insert("新しい");  // ✅ Unicode + thread-safe
@@ -212,7 +212,7 @@ dict.remove("café");    // ✅ Full removal support
 **Best for**: Substring/infix search within text
 
 ```rust
-use liblevenshtein::dictionary::suffix_automaton::SuffixAutomaton;
+use libdictenstein::suffix_automaton::SuffixAutomaton;
 
 let dict = SuffixAutomaton::from_source_text("the quick brown fox");
 // Finds "quick" even though it's not a prefix
@@ -231,7 +231,7 @@ let dict = SuffixAutomaton::from_source_text("the quick brown fox");
 
 ```rust
 #[cfg(feature = "pathmap-backend")]
-use liblevenshtein::dictionary::pathmap::PathMapDictionary;
+use libdictenstein::pathmap::PathMapDictionary;
 
 let dict = PathMapDictionary::from_terms(vec!["test"]);
 dict.insert("new");  // Simpler internal structure
@@ -243,30 +243,36 @@ dict.insert("new");  // Simpler internal structure
 - 📉 **2-3x slower** than DoubleArrayTrie
 - 💾 **Higher memory** usage
 
-### Legacy (Static)
+### Substring & static-compact
 
-#### 7. DawgDictionary
+#### 7. SuffixAutomatonChar / Scdawg / ScdawgChar
 
-Static DAWG implementation (no dynamic updates):
+Unicode substring search (`SuffixAutomatonChar`) and the static, compact **symmetric** DAWG
+(`Scdawg` / `ScdawgChar`) for bidirectional substring indexing at ~20–30% fewer states than a
+plain suffix automaton. See [suffix-automaton.md](implementations/suffix-automaton.md) and
+[scdawg.md](implementations/scdawg.md).
 
-```rust
-use liblevenshtein::dictionary::dawg::DawgDictionary;
+### Token / time-series labels
 
-let dict = DawgDictionary::from_sorted_terms(vec!["a", "b", "c"]);
-// ❌ No runtime insertions/removals
-```
+#### 8. DynamicDawgU64
 
-#### 8. OptimizedDawg
-
-Fast construction variant:
+A `DynamicDawg` whose edge labels are 64-bit units — for token sequences and time-series keys:
 
 ```rust
-use liblevenshtein::dictionary::dawg_optimized::OptimizedDawg;
+use libdictenstein::dynamic_dawg_u64::DynamicDawgU64;
 
-let dict = OptimizedDawg::from_terms(vec!["test"]);
-// ✅ Faster construction than DawgDictionary
-// ❌ No runtime updates
+let dict = DynamicDawgU64::new();   // thread-safe insert + remove over u64 labels
 ```
+
+### Disk-backed (feature `persistent-artrie`)
+
+#### 9. Persistent ARTrie family
+
+Crash-durable Adaptive Radix Trees: `PersistentARTrie` / `PersistentARTrieChar` (key → value)
+and `PersistentVocabARTrie` (term ↔ u64 bijection), built on a lock-free overlay, a write-ahead
+log, and `mmap` (or `io_uring`) block storage. See the
+[crate README](../../README.md#persistent-artrie--lock-free--durable) and
+[mmap-architecture.md](../persistence/mmap-architecture.md).
 
 ## Decision Guide
 
@@ -313,7 +319,7 @@ DoubleArrayTrie:     3.2ms
 DoubleArrayTrieChar: 3.4ms  (+6%)
 PathMapDictionary:   3.5ms  (+9%)
 DynamicDawg:         4.1ms  (+28%)
-DawgDictionary:      7.2ms  (+125%)
+DynamicDawg:      7.2ms  (+125%)
 ```
 
 ### Exact Match (single term)
@@ -321,7 +327,7 @@ DawgDictionary:      7.2ms  (+125%)
 ```
 DoubleArrayTrie:     6.6µs
 DoubleArrayTrieChar: 6.9µs  (+5%)
-DawgDictionary:      19.8µs (+200%)
+DynamicDawg:      19.8µs (+200%)
 PathMapDictionary:   71.1µs (+977%)
 ```
 
@@ -330,7 +336,7 @@ PathMapDictionary:   71.1µs (+977%)
 ```
 DoubleArrayTrie:     0.22µs per check
 DoubleArrayTrieChar: 0.23µs (+5%)
-DawgDictionary:      6.7µs  (+2945%)
+DynamicDawg:      6.7µs  (+2945%)
 PathMapDictionary:   132µs  (+59900%)
 ```
 
@@ -339,7 +345,7 @@ PathMapDictionary:   132µs  (+59900%)
 ```
 DoubleArrayTrie:     16.3µs
 DoubleArrayTrieChar: 17.1µs  (+5%)
-DawgDictionary:      2,150µs (+13100%)
+DynamicDawg:      2,150µs (+13100%)
 PathMapDictionary:   5,919µs (+36200%)
 ```
 
@@ -352,7 +358,7 @@ PathMapDictionary:   5,919µs (+36200%)
 ```
 DoubleArrayTrie:     8 bytes/state
 DoubleArrayTrieChar: 12 bytes/state (char labels = 4x u8)
-DawgDictionary:      16 bytes/state
+DynamicDawg:      16 bytes/state
 DynamicDawg:         24 bytes/state (Arc overhead)
 PathMapDictionary:   32 bytes/state (HashMap overhead)
 SuffixAutomaton:     48 bytes/state (suffix links)
@@ -374,7 +380,7 @@ PathMapDictionary:   ~3.2 MB
 **Recommendation**: `DoubleArrayTrie` or `DoubleArrayTrieChar`
 
 ```rust
-use liblevenshtein::dictionary::double_array_trie::DoubleArrayTrie;
+use libdictenstein::double_array_trie::DoubleArrayTrie;
 use liblevenshtein::levenshtein::Algorithm;
 use liblevenshtein::levenshtein_automaton::LevenshteinAutomaton;
 
@@ -395,7 +401,7 @@ fn autocomplete(query: &str, max_distance: usize) -> Vec<String> {
 **Recommendation**: `DoubleArrayTrieChar`
 
 ```rust
-use liblevenshtein::dictionary::double_array_trie_char::DoubleArrayTrieChar;
+use libdictenstein::double_array_trie_char::DoubleArrayTrieChar;
 
 let dict = DoubleArrayTrieChar::from_terms(vec![
     // English
@@ -418,7 +424,7 @@ let dict = DoubleArrayTrieChar::from_terms(vec![
 **Recommendation**: `DynamicDawg` or `DynamicDawgChar`
 
 ```rust
-use liblevenshtein::dictionary::dynamic_dawg::DynamicDawg;
+use libdictenstein::dynamic_dawg::DynamicDawg;
 
 let dict = DynamicDawg::new();
 
@@ -438,7 +444,7 @@ dict.remove("typo");
 **Recommendation**: `DoubleArrayTrie<u32>` with values
 
 ```rust
-use liblevenshtein::dictionary::double_array_trie::DoubleArrayTrie;
+use libdictenstein::double_array_trie::DoubleArrayTrie;
 
 let dict = DoubleArrayTrie::from_terms_with_values(vec![
     ("println", 1),   // Global scope
@@ -458,7 +464,7 @@ let results = query_with_filter(&dict, "temp", 2, |scope| *scope == 42);
 **Recommendation**: `SuffixAutomaton`
 
 ```rust
-use liblevenshtein::dictionary::suffix_automaton::SuffixAutomaton;
+use libdictenstein::suffix_automaton::SuffixAutomaton;
 
 let doc = "The quick brown fox jumps over the lazy dog";
 let dict = SuffixAutomaton::from_source_text(doc);
@@ -474,8 +480,8 @@ let results = fuzzy_search(&dict, "quik", 1);  // Finds "quick"
 **Recommendation**: `DynamicDawg` or `PathMapDictionary` with values
 
 ```rust
-use liblevenshtein::dictionary::dynamic_dawg::DynamicDawg;
-use liblevenshtein::dictionary::MutableMappedDictionary;
+use libdictenstein::dynamic_dawg::DynamicDawg;
+use libdictenstein::MutableMappedDictionary;
 
 // System-wide default frequencies
 let system_dict: DynamicDawg<u32> = DynamicDawg::new();
@@ -502,8 +508,8 @@ system_dict.union_with(&user_dict, |system_freq, user_freq| {
 
 **Alternative with Configuration Layers**:
 ```rust
-use liblevenshtein::dictionary::pathmap::PathMapDictionary;
-use liblevenshtein::dictionary::MutableMappedDictionary;
+use libdictenstein::pathmap::PathMapDictionary;
+use libdictenstein::MutableMappedDictionary;
 
 // Default application settings
 let defaults: PathMapDictionary<String> = PathMapDictionary::new();
@@ -527,7 +533,7 @@ defaults.union_replace(&user_prefs);
 The Dictionary Layer is designed to work seamlessly with Layer 2 (Automata):
 
 ```rust
-use liblevenshtein::dictionary::double_array_trie::DoubleArrayTrie;
+use libdictenstein::double_array_trie::DoubleArrayTrie;
 use liblevenshtein::levenshtein::Algorithm;
 use liblevenshtein::levenshtein_automaton::LevenshteinAutomaton;
 
@@ -580,7 +586,7 @@ For concurrent writes, dictionaries have different strategies:
 To implement a custom backend:
 
 ```rust
-use liblevenshtein::dictionary::{Dictionary, DictionaryNode, CharUnit};
+use libdictenstein::{Dictionary, DictionaryNode, CharUnit};
 
 #[derive(Clone)]
 struct MyNode {
@@ -625,7 +631,7 @@ impl Dictionary for MyDictionary {
 Dictionaries can be serialized for persistence:
 
 ```rust
-use liblevenshtein::dictionary::double_array_trie::DoubleArrayTrie;
+use libdictenstein::double_array_trie::DoubleArrayTrie;
 
 let dict = DoubleArrayTrie::from_terms(vec!["test"]);
 
@@ -658,7 +664,7 @@ See [Serialization Guide](../08-serialization/README.md) for details.
 
 2. **Yata, S., Oono, M., Morita, K., Fuketa, M., Sumitomo, T., & Aoe, J. (2007)**. "A compact static double-array keeping character codes"
    - *Information Processing & Management*, 43(1), 237-247
-   - DOI: [10.1016/j.ipm.2006.06.001](https://doi.org/10.1016/j.ipm.2006.06.001)
+   - DOI: [10.1016/j.ipm.2006.04.004](https://doi.org/10.1016/j.ipm.2006.04.004)
    - 📄 Optimization techniques for DATs
 
 3. **Blumer, A., Blumer, J., Haussler, D., McConnell, R., & Ehrenfeucht, A. (1987)**. "Complete inverted files for efficient text retrieval and analysis"

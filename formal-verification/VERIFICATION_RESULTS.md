@@ -415,9 +415,9 @@ The prior 15-module core compiled with Rocq 9.1.0 (~72 s wall clock under
 | Proofs/HotStuffSafety.v | 46 | 2 | 0 | 2 | Complete |
 | Proofs/ProofCarryingExtraction.v | 80 | 3 | 0 | 3 | Complete |
 
-**Total Rocq LOC:** 24,405 (58 modules)
-**Aggregate proof tally:** 924 `Theorem` + 262 `Lemma` + 6 `Corollary`
-= 1,192 theorem/lemma/corollary propositions, all closed
+**Total Rocq LOC:** 26,019 (65 modules)
+**Aggregate proof tally:** 957 `Theorem` + 300 `Lemma` + 8 `Corollary`
+= 1,265 theorem/lemma/corollary propositions, all closed
 (`Qed.`/`Defined.`; no escape hatches).
 
 ### Compilation Command
@@ -461,7 +461,7 @@ obligations were resolved as follows:
 
 ### Proven Theorems (selected highlights)
 
-A non-exhaustive sample of the 1,192 theorem/lemma/corollary propositions. See per-module file for
+A non-exhaustive sample of the 1,265 theorem/lemma/corollary propositions. See per-module file for
 the complete list; see [README.md](README.md) for module-by-module module-status
 table.
 

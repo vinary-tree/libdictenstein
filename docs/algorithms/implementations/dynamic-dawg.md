@@ -248,7 +248,7 @@ struct DawgNode<V: DictionaryValue> {
 `DynamicDawg` uses `Arc<RwLock<...>>` internally, making `.clone()` a **shallow copy** that shares all underlying data structures between clones:
 
 ```rust
-use liblevenshtein::dictionary::dynamic_dawg::DynamicDawg;
+use libdictenstein::dynamic_dawg::DynamicDawg;
 
 let dict1 = DynamicDawg::from_iter(vec!["test", "testing"]);
 let dict2 = dict1.clone();  // O(1) - only increments Arc refcount
@@ -562,7 +562,7 @@ Where n = number of terms, m = average term length
 Create an empty dictionary for incremental population:
 
 ```rust
-use liblevenshtein::dictionary::dynamic_dawg::DynamicDawg;
+use libdictenstein::dynamic_dawg::DynamicDawg;
 
 // Create empty dictionary
 let dict: DynamicDawg = DynamicDawg::new();
@@ -592,7 +592,7 @@ valued_dict.insert_with_value("world", 200);
 Build dictionary from any iterator over string-like items:
 
 ```rust
-use liblevenshtein::dictionary::dynamic_dawg::DynamicDawg;
+use libdictenstein::dynamic_dawg::DynamicDawg;
 
 // From Vec
 let terms = vec!["apple", "banana", "cherry"];
@@ -630,7 +630,7 @@ let dict = DynamicDawg::from_iter(terms);
 Convenience wrapper for common case of Vec/slice of terms:
 
 ```rust
-use liblevenshtein::dictionary::dynamic_dawg::DynamicDawg;
+use libdictenstein::dynamic_dawg::DynamicDawg;
 
 // Direct from slice
 let dict = DynamicDawg::from_terms(&["test", "testing", "tester"]);
@@ -647,7 +647,7 @@ let dict = DynamicDawg::from_terms(terms);
 Insert terms with associated metadata (frequencies, IDs, etc.):
 
 ```rust
-use liblevenshtein::dictionary::dynamic_dawg::DynamicDawg;
+use libdictenstein::dynamic_dawg::DynamicDawg;
 
 // Example: Term frequencies
 let dict: DynamicDawg<u32> = DynamicDawg::new();
@@ -807,7 +807,7 @@ pub fn contains(&self, term: &str) -> bool
 
 **Example**:
 ```rust
-use liblevenshtein::dictionary::dynamic_dawg::DynamicDawg;
+use libdictenstein::dynamic_dawg::DynamicDawg;
 
 let dict = DynamicDawg::from_terms(vec!["cat", "dog"]);
 
@@ -876,7 +876,7 @@ where
 
 **Example**:
 ```rust
-use liblevenshtein::dictionary::dynamic_dawg::DynamicDawg;
+use libdictenstein::dynamic_dawg::DynamicDawg;
 
 // Dictionary with integer values
 let dict: DynamicDawg<u32> = DynamicDawg::new();
@@ -932,7 +932,7 @@ fn is_empty(&self) -> bool      // Dictionary trait
 
 **Example**:
 ```rust
-use liblevenshtein::dictionary::{Dictionary, dynamic_dawg::DynamicDawg};
+use libdictenstein::{Dictionary, dynamic_dawg::DynamicDawg};
 
 let dict = DynamicDawg::new();
 assert_eq!(dict.len(), Some(0));
@@ -1111,7 +1111,7 @@ fn root(&self) -> DynamicDawgNode // From Dictionary trait
 
 **Example**:
 ```rust
-use liblevenshtein::dictionary::{Dictionary, DictionaryNode};
+use libdictenstein::{Dictionary, DictionaryNode};
 
 let dict = DynamicDawg::from_terms(vec!["cat", "car", "card"]);
 
@@ -1137,8 +1137,8 @@ if let Some(c_node) = root.transition(b'c') {
 **Zipper-Based Traversal** (preferred for complex navigation):
 
 ```rust
-use liblevenshtein::dictionary::zipper::DictZipper;
-use liblevenshtein::dictionary::dynamic_dawg_zipper::DynamicDawgZipper;
+use libdictenstein::zipper::DictZipper;
+use libdictenstein::dynamic_dawg_zipper::DynamicDawgZipper;
 
 let dict: DynamicDawg<u32> = DynamicDawg::new();
 dict.insert_with_value("hello", 42);
@@ -1329,8 +1329,8 @@ where
 Merge term counts by summing conflicting values:
 
 ```rust
-use liblevenshtein::dictionary::dynamic_dawg::DynamicDawg;
-use liblevenshtein::dictionary::MutableMappedDictionary;
+use libdictenstein::dynamic_dawg::DynamicDawg;
+use libdictenstein::MutableMappedDictionary;
 
 // First dataset: word frequencies
 let dict1: DynamicDawg<u32> = DynamicDawg::new();
@@ -1362,8 +1362,8 @@ assert_eq!(processed, 3); // Processed 3 terms from dict2
 Merge lists of associated IDs, eliminating duplicates:
 
 ```rust
-use liblevenshtein::dictionary::dynamic_dawg::DynamicDawg;
-use liblevenshtein::dictionary::MutableMappedDictionary;
+use libdictenstein::dynamic_dawg::DynamicDawg;
+use libdictenstein::MutableMappedDictionary;
 
 // First dictionary: terms with associated document IDs
 let dict1: DynamicDawg<Vec<u32>> = DynamicDawg::new();
@@ -1396,8 +1396,8 @@ assert_eq!(dict1.get_value("algorithm"), Some(vec![1, 2, 4, 5]));
 Keep the highest value when terms conflict:
 
 ```rust
-use liblevenshtein::dictionary::dynamic_dawg::DynamicDawg;
-use liblevenshtein::dictionary::MutableMappedDictionary;
+use libdictenstein::dynamic_dawg::DynamicDawg;
+use libdictenstein::MutableMappedDictionary;
 
 // Dictionary 1: initial scores
 let dict1: DynamicDawg<i32> = DynamicDawg::new();
@@ -1426,8 +1426,8 @@ assert_eq!(dict1.get_value("reliability"), Some(92));
 Demonstrates correct behavior with terms sharing common prefixes:
 
 ```rust
-use liblevenshtein::dictionary::dynamic_dawg::DynamicDawg;
-use liblevenshtein::dictionary::MutableMappedDictionary;
+use libdictenstein::dynamic_dawg::DynamicDawg;
+use libdictenstein::MutableMappedDictionary;
 
 // Dictionary with "test" prefix family
 let dict1: DynamicDawg<u32> = DynamicDawg::new();
@@ -1463,8 +1463,8 @@ where
 
 **Example**:
 ```rust
-use liblevenshtein::dictionary::dynamic_dawg::DynamicDawg;
-use liblevenshtein::dictionary::MutableMappedDictionary;
+use libdictenstein::dynamic_dawg::DynamicDawg;
+use libdictenstein::MutableMappedDictionary;
 
 let dict1: DynamicDawg<&str> = DynamicDawg::new();
 dict1.insert_with_value("version", "1.0");
@@ -1647,7 +1647,7 @@ For high-concurrency scenarios, consider:
 ### Example 1: Basic Usage
 
 ```rust
-use liblevenshtein::dictionary::dynamic_dawg::DynamicDawg;
+use libdictenstein::dynamic_dawg::DynamicDawg;
 
 // Create empty DAWG
 let dict = DynamicDawg::new();
@@ -1669,8 +1669,8 @@ assert_eq!(dict.len(), Some(2));
 ### Example 2: With Values
 
 ```rust
-use liblevenshtein::dictionary::dynamic_dawg::DynamicDawg;
-use liblevenshtein::dictionary::MappedDictionary;
+use libdictenstein::dynamic_dawg::DynamicDawg;
+use libdictenstein::MappedDictionary;
 
 let dict: DynamicDawg<u32> = DynamicDawg::new();
 
@@ -1690,7 +1690,7 @@ assert_eq!(dict.get_value("testing"), Some(2));
 ### Example 3: From Existing Terms
 
 ```rust
-use liblevenshtein::dictionary::dynamic_dawg::DynamicDawg;
+use libdictenstein::dynamic_dawg::DynamicDawg;
 
 let dict = DynamicDawg::from_terms(vec![
     "algorithm", "approximate", "automaton"
@@ -1706,7 +1706,7 @@ assert!(dict.contains("analysis"));
 ### Example 4: Thread-Safe Updates
 
 ```rust
-use liblevenshtein::dictionary::dynamic_dawg::DynamicDawg;
+use libdictenstein::dynamic_dawg::DynamicDawg;
 use std::sync::Arc;
 use std::thread;
 
@@ -1735,7 +1735,7 @@ for handle in handles {
 ### Example 5: Compaction
 
 ```rust
-use liblevenshtein::dictionary::dynamic_dawg::DynamicDawg;
+use libdictenstein::dynamic_dawg::DynamicDawg;
 
 let dict = DynamicDawg::from_terms(vec![
     "test1", "test2", "test3", "test4", "test5"
@@ -1759,7 +1759,7 @@ println!("After compaction: {} nodes", dict.node_count());
 ### Example 6: Fuzzy Search with Dynamic Updates
 
 ```rust
-use liblevenshtein::dictionary::dynamic_dawg::DynamicDawg;
+use libdictenstein::dynamic_dawg::DynamicDawg;
 use liblevenshtein::levenshtein::Algorithm;
 use liblevenshtein::levenshtein_automaton::LevenshteinAutomaton;
 
@@ -1905,7 +1905,7 @@ Compaction time:      ~8ms for 10K terms
 
 3. **Inenaga, S., Hoshino, H., Shinohara, A., Takeda, M., & Arikawa, S. (2001)**. "On-line construction of compact directed acyclic word graphs"
    - *Annual Symposium on Combinatorial Pattern Matching*, 83-97
-   - DOI: [10.1007/3-540-48194-X_8](https://doi.org/10.1007/3-540-48194-X_8)
+   - DOI: [10.1007/3-540-48194-X_16](https://doi.org/10.1007/3-540-48194-X_16)
    - 📄 Online DAWG modifications
 
 ### Textbooks

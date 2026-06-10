@@ -84,7 +84,7 @@ Fuzzy search "cafe" (distance 1):
 **Example: Multi-language Spell Checker**
 
 ```rust
-use liblevenshtein::dictionary::dynamic_dawg_char::DynamicDawgChar;
+use libdictenstein::dynamic_dawg_char::DynamicDawgChar;
 use liblevenshtein::levenshtein::Algorithm;
 use liblevenshtein::levenshtein_automaton::LevenshteinAutomaton;
 
@@ -187,7 +187,7 @@ struct DawgNodeChar<V: DictionaryValue> {
 `DynamicDawgChar` uses `Arc<RwLock<...>>` internally, making `.clone()` a **shallow copy** that shares all underlying data structures between clones. The clone behavior is **identical** to `DynamicDawg` - only the edge label types differ (char vs u8).
 
 ```rust
-use liblevenshtein::dictionary::dynamic_dawg_char::DynamicDawgChar;
+use libdictenstein::dynamic_dawg_char::DynamicDawgChar;
 
 let dict1 = DynamicDawgChar::from_iter(vec!["café", "naïve"]);
 let dict2 = dict1.clone();  // O(1) - only increments Arc refcount
@@ -391,7 +391,7 @@ Where n = number of terms, m = average **character** count (not bytes!)
 Create an empty dictionary for incremental Unicode text:
 
 ```rust
-use liblevenshtein::dictionary::dynamic_dawg_char::DynamicDawgChar;
+use libdictenstein::dynamic_dawg_char::DynamicDawgChar;
 
 // Create empty dictionary
 let dict: DynamicDawgChar = DynamicDawgChar::new();
@@ -417,7 +417,7 @@ valued_dict.insert_with_value("résumé", 200);
 Build from any iterator over Unicode strings:
 
 ```rust
-use liblevenshtein::dictionary::dynamic_dawg_char::DynamicDawgChar;
+use libdictenstein::dynamic_dawg_char::DynamicDawgChar;
 
 // Multilingual terms
 let terms = vec!["hello", "مرحبا", "こんにちは", "привет"];
@@ -499,7 +499,7 @@ dict.insert("こんにちは"); // 5 characters (15 bytes UTF-8)
 Unicode-aware term frequencies or context IDs:
 
 ```rust
-use liblevenshtein::dictionary::dynamic_dawg_char::DynamicDawgChar;
+use libdictenstein::dynamic_dawg_char::DynamicDawgChar;
 
 type ContextId = u32;
 
@@ -640,7 +640,7 @@ All accessor methods operate on **character boundaries** (Unicode code points), 
 ### Quick Reference
 
 ```rust
-use liblevenshtein::dictionary::dynamic_dawg_char::DynamicDawgChar;
+use libdictenstein::dynamic_dawg_char::DynamicDawgChar;
 
 let dict = DynamicDawgChar::from_terms(vec!["café", "naïve", "中文", "🎉"]);
 
@@ -662,7 +662,7 @@ assert!(dict.node_count() > 4);   // More nodes due to char edges
 assert!(!dict.needs_compaction()); // Freshly built
 
 // Traversal (character-level)
-use liblevenshtein::dictionary::{Dictionary, DictionaryNode};
+use libdictenstein::{Dictionary, DictionaryNode};
 let root = dict.root();
 if let Some(c_node) = root.transition('c') { // Note: char, not byte
     if let Some(a_node) = c_node.transition('a') {
@@ -839,8 +839,8 @@ where
 Merge term frequencies across dictionaries with Unicode text:
 
 ```rust
-use liblevenshtein::dictionary::dynamic_dawg_char::DynamicDawgChar;
-use liblevenshtein::dictionary::MutableMappedDictionary;
+use libdictenstein::dynamic_dawg_char::DynamicDawgChar;
+use libdictenstein::MutableMappedDictionary;
 
 // French dictionary: word frequencies
 let dict1: DynamicDawgChar<u32> = DynamicDawgChar::new();
@@ -871,8 +871,8 @@ assert_eq!(processed, 2); // Processed 2 terms from dict2
 Demonstrates correct handling of 4-byte Unicode characters:
 
 ```rust
-use liblevenshtein::dictionary::dynamic_dawg_char::DynamicDawgChar;
-use liblevenshtein::dictionary::MutableMappedDictionary;
+use libdictenstein::dynamic_dawg_char::DynamicDawgChar;
+use libdictenstein::MutableMappedDictionary;
 
 // Dictionary 1: emoji usage counts
 let dict1: DynamicDawgChar<u32> = DynamicDawgChar::new();
@@ -899,8 +899,8 @@ assert_eq!(dict1.get_value("rocket🚀"), Some(7));
 Proper handling of East Asian characters:
 
 ```rust
-use liblevenshtein::dictionary::dynamic_dawg_char::DynamicDawgChar;
-use liblevenshtein::dictionary::MutableMappedDictionary;
+use libdictenstein::dynamic_dawg_char::DynamicDawgChar;
+use libdictenstein::MutableMappedDictionary;
 
 // Japanese dictionary
 let dict1: DynamicDawgChar<u32> = DynamicDawgChar::new();
@@ -927,8 +927,8 @@ assert_eq!(dict1.get_value("大阪"), Some(6));
 Demonstrates proper handling of combining characters vs precomposed:
 
 ```rust
-use liblevenshtein::dictionary::dynamic_dawg_char::DynamicDawgChar;
-use liblevenshtein::dictionary::MutableMappedDictionary;
+use libdictenstein::dynamic_dawg_char::DynamicDawgChar;
+use libdictenstein::MutableMappedDictionary;
 
 let dict1: DynamicDawgChar<Vec<String>> = DynamicDawgChar::new();
 
@@ -965,8 +965,8 @@ where
 
 **Example with Unicode**:
 ```rust
-use liblevenshtein::dictionary::dynamic_dawg_char::DynamicDawgChar;
-use liblevenshtein::dictionary::MutableMappedDictionary;
+use libdictenstein::dynamic_dawg_char::DynamicDawgChar;
+use libdictenstein::MutableMappedDictionary;
 
 let dict1: DynamicDawgChar<&str> = DynamicDawgChar::new();
 dict1.insert_with_value("Zürich", "city_old");      // ü = U+00FC
@@ -1140,7 +1140,7 @@ dict.insert_with_value(&term, value);
 ### Example 1: Basic Unicode Dictionary
 
 ```rust
-use liblevenshtein::dictionary::dynamic_dawg_char::DynamicDawgChar;
+use libdictenstein::dynamic_dawg_char::DynamicDawgChar;
 
 let dict = DynamicDawgChar::new();
 
@@ -1163,7 +1163,7 @@ assert!(!dict.contains("café"));
 ### Example 2: Multi-Language User Dictionary
 
 ```rust
-use liblevenshtein::dictionary::dynamic_dawg_char::DynamicDawgChar;
+use libdictenstein::dynamic_dawg_char::DynamicDawgChar;
 
 // Create user's personal dictionary
 let user_dict = DynamicDawgChar::new();
@@ -1186,8 +1186,8 @@ assert_eq!(user_dict.len(), Some(5));
 ### Example 3: With Values (Language Codes)
 
 ```rust
-use liblevenshtein::dictionary::dynamic_dawg_char::DynamicDawgChar;
-use liblevenshtein::dictionary::MappedDictionary;
+use libdictenstein::dynamic_dawg_char::DynamicDawgChar;
+use libdictenstein::MappedDictionary;
 
 let dict: DynamicDawgChar<&str> = DynamicDawgChar::new();
 
@@ -1210,7 +1210,7 @@ assert_eq!(dict.get_value("hola"), None);
 ### Example 4: Fuzzy Matching with Unicode
 
 ```rust
-use liblevenshtein::dictionary::dynamic_dawg_char::DynamicDawgChar;
+use libdictenstein::dynamic_dawg_char::DynamicDawgChar;
 use liblevenshtein::levenshtein::Algorithm;
 use liblevenshtein::levenshtein_automaton::LevenshteinAutomaton;
 
@@ -1237,7 +1237,7 @@ println!("{:?}", results);
 ### Example 5: Emoji Support
 
 ```rust
-use liblevenshtein::dictionary::dynamic_dawg_char::DynamicDawgChar;
+use libdictenstein::dynamic_dawg_char::DynamicDawgChar;
 
 let dict = DynamicDawgChar::new();
 
@@ -1263,7 +1263,7 @@ println!("Matches: {}", results.len());
 ### Example 6: CJK Text
 
 ```rust
-use liblevenshtein::dictionary::dynamic_dawg_char::DynamicDawgChar;
+use libdictenstein::dynamic_dawg_char::DynamicDawgChar;
 
 let dict = DynamicDawgChar::new();
 
@@ -1291,7 +1291,7 @@ println!("{:?}", results);
 ### Example 7: Thread-Safe Updates
 
 ```rust
-use liblevenshtein::dictionary::dynamic_dawg_char::DynamicDawgChar;
+use libdictenstein::dynamic_dawg_char::DynamicDawgChar;
 use std::sync::Arc;
 use std::thread;
 
@@ -1325,7 +1325,7 @@ assert!(dict.contains("مرحبا"));
 ### Example 8: Compaction with Unicode
 
 ```rust
-use liblevenshtein::dictionary::dynamic_dawg_char::DynamicDawgChar;
+use libdictenstein::dynamic_dawg_char::DynamicDawgChar;
 
 let dict = DynamicDawgChar::from_terms(vec![
     "café", "cafétéria", "naïve", "résumé", "déjà"
