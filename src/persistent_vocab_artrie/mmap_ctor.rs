@@ -100,6 +100,9 @@ impl PersistentVocabARTrie {
             let bm = buffer_manager.write();
             let dm = bm.storage();
             let mut header = VocabTrieFileHeader::with_start_index(start_index);
+            // V4c: overlay format from creation (so a flipped-but-not-yet-checkpointed vocab
+            // reopens as overlay, not legacy owned).
+            header.version = VOCAB_HEADER_VERSION_V2;
             dm.write_header_bytes(&header.to_bytes_with_checksum())?;
             dm.sync()?;
         }
@@ -130,7 +133,7 @@ impl PersistentVocabARTrie {
         // Reconstruct root from pointer
         let root = VocabTrieRoot::Node(unsafe { Box::from_raw(root_ptr) });
 
-        Ok(Self {
+        let mut trie = Self {
             path,
             root,
             entry_count: AtomicUsize::new(0),
@@ -161,7 +164,17 @@ impl PersistentVocabARTrie {
                 crate::persistent_artrie_core::concurrency::EpochManager::new(),
             ),
             reverse_term_map: None,
-        })
+        };
+        // V4c FLIP: the overlay is the LIVE representation from construction (single lock-free
+        // impl — no enable_lockfree toggle). flip_to_overlay installs the overlay + stamps the
+        // Overlay regime so route_overlay() -> true; every insert/read/checkpoint then routes
+        // through the lock-free overlay.
+        if !trie.flip_to_overlay() {
+            return Err(PersistentARTrieError::internal(
+                "vocab create: flip_to_overlay did not engage on a fresh trie",
+            ));
+        }
+        Ok(trie)
     }
 
     /// Open an existing vocabulary trie, replaying WAL records if needed.

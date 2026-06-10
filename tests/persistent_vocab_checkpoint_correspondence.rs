@@ -107,6 +107,7 @@ fn recovery_replay_retains_wal_until_checkpoint() {
 }
 
 #[test]
+#[ignore = "owned WAL-rotate behavior; obsolete under the V4c overlay flip (overlay retains its WAL); removed at V6/single-lock-free"]
 fn rotate_wal_followed_by_reopen_still_recovers_from_wal() {
     let dir = tempdir().expect("temp dir");
     let path = dir.path().join("rotate_recovery.vocab");
@@ -132,6 +133,7 @@ fn rotate_wal_followed_by_reopen_still_recovers_from_wal() {
 }
 
 #[test]
+#[ignore = "owned sync/checkpoint distinction; obsolete under the V4c overlay flip (overlay sync flushes the WAL, reopen replays it via V3); removed at V6/single-lock-free"]
 fn sync_to_disk_does_not_act_as_checkpoint() {
     let dir = tempdir().expect("temp dir");
     let path = dir.path().join("sync_not_checkpoint.vocab");
@@ -222,6 +224,7 @@ fn stale_reverse_index_entries_are_not_trusted() {
 }
 
 #[test]
+#[ignore = "owned bloom sidecar; obsolete under the V4c overlay flip (overlay reads use get_index_lockfree, not the bloom; reopen does not rebuild it); removed at V6/single-lock-free"]
 fn missing_bloom_sidecar_rebuilds_without_false_negatives() {
     let dir = tempdir().expect("temp dir");
     let path = dir.path().join("missing_bloom.vocab");
@@ -246,6 +249,7 @@ fn missing_bloom_sidecar_rebuilds_without_false_negatives() {
 }
 
 #[test]
+#[ignore = "owned bloom sidecar; obsolete under the V4c overlay flip (overlay reads use get_index_lockfree, not the bloom; reopen does not rebuild it); removed at V6/single-lock-free"]
 fn corrupt_bloom_sidecar_rebuilds_without_false_negatives() {
     let dir = tempdir().expect("temp dir");
     let path = dir.path().join("corrupt_bloom.vocab");
@@ -271,6 +275,7 @@ fn corrupt_bloom_sidecar_rebuilds_without_false_negatives() {
 }
 
 #[test]
+#[ignore = "owned bloom sidecar publication; obsolete under the V4c overlay flip (overlay has no owned bloom sidecar); removed at V6/single-lock-free"]
 fn failed_bloom_sidecar_publication_keeps_dirty_and_wal_replayable() {
     let dir = tempdir().expect("temp dir");
     let path = dir.path().join("failed_bloom_checkpoint.vocab");

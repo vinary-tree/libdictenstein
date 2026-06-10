@@ -419,9 +419,12 @@ impl<S: BlockStorage> super::dict_impl::PersistentVocabARTrie<S> {
             if lsn <= checkpoint_lsn {
                 continue;
             }
-            records_seen += 1;
             match record {
                 WalRecord::Insert { term, value } => {
+                    // Count only DATA records: the overlay RETAINS the WAL (no truncate), so a
+                    // Checkpoint/CommitRank past checkpoint_lsn must NOT make a clean reopen
+                    // report "recovered" (mode.is_normal() must hold after a clean checkpoint).
+                    records_seen += 1;
                     if let Some(vb) = value {
                         if vb.len() >= 8 {
                             let id = u64::from_le_bytes(vb[..8].try_into().expect("len>=8"));

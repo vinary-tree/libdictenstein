@@ -1449,6 +1449,7 @@ mod tests {
     // ========================================================================
 
     #[test]
+    #[ignore = "owned WAL-rotate; obsolete under the V4c overlay flip (the overlay retains its WAL — no rotate); removed at V6/single-lock-free"]
     fn test_rotate_wal_basic() {
         let dir = tempdir().expect("Failed to create temp dir");
         let path = dir.path().join("vocab.vocab");
@@ -1587,6 +1588,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "enable_lockfree/insert_cas/merge_to_persistent toggle flow; obsolete under the V4c overlay flip (single lock-free impl); removed at V6/single-lock-free"]
     fn test_insert_cas_merge_to_persistent() {
         let dir = tempdir().expect("Failed to create temp dir");
         let path = dir.path().join("vocab.vocab");

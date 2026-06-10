@@ -142,6 +142,7 @@ fn vocab_checkpoint_rewrite_keeps_post_checkpoint_wal_tail_replayable() {
 }
 
 #[test]
+#[ignore = "owned reverse-index .idx sidecar publication; obsolete under the V4c overlay flip (the overlay's reverse map is in-memory, rebuilt on reopen — no owned sidecar); removed at V6/single-lock-free"]
 fn vocab_failed_sidecar_publication_keeps_dirty_and_wal_replayable_until_retry() {
     let dir = tempdir().expect("temp dir");
     let path = dir.path().join("vocab_rewrite_bloom_fail.vocab");

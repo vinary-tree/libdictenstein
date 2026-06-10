@@ -77,7 +77,20 @@ impl<S: BlockStorage> super::dict_impl::PersistentVocabARTrie<S> {
     /// Note: For large vocabularies, consider using the reverse index lookup
     /// via `get_term(index)` for specific indices instead.
     pub fn iter_terms(&self) -> impl Iterator<Item = String> + '_ {
-        VocabTermIterator::new(self)
+        use crate::persistent_artrie_core::overlay::flip::LockFreeOverlay;
+        if self.route_overlay() {
+            // Overlay: collect ALL terms (empty prefix) from the lock-free overlay; the owned
+            // VocabTermIterator would walk the (empty) owned root post-flip.
+            let terms: Vec<String> = self
+                .overlay_collect_units(&[])
+                .unwrap_or_default()
+                .into_iter()
+                .map(|u| u.iter().filter_map(|&c| char::from_u32(c)).collect())
+                .collect();
+            Box::new(terms.into_iter()) as Box<dyn Iterator<Item = String> + '_>
+        } else {
+            Box::new(VocabTermIterator::new(self)) as Box<dyn Iterator<Item = String> + '_>
+        }
     }
 
     /// Iterate over terms with the given prefix.
@@ -87,7 +100,20 @@ impl<S: BlockStorage> super::dict_impl::PersistentVocabARTrie<S> {
         &'a self,
         prefix: &'a str,
     ) -> impl Iterator<Item = String> + 'a {
-        let prefix_chars: Vec<char> = prefix.chars().collect();
-        VocabPrefixIterator::new(self, prefix_chars)
+        use crate::persistent_artrie_core::overlay::flip::LockFreeOverlay;
+        if self.route_overlay() {
+            let prefix_units: Vec<u32> = prefix.chars().map(|c| c as u32).collect();
+            let terms: Vec<String> = self
+                .overlay_collect_units(&prefix_units)
+                .unwrap_or_default()
+                .into_iter()
+                .map(|u| u.iter().filter_map(|&c| char::from_u32(c)).collect())
+                .collect();
+            Box::new(terms.into_iter()) as Box<dyn Iterator<Item = String> + 'a>
+        } else {
+            let prefix_chars: Vec<char> = prefix.chars().collect();
+            Box::new(VocabPrefixIterator::new(self, prefix_chars))
+                as Box<dyn Iterator<Item = String> + 'a>
+        }
     }
 }

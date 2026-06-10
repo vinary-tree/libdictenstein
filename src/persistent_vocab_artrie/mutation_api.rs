@@ -228,6 +228,11 @@ impl<S: BlockStorage> super::dict_impl::PersistentVocabARTrie<S> {
     /// # }
     /// ```
     pub fn insert_batch(&mut self, terms: &[&str]) -> Result<Vec<u64>> {
+        // Flip routing: under route_overlay() each term takes the lock-free Order-A overlay
+        // insert (the durable unit; no owned batch WAL record). Dead owned body below post-flip.
+        if self.route_overlay() {
+            return terms.iter().map(|&t| self.insert_overlay(t)).collect();
+        }
         if terms.is_empty() {
             return Ok(Vec::new());
         }
@@ -293,12 +298,60 @@ impl<S: BlockStorage> super::dict_impl::PersistentVocabARTrie<S> {
     ///
     /// `true` if the term was newly inserted, `false` if it already existed.
     pub fn insert_with_index(&mut self, term: &str, index: u64) -> Result<bool> {
+        if self.route_overlay() {
+            return self.insert_with_index_overlay(term, index);
+        }
         if self.validate_index_insert(term, index)?.is_some() {
             return Ok(false);
         }
 
         self.append_vocab_insert_wal(term, index)?;
         self.insert_with_index_no_wal(term, index)
+    }
+
+    /// Lock-free Order-A overlay insert at a SPECIFIC id (the flip path for `insert_with_index`).
+    /// Validates (id >= start_index; term not already at a different id; id not already assigned
+    /// to a different term), durably publishes `term -> index` write-once, mirrors the reverse
+    /// map, and raises the id floor. Returns `true` iff newly inserted.
+    fn insert_with_index_overlay(&self, term: &str, index: u64) -> Result<bool> {
+        if index < self.start_index {
+            return Err(PersistentARTrieError::InvalidOperation(format!(
+                "vocabulary index {index} is below start index {}",
+                self.start_index
+            )));
+        }
+        if let Some(existing) = self.get_index_lockfree(term) {
+            if existing == index {
+                return Ok(false);
+            }
+            return Err(PersistentARTrieError::InvalidOperation(format!(
+                "term {term:?} is already assigned index {existing}, not {index}"
+            )));
+        }
+        if let Some(ref rev) = self.reverse_term_map {
+            if let Some(entry) = rev.get(&index) {
+                if entry.value() != term {
+                    return Err(PersistentARTrieError::InvalidOperation(format!(
+                        "vocabulary index {index} is already assigned to term {:?}",
+                        entry.value()
+                    )));
+                }
+            }
+        }
+        let newly =
+            <Self as crate::persistent_artrie_core::overlay::durable_write::DurableOverlayWrite<
+                crate::persistent_artrie_core::key_encoding::CharKey,
+                u64,
+                S,
+            >>::insert_cas_with_value_durable_default(self, term.as_bytes(), index)?;
+        if newly {
+            if let Some(ref rev) = self.reverse_term_map {
+                rev.insert(index, term.to_string());
+            }
+            self.entry_count.fetch_add(1, Ordering::AcqRel);
+            self.next_index.fetch_max(index + 1, Ordering::AcqRel);
+        }
+        Ok(newly)
     }
 
     pub(super) fn insert_with_index_no_wal(&mut self, term: &str, index: u64) -> Result<bool> {
@@ -441,6 +494,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "drops the WAL mid-life; the overlay flip makes the WAL mandatory (route_overlay + durable inserts need it), so this no-WAL scenario is unsupported post-flip; removed at single-lock-free"]
     fn batch_without_wal_writer_preserves_state_and_allocator() {
         let dir = tempdir().expect("temp dir");
         let path = dir.path().join("wal_missing_batch.vocab");
