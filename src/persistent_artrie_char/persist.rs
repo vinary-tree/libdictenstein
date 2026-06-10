@@ -262,8 +262,13 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
                 // iterative too (same reason). The root's finality is the overlay
                 // root's finality (`overlay_to_inner` set the inner root's final
                 // flag from `root.is_final()`).
+                // CX-universal: PATH-COMPRESSED serialize (proven NO-TRUNCATION — Rocq T1/T3 +
+                // exhaustive Rust round-trip/density). Also iterative (stack-safe per the note
+                // above); the loader expands prefixes back into chains (4A), and the #6 path
+                // re-stamps the registry at the chunk's true expanded depth. On-disk images shrink;
+                // reopen stays byte-faithful (uncompressed prefix_len=0 images still load).
                 let ptr =
-                    self.serialize_overlay_to_disk_iterative(&root, eviction_registry.as_mut())?;
+                    self.serialize_overlay_snapshot_compressed(&root, eviction_registry.as_mut())?;
                 let entry_count = count_overlay_finals(&root);
                 (ROOT_TYPE_NODE, ptr.to_raw(), root.is_final(), entry_count)
             }
