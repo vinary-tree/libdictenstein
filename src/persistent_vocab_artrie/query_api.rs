@@ -19,6 +19,10 @@ use super::types::{NodeRef, VocabTrieRoot};
 
 impl<S: BlockStorage> super::dict_impl::PersistentVocabARTrie<S> {
     pub fn get_index(&self, term: &str) -> Option<u64> {
+        // Flip routing: under route_overlay() the lock-free overlay is the live rep.
+        if self.route_overlay() {
+            return self.get_index_lockfree(term);
+        }
         let chars: Vec<char> = term.chars().collect();
 
         match &self.root {
@@ -49,6 +53,14 @@ impl<S: BlockStorage> super::dict_impl::PersistentVocabARTrie<S> {
     /// - O(1) if cached (LRU cache hit)
     /// - O(k) if not cached (parent pointer backtracking, where k = term length)
     pub fn get_term(&self, index: u64) -> Option<String> {
+        // Flip routing: under route_overlay() the reverse map (id->term) is the live
+        // reverse index (the owned reverse_index/parent-pointer machinery is deleted at V6).
+        if self.route_overlay() {
+            return self
+                .reverse_term_map
+                .as_ref()
+                .and_then(|m| m.get(&index).map(|e| e.value().clone()));
+        }
         // Check cache first
         if let Some(term) = self.reverse_cache.get(index) {
             return Some(term);

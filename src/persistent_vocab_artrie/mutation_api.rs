@@ -134,6 +134,11 @@ impl<S: BlockStorage> super::dict_impl::PersistentVocabARTrie<S> {
     /// significant speedup during bulk vocabulary building where most terms
     /// are new.
     pub fn insert(&mut self, term: &str) -> Result<u64> {
+        // Flip routing: under route_overlay() the lock-free Order-A overlay insert is the
+        // live write path (the owned body below is dead post-flip; deleted at V6).
+        if self.route_overlay() {
+            return self.insert_overlay(term);
+        }
         // Fast path: bloom filter says definitely NOT in vocabulary
         // This skips the O(k) trie traversal for new terms
         let is_definitely_new = self
@@ -156,6 +161,39 @@ impl<S: BlockStorage> super::dict_impl::PersistentVocabARTrie<S> {
         debug_assert!(inserted, "newly allocated vocab term should insert");
 
         Ok(index)
+    }
+
+    /// Lock-free Order-A overlay insert — the flip write path (`&self`, concurrent-safe).
+    ///
+    /// Allocates a WRITE-ONCE id (`next_index.fetch_add` — nearly-dense: a lost InsertOnce
+    /// race burns one id, rare) and durably publishes `(term -> id)` via the proven generic
+    /// insert-once orchestrator (Order-A: WAL `Insert{value:id}` -> overlay root-CAS ->
+    /// CommitRank -> mark_committed), then mirrors it into the lock-free reverse map. An
+    /// existing term keeps its id (no id burned). Idempotent on a lost race (the durable
+    /// orchestrator's own present-hoist returns `false`; the burned id's WAL Insert is a
+    /// benign replay no-op under InsertOnce).
+    fn insert_overlay(&self, term: &str) -> Result<u64> {
+        if let Some(id) = self.get_index_lockfree(term) {
+            return Ok(id);
+        }
+        let index = self.next_index.fetch_add(1, Ordering::AcqRel);
+        let newly =
+            <Self as crate::persistent_artrie_core::overlay::durable_write::DurableOverlayWrite<
+                crate::persistent_artrie_core::key_encoding::CharKey,
+                u64,
+                S,
+            >>::insert_cas_with_value_durable_default(self, term.as_bytes(), index)?;
+        if newly {
+            if let Some(ref rev) = self.reverse_term_map {
+                rev.insert(index, term.to_string());
+            }
+            self.entry_count.fetch_add(1, Ordering::AcqRel);
+            Ok(index)
+        } else {
+            // A concurrent insert won the term between the hoist and the CAS: return the
+            // winner's id; our `index` is a benign gap.
+            Ok(self.get_index_lockfree(term).unwrap_or(index))
+        }
     }
 
     /// Bulk insert multiple terms with a single WAL record.

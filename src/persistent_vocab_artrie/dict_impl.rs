@@ -214,9 +214,8 @@ pub struct PersistentVocabARTrie<S: BlockStorage = MmapDiskManager> {
     /// Option-D reverse id→term map: the NON-BLOCKING derived inverse of the forward overlay
     /// (which stores `value = id`). The overlay is the source of truth; this is a rebuildable
     /// accelerator, checkpoint-emitted to the mmap cache (V2). `DashMap` keeps the lock-free
-    /// insert path fully non-blocking. `Some` once the overlay is enabled.
-    // V1 forward-declaration: wired into the lock-free insert + `get_term` at V4 (the flip).
-    #[allow(dead_code)]
+    /// insert path fully non-blocking. `Some` once the overlay is enabled. Written by the
+    /// lock-free `insert_overlay`, read by `get_term` under `route_overlay()` (V4).
     pub(super) reverse_term_map: Option<DashMap<u64, String>>,
 }
 
