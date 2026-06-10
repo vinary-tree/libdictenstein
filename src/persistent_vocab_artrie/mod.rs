@@ -129,6 +129,9 @@ pub mod lockfree_cas;
 // Vocab overlay-flip seam impls (V1 — the shared overlay traits at V=u64).
 pub(crate) mod overlay_write_mode;
 
+// Overlay → disk serializer (V2 — the char-arena image writer for the flip).
+pub(crate) mod overlay_serialize;
+
 // Persistence/durability/observability API (Phase-6 split out of dict_impl).
 pub mod persistence_api;
 

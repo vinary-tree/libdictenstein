@@ -380,7 +380,10 @@ impl<S: BlockStorage> super::dict_impl::PersistentVocabARTrie<S> {
     }
 
     /// Build a CharNode with disk SwizzledPtrs for serialization.
-    fn build_disk_char_node_static(
+    ///
+    /// `pub(super)` so the overlay serializer (`overlay_serialize`) reuses this exact
+    /// per-node builder — the overlay image must be byte-identical to the owned format.
+    pub(super) fn build_disk_char_node_static(
         original: &CharNode,
         disk_children: &[(u32, SwizzledPtr)],
     ) -> CharNode {
