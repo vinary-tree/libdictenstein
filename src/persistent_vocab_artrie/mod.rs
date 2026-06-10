@@ -482,7 +482,7 @@ impl crate::artrie_trait::ARTrie for SharedVocabARTrie {
     fn open_with_recovery_and_slot_tracking<P: AsRef<Path>>(
         path: P,
     ) -> Result<(Self, RecoveryReport)> {
-        let (mut trie, report) = PersistentVocabARTrie::open_with_recovery(path)?;
+        let (trie, report) = PersistentVocabARTrie::open_with_recovery(path)?;
         trie.enable_slot_tracking();
         Ok((Arc::new(RwLock::new(trie)), report))
     }
@@ -552,7 +552,7 @@ impl crate::artrie_trait::ARTrie for SharedVocabARTrie {
     }
 
     fn checkpoint(&self) -> Result<()> {
-        let mut guard = self.write();
+        let guard = self.write();
         guard.checkpoint()
     }
 
@@ -593,7 +593,7 @@ impl crate::artrie_trait::ARTrie for SharedVocabARTrie {
     }
 
     fn sync(&self) -> Result<()> {
-        let mut guard = self.write();
+        let guard = self.write();
         guard.sync()
     }
 

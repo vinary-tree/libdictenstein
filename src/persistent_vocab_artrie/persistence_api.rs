@@ -26,7 +26,7 @@ impl<S: BlockStorage> super::dict_impl::PersistentVocabARTrie<S> {
 
     /// Checkpoint current state to disk — publishes the lock-free overlay image (retaining the
     /// WAL). The owned tree is deleted; this is a thin wrapper over `checkpoint_overlay`.
-    pub fn checkpoint(&mut self) -> Result<()> {
+    pub fn checkpoint(&self) -> Result<()> {
         self.checkpoint_overlay()
     }
 
@@ -42,7 +42,7 @@ impl<S: BlockStorage> super::dict_impl::PersistentVocabARTrie<S> {
     /// idempotent InsertOnce replay tolerates re-applying `(w, frontier]`). `mark_committed` on
     /// the Checkpoint record (#49) keeps the watermark == the committed frontier; the commit_seq
     /// floor (S5-2) keeps post-checkpoint ops out-ranking pre-checkpoint survivors.
-    fn checkpoint_overlay(&mut self) -> Result<()> {
+    fn checkpoint_overlay(&self) -> Result<()> {
         use std::time::{SystemTime, UNIX_EPOCH};
 
         let entry_count = self.entry_count.load(Ordering::Acquire);
@@ -131,7 +131,7 @@ impl<S: BlockStorage> super::dict_impl::PersistentVocabARTrie<S> {
     }
 
     /// Sync WAL to disk without full checkpoint.
-    pub fn sync(&mut self) -> Result<()> {
+    pub fn sync(&self) -> Result<()> {
         if let Some(ref wal) = self.wal_writer {
             let lsn = wal.sync().map_err(|e| {
                 PersistentARTrieError::io_error(
@@ -147,7 +147,7 @@ impl<S: BlockStorage> super::dict_impl::PersistentVocabARTrie<S> {
 
     /// Rotate WAL without full checkpoint serialization — syncs the WAL while retaining it for
     /// replay (no overlay image written, no truncate). Crash recovery replays the WAL tail.
-    pub fn rotate_wal(&mut self) -> Result<()> {
+    pub fn rotate_wal(&self) -> Result<()> {
         if !self.dirty.load(Ordering::Acquire) {
             return Ok(());
         }
@@ -186,7 +186,7 @@ impl<S: BlockStorage> super::dict_impl::PersistentVocabARTrie<S> {
     }
 
     /// Blocking sync to disk without checkpoint bookkeeping — `sync_to_disk_async()?.wait()`.
-    pub fn sync_to_disk(&mut self) -> Result<()> {
+    pub fn sync_to_disk(&self) -> Result<()> {
         let handle = self.sync_to_disk_async()?;
         handle
             .wait()
@@ -224,7 +224,7 @@ impl<S: BlockStorage> super::dict_impl::PersistentVocabARTrie<S> {
     }
 
     /// Enable slot-level dirty tracking for reduced checkpoint I/O. Idempotent.
-    pub fn enable_slot_tracking(&mut self) {
+    pub fn enable_slot_tracking(&self) {
         if let Some(ref am) = self.arena_manager {
             am.write().enable_slot_tracking();
         }
@@ -238,7 +238,7 @@ impl<S: BlockStorage> super::dict_impl::PersistentVocabARTrie<S> {
     }
 
     /// Flush dirty arenas in sequential order for optimized disk I/O.
-    pub fn flush_sequential(&mut self) -> Result<()> {
+    pub fn flush_sequential(&self) -> Result<()> {
         if let Some(ref am) = self.arena_manager {
             am.write().flush_sequential()?;
         }
