@@ -33,8 +33,15 @@ pub const VOCAB_TRIE_MAGIC: [u8; 4] = *b"VOCB";
 /// File header size in bytes (extended from 64 to 96 bytes)
 pub const VOCAB_FILE_HEADER_SIZE: usize = 96;
 
-/// Header format version 1
+/// Header format version 1 — the legacy OWNED image (`root_ptr` = a `VocabTrieNode` `ArenaSlot`).
 pub const VOCAB_HEADER_VERSION_V1: u8 = 1;
+
+/// Header format version 2 — the OVERLAY image (the V4 flip). `root_ptr` is the root NODE
+/// `SwizzledPtr.to_raw()` of the dense char-arena overlay image (read back by
+/// `enumerate_overlay_terms_from_disk`), NOT an owned `VocabTrieNode` `ArenaSlot`. The reverse
+/// index is derived (rebuilt in memory on reopen), so `reverse_index_capacity` is 0. Legacy v1
+/// (owned) files are REBUILT, not migrated (owner decision — the C2 precedent).
+pub const VOCAB_HEADER_VERSION_V2: u8 = 2;
 
 /// Default buffer pool size (number of pages)
 pub const DEFAULT_VOCAB_BUFFER_POOL_SIZE: usize = 256;

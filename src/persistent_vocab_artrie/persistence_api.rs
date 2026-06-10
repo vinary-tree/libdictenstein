@@ -19,10 +19,11 @@ use std::sync::atomic::Ordering;
 use crate::persistent_artrie::block_storage::BlockStorage;
 use crate::persistent_artrie::dict_impl::DurabilityPolicy;
 use crate::persistent_artrie::error::{PersistentARTrieError, Result};
+use crate::persistent_artrie::wal::WalRecord;
 use crate::persistent_artrie_char::arena_manager::ArenaSlot;
 
 use super::sync_handle::VocabSyncHandle;
-use super::types::{VocabTrieFileHeader, VOCAB_TRIE_MAGIC};
+use super::types::{VocabTrieFileHeader, VOCAB_HEADER_VERSION_V2, VOCAB_TRIE_MAGIC};
 
 impl<S: BlockStorage> super::dict_impl::PersistentVocabARTrie<S> {
     pub fn is_dirty(&self) -> bool {
@@ -38,6 +39,11 @@ impl<S: BlockStorage> super::dict_impl::PersistentVocabARTrie<S> {
     /// 4. Flush reverse index
     /// 5. Write checkpoint record to WAL and truncate
     pub fn checkpoint(&mut self) -> Result<()> {
+        // Flip routing: under route_overlay() the durable snapshot is the OVERLAY image
+        // (the owned persist_to_disk path below is dead post-flip; deleted at V6).
+        if self.route_overlay() {
+            return self.checkpoint_overlay();
+        }
         if !self.dirty.load(Ordering::Acquire) && self.entry_count.load(Ordering::Acquire) == 0 {
             return Ok(());
         }
@@ -129,6 +135,100 @@ impl<S: BlockStorage> super::dict_impl::PersistentVocabARTrie<S> {
             let next_lsn = checkpoint_lsn.saturating_add(1);
             wal.set_min_lsn(next_lsn);
             self.next_lsn.store(next_lsn, Ordering::Release);
+        }
+
+        self.dirty.store(false, Ordering::Release);
+        Ok(())
+    }
+
+    /// Lock-free OVERLAY checkpoint — the flip durable-snapshot path (mirrors char's
+    /// `publish_immutable_snapshot_retaining_wal`).
+    ///
+    /// Captures the COMMITTED watermark BEFORE the root load (the safe `checkpoint_lsn`: the
+    /// snapshot is guaranteed to contain every write `<= w`; appended-but-uncommitted writes
+    /// beyond `w` stay in the WAL), serializes the immutable overlay into the dense char-arena
+    /// image, writes the VOCB header (version 2 = overlay; `root_ptr` = the root NODE
+    /// `SwizzledPtr.to_raw()`), then appends a `Checkpoint` record + syncs and RETAINS the WAL
+    /// (no destructive truncate — reversible + non-double-counting via the Checkpoint gate;
+    /// idempotent InsertOnce replay tolerates re-applying `(w, frontier]`). `mark_committed` on
+    /// the Checkpoint record (#49) keeps the watermark == the committed frontier; the commit_seq
+    /// floor (S5-2) keeps post-checkpoint ops out-ranking pre-checkpoint survivors.
+    fn checkpoint_overlay(&mut self) -> Result<()> {
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let entry_count = self.entry_count.load(Ordering::Acquire);
+        if !self.dirty.load(Ordering::Acquire) && entry_count == 0 {
+            return Ok(());
+        }
+
+        // (0) Capture watermark + commit_seq floor BEFORE the root load (Order-A safe lsn).
+        let checkpoint_lsn = self
+            .committed_watermark
+            .watermark()
+            .max(self.committed_watermark.take_recovery_image_coverage());
+        let commit_seq_floor = self.commit_seq.load(Ordering::Acquire);
+
+        // (1) Serialize the immutable overlay root (empty -> root_ptr 0).
+        let root_ptr_raw: u64 = match self.lockfree_root.as_ref().and_then(|r| r.load()) {
+            Some(root) if entry_count > 0 => self.serialize_overlay_to_disk(&root)?.to_raw(),
+            _ => 0,
+        };
+
+        // (2) Write the VOCB header (version 2 = overlay image; no owned reverse index).
+        let buffer_manager = self.buffer_manager.as_ref().ok_or_else(|| {
+            PersistentARTrieError::internal("No buffer manager for overlay checkpoint")
+        })?;
+        let block_count = {
+            let bm = buffer_manager.read();
+            bm.storage().block_count().unwrap_or(1)
+        };
+        let mut header = VocabTrieFileHeader {
+            magic: VOCAB_TRIE_MAGIC,
+            version: VOCAB_HEADER_VERSION_V2,
+            _reserved: [0; 3],
+            root_ptr: root_ptr_raw,
+            entry_count: entry_count as u64,
+            block_count,
+            _pad1: 0,
+            checkpoint_lsn,
+            header_checksum: 0,
+            _padding: [0; 20],
+            start_index: self.start_index,
+            next_index: self.next_index.load(Ordering::Acquire),
+            reverse_index_capacity: 0,
+            _ext_padding: [0; 8],
+        };
+        {
+            let bm = buffer_manager.write();
+            let dm = bm.storage();
+            dm.write_header_bytes(&header.to_bytes_with_checksum())?;
+            bm.flush_all()?;
+            dm.sync()?;
+        }
+
+        // (3) Append Checkpoint + sync; mark it committed (#49); raise the commit_seq floor
+        //     (S5-2); RETAIN the WAL (no truncate — the Checkpoint record gates replay).
+        if let Some(ref wal) = self.wal_writer {
+            let timestamp = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+            let cp_lsn = wal
+                .append(WalRecord::Checkpoint {
+                    checkpoint_lsn,
+                    timestamp,
+                })
+                .map_err(|e| {
+                    PersistentARTrieError::Wal(format!("append overlay checkpoint record: {e}"))
+                })?;
+            wal.sync().map_err(|e| {
+                PersistentARTrieError::Wal(format!("sync overlay checkpoint record: {e}"))
+            })?;
+            self.synced_lsn.fetch_max(cp_lsn, Ordering::AcqRel);
+            self.committed_watermark.mark_committed(cp_lsn);
+            wal.set_commit_seq_floor(commit_seq_floor).map_err(|e| {
+                PersistentARTrieError::Wal(format!("set overlay commit_seq floor: {e}"))
+            })?;
         }
 
         self.dirty.store(false, Ordering::Release);
