@@ -19,6 +19,8 @@ use crate::persistent_artrie::error::{PersistentARTrieError, Result};
 use crate::persistent_artrie::eviction::DiskLocationRegistry;
 use crate::persistent_artrie::swizzled_ptr::{NodeType, SwizzledPtr};
 use crate::persistent_artrie::wal::WalRecord;
+use crate::persistent_artrie_core::key_encoding::CharKey;
+use crate::persistent_artrie_core::overlay::compressed_serialize::OverlayCompressedSerialize;
 use crate::value::DictionaryValue;
 
 use super::dict_impl_char::{ROOT_TYPE_EMPTY, ROOT_TYPE_NODE};
@@ -1254,213 +1256,62 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     pub(crate) fn serialize_overlay_snapshot_compressed(
         &self,
         root: &std::sync::Arc<super::nodes::PersistentCharNode<V>>,
-        mut registry: Option<&mut DiskLocationRegistry>,
+        registry: Option<&mut DiskLocationRegistry>,
     ) -> Result<SwizzledPtr> {
-        use std::sync::Arc;
+        self.serialize_compressed_loop(root, registry)
+    }
+}
 
-        struct PendingChild {
-            key: u32,
-            ptr: Option<SwizzledPtr>,
-        }
-        // A frame is a TERMINUS node (a non-prefix-link) plus the peeled chain ABOVE it.
-        struct Frame<V: DictionaryValue> {
-            node: Arc<super::nodes::PersistentCharNode<V>>,
-            parent_key: Option<u32>,
-            // The peeled chain `Lp` above this terminus (empty ⇒ no chain; the terminus is keyed
-            // directly by `parent_key`). Collapsed into a chunk stack when this frame finalizes.
-            chain_prefix: Vec<u32>,
-            // CX/#6: the LIVE chain-link nodes (`live[Σ_{i<c}(|P_i|+1)]` = chunk c's top-of-span,
-            // stamped with chunk c's disk_ptr for eviction). Length == chain_prefix.len().
-            live_spine: Vec<Arc<super::nodes::PersistentCharNode<V>>>,
-            // CX/#6: `path.len()` BEFORE this frame's segment was pushed (= this frame's parent's
-            // logical depth). The terminus registers at the full `path` (depth base+1+L); chunk c
-            // registers at `path[..base+1+Σ_{i<c}(|P_i|+1)]` (its TRUE expanded depth).
-            base_depth: usize,
-            // CX/#6: count of `[edge] ++ chain_prefix` units pushed onto `path` (for the symmetric pop).
-            pushed_units: usize,
-            pending_in_mem: Vec<(u32, Arc<super::nodes::PersistentCharNode<V>>)>,
-            slots: Vec<PendingChild>,
-        }
+/// CX-universal seams for char (eviction-ON capable): the shared compressed loop lives in
+/// `OverlayCompressedSerialize::serialize_compressed_loop`; char supplies the `CharNode`-arena
+/// projection + per-node serialize + the eviction durable-stamp. The loop threads the path as
+/// `[u32]` (`CharKey::Unit`); char lowers `u32 -> char` at the `register_char` boundary inside
+/// `serialize_projected_node` (preserving the exact registry-path hash).
+impl<V: DictionaryValue, S: BlockStorage> OverlayCompressedSerialize<CharKey, V>
+    for super::PersistentARTrieChar<V, S>
+{
+    type Projected = CharTrieNodeInner<V>;
 
-        #[allow(clippy::too_many_arguments)]
-        fn make_frame<V: DictionaryValue>(
-            node: Arc<super::nodes::PersistentCharNode<V>>,
-            parent_key: Option<u32>,
-            chain_prefix: Vec<u32>,
-            live_spine: Vec<Arc<super::nodes::PersistentCharNode<V>>>,
-            base_depth: usize,
-            pushed_units: usize,
-        ) -> Frame<V> {
-            let n = node.num_children();
-            let mut slots: Vec<PendingChild> = Vec::with_capacity(n);
-            let mut pending: Vec<(u32, Arc<super::nodes::PersistentCharNode<V>>)> =
-                Vec::with_capacity(n);
-            for (&key, child) in node.iter_children() {
-                if let Some(arc) = child.as_in_mem() {
-                    slots.push(PendingChild { key, ptr: None });
-                    pending.push((key, Arc::clone(arc)));
-                } else if let Some(od) = child.as_on_disk() {
-                    if !od.is_null() {
-                        slots.push(PendingChild {
-                            key,
-                            ptr: Some(od.clone()),
-                        });
-                    }
-                }
-            }
-            pending.reverse();
-            Frame {
-                node,
-                parent_key,
-                chain_prefix,
-                live_spine,
-                base_depth,
-                pushed_units,
-                pending_in_mem: pending,
-                slots,
-            }
-        }
+    fn project_node(
+        node: &super::nodes::PersistentCharNode<V>,
+        child_disk_ptrs: &[(u32, SwizzledPtr)],
+    ) -> Result<Self::Projected> {
+        Ok(overlay_inner_single_node(node, child_disk_ptrs))
+    }
 
-        // The ROOT is its own terminus (no incoming edge to absorb into a prefix); its children's
-        // chains collapse below it. `path` is the full root→node char sequence in the EXPANDED tree
-        // (= the path the uncompressed serializer + the evictor walk), threaded for the registry.
-        let mut path: Vec<char> = Vec::new();
-        let mut stack: Vec<Frame<V>> = Vec::new();
-        stack.push(make_frame(
-            Arc::clone(root),
-            None,
-            Vec::new(),
-            Vec::new(),
-            0,
-            0,
-        ));
-        let mut completed: Option<(u32, SwizzledPtr)> = None;
+    fn project_chunk(
+        synth: &super::nodes::PersistentCharNode<V>,
+        child_disk_ptrs: &[(u32, SwizzledPtr)],
+        prefix: &[u32],
+    ) -> Result<Self::Projected> {
+        Ok(overlay_inner_single_node_with_prefix::<V>(
+            synth,
+            child_disk_ptrs,
+            prefix,
+        ))
+    }
 
-        loop {
-            let frame = stack
-                .last_mut()
-                .expect("serialize_compressed: non-empty stack");
+    fn serialize_projected_node(
+        &self,
+        projected: &Self::Projected,
+        child_disk_ptrs: &[(u32, SwizzledPtr)],
+        path: &[u32],
+        registry: Option<&mut DiskLocationRegistry>,
+    ) -> Result<SwizzledPtr> {
+        // char-trie units are valid codepoints; lower the u32 path to `char` for the registry hash.
+        let path_chars: Vec<char> = path
+            .iter()
+            .map(|&u| char::from_u32(u).expect("char-trie unit is a valid codepoint"))
+            .collect();
+        self.serialize_one_char_node_to_disk(projected, child_disk_ptrs, &path_chars, registry)
+    }
 
-            if let Some((key, ptr)) = completed.take() {
-                let slot = frame
-                    .slots
-                    .iter_mut()
-                    .find(|s| s.key == key && s.ptr.is_none())
-                    .expect("completed child key has a matching unfilled slot");
-                slot.ptr = Some(ptr);
-            }
+    fn new_synth_node() -> super::nodes::PersistentCharNode<V> {
+        super::nodes::PersistentCharNode::<V>::new()
+    }
 
-            // Descend into the next in-mem child — PEELING its chain first. Push the WHOLE consumed
-            // segment `[edge] ++ chain_prefix` onto `path` ONCE (so the terminus + every chunk slice
-            // share these units; the out-edge is never double-counted). char-trie units are always
-            // valid codepoints.
-            if let Some((edge, child_arc)) = frame.pending_in_mem.pop() {
-                let (chain_prefix, live_spine, terminus) = peel_chain::<V>(child_arc);
-                let base_depth = path.len();
-                let mut pushed = 0usize;
-                for &u in std::iter::once(&edge).chain(chain_prefix.iter()) {
-                    path.push(char::from_u32(u).expect("char-trie unit is a valid codepoint"));
-                    pushed += 1;
-                }
-                stack.push(make_frame(
-                    terminus,
-                    Some(edge),
-                    chain_prefix,
-                    live_spine,
-                    base_depth,
-                    pushed,
-                ));
-                continue;
-            }
-
-            // All children resolved → serialize THIS terminus, then collapse its peeled chain.
-            let frame = stack
-                .pop()
-                .expect("serialize_compressed: frame to finalize");
-            let child_disk_ptrs: Vec<(u32, SwizzledPtr)> = frame
-                .slots
-                .into_iter()
-                .map(|s| (s.key, s.ptr.expect("post-order: every in-mem slot filled")))
-                .collect();
-
-            // (1) The terminus node — NO prefix (its own finality/value/children). Registers at the
-            // FULL `path` (its true logical depth). CX/#6: 1c-stamp the LIVE terminus (gated on
-            // `registry.is_some()`, i.e. eviction-ON — matching the uncompressed serializer).
-            let inner = overlay_inner_single_node::<V>(frame.node.as_ref(), &child_disk_ptrs);
-            let terminus_ptr = self.serialize_one_char_node_to_disk(
-                &inner,
-                &child_disk_ptrs,
-                &path,
-                registry.as_deref_mut(),
-            )?;
-            if registry.is_some() {
-                frame.node.set_durable_stamp(terminus_ptr.to_raw());
-            }
-
-            // (2) Collapse the peeled chain `Lp` into a chunk stack ABOVE the terminus. Bottom-up:
-            // the lowest chunk's edge points at the terminus; each chunk node carries `prefix`
-            // (<= CHAR_MAX_PREFIX_LEN units, the inter-edges) + one out-edge. The top chunk's ptr is
-            // what the parent points to (keyed by `parent_key`). Empty chain ⇒ the terminus is top.
-            // CX/#6: each chunk registers at its TRUE expanded depth `ends[c] = base+1+Σ_{i<c}(|P_i|+1)`
-            // (a prefix-slice of `path`) and 1c-stamps its LIVE top-of-span node `live_spine[idx]`.
-            let top_ptr = if frame.chain_prefix.is_empty() {
-                terminus_ptr
-            } else {
-                let chunks = crate::persistent_artrie_core::overlay::codec::chain_chunks(
-                    &frame.chain_prefix,
-                    super::nodes::CHAR_MAX_PREFIX_LEN,
-                );
-                // Per-chunk logical-path END offsets (top-down): ends[c] = chain_head + Σ_{i<c}(|P_i|+1).
-                let chain_head = frame.base_depth + 1;
-                let mut ends: Vec<usize> = Vec::with_capacity(chunks.len());
-                let mut acc = chain_head;
-                for ch in &chunks {
-                    ends.push(acc);
-                    acc += ch.prefix.len() + 1;
-                }
-                debug_assert_eq!(
-                    acc,
-                    frame.base_depth + 1 + frame.chain_prefix.len(),
-                    "CX #6: Σ chunk widths must equal the chain length (no-truncation witness)"
-                );
-                let synth = super::nodes::PersistentCharNode::<V>::new(); // non-final, no-value
-                let mut child_ptr = terminus_ptr;
-                for (c, chunk) in chunks.iter().enumerate().rev() {
-                    let child_slots = [(chunk.edge, child_ptr.clone())];
-                    let chunk_inner = overlay_inner_single_node_with_prefix::<V>(
-                        &synth,
-                        &child_slots,
-                        chunk.prefix,
-                    );
-                    let chunk_path = &path[..ends[c]];
-                    let next_ptr = self.serialize_one_char_node_to_disk(
-                        &chunk_inner,
-                        &child_slots,
-                        chunk_path,
-                        registry.as_deref_mut(),
-                    )?;
-                    if registry.is_some() {
-                        // idx = ends[c] - base - 1 = Σ_{i<c}(|P_i|+1) = this chunk's top-of-span live node.
-                        let idx = ends[c] - frame.base_depth - 1;
-                        if let Some(top_live) = frame.live_spine.get(idx) {
-                            top_live.set_durable_stamp(next_ptr.to_raw());
-                        }
-                    }
-                    child_ptr = next_ptr;
-                }
-                child_ptr
-            };
-
-            // Symmetric pop of THIS frame's pushed `[edge] ++ chain_prefix` segment.
-            for _ in 0..frame.pushed_units {
-                path.pop();
-            }
-
-            match frame.parent_key {
-                Some(key) => completed = Some((key, top_ptr)),
-                None => return Ok(top_ptr),
-            }
-        }
+    fn stamp_durable(live: &super::nodes::PersistentCharNode<V>, raw: u64) {
+        live.set_durable_stamp(raw);
     }
 }
 
@@ -1523,54 +1374,6 @@ where
     inner.node.header_mut().prefix_len = prefix.len() as u8;
     *inner.node.prefix_mut() = super::nodes::CharCompressedPrefix::from_chars(prefix);
     inner
-}
-
-/// CX (#43): peel a maximal **single-child non-final no-value** chain starting at `start`, returning
-/// `(chain_units, terminus)`. `chain_units` is the edge unit-string of the peeled links (the `Lp`
-/// fed to [`crate::persistent_artrie_core::overlay::codec::chain_chunks`]); it is EMPTY iff `start`
-/// is itself the terminus. The terminus is the first node that is NOT a prefix-link — final, valued,
-/// `!= 1` child, OR whose sole child is `OnDisk` (the serializer NEVER faults disk: an OnDisk sole
-/// child ends the chain, its `SwizzledPtr` passing through verbatim). ITERATIVE (walks the
-/// uncompressed spine, which is ~key-length deep) so it does not recurse with key length.
-pub(crate) fn peel_chain<V: DictionaryValue>(
-    start: std::sync::Arc<super::nodes::PersistentCharNode<V>>,
-) -> (
-    Vec<u32>,
-    Vec<std::sync::Arc<super::nodes::PersistentCharNode<V>>>,
-    std::sync::Arc<super::nodes::PersistentCharNode<V>>,
-) {
-    let mut units: Vec<u32> = Vec::new();
-    // CX/#6: the LIVE chain-link nodes (one per peeled unit, `live[j]` reached by `units[j-1]`,
-    // `live[0]` = the chain head). Used at SERIALIZE time to stamp each chunk's TOP-of-span live node
-    // (`live[Σ_{i<c}(|P_i|+1)]`) with that chunk's disk_ptr, so eviction can reclaim the whole span as
-    // one unit. Length == units.len() (the terminus is NOT included — it is returned separately and
-    // stamped via the frame).
-    let mut live: Vec<std::sync::Arc<super::nodes::PersistentCharNode<V>>> = Vec::new();
-    let mut cur = start;
-    loop {
-        // A prefix-link: exactly one child, not final, no value.
-        if cur.num_children() != 1 || cur.is_final() || cur.has_value() {
-            return (units, live, cur);
-        }
-        // Its sole child — continue ONLY while it is InMem (never fault disk during serialize).
-        let sole = {
-            let mut it = cur.iter_children();
-            let (&edge, child) = it.next().expect("num_children() == 1 ⇒ exactly one child");
-            child
-                .as_in_mem()
-                .map(|arc| (edge, std::sync::Arc::clone(arc)))
-        };
-        match sole {
-            Some((edge, child_arc)) => {
-                // `cur` is a confirmed chain LINK (the top-of-span candidate for some chunk).
-                live.push(std::sync::Arc::clone(&cur));
-                units.push(edge);
-                cur = child_arc;
-            }
-            // Sole child is OnDisk ⇒ `cur` is the terminus (its OnDisk child passes through).
-            None => return (units, live, cur),
-        }
-    }
 }
 
 /// Convert ONE owned production `CharTrieNodeInner<V>` back into an immutable

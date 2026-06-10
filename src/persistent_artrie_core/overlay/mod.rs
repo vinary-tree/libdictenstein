@@ -56,6 +56,9 @@ pub(crate) mod f5_build;
 // CX (task #43): the path-compressing overlay↔dense codec's shared, K-generic, PURE
 // no-truncation core (`chain_chunks`). DORMANT until L2/L3 wire the codec.
 pub(crate) mod codec;
+// CX-universal: the ONE generic path-compressed overlay serializer (`OverlayCompressedSerialize<K,V>`
+// default-method loop + `peel_chain_generic`); per-variant seams cover the format-specific leaves.
+pub(crate) mod compressed_serialize;
 // G5.3' — the shared lock-free CAS-walk SKELETON (free generic-over-`<K,V>` COMMON
 // descent helpers + the `OverlayCasWalk<K,V,S>` trait with per-variant
 // specialization hooks + DEFAULT skeleton methods). The COMMON descent
