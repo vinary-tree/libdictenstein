@@ -176,7 +176,7 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     /// trie.enable_lockfree();
     /// trie.insert_cas("hello");  // Now works concurrently
     /// ```
-    pub fn enable_lockfree(&mut self) {
+    pub(crate) fn enable_lockfree(&mut self) {
         use super::nodes::atomic_ptr::AtomicNodePtr;
         use super::nodes::persistent_node::PersistentCharNode;
         use dashmap::DashMap;

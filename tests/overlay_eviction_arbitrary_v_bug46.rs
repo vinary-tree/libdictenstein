@@ -149,7 +149,6 @@ fn bug46_baseline_u64_faultin_preserves_values() {
     let mut trie = PersistentARTrieChar::<u64>::create_with_config(&path, WalConfig::no_archive())
         .expect("create");
     trie.set_durability_policy(DurabilityPolicy::Immediate);
-    trie.enable_lockfree();
     let trie = Arc::new(trie);
     trie.enable_eviction(EvictionConfig::without_memory_monitor())
         .expect("enable");

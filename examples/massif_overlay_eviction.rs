@@ -60,7 +60,6 @@ fn run(n: usize, budget: Option<usize>) -> (usize, usize, usize) {
     let mut trie: PersistentARTrieChar<u64> =
         PersistentARTrieChar::create_with_config(&path, WalConfig::no_archive()).expect("create");
     trie.set_durability_policy(DurabilityPolicy::Immediate);
-    trie.enable_lockfree();
     // PRODUCTION API (not the bench shim): `enable_eviction` installs the coordinator,
     // and `checkpoint()` route-splits to `publish_overlay_snapshot_retaining_with_eviction`
     // (the budget tail) under `route_overlay()` + a coordinator — the exact path that

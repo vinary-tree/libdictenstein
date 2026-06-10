@@ -45,7 +45,6 @@ fn lockfree_trie(prefix: &str) -> (TempDir, PersistentARTrieChar<()>) {
     let dir = scratch_dir(prefix);
     let path = dir.path().join("overlay.artc");
     let mut trie = PersistentARTrieChar::<()>::create(&path).expect("create trie");
-    trie.enable_lockfree();
     (dir, trie)
 }
 
@@ -56,7 +55,6 @@ fn durable_lockfree_trie(prefix: &str) -> (TempDir, PersistentARTrieChar<()>) {
     let path = dir.path().join("overlay.artc");
     let mut trie = PersistentARTrieChar::<()>::create(&path).expect("create trie");
     trie.set_durability_policy(DurabilityPolicy::Immediate);
-    trie.enable_lockfree();
     (dir, trie)
 }
 
@@ -354,7 +352,6 @@ fn valued_overlay_remove_drops_value_not_zero() {
     let path = dir.path().join("overlay.artc");
     let mut trie = PersistentARTrieChar::<u64>::create(&path).expect("create valued trie");
     trie.set_durability_policy(DurabilityPolicy::Immediate);
-    trie.enable_lockfree();
 
     let mut oracle: BTreeMap<String, u64> = BTreeMap::new();
 

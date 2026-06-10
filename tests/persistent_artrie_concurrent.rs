@@ -651,7 +651,6 @@ fn test_lockfree_insert_cas_basic() {
     let mut dict: PersistentARTrie<()> = PersistentARTrie::create(&dict_path).expect("create dict");
 
     // Enable lock-free mode
-    dict.enable_lockfree();
 
     // Insert some terms using CAS
     assert!(dict.insert_cas(b"hello"), "First insert should succeed");
@@ -678,7 +677,6 @@ fn test_lockfree_insert_cas_concurrent() {
     let mut dict: PersistentARTrie<()> = PersistentARTrie::create(&dict_path).expect("create dict");
 
     // Enable lock-free mode
-    dict.enable_lockfree();
 
     // Wrap in Arc for sharing (no RwLock needed for lock-free ops!)
     let dict = Arc::new(dict);
@@ -749,7 +747,6 @@ fn test_lockfree_insert_cas_same_terms() {
     let mut dict: PersistentARTrie<()> = PersistentARTrie::create(&dict_path).expect("create dict");
 
     // Enable lock-free mode
-    dict.enable_lockfree();
 
     // Wrap in Arc for sharing
     let dict = Arc::new(dict);

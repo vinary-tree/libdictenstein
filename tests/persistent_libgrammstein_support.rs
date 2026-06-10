@@ -47,7 +47,6 @@ fn arc_commit_document_byte_needs_no_mut() {
     let path = dir.path().join("c.artb");
     let mut trie = PersistentARTrie::<u64>::create(&path).expect("create");
     trie.set_durability_policy(DurabilityPolicy::Immediate);
-    trie.enable_lockfree(); // overlay = the production rep an embedder routes through
     let trie = Arc::new(trie);
 
     // Commit through the Arc on ANOTHER thread — the exact libgrammstein shape.
@@ -80,7 +79,6 @@ fn arc_commit_document_char_needs_no_mut() {
     let mut trie = PersistentARTrieChar::<u64>::create_with_config(&path, WalConfig::no_archive())
         .expect("create");
     trie.set_durability_policy(DurabilityPolicy::Immediate);
-    trie.enable_lockfree();
     let trie = Arc::new(trie);
 
     let worker = Arc::clone(&trie);
@@ -112,7 +110,6 @@ fn public_eviction_stats_resident_bytes_and_checkpoint_tail_nodes_evicted() {
             PersistentARTrieChar::<u64>::create_with_config(&path, WalConfig::no_archive())
                 .expect("create");
         trie.set_durability_policy(DurabilityPolicy::Immediate);
-        trie.enable_lockfree();
         let trie = Arc::new(trie);
         let config = EvictionConfig {
             resident_budget_bytes: budget,
