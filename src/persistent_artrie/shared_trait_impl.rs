@@ -105,13 +105,10 @@ impl<V: DictionaryValue> ARTrie for SharedARTrie<V> {
 
     #[inline]
     fn len(&self) -> usize {
-        // M3 (C6): under the overlay count resident finals (the owned `term_count` is
-        // cleared on reopen); this read `term_count` directly, bypassing the route.
-        let guard = self.read();
-        if guard.route_overlay() {
-            return guard.overlay_len();
-        }
-        guard.term_count.load(AtomicOrdering::Acquire)
+        // The lock-free overlay is the SOLE representation, so count its resident finals.
+        // (The owned `term_count` is no longer maintained — it was cleared on reopen — and
+        // `route_overlay()` is universally true, so the old owned-fallback branch was dead.)
+        self.read().overlay_len()
     }
 
     fn checkpoint(&self) -> Result<()> {

@@ -308,7 +308,7 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     /// let inserted2 = trie.insert_cas("hello");
     /// assert!(!inserted2);  // Already exists
     /// ```
-    pub fn insert_cas(&self, term: &str) -> bool {
+    pub(crate) fn insert_cas(&self, term: &str) -> bool {
         use std::sync::atomic::Ordering;
 
         let lockfree_root = self

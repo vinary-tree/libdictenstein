@@ -271,7 +271,7 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
     ///
     /// This method inserts a term into the lock-free trie structure without
     /// acquiring any locks. Multiple threads can call this concurrently.
-    pub fn insert_cas(&self, term: &[u8]) -> bool {
+    pub(crate) fn insert_cas(&self, term: &[u8]) -> bool {
         use std::sync::atomic::Ordering;
 
         let lockfree_root = self

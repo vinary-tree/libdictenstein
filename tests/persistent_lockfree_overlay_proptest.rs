@@ -151,17 +151,17 @@ proptest! {
     fn overlay_insert_contains_match_btreeset_oracle(
         ops in prop::collection::vec(op_strategy(), 1..200)
     ) {
-        let (_dir, trie) = lockfree_trie("overlay-proptest");
+        let (_dir, trie) = durable_lockfree_trie("overlay-proptest");
         let mut oracle: BTreeSet<String> = BTreeSet::new();
 
         for op in ops {
             match op {
                 Op::Insert(t) => {
                     let expected_new = !oracle.contains(&t);
-                    let got = trie.insert_cas(&t);
+                    let got = trie.insert_cas_durable(&t).expect("durable insert");
                     prop_assert_eq!(
                         got, expected_new,
-                        "insert_cas({:?}) returned {} but oracle newness was {}",
+                        "insert_cas_durable({:?}) returned {} but oracle newness was {}",
                         t, got, expected_new
                     );
                     oracle.insert(t);
@@ -414,7 +414,7 @@ fn valued_overlay_remove_drops_value_not_zero() {
 
 #[test]
 fn concurrent_contended_inserts_finalize_each_term_exactly_once() {
-    let (_dir, trie) = lockfree_trie("overlay-proptest-mt");
+    let (_dir, trie) = durable_lockfree_trie("overlay-proptest-mt");
     let trie = Arc::new(trie);
 
     // 120 distinct terms with shared prefixes (to provoke CAS contention on the
@@ -432,7 +432,7 @@ fn concurrent_contended_inserts_finalize_each_term_exactly_once() {
                 barrier.wait();
                 let mut wins = 0usize;
                 for t in &terms {
-                    if trie.insert_cas(t) {
+                    if trie.insert_cas_durable(t).expect("durable insert") {
                         wins += 1;
                     }
                 }

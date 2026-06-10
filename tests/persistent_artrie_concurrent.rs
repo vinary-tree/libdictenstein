@@ -22,6 +22,7 @@
 #![cfg(feature = "persistent-artrie")]
 
 use libdictenstein::persistent_artrie::{PersistentARTrie, SharedARTrie};
+use libdictenstein::persistent_artrie_core::durability::DurabilityPolicy;
 use libdictenstein::persistent_artrie_core::shared_access::SharedTrieAccess;
 use libdictenstein::Dictionary;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -649,18 +650,26 @@ fn test_lockfree_insert_cas_basic() {
     let dict_path = temp_dir.path().join("lockfree_basic.part");
 
     let mut dict: PersistentARTrie<()> = PersistentARTrie::create(&dict_path).expect("create dict");
-
-    // Enable lock-free mode
+    dict.set_durability_policy(DurabilityPolicy::Immediate);
 
     // Insert some terms using CAS
-    assert!(dict.insert_cas(b"hello"), "First insert should succeed");
     assert!(
-        !dict.insert_cas(b"hello"),
+        dict.insert_cas_durable(b"hello").expect("durable insert"),
+        "First insert should succeed"
+    );
+    assert!(
+        !dict.insert_cas_durable(b"hello").expect("durable insert"),
         "Duplicate insert should return false"
     );
 
-    assert!(dict.insert_cas(b"world"), "Second term should succeed");
-    assert!(dict.insert_cas(b"foo"), "Third term should succeed");
+    assert!(
+        dict.insert_cas_durable(b"world").expect("durable insert"),
+        "Second term should succeed"
+    );
+    assert!(
+        dict.insert_cas_durable(b"foo").expect("durable insert"),
+        "Third term should succeed"
+    );
 
     // Verify using lock-free contains
     assert!(dict.contains_lockfree(b"hello"), "Should find hello");
@@ -675,8 +684,7 @@ fn test_lockfree_insert_cas_concurrent() {
     let dict_path = temp_dir.path().join("lockfree_concurrent.part");
 
     let mut dict: PersistentARTrie<()> = PersistentARTrie::create(&dict_path).expect("create dict");
-
-    // Enable lock-free mode
+    dict.set_durability_policy(DurabilityPolicy::Immediate);
 
     // Wrap in Arc for sharing (no RwLock needed for lock-free ops!)
     let dict = Arc::new(dict);
@@ -697,7 +705,10 @@ fn test_lockfree_insert_cas_concurrent() {
                 // Each thread inserts unique terms
                 for i in 0..OPS_PER_THREAD {
                     let term = format!("t{}_{:05}", thread_id, i);
-                    if dict_clone.insert_cas(term.as_bytes()) {
+                    if dict_clone
+                        .insert_cas_durable(term.as_bytes())
+                        .expect("durable insert")
+                    {
                         count.fetch_add(1, Ordering::Relaxed);
                     }
                 }
@@ -745,8 +756,7 @@ fn test_lockfree_insert_cas_same_terms() {
     let dict_path = temp_dir.path().join("lockfree_same.part");
 
     let mut dict: PersistentARTrie<()> = PersistentARTrie::create(&dict_path).expect("create dict");
-
-    // Enable lock-free mode
+    dict.set_durability_policy(DurabilityPolicy::Immediate);
 
     // Wrap in Arc for sharing
     let dict = Arc::new(dict);
@@ -771,7 +781,10 @@ fn test_lockfree_insert_cas_same_terms() {
 
                 // Each thread tries to insert the same 50 terms
                 for term in terms.iter() {
-                    if dict_clone.insert_cas(term.as_bytes()) {
+                    if dict_clone
+                        .insert_cas_durable(term.as_bytes())
+                        .expect("durable insert")
+                    {
                         count.fetch_add(1, Ordering::Relaxed);
                     }
                 }
