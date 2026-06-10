@@ -1451,4 +1451,39 @@ mod tests {
         assert_eq!(vocab.get_index("apple"), Some(0));
         assert_eq!(vocab.get_index("elderberry"), Some(4));
     }
+
+    #[test]
+    fn concurrent_inserts_via_shared_arc_are_lock_free() {
+        // The single lock-free impl: many threads insert through a shared `Arc` with NO external
+        // locking (replaces the deleted ConcurrentVocabARTrie-based test_insert_cas_concurrent).
+        let dir = tempdir().expect("temp dir");
+        let path = dir.path().join("concurrent.vocab");
+        let vocab = Arc::new(PersistentVocabARTrie::create(&path).expect("create vocab"));
+
+        let num_threads = 4usize;
+        let per_thread = 100usize;
+        let handles: Vec<_> = (0..num_threads)
+            .map(|t| {
+                let v = Arc::clone(&vocab);
+                std::thread::spawn(move || {
+                    for i in 0..per_thread {
+                        v.insert(&format!("t{t}_{i}")).expect("concurrent insert");
+                    }
+                })
+            })
+            .collect();
+        for h in handles {
+            h.join().expect("thread join");
+        }
+
+        assert_eq!(vocab.len(), num_threads * per_thread);
+        // Every term resolves forward + reverse (the reverse map is populated lock-free).
+        for t in 0..num_threads {
+            for i in 0..per_thread {
+                let term = format!("t{t}_{i}");
+                let id = vocab.get_index(&term).expect("forward lookup");
+                assert_eq!(vocab.get_term(id).as_deref(), Some(term.as_str()));
+            }
+        }
+    }
 }

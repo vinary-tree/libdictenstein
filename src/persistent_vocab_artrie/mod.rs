@@ -9,53 +9,16 @@
 //! - **Reverse lookup** (index → term): O(1) via the in-memory `reverse_term_map` (id → term),
 //!   rebuilt from the checkpoint image on reopen
 //!
-//! # Design Rationale
+//! # Design
 //!
-//! A naive approach would store an in-memory `Vec<String>` for reverse lookup, but this
-//! would be lost after restart and not scale to large vocabularies. Adding parent pointers
-//! to the base `CharTrieNodeInner<V>` would waste 12 bytes per node in n-gram tries that
-//! don't need reverse lookup.
-//!
-//! `PersistentVocabARTrie` solves this by creating a specialized vocabulary trie that:
-//! 1. Stores parent pointers only where needed (vocabulary-specific)
-//! 2. Uses a memory-mapped reverse index for O(1) node location
-//! 3. Caches hot lookups with an LRU cache
-//! 4. Uses WAL for crash recovery (via base `persistent_artrie` infrastructure)
-//!
-//! # Architecture
-//!
-//! ```text
-//! ┌─────────────────────────────────────────────────────────────┐
-//! │                    PersistentVocabARTrie                     │
-//! ├─────────────────────────────────────────────────────────────┤
-//! │  Uses base persistence layer from persistent_artrie:        │
-//! │  - WalWriter/WalReader for WAL operations                   │
-//! │  - BufferManager for page cache                             │
-//! │  - DiskManager for raw block I/O                            │
-//! │                                                              │
-//! │  VocabTrieNode (wrapper with parent pointers)               │
-//! │  ┌───────────────────────────────────────────────────────┐  │
-//! │  │  inner: CharNode        // Reuses existing ART nodes  │  │
-//! │  │  parent: NodeRef        // Parent for backtracking    │  │
-//! │  │  parent_edge: u32       // Edge label from parent     │  │
-//! │  │  value: Option<u64>     // Vocabulary index (inline)  │  │
-//! │  └───────────────────────────────────────────────────────┘  │
-//! │                                                              │
-//! │  Forward Lookup: term → u64 index (O(k) via trie traversal) │
-//! │  Reverse Lookup: u64 index → term                           │
-//! │    1. LRU Cache check (O(1) hit)                            │
-//! │    2. Mmap'd index: u64 → NodeRef (O(1))                    │
-//! │    3. Backtrack parent pointers (O(k))                      │
-//! └─────────────────────────────────────────────────────────────┘
-//! ```
-//!
-//! # File Layout
-//!
-//! ```text
-//! vocabulary.vocab           # Main trie (nodes with parent pointers)
-//! vocabulary.vocab.wal       # Write-ahead log (for crash recovery)
-//! vocabulary.vocab.idx       # Mmap'd reverse index (u64 → NodeRef)
-//! ```
+//! The vocabulary IS the lock-free overlay (a `PersistentCharNode` trie with structural sharing,
+//! at `V = u64`) plus an in-memory `reverse_term_map` (id → term) for reverse lookups. Inserts
+//! are `&self`-concurrent durable Order-A operations (WAL `Insert{value:id}` → overlay root-CAS →
+//! CommitRank → mark_committed) — many threads may insert through a shared `Arc` with no external
+//! locking (the single lock-free impl: no `enable_lockfree` toggle, no `ConcurrentVocabARTrie`
+//! wrapper). A checkpoint publishes the overlay as a dense char-arena image (`vocabulary.vocab`),
+//! RETAINING the WAL (`vocabulary.vocab.wal`) for crash recovery; the reverse map is rebuilt from
+//! the image on reopen.
 //!
 //! # Example
 //!
@@ -95,19 +58,9 @@
 //!
 //! | Operation | Complexity | Notes |
 //! |-----------|------------|-------|
-//! | Forward lookup | O(k) | k = term length |
-//! | Reverse lookup (hot) | O(1) | LRU cache hit |
-//! | Reverse lookup (cold) | O(k) | Parent backtracking |
-//! | Insert | O(k) | Sets parent atomically |
-//!
-//! # Memory Overhead
-//!
-//! Per-node overhead vs base `CharTrieNodeInner`:
-//! - `parent: NodeRef` = 8 bytes
-//! - `parent_edge: u32` = 4 bytes
-//! - Total: **12 bytes per node**
-//!
-//! For 100K terms with avg depth 8 (~800K nodes): ~9.6 MB additional
+//! | Forward lookup (`get_index`) | O(k) | overlay walk, k = term length |
+//! | Reverse lookup (`get_term`) | O(1) | in-memory `reverse_term_map` |
+//! | Insert (`&self`, concurrent) | O(k) | durable Order-A, lock-free CAS |
 
 // Core types
 pub mod types;
@@ -420,7 +373,7 @@ impl MutableMappedDictionary for SharedVocabARTrie {
         );
         let existed = self.read().contains(term);
         if !existed {
-            let mut guard = self.write();
+            let guard = self.write();
             if let Err(error) = guard.insert(term) {
                 log::warn!("SharedVocabARTrie::insert_with_value failed: {error}");
                 return false;
@@ -446,7 +399,7 @@ impl MutableMappedDictionary for SharedVocabARTrie {
         };
 
         let mut count = 0;
-        let mut self_guard = self.write();
+        let self_guard = self.write();
         for term in other_terms {
             if !self_guard.contains(&term) {
                 match self_guard.insert(&term) {
@@ -472,7 +425,7 @@ impl MutableMappedDictionary for SharedVocabARTrie {
         );
         let existed = self.read().contains(term);
         if !existed {
-            let mut guard = self.write();
+            let guard = self.write();
             if let Err(error) = guard.insert(term) {
                 log::warn!("SharedVocabARTrie::update_or_insert failed: {error}");
                 return false;

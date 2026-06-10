@@ -15,7 +15,11 @@ use crate::persistent_artrie::error::{PersistentARTrieError, Result};
 
 impl<S: BlockStorage> super::dict_impl::PersistentVocabARTrie<S> {
     /// Insert a term and auto-assign the next vocabulary index. Returns the assigned index.
-    pub fn insert(&mut self, term: &str) -> Result<u64> {
+    ///
+    /// Lock-free + concurrent-safe (`&self`): multiple threads may insert through a shared
+    /// `Arc<PersistentVocabARTrie>` with no external locking (the single lock-free impl —
+    /// no `enable_lockfree` toggle, no `ConcurrentVocabARTrie` wrapper).
+    pub fn insert(&self, term: &str) -> Result<u64> {
         self.insert_overlay(term)
     }
 
@@ -66,12 +70,13 @@ impl<S: BlockStorage> super::dict_impl::PersistentVocabARTrie<S> {
     /// # Ok(())
     /// # }
     /// ```
-    pub fn insert_batch(&mut self, terms: &[&str]) -> Result<Vec<u64>> {
+    pub fn insert_batch(&self, terms: &[&str]) -> Result<Vec<u64>> {
         terms.iter().map(|&t| self.insert_overlay(t)).collect()
     }
 
-    /// Insert a term with a specific vocabulary index. Returns `true` iff newly inserted.
-    pub fn insert_with_index(&mut self, term: &str, index: u64) -> Result<bool> {
+    /// Insert a term with a specific vocabulary index (lock-free, `&self`). Returns `true` iff
+    /// newly inserted.
+    pub fn insert_with_index(&self, term: &str, index: u64) -> Result<bool> {
         self.insert_with_index_overlay(term, index)
     }
 
