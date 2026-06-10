@@ -130,11 +130,6 @@ impl<S: BlockStorage> LockFreeOverlay<CharKey, u64, S> for PersistentVocabARTrie
         }
     }
 
-    /// Vocab's value (`u64` id) is always overlay-eligible.
-    fn overlay_eligible_v() -> bool {
-        true
-    }
-
     fn overlay_publish_membership(&self, units: &[u32]) {
         // Vocab inserts ALWAYS carry a value (the id); there are no membership-only
         // inserts, so the F5 WAL-tail applier never routes a vocab term here (vocab
@@ -373,9 +368,6 @@ impl<S: BlockStorage> PersistentVocabARTrie<S> {
 
     /// Flip-construction helper. Thin delegator to [`LockFreeOverlay::flip_to_overlay`].
     #[inline]
-    pub fn flip_to_overlay(&mut self) -> bool {
-        <Self as LockFreeOverlay<CharKey, u64, S>>::flip_to_overlay(self)
-    }
 
     /// Require the lock-free root, else a uniform "install_overlay() first" error.
     #[inline]

@@ -102,15 +102,6 @@ impl<V: DictionaryValue, S: BlockStorage> LockFreeOverlay<ByteKey, V, S>
         }
     }
 
-    /// ANY `V: DictionaryValue` is overlay-eligible (F2, design G5).
-    ///
-    /// Arbitrary-V overlay routing is the production default: the generic value
-    /// path routes every `V` through the lock-free overlay. Since L3.3 deleted the
-    /// owned tree, the overlay is the SOLE representation.
-    fn overlay_eligible_v() -> bool {
-        true
-    }
-
     // ---- overlay publishers (the per-variant write seam) ----
 
     fn overlay_publish_membership(&self, units: &[u8]) {
@@ -429,9 +420,6 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
     /// Overlay-eligibility gate (`V ∈ {(), i64}` for byte). Thin delegator.
     #[cfg_attr(not(test), allow(dead_code))]
     #[inline]
-    pub(crate) fn overlay_eligible_v() -> bool {
-        <Self as LockFreeOverlay<ByteKey, V, S>>::overlay_eligible_v()
-    }
 
     /// **Flip construction helper.** Thin delegator to
     /// [`LockFreeOverlay::flip_to_overlay`]. Opt-in, REVERSIBLE (M2a): a NO-OP
@@ -440,10 +428,6 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
     /// `route_overlay()` true.
     #[cfg_attr(not(test), allow(dead_code))]
     #[inline]
-    pub(crate) fn flip_to_overlay(&mut self) -> bool {
-        <Self as LockFreeOverlay<ByteKey, V, S>>::flip_to_overlay(self)
-    }
-
     // ---- inherent skins over the trait read engine (used by the M2a test) ----
 
     /// Overlay term count (resident-finals). Thin delegator to the read engine.
@@ -543,10 +527,6 @@ mod tests {
         // restoration); `()` is membership, and every other `V` (incl. `i64` and
         // `String`) is arbitrary-V — all eligible.
         use crate::persistent_artrie::PersistentARTrie;
-        assert!(PersistentARTrie::<()>::overlay_eligible_v());
-        assert!(PersistentARTrie::<u64>::overlay_eligible_v());
-        assert!(PersistentARTrie::<i64>::overlay_eligible_v());
-        assert!(PersistentARTrie::<String>::overlay_eligible_v());
     }
 
     #[test]

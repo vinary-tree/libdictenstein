@@ -98,16 +98,6 @@ impl<V: DictionaryValue, S: BlockStorage> LockFreeOverlay<CharKey, V, S>
         }
     }
 
-    /// **S5-12 (V-1) + F2 (G5)** — overlay eligibility: ANY `V` is eligible.
-    ///
-    /// Arbitrary-V overlay routing is the production default: the generic value
-    /// path (F0 durable write / F1 reestablish + read) routes every `V` through
-    /// the lock-free overlay. Since L3.3 deleted the owned tree, the overlay is the
-    /// SOLE representation.
-    fn overlay_eligible_v() -> bool {
-        true
-    }
-
     // ---- overlay publishers (the per-variant write seam) ----
 
     fn overlay_publish_membership(&self, units: &[u32]) {
@@ -514,21 +504,6 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     pub fn route_overlay(&self) -> bool {
         <Self as LockFreeOverlay<CharKey, V, S>>::route_overlay(self)
     }
-
-    /// **S5-12 (V-1)** — overlay-eligibility gate (`V ∈ {(), u64}`). Thin delegator.
-    #[cfg_attr(not(test), allow(dead_code))]
-    #[inline]
-    pub(crate) fn overlay_eligible_v() -> bool {
-        <Self as LockFreeOverlay<CharKey, V, S>>::overlay_eligible_v()
-    }
-
-    /// **S5-10c — flip construction helper.** Thin delegator to
-    /// [`LockFreeOverlay::flip_to_overlay`].
-    #[cfg_attr(not(test), allow(dead_code))]
-    #[inline]
-    pub(crate) fn flip_to_overlay(&mut self) -> bool {
-        <Self as LockFreeOverlay<CharKey, V, S>>::flip_to_overlay(self)
-    }
 }
 
 #[cfg(test)]
@@ -539,9 +514,6 @@ mod tests {
     #[test]
     fn v1_arbitrary_v_create_flips_to_overlay() {
         use crate::persistent_artrie_char::PersistentARTrieChar;
-        assert!(PersistentARTrieChar::<u64>::overlay_eligible_v());
-        assert!(PersistentARTrieChar::<()>::overlay_eligible_v());
-        assert!(PersistentARTrieChar::<String>::overlay_eligible_v());
 
         std::fs::create_dir_all("target/test-tmp").ok();
         let dir = tempfile::Builder::new()

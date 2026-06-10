@@ -731,7 +731,6 @@ mod tests {
         let mut expected: Vec<(String, u64)> = Vec::with_capacity(terms.len());
         {
             let mut vocab = PersistentVocabARTrie::create(&path).expect("create");
-            assert!(vocab.flip_to_overlay(), "flip engaged on a fresh trie");
             assert!(vocab.route_overlay(), "overlay is the live rep after flip");
             for t in &terms {
                 let id = vocab.insert(t).expect("overlay insert"); // routes to insert_overlay
@@ -805,7 +804,6 @@ mod tests {
         let mut expected: Vec<(String, u64)> = Vec::with_capacity(terms.len());
         {
             let mut vocab = PersistentVocabARTrie::create(&path).expect("create");
-            vocab.flip_to_overlay();
             assert!(vocab.route_overlay(), "overlay is the live rep");
             for t in &terms {
                 let id = vocab.insert(t).expect("overlay insert");
@@ -862,7 +860,6 @@ mod tests {
         let mut expected: Vec<(String, u64)> = Vec::new();
         {
             let mut vocab = PersistentVocabARTrie::create(&path_a).expect("create");
-            assert!(vocab.flip_to_overlay(), "flip");
             for t in &first {
                 expected.push((t.to_string(), vocab.insert(t).expect("insert")));
             }

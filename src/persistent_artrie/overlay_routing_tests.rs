@@ -46,7 +46,6 @@ fn m3_empty_term_routes_to_overlay() {
 
     let empty_count: u64 = 77;
     let mut trie = PersistentARTrie::<u64>::create(&path).expect("create");
-    trie.flip_to_overlay();
     assert!(trie.route_overlay());
 
     // The routed public writer publishes "" to the overlay ROOT (durable, H4).
@@ -94,7 +93,6 @@ fn m3_routed_writes_round_trip_and_survive_reopen() {
 
     {
         let mut trie = PersistentARTrie::<u64>::create(&path).expect("create");
-        trie.flip_to_overlay();
         assert!(trie.route_overlay());
 
         // Each routed public writer. `insert_with_value` returns `bool` (byte
@@ -185,7 +183,6 @@ fn m3_overlay_routed_ops_succeed() {
     let other_path = dir.path().join("other.part");
 
     let mut trie = PersistentARTrie::<u64>::create(&path).expect("create");
-    trie.flip_to_overlay();
     assert!(trie.route_overlay());
     trie.increment_bytes(b"seed", 1).expect("seed");
 
@@ -218,7 +215,6 @@ fn m3_overlay_routed_ops_succeed() {
     // SUCCEED (read self via the overlay seam, combine via merge_fn, publish). `other`
     // holds `x=100`; `seed=2` (from the CAS above), no overlap, so each merge inserts x.
     let mut other = PersistentARTrie::<u64>::create(&other_path).expect("create other");
-    other.flip_to_overlay();
     other.increment_bytes(b"x", 100).expect("other seed");
     assert_eq!(
         trie.merge_from(&other, |a, _| *a)
@@ -281,7 +277,6 @@ fn m3_deep_key_routed_reads_no_stack_overflow() {
 
     let deep: Vec<u8> = vec![b'a'; 500];
     let mut trie = PersistentARTrie::<u64>::create(&path).expect("create");
-    trie.flip_to_overlay();
     assert!(trie.route_overlay());
     trie.increment_bytes(&deep, 11).expect("deep increment");
 

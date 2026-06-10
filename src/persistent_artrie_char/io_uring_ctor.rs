@@ -264,8 +264,7 @@ impl<V: DictionaryValue>
             V,
             crate::persistent_artrie::IoUringDiskManager,
         >>::USE_F5_REOPEN_LOADER
-            && rank_regime == crate::persistent_artrie_core::wal::RankRegime::Overlay
-            && Self::overlay_eligible_v();
+            && rank_regime == crate::persistent_artrie_core::wal::RankRegime::Overlay;
         // **F7 convert gate** (io_uring twin; const-keyed, no `force_f5`): an Owned-regime
         // eligible file converts into the overlay.
         let convert_owned = <Self as LockFreeOverlay<
@@ -273,8 +272,7 @@ impl<V: DictionaryValue>
             V,
             crate::persistent_artrie::IoUringDiskManager,
         >>::USE_F5_REOPEN_LOADER
-            && rank_regime == crate::persistent_artrie_core::wal::RankRegime::Owned
-            && Self::overlay_eligible_v();
+            && rank_regime == crate::persistent_artrie_core::wal::RankRegime::Owned;
 
         if convert_owned {
             // ===== F7 CONVERT PATH (Owned-regime eligible → overlay; io_uring twin) =====

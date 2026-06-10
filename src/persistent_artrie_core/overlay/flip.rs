@@ -222,10 +222,6 @@ pub(crate) trait LockFreeOverlay<K: KeyEncoding, V: DictionaryValue, S>:
     /// WAL is non-empty or absent — the variant logs a warning on failure).
     fn wal_stamp_overlay_regime(&self);
 
-    /// `true` iff `V` is an eligible overlay monomorph (`{(), CounterValue}`). The
-    /// SOLE expression of the "overlay only for `V ∈ {(), counter}`" invariant.
-    fn overlay_eligible_v() -> bool;
-
     // ---- overlay publishers (the per-variant write seam) ----
 
     /// Publish membership of `units` to the overlay via the variant's no-WAL CAS
@@ -504,36 +500,6 @@ pub(crate) trait LockFreeOverlay<K: KeyEncoding, V: DictionaryValue, S>:
 
     // ===== flip / kill-switch =====
 
-    /// **S5-10c — flip construction helper.** Make the lock-free overlay the live
-    /// write target: `install_overlay()` (which stamps the WAL Overlay regime when
-    /// the WAL is empty) then select `LockFreeOverlay` so `route_overlay()` becomes
-    /// true. Returns the resulting `route_overlay() && stamped_overlay`.
-    ///
-    /// **V-1 gate:** a NO-OP returning `false` for `V ∉ {(), CounterValue}` — the
-    /// authoritative chokepoint so no caller can enable a broken overlay for
-    /// arbitrary `V`.
-    fn flip_to_overlay(&mut self) -> bool {
-        if !Self::overlay_eligible_v() {
-            return false; // arbitrary V: never enable the overlay; stay OwnedTree.
-        }
-        self.install_overlay();
-        // `install_overlay` stamps the WAL Overlay regime on its FIRST call (it
-        // early-returns once `lockfree_root` is set). Belt-and-suspenders: restamp on
-        // the fresh-WAL edge (`current_lsn() == 1`) so the V-2 verification below holds
-        // even if the first stamp was skipped; a no-op once the Overlay regime is stamped.
-        if self.wal_current_lsn() == Some(1) && !self.wal_is_overlay_regime() {
-            self.wal_stamp_overlay_regime();
-        }
-        // V-2: `install_overlay` only `log::warn!`s if the Overlay-regime stamp
-        // failed, then STILL enables the overlay — so verify the WAL is ACTUALLY
-        // Overlay-regime. An Owned-regime WAL under overlay routing would make
-        // recovery KEEP unranked orphans (resurrection). A trie with no WAL
-        // (in-memory) cannot durably flip and also fails this check. The
-        // create-flip caller hard-errors on a `false` return.
-        let stamped_overlay = self.wal_current_lsn().is_some() && self.wal_is_overlay_regime();
-        self.route_overlay() && stamped_overlay
-    }
-
     /// Build the lock-free overlay on a freshly-created trie and return it. The overlay is the SOLE
     /// representation (the owned tree was deleted at C2/V6), so construction installs it DIRECTLY —
     /// there is no "enable"/"flip" step, because there is nothing else to be. `install_overlay()`
@@ -791,9 +757,6 @@ pub(crate) trait LockFreeOverlay<K: KeyEncoding, V: DictionaryValue, S>:
     /// Owned-regime WAL under overlay routing (which would KEEP unranked orphans on a
     /// later reopen) is surfaced as `false` (the caller hard-errors).
     fn install_prebuilt_overlay_root(&mut self, root: Arc<OverlayNode<K, V>>) -> bool {
-        if !Self::overlay_eligible_v() {
-            return false;
-        }
         // Install the pre-built root + fresh cache (variant seam — it owns the
         // concrete `AtomicNodePtr`/cache field types). Idempotent guard inside the
         // seam: it only installs when `lockfree_root` is not already set (a fresh
@@ -1350,13 +1313,6 @@ pub(crate) trait LockFreeOverlay<K: KeyEncoding, V: DictionaryValue, S>:
     {
         use crate::persistent_artrie_core::error::PersistentARTrieError;
         use f7_failpoint::FailPoint;
-
-        if !Self::overlay_eligible_v() {
-            // Defensive: the ctor gate (overlay_eligible_v) should already exclude this.
-            // An ineligible V cannot route the overlay, so there is nothing to convert —
-            // the file legitimately stays Owned. Return Ok (no-op).
-            return Ok(());
-        }
 
         // F7 crash-injection (test-only; disarmed = strict no-op): a simulated power-cut
         // BEFORE any durable conversion side effect. Reopen reads Owned → re-runs the

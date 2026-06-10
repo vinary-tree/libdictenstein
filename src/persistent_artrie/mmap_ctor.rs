@@ -512,9 +512,8 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
         };
         // F5 gate: a direct dense→overlay reopen runs ONLY for an Overlay-regime,
         // overlay-eligible file when F5 is selected. Everything else is LEGACY.
-        let use_f5 = force_f5
-            && rank_regime == crate::persistent_artrie_core::wal::RankRegime::Overlay
-            && Self::overlay_eligible_v();
+        let use_f5 =
+            force_f5 && rank_regime == crate::persistent_artrie_core::wal::RankRegime::Overlay;
         // **F7 convert gate:** an OWNED-regime, overlay-eligible file opened on the
         // PRODUCTION path (`force_f5` — `open`/`open_with_f5_loader`) is CONVERTED into the
         // overlay via `convert_owned_to_overlay_on_reopen` (rotate-if-records-non-empty →
@@ -522,9 +521,8 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
         // (`force_f5 == false`) keeps the legacy owned-loader stay-owned path (the pre-F7
         // owned-reopen ORACLE the correspondence test compares against). An ineligible V
         // can never overlay, so it stays owned regardless.
-        let convert_owned = force_f5
-            && rank_regime == crate::persistent_artrie_core::wal::RankRegime::Owned
-            && Self::overlay_eligible_v();
+        let convert_owned =
+            force_f5 && rank_regime == crate::persistent_artrie_core::wal::RankRegime::Owned;
 
         // Create the dictionary with storage layer.
         // L3.3c (BLOCKER#4): the overlay is built DIRECTLY from the dense image via the codec

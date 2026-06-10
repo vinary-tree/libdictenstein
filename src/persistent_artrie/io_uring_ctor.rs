@@ -275,7 +275,6 @@ impl<V: DictionaryValue> PersistentARTrie<V, IoUringDiskManager> {
                 IoUringDiskManager,
             >>::USE_F5_REOPEN_LOADER
                 && rank_regime == crate::persistent_artrie_core::wal::RankRegime::Overlay
-                && Self::overlay_eligible_v()
         };
         // **F7 convert gate** (io_uring twin): an Owned-regime eligible file is CONVERTED
         // into the overlay (rotate-if-records-non-empty → stamp → F5 build → archive-aware
@@ -289,7 +288,6 @@ impl<V: DictionaryValue> PersistentARTrie<V, IoUringDiskManager> {
                 IoUringDiskManager,
             >>::USE_F5_REOPEN_LOADER
                 && rank_regime == crate::persistent_artrie_core::wal::RankRegime::Owned
-                && Self::overlay_eligible_v()
         };
 
         // L3.3c (BLOCKER#4, io_uring twin): no eager owned pre-load; the owned `dict.root` is a

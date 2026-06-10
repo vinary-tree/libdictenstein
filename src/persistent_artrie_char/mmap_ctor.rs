@@ -490,16 +490,14 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
         // F5 gate: a direct dense→overlay reopen runs ONLY for an Overlay-regime,
         // overlay-eligible file when F5 is selected (the gate, or the test ctor's
         // `force_f5`). Everything else takes the proven LEGACY path.
-        let use_f5 = force_f5
-            && rank_regime == crate::persistent_artrie_core::wal::RankRegime::Overlay
-            && Self::overlay_eligible_v();
+        let use_f5 =
+            force_f5 && rank_regime == crate::persistent_artrie_core::wal::RankRegime::Overlay;
         // **F7 convert gate:** an OWNED-regime, overlay-eligible file on the PRODUCTION path
         // (`force_f5` — `open`/`open_with_f5_loader`) is CONVERTED into the overlay.
         // `open_with_legacy_loader` (`force_f5 == false`) keeps the legacy owned-loader
         // stay-owned path (the pre-F7 owned-reopen ORACLE).
-        let convert_owned = force_f5
-            && rank_regime == crate::persistent_artrie_core::wal::RankRegime::Owned
-            && Self::overlay_eligible_v();
+        let convert_owned =
+            force_f5 && rank_regime == crate::persistent_artrie_core::wal::RankRegime::Owned;
 
         // #48: the loaded image self-describes its IMAGE-COVERAGE frontier (the max WAL LSN folded
         // into it), durable ATOMICALLY with the image. Take max(WAL Checkpoint record, image
