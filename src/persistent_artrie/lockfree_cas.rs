@@ -185,10 +185,10 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
         // threading is inert and H3 stays open. SAFE here ONLY on an EMPTY WAL
         // (`current_lsn() == 1` ⇒ no records appended) — an in-place restamp of a
         // non-empty file is torn-write-unsafe and would drop pre-existing Owned
-        // records (the non-empty case needs a rotation, deferred to the M4 flip).
-        // REVERSIBLE/opt-in: every `install_overlay` caller is opt-in/test today (no
-        // production/default ctor reaches it); a PRODUCTION caller would make this
-        // the irreversible M4 flip.
+        // records (the non-empty legacy-file case is handled by the reopen converter
+        // `convert_owned_to_overlay_on_reopen`, which rotates the tail first). Every
+        // production ctor reaches this via `install_overlay_on_create` (the overlay is
+        // the sole representation).
         if let Some(ref writer) = self.wal_writer {
             // EMPTY-WAL guard: use the WRITER's authoritative next-LSN (incremented
             // by EVERY append — owned insert/remove/upsert AND the durable producers),
@@ -261,11 +261,10 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
     }
 
     // **F7 — `reestablish_overlay_dispatch` DELETED.** The per-term owned→overlay
-    // reestablish dispatch (membership/counter/value folds) is superseded by the KEPT
-    // structural converter `LockFreeOverlay::reestablish_overlay_from_owned`
-    // (`build_overlay_root_from_owned`), which the F7 reopen converter + the legacy-loader
-    // oracle + compaction now use. Same overlay, strictly more correct (keeps a term-only
-    // counter member the counter fold dropped).
+    // reestablish dispatch (membership/counter/value folds) is gone along with the owned
+    // tree: reopen now builds the overlay DIRECTLY from the dense on-disk image via the
+    // F5 loader (`load_root_immutable` + the archive-aware WAL-tail applier), used by the
+    // reopen ctors + compaction. The owned-reading converters were all deleted.
 
     /// Lock-free insert using CAS operations.
     ///
@@ -558,8 +557,8 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
     // two-phase `try_set_final` arbiter is untouched). The durable path is
     // SINGLE-PHASE: the leaf is published FINAL inside the root CAS, so the root
     // CAS is the SOLE linearization point and the claimed `commit_seq` generation
-    // == visibility order. Opt-in (`install_overlay` + a synchronous policy); NOT
-    // routed from production `insert`/`remove` until M4.
+    // == visibility order. Requires `install_overlay` + a synchronous policy; the
+    // overlay is the sole representation, so production `insert`/`remove` route here.
     // ====================================================================
 
     /// **Order-A durable** lock-free insert (membership). Unlike [`Self::insert_cas`]
@@ -574,12 +573,11 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
     /// (`Immediate`/`GroupCommit`). Returns `Ok(true)` iff this call newly inserted
     /// the term.
     ///
-    /// # Safety boundary (pre-flip)
+    /// # Durability
     ///
-    /// WAL-only-safe: an acknowledged write survives a crash/reopen with NO
-    /// checkpoint (durability rests on WAL replay). It is NOT yet safe to mix with
-    /// the owned-tree [`checkpoint()`](Self::checkpoint) (which captures the OWNED
-    /// tree, not the overlay) — that is the M4 flip. Use WAL-only until then.
+    /// An acknowledged write survives a crash/reopen with NO checkpoint (durability
+    /// rests on WAL replay) AND through a checkpoint: the overlay is the sole
+    /// representation, so [`checkpoint()`](Self::checkpoint) captures the live overlay.
     pub fn insert_cas_durable(&self, term: &[u8]) -> Result<bool> {
         // **M1:** the Order-A durability gate is the SHARED GENERIC default
         // [`DurableOverlayWrite::durable_policy_gate`] (byte-exact message via the
@@ -1518,9 +1516,8 @@ mod durable_write_tests {
 
     /// **THE #41 BYTE WITNESS (membership).** Terms inserted durably + acknowledged
     /// survive a reopen WITHOUT a checkpoint (pure WAL replay = durability proven).
-    /// Explicitly enables the overlay write mode (`install_overlay` +
-    /// `set_overlay_write_mode(LockFreeOverlay)`) so the durable path is exercised as
-    /// the M4 flip will use it.
+    /// The overlay is the sole representation (every ctor installs it), so the durable
+    /// path is exercised exactly as production uses it.
     #[test]
     fn insert_cas_durable_survives_reopen_without_checkpoint() {
         let dir = scratch("byte-order-a-durable");
@@ -1957,10 +1954,10 @@ mod m2d_regime_aware_recovery_tests {
     //! on-disk WAL, proving (a) the Overlay orphan-drop closes H3 and (b) a
     //! rank-less Owned WAL replays in-order byte-for-byte (the back-compat proof).
     //!
-    //! NOTE (no M4 here): byte's `open` does NOT create-flip / reestablish, so the
-    //! recovered state lands in the OWNED tree and is read post-reopen via
-    //! `Dictionary::contains` / `MappedDictionary::get_value` (the owned readers) —
-    //! M2d threads the RECONCILE only, not the read route. Scratch is real disk
+    //! NOTE: the overlay is the sole representation, so byte's `open` replays the
+    //! recovered state INTO the overlay; it is read post-reopen via the public
+    //! `Dictionary::contains` / `MappedDictionary::get_value` (overlay-routed). These
+    //! tests exercise the RECONCILE on the recovery path. Scratch is real disk
     //! (`target/test-tmp`), never `/tmp` (tmpfs — the disk-backed-test gotcha).
 
     use crate::persistent_artrie::PersistentARTrie;

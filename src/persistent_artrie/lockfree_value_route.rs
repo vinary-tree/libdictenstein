@@ -1,5 +1,5 @@
-//! Per-monomorph routing for the VALUED byte production mutators under the
-//! lock-free flip (`increment_bytes` / `upsert_bytes` / `get_or_insert_bytes`).
+//! Per-monomorph routing for the VALUED byte counter increment
+//! (`route_increment_bytes`).
 //!
 //! # Why this module exists (the byte twin of char's `lockfree_value_route`)
 //!
@@ -8,23 +8,19 @@
 //! valued Order-A durable primitives (`insert_cas_with_value_durable` /
 //! `upsert_cas_durable` / `try_increment_cas_durable` / `get_lockfree`) are all
 //! defined on the `impl<S> PersistentARTrie<u64, S>` block (the byte counter
-//! monomorph, now `u64` matching char). So the VALUED production mutators — which
-//! live in one generic `impl<V: DictionaryValue + Serialize + DeserializeOwned, S>`
-//! block that cannot name `PersistentARTrie<u64, S>`'s inherent methods — must route
-//! to the overlay ONLY for the `V = u64` monomorph and stay on the proven owned tree
-//! for every other `V` (the design's "arbitrary V → forced OwnedTree" gap; an
-//! ineligible `V` never has `route_overlay()` true anyway, since the F5 flip never
-//! enables the overlay for it).
+//! monomorph, now `u64` matching char). So the u64 add-only counter fast path —
+//! which lives in one generic `impl<V: DictionaryValue + Serialize +
+//! DeserializeOwned, S>` block that cannot name `PersistentARTrie<u64, S>`'s
+//! inherent methods — must route to the overlay ONLY for the `V = u64` monomorph.
 //!
 //! Rust has no stable specialization, so — exactly as char — the idiomatic,
 //! **zero-unsafe** solution is a free function that does a SAFE
 //! [`Any`](std::any::Any) downcast of `&self` to the `u64` monomorph
 //! (`DictionaryValue: 'static`, and the trie + block storage are `'static`), then
 //! calls the thin Order-A overlay primitives. When the downcast fails (`V != u64`)
-//! it returns `None`, signalling the caller to run its proven owned-tree body (the
-//! value-CAS increment path, which handles an `i64` counter and decrements). The
-//! owned arms are unchanged (the INERT-pre-flip property: with `route_overlay()`
-//! false the routed branch is never entered).
+//! it returns `None`, signalling the caller to run the general overlay value-CAS
+//! increment path (which handles a wider counter type and decrements). The overlay
+//! is the sole representation for ALL `V`, so both branches write to the overlay.
 
 use std::any::Any;
 

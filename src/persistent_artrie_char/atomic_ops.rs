@@ -62,12 +62,12 @@ impl<V: DictionaryValue + serde::Serialize + serde::de::DeserializeOwned, S: Blo
         self.increment_via_value_cas(term, delta)
     }
 
-    /// **F2 — general overlay increment via the value-CAS path** (Counter-bound).
+    /// **General overlay increment via the value-CAS path** (Counter-bound).
     ///
     /// The fast `route_increment` seam only handles `V = u64` with a non-negative delta
-    /// (the add-only commutative `BatchIncrement`). To avoid dropping the owned path's
-    /// increment for `i64` counters and for decrements, this routes any other Counter
-    /// increment through a read → `cur + delta` → CAS retry loop over the proven
+    /// (the add-only commutative `BatchIncrement`). To support `i64` counters and
+    /// decrements, this routes any other Counter increment through a read → `cur +
+    /// delta` → CAS retry loop over the proven
     /// `compare_and_swap` (overlay-routed to `compare_and_swap_cas_durable`, phantom-safe
     /// per `LockFreeOverlayValueCas.tla` — a lost CAS burns an unranked record dropped on
     /// reopen). Every counter-leaf read/write routes through the `counter_codec` i128
@@ -120,14 +120,12 @@ impl<V: DictionaryValue + serde::Serialize + serde::de::DeserializeOwned, S: Blo
     ///
     /// `true` if a new term was inserted, `false` if an existing term was updated.
     ///
-    /// **Flip routing (design §2):** for the `V = u64` monomorph with
-    /// `route_overlay()`, routes to the thin Order-A
-    /// [`upsert_cas_durable`](Self::upsert_cas_durable) (last-writer = the root-CAS
-    /// winner). Arbitrary `V` falls back to the owned tree (SAFE `Any` dispatch).
+    /// The overlay is the sole representation, so for ALL `V` this routes to the
+    /// SHARED GENERIC thin Order-A `upsert_cas_durable_default` (last-writer = the
+    /// root-CAS winner).
     pub fn upsert(&self, term: &str, value: V) -> Result<bool> {
-        // Flip F0/G5 (NH1): under the overlay, route to the SHARED GENERIC durable
-        // UPSERT (always-write) for ANY V — NEVER fall through to owned. Eligible V
-        // now; arbitrary V at F2.
+        // G5 (NH1): under the overlay, route to the SHARED GENERIC durable UPSERT
+        // (always-write) for ANY V — there is no owned tree to fall through to.
         <Self as DurableOverlayWrite<CharKey, V, S>>::upsert_cas_durable_default(
             self,
             term.as_bytes(),
@@ -148,14 +146,12 @@ impl<V: DictionaryValue + serde::Serialize + serde::de::DeserializeOwned, S: Blo
         expected: Option<V>,
         new_value: V,
     ) -> Result<bool> {
-        // Flip F0/G5 (NH2): under the overlay, route to the SHARED GENERIC overlay
-        // value-CAS — bincode-BYTE comparison (no `PartialEq` on `DictionaryValue`),
-        // a per-iteration `expected`-recheck on the freshly-loaded root, Order-A
+        // G5 (NH2): under the overlay, route to the SHARED GENERIC overlay value-CAS
+        // — bincode-BYTE comparison (no `PartialEq` on `DictionaryValue`), a
+        // per-iteration `expected`-recheck on the freshly-loaded root, Order-A
         // durable (append `Upsert{new}` THEN publish, burn the LSN on a recheck
-        // miss). This SUPERSEDES the prior reject (the design's NH2 regression fix):
-        // the currently-eligible `V` ({(),u64}) gets working overlay CAS now, and
-        // arbitrary `V` joins at the F2 eligibility flip. (Owned body below runs only
-        // when `!route_overlay()` — ineligible `V`, or kill-switched.)
+        // miss). The overlay is the sole representation, so this runs for ANY `V` —
+        // there is no owned tree to fall through to.
         <Self as DurableOverlayWrite<CharKey, V, S>>::compare_and_swap_cas_durable_default(
             self,
             term.as_bytes(),
@@ -192,14 +188,13 @@ impl<V: DictionaryValue + serde::Serialize + serde::de::DeserializeOwned, S: Blo
     /// If the term exists, returns its current value.
     /// If not, inserts the default value and returns it.
     pub fn get_or_insert(&self, term: &str, default: V) -> Result<V> {
-        // Flip F0/G5 (NH1): under the overlay, route to the SHARED GENERIC
-        // insert-once get-or-insert (read-your-write: present? return it : insert
-        // the default once, then return; the durable insert is genuinely insert-once
-        // so concurrent racers converge on ONE value). It NEVER falls through to the
-        // owned tree for an overlay-routed trie — that is the NH1 data-loss fix (a
-        // fall-through owned write would be unranked → dropped on Overlay reopen).
-        // The currently-eligible V ({(),u64}) takes this now; arbitrary V at F2.
-        // (Owned body below runs only when `!route_overlay()`.)
+        // G5 (NH1): under the overlay, route to the SHARED GENERIC insert-once
+        // get-or-insert (read-your-write: present? return it : insert the default
+        // once, then return; the durable insert is genuinely insert-once so
+        // concurrent racers converge on ONE value). The overlay is the sole
+        // representation, so this runs for ANY V — there is no owned tree to fall
+        // through to (the NH1 data-loss fix: a fall-through owned write would be
+        // unranked → dropped on Overlay reopen).
         <Self as DurableOverlayWrite<CharKey, V, S>>::get_or_insert_durable_default(
             self,
             term.as_bytes(),

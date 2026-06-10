@@ -70,7 +70,7 @@ pub(crate) const DEFAULT_MAX_FAULTIN_RETRIES: usize = 16;
 /// exercised only by the `#[cfg(any(test, bench-internals))]` batch drivers + the OE
 /// tests until the production force-eviction caller is wired (a later phase); the
 /// READ-fault default (`find_leaf_faulting`) IS used in non-test production builds, so
-/// the trait itself is not dead — only the evict-only members are, pre-flip.
+/// the trait itself is not dead — only the evict-only members are.
 #[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum OverlayEvictOutcome {
@@ -155,7 +155,7 @@ pub(crate) trait OverlayEvictable<K: KeyEncoding, V: DictionaryValue, S>:
     /// overlay root to the victim.
     ///
     /// `#[allow(dead_code)]`: the production force-eviction caller is a later phase;
-    /// pre-flip this is exercised only by the gated batch drivers + the OE tests.
+    /// this is currently exercised only by the gated batch drivers + the OE tests.
     #[allow(dead_code)]
     fn evict_overlay_node_at_path(
         &self,

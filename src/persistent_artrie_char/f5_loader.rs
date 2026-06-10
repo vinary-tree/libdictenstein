@@ -21,10 +21,10 @@
 //! descriptor) reads `(is_final, value, prefix, children)` from its record, yields its
 //! `value`-or-`None` ONCE (membership∪value intrinsic), and pushes children at `+edge`. The
 //! enumerator loads the arenas first (the char ctor does NOT — only `load_root_from_disk` did,
-//! which this replaces). **Equivalence to the proven path is the GOLD-STANDARD GATE**
-//! (`l31_char_differential_tests`): byte-exact vs
-//! `build_overlay_root_from_owned(load_root_from_disk(image))` over format × `V` × Unicode ×
-//! shape — run NOW while the oracle exists (it retires at L3.3).
+//! which this replaces). **Equivalence to the proven path was the GOLD-STANDARD GATE**
+//! (`l31_char_differential_tests`): byte-exact vs the now-retired owned-scratch oracle
+//! (`load_root_from_disk` + the owned→overlay converter) over format × `V` × Unicode ×
+//! shape — verified BEFORE L3.3 retired that oracle.
 
 use std::sync::Arc;
 
@@ -38,20 +38,17 @@ use crate::value::DictionaryValue;
 use super::nodes::persistent_node::PersistentCharNode;
 
 impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
-    /// **F5 — load the dense image into a pre-built lock-free overlay root** (the owned
-    /// tree is a TRANSIENT decode scratch, cleared after conversion — reopen never leaves
-    /// it as a production representation).
+    /// **F5/L3.1 — load the dense image DIRECTLY into a pre-built lock-free overlay
+    /// root** (NO transient owned `CharTrieRoot`; the owned tree was deleted).
     ///
-    /// 1. Eager-load the dense image via the EXISTING `load_root_from_disk`
-    ///    (`eager_depth = Some(usize::MAX)` → `load_char_node_from_disk_iterative`, so the
-    ///    owned readers never fault) INTO `self.root`.
-    /// 2. Build the overlay root from the owned tree via the generic, COMPRESSION-AWARE
-    ///    [`LockFreeOverlay::build_overlay_root_from_owned`] (handles both un-compressed
-    ///    and compacted/path-compressed Overlay images).
-    /// 3. Install it as the live overlay (`install_prebuilt_overlay_root`: selects
+    /// 1. Build the overlay root from the dense image via the COMPRESSION-AWARE codec
+    ///    [`Self::load_overlay_char_root_compressed`] (`enumerate_char_terms_from_disk`
+    ///    + `build_overlay_root_from_terms`), which handles both un-compressed and
+    ///    compacted/path-compressed Overlay images and falls back to an EMPTY overlay +
+    ///    `image_loaded = false` on a corrupt/absent image.
+    /// 2. Install it as the live overlay (`install_prebuilt_overlay_root`: selects
     ///    LockFreeOverlay + verifies the WAL Overlay regime — V-2; HARD-ERROR on a `false`
     ///    so a recovery-unsafe Owned-regime-under-overlay never engages).
-    /// 4. CLEAR the transient owned tree (F5's goal — owned not left materialized).
     ///
     /// `&mut self`. Returns the term count loaded from the dense image (NOT incl. the WAL
     /// tail — the caller replays the tail via `replay_records_lww_overlay` after).
@@ -64,8 +61,8 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     ) -> Result<(usize, bool)> {
         // **L3.1:** build the overlay root DIRECTLY from the dense image via the codec loader —
         // NO transient owned `CharTrieRoot`. (`load_root_from_disk` + `CharTrieRoot`/
-        // `CharTrieNodeInner` + `build_overlay_root_from_owned` + the char D1 readers survive only
-        // as the L3.1 differential-test ORACLE; all die at L3.3.) Preserves char's IN-LOADER
+        // `CharTrieNodeInner` + the owned→overlay converter + the char D1 readers were the L3.1
+        // differential-test ORACLE; all were deleted at L3.3.) Preserves char's IN-LOADER
         // corrupt-image fallback (`image_loaded = false` ⇒ the caller drains the WAL from
         // frontier 0, covering everything the absent/corrupt image does not).
         let (overlay_root, term_count, image_loaded) =

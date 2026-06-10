@@ -67,14 +67,12 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
     /// Returns all (term, value, arena_id) tuples matching the prefix.
     /// This enables page-locality optimized merge operations.
     ///
-    /// **M3 read-flip (C6 + the audit's §C.2 VALUE-CARRYING rule).** Under
-    /// `route_overlay()` this routes to the VALUE-CARRYING overlay enumerator
+    /// **C6 + the audit's §C.2 VALUE-CARRYING rule.** The overlay is the sole
+    /// representation, so this routes to the VALUE-CARRYING overlay enumerator
     /// [`overlay_iter_prefix_with_values`](Self::overlay_iter_prefix_with_values) —
-    /// NOT enumerate-overlay-then-value-owned (which would re-read each value from
-    /// the EMPTY owned tree). `arena_id` is `None` for every resident overlay term.
-    /// This is the value-carrying read chokepoint: `iter_prefix_with_values` funnels
-    /// through it, so routing it here routes that surface too. The owned arm below is
-    /// the verbatim pre-flip walk.
+    /// NOT enumerate-overlay-then-value-owned. `arena_id` is `None` for every resident
+    /// overlay term. This is the value-carrying read chokepoint: `iter_prefix_with_values`
+    /// funnels through it, so routing it here routes that surface too.
     pub fn iter_prefix_with_values_and_arena(
         &self,
         prefix: &[u8],

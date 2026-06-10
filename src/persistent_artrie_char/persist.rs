@@ -101,8 +101,8 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
         // [`OverlayCheckpoint::checkpoint_route_split`]; this method is a thin wrapper
         // calling it. The per-variant capture/publish seams delegate to the SAME char
         // inherent methods the prior inline body called, so it is byte-identical.
-        // INERT pre-flip: `route_overlay()` is false until S5-12 wires the production
-        // ctors, so the owned arm is byte-for-byte the prior body.
+        // The overlay is the sole representation (`route_overlay()` universally true),
+        // so the route-split always runs the overlay capture.
         <Self as crate::persistent_artrie_core::overlay::checkpoint::OverlayCheckpoint<
             crate::persistent_artrie_core::key_encoding::CharKey,
             V,
@@ -159,10 +159,8 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     /// is gone. For `V = ()` membership tries the overlay never holds a value.
     ///
     /// S5-9: un-gated to production (was `#[cfg(any(test, feature="bench-internals"))]`).
-    /// `checkpoint()` route-splits to this under `route_overlay()` so a post-flip
-    /// checkpoint captures the immutable overlay (the live data) instead of the empty
-    /// owned tree. Adds zero new `unsafe`. Inert until S5-12 flips the production
-    /// ctors (route_overlay() is false pre-flip).
+    /// `checkpoint()` route-splits to this (`route_overlay()` is universally true) so the
+    /// checkpoint captures the immutable overlay (the live data). Adds zero new `unsafe`.
     pub(crate) fn capture_snapshot_immutable(&self) -> Result<CheckpointSnapshot> {
         let mut eviction_registry = self
             .eviction_coordinator

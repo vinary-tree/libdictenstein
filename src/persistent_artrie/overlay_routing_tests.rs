@@ -83,9 +83,8 @@ fn m3_empty_term_routes_to_overlay() {
 /// **Durable writes round-trip through the ROUTED public writers.** Build via the
 /// public writers, then read back via the routed reads — and (the durability
 /// witness) reopen WITHOUT a checkpoint and confirm the writes survived via WAL
-/// replay. NB: reopen is owned-regime-reconstructed; we re-flip + reestablish is
-/// M4, so here we read the durable owned tree the WAL rebuilt (the overlay-write
-/// durability is the WAL record, which replays into the owned tree on reopen).
+/// replay. NB: the overlay is the sole representation, so the overlay-write
+/// durability is the WAL record, which replays into the overlay on reopen.
 #[test]
 fn m3_routed_writes_round_trip_and_survive_reopen() {
     let dir = scratch("byte-m3-write-roundtrip");
@@ -143,10 +142,9 @@ fn m3_routed_writes_round_trip_and_survive_reopen() {
         trie.sync().expect("sync");
     }
 
-    // Reopen WITHOUT a checkpoint — the durable WAL records replay (into the owned
-    // tree; the reopened trie is owned-regime since flip_to_overlay on a fresh WAL
-    // stamps Overlay, but the reopen rebuilds owned + would re-flip at M4). We read
-    // the surviving terms via the public reads.
+    // Reopen WITHOUT a checkpoint — the durable WAL records replay into the overlay
+    // on reopen (create stamps Overlay; the overlay is the sole representation, so
+    // there is no owned rebuild). We read the surviving terms via the public reads.
     let reopened = PersistentARTrie::<u64>::open(&path).expect("reopen");
     // The acked writes survived (alpha=11 after upsert, beta=25 after increment,
     // gamma=7, delta+epsilon removed).
@@ -173,7 +171,7 @@ fn m3_routed_writes_round_trip_and_survive_reopen() {
 /// routes the trie-to-trie merges (`merge_from`/`merge_replace`/`merge_from_batched`/
 /// `merge_from_batched_grouped`) and `begin_document` through the overlay, and F6 makes
 /// `compact` succeed under the overlay too (it sources the snapshot from the overlay and
-/// re-flips to preserve the regime). (L3.3b B6 deleted the owned-tree drains
+/// preserves the overlay regime). (L3.3b B6 deleted the owned-tree drains
 /// `merge_lockfree_{,values_}to_persistent` entirely, so their former reject assertions
 /// are gone with them.)
 #[test]
@@ -256,14 +254,14 @@ fn m3_overlay_routed_ops_succeed() {
     );
 
     // compact (file-replacer) now SUCCEEDS under the overlay (F6): it sources the
-    // snapshot from the overlay (enumeration AND values), rebuilds a dense owned image,
-    // and RE-FLIPS to preserve the regime — no longer a reject.
+    // snapshot from the overlay (enumeration AND values), rebuilds a dense on-disk
+    // image, and preserves the overlay regime — no longer a reject.
     let cfg = crate::persistent_artrie::CompactionConfig::default();
     trie.compact(cfg, |_| {})
         .expect("F6: compact succeeds under the overlay");
     assert!(
         trie.route_overlay(),
-        "F6: compact preserves the overlay regime (re-flip after reopen)"
+        "F6: compact preserves the overlay regime"
     );
 }
 

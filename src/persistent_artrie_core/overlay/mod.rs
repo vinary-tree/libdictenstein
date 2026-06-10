@@ -51,7 +51,8 @@ pub(crate) mod checkpoint;
 // loaders + registry plumbing + batch driver stay variant-specific.
 pub(crate) mod evict;
 // F5 (Slice 3): the generic, compression-aware dense→overlay builder
-// (`build_overlay_root_from_terms`) used by `LockFreeOverlay::build_overlay_root_from_owned`.
+// (`build_overlay_root_from_terms`) used by the F5 dense-image reopen loaders
+// (`load_overlay_root_compressed` / `load_overlay_char_root_compressed`).
 pub(crate) mod f5_build;
 // CX (task #43): the path-compressing overlay↔dense codec's shared, K-generic, PURE
 // no-truncation core (`chain_chunks`). DORMANT until L2/L3 wire the codec.

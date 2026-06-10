@@ -103,8 +103,8 @@ pub(crate) trait OverlayCheckpoint<K: KeyEncoding, V: DictionaryValue, S>:
     /// (eviction-aware when a coordinator is installed).
     ///
     /// Since L3.3 deleted the owned tree, `route_overlay()` is universally true (every
-    /// constructor installs the overlay; `overlay_eligible_v()` holds for all `V`), so
-    /// there is no owned-capture arm left — the RES-4 total-loss footgun it guarded
+    /// constructor installs the overlay for all `V`), so there is no owned-capture arm
+    /// left — the RES-4 total-loss footgun it guarded
     /// (silently checkpointing the empty owned tree while the overlay is the live write
     /// target) is structurally gone. The `debug_assert!` documents the invariant.
     ///

@@ -215,14 +215,14 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
         }
     }
 
-    /// **F5 — install a PRE-BUILT overlay root** (the dense→overlay walk-converter's
-    /// output) as the live lock-free overlay, instead of [`Self::install_overlay`]'s
-    /// EMPTY root. Sets `lockfree_root = Some(AtomicNodePtr::new(root))` + a fresh
-    /// empty lookup cache. Idempotent (only installs if the overlay is NOT already
-    /// enabled — a fresh reopen trie never has it set). Does NOT stamp the WAL regime
-    /// (the generic [`LockFreeOverlay::install_prebuilt_overlay_root`] does that, the
-    /// SAME way `flip_to_overlay` does, AFTER this seam runs). Does NOT touch the
-    /// owned tree (F5 adds ALONGSIDE; F7 deletes owned). NO new `unsafe`.
+    /// **F5 — install a PRE-BUILT overlay root** (the dense-image loader's output) as
+    /// the live lock-free overlay, instead of [`Self::install_overlay`]'s EMPTY root.
+    /// Sets `lockfree_root = Some(AtomicNodePtr::new(root))` + a fresh empty lookup
+    /// cache. Idempotent (only installs if the overlay is NOT already installed — a
+    /// fresh reopen trie never has it set). Does NOT stamp the WAL regime (the generic
+    /// [`LockFreeOverlay::install_prebuilt_overlay_root`] does that, the SAME way
+    /// `install_overlay_on_create` does, AFTER this seam runs). There is no owned tree
+    /// (it was deleted). NO new `unsafe`.
     pub(crate) fn install_prebuilt_overlay_root_inherent(
         &mut self,
         root: Arc<super::nodes::persistent_node::PersistentCharNode<V>>,
@@ -387,10 +387,9 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
 
     // **F7 — `reestablish_overlay_membership_after_recovery` + `reestablish_overlay_dispatch`
     // DELETED.** The per-term owned→overlay reestablish dispatch (membership/counter/value
-    // folds) is superseded by the KEPT structural converter
-    // `LockFreeOverlay::reestablish_overlay_from_owned` (`build_overlay_root_from_owned`),
-    // which the F7 reopen converter + the legacy-loader oracle now use. Same overlay,
-    // strictly more correct.
+    // folds) is gone along with the owned tree: reopen now builds the overlay DIRECTLY from
+    // the dense on-disk image via the F5 loader (`load_root_immutable` + the archive-aware
+    // WAL-tail applier). The owned-reading converters were all deleted.
 
     /// **Order-A durable** lock-free insert (Migration Phase E).
     ///
@@ -407,23 +406,17 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     /// Requires `install_overlay()` and a synchronous durability policy
     /// (`Immediate`/`GroupCommit`) so that "acknowledged ⇒ durable" holds.
     ///
-    /// # ⚠️ Safety boundary (pre-flip)
+    /// # Durability
     ///
-    /// This is **WAL-only-safe**: durability rests on WAL replay, so an
-    /// acknowledged write survives a crash/reopen with **no checkpoint**. It is
-    /// NOT yet safe to mix with the *owned-tree* [`checkpoint()`](Self::checkpoint):
-    /// that checkpoint captures the **owned** tree (these writes live in the
-    /// lock-free **overlay**, not the owned tree) and rotates the WAL by
-    /// `self.next_lsn` — so it could archive an overlay-write record that is not in
-    /// the checkpoint, losing it. The clean integration (checkpoint captures the
-    /// overlay via `capture_snapshot_immutable`, rotating by the committed
-    /// watermark) is the **Phase-E flip** — until then, use this in a WAL-only
-    /// configuration (no owned checkpoint between writes and recovery), or via the
-    /// overlay-as-default path once the flip lands. Increments are durable via the
-    /// existing merge path (`merge_lockfree_to_persistent` logs `BatchIncrement`):
-    /// per-op Order-A durable increment does not fit the *result-based* `Increment`
-    /// WAL record under lock-free CAS (the logged result can be invalidated by a
-    /// concurrent commit), so it is intentionally not provided.
+    /// This is **WAL-only-safe**: durability rests on WAL replay, so an acknowledged
+    /// write survives a crash/reopen with **no checkpoint**. It is ALSO safe through a
+    /// checkpoint: the overlay is the sole representation, so [`checkpoint()`](Self::checkpoint)
+    /// captures the live overlay (via `capture_snapshot_immutable`) and rotates the WAL
+    /// by the committed watermark — no acknowledged overlay write is lost. Increments
+    /// are durable via the value-CAS / merge path; a per-op Order-A durable increment
+    /// does not fit the *result-based* `Increment` WAL record under lock-free CAS (the
+    /// logged result can be invalidated by a concurrent commit), so it is intentionally
+    /// not provided here.
     ///
     /// Returns `Ok(true)` iff this call newly inserted the term.
     pub fn insert_cas_durable(&self, term: &str) -> Result<bool> {
@@ -1529,14 +1522,12 @@ impl<S: BlockStorage> super::PersistentARTrieChar<u64, S> {
     /// Requires `install_overlay()` and a synchronous durability policy
     /// (`Immediate`/`GroupCommit`), rejected EXACTLY as `insert_cas_durable` does.
     ///
-    /// # ⚠️ Safety boundary (pre-flip)
+    /// # Durability
     ///
-    /// WAL-only-safe, identical to `insert_cas_durable`: durability rests on WAL
-    /// replay (survives reopen with NO checkpoint), but it is NOT yet safe to mix
-    /// with the *owned-tree* checkpoint (which captures the owned tree, not the
-    /// overlay, and rotates the WAL by `next_lsn`). Use in a WAL-only configuration
-    /// until the Phase-E flip routes checkpoints through `capture_snapshot_immutable`
-    /// reclaiming by the committed watermark.
+    /// Identical to `insert_cas_durable`: durability rests on WAL replay (survives
+    /// reopen with NO checkpoint), AND it is safe through a checkpoint — the overlay is
+    /// the sole representation, so the checkpoint captures the live overlay (via
+    /// `capture_snapshot_immutable`) and reclaims by the committed watermark.
     ///
     /// Returns the new accumulated count on success.
     pub fn try_increment_cas_durable(&self, key: &str, delta: u64) -> Result<u64> {
@@ -1630,9 +1621,8 @@ impl<S: BlockStorage> super::PersistentARTrieChar<u64, S> {
     }
 
     // **F7 — `reestablish_overlay_after_recovery` (u64 inherent counter fold) DELETED.**
-    // Superseded by the KEPT structural converter
-    // `LockFreeOverlay::reestablish_overlay_from_owned` (`build_overlay_root_from_owned`,
-    // value-carrying for u64). Its only caller was the now-deleted
+    // Gone along with the owned tree: reopen builds the overlay DIRECTLY from the dense
+    // on-disk image via the F5 loader. Its only caller was the now-deleted
     // `reestablish_overlay_dispatch`.
 
     pub(super) fn lockfree_increment_overflow_error(

@@ -28,13 +28,14 @@ use super::DEFAULT_CHAR_BUFFER_POOL_SIZE;
 impl<V: DictionaryValue>
     super::PersistentARTrieChar<V, crate::persistent_artrie::IoUringDiskManager>
 {
-    /// **S5-12 EDIT 1 (io_uring twin of the mmap `install_overlay_on_create`).** A freshly
-    /// created io_uring trie flips to the lock-free overlay for `V ∈ {(), u64}`; a
-    /// strict NO-OP for arbitrary `V`. The mmap `install_overlay_on_create` lives in the
+    /// **io_uring twin of the mmap `install_overlay_on_create`.** A freshly created
+    /// io_uring trie builds the lock-free overlay directly; the overlay is the SOLE
+    /// representation for ALL `V`. The mmap `install_overlay_on_create` lives in the
     /// default-`S` (`MmapDiskManager`) impl block and is not visible here, so the
-    /// `IoUringDiskManager` create path needs its own. `flip_to_overlay` /
-    /// `overlay_eligible_v` are on the `<V, S: BlockStorage>` block (visible for any
-    /// `S`). Fresh WAL ⇒ the Overlay stamp MUST take; `!took` ⇒ hard error (V-2).
+    /// `IoUringDiskManager` create path needs its own. The shared
+    /// `install_overlay_on_create` / `install_overlay` defaults are on the
+    /// `<V, S: BlockStorage>` `LockFreeOverlay` block (visible for any `S`). Fresh WAL
+    /// ⇒ the Overlay stamp MUST take; a failure to engage ⇒ hard error (V-2).
     fn install_overlay_on_create(self) -> Result<Self> {
         <Self as crate::persistent_artrie_core::overlay::flip::LockFreeOverlay<
             crate::persistent_artrie_core::key_encoding::CharKey,

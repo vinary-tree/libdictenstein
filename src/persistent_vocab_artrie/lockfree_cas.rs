@@ -1,6 +1,7 @@
 //! Lock-free CAS path helpers for `PersistentVocabARTrie` — the OVERLAY write primitives (V6).
 //!
-//! The public toggle (`install_overlay` is now `pub(crate)`, called only by the flip seam) +
+//! `install_overlay` is now `pub(crate)` (the overlay-install primitive, called by the ctors via
+//! `install_overlay_on_create`) +
 //! the owned `insert_cas`/`is_lockfree_enabled`/`merge_lockfree_to_persistent` are deleted. The
 //! immutable-trie CAS walk (`try_insert_lockfree_path` / `insert_lockfree_recursive` /
 //! `create_lockfree_path` / `find_in_lockfree_trie`) is RETAINED — it is the structural-sharing
@@ -27,9 +28,9 @@ impl<S: crate::persistent_artrie::block_storage::BlockStorage>
 {
     /// Install the lock-free overlay infrastructure (root + cache + reverse map).
     ///
-    /// `pub(crate)`: the ONLY caller is the flip seam (`flip_to_overlay` →
+    /// `pub(crate)`: the ONLY caller is the ctor seam (`install_overlay_on_create` →
     /// `LockFreeOverlay::install_overlay`), which every production ctor runs at construction.
-    /// Returns `true` if newly enabled, `false` if already enabled.
+    /// Returns `true` if newly installed, `false` if already installed.
     pub(crate) fn install_overlay(&mut self) -> bool {
         if self.lockfree_root.is_some() {
             return false;

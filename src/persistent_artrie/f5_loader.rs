@@ -7,8 +7,8 @@
 //! [`PersistentARTrie::enumerate_terms_from_disk`] + the proven iterative
 //! [`build_overlay_root_from_terms`](crate::persistent_artrie_core::overlay::f5_build::build_overlay_root_from_terms)
 //! — **NO transient owned `TrieRoot`**. `self.root` is never materialized; this is the
-//! "literal-zero-owned" reopen the campaign targets, and it lets L3.3 delete
-//! `load_root_from_disk_with_arena` + `TrieRoot` + `build_overlay_root_from_owned` + the D1
+//! "literal-zero-owned" reopen the campaign targets, and it let L3.3 delete
+//! `load_root_from_disk_with_arena` + `TrieRoot` + the owned converters + the D1
 //! owned readers outright.
 //!
 //! # The single dense-image walk (all three on-disk formats)
@@ -24,10 +24,10 @@
 //!   reopened legacy file auto-rewrites to the new format on its next checkpoint.
 //!
 //! A final node / bucket entry yields its `read_node_value`-or-`None` ONCE, so the membership∪
-//! value union is intrinsic. **Equivalence to the proven path is the L3.1 GOLD-STANDARD GATE**
-//! (`l31_differential_tests`): this loader produces a byte-exact overlay vs
-//! `build_overlay_root_from_owned(load_root_from_disk_with_arena(image))` over every
-//! format × `V` × shape — run NOW while the oracle still exists (it retires at L3.3).
+//! value union is intrinsic. **Equivalence to the proven path was the L3.1 GOLD-STANDARD GATE**
+//! (`l31_differential_tests`): this loader produced a byte-exact overlay vs the owned-scratch
+//! oracle (`load_root_from_disk_with_arena` + the owned→overlay converter) over every
+//! format × `V` × shape — verified BEFORE L3.3 retired that oracle.
 
 use std::sync::Arc;
 
@@ -61,8 +61,8 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrie<V, S> {
         // corrupt/absent image yields an EMPTY overlay + `image_loaded = false` (the caller then
         // drains the WAL from frontier 0, recovering everything the absent image fails to cover)
         // rather than `?`-aborting `open()`. Returns `(term_count, image_loaded)` — byte twin of
-        // char's signature. (The owned decoder `load_root_from_disk_with_arena` + `TrieRoot` die
-        // at L3.3c-C2.)
+        // char's signature. (The owned decoder `load_root_from_disk_with_arena` + `TrieRoot` were
+        // deleted at L3.3c-C2.)
         let (overlay_root, term_count, image_loaded) =
             self.load_overlay_root_compressed(root_ptr)?;
 
@@ -95,10 +95,10 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrie<V, S> {
     /// walk only `as_in_mem()`) require — a lazily-`OnDisk` reopened root would silently vanish
     /// from the first post-reopen checkpoint.
     ///
-    /// Equivalence anchor (the L3.1 differential gate): for every image this produces the SAME
-    /// overlay as `build_overlay_root_from_owned(load_root_from_disk_with_arena(image))` (the
-    /// owned-scratch oracle), proven over format × `V` × {valued, term-only, "" valued, ""
-    /// membership} × deep keys BEFORE this becomes the only reopen path.
+    /// Equivalence anchor (the L3.1 differential gate): for every image this produced the SAME
+    /// overlay as the now-retired owned-scratch oracle (`load_root_from_disk_with_arena` + the
+    /// owned→overlay converter), proven over format × `V` × {valued, term-only, "" valued, ""
+    /// membership} × deep keys BEFORE this became the only reopen path.
     pub(crate) fn load_overlay_root_compressed(
         &self,
         root_ptr: u64,

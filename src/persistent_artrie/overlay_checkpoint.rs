@@ -1053,14 +1053,11 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
     /// **INVARIANT (data-loss-critical).** The emitted image uses **node-header prefix
     /// compression** (`header.prefix_len > 0`). It MUST only ever be read back via a
     /// prefix-AWARE loader: the overlay fault loader [`Self::load_overlay_node_from_disk`], or
-    /// the F5 reopen path (`load_root_immutable` → `build_overlay_root_from_owned`, whose
-    /// `unrouted_collect_terms_*_under_child` collectors fold `node.prefix()`). The OTHER owned
-    /// readers (`arena_iter::collect_terms_*`, `query_impl`, `cursor_iter`, `zipper`) are
-    /// prefix-BLIND (the byte owned write path never sets `prefix_len > 0`, so they were never
-    /// taught to expand it) and would SILENTLY TRUNCATE every compressed term. They are safe
-    /// today only because a CX image is always Overlay-regime + eligible-`V`, so it never
-    /// reaches an owned-routed (`route_overlay() == false`) read. Do NOT route a CX image
-    /// through them without first making them prefix-aware.
+    /// the F5 reopen path (`load_root_immutable` → `load_overlay_root_compressed`, whose
+    /// `enumerate_terms_from_disk` walk folds `node.prefix()` into the path). The
+    /// now-deleted owned readers were prefix-BLIND and would have SILENTLY TRUNCATED every
+    /// compressed term; the overlay loaders are the only readers, and both are prefix-aware,
+    /// so a CX image is always read losslessly.
     pub(crate) fn serialize_overlay_snapshot_compressed(
         &self,
         root: &std::sync::Arc<OverlayNode<ByteKey, V>>,

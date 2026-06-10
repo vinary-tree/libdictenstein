@@ -90,9 +90,9 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
     /// records — all three formats: un-compressed overlay, CX node-prefix-compressed, and legacy
     /// owned bucket-suffix) DIRECTLY into a `(term-units → Option<V>)` map + the empty term "",
     /// WITHOUT materializing a `TrieRoot`. This is the overlay-codec replacement for the
-    /// `load_root_from_disk_with_arena` + `build_overlay_root_from_owned` owned-scratch pair: fed
-    /// to `build_overlay_root_from_terms` it yields the resident overlay root directly, and (at
-    /// L3.3) lets the owned decoder + `TrieRoot` + the D1 owned readers be deleted outright.
+    /// (now-deleted) `load_root_from_disk_with_arena` + owned→overlay-converter owned-scratch
+    /// pair: fed to `build_overlay_root_from_terms` it yields the resident overlay root directly,
+    /// and let L3.3 delete the owned decoder + `TrieRoot` + the D1 owned readers outright.
     ///
     /// ONE eager DFS over the arena records (explicit work-stack — stack-safe at depth). Each ART
     /// node folds its own compressed `prefix` into the accumulated path BEFORE recording finality /

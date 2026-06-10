@@ -261,16 +261,16 @@ pub fn reconcile_lww(
     recovered_ops: Vec<(Lsn, WalRecord)>,
     loaded_from_disk: bool,
     checkpoint_lsn: Lsn,
-    // D2.8 §1.5: the regime of the FILE these records came from. `Owned` (the
-    // current, pre-flip value for every base/vocab/char file) keeps unranked
-    // records in LSN order (unchanged behavior). `Overlay` drops unranked records
-    // (two-append-window orphans). INERT until the flip writes an Overlay file.
+    // D2.8 §1.5: the regime of the FILE these records came from. `Owned` (only a
+    // legacy file now — every fresh file is Overlay-regime) keeps unranked records
+    // in LSN order. `Overlay` (the current default) drops unranked records
+    // (two-append-window orphans).
     rank_regime: RankRegime,
 ) -> Vec<RecoveredOperation> {
     // Single-regime entry point: every record came from ONE file, so the regime is
     // constant. Delegates to the per-record-regime core (A2 fix, S5 v4 §1.5); the
-    // result is byte-for-byte the pre-A2 single-regime body. INERT until the flip
-    // writes an Overlay file.
+    // result is byte-for-byte the pre-A2 single-regime body for an Owned (legacy)
+    // file.
     reconcile_lww_with_regime(recovered_ops, loaded_from_disk, checkpoint_lsn, move |_| {
         rank_regime
     })
@@ -320,8 +320,8 @@ pub fn reconcile_lww_with_regime<R: Fn(Lsn) -> RankRegime>(
         }
         // Regime-gated drop (D2.8 §1.5). RANKED ⇒ a confirmed (acked) op → keep at
         // its commit-generation. UNRANKED ⇒ Owned/legacy file: KEEP @ lsn (in-order
-        // replay; the pre-fix `unwrap_or(lsn)` behavior — INERT while every file is
-        // Owned); Overlay file: DROP (a never-acked two-append-window orphan — ack
+        // replay; the pre-fix `unwrap_or(lsn)` behavior, for a legacy Owned file);
+        // Overlay file: DROP (a never-acked two-append-window orphan — ack
         // waits for the CommitRank, so dropping it loses no acked write and
         // resurrects nothing). `regime_of(lsn)` is the per-segment regime so a mixed
         // Owned+Overlay archive rebuild applies each segment's rule (A2 fix).
@@ -1548,8 +1548,8 @@ where
 /// applying, so an Overlay segment's never-acked two-append-window orphans are
 /// DROPPED instead of resurrected on a post-flip corruption rebuild. For an
 /// all-Owned segment set the applied state is identical to the raw in-order replay
-/// of [`rebuild_from_wal_segments`] (INERT pre-flip). Durable-prefix semantics are
-/// preserved: collection stops at the first unreadable segment / corrupt record.
+/// of [`rebuild_from_wal_segments`] (the legacy-archive case). Durable-prefix semantics
+/// are preserved: collection stops at the first unreadable segment / corrupt record.
 ///
 /// The caller deletes the base image before invoking, so reconciliation runs with
 /// `loaded_from_disk = false` and `checkpoint_lsn = 0` (no folded prefix to skip).
@@ -1560,9 +1560,9 @@ pub fn rebuild_from_wal_segments_regime_aware<F>(
 where
     F: FnMut(RecoveredOperation) -> std::result::Result<(), String>,
 {
-    // Fast path (INERT pre-flip): if NO segment is Overlay regime, the regime-aware
-    // reconcile would keep every record in LSN order — byte-for-byte the raw
-    // streaming replay. Delegate to it so the durable-prefix-stop + records_replayed
+    // Fast path (legacy all-Owned archives): if NO segment is Overlay regime, the
+    // regime-aware reconcile would keep every record in LSN order — byte-for-byte the
+    // raw streaming replay. Delegate to it so the durable-prefix-stop + records_replayed
     // / terms_recovered stat semantics are EXACTLY preserved (every existing Owned
     // archive test). The collect-reconcile path below runs ONLY for Overlay archives.
     let any_overlay = segments.iter().any(|seg| {

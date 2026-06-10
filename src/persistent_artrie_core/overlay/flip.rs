@@ -1,37 +1,33 @@
-//! `LockFreeOverlay<K, V, S>` — the SHARED GENERIC lock-free-overlay flip
-//! (route + read-engine + flip + reestablish), extracted token-for-token from the
-//! char variant so byte can reuse it rather than copy-paste
-//! (`docs/design/overlay-flip-genericization.md` §2).
+//! `LockFreeOverlay<K, V, S>` — the SHARED GENERIC lock-free-overlay machinery
+//! (route + read-engine + overlay install + reopen-into-overlay), extracted
+//! token-for-token from the char variant so byte can reuse it rather than
+//! copy-paste (`docs/design/overlay-flip-genericization.md` §2).
 //!
 //! # What this trait is
 //!
 //! A **seam trait with default-provided generic methods + variant-supplied seam
 //! methods** (design §2). Each persistent ARTrie variant writes ONE thin `impl`
-//! supplying only the seam (the owned-tree readers, the overlay publishers, the
+//! supplying only the seam (the overlay readers, the overlay publishers, the
 //! WAL/field accessors, the per-variant counter monomorph); the data-loss-
 //! critical generic logic — the route predicate, the overlay-read DFS walks in
-//! `K::Unit` space, `flip_to_overlay` (incl. the WAL-regime stamp), and the
-//! `reestablish` streaming-fold (the clear-owned-LAST control flow) — lives here
+//! `K::Unit` space, `install_overlay_on_create` (incl. the WAL-regime stamp), and
+//! the dense-image reopen loader (the WAL-tail-into-overlay applier) — lives here
 //! ONCE as default methods.
 //!
 //! Not a blanket impl (three distinct trie structs, no single type to blanket);
-//! not a wrapper struct (reestablish mutates `&mut self` trie state while
-//! reading the owned tree via `&self`, which a wrapper cannot express without a
-//! lifetime mess across the `&self`-iter-before-`&mut`-clear ordering).
-//! Coherence holds (trait in core, impls in variant modules, one crate — same as
-//! the existing `TrieRoot for OverlayNode` blanket).
+//! not a wrapper struct (the reopen loader mutates `&mut self` trie state across the
+//! install-then-drain ordering, which a wrapper cannot express without a lifetime
+//! mess). Coherence holds (trait in core, impls in variant modules, one crate —
+//! same as the existing `TrieRoot for OverlayNode` blanket).
 //!
-//! # D1 — the #1 data-loss risk (READ THIS BEFORE EDITING A SEAM IMPL)
+//! # The overlay is the SOLE representation
 //!
-//! The `owned_*` seam methods MUST read the OWNED tree directly. The structural
-//! converter `build_overlay_root_from_owned` (used by `reestablish_overlay_from_owned`
-//! and the F7 reopen converter) reads them while `route_overlay()` may ALREADY be TRUE
-//! (the ctor flips before reestablishing), so routing an owned read through the public
-//! `iter_prefix`/`get`/`contains`/`get_value` would read the EMPTY overlay, publish
-//! nothing, then clear the owned tree LAST = TOTAL IRREVERSIBLE LOSS. Each `owned_*`
-//! seam carries a `# Safety (data-loss)` contract; a CI grep gate (contract §6(a)) FAILS
-//! if any `owned_*` seam body references
-//! `route_overlay`/`iter_prefix(`/`self.get(`/`get_value(`/`contains(`.
+//! The owned tree was deleted (C2/V6), so EVERY constructor builds the overlay
+//! directly via [`LockFreeOverlay::install_overlay_on_create`] (no "enable"/"flip"
+//! step, no eligibility gate). `route_overlay()` is therefore universally `true` in
+//! production. Reopen builds the overlay DIRECTLY from the dense on-disk image (the
+//! F5 loader) and drains the WAL tail INTO it; a legacy Owned-regime file is
+//! converted in place by [`LockFreeOverlay::convert_owned_to_overlay_on_reopen`].
 //!
 //! # NON-FAULTING read engine — DO NOT add disk fault-in
 //!
@@ -153,7 +149,7 @@ pub mod f7_failpoint {
 /// `Some(())` re-wrapped as `V` iff `V == ()`, else `None`.
 ///
 /// Membership finals (`V = ()`) carry `value: None` (`OverlayNode::as_final`
-/// leaves the value unset), but the owned-tree semantics give every membership
+/// leaves the value unset), but membership semantics give every membership
 /// term the value `()`. So when iterating values for the `V = ()` monomorph we
 /// SYNTHESIZE `()` for each final via a SAFE `Any` re-wrap (the same zero-`unsafe`
 /// pattern as the variant's `lockfree_value_route`). Generic over `K` is
@@ -190,8 +186,8 @@ pub(crate) enum RootPublishOutcome {
 pub(crate) trait LockFreeOverlay<K: KeyEncoding, V: DictionaryValue, S>:
     OverlayEvictable<K, V, S> + Sized + 'static
 {
-    /// The per-variant counter monomorph (`u64` for char, `i64` for byte). THE
-    /// divergence that makes the value-route a seam, not a blanket. `Copy` so the
+    /// The per-variant counter monomorph (`u64` for BOTH char and byte now). The value-route is a
+    /// per-variant seam (the `Any`-downcast to the `<u64, S>` monomorph), not a blanket. `Copy` so the
     /// publisher/getter seams can pass it by value. `Serialize + DeserializeOwned` so
     /// the F5 WAL-tail applier can re-encode a recovered absolute-`i64` counter as the
     /// typed `CounterValue` via the shared `counter_codec` (`counter_leaf_to_i128` →
@@ -199,8 +195,8 @@ pub(crate) trait LockFreeOverlay<K: KeyEncoding, V: DictionaryValue, S>:
     type CounterValue: 'static + Copy + serde::Serialize + serde::de::DeserializeOwned;
 
     // ========================================================================
-    // REQUIRED SEAM (variant provides) — small accessors + the un-routed owned
-    // readers + the overlay publishers.
+    // REQUIRED SEAM (variant provides) — small accessors + the overlay readers +
+    // the overlay publishers.
     // ========================================================================
 
     /// The lock-free overlay's atomic root pointer, or `None` if the overlay is
@@ -301,18 +297,18 @@ pub(crate) trait LockFreeOverlay<K: KeyEncoding, V: DictionaryValue, S>:
     fn overlay_try_remove_path(&self, units: &[K::Unit]);
 
     // ========================================================================
-    // DEFAULT-PROVIDED GENERIC METHODS — DO NOT OVERRIDE (they encode D1 +
-    // clear-owned-LAST + the non-faulting resident-finals walks).
+    // DEFAULT-PROVIDED GENERIC METHODS — DO NOT OVERRIDE (they encode the
+    // non-faulting resident-finals walks + the Order-A durable publish ordering).
     // ========================================================================
 
     /// **L3.3 — the production router predicate: overlay-routed iff the overlay is installed.**
     ///
     /// `true` iff the lock-free overlay is live (`install_overlay()` has run ⇒ `lockfree_root`
-    /// is `Some`). Since L3.3 deleted `kill_switch_to_owned` (the only writer of `OwnedTree`
-    /// mode) and the `OverlayWriteMode` enum, an installed `lockfree_root` ALWAYS implies overlay
-    /// routing — so the prior `&& uses_overlay()` conjunct is redundant. Every constructor installs
-    /// the overlay (`overlay_eligible_v() == true` for all `V`; `::new()` calls `install_overlay`),
-    /// so this is universally `true` in production — the owned tree is gone.
+    /// is `Some`). Since L3.3 deleted `kill_switch_to_owned` (the only writer of the prior
+    /// owned mode) and the `OverlayWriteMode` enum, an installed `lockfree_root` ALWAYS implies
+    /// overlay routing — so the prior `&& uses_overlay()` conjunct is redundant. Every constructor
+    /// installs the overlay for all `V` (`::new()` calls `install_overlay`), so this is universally
+    /// `true` in production — the owned tree is gone.
     #[inline]
     fn route_overlay(&self) -> bool {
         self.lockfree_root().is_some()
@@ -498,7 +494,7 @@ pub(crate) trait LockFreeOverlay<K: KeyEncoding, V: DictionaryValue, S>:
         }
     }
 
-    // ===== flip / kill-switch =====
+    // ===== overlay install (on create) =====
 
     /// Build the lock-free overlay on a freshly-created trie and return it. The overlay is the SOLE
     /// representation (the owned tree was deleted at C2/V6), so construction installs it DIRECTLY —
@@ -530,21 +526,15 @@ pub(crate) trait LockFreeOverlay<K: KeyEncoding, V: DictionaryValue, S>:
         Ok(self)
     }
 
-    // ===== reestablish =====
+    // ===== reopen-into-overlay =====
     //
-    // **F7 — the three per-term reestablish folds (`reestablish_overlay_membership` /
-    // `reestablish_overlay_counter` / `reestablish_overlay_value`) and the
-    // `value_as_counter` helper they used were DELETED.** They are superseded by the KEPT
-    // STRUCTURAL converter [`Self::reestablish_overlay_from_owned`] (which calls
-    // [`Self::build_overlay_root_from_owned`]): it reproduces the SAME overlay (same
-    // term-set + values, incl. counters > i64::MAX and the empty term "") via the SAME D1
-    // un-routed `owned_*` seams, force-replaces the root, and clears owned LAST (RES-7) —
-    // and is strictly MORE correct (it keeps a term-only counter member the per-term
-    // counter fold dropped). The F7 reopen converter, the legacy-loader oracle, the
-    // recovery-family ctors, and byte compaction all route through
-    // `reestablish_overlay_from_owned` / `build_overlay_root_from_owned` now. The
-    // membership-∪-value union the value fold pioneered (the "flag-2 fix") lives on in
-    // `build_overlay_root_from_owned`.
+    // The owned tree was deleted (C2/V6), so the owned-reading reestablish converters
+    // (the per-term `reestablish_overlay_*` folds, the structural
+    // `reestablish_overlay_from_owned` / `build_overlay_root_from_owned`) are all GONE.
+    // Reopen now builds the overlay DIRECTLY from the dense image via the F5 loader
+    // ([`Self::load_root_immutable_seam`] + the archive-aware
+    // [`Self::reconcile_and_drain_overlay`] WAL-tail applier); a legacy Owned-regime
+    // file is converted in place by [`Self::convert_owned_to_overlay_on_reopen`].
 
     /// Re-wrap a `CounterValue` as `V` via a SAFE `Any` downcast iff `V ==
     /// CounterValue`, else `None`. Re-wraps an overlay counter read into the public `V`
@@ -562,7 +552,8 @@ pub(crate) trait LockFreeOverlay<K: KeyEncoding, V: DictionaryValue, S>:
     ///   membership), re-wrapped as `V`;
     /// - `Some(None)` — handled by the overlay, term absent;
     /// - `None` — `V` is neither `()` nor `CounterValue` (arbitrary `V`); the
-    ///   caller runs its owned-tree body (unreachable under `route_overlay()`).
+    ///   arbitrary-`V` arm below handles it directly off the overlay, so in practice
+    ///   this driver always returns `Some(_)`.
     ///
     /// The per-variant `overlay_get_value` skin delegates here; the only seam it
     /// uses are [`Self::overlay_counter_get`] / [`Self::overlay_contains`], so the
@@ -586,9 +577,8 @@ pub(crate) trait LockFreeOverlay<K: KeyEncoding, V: DictionaryValue, S>:
         }
         // G5/F1: ARBITRARY `V` — read the leaf's `Option<V>` directly (non-faulting,
         // exact: overlay finals are never evicted in production, §2.4/RT5). `Some(_)`
-        // tells the caller the overlay handled it (NEVER fall through to owned — the
-        // NH1 read-side: a fall-through owned read post-flip sees the empty owned
-        // tree). Unreachable until the F2 eligibility flip (route_overlay() false).
+        // tells the caller the overlay handled it (the overlay is the sole
+        // representation — there is no owned tree to fall through to).
         Some(self.overlay_value_get(units))
     }
 
@@ -718,8 +708,8 @@ pub(crate) trait LockFreeOverlay<K: KeyEncoding, V: DictionaryValue, S>:
     // ========================================================================
     // F5 — direct dense→overlay reopen loader: the GENERIC pieces (the
     // WAL-tail-into-overlay applier + the no-WAL overlay remove). The per-variant
-    // walk-converter (`build_overlay_root_from_owned` / `load_root_immutable`) lives
-    // in each variant module (it walks the variant's owned `CharTrieRoot`/`TrieRoot`)
+    // dense-image loader (`load_root_immutable` / `load_root_immutable_seam`) lives
+    // in each variant module (it builds the overlay root from the dense on-disk image)
     // and installs the pre-built root via `install_prebuilt_overlay_root` below.
     // See `docs/design/slice3-f5-loader-impl.md`.
     // ========================================================================
@@ -728,11 +718,10 @@ pub(crate) trait LockFreeOverlay<K: KeyEncoding, V: DictionaryValue, S>:
     /// Overlay-regime branch uses the F5 direct dense→overlay loader
     /// (`load_root_immutable` + the archive-aware [`Self::reconcile_and_drain_overlay`]):
     /// reopen builds the lock-free overlay DIRECTLY from the dense image + drains the WAL
-    /// tail (active + archived segments, FIX B) INTO the overlay, never materializing the
-    /// owned tree into `self.root` (the F7 prerequisite). When `false` (the legacy oracle
-    /// state, used by `open_with_legacy_loader`), reopen uses the LEGACY path (owned
-    /// `load_root_from_disk` + owned `replay_records_lww` + `flip` +
-    /// `reestablish_overlay_from_owned`). The
+    /// tail (active + archived segments, FIX B) INTO the overlay (the F7 prerequisite —
+    /// the owned tree was deleted, so nothing is ever materialized into `self.root`).
+    /// `false` selects the legacy oracle path (`open_with_legacy_loader`); the F5 loader
+    /// is the only live reopen loader now that the owned-reading converters are gone. The
     /// `tests/persistent_f5_both_loaders_correspondence.rs` `open_with_f5_loader` ctors
     /// drive F5 regardless of this gate, so they stay a stable oracle either way.
     ///
@@ -742,29 +731,27 @@ pub(crate) trait LockFreeOverlay<K: KeyEncoding, V: DictionaryValue, S>:
     /// reopen-side only).
     const USE_F5_REOPEN_LOADER: bool = true;
 
-    /// **F5 — install a PRE-BUILT overlay root** (the walk-converter's output) as the
-    /// live lock-free overlay, instead of `install_overlay`'s EMPTY root. Sets
+    /// **F5 — install a PRE-BUILT overlay root** (the dense-image loader's output) as
+    /// the live lock-free overlay, instead of `install_overlay`'s EMPTY root. Sets
     /// `lockfree_root = Some(AtomicNodePtr::new(root))` + a fresh lookup cache via the
-    /// variant seam [`Self::install_prebuilt_overlay_root_seam`], then selects
-    /// `LockFreeOverlay` and stamps/verifies the WAL Overlay regime EXACTLY as
-    /// [`Self::flip_to_overlay`] does (re-using its WAL-regime stamp logic), returning
-    /// the resulting `route_overlay() && stamped_overlay`. Does NOT touch the owned
-    /// tree (F5 adds ALONGSIDE; F7 deletes owned).
+    /// variant seam [`Self::install_prebuilt_overlay_root_seam`], then stamps/verifies
+    /// the WAL Overlay regime EXACTLY as [`Self::install_overlay_on_create`] does
+    /// (re-using its WAL-regime stamp logic), returning the resulting
+    /// `route_overlay() && stamped_overlay`. There is no owned tree (it was deleted).
     ///
-    /// **V-1 gate:** a NO-OP returning `false` for `V ∉ {(), CounterValue}`? No — F2
-    /// made ALL `V` overlay-eligible, so this engages for any `V` (the same as
-    /// `flip_to_overlay`). It mirrors `flip_to_overlay`'s V-2 stamp re-check so an
-    /// Owned-regime WAL under overlay routing (which would KEEP unranked orphans on a
-    /// later reopen) is surfaced as `false` (the caller hard-errors).
+    /// This engages for ANY `V` (the overlay is the sole representation). It mirrors
+    /// `install_overlay_on_create`'s V-2 stamp re-check so an Owned-regime WAL under
+    /// overlay routing (which would KEEP unranked orphans on a later reopen) is
+    /// surfaced as `false` (the caller hard-errors).
     fn install_prebuilt_overlay_root(&mut self, root: Arc<OverlayNode<K, V>>) -> bool {
         // Install the pre-built root + fresh cache (variant seam — it owns the
         // concrete `AtomicNodePtr`/cache field types). Idempotent guard inside the
         // seam: it only installs when `lockfree_root` is not already set (a fresh
         // reopen trie never has it set).
         self.install_prebuilt_overlay_root_seam(root);
-        // Mirror `flip_to_overlay`'s empty-WAL restamp guard: F5 runs on an
+        // Mirror `install_overlay_on_create`'s empty-WAL restamp guard: F5 runs on an
         // already-Overlay (non-empty) WAL, so the stamp is normally already Overlay;
-        // restamp only on the fresh-WAL edge case (defensive, matches flip).
+        // restamp only on the fresh-WAL edge case (defensive).
         if self.wal_current_lsn() == Some(1) && !self.wal_is_overlay_regime() {
             self.wal_stamp_overlay_regime();
         }
@@ -807,9 +794,9 @@ pub(crate) trait LockFreeOverlay<K: KeyEncoding, V: DictionaryValue, S>:
     }
 
     /// **F5 (THE data-loss-critical path) — apply ONE reconciled
-    /// [`RecoveredOperation`] INTO THE OVERLAY** (no WAL), via the SAME no-WAL
-    /// publishers [`Self::build_overlay_root_from_owned`] uses. The overlay twin of the
-    /// owned `apply_*_recovered_operation_no_wal`: where the owned applier mutates
+    /// [`RecoveredOperation`] INTO THE OVERLAY** (no WAL), via the same no-WAL overlay
+    /// publishers the F5 loader uses. The overlay twin of the (now-deleted) owned
+    /// `apply_*_recovered_operation_no_wal`: where the owned applier mutated
     /// `self.root`, this publishes into the live lock-free overlay (which already
     /// holds the dense/checkpoint state from `load_root_immutable`). Returns `true`
     /// iff the op was applied (a value-deserialize failure logs + returns `false`,

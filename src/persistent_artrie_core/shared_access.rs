@@ -45,9 +45,10 @@ use std::sync::atomic::{AtomicU8, Ordering};
 /// A small `Copy` enum that round-trips through a single `u8` discriminant, so it
 /// can live in an [`AtomicEnumCell`] for cheap lock-free `&self` reads/writes.
 ///
-/// Implemented for `OverlayWriteMode` (the hot `route_overlay()` predicate) and
-/// `DurabilityPolicy` (read on every durable write) — the two F4 Tier-2 fields
-/// that are plain `Copy` enums rather than `Option<Arc<…>>` handles.
+/// Implemented for `DurabilityPolicy` (read on every durable write) — an F4 Tier-2
+/// field that is a plain `Copy` enum rather than an `Option<Arc<…>>` handle. (The
+/// `OverlayWriteMode` impl was removed with the deleted enum; the overlay is now the
+/// sole representation, so `route_overlay()` reads `lockfree_root.is_some()` directly.)
 pub trait U8Enum: Copy {
     /// Stable `u8` discriminant for this value.
     fn as_u8(self) -> u8;

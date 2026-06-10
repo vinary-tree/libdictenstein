@@ -154,8 +154,8 @@ pub struct PersistentVocabARTrie<S: BlockStorage = MmapDiskManager> {
     // === Lock-free overlay (the SOLE representation — V6) ===
     /// The lock-free overlay root (`PersistentCharNode` with structural sharing). The insert
     /// path (`insert_overlay`) CASes new immutable roots onto it; reads (`get_index_lockfree`)
-    /// walk it. Installed at construction by `flip_to_overlay` (every ctor flips); `Some` in
-    /// production. The owned tree is deleted.
+    /// walk it. Installed at construction by `install_overlay_on_create` (every ctor builds it);
+    /// `Some` in production. The owned tree is deleted.
     ///
     /// G1: the char overlay node is generic over its value type; the vocab
     /// overlay instantiates it at `V = u64` (the vocabulary index).
@@ -168,7 +168,7 @@ pub struct PersistentVocabARTrie<S: BlockStorage = MmapDiskManager> {
     pub(super) cas_retries: AtomicU64,
 
     // === Order-A durable substrate (V1.1 — the overlay flip). Vocab lacked these (unlike
-    // byte/char, which carried them pre-flip). INERT until the overlay becomes the default. ===
+    // byte/char, which carried them). They are LIVE: the overlay is the sole representation, built at construction. ===
     /// Durable global commit-sequence counter — the CommitRank generation `reconcile_lww`
     /// orders replay by (NOT the per-node `root.version()`). Claimed per durable insert via
     /// `claim_commit_seq`; restart-seeded from `max(wal commit_seq_floor, max replayed

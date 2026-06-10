@@ -181,12 +181,12 @@ pub mod wal_helpers;
 pub(crate) mod committed_watermark;
 
 // Thin production-write-path router for the lock-free overlay (the SOLE
-// representation since L3.3). `route_overlay()` + `flip_to_overlay()` live here.
+// representation since L3.3). `route_overlay()` lives here.
 pub(crate) mod overlay_write_mode;
 
-// Per-monomorph routing for the valued production mutators (insert_with_value /
-// increment / upsert): routes to the overlay only for V = u64 (SAFE Any downcast),
-// owned tree otherwise. Flip F0.
+// Per-monomorph routing for the valued counter increment: routes to the overlay
+// only for V = u64 (SAFE Any downcast); other V take the general overlay value-CAS
+// path (the overlay is the sole representation for all V).
 pub(crate) mod lockfree_value_route;
 
 // Public mutation API (insert / insert_with_value / remove) — Phase-6 split.
@@ -840,8 +840,9 @@ impl<V: DictionaryValue + Clone, S: crate::persistent_artrie::block_storage::Blo
 
     fn get_value(&self, term: &str) -> Option<V> {
         // D2/S3″: delegate to the inherent `get_value` (which value-routes to the
-        // overlay), NOT `self.get(..).cloned()` — `get` returns `None` under the flip.
-        // The inherent method shadows this trait method in `.get_value()` call syntax.
+        // overlay), NOT `self.get(..).cloned()` — `get` returns `None` under overlay
+        // routing. The inherent method shadows this trait method in `.get_value()` call
+        // syntax.
         self.get_value(term)
     }
 }
@@ -902,7 +903,7 @@ impl<V: DictionaryValue + Clone> MappedDictionary for SharedCharARTrie<V> {
 
     fn get_value(&self, term: &str) -> Option<V> {
         // D3/S3: delegate to the inner inherent `get_value` (value-routed), NOT
-        // `guard.get(..).cloned()` (which is `None` under the flip).
+        // `guard.get(..).cloned()` (which is `None` under overlay routing).
         let guard = self.read();
         guard.get_value(term)
     }
@@ -1133,7 +1134,7 @@ impl<V: DictionaryValue> crate::artrie_trait::ARTrie for SharedCharARTrie<V> {
     where
         V: Clone,
     {
-        // D3/S3′: inner inherent `get_value` (value-routed under the flip).
+        // D3/S3′: inner inherent `get_value` (value-routed to the overlay).
         let guard = self.read();
         guard.get_value(term)
     }
@@ -1145,7 +1146,7 @@ impl<V: DictionaryValue> crate::artrie_trait::ARTrie for SharedCharARTrie<V> {
 
     #[inline]
     fn len(&self) -> usize {
-        // D3/S2′: inner inherent `len()` (overlay-routed under the flip).
+        // D3/S2′: inner inherent `len()` (overlay-routed).
         let guard = self.read();
         guard.len()
     }

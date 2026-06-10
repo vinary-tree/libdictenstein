@@ -33,26 +33,22 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
     ///
     /// Returns an iterator yielding `(term, Option<value>)` pairs in lexicographic order.
     ///
-    /// **M3 read-flip (the audit's §C.2 — byte's MIXED-read iterator).** The owned
-    /// body enumerates the terms via the arena iter then re-reads each value via
-    /// `get_value_impl` (owned). Under `route_overlay()` the owned tree is empty, so
-    /// that mixed read would emit every value as `None`. The flip routes through the
-    /// VALUE-CARRYING overlay enumerator
-    /// [`iter_prefix_with_values_and_arena`](Self::iter_prefix_with_values_and_arena)
-    /// (itself overlay-routed to `overlay_iter_prefix_with_values`), NOT
-    /// enumerate-overlay-then-value-owned. The owned arm below is the verbatim
-    /// pre-flip mixed read (INERT until the flip).
+    /// **The MIXED-read iterator (the audit's §C.2).** The overlay is the sole
+    /// representation, so this ENUMERATES every term (membership-complete via
+    /// `iter_prefix_with_arena`, including value-less "term-only" members) and then
+    /// looks up the value PER TERM (`get_value_bytes`, overlay-routed) — NOT the
+    /// value-CARRYING enumerator, which cannot represent a value-less final and would
+    /// silently drop term-only members.
     pub fn iter_with_values(&self) -> TermValueIterator<V> {
-        // **F7 fix (term-only membership preservation).** BOTH the overlay and owned arms
-        // ENUMERATE every term (membership-complete via `iter_prefix_with_arena`, which
-        // includes value-less "term-only" members) and then look the value up PER TERM
-        // (`get_value_impl`, overlay-routed under `route_overlay()`), yielding `(term,
-        // None)` for a term-only member. The previous overlay arm used the value-CARRYING
-        // `iter_prefix_with_values_and_arena` enumerator, whose `PrefixTermWithValueAndArena`
-        // cannot represent a value-less final, so it SILENTLY DROPPED term-only members on a
-        // mixed valued/value-less trie that routes the overlay (the data-loss-in-observation
-        // F7's converter exposed when an Owned mixed-usage trie now reopens INTO the overlay).
-        // The enumerate-then-lookup shape matches the proven owned arm exactly.
+        // **F7 fix (term-only membership preservation).** ENUMERATE every term
+        // (membership-complete via `iter_prefix_with_arena`, which includes value-less
+        // "term-only" members) and then look the value up PER TERM (`get_value_bytes`,
+        // overlay-routed), yielding `(term, None)` for a term-only member. The previous
+        // value-CARRYING `iter_prefix_with_values_and_arena` enumerator, whose
+        // `PrefixTermWithValueAndArena` cannot represent a value-less final, SILENTLY
+        // DROPPED term-only members on a mixed valued/value-less trie (the
+        // data-loss-in-observation F7's converter exposed when an Owned mixed-usage file
+        // now reopens INTO the overlay).
         let mut entries: Vec<(Vec<u8>, Option<V>)> = self
             .iter_prefix_with_arena(b"")
             .ok()
@@ -60,9 +56,8 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
             .unwrap_or_default()
             .into_iter()
             .map(|entry| {
-                // `get_value_bytes` is overlay-ROUTED (reads the overlay value under
-                // `route_overlay()`, falls back to the owned tree otherwise), so a term-only
-                // member yields `None` and a valued term yields `Some(v)` on BOTH paths.
+                // `get_value_bytes` reads the overlay value (the sole representation), so a
+                // term-only member yields `None` and a valued term yields `Some(v)`.
                 let value = self.get_value_bytes(&entry.term);
                 (entry.term, value)
             })

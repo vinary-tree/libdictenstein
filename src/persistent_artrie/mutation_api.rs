@@ -28,12 +28,12 @@ use super::error::Result;
 impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
     /// Insert a term into the dictionary.
     ///
-    /// **M3 write-flip (C5):** under `route_overlay()` this routes to the proven
-    /// Order-A [`insert_cas_durable`](Self::insert_cas_durable) (membership; value-
-    /// free, so safe for ALL `V`). The public byte signature returns `bool`, so a
-    /// durable failure (wrong policy / on-disk-child-blocked) is logged and reported
-    /// as `false` (no insert) rather than panicking — consistent with `insert_batch`'s
-    /// fail-soft WAL handling. The owned arm is the verbatim pre-flip body.
+    /// The overlay is the sole representation, so this routes to the proven Order-A
+    /// [`insert_cas_durable`](Self::insert_cas_durable) (membership; value-free, so
+    /// safe for ALL `V`). The public byte signature returns `bool`, so a durable
+    /// failure (wrong policy / on-disk-child-blocked) is logged and reported as
+    /// `false` (no insert) rather than panicking — consistent with `insert_batch`'s
+    /// fail-soft WAL handling.
     pub fn insert(&self, term: &str) -> bool {
         self.insert_cas_durable(term.as_bytes())
             .unwrap_or_else(|e| {
@@ -45,18 +45,17 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
     /// Insert a term with an associated value.
     ///
     /// **Semantics — UPSERT (overwrite on duplicate):** the canonical map "insert or
-    /// update" ([`crate::MutableMappedDictionary`]); the owned body overwrites an
-    /// existing term's value, matching every other backend and the map laws. Returns
-    /// `true` iff the term was newly inserted (`false` = an existing value overwritten,
-    /// or a durable error logged as no-insert).
+    /// update" ([`crate::MutableMappedDictionary`]); it overwrites an existing term's
+    /// value, matching every other backend and the map laws. Returns `true` iff the
+    /// term was newly inserted (`false` = an existing value overwritten, or a durable
+    /// error logged as no-insert).
     ///
-    /// **Flip routing (design §2 + C0):** under `route_overlay()` this routes to the
-    /// generic Order-A [`upsert_cas_durable_default`](DurableOverlayWrite::upsert_cas_durable_default)
-    /// for ANY `V` (overwrite = last-writer-wins root-CAS) — NEVER falling through to
-    /// owned (the NH1 data-loss fix). (C0 fix: previously routed to the insert-once
-    /// `insert_cas_with_value_durable_default`, diverging from the owned overwrite
-    /// semantics — a silent overlay↔owned mismatch on duplicate keys.) A durable
-    /// failure is logged and reported `false` (byte's `bool` signature).
+    /// **Routing (design §2 + C0):** the overlay is the sole representation, so this
+    /// routes to the generic Order-A [`upsert_cas_durable_default`](DurableOverlayWrite::upsert_cas_durable_default)
+    /// for ANY `V` (overwrite = last-writer-wins root-CAS). (C0 fix: previously routed
+    /// to the insert-once `insert_cas_with_value_durable_default`, diverging from the
+    /// overwrite semantics — a silent mismatch on duplicate keys.) A durable failure
+    /// is logged and reported `false` (byte's `bool` signature).
     pub fn insert_with_value(&self, term: &str, value: V) -> bool {
         <Self as DurableOverlayWrite<ByteKey, V, S>>::upsert_cas_durable_default(
             self,
@@ -82,13 +81,12 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
     /// Returns the number of terms that were newly inserted (excluding
     /// updates to existing terms).
     ///
-    /// **M3 write-flip (C5):** under `route_overlay()` each entry routes to the
-    /// proven Order-A durable overlay insert (the audit's "loop insert_cas_durable"
-    /// — no batch-durable overlay primitive exists, and a per-record durable insert
+    /// The overlay is the sole representation, so each entry routes to the proven
+    /// Order-A durable overlay insert (the audit's "loop insert_cas_durable" — no
+    /// batch-durable overlay primitive exists, and a per-record durable insert
     /// preserves the WAL-then-CAS ordering). A `None` value → membership
-    /// [`insert_cas_durable`](Self::insert_cas_durable); an `i64` value →
-    /// [`insert_cas_with_value_durable`](Self::insert_cas_with_value_durable). The
-    /// owned arm below is the verbatim pre-flip batch path.
+    /// [`insert_cas_durable`](Self::insert_cas_durable); a value-carrying entry →
+    /// [`insert_cas_with_value_durable`](Self::insert_cas_with_value_durable).
     pub fn insert_batch(&self, entries: &[(String, Option<V>)]) -> usize {
         if entries.is_empty() {
             return 0;
@@ -108,9 +106,8 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
     /// This is the byte-slice version of `insert_batch()` for when you
     /// already have byte data and want to avoid string conversion overhead.
     ///
-    /// **M3 write-flip (C5):** under `route_overlay()` each entry routes to the
-    /// proven Order-A durable overlay insert (per-record; see [`insert_batch`](Self::insert_batch)).
-    /// The owned arm below is the verbatim pre-flip batch path.
+    /// The overlay is the sole representation, so each entry routes to the proven
+    /// Order-A durable overlay insert (per-record; see [`insert_batch`](Self::insert_batch)).
     pub fn insert_batch_bytes(&self, entries: &[(&[u8], Option<V>)]) -> usize {
         if entries.is_empty() {
             return 0;
@@ -197,11 +194,11 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
 
     /// Remove a term from the dictionary.
     ///
-    /// **M3 write-flip (C5):** under `route_overlay()` this routes to the proven
-    /// Order-A [`remove_cas_durable`](Self::remove_cas_durable) (R-B: durable
-    /// `Remove` → path-copy clearing the leaf's finality → root-CAS → mark_committed;
-    /// value-free, safe for ALL `V`). The public `bool` signature reports a durable
-    /// failure as `false` (no remove) with a log. The owned arm is verbatim pre-flip.
+    /// The overlay is the sole representation, so this routes to the proven Order-A
+    /// [`remove_cas_durable`](Self::remove_cas_durable) (R-B: durable `Remove` →
+    /// path-copy clearing the leaf's finality → root-CAS → mark_committed; value-free,
+    /// safe for ALL `V`). The public `bool` signature reports a durable failure as
+    /// `false` (no remove) with a log.
     pub fn remove(&self, term: &str) -> bool {
         self.remove_cas_durable(term.as_bytes())
             .unwrap_or_else(|e| {
@@ -223,16 +220,14 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
     /// This method allows fine-tuning the memory/efficiency trade-off:
     /// smaller batch_size = less memory, more iterations.
     ///
-    /// **M3 write-flip (C5/H4):** under `route_overlay()` there is no owned arena to
-    /// group by; the routed `iter_prefix` would enumerate the OVERLAY while the
-    /// owned `remove_impl` runs on the EMPTY owned tree = a SILENT NO-OP delete (the
-    /// audit's named hazard). The `usize` signature cannot carry an `Err`, so —
-    /// mirroring the char audit's resolution — this reimplements over the overlay
-    /// remove-CAS: enumerate the prefix from the immutable overlay (non-faulting,
-    /// resident-finals), then durably [`remove_cas_durable`](Self::remove_cas_durable)
-    /// each term. Durable, NOT a no-op, NO data loss. Arena page-locality grouping is
-    /// an owned-tree disk-layout optimization with no overlay analogue; the removal
-    /// SEMANTICS are fully preserved. The owned arm below is verbatim pre-flip.
+    /// **C5/H4:** the overlay is the sole representation, so there is no owned arena to
+    /// group by. The `usize` signature cannot carry an `Err`, so — mirroring the char
+    /// audit's resolution — this reimplements over the overlay remove-CAS: enumerate
+    /// the prefix from the immutable overlay (non-faulting, resident-finals), then
+    /// durably [`remove_cas_durable`](Self::remove_cas_durable) each term. Durable, NOT
+    /// a no-op, NO data loss. (Arena page-locality grouping was an owned-tree disk-
+    /// layout optimization with no overlay analogue; the removal SEMANTICS are fully
+    /// preserved.)
     pub fn remove_prefix_batched(&self, prefix: &[u8], _batch_size: usize) -> usize {
         self.remove_prefix_overlay(prefix)
     }
@@ -243,10 +238,9 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
 
     /// Route a single batch-insert entry to the proven Order-A durable overlay
     /// insert. A `None` value → membership [`insert_cas_durable`](Self::insert_cas_durable);
-    /// an `i64` value → [`insert_cas_with_value_durable`](Self::insert_cas_with_value_durable)
-    /// via the SAFE `Any` dispatch. Returns `true` iff this call newly inserted the
-    /// term (matching the owned batch's "newly inserted" count). A durable failure
-    /// is logged and counted as not-inserted (byte's fail-soft batch discipline).
+    /// a value-carrying entry → the generic durable UPSERT (overwrite on duplicate).
+    /// Returns `true` iff this call newly inserted the term. A durable failure is
+    /// logged and counted as not-inserted (byte's fail-soft batch discipline).
     fn insert_batch_entry_overlay(&self, term: &[u8], value: Option<&V>) -> bool {
         let result: Result<bool> = match value {
             // Membership: durable membership insert.

@@ -370,8 +370,8 @@ pub struct PersistentARTrie<V: DictionaryValue = (), S: BlockStorage = MmapDiskM
     /// `formal-verification/tla+/LockFreeDurableCheckpoint.tla`). Shared, K-agnostic:
     /// [`crate::persistent_artrie_core::committed_watermark::CommittedWatermark`].
     /// Seeded on open with the recovered durable WAL frontier (so replayed LSNs are
-    /// treated as already committed), `0` on create. INERT pre-flip — only the
-    /// `*_cas_durable` opt-in writes advance it; no production path reads it until M4.
+    /// treated as already committed), `0` on create. Advanced by the durable
+    /// `*_cas_durable` overlay writes; read by the overlay checkpoint as `checkpoint_lsn`.
     pub(crate) committed_watermark:
         crate::persistent_artrie_core::committed_watermark::CommittedWatermark,
 
@@ -404,8 +404,8 @@ pub struct PersistentARTrie<V: DictionaryValue = (), S: BlockStorage = MmapDiskM
     /// open from `max(header.commit_seq_floor, scan-max-of-CommitRank-generation)`,
     /// the A.2 cross-restart fix `root.version()` — per-lifetime — could not make).
     /// `CommitRank` records bind a data LSN to the generation here so recovery's
-    /// `reconcile_lww` orders same-term replay by commit generation. INERT pre-flip
-    /// (`0` until the first opt-in durable write claims).
+    /// `reconcile_lww` orders same-term replay by commit generation. Starts at `0`
+    /// (the first durable write claims generation 1).
     pub(crate) commit_seq: std::sync::atomic::AtomicU64,
 }
 

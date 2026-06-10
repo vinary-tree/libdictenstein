@@ -123,7 +123,7 @@ impl<S: BlockStorage> LockFreeOverlay<CharKey, u64, S> for PersistentVocabARTrie
         if let Some(ref writer) = self.wal_writer {
             if let Err(e) = writer.set_overlay_regime() {
                 log::warn!(
-                    "vocab flip_to_overlay: could not stamp Overlay regime: {:?}",
+                    "vocab install_overlay: could not stamp Overlay regime: {:?}",
                     e
                 );
             }
@@ -366,7 +366,9 @@ impl<S: BlockStorage> PersistentVocabARTrie<S> {
         <Self as LockFreeOverlay<CharKey, u64, S>>::route_overlay(self)
     }
 
-    /// Flip-construction helper. Thin delegator to [`LockFreeOverlay::flip_to_overlay`].
+    // (The `flip_to_overlay` inherent wrapper was deleted with the dead flip
+    // machinery — the overlay is the sole representation, built directly by every
+    // constructor; there is no flip step.)
     #[inline]
 
     /// Require the lock-free root, else a uniform "install_overlay() first" error.

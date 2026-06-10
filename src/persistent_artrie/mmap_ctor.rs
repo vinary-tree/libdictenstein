@@ -30,20 +30,17 @@ use super::error::{PersistentARTrieError, Result};
 use super::wal::{AsyncWalConfig, AsyncWalWriter, WalConfig};
 
 impl<V: DictionaryValue> PersistentARTrie<V> {
-    /// **M4b EDIT 1 (owner-GO, IRREVERSIBLE): a freshly-created byte trie flips to
-    /// the lock-free overlay for `V ∈ {(), i64}`; a strict NO-OP for arbitrary `V`.**
-    /// The byte twin of char's `install_overlay_on_create` (persistent_artrie_char/mmap_ctor.rs).
+    /// **A freshly-created byte trie builds the lock-free overlay directly. The
+    /// overlay is the SOLE representation for ALL `V`.** The byte twin of char's
+    /// `install_overlay_on_create` (persistent_artrie_char/mmap_ctor.rs).
     ///
-    /// A `create*` ctor builds a FRESH WAL (`current_lsn() == 1`), so
-    /// `flip_to_overlay`'s shared default — `install_overlay()` (which stamps the
-    /// Overlay regime on the empty WAL, M2d) + selects `LockFreeOverlay` + the V-2
-    /// stamp re-check — MUST engage. `!flip_to_overlay()` therefore means the stamp
-    /// silently failed (a torn header / no WAL), surfaced as a hard error rather than
-    /// enabling a write-broken or recovery-unsafe overlay. For `V ∉ {(), i64}`
-    /// `overlay_eligible_v()` is false, the gate short-circuits, the trie stays
-    /// `OwnedTree`, and this is a pure no-op (the proven owned path runs unchanged —
-    /// backward-compat for arbitrary V). NB the byte eligible counter monomorph is
-    /// `i64` (char's is `u64`).
+    /// A `create*` ctor builds a FRESH WAL (`current_lsn() == 1`), so the shared
+    /// `install_overlay_on_create` default — `install_overlay()` (which stamps the
+    /// Overlay regime on the empty WAL) + the V-2 stamp re-check — MUST engage. A
+    /// failure to engage the Overlay regime therefore means the stamp silently failed
+    /// (a torn header / no WAL), surfaced as a hard error rather than leaving a
+    /// write-broken or recovery-unsafe overlay. NB the byte counter monomorph is
+    /// `u64` (char's is also `u64`).
     fn install_overlay_on_create(self) -> Result<Self> {
         <Self as crate::persistent_artrie_core::overlay::flip::LockFreeOverlay<
             crate::persistent_artrie_core::key_encoding::ByteKey,
@@ -87,8 +84,8 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
             #[cfg(feature = "persistent-artrie")]
             cas_retries: std::sync::atomic::AtomicU64::new(0),
             // M2b: fresh in-memory trie — no durable WAL frontier, no prior
-            // generations, so the watermark base + commit_seq are both 0 (INERT
-            // pre-flip; only opt-in `*_cas_durable` writes advance them).
+            // generations, so the watermark base + commit_seq are both 0 (a WAL-less
+            // in-memory trie has no durable writes to advance them).
             committed_watermark:
                 crate::persistent_artrie_core::committed_watermark::CommittedWatermark::new(0),
             checkpoint_lock: std::sync::Arc::new(parking_lot::Mutex::new(())),
@@ -100,8 +97,9 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
         // is UNIVERSALLY true across every constructor (the owned tree is gone). Writes degrade to
         // a non-durable in-memory CAS (the durable path's WAL append returns LSN 0 under
         // `Immediate`; `mark_committed(0)` is a no-op); reads + the zipper walk the overlay.
-        // `checkpoint()` still errors (no buffer manager). This does NOT route through
-        // `flip_to_overlay` (which hard-requires a WAL) — just the two WAL-less primitives.
+        // `checkpoint()` still errors (no buffer manager). This calls `install_overlay()`
+        // directly (the WAL-less primitive), NOT `install_overlay_on_create` (which
+        // hard-requires a WAL Overlay regime).
         trie.install_overlay();
         trie
     }
@@ -188,9 +186,10 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
             lockfree_cache: None,
             #[cfg(feature = "persistent-artrie")]
             cas_retries: std::sync::atomic::AtomicU64::new(0),
-            // install_overlay_on_create above for eligible V; arbitrary V stays owned.
-            // M2b: fresh on-disk trie (empty WAL) — no durable frontier, no prior
-            // generations ⇒ watermark base + commit_seq both 0 (INERT pre-flip).
+            // install_overlay_on_create above builds the overlay (the sole representation
+            // for ALL V). M2b: fresh on-disk trie (empty WAL) — no durable frontier, no
+            // prior generations ⇒ watermark base + commit_seq both 0 (advanced by durable
+            // writes).
             committed_watermark:
                 crate::persistent_artrie_core::committed_watermark::CommittedWatermark::new(0),
             checkpoint_lock: std::sync::Arc::new(parking_lot::Mutex::new(())),
@@ -286,7 +285,7 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
             #[cfg(feature = "persistent-artrie")]
             cas_retries: std::sync::atomic::AtomicU64::new(0),
             // M2b: fresh on-disk trie (empty WAL) — no durable frontier, no prior
-            // generations ⇒ watermark base + commit_seq both 0 (INERT pre-flip).
+            // generations ⇒ watermark base + commit_seq both 0 (advanced by durable writes).
             committed_watermark:
                 crate::persistent_artrie_core::committed_watermark::CommittedWatermark::new(0),
             checkpoint_lock: std::sync::Arc::new(parking_lot::Mutex::new(())),
@@ -466,8 +465,8 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
         //     WAL scan covers the un-checkpointed tail. Byte's `open` uses
         //     `RecoveryManager` (which expands `CommitRank` to nothing), so we do a
         //     lightweight extra `WalReader` pass for the max generation — one-time,
-        //     on open, exactly as char does. INERT pre-flip: nothing claims/marks
-        //     until an opt-in `*_cas_durable` write runs.
+        //     on open, exactly as char does. Nothing claims/marks until a durable
+        //     `*_cas_durable` write runs.
         // F7 FIX C: base = max LSN over ALL segments (archive + active), falling back to
         // the active-only frontier when no segments are enumerable (e.g. archiving off).
         let recovered_frontier = {
@@ -558,7 +557,7 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
             // M2b: seed the watermark base from the recovered durable WAL frontier
             // (replayed LSNs are already committed) and the commit_seq from
             // max(header floor, surviving CommitRank generation) — the A.2
-            // cross-restart fix. INERT pre-flip.
+            // cross-restart fix.
             committed_watermark:
                 crate::persistent_artrie_core::committed_watermark::CommittedWatermark::new(
                     recovered_frontier,
@@ -822,13 +821,13 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
                 let mut max_applied_lsn: u64 = 0;
                 let mut had_apply_failure = false;
 
-                // M2d (A2 fix, mirrors char's corruption-rebuild gate): a post-flip
-                // Overlay archive must DROP never-acked two-append-window orphans
-                // (else a corruption rebuild resurrects them) and reorder same-term
-                // ops by commit generation. Route the Overlay case through the
-                // canonical SHARED regime-aware reconcile; the all-`Owned` case keeps
-                // the existing inline streaming replay UNCHANGED (INERT pre-flip —
-                // byte-for-byte the old rebuild for every legacy/rank-less archive).
+                // M2d (A2 fix, mirrors char's corruption-rebuild gate): an Overlay-regime
+                // archive must DROP never-acked two-append-window orphans (else a
+                // corruption rebuild resurrects them) and reorder same-term ops by commit
+                // generation. Route the Overlay case through the canonical SHARED
+                // regime-aware reconcile; the all-`Owned` case keeps the existing inline
+                // streaming replay UNCHANGED (byte-for-byte the old rebuild for every
+                // legacy/rank-less archive).
                 let any_overlay = segments.iter().any(|seg| {
                     WalReader::read_header(seg)
                         .map(|h| {
@@ -950,10 +949,10 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
                 );
 
                 // L1: the recovered ops were replayed DIRECTLY into the overlay (the apply sinks
-                // above), so the owned tree stays empty and there is NO owned→overlay conversion —
-                // the former `reestablish_overlay_from_owned` sink is DELETED. The deletion is
-                // ATOMIC with the applier-swap (R2): keeping it would `build_overlay_root_from_owned`
-                // an EMPTY root and FORCE-REPLACE the just-populated overlay root = 100% silent loss.
+                // above), so there is NO owned→overlay conversion — the former owned-reading
+                // reestablish sink is DELETED. That deletion was ATOMIC with the applier-swap
+                // (R2): an owned converter here would have rebuilt an EMPTY root and FORCE-REPLACED
+                // the just-populated overlay root = 100% silent loss.
 
                 Ok((trie, report))
             }

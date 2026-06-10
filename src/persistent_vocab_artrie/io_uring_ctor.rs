@@ -1,7 +1,7 @@
 //! `IoUringDiskManager`-specific constructors for `PersistentVocabARTrie` — OVERLAY-ONLY (V6).
 //!
-//! Mirror the mmap ctors for the io_uring backend: every ctor flips to the lock-free overlay at
-//! construction; the owned tree, the reverse-index sidecar, and the bloom filter are deleted.
+//! Mirror the mmap ctors for the io_uring backend: every ctor builds the lock-free overlay at
+//! construction (it is the sole representation); the owned tree, the reverse-index sidecar, and the bloom filter are deleted.
 
 #![cfg(feature = "io-uring-backend")]
 

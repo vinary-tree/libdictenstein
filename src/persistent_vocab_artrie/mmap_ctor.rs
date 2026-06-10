@@ -92,9 +92,9 @@ impl PersistentVocabARTrie {
             ),
             reverse_term_map: None,
         };
-        // FLIP: the overlay is the LIVE representation from construction (single lock-free impl —
-        // no install_overlay toggle). flip_to_overlay installs the overlay + stamps the Overlay
-        // regime so route_overlay() -> true.
+        // The overlay is the LIVE representation from construction (single lock-free impl —
+        // no install_overlay toggle). install_overlay_on_create installs the overlay + stamps
+        // the Overlay regime so route_overlay() -> true.
         <Self as crate::persistent_artrie_core::overlay::flip::LockFreeOverlay<
             crate::persistent_artrie_core::key_encoding::CharKey,
             _,

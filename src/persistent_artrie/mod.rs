@@ -171,8 +171,8 @@ pub mod lockfree_cas;
 
 // Thin production-write-path router for the lock-free overlay (the SOLE
 // representation since L3.3). The byte seam impl of the shared
-// `LockFreeOverlay<ByteKey, V, S>` trait lives here: `route_overlay()` /
-// `flip_to_overlay()` + the un-routed owned readers + the overlay publishers.
+// `LockFreeOverlay<ByteKey, V, S>` trait lives here: `route_overlay()` + the
+// overlay publishers (the owned tree is deleted).
 pub(crate) mod overlay_write_mode;
 
 // M2a byte LockFreeOverlay correspondence + reestablish round-trip (in-crate
@@ -180,9 +180,9 @@ pub(crate) mod overlay_write_mode;
 #[cfg(test)]
 mod overlay_correspondence_tests;
 
-// M3 byte read/write routing + reject correspondence tests (in-crate: the routed
-// public reads/writes are exercised against the owned oracle under an EXPLICIT
-// opt-in flip; route_overlay() stays false in production until M4's create-flip).
+// Byte read/write routing + reject correspondence tests (in-crate: the routed
+// public reads/writes are exercised against the overlay, the SOLE representation —
+// every constructor installs it, so route_overlay() is universally true).
 #[cfg(test)]
 mod overlay_routing_tests;
 
@@ -194,10 +194,10 @@ mod overlay_routing_tests;
 #[cfg(test)]
 mod overlay_eviction_byte_tests;
 
-// M3 per-monomorph value-route for the byte valued mutators (increment_bytes /
-// upsert_bytes / get_or_insert_bytes) under the flip — the byte twin of char's
-// `lockfree_value_route`. SAFE `Any` dispatch to the `<i64, S>` durable
-// primitives; `None` for arbitrary `V` (caller runs the owned body).
+// Per-monomorph value-route for the byte counter increment (increment_bytes) — the
+// byte twin of char's `lockfree_value_route`. SAFE `Any` dispatch to the `<u64, S>`
+// durable primitives; `None` for non-u64 `V` (caller runs the general overlay
+// value-CAS path).
 pub(crate) mod lockfree_value_route;
 
 // Document-transaction execution methods (Phase-5 split out of dict_impl).
@@ -225,9 +225,9 @@ pub mod compaction_impl;
 // Persistence/durability/stats public API (Phase-5 split out of dict_impl).
 pub mod persistence_api;
 
-// Byte seam impl of the shared OverlayCheckpoint route-split (M2b). INERT
-// pre-flip: `route_overlay()` is false until M4, so the route-split runs the
-// owned arm (byte-identical to the prior checkpoint body).
+// Byte seam impl of the shared OverlayCheckpoint route-split (M2b). The overlay is
+// the SOLE representation (`route_overlay()` universally true), so the route-split
+// always runs the overlay arm.
 pub(crate) mod overlay_checkpoint;
 
 // Byte overlay fault-in primitive (`load_overlay_node_from_disk`) + the SAFE

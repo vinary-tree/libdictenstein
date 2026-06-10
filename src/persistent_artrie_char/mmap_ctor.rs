@@ -77,23 +77,22 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
         // `install_overlay`'s WAL stamp is a no-op without a `wal_writer`), so `route_overlay()`
         // is UNIVERSALLY true across every constructor (the owned tree is gone). Writes degrade to
         // a non-durable in-memory CAS (the durable path's WAL append returns LSN 0 under
-        // `Immediate`; `mark_committed(0)` is a no-op); reads + the zipper walk the overlay. Does
-        // NOT route through `flip_to_overlay` (which needs a WAL).
+        // `Immediate`; `mark_committed(0)` is a no-op); reads + the zipper walk the overlay. Calls
+        // `install_overlay()` directly (the WAL-less primitive), NOT `install_overlay_on_create`
+        // (which needs a WAL).
         trie.install_overlay();
         trie
     }
 
-    /// **S5-12 EDIT 1 (owner-GO, IRREVERSIBLE): a freshly-created trie flips to the
-    /// lock-free overlay for `V ∈ {(), u64}`; a strict NO-OP for arbitrary `V`.**
+    /// **A freshly-created trie builds the lock-free overlay directly. The overlay is
+    /// the SOLE representation for ALL `V`.**
     ///
-    /// A `create*` ctor builds a FRESH WAL (`current_lsn() == 1`), so
-    /// `flip_to_overlay`'s `install_overlay` stamps the Overlay regime and the V-2
-    /// stamp re-check (`route_overlay() && rank_regime()==Overlay`) MUST succeed —
-    /// `!took` therefore means the stamp silently failed (a torn header / no WAL),
-    /// which we surface as a hard error rather than enabling a write-broken or
-    /// recovery-unsafe overlay. For `V ∉ {(), u64}` `overlay_eligible_v()` is false,
-    /// the gate short-circuits, the trie stays `OwnedTree`, and this is a pure no-op
-    /// (the proven owned path runs, unchanged — backward-compat for arbitrary V).
+    /// A `create*` ctor builds a FRESH WAL (`current_lsn() == 1`), so the shared
+    /// `install_overlay_on_create` default — `install_overlay()` stamps the Overlay
+    /// regime and the V-2 stamp re-check (`route_overlay() && rank_regime()==Overlay`)
+    /// MUST succeed — a failure to engage therefore means the stamp silently failed (a
+    /// torn header / no WAL), which we surface as a hard error rather than leaving a
+    /// write-broken or recovery-unsafe overlay.
     fn install_overlay_on_create(self) -> Result<Self> {
         <Self as crate::persistent_artrie_core::overlay::flip::LockFreeOverlay<
             crate::persistent_artrie_core::key_encoding::CharKey,
@@ -816,8 +815,8 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
                 // two-append-window orphans (else a post-flip corruption rebuild
                 // resurrects them) and reorder same-term ops by commit generation.
                 // Route the Overlay case through the canonical regime-aware reconcile
-                // (DRY with `recover_from_archives`); the all-Owned case keeps the
-                // existing inline streaming replay UNCHANGED (INERT pre-flip).
+                // (DRY with `recover_from_archives`); the all-Owned (legacy) case keeps
+                // the existing inline streaming replay UNCHANGED.
                 let any_overlay = segments.iter().any(|seg| {
                     crate::persistent_artrie::wal::WalReader::read_header(seg)
                         .map(|h| h.regime() == crate::persistent_artrie::wal::RankRegime::Overlay)

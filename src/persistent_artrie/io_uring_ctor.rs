@@ -29,14 +29,15 @@ use super::wal::{AsyncWalConfig, AsyncWalWriter, WalConfig};
 use super::{IoUringDiskManager, DEFAULT_BUFFER_POOL_SIZE};
 
 impl<V: DictionaryValue> PersistentARTrie<V, IoUringDiskManager> {
-    /// **M4b EDIT 1 (io_uring twin of the mmap `install_overlay_on_create`).** A freshly
-    /// created io_uring byte trie flips to the lock-free overlay for `V ∈ {(), i64}`;
-    /// a strict NO-OP for arbitrary `V`. The mmap `install_overlay_on_create` lives in the
-    /// default-`S` (`MmapDiskManager`) impl block and is not visible here, so the
-    /// `IoUringDiskManager` create path needs its own. `flip_to_overlay` /
-    /// `overlay_eligible_v` are on the `<V, S: BlockStorage>` block (visible for any
-    /// `S`). Fresh WAL ⇒ the Overlay stamp MUST take; `!flip_to_overlay()` ⇒ hard
-    /// error (V-2). NB byte's eligible counter monomorph is `i64` (char's is `u64`).
+    /// **io_uring twin of the mmap `install_overlay_on_create`.** A freshly created
+    /// io_uring byte trie builds the lock-free overlay directly; the overlay is the
+    /// SOLE representation for ALL `V`. The mmap `install_overlay_on_create` lives in
+    /// the default-`S` (`MmapDiskManager`) impl block and is not visible here, so the
+    /// `IoUringDiskManager` create path needs its own. The shared
+    /// `install_overlay_on_create` / `install_overlay` defaults are on the
+    /// `<V, S: BlockStorage>` `LockFreeOverlay` block (visible for any `S`). Fresh WAL
+    /// ⇒ the Overlay stamp MUST take; a failure to engage ⇒ hard error (V-2). NB byte's
+    /// counter monomorph is `u64` (char's is also `u64`).
     fn install_overlay_on_create(self) -> Result<Self> {
         <Self as crate::persistent_artrie_core::overlay::flip::LockFreeOverlay<
             crate::persistent_artrie_core::key_encoding::ByteKey,
@@ -223,8 +224,8 @@ impl<V: DictionaryValue> PersistentARTrie<V, IoUringDiskManager> {
         // M2b — Order-A durable-overlay recovery seeding (mirrors mmap `open`):
         // watermark base = recovered durable WAL frontier (`next_lsn - 1`),
         // commit_seq seed = max(durable header floor, surviving CommitRank
-        // generation) (the A.2 cross-restart fix). One-time WAL scan on open; INERT
-        // pre-flip. See the mmap `open` body for the full rationale.
+        // generation) (the A.2 cross-restart fix). One-time WAL scan on open. See the
+        // mmap `open` body for the full rationale.
         // F7 FIX C: watermark base = max LSN over ALL segments (archive + active), so a
         // converted/under-load file's archived committed tail is covered before the first
         // post-conversion checkpoint (else a BatchIncrement delta double-applies). Falls
@@ -318,7 +319,7 @@ impl<V: DictionaryValue> PersistentARTrie<V, IoUringDiskManager> {
             lockfree_cache: None,
             #[cfg(feature = "persistent-artrie")]
             cas_retries: std::sync::atomic::AtomicU64::new(0),
-            // M2b: seed watermark base + commit_seq from recovery (INERT pre-flip).
+            // M2b: seed watermark base + commit_seq from recovery.
             committed_watermark:
                 crate::persistent_artrie_core::committed_watermark::CommittedWatermark::new(
                     recovered_frontier,

@@ -66,19 +66,20 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
         }
     }
 
-    /// E1 read-flip: term → value as an owned `Option<V>` (unlike `get`'s borrow).
-    /// Under `route_overlay()` it value-routes to the overlay (the `u64` counter via
-    /// `get_lockfree`, or `()` membership) through the SAFE `Any` dispatch in
-    /// `overlay_get_value`; otherwise it reads the owned tree. This is the canonical
-    /// value getter the `MappedDictionary`/`ARTrie` trait bodies delegate to — the
+    /// Term → value as an owned `Option<V>` (unlike `get`'s borrow). The overlay is
+    /// the sole representation, so it value-routes to the overlay (the `u64` counter
+    /// via `get_lockfree`, or `()` membership) through the SAFE `Any` dispatch in
+    /// `overlay_get_value`. This is the canonical value getter the
+    /// `MappedDictionary`/`ARTrie` trait bodies delegate to — the
     /// inherent method shadows the trait method of the same name in `.get_value()`
     /// call syntax, so `self.get_value(..)` from a trait body calls THIS (no recursion).
     pub fn get_value(&self, term: &str) -> Option<V> {
         // L3.3c: the overlay is the sole representation; route to the overlay value read
-        // (`overlay_get_value` → the shared LockFreeOverlay driver handling the i64/u64
+        // (`overlay_get_value` → the shared LockFreeOverlay driver handling the u64
         // counter, `()` membership, AND arbitrary `V`). `Some(inner)` is the answer; an outer
-        // `None` (overlay-ineligible `V`) is impossible since `overlay_eligible_v() == true
-        // ∀V`, so `.flatten()` (treating the impossible `None` as absent) is exact.
+        // `None` (overlay-ineligible `V`) is impossible since the overlay is the sole
+        // representation for all `V`, so `.flatten()` (treating the impossible `None` as
+        // absent) is exact.
         self.overlay_get_value(term).flatten()
     }
 
@@ -147,8 +148,8 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
 
         // Clone the value if found (to avoid holding reference during validation).
         // D4: value-route via `get_value` (owned `Option<V>`, no borrow) so the
-        // optimistic getter reflects the overlay under the flip, instead of `get`
-        // (which returns `None` under the overlay — the borrow limitation).
+        // optimistic getter reflects the overlay, instead of `get` (which returns
+        // `None` under the overlay — the borrow limitation).
         let result = self.get_value(term);
 
         if guard.validate() {

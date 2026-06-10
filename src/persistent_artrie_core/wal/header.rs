@@ -79,8 +79,8 @@ impl WalHeader {
     /// binary (which only knows version 1) refuses a version-2 file via the
     /// `version > VERSION` check below rather than silently mis-reading the new
     /// records. This is the one intentionally one-way change in the design
-    /// (documented in GAP_LEDGER / UNSAFE_BOUNDARY); it gates an opt-in pre-flip
-    /// feature, so no released on-disk format is broken.
+    /// (documented in GAP_LEDGER / UNSAFE_BOUNDARY); it gates the overlay
+    /// durable-write feature, so no released on-disk format is broken.
     pub const VERSION: u32 = 2;
     /// Oldest WAL version this build can still READ.
     ///
@@ -124,7 +124,7 @@ impl WalHeader {
         // the Overlay magic; an OLD binary (only `MAGIC`) fail-closes on an Overlay
         // file. ADDITIVE — every existing file (`MAGIC`) parses exactly as before, so
         // base/vocab/char recovery is unchanged. The regime itself is still read from
-        // the `rank_regime` byte (28); the flip writes both consistently.
+        // the `rank_regime` byte (28); the overlay write path writes both consistently.
         if magic != Self::MAGIC && magic != Self::MAGIC_OVERLAY {
             return Err(WalError::CorruptedRecord("Invalid WAL magic number".into()));
         }

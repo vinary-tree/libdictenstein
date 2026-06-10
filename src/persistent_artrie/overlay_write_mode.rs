@@ -1,19 +1,18 @@
-//! Byte seam impl of the shared [`LockFreeOverlay`] flip + thin inherent
-//! wrappers preserving the byte public surface.
+//! Byte seam impl of the shared [`LockFreeOverlay`] overlay-install + thin inherent
+//! wrapper preserving the byte public surface.
 //!
 //! This is the BYTE twin of `persistent_artrie_char::overlay_write_mode`. The
-//! overlay-flip genericization (`docs/design/overlay-durable-architecture.md`)
-//! extracted the lock-free-overlay flip (route predicate + non-faulting RCU read
-//! engine + flip + reestablish folds) into the SHARED GENERIC
+//! overlay genericization (`docs/design/overlay-durable-architecture.md`)
+//! extracted the lock-free-overlay machinery (route predicate + non-faulting RCU
+//! read engine + overlay install + reestablish folds) into the SHARED GENERIC
 //! [`LockFreeOverlay`](crate::persistent_artrie_core::overlay::flip::LockFreeOverlay)
 //! trait. This module holds only:
 //!
 //! 1. the byte SEAM impl `impl LockFreeOverlay<ByteKey, V, S> for
-//!    PersistentARTrie<V, S>` (per-variant owned readers / overlay publishers /
-//!    WAL accessors / `CounterValue = u64`, matching char post-u64-restoration);
-//! 2. thin inherent wrappers (`route_overlay` / `flip_to_overlay` /
-//!    `overlay_eligible_v`) that DELEGATE to the trait, so the byte call sites and
-//!    the byte correspondence tests can use inherent syntax.
+//!    PersistentARTrie<V, S>` (per-variant overlay publishers / WAL accessors /
+//!    `CounterValue = u64`, matching char post-u64-restoration);
+//! 2. a thin inherent wrapper (`route_overlay`) that DELEGATES to the trait, so the
+//!    byte call sites and the byte correspondence tests can use inherent syntax.
 //!
 //! **L3.3 / L3.3c — the overlay is the SOLE representation.** Every byte constructor
 //! installs the lock-free overlay, so `route_overlay()` is universally true; the
@@ -21,8 +20,8 @@
 //! (L3.3c) the private UN-ROUTED owned enumerators that the reestablish folds once
 //! used were all deleted. This module gives byte the trait DEFAULTS: the route
 //! predicate, the read engine (`overlay_len`/`overlay_iter_prefix*`/`overlay_get_value`),
-//! the flip, and the no-WAL reestablish folds — all of which read the overlay
-//! directly now that there is no owned tree to fold from.
+//! the overlay install, and the no-WAL reestablish folds — all of which read the
+//! overlay directly now that there is no owned tree to fold from.
 
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -75,9 +74,9 @@ impl<V: DictionaryValue, S: BlockStorage> LockFreeOverlay<ByteKey, V, S>
         // Delegate to the existing inherent `install_overlay` (lockfree_cas.rs),
         // which installs the `AtomicNodePtr` root + cache. NB byte's
         // `install_overlay` does NOT stamp the WAL Overlay regime (unlike char's);
-        // the generic `flip_to_overlay` default performs the regime stamp via the
-        // `wal_current_lsn() == Some(1)` empty-WAL guard, so byte's flip is still
-        // durably correct.
+        // the generic `install_overlay_on_create` default performs the regime stamp
+        // via the `wal_current_lsn() == Some(1)` empty-WAL guard, so byte's overlay
+        // install is still durably correct.
         PersistentARTrie::install_overlay(self)
     }
 
@@ -97,7 +96,7 @@ impl<V: DictionaryValue, S: BlockStorage> LockFreeOverlay<ByteKey, V, S>
     fn wal_stamp_overlay_regime(&self) {
         if let Some(ref writer) = self.wal_writer {
             if let Err(e) = writer.set_overlay_regime() {
-                log::warn!("flip_to_overlay: could not stamp Overlay regime: {:?}", e);
+                log::warn!("install_overlay: could not stamp Overlay regime: {:?}", e);
             }
         }
     }
@@ -209,8 +208,9 @@ impl<V: DictionaryValue, S: BlockStorage> LockFreeOverlay<ByteKey, V, S>
 // mark ORDER, the commit-rank + watermark tail, the full increment template);
 // this impl supplies ONLY the per-variant seams: the WAL/watermark accessors + the
 // increment's i64 value-domain bound (C4) / delta-record builder / proven path-copy
-// publish. The byte counter monomorph is `i64` (`CounterValue` from `LockFreeOverlay`),
-// the one divergence from char's `u64`.
+// publish. The byte counter monomorph is `u64` (`CounterValue` from `LockFreeOverlay`),
+// matching char post-u64-restoration. (The per-call WAL delta is still carried in one
+// signed `i64` chunk — see the C4 bound below — but the stored counter VALUE is `u64`.)
 //
 // Byte-identical ORDER: the seams delegate to the EXISTING byte inherent helpers
 // (`append_to_wal_returning_lsn`, `append_commit_rank`, `committed_watermark.mark_committed`,
@@ -297,9 +297,9 @@ impl<V: DictionaryValue, S: BlockStorage> DurableOverlayWrite<ByteKey, V, S>
     }
 
     // ---- G5/F0 value seams (byte): byte keys are raw `&[u8]` (no str), the
-    // counter is i64, and the byte overlay has NO write-path fault-in (overlay
-    // finals are never evicted in production — RT5 — so the non-faulting walk is
-    // exact). Mirrors the char seams otherwise. ----
+    // counter is u64 (matching char), and the byte overlay has NO write-path
+    // fault-in (overlay finals are never evicted in production — RT5 — so the
+    // non-faulting walk is exact). Mirrors the char seams otherwise. ----
 
     fn value_present_faulting(&self, key_bytes: &[u8]) -> Result<bool> {
         let lockfree_root = self.lockfree_root.as_ref().ok_or_else(|| {
@@ -408,8 +408,8 @@ impl<V: DictionaryValue, S: BlockStorage> DurableOverlayWrite<ByteKey, V, S>
 // ============================================================================
 
 impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
-    /// **Flip F0 — production-write/read-path router.** `true` iff reads/writes/
-    /// checkpoint take the lock-free overlay path for this trie. Thin delegator to
+    /// **Production-write/read-path router.** `true` iff reads/writes/checkpoint
+    /// take the lock-free overlay path for this trie. Thin delegator to
     /// [`LockFreeOverlay::route_overlay`]. Since L3.3 deleted the owned tree, every
     /// constructor installs the overlay, so this is universally `true`.
     #[inline]
@@ -417,15 +417,11 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
         <Self as LockFreeOverlay<ByteKey, V, S>>::route_overlay(self)
     }
 
-    /// Overlay-eligibility gate (`V ∈ {(), i64}` for byte). Thin delegator.
+    // (The `flip_to_overlay` + `overlay_eligible_v` inherent wrappers were deleted
+    // with the dead flip machinery — the overlay is the sole representation, built
+    // directly by every constructor; there is no eligibility gate and no flip.)
     #[cfg_attr(not(test), allow(dead_code))]
     #[inline]
-
-    /// **Flip construction helper.** Thin delegator to
-    /// [`LockFreeOverlay::flip_to_overlay`]. Opt-in, REVERSIBLE (M2a): a NO-OP
-    /// returning `false` for ineligible `V`; for eligible `V` it enables the
-    /// overlay, stamps the WAL Overlay regime on a fresh WAL, and makes
-    /// `route_overlay()` true.
     #[cfg_attr(not(test), allow(dead_code))]
     #[inline]
     // ---- inherent skins over the trait read engine (used by the M2a test) ----
@@ -496,22 +492,22 @@ mod tests {
             .prefix("byte-m4b-create-flip")
             .tempdir_in("target/test-tmp")
             .expect("scratch tempdir under target/test-tmp");
-        // Eligible V = (): the create-flip routes to the overlay.
+        // V = (): the constructor installs the overlay.
         let path_unit = dir.path().join("unit.part");
         let trie_unit = PersistentARTrie::<()>::create(&path_unit).expect("create<()>");
         assert!(
             trie_unit.route_overlay(),
             "M4b: a fresh create::<()>() must flip to the overlay (route_overlay true)"
         );
-        // Eligible V = i64: the create-flip routes to the overlay.
+        // V = i64: the constructor installs the overlay.
         let path_i64 = dir.path().join("i64.part");
         let trie_i64 = PersistentARTrie::<i64>::create(&path_i64).expect("create<i64>");
         assert!(
             trie_i64.route_overlay(),
             "M4b: a fresh create::<i64>() must flip to the overlay (route_overlay true)"
         );
-        // Arbitrary V = String is overlay-eligible (the default): a fresh
-        // `create::<String>()` create-flips to the overlay.
+        // Arbitrary V = String: the overlay is the sole representation for ALL V, so
+        // a fresh `create::<String>()` installs the overlay like every other type.
         let path_str = dir.path().join("str.part");
         let trie_str = PersistentARTrie::<String>::create(&path_str).expect("create<String>");
         assert!(

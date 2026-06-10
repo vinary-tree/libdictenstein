@@ -1,19 +1,18 @@
-//! Char seam impl of the shared [`LockFreeOverlay`] flip + thin inherent
-//! wrappers preserving the char public surface.
+//! Char seam impl of the shared [`LockFreeOverlay`] overlay-install + thin inherent
+//! wrapper preserving the char public surface.
 //!
-//! The overlay-flip genericization (`docs/design/overlay-flip-genericization.md`
-//! §2, Step 1) extracted the lock-free-overlay flip (route + read-engine + flip +
-//! reestablish) into the SHARED GENERIC
+//! The overlay genericization (`docs/design/overlay-flip-genericization.md`
+//! §2, Step 1) extracted the lock-free-overlay machinery (route + read-engine +
+//! overlay install + reestablish) into the SHARED GENERIC
 //! [`LockFreeOverlay`](crate::persistent_artrie_core::overlay::flip::LockFreeOverlay)
 //! trait in `persistent_artrie_core::overlay::flip`. This module now holds only:
 //!
 //! 1. the char SEAM impl `impl LockFreeOverlay<CharKey, V, S> for
-//!    PersistentARTrieChar<V, S>` (the per-variant owned readers / overlay
-//!    publishers / WAL accessors / `CounterValue = u64`);
-//! 2. thin inherent wrappers (`route_overlay`/`flip_to_overlay`/
-//!    `overlay_eligible_v`) that DELEGATE to the trait, so the existing
-//!    inherent-syntax call sites (`self.route_overlay()`, …) keep compiling and
-//!    behaving IDENTICALLY.
+//!    PersistentARTrieChar<V, S>` (the per-variant overlay publishers / WAL
+//!    accessors / `CounterValue = u64`);
+//! 2. a thin inherent wrapper (`route_overlay`) that DELEGATES to the trait, so the
+//!    existing inherent-syntax call sites (`self.route_overlay()`, …) keep compiling
+//!    and behaving IDENTICALLY.
 //!
 //! **L3.3 — the overlay is the SOLE representation.** Every char constructor
 //! installs the lock-free overlay, so `route_overlay()` is universally true; the
@@ -55,7 +54,7 @@ use super::persist::CheckpointSnapshot;
 impl<V: DictionaryValue, S: BlockStorage> LockFreeOverlay<CharKey, V, S>
     for super::PersistentARTrieChar<V, S>
 {
-    /// `u64` — the char counter monomorph (byte's is `i64`).
+    /// `u64` — the char counter monomorph (byte's is `u64` too, post-u64-restoration).
     type CounterValue = u64;
 
     // ---- small accessors ----
@@ -93,7 +92,7 @@ impl<V: DictionaryValue, S: BlockStorage> LockFreeOverlay<CharKey, V, S>
     fn wal_stamp_overlay_regime(&self) {
         if let Some(ref writer) = self.wal_writer {
             if let Err(e) = writer.set_overlay_regime() {
-                log::warn!("flip_to_overlay: could not stamp Overlay regime: {:?}", e);
+                log::warn!("install_overlay: could not stamp Overlay regime: {:?}", e);
             }
         }
     }
@@ -497,8 +496,8 @@ impl<V: DictionaryValue, S: BlockStorage> OverlayCheckpoint<CharKey, V, S>
 // ============================================================================
 
 impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
-    /// **Flip F0 — production-write/read-path router.** `true` iff reads/writes/
-    /// checkpoint take the lock-free overlay path for this trie. Thin delegator to
+    /// **Production-write/read-path router.** `true` iff reads/writes/checkpoint
+    /// take the lock-free overlay path for this trie. Thin delegator to
     /// [`LockFreeOverlay::route_overlay`]. Kept `pub` (external tests call it).
     #[inline]
     pub fn route_overlay(&self) -> bool {
@@ -508,9 +507,8 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
 
 #[cfg(test)]
 mod tests {
-    /// S5-12 (V-1) + F2: `overlay_eligible_v()` is true for ALL `V` (arbitrary-V
-    /// overlay routing is the default), so a fresh `create::<String>()` create-flips
-    /// to the overlay.
+    /// The overlay is the sole representation for ALL `V`, so a fresh
+    /// `create::<String>()` installs the overlay like every other value type.
     #[test]
     fn v1_arbitrary_v_create_flips_to_overlay() {
         use crate::persistent_artrie_char::PersistentARTrieChar;

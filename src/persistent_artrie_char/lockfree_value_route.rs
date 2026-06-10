@@ -1,24 +1,20 @@
-//! Per-monomorph routing for the VALUED production mutators under the lock-free
-//! flip (`insert_with_value` / `increment` / `upsert`).
+//! Per-monomorph routing for the VALUED counter increment (`route_increment`).
 //!
 //! # Why this module exists
 //!
-//! The lock-free overlay's value-write path
-//! ([`build_value_path_recursive`](super::PersistentARTrieChar)) is hardcoded
-//! `<u64>` (the n-gram counter domain; arbitrary `V` needs the G1 single-phase
-//! genericization, out of scope for the flip — design §1). So the VALUED
-//! production mutators must route to the overlay ONLY for the `V = u64` monomorph
-//! and stay on the proven owned tree for every other `V` (the design's "arbitrary
-//! V → forced OwnedTree" gap).
+//! The counter RMW fast path uses the lock-free overlay's `<u64>`-typed Order-A
+//! increment primitive. The generic mutators live in one `impl<V: DictionaryValue,
+//! S>` block that cannot name `PersistentARTrieChar<u64, S>`'s inherent
+//! `*_cas_durable` methods, so the u64 counter fast path must route to the overlay
+//! ONLY for the `V = u64` monomorph.
 //!
-//! Rust has no stable specialization, and the generic mutators live in one
-//! `impl<V: DictionaryValue, S>` block that cannot name `PersistentARTrieChar<u64,
-//! S>`'s inherent `*_cas_durable` methods. The idiomatic, **zero-unsafe** solution
-//! is a free function that does a SAFE [`Any`](std::any::Any) downcast of `&self`
-//! to the `u64` monomorph (`DictionaryValue: 'static`, and the trie + block
-//! storage are `'static`), then calls the thin Order-A overlay primitives. When
-//! the downcast fails (`V != u64`) it returns `None`, signalling the caller to run
-//! its proven owned-tree body. The owned arms are unchanged.
+//! Rust has no stable specialization. The idiomatic, **zero-unsafe** solution is a
+//! free function that does a SAFE [`Any`](std::any::Any) downcast of `&self` to the
+//! `u64` monomorph (`DictionaryValue: 'static`, and the trie + block storage are
+//! `'static`), then calls the thin Order-A overlay primitives. When the downcast
+//! fails (`V != u64`) it returns `None`, signalling the caller to run the general
+//! overlay value-CAS increment path. The overlay is the sole representation for ALL
+//! `V`, so both branches write to the overlay.
 
 use crate::persistent_artrie::block_storage::BlockStorage;
 use crate::persistent_artrie::error::Result;

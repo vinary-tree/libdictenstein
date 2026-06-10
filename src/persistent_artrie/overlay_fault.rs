@@ -319,9 +319,9 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
     /// **REVERSIBLE BENCH/TEST CHECKPOINT — EVICTION-ON** (byte twin of char's
     /// `bench_immutable_checkpoint_with_eviction`, Phase 6). Capture the IMMUTABLE overlay
     /// + publish RETAINING the WAL with eviction-registry publication — directly via the
-    /// overlay capture/publish seams (NOT the production `checkpoint()` route-split, which
-    /// is INERT pre-flip). This is what populates + publishes the byte disk-location
-    /// registry the OE tests then evict from (the M-2a stamps are written here).
+    /// overlay capture/publish seams (NOT the production `checkpoint()` route-split). This
+    /// is what populates + publishes the byte disk-location registry the OE tests then
+    /// evict from (the M-2a stamps are written here).
     pub(crate) fn bench_immutable_checkpoint_with_eviction(&self) -> Result<()> {
         let snapshot = self.capture_overlay_snapshot()?;
         self.publish_overlay_snapshot_retaining_with_eviction(snapshot)
