@@ -1423,7 +1423,7 @@ mod cx_compressed_serialize_byte {
         let path = dir.path().join("t.artb");
         let mut trie = PersistentARTrie::<u64>::create(&path).expect("create");
         trie.set_durability_policy(DurabilityPolicy::Immediate);
-        trie.enable_lockfree();
+        trie.install_overlay();
         trie.bench_enable_eviction(EvictionConfig::without_memory_monitor())
             .expect("enable eviction");
         // A long single-byte-child chain (≥2 chunks) below a branch ('a' chain + 'b' sibling).

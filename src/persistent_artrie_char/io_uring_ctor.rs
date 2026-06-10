@@ -130,7 +130,7 @@ impl<V: DictionaryValue>
 
         // Read root pointer and entry count from header
         let root_ptr = disk_manager.root_ptr()?;
-        let entry_count = disk_manager.entry_count()?;
+        let _entry_count = disk_manager.entry_count()?;
 
         // Create buffer manager (takes ownership of disk_manager)
         let buffer_manager = BufferManager::new(disk_manager, DEFAULT_CHAR_BUFFER_POOL_SIZE);

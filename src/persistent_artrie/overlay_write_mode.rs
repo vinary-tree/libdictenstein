@@ -71,14 +71,14 @@ impl<V: DictionaryValue, S: BlockStorage> LockFreeOverlay<ByteKey, V, S>
     }
 
     #[inline]
-    fn enable_lockfree(&mut self) {
-        // Delegate to the existing inherent `enable_lockfree` (lockfree_cas.rs),
+    fn install_overlay(&mut self) {
+        // Delegate to the existing inherent `install_overlay` (lockfree_cas.rs),
         // which installs the `AtomicNodePtr` root + cache. NB byte's
-        // `enable_lockfree` does NOT stamp the WAL Overlay regime (unlike char's);
+        // `install_overlay` does NOT stamp the WAL Overlay regime (unlike char's);
         // the generic `flip_to_overlay` default performs the regime stamp via the
         // `wal_current_lsn() == Some(1)` empty-WAL guard, so byte's flip is still
         // durably correct.
-        PersistentARTrie::enable_lockfree(self)
+        PersistentARTrie::install_overlay(self)
     }
 
     #[inline]
@@ -313,7 +313,7 @@ impl<V: DictionaryValue, S: BlockStorage> DurableOverlayWrite<ByteKey, V, S>
     fn value_present_faulting(&self, key_bytes: &[u8]) -> Result<bool> {
         let lockfree_root = self.lockfree_root.as_ref().ok_or_else(|| {
             PersistentARTrieError::InvalidOperation(
-                "Lock-free mode not enabled. Call enable_lockfree() first.".to_string(),
+                "Lock-free mode not enabled. Call install_overlay() first.".to_string(),
             )
         })?;
         let _epoch = self.epoch_manager.enter_read();
@@ -323,7 +323,7 @@ impl<V: DictionaryValue, S: BlockStorage> DurableOverlayWrite<ByteKey, V, S>
     fn value_read_faulting(&self, key_bytes: &[u8]) -> Result<Option<V>> {
         let lockfree_root = self.lockfree_root.as_ref().ok_or_else(|| {
             PersistentARTrieError::InvalidOperation(
-                "Lock-free mode not enabled. Call enable_lockfree() first.".to_string(),
+                "Lock-free mode not enabled. Call install_overlay() first.".to_string(),
             )
         })?;
         let _epoch = self.epoch_manager.enter_read();
@@ -341,7 +341,7 @@ impl<V: DictionaryValue, S: BlockStorage> DurableOverlayWrite<ByteKey, V, S>
         use super::nodes::persistent_node::PersistentNode;
         let lockfree_root = self.lockfree_root.as_ref().ok_or_else(|| {
             PersistentARTrieError::InvalidOperation(
-                "Lock-free mode not enabled. Call enable_lockfree() first.".to_string(),
+                "Lock-free mode not enabled. Call install_overlay() first.".to_string(),
             )
         })?;
         let _epoch = self.epoch_manager.enter_read();

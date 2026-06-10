@@ -35,7 +35,7 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
     /// The byte twin of char's `apply_create_flip` (persistent_artrie_char/mmap_ctor.rs).
     ///
     /// A `create*` ctor builds a FRESH WAL (`current_lsn() == 1`), so
-    /// `flip_to_overlay`'s shared default — `enable_lockfree()` (which stamps the
+    /// `flip_to_overlay`'s shared default — `install_overlay()` (which stamps the
     /// Overlay regime on the empty WAL, M2d) + selects `LockFreeOverlay` + the V-2
     /// stamp re-check — MUST engage. `!flip_to_overlay()` therefore means the stamp
     /// silently failed (a torn header / no WAL), surfaced as a hard error rather than
@@ -97,13 +97,13 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
             commit_seq: std::sync::atomic::AtomicU64::new(0),
         };
         // **L3.3:** an in-memory `::new()` trie installs an empty lock-free overlay (WAL-less —
-        // `enable_lockfree`'s WAL stamp is a no-op without a `wal_writer`), so `route_overlay()`
+        // `install_overlay`'s WAL stamp is a no-op without a `wal_writer`), so `route_overlay()`
         // is UNIVERSALLY true across every constructor (the owned tree is gone). Writes degrade to
         // a non-durable in-memory CAS (the durable path's WAL append returns LSN 0 under
         // `Immediate`; `mark_committed(0)` is a no-op); reads + the zipper walk the overlay.
         // `checkpoint()` still errors (no buffer manager). This does NOT route through
         // `flip_to_overlay` (which hard-requires a WAL) — just the two WAL-less primitives.
-        trie.enable_lockfree();
+        trie.install_overlay();
         trie
     }
 

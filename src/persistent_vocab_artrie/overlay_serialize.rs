@@ -672,7 +672,7 @@ mod tests {
         let _ = std::fs::remove_file(&path);
 
         let mut vocab = PersistentVocabARTrie::create(&path).expect("create vocab");
-        vocab.enable_lockfree();
+        vocab.install_overlay();
 
         // Shared prefixes, branches, and a proper-prefix term ("app" ⊂ "apple"/"applet").
         let terms = ["apple", "app", "applet", "banana", "band", "can", "candy"];

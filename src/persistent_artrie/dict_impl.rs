@@ -340,7 +340,7 @@ pub struct PersistentARTrie<V: DictionaryValue = (), S: BlockStorage = MmapDiskM
     // === Lock-Free Layer ===
     /// Lock-free root pointer for CAS-based concurrent inserts.
     ///
-    /// When `enable_lockfree()` is called, this pointer becomes the primary
+    /// When `install_overlay()` is called, this pointer becomes the primary
     /// root for all lock-free operations. The persistent root remains separate
     /// and is merged during checkpoint.
     ///

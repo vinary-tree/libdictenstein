@@ -123,7 +123,7 @@ fn overlay_dictionary_node_faults_evicted_children_in() {
     let mut owned: PersistentARTrieChar<()> =
         PersistentARTrieChar::create_with_config(&path, WalConfig::no_archive()).expect("create");
     owned.set_durability_policy(DurabilityPolicy::Immediate);
-    owned.enable_lockfree();
+    owned.install_overlay();
     owned
         .bench_enable_eviction(EvictionConfig::without_memory_monitor())
         .expect("bench_enable_eviction");

@@ -98,7 +98,7 @@ fn cold_eviction_under_concurrent_writers_reopens_losing_nothing() {
             PersistentARTrieChar::create_with_config(&path, WalConfig::no_archive())
                 .expect("create");
         owned.set_durability_policy(DurabilityPolicy::Immediate);
-        owned.enable_lockfree();
+        owned.install_overlay();
         owned
             .bench_enable_eviction(EvictionConfig::without_memory_monitor())
             .expect("bench_enable_eviction");
@@ -213,7 +213,7 @@ fn reader_concurrent_with_overlay_eviction_sees_consistent_snapshot() {
     let mut owned: PersistentARTrieChar<()> =
         PersistentARTrieChar::create_with_config(&path, WalConfig::no_archive()).expect("create");
     owned.set_durability_policy(DurabilityPolicy::Immediate);
-    owned.enable_lockfree();
+    owned.install_overlay();
     owned
         .bench_enable_eviction(EvictionConfig::without_memory_monitor())
         .expect("bench_enable_eviction");
@@ -315,7 +315,7 @@ fn evict_then_reload_returns_exact_values() {
             PersistentARTrieChar::create_with_config(&path, WalConfig::no_archive())
                 .expect("create");
         owned.set_durability_policy(DurabilityPolicy::Immediate);
-        owned.enable_lockfree();
+        owned.install_overlay();
         owned
             .bench_enable_eviction(EvictionConfig::without_memory_monitor())
             .expect("bench_enable_eviction");
@@ -388,7 +388,7 @@ mod oe4 {
                 PersistentARTrieChar::create_with_config(&path, WalConfig::no_archive())
                     .expect("create");
             owned.set_durability_policy(DurabilityPolicy::Immediate);
-            owned.enable_lockfree();
+            owned.install_overlay();
             owned
                 .bench_enable_eviction(EvictionConfig::without_memory_monitor())
                 .expect("bench_enable_eviction");
@@ -468,7 +468,7 @@ fn evict_then_read_faults_in_membership() {
     let mut owned: PersistentARTrieChar<()> =
         PersistentARTrieChar::create_with_config(&path, WalConfig::no_archive()).expect("create");
     owned.set_durability_policy(DurabilityPolicy::Immediate);
-    owned.enable_lockfree();
+    owned.install_overlay();
     owned
         .bench_enable_eviction(EvictionConfig::without_memory_monitor())
         .expect("bench_enable_eviction");
@@ -526,7 +526,7 @@ fn evict_then_read_faults_in_exact_value() {
     let mut owned: PersistentARTrieChar<u64> =
         PersistentARTrieChar::create_with_config(&path, WalConfig::no_archive()).expect("create");
     owned.set_durability_policy(DurabilityPolicy::Immediate);
-    owned.enable_lockfree();
+    owned.install_overlay();
     owned
         .bench_enable_eviction(EvictionConfig::without_memory_monitor())
         .expect("bench_enable_eviction");
@@ -584,7 +584,7 @@ fn evict_faultin_evict_thrash_terminates() {
     let mut owned: PersistentARTrieChar<u64> =
         PersistentARTrieChar::create_with_config(&path, WalConfig::no_archive()).expect("create");
     owned.set_durability_policy(DurabilityPolicy::Immediate);
-    owned.enable_lockfree();
+    owned.install_overlay();
     owned
         .bench_enable_eviction(EvictionConfig::without_memory_monitor())
         .expect("bench_enable_eviction");
@@ -657,7 +657,7 @@ fn evict_then_write_under_evicted_prefix_reopen_loses_nothing() {
             PersistentARTrieChar::create_with_config(&path, WalConfig::no_archive())
                 .expect("create");
         owned.set_durability_policy(DurabilityPolicy::Immediate);
-        owned.enable_lockfree();
+        owned.install_overlay();
         owned
             .bench_enable_eviction(EvictionConfig::without_memory_monitor())
             .expect("bench_enable_eviction");
@@ -759,7 +759,7 @@ fn concurrent_reader_writer_evictor_faulter_no_uaf_and_complete() {
     let mut owned: PersistentARTrieChar<()> =
         PersistentARTrieChar::create_with_config(&path, WalConfig::no_archive()).expect("create");
     owned.set_durability_policy(DurabilityPolicy::Immediate);
-    owned.enable_lockfree();
+    owned.install_overlay();
     owned
         .bench_enable_eviction(EvictionConfig::without_memory_monitor())
         .expect("bench_enable_eviction");
@@ -916,7 +916,7 @@ fn oe5_overwrite_since_checkpoint_is_not_evicted_to_stale_image() {
     let mut owned: PersistentARTrieChar<u64> =
         PersistentARTrieChar::create_with_config(&path, WalConfig::no_archive()).expect("create");
     owned.set_durability_policy(DurabilityPolicy::Immediate);
-    owned.enable_lockfree();
+    owned.install_overlay();
     owned
         .bench_enable_eviction(EvictionConfig::without_memory_monitor())
         .expect("bench_enable_eviction");
@@ -1014,7 +1014,7 @@ fn oe9_iter_prefix_faults_evicted_subtree_no_under_report() {
     let mut owned: PersistentARTrieChar<u64> =
         PersistentARTrieChar::create_with_config(&path, WalConfig::no_archive()).expect("create");
     owned.set_durability_policy(DurabilityPolicy::Immediate);
-    owned.enable_lockfree();
+    owned.install_overlay();
     owned
         .bench_enable_eviction(EvictionConfig::without_memory_monitor())
         .expect("bench_enable_eviction");
@@ -1110,7 +1110,7 @@ fn phase7_resident_budget_checkpoint_tail_evicts_to_budget() {
             PersistentARTrieChar::create_with_config(&path, WalConfig::no_archive())
                 .expect("create");
         owned.set_durability_policy(DurabilityPolicy::Immediate);
-        owned.enable_lockfree();
+        owned.install_overlay();
         let config = EvictionConfig {
             resident_budget_bytes: budget,
             ..EvictionConfig::without_memory_monitor()

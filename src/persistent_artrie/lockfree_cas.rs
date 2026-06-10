@@ -158,10 +158,10 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
     ///
     /// ```text
     /// let mut trie = PersistentARTrie::<()>::create("trie.part")?;
-    /// trie.enable_lockfree();
+    /// trie.install_overlay();
     /// trie.insert_cas(b"hello");  // Now works concurrently
     /// ```
-    pub(crate) fn enable_lockfree(&mut self) {
+    pub(crate) fn install_overlay(&mut self) {
         use super::nodes::atomic_ptr::AtomicNodePtr;
         use super::nodes::persistent_node::PersistentNode;
         use dashmap::DashMap;
@@ -175,7 +175,7 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
         self.lockfree_root = Some(AtomicNodePtr::new(root_node));
         self.lockfree_cache = Some(DashMap::new());
 
-        // S4 / M2d (byte twin of char's `enable_lockfree` regime stamp): stamp the
+        // S4 / M2d (byte twin of char's `install_overlay` regime stamp): stamp the
         // WAL header to the Overlay regime on an EMPTY WAL so crash recovery DROPS
         // the idempotent NO-RANK two-append-window orphans the durable producers may
         // leave (else, under Owned, an unranked orphan is kept-@-lsn and could
@@ -186,7 +186,7 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
         // (`current_lsn() == 1` ⇒ no records appended) — an in-place restamp of a
         // non-empty file is torn-write-unsafe and would drop pre-existing Owned
         // records (the non-empty case needs a rotation, deferred to the M4 flip).
-        // REVERSIBLE/opt-in: every `enable_lockfree` caller is opt-in/test today (no
+        // REVERSIBLE/opt-in: every `install_overlay` caller is opt-in/test today (no
         // production/default ctor reaches it); a PRODUCTION caller would make this
         // the irreversible M4 flip.
         if let Some(ref writer) = self.wal_writer {
@@ -197,14 +197,14 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
             // holds owned records, silently DROPPING them on reopen under Overlay).
             if writer.current_lsn() == 1 {
                 if let Err(e) = writer.set_overlay_regime() {
-                    log::warn!("enable_lockfree: could not stamp Overlay regime: {:?}", e);
+                    log::warn!("install_overlay: could not stamp Overlay regime: {:?}", e);
                 }
             }
         }
     }
 
     /// **F5 — install a PRE-BUILT overlay root** (the dense→overlay walk-converter's
-    /// output) as the live lock-free overlay, instead of [`Self::enable_lockfree`]'s
+    /// output) as the live lock-free overlay, instead of [`Self::install_overlay`]'s
     /// EMPTY root (the byte twin of char's `install_prebuilt_overlay_root_inherent`).
     /// Sets `lockfree_root = Some(AtomicNodePtr::new(root))` + a fresh empty lookup
     /// cache. Idempotent (only installs if NOT already enabled). Does NOT stamp the WAL
@@ -277,11 +277,11 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
         let lockfree_root = self
             .lockfree_root
             .as_ref()
-            .expect("Lock-free mode not enabled. Call enable_lockfree() first.");
+            .expect("Lock-free mode not enabled. Call install_overlay() first.");
         let lockfree_cache = self
             .lockfree_cache
             .as_ref()
-            .expect("Lock-free mode not enabled. Call enable_lockfree() first.");
+            .expect("Lock-free mode not enabled. Call install_overlay() first.");
 
         // Fast path: check cache first
         if lockfree_cache.contains_key(term) {
@@ -558,7 +558,7 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
     // two-phase `try_set_final` arbiter is untouched). The durable path is
     // SINGLE-PHASE: the leaf is published FINAL inside the root CAS, so the root
     // CAS is the SOLE linearization point and the claimed `commit_seq` generation
-    // == visibility order. Opt-in (`enable_lockfree` + a synchronous policy); NOT
+    // == visibility order. Opt-in (`install_overlay` + a synchronous policy); NOT
     // routed from production `insert`/`remove` until M4.
     // ====================================================================
 
@@ -570,7 +570,7 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
     /// byte twin of char's `insert_cas_durable`; the gate + commit-rank/watermark
     /// tail route through the SHARED GENERIC [`DurableOverlayWrite`] defaults.
     ///
-    /// Requires `enable_lockfree()` and a synchronous durability policy
+    /// Requires `install_overlay()` and a synchronous durability policy
     /// (`Immediate`/`GroupCommit`). Returns `Ok(true)` iff this call newly inserted
     /// the term.
     ///
@@ -594,12 +594,12 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
 
         let lockfree_root = self.lockfree_root.as_ref().ok_or_else(|| {
             PersistentARTrieError::InvalidOperation(
-                "Lock-free mode not enabled. Call enable_lockfree() first.".to_string(),
+                "Lock-free mode not enabled. Call install_overlay() first.".to_string(),
             )
         })?;
         let lockfree_cache = self.lockfree_cache.as_ref().ok_or_else(|| {
             PersistentARTrieError::InvalidOperation(
-                "Lock-free mode not enabled. Call enable_lockfree() first.".to_string(),
+                "Lock-free mode not enabled. Call install_overlay() first.".to_string(),
             )
         })?;
 
@@ -718,12 +718,12 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
 
         let lockfree_root = self.lockfree_root.as_ref().ok_or_else(|| {
             PersistentARTrieError::InvalidOperation(
-                "Lock-free mode not enabled. Call enable_lockfree() first.".to_string(),
+                "Lock-free mode not enabled. Call install_overlay() first.".to_string(),
             )
         })?;
         let lockfree_cache = self.lockfree_cache.as_ref().ok_or_else(|| {
             PersistentARTrieError::InvalidOperation(
-                "Lock-free mode not enabled. Call enable_lockfree() first.".to_string(),
+                "Lock-free mode not enabled. Call install_overlay() first.".to_string(),
             )
         })?;
 
@@ -1203,7 +1203,7 @@ impl<S: BlockStorage> PersistentARTrie<u64, S> {
         let lockfree_root = self
             .lockfree_root
             .as_ref()
-            .expect("Lock-free mode not enabled. Call enable_lockfree() first.");
+            .expect("Lock-free mode not enabled. Call install_overlay() first.");
 
         // Empty-string support (H4): the empty key "" IS the root; the loop below
         // reads the root counter via `find_leaf_recursive(root, b"", 0)` (returns the
@@ -1327,7 +1327,7 @@ impl<S: BlockStorage> PersistentARTrie<u64, S> {
     /// `delta` is `u64` (the byte overlay counter domain is now a full `u64`,
     /// matching char — the C4 [`DurableOverlayWrite::bound_increment_delta`] seam
     /// chunks a delta above `i64::MAX` into commutative WAL deltas rather than
-    /// rejecting it). Requires `enable_lockfree()` and a synchronous durability
+    /// rejecting it). Requires `install_overlay()` and a synchronous durability
     /// policy (`Immediate`/`GroupCommit`). Returns the new accumulated count.
     ///
     /// Thin wrapper over the SHARED GENERIC Order-A increment template
@@ -1363,7 +1363,7 @@ impl<S: BlockStorage> PersistentARTrie<u64, S> {
     ///
     /// Order-A: the `Insert{value}` WAL record is appended+synced DURABLE before the
     /// visibility CAS; the watermark advances only after the CAS lands (+ the
-    /// CommitRank). Requires a synchronous durability policy and `enable_lockfree()`.
+    /// CommitRank). Requires a synchronous durability policy and `install_overlay()`.
     /// Returns `Ok(true)` iff this call newly inserted the term. The whole `u64`
     /// range is representable (the value is published via the path-copy value seam,
     /// not a delta-based i64 WAL record), so there is no value-domain reject — a
@@ -1437,7 +1437,7 @@ mod reclaim_tests {
             .expect("scratch tempdir under target/test-tmp");
         let path = dir.path().join("overlay.part");
         let mut trie = PersistentARTrie::<()>::create(&path).expect("create trie");
-        trie.enable_lockfree();
+        trie.install_overlay();
         (dir, trie)
     }
 
@@ -1518,7 +1518,7 @@ mod durable_write_tests {
 
     /// **THE #41 BYTE WITNESS (membership).** Terms inserted durably + acknowledged
     /// survive a reopen WITHOUT a checkpoint (pure WAL replay = durability proven).
-    /// Explicitly enables the overlay write mode (`enable_lockfree` +
+    /// Explicitly enables the overlay write mode (`install_overlay` +
     /// `set_overlay_write_mode(LockFreeOverlay)`) so the durable path is exercised as
     /// the M4 flip will use it.
     #[test]
@@ -1532,7 +1532,7 @@ mod durable_write_tests {
         {
             let mut trie = PersistentARTrie::<()>::create(&path).expect("create");
             trie.set_durability_policy(DurabilityPolicy::Immediate);
-            trie.enable_lockfree();
+            trie.install_overlay();
             // `inserted_count` tracks committed inserts as a u64 (NOT an `as`-cast of
             // the enumerate index) so this membership test stays free of the forbidden
             // counter-codec gate tokens (the watermark/LSN math is not a counter leaf).
@@ -1593,7 +1593,7 @@ mod durable_write_tests {
         {
             let mut trie = PersistentARTrie::<u64>::create(&path).expect("create");
             trie.set_durability_policy(DurabilityPolicy::Immediate);
-            trie.enable_lockfree();
+            trie.install_overlay();
             for (key, steps, delta) in plan {
                 let mut last = 0u64;
                 for _ in 0..steps {
@@ -1637,7 +1637,7 @@ mod durable_write_tests {
         {
             let mut trie = PersistentARTrie::<u64>::create(&path).expect("create");
             trie.set_durability_policy(DurabilityPolicy::Immediate);
-            trie.enable_lockfree();
+            trie.install_overlay();
             assert!(trie
                 .insert_cas_with_value_durable(b"alpha", 11)
                 .expect("valued insert"));
@@ -1682,7 +1682,7 @@ mod durable_write_tests {
         {
             let mut trie = PersistentARTrie::<u64>::create(&path).expect("create");
             trie.set_durability_policy(DurabilityPolicy::Immediate);
-            trie.enable_lockfree();
+            trie.install_overlay();
             assert!(trie
                 .insert_cas_with_value_durable(b"counter", 42)
                 .expect("valued insert"));
@@ -1722,7 +1722,7 @@ mod durable_write_tests {
         {
             let mut trie = PersistentARTrie::<()>::create(&path).expect("create");
             trie.set_durability_policy(DurabilityPolicy::Immediate);
-            trie.enable_lockfree();
+            trie.install_overlay();
             // "apple"/"apricot" share the "ap" prefix; removing "apple" retains "apricot".
             assert!(trie.insert_cas_durable(b"apple").expect("durable insert"));
             assert!(trie.insert_cas_durable(b"apricot").expect("durable insert"));
@@ -1791,7 +1791,7 @@ mod durable_write_tests {
         let path = dir.path().join("t.part");
         let mut trie = PersistentARTrie::<u64>::create(&path).expect("create");
         trie.set_durability_policy(DurabilityPolicy::Immediate);
-        trie.enable_lockfree();
+        trie.install_overlay();
 
         // (1) A single durable delta above i64::MAX must be rejected by the seam
         // (one i64 WAL chunk cannot carry it), not wrapped. `(u64::MAX / 2) + 1`
@@ -1865,7 +1865,7 @@ mod durable_write_tests {
         let path = dir.path().join("t.part");
         let mut trie = PersistentARTrie::<u64>::create(&path).expect("create");
         trie.set_durability_policy(DurabilityPolicy::None);
-        trie.enable_lockfree();
+        trie.install_overlay();
         assert!(
             trie.insert_cas_durable(b"x").is_err(),
             "insert_cas_durable must reject a non-synchronous policy"
@@ -1898,7 +1898,7 @@ mod durable_write_tests {
         let acknowledged: Vec<Vec<u8>> = {
             let mut trie = PersistentARTrie::<()>::create(&path).expect("create");
             trie.set_durability_policy(DurabilityPolicy::Immediate);
-            trie.enable_lockfree();
+            trie.install_overlay();
             let trie = Arc::new(trie);
             let barrier = Arc::new(Barrier::new(n_threads));
 
@@ -1990,7 +1990,7 @@ mod m2d_regime_aware_recovery_tests {
         {
             let mut trie = PersistentARTrie::<()>::create(&path).expect("create");
             trie.set_durability_policy(DurabilityPolicy::Immediate);
-            trie.enable_lockfree();
+            trie.install_overlay();
             // Stamps the WAL header regime = Overlay.
             // RANKED survivor: insert_cas_durable appends Insert + CommitRank (acked).
             assert!(
@@ -2034,7 +2034,7 @@ mod m2d_regime_aware_recovery_tests {
         {
             let mut trie = PersistentARTrie::<()>::create(&path).expect("create");
             trie.set_durability_policy(DurabilityPolicy::Immediate);
-            trie.enable_lockfree();
+            trie.install_overlay();
             // RANKED insert then RANKED remove of the SAME term `t`.
             assert!(trie.insert_cas_durable(b"t").expect("durable insert"));
             assert!(
@@ -2078,7 +2078,7 @@ mod m2d_regime_aware_recovery_tests {
         {
             let trie = PersistentARTrie::<()>::create(&path).expect("create");
             trie.set_durability_policy(DurabilityPolicy::Immediate);
-            // NO enable_lockfree / NO set_overlay_write_mode ⇒ the WAL header regime
+            // NO install_overlay / NO set_overlay_write_mode ⇒ the WAL header regime
             // stays Owned (rank-less).
             for t in terms {
                 trie.insert(t);
@@ -2140,7 +2140,7 @@ mod m2d_regime_aware_recovery_tests {
         {
             let mut trie = PersistentARTrie::<u64>::create(&path).expect("create");
             trie.set_durability_policy(DurabilityPolicy::Immediate);
-            trie.enable_lockfree();
+            trie.install_overlay();
             // 3 ranked +7 deltas ⇒ 21.
             for _ in 0..3 {
                 trie.try_increment_cas_durable(b"ctr", 7)

@@ -15,7 +15,7 @@
 //! at `V = u64`) plus an in-memory `reverse_term_map` (id → term) for reverse lookups. Inserts
 //! are `&self`-concurrent durable Order-A operations (WAL `Insert{value:id}` → overlay root-CAS →
 //! CommitRank → mark_committed) — many threads may insert through a shared `Arc` with no external
-//! locking (the single lock-free impl: no `enable_lockfree` toggle, no `ConcurrentVocabARTrie`
+//! locking (the single lock-free impl: no `install_overlay` toggle, no `ConcurrentVocabARTrie`
 //! wrapper). A checkpoint publishes the overlay as a dense char-arena image (`vocabulary.vocab`),
 //! RETAINING the WAL (`vocabulary.vocab.wal`) for crash recovery; the reverse map is rebuilt from
 //! the image on reopen.

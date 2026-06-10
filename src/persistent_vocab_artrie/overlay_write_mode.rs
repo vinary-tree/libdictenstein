@@ -100,10 +100,10 @@ impl<S: BlockStorage> LockFreeOverlay<CharKey, u64, S> for PersistentVocabARTrie
     }
 
     #[inline]
-    fn enable_lockfree(&mut self) {
-        // The inherent `enable_lockfree` (lockfree_cas.rs) installs the AtomicNodePtr root +
+    fn install_overlay(&mut self) {
+        // The inherent `install_overlay` (lockfree_cas.rs) installs the AtomicNodePtr root +
         // cache. It does NOT stamp the Overlay regime (the flip does — see `route_overlay`).
-        PersistentVocabARTrie::enable_lockfree(self);
+        PersistentVocabARTrie::install_overlay(self);
     }
 
     #[inline]
@@ -377,12 +377,12 @@ impl<S: BlockStorage> PersistentVocabARTrie<S> {
         <Self as LockFreeOverlay<CharKey, u64, S>>::flip_to_overlay(self)
     }
 
-    /// Require the lock-free root, else a uniform "enable_lockfree() first" error.
+    /// Require the lock-free root, else a uniform "install_overlay() first" error.
     #[inline]
     pub(super) fn require_lockfree_root(&self) -> Result<&AtomicNodePtr<CharKey, u64>> {
         self.lockfree_root.as_ref().ok_or_else(|| {
             PersistentARTrieError::InvalidOperation(
-                "Lock-free mode not enabled. Call enable_lockfree() first.".to_string(),
+                "Lock-free mode not enabled. Call install_overlay() first.".to_string(),
             )
         })
     }

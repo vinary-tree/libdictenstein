@@ -204,13 +204,13 @@ pub(crate) trait LockFreeOverlay<K: KeyEncoding, V: DictionaryValue, S>:
     // ========================================================================
 
     /// The lock-free overlay's atomic root pointer, or `None` if the overlay is
-    /// not installed (`enable_lockfree()` not yet run for this trie).
+    /// not installed (`install_overlay()` not yet run for this trie).
     fn lockfree_root(&self)
         -> Option<&crate::persistent_artrie_core::overlay::AtomicNodePtr<K, V>>;
 
     /// Install the lock-free overlay (an empty `AtomicNodePtr` root + lookup
     /// cache), stamping the WAL Overlay regime when the WAL is empty. Idempotent.
-    fn enable_lockfree(&mut self);
+    fn install_overlay(&mut self);
 
     /// The WAL's current (next) LSN, or `None` for an in-memory trie (no WAL).
     fn wal_current_lsn(&self) -> Option<u64>;
@@ -311,11 +311,11 @@ pub(crate) trait LockFreeOverlay<K: KeyEncoding, V: DictionaryValue, S>:
 
     /// **L3.3 — the production router predicate: overlay-routed iff the overlay is installed.**
     ///
-    /// `true` iff the lock-free overlay is live (`enable_lockfree()` has run ⇒ `lockfree_root`
+    /// `true` iff the lock-free overlay is live (`install_overlay()` has run ⇒ `lockfree_root`
     /// is `Some`). Since L3.3 deleted `kill_switch_to_owned` (the only writer of `OwnedTree`
     /// mode) and the `OverlayWriteMode` enum, an installed `lockfree_root` ALWAYS implies overlay
     /// routing — so the prior `&& uses_overlay()` conjunct is redundant. Every constructor installs
-    /// the overlay (`overlay_eligible_v() == true` for all `V`; `::new()` calls `enable_lockfree`),
+    /// the overlay (`overlay_eligible_v() == true` for all `V`; `::new()` calls `install_overlay`),
     /// so this is universally `true` in production — the owned tree is gone.
     #[inline]
     fn route_overlay(&self) -> bool {
@@ -505,7 +505,7 @@ pub(crate) trait LockFreeOverlay<K: KeyEncoding, V: DictionaryValue, S>:
     // ===== flip / kill-switch =====
 
     /// **S5-10c — flip construction helper.** Make the lock-free overlay the live
-    /// write target: `enable_lockfree()` (which stamps the WAL Overlay regime when
+    /// write target: `install_overlay()` (which stamps the WAL Overlay regime when
     /// the WAL is empty) then select `LockFreeOverlay` so `route_overlay()` becomes
     /// true. Returns the resulting `route_overlay() && stamped_overlay`.
     ///
@@ -516,15 +516,15 @@ pub(crate) trait LockFreeOverlay<K: KeyEncoding, V: DictionaryValue, S>:
         if !Self::overlay_eligible_v() {
             return false; // arbitrary V: never enable the overlay; stay OwnedTree.
         }
-        self.enable_lockfree();
-        // `enable_lockfree` stamps the WAL Overlay regime on its FIRST call (it
+        self.install_overlay();
+        // `install_overlay` stamps the WAL Overlay regime on its FIRST call (it
         // early-returns once `lockfree_root` is set). Belt-and-suspenders: restamp on
         // the fresh-WAL edge (`current_lsn() == 1`) so the V-2 verification below holds
         // even if the first stamp was skipped; a no-op once the Overlay regime is stamped.
         if self.wal_current_lsn() == Some(1) && !self.wal_is_overlay_regime() {
             self.wal_stamp_overlay_regime();
         }
-        // V-2: `enable_lockfree` only `log::warn!`s if the Overlay-regime stamp
+        // V-2: `install_overlay` only `log::warn!`s if the Overlay-regime stamp
         // failed, then STILL enables the overlay — so verify the WAL is ACTUALLY
         // Overlay-regime. An Owned-regime WAL under overlay routing would make
         // recovery KEEP unranked orphans (resurrection). A trie with no WAL
@@ -634,7 +634,7 @@ pub(crate) trait LockFreeOverlay<K: KeyEncoding, V: DictionaryValue, S>:
     ) -> Result<bool> {
         let root_ptr = self.lockfree_root().ok_or_else(|| {
             crate::persistent_artrie_core::error::PersistentARTrieError::InvalidOperation(
-                "Lock-free mode not enabled. Call enable_lockfree() first.".to_string(),
+                "Lock-free mode not enabled. Call install_overlay() first.".to_string(),
             )
         })?;
         loop {
@@ -673,7 +673,7 @@ pub(crate) trait LockFreeOverlay<K: KeyEncoding, V: DictionaryValue, S>:
     ) -> Result<RootPublishOutcome> {
         let root_ptr = self.lockfree_root().ok_or_else(|| {
             crate::persistent_artrie_core::error::PersistentARTrieError::InvalidOperation(
-                "Lock-free mode not enabled. Call enable_lockfree() first.".to_string(),
+                "Lock-free mode not enabled. Call install_overlay() first.".to_string(),
             )
         })?;
         loop {
@@ -747,7 +747,7 @@ pub(crate) trait LockFreeOverlay<K: KeyEncoding, V: DictionaryValue, S>:
     const USE_F5_REOPEN_LOADER: bool = true;
 
     /// **F5 — install a PRE-BUILT overlay root** (the walk-converter's output) as the
-    /// live lock-free overlay, instead of `enable_lockfree`'s EMPTY root. Sets
+    /// live lock-free overlay, instead of `install_overlay`'s EMPTY root. Sets
     /// `lockfree_root = Some(AtomicNodePtr::new(root))` + a fresh lookup cache via the
     /// variant seam [`Self::install_prebuilt_overlay_root_seam`], then selects
     /// `LockFreeOverlay` and stamps/verifies the WAL Overlay regime EXACTLY as

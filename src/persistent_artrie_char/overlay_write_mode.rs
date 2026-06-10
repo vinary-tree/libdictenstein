@@ -70,11 +70,11 @@ impl<V: DictionaryValue, S: BlockStorage> LockFreeOverlay<CharKey, V, S>
     }
 
     #[inline]
-    fn enable_lockfree(&mut self) {
-        // Delegate to the existing inherent `enable_lockfree` (lockfree_cas.rs),
+    fn install_overlay(&mut self) {
+        // Delegate to the existing inherent `install_overlay` (lockfree_cas.rs),
         // which sets up the `AtomicNodePtr` root + cache and stamps the WAL Overlay
         // regime on an EMPTY WAL. Unchanged behavior.
-        super::PersistentARTrieChar::enable_lockfree(self)
+        super::PersistentARTrieChar::install_overlay(self)
     }
 
     #[inline]
@@ -314,7 +314,7 @@ impl<V: DictionaryValue, S: BlockStorage> DurableOverlayWrite<CharKey, V, S>
         let chars: Vec<u32> = term.chars().map(|c| c as u32).collect();
         let lockfree_root = self.lockfree_root.as_ref().ok_or_else(|| {
             crate::persistent_artrie_core::error::PersistentARTrieError::InvalidOperation(
-                "Lock-free mode not enabled. Call enable_lockfree() first.".to_string(),
+                "Lock-free mode not enabled. Call install_overlay() first.".to_string(),
             )
         })?;
         let _epoch = self.epoch_manager.enter_read();
@@ -343,7 +343,7 @@ impl<V: DictionaryValue, S: BlockStorage> DurableOverlayWrite<CharKey, V, S>
         let chars: Vec<u32> = term.chars().map(|c| c as u32).collect();
         let lockfree_root = self.lockfree_root.as_ref().ok_or_else(|| {
             crate::persistent_artrie_core::error::PersistentARTrieError::InvalidOperation(
-                "Lock-free mode not enabled. Call enable_lockfree() first.".to_string(),
+                "Lock-free mode not enabled. Call install_overlay() first.".to_string(),
             )
         })?;
         let _epoch = self.epoch_manager.enter_read();
@@ -377,7 +377,7 @@ impl<V: DictionaryValue, S: BlockStorage> DurableOverlayWrite<CharKey, V, S>
         let chars: Vec<u32> = term.chars().map(|c| c as u32).collect();
         let lockfree_root = self.lockfree_root.as_ref().ok_or_else(|| {
             crate::persistent_artrie_core::error::PersistentARTrieError::InvalidOperation(
-                "Lock-free mode not enabled. Call enable_lockfree() first.".to_string(),
+                "Lock-free mode not enabled. Call install_overlay() first.".to_string(),
             )
         })?;
         let _epoch = self.epoch_manager.enter_read();

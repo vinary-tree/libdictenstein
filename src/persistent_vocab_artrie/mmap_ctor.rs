@@ -93,7 +93,7 @@ impl PersistentVocabARTrie {
             reverse_term_map: None,
         };
         // FLIP: the overlay is the LIVE representation from construction (single lock-free impl —
-        // no enable_lockfree toggle). flip_to_overlay installs the overlay + stamps the Overlay
+        // no install_overlay toggle). flip_to_overlay installs the overlay + stamps the Overlay
         // regime so route_overlay() -> true.
         if !trie.flip_to_overlay() {
             return Err(PersistentARTrieError::internal(

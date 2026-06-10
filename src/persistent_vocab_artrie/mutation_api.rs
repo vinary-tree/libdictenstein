@@ -18,7 +18,7 @@ impl<S: BlockStorage> super::dict_impl::PersistentVocabARTrie<S> {
     ///
     /// Lock-free + concurrent-safe (`&self`): multiple threads may insert through a shared
     /// `Arc<PersistentVocabARTrie>` with no external locking (the single lock-free impl —
-    /// no `enable_lockfree` toggle, no `ConcurrentVocabARTrie` wrapper).
+    /// no `install_overlay` toggle, no `ConcurrentVocabARTrie` wrapper).
     pub fn insert(&self, term: &str) -> Result<u64> {
         self.insert_overlay(term)
     }

@@ -269,12 +269,12 @@ pub(crate) trait DurableOverlayWrite<K: KeyEncoding, V: DictionaryValue, S>:
         // "Acknowledged ⇒ durable" only holds under a synchronous policy.
         self.durable_policy_gate("try_increment_cas_durable", "increment")?;
 
-        // enable_lockfree() must have run (the inner would otherwise panic; surface
+        // install_overlay() must have run (the inner would otherwise panic; surface
         // it as a recoverable error on the durable path instead).
         if self.lockfree_root().is_none() {
             return Err(
                 crate::persistent_artrie_core::error::PersistentARTrieError::InvalidOperation(
-                    "Lock-free mode not enabled. Call enable_lockfree() first.".to_string(),
+                    "Lock-free mode not enabled. Call install_overlay() first.".to_string(),
                 ),
             );
         }
@@ -369,7 +369,7 @@ pub(crate) trait DurableOverlayWrite<K: KeyEncoding, V: DictionaryValue, S>:
         if self.lockfree_root().is_none() {
             return Err(
                 crate::persistent_artrie_core::error::PersistentARTrieError::InvalidOperation(
-                    "Lock-free mode not enabled. Call enable_lockfree() first.".to_string(),
+                    "Lock-free mode not enabled. Call install_overlay() first.".to_string(),
                 ),
             );
         }
@@ -417,7 +417,7 @@ pub(crate) trait DurableOverlayWrite<K: KeyEncoding, V: DictionaryValue, S>:
         if self.lockfree_root().is_none() {
             return Err(
                 crate::persistent_artrie_core::error::PersistentARTrieError::InvalidOperation(
-                    "Lock-free mode not enabled. Call enable_lockfree() first.".to_string(),
+                    "Lock-free mode not enabled. Call install_overlay() first.".to_string(),
                 ),
             );
         }
@@ -472,7 +472,7 @@ pub(crate) trait DurableOverlayWrite<K: KeyEncoding, V: DictionaryValue, S>:
         if self.lockfree_root().is_none() {
             return Err(
                 crate::persistent_artrie_core::error::PersistentARTrieError::InvalidOperation(
-                    "Lock-free mode not enabled. Call enable_lockfree() first.".to_string(),
+                    "Lock-free mode not enabled. Call install_overlay() first.".to_string(),
                 ),
             );
         }

@@ -182,7 +182,7 @@ pub use super::transactions::CharDocumentTransaction;
 // - parallel_merge: rayon-based parallel merge (feature-gated)
 // - document_tx:   begin/tx_insert/commit/abort
 // - batch_insert:  insert_batch + 9 variants
-// - lockfree_cas:  enable_lockfree/insert_cas/contains_lockfree/...
+// - lockfree_cas:  install_overlay/insert_cas/contains_lockfree/...
 // - atomic_ops:    increment, upsert, compare_and_swap, fetch_add, get_or_insert
 // - observability: sync, current_lsn, group commit + memory monitor + cache stats
 // - epoch_checkpointing: enable/disable epoch-based auto checkpoint
@@ -3012,7 +3012,7 @@ mod tests {
 
         let mut trie: PersistentARTrieChar<()> =
             PersistentARTrieChar::create(&path).expect("create trie");
-        trie.enable_lockfree();
+        trie.install_overlay();
 
         // First insert should succeed
         assert!(trie.insert_cas("hello"));
@@ -3034,7 +3034,7 @@ mod tests {
 
         let mut trie: PersistentARTrieChar<()> =
             PersistentARTrieChar::create(&path).expect("create trie");
-        trie.enable_lockfree();
+        trie.install_overlay();
 
         // Empty-string support (P3): "" is a first-class key on the overlay ROOT. The
         // first insert publishes the root final (returns true → newly inserted); it is
@@ -3058,7 +3058,7 @@ mod tests {
 
         let mut trie: PersistentARTrieChar<()> =
             PersistentARTrieChar::create(&path).expect("create trie");
-        trie.enable_lockfree();
+        trie.install_overlay();
 
         // Unicode terms
         assert!(trie.insert_cas("日本語"));
@@ -3081,7 +3081,7 @@ mod tests {
 
         let mut trie: PersistentARTrieChar<()> =
             PersistentARTrieChar::create(&path).expect("create trie");
-        trie.enable_lockfree();
+        trie.install_overlay();
 
         let trie = Arc::new(trie);
         let num_threads = 4;
@@ -3134,7 +3134,7 @@ mod tests {
 
         let mut trie: PersistentARTrieChar<()> =
             PersistentARTrieChar::create(&path).expect("create trie");
-        trie.enable_lockfree();
+        trie.install_overlay();
 
         // Insert some terms
         trie.insert_cas("apple");

@@ -74,12 +74,12 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
             cas_retries: std::sync::atomic::AtomicU64::new(0),
         };
         // **L3.3:** an in-memory `::new()` trie installs an empty lock-free overlay (WAL-less —
-        // `enable_lockfree`'s WAL stamp is a no-op without a `wal_writer`), so `route_overlay()`
+        // `install_overlay`'s WAL stamp is a no-op without a `wal_writer`), so `route_overlay()`
         // is UNIVERSALLY true across every constructor (the owned tree is gone). Writes degrade to
         // a non-durable in-memory CAS (the durable path's WAL append returns LSN 0 under
         // `Immediate`; `mark_committed(0)` is a no-op); reads + the zipper walk the overlay. Does
         // NOT route through `flip_to_overlay` (which needs a WAL).
-        trie.enable_lockfree();
+        trie.install_overlay();
         trie
     }
 
@@ -87,7 +87,7 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
     /// lock-free overlay for `V ∈ {(), u64}`; a strict NO-OP for arbitrary `V`.**
     ///
     /// A `create*` ctor builds a FRESH WAL (`current_lsn() == 1`), so
-    /// `flip_to_overlay`'s `enable_lockfree` stamps the Overlay regime and the V-2
+    /// `flip_to_overlay`'s `install_overlay` stamps the Overlay regime and the V-2
     /// stamp re-check (`route_overlay() && rank_regime()==Overlay`) MUST succeed —
     /// `!took` therefore means the stamp silently failed (a torn header / no WAL),
     /// which we surface as a hard error rather than enabling a write-broken or
@@ -1315,7 +1315,7 @@ mod s5_12_flip_ctor_gate {
             let terms: Vec<String> = (0..40u32).map(|i| format!("term{i:03}")).collect();
             {
                 let trie = PersistentARTrieChar::<()>::create(&path).expect("create<()>");
-                // create-flip already ran enable_lockfree + LockFreeOverlay; default
+                // create-flip already ran install_overlay + LockFreeOverlay; default
                 // durability is Immediate (set it explicitly to match S5 conventions).
                 trie.set_durability_policy(
                     crate::persistent_artrie_core::durability::DurabilityPolicy::Immediate,

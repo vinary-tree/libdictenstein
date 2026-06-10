@@ -1541,7 +1541,7 @@ mod immutable_recovery_correspondence {
             terms.len(),
             "recovery lost terms before overlay rebuild"
         );
-        recovered.enable_lockfree();
+        recovered.install_overlay();
         for t in &recovered_terms {
             recovered.insert_cas(t);
         }
@@ -1588,7 +1588,7 @@ mod immutable_recovery_correspondence {
 
         // Reopen: the Overlay-regime reopen AUTOMATICALLY rebuilds the overlay from the
         // recovered owned tree (the Phase-C value rebuild is now wired into the flip's
-        // open path via `reestablish_overlay_after_recovery`). A manual `enable_lockfree`
+        // open path via `reestablish_overlay_after_recovery`). A manual `install_overlay`
         // + `increment_cas` rebuild here would DOUBLE-count on top of the automatic one.
         let recovered = PersistentARTrieChar::<u64>::open(&path).expect("reopen");
 
@@ -1668,7 +1668,7 @@ mod multi_writer_checkpointer_soak {
         {
             let mut trie = PersistentARTrieChar::<()>::create(&path).expect("create");
             trie.set_durability_policy(DurabilityPolicy::Immediate);
-            trie.enable_lockfree();
+            trie.install_overlay();
             for t in &terms {
                 trie.insert_cas_durable(t).expect("durable overlay insert");
             }
@@ -1703,7 +1703,7 @@ mod multi_writer_checkpointer_soak {
         let path = dir.path().join("t.artc");
         let mut trie = PersistentARTrieChar::<u64>::create(&path).expect("create");
         trie.set_durability_policy(DurabilityPolicy::Immediate);
-        trie.enable_lockfree();
+        trie.install_overlay();
 
         // S5-7: begin_document now SUCCEEDS under the overlay (C2).
         assert!(
@@ -1821,7 +1821,7 @@ mod multi_writer_checkpointer_soak {
         {
             let mut trie = PersistentARTrieChar::<()>::create(&path).expect("create");
             trie.set_durability_policy(DurabilityPolicy::Immediate);
-            trie.enable_lockfree();
+            trie.install_overlay();
             // RANKED survivor: insert_cas_durable appends Insert + CommitRank (acked).
             assert!(trie.insert_cas_durable("survivor").expect("durable insert"));
             // Durable UNRANKED orphan: an Insert with NO following CommitRank — the
@@ -1857,7 +1857,7 @@ mod multi_writer_checkpointer_soak {
         let acknowledged: Vec<String> = {
             let mut trie = PersistentARTrieChar::<()>::create(&path).expect("create");
             trie.set_durability_policy(DurabilityPolicy::Immediate);
-            trie.enable_lockfree();
+            trie.install_overlay();
             let trie = Arc::new(trie);
             // +1 for the checkpointer so it starts alongside the writers.
             let barrier = Arc::new(Barrier::new(n_writers + 1));
@@ -1966,7 +1966,7 @@ mod multi_writer_checkpointer_soak {
         {
             let mut trie = PersistentARTrieChar::<u64>::create(&path).expect("create");
             trie.set_durability_policy(DurabilityPolicy::Immediate);
-            trie.enable_lockfree();
+            trie.install_overlay();
             let trie = Arc::new(trie);
             let barrier = Arc::new(Barrier::new(n_writers + 1));
             let writers_done = Arc::new(AtomicBool::new(false));
@@ -2083,7 +2083,7 @@ mod immutable_eviction_checkpoint_correspondence {
     }
 
     /// **T1** — eviction-enabled overlay membership trie, `Immediate`,
-    /// `enable_lockfree`; `insert_cas_durable` a tier-spanning set; capture the
+    /// `install_overlay`; `insert_cas_durable` a tier-spanning set; capture the
     /// immutable snapshot (assert its registry is NON-EMPTY — the GAP closed);
     /// publish with eviction (assert `evictable_node_count() > 0`); force an
     /// eviction (every term still resolves via reload); drop WITHOUT a destructive
@@ -2106,7 +2106,7 @@ mod immutable_eviction_checkpoint_correspondence {
         }
 
         let acknowledged: Vec<String> = {
-            // F4: `enable_lockfree` is a Tier-1 PRE-SHARE configurator (`&mut self`),
+            // F4: `install_overlay` is a Tier-1 PRE-SHARE configurator (`&mut self`),
             // so configure the OWNED trie BEFORE wrapping it in the `Arc` handle.
             // `set_durability_policy` is now `&self`, but doing both pre-share keeps
             // the lifecycle explicit. Then the `EvictableARTrie` surface
@@ -2114,7 +2114,7 @@ mod immutable_eviction_checkpoint_correspondence {
             let mut owned: PersistentARTrieChar<()> =
                 PersistentARTrieChar::create(&path).expect("create eviction overlay trie");
             owned.set_durability_policy(DurabilityPolicy::Immediate);
-            owned.enable_lockfree();
+            owned.install_overlay();
             let shared: SharedCharARTrie<()> = std::sync::Arc::new(owned);
             // Enable eviction (production wiring: shares the trie epoch manager).
             shared
@@ -2228,12 +2228,12 @@ mod immutable_eviction_checkpoint_correspondence {
         let per_writer = 80usize; // 320 keys — bounded, seconds.
 
         let acknowledged: Vec<String> = {
-            // F4: configure the OWNED trie pre-share (`enable_lockfree` is Tier-1
+            // F4: configure the OWNED trie pre-share (`install_overlay` is Tier-1
             // `&mut self`), then wrap in the `Arc` handle.
             let mut owned: PersistentARTrieChar<()> =
                 PersistentARTrieChar::create(&path).expect("create");
             owned.set_durability_policy(DurabilityPolicy::Immediate);
-            owned.enable_lockfree();
+            owned.install_overlay();
             let shared: SharedCharARTrie<()> = std::sync::Arc::new(owned);
             shared
                 .enable_eviction(EvictionConfig::without_memory_monitor())
@@ -2692,7 +2692,7 @@ mod cx_compressed_serialize {
         let dir = scratch("cx6-evict-refault");
         let path = dir.path().join("t.artc");
         let mut owned = PersistentARTrieChar::<()>::create(&path).expect("create");
-        owned.enable_lockfree();
+        owned.install_overlay();
         owned
             .bench_enable_eviction(EvictionConfig::without_memory_monitor())
             .expect("enable eviction");
