@@ -1,119 +1,69 @@
-//! Path-based query API for `PersistentVocabARTrie<S>`.
+//! Path-based query API for `PersistentVocabARTrie<S>` — OVERLAY-ONLY (V6).
 //!
-//! Split out of vocab `dict_impl.rs` (lines ~701-772, ~73 LOC) as
-//! a Phase-6 vocab sub-module. Methods covered:
+//! The owned tree is deleted; every method walks the lock-free overlay:
+//! - `get_root_children` / `get_children_at_path` — children (label, is_final) of a node
+//! - `is_final_at_path` — predicate over the node reached by a path
+//! - `iter_terms` / `iter_terms_with_prefix` — full-term enumeration
 //!
-//! - `get_root_children` — list children of the root (label + is_final)
-//! - `get_children_at_path` — same, but for the node at an arbitrary path
-//! - `is_final_at_path` — predicate over the node at a path
-//! - `iter_terms` / `iter_terms_with_prefix` — DFS iterators (the
-//!   underlying `VocabTermIterator` / `VocabPrefixIterator` impls live
-//!   in `dict_impl.rs`)
+//! `get_*`/`is_final_*` use `overlay_navigate` (O(path) descent); `iter_*` use
+//! `overlay_collect_units` (DFS under a prefix). All in `K::Unit` (u32) space.
 
 use crate::persistent_artrie::block_storage::BlockStorage;
-
-use super::iterators::{VocabPrefixIterator, VocabTermIterator};
-use super::types::VocabTrieRoot;
+use crate::persistent_artrie_core::overlay::flip::LockFreeOverlay;
 
 impl<S: BlockStorage> super::dict_impl::PersistentVocabARTrie<S> {
-    /// Get root children information for Dictionary trait implementation.
-    ///
-    /// Returns a vector of (label, is_final) pairs for all children of the root node.
+    /// Children `(label, is_final)` of the overlay root — backs `Dictionary::root`.
     pub fn get_root_children(&self) -> Vec<(char, bool)> {
-        match &self.root {
-            VocabTrieRoot::Empty => Vec::new(),
-            VocabTrieRoot::Node(root) => root
-                .iter_children()
-                .map(|(c, child)| (c, child.is_final()))
-                .collect(),
-        }
+        self.get_children_at_path(&[])
     }
 
-    /// Get children of a node at the given path.
-    ///
-    /// Returns a vector of (label, is_final) pairs for all children.
+    /// Children `(label, is_final)` of the overlay node reached by `path`.
     pub fn get_children_at_path(&self, path: &[char]) -> Vec<(char, bool)> {
-        match &self.root {
-            VocabTrieRoot::Empty => Vec::new(),
-            VocabTrieRoot::Node(root) => {
-                let mut current = root.as_ref();
-                for &c in path {
-                    match current.get_child(c) {
-                        Some(child) => current = child,
-                        None => return Vec::new(),
-                    }
-                }
-                current
-                    .iter_children()
-                    .map(|(c, child)| (c, child.is_final()))
-                    .collect()
-            }
-        }
+        let units: Vec<u32> = path.iter().map(|&c| c as u32).collect();
+        let Some(node) = self.overlay_navigate(&units) else {
+            return Vec::new();
+        };
+        node.iter_children()
+            .filter_map(|(key, child)| {
+                // Vocab never evicts (OverlayFaulter::fault_overlay_slot -> None), so every
+                // overlay child is in-mem; an on-disk child (impossible here) is skipped.
+                let child_node = child.as_in_mem()?;
+                char::from_u32(*key).map(|c| (c, child_node.is_final()))
+            })
+            .collect()
     }
 
-    /// Check if the node at the given path is final.
+    /// Whether the overlay node reached by `path` is final (a stored term).
     pub fn is_final_at_path(&self, path: &[char]) -> bool {
-        match &self.root {
-            VocabTrieRoot::Empty => false,
-            VocabTrieRoot::Node(root) => {
-                if path.is_empty() {
-                    return root.is_final();
-                }
-                let mut current = root.as_ref();
-                for &c in path {
-                    match current.get_child(c) {
-                        Some(child) => current = child,
-                        None => return false,
-                    }
-                }
-                current.is_final()
-            }
-        }
+        let units: Vec<u32> = path.iter().map(|&c| c as u32).collect();
+        self.overlay_navigate(&units)
+            .map(|node| node.is_final())
+            .unwrap_or(false)
     }
 
-    /// Iterate over all terms in the vocabulary.
-    ///
-    /// This performs a depth-first traversal of the trie to enumerate all terms.
-    /// Note: For large vocabularies, consider using the reverse index lookup
-    /// via `get_term(index)` for specific indices instead.
+    /// Iterate over all terms in the vocabulary (overlay enumeration).
     pub fn iter_terms(&self) -> impl Iterator<Item = String> + '_ {
-        use crate::persistent_artrie_core::overlay::flip::LockFreeOverlay;
-        if self.route_overlay() {
-            // Overlay: collect ALL terms (empty prefix) from the lock-free overlay; the owned
-            // VocabTermIterator would walk the (empty) owned root post-flip.
-            let terms: Vec<String> = self
-                .overlay_collect_units(&[])
-                .unwrap_or_default()
-                .into_iter()
-                .map(|u| u.iter().filter_map(|&c| char::from_u32(c)).collect())
-                .collect();
-            Box::new(terms.into_iter()) as Box<dyn Iterator<Item = String> + '_>
-        } else {
-            Box::new(VocabTermIterator::new(self)) as Box<dyn Iterator<Item = String> + '_>
-        }
+        let terms: Vec<String> = self
+            .overlay_collect_units(&[])
+            .unwrap_or_default()
+            .into_iter()
+            .map(|u| u.iter().filter_map(|&c| char::from_u32(c)).collect())
+            .collect();
+        terms.into_iter()
     }
 
-    /// Iterate over terms with the given prefix.
-    ///
-    /// Returns an iterator over all terms that start with the given prefix.
+    /// Iterate over terms with the given prefix (overlay enumeration).
     pub fn iter_terms_with_prefix<'a>(
         &'a self,
         prefix: &'a str,
     ) -> impl Iterator<Item = String> + 'a {
-        use crate::persistent_artrie_core::overlay::flip::LockFreeOverlay;
-        if self.route_overlay() {
-            let prefix_units: Vec<u32> = prefix.chars().map(|c| c as u32).collect();
-            let terms: Vec<String> = self
-                .overlay_collect_units(&prefix_units)
-                .unwrap_or_default()
-                .into_iter()
-                .map(|u| u.iter().filter_map(|&c| char::from_u32(c)).collect())
-                .collect();
-            Box::new(terms.into_iter()) as Box<dyn Iterator<Item = String> + 'a>
-        } else {
-            let prefix_chars: Vec<char> = prefix.chars().collect();
-            Box::new(VocabPrefixIterator::new(self, prefix_chars))
-                as Box<dyn Iterator<Item = String> + 'a>
-        }
+        let prefix_units: Vec<u32> = prefix.chars().map(|c| c as u32).collect();
+        let terms: Vec<String> = self
+            .overlay_collect_units(&prefix_units)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|u| u.iter().filter_map(|&c| char::from_u32(c)).collect())
+            .collect();
+        terms.into_iter()
     }
 }

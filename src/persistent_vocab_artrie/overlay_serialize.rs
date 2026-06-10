@@ -26,6 +26,7 @@ use crate::persistent_artrie::swizzled_ptr::SwizzledPtr;
 use crate::persistent_artrie::NodeType;
 use crate::persistent_artrie_char::arena_manager::ArenaSlot;
 use crate::persistent_artrie_char::nodes::persistent_node::PersistentCharNode;
+use crate::persistent_artrie_char::nodes::CharNode;
 use crate::persistent_artrie_char::relative_encoding::SerializationContext;
 use crate::persistent_artrie_char::serialization_char::{
     deserialize_char_node_v2, serialize_char_node_v2, DeserializationContext,
@@ -36,6 +37,49 @@ use crate::persistent_artrie_char::types::CharTrieNodeInner;
 type VocabOverlayNode = PersistentCharNode<u64>;
 
 impl<S: BlockStorage> super::dict_impl::PersistentVocabARTrie<S> {
+    /// Build a `CharNode` with disk `SwizzledPtr`s for serialization.
+    ///
+    /// Relocated from the deleted owned `disk_io.rs` (V6) — the overlay serializer is now the
+    /// sole reuser. `Self::`-associated (no `self`/`S`); the overlay image must be byte-identical
+    /// to the CHAR arena v2 format.
+    pub(super) fn build_disk_char_node_static(
+        original: &CharNode,
+        disk_children: &[(u32, SwizzledPtr)],
+    ) -> CharNode {
+        use crate::persistent_artrie_char::nodes::{CharBucket, CharNode16, CharNode4, CharNode48};
+
+        let mut new_node = match original {
+            CharNode::N4(_) => CharNode::N4(Box::new(CharNode4::new())),
+            CharNode::N16(_) => CharNode::N16(Box::new(CharNode16::new())),
+            CharNode::N48(_) => CharNode::N48(Box::new(CharNode48::new())),
+            CharNode::Bucket(_) => CharNode::Bucket(Box::new(CharBucket::new())),
+        };
+
+        {
+            let new_header = new_node.header_mut();
+            let orig_header = original.header();
+            new_header.prefix_len = orig_header.prefix_len;
+            new_header.flags = orig_header.flags;
+        }
+
+        *new_node.prefix_mut() = *original.prefix();
+
+        for &(key, ref ptr) in disk_children {
+            match new_node.add_child_growing(key, ptr.clone()) {
+                Ok(Some(grown)) => new_node = grown,
+                Ok(None) => {}
+                Err(e) => {
+                    eprintln!(
+                        "Warning: failed to add child in build_disk_char_node_static: {:?}",
+                        e
+                    );
+                }
+            }
+        }
+
+        new_node
+    }
+
     /// Serialize the immutable overlay rooted at `root` into the dense char-arena image,
     /// returning the root `SwizzledPtr`. ITERATIVE post-order (work-stack) so depth does not
     /// recurse with branch depth. Each node's children are resolved to disk ptrs BEFORE the
@@ -568,7 +612,7 @@ mod tests {
         let terms = ["apple", "app", "applet", "banana", "band", "can", "candy"];
         let mut expected: Vec<(Vec<u32>, u64)> = Vec::with_capacity(terms.len());
         for t in &terms {
-            let id = vocab.insert_cas(t);
+            let id = vocab.insert(t).expect("overlay insert");
             expected.push((t.chars().map(|c| c as u32).collect(), id));
         }
 

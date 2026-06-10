@@ -1,8 +1,10 @@
 //! Disk-backed implementation of PersistentVocabARTrie.
 //!
-//! This module provides the core disk-backed vocabulary trie implementation
-//! with parent pointers for O(k) reverse lookups, using the base persistence
-//! infrastructure from `persistent_artrie` (WAL, BufferManager, etc.).
+//! This module provides the core disk-backed vocabulary trie implementation. The SOLE
+//! representation is the lock-free overlay (V6 — the owned parent-pointer tree was deleted);
+//! reverse lookups use the in-memory `reverse_term_map`. Built on the base persistence
+//! infrastructure from `persistent_artrie` (WAL, BufferManager, ArenaManager). The historical
+//! ASCII diagram below describes the deleted owned layout.
 //!
 //! # Architecture
 //!
@@ -39,15 +41,10 @@
 //! └─────────────────────────────────────────────────────────────┘
 //! ```
 
-use std::collections::HashMap;
 use std::path::PathBuf;
-#[allow(unused_imports)]
 use std::sync::atomic::Ordering;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize};
 use std::sync::Arc;
-#[allow(unused_imports)]
-use std::time::Duration;
-use xxhash_rust::xxh3::Xxh3DefaultBuilder;
 
 use parking_lot::RwLock;
 
@@ -56,18 +53,11 @@ use crate::persistent_artrie::buffer_manager::BufferManager;
 use crate::persistent_artrie::dict_impl::DurabilityPolicy;
 use crate::persistent_artrie::disk_manager::MmapDiskManager;
 use crate::persistent_artrie::wal::AsyncWalWriter;
-#[allow(unused_imports)]
-use crate::persistent_artrie::wal::{WalConfig, WalReader};
+use crate::persistent_artrie::wal::WalConfig;
 use crate::persistent_artrie::wal_managed::WalManaged;
 use crate::persistent_artrie_char::arena_manager::ArenaManager;
 use crate::persistent_artrie_char::nodes::AtomicNodePtr;
-use crate::persistent_artrie_char::types::NodeRef;
 use dashmap::DashMap;
-
-use super::reverse_cache::VocabReverseCache;
-use super::reverse_index::VocabReverseIndex;
-use super::types::{VocabTrieNode, VocabTrieRoot, DEFAULT_REVERSE_CACHE_SIZE};
-use crate::bloom_filter::BloomFilter;
 
 /// Default buffer pool size for vocabulary trie
 const DEFAULT_VOCAB_BUFFER_POOL_SIZE: usize = 64;
@@ -121,9 +111,6 @@ pub struct PersistentVocabARTrie<S: BlockStorage = MmapDiskManager> {
     /// Path to the main trie file
     pub(super) path: PathBuf,
 
-    /// Root node of the trie
-    pub(crate) root: VocabTrieRoot,
-
     /// Number of vocabulary entries (atomic for lock-free access)
     pub(super) entry_count: AtomicUsize,
 
@@ -135,21 +122,6 @@ pub struct PersistentVocabARTrie<S: BlockStorage = MmapDiskManager> {
 
     /// Dirty flag (atomic for lock-free access)
     pub(super) dirty: AtomicBool,
-
-    /// Reverse index for O(1) node lookup by vocabulary index
-    pub(super) reverse_index: Option<VocabReverseIndex>,
-
-    /// LRU cache for hot reverse lookups
-    pub(super) reverse_cache: VocabReverseCache,
-
-    /// Map from NodeRef to in-memory node for lookups.
-    /// This is used for term reconstruction via parent pointers.
-    /// Uses xxh3 hasher instead of SipHash for ~3-5x faster hashing on
-    /// non-adversarial input (vocabulary node references).
-    pub(super) node_map: HashMap<NodeRef, *const VocabTrieNode, Xxh3DefaultBuilder>,
-
-    /// Next available slot for NodeRef assignment
-    pub(super) next_slot: u64,
 
     // === Base persistence layer (from persistent_artrie) ===
     /// WAL writer for durability (using AsyncWalWriter via WalManaged trait)
@@ -179,14 +151,11 @@ pub struct PersistentVocabARTrie<S: BlockStorage = MmapDiskManager> {
     pub(crate) eviction_coordinator:
         Option<Arc<crate::persistent_artrie::eviction::EvictionCoordinator>>,
 
-    // === BloomFilter Support ===
-    /// Optional BloomFilter for O(1) negative lookups.
-    /// Provides 5-10x faster rejection for OOV words.
-    pub(super) bloom_filter: Option<BloomFilter>,
-
-    // === Lock-Free Infrastructure (per plan Phase 4-5) ===
-    /// Lock-free root using PersistentCharNode with im::Vector for CAS operations.
-    /// When present, `insert_cas()` uses this for lock-free concurrent inserts.
+    // === Lock-free overlay (the SOLE representation — V6) ===
+    /// The lock-free overlay root (`PersistentCharNode` with structural sharing). The insert
+    /// path (`insert_overlay`) CASes new immutable roots onto it; reads (`get_index_lockfree`)
+    /// walk it. Installed at construction by `flip_to_overlay` (every ctor flips); `Some` in
+    /// production. The owned tree is deleted.
     ///
     /// G1: the char overlay node is generic over its value type; the vocab
     /// overlay instantiates it at `V = u64` (the vocabulary index).
@@ -251,27 +220,15 @@ impl<S: BlockStorage> Drop for PersistentVocabARTrie<S> {
 
 impl<S: BlockStorage> Clone for PersistentVocabARTrie<S> {
     fn clone(&self) -> Self {
-        // Deep clone the root
-        let cloned_root = self.root.clone();
-
-        // Clone node_map with new pointers
-        let mut new_node_map = HashMap::with_hasher(Xxh3DefaultBuilder);
-        if let VocabTrieRoot::Node(ref root_box) = cloned_root {
-            let root_ref = NodeRef::new(0, 0);
-            new_node_map.insert(root_ref, root_box.as_ref() as *const VocabTrieNode);
-        }
-
+        // The overlay (lockfree_root/cache/reverse_term_map) + storage handles are NOT
+        // deep-cloned — they are re-established by the clone's own ctor/recovery on first use
+        // (mirrors byte/char `clone`). Only the scalar/atomic state is carried.
         Self {
             path: self.path.clone(),
-            root: cloned_root,
             entry_count: AtomicUsize::new(self.entry_count.load(Ordering::Acquire)),
             start_index: self.start_index,
             next_index: AtomicU64::new(self.next_index.load(Ordering::Acquire)),
             dirty: AtomicBool::new(self.dirty.load(Ordering::Acquire)),
-            reverse_index: None, // Cannot clone mmap'd index
-            reverse_cache: VocabReverseCache::new(DEFAULT_REVERSE_CACHE_SIZE),
-            node_map: new_node_map,
-            next_slot: self.next_slot,
             wal_writer: self.wal_writer.clone(),
             wal_config: self.wal_config.clone(),
             next_lsn: AtomicU64::new(self.next_lsn.load(Ordering::Acquire)),
@@ -280,13 +237,9 @@ impl<S: BlockStorage> Clone for PersistentVocabARTrie<S> {
             arena_manager: None,        // Cannot clone arena manager
             buffer_manager: None,       // Cannot clone buffer manager
             eviction_coordinator: None, // Cannot clone eviction coordinator
-            bloom_filter: self.bloom_filter.clone(),
-            lockfree_root: None,  // Cannot clone lock-free root
-            lockfree_cache: None, // Cannot clone lock-free cache
+            lockfree_root: None,        // Cannot clone lock-free root
+            lockfree_cache: None,       // Cannot clone lock-free cache
             cas_retries: AtomicU64::new(0),
-            // V1.1 Order-A substrate: carry the commit_seq value; fresh watermark + epoch
-            // (these are not deep-cloned — they gate the lock-free overlay, re-established by
-            // the clone's own ctor/recovery, mirroring byte/char `clone`).
             commit_seq: AtomicU64::new(self.commit_seq.load(Ordering::Acquire)),
             committed_watermark:
                 crate::persistent_artrie_core::committed_watermark::CommittedWatermark::new(0),
@@ -318,6 +271,7 @@ impl<S: BlockStorage> std::fmt::Debug for PersistentVocabARTrie<S> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
     use tempfile::tempdir;
 
     #[test]
@@ -1449,29 +1403,6 @@ mod tests {
     // ========================================================================
 
     #[test]
-    #[ignore = "owned WAL-rotate; obsolete under the V4c overlay flip (the overlay retains its WAL — no rotate); removed at V6/single-lock-free"]
-    fn test_rotate_wal_basic() {
-        let dir = tempdir().expect("Failed to create temp dir");
-        let path = dir.path().join("vocab.vocab");
-
-        let mut vocab = PersistentVocabARTrie::create(&path).expect("Failed to create vocab");
-        vocab.enable_slot_tracking();
-
-        // Insert data
-        vocab.insert("hello");
-        vocab.insert("world");
-        assert!(vocab.is_dirty());
-
-        // Rotate WAL (should sync but not full checkpoint)
-        vocab.rotate_wal().expect("rotate_wal failed");
-
-        // Data should still be accessible
-        assert!(vocab.contains("hello"));
-        assert!(vocab.contains("world"));
-        assert_eq!(vocab.len(), 2);
-    }
-
-    #[test]
     fn test_rotate_wal_recovery() {
         let dir = tempdir().expect("Failed to create temp dir");
         let path = dir.path().join("vocab.vocab");
@@ -1519,102 +1450,5 @@ mod tests {
         assert_eq!(vocab.len(), 5);
         assert_eq!(vocab.get_index("apple"), Some(0));
         assert_eq!(vocab.get_index("elderberry"), Some(4));
-    }
-
-    #[test]
-    fn test_insert_cas_basic() {
-        let dir = tempdir().expect("Failed to create temp dir");
-        let path = dir.path().join("vocab.vocab");
-
-        let mut vocab = PersistentVocabARTrie::create(&path).expect("Failed to create vocab");
-        vocab.enable_lockfree();
-
-        // Insert using CAS
-        let idx1 = vocab.insert_cas("hello");
-        let idx2 = vocab.insert_cas("world");
-        let idx3 = vocab.insert_cas("hello"); // Duplicate
-
-        assert_eq!(idx1, 0);
-        assert_eq!(idx2, 1);
-        assert_eq!(idx3, 0); // Should return existing index
-
-        // Verify with get_index via cache
-        assert_eq!(vocab.insert_cas("hello"), 0);
-        assert_eq!(vocab.insert_cas("world"), 1);
-    }
-
-    #[test]
-    fn test_insert_cas_concurrent() {
-        use std::thread;
-
-        let dir = tempdir().expect("Failed to create temp dir");
-        let path = dir.path().join("vocab.vocab");
-
-        let mut vocab = PersistentVocabARTrie::create(&path).expect("Failed to create vocab");
-        vocab.enable_lockfree();
-
-        let vocab = Arc::new(vocab);
-        let num_threads = 4;
-        let terms_per_thread = 100;
-
-        let handles: Vec<_> = (0..num_threads)
-            .map(|t| {
-                let v = Arc::clone(&vocab);
-                thread::spawn(move || {
-                    let mut indices = Vec::new();
-                    for i in 0..terms_per_thread {
-                        let term = format!("thread{}_{}", t, i);
-                        let idx = v.insert_cas(&term);
-                        indices.push(idx);
-                    }
-                    indices
-                })
-            })
-            .collect();
-
-        let all_indices: Vec<u64> = handles
-            .into_iter()
-            .flat_map(|h| h.join().expect("thread"))
-            .collect();
-
-        // All indices should be in valid range
-        let max_expected = (num_threads * terms_per_thread) as u64;
-        for &idx in &all_indices {
-            assert!(idx < max_expected + 100, "index {} out of range", idx);
-        }
-
-        // Next index should be at least num_threads * terms_per_thread
-        assert!(vocab.next_index() >= (num_threads * terms_per_thread) as u64);
-    }
-
-    #[test]
-    #[ignore = "enable_lockfree/insert_cas/merge_to_persistent toggle flow; obsolete under the V4c overlay flip (single lock-free impl); removed at V6/single-lock-free"]
-    fn test_insert_cas_merge_to_persistent() {
-        let dir = tempdir().expect("Failed to create temp dir");
-        let path = dir.path().join("vocab.vocab");
-
-        let mut vocab = PersistentVocabARTrie::create(&path).expect("Failed to create vocab");
-        vocab.enable_lockfree();
-
-        // Insert using CAS (lock-free)
-        vocab.insert_cas("apple");
-        vocab.insert_cas("banana");
-        vocab.insert_cas("cherry");
-
-        // Merge to persistent trie
-        let merged = vocab.merge_lockfree_to_persistent().expect("merge failed");
-        assert_eq!(merged, 3);
-
-        // Checkpoint and reopen
-        vocab.checkpoint().expect("checkpoint failed");
-        drop(vocab);
-
-        let (vocab, _) =
-            PersistentVocabARTrie::open_with_recovery(&path).expect("Failed to open vocab");
-
-        // Data should be persisted
-        assert_eq!(vocab.get_index("apple"), Some(0));
-        assert_eq!(vocab.get_index("banana"), Some(1));
-        assert_eq!(vocab.get_index("cherry"), Some(2));
     }
 }

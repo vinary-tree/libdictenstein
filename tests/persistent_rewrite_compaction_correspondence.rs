@@ -140,30 +140,3 @@ fn vocab_checkpoint_rewrite_keeps_post_checkpoint_wal_tail_replayable() {
     assert_eq!(vocab.get_index("wal-tail"), Some(1));
     assert_eq!(vocab.get_term(1), Some("wal-tail".to_string()));
 }
-
-#[test]
-#[ignore = "owned reverse-index .idx sidecar publication; obsolete under the V4c overlay flip (the overlay's reverse map is in-memory, rebuilt on reopen — no owned sidecar); removed at V6/single-lock-free"]
-fn vocab_failed_sidecar_publication_keeps_dirty_and_wal_replayable_until_retry() {
-    let dir = tempdir().expect("temp dir");
-    let path = dir.path().join("vocab_rewrite_bloom_fail.vocab");
-    let bloom_path = path.with_extension("vocab.bloom");
-
-    let mut vocab = PersistentVocabARTrie::create_with_bloom(&path, 32).expect("create vocab");
-    assert_eq!(vocab.insert("alpha").expect("insert alpha"), 0);
-    fs::create_dir(&bloom_path).expect("create blocking bloom directory");
-
-    let err = vocab
-        .checkpoint()
-        .expect_err("checkpoint must fail while bloom sidecar is blocked");
-    assert!(err.to_string().contains("bloom"), "unexpected error: {err}");
-    assert!(vocab.is_dirty(), "failed checkpoint must remain dirty");
-    assert_eq!(vocab.get_index("alpha"), Some(0));
-    assert!(
-        vocab_wal_record_count(&path) > 0,
-        "failed sidecar publication must retain active WAL"
-    );
-
-    fs::remove_dir(&bloom_path).expect("remove bloom blocker");
-    vocab.checkpoint().expect("retry checkpoint");
-    assert!(!vocab.is_dirty(), "retry checkpoint should clear dirty");
-}

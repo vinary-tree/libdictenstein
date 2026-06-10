@@ -19,9 +19,7 @@ use libdictenstein::persistent_artrie_char::nodes::PersistentCharNode;
 use libdictenstein::persistent_artrie_char::{CharTrieNodeInner, PersistentARTrieCharNode};
 use libdictenstein::persistent_artrie_core::concurrency::OptimisticCell;
 use libdictenstein::persistent_artrie_core::mvcc::ReadTransaction;
-use libdictenstein::persistent_vocab_artrie::{
-    ConcurrentVocabARTrie, LockFreeVocab, NodeRef, PersistentVocabARTrie, VocabTrieNode,
-};
+use libdictenstein::persistent_vocab_artrie::PersistentVocabARTrie;
 use libdictenstein::serialization::bincode_compat;
 use libdictenstein::{Dictionary, MappedDictionary};
 use proptest::prelude::*;
@@ -435,8 +433,6 @@ fn unsafe_send_sync_contracts_remain_explicit() {
     assert_send_sync::<PersistentARTrieCharNode<u64>>();
     assert_send_sync::<OptimisticCell<u64>>();
     assert_send_sync::<PersistentVocabARTrie<MmapDiskManager>>();
-    assert_send_sync::<ConcurrentVocabARTrie>();
-    assert_send_sync::<LockFreeVocab>();
     // G4: the byte/char overlay nodes are now generic over `V`; `TrieRoot` (the
     // MVCC snapshot read bound) is impl'd on the byte node at `<i64>` (its
     // persistence/counter domain) and on the char node at any `<V>`. Pin the byte
@@ -446,100 +442,6 @@ fn unsafe_send_sync_contracts_remain_explicit() {
 
     #[cfg(feature = "io-uring-backend")]
     assert_send_sync::<libdictenstein::persistent_artrie::IoUringDiskManager>();
-}
-
-#[test]
-fn vocab_child_remove_transfers_box_ownership_once() {
-    let mut root = VocabTrieNode::new();
-    let root_ref = NodeRef::new(0, 0);
-
-    root.get_or_create_child('a', root_ref).set_value(7);
-    let raw_before = root.get_child('a').expect("child exists") as *const VocabTrieNode;
-
-    let removed = root.remove_child('a').expect("child removed");
-    let raw_after = removed.as_ref() as *const VocabTrieNode;
-
-    assert_eq!(raw_before, raw_after);
-    assert_eq!(removed.get_value(), Some(7));
-    assert!(root.get_child('a').is_none());
-    assert!(root.remove_child('a').is_none());
-}
-
-#[test]
-fn vocab_insert_child_replaces_without_aliasing_old_box() {
-    let mut root = VocabTrieNode::new();
-    let root_ref = NodeRef::new(0, 0);
-
-    let mut first = VocabTrieNode::with_parent(root_ref, 'x');
-    first.set_value(11);
-    assert!(root.insert_child('x', first).is_none());
-
-    let first_raw = root.get_child('x').expect("first child exists") as *const VocabTrieNode;
-
-    let mut second = VocabTrieNode::with_parent(root_ref, 'x');
-    second.set_value(22);
-    let replaced = root
-        .insert_child('x', second)
-        .expect("old child returned on replacement");
-
-    let second_raw = root.get_child('x').expect("second child exists") as *const VocabTrieNode;
-    assert_eq!(replaced.as_ref() as *const VocabTrieNode, first_raw);
-    assert_ne!(second_raw, first_raw);
-    assert_eq!(replaced.get_value(), Some(11));
-    assert_eq!(
-        root.get_child('x').and_then(VocabTrieNode::get_value),
-        Some(22)
-    );
-}
-
-#[test]
-fn vocab_clone_deep_copies_child_boxes() {
-    let mut original = VocabTrieNode::new();
-    let root_ref = NodeRef::new(0, 0);
-
-    original.get_or_create_child('z', root_ref).set_value(33);
-    let mut cloned = original.clone();
-
-    let original_child = original.remove_child('z').expect("original child removed");
-    let cloned_child = cloned.remove_child('z').expect("cloned child removed");
-
-    assert_ne!(
-        original_child.as_ref() as *const VocabTrieNode,
-        cloned_child.as_ref() as *const VocabTrieNode
-    );
-    assert_eq!(original_child.get_value(), Some(33));
-    assert_eq!(cloned_child.get_value(), Some(33));
-    assert!(original.get_child('z').is_none());
-    assert!(cloned.get_child('z').is_none());
-}
-
-#[test]
-fn vocab_get_or_create_child_mutation_keeps_unique_raw_borrow() {
-    let mut root = VocabTrieNode::new();
-    let root_ref = NodeRef::new(0, 0);
-    let child_ref = NodeRef::new(0, 1);
-
-    {
-        let child = root.get_or_create_child('語', root_ref);
-        child.set_value(101);
-        child.get_or_create_child('尾', child_ref).set_value(202);
-    }
-
-    let child_raw = root.get_child('語').expect("child exists") as *const VocabTrieNode;
-    {
-        let same_child = root.get_or_create_child('語', root_ref);
-        assert_eq!(same_child as *const VocabTrieNode, child_raw);
-        same_child.set_value(303);
-    }
-
-    let removed = root.remove_child('語').expect("child removed");
-    assert_eq!(removed.as_ref() as *const VocabTrieNode, child_raw);
-    assert_eq!(removed.get_value(), Some(303));
-    assert_eq!(
-        removed.get_child('尾').and_then(VocabTrieNode::get_value),
-        Some(202)
-    );
-    assert!(root.get_child('語').is_none());
 }
 
 #[test]

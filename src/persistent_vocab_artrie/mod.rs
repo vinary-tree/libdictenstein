@@ -1,10 +1,13 @@
-//! Persistent Vocabulary ARTrie with Parent Pointers for O(k) Reverse Lookups.
+//! Persistent Vocabulary ARTrie — a lock-free, overlay-only UTF-8 vocabulary (V6).
 //!
-//! This module provides [`PersistentVocabARTrie`], a specialized UTF-8 vocabulary trie
-//! with parent pointers that enable efficient bidirectional lookups:
+//! This module provides [`PersistentVocabARTrie`], a specialized UTF-8 vocabulary trie whose
+//! SOLE representation is the lock-free overlay (`PersistentCharNode` with structural sharing,
+//! at `V = u64` = the vocabulary index). The owned parent-pointer tree + reverse-index sidecar
+//! described historically below were deleted in V6 (the single-lock-free transition).
 //!
-//! - **Forward lookup** (term → index): O(k) via trie traversal
-//! - **Reverse lookup** (index → term): O(1) cache hit, O(k) via parent backtracking
+//! - **Forward lookup** (term → index): O(k) walk of the lock-free overlay
+//! - **Reverse lookup** (index → term): O(1) via the in-memory `reverse_term_map` (id → term),
+//!   rebuilt from the checkpoint image on reopen
 //!
 //! # Design Rationale
 //!
@@ -138,69 +141,26 @@ pub mod persistence_api;
 // Public query API (get_index, get_term, contains, len) — Phase-6 split.
 pub mod query_api;
 
-// BloomFilter support — Phase-6 split out of dict_impl.
-pub mod bloom_filter_api;
-
 // Public mutation API (insert / insert_batch / insert_with_index) — Phase-6 split.
 pub mod mutation_api;
 
 // Path-based queries + iter_terms wrappers — Phase-6 split.
 pub mod path_query;
 
-// Disk I/O helpers (load/persist/serialize/rebuild_reverse_index) — Phase-6 split.
-pub mod disk_io;
-
-// DFS iterators (VocabTermIterator + VocabPrefixIterator) — Phase-6 split.
-pub mod iterators;
-
-// Reverse index infrastructure
-pub mod reverse_index;
-
-// LRU cache for hot lookups
-pub mod reverse_cache;
-
-// Serialization with parent pointers
-pub mod serialization;
-
 // Disk-backed implementation
 pub mod dict_impl;
-
-// Lock-free concurrent vocabulary access
-pub mod concurrent;
-
-// Truly lock-free vocabulary using persistent data structures
-pub mod lockfree;
 
 // Re-export main types
 pub use types::{
     NodeRef, // Re-export from persistent_artrie_char
     VocabTrieFileHeader,
-    VocabTrieNode,
-    VocabTrieRoot,
-    DEFAULT_REVERSE_CACHE_SIZE,
     DEFAULT_VOCAB_BUFFER_POOL_SIZE,
-    FLAG_HAS_PARENT_POINTER,
     VOCAB_FILE_HEADER_SIZE,
-    VOCAB_HEADER_VERSION_V1,
+    VOCAB_HEADER_VERSION_V2,
     VOCAB_TRIE_MAGIC,
 };
 
-pub use reverse_index::{
-    ReverseIndexHeader, VocabReverseIndex, REVERSE_INDEX_HEADER_SIZE, REVERSE_INDEX_MAGIC,
-};
-
-pub use reverse_cache::{CacheStats, VocabReverseCache};
-
-pub use serialization::{
-    deserialize_vocab_node, serialize_vocab_node, vocab_serialized_size, SerializedVocabNodeHeader,
-    FLAG_HAS_VALUE, VOCAB_FORMAT_VERSION, VOCAB_NODE_MAGIC, VOCAB_SERIALIZED_HEADER_SIZE,
-};
-
 pub use dict_impl::{PersistentVocabARTrie, SharedVocabARTrie, VocabSyncHandle};
-
-pub use concurrent::{ConcurrentMode, ConcurrentVocabARTrie, ConcurrentVocabStats};
-
-pub use lockfree::{InsertResult, LockFreeVocab, LockFreeVocabStats};
 
 // Re-export DurabilityPolicy from base layer
 pub use crate::persistent_artrie::dict_impl::DurabilityPolicy;
@@ -753,39 +713,12 @@ impl crate::artrie_trait::EvictableARTrie for SharedVocabARTrie {
             epoch_manager,
         );
 
-        // Create a weak reference to self for the eviction callback
-        let self_weak = Arc::downgrade(self);
-
-        // Start the eviction coordinator with the eviction callback for char nodes
-        // (VocabARTrie uses char-based nodes internally)
+        // Start the eviction coordinator with a no-op char callback. Overlay-only (V6): the
+        // overlay never evicts finals to disk (OverlayFaulter::fault_overlay_slot -> None), so
+        // there is nothing to unswizzle; the coordinator lifecycle is retained for
+        // memory-pressure accounting + API parity with byte/char.
         coordinator
-            .start_char(move |nodes_to_evict| {
-                // Try to upgrade the weak reference
-                let Some(trie) = self_weak.upgrade() else {
-                    return (0, 0);
-                };
-
-                let mut guard = trie.write();
-                let mut evicted_count = 0;
-                let mut bytes_freed = 0;
-
-                for (_path_hash, path, disk_ptr) in nodes_to_evict {
-                    if guard.evict_node_at_path(&path, disk_ptr.clone()) {
-                        evicted_count += 1;
-                        bytes_freed += 256; // Estimate ~256 bytes per node
-
-                        // Remove from LRU tracking
-                        if let Some(ref coordinator) = guard.eviction_coordinator {
-                            use crate::persistent_artrie::eviction::lru_tracker::hash_char_path;
-                            coordinator
-                                .lru_registry()
-                                .remove_hash(hash_char_path(&path));
-                        }
-                    }
-                }
-
-                (evicted_count, bytes_freed)
-            })
+            .start_char(move |_nodes_to_evict| (0, 0))
             .map_err(|e| PersistentARTrieError::internal(&e))?;
 
         // Start memory pressure monitor if configured
@@ -852,129 +785,6 @@ impl crate::artrie_trait::EvictableARTrie for SharedVocabARTrie {
     }
 }
 
-// Helper methods for eviction on PersistentVocabARTrie
-impl PersistentVocabARTrie {
-    /// Evict a single node at the given path, replacing it with a DiskRef.
-    ///
-    /// Walks `path` from the root, descends through `path[..path.len()-1]`
-    /// to reach the parent, and atomically `unswizzle`s the slot for
-    /// `path.last()` to the disk location encoded in `disk_ptr`.
-    ///
-    /// Vocab-specific constraint: a vocab node carries a `parent: NodeRef`
-    /// back-pointer used by `rebuild_reverse_index`. Evicting a node whose
-    /// in-memory subtree is non-trivial would orphan those descendants
-    /// (their `parent` would dangle once the in-memory node is dropped).
-    /// We therefore refuse to evict any node that still has in-memory
-    /// (swizzled) children — the eviction coordinator must descend
-    /// leaf-first via repeated calls before draining a parent.
-    ///
-    /// Returns `true` on successful unswizzle, `false` on any of: empty
-    /// path, navigation failure, parent slot already on disk, child slot
-    /// already on disk, subtree-not-leaf violation, missing/non-disk
-    /// `disk_ptr`, or CAS race loss.
-    pub(crate) fn evict_node_at_path(
-        &mut self,
-        path: &[char],
-        disk_ptr: crate::persistent_artrie::swizzled_ptr::SwizzledPtr,
-    ) -> bool {
-        if path.is_empty() {
-            return false; // The root is never evicted via this path.
-        }
-
-        let target_loc = match disk_ptr.disk_location() {
-            Some(loc) => loc,
-            None => return false,
-        };
-
-        let root_node: &mut crate::persistent_vocab_artrie::types::VocabTrieNode = match self.root {
-            crate::persistent_vocab_artrie::types::VocabTrieRoot::Node(ref mut boxed) => {
-                boxed.as_mut()
-            }
-            crate::persistent_vocab_artrie::types::VocabTrieRoot::Empty => return false,
-        };
-
-        // Navigate to the parent of the target. As in the char variant, this
-        // uses raw-pointer hops; `&mut self` guarantees no concurrent access
-        // and each pointer comes from a SwizzledPtr we just verified is
-        // in-memory.
-        let mut current: *mut crate::persistent_vocab_artrie::types::VocabTrieNode = root_node;
-        let descent: &[char] = &path[..path.len() - 1];
-        for &edge in descent {
-            // SAFETY: same invariant as `evict_node_at_path` in
-            // `persistent_artrie_char`. The pointer is either the original
-            // `&mut root_node` (first iteration) or a pointer we just proved
-            // points to an in-memory `VocabTrieNode` whose lifetime is at
-            // least the lifetime of `&mut self`.
-            let node = unsafe { &mut *current };
-            let child_slot = match node.inner.find_child(edge as u32) {
-                Some(slot) => slot,
-                None => return false,
-            };
-            if !child_slot.is_swizzled() {
-                return false; // Cannot descend through an on-disk parent slot.
-            }
-            let child_raw =
-                match child_slot.as_ptr::<crate::persistent_vocab_artrie::types::VocabTrieNode>() {
-                    Some(p) => p,
-                    None => return false,
-                };
-            current = child_raw as *mut crate::persistent_vocab_artrie::types::VocabTrieNode;
-        }
-
-        // SAFETY: same invariant.
-        let parent = unsafe { &mut *current };
-        let last_edge = *path.last().expect("non-empty path verified above");
-        let slot = match parent.inner.find_child_mut(last_edge as u32) {
-            Some(s) => s,
-            None => return false,
-        };
-        if !slot.is_swizzled() {
-            return false; // Already on disk.
-        }
-
-        // Parent-pointer-integrity check: only evict if the target's
-        // subtree has no in-memory descendants. Peek at the target's
-        // children through the slot's in-memory pointer.
-        let target_raw = match slot.as_ptr::<crate::persistent_vocab_artrie::types::VocabTrieNode>()
-        {
-            Some(p) => p,
-            None => return false,
-        };
-        // SAFETY: slot is swizzled, target_raw points at a live
-        // VocabTrieNode owned by this trie.
-        let target = unsafe { &*target_raw };
-        for (_edge, child_slot) in target.inner.iter_children() {
-            if child_slot.is_swizzled() {
-                // Descendant still in memory; refuse to evict.
-                return false;
-            }
-        }
-
-        match slot.unswizzle::<crate::persistent_vocab_artrie::types::VocabTrieNode>(
-            target_loc.block_id,
-            target_loc.offset,
-            target_loc.node_type,
-        ) {
-            Ok(raw_ptr) => {
-                let raw_const =
-                    raw_ptr as *const crate::persistent_vocab_artrie::types::VocabTrieNode;
-                self.node_map.retain(|_, node_ptr| *node_ptr != raw_const);
-
-                // SAFETY: slot was just unswizzled; we now own the old
-                // pointer, originally `Box::into_raw(Box::new(...))`.
-                unsafe {
-                    let _: Box<crate::persistent_vocab_artrie::types::VocabTrieNode> =
-                        Box::from_raw(
-                            raw_ptr as *mut crate::persistent_vocab_artrie::types::VocabTrieNode,
-                        );
-                }
-                true
-            }
-            Err(_) => false,
-        }
-    }
-}
-
 // ============================================================================
 // Type Aliases
 // ============================================================================
@@ -1016,125 +826,7 @@ pub type DiskBackedVocabTrieInner = PersistentVocabARTrie;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::persistent_artrie::wal::WalConfig;
-    use crate::persistent_artrie::{NodeType, SwizzledPtr};
-    use std::collections::HashMap;
-    use std::path::PathBuf;
-    use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
     use tempfile::tempdir;
-    use xxhash_rust::xxh3::Xxh3DefaultBuilder;
-
-    fn suppress_drop_checkpoint(vocab: &PersistentVocabARTrie) {
-        vocab.entry_count.store(0, Ordering::Release);
-        vocab.dirty.store(false, Ordering::Release);
-    }
-
-    fn heap_only_vocab_for_unsafe_tests() -> PersistentVocabARTrie {
-        let root = Box::new(VocabTrieNode::new());
-        let root_ref = NodeRef::new(0, 0);
-        let root_ptr = root.as_ref() as *const VocabTrieNode;
-        let mut node_map = HashMap::with_hasher(Xxh3DefaultBuilder);
-        node_map.insert(root_ref, root_ptr);
-
-        PersistentVocabARTrie {
-            path: PathBuf::new(),
-            root: VocabTrieRoot::Node(root),
-            entry_count: AtomicUsize::new(0),
-            start_index: 0,
-            next_index: AtomicU64::new(0),
-            dirty: AtomicBool::new(false),
-            reverse_index: None,
-            reverse_cache: VocabReverseCache::new(DEFAULT_REVERSE_CACHE_SIZE),
-            node_map,
-            next_slot: 1,
-            wal_writer: None,
-            wal_config: WalConfig::default(),
-            next_lsn: AtomicU64::new(1),
-            synced_lsn: AtomicU64::new(0),
-            durability_policy: DurabilityPolicy::Periodic,
-            arena_manager: None,
-            buffer_manager: None,
-            eviction_coordinator: None,
-            bloom_filter: None,
-            lockfree_root: None,
-            lockfree_cache: None,
-            cas_retries: AtomicU64::new(0),
-            // V1.1 Order-A substrate (INERT until the overlay is the default).
-            commit_seq: AtomicU64::new(0),
-            committed_watermark:
-                crate::persistent_artrie_core::committed_watermark::CommittedWatermark::new(0),
-            epoch_manager: Arc::new(
-                crate::persistent_artrie_core::concurrency::EpochManager::new(),
-            ),
-            reverse_term_map: None,
-        }
-    }
-
-    fn assert_rebuilt_node_map_parent_chain(vocab: &PersistentVocabARTrie) {
-        let mut ptr_to_ref = HashMap::new();
-
-        for (node_ref, node_ptr) in &vocab.node_map {
-            assert!(
-                !node_ptr.is_null(),
-                "node_map must not contain null pointers"
-            );
-            assert!(
-                ptr_to_ref.insert(*node_ptr as usize, *node_ref).is_none(),
-                "node_map must assign each raw node pointer a single NodeRef"
-            );
-        }
-
-        let root = match &vocab.root {
-            VocabTrieRoot::Node(root) => root.as_ref(),
-            VocabTrieRoot::Empty => panic!("checkpointed vocabulary root should be loaded"),
-        };
-        let root_ref = NodeRef::new(0, 0);
-        let root_ptr = root as *const VocabTrieNode as usize;
-
-        assert_eq!(ptr_to_ref.get(&root_ptr), Some(&root_ref));
-        assert!(
-            root.parent.is_null(),
-            "reloaded root must not acquire a parent pointer"
-        );
-
-        let mut visited = Vec::new();
-        let mut stack = vec![(root_ref, root)];
-
-        while let Some((node_ref, node)) = stack.pop() {
-            let node_ptr = node as *const VocabTrieNode as usize;
-            visited.push(node_ptr);
-
-            for (edge, child) in node.iter_children() {
-                let child_ptr = child as *const VocabTrieNode as usize;
-                let child_ref = ptr_to_ref
-                    .get(&child_ptr)
-                    .expect("in-memory child must be present in node_map");
-
-                assert_eq!(
-                    child.parent, node_ref,
-                    "rebuild must set each child parent NodeRef"
-                );
-                assert_eq!(
-                    child.parent_edge, edge as u32,
-                    "rebuild must set the parent edge used for reverse lookup"
-                );
-                assert_eq!(
-                    vocab.node_map.get(child_ref).map(|ptr| *ptr as usize),
-                    Some(child_ptr),
-                    "child NodeRef must resolve to the same raw pointer"
-                );
-                stack.push((*child_ref, child));
-            }
-        }
-
-        visited.sort_unstable();
-        visited.dedup();
-        assert_eq!(
-            visited.len(),
-            vocab.node_map.len(),
-            "node_map must not retain stale raw pointers after rebuild"
-        );
-    }
 
     #[test]
     fn test_vocab_trie_basic() {
@@ -1318,162 +1010,5 @@ mod tests {
 
         // Checkpoint
         ARTrie::checkpoint(&vocab).unwrap();
-    }
-
-    #[test]
-    fn vocab_parent_eviction_is_rejected_while_child_is_in_memory() {
-        let mut vocab = heap_only_vocab_for_unsafe_tests();
-        vocab.insert_with_index_no_wal("ab", 0).unwrap();
-
-        let parent_ptr = match &vocab.root {
-            VocabTrieRoot::Node(root) => {
-                root.get_child('a').expect("parent child exists") as *const VocabTrieNode
-            }
-            VocabTrieRoot::Empty => panic!("vocab root is empty"),
-        };
-
-        let disk_ptr = SwizzledPtr::on_disk(1, 4096, NodeType::CharNode4);
-        assert!(
-            !vocab.evict_node_at_path(&['a'], disk_ptr),
-            "parent with an in-memory descendant must not be evicted"
-        );
-        assert!(
-            vocab.node_map.values().any(|ptr| *ptr == parent_ptr),
-            "rejected eviction must leave node_map unchanged"
-        );
-
-        suppress_drop_checkpoint(&vocab);
-    }
-
-    #[test]
-    fn vocab_leaf_eviction_invalidates_node_map_entry_before_drop() {
-        let mut vocab = heap_only_vocab_for_unsafe_tests();
-        vocab.insert_with_index_no_wal("ab", 0).unwrap();
-
-        let leaf_ptr = match &vocab.root {
-            VocabTrieRoot::Node(root) => {
-                root.get_child('a')
-                    .and_then(|node| node.get_child('b'))
-                    .expect("leaf child exists") as *const VocabTrieNode
-            }
-            VocabTrieRoot::Empty => panic!("vocab root is empty"),
-        };
-        assert!(
-            vocab.node_map.values().any(|ptr| *ptr == leaf_ptr),
-            "leaf pointer should be registered before eviction"
-        );
-
-        let disk_ptr = SwizzledPtr::on_disk(1, 8192, NodeType::CharNode4);
-        assert!(
-            vocab.evict_node_at_path(&['a', 'b'], disk_ptr),
-            "leaf eviction should succeed"
-        );
-        assert!(
-            vocab.node_map.values().all(|ptr| *ptr != leaf_ptr),
-            "successful eviction must not leave a stale raw node_map pointer"
-        );
-
-        let leaf_slot = match &vocab.root {
-            VocabTrieRoot::Node(root) => root
-                .get_child('a')
-                .and_then(|node| node.inner.find_child('b' as u32))
-                .expect("evicted child slot remains as disk pointer"),
-            VocabTrieRoot::Empty => panic!("vocab root is empty"),
-        };
-        assert!(leaf_slot.disk_location().is_some());
-
-        suppress_drop_checkpoint(&vocab);
-    }
-
-    #[test]
-    fn vocab_leaf_eviction_keeps_sibling_queries_on_live_nodes() {
-        let mut vocab = heap_only_vocab_for_unsafe_tests();
-        vocab.insert_with_index_no_wal("ab", 0).unwrap();
-        vocab.insert_with_index_no_wal("ac", 1).unwrap();
-        let evicted_index = 0;
-        let sibling_index = 1;
-
-        let leaf_ptr = match &vocab.root {
-            VocabTrieRoot::Node(root) => {
-                root.get_child('a')
-                    .and_then(|node| node.get_child('b'))
-                    .expect("leaf child exists") as *const VocabTrieNode
-            }
-            VocabTrieRoot::Empty => panic!("vocab root is empty"),
-        };
-
-        let disk_ptr = SwizzledPtr::on_disk(1, 12_288, NodeType::CharNode4);
-        assert!(
-            vocab.evict_node_at_path(&['a', 'b'], disk_ptr),
-            "leaf eviction should succeed"
-        );
-        assert!(
-            vocab.node_map.values().all(|ptr| *ptr != leaf_ptr),
-            "evicted leaf raw pointer must be removed before the Box is dropped"
-        );
-
-        assert_eq!(
-            vocab.get_index("ac"),
-            Some(sibling_index),
-            "sibling path must remain backed by live in-memory nodes"
-        );
-        assert_eq!(
-            vocab.get_index("ab"),
-            None,
-            "query traversal must not dereference an evicted disk-only child"
-        );
-        assert_ne!(evicted_index, sibling_index);
-
-        suppress_drop_checkpoint(&vocab);
-    }
-
-    #[test]
-    fn vocab_heap_node_map_parent_chain_tracks_live_nodes() {
-        let mut vocab = heap_only_vocab_for_unsafe_tests();
-        let expected = [("alpha", 0), ("alpine", 1), ("beta", 2), ("delta", 3)];
-
-        for (term, index) in expected {
-            assert!(vocab.insert_with_index_no_wal(term, index).unwrap());
-        }
-
-        assert_eq!(vocab.len(), expected.len());
-        for (term, index) in expected {
-            assert_eq!(vocab.get_index(term), Some(index));
-            assert_eq!(vocab.get_term(index), Some(term.to_string()));
-            assert!(vocab.contains_index(index));
-        }
-        assert_rebuilt_node_map_parent_chain(&vocab);
-
-        suppress_drop_checkpoint(&vocab);
-    }
-
-    #[test]
-    fn vocab_reopen_rebuilds_node_map_parent_chain_and_reverse_index() {
-        let dir = tempdir().unwrap();
-        let path = dir.path().join("reopen_rebuilds_node_map.vocab");
-        let terms = ["alpha", "alpine", "beta", "delta"];
-        let mut expected = Vec::new();
-
-        {
-            let mut vocab = PersistentVocabARTrie::create(&path).unwrap();
-            for term in terms {
-                expected.push((term.to_string(), vocab.insert(term).expect("insert term")));
-            }
-
-            vocab.checkpoint().unwrap();
-            suppress_drop_checkpoint(&vocab);
-        }
-
-        let reopened = PersistentVocabARTrie::open(&path).unwrap();
-        assert_eq!(reopened.len(), expected.len());
-
-        for (term, index) in &expected {
-            assert_eq!(reopened.get_index(term), Some(*index));
-            assert_eq!(reopened.get_term(*index), Some(term.clone()));
-            assert!(reopened.contains_index(*index));
-        }
-
-        assert_rebuilt_node_map_parent_chain(&reopened);
-        suppress_drop_checkpoint(&reopened);
     }
 }

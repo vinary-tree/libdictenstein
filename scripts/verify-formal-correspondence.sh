@@ -68,7 +68,6 @@ run_capped cargo test --features persistent-artrie --test persistent_compaction_
 run_capped cargo test --features persistent-artrie --test persistent_rewrite_compaction_correspondence
 run_capped cargo test --features persistent-artrie --test persistent_vocab_wal_atomicity_correspondence
 run_capped cargo test --features persistent-artrie --test persistent_vocab_checkpoint_correspondence
-run_capped cargo test --features persistent-artrie --test concurrent_checkpoint_publication_correspondence
 run_capped cargo test --features persistent-artrie --test persistent_char_eviction_correspondence
 run_capped cargo test --features persistent-artrie --test persistent_char_eviction_registry_correspondence
 run_capped cargo test \
