@@ -48,6 +48,7 @@ impl<S: BlockStorage> super::dict_impl::PersistentVocabARTrie<S> {
                 rev.insert(index, term.to_string());
             }
             self.entry_count.fetch_add(1, Ordering::AcqRel);
+            self.dirty.store(true, Ordering::Release);
             Ok(index)
         } else {
             // A concurrent insert won the term between the hoist and the CAS: return the
@@ -120,6 +121,7 @@ impl<S: BlockStorage> super::dict_impl::PersistentVocabARTrie<S> {
             }
             self.entry_count.fetch_add(1, Ordering::AcqRel);
             self.next_index.fetch_max(index + 1, Ordering::AcqRel);
+            self.dirty.store(true, Ordering::Release);
         }
         Ok(newly)
     }
