@@ -27,6 +27,8 @@ use crate::persistent_artrie::NodeType;
 use crate::persistent_artrie_char::arena_manager::ArenaSlot;
 use crate::persistent_artrie_char::nodes::persistent_node::PersistentCharNode;
 use crate::persistent_artrie_char::nodes::CharNode;
+use crate::persistent_artrie_char::nodes::CHAR_MAX_PREFIX_LEN;
+use crate::persistent_artrie_char::persist::{overlay_inner_single_node_with_prefix, peel_chain};
 use crate::persistent_artrie_char::relative_encoding::SerializationContext;
 use crate::persistent_artrie_char::serialization_char::{
     deserialize_char_node_v2, serialize_char_node_v2, DeserializationContext,
@@ -85,6 +87,9 @@ impl<S: BlockStorage> super::dict_impl::PersistentVocabARTrie<S> {
     /// recurse with branch depth. Each node's children are resolved to disk ptrs BEFORE the
     /// node itself is serialized (post-order invariant). Mirrors char's
     /// `serialize_overlay_to_disk_iterative`.
+    // Uncompressed serializer: SUPERSEDED in production by `serialize_overlay_snapshot_compressed`
+    // (CX-universal). Retained as the baseline for the V2-serialize round-trip test.
+    #[cfg(test)]
     pub(super) fn serialize_overlay_to_disk(
         &self,
         root: &Arc<VocabOverlayNode>,
@@ -192,6 +197,143 @@ impl<S: BlockStorage> super::dict_impl::PersistentVocabARTrie<S> {
             match frame.parent_key {
                 Some(key) => completed = Some((key, node_ptr)),
                 None => return Ok(node_ptr),
+            }
+        }
+    }
+
+    /// CX-universal: PATH-COMPRESSED overlay serialize — the vocab twin of char's
+    /// `serialize_overlay_snapshot_compressed`, EVICTION-OFF (vocab overlays are never evicted, so
+    /// there is NO registry / durable-stamp / depth-path bookkeeping — the part of char's serializer
+    /// that the `registry.is_some()` gates guard is simply absent here). Iterative post-order: peels
+    /// each maximal single-child non-final no-value chain via the PROVEN `peel_chain`, feeds the
+    /// chain's unit-string to the PROVEN `chain_chunks` (chunk width = `CHAR_MAX_PREFIX_LEN + 1`, NO
+    /// truncation — Rocq T1/T3 + exhaustive Rust), and emits the chunk stack bottom-up via
+    /// `overlay_inner_single_node_with_prefix`. The loader expands `prefix_len > 0` chunk nodes back
+    /// into chains on load (4A, inherited from the char loader vocab reuses); uncompressed
+    /// `prefix_len = 0` images still load (forward-compatible — no format version bump). On-disk
+    /// overlay images shrink. Reuses char's `peel_chain`/`overlay_inner_single_node_with_prefix` so
+    /// the compression logic is the single proven implementation, not a re-port.
+    pub(super) fn serialize_overlay_snapshot_compressed(
+        &self,
+        root: &Arc<VocabOverlayNode>,
+    ) -> Result<SwizzledPtr> {
+        struct PendingChild {
+            key: u32,
+            ptr: Option<SwizzledPtr>,
+        }
+        // A work-stack frame: the TERMINUS of a peeled chain (the root has an empty chain), the edge
+        // from its parent, and the peeled chain prefix that sits ABOVE it (collapsed into chunks).
+        struct Frame {
+            node: Arc<VocabOverlayNode>,
+            parent_key: Option<u32>,
+            chain_prefix: Vec<u32>,
+            pending_in_mem: Vec<(u32, Arc<VocabOverlayNode>)>,
+            slots: Vec<PendingChild>,
+        }
+        fn make_frame(
+            node: Arc<VocabOverlayNode>,
+            parent_key: Option<u32>,
+            chain_prefix: Vec<u32>,
+        ) -> Frame {
+            let n = node.num_children();
+            let mut slots: Vec<PendingChild> = Vec::with_capacity(n);
+            let mut pending_in_mem: Vec<(u32, Arc<VocabOverlayNode>)> = Vec::with_capacity(n);
+            for (&key, child) in node.iter_children() {
+                if let Some(child_arc) = child.as_in_mem() {
+                    slots.push(PendingChild { key, ptr: None });
+                    pending_in_mem.push((key, Arc::clone(child_arc)));
+                } else if let Some(on_disk) = child.as_on_disk() {
+                    if !on_disk.is_null() {
+                        slots.push(PendingChild {
+                            key,
+                            ptr: Some(on_disk.clone()),
+                        });
+                    }
+                }
+            }
+            pending_in_mem.reverse();
+            Frame {
+                node,
+                parent_key,
+                chain_prefix,
+                pending_in_mem,
+                slots,
+            }
+        }
+
+        // The root is never peeled (it is always the on-disk entry node); its children are.
+        let mut stack: Vec<Frame> = vec![make_frame(Arc::clone(root), None, Vec::new())];
+        let mut completed: Option<(u32, SwizzledPtr)> = None;
+
+        loop {
+            let frame = stack
+                .last_mut()
+                .expect("serialize_compressed: non-empty work-stack");
+
+            if let Some((key, ptr)) = completed.take() {
+                let slot = frame
+                    .slots
+                    .iter_mut()
+                    .find(|s| s.key == key && s.ptr.is_none())
+                    .expect("completed child key has a matching unfilled slot");
+                slot.ptr = Some(ptr);
+            }
+
+            // Descend into the next in-mem child — PEELING its chain first (the out-edge `edge` is
+            // the parent's child-key, NOT part of the chain prefix — the B1 convention).
+            if let Some((edge, child_arc)) = frame.pending_in_mem.pop() {
+                let (chain_prefix, _live_spine, terminus) = peel_chain::<u64>(child_arc);
+                stack.push(make_frame(terminus, Some(edge), chain_prefix));
+                continue;
+            }
+
+            // All children resolved → serialize THIS terminus, then collapse its peeled chain.
+            let frame = stack
+                .pop()
+                .expect("serialize_compressed: frame to finalize");
+            let child_disk_ptrs: Vec<(u32, SwizzledPtr)> = frame
+                .slots
+                .into_iter()
+                .map(|s| {
+                    (
+                        s.key,
+                        s.ptr
+                            .expect("post-order: every in-mem child slot filled before its parent"),
+                    )
+                })
+                .collect();
+
+            // (1) The terminus node — NO prefix (its own finality / value / children).
+            let inner = overlay_inner_single_node(frame.node.as_ref(), &child_disk_ptrs);
+            let terminus_ptr = self.serialize_one_overlay_node(&inner, &child_disk_ptrs)?;
+
+            // (2) Collapse the peeled chain into a chunk stack ABOVE the terminus (bottom-up): the
+            // lowest chunk's edge points at the terminus; each chunk carries <= CHAR_MAX_PREFIX_LEN
+            // inter-edge units as its prefix + one out-edge. Empty chain ⇒ the terminus is the top.
+            let top_ptr = if frame.chain_prefix.is_empty() {
+                terminus_ptr
+            } else {
+                let chunks = crate::persistent_artrie_core::overlay::codec::chain_chunks(
+                    &frame.chain_prefix,
+                    CHAR_MAX_PREFIX_LEN,
+                );
+                let synth = VocabOverlayNode::new(); // non-final, no-value chunk carrier
+                let mut child_ptr = terminus_ptr;
+                for chunk in chunks.iter().rev() {
+                    let child_slots = [(chunk.edge, child_ptr.clone())];
+                    let chunk_inner = overlay_inner_single_node_with_prefix::<u64>(
+                        &synth,
+                        &child_slots,
+                        chunk.prefix,
+                    );
+                    child_ptr = self.serialize_one_overlay_node(&chunk_inner, &child_slots)?;
+                }
+                child_ptr
+            };
+
+            match frame.parent_key {
+                Some(key) => completed = Some((key, top_ptr)),
+                None => return Ok(top_ptr),
             }
         }
     }
@@ -690,6 +832,76 @@ mod tests {
         );
         for (t, id) in &expected {
             assert_eq!(vocab.get_index(t), Some(*id), "reopened forward {t:?}");
+            assert_eq!(
+                vocab.get_term(*id).as_deref(),
+                Some(t.as_str()),
+                "reopened reverse id {id}"
+            );
+        }
+        assert_eq!(vocab.len(), terms.len(), "reopened entry_count");
+        drop(vocab);
+        cleanup(&path);
+    }
+
+    /// CX-universal (vocab): the production checkpoint now uses the PATH-COMPRESSED serializer
+    /// (`serialize_overlay_snapshot_compressed`). Insert long single-child chains whose lengths
+    /// straddle the `CHAR_MAX_PREFIX_LEN = 6` chunk boundary (so they compress into MULTIPLE chunk
+    /// nodes), a shared-prefix branch (a multi-chunk shared head that forks), and an astral-codepoint
+    /// chain; checkpoint (compressed v2 image), drop, reopen — every term->id forward AND id->term
+    /// reverse must survive byte-EXACT (the char loader vocab reuses expands the prefix chunks back
+    /// into chains; NO truncation). A lengthened/shortened key would change the collected terms, so
+    /// this is the end-to-end no-truncation witness for the vocab compressed path.
+    #[test]
+    fn cx_compressed_long_chain_reopen_roundtrip() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target/test-scratch");
+        std::fs::create_dir_all(&dir).expect("scratch dir");
+        let path = dir.join(format!("vocab_cx_longchain_{}.vocab", std::process::id()));
+        let cleanup = |p: &std::path::Path| {
+            let _ = std::fs::remove_file(p);
+            let _ = std::fs::remove_file(p.with_extension("vocab.wal"));
+            let _ = std::fs::remove_file(p.with_extension("vocab.idx"));
+        };
+        cleanup(&path);
+
+        // Distinct first chars ⇒ pure single-child chunk-chains. Lengths straddle the chunk width
+        // (prefix cap 6 ⇒ width 7): 1 (no chunk), 7 (one chunk), 13 (two), 21 (three), 40 (six).
+        let alphabet = "abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJKLMN"; // 50 chars
+        let mut terms: Vec<String> = Vec::new();
+        for (i, &len) in [1usize, 7, 13, 21, 40].iter().enumerate() {
+            let first = (b'A' + i as u8) as char;
+            let body: String = alphabet.chars().take(len.saturating_sub(1)).collect();
+            terms.push(format!("{first}{body}"));
+        }
+        // Shared-prefix branch: a multi-chunk shared head ("sharedprefix", 12) that forks z.. / q..
+        terms.push("sharedprefixzzzzzzzz".to_string());
+        terms.push("sharedprefixqqqqqqqq".to_string());
+        // Astral-codepoint chain (unit = codepoint, not byte): 10 × U+1F3AF.
+        terms.push("\u{1F3AF}".repeat(10));
+
+        let mut expected: Vec<(String, u64)> = Vec::with_capacity(terms.len());
+        {
+            let mut vocab = PersistentVocabARTrie::create(&path).expect("create");
+            vocab.flip_to_overlay();
+            assert!(vocab.route_overlay(), "overlay is the live rep");
+            for t in &terms {
+                let id = vocab.insert(t).expect("overlay insert");
+                expected.push((t.clone(), id));
+            }
+            vocab.checkpoint().expect("compressed checkpoint"); // -> compressed v2 image
+        }
+
+        let (vocab, _report) =
+            PersistentVocabARTrie::open_with_recovery(&path).expect("reopen compressed v2 image");
+        assert!(
+            vocab.route_overlay(),
+            "overlay is the live rep after reopen"
+        );
+        for (t, id) in &expected {
+            assert_eq!(
+                vocab.get_index(t),
+                Some(*id),
+                "reopened forward {t:?} (no truncation)"
+            );
             assert_eq!(
                 vocab.get_term(*id).as_deref(),
                 Some(t.as_str()),

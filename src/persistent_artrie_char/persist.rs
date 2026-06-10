@@ -1076,6 +1076,9 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     /// `path` is threaded for the eviction registry exactly as the recursive walk
     /// threaded it (edge char pushed on descent into each in-mem child, popped on
     /// completion).
+    // Uncompressed serializer: SUPERSEDED in production by `serialize_overlay_snapshot_compressed`
+    // (CX-universal). Retained as the baseline for the density-comparison test (compressed < this).
+    #[cfg(test)]
     fn serialize_overlay_to_disk_iterative(
         &self,
         root: &std::sync::Arc<super::nodes::PersistentCharNode<V>>,
@@ -1502,7 +1505,7 @@ where
 /// `node` supplies finality/value (a synthetic non-final no-value node for an interior chunk node;
 /// the terminus uses the plain [`overlay_inner_single_node`] with an empty prefix). `prefix.len()`
 /// MUST be `<= CHAR_MAX_PREFIX_LEN` (the chunker guarantees it; `from_chars` asserts it).
-fn overlay_inner_single_node_with_prefix<V>(
+pub(crate) fn overlay_inner_single_node_with_prefix<V>(
     node: &super::nodes::PersistentCharNode<V>,
     child_disk_ptrs: &[(u32, SwizzledPtr)],
     prefix: &[u32],
@@ -1529,7 +1532,7 @@ where
 /// `!= 1` child, OR whose sole child is `OnDisk` (the serializer NEVER faults disk: an OnDisk sole
 /// child ends the chain, its `SwizzledPtr` passing through verbatim). ITERATIVE (walks the
 /// uncompressed spine, which is ~key-length deep) so it does not recurse with key length.
-fn peel_chain<V: DictionaryValue>(
+pub(crate) fn peel_chain<V: DictionaryValue>(
     start: std::sync::Arc<super::nodes::PersistentCharNode<V>>,
 ) -> (
     Vec<u32>,
