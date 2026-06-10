@@ -144,23 +144,33 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
         let (root_type, root_ptr, is_final, term_count) = match overlay_root {
             None => (ROOT_TYPE_EMPTY, 0u64, false, 0u64),
             Some(root) => {
-                // Serialize the overlay root DIRECTLY with an ITERATIVE post-order
-                // walk (no deep intermediate owned tree), so the on-disk image is
-                // equivalent by construction to an owned snapshot of the same terms
-                // WITHOUT recursing with key length. The overlay spine is
-                // UN-path-compressed (one node per key unit), so a ~500-char term
-                // builds a ~500-deep Arc spine; the prior recursive
-                // `overlay_root_to_owned` ⇄ `overlay_node_to_child` +
-                // `serialize_child_to_disk_with_path` pipeline overflowed the stack
-                // (F6 flag-1b). [`Self::serialize_overlay_root_iterative`] flattens
-                // the descent onto a heap work-stack and reuses the NON-recursive
-                // single-node serializer [`Self::serialize_node_to_disk_with_value`],
-                // producing the byte-identical image. `count_overlay_finals` is now
-                // iterative too (same reason).
+                // CX-universal: the regular checkpoint capture now serializes via the PATH-COMPRESSED
+                // serializer (was the uncompressed `serialize_overlay_root_iterative`), passing the
+                // eviction registry so an eviction-ON checkpoint compresses AND #6-stamps each chunk
+                // at its true expanded depth — matching char's `capture_snapshot_immutable`. The byte
+                // loader is already prefix-aware (folds `prefix_len>0` chunks back into chains on
+                // reopen), and uncompressed `prefix_len=0` images still load (forward-compatible).
+                //
+                // Root-descriptor rule: IDENTICAL to `compact_publish_compressed_overlay` (the empty/
+                // bucket override) and to the old `serialize_overlay_root_iterative` — a childless
+                // NON-final root is an empty values-bucket (`ROOT_TYPE_BUCKET`, the byte loader's
+                // convention); everything else is `ROOT_TYPE_ART_NODE`. NEVER `ROOT_TYPE_NODE` (that
+                // is char's distinct scheme). DATA-LOSS callout: for a childless-FINAL root the
+                // compressed serializer's `root_ptr` already carries the root value (the terminus
+                // record serialized + registered at `path=[]`), so the `else` arm is correct; the
+                // bucket override fires only for the childless NON-final (0-term) root, whose discarded
+                // compressed record is harmless (empty registry — eviction never acts on it).
                 let entry_count = count_overlay_finals::<V>(&root);
-                let (rt, rp, isf) =
-                    self.serialize_overlay_root_iterative(&root, eviction_registry.as_mut())?;
-                (rt, rp, isf, entry_count)
+                let root_ptr =
+                    self.serialize_overlay_snapshot_compressed(&root, eviction_registry.as_mut())?;
+                let is_final = root.is_final();
+                let (rt, rp) = if root.num_children() == 0 && !is_final {
+                    let bucket_ptr = self.serialize_bucket_to_disk(&StringBucket::with_values())?;
+                    (ROOT_TYPE_BUCKET, bucket_ptr.to_raw())
+                } else {
+                    (ROOT_TYPE_ART_NODE, root_ptr.to_raw())
+                };
+                (rt, rp, is_final, entry_count)
             }
         };
 
