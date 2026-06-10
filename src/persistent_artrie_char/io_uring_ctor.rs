@@ -28,20 +28,19 @@ use super::DEFAULT_CHAR_BUFFER_POOL_SIZE;
 impl<V: DictionaryValue>
     super::PersistentARTrieChar<V, crate::persistent_artrie::IoUringDiskManager>
 {
-    /// **S5-12 EDIT 1 (io_uring twin of the mmap `apply_create_flip`).** A freshly
+    /// **S5-12 EDIT 1 (io_uring twin of the mmap `install_overlay_on_create`).** A freshly
     /// created io_uring trie flips to the lock-free overlay for `V ∈ {(), u64}`; a
-    /// strict NO-OP for arbitrary `V`. The mmap `apply_create_flip` lives in the
+    /// strict NO-OP for arbitrary `V`. The mmap `install_overlay_on_create` lives in the
     /// default-`S` (`MmapDiskManager`) impl block and is not visible here, so the
     /// `IoUringDiskManager` create path needs its own. `flip_to_overlay` /
     /// `overlay_eligible_v` are on the `<V, S: BlockStorage>` block (visible for any
     /// `S`). Fresh WAL ⇒ the Overlay stamp MUST take; `!took` ⇒ hard error (V-2).
-    fn apply_create_flip(mut self) -> Result<Self> {
-        if Self::overlay_eligible_v() && !self.flip_to_overlay() {
-            return Err(PersistentARTrieError::internal(
-                "S5-12 create-flip (io_uring): flip_to_overlay did not engage on a fresh trie",
-            ));
-        }
-        Ok(self)
+    fn install_overlay_on_create(self) -> Result<Self> {
+        <Self as crate::persistent_artrie_core::overlay::flip::LockFreeOverlay<
+            crate::persistent_artrie_core::key_encoding::CharKey,
+            _,
+            _,
+        >>::install_overlay_on_create(self)
     }
 
     /// Create a new disk-backed trie using io_uring + O_DIRECT.
@@ -78,7 +77,7 @@ impl<V: DictionaryValue>
         let arena_manager = Arc::new(RwLock::new(arena_manager));
 
         // S5-12 EDIT 1: flip a fresh eligible-V trie to the overlay (no-op for arbitrary V).
-        Self::apply_create_flip(Self {
+        Self::install_overlay_on_create(Self {
             len: AtomicUsize::new(0),
             dirty: AtomicBool::new(false),
             buffer_manager: Some(buffer_manager),

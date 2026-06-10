@@ -29,21 +29,20 @@ use super::wal::{AsyncWalConfig, AsyncWalWriter, WalConfig};
 use super::{IoUringDiskManager, DEFAULT_BUFFER_POOL_SIZE};
 
 impl<V: DictionaryValue> PersistentARTrie<V, IoUringDiskManager> {
-    /// **M4b EDIT 1 (io_uring twin of the mmap `apply_create_flip`).** A freshly
+    /// **M4b EDIT 1 (io_uring twin of the mmap `install_overlay_on_create`).** A freshly
     /// created io_uring byte trie flips to the lock-free overlay for `V ∈ {(), i64}`;
-    /// a strict NO-OP for arbitrary `V`. The mmap `apply_create_flip` lives in the
+    /// a strict NO-OP for arbitrary `V`. The mmap `install_overlay_on_create` lives in the
     /// default-`S` (`MmapDiskManager`) impl block and is not visible here, so the
     /// `IoUringDiskManager` create path needs its own. `flip_to_overlay` /
     /// `overlay_eligible_v` are on the `<V, S: BlockStorage>` block (visible for any
     /// `S`). Fresh WAL ⇒ the Overlay stamp MUST take; `!flip_to_overlay()` ⇒ hard
     /// error (V-2). NB byte's eligible counter monomorph is `i64` (char's is `u64`).
-    fn apply_create_flip(mut self) -> Result<Self> {
-        if Self::overlay_eligible_v() && !self.flip_to_overlay() {
-            return Err(PersistentARTrieError::internal(
-                "byte create-flip (io_uring): flip did not engage on a fresh trie",
-            ));
-        }
-        Ok(self)
+    fn install_overlay_on_create(self) -> Result<Self> {
+        <Self as crate::persistent_artrie_core::overlay::flip::LockFreeOverlay<
+            crate::persistent_artrie_core::key_encoding::ByteKey,
+            _,
+            _,
+        >>::install_overlay_on_create(self)
     }
 
     /// Create a new persistent dictionary backed by io_uring + O_DIRECT.
@@ -91,7 +90,7 @@ impl<V: DictionaryValue> PersistentARTrie<V, IoUringDiskManager> {
         let arena_manager = Arc::new(RwLock::new(arena_manager));
 
         // M4b EDIT 1: flip a fresh eligible-V trie to the overlay (no-op for arbitrary V).
-        Self::apply_create_flip(Self {
+        Self::install_overlay_on_create(Self {
             term_count: AtomicUsize::new(0),
             dirty: AtomicBool::new(false),
             buffer_manager: Some(buffer_manager),
@@ -111,7 +110,7 @@ impl<V: DictionaryValue> PersistentARTrie<V, IoUringDiskManager> {
             lockfree_cache: None,
             #[cfg(feature = "persistent-artrie")]
             cas_retries: std::sync::atomic::AtomicU64::new(0),
-            // apply_create_flip above for eligible V; arbitrary V stays owned.
+            // install_overlay_on_create above for eligible V; arbitrary V stays owned.
             // M2b: fresh on-disk trie (empty WAL) — watermark base + commit_seq 0.
             committed_watermark:
                 crate::persistent_artrie_core::committed_watermark::CommittedWatermark::new(0),

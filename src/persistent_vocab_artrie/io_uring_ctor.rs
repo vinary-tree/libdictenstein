@@ -97,12 +97,11 @@ impl PersistentVocabARTrie<crate::persistent_artrie::IoUringDiskManager> {
             reverse_term_map: None,
         };
         // FLIP (io_uring): overlay is the LIVE rep from construction (mirror mmap).
-        if !trie.flip_to_overlay() {
-            return Err(PersistentARTrieError::internal(
-                "vocab create_with_io_uring: flip_to_overlay did not engage on a fresh trie",
-            ));
-        }
-        Ok(trie)
+        <Self as crate::persistent_artrie_core::overlay::flip::LockFreeOverlay<
+            crate::persistent_artrie_core::key_encoding::CharKey,
+            _,
+            _,
+        >>::install_overlay_on_create(trie)
     }
 
     /// Open an existing vocabulary trie using io_uring + O_DIRECT (the v2 overlay image).

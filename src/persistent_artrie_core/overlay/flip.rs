@@ -534,6 +534,36 @@ pub(crate) trait LockFreeOverlay<K: KeyEncoding, V: DictionaryValue, S>:
         self.route_overlay() && stamped_overlay
     }
 
+    /// Build the lock-free overlay on a freshly-created trie and return it. The overlay is the SOLE
+    /// representation (the owned tree was deleted at C2/V6), so construction installs it DIRECTLY —
+    /// there is no "enable"/"flip" step, because there is nothing else to be. `install_overlay()`
+    /// installs `lockfree_root` + the cache and stamps the WAL Overlay regime on the empty `create*`
+    /// WAL (`current_lsn() == 1`); the restamp covers a variant whose `install_overlay` does not stamp.
+    /// HARD-ERRORS if the WAL is not Overlay-regime afterward (an Owned-regime WAL under overlay routing
+    /// would make recovery keep unranked orphans; a WAL-less trie also fails — but `new()` does not call
+    /// this). Behavior-identical to the old `apply_create_flip` (`flip_to_overlay` + hard-error), minus
+    /// the dead `overlay_eligible_v()` gate.
+    fn install_overlay_on_create(mut self) -> Result<Self>
+    where
+        Self: Sized,
+    {
+        self.install_overlay();
+        if self.wal_current_lsn() == Some(1) && !self.wal_is_overlay_regime() {
+            self.wal_stamp_overlay_regime();
+        }
+        if !(self.route_overlay()
+            && self.wal_current_lsn().is_some()
+            && self.wal_is_overlay_regime())
+        {
+            return Err(
+                crate::persistent_artrie_core::error::PersistentARTrieError::internal(
+                    "create: overlay setup did not engage the WAL Overlay regime on a fresh trie",
+                ),
+            );
+        }
+        Ok(self)
+    }
+
     // ===== reestablish =====
     //
     // **F7 — the three per-term reestablish folds (`reestablish_overlay_membership` /

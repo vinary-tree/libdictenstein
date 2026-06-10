@@ -95,12 +95,11 @@ impl PersistentVocabARTrie {
         // FLIP: the overlay is the LIVE representation from construction (single lock-free impl —
         // no install_overlay toggle). flip_to_overlay installs the overlay + stamps the Overlay
         // regime so route_overlay() -> true.
-        if !trie.flip_to_overlay() {
-            return Err(PersistentARTrieError::internal(
-                "vocab create: flip_to_overlay did not engage on a fresh trie",
-            ));
-        }
-        Ok(trie)
+        <Self as crate::persistent_artrie_core::overlay::flip::LockFreeOverlay<
+            crate::persistent_artrie_core::key_encoding::CharKey,
+            _,
+            _,
+        >>::install_overlay_on_create(trie)
     }
 
     /// Open an existing vocabulary trie, replaying WAL records if needed.

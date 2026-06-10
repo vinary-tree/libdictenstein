@@ -32,7 +32,7 @@ use super::wal::{AsyncWalConfig, AsyncWalWriter, WalConfig};
 impl<V: DictionaryValue> PersistentARTrie<V> {
     /// **M4b EDIT 1 (owner-GO, IRREVERSIBLE): a freshly-created byte trie flips to
     /// the lock-free overlay for `V ∈ {(), i64}`; a strict NO-OP for arbitrary `V`.**
-    /// The byte twin of char's `apply_create_flip` (persistent_artrie_char/mmap_ctor.rs).
+    /// The byte twin of char's `install_overlay_on_create` (persistent_artrie_char/mmap_ctor.rs).
     ///
     /// A `create*` ctor builds a FRESH WAL (`current_lsn() == 1`), so
     /// `flip_to_overlay`'s shared default — `install_overlay()` (which stamps the
@@ -44,13 +44,12 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
     /// `OwnedTree`, and this is a pure no-op (the proven owned path runs unchanged —
     /// backward-compat for arbitrary V). NB the byte eligible counter monomorph is
     /// `i64` (char's is `u64`).
-    fn apply_create_flip(mut self) -> Result<Self> {
-        if Self::overlay_eligible_v() && !self.flip_to_overlay() {
-            return Err(PersistentARTrieError::internal(
-                "byte create-flip: flip did not engage on a fresh trie",
-            ));
-        }
-        Ok(self)
+    fn install_overlay_on_create(self) -> Result<Self> {
+        <Self as crate::persistent_artrie_core::overlay::flip::LockFreeOverlay<
+            crate::persistent_artrie_core::key_encoding::ByteKey,
+            _,
+            _,
+        >>::install_overlay_on_create(self)
     }
 
     /// Create a new empty in-memory dictionary.
@@ -169,7 +168,7 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
         let arena_manager = Arc::new(RwLock::new(arena_manager));
 
         // M4b EDIT 1: flip a fresh eligible-V trie to the overlay (no-op for arbitrary V).
-        Self::apply_create_flip(Self {
+        Self::install_overlay_on_create(Self {
             term_count: AtomicUsize::new(0),
             dirty: AtomicBool::new(false),
             buffer_manager: Some(buffer_manager),
@@ -189,7 +188,7 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
             lockfree_cache: None,
             #[cfg(feature = "persistent-artrie")]
             cas_retries: std::sync::atomic::AtomicU64::new(0),
-            // apply_create_flip above for eligible V; arbitrary V stays owned.
+            // install_overlay_on_create above for eligible V; arbitrary V stays owned.
             // M2b: fresh on-disk trie (empty WAL) — no durable frontier, no prior
             // generations ⇒ watermark base + commit_seq both 0 (INERT pre-flip).
             committed_watermark:
@@ -266,7 +265,7 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
         let arena_manager = Arc::new(RwLock::new(arena_manager));
 
         // M4b EDIT 1: flip a fresh eligible-V trie to the overlay (no-op for arbitrary V).
-        Self::apply_create_flip(Self {
+        Self::install_overlay_on_create(Self {
             term_count: AtomicUsize::new(0),
             dirty: AtomicBool::new(false),
             buffer_manager: Some(buffer_manager),

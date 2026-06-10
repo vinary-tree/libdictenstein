@@ -94,13 +94,12 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
     /// recovery-unsafe overlay. For `V ∉ {(), u64}` `overlay_eligible_v()` is false,
     /// the gate short-circuits, the trie stays `OwnedTree`, and this is a pure no-op
     /// (the proven owned path runs, unchanged — backward-compat for arbitrary V).
-    fn apply_create_flip(mut self) -> Result<Self> {
-        if Self::overlay_eligible_v() && !self.flip_to_overlay() {
-            return Err(PersistentARTrieError::internal(
-                "S5-12 create-flip: flip_to_overlay did not engage on a fresh trie",
-            ));
-        }
-        Ok(self)
+    fn install_overlay_on_create(self) -> Result<Self> {
+        <Self as crate::persistent_artrie_core::overlay::flip::LockFreeOverlay<
+            crate::persistent_artrie_core::key_encoding::CharKey,
+            _,
+            _,
+        >>::install_overlay_on_create(self)
     }
 
     /// Create a new disk-backed trie at the given path
@@ -127,7 +126,7 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
         let arena_manager = Arc::new(RwLock::new(arena_manager));
 
         // S5-12 EDIT 1: flip a fresh eligible-V trie to the overlay (no-op for arbitrary V).
-        Self::apply_create_flip(Self {
+        Self::install_overlay_on_create(Self {
             len: AtomicUsize::new(0),
             dirty: AtomicBool::new(false),
             buffer_manager: Some(buffer_manager),
@@ -197,7 +196,7 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
         let arena_manager = Arc::new(RwLock::new(arena_manager));
 
         // S5-12 EDIT 1: flip a fresh eligible-V trie to the overlay (no-op for arbitrary V).
-        Self::apply_create_flip(Self {
+        Self::install_overlay_on_create(Self {
             len: AtomicUsize::new(0),
             dirty: AtomicBool::new(false),
             buffer_manager: Some(buffer_manager),
@@ -277,7 +276,7 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
         let arena_manager = Arc::new(RwLock::new(arena_manager));
 
         // S5-12 EDIT 1: flip a fresh eligible-V trie to the overlay (no-op for arbitrary V).
-        Self::apply_create_flip(Self {
+        Self::install_overlay_on_create(Self {
             len: AtomicUsize::new(0),
             dirty: AtomicBool::new(false),
             buffer_manager: Some(buffer_manager),
