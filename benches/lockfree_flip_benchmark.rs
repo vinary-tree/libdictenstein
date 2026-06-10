@@ -27,7 +27,18 @@
 //!     --features persistent-artrie,bench-internals -- --measure \
 //!   | tee docs/experiments/lockfree-flip-raw-combined.log
 //! ```
+//!
+//! DISABLED (2026-06-10): this benchmark compared a CONTROL round (the owned tree under an
+//! RwLock-shared `SharedCharARTrie`) against a TREATMENT round (the lock-free overlay). Both the
+//! owned tree (C2) AND the RwLock-shared char handle (single-lock-free) were DELETED, so there is
+//! no control side left. The original body is preserved (block-commented) below; rewrite as an
+//! overlay-only insert benchmark to re-enable.
 
+fn main() {
+    eprintln!("lockfree_flip_benchmark is disabled (obsolete): the owned->overlay flip subject was deleted in C2/V6 (see the block comment below for the original body).");
+}
+
+/*
 #![cfg(all(feature = "persistent-artrie", feature = "bench-internals"))]
 
 use std::hint::black_box;
@@ -1303,3 +1314,5 @@ fn rand_suffix() -> u64 {
         .map(|d| d.as_nanos() as u64)
         .unwrap_or(0)
 }
+
+*/
