@@ -1,72 +1,23 @@
-//! Lattice abstraction and adapters for union merging.
+//! Lattice adapters for union merging.
 //!
-//! A lattice is a partially-ordered set with two operations:
-//! - **join** (least upper bound / supremum)
-//! - **meet** (greatest lower bound / infimum)
+//! The [`Lattice`] trait itself lives in the [`llattice`] crate and is
+//! re-exported here so that `libdictenstein::union_zipper::Lattice` keeps
+//! resolving. [`LatticeJoin`] and [`LatticeMeet`] adapt any `Lattice` impl into
+//! a [`ValueMergeStrategy`](super::merge_strategies::ValueMergeStrategy).
 //!
-//! For union zipper purposes, [`LatticeJoin`] and [`LatticeMeet`] adapt any
-//! `Lattice` impl into a [`ValueMergeStrategy`](super::merge_strategies::ValueMergeStrategy).
-//!
-//! Extracted from `union_zipper.rs` (C6 dedup); re-exported from
+//! Extracted from `union_zipper.rs` (C6 dedup); the trait itself moved to the
+//! `llattice` leaf crate to break a dependency cycle. Re-exported from
 //! [`crate::union_zipper`] for back-compat.
-
-use std::collections::HashSet;
-use std::hash::Hash;
 
 use super::merge_strategies::ValueMergeStrategy;
 
-/// A lattice provides join (least upper bound) and meet (greatest lower bound) operations.
+/// The lattice trait (join / meet), re-exported from the [`llattice`] crate.
 ///
-/// Lattices satisfy the following properties:
-/// - **Idempotency**: `a.join(a) = a` and `a.meet(a) = a`
-/// - **Commutativity**: `a.join(b) = b.join(a)` and `a.meet(b) = b.meet(a)`
-/// - **Associativity**: `(a.join(b)).join(c) = a.join(b.join(c))` (same for meet)
-/// - **Absorption**: `a.join(a.meet(b)) = a` and `a.meet(a.join(b)) = a`
-///
-/// # Use Cases
-///
-/// - **CRDT-style merges**: When values from multiple dictionaries should be combined
-///   using lattice semantics (e.g., merging sets, taking max/min)
-/// - **Conflict-free replication**: Lattice operations are commutative and associative,
-///   making them suitable for distributed systems
-///
-/// # Relationship to Semirings
-///
-/// For idempotent semirings (where `a ⊕ a = a`), the `plus` operation forms a join
-/// semilattice. However, `times` is generally path composition, not lattice meet.
-/// See the `lling-llang` feature for automatic `Lattice` impl from `IdempotentSemiring`.
-///
-/// # Examples
-///
-/// ```rust
-/// use libdictenstein::union_zipper::Lattice;
-/// use std::collections::HashSet;
-///
-/// // HashSet: join = union, meet = intersection
-/// let a: HashSet<i32> = [1, 2].into_iter().collect();
-/// let b: HashSet<i32> = [2, 3].into_iter().collect();
-///
-/// let joined = a.join(&b);  // {1, 2, 3}
-/// let met = a.meet(&b);     // {2}
-///
-/// assert_eq!(joined, [1, 2, 3].into_iter().collect());
-/// assert_eq!(met, [2].into_iter().collect());
-///
-/// // Numeric: join = max, meet = min
-/// assert_eq!(5u32.join(&3), 5);
-/// assert_eq!(5u32.meet(&3), 3);
-/// ```
-pub trait Lattice: Clone + Send + Sync {
-    /// Join operation (least upper bound / union / supremum).
-    ///
-    /// For sets, this is union. For numbers, this is max.
-    fn join(&self, other: &Self) -> Self;
-
-    /// Meet operation (greatest lower bound / intersection / infimum).
-    ///
-    /// For sets, this is intersection. For numbers, this is min.
-    fn meet(&self, other: &Self) -> Self;
-}
+/// A lattice provides join (least upper bound) and meet (greatest lower bound)
+/// operations. Built-in impls cover integers, floats, `bool`, `Option`,
+/// `HashSet`, and `Vec`; see the [`llattice`] crate for the trait definition,
+/// laws, and per-type semantics.
+pub use llattice::Lattice;
 
 /// Adapter that uses [`Lattice::join`] as the merge strategy.
 ///
@@ -155,121 +106,5 @@ impl<V: Lattice> ValueMergeStrategy<V> for LatticeMeet {
     #[inline]
     fn merge(&self, existing: V, new: V) -> V {
         existing.meet(&new)
-    }
-}
-
-// =============================================================================
-// Built-in Lattice Implementations
-// =============================================================================
-
-// Numeric types: join = max, meet = min
-macro_rules! impl_lattice_for_numeric {
-    ($($t:ty),+) => {
-        $(
-            impl Lattice for $t {
-                #[inline]
-                fn join(&self, other: &Self) -> Self {
-                    (*self).max(*other)
-                }
-
-                #[inline]
-                fn meet(&self, other: &Self) -> Self {
-                    (*self).min(*other)
-                }
-            }
-        )+
-    };
-}
-
-impl_lattice_for_numeric!(u8, u16, u32, u64, u128, usize, i8, i16, i32, i64, i128, isize);
-
-// f32: join = max, meet = min (using total ordering)
-impl Lattice for f32 {
-    #[inline]
-    fn join(&self, other: &Self) -> Self {
-        self.max(*other)
-    }
-
-    #[inline]
-    fn meet(&self, other: &Self) -> Self {
-        self.min(*other)
-    }
-}
-
-// f64: join = max, meet = min (using total ordering)
-impl Lattice for f64 {
-    #[inline]
-    fn join(&self, other: &Self) -> Self {
-        self.max(*other)
-    }
-
-    #[inline]
-    fn meet(&self, other: &Self) -> Self {
-        self.min(*other)
-    }
-}
-
-// bool: join = OR, meet = AND
-impl Lattice for bool {
-    #[inline]
-    fn join(&self, other: &Self) -> Self {
-        *self || *other
-    }
-
-    #[inline]
-    fn meet(&self, other: &Self) -> Self {
-        *self && *other
-    }
-}
-
-// Option<T>: join = Some if either Some, meet = Some only if both Some
-impl<T: Lattice> Lattice for Option<T> {
-    #[inline]
-    fn join(&self, other: &Self) -> Self {
-        match (self, other) {
-            (Some(a), Some(b)) => Some(a.join(b)),
-            (Some(a), None) => Some(a.clone()),
-            (None, Some(b)) => Some(b.clone()),
-            (None, None) => None,
-        }
-    }
-
-    #[inline]
-    fn meet(&self, other: &Self) -> Self {
-        match (self, other) {
-            (Some(a), Some(b)) => Some(a.meet(b)),
-            _ => None,
-        }
-    }
-}
-
-// HashSet<T>: join = union, meet = intersection
-impl<T: Clone + Eq + Hash + Send + Sync> Lattice for HashSet<T> {
-    fn join(&self, other: &Self) -> Self {
-        self.union(other).cloned().collect()
-    }
-
-    fn meet(&self, other: &Self) -> Self {
-        self.intersection(other).cloned().collect()
-    }
-}
-
-// Vec<T>: join = concatenate + dedup (if T: Eq), meet = intersection (preserving order)
-impl<T: Clone + Eq + Send + Sync> Lattice for Vec<T> {
-    fn join(&self, other: &Self) -> Self {
-        let mut result = self.clone();
-        for item in other {
-            if !result.contains(item) {
-                result.push(item.clone());
-            }
-        }
-        result
-    }
-
-    fn meet(&self, other: &Self) -> Self {
-        self.iter()
-            .filter(|item| other.contains(item))
-            .cloned()
-            .collect()
     }
 }

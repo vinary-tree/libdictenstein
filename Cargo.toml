@@ -5,11 +5,12 @@ edition = "2021"
 rust-version = "1.70"
 authors = ["Dylon Edwards <dylon.devo@gmail.com>"]
 license = "Apache-2.0"
-repository = "https://github.com/f1r3fly-io/libdictenstein"
+repository = "https://github.com/vinary-tree/libdictenstein"
 description = "High-performance dictionary data structures (trie, DAWG, double-array trie, suffix automaton, lock-free durable persistent ART) behind one trait API; pairs with liblevenshtein for fuzzy matching"
 keywords = ["trie", "dawg", "dictionary", "fuzzy-search", "automata"]
 categories = ["algorithms", "data-structures", "text-processing"]
 readme = "README.md"
+exclude = ["docs/", "formal-verification/"]
 
 [dependencies]
 # Logging facade
@@ -22,6 +23,8 @@ rustc-hash = "1.1"
 arc-swap = "1.7"
 # Error handling
 thiserror = "2.0"
+# Shared lattice trait (join/meet); extracted leaf crate (cycle-break)
+llattice = { path = "../llattice", version = "0.1" }
 # Faster RwLock for DynamicDawg
 parking_lot = { version = "0.12", optional = true }
 # Serialization support (optional)
@@ -37,9 +40,6 @@ prost = { version = "0.13", optional = true }
 
 # PathMap as an optional dictionary backend
 pathmap = { version = "0.2", optional = true }
-
-# WFST semiring integration for Lattice trait
-lling-llang = { path = "../lling-llang", optional = true }
 
 # Memory-mapped I/O for persistent data structures
 memmap2 = { version = "0.9", optional = true }
@@ -81,7 +81,6 @@ criterion = "0.5"
 tempfile = "3.8"
 proptest = "1.4"
 paste = "1.0"  # For macro test name concatenation
-ordered-float = "4.6"  # For lling-llang semiring tests
 hdrhistogram = "7.5"  # High dynamic range histograms for latency benchmarks
 rand = "0.8"  # PRNG for randomized benchmark scenarios
 loom = "0.7"  # Bounded schedule exploration for concurrency correspondence tests
@@ -107,8 +106,6 @@ persistent-artrie = ["memmap2", "parking_lot", "serde", "bincode", "sysinfo", "x
 group-commit = ["persistent-artrie", "crossbeam-channel"]
 # Parallel merge using rayon for multi-core acceleration
 parallel-merge = ["persistent-artrie", "rayon"]
-# lling-llang WFST semiring integration (IdempotentSemiring -> Lattice)
-lling-llang = ["dep:lling-llang"]
 # io_uring-based block storage backend (Linux-only, requires kernel >= 5.1)
 io-uring-backend = ["persistent-artrie", "dep:io-uring", "dep:libc"]
 # Expose internal APIs for benchmarks (not in default features)
@@ -270,3 +267,6 @@ name = "lockfree_flip_benchmark"
 # must be disabled (otherwise libtest's main runs and criterion never executes).
 harness = false
 required-features = ["persistent-artrie", "bench-internals"]
+
+[package.metadata.docs.rs]
+all-features = true

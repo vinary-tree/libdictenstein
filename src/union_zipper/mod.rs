@@ -7,11 +7,8 @@
 //! # Module layout (post-C6 split)
 //!
 //! - [`merge_strategies`] — [`ValueMergeStrategy`], [`FirstWins`], [`LastWins`].
-//! - [`lattice`] — [`Lattice`] trait + [`LatticeJoin`] / [`LatticeMeet`] adapters
-//!   + built-in lattice impls for numeric/bool/Option/HashSet/Vec.
-//! - [`semiring_lattice`] *(feature `lling-llang`)* — `SemiringLattice` /
-//!   `SemiringLatticeWrapper` bridging `IdempotentSemiring` into the lattice
-//!   surface.
+//! - [`lattice`] — re-exports the [`Lattice`] trait (from the `llattice` crate)
+//!   plus the [`LatticeJoin`] / [`LatticeMeet`] merge-strategy adapters.
 //! - This `mod.rs` — [`UnionZipper`] + [`UnionIterator`] + [`ValuedUnionIterator`] +
 //!   [`UnionZipperExt`] / [`ValuedUnionZipperExt`] extension traits + tests.
 //!
@@ -149,8 +146,6 @@
 
 pub mod lattice;
 pub mod merge_strategies;
-#[cfg(feature = "lling-llang")]
-pub mod semiring_lattice;
 
 use std::collections::HashSet;
 
@@ -160,8 +155,6 @@ use crate::zipper::{DictZipper, ValuedDictZipper};
 // expect these names at the crate-public path).
 pub use lattice::{Lattice, LatticeJoin, LatticeMeet};
 pub use merge_strategies::{FirstWins, LastWins, ValueMergeStrategy};
-#[cfg(feature = "lling-llang")]
-pub use semiring_lattice::{SemiringLattice, SemiringLatticeWrapper};
 
 // =============================================================================
 // UnionZipper
