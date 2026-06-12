@@ -226,6 +226,10 @@ pub mod suffix_automaton;
 // index architecture.
 pub mod scdawg;
 
+// Persistent suffix-tree-compatible byte/char variants built on the same native
+// suffix graph snapshots as PersistentSuffixAutomaton.
+pub mod suffix_tree;
+
 // Sequence-keyed u64 persistent ARTrie with native adaptive u64 edge storage.
 pub mod u64;
 
@@ -451,6 +455,11 @@ pub use suffix_automaton::{
 
 pub use scdawg::{
     PersistentScdawg, PersistentScdawgChar, PersistentScdawgCharNode, PersistentScdawgNode,
+};
+
+pub use suffix_tree::{
+    PersistentSuffixTree, PersistentSuffixTreeChar, PersistentSuffixTreeCharNode,
+    PersistentSuffixTreeNode,
 };
 
 pub use u64::{PersistentARTrieU64, PersistentARTrieU64Node};

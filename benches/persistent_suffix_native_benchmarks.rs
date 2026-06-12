@@ -6,7 +6,8 @@
 //! suffix store: namespaced suffix keys in `PersistentARTrie` /
 //! `PersistentARTrieChar`, with serialized suffix payloads and source records.
 //! Treatment: the native suffix graph snapshot/WAL now used by
-//! `PersistentSuffixAutomaton{,Char}` and `PersistentScdawg{,Char}`.
+//! `PersistentSuffixAutomaton{,Char}`, `PersistentSuffixTree{,Char}`, and
+//! `PersistentScdawg{,Char}`.
 //!
 //! Fixed-sample mode prints raw per-round samples for pgmcp/Welch testing:
 //!
@@ -26,7 +27,7 @@ use criterion::{black_box, BenchmarkId, Criterion, Throughput};
 use libdictenstein::persistent_artrie::char::PersistentARTrieChar;
 use libdictenstein::persistent_artrie::{
     PersistentARTrie, PersistentScdawg, PersistentScdawgChar, PersistentSuffixAutomaton,
-    PersistentSuffixAutomatonChar,
+    PersistentSuffixAutomatonChar, PersistentSuffixTree, PersistentSuffixTreeChar,
 };
 use serde::{Deserialize, Serialize};
 
@@ -465,6 +466,22 @@ fn build_native_char_suffix(texts: &[String]) -> PersistentSuffixAutomatonChar<(
     dict
 }
 
+fn build_native_byte_suffix_tree(texts: &[String]) -> PersistentSuffixTree<()> {
+    let dict = PersistentSuffixTree::new();
+    for text in texts {
+        dict.insert(text);
+    }
+    dict
+}
+
+fn build_native_char_suffix_tree(texts: &[String]) -> PersistentSuffixTreeChar<()> {
+    let dict = PersistentSuffixTreeChar::new();
+    for text in texts {
+        dict.insert(text);
+    }
+    dict
+}
+
 fn build_native_byte_scdawg(texts: &[String]) -> PersistentScdawg<()> {
     let dict = PersistentScdawg::new();
     for text in texts {
@@ -514,6 +531,29 @@ fn lookup_native_char_suffix(
     let mut hits = 0usize;
     for query in queries {
         if !dict.match_positions(black_box(query)).is_empty() {
+            hits += 1;
+        }
+    }
+    black_box(hits)
+}
+
+fn lookup_native_byte_suffix_tree(dict: &PersistentSuffixTree<()>, queries: &[String]) -> usize {
+    let mut hits = 0usize;
+    for query in queries {
+        if !dict.locations(black_box(query)).is_empty() {
+            hits += 1;
+        }
+    }
+    black_box(hits)
+}
+
+fn lookup_native_char_suffix_tree(
+    dict: &PersistentSuffixTreeChar<()>,
+    queries: &[String],
+) -> usize {
+    let mut hits = 0usize;
+    for query in queries {
+        if !dict.locations(black_box(query)).is_empty() {
             hits += 1;
         }
     }
@@ -650,6 +690,37 @@ fn checkpoint_native_char_bytes(texts: &[String]) -> u64 {
     directory_bytes(dir.path())
 }
 
+fn checkpoint_native_byte_suffix_tree_bytes(texts: &[String]) -> u64 {
+    let dir = tempfile::Builder::new()
+        .prefix("native_suffix_tree_byte")
+        .tempdir_in(scratch_dir())
+        .expect("native suffix tree byte tempdir");
+    let path = dir.path().join("native.pstree");
+    let dict = PersistentSuffixTree::<()>::create(&path).expect("create native byte suffix tree");
+    for text in texts {
+        dict.insert(text);
+    }
+    dict.checkpoint()
+        .expect("native byte suffix tree checkpoint");
+    directory_bytes(dir.path())
+}
+
+fn checkpoint_native_char_suffix_tree_bytes(texts: &[String]) -> u64 {
+    let dir = tempfile::Builder::new()
+        .prefix("native_suffix_tree_char")
+        .tempdir_in(scratch_dir())
+        .expect("native suffix tree char tempdir");
+    let path = dir.path().join("native.pstreec");
+    let dict =
+        PersistentSuffixTreeChar::<()>::create(&path).expect("create native char suffix tree");
+    for text in texts {
+        dict.insert(text);
+    }
+    dict.checkpoint()
+        .expect("native char suffix tree checkpoint");
+    directory_bytes(dir.path())
+}
+
 fn checkpoint_legacy_char_bytes(texts: &[String]) -> u64 {
     let dir = tempfile::Builder::new()
         .prefix("legacy_suffix_char")
@@ -681,6 +752,58 @@ fn time_parallel_native_byte(texts: &[String], queries: &[String]) -> Duration {
                 let index =
                     op.wrapping_mul(2_654_435_761).wrapping_add(reader * 17) % queries.len();
                 if !dict.match_positions(&queries[index]).is_empty() {
+                    hits += 1;
+                }
+            }
+            black_box(hits)
+        }));
+    }
+
+    let writer = {
+        let dict = Arc::clone(&dict);
+        let barrier = Arc::clone(&barrier);
+        let stop = Arc::clone(&stop);
+        let texts = texts.to_vec();
+        thread::spawn(move || {
+            barrier.wait();
+            let mut writes = 0usize;
+            while !stop.load(Ordering::Relaxed) && writes < WRITES_PER_SAMPLE {
+                let index = texts.len() / 2 + writes % (texts.len() / 2);
+                dict.insert(&texts[index]);
+                writes += 1;
+            }
+            black_box(writes)
+        })
+    };
+
+    barrier.wait();
+    let start = Instant::now();
+    for handle in handles {
+        let _ = handle.join();
+    }
+    let elapsed = start.elapsed();
+    stop.store(true, Ordering::Relaxed);
+    let _ = writer.join();
+    elapsed
+}
+
+fn time_parallel_native_byte_suffix_tree(texts: &[String], queries: &[String]) -> Duration {
+    let dict = Arc::new(build_native_byte_suffix_tree(&texts[..texts.len() / 2]));
+    let stop = Arc::new(AtomicBool::new(false));
+    let barrier = Arc::new(Barrier::new(PARALLEL_READERS + 2));
+    let mut handles = Vec::with_capacity(PARALLEL_READERS);
+
+    for reader in 0..PARALLEL_READERS {
+        let dict = Arc::clone(&dict);
+        let barrier = Arc::clone(&barrier);
+        let queries = queries.to_vec();
+        handles.push(thread::spawn(move || {
+            barrier.wait();
+            let mut hits = 0usize;
+            for op in 0..OPS_PER_READER {
+                let index =
+                    op.wrapping_mul(2_654_435_761).wrapping_add(reader * 17) % queries.len();
+                if !dict.locations(&queries[index]).is_empty() {
                     hits += 1;
                 }
             }
@@ -803,6 +926,8 @@ fn run_fixed_samples() {
     let legacy_byte_suffix = build_legacy_byte(&byte_texts);
     let native_char_suffix = build_native_char_suffix(&char_texts);
     let legacy_char_suffix = build_legacy_char(&char_texts);
+    let native_byte_suffix_tree = build_native_byte_suffix_tree(&byte_texts);
+    let native_char_suffix_tree = build_native_char_suffix_tree(&char_texts);
     let native_byte_scdawg = build_native_byte_scdawg(&byte_texts);
     let native_char_scdawg = build_native_char_scdawg(&char_texts);
 
@@ -834,6 +959,38 @@ fn run_fixed_samples() {
         || {
             let start = Instant::now();
             lookup_native_char_suffix(&native_char_suffix, &char_queries);
+            start.elapsed()
+        },
+        QUERY_COUNT as f64,
+    );
+    let suffix_tree_byte_control = collect_samples(
+        || {
+            let start = Instant::now();
+            lookup_legacy_byte_scdawg(&legacy_byte_suffix, &byte_queries);
+            start.elapsed()
+        },
+        QUERY_COUNT as f64,
+    );
+    let suffix_tree_byte_treatment = collect_samples(
+        || {
+            let start = Instant::now();
+            lookup_native_byte_suffix_tree(&native_byte_suffix_tree, &byte_queries);
+            start.elapsed()
+        },
+        QUERY_COUNT as f64,
+    );
+    let suffix_tree_char_control = collect_samples(
+        || {
+            let start = Instant::now();
+            lookup_legacy_char_scdawg(&legacy_char_suffix, &char_queries);
+            start.elapsed()
+        },
+        QUERY_COUNT as f64,
+    );
+    let suffix_tree_char_treatment = collect_samples(
+        || {
+            let start = Instant::now();
+            lookup_native_char_suffix_tree(&native_char_suffix_tree, &char_queries);
             start.elapsed()
         },
         QUERY_COUNT as f64,
@@ -878,6 +1035,10 @@ fn run_fixed_samples() {
         || time_parallel_native_byte(&byte_texts, &byte_queries),
         (PARALLEL_READERS * OPS_PER_READER) as f64,
     );
+    let suffix_tree_parallel_treatment = collect_samples(
+        || time_parallel_native_byte_suffix_tree(&byte_texts, &byte_queries),
+        (PARALLEL_READERS * OPS_PER_READER) as f64,
+    );
 
     print_sample_line(
         "suffix_byte_match_positions_ns_per_query",
@@ -902,6 +1063,30 @@ fn run_fixed_samples() {
         "treatment_native_suffix_graph_char",
         "ns/query",
         &suffix_char_treatment,
+    );
+    print_sample_line(
+        "suffix_tree_byte_locations_ns_per_query",
+        "control_encoded_suffix_tree_artrie",
+        "ns/query",
+        &suffix_tree_byte_control,
+    );
+    print_sample_line(
+        "suffix_tree_byte_locations_ns_per_query",
+        "treatment_native_suffix_tree_graph",
+        "ns/query",
+        &suffix_tree_byte_treatment,
+    );
+    print_sample_line(
+        "suffix_tree_char_locations_ns_per_query",
+        "control_encoded_suffix_tree_artrie_char",
+        "ns/query",
+        &suffix_tree_char_control,
+    );
+    print_sample_line(
+        "suffix_tree_char_locations_ns_per_query",
+        "treatment_native_suffix_tree_graph_char",
+        "ns/query",
+        &suffix_tree_char_treatment,
     );
     print_sample_line(
         "scdawg_byte_locations_ns_per_query",
@@ -939,6 +1124,18 @@ fn run_fixed_samples() {
         "ns/read",
         &parallel_treatment,
     );
+    print_sample_line(
+        "suffix_tree_byte_parallel_read_write_ns_per_read",
+        "control_encoded_suffix_tree_artrie",
+        "ns/read",
+        &parallel_control,
+    );
+    print_sample_line(
+        "suffix_tree_byte_parallel_read_write_ns_per_read",
+        "treatment_native_suffix_tree_graph",
+        "ns/read",
+        &suffix_tree_parallel_treatment,
+    );
 
     let disk_texts = &byte_texts[..128];
     let char_disk_texts = &char_texts[..128];
@@ -957,6 +1154,22 @@ fn run_fixed_samples() {
     println!(
         "metric=suffix_char_checkpoint_disk_bytes,arm=treatment_native_suffix_graph_char,unit=bytes,samples={}",
         checkpoint_native_char_bytes(char_disk_texts)
+    );
+    println!(
+        "metric=suffix_tree_byte_checkpoint_disk_bytes,arm=control_encoded_suffix_tree_artrie,unit=bytes,samples={}",
+        checkpoint_legacy_byte_bytes(disk_texts)
+    );
+    println!(
+        "metric=suffix_tree_byte_checkpoint_disk_bytes,arm=treatment_native_suffix_tree_graph,unit=bytes,samples={}",
+        checkpoint_native_byte_suffix_tree_bytes(disk_texts)
+    );
+    println!(
+        "metric=suffix_tree_char_checkpoint_disk_bytes,arm=control_encoded_suffix_tree_artrie_char,unit=bytes,samples={}",
+        checkpoint_legacy_char_bytes(char_disk_texts)
+    );
+    println!(
+        "metric=suffix_tree_char_checkpoint_disk_bytes,arm=treatment_native_suffix_tree_graph_char,unit=bytes,samples={}",
+        checkpoint_native_char_suffix_tree_bytes(char_disk_texts)
     );
 }
 
@@ -1016,6 +1229,34 @@ fn bench_scdawg_lookup(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_suffix_tree_lookup(c: &mut Criterion) {
+    let byte_texts = ascii_texts(TEXT_COUNT, TEXT_LEN);
+    let char_texts = unicode_texts(TEXT_COUNT, TEXT_LEN);
+    let byte_queries = byte_queries(&byte_texts, QUERY_COUNT, QUERY_LEN);
+    let char_queries = char_queries(&char_texts, QUERY_COUNT, QUERY_LEN);
+    let native_byte = build_native_byte_suffix_tree(&byte_texts);
+    let legacy_byte = build_legacy_byte(&byte_texts);
+    let native_char = build_native_char_suffix_tree(&char_texts);
+    let legacy_char = build_legacy_char(&char_texts);
+
+    let mut group = c.benchmark_group("persistent_suffix_tree_native_locations");
+    group.sample_size(20);
+    group.throughput(Throughput::Elements(QUERY_COUNT as u64));
+    group.bench_function(BenchmarkId::new("control_encoded_byte", QUERY_LEN), |b| {
+        b.iter(|| lookup_legacy_byte_scdawg(&legacy_byte, &byte_queries));
+    });
+    group.bench_function(BenchmarkId::new("treatment_native_byte", QUERY_LEN), |b| {
+        b.iter(|| lookup_native_byte_suffix_tree(&native_byte, &byte_queries));
+    });
+    group.bench_function(BenchmarkId::new("control_encoded_char", QUERY_LEN), |b| {
+        b.iter(|| lookup_legacy_char_scdawg(&legacy_char, &char_queries));
+    });
+    group.bench_function(BenchmarkId::new("treatment_native_char", QUERY_LEN), |b| {
+        b.iter(|| lookup_native_char_suffix_tree(&native_char, &char_queries));
+    });
+    group.finish();
+}
+
 fn bench_parallel(c: &mut Criterion) {
     let byte_texts = ascii_texts(TEXT_COUNT, TEXT_LEN);
     let byte_queries = byte_queries(&byte_texts, QUERY_COUNT, QUERY_LEN);
@@ -1043,6 +1284,15 @@ fn bench_parallel(c: &mut Criterion) {
             total
         });
     });
+    group.bench_function("treatment_native_suffix_tree_byte", |b| {
+        b.iter_custom(|iters| {
+            let mut total = Duration::ZERO;
+            for _ in 0..iters {
+                total += time_parallel_native_byte_suffix_tree(&byte_texts, &byte_queries);
+            }
+            total
+        });
+    });
     group.finish();
 }
 
@@ -1051,8 +1301,10 @@ fn bench_checkpoint_bytes(c: &mut Criterion) {
     let char_texts = unicode_texts(128, TEXT_LEN);
     let legacy_byte = checkpoint_legacy_byte_bytes(&byte_texts);
     let native_byte = checkpoint_native_byte_bytes(&byte_texts);
+    let native_suffix_tree_byte = checkpoint_native_byte_suffix_tree_bytes(&byte_texts);
     let legacy_char = checkpoint_legacy_char_bytes(&char_texts);
     let native_char = checkpoint_native_char_bytes(&char_texts);
+    let native_suffix_tree_char = checkpoint_native_char_suffix_tree_bytes(&char_texts);
 
     let mut group = c.benchmark_group("persistent_suffix_native_checkpoint_bytes");
     group.sample_size(10);
@@ -1062,23 +1314,30 @@ fn bench_checkpoint_bytes(c: &mut Criterion) {
     group.bench_function("treatment_native_byte_bytes", |b| {
         b.iter(|| black_box(native_byte))
     });
+    group.bench_function("treatment_native_suffix_tree_byte_bytes", |b| {
+        b.iter(|| black_box(native_suffix_tree_byte))
+    });
     group.bench_function("control_encoded_char_bytes", |b| {
         b.iter(|| black_box(legacy_char))
     });
     group.bench_function("treatment_native_char_bytes", |b| {
         b.iter(|| black_box(native_char))
     });
+    group.bench_function("treatment_native_suffix_tree_char_bytes", |b| {
+        b.iter(|| black_box(native_suffix_tree_char))
+    });
     group.finish();
 
     eprintln!(
-        "persistent_suffix_native_checkpoint_bytes,legacy_byte={},native_byte={},legacy_char={},native_char={}",
-        legacy_byte, native_byte, legacy_char, native_char
+        "persistent_suffix_native_checkpoint_bytes,legacy_byte={},native_byte={},native_suffix_tree_byte={},legacy_char={},native_char={},native_suffix_tree_char={}",
+        legacy_byte, native_byte, native_suffix_tree_byte, legacy_char, native_char, native_suffix_tree_char
     );
 }
 
 fn run_criterion() {
     let mut criterion = Criterion::default().configure_from_args();
     bench_suffix_lookup(&mut criterion);
+    bench_suffix_tree_lookup(&mut criterion);
     bench_scdawg_lookup(&mut criterion);
     bench_parallel(&mut criterion);
     bench_checkpoint_bytes(&mut criterion);
