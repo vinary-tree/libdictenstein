@@ -32,7 +32,8 @@ use crate::{
 
 const BYTE_MAGIC: [u8; 8] = *b"PSUFU8N1";
 const CHAR_MAGIC: [u8; 8] = *b"PSUFCHR1";
-const SNAPSHOT_VERSION: u32 = 1;
+const SNAPSHOT_VERSION: u32 = 2;
+const LEGACY_GRAPH_SNAPSHOT_VERSION: u32 = 1;
 const MAX_WAL_RECORD_BYTES: u64 = 64 * 1024 * 1024;
 
 pub trait PersistentSuffixUnit:
@@ -162,6 +163,42 @@ impl<U: PersistentSuffixUnit, V: DictionaryValue> NativeSuffixGraph<U, V> {
             explicit_values: HashMap::new(),
             needs_compaction: false,
         }
+    }
+
+    fn from_compact_snapshot(
+        sources: Vec<SourceRecord<V>>,
+        explicit_values: HashMap<Vec<U>, V>,
+        needs_compaction: bool,
+    ) -> Self {
+        let mut graph = Self::new();
+        for record in sources.iter().filter(|record| record.active) {
+            graph.insert_source_with_id(record.id, record.text.clone(), record.value.clone());
+        }
+        graph.sources = sources;
+        graph.explicit_values.clear();
+        for (units, value) in explicit_values {
+            graph.ensure_value_path(&units, value);
+        }
+        graph.needs_compaction = needs_compaction;
+        graph
+    }
+
+    fn ensure_value_path(&mut self, units: &[U], value: V) {
+        let mut state = 0usize;
+        for &unit in units {
+            let next = match self.nodes[state].find_edge(unit) {
+                Some(next) => next,
+                None => {
+                    let next = self.nodes.len();
+                    self.nodes.push(NativeSuffixNode::new());
+                    self.nodes[state].add_edge(unit, next);
+                    next
+                }
+            };
+            state = next;
+        }
+        self.nodes[state].value = Some(value.clone());
+        self.explicit_values.insert(units.to_vec(), value);
     }
 
     fn next_source_id(&self) -> u64 {
@@ -468,10 +505,23 @@ impl<U: PersistentSuffixUnit, V: DictionaryValue> NativeSuffixGraph<U, V> {
     serialize = "U: serde::Serialize, V: serde::Serialize",
     deserialize = "U: serde::de::DeserializeOwned, V: serde::de::DeserializeOwned"
 ))]
-struct NativeSuffixSnapshot<U: PersistentSuffixUnit, V: DictionaryValue> {
+struct NativeSuffixGraphSnapshot<U: PersistentSuffixUnit, V: DictionaryValue> {
     magic: [u8; 8],
     version: u32,
     graph: NativeSuffixGraph<U, V>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(bound(
+    serialize = "U: serde::Serialize, V: serde::Serialize",
+    deserialize = "U: serde::de::DeserializeOwned, V: serde::de::DeserializeOwned"
+))]
+struct NativeSuffixCompactSnapshot<U: PersistentSuffixUnit, V: DictionaryValue> {
+    magic: [u8; 8],
+    version: u32,
+    sources: Vec<SourceRecord<V>>,
+    explicit_values: Vec<(Vec<U>, V)>,
+    needs_compaction: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -652,10 +702,13 @@ fn write_snapshot_file<U: PersistentSuffixUnit, V: DictionaryValue>(
             .map_err(|error| io_error("create suffix snapshot parent directory", parent, error))?;
     }
 
-    let snapshot = NativeSuffixSnapshot {
+    let explicit_values: Vec<(Vec<U>, V)> = graph.explicit_values.into_iter().collect();
+    let snapshot = NativeSuffixCompactSnapshot {
         magic: U::MAGIC,
         version: SNAPSHOT_VERSION,
-        graph,
+        sources: graph.sources,
+        explicit_values,
+        needs_compaction: graph.needs_compaction,
     };
     let bytes = serialize_bytes("serialize native suffix snapshot", &snapshot)?;
     let tmp = tmp_snapshot_path(path);
@@ -678,21 +731,64 @@ fn read_snapshot_file<U: PersistentSuffixUnit, V: DictionaryValue>(
         .map_err(|error| io_error("open suffix snapshot", path, error))?
         .read_to_end(&mut bytes)
         .map_err(|error| io_error("read suffix snapshot", path, error))?;
-    let snapshot: NativeSuffixSnapshot<U, V> =
-        deserialize_bytes("deserialize native suffix snapshot", &bytes)?;
-    if snapshot.magic != U::MAGIC {
+    if bytes.len() < 12 {
+        return Err(PersistentARTrieError::corrupted(format!(
+            "native suffix snapshot is too short: {} bytes",
+            bytes.len()
+        )));
+    }
+    let magic: [u8; 8] = bytes[0..8]
+        .try_into()
+        .expect("slice length checked for suffix snapshot magic");
+    if magic != U::MAGIC {
         return Err(PersistentARTrieError::InvalidMagic {
             expected: u64::from_le_bytes(U::MAGIC),
-            found: u64::from_le_bytes(snapshot.magic),
+            found: u64::from_le_bytes(magic),
         });
     }
-    if snapshot.version > SNAPSHOT_VERSION {
+    let version = u32::from_le_bytes(
+        bytes[8..12]
+            .try_into()
+            .expect("slice length checked for suffix snapshot version"),
+    );
+
+    match version {
+        SNAPSHOT_VERSION => {
+            let snapshot: NativeSuffixCompactSnapshot<U, V> =
+                deserialize_bytes("deserialize native suffix compact snapshot", &bytes)?;
+            let explicit_values = snapshot.explicit_values.into_iter().collect();
+            Ok(NativeSuffixGraph::from_compact_snapshot(
+                snapshot.sources,
+                explicit_values,
+                snapshot.needs_compaction,
+            ))
+        }
+        LEGACY_GRAPH_SNAPSHOT_VERSION => read_legacy_snapshot(&bytes),
+        found => Err(PersistentARTrieError::UnsupportedVersion {
+            max_supported: SNAPSHOT_VERSION,
+            found,
+        }),
+    }
+}
+
+fn read_legacy_snapshot<U: PersistentSuffixUnit, V: DictionaryValue>(
+    bytes: &[u8],
+) -> Result<NativeSuffixGraph<U, V>> {
+    let legacy: NativeSuffixGraphSnapshot<U, V> = bincode_compat::deserialize(bytes)
+        .map_err(|error| codec_error("legacy suffix snapshot", error))?;
+    if legacy.magic != U::MAGIC {
+        return Err(PersistentARTrieError::InvalidMagic {
+            expected: u64::from_le_bytes(U::MAGIC),
+            found: u64::from_le_bytes(legacy.magic),
+        });
+    }
+    if legacy.version > LEGACY_GRAPH_SNAPSHOT_VERSION {
         return Err(PersistentARTrieError::UnsupportedVersion {
             max_supported: SNAPSHOT_VERSION,
-            found: snapshot.version,
+            found: legacy.version,
         });
     }
-    Ok(snapshot.graph)
+    Ok(legacy.graph)
 }
 
 fn truncate_wal(path: &Path) -> Result<()> {
@@ -1477,5 +1573,33 @@ impl<V: DictionaryValue> Default for PersistentSuffixAutomaton<V> {
 impl<V: DictionaryValue> Default for PersistentSuffixAutomatonChar<V> {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn opens_legacy_full_graph_snapshot_after_compact_snapshot_upgrade() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("legacy.psuffix");
+        let mut graph = NativeSuffixGraph::<u8, u64>::new();
+        graph.insert_source("banana", Some(7));
+        graph.insert_source("bandana", Some(11));
+
+        let snapshot = NativeSuffixGraphSnapshot {
+            magic: BYTE_MAGIC,
+            version: LEGACY_GRAPH_SNAPSHOT_VERSION,
+            graph,
+        };
+        let bytes = serialize_bytes("serialize legacy suffix snapshot", &snapshot)
+            .expect("legacy snapshot bytes");
+        std::fs::write(&path, bytes).expect("write legacy snapshot");
+
+        let reopened = PersistentSuffixAutomaton::<u64>::open(&path).expect("open legacy snapshot");
+        assert!(reopened.contains_live_suffix_prefix("nana"));
+        assert_eq!(reopened.get_value("banana"), Some(7));
+        assert_eq!(reopened.get_value("bandana"), Some(11));
     }
 }

@@ -11,6 +11,7 @@ use libdictenstein::persistent_artrie::{PersistentSuffixAutomaton, PersistentSuf
 use libdictenstein::suffix_automaton::{SuffixAutomaton, SuffixAutomatonChar};
 use libdictenstein::{Dictionary, MappedDictionary, MutableMappedDictionary, SyncStrategy};
 use serde::{Deserialize, Serialize};
+use std::fs;
 use tempfile::tempdir;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -319,4 +320,77 @@ fn char_disk_backed_suffix_state_survives_reopen_and_compaction() {
     assert!(!reopened.needs_compaction());
     assert!(!reopened.contains("ïve c"));
     assert_eq!(reopened.get_value("東京カフェ"), Some(41));
+}
+
+fn suffix_snapshot_version(path: &std::path::Path) -> u32 {
+    let bytes = fs::read(path).expect("read suffix snapshot");
+    assert!(
+        bytes.len() >= 12,
+        "suffix snapshot must contain magic and version"
+    );
+    u32::from_le_bytes(bytes[8..12].try_into().expect("snapshot version"))
+}
+
+#[test]
+fn byte_checkpoint_uses_compact_v2_snapshot_records() {
+    let dir = tempdir().expect("temp dir");
+    let path = dir.path().join("persistent_suffix_byte_compact.psuf");
+    let texts: Vec<String> = (0..48)
+        .map(|idx| format!("shared-prefix-{idx:02}-abcdefghijklmnopqrstuvwxyz-{idx:02}"))
+        .collect();
+
+    {
+        let dict = PersistentSuffixAutomaton::<u64>::create(&path).expect("create byte suffix");
+        for (idx, text) in texts.iter().enumerate() {
+            assert!(dict.insert_with_value(text, idx as u64));
+        }
+        assert!(dict.update_or_insert("shared-prefix", 9000, |value| *value += 1));
+        dict.checkpoint().expect("checkpoint compact byte suffix");
+    }
+
+    assert_eq!(suffix_snapshot_version(&path), 2);
+    let bytes = fs::metadata(&path).expect("snapshot metadata").len();
+    assert!(
+        bytes < 12_000,
+        "compact suffix snapshot should store records, not the rebuilt graph; got {bytes} bytes"
+    );
+
+    let reopened = PersistentSuffixAutomaton::<u64>::open(&path).expect("open compact byte suffix");
+    assert_eq!(reopened.string_count(), texts.len());
+    assert!(reopened.contains("abcdefghijklmnopqrstuvwxyz"));
+    assert_eq!(reopened.get_value(&texts[7]), Some(7));
+    assert_eq!(reopened.get_value("shared-prefix"), Some(9000));
+}
+
+#[test]
+fn char_checkpoint_uses_compact_v2_snapshot_records() {
+    let dir = tempdir().expect("temp dir");
+    let path = dir.path().join("persistent_suffix_char_compact.psufc");
+    let texts: Vec<String> = (0..32)
+        .map(|idx| format!("語彙-{idx:02}-café-naïve-日本語-{idx:02}"))
+        .collect();
+
+    {
+        let dict = PersistentSuffixAutomatonChar::<u64>::create(&path).expect("create char suffix");
+        for (idx, text) in texts.iter().enumerate() {
+            assert!(dict.insert_with_value(text, (idx * 10) as u64));
+        }
+        assert!(dict.update_or_insert("日本語", 700, |value| *value += 1));
+        dict.checkpoint().expect("checkpoint compact char suffix");
+    }
+
+    assert_eq!(suffix_snapshot_version(&path), 2);
+    let bytes = fs::metadata(&path).expect("snapshot metadata").len();
+    assert!(
+        bytes < 16_000,
+        "compact char suffix snapshot should store records, not the rebuilt graph; got {bytes} bytes"
+    );
+
+    let reopened =
+        PersistentSuffixAutomatonChar::<u64>::open(&path).expect("open compact char suffix");
+    assert_eq!(reopened.string_count(), texts.len());
+    assert!(reopened.contains("café"));
+    assert!(reopened.contains("日本語"));
+    assert_eq!(reopened.get_value(&texts[3]), Some(30));
+    assert_eq!(reopened.get_value("日本語"), Some(700));
 }

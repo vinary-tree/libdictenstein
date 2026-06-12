@@ -1087,6 +1087,46 @@ fn run_fixed_samples() {
         || time_parallel_native_byte_suffix_tree(&byte_texts, &byte_queries),
         (PARALLEL_READERS * OPS_PER_READER) as f64,
     );
+    let suffix_byte_disk_control = collect_scalar_samples(|round| {
+        let texts =
+            ascii_texts_with_seed(DISK_SAMPLE_TEXT_COUNT, TEXT_LEN, 0x5f00_0000 ^ round as u64);
+        checkpoint_legacy_byte_bytes(&texts) as f64
+    });
+    let suffix_byte_disk_treatment = collect_scalar_samples(|round| {
+        let texts =
+            ascii_texts_with_seed(DISK_SAMPLE_TEXT_COUNT, TEXT_LEN, 0x5f00_0000 ^ round as u64);
+        checkpoint_native_byte_bytes(&texts) as f64
+    });
+    let suffix_char_disk_control = collect_scalar_samples(|round| {
+        let texts =
+            unicode_texts_with_seed(DISK_SAMPLE_TEXT_COUNT, TEXT_LEN, 0x5f00_c000 ^ round as u64);
+        checkpoint_legacy_char_bytes(&texts) as f64
+    });
+    let suffix_char_disk_treatment = collect_scalar_samples(|round| {
+        let texts =
+            unicode_texts_with_seed(DISK_SAMPLE_TEXT_COUNT, TEXT_LEN, 0x5f00_c000 ^ round as u64);
+        checkpoint_native_char_bytes(&texts) as f64
+    });
+    let suffix_tree_byte_disk_control = collect_scalar_samples(|round| {
+        let texts =
+            ascii_texts_with_seed(DISK_SAMPLE_TEXT_COUNT, TEXT_LEN, 0x57ee_0000 ^ round as u64);
+        checkpoint_legacy_byte_bytes(&texts) as f64
+    });
+    let suffix_tree_char_disk_control = collect_scalar_samples(|round| {
+        let texts =
+            unicode_texts_with_seed(DISK_SAMPLE_TEXT_COUNT, TEXT_LEN, 0x57ee_c000 ^ round as u64);
+        checkpoint_legacy_char_bytes(&texts) as f64
+    });
+    let suffix_tree_byte_disk_treatment = collect_scalar_samples(|round| {
+        let texts =
+            ascii_texts_with_seed(DISK_SAMPLE_TEXT_COUNT, TEXT_LEN, 0x57ee_0000 ^ round as u64);
+        checkpoint_native_byte_suffix_tree_bytes(&texts) as f64
+    });
+    let suffix_tree_char_disk_treatment = collect_scalar_samples(|round| {
+        let texts =
+            unicode_texts_with_seed(DISK_SAMPLE_TEXT_COUNT, TEXT_LEN, 0x57ee_c000 ^ round as u64);
+        checkpoint_native_char_suffix_tree_bytes(&texts) as f64
+    });
     let scdawg_byte_disk_control = collect_scalar_samples(|round| {
         let texts =
             ascii_texts_with_seed(DISK_SAMPLE_TEXT_COUNT, TEXT_LEN, 0x5cda_0000 ^ round as u64);
@@ -1205,6 +1245,54 @@ fn run_fixed_samples() {
         &suffix_tree_parallel_treatment,
     );
     print_sample_line(
+        "suffix_byte_checkpoint_disk_bytes",
+        "control_encoded_suffix_artrie",
+        "bytes",
+        &suffix_byte_disk_control,
+    );
+    print_sample_line(
+        "suffix_byte_checkpoint_disk_bytes",
+        "treatment_native_suffix_graph",
+        "bytes",
+        &suffix_byte_disk_treatment,
+    );
+    print_sample_line(
+        "suffix_char_checkpoint_disk_bytes",
+        "control_encoded_suffix_artrie_char",
+        "bytes",
+        &suffix_char_disk_control,
+    );
+    print_sample_line(
+        "suffix_char_checkpoint_disk_bytes",
+        "treatment_native_suffix_graph_char",
+        "bytes",
+        &suffix_char_disk_treatment,
+    );
+    print_sample_line(
+        "suffix_tree_byte_checkpoint_disk_bytes",
+        "control_encoded_suffix_tree_artrie",
+        "bytes",
+        &suffix_tree_byte_disk_control,
+    );
+    print_sample_line(
+        "suffix_tree_byte_checkpoint_disk_bytes",
+        "treatment_native_suffix_tree_graph",
+        "bytes",
+        &suffix_tree_byte_disk_treatment,
+    );
+    print_sample_line(
+        "suffix_tree_char_checkpoint_disk_bytes",
+        "control_encoded_suffix_tree_artrie_char",
+        "bytes",
+        &suffix_tree_char_disk_control,
+    );
+    print_sample_line(
+        "suffix_tree_char_checkpoint_disk_bytes",
+        "treatment_native_suffix_tree_graph_char",
+        "bytes",
+        &suffix_tree_char_disk_treatment,
+    );
+    print_sample_line(
         "scdawg_byte_checkpoint_disk_bytes",
         "control_encoded_scdawg_artrie",
         "bytes",
@@ -1227,41 +1315,6 @@ fn run_fixed_samples() {
         "treatment_native_scdawg_graph_char",
         "bytes",
         &scdawg_char_disk_treatment,
-    );
-
-    let disk_texts = &byte_texts[..128];
-    let char_disk_texts = &char_texts[..128];
-    println!(
-        "metric=suffix_byte_checkpoint_disk_bytes,arm=control_encoded_suffix_artrie,unit=bytes,samples={}",
-        checkpoint_legacy_byte_bytes(disk_texts)
-    );
-    println!(
-        "metric=suffix_byte_checkpoint_disk_bytes,arm=treatment_native_suffix_graph,unit=bytes,samples={}",
-        checkpoint_native_byte_bytes(disk_texts)
-    );
-    println!(
-        "metric=suffix_char_checkpoint_disk_bytes,arm=control_encoded_suffix_artrie_char,unit=bytes,samples={}",
-        checkpoint_legacy_char_bytes(char_disk_texts)
-    );
-    println!(
-        "metric=suffix_char_checkpoint_disk_bytes,arm=treatment_native_suffix_graph_char,unit=bytes,samples={}",
-        checkpoint_native_char_bytes(char_disk_texts)
-    );
-    println!(
-        "metric=suffix_tree_byte_checkpoint_disk_bytes,arm=control_encoded_suffix_tree_artrie,unit=bytes,samples={}",
-        checkpoint_legacy_byte_bytes(disk_texts)
-    );
-    println!(
-        "metric=suffix_tree_byte_checkpoint_disk_bytes,arm=treatment_native_suffix_tree_graph,unit=bytes,samples={}",
-        checkpoint_native_byte_suffix_tree_bytes(disk_texts)
-    );
-    println!(
-        "metric=suffix_tree_char_checkpoint_disk_bytes,arm=control_encoded_suffix_tree_artrie_char,unit=bytes,samples={}",
-        checkpoint_legacy_char_bytes(char_disk_texts)
-    );
-    println!(
-        "metric=suffix_tree_char_checkpoint_disk_bytes,arm=treatment_native_suffix_tree_graph_char,unit=bytes,samples={}",
-        checkpoint_native_char_suffix_tree_bytes(char_disk_texts)
     );
 }
 

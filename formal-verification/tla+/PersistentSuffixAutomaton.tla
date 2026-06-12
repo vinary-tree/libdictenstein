@@ -4,12 +4,13 @@ EXTENDS Naturals, FiniteSets, TLC
 (*
   Bounded model for persistent suffix automata.
 
-  The implementation stores source suffix payloads and explicit mapped values
-  in the persistent ARTrie data namespace. Removing a source deactivates it but
-  may leave stale payload positions until compaction. Reads filter positions
-  through the active source set; explicit mapped values remain visible and are
-  preserved by compaction. Checkpoint/reopen copies and restores the abstract
-  persistent state.
+  The implementation stores native source records and explicit mapped values in
+  a compact suffix snapshot plus a native suffix WAL. Removing a source
+  deactivates it but may leave stale payload positions until compaction. Reads
+  filter positions through the active source set; explicit mapped values remain
+  visible and are preserved by compaction. Checkpoint/reopen copies and restores
+  the abstract persistent state, rebuilding the in-memory suffix graph from the
+  compact durable records.
 *)
 
 CONSTANTS S1, S2, Empty, A, B, AB, BA
