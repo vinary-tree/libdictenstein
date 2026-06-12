@@ -15,3 +15,9 @@ pub use ascii::{SuffixAutomaton, SuffixNodeHandle};
 pub use char::{SuffixAutomatonChar, SuffixNodeCharHandle};
 pub use char_zipper::SuffixAutomatonCharZipper;
 pub use zipper::SuffixAutomatonZipper;
+
+#[cfg(feature = "persistent-artrie")]
+pub use crate::persistent_artrie::{
+    PersistentSuffixAutomaton, PersistentSuffixAutomatonChar, PersistentSuffixAutomatonCharNode,
+    PersistentSuffixAutomatonNode,
+};

@@ -68,6 +68,11 @@ run_capped cargo test --features persistent-artrie --test zipper_language_corres
 run_capped cargo test --features persistent-artrie --test persistent_artrie_formal_correspondence
 run_capped cargo test --features persistent-artrie --test persistent_prefix_correspondence
 run_capped cargo test --features persistent-artrie --test persistent_read_snapshot_correspondence
+run_capped cargo test --features persistent-artrie --test persistent_suffix_automaton_correspondence
+run_capped cargo test --features persistent-artrie --test persistent_suffix_automaton_proptest
+run_capped cargo test --features persistent-artrie --test persistent_suffix_automaton_concurrency
+run_capped cargo test --features persistent-artrie --test persistent_scdawg_correspondence
+run_capped cargo test --features persistent-artrie --test persistent_artrie_u64_correspondence
 run_capped cargo test --features persistent-artrie --test persistent_char_node_layout_correspondence
 # L3.3: the owned-machinery correspondence tests (persistent_char_ebr / persistent_lazy_mutation /
 # persistent_bulk_mutation / persistent_lockfree_merge / persistent_char_eviction_proptest) were
@@ -243,6 +248,9 @@ if command -v tla2sany >/dev/null 2>&1; then
       PublicDurabilityPolicy \
       PersistentEndToEndTrace \
       PublicReadSnapshotTraversal \
+      PersistentSuffixAutomaton \
+      PersistentScdawg \
+      PersistentARTrieU64 \
       CharNodeV2Layout \
       ConcurrentVocabLinearizability \
       EpochCheckpointRecovery \
@@ -297,6 +305,9 @@ if [ "${RUN_TLC:-0}" = "1" ]; then
       PublicDurabilityPolicy \
       PersistentEndToEndTrace \
       PublicReadSnapshotTraversal \
+      PersistentSuffixAutomaton \
+      PersistentScdawg \
+      PersistentARTrieU64 \
       CharNodeV2Layout \
       ConcurrentVocabLinearizability \
       EpochCheckpointRecovery \

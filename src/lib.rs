@@ -30,6 +30,8 @@
 //! |---------|----------|-------------|-------------|---------|
 //! | **[PersistentARTrie]** | Disk-backed key/value, byte keys | mmap + WAL | Lock-free CAS | Byte-level |
 //! | **[PersistentARTrieChar]** | Disk-backed key/value, Unicode | mmap + WAL | Lock-free CAS | ✅ Character-level |
+//! | **[PersistentSuffixAutomaton]** | Disk-backed substring search, byte keys | mmap + WAL | Lock-free CAS | Byte-level |
+//! | **[PersistentSuffixAutomatonChar]** | Disk-backed Unicode substring search | mmap + WAL | Lock-free CAS | ✅ Character-level |
 //! | **[PersistentVocabARTrie]** | Vocabulary trie (term ↔ u64 index) | mmap + WAL | RwLock | ✅ Character-level |
 //!
 //! Use the [`factory::DictionaryFactory`] for a unified construction API across
@@ -49,6 +51,8 @@
 //! [PathMapDictionaryChar]: pathmap::PathMapDictionaryChar
 //! [PersistentARTrie]: persistent_artrie::PersistentARTrie
 //! [PersistentARTrieChar]: persistent_artrie::char::PersistentARTrieChar
+//! [PersistentSuffixAutomaton]: persistent_artrie::PersistentSuffixAutomaton
+//! [PersistentSuffixAutomatonChar]: persistent_artrie::PersistentSuffixAutomatonChar
 //! [PersistentVocabARTrie]: persistent_artrie::vocab::PersistentVocabARTrie
 
 // === Shared infrastructure ===
@@ -130,7 +134,10 @@ pub use persistent_artrie::vocab::{IndexedVocabularyPersistent, PersistentVocabA
 pub use persistent_artrie::wal::Lsn;
 #[cfg(feature = "persistent-artrie")]
 pub use persistent_artrie::{
-    PersistentARTrie, PersistentARTrieZipper, RecoveryMode, RecoveryReport, WalConfig,
+    PersistentARTrie, PersistentARTrieU64, PersistentARTrieU64Node, PersistentARTrieZipper,
+    PersistentScdawg, PersistentScdawgChar, PersistentScdawgCharNode, PersistentScdawgNode,
+    PersistentSuffixAutomaton, PersistentSuffixAutomatonChar, PersistentSuffixAutomatonCharNode,
+    PersistentSuffixAutomatonNode, RecoveryMode, RecoveryReport, WalConfig,
 };
 
 /// Synchronization strategy for dictionary operations.
@@ -501,4 +508,10 @@ pub mod prelude {
     pub use crate::dynamic_dawg::{DynamicDawg, DynamicDawgChar, DynamicDawgU64};
     pub use crate::scdawg::{Scdawg, ScdawgChar};
     pub use crate::suffix_automaton::{SuffixAutomaton, SuffixAutomatonChar};
+
+    #[cfg(feature = "persistent-artrie")]
+    pub use crate::persistent_artrie::{
+        PersistentARTrieU64, PersistentScdawg, PersistentScdawgChar, PersistentSuffixAutomaton,
+        PersistentSuffixAutomatonChar,
+    };
 }

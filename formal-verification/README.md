@@ -10,7 +10,7 @@ The verification uses a two-pronged approach:
 2. **Rocq/Coq (Theorem Proving)**: Proves functional correctness, node transitions, and refinement to abstract map ADT
 
 The current repo-wide coverage and remaining formalization candidates are
-tracked in [`GAP_LEDGER.md`](GAP_LEDGER.md). As of the 2026-06-11 audit, the
+tracked in [`GAP_LEDGER.md`](GAP_LEDGER.md). As of the 2026-06-12 audit, the
 only non-ARTrie stale model found in the refactor was the PathMap snapshot/ref
 surface, now covered by `rocq/Spec/PathMapSnapshotSpec.v`.
 
@@ -47,6 +47,7 @@ formal-verification/
 │   ├── PublicDurabilityPolicy.tla # Public mutation/sync acknowledgement model
 │   ├── PersistentEndToEndTrace.tla # Public checkpoint/WAL/compaction/reopen trace model
 │   ├── PublicReadSnapshotTraversal.tla # Public read traversal snapshot model
+│   ├── PersistentSuffixAutomaton.tla # Persistent suffix value/compaction/reopen model
 │   ├── ConcurrentVocabLinearizability.tla # Public concurrent vocab history model
 │   ├── EpochCheckpointRecovery.tla # Epoch checkpoint/recovery ordering model
 │   ├── PersistentCharBulkMutationRecovery.tla # Char bulk-delete/RMW recovery model
@@ -59,8 +60,8 @@ formal-verification/
 │   ├── PART.cfg               # TLC configuration (no crash)
 │   └── PART_crash.cfg         # TLC configuration (with crash)
 │
-└── rocq/                      # Rocq/Coq proofs (66 .v files, 26,329 LOC,
-    │                            1,283 theorem/lemma/corollary propositions,
+└── rocq/                      # Rocq/Coq proofs (67 .v files, 26,555 LOC,
+    │                            1,292 theorem/lemma/corollary propositions,
     │                            0 Admitted / 0 Axiom / 0 Parameter)
     ├── Makefile               # Build system
     ├── Spec/                  # Specifications
@@ -74,6 +75,7 @@ formal-verification/
     │   ├── BloomFilterSpec.v # Bloom filter no-false-negative laws
     │   ├── PersistentMergeSpec.v # Cursor pagination and persistent merge laws
     │   ├── PersistentPrefixSpec.v # Persistent char prefix/removal/recovery laws
+    │   ├── PersistentSuffixAutomatonSpec.v # Persistent suffix substring/value-position laws
     │   ├── PathMapFactorySpec.v # Optional PathMap and factory dispatch laws
     │   ├── PathMapSnapshotSpec.v # PathMap TrieRef snapshot/ref view laws
     │   ├── RelativeEncodingSpec.v # Persistent child-pointer encoding laws

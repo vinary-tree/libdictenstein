@@ -21,11 +21,11 @@ It is the companion to **[liblevenshtein](https://github.com/universal-automata/
 
 ## Highlights
 
-- **14 backends** spanning the time/space/durability frontier — pick by need, not by lock-in.
+- **16 backends** spanning the time/space/durability frontier — pick by need, not by lock-in.
 - **Three alphabets, one code path** — byte (`u8`), Unicode (`char`), and 64-bit token (`u64`) units via the [`CharUnit`](#core-traits) abstraction.
 - **A lock-free, crash-durable Adaptive Radix Tree** — disk-backed (`mmap` or `io_uring`), write-ahead-logged, with `O(∣key∣)` lookups independent of dictionary size.
 - **Set algebra over dictionaries** — union / intersection / difference / prefix *zippers* compose any two backends lazily.
-- **Formally verified core** — 66 Rocq files (0 axioms, 0 admits), 51 TLA⁺ models, and a CI-gated `unsafe` contract inventory (see [Formal verification](#formal-verification)).
+- **Formally verified core** — 67 Rocq files (0 axioms, 0 admits), 52 TLA⁺ models, and a CI-gated `unsafe` contract inventory (see [Formal verification](#formal-verification)).
 
 ---
 
@@ -41,9 +41,10 @@ It is the companion to **[liblevenshtein](https://github.com/universal-automata/
 | **Scdawg** / `…Char`                                         | static, compact **bidirectional** substring index | build-once            | `u8` / `char`         | `O(∣q∣)`       |
 | **PathMapDictionary** / `…Char` *(feat. `pathmap-backend`)*  | shared-structure mutable trie                     | insert + remove       | `u8` / `char`         | `O(∣q∣)`       |
 | **PersistentARTrie** / `…Char` *(feat. `persistent-artrie`)* | disk-backed, crash-durable key→value              | insert + remove       | `u8` / `char`         | `O(∣q∣)` + I/O |
+| **PersistentSuffixAutomaton** / `…Char` *(feat. `persistent-artrie`)* | disk-backed **substring** search                  | insert + remove       | `u8` / `char`         | `O(∣q∣)` + I/O |
 | **PersistentVocabARTrie** *(feat. `persistent-artrie`)*      | durable **term ↔ u64** vocabulary (bijection)     | insert                | `char`                | `O(∣q∣)`       |
 
-`∣q∣` is the query length; lookup cost is **independent of the number of stored terms** `n` for every backend — the defining property of trie-shaped indexes. The factory (below) constructs all **11** in-memory backends from one call; the 3 disk-backed variants take a file path.
+`∣q∣` is the query length; lookup cost is **independent of the number of stored terms** `n` for every backend — the defining property of trie-shaped indexes. The factory (below) constructs all **11** in-memory backends from one call; the 5 disk-backed variants take a file path.
 
 ---
 
@@ -306,7 +307,7 @@ The persistent ARTrie carries an unusually strong correctness budget. All figure
 | Tool | Scope | Status |
 |---|---|---|
 | **Rocq (Coq)** | functional correctness + refinement of the trie to an abstract map ADT | **66** `.v` files, **1,283** propositions (theorem/lemma/corollary), **0 `Admitted`, 0 `Axiom`, 0 `Parameter`** — fully constructive (every obligation closed by `Qed.`/`Defined.`) |
-| **TLA⁺ / TLC** | concurrency & crash-recovery safety/liveness | **51** specification modules — e.g. `LockFreeARTrieLinearizability`, `CrashRecovery`, `LockFreeDurableCheckpoint`, `PublicDurabilityPolicy`; the composed model explores multi-million-state spaces (PART ≈ 4.2 M distinct states) |
+| **TLA⁺ / TLC** | concurrency & crash-recovery safety/liveness | **52** specification modules — e.g. `LockFreeARTrieLinearizability`, `CrashRecovery`, `PersistentSuffixAutomaton`, `PublicDurabilityPolicy`; the composed model explores multi-million-state spaces (PART ≈ 4.2 M distinct states) |
 | **loom** | exhaustive interleaving of the lock-free CAS paths | root-CAS, overlay value/index CAS, counter-merge, EBR |
 | **`unsafe` inventory** | every `unsafe` site bound to a reviewed contract + coverage class | **43** inventory rows / **31** contracts, CI-gated by `scripts/verify-unsafe-boundary-inventory.sh` (set-equality — no silent drift) |
 

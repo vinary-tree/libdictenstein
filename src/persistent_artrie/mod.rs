@@ -218,6 +218,17 @@ pub mod shared_trait_impl;
 // Public iteration API (iter / iter_strings / iter_prefix wrappers).
 pub mod public_iter;
 
+// Persistent SuffixAutomaton-compatible byte/char variants built on the shared
+// ARTrie overlay, WAL, recovery, and checkpoint architecture.
+pub mod suffix_automaton;
+
+// Persistent SCDAWG-compatible byte/char variants built on the persistent suffix
+// index architecture.
+pub mod scdawg;
+
+// Sequence-keyed u64 facade over the persistent byte ARTrie architecture.
+pub mod u64;
+
 // IoUringDiskManager-specific constructors (Phase-5 split out of dict_impl).
 #[cfg(feature = "io-uring-backend")]
 pub mod io_uring_ctor;
@@ -432,6 +443,17 @@ pub use dict_impl::{CompactionConfig, CompactionProgress, CompactionStats};
 
 // Zipper types
 pub use zipper::PersistentARTrieZipper;
+
+pub use suffix_automaton::{
+    PersistentSuffixAutomaton, PersistentSuffixAutomatonChar, PersistentSuffixAutomatonCharNode,
+    PersistentSuffixAutomatonNode,
+};
+
+pub use scdawg::{
+    PersistentScdawg, PersistentScdawgChar, PersistentScdawgCharNode, PersistentScdawgNode,
+};
+
+pub use u64::{PersistentARTrieU64, PersistentARTrieU64Node};
 
 pub use block_storage::{AlignedBlock, BlockStorage};
 pub use buffer_manager::{BufferManager, BufferPoolStats, PageReadGuard, PageWriteGuard};
