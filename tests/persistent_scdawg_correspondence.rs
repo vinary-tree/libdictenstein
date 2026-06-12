@@ -16,6 +16,7 @@ fn assert_byte_parity(terms: Vec<String>, probes: Vec<String>) {
     let persistent = PersistentScdawg::<()>::from_terms(terms.iter());
 
     assert_eq!(persistent.len(), volatile.len());
+    assert_eq!(persistent.node_count(), volatile.node_count());
     assert_eq!(persistent.sync_strategy(), SyncStrategy::InternalSync);
     assert!(persistent.is_suffix_based());
 
@@ -61,6 +62,23 @@ fn assert_byte_parity(terms: Vec<String>, probes: Vec<String>) {
 }
 
 #[test]
+fn byte_persistent_scdawg_uses_native_compact_graph_shape() {
+    let terms = ["banana", "bandana", "cabana", "ban"];
+    let volatile = Scdawg::<()>::from_terms(terms);
+    let persistent = PersistentScdawg::<()>::from_terms(terms);
+    let suffix_trie_upper_bound: usize = 1 + terms
+        .iter()
+        .map(|term| term.len() * (term.len() + 1) / 2)
+        .sum::<usize>();
+
+    assert_eq!(persistent.node_count(), volatile.node_count());
+    assert!(
+        persistent.node_count() < suffix_trie_upper_bound,
+        "native SCDAWG graph should be compact against the explicit suffix-trie upper bound"
+    );
+}
+
+#[test]
 fn byte_persistent_scdawg_matches_volatile_scdawg_contract() {
     assert_byte_parity(
         vec![
@@ -77,6 +95,30 @@ fn byte_persistent_scdawg_matches_volatile_scdawg_contract() {
             "xyz".to_string(),
         ],
     );
+}
+
+#[test]
+fn byte_native_scdawg_wal_replays_uncheckpointed_operations() {
+    let dir = tempdir().expect("temp dir");
+    let path = dir.path().join("persistent_scdawg_byte_wal.scdawg");
+
+    {
+        let dict = PersistentScdawg::<i32>::create(&path).expect("create persistent scdawg");
+        assert!(dict.insert_with_value("banana", 7));
+        assert!(dict.insert("bandana"));
+        assert!(dict.remove("banana"));
+        assert!(!dict.update_or_insert("bandana", 10, |value| *value += 1));
+        // Intentionally skip checkpoint so reopen must replay the native SCDAWG WAL.
+    }
+
+    let (reopened, report) =
+        PersistentScdawg::<i32>::open_with_recovery(&path).expect("reopen native scdawg WAL");
+    assert!(report.records_replayed >= 4);
+    assert_eq!(reopened.term_count(), 1);
+    assert!(reopened.contains("bandana"));
+    assert!(!reopened.contains("banana"));
+    assert_eq!(reopened.get_value("bandana"), Some(11));
+    assert!(reopened.contains_substring("dana"));
 }
 
 #[test]
@@ -123,6 +165,8 @@ fn byte_values_duplicates_removal_compaction_and_reopen() {
 fn char_persistent_scdawg_matches_unicode_positions() {
     let volatile = ScdawgChar::<()>::from_terms(["café 日本", "naïve café"]);
     let persistent = PersistentScdawgChar::<()>::from_terms(["café 日本", "naïve café"]);
+
+    assert_eq!(persistent.node_count(), volatile.node_count());
 
     for probe in ["", "café", "fé 日", "日本", "ïve", "missing"] {
         assert_eq!(persistent.contains(probe), volatile.contains(probe));

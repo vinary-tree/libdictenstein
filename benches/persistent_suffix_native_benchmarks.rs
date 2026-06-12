@@ -45,6 +45,7 @@ const FIXED_WARMUPS: usize = 3;
 const PARALLEL_READERS: usize = 4;
 const OPS_PER_READER: usize = 2_000;
 const WRITES_PER_SAMPLE: usize = 128;
+const DISK_SAMPLE_TEXT_COUNT: usize = 32;
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 enum LegacySuffixValue {
@@ -86,12 +87,16 @@ fn mix64(mut value: u64) -> u64 {
 }
 
 fn ascii_texts(count: usize, len: usize) -> Vec<String> {
+    ascii_texts_with_seed(count, len, 0)
+}
+
+fn ascii_texts_with_seed(count: usize, len: usize, seed: u64) -> Vec<String> {
     let alphabet = b"abcdefghijklmnopqrstuvwxyz0123456789";
     let mut texts = Vec::with_capacity(count);
     for i in 0..count {
         let mut text = String::with_capacity(len);
         for j in 0..len {
-            let value = mix64(((i as u64) << 32) | j as u64) as usize;
+            let value = mix64(seed ^ ((i as u64) << 32) ^ j as u64) as usize;
             text.push(alphabet[value % alphabet.len()] as char);
         }
         texts.push(text);
@@ -100,6 +105,10 @@ fn ascii_texts(count: usize, len: usize) -> Vec<String> {
 }
 
 fn unicode_texts(count: usize, len: usize) -> Vec<String> {
+    unicode_texts_with_seed(count, len, 0)
+}
+
+fn unicode_texts_with_seed(count: usize, len: usize, seed: u64) -> Vec<String> {
     const ALPHABET: &[char] = &[
         'a', 'b', 'c', 'é', 'ï', 'ñ', '日', '本', '語', '東', '京', '文', 'ß', 'ø', 'λ', 'Ж',
     ];
@@ -107,7 +116,7 @@ fn unicode_texts(count: usize, len: usize) -> Vec<String> {
     for i in 0..count {
         let mut text = String::new();
         for j in 0..len {
-            let value = mix64(((i as u64) << 32) | j as u64) as usize;
+            let value = mix64(seed ^ ((i as u64) << 32) ^ j as u64) as usize;
             text.push(ALPHABET[value % ALPHABET.len()]);
         }
         texts.push(text);
@@ -721,6 +730,34 @@ fn checkpoint_native_char_suffix_tree_bytes(texts: &[String]) -> u64 {
     directory_bytes(dir.path())
 }
 
+fn checkpoint_native_byte_scdawg_bytes(texts: &[String]) -> u64 {
+    let dir = tempfile::Builder::new()
+        .prefix("native_scdawg_byte")
+        .tempdir_in(scratch_dir())
+        .expect("native scdawg byte tempdir");
+    let path = dir.path().join("native.pscdawg");
+    let dict = PersistentScdawg::<()>::create(&path).expect("create native byte scdawg");
+    for text in texts {
+        dict.insert(text);
+    }
+    dict.checkpoint().expect("native byte scdawg checkpoint");
+    directory_bytes(dir.path())
+}
+
+fn checkpoint_native_char_scdawg_bytes(texts: &[String]) -> u64 {
+    let dir = tempfile::Builder::new()
+        .prefix("native_scdawg_char")
+        .tempdir_in(scratch_dir())
+        .expect("native scdawg char tempdir");
+    let path = dir.path().join("native.pscdawgc");
+    let dict = PersistentScdawgChar::<()>::create(&path).expect("create native char scdawg");
+    for text in texts {
+        dict.insert(text);
+    }
+    dict.checkpoint().expect("native char scdawg checkpoint");
+    directory_bytes(dir.path())
+}
+
 fn checkpoint_legacy_char_bytes(texts: &[String]) -> u64 {
     let dir = tempfile::Builder::new()
         .prefix("legacy_suffix_char")
@@ -916,6 +953,17 @@ where
     samples
 }
 
+fn collect_scalar_samples<F>(mut f: F) -> Vec<f64>
+where
+    F: FnMut(usize) -> f64,
+{
+    let mut samples = Vec::with_capacity(FIXED_SAMPLES);
+    for round in 0..FIXED_SAMPLES {
+        samples.push(f(round));
+    }
+    samples
+}
+
 fn run_fixed_samples() {
     let byte_texts = ascii_texts(TEXT_COUNT, TEXT_LEN);
     let char_texts = unicode_texts(TEXT_COUNT, TEXT_LEN);
@@ -1039,6 +1087,26 @@ fn run_fixed_samples() {
         || time_parallel_native_byte_suffix_tree(&byte_texts, &byte_queries),
         (PARALLEL_READERS * OPS_PER_READER) as f64,
     );
+    let scdawg_byte_disk_control = collect_scalar_samples(|round| {
+        let texts =
+            ascii_texts_with_seed(DISK_SAMPLE_TEXT_COUNT, TEXT_LEN, 0x5cda_0000 ^ round as u64);
+        checkpoint_legacy_byte_bytes(&texts) as f64
+    });
+    let scdawg_byte_disk_treatment = collect_scalar_samples(|round| {
+        let texts =
+            ascii_texts_with_seed(DISK_SAMPLE_TEXT_COUNT, TEXT_LEN, 0x5cda_0000 ^ round as u64);
+        checkpoint_native_byte_scdawg_bytes(&texts) as f64
+    });
+    let scdawg_char_disk_control = collect_scalar_samples(|round| {
+        let texts =
+            unicode_texts_with_seed(DISK_SAMPLE_TEXT_COUNT, TEXT_LEN, 0x5cda_c000 ^ round as u64);
+        checkpoint_legacy_char_bytes(&texts) as f64
+    });
+    let scdawg_char_disk_treatment = collect_scalar_samples(|round| {
+        let texts =
+            unicode_texts_with_seed(DISK_SAMPLE_TEXT_COUNT, TEXT_LEN, 0x5cda_c000 ^ round as u64);
+        checkpoint_native_char_scdawg_bytes(&texts) as f64
+    });
 
     print_sample_line(
         "suffix_byte_match_positions_ns_per_query",
@@ -1135,6 +1203,30 @@ fn run_fixed_samples() {
         "treatment_native_suffix_tree_graph",
         "ns/read",
         &suffix_tree_parallel_treatment,
+    );
+    print_sample_line(
+        "scdawg_byte_checkpoint_disk_bytes",
+        "control_encoded_scdawg_artrie",
+        "bytes",
+        &scdawg_byte_disk_control,
+    );
+    print_sample_line(
+        "scdawg_byte_checkpoint_disk_bytes",
+        "treatment_native_scdawg_graph",
+        "bytes",
+        &scdawg_byte_disk_treatment,
+    );
+    print_sample_line(
+        "scdawg_char_checkpoint_disk_bytes",
+        "control_encoded_scdawg_artrie_char",
+        "bytes",
+        &scdawg_char_disk_control,
+    );
+    print_sample_line(
+        "scdawg_char_checkpoint_disk_bytes",
+        "treatment_native_scdawg_graph_char",
+        "bytes",
+        &scdawg_char_disk_treatment,
     );
 
     let disk_texts = &byte_texts[..128];
@@ -1302,9 +1394,11 @@ fn bench_checkpoint_bytes(c: &mut Criterion) {
     let legacy_byte = checkpoint_legacy_byte_bytes(&byte_texts);
     let native_byte = checkpoint_native_byte_bytes(&byte_texts);
     let native_suffix_tree_byte = checkpoint_native_byte_suffix_tree_bytes(&byte_texts);
+    let native_scdawg_byte = checkpoint_native_byte_scdawg_bytes(&byte_texts);
     let legacy_char = checkpoint_legacy_char_bytes(&char_texts);
     let native_char = checkpoint_native_char_bytes(&char_texts);
     let native_suffix_tree_char = checkpoint_native_char_suffix_tree_bytes(&char_texts);
+    let native_scdawg_char = checkpoint_native_char_scdawg_bytes(&char_texts);
 
     let mut group = c.benchmark_group("persistent_suffix_native_checkpoint_bytes");
     group.sample_size(10);
@@ -1317,6 +1411,9 @@ fn bench_checkpoint_bytes(c: &mut Criterion) {
     group.bench_function("treatment_native_suffix_tree_byte_bytes", |b| {
         b.iter(|| black_box(native_suffix_tree_byte))
     });
+    group.bench_function("treatment_native_scdawg_byte_bytes", |b| {
+        b.iter(|| black_box(native_scdawg_byte))
+    });
     group.bench_function("control_encoded_char_bytes", |b| {
         b.iter(|| black_box(legacy_char))
     });
@@ -1326,11 +1423,21 @@ fn bench_checkpoint_bytes(c: &mut Criterion) {
     group.bench_function("treatment_native_suffix_tree_char_bytes", |b| {
         b.iter(|| black_box(native_suffix_tree_char))
     });
+    group.bench_function("treatment_native_scdawg_char_bytes", |b| {
+        b.iter(|| black_box(native_scdawg_char))
+    });
     group.finish();
 
     eprintln!(
-        "persistent_suffix_native_checkpoint_bytes,legacy_byte={},native_byte={},native_suffix_tree_byte={},legacy_char={},native_char={},native_suffix_tree_char={}",
-        legacy_byte, native_byte, native_suffix_tree_byte, legacy_char, native_char, native_suffix_tree_char
+        "persistent_suffix_native_checkpoint_bytes,legacy_byte={},native_byte={},native_suffix_tree_byte={},native_scdawg_byte={},legacy_char={},native_char={},native_suffix_tree_char={},native_scdawg_char={}",
+        legacy_byte,
+        native_byte,
+        native_suffix_tree_byte,
+        native_scdawg_byte,
+        legacy_char,
+        native_char,
+        native_suffix_tree_char,
+        native_scdawg_char
     );
 }
 

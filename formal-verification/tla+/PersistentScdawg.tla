@@ -2,11 +2,12 @@
 EXTENDS Naturals, FiniteSets, TLC
 
 (*
-  Bounded model for the persistent SCDAWG facade.
+  Bounded model for the native persistent SCDAWG graph.
 
-  The implementation is backed by the persistent suffix-index storage path.
-  Exact dictionary membership is active-source membership; substring search is
-  membership in the active sources' substring language. Checkpoint/reopen copy
+  The implementation persists active term records plus a native SCDAWG WAL and
+  rebuilds immutable compact graph snapshots on publication/reopen. Exact
+  dictionary membership is active-term membership; substring search is
+  membership in the active terms' substring language. Checkpoint/reopen copy
   and restore that abstract state.
 *)
 

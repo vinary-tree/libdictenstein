@@ -238,6 +238,11 @@ impl<V: DictionaryValue> Scdawg<V> {
         self.inner.read().term_count()
     }
 
+    /// Get the number of nodes in the SCDAWG.
+    pub fn node_count(&self) -> usize {
+        self.inner.read().nodes.len()
+    }
+
     // ========================================================================
     // IS Features (Blumer et al. 1987)
     // ========================================================================

@@ -2,11 +2,12 @@
 EXTENDS Naturals, FiniteSets, TLC
 
 (*
-  Bounded model for the sequence-keyed persistent u64 ARTrie facade.
+  Bounded model for the sequence-keyed native persistent u64 ARTrie.
 
-  Public u64 sequences are exact keys. The implementation encodes each u64 as
-  eight bytes before delegating to the persistent byte ARTrie, so the abstract
-  state is a finite set of complete u64 sequences plus a durable checkpoint set.
+  Public u64 sequences are exact keys. The implementation stores native u64
+  edge labels in adaptive edge stores and publishes copy-on-write snapshots, so
+  the abstract state is a finite set of complete u64 sequences plus a durable
+  checkpoint set.
 *)
 
 CONSTANTS Empty, U1, U2, U12, U21
