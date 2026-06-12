@@ -1,54 +1,87 @@
-//! Persistent SuffixAutomaton-compatible dictionaries backed by the ARTrie overlay.
+//! Native persistent suffix-index dictionaries.
 //!
-//! These types are persistent counterparts to [`crate::suffix_automaton::SuffixAutomaton`]
-//! and [`crate::suffix_automaton::SuffixAutomatonChar`]. They deliberately live inside
-//! the persistent ARTrie family so they can use the same lock-free overlay, WAL,
-//! checkpoint, recovery, and value-publication seams as the byte, char, and vocab
-//! persistent tries.
+//! These types provide the persistent counterparts to the byte and Unicode
+//! suffix automaton APIs without encoding suffixes as namespaced
+//! `PersistentARTrie` keys. The durable representation is a native suffix graph
+//! snapshot plus a length-prefixed operation WAL. Readers traverse immutable
+//! graph snapshots; writers publish copy-on-write graph revisions.
 
-use std::collections::HashSet;
-use std::path::Path;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::collections::{HashMap, HashSet};
+use std::fmt;
+use std::fs::{self, File, OpenOptions};
+use std::io::{self, Read, Write};
+use std::marker::PhantomData;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::time::Instant;
 
+use arc_swap::ArcSwap;
+use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 
 use crate::persistent_artrie::block_storage::BlockStorage;
-use crate::persistent_artrie::char::PersistentARTrieChar;
-use crate::persistent_artrie::core::key_encoding::{ByteKey, CharKey};
-use crate::persistent_artrie::core::overlay::durable_write::DurableOverlayWrite;
 use crate::persistent_artrie::disk_manager::MmapDiskManager;
-use crate::persistent_artrie::error::Result;
-use crate::persistent_artrie::{PersistentARTrie, RecoveryReport};
+use crate::persistent_artrie::error::{PersistentARTrieError, Result};
+use crate::persistent_artrie::RecoveryReport;
+use crate::serialization::bincode_compat;
 use crate::value::DictionaryValue;
 use crate::{
-    Dictionary, DictionaryNode, MappedDictionary, MappedDictionaryNode, MutableDictionary,
-    MutableMappedDictionary, SyncStrategy,
+    CharUnit, Dictionary, DictionaryNode, MappedDictionary, MappedDictionaryNode,
+    MutableDictionary, MutableMappedDictionary, SyncStrategy,
 };
 
-const BYTE_DATA_TAG: u8 = 0;
-const BYTE_SOURCE_TAG: u8 = 1;
-const BYTE_META_TAG: u8 = 2;
-const BYTE_STATE_KEY: &[u8] = &[BYTE_META_TAG, b'S'];
+const BYTE_MAGIC: [u8; 8] = *b"PSUFU8N1";
+const CHAR_MAGIC: [u8; 8] = *b"PSUFCHR1";
+const SNAPSHOT_VERSION: u32 = 1;
+const MAX_WAL_RECORD_BYTES: u64 = 64 * 1024 * 1024;
 
-const CHAR_DATA_TAG: char = '\u{E000}';
-const CHAR_SOURCE_TAG: char = '\u{E001}';
-const CHAR_META_TAG: char = '\u{E002}';
-const CHAR_STATE_SUFFIX: &str = "S";
+pub trait PersistentSuffixUnit:
+    CharUnit + Serialize + serde::de::DeserializeOwned + fmt::Debug + Send + Sync
+{
+    const MAGIC: [u8; 8];
+
+    fn suffix_starts(text: &str) -> Vec<usize>;
+
+    fn suffix_units(text: &str, start_byte: usize) -> Vec<Self>;
+
+    fn term_units(text: &str) -> Vec<Self> {
+        Self::from_str(text)
+    }
+}
+
+impl PersistentSuffixUnit for u8 {
+    const MAGIC: [u8; 8] = BYTE_MAGIC;
+
+    fn suffix_starts(text: &str) -> Vec<usize> {
+        let bytes = text.as_bytes();
+        let mut starts: Vec<usize> = (0..bytes.len()).collect();
+        starts.sort_by(|left, right| bytes[*left..].cmp(&bytes[*right..]));
+        starts
+    }
+
+    fn suffix_units(text: &str, start_byte: usize) -> Vec<Self> {
+        text.as_bytes()[start_byte..].to_vec()
+    }
+}
+
+impl PersistentSuffixUnit for char {
+    const MAGIC: [u8; 8] = CHAR_MAGIC;
+
+    fn suffix_starts(text: &str) -> Vec<usize> {
+        let mut starts: Vec<usize> = text.char_indices().map(|(idx, _)| idx).collect();
+        starts.sort_by(|left, right| text[*left..].cmp(&text[*right..]));
+        starts
+    }
+
+    fn suffix_units(text: &str, start_byte: usize) -> Vec<Self> {
+        text[start_byte..].chars().collect()
+    }
+}
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub(crate) struct SuffixPosition {
     source_id: u64,
     start_byte: usize,
-}
-
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
-#[serde(bound(
-    serialize = "V: serde::Serialize",
-    deserialize = "V: serde::de::DeserializeOwned"
-))]
-pub(crate) struct SuffixPayload<V: DictionaryValue> {
-    positions: Vec<SuffixPosition>,
-    value: Option<V>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -63,9 +96,382 @@ pub(crate) struct SourceRecord<V: DictionaryValue> {
     active: bool,
 }
 
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
-pub(crate) struct SuffixState {
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(bound(
+    serialize = "U: serde::Serialize, V: serde::Serialize",
+    deserialize = "U: serde::de::DeserializeOwned, V: serde::de::DeserializeOwned"
+))]
+struct NativeSuffixNode<U: PersistentSuffixUnit, V: DictionaryValue> {
+    edges: Vec<(U, usize)>,
+    positions: Vec<SuffixPosition>,
+    value: Option<V>,
+}
+
+impl<U: PersistentSuffixUnit, V: DictionaryValue> NativeSuffixNode<U, V> {
+    fn new() -> Self {
+        Self {
+            edges: Vec::new(),
+            positions: Vec::new(),
+            value: None,
+        }
+    }
+
+    fn find_edge(&self, label: U) -> Option<usize> {
+        if self.edges.len() < 16 {
+            self.edges
+                .iter()
+                .find(|(unit, _)| *unit == label)
+                .map(|(_, target)| *target)
+        } else {
+            self.edges
+                .binary_search_by_key(&label, |(unit, _)| *unit)
+                .ok()
+                .map(|index| self.edges[index].1)
+        }
+    }
+
+    fn add_edge(&mut self, label: U, target: usize) {
+        match self.edges.binary_search_by_key(&label, |(unit, _)| *unit) {
+            Ok(index) => self.edges[index].1 = target,
+            Err(index) => self.edges.insert(index, (label, target)),
+        }
+    }
+
+    fn is_final(&self) -> bool {
+        self.value.is_some() || !self.positions.is_empty()
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(bound(
+    serialize = "U: serde::Serialize, V: serde::Serialize",
+    deserialize = "U: serde::de::DeserializeOwned, V: serde::de::DeserializeOwned"
+))]
+struct NativeSuffixGraph<U: PersistentSuffixUnit, V: DictionaryValue> {
+    nodes: Vec<NativeSuffixNode<U, V>>,
+    sources: Vec<SourceRecord<V>>,
+    explicit_values: HashMap<Vec<U>, V>,
     needs_compaction: bool,
+}
+
+impl<U: PersistentSuffixUnit, V: DictionaryValue> NativeSuffixGraph<U, V> {
+    fn new() -> Self {
+        Self {
+            nodes: vec![NativeSuffixNode::new()],
+            sources: Vec::new(),
+            explicit_values: HashMap::new(),
+            needs_compaction: false,
+        }
+    }
+
+    fn next_source_id(&self) -> u64 {
+        self.sources
+            .iter()
+            .map(|record| record.id.saturating_add(1))
+            .max()
+            .unwrap_or(0)
+    }
+
+    fn active_source_ids(&self) -> HashSet<u64> {
+        self.sources
+            .iter()
+            .filter(|record| record.active)
+            .map(|record| record.id)
+            .collect()
+    }
+
+    fn active_count(&self) -> usize {
+        self.sources.iter().filter(|record| record.active).count()
+    }
+
+    fn source_texts(&self) -> Vec<String> {
+        self.sources
+            .iter()
+            .map(|record| record.text.clone())
+            .collect()
+    }
+
+    fn traverse_units(&self, units: &[U]) -> Option<usize> {
+        let mut state = 0usize;
+        for &unit in units {
+            state = self.nodes.get(state)?.find_edge(unit)?;
+        }
+        Some(state)
+    }
+
+    fn insert_suffix_units(&mut self, units: &[U], position: SuffixPosition, value: Option<V>) {
+        let mut state = 0usize;
+        for &unit in units {
+            let next = match self.nodes[state].find_edge(unit) {
+                Some(next) => next,
+                None => {
+                    let next = self.nodes.len();
+                    self.nodes.push(NativeSuffixNode::new());
+                    self.nodes[state].add_edge(unit, next);
+                    next
+                }
+            };
+            state = next;
+        }
+
+        if !self.nodes[state].positions.iter().any(|existing| {
+            existing.source_id == position.source_id && existing.start_byte == position.start_byte
+        }) {
+            self.nodes[state].positions.push(position);
+        }
+        if let Some(value) = value {
+            self.nodes[state].value = Some(value.clone());
+            self.explicit_values.insert(units.to_vec(), value);
+        }
+    }
+
+    fn insert_source_with_id(&mut self, source_id: u64, text: String, value: Option<V>) {
+        if text.is_empty() {
+            self.insert_suffix_units(
+                &[],
+                SuffixPosition {
+                    source_id,
+                    start_byte: 0,
+                },
+                value.clone(),
+            );
+        } else {
+            for start in U::suffix_starts(&text) {
+                let suffix = U::suffix_units(&text, start);
+                let suffix_value = if start == 0 { value.clone() } else { None };
+                self.insert_suffix_units(
+                    &suffix,
+                    SuffixPosition {
+                        source_id,
+                        start_byte: start,
+                    },
+                    suffix_value,
+                );
+            }
+        }
+
+        self.sources.push(SourceRecord {
+            id: source_id,
+            text,
+            value,
+            active: true,
+        });
+    }
+
+    fn insert_source(&mut self, text: &str, value: Option<V>) -> bool {
+        let source_id = self.next_source_id();
+        self.insert_source_with_id(source_id, text.to_string(), value);
+        true
+    }
+
+    fn remove_source(&mut self, text: &str) -> bool {
+        if let Some(record) = self
+            .sources
+            .iter_mut()
+            .find(|record| record.active && record.text == text)
+        {
+            record.active = false;
+            self.needs_compaction = true;
+            return true;
+        }
+        false
+    }
+
+    fn clear(&mut self) {
+        *self = Self::new();
+    }
+
+    fn set_value(&mut self, text: &str, value: V) {
+        let units = U::term_units(text);
+        let Some(state) = self.traverse_units(&units) else {
+            self.insert_source(text, Some(value));
+            return;
+        };
+        self.nodes[state].value = Some(value.clone());
+        self.explicit_values.insert(units, value);
+    }
+
+    fn update_or_insert<F>(&mut self, text: &str, default_value: V, update_fn: F) -> (bool, V)
+    where
+        F: FnOnce(&mut V),
+    {
+        let units = U::term_units(text);
+        if let Some(state) = self.traverse_units(&units) {
+            if let Some(mut value) = self.nodes[state].value.clone() {
+                update_fn(&mut value);
+                self.nodes[state].value = Some(value.clone());
+                self.explicit_values.insert(units, value.clone());
+                return (false, value);
+            }
+
+            if self.contains_live_units(&units) {
+                self.nodes[state].value = Some(default_value.clone());
+                self.explicit_values.insert(units, default_value.clone());
+                return (true, default_value);
+            }
+        }
+
+        self.insert_source(text, Some(default_value.clone()));
+        (true, default_value)
+    }
+
+    fn get_value(&self, text: &str) -> Option<V> {
+        let units = U::term_units(text);
+        let state = self.traverse_units(&units)?;
+        self.nodes[state].value.clone()
+    }
+
+    fn contains_live_units(&self, units: &[U]) -> bool {
+        if units.is_empty() {
+            return true;
+        }
+        let Some(state) = self.traverse_units(units) else {
+            return false;
+        };
+        if self.nodes[state].value.is_some() {
+            return true;
+        }
+        let active = self.active_source_ids();
+        self.subtree_has_active_position_or_value(state, &active)
+    }
+
+    fn contains_live_text(&self, text: &str) -> bool {
+        self.contains_live_units(&U::term_units(text))
+    }
+
+    fn subtree_has_active_position_or_value(&self, state: usize, active: &HashSet<u64>) -> bool {
+        let mut stack = vec![state];
+        while let Some(state) = stack.pop() {
+            let node = &self.nodes[state];
+            if node.value.is_some() {
+                return true;
+            }
+            if node
+                .positions
+                .iter()
+                .any(|position| active.contains(&position.source_id))
+            {
+                return true;
+            }
+            for &(_, child) in &node.edges {
+                stack.push(child);
+            }
+        }
+        false
+    }
+
+    fn collect_subtree_positions(&self, state: usize, out: &mut Vec<SuffixPosition>) {
+        let mut stack = vec![state];
+        while let Some(state) = stack.pop() {
+            let node = &self.nodes[state];
+            out.extend(node.positions.iter().cloned());
+            for &(_, child) in &node.edges {
+                stack.push(child);
+            }
+        }
+    }
+
+    fn match_positions(&self, substring: &str) -> Vec<(usize, usize)> {
+        if substring.is_empty() {
+            return Vec::new();
+        }
+
+        let units = U::term_units(substring);
+        let Some(state) = self.traverse_units(&units) else {
+            return Vec::new();
+        };
+
+        let active = self.active_source_ids();
+        let mut positions = Vec::new();
+        self.collect_subtree_positions(state, &mut positions);
+
+        let mut result = Vec::new();
+        for position in positions {
+            if !active.contains(&position.source_id) {
+                continue;
+            }
+            if let Ok(source_id) = usize::try_from(position.source_id) {
+                result.push((source_id, position.start_byte + substring.len()));
+            }
+        }
+        result.sort_unstable();
+        result.dedup();
+        result
+    }
+
+    fn compact(&mut self) -> usize {
+        if !self.needs_compaction {
+            return 0;
+        }
+
+        let old_nodes = self.nodes.len();
+        let sources = self.sources.clone();
+        let values = self.explicit_values.clone();
+        self.nodes = vec![NativeSuffixNode::new()];
+
+        for record in sources.iter().filter(|record| record.active) {
+            if record.text.is_empty() {
+                self.insert_suffix_units(
+                    &[],
+                    SuffixPosition {
+                        source_id: record.id,
+                        start_byte: 0,
+                    },
+                    record.value.clone(),
+                );
+            } else {
+                for start in U::suffix_starts(&record.text) {
+                    let suffix = U::suffix_units(&record.text, start);
+                    let suffix_value = if start == 0 {
+                        record.value.clone()
+                    } else {
+                        None
+                    };
+                    self.insert_suffix_units(
+                        &suffix,
+                        SuffixPosition {
+                            source_id: record.id,
+                            start_byte: start,
+                        },
+                        suffix_value,
+                    );
+                }
+            }
+        }
+
+        for (units, value) in values {
+            let mut state = 0usize;
+            for unit in &units {
+                let next = match self.nodes[state].find_edge(*unit) {
+                    Some(next) => next,
+                    None => {
+                        let next = self.nodes.len();
+                        self.nodes.push(NativeSuffixNode::new());
+                        self.nodes[state].add_edge(*unit, next);
+                        next
+                    }
+                };
+                state = next;
+            }
+            self.nodes[state].value = Some(value.clone());
+            self.explicit_values.insert(units, value);
+        }
+
+        self.sources = sources;
+        self.needs_compaction = false;
+        old_nodes.saturating_sub(self.nodes.len())
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(bound(
+    serialize = "U: serde::Serialize, V: serde::Serialize",
+    deserialize = "U: serde::de::DeserializeOwned, V: serde::de::DeserializeOwned"
+))]
+struct NativeSuffixSnapshot<U: PersistentSuffixUnit, V: DictionaryValue> {
+    magic: [u8; 8],
+    version: u32,
+    graph: NativeSuffixGraph<U, V>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -73,103 +479,362 @@ pub(crate) struct SuffixState {
     serialize = "V: serde::Serialize",
     deserialize = "V: serde::de::DeserializeOwned"
 ))]
-pub(crate) enum PersistentSuffixValue<V: DictionaryValue> {
-    Suffix(SuffixPayload<V>),
-    Source(SourceRecord<V>),
-    State(SuffixState),
+enum NativeSuffixWalRecord<V: DictionaryValue> {
+    Insert { text: String, value: Option<V> },
+    Remove { text: String },
+    SetValue { text: String, value: V },
+    Clear,
+    Compact,
 }
 
-impl<V: DictionaryValue> Default for PersistentSuffixValue<V> {
-    fn default() -> Self {
-        Self::Suffix(SuffixPayload::default())
+pub struct NativeSuffixIndex<U: PersistentSuffixUnit, V: DictionaryValue> {
+    graph: ArcSwap<NativeSuffixGraph<U, V>>,
+    path: Option<PathBuf>,
+    write_lock: Arc<Mutex<()>>,
+    wal_lock: Arc<Mutex<()>>,
+}
+
+fn wal_path(path: &Path) -> PathBuf {
+    let mut wal = path.to_path_buf();
+    wal.set_extension("suffixwal");
+    wal
+}
+
+fn tmp_snapshot_path(path: &Path) -> PathBuf {
+    let mut tmp = path.to_path_buf();
+    tmp.set_extension("suffixtmp");
+    tmp
+}
+
+fn io_error(operation: impl Into<String>, path: &Path, source: io::Error) -> PersistentARTrieError {
+    PersistentARTrieError::io_error(operation, path.display().to_string(), source)
+}
+
+fn codec_error(context: &str, error: impl fmt::Display) -> PersistentARTrieError {
+    PersistentARTrieError::corrupted(format!("{context}: {error}"))
+}
+
+fn serialize_bytes<T: Serialize>(context: &str, value: &T) -> Result<Vec<u8>> {
+    bincode_compat::serialize(value).map_err(|error| codec_error(context, error))
+}
+
+fn deserialize_bytes<T: serde::de::DeserializeOwned>(context: &str, bytes: &[u8]) -> Result<T> {
+    bincode_compat::deserialize(bytes).map_err(|error| codec_error(context, error))
+}
+
+impl<U: PersistentSuffixUnit, V: DictionaryValue> NativeSuffixIndex<U, V> {
+    fn new_in_memory() -> Self {
+        Self {
+            graph: ArcSwap::from_pointee(NativeSuffixGraph::new()),
+            path: None,
+            write_lock: Arc::new(Mutex::new(())),
+            wal_lock: Arc::new(Mutex::new(())),
+        }
+    }
+
+    fn create(path: &Path) -> Result<Self> {
+        let graph = NativeSuffixGraph::new();
+        write_snapshot_file::<U, V>(path, graph.clone())?;
+        truncate_wal(&wal_path(path))?;
+        Ok(Self {
+            graph: ArcSwap::from_pointee(graph),
+            path: Some(path.to_path_buf()),
+            write_lock: Arc::new(Mutex::new(())),
+            wal_lock: Arc::new(Mutex::new(())),
+        })
+    }
+
+    fn open(path: &Path) -> Result<(Self, u64)> {
+        let graph = read_snapshot_file::<U, V>(path)?;
+        let mut replay_graph = graph.clone();
+        let replayed = replay_wal::<U, V>(&mut replay_graph, &wal_path(path))?;
+        Ok((
+            Self {
+                graph: ArcSwap::from_pointee(replay_graph),
+                path: Some(path.to_path_buf()),
+                write_lock: Arc::new(Mutex::new(())),
+                wal_lock: Arc::new(Mutex::new(())),
+            },
+            replayed,
+        ))
+    }
+
+    fn load(&self) -> Arc<NativeSuffixGraph<U, V>> {
+        self.graph.load_full()
+    }
+
+    fn append_record_locked(&self, record: &NativeSuffixWalRecord<V>) -> Result<()> {
+        let Some(path) = self.path.as_ref() else {
+            return Ok(());
+        };
+        let _wal_guard = self.wal_lock.lock();
+        append_wal_record(&wal_path(path), record)
+    }
+
+    fn mutate<R, F>(&self, record: Option<NativeSuffixWalRecord<V>>, mutate: F) -> Result<R>
+    where
+        F: FnOnce(&mut NativeSuffixGraph<U, V>) -> R,
+    {
+        let _write_guard = self.write_lock.lock();
+        let current = self.graph.load_full();
+        let mut next = (*current).clone();
+        let result = mutate(&mut next);
+        if let Some(record) = record {
+            self.append_record_locked(&record)?;
+        }
+        self.graph.store(Arc::new(next));
+        Ok(result)
+    }
+
+    fn insert(&self, text: &str, value: Option<V>) -> Result<bool> {
+        self.mutate(
+            Some(NativeSuffixWalRecord::Insert {
+                text: text.to_string(),
+                value: value.clone(),
+            }),
+            |graph| graph.insert_source(text, value),
+        )
+    }
+
+    fn remove(&self, text: &str) -> Result<bool> {
+        self.mutate(
+            Some(NativeSuffixWalRecord::Remove {
+                text: text.to_string(),
+            }),
+            |graph| graph.remove_source(text),
+        )
+    }
+
+    fn clear(&self) -> Result<()> {
+        self.mutate(Some(NativeSuffixWalRecord::Clear), |graph| graph.clear())
+    }
+
+    fn compact(&self) -> Result<usize> {
+        self.mutate(Some(NativeSuffixWalRecord::Compact), |graph| {
+            graph.compact()
+        })
+    }
+
+    fn update_or_insert<F>(&self, text: &str, default_value: V, update_fn: F) -> Result<bool>
+    where
+        F: FnOnce(&mut V),
+    {
+        let _write_guard = self.write_lock.lock();
+        let current = self.graph.load_full();
+        let mut next = (*current).clone();
+        let (was_new, value) = next.update_or_insert(text, default_value, update_fn);
+        self.append_record_locked(&NativeSuffixWalRecord::SetValue {
+            text: text.to_string(),
+            value,
+        })?;
+        self.graph.store(Arc::new(next));
+        Ok(was_new)
+    }
+
+    fn checkpoint(&self) -> Result<()> {
+        let Some(path) = self.path.as_ref() else {
+            return Ok(());
+        };
+        let _write_guard = self.write_lock.lock();
+        let _wal_guard = self.wal_lock.lock();
+        let graph = (*self.graph.load_full()).clone();
+        write_snapshot_file::<U, V>(path, graph)?;
+        truncate_wal(&wal_path(path))
     }
 }
 
-impl<V: DictionaryValue> DictionaryValue for PersistentSuffixValue<V> {}
+fn write_snapshot_file<U: PersistentSuffixUnit, V: DictionaryValue>(
+    path: &Path,
+    graph: NativeSuffixGraph<U, V>,
+) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|error| io_error("create suffix snapshot parent directory", parent, error))?;
+    }
 
-/// Byte/u8 persistent suffix automaton compatible with
-/// [`crate::suffix_automaton::SuffixAutomaton`].
-pub struct PersistentSuffixAutomaton<V: DictionaryValue = (), S: BlockStorage = MmapDiskManager> {
-    inner: PersistentARTrie<PersistentSuffixValue<V>, S>,
-    next_source_id: AtomicU64,
+    let snapshot = NativeSuffixSnapshot {
+        magic: U::MAGIC,
+        version: SNAPSHOT_VERSION,
+        graph,
+    };
+    let bytes = serialize_bytes("serialize native suffix snapshot", &snapshot)?;
+    let tmp = tmp_snapshot_path(path);
+    {
+        let mut file =
+            File::create(&tmp).map_err(|error| io_error("create suffix snapshot", &tmp, error))?;
+        file.write_all(&bytes)
+            .map_err(|error| io_error("write suffix snapshot", &tmp, error))?;
+        file.sync_all()
+            .map_err(|error| io_error("sync suffix snapshot", &tmp, error))?;
+    }
+    fs::rename(&tmp, path).map_err(|error| io_error("install suffix snapshot", path, error))
 }
 
-/// Character/u32 persistent suffix automaton compatible with
-/// [`crate::suffix_automaton::SuffixAutomatonChar`].
+fn read_snapshot_file<U: PersistentSuffixUnit, V: DictionaryValue>(
+    path: &Path,
+) -> Result<NativeSuffixGraph<U, V>> {
+    let mut bytes = Vec::new();
+    File::open(path)
+        .map_err(|error| io_error("open suffix snapshot", path, error))?
+        .read_to_end(&mut bytes)
+        .map_err(|error| io_error("read suffix snapshot", path, error))?;
+    let snapshot: NativeSuffixSnapshot<U, V> =
+        deserialize_bytes("deserialize native suffix snapshot", &bytes)?;
+    if snapshot.magic != U::MAGIC {
+        return Err(PersistentARTrieError::InvalidMagic {
+            expected: u64::from_le_bytes(U::MAGIC),
+            found: u64::from_le_bytes(snapshot.magic),
+        });
+    }
+    if snapshot.version > SNAPSHOT_VERSION {
+        return Err(PersistentARTrieError::UnsupportedVersion {
+            max_supported: SNAPSHOT_VERSION,
+            found: snapshot.version,
+        });
+    }
+    Ok(snapshot.graph)
+}
+
+fn truncate_wal(path: &Path) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|error| io_error("create suffix WAL parent directory", parent, error))?;
+    }
+    let file = OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .open(path)
+        .map_err(|error| io_error("truncate suffix WAL", path, error))?;
+    file.sync_all()
+        .map_err(|error| io_error("sync suffix WAL", path, error))
+}
+
+fn append_wal_record<V: DictionaryValue>(
+    path: &Path,
+    record: &NativeSuffixWalRecord<V>,
+) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|error| io_error("create suffix WAL parent directory", parent, error))?;
+    }
+    let payload = serialize_bytes("serialize native suffix WAL record", record)?;
+    let len = payload.len() as u64;
+    let mut file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .map_err(|error| io_error("open suffix WAL", path, error))?;
+    file.write_all(&len.to_le_bytes())
+        .map_err(|error| io_error("write suffix WAL record length", path, error))?;
+    file.write_all(&payload)
+        .map_err(|error| io_error("write suffix WAL record", path, error))?;
+    file.sync_all()
+        .map_err(|error| io_error("sync suffix WAL", path, error))
+}
+
+fn replay_wal<U: PersistentSuffixUnit, V: DictionaryValue>(
+    graph: &mut NativeSuffixGraph<U, V>,
+    path: &Path,
+) -> Result<u64> {
+    if !path.exists() {
+        return Ok(0);
+    }
+    let mut file =
+        File::open(path).map_err(|error| io_error("open suffix WAL for replay", path, error))?;
+    let mut replayed = 0;
+    loop {
+        let mut len_buf = [0u8; 8];
+        match file.read_exact(&mut len_buf) {
+            Ok(()) => {}
+            Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => break,
+            Err(error) => return Err(io_error("read suffix WAL record length", path, error)),
+        }
+        let len = u64::from_le_bytes(len_buf);
+        if len > MAX_WAL_RECORD_BYTES {
+            return Err(PersistentARTrieError::corrupted(format!(
+                "native suffix WAL record is too large: {len} bytes"
+            )));
+        }
+        let mut payload = vec![0u8; len as usize];
+        match file.read_exact(&mut payload) {
+            Ok(()) => {}
+            Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => break,
+            Err(error) => return Err(io_error("read suffix WAL record payload", path, error)),
+        }
+        let record: NativeSuffixWalRecord<V> =
+            deserialize_bytes("deserialize native suffix WAL record", &payload)?;
+        match record {
+            NativeSuffixWalRecord::Insert { text, value } => {
+                graph.insert_source(&text, value);
+            }
+            NativeSuffixWalRecord::Remove { text } => {
+                graph.remove_source(&text);
+            }
+            NativeSuffixWalRecord::SetValue { text, value } => {
+                graph.set_value(&text, value);
+            }
+            NativeSuffixWalRecord::Clear => graph.clear(),
+            NativeSuffixWalRecord::Compact => {
+                graph.compact();
+            }
+        }
+        replayed += 1;
+    }
+    Ok(replayed)
+}
+
+/// Byte/u8 persistent suffix automaton compatible dictionary.
+pub struct PersistentSuffixAutomaton<V: DictionaryValue = (), S: BlockStorage = MmapDiskManager> {
+    index: NativeSuffixIndex<u8, V>,
+    _storage: PhantomData<S>,
+}
+
+/// Character/u32 persistent suffix automaton compatible dictionary.
 pub struct PersistentSuffixAutomatonChar<V: DictionaryValue = (), S: BlockStorage = MmapDiskManager>
 {
-    inner: PersistentARTrieChar<PersistentSuffixValue<V>, S>,
-    next_source_id: AtomicU64,
+    index: NativeSuffixIndex<char, V>,
+    _storage: PhantomData<S>,
 }
 
-/// Byte-level node handle that hides the internal suffix-data namespace.
-#[derive(Clone, Debug)]
+/// Byte-level node handle for native persistent suffix traversal.
+#[derive(Clone)]
 pub struct PersistentSuffixAutomatonNode<V: DictionaryValue = ()> {
-    inner: Option<crate::persistent_artrie::PersistentARTrieNode<PersistentSuffixValue<V>>>,
+    graph: Arc<NativeSuffixGraph<u8, V>>,
+    state_id: Option<usize>,
 }
 
-/// Character-level node handle that hides the internal suffix-data namespace.
-#[derive(Clone, Debug)]
+/// Character-level node handle for native persistent suffix traversal.
+#[derive(Clone)]
 pub struct PersistentSuffixAutomatonCharNode<V: DictionaryValue = ()> {
-    inner:
-        Option<crate::persistent_artrie::char::PersistentARTrieCharNode<PersistentSuffixValue<V>>>,
+    graph: Arc<NativeSuffixGraph<char, V>>,
+    state_id: Option<usize>,
 }
 
-fn byte_data_key(suffix: &[u8]) -> Vec<u8> {
-    let mut key = Vec::with_capacity(suffix.len() + 1);
-    key.push(BYTE_DATA_TAG);
-    key.extend_from_slice(suffix);
-    key
+impl<V: DictionaryValue> fmt::Debug for PersistentSuffixAutomatonNode<V> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("PersistentSuffixAutomatonNode")
+            .field("state_id", &self.state_id)
+            .finish()
+    }
 }
 
-fn byte_source_key(source_id: u64) -> Vec<u8> {
-    let mut key = Vec::with_capacity(9);
-    key.push(BYTE_SOURCE_TAG);
-    key.extend_from_slice(&source_id.to_be_bytes());
-    key
-}
-
-fn char_data_key(suffix: &str) -> String {
-    let mut key = String::with_capacity(CHAR_DATA_TAG.len_utf8() + suffix.len());
-    key.push(CHAR_DATA_TAG);
-    key.push_str(suffix);
-    key
-}
-
-fn char_source_key(source_id: u64) -> String {
-    let mut key = String::with_capacity(CHAR_SOURCE_TAG.len_utf8() + 16);
-    key.push(CHAR_SOURCE_TAG);
-    use std::fmt::Write as _;
-    let _ = write!(&mut key, "{source_id:016x}");
-    key
-}
-
-fn char_state_key() -> String {
-    let mut key = String::with_capacity(CHAR_META_TAG.len_utf8() + CHAR_STATE_SUFFIX.len());
-    key.push(CHAR_META_TAG);
-    key.push_str(CHAR_STATE_SUFFIX);
-    key
-}
-
-fn sorted_byte_suffix_starts(text: &str) -> Vec<usize> {
-    let bytes = text.as_bytes();
-    let mut starts: Vec<usize> = (0..bytes.len()).collect();
-    starts.sort_by(|left, right| bytes[*left..].cmp(&bytes[*right..]));
-    starts
-}
-
-fn sorted_char_suffix_starts(text: &str) -> Vec<usize> {
-    let mut starts: Vec<usize> = text.char_indices().map(|(idx, _)| idx).collect();
-    starts.sort_by(|left, right| text[*left..].cmp(&text[*right..]));
-    starts
+impl<V: DictionaryValue> fmt::Debug for PersistentSuffixAutomatonCharNode<V> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("PersistentSuffixAutomatonCharNode")
+            .field("state_id", &self.state_id)
+            .finish()
+    }
 }
 
 impl<V: DictionaryValue> PersistentSuffixAutomaton<V> {
-    /// Create an in-memory persistent-suffix instance.
     pub fn new() -> Self {
-        #[allow(deprecated)]
-        let inner = PersistentARTrie::new();
-        Self::from_inner(inner)
+        Self {
+            index: NativeSuffixIndex::new_in_memory(),
+            _storage: PhantomData,
+        }
     }
 
     pub fn from_text(text: &str) -> Self {
@@ -193,225 +858,58 @@ impl<V: DictionaryValue> PersistentSuffixAutomaton<V> {
 
 impl<V: DictionaryValue> PersistentSuffixAutomaton<V, MmapDiskManager> {
     pub fn create<P: AsRef<Path>>(path: P) -> Result<Self> {
-        PersistentARTrie::create(path).map(Self::from_inner)
+        Ok(Self {
+            index: NativeSuffixIndex::create(path.as_ref())?,
+            _storage: PhantomData,
+        })
     }
 
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self> {
-        PersistentARTrie::open(path).map(Self::from_inner)
+        let (index, _) = NativeSuffixIndex::open(path.as_ref())?;
+        Ok(Self {
+            index,
+            _storage: PhantomData,
+        })
     }
 
     pub fn open_with_recovery<P: AsRef<Path>>(path: P) -> Result<(Self, RecoveryReport)> {
-        PersistentARTrie::open_with_recovery(path)
-            .map(|(inner, report)| (Self::from_inner(inner), report))
+        let start = Instant::now();
+        let path = path.as_ref();
+        if !path.exists() {
+            return Ok((Self::create(path)?, RecoveryReport::created_new()));
+        }
+        let (index, replayed) = NativeSuffixIndex::open(path)?;
+        let dict = Self {
+            index,
+            _storage: PhantomData,
+        };
+        let report = if replayed == 0 {
+            RecoveryReport::normal()
+        } else {
+            RecoveryReport::rebuild_from_wal(
+                path.to_path_buf(),
+                "native suffix WAL replay".to_string(),
+                replayed,
+                dict.string_count() as u64,
+                Vec::new(),
+                start.elapsed().as_millis() as u64,
+            )
+        };
+        Ok((dict, report))
     }
 }
 
 impl<V: DictionaryValue, S: BlockStorage> PersistentSuffixAutomaton<V, S> {
-    fn from_inner(inner: PersistentARTrie<PersistentSuffixValue<V>, S>) -> Self {
-        let dict = Self {
-            inner,
-            next_source_id: AtomicU64::new(0),
-        };
-        dict.next_source_id
-            .store(dict.derive_next_source_id(), Ordering::Release);
-        let _ = dict.ensure_state();
-        dict
-    }
-
-    fn derive_next_source_id(&self) -> u64 {
-        self.source_records()
-            .into_iter()
-            .map(|record| record.id.saturating_add(1))
-            .max()
-            .unwrap_or(0)
-    }
-
-    fn source_records(&self) -> Vec<SourceRecord<V>> {
-        let mut records = Vec::new();
-        if let Some(iter) = self.inner.iter_prefix_with_values(&[BYTE_SOURCE_TAG]) {
-            for (_, value) in iter {
-                if let PersistentSuffixValue::Source(record) = value {
-                    records.push(record);
-                }
-            }
-        }
-        records.sort_by_key(|record| record.id);
-        records
-    }
-
-    fn active_source_ids(&self) -> HashSet<u64> {
-        self.source_records()
-            .into_iter()
-            .filter(|record| record.active)
-            .map(|record| record.id)
-            .collect()
-    }
-
-    fn state(&self) -> SuffixState {
-        match self.inner.get_value_bytes(BYTE_STATE_KEY) {
-            Some(PersistentSuffixValue::State(state)) => state,
-            _ => SuffixState::default(),
-        }
-    }
-
-    fn ensure_state(&self) -> Result<()> {
-        if self.inner.get_value_bytes(BYTE_STATE_KEY).is_none() {
-            self.upsert_bytes(
-                BYTE_STATE_KEY,
-                PersistentSuffixValue::State(SuffixState::default()),
-            )?;
-        }
-        Ok(())
-    }
-
-    fn set_state(&self, state: SuffixState) -> Result<()> {
-        self.upsert_bytes(BYTE_STATE_KEY, PersistentSuffixValue::State(state))?;
-        Ok(())
-    }
-
-    fn upsert_bytes(&self, key: &[u8], value: PersistentSuffixValue<V>) -> Result<bool> {
-        <PersistentARTrie<PersistentSuffixValue<V>, S> as DurableOverlayWrite<
-            ByteKey,
-            PersistentSuffixValue<V>,
-            S,
-        >>::upsert_cas_durable_default(&self.inner, key, value)
-    }
-
-    fn cas_update_bytes<F>(&self, key: &[u8], mut update: F) -> Result<bool>
-    where
-        F: FnMut(Option<PersistentSuffixValue<V>>) -> PersistentSuffixValue<V>,
-    {
-        loop {
-            let current = self.inner.get_value_bytes(key);
-            let new_value = update(current.clone());
-            let swapped = <PersistentARTrie<PersistentSuffixValue<V>, S> as DurableOverlayWrite<
-                ByteKey,
-                PersistentSuffixValue<V>,
-                S,
-            >>::compare_and_swap_cas_durable_default(
-                &self.inner, key, current, new_value
-            )?;
-            if swapped {
-                return Ok(true);
-            }
-            std::hint::spin_loop();
-        }
-    }
-
-    fn compare_and_swap_bytes(
-        &self,
-        key: &[u8],
-        current: Option<PersistentSuffixValue<V>>,
-        new_value: PersistentSuffixValue<V>,
-    ) -> Result<bool> {
-        <PersistentARTrie<PersistentSuffixValue<V>, S> as DurableOverlayWrite<
-            ByteKey,
-            PersistentSuffixValue<V>,
-            S,
-        >>::compare_and_swap_cas_durable_default(&self.inner, key, current, new_value)
-    }
-
-    fn merge_suffix_position(
-        &self,
-        key: &[u8],
-        source_id: u64,
-        start_byte: usize,
-        value: Option<V>,
-    ) -> Result<()> {
-        self.cas_update_bytes(key, |current| {
-            let mut payload = match current {
-                Some(PersistentSuffixValue::Suffix(payload)) => payload,
-                _ => SuffixPayload::default(),
-            };
-            if !payload
-                .positions
-                .iter()
-                .any(|pos| pos.source_id == source_id && pos.start_byte == start_byte)
-            {
-                payload.positions.push(SuffixPosition {
-                    source_id,
-                    start_byte,
-                });
-            }
-            if let Some(value) = value.clone() {
-                payload.value = Some(value);
-            }
-            PersistentSuffixValue::Suffix(payload)
-        })?;
-        Ok(())
-    }
-
-    fn set_suffix_value(&self, suffix: &[u8], value: V) -> Result<()> {
-        let key = byte_data_key(suffix);
-        self.cas_update_bytes(&key, |current| {
-            let mut payload = match current {
-                Some(PersistentSuffixValue::Suffix(payload)) => payload,
-                _ => SuffixPayload::default(),
-            };
-            payload.value = Some(value.clone());
-            PersistentSuffixValue::Suffix(payload)
-        })?;
-        Ok(())
-    }
-
-    fn explicit_suffix_values(&self) -> Vec<(Vec<u8>, V)> {
-        let mut values = Vec::new();
-        if let Some(iter) = self.inner.iter_prefix_with_values(&[BYTE_DATA_TAG]) {
-            for (key, value) in iter {
-                let PersistentSuffixValue::Suffix(payload) = value else {
-                    continue;
-                };
-                if let Some(value) = payload.value {
-                    if key.first() == Some(&BYTE_DATA_TAG) {
-                        values.push((key[1..].to_vec(), value));
-                    }
-                }
-            }
-        }
-        values
-    }
-
-    fn insert_suffixes_for_source(
-        &self,
-        source_id: u64,
-        text: &str,
-        value: Option<V>,
-    ) -> Result<()> {
-        if text.is_empty() {
-            self.merge_suffix_position(&byte_data_key(&[]), source_id, 0, value)?;
-            return Ok(());
-        }
-        for start in sorted_byte_suffix_starts(text) {
-            let suffix = &text.as_bytes()[start..];
-            let key = byte_data_key(suffix);
-            let suffix_value = if start == 0 { value.clone() } else { None };
-            self.merge_suffix_position(&key, source_id, start, suffix_value)?;
-        }
-        Ok(())
+    pub fn inner(&self) -> &NativeSuffixIndex<u8, V> {
+        &self.index
     }
 
     pub fn try_insert(&self, text: &str) -> Result<bool> {
-        self.try_insert_with_value_internal(text, None)
+        self.index.insert(text, None)
     }
 
     pub fn try_insert_with_value(&self, text: &str, value: V) -> Result<bool> {
-        self.try_insert_with_value_internal(text, Some(value))
-    }
-
-    fn try_insert_with_value_internal(&self, text: &str, value: Option<V>) -> Result<bool> {
-        let source_id = self.next_source_id.fetch_add(1, Ordering::AcqRel);
-        self.insert_suffixes_for_source(source_id, text, value.clone())?;
-        let source = SourceRecord {
-            id: source_id,
-            text: text.to_string(),
-            value,
-            active: true,
-        };
-        self.upsert_bytes(
-            &byte_source_key(source_id),
-            PersistentSuffixValue::Source(source),
-        )?;
-        Ok(true)
+        self.index.insert(text, Some(value))
     }
 
     pub fn insert(&self, text: &str) -> bool {
@@ -430,25 +928,7 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentSuffixAutomaton<V, S> {
     }
 
     pub fn try_remove(&self, text: &str) -> Result<bool> {
-        for record in self.source_records() {
-            if record.active && record.text == text {
-                let mut inactive = record.clone();
-                inactive.active = false;
-                let key = byte_source_key(record.id);
-                let removed = self.compare_and_swap_bytes(
-                    &key,
-                    Some(PersistentSuffixValue::Source(record)),
-                    PersistentSuffixValue::Source(inactive),
-                )?;
-                if removed {
-                    let mut state = self.state();
-                    state.needs_compaction = true;
-                    self.set_state(state)?;
-                    return Ok(true);
-                }
-            }
-        }
-        Ok(false)
+        self.index.remove(text)
     }
 
     pub fn remove(&self, text: &str) -> bool {
@@ -459,11 +939,7 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentSuffixAutomaton<V, S> {
     }
 
     pub fn try_clear(&self) -> Result<()> {
-        self.inner.remove_prefix(&[BYTE_DATA_TAG]);
-        self.inner.remove_prefix(&[BYTE_SOURCE_TAG]);
-        self.inner.remove_prefix(&[BYTE_META_TAG]);
-        self.next_source_id.store(0, Ordering::Release);
-        self.set_state(SuffixState::default())
+        self.index.clear()
     }
 
     pub fn clear(&self) {
@@ -473,26 +949,7 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentSuffixAutomaton<V, S> {
     }
 
     pub fn try_compact(&self) -> Result<usize> {
-        if !self.needs_compaction() {
-            return Ok(0);
-        }
-        let active_sources: Vec<_> = self
-            .source_records()
-            .into_iter()
-            .filter(|record| record.active)
-            .collect();
-        let explicit_values = self.explicit_suffix_values();
-        let removed = self.inner.remove_prefix(&[BYTE_DATA_TAG]);
-        for record in active_sources {
-            self.insert_suffixes_for_source(record.id, &record.text, record.value.clone())?;
-        }
-        for (suffix, value) in explicit_values {
-            self.set_suffix_value(&suffix, value)?;
-        }
-        self.set_state(SuffixState {
-            needs_compaction: false,
-        })?;
-        Ok(removed)
+        self.index.compact()
     }
 
     pub fn compact(&self) {
@@ -502,135 +959,54 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentSuffixAutomaton<V, S> {
     }
 
     pub fn string_count(&self) -> usize {
-        self.source_records()
-            .into_iter()
-            .filter(|record| record.active)
-            .count()
+        self.index.load().active_count()
     }
 
     pub fn needs_compaction(&self) -> bool {
-        self.state().needs_compaction
+        self.index.load().needs_compaction
     }
 
     pub fn match_positions(&self, substring: &str) -> Vec<(usize, usize)> {
-        if substring.is_empty() {
-            return Vec::new();
-        }
-        let active = self.active_source_ids();
-        let prefix = byte_data_key(substring.as_bytes());
-        let Some(iter) = self.inner.iter_prefix_with_values(&prefix) else {
-            return Vec::new();
-        };
-        let mut result = Vec::new();
-        for (_, value) in iter {
-            let PersistentSuffixValue::Suffix(payload) = value else {
-                continue;
-            };
-            for pos in payload.positions {
-                if active.contains(&pos.source_id) {
-                    if let Ok(source_id) = usize::try_from(pos.source_id) {
-                        result.push((source_id, pos.start_byte + substring.len()));
-                    }
-                }
-            }
-        }
-        result.sort_unstable();
-        result.dedup();
-        result
-    }
-
-    fn contains_live_suffix_prefix(&self, term: &str) -> bool {
-        if term.is_empty() {
-            return true;
-        }
-        let active = self.active_source_ids();
-        let prefix = byte_data_key(term.as_bytes());
-        let Some(iter) = self.inner.iter_prefix_with_values(&prefix) else {
-            return false;
-        };
-        for (_, value) in iter {
-            let PersistentSuffixValue::Suffix(payload) = value else {
-                continue;
-            };
-            if payload.value.is_some()
-                || payload
-                    .positions
-                    .iter()
-                    .any(|pos| active.contains(&pos.source_id))
-            {
-                return true;
-            }
-        }
-        false
+        self.index.load().match_positions(substring)
     }
 
     pub fn update_or_insert<F>(&self, term: &str, default_value: V, update_fn: F) -> bool
     where
         F: FnOnce(&mut V),
     {
-        let key = byte_data_key(term.as_bytes());
-        match self.inner.get_value_bytes(&key) {
-            Some(PersistentSuffixValue::Suffix(mut payload)) => {
-                if let Some(mut value) = payload.value.clone() {
-                    update_fn(&mut value);
-                    payload.value = Some(value);
-                    self.upsert_bytes(&key, PersistentSuffixValue::Suffix(payload))
-                        .unwrap_or_else(|error| {
-                            log::warn!(
-                                "PersistentSuffixAutomaton::update_or_insert failed: {error}"
-                            );
-                            false
-                        });
-                    false
-                } else {
-                    payload.value = Some(default_value);
-                    match self.upsert_bytes(&key, PersistentSuffixValue::Suffix(payload)) {
-                        Ok(_) => true,
-                        Err(error) => {
-                            log::warn!(
-                                "PersistentSuffixAutomaton::update_or_insert failed: {error}"
-                            );
-                            false
-                        }
-                    }
-                }
-            }
-            _ if self.contains(term) => match self.upsert_bytes(
-                &key,
-                PersistentSuffixValue::Suffix(SuffixPayload {
-                    positions: Vec::new(),
-                    value: Some(default_value),
-                }),
-            ) {
-                Ok(_) => true,
-                Err(error) => {
-                    log::warn!("PersistentSuffixAutomaton::update_or_insert failed: {error}");
-                    false
-                }
-            },
-            _ => self.insert_with_value(term, default_value),
-        }
+        self.index
+            .update_or_insert(term, default_value, update_fn)
+            .unwrap_or_else(|error| {
+                log::warn!("PersistentSuffixAutomaton::update_or_insert failed: {error}");
+                false
+            })
     }
 
     pub fn source_texts(&self) -> Vec<String> {
-        self.source_records()
-            .into_iter()
-            .map(|record| record.text)
-            .collect()
+        self.index.load().source_texts()
     }
 
     pub fn checkpoint(&self) -> Result<()> {
-        self.inner.checkpoint()
+        self.index.checkpoint()
     }
 
     pub fn close(&self) {
-        self.inner.close();
+        if let Err(error) = self.checkpoint() {
+            log::warn!("PersistentSuffixAutomaton::close checkpoint failed: {error}");
+        }
+    }
+
+    fn contains_live_suffix_prefix(&self, term: &str) -> bool {
+        self.index.load().contains_live_text(term)
     }
 }
 
 impl<V: DictionaryValue> PersistentSuffixAutomatonChar<V> {
     pub fn new() -> Self {
-        Self::from_inner(PersistentARTrieChar::new())
+        Self {
+            index: NativeSuffixIndex::new_in_memory(),
+            _storage: PhantomData,
+        }
     }
 
     pub fn from_text(text: &str) -> Self {
@@ -654,240 +1030,58 @@ impl<V: DictionaryValue> PersistentSuffixAutomatonChar<V> {
 
 impl<V: DictionaryValue> PersistentSuffixAutomatonChar<V, MmapDiskManager> {
     pub fn create<P: AsRef<Path>>(path: P) -> Result<Self> {
-        PersistentARTrieChar::create(path).map(Self::from_inner)
+        Ok(Self {
+            index: NativeSuffixIndex::create(path.as_ref())?,
+            _storage: PhantomData,
+        })
     }
 
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self> {
-        PersistentARTrieChar::open(path).map(Self::from_inner)
+        let (index, _) = NativeSuffixIndex::open(path.as_ref())?;
+        Ok(Self {
+            index,
+            _storage: PhantomData,
+        })
     }
 
     pub fn open_with_recovery<P: AsRef<Path>>(path: P) -> Result<(Self, RecoveryReport)> {
-        PersistentARTrieChar::open_with_recovery(path)
-            .map(|(inner, report)| (Self::from_inner(inner), report))
+        let start = Instant::now();
+        let path = path.as_ref();
+        if !path.exists() {
+            return Ok((Self::create(path)?, RecoveryReport::created_new()));
+        }
+        let (index, replayed) = NativeSuffixIndex::open(path)?;
+        let dict = Self {
+            index,
+            _storage: PhantomData,
+        };
+        let report = if replayed == 0 {
+            RecoveryReport::normal()
+        } else {
+            RecoveryReport::rebuild_from_wal(
+                path.to_path_buf(),
+                "native suffix char WAL replay".to_string(),
+                replayed,
+                dict.string_count() as u64,
+                Vec::new(),
+                start.elapsed().as_millis() as u64,
+            )
+        };
+        Ok((dict, report))
     }
 }
 
 impl<V: DictionaryValue, S: BlockStorage> PersistentSuffixAutomatonChar<V, S> {
-    fn from_inner(inner: PersistentARTrieChar<PersistentSuffixValue<V>, S>) -> Self {
-        let dict = Self {
-            inner,
-            next_source_id: AtomicU64::new(0),
-        };
-        dict.next_source_id
-            .store(dict.derive_next_source_id(), Ordering::Release);
-        let _ = dict.ensure_state();
-        dict
-    }
-
-    fn derive_next_source_id(&self) -> u64 {
-        self.source_records()
-            .into_iter()
-            .map(|record| record.id.saturating_add(1))
-            .max()
-            .unwrap_or(0)
-    }
-
-    fn source_prefix() -> String {
-        CHAR_SOURCE_TAG.to_string()
-    }
-
-    fn source_records(&self) -> Vec<SourceRecord<V>> {
-        let mut records = Vec::new();
-        if let Ok(Some(entries)) = self.inner.iter_prefix_with_values(&Self::source_prefix()) {
-            for (_, value) in entries {
-                if let PersistentSuffixValue::Source(record) = value {
-                    records.push(record);
-                }
-            }
-        }
-        records.sort_by_key(|record| record.id);
-        records
-    }
-
-    fn active_source_ids(&self) -> HashSet<u64> {
-        self.source_records()
-            .into_iter()
-            .filter(|record| record.active)
-            .map(|record| record.id)
-            .collect()
-    }
-
-    fn state(&self) -> SuffixState {
-        match self.inner.get_value(&char_state_key()) {
-            Some(PersistentSuffixValue::State(state)) => state,
-            _ => SuffixState::default(),
-        }
-    }
-
-    fn ensure_state(&self) -> Result<()> {
-        if self.inner.get_value(&char_state_key()).is_none() {
-            self.upsert_str(
-                &char_state_key(),
-                PersistentSuffixValue::State(SuffixState::default()),
-            )?;
-        }
-        Ok(())
-    }
-
-    fn set_state(&self, state: SuffixState) -> Result<()> {
-        self.upsert_str(&char_state_key(), PersistentSuffixValue::State(state))?;
-        Ok(())
-    }
-
-    fn upsert_str(&self, key: &str, value: PersistentSuffixValue<V>) -> Result<bool> {
-        <PersistentARTrieChar<PersistentSuffixValue<V>, S> as DurableOverlayWrite<
-            CharKey,
-            PersistentSuffixValue<V>,
-            S,
-        >>::upsert_cas_durable_default(&self.inner, key.as_bytes(), value)
-    }
-
-    fn cas_update_str<F>(&self, key: &str, mut update: F) -> Result<bool>
-    where
-        F: FnMut(Option<PersistentSuffixValue<V>>) -> PersistentSuffixValue<V>,
-    {
-        loop {
-            let current = self.inner.get_value(key);
-            let new_value = update(current.clone());
-            let swapped =
-                <PersistentARTrieChar<PersistentSuffixValue<V>, S> as DurableOverlayWrite<
-                    CharKey,
-                    PersistentSuffixValue<V>,
-                    S,
-                >>::compare_and_swap_cas_durable_default(
-                    &self.inner,
-                    key.as_bytes(),
-                    current,
-                    new_value,
-                )?;
-            if swapped {
-                return Ok(true);
-            }
-            std::hint::spin_loop();
-        }
-    }
-
-    fn compare_and_swap_str(
-        &self,
-        key: &str,
-        current: Option<PersistentSuffixValue<V>>,
-        new_value: PersistentSuffixValue<V>,
-    ) -> Result<bool> {
-        <PersistentARTrieChar<PersistentSuffixValue<V>, S> as DurableOverlayWrite<
-            CharKey,
-            PersistentSuffixValue<V>,
-            S,
-        >>::compare_and_swap_cas_durable_default(
-            &self.inner, key.as_bytes(), current, new_value
-        )
-    }
-
-    fn merge_suffix_position(
-        &self,
-        key: &str,
-        source_id: u64,
-        start_byte: usize,
-        value: Option<V>,
-    ) -> Result<()> {
-        self.cas_update_str(key, |current| {
-            let mut payload = match current {
-                Some(PersistentSuffixValue::Suffix(payload)) => payload,
-                _ => SuffixPayload::default(),
-            };
-            if !payload
-                .positions
-                .iter()
-                .any(|pos| pos.source_id == source_id && pos.start_byte == start_byte)
-            {
-                payload.positions.push(SuffixPosition {
-                    source_id,
-                    start_byte,
-                });
-            }
-            if let Some(value) = value.clone() {
-                payload.value = Some(value);
-            }
-            PersistentSuffixValue::Suffix(payload)
-        })?;
-        Ok(())
-    }
-
-    fn set_suffix_value(&self, suffix: &str, value: V) -> Result<()> {
-        let key = char_data_key(suffix);
-        self.cas_update_str(&key, |current| {
-            let mut payload = match current {
-                Some(PersistentSuffixValue::Suffix(payload)) => payload,
-                _ => SuffixPayload::default(),
-            };
-            payload.value = Some(value.clone());
-            PersistentSuffixValue::Suffix(payload)
-        })?;
-        Ok(())
-    }
-
-    fn explicit_suffix_values(&self) -> Vec<(String, V)> {
-        let mut values = Vec::new();
-        let Ok(Some(entries)) = self
-            .inner
-            .iter_prefix_with_values(&CHAR_DATA_TAG.to_string())
-        else {
-            return values;
-        };
-        for (key, value) in entries {
-            let PersistentSuffixValue::Suffix(payload) = value else {
-                continue;
-            };
-            if let Some(value) = payload.value {
-                let mut chars = key.chars();
-                if chars.next() == Some(CHAR_DATA_TAG) {
-                    values.push((chars.as_str().to_string(), value));
-                }
-            }
-        }
-        values
-    }
-
-    fn insert_suffixes_for_source(
-        &self,
-        source_id: u64,
-        text: &str,
-        value: Option<V>,
-    ) -> Result<()> {
-        if text.is_empty() {
-            self.merge_suffix_position(&char_data_key(""), source_id, 0, value)?;
-            return Ok(());
-        }
-        for start in sorted_char_suffix_starts(text) {
-            let suffix = &text[start..];
-            let key = char_data_key(suffix);
-            let suffix_value = if start == 0 { value.clone() } else { None };
-            self.merge_suffix_position(&key, source_id, start, suffix_value)?;
-        }
-        Ok(())
+    pub fn inner(&self) -> &NativeSuffixIndex<char, V> {
+        &self.index
     }
 
     pub fn try_insert(&self, text: &str) -> Result<bool> {
-        self.try_insert_with_value_internal(text, None)
+        self.index.insert(text, None)
     }
 
     pub fn try_insert_with_value(&self, text: &str, value: V) -> Result<bool> {
-        self.try_insert_with_value_internal(text, Some(value))
-    }
-
-    fn try_insert_with_value_internal(&self, text: &str, value: Option<V>) -> Result<bool> {
-        let source_id = self.next_source_id.fetch_add(1, Ordering::AcqRel);
-        self.insert_suffixes_for_source(source_id, text, value.clone())?;
-        let source = SourceRecord {
-            id: source_id,
-            text: text.to_string(),
-            value,
-            active: true,
-        };
-        self.upsert_str(
-            &char_source_key(source_id),
-            PersistentSuffixValue::Source(source),
-        )?;
-        Ok(true)
+        self.index.insert(text, Some(value))
     }
 
     pub fn insert(&self, text: &str) -> bool {
@@ -906,25 +1100,7 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentSuffixAutomatonChar<V, S> {
     }
 
     pub fn try_remove(&self, text: &str) -> Result<bool> {
-        for record in self.source_records() {
-            if record.active && record.text == text {
-                let mut inactive = record.clone();
-                inactive.active = false;
-                let key = char_source_key(record.id);
-                let removed = self.compare_and_swap_str(
-                    &key,
-                    Some(PersistentSuffixValue::Source(record)),
-                    PersistentSuffixValue::Source(inactive),
-                )?;
-                if removed {
-                    let mut state = self.state();
-                    state.needs_compaction = true;
-                    self.set_state(state)?;
-                    return Ok(true);
-                }
-            }
-        }
-        Ok(false)
+        self.index.remove(text)
     }
 
     pub fn remove(&self, text: &str) -> bool {
@@ -935,11 +1111,7 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentSuffixAutomatonChar<V, S> {
     }
 
     pub fn try_clear(&self) -> Result<()> {
-        self.inner.remove_prefix(&CHAR_DATA_TAG.to_string())?;
-        self.inner.remove_prefix(&Self::source_prefix())?;
-        self.inner.remove_prefix(&CHAR_META_TAG.to_string())?;
-        self.next_source_id.store(0, Ordering::Release);
-        self.set_state(SuffixState::default())
+        self.index.clear()
     }
 
     pub fn clear(&self) {
@@ -949,26 +1121,7 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentSuffixAutomatonChar<V, S> {
     }
 
     pub fn try_compact(&self) -> Result<usize> {
-        if !self.needs_compaction() {
-            return Ok(0);
-        }
-        let active_sources: Vec<_> = self
-            .source_records()
-            .into_iter()
-            .filter(|record| record.active)
-            .collect();
-        let explicit_values = self.explicit_suffix_values();
-        let removed = self.inner.remove_prefix(&CHAR_DATA_TAG.to_string())?;
-        for record in active_sources {
-            self.insert_suffixes_for_source(record.id, &record.text, record.value.clone())?;
-        }
-        for (suffix, value) in explicit_values {
-            self.set_suffix_value(&suffix, value)?;
-        }
-        self.set_state(SuffixState {
-            needs_compaction: false,
-        })?;
-        Ok(removed)
+        self.index.compact()
     }
 
     pub fn compact(&self) {
@@ -978,129 +1131,45 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentSuffixAutomatonChar<V, S> {
     }
 
     pub fn string_count(&self) -> usize {
-        self.source_records()
-            .into_iter()
-            .filter(|record| record.active)
-            .count()
+        self.index.load().active_count()
     }
 
     pub fn needs_compaction(&self) -> bool {
-        self.state().needs_compaction
+        self.index.load().needs_compaction
     }
 
     pub fn match_positions(&self, substring: &str) -> Vec<(usize, usize)> {
-        if substring.is_empty() {
-            return Vec::new();
-        }
-        let active = self.active_source_ids();
-        let prefix = char_data_key(substring);
-        let Ok(Some(entries)) = self.inner.iter_prefix_with_values(&prefix) else {
-            return Vec::new();
-        };
-        let mut result = Vec::new();
-        for (_, value) in entries {
-            let PersistentSuffixValue::Suffix(payload) = value else {
-                continue;
-            };
-            for pos in payload.positions {
-                if active.contains(&pos.source_id) {
-                    if let Ok(source_id) = usize::try_from(pos.source_id) {
-                        result.push((source_id, pos.start_byte + substring.len()));
-                    }
-                }
-            }
-        }
-        result.sort_unstable();
-        result.dedup();
-        result
-    }
-
-    fn contains_live_suffix_prefix(&self, term: &str) -> bool {
-        if term.is_empty() {
-            return true;
-        }
-        let active = self.active_source_ids();
-        let prefix = char_data_key(term);
-        let Ok(Some(entries)) = self.inner.iter_prefix_with_values(&prefix) else {
-            return false;
-        };
-        for (_, value) in entries {
-            let PersistentSuffixValue::Suffix(payload) = value else {
-                continue;
-            };
-            if payload.value.is_some()
-                || payload
-                    .positions
-                    .iter()
-                    .any(|pos| active.contains(&pos.source_id))
-            {
-                return true;
-            }
-        }
-        false
+        self.index.load().match_positions(substring)
     }
 
     pub fn update_or_insert<F>(&self, term: &str, default_value: V, update_fn: F) -> bool
     where
         F: FnOnce(&mut V),
     {
-        let key = char_data_key(term);
-        match self.inner.get_value(&key) {
-            Some(PersistentSuffixValue::Suffix(mut payload)) => {
-                if let Some(mut value) = payload.value.clone() {
-                    update_fn(&mut value);
-                    payload.value = Some(value);
-                    self.upsert_str(&key, PersistentSuffixValue::Suffix(payload))
-                        .unwrap_or_else(|error| {
-                            log::warn!(
-                                "PersistentSuffixAutomatonChar::update_or_insert failed: {error}"
-                            );
-                            false
-                        });
-                    false
-                } else {
-                    payload.value = Some(default_value);
-                    match self.upsert_str(&key, PersistentSuffixValue::Suffix(payload)) {
-                        Ok(_) => true,
-                        Err(error) => {
-                            log::warn!(
-                                "PersistentSuffixAutomatonChar::update_or_insert failed: {error}"
-                            );
-                            false
-                        }
-                    }
-                }
-            }
-            _ if self.contains(term) => match self.upsert_str(
-                &key,
-                PersistentSuffixValue::Suffix(SuffixPayload {
-                    positions: Vec::new(),
-                    value: Some(default_value),
-                }),
-            ) {
-                Ok(_) => true,
-                Err(error) => {
-                    log::warn!("PersistentSuffixAutomatonChar::update_or_insert failed: {error}");
-                    false
-                }
-            },
-            _ => self.insert_with_value(term, default_value),
-        }
+        self.index
+            .update_or_insert(term, default_value, update_fn)
+            .unwrap_or_else(|error| {
+                log::warn!("PersistentSuffixAutomatonChar::update_or_insert failed: {error}");
+                false
+            })
     }
 
     pub fn source_texts(&self) -> Vec<String> {
-        self.source_records()
-            .into_iter()
-            .map(|record| record.text)
-            .collect()
+        self.index.load().source_texts()
     }
 
     pub fn checkpoint(&self) -> Result<()> {
-        self.inner.checkpoint()
+        self.index.checkpoint()
     }
 
     pub fn close(&self) {
-        self.inner.close();
+        if let Err(error) = self.checkpoint() {
+            log::warn!("PersistentSuffixAutomatonChar::close checkpoint failed: {error}");
+        }
+    }
+
+    fn contains_live_suffix_prefix(&self, term: &str) -> bool {
+        self.index.load().contains_live_text(term)
     }
 }
 
@@ -1108,29 +1177,48 @@ impl<V: DictionaryValue> DictionaryNode for PersistentSuffixAutomatonNode<V> {
     type Unit = u8;
 
     fn is_final(&self) -> bool {
-        self.inner.as_ref().is_some_and(DictionaryNode::is_final)
+        self.state_id
+            .and_then(|state| self.graph.nodes.get(state))
+            .is_some_and(NativeSuffixNode::is_final)
     }
 
     fn transition(&self, label: Self::Unit) -> Option<Self> {
-        self.inner
-            .as_ref()?
-            .transition(label)
-            .map(|inner| Self { inner: Some(inner) })
+        let state = self.state_id?;
+        let target = self.graph.nodes.get(state)?.find_edge(label)?;
+        Some(Self {
+            graph: self.graph.clone(),
+            state_id: Some(target),
+        })
     }
 
     fn edges(&self) -> Box<dyn Iterator<Item = (Self::Unit, Self)> + '_> {
-        let Some(inner) = &self.inner else {
+        let Some(state) = self.state_id else {
             return Box::new(std::iter::empty());
         };
-        let edges: Vec<_> = inner
-            .edges()
-            .map(|(unit, child)| (unit, Self { inner: Some(child) }))
+        let Some(node) = self.graph.nodes.get(state) else {
+            return Box::new(std::iter::empty());
+        };
+        let graph = self.graph.clone();
+        let edges: Vec<_> = node
+            .edges
+            .iter()
+            .map(|(unit, target)| {
+                (
+                    *unit,
+                    Self {
+                        graph: graph.clone(),
+                        state_id: Some(*target),
+                    },
+                )
+            })
             .collect();
         Box::new(edges.into_iter())
     }
 
     fn edge_count(&self) -> Option<usize> {
-        self.inner.as_ref().and_then(DictionaryNode::edge_count)
+        self.state_id
+            .and_then(|state| self.graph.nodes.get(state))
+            .map(|node| node.edges.len())
     }
 }
 
@@ -1138,10 +1226,9 @@ impl<V: DictionaryValue> MappedDictionaryNode for PersistentSuffixAutomatonNode<
     type Value = V;
 
     fn value(&self) -> Option<Self::Value> {
-        match self.inner.as_ref()?.value()? {
-            PersistentSuffixValue::Suffix(payload) => payload.value,
-            _ => None,
-        }
+        self.state_id
+            .and_then(|state| self.graph.nodes.get(state))
+            .and_then(|node| node.value.clone())
     }
 }
 
@@ -1149,29 +1236,48 @@ impl<V: DictionaryValue> DictionaryNode for PersistentSuffixAutomatonCharNode<V>
     type Unit = char;
 
     fn is_final(&self) -> bool {
-        self.inner.as_ref().is_some_and(DictionaryNode::is_final)
+        self.state_id
+            .and_then(|state| self.graph.nodes.get(state))
+            .is_some_and(NativeSuffixNode::is_final)
     }
 
     fn transition(&self, label: Self::Unit) -> Option<Self> {
-        self.inner
-            .as_ref()?
-            .transition(label)
-            .map(|inner| Self { inner: Some(inner) })
+        let state = self.state_id?;
+        let target = self.graph.nodes.get(state)?.find_edge(label)?;
+        Some(Self {
+            graph: self.graph.clone(),
+            state_id: Some(target),
+        })
     }
 
     fn edges(&self) -> Box<dyn Iterator<Item = (Self::Unit, Self)> + '_> {
-        let Some(inner) = &self.inner else {
+        let Some(state) = self.state_id else {
             return Box::new(std::iter::empty());
         };
-        let edges: Vec<_> = inner
-            .edges()
-            .map(|(unit, child)| (unit, Self { inner: Some(child) }))
+        let Some(node) = self.graph.nodes.get(state) else {
+            return Box::new(std::iter::empty());
+        };
+        let graph = self.graph.clone();
+        let edges: Vec<_> = node
+            .edges
+            .iter()
+            .map(|(unit, target)| {
+                (
+                    *unit,
+                    Self {
+                        graph: graph.clone(),
+                        state_id: Some(*target),
+                    },
+                )
+            })
             .collect();
         Box::new(edges.into_iter())
     }
 
     fn edge_count(&self) -> Option<usize> {
-        self.inner.as_ref().and_then(DictionaryNode::edge_count)
+        self.state_id
+            .and_then(|state| self.graph.nodes.get(state))
+            .map(|node| node.edges.len())
     }
 }
 
@@ -1179,10 +1285,9 @@ impl<V: DictionaryValue> MappedDictionaryNode for PersistentSuffixAutomatonCharN
     type Value = V;
 
     fn value(&self) -> Option<Self::Value> {
-        match self.inner.as_ref()?.value()? {
-            PersistentSuffixValue::Suffix(payload) => payload.value,
-            _ => None,
-        }
+        self.state_id
+            .and_then(|state| self.graph.nodes.get(state))
+            .and_then(|node| node.value.clone())
     }
 }
 
@@ -1191,7 +1296,8 @@ impl<V: DictionaryValue, S: BlockStorage> Dictionary for PersistentSuffixAutomat
 
     fn root(&self) -> Self::Node {
         Self::Node {
-            inner: self.inner.root().transition(BYTE_DATA_TAG),
+            graph: self.index.load(),
+            state_id: Some(0),
         }
     }
 
@@ -1216,11 +1322,7 @@ impl<V: DictionaryValue, S: BlockStorage> MappedDictionary for PersistentSuffixA
     type Value = V;
 
     fn get_value(&self, term: &str) -> Option<Self::Value> {
-        let mut node = self.root();
-        for byte in term.bytes() {
-            node = node.transition(byte)?;
-        }
-        node.value()
+        self.index.load().get_value(term)
     }
 }
 
@@ -1280,7 +1382,8 @@ impl<V: DictionaryValue, S: BlockStorage> Dictionary for PersistentSuffixAutomat
 
     fn root(&self) -> Self::Node {
         Self::Node {
-            inner: self.inner.root().transition(CHAR_DATA_TAG),
+            graph: self.index.load(),
+            state_id: Some(0),
         }
     }
 
@@ -1305,11 +1408,7 @@ impl<V: DictionaryValue, S: BlockStorage> MappedDictionary for PersistentSuffixA
     type Value = V;
 
     fn get_value(&self, term: &str) -> Option<Self::Value> {
-        let mut node = self.root();
-        for ch in term.chars() {
-            node = node.transition(ch)?;
-        }
-        node.value()
+        self.index.load().get_value(term)
     }
 }
 

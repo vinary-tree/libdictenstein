@@ -218,15 +218,15 @@ pub mod shared_trait_impl;
 // Public iteration API (iter / iter_strings / iter_prefix wrappers).
 pub mod public_iter;
 
-// Persistent SuffixAutomaton-compatible byte/char variants built on the shared
-// ARTrie overlay, WAL, recovery, and checkpoint architecture.
+// Persistent SuffixAutomaton-compatible byte/char variants built on native
+// suffix graph snapshots, operation WAL replay, and copy-on-write publication.
 pub mod suffix_automaton;
 
 // Persistent SCDAWG-compatible byte/char variants built on the persistent suffix
 // index architecture.
 pub mod scdawg;
 
-// Sequence-keyed u64 facade over the persistent byte ARTrie architecture.
+// Sequence-keyed u64 persistent ARTrie with native adaptive u64 edge storage.
 pub mod u64;
 
 // IoUringDiskManager-specific constructors (Phase-5 split out of dict_impl).

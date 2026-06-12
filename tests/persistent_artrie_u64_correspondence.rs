@@ -104,6 +104,29 @@ fn values_prefix_iteration_node_traversal_and_reopen() {
 }
 
 #[test]
+fn native_u64_wal_replays_uncheckpointed_operations() {
+    let dir = tempdir().expect("temp dir");
+    let path = dir.path().join("persistent_artrie_u64_wal.partu64");
+
+    {
+        let trie = PersistentARTrieU64::<i32>::create(&path).expect("create u64 trie");
+        assert!(trie.insert_sequence_with_value(&[1, 2, 3], 123));
+        assert!(trie.insert_sequence(&[4, 5, 6]));
+        assert!(trie.insert_sequence_with_value(&[9], 9));
+        assert!(trie.remove_sequence(&[9]));
+        // Intentionally skip checkpoint/close so reopen must use the native WAL.
+    }
+
+    let (reopened, report) =
+        PersistentARTrieU64::<i32>::open_with_recovery(&path).expect("recover u64 trie");
+    assert!(report.records_replayed >= 4);
+    assert!(reopened.contains_sequence(&[1, 2, 3]));
+    assert!(reopened.contains_sequence(&[4, 5, 6]));
+    assert!(!reopened.contains_sequence(&[9]));
+    assert_eq!(reopened.get_sequence_value(&[1, 2, 3]), Some(123));
+}
+
+#[test]
 fn f64_and_string_helpers_use_u64_units() {
     let trie = PersistentARTrieU64::<i32>::new();
 

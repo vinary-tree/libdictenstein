@@ -1,9 +1,10 @@
 //! Persistent SCDAWG-compatible dictionaries backed by persistent suffix indexes.
 //!
 //! The byte and Unicode variants intentionally reuse the persistent suffix
-//! automaton storage path. That keeps WAL ordering, checkpoint/reopen, CX
-//! compression, and pointer swizzling on the established persistent ARTrie
-//! architecture while presenting the public SCDAWG substring API.
+//! automaton native graph storage path. That keeps snapshot/WAL ordering,
+//! checkpoint/reopen, non-blocking snapshot reads, and copy-on-write publication
+//! consistent with the persistent suffix index while presenting the public
+//! SCDAWG substring API.
 
 use std::collections::HashSet;
 use std::path::Path;

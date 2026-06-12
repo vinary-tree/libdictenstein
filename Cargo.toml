@@ -139,6 +139,16 @@ harness = false
 required-features = ["persistent-artrie"]
 
 [[bench]]
+name = "persistent_artrie_u64_native_benchmarks"
+harness = false
+required-features = ["persistent-artrie"]
+
+[[bench]]
+name = "persistent_suffix_native_benchmarks"
+harness = false
+required-features = ["persistent-artrie"]
+
+[[bench]]
 name = "loading_experiments"
 harness = false
 required-features = ["persistent-artrie"]
@@ -270,4 +280,3 @@ required-features = ["persistent-artrie", "bench-internals"]
 
 [package.metadata.docs.rs]
 all-features = true
-

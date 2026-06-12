@@ -30,8 +30,11 @@
 //! |---------|----------|-------------|-------------|---------|
 //! | **[PersistentARTrie]** | Disk-backed key/value, byte keys | mmap + WAL | Lock-free CAS | Byte-level |
 //! | **[PersistentARTrieChar]** | Disk-backed key/value, Unicode | mmap + WAL | Lock-free CAS | ✅ Character-level |
-//! | **[PersistentSuffixAutomaton]** | Disk-backed substring search, byte keys | mmap + WAL | Lock-free CAS | Byte-level |
-//! | **[PersistentSuffixAutomatonChar]** | Disk-backed Unicode substring search | mmap + WAL | Lock-free CAS | ✅ Character-level |
+//! | **[PersistentARTrieU64]** | Disk-backed sequence key/value, u64 labels | native snapshot + WAL | Copy-on-write snapshots | 64-bit labels |
+//! | **[PersistentSuffixAutomaton]** | Disk-backed substring search, byte keys | native snapshot + WAL | Copy-on-write snapshots | Byte-level |
+//! | **[PersistentSuffixAutomatonChar]** | Disk-backed Unicode substring search | native snapshot + WAL | Copy-on-write snapshots | ✅ Character-level |
+//! | **[PersistentScdawg]** | Disk-backed compact-suffix API, byte keys | native suffix snapshot + WAL | Copy-on-write snapshots | Byte-level |
+//! | **[PersistentScdawgChar]** | Disk-backed compact-suffix API, Unicode | native suffix snapshot + WAL | Copy-on-write snapshots | ✅ Character-level |
 //! | **[PersistentVocabARTrie]** | Vocabulary trie (term ↔ u64 index) | mmap + WAL | RwLock | ✅ Character-level |
 //!
 //! Use the [`factory::DictionaryFactory`] for a unified construction API across
@@ -51,8 +54,11 @@
 //! [PathMapDictionaryChar]: pathmap::PathMapDictionaryChar
 //! [PersistentARTrie]: persistent_artrie::PersistentARTrie
 //! [PersistentARTrieChar]: persistent_artrie::char::PersistentARTrieChar
+//! [PersistentARTrieU64]: persistent_artrie::PersistentARTrieU64
 //! [PersistentSuffixAutomaton]: persistent_artrie::PersistentSuffixAutomaton
 //! [PersistentSuffixAutomatonChar]: persistent_artrie::PersistentSuffixAutomatonChar
+//! [PersistentScdawg]: persistent_artrie::PersistentScdawg
+//! [PersistentScdawgChar]: persistent_artrie::PersistentScdawgChar
 //! [PersistentVocabARTrie]: persistent_artrie::vocab::PersistentVocabARTrie
 
 // === Shared infrastructure ===
