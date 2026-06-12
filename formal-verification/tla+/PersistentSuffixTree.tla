@@ -4,14 +4,14 @@ EXTENDS Naturals, FiniteSets, TLC
 (*
   Bounded model for persistent suffix-tree-compatible dictionaries.
 
-  The implementation is a first-class public view over the compact native
-  persistent suffix store used by PersistentSuffixAutomaton. The suffix-tree API
-  exposes substring containment, frequency, and locations from immutable graph
-  snapshots while writers publish copy-on-write revisions. Removing a source
-  deactivates it but may leave stale payload positions until compaction; reads
-  filter by the active source set. Explicit mapped values remain visible and are
-  preserved by compaction. Checkpoint/reopen copies and restores the compact
-  durable source/value records and rebuilds the native suffix graph.
+  The implementation owns a native path-compressed persistent suffix-tree graph.
+  The suffix-tree API exposes substring containment, frequency, and locations
+  from immutable graph snapshots while writers publish copy-on-write revisions.
+  Removing a source deactivates its durable source record; compaction prunes and
+  renumbers inactive source records before rebuilding the compact graph.
+  Explicit mapped values remain visible and are preserved by compaction.
+  Checkpoint/reopen copies and restores the durable source/value records and
+  rebuilds the native compact suffix-tree graph.
 *)
 
 CONSTANTS S1, S2, Empty, A, B, AB, BA

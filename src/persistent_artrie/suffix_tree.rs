@@ -1,48 +1,1005 @@
-//! Persistent suffix-tree-compatible dictionaries backed by native suffix indexes.
+//! Persistent suffix-tree-compatible dictionaries backed by native compact graphs.
 //!
-//! The byte and Unicode variants expose a suffix tree API over the same native
-//! suffix graph snapshot/WAL storage used by the persistent suffix automata.
-//! Reads traverse immutable graph snapshots while writers publish copy-on-write
-//! revisions, so read-side traversal is non-blocking with respect to mutation.
+//! The byte and Unicode variants persist source/value records plus a
+//! length-prefixed operation WAL, then rebuild and publish immutable,
+//! path-compressed suffix-tree snapshots. Reads traverse the currently loaded
+//! graph without taking the writer lock; writers construct a new graph and
+//! publish it copy-on-write.
 
-use std::path::Path;
+use std::collections::{BTreeMap, HashSet};
+use std::fmt;
+use std::fs::{self, File, OpenOptions};
+use std::io::{self, Read, Write};
+use std::marker::PhantomData;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::time::Instant;
+
+use arc_swap::ArcSwap;
+use parking_lot::Mutex;
+use serde::{Deserialize, Serialize};
 
 use crate::persistent_artrie::block_storage::BlockStorage;
 use crate::persistent_artrie::disk_manager::MmapDiskManager;
-use crate::persistent_artrie::error::Result;
-use crate::persistent_artrie::{
-    PersistentSuffixAutomaton, PersistentSuffixAutomatonChar, PersistentSuffixAutomatonCharNode,
-    PersistentSuffixAutomatonNode, RecoveryReport,
-};
+use crate::persistent_artrie::error::{PersistentARTrieError, Result};
+use crate::persistent_artrie::RecoveryReport;
+use crate::serialization::bincode_compat;
 use crate::substring::{SubstringDictionary, SubstringMatch};
 use crate::value::DictionaryValue;
 use crate::{
-    Dictionary, DictionaryNode, MappedDictionary, MappedDictionaryNode, MutableDictionary,
-    MutableMappedDictionary, SyncStrategy,
+    CharUnit, Dictionary, DictionaryNode, MappedDictionary, MappedDictionaryNode,
+    MutableDictionary, MutableMappedDictionary, SyncStrategy,
 };
 
-/// Byte/u8 persistent suffix-tree-compatible substring index.
-pub struct PersistentSuffixTree<V: DictionaryValue = (), S: BlockStorage = MmapDiskManager> {
-    inner: PersistentSuffixAutomaton<V, S>,
+const BYTE_MAGIC: [u8; 8] = *b"PSTREEB1";
+const CHAR_MAGIC: [u8; 8] = *b"PSTREEC1";
+const SNAPSHOT_VERSION: u32 = 1;
+const MAX_WAL_RECORD_BYTES: u64 = 64 * 1024 * 1024;
+
+trait PersistentSuffixTreeUnit:
+    CharUnit + Serialize + serde::de::DeserializeOwned + fmt::Debug + Send + Sync
+{
+    const MAGIC: [u8; 8];
+
+    fn suffix_starts(text: &str) -> Vec<usize>;
+
+    fn suffix_units(text: &str, start_byte: usize) -> Vec<Self>;
+
+    fn term_units(text: &str) -> Vec<Self> {
+        Self::from_str(text)
+    }
 }
 
-/// Unicode/u32 persistent suffix-tree-compatible substring index.
-pub struct PersistentSuffixTreeChar<V: DictionaryValue = (), S: BlockStorage = MmapDiskManager> {
-    inner: PersistentSuffixAutomatonChar<V, S>,
+impl PersistentSuffixTreeUnit for u8 {
+    const MAGIC: [u8; 8] = BYTE_MAGIC;
+
+    fn suffix_starts(text: &str) -> Vec<usize> {
+        let bytes = text.as_bytes();
+        let mut starts: Vec<usize> = (0..bytes.len()).collect();
+        starts.sort_by(|left, right| bytes[*left..].cmp(&bytes[*right..]));
+        starts
+    }
+
+    fn suffix_units(text: &str, start_byte: usize) -> Vec<Self> {
+        text.as_bytes()[start_byte..].to_vec()
+    }
 }
 
-/// Byte-level persistent suffix tree node handle.
-#[derive(Clone, Debug)]
-pub struct PersistentSuffixTreeNode<V: DictionaryValue = ()> {
-    inner: PersistentSuffixAutomatonNode<V>,
-    path: Vec<u8>,
+impl PersistentSuffixTreeUnit for char {
+    const MAGIC: [u8; 8] = CHAR_MAGIC;
+
+    fn suffix_starts(text: &str) -> Vec<usize> {
+        let mut starts: Vec<usize> = text.char_indices().map(|(idx, _)| idx).collect();
+        starts.sort_by(|left, right| text[*left..].cmp(&text[*right..]));
+        starts
+    }
+
+    fn suffix_units(text: &str, start_byte: usize) -> Vec<Self> {
+        text[start_byte..].chars().collect()
+    }
 }
 
-/// Character-level persistent suffix tree node handle.
-#[derive(Clone, Debug)]
-pub struct PersistentSuffixTreeCharNode<V: DictionaryValue = ()> {
-    inner: PersistentSuffixAutomatonCharNode<V>,
-    path: String,
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+struct TreePosition {
+    source_id: u64,
+    start_byte: usize,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(bound(
+    serialize = "V: serde::Serialize",
+    deserialize = "V: serde::de::DeserializeOwned"
+))]
+struct TreeSourceRecord<V: DictionaryValue> {
+    id: u64,
+    text: String,
+    value: Option<V>,
+    active: bool,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(bound(
+    serialize = "U: serde::Serialize",
+    deserialize = "U: serde::de::DeserializeOwned"
+))]
+struct CompactSuffixTreeEdge<U: PersistentSuffixTreeUnit> {
+    label: Vec<U>,
+    target: usize,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(bound(
+    serialize = "U: serde::Serialize, V: serde::Serialize",
+    deserialize = "U: serde::de::DeserializeOwned, V: serde::de::DeserializeOwned"
+))]
+struct CompactSuffixTreeNode<U: PersistentSuffixTreeUnit, V: DictionaryValue> {
+    edges: Vec<CompactSuffixTreeEdge<U>>,
+    positions: Vec<TreePosition>,
+    value: Option<V>,
+}
+
+impl<U: PersistentSuffixTreeUnit, V: DictionaryValue> CompactSuffixTreeNode<U, V> {
+    fn new() -> Self {
+        Self {
+            edges: Vec::new(),
+            positions: Vec::new(),
+            value: None,
+        }
+    }
+
+    fn find_edge(&self, label: U) -> Option<usize> {
+        self.edges
+            .binary_search_by_key(&label, |edge| edge.label[0])
+            .ok()
+    }
+}
+
+struct RawSuffixTreeNode<U: PersistentSuffixTreeUnit, V: DictionaryValue> {
+    children: BTreeMap<U, usize>,
+    positions: Vec<TreePosition>,
+    value: Option<V>,
+}
+
+impl<U: PersistentSuffixTreeUnit, V: DictionaryValue> RawSuffixTreeNode<U, V> {
+    fn new() -> Self {
+        Self {
+            children: BTreeMap::new(),
+            positions: Vec::new(),
+            value: None,
+        }
+    }
+
+    fn is_compression_boundary(&self) -> bool {
+        self.value.is_some() || !self.positions.is_empty() || self.children.len() != 1
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(bound(
+    serialize = "U: serde::Serialize, V: serde::Serialize",
+    deserialize = "U: serde::de::DeserializeOwned, V: serde::de::DeserializeOwned"
+))]
+struct NativeSuffixTreeGraph<U: PersistentSuffixTreeUnit, V: DictionaryValue> {
+    nodes: Vec<CompactSuffixTreeNode<U, V>>,
+    sources: Vec<TreeSourceRecord<V>>,
+    explicit_values: BTreeMap<Vec<U>, V>,
+    needs_compaction: bool,
+}
+
+enum LocatedPath {
+    Node(usize),
+    InsideEdge {
+        parent: usize,
+        edge_index: usize,
+        offset: usize,
+    },
+}
+
+impl<U: PersistentSuffixTreeUnit, V: DictionaryValue> NativeSuffixTreeGraph<U, V> {
+    fn new() -> Self {
+        Self {
+            nodes: vec![CompactSuffixTreeNode::new()],
+            sources: Vec::new(),
+            explicit_values: BTreeMap::new(),
+            needs_compaction: false,
+        }
+    }
+
+    fn from_snapshot_parts(
+        sources: Vec<TreeSourceRecord<V>>,
+        explicit_values: BTreeMap<Vec<U>, V>,
+        needs_compaction: bool,
+    ) -> Self {
+        let mut graph = Self {
+            nodes: Vec::new(),
+            sources,
+            explicit_values,
+            needs_compaction,
+        };
+        graph.rebuild_nodes();
+        graph
+    }
+
+    fn node_count(&self) -> usize {
+        self.nodes.len()
+    }
+
+    fn edge_count(&self) -> usize {
+        self.nodes.iter().map(|node| node.edges.len()).sum()
+    }
+
+    fn active_count(&self) -> usize {
+        self.sources.iter().filter(|record| record.active).count()
+    }
+
+    fn source_texts(&self) -> Vec<String> {
+        self.sources
+            .iter()
+            .map(|record| record.text.clone())
+            .collect()
+    }
+
+    fn active_texts(&self) -> Vec<String> {
+        self.sources
+            .iter()
+            .filter(|record| record.active)
+            .map(|record| record.text.clone())
+            .collect()
+    }
+
+    fn active_source_ids(&self) -> HashSet<u64> {
+        self.sources
+            .iter()
+            .filter(|record| record.active)
+            .map(|record| record.id)
+            .collect()
+    }
+
+    fn insert_source(&mut self, text: &str, value: Option<V>) -> bool {
+        let id = self.sources.len() as u64;
+        self.sources.push(TreeSourceRecord {
+            id,
+            text: text.to_string(),
+            value,
+            active: true,
+        });
+        self.rebuild_nodes();
+        true
+    }
+
+    fn remove_source(&mut self, text: &str) -> bool {
+        if let Some(record) = self
+            .sources
+            .iter_mut()
+            .find(|record| record.active && record.text == text)
+        {
+            record.active = false;
+            self.needs_compaction = true;
+            self.rebuild_nodes();
+            return true;
+        }
+        false
+    }
+
+    fn clear(&mut self) {
+        self.sources.clear();
+        self.explicit_values.clear();
+        self.needs_compaction = false;
+        self.nodes = vec![CompactSuffixTreeNode::new()];
+    }
+
+    fn compact(&mut self) -> usize {
+        if !self.needs_compaction {
+            return 0;
+        }
+
+        let before = self.sources.len();
+        let mut compacted = Vec::with_capacity(self.active_count());
+        for record in self.sources.iter().filter(|record| record.active) {
+            let mut record = record.clone();
+            record.id = compacted.len() as u64;
+            compacted.push(record);
+        }
+        self.sources = compacted;
+        self.needs_compaction = false;
+        self.rebuild_nodes();
+        before.saturating_sub(self.sources.len())
+    }
+
+    fn set_value(&mut self, text: &str, value: V) {
+        let units = U::term_units(text);
+        if self.path_exists_units(&units) {
+            self.explicit_values.insert(units, value);
+            self.rebuild_nodes();
+        } else {
+            self.insert_source(text, Some(value));
+        }
+    }
+
+    fn update_or_insert<F>(&mut self, text: &str, default_value: V, update_fn: F) -> (bool, V)
+    where
+        F: FnOnce(&mut V),
+    {
+        let units = U::term_units(text);
+        if let Some(mut value) = self.get_value_units(&units) {
+            update_fn(&mut value);
+            self.explicit_values.insert(units, value.clone());
+            self.rebuild_nodes();
+            return (false, value);
+        }
+
+        if self.contains_live_units(&units) {
+            self.explicit_values.insert(units, default_value.clone());
+            self.rebuild_nodes();
+            return (true, default_value);
+        }
+
+        self.insert_source(text, Some(default_value.clone()));
+        (true, default_value)
+    }
+
+    fn get_value_text(&self, text: &str) -> Option<V> {
+        self.get_value_units(&U::term_units(text))
+    }
+
+    fn get_value_units(&self, units: &[U]) -> Option<V> {
+        match self.locate_units(units)? {
+            LocatedPath::Node(node) => self.nodes.get(node)?.value.clone(),
+            LocatedPath::InsideEdge { .. } => None,
+        }
+    }
+
+    fn path_exists_units(&self, units: &[U]) -> bool {
+        self.locate_units(units).is_some()
+    }
+
+    fn contains_live_units(&self, units: &[U]) -> bool {
+        if units.is_empty() {
+            return true;
+        }
+
+        let Some(located) = self.locate_units(units) else {
+            return false;
+        };
+        let active = self.active_source_ids();
+        match located {
+            LocatedPath::Node(node) => self.subtree_has_active_position_or_value(node, &active),
+            LocatedPath::InsideEdge {
+                parent, edge_index, ..
+            } => {
+                let Some(edge) = self
+                    .nodes
+                    .get(parent)
+                    .and_then(|node| node.edges.get(edge_index))
+                else {
+                    return false;
+                };
+                self.subtree_has_active_position_or_value(edge.target, &active)
+            }
+        }
+    }
+
+    fn contains_live_text(&self, text: &str) -> bool {
+        self.contains_live_units(&U::term_units(text))
+    }
+
+    fn next_units_after_path(&self, units: &[U]) -> Vec<U> {
+        match self.locate_units(units) {
+            Some(LocatedPath::Node(node)) => self
+                .nodes
+                .get(node)
+                .map(|node| node.edges.iter().map(|edge| edge.label[0]).collect())
+                .unwrap_or_default(),
+            Some(LocatedPath::InsideEdge {
+                parent,
+                edge_index,
+                offset,
+            }) => self
+                .nodes
+                .get(parent)
+                .and_then(|node| node.edges.get(edge_index))
+                .and_then(|edge| edge.label.get(offset).copied())
+                .into_iter()
+                .collect(),
+            None => Vec::new(),
+        }
+    }
+
+    fn match_positions(&self, substring: &str) -> Vec<(usize, usize)> {
+        if substring.is_empty() {
+            return Vec::new();
+        }
+
+        let units = U::term_units(substring);
+        let Some(located) = self.locate_units(&units) else {
+            return Vec::new();
+        };
+
+        let mut positions = Vec::new();
+        match located {
+            LocatedPath::Node(node) => self.collect_subtree_positions(node, &mut positions),
+            LocatedPath::InsideEdge {
+                parent, edge_index, ..
+            } => {
+                if let Some(edge) = self
+                    .nodes
+                    .get(parent)
+                    .and_then(|node| node.edges.get(edge_index))
+                {
+                    self.collect_subtree_positions(edge.target, &mut positions);
+                }
+            }
+        }
+
+        let active = self.active_source_ids();
+        let mut result = Vec::new();
+        for position in positions {
+            if !active.contains(&position.source_id) {
+                continue;
+            }
+            if let Ok(source_id) = usize::try_from(position.source_id) {
+                result.push((source_id, position.start_byte + substring.len()));
+            }
+        }
+        result.sort_unstable();
+        result.dedup();
+        result
+    }
+
+    fn locate_units(&self, units: &[U]) -> Option<LocatedPath> {
+        if units.is_empty() {
+            return Some(LocatedPath::Node(0));
+        }
+
+        let mut node = 0usize;
+        let mut consumed = 0usize;
+        while consumed < units.len() {
+            let edge_index = self.nodes.get(node)?.find_edge(units[consumed])?;
+            let edge = self.nodes.get(node)?.edges.get(edge_index)?;
+            let mut offset = 0usize;
+            while offset < edge.label.len() && consumed + offset < units.len() {
+                if edge.label[offset] != units[consumed + offset] {
+                    return None;
+                }
+                offset += 1;
+            }
+
+            if consumed + offset == units.len() {
+                if offset == edge.label.len() {
+                    return Some(LocatedPath::Node(edge.target));
+                }
+                return Some(LocatedPath::InsideEdge {
+                    parent: node,
+                    edge_index,
+                    offset,
+                });
+            }
+
+            if offset != edge.label.len() {
+                return None;
+            }
+
+            consumed += offset;
+            node = edge.target;
+        }
+
+        Some(LocatedPath::Node(node))
+    }
+
+    fn subtree_has_active_position_or_value(&self, node: usize, active: &HashSet<u64>) -> bool {
+        let mut stack = vec![node];
+        while let Some(node) = stack.pop() {
+            let Some(node_ref) = self.nodes.get(node) else {
+                continue;
+            };
+            if node_ref.value.is_some() {
+                return true;
+            }
+            if node_ref
+                .positions
+                .iter()
+                .any(|position| active.contains(&position.source_id))
+            {
+                return true;
+            }
+            stack.extend(node_ref.edges.iter().map(|edge| edge.target));
+        }
+        false
+    }
+
+    fn collect_subtree_positions(&self, node: usize, out: &mut Vec<TreePosition>) {
+        let mut stack = vec![node];
+        while let Some(node) = stack.pop() {
+            let Some(node_ref) = self.nodes.get(node) else {
+                continue;
+            };
+            out.extend(node_ref.positions.iter().cloned());
+            stack.extend(node_ref.edges.iter().map(|edge| edge.target));
+        }
+    }
+
+    fn rebuild_nodes(&mut self) {
+        let mut raw = vec![RawSuffixTreeNode::<U, V>::new()];
+        for record in self.sources.iter().filter(|record| record.active) {
+            insert_source_suffixes::<U, V>(&mut raw, record);
+        }
+        for (units, value) in &self.explicit_values {
+            insert_raw_value(&mut raw, units, value.clone());
+        }
+
+        let mut nodes = Vec::new();
+        compress_raw_node(&raw, 0, &mut nodes);
+        if nodes.is_empty() {
+            nodes.push(CompactSuffixTreeNode::new());
+        }
+        self.nodes = nodes;
+    }
+}
+
+fn insert_source_suffixes<U, V>(
+    raw: &mut Vec<RawSuffixTreeNode<U, V>>,
+    record: &TreeSourceRecord<V>,
+) where
+    U: PersistentSuffixTreeUnit,
+    V: DictionaryValue,
+{
+    if record.text.is_empty() {
+        insert_raw_suffix(
+            raw,
+            &[],
+            TreePosition {
+                source_id: record.id,
+                start_byte: 0,
+            },
+            record.value.clone(),
+        );
+        return;
+    }
+
+    for start in U::suffix_starts(&record.text) {
+        let suffix = U::suffix_units(&record.text, start);
+        let suffix_value = if start == 0 {
+            record.value.clone()
+        } else {
+            None
+        };
+        insert_raw_suffix(
+            raw,
+            &suffix,
+            TreePosition {
+                source_id: record.id,
+                start_byte: start,
+            },
+            suffix_value,
+        );
+    }
+}
+
+fn insert_raw_suffix<U, V>(
+    raw: &mut Vec<RawSuffixTreeNode<U, V>>,
+    units: &[U],
+    position: TreePosition,
+    value: Option<V>,
+) where
+    U: PersistentSuffixTreeUnit,
+    V: DictionaryValue,
+{
+    let mut node = 0usize;
+    for &unit in units {
+        let next = match raw[node].children.get(&unit).copied() {
+            Some(next) => next,
+            None => {
+                let next = raw.len();
+                raw.push(RawSuffixTreeNode::new());
+                raw[node].children.insert(unit, next);
+                next
+            }
+        };
+        node = next;
+    }
+
+    if !raw[node].positions.iter().any(|existing| {
+        existing.source_id == position.source_id && existing.start_byte == position.start_byte
+    }) {
+        raw[node].positions.push(position);
+    }
+    if let Some(value) = value {
+        raw[node].value = Some(value);
+    }
+}
+
+fn insert_raw_value<U, V>(raw: &mut Vec<RawSuffixTreeNode<U, V>>, units: &[U], value: V)
+where
+    U: PersistentSuffixTreeUnit,
+    V: DictionaryValue,
+{
+    let mut node = 0usize;
+    for &unit in units {
+        let next = match raw[node].children.get(&unit).copied() {
+            Some(next) => next,
+            None => {
+                let next = raw.len();
+                raw.push(RawSuffixTreeNode::new());
+                raw[node].children.insert(unit, next);
+                next
+            }
+        };
+        node = next;
+    }
+    raw[node].value = Some(value);
+}
+
+fn compress_raw_node<U, V>(
+    raw: &[RawSuffixTreeNode<U, V>],
+    raw_index: usize,
+    nodes: &mut Vec<CompactSuffixTreeNode<U, V>>,
+) -> usize
+where
+    U: PersistentSuffixTreeUnit,
+    V: DictionaryValue,
+{
+    let compact_index = nodes.len();
+    let raw_node = &raw[raw_index];
+    nodes.push(CompactSuffixTreeNode {
+        edges: Vec::new(),
+        positions: raw_node.positions.clone(),
+        value: raw_node.value.clone(),
+    });
+
+    for (&unit, &child) in &raw_node.children {
+        let mut label = vec![unit];
+        let mut cursor = child;
+        while !raw[cursor].is_compression_boundary() {
+            let (&next_unit, &next_child) = raw[cursor]
+                .children
+                .iter()
+                .next()
+                .expect("non-boundary raw suffix-tree node has one child");
+            label.push(next_unit);
+            cursor = next_child;
+        }
+        let target = compress_raw_node(raw, cursor, nodes);
+        nodes[compact_index]
+            .edges
+            .push(CompactSuffixTreeEdge { label, target });
+    }
+
+    compact_index
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(bound(
+    serialize = "U: serde::Serialize, V: serde::Serialize",
+    deserialize = "U: serde::de::DeserializeOwned, V: serde::de::DeserializeOwned"
+))]
+struct NativeSuffixTreeSnapshot<U: PersistentSuffixTreeUnit, V: DictionaryValue> {
+    magic: [u8; 8],
+    version: u32,
+    sources: Vec<TreeSourceRecord<V>>,
+    explicit_values: Vec<(Vec<U>, V)>,
+    needs_compaction: bool,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(bound(
+    serialize = "V: serde::Serialize",
+    deserialize = "V: serde::de::DeserializeOwned"
+))]
+enum NativeSuffixTreeWalRecord<V: DictionaryValue> {
+    Insert { text: String, value: Option<V> },
+    Remove { text: String },
+    SetValue { text: String, value: V },
+    Clear,
+    Compact,
+}
+
+struct NativeSuffixTreeIndex<U: PersistentSuffixTreeUnit, V: DictionaryValue> {
+    graph: ArcSwap<NativeSuffixTreeGraph<U, V>>,
+    path: Option<PathBuf>,
+    write_lock: Arc<Mutex<()>>,
+    wal_lock: Arc<Mutex<()>>,
+}
+
+fn wal_path(path: &Path) -> PathBuf {
+    let mut wal = path.to_path_buf();
+    wal.set_extension("streewal");
+    wal
+}
+
+fn tmp_snapshot_path(path: &Path) -> PathBuf {
+    let mut tmp = path.to_path_buf();
+    tmp.set_extension("streetmp");
+    tmp
+}
+
+fn io_error(operation: impl Into<String>, path: &Path, source: io::Error) -> PersistentARTrieError {
+    PersistentARTrieError::io_error(operation, path.display().to_string(), source)
+}
+
+fn codec_error(context: &str, error: impl fmt::Display) -> PersistentARTrieError {
+    PersistentARTrieError::corrupted(format!("{context}: {error}"))
+}
+
+fn serialize_bytes<T: Serialize>(context: &str, value: &T) -> Result<Vec<u8>> {
+    bincode_compat::serialize(value).map_err(|error| codec_error(context, error))
+}
+
+fn deserialize_bytes<T: serde::de::DeserializeOwned>(context: &str, bytes: &[u8]) -> Result<T> {
+    bincode_compat::deserialize(bytes).map_err(|error| codec_error(context, error))
+}
+
+impl<U: PersistentSuffixTreeUnit, V: DictionaryValue> NativeSuffixTreeIndex<U, V> {
+    fn new_in_memory() -> Self {
+        Self {
+            graph: ArcSwap::from_pointee(NativeSuffixTreeGraph::new()),
+            path: None,
+            write_lock: Arc::new(Mutex::new(())),
+            wal_lock: Arc::new(Mutex::new(())),
+        }
+    }
+
+    fn create(path: &Path) -> Result<Self> {
+        let graph = NativeSuffixTreeGraph::new();
+        write_snapshot_file::<U, V>(path, &graph)?;
+        truncate_wal(&wal_path(path))?;
+        Ok(Self {
+            graph: ArcSwap::from_pointee(graph),
+            path: Some(path.to_path_buf()),
+            write_lock: Arc::new(Mutex::new(())),
+            wal_lock: Arc::new(Mutex::new(())),
+        })
+    }
+
+    fn open(path: &Path) -> Result<(Self, u64)> {
+        let mut graph = read_snapshot_file::<U, V>(path)?;
+        let replayed = replay_wal::<U, V>(&mut graph, &wal_path(path))?;
+        Ok((
+            Self {
+                graph: ArcSwap::from_pointee(graph),
+                path: Some(path.to_path_buf()),
+                write_lock: Arc::new(Mutex::new(())),
+                wal_lock: Arc::new(Mutex::new(())),
+            },
+            replayed,
+        ))
+    }
+
+    fn load(&self) -> Arc<NativeSuffixTreeGraph<U, V>> {
+        self.graph.load_full()
+    }
+
+    fn append_record_locked(&self, record: &NativeSuffixTreeWalRecord<V>) -> Result<()> {
+        let Some(path) = self.path.as_ref() else {
+            return Ok(());
+        };
+        let _wal_guard = self.wal_lock.lock();
+        append_wal_record(&wal_path(path), record)
+    }
+
+    fn mutate<R, F>(&self, record: Option<NativeSuffixTreeWalRecord<V>>, mutate: F) -> Result<R>
+    where
+        F: FnOnce(&mut NativeSuffixTreeGraph<U, V>) -> R,
+    {
+        let _write_guard = self.write_lock.lock();
+        let current = self.graph.load_full();
+        let mut next = (*current).clone();
+        let result = mutate(&mut next);
+        if let Some(record) = record {
+            self.append_record_locked(&record)?;
+        }
+        self.graph.store(Arc::new(next));
+        Ok(result)
+    }
+
+    fn insert(&self, text: &str, value: Option<V>) -> Result<bool> {
+        self.mutate(
+            Some(NativeSuffixTreeWalRecord::Insert {
+                text: text.to_string(),
+                value: value.clone(),
+            }),
+            |graph| graph.insert_source(text, value),
+        )
+    }
+
+    fn remove(&self, text: &str) -> Result<bool> {
+        self.mutate(
+            Some(NativeSuffixTreeWalRecord::Remove {
+                text: text.to_string(),
+            }),
+            |graph| graph.remove_source(text),
+        )
+    }
+
+    fn clear(&self) -> Result<()> {
+        self.mutate(Some(NativeSuffixTreeWalRecord::Clear), |graph| {
+            graph.clear()
+        })
+    }
+
+    fn compact(&self) -> Result<usize> {
+        self.mutate(Some(NativeSuffixTreeWalRecord::Compact), |graph| {
+            graph.compact()
+        })
+    }
+
+    fn update_or_insert<F>(&self, text: &str, default_value: V, update_fn: F) -> Result<bool>
+    where
+        F: FnOnce(&mut V),
+    {
+        let _write_guard = self.write_lock.lock();
+        let current = self.graph.load_full();
+        let mut next = (*current).clone();
+        let (was_new, value) = next.update_or_insert(text, default_value, update_fn);
+        self.append_record_locked(&NativeSuffixTreeWalRecord::SetValue {
+            text: text.to_string(),
+            value,
+        })?;
+        self.graph.store(Arc::new(next));
+        Ok(was_new)
+    }
+
+    fn checkpoint(&self) -> Result<()> {
+        let Some(path) = self.path.as_ref() else {
+            return Ok(());
+        };
+        let _write_guard = self.write_lock.lock();
+        let _wal_guard = self.wal_lock.lock();
+        let graph = self.graph.load_full();
+        write_snapshot_file::<U, V>(path, graph.as_ref())?;
+        truncate_wal(&wal_path(path))
+    }
+}
+
+fn write_snapshot_file<U: PersistentSuffixTreeUnit, V: DictionaryValue>(
+    path: &Path,
+    graph: &NativeSuffixTreeGraph<U, V>,
+) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|error| {
+            io_error(
+                "create suffix-tree snapshot parent directory",
+                parent,
+                error,
+            )
+        })?;
+    }
+
+    let snapshot = NativeSuffixTreeSnapshot {
+        magic: U::MAGIC,
+        version: SNAPSHOT_VERSION,
+        sources: graph.sources.clone(),
+        explicit_values: graph
+            .explicit_values
+            .iter()
+            .map(|(units, value)| (units.clone(), value.clone()))
+            .collect(),
+        needs_compaction: graph.needs_compaction,
+    };
+    let bytes = serialize_bytes("serialize native suffix-tree snapshot", &snapshot)?;
+    let tmp = tmp_snapshot_path(path);
+    {
+        let mut file = File::create(&tmp)
+            .map_err(|error| io_error("create suffix-tree snapshot", &tmp, error))?;
+        file.write_all(&bytes)
+            .map_err(|error| io_error("write suffix-tree snapshot", &tmp, error))?;
+        file.sync_all()
+            .map_err(|error| io_error("sync suffix-tree snapshot", &tmp, error))?;
+    }
+    fs::rename(&tmp, path).map_err(|error| io_error("install suffix-tree snapshot", path, error))
+}
+
+fn read_snapshot_file<U: PersistentSuffixTreeUnit, V: DictionaryValue>(
+    path: &Path,
+) -> Result<NativeSuffixTreeGraph<U, V>> {
+    let mut bytes = Vec::new();
+    File::open(path)
+        .map_err(|error| io_error("open suffix-tree snapshot", path, error))?
+        .read_to_end(&mut bytes)
+        .map_err(|error| io_error("read suffix-tree snapshot", path, error))?;
+    if bytes.len() < 12 {
+        return Err(PersistentARTrieError::corrupted(format!(
+            "native suffix-tree snapshot is too short: {} bytes",
+            bytes.len()
+        )));
+    }
+    let magic: [u8; 8] = bytes[0..8]
+        .try_into()
+        .expect("slice length checked for suffix-tree snapshot magic");
+    if magic != U::MAGIC {
+        return Err(PersistentARTrieError::InvalidMagic {
+            expected: u64::from_le_bytes(U::MAGIC),
+            found: u64::from_le_bytes(magic),
+        });
+    }
+    let version = u32::from_le_bytes(
+        bytes[8..12]
+            .try_into()
+            .expect("slice length checked for suffix-tree snapshot version"),
+    );
+    if version > SNAPSHOT_VERSION {
+        return Err(PersistentARTrieError::UnsupportedVersion {
+            max_supported: SNAPSHOT_VERSION,
+            found: version,
+        });
+    }
+
+    let snapshot: NativeSuffixTreeSnapshot<U, V> =
+        deserialize_bytes("deserialize native suffix-tree snapshot", &bytes)?;
+    let explicit_values = snapshot.explicit_values.into_iter().collect();
+    Ok(NativeSuffixTreeGraph::from_snapshot_parts(
+        snapshot.sources,
+        explicit_values,
+        snapshot.needs_compaction,
+    ))
+}
+
+fn truncate_wal(path: &Path) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|error| io_error("create suffix-tree WAL parent directory", parent, error))?;
+    }
+    let file = OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .open(path)
+        .map_err(|error| io_error("truncate suffix-tree WAL", path, error))?;
+    file.sync_all()
+        .map_err(|error| io_error("sync suffix-tree WAL", path, error))
+}
+
+fn append_wal_record<V: DictionaryValue>(
+    path: &Path,
+    record: &NativeSuffixTreeWalRecord<V>,
+) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|error| io_error("create suffix-tree WAL parent directory", parent, error))?;
+    }
+    let payload = serialize_bytes("serialize native suffix-tree WAL record", record)?;
+    let len = payload.len() as u64;
+    let mut file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .map_err(|error| io_error("open suffix-tree WAL", path, error))?;
+    file.write_all(&len.to_le_bytes())
+        .map_err(|error| io_error("write suffix-tree WAL record length", path, error))?;
+    file.write_all(&payload)
+        .map_err(|error| io_error("write suffix-tree WAL record", path, error))?;
+    file.sync_all()
+        .map_err(|error| io_error("sync suffix-tree WAL", path, error))
+}
+
+fn replay_wal<U: PersistentSuffixTreeUnit, V: DictionaryValue>(
+    graph: &mut NativeSuffixTreeGraph<U, V>,
+    path: &Path,
+) -> Result<u64> {
+    if !path.exists() {
+        return Ok(0);
+    }
+    let mut file = File::open(path)
+        .map_err(|error| io_error("open suffix-tree WAL for replay", path, error))?;
+    let mut replayed = 0;
+    loop {
+        let mut len_buf = [0u8; 8];
+        match file.read_exact(&mut len_buf) {
+            Ok(()) => {}
+            Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => break,
+            Err(error) => return Err(io_error("read suffix-tree WAL record length", path, error)),
+        }
+        let len = u64::from_le_bytes(len_buf);
+        if len > MAX_WAL_RECORD_BYTES {
+            return Err(PersistentARTrieError::corrupted(format!(
+                "native suffix-tree WAL record is too large: {len} bytes"
+            )));
+        }
+        let mut payload = vec![0u8; len as usize];
+        match file.read_exact(&mut payload) {
+            Ok(()) => {}
+            Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => break,
+            Err(error) => return Err(io_error("read suffix-tree WAL record payload", path, error)),
+        }
+        let record: NativeSuffixTreeWalRecord<V> =
+            deserialize_bytes("deserialize native suffix-tree WAL record", &payload)?;
+        match record {
+            NativeSuffixTreeWalRecord::Insert { text, value } => {
+                graph.insert_source(&text, value);
+            }
+            NativeSuffixTreeWalRecord::Remove { text } => {
+                graph.remove_source(&text);
+            }
+            NativeSuffixTreeWalRecord::SetValue { text, value } => {
+                graph.set_value(&text, value);
+            }
+            NativeSuffixTreeWalRecord::Clear => graph.clear(),
+            NativeSuffixTreeWalRecord::Compact => {
+                graph.compact();
+            }
+        }
+        replayed += 1;
+    }
+    Ok(replayed)
 }
 
 fn byte_match_start(finish_byte: usize, pattern: &str) -> Option<usize> {
@@ -57,11 +1014,57 @@ fn char_match_start(term: &str, finish_byte: usize, pattern: &str) -> Option<usi
     Some(term[..start_byte].chars().count())
 }
 
+/// Byte/u8 persistent suffix-tree-compatible substring index.
+pub struct PersistentSuffixTree<V: DictionaryValue = (), S: BlockStorage = MmapDiskManager> {
+    index: NativeSuffixTreeIndex<u8, V>,
+    _storage: PhantomData<S>,
+}
+
+/// Unicode/u32 persistent suffix-tree-compatible substring index.
+pub struct PersistentSuffixTreeChar<V: DictionaryValue = (), S: BlockStorage = MmapDiskManager> {
+    index: NativeSuffixTreeIndex<char, V>,
+    _storage: PhantomData<S>,
+}
+
+/// Byte-level persistent suffix tree node handle.
+#[derive(Clone)]
+pub struct PersistentSuffixTreeNode<V: DictionaryValue = ()> {
+    graph: Arc<NativeSuffixTreeGraph<u8, V>>,
+    path: Vec<u8>,
+}
+
+/// Character-level persistent suffix tree node handle.
+#[derive(Clone)]
+pub struct PersistentSuffixTreeCharNode<V: DictionaryValue = ()> {
+    graph: Arc<NativeSuffixTreeGraph<char, V>>,
+    path: Vec<char>,
+}
+
+impl<V: DictionaryValue> fmt::Debug for PersistentSuffixTreeNode<V> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("PersistentSuffixTreeNode")
+            .field("path", &String::from_utf8_lossy(&self.path))
+            .finish()
+    }
+}
+
+impl<V: DictionaryValue> fmt::Debug for PersistentSuffixTreeCharNode<V> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let path: String = self.path.iter().collect();
+        formatter
+            .debug_struct("PersistentSuffixTreeCharNode")
+            .field("path", &path)
+            .finish()
+    }
+}
+
 impl<V: DictionaryValue> PersistentSuffixTree<V> {
     /// Create an in-memory persistent suffix tree.
     pub fn new() -> Self {
         Self {
-            inner: PersistentSuffixAutomaton::new(),
+            index: NativeSuffixTreeIndex::new_in_memory(),
+            _storage: PhantomData,
         }
     }
 
@@ -86,108 +1089,153 @@ impl<V: DictionaryValue> PersistentSuffixTree<V> {
 
 impl<V: DictionaryValue> PersistentSuffixTree<V, MmapDiskManager> {
     pub fn create<P: AsRef<Path>>(path: P) -> Result<Self> {
-        PersistentSuffixAutomaton::create(path).map(|inner| Self { inner })
+        Ok(Self {
+            index: NativeSuffixTreeIndex::create(path.as_ref())?,
+            _storage: PhantomData,
+        })
     }
 
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self> {
-        PersistentSuffixAutomaton::open(path).map(|inner| Self { inner })
+        let (index, _) = NativeSuffixTreeIndex::open(path.as_ref())?;
+        Ok(Self {
+            index,
+            _storage: PhantomData,
+        })
     }
 
     pub fn open_with_recovery<P: AsRef<Path>>(path: P) -> Result<(Self, RecoveryReport)> {
-        PersistentSuffixAutomaton::open_with_recovery(path)
-            .map(|(inner, report)| (Self { inner }, report))
+        let start = Instant::now();
+        let path = path.as_ref();
+        if !path.exists() {
+            return Ok((Self::create(path)?, RecoveryReport::created_new()));
+        }
+        let (index, replayed) = NativeSuffixTreeIndex::open(path)?;
+        let dict = Self {
+            index,
+            _storage: PhantomData,
+        };
+        let report = if replayed == 0 {
+            RecoveryReport::normal()
+        } else {
+            RecoveryReport::rebuild_from_wal(
+                path.to_path_buf(),
+                "native suffix-tree WAL replay".to_string(),
+                replayed,
+                dict.string_count() as u64,
+                Vec::new(),
+                start.elapsed().as_millis() as u64,
+            )
+        };
+        Ok((dict, report))
     }
 }
 
 impl<V: DictionaryValue, S: BlockStorage> PersistentSuffixTree<V, S> {
-    pub fn inner(&self) -> &PersistentSuffixAutomaton<V, S> {
-        &self.inner
+    pub fn try_insert(&self, text: &str) -> Result<bool> {
+        self.index.insert(text, None)
+    }
+
+    pub fn try_insert_with_value(&self, text: &str, value: V) -> Result<bool> {
+        self.index.insert(text, Some(value))
     }
 
     pub fn insert(&self, text: &str) -> bool {
-        self.inner.insert(text)
+        self.try_insert(text).unwrap_or_else(|error| {
+            log::warn!("PersistentSuffixTree::insert failed: {error}");
+            false
+        })
     }
 
     pub fn insert_with_value(&self, text: &str, value: V) -> bool {
-        self.inner.insert_with_value(text, value)
+        self.try_insert_with_value(text, value)
+            .unwrap_or_else(|error| {
+                log::warn!("PersistentSuffixTree::insert_with_value failed: {error}");
+                false
+            })
     }
 
     pub fn update_or_insert<F>(&self, term: &str, default_value: V, update_fn: F) -> bool
     where
         F: FnOnce(&mut V),
     {
-        self.inner.update_or_insert(term, default_value, update_fn)
+        self.index
+            .update_or_insert(term, default_value, update_fn)
+            .unwrap_or_else(|error| {
+                log::warn!("PersistentSuffixTree::update_or_insert failed: {error}");
+                false
+            })
+    }
+
+    pub fn try_remove(&self, text: &str) -> Result<bool> {
+        self.index.remove(text)
     }
 
     pub fn remove(&self, text: &str) -> bool {
-        self.inner.remove(text)
+        self.try_remove(text).unwrap_or_else(|error| {
+            log::warn!("PersistentSuffixTree::remove failed: {error}");
+            false
+        })
+    }
+
+    pub fn try_clear(&self) -> Result<()> {
+        self.index.clear()
     }
 
     pub fn clear(&self) {
-        self.inner.clear();
+        if let Err(error) = self.try_clear() {
+            log::warn!("PersistentSuffixTree::clear failed: {error}");
+        }
+    }
+
+    pub fn try_compact(&self) -> Result<usize> {
+        self.index.compact()
     }
 
     pub fn compact(&self) {
-        self.inner.compact();
+        if let Err(error) = self.try_compact() {
+            log::warn!("PersistentSuffixTree::compact failed: {error}");
+        }
     }
 
     pub fn needs_compaction(&self) -> bool {
-        self.inner.needs_compaction()
+        self.index.load().needs_compaction
     }
 
     pub fn string_count(&self) -> usize {
-        self.inner.string_count()
+        self.index.load().active_count()
     }
 
     pub fn source_texts(&self) -> Vec<String> {
-        self.inner.source_texts()
+        self.index.load().source_texts()
     }
 
     pub fn active_texts(&self) -> Vec<String> {
-        let source_texts = self.inner.source_texts();
-        let mut active = Vec::new();
-        let mut active_non_empty = 0usize;
-        let mut empty_texts = Vec::new();
+        self.index.load().active_texts()
+    }
 
-        for (source_id, text) in source_texts.into_iter().enumerate() {
-            if text.is_empty() {
-                empty_texts.push(text);
-                continue;
-            }
-            let finish = text.len();
-            if self
-                .inner
-                .match_positions(&text)
-                .into_iter()
-                .any(|pos| pos == (source_id, finish))
-            {
-                active_non_empty += 1;
-                active.push(text);
-            }
-        }
+    pub fn graph_node_count(&self) -> usize {
+        self.index.load().node_count()
+    }
 
-        let active_empty = self.inner.string_count().saturating_sub(active_non_empty);
-        active.extend(empty_texts.into_iter().take(active_empty));
-        active
+    pub fn graph_edge_count(&self) -> usize {
+        self.index.load().edge_count()
     }
 
     pub fn match_positions(&self, pattern: &str) -> Vec<(usize, usize)> {
-        self.inner.match_positions(pattern)
+        self.index.load().match_positions(pattern)
     }
 
     pub fn contains_substring(&self, pattern: &str) -> bool {
-        pattern.is_empty() || !self.inner.match_positions(pattern).is_empty()
+        self.index.load().contains_live_text(pattern)
     }
 
     pub fn find(&self, pattern: &str) -> Option<PersistentSuffixTreeNode<V>> {
-        if !self.contains_substring(pattern) {
+        let graph = self.index.load();
+        let path = pattern.as_bytes().to_vec();
+        if !graph.contains_live_units(&path) {
             return None;
         }
-        let mut node = self.root();
-        for byte in pattern.bytes() {
-            node = node.transition(byte)?;
-        }
-        Some(node)
+        Some(PersistentSuffixTreeNode { graph, path })
     }
 
     pub fn freq(&self, pattern: &str) -> usize {
@@ -205,9 +1253,10 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentSuffixTree<V, S> {
     }
 
     pub fn locations(&self, pattern: &str) -> Vec<(String, usize)> {
-        let texts = self.inner.source_texts();
+        let graph = self.index.load();
+        let texts = graph.source_texts();
         if pattern.is_empty() {
-            return self
+            return graph
                 .active_texts()
                 .into_iter()
                 .map(|text| (text, 0))
@@ -215,7 +1264,7 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentSuffixTree<V, S> {
         }
 
         let mut locations = Vec::new();
-        for (source_id, finish_byte) in self.inner.match_positions(pattern) {
+        for (source_id, finish_byte) in graph.match_positions(pattern) {
             let Some(text) = texts.get(source_id) else {
                 continue;
             };
@@ -243,18 +1292,21 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentSuffixTree<V, S> {
     }
 
     pub fn checkpoint(&self) -> Result<()> {
-        self.inner.checkpoint()
+        self.index.checkpoint()
     }
 
     pub fn close(&self) {
-        self.inner.close();
+        if let Err(error) = self.checkpoint() {
+            log::warn!("PersistentSuffixTree::close checkpoint failed: {error}");
+        }
     }
 }
 
 impl<V: DictionaryValue> PersistentSuffixTreeChar<V> {
     pub fn new() -> Self {
         Self {
-            inner: PersistentSuffixAutomatonChar::new(),
+            index: NativeSuffixTreeIndex::new_in_memory(),
+            _storage: PhantomData,
         }
     }
 
@@ -279,108 +1331,153 @@ impl<V: DictionaryValue> PersistentSuffixTreeChar<V> {
 
 impl<V: DictionaryValue> PersistentSuffixTreeChar<V, MmapDiskManager> {
     pub fn create<P: AsRef<Path>>(path: P) -> Result<Self> {
-        PersistentSuffixAutomatonChar::create(path).map(|inner| Self { inner })
+        Ok(Self {
+            index: NativeSuffixTreeIndex::create(path.as_ref())?,
+            _storage: PhantomData,
+        })
     }
 
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self> {
-        PersistentSuffixAutomatonChar::open(path).map(|inner| Self { inner })
+        let (index, _) = NativeSuffixTreeIndex::open(path.as_ref())?;
+        Ok(Self {
+            index,
+            _storage: PhantomData,
+        })
     }
 
     pub fn open_with_recovery<P: AsRef<Path>>(path: P) -> Result<(Self, RecoveryReport)> {
-        PersistentSuffixAutomatonChar::open_with_recovery(path)
-            .map(|(inner, report)| (Self { inner }, report))
+        let start = Instant::now();
+        let path = path.as_ref();
+        if !path.exists() {
+            return Ok((Self::create(path)?, RecoveryReport::created_new()));
+        }
+        let (index, replayed) = NativeSuffixTreeIndex::open(path)?;
+        let dict = Self {
+            index,
+            _storage: PhantomData,
+        };
+        let report = if replayed == 0 {
+            RecoveryReport::normal()
+        } else {
+            RecoveryReport::rebuild_from_wal(
+                path.to_path_buf(),
+                "native suffix-tree char WAL replay".to_string(),
+                replayed,
+                dict.string_count() as u64,
+                Vec::new(),
+                start.elapsed().as_millis() as u64,
+            )
+        };
+        Ok((dict, report))
     }
 }
 
 impl<V: DictionaryValue, S: BlockStorage> PersistentSuffixTreeChar<V, S> {
-    pub fn inner(&self) -> &PersistentSuffixAutomatonChar<V, S> {
-        &self.inner
+    pub fn try_insert(&self, text: &str) -> Result<bool> {
+        self.index.insert(text, None)
+    }
+
+    pub fn try_insert_with_value(&self, text: &str, value: V) -> Result<bool> {
+        self.index.insert(text, Some(value))
     }
 
     pub fn insert(&self, text: &str) -> bool {
-        self.inner.insert(text)
+        self.try_insert(text).unwrap_or_else(|error| {
+            log::warn!("PersistentSuffixTreeChar::insert failed: {error}");
+            false
+        })
     }
 
     pub fn insert_with_value(&self, text: &str, value: V) -> bool {
-        self.inner.insert_with_value(text, value)
+        self.try_insert_with_value(text, value)
+            .unwrap_or_else(|error| {
+                log::warn!("PersistentSuffixTreeChar::insert_with_value failed: {error}");
+                false
+            })
     }
 
     pub fn update_or_insert<F>(&self, term: &str, default_value: V, update_fn: F) -> bool
     where
         F: FnOnce(&mut V),
     {
-        self.inner.update_or_insert(term, default_value, update_fn)
+        self.index
+            .update_or_insert(term, default_value, update_fn)
+            .unwrap_or_else(|error| {
+                log::warn!("PersistentSuffixTreeChar::update_or_insert failed: {error}");
+                false
+            })
+    }
+
+    pub fn try_remove(&self, text: &str) -> Result<bool> {
+        self.index.remove(text)
     }
 
     pub fn remove(&self, text: &str) -> bool {
-        self.inner.remove(text)
+        self.try_remove(text).unwrap_or_else(|error| {
+            log::warn!("PersistentSuffixTreeChar::remove failed: {error}");
+            false
+        })
+    }
+
+    pub fn try_clear(&self) -> Result<()> {
+        self.index.clear()
     }
 
     pub fn clear(&self) {
-        self.inner.clear();
+        if let Err(error) = self.try_clear() {
+            log::warn!("PersistentSuffixTreeChar::clear failed: {error}");
+        }
+    }
+
+    pub fn try_compact(&self) -> Result<usize> {
+        self.index.compact()
     }
 
     pub fn compact(&self) {
-        self.inner.compact();
+        if let Err(error) = self.try_compact() {
+            log::warn!("PersistentSuffixTreeChar::compact failed: {error}");
+        }
     }
 
     pub fn needs_compaction(&self) -> bool {
-        self.inner.needs_compaction()
+        self.index.load().needs_compaction
     }
 
     pub fn string_count(&self) -> usize {
-        self.inner.string_count()
+        self.index.load().active_count()
     }
 
     pub fn source_texts(&self) -> Vec<String> {
-        self.inner.source_texts()
+        self.index.load().source_texts()
     }
 
     pub fn active_texts(&self) -> Vec<String> {
-        let source_texts = self.inner.source_texts();
-        let mut active = Vec::new();
-        let mut active_non_empty = 0usize;
-        let mut empty_texts = Vec::new();
+        self.index.load().active_texts()
+    }
 
-        for (source_id, text) in source_texts.into_iter().enumerate() {
-            if text.is_empty() {
-                empty_texts.push(text);
-                continue;
-            }
-            let finish = text.len();
-            if self
-                .inner
-                .match_positions(&text)
-                .into_iter()
-                .any(|pos| pos == (source_id, finish))
-            {
-                active_non_empty += 1;
-                active.push(text);
-            }
-        }
+    pub fn graph_node_count(&self) -> usize {
+        self.index.load().node_count()
+    }
 
-        let active_empty = self.inner.string_count().saturating_sub(active_non_empty);
-        active.extend(empty_texts.into_iter().take(active_empty));
-        active
+    pub fn graph_edge_count(&self) -> usize {
+        self.index.load().edge_count()
     }
 
     pub fn match_positions(&self, pattern: &str) -> Vec<(usize, usize)> {
-        self.inner.match_positions(pattern)
+        self.index.load().match_positions(pattern)
     }
 
     pub fn contains_substring(&self, pattern: &str) -> bool {
-        pattern.is_empty() || !self.inner.match_positions(pattern).is_empty()
+        self.index.load().contains_live_text(pattern)
     }
 
     pub fn find(&self, pattern: &str) -> Option<PersistentSuffixTreeCharNode<V>> {
-        if !self.contains_substring(pattern) {
+        let graph = self.index.load();
+        let path: Vec<char> = pattern.chars().collect();
+        if !graph.contains_live_units(&path) {
             return None;
         }
-        let mut node = self.root();
-        for ch in pattern.chars() {
-            node = node.transition(ch)?;
-        }
-        Some(node)
+        Some(PersistentSuffixTreeCharNode { graph, path })
     }
 
     pub fn freq(&self, pattern: &str) -> usize {
@@ -395,13 +1492,15 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentSuffixTreeChar<V, S> {
     }
 
     pub fn freq_at(&self, handle: &PersistentSuffixTreeCharNode<V>) -> usize {
-        self.freq(&handle.path)
+        let pattern: String = handle.path.iter().collect();
+        self.freq(&pattern)
     }
 
     pub fn locations(&self, pattern: &str) -> Vec<(String, usize)> {
-        let texts = self.inner.source_texts();
+        let graph = self.index.load();
+        let texts = graph.source_texts();
         if pattern.is_empty() {
-            return self
+            return graph
                 .active_texts()
                 .into_iter()
                 .map(|text| (text, 0))
@@ -409,7 +1508,7 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentSuffixTreeChar<V, S> {
         }
 
         let mut locations = Vec::new();
-        for (source_id, finish_byte) in self.inner.match_positions(pattern) {
+        for (source_id, finish_byte) in graph.match_positions(pattern) {
             let Some(text) = texts.get(source_id) else {
                 continue;
             };
@@ -426,20 +1525,23 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentSuffixTreeChar<V, S> {
         handle: &PersistentSuffixTreeCharNode<V>,
         pattern_len: usize,
     ) -> Vec<(String, usize)> {
-        let chars: Vec<char> = handle.path.chars().collect();
-        if pattern_len > chars.len() {
+        if pattern_len > handle.path.len() {
             return Vec::new();
         }
-        let pattern: String = chars[chars.len() - pattern_len..].iter().collect();
+        let pattern: String = handle.path[handle.path.len() - pattern_len..]
+            .iter()
+            .collect();
         self.locations(&pattern)
     }
 
     pub fn checkpoint(&self) -> Result<()> {
-        self.inner.checkpoint()
+        self.index.checkpoint()
     }
 
     pub fn close(&self) {
-        self.inner.close();
+        if let Err(error) = self.checkpoint() {
+            log::warn!("PersistentSuffixTreeChar::close checkpoint failed: {error}");
+        }
     }
 }
 
@@ -447,28 +1549,34 @@ impl<V: DictionaryValue> DictionaryNode for PersistentSuffixTreeNode<V> {
     type Unit = u8;
 
     fn is_final(&self) -> bool {
-        self.inner.is_final()
+        self.graph.contains_live_units(&self.path)
     }
 
     fn transition(&self, label: Self::Unit) -> Option<Self> {
-        let inner = self.inner.transition(label)?;
         let mut path = self.path.clone();
         path.push(label);
-        Some(Self { inner, path })
+        if !self.graph.path_exists_units(&path) {
+            return None;
+        }
+        Some(Self {
+            graph: self.graph.clone(),
+            path,
+        })
     }
 
     fn edges(&self) -> Box<dyn Iterator<Item = (Self::Unit, Self)> + '_> {
+        let graph = self.graph.clone();
         let path = self.path.clone();
-        let edges: Vec<_> = self
-            .inner
-            .edges()
-            .map(|(label, inner)| {
+        let edges: Vec<_> = graph
+            .next_units_after_path(&path)
+            .into_iter()
+            .map(|label| {
                 let mut child_path = path.clone();
                 child_path.push(label);
                 (
                     label,
                     Self {
-                        inner,
+                        graph: graph.clone(),
                         path: child_path,
                     },
                 )
@@ -478,7 +1586,7 @@ impl<V: DictionaryValue> DictionaryNode for PersistentSuffixTreeNode<V> {
     }
 
     fn edge_count(&self) -> Option<usize> {
-        self.inner.edge_count()
+        Some(self.graph.next_units_after_path(&self.path).len())
     }
 }
 
@@ -486,7 +1594,7 @@ impl<V: DictionaryValue> MappedDictionaryNode for PersistentSuffixTreeNode<V> {
     type Value = V;
 
     fn value(&self) -> Option<Self::Value> {
-        self.inner.value()
+        self.graph.get_value_units(&self.path)
     }
 }
 
@@ -494,28 +1602,34 @@ impl<V: DictionaryValue> DictionaryNode for PersistentSuffixTreeCharNode<V> {
     type Unit = char;
 
     fn is_final(&self) -> bool {
-        self.inner.is_final()
+        self.graph.contains_live_units(&self.path)
     }
 
     fn transition(&self, label: Self::Unit) -> Option<Self> {
-        let inner = self.inner.transition(label)?;
         let mut path = self.path.clone();
         path.push(label);
-        Some(Self { inner, path })
+        if !self.graph.path_exists_units(&path) {
+            return None;
+        }
+        Some(Self {
+            graph: self.graph.clone(),
+            path,
+        })
     }
 
     fn edges(&self) -> Box<dyn Iterator<Item = (Self::Unit, Self)> + '_> {
+        let graph = self.graph.clone();
         let path = self.path.clone();
-        let edges: Vec<_> = self
-            .inner
-            .edges()
-            .map(|(label, inner)| {
+        let edges: Vec<_> = graph
+            .next_units_after_path(&path)
+            .into_iter()
+            .map(|label| {
                 let mut child_path = path.clone();
                 child_path.push(label);
                 (
                     label,
                     Self {
-                        inner,
+                        graph: graph.clone(),
                         path: child_path,
                     },
                 )
@@ -525,7 +1639,7 @@ impl<V: DictionaryValue> DictionaryNode for PersistentSuffixTreeCharNode<V> {
     }
 
     fn edge_count(&self) -> Option<usize> {
-        self.inner.edge_count()
+        Some(self.graph.next_units_after_path(&self.path).len())
     }
 }
 
@@ -533,7 +1647,7 @@ impl<V: DictionaryValue> MappedDictionaryNode for PersistentSuffixTreeCharNode<V
     type Value = V;
 
     fn value(&self) -> Option<Self::Value> {
-        self.inner.value()
+        self.graph.get_value_units(&self.path)
     }
 }
 
@@ -542,7 +1656,7 @@ impl<V: DictionaryValue, S: BlockStorage> Dictionary for PersistentSuffixTree<V,
 
     fn root(&self) -> Self::Node {
         Self::Node {
-            inner: self.inner.root(),
+            graph: self.index.load(),
             path: Vec::new(),
         }
     }
@@ -568,7 +1682,7 @@ impl<V: DictionaryValue, S: BlockStorage> MappedDictionary for PersistentSuffixT
     type Value = V;
 
     fn get_value(&self, term: &str) -> Option<Self::Value> {
-        self.inner.get_value(term)
+        self.index.load().get_value_text(term)
     }
 }
 
@@ -637,8 +1751,8 @@ impl<V: DictionaryValue, S: BlockStorage> Dictionary for PersistentSuffixTreeCha
 
     fn root(&self) -> Self::Node {
         Self::Node {
-            inner: self.inner.root(),
-            path: String::new(),
+            graph: self.index.load(),
+            path: Vec::new(),
         }
     }
 
@@ -663,7 +1777,7 @@ impl<V: DictionaryValue, S: BlockStorage> MappedDictionary for PersistentSuffixT
     type Value = V;
 
     fn get_value(&self, term: &str) -> Option<Self::Value> {
-        self.inner.get_value(term)
+        self.index.load().get_value_text(term)
     }
 }
 

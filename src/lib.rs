@@ -33,8 +33,8 @@
 //! | **[PersistentARTrieU64]** | Disk-backed sequence key/value, u64 labels | native snapshot + WAL | Copy-on-write snapshots | 64-bit labels |
 //! | **[PersistentSuffixAutomaton]** | Disk-backed substring search, byte keys | native snapshot + WAL | Copy-on-write snapshots | Byte-level |
 //! | **[PersistentSuffixAutomatonChar]** | Disk-backed Unicode substring search | native snapshot + WAL | Copy-on-write snapshots | ✅ Character-level |
-//! | **[PersistentSuffixTree]** | Disk-backed suffix-tree-compatible substring API, byte keys | native suffix snapshot + WAL | Copy-on-write snapshots | Byte-level |
-//! | **[PersistentSuffixTreeChar]** | Disk-backed suffix-tree-compatible Unicode substring API | native suffix snapshot + WAL | Copy-on-write snapshots | ✅ Character-level |
+//! | **[PersistentSuffixTree]** | Disk-backed suffix-tree-compatible substring API, byte keys | native compact suffix-tree snapshot + WAL | Copy-on-write snapshots | Byte-level |
+//! | **[PersistentSuffixTreeChar]** | Disk-backed suffix-tree-compatible Unicode substring API | native compact suffix-tree snapshot + WAL | Copy-on-write snapshots | ✅ Character-level |
 //! | **[PersistentScdawg]** | Disk-backed compact-suffix API, byte keys | native suffix snapshot + WAL | Copy-on-write snapshots | Byte-level |
 //! | **[PersistentScdawgChar]** | Disk-backed compact-suffix API, Unicode | native suffix snapshot + WAL | Copy-on-write snapshots | ✅ Character-level |
 //! | **[PersistentVocabARTrie]** | Vocabulary trie (term ↔ u64 index) | mmap + WAL | RwLock | ✅ Character-level |

@@ -1,15 +1,14 @@
-//! Correspondence checks for persistent suffix-tree-compatible wrappers.
+//! Correspondence checks for native persistent suffix-tree-compatible indexes.
 //!
-//! The implementation is intentionally backed by the native persistent suffix
-//! graph used by `PersistentSuffixAutomaton`; these tests pin that public
-//! suffix-tree surface to the same substring language, occurrence positions,
-//! persistence, and shared-reference concurrency contract.
+//! These tests pin the suffix-tree surface to suffix-automaton substring
+//! semantics while also checking that storage is a native compact suffix-tree
+//! graph with its own persistence and shared-reference concurrency contract.
 
 #![cfg(feature = "persistent-artrie")]
 
 use libdictenstein::persistent_artrie::{
     PersistentSuffixAutomaton, PersistentSuffixTree, PersistentSuffixTreeChar,
-    PersistentSuffixTreeCharNode, PersistentSuffixTreeNode,
+    PersistentSuffixTreeCharNode, PersistentSuffixTreeNode, RecoveryMode,
 };
 use libdictenstein::{Dictionary, MappedDictionary, SubstringDictionary, SyncStrategy};
 use proptest::prelude::*;
@@ -114,6 +113,35 @@ fn suffix_tree_types_are_send_sync() {
 }
 
 #[test]
+fn byte_suffix_tree_uses_native_path_compressed_graph_shape() {
+    let texts = ["banana", "bandana", "ananas"];
+    let tree = PersistentSuffixTree::<()>::from_texts(texts);
+    let explicit_suffix_trie_nodes = 1 + texts
+        .iter()
+        .map(|text| text.len() * (text.len() + 1) / 2)
+        .sum::<usize>();
+
+    assert!(tree.graph_node_count() > 1);
+    assert!(tree.graph_edge_count() > 0);
+    assert!(
+        tree.graph_node_count() < explicit_suffix_trie_nodes,
+        "graph_node_count={} explicit_suffix_trie_nodes={explicit_suffix_trie_nodes}",
+        tree.graph_node_count()
+    );
+    assert!(tree.contains("band"));
+    assert_eq!(
+        sorted_locations(tree.locations("ana")),
+        vec![
+            ("ananas".to_string(), 0),
+            ("ananas".to_string(), 2),
+            ("banana".to_string(), 1),
+            ("banana".to_string(), 3),
+            ("bandana".to_string(), 4),
+        ]
+    );
+}
+
+#[test]
 fn byte_suffix_tree_matches_native_suffix_automaton_positions() {
     assert_suffix_tree_matches_automaton(
         vec![
@@ -131,6 +159,31 @@ fn byte_suffix_tree_matches_native_suffix_automaton_positions() {
             "xyz".to_string(),
         ],
     );
+}
+
+#[test]
+fn byte_suffix_tree_replays_native_wal_without_automaton_snapshot() {
+    let dir = tempdir().expect("temp dir");
+    let path = dir.path().join("persistent_suffix_tree_wal.pstree");
+
+    {
+        let tree = PersistentSuffixTree::<i32>::create(&path).expect("create suffix tree");
+        assert!(tree.insert_with_value("banana", 7));
+        assert!(tree.insert("bandana"));
+        assert!(tree.update_or_insert("ana", 3, |value| *value += 1));
+        assert!(tree.remove("banana"));
+    }
+
+    let (reopened, report) =
+        PersistentSuffixTree::<i32>::open_with_recovery(&path).expect("recover suffix tree");
+    assert!(matches!(report.mode, RecoveryMode::RebuildFromWal));
+    assert_eq!(report.records_replayed, 4);
+    assert_eq!(reopened.string_count(), 1);
+    assert_eq!(reopened.active_texts(), vec!["bandana".to_string()]);
+    assert!(reopened.contains("dana"));
+    assert!(!reopened.contains("banana"));
+    assert_eq!(reopened.get_value("ana"), Some(3));
+    assert_eq!(reopened.locations("ana"), vec![("bandana".to_string(), 4)]);
 }
 
 #[test]
