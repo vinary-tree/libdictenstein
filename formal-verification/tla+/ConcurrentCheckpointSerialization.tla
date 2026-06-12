@@ -5,7 +5,7 @@
 (*                                                                            *)
 (* The non-blocking overlay checkpoint reads the atomic root WITHOUT a write   *)
 (* lock — char's overlay arm holds only `self.read()`                         *)
-(* (`persistent_artrie_char/mod.rs` checkpoint trait impl). So two concurrent  *)
+(* (`persistent_artrie/char/mod.rs` checkpoint trait impl). So two concurrent  *)
 (* `checkpoint()` calls on a shared handle run TOGETHER. Each publishes a      *)
 (* block-0 descriptor whose fields (root_ptr, arena_count, entry_count) plus   *)
 (* the sequentially-allocated arena slots MUST all come from the SAME captured *)

@@ -42,15 +42,15 @@ use super::block_storage::BlockStorage;
 use super::dict_impl::PersistentARTrie;
 use super::error::{PersistentARTrieError, Result};
 use super::wal::WalRecord;
-use crate::persistent_artrie_core::counter_codec;
-use crate::persistent_artrie_core::key_encoding::ByteKey;
-use crate::persistent_artrie_core::overlay::durable_write::DurableOverlayWrite;
+use crate::persistent_artrie::core::counter_codec;
+use crate::persistent_artrie::core::key_encoding::ByteKey;
+use crate::persistent_artrie::core::overlay::durable_write::DurableOverlayWrite;
 // Phase 5 (byte fault-in): the read-path single-level fault-in walk `find_leaf_faulting`
 // is the K-generic default of `OverlayEvictable<ByteKey, V, S>` (lifted in Phase 4).
 // Bringing the trait into module scope routes the byte read/counter `self.find_leaf_faulting(..)`
 // calls below to the shared default (byte's `OverlayFaulter<ByteKey, V>` loader supplies
 // the OnDisk-child load). Behavior mirrors char EXACTLY.
-use crate::persistent_artrie_core::overlay::evict::OverlayEvictable;
+use crate::persistent_artrie::core::overlay::evict::OverlayEvictable;
 use crate::value::DictionaryValue;
 
 /// Default bound on read/write fault-in install-CAS retries before falling back to a
@@ -293,7 +293,7 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
             // non-empty insert's `with_child` root-copy snapshots flags and would
             // discard an in-place finalize). Non-durable (no WAL). Returns whether THIS
             // call newly finalized the root.
-            use crate::persistent_artrie_core::overlay::flip::LockFreeOverlay;
+            use crate::persistent_artrie::core::overlay::flip::LockFreeOverlay;
             let _epoch = self.epoch_manager.enter_read();
             let inserted = self.overlay_publish_root_membership().unwrap_or(false);
             if inserted {
@@ -403,7 +403,7 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
         //     retry. This is the PRESERVED byte non-durable-insert mapping (turning it
         //     into a retry would LIVELOCK on a permanently-failing fault);
         //   Absent → build the remaining spine bottom-up (`create_lockfree_path`).
-        use crate::persistent_artrie_core::overlay::cas_walk::{
+        use crate::persistent_artrie::core::overlay::cas_walk::{
             resolve_or_fault, ChildResolution, FaultMode,
         };
         match resolve_or_fault::<ByteKey, V, _>(node, key, FaultMode::Fault, |p| {
@@ -441,7 +441,7 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
         Arc<super::nodes::PersistentNode<V>>,
     ) {
         use super::nodes::persistent_node::PersistentNode;
-        crate::persistent_artrie_core::overlay::cas_walk::create_spine::<ByteKey, V, _>(
+        crate::persistent_artrie::core::overlay::cas_walk::create_spine::<ByteKey, V, _>(
             term,
             || Arc::new(PersistentNode::<V>::new()),
         )
@@ -506,7 +506,7 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
         term: &[u8],
         depth: usize,
     ) -> bool {
-        crate::persistent_artrie_core::overlay::cas_walk::find_in_lockfree_trie::<ByteKey, V>(
+        crate::persistent_artrie::core::overlay::cas_walk::find_in_lockfree_trie::<ByteKey, V>(
             node, term, depth,
         )
     }
@@ -545,7 +545,7 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
         key: &[u8],
         depth: usize,
     ) -> Option<Arc<super::nodes::PersistentNode<V>>> {
-        crate::persistent_artrie_core::overlay::cas_walk::find_leaf_recursive::<ByteKey, V>(
+        crate::persistent_artrie::core::overlay::cas_walk::find_leaf_recursive::<ByteKey, V>(
             node, key, depth,
         )
     }
@@ -610,7 +610,7 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
             // the fresh-root-CAS RANKED publisher (NOT `try_insert_lockfree_path_durable`,
             // which finalizes in-place — a concurrent non-empty insert's `with_child`
             // root-copy snapshots flags and would discard an in-place finalize).
-            use crate::persistent_artrie_core::overlay::flip::{
+            use crate::persistent_artrie::core::overlay::flip::{
                 LockFreeOverlay, RootPublishOutcome,
             };
             let _epoch = self.epoch_manager.enter_read();
@@ -685,7 +685,7 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
         // non-faulting present-hoist) spans the call. byte's durable insert has no
         // `IoError` arm (fault-fail → Conflict). REC 3: the NON-durable `insert_cas`
         // two-phase `try_set_final` arbiter is a SEPARATE method (NOT routed here).
-        <Self as crate::persistent_artrie_core::overlay::cas_walk::OverlayCasWalk<ByteKey, V, S>>::drive_insert_cas(
+        <Self as crate::persistent_artrie::core::overlay::cas_walk::OverlayCasWalk<ByteKey, V, S>>::drive_insert_cas(
             self, term, lsn,
         )
     }
@@ -730,7 +730,7 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
             // fresh-root-CAS RANKED un-publisher (`as_non_final` on a FRESH root, NOT an
             // in-place clear of the shared root — last-writer-wins with concurrent
             // inserts via the single root CAS, like every non-empty remove).
-            use crate::persistent_artrie_core::overlay::flip::{
+            use crate::persistent_artrie::core::overlay::flip::{
                 LockFreeOverlay, RootPublishOutcome,
             };
             let _epoch = self.epoch_manager.enter_read();
@@ -787,7 +787,7 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
         // every state-changing arm, and binds the caller-claimed generation. The read
         // epoch (entered above for the absent fast-path) spans the call. byte's
         // overlay remove has no `IoError` arm (fault-fail → Conflict).
-        <Self as crate::persistent_artrie_core::overlay::cas_walk::OverlayCasWalk<ByteKey, V, S>>::drive_remove_cas(
+        <Self as crate::persistent_artrie::core::overlay::cas_walk::OverlayCasWalk<ByteKey, V, S>>::drive_remove_cas(
             self, term, lsn,
         )
     }
@@ -863,7 +863,7 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
         //   FaultFailed / Null → `Conflict` (transient → the caller retries from a
         //     fresh root load — DURABLE insert, NOT the non-durable terminal arm);
         //   Absent → build the remaining FINAL spine (`create_lockfree_path_final`).
-        use crate::persistent_artrie_core::overlay::cas_walk::{
+        use crate::persistent_artrie::core::overlay::cas_walk::{
             resolve_or_fault, ChildResolution, FaultMode,
         };
         match resolve_or_fault::<ByteKey, V, _>(node, key, FaultMode::Fault, |p| {
@@ -901,7 +901,7 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
         Arc<super::nodes::PersistentNode<V>>,
     ) {
         use super::nodes::persistent_node::PersistentNode;
-        crate::persistent_artrie_core::overlay::cas_walk::create_spine::<ByteKey, V, _>(
+        crate::persistent_artrie::core::overlay::cas_walk::create_spine::<ByteKey, V, _>(
             term,
             || Arc::new(PersistentNode::<V>::new().as_final()),
         )
@@ -969,7 +969,7 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
         //     would DROP the remove);
         //   Null / Absent → `AlreadyExists` (= "already absent" — the no-op-spine
         //     outcome; no publication).
-        use crate::persistent_artrie_core::overlay::cas_walk::{
+        use crate::persistent_artrie::core::overlay::cas_walk::{
             resolve_or_fault, ChildResolution, FaultMode,
         };
         match resolve_or_fault::<ByteKey, V, _>(node, key, FaultMode::Fault, |p| {
@@ -1013,7 +1013,7 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
         // primitive's `FaultMode::Fault`.) The `pub(crate)` NAME + `&self`-syntax call
         // sites are PRESERVED; `PersistentNode<V>` IS `OverlayNode<ByteKey, V>` (a
         // type alias), so descent + bottom-up build order are byte-identical.
-        use crate::persistent_artrie_core::overlay::cas_walk::{build_value_spine, FaultMode};
+        use crate::persistent_artrie::core::overlay::cas_walk::{build_value_spine, FaultMode};
         build_value_spine::<ByteKey, V, _>(node, key, depth, value, FaultMode::Fault, |p| {
             self.load_overlay_node_from_disk(p)
         })
@@ -1042,14 +1042,14 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
 // never constructs `Remove/InsertAttempt::IoError` — that arm is char-only here.
 // ============================================================================
 impl<V: DictionaryValue, S: BlockStorage>
-    crate::persistent_artrie_core::overlay::cas_walk::OverlayCasWalk<ByteKey, V, S>
+    crate::persistent_artrie::core::overlay::cas_walk::OverlayCasWalk<ByteKey, V, S>
     for PersistentARTrie<V, S>
 {
     fn try_remove_path_attempt(
         &self,
         key_bytes: &[u8],
-    ) -> crate::persistent_artrie_core::overlay::cas_walk::RemoveAttempt {
-        use crate::persistent_artrie_core::overlay::cas_walk::RemoveAttempt;
+    ) -> crate::persistent_artrie::core::overlay::cas_walk::RemoveAttempt {
+        use crate::persistent_artrie::core::overlay::cas_walk::RemoveAttempt;
         let lockfree_root = match self.lockfree_root.as_ref() {
             Some(r) => r,
             None => return RemoveAttempt::AlreadyAbsent,
@@ -1074,8 +1074,8 @@ impl<V: DictionaryValue, S: BlockStorage>
     fn try_insert_path_attempt(
         &self,
         key_bytes: &[u8],
-    ) -> crate::persistent_artrie_core::overlay::cas_walk::InsertAttempt {
-        use crate::persistent_artrie_core::overlay::cas_walk::InsertAttempt;
+    ) -> crate::persistent_artrie::core::overlay::cas_walk::InsertAttempt {
+        use crate::persistent_artrie::core::overlay::cas_walk::InsertAttempt;
         let lockfree_root = match self.lockfree_root.as_ref() {
             Some(r) => r,
             // Defensive (the durable caller enable-checks); never reached.
@@ -1109,8 +1109,8 @@ impl<V: DictionaryValue, S: BlockStorage>
 // gone; an increment becomes a **path-copy CAS** (read the leaf's value, build a
 // new leaf with `old_leaf.as_final().with_value(new_val)`, path-copy the
 // root→leaf spine, CAS-publish the root — exactly the single-phase model the
-// vocab overlay (`persistent_vocab_artrie::lockfree_cas`) and the char overlay
-// (`persistent_artrie_char::lockfree_cas`) already use).
+// vocab overlay (`persistent_artrie::vocab::lockfree_cas`) and the char overlay
+// (`persistent_artrie::char::lockfree_cas`) already use).
 //
 // Byte tries now persist a full `u64` counter (the u64 restoration — matching
 // char), so the lock-free counter overlay lives in a `V = u64` impl block: the
@@ -1500,8 +1500,8 @@ mod durable_write_tests {
     //! WAL replays the record into the recovered (owned) tree. Scratch is real disk
     //! (`target/test-tmp`), never `/tmp` (tmpfs — the disk-backed-test gotcha).
 
+    use crate::persistent_artrie::core::durability::DurabilityPolicy;
     use crate::persistent_artrie::PersistentARTrie;
-    use crate::persistent_artrie_core::durability::DurabilityPolicy;
     use crate::{Dictionary, MappedDictionary};
     use std::sync::{Arc, Barrier};
     use std::thread;
@@ -1960,9 +1960,9 @@ mod m2d_regime_aware_recovery_tests {
     //! tests exercise the RECONCILE on the recovery path. Scratch is real disk
     //! (`target/test-tmp`), never `/tmp` (tmpfs — the disk-backed-test gotcha).
 
+    use crate::persistent_artrie::core::durability::DurabilityPolicy;
+    use crate::persistent_artrie::core::wal::WalRecord;
     use crate::persistent_artrie::PersistentARTrie;
-    use crate::persistent_artrie_core::durability::DurabilityPolicy;
-    use crate::persistent_artrie_core::wal::WalRecord;
     use crate::{Dictionary, MappedDictionary};
 
     fn scratch(prefix: &str) -> tempfile::TempDir {
@@ -2173,9 +2173,8 @@ mod m4b_flip_gate_tests {
     //! Scratch is real disk (`target/test-tmp`), never `/tmp` (tmpfs — the
     //! disk-backed-test gotcha).
 
+    use crate::persistent_artrie::core::durability::DurabilityPolicy;
     use crate::persistent_artrie::{CompactionConfig, PersistentARTrie};
-    use crate::persistent_artrie_core::durability::DurabilityPolicy;
-    use crate::Dictionary;
 
     fn scratch(prefix: &str) -> tempfile::TempDir {
         std::fs::create_dir_all("target/test-tmp").ok();

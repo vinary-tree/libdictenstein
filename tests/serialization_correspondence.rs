@@ -14,12 +14,12 @@
 mod common;
 
 use common::strategies::{ascii_term, unicode_term};
+use libdictenstein::double_array_trie::char::DoubleArrayTrieChar;
 use libdictenstein::double_array_trie::DoubleArrayTrie;
-use libdictenstein::double_array_trie_char::DoubleArrayTrieChar;
+use libdictenstein::dynamic_dawg::char::DynamicDawgChar;
 use libdictenstein::dynamic_dawg::DynamicDawg;
-use libdictenstein::dynamic_dawg_char::DynamicDawgChar;
+use libdictenstein::scdawg::char::ScdawgChar;
 use libdictenstein::scdawg::Scdawg;
-use libdictenstein::scdawg_char::ScdawgChar;
 use libdictenstein::serialization::{
     BincodeSerializer, DictionaryFromTerms, DictionaryFromTermsWithValues, DictionarySerializer,
     JsonSerializer, PlainTextSerializer,

@@ -11,12 +11,12 @@
 use std::collections::HashSet;
 
 use libdictenstein::difference_zipper::DifferenceZipperExt;
+use libdictenstein::double_array_trie::char::DoubleArrayTrieChar;
+use libdictenstein::double_array_trie::char_zipper::DoubleArrayTrieCharZipper;
+use libdictenstein::double_array_trie::zipper::DoubleArrayTrieZipper;
 use libdictenstein::double_array_trie::DoubleArrayTrie;
-use libdictenstein::double_array_trie_char::DoubleArrayTrieChar;
-use libdictenstein::double_array_trie_char_zipper::DoubleArrayTrieCharZipper;
-use libdictenstein::double_array_trie_zipper::DoubleArrayTrieZipper;
+use libdictenstein::dynamic_dawg::zipper::DynamicDawgZipper;
 use libdictenstein::dynamic_dawg::DynamicDawg;
-use libdictenstein::dynamic_dawg_zipper::DynamicDawgZipper;
 use libdictenstein::intersection_zipper::{IntersectionZipper, IntersectionZipperExt};
 use libdictenstein::symmetric_difference_zipper::SymmetricDifferenceZipperExt;
 use libdictenstein::union_zipper::{LatticeJoin, UnionZipperExt};

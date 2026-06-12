@@ -2,8 +2,8 @@
 
 use std::collections::BTreeSet;
 
+use libdictenstein::scdawg::char::ScdawgChar;
 use libdictenstein::scdawg::Scdawg;
-use libdictenstein::scdawg_char::ScdawgChar;
 use libdictenstein::substring::{SubstringDictionary, SubstringMatch};
 use libdictenstein::{Dictionary, DictionaryNode};
 use proptest::prelude::*;

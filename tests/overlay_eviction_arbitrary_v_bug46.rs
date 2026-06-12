@@ -19,11 +19,11 @@
 use std::sync::Arc;
 
 use libdictenstein::artrie_trait::{ARTrie, EvictableARTrie};
+use libdictenstein::persistent_artrie::char::{PersistentARTrieChar, SharedCharARTrie};
+use libdictenstein::persistent_artrie::core::durability::DurabilityPolicy;
+use libdictenstein::persistent_artrie::core::shared_access::SharedTrieAccess;
 use libdictenstein::persistent_artrie::eviction::EvictionConfig;
 use libdictenstein::persistent_artrie::WalConfig;
-use libdictenstein::persistent_artrie_char::{PersistentARTrieChar, SharedCharARTrie};
-use libdictenstein::persistent_artrie_core::durability::DurabilityPolicy;
-use libdictenstein::persistent_artrie_core::shared_access::SharedTrieAccess;
 use libdictenstein::{
     Dictionary, DictionaryNode, MappedDictionary, MappedDictionaryNode, MutableMappedDictionary,
 };
@@ -146,7 +146,7 @@ fn bug46_reopen_recovers_arbitrary_v_value() {
 fn bug46_baseline_u64_faultin_preserves_values() {
     let dir = scratch("bug46-u64");
     let path = dir.path().join("b46.artc");
-    let mut trie = PersistentARTrieChar::<u64>::create_with_config(&path, WalConfig::no_archive())
+    let trie = PersistentARTrieChar::<u64>::create_with_config(&path, WalConfig::no_archive())
         .expect("create");
     trie.set_durability_policy(DurabilityPolicy::Immediate);
     let trie = Arc::new(trie);

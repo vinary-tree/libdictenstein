@@ -17,9 +17,9 @@
 use super::block_storage::BlockStorage;
 use super::dict_impl::PersistentARTrie;
 use super::error::{PersistentARTrieError, Result};
-use crate::persistent_artrie_core::counter_codec;
-use crate::persistent_artrie_core::key_encoding::ByteKey;
-use crate::persistent_artrie_core::overlay::durable_write::DurableOverlayWrite;
+use crate::persistent_artrie::core::counter_codec;
+use crate::persistent_artrie::core::key_encoding::ByteKey;
+use crate::persistent_artrie::core::overlay::durable_write::DurableOverlayWrite;
 use crate::value::DictionaryValue;
 
 impl<V: DictionaryValue + serde::Serialize + serde::de::DeserializeOwned, S: BlockStorage>

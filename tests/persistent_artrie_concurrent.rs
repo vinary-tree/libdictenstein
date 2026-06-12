@@ -8,22 +8,22 @@
 //!
 //! # Architecture Notes
 //!
-//! PersistentARTrie uses `SharedARTrie` (Arc<RwLock<...>>) for thread-safety:
+//! PersistentARTrie uses `SharedARTrie` (Arc<PersistentARTrie<...>>) for thread-safety:
 //! - Arc::clone creates a shared reference to the same underlying data
 //! - Multiple clones can be passed to different threads
-//! - RwLock ensures read/write safety
+//! - root publication is lock-free; checkpoint/merge publication use internal locks
 //!
 //! # Known Limitations
 //!
 //! - Bucket capacity is 256 entries per bucket
 //! - Tests stay within safe capacity limits
-//! - Write operations are serialized by RwLock
+//! - Checkpoint and merge publication are serialized by internal locks
 
 #![cfg(feature = "persistent-artrie")]
 
+use libdictenstein::persistent_artrie::core::durability::DurabilityPolicy;
+use libdictenstein::persistent_artrie::core::shared_access::SharedTrieAccess;
 use libdictenstein::persistent_artrie::{PersistentARTrie, SharedARTrie};
-use libdictenstein::persistent_artrie_core::durability::DurabilityPolicy;
-use libdictenstein::persistent_artrie_core::shared_access::SharedTrieAccess;
 use libdictenstein::Dictionary;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Barrier};
@@ -649,7 +649,7 @@ fn test_lockfree_insert_cas_basic() {
     let temp_dir = TempDir::new().expect("create temp dir");
     let dict_path = temp_dir.path().join("lockfree_basic.part");
 
-    let mut dict: PersistentARTrie<()> = PersistentARTrie::create(&dict_path).expect("create dict");
+    let dict: PersistentARTrie<()> = PersistentARTrie::create(&dict_path).expect("create dict");
     dict.set_durability_policy(DurabilityPolicy::Immediate);
 
     // Insert some terms using CAS
@@ -683,7 +683,7 @@ fn test_lockfree_insert_cas_concurrent() {
     let temp_dir = TempDir::new().expect("create temp dir");
     let dict_path = temp_dir.path().join("lockfree_concurrent.part");
 
-    let mut dict: PersistentARTrie<()> = PersistentARTrie::create(&dict_path).expect("create dict");
+    let dict: PersistentARTrie<()> = PersistentARTrie::create(&dict_path).expect("create dict");
     dict.set_durability_policy(DurabilityPolicy::Immediate);
 
     // Wrap in Arc for sharing (no RwLock needed for lock-free ops!)
@@ -755,7 +755,7 @@ fn test_lockfree_insert_cas_same_terms() {
     let temp_dir = TempDir::new().expect("create temp dir");
     let dict_path = temp_dir.path().join("lockfree_same.part");
 
-    let mut dict: PersistentARTrie<()> = PersistentARTrie::create(&dict_path).expect("create dict");
+    let dict: PersistentARTrie<()> = PersistentARTrie::create(&dict_path).expect("create dict");
     dict.set_durability_policy(DurabilityPolicy::Immediate);
 
     // Wrap in Arc for sharing

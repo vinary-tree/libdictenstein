@@ -28,9 +28,9 @@ use std::sync::{Arc, Barrier};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use libdictenstein::persistent_artrie_char::SharedCharARTrie;
+use libdictenstein::persistent_artrie::char::SharedCharARTrie;
 // F4: the `.read()/.write()` compat shim on the collapsed handle.
-use libdictenstein::persistent_artrie_core::shared_access::SharedTrieAccess;
+use libdictenstein::persistent_artrie::core::shared_access::SharedTrieAccess;
 use libdictenstein::{ARTrie, Dictionary};
 
 const KEY_COUNT: usize = 5_000;
@@ -50,6 +50,7 @@ enum Arm {
 }
 
 impl Arm {
+    #[allow(dead_code)]
     fn label(self) -> &'static str {
         match self {
             Arm::Control => "control",
@@ -62,7 +63,7 @@ impl Arm {
         match self {
             // Blocking baseline: hold the trie write lock across the whole checkpoint.
             Arm::Control => {
-                let mut g = trie.write();
+                let g = trie.write();
                 g.checkpoint().expect("control checkpoint");
             }
             // The wrapper (non-blocking after the change; identical to control before it).

@@ -6,6 +6,38 @@ Date format is ISO-8601 (YYYY-MM-DD).
 
 ## Unreleased
 
+### Changed
+
+- **PathMap dictionary nodes rebuilt on `TrieRef` (lock-free, `𝒪(1)`-from-focus).**
+  `PathMapNode` / `PathMapNodeChar` are now type aliases of the new
+  `TrieRefNode` / `TrieRefNodeChar` (`pathmap::core`) over a sealed `TrieRefLike`
+  handle. `PathMapDictionary{,Char}::root()` takes an `𝒪(1)` copy-on-write
+  snapshot and queries run **lock-free** over it (snapshot isolation), replacing
+  the former lock-per-operation, root-replay node (`𝒪(n²)` byte-steps + `n` lock
+  round-trips to walk a term of length `n`). `PathMapZipper` is likewise reworked
+  onto `TrieRefZipper`. Fields were private, so there is no downstream breakage.
+- **All dictionary families reorganized into directory submodules** —
+  `pathmap`, `dynamic_dawg`, `double_array_trie`, `suffix_automaton`, `scdawg`,
+  and `persistent_artrie` (with `char/`, `core/`, `vocab/`) — each as
+  `family/{mod,ascii,char,…}.rs`, with `mod.rs` re-exporting the family's public
+  types. The crate-root re-exports and prelude are preserved; **no
+  compatibility shims** remain for the old flat module paths.
+
+### Added
+
+- **Zero-plumbing, MORK-facing dictionaries** (`pathmap::snapshot`):
+  `PathMapSnapshot` / `PathMapRef` (and `…Char` variants) wrap a **borrowed** or
+  `𝒪(1)`-snapshotted `PathMap` so a caller that already holds one (e.g. MORK's
+  `Space.btm`) can fuzzy-query it with no copy and no lock. Constructors:
+  `from_map`, `from_map_ref`, `from_trie_ref`, `from_read_zipper`. Plus
+  `PathMapDictionary{,Char}::snapshot()` and a borrowed `PathMapZipperRef<'a>`.
+
+### Dependencies
+
+- `pathmap` requirement widened to `>=0.2.2, <0.4` (publishable — resolves to
+  0.2.2 on crates.io; accepts a local 0.3 via `[patch.crates-io]`). Verified to
+  compile against PathMap 0.3.0 (0 API errors).
+
 ### Build infrastructure
 
 - **`.cargo/config.toml`**: scoped `target-cpu=native` down to
@@ -81,7 +113,7 @@ Date format is ISO-8601 (YYYY-MM-DD).
   `&mut self` to `&self` (3 impl sites updated). The `&mut self` bound
   was performative — impls already mutate through interior write guards.
 - **`ARTrie::durability_policy`** return type points at
-  `crate::persistent_artrie_core::durability::DurabilityPolicy`
+  `crate::persistent_artrie::core::durability::DurabilityPolicy`
   (canonical home); the byte-side `pub use` re-export is retained.
 - **`ARTrie::iter_prefix_units`** sibling method added that preserves
   `Self::Unit` typing (the old `iter_prefix` returns `String`, lossy for
@@ -153,7 +185,7 @@ Date format is ISO-8601 (YYYY-MM-DD).
 - **README.md Quick Start** explains prelude usage; mirrors the lib.rs
   table; pointer to `DictionaryFactory`.
 - **`docs/persistence/mmap-architecture.md`** refreshed to reference the
-  post-Phase-6 file layout (`persistent_artrie_core/{disk_manager,
+  post-Phase-6 file layout (`persistent_artrie/core/{disk_manager,
   buffer_manager, swizzled_ptr, block_storage, io_uring_disk_manager,
   wal, durability}.rs`).
 - New **`docs/algorithms/implementations/scdawg.md`** and

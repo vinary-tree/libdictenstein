@@ -1,4 +1,4 @@
-use libdictenstein::persistent_artrie::{PersistentARTrie, WalConfig, WalWriter};
+use libdictenstein::persistent_artrie::PersistentARTrie;
 use std::fs;
 use tempfile::tempdir;
 
@@ -12,7 +12,7 @@ fn main() {
     let dir1 = tempdir().expect("create temp dir");
     let path1 = dir1.path().join("individual.artrie");
     {
-        let mut trie: PersistentARTrie<()> = PersistentARTrie::create(&path1).expect("create trie");
+        let trie: PersistentARTrie<()> = PersistentARTrie::create(&path1).expect("create trie");
         for term in &terms {
             trie.insert(term);
         }
@@ -25,7 +25,7 @@ fn main() {
     let dir2 = tempdir().expect("create temp dir");
     let path2 = dir2.path().join("batch.artrie");
     {
-        let mut trie: PersistentARTrie<()> = PersistentARTrie::create(&path2).expect("create trie");
+        let trie: PersistentARTrie<()> = PersistentARTrie::create(&path2).expect("create trie");
         let entries: Vec<(String, Option<()>)> = terms.iter().map(|t| (t.clone(), None)).collect();
         trie.insert_batch(&entries);
         trie.sync().expect("sync");

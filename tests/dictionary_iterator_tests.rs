@@ -131,7 +131,7 @@ mod dynamic_dawg_tests {
 // ============================================================================
 
 mod double_array_trie_char_tests {
-    use libdictenstein::double_array_trie_char::DoubleArrayTrieChar;
+    use libdictenstein::double_array_trie::char::DoubleArrayTrieChar;
 
     #[test]
     fn test_iter_chars_unicode() {
@@ -180,7 +180,7 @@ mod double_array_trie_char_tests {
 // ============================================================================
 
 mod dynamic_dawg_char_tests {
-    use libdictenstein::dynamic_dawg_char::DynamicDawgChar;
+    use libdictenstein::dynamic_dawg::char::DynamicDawgChar;
 
     #[test]
     fn test_iter_chars_unicode() {
@@ -243,7 +243,7 @@ mod suffix_automaton_tests {
 // ============================================================================
 
 mod suffix_automaton_char_tests {
-    use libdictenstein::suffix_automaton_char::SuffixAutomatonChar;
+    use libdictenstein::suffix_automaton::char::SuffixAutomatonChar;
 
     #[test]
     fn test_iter_terms_unicode_substrings() {
@@ -275,7 +275,6 @@ mod suffix_automaton_char_tests {
 #[cfg(feature = "pathmap-backend")]
 mod pathmap_tests {
     use libdictenstein::pathmap::PathMapDictionary;
-    use std::collections::HashSet;
 
     #[test]
     fn test_iter_bytes_with_values() {

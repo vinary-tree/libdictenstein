@@ -7,7 +7,7 @@
 
 #![cfg(feature = "persistent-artrie")]
 
-use libdictenstein::persistent_artrie_char::PersistentARTrieChar;
+use libdictenstein::persistent_artrie::char::PersistentARTrieChar;
 use std::collections::{BTreeMap, BTreeSet};
 use tempfile::tempdir;
 

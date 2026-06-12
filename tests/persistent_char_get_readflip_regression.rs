@@ -17,7 +17,7 @@
 
 #![cfg(feature = "persistent-artrie")]
 
-use libdictenstein::persistent_artrie_char::PersistentARTrieChar;
+use libdictenstein::persistent_artrie::char::PersistentARTrieChar;
 use libdictenstein::MutableMappedDictionary;
 
 fn scratch(prefix: &str) -> tempfile::TempDir {
@@ -138,7 +138,7 @@ fn char_string_value_get_routes_to_overlay() {
 #[test]
 fn char_update_or_insert_preserves_existing_overlay_value() {
     use libdictenstein::artrie_trait::ARTrie;
-    use libdictenstein::persistent_artrie_char::SharedCharARTrie;
+    use libdictenstein::persistent_artrie::char::SharedCharARTrie;
     let dir = scratch("char-update-or-insert");
     let path = dir.path().join("test.artrie");
     let trie: SharedCharARTrie<i64> = ARTrie::create(&path).expect("create");

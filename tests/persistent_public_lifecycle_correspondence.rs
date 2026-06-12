@@ -7,9 +7,9 @@
 
 #![cfg(feature = "persistent-artrie")]
 
+use libdictenstein::persistent_artrie::char::PersistentARTrieChar;
+use libdictenstein::persistent_artrie::vocab::PersistentVocabARTrie;
 use libdictenstein::persistent_artrie::PersistentARTrie;
-use libdictenstein::persistent_artrie_char::PersistentARTrieChar;
-use libdictenstein::persistent_vocab_artrie::PersistentVocabARTrie;
 use libdictenstein::MappedDictionary;
 use tempfile::tempdir;
 
@@ -85,7 +85,7 @@ fn vocab_public_open_replays_checkpoint_plus_synced_tail_indices() {
     let path = dir.path().join("vocab_checkpoint_tail.vocab");
 
     let (alpha, beta, emoji) = {
-        let mut vocab = PersistentVocabARTrie::create(&path).expect("create vocab trie");
+        let vocab = PersistentVocabARTrie::create(&path).expect("create vocab trie");
         let alpha = vocab.insert("alpha").expect("insert alpha");
         vocab.sync().expect("sync checkpointed vocab record");
         vocab.checkpoint().expect("checkpoint vocab trie");

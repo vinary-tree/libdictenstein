@@ -553,8 +553,7 @@ fn cmp_trie_insert(c: &mut Criterion) {
             for _ in 0..iters {
                 let dir = tempdir().expect("create temp dir");
                 let path = dir.path().join("trie_mmap.part");
-                let mut dict: PersistentARTrie<()> =
-                    PersistentARTrie::create(&path).expect("create");
+                let dict: PersistentARTrie<()> = PersistentARTrie::create(&path).expect("create");
 
                 let start = Instant::now();
                 for term in &terms {
@@ -576,7 +575,7 @@ fn cmp_trie_insert(c: &mut Criterion) {
             for _ in 0..iters {
                 let dir = tempdir().expect("create temp dir");
                 let path = dir.path().join("trie_uring.part");
-                let mut dict: PersistentARTrie<(), _> =
+                let dict: PersistentARTrie<(), _> =
                     PersistentARTrie::create_with_io_uring(&path).expect("create");
 
                 let start = Instant::now();
@@ -609,7 +608,7 @@ fn cmp_trie_query(c: &mut Criterion) {
     group.bench_function("mmap", |b| {
         let dir = tempdir().expect("create temp dir");
         let path = dir.path().join("query_mmap.part");
-        let mut dict: PersistentARTrie<()> = PersistentARTrie::create(&path).expect("create");
+        let dict: PersistentARTrie<()> = PersistentARTrie::create(&path).expect("create");
         for term in &terms {
             dict.insert(term);
         }
@@ -632,7 +631,7 @@ fn cmp_trie_query(c: &mut Criterion) {
     group.bench_function("io_uring", |b| {
         let dir = tempdir().expect("create temp dir");
         let path = dir.path().join("query_uring.part");
-        let mut dict: PersistentARTrie<(), _> =
+        let dict: PersistentARTrie<(), _> =
             PersistentARTrie::create_with_io_uring(&path).expect("create");
         for term in &terms {
             dict.insert(term);

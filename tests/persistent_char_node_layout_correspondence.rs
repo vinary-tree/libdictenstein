@@ -3,18 +3,18 @@
 use std::io::Cursor;
 use std::panic;
 
-use libdictenstein::persistent_artrie::{NodeType, SwizzledPtr};
-use libdictenstein::persistent_artrie_char::arena_manager::ArenaSlot;
-use libdictenstein::persistent_artrie_char::nodes::{
+use libdictenstein::persistent_artrie::char::arena_manager::ArenaSlot;
+use libdictenstein::persistent_artrie::char::nodes::{
     CharArtNode, CharBucket, CharCompressedPrefix, CharNode, CharNode16, CharNode4, CharNode48,
 };
-use libdictenstein::persistent_artrie_char::relative_encoding::{
+use libdictenstein::persistent_artrie::char::relative_encoding::{
     SerializationContext, FLAG_RELATIVE_OFFSETS, FLAG_SEQUENTIAL_SIBLINGS,
 };
-use libdictenstein::persistent_artrie_char::serialization_char::{
+use libdictenstein::persistent_artrie::char::serialization_char::{
     char_node_types, deserialize_char_node_v2, serialize_char_node_v2, DeserializationContext,
     CHAR_FORMAT_VERSION, CHAR_NODE_MAGIC, CHAR_SERIALIZED_HEADER_SIZE,
 };
+use libdictenstein::persistent_artrie::{NodeType, SwizzledPtr};
 
 fn disk_ptr(slot: ArenaSlot) -> SwizzledPtr {
     SwizzledPtr::on_disk(slot.arena_id + 1, slot.slot_id, NodeType::CharNode4)

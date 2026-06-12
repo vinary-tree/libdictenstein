@@ -13,7 +13,7 @@ fn main() {
 
     println!("=== Insert with periodic sync every 100 terms ===");
     {
-        let mut trie: PersistentARTrie<()> = PersistentARTrie::create(&path).expect("create trie");
+        let trie: PersistentARTrie<()> = PersistentARTrie::create(&path).expect("create trie");
         for (i, term) in terms.iter().enumerate() {
             trie.insert(term);
             if (i + 1) % 100 == 0 {

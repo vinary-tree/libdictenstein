@@ -7,10 +7,10 @@
 
 #![cfg(feature = "persistent-artrie")]
 
+use libdictenstein::persistent_artrie::char::PersistentARTrieChar;
 use libdictenstein::persistent_artrie::{
     PersistentARTrie, RecoveryMode, WalConfig, WalRecord, WalWriter,
 };
-use libdictenstein::persistent_artrie_char::PersistentARTrieChar;
 use libdictenstein::{Dictionary, MappedDictionary};
 use std::fs::{self, OpenOptions};
 use std::io::{Seek, SeekFrom, Write};

@@ -1,11 +1,11 @@
 //! Byte seam impl of the shared [`LockFreeOverlay`] overlay-install + thin inherent
 //! wrapper preserving the byte public surface.
 //!
-//! This is the BYTE twin of `persistent_artrie_char::overlay_write_mode`. The
+//! This is the BYTE twin of `persistent_artrie::char::overlay_write_mode`. The
 //! overlay genericization (`docs/design/overlay-durable-architecture.md`)
 //! extracted the lock-free-overlay machinery (route predicate + non-faulting RCU
 //! read engine + overlay install + reestablish folds) into the SHARED GENERIC
-//! [`LockFreeOverlay`](crate::persistent_artrie_core::overlay::flip::LockFreeOverlay)
+//! [`LockFreeOverlay`](crate::persistent_artrie::core::overlay::flip::LockFreeOverlay)
 //! trait. This module holds only:
 //!
 //! 1. the byte SEAM impl `impl LockFreeOverlay<ByteKey, V, S> for
@@ -29,13 +29,13 @@ use std::sync::Arc;
 use super::block_storage::BlockStorage;
 use super::dict_impl::PersistentARTrie;
 use super::error::{PersistentARTrieError, Result};
-use crate::persistent_artrie_core::durability::DurabilityPolicy;
-use crate::persistent_artrie_core::key_encoding::{ByteKey, KeyEncoding};
-use crate::persistent_artrie_core::overlay::durable_write::{
+use crate::persistent_artrie::core::durability::DurabilityPolicy;
+use crate::persistent_artrie::core::key_encoding::{ByteKey, KeyEncoding};
+use crate::persistent_artrie::core::overlay::durable_write::{
     DurableOverlayWrite, ValuePublishOutcome, ValueWriteMode,
 };
-use crate::persistent_artrie_core::overlay::flip::LockFreeOverlay;
-use crate::persistent_artrie_core::wal::{Lsn, RankRegime, WalRecord};
+use crate::persistent_artrie::core::overlay::flip::LockFreeOverlay;
+use crate::persistent_artrie::core::wal::{Lsn, RankRegime, WalRecord};
 use crate::value::DictionaryValue;
 
 // L3.3c: removed — the private UN-ROUTED, UNCAPPED owned enumerators
@@ -63,7 +63,7 @@ impl<V: DictionaryValue, S: BlockStorage> LockFreeOverlay<ByteKey, V, S>
     #[inline]
     fn lockfree_root(
         &self,
-    ) -> Option<&crate::persistent_artrie_core::overlay::AtomicNodePtr<ByteKey, V>> {
+    ) -> Option<&crate::persistent_artrie::core::overlay::AtomicNodePtr<ByteKey, V>> {
         // `super::nodes::AtomicNodePtr<V>` IS `overlay::AtomicNodePtr<ByteKey, V>`
         // (a type alias — see `nodes::atomic_ptr`), so this borrow is identity.
         self.lockfree_root.as_ref()
@@ -176,7 +176,7 @@ impl<V: DictionaryValue, S: BlockStorage> LockFreeOverlay<ByteKey, V, S>
 
     fn install_prebuilt_overlay_root_seam(
         &mut self,
-        root: Arc<crate::persistent_artrie_core::overlay::node::OverlayNode<ByteKey, V>>,
+        root: Arc<crate::persistent_artrie::core::overlay::node::OverlayNode<ByteKey, V>>,
     ) {
         // `OverlayNode<ByteKey, V>` IS `PersistentNode<V>` (a type alias — see
         // `nodes::persistent_node`), so this is an identity install. Delegates to the
@@ -420,10 +420,6 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
     // (The `flip_to_overlay` + `overlay_eligible_v` inherent wrappers were deleted
     // with the dead flip machinery — the overlay is the sole representation, built
     // directly by every constructor; there is no eligibility gate and no flip.)
-    #[cfg_attr(not(test), allow(dead_code))]
-    #[inline]
-    #[cfg_attr(not(test), allow(dead_code))]
-    #[inline]
     // ---- inherent skins over the trait read engine (used by the M2a test) ----
 
     /// Overlay term count (resident-finals). Thin delegator to the read engine.
@@ -434,7 +430,7 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
     }
 
     /// Overlay `is_empty` (cheap early-out). Thin delegator.
-    #[cfg_attr(not(test), allow(dead_code))]
+    #[allow(dead_code)]
     #[inline]
     pub(crate) fn overlay_is_empty(&self) -> bool {
         <Self as LockFreeOverlay<ByteKey, V, S>>::overlay_is_empty(self)
@@ -522,7 +518,6 @@ mod tests {
         // The byte counter monomorph is now `u64` (matching char, post-u64-
         // restoration); `()` is membership, and every other `V` (incl. `i64` and
         // `String`) is arbitrary-V — all eligible.
-        use crate::persistent_artrie::PersistentARTrie;
     }
 
     #[test]

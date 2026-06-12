@@ -8,15 +8,15 @@
 
 #![cfg(feature = "persistent-artrie")]
 
+use libdictenstein::persistent_artrie::char::{
+    ArenaManager as CharArenaManager, ArenaSlot as CharArenaSlot,
+    BatchDeduplicator as CharBatchDeduplicator,
+    DeduplicatingArenaManager as CharDeduplicatingArenaManager,
+};
 use libdictenstein::persistent_artrie::{
     ArenaManager as ByteArenaManager, ArenaSlot as ByteArenaSlot,
     BatchDeduplicator as ByteBatchDeduplicator,
     DeduplicatingArenaManager as ByteDeduplicatingArenaManager, MmapDiskManager,
-};
-use libdictenstein::persistent_artrie_char::{
-    ArenaManager as CharArenaManager, ArenaSlot as CharArenaSlot,
-    BatchDeduplicator as CharBatchDeduplicator,
-    DeduplicatingArenaManager as CharDeduplicatingArenaManager,
 };
 use std::collections::BTreeMap;
 

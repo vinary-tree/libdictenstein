@@ -3,13 +3,13 @@
 //! G4 unification: the byte lock-free overlay node (`u8`/ASCII / arbitrary-byte
 //! keys) was token-for-token identical to the char overlay node modulo the
 //! key-unit type, `MAX_PREFIX_LEN`, the inline zero filler, and prose. Both are
-//! now a single generic `persistent_artrie_core::overlay::OverlayNode<K, V>`; the
+//! now a single generic `persistent_artrie::core::overlay::OverlayNode<K, V>`; the
 //! byte node is its `<ByteKey>` alias. This file is a **pure re-export** — every
 //! method has the same signature and (after monomorphization) the same machine
 //! code as the prior in-place byte node, so the loom/proptest/TLA correspondence
 //! over this node is unchanged by construction. The exhaustive node unit tests
 //! (both `<ByteKey>` and `<CharKey>` instantiations) live in the shared module
-//! `persistent_artrie_core::overlay::node`.
+//! `persistent_artrie::core::overlay::node`.
 //!
 //! The prior in-place byte node body (the duplicate of char's node) is removed in
 //! favor of this alias — its logic now lives once in `core::overlay::node`. The
@@ -18,17 +18,17 @@
 //! `MAX_PREFIX_LEN` is preserved as a module constant (= 12 = `ByteKey::MAX_PREFIX_LEN`)
 //! for any external referent.
 
-use crate::persistent_artrie_core::key_encoding::{ByteKey, KeyEncoding};
+use crate::persistent_artrie::core::key_encoding::{ByteKey, KeyEncoding};
 
 // Re-export the shared flags so `persistent_node::flags::*` call-sites resolve.
-pub use crate::persistent_artrie_core::overlay::flags;
+pub use crate::persistent_artrie::core::overlay::flags;
 
 /// The byte overlay node (u8/ASCII keys). Now an alias of the shared generic
 /// `OverlayNode<ByteKey, V>` (default `V = ()` for membership).
-pub type PersistentNode<V = ()> = crate::persistent_artrie_core::overlay::OverlayNode<ByteKey, V>;
+pub type PersistentNode<V = ()> = crate::persistent_artrie::core::overlay::OverlayNode<ByteKey, V>;
 
 /// The byte child slot. Alias of the shared `Child<ByteKey, V>`.
-pub type Child<V = ()> = crate::persistent_artrie_core::overlay::Child<ByteKey, V>;
+pub type Child<V = ()> = crate::persistent_artrie::core::overlay::Child<ByteKey, V>;
 
 /// Maximum path-compression prefix length for byte overlay nodes (12 B).
 /// Mirrors `ByteKey::MAX_PREFIX_LEN`; kept as a module const for external referents.
@@ -39,7 +39,7 @@ mod tests {
     //! Alias-smoke tests: prove the `PersistentNode`/`Child` aliases resolve to the
     //! shared `OverlayNode<ByteKey, _>` and behave identically. The exhaustive node
     //! coverage (tier transitions, all-byte-values, value carry, etc.) lives in
-    //! `persistent_artrie_core::overlay::node::tests`, which exercises BOTH the
+    //! `persistent_artrie::core::overlay::node::tests`, which exercises BOTH the
     //! `<ByteKey>` and `<CharKey>` instantiations of this same code.
 
     use super::*;

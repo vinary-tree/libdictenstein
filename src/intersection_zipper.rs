@@ -17,7 +17,7 @@
 //! ```rust
 //! use libdictenstein::prelude::*;
 //! use libdictenstein::intersection_zipper::{IntersectionZipper, IntersectionZipperExt};
-//! use libdictenstein::double_array_trie_zipper::DoubleArrayTrieZipper;
+//! use libdictenstein::double_array_trie::zipper::DoubleArrayTrieZipper;
 //!
 //! let dict1 = DoubleArrayTrie::from_terms(vec!["cat", "dog", "fish"].iter());
 //! let dict2 = DoubleArrayTrie::from_terms(vec!["cat", "fish", "bird"].iter());
@@ -41,7 +41,7 @@
 //! ```rust
 //! use libdictenstein::prelude::*;
 //! use libdictenstein::intersection_zipper::IntersectionZipperExt;
-//! use libdictenstein::double_array_trie_zipper::DoubleArrayTrieZipper;
+//! use libdictenstein::double_array_trie::zipper::DoubleArrayTrieZipper;
 //! use libdictenstein::zipper::DictZipper;
 //!
 //! let dict1 = DoubleArrayTrie::from_terms(vec!["cat", "car", "cab"].iter());
@@ -73,7 +73,7 @@
 //! use libdictenstein::prelude::*;
 //! use libdictenstein::intersection_zipper::IntersectionZipper;
 //! use libdictenstein::union_zipper::LatticeMeet;
-//! use libdictenstein::double_array_trie_zipper::DoubleArrayTrieZipper;
+//! use libdictenstein::double_array_trie::zipper::DoubleArrayTrieZipper;
 //! use libdictenstein::zipper::{DictZipper, ValuedDictZipper};
 //!
 //! let dict1 = DoubleArrayTrie::from_terms_with_values(vec![("score", 85u32)].into_iter());
@@ -173,7 +173,7 @@ impl<Z: DictZipper> IntersectionZipper<Z, LatticeMeet> {
     /// ```rust
     /// use libdictenstein::prelude::*;
     /// use libdictenstein::intersection_zipper::IntersectionZipper;
-    /// use libdictenstein::double_array_trie_zipper::DoubleArrayTrieZipper;
+    /// use libdictenstein::double_array_trie::zipper::DoubleArrayTrieZipper;
     ///
     /// let dict1 = DoubleArrayTrie::from_terms(vec!["cat", "dog"].iter());
     /// let dict2 = DoubleArrayTrie::from_terms(vec!["cat", "fish"].iter());
@@ -210,7 +210,7 @@ impl<Z: DictZipper, S: Clone + Send + Sync> IntersectionZipper<Z, S> {
     /// use libdictenstein::prelude::*;
     /// use libdictenstein::intersection_zipper::IntersectionZipper;
     /// use libdictenstein::union_zipper::LatticeJoin;
-    /// use libdictenstein::double_array_trie_zipper::DoubleArrayTrieZipper;
+    /// use libdictenstein::double_array_trie::zipper::DoubleArrayTrieZipper;
     ///
     /// let dict1 = DoubleArrayTrie::from_terms_with_values(vec![("cat", 1)].into_iter());
     /// let dict2 = DoubleArrayTrie::from_terms_with_values(vec![("cat", 10)].into_iter());
@@ -264,7 +264,7 @@ impl<Z: DictZipper, S: Clone + Send + Sync> IntersectionZipper<Z, S> {
     /// ```rust
     /// use libdictenstein::prelude::*;
     /// use libdictenstein::intersection_zipper::IntersectionZipperExt;
-    /// use libdictenstein::double_array_trie_zipper::DoubleArrayTrieZipper;
+    /// use libdictenstein::double_array_trie::zipper::DoubleArrayTrieZipper;
     ///
     /// let dict1 = DoubleArrayTrie::from_terms(vec!["cat", "dog"].iter());
     /// let dict2 = DoubleArrayTrie::from_terms(vec!["cat", "fish"].iter());
@@ -527,7 +527,7 @@ where
 /// ```rust
 /// use libdictenstein::prelude::*;
 /// use libdictenstein::intersection_zipper::IntersectionZipperExt;
-/// use libdictenstein::double_array_trie_zipper::DoubleArrayTrieZipper;
+/// use libdictenstein::double_array_trie::zipper::DoubleArrayTrieZipper;
 ///
 /// let dict1 = DoubleArrayTrie::from_terms(vec!["cat", "dog"].iter());
 /// let dict2 = DoubleArrayTrie::from_terms(vec!["cat", "fish"].iter());
@@ -614,8 +614,8 @@ impl<Z: ValuedDictZipper> ValuedIntersectionZipperExt for Z {}
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::double_array_trie::zipper::DoubleArrayTrieZipper;
     use crate::double_array_trie::DoubleArrayTrie;
-    use crate::double_array_trie_zipper::DoubleArrayTrieZipper;
     use crate::union_zipper::LatticeJoin;
 
     fn sorted_strings(mut v: Vec<String>) -> Vec<String> {

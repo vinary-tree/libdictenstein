@@ -1,7 +1,7 @@
 //! Byte overlay fault-in primitive + [`OverlayFaulter`] impl.
 //!
-//! The byte twin of char's `load_overlay_node_from_disk` (`persistent_artrie_char/
-//! disk_io.rs`). Byte has **no** overlay eviction and **no** other overlay
+//! The byte twin of char's `load_overlay_node_from_disk`
+//! (`persistent_artrie::char::disk_io`). Byte has **no** overlay eviction and **no** other overlay
 //! fault-in (its routed overlay is always fully `Child::InMem`, since the
 //! reestablish folds publish in-memory and nothing serializes overlay children
 //! back into the live in-memory tree). This module exists so the overlay-backed
@@ -19,9 +19,9 @@
 
 use std::sync::Arc;
 
-use crate::persistent_artrie_core::key_encoding::ByteKey;
-use crate::persistent_artrie_core::overlay::evict::OverlayEvictable;
-use crate::persistent_artrie_core::overlay::{AtomicNodePtr, Child, OverlayFaulter, OverlayNode};
+use crate::persistent_artrie::core::key_encoding::ByteKey;
+use crate::persistent_artrie::core::overlay::evict::OverlayEvictable;
+use crate::persistent_artrie::core::overlay::{AtomicNodePtr, Child, OverlayFaulter, OverlayNode};
 use crate::value::DictionaryValue;
 
 use super::arena_manager::ArenaSlot;
@@ -182,7 +182,7 @@ impl<V: DictionaryValue, S: BlockStorage> OverlayEvictable<ByteKey, V, S>
     }
 
     #[inline]
-    fn overlay_epoch_manager(&self) -> &crate::persistent_artrie_core::concurrency::EpochManager {
+    fn overlay_epoch_manager(&self) -> &crate::persistent_artrie::core::concurrency::EpochManager {
         &self.epoch_manager
     }
 
@@ -226,8 +226,8 @@ pub(crate) fn evict_overlay_nodes<V: DictionaryValue, S: BlockStorage>(
     mut nodes: Vec<(u64, Vec<u8>, SwizzledPtr)>,
     max_rebase_retries: usize,
 ) -> (usize, usize) {
+    use crate::persistent_artrie::core::overlay::evict::{OverlayEvictOutcome, OverlayEvictable};
     use crate::persistent_artrie::eviction::lru_tracker::LruRegistry;
-    use crate::persistent_artrie_core::overlay::evict::{OverlayEvictOutcome, OverlayEvictable};
 
     // LEAF-FIRST: sort by DESCENDING path length (depth).
     nodes.sort_by(|a, b| b.1.len().cmp(&a.1.len()));
@@ -274,6 +274,7 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
     /// byte OE tests can run eviction-ON checkpoints + drive the overlay evictor. The
     /// reclaim callback is a no-op `(0, 0)` (the test drives reclamation synchronously via
     /// `evict_overlay_nodes`); the bench measures the CHECKPOINT registration path.
+    #[allow(dead_code)]
     pub(crate) fn bench_enable_eviction(
         &self,
         config: crate::persistent_artrie::eviction::EvictionConfig,
@@ -322,6 +323,7 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
     /// overlay capture/publish seams (NOT the production `checkpoint()` route-split). This
     /// is what populates + publishes the byte disk-location registry the OE tests then
     /// evict from (the M-2a stamps are written here).
+    #[allow(dead_code)]
     pub(crate) fn bench_immutable_checkpoint_with_eviction(&self) -> Result<()> {
         let snapshot = self.capture_overlay_snapshot()?;
         self.publish_overlay_snapshot_retaining_with_eviction(snapshot)
@@ -331,6 +333,7 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
     /// published at the last `bench_immutable_checkpoint_with_eviction` (byte twin of
     /// char's `evictable_node_count`, Phase 6). `None` when eviction is disabled;
     /// `Some(0)` before the first checkpoint.
+    #[allow(dead_code)]
     pub(crate) fn evictable_node_count(&self) -> Option<usize> {
         self.eviction_coordinator
             .lock()

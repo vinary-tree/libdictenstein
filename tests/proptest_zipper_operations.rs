@@ -9,10 +9,10 @@ mod common;
 
 use common::strategies::*;
 use libdictenstein::difference_zipper::DifferenceZipperExt;
+use libdictenstein::double_array_trie::zipper::DoubleArrayTrieZipper;
 use libdictenstein::double_array_trie::DoubleArrayTrie;
-use libdictenstein::double_array_trie_zipper::DoubleArrayTrieZipper;
+use libdictenstein::dynamic_dawg::zipper::DynamicDawgZipper;
 use libdictenstein::dynamic_dawg::DynamicDawg;
-use libdictenstein::dynamic_dawg_zipper::DynamicDawgZipper;
 use libdictenstein::intersection_zipper::IntersectionZipperExt;
 use libdictenstein::symmetric_difference_zipper::SymmetricDifferenceZipperExt;
 use libdictenstein::union_zipper::UnionZipperExt;

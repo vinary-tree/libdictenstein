@@ -299,7 +299,7 @@ pub struct PersistentARTrie<V: DictionaryValue = (), S: BlockStorage = MmapDiskM
     /// lock-free after the collapse — strictly cheaper than the old
     /// `RwLock`-guarded field read.
     pub(crate) durability_policy:
-        crate::persistent_artrie_core::shared_access::AtomicEnumCell<DurabilityPolicy>,
+        crate::persistent_artrie::core::shared_access::AtomicEnumCell<DurabilityPolicy>,
     /// Epoch manager for MVCC-Lite snapshot isolation.
     ///
     /// Phase 6: an `Arc<EpochManager>` (was a bare `EpochManager`) so byte's
@@ -368,12 +368,12 @@ pub struct PersistentARTrie<V: DictionaryValue = (), S: BlockStorage = MmapDiskM
     /// committed prefix this tracks — NOT the appended/synced WAL frontier — is
     /// the only safe `checkpoint_lsn` (GAP_LEDGER #41; TLC-verified in
     /// `formal-verification/tla+/LockFreeDurableCheckpoint.tla`). Shared, K-agnostic:
-    /// [`crate::persistent_artrie_core::committed_watermark::CommittedWatermark`].
+    /// [`crate::persistent_artrie::core::committed_watermark::CommittedWatermark`].
     /// Seeded on open with the recovered durable WAL frontier (so replayed LSNs are
     /// treated as already committed), `0` on create. Advanced by the durable
     /// `*_cas_durable` overlay writes; read by the overlay checkpoint as `checkpoint_lsn`.
     pub(crate) committed_watermark:
-        crate::persistent_artrie_core::committed_watermark::CommittedWatermark,
+        crate::persistent_artrie::core::committed_watermark::CommittedWatermark,
 
     /// **F3 / NF-3 — serializes concurrent checkpoints** (byte twin of char's
     /// field). Today byte's `SharedARTrie` checkpoint holds the outer `self.write()`
@@ -395,6 +395,7 @@ pub struct PersistentARTrie<V: DictionaryValue = (), S: BlockStorage = MmapDiskM
     /// handle clone unchanged, mirroring `checkpoint_lock` EXACTLY. Single
     /// acquisition site (the innermost private driver); public wrappers must NOT
     /// re-take it (parking_lot is non-reentrant).
+    #[allow(dead_code)]
     pub(crate) merge_lock: std::sync::Arc<parking_lot::Mutex<()>>,
 
     /// **Durable global commit sequence** (the byte twin of the char field). The
@@ -429,10 +430,10 @@ pub use super::iterators::{TermIterator, TermValueIterator};
 pub use super::transactions::TransactionState;
 
 /// Durability policy — relocated to
-/// [`crate::persistent_artrie_core::durability::DurabilityPolicy`]. Re-exported
+/// [`crate::persistent_artrie::core::durability::DurabilityPolicy`]. Re-exported
 /// at module scope below so existing `dict_impl::DurabilityPolicy` callers keep
 /// working.
-pub use crate::persistent_artrie_core::durability::DurabilityPolicy;
+pub use crate::persistent_artrie::core::durability::DurabilityPolicy;
 
 // `CompactionConfig`, `CompactionStats`, and `CompactionProgress` (plus the
 // `Default` impl for `CompactionConfig`) were relocated to the sibling
@@ -560,6 +561,7 @@ impl<V: DictionaryValue, S: BlockStorage> Drop for PersistentARTrie<V, S> {
 }
 
 #[cfg(test)]
+#[allow(deprecated)]
 mod tests {
     use super::*;
 

@@ -25,11 +25,11 @@
 
 use std::sync::Arc;
 
+use crate::persistent_artrie::core::durability::DurabilityPolicy;
+use crate::persistent_artrie::core::overlay::evict::OverlayEvictable;
 use crate::persistent_artrie::eviction::EvictionConfig;
 use crate::persistent_artrie::overlay_fault::evict_overlay_nodes;
 use crate::persistent_artrie::PersistentARTrie;
-use crate::persistent_artrie_core::durability::DurabilityPolicy;
-use crate::persistent_artrie_core::overlay::evict::OverlayEvictable;
 use crate::MappedDictionary;
 
 /// A scratch directory on real disk (`target/test-tmp`), never tmpfs `/tmp`.
@@ -148,7 +148,7 @@ fn byte_evict_then_reload_returns_exact_values() {
 ///   registry `disk_ptr` returns `NotEvictable`, and the NEW value survives.
 #[test]
 fn byte_overwrite_since_checkpoint_is_not_evicted_to_stale_image() {
-    use crate::persistent_artrie_core::overlay::evict::OverlayEvictOutcome;
+    use crate::persistent_artrie::core::overlay::evict::OverlayEvictOutcome;
 
     let dir = scratch("byte-oe5-overwrite-guard");
     let path = dir.path().join("oe5.part");

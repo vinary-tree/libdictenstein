@@ -9,9 +9,8 @@
 mod common;
 
 use common::strategies::*;
+use libdictenstein::dynamic_dawg::char::DynamicDawgChar;
 use libdictenstein::dynamic_dawg::DynamicDawg;
-use libdictenstein::dynamic_dawg_char::DynamicDawgChar;
-use libdictenstein::MappedDictionary;
 use proptest::prelude::*;
 use std::collections::{HashMap, HashSet};
 

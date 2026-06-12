@@ -12,7 +12,7 @@
 #![cfg(feature = "persistent-artrie")]
 
 use libdictenstein::artrie_trait::ARTrie;
-use libdictenstein::persistent_vocab_artrie::{PersistentVocabARTrie, SharedVocabARTrie};
+use libdictenstein::persistent_artrie::vocab::{PersistentVocabARTrie, SharedVocabARTrie};
 use libdictenstein::{MappedDictionary, MutableMappedDictionary};
 use parking_lot::RwLock;
 use std::sync::Arc;
@@ -108,9 +108,9 @@ fn shared_vocab_union_with_ignores_merge_fn_but_unions_terms() {
     let a = fresh_shared(&path_a);
     let b = fresh_shared(&path_b);
     {
-        let mut g = b.write();
-        g.insert("foo");
-        g.insert("bar");
+        let g = b.write();
+        g.insert("foo").expect("insert term failed");
+        g.insert("bar").expect("insert term failed");
     }
 
     let merge_was_called = std::cell::Cell::new(false);
@@ -161,8 +161,8 @@ fn shared_vocab_artrie_remove_unconditionally_false() {
     let dir = tempdir().unwrap();
     let shared = fresh_shared(&dir.path().join("vocab.dict"));
     {
-        let mut g = shared.write();
-        g.insert("apple");
+        let g = shared.write();
+        g.insert("apple").expect("insert term failed");
     }
     assert!(shared.read().contains("apple"));
 
@@ -180,9 +180,9 @@ fn shared_vocab_artrie_remove_prefix_unconditionally_zero() {
     let dir = tempdir().unwrap();
     let shared = fresh_shared(&dir.path().join("vocab.dict"));
     {
-        let mut g = shared.write();
-        g.insert("apple");
-        g.insert("application");
+        let g = shared.write();
+        g.insert("apple").expect("insert term failed");
+        g.insert("application").expect("insert term failed");
     }
 
     assert_eq!(ARTrie::remove_prefix(&shared, "app"), 0);
@@ -203,8 +203,8 @@ fn shared_vocab_artrie_has_no_increment() {
     let dir = tempdir().unwrap();
     let shared = fresh_shared(&dir.path().join("vocab.dict"));
     {
-        let mut g = shared.write();
-        g.insert("counter");
+        let g = shared.write();
+        g.insert("counter").expect("insert term failed");
     }
     assert!(
         shared.read().contains("counter"),

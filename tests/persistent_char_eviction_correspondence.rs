@@ -20,7 +20,7 @@
 //! 2. The white-box proof that an evicted slot actually becomes a DiskRef — and
 //!    the end-to-end *async* eviction path (`request_eviction` lives only on the
 //!    private coordinator) — need internal access and live in the in-crate
-//!    `#[cfg(test)]` module `persistent_artrie_char::eviction_registry_tests`.
+//!    `#[cfg(test)]` module `persistent_artrie::char::eviction_registry_tests`.
 //!    Here we use the public contract: `force_eviction` returns the count of
 //!    nodes actually unswizzled (`evict_node_at_path` succeeded), and
 //!    reload-from-disk preserves values.
@@ -32,11 +32,11 @@
 //! raw byte-for-byte file compare is confounded by the checkpoint timestamp.
 
 use libdictenstein::artrie_trait::{ARTrie, EvictableARTrie};
-use libdictenstein::persistent_artrie::eviction::EvictionConfig;
-use libdictenstein::persistent_artrie_char::{
+use libdictenstein::persistent_artrie::char::{
     PersistentARTrieChar, PersistentARTrieCharNode, SharedCharARTrie,
 };
-use libdictenstein::persistent_artrie_core::shared_access::SharedTrieAccess;
+use libdictenstein::persistent_artrie::core::shared_access::SharedTrieAccess;
+use libdictenstein::persistent_artrie::eviction::EvictionConfig;
 use libdictenstein::{DictionaryNode, MappedDictionaryNode, MutableMappedDictionary};
 use std::path::Path;
 use tempfile::tempdir;

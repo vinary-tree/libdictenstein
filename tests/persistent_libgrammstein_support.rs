@@ -22,10 +22,10 @@
 use std::sync::Arc;
 
 use libdictenstein::artrie_trait::EvictableARTrie;
+use libdictenstein::persistent_artrie::char::PersistentARTrieChar;
+use libdictenstein::persistent_artrie::core::durability::DurabilityPolicy;
 use libdictenstein::persistent_artrie::eviction::EvictionConfig;
 use libdictenstein::persistent_artrie::{PersistentARTrie, WalConfig};
-use libdictenstein::persistent_artrie_char::PersistentARTrieChar;
-use libdictenstein::persistent_artrie_core::durability::DurabilityPolicy;
 use libdictenstein::MappedDictionary;
 
 /// A scratch directory on real disk (`target/test-tmp`), never tmpfs `/tmp`. Each call
@@ -45,7 +45,7 @@ fn scratch(prefix: &str) -> tempfile::TempDir {
 fn arc_commit_document_byte_needs_no_mut() {
     let dir = scratch("libg-arc-commit-byte");
     let path = dir.path().join("c.artb");
-    let mut trie = PersistentARTrie::<u64>::create(&path).expect("create");
+    let trie = PersistentARTrie::<u64>::create(&path).expect("create");
     trie.set_durability_policy(DurabilityPolicy::Immediate);
     let trie = Arc::new(trie);
 
@@ -76,7 +76,7 @@ fn arc_commit_document_byte_needs_no_mut() {
 fn arc_commit_document_char_needs_no_mut() {
     let dir = scratch("libg-arc-commit-char");
     let path = dir.path().join("c.artc");
-    let mut trie = PersistentARTrieChar::<u64>::create_with_config(&path, WalConfig::no_archive())
+    let trie = PersistentARTrieChar::<u64>::create_with_config(&path, WalConfig::no_archive())
         .expect("create");
     trie.set_durability_policy(DurabilityPolicy::Immediate);
     let trie = Arc::new(trie);
@@ -106,9 +106,8 @@ fn public_eviction_stats_resident_bytes_and_checkpoint_tail_nodes_evicted() {
     fn run(budget: Option<usize>) -> (u64, u64) {
         let dir = scratch("libg-evict-stats");
         let path = dir.path().join("e.artc");
-        let mut trie =
-            PersistentARTrieChar::<u64>::create_with_config(&path, WalConfig::no_archive())
-                .expect("create");
+        let trie = PersistentARTrieChar::<u64>::create_with_config(&path, WalConfig::no_archive())
+            .expect("create");
         trie.set_durability_policy(DurabilityPolicy::Immediate);
         let trie = Arc::new(trie);
         let config = EvictionConfig {

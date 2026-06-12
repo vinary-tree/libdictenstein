@@ -15,7 +15,7 @@
 
 #![cfg(feature = "persistent-artrie")]
 
-use libdictenstein::persistent_artrie_char::{PersistentARTrieChar, PersistentARTrieCharNode};
+use libdictenstein::persistent_artrie::char::{PersistentARTrieChar, PersistentARTrieCharNode};
 use libdictenstein::{DictionaryNode, MappedDictionaryNode};
 use proptest::prelude::*;
 use std::collections::BTreeMap;

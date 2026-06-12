@@ -851,10 +851,10 @@ fn test_art_node_wal_only_recovery() {
 // =============================================================================
 
 mod char_recovery_tests {
-    use libdictenstein::persistent_artrie::wal::WalConfig;
-    use libdictenstein::persistent_artrie_char::{
+    use libdictenstein::persistent_artrie::char::{
         detect_corruption, CorruptionType, RecoveryManager, RecoveryMode, RecoveryReport,
     };
+    use libdictenstein::persistent_artrie::wal::WalConfig;
     use std::fs;
     use tempfile::tempdir;
 
@@ -1020,8 +1020,8 @@ mod char_recovery_tests {
 // =============================================================================
 
 mod archive_mode_tests {
+    use libdictenstein::persistent_artrie::char::PersistentARTrieChar;
     use libdictenstein::persistent_artrie::wal::WalConfig;
-    use libdictenstein::persistent_artrie_char::PersistentARTrieChar;
     use std::path::PathBuf;
     use tempfile::tempdir;
 
@@ -1137,7 +1137,7 @@ mod archive_mode_tests {
 mod open_with_recovery_tests {
     use libdictenstein::persistent_artrie::recovery::RecoveryMode;
 
-    use libdictenstein::persistent_artrie_char::PersistentARTrieChar;
+    use libdictenstein::persistent_artrie::char::PersistentARTrieChar;
 
     use tempfile::tempdir;
 
@@ -1221,6 +1221,7 @@ mod open_with_recovery_tests {
 // ===========================================================================
 // Tests for iter_prefix(), iter_prefix_with_values(), and remove_prefix()
 
+#[allow(deprecated)]
 mod phase_20_prefix_operations {
     use libdictenstein::persistent_artrie::PersistentARTrie;
     use libdictenstein::Dictionary;
@@ -1306,9 +1307,7 @@ mod phase_20_prefix_operations {
             .expect("prefix exists")
             .collect();
 
-        // Note: ValuedDictZipper::value() may return None if value extraction isn't implemented
-        // So we just check that we got some results (even if values are empty)
-        assert!(matches.len() >= 0, "Should return iterator");
+        assert_eq!(matches.len(), 3, "prefix app should return three terms");
     }
 
     #[test]
@@ -1491,7 +1490,7 @@ mod phase_20_prefix_operations {
 
 /// Phase 21: Prefix operations for char-based PersistentARTrieChar
 mod phase_21_char_prefix_operations {
-    use libdictenstein::persistent_artrie_char::PersistentARTrieChar;
+    use libdictenstein::persistent_artrie::char::PersistentARTrieChar;
     use tempfile::tempdir;
 
     // =========================================================================
@@ -1501,11 +1500,11 @@ mod phase_21_char_prefix_operations {
     #[test]
     fn test_char_iter_prefix() {
         let trie: PersistentARTrieChar<()> = PersistentARTrieChar::new();
-        trie.insert("apple");
-        trie.insert("application");
-        trie.insert("apply");
-        trie.insert("banana");
-        trie.insert("band");
+        trie.insert("apple").expect("insert failed");
+        trie.insert("application").expect("insert failed");
+        trie.insert("apply").expect("insert failed");
+        trie.insert("banana").expect("insert failed");
+        trie.insert("band").expect("insert failed");
 
         // Prefix "app" should match 3 terms
         let matches = trie
@@ -1522,8 +1521,8 @@ mod phase_21_char_prefix_operations {
     #[test]
     fn test_char_iter_prefix_not_found() {
         let trie: PersistentARTrieChar<()> = PersistentARTrieChar::new();
-        trie.insert("apple");
-        trie.insert("banana");
+        trie.insert("apple").expect("insert failed");
+        trie.insert("banana").expect("insert failed");
 
         // Prefix "xyz" should not exist
         assert!(
@@ -1535,10 +1534,10 @@ mod phase_21_char_prefix_operations {
     #[test]
     fn test_char_iter_prefix_unicode() {
         let trie: PersistentARTrieChar<()> = PersistentARTrieChar::new();
-        trie.insert("日本語");
-        trie.insert("日本人");
-        trie.insert("日曜日");
-        trie.insert("月曜日");
+        trie.insert("日本語").expect("insert failed");
+        trie.insert("日本人").expect("insert failed");
+        trie.insert("日曜日").expect("insert failed");
+        trie.insert("月曜日").expect("insert failed");
 
         // Prefix "日本" should match 2 terms
         let matches = trie
@@ -1554,10 +1553,14 @@ mod phase_21_char_prefix_operations {
     #[test]
     fn test_char_iter_prefix_with_values() {
         let trie: PersistentARTrieChar<i32> = PersistentARTrieChar::new();
-        trie.insert_with_value("apple", 1);
-        trie.insert_with_value("application", 2);
-        trie.insert_with_value("apply", 3);
-        trie.insert_with_value("banana", 4);
+        trie.insert_with_value("apple", 1)
+            .expect("insert value failed");
+        trie.insert_with_value("application", 2)
+            .expect("insert value failed");
+        trie.insert_with_value("apply", 3)
+            .expect("insert value failed");
+        trie.insert_with_value("banana", 4)
+            .expect("insert value failed");
 
         // Prefix "app" should return (term, value) pairs
         let matches = trie
@@ -1576,11 +1579,11 @@ mod phase_21_char_prefix_operations {
     #[test]
     fn test_char_remove_prefix() {
         let trie: PersistentARTrieChar<()> = PersistentARTrieChar::new();
-        trie.insert("apple");
-        trie.insert("application");
-        trie.insert("apply");
-        trie.insert("banana");
-        trie.insert("band");
+        trie.insert("apple").expect("insert failed");
+        trie.insert("application").expect("insert failed");
+        trie.insert("apply").expect("insert failed");
+        trie.insert("banana").expect("insert failed");
+        trie.insert("band").expect("insert failed");
 
         // Remove all terms starting with "app"
         let removed = trie.remove_prefix("app").expect("remove_prefix failed");
@@ -1599,10 +1602,10 @@ mod phase_21_char_prefix_operations {
     #[test]
     fn test_char_remove_prefix_unicode() {
         let trie: PersistentARTrieChar<()> = PersistentARTrieChar::new();
-        trie.insert("日本語");
-        trie.insert("日本人");
-        trie.insert("日曜日");
-        trie.insert("月曜日");
+        trie.insert("日本語").expect("insert failed");
+        trie.insert("日本人").expect("insert failed");
+        trie.insert("日曜日").expect("insert failed");
+        trie.insert("月曜日").expect("insert failed");
 
         // Remove terms starting with "日"
         let removed = trie.remove_prefix("日").expect("remove_prefix failed");
@@ -1620,9 +1623,10 @@ mod phase_21_char_prefix_operations {
 
         // Insert many terms with common prefix
         for i in 0..100 {
-            trie.insert(&format!("prefix_{:03}", i));
+            trie.insert(&format!("prefix_{:03}", i))
+                .expect("insert failed");
         }
-        trie.insert("other_term");
+        trie.insert("other_term").expect("insert failed");
 
         // Remove in small batches (batch_size = 10)
         let removed = trie
@@ -2030,14 +2034,13 @@ mod phase_21_char_prefix_operations {
 // =============================================================================
 // Phase 22: Merge Operations Tests
 // =============================================================================
-// Tests for merge_from(), merge_replace(), SharedCharTrie::union_with(),
+// Tests for merge_from(), merge_replace(), SharedCharARTrie::union_with(),
 // and iter_prefix_with_values_and_arena()
 
 mod phase_22_merge_operations {
 
-    use libdictenstein::persistent_artrie_char::PersistentARTrieChar;
-    use libdictenstein::persistent_artrie_char::SharedCharTrie;
-    use libdictenstein::ARTrie;
+    use libdictenstein::persistent_artrie::char::PersistentARTrieChar;
+    use libdictenstein::persistent_artrie::char::SharedCharARTrie;
 
     use tempfile::tempdir;
 
@@ -2389,7 +2392,7 @@ mod phase_22_merge_operations {
     }
 
     // =========================================================================
-    // SharedCharTrie tests
+    // SharedCharARTrie tests
     // =========================================================================
 
     #[test]
@@ -2400,7 +2403,8 @@ mod phase_22_merge_operations {
         let path = dir.path().join("shared_basic.artrie");
 
         // Create via ARTrie trait
-        let trie: SharedCharTrie<i64> = SharedCharTrie::create(&path).expect("create shared trie");
+        let trie: SharedCharARTrie<i64> =
+            SharedCharARTrie::create(&path).expect("create shared trie");
 
         // Test upsert (via ARTrie trait)
         assert!(trie.upsert("hello", 42).expect("upsert failed"));
@@ -2428,15 +2432,13 @@ mod phase_22_merge_operations {
 
     #[test]
     fn test_shared_char_trie_increment() {
-        use libdictenstein::ARTrie;
-
         let dir = tempdir().expect("create temp dir");
         let path = dir.path().join("shared_incr.artrie");
 
         // C1 / F4 (V11.4 sweep B): `increment` is an inherent `V: Counter`
         // ({i64,u64}) method on the OWNED `PersistentARTrieChar` (removed from the
         // `ARTrie` trait / `Shared*` handle, and it stays `&mut self` — owned-only).
-        // F4 collapsed `SharedCharTrie` to `Arc<…>` whose `.write()` no longer hands
+        // F4 collapsed `SharedCharARTrie` to `Arc<…>` whose `.write()` no longer hands
         // out `&mut`, so this counter test now drives the owned trie directly
         // (the canonical way to reach `increment` post-F4).
         let mut trie: PersistentARTrieChar<i64> =
@@ -2466,7 +2468,8 @@ mod phase_22_merge_operations {
         let dir = tempdir().expect("create temp dir");
         let path = dir.path().join("shared_threads.artrie");
 
-        let trie: SharedCharTrie<i64> = SharedCharTrie::create(&path).expect("create shared trie");
+        let trie: SharedCharARTrie<i64> =
+            SharedCharARTrie::create(&path).expect("create shared trie");
 
         // Insert initial data
         for i in 0..50 {
@@ -2660,7 +2663,6 @@ mod phase_22_merge_operations {
 mod phase_22_byte_arena_aware_iteration {
     use super::*;
     use libdictenstein::persistent_artrie::PersistentARTrie;
-    use libdictenstein::Dictionary;
     use std::collections::HashMap;
 
     #[test]
@@ -2742,7 +2744,6 @@ mod phase_22_byte_arena_aware_iteration {
         let trie: PersistentARTrie<i32> = PersistentARTrie::create(&path).expect("create trie");
 
         // Insert terms with values
-        use libdictenstein::MutableMappedDictionary;
         trie.insert_with_value("apple", 1);
         trie.insert_with_value("application", 2);
         trie.insert_with_value("banana", 3);

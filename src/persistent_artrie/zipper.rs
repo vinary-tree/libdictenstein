@@ -15,9 +15,9 @@ use super::dict_impl::PersistentARTrie;
 use super::transitions::ChildNode;
 use super::SharedARTrie;
 // F4: the `.read()` compat shim on the collapsed `Arc<PersistentARTrie>` handle.
-use crate::persistent_artrie_core::shared_access::SharedTrieAccess;
+use crate::persistent_artrie::core::shared_access::SharedTrieAccess;
 // **L3.2:** overlay-backed zipper navigation.
-use crate::persistent_artrie_core::overlay::flip::LockFreeOverlay;
+use crate::persistent_artrie::core::overlay::flip::LockFreeOverlay;
 use crate::value::DictionaryValue;
 use crate::zipper::{DictZipper, ValuedDictZipper};
 
@@ -218,6 +218,7 @@ impl<V: DictionaryValue> ValuedDictZipper for PersistentARTrieZipper<V> {
 }
 
 #[cfg(test)]
+#[allow(deprecated)]
 mod tests {
     use super::*;
 

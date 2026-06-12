@@ -9,14 +9,14 @@
 //! - Edge cases (empty prefix, exact matches, long prefixes)
 //! - Consistency across backends
 
+use libdictenstein::double_array_trie::char::DoubleArrayTrieChar;
+use libdictenstein::double_array_trie::char_zipper::DoubleArrayTrieCharZipper;
+use libdictenstein::double_array_trie::zipper::DoubleArrayTrieZipper;
 use libdictenstein::double_array_trie::DoubleArrayTrie;
-use libdictenstein::double_array_trie_char::DoubleArrayTrieChar;
-use libdictenstein::double_array_trie_char_zipper::DoubleArrayTrieCharZipper;
-use libdictenstein::double_array_trie_zipper::DoubleArrayTrieZipper;
+use libdictenstein::dynamic_dawg::char::DynamicDawgChar;
+use libdictenstein::dynamic_dawg::char_zipper::DynamicDawgCharZipper;
+use libdictenstein::dynamic_dawg::zipper::DynamicDawgZipper;
 use libdictenstein::dynamic_dawg::DynamicDawg;
-use libdictenstein::dynamic_dawg_char::DynamicDawgChar;
-use libdictenstein::dynamic_dawg_char_zipper::DynamicDawgCharZipper;
-use libdictenstein::dynamic_dawg_zipper::DynamicDawgZipper;
 use libdictenstein::prefix_zipper::{PrefixZipper, ValuedPrefixZipper};
 
 // ============================================================================

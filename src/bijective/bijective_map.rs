@@ -5,7 +5,7 @@
 //!
 //! `BijectiveMap` supports any value type that implements `DictionaryValue + Eq + Hash`.
 //! For vocabulary use cases with sequential `u64` indices, use
-//! [`PersistentVocabARTrie`](crate::persistent_vocab_artrie::PersistentVocabARTrie).
+//! [`PersistentVocabARTrie`](crate::persistent_artrie::vocab::PersistentVocabARTrie).
 //!
 //! # Use Cases
 //!
@@ -14,7 +14,7 @@
 //! - Any bijection where values aren't sequential integers
 
 use crate::bijective::BijectiveDictionary;
-use crate::dynamic_dawg_char::DynamicDawgChar;
+use crate::dynamic_dawg::char::DynamicDawgChar;
 use crate::sync_compat::RwLock;
 use crate::value::DictionaryValue;
 use crate::{Dictionary, MappedDictionary};

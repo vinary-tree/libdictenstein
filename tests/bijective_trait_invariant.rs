@@ -17,6 +17,7 @@
 use std::borrow::Cow;
 
 use libdictenstein::bijective::{BijectiveDictionary, BijectiveMap};
+#[cfg(feature = "persistent-artrie")]
 use libdictenstein::MappedDictionary;
 
 #[test]
@@ -46,7 +47,7 @@ fn bijective_map_round_trips_via_trait() {
 mod persistent_vocab {
     use super::*;
 
-    use libdictenstein::persistent_vocab_artrie::PersistentVocabARTrie;
+    use libdictenstein::persistent_artrie::vocab::PersistentVocabARTrie;
     use tempfile::tempdir;
 
     #[test]
@@ -54,10 +55,10 @@ mod persistent_vocab {
         let dir = tempdir().expect("create tempdir");
         let path = dir.path().join("vocab.dict");
 
-        let mut vocab = PersistentVocabARTrie::create(&path).expect("create persistent vocab");
+        let vocab = PersistentVocabARTrie::create(&path).expect("create persistent vocab");
         let terms = ["apple", "banana", "cherry"];
         for t in &terms {
-            vocab.insert(t);
+            vocab.insert(t).expect("insert term failed");
         }
 
         for (i, term) in terms.iter().enumerate() {
@@ -88,7 +89,7 @@ mod persistent_vocab {
 mod shared_vocab {
     use super::*;
 
-    use libdictenstein::persistent_vocab_artrie::{PersistentVocabARTrie, SharedVocabARTrie};
+    use libdictenstein::persistent_artrie::vocab::{PersistentVocabARTrie, SharedVocabARTrie};
     use parking_lot::RwLock;
     use std::sync::Arc;
     use tempfile::tempdir;
@@ -102,9 +103,9 @@ mod shared_vocab {
         let shared: SharedVocabARTrie = Arc::new(RwLock::new(vocab));
         let terms = ["one", "two", "three"];
         {
-            let mut g = shared.write();
+            let g = shared.write();
             for t in &terms {
-                g.insert(t);
+                g.insert(t).expect("insert term failed");
             }
         }
 

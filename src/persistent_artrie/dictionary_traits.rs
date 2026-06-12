@@ -9,7 +9,7 @@
 
 use std::sync::atomic::Ordering as AtomicOrdering;
 
-use crate::persistent_artrie_core::key_encoding::ByteKey;
+use crate::persistent_artrie::core::key_encoding::ByteKey;
 use crate::value::DictionaryValue;
 use crate::{Dictionary, MappedDictionary, SyncStrategy};
 
@@ -26,10 +26,10 @@ impl<V: DictionaryValue, S: BlockStorage> Dictionary for PersistentARTrie<V, S> 
         // fuzzy traversal works. `overlay_root_node()` is the hazard-protected immutable
         // root snapshot; an empty/absent overlay yields a fresh empty node (a childless,
         // non-final root — the correct empty-dictionary view).
-        use crate::persistent_artrie_core::overlay::flip::LockFreeOverlay;
+        use crate::persistent_artrie::core::overlay::flip::LockFreeOverlay;
         let root = <Self as LockFreeOverlay<ByteKey, V, S>>::overlay_root_node(self)
             .unwrap_or_else(|| {
-                std::sync::Arc::new(crate::persistent_artrie_core::overlay::OverlayNode::<
+                std::sync::Arc::new(crate::persistent_artrie::core::overlay::OverlayNode::<
                     ByteKey,
                     V,
                 >::new())

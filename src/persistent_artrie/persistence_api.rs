@@ -21,9 +21,9 @@
 use std::sync::atomic::Ordering as AtomicOrdering;
 use std::sync::Arc;
 
-use crate::persistent_artrie_core::concurrency::{TrieStats, TrieStatsSnapshot};
-use crate::persistent_artrie_core::durability::DurabilityPolicy;
-use crate::persistent_artrie_core::prefetch::PrefetchStatsSnapshot;
+use crate::persistent_artrie::core::concurrency::{TrieStats, TrieStatsSnapshot};
+use crate::persistent_artrie::core::durability::DurabilityPolicy;
+use crate::persistent_artrie::core::prefetch::PrefetchStatsSnapshot;
 use crate::value::DictionaryValue;
 
 use super::block_storage::BlockStorage;
@@ -295,7 +295,7 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
     /// DECISION (the OWNED tree is gone — the live data is in the immutable overlay,
     /// so route to the overlay capture + watermark-bounded retaining publisher) + the
     /// total-loss-guard assert live ONCE in the SHARED GENERIC
-    /// [`OverlayCheckpoint::checkpoint_route_split`](crate::persistent_artrie_core::overlay::checkpoint::OverlayCheckpoint::checkpoint_route_split);
+    /// [`OverlayCheckpoint::checkpoint_route_split`](crate::persistent_artrie::core::overlay::checkpoint::OverlayCheckpoint::checkpoint_route_split);
     /// this method is a thin wrapper calling it. The per-variant capture/publish seams
     /// (`overlay_checkpoint.rs`) delegate to byte's overlay serialize path.
     ///
@@ -305,8 +305,8 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
     pub fn checkpoint(&self) -> Result<()> {
         // **F4:** `&self`. Concurrent checkpoints are serialized by the `Shared*`
         // trait `checkpoint()` (the CK `checkpoint_lock`).
-        <Self as crate::persistent_artrie_core::overlay::checkpoint::OverlayCheckpoint<
-            crate::persistent_artrie_core::key_encoding::ByteKey,
+        <Self as crate::persistent_artrie::core::overlay::checkpoint::OverlayCheckpoint<
+            crate::persistent_artrie::core::key_encoding::ByteKey,
             V,
             S,
         >>::checkpoint_route_split(self)?;

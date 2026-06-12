@@ -25,7 +25,7 @@ It is the companion to **[liblevenshtein](https://github.com/universal-automata/
 - **Three alphabets, one code path** — byte (`u8`), Unicode (`char`), and 64-bit token (`u64`) units via the [`CharUnit`](#core-traits) abstraction.
 - **A lock-free, crash-durable Adaptive Radix Tree** — disk-backed (`mmap` or `io_uring`), write-ahead-logged, with `O(∣key∣)` lookups independent of dictionary size.
 - **Set algebra over dictionaries** — union / intersection / difference / prefix *zippers* compose any two backends lazily.
-- **Formally verified core** — 65 Rocq files (0 axioms, 0 admits), 51 TLA⁺ models, and a CI-gated `unsafe` contract inventory (see [Formal verification](#formal-verification)).
+- **Formally verified core** — 66 Rocq files (0 axioms, 0 admits), 51 TLA⁺ models, and a CI-gated `unsafe` contract inventory (see [Formal verification](#formal-verification)).
 
 ---
 
@@ -96,7 +96,7 @@ assert_eq!(counts.get_value("apple"), Some(3));
 **Persist to disk, durably** (feature `persistent-artrie`):
 
 ```rust,no_run
-use libdictenstein::persistent_artrie_char::PersistentARTrieChar;
+use libdictenstein::persistent_artrie::char::PersistentARTrieChar;
 
 // Create + populate; values are u64 here.
 let trie = PersistentARTrieChar::<u64>::create("words.artc")?;
@@ -260,7 +260,7 @@ Tree height drops from `O(∣key∣)` to `O(∣key∣ / s̄)` for mean compresse
 
 ### Durable writes: the Order-A protocol
 
-The persistent ARTrie is **lock-free** (readers and writers never block on a global lock) yet **crash-durable** (an acknowledged write survives power loss). The reconciling invariant is `acknowledged ⟹ durable`, enforced by a strict, non-negotiable ordering ([`durable_write.rs`](src/persistent_artrie_core/overlay/durable_write.rs)):
+The persistent ARTrie is **lock-free** (readers and writers never block on a global lock) yet **crash-durable** (an acknowledged write survives power loss). The reconciling invariant is `acknowledged ⟹ durable`, enforced by a strict, non-negotiable ordering ([`durable_write.rs`](src/persistent_artrie/core/overlay/durable_write.rs)):
 
 ```text
 durable_insert(term, value):                  # requires durability ∈ { Immediate, GroupCommit }
@@ -305,7 +305,7 @@ The persistent ARTrie carries an unusually strong correctness budget. All figure
 
 | Tool | Scope | Status |
 |---|---|---|
-| **Rocq (Coq)** | functional correctness + refinement of the trie to an abstract map ADT | **65** `.v` files, **1,265** propositions (theorem/lemma/corollary), **0 `Admitted`, 0 `Axiom`, 0 `Parameter`** — fully constructive (every obligation closed by `Qed.`/`Defined.`) |
+| **Rocq (Coq)** | functional correctness + refinement of the trie to an abstract map ADT | **66** `.v` files, **1,283** propositions (theorem/lemma/corollary), **0 `Admitted`, 0 `Axiom`, 0 `Parameter`** — fully constructive (every obligation closed by `Qed.`/`Defined.`) |
 | **TLA⁺ / TLC** | concurrency & crash-recovery safety/liveness | **51** specification modules — e.g. `LockFreeARTrieLinearizability`, `CrashRecovery`, `LockFreeDurableCheckpoint`, `PublicDurabilityPolicy`; the composed model explores multi-million-state spaces (PART ≈ 4.2 M distinct states) |
 | **loom** | exhaustive interleaving of the lock-free CAS paths | root-CAS, overlay value/index CAS, counter-merge, EBR |
 | **`unsafe` inventory** | every `unsafe` site bound to a reviewed contract + coverage class | **43** inventory rows / **31** contracts, CI-gated by `scripts/verify-unsafe-boundary-inventory.sh` (set-equality — no silent drift) |

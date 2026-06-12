@@ -38,10 +38,10 @@ fn rss_bytes() -> usize {
 #[cfg(feature = "persistent-artrie")]
 fn run(n: usize, budget: Option<usize>) -> (usize, usize, usize) {
     use libdictenstein::artrie_trait::EvictableARTrie;
+    use libdictenstein::persistent_artrie::char::PersistentARTrieChar;
+    use libdictenstein::persistent_artrie::core::durability::DurabilityPolicy;
     use libdictenstein::persistent_artrie::eviction::EvictionConfig;
     use libdictenstein::persistent_artrie::WalConfig;
-    use libdictenstein::persistent_artrie_char::PersistentARTrieChar;
-    use libdictenstein::persistent_artrie_core::durability::DurabilityPolicy;
 
     // Clean the whole scratch dir (the trie has a WAL sidecar + descriptor, not just
     // the .artc — a stale WAL would fail `create` with Wal(AlreadyExists)).
@@ -57,7 +57,7 @@ fn run(n: usize, budget: Option<usize>) -> (usize, usize, usize) {
         }
     );
 
-    let mut trie: PersistentARTrieChar<u64> =
+    let trie: PersistentARTrieChar<u64> =
         PersistentARTrieChar::create_with_config(&path, WalConfig::no_archive()).expect("create");
     trie.set_durability_policy(DurabilityPolicy::Immediate);
     // PRODUCTION API (not the bench shim): `enable_eviction` installs the coordinator,

@@ -14,6 +14,21 @@ run_capped() {
   fi
 }
 
+assert_nonzero_cargo_filter() {
+  local output
+  output="$(run_capped cargo test "$@" -- --list)"
+  printf '%s\n' "$output"
+  if ! printf '%s\n' "$output" | grep -qE '^[^[:space:]].*: test$'; then
+    echo "ERROR: filtered cargo test target discovered zero tests: cargo test $*" >&2
+    exit 1
+  fi
+}
+
+run_filtered_cargo_test() {
+  assert_nonzero_cargo_filter "$@"
+  run_capped cargo test "$@"
+}
+
 echo "== Unsafe boundary inventory =="
 run_capped bash scripts/verify-unsafe-boundary-inventory.sh
 
@@ -30,8 +45,15 @@ run_capped cargo test --test double_array_trie_correspondence
 run_capped cargo test --test unsafe_boundary_contracts
 run_capped cargo test --test zipper_language_correspondence
 run_capped cargo test --test valued_set_combinator_correspondence
-run_capped cargo test --features lling-llang --test valued_set_combinator_correspondence
+# The old `lling-llang` feature was retired when the lattice dependency was
+# extracted into `llattice`; keep the harness compatible with both layouts.
+if grep -q '^lling-llang[[:space:]]*=' Cargo.toml; then
+  run_capped cargo test --features lling-llang --test valued_set_combinator_correspondence
+else
+  echo "Skipping lling-llang feature correspondence; feature not declared"
+fi
 run_capped cargo test --features pathmap-backend --test pathmap_factory_correspondence
+run_capped cargo test --features pathmap-backend --test pathmap_snapshot_tests
 run_capped cargo test --test substring_candidate_correspondence
 run_capped cargo test --test scdawg_occurrence_correspondence
 run_capped cargo test --test fuzzy_candidate_coverage_correspondence
@@ -70,10 +92,10 @@ run_capped cargo test --features persistent-artrie --test persistent_vocab_wal_a
 run_capped cargo test --features persistent-artrie --test persistent_vocab_checkpoint_correspondence
 run_capped cargo test --features persistent-artrie --test persistent_char_eviction_correspondence
 run_capped cargo test --features persistent-artrie --test persistent_char_eviction_registry_correspondence
-run_capped cargo test \
+run_filtered_cargo_test \
   --features persistent-artrie \
   --lib \
-  persistent_artrie_char::eviction_registry_tests
+  persistent_artrie::char::eviction_registry_tests
 run_capped cargo test --features persistent-artrie --test persistent_shared_concurrency_correspondence
 run_capped cargo test --features persistent-artrie --test persistent_public_durability_policy_correspondence
 run_capped cargo test --features persistent-artrie --test persistent_public_lifecycle_correspondence
@@ -93,10 +115,10 @@ run_capped cargo test --features persistent-artrie --test persistent_artrie_stor
 run_capped cargo test --features persistent-artrie --test persistent_artrie_loom_correspondence
 run_capped cargo test --features persistent-artrie --test persistent_lockfree_overlay_loom
 run_capped cargo test --features persistent-artrie --test persistent_lockfree_durable_loom
-run_capped cargo test \
+run_filtered_cargo_test \
   --features persistent-artrie \
   --lib \
-  persistent_vocab_artrie::tests::vocab_
+  persistent_artrie::vocab
 run_capped cargo test \
   --features "persistent-artrie group-commit" \
   --test persistent_artrie_formal_correspondence \
@@ -129,66 +151,51 @@ if [ "${RUN_MIRI:-0}" = "1" ]; then
     export MIRIFLAGS="-Zmiri-disable-isolation ${MIRIFLAGS:-}"
   fi
 
-  run_capped "${miri_cargo[@]}" miri test \
+  run_miri_filtered() {
+    assert_nonzero_cargo_filter "$@"
+    run_capped "${miri_cargo[@]}" miri test "$@"
+  }
+
+  run_miri_filtered \
     --features persistent-artrie \
     --test persistent_artrie_formal_correspondence \
-    vocab_child_remove_transfers_box_ownership_once
-  run_capped "${miri_cargo[@]}" miri test \
+    vocab_checkpoint_reopen_preserves_unicode_bijection
+  run_miri_filtered \
     --features persistent-artrie \
     --test persistent_artrie_formal_correspondence \
-    vocab_insert_child_replaces_without_aliasing_old_box
-  run_capped "${miri_cargo[@]}" miri test \
-    --features persistent-artrie \
-    --test persistent_artrie_formal_correspondence \
-    vocab_clone_deep_copies_child_boxes
-  run_capped "${miri_cargo[@]}" miri test \
-    --features persistent-artrie \
-    --test persistent_artrie_formal_correspondence \
-    vocab_get_or_create_child_mutation_keeps_unique_raw_borrow
-  run_capped "${miri_cargo[@]}" miri test \
+    vocab_duplicate_insert_keeps_stable_index_after_reopen
+  run_miri_filtered \
     --features persistent-artrie \
     --test persistent_artrie_formal_correspondence \
     char_child_remove_transfers_box_ownership_once
-  run_capped "${miri_cargo[@]}" miri test \
+  run_miri_filtered \
     --features persistent-artrie \
     --test persistent_artrie_formal_correspondence \
     char_insert_child_replaces_without_aliasing_old_box
-  run_capped "${miri_cargo[@]}" miri test \
+  run_miri_filtered \
     --features persistent-artrie \
     --test persistent_artrie_formal_correspondence \
     char_clone_deep_copies_child_boxes
-  run_capped "${miri_cargo[@]}" miri test \
+  run_miri_filtered \
     --features persistent-artrie \
     --test persistent_artrie_formal_correspondence \
     char_get_or_create_child_mutation_keeps_unique_raw_borrow
-  run_capped "${miri_cargo[@]}" miri test \
+  run_miri_filtered \
     --features persistent-artrie \
     --test persistent_artrie_formal_correspondence \
     swizzled_pointer_raw_extraction_is_gated_by_in_memory_state
-  run_capped "${miri_cargo[@]}" miri test \
+  run_miri_filtered \
     --features persistent-artrie \
     --test persistent_artrie_formal_correspondence \
     swizzled_pointer_losing_lazy_load_candidate_can_be_reclaimed_once
-  run_capped "${miri_cargo[@]}" miri test \
+  run_miri_filtered \
     --features persistent-artrie \
     --lib \
-    persistent_artrie_core::swizzled_ptr::tests
-  run_capped "${miri_cargo[@]}" miri test \
+    persistent_artrie::core::swizzled_ptr::tests
+  run_miri_filtered \
     --features persistent-artrie \
     --lib \
-    persistent_vocab_artrie::tests::vocab_leaf_eviction_invalidates_node_map_entry_before_drop
-  run_capped "${miri_cargo[@]}" miri test \
-    --features persistent-artrie \
-    --lib \
-    persistent_vocab_artrie::tests::vocab_leaf_eviction_keeps_sibling_queries_on_live_nodes
-  run_capped "${miri_cargo[@]}" miri test \
-    --features persistent-artrie \
-    --lib \
-    persistent_vocab_artrie::tests::vocab_heap_node_map_parent_chain_tracks_live_nodes
-  run_capped "${miri_cargo[@]}" miri test \
-    --features persistent-artrie \
-    --lib \
-    persistent_artrie_core::buffer_manager::tests::fixed_buffer_registration_covers_write_guard_mutation_and_flush
+    persistent_artrie::core::buffer_manager::tests::fixed_buffer_registration_covers_write_guard_mutation_and_flush
 else
   echo "Skipping Miri unsafe-boundary checks; set RUN_MIRI=1 to enable them"
 fi
@@ -223,7 +230,6 @@ if command -v tla2sany >/dev/null 2>&1; then
       MmapBlockStorage \
       StorageSyscallOutcome \
       BufferPageLease \
-      ReverseIndexMmap \
       IoUringFixedBufferOwnership \
       IoUringSqeCqeLifecycle \
       LockFreeARTrieLinearizability \
@@ -279,7 +285,6 @@ if [ "${RUN_TLC:-0}" = "1" ]; then
       MmapBlockStorage \
       StorageSyscallOutcome \
       BufferPageLease \
-      ReverseIndexMmap \
       IoUringFixedBufferOwnership \
       IoUringSqeCqeLifecycle \
       LockFreeARTrieLinearizability \

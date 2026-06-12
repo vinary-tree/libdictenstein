@@ -6,6 +6,7 @@
 //! byte keys that are not UTF-8, stale WAL replay, and output-file compaction.
 
 #![cfg(feature = "persistent-artrie")]
+#![allow(dead_code)]
 
 use libdictenstein::persistent_artrie::{CompactionConfig, PersistentARTrie};
 use libdictenstein::{Dictionary, MappedDictionary};

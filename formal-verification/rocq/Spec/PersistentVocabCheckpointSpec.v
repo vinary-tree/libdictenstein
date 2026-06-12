@@ -8,9 +8,8 @@
     - WAL truncation occurs only after the checkpoint is fully published;
     - post-checkpoint WAL records receive LSNs above the checkpoint threshold;
     - [rotate_wal] syncs durability evidence without becoming a checkpoint;
-    - missing/corrupt Bloom sidecars are rebuilt without false negatives; and
-    - reverse-index sidecars are rebuilt from the durable trie snapshot rather
-      than trusted as authoritative input.
+    - reverse maps are rebuilt from the durable overlay snapshot plus retained
+      WAL tail rather than trusted as authoritative cache input.
 
     Filesystem/kernel ordering below successful write/sync calls and certified
     Rust compilation are outside this proof boundary.
@@ -102,7 +101,7 @@ Record VocabState : Type := mkVocabState {
   durable_checkpoint_lsn : Lsn;
   durable_checkpoint_published : bool;
   bloom_evidence : BloomEvidence;
-  reverse_sidecar : Reverse
+  reverse_map_cache : Reverse
 }.
 
 Definition empty_state : VocabState :=
@@ -134,8 +133,8 @@ Inductive CheckpointOutcome : Type :=
 | CheckpointOk
 | TrieSnapshotFailed
 | HeaderPublishFailed
-| ReverseIndexFlushFailed
-| BloomSidecarFailed
+| ReverseMapRebuildFailed
+| DerivedFilterRebuildFailed
 | WalCheckpointFailed
 | WalTruncateFailed.
 
@@ -147,8 +146,8 @@ Definition checkpoint
   | CheckpointOk => checkpoint_success state
   | TrieSnapshotFailed => state
   | HeaderPublishFailed => state
-  | ReverseIndexFlushFailed => state
-  | BloomSidecarFailed => state
+  | ReverseMapRebuildFailed => state
+  | DerivedFilterRebuildFailed => state
   | WalCheckpointFailed => state
   | WalTruncateFailed => state
   end.
@@ -334,7 +333,7 @@ Definition rotate_wal (state : VocabState) : VocabState :=
     (durable_checkpoint_lsn state)
     (durable_checkpoint_published state)
     (bloom_evidence state)
-    (reverse_sidecar state).
+    (reverse_map_cache state).
 
 Theorem rotate_wal_preserves_replay_requirements :
   forall state,
@@ -373,22 +372,22 @@ Definition rebuild_bloom (forward : Forward) : BloomEvidence :=
     | None => false
     end.
 
-Inductive BloomSidecar : Type :=
-| BloomValid : BloomEvidence -> BloomSidecar
-| BloomMissing
-| BloomCorrupt.
+Inductive DerivedFilterSnapshot : Type :=
+| DerivedFilterValid : BloomEvidence -> DerivedFilterSnapshot
+| DerivedFilterMissing
+| DerivedFilterCorrupt.
 
-Definition open_bloom (forward : Forward) (sidecar : BloomSidecar)
+Definition open_bloom (forward : Forward) (snapshot : DerivedFilterSnapshot)
   : BloomEvidence :=
-  match sidecar with
-  | BloomValid bloom => bloom
-  | BloomMissing => rebuild_bloom forward
-  | BloomCorrupt => rebuild_bloom forward
+  match snapshot with
+  | DerivedFilterValid bloom => bloom
+  | DerivedFilterMissing => rebuild_bloom forward
+  | DerivedFilterCorrupt => rebuild_bloom forward
   end.
 
 Theorem rebuilt_missing_bloom_has_no_false_negatives :
   forall forward,
-    bloom_no_false_negative forward (open_bloom forward BloomMissing).
+    bloom_no_false_negative forward (open_bloom forward DerivedFilterMissing).
 Proof.
   intros forward term index Hlookup.
   unfold open_bloom, bloom_no_false_negative, rebuild_bloom in *.
@@ -398,7 +397,7 @@ Qed.
 
 Theorem rebuilt_corrupt_bloom_has_no_false_negatives :
   forall forward,
-    bloom_no_false_negative forward (open_bloom forward BloomCorrupt).
+    bloom_no_false_negative forward (open_bloom forward DerivedFilterCorrupt).
 Proof.
   intros forward term index Hlookup.
   unfold open_bloom, bloom_no_false_negative, rebuild_bloom in *.
@@ -409,37 +408,37 @@ Qed.
 Theorem valid_bloom_loaded_when_safe :
   forall forward bloom,
     bloom_no_false_negative forward bloom ->
-    bloom_no_false_negative forward (open_bloom forward (BloomValid bloom)).
+    bloom_no_false_negative forward (open_bloom forward (DerivedFilterValid bloom)).
 Proof.
   intros forward bloom Hsafe.
   exact Hsafe.
 Qed.
 
-Inductive ReverseSidecarStatus : Type :=
-| ReverseSidecarValid
-| ReverseSidecarMissing
-| ReverseSidecarCorrupt
-| ReverseSidecarStale.
+Inductive ReverseMapRebuildStatus : Type :=
+| ReverseMapValid
+| ReverseMapMissing
+| ReverseMapCorrupt
+| ReverseMapStale.
 
 Definition rebuild_reverse_from_snapshot (snapshot_reverse : Reverse)
   : Reverse :=
   snapshot_reverse.
 
-Definition open_reverse_sidecar
+Definition open_reverse_map_cache
   (snapshot_reverse : Reverse)
-  (_status : ReverseSidecarStatus)
+  (_status : ReverseMapRebuildStatus)
   : Reverse :=
   rebuild_reverse_from_snapshot snapshot_reverse.
 
-Theorem rebuilt_reverse_sidecar_is_exact :
+Theorem rebuilt_reverse_map_cache_is_exact :
   forall forward snapshot_reverse status,
     forward_reverse_exact forward snapshot_reverse ->
     forward_reverse_exact
       forward
-      (open_reverse_sidecar snapshot_reverse status).
+      (open_reverse_map_cache snapshot_reverse status).
 Proof.
   intros forward snapshot_reverse status Hexact.
-  unfold open_reverse_sidecar, rebuild_reverse_from_snapshot.
+  unfold open_reverse_map_cache, rebuild_reverse_from_snapshot.
   exact Hexact.
 Qed.
 
@@ -457,7 +456,7 @@ Definition recover_by_wal_replay (state : VocabState) : VocabState :=
     (durable_checkpoint_lsn state)
     (durable_checkpoint_published state)
     (bloom_evidence state)
-    (reverse_sidecar state).
+    (reverse_map_cache state).
 
 Theorem wal_recovery_retains_active_wal_until_checkpoint :
   forall state,

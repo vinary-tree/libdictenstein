@@ -16,9 +16,9 @@
 
 #![cfg(feature = "persistent-artrie")]
 
-use libdictenstein::persistent_artrie_char::{PersistentARTrieChar, PersistentARTrieCharZipper};
+use libdictenstein::persistent_artrie::char::{PersistentARTrieChar, PersistentARTrieCharZipper};
 use libdictenstein::zipper::DictZipper;
-use libdictenstein::{DictionaryNode, MappedDictionary};
+use libdictenstein::DictionaryNode;
 
 // =============================================================================
 // Test: Basic Unicode Insertion and Lookup
@@ -29,9 +29,9 @@ fn test_basic_unicode_insertion() {
     let trie: PersistentARTrieChar<()> = PersistentARTrieChar::new();
 
     // Insert various Unicode strings
-    trie.insert("café");
-    trie.insert("naïve");
-    trie.insert("résumé");
+    trie.insert("café").expect("insert failed");
+    trie.insert("naïve").expect("insert failed");
+    trie.insert("résumé").expect("insert failed");
 
     assert!(trie.contains("café"));
     assert!(trie.contains("naïve"));
@@ -45,18 +45,18 @@ fn test_cjk_characters() {
     let trie: PersistentARTrieChar<()> = PersistentARTrieChar::new();
 
     // Chinese characters
-    trie.insert("中文");
-    trie.insert("你好");
-    trie.insert("世界");
+    trie.insert("中文").expect("insert failed");
+    trie.insert("你好").expect("insert failed");
+    trie.insert("世界").expect("insert failed");
 
     // Japanese
-    trie.insert("日本語");
-    trie.insert("こんにちは");
-    trie.insert("ありがとう");
+    trie.insert("日本語").expect("insert failed");
+    trie.insert("こんにちは").expect("insert failed");
+    trie.insert("ありがとう").expect("insert failed");
 
     // Korean
-    trie.insert("한국어");
-    trie.insert("안녕하세요");
+    trie.insert("한국어").expect("insert failed");
+    trie.insert("안녕하세요").expect("insert failed");
 
     assert!(trie.contains("中文"));
     assert!(trie.contains("こんにちは"));
@@ -70,17 +70,17 @@ fn test_emoji_handling() {
     let trie: PersistentARTrieChar<()> = PersistentARTrieChar::new();
 
     // Single emoji
-    trie.insert("🎉");
-    trie.insert("🌍");
-    trie.insert("❤️");
+    trie.insert("🎉").expect("insert failed");
+    trie.insert("🌍").expect("insert failed");
+    trie.insert("❤️").expect("insert failed");
 
     // Emoji sequences
-    trie.insert("👨‍👩‍👧"); // Family emoji (ZWJ sequence)
-    trie.insert("🏳️‍🌈"); // Rainbow flag
+    trie.insert("👨‍👩‍👧").expect("insert failed"); // Family emoji (ZWJ sequence)
+    trie.insert("🏳️‍🌈").expect("insert failed"); // Rainbow flag
 
     // Mixed text and emoji
-    trie.insert("Hello 🌍!");
-    trie.insert("I ❤️ Rust");
+    trie.insert("Hello 🌍!").expect("insert failed");
+    trie.insert("I ❤️ Rust").expect("insert failed");
 
     assert!(trie.contains("🎉"));
     assert!(trie.contains("Hello 🌍!"));
@@ -101,8 +101,8 @@ fn test_combining_characters() {
     let precomposed = "é"; // U+00E9 (single code point)
     let decomposed = "é"; // U+0065 + U+0301 (e + combining acute)
 
-    trie.insert(precomposed);
-    trie.insert(decomposed);
+    trie.insert(precomposed).expect("insert failed");
+    trie.insert(decomposed).expect("insert failed");
 
     // These may or may not be the same depending on normalization
     assert!(trie.contains(precomposed));
@@ -117,12 +117,12 @@ fn test_rtl_text() {
     let trie: PersistentARTrieChar<()> = PersistentARTrieChar::new();
 
     // Arabic
-    trie.insert("مرحبا");
-    trie.insert("العالم");
+    trie.insert("مرحبا").expect("insert failed");
+    trie.insert("العالم").expect("insert failed");
 
     // Hebrew
-    trie.insert("שלום");
-    trie.insert("עולם");
+    trie.insert("שלום").expect("insert failed");
+    trie.insert("עולם").expect("insert failed");
 
     assert!(trie.contains("مرحبا"));
     assert!(trie.contains("שלום"));
@@ -134,10 +134,10 @@ fn test_mixed_scripts() {
     let trie: PersistentARTrieChar<()> = PersistentARTrieChar::new();
 
     // Mixed script strings
-    trie.insert("Café 中文");
-    trie.insert("Tōkyō 東京");
-    trie.insert("München München");
-    trie.insert("São Paulo");
+    trie.insert("Café 中文").expect("insert failed");
+    trie.insert("Tōkyō 東京").expect("insert failed");
+    trie.insert("München München").expect("insert failed");
+    trie.insert("São Paulo").expect("insert failed");
 
     assert!(trie.contains("Café 中文"));
     assert!(trie.contains("Tōkyō 東京"));
@@ -149,17 +149,17 @@ fn test_special_unicode_categories() {
     let trie: PersistentARTrieChar<()> = PersistentARTrieChar::new();
 
     // Mathematical symbols
-    trie.insert("∑∏∫∂");
-    trie.insert("∀x∃y");
+    trie.insert("∑∏∫∂").expect("insert failed");
+    trie.insert("∀x∃y").expect("insert failed");
 
     // Currency symbols
-    trie.insert("$€£¥₿");
+    trie.insert("$€£¥₿").expect("insert failed");
 
     // Musical symbols
-    trie.insert("♩♪♫♬");
+    trie.insert("♩♪♫♬").expect("insert failed");
 
     // Technical symbols
-    trie.insert("⚡⚙️🔧");
+    trie.insert("⚡⚙️🔧").expect("insert failed");
 
     assert!(trie.contains("∑∏∫∂"));
     assert!(trie.contains("$€£¥₿"));
@@ -174,9 +174,12 @@ fn test_special_unicode_categories() {
 fn test_unicode_keys_with_values() {
     let trie: PersistentARTrieChar<i32> = PersistentARTrieChar::new();
 
-    trie.insert_with_value("café", 1);
-    trie.insert_with_value("中文", 2);
-    trie.insert_with_value("🎉", 3);
+    trie.insert_with_value("café", 1)
+        .expect("insert value failed");
+    trie.insert_with_value("中文", 2)
+        .expect("insert value failed");
+    trie.insert_with_value("🎉", 3)
+        .expect("insert value failed");
 
     assert_eq!(trie.get_value("café"), Some(1));
     assert_eq!(trie.get_value("中文"), Some(2));
@@ -188,9 +191,12 @@ fn test_unicode_keys_with_values() {
 fn test_unicode_keys_with_string_values() {
     let trie: PersistentARTrieChar<String> = PersistentARTrieChar::new();
 
-    trie.insert_with_value("hello", "greeting".to_string());
-    trie.insert_with_value("世界", "world".to_string());
-    trie.insert_with_value("café", "coffee place".to_string());
+    trie.insert_with_value("hello", "greeting".to_string())
+        .expect("insert value failed");
+    trie.insert_with_value("世界", "world".to_string())
+        .expect("insert value failed");
+    trie.insert_with_value("café", "coffee place".to_string())
+        .expect("insert value failed");
 
     assert_eq!(trie.get_value("hello"), Some("greeting".to_string()));
     assert_eq!(trie.get_value("世界"), Some("world".to_string()));
@@ -205,8 +211,8 @@ fn test_unicode_keys_with_string_values() {
 fn test_zipper_unicode_navigation() {
     let trie: PersistentARTrieChar<()> = PersistentARTrieChar::new();
 
-    trie.insert("café");
-    trie.insert("cat");
+    trie.insert("café").expect("insert failed");
+    trie.insert("cat").expect("insert failed");
 
     let zipper = PersistentARTrieCharZipper::new(&trie);
 
@@ -230,7 +236,7 @@ fn test_zipper_unicode_navigation() {
 fn test_zipper_cjk_navigation() {
     let trie: PersistentARTrieChar<()> = PersistentARTrieChar::new();
 
-    trie.insert("中文");
+    trie.insert("中文").expect("insert failed");
 
     let zipper = PersistentARTrieCharZipper::new(&trie);
 
@@ -248,10 +254,10 @@ fn test_zipper_children_with_unicode() {
     let trie: PersistentARTrieChar<()> = PersistentARTrieChar::new();
 
     // Insert terms with different second characters
-    trie.insert("ab");
-    trie.insert("aé");
-    trie.insert("a中");
-    trie.insert("a🎉");
+    trie.insert("ab").expect("insert failed");
+    trie.insert("aé").expect("insert failed");
+    trie.insert("a中").expect("insert failed");
+    trie.insert("a🎉").expect("insert failed");
 
     let zipper = PersistentARTrieCharZipper::new(&trie);
     let a_zipper = zipper.descend('a').expect("should have 'a'");
@@ -274,9 +280,9 @@ fn test_zipper_children_with_unicode() {
 fn test_dictionary_trait_unicode() {
     let trie: PersistentARTrieChar<()> = PersistentARTrieChar::new();
 
-    trie.insert("hello");
-    trie.insert("世界");
-    trie.insert("café");
+    trie.insert("hello").expect("insert failed");
+    trie.insert("世界").expect("insert failed");
+    trie.insert("café").expect("insert failed");
 
     // Test Dictionary trait methods
     assert!(trie.contains("hello"));
@@ -292,8 +298,8 @@ fn test_dictionary_trait_unicode() {
 fn test_dictionary_node_trait_unicode() {
     let trie: PersistentARTrieChar<()> = PersistentARTrieChar::new();
 
-    trie.insert("abc");
-    trie.insert("aéc");
+    trie.insert("abc").expect("insert failed");
+    trie.insert("aéc").expect("insert failed");
 
     let root = trie.root();
 
@@ -346,9 +352,9 @@ fn test_from_iterator_owned_strings() {
 fn test_iterator_unicode() {
     let trie: PersistentARTrieChar<()> = PersistentARTrieChar::new();
 
-    trie.insert("aaa");
-    trie.insert("café");
-    trie.insert("中文");
+    trie.insert("aaa").expect("insert failed");
+    trie.insert("café").expect("insert failed");
+    trie.insert("中文").expect("insert failed");
 
     // Collect all terms via iteration
     let terms: Vec<String> = trie.iter().collect();
@@ -368,9 +374,9 @@ fn test_unicode_prefix_sharing() {
     let trie: PersistentARTrieChar<()> = PersistentARTrieChar::new();
 
     // Terms sharing Unicode prefixes
-    trie.insert("中文");
-    trie.insert("中国");
-    trie.insert("中心");
+    trie.insert("中文").expect("insert failed");
+    trie.insert("中国").expect("insert failed");
+    trie.insert("中心").expect("insert failed");
 
     assert_eq!(trie.len(), 3);
     assert!(trie.contains("中文"));
@@ -383,9 +389,9 @@ fn test_emoji_prefix_sharing() {
     let trie: PersistentARTrieChar<()> = PersistentARTrieChar::new();
 
     // Emoji with common prefix
-    trie.insert("🎉🎊");
-    trie.insert("🎉🎁");
-    trie.insert("🎉🎈");
+    trie.insert("🎉🎊").expect("insert failed");
+    trie.insert("🎉🎁").expect("insert failed");
+    trie.insert("🎉🎈").expect("insert failed");
 
     assert_eq!(trie.len(), 3);
 
@@ -406,7 +412,7 @@ fn test_empty_string() {
     let trie: PersistentARTrieChar<()> = PersistentARTrieChar::new();
 
     // Empty string should be insertable
-    trie.insert("");
+    trie.insert("").expect("insert failed");
 
     assert!(trie.contains(""));
     assert_eq!(trie.len(), 1);
@@ -417,10 +423,10 @@ fn test_single_character_unicode() {
     let trie: PersistentARTrieChar<()> = PersistentARTrieChar::new();
 
     // Single character terms of various types
-    trie.insert("a");
-    trie.insert("é");
-    trie.insert("中");
-    trie.insert("🎉");
+    trie.insert("a").expect("insert failed");
+    trie.insert("é").expect("insert failed");
+    trie.insert("中").expect("insert failed");
+    trie.insert("🎉").expect("insert failed");
 
     assert_eq!(trie.len(), 4);
     assert!(trie.contains("a"));
@@ -435,7 +441,7 @@ fn test_long_unicode_string() {
 
     // Long Unicode string
     let long_unicode = "这是一个非常长的中文字符串，包含很多字符";
-    trie.insert(long_unicode);
+    trie.insert(long_unicode).expect("insert failed");
 
     assert!(trie.contains(long_unicode));
     assert_eq!(trie.len(), 1);
@@ -464,7 +470,7 @@ fn test_concurrent_unicode_reads() {
     // Insert Unicode terms
     let terms = vec!["café", "中文", "🎉", "日本語", "한국어"];
     for term in &terms {
-        trie.insert(term);
+        trie.insert(term).expect("insert failed");
     }
 
     let trie: Arc<PersistentARTrieChar<()>> = Arc::new(trie);
@@ -506,9 +512,12 @@ fn test_concurrent_unicode_reads() {
 fn test_mapped_dictionary_unicode() {
     let trie: PersistentARTrieChar<i32> = PersistentARTrieChar::new();
 
-    trie.insert_with_value("one", 1);
-    trie.insert_with_value("一", 1); // Chinese for "one"
-    trie.insert_with_value("하나", 1); // Korean for "one"
+    trie.insert_with_value("one", 1)
+        .expect("insert value failed");
+    trie.insert_with_value("一", 1)
+        .expect("insert value failed"); // Chinese for "one"
+    trie.insert_with_value("하나", 1)
+        .expect("insert value failed"); // Korean for "one"
 
     // MappedDictionary::get_value
     assert_eq!(trie.get_value("one"), Some(1));
@@ -528,16 +537,16 @@ fn test_supplementary_plane_characters() {
     // These require surrogate pairs in UTF-16 but are single code points in Rust
 
     // Musical symbols (U+1D100-U+1D1FF)
-    trie.insert("𝄞"); // G clef
+    trie.insert("𝄞").expect("insert failed"); // G clef
 
     // Mathematical Alphanumeric Symbols (U+1D400-U+1D7FF)
-    trie.insert("𝐀𝐁𝐂"); // Bold letters
+    trie.insert("𝐀𝐁𝐂").expect("insert failed"); // Bold letters
 
     // Ancient scripts
-    trie.insert("𐀀"); // Linear B syllable
+    trie.insert("𐀀").expect("insert failed"); // Linear B syllable
 
     // Emoji with skin tone modifiers (U+1F3FB-U+1F3FF)
-    trie.insert("👋🏽"); // Waving hand with medium skin tone
+    trie.insert("👋🏽").expect("insert failed"); // Waving hand with medium skin tone
 
     assert!(trie.contains("𝄞"));
     assert!(trie.contains("𝐀𝐁𝐂"));
@@ -558,8 +567,8 @@ fn test_zero_width_characters() {
     let with_zwj = "a\u{200D}b"; // a + ZWJ + b
     let without_zwj = "ab";
 
-    trie.insert(with_zwj);
-    trie.insert(without_zwj);
+    trie.insert(with_zwj).expect("insert failed");
+    trie.insert(without_zwj).expect("insert failed");
 
     // These should be different strings
     assert!(trie.contains(with_zwj));
@@ -579,10 +588,10 @@ fn test_unicode_whitespace() {
     let trie: PersistentARTrieChar<()> = PersistentARTrieChar::new();
 
     // Different types of spaces
-    trie.insert("hello world"); // Regular space
-    trie.insert("hello\u{00A0}world"); // Non-breaking space
-    trie.insert("hello\u{2003}world"); // Em space
-    trie.insert("hello\u{3000}world"); // Ideographic space
+    trie.insert("hello world").expect("insert failed"); // Regular space
+    trie.insert("hello\u{00A0}world").expect("insert failed"); // Non-breaking space
+    trie.insert("hello\u{2003}world").expect("insert failed"); // Em space
+    trie.insert("hello\u{3000}world").expect("insert failed"); // Ideographic space
 
     // These should all be different
     assert!(trie.contains("hello world"));

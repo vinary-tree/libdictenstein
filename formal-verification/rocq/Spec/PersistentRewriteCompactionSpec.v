@@ -3,17 +3,16 @@
     Char and vocabulary persistent tries do not currently expose the byte
     trie's public file-size compaction API.  Their durable rewrite surface is
     checkpoint publication: serialize the visible trie snapshot, publish the
-    root/header and sidecars, then publish the WAL checkpoint/truncation or
-    archive boundary.
+    root/header and rebuilt derived lookup artifacts, then publish the WAL
+    checkpoint/truncation or archive boundary.
 
     This specification captures the semantic obligations for that rewrite:
 
     - successful char rewrites preserve the exact key/value snapshot;
-    - successful vocab rewrites preserve sparse forward/reverse index
-      snapshots;
+    - successful vocab rewrites preserve sparse forward/reverse-map snapshots;
     - post-checkpoint WAL tails replay over the checkpointed snapshot; and
-    - failures during arena/header/sidecar/WAL publication preserve dirty
-      evidence and replayable WAL.
+    - failures during arena/header/derived-artifact/WAL publication preserve
+      dirty evidence and replayable WAL.
  *)
 
 From Stdlib Require Import List.
@@ -59,7 +58,7 @@ Fixpoint replay_char_wal (wal : list CharWalOp) (map : RefMap) : RefMap :=
 Inductive RewriteFailure : Type :=
 | FailArenaWrite
 | FailHeaderPublish
-| FailSidecarPublish
+| FailDerivedArtifactPublish
 | FailWalCheckpoint
 | FailWalTruncateOrArchive.
 
@@ -176,7 +175,7 @@ Definition vocab_append_tail
     (vocab_wal state ++ [entry])
     true.
 
-Definition rebuild_vocab_reverse_sidecar
+Definition rebuild_vocab_reverse_map
   (snapshot : VocabSnapshot)
   : VocabSnapshot :=
   snapshot.
@@ -343,17 +342,17 @@ Proof.
   intros state failure. reflexivity.
 Qed.
 
-Theorem vocab_missing_sidecar_rebuilds_reverse_lookup :
+Theorem vocab_missing_reverse_map_rebuilds_reverse_lookup :
   forall snapshot index,
-    vocab_reverse_lookup (rebuild_vocab_reverse_sidecar snapshot) index =
+    vocab_reverse_lookup (rebuild_vocab_reverse_map snapshot) index =
       vocab_reverse_lookup snapshot index.
 Proof.
   intros snapshot index. reflexivity.
 Qed.
 
-Theorem vocab_missing_sidecar_rebuilds_forward_lookup :
+Theorem vocab_missing_reverse_map_rebuilds_forward_lookup :
   forall snapshot term,
-    vocab_forward_lookup (rebuild_vocab_reverse_sidecar snapshot) term =
+    vocab_forward_lookup (rebuild_vocab_reverse_map snapshot) term =
       vocab_forward_lookup snapshot term.
 Proof.
   intros snapshot term. reflexivity.

@@ -122,22 +122,28 @@
 //! blocking sync to preserve full durability acknowledgements. `Periodic` trades
 //! some durability for performance.
 
+// === Family submodules ===
+// Relocated here from the former top-level char, core, and vocab modules.
+pub mod char;
+pub mod core;
+pub mod vocab;
+
 // Core modules (storage foundation)
 //
-// `error` has been relocated to `crate::persistent_artrie_core::error`; it is
+// `error` has been relocated to `crate::persistent_artrie::core::error`; it is
 // re-exported here under its original path so existing call-sites work
 // unchanged after the core extraction.
-pub use crate::persistent_artrie_core::error;
-pub use crate::persistent_artrie_core::swizzled_ptr;
+pub use crate::persistent_artrie::core::error;
+pub use crate::persistent_artrie::core::swizzled_ptr;
 
 // Block storage abstraction + memory-mapped and io_uring backends (relocated to core).
-pub use crate::persistent_artrie_core::block_storage;
-pub use crate::persistent_artrie_core::disk_manager;
+pub use crate::persistent_artrie::core::block_storage;
+pub use crate::persistent_artrie::core::disk_manager;
 
 #[cfg(feature = "io-uring-backend")]
-pub use crate::persistent_artrie_core::io_uring_disk_manager;
+pub use crate::persistent_artrie::core::io_uring_disk_manager;
 
-pub use crate::persistent_artrie_core::buffer_manager;
+pub use crate::persistent_artrie::core::buffer_manager;
 
 // Arena allocation for efficient node storage
 pub mod arena;
@@ -146,9 +152,9 @@ pub mod arena_manager;
 
 // Compact variable-width encoding
 //
-// Relocated to `crate::persistent_artrie_core::compact_encoding`; re-exported
+// Relocated to `crate::persistent_artrie::core::compact_encoding`; re-exported
 // here for backward-compatible call-sites.
-pub use crate::persistent_artrie_core::compact_encoding;
+pub use crate::persistent_artrie::core::compact_encoding;
 
 // ART node types
 pub mod nodes;
@@ -290,32 +296,32 @@ pub mod dict_impl;
 pub mod zipper;
 
 // Write-ahead log for crash recovery (relocated to core)
-pub use crate::persistent_artrie_core::wal;
+pub use crate::persistent_artrie::core::wal;
 
 // WAL management trait for shared WAL operations
-pub use crate::persistent_artrie_core::wal_managed;
+pub use crate::persistent_artrie::core::wal_managed;
 
 // Crash recovery (relocated to core)
-pub use crate::persistent_artrie_core::recovery;
+pub use crate::persistent_artrie::core::recovery;
 
 // Epoch-based checkpoint metadata/tracking (relocated to core)
-pub use crate::persistent_artrie_core::epoch;
+pub use crate::persistent_artrie::core::epoch;
 
 // Group commit for WAL batching (relocated to core)
 #[cfg(feature = "group-commit")]
-pub use crate::persistent_artrie_core::group_commit;
+pub use crate::persistent_artrie::core::group_commit;
 
 // Prefetching for DFS traversal
-pub use crate::persistent_artrie_core::prefetch;
+pub use crate::persistent_artrie::core::prefetch;
 
 // Concurrency controls - optimistic lock coupling (relocated to core)
-pub use crate::persistent_artrie_core::concurrency;
+pub use crate::persistent_artrie::core::concurrency;
 
 // Traversal context for block caching
 pub mod traversal_context;
 
 // Dirty tracking for incremental checkpoints (relocated to core)
-pub use crate::persistent_artrie_core::dirty_tracker;
+pub use crate::persistent_artrie::core::dirty_tracker;
 
 // Hash-based deduplication for space efficiency
 pub mod dedup;
@@ -324,25 +330,25 @@ pub mod dedup;
 pub mod relative_encoding;
 
 // Memory pressure monitoring for proactive eviction
-pub use crate::persistent_artrie_core::memory_monitor;
+pub use crate::persistent_artrie::core::memory_monitor;
 
 // Memory pressure-driven node eviction (relocated to core)
-pub use crate::persistent_artrie_core::eviction;
+pub use crate::persistent_artrie::core::eviction;
 
 // Adaptive buffer pool sizing
-pub use crate::persistent_artrie_core::adaptive_pool;
+pub use crate::persistent_artrie::core::adaptive_pool;
 
 // Per-node logging for near-instant recovery
 pub mod per_node_log;
 
 // Version-based checkpoint management
-pub use crate::persistent_artrie_core::version_checkpoint;
+pub use crate::persistent_artrie::core::version_checkpoint;
 
 // MVCC-lite read transactions
 pub mod mvcc;
 
 // Version garbage collection
-pub use crate::persistent_artrie_core::version_gc;
+pub use crate::persistent_artrie::core::version_gc;
 
 // Re-exports for convenience
 pub use error::{PersistentARTrieError, Result, SwizzleError};
@@ -380,20 +386,20 @@ pub use dict_impl::SharedARTrieParallelExt;
 /// (`checkpoint_lock`, the wrapped `root` `RwLock` for the dormant owned path, the
 /// `eviction_coordinator` `Mutex`, `merge_lock`) — never the handle. A
 /// backward-compatible `.read()`/`.write()` API is preserved by
-/// [`SharedTrieAccess`](crate::persistent_artrie_core::shared_access::SharedTrieAccess)
+/// [`SharedTrieAccess`](crate::persistent_artrie::core::shared_access::SharedTrieAccess)
 /// (both return a transparent guard that derefs to `&T`; there is no lock), so the
 /// ~270 historical call sites and the `liblevenshtein-rust` sibling compile
 /// unchanged against the collapsed type.
 pub type SharedARTrie<V, S = MmapDiskManager> = std::sync::Arc<PersistentARTrie<V, S>>;
 
 #[doc(inline)]
-pub use crate::persistent_artrie_core::shared_access::SharedTrieAccess;
+pub use crate::persistent_artrie::core::shared_access::SharedTrieAccess;
 
 // F4: the concrete `.read()/.write()` shim impl on the collapsed byte handle.
 // CONCRETE (not a blanket `Arc<T>`) so it never shadows the inherent
 // `RwLock::{read,write}` on the crate's `Arc<RwLock<…>>` manager handles.
 impl<V: crate::value::DictionaryValue, S: BlockStorage>
-    crate::persistent_artrie_core::shared_access::SharedTrieAccess
+    crate::persistent_artrie::core::shared_access::SharedTrieAccess
     for std::sync::Arc<PersistentARTrie<V, S>>
 {
     type Target = PersistentARTrie<V, S>;
@@ -401,17 +407,17 @@ impl<V: crate::value::DictionaryValue, S: BlockStorage>
     #[inline]
     fn read(
         &self,
-    ) -> crate::persistent_artrie_core::shared_access::TrieAccessGuard<'_, PersistentARTrie<V, S>>
+    ) -> crate::persistent_artrie::core::shared_access::TrieAccessGuard<'_, PersistentARTrie<V, S>>
     {
-        crate::persistent_artrie_core::shared_access::TrieAccessGuard::from_ref(self.as_ref())
+        crate::persistent_artrie::core::shared_access::TrieAccessGuard::from_ref(self.as_ref())
     }
 
     #[inline]
     fn write(
         &self,
-    ) -> crate::persistent_artrie_core::shared_access::TrieAccessGuard<'_, PersistentARTrie<V, S>>
+    ) -> crate::persistent_artrie::core::shared_access::TrieAccessGuard<'_, PersistentARTrie<V, S>>
     {
-        crate::persistent_artrie_core::shared_access::TrieAccessGuard::from_ref(self.as_ref())
+        crate::persistent_artrie::core::shared_access::TrieAccessGuard::from_ref(self.as_ref())
     }
 }
 

@@ -8,10 +8,9 @@
 //! semantics are preserved (e.g., `café` has length 4 in characters,
 //! not 5 in bytes).
 
+use libdictenstein::scdawg::char::ScdawgChar;
 use libdictenstein::scdawg::Scdawg;
-use libdictenstein::scdawg_char::ScdawgChar;
 use libdictenstein::Dictionary;
-use libdictenstein::SubstringDictionary;
 
 const ASCII_TERMS: &[&str] = &["cathedral", "category", "catering", "cat", "car"];
 

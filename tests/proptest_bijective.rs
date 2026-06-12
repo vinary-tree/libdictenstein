@@ -8,7 +8,6 @@ mod common;
 
 use common::strategies::*;
 use libdictenstein::bijective::{BijectiveDictionary, BijectiveMap, InsertError};
-use libdictenstein::Dictionary;
 use proptest::prelude::*;
 use std::collections::{HashMap, HashSet};
 

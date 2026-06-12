@@ -1745,8 +1745,8 @@ fn child_pointer_handoff_keeps_arc_alive_for_readers() {
 //
 // These mirror the protocol in `EvictionWalkEBR.tla` /
 // `PersistentCharEpochReclamationSpec.v` and the implementation in
-// `persistent_artrie_char::{reclaim, evict_char_nodes}` +
-// `persistent_artrie_core::concurrency::EpochManager`, WITHOUT making the
+// `persistent_artrie::char::{reclaim, evict_char_nodes}` +
+// `persistent_artrie::core::concurrency::EpochManager`, WITHOUT making the
 // production code depend on loom primitives. Loom exhaustively explores the
 // thread interleavings.
 //

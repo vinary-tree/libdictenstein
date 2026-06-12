@@ -18,6 +18,7 @@
 //! Tests are designed to stay within these limits or use sufficient prefix diversity.
 
 #![cfg(feature = "persistent-artrie")]
+#![allow(dead_code)]
 
 use libdictenstein::persistent_artrie::PersistentARTrie;
 use libdictenstein::{Dictionary, MappedDictionary};

@@ -8,7 +8,7 @@ fn main() {
     {
         let dir = tempdir().expect("create temp dir");
         let path = dir.path().join("test.artrie");
-        let mut trie: PersistentARTrie<()> = PersistentARTrie::create(&path).expect("create");
+        let trie: PersistentARTrie<()> = PersistentARTrie::create(&path).expect("create");
 
         for i in 0..300 {
             trie.insert(&format!("term_{:08}", i));
@@ -25,7 +25,7 @@ fn main() {
     {
         let dir = tempdir().expect("create temp dir");
         let path = dir.path().join("test.artrie");
-        let mut trie: PersistentARTrie<()> = PersistentARTrie::create(&path).expect("create");
+        let trie: PersistentARTrie<()> = PersistentARTrie::create(&path).expect("create");
 
         // 52 different first characters
         for c in ('a'..='z').chain('A'..='Z') {
@@ -45,7 +45,7 @@ fn main() {
     {
         let dir = tempdir().expect("create temp dir");
         let path = dir.path().join("test.artrie");
-        let mut trie: PersistentARTrie<()> = PersistentARTrie::create(&path).expect("create");
+        let trie: PersistentARTrie<()> = PersistentARTrie::create(&path).expect("create");
 
         // Use numeric prefix to spread across buckets
         for i in 0..500 {

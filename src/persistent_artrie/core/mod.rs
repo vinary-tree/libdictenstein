@@ -1,0 +1,73 @@
+//! Shared substrate for the persistent ARTrie variants.
+//!
+//! `persistent_artrie::core` hosts the unit-agnostic infrastructure
+//! shared by the three persistent ARTrie variants:
+//!
+//! - [`crate::persistent_artrie`] — byte / `u8` keys
+//! - [`crate::persistent_artrie::char`] — UTF-8 / `u32` keys
+//! - [`crate::persistent_artrie::vocab`] — vocabulary-specific, builds on char
+//!
+//! # Layering invariant
+//!
+//! `persistent_artrie::core` has **zero** upward dependencies on the variant
+//! modules. Variants depend on core; core never depends on variants. This
+//! invariant is verified by:
+//!
+//! ```text
+//! grep -rn "crate::persistent_artrie::char\|crate::persistent_vocab" src/persistent_artrie/core/
+//! ```
+//!
+//! which must return empty.
+//!
+//! # Migration
+//!
+//! Sub-modules are added incrementally as the multi-phase
+//! `persistent_artrie::core` extraction proceeds. Until the extraction is
+//! complete, the variant modules continue to re-export their original symbols
+//! so existing call-sites need not change paths in lock-step with moves.
+
+pub mod adaptive_pool;
+pub mod arena_slot;
+pub mod block_storage;
+pub mod buffer_manager;
+pub mod committed_watermark;
+pub mod compact_encoding;
+pub mod concurrency;
+/// The shared `{i64, u64}` counter-leaf codec — the single `i128`-domain arithmetic
+/// substrate every counter-leaf read/write routes through (the u64 restoration). See
+/// `docs/design/counter-u64-restoration.md` and the module-level docs for the gate.
+pub mod counter_codec;
+pub mod dirty_tracker;
+pub mod disk_manager;
+pub mod durability;
+pub mod epoch;
+pub mod error;
+pub mod eviction;
+#[cfg(feature = "group-commit")]
+pub mod group_commit;
+#[cfg(feature = "io-uring-backend")]
+pub mod io_uring_disk_manager;
+pub mod key_encoding;
+pub mod memory_monitor;
+pub mod mvcc;
+/// G4: the shared lock-free `OverlayNode<K, V>` / `AtomicNodePtr<K, V>` aliased by
+/// the byte/char overlays. Gated on `persistent-artrie` like the variant node
+/// modules (it depends on `arc_swap` and the overlay machinery).
+#[cfg(feature = "persistent-artrie")]
+pub mod overlay;
+pub mod prefetch;
+pub mod recovery;
+/// F4 lock-collapse compat shim (`SharedTrieAccess` `.read()/.write()` on `Arc<T>`)
+/// + the `AtomicEnumCell` used to wrap the `Copy`-enum Tier-2 fields. Dependency-
+/// free, so unconditional (the `DurabilityPolicy` `U8Enum` impl lives in the
+/// always-compiled `durability` module).
+pub mod shared_access;
+pub mod swizzled_ptr;
+pub mod traversal_context;
+pub mod version_checkpoint;
+pub mod version_gc;
+pub mod wal;
+pub mod wal_managed;
+
+// Top-level convenience re-exports used by sub-modules via `super::`.
+pub use error::{PersistentARTrieError, Result, SwizzleError};

@@ -1,6 +1,6 @@
 //! Test create/open cycle with 1M terms
 
-use libdictenstein::persistent_artrie_char::PersistentARTrieChar;
+use libdictenstein::persistent_artrie::char::PersistentARTrieChar;
 use std::time::Instant;
 use tempfile::TempDir;
 
@@ -12,8 +12,7 @@ fn main() {
 
     // Create and populate trie
     {
-        let mut trie =
-            PersistentARTrieChar::<u64>::create(&trie_path).expect("Failed to create trie");
+        let trie = PersistentARTrieChar::<u64>::create(&trie_path).expect("Failed to create trie");
 
         let start = Instant::now();
         for i in 0..1_000_000 {

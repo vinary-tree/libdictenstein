@@ -5,12 +5,12 @@
 //! not trusted even if they parse as valid records.
 
 #![cfg(feature = "persistent-artrie")]
+#![allow(dead_code)]
 
 use libdictenstein::persistent_artrie::{
     rebuild_from_wal_segments, IncrementalRecovery, RecoveredOperation, RecoveryManager, WalConfig,
     WalHeader, WalRecord, WalWriter,
 };
-use libdictenstein::Dictionary;
 use std::fs::OpenOptions;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};

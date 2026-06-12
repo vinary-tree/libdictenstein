@@ -1,8 +1,8 @@
 use std::sync::{Arc, Barrier};
 use std::thread;
 
+use libdictenstein::scdawg::char::{ScdawgChar, ScdawgCharNodeHandle};
 use libdictenstein::scdawg::{Scdawg, ScdawgNodeHandle};
-use libdictenstein::scdawg_char::{ScdawgChar, ScdawgCharNodeHandle};
 use libdictenstein::DictionaryNode;
 
 fn assert_send_sync<T: Send + Sync>() {}

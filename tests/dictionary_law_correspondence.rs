@@ -12,16 +12,16 @@ use common::strategies::{
 };
 use libdictenstein::bijective::{BijectiveMap, InsertError};
 use libdictenstein::difference_zipper::DifferenceZipperExt;
+use libdictenstein::double_array_trie::char::DoubleArrayTrieChar;
+use libdictenstein::double_array_trie::char_zipper::DoubleArrayTrieCharZipper;
+use libdictenstein::double_array_trie::zipper::DoubleArrayTrieZipper;
 use libdictenstein::double_array_trie::DoubleArrayTrie;
-use libdictenstein::double_array_trie_char::DoubleArrayTrieChar;
-use libdictenstein::double_array_trie_char_zipper::DoubleArrayTrieCharZipper;
-use libdictenstein::double_array_trie_zipper::DoubleArrayTrieZipper;
+use libdictenstein::dynamic_dawg::char::DynamicDawgChar;
 use libdictenstein::dynamic_dawg::DynamicDawg;
-use libdictenstein::dynamic_dawg_char::DynamicDawgChar;
 use libdictenstein::intersection_zipper::IntersectionZipperExt;
 use libdictenstein::scdawg::Scdawg;
+use libdictenstein::suffix_automaton::char::SuffixAutomatonChar;
 use libdictenstein::suffix_automaton::SuffixAutomaton;
-use libdictenstein::suffix_automaton_char::SuffixAutomatonChar;
 use libdictenstein::symmetric_difference_zipper::SymmetricDifferenceZipperExt;
 use libdictenstein::union_zipper::UnionZipperExt;
 use libdictenstein::{
@@ -414,8 +414,8 @@ fn suffix_char_backend_exposes_unicode_substring_laws() {
 mod persistent {
     use super::*;
 
+    use libdictenstein::persistent_artrie::vocab::PersistentVocabARTrie;
     use libdictenstein::persistent_artrie::PersistentARTrie;
-    use libdictenstein::persistent_vocab_artrie::PersistentVocabARTrie;
     use libdictenstein::BijectiveDictionary;
     use tempfile::tempdir;
 
@@ -451,7 +451,7 @@ mod persistent {
     fn persistent_vocab_public_bijection_laws_match_reference_indices() {
         let dir = tempdir().expect("tempdir");
         let path = dir.path().join("vocab.dict");
-        let mut vocab = PersistentVocabARTrie::create(&path).expect("create vocab");
+        let vocab = PersistentVocabARTrie::create(&path).expect("create vocab");
 
         let terms = ["alpha", "beta", "gamma", "delta"];
         for (expected_index, term) in terms.iter().enumerate() {

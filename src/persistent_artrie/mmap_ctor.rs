@@ -32,7 +32,7 @@ use super::wal::{AsyncWalConfig, AsyncWalWriter, WalConfig};
 impl<V: DictionaryValue> PersistentARTrie<V> {
     /// **A freshly-created byte trie builds the lock-free overlay directly. The
     /// overlay is the SOLE representation for ALL `V`.** The byte twin of char's
-    /// `install_overlay_on_create` (persistent_artrie_char/mmap_ctor.rs).
+    /// `install_overlay_on_create` (persistent_artrie/char/mmap_ctor.rs).
     ///
     /// A `create*` ctor builds a FRESH WAL (`current_lsn() == 1`), so the shared
     /// `install_overlay_on_create` default — `install_overlay()` (which stamps the
@@ -42,8 +42,8 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
     /// write-broken or recovery-unsafe overlay. NB the byte counter monomorph is
     /// `u64` (char's is also `u64`).
     fn install_overlay_on_create(self) -> Result<Self> {
-        <Self as crate::persistent_artrie_core::overlay::flip::LockFreeOverlay<
-            crate::persistent_artrie_core::key_encoding::ByteKey,
+        <Self as crate::persistent_artrie::core::overlay::flip::LockFreeOverlay<
+            crate::persistent_artrie::core::key_encoding::ByteKey,
             _,
             _,
         >>::install_overlay_on_create(self)
@@ -71,7 +71,7 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
             next_lsn: std::sync::atomic::AtomicU64::new(0),
             prefetcher: super::prefetch::Prefetcher::disabled(),
             arena_manager: None,
-            durability_policy: crate::persistent_artrie_core::shared_access::AtomicEnumCell::new(
+            durability_policy: crate::persistent_artrie::core::shared_access::AtomicEnumCell::new(
                 DurabilityPolicy::default(),
             ),
             epoch_manager: Arc::new(super::concurrency::EpochManager::new()),
@@ -87,7 +87,7 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
             // generations, so the watermark base + commit_seq are both 0 (a WAL-less
             // in-memory trie has no durable writes to advance them).
             committed_watermark:
-                crate::persistent_artrie_core::committed_watermark::CommittedWatermark::new(0),
+                crate::persistent_artrie::core::committed_watermark::CommittedWatermark::new(0),
             checkpoint_lock: std::sync::Arc::new(parking_lot::Mutex::new(())),
             merge_lock: std::sync::Arc::new(parking_lot::Mutex::new(())),
             commit_seq: std::sync::atomic::AtomicU64::new(0),
@@ -174,7 +174,7 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
             next_lsn: std::sync::atomic::AtomicU64::new(1), // Start at 1, 0 reserved for "no LSN"
             prefetcher: super::prefetch::Prefetcher::new(),
             arena_manager: Some(arena_manager),
-            durability_policy: crate::persistent_artrie_core::shared_access::AtomicEnumCell::new(
+            durability_policy: crate::persistent_artrie::core::shared_access::AtomicEnumCell::new(
                 DurabilityPolicy::default(),
             ),
             epoch_manager: Arc::new(super::concurrency::EpochManager::new()),
@@ -191,7 +191,7 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
             // prior generations ⇒ watermark base + commit_seq both 0 (advanced by durable
             // writes).
             committed_watermark:
-                crate::persistent_artrie_core::committed_watermark::CommittedWatermark::new(0),
+                crate::persistent_artrie::core::committed_watermark::CommittedWatermark::new(0),
             checkpoint_lock: std::sync::Arc::new(parking_lot::Mutex::new(())),
             merge_lock: std::sync::Arc::new(parking_lot::Mutex::new(())),
             commit_seq: std::sync::atomic::AtomicU64::new(0),
@@ -272,7 +272,7 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
             next_lsn: std::sync::atomic::AtomicU64::new(1), // Start at 1, 0 reserved for "no LSN"
             prefetcher: super::prefetch::Prefetcher::new(),
             arena_manager: Some(arena_manager),
-            durability_policy: crate::persistent_artrie_core::shared_access::AtomicEnumCell::new(
+            durability_policy: crate::persistent_artrie::core::shared_access::AtomicEnumCell::new(
                 DurabilityPolicy::default(),
             ),
             epoch_manager: Arc::new(super::concurrency::EpochManager::new()),
@@ -287,7 +287,7 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
             // M2b: fresh on-disk trie (empty WAL) — no durable frontier, no prior
             // generations ⇒ watermark base + commit_seq both 0 (advanced by durable writes).
             committed_watermark:
-                crate::persistent_artrie_core::committed_watermark::CommittedWatermark::new(0),
+                crate::persistent_artrie::core::committed_watermark::CommittedWatermark::new(0),
             checkpoint_lock: std::sync::Arc::new(parking_lot::Mutex::new(())),
             merge_lock: std::sync::Arc::new(parking_lot::Mutex::new(())),
             commit_seq: std::sync::atomic::AtomicU64::new(0),
@@ -309,8 +309,8 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
     /// let dict: PersistentARTrie<()> = PersistentARTrie::open("words.part")?;
     /// ```
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self> {
-        use crate::persistent_artrie_core::key_encoding::ByteKey;
-        use crate::persistent_artrie_core::overlay::flip::LockFreeOverlay;
+        use crate::persistent_artrie::core::key_encoding::ByteKey;
+        use crate::persistent_artrie::core::overlay::flip::LockFreeOverlay;
         // This impl block is the default-`S` (`MmapDiskManager`) block.
         let gate = <Self as LockFreeOverlay<ByteKey, V, super::disk_manager::MmapDiskManager>>::USE_F5_REOPEN_LOADER;
         Self::open_inner(path.as_ref(), gate)
@@ -335,7 +335,7 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
         use super::DEFAULT_BUFFER_POOL_SIZE;
         // F5 trait methods resolve through the seam.
         #[allow(unused_imports)]
-        use crate::persistent_artrie_core::overlay::flip::LockFreeOverlay;
+        use crate::persistent_artrie::core::overlay::flip::LockFreeOverlay;
 
         // Fail if file doesn't exist
         if !path.exists() {
@@ -482,7 +482,7 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
         let commit_seq_seed = {
             let mut max_commit_seq_gen = 0u64;
             if wal_path.exists() {
-                use crate::persistent_artrie_core::wal::{WalReader, WalRecord};
+                use crate::persistent_artrie::core::wal::{WalReader, WalRecord};
                 if let Ok(mut reader) = WalReader::new(&wal_path) {
                     while let Some(result) = reader.next_record() {
                         match result {
@@ -504,15 +504,15 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
         // into the owned tree — it builds the overlay directly). Unreadable ⇒ Owned
         // (keep, never drop). This is the SAME value that drives the reconcile below.
         let rank_regime = {
-            use crate::persistent_artrie_core::wal::WalReader;
+            use crate::persistent_artrie::core::wal::WalReader;
             WalReader::read_header(&wal_path)
                 .map(|h| h.regime())
-                .unwrap_or(crate::persistent_artrie_core::wal::RankRegime::Owned)
+                .unwrap_or(crate::persistent_artrie::core::wal::RankRegime::Owned)
         };
         // F5 gate: a direct dense→overlay reopen runs ONLY for an Overlay-regime,
         // overlay-eligible file when F5 is selected. Everything else is LEGACY.
         let use_f5 =
-            force_f5 && rank_regime == crate::persistent_artrie_core::wal::RankRegime::Overlay;
+            force_f5 && rank_regime == crate::persistent_artrie::core::wal::RankRegime::Overlay;
         // **F7 convert gate:** an OWNED-regime, overlay-eligible file opened on the
         // PRODUCTION path (`force_f5` — `open`/`open_with_f5_loader`) is CONVERTED into the
         // overlay via `convert_owned_to_overlay_on_reopen` (rotate-if-records-non-empty →
@@ -521,7 +521,7 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
         // owned-reopen ORACLE the correspondence test compares against). An ineligible V
         // can never overlay, so it stays owned regardless.
         let convert_owned =
-            force_f5 && rank_regime == crate::persistent_artrie_core::wal::RankRegime::Owned;
+            force_f5 && rank_regime == crate::persistent_artrie::core::wal::RankRegime::Owned;
 
         // Create the dictionary with storage layer.
         // L3.3c (BLOCKER#4): the overlay is built DIRECTLY from the dense image via the codec
@@ -542,7 +542,7 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
             next_lsn: std::sync::atomic::AtomicU64::new(next_lsn),
             prefetcher: super::prefetch::Prefetcher::new(),
             arena_manager: Some(arena_manager),
-            durability_policy: crate::persistent_artrie_core::shared_access::AtomicEnumCell::new(
+            durability_policy: crate::persistent_artrie::core::shared_access::AtomicEnumCell::new(
                 DurabilityPolicy::default(),
             ),
             epoch_manager: Arc::new(super::concurrency::EpochManager::new()),
@@ -559,7 +559,7 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
             // max(header floor, surviving CommitRank generation) — the A.2
             // cross-restart fix.
             committed_watermark:
-                crate::persistent_artrie_core::committed_watermark::CommittedWatermark::new(
+                crate::persistent_artrie::core::committed_watermark::CommittedWatermark::new(
                     recovered_frontier,
                 ),
             checkpoint_lock: std::sync::Arc::new(parking_lot::Mutex::new(())),
@@ -756,8 +756,8 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
         use super::wal::WalReader;
         use std::time::Instant;
         // F7-R1: the structural owned→overlay converter resolves through the seam.
-        use crate::persistent_artrie_core::key_encoding::ByteKey;
-        use crate::persistent_artrie_core::overlay::flip::LockFreeOverlay;
+        use crate::persistent_artrie::core::key_encoding::ByteKey;
+        use crate::persistent_artrie::core::overlay::flip::LockFreeOverlay;
 
         let path = path.as_ref();
         let start_time = Instant::now();
@@ -831,7 +831,7 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
                 let any_overlay = segments.iter().any(|seg| {
                     WalReader::read_header(seg)
                         .map(|h| {
-                            h.regime() == crate::persistent_artrie_core::wal::RankRegime::Overlay
+                            h.regime() == crate::persistent_artrie::core::wal::RankRegime::Overlay
                         })
                         .unwrap_or(false)
                 });

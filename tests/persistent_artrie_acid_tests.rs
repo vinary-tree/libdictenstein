@@ -7,6 +7,7 @@
 //! - Durability: Committed data survives crashes
 
 #![cfg(feature = "persistent-artrie")]
+#![allow(dead_code)]
 
 use libdictenstein::persistent_artrie::{DurabilityPolicy, PersistentARTrie};
 use libdictenstein::Dictionary;

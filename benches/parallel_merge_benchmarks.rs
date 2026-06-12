@@ -12,7 +12,6 @@ use std::time::Duration;
 use tempfile::tempdir;
 
 use libdictenstein::persistent_artrie::PersistentARTrie;
-use libdictenstein::MutableMappedDictionary;
 
 /// Generate test terms with values for merge testing
 fn generate_terms_with_values(count: usize, value_offset: i64) -> Vec<(String, i64)> {
@@ -256,6 +255,7 @@ fn drop_caches() {
 }
 
 /// Create a trie populated with varied-prefix terms, synced to disk
+#[allow(dead_code)]
 fn create_populated_trie_varied(
     terms: &[(String, i64)],
 ) -> (tempfile::TempDir, PersistentARTrie<i64>) {

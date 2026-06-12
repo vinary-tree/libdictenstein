@@ -1,24 +1,24 @@
 //! Byte CAS-style node pointer — a `<ByteKey>` instantiation of the shared
-//! `persistent_artrie_core::overlay::AtomicNodePtr`.
+//! `persistent_artrie::core::overlay::AtomicNodePtr`.
 //!
 //! G4 unification: the byte and char `AtomicNodePtr` wrappers were identical
 //! modulo the node type they wrapped. Both are now the single generic
 //! `overlay::AtomicNodePtr<K, V>`; the byte pointer is its `<ByteKey>` alias.
 //! This is a **pure re-export** — the exhaustive pointer unit tests (both
 //! `<ByteKey>` and `<CharKey>` instantiations) live in
-//! `persistent_artrie_core::overlay::atomic_ptr`.
+//! `persistent_artrie::core::overlay::atomic_ptr`.
 
-use crate::persistent_artrie_core::key_encoding::ByteKey;
+use crate::persistent_artrie::core::key_encoding::ByteKey;
 
 /// The byte CAS-style node pointer. Alias of the shared
 /// `overlay::AtomicNodePtr<ByteKey, V>` (default `V = ()` for membership).
-pub type AtomicNodePtr<V = ()> = crate::persistent_artrie_core::overlay::AtomicNodePtr<ByteKey, V>;
+pub type AtomicNodePtr<V = ()> = crate::persistent_artrie::core::overlay::AtomicNodePtr<ByteKey, V>;
 
 #[cfg(test)]
 mod tests {
     //! Alias-smoke test: prove the `AtomicNodePtr` alias resolves to the shared
     //! `overlay::AtomicNodePtr<ByteKey, _>` and behaves. Exhaustive CAS coverage
-    //! lives in `persistent_artrie_core::overlay::atomic_ptr::tests`.
+    //! lives in `persistent_artrie::core::overlay::atomic_ptr::tests`.
 
     use std::sync::Arc;
 

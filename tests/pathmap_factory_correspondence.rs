@@ -8,9 +8,9 @@
 #![cfg(feature = "pathmap-backend")]
 
 use libdictenstein::factory::{DictionaryBackend, DictionaryFactory};
+use libdictenstein::pathmap::char::PathMapDictionaryChar;
+use libdictenstein::pathmap::zipper::PathMapZipper;
 use libdictenstein::pathmap::PathMapDictionary;
-use libdictenstein::pathmap_char::PathMapDictionaryChar;
-use libdictenstein::pathmap_zipper::PathMapZipper;
 use libdictenstein::{
     DictZipper, Dictionary, DictionaryNode, MappedDictionary, MappedDictionaryNode,
     MutableDictionary, MutableMappedDictionary, ValuedDictZipper,

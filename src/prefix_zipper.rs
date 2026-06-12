@@ -14,7 +14,7 @@
 //! ```rust
 //! use libdictenstein::prelude::*;
 //! use libdictenstein::prefix_zipper::PrefixZipper;
-//! use libdictenstein::double_array_trie_zipper::DoubleArrayTrieZipper;
+//! use libdictenstein::double_array_trie::zipper::DoubleArrayTrieZipper;
 //!
 //! let terms = vec!["process", "processUser", "produce", "product"];
 //! let dict = DoubleArrayTrie::from_terms(terms.iter());
@@ -35,8 +35,8 @@
 //! ## Unicode Support (Character-level)
 //!
 //! ```rust
-//! use libdictenstein::double_array_trie_char::DoubleArrayTrieChar;
-//! use libdictenstein::double_array_trie_char_zipper::DoubleArrayTrieCharZipper;
+//! use libdictenstein::double_array_trie::char::DoubleArrayTrieChar;
+//! use libdictenstein::double_array_trie::char_zipper::DoubleArrayTrieCharZipper;
 //! use libdictenstein::prefix_zipper::PrefixZipper;
 //!
 //! let terms = vec!["café", "cafétéria", "naïve"];
@@ -59,7 +59,7 @@
 //! ```rust
 //! use libdictenstein::prelude::*;
 //! use libdictenstein::prefix_zipper::ValuedPrefixZipper;
-//! use libdictenstein::double_array_trie_zipper::DoubleArrayTrieZipper;
+//! use libdictenstein::double_array_trie::zipper::DoubleArrayTrieZipper;
 //!
 //! let terms_with_values = vec![("cat", 1), ("cats", 2), ("dog", 3)];
 //! let dict = DoubleArrayTrie::from_terms_with_values(
@@ -149,7 +149,7 @@ pub trait PrefixZipper: DictZipper {
     /// ```rust
     /// use libdictenstein::prelude::*;
     /// use libdictenstein::prefix_zipper::PrefixZipper;
-    /// use libdictenstein::double_array_trie_zipper::DoubleArrayTrieZipper;
+    /// use libdictenstein::double_array_trie::zipper::DoubleArrayTrieZipper;
     ///
     /// let dict = DoubleArrayTrie::from_terms(vec!["hello", "help", "world"].iter());
     /// let zipper = DoubleArrayTrieZipper::new_from_dict(&dict);
@@ -289,7 +289,7 @@ impl<Z: DictZipper> Iterator for PrefixIterator<Z> {
 /// ```rust
 /// use libdictenstein::prelude::*;
 /// use libdictenstein::prefix_zipper::ValuedPrefixZipper;
-/// use libdictenstein::double_array_trie_zipper::DoubleArrayTrieZipper;
+/// use libdictenstein::double_array_trie::zipper::DoubleArrayTrieZipper;
 ///
 /// let dict = DoubleArrayTrie::from_terms_with_values(
 ///     vec![("cat", 1), ("cats", 2), ("dog", 3)].into_iter()

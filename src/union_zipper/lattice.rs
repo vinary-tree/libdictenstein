@@ -29,7 +29,7 @@ pub use llattice::Lattice;
 /// ```rust
 /// use libdictenstein::prelude::*;
 /// use libdictenstein::union_zipper::{UnionZipper, LatticeJoin};
-/// use libdictenstein::double_array_trie_zipper::DoubleArrayTrieZipper;
+/// use libdictenstein::double_array_trie::zipper::DoubleArrayTrieZipper;
 /// use std::collections::HashSet;
 ///
 /// // Create dictionaries with HashSet values
@@ -74,7 +74,7 @@ impl<V: Lattice> ValueMergeStrategy<V> for LatticeJoin {
 /// ```rust
 /// use libdictenstein::prelude::*;
 /// use libdictenstein::union_zipper::{UnionZipper, LatticeMeet};
-/// use libdictenstein::double_array_trie_zipper::DoubleArrayTrieZipper;
+/// use libdictenstein::double_array_trie::zipper::DoubleArrayTrieZipper;
 /// use std::collections::HashSet;
 ///
 /// // Create dictionaries with HashSet values

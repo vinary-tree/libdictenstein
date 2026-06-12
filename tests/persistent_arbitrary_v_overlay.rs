@@ -20,9 +20,9 @@
 
 #![cfg(feature = "persistent-artrie")]
 
+use libdictenstein::persistent_artrie::char::{PersistentARTrieChar, SharedCharARTrie};
+use libdictenstein::persistent_artrie::core::shared_access::SharedTrieAccess;
 use libdictenstein::persistent_artrie::PersistentARTrie;
-use libdictenstein::persistent_artrie_char::{PersistentARTrieChar, SharedCharTrie};
-use libdictenstein::persistent_artrie_core::shared_access::SharedTrieAccess;
 use libdictenstein::{ARTrie, MappedDictionary, MutableMappedDictionary};
 use std::sync::Arc;
 
@@ -305,10 +305,10 @@ fn char_arbitrary_v_concurrent_writers_all_survive() {
 fn char_union_with_no_ab_ba_deadlock() {
     use std::thread;
     let dir = scratch("f2-union-deadlock");
-    let a: SharedCharTrie<u64> =
-        SharedCharTrie::create(&dir.path().join("a.artc")).expect("create a");
-    let b: SharedCharTrie<u64> =
-        SharedCharTrie::create(&dir.path().join("b.artc")).expect("create b");
+    let a: SharedCharARTrie<u64> =
+        SharedCharARTrie::create(&dir.path().join("a.artc")).expect("create a");
+    let b: SharedCharARTrie<u64> =
+        SharedCharARTrie::create(&dir.path().join("b.artc")).expect("create b");
     a.write().insert_with_value("shared", 1).expect("a ins");
     a.write().insert_with_value("a_only", 10).expect("a ins2");
     b.write().insert_with_value("shared", 2).expect("b ins");

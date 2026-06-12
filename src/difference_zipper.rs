@@ -16,7 +16,7 @@
 //! ```rust
 //! use libdictenstein::prelude::*;
 //! use libdictenstein::difference_zipper::{DifferenceZipper, DifferenceZipperExt};
-//! use libdictenstein::double_array_trie_zipper::DoubleArrayTrieZipper;
+//! use libdictenstein::double_array_trie::zipper::DoubleArrayTrieZipper;
 //!
 //! let dict_a = DoubleArrayTrie::from_terms(vec!["cat", "dog", "fish"].iter());
 //! let dict_b = DoubleArrayTrie::from_terms(vec!["dog", "bird"].iter());
@@ -40,7 +40,7 @@
 //! ```rust
 //! use libdictenstein::prelude::*;
 //! use libdictenstein::difference_zipper::DifferenceZipperExt;
-//! use libdictenstein::double_array_trie_zipper::DoubleArrayTrieZipper;
+//! use libdictenstein::double_array_trie::zipper::DoubleArrayTrieZipper;
 //!
 //! let vocabulary = DoubleArrayTrie::from_terms(vec!["the", "cat", "sat", "on", "a", "mat"].iter());
 //! let stopwords = DoubleArrayTrie::from_terms(vec!["the", "on", "a"].iter());
@@ -63,7 +63,7 @@
 //! ```rust
 //! use libdictenstein::prelude::*;
 //! use libdictenstein::difference_zipper::DifferenceZipperExt;
-//! use libdictenstein::double_array_trie_zipper::DoubleArrayTrieZipper;
+//! use libdictenstein::double_array_trie::zipper::DoubleArrayTrieZipper;
 //! use libdictenstein::zipper::DictZipper;
 //!
 //! let dict_a = DoubleArrayTrie::from_terms(vec!["cat", "car"].iter());
@@ -157,7 +157,7 @@ impl<Z: DictZipper> DifferenceZipper<Z> {
     /// ```rust
     /// use libdictenstein::prelude::*;
     /// use libdictenstein::difference_zipper::DifferenceZipper;
-    /// use libdictenstein::double_array_trie_zipper::DoubleArrayTrieZipper;
+    /// use libdictenstein::double_array_trie::zipper::DoubleArrayTrieZipper;
     ///
     /// let dict_a = DoubleArrayTrie::from_terms(vec!["cat", "dog"].iter());
     /// let dict_b = DoubleArrayTrie::from_terms(vec!["dog"].iter());
@@ -394,7 +394,7 @@ impl<Z: ValuedDictZipper> Iterator for ValuedDifferenceIterator<Z> {
 /// ```rust
 /// use libdictenstein::prelude::*;
 /// use libdictenstein::difference_zipper::DifferenceZipperExt;
-/// use libdictenstein::double_array_trie_zipper::DoubleArrayTrieZipper;
+/// use libdictenstein::double_array_trie::zipper::DoubleArrayTrieZipper;
 ///
 /// let dict_a = DoubleArrayTrie::from_terms(vec!["cat", "dog", "fish"].iter());
 /// let dict_b = DoubleArrayTrie::from_terms(vec!["dog"].iter());
@@ -447,8 +447,8 @@ impl<Z: DictZipper> DifferenceZipperExt for Z {}
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::double_array_trie::zipper::DoubleArrayTrieZipper;
     use crate::double_array_trie::DoubleArrayTrie;
-    use crate::double_array_trie_zipper::DoubleArrayTrieZipper;
 
     fn sorted_strings(mut v: Vec<String>) -> Vec<String> {
         v.sort();

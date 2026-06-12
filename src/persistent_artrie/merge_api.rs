@@ -41,8 +41,8 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
         F: Fn(&V, &V) -> V,
         V: Clone,
     {
-        use crate::persistent_artrie_core::key_encoding::ByteKey;
-        use crate::persistent_artrie_core::overlay::durable_write::DurableOverlayWrite;
+        use crate::persistent_artrie::core::key_encoding::ByteKey;
+        use crate::persistent_artrie::core::overlay::durable_write::DurableOverlayWrite;
         let mut processed = 0usize;
         for (term, other_value) in entries {
             let mut spins = 0u32;

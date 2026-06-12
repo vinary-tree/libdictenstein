@@ -233,8 +233,6 @@ macro_rules! test_mapped_dictionary {
                             1..=30
                         )
                     ) {
-                        use libdictenstein::MappedDictionary;
-
                         let dict = $dict_expr;
                         let expected: std::collections::HashMap<String, u32> = pairs.into_iter().collect();
 
@@ -260,8 +258,6 @@ macro_rules! test_mapped_dictionary {
                         value1 in any::<u32>(),
                         value2 in any::<u32>()
                     ) {
-                        use libdictenstein::MappedDictionary;
-
                         let dict = $dict_expr;
 
                         dict.insert_with_value(&term, value1);

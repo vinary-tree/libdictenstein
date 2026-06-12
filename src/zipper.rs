@@ -25,7 +25,7 @@
 //! ```ignore
 //! use libdictenstein::DictZipper;
 //! use libdictenstein::pathmap::PathMapDictionary;
-//! use libdictenstein::pathmap_zipper::PathMapZipper;
+//! use libdictenstein::pathmap::zipper::PathMapZipper;
 //!
 //! // Create a dictionary zipper
 //! let dict = PathMapDictionary::<()>::new();

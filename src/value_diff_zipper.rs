@@ -17,7 +17,7 @@
 //! ```rust
 //! use libdictenstein::prelude::*;
 //! use libdictenstein::value_diff_zipper::{ValueDiffZipper, ValueDiffZipperExt};
-//! use libdictenstein::double_array_trie_zipper::DoubleArrayTrieZipper;
+//! use libdictenstein::double_array_trie::zipper::DoubleArrayTrieZipper;
 //!
 //! // Two versions of a frequency dictionary
 //! let version1 = DoubleArrayTrie::from_terms_with_values(
@@ -52,7 +52,7 @@
 //! ```rust
 //! use libdictenstein::prelude::*;
 //! use libdictenstein::value_diff_zipper::{ValueDiffZipper, ValueDiffZipperExt};
-//! use libdictenstein::double_array_trie_zipper::DoubleArrayTrieZipper;
+//! use libdictenstein::double_array_trie::zipper::DoubleArrayTrieZipper;
 //! use libdictenstein::zipper::DictZipper;
 //!
 //! let dict1 = DoubleArrayTrie::from_terms_with_values(
@@ -212,7 +212,7 @@ where
     /// ```rust
     /// use libdictenstein::prelude::*;
     /// use libdictenstein::value_diff_zipper::ValueDiffZipper;
-    /// use libdictenstein::double_array_trie_zipper::DoubleArrayTrieZipper;
+    /// use libdictenstein::double_array_trie::zipper::DoubleArrayTrieZipper;
     ///
     /// let dict1 = DoubleArrayTrie::from_terms_with_values(
     ///     vec![("key", 1usize)].into_iter()
@@ -449,7 +449,7 @@ where
 /// ```rust
 /// use libdictenstein::prelude::*;
 /// use libdictenstein::value_diff_zipper::ValueDiffZipperExt;
-/// use libdictenstein::double_array_trie_zipper::DoubleArrayTrieZipper;
+/// use libdictenstein::double_array_trie::zipper::DoubleArrayTrieZipper;
 ///
 /// let dict1 = DoubleArrayTrie::from_terms_with_values(
 ///     vec![("key", 1usize), ("other", 5)].into_iter()
@@ -510,8 +510,8 @@ impl<Z: ValuedDictZipper> ValueDiffZipperExt for Z where Z::Value: PartialEq {}
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::double_array_trie::zipper::DoubleArrayTrieZipper;
     use crate::double_array_trie::DoubleArrayTrie;
-    use crate::double_array_trie_zipper::DoubleArrayTrieZipper;
 
     fn sorted_diffs<U: CharUnit + Ord, V: DictionaryValue + Ord>(
         mut diffs: Vec<ValueDiff<U, V>>,

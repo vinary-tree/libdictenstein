@@ -8,18 +8,18 @@
 
 #![cfg(feature = "persistent-artrie")]
 
+use libdictenstein::persistent_artrie::char::nodes::PersistentCharNode;
+use libdictenstein::persistent_artrie::char::{CharTrieNodeInner, PersistentARTrieCharNode};
+use libdictenstein::persistent_artrie::core::concurrency::OptimisticCell;
+use libdictenstein::persistent_artrie::core::mvcc::ReadTransaction;
 use libdictenstein::persistent_artrie::nodes::PersistentNode;
+use libdictenstein::persistent_artrie::vocab::PersistentVocabARTrie;
 use libdictenstein::persistent_artrie::wal::WalError;
 use libdictenstein::persistent_artrie::{
     AsyncWalConfig, BucketError, MmapDiskManager, PendingSegment, PersistentARTrie,
     SegmentSyncManager, StringBucket, WalConfig, WalHeader, WalReader, WalRecord, WalRecordType,
     WalSyncBackend, WalWriter,
 };
-use libdictenstein::persistent_artrie_char::nodes::PersistentCharNode;
-use libdictenstein::persistent_artrie_char::{CharTrieNodeInner, PersistentARTrieCharNode};
-use libdictenstein::persistent_artrie_core::concurrency::OptimisticCell;
-use libdictenstein::persistent_artrie_core::mvcc::ReadTransaction;
-use libdictenstein::persistent_vocab_artrie::PersistentVocabARTrie;
 use libdictenstein::serialization::bincode_compat;
 use libdictenstein::{Dictionary, MappedDictionary};
 use proptest::prelude::*;
@@ -555,7 +555,7 @@ fn vocab_checkpoint_reopen_preserves_unicode_bijection() {
     ];
 
     {
-        let mut vocab = PersistentVocabARTrie::create(&path).expect("create vocab trie");
+        let vocab = PersistentVocabARTrie::create(&path).expect("create vocab trie");
         for (expected_index, term) in terms.iter().enumerate() {
             assert_eq!(
                 vocab.insert(term).expect("insert vocab term"),
@@ -586,7 +586,7 @@ fn vocab_duplicate_insert_keeps_stable_index_after_reopen() {
     let path = temp_dir.path().join("vocab_duplicate_reopen.vocab");
 
     {
-        let mut vocab = PersistentVocabARTrie::create(&path).expect("create vocab trie");
+        let vocab = PersistentVocabARTrie::create(&path).expect("create vocab trie");
         assert_eq!(vocab.insert("duplicate").expect("insert duplicate"), 0);
         assert_eq!(vocab.insert("delta").expect("insert delta"), 1);
         assert_eq!(
@@ -596,7 +596,7 @@ fn vocab_duplicate_insert_keeps_stable_index_after_reopen() {
         vocab.checkpoint().expect("checkpoint vocab trie");
     }
 
-    let mut reopened = PersistentVocabARTrie::open(&path).expect("reopen vocab trie");
+    let reopened = PersistentVocabARTrie::open(&path).expect("reopen vocab trie");
     assert_eq!(reopened.insert("duplicate").expect("insert duplicate"), 0);
     assert_eq!(reopened.get_index("duplicate"), Some(0));
     assert_eq!(reopened.get_term(0), Some("duplicate".to_string()));

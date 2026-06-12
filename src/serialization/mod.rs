@@ -345,9 +345,9 @@ impl DictionaryFromTerms for crate::double_array_trie::DoubleArrayTrie {
     }
 }
 
-impl DictionaryFromTerms for crate::double_array_trie_char::DoubleArrayTrieChar {
+impl DictionaryFromTerms for crate::double_array_trie::char::DoubleArrayTrieChar {
     fn from_terms<I: IntoIterator<Item = String>>(terms: I) -> Self {
-        crate::double_array_trie_char::DoubleArrayTrieChar::from_terms(terms)
+        crate::double_array_trie::char::DoubleArrayTrieChar::from_terms(terms)
     }
 }
 
@@ -358,17 +358,19 @@ impl<V: crate::DictionaryValue> DictionaryFromTerms for crate::dynamic_dawg::Dyn
 }
 
 impl<V: crate::DictionaryValue> DictionaryFromTerms
-    for crate::dynamic_dawg_char::DynamicDawgChar<V>
+    for crate::dynamic_dawg::char::DynamicDawgChar<V>
 {
     fn from_terms<I: IntoIterator<Item = String>>(terms: I) -> Self {
-        crate::dynamic_dawg_char::DynamicDawgChar::from_terms(terms)
+        crate::dynamic_dawg::char::DynamicDawgChar::from_terms(terms)
     }
 }
 
-impl<V: crate::DictionaryValue> DictionaryFromTerms for crate::dynamic_dawg_u64::DynamicDawgU64<V> {
+impl<V: crate::DictionaryValue> DictionaryFromTerms
+    for crate::dynamic_dawg::u64::DynamicDawgU64<V>
+{
     fn from_terms<I: IntoIterator<Item = String>>(terms: I) -> Self {
         // DynamicDawgU64's from_terms accepts strings and converts them internally
-        crate::dynamic_dawg_u64::DynamicDawgU64::from_terms(terms)
+        crate::dynamic_dawg::u64::DynamicDawgU64::from_terms(terms)
     }
 }
 
@@ -382,10 +384,10 @@ impl<V: crate::DictionaryValue> DictionaryFromTerms
 }
 
 impl<V: crate::DictionaryValue> DictionaryFromTerms
-    for crate::suffix_automaton_char::SuffixAutomatonChar<V>
+    for crate::suffix_automaton::char::SuffixAutomatonChar<V>
 {
     fn from_terms<I: IntoIterator<Item = String>>(terms: I) -> Self {
-        crate::suffix_automaton_char::SuffixAutomatonChar::from_texts(terms)
+        crate::suffix_automaton::char::SuffixAutomatonChar::from_texts(terms)
     }
 }
 
@@ -395,9 +397,9 @@ impl<V: crate::DictionaryValue> DictionaryFromTerms for crate::scdawg::Scdawg<V>
     }
 }
 
-impl<V: crate::DictionaryValue> DictionaryFromTerms for crate::scdawg_char::ScdawgChar<V> {
+impl<V: crate::DictionaryValue> DictionaryFromTerms for crate::scdawg::char::ScdawgChar<V> {
     fn from_terms<I: IntoIterator<Item = String>>(terms: I) -> Self {
-        crate::scdawg_char::ScdawgChar::from_terms(terms)
+        crate::scdawg::char::ScdawgChar::from_terms(terms)
     }
 }
 
@@ -412,10 +414,10 @@ impl<V: crate::DictionaryValue + Default> DictionaryFromTerms
 
 #[cfg(feature = "pathmap-backend")]
 impl<V: crate::DictionaryValue + Default> DictionaryFromTerms
-    for crate::pathmap_char::PathMapDictionaryChar<V>
+    for crate::pathmap::char::PathMapDictionaryChar<V>
 {
     fn from_terms<I: IntoIterator<Item = String>>(terms: I) -> Self {
-        crate::pathmap_char::PathMapDictionaryChar::from_terms(terms)
+        crate::pathmap::char::PathMapDictionaryChar::from_terms(terms)
     }
 }
 
@@ -441,7 +443,7 @@ impl<V: crate::DictionaryValue> DictionaryFromTermsWithValues
 }
 
 impl<V: crate::DictionaryValue> DictionaryFromTermsWithValues
-    for crate::double_array_trie_char::DoubleArrayTrieChar<V>
+    for crate::double_array_trie::char::DoubleArrayTrieChar<V>
 {
     type Value = V;
 
@@ -449,7 +451,7 @@ impl<V: crate::DictionaryValue> DictionaryFromTermsWithValues
     where
         I: IntoIterator<Item = (String, Self::Value)>,
     {
-        crate::double_array_trie_char::DoubleArrayTrieChar::from_terms_with_values(entries)
+        crate::double_array_trie::char::DoubleArrayTrieChar::from_terms_with_values(entries)
     }
 }
 
@@ -467,7 +469,7 @@ impl<V: crate::DictionaryValue> DictionaryFromTermsWithValues
 }
 
 impl<V: crate::DictionaryValue> DictionaryFromTermsWithValues
-    for crate::dynamic_dawg_char::DynamicDawgChar<V>
+    for crate::dynamic_dawg::char::DynamicDawgChar<V>
 {
     type Value = V;
 
@@ -475,12 +477,12 @@ impl<V: crate::DictionaryValue> DictionaryFromTermsWithValues
     where
         I: IntoIterator<Item = (String, Self::Value)>,
     {
-        crate::dynamic_dawg_char::DynamicDawgChar::from_terms_with_values(entries)
+        crate::dynamic_dawg::char::DynamicDawgChar::from_terms_with_values(entries)
     }
 }
 
 impl<V: crate::DictionaryValue> DictionaryFromTermsWithValues
-    for crate::dynamic_dawg_u64::DynamicDawgU64<V>
+    for crate::dynamic_dawg::u64::DynamicDawgU64<V>
 {
     type Value = V;
 
@@ -488,7 +490,7 @@ impl<V: crate::DictionaryValue> DictionaryFromTermsWithValues
     where
         I: IntoIterator<Item = (String, Self::Value)>,
     {
-        crate::dynamic_dawg_u64::DynamicDawgU64::from_terms_with_values(entries)
+        crate::dynamic_dawg::u64::DynamicDawgU64::from_terms_with_values(entries)
     }
 }
 
@@ -504,7 +506,7 @@ impl<V: crate::DictionaryValue> DictionaryFromTermsWithValues for crate::scdawg:
 }
 
 impl<V: crate::DictionaryValue> DictionaryFromTermsWithValues
-    for crate::scdawg_char::ScdawgChar<V>
+    for crate::scdawg::char::ScdawgChar<V>
 {
     type Value = V;
 
@@ -512,7 +514,7 @@ impl<V: crate::DictionaryValue> DictionaryFromTermsWithValues
     where
         I: IntoIterator<Item = (String, Self::Value)>,
     {
-        crate::scdawg_char::ScdawgChar::from_terms_with_values(entries)
+        crate::scdawg::char::ScdawgChar::from_terms_with_values(entries)
     }
 }
 
@@ -532,7 +534,7 @@ impl<V: crate::DictionaryValue + Default> DictionaryFromTermsWithValues
 
 #[cfg(feature = "pathmap-backend")]
 impl<V: crate::DictionaryValue + Default> DictionaryFromTermsWithValues
-    for crate::pathmap_char::PathMapDictionaryChar<V>
+    for crate::pathmap::char::PathMapDictionaryChar<V>
 {
     type Value = V;
 
@@ -540,7 +542,7 @@ impl<V: crate::DictionaryValue + Default> DictionaryFromTermsWithValues
     where
         I: IntoIterator<Item = (String, Self::Value)>,
     {
-        crate::pathmap_char::PathMapDictionaryChar::from_terms_with_values(entries)
+        crate::pathmap::char::PathMapDictionaryChar::from_terms_with_values(entries)
     }
 }
 

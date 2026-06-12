@@ -1,3 +1,5 @@
+#![allow(deprecated)]
+
 //! Simple benchmark runner for disk I/O profiling.
 //!
 //! Run with:
@@ -52,11 +54,11 @@ fn main() {
 
     for iter in 0..iterations {
         let dir = tempdir().expect("Failed to create temp dir");
-        let path = dir.path().join("bench.dat");
+        let _path = dir.path().join("bench.dat");
 
         // Create and insert (in-memory only, no persistence for this simple test)
         {
-            let mut trie: PersistentARTrie<()> = PersistentARTrie::new();
+            let trie: PersistentARTrie<()> = PersistentARTrie::new();
             for term in &terms {
                 let _ = trie.insert(term);
             }

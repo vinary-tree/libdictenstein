@@ -1,12 +1,15 @@
 -------------------- MODULE SharedPersistentConcurrency --------------------
 (****************************************************************************)
-(* Bounded model for Arc<RwLock<...>> persistent public APIs.                *)
+(* Bounded model for persistent shared public APIs after the byte/char lock  *)
+(* collapse.                                                                *)
 (*                                                                          *)
-(* Scope: public shared writes acquire the write lock until WAL-before-      *)
-(* visible publication is complete; public checkpoint acquires the same      *)
-(* exclusive lock until snapshot publication, checkpoint WAL sync, and WAL   *)
-(* truncation are complete; reads observe only completed visible states;     *)
-(* sync does not publish checkpoint state.                                   *)
+(* Scope: byte and char shared handles are bare Arc<T> handles. Public       *)
+(* writes do not acquire a global RwLock; they linearize when the WAL-backed *)
+(* root publication becomes visible. Public checkpoint uses the internal     *)
+(* checkpoint_lock only to serialize checkpoint publication. Reads observe   *)
+(* Arc/root snapshots of completed visible states; sync does not publish     *)
+(* checkpoint state. SharedVocabARTrie is still RwLock-gated in Rust, but    *)
+(* this model covers the weaker byte/char contract.                          *)
 (****************************************************************************)
 
 EXTENDS Naturals, FiniteSets, TLC
@@ -30,7 +33,7 @@ Vars == <<nextLsn, phase, opTerm, opLsn,
 Lsns == 1..MaxLSN
 LsnOrNone == Lsns \cup {None}
 WriterPhases == {"Idle", "Writing"}
-LockStates == {"Free", "Writer", "Checkpoint"}
+LockStates == {"Free", "Checkpoint"}
 CheckpointPhases == {"Idle", "Snapshotted"}
 EmptyLsnMap == [k \in Terms |-> None]
 EmptyWal == [l \in Lsns |-> None]
@@ -38,10 +41,13 @@ EmptyBoolMap == [k \in Terms |-> FALSE]
 
 MaxNat(a, b) == IF a >= b THEN a ELSE b
 
-MaxVisibleLsn(m, lsns) ==
+CommittedThrough(n) ==
+    \A l \in 1..n : walTerms[l] # None
+
+CommittedWatermark ==
     CHOOSE n \in 0..MaxLSN :
-        /\ \A k \in Terms : m[k] # None => lsns[k] # None /\ lsns[k] <= n
-        /\ n = 0 \/ \E k \in Terms : m[k] # None /\ lsns[k] = n
+        /\ CommittedThrough(n)
+        /\ \A m \in 0..MaxLSN : CommittedThrough(m) => m <= n
 
 RecoveredMap ==
     [k \in Terms |->
@@ -106,24 +112,21 @@ Init ==
 StartWrite(w, k) ==
     /\ w \in Writers
     /\ k \in Terms
-    /\ lock = "Free"
     /\ phase[w] = "Idle"
     /\ visible[k] = None
     /\ nextLsn <= MaxLSN
-    /\ lock' = "Writer"
     /\ phase' = [phase EXCEPT ![w] = "Writing"]
     /\ opTerm' = [opTerm EXCEPT ![w] = k]
     /\ opLsn' = [opLsn EXCEPT ![w] = nextLsn]
     /\ nextLsn' = nextLsn + 1
     /\ recoveryFresh' = FALSE
     /\ UNCHANGED <<visible, termLsn, walTerms, syncedLsn, walRetainedFrom,
-                  durableCheckpoint, checkpointLsn, dirty, ckptPhase,
+                  durableCheckpoint, checkpointLsn, dirty, lock, ckptPhase,
                   ckptSnapshot, ckptTarget, ckptPrevDirty,
                   readerObserved, readerObservedLsn, readerFresh, recovered>>
 
 FinishWriteSuccess(w) ==
     /\ w \in Writers
-    /\ lock = "Writer"
     /\ phase[w] = "Writing"
     /\ opTerm[w] \in Terms
     /\ opLsn[w] \in Lsns
@@ -133,33 +136,29 @@ FinishWriteSuccess(w) ==
     /\ visible' = [visible EXCEPT ![opTerm[w]] = opLsn[w]]
     /\ syncedLsn' = MaxNat(syncedLsn, opLsn[w])
     /\ dirty' = TRUE
-    /\ lock' = "Free"
     /\ phase' = [phase EXCEPT ![w] = "Idle"]
     /\ opTerm' = [opTerm EXCEPT ![w] = None]
     /\ opLsn' = [opLsn EXCEPT ![w] = None]
     /\ recoveryFresh' = FALSE
     /\ UNCHANGED <<nextLsn, walRetainedFrom, durableCheckpoint,
-                  checkpointLsn, ckptPhase, ckptSnapshot, ckptTarget,
+                  checkpointLsn, lock, ckptPhase, ckptSnapshot, ckptTarget,
                   ckptPrevDirty, readerObserved, readerObservedLsn,
                   readerFresh, recovered>>
 
 FinishWriteFailure(w) ==
     /\ w \in Writers
-    /\ lock = "Writer"
     /\ phase[w] = "Writing"
-    /\ lock' = "Free"
     /\ phase' = [phase EXCEPT ![w] = "Idle"]
     /\ opTerm' = [opTerm EXCEPT ![w] = None]
     /\ opLsn' = [opLsn EXCEPT ![w] = None]
     /\ recoveryFresh' = FALSE
     /\ UNCHANGED <<nextLsn, visible, termLsn, walTerms, syncedLsn,
                   walRetainedFrom, durableCheckpoint, checkpointLsn, dirty,
-                  ckptPhase, ckptSnapshot, ckptTarget, ckptPrevDirty,
+                  lock, ckptPhase, ckptSnapshot, ckptTarget, ckptPrevDirty,
                   readerObserved, readerObservedLsn, readerFresh, recovered>>
 
 ReadTerm(k) ==
     /\ k \in Terms
-    /\ lock = "Free"
     /\ readerObserved' = [readerObserved EXCEPT ![k] = visible[k]]
     /\ readerObservedLsn' = [readerObservedLsn EXCEPT ![k] = termLsn[k]]
     /\ readerFresh' = [readerFresh EXCEPT ![k] = TRUE]
@@ -171,11 +170,10 @@ ReadTerm(k) ==
 StartCheckpoint ==
     /\ lock = "Free"
     /\ ckptPhase = "Idle"
-    /\ \A w \in Writers : phase[w] = "Idle"
     /\ lock' = "Checkpoint"
     /\ ckptPhase' = "Snapshotted"
     /\ ckptSnapshot' = visible
-    /\ ckptTarget' = MaxVisibleLsn(visible, termLsn)
+    /\ ckptTarget' = CommittedWatermark
     /\ ckptPrevDirty' = dirty
     /\ recoveryFresh' = FALSE
     /\ UNCHANGED <<nextLsn, phase, opTerm, opLsn, visible, termLsn, walTerms,
@@ -190,7 +188,7 @@ FinishCheckpointSuccess ==
     /\ checkpointLsn' = MaxNat(checkpointLsn, ckptTarget)
     /\ walRetainedFrom' = MaxNat(walRetainedFrom, ckptTarget + 1)
     /\ syncedLsn' = MaxNat(syncedLsn, ckptTarget)
-    /\ dirty' = FALSE
+    /\ dirty' = \E k \in Terms : visible[k] # ckptSnapshot[k]
     /\ lock' = "Free"
     /\ ckptPhase' = "Idle"
     /\ ckptSnapshot' = EmptyLsnMap
@@ -203,7 +201,7 @@ FinishCheckpointSuccess ==
 FinishCheckpointFailure ==
     /\ lock = "Checkpoint"
     /\ ckptPhase = "Snapshotted"
-    /\ dirty' = ckptPrevDirty
+    /\ dirty' = (ckptPrevDirty \/ \E k \in Terms : visible[k] # ckptSnapshot[k])
     /\ lock' = "Free"
     /\ ckptPhase' = "Idle"
     /\ ckptSnapshot' = EmptyLsnMap
@@ -255,9 +253,8 @@ CheckpointSnapshotIsVisible ==
     \A k \in Terms :
         durableCheckpoint[k] # None => durableCheckpoint[k] = visible[k]
 
-CheckpointLsnCoversSnapshot ==
-    \A k \in Terms :
-        durableCheckpoint[k] # None => durableCheckpoint[k] <= checkpointLsn
+CheckpointLsnIsCommittedPrefix ==
+    CommittedThrough(checkpointLsn)
 
 TruncationKeepsUncheckpointedVisibleWal ==
     \A k \in Terms :
@@ -268,15 +265,12 @@ TruncationKeepsUncheckpointedVisibleWal ==
 DirtyFalseMeansCheckpointCoversVisible ==
     dirty = FALSE => durableCheckpoint = visible
 
-NoWriteWhileCheckpointHeld ==
-    lock = "Checkpoint" => \A w \in Writers : phase[w] = "Idle"
+CheckpointLockSerializesPublication ==
+    lock = "Checkpoint" => ckptPhase = "Snapshotted"
 
-NoCheckpointWhileWriteHeld ==
-    lock = "Writer" => ckptPhase = "Idle"
-
-WriterLockHasOneOwner ==
-    lock = "Writer" =>
-        Cardinality({w \in Writers : phase[w] = "Writing"}) = 1
+CheckpointTargetIsCommittedPrefix ==
+    ckptPhase = "Snapshotted" =>
+        CommittedThrough(ckptTarget)
 
 IdleWritersHaveNoReservedOperation ==
     \A w \in Writers :

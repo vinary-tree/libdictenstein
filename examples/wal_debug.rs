@@ -15,7 +15,7 @@ fn main() {
 
     println!("=== Testing Individual Inserts ===");
     {
-        let mut trie: PersistentARTrie<()> = PersistentARTrie::create(&path).expect("create trie");
+        let trie: PersistentARTrie<()> = PersistentARTrie::create(&path).expect("create trie");
         for term in &terms {
             trie.insert(term);
         }

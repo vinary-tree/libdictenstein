@@ -30,7 +30,7 @@ use std::sync::{Arc, Barrier};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use libdictenstein::persistent_artrie_char::SharedCharARTrie;
+use libdictenstein::persistent_artrie::char::SharedCharARTrie;
 use libdictenstein::{ARTrie, Dictionary};
 
 /// Number of distinct keys inserted into the trie before benchmarking.

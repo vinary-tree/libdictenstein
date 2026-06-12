@@ -8,7 +8,7 @@
 (*                                                                         *)
 (* The Rust components being modelled are                                  *)
 (* `evict_overlay_node_at_path` / `evict_overlay_nodes`                    *)
-(* (`persistent_artrie_char/mod.rs`, `cfg(any(test, bench-internals))`):   *)
+(* (`persistent_artrie/char/mod.rs`, `cfg(any(test, bench-internals))`):   *)
 (* they path-copy the overlay spine from the published `lockfree_root`,    *)
 (* swap an in-memory child for an `OnDisk(SwizzledPtr)` reference, and CAS- *)
 (* publish the new root. The NEW component is `find_leaf_faulting` /        *)

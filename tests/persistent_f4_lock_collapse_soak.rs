@@ -31,9 +31,9 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use libdictenstein::artrie_trait::{ARTrie, EvictableARTrie};
+use libdictenstein::persistent_artrie::char::SharedCharARTrie;
+use libdictenstein::persistent_artrie::core::shared_access::SharedTrieAccess;
 use libdictenstein::persistent_artrie::eviction::EvictionConfig;
-use libdictenstein::persistent_artrie_char::SharedCharARTrie;
-use libdictenstein::persistent_artrie_core::shared_access::SharedTrieAccess;
 use libdictenstein::MappedDictionary;
 
 fn scratch() -> std::path::PathBuf {

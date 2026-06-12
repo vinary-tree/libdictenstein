@@ -1,5 +1,5 @@
 use libdictenstein::persistent_artrie::PersistentARTrie;
-use libdictenstein::{Dictionary, MappedDictionary, MutableMappedDictionary};
+use libdictenstein::{Dictionary, MappedDictionary};
 use tempfile::tempdir;
 
 fn main() {
@@ -8,8 +8,7 @@ fn main() {
     // Create source trie
     let dir1 = tempdir().expect("create temp dir");
     let path1 = dir1.path().join("source.artrie");
-    let mut source: PersistentARTrie<i64> =
-        PersistentARTrie::create(&path1).expect("create source");
+    let source: PersistentARTrie<i64> = PersistentARTrie::create(&path1).expect("create source");
 
     // Insert terms with values
     for i in 0..1000 {
@@ -21,8 +20,7 @@ fn main() {
     // Create target trie
     let dir2 = tempdir().expect("create temp dir");
     let path2 = dir2.path().join("target.artrie");
-    let mut target: PersistentARTrie<i64> =
-        PersistentARTrie::create(&path2).expect("create target");
+    let target: PersistentARTrie<i64> = PersistentARTrie::create(&path2).expect("create target");
 
     // Add some overlapping terms with different values
     for i in 500..1500 {

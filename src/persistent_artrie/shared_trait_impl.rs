@@ -10,10 +10,12 @@ use std::sync::atomic::Ordering as AtomicOrdering;
 use std::sync::Arc;
 
 use crate::artrie_trait::{ARTrie, EvictableARTrie};
-use crate::persistent_artrie_core::durability::DurabilityPolicy;
-use crate::persistent_artrie_core::eviction::{EvictionConfig, EvictionCoordinator, EvictionStats};
+use crate::persistent_artrie::core::durability::DurabilityPolicy;
+use crate::persistent_artrie::core::eviction::{
+    EvictionConfig, EvictionCoordinator, EvictionStats,
+};
 // F4: the `.read()/.write()` compat shim on the collapsed `Arc<PersistentARTrie>`.
-use crate::persistent_artrie_core::shared_access::SharedTrieAccess;
+use crate::persistent_artrie::core::shared_access::SharedTrieAccess;
 use crate::value::DictionaryValue;
 
 use super::dict_impl::PersistentARTrie;

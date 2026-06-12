@@ -2,8 +2,8 @@
 //!
 //! **G5.1 (DRY unification).** The byte overlay-backed `DictionaryNode` handle is now
 //! a thin alias of the shared, key-encoding-generic
-//! [`OverlayDictionaryNode<ByteKey, V>`](crate::persistent_artrie_core::overlay::OverlayDictionaryNode)
-//! that lives in `persistent_artrie_core`. The byte and char handles were
+//! [`OverlayDictionaryNode<ByteKey, V>`](crate::persistent_artrie::core::overlay::OverlayDictionaryNode)
+//! that lives in `persistent_artrie::core`. The byte and char handles were
 //! token-for-token identical modulo the key encoding (`ByteKey` vs `CharKey`) and the
 //! public unit they presented (`u8` vs `char`); G5.1 collapses both into the one
 //! generic handle. The public name `PersistentARTrieNode<V>` is PRESERVED (downstream
@@ -23,8 +23,8 @@
 //! `OverlayFaulter`; `Send`/`Sync` AUTO-DERIVE (the faulter trait object carries a
 //! `Send + Sync` supertrait bound). No raw pointers, zero `unsafe`.
 
-use crate::persistent_artrie_core::key_encoding::ByteKey;
-use crate::persistent_artrie_core::overlay::OverlayDictionaryNode;
+use crate::persistent_artrie::core::key_encoding::ByteKey;
+use crate::persistent_artrie::core::overlay::OverlayDictionaryNode;
 
 /// A node in the Persistent ART, backed by a lock-free overlay snapshot.
 ///
@@ -37,8 +37,8 @@ pub type PersistentARTrieNode<V = ()> = OverlayDictionaryNode<ByteKey, V>;
 mod tests {
     use std::sync::Arc;
 
-    use crate::persistent_artrie_core::key_encoding::ByteKey;
-    use crate::persistent_artrie_core::overlay::OverlayNode;
+    use crate::persistent_artrie::core::key_encoding::ByteKey;
+    use crate::persistent_artrie::core::overlay::OverlayNode;
     use crate::DictionaryNode;
 
     use super::PersistentARTrieNode;

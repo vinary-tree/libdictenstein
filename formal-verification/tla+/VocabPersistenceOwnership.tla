@@ -1,146 +1,152 @@
 ---------------------- MODULE VocabPersistenceOwnership ----------------------
 (****************************************************************************)
-(* Bounded vocab persistence/reopen/eviction ownership model.                *)
+(* Bounded vocab persistence/reopen ownership model for the V6 overlay-only  *)
+(* vocabulary.                                                              *)
 (*                                                                          *)
-(* Scope: a vocabulary term gets one stable index and one live node-map      *)
-(* entry while resident. Checkpoint/reopen may rebuild node-map entries      *)
-(* using fresh nodes. Eviction may move a node to disk and drop the old raw  *)
-(* pointer, but it must first remove the raw pointer from the node map.      *)
-(* Forward/reverse observations may fail closed while a term is evicted, but *)
-(* any successful observation must match the stable reverse index.           *)
+(* Scope: the published overlay is the sole source of truth for term -> id   *)
+(* bindings. The in-memory reverse_term_map is a derived exact inverse that  *)
+(* is populated on insert and rebuilt from the checkpoint image plus WAL     *)
+(* tail on reopen. There is no owned parent-pointer tree, node_map, reverse  *)
+(* index sidecar, or vocab overlay eviction action in this model.            *)
 (****************************************************************************)
 
 EXTENDS Naturals, FiniteSets, TLC
 
-CONSTANTS Terms, Nodes, MaxIndex, None
+CONSTANTS Terms, MaxIndex, None
 
-VARIABLES termIndex, nextIndex, nodeState, nodeTerm, nodeMap,
-          reverseIndex, reverseCache, forwardObserved, reverseObserved
+VARIABLES termIndex, nextIndex, checkpointed, walLive, reverseMap,
+          forwardObserved, reverseObserved, recovered, dirty
 
-Vars == <<termIndex, nextIndex, nodeState, nodeTerm, nodeMap,
-          reverseIndex, reverseCache, forwardObserved, reverseObserved>>
+Vars == <<termIndex, nextIndex, checkpointed, walLive, reverseMap,
+          forwardObserved, reverseObserved, recovered, dirty>>
 
-Indexes == {i \in 0..MaxIndex : TRUE}
+Indexes == 0..MaxIndex
 IndexOrNone == Indexes \cup {None}
 TermOrNone == Terms \cup {None}
-NodeOrNone == Nodes \cup {None}
-NodeStates == {"Free", "Live", "Disk", "Dropped"}
+EmptyIndexMap == [t \in Terms |-> None]
+EmptyBoolMap == [t \in Terms |-> FALSE]
+EmptyReverseMap == [i \in Indexes |-> None]
 
 Inserted(t) == termIndex[t] # None
-LiveMapped(t) == nodeMap[t] # None /\ nodeState[nodeMap[t]] = "Live"
-NodeMapImage == {nodeMap[t] : t \in Terms} \ {None}
+UsedIndexes(m) == {m[t] : t \in Terms} \ {None}
+
+MaxNat(a, b) == IF a >= b THEN a ELSE b
+
+TermForIndex(m, i) ==
+    IF \E t \in Terms : m[t] = i
+    THEN CHOOSE t \in Terms : m[t] = i
+    ELSE None
+
+ReverseFrom(m) == [i \in Indexes |-> TermForIndex(m, i)]
+
+RecoveredMap ==
+    [t \in Terms |->
+        IF checkpointed[t] # None
+        THEN checkpointed[t]
+        ELSE IF walLive[t]
+             THEN termIndex[t]
+             ELSE None]
 
 TypeInvariant ==
     /\ None \notin Terms
-    /\ None \notin Nodes
+    /\ None \notin Indexes
     /\ termIndex \in [Terms -> IndexOrNone]
     /\ nextIndex \in 0..(MaxIndex + 1)
-    /\ nodeState \in [Nodes -> NodeStates]
-    /\ nodeTerm \in [Nodes -> TermOrNone]
-    /\ nodeMap \in [Terms -> NodeOrNone]
-    /\ reverseIndex \in [Indexes -> TermOrNone]
-    /\ reverseCache \in [Indexes -> TermOrNone]
+    /\ checkpointed \in [Terms -> IndexOrNone]
+    /\ walLive \in [Terms -> BOOLEAN]
+    /\ reverseMap \in [Indexes -> TermOrNone]
     /\ forwardObserved \in [Terms -> IndexOrNone]
     /\ reverseObserved \in [Indexes -> TermOrNone]
+    /\ recovered \in [Terms -> IndexOrNone]
+    /\ dirty \in BOOLEAN
 
 Init ==
-    /\ termIndex = [t \in Terms |-> None]
+    /\ termIndex = EmptyIndexMap
     /\ nextIndex = 0
-    /\ nodeState = [n \in Nodes |-> "Free"]
-    /\ nodeTerm = [n \in Nodes |-> None]
-    /\ nodeMap = [t \in Terms |-> None]
-    /\ reverseIndex = [i \in Indexes |-> None]
-    /\ reverseCache = [i \in Indexes |-> None]
-    /\ forwardObserved = [t \in Terms |-> None]
-    /\ reverseObserved = [i \in Indexes |-> None]
+    /\ checkpointed = EmptyIndexMap
+    /\ walLive = EmptyBoolMap
+    /\ reverseMap = EmptyReverseMap
+    /\ forwardObserved = EmptyIndexMap
+    /\ reverseObserved = EmptyReverseMap
+    /\ recovered = EmptyIndexMap
+    /\ dirty = FALSE
 
-InsertTerm(t, n) ==
+InsertTerm(t) ==
     /\ t \in Terms
-    /\ n \in Nodes
     /\ ~Inserted(t)
-    /\ nodeState[n] = "Free"
     /\ nextIndex <= MaxIndex
-    /\ termIndex' = [termIndex EXCEPT ![t] = nextIndex]
-    /\ reverseIndex' = [reverseIndex EXCEPT ![nextIndex] = t]
-    /\ reverseCache' = [reverseCache EXCEPT ![nextIndex] = t]
-    /\ nodeState' = [nodeState EXCEPT ![n] = "Live"]
-    /\ nodeTerm' = [nodeTerm EXCEPT ![n] = t]
-    /\ nodeMap' = [nodeMap EXCEPT ![t] = n]
+    /\ LET newTermIndex == [termIndex EXCEPT ![t] = nextIndex] IN
+       /\ termIndex' = newTermIndex
+       /\ reverseMap' = ReverseFrom(newTermIndex)
+    /\ walLive' = [walLive EXCEPT ![t] = TRUE]
     /\ nextIndex' = nextIndex + 1
-    /\ UNCHANGED <<forwardObserved, reverseObserved>>
+    /\ dirty' = TRUE
+    /\ UNCHANGED <<checkpointed, forwardObserved, reverseObserved, recovered>>
+
+ManualInsert(t, i) ==
+    /\ t \in Terms
+    /\ i \in Indexes
+    /\ ~Inserted(t)
+    /\ i \notin UsedIndexes(termIndex)
+    /\ LET newTermIndex == [termIndex EXCEPT ![t] = i] IN
+       /\ termIndex' = newTermIndex
+       /\ reverseMap' = ReverseFrom(newTermIndex)
+    /\ walLive' = [walLive EXCEPT ![t] = TRUE]
+    /\ nextIndex' = MaxNat(nextIndex, i + 1)
+    /\ dirty' = TRUE
+    /\ UNCHANGED <<checkpointed, forwardObserved, reverseObserved, recovered>>
 
 DuplicateInsert(t) ==
     /\ t \in Terms
     /\ Inserted(t)
     /\ forwardObserved' = [forwardObserved EXCEPT ![t] = termIndex[t]]
-    /\ UNCHANGED <<termIndex, nextIndex, nodeState, nodeTerm, nodeMap,
-                  reverseIndex, reverseCache, reverseObserved>>
+    /\ UNCHANGED <<termIndex, nextIndex, checkpointed, walLive, reverseMap,
+                  reverseObserved, recovered, dirty>>
 
 Checkpoint ==
-    UNCHANGED Vars
+    /\ checkpointed' = termIndex
+    /\ walLive' = EmptyBoolMap
+    /\ dirty' = FALSE
+    /\ UNCHANGED <<termIndex, nextIndex, reverseMap,
+                  forwardObserved, reverseObserved, recovered>>
 
-EvictTerm(t) ==
-    LET n == nodeMap[t] IN
-    /\ t \in Terms
-    /\ Inserted(t)
-    /\ n # None
-    /\ nodeState[n] = "Live"
-    /\ nodeTerm[n] = t
-    /\ nodeState' = [nodeState EXCEPT ![n] = "Disk"]
-    /\ nodeMap' = [nodeMap EXCEPT ![t] = None]
-    /\ UNCHANGED <<termIndex, nextIndex, nodeTerm, reverseIndex,
-                  reverseCache, forwardObserved, reverseObserved>>
+Reopen ==
+    /\ LET newTermIndex == RecoveredMap IN
+       /\ termIndex' = newTermIndex
+       /\ reverseMap' = ReverseFrom(newTermIndex)
+    /\ dirty' = \E t \in Terms : walLive[t]
+    /\ UNCHANGED <<nextIndex, checkpointed, walLive,
+                  forwardObserved, reverseObserved, recovered>>
 
-ReopenTerm(t, n) ==
-    /\ t \in Terms
-    /\ n \in Nodes
-    /\ Inserted(t)
-    /\ nodeMap[t] = None
-    /\ nodeState[n] = "Free"
-    /\ nodeState' = [nodeState EXCEPT ![n] = "Live"]
-    /\ nodeTerm' = [nodeTerm EXCEPT ![n] = t]
-    /\ nodeMap' = [nodeMap EXCEPT ![t] = n]
-    /\ UNCHANGED <<termIndex, nextIndex, reverseIndex, reverseCache,
-                  forwardObserved, reverseObserved>>
-
-ClearReverseCache(i) ==
-    /\ i \in Indexes
-    /\ reverseCache[i] # None
-    /\ reverseCache' = [reverseCache EXCEPT ![i] = None]
-    /\ UNCHANGED <<termIndex, nextIndex, nodeState, nodeTerm, nodeMap,
-                  reverseIndex, forwardObserved, reverseObserved>>
+CrashRecover ==
+    /\ recovered' = RecoveredMap
+    /\ UNCHANGED <<termIndex, nextIndex, checkpointed, walLive, reverseMap,
+                  forwardObserved, reverseObserved, dirty>>
 
 ForwardLookup(t) ==
     /\ t \in Terms
-    /\ IF Inserted(t) /\ LiveMapped(t)
-       THEN forwardObserved' = [forwardObserved EXCEPT ![t] = termIndex[t]]
-       ELSE forwardObserved' = [forwardObserved EXCEPT ![t] = None]
-    /\ UNCHANGED <<termIndex, nextIndex, nodeState, nodeTerm, nodeMap,
-                  reverseIndex, reverseCache, reverseObserved>>
+    /\ forwardObserved' = [forwardObserved EXCEPT ![t] = termIndex[t]]
+    /\ UNCHANGED <<termIndex, nextIndex, checkpointed, walLive, reverseMap,
+                  reverseObserved, recovered, dirty>>
 
 ReverseLookup(i) ==
     /\ i \in Indexes
-    /\ IF reverseCache[i] # None
-       THEN reverseObserved' = [reverseObserved EXCEPT ![i] = reverseCache[i]]
-       ELSE IF reverseIndex[i] # None /\ LiveMapped(reverseIndex[i])
-            THEN reverseObserved' = [reverseObserved EXCEPT ![i] = reverseIndex[i]]
-            ELSE reverseObserved' = [reverseObserved EXCEPT ![i] = None]
-    /\ UNCHANGED <<termIndex, nextIndex, nodeState, nodeTerm, nodeMap,
-                  reverseIndex, reverseCache, forwardObserved>>
+    /\ reverseObserved' = [reverseObserved EXCEPT ![i] = reverseMap[i]]
+    /\ UNCHANGED <<termIndex, nextIndex, checkpointed, walLive, reverseMap,
+                  forwardObserved, recovered, dirty>>
 
 Next ==
-    \/ \E t \in Terms, n \in Nodes : InsertTerm(t, n)
+    \/ \E t \in Terms : InsertTerm(t)
+    \/ \E t \in Terms, i \in Indexes : ManualInsert(t, i)
     \/ \E t \in Terms : DuplicateInsert(t)
     \/ Checkpoint
-    \/ \E t \in Terms : EvictTerm(t)
-    \/ \E t \in Terms, n \in Nodes : ReopenTerm(t, n)
-    \/ \E i \in Indexes : ClearReverseCache(i)
+    \/ Reopen
+    \/ CrashRecover
     \/ \E t \in Terms : ForwardLookup(t)
     \/ \E i \in Indexes : ReverseLookup(i)
 
-ReverseIndexMatchesStableTermIndex ==
-    \A t \in Terms :
-        Inserted(t) => reverseIndex[termIndex[t]] = t
+ReverseMapIsExactInverse ==
+    reverseMap = ReverseFrom(termIndex)
 
 IndexesAreUnique ==
     \A t1 \in Terms, t2 \in Terms :
@@ -149,23 +155,15 @@ IndexesAreUnique ==
         /\ t1 # t2
         => termIndex[t1] # termIndex[t2]
 
-NodeMapPointsOnlyToLiveOwnedNodes ==
+CheckpointedBindingsAreStable ==
     \A t \in Terms :
-        nodeMap[t] # None =>
-            /\ nodeState[nodeMap[t]] = "Live"
-            /\ nodeTerm[nodeMap[t]] = t
+        checkpointed[t] # None => termIndex[t] = checkpointed[t]
 
-NoStaleMapEntriesToDiskOrDroppedNodes ==
-    \A n \in Nodes :
-        nodeState[n] \in {"Disk", "Dropped"} => n \notin NodeMapImage
-
-NoNodeMapAliasing ==
-    \A n \in Nodes :
-        Cardinality({t \in Terms : nodeMap[t] = n}) <= 1
-
-ReverseCacheConsistentWithReverseIndex ==
-    \A i \in Indexes :
-        reverseCache[i] # None => reverseIndex[i] = reverseCache[i]
+WalTailCoversUncheckpointedVisibleTerms ==
+    \A t \in Terms :
+        /\ termIndex[t] # None
+        /\ checkpointed[t] # termIndex[t]
+        => walLive[t]
 
 ForwardObservationsAreStable ==
     \A t \in Terms :
@@ -173,7 +171,16 @@ ForwardObservationsAreStable ==
 
 ReverseObservationsAreStable ==
     \A i \in Indexes :
-        reverseObserved[i] # None => reverseIndex[i] = reverseObserved[i]
+        reverseObserved[i] # None =>
+            /\ reverseMap[i] = reverseObserved[i]
+            /\ termIndex[reverseObserved[i]] = i
+
+RecoveredNeverInventsVisibleState ==
+    \A t \in Terms :
+        recovered[t] # None => termIndex[t] = recovered[t]
+
+DirtyFalseMeansCheckpointCoversVisible ==
+    dirty = FALSE => checkpointed = termIndex
 
 Spec == Init /\ [][Next]_Vars
 

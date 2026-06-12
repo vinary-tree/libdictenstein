@@ -30,7 +30,7 @@ use tempfile::tempdir;
 
 use libdictenstein::persistent_artrie::block_storage::{AlignedBlock, BlockStorage};
 use libdictenstein::persistent_artrie::buffer_manager::BufferManager;
-use libdictenstein::persistent_artrie::disk_manager::{MmapDiskManager, BLOCK_SIZE};
+use libdictenstein::persistent_artrie::disk_manager::MmapDiskManager;
 use libdictenstein::persistent_artrie::IoUringDiskManager;
 
 /// Small buffer pool to force eviction on every access past the pool size.
@@ -90,7 +90,7 @@ fn setup_mmap_with_data(block_count: u32) -> (tempfile::TempDir, MmapDiskManager
     let path = dir.path().join("evict_mmap.part");
     let dm = MmapDiskManager::create(&path).expect("create mmap disk manager");
 
-    let block = AlignedBlock::new_boxed();
+    let _block = AlignedBlock::new_boxed();
     for i in 0..block_count {
         let id = dm.allocate_block().expect("allocate block");
         // Write a marker byte so reads are deterministic

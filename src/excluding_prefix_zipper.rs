@@ -20,7 +20,7 @@
 //! ```rust
 //! use libdictenstein::prelude::*;
 //! use libdictenstein::excluding_prefix_zipper::ExcludingPrefixZipper;
-//! use libdictenstein::double_array_trie_zipper::DoubleArrayTrieZipper;
+//! use libdictenstein::double_array_trie::zipper::DoubleArrayTrieZipper;
 //!
 //! let terms = vec!["\x00meta", "\x00index", "hello", "world"];
 //! let dict = DoubleArrayTrie::from_terms(terms.iter());
@@ -44,7 +44,7 @@
 //! ```rust
 //! use libdictenstein::prelude::*;
 //! use libdictenstein::excluding_prefix_zipper::ExcludingPrefixZipper;
-//! use libdictenstein::double_array_trie_zipper::DoubleArrayTrieZipper;
+//! use libdictenstein::double_array_trie::zipper::DoubleArrayTrieZipper;
 //!
 //! let terms = vec!["_internal", "_hidden", "public", "visible"];
 //! let dict = DoubleArrayTrie::from_terms(terms.iter());
@@ -67,7 +67,7 @@
 //! ```rust
 //! use libdictenstein::prelude::*;
 //! use libdictenstein::excluding_prefix_zipper::ExcludingPrefixZipper;
-//! use libdictenstein::double_array_trie_zipper::DoubleArrayTrieZipper;
+//! use libdictenstein::double_array_trie::zipper::DoubleArrayTrieZipper;
 //!
 //! let terms = vec!["api_v1", "api_v2", "api__internal", "web_v1"];
 //! let dict = DoubleArrayTrie::from_terms(terms.iter());
@@ -144,7 +144,7 @@ pub trait ExcludingPrefixZipper: DictZipper {
     /// ```rust
     /// use libdictenstein::prelude::*;
     /// use libdictenstein::excluding_prefix_zipper::ExcludingPrefixZipper;
-    /// use libdictenstein::double_array_trie_zipper::DoubleArrayTrieZipper;
+    /// use libdictenstein::double_array_trie::zipper::DoubleArrayTrieZipper;
     ///
     /// let dict = DoubleArrayTrie::from_terms(vec!["hello", "\x00meta", "world"].iter());
     /// let zipper = DoubleArrayTrieZipper::new_from_dict(&dict);
@@ -189,7 +189,7 @@ pub trait ExcludingPrefixZipper: DictZipper {
     /// ```rust
     /// use libdictenstein::prelude::*;
     /// use libdictenstein::excluding_prefix_zipper::ExcludingPrefixZipper;
-    /// use libdictenstein::double_array_trie_zipper::DoubleArrayTrieZipper;
+    /// use libdictenstein::double_array_trie::zipper::DoubleArrayTrieZipper;
     ///
     /// let terms = vec!["api_v1", "api_v2", "api__internal", "web_v1"];
     /// let dict = DoubleArrayTrie::from_terms(terms.iter());
@@ -354,7 +354,7 @@ impl<'a, Z: DictZipper, P: AsRef<[Z::Unit]>> Iterator for ExcludingIterator<'a, 
 /// ```rust
 /// use libdictenstein::prelude::*;
 /// use libdictenstein::excluding_prefix_zipper::ValuedExcludingPrefixZipper;
-/// use libdictenstein::double_array_trie_zipper::DoubleArrayTrieZipper;
+/// use libdictenstein::double_array_trie::zipper::DoubleArrayTrieZipper;
 ///
 /// let terms_with_values = vec![
 ///     ("cat", 1),
@@ -479,8 +479,8 @@ impl<'a, Z: ValuedDictZipper, P: AsRef<[Z::Unit]>> Iterator for ValuedExcludingI
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::double_array_trie::zipper::DoubleArrayTrieZipper;
     use crate::double_array_trie::DoubleArrayTrie;
-    use crate::double_array_trie_zipper::DoubleArrayTrieZipper;
 
     #[test]
     fn test_single_exclusion_null_prefix() {

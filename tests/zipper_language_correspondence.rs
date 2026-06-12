@@ -9,23 +9,23 @@ mod common;
 
 use common::strategies::{ascii_term, overlapping_term_sets, unicode_term};
 use libdictenstein::difference_zipper::DifferenceZipperExt;
+use libdictenstein::double_array_trie::char::DoubleArrayTrieChar;
+use libdictenstein::double_array_trie::char_zipper::DoubleArrayTrieCharZipper;
+use libdictenstein::double_array_trie::zipper::DoubleArrayTrieZipper;
 use libdictenstein::double_array_trie::DoubleArrayTrie;
-use libdictenstein::double_array_trie_char::DoubleArrayTrieChar;
-use libdictenstein::double_array_trie_char_zipper::DoubleArrayTrieCharZipper;
-use libdictenstein::double_array_trie_zipper::DoubleArrayTrieZipper;
+use libdictenstein::dynamic_dawg::char::DynamicDawgChar;
+use libdictenstein::dynamic_dawg::char_zipper::DynamicDawgCharZipper;
+use libdictenstein::dynamic_dawg::zipper::DynamicDawgZipper;
 use libdictenstein::dynamic_dawg::DynamicDawg;
-use libdictenstein::dynamic_dawg_char::DynamicDawgChar;
-use libdictenstein::dynamic_dawg_char_zipper::DynamicDawgCharZipper;
-use libdictenstein::dynamic_dawg_zipper::DynamicDawgZipper;
 use libdictenstein::excluding_prefix_zipper::ExcludingPrefixZipper;
 use libdictenstein::intersection_zipper::IntersectionZipperExt;
 use libdictenstein::prefix_zipper::PrefixZipper;
+use libdictenstein::scdawg::char::ScdawgChar;
 use libdictenstein::scdawg::Scdawg;
-use libdictenstein::scdawg_char::ScdawgChar;
+use libdictenstein::suffix_automaton::char::SuffixAutomatonChar;
+use libdictenstein::suffix_automaton::char_zipper::SuffixAutomatonCharZipper;
+use libdictenstein::suffix_automaton::zipper::SuffixAutomatonZipper;
 use libdictenstein::suffix_automaton::SuffixAutomaton;
-use libdictenstein::suffix_automaton_char::SuffixAutomatonChar;
-use libdictenstein::suffix_automaton_char_zipper::SuffixAutomatonCharZipper;
-use libdictenstein::suffix_automaton_zipper::SuffixAutomatonZipper;
 use libdictenstein::symmetric_difference_zipper::SymmetricDifferenceZipperExt;
 use libdictenstein::union_zipper::UnionZipperExt;
 use libdictenstein::value_diff_zipper::ValueDiffZipperExt;
@@ -518,11 +518,11 @@ fn scdawg_handles_refine_exact_and_substring_queries() {
 #[cfg(feature = "persistent-artrie")]
 mod persistent {
     use super::*;
+    use libdictenstein::persistent_artrie::char::{
+        PersistentARTrieChar, PersistentARTrieCharZipper,
+    };
     use libdictenstein::persistent_artrie::{
         PersistentARTrie, PersistentARTrieZipper, SharedARTrie,
-    };
-    use libdictenstein::persistent_artrie_char::{
-        PersistentARTrieChar, PersistentARTrieCharZipper,
     };
 
     use std::sync::Arc;

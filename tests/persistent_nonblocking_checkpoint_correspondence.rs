@@ -19,7 +19,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Barrier};
 use std::thread;
 
-use libdictenstein::persistent_artrie_char::{PersistentARTrieChar, SharedCharARTrie};
+use libdictenstein::persistent_artrie::char::{PersistentARTrieChar, SharedCharARTrie};
 use libdictenstein::{ARTrie, Dictionary, MappedDictionary};
 
 /// Real-disk scratch tempdir (NOT the default temp dir, which is tmpfs here).

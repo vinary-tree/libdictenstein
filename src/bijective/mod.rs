@@ -13,7 +13,7 @@
 //! - [`BijectiveMap`]: Generic bijective map for arbitrary hashable value types
 //!
 //! For vocabulary use cases with sequential `u64` indices, use
-//! [`PersistentVocabARTrie`](crate::persistent_vocab_artrie::PersistentVocabARTrie) which provides
+//! [`PersistentVocabARTrie`](crate::persistent_artrie::vocab::PersistentVocabARTrie) which provides
 //! correct persistent bidirectional lookups via parent pointers and LRU caching.
 //!
 //! # Design

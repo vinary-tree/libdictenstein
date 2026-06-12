@@ -8,10 +8,11 @@
 //! the forward/reverse bijection.
 
 #![cfg(feature = "persistent-artrie")]
+#![allow(dead_code)]
 
+use libdictenstein::persistent_artrie::char::PersistentARTrieChar;
+use libdictenstein::persistent_artrie::vocab::PersistentVocabARTrie;
 use libdictenstein::persistent_artrie::PersistentARTrie;
-use libdictenstein::persistent_artrie_char::PersistentARTrieChar;
-use libdictenstein::persistent_vocab_artrie::PersistentVocabARTrie;
 use libdictenstein::{Dictionary, MappedDictionary};
 use std::collections::BTreeMap;
 use tempfile::tempdir;
@@ -93,7 +94,7 @@ fn vocab_trace_preserves_bijection_after_checkpoint_and_reopen() {
 
     let mut expected = BTreeMap::new();
     let (alpha, beta, gamma, emoji) = {
-        let mut vocab = PersistentVocabARTrie::create(&path).expect("create vocab trie");
+        let vocab = PersistentVocabARTrie::create(&path).expect("create vocab trie");
 
         let alpha = vocab.insert("alpha").expect("insert alpha");
         assert_eq!(vocab.insert("alpha").expect("duplicate alpha"), alpha);

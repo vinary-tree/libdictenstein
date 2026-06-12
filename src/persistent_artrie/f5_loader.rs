@@ -5,7 +5,7 @@
 //! [`PersistentARTrie::load_overlay_root_compressed`], which reads the dense on-disk image
 //! DIRECTLY into a fully-resident `Arc<OverlayNode<ByteKey, V>>` via
 //! [`PersistentARTrie::enumerate_terms_from_disk`] + the proven iterative
-//! [`build_overlay_root_from_terms`](crate::persistent_artrie_core::overlay::f5_build::build_overlay_root_from_terms)
+//! [`build_overlay_root_from_terms`](crate::persistent_artrie::core::overlay::f5_build::build_overlay_root_from_terms)
 //! — **NO transient owned `TrieRoot`**. `self.root` is never materialized; this is the
 //! "literal-zero-owned" reopen the campaign targets, and it let L3.3 delete
 //! `load_root_from_disk_with_arena` + `TrieRoot` + the owned converters + the D1
@@ -32,10 +32,10 @@
 use std::sync::Arc;
 
 use crate::persistent_artrie::block_storage::BlockStorage;
+use crate::persistent_artrie::core::key_encoding::ByteKey;
+use crate::persistent_artrie::core::overlay::flip::LockFreeOverlay;
+use crate::persistent_artrie::core::overlay::node::OverlayNode;
 use crate::persistent_artrie::error::{PersistentARTrieError, Result};
-use crate::persistent_artrie_core::key_encoding::ByteKey;
-use crate::persistent_artrie_core::overlay::flip::LockFreeOverlay;
-use crate::persistent_artrie_core::overlay::node::OverlayNode;
 use crate::value::DictionaryValue;
 
 impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrie<V, S> {
@@ -89,7 +89,7 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrie<V, S> {
     /// [`PersistentARTrie::enumerate_terms_from_disk`] (all three on-disk formats:
     /// un-compressed overlay, CX node-prefix-compressed, legacy owned bucket-suffix), then builds
     /// the fully-resident (every child `Child::InMem`) overlay root via the proven iterative
-    /// [`build_overlay_root_from_terms`](crate::persistent_artrie_core::overlay::f5_build::build_overlay_root_from_terms).
+    /// [`build_overlay_root_from_terms`](crate::persistent_artrie::core::overlay::f5_build::build_overlay_root_from_terms).
     /// `root_ptr == 0` ⇒ an EMPTY overlay root. The eager all-`InMem` result satisfies the
     /// residency invariant that `capture_overlay_snapshot`/`evict`/`count_overlay_finals` (which
     /// walk only `as_in_mem()`) require — a lazily-`OnDisk` reopened root would silently vanish
@@ -103,7 +103,7 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrie<V, S> {
         &self,
         root_ptr: u64,
     ) -> Result<(Arc<OverlayNode<ByteKey, V>>, usize, bool)> {
-        use crate::persistent_artrie_core::overlay::f5_build::build_overlay_root_from_terms;
+        use crate::persistent_artrie::core::overlay::f5_build::build_overlay_root_from_terms;
 
         // `root_ptr == 0` ⇒ an EMPTY overlay + `image_loaded = false` (no dense image present).
         if root_ptr == 0 {

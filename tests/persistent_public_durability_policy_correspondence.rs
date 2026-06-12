@@ -1,8 +1,9 @@
 #![cfg(feature = "persistent-artrie")]
+#![allow(dead_code)]
 
+use libdictenstein::persistent_artrie::char::PersistentARTrieChar;
+use libdictenstein::persistent_artrie::vocab::PersistentVocabARTrie;
 use libdictenstein::persistent_artrie::{DurabilityPolicy, PersistentARTrie};
-use libdictenstein::persistent_artrie_char::PersistentARTrieChar;
-use libdictenstein::persistent_vocab_artrie::PersistentVocabARTrie;
 use tempfile::tempdir;
 
 fn assert_synced_covers_tail(label: &str, next_lsn: u64, synced_lsn: Option<u64>) {

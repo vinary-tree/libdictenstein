@@ -2,10 +2,10 @@
    overlay <-> dense codec.
 
    The Coq twin of the overlay<->dense transform implemented in Rust by
-   [src/persistent_artrie_char/persist.rs::serialize_overlay_snapshot_compressed] / [peel_chain]
-   (the ENCODE / compress side) and [src/persistent_artrie_char/disk_io.rs::load_overlay_node_from_disk]
+   [src/persistent_artrie/char/persist.rs::serialize_overlay_snapshot_compressed] / [peel_chain]
+   (the ENCODE / compress side) and [src/persistent_artrie/char/disk_io.rs::load_overlay_node_from_disk]
    -> [persist.rs::inner_to_overlay] (the DECODE / expand side), with the chunking step
-   [src/persistent_artrie_core/overlay/codec.rs::chain_chunks] already proven no-truncating in
+   [src/persistent_artrie/core/overlay/codec.rs::chain_chunks] already proven no-truncating in
    [Model/PrefixChunking.v] (theorem [chunks_concat]).
 
    The owner mandate (2026-06-08) is "KEEP path compression, but PROVE it is safe (loses no key

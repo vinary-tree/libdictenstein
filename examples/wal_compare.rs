@@ -15,8 +15,7 @@ fn main() {
         let wal_path1 = dir1.path().join("individual.wal");
 
         {
-            let mut trie: PersistentARTrie<()> =
-                PersistentARTrie::create(&path1).expect("create trie");
+            let trie: PersistentARTrie<()> = PersistentARTrie::create(&path1).expect("create trie");
             for term in &terms {
                 trie.insert(term);
             }
@@ -33,8 +32,7 @@ fn main() {
         let wal_path2 = dir2.path().join("batch.wal");
 
         {
-            let mut trie: PersistentARTrie<()> =
-                PersistentARTrie::create(&path2).expect("create trie");
+            let trie: PersistentARTrie<()> = PersistentARTrie::create(&path2).expect("create trie");
             let entries: Vec<(String, Option<()>)> =
                 terms.iter().map(|t| (t.clone(), None)).collect();
             trie.insert_batch(&entries);

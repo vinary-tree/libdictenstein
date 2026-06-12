@@ -1,6 +1,6 @@
 //! Simple test to verify create/open cycle works correctly
 
-use libdictenstein::persistent_artrie_char::PersistentARTrieChar;
+use libdictenstein::persistent_artrie::char::PersistentARTrieChar;
 use tempfile::TempDir;
 
 fn main() {
@@ -11,8 +11,7 @@ fn main() {
 
     // Create and populate trie
     {
-        let mut trie =
-            PersistentARTrieChar::<u64>::create(&trie_path).expect("Failed to create trie");
+        let trie = PersistentARTrieChar::<u64>::create(&trie_path).expect("Failed to create trie");
 
         for i in 0..1000 {
             let term = format!("term{:05}", i);

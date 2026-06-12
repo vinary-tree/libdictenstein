@@ -52,7 +52,7 @@ fn bench_check_now(c: &mut Criterion) {
                 let start = std::time::Instant::now();
                 for _ in 0..OPS_PER_ITER {
                     let level = black_box(monitor.check_now());
-                    black_box(level);
+                    let _ = black_box(level);
                 }
                 total_duration += start.elapsed();
             }

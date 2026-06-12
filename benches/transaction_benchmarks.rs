@@ -19,7 +19,7 @@ fn bench_transaction_commit(c: &mut Criterion) {
         group.bench_with_input(BenchmarkId::new("commit", count), &count, |b, &count| {
             let dir = tempdir().expect("create temp dir");
             let path = dir.path().join("bench.artrie");
-            let mut trie: PersistentARTrie<i64> = PersistentARTrie::create(&path).expect("create");
+            let trie: PersistentARTrie<i64> = PersistentARTrie::create(&path).expect("create");
 
             // Pre-generate terms
             let terms: Vec<String> = (0..count).map(|i| format!("term_{:08}", i)).collect();
@@ -79,7 +79,7 @@ fn bench_commit_vs_abort(c: &mut Criterion) {
     group.bench_function("commit_1000", |b| {
         let dir = tempdir().expect("create temp dir");
         let path = dir.path().join("bench.artrie");
-        let mut trie: PersistentARTrie<i64> = PersistentARTrie::create(&path).expect("create");
+        let trie: PersistentARTrie<i64> = PersistentARTrie::create(&path).expect("create");
 
         b.iter(|| {
             let mut tx = trie.begin_document("bench_doc").expect("begin");
@@ -123,7 +123,7 @@ fn bench_transaction_vs_batch(c: &mut Criterion) {
     group.bench_function("transaction_commit", |b| {
         let dir = tempdir().expect("create temp dir");
         let path = dir.path().join("bench.artrie");
-        let mut trie: PersistentARTrie<i64> = PersistentARTrie::create(&path).expect("create");
+        let trie: PersistentARTrie<i64> = PersistentARTrie::create(&path).expect("create");
 
         b.iter(|| {
             let mut tx = trie.begin_document("bench_doc").expect("begin");
@@ -138,7 +138,7 @@ fn bench_transaction_vs_batch(c: &mut Criterion) {
     group.bench_function("direct_insert_batch", |b| {
         let dir = tempdir().expect("create temp dir");
         let path = dir.path().join("bench.artrie");
-        let mut trie: PersistentARTrie<i64> = PersistentARTrie::create(&path).expect("create");
+        let trie: PersistentARTrie<i64> = PersistentARTrie::create(&path).expect("create");
 
         b.iter(|| {
             let result = trie.insert_batch(&terms);

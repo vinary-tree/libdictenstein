@@ -2,10 +2,10 @@
 //!
 //! The generic MVCC primitives (`MvccStats`, `MvccStatsTracker`, `TrieRoot`
 //! trait, `ReadTransaction<T>`, `EpochGuard`) live in
-//! [`crate::persistent_artrie_core::mvcc`] and are re-exported here for
+//! [`crate::persistent_artrie::core::mvcc`] and are re-exported here for
 //! backward-compatible call-sites. The byte-side `impl TrieRoot` is, as of G4
 //! Phase 6, provided by the blanket `impl<K, V> TrieRoot for OverlayNode<K, V>`
-//! in `crate::persistent_artrie_core::overlay` (the byte node is now its
+//! in `crate::persistent_artrie::core::overlay` (the byte node is now its
 //! `<ByteKey>` alias), so this module is pure re-export plumbing.
 
 // `use std::sync::Arc;` removed — the only consumer was the now-superseded
@@ -13,13 +13,13 @@
 
 // Re-export the generic primitives so existing `persistent_artrie::mvcc::*`
 // imports keep working unchanged.
-pub use crate::persistent_artrie_core::mvcc::{
+pub use crate::persistent_artrie::core::mvcc::{
     EpochGuard, MvccStats, MvccStatsTracker, ReadTransaction, TrieRoot,
 };
 
 // G4 Phase 6: this per-variant `impl TrieRoot for PersistentNode<i64>` is
 // SUPERSEDED by the single blanket `impl<K, V> TrieRoot for OverlayNode<K, V>` in
-// `crate::persistent_artrie_core::overlay` (the DRY bonus). Because
+// `crate::persistent_artrie::core::overlay` (the DRY bonus). Because
 // `PersistentNode<V>` is now the alias `OverlayNode<ByteKey, V>`, the blanket
 // already covers `OverlayNode<ByteKey, i64>` with the identical `Key=u8,
 // Value=i64` — keeping this impl would be a duplicate-impl coherence error.

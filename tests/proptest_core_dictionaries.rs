@@ -8,13 +8,13 @@
 mod common;
 
 use common::strategies::*;
+use libdictenstein::double_array_trie::char::DoubleArrayTrieChar;
 use libdictenstein::double_array_trie::DoubleArrayTrie;
-use libdictenstein::double_array_trie_char::DoubleArrayTrieChar;
+use libdictenstein::dynamic_dawg::char::DynamicDawgChar;
 use libdictenstein::dynamic_dawg::DynamicDawg;
-use libdictenstein::dynamic_dawg_char::DynamicDawgChar;
+use libdictenstein::suffix_automaton::char::SuffixAutomatonChar;
 use libdictenstein::suffix_automaton::SuffixAutomaton;
-use libdictenstein::suffix_automaton_char::SuffixAutomatonChar;
-use libdictenstein::{CompactableDictionary, Dictionary};
+use libdictenstein::Dictionary;
 use proptest::prelude::*;
 use std::collections::{HashMap, HashSet};
 

@@ -5,8 +5,8 @@
 //! deleted the owned tree — and that WAL-less in-memory writes/reads round-trip through it.
 #![cfg(feature = "persistent-artrie")]
 
+use libdictenstein::persistent_artrie::char::PersistentARTrieChar;
 use libdictenstein::persistent_artrie::PersistentARTrie;
-use libdictenstein::persistent_artrie_char::PersistentARTrieChar;
 use libdictenstein::{Dictionary, MappedDictionary};
 
 #[test]

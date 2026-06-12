@@ -7,15 +7,16 @@
 //! lazy-load errors are exposed by `try_*` while public reads fail closed.
 
 #![cfg(feature = "persistent-artrie")]
+#![allow(dead_code)]
 
-use libdictenstein::persistent_artrie::{
-    PersistentARTrie, SwizzledPtr, WalRecord, WalWriter, BLOCK_SIZE,
-};
-use libdictenstein::persistent_artrie_char::serialization_char::{
+use libdictenstein::persistent_artrie::char::serialization_char::{
     deserialize_char_node_v2, DeserializationContext,
 };
-use libdictenstein::persistent_artrie_char::{
+use libdictenstein::persistent_artrie::char::{
     ArenaSlot as CharArenaSlot, CharNodeArena, PersistentARTrieChar,
+};
+use libdictenstein::persistent_artrie::{
+    PersistentARTrie, SwizzledPtr, WalRecord, WalWriter, BLOCK_SIZE,
 };
 use libdictenstein::serialization::bincode_compat;
 use libdictenstein::{Dictionary, MappedDictionary};

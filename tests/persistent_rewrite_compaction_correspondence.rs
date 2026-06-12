@@ -6,11 +6,11 @@
 //! retryable.
 
 #![cfg(feature = "persistent-artrie")]
+#![allow(dead_code)]
 
+use libdictenstein::persistent_artrie::char::PersistentARTrieChar;
+use libdictenstein::persistent_artrie::vocab::PersistentVocabARTrie;
 use libdictenstein::persistent_artrie::wal::WalReader;
-use libdictenstein::persistent_artrie_char::PersistentARTrieChar;
-use libdictenstein::persistent_vocab_artrie::PersistentVocabARTrie;
-use std::fs;
 use std::path::Path;
 use tempfile::tempdir;
 
@@ -89,7 +89,7 @@ fn vocab_rewrite_checkpoint_preserves_sparse_unicode_duplicate_bijection() {
     let path = dir.path().join("vocab_rewrite_sparse.vocab");
 
     {
-        let mut vocab =
+        let vocab =
             PersistentVocabARTrie::create_with_start_index(&path, 10).expect("create vocab");
         assert!(vocab.insert_with_index("日本語", 10).expect("insert"));
         assert!(vocab.insert_with_index("emoji😀", 42).expect("insert"));
@@ -121,7 +121,7 @@ fn vocab_checkpoint_rewrite_keeps_post_checkpoint_wal_tail_replayable() {
     let path = dir.path().join("vocab_rewrite_tail.vocab");
 
     {
-        let mut vocab = PersistentVocabARTrie::create(&path).expect("create vocab");
+        let vocab = PersistentVocabARTrie::create(&path).expect("create vocab");
         assert_eq!(vocab.insert("checkpointed").expect("insert"), 0);
         vocab.checkpoint().expect("checkpoint vocab");
 

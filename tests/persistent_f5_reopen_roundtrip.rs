@@ -11,8 +11,8 @@
 //! Scratch is real disk (`target/test-tmp`), never tmpfs.
 #![cfg(feature = "persistent-artrie")]
 
-use libdictenstein::persistent_artrie_char::PersistentARTrieChar;
-use libdictenstein::persistent_artrie_core::wal::{RankRegime, WalReader};
+use libdictenstein::persistent_artrie::char::PersistentARTrieChar;
+use libdictenstein::persistent_artrie::core::wal::{RankRegime, WalReader};
 use libdictenstein::{Dictionary, MappedDictionary};
 
 fn scratch(tag: &str) -> tempfile::TempDir {

@@ -7,9 +7,9 @@
 
 #![cfg(feature = "persistent-artrie")]
 
+use libdictenstein::persistent_artrie::char::{PersistentARTrieChar, SharedCharARTrie};
+use libdictenstein::persistent_artrie::vocab::{PersistentVocabARTrie, SharedVocabARTrie};
 use libdictenstein::persistent_artrie::{PersistentARTrie, SharedARTrie};
-use libdictenstein::persistent_artrie_char::{PersistentARTrieChar, SharedCharARTrie};
-use libdictenstein::persistent_vocab_artrie::{PersistentVocabARTrie, SharedVocabARTrie};
 use libdictenstein::{ARTrie, MappedDictionary};
 use std::sync::{Arc, Barrier};
 use std::thread;

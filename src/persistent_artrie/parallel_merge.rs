@@ -16,7 +16,7 @@
 use super::SharedARTrie;
 use crate::persistent_artrie::error::Result;
 // F4: the `.read()/.write()` compat shim on the collapsed `Arc<PersistentARTrie>`.
-use crate::persistent_artrie_core::shared_access::SharedTrieAccess;
+use crate::persistent_artrie::core::shared_access::SharedTrieAccess;
 use crate::value::DictionaryValue;
 
 /// Extension trait for parallel merge operations on [`SharedARTrie`].

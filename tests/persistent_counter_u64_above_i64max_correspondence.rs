@@ -22,8 +22,8 @@
 
 #![cfg(feature = "persistent-artrie")]
 
+use libdictenstein::persistent_artrie::char::PersistentARTrieChar;
 use libdictenstein::persistent_artrie::{PersistentARTrie, WalRecord, WalWriter};
-use libdictenstein::persistent_artrie_char::PersistentARTrieChar;
 use libdictenstein::{Dictionary, MappedDictionary};
 use std::path::Path;
 
@@ -248,7 +248,7 @@ fn char_counter_crosses_i64_max_survives_checkpoint_reopen_and_rejects_overflow(
 /// i64 WAL `result` field is NEGATIVE.
 #[test]
 fn byte_counter_above_i64_max_survives_pure_wal_replay() {
-    use libdictenstein::persistent_artrie_core::durability::DurabilityPolicy;
+    use libdictenstein::persistent_artrie::core::durability::DurabilityPolicy;
     let dir = scratch("u64-above-i64max-byte-wal");
     let path = dir.path().join("t.part");
 

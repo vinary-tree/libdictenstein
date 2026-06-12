@@ -30,7 +30,7 @@ fn main() {
 
     // Phase 1: Insert all terms and verify in memory
     {
-        let mut dict = PersistentARTrie::<()>::create(&path).expect("create dict");
+        let dict = PersistentARTrie::<()>::create(&path).expect("create dict");
 
         for term in &terms {
             dict.insert(term);

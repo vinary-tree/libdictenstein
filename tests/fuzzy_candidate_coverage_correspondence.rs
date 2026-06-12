@@ -8,8 +8,8 @@
 //! surfaced by at least one exact substring piece.  The edit-distance
 //! transducer itself remains upstream-owned by `liblevenshtein`.
 
+use libdictenstein::scdawg::char::ScdawgChar;
 use libdictenstein::scdawg::Scdawg;
-use libdictenstein::scdawg_char::ScdawgChar;
 use libdictenstein::substring::SubstringDictionary;
 use std::collections::BTreeSet;
 

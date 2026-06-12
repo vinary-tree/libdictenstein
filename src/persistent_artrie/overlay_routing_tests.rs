@@ -45,7 +45,7 @@ fn m3_empty_term_routes_to_overlay() {
     let path = dir.path().join("e.part");
 
     let empty_count: u64 = 77;
-    let mut trie = PersistentARTrie::<u64>::create(&path).expect("create");
+    let trie = PersistentARTrie::<u64>::create(&path).expect("create");
     assert!(trie.route_overlay());
 
     // The routed public writer publishes "" to the overlay ROOT (durable, H4).

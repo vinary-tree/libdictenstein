@@ -3,14 +3,14 @@
 use std::io::Cursor;
 
 use libdictenstein::persistent_artrie::arena_manager::ArenaSlot as ByteArenaSlot;
-use libdictenstein::persistent_artrie::error::PersistentARTrieError;
-use libdictenstein::persistent_artrie::relative_encoding as byte_rel;
-use libdictenstein::persistent_artrie_char::arena_manager::ArenaSlot as CharArenaSlot;
-use libdictenstein::persistent_artrie_char::relative_encoding as char_rel;
-use libdictenstein::persistent_artrie_char::serialization_char::{
+use libdictenstein::persistent_artrie::char::arena_manager::ArenaSlot as CharArenaSlot;
+use libdictenstein::persistent_artrie::char::relative_encoding as char_rel;
+use libdictenstein::persistent_artrie::char::serialization_char::{
     char_node_types, deserialize_char_node_v2, DeserializationContext, SerializedCharNodeHeader,
     CHAR_FORMAT_VERSION, CHAR_NODE_MAGIC,
 };
+use libdictenstein::persistent_artrie::error::PersistentARTrieError;
+use libdictenstein::persistent_artrie::relative_encoding as byte_rel;
 
 #[test]
 fn byte_relative_encoding_falls_back_to_full_for_forward_same_arena_child() {

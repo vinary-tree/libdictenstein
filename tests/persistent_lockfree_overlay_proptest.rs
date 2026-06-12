@@ -21,10 +21,10 @@
 //! Run with: cargo test --features persistent-artrie --test persistent_lockfree_overlay_proptest
 
 #![cfg(feature = "persistent-artrie")]
+#![allow(dead_code)]
 
-use libdictenstein::persistent_artrie_char::PersistentARTrieChar;
-use libdictenstein::persistent_artrie_core::durability::DurabilityPolicy;
-use libdictenstein::Dictionary;
+use libdictenstein::persistent_artrie::char::PersistentARTrieChar;
+use libdictenstein::persistent_artrie::core::durability::DurabilityPolicy;
 use proptest::prelude::*;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Barrier};
@@ -44,7 +44,7 @@ fn scratch_dir(prefix: &str) -> TempDir {
 fn lockfree_trie(prefix: &str) -> (TempDir, PersistentARTrieChar<()>) {
     let dir = scratch_dir(prefix);
     let path = dir.path().join("overlay.artc");
-    let mut trie = PersistentARTrieChar::<()>::create(&path).expect("create trie");
+    let trie = PersistentARTrieChar::<()>::create(&path).expect("create trie");
     (dir, trie)
 }
 
@@ -53,7 +53,7 @@ fn lockfree_trie(prefix: &str) -> (TempDir, PersistentARTrieChar<()>) {
 fn durable_lockfree_trie(prefix: &str) -> (TempDir, PersistentARTrieChar<()>) {
     let dir = scratch_dir(prefix);
     let path = dir.path().join("overlay.artc");
-    let mut trie = PersistentARTrieChar::<()>::create(&path).expect("create trie");
+    let trie = PersistentARTrieChar::<()>::create(&path).expect("create trie");
     trie.set_durability_policy(DurabilityPolicy::Immediate);
     (dir, trie)
 }
@@ -350,7 +350,7 @@ fn multithread_insert_remove_converges_to_known_subset() {
 fn valued_overlay_remove_drops_value_not_zero() {
     let dir = scratch_dir("rb-remove-valued");
     let path = dir.path().join("overlay.artc");
-    let mut trie = PersistentARTrieChar::<u64>::create(&path).expect("create valued trie");
+    let trie = PersistentARTrieChar::<u64>::create(&path).expect("create valued trie");
     trie.set_durability_policy(DurabilityPolicy::Immediate);
 
     let mut oracle: BTreeMap<String, u64> = BTreeMap::new();

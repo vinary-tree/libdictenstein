@@ -2,6 +2,7 @@
 //!
 //! This module provides strategies for generating test data that exercises
 //! various edge cases and code paths in dictionary implementations.
+#![allow(dead_code)]
 
 use proptest::prelude::*;
 use std::collections::HashSet;

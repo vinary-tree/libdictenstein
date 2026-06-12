@@ -1,7 +1,6 @@
 //! Quick comparison of regular merge vs batched merge throughput
 
 use libdictenstein::persistent_artrie::PersistentARTrie;
-use libdictenstein::MutableMappedDictionary;
 use std::time::Instant;
 use tempfile::tempdir;
 
@@ -14,7 +13,7 @@ fn main() {
     // Create source trie
     let source_dir = tempdir().expect("create temp dir");
     let source_path = source_dir.path().join("source.artrie");
-    let mut source: PersistentARTrie<i64> =
+    let source: PersistentARTrie<i64> =
         PersistentARTrie::create(&source_path).expect("create source");
 
     for i in 0..size {

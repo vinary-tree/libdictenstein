@@ -20,7 +20,7 @@
 //! ```text
 //! use libdictenstein::ARTrie;
 //! use libdictenstein::persistent_artrie::PersistentARTrie;
-//! use libdictenstein::persistent_artrie_char::PersistentARTrieChar;
+//! use libdictenstein::persistent_artrie::char::PersistentARTrieChar;
 //!
 //! // Generic function works with both variants
 //! fn count_words<T: ARTrie>(trie: &T) -> usize {
@@ -43,11 +43,11 @@
 //! ```
 //!
 //! [`PersistentARTrie`]: crate::persistent_artrie::PersistentARTrie
-//! [`PersistentARTrieChar`]: crate::persistent_artrie_char::PersistentARTrieChar
+//! [`PersistentARTrieChar`]: crate::persistent_artrie::char::PersistentARTrieChar
 //! [`DoubleArrayTrie`]: crate::double_array_trie::DoubleArrayTrie
-//! [`DoubleArrayTrieChar`]: crate::double_array_trie_char::DoubleArrayTrieChar
+//! [`DoubleArrayTrieChar`]: crate::double_array_trie::char::DoubleArrayTrieChar
 //! [`DynamicDawg`]: crate::dynamic_dawg::DynamicDawg
-//! [`DynamicDawgChar`]: crate::dynamic_dawg_char::DynamicDawgChar
+//! [`DynamicDawgChar`]: crate::dynamic_dawg::char::DynamicDawgChar
 
 use std::path::Path;
 
@@ -213,7 +213,7 @@ pub trait ARTrie: Clone + Send + Sync {
     ///
     /// ```text
     /// use libdictenstein::ARTrie;
-    /// use libdictenstein::persistent_artrie_char::PersistentARTrieChar;
+    /// use libdictenstein::persistent_artrie::char::PersistentARTrieChar;
     ///
     /// let (trie, report) = PersistentARTrieChar::<i64>::open_with_recovery_and_slot_tracking("data.artc")?;
     ///
@@ -241,7 +241,7 @@ pub trait ARTrie: Clone + Send + Sync {
     ///
     /// ```text
     /// use libdictenstein::ARTrie;
-    /// use libdictenstein::persistent_artrie_char::PersistentARTrieChar;
+    /// use libdictenstein::persistent_artrie::char::PersistentARTrieChar;
     ///
     /// let mut trie = PersistentARTrieChar::<()>::open("words.artc")?;
     /// trie.enable_slot_tracking(); // Enable after opening
@@ -264,7 +264,7 @@ pub trait ARTrie: Clone + Send + Sync {
     ///
     /// ```text
     /// use libdictenstein::ARTrie;
-    /// use libdictenstein::persistent_artrie_char::PersistentARTrieChar;
+    /// use libdictenstein::persistent_artrie::char::PersistentARTrieChar;
     ///
     /// let mut trie = PersistentARTrieChar::<()>::create("words.artc")?;
     /// trie.insert("hello");
@@ -477,10 +477,10 @@ pub trait ARTrie: Clone + Send + Sync {
     /// - `Manual`: Only syncs on explicit `sync()` calls
     ///
     /// The return type now points at the canonical home in
-    /// `persistent_artrie_core::durability`. The old
+    /// `persistent_artrie::core::durability`. The old
     /// `persistent_artrie::dict_impl::DurabilityPolicy` path is a
     /// `pub use` re-export, kept for back-compat for one release.
-    fn durability_policy(&self) -> crate::persistent_artrie_core::durability::DurabilityPolicy;
+    fn durability_policy(&self) -> crate::persistent_artrie::core::durability::DurabilityPolicy;
 
     // === Atomic Update Operations ===
 
@@ -496,7 +496,7 @@ pub trait ARTrie: Clone + Send + Sync {
     ///
     /// ```text
     /// use libdictenstein::ARTrie;
-    /// use libdictenstein::persistent_artrie_char::PersistentARTrieChar;
+    /// use libdictenstein::persistent_artrie::char::PersistentARTrieChar;
     ///
     /// let mut trie = PersistentARTrieChar::<i64>::create("counts.artc")?;
     /// trie.upsert("hello", 1)?;   // New term: returns Ok(true)
@@ -537,7 +537,7 @@ pub trait ARTrie: Clone + Send + Sync {
 // `ARTrie` cover the same surface with consistent return types.
 // `compare_and_swap` remains available as an inherent method on
 // `PersistentARTrie` / `PersistentARTrieChar` (`src/persistent_artrie/
-// atomic_ops.rs:158`, `src/persistent_artrie_char/atomic_ops.rs:148`).
+// atomic_ops.rs:158`, `src/persistent_artrie/char/atomic_ops.rs:148`).
 //
 // The trait body is commented out (per CLAUDE.md "never delete to disable")
 // and the `pub use` re-export at `src/lib.rs` is replaced with a

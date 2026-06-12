@@ -14,8 +14,8 @@ use super::block_storage::BlockStorage;
 use super::dict_impl::PersistentARTrie;
 use super::error::{PersistentARTrieError, Result};
 use super::transactions::{DocumentTransaction, TransactionState};
-use crate::persistent_artrie_core::key_encoding::ByteKey;
-use crate::persistent_artrie_core::overlay::durable_write::DurableOverlayWrite;
+use crate::persistent_artrie::core::key_encoding::ByteKey;
+use crate::persistent_artrie::core::overlay::durable_write::DurableOverlayWrite;
 use crate::value::DictionaryValue;
 
 impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {

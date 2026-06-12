@@ -29,7 +29,7 @@
 //! ```rust
 //! use libdictenstein::prelude::*;
 //! use libdictenstein::union_zipper::{UnionZipper, UnionZipperExt};
-//! use libdictenstein::double_array_trie_zipper::DoubleArrayTrieZipper;
+//! use libdictenstein::double_array_trie::zipper::DoubleArrayTrieZipper;
 //!
 //! let dict1 = DoubleArrayTrie::from_terms(vec!["cat", "dog"].iter());
 //! let dict2 = DoubleArrayTrie::from_terms(vec!["cat", "fish"].iter());
@@ -53,7 +53,7 @@
 //! ```rust
 //! use libdictenstein::prelude::*;
 //! use libdictenstein::union_zipper::{UnionZipper, UnionZipperExt};
-//! use libdictenstein::double_array_trie_zipper::DoubleArrayTrieZipper;
+//! use libdictenstein::double_array_trie::zipper::DoubleArrayTrieZipper;
 //! use libdictenstein::zipper::DictZipper;
 //!
 //! let dict1 = DoubleArrayTrie::from_terms(vec!["cat", "car"].iter());
@@ -78,7 +78,7 @@
 //! ```rust
 //! use libdictenstein::prelude::*;
 //! use libdictenstein::union_zipper::{UnionZipper, FirstWins, LastWins};
-//! use libdictenstein::double_array_trie_zipper::DoubleArrayTrieZipper;
+//! use libdictenstein::double_array_trie::zipper::DoubleArrayTrieZipper;
 //! use libdictenstein::zipper::{DictZipper, ValuedDictZipper};
 //!
 //! let dict1 = DoubleArrayTrie::from_terms_with_values(vec![("cat", 1), ("dog", 2)].into_iter());
@@ -110,7 +110,7 @@
 //! use libdictenstein::prelude::*;
 //! use libdictenstein::union_zipper::UnionZipperExt;
 //! use libdictenstein::prefix_zipper::PrefixZipper;
-//! use libdictenstein::double_array_trie_zipper::DoubleArrayTrieZipper;
+//! use libdictenstein::double_array_trie::zipper::DoubleArrayTrieZipper;
 //!
 //! let dict1 = DoubleArrayTrie::from_terms(vec!["process", "produce"].iter());
 //! let dict2 = DoubleArrayTrie::from_terms(vec!["product", "program"].iter());
@@ -210,7 +210,7 @@ impl<Z: DictZipper> UnionZipper<Z, FirstWins> {
     /// ```rust
     /// use libdictenstein::prelude::*;
     /// use libdictenstein::union_zipper::UnionZipper;
-    /// use libdictenstein::double_array_trie_zipper::DoubleArrayTrieZipper;
+    /// use libdictenstein::double_array_trie::zipper::DoubleArrayTrieZipper;
     ///
     /// let dict1 = DoubleArrayTrie::from_terms(vec!["cat", "dog"].iter());
     /// let dict2 = DoubleArrayTrie::from_terms(vec!["fish", "bird"].iter());
@@ -246,7 +246,7 @@ impl<Z: DictZipper, S: Clone + Send + Sync> UnionZipper<Z, S> {
     /// ```rust
     /// use libdictenstein::prelude::*;
     /// use libdictenstein::union_zipper::{UnionZipper, LastWins};
-    /// use libdictenstein::double_array_trie_zipper::DoubleArrayTrieZipper;
+    /// use libdictenstein::double_array_trie::zipper::DoubleArrayTrieZipper;
     ///
     /// let dict1 = DoubleArrayTrie::from_terms_with_values(vec![("cat", 1)].into_iter());
     /// let dict2 = DoubleArrayTrie::from_terms_with_values(vec![("cat", 10)].into_iter());
@@ -299,7 +299,7 @@ impl<Z: DictZipper, S: Clone + Send + Sync> UnionZipper<Z, S> {
     /// ```rust
     /// use libdictenstein::prelude::*;
     /// use libdictenstein::union_zipper::UnionZipperExt;
-    /// use libdictenstein::double_array_trie_zipper::DoubleArrayTrieZipper;
+    /// use libdictenstein::double_array_trie::zipper::DoubleArrayTrieZipper;
     ///
     /// let dict1 = DoubleArrayTrie::from_terms(vec!["cat", "dog"].iter());
     /// let dict2 = DoubleArrayTrie::from_terms(vec!["cat", "fish"].iter());
@@ -531,7 +531,7 @@ impl<Z: ValuedDictZipper, S: ValueMergeStrategy<Z::Value> + Clone + Send + Sync>
 /// ```rust
 /// use libdictenstein::prelude::*;
 /// use libdictenstein::union_zipper::UnionZipperExt;
-/// use libdictenstein::double_array_trie_zipper::DoubleArrayTrieZipper;
+/// use libdictenstein::double_array_trie::zipper::DoubleArrayTrieZipper;
 ///
 /// let dict1 = DoubleArrayTrie::from_terms(vec!["cat", "dog"].iter());
 /// let dict2 = DoubleArrayTrie::from_terms(vec!["fish", "bird"].iter());
@@ -618,8 +618,8 @@ impl<Z: ValuedDictZipper> ValuedUnionZipperExt for Z {}
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::double_array_trie::zipper::DoubleArrayTrieZipper;
     use crate::double_array_trie::DoubleArrayTrie;
-    use crate::double_array_trie_zipper::DoubleArrayTrieZipper;
 
     fn sorted_strings(mut v: Vec<String>) -> Vec<String> {
         v.sort();

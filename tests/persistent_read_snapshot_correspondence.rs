@@ -7,9 +7,10 @@
 //! WAL records.
 
 #![cfg(feature = "persistent-artrie")]
+#![allow(dead_code)]
 
+use libdictenstein::persistent_artrie::vocab::PersistentVocabARTrie;
 use libdictenstein::persistent_artrie::BLOCK_SIZE;
-use libdictenstein::persistent_vocab_artrie::PersistentVocabARTrie;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
@@ -139,7 +140,7 @@ fn vocab_public_iterators_reopen_to_exact_snapshot() {
     let terms = ["alpha", "alpine", "banana", "βeta", "emoji😀", "日本語"];
 
     {
-        let mut vocab = PersistentVocabARTrie::create(&path).expect("create vocab trie");
+        let vocab = PersistentVocabARTrie::create(&path).expect("create vocab trie");
         for (index, term) in terms.iter().enumerate() {
             assert_eq!(vocab.insert(term).expect("insert vocab term"), index as u64);
         }

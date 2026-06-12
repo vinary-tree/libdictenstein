@@ -54,7 +54,7 @@ use super::zipper::{DictZipper, ValuedDictZipper};
 /// ```rust,no_run
 /// use libdictenstein::double_array_trie::DoubleArrayTrie;
 /// use libdictenstein::iterator::DictionaryIterator;
-/// use libdictenstein::double_array_trie_zipper::DoubleArrayTrieZipper;
+/// use libdictenstein::double_array_trie::zipper::DoubleArrayTrieZipper;
 ///
 /// let dict = DoubleArrayTrie::from_terms_with_values(vec![("test", 42)]);
 /// let zipper = DoubleArrayTrieZipper::new_from_dict(&dict);
@@ -83,7 +83,7 @@ impl<Z: ValuedDictZipper> DictionaryIterator<Z> {
     ///
     /// ```rust,no_run
     /// use libdictenstein::double_array_trie::DoubleArrayTrie;
-    /// use libdictenstein::double_array_trie_zipper::DoubleArrayTrieZipper;
+    /// use libdictenstein::double_array_trie::zipper::DoubleArrayTrieZipper;
     /// use libdictenstein::iterator::DictionaryIterator;
     ///
     /// let dict = DoubleArrayTrie::from_terms(vec!["hello", "world"]);
@@ -141,7 +141,7 @@ impl<Z: ValuedDictZipper> Iterator for DictionaryIterator<Z> {
 /// ```rust,no_run
 /// use libdictenstein::double_array_trie::DoubleArrayTrie;
 /// use libdictenstein::iterator::DictionaryTermIterator;
-/// use libdictenstein::double_array_trie_zipper::DoubleArrayTrieZipper;
+/// use libdictenstein::double_array_trie::zipper::DoubleArrayTrieZipper;
 ///
 /// let dict = DoubleArrayTrie::from_terms(vec!["hello", "world"]);
 /// let zipper = DoubleArrayTrieZipper::new_from_dict(&dict);

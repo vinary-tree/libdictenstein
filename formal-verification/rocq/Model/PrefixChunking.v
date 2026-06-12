@@ -1,7 +1,7 @@
 (* Model/PrefixChunking.v — CX (task #43): the path-compression chunker's NO-TRUNCATION core,
    formalized.
 
-   The Coq twin of [src/persistent_artrie_core/overlay/codec.rs::chain_chunks]. The owner mandate
+   The Coq twin of [src/persistent_artrie/core/overlay/codec.rs::chain_chunks]. The owner mandate
    (2026-06-08) for the path-compressing overlay<->dense codec is: KEEP compression, but PROVE it
    never truncates / loses key data. This file proves exactly that for the chunking step — the only
    place a fixed [MAX_PREFIX_LEN] could cause loss:

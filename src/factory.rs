@@ -24,19 +24,19 @@
 //! );
 //! ```
 
+use super::double_array_trie::char::DoubleArrayTrieChar;
 use super::double_array_trie::DoubleArrayTrie;
-use super::double_array_trie_char::DoubleArrayTrieChar;
+use super::dynamic_dawg::char::DynamicDawgChar;
+use super::dynamic_dawg::u64::DynamicDawgU64;
 use super::dynamic_dawg::DynamicDawg;
-use super::dynamic_dawg_char::DynamicDawgChar;
-use super::dynamic_dawg_u64::DynamicDawgU64;
+#[cfg(feature = "pathmap-backend")]
+use super::pathmap::char::PathMapDictionaryChar;
 #[cfg(feature = "pathmap-backend")]
 use super::pathmap::PathMapDictionary;
-#[cfg(feature = "pathmap-backend")]
-use super::pathmap_char::PathMapDictionaryChar;
+use super::scdawg::char::ScdawgChar;
 use super::scdawg::Scdawg;
-use super::scdawg_char::ScdawgChar;
+use super::suffix_automaton::char::SuffixAutomatonChar;
 use super::suffix_automaton::SuffixAutomaton;
-use super::suffix_automaton_char::SuffixAutomatonChar;
 use super::Dictionary;
 
 /// Dictionary backend types.

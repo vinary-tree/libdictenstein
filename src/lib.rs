@@ -37,82 +37,63 @@
 //! bidirectional-lookup trait shared by `BijectiveMap` and the vocab tries.
 //!
 //! [DoubleArrayTrie]: double_array_trie::DoubleArrayTrie
-//! [DoubleArrayTrieChar]: double_array_trie_char::DoubleArrayTrieChar
+//! [DoubleArrayTrieChar]: double_array_trie::DoubleArrayTrieChar
 //! [DynamicDawg]: dynamic_dawg::DynamicDawg
-//! [DynamicDawgChar]: dynamic_dawg_char::DynamicDawgChar
-//! [DynamicDawgU64]: dynamic_dawg_u64::DynamicDawgU64
+//! [DynamicDawgChar]: dynamic_dawg::DynamicDawgChar
+//! [DynamicDawgU64]: dynamic_dawg::DynamicDawgU64
 //! [SuffixAutomaton]: suffix_automaton::SuffixAutomaton
-//! [SuffixAutomatonChar]: suffix_automaton_char::SuffixAutomatonChar
+//! [SuffixAutomatonChar]: suffix_automaton::SuffixAutomatonChar
 //! [Scdawg]: scdawg::Scdawg
-//! [ScdawgChar]: scdawg_char::ScdawgChar
+//! [ScdawgChar]: scdawg::ScdawgChar
 //! [PathMapDictionary]: pathmap::PathMapDictionary
-//! [PathMapDictionaryChar]: pathmap_char::PathMapDictionaryChar
+//! [PathMapDictionaryChar]: pathmap::PathMapDictionaryChar
 //! [PersistentARTrie]: persistent_artrie::PersistentARTrie
-//! [PersistentARTrieChar]: persistent_artrie_char::PersistentARTrieChar
-//! [PersistentVocabARTrie]: persistent_vocab_artrie::PersistentVocabARTrie
+//! [PersistentARTrieChar]: persistent_artrie::char::PersistentARTrieChar
+//! [PersistentVocabARTrie]: persistent_artrie::vocab::PersistentVocabARTrie
 
+// === Shared infrastructure ===
 pub mod bijective;
 pub mod bloom_filter;
 pub mod char_unit;
-pub mod dawg_core;
-pub mod node_signature;
-pub mod sync_compat;
-
-pub mod dat_core;
-pub mod difference_zipper;
-pub mod double_array_trie;
-pub mod double_array_trie_char;
-pub mod double_array_trie_char_zipper;
-pub mod double_array_trie_zipper;
-pub mod dynamic_dawg;
-pub mod dynamic_dawg_char;
-pub mod dynamic_dawg_char_zipper;
-pub mod dynamic_dawg_u64;
-pub mod dynamic_dawg_u64_zipper;
-pub mod dynamic_dawg_zipper;
-pub mod excluding_prefix_zipper;
 pub mod factory;
-pub mod intersection_zipper;
 pub mod iterator;
+pub mod node_signature;
+pub mod substring;
+pub mod sync_compat;
+pub mod value;
+pub mod zipper;
+
+// === Zipper combinators ===
+pub mod difference_zipper;
+pub mod excluding_prefix_zipper;
+pub mod intersection_zipper;
+pub mod prefix_zipper;
+pub mod symmetric_difference_zipper;
+pub mod union_zipper;
+pub mod value_diff_zipper;
+
+// === Dictionary families ===
+// Each family is a directory submodule whose `mod.rs` re-exports the family's
+// public types. Within a family: `ascii` = byte/`u8` base, `char` = Unicode
+// (`char`), `u64` = `u64`-labeled (dynamic_dawg only), `core` = the unit-generic
+// substrate shared by the variants, and `*zipper` = the navigators.
+pub mod double_array_trie;
+pub mod dynamic_dawg;
 #[cfg(feature = "pathmap-backend")]
 pub mod pathmap;
-#[cfg(feature = "pathmap-backend")]
-pub mod pathmap_char;
-#[cfg(feature = "pathmap-backend")]
-pub mod pathmap_zipper;
+pub mod scdawg;
+pub mod suffix_automaton;
 
 // === Persistent ARTrie modules (feature-gated at module level) ===
 // These modules are gated here; internal code does NOT need feature gates.
 //
-// Layering: `persistent_artrie_core` is the shared substrate; the three
+// Layering: `persistent_artrie::core` is the shared substrate; the three
 // variants depend on core, never on each other. See
-// `persistent_artrie_core/mod.rs` for the invariant.
+// `persistent_artrie/core/mod.rs` for the invariant.
 #[cfg(feature = "persistent-artrie")]
 pub mod artrie_trait;
 #[cfg(feature = "persistent-artrie")]
 pub mod persistent_artrie;
-#[cfg(feature = "persistent-artrie")]
-pub mod persistent_artrie_char;
-#[cfg(feature = "persistent-artrie")]
-pub mod persistent_artrie_core;
-#[cfg(feature = "persistent-artrie")]
-pub mod persistent_vocab_artrie;
-
-pub mod prefix_zipper;
-pub mod scdawg;
-pub mod scdawg_char;
-pub mod scdawg_core;
-pub mod substring;
-pub mod suffix_automaton;
-pub mod suffix_automaton_char;
-pub mod suffix_automaton_char_zipper;
-pub mod suffix_automaton_core;
-pub mod suffix_automaton_zipper;
-pub mod symmetric_difference_zipper;
-pub mod union_zipper;
-pub mod value;
-pub mod value_diff_zipper;
-pub mod zipper;
 
 #[cfg(feature = "serialization")]
 pub mod serialization;
@@ -121,7 +102,7 @@ pub mod serialization;
 pub use bijective::{BijectiveDictionary, BijectiveMap, InsertError};
 pub use bloom_filter::BloomFilter;
 pub use char_unit::CharUnit;
-pub use dawg_core::{DawgCore, DawgNode};
+pub use dynamic_dawg::core::{DawgCore, DawgNode};
 pub use iterator::{DictionaryIterator, DictionaryTermIterator};
 pub use node_signature::NodeSignature;
 pub use substring::{
@@ -140,17 +121,17 @@ pub use artrie_trait::{ARTrie, EvictableARTrie};
 #[allow(deprecated)]
 pub use artrie_trait::ARTrieAtomicOps;
 #[cfg(feature = "persistent-artrie")]
+pub use persistent_artrie::char::{
+    PersistentARTrieChar, PersistentARTrieCharNode, PersistentARTrieCharZipper,
+};
+#[cfg(feature = "persistent-artrie")]
+pub use persistent_artrie::vocab::{IndexedVocabularyPersistent, PersistentVocabARTrie};
+#[cfg(feature = "persistent-artrie")]
 pub use persistent_artrie::wal::Lsn;
 #[cfg(feature = "persistent-artrie")]
 pub use persistent_artrie::{
     PersistentARTrie, PersistentARTrieZipper, RecoveryMode, RecoveryReport, WalConfig,
 };
-#[cfg(feature = "persistent-artrie")]
-pub use persistent_artrie_char::{
-    PersistentARTrieChar, PersistentARTrieCharNode, PersistentARTrieCharZipper,
-};
-#[cfg(feature = "persistent-artrie")]
-pub use persistent_vocab_artrie::{IndexedVocabularyPersistent, PersistentVocabARTrie};
 
 /// Synchronization strategy for dictionary operations.
 ///
@@ -516,13 +497,8 @@ pub mod prelude {
     };
 
     // Re-export common dictionary types
-    pub use crate::double_array_trie::DoubleArrayTrie;
-    pub use crate::double_array_trie_char::DoubleArrayTrieChar;
-    pub use crate::dynamic_dawg::DynamicDawg;
-    pub use crate::dynamic_dawg_char::DynamicDawgChar;
-    pub use crate::dynamic_dawg_u64::DynamicDawgU64;
-    pub use crate::scdawg::Scdawg;
-    pub use crate::scdawg_char::ScdawgChar;
-    pub use crate::suffix_automaton::SuffixAutomaton;
-    pub use crate::suffix_automaton_char::SuffixAutomatonChar;
+    pub use crate::double_array_trie::{DoubleArrayTrie, DoubleArrayTrieChar};
+    pub use crate::dynamic_dawg::{DynamicDawg, DynamicDawgChar, DynamicDawgU64};
+    pub use crate::scdawg::{Scdawg, ScdawgChar};
+    pub use crate::suffix_automaton::{SuffixAutomaton, SuffixAutomatonChar};
 }

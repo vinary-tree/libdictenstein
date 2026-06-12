@@ -15,6 +15,7 @@ use tempfile::tempdir;
 use libdictenstein::persistent_artrie::PersistentARTrie;
 
 /// Generate test terms in sorted order
+#[allow(dead_code)]
 fn generate_sorted_terms(count: usize) -> Vec<String> {
     (0..count).map(|i| format!("term_{:08}", i)).collect()
 }
@@ -87,7 +88,7 @@ fn bench_unsorted_batch_inserts(c: &mut Criterion) {
                         PersistentARTrie::create(&path).expect("create trie");
                     (dir, trie, entries.clone())
                 },
-                |(_dir, mut trie, entries)| {
+                |(_dir, trie, entries)| {
                     trie.insert_batch(&entries);
                     trie.sync().ok();
                 },
@@ -119,7 +120,7 @@ fn bench_sorted_batch_inserts(c: &mut Criterion) {
                         PersistentARTrie::create(&path).expect("create trie");
                     (dir, trie, entries.clone())
                 },
-                |(_dir, mut trie, entries)| {
+                |(_dir, trie, entries)| {
                     // Use the sorted batch insert which sorts internally
                     trie.insert_batch_sorted(entries);
                     trie.sync().ok();
@@ -151,7 +152,7 @@ fn bench_varied_prefix_unsorted(c: &mut Criterion) {
                         PersistentARTrie::create(&path).expect("create trie");
                     (dir, trie, entries.clone())
                 },
-                |(_dir, mut trie, entries)| {
+                |(_dir, trie, entries)| {
                     trie.insert_batch(&entries);
                     trie.sync().ok();
                 },
@@ -182,7 +183,7 @@ fn bench_varied_prefix_sorted(c: &mut Criterion) {
                         PersistentARTrie::create(&path).expect("create trie");
                     (dir, trie, entries.clone())
                 },
-                |(_dir, mut trie, entries)| {
+                |(_dir, trie, entries)| {
                     trie.insert_batch_sorted(entries);
                     trie.sync().ok();
                 },
@@ -215,7 +216,7 @@ fn bench_direct_comparison(c: &mut Criterion) {
                     PersistentARTrie::create(&path).expect("create trie");
                 (dir, trie, entries.clone())
             },
-            |(_dir, mut trie, entries)| {
+            |(_dir, trie, entries)| {
                 trie.insert_batch(&entries);
                 trie.sync().ok();
             },
@@ -231,7 +232,7 @@ fn bench_direct_comparison(c: &mut Criterion) {
                     PersistentARTrie::create(&path).expect("create trie");
                 (dir, trie, entries.clone())
             },
-            |(_dir, mut trie, entries)| {
+            |(_dir, trie, entries)| {
                 trie.insert_batch_sorted(entries);
                 trie.sync().ok();
             },
@@ -326,7 +327,7 @@ fn bench_insert_arena_grouped(c: &mut Criterion) {
                         PersistentARTrie::create(&path).expect("create trie");
                     (dir, trie, string_entries.clone())
                 },
-                |(_dir, mut trie, e)| {
+                |(_dir, trie, e)| {
                     trie.insert_batch_sorted(e);
                     trie.sync().ok();
                 },
@@ -343,7 +344,7 @@ fn bench_insert_arena_grouped(c: &mut Criterion) {
                         PersistentARTrie::create(&path).expect("create trie");
                     (dir, trie, entries.clone())
                 },
-                |(_dir, mut trie, e)| {
+                |(_dir, trie, e)| {
                     trie.insert_batch_arena_grouped(e);
                     trie.sync().ok();
                 },

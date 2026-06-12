@@ -3,8 +3,8 @@
 use std::path::Path;
 use std::time::Duration;
 
+use libdictenstein::persistent_artrie::char::PersistentARTrieChar;
 use libdictenstein::persistent_artrie::epoch::EpochConfig;
-use libdictenstein::persistent_artrie_char::PersistentARTrieChar;
 use tempfile::tempdir;
 
 fn correspondence_epoch_config() -> EpochConfig {

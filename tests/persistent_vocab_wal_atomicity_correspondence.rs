@@ -2,11 +2,11 @@
 //!
 //! The Rocq model for this target treats vocabulary mutations as append-only
 //! term-index assignments. Public mutations must accept the WAL record before
-//! changing the trie, and the forward/reverse index relation must stay exact.
+//! changing the trie, and the forward index / reverse-map relation must stay exact.
 
 #![cfg(feature = "persistent-artrie")]
 
-use libdictenstein::persistent_vocab_artrie::PersistentVocabARTrie;
+use libdictenstein::persistent_artrie::vocab::PersistentVocabARTrie;
 use tempfile::tempdir;
 
 #[test]
@@ -15,7 +15,7 @@ fn single_insert_recovers_by_wal_replay_without_checkpoint() {
     let path = dir.path().join("single_replay.vocab");
 
     {
-        let mut vocab = PersistentVocabARTrie::create(&path).expect("create vocab");
+        let vocab = PersistentVocabARTrie::create(&path).expect("create vocab");
         assert_eq!(vocab.insert("alpha").expect("insert alpha"), 0);
         vocab.sync().expect("sync WAL");
         std::mem::forget(vocab);
@@ -34,7 +34,7 @@ fn manual_index_insert_recovers_by_wal_replay_without_checkpoint() {
     let path = dir.path().join("manual_replay.vocab");
 
     {
-        let mut vocab = PersistentVocabARTrie::create(&path).expect("create vocab");
+        let vocab = PersistentVocabARTrie::create(&path).expect("create vocab");
         assert!(vocab
             .insert_with_index("manual", 42)
             .expect("insert manual index"));
@@ -56,7 +56,7 @@ fn manual_nonzero_index_round_trips_bijection() {
     let path = dir.path().join("manual_bijection.vocab");
 
     {
-        let mut vocab =
+        let vocab =
             PersistentVocabARTrie::create_with_start_index(&path, 10).expect("create vocab");
         assert!(vocab.insert_with_index("ten", 10).expect("insert ten"));
         assert!(vocab.insert_with_index("dozen", 12).expect("insert dozen"));
@@ -78,7 +78,7 @@ fn batch_duplicate_terms_share_index_without_gaps() {
     let dir = tempdir().expect("temp dir");
     let path = dir.path().join("batch_duplicates.vocab");
 
-    let mut vocab = PersistentVocabARTrie::create(&path).expect("create vocab");
+    let vocab = PersistentVocabARTrie::create(&path).expect("create vocab");
     let indices = vocab
         .insert_batch(&["alpha", "beta", "alpha", "gamma", "beta"])
         .expect("batch insert");
@@ -100,7 +100,7 @@ fn duplicate_terms_across_batches_keep_stable_after_reopen() {
     let path = dir.path().join("batch_reopen.vocab");
 
     {
-        let mut vocab = PersistentVocabARTrie::create(&path).expect("create vocab");
+        let vocab = PersistentVocabARTrie::create(&path).expect("create vocab");
         assert_eq!(
             vocab.insert_batch(&["alpha", "beta"]).expect("first batch"),
             vec![0, 1]
@@ -127,7 +127,7 @@ fn index_collision_rejected_without_mutating() {
     let dir = tempdir().expect("temp dir");
     let path = dir.path().join("collision.vocab");
 
-    let mut vocab = PersistentVocabARTrie::create(&path).expect("create vocab");
+    let vocab = PersistentVocabARTrie::create(&path).expect("create vocab");
     assert!(vocab.insert_with_index("alpha", 5).expect("insert alpha"));
     let before_len = vocab.len();
     let before_next = vocab.next_index();

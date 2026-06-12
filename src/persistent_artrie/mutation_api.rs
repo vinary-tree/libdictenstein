@@ -17,8 +17,8 @@
 
 use log::warn;
 
-use crate::persistent_artrie_core::key_encoding::ByteKey;
-use crate::persistent_artrie_core::overlay::durable_write::DurableOverlayWrite;
+use crate::persistent_artrie::core::key_encoding::ByteKey;
+use crate::persistent_artrie::core::overlay::durable_write::DurableOverlayWrite;
 use crate::value::DictionaryValue;
 
 use super::block_storage::BlockStorage;

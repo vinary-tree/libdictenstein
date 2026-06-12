@@ -39,8 +39,8 @@ impl<V: DictionaryValue> PersistentARTrie<V, IoUringDiskManager> {
     /// ⇒ the Overlay stamp MUST take; a failure to engage ⇒ hard error (V-2). NB byte's
     /// counter monomorph is `u64` (char's is also `u64`).
     fn install_overlay_on_create(self) -> Result<Self> {
-        <Self as crate::persistent_artrie_core::overlay::flip::LockFreeOverlay<
-            crate::persistent_artrie_core::key_encoding::ByteKey,
+        <Self as crate::persistent_artrie::core::overlay::flip::LockFreeOverlay<
+            crate::persistent_artrie::core::key_encoding::ByteKey,
             _,
             _,
         >>::install_overlay_on_create(self)
@@ -99,7 +99,7 @@ impl<V: DictionaryValue> PersistentARTrie<V, IoUringDiskManager> {
             next_lsn: std::sync::atomic::AtomicU64::new(1),
             prefetcher: super::prefetch::Prefetcher::new(),
             arena_manager: Some(arena_manager),
-            durability_policy: crate::persistent_artrie_core::shared_access::AtomicEnumCell::new(
+            durability_policy: crate::persistent_artrie::core::shared_access::AtomicEnumCell::new(
                 DurabilityPolicy::default(),
             ),
             epoch_manager: Arc::new(super::concurrency::EpochManager::new()),
@@ -114,7 +114,7 @@ impl<V: DictionaryValue> PersistentARTrie<V, IoUringDiskManager> {
             // install_overlay_on_create above for eligible V; arbitrary V stays owned.
             // M2b: fresh on-disk trie (empty WAL) — watermark base + commit_seq 0.
             committed_watermark:
-                crate::persistent_artrie_core::committed_watermark::CommittedWatermark::new(0),
+                crate::persistent_artrie::core::committed_watermark::CommittedWatermark::new(0),
             checkpoint_lock: std::sync::Arc::new(parking_lot::Mutex::new(())),
             merge_lock: std::sync::Arc::new(parking_lot::Mutex::new(())),
             commit_seq: std::sync::atomic::AtomicU64::new(0),
@@ -244,7 +244,7 @@ impl<V: DictionaryValue> PersistentARTrie<V, IoUringDiskManager> {
         let commit_seq_seed = {
             let mut max_commit_seq_gen = 0u64;
             if wal_path.exists() {
-                use crate::persistent_artrie_core::wal::{WalReader, WalRecord};
+                use crate::persistent_artrie::core::wal::{WalReader, WalRecord};
                 if let Ok(mut reader) = WalReader::new(&wal_path) {
                     while let Some(result) = reader.next_record() {
                         match result {
@@ -263,32 +263,32 @@ impl<V: DictionaryValue> PersistentARTrie<V, IoUringDiskManager> {
         // The on-disk rank-regime + the F5 gate (read up-front so F5 can avoid
         // installing the owned dense tree). No-drift with the byte mmap ctor.
         let rank_regime = {
-            use crate::persistent_artrie_core::wal::WalReader;
+            use crate::persistent_artrie::core::wal::WalReader;
             WalReader::read_header(&wal_path)
                 .map(|h| h.regime())
-                .unwrap_or(crate::persistent_artrie_core::wal::RankRegime::Owned)
+                .unwrap_or(crate::persistent_artrie::core::wal::RankRegime::Owned)
         };
         let use_f5 = {
-            use crate::persistent_artrie_core::overlay::flip::LockFreeOverlay;
+            use crate::persistent_artrie::core::overlay::flip::LockFreeOverlay;
             <Self as LockFreeOverlay<
-                crate::persistent_artrie_core::key_encoding::ByteKey,
+                crate::persistent_artrie::core::key_encoding::ByteKey,
                 V,
                 IoUringDiskManager,
             >>::USE_F5_REOPEN_LOADER
-                && rank_regime == crate::persistent_artrie_core::wal::RankRegime::Overlay
+                && rank_regime == crate::persistent_artrie::core::wal::RankRegime::Overlay
         };
         // **F7 convert gate** (io_uring twin): an Owned-regime eligible file is CONVERTED
         // into the overlay (rotate-if-records-non-empty → stamp → F5 build → archive-aware
         // drain). io_uring has no legacy/f5 test ctors, so the convert is gated on the F5
         // const directly (always true). Ineligible V stays owned.
         let convert_owned = {
-            use crate::persistent_artrie_core::overlay::flip::LockFreeOverlay;
+            use crate::persistent_artrie::core::overlay::flip::LockFreeOverlay;
             <Self as LockFreeOverlay<
-                crate::persistent_artrie_core::key_encoding::ByteKey,
+                crate::persistent_artrie::core::key_encoding::ByteKey,
                 V,
                 IoUringDiskManager,
             >>::USE_F5_REOPEN_LOADER
-                && rank_regime == crate::persistent_artrie_core::wal::RankRegime::Owned
+                && rank_regime == crate::persistent_artrie::core::wal::RankRegime::Owned
         };
 
         // L3.3c (BLOCKER#4, io_uring twin): no eager owned pre-load; the owned `dict.root` is a
@@ -307,7 +307,7 @@ impl<V: DictionaryValue> PersistentARTrie<V, IoUringDiskManager> {
             next_lsn: std::sync::atomic::AtomicU64::new(next_lsn),
             prefetcher: super::prefetch::Prefetcher::new(),
             arena_manager: Some(arena_manager),
-            durability_policy: crate::persistent_artrie_core::shared_access::AtomicEnumCell::new(
+            durability_policy: crate::persistent_artrie::core::shared_access::AtomicEnumCell::new(
                 DurabilityPolicy::default(),
             ),
             epoch_manager: Arc::new(super::concurrency::EpochManager::new()),
@@ -321,7 +321,7 @@ impl<V: DictionaryValue> PersistentARTrie<V, IoUringDiskManager> {
             cas_retries: std::sync::atomic::AtomicU64::new(0),
             // M2b: seed watermark base + commit_seq from recovery.
             committed_watermark:
-                crate::persistent_artrie_core::committed_watermark::CommittedWatermark::new(
+                crate::persistent_artrie::core::committed_watermark::CommittedWatermark::new(
                     recovered_frontier,
                 ),
             checkpoint_lock: std::sync::Arc::new(parking_lot::Mutex::new(())),
@@ -331,7 +331,7 @@ impl<V: DictionaryValue> PersistentARTrie<V, IoUringDiskManager> {
 
         // F5 trait methods resolve through the seam.
         #[allow(unused_imports)]
-        use crate::persistent_artrie_core::overlay::flip::LockFreeOverlay;
+        use crate::persistent_artrie::core::overlay::flip::LockFreeOverlay;
 
         if convert_owned {
             // ===== F7 CONVERT PATH (Owned-regime eligible → overlay; io_uring twin) =====

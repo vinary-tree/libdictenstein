@@ -15,7 +15,7 @@ use criterion::{criterion_group, criterion_main, BatchSize, BenchmarkId, Criteri
 use std::path::{Path, PathBuf};
 
 use libdictenstein::artrie_trait::ARTrie;
-use libdictenstein::persistent_artrie_char::SharedCharARTrie;
+use libdictenstein::persistent_artrie::char::SharedCharARTrie;
 use libdictenstein::MutableMappedDictionary;
 
 static SCRATCH_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);

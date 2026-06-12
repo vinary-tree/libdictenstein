@@ -1,3 +1,5 @@
+#![allow(deprecated)]
+
 //! Benchmarks for PersistentARTrie (Persistent Adaptive Radix Trie)
 //!
 //! This benchmark suite compares PersistentARTrie against other dictionary
@@ -104,7 +106,7 @@ fn bench_part_construction(c: &mut Criterion) {
         group.throughput(Throughput::Elements(*size as u64));
         group.bench_with_input(BenchmarkId::new("persistent_artrie", size), size, |b, _| {
             b.iter(|| {
-                let mut dict: PersistentARTrie<()> = PersistentARTrie::new();
+                let dict: PersistentARTrie<()> = PersistentARTrie::new();
                 for term in &terms {
                     let _ = dict.insert(bb(term));
                 }
@@ -167,7 +169,7 @@ fn bench_part_lookup(c: &mut Criterion) {
         let terms = generate_terms(*size);
         let queries = generate_queries(&terms, 100);
 
-        let mut dict: PersistentARTrie<()> = PersistentARTrie::new();
+        let dict: PersistentARTrie<()> = PersistentARTrie::new();
         for term in &terms {
             let _ = dict.insert(term);
         }
@@ -255,7 +257,7 @@ fn bench_part_edge_traversal(c: &mut Criterion) {
     for size in [100, 1000, 5000].iter() {
         let terms = generate_terms(*size);
 
-        let mut dict: PersistentARTrie<()> = PersistentARTrie::new();
+        let dict: PersistentARTrie<()> = PersistentARTrie::new();
         for term in &terms {
             let _ = dict.insert(term);
         }
@@ -350,7 +352,7 @@ fn bench_part_transitions(c: &mut Criterion) {
         let terms = generate_terms(*size);
         let queries: Vec<_> = terms.iter().take(100).collect();
 
-        let mut dict: PersistentARTrie<()> = PersistentARTrie::new();
+        let dict: PersistentARTrie<()> = PersistentARTrie::new();
         for term in &terms {
             let _ = dict.insert(term);
         }
@@ -461,7 +463,7 @@ fn bench_memory_efficiency(c: &mut Criterion) {
             size,
             |b, _| {
                 b.iter(|| {
-                    let mut dict: PersistentARTrie<()> = PersistentARTrie::new();
+                    let dict: PersistentARTrie<()> = PersistentARTrie::new();
                     for term in &terms {
                         let _ = dict.insert(term);
                     }
@@ -525,7 +527,7 @@ fn bench_part_disk_io(c: &mut Criterion) {
                         let path = dir.path().join("bench.part");
 
                         let start = Instant::now();
-                        let mut dict = PersistentARTrie::<()>::create(&path).unwrap();
+                        let dict = PersistentARTrie::<()>::create(&path).unwrap();
                         for term in &terms {
                             let _ = dict.insert(bb(term));
                         }
@@ -544,7 +546,7 @@ fn bench_part_disk_io(c: &mut Criterion) {
             let dir = tempdir().unwrap();
             let path = dir.path().join("bench.part");
             {
-                let mut dict = PersistentARTrie::<()>::create(&path).unwrap();
+                let dict = PersistentARTrie::<()>::create(&path).unwrap();
                 for term in &terms {
                     let _ = dict.insert(term);
                 }
@@ -567,7 +569,7 @@ fn bench_part_disk_io(c: &mut Criterion) {
         group.bench_with_input(BenchmarkId::new("checkpoint", size), size, |b, _| {
             let dir = tempdir().unwrap();
             let path = dir.path().join("bench.part");
-            let mut dict = PersistentARTrie::<()>::create(&path).unwrap();
+            let dict = PersistentARTrie::<()>::create(&path).unwrap();
             for term in &terms {
                 let _ = dict.insert(term);
             }

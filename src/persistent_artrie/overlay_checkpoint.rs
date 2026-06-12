@@ -1,6 +1,6 @@
 //! Byte seam impl of the shared [`OverlayCheckpoint`] checkpoint skeleton
 //! (`overlay-durable-architecture.md`, trait 3). The byte twin of
-//! `persistent_artrie_char::{overlay_write_mode (impl), persist}`.
+//! `persistent_artrie::char::{overlay_write_mode (impl), persist}`.
 //!
 //! The generic [`OverlayCheckpoint::checkpoint_route_split`] default owns the
 //! data-loss-critical skeleton (capture the IMMUTABLE OVERLAY — the SOLE live
@@ -39,11 +39,11 @@ use super::error::{PersistentARTrieError, Result};
 use super::nodes::{ArtNode, Node, Node4};
 use super::swizzled_ptr::{NodeType, SwizzledPtr};
 use super::wal::WalRecord;
+use crate::persistent_artrie::core::key_encoding::ByteKey;
+use crate::persistent_artrie::core::overlay::checkpoint::OverlayCheckpoint;
+use crate::persistent_artrie::core::overlay::compressed_serialize::OverlayCompressedSerialize;
+use crate::persistent_artrie::core::overlay::OverlayNode;
 use crate::persistent_artrie::eviction::DiskLocationRegistry;
-use crate::persistent_artrie_core::key_encoding::ByteKey;
-use crate::persistent_artrie_core::overlay::checkpoint::OverlayCheckpoint;
-use crate::persistent_artrie_core::overlay::compressed_serialize::OverlayCompressedSerialize;
-use crate::persistent_artrie_core::overlay::OverlayNode;
 use crate::value::DictionaryValue;
 
 /// An immutable, self-consistent byte checkpoint snapshot (the byte twin of char's
@@ -1038,7 +1038,7 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
     /// in-mem child is descended via [`peel_chain_byte`], which collapses a maximal single-child
     /// non-final no-value chain into `(chain_prefix, live_spine, terminus)`. The terminus serializes
     /// as a plain (prefix-less) node; the peeled `chain_prefix` collapses into a stack of dense chunk
-    /// nodes ABOVE it via the proven [`crate::persistent_artrie_core::overlay::codec::chain_chunks`]
+    /// nodes ABOVE it via the proven [`crate::persistent_artrie::core::overlay::codec::chain_chunks`]
     /// (width `MAX_PREFIX_LEN + 1` — `<= MAX_PREFIX_LEN` prefix bytes + 1 out-edge per chunk; NEVER
     /// truncates — chains longer runs across multiple chunk nodes).
     ///
@@ -1266,14 +1266,14 @@ mod cx_compressed_serialize_byte {
     //! and the #6 eviction-ON tests: F.1 evict-then-refault a compressed chunk, F.3 the load-side
     //! `prefix_len>0` stamp gate (uncompressed no-op = #39 unchanged; compressed stamped = re-evictable).
     //! Scratch is real disk (`target/test-tmp`), never tmpfs `/tmp`.
+    use crate::persistent_artrie::core::block_storage::BlockStorage;
+    use crate::persistent_artrie::core::durability::DurabilityPolicy;
+    use crate::persistent_artrie::core::key_encoding::ByteKey;
+    use crate::persistent_artrie::core::overlay::node::Child;
+    use crate::persistent_artrie::core::overlay::OverlayNode;
     use crate::persistent_artrie::eviction::{DiskLocationRegistry, EvictionConfig};
     use crate::persistent_artrie::overlay_fault::evict_overlay_nodes;
     use crate::persistent_artrie::PersistentARTrie;
-    use crate::persistent_artrie_core::block_storage::BlockStorage;
-    use crate::persistent_artrie_core::durability::DurabilityPolicy;
-    use crate::persistent_artrie_core::key_encoding::ByteKey;
-    use crate::persistent_artrie_core::overlay::node::Child;
-    use crate::persistent_artrie_core::overlay::OverlayNode;
     use std::sync::Arc;
 
     fn scratch(prefix: &str) -> tempfile::TempDir {

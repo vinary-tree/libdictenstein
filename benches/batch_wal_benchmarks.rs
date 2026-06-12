@@ -35,7 +35,7 @@ fn bench_individual_inserts(c: &mut Criterion) {
                         PersistentARTrie::create(&path).expect("create trie");
                     (dir, trie, terms.clone())
                 },
-                |(_dir, mut trie, terms)| {
+                |(_dir, trie, terms)| {
                     for term in terms {
                         trie.insert(&term);
                     }
@@ -69,7 +69,7 @@ fn bench_batch_inserts(c: &mut Criterion) {
                         PersistentARTrie::create(&path).expect("create trie");
                     (dir, trie, entries.clone())
                 },
-                |(_dir, mut trie, entries)| {
+                |(_dir, trie, entries)| {
                     trie.insert_batch(&entries);
                     // Force sync to ensure WAL is flushed
                     trie.sync().ok();
@@ -102,7 +102,7 @@ fn bench_wal_size_comparison(c: &mut Criterion) {
                     PersistentARTrie::create(&path).expect("create trie");
                 (dir, trie, wal_path, terms.clone())
             },
-            |(_dir, mut trie, wal_path, terms)| {
+            |(_dir, trie, wal_path, terms)| {
                 for term in terms {
                     trie.insert(&term);
                 }
@@ -124,7 +124,7 @@ fn bench_wal_size_comparison(c: &mut Criterion) {
                     PersistentARTrie::create(&path).expect("create trie");
                 (dir, trie, wal_path, entries.clone())
             },
-            |(_dir, mut trie, wal_path, entries)| {
+            |(_dir, trie, wal_path, entries)| {
                 trie.insert_batch(&entries);
                 trie.sync().ok();
                 // Return WAL file size

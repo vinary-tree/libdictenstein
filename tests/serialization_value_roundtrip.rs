@@ -26,12 +26,11 @@
 // trivially round-trip through `String`, and the appropriate format
 // (JSON array of u64s, separator-delimited tokens, …) needs design input.
 
+use libdictenstein::double_array_trie::char::DoubleArrayTrieChar;
 use libdictenstein::double_array_trie::DoubleArrayTrie;
-use libdictenstein::double_array_trie_char::DoubleArrayTrieChar;
+use libdictenstein::dynamic_dawg::char::DynamicDawgChar;
 use libdictenstein::dynamic_dawg::DynamicDawg;
-use libdictenstein::dynamic_dawg_char::DynamicDawgChar;
 use libdictenstein::serialization::{BincodeSerializer, JsonSerializer, PlainTextSerializer};
-use libdictenstein::MappedDictionary;
 
 fn pairs_u32() -> Vec<(&'static str, u32)> {
     vec![("apple", 10), ("banana", 20), ("cherry", 30)]

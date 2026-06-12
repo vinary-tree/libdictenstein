@@ -2,12 +2,12 @@
 //!
 //! These tests exercise the Rust side of `PersistentVocabCheckpointSpec.v`:
 //! checkpoint/reopen bijection, WAL retention until a real checkpoint, LSN
-//! continuity after checkpoint truncation, sidecar rebuild, and dirty-state
+//! continuity after checkpoint truncation, reverse-map rebuild, and dirty-state
 //! preservation after failed publication.
 
 #![cfg(feature = "persistent-artrie")]
 
-use libdictenstein::persistent_vocab_artrie::PersistentVocabARTrie;
+use libdictenstein::persistent_artrie::vocab::PersistentVocabARTrie;
 use tempfile::tempdir;
 
 #[test]
@@ -16,7 +16,7 @@ fn checkpoint_reopen_preserves_unicode_sparse_duplicates_and_batch() {
     let path = dir.path().join("unicode_sparse.vocab");
 
     {
-        let mut vocab =
+        let vocab =
             PersistentVocabARTrie::create_with_start_index(&path, 10).expect("create vocab");
         assert!(vocab.insert_with_index("日本語", 10).expect("insert"));
         assert!(vocab.insert_with_index("emoji😀", 42).expect("insert"));
@@ -48,7 +48,7 @@ fn checkpoint_then_later_insert_replays_post_checkpoint_wal() {
     let path = dir.path().join("post_checkpoint_replay.vocab");
 
     {
-        let mut vocab = PersistentVocabARTrie::create(&path).expect("create vocab");
+        let vocab = PersistentVocabARTrie::create(&path).expect("create vocab");
         assert_eq!(vocab.insert("alpha").expect("insert alpha"), 0);
         vocab.checkpoint().expect("checkpoint alpha");
 
@@ -74,7 +74,7 @@ fn recovery_replay_retains_wal_until_checkpoint() {
     let path = dir.path().join("recovery_retains_wal.vocab");
 
     {
-        let mut vocab = PersistentVocabARTrie::create(&path).expect("create vocab");
+        let vocab = PersistentVocabARTrie::create(&path).expect("create vocab");
         assert_eq!(vocab.insert("alpha").expect("insert alpha"), 0);
         vocab.sync().expect("sync WAL");
         std::mem::forget(vocab);

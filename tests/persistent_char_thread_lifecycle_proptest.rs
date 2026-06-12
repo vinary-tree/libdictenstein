@@ -11,8 +11,8 @@
 //! Linux-only: thread accounting reads `/proc/self/task`.
 
 use libdictenstein::artrie_trait::{ARTrie, EvictableARTrie};
+use libdictenstein::persistent_artrie::char::SharedCharARTrie;
 use libdictenstein::persistent_artrie::eviction::EvictionConfig;
-use libdictenstein::persistent_artrie_char::SharedCharARTrie;
 use libdictenstein::MutableMappedDictionary;
 use proptest::prelude::*;
 use std::time::{Duration, Instant};

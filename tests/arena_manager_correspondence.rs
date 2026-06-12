@@ -7,12 +7,12 @@
 
 #![cfg(feature = "persistent-artrie")]
 
+use libdictenstein::persistent_artrie::char::{
+    ArenaManager as CharArenaManager, FlushConfig as CharFlushConfig,
+};
 use libdictenstein::persistent_artrie::{
     ArenaManager as ByteArenaManager, ArenaSlot as ByteArenaSlot, BlockStorage, BufferManager,
     FileHeader, FlushConfig as ByteFlushConfig, MmapDiskManager, PersistentARTrieError, BLOCK_SIZE,
-};
-use libdictenstein::persistent_artrie_char::{
-    ArenaManager as CharArenaManager, FlushConfig as CharFlushConfig,
 };
 use parking_lot::RwLock;
 use std::sync::Arc;

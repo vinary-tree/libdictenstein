@@ -6,7 +6,7 @@ fn main() {
     let dir = tempdir().expect("create temp dir");
     let path = dir.path().join("test.artrie");
 
-    let mut trie: PersistentARTrie<()> = PersistentARTrie::create(&path).expect("create trie");
+    let trie: PersistentARTrie<()> = PersistentARTrie::create(&path).expect("create trie");
 
     // Insert and trace
     for i in 0..300 {

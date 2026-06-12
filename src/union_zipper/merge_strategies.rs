@@ -57,7 +57,7 @@ pub trait ValueMergeStrategy<V>: Clone + Send + Sync {
 /// ```rust
 /// use libdictenstein::union_zipper::{UnionZipper, FirstWins};
 /// # use libdictenstein::prelude::*;
-/// # use libdictenstein::double_array_trie_zipper::DoubleArrayTrieZipper;
+/// # use libdictenstein::double_array_trie::zipper::DoubleArrayTrieZipper;
 ///
 /// // dict1 has "cat" -> 1, dict2 has "cat" -> 10
 /// // With FirstWins, "cat" -> 1
@@ -82,7 +82,7 @@ impl<V> ValueMergeStrategy<V> for FirstWins {
 /// ```rust
 /// use libdictenstein::union_zipper::{UnionZipper, LastWins};
 /// # use libdictenstein::prelude::*;
-/// # use libdictenstein::double_array_trie_zipper::DoubleArrayTrieZipper;
+/// # use libdictenstein::double_array_trie::zipper::DoubleArrayTrieZipper;
 ///
 /// // dict1 has "cat" -> 1, dict2 has "cat" -> 10
 /// // With LastWins, "cat" -> 10

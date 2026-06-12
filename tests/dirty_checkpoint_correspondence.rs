@@ -7,12 +7,12 @@
 
 #![cfg(feature = "persistent-artrie")]
 
+use libdictenstein::persistent_artrie::char::{
+    ArenaManager as CharArenaManager, FlushConfig as CharFlushConfig, PersistentARTrieChar,
+};
 use libdictenstein::persistent_artrie::{
     ArenaManager as ByteArenaManager, BlockStorage, BufferManager, FileHeader,
     FlushConfig as ByteFlushConfig, PersistentARTrie, PersistentARTrieError, BLOCK_SIZE,
-};
-use libdictenstein::persistent_artrie_char::{
-    ArenaManager as CharArenaManager, FlushConfig as CharFlushConfig, PersistentARTrieChar,
 };
 use libdictenstein::MappedDictionary;
 use parking_lot::RwLock;
@@ -448,7 +448,7 @@ fn char_descriptor_publication_before_wal_truncation_reopens_with_wal_tail() {
     let path = dir.path().join("char_descriptor_before_truncate.part");
 
     {
-        let mut trie = PersistentARTrieChar::<i32>::create(&path).expect("create char trie");
+        let trie = PersistentARTrieChar::<i32>::create(&path).expect("create char trie");
         trie.insert_with_value("descriptor", 10)
             .expect("insert descriptor term");
         // L3.3: the owned `persist_to_disk` descriptor-only publish is gone; the

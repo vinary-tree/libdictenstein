@@ -10,9 +10,9 @@
 
 #![cfg(feature = "io-uring-backend")]
 
+use libdictenstein::persistent_artrie::char::PersistentARTrieChar;
+use libdictenstein::persistent_artrie::vocab::PersistentVocabARTrie;
 use libdictenstein::persistent_artrie::PersistentARTrie;
-use libdictenstein::persistent_artrie_char::PersistentARTrieChar;
-use libdictenstein::persistent_vocab_artrie::PersistentVocabARTrie;
 use libdictenstein::Dictionary;
 use tempfile::tempdir;
 
@@ -25,7 +25,7 @@ fn test_byte_trie_create_insert_contains() {
     let dir = tempdir().expect("create temp dir");
     let path = dir.path().join("byte_trie.part");
 
-    let mut dict: PersistentARTrie<(), _> =
+    let dict: PersistentARTrie<(), _> =
         PersistentARTrie::create_with_io_uring(&path).expect("create with io_uring");
 
     assert!(dict.insert("apple"));
@@ -50,7 +50,7 @@ fn test_byte_trie_create_sync_reopen() {
 
     // Create and insert
     {
-        let mut dict: PersistentARTrie<(), _> =
+        let dict: PersistentARTrie<(), _> =
             PersistentARTrie::create_with_io_uring(&path).expect("create");
         for term in &terms {
             dict.insert(term);
@@ -82,7 +82,7 @@ fn test_byte_trie_wal_recovery() {
 
     // Create and insert — drop without sync (simulate crash)
     {
-        let mut dict: PersistentARTrie<(), _> =
+        let dict: PersistentARTrie<(), _> =
             PersistentARTrie::create_with_io_uring(&path).expect("create");
         for term in &terms {
             dict.insert(term);
@@ -111,7 +111,7 @@ fn test_byte_trie_remove_and_reopen() {
     let path = dir.path().join("byte_remove.part");
 
     {
-        let mut dict: PersistentARTrie<(), _> =
+        let dict: PersistentARTrie<(), _> =
             PersistentARTrie::create_with_io_uring(&path).expect("create");
         dict.insert("keep");
         dict.insert("remove_me");
@@ -138,7 +138,7 @@ fn test_byte_trie_large_dataset() {
     let count = 5000;
 
     {
-        let mut dict: PersistentARTrie<(), _> =
+        let dict: PersistentARTrie<(), _> =
             PersistentARTrie::create_with_io_uring(&path).expect("create");
         for i in 0..count {
             dict.insert(&format!("term_{:06}", i));
@@ -169,7 +169,7 @@ fn test_char_trie_create_insert_contains() {
     let dir = tempdir().expect("create temp dir");
     let path = dir.path().join("char_trie.part");
 
-    let mut trie: PersistentARTrieChar<(), _> =
+    let trie: PersistentARTrieChar<(), _> =
         PersistentARTrieChar::create_with_io_uring(&path).expect("create with io_uring");
 
     trie.insert("hello").expect("insert hello");
@@ -192,7 +192,7 @@ fn test_char_trie_create_sync_reopen() {
     let terms = vec!["café", "naïve", "résumé", "über", "日本語"];
 
     {
-        let mut trie: PersistentARTrieChar<(), _> =
+        let trie: PersistentARTrieChar<(), _> =
             PersistentARTrieChar::create_with_io_uring(&path).expect("create");
         for term in &terms {
             trie.insert(term).expect("insert");
@@ -223,7 +223,7 @@ fn test_char_trie_wal_recovery() {
 
     // Drop without sync
     {
-        let mut trie: PersistentARTrieChar<(), _> =
+        let trie: PersistentARTrieChar<(), _> =
             PersistentARTrieChar::create_with_io_uring(&path).expect("create");
         for term in &terms {
             trie.insert(term).expect("insert");
@@ -254,7 +254,7 @@ fn test_vocab_trie_create_insert_lookup() {
     let dir = tempdir().expect("create temp dir");
     let path = dir.path().join("vocab_trie.part");
 
-    let mut vocab: PersistentVocabARTrie<_> =
+    let vocab: PersistentVocabARTrie<_> =
         PersistentVocabARTrie::create_with_io_uring(&path).expect("create with io_uring");
 
     let idx0 = vocab.insert("hello").expect("insert hello");
@@ -287,10 +287,10 @@ fn test_vocab_trie_create_sync_reopen() {
     let terms = vec!["apple", "banana", "cherry", "date", "elderberry"];
 
     {
-        let mut vocab: PersistentVocabARTrie<_> =
+        let vocab: PersistentVocabARTrie<_> =
             PersistentVocabARTrie::create_with_io_uring(&path).expect("create");
         for term in &terms {
-            vocab.insert(term);
+            vocab.insert(term).expect("insert term failed");
         }
         vocab.sync().expect("sync");
     }
@@ -327,10 +327,10 @@ fn test_vocab_trie_wal_recovery() {
 
     // Drop without sync
     {
-        let mut vocab: PersistentVocabARTrie<_> =
+        let vocab: PersistentVocabARTrie<_> =
             PersistentVocabARTrie::create_with_io_uring(&path).expect("create");
         for term in &terms {
-            vocab.insert(term);
+            vocab.insert(term).expect("insert term failed");
         }
     }
 
@@ -359,7 +359,7 @@ fn test_vocab_trie_large_dataset() {
     let count = 5000;
 
     {
-        let mut vocab: PersistentVocabARTrie<_> =
+        let vocab: PersistentVocabARTrie<_> =
             PersistentVocabARTrie::create_with_io_uring(&path).expect("create");
         for i in 0..count {
             let idx = vocab

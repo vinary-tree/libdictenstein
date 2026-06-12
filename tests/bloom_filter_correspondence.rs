@@ -7,8 +7,8 @@
 //! Bloom-backed DynamicDawg lookup path.  They do not assert a probabilistic
 //! false-positive rate.
 
+use libdictenstein::dynamic_dawg::char::DynamicDawgChar;
 use libdictenstein::dynamic_dawg::DynamicDawg;
-use libdictenstein::dynamic_dawg_char::DynamicDawgChar;
 use libdictenstein::BloomFilter;
 use proptest::prelude::*;
 use rustc_hash::FxHasher;

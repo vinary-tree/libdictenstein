@@ -155,9 +155,9 @@ fn write_dirty_slots_for_arena<S: BlockStorage>(
 }
 
 /// Arena slot identifier — relocated to
-/// [`crate::persistent_artrie_core::arena_slot::ArenaSlot`]. Re-exported here
+/// [`crate::persistent_artrie::core::arena_slot::ArenaSlot`]. Re-exported here
 /// so existing callers keep working unchanged.
-pub use crate::persistent_artrie_core::arena_slot::ArenaSlot;
+pub use crate::persistent_artrie::core::arena_slot::ArenaSlot;
 
 /// Handle for a reserved range of consecutive slots.
 ///
@@ -1900,9 +1900,8 @@ mod tests {
         let stats = manager.dirty_tracker_stats();
         assert!(stats.is_some());
         let stats = stats.unwrap();
-        // Check dirty_arenas instead of total_arenas
-        // Initially the first arena should be tracked
-        assert!(stats.dirty_arenas >= 0);
+        // The existing arena is marked dirty when slot tracking is enabled.
+        assert_eq!(stats.dirty_arenas, 1);
     }
 
     #[test]

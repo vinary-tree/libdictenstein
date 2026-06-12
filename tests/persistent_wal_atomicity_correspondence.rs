@@ -6,8 +6,8 @@
 
 #![cfg(feature = "persistent-artrie")]
 
+use libdictenstein::persistent_artrie::char::PersistentARTrieChar;
 use libdictenstein::persistent_artrie::PersistentARTrie;
-use libdictenstein::persistent_artrie_char::PersistentARTrieChar;
 use libdictenstein::value::DictionaryValue;
 use libdictenstein::{Dictionary, MappedDictionary};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};

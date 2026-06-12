@@ -6,6 +6,24 @@
 
 ---
 
+> **Update (2026) — TrieRef rework.** The PathMap dictionary nodes and zippers
+> were rebuilt on pathmap's lock-free `TrieRef` handles (`src/pathmap/core.rs`),
+> and the crate's dictionary families reorganized into directory submodules
+> (`src/pathmap/`, `src/dynamic_dawg/`, `src/double_array_trie/`,
+> `src/suffix_automaton/`, `src/scdawg/`, `src/persistent_artrie/`). New
+> zero-plumbing, MORK-facing dictionaries — `PathMapSnapshot` / `PathMapRef`
+> (and `Char` variants) in `src/pathmap/snapshot.rs` — let a caller fuzzy-query a
+> **borrowed** or `𝒪(1)`-snapshotted `PathMap` with no copy and no lock.
+> `PathMapDictionary{,Char}::root()` now takes an `𝒪(1)` copy-on-write snapshot
+> (lock-free queries, snapshot isolation), replacing the former
+> lock-per-operation, path-replay node. Full design (with verified pathmap-API
+> facts and the 0.3 portability result):
+> `liblevenshtein-rust/docs/design/pathmap-trieref-rework.md`. Sections below
+> that describe a lock-per-operation node/zipper document the **superseded**
+> design.
+
+---
+
 ## Table of Contents
 
 1. [Overview](#overview)

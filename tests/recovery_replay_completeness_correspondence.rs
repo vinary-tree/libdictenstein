@@ -6,11 +6,11 @@
 
 #![cfg(feature = "persistent-artrie")]
 
+use libdictenstein::persistent_artrie::char::PersistentARTrieChar;
 use libdictenstein::persistent_artrie::{
     rebuild_from_wal_segments, recovered_operations_from_record, PersistentARTrie,
     RecoveredOperation, RecoveryMode, WalConfig, WalHeader, WalRecord, WalWriter,
 };
-use libdictenstein::persistent_artrie_char::PersistentARTrieChar;
 use libdictenstein::MappedDictionary;
 use std::fs::{self, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};

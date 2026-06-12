@@ -29,12 +29,12 @@
 //! archive self-cancels — the re-drained SET masks the delta).
 #![cfg(feature = "persistent-artrie")]
 
+use libdictenstein::persistent_artrie::char::PersistentARTrieChar;
+use libdictenstein::persistent_artrie::core::disk_manager::FileHeader;
+use libdictenstein::persistent_artrie::core::durability::DurabilityPolicy;
 use libdictenstein::persistent_artrie::{
     PersistentARTrie, RecoveryMode, WalConfig, WalHeader, WalReader, WalRecord, WalWriter,
 };
-use libdictenstein::persistent_artrie_char::PersistentARTrieChar;
-use libdictenstein::persistent_artrie_core::disk_manager::FileHeader;
-use libdictenstein::persistent_artrie_core::durability::DurabilityPolicy;
 use libdictenstein::MappedDictionary;
 use std::fs;
 use std::path::{Path, PathBuf};

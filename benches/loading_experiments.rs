@@ -11,11 +11,8 @@
 //! For scientific analysis, run with JSON output:
 //! cargo bench --bench loading_experiments --features persistent-artrie -- --save-baseline eager
 
-use criterion::{
-    black_box, criterion_group, criterion_main, measurement::WallTime, BenchmarkId, Criterion,
-    Throughput,
-};
-use libdictenstein::persistent_artrie_char::PersistentARTrieChar;
+use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+use libdictenstein::persistent_artrie::char::PersistentARTrieChar;
 use log::info;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -101,7 +98,7 @@ impl TestDataset {
 
         // Create and persist the trie
         {
-            let mut trie =
+            let trie =
                 PersistentARTrieChar::<u64>::create(&trie_path).expect("Failed to create trie");
 
             for (i, term) in terms.iter().enumerate() {
@@ -283,6 +280,7 @@ fn bench_memory_usage(c: &mut Criterion) {
 
 /// Collect raw timings for custom statistical analysis
 /// This bypasses Criterion's aggregation to give us per-run data
+#[allow(dead_code)]
 fn collect_raw_timings() {
     println!("\n=== Raw Timing Collection for Statistical Analysis ===\n");
 
@@ -374,7 +372,7 @@ fn bench_open_time_depth(c: &mut Criterion) {
         group.bench_with_input(
             BenchmarkId::new("depth", depth),
             &(&dataset, depth),
-            |b, (dataset, depth)| {
+            |b, (dataset, _depth)| {
                 b.iter(|| {
                     let trie = PersistentARTrieChar::<u64>::open(&dataset.trie_path)
                         .expect("Failed to open trie");
@@ -406,7 +404,7 @@ fn bench_first_lookup_depth(c: &mut Criterion) {
         group.bench_with_input(
             BenchmarkId::new("depth", depth),
             &(&dataset, &first_term, depth),
-            |b, (dataset, term, depth)| {
+            |b, (dataset, term, _depth)| {
                 b.iter(|| {
                     let trie = PersistentARTrieChar::<u64>::open(&dataset.trie_path)
                         .expect("Failed to open trie");

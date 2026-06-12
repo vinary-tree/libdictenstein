@@ -10,7 +10,7 @@
 mod common;
 
 use common::strategies::ascii_term;
-use libdictenstein::dynamic_dawg_u64::DynamicDawgU64;
+use libdictenstein::dynamic_dawg::u64::DynamicDawgU64;
 use libdictenstein::{CharUnit, DictZipper, Dictionary, DictionaryNode, ValuedDictZipper};
 use proptest::prelude::*;
 use proptest::test_runner::TestCaseError;
