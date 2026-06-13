@@ -8,6 +8,20 @@ Date format is ISO-8601 (YYYY-MM-DD).
 
 ### Changed
 
+- **`PersistentARTrieU64Compact` durability aligned with the byte/char
+  Order-A overlay path.** Native u64 now uses the shared WAL overlay regime,
+  appends `CommitRank` after the winning CAS publication, seeds and advances
+  `CommittedWatermark`, records checkpoint `checkpoint_lsn`, and retains WAL
+  tail records for recovery. The implementation keeps the native
+  `OverlayNode<U64Key<4>, V>` architecture and u64 CX checkpoint image; the old
+  native bincode snapshot/WAL path remains available only from git history.
+  Recovery tests now cover checkpoint-tail replay and CommitRank generation
+  ordering. Fixed-sample benchmarks added the encoded parallel reader/writer
+  control; pgmcp experiments `53`-`55` accepted native prefix-4 lookup,
+  parallel read/write latency, and prefix-4 checkpoint-density hypotheses.
+  Raw samples are in
+  `docs/experiments/persistent-u64-watermark-commitrank-2026-06-13.md`;
+  pgmcp artifact `132` stores the full benchmark output.
 - **PathMap dictionary nodes rebuilt on `TrieRef` (lock-free, `𝒪(1)`-from-focus).**
   `PathMapNode` / `PathMapNodeChar` are now type aliases of the new
   `TrieRefNode` / `TrieRefNodeChar` (`pathmap::core`) over a sealed `TrieRefLike`
