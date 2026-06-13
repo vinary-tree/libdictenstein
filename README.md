@@ -297,7 +297,7 @@ check_prefix(node, key, depth):
     for i in 0 .. min(node.partial_len, 8):          # "pessimistic": compare stored bytes inline
         if key[depth + i] ≠ node.partial[i]:
             return Mismatch(i)
-    # partial_len > 8 ("optimistic"): the prefix was truncated — defer full verification to the leaf
+    # partial_len > 8 ("optimistic"): the prefix was truncated; verify fully at the leaf
 ```
 
 Tree height drops from `O(∣key∣)` to `O(∣key∣ / s̄)` for mean compressed span `s̄`, a ~2–4× reduction (hence ~2–4× fewer I/Os) on natural-language keys. — Morrison (1968).

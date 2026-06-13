@@ -259,7 +259,7 @@ impl SwizzledPtr {
     /// The caller must ensure that `is_swizzled()` returns true before calling this.
     /// The returned pointer references a trie-owned node. On the durable char trie
     /// it stays valid for a `DictionaryNode` walk because the walk pins the trie's
-    /// epoch, so eviction defers reclamation until the walk drains (epoch-based
+    /// epoch, so eviction waits to reclaim until the walk drains (epoch-based
     /// reclamation); it is NOT valid across a concurrent in-place mutation.
     #[inline]
     pub unsafe fn as_ptr_unchecked<T>(&self) -> *const T {

@@ -12,7 +12,7 @@
 //! coordinator is installed) — lives here ONCE; the per-variant steps (the
 //! [`CheckpointSnapshot`](Self::CheckpointSnapshot) capture + serialize, which are
 //! GENUINELY per-variant because they touch the char/byte arena on-disk format) are
-//! deferred to abstract SEAM hooks.
+//! provided by abstract SEAM hooks.
 //!
 //! # Why this is data-loss-critical (RES-4, now structurally resolved)
 //!

@@ -238,7 +238,7 @@ where
 /// it bottom-up with a fresh `as_final().with_value(value)` leaf. Returns the new
 /// root `Arc`, or `None` if an `OnDisk` child blocked the copy (a fault failure, or
 /// a null filler, or [`FaultMode::NoFaultIn`]) — the caller's increment/value seam
-/// treats `None` as a transient conflict / a durable-but-deferred error.
+/// treats `None` as a transient conflict / a durable error reported by the caller.
 ///
 /// Lifted from the already-iterative per-variant `build_value_path_recursive` (byte
 /// `lockfree_cas.rs:1069`, char `:1348`) — SAME path-copy / absent-spine / valued-leaf

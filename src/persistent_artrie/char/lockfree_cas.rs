@@ -195,10 +195,9 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
         // an unranked orphan is kept-@-lsn and could resurrect a removed term). SAFE here
         // ONLY on an EMPTY WAL (`next_lsn == 1` ⇒ no records appended) — an in-place
         // restamp of a non-empty file is torn-write-unsafe + would drop pre-existing
-        // Owned records (N-S4-1; the non-empty case needs a rotation, deferred to the S5
-        // production flip). REVERSIBLE-S4: every caller of `install_overlay` is opt-in/
-        // test today (no production/default ctor reaches it); a PRODUCTION caller would
-        // make this the irreversible S5 flip.
+        // Owned records (N-S4-1). Current constructors reach this helper only on a fresh
+        // empty WAL (or without a WAL for `new()`), while non-empty recovery rebuilds the
+        // overlay through the open/recovery path instead of restamping in place.
         if let Some(ref writer) = self.wal_writer {
             // EMPTY-WAL guard: use the WRITER's authoritative next-LSN (incremented by
             // EVERY append — owned upsert/insert/remove AND the durable producers), NOT
@@ -2745,7 +2744,7 @@ mod durable_write_tests {
     /// second-load/global-claim rank is proven by the version-chain argument in
     /// docs/design/dg-recon-commitseq-stamp-seed-step.md §11; staging it
     /// deterministically needs finer interleaving control than the OD4 harness
-    /// exposes and is deferred to the S4 Overlay-drop gate.)
+    /// exposes; the S4 Overlay-drop gate covers that replay-order property.)
     #[test]
     fn fixa_idempotent_cache_cold_observed_version_then_remove_stays_absent() {
         let dir = scratch("fixa-observed-absent");

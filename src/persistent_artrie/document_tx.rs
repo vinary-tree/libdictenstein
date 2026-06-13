@@ -74,7 +74,7 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
     ///
     /// Compatibility wrapper for [`Self::try_tx_increment`]. Arithmetic or
     /// value-conversion failures poison the transaction; `commit_document`
-    /// will return the deferred error without appending commit records.
+    /// returns the stored error without appending commit records.
     pub fn tx_increment(&self, tx: &mut DocumentTransaction<V>, term: &str, delta: i64) {
         self.tx_increment_bytes(tx, term.as_bytes(), delta);
     }

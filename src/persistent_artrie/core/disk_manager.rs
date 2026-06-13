@@ -1068,7 +1068,7 @@ impl MmapDiskManager {
                 const BLOCK_COUNT_OFFSET: usize = 24;
                 mmap[BLOCK_COUNT_OFFSET..BLOCK_COUNT_OFFSET + 4]
                     .copy_from_slice(&count.to_le_bytes());
-                // Note: Checksum update is deferred to checkpoint/sync for performance.
+                // Note: checkpoint/sync performs the checksum update for performance.
                 // Recovery recalculates block_count from file size anyway.
             }
             // If try_write fails, another thread holds the lock - that's fine,

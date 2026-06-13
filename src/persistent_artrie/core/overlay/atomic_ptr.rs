@@ -18,8 +18,8 @@
 //! epoch/hazard-pointer scheme because `load()` can race with replacement and
 //! attempt to increment a freed allocation; a stopgap then retreated to a
 //! `RwLock`, which reintroduced a lock on every "CAS". `ArcSwapOption` is the
-//! sound *and* lock-free resolution: its `load` is protected by an internal
-//! deferred-reclaim scheme, so a reader never touches a freed allocation, and no
+//! sound *and* lock-free resolution: its `load` is protected by ArcSwap's
+//! guarded reclamation, so a reader never touches a freed allocation, and no
 //! lock serializes concurrent readers/writers.
 //!
 //! # Memory Safety

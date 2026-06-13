@@ -685,7 +685,7 @@ impl<V: DictionaryValue, S: crate::persistent_artrie::block_storage::BlockStorag
     ///
     /// L3.3: the overlay is the sole representation, so this returns an OVERLAY-backed
     /// `DictionaryNode` that navigates the overlay lazily, so zipper / transducer / fuzzy
-    /// traversal works (was: an EMPTY owned tree + a `log::warn!` deferral).
+    /// traversal works (previously: an EMPTY owned tree plus a warning path).
     ///
     /// The inherent `&self` path passes **no** overlay faulter: eviction (the only
     /// source of an `OnDisk` overlay child) is impossible on a non-`Shared` owned

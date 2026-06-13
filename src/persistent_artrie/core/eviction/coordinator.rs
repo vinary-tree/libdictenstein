@@ -715,7 +715,7 @@ impl EvictionCoordinator {
                     // drain, THEN free. Draining BEFORE the unlink would be unnecessary AND
                     // over-conservative: it would skip eviction entirely whenever any walk
                     // is active, even though the post-unlink drain handles that case safely
-                    // (deferring the free, never freeing under a live reader).
+                    // (holding the free until no live reader can observe it).
                     let start = Instant::now();
                     let (nodes_evicted, bytes_freed) =
                         this.perform_eviction_char(&*callback, &request);

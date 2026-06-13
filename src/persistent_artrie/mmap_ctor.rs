@@ -165,7 +165,7 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
         let arena_manager = ArenaManager::with_buffer_manager(Arc::clone(&buffer_manager));
         let arena_manager = Arc::new(RwLock::new(arena_manager));
 
-        // M4b EDIT 1: flip a fresh eligible-V trie to the overlay (no-op for arbitrary V).
+        // M4b EDIT 1: install the overlay for a fresh trie of every value type.
         Self::install_overlay_on_create(Self {
             term_count: AtomicUsize::new(0),
             dirty: AtomicBool::new(false),
@@ -263,7 +263,7 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
             ArenaManager::with_buffer_manager_and_config(Arc::clone(&buffer_manager), flush_config);
         let arena_manager = Arc::new(RwLock::new(arena_manager));
 
-        // M4b EDIT 1: flip a fresh eligible-V trie to the overlay (no-op for arbitrary V).
+        // M4b EDIT 1: install the overlay for a fresh trie of every value type.
         Self::install_overlay_on_create(Self {
             term_count: AtomicUsize::new(0),
             dirty: AtomicBool::new(false),
