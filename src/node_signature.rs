@@ -42,7 +42,7 @@ impl NodeSignature {
         NodeSignature { hash }
     }
 
-    /// Create a zero signature (used as placeholder before computation).
+    /// Create a zero signature for values that have not been computed yet.
     pub fn zero() -> Self {
         NodeSignature { hash: 0 }
     }

@@ -114,8 +114,8 @@ where
     /// be tied to `&self`) or an owned `String` (when the term must be
     /// reconstructed on-the-fly, as in persistent-vocab tries). The previous
     /// `Option<&str>` signature forced unsafe pointer dereference in
-    /// `BijectiveMap` and forced persistent-vocab impls to stub the method to
-    /// `None` — both are fixed by the `Cow` return type.
+    /// `BijectiveMap` and prevented persistent-vocab impls from returning the
+    /// reconstructed term — both are fixed by the `Cow` return type.
     ///
     /// # Performance
     ///

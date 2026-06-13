@@ -292,7 +292,7 @@ impl<V: DictionaryValue> PersistentARTrie<V, IoUringDiskManager> {
         };
 
         // L3.3c (BLOCKER#4, io_uring twin): no eager owned pre-load; the owned `dict.root` is a
-        // vestigial EMPTY placeholder (deleted at L3.3c-C2). The REAL codec `image_loaded` (with
+        // vestigial EMPTY root (deleted at L3.3c-C2). The REAL codec `image_loaded` (with
         // the in-loader Err→empty fallback) drives the WAL drain-skip — not a separate eager
         // probe that could disagree with the codec on a corrupt-NODE image and brick the reopen.
         // L3.3c: the owned root is gone; the overlay (built below via `load_root_immutable`)

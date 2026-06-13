@@ -8,7 +8,7 @@
 //! ```
 //!
 //! The previous `Option<&str>` trait signature forced the persistent-vocab
-//! impls to stub the method to `None`, silently violating the invariant for
+//! impls to return `None`, silently violating the invariant for
 //! every caller. Switching to `Option<Cow<'_, str>>` (A1 in the crate-wide
 //! tech-debt plan) lets each impl return the real reconstructed term — these
 //! tests confirm the law holds across `BijectiveMap`,

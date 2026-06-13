@@ -560,10 +560,10 @@ pub trait ARTrie: Clone + Send + Sync {
 //     ) -> bool;
 // }
 
-/// Deprecated placeholder for the removed `ARTrieAtomicOps` extension trait.
+/// Deprecated compatibility marker for the removed `ARTrieAtomicOps` extension trait.
 ///
 /// All methods that lived on it (`increment`, `upsert`, plus the
-/// never-implemented `compare_and_swap`) are now on [`ARTrie`] directly. Use
+/// removed `compare_and_swap`) are now on [`ARTrie`] directly. Use
 /// the canonical [`ARTrie::increment`] / [`ARTrie::upsert`] methods, or the
 /// inherent `compare_and_swap` on each persistent-ARTrie type.
 #[deprecated(note = "ARTrieAtomicOps was a transitional duplicate of ARTrie's \

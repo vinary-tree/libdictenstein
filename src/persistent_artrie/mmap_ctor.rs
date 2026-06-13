@@ -526,7 +526,7 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
         // Create the dictionary with storage layer.
         // L3.3c (BLOCKER#4): the overlay is built DIRECTLY from the dense image via the codec
         // `load_root_immutable` (it reads the arenas itself); there is NO eager owned pre-load,
-        // and the owned `dict.root` is a vestigial EMPTY placeholder (deleted at L3.3c-C2). The
+        // and the owned `dict.root` is a vestigial EMPTY root (deleted at L3.3c-C2). The
         // REAL codec `image_loaded` (with the in-loader Err→empty fallback) drives the WAL
         // drain-skip — NOT a separate eager probe that could disagree with the codec on a
         // valid-descriptor + corrupt-NODE image and brick the reopen (the BLOCKER#4 footgun).
