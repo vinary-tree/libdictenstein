@@ -1,53 +1,27 @@
-//! Regression tests for ARTrie record-segment WAL publication.
+//! Regression tests for ARTrie writer-lock-free WAL publication.
 //!
-//! Byte, char, vocab, and u64 durable writes should publish replayable one-record
-//! WAL segments instead of serializing through the active WAL file append lock.
+//! Byte, char, vocab, and u64 durable writes should publish replayable WAL
+//! records without serializing through the active WAL file append lock.
 
 #![cfg(feature = "persistent-artrie")]
 
 use libdictenstein::persistent_artrie::char::PersistentARTrieChar;
 use libdictenstein::persistent_artrie::vocab::PersistentVocabARTrie;
-use libdictenstein::persistent_artrie::{PersistentARTrie, PersistentARTrieU64, WalHeader};
+use libdictenstein::persistent_artrie::{PersistentARTrie, PersistentARTrieU64, WalReader};
 use libdictenstein::MappedDictionary;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use tempfile::tempdir;
 
-fn record_segment_dir_for_wal(wal_path: &Path) -> PathBuf {
-    let mut dir = wal_path.to_path_buf();
-    let extension = wal_path
-        .extension()
-        .and_then(|ext| ext.to_str())
-        .map(|ext| format!("{ext}.d"))
-        .unwrap_or_else(|| "wal.d".to_string());
-    dir.set_extension(extension);
-    dir
-}
-
-fn segment_count(wal_path: &Path) -> usize {
-    let dir = record_segment_dir_for_wal(wal_path);
-    std::fs::read_dir(dir)
-        .map(|entries| {
-            entries
-                .filter_map(Result::ok)
-                .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "segment"))
-                .count()
-        })
-        .unwrap_or(0)
-}
-
-fn assert_active_wal_header_only(wal_path: &Path) {
-    let len = std::fs::metadata(wal_path)
-        .expect("active WAL metadata")
-        .len();
-    assert_eq!(
-        len,
-        WalHeader::SIZE as u64,
-        "active WAL should remain header-only when record segments carry durable records"
-    );
+fn active_record_count(wal_path: &Path) -> usize {
+    let reader = WalReader::new(wal_path).expect("open active WAL");
+    reader
+        .iter()
+        .map(|result| result.expect("read WAL record"))
+        .count()
 }
 
 #[test]
-fn byte_replays_record_segments_without_active_append() {
+fn byte_replays_lockfree_wal_records() {
     let dir = tempdir().expect("temp dir");
     let path = dir.path().join("byte_segments.part");
     let wal_path = path.with_extension("wal");
@@ -57,11 +31,7 @@ fn byte_replays_record_segments_without_active_append() {
         assert!(trie.insert_with_value("alpha", 11));
         assert!(trie.insert_with_value("beta", 22));
         trie.sync().expect("sync byte WAL");
-        assert!(
-            segment_count(&wal_path) >= 4,
-            "two ranked byte inserts should publish data+rank record segments"
-        );
-        assert_active_wal_header_only(&wal_path);
+        assert!(active_record_count(&wal_path) >= 4);
         std::mem::forget(trie);
     }
 
@@ -71,7 +41,7 @@ fn byte_replays_record_segments_without_active_append() {
 }
 
 #[test]
-fn char_replays_record_segments_without_active_append() {
+fn char_replays_lockfree_wal_records() {
     let dir = tempdir().expect("temp dir");
     let path = dir.path().join("char_segments.part");
     let wal_path = path.with_extension("wal");
@@ -85,11 +55,7 @@ fn char_replays_record_segments_without_active_append() {
             .insert_with_value("東京", 2)
             .expect("insert unicode char key"));
         trie.sync().expect("sync char WAL");
-        assert!(
-            segment_count(&wal_path) >= 4,
-            "two ranked char inserts should publish data+rank record segments"
-        );
-        assert_active_wal_header_only(&wal_path);
+        assert!(active_record_count(&wal_path) >= 4);
         std::mem::forget(trie);
     }
 
@@ -99,7 +65,7 @@ fn char_replays_record_segments_without_active_append() {
 }
 
 #[test]
-fn vocab_replays_record_segments_without_active_append() {
+fn vocab_replays_lockfree_wal_records() {
     let dir = tempdir().expect("temp dir");
     let path = dir.path().join("vocab_segments.vocab");
     let wal_path = path.with_extension("vocab.wal");
@@ -111,11 +77,7 @@ fn vocab_replays_record_segments_without_active_append() {
             .insert_with_index("manual", 42)
             .expect("insert manual index"));
         vocab.sync().expect("sync vocab WAL");
-        assert!(
-            segment_count(&wal_path) >= 4,
-            "two ranked vocab inserts should publish data+rank record segments"
-        );
-        assert_active_wal_header_only(&wal_path);
+        assert!(active_record_count(&wal_path) >= 4);
         std::mem::forget(vocab);
     }
 
@@ -127,7 +89,7 @@ fn vocab_replays_record_segments_without_active_append() {
 }
 
 #[test]
-fn u64_replays_record_segments_without_active_append() {
+fn u64_replays_lockfree_wal_records() {
     let dir = tempdir().expect("temp dir");
     let path = dir.path().join("u64_segments.partu64");
     let wal_path = path.with_extension("wal");
@@ -137,11 +99,7 @@ fn u64_replays_record_segments_without_active_append() {
         assert!(trie.insert_sequence_with_value(&[1, 2, 3], 123));
         assert!(trie.insert_sequence_with_value(&[7, 8], 78));
         assert!(trie.remove_sequence(&[7, 8]));
-        assert!(
-            segment_count(&wal_path) >= 6,
-            "two ranked inserts plus one ranked remove should publish data+rank record segments"
-        );
-        assert_active_wal_header_only(&wal_path);
+        assert!(active_record_count(&wal_path) >= 6);
         std::mem::forget(trie);
     }
 
