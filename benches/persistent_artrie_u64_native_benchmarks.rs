@@ -1,10 +1,18 @@
 #![cfg(feature = "persistent-artrie")]
 
-//! Benchmarks for the native `PersistentARTrieU64` representation.
+//! Benchmarks for the native-key overlay `PersistentARTrieU64` representation.
 //!
 //! Control: `EncodedPersistentARTrieU64`, which maps every public `u64` unit
 //! onto eight byte transitions in the byte persistent ARTrie.
-//! Treatment: `PersistentARTrieU64`, which stores one native edge per `u64`.
+//! Control: `PersistentARTrieU64Prefix3Compat`, the previous native-key CX
+//! prefix budget.
+//! Treatment: `PersistentARTrieU64Compact`, which stores one native edge per
+//! `u64` and uses the widened CX prefix budget.
+//!
+//! The fixed workload is a seeded time-series stream: stream/metric identifiers,
+//! monotonic timestamp/delta tokens, and IEEE-754 `f64::to_bits()` observations.
+//! Terminal values are stored as `u64` float bits to match the intended payload
+//! shape without adding floating-point equality semantics to `DictionaryValue`.
 //!
 //! The fixed-sample mode is intended for the pgmcp experiment protocol:
 //!
@@ -17,7 +25,13 @@
 
 use criterion::{black_box, BenchmarkId, Criterion, Throughput};
 use libdictenstein::persistent_artrie::u64::EncodedPersistentARTrieU64;
-use libdictenstein::persistent_artrie::PersistentARTrieU64;
+use libdictenstein::persistent_artrie::{
+    PersistentARTrieU64Compact, PersistentARTrieU64Prefix3Compat,
+};
+use rand::distributions::{Distribution, WeightedIndex};
+use rand::rngs::StdRng;
+use rand::{Rng, SeedableRng};
+use std::collections::HashSet;
 use std::fs;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -34,65 +48,203 @@ const PARALLEL_KEYS: usize = 8_192;
 const OPS_PER_READER: usize = 12_000;
 const WRITES_PER_SAMPLE: usize = 2_000;
 const READER_COUNTS: &[usize] = &[1, 4, 8];
+const FIXED_SEED: u64 = 0x5041_5254_5536_3455;
 
 #[derive(Clone, Copy)]
 enum Arm {
     Native,
+    NativePrefix3,
     Encoded,
 }
 
-fn mix64(mut value: u64) -> u64 {
-    value = value.wrapping_add(0x9e37_79b9_7f4a_7c15);
-    value = (value ^ (value >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
-    value = (value ^ (value >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
-    value ^ (value >> 31)
+#[derive(Clone, Copy)]
+enum U64Class {
+    StreamId,
+    MetricId,
+    TimestampNanos,
+    DeltaNanos,
+    FloatBits,
+    EventCode,
 }
 
-fn generate_sequences(count: usize, len: usize) -> Vec<Vec<u64>> {
-    let mut out = Vec::with_capacity(count);
-    for i in 0..count {
-        let mut sequence = Vec::with_capacity(len);
-        for j in 0..len {
-            sequence.push(mix64((i as u64) << 32 | j as u64));
+fn sample_weighted_index(rng: &mut StdRng, weights: &[u32]) -> usize {
+    WeightedIndex::new(weights)
+        .expect("valid benchmark weights")
+        .sample(rng)
+}
+
+fn sample_u64_class(rng: &mut StdRng, previous: Option<U64Class>, position: usize) -> U64Class {
+    if position == 0 {
+        return U64Class::StreamId;
+    }
+    if position == 1 {
+        return U64Class::MetricId;
+    }
+    if position == 2 {
+        return U64Class::TimestampNanos;
+    }
+
+    let weights = match previous {
+        None => [0, 0, 60, 20, 20, 0],
+        Some(U64Class::StreamId) => [3, 75, 17, 3, 2, 0],
+        Some(U64Class::MetricId) => [0, 5, 72, 12, 10, 1],
+        Some(U64Class::TimestampNanos) => [0, 0, 18, 38, 38, 6],
+        Some(U64Class::DeltaNanos) => [0, 0, 25, 14, 56, 5],
+        Some(U64Class::FloatBits) => [0, 4, 28, 42, 21, 5],
+        Some(U64Class::EventCode) => [0, 5, 38, 24, 28, 5],
+    };
+    match sample_weighted_index(rng, &weights) {
+        0 => U64Class::StreamId,
+        1 => U64Class::MetricId,
+        2 => U64Class::TimestampNanos,
+        3 => U64Class::DeltaNanos,
+        4 => U64Class::FloatBits,
+        _ => U64Class::EventCode,
+    }
+}
+
+fn sample_delta_nanos(rng: &mut StdRng) -> u64 {
+    const BASE_DELTAS: &[u64] = &[
+        1_000,             // 1 us
+        1_000_000,         // 1 ms
+        10_000_000,        // 10 ms
+        100_000_000,       // 100 ms
+        1_000_000_000,     // 1 s
+        60_000_000_000,    // 1 min
+        3_600_000_000_000, // 1 h
+    ];
+    const WEIGHTS: &[u32] = &[3, 20, 24, 22, 20, 8, 3];
+    let base = BASE_DELTAS[sample_weighted_index(rng, WEIGHTS)];
+    base.saturating_add(rng.gen_range(0..=(base / 20).max(1)))
+}
+
+fn quantized_f64_bits(value: f64) -> u64 {
+    let quantized = (value * 1_000_000.0).round() / 1_000_000.0;
+    quantized.to_bits()
+}
+
+fn sample_u64_sequence(rng: &mut StdRng, len: usize) -> Vec<u64> {
+    const TAG_STREAM: u64 = 0x1000_0000_0000_0000;
+    const TAG_METRIC: u64 = 0x2000_0000_0000_0000;
+    const TAG_TIMESTAMP: u64 = 0x3000_0000_0000_0000;
+    const TAG_DELTA: u64 = 0x4000_0000_0000_0000;
+    const TAG_EVENT: u64 = 0x5000_0000_0000_0000;
+    const TAG_MASK: u64 = 0x0fff_ffff_ffff_ffff;
+
+    let stream_id = rng.gen_range(0..2_048u64);
+    let mut metric_id = rng.gen_range(0..512u64);
+    let mut timestamp = 1_700_000_000_000_000_000u64
+        + rng.gen_range(0..86_400_000_000_000u64)
+        + stream_id * 1_000_000;
+    let seasonal_phase = rng.gen_range(0.0..std::f64::consts::TAU);
+    let mut value = rng.gen_range(-20.0..20.0) + metric_id as f64 * 0.025;
+    let mut previous = None;
+    let mut sequence = Vec::with_capacity(len);
+    for position in 0..len {
+        let mut class = sample_u64_class(rng, previous, position);
+        if position + 1 == len {
+            class = U64Class::FloatBits;
         }
-        out.push(sequence);
+        let label = match class {
+            U64Class::StreamId => TAG_STREAM | stream_id,
+            U64Class::MetricId => {
+                if position > 1 && rng.gen_bool(0.18) {
+                    metric_id = (metric_id + rng.gen_range(1..17)) & 0x01ff;
+                }
+                TAG_METRIC | metric_id
+            }
+            U64Class::TimestampNanos => {
+                timestamp = timestamp.saturating_add(sample_delta_nanos(rng));
+                TAG_TIMESTAMP | (timestamp & TAG_MASK)
+            }
+            U64Class::DeltaNanos => {
+                let delta = sample_delta_nanos(rng);
+                timestamp = timestamp.saturating_add(delta);
+                TAG_DELTA | (delta & TAG_MASK)
+            }
+            U64Class::FloatBits => {
+                let drift = rng.gen_range(-0.75..0.75);
+                let seasonal = ((position as f64 * 0.37) + seasonal_phase).sin() * 0.35;
+                value += drift + seasonal + metric_id as f64 * 0.0005;
+                quantized_f64_bits(value)
+            }
+            U64Class::EventCode => {
+                let code = rng.gen_range(0..128u64);
+                TAG_EVENT | ((metric_id & 0xffff) << 16) | code
+            }
+        };
+        sequence.push(label);
+        previous = Some(class);
+    }
+    sequence
+}
+
+fn terminal_value_bits(sequence: &[u64]) -> u64 {
+    sequence.last().copied().unwrap_or_else(|| 0.0f64.to_bits())
+}
+
+fn generate_sequences_with_salt(count: usize, len: usize, salt: u64) -> Vec<Vec<u64>> {
+    let mut rng = StdRng::seed_from_u64(FIXED_SEED ^ ((count as u64) << 16) ^ len as u64 ^ salt);
+    let mut out = Vec::with_capacity(count);
+    let mut seen = HashSet::with_capacity(count * 2);
+    while out.len() < count {
+        let sequence = sample_u64_sequence(&mut rng, len);
+        if seen.insert(sequence.clone()) {
+            out.push(sequence);
+        }
     }
     out
 }
 
+fn generate_sequences(count: usize, len: usize) -> Vec<Vec<u64>> {
+    generate_sequences_with_salt(count, len, 0)
+}
+
 fn generate_queries(sequences: &[Vec<u64>], count: usize) -> Vec<Vec<u64>> {
+    let mut rng = StdRng::seed_from_u64(FIXED_SEED ^ 0x5155_4552_4945_5300);
     let mut queries = Vec::with_capacity(count);
+    let hot_len = (sequences.len() / 10).max(1);
     for i in 0..count {
-        let base = &sequences[i % sequences.len()];
-        if i % 2 == 0 {
-            queries.push(base.clone());
-        } else {
-            let mut miss = base.clone();
-            let last = miss.len() - 1;
-            miss[last] ^= 0x8000_0000_0000_0000;
-            queries.push(miss);
+        match sample_weighted_index(&mut rng, &[70, 20, 10]) {
+            0 => queries.push(sequences[rng.gen_range(0..hot_len)].clone()),
+            1 => queries.push(sequences[rng.gen_range(0..sequences.len())].clone()),
+            _ => {
+                let base = &sequences[i % sequences.len()];
+                let mut miss = base.clone();
+                let last = miss.len() - 1;
+                miss[last] = miss[last].wrapping_add(0x9e37_79b9_7f4a_7c15);
+                queries.push(miss);
+            }
         }
     }
     queries
 }
 
-fn build_native(sequences: &[Vec<u64>]) -> PersistentARTrieU64<()> {
-    let trie = PersistentARTrieU64::new();
+fn build_native(sequences: &[Vec<u64>]) -> PersistentARTrieU64Compact<u64> {
+    let trie = PersistentARTrieU64Compact::<u64>::new();
     for sequence in sequences {
-        trie.insert_sequence(sequence);
+        trie.insert_sequence_with_value(sequence, terminal_value_bits(sequence));
     }
     trie
 }
 
-fn build_encoded(sequences: &[Vec<u64>]) -> EncodedPersistentARTrieU64<()> {
-    let trie = EncodedPersistentARTrieU64::new();
+fn build_native_prefix3(sequences: &[Vec<u64>]) -> PersistentARTrieU64Prefix3Compat<u64> {
+    let trie = PersistentARTrieU64Prefix3Compat::<u64>::new();
     for sequence in sequences {
-        trie.insert_sequence(sequence);
+        trie.insert_sequence_with_value(sequence, terminal_value_bits(sequence));
     }
     trie
 }
 
-fn lookup_native(trie: &PersistentARTrieU64<()>, queries: &[Vec<u64>]) -> usize {
+fn build_encoded(sequences: &[Vec<u64>]) -> EncodedPersistentARTrieU64<u64> {
+    let trie = EncodedPersistentARTrieU64::<u64>::new();
+    for sequence in sequences {
+        trie.insert_sequence_with_value(sequence, terminal_value_bits(sequence));
+    }
+    trie
+}
+
+fn lookup_native(trie: &PersistentARTrieU64Compact<u64>, queries: &[Vec<u64>]) -> usize {
     let mut hits = 0usize;
     for query in queries {
         if trie.contains_sequence(black_box(query)) {
@@ -102,7 +254,20 @@ fn lookup_native(trie: &PersistentARTrieU64<()>, queries: &[Vec<u64>]) -> usize 
     black_box(hits)
 }
 
-fn lookup_encoded(trie: &EncodedPersistentARTrieU64<()>, queries: &[Vec<u64>]) -> usize {
+fn lookup_native_prefix3(
+    trie: &PersistentARTrieU64Prefix3Compat<u64>,
+    queries: &[Vec<u64>],
+) -> usize {
+    let mut hits = 0usize;
+    for query in queries {
+        if trie.contains_sequence(black_box(query)) {
+            hits += 1;
+        }
+    }
+    black_box(hits)
+}
+
+fn lookup_encoded(trie: &EncodedPersistentARTrieU64<u64>, queries: &[Vec<u64>]) -> usize {
     let mut hits = 0usize;
     for query in queries {
         if trie.contains_sequence(black_box(query)) {
@@ -139,15 +304,30 @@ fn scratch_dir() -> std::path::PathBuf {
     path
 }
 
-fn checkpoint_bytes_native(sequences: &[Vec<u64>]) -> u64 {
+fn checkpoint_bytes_native_compact(sequences: &[Vec<u64>]) -> u64 {
     let dir = tempfile::Builder::new()
         .prefix("part_u64_native")
         .tempdir_in(scratch_dir())
         .expect("native tempdir");
     let path = dir.path().join("native.partu64");
-    let trie = PersistentARTrieU64::<()>::create(&path).expect("create native trie");
+    let trie = PersistentARTrieU64Compact::<u64>::create(&path).expect("create compact u64 trie");
     for sequence in sequences {
-        trie.insert_sequence(sequence);
+        trie.insert_sequence_with_value(sequence, terminal_value_bits(sequence));
+    }
+    trie.checkpoint().expect("native checkpoint");
+    directory_bytes(dir.path())
+}
+
+fn checkpoint_bytes_native_prefix3_compat(sequences: &[Vec<u64>]) -> u64 {
+    let dir = tempfile::Builder::new()
+        .prefix("part_u64_native")
+        .tempdir_in(scratch_dir())
+        .expect("native tempdir");
+    let path = dir.path().join("native.partu64");
+    let trie =
+        PersistentARTrieU64Prefix3Compat::<u64>::create(&path).expect("create prefix3 u64 trie");
+    for sequence in sequences {
+        trie.insert_sequence_with_value(sequence, terminal_value_bits(sequence));
     }
     trie.checkpoint().expect("native checkpoint");
     directory_bytes(dir.path())
@@ -159,9 +339,9 @@ fn checkpoint_bytes_encoded(sequences: &[Vec<u64>]) -> u64 {
         .tempdir_in(scratch_dir())
         .expect("encoded tempdir");
     let path = dir.path().join("encoded.part");
-    let trie = EncodedPersistentARTrieU64::<()>::create(&path).expect("create encoded trie");
+    let trie = EncodedPersistentARTrieU64::<u64>::create(&path).expect("create encoded trie");
     for sequence in sequences {
-        trie.insert_sequence(sequence);
+        trie.insert_sequence_with_value(sequence, terminal_value_bits(sequence));
     }
     trie.checkpoint().expect("encoded checkpoint");
     directory_bytes(dir.path())
@@ -173,6 +353,12 @@ fn time_lookup_sample(arm: Arm, sequences: &[Vec<u64>], queries: &[Vec<u64>]) ->
             let trie = build_native(sequences);
             let start = Instant::now();
             lookup_native(&trie, queries);
+            start.elapsed()
+        }
+        Arm::NativePrefix3 => {
+            let trie = build_native_prefix3(sequences);
+            let start = Instant::now();
+            lookup_native_prefix3(&trie, queries);
             start.elapsed()
         }
         Arm::Encoded => {
@@ -217,7 +403,7 @@ fn parallel_native_sample(readers: usize, sequences: &[Vec<u64>]) -> Duration {
             let mut writes = 0usize;
             while !stop.load(Ordering::Relaxed) && writes < WRITES_PER_SAMPLE {
                 let index = (PARALLEL_KEYS / 2) + (writes % (PARALLEL_KEYS / 2));
-                trie.insert_sequence(&keys[index]);
+                trie.insert_sequence_with_value(&keys[index], terminal_value_bits(&keys[index]));
                 writes += 1;
             }
             black_box(writes)
@@ -268,7 +454,7 @@ fn parallel_encoded_sample(readers: usize, sequences: &[Vec<u64>]) -> Duration {
             let mut writes = 0usize;
             while !stop.load(Ordering::Relaxed) && writes < WRITES_PER_SAMPLE {
                 let index = (PARALLEL_KEYS / 2) + (writes % (PARALLEL_KEYS / 2));
-                trie.insert_sequence(&keys[index]);
+                trie.insert_sequence_with_value(&keys[index], terminal_value_bits(&keys[index]));
                 writes += 1;
             }
             black_box(writes)
@@ -296,8 +482,12 @@ fn bench_lookup(c: &mut Criterion) {
     group.sample_size(30);
     group.throughput(Throughput::Elements(LOOKUP_QUERIES as u64));
 
-    group.bench_function(BenchmarkId::new("native_u64", LOOKUP_LEN), |b| {
+    group.bench_function(BenchmarkId::new("native_u64_prefix4", LOOKUP_LEN), |b| {
         b.iter(|| lookup_native(&native, &queries));
+    });
+    let native_prefix3 = build_native_prefix3(&sequences);
+    group.bench_function(BenchmarkId::new("native_u64_prefix3", LOOKUP_LEN), |b| {
+        b.iter(|| lookup_native_prefix3(&native_prefix3, &queries));
     });
     group.bench_function(BenchmarkId::new("encoded_u64_as_bytes", LOOKUP_LEN), |b| {
         b.iter(|| lookup_encoded(&encoded, &queries));
@@ -312,20 +502,32 @@ fn bench_insert(c: &mut Criterion) {
     group.sample_size(20);
     group.throughput(Throughput::Elements(LOOKUP_SIZE as u64));
 
-    group.bench_function(BenchmarkId::new("native_u64", LOOKUP_LEN), |b| {
+    group.bench_function(BenchmarkId::new("native_u64_prefix4", LOOKUP_LEN), |b| {
         b.iter(|| {
-            let trie = PersistentARTrieU64::<()>::new();
+            let trie = PersistentARTrieU64Compact::<u64>::new();
             for sequence in &sequences {
-                trie.insert_sequence(black_box(sequence));
+                let sequence = black_box(sequence);
+                trie.insert_sequence_with_value(sequence, terminal_value_bits(sequence));
+            }
+            black_box(trie)
+        });
+    });
+    group.bench_function(BenchmarkId::new("native_u64_prefix3", LOOKUP_LEN), |b| {
+        b.iter(|| {
+            let trie = PersistentARTrieU64Prefix3Compat::<u64>::new();
+            for sequence in &sequences {
+                let sequence = black_box(sequence);
+                trie.insert_sequence_with_value(sequence, terminal_value_bits(sequence));
             }
             black_box(trie)
         });
     });
     group.bench_function(BenchmarkId::new("encoded_u64_as_bytes", LOOKUP_LEN), |b| {
         b.iter(|| {
-            let trie = EncodedPersistentARTrieU64::<()>::new();
+            let trie = EncodedPersistentARTrieU64::<u64>::new();
             for sequence in &sequences {
-                trie.insert_sequence(black_box(sequence));
+                let sequence = black_box(sequence);
+                trie.insert_sequence_with_value(sequence, terminal_value_bits(sequence));
             }
             black_box(trie)
         });
@@ -336,13 +538,17 @@ fn bench_insert(c: &mut Criterion) {
 
 fn bench_checkpoint_disk_bytes(c: &mut Criterion) {
     let sequences = generate_sequences(2_048, LOOKUP_LEN);
-    let native_bytes = checkpoint_bytes_native(&sequences);
+    let native_bytes = checkpoint_bytes_native_compact(&sequences);
+    let native_prefix3_bytes = checkpoint_bytes_native_prefix3_compat(&sequences);
     let encoded_bytes = checkpoint_bytes_encoded(&sequences);
 
     let mut group = c.benchmark_group("persistent_artrie_u64_checkpoint_bytes");
     group.sample_size(10);
-    group.bench_function("native_u64_bytes", |b| {
+    group.bench_function("native_u64_prefix4_bytes", |b| {
         b.iter(|| black_box(native_bytes));
+    });
+    group.bench_function("native_u64_prefix3_bytes", |b| {
+        b.iter(|| black_box(native_prefix3_bytes));
     });
     group.bench_function("encoded_u64_as_bytes_bytes", |b| {
         b.iter(|| black_box(encoded_bytes));
@@ -350,8 +556,8 @@ fn bench_checkpoint_disk_bytes(c: &mut Criterion) {
     group.finish();
 
     eprintln!(
-        "persistent_artrie_u64_checkpoint_bytes,native={},encoded={}",
-        native_bytes, encoded_bytes
+        "persistent_artrie_u64_checkpoint_bytes,native_prefix4={},native_prefix3={},encoded={}",
+        native_bytes, native_prefix3_bytes, encoded_bytes
     );
 }
 
@@ -405,24 +611,42 @@ fn print_sample_line(metric: &str, arm: &str, unit: &str, samples: &[f64]) {
     println!();
 }
 
+fn native_edge_store_arm_label() -> &'static str {
+    "treatment_overlay_cx_prefix4"
+}
+
 fn run_fixed_samples() {
     let sequences = generate_sequences(LOOKUP_SIZE, LOOKUP_LEN);
     let queries = generate_queries(&sequences, LOOKUP_QUERIES);
 
     let mut native_lookup = Vec::with_capacity(FIXED_SAMPLES);
+    let mut prefix3_lookup = Vec::with_capacity(FIXED_SAMPLES);
     let mut encoded_lookup = Vec::with_capacity(FIXED_SAMPLES);
+    let mut native_parallel = Vec::with_capacity(FIXED_SAMPLES);
+    let mut prefix3_bytes_per_entry = Vec::with_capacity(FIXED_SAMPLES);
+    let mut prefix4_bytes_per_entry = Vec::with_capacity(FIXED_SAMPLES);
 
     for round in 0..(FIXED_WARMUPS + FIXED_SAMPLES) {
         let encoded = time_lookup_sample(Arm::Encoded, &sequences, &queries);
         let native = time_lookup_sample(Arm::Native, &sequences, &queries);
+        let prefix3 = time_lookup_sample(Arm::NativePrefix3, &sequences, &queries);
+        let parallel = parallel_native_sample(8, &sequences);
+        let checkpoint_sequences =
+            generate_sequences_with_salt(2_048, LOOKUP_LEN, 0x4348_4b50_0000_0000 ^ round as u64);
+        let prefix3_bytes = checkpoint_bytes_native_prefix3_compat(&checkpoint_sequences);
+        let prefix4_bytes = checkpoint_bytes_native_compact(&checkpoint_sequences);
 
         if round >= FIXED_WARMUPS {
             encoded_lookup.push(encoded.as_nanos() as f64 / LOOKUP_QUERIES as f64);
             native_lookup.push(native.as_nanos() as f64 / LOOKUP_QUERIES as f64);
+            prefix3_lookup.push(prefix3.as_nanos() as f64 / LOOKUP_QUERIES as f64);
+            native_parallel.push(parallel.as_nanos() as f64 / (8 * OPS_PER_READER) as f64);
+            prefix3_bytes_per_entry.push(prefix3_bytes as f64 / checkpoint_sequences.len() as f64);
+            prefix4_bytes_per_entry.push(prefix4_bytes as f64 / checkpoint_sequences.len() as f64);
         }
     }
 
-    let native_bytes = checkpoint_bytes_native(&sequences[..2_048]);
+    let native_bytes = checkpoint_bytes_native_compact(&sequences[..2_048]);
     let encoded_bytes = checkpoint_bytes_encoded(&sequences[..2_048]);
 
     print_sample_line(
@@ -433,13 +657,38 @@ fn run_fixed_samples() {
     );
     print_sample_line(
         "lookup_ns_per_query",
-        "treatment_native_u64",
+        native_edge_store_arm_label(),
         "ns/query",
         &native_lookup,
     );
+    print_sample_line(
+        "lookup_ns_per_query",
+        "control_overlay_cx_prefix3",
+        "ns/query",
+        &prefix3_lookup,
+    );
+    print_sample_line(
+        "parallel_ns_per_read",
+        native_edge_store_arm_label(),
+        "ns/read",
+        &native_parallel,
+    );
+    print_sample_line(
+        "checkpoint_bytes_per_entry",
+        "control_overlay_cx_prefix3",
+        "bytes/entry",
+        &prefix3_bytes_per_entry,
+    );
+    print_sample_line(
+        "checkpoint_bytes_per_entry",
+        "treatment_overlay_cx_prefix4",
+        "bytes/entry",
+        &prefix4_bytes_per_entry,
+    );
     println!("metric=checkpoint_disk_bytes,arm=control_encoded_u64_as_bytes,unit=bytes,samples={encoded_bytes}");
     println!(
-        "metric=checkpoint_disk_bytes,arm=treatment_native_u64,unit=bytes,samples={native_bytes}"
+        "metric=checkpoint_disk_bytes,arm={},unit=bytes,samples={native_bytes}",
+        native_edge_store_arm_label()
     );
 }
 

@@ -123,6 +123,9 @@ codegen-units = 1
 [profile.bench]
 inherits = "release"
 
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(part_legacy_edge_store)"] }
+
 [[bench]]
 name = "serialization_benchmarks"
 harness = false
@@ -140,6 +143,11 @@ required-features = ["persistent-artrie"]
 
 [[bench]]
 name = "persistent_artrie_u64_native_benchmarks"
+harness = false
+required-features = ["persistent-artrie"]
+
+[[bench]]
+name = "persistent_vocab_artrie_benchmarks"
 harness = false
 required-features = ["persistent-artrie"]
 

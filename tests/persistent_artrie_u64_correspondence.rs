@@ -1,7 +1,7 @@
 #![cfg(feature = "persistent-artrie")]
 
 use libdictenstein::dynamic_dawg::DynamicDawgU64;
-use libdictenstein::persistent_artrie::PersistentARTrieU64;
+use libdictenstein::persistent_artrie::{PersistentARTrieU64, PersistentARTrieU64Compact};
 use libdictenstein::{CharUnit, Dictionary, DictionaryNode, MappedDictionaryNode, SyncStrategy};
 use proptest::prelude::*;
 use tempfile::tempdir;
@@ -124,6 +124,28 @@ fn native_u64_wal_replays_uncheckpointed_operations() {
     assert!(reopened.contains_sequence(&[4, 5, 6]));
     assert!(!reopened.contains_sequence(&[9]));
     assert_eq!(reopened.get_sequence_value(&[1, 2, 3]), Some(123));
+}
+
+#[test]
+fn cx_prefix_four_checkpoint_reopens() {
+    let dir = tempdir().expect("temp dir");
+    let path = dir.path().join("persistent_artrie_u64_prefix4.artrie");
+
+    {
+        let trie = PersistentARTrieU64Compact::<u64>::create(&path).expect("create u64 trie");
+        for i in 0..32u64 {
+            let sequence = vec![7, 11, 13, 17, i, i.wrapping_mul(3), i.wrapping_mul(9)];
+            assert!(trie.insert_sequence_with_value(&sequence, i));
+        }
+        trie.checkpoint().expect("checkpoint prefix4 u64 trie");
+    }
+
+    let reopened = PersistentARTrieU64Compact::<u64>::open(&path).expect("open prefix4 u64 trie");
+    for i in 0..32u64 {
+        let sequence = vec![7, 11, 13, 17, i, i.wrapping_mul(3), i.wrapping_mul(9)];
+        assert!(reopened.contains_sequence(&sequence));
+        assert_eq!(reopened.get_sequence_value(&sequence), Some(i));
+    }
 }
 
 #[test]

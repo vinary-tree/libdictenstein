@@ -26,6 +26,8 @@
 //! complete, the variant modules continue to re-export their original symbols
 //! so existing call-sites need not change paths in lock-step with moves.
 
+#[doc(hidden)]
+pub mod adaptive_edge_store;
 pub mod adaptive_pool;
 pub mod arena_slot;
 pub mod block_storage;

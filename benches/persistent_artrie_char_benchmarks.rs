@@ -9,9 +9,27 @@
 //!
 //! Run with: cargo bench --bench persistent_artrie_char_benchmarks --features persistent-artrie
 
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+use criterion::{black_box, BenchmarkId, Criterion, Throughput};
 use libdictenstein::{persistent_artrie::char::PersistentARTrieChar, DictionaryNode};
+use rand::distributions::{Distribution, WeightedIndex};
+use rand::rngs::StdRng;
+use rand::{Rng, SeedableRng};
+use std::collections::HashSet;
 use std::hint::black_box as bb;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Barrier};
+use std::thread;
+use std::time::{Duration, Instant};
+
+const FIXED_SAMPLES: usize = 51;
+const FIXED_WARMUPS: usize = 3;
+const FIXED_LOOKUP_SIZE: usize = 8_192;
+const FIXED_QUERY_COUNT: usize = 16_384;
+const FIXED_PARALLEL_KEYS: usize = 8_192;
+const FIXED_OPS_PER_READER: usize = 12_000;
+const FIXED_WRITES_PER_SAMPLE: usize = 2_000;
+const FIXED_READER_COUNT: usize = 8;
+const FIXED_SEED: u64 = 0x5041_5254_4348_4152;
 
 /// Generate realistic Unicode dictionary terms for benchmarking
 fn generate_unicode_terms(size: usize) -> Vec<String> {
@@ -95,6 +113,252 @@ fn generate_queries(terms: &[String], count: usize) -> Vec<String> {
     }
 
     queries
+}
+
+#[derive(Clone, Copy)]
+enum CharClass {
+    LatinConsonant,
+    LatinVowel,
+    Digit,
+    Separator,
+    Cjk,
+    Kana,
+    Greek,
+}
+
+fn sample_weighted_index(rng: &mut StdRng, weights: &[u32]) -> usize {
+    WeightedIndex::new(weights)
+        .expect("valid benchmark weights")
+        .sample(rng)
+}
+
+fn sample_char_class(rng: &mut StdRng, previous: Option<CharClass>) -> CharClass {
+    let weights = match previous {
+        None => [32, 18, 3, 0, 20, 12, 8],
+        Some(CharClass::LatinConsonant) => [14, 34, 3, 1, 3, 2, 2],
+        Some(CharClass::LatinVowel) => [38, 10, 3, 2, 3, 2, 2],
+        Some(CharClass::Digit) => [15, 12, 20, 2, 2, 1, 1],
+        Some(CharClass::Separator) => [26, 14, 2, 0, 8, 5, 4],
+        Some(CharClass::Cjk) => [3, 2, 1, 1, 34, 6, 1],
+        Some(CharClass::Kana) => [3, 2, 1, 1, 8, 30, 1],
+        Some(CharClass::Greek) => [5, 3, 1, 1, 1, 1, 30],
+    };
+    match sample_weighted_index(rng, &weights) {
+        0 => CharClass::LatinConsonant,
+        1 => CharClass::LatinVowel,
+        2 => CharClass::Digit,
+        3 => CharClass::Separator,
+        4 => CharClass::Cjk,
+        5 => CharClass::Kana,
+        _ => CharClass::Greek,
+    }
+}
+
+fn sample_char(rng: &mut StdRng, class: CharClass) -> char {
+    const LATIN_CONSONANTS: &[char] = &[
+        'b', 'c', 'd', 'f', 'g', 'h', 'j', 'k', 'l', 'm', 'n', 'p', 'q', 'r', 's', 't', 'v', 'w',
+        'x', 'y', 'z',
+    ];
+    const LATIN_VOWELS: &[char] = &['a', 'e', 'i', 'o', 'u', 'á', 'é', 'í', 'ó', 'ú', 'ü'];
+    const DIGITS: &[char] = &['0', '1', '2', '3', '4', '5', '6', '7', '8', '9'];
+    const CJK: &[char] = &[
+        '数', '据', '结', '构', '算', '法', '模', '型', '索', '引', '検', '索', '辞', '書', '言',
+        '語', '東', '京', '京', '都',
+    ];
+    const KANA: &[char] = &[
+        'ア', 'イ', 'ウ', 'エ', 'オ', 'カ', 'キ', 'ク', 'ケ', 'コ', 'サ', 'シ', 'ス', 'セ', 'ソ',
+        'ン', 'ー',
+    ];
+    const GREEK: &[char] = &[
+        'α', 'β', 'γ', 'δ', 'ε', 'η', 'θ', 'ι', 'κ', 'λ', 'μ', 'ν', 'ο', 'π', 'ρ', 'σ', 'τ',
+    ];
+    match class {
+        CharClass::LatinConsonant => LATIN_CONSONANTS[rng.gen_range(0..LATIN_CONSONANTS.len())],
+        CharClass::LatinVowel => LATIN_VOWELS[rng.gen_range(0..LATIN_VOWELS.len())],
+        CharClass::Digit => DIGITS[rng.gen_range(0..DIGITS.len())],
+        CharClass::Separator => ['-', '_'][rng.gen_range(0..2)],
+        CharClass::Cjk => CJK[rng.gen_range(0..CJK.len())],
+        CharClass::Kana => KANA[rng.gen_range(0..KANA.len())],
+        CharClass::Greek => GREEK[rng.gen_range(0..GREEK.len())],
+    }
+}
+
+fn sample_char_term(rng: &mut StdRng) -> String {
+    let lengths = [3usize, 4, 5, 6, 7, 8, 10, 12, 16];
+    let weights = [4, 9, 13, 16, 15, 12, 8, 4, 1];
+    let len = lengths[sample_weighted_index(rng, &weights)];
+    let mut out = String::new();
+    let mut previous = None;
+    for index in 0..len {
+        let mut class = sample_char_class(rng, previous);
+        if index == 0 || index + 1 == len {
+            if matches!(class, CharClass::Separator) {
+                class = CharClass::LatinConsonant;
+            }
+        }
+        out.push(sample_char(rng, class));
+        previous = Some(class);
+    }
+    out
+}
+
+fn generate_statistical_char_terms(size: usize) -> Vec<String> {
+    let mut rng = StdRng::seed_from_u64(FIXED_SEED);
+    let mut terms = Vec::with_capacity(size);
+    let mut seen = HashSet::with_capacity(size * 2);
+    while terms.len() < size {
+        let term = sample_char_term(&mut rng);
+        if seen.insert(term.clone()) {
+            terms.push(term);
+        }
+    }
+    terms
+}
+
+fn generate_statistical_char_queries(terms: &[String], count: usize) -> Vec<String> {
+    let mut rng = StdRng::seed_from_u64(FIXED_SEED ^ 0x5155_4552_4945_5300);
+    let mut queries = Vec::with_capacity(count);
+    let hot_len = (terms.len() / 10).max(1);
+    for i in 0..count {
+        match sample_weighted_index(&mut rng, &[70, 20, 10]) {
+            0 => queries.push(terms[rng.gen_range(0..hot_len)].clone()),
+            1 => queries.push(terms[rng.gen_range(0..terms.len())].clone()),
+            _ => {
+                let base = &terms[i % terms.len()];
+                queries.push(format!("{base}x"));
+            }
+        }
+    }
+    queries
+}
+
+fn build_fixed_char_trie(terms: &[String]) -> PersistentARTrieChar<()> {
+    let dict = PersistentARTrieChar::new();
+    for term in terms {
+        dict.insert(term).expect("insert fixed char term");
+    }
+    dict
+}
+
+fn lookup_fixed_char(dict: &PersistentARTrieChar<()>, queries: &[String]) -> usize {
+    let mut found = 0usize;
+    for query in queries {
+        if dict.contains(bb(query)) {
+            found += 1;
+        }
+    }
+    black_box(found)
+}
+
+fn time_lookup_sample(terms: &[String], queries: &[String]) -> Duration {
+    let dict = build_fixed_char_trie(terms);
+    let start = Instant::now();
+    lookup_fixed_char(&dict, queries);
+    start.elapsed()
+}
+
+fn parallel_read_write_sample(readers: usize, terms: &[String]) -> Duration {
+    let dict = Arc::new(build_fixed_char_trie(&terms[..FIXED_PARALLEL_KEYS / 2]));
+    let stop = Arc::new(AtomicBool::new(false));
+    let barrier = Arc::new(Barrier::new(readers + 2));
+
+    let mut handles = Vec::with_capacity(readers);
+    for reader in 0..readers {
+        let dict = Arc::clone(&dict);
+        let barrier = Arc::clone(&barrier);
+        let keys = terms.to_vec();
+        handles.push(thread::spawn(move || {
+            barrier.wait();
+            let mut hits = 0usize;
+            for op in 0..FIXED_OPS_PER_READER {
+                let index = op.wrapping_mul(2_654_435_761).wrapping_add(reader * 17) % keys.len();
+                if dict.contains(&keys[index]) {
+                    hits += 1;
+                }
+            }
+            black_box(hits)
+        }));
+    }
+
+    let writer = {
+        let dict = Arc::clone(&dict);
+        let barrier = Arc::clone(&barrier);
+        let stop = Arc::clone(&stop);
+        let keys = terms.to_vec();
+        thread::spawn(move || {
+            barrier.wait();
+            let mut writes = 0usize;
+            while !stop.load(Ordering::Relaxed) && writes < FIXED_WRITES_PER_SAMPLE {
+                let index = (FIXED_PARALLEL_KEYS / 2) + (writes % (FIXED_PARALLEL_KEYS / 2));
+                let _ = dict.insert(&keys[index]);
+                writes += 1;
+            }
+            black_box(writes)
+        })
+    };
+
+    barrier.wait();
+    let start = Instant::now();
+    for handle in handles {
+        let _ = handle.join();
+    }
+    let elapsed = start.elapsed();
+    stop.store(true, Ordering::Relaxed);
+    let _ = writer.join();
+    elapsed
+}
+
+fn fixed_arm_label() -> &'static str {
+    if cfg!(part_legacy_edge_store) {
+        "control_legacy_edge_store"
+    } else {
+        "treatment_adaptive_edge_store"
+    }
+}
+
+fn print_sample_line(metric: &str, unit: &str, samples: &[f64]) {
+    print!(
+        "metric={metric},arm={},unit={unit},samples=",
+        fixed_arm_label()
+    );
+    for (index, sample) in samples.iter().enumerate() {
+        if index > 0 {
+            print!(";");
+        }
+        print!("{sample:.6}");
+    }
+    println!();
+}
+
+fn collect_samples<F>(mut f: F, divisor: f64) -> Vec<f64>
+where
+    F: FnMut() -> Duration,
+{
+    let mut samples = Vec::with_capacity(FIXED_SAMPLES);
+    for round in 0..(FIXED_WARMUPS + FIXED_SAMPLES) {
+        let elapsed = f();
+        if round >= FIXED_WARMUPS {
+            samples.push(elapsed.as_nanos() as f64 / divisor);
+        }
+    }
+    samples
+}
+
+fn run_fixed_samples() {
+    let terms = generate_statistical_char_terms(FIXED_LOOKUP_SIZE);
+    let queries = generate_statistical_char_queries(&terms, FIXED_QUERY_COUNT);
+
+    let lookup = collect_samples(
+        || time_lookup_sample(&terms, &queries),
+        FIXED_QUERY_COUNT as f64,
+    );
+    let parallel = collect_samples(
+        || parallel_read_write_sample(FIXED_READER_COUNT, &terms),
+        (FIXED_READER_COUNT * FIXED_OPS_PER_READER) as f64,
+    );
+
+    print_sample_line("lookup_ns_per_query", "ns/query", &lookup);
+    print_sample_line("parallel_ns_per_read", "ns/read", &parallel);
 }
 
 // ============================================================================
@@ -632,58 +896,28 @@ fn bench_char_atomic_ops(c: &mut Criterion) {
     group.finish();
 }
 
-// ============================================================================
-// Criterion Groups
-// ============================================================================
+fn run_criterion() {
+    let mut criterion = Criterion::default().configure_from_args();
+    bench_char_construction(&mut criterion);
+    bench_char_construction_ascii(&mut criterion);
+    bench_char_lookup(&mut criterion);
+    bench_char_lookup_cjk(&mut criterion);
+    bench_char_edge_traversal(&mut criterion);
+    bench_char_transitions(&mut criterion);
+    bench_char_transitions_emoji(&mut criterion);
+    bench_char_iteration(&mut criterion);
+    bench_char_memory_efficiency(&mut criterion);
+    bench_char_optimistic_reads(&mut criterion);
+    bench_char_disk_io(&mut criterion);
+    bench_char_disk_io_cjk(&mut criterion);
+    bench_char_atomic_ops(&mut criterion);
+    criterion.final_summary();
+}
 
-criterion_group!(
-    construction_benches,
-    bench_char_construction,
-    bench_char_construction_ascii,
-);
-
-criterion_group!(lookup_benches, bench_char_lookup, bench_char_lookup_cjk,);
-
-criterion_group!(edge_traversal_benches, bench_char_edge_traversal,);
-
-criterion_group!(
-    transition_benches,
-    bench_char_transitions,
-    bench_char_transitions_emoji,
-);
-
-criterion_group!(iteration_benches, bench_char_iteration,);
-
-criterion_group!(memory_benches, bench_char_memory_efficiency,);
-
-#[cfg(feature = "persistent-artrie")]
-criterion_group!(optimistic_benches, bench_char_optimistic_reads,);
-
-#[cfg(feature = "persistent-artrie")]
-criterion_group!(disk_io_benches, bench_char_disk_io, bench_char_disk_io_cjk,);
-
-#[cfg(feature = "persistent-artrie")]
-criterion_group!(atomic_benches, bench_char_atomic_ops,);
-
-#[cfg(feature = "persistent-artrie")]
-criterion_main!(
-    construction_benches,
-    lookup_benches,
-    edge_traversal_benches,
-    transition_benches,
-    iteration_benches,
-    memory_benches,
-    optimistic_benches,
-    disk_io_benches,
-    atomic_benches,
-);
-
-#[cfg(not(feature = "persistent-artrie"))]
-criterion_main!(
-    construction_benches,
-    lookup_benches,
-    edge_traversal_benches,
-    transition_benches,
-    iteration_benches,
-    memory_benches,
-);
+fn main() {
+    if std::env::var_os("PART_CHAR_FIXED_SAMPLES").is_some() {
+        run_fixed_samples();
+    } else {
+        run_criterion();
+    }
+}

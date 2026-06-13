@@ -30,7 +30,7 @@
 //! |---------|----------|-------------|-------------|---------|
 //! | **[PersistentARTrie]** | Disk-backed key/value, byte keys | mmap + WAL | Lock-free CAS | Byte-level |
 //! | **[PersistentARTrieChar]** | Disk-backed key/value, Unicode | mmap + WAL | Lock-free CAS | ✅ Character-level |
-//! | **[PersistentARTrieU64]** | Disk-backed sequence key/value, u64 labels | native snapshot + WAL | Copy-on-write snapshots | 64-bit labels |
+//! | **[PersistentARTrieU64]** | Disk-backed sequence key/value, u64 labels | overlay CX snapshot + WAL | Lock-free CAS | 64-bit labels |
 //! | **[PersistentSuffixAutomaton]** | Disk-backed substring search, byte keys | native snapshot + WAL | Copy-on-write snapshots | Byte-level |
 //! | **[PersistentSuffixAutomatonChar]** | Disk-backed Unicode substring search | native snapshot + WAL | Copy-on-write snapshots | ✅ Character-level |
 //! | **[PersistentSuffixTree]** | Disk-backed suffix-tree-compatible substring API, byte keys | native compact suffix-tree snapshot + WAL | Copy-on-write snapshots | Byte-level |

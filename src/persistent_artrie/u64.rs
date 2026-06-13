@@ -1,420 +1,198 @@
-//! Sequence-keyed persistent trie for `u64` units.
+//! Sequence-keyed persistent trie for native `u64` units.
 //!
-//! `PersistentARTrieU64` uses a native `u64` edge representation instead of
-//! encoding every public unit as eight byte-level trie transitions. The native
-//! storage format is a bincode snapshot of `u64` paths plus a length-prefixed
-//! native operation log. The byte-encoded facade is retained as
-//! [`EncodedPersistentARTrieU64`] for benchmarks and migration comparisons.
+//! The live representation is the same immutable, lock-free overlay architecture
+//! used by the byte and char persistent ARTrie variants:
+//! `AtomicNodePtr<OverlayNode<U64Key<PREFIX>, V>>`.  The u64 variant keeps native
+//! 64-bit labels all the way through insertion, lookup, checkpoint capture, and
+//! reopen.  It does not keep the former native bincode snapshot/WAL format; the
+//! WAL is the shared `WalRecord` codec and checkpoint capture uses the shared CX
+//! overlay compressor with u64-specific node projection.
 
-use std::collections::HashMap;
-use std::fmt;
-use std::fs::{self, File, OpenOptions};
+use std::fs::{self, File};
 use std::io::{self, Read, Write};
 use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
-use arc_swap::{ArcSwap, ArcSwapOption};
-use parking_lot::Mutex;
-use rustc_hash::FxHashMap;
-use serde::{Deserialize, Serialize};
-use smallvec::SmallVec;
-
 use crate::persistent_artrie::block_storage::BlockStorage;
+use crate::persistent_artrie::core::key_encoding::{KeyEncoding, U64Key};
+use crate::persistent_artrie::core::overlay::atomic_ptr::AtomicNodePtr;
+use crate::persistent_artrie::core::overlay::compressed_serialize::OverlayCompressedSerialize;
+use crate::persistent_artrie::core::overlay::dict_node::OverlayDictionaryNode;
+use crate::persistent_artrie::core::overlay::node::{Child, OverlayNode};
+use crate::persistent_artrie::core::wal::{WalReader, WalRecord, WalWriter};
 use crate::persistent_artrie::disk_manager::MmapDiskManager;
 use crate::persistent_artrie::error::{PersistentARTrieError, Result};
+use crate::persistent_artrie::swizzled_ptr::{NodeType, SwizzledPtr};
 use crate::persistent_artrie::{PersistentARTrie, RecoveryReport};
 use crate::serialization::bincode_compat;
 use crate::value::DictionaryValue;
 use crate::{
-    CharUnit, Dictionary, DictionaryNode, MappedDictionary, MappedDictionaryNode,
-    MutableDictionary, MutableMappedDictionary, SyncStrategy,
+    CharUnit, Dictionary, MappedDictionary, MutableDictionary, MutableMappedDictionary,
+    SyncStrategy,
 };
 
-const SNAPSHOT_MAGIC: [u8; 8] = *b"PARTU64N";
+const SNAPSHOT_MAGIC: [u8; 8] = *b"AR64CX01";
 const SNAPSHOT_VERSION: u32 = 1;
-const MAX_WAL_RECORD_BYTES: u64 = 64 * 1024 * 1024;
-const INLINE_EDGE_LIMIT: usize = 16;
-const SORTED_EDGE_LIMIT: usize = 128;
+const NONE_VALUE_LEN: u64 = u64::MAX;
+const MAX_VALUE_BYTES: u64 = 64 * 1024 * 1024;
+const MAX_NODE_COUNT: u64 = 16 * 1024 * 1024;
+const MAX_PREFIX_UNITS: u32 = 4096;
+const MAX_CHILDREN_PER_NODE: u32 = 1_000_000;
+
+/// CX prefix budget for the prefix-3 compatibility/baseline profile.
+pub const U64_CX_PREFIX_COMPAT: usize = 3;
+
+/// CX prefix budget for the disk-compact default profile.
+pub const U64_CX_PREFIX_COMPACT: usize = 4;
+
+type U64Node<V, const PREFIX: usize> = OverlayNode<U64Key<PREFIX>, V>;
 
 /// Persistent trie keyed by native `u64` sequences.
-pub struct PersistentARTrieU64<V: DictionaryValue = (), S: BlockStorage = MmapDiskManager> {
-    inner: Arc<NativeU64Trie<V>>,
+pub struct PersistentARTrieU64<
+    V: DictionaryValue = (),
+    S: BlockStorage = MmapDiskManager,
+    const PREFIX: usize = U64_CX_PREFIX_COMPACT,
+> {
+    root: AtomicNodePtr<U64Key<PREFIX>, V>,
+    term_count: AtomicUsize,
     path: Option<PathBuf>,
+    wal_writer: Option<Arc<WalWriter>>,
     checkpoint_lock: Arc<Mutex<()>>,
-    wal_lock: Arc<Mutex<()>>,
     _storage: PhantomData<S>,
 }
 
 /// Node handle for [`PersistentARTrieU64`].
+pub type PersistentARTrieU64Node<V = (), const PREFIX: usize = U64_CX_PREFIX_COMPACT> =
+    OverlayDictionaryNode<U64Key<PREFIX>, V>;
+
+/// Disk-compact u64 profile.
+///
+/// This is the current default profile (`PREFIX = 4`).  It keeps one native
+/// `u64` edge per transition and uses the wider CX prefix budget measured to
+/// reduce checkpoint bytes while preserving lookup performance.
+pub type PersistentARTrieU64Compact<V = (), S = MmapDiskManager> =
+    PersistentARTrieU64<V, S, U64_CX_PREFIX_COMPACT>;
+
+/// Prefix-3 u64 profile kept for compatibility and benchmark baselines.
+///
+/// Use this alias when opening prefix-3 CX checkpoint files or when comparing
+/// the old prefix budget against [`PersistentARTrieU64Compact`].
+pub type PersistentARTrieU64Prefix3Compat<V = (), S = MmapDiskManager> =
+    PersistentARTrieU64<V, S, U64_CX_PREFIX_COMPAT>;
+
+/// Node handle for [`PersistentARTrieU64Compact`].
+pub type PersistentARTrieU64CompactNode<V = ()> = PersistentARTrieU64Node<V, U64_CX_PREFIX_COMPACT>;
+
+/// Node handle for [`PersistentARTrieU64Prefix3Compat`].
+pub type PersistentARTrieU64Prefix3CompatNode<V = ()> =
+    PersistentARTrieU64Node<V, U64_CX_PREFIX_COMPAT>;
+
+struct U64Projected {
+    is_final: bool,
+    prefix: Vec<u64>,
+    value: Option<Vec<u8>>,
+    children: Vec<(u64, u64)>,
+}
+
 #[derive(Clone)]
-pub struct PersistentARTrieU64Node<V: DictionaryValue = ()> {
-    inner: Arc<NativeU64Node<V>>,
-    path: Vec<u64>,
+struct U64DiskNode {
+    is_final: bool,
+    prefix: Vec<u64>,
+    value: Option<Vec<u8>>,
+    children: Vec<(u64, u64)>,
 }
 
-pub struct NativeU64Trie<V: DictionaryValue> {
-    root: Arc<NativeU64Node<V>>,
-    term_count: AtomicUsize,
+#[derive(Default)]
+struct U64SnapshotBuilder {
+    nodes: Mutex<Vec<U64DiskNode>>,
 }
 
-struct NativeU64Node<V: DictionaryValue> {
-    edges: ArcSwap<NativeU64EdgeStore<V>>,
-    is_final: AtomicBool,
-    value: ArcSwapOption<V>,
-}
-
-enum NativeU64EdgeStore<V: DictionaryValue> {
-    Inline(SmallVec<[(u64, Arc<NativeU64Node<V>>); INLINE_EDGE_LIMIT]>),
-    Sorted(Vec<(u64, Arc<NativeU64Node<V>>)>),
-    Hash(FxHashMap<u64, Arc<NativeU64Node<V>>>),
-}
-
-impl<V: DictionaryValue> NativeU64EdgeStore<V> {
-    fn new() -> Self {
-        Self::Inline(SmallVec::new())
-    }
-
-    fn len(&self) -> usize {
-        match self {
-            Self::Inline(edges) => edges.len(),
-            Self::Sorted(edges) => edges.len(),
-            Self::Hash(edges) => edges.len(),
-        }
-    }
-
-    fn find(&self, label: u64) -> Option<&Arc<NativeU64Node<V>>> {
-        match self {
-            Self::Inline(edges) => edges
-                .binary_search_by_key(&label, |(edge, _)| *edge)
-                .ok()
-                .map(|index| &edges[index].1),
-            Self::Sorted(edges) => edges
-                .binary_search_by_key(&label, |(edge, _)| *edge)
-                .ok()
-                .map(|index| &edges[index].1),
-            Self::Hash(edges) => edges.get(&label),
-        }
-    }
-
-    fn with_edge(&self, label: u64, child: Arc<NativeU64Node<V>>) -> Self {
-        match self {
-            Self::Inline(edges) => {
-                let mut next = edges.clone();
-                match next.binary_search_by_key(&label, |(edge, _)| *edge) {
-                    Ok(index) => next[index].1 = child,
-                    Err(index) => next.insert(index, (label, child)),
-                }
-
-                if next.len() <= INLINE_EDGE_LIMIT {
-                    Self::Inline(next)
-                } else {
-                    Self::Sorted(next.into_iter().collect())
-                }
-            }
-            Self::Sorted(edges) => {
-                let mut next = edges.clone();
-                match next.binary_search_by_key(&label, |(edge, _)| *edge) {
-                    Ok(index) => next[index].1 = child,
-                    Err(index) => next.insert(index, (label, child)),
-                }
-
-                if next.len() <= SORTED_EDGE_LIMIT {
-                    Self::Sorted(next)
-                } else {
-                    let mut hash = FxHashMap::default();
-                    hash.reserve(next.len());
-                    for (edge, child) in next {
-                        hash.insert(edge, child);
-                    }
-                    Self::Hash(hash)
-                }
-            }
-            Self::Hash(edges) => {
-                let mut next = edges.clone();
-                next.insert(label, child);
-                Self::Hash(next)
-            }
-        }
-    }
-
-    fn edges_vec(&self) -> Vec<(u64, Arc<NativeU64Node<V>>)> {
-        match self {
-            Self::Inline(edges) => edges
-                .iter()
-                .map(|(label, child)| (*label, child.clone()))
-                .collect(),
-            Self::Sorted(edges) => edges
-                .iter()
-                .map(|(label, child)| (*label, child.clone()))
-                .collect(),
-            Self::Hash(edges) => {
-                let mut out: Vec<_> = edges
-                    .iter()
-                    .map(|(label, child)| (*label, child.clone()))
-                    .collect();
-                out.sort_by_key(|(label, _)| *label);
-                out
-            }
-        }
+impl U64SnapshotBuilder {
+    fn into_nodes(self) -> Vec<U64DiskNode> {
+        self.nodes
+            .into_inner()
+            .expect("u64 snapshot builder mutex poisoned")
     }
 }
 
-impl<V: DictionaryValue> NativeU64Node<V> {
-    fn new(is_final: bool) -> Self {
-        Self {
-            edges: ArcSwap::from_pointee(NativeU64EdgeStore::new()),
-            is_final: AtomicBool::new(is_final),
-            value: ArcSwapOption::empty(),
-        }
-    }
+impl<V: DictionaryValue, const PREFIX: usize> OverlayCompressedSerialize<U64Key<PREFIX>, V>
+    for U64SnapshotBuilder
+{
+    type Projected = U64Projected;
 
-    fn new_with_value(is_final: bool, value: V) -> Self {
-        Self {
-            edges: ArcSwap::from_pointee(NativeU64EdgeStore::new()),
-            is_final: AtomicBool::new(is_final),
-            value: ArcSwapOption::from_pointee(Some(value)),
-        }
-    }
-}
-
-impl<V: DictionaryValue> NativeU64Trie<V> {
-    fn new() -> Self {
-        Self {
-            root: Arc::new(NativeU64Node::new(false)),
-            term_count: AtomicUsize::new(0),
-        }
-    }
-
-    fn term_count(&self) -> usize {
-        self.term_count.load(Ordering::Relaxed)
-    }
-
-    fn root(&self) -> Arc<NativeU64Node<V>> {
-        self.root.clone()
-    }
-
-    fn insert_sequence(&self, sequence: &[u64]) -> bool {
-        if sequence.is_empty() {
-            if self
-                .root
-                .is_final
-                .compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed)
-                .is_ok()
-            {
-                self.term_count.fetch_add(1, Ordering::Relaxed);
-                return true;
-            }
-            return false;
-        }
-
-        let mut current = self.root.clone();
-        for (index, &label) in sequence.iter().enumerate() {
-            let is_last = index == sequence.len() - 1;
-            loop {
-                let edges = current.edges.load();
-                if let Some(child) = edges.find(label) {
-                    if is_last {
-                        if child
-                            .is_final
-                            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed)
-                            .is_ok()
-                        {
-                            self.term_count.fetch_add(1, Ordering::Relaxed);
-                            return true;
-                        }
-                        return false;
-                    }
-                    current = child.clone();
-                    break;
-                }
-
-                let new_node = Arc::new(NativeU64Node::new(is_last));
-                let new_edges = Arc::new(edges.with_edge(label, new_node.clone()));
-                let previous = current.edges.compare_and_swap(&edges, new_edges);
-                if Arc::ptr_eq(&previous, &edges) {
-                    if is_last {
-                        self.term_count.fetch_add(1, Ordering::Relaxed);
-                        return true;
-                    }
-                    current = new_node;
-                    break;
-                }
-            }
-        }
-
-        true
-    }
-
-    fn insert_sequence_with_value(&self, sequence: &[u64], value: V) -> bool {
-        if sequence.is_empty() {
-            if self
-                .root
-                .is_final
-                .compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed)
-                .is_ok()
-            {
-                self.root.value.store(Some(Arc::new(value)));
-                self.term_count.fetch_add(1, Ordering::Relaxed);
-                return true;
-            }
-            self.root.value.store(Some(Arc::new(value)));
-            return false;
-        }
-
-        let mut current = self.root.clone();
-        for (index, &label) in sequence.iter().enumerate() {
-            let is_last = index == sequence.len() - 1;
-            loop {
-                let edges = current.edges.load();
-                if let Some(child) = edges.find(label) {
-                    if is_last {
-                        if child
-                            .is_final
-                            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed)
-                            .is_ok()
-                        {
-                            child.value.store(Some(Arc::new(value)));
-                            self.term_count.fetch_add(1, Ordering::Relaxed);
-                            return true;
-                        }
-                        child.value.store(Some(Arc::new(value)));
-                        return false;
-                    }
-                    current = child.clone();
-                    break;
-                }
-
-                let new_node = Arc::new(if is_last {
-                    NativeU64Node::new_with_value(true, value.clone())
-                } else {
-                    NativeU64Node::new(false)
-                });
-                let new_edges = Arc::new(edges.with_edge(label, new_node.clone()));
-                let previous = current.edges.compare_and_swap(&edges, new_edges);
-                if Arc::ptr_eq(&previous, &edges) {
-                    if is_last {
-                        self.term_count.fetch_add(1, Ordering::Relaxed);
-                        return true;
-                    }
-                    current = new_node;
-                    break;
-                }
-            }
-        }
-
-        true
-    }
-
-    fn find_node(&self, sequence: &[u64]) -> Option<Arc<NativeU64Node<V>>> {
-        let mut current = self.root.clone();
-        for &label in sequence {
-            let edges = current.edges.load();
-            current = edges.find(label)?.clone();
-        }
-        Some(current)
-    }
-
-    fn contains_sequence(&self, sequence: &[u64]) -> bool {
-        self.find_node(sequence)
-            .is_some_and(|node| node.is_final.load(Ordering::Acquire))
-    }
-
-    fn get_sequence_value(&self, sequence: &[u64]) -> Option<V> {
-        let node = self.find_node(sequence)?;
-        if !node.is_final.load(Ordering::Acquire) {
-            return None;
-        }
-        let value = node.value.load();
-        value.as_ref().map(|value| (**value).clone())
-    }
-
-    fn remove_sequence(&self, sequence: &[u64]) -> bool {
-        let Some(node) = self.find_node(sequence) else {
-            return false;
+    fn project_node(
+        node: &U64Node<V, PREFIX>,
+        child_disk_ptrs: &[(u64, SwizzledPtr)],
+    ) -> Result<Self::Projected> {
+        let value = match node.get_value() {
+            Some(value) => Some(bincode_compat::serialize(&value).map_err(|error| {
+                PersistentARTrieError::internal(format!("serialize u64 overlay value: {error}"))
+            })?),
+            None => None,
         };
-        if node
-            .is_final
-            .compare_exchange(true, false, Ordering::AcqRel, Ordering::Relaxed)
-            .is_ok()
-        {
-            node.value.store(None);
-            self.term_count.fetch_sub(1, Ordering::Relaxed);
-            return true;
-        }
-        false
+        Ok(U64Projected {
+            is_final: node.is_final(),
+            prefix: Vec::new(),
+            value,
+            children: child_disk_ptrs
+                .iter()
+                .map(|(label, ptr)| (*label, ptr.to_raw()))
+                .collect(),
+        })
     }
 
-    fn iter(&self) -> impl Iterator<Item = Vec<u64>> {
-        let mut out = Vec::with_capacity(self.term_count());
-        let mut path = Vec::new();
-        self.collect_sequences(&self.root, &mut path, &mut out);
-        out.into_iter()
+    fn project_chunk(
+        _synth: &U64Node<V, PREFIX>,
+        child_disk_ptrs: &[(u64, SwizzledPtr)],
+        prefix: &[u64],
+    ) -> Result<Self::Projected> {
+        Ok(U64Projected {
+            is_final: false,
+            prefix: prefix.to_vec(),
+            value: None,
+            children: child_disk_ptrs
+                .iter()
+                .map(|(label, ptr)| (*label, ptr.to_raw()))
+                .collect(),
+        })
     }
 
-    fn iter_with_values(&self) -> impl Iterator<Item = (Vec<u64>, V)> {
-        let mut out = Vec::new();
-        let mut path = Vec::new();
-        self.collect_sequences_with_values(&self.root, &mut path, &mut out);
-        out.into_iter()
-    }
-
-    fn collect_sequences(
+    fn serialize_projected_node(
         &self,
-        node: &Arc<NativeU64Node<V>>,
-        path: &mut Vec<u64>,
-        out: &mut Vec<Vec<u64>>,
-    ) {
-        if node.is_final.load(Ordering::Acquire) {
-            out.push(path.clone());
+        projected: &Self::Projected,
+        _child_disk_ptrs: &[(u64, SwizzledPtr)],
+        _path: &[u64],
+        _registry: Option<&mut crate::persistent_artrie::eviction::DiskLocationRegistry>,
+    ) -> Result<SwizzledPtr> {
+        let mut nodes = self
+            .nodes
+            .lock()
+            .expect("u64 snapshot builder mutex poisoned");
+        if nodes.len() as u64 >= MAX_NODE_COUNT {
+            return Err(PersistentARTrieError::corrupted(format!(
+                "u64 CX checkpoint exceeds maximum node count {MAX_NODE_COUNT}"
+            )));
         }
-        for (label, child) in node.edges.load().edges_vec() {
-            path.push(label);
-            self.collect_sequences(&child, path, out);
-            path.pop();
-        }
+        let index = nodes.len() as u32;
+        nodes.push(U64DiskNode {
+            is_final: projected.is_final,
+            prefix: projected.prefix.clone(),
+            value: projected.value.clone(),
+            children: projected.children.clone(),
+        });
+        Ok(SwizzledPtr::on_disk(0, index, NodeType::CharBucket))
     }
 
-    fn collect_sequences_with_values(
-        &self,
-        node: &Arc<NativeU64Node<V>>,
-        path: &mut Vec<u64>,
-        out: &mut Vec<(Vec<u64>, V)>,
-    ) {
-        if node.is_final.load(Ordering::Acquire) {
-            let value = node.value.load();
-            if let Some(value) = value.as_ref() {
-                out.push((path.clone(), (**value).clone()));
-            }
-        }
-        for (label, child) in node.edges.load().edges_vec() {
-            path.push(label);
-            self.collect_sequences_with_values(&child, path, out);
-            path.pop();
-        }
+    fn new_synth_node() -> U64Node<V, PREFIX> {
+        U64Node::<V, PREFIX>::new()
     }
-}
 
-#[derive(Debug, Serialize, Deserialize)]
-struct U64Snapshot<V> {
-    magic: [u8; 8],
-    version: u32,
-    entries: Vec<U64SnapshotEntry<V>>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-struct U64SnapshotEntry<V> {
-    sequence: Vec<u64>,
-    value: Option<V>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-enum U64WalRecord<V> {
-    Insert { sequence: Vec<u64> },
-    Upsert { sequence: Vec<u64>, value: V },
-    Remove { sequence: Vec<u64> },
+    fn stamp_durable(live: &U64Node<V, PREFIX>, raw: u64) {
+        live.set_durable_stamp(raw);
+    }
 }
 
 fn encode_sequence(sequence: &[u64]) -> Vec<u8> {
@@ -426,24 +204,12 @@ fn encode_sequence(sequence: &[u64]) -> Vec<u8> {
 }
 
 fn decode_sequence(bytes: &[u8]) -> Option<Vec<u64>> {
-    if bytes.len() % 8 != 0 {
-        return None;
-    }
-    Some(
-        bytes
-            .chunks_exact(8)
-            .map(|chunk| {
-                let mut word = [0u8; 8];
-                word.copy_from_slice(chunk);
-                u64::from_le_bytes(word)
-            })
-            .collect(),
-    )
+    U64Key::<3>::units_from_bytes(bytes).map(|units| units.into_iter().collect())
 }
 
 fn wal_path(path: &Path) -> PathBuf {
     let mut wal = path.to_path_buf();
-    wal.set_extension("u64wal");
+    wal.set_extension("wal");
     wal
 }
 
@@ -457,181 +223,432 @@ fn io_error(operation: impl Into<String>, path: &Path, source: io::Error) -> Per
     PersistentARTrieError::io_error(operation, path.display().to_string(), source)
 }
 
-fn codec_error(context: &str, error: impl fmt::Display) -> PersistentARTrieError {
+fn wal_error(context: &str, error: impl std::fmt::Display) -> PersistentARTrieError {
+    PersistentARTrieError::internal(format!("{context}: {error}"))
+}
+
+fn codec_error(context: &str, error: impl std::fmt::Display) -> PersistentARTrieError {
     PersistentARTrieError::corrupted(format!("{context}: {error}"))
 }
 
-fn serialize_bytes<T: Serialize>(context: &str, value: &T) -> Result<Vec<u8>> {
-    bincode_compat::serialize(value).map_err(|error| codec_error(context, error))
-}
-
-fn deserialize_bytes<T: serde::de::DeserializeOwned>(context: &str, bytes: &[u8]) -> Result<T> {
-    bincode_compat::deserialize(bytes).map_err(|error| codec_error(context, error))
-}
-
-fn write_snapshot_file<V: DictionaryValue>(
-    path: &Path,
-    entries: Vec<U64SnapshotEntry<V>>,
-) -> Result<()> {
+fn ensure_parent(path: &Path) -> Result<()> {
     if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)
-            .map_err(|error| io_error("create parent directory", parent, error))?;
+        if !parent.as_os_str().is_empty() {
+            fs::create_dir_all(parent)
+                .map_err(|error| io_error("create parent directory", parent, error))?;
+        }
     }
-
-    let snapshot = U64Snapshot {
-        magic: SNAPSHOT_MAGIC,
-        version: SNAPSHOT_VERSION,
-        entries,
-    };
-    let bytes = serialize_bytes("serialize native u64 snapshot", &snapshot)?;
-    let tmp = tmp_snapshot_path(path);
-
-    {
-        let mut file = File::create(&tmp)
-            .map_err(|error| io_error("create native u64 snapshot", &tmp, error))?;
-        file.write_all(&bytes)
-            .map_err(|error| io_error("write native u64 snapshot", &tmp, error))?;
-        file.sync_all()
-            .map_err(|error| io_error("sync native u64 snapshot", &tmp, error))?;
-    }
-
-    fs::rename(&tmp, path).map_err(|error| io_error("install native u64 snapshot", path, error))?;
     Ok(())
 }
 
-fn read_snapshot_file<V: DictionaryValue>(path: &Path) -> Result<Vec<U64SnapshotEntry<V>>> {
+fn write_u8(out: &mut Vec<u8>, value: u8) {
+    out.push(value);
+}
+
+fn write_u32(out: &mut Vec<u8>, value: u32) {
+    out.extend_from_slice(&value.to_le_bytes());
+}
+
+fn write_u64(out: &mut Vec<u8>, value: u64) {
+    out.extend_from_slice(&value.to_le_bytes());
+}
+
+fn write_bytes(out: &mut Vec<u8>, bytes: &[u8]) {
+    out.extend_from_slice(bytes);
+}
+
+struct Cursor<'a> {
+    bytes: &'a [u8],
+    pos: usize,
+}
+
+impl<'a> Cursor<'a> {
+    fn new(bytes: &'a [u8]) -> Self {
+        Self { bytes, pos: 0 }
+    }
+
+    fn take(&mut self, n: usize) -> Result<&'a [u8]> {
+        let end = self
+            .pos
+            .checked_add(n)
+            .ok_or_else(|| PersistentARTrieError::corrupted("u64 snapshot cursor overflow"))?;
+        if end > self.bytes.len() {
+            return Err(PersistentARTrieError::corrupted(
+                "truncated u64 checkpoint image",
+            ));
+        }
+        let out = &self.bytes[self.pos..end];
+        self.pos = end;
+        Ok(out)
+    }
+
+    fn u8(&mut self) -> Result<u8> {
+        Ok(self.take(1)?[0])
+    }
+
+    fn u32(&mut self) -> Result<u32> {
+        let mut buf = [0u8; 4];
+        buf.copy_from_slice(self.take(4)?);
+        Ok(u32::from_le_bytes(buf))
+    }
+
+    fn u64(&mut self) -> Result<u64> {
+        let mut buf = [0u8; 8];
+        buf.copy_from_slice(self.take(8)?);
+        Ok(u64::from_le_bytes(buf))
+    }
+
+    fn finish(self) -> Result<()> {
+        if self.pos == self.bytes.len() {
+            Ok(())
+        } else {
+            Err(PersistentARTrieError::corrupted(format!(
+                "u64 checkpoint has {} trailing bytes",
+                self.bytes.len() - self.pos
+            )))
+        }
+    }
+}
+
+fn write_snapshot_file<V: DictionaryValue, const PREFIX: usize>(
+    path: &Path,
+    root: &Arc<U64Node<V, PREFIX>>,
+    term_count: usize,
+) -> Result<()> {
+    ensure_parent(path)?;
+
+    let builder = U64SnapshotBuilder::default();
+    let root_ptr = builder.serialize_compressed_loop(root, None)?;
+    let nodes = builder.into_nodes();
+
+    let mut bytes = Vec::new();
+    write_bytes(&mut bytes, &SNAPSHOT_MAGIC);
+    write_u32(&mut bytes, SNAPSHOT_VERSION);
+    write_u32(&mut bytes, PREFIX as u32);
+    write_u64(&mut bytes, term_count as u64);
+    write_u64(&mut bytes, root_ptr.to_raw());
+    write_u64(&mut bytes, nodes.len() as u64);
+
+    for node in nodes {
+        let mut flags = 0u8;
+        if node.is_final {
+            flags |= 0b0000_0001;
+        }
+        if node.value.is_some() {
+            flags |= 0b0000_0010;
+        }
+        write_u8(&mut bytes, flags);
+        write_u32(&mut bytes, node.prefix.len() as u32);
+        for unit in node.prefix {
+            write_u64(&mut bytes, unit);
+        }
+        match node.value {
+            Some(value) => {
+                write_u64(&mut bytes, value.len() as u64);
+                write_bytes(&mut bytes, &value);
+            }
+            None => write_u64(&mut bytes, NONE_VALUE_LEN),
+        }
+        write_u32(&mut bytes, node.children.len() as u32);
+        for (label, raw_ptr) in node.children {
+            write_u64(&mut bytes, label);
+            write_u64(&mut bytes, raw_ptr);
+        }
+    }
+
+    let tmp = tmp_snapshot_path(path);
+    {
+        let mut file =
+            File::create(&tmp).map_err(|error| io_error("create u64 checkpoint", &tmp, error))?;
+        file.write_all(&bytes)
+            .map_err(|error| io_error("write u64 checkpoint", &tmp, error))?;
+        file.sync_all()
+            .map_err(|error| io_error("sync u64 checkpoint", &tmp, error))?;
+    }
+    fs::rename(&tmp, path).map_err(|error| io_error("install u64 checkpoint", path, error))
+}
+
+fn read_snapshot_file<V: DictionaryValue, const PREFIX: usize>(
+    path: &Path,
+) -> Result<(Arc<U64Node<V, PREFIX>>, usize)> {
     let mut bytes = Vec::new();
     File::open(path)
-        .map_err(|error| io_error("open native u64 snapshot", path, error))?
+        .map_err(|error| io_error("open u64 checkpoint", path, error))?
         .read_to_end(&mut bytes)
-        .map_err(|error| io_error("read native u64 snapshot", path, error))?;
+        .map_err(|error| io_error("read u64 checkpoint", path, error))?;
 
-    let snapshot: U64Snapshot<V> = deserialize_bytes("deserialize native u64 snapshot", &bytes)?;
-    if snapshot.magic != SNAPSHOT_MAGIC {
+    let mut cursor = Cursor::new(&bytes);
+    let magic = cursor.take(8)?;
+    if magic != SNAPSHOT_MAGIC {
+        let mut found = [0u8; 8];
+        found.copy_from_slice(magic);
         return Err(PersistentARTrieError::InvalidMagic {
             expected: u64::from_le_bytes(SNAPSHOT_MAGIC),
-            found: u64::from_le_bytes(snapshot.magic),
+            found: u64::from_le_bytes(found),
         });
     }
-    if snapshot.version > SNAPSHOT_VERSION {
+    let version = cursor.u32()?;
+    if version > SNAPSHOT_VERSION {
         return Err(PersistentARTrieError::UnsupportedVersion {
             max_supported: SNAPSHOT_VERSION,
-            found: snapshot.version,
+            found: version,
         });
     }
-    Ok(snapshot.entries)
-}
-
-fn truncate_wal(path: &Path) -> Result<()> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)
-            .map_err(|error| io_error("create WAL parent directory", parent, error))?;
+    let prefix = cursor.u32()? as usize;
+    if prefix != PREFIX {
+        return Err(PersistentARTrieError::corrupted(format!(
+            "u64 checkpoint prefix budget mismatch: file={prefix}, type={PREFIX}"
+        )));
+    }
+    let term_count = cursor.u64()? as usize;
+    let root_raw = cursor.u64()?;
+    let node_count = cursor.u64()?;
+    if node_count > MAX_NODE_COUNT {
+        return Err(PersistentARTrieError::corrupted(format!(
+            "u64 checkpoint node count {node_count} exceeds maximum {MAX_NODE_COUNT}"
+        )));
     }
 
-    let file = OpenOptions::new()
-        .create(true)
-        .write(true)
-        .truncate(true)
-        .open(path)
-        .map_err(|error| io_error("truncate native u64 WAL", path, error))?;
-    file.sync_all()
-        .map_err(|error| io_error("sync truncated native u64 WAL", path, error))
-}
-
-fn append_wal_record<V: DictionaryValue>(path: &Path, record: &U64WalRecord<V>) -> Result<()> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)
-            .map_err(|error| io_error("create WAL parent directory", parent, error))?;
-    }
-
-    let payload = serialize_bytes("serialize native u64 WAL record", record)?;
-    let len = payload.len() as u64;
-    let mut file = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)
-        .map_err(|error| io_error("open native u64 WAL", path, error))?;
-    file.write_all(&len.to_le_bytes())
-        .map_err(|error| io_error("write native u64 WAL record length", path, error))?;
-    file.write_all(&payload)
-        .map_err(|error| io_error("write native u64 WAL record", path, error))?;
-    file.sync_all()
-        .map_err(|error| io_error("sync native u64 WAL", path, error))
-}
-
-fn replay_wal<V: DictionaryValue>(inner: &NativeU64Trie<V>, path: &Path) -> Result<u64> {
-    if !path.exists() {
-        return Ok(0);
-    }
-
-    let mut file = File::open(path)
-        .map_err(|error| io_error("open native u64 WAL for replay", path, error))?;
-    let mut replayed = 0;
-
-    loop {
-        let mut len_buf = [0u8; 8];
-        match file.read_exact(&mut len_buf) {
-            Ok(()) => {}
-            Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => break,
-            Err(error) => return Err(io_error("read native u64 WAL record length", path, error)),
-        }
-
-        let len = u64::from_le_bytes(len_buf);
-        if len > MAX_WAL_RECORD_BYTES {
+    let mut nodes = Vec::with_capacity(node_count as usize);
+    for _ in 0..node_count {
+        let flags = cursor.u8()?;
+        let prefix_len = cursor.u32()?;
+        if prefix_len > MAX_PREFIX_UNITS {
             return Err(PersistentARTrieError::corrupted(format!(
-                "native u64 WAL record is too large: {len} bytes"
+                "u64 checkpoint prefix length {prefix_len} exceeds maximum {MAX_PREFIX_UNITS}"
             )));
         }
-
-        let mut payload = vec![0u8; len as usize];
-        match file.read_exact(&mut payload) {
-            Ok(()) => {}
-            Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => break,
-            Err(error) => return Err(io_error("read native u64 WAL record payload", path, error)),
+        let mut prefix = Vec::with_capacity(prefix_len as usize);
+        for _ in 0..prefix_len {
+            prefix.push(cursor.u64()?);
         }
-
-        let record: U64WalRecord<V> =
-            deserialize_bytes("deserialize native u64 WAL record", &payload)?;
-        match record {
-            U64WalRecord::Insert { sequence } => {
-                inner.insert_sequence(&sequence);
+        let value_len = cursor.u64()?;
+        let value = if value_len == NONE_VALUE_LEN {
+            None
+        } else {
+            if value_len > MAX_VALUE_BYTES {
+                return Err(PersistentARTrieError::corrupted(format!(
+                    "u64 checkpoint value length {value_len} exceeds maximum {MAX_VALUE_BYTES}"
+                )));
             }
-            U64WalRecord::Upsert { sequence, value } => {
-                inner.insert_sequence_with_value(&sequence, value);
-            }
-            U64WalRecord::Remove { sequence } => {
-                inner.remove_sequence(&sequence);
-            }
+            Some(cursor.take(value_len as usize)?.to_vec())
+        };
+        if flags & 0b0000_0010 != 0 && value.is_none() {
+            return Err(PersistentARTrieError::corrupted(
+                "u64 checkpoint value flag set without value bytes",
+            ));
         }
-        replayed += 1;
+        let child_count = cursor.u32()?;
+        if child_count > MAX_CHILDREN_PER_NODE {
+            return Err(PersistentARTrieError::corrupted(format!(
+                "u64 checkpoint child count {child_count} exceeds maximum {MAX_CHILDREN_PER_NODE}"
+            )));
+        }
+        let mut children = Vec::with_capacity(child_count as usize);
+        for _ in 0..child_count {
+            children.push((cursor.u64()?, cursor.u64()?));
+        }
+        nodes.push(U64DiskNode {
+            is_final: flags & 0b0000_0001 != 0,
+            prefix,
+            value,
+            children,
+        });
     }
+    cursor.finish()?;
 
-    Ok(replayed)
+    let mut memo: Vec<Option<Arc<U64Node<V, PREFIX>>>> = vec![None; nodes.len()];
+    let root = build_overlay_from_disk::<V, PREFIX>(root_raw, &nodes, &mut memo)?;
+    Ok((root, term_count))
 }
 
-fn build_native<V: DictionaryValue>(entries: Vec<U64SnapshotEntry<V>>) -> Arc<NativeU64Trie<V>> {
-    let trie = Arc::new(NativeU64Trie::new());
-    for entry in entries {
-        match entry.value {
-            Some(value) => {
-                trie.insert_sequence_with_value(&entry.sequence, value);
-            }
-            None => {
-                trie.insert_sequence(&entry.sequence);
+fn ptr_index(raw: u64, node_count: usize) -> Result<usize> {
+    let ptr = SwizzledPtr::from_raw(raw);
+    let loc = ptr.disk_location().ok_or_else(|| {
+        PersistentARTrieError::corrupted("u64 checkpoint contains null or memory pointer")
+    })?;
+    let index = loc.offset as usize;
+    if index >= node_count {
+        return Err(PersistentARTrieError::corrupted(format!(
+            "u64 checkpoint child pointer index {index} out of {node_count}"
+        )));
+    }
+    Ok(index)
+}
+
+fn build_overlay_from_disk<V: DictionaryValue, const PREFIX: usize>(
+    raw: u64,
+    nodes: &[U64DiskNode],
+    memo: &mut [Option<Arc<U64Node<V, PREFIX>>>],
+) -> Result<Arc<U64Node<V, PREFIX>>> {
+    let index = ptr_index(raw, nodes.len())?;
+    if let Some(node) = &memo[index] {
+        return Ok(Arc::clone(node));
+    }
+
+    let disk = nodes[index].clone();
+    let mut node = U64Node::<V, PREFIX>::new();
+    if disk.is_final {
+        node = node.as_final();
+    }
+    if let Some(value_bytes) = disk.value {
+        let value: V = bincode_compat::deserialize(&value_bytes)
+            .map_err(|error| codec_error("deserialize u64 checkpoint value", error))?;
+        node = node.with_value(value);
+    }
+    for (label, child_raw) in disk.children {
+        let child = build_overlay_from_disk::<V, PREFIX>(child_raw, nodes, memo)?;
+        node = node.with_child(label, Child::InMem(child));
+    }
+    let mut current = Arc::new(node);
+    for unit in disk.prefix.into_iter().rev() {
+        let wrapper = U64Node::<V, PREFIX>::new().with_child(unit, Child::InMem(current));
+        current = Arc::new(wrapper);
+    }
+    memo[index] = Some(Arc::clone(&current));
+    Ok(current)
+}
+
+fn create_wal(path: &Path) -> Result<Arc<WalWriter>> {
+    let wal = wal_path(path);
+    ensure_parent(&wal)?;
+    if wal.exists() {
+        fs::remove_file(&wal).map_err(|error| io_error("remove existing u64 WAL", &wal, error))?;
+    }
+    WalWriter::create(&wal)
+        .map(Arc::new)
+        .map_err(|error| wal_error("create u64 shared WAL", error))
+}
+
+fn open_wal(path: &Path) -> Result<Arc<WalWriter>> {
+    let wal = wal_path(path);
+    WalWriter::open_or_create(&wal)
+        .map(Arc::new)
+        .map_err(|error| wal_error("open u64 shared WAL", error))
+}
+
+fn append_and_sync(wal_writer: &WalWriter, record: WalRecord) -> Result<()> {
+    wal_writer
+        .append(record)
+        .map_err(|error| wal_error("append u64 shared WAL", error))?;
+    wal_writer
+        .sync()
+        .map_err(|error| wal_error("sync u64 shared WAL", error))?;
+    Ok(())
+}
+
+fn count_overlay_finals<V: DictionaryValue, const PREFIX: usize>(
+    root: &Arc<U64Node<V, PREFIX>>,
+) -> usize {
+    let mut count = 0usize;
+    let mut stack = vec![Arc::clone(root)];
+    while let Some(node) = stack.pop() {
+        if node.is_final() {
+            count += 1;
+        }
+        for (_, child) in node.iter_children() {
+            if let Some(child) = child.as_in_mem() {
+                stack.push(Arc::clone(child));
             }
         }
     }
-    trie
+    count
 }
 
-impl<V: DictionaryValue> PersistentARTrieU64<V> {
+fn collect_sequences<V: DictionaryValue, const PREFIX: usize>(
+    root: Arc<U64Node<V, PREFIX>>,
+) -> Vec<(Vec<u64>, Option<V>)> {
+    let mut out = Vec::new();
+    let mut stack = vec![(root, Vec::<u64>::new())];
+    while let Some((node, path)) = stack.pop() {
+        if node.is_final() {
+            out.push((path.clone(), node.get_value()));
+        }
+        let mut children = Vec::new();
+        for (&label, child) in node.iter_children() {
+            if let Some(child) = child.as_in_mem() {
+                children.push((label, Arc::clone(child)));
+            }
+        }
+        children.reverse();
+        for (label, child) in children {
+            let mut child_path = path.clone();
+            child_path.push(label);
+            stack.push((child, child_path));
+        }
+    }
+    out.sort_by(|left, right| left.0.cmp(&right.0));
+    out
+}
+
+impl<V: DictionaryValue, const PREFIX: usize> PersistentARTrieU64<V, MmapDiskManager, PREFIX> {
+    pub fn create<P: AsRef<Path>>(path: P) -> Result<Self> {
+        let path = path.as_ref().to_path_buf();
+        let wal_writer = create_wal(&path)?;
+        let root = Arc::new(U64Node::<V, PREFIX>::new());
+        write_snapshot_file::<V, PREFIX>(&path, &root, 0)?;
+        Ok(Self {
+            root: AtomicNodePtr::new(root),
+            term_count: AtomicUsize::new(0),
+            path: Some(path),
+            wal_writer: Some(wal_writer),
+            checkpoint_lock: Arc::new(Mutex::new(())),
+            _storage: PhantomData,
+        })
+    }
+
+    pub fn open<P: AsRef<Path>>(path: P) -> Result<Self> {
+        let (trie, _) = Self::open_loaded(path.as_ref())?;
+        Ok(trie)
+    }
+
+    pub fn open_with_recovery<P: AsRef<Path>>(path: P) -> Result<(Self, RecoveryReport)> {
+        let start = Instant::now();
+        let path_ref = path.as_ref();
+        if !path_ref.exists() {
+            let trie = Self::create(path_ref)?;
+            return Ok((trie, RecoveryReport::created_new()));
+        }
+
+        let (trie, records_replayed) = Self::open_loaded(path_ref)?;
+        let mut report = RecoveryReport::normal();
+        if records_replayed > 0 {
+            report = RecoveryReport::rebuild_from_wal(
+                path_ref.to_path_buf(),
+                "u64 shared WAL replay".to_string(),
+                records_replayed,
+                trie.term_count() as u64,
+                Vec::new(),
+                start.elapsed().as_millis() as u64,
+            );
+        }
+        Ok((trie, report))
+    }
+
+    fn open_loaded(path: &Path) -> Result<(Self, u64)> {
+        let (root, term_count) = read_snapshot_file::<V, PREFIX>(path)?;
+        let trie = Self {
+            root: AtomicNodePtr::new(root),
+            term_count: AtomicUsize::new(term_count),
+            path: Some(path.to_path_buf()),
+            wal_writer: Some(open_wal(path)?),
+            checkpoint_lock: Arc::new(Mutex::new(())),
+            _storage: PhantomData,
+        };
+        let records_replayed = trie.replay_wal()?;
+        Ok((trie, records_replayed))
+    }
+}
+
+impl<V: DictionaryValue, S: BlockStorage, const PREFIX: usize> PersistentARTrieU64<V, S, PREFIX> {
     /// Create an in-memory persistent u64 trie.
     pub fn new() -> Self {
         Self {
-            inner: Arc::new(NativeU64Trie::new()),
+            root: AtomicNodePtr::new(Arc::new(U64Node::<V, PREFIX>::new())),
+            term_count: AtomicUsize::new(0),
             path: None,
+            wal_writer: None,
             checkpoint_lock: Arc::new(Mutex::new(())),
-            wal_lock: Arc::new(Mutex::new(())),
             _storage: PhantomData,
         }
     }
@@ -683,89 +700,143 @@ impl<V: DictionaryValue> PersistentARTrieU64<V> {
         }
         trie
     }
-}
-
-impl<V: DictionaryValue> PersistentARTrieU64<V, MmapDiskManager> {
-    pub fn create<P: AsRef<Path>>(path: P) -> Result<Self> {
-        let path = path.as_ref().to_path_buf();
-        write_snapshot_file::<V>(&path, Vec::new())?;
-        truncate_wal(&wal_path(&path))?;
-        Ok(Self {
-            inner: Arc::new(NativeU64Trie::new()),
-            path: Some(path),
-            checkpoint_lock: Arc::new(Mutex::new(())),
-            wal_lock: Arc::new(Mutex::new(())),
-            _storage: PhantomData,
-        })
-    }
-
-    pub fn open<P: AsRef<Path>>(path: P) -> Result<Self> {
-        let (trie, _) = Self::open_loaded(path.as_ref())?;
-        Ok(trie)
-    }
-
-    pub fn open_with_recovery<P: AsRef<Path>>(path: P) -> Result<(Self, RecoveryReport)> {
-        let start = Instant::now();
-        let path_ref = path.as_ref();
-        if !path_ref.exists() {
-            let trie = Self::create(path_ref)?;
-            return Ok((trie, RecoveryReport::created_new()));
-        }
-
-        let (trie, records_replayed) = Self::open_loaded(path_ref)?;
-        let mut report = RecoveryReport::normal();
-        if records_replayed > 0 {
-            report = RecoveryReport::rebuild_from_wal(
-                path_ref.to_path_buf(),
-                "native u64 WAL replay".to_string(),
-                records_replayed,
-                trie.term_count() as u64,
-                Vec::new(),
-                start.elapsed().as_millis() as u64,
-            );
-        }
-        Ok((trie, report))
-    }
-
-    fn open_loaded(path: &Path) -> Result<(Self, u64)> {
-        let entries = read_snapshot_file(path)?;
-        let inner = build_native(entries);
-        let records_replayed = replay_wal(&inner, &wal_path(path))?;
-        Ok((
-            Self {
-                inner,
-                path: Some(path.to_path_buf()),
-                checkpoint_lock: Arc::new(Mutex::new(())),
-                wal_lock: Arc::new(Mutex::new(())),
-                _storage: PhantomData,
-            },
-            records_replayed,
-        ))
-    }
-}
-
-impl<V: DictionaryValue, S: BlockStorage> PersistentARTrieU64<V, S> {
-    pub fn inner(&self) -> &NativeU64Trie<V> {
-        &self.inner
-    }
 
     pub fn storage_path(&self) -> Option<&Path> {
         self.path.as_deref()
     }
 
-    fn persist_record(&self, record: &U64WalRecord<V>) -> Result<()> {
-        let Some(path) = self.path.as_ref() else {
-            return Ok(());
+    pub fn root_arc(&self) -> Arc<U64Node<V, PREFIX>> {
+        self.root
+            .load()
+            .unwrap_or_else(|| Arc::new(U64Node::<V, PREFIX>::new()))
+    }
+
+    fn find_node(&self, sequence: &[u64]) -> Option<Arc<U64Node<V, PREFIX>>> {
+        let mut current = self.root.load()?;
+        for &label in sequence {
+            let child = current.find_child(label)?;
+            current = Arc::clone(child.as_in_mem()?);
+        }
+        Some(current)
+    }
+
+    fn build_spine(sequence: &[u64], index: usize, value: Option<V>) -> Arc<U64Node<V, PREFIX>> {
+        if index == sequence.len() {
+            let mut node = U64Node::<V, PREFIX>::new().as_final();
+            if let Some(value) = value {
+                node = node.with_value(value);
+            }
+            return Arc::new(node);
+        }
+        let child = Self::build_spine(sequence, index + 1, value);
+        Arc::new(U64Node::<V, PREFIX>::new().with_child(sequence[index], Child::InMem(child)))
+    }
+
+    fn build_insert_path(
+        node: &Arc<U64Node<V, PREFIX>>,
+        sequence: &[u64],
+        index: usize,
+        value: Option<V>,
+    ) -> Option<(Arc<U64Node<V, PREFIX>>, bool)> {
+        if index == sequence.len() {
+            let inserted = !node.is_final();
+            if !inserted && value.is_none() {
+                return None;
+            }
+            let mut next = node.as_ref().clone().as_final();
+            if let Some(value) = value {
+                next = next.with_value(value);
+            }
+            return Some((Arc::new(next), inserted));
+        }
+
+        let label = sequence[index];
+        let (child, inserted) = match node.find_child(label).and_then(|child| child.as_in_mem()) {
+            Some(child) => Self::build_insert_path(child, sequence, index + 1, value)?,
+            None => (Self::build_spine(sequence, index + 1, value), true),
         };
-        let _guard = self.wal_lock.lock();
-        append_wal_record(&wal_path(path), record)
+        Some((
+            Arc::new(node.as_ref().clone().with_child(label, Child::InMem(child))),
+            inserted,
+        ))
+    }
+
+    fn insert_sequence_cas(&self, sequence: &[u64], value: Option<V>) -> bool {
+        loop {
+            let root = self.root_arc();
+            let Some((new_root, inserted)) =
+                Self::build_insert_path(&root, sequence, 0, value.clone())
+            else {
+                return false;
+            };
+            match self.root.compare_exchange(&root, new_root) {
+                Ok(_) => {
+                    if inserted {
+                        self.term_count.fetch_add(1, Ordering::AcqRel);
+                    }
+                    return inserted;
+                }
+                Err(_) => continue,
+            }
+        }
+    }
+
+    fn build_remove_path(
+        node: &Arc<U64Node<V, PREFIX>>,
+        sequence: &[u64],
+        index: usize,
+    ) -> Option<(Arc<U64Node<V, PREFIX>>, bool)> {
+        if index == sequence.len() {
+            if !node.is_final() {
+                return None;
+            }
+            return Some((Arc::new(node.as_ref().clone().as_non_final()), true));
+        }
+        let label = sequence[index];
+        let child = node.find_child(label)?.as_in_mem()?;
+        let (new_child, removed) = Self::build_remove_path(child, sequence, index + 1)?;
+        Some((
+            Arc::new(
+                node.as_ref()
+                    .clone()
+                    .with_child(label, Child::InMem(new_child)),
+            ),
+            removed,
+        ))
+    }
+
+    fn remove_sequence_cas(&self, sequence: &[u64]) -> bool {
+        loop {
+            let root = self.root_arc();
+            let Some((new_root, removed)) = Self::build_remove_path(&root, sequence, 0) else {
+                return false;
+            };
+            match self.root.compare_exchange(&root, new_root) {
+                Ok(_) => {
+                    if removed {
+                        self.term_count.fetch_sub(1, Ordering::AcqRel);
+                    }
+                    return removed;
+                }
+                Err(_) => continue,
+            }
+        }
     }
 
     pub fn try_insert_sequence(&self, sequence: &[u64]) -> Result<bool> {
-        self.persist_record(&U64WalRecord::Insert {
-            sequence: sequence.to_vec(),
-        })?;
-        Ok(self.inner.insert_sequence(sequence))
+        if self.contains_sequence(sequence) {
+            return Ok(false);
+        }
+        if let Some(wal_writer) = &self.wal_writer {
+            append_and_sync(
+                wal_writer,
+                WalRecord::Insert {
+                    term: encode_sequence(sequence),
+                    value: None,
+                },
+            )?;
+        }
+        Ok(self.insert_sequence_cas(sequence, None))
     }
 
     pub fn insert_sequence(&self, sequence: &[u64]) -> bool {
@@ -776,11 +847,19 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrieU64<V, S> {
     }
 
     pub fn try_insert_sequence_with_value(&self, sequence: &[u64], value: V) -> Result<bool> {
-        self.persist_record(&U64WalRecord::Upsert {
-            sequence: sequence.to_vec(),
-            value: value.clone(),
-        })?;
-        Ok(self.inner.insert_sequence_with_value(sequence, value))
+        if let Some(wal_writer) = &self.wal_writer {
+            let value_bytes = bincode_compat::serialize(&value).map_err(|error| {
+                PersistentARTrieError::internal(format!("serialize u64 WAL value: {error}"))
+            })?;
+            append_and_sync(
+                wal_writer,
+                WalRecord::Upsert {
+                    term: encode_sequence(sequence),
+                    value: value_bytes,
+                },
+            )?;
+        }
+        Ok(self.insert_sequence_cas(sequence, Some(value)))
     }
 
     pub fn insert_sequence_with_value(&self, sequence: &[u64], value: V) -> bool {
@@ -800,13 +879,9 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrieU64<V, S> {
     where
         F: FnOnce(&mut V),
     {
-        if let Some(mut value) = self.inner.get_sequence_value(sequence) {
+        if let Some(mut value) = self.get_sequence_value(sequence) {
             update_fn(&mut value);
-            self.try_insert_sequence_with_value(sequence, value)
-                .unwrap_or_else(|error| {
-                    log::warn!("PersistentARTrieU64::update_or_insert_sequence failed: {error}");
-                    false
-                });
+            let _ = self.insert_sequence_with_value(sequence, value);
             false
         } else {
             self.insert_sequence_with_value(sequence, default_value)
@@ -814,21 +889,31 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrieU64<V, S> {
     }
 
     pub fn contains_sequence(&self, sequence: &[u64]) -> bool {
-        self.inner.contains_sequence(sequence)
+        self.find_node(sequence).is_some_and(|node| node.is_final())
     }
 
     pub fn get_sequence_value(&self, sequence: &[u64]) -> Option<V> {
-        self.inner.get_sequence_value(sequence)
+        let node = self.find_node(sequence)?;
+        if node.is_final() {
+            node.get_value()
+        } else {
+            None
+        }
     }
 
     pub fn try_remove_sequence(&self, sequence: &[u64]) -> Result<bool> {
-        if !self.inner.contains_sequence(sequence) {
+        if !self.contains_sequence(sequence) {
             return Ok(false);
         }
-        self.persist_record(&U64WalRecord::Remove {
-            sequence: sequence.to_vec(),
-        })?;
-        Ok(self.inner.remove_sequence(sequence))
+        if let Some(wal_writer) = &self.wal_writer {
+            append_and_sync(
+                wal_writer,
+                WalRecord::Remove {
+                    term: encode_sequence(sequence),
+                },
+            )?;
+        }
+        Ok(self.remove_sequence_cas(sequence))
     }
 
     pub fn remove_sequence(&self, sequence: &[u64]) -> bool {
@@ -839,26 +924,23 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrieU64<V, S> {
     }
 
     pub fn term_count(&self) -> usize {
-        self.inner.term_count()
+        self.term_count.load(Ordering::Acquire)
     }
 
     pub fn iter_sequences(&self) -> impl Iterator<Item = Vec<u64>> + '_ {
-        self.inner.iter()
+        collect_sequences(self.root_arc())
+            .into_iter()
+            .map(|(sequence, _)| sequence)
     }
 
     pub fn iter_sequences_with_values(&self) -> impl Iterator<Item = (Vec<u64>, Option<V>)> + '_ {
-        let mut values: HashMap<Vec<u64>, V> = self.inner.iter_with_values().collect();
-        self.inner.iter().map(move |sequence| {
-            let value = values.remove(&sequence);
-            (sequence, value)
-        })
+        collect_sequences(self.root_arc()).into_iter()
     }
 
     pub fn iter_sequence_prefix(&self, prefix: &[u64]) -> Box<dyn Iterator<Item = Vec<u64>> + '_> {
         let prefix = prefix.to_vec();
         Box::new(
-            self.inner
-                .iter()
+            self.iter_sequences()
                 .filter(move |sequence| sequence.starts_with(&prefix)),
         )
     }
@@ -928,16 +1010,13 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrieU64<V, S> {
         let Some(path) = self.path.as_ref() else {
             return Ok(());
         };
-
-        let _checkpoint_guard = self.checkpoint_lock.lock();
-        let _wal_guard = self.wal_lock.lock();
-        let mut entries: Vec<_> = self
-            .iter_sequences_with_values()
-            .map(|(sequence, value)| U64SnapshotEntry { sequence, value })
-            .collect();
-        entries.sort_by(|left, right| left.sequence.cmp(&right.sequence));
-        write_snapshot_file(path, entries)?;
-        truncate_wal(&wal_path(path))
+        let _guard = self
+            .checkpoint_lock
+            .lock()
+            .expect("u64 checkpoint mutex poisoned");
+        let root = self.root_arc();
+        let term_count = count_overlay_finals(&root);
+        write_snapshot_file::<V, PREFIX>(path, &root, term_count)
     }
 
     pub fn close(&self) {
@@ -945,82 +1024,95 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrieU64<V, S> {
             log::warn!("PersistentARTrieU64::close checkpoint failed: {error}");
         }
     }
-}
 
-impl<V: DictionaryValue> fmt::Debug for PersistentARTrieU64Node<V> {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_struct("PersistentARTrieU64Node")
-            .field("path", &self.path)
-            .field("is_final", &self.is_final())
-            .field("edge_count", &self.edge_count())
-            .finish()
-    }
-}
-
-impl<V: DictionaryValue> DictionaryNode for PersistentARTrieU64Node<V> {
-    type Unit = u64;
-
-    fn is_final(&self) -> bool {
-        self.inner.is_final.load(Ordering::Acquire)
-    }
-
-    fn transition(&self, label: Self::Unit) -> Option<Self> {
-        let edges = self.inner.edges.load();
-        let inner = edges.find(label)?.clone();
-        let mut path = self.path.clone();
-        path.push(label);
-        Some(Self { inner, path })
-    }
-
-    fn edges(&self) -> Box<dyn Iterator<Item = (Self::Unit, Self)> + '_> {
-        let path = self.path.clone();
-        let edges: Vec<_> = self
-            .inner
-            .edges
-            .load()
-            .edges_vec()
-            .into_iter()
-            .map(|(label, inner)| {
-                let mut child_path = path.clone();
-                child_path.push(label);
-                (
-                    label,
-                    Self {
-                        inner,
-                        path: child_path,
-                    },
-                )
-            })
-            .collect();
-        Box::new(edges.into_iter())
-    }
-
-    fn edge_count(&self) -> Option<usize> {
-        Some(self.inner.edges.load().len())
-    }
-}
-
-impl<V: DictionaryValue> MappedDictionaryNode for PersistentARTrieU64Node<V> {
-    type Value = V;
-
-    fn value(&self) -> Option<Self::Value> {
-        if !self.inner.is_final.load(Ordering::Acquire) {
-            return None;
+    fn replay_wal(&self) -> Result<u64> {
+        let Some(path) = self.path.as_ref() else {
+            return Ok(0);
+        };
+        let wal = wal_path(path);
+        if !wal.exists() {
+            return Ok(0);
         }
-        let value = self.inner.value.load();
-        value.as_ref().map(|value| (**value).clone())
+        let mut reader =
+            WalReader::new(&wal).map_err(|error| wal_error("open u64 shared WAL reader", error))?;
+        let mut replayed = 0u64;
+        while let Some(record) = reader.next_record() {
+            let (_, record) =
+                record.map_err(|error| wal_error("read u64 shared WAL record", error))?;
+            if self.apply_wal_record(record)? {
+                replayed += 1;
+            }
+        }
+        Ok(replayed)
+    }
+
+    fn apply_wal_record(&self, record: WalRecord) -> Result<bool> {
+        match record {
+            WalRecord::Insert { term, value } => {
+                let Some(sequence) = decode_sequence(&term) else {
+                    return Ok(false);
+                };
+                match value {
+                    Some(bytes) => {
+                        let value = bincode_compat::deserialize::<V>(&bytes).map_err(|error| {
+                            codec_error("deserialize u64 WAL insert value", error)
+                        })?;
+                        self.insert_sequence_cas(&sequence, Some(value));
+                    }
+                    None => {
+                        self.insert_sequence_cas(&sequence, None);
+                    }
+                }
+                Ok(true)
+            }
+            WalRecord::Upsert { term, value } => {
+                let Some(sequence) = decode_sequence(&term) else {
+                    return Ok(false);
+                };
+                let value = bincode_compat::deserialize::<V>(&value)
+                    .map_err(|error| codec_error("deserialize u64 WAL upsert value", error))?;
+                self.insert_sequence_cas(&sequence, Some(value));
+                Ok(true)
+            }
+            WalRecord::Remove { term } => {
+                let Some(sequence) = decode_sequence(&term) else {
+                    return Ok(false);
+                };
+                self.remove_sequence_cas(&sequence);
+                Ok(true)
+            }
+            WalRecord::BatchInsert { entries } => {
+                for (term, value) in entries {
+                    let Some(sequence) = decode_sequence(&term) else {
+                        continue;
+                    };
+                    match value {
+                        Some(bytes) => {
+                            let value =
+                                bincode_compat::deserialize::<V>(&bytes).map_err(|error| {
+                                    codec_error("deserialize u64 WAL batch value", error)
+                                })?;
+                            self.insert_sequence_cas(&sequence, Some(value));
+                        }
+                        None => {
+                            self.insert_sequence_cas(&sequence, None);
+                        }
+                    }
+                }
+                Ok(true)
+            }
+            _ => Ok(false),
+        }
     }
 }
 
-impl<V: DictionaryValue, S: BlockStorage> Dictionary for PersistentARTrieU64<V, S> {
-    type Node = PersistentARTrieU64Node<V>;
+impl<V: DictionaryValue, S: BlockStorage, const PREFIX: usize> Dictionary
+    for PersistentARTrieU64<V, S, PREFIX>
+{
+    type Node = PersistentARTrieU64Node<V, PREFIX>;
 
     fn root(&self) -> Self::Node {
-        Self::Node {
-            inner: self.inner.root(),
-            path: Vec::new(),
-        }
+        PersistentARTrieU64Node::from_overlay_root(self.root_arc(), None)
     }
 
     fn contains(&self, term: &str) -> bool {
@@ -1036,7 +1128,9 @@ impl<V: DictionaryValue, S: BlockStorage> Dictionary for PersistentARTrieU64<V, 
     }
 }
 
-impl<V: DictionaryValue, S: BlockStorage> MappedDictionary for PersistentARTrieU64<V, S> {
+impl<V: DictionaryValue, S: BlockStorage, const PREFIX: usize> MappedDictionary
+    for PersistentARTrieU64<V, S, PREFIX>
+{
     type Value = V;
 
     fn get_value(&self, term: &str) -> Option<Self::Value> {
@@ -1044,7 +1138,9 @@ impl<V: DictionaryValue, S: BlockStorage> MappedDictionary for PersistentARTrieU
     }
 }
 
-impl<V: DictionaryValue, S: BlockStorage> MutableDictionary for PersistentARTrieU64<V, S> {
+impl<V: DictionaryValue, S: BlockStorage, const PREFIX: usize> MutableDictionary
+    for PersistentARTrieU64<V, S, PREFIX>
+{
     fn insert(&self, term: &str) -> bool {
         PersistentARTrieU64::insert(self, term)
     }
@@ -1054,7 +1150,9 @@ impl<V: DictionaryValue, S: BlockStorage> MutableDictionary for PersistentARTrie
     }
 }
 
-impl<V: DictionaryValue, S: BlockStorage> MutableMappedDictionary for PersistentARTrieU64<V, S> {
+impl<V: DictionaryValue, S: BlockStorage, const PREFIX: usize> MutableMappedDictionary
+    for PersistentARTrieU64<V, S, PREFIX>
+{
     fn insert_with_value(&self, term: &str, value: Self::Value) -> bool {
         PersistentARTrieU64::insert_with_value(self, term, value)
     }
@@ -1089,17 +1187,18 @@ impl<V: DictionaryValue, S: BlockStorage> MutableMappedDictionary for Persistent
     }
 }
 
-impl<V: DictionaryValue> Default for PersistentARTrieU64<V> {
+impl<V: DictionaryValue, S: BlockStorage, const PREFIX: usize> Default
+    for PersistentARTrieU64<V, S, PREFIX>
+{
     fn default() -> Self {
         Self::new()
     }
 }
 
-/// Byte-encoded u64 persistent trie kept as a benchmark and migration control.
+/// Byte-encoded u64 persistent trie kept as a current-branch encoded control.
 ///
 /// Each public `u64` is encoded as eight little-endian `u8` transitions through
-/// the established byte `PersistentARTrie`. New code should use
-/// [`PersistentARTrieU64`] unless it explicitly needs the encoded control.
+/// the established byte `PersistentARTrie`.
 pub struct EncodedPersistentARTrieU64<V: DictionaryValue = (), S: BlockStorage = MmapDiskManager> {
     inner: PersistentARTrie<V, S>,
 }

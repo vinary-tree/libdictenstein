@@ -3,8 +3,8 @@
 //!
 //! Variants implement this trait on a marker type (e.g. `ByteKey`, `CharKey`)
 //! and the shared modules in `persistent_artrie::core` use the trait's
-//! associated `Unit` and `KEY_BYTES` to operate on byte (`u8`) or char (`u32`)
-//! keys uniformly.
+//! associated `Unit` and `KEY_BYTES` to operate on byte (`u8`), char (`u32`),
+//! or native sequence (`u64`) keys uniformly.
 //!
 //! Phase 1 only defines the trait. The `ByteKey` / `CharKey` impls and the
 //! generification of `arena_manager`, `dedup`, `traversal_context`,
@@ -15,6 +15,8 @@ use std::fmt::Debug;
 use std::hash::Hash;
 
 use smallvec::SmallVec;
+
+use crate::persistent_artrie::core::adaptive_edge_store::AdaptiveLabel;
 
 // ============================================================================
 // Concrete `KeyEncoding` markers
@@ -27,6 +29,10 @@ pub struct ByteKey;
 /// Marker type for char-keyed (UTF-8 / Unicode code-point) tries.
 #[derive(Debug, Clone, Copy)]
 pub struct CharKey;
+
+/// Marker type for native `u64` sequence-keyed tries.
+#[derive(Debug, Clone, Copy)]
+pub struct U64Key<const PREFIX: usize = 4>;
 
 impl KeyEncoding for ByteKey {
     type Unit = u8;
@@ -67,8 +73,10 @@ impl KeyEncoding for ByteKey {
         Some(unit)
     }
 
-    fn unit_to_le_bytes(unit: Self::Unit) -> [u8; 4] {
-        [unit, 0, 0, 0]
+    fn unit_to_le_bytes(unit: Self::Unit) -> [u8; 8] {
+        let mut out = [0u8; 8];
+        out[0] = unit;
+        out
     }
 
     fn unit_from_le_bytes(bytes: &[u8]) -> Self::Unit {
@@ -121,14 +129,73 @@ impl KeyEncoding for CharKey {
         char::from_u32(unit)
     }
 
-    fn unit_to_le_bytes(unit: Self::Unit) -> [u8; 4] {
-        unit.to_le_bytes()
+    fn unit_to_le_bytes(unit: Self::Unit) -> [u8; 8] {
+        let mut out = [0u8; 8];
+        out[..4].copy_from_slice(&unit.to_le_bytes());
+        out
     }
 
     fn unit_from_le_bytes(bytes: &[u8]) -> Self::Unit {
         let mut buf = [0u8; 4];
         buf.copy_from_slice(&bytes[..4]);
         u32::from_le_bytes(buf)
+    }
+}
+
+impl<const PREFIX: usize> KeyEncoding for U64Key<PREFIX> {
+    type Unit = u64;
+    type Term = Vec<u64>;
+    type Token = u64;
+    const KEY_BYTES: usize = 8;
+    const ARENA_MAGIC: u64 = u64::from_le_bytes(*b"U64ARNA1");
+    const ARENA_MAGIC_V2: u64 = u64::from_le_bytes(*b"U64ARNA2");
+    const FILE_MAGIC: [u8; 4] = *b"AR64";
+    const NAME: &'static str = "u64";
+    const MAX_PREFIX_LEN: usize = PREFIX;
+    const UNIT_ZERO: Self::Unit = 0u64;
+
+    fn units_from_str(s: &str) -> SmallVec<[Self::Unit; 32]> {
+        <u64 as crate::CharUnit>::from_str(s).into_iter().collect()
+    }
+
+    fn units_from_bytes(bytes: &[u8]) -> Option<SmallVec<[Self::Unit; 32]>> {
+        if bytes.len() % Self::KEY_BYTES != 0 {
+            return None;
+        }
+        Some(
+            bytes
+                .chunks_exact(Self::KEY_BYTES)
+                .map(|chunk| {
+                    let mut word = [0u8; 8];
+                    word.copy_from_slice(chunk);
+                    u64::from_le_bytes(word)
+                })
+                .collect(),
+        )
+    }
+
+    fn units_to_term(units: &[u64]) -> Vec<u64> {
+        units.to_vec()
+    }
+
+    #[inline]
+    fn token_to_unit(token: u64) -> u64 {
+        token
+    }
+
+    #[inline]
+    fn unit_to_token(unit: u64) -> Option<u64> {
+        Some(unit)
+    }
+
+    fn unit_to_le_bytes(unit: Self::Unit) -> [u8; 8] {
+        unit.to_le_bytes()
+    }
+
+    fn unit_from_le_bytes(bytes: &[u8]) -> Self::Unit {
+        let mut buf = [0u8; 8];
+        buf.copy_from_slice(&bytes[..8]);
+        u64::from_le_bytes(buf)
     }
 }
 
@@ -153,6 +220,14 @@ mod tests {
     }
 
     #[test]
+    fn u64_key_roundtrip() {
+        for u in [0u64, 1, u32::MAX as u64, u64::MAX, 0x0123_4567_89AB_CDEF] {
+            let bytes = U64Key::<3>::unit_to_le_bytes(u);
+            assert_eq!(U64Key::<3>::unit_from_le_bytes(&bytes), u);
+        }
+    }
+
+    #[test]
     fn byte_key_units_from_str() {
         let units = ByteKey::units_from_str("hello");
         assert_eq!(units.as_slice(), b"hello");
@@ -162,6 +237,16 @@ mod tests {
     fn char_key_units_from_str() {
         let units = CharKey::units_from_str("h\u{1F600}");
         assert_eq!(units.as_slice(), &[b'h' as u32, 0x1F600]);
+    }
+
+    #[test]
+    fn u64_key_units_from_bytes_rejects_partial_word() {
+        assert!(U64Key::<3>::units_from_bytes(&[1, 2, 3]).is_none());
+        let bytes = 42u64.to_le_bytes();
+        assert_eq!(
+            U64Key::<3>::units_from_bytes(&bytes).unwrap().as_slice(),
+            &[42]
+        );
     }
 
     // G5.0: `Token` ↔ `Unit` conversions for the shared `OverlayDictionaryNode`.
@@ -192,6 +277,14 @@ mod tests {
         // as the prior char `edges()` `char::from_u32` filter did.
         assert_eq!(CharKey::unit_to_token(0xD800), None);
         assert_eq!(CharKey::unit_to_token(0xDFFF), None);
+    }
+
+    #[test]
+    fn u64_key_token_unit_roundtrip() {
+        for u in [0u64, 1, 42, u64::MAX] {
+            assert_eq!(U64Key::<3>::token_to_unit(u), u);
+            assert_eq!(U64Key::<3>::unit_to_token(u), Some(u));
+        }
     }
 
     // The `units_from_str` ∘ `units_to_term` round-trip invariant (the formal
@@ -230,6 +323,12 @@ mod tests {
         assert_eq!(ByteKey::units_to_term(&raw), raw.clone());
     }
 
+    #[test]
+    fn u64_units_to_term_roundtrips_sequence() {
+        let units = vec![0, 1, 2, u64::MAX];
+        assert_eq!(U64Key::<3>::units_to_term(&units), units);
+    }
+
     // Note: assertions that ByteKey / CharKey constants match the variant
     // modules' arena ARENA_MAGIC / ARENA_MAGIC_V2 constants live in the
     // variant modules' test suites (persistent_artrie::arena::tests and
@@ -244,8 +343,9 @@ mod tests {
 pub trait KeyEncoding: 'static + Copy + Send + Sync + Debug {
     /// The unit type stored at each edge of the trie.
     ///
-    /// `u8` for byte tries; `u32` (Unicode code points) for char tries.
-    type Unit: Copy + Eq + Ord + Hash + Send + Sync + 'static + Debug;
+    /// `u8` for byte tries; `u32` (Unicode code points) for char tries; `u64`
+    /// for native sequence tries.
+    type Unit: Copy + Eq + Ord + Hash + Send + Sync + 'static + Debug + AdaptiveLabel;
 
     /// The public term type this encoding reconstructs to: `String` for char
     /// (Unicode), `Vec<u8>` for byte (arbitrary byte strings). The shared
@@ -266,7 +366,7 @@ pub trait KeyEncoding: 'static + Copy + Send + Sync + Debug {
     /// `Unit = char` bound — no new constraint on any real implementor.
     type Token: crate::char_unit::CharUnit;
 
-    /// Width of `Self::Unit` in bytes (1 for `u8`, 4 for `u32`).
+    /// Width of `Self::Unit` in bytes (1 for `u8`, 4 for `u32`, 8 for `u64`).
     const KEY_BYTES: usize;
 
     /// 8-byte arena magic prefix used in V1 arena-page header layouts.
@@ -284,7 +384,8 @@ pub trait KeyEncoding: 'static + Copy + Send + Sync + Debug {
 
     /// G4: maximum path-compression prefix length, in key units.
     ///
-    /// `12` for byte (12 B), `6` for char (24 B). Consumed by the shared
+    /// `12` for byte (12 B), `6` for char (24 B), benchmark-selected for u64.
+    /// Consumed by the shared
     /// `persistent_artrie::core::overlay::OverlayNode` to cap its `prefix` length.
     const MAX_PREFIX_LEN: usize;
 
@@ -329,10 +430,9 @@ pub trait KeyEncoding: 'static + Copy + Send + Sync + Debug {
     /// preserving the prior char `char::from_u32` filter. Byte: always `Some`.
     fn unit_to_token(unit: Self::Unit) -> Option<Self::Token>;
 
-    /// Encode `unit` as up to 4 little-endian bytes. `u8` keys pad with
-    /// zeros; `u32` keys use the full 4 bytes. Returned slice is always
-    /// `KEY_BYTES` long.
-    fn unit_to_le_bytes(unit: Self::Unit) -> [u8; 4];
+    /// Encode `unit` as up to 8 little-endian bytes. Narrower keys pad with
+    /// zeros. Callers consume the first `KEY_BYTES` bytes.
+    fn unit_to_le_bytes(unit: Self::Unit) -> [u8; 8];
 
     /// Decode a unit from at least `KEY_BYTES` of little-endian bytes.
     /// Panics if `bytes.len() < KEY_BYTES`.

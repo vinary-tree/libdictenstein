@@ -230,7 +230,7 @@ pub mod scdawg;
 // suffix graph snapshots as PersistentSuffixAutomaton.
 pub mod suffix_tree;
 
-// Sequence-keyed u64 persistent ARTrie with native adaptive u64 edge storage.
+// Sequence-keyed u64 persistent ARTrie with native-key overlay and CX snapshots.
 pub mod u64;
 
 // IoUringDiskManager-specific constructors (Phase-5 split out of dict_impl).
@@ -462,7 +462,11 @@ pub use suffix_tree::{
     PersistentSuffixTreeNode,
 };
 
-pub use u64::{PersistentARTrieU64, PersistentARTrieU64Node};
+pub use u64::{
+    PersistentARTrieU64, PersistentARTrieU64Compact, PersistentARTrieU64CompactNode,
+    PersistentARTrieU64Node, PersistentARTrieU64Prefix3Compat,
+    PersistentARTrieU64Prefix3CompatNode, U64_CX_PREFIX_COMPACT, U64_CX_PREFIX_COMPAT,
+};
 
 pub use block_storage::{AlignedBlock, BlockStorage};
 pub use buffer_manager::{BufferManager, BufferPoolStats, PageReadGuard, PageWriteGuard};

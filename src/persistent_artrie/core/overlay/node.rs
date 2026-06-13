@@ -21,16 +21,19 @@
 //!
 //! # Design
 //!
-//! Child storage uses a tiered `ChildStore` enum:
+//! Child storage delegates to the shared immutable `AdaptiveEdgeStore`:
 //!
 //! ```text
-//! ChildStore::Inline  (0-4 children, ~85% of nodes)
+//! Tiny        (0-4 children)
 //!   → Zero heap allocation. Clone is pure value copy.
 //!   → Linear scan for lookups (faster than binary search at this size).
 //!
-//! ChildStore::Heap    (5+ children)
-//!   → Owned Vec<K::Unit> + Vec<Child>. Clone is flat contiguous copy.
-//!   → Binary search for lookups.
+//! Small       (5-16 children)
+//!   → Inline SmallVec storage with sorted lookup.
+//!
+//! Sorted / indexed tiers
+//!   → Sorted Vec for medium fanout, byte Node48/Node256-style indexes for
+//!     dense u8 fanout, and sparse hash indexing for high-fanout wide labels.
 //! ```
 //!
 //! For lock-free concurrent updates, we CAS on a pointer to the node
@@ -56,6 +59,7 @@
 use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
 use std::sync::Arc;
 
+use crate::persistent_artrie::core::adaptive_edge_store::AdaptiveEdgeStore;
 use crate::persistent_artrie::core::key_encoding::KeyEncoding;
 use crate::persistent_artrie::core::swizzled_ptr::SwizzledPtr;
 // `DictionaryValue` is the bound callers supply for the genericized value `V`; it
@@ -76,12 +80,6 @@ pub mod flags {
     /// Node has a value assigned
     pub const HAS_VALUE: u8 = 0b0000_1000;
 }
-
-/// Maximum number of children in the inline storage tier.
-///
-/// Nodes with 0-4 children use fully inline storage (zero heap allocation);
-/// adding a 5th child promotes to the Heap tier.
-const INLINE_CAPACITY: usize = 4;
 
 // ============================================================================
 // Child: an owned child slot (the leak fix)
@@ -146,15 +144,6 @@ impl<K: KeyEncoding, V> std::fmt::Debug for Child<K, V> {
 }
 
 impl<K: KeyEncoding, V> Child<K, V> {
-    /// The placeholder for unused inline-array slots: a null on-disk reference.
-    ///
-    /// Only `keys[..count]` / `children[..count]` of an `Inline` store are ever
-    /// read; the remaining slots hold this cheap, ownership-free filler.
-    #[inline]
-    fn empty() -> Self {
-        Child::OnDisk(SwizzledPtr::null())
-    }
-
     /// `true` if this slot is an empty/null on-disk reference (filler or unset).
     #[inline]
     pub fn is_null(&self) -> bool {
@@ -190,433 +179,95 @@ impl<K: KeyEncoding, V> Child<K, V> {
 // ChildStore: Tiered child storage for OverlayNode
 // ============================================================================
 
-/// Tiered child storage that eliminates heap allocation for most nodes.
-///
-/// Generic over `K` (key encoding) and `V` (value, default `()`); `Clone`/`Debug`
-/// are hand-written below to bound only `V`.
-enum ChildStore<K: KeyEncoding, V = ()> {
-    /// 0-4 children stored inline (no heap allocation).
-    ///
-    /// Keys are sorted in ascending order. Only `keys[..count]` /
-    /// `children[..count]` are valid; the rest hold `Child::empty()`.
-    Inline {
-        /// Number of valid children (0-4).
-        count: u8,
-        /// Sorted child keys. Only `[..count]` is valid.
-        keys: [K::Unit; INLINE_CAPACITY],
-        /// Child slots corresponding to keys. Only `[..count]` is valid.
-        children: [Child<K, V>; INLINE_CAPACITY],
-    },
-
-    /// 5+ children in owned Vecs.
-    ///
-    /// Keys are sorted in ascending order. Both Vecs always have the same length.
-    Heap {
-        /// Sorted child keys.
-        keys: Vec<K::Unit>,
-        /// Child slots corresponding to keys.
-        children: Vec<Child<K, V>>,
-    },
+/// Variant-specific child storage wrapper over the shared adaptive edge store.
+struct ChildStore<K: KeyEncoding, V = ()> {
+    inner: AdaptiveEdgeStore<K::Unit, Child<K, V>>,
 }
 
-// Manual `Clone` bounding only `V: Clone`.
 impl<K: KeyEncoding, V: Clone> Clone for ChildStore<K, V> {
     fn clone(&self) -> Self {
-        match self {
-            ChildStore::Inline {
-                count,
-                keys,
-                children,
-            } => ChildStore::Inline {
-                count: *count,
-                keys: *keys,
-                children: children.clone(),
-            },
-            ChildStore::Heap { keys, children } => ChildStore::Heap {
-                keys: keys.clone(),
-                children: children.clone(),
-            },
+        Self {
+            inner: self.inner.clone(),
         }
     }
 }
 
-// Manual `Debug` so neither `K::Unit` nor `V` need `Debug`.
 impl<K: KeyEncoding, V> std::fmt::Debug for ChildStore<K, V> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            ChildStore::Inline { count, .. } => f
-                .debug_struct("ChildStore::Inline")
-                .field("count", count)
-                .finish_non_exhaustive(),
-            ChildStore::Heap { keys, .. } => f
-                .debug_struct("ChildStore::Heap")
-                .field("len", &keys.len())
-                .finish_non_exhaustive(),
-        }
+        f.debug_tuple("ChildStore").field(&self.inner).finish()
     }
 }
 
-// Bound-free helpers (no `V: Clone`) — required by `OverlayNode`'s iterative `Drop`,
-// which cannot add a `V: Clone` bound the struct lacks (E0367).
 impl<K: KeyEncoding, V> ChildStore<K, V> {
-    /// Create an empty inline child store WITHOUT requiring `V: Clone`. The body
-    /// needs no `V` (it uses `K::UNIT_ZERO` + the bound-free `Child::empty()`).
     #[inline]
-    fn empty_inline() -> Self {
-        ChildStore::Inline {
-            count: 0,
-            keys: [K::UNIT_ZERO; INLINE_CAPACITY],
-            children: [
-                Child::empty(),
-                Child::empty(),
-                Child::empty(),
-                Child::empty(),
-            ],
+    fn new() -> Self {
+        Self {
+            inner: AdaptiveEdgeStore::new(),
         }
     }
 
-    /// Replace this store with an empty inline store, returning the old store by
-    /// value so its owned `Child`s can be consumed without recursion. Used by
-    /// `OverlayNode`'s iterative `Drop` to move a node's children out BEFORE the
-    /// node's own field-drop runs (which then sees an empty store).
     #[inline]
     fn take(&mut self) -> Self {
-        std::mem::replace(self, Self::empty_inline())
+        Self {
+            inner: self.inner.take(),
+        }
     }
 
-    /// Consume this store, pushing every owned in-memory child `Arc` into `out`
-    /// (on-disk children own no heap allocation, so they drop here cheaply). `self`
-    /// is taken by value so the `Child`s MOVE out — refcounts unchanged (no clone),
-    /// the property the reclaim/leak witnesses depend on. No `unsafe`.
     fn drain_in_mem_into(self, out: &mut Vec<Arc<OverlayNode<K, V>>>) {
-        match self {
-            ChildStore::Inline {
-                count, children, ..
-            } => {
-                // Move only the valid prefix; array `into_iter()` (edition 2021)
-                // yields each `Child` by value.
-                for child in children.into_iter().take(count as usize) {
-                    if let Child::InMem(arc) = child {
-                        out.push(arc);
-                    }
-                }
-            }
-            ChildStore::Heap { children, .. } => {
-                for child in children {
-                    if let Child::InMem(arc) = child {
-                        out.push(arc);
-                    }
-                }
+        for (_, child) in self.inner.into_entries() {
+            if let Child::InMem(arc) = child {
+                out.push(arc);
             }
         }
+    }
+
+    #[inline]
+    fn len(&self) -> usize {
+        self.inner.len()
+    }
+
+    #[inline]
+    fn is_empty(&self) -> bool {
+        self.inner.is_empty()
+    }
+
+    #[inline]
+    fn find_child(&self, key: K::Unit) -> Option<&Child<K, V>> {
+        self.inner.find(key)
+    }
+
+    #[inline]
+    fn has_child(&self, key: K::Unit) -> bool {
+        self.inner.contains_key(key)
+    }
+
+    #[inline]
+    fn child_at(&self, index: usize) -> Option<(&K::Unit, &Child<K, V>)> {
+        self.inner.entry_at(index)
+    }
+
+    #[inline]
+    fn iter_children(&self) -> impl Iterator<Item = (&K::Unit, &Child<K, V>)> {
+        self.inner.iter()
+    }
+
+    #[inline]
+    fn memory_usage(&self) -> usize {
+        self.inner.memory_usage()
     }
 }
 
 impl<K: KeyEncoding, V: Clone> ChildStore<K, V> {
-    /// Create an empty inline child store. Delegates to the bound-free
-    /// [`Self::empty_inline`] so the iterative `Drop` (which cannot require
-    /// `V: Clone`) builds the SAME empty store.
     #[inline]
-    fn new() -> Self {
-        Self::empty_inline()
-    }
-
-    /// Number of children.
-    #[inline]
-    fn len(&self) -> usize {
-        match self {
-            ChildStore::Inline { count, .. } => *count as usize,
-            ChildStore::Heap { keys, .. } => keys.len(),
-        }
-    }
-
-    /// Check if empty.
-    #[inline]
-    fn is_empty(&self) -> bool {
-        self.len() == 0
-    }
-
-    /// Find a child by key.
-    ///
-    /// Uses linear scan for Inline (optimal for ≤4 elements),
-    /// binary search for Heap.
-    #[inline]
-    fn find_child(&self, key: K::Unit) -> Option<&Child<K, V>> {
-        match self {
-            ChildStore::Inline {
-                count,
-                keys,
-                children,
-            } => {
-                let n = *count as usize;
-                // Linear scan — faster than binary search for ≤4 elements
-                for i in 0..n {
-                    if keys[i] == key {
-                        return Some(&children[i]);
-                    }
-                    // Keys are sorted; early exit if we've passed the target
-                    if keys[i] > key {
-                        return None;
-                    }
-                }
-                None
-            }
-            ChildStore::Heap { keys, children } => match keys.binary_search(&key) {
-                Ok(idx) => Some(&children[idx]),
-                Err(_) => None,
-            },
-        }
-    }
-
-    /// Check if a child exists for the given key.
-    #[inline]
-    fn has_child(&self, key: K::Unit) -> bool {
-        self.find_child(key).is_some()
-    }
-
-    /// Get the child at a specific index.
-    #[inline]
-    fn child_at(&self, index: usize) -> Option<(&K::Unit, &Child<K, V>)> {
-        match self {
-            ChildStore::Inline {
-                count,
-                keys,
-                children,
-            } => {
-                if index < *count as usize {
-                    Some((&keys[index], &children[index]))
-                } else {
-                    None
-                }
-            }
-            ChildStore::Heap { keys, children } => {
-                if index < keys.len() {
-                    Some((&keys[index], &children[index]))
-                } else {
-                    None
-                }
-            }
-        }
-    }
-
-    /// Get key and child slices for iteration.
-    #[inline]
-    fn slices(&self) -> (&[K::Unit], &[Child<K, V>]) {
-        match self {
-            ChildStore::Inline {
-                count,
-                keys,
-                children,
-            } => {
-                let n = *count as usize;
-                (&keys[..n], &children[..n])
-            }
-            ChildStore::Heap { keys, children } => (keys.as_slice(), children.as_slice()),
-        }
-    }
-
-    /// Create a new ChildStore with a child added (or replaced if key exists).
-    ///
-    /// Maintains sorted key order. Promotes from Inline to Heap when adding
-    /// a 5th child.
     fn with_child(&self, key: K::Unit, child: Child<K, V>) -> Self {
-        match self {
-            ChildStore::Inline {
-                count,
-                keys,
-                children,
-            } => {
-                let n = *count as usize;
-
-                // Find insertion point or existing key
-                let mut insert_pos = n;
-                for i in 0..n {
-                    if keys[i] == key {
-                        // Key exists — replace the child
-                        let new_keys = *keys;
-                        let mut new_children = children.clone();
-                        new_children[i] = child;
-                        return ChildStore::Inline {
-                            count: *count,
-                            keys: new_keys,
-                            children: new_children,
-                        };
-                    }
-                    if keys[i] > key {
-                        insert_pos = i;
-                        break;
-                    }
-                }
-
-                if n < INLINE_CAPACITY {
-                    // Room in inline — shift right and insert
-                    let mut new_keys = *keys;
-                    let mut new_children = children.clone();
-
-                    // Shift elements right from insert_pos
-                    for i in (insert_pos..n).rev() {
-                        new_keys[i + 1] = new_keys[i];
-                        new_children[i + 1] = new_children[i].clone();
-                    }
-                    new_keys[insert_pos] = key;
-                    new_children[insert_pos] = child;
-
-                    ChildStore::Inline {
-                        count: *count + 1,
-                        keys: new_keys,
-                        children: new_children,
-                    }
-                } else {
-                    // Promote to Heap: copy 4 existing + insert 1 new = 5
-                    let mut new_keys = Vec::with_capacity(n + 1);
-                    let mut new_children = Vec::with_capacity(n + 1);
-
-                    for i in 0..insert_pos {
-                        new_keys.push(keys[i]);
-                        new_children.push(children[i].clone());
-                    }
-                    new_keys.push(key);
-                    new_children.push(child);
-                    for i in insert_pos..n {
-                        new_keys.push(keys[i]);
-                        new_children.push(children[i].clone());
-                    }
-
-                    ChildStore::Heap {
-                        keys: new_keys,
-                        children: new_children,
-                    }
-                }
-            }
-            ChildStore::Heap { keys, children } => {
-                match keys.binary_search(&key) {
-                    Ok(idx) => {
-                        // Key exists — replace the child
-                        let mut new_children = children.clone();
-                        new_children[idx] = child;
-                        ChildStore::Heap {
-                            keys: keys.clone(),
-                            children: new_children,
-                        }
-                    }
-                    Err(idx) => {
-                        // Insert at sorted position
-                        let mut new_keys = keys.clone();
-                        let mut new_children = children.clone();
-                        new_keys.insert(idx, key);
-                        new_children.insert(idx, child);
-                        ChildStore::Heap {
-                            keys: new_keys,
-                            children: new_children,
-                        }
-                    }
-                }
-            }
+        Self {
+            inner: self.inner.with_edge(key, child),
         }
     }
 
-    /// Create a new ChildStore with a child removed.
-    ///
-    /// Returns `None` if the key doesn't exist. Demotes from Heap to Inline
-    /// when the child count drops to INLINE_CAPACITY.
+    #[inline]
     fn without_child(&self, key: K::Unit) -> Option<Self> {
-        match self {
-            ChildStore::Inline {
-                count,
-                keys,
-                children,
-            } => {
-                let n = *count as usize;
-
-                // Find the key
-                let mut found_pos = None;
-                for i in 0..n {
-                    if keys[i] == key {
-                        found_pos = Some(i);
-                        break;
-                    }
-                    if keys[i] > key {
-                        return None; // Keys are sorted; not found
-                    }
-                }
-
-                let pos = found_pos?;
-
-                // Shift elements left
-                let mut new_keys = *keys;
-                let mut new_children = children.clone();
-
-                for i in pos..n - 1 {
-                    new_keys[i] = new_keys[i + 1];
-                    new_children[i] = new_children[i + 1].clone();
-                }
-                // Clear the now-unused last slot
-                new_keys[n - 1] = K::UNIT_ZERO;
-                new_children[n - 1] = Child::empty();
-
-                Some(ChildStore::Inline {
-                    count: *count - 1,
-                    keys: new_keys,
-                    children: new_children,
-                })
-            }
-            ChildStore::Heap { keys, children } => {
-                let idx = keys.binary_search(&key).ok()?;
-
-                let new_len = keys.len() - 1;
-
-                if new_len <= INLINE_CAPACITY {
-                    // Demote to Inline
-                    let mut new_keys = [K::UNIT_ZERO; INLINE_CAPACITY];
-                    let mut new_children = [
-                        Child::empty(),
-                        Child::empty(),
-                        Child::empty(),
-                        Child::empty(),
-                    ];
-
-                    let mut j = 0;
-                    for i in 0..keys.len() {
-                        if i != idx {
-                            new_keys[j] = keys[i];
-                            new_children[j] = children[i].clone();
-                            j += 1;
-                        }
-                    }
-
-                    Some(ChildStore::Inline {
-                        count: new_len as u8,
-                        keys: new_keys,
-                        children: new_children,
-                    })
-                } else {
-                    // Stay Heap
-                    let mut new_keys = keys.clone();
-                    let mut new_children = children.clone();
-                    new_keys.remove(idx);
-                    new_children.remove(idx);
-                    Some(ChildStore::Heap {
-                        keys: new_keys,
-                        children: new_children,
-                    })
-                }
-            }
-        }
-    }
-
-    /// Estimated memory usage in bytes.
-    fn memory_usage(&self) -> usize {
-        match self {
-            ChildStore::Inline { count, .. } => {
-                // The inline arrays are part of the struct — no heap allocation.
-                let n = *count as usize;
-                n * (std::mem::size_of::<K::Unit>() + std::mem::size_of::<Child<K, V>>())
-            }
-            ChildStore::Heap { keys, children } => {
-                keys.capacity() * std::mem::size_of::<K::Unit>()
-                    + children.capacity() * std::mem::size_of::<Child<K, V>>()
-            }
-        }
+        self.inner.without_edge(key).map(|inner| Self { inner })
     }
 }
 
@@ -851,8 +502,7 @@ impl<K: KeyEncoding, V: Clone> OverlayNode<K, V> {
 
     /// Iterate over all (key, child) pairs.
     pub fn iter_children(&self) -> impl Iterator<Item = (&K::Unit, &Child<K, V>)> {
-        let (keys, children) = self.store.slices();
-        keys.iter().zip(children.iter())
+        self.store.iter_children()
     }
 
     /// Create a new version of this node with an added child.
@@ -1109,6 +759,20 @@ mod tests {
     type ByteValuedNode = OverlayNode<ByteKey, u64>;
     type CharNode = OverlayNode<CharKey, ()>;
     type CharValuedNode = OverlayNode<CharKey, u64>;
+
+    fn child_store_is_tiny<K: KeyEncoding, V>(store: &ChildStore<K, V>) -> bool {
+        matches!(&store.inner, AdaptiveEdgeStore::Tiny(_))
+    }
+
+    fn child_store_is_wide<K: KeyEncoding, V>(store: &ChildStore<K, V>) -> bool {
+        matches!(
+            &store.inner,
+            AdaptiveEdgeStore::Sorted(_)
+                | AdaptiveEdgeStore::SparseIndexed { .. }
+                | AdaptiveEdgeStore::ByteIndexed48 { .. }
+                | AdaptiveEdgeStore::ByteDense256 { .. }
+        )
+    }
 
     #[test]
     fn test_new_node() {
@@ -1383,7 +1047,7 @@ mod tests {
             node = node.with_child(key, child.clone());
         }
         assert_eq!(node.num_children(), 256);
-        assert!(matches!(node.store, ChildStore::Heap { .. }));
+        assert!(child_store_is_wide(&node.store));
         for key in 0u8..=255 {
             assert!(node.has_child(key), "should find key {}", key);
         }
@@ -1404,11 +1068,11 @@ mod tests {
             node = node.with_child(i + 100, child);
         }
         assert_eq!(node.num_children(), 4);
-        assert!(matches!(node.store, ChildStore::Inline { .. }));
+        assert!(child_store_is_tiny(&node.store));
         let child = Child::OnDisk(SwizzledPtr::on_disk(5, 500, NodeType::Node4));
         node = node.with_child(104, child);
         assert_eq!(node.num_children(), 5);
-        assert!(matches!(node.store, ChildStore::Heap { .. }));
+        assert!(!child_store_is_tiny(&node.store));
         let keys: Vec<u8> = node.iter_children().map(|(&k, _)| k).collect();
         assert_eq!(keys, vec![100, 101, 102, 103, 104]);
     }
@@ -1420,10 +1084,10 @@ mod tests {
             let child = Child::OnDisk(SwizzledPtr::on_disk(i, i * 100, NodeType::CharNode4));
             node = node.with_child(i + 100, child);
         }
-        assert!(matches!(node.store, ChildStore::Heap { .. }));
+        assert!(!child_store_is_tiny(&node.store));
         let node2 = node.without_child(102).expect("should remove");
         assert_eq!(node2.num_children(), 4);
-        assert!(matches!(node2.store, ChildStore::Inline { .. }));
+        assert!(child_store_is_tiny(&node2.store));
         let keys: Vec<u32> = node2.iter_children().map(|(&k, _)| k).collect();
         assert_eq!(keys, vec![100, 101, 103, 104]);
     }
@@ -1439,10 +1103,10 @@ mod tests {
             ));
             node = node.with_child(i + 100, child);
         }
-        assert!(matches!(node.store, ChildStore::Heap { .. }));
+        assert!(!child_store_is_tiny(&node.store));
         let node2 = node.without_child(102).expect("should remove");
         assert_eq!(node2.num_children(), 5);
-        assert!(matches!(node2.store, ChildStore::Heap { .. }));
+        assert!(!child_store_is_tiny(&node2.store));
     }
 
     #[test]
@@ -1466,10 +1130,10 @@ mod tests {
             .with_child(b'a', child1.clone())
             .with_child(b'b', child1);
         assert_eq!(node.num_children(), 2);
-        assert!(matches!(node.store, ChildStore::Inline { .. }));
+        assert!(child_store_is_tiny(&node.store));
         let node2 = node.with_child(b'a', child2);
         assert_eq!(node2.num_children(), 2);
-        assert!(matches!(node2.store, ChildStore::Inline { .. }));
+        assert!(child_store_is_tiny(&node2.store));
     }
 
     #[test]
@@ -1555,22 +1219,22 @@ mod tests {
             node = node.with_child(mk(base + i), an_on_disk_child::<K, ()>(i, nt));
         }
         assert_eq!(node.num_children(), 4);
-        assert!(matches!(node.store, ChildStore::Inline { .. }));
+        assert!(child_store_is_tiny(&node.store));
         // 5th child promotes to Heap.
         node = node.with_child(mk(base + 4), an_on_disk_child::<K, ()>(4, nt));
         assert_eq!(node.num_children(), 5);
-        assert!(matches!(node.store, ChildStore::Heap { .. }));
+        assert!(!child_store_is_tiny(&node.store));
         // Removing back to 4 demotes to Inline.
         let demoted = node
             .without_child(mk(base + 2))
             .expect("remove present key");
         assert_eq!(demoted.num_children(), 4);
-        assert!(matches!(demoted.store, ChildStore::Inline { .. }));
+        assert!(child_store_is_tiny(&demoted.store));
         // A 6→5 removal stays Heap.
         let six = node.with_child(mk(base + 5), an_on_disk_child::<K, ()>(5, nt));
         let five = six.without_child(mk(base + 2)).expect("remove present key");
         assert_eq!(five.num_children(), 5);
-        assert!(matches!(five.store, ChildStore::Heap { .. }));
+        assert!(!child_store_is_tiny(&five.store));
         // Removing an absent key returns None.
         assert!(OverlayNode::<K, ()>::new()
             .without_child(mk(base))
@@ -1803,7 +1467,7 @@ mod tests {
             expected.push(k.into());
         }
         assert_eq!(node.num_children(), expected.len());
-        assert!(matches!(node.store, ChildStore::Heap { .. }));
+        assert!(child_store_is_wide(&node.store));
         for u in range {
             let k = K::Unit::try_from(u).expect("unit fits");
             assert!(node.has_child(k), "key {u} must be present");
@@ -1907,7 +1571,7 @@ mod tests {
             let k = K::Unit::try_from(0x40 + u).expect("unit fits");
             node = node.with_child(k, an_on_disk_child::<K, ()>(u, nt));
         }
-        assert!(matches!(node.store, ChildStore::Heap { .. }));
+        assert!(!child_store_is_tiny(&node.store));
         let cloned = node.clone();
         assert_eq!(cloned.num_children(), node.num_children());
         let a: Vec<u64> = node.iter_children().map(|(&k, _)| k.into()).collect();
