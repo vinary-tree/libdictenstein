@@ -106,6 +106,13 @@ locations, and byte/char variants. Benchmarks live in
 `benches/persistent_suffix_native_benchmarks.rs`; fixed-sample mode prints raw
 samples suitable for pgmcp/Welch analysis.
 
+The 2026-06-13 fixed-sample run accepted pgmcp experiments `56`-`61` for
+parallel read/write latency across persistent suffix automaton, suffix tree,
+and SCDAWG byte/char variants. The local summary is
+`docs/experiments/persistent-suffix-native-2026-06-13.md`; the full raw sample
+vectors are in pgmcp table
+`libdictenstein.persistent_suffix_native_benchmark_sample_sets`.
+
 The read path is snapshot/non-blocking, and suffix graph writes use CAS
 publication with prepared/commit WAL recovery. Checkpoint image publication is
 best-effort under continuous writer churn because retained WAL replay remains

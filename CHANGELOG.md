@@ -56,9 +56,12 @@ Date format is ISO-8601 (YYYY-MM-DD).
   benchmark harness now emits distinct byte/char parallel read/write controls
   and treatments for persistent suffix automaton, suffix tree, and SCDAWG
   variants, instead of reusing the byte suffix-automaton control path for
-  suffix-tree and SCDAWG comparisons. pgmcp experiments `56`-`61` are reserved
-  for these hypotheses; fixed-sample measurements are intentionally deferred
-  until they can be run without known host-load bias.
+  suffix-tree and SCDAWG comparisons. A low-load fixed-sample run accepted the
+  six pgmcp Welch hypotheses `56`-`61` for native parallel read/write latency;
+  all 36 raw `metric x arm` sample vectors are stored in pgmcp data table
+  `libdictenstein.persistent_suffix_native_benchmark_sample_sets`, and the
+  result summary is recorded in
+  `docs/experiments/persistent-suffix-native-2026-06-13.md`.
 - **Persistent native-key documentation refresh.** README, backend guide,
   persistence architecture docs, and persistent suffix-index design docs now
   describe the current `persistent-artrie` implementation set:
