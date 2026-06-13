@@ -1,8 +1,8 @@
 //! Concurrency coverage for persistent suffix automata.
 //!
-//! These tests exercise the public shared-reference behavior over the same
-//! ARTrie overlay/checkpoint substrate used by the byte and char persistent
-//! tries.
+//! These tests exercise public shared-reference behavior over immutable native
+//! suffix-graph snapshots: readers load snapshots without taking the writer
+//! lock while writers serialize rebuild-and-publish operations.
 
 #![cfg(feature = "persistent-artrie")]
 

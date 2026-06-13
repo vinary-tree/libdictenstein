@@ -6,10 +6,10 @@
 //! associated `Unit` and `KEY_BYTES` to operate on byte (`u8`), char (`u32`),
 //! or native sequence (`u64`) keys uniformly.
 //!
-//! Phase 1 only defines the trait. The `ByteKey` / `CharKey` impls and the
-//! generification of `arena_manager`, `dedup`, `traversal_context`,
-//! `relative_encoding`, `per_node_log`, `mvcc`, `version_checkpoint`,
-//! `version_gc`, and `recovery` against this trait happen in Phase 3.
+//! The live overlay, adaptive edge store, dictionary-node handles, and CX
+//! checkpoint serializer are generic over this trait. Byte, char, and native
+//! `u64` sequence keys all use the same immutable overlay node shape while
+//! retaining their native unit widths.
 
 use std::fmt::Debug;
 use std::hash::Hash;

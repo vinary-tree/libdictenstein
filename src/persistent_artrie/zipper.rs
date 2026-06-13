@@ -103,8 +103,7 @@ impl<V: DictionaryValue> PersistentARTrieZipper<V> {
     ///
     /// **L3.2:** overlay-backed — `has_path`/`is_final_at_path`/`get_children_at_path` navigate
     /// the lock-free overlay (the production rep), so the zipper sees the live dictionary on every
-    /// (now universally overlay-routed) trie. (Replaces the M3-DEFER `log::warn!` "navigates an
-    /// EMPTY owned tree" stub — overlay traversal is now implemented.)
+    /// overlay-routed trie.
     pub fn new(trie: SharedARTrie<V>) -> Self {
         PersistentARTrieZipper {
             trie,

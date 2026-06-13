@@ -16,6 +16,7 @@
 
 #![allow(dead_code)]
 
+use super::arena::ByteNodeArena;
 use super::arena_manager::ArenaSlot;
 use super::block_storage::BlockStorage;
 use super::bucket::StringBucket;
@@ -72,14 +73,17 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
         let page_guard = bm.fetch_page(disk_location.block_id)?;
         let page_data = page_guard.data();
 
-        let offset = disk_location.offset as usize;
-        let node_data = &page_data[offset..];
+        let arena = ByteNodeArena::from_bytes(page_data, disk_location.block_id)?;
+        let node_data = arena.read(disk_location.offset)?;
 
         match disk_location.node_type {
             NodeType::Bucket => {
-                // Bucket deserialization stub: returns empty bucket pending
-                // dedicated bucket serializer (see plan T1-2 follow-up).
-                let bucket = StringBucket::new();
+                let bucket = StringBucket::from_bytes(node_data).map_err(|error| {
+                    PersistentARTrieError::corrupted(format!(
+                        "decode bucket at block {}, slot {}: {:?}",
+                        disk_location.block_id, disk_location.offset, error
+                    ))
+                })?;
                 Ok(ChildNode::Bucket(bucket))
             }
             NodeType::Node4 | NodeType::Node16 | NodeType::Node48 | NodeType::Node256 => {

@@ -52,9 +52,8 @@
 //! ```
 
 // wal.rs is now a thin re-export hub for the wal/ sub-modules plus the
-// `Lsn` type alias, the `crc32` helper, the disabled legacy GroupCommit
-// stub, and the integration test suite at the bottom of this file. std
-// imports for the tests live inside `mod tests`.
+// `Lsn` type alias, the `crc32` helper, and the integration test suite at the
+// bottom of this file. std imports for the tests live inside `mod tests`.
 
 /// Log Sequence Number - monotonically increasing identifier for log records.
 pub type Lsn = u64;
@@ -113,13 +112,13 @@ pub use reader::{WalReader, WalRecordIterator};
 
 mod reader;
 
-// DISABLED — the legacy `GroupCommit` stub claimed to batch but its
+// DISABLED — the legacy `GroupCommit` adapter claimed to batch but its
 // `append_sync` synchronously fsync'd every record ("For simplicity, sync
 // immediately"). Production batching lives in
 // `crate::persistent_artrie::core::group_commit::GroupCommitCoordinator`
 // (background thread, AIMD batching, oneshot channels) and is selected via
 // `DurabilityPolicy::GroupCommit` routing through
-// `WalWriter::sync_async` from `dict_impl::sync()`. The stub had no
+// `WalWriter::sync_async` from `dict_impl::sync()`. The adapter had no
 // remaining callers; commenting it out per CLAUDE.md to keep the audit
 // trail clear.
 //

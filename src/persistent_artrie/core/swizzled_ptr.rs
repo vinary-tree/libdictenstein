@@ -3,7 +3,8 @@
 //! A swizzled pointer uses a stable 64-bit state word plus a separate
 //! provenance-carrying pointer slot to represent either:
 //! - A memory state (when the node is loaded in RAM)
-//! - A disk reference (block_id + offset when the node is on disk)
+//! - A disk reference (block_id + format-specific location when the node is
+//!   on disk; arena-backed nodes store a slot id in the location field)
 //!
 //! The MSB (bit 63) discriminates between state classes:
 //! - MSB = 1: Memory/transitional state; the actual pointer is stored
@@ -33,7 +34,9 @@ const EVICTING_MEMORY_STATE: u64 = SWIZZLE_FLAG | 2;
 
 /// Bit layout for disk references (when MSB = 0):
 /// - Bits 62-40: Block ID (23 bits = 8M blocks)
-/// - Bits 39-18: Offset within block (22 bits = 4MB offset)
+/// - Bits 39-18: Format-specific location field (22 bits). Raw disk
+///   references use it as a byte offset; arena-backed byte nodes use it as a
+///   slot id into the arena directory.
 /// - Bits 17-0: Flags including node type (18 bits)
 const BLOCK_ID_SHIFT: u32 = 40;
 const OFFSET_SHIFT: u32 = 18;
@@ -180,7 +183,8 @@ impl SwizzledPtr {
     /// # Arguments
     ///
     /// * `block_id` - The block containing the node (max 8M - 1)
-    /// * `offset` - Offset within the block (max 4MB - 1)
+    /// * `offset` - Format-specific location field (max 4MB - 1). For
+    ///   arena-backed nodes this is the arena slot id, not a byte offset.
     /// * `node_type` - The type of node at this location
     ///
     /// # Panics
@@ -353,7 +357,8 @@ impl SwizzledPtr {
     /// # Arguments
     ///
     /// * `block_id` - The block where the node is stored
-    /// * `offset` - Offset within the block
+    /// * `offset` - Format-specific location field; arena-backed nodes store
+    ///   an arena slot id here.
     /// * `node_type` - The type of node
     ///
     /// # Returns
@@ -745,14 +750,20 @@ impl Default for SwizzledPtr {
 pub struct DiskLocation {
     /// Block ID (0 to 8M - 1).
     pub block_id: u32,
-    /// Offset within the block (0 to 4MB - 1).
+    /// Format-specific location field (0 to 4MB - 1). Raw disk references use
+    /// this as a byte offset; arena-backed byte nodes use it as an arena slot
+    /// id.
     pub offset: u32,
     /// Type of node at this location.
     pub node_type: NodeType,
 }
 
 impl DiskLocation {
-    /// Calculate the absolute byte offset in the file.
+    /// Calculate the absolute byte offset in the file for raw byte-offset
+    /// locations.
+    ///
+    /// Arena-backed locations store a slot id in `offset`; callers resolving
+    /// those pointers must read through the arena directory instead.
     ///
     /// # Arguments
     ///

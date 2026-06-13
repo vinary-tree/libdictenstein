@@ -20,6 +20,7 @@ use log::warn;
 use std::sync::atomic::{AtomicBool, AtomicUsize};
 use std::sync::Arc;
 
+use super::arena::ByteNodeArena;
 use super::bucket::StringBucket;
 #[allow(unused_imports)]
 use super::error::Result;
@@ -190,16 +191,38 @@ pub(super) fn resolve_child_for_mutation_with_bm<S: BlockStorage>(
         };
 
         let page_data = page_guard.data();
-        let offset = disk_location.offset as usize;
-        let node_data = &page_data[offset..];
+        let arena = match ByteNodeArena::from_bytes(page_data, disk_location.block_id) {
+            Ok(arena) => arena,
+            Err(e) => {
+                warn!(
+                    "Failed to decode arena page for DiskRef at block {}: {}",
+                    disk_location.block_id, e
+                );
+                return false;
+            }
+        };
+        let node_data = match arena.read(disk_location.offset) {
+            Ok(data) => data,
+            Err(e) => {
+                warn!(
+                    "Failed to read arena slot {} at block {}: {}",
+                    disk_location.offset, disk_location.block_id, e
+                );
+                return false;
+            }
+        };
 
         match disk_location.node_type {
-            NodeType::Bucket => {
-                // Deserialize bucket
-                // For now, return an empty bucket - full bucket serialization
-                // will be implemented in Phase 7.4
-                ChildNode::Bucket(StringBucket::new())
-            }
+            NodeType::Bucket => match StringBucket::from_bytes(node_data) {
+                Ok(bucket) => ChildNode::Bucket(bucket),
+                Err(e) => {
+                    warn!(
+                        "Failed to deserialize bucket at block {}, slot {}: {:?}",
+                        disk_location.block_id, disk_location.offset, e
+                    );
+                    return false;
+                }
+            },
             NodeType::Node4 | NodeType::Node16 | NodeType::Node48 | NodeType::Node256 => {
                 // Deserialize ART node
                 match serialization::from_bytes(node_data) {
@@ -1967,6 +1990,52 @@ mod tests {
 
         let none_bm: Option<&Arc<RwLock<BufferManager>>> = None;
         assert!(!resolve_child_for_mutation_with_bm(&mut child, none_bm));
+    }
+
+    #[test]
+    fn test_resolve_child_disk_ref_bucket_decodes_persisted_entries() {
+        let temp_dir = tempfile::tempdir().expect("create temp dir");
+        let dict_path = temp_dir.path().join("bucket-resolve.part");
+        let dict: PersistentARTrie<()> =
+            PersistentARTrie::create(&dict_path).expect("create persistent trie");
+
+        let mut bucket = StringBucket::with_values();
+        bucket
+            .insert(b"alpha", b"value-alpha")
+            .expect("insert alpha into bucket");
+        bucket
+            .insert(b"beta", b"value-beta")
+            .expect("insert beta into bucket");
+
+        let ptr = dict
+            .serialize_bucket_to_disk(&bucket)
+            .expect("serialize bucket to arena slot");
+        dict.arena_manager
+            .as_ref()
+            .expect("disk-backed trie has arena manager")
+            .write()
+            .flush()
+            .expect("flush arena to disk");
+
+        let mut child = ChildNode::DiskRef { ptr };
+        let bm = dict
+            .buffer_manager
+            .as_ref()
+            .expect("disk-backed trie has buffer manager");
+
+        assert!(resolve_child_for_mutation_with_bm(&mut child, Some(bm)));
+
+        let ChildNode::Bucket(restored) = child else {
+            panic!("DiskRef should resolve to a StringBucket");
+        };
+        assert_eq!(restored.len(), 2);
+
+        let first = restored.get_entry(0).expect("first bucket entry");
+        let second = restored.get_entry(1).expect("second bucket entry");
+        assert_eq!(restored.get_suffix(&first), b"alpha");
+        assert_eq!(restored.get_value(&first), Some(b"value-alpha".as_slice()));
+        assert_eq!(restored.get_suffix(&second), b"beta");
+        assert_eq!(restored.get_value(&second), Some(b"value-beta".as_slice()));
     }
 
     #[test]

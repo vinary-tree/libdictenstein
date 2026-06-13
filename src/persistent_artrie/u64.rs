@@ -106,11 +106,11 @@ struct U64DiskNode {
 }
 
 #[derive(Default)]
-struct U64SnapshotBuilder {
+struct U64CxSnapshotBuilder {
     nodes: Mutex<Vec<U64DiskNode>>,
 }
 
-impl U64SnapshotBuilder {
+impl U64CxSnapshotBuilder {
     fn into_nodes(self) -> Vec<U64DiskNode> {
         self.nodes
             .into_inner()
@@ -119,7 +119,7 @@ impl U64SnapshotBuilder {
 }
 
 impl<V: DictionaryValue, const PREFIX: usize> OverlayCompressedSerialize<U64Key<PREFIX>, V>
-    for U64SnapshotBuilder
+    for U64CxSnapshotBuilder
 {
     type Projected = U64Projected;
 
@@ -317,7 +317,7 @@ fn write_snapshot_file<V: DictionaryValue, const PREFIX: usize>(
 ) -> Result<()> {
     ensure_parent(path)?;
 
-    let builder = U64SnapshotBuilder::default();
+    let builder = U64CxSnapshotBuilder::default();
     let root_ptr = builder.serialize_compressed_loop(root, None)?;
     let nodes = builder.into_nodes();
 

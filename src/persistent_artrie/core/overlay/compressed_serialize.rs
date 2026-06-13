@@ -1,20 +1,24 @@
 //! CX-universal: the ONE path-compressed overlay-checkpoint serializer, generic over
 //! `K: KeyEncoding`.
 //!
-//! The post-order chain-peeling work-stack loop is byte-for-byte the same across all three ARTrie
-//! variants (byte / char / vocab) — they operate on the unified [`OverlayNode<K, V>`]. Only the
-//! *leaves* differ, and they differ by on-disk FORMAT (byte `PART` `Node` tiers + `{EMPTY, BUCKET,
-//! ART_NODE}` root scheme vs char `ARTC` `CharNode` tiers + `{EMPTY, NODE}`), which is irreconcilable.
-//! So the loop lives ONCE here (the default method [`OverlayCompressedSerialize::serialize_compressed_loop`])
-//! and each variant supplies the format-specific seams: peel is shared ([`peel_chain_generic`]),
-//! chunking is shared ([`crate::persistent_artrie::core::overlay::codec::chain_chunks`], proven
-//! no-truncation), and the per-variant trait methods cover node projection + the single-node
-//! serialize + the eviction durable-stamp (a no-op for the eviction-OFF vocab).
+//! The post-order chain-peeling work-stack loop is byte-for-byte the same across
+//! the persistent ARTrie variants (byte / char / vocab / u64) because they
+//! operate on the unified [`OverlayNode<K, V>`]. Only the leaves differ, and they
+//! differ by on-disk format (byte `PART` `Node` tiers, char `ARTC` `CharNode`
+//! tiers, vocab sidecars, and native-u64 CX records). So the loop lives once
+//! here (the default method
+//! [`OverlayCompressedSerialize::serialize_compressed_loop`]) and each variant
+//! supplies the format-specific seams: peel is shared ([`peel_chain_generic`]),
+//! chunking is shared
+//! ([`crate::persistent_artrie::core::overlay::codec::chain_chunks`]), and the
+//! per-variant trait methods cover node projection, single-node serialization,
+//! and eviction durable-stamping.
 //!
 //! DATA-LOSS-CRITICAL: the edge convention (peel terminus = `num_children()!=1 || is_final ||
-//! has_value`, OnDisk sole child ends the chain), the `K::MAX_PREFIX_LEN` chunk width (6 char / 12
-//! byte), and the `ends[c] = base+1+Σ_{i<c}(|P_i|+1)` true-depth registry/stamp index are preserved
-//! verbatim from the three (proven, round-trip-/density-/Rocq-validated) inlined originals.
+//! has_value`, OnDisk sole child ends the chain), the `K::MAX_PREFIX_LEN` chunk
+//! width, and the `ends[c] = base+1+Σ_{i<c}(|P_i|+1)` true-depth
+//! registry/stamp index are preserved from the proven byte/char/vocab originals
+//! and are reused by the native-u64 profile.
 
 use std::sync::Arc;
 
