@@ -76,8 +76,8 @@ impl<S: BlockStorage> OverlayFaulter<CharKey, u64> for PersistentVocabARTrie<S> 
         // Vocab's lock-free overlay never evicts its finals to disk in production
         // (RT5 — overlay finals are not eviction targets), so there is no overlay-node
         // disk loader. Degrade to "no child" (matches byte, which also has neither
-        // eviction nor production fault-in). A real loader would only be needed if
-        // vocab enabled overlay eviction — out of scope.
+        // eviction nor production fault-in). Overlay eviction is not part of the
+        // vocab write-once storage contract.
         None
     }
 }
@@ -134,7 +134,8 @@ impl<S: BlockStorage> LockFreeOverlay<CharKey, u64, S> for PersistentVocabARTrie
         // Vocab inserts ALWAYS carry a value (the id); there are no membership-only
         // inserts, so the F5 WAL-tail applier never routes a vocab term here (vocab
         // only logs `Insert{value: Some(id)}` → `overlay_publish_value`). A membership
-        // publish would have no id to assign, so this is unreachable in production.
+        // publish would have no id to assign, so reaching this path violates the
+        // vocab insert-with-id invariant.
         debug_assert!(
             false,
             "vocab overlay_publish_membership: vocab inserts always carry a value=id"
@@ -210,8 +211,8 @@ impl<S: BlockStorage> LockFreeOverlay<CharKey, u64, S> for PersistentVocabARTrie
     }
 
     fn load_root_immutable_seam(&mut self, root_ptr: u64) -> Result<bool> {
-        // V1: build the overlay from the loaded owned tree (vocab's reopen populates
-        // self.root). V5 will make this codec-direct from the dense VOCB image.
+        // Build the overlay from the loaded vocabulary image; vocab's reopen path
+        // populates self.root before this seam enumerates terms into the overlay.
         let (_term_count, image_loaded) = self.load_root_immutable(root_ptr)?;
         Ok(image_loaded)
     }
@@ -254,8 +255,8 @@ impl<S: BlockStorage> DurableOverlayWrite<CharKey, u64, S> for PersistentVocabAR
     }
 
     fn build_increment_record(&self, key_bytes: &[u8], bounded: i64) -> WalRecord {
-        // Unreachable for vocab (bound_increment_delta errs first), but a valid record
-        // shape is required by the signature.
+        // The shared trait requires a record builder even though vocab rejects the
+        // increment before record construction.
         WalRecord::BatchIncrement {
             entries: vec![(key_bytes.to_vec(), bounded)],
         }
@@ -404,9 +405,9 @@ impl<S: BlockStorage> PersistentVocabARTrie<S> {
         }
     }
 
-    /// Overlay remove (the F5 Remove arm). Vocab is INSERT-ONLY — it collects a corpus
-    /// vocabulary for language modeling and never deletes terms — so no Remove WAL
-    /// records are ever written and this is unreachable. No-op.
+    /// Overlay remove entry point for the shared overlay trait. Vocab is
+    /// insert-only: it collects a corpus vocabulary for language modeling and never
+    /// writes Remove WAL records. Calling this in debug builds trips the invariant.
     pub(super) fn overlay_remove_no_wal(&self, _units: &[u32]) {
         debug_assert!(
             false,
@@ -455,11 +456,9 @@ impl<S: BlockStorage> PersistentVocabARTrie<S> {
 
     /// Build the overlay root from the on-disk image (the F7 reopen seam).
     ///
-    /// **V1:** enumerates `(term, id)` from the loaded owned tree (vocab's reopen
-    /// populates `self.root` before the overlay is built) and builds the overlay via
-    /// the shared `build_overlay_root_from_terms`. **V5** makes this codec-direct
-    /// (a single dense-image walk from `root_ptr`, no owned tree) once the owned tree
-    /// is deleted. `root_ptr == 0` ⇒ an empty overlay.
+    /// Enumerates `(term, id)` from the loaded vocabulary image and builds the
+    /// overlay via the shared `build_overlay_root_from_terms`.
+    /// `root_ptr == 0` installs an empty overlay.
     pub(super) fn load_root_immutable(&mut self, root_ptr: u64) -> Result<(usize, bool)> {
         if root_ptr == 0 {
             let empty = build_overlay_root_from_terms::<CharKey, u64, _>(
