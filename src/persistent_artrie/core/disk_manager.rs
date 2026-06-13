@@ -42,6 +42,8 @@
 //! - Alignment with memory-mapped page boundaries
 
 use std::fs::{File, OpenOptions};
+#[cfg(not(unix))]
+use std::io::Read as IoRead;
 use std::io::{Seek, SeekFrom, Write as IoWrite};
 use std::path::Path;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
@@ -360,6 +362,116 @@ impl MmapDiskManager {
         Ok((file_offset, end_offset))
     }
 
+    fn read_file_range(&self, offset: u64, buffer: &mut [u8], operation: &str) -> Result<()> {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::FileExt;
+
+            let mut read = 0;
+            while read < buffer.len() {
+                let n = self
+                    .file
+                    .read_at(&mut buffer[read..], offset + read as u64)
+                    .map_err(|e| PersistentARTrieError::IoError {
+                        operation: operation.to_string(),
+                        path: self.path.clone(),
+                        source: e,
+                    })?;
+                if n == 0 {
+                    return Err(PersistentARTrieError::IoError {
+                        operation: operation.to_string(),
+                        path: self.path.clone(),
+                        source: std::io::Error::new(
+                            std::io::ErrorKind::UnexpectedEof,
+                            "short positional read",
+                        ),
+                    });
+                }
+                read += n;
+            }
+            Ok(())
+        }
+
+        #[cfg(not(unix))]
+        {
+            let mut file = self
+                .file
+                .try_clone()
+                .map_err(|e| PersistentARTrieError::IoError {
+                    operation: format!("{operation}: clone file"),
+                    path: self.path.clone(),
+                    source: e,
+                })?;
+            file.seek(SeekFrom::Start(offset))
+                .map_err(|e| PersistentARTrieError::IoError {
+                    operation: format!("{operation}: seek"),
+                    path: self.path.clone(),
+                    source: e,
+                })?;
+            file.read_exact(buffer)
+                .map_err(|e| PersistentARTrieError::IoError {
+                    operation: operation.to_string(),
+                    path: self.path.clone(),
+                    source: e,
+                })
+        }
+    }
+
+    fn write_file_range(&self, offset: u64, data: &[u8], operation: &str) -> Result<()> {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::FileExt;
+
+            let mut written = 0;
+            while written < data.len() {
+                let n = self
+                    .file
+                    .write_at(&data[written..], offset + written as u64)
+                    .map_err(|e| PersistentARTrieError::IoError {
+                        operation: operation.to_string(),
+                        path: self.path.clone(),
+                        source: e,
+                    })?;
+                if n == 0 {
+                    return Err(PersistentARTrieError::IoError {
+                        operation: operation.to_string(),
+                        path: self.path.clone(),
+                        source: std::io::Error::new(
+                            std::io::ErrorKind::WriteZero,
+                            "short positional write",
+                        ),
+                    });
+                }
+                written += n;
+            }
+            Ok(())
+        }
+
+        #[cfg(not(unix))]
+        {
+            let mut file = self
+                .file
+                .try_clone()
+                .map_err(|e| PersistentARTrieError::IoError {
+                    operation: format!("{operation}: clone file"),
+                    path: self.path.clone(),
+                    source: e,
+                })?;
+            file.seek(SeekFrom::Start(offset))
+                .map_err(|e| PersistentARTrieError::IoError {
+                    operation: format!("{operation}: seek"),
+                    path: self.path.clone(),
+                    source: e,
+                })?;
+            file.write_all(data)
+                .map_err(|e| PersistentARTrieError::IoError {
+                    operation: operation.to_string(),
+                    path: self.path.clone(),
+                    source: e,
+                })
+        }
+    }
+
     /// Create a new disk manager, creating the file if it doesn't exist.
     ///
     /// This is a TOCTOU-safe "open or create" operation that matches the formal
@@ -439,16 +551,23 @@ impl MmapDiskManager {
 
         // Create memory map
         let mmap = if file_size > 0 {
-            let mmap = unsafe {
-                MmapOptions::new()
-                    .len(file_size as usize)
-                    .map_mut(&file)
-                    .map_err(|e| PersistentARTrieError::MmapError {
-                        operation: "create mmap".to_string(),
-                        source: e,
-                    })?
-            };
-            Some(RwLock::new(mmap))
+            #[cfg(miri)]
+            {
+                None
+            }
+            #[cfg(not(miri))]
+            {
+                let mmap = unsafe {
+                    MmapOptions::new()
+                        .len(file_size as usize)
+                        .map_mut(&file)
+                        .map_err(|e| PersistentARTrieError::MmapError {
+                            operation: "create mmap".to_string(),
+                            source: e,
+                        })?
+                };
+                Some(RwLock::new(mmap))
+            }
         } else {
             None
         };
@@ -495,6 +614,9 @@ impl MmapDiskManager {
         }
 
         // Create memory map
+        #[cfg(miri)]
+        let mmap = None;
+        #[cfg(not(miri))]
         let mmap = unsafe {
             MmapOptions::new()
                 .len(file_size as usize)
@@ -504,13 +626,15 @@ impl MmapDiskManager {
                     source: e,
                 })?
         };
+        #[cfg(not(miri))]
+        let mmap = Some(RwLock::new(mmap));
 
         // Recover block count from file size (source of truth, handles crashes)
         let block_count = (file_size / BLOCK_SIZE as u64) as u32;
 
         let manager = Self {
             file,
-            mmap: Some(RwLock::new(mmap)),
+            mmap,
             file_size: AtomicU64::new(file_size),
             block_count: AtomicU32::new(block_count),
             path: path_str,
@@ -571,6 +695,9 @@ impl MmapDiskManager {
         }
 
         // Create memory map
+        #[cfg(miri)]
+        let mmap = None;
+        #[cfg(not(miri))]
         let mmap = unsafe {
             MmapOptions::new()
                 .len(file_size as usize)
@@ -580,13 +707,15 @@ impl MmapDiskManager {
                     source: e,
                 })?
         };
+        #[cfg(not(miri))]
+        let mmap = Some(RwLock::new(mmap));
 
         // Recover block count from file size (source of truth, handles crashes)
         let block_count = (file_size / BLOCK_SIZE as u64) as u32;
 
         Ok(Self {
             file,
-            mmap: Some(RwLock::new(mmap)),
+            mmap,
             file_size: AtomicU64::new(file_size),
             block_count: AtomicU32::new(block_count),
             path: path_str,
@@ -637,44 +766,44 @@ impl MmapDiskManager {
 
     /// Read the file header
     pub fn read_header(&self) -> Result<FileHeader> {
-        let mmap_guard =
-            self.mmap
-                .as_ref()
-                .ok_or_else(|| PersistentARTrieError::CorruptedFile {
-                    reason: "No memory map available".to_string(),
-                })?;
+        if let Some(mmap_guard) = self.mmap.as_ref() {
+            let mmap = mmap_guard.read();
 
-        let mmap = mmap_guard.read();
+            if mmap.len() < 64 {
+                return Err(PersistentARTrieError::CorruptedFile {
+                    reason: "File too small for header".to_string(),
+                });
+            }
 
-        if mmap.len() < 64 {
-            return Err(PersistentARTrieError::CorruptedFile {
-                reason: "File too small for header".to_string(),
-            });
+            let bytes: [u8; 64] =
+                mmap[0..64]
+                    .try_into()
+                    .map_err(|_| PersistentARTrieError::CorruptedFile {
+                        reason: "Failed to read header bytes".to_string(),
+                    })?;
+
+            Ok(FileHeader::from_bytes(&bytes))
+        } else {
+            if self.file_size.load(Ordering::Acquire) < 64 {
+                return Err(PersistentARTrieError::CorruptedFile {
+                    reason: "File too small for header".to_string(),
+                });
+            }
+            let mut bytes = [0u8; 64];
+            self.read_file_range(0, &mut bytes, "read header")?;
+            Ok(FileHeader::from_bytes(&bytes))
         }
-
-        let bytes: [u8; 64] =
-            mmap[0..64]
-                .try_into()
-                .map_err(|_| PersistentARTrieError::CorruptedFile {
-                    reason: "Failed to read header bytes".to_string(),
-                })?;
-
-        Ok(FileHeader::from_bytes(&bytes))
     }
 
     /// Write the file header
     pub fn write_header(&self, header: &FileHeader) -> Result<()> {
-        let mmap_guard =
-            self.mmap
-                .as_ref()
-                .ok_or_else(|| PersistentARTrieError::CorruptedFile {
-                    reason: "No memory map available".to_string(),
-                })?;
-
-        let mut mmap = mmap_guard.write();
-
         let bytes = header.to_bytes();
-        mmap[0..64].copy_from_slice(&bytes);
+        if let Some(mmap_guard) = self.mmap.as_ref() {
+            let mut mmap = mmap_guard.write();
+            mmap[0..64].copy_from_slice(&bytes);
+        } else {
+            self.write_file_range(0, &bytes, "write header")?;
+        }
 
         Ok(())
     }
@@ -755,25 +884,24 @@ impl MmapDiskManager {
                 Ordering::Acquire,
             ) {
                 Ok(_) => {
-                    // We won the race - now extend file and remap
-                    //
-                    // IMPORTANT: The entire file extension + remap sequence must be done
-                    // while holding the mmap write lock to prevent races between:
-                    // - Multiple concurrent set_len calls
-                    // - set_len and mmap creation
-                    //
-                    // Order:
-                    // 1. Acquire mmap write lock
-                    // 2. Extend file (set_len)
-                    // 3. pwrite() to materialize sparse region
-                    // 4. Remap mmap
-                    // 5. Memory barrier
-                    // 6. Update file_size
-                    // 7. Release write lock
-                    //
-                    // Readers acquire mmap lock FIRST, then check file_size.
-                    {
-                        let mmap_guard = self.mmap.as_ref().expect("mmap should exist");
+                    if let Some(mmap_guard) = self.mmap.as_ref() {
+                        // We won the race - now extend file and remap.
+                        //
+                        // IMPORTANT: The entire file extension + remap sequence must be done
+                        // while holding the mmap write lock to prevent races between:
+                        // - Multiple concurrent set_len calls
+                        // - set_len and mmap creation
+                        //
+                        // Order:
+                        // 1. Acquire mmap write lock
+                        // 2. Extend file (set_len)
+                        // 3. pwrite() to materialize sparse region
+                        // 4. Remap mmap
+                        // 5. Memory barrier
+                        // 6. Update file_size
+                        // 7. Release write lock
+                        //
+                        // Readers acquire mmap lock FIRST, then check file_size.
                         let mut mmap = mmap_guard.write();
 
                         // 2. Extend file to at least new_file_size
@@ -858,6 +986,60 @@ impl MmapDiskManager {
                         }
 
                         // 7. Write lock released when `mmap` guard is dropped
+                    } else {
+                        // Miri does not support file-backed mmap. The same block format is still
+                        // exercised through positional file I/O so the unsafe-boundary checks can
+                        // validate persistence logic under the interpreter.
+                        let current_actual_size = self
+                            .file
+                            .metadata()
+                            .map_err(|e| PersistentARTrieError::IoError {
+                                operation: "get file metadata before extend".to_string(),
+                                path: self.path.clone(),
+                                source: e,
+                            })?
+                            .len();
+
+                        if new_file_size > current_actual_size {
+                            self.file.set_len(new_file_size).map_err(|e| {
+                                PersistentARTrieError::IoError {
+                                    operation: "extend file".to_string(),
+                                    path: self.path.clone(),
+                                    source: e,
+                                }
+                            })?;
+                        }
+
+                        let offset = new_block_id as u64 * BLOCK_SIZE as u64;
+                        let zeros = [0u8; 8];
+                        self.write_file_range(offset, &zeros, "materialize extended block")?;
+
+                        let actual_file_size = self
+                            .file
+                            .metadata()
+                            .map_err(|e| PersistentARTrieError::IoError {
+                                operation: "get file metadata after extend".to_string(),
+                                path: self.path.clone(),
+                                source: e,
+                            })?
+                            .len();
+                        let file_size = actual_file_size.max(new_file_size);
+
+                        loop {
+                            let current = self.file_size.load(Ordering::Acquire);
+                            if file_size <= current {
+                                break;
+                            }
+                            match self.file_size.compare_exchange(
+                                current,
+                                file_size,
+                                Ordering::AcqRel,
+                                Ordering::Acquire,
+                            ) {
+                                Ok(_) => break,
+                                Err(_) => continue,
+                            }
+                        }
                     }
 
                     // Update on-disk header (best-effort, recovered from file size on restart)
@@ -891,6 +1073,13 @@ impl MmapDiskManager {
             }
             // If try_write fails, another thread holds the lock - that's fine,
             // they will update the header with a >= count value.
+        } else {
+            const BLOCK_COUNT_OFFSET: u64 = 24;
+            let _ = self.write_file_range(
+                BLOCK_COUNT_OFFSET,
+                &count.to_le_bytes(),
+                "persist header block count",
+            );
         }
     }
 
@@ -940,27 +1129,20 @@ impl MmapDiskManager {
     fn read_free_block_next(&self, block_id: u32) -> Result<u64> {
         let offset = block_id as usize * BLOCK_SIZE;
 
-        let mmap_guard =
-            self.mmap
-                .as_ref()
-                .ok_or_else(|| PersistentARTrieError::CorruptedFile {
-                    reason: "No memory map available".to_string(),
-                })?;
-
-        let mmap = mmap_guard.read();
-
-        if offset + 8 > mmap.len() {
+        if offset + 8 > self.file_size.load(Ordering::Acquire) as usize {
             return Err(PersistentARTrieError::InvalidBlockId {
                 block_id,
                 reason: "Block offset exceeds file size".to_string(),
             });
         }
 
-        let bytes: [u8; 8] = mmap[offset..offset + 8].try_into().map_err(|_| {
-            PersistentARTrieError::CorruptedFile {
-                reason: "Failed to read free block next pointer".to_string(),
-            }
-        })?;
+        let mut bytes = [0u8; 8];
+        if let Some(mmap_guard) = self.mmap.as_ref() {
+            let mmap = mmap_guard.read();
+            bytes.copy_from_slice(&mmap[offset..offset + 8]);
+        } else {
+            self.read_file_range(offset as u64, &mut bytes, "read free block next")?;
+        }
 
         Ok(u64::from_le_bytes(bytes))
     }
@@ -969,23 +1151,19 @@ impl MmapDiskManager {
     fn write_free_block_next(&self, block_id: u32, next: u64) -> Result<()> {
         let offset = block_id as usize * BLOCK_SIZE;
 
-        let mmap_guard =
-            self.mmap
-                .as_ref()
-                .ok_or_else(|| PersistentARTrieError::CorruptedFile {
-                    reason: "No memory map available".to_string(),
-                })?;
-
-        let mut mmap = mmap_guard.write();
-
-        if offset + 8 > mmap.len() {
+        if offset + 8 > self.file_size.load(Ordering::Acquire) as usize {
             return Err(PersistentARTrieError::InvalidBlockId {
                 block_id,
                 reason: "Block offset exceeds file size".to_string(),
             });
         }
 
-        mmap[offset..offset + 8].copy_from_slice(&next.to_le_bytes());
+        if let Some(mmap_guard) = self.mmap.as_ref() {
+            let mut mmap = mmap_guard.write();
+            mmap[offset..offset + 8].copy_from_slice(&next.to_le_bytes());
+        } else {
+            self.write_file_range(offset as u64, &next.to_le_bytes(), "write free block next")?;
+        }
 
         Ok(())
     }
@@ -1050,34 +1228,41 @@ impl MmapDiskManager {
             });
         }
 
-        let mmap_guard =
-            self.mmap
-                .as_ref()
-                .ok_or_else(|| PersistentARTrieError::CorruptedFile {
-                    reason: "No memory map available".to_string(),
-                })?;
+        if let Some(mmap_guard) = self.mmap.as_ref() {
+            // Step 2: Acquire mmap lock FIRST
+            // This will block if the allocator is in the middle of remapping
+            let mmap = mmap_guard.read();
 
-        // Step 2: Acquire mmap lock FIRST
-        // This will block if the allocator is in the middle of remapping
-        let mmap = mmap_guard.read();
+            // Step 3: THEN check file_size
+            // If we got the lock, either:
+            // - Allocator hasn't started remapping (old file_size) → fail with clear error
+            // - Allocator finished remapping (new file_size, new mmap) → safe to access
+            let current_file_size = self.file_size.load(Ordering::Acquire);
+            if end_offset as u64 > current_file_size {
+                return Err(PersistentARTrieError::InvalidBlockId {
+                    block_id,
+                    reason: format!(
+                        "Block {} not yet accessible (file_size={}, need={})",
+                        block_id, current_file_size, end_offset
+                    ),
+                });
+            }
 
-        // Step 3: THEN check file_size
-        // If we got the lock, either:
-        // - Allocator hasn't started remapping (old file_size) → fail with clear error
-        // - Allocator finished remapping (new file_size, new mmap) → safe to access
-        let current_file_size = self.file_size.load(Ordering::Acquire);
-        if end_offset as u64 > current_file_size {
-            return Err(PersistentARTrieError::InvalidBlockId {
-                block_id,
-                reason: format!(
-                    "Block {} not yet accessible (file_size={}, need={})",
-                    block_id, current_file_size, end_offset
-                ),
-            });
+            // Step 4: Safe to access - we have lock and file_size confirms allocation complete
+            buffer.copy_from_slice(&mmap[offset..end_offset]);
+        } else {
+            let current_file_size = self.file_size.load(Ordering::Acquire);
+            if end_offset as u64 > current_file_size {
+                return Err(PersistentARTrieError::InvalidBlockId {
+                    block_id,
+                    reason: format!(
+                        "Block {} not yet accessible (file_size={}, need={})",
+                        block_id, current_file_size, end_offset
+                    ),
+                });
+            }
+            self.read_file_range(offset as u64, buffer, "read block")?;
         }
-
-        // Step 4: Safe to access - we have lock and file_size confirms allocation complete
-        buffer.copy_from_slice(&mmap[offset..end_offset]);
         Ok(())
     }
 
@@ -1110,30 +1295,37 @@ impl MmapDiskManager {
             });
         }
 
-        let mmap_guard =
-            self.mmap
-                .as_ref()
-                .ok_or_else(|| PersistentARTrieError::CorruptedFile {
-                    reason: "No memory map available".to_string(),
-                })?;
+        if let Some(mmap_guard) = self.mmap.as_ref() {
+            // Step 2: Acquire mmap lock FIRST
+            let mut mmap = mmap_guard.write();
 
-        // Step 2: Acquire mmap lock FIRST
-        let mut mmap = mmap_guard.write();
+            // Step 3: THEN check file_size
+            let current_file_size = self.file_size.load(Ordering::Acquire);
+            if end_offset as u64 > current_file_size {
+                return Err(PersistentARTrieError::InvalidBlockId {
+                    block_id,
+                    reason: format!(
+                        "Block {} not yet accessible (file_size={}, need={})",
+                        block_id, current_file_size, end_offset
+                    ),
+                });
+            }
 
-        // Step 3: THEN check file_size
-        let current_file_size = self.file_size.load(Ordering::Acquire);
-        if end_offset as u64 > current_file_size {
-            return Err(PersistentARTrieError::InvalidBlockId {
-                block_id,
-                reason: format!(
-                    "Block {} not yet accessible (file_size={}, need={})",
-                    block_id, current_file_size, end_offset
-                ),
-            });
+            // Step 4: Safe to access
+            mmap[offset..end_offset].copy_from_slice(buffer);
+        } else {
+            let current_file_size = self.file_size.load(Ordering::Acquire);
+            if end_offset as u64 > current_file_size {
+                return Err(PersistentARTrieError::InvalidBlockId {
+                    block_id,
+                    reason: format!(
+                        "Block {} not yet accessible (file_size={}, need={})",
+                        block_id, current_file_size, end_offset
+                    ),
+                });
+            }
+            self.write_file_range(offset as u64, buffer, "write block")?;
         }
-
-        // Step 4: Safe to access
-        mmap[offset..end_offset].copy_from_slice(buffer);
         Ok(())
     }
 
@@ -1168,30 +1360,37 @@ impl MmapDiskManager {
             });
         }
 
-        let mmap_guard =
-            self.mmap
-                .as_ref()
-                .ok_or_else(|| PersistentARTrieError::CorruptedFile {
-                    reason: "No memory map available".to_string(),
-                })?;
+        if let Some(mmap_guard) = self.mmap.as_ref() {
+            // Step 2: Acquire mmap lock FIRST
+            let mmap = mmap_guard.read();
 
-        // Step 2: Acquire mmap lock FIRST
-        let mmap = mmap_guard.read();
+            // Step 3: THEN check file_size
+            let current_file_size = self.file_size.load(Ordering::Acquire);
+            if end_offset as u64 > current_file_size {
+                return Err(PersistentARTrieError::InvalidBlockId {
+                    block_id,
+                    reason: format!(
+                        "Read range [{}, {}) not accessible (file_size={})",
+                        file_offset, end_offset, current_file_size
+                    ),
+                });
+            }
 
-        // Step 3: THEN check file_size
-        let current_file_size = self.file_size.load(Ordering::Acquire);
-        if end_offset as u64 > current_file_size {
-            return Err(PersistentARTrieError::InvalidBlockId {
-                block_id,
-                reason: format!(
-                    "Read range [{}, {}) not accessible (file_size={})",
-                    file_offset, end_offset, current_file_size
-                ),
-            });
+            // Step 4: Safe to access
+            buffer.copy_from_slice(&mmap[file_offset..end_offset]);
+        } else {
+            let current_file_size = self.file_size.load(Ordering::Acquire);
+            if end_offset as u64 > current_file_size {
+                return Err(PersistentARTrieError::InvalidBlockId {
+                    block_id,
+                    reason: format!(
+                        "Read range [{}, {}) not accessible (file_size={})",
+                        file_offset, end_offset, current_file_size
+                    ),
+                });
+            }
+            self.read_file_range(file_offset as u64, buffer, "read bytes")?;
         }
-
-        // Step 4: Safe to access
-        buffer.copy_from_slice(&mmap[file_offset..end_offset]);
         Ok(())
     }
 
@@ -1221,30 +1420,37 @@ impl MmapDiskManager {
             });
         }
 
-        let mmap_guard =
-            self.mmap
-                .as_ref()
-                .ok_or_else(|| PersistentARTrieError::CorruptedFile {
-                    reason: "No memory map available".to_string(),
-                })?;
+        if let Some(mmap_guard) = self.mmap.as_ref() {
+            // Step 2: Acquire mmap lock FIRST
+            let mut mmap = mmap_guard.write();
 
-        // Step 2: Acquire mmap lock FIRST
-        let mut mmap = mmap_guard.write();
+            // Step 3: THEN check file_size
+            let current_file_size = self.file_size.load(Ordering::Acquire);
+            if end_offset as u64 > current_file_size {
+                return Err(PersistentARTrieError::InvalidBlockId {
+                    block_id,
+                    reason: format!(
+                        "Write range [{}, {}) not accessible (file_size={})",
+                        file_offset, end_offset, current_file_size
+                    ),
+                });
+            }
 
-        // Step 3: THEN check file_size
-        let current_file_size = self.file_size.load(Ordering::Acquire);
-        if end_offset as u64 > current_file_size {
-            return Err(PersistentARTrieError::InvalidBlockId {
-                block_id,
-                reason: format!(
-                    "Write range [{}, {}) not accessible (file_size={})",
-                    file_offset, end_offset, current_file_size
-                ),
-            });
+            // Step 4: Safe to access
+            mmap[file_offset..end_offset].copy_from_slice(buffer);
+        } else {
+            let current_file_size = self.file_size.load(Ordering::Acquire);
+            if end_offset as u64 > current_file_size {
+                return Err(PersistentARTrieError::InvalidBlockId {
+                    block_id,
+                    reason: format!(
+                        "Write range [{}, {}) not accessible (file_size={})",
+                        file_offset, end_offset, current_file_size
+                    ),
+                });
+            }
+            self.write_file_range(file_offset as u64, buffer, "write bytes")?;
         }
-
-        // Step 4: Safe to access
-        mmap[file_offset..end_offset].copy_from_slice(buffer);
         Ok(())
     }
 
@@ -1272,6 +1478,22 @@ impl MmapDiskManager {
                 operation: "flush mmap".to_string(),
                 source: e,
             })?;
+        } else {
+            if self.file_size.load(Ordering::Acquire) < 64 {
+                return Err(PersistentARTrieError::CorruptedFile {
+                    reason: "File too small for header checksum refresh".to_string(),
+                });
+            }
+
+            let mut header_bytes = [0u8; 64];
+            self.read_file_range(
+                0,
+                &mut header_bytes,
+                "read header bytes for checksum refresh",
+            )?;
+            let mut header = FileHeader::from_bytes(&header_bytes);
+            header.checksum = header.compute_checksum();
+            self.write_file_range(0, &header.to_bytes(), "write refreshed header checksum")?;
         }
 
         self.file

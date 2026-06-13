@@ -1,4 +1,6 @@
 fn main() {
+    println!("cargo:rustc-check-cfg=cfg(miri)");
+
     #[cfg(feature = "protobuf")]
     {
         println!("cargo:rerun-if-changed=proto/libdictenstein.proto");

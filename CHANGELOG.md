@@ -109,6 +109,14 @@ Date format is ISO-8601 (YYYY-MM-DD).
 
 ### Build infrastructure
 
+- **Miri unsafe-boundary gate now exercises persistent storage without mmap.**
+  `MmapDiskManager` keeps mmap as the production fast path, but under
+  `cfg(miri)` it opens the same file format with positional file I/O because
+  Miri does not support file-backed mappings. This lets
+  `RUN_MIRI=1 FORMAL_MIRI_TOOLCHAIN=nightly` run the documented vocab
+  persistence, swizzled-pointer, and buffer-manager checks instead of failing
+  during sysroot/cache or mmap setup. `build.rs` declares `cfg(miri)` for
+  `unexpected_cfgs` hygiene.
 - **`.cargo/config.toml`**: scoped `target-cpu=native` down to
   `target-feature=+aes,+sse2` (the minimum gxhash requires). Native
   builds remain available via `RUSTFLAGS="-C target-cpu=native"`. The
