@@ -6,23 +6,28 @@
 //! 64-bit labels all the way through insertion, lookup, checkpoint capture, and
 //! reopen.  It does not keep the former native bincode snapshot/WAL format; the
 //! WAL is the shared `WalRecord` codec and checkpoint capture uses the shared CX
-//! overlay compressor with u64-specific node projection.
+//! overlay compressor with u64-specific node projection. Durable writes use the
+//! same Order-A shape as byte/char: log before CAS publication, append
+//! `CommitRank` after the winning CAS, advance `CommittedWatermark`, and retain
+//! WAL records beyond the checkpoint watermark for recovery.
 
 use std::fs::{self, File};
 use std::io::{self, Read, Write};
 use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use crate::persistent_artrie::block_storage::BlockStorage;
+use crate::persistent_artrie::core::committed_watermark::CommittedWatermark;
 use crate::persistent_artrie::core::key_encoding::{KeyEncoding, U64Key};
 use crate::persistent_artrie::core::overlay::atomic_ptr::AtomicNodePtr;
 use crate::persistent_artrie::core::overlay::compressed_serialize::OverlayCompressedSerialize;
 use crate::persistent_artrie::core::overlay::dict_node::OverlayDictionaryNode;
 use crate::persistent_artrie::core::overlay::node::{Child, OverlayNode};
-use crate::persistent_artrie::core::wal::{WalReader, WalRecord, WalWriter};
+use crate::persistent_artrie::core::recovery::{reconcile_lww, RecoveredOperation};
+use crate::persistent_artrie::core::wal::{Lsn, WalReader, WalRecord, WalWriter};
 use crate::persistent_artrie::disk_manager::MmapDiskManager;
 use crate::persistent_artrie::error::{PersistentARTrieError, Result};
 use crate::persistent_artrie::swizzled_ptr::{NodeType, SwizzledPtr};
@@ -60,6 +65,8 @@ pub struct PersistentARTrieU64<
     term_count: AtomicUsize,
     path: Option<PathBuf>,
     wal_writer: Option<Arc<WalWriter>>,
+    committed_watermark: CommittedWatermark,
+    commit_seq: AtomicU64,
     checkpoint_lock: Arc<Mutex<()>>,
     _storage: PhantomData<S>,
 }
@@ -103,6 +110,11 @@ struct U64DiskNode {
     prefix: Vec<u64>,
     value: Option<Vec<u8>>,
     children: Vec<(u64, u64)>,
+}
+
+enum U64CasOutcome {
+    Published { inserted: bool, generation: u64 },
+    Idempotent,
 }
 
 #[derive(Default)]
@@ -515,9 +527,12 @@ fn create_wal(path: &Path) -> Result<Arc<WalWriter>> {
     if wal.exists() {
         fs::remove_file(&wal).map_err(|error| io_error("remove existing u64 WAL", &wal, error))?;
     }
-    WalWriter::create(&wal)
-        .map(Arc::new)
-        .map_err(|error| wal_error("create u64 shared WAL", error))
+    let writer =
+        WalWriter::create(&wal).map_err(|error| wal_error("create u64 shared WAL", error))?;
+    writer
+        .set_overlay_regime()
+        .map_err(|error| wal_error("stamp u64 WAL overlay regime", error))?;
+    Ok(Arc::new(writer))
 }
 
 fn open_wal(path: &Path) -> Result<Arc<WalWriter>> {
@@ -527,14 +542,14 @@ fn open_wal(path: &Path) -> Result<Arc<WalWriter>> {
         .map_err(|error| wal_error("open u64 shared WAL", error))
 }
 
-fn append_and_sync(wal_writer: &WalWriter, record: WalRecord) -> Result<()> {
-    wal_writer
+fn append_and_sync(wal_writer: &WalWriter, record: WalRecord) -> Result<Lsn> {
+    let lsn = wal_writer
         .append(record)
         .map_err(|error| wal_error("append u64 shared WAL", error))?;
     wal_writer
         .sync()
         .map_err(|error| wal_error("sync u64 shared WAL", error))?;
-    Ok(())
+    Ok(lsn)
 }
 
 fn count_overlay_finals<V: DictionaryValue, const PREFIX: usize>(
@@ -581,6 +596,47 @@ fn collect_sequences<V: DictionaryValue, const PREFIX: usize>(
     out
 }
 
+struct U64ReplayPlan {
+    operations: Vec<RecoveredOperation>,
+    max_lsn: Lsn,
+    commit_seq_seed: u64,
+}
+
+fn read_replay_plan(wal_writer: &WalWriter, path: &Path) -> Result<U64ReplayPlan> {
+    let wal = wal_path(path);
+    if !wal.exists() {
+        return Ok(U64ReplayPlan {
+            operations: Vec::new(),
+            max_lsn: 0,
+            commit_seq_seed: wal_writer.commit_seq_floor(),
+        });
+    }
+
+    let checkpoint_lsn = wal_writer.checkpoint_lsn();
+    let rank_regime = wal_writer.rank_regime();
+    let mut max_lsn = 0u64;
+    let mut max_commit_generation = wal_writer.commit_seq_floor();
+    let mut records = Vec::new();
+    let mut reader =
+        WalReader::new(&wal).map_err(|error| wal_error("open u64 shared WAL reader", error))?;
+    while let Some(record) = reader.next_record() {
+        let (lsn, record) =
+            record.map_err(|error| wal_error("read u64 shared WAL record", error))?;
+        max_lsn = max_lsn.max(lsn);
+        if let WalRecord::CommitRank { generation, .. } = &record {
+            max_commit_generation = max_commit_generation.max(*generation);
+        }
+        records.push((lsn, record));
+    }
+
+    let operations = reconcile_lww(records, true, checkpoint_lsn, rank_regime);
+    Ok(U64ReplayPlan {
+        operations,
+        max_lsn,
+        commit_seq_seed: max_commit_generation,
+    })
+}
+
 impl<V: DictionaryValue, const PREFIX: usize> PersistentARTrieU64<V, MmapDiskManager, PREFIX> {
     pub fn create<P: AsRef<Path>>(path: P) -> Result<Self> {
         let path = path.as_ref().to_path_buf();
@@ -592,6 +648,8 @@ impl<V: DictionaryValue, const PREFIX: usize> PersistentARTrieU64<V, MmapDiskMan
             term_count: AtomicUsize::new(0),
             path: Some(path),
             wal_writer: Some(wal_writer),
+            committed_watermark: CommittedWatermark::new(0),
+            commit_seq: AtomicU64::new(0),
             checkpoint_lock: Arc::new(Mutex::new(())),
             _storage: PhantomData,
         })
@@ -627,15 +685,19 @@ impl<V: DictionaryValue, const PREFIX: usize> PersistentARTrieU64<V, MmapDiskMan
 
     fn open_loaded(path: &Path) -> Result<(Self, u64)> {
         let (root, term_count) = read_snapshot_file::<V, PREFIX>(path)?;
+        let wal_writer = open_wal(path)?;
+        let replay_plan = read_replay_plan(&wal_writer, path)?;
         let trie = Self {
             root: AtomicNodePtr::new(root),
             term_count: AtomicUsize::new(term_count),
             path: Some(path.to_path_buf()),
-            wal_writer: Some(open_wal(path)?),
+            wal_writer: Some(wal_writer),
+            committed_watermark: CommittedWatermark::new(replay_plan.max_lsn),
+            commit_seq: AtomicU64::new(replay_plan.commit_seq_seed),
             checkpoint_lock: Arc::new(Mutex::new(())),
             _storage: PhantomData,
         };
-        let records_replayed = trie.replay_wal()?;
+        let records_replayed = trie.apply_replay_plan(replay_plan)?;
         Ok((trie, records_replayed))
     }
 }
@@ -648,6 +710,8 @@ impl<V: DictionaryValue, S: BlockStorage, const PREFIX: usize> PersistentARTrieU
             term_count: AtomicUsize::new(0),
             path: None,
             wal_writer: None,
+            committed_watermark: CommittedWatermark::new(0),
+            commit_seq: AtomicU64::new(0),
             checkpoint_lock: Arc::new(Mutex::new(())),
             _storage: PhantomData,
         }
@@ -781,6 +845,30 @@ impl<V: DictionaryValue, S: BlockStorage, const PREFIX: usize> PersistentARTrieU
         }
     }
 
+    fn insert_sequence_cas_ranked(&self, sequence: &[u64], value: Option<V>) -> U64CasOutcome {
+        loop {
+            let generation = self.commit_seq.fetch_add(1, Ordering::AcqRel) + 1;
+            let root = self.root_arc();
+            let Some((new_root, inserted)) =
+                Self::build_insert_path(&root, sequence, 0, value.clone())
+            else {
+                return U64CasOutcome::Idempotent;
+            };
+            match self.root.compare_exchange(&root, new_root) {
+                Ok(_) => {
+                    if inserted {
+                        self.term_count.fetch_add(1, Ordering::AcqRel);
+                    }
+                    return U64CasOutcome::Published {
+                        inserted,
+                        generation,
+                    };
+                }
+                Err(_) => continue,
+            }
+        }
+    }
+
     fn build_remove_path(
         node: &Arc<U64Node<V, PREFIX>>,
         sequence: &[u64],
@@ -823,18 +911,71 @@ impl<V: DictionaryValue, S: BlockStorage, const PREFIX: usize> PersistentARTrieU
         }
     }
 
+    fn remove_sequence_cas_ranked(&self, sequence: &[u64]) -> U64CasOutcome {
+        loop {
+            let generation = self.commit_seq.fetch_add(1, Ordering::AcqRel) + 1;
+            let root = self.root_arc();
+            let Some((new_root, removed)) = Self::build_remove_path(&root, sequence, 0) else {
+                return U64CasOutcome::Idempotent;
+            };
+            match self.root.compare_exchange(&root, new_root) {
+                Ok(_) => {
+                    if removed {
+                        self.term_count.fetch_sub(1, Ordering::AcqRel);
+                    }
+                    return U64CasOutcome::Published {
+                        inserted: false,
+                        generation,
+                    };
+                }
+                Err(_) => continue,
+            }
+        }
+    }
+
+    fn commit_rank_and_mark(&self, data_lsn: Lsn, term: &[u8], generation: u64) -> Result<()> {
+        let Some(wal_writer) = &self.wal_writer else {
+            return Ok(());
+        };
+        let rank_lsn = append_and_sync(
+            wal_writer,
+            WalRecord::CommitRank {
+                data_lsn,
+                term: term.to_vec(),
+                generation,
+            },
+        )?;
+        self.committed_watermark.mark_committed(data_lsn);
+        self.committed_watermark.mark_committed(rank_lsn);
+        Ok(())
+    }
+
     pub fn try_insert_sequence(&self, sequence: &[u64]) -> Result<bool> {
         if self.contains_sequence(sequence) {
             return Ok(false);
         }
+        let term = encode_sequence(sequence);
         if let Some(wal_writer) = &self.wal_writer {
-            append_and_sync(
+            let data_lsn = append_and_sync(
                 wal_writer,
                 WalRecord::Insert {
-                    term: encode_sequence(sequence),
+                    term: term.clone(),
                     value: None,
                 },
             )?;
+            return match self.insert_sequence_cas_ranked(sequence, None) {
+                U64CasOutcome::Published {
+                    inserted,
+                    generation,
+                } => {
+                    self.commit_rank_and_mark(data_lsn, &term, generation)?;
+                    Ok(inserted)
+                }
+                U64CasOutcome::Idempotent => {
+                    self.committed_watermark.mark_committed(data_lsn);
+                    Ok(false)
+                }
+            };
         }
         Ok(self.insert_sequence_cas(sequence, None))
     }
@@ -847,17 +988,31 @@ impl<V: DictionaryValue, S: BlockStorage, const PREFIX: usize> PersistentARTrieU
     }
 
     pub fn try_insert_sequence_with_value(&self, sequence: &[u64], value: V) -> Result<bool> {
+        let term = encode_sequence(sequence);
         if let Some(wal_writer) = &self.wal_writer {
             let value_bytes = bincode_compat::serialize(&value).map_err(|error| {
                 PersistentARTrieError::internal(format!("serialize u64 WAL value: {error}"))
             })?;
-            append_and_sync(
+            let data_lsn = append_and_sync(
                 wal_writer,
                 WalRecord::Upsert {
-                    term: encode_sequence(sequence),
+                    term: term.clone(),
                     value: value_bytes,
                 },
             )?;
+            return match self.insert_sequence_cas_ranked(sequence, Some(value)) {
+                U64CasOutcome::Published {
+                    inserted,
+                    generation,
+                } => {
+                    self.commit_rank_and_mark(data_lsn, &term, generation)?;
+                    Ok(inserted)
+                }
+                U64CasOutcome::Idempotent => {
+                    self.committed_watermark.mark_committed(data_lsn);
+                    Ok(false)
+                }
+            };
         }
         Ok(self.insert_sequence_cas(sequence, Some(value)))
     }
@@ -905,13 +1060,19 @@ impl<V: DictionaryValue, S: BlockStorage, const PREFIX: usize> PersistentARTrieU
         if !self.contains_sequence(sequence) {
             return Ok(false);
         }
+        let term = encode_sequence(sequence);
         if let Some(wal_writer) = &self.wal_writer {
-            append_and_sync(
-                wal_writer,
-                WalRecord::Remove {
-                    term: encode_sequence(sequence),
-                },
-            )?;
+            let data_lsn = append_and_sync(wal_writer, WalRecord::Remove { term: term.clone() })?;
+            return match self.remove_sequence_cas_ranked(sequence) {
+                U64CasOutcome::Published { generation, .. } => {
+                    self.commit_rank_and_mark(data_lsn, &term, generation)?;
+                    Ok(true)
+                }
+                U64CasOutcome::Idempotent => {
+                    self.committed_watermark.mark_committed(data_lsn);
+                    Ok(false)
+                }
+            };
         }
         Ok(self.remove_sequence_cas(sequence))
     }
@@ -1014,9 +1175,32 @@ impl<V: DictionaryValue, S: BlockStorage, const PREFIX: usize> PersistentARTrieU
             .checkpoint_lock
             .lock()
             .expect("u64 checkpoint mutex poisoned");
+        let checkpoint_lsn = self.committed_watermark.watermark();
+        let synced_frontier = self
+            .wal_writer
+            .as_ref()
+            .map(|writer| writer.synced_lsn())
+            .unwrap_or(0);
+        assert!(
+            checkpoint_lsn <= synced_frontier,
+            "PersistentARTrieU64 checkpoint watermark {checkpoint_lsn} exceeds synced WAL frontier \
+             {synced_frontier}"
+        );
+        let commit_seq_at_capture = self.commit_seq.load(Ordering::Acquire);
         let root = self.root_arc();
         let term_count = count_overlay_finals(&root);
-        write_snapshot_file::<V, PREFIX>(path, &root, term_count)
+        write_snapshot_file::<V, PREFIX>(path, &root, term_count)?;
+        if let Some(wal_writer) = &self.wal_writer {
+            let checkpoint_record_lsn = wal_writer
+                .checkpoint(checkpoint_lsn)
+                .map_err(|error| wal_error("checkpoint u64 shared WAL", error))?;
+            self.committed_watermark
+                .mark_committed(checkpoint_record_lsn);
+            wal_writer
+                .set_commit_seq_floor(commit_seq_at_capture)
+                .map_err(|error| wal_error("set u64 WAL commit sequence floor", error))?;
+        }
+        Ok(())
     }
 
     pub fn close(&self) {
@@ -1025,30 +1209,19 @@ impl<V: DictionaryValue, S: BlockStorage, const PREFIX: usize> PersistentARTrieU
         }
     }
 
-    fn replay_wal(&self) -> Result<u64> {
-        let Some(path) = self.path.as_ref() else {
-            return Ok(0);
-        };
-        let wal = wal_path(path);
-        if !wal.exists() {
-            return Ok(0);
-        }
-        let mut reader =
-            WalReader::new(&wal).map_err(|error| wal_error("open u64 shared WAL reader", error))?;
+    fn apply_replay_plan(&self, replay_plan: U64ReplayPlan) -> Result<u64> {
         let mut replayed = 0u64;
-        while let Some(record) = reader.next_record() {
-            let (_, record) =
-                record.map_err(|error| wal_error("read u64 shared WAL record", error))?;
-            if self.apply_wal_record(record)? {
+        for operation in replay_plan.operations {
+            if self.apply_recovered_operation(operation)? {
                 replayed += 1;
             }
         }
         Ok(replayed)
     }
 
-    fn apply_wal_record(&self, record: WalRecord) -> Result<bool> {
-        match record {
-            WalRecord::Insert { term, value } => {
+    fn apply_recovered_operation(&self, operation: RecoveredOperation) -> Result<bool> {
+        match operation {
+            RecoveredOperation::Insert { term, value, .. } => {
                 let Some(sequence) = decode_sequence(&term) else {
                     return Ok(false);
                 };
@@ -1065,7 +1238,7 @@ impl<V: DictionaryValue, S: BlockStorage, const PREFIX: usize> PersistentARTrieU
                 }
                 Ok(true)
             }
-            WalRecord::Upsert { term, value } => {
+            RecoveredOperation::Upsert { term, value, .. } => {
                 let Some(sequence) = decode_sequence(&term) else {
                     return Ok(false);
                 };
@@ -1074,34 +1247,16 @@ impl<V: DictionaryValue, S: BlockStorage, const PREFIX: usize> PersistentARTrieU
                 self.insert_sequence_cas(&sequence, Some(value));
                 Ok(true)
             }
-            WalRecord::Remove { term } => {
+            RecoveredOperation::Remove { term, .. } => {
                 let Some(sequence) = decode_sequence(&term) else {
                     return Ok(false);
                 };
                 self.remove_sequence_cas(&sequence);
                 Ok(true)
             }
-            WalRecord::BatchInsert { entries } => {
-                for (term, value) in entries {
-                    let Some(sequence) = decode_sequence(&term) else {
-                        continue;
-                    };
-                    match value {
-                        Some(bytes) => {
-                            let value =
-                                bincode_compat::deserialize::<V>(&bytes).map_err(|error| {
-                                    codec_error("deserialize u64 WAL batch value", error)
-                                })?;
-                            self.insert_sequence_cas(&sequence, Some(value));
-                        }
-                        None => {
-                            self.insert_sequence_cas(&sequence, None);
-                        }
-                    }
-                }
-                Ok(true)
+            RecoveredOperation::Increment { .. } | RecoveredOperation::CompareAndSwap { .. } => {
+                Ok(false)
             }
-            _ => Ok(false),
         }
     }
 }

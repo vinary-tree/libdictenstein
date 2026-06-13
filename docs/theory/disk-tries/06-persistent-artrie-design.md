@@ -85,14 +85,20 @@ append durable WAL record
 ```
 
 The u64 profile follows the same log-before-publish visibility rule with shared
-WAL records and a u64 CX checkpoint image. Checkpoint capture serializes the
-published overlay into a dense disk image. Recovery loads the checkpoint and
-replays retained WAL records.
+WAL records and a u64 CX checkpoint image. Durable u64 writes append the data
+record, publish by CAS, append `CommitRank`, and advance the committed-prefix
+watermark. Checkpoint capture serializes the published overlay into a dense disk
+image, records the safe `checkpoint_lsn`, and retains the WAL tail for recovery.
+Recovery loads the checkpoint, reconciles ranked WAL records, and replays only
+operations not covered by the checkpoint watermark.
 
 ## Concurrency Model
 
 - Reads are non-blocking on the mutation path.
 - Write publication is lock-free CAS for the ARTrie overlay family.
+- Immediate durable acknowledgements still wait for WAL append/fsync; storage
+  I/O can block the caller even though overlay publication has no trie-wide
+  mutation lock.
 - Checkpoints are serialized by a checkpoint lock to avoid torn checkpoint
   publication.
 - Memory safety relies on immutable published nodes and the same reclamation
@@ -103,8 +109,8 @@ those types use snapshot reads and serialized graph rebuild/publish writes.
 
 ## Empirical Status
 
-The u64 compact profile was benchmarked with a seeded time-series workload. The
-fixed-sample run showed:
+The u64 compact profile was benchmarked with a seeded time-series workload. An
+earlier fixed-sample run showed:
 
 - checkpoint: `656,679` bytes for native prefix-4 vs `1,585,249` bytes for
   byte-encoded u64 keys
@@ -114,6 +120,22 @@ fixed-sample run showed:
 Welch's t-test found statistically significant improvement for prefix-4 storage
 versus prefix-3 and for native prefix-4 lookup versus byte-encoded lookup. Raw
 samples were appended to pgmcp artifacts `111` and `112`.
+
+The post-watermark/CommitRank run on 2026-06-13 appended a registered pgmcp
+experiment set:
+
+- lookup: `357.25 ns/query` native prefix-4 vs `455.35 ns/query` byte-encoded
+  u64 control, accepted at `p = 2.82e-35`
+- parallel readers plus writer: `148.35 ns/read` native prefix-4 vs
+  `204.30 ns/read` byte-encoded u64 control, accepted at `p = 4.42e-9`
+- checkpoint density: `453.98` bytes/entry prefix-4 vs `469.76` prefix-3,
+  accepted at `p = 4.61e-127`
+- full checkpoint directory: `929,096` bytes native prefix-4 vs `1,585,249`
+  byte-encoded u64 control
+
+Raw samples are in
+[`docs/experiments/persistent-u64-watermark-commitrank-2026-06-13.md`](../../experiments/persistent-u64-watermark-commitrank-2026-06-13.md)
+and pgmcp experiments `53`-`55` with artifact `132`.
 
 ## Related Material
 

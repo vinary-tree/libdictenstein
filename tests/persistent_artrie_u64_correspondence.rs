@@ -1,14 +1,31 @@
 #![cfg(feature = "persistent-artrie")]
 
 use libdictenstein::dynamic_dawg::DynamicDawgU64;
-use libdictenstein::persistent_artrie::{PersistentARTrieU64, PersistentARTrieU64Compact};
+use libdictenstein::persistent_artrie::{
+    PersistentARTrieU64, PersistentARTrieU64Compact, WalReader, WalRecord, WalWriter,
+};
 use libdictenstein::{CharUnit, Dictionary, DictionaryNode, MappedDictionaryNode, SyncStrategy};
 use proptest::prelude::*;
+use std::path::{Path, PathBuf};
 use tempfile::tempdir;
 
 fn sorted_sequences(mut sequences: Vec<Vec<u64>>) -> Vec<Vec<u64>> {
     sequences.sort();
     sequences
+}
+
+fn encode_sequence(sequence: &[u64]) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(sequence.len() * 8);
+    for unit in sequence {
+        bytes.extend_from_slice(&unit.to_le_bytes());
+    }
+    bytes
+}
+
+fn u64_wal_path(path: &Path) -> PathBuf {
+    let mut wal = path.to_path_buf();
+    wal.set_extension("wal");
+    wal
 }
 
 fn assert_sequence_parity(sequences: Vec<Vec<u64>>, probes: Vec<Vec<u64>>) {
@@ -124,6 +141,92 @@ fn native_u64_wal_replays_uncheckpointed_operations() {
     assert!(reopened.contains_sequence(&[4, 5, 6]));
     assert!(!reopened.contains_sequence(&[9]));
     assert_eq!(reopened.get_sequence_value(&[1, 2, 3]), Some(123));
+}
+
+#[test]
+fn native_u64_checkpoint_records_watermark_and_replays_only_tail() {
+    let dir = tempdir().expect("temp dir");
+    let path = dir
+        .path()
+        .join("persistent_artrie_u64_checkpoint_tail.partu64");
+
+    {
+        let trie = PersistentARTrieU64::<i32>::create(&path).expect("create u64 trie");
+        assert!(trie.insert_sequence_with_value(&[1], 10));
+        assert!(trie.insert_sequence_with_value(&[2], 20));
+        trie.checkpoint().expect("checkpoint u64 trie");
+        assert!(trie.insert_sequence_with_value(&[3], 30));
+    }
+
+    let header = WalReader::read_header(u64_wal_path(&path)).expect("read u64 wal header");
+    assert!(
+        header.checkpoint_lsn > 0,
+        "u64 checkpoint must record a committed-watermark checkpoint_lsn"
+    );
+
+    let (reopened, report) =
+        PersistentARTrieU64::<i32>::open_with_recovery(&path).expect("recover u64 trie");
+    assert_eq!(
+        report.records_replayed, 1,
+        "only the post-checkpoint tail data record should replay"
+    );
+    assert_eq!(reopened.get_sequence_value(&[1]), Some(10));
+    assert_eq!(reopened.get_sequence_value(&[2]), Some(20));
+    assert_eq!(reopened.get_sequence_value(&[3]), Some(30));
+}
+
+#[test]
+fn native_u64_recovery_honors_commit_rank_generation_order() {
+    let dir = tempdir().expect("temp dir");
+    let path = dir.path().join("persistent_artrie_u64_commit_rank.partu64");
+    {
+        let _trie = PersistentARTrieU64::<i32>::create(&path).expect("create u64 trie");
+    }
+
+    let wal_path = u64_wal_path(&path);
+    let writer = WalWriter::open(&wal_path).expect("open u64 wal");
+    let term = encode_sequence(&[9, 9]);
+    let value_one =
+        libdictenstein::serialization::bincode_compat::serialize(&1i32).expect("serialize value");
+    let value_two =
+        libdictenstein::serialization::bincode_compat::serialize(&2i32).expect("serialize value");
+
+    let lsn_one = writer
+        .append(WalRecord::Upsert {
+            term: term.clone(),
+            value: value_one,
+        })
+        .expect("append first upsert");
+    let lsn_two = writer
+        .append(WalRecord::Upsert {
+            term: term.clone(),
+            value: value_two,
+        })
+        .expect("append second upsert");
+    writer
+        .append(WalRecord::CommitRank {
+            data_lsn: lsn_two,
+            term: term.clone(),
+            generation: 1,
+        })
+        .expect("rank second upsert first");
+    writer
+        .append(WalRecord::CommitRank {
+            data_lsn: lsn_one,
+            term,
+            generation: 2,
+        })
+        .expect("rank first upsert second");
+    writer.sync().expect("sync u64 wal");
+
+    let (reopened, report) =
+        PersistentARTrieU64::<i32>::open_with_recovery(&path).expect("recover ranked u64 trie");
+    assert_eq!(report.records_replayed, 2);
+    assert_eq!(
+        reopened.get_sequence_value(&[9, 9]),
+        Some(1),
+        "replay must follow CommitRank generation order, not raw WAL LSN order"
+    );
 }
 
 #[test]

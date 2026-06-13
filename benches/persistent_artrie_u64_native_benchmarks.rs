@@ -20,7 +20,8 @@
 //! PART_U64_FIXED_SAMPLES=1 cargo bench --bench persistent_artrie_u64_native_benchmarks --features persistent-artrie
 //! ```
 //!
-//! It prints raw per-round samples for Welch's t-test. Criterion mode remains
+//! It prints raw per-round samples for Welch's t-test, including the encoded
+//! control for the parallel reader/writer metric. Criterion mode remains
 //! available for the usual local performance workflow.
 
 use criterion::{black_box, BenchmarkId, Criterion, Throughput};
@@ -623,6 +624,7 @@ fn run_fixed_samples() {
     let mut prefix3_lookup = Vec::with_capacity(FIXED_SAMPLES);
     let mut encoded_lookup = Vec::with_capacity(FIXED_SAMPLES);
     let mut native_parallel = Vec::with_capacity(FIXED_SAMPLES);
+    let mut encoded_parallel = Vec::with_capacity(FIXED_SAMPLES);
     let mut prefix3_bytes_per_entry = Vec::with_capacity(FIXED_SAMPLES);
     let mut prefix4_bytes_per_entry = Vec::with_capacity(FIXED_SAMPLES);
 
@@ -631,6 +633,7 @@ fn run_fixed_samples() {
         let native = time_lookup_sample(Arm::Native, &sequences, &queries);
         let prefix3 = time_lookup_sample(Arm::NativePrefix3, &sequences, &queries);
         let parallel = parallel_native_sample(8, &sequences);
+        let encoded_parallel_sample = parallel_encoded_sample(8, &sequences);
         let checkpoint_sequences =
             generate_sequences_with_salt(2_048, LOOKUP_LEN, 0x4348_4b50_0000_0000 ^ round as u64);
         let prefix3_bytes = checkpoint_bytes_native_prefix3_compat(&checkpoint_sequences);
@@ -641,6 +644,8 @@ fn run_fixed_samples() {
             native_lookup.push(native.as_nanos() as f64 / LOOKUP_QUERIES as f64);
             prefix3_lookup.push(prefix3.as_nanos() as f64 / LOOKUP_QUERIES as f64);
             native_parallel.push(parallel.as_nanos() as f64 / (8 * OPS_PER_READER) as f64);
+            encoded_parallel
+                .push(encoded_parallel_sample.as_nanos() as f64 / (8 * OPS_PER_READER) as f64);
             prefix3_bytes_per_entry.push(prefix3_bytes as f64 / checkpoint_sequences.len() as f64);
             prefix4_bytes_per_entry.push(prefix4_bytes as f64 / checkpoint_sequences.len() as f64);
         }
@@ -672,6 +677,12 @@ fn run_fixed_samples() {
         native_edge_store_arm_label(),
         "ns/read",
         &native_parallel,
+    );
+    print_sample_line(
+        "parallel_ns_per_read",
+        "control_encoded_u64_as_bytes",
+        "ns/read",
+        &encoded_parallel,
     );
     print_sample_line(
         "checkpoint_bytes_per_entry",

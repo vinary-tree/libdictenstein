@@ -48,6 +48,12 @@ of the affected path and attempt to publish it with atomic root or child-pointer
 CAS. Readers traverse the currently published root and do not take a global
 mutation lock.
 
+Immediate durable writes still wait for WAL append/fsync, and the synchronous
+WAL writer serializes file writes. The lock-free/non-blocking claim for the
+ARTrie family is the overlay traversal and publication path: reads do not wait
+on a mutation lock, and writers do not serialize through a trie-wide mutation
+lock before publishing their immutable path copy.
+
 `KeyEncoding` selects the persistent key model:
 
 - `ByteKey`: byte keys (`u8` units)
@@ -99,10 +105,19 @@ feature-gated constructor.
 
 ## Benchmark Evidence
 
-Recent fixed-sample u64 experiments used a seeded time-series workload and
+Earlier fixed-sample u64 experiments used a seeded time-series workload and
 Welch's unequal-variance t-test. The compact prefix-4 profile produced a
 `656,679` byte checkpoint versus `1,585,249` bytes for byte-encoded `u64` keys,
 and lookup averaged `350.72 ns/query` versus `455.01 ns/query` for the encoded
 control. The prefix-4 checkpoint budget also reduced bytes per entry versus the
 prefix-3 profile (`320.97` vs `336.74`). Raw samples were appended to pgmcp
 artifacts `111` and `112`.
+
+The post-watermark/CommitRank registered pgmcp run on 2026-06-13 appended new
+evidence after native u64 was aligned with the byte/char Order-A WAL discipline.
+The native prefix-4 profile beat byte-encoded u64 lookup (`357.25 ns/query` vs
+`455.35`, `p = 2.82e-35`) and the eight-reader/one-writer read path
+(`148.35 ns/read` vs `204.30`, `p = 4.42e-9`). Prefix-4 checkpoint density beat
+prefix-3 (`453.98` vs `469.76` bytes/entry, `p = 4.61e-127`). The raw ledger is
+[`docs/experiments/persistent-u64-watermark-commitrank-2026-06-13.md`](../experiments/persistent-u64-watermark-commitrank-2026-06-13.md);
+pgmcp experiments `53`-`55` and artifact `132` hold the structured records.

@@ -332,6 +332,8 @@ Freed nodes are reclaimed by **epoch-based reclamation (EBR)**: memory is releas
 
 The native `u64` profile follows the same log-before-publish rule with shared WAL records and lock-free root publication, but its compact CX snapshot format is intentionally not the old native bincode snapshot/WAL format. Historical bincode controls live only in git history.
 
+The write path has no trie-wide mutation lock: publication is a CAS over immutable overlay nodes. Immediate crash durability still waits for WAL append/fsync, and the synchronous WAL writer serializes file writes; the lock-free claim is about overlay read/write publication, not about making storage latency disappear.
+
 ---
 
 ## Feature flags
@@ -380,7 +382,9 @@ Indicative figures for a 10,000-word English corpus (build once, then query) —
 
 The takeaway: a static double-array trie wins read-heavy in-memory workloads; a DAWG pays a constant factor for runtime `insert`/`remove` and suffix-sharing. Disk-backed throughput (mmap vs io_uring) is characterized in [`docs/io_uring_migration/benchmark_results.md`](docs/io_uring_migration/).
 
-Recent persistent-u64 fixed-sample benchmarks used a seeded time-series workload and Welch's unequal-variance t-test. `PersistentARTrieU64Compact` produced a `656,679` byte checkpoint versus `1,585,249` bytes for byte-encoded `u64` keys, and lookup averaged `350.72 ns/query` versus `455.01 ns/query` for the encoded control (`p ≈ 5.46e-38`). Its prefix-4 CX budget also reduced checkpoint bytes/entry versus the prefix-3 compatibility profile (`320.97` vs `336.74`, `p ≈ 9.23e-127`). Raw artifacts were appended to pgmcp as experiment artifacts `111` and `112`.
+Earlier persistent-u64 fixed-sample benchmarks used a seeded time-series workload and Welch's unequal-variance t-test. `PersistentARTrieU64Compact` produced a `656,679` byte checkpoint versus `1,585,249` bytes for byte-encoded `u64` keys, and lookup averaged `350.72 ns/query` versus `455.01 ns/query` for the encoded control (`p ≈ 5.46e-38`). Its prefix-4 CX budget also reduced checkpoint bytes/entry versus the prefix-3 compatibility profile (`320.97` vs `336.74`, `p ≈ 9.23e-127`). Raw artifacts were appended to pgmcp as experiment artifacts `111` and `112`.
+
+After aligning native u64 durability with the byte/char overlay Order-A path (`CommitRank`, committed watermark, retain-WAL checkpoints), the appended 2026-06-13 registered pgmcp run still accepted the native prefix-4 treatment over byte-encoded u64 for lookup (`357.25 ns/query` vs `455.35`, `p ≈ 2.82e-35`) and for eight-reader/one-writer read latency (`148.35 ns/read` vs `204.30`, `p ≈ 4.42e-9`). Prefix-4 checkpoint density remained smaller than prefix-3 (`453.98` vs `469.76` bytes/entry, `p ≈ 4.61e-127`), and the full checkpoint directory was `929,096` bytes versus `1,585,249` for the encoded control. Raw samples: [`docs/experiments/persistent-u64-watermark-commitrank-2026-06-13.md`](docs/experiments/persistent-u64-watermark-commitrank-2026-06-13.md), pgmcp experiments `53`-`55`, artifact `132`.
 
 ---
 
