@@ -26,8 +26,10 @@ use crate::persistent_artrie::core::overlay::atomic_ptr::AtomicNodePtr;
 use crate::persistent_artrie::core::overlay::compressed_serialize::OverlayCompressedSerialize;
 use crate::persistent_artrie::core::overlay::dict_node::OverlayDictionaryNode;
 use crate::persistent_artrie::core::overlay::node::{Child, OverlayNode};
-use crate::persistent_artrie::core::recovery::{reconcile_lww, RecoveredOperation};
-use crate::persistent_artrie::core::wal::{Lsn, WalReader, WalRecord, WalWriter};
+use crate::persistent_artrie::core::recovery::{reconcile_lww_with_regime, RecoveredOperation};
+use crate::persistent_artrie::core::wal::{
+    Lsn, RankRegime, WalConfig, WalReader, WalRecord, WalWriter,
+};
 use crate::persistent_artrie::disk_manager::MmapDiskManager;
 use crate::persistent_artrie::error::{PersistentARTrieError, Result};
 use crate::persistent_artrie::swizzled_ptr::{NodeType, SwizzledPtr};
@@ -537,17 +539,22 @@ fn create_wal(path: &Path) -> Result<Arc<WalWriter>> {
 
 fn open_wal(path: &Path) -> Result<Arc<WalWriter>> {
     let wal = wal_path(path);
-    WalWriter::open_or_create(&wal)
-        .map(Arc::new)
-        .map_err(|error| wal_error("open u64 shared WAL", error))
+    let writer =
+        WalWriter::open_or_create(&wal).map_err(|error| wal_error("open u64 shared WAL", error))?;
+    if writer.records_empty_on_disk() {
+        writer
+            .set_overlay_regime_records_empty()
+            .map_err(|error| wal_error("stamp empty u64 WAL overlay regime", error))?;
+    }
+    Ok(Arc::new(writer))
 }
 
 fn append_and_sync(wal_writer: &WalWriter, record: WalRecord) -> Result<Lsn> {
     let lsn = wal_writer
-        .append(record)
+        .append_record_segment(record)
         .map_err(|error| wal_error("append u64 shared WAL", error))?;
     wal_writer
-        .sync()
+        .sync_record_segments()
         .map_err(|error| wal_error("sync u64 shared WAL", error))?;
     Ok(lsn)
 }
@@ -613,23 +620,43 @@ fn read_replay_plan(wal_writer: &WalWriter, path: &Path) -> Result<U64ReplayPlan
     }
 
     let checkpoint_lsn = wal_writer.checkpoint_lsn();
-    let rank_regime = wal_writer.rank_regime();
     let mut max_lsn = 0u64;
     let mut max_commit_generation = wal_writer.commit_seq_floor();
     let mut records = Vec::new();
-    let mut reader =
-        WalReader::new(&wal).map_err(|error| wal_error("open u64 shared WAL reader", error))?;
-    while let Some(record) = reader.next_record() {
-        let (lsn, record) =
-            record.map_err(|error| wal_error("read u64 shared WAL record", error))?;
-        max_lsn = max_lsn.max(lsn);
-        if let WalRecord::CommitRank { generation, .. } = &record {
-            max_commit_generation = max_commit_generation.max(*generation);
+    let mut regime_by_lsn = Vec::<(Lsn, RankRegime)>::new();
+    let mut segments = wal_writer
+        .collect_wal_segments(&WalConfig::default())
+        .map_err(|error| wal_error("collect u64 shared WAL segments", error))?;
+    if segments.is_empty() {
+        segments.push(wal);
+    }
+    for segment in segments {
+        let segment_regime = WalReader::read_header(&segment)
+            .map(|header| header.regime())
+            .unwrap_or_else(|_| wal_writer.rank_regime());
+        let mut reader = WalReader::new(&segment)
+            .map_err(|error| wal_error("open u64 shared WAL segment", error))?;
+        while let Some(record) = reader.next_record() {
+            let (lsn, record) =
+                record.map_err(|error| wal_error("read u64 shared WAL record", error))?;
+            max_lsn = max_lsn.max(lsn);
+            regime_by_lsn.push((lsn, segment_regime));
+            if let WalRecord::CommitRank { generation, .. } = &record {
+                max_commit_generation = max_commit_generation.max(*generation);
+            }
+            records.push((lsn, record));
         }
-        records.push((lsn, record));
     }
 
-    let operations = reconcile_lww(records, true, checkpoint_lsn, rank_regime);
+    regime_by_lsn.sort_by_key(|(lsn, _)| *lsn);
+    let default_regime = wal_writer.rank_regime();
+    let operations = reconcile_lww_with_regime(records, true, checkpoint_lsn, |lsn| {
+        regime_by_lsn
+            .binary_search_by_key(&lsn, |(record_lsn, _)| *record_lsn)
+            .ok()
+            .map(|index| regime_by_lsn[index].1)
+            .unwrap_or(default_regime)
+    });
     Ok(U64ReplayPlan {
         operations,
         max_lsn,
@@ -1192,7 +1219,7 @@ impl<V: DictionaryValue, S: BlockStorage, const PREFIX: usize> PersistentARTrieU
         write_snapshot_file::<V, PREFIX>(path, &root, term_count)?;
         if let Some(wal_writer) = &self.wal_writer {
             let checkpoint_record_lsn = wal_writer
-                .checkpoint(checkpoint_lsn)
+                .checkpoint_record_segment(checkpoint_lsn)
                 .map_err(|error| wal_error("checkpoint u64 shared WAL", error))?;
             self.committed_watermark
                 .mark_committed(checkpoint_record_lsn);

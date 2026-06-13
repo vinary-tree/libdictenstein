@@ -9,8 +9,7 @@
 //! layout.
 
 use std::collections::VecDeque;
-use std::fs::{self, OpenOptions};
-use std::io::{BufWriter, Write};
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
@@ -379,19 +378,15 @@ impl Drop for SegmentSyncManager {
 /// An async-capable WAL writer that allows writes during sync.
 pub struct AsyncWalWriter {
     /// The underlying WAL writer.
-    writer: Mutex<WalWriter>,
+    writer: Arc<WalWriter>,
     /// Next LSN to assign (mirrors writer.next_lsn but allows non-blocking reads).
     next_lsn: AtomicU64,
     /// Last synced LSN (updated after each sync completes).
     synced_lsn: AtomicU64,
     /// Segment sync manager for background operations.
     sync_manager: Arc<SegmentSyncManager>,
-    /// Configuration.
-    config: AsyncWalConfig,
     /// Path to the WAL file.
     path: PathBuf,
-    /// Counter for pending segment naming.
-    pending_counter: AtomicU64,
 }
 
 impl AsyncWalWriter {
@@ -422,11 +417,9 @@ impl AsyncWalWriter {
         Ok(Self {
             next_lsn: AtomicU64::new(writer.current_lsn()),
             synced_lsn: AtomicU64::new(writer.synced_lsn()),
-            writer: Mutex::new(writer),
+            writer: Arc::new(writer),
             sync_manager,
-            config,
             path,
-            pending_counter: AtomicU64::new(0),
         })
     }
 
@@ -471,11 +464,9 @@ impl AsyncWalWriter {
         Ok(Self {
             next_lsn: AtomicU64::new(writer.current_lsn()),
             synced_lsn: AtomicU64::new(synced_lsn),
-            writer: Mutex::new(writer),
+            writer: Arc::new(writer),
             sync_manager,
-            config,
             path,
-            pending_counter: AtomicU64::new(0),
         })
     }
 
@@ -495,10 +486,9 @@ impl AsyncWalWriter {
 
     /// Append a record to the WAL.
     pub fn append(&self, record: WalRecord) -> Result<Lsn, AsyncWalError> {
-        let writer = self.writer.lock().expect("WAL writer lock poisoned");
-        let lsn = writer.append(record)?;
+        let lsn = self.writer.append_record_segment(record)?;
         self.next_lsn
-            .fetch_max(writer.current_lsn(), Ordering::AcqRel);
+            .fetch_max(self.writer.current_lsn(), Ordering::AcqRel);
         Ok(lsn)
     }
 
@@ -509,10 +499,9 @@ impl AsyncWalWriter {
         lsn: Lsn,
         record: WalRecord,
     ) -> Result<Lsn, AsyncWalError> {
-        let writer = self.writer.lock().expect("WAL writer lock poisoned");
-        let written_lsn = writer.append_with_lsn(lsn, record)?;
+        let written_lsn = self.writer.append_record_segment_with_lsn(lsn, record)?;
         self.next_lsn
-            .fetch_max(writer.current_lsn(), Ordering::AcqRel);
+            .fetch_max(self.writer.current_lsn(), Ordering::AcqRel);
         Ok(written_lsn)
     }
 
@@ -521,10 +510,12 @@ impl AsyncWalWriter {
         &self,
         entries: &[(Vec<u8>, Option<Vec<u8>>)],
     ) -> Result<Lsn, AsyncWalError> {
-        let writer = self.writer.lock().expect("WAL writer lock poisoned");
-        let lsn = writer.append_batch(entries)?;
+        let record = WalRecord::BatchInsert {
+            entries: entries.to_vec(),
+        };
+        let lsn = self.writer.append_record_segment(record)?;
         self.next_lsn
-            .fetch_max(writer.current_lsn(), Ordering::AcqRel);
+            .fetch_max(self.writer.current_lsn(), Ordering::AcqRel);
         Ok(lsn)
     }
 
@@ -540,17 +531,16 @@ impl AsyncWalWriter {
             ));
         }
 
-        self.sync_manager.wait_for_backpressure()?;
-
-        self.rotate_for_sync(current_lsn)?;
-
-        Ok(SyncHandle::new(current_lsn, Arc::clone(&self.sync_manager)))
+        let synced_lsn = self.sync()?;
+        Ok(SyncHandle::already_synced(
+            synced_lsn.min(current_lsn),
+            Arc::clone(&self.sync_manager),
+        ))
     }
 
     /// Blocking sync — waits for all current data to be durable.
     pub fn sync(&self) -> Result<Lsn, AsyncWalError> {
-        let writer = self.writer.lock().expect("WAL writer lock poisoned");
-        let lsn = writer.sync()?;
+        let lsn = self.writer.sync_record_segments()?;
         self.synced_lsn.store(lsn, Ordering::Release);
         self.sync_manager
             .global_synced_lsn
@@ -582,10 +572,7 @@ impl AsyncWalWriter {
 
     /// Set the minimum starting LSN for subsequent records.
     pub fn set_min_lsn(&self, min_lsn: Lsn) {
-        {
-            let writer = self.writer.lock().expect("WAL writer lock poisoned");
-            writer.set_min_lsn(min_lsn);
-        }
+        self.writer.set_min_lsn(min_lsn);
 
         loop {
             let current = self.next_lsn.load(Ordering::Acquire);
@@ -620,8 +607,7 @@ impl AsyncWalWriter {
                     .to_string(),
             ));
         }
-        let writer = self.writer.lock().expect("WAL writer lock poisoned");
-        writer.set_overlay_regime()
+        self.writer.set_overlay_regime()
     }
 
     /// **F7 (FIX A widening) — stamp Overlay gated on RECORDS-EMPTY-ON-DISK** (not the
@@ -631,14 +617,12 @@ impl AsyncWalWriter {
     /// does NOT consult the async counter (which is precisely the high value the cheap path
     /// must accept); the inner records-empty-on-disk check is authoritative.
     pub fn set_overlay_regime_records_empty(&self) -> Result<(), WalError> {
-        let writer = self.writer.lock().expect("WAL writer lock poisoned");
-        writer.set_overlay_regime_records_empty()
+        self.writer.set_overlay_regime_records_empty()
     }
 
     /// The header's current rank-regime (S4).
     pub fn rank_regime(&self) -> super::RankRegime {
-        let writer = self.writer.lock().expect("WAL writer lock poisoned");
-        writer.rank_regime()
+        self.writer.rank_regime()
     }
 
     /// Stamp the WAL header BACK to the Owned regime (S5-4 kill-switch). **ENFORCED to
@@ -649,21 +633,18 @@ impl AsyncWalWriter {
                 "set_owned_regime on a non-empty async WAL (records already appended)".to_string(),
             ));
         }
-        let writer = self.writer.lock().expect("WAL writer lock poisoned");
-        writer.set_owned_regime()
+        self.writer.set_owned_regime()
     }
 
     /// Durably raise the WAL `commit_seq_floor` (S5-2 A3 floor). Delegates to the
     /// inner sync writer (monotone raise-only; persists the header).
     pub fn set_commit_seq_floor(&self, floor: u64) -> Result<(), WalError> {
-        let writer = self.writer.lock().expect("WAL writer lock poisoned");
-        writer.set_commit_seq_floor(floor)
+        self.writer.set_commit_seq_floor(floor)
     }
 
     /// The durable `commit_seq_floor` from the header (S5-2).
     pub fn commit_seq_floor(&self) -> u64 {
-        let writer = self.writer.lock().expect("WAL writer lock poisoned");
-        writer.commit_seq_floor()
+        self.writer.commit_seq_floor()
     }
 
     /// Get the path to the WAL file.
@@ -678,18 +659,18 @@ impl AsyncWalWriter {
 
     /// Write a checkpoint record.
     pub fn checkpoint(&self, checkpoint_lsn: Lsn) -> Result<Lsn, AsyncWalError> {
-        let writer = self.writer.lock().expect("WAL writer lock poisoned");
-        let lsn = writer.checkpoint(checkpoint_lsn)?;
-        self.next_lsn.store(writer.current_lsn(), Ordering::Release);
+        let lsn = self.writer.checkpoint_record_segment(checkpoint_lsn)?;
+        self.next_lsn
+            .store(self.writer.current_lsn(), Ordering::Release);
         Ok(lsn)
     }
 
     /// Truncate the WAL, discarding all records after the header.
     pub fn truncate(&self) -> Result<(), AsyncWalError> {
-        let writer = self.writer.lock().expect("WAL writer lock poisoned");
-        writer.truncate()?;
-        self.next_lsn.store(writer.current_lsn(), Ordering::Release);
-        let synced_lsn = writer.synced_lsn();
+        self.writer.truncate()?;
+        self.next_lsn
+            .store(self.writer.current_lsn(), Ordering::Release);
+        let synced_lsn = self.writer.synced_lsn();
         self.synced_lsn.store(synced_lsn, Ordering::Release);
         self.sync_manager
             .global_synced_lsn
@@ -703,8 +684,7 @@ impl AsyncWalWriter {
             self.truncate()?;
             return Ok(None);
         }
-        let writer = self.writer.lock().expect("WAL writer lock poisoned");
-        let path = writer.rotate_to_archive(config)?;
+        let path = self.writer.rotate_to_archive(config)?;
         Ok(Some(path))
     }
 
@@ -713,8 +693,7 @@ impl AsyncWalWriter {
     /// `WalHeader::SIZE`), the counter-independent emptiness check the F7 converter uses
     /// for its cheap-vs-rotate decision and the post-rotate Overlay stamp gate.
     pub fn records_empty_on_disk(&self) -> bool {
-        let writer = self.writer.lock().expect("WAL writer lock poisoned");
-        writer.records_empty_on_disk()
+        self.writer.records_empty_on_disk()
     }
 
     /// **F7 (S1+S2) — rotate the Owned tail to archive + RE-STAMP the fresh active
@@ -746,11 +725,11 @@ impl AsyncWalWriter {
                 source: None,
             });
         }
-        let writer = self.writer.lock().expect("WAL writer lock poisoned");
-        let path = writer.rotate_and_restamp_overlay(config)?;
+        let path = self.writer.rotate_and_restamp_overlay(config)?;
         // Re-sync the async counters from the inner writer (carried high next_lsn — DG0).
-        self.next_lsn.store(writer.current_lsn(), Ordering::Release);
-        let synced = writer.synced_lsn();
+        self.next_lsn
+            .store(self.writer.current_lsn(), Ordering::Release);
+        let synced = self.writer.synced_lsn();
         self.synced_lsn.store(synced, Ordering::Release);
         self.sync_manager
             .global_synced_lsn
@@ -764,8 +743,7 @@ impl AsyncWalWriter {
     /// overlay drain reconciles these; the watermark base (FIX C) is the max LSN over
     /// them.
     pub fn collect_wal_segments(&self, config: &WalConfig) -> Result<Vec<PathBuf>, WalError> {
-        let writer = self.writer.lock().expect("WAL writer lock poisoned");
-        writer.collect_wal_segments(config)
+        self.writer.collect_wal_segments(config)
     }
 
     /// **F7 (FIX C) — the max LSN over a segment set.** Delegates to
@@ -777,118 +755,46 @@ impl AsyncWalWriter {
         WalWriter::max_lsn_in_segments(segments)
     }
 
+    /// Scan a segment set for replay-seeding metadata.
+    pub fn segment_replay_bounds(segments: &[PathBuf]) -> (Lsn, u64) {
+        let mut checkpoint_lsn = 0u64;
+        let mut max_commit_generation = 0u64;
+
+        for segment in segments {
+            let Ok(reader) = super::WalReader::new(segment) else {
+                continue;
+            };
+            for result in reader.iter() {
+                match result {
+                    Ok((
+                        _,
+                        WalRecord::Checkpoint {
+                            checkpoint_lsn: cp, ..
+                        },
+                    )) => {
+                        checkpoint_lsn = checkpoint_lsn.max(cp);
+                    }
+                    Ok((_, WalRecord::CommitRank { generation, .. })) => {
+                        max_commit_generation = max_commit_generation.max(generation);
+                    }
+                    Ok(_) => {}
+                    Err(_) => break,
+                }
+            }
+        }
+
+        (checkpoint_lsn, max_commit_generation)
+    }
+
     /// Convert the async writer back to a synchronous writer.
     pub fn into_sync(self) -> Result<WalWriter, AsyncWalError> {
-        let current_lsn = self.next_lsn.load(Ordering::Acquire).saturating_sub(1);
-        if current_lsn > 0 {
-            self.sync_manager.wait_for_lsn(current_lsn)?;
-        }
+        let _ = self.sync()?;
 
         self.sync_manager.stop();
 
         let writer = WalWriter::open(&self.path)?;
 
         Ok(writer)
-    }
-
-    /// Internal: Rotate the current WAL segment for async sync.
-    fn rotate_for_sync(&self, last_lsn: Lsn) -> Result<(), AsyncWalError> {
-        let writer = self.writer.lock().expect("WAL writer lock poisoned");
-
-        if let Err(e) = writer.file.lock().expect("file lock poisoned").flush() {
-            return Err(AsyncWalError::RotationFailed {
-                reason: "Failed to flush buffer".to_string(),
-                source: Some(e),
-            });
-        }
-
-        let counter = self.pending_counter.fetch_add(1, Ordering::Relaxed);
-        let timestamp = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis();
-        let pending_name = format!("wal_pending_{}_{}.segment", timestamp, counter);
-        let pending_dir = if self.config.pending_dir.is_absolute() {
-            self.config.pending_dir.clone()
-        } else {
-            self.path
-                .parent()
-                .unwrap_or(Path::new("."))
-                .join(&self.config.pending_dir)
-        };
-        let pending_path = pending_dir.join(pending_name);
-
-        let size_bytes = fs::metadata(&self.path).map(|m| m.len()).unwrap_or(0);
-
-        let first_lsn = self.synced_lsn.load(Ordering::Acquire) + 1;
-
-        fs::rename(&self.path, &pending_path).map_err(|e| AsyncWalError::RotationFailed {
-            reason: "Failed to rename WAL to pending".to_string(),
-            source: Some(e),
-        })?;
-
-        let pending_file = OpenOptions::new()
-            .read(true)
-            .open(&pending_path)
-            .map_err(|e| {
-                let _ = fs::rename(&pending_path, &self.path);
-                AsyncWalError::RotationFailed {
-                    reason: "Failed to open pending segment".to_string(),
-                    source: Some(e),
-                }
-            })?;
-
-        let new_file = match OpenOptions::new()
-            .create_new(true)
-            .write(true)
-            .read(true)
-            .open(&self.path)
-        {
-            Ok(f) => f,
-            Err(e) => {
-                let _ = fs::rename(&pending_path, &self.path);
-                return Err(AsyncWalError::RotationFailed {
-                    reason: "Failed to create new WAL file".to_string(),
-                    source: Some(e),
-                });
-            }
-        };
-
-        let mut new_writer = BufWriter::new(new_file);
-
-        let header = WalHeader::new();
-        if let Err(e) = new_writer.write_all(&header.to_bytes()) {
-            let _ = fs::remove_file(&self.path);
-            let _ = fs::rename(&pending_path, &self.path);
-            return Err(AsyncWalError::RotationFailed {
-                reason: "Failed to write header".to_string(),
-                source: Some(e),
-            });
-        }
-        if let Err(e) = new_writer.flush() {
-            let _ = fs::remove_file(&self.path);
-            let _ = fs::rename(&pending_path, &self.path);
-            return Err(AsyncWalError::RotationFailed {
-                reason: "Failed to flush header".to_string(),
-                source: Some(e),
-            });
-        }
-
-        *writer.file.lock().expect("file lock poisoned") = new_writer;
-        *writer.header.lock().expect("header lock poisoned") = header;
-
-        self.synced_lsn.store(last_lsn, Ordering::Release);
-
-        let pending_segment = PendingSegment {
-            path: pending_path,
-            lsn_range: (first_lsn, last_lsn),
-            file: pending_file,
-            rotated_at: Instant::now(),
-            size_bytes,
-        };
-        self.sync_manager.enqueue(pending_segment);
-
-        Ok(())
     }
 
     /// Stop and join the background WAL-sync thread.
@@ -908,10 +814,8 @@ impl Drop for AsyncWalWriter {
         // final fsync, and so the wal-sync thread is reclaimed deterministically
         // from this (the owning) thread rather than via Arc-refcount drop order.
         self.sync_manager.stop();
-        if let Ok(writer) = self.writer.lock() {
-            if let Err(e) = writer.sync() {
-                log::warn!("Failed to sync WAL on drop: {:?}", e);
-            }
+        if let Err(e) = self.writer.sync_record_segments() {
+            log::warn!("Failed to sync WAL on drop: {:?}", e);
         }
     }
 }
@@ -961,6 +865,8 @@ pub fn collect_all_segments(
             }
         }
     }
+
+    segments.extend(WalWriter::collect_record_segments_for_path(wal_path)?);
 
     if wal_path.exists() {
         let metadata = fs::metadata(wal_path).map_err(WalError::Io)?;

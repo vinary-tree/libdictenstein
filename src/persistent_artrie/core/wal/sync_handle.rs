@@ -40,14 +40,6 @@ pub struct SyncHandle {
 }
 
 impl SyncHandle {
-    /// Create a new sync handle.
-    pub(super) fn new(target_lsn: Lsn, sync_manager: Arc<SegmentSyncManager>) -> Self {
-        Self {
-            target_lsn,
-            sync_manager,
-        }
-    }
-
     /// Create a handle that is already synced.
     pub(super) fn already_synced(target_lsn: Lsn, sync_manager: Arc<SegmentSyncManager>) -> Self {
         Self {

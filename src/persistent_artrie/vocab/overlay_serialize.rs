@@ -474,51 +474,59 @@ impl<S: BlockStorage> super::dict_impl::PersistentVocabARTrie<S> {
         use std::collections::HashSet;
         use std::sync::atomic::Ordering;
 
-        let reader = WalReader::new(wal_path)?;
+        let segments = self
+            .wal_writer
+            .as_ref()
+            .and_then(|wal| wal.collect_wal_segments(&self.wal_config).ok())
+            .filter(|segments| !segments.is_empty())
+            .unwrap_or_else(|| vec![wal_path.to_path_buf()]);
         let mut pending: Vec<(u64, String, u64)> = Vec::new();
         let mut ranked: HashSet<u64> = HashSet::new();
         let mut max_generation: u64 = 0;
         let mut records_seen = 0usize;
-        for rr in reader.iter() {
-            let (lsn, record) = rr?;
-            if lsn <= checkpoint_lsn {
-                continue;
-            }
-            match record {
-                WalRecord::Insert { term, value } => {
-                    // Count only DATA records: the overlay RETAINS the WAL (no truncate), so a
-                    // Checkpoint/CommitRank past checkpoint_lsn must NOT make a clean reopen
-                    // report "recovered" (mode.is_normal() must hold after a clean checkpoint).
-                    records_seen += 1;
-                    if let Some(vb) = value {
-                        if vb.len() >= 8 {
-                            let id = u64::from_le_bytes(vb[..8].try_into().expect("len>=8"));
-                            let t = String::from_utf8(term).map_err(|e| {
-                                PersistentARTrieError::corrupted(format!(
-                                    "vocab overlay replay: invalid UTF-8 term: {e}"
-                                ))
-                            })?;
-                            pending.push((lsn, t, id));
+        for segment in segments {
+            let reader = WalReader::new(&segment)?;
+            for rr in reader.iter() {
+                let (lsn, record) = rr?;
+                if lsn <= checkpoint_lsn {
+                    continue;
+                }
+                match record {
+                    WalRecord::Insert { term, value } => {
+                        // Count only DATA records: the overlay RETAINS the WAL (no truncate), so a
+                        // Checkpoint/CommitRank past checkpoint_lsn must NOT make a clean reopen
+                        // report "recovered" (mode.is_normal() must hold after a clean checkpoint).
+                        records_seen += 1;
+                        if let Some(vb) = value {
+                            if vb.len() >= 8 {
+                                let id = u64::from_le_bytes(vb[..8].try_into().expect("len>=8"));
+                                let t = String::from_utf8(term).map_err(|e| {
+                                    PersistentARTrieError::corrupted(format!(
+                                        "vocab overlay replay: invalid UTF-8 term: {e}"
+                                    ))
+                                })?;
+                                pending.push((lsn, t, id));
+                            }
                         }
                     }
+                    WalRecord::CommitRank {
+                        data_lsn,
+                        generation,
+                        ..
+                    } => {
+                        ranked.insert(data_lsn);
+                        max_generation = max_generation.max(generation);
+                    }
+                    WalRecord::Checkpoint {
+                        checkpoint_lsn: new_lsn,
+                        ..
+                    } => {
+                        self.synced_lsn.fetch_max(new_lsn, Ordering::AcqRel);
+                    }
+                    _ => {}
                 }
-                WalRecord::CommitRank {
-                    data_lsn,
-                    generation,
-                    ..
-                } => {
-                    ranked.insert(data_lsn);
-                    max_generation = max_generation.max(generation);
-                }
-                WalRecord::Checkpoint {
-                    checkpoint_lsn: new_lsn,
-                    ..
-                } => {
-                    self.synced_lsn.fetch_max(new_lsn, Ordering::AcqRel);
-                }
-                _ => {}
+                self.next_lsn.fetch_max(lsn + 1, Ordering::AcqRel);
             }
-            self.next_lsn.fetch_max(lsn + 1, Ordering::AcqRel);
         }
 
         // Apply ONLY ranked Inserts (idempotent vs the image; count only genuinely-new terms).
@@ -852,10 +860,17 @@ mod tests {
         let pid = std::process::id();
         let path_a = dir.join(format!("vocab_crash_a_{}.vocab", pid));
         let path_b = dir.join(format!("vocab_crash_b_{}.vocab", pid));
+        let record_segment_dir = |p: &std::path::Path| {
+            let wal = p.with_extension("vocab.wal");
+            let mut dir = wal;
+            dir.set_extension("wal.d");
+            dir
+        };
         let cleanup = |p: &std::path::Path| {
             let _ = std::fs::remove_file(p);
             let _ = std::fs::remove_file(p.with_extension("vocab.wal"));
             let _ = std::fs::remove_file(p.with_extension("vocab.idx"));
+            let _ = std::fs::remove_dir_all(record_segment_dir(p));
         };
         cleanup(&path_a);
         cleanup(&path_b);
@@ -880,6 +895,16 @@ mod tests {
                 path_b.with_extension("vocab.wal"),
             )
             .expect("copy wal");
+            let src_segments = record_segment_dir(&path_a);
+            let dst_segments = record_segment_dir(&path_b);
+            if src_segments.exists() {
+                std::fs::create_dir_all(&dst_segments).expect("copy WAL segment dir");
+                for entry in std::fs::read_dir(&src_segments).expect("read WAL segment dir") {
+                    let entry = entry.expect("WAL segment entry");
+                    std::fs::copy(entry.path(), dst_segments.join(entry.file_name()))
+                        .expect("copy WAL record segment");
+                }
+            }
             // vocab A drops here (checkpoints A; irrelevant to the B snapshot).
         }
 

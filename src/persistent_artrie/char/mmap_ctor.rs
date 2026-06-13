@@ -409,6 +409,20 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
             }
         })?;
         let wal_writer = Arc::new(wal_writer);
+        let segment_set = wal_writer
+            .collect_wal_segments(&WalConfig::default())
+            .unwrap_or_default();
+        let (segment_checkpoint_lsn, segment_commit_seq_gen) =
+            AsyncWalWriter::segment_replay_bounds(&segment_set);
+        let next_lsn = next_lsn.max(wal_writer.current_lsn());
+        let checkpoint_lsn = checkpoint_lsn.max(segment_checkpoint_lsn).max(
+            WalReader::read_header(&wal_path)
+                .map(|h| h.checkpoint_lsn)
+                .unwrap_or(0),
+        );
+        let commit_seq_seed = commit_seq_seed
+            .max(wal_writer.commit_seq_floor())
+            .max(segment_commit_seq_gen);
 
         // Create arena manager for space-efficient node storage
         let arena_manager = ArenaManager::with_buffer_manager(Arc::clone(&buffer_manager));
@@ -420,11 +434,7 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
         // back to the active-only frontier when no segments are enumerable. Computed BEFORE
         // `wal_writer` is moved into the struct.
         let recovered_frontier = {
-            let archive_config_for_base = WalConfig::default();
-            let full_max = wal_writer
-                .collect_wal_segments(&archive_config_for_base)
-                .ok()
-                .and_then(|segments| AsyncWalWriter::max_lsn_in_segments(&segments));
+            let full_max = AsyncWalWriter::max_lsn_in_segments(&segment_set);
             full_max
                 .unwrap_or_else(|| next_lsn.saturating_sub(1))
                 .max(next_lsn.saturating_sub(1))

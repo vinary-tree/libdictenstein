@@ -5,7 +5,9 @@
 //! on-disk WAL file handle and is the primary write entry point — append,
 //! sync, batch, checkpoint, truncate, and segment rotation all live here.
 
+use std::collections::BTreeSet;
 use std::fs::{self, File, OpenOptions};
+use std::hint::spin_loop;
 use std::io::{self, BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -32,6 +34,17 @@ pub struct WalWriter {
     next_lsn: AtomicU64,
     /// Last synced LSN
     synced_lsn: AtomicU64,
+    /// Highest contiguous LSN durably published through record segments.
+    ///
+    /// The active-file append path still obtains durability from [`Self::sync`].
+    /// Segment appenders publish independent one-record WAL files, so they need an
+    /// explicit contiguous frontier: LSN N+1 cannot be reported durable while LSN N
+    /// is still missing.
+    segment_durable_lsn: AtomicU64,
+    /// Segment LSNs that reached disk before an earlier LSN completed.
+    segment_durable_pending: Mutex<BTreeSet<Lsn>>,
+    /// Lowest segment LSN whose publication failed after reservation.
+    segment_failed_lsn: AtomicU64,
     /// Header (cached). Same visibility rationale as `file`.
     pub(super) header: Mutex<WalHeader>,
 }
@@ -93,6 +106,9 @@ impl WalWriter {
             file: Mutex::new(writer),
             next_lsn: AtomicU64::new(1), // LSN 0 reserved for "no LSN"
             synced_lsn: AtomicU64::new(0),
+            segment_durable_lsn: AtomicU64::new(0),
+            segment_durable_pending: Mutex::new(BTreeSet::new()),
+            segment_failed_lsn: AtomicU64::new(Lsn::MAX),
             header: Mutex::new(header),
         })
     }
@@ -115,7 +131,7 @@ impl WalWriter {
         reader.read_exact(&mut header_buf)?;
         let header = WalHeader::from_bytes(&header_buf)?;
 
-        // Find the last LSN by scanning the log
+        // Find the last LSN by scanning the active log and record segments.
         let mut last_lsn: Lsn = 0;
         let mut reader = WalReader::new(path.clone())?;
         while let Some(result) = reader.next_record() {
@@ -123,6 +139,11 @@ impl WalWriter {
                 last_lsn = lsn;
             }
         }
+        let record_segments = Self::collect_record_segments_for_path(&path)?;
+        if let Some(max_segment_lsn) = Self::max_lsn_in_segments(&record_segments) {
+            last_lsn = last_lsn.max(max_segment_lsn);
+        }
+        last_lsn = last_lsn.max(header.checkpoint_lsn);
 
         // Seek to end for appending
         let file = OpenOptions::new().read(true).write(true).open(&path)?;
@@ -134,6 +155,9 @@ impl WalWriter {
             file: Mutex::new(writer),
             next_lsn: AtomicU64::new(last_lsn + 1),
             synced_lsn: AtomicU64::new(last_lsn),
+            segment_durable_lsn: AtomicU64::new(last_lsn),
+            segment_durable_pending: Mutex::new(BTreeSet::new()),
+            segment_failed_lsn: AtomicU64::new(Lsn::MAX),
             header: Mutex::new(header),
         })
     }
@@ -172,6 +196,48 @@ impl WalWriter {
         Ok(lsn)
     }
 
+    /// Append a record as an independent, valid one-record WAL segment.
+    ///
+    /// This is the ARTrie durable-write hot path. It reserves the LSN atomically
+    /// and never takes the active WAL file mutex while publishing the record; the
+    /// only shared state touched after the filesystem rename is the small
+    /// contiguous-durability frontier.
+    pub fn append_record_segment(&self, record: WalRecord) -> Result<Lsn, WalError> {
+        let lsn = self.next_lsn.fetch_add(1, Ordering::AcqRel);
+        if let Err(error) = self.write_record_segment_at_lsn(lsn, record) {
+            self.mark_segment_failed(lsn);
+            return Err(error);
+        }
+        self.mark_segment_durable(lsn);
+        self.wait_for_segment_durable_lsn(lsn)?;
+        Ok(lsn)
+    }
+
+    /// Append a record segment using an LSN reserved by the caller.
+    #[cfg(feature = "group-commit")]
+    pub(crate) fn append_record_segment_with_lsn(
+        &self,
+        lsn: Lsn,
+        record: WalRecord,
+    ) -> Result<Lsn, WalError> {
+        let current = self.current_lsn();
+        if lsn != current {
+            return Err(WalError::CorruptedRecord(format!(
+                "reserved LSN {} does not match next WAL segment LSN {}",
+                lsn, current
+            )));
+        }
+
+        self.next_lsn.fetch_add(1, Ordering::AcqRel);
+        if let Err(error) = self.write_record_segment_at_lsn(lsn, record) {
+            self.mark_segment_failed(lsn);
+            return Err(error);
+        }
+        self.mark_segment_durable(lsn);
+        self.wait_for_segment_durable_lsn(lsn)?;
+        Ok(lsn)
+    }
+
     /// Append a record using an LSN that was reserved before the write.
     #[cfg(feature = "group-commit")]
     pub(crate) fn append_with_lsn(&self, lsn: Lsn, record: WalRecord) -> Result<Lsn, WalError> {
@@ -189,6 +255,15 @@ impl WalWriter {
     }
 
     fn write_record_at_lsn(&self, lsn: Lsn, record: WalRecord) -> Result<(), WalError> {
+        let buf = Self::encode_record_frame(lsn, record);
+
+        let mut file = self.file.lock().expect("WAL lock poisoned");
+        file.write_all(&buf)?;
+
+        Ok(())
+    }
+
+    fn encode_record_frame(lsn: Lsn, record: WalRecord) -> Vec<u8> {
         let payload = record.serialize_payload();
         let record_type = record.record_type() as u8;
 
@@ -204,10 +279,94 @@ impl WalWriter {
         let crc = crc32(&buf[4..]);
         buf[0..4].copy_from_slice(&crc.to_le_bytes());
 
-        let mut file = self.file.lock().expect("WAL lock poisoned");
-        file.write_all(&buf)?;
+        buf
+    }
+
+    fn write_record_segment_at_lsn(&self, lsn: Lsn, record: WalRecord) -> Result<(), WalError> {
+        let header = *self.header.lock().expect("header lock poisoned");
+        let frame = Self::encode_record_frame(lsn, record);
+        let segment_dir = self.record_segment_dir();
+        fs::create_dir_all(&segment_dir).map_err(WalError::Io)?;
+
+        let final_path = segment_dir.join(format!("wal_record_{lsn:020}.segment"));
+        let tmp_counter = ARCHIVE_SEGMENT_COUNTER.fetch_add(1, Ordering::AcqRel);
+        let tmp_path = segment_dir.join(format!(
+            "wal_record_{lsn:020}.{}.{}.tmp",
+            std::process::id(),
+            tmp_counter
+        ));
+
+        let mut file = OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .read(true)
+            .open(&tmp_path)
+            .map_err(WalError::Io)?;
+        file.write_all(&header.to_bytes()).map_err(WalError::Io)?;
+        file.write_all(&frame).map_err(WalError::Io)?;
+        file.sync_all().map_err(WalError::Io)?;
+        drop(file);
+
+        match fs::rename(&tmp_path, &final_path) {
+            Ok(()) => {}
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
+                let _ = fs::remove_file(&tmp_path);
+                return Err(WalError::CorruptedRecord(format!(
+                    "record segment for LSN {lsn} already exists at {}",
+                    final_path.display()
+                )));
+            }
+            Err(e) => {
+                let _ = fs::remove_file(&tmp_path);
+                return Err(WalError::Io(e));
+            }
+        }
+
+        if let Ok(dir_file) = OpenOptions::new().read(true).open(&segment_dir) {
+            let _ = dir_file.sync_all();
+        }
 
         Ok(())
+    }
+
+    fn mark_segment_durable(&self, lsn: Lsn) {
+        let mut pending = self
+            .segment_durable_pending
+            .lock()
+            .expect("segment durable frontier lock poisoned");
+        pending.insert(lsn);
+
+        let mut next = self.segment_durable_lsn.load(Ordering::Acquire) + 1;
+        while pending.remove(&next) {
+            self.segment_durable_lsn.store(next, Ordering::Release);
+            next += 1;
+        }
+    }
+
+    fn mark_segment_failed(&self, lsn: Lsn) {
+        self.segment_failed_lsn.fetch_min(lsn, Ordering::AcqRel);
+    }
+
+    fn wait_for_segment_durable_lsn(&self, lsn: Lsn) -> Result<(), WalError> {
+        let mut spins = 0u32;
+        loop {
+            if self.segment_durable_lsn.load(Ordering::Acquire) >= lsn {
+                return Ok(());
+            }
+            let failed = self.segment_failed_lsn.load(Ordering::Acquire);
+            if failed <= lsn {
+                return Err(WalError::CorruptedRecord(format!(
+                    "cannot publish contiguous WAL segment frontier through LSN {lsn}; \
+                     earlier reserved LSN {failed} failed to publish"
+                )));
+            }
+            if spins < 64 {
+                spins += 1;
+                spin_loop();
+            } else {
+                std::thread::yield_now();
+            }
+        }
     }
 
     /// Sync (fsync) the WAL to disk.
@@ -220,6 +379,21 @@ impl WalWriter {
         self.synced_lsn.store(current_lsn, Ordering::Release);
 
         Ok(current_lsn)
+    }
+
+    /// Sync the active header and report the contiguous segment-durable frontier.
+    ///
+    /// Used by ARTrie variants that publish operation records as per-record
+    /// segments instead of appending them to the active WAL file.
+    pub fn sync_record_segments(&self) -> Result<Lsn, WalError> {
+        let mut file = self.file.lock().expect("WAL lock poisoned");
+        file.flush()?;
+        file.get_ref().sync_all()?;
+
+        let durable_lsn = self.segment_durable_lsn.load(Ordering::Acquire);
+        self.synced_lsn.store(durable_lsn, Ordering::Release);
+
+        Ok(durable_lsn)
     }
 
     /// Append a batch of inserts as a single WAL record.
@@ -297,6 +471,37 @@ impl WalWriter {
                 break;
             }
         }
+        loop {
+            let current = self.segment_durable_lsn.load(Ordering::Acquire);
+            if current >= min_lsn {
+                break;
+            }
+            if self
+                .segment_durable_lsn
+                .compare_exchange(current, min_lsn, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+            {
+                break;
+            }
+        }
+    }
+
+    /// Write a checkpoint record as a record segment and update the active header.
+    pub fn checkpoint_record_segment(&self, checkpoint_lsn: Lsn) -> Result<Lsn, WalError> {
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+
+        let record = WalRecord::Checkpoint {
+            checkpoint_lsn,
+            timestamp,
+        };
+
+        let lsn = self.append_record_segment(record)?;
+        self.sync_record_segments()?;
+        self.write_checkpoint_header(checkpoint_lsn)?;
+        Ok(lsn)
     }
 
     /// Write a checkpoint record and update the header.
@@ -314,6 +519,12 @@ impl WalWriter {
         let lsn = self.append(record)?;
         self.sync()?;
 
+        self.write_checkpoint_header(checkpoint_lsn)?;
+
+        Ok(lsn)
+    }
+
+    fn write_checkpoint_header(&self, checkpoint_lsn: Lsn) -> Result<(), WalError> {
         let mut file = self.file.lock().expect("WAL lock poisoned");
         let mut header = self.header.lock().expect("header lock poisoned");
         header.checkpoint_lsn = checkpoint_lsn;
@@ -324,8 +535,7 @@ impl WalWriter {
         file.get_ref().sync_all()?;
 
         file.seek(SeekFrom::End(0))?;
-
-        Ok(lsn)
+        Ok(())
     }
 
     /// Get the last checkpoint LSN.
@@ -524,6 +734,16 @@ impl WalWriter {
 
         self.next_lsn.store(1, Ordering::Release);
         self.synced_lsn.store(0, Ordering::Release);
+        self.segment_durable_lsn.store(0, Ordering::Release);
+        self.segment_failed_lsn.store(Lsn::MAX, Ordering::Release);
+        self.segment_durable_pending
+            .lock()
+            .expect("segment durable frontier lock poisoned")
+            .clear();
+        let record_segment_dir = self.record_segment_dir();
+        if record_segment_dir.exists() {
+            fs::remove_dir_all(&record_segment_dir).map_err(WalError::Io)?;
+        }
 
         {
             let mut header = self.header.lock().expect("header lock poisoned");
@@ -558,6 +778,37 @@ impl WalWriter {
                 return candidate;
             }
         }
+    }
+
+    pub(super) fn record_segment_dir_for_path(path: &Path) -> PathBuf {
+        let mut dir = path.to_path_buf();
+        let extension = path
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .map(|ext| format!("{ext}.d"))
+            .unwrap_or_else(|| "wal.d".to_string());
+        dir.set_extension(extension);
+        dir
+    }
+
+    pub fn record_segment_dir(&self) -> PathBuf {
+        Self::record_segment_dir_for_path(&self.path)
+    }
+
+    pub(super) fn collect_record_segments_for_path(path: &Path) -> Result<Vec<PathBuf>, WalError> {
+        let segment_dir = Self::record_segment_dir_for_path(path);
+        let mut segments = Vec::new();
+        if segment_dir.exists() {
+            for entry in fs::read_dir(&segment_dir).map_err(WalError::Io)? {
+                let entry = entry.map_err(WalError::Io)?;
+                let path = entry.path();
+                if path.extension().map_or(false, |ext| ext == "segment") {
+                    segments.push(path);
+                }
+            }
+        }
+        Self::sort_segments_by_first_lsn(&mut segments);
+        Ok(segments)
     }
 
     pub(super) fn sort_segments_by_first_lsn(segments: &mut [PathBuf]) {
@@ -787,6 +1038,8 @@ impl WalWriter {
                 }
             }
         }
+
+        segments.extend(Self::collect_record_segments_for_path(&self.path)?);
 
         if self.path.exists() {
             let metadata = fs::metadata(&self.path).map_err(|e| WalError::Io(e))?;

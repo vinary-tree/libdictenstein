@@ -27,7 +27,7 @@ use super::arena_manager::ArenaManager;
 use super::dict_impl::{DurabilityPolicy, PersistentARTrie};
 use super::disk_load::read_root_descriptor_arena_count;
 use super::error::{PersistentARTrieError, Result};
-use super::wal::{AsyncWalConfig, AsyncWalWriter, WalConfig};
+use super::wal::{AsyncWalConfig, AsyncWalWriter, WalConfig, WalReader};
 
 impl<V: DictionaryValue> PersistentARTrie<V> {
     /// **A freshly-created byte trie builds the lock-free overlay directly. The
@@ -442,6 +442,22 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
                 )
             })?;
         let wal_writer = Arc::new(wal_writer);
+        let segment_set = wal_writer
+            .collect_wal_segments(&WalConfig::default())
+            .unwrap_or_default();
+        let (segment_checkpoint_lsn, segment_commit_seq_gen) =
+            AsyncWalWriter::segment_replay_bounds(&segment_set);
+        let next_lsn = next_lsn.max(wal_writer.current_lsn());
+        let checkpoint_lsn = checkpoint_lsn
+            .map(|lsn| lsn.max(segment_checkpoint_lsn))
+            .or(Some(segment_checkpoint_lsn))
+            .map(|lsn| {
+                lsn.max(
+                    WalReader::read_header(&wal_path)
+                        .map(|h| h.checkpoint_lsn)
+                        .unwrap_or(0),
+                )
+            });
 
         // M2b — Order-A durable-overlay recovery seeding (mirrors char mmap_ctor).
         //
@@ -470,17 +486,13 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
         // F7 FIX C: base = max LSN over ALL segments (archive + active), falling back to
         // the active-only frontier when no segments are enumerable (e.g. archiving off).
         let recovered_frontier = {
-            let archive_config_for_base = WalConfig::default();
-            let full_max = wal_writer
-                .collect_wal_segments(&archive_config_for_base)
-                .ok()
-                .and_then(|segments| AsyncWalWriter::max_lsn_in_segments(&segments));
+            let full_max = AsyncWalWriter::max_lsn_in_segments(&segment_set);
             full_max
                 .unwrap_or_else(|| next_lsn.saturating_sub(1))
                 .max(next_lsn.saturating_sub(1))
         };
         let commit_seq_seed = {
-            let mut max_commit_seq_gen = 0u64;
+            let mut max_commit_seq_gen = segment_commit_seq_gen;
             if wal_path.exists() {
                 use crate::persistent_artrie::core::wal::{WalReader, WalRecord};
                 if let Ok(mut reader) = WalReader::new(&wal_path) {
