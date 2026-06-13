@@ -207,10 +207,12 @@ Date format is ISO-8601 (YYYY-MM-DD).
   `tests/serialization_value_roundtrip.rs` covers DynamicDawg/DAT byte
   variants, char variants, and a regression-guard for the legacy
   drop-values behavior.
-- **`SharedVocabARTrie` no-op stubs** now emit `log::warn!` on every call
-  with non-default arguments, naming the discarded argument and
-  recommending an alternative. Behavior unchanged for back-compat. New
-  `tests/vocab_trait_honesty.rs` pins every documented sentinel return.
+- **`SharedVocabARTrie` no-op stubs were made visible as an interim
+  hardening step.** At this point in the history, unsupported methods emitted
+  `log::warn!` instead of silently discarding non-default arguments. This was
+  later superseded by the Unreleased persistent-vocab change above:
+  `insert_with_value`, `update_or_insert`, and `union_with` now perform real
+  index-aware writes and are pinned by `tests/vocab_trait_honesty.rs`.
 - **`FilterableValue::Atom`** associated type added; `Vec<T>` / `HashSet<T>`
   / `SmallVec<A>` get per-element semantics
   (`self.iter().any(predicate)` / `self.iter().all(predicate)`) instead
