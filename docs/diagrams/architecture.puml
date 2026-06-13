@@ -25,7 +25,7 @@ package "Trait layer" #E1BEE7 {
 
 package "Unit abstraction" #CFD8DC {
   rectangle "**CharUnit**\nu8 · char · u64" as CU
-  rectangle "**KeyEncoding**\nByteKey · CharKey" as KE
+  rectangle "**KeyEncoding**\nByteKey · CharKey · U64Key" as KE
 }
 
 package "In-memory backends (always on)" #C8E6C9 {
@@ -41,7 +41,9 @@ package "feature pathmap-backend" #FFF59D {
 
 package "feature persistent-artrie (disk-backed)" #BBDEFB {
   rectangle "PersistentARTrie / …Char" as PA
+  rectangle "PersistentARTrieU64Compact\n/ Prefix3Compat" as PU64
   rectangle "PersistentVocabARTrie" as PV
+  rectangle "PersistentSuffixAutomaton\nPersistentSuffixTree\nPersistentScdawg\n(byte / Char)" as PSG
 }
 
 package "Entry points" #B2DFDB {
@@ -55,10 +57,14 @@ SA  ..|> Dict
 SC  ..|> Dict
 PM  ..|> Dict
 PA  ..|> Dict
+PU64 ..|> Dict
 PV  ..|> Bij
+PSG ..|> Dict
+PSG ..> Node : snapshot nodes
 Node <.. Dict
 DAT ..> CU  : labels
 PA  ..> KE  : keys
+PU64 ..> KE : native u64 keys
 Fac ..> DAT : builds
 Pre ..> Dict : re-exports
 @enduml

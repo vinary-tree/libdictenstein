@@ -25,6 +25,15 @@ Date format is ISO-8601 (YYYY-MM-DD).
 
 ### Added
 
+- **Persistent native-key documentation refresh.** README, backend guide,
+  persistence architecture docs, and persistent suffix-index design docs now
+  describe the current `persistent-artrie` implementation set:
+  `PersistentARTrie{,Char}`, `PersistentARTrieU64Compact`,
+  `PersistentARTrieU64Prefix3Compat`, `PersistentVocabARTrie`, and native
+  persistent suffix automaton/tree/SCDAWG variants. The docs distinguish
+  lock-free ARTrie overlay publication from snapshot-read / copy-on-write
+  suffix graph writes, and summarize the appended u64 benchmark artifacts
+  (`111`, `112`) without replacing historical ledger data.
 - **Zero-plumbing, MORK-facing dictionaries** (`pathmap::snapshot`):
   `PathMapSnapshot` / `PathMapRef` (and `…Char` variants) wrap a **borrowed** or
   `𝒪(1)`-snapshotted `PathMap` so a caller that already holds one (e.g. MORK's

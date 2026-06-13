@@ -7,15 +7,15 @@
 skinparam backgroundColor #FFFFFF
 skinparam defaultFontName "DejaVu Sans"
 skinparam ArrowColor #37474F
-title PersistentARTrie — the lock-free **durable** write stack
+title Persistent ARTrie family — lock-free **durable** overlay stack
 
-rectangle "**Client API**\nARTrie · MutableMappedDictionary\ninsert_with_value · upsert · get · iter_prefix" as Client #BBDEFB
+rectangle "**Client API**\nPersistentARTrie · …Char · …U64Compact · Vocab\ninsert_with_value · upsert · sequence insert · get · iter_prefix" as Client #BBDEFB
 
-rectangle "**Lock-free overlay**  (the *sole* in-memory representation)\narc-swap root · adaptive ART nodes (Node4/16/48/256)\npath compression · copy-on-write structural sharing" as Overlay #FFE0B2
+rectangle "**Lock-free overlay**  (the live representation)\natomic root · immutable adaptive edge stores\nByteKey · CharKey · U64Key\npath compression · copy-on-write structural sharing" as Overlay #FFE0B2
 
-rectangle "**Durability — Order-A** (data-loss-critical ordering)\n① append + fsync WAL record   ② publish via root-CAS\n③ CommitRank + mark_committed → committed-prefix watermark\nepoch-based reclamation (EBR)" as Dur #FFCDD2
+rectangle "**Durability — log before publish**\n① append + fsync WAL record   ② publish via CAS\n③ commit rank / watermark where applicable\ncheckpoint lock serializes checkpoint publication" as Dur #FFCDD2
 
-rectangle "**Block storage**\nmmap (default)  |  io_uring + O_DIRECT (feature)\n256 KB arenas · swizzled (offset) pointers" as Store #CFD8DC
+rectangle "**Checkpoint storage**\nmmap (default)  |  io_uring + O_DIRECT (feature)\nCX/dense overlay images · retained WAL replay\nu64 compact prefix-4 profile" as Store #CFD8DC
 
 Client --> Overlay : "read / write"
 Overlay --> Dur : "publish"
@@ -25,10 +25,11 @@ Store ..> Overlay : "reopen → rebuild overlay\n(dense image + WAL replay)"
 note right of Dur
   **acknowledged ⟹ durable**
   a write becomes visible only AFTER its
-  WAL record is fsync-durable (Order-A).
+  WAL record is fsync-durable.
   Linearization point = the winning CAS.
-  Watermark is the only safe checkpoint LSN
-  under out-of-order lock-free commit.
+  For byte/char/vocab, the watermark is
+  the safe checkpoint LSN under out-of-order
+  lock-free commit.
   (TLA+ checked: no lost writes)
 end note
 @enduml

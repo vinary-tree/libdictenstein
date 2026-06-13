@@ -1,5 +1,6 @@
 //! High-performance dictionary data structures — tries, DAWGs, double-array tries, suffix
-//! automata, and a lock-free durable Adaptive Radix Tree — unified behind one trait API.
+//! automata, compact suffix graphs, and lock-free durable Adaptive Radix Tries —
+//! unified behind one trait API.
 //!
 //! libdictenstein provides the *container* half of approximate string matching: efficient,
 //! traversable collections of terms. The *query* half — a Levenshtein-automaton transducer —
@@ -21,8 +22,8 @@
 //! | **[SuffixAutomatonChar]** | Unicode substring search | ⭐⭐⭐ | ⭐⭐ | ✅ Insert + Remove | ✅ Character-level |
 //! | **[Scdawg]** | Substring search (static, compact) | ⭐⭐⭐⭐ | ⭐⭐⭐⭐ | ✅ Insert-only | Byte-level |
 //! | **[ScdawgChar]** | Unicode substring search (static) | ⭐⭐⭐⭐ | ⭐⭐⭐⭐ | ✅ Insert-only | ✅ Character-level |
-//! | **[PathMapDictionary]** (feature `pathmap-backend`) | Fast in-memory queries | ⭐⭐⭐⭐ | ⭐⭐⭐ | ✅ Thread-safe | Byte-level |
-//! | **[PathMapDictionaryChar]** (feature `pathmap-backend`) | Fast in-memory queries (Unicode) | ⭐⭐⭐⭐ | ⭐⭐⭐ | ✅ Thread-safe | ✅ Character-level |
+//! | **`PathMapDictionary`** (feature `pathmap-backend`) | Fast in-memory queries | ⭐⭐⭐⭐ | ⭐⭐⭐ | ✅ Thread-safe | Byte-level |
+//! | **`PathMapDictionaryChar`** (feature `pathmap-backend`) | Fast in-memory queries (Unicode) | ⭐⭐⭐⭐ | ⭐⭐⭐ | ✅ Thread-safe | ✅ Character-level |
 //!
 //! ## Disk-backed backends (feature `persistent-artrie`)
 //!
@@ -30,14 +31,15 @@
 //! |---------|----------|-------------|-------------|---------|
 //! | **[PersistentARTrie]** | Disk-backed key/value, byte keys | mmap + WAL | Lock-free CAS | Byte-level |
 //! | **[PersistentARTrieChar]** | Disk-backed key/value, Unicode | mmap + WAL | Lock-free CAS | ✅ Character-level |
-//! | **[PersistentARTrieU64]** | Disk-backed sequence key/value, u64 labels | overlay CX snapshot + WAL | Lock-free CAS | 64-bit labels |
-//! | **[PersistentSuffixAutomaton]** | Disk-backed substring search, byte keys | native snapshot + WAL | Copy-on-write snapshots | Byte-level |
-//! | **[PersistentSuffixAutomatonChar]** | Disk-backed Unicode substring search | native snapshot + WAL | Copy-on-write snapshots | ✅ Character-level |
-//! | **[PersistentSuffixTree]** | Disk-backed suffix-tree-compatible substring API, byte keys | native compact suffix-tree snapshot + WAL | Copy-on-write snapshots | Byte-level |
-//! | **[PersistentSuffixTreeChar]** | Disk-backed suffix-tree-compatible Unicode substring API | native compact suffix-tree snapshot + WAL | Copy-on-write snapshots | ✅ Character-level |
-//! | **[PersistentScdawg]** | Disk-backed compact-suffix API, byte keys | native suffix snapshot + WAL | Copy-on-write snapshots | Byte-level |
-//! | **[PersistentScdawgChar]** | Disk-backed compact-suffix API, Unicode | native suffix snapshot + WAL | Copy-on-write snapshots | ✅ Character-level |
-//! | **[PersistentVocabARTrie]** | Vocabulary trie (term ↔ u64 index) | mmap + WAL | RwLock | ✅ Character-level |
+//! | **[PersistentARTrieU64]** / **[PersistentARTrieU64Compact]** | Disk-backed sequence key/value, native u64 labels | overlay CX snapshot + WAL | Lock-free CAS | 64-bit labels |
+//! | **[PersistentARTrieU64Prefix3Compat]** | Prefix-3 u64 CX compatibility/baseline profile | overlay CX snapshot + WAL | Lock-free CAS | 64-bit labels |
+//! | **[PersistentSuffixAutomaton]** | Disk-backed substring search, byte keys | native suffix snapshot + WAL | Snapshot reads, COW writes | Byte-level |
+//! | **[PersistentSuffixAutomatonChar]** | Disk-backed Unicode substring search | native suffix snapshot + WAL | Snapshot reads, COW writes | ✅ Character-level |
+//! | **[PersistentSuffixTree]** | Disk-backed suffix-tree-compatible substring API, byte keys | native compact suffix-tree snapshot + WAL | Snapshot reads, COW writes | Byte-level |
+//! | **[PersistentSuffixTreeChar]** | Disk-backed suffix-tree-compatible Unicode substring API | native compact suffix-tree snapshot + WAL | Snapshot reads, COW writes | ✅ Character-level |
+//! | **[PersistentScdawg]** | Disk-backed compact-suffix API, byte keys | native SCDAWG snapshot + WAL | Snapshot reads, COW writes | Byte-level |
+//! | **[PersistentScdawgChar]** | Disk-backed compact-suffix API, Unicode | native SCDAWG snapshot + WAL | Snapshot reads, COW writes | ✅ Character-level |
+//! | **[PersistentVocabARTrie]** | Vocabulary trie (term ↔ u64 index) | overlay checkpoint + WAL | Lock-free CAS | ✅ Character-level |
 //!
 //! Use the [`factory::DictionaryFactory`] for a unified construction API across
 //! all in-memory backends. See [`bijective::BijectiveDictionary`] for the
@@ -52,11 +54,11 @@
 //! [SuffixAutomatonChar]: suffix_automaton::SuffixAutomatonChar
 //! [Scdawg]: scdawg::Scdawg
 //! [ScdawgChar]: scdawg::ScdawgChar
-//! [PathMapDictionary]: pathmap::PathMapDictionary
-//! [PathMapDictionaryChar]: pathmap::PathMapDictionaryChar
 //! [PersistentARTrie]: persistent_artrie::PersistentARTrie
 //! [PersistentARTrieChar]: persistent_artrie::char::PersistentARTrieChar
 //! [PersistentARTrieU64]: persistent_artrie::PersistentARTrieU64
+//! [PersistentARTrieU64Compact]: persistent_artrie::PersistentARTrieU64Compact
+//! [PersistentARTrieU64Prefix3Compat]: persistent_artrie::PersistentARTrieU64Prefix3Compat
 //! [PersistentSuffixAutomaton]: persistent_artrie::PersistentSuffixAutomaton
 //! [PersistentSuffixAutomatonChar]: persistent_artrie::PersistentSuffixAutomatonChar
 //! [PersistentSuffixTree]: persistent_artrie::PersistentSuffixTree

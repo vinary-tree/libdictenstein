@@ -268,11 +268,21 @@ let dict = DynamicDawgU64::new();   // thread-safe insert + remove over u64 labe
 
 #### 9. Persistent ARTrie family
 
-Crash-durable Adaptive Radix Trees: `PersistentARTrie` / `PersistentARTrieChar` (key → value)
-and `PersistentVocabARTrie` (term ↔ u64 bijection), built on a lock-free overlay, a write-ahead
-log, and `mmap` (or `io_uring`) block storage. See the
+Crash-durable Adaptive Radix Tries: `PersistentARTrie` / `PersistentARTrieChar`
+(key -> value), `PersistentARTrieU64Compact` (native `u64` sequence keys), and
+`PersistentVocabARTrie` (term <-> u64 vocabulary ids). These are built on a
+lock-free overlay, write-ahead logging, and CX checkpoint images over `mmap`
+(or `io_uring`) block storage. See the
 [crate README](../../README.md#persistent-artrie--lock-free--durable) and
 [mmap-architecture.md](../persistence/mmap-architecture.md).
+
+#### 10. Persistent suffix graph family
+
+Durable substring indexes: `PersistentSuffixAutomaton`, `PersistentSuffixTree`,
+and `PersistentScdawg`, each with byte and `Char` variants. These persist
+native suffix graph snapshots plus operation WALs. Reads traverse immutable
+snapshots without taking the writer lock; writes rebuild and publish a new graph
+revision copy-on-write.
 
 ## Decision Guide
 
@@ -307,6 +317,11 @@ Start: What do you need?
 | **Unicode** | Byte | ✅ Char | Byte | ✅ Char | Byte | Byte |
 | **Thread-Safe** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | **Use Case** | General | Unicode | Dynamic | Dyn+Unicode | Simple | Substring |
+
+Persistent backends are excluded from this in-memory comparison table because
+they require file paths, durability policy, and checkpoint/recovery costs. For
+durable prefix/key-value dictionaries choose `PersistentARTrie`/`Char`/`U64`;
+for durable substring search choose the persistent suffix graph family.
 
 ## Performance Benchmarks
 

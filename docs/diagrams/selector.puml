@@ -17,15 +17,25 @@ start
 :Store a set of terms\n(optionally term → value);
 
 if (Match **substrings** (anywhere),\nnot just prefixes?) then (yes)
-  if (Corpus is **static** (build once)?) then (yes)
-    :**Scdawg / ScdawgChar**\ncompact symmetric DAWG\n(bidirectional substring index);<<#C8E6C9>>
-  else (mutable)
-    :**SuffixAutomaton(Char)**\nonline substring automaton\n(≤ 2·n − 1 states);<<#C8E6C9>>
+  if (Must **persist to disk**\nand survive crashes?) then (yes)
+    if (Need compact/bidirectional\nsubstring locations?) then (yes)
+      :**PersistentScdawg / …Char**\nnative compact suffix graph\n(snapshot reads, COW writes);<<#BBDEFB>>
+    else (suffix API)
+      :**PersistentSuffixAutomaton**\n/**PersistentSuffixTree**\nbyte or Unicode native graph;<<#BBDEFB>>
+    endif
+  else (in-memory)
+    if (Corpus is **static** (build once)?) then (yes)
+      :**Scdawg / ScdawgChar**\ncompact symmetric DAWG\n(bidirectional substring index);<<#C8E6C9>>
+    else (mutable)
+      :**SuffixAutomaton(Char)**\nonline substring automaton\n(≤ 2·n − 1 states);<<#C8E6C9>>
+    endif
   endif
   stop
 else (prefix / whole-word)
   if (Must **persist to disk**\nand survive crashes?) then (yes)
-    if (Map **term ↔ u64** id\n(a vocabulary)?) then (yes)
+    if (Native **u64 sequence** keys\n(time series / tokens)?) then (yes)
+      :**PersistentARTrieU64Compact**\nnative 64-bit labels\n(prefix-4 CX profile);<<#BBDEFB>>
+    elseif (Map **term ↔ u64** id\n(a vocabulary)?) then (yes)
       :**PersistentVocabARTrie**\nbijective term ↔ id;<<#BBDEFB>>
     else (key → value)
       :**PersistentARTrie / …Char**\nlock-free **durable** ART\n(mmap or io_uring);<<#BBDEFB>>

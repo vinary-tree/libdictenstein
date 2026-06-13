@@ -1,6 +1,6 @@
 # libdictenstein
 
-**A toolbox of high-performance dictionary data structures for Rust** — tries, DAWGs, double-array tries, suffix automata, and a lock-free **durable** Adaptive Radix Tree — unified behind one small trait API, and backed by machine-checked proofs.
+**A toolbox of high-performance dictionary data structures for Rust** — tries, DAWGs, double-array tries, suffix automata, compact suffix graphs, and lock-free **durable** Adaptive Radix Tries — unified behind one small trait API, and backed by machine-checked proofs.
 
 ![License](https://img.shields.io/badge/license-Apache--2.0-blue)
 ![MSRV](https://img.shields.io/badge/rustc-1.70%2B-orange)
@@ -21,9 +21,10 @@ It is the companion to **[liblevenshtein](https://github.com/universal-automata/
 
 ## Highlights
 
-- **16 backends** spanning the time/space/durability frontier — pick by need, not by lock-in.
+- **20+ backend variants** spanning the time/space/durability frontier — pick by need, not by lock-in.
 - **Three alphabets, one code path** — byte (`u8`), Unicode (`char`), and 64-bit token (`u64`) units via the [`CharUnit`](#core-traits) abstraction.
-- **A lock-free, crash-durable Adaptive Radix Tree** — disk-backed (`mmap` or `io_uring`), write-ahead-logged, with `O(∣key∣)` lookups independent of dictionary size.
+- **A lock-free, crash-durable persistent ARTrie family** — disk-backed (`mmap` or `io_uring`), write-ahead-logged, with native byte, Unicode, vocabulary, and `u64` sequence profiles.
+- **Native persistent substring indexes** — suffix automaton, suffix-tree-compatible, and SCDAWG variants for byte and Unicode corpora.
 - **Set algebra over dictionaries** — union / intersection / difference / prefix *zippers* compose any two backends lazily.
 - **Formally verified core** — 67 Rocq files (0 axioms, 0 admits), 52 TLA⁺ models, and a CI-gated `unsafe` contract inventory (see [Formal verification](#formal-verification)).
 
@@ -41,10 +42,13 @@ It is the companion to **[liblevenshtein](https://github.com/universal-automata/
 | **Scdawg** / `…Char`                                         | static, compact **bidirectional** substring index | build-once            | `u8` / `char`         | `O(∣q∣)`       |
 | **PathMapDictionary** / `…Char` *(feat. `pathmap-backend`)*  | shared-structure mutable trie                     | insert + remove       | `u8` / `char`         | `O(∣q∣)`       |
 | **PersistentARTrie** / `…Char` *(feat. `persistent-artrie`)* | disk-backed, crash-durable key→value              | insert + remove       | `u8` / `char`         | `O(∣q∣)` + I/O |
+| **PersistentARTrieU64Compact** *(feat. `persistent-artrie`)* | durable `u64` sequence/time-series key→value      | insert + remove       | `u64`                 | `O(∣q∣)` + I/O |
 | **PersistentSuffixAutomaton** / `…Char` *(feat. `persistent-artrie`)* | disk-backed **substring** search                  | insert + remove       | `u8` / `char`         | `O(∣q∣)` + I/O |
+| **PersistentSuffixTree** / `…Char` *(feat. `persistent-artrie`)* | disk-backed suffix-tree-compatible substring API  | insert + remove       | `u8` / `char`         | `O(∣q∣)` + I/O |
+| **PersistentScdawg** / `…Char` *(feat. `persistent-artrie`)* | disk-backed compact bidirectional substring index | insert + remove       | `u8` / `char`         | `O(∣q∣)` + I/O |
 | **PersistentVocabARTrie** *(feat. `persistent-artrie`)*      | durable **term ↔ u64** vocabulary (bijection)     | insert                | `char`                | `O(∣q∣)`       |
 
-`∣q∣` is the query length; lookup cost is **independent of the number of stored terms** `n` for every backend — the defining property of trie-shaped indexes. The factory (below) constructs all **11** in-memory backends from one call; the 5 disk-backed variants take a file path.
+`∣q∣` is the query length; lookup cost is **independent of the number of stored terms** `n` for every backend — the defining property of trie-shaped indexes. The factory (below) constructs all **11** in-memory backends from one call; disk-backed variants take a file path because creation, recovery, and checkpointing are part of the API.
 
 ---
 
@@ -52,7 +56,7 @@ It is the companion to **[liblevenshtein](https://github.com/universal-automata/
 
 <img src="docs/diagrams/architecture.svg" alt="Trait layer over backend families" width="760"/>
 
-The design is a thin **trait layer** over interchangeable **backend families**. Backends implement only the traits they can honor (a read-only static trie implements `Dictionary`; a DAWG also implements `MutableDictionary` and `CompactableDictionary`). The **unit abstraction** (`CharUnit` for edge labels, `KeyEncoding` for the persistent keys) lets one generic implementation serve `u8`, `char`, and `u64` alphabets. The **factory** and **prelude** are the ergonomic entry points.
+The design is a thin **trait layer** over interchangeable **backend families**. Backends implement only the traits they can honor (a read-only static trie implements `Dictionary`; a DAWG also implements `MutableDictionary` and `CompactableDictionary`). The **unit abstraction** (`CharUnit` for edge labels, `KeyEncoding` for persistent keys) lets shared implementations serve `u8`, `char`, and `u64` alphabets. The **factory** and **prelude** are the ergonomic entry points.
 
 ---
 
@@ -112,6 +116,41 @@ assert_eq!(reopened.get("term00500"), Some(500));
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
+**Persist native `u64` sequence keys**:
+
+```rust,no_run
+use libdictenstein::persistent_artrie::PersistentARTrieU64Compact;
+
+// Prefix-4 CX profile: the default compact native-u64 representation.
+let series = PersistentARTrieU64Compact::<u64>::create("series.ar64")?;
+series.insert_sequence_with_value(
+    &[0x1000_0000_0000_002a, 0x3000_0000_0000_0100, f64::to_bits(42.5)],
+    f64::to_bits(42.5),
+);
+series.checkpoint()?;
+
+let reopened = PersistentARTrieU64Compact::<u64>::open("series.ar64")?;
+assert!(reopened.contains_sequence(
+    &[0x1000_0000_0000_002a, 0x3000_0000_0000_0100, f64::to_bits(42.5)]
+));
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+**Persist substring indexes**:
+
+```rust,no_run
+use libdictenstein::persistent_artrie::PersistentScdawgChar;
+
+let index = PersistentScdawgChar::<u64>::create("docs.pscdawg")?;
+index.insert_with_value("the quick brown fox", 7);
+index.checkpoint()?;
+
+let reopened = PersistentScdawgChar::<u64>::open("docs.pscdawg")?;
+assert!(reopened.contains_substring("quick"));
+assert_eq!(reopened.locations("brown"), vec![("the quick brown fox".to_string(), 10)]);
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
 ---
 
 ## Core traits
@@ -131,7 +170,7 @@ The public surface is small and layered — implement only what a backend can su
 Two **unit abstractions** let one implementation serve every alphabet:
 
 - **`CharUnit`** — the edge-label type: `u8` (bytes; ASCII/Latin-1, smallest), `char` (Unicode scalar values; correct character-level semantics), or `u64` (token / time-series labels).
-- **`KeyEncoding`** — the persistent-trie key model: `ByteKey` (`u8` spans) or `CharKey` (`u32` codepoint spans).
+- **`KeyEncoding`** — the persistent-trie key model: `ByteKey` (`u8` spans), `CharKey` (`u32` codepoint spans), or `U64Key` (native 64-bit sequence units).
 
 Values must implement **`DictionaryValue`** (`Clone + Send + Sync + 'static`); the blanket impls cover `()`, the integer types, `String`, `Vec<T>`, `HashSet<T>`, and `SmallVec`. `()` makes a *set* (membership only); any other `V` makes a *map*.
 
@@ -214,23 +253,27 @@ answers membership in `O(∣q∣)`, **independent of `N`** — they diverge on u
 | **SuffixAutomaton**  | `O(∣q∣)` *(substring)* | `O(1)` amortized | `O(n)` rebuild   | ~40–50        | `O(n)` online              |
 | **Scdawg**           | `O(∣q∣)` *(substring)* | build-once       | —                | ~30–40        | `O(n)`                     |
 | **PersistentARTrie** | `O(∣q∣)` + I/O         | `O(∣q∣)` + I/O | `O(∣q∣)` + I/O | ~30–50 + disk | incremental                |
+| **PersistentSuffix\*** | `O(∣q∣)` + I/O *(substring)* | rebuild+publish | rebuild+publish | graph + disk | copy-on-write native graph |
 
 The double-array trie's `O(N log N)` build buys the cheapest, most cache-resident lookup; the DAWG
 family trades a `log n` insert factor for runtime mutation **and** suffix sharing; the suffix automaton
-spends ~2× the memory to answer *substring* (not just prefix) queries; the persistent ART adds a bounded,
-path-compressed number of disk I/Os per level.
+spends ~2× the memory to answer *substring* (not just prefix) queries; the persistent ARTrie family adds
+crash recovery and checkpointable disk images, while the persistent suffix family stores native substring
+graphs behind snapshot-style readers.
 
 ---
 
 ## Persistent ARTrie — lock-free & durable
 
-The flagship backend is a disk-backed **Adaptive Radix Tree (ART)**: a radix tree whose nodes adapt their representation to their fanout, paired with a **write-ahead log (WAL)** for crash durability and a lock-free (atomic **compare-and-swap**, *CAS*) in-memory overlay for concurrency.
+The flagship backend family is a disk-backed **Adaptive Radix Trie (ARTrie)**: a radix tree whose nodes adapt their representation to their fanout, paired with a **write-ahead log (WAL)** for crash durability and a lock-free (atomic **compare-and-swap**, *CAS*) in-memory overlay for concurrency.
 
 <img src="docs/diagrams/artrie-layering.svg" alt="PersistentARTrie durability stack" width="720"/>
 
 ### Adaptive nodes + SIMD
 
-A radix-tree node's fanout ranges from 1 to `∣Σ∣ = 256`. A fixed 256-pointer array wastes ~98% of its slots on sparse nodes; a sorted list is slow on dense ones. **ART stores each node in one of four layouts, chosen by fanout** — so memory tracks the children actually present:
+A radix-tree node's fanout ranges from 1 to `∣Σ∣`. A fixed dense array wastes most of its slots on sparse nodes; a sorted list is slow on dense ones. The persistent overlay uses an immutable adaptive edge store: byte labels get the classic ART tiers, while `char` and `u64` labels stay native and choose between inline, sorted, and sparse-indexed storage by fanout.
+
+For byte keys, the hot path is the familiar Node4/16/48/256 ART ladder:
 
 ```text
 find_child(node, byte):
@@ -243,7 +286,7 @@ find_child(node, byte):
         Node256 →  children[byte]                         # direct array; dense nodes
 ```
 
-Per-node lookup is `O(1)` (bounded by `∣Σ∣`); the **Node16** path turns `≤ 16` scalar comparisons into one **SIMD** (single-instruction, multiple-data) `_mm_cmpeq_epi8` instruction. A node grows to the next layout when it overflows (Node4→16→48→256) and shrinks on removal — amortized `O(1)` per child. — Leis et al. (2013).
+Per-node lookup is bounded by the adaptive representation; the **Node16** byte path turns `≤ 16` scalar comparisons into one **SIMD** (single-instruction, multiple-data) `_mm_cmpeq_epi8` instruction. For non-byte labels, native `u32`/`u64` labels avoid byte expansion and use sorted or indexed lookup once fanout outgrows inline storage. — Leis et al. (2013).
 
 ### Path compression
 
@@ -259,9 +302,16 @@ check_prefix(node, key, depth):
 
 Tree height drops from `O(∣key∣)` to `O(∣key∣ / s̄)` for mean compressed span `s̄`, a ~2–4× reduction (hence ~2–4× fewer I/Os) on natural-language keys. — Morrison (1968).
 
+### Persistent variants
+
+- **`PersistentARTrie` / `PersistentARTrieChar`** use `ByteKey` / `CharKey`, shared overlay nodes, WAL records, and CX checkpoint images.
+- **`PersistentARTrieU64Compact`** is the default native `u64` sequence-key profile. It stores one `u64` edge per transition, writes shared WAL records, and checkpoints through the CX compressor with a prefix-4 budget. **`PersistentARTrieU64Prefix3Compat`** opens or benchmarks prefix-3 CX images explicitly.
+- **`PersistentVocabARTrie`** is a durable `term -> u64` and `u64 -> term` vocabulary. Forward lookup walks the lock-free char overlay; reverse lookup uses an in-memory map rebuilt from checkpoint/WAL recovery.
+- **`PersistentSuffixAutomaton` / `PersistentSuffixTree` / `PersistentScdawg`** and their `Char` variants persist native substring graphs plus length-prefixed operation WALs. Reads traverse immutable snapshots without taking the writer lock; writes rebuild and publish a new graph copy.
+
 ### Durable writes: the Order-A protocol
 
-The persistent ARTrie is **lock-free** (readers and writers never block on a global lock) yet **crash-durable** (an acknowledged write survives power loss). The reconciling invariant is `acknowledged ⟹ durable`, enforced by a strict, non-negotiable ordering ([`durable_write.rs`](src/persistent_artrie/core/overlay/durable_write.rs)):
+The byte/char persistent ARTrie and vocabulary implementations are **lock-free** (readers and writers never block on a global mutation lock) yet **crash-durable** (an acknowledged write survives power loss). The reconciling invariant is `acknowledged ⟹ durable`, enforced by a strict, non-negotiable ordering ([`durable_write.rs`](src/persistent_artrie/core/overlay/durable_write.rs)):
 
 ```text
 durable_insert(term, value):                  # requires durability ∈ { Immediate, GroupCommit }
@@ -280,6 +330,8 @@ Why the order is sacred:
 
 Freed nodes are reclaimed by **epoch-based reclamation (EBR)**: memory is released only after every reader that *could* hold a pointer to it has departed its epoch — bounded-latency, lock-free, and free of use-after-free. The on-disk substrate is `mmap` by default, or `io_uring` + `O_DIRECT` (feature `io-uring-backend`, Linux ≥ 5.1) for batched async I/O. — Mohan et al. (1992) for the WAL/recovery discipline; Driscoll et al. (1989) for the copy-on-write structural sharing.
 
+The native `u64` profile follows the same log-before-publish rule with shared WAL records and lock-free root publication, but its compact CX snapshot format is intentionally not the old native bincode snapshot/WAL format. Historical bincode controls live only in git history.
+
 ---
 
 ## Feature flags
@@ -291,7 +343,7 @@ Freed nodes are reclaimed by **epoch-based reclamation (EBR)**: memory is releas
 | `serialization`               | `serde` + `bincode` + JSON (de)serialization      |                                                                                                                                                                                              |
 | `compression`                 | gzip the serialized form (`flate2`)               |                                                                                                                                                                                              |
 | `protobuf`                    | Protobuf (de)serialization (`prost`)              |                                                                                                                                                                                              |
-| `persistent-artrie`           | the disk-backed ART family                        | `mmap` + WAL                                                                                                                                                                                 |
+| `persistent-artrie`           | the disk-backed ARTrie, vocabulary, and native suffix graph families | `mmap` + WAL + CX/native snapshots                                                                                                                                                            |
 | `io-uring-backend`            | `io_uring` + `O_DIRECT` block storage             | Linux ≥ 5.1                                                                                                                                                                                  |
 | `parallel-merge`              | multi-core merge via `rayon`                      |                                                                                                                                                                                              |
 | `group-commit`                | batched WAL group commit                          | ⚠️ **experimental** — measured ~1.5–2× *regression* on NVMe; intended only for slow storage. See [`docs/persistence/group_commit_regression.md`](docs/persistence/group_commit_regression.md) |
@@ -326,7 +378,9 @@ Indicative figures for a 10,000-word English corpus (build once, then query) —
    contains (cached)         ~0.22 µs         ~6.7 µs
 ```
 
-The takeaway: a static double-array trie wins read-heavy workloads; a DAWG pays a constant factor for runtime `insert`/`remove` and suffix-sharing. Disk-backed throughput (mmap vs io_uring) is characterized in [`docs/io_uring_migration/benchmark_results.md`](docs/io_uring_migration/).
+The takeaway: a static double-array trie wins read-heavy in-memory workloads; a DAWG pays a constant factor for runtime `insert`/`remove` and suffix-sharing. Disk-backed throughput (mmap vs io_uring) is characterized in [`docs/io_uring_migration/benchmark_results.md`](docs/io_uring_migration/).
+
+Recent persistent-u64 fixed-sample benchmarks used a seeded time-series workload and Welch's unequal-variance t-test. `PersistentARTrieU64Compact` produced a `656,679` byte checkpoint versus `1,585,249` bytes for byte-encoded `u64` keys, and lookup averaged `350.72 ns/query` versus `455.01 ns/query` for the encoded control (`p ≈ 5.46e-38`). Its prefix-4 CX budget also reduced checkpoint bytes/entry versus the prefix-3 compatibility profile (`320.97` vs `336.74`, `p ≈ 9.23e-127`). Raw artifacts were appended to pgmcp as experiment artifacts `111` and `112`.
 
 ---
 
