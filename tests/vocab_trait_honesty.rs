@@ -1,13 +1,10 @@
 //! Trait-honesty tests for `PersistentVocabARTrie` and `SharedVocabARTrie`.
 //!
-//! These tests pin the documented no-op semantics of the trait methods that
-//! cannot be honored faithfully by an append-only vocabulary trie. Each test
-//! asserts that the stub returns its documented sentinel value (`false`,
-//! `0`, or `Err(...)`) so any regression in the implementation surfaces here
-//! rather than as a silent behavior drift.
-//!
-//! The companion `log::warn!` lines emitted by each stub are observable via
-//! `RUST_LOG=warn cargo test --test vocab_trait_honesty -- --nocapture`.
+//! The mapped value for a vocab trie is the assigned u64 index. New-term
+//! value-shaped mutation APIs therefore honor the supplied value as an explicit
+//! requested index. Existing-term updates cannot remap the index without
+//! breaking the term <-> index bijection, so they report no insertion and leave
+//! the assigned index unchanged.
 
 #![cfg(feature = "persistent-artrie")]
 
@@ -27,27 +24,46 @@ fn fresh_shared(path: &std::path::Path) -> SharedVocabARTrie {
 }
 
 // =============================================================================
-// PersistentVocabARTrie — no interior mutability; trait methods are no-ops.
+// PersistentVocabARTrie — value-shaped traits map values to explicit indices.
 // =============================================================================
 
 #[test]
-fn persistent_vocab_insert_with_value_is_noop() {
+fn persistent_vocab_insert_with_value_uses_requested_index() {
     let dir = tempdir().unwrap();
     let vocab = fresh_persistent(&dir.path().join("vocab.dict"));
 
-    // Returns false (sentinel = "no-op").
-    assert!(!vocab.insert_with_value("apple", 999));
-    // The term is NOT actually inserted (this type can't mutate via &self).
-    assert!(vocab.get_value("apple").is_none());
+    assert!(vocab.insert_with_value("apple", 999));
+    assert_eq!(vocab.get_value("apple"), Some(999));
+    assert_eq!(vocab.get_term(999).as_deref(), Some("apple"));
+    assert!(
+        !vocab.insert_with_value("apple", 999),
+        "same term/index is idempotent"
+    );
 }
 
 #[test]
-fn persistent_vocab_union_with_returns_zero() {
+fn persistent_vocab_insert_with_value_rejects_index_conflicts() {
+    let dir = tempdir().unwrap();
+    let vocab = fresh_persistent(&dir.path().join("vocab.dict"));
+
+    assert!(vocab.insert_with_value("apple", 7));
+    assert!(
+        !vocab.insert_with_value("banana", 7),
+        "a second term cannot reuse an assigned index"
+    );
+    assert!(vocab.get_value("banana").is_none());
+}
+
+#[test]
+fn persistent_vocab_union_with_preserves_source_indices_for_missing_terms() {
     let dir = tempdir().unwrap();
     let path_a = dir.path().join("a.dict");
     let path_b = dir.path().join("b.dict");
     let a = fresh_persistent(&path_a);
     let b = fresh_persistent(&path_b);
+
+    b.insert_with_index("foo", 20).expect("insert foo");
+    b.insert_with_index("bar", 21).expect("insert bar");
 
     let merge_was_called = std::cell::Cell::new(false);
     let count = a.union_with(&b, |_av, _bv| {
@@ -55,12 +71,36 @@ fn persistent_vocab_union_with_returns_zero() {
         0u64
     });
 
-    assert_eq!(count, 0, "no-op should report 0");
-    assert!(!merge_was_called.get(), "merge_fn must be discarded");
+    assert_eq!(count, 2);
+    assert!(!merge_was_called.get(), "merge_fn is only for conflicts");
+    assert_eq!(a.get_value("foo"), Some(20));
+    assert_eq!(a.get_value("bar"), Some(21));
 }
 
 #[test]
-fn persistent_vocab_update_or_insert_is_noop() {
+fn persistent_vocab_union_with_calls_merge_for_conflict_but_keeps_existing_index() {
+    let dir = tempdir().unwrap();
+    let path_a = dir.path().join("a.dict");
+    let path_b = dir.path().join("b.dict");
+    let a = fresh_persistent(&path_a);
+    let b = fresh_persistent(&path_b);
+
+    a.insert_with_index("foo", 10).expect("insert into a");
+    b.insert_with_index("foo", 20).expect("insert into b");
+
+    let merge_was_called = std::cell::Cell::new(false);
+    let count = a.union_with(&b, |av, bv| {
+        merge_was_called.set(true);
+        av.max(bv).to_owned()
+    });
+
+    assert_eq!(count, 0, "existing term is not reinserted");
+    assert!(merge_was_called.get(), "merge_fn should observe conflicts");
+    assert_eq!(a.get_value("foo"), Some(10), "indices are immutable");
+}
+
+#[test]
+fn persistent_vocab_update_or_insert_inserts_default_index() {
     let dir = tempdir().unwrap();
     let vocab = fresh_persistent(&dir.path().join("vocab.dict"));
 
@@ -69,39 +109,50 @@ fn persistent_vocab_update_or_insert_is_noop() {
         update_was_called.set(true);
     });
 
-    assert!(!added, "no-op should report no-change");
-    assert!(!update_was_called.get(), "update_fn must be discarded");
+    assert!(added, "absent term should be inserted at default index");
     assert!(
-        vocab.get_value("apple").is_none(),
-        "term not actually inserted"
+        !update_was_called.get(),
+        "update_fn is only for existing terms"
     );
+    assert_eq!(vocab.get_value("apple"), Some(999));
+}
+
+#[test]
+fn persistent_vocab_update_or_insert_calls_update_but_does_not_remap_existing_index() {
+    let dir = tempdir().unwrap();
+    let vocab = fresh_persistent(&dir.path().join("vocab.dict"));
+
+    assert!(vocab.insert_with_value("apple", 7));
+    let update_was_called = std::cell::Cell::new(false);
+    let added = vocab.update_or_insert("apple", 999, |v| {
+        update_was_called.set(true);
+        *v = 11;
+    });
+
+    assert!(!added, "existing term was not newly inserted");
+    assert!(update_was_called.get(), "existing term invokes update_fn");
+    assert_eq!(vocab.get_value("apple"), Some(7), "index is immutable");
 }
 
 // =============================================================================
-// SharedVocabARTrie — actually mutates, but discards value/merge_fn/update_fn.
+// SharedVocabARTrie — same index-aware contract behind a synchronization handle.
 // =============================================================================
 
 #[test]
-fn shared_vocab_insert_with_value_ignores_value_but_inserts_term() {
+fn shared_vocab_insert_with_value_uses_requested_index() {
     let dir = tempdir().unwrap();
     let shared = fresh_shared(&dir.path().join("vocab.dict"));
 
-    // Caller asks for value=999. Vocab silently discards the value.
     let added = MutableMappedDictionary::insert_with_value(&shared, "apple", 999);
     assert!(added);
 
-    // Term is inserted, but the assigned index is auto-allocated (the first
-    // index in an empty trie is 0, not 999).
     let actual_index = MappedDictionary::get_value(&shared, "apple");
-    assert_eq!(
-        actual_index,
-        Some(0),
-        "vocab auto-assigns from 0, ignoring user-supplied value"
-    );
+    assert_eq!(actual_index, Some(999));
+    assert_eq!(shared.read().get_term(999).as_deref(), Some("apple"));
 }
 
 #[test]
-fn shared_vocab_union_with_ignores_merge_fn_but_unions_terms() {
+fn shared_vocab_union_with_preserves_source_indices() {
     let dir = tempdir().unwrap();
     let path_a = dir.path().join("a.dict");
     let path_b = dir.path().join("b.dict");
@@ -109,8 +160,8 @@ fn shared_vocab_union_with_ignores_merge_fn_but_unions_terms() {
     let b = fresh_shared(&path_b);
     {
         let g = b.write();
-        g.insert("foo").expect("insert term failed");
-        g.insert("bar").expect("insert term failed");
+        g.insert_with_index("foo", 40).expect("insert term failed");
+        g.insert_with_index("bar", 41).expect("insert term failed");
     }
 
     let merge_was_called = std::cell::Cell::new(false);
@@ -120,13 +171,13 @@ fn shared_vocab_union_with_ignores_merge_fn_but_unions_terms() {
     });
 
     assert_eq!(count, 2);
-    assert!(!merge_was_called.get(), "merge_fn must be discarded");
-    assert!(a.read().contains("foo"));
-    assert!(a.read().contains("bar"));
+    assert!(!merge_was_called.get(), "merge_fn is only for conflicts");
+    assert_eq!(a.read().get_index("foo"), Some(40));
+    assert_eq!(a.read().get_index("bar"), Some(41));
 }
 
 #[test]
-fn shared_vocab_update_or_insert_ignores_callbacks_but_inserts_term() {
+fn shared_vocab_update_or_insert_inserts_default_index_and_preserves_existing() {
     let dir = tempdir().unwrap();
     let shared = fresh_shared(&dir.path().join("vocab.dict"));
 
@@ -136,20 +187,20 @@ fn shared_vocab_update_or_insert_ignores_callbacks_but_inserts_term() {
     });
 
     assert!(added, "should report new term inserted");
-    assert!(!update_was_called.get(), "update_fn must be discarded");
-    assert_eq!(shared.read().get_value("apple"), Some(0), "auto-assigned");
-
-    // Calling again on the same term: update_fn would normally run, but here
-    // it's still discarded and the method reports "no change".
-    let added_again =
-        MutableMappedDictionary::update_or_insert(&shared, "apple", 999, |_v: &mut u64| {
-            update_was_called.set(true);
-        });
-    assert!(!added_again);
     assert!(
         !update_was_called.get(),
-        "update_fn discarded even when term already exists"
+        "update_fn is only for existing terms"
     );
+    assert_eq!(shared.read().get_value("apple"), Some(999));
+
+    let added_again =
+        MutableMappedDictionary::update_or_insert(&shared, "apple", 111, |v: &mut u64| {
+            update_was_called.set(true);
+            *v = 111;
+        });
+    assert!(!added_again);
+    assert!(update_was_called.get(), "existing term invokes update_fn");
+    assert_eq!(shared.read().get_value("apple"), Some(999));
 }
 
 // =============================================================================
@@ -213,22 +264,21 @@ fn shared_vocab_artrie_has_no_increment() {
 }
 
 #[test]
-fn shared_vocab_artrie_insert_with_value_ignores_value() {
+fn shared_vocab_artrie_insert_with_value_uses_requested_index() {
     let dir = tempdir().unwrap();
     let shared = fresh_shared(&dir.path().join("vocab.dict"));
 
-    // ARTrie::insert_with_value ignores `value`.
     let added = ARTrie::insert_with_value(&shared, "apple", 999);
     assert!(added);
-    assert_eq!(shared.read().get_value("apple"), Some(0));
+    assert_eq!(shared.read().get_value("apple"), Some(999));
 }
 
 #[test]
-fn shared_vocab_artrie_upsert_ignores_value() {
+fn shared_vocab_artrie_upsert_uses_requested_index() {
     let dir = tempdir().unwrap();
     let shared = fresh_shared(&dir.path().join("vocab.dict"));
 
     let r = ARTrie::upsert(&shared, "apple", 999);
     assert!(r.expect("upsert succeeds for vocab"));
-    assert_eq!(shared.read().get_value("apple"), Some(0));
+    assert_eq!(shared.read().get_value("apple"), Some(999));
 }

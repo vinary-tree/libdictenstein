@@ -232,48 +232,87 @@ impl MappedDictionary for PersistentVocabARTrie {
 
 // MutableMappedDictionary trait implementation.
 //
-// The vocabulary's inherent insert API assigns ids itself, so the value-shaped
-// mutation trait cannot honestly honor caller-supplied values or merge
-// functions. All three methods return their no-op sentinel value (`false` or
-// `0`) and emit `log::warn!` so the call site shows up under `RUST_LOG=warn`.
-// To mutate through this trait, use `SharedVocabARTrie`; otherwise call the
-// inherent `PersistentVocabARTrie::insert(term)` API directly.
+// The mapped value is the vocabulary index. New terms honor caller-supplied
+// values via `insert_with_index`; existing terms keep their assigned index so
+// the term <-> index bijection remains stable.
 impl MutableMappedDictionary for PersistentVocabARTrie {
-    fn insert_with_value(&self, term: &str, _value: Self::Value) -> bool {
-        log::warn!(
-            "PersistentVocabARTrie::insert_with_value({term:?}, _) is a no-op \
-             — this type has no interior mutability. Use \
-             SharedVocabARTrie::insert_with_value, or call the inherent \
-             PersistentVocabARTrie::insert via &mut self."
-        );
-        false
+    fn insert_with_value(&self, term: &str, value: Self::Value) -> bool {
+        match self.insert_with_index(term, value) {
+            Ok(inserted) => inserted,
+            Err(error) => {
+                log::warn!(
+                    "PersistentVocabARTrie::insert_with_value({term:?}, {value}) failed: {error}"
+                );
+                false
+            }
+        }
     }
 
-    fn union_with<F>(&self, _other: &Self, _merge_fn: F) -> usize
+    fn union_with<F>(&self, other: &Self, merge_fn: F) -> usize
     where
         F: Fn(&Self::Value, &Self::Value) -> Self::Value,
         Self::Value: Clone,
     {
-        log::warn!(
-            "PersistentVocabARTrie::union_with is a no-op — vocab tries are \
-             append-only and this type has no interior mutability. Use \
-             SharedVocabARTrie::union_with (note: merge_fn will still be \
-             ignored, vocab indices are auto-assigned)."
-        );
-        0
+        let other_terms: Vec<(String, u64)> = other
+            .iter_terms()
+            .filter_map(|term| other.get_index(&term).map(|index| (term, index)))
+            .collect();
+
+        let mut inserted = 0;
+        for (term, other_index) in other_terms {
+            if let Some(existing_index) = self.get_index(&term) {
+                let merged_index = merge_fn(&existing_index, &other_index);
+                if merged_index != existing_index {
+                    log::warn!(
+                        "PersistentVocabARTrie::union_with cannot remap existing term \
+                         {term:?} from index {existing_index} to {merged_index}; \
+                         vocabulary indices are immutable"
+                    );
+                }
+                continue;
+            }
+
+            match self.insert_with_index(&term, other_index) {
+                Ok(true) => inserted += 1,
+                Ok(false) => {}
+                Err(error) => {
+                    log::warn!(
+                        "PersistentVocabARTrie::union_with failed for {term:?} at \
+                         index {other_index}: {error}"
+                    );
+                }
+            }
+        }
+        inserted
     }
 
-    fn update_or_insert<F>(&self, term: &str, _default_value: Self::Value, _update_fn: F) -> bool
+    fn update_or_insert<F>(&self, term: &str, default_value: Self::Value, update_fn: F) -> bool
     where
         F: Fn(&mut Self::Value),
     {
-        log::warn!(
-            "PersistentVocabARTrie::update_or_insert({term:?}, _, _) is a no-op \
-             — this type has no interior mutability. Use \
-             SharedVocabARTrie::update_or_insert (note: default_value and \
-             update_fn will still be ignored, indices are auto-assigned)."
-        );
-        false
+        if let Some(existing_index) = self.get_index(term) {
+            let mut proposed_index = existing_index;
+            update_fn(&mut proposed_index);
+            if proposed_index != existing_index {
+                log::warn!(
+                    "PersistentVocabARTrie::update_or_insert({term:?}) cannot remap \
+                     existing index {existing_index} to {proposed_index}; vocabulary \
+                     indices are immutable"
+                );
+            }
+            return false;
+        }
+
+        match self.insert_with_index(term, default_value) {
+            Ok(inserted) => inserted,
+            Err(error) => {
+                log::warn!(
+                    "PersistentVocabARTrie::update_or_insert({term:?}, {default_value}, _) \
+                     failed: {error}"
+                );
+                false
+            }
+        }
     }
 }
 
@@ -345,82 +384,102 @@ impl MappedDictionary for SharedVocabARTrie {
     }
 }
 
-// `SharedVocabARTrie` accepts mutations through its read/write guards, but
-// it cannot honor the `value`/`merge_fn`/`update_fn` arguments that
-// `MutableMappedDictionary` exposes — vocab indices are auto-assigned by the
-// internal allocator, not chosen by the caller. The trait methods below
-// insert the term and emit `log::warn!` so the discarded argument shows up
-// under `RUST_LOG=warn`. Read the assigned index back with
-// `MappedDictionary::get_value`.
+// `SharedVocabARTrie` accepts mutations through its read/write guards. New
+// terms honor the value-shaped API by treating values as explicit vocabulary
+// indices; existing terms keep their assigned index.
 impl MutableMappedDictionary for SharedVocabARTrie {
-    fn insert_with_value(&self, term: &str, _value: Self::Value) -> bool {
-        log::warn!(
-            "SharedVocabARTrie::insert_with_value({term:?}, _) discards the \
-             value argument — vocab indices are auto-assigned. Use \
-             insert(term) and read the assigned index back via \
-             MappedDictionary::get_value(term)."
-        );
-        let existed = self.read().contains(term);
-        if !existed {
-            let guard = self.write();
-            if let Err(error) = guard.insert(term) {
-                log::warn!("SharedVocabARTrie::insert_with_value failed: {error}");
-                return false;
+    fn insert_with_value(&self, term: &str, value: Self::Value) -> bool {
+        let guard = self.write();
+        match guard.insert_with_index(term, value) {
+            Ok(inserted) => inserted,
+            Err(error) => {
+                log::warn!(
+                    "SharedVocabARTrie::insert_with_value({term:?}, {value}) failed: {error}"
+                );
+                false
             }
         }
-        !existed
     }
 
-    fn union_with<F>(&self, other: &Self, _merge_fn: F) -> usize
+    fn union_with<F>(&self, other: &Self, merge_fn: F) -> usize
     where
         F: Fn(&Self::Value, &Self::Value) -> Self::Value,
         Self::Value: Clone,
     {
-        log::warn!(
-            "SharedVocabARTrie::union_with discards the merge_fn argument — \
-             vocab indices are auto-assigned, so there is nothing to merge. \
-             Terms missing from self will be inserted with fresh indices."
-        );
-        // First collect terms from other to avoid holding locks simultaneously
-        let other_terms: Vec<String> = {
+        let other_terms: Vec<(String, u64)> = {
             let other_guard = other.read();
-            other_guard.iter_terms().collect()
+            other_guard
+                .iter_terms()
+                .filter_map(|term| other_guard.get_index(&term).map(|index| (term, index)))
+                .collect()
         };
 
-        let mut count = 0;
-        let self_guard = self.write();
-        for term in other_terms {
-            if !self_guard.contains(&term) {
-                match self_guard.insert(&term) {
-                    Ok(_) => count += 1,
+        let mut conflicts = Vec::new();
+        let inserted = {
+            let self_guard = self.write();
+            let mut inserted = 0;
+            for (term, other_index) in other_terms {
+                if let Some(existing_index) = self_guard.get_index(&term) {
+                    conflicts.push((term, existing_index, other_index));
+                    continue;
+                }
+
+                match self_guard.insert_with_index(&term, other_index) {
+                    Ok(true) => inserted += 1,
+                    Ok(false) => {}
                     Err(error) => {
-                        log::warn!("SharedVocabARTrie::union_with failed for {term:?}: {error}");
+                        log::warn!(
+                            "SharedVocabARTrie::union_with failed for {term:?} at \
+                             index {other_index}: {error}"
+                        );
                     }
                 }
             }
+            inserted
+        };
+
+        for (term, existing_index, other_index) in conflicts {
+            let merged_index = merge_fn(&existing_index, &other_index);
+            if merged_index != existing_index {
+                log::warn!(
+                    "SharedVocabARTrie::union_with cannot remap existing term \
+                     {term:?} from index {existing_index} to {merged_index}; \
+                     vocabulary indices are immutable"
+                );
+            }
         }
-        count
+        inserted
     }
 
-    fn update_or_insert<F>(&self, term: &str, _default_value: Self::Value, _update_fn: F) -> bool
+    fn update_or_insert<F>(&self, term: &str, default_value: Self::Value, update_fn: F) -> bool
     where
         F: Fn(&mut Self::Value),
     {
-        log::warn!(
-            "SharedVocabARTrie::update_or_insert({term:?}, _, _) discards \
-             both default_value and update_fn — vocab indices are \
-             auto-assigned and immutable. Inserts the term if absent and \
-             returns whether a new term was added."
-        );
-        let existed = self.read().contains(term);
-        if !existed {
-            let guard = self.write();
-            if let Err(error) = guard.insert(term) {
-                log::warn!("SharedVocabARTrie::update_or_insert failed: {error}");
-                return false;
+        let guard = self.write();
+        if let Some(existing_index) = guard.get_index(term) {
+            drop(guard);
+            let mut proposed_index = existing_index;
+            update_fn(&mut proposed_index);
+            if proposed_index != existing_index {
+                log::warn!(
+                    "SharedVocabARTrie::update_or_insert({term:?}) cannot remap \
+                     existing index {existing_index} to {proposed_index}; vocabulary \
+                     indices are immutable"
+                );
+            }
+            return false;
+        }
+
+        match guard.insert_with_index(term, default_value) {
+            Ok(inserted) => inserted,
+            Err(error) => {
+                log::warn!(
+                    "SharedVocabARTrie::update_or_insert({term:?}, {default_value}, _) \
+                     failed: {error}"
+                );
+                false
             }
         }
-        !existed
     }
 }
 
@@ -499,21 +558,17 @@ impl crate::artrie_trait::ARTrie for SharedVocabARTrie {
         guard.len() > old_count
     }
 
-    fn insert_with_value(&self, term: &str, _value: Self::Value) -> bool {
-        log::warn!(
-            "SharedVocabARTrie::insert_with_value (via ARTrie trait) for \
-             {term:?} discards the value argument — vocab indices are \
-             auto-assigned."
-        );
-        let mut guard = self.write();
-        let old_count = guard.len();
-        // Explicitly call the struct method, not trait method
-        if let Err(error) = PersistentVocabARTrie::insert(&mut *guard, term) {
-            log::warn!("SharedVocabARTrie::insert_with_value failed: {error}");
-            return false;
+    fn insert_with_value(&self, term: &str, value: Self::Value) -> bool {
+        let guard = self.write();
+        match guard.insert_with_index(term, value) {
+            Ok(inserted) => inserted,
+            Err(error) => {
+                log::warn!(
+                    "SharedVocabARTrie::insert_with_value({term:?}, {value}) failed: {error}"
+                );
+                false
+            }
         }
-        // Return true if a new term was added (count increased)
-        guard.len() > old_count
     }
 
     fn contains(&self, term: &str) -> bool {
@@ -601,16 +656,9 @@ impl crate::artrie_trait::ARTrie for SharedVocabARTrie {
         guard.durability_policy()
     }
 
-    fn upsert(&self, term: &str, _value: Self::Value) -> Result<bool> {
-        log::warn!(
-            "SharedVocabARTrie::upsert({term:?}, _) discards the value \
-             argument — vocab indices are auto-assigned. Behaves as insert."
-        );
-        let mut guard = self.write();
-        let old_count = guard.len();
-        // Explicitly call the struct method, not trait method
-        PersistentVocabARTrie::insert(&mut *guard, term)?;
-        Ok(guard.len() > old_count)
+    fn upsert(&self, term: &str, value: Self::Value) -> Result<bool> {
+        let guard = self.write();
+        guard.insert_with_index(term, value)
     }
 
     // C1: `increment` removed from the `ARTrie` trait. Vocab never supported it

@@ -8,6 +8,16 @@ Date format is ISO-8601 (YYYY-MM-DD).
 
 ### Changed
 
+- **`PersistentVocabARTrie` mapped mutation traits now perform real
+  index-aware writes.** `MutableMappedDictionary::insert_with_value` and
+  `update_or_insert` on both `PersistentVocabARTrie` and `SharedVocabARTrie`
+  now treat the supplied `u64` value as an explicit requested vocabulary index
+  for new terms, while preserving immutable indices for existing terms.
+  `union_with` inserts missing terms with their source indices and calls the
+  merge callback only for conflicts, warning if a merge result would require
+  remapping an existing index. Focused trait-honesty tests now pin requested
+  index insertion, index-conflict rejection, union index preservation, and
+  existing-index immutability.
 - **`DynamicDawgU64` compaction/minimization now publish real rebuilt graphs.**
   The u64 DAWG no longer clears the compaction flag as a no-op: `compact()` and
   `minimize()` snapshot visible final sequences, rebuild a compact graph,
