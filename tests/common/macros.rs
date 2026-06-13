@@ -83,9 +83,11 @@ macro_rules! test_dictionary_contains {
 
     // Helper for builder-style (from_terms)
     (@insert $dict:ident, $terms:ident, from_terms) => {
-        // Note: for from_terms, the dict must be created with the terms
-        // This branch is just a placeholder - actual usage requires different macro structure
-        let _ = &$terms; // suppress unused warning
+        compile_error!(
+            "test_dictionary_contains!(..., from_terms) cannot mutate an already-created \
+             dictionary. Use the insert mode, or add a macro arm that constructs the \
+             dictionary from generated terms before assertions."
+        );
     };
 }
 
