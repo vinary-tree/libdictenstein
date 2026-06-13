@@ -23,10 +23,11 @@ Persistent suffix indexes are native suffix graphs, not ARTrie-encoded suffix
 key spaces.
 
 ```text
-operation WAL
+prepared operation segment
     -> active source/term records
     -> rebuild native graph revision
-    -> publish immutable snapshot
+    -> publish immutable snapshot by CAS
+    -> commit operation segment
     -> checkpoint native graph image
 ```
 
@@ -37,14 +38,14 @@ left/right extension support.
 
 ## Concurrency
 
-Reads traverse immutable snapshots and do not take the writer lock. Writes are
+Reads traverse immutable snapshots and do not take a writer lock. Writes are
 split by retryability:
 
 - `insert`, `insert_with_value`, `remove`, `clear`, `compact`, and
-  `update_or_insert` append a prepared WAL operation, publish a rebuilt
-  immutable graph revision with pointer-identity CAS, then append a commit
-  marker before acknowledging the caller. CAS losers leave uncommitted prepared
-  records that recovery ignores.
+  `update_or_insert` append a prepared WAL segment, publish a rebuilt immutable
+  graph revision with pointer-identity CAS, then append a commit segment before
+  acknowledging the caller. CAS losers leave uncommitted prepared records that
+  recovery ignores.
 - `update_or_insert` uses a retry-safe `Fn(&mut V)` updater so CAS conflicts
   recompute against the newest graph snapshot rather than serializing writes.
 - Checkpoints retain the active WAL and record the committed operation

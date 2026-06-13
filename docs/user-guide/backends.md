@@ -150,13 +150,13 @@ suffixes as artificial ARTrie keys.
 
 | Backend | Use when | Representation |
 |---------|----------|----------------|
-| `PersistentSuffixAutomaton` / `Char` | You want the suffix-automaton API on disk | Native suffix graph snapshot + operation WAL |
-| `PersistentSuffixTree` / `Char` | You want suffix-tree-compatible handles, frequencies, and locations | Path-compressed suffix tree snapshot + operation WAL |
-| `PersistentScdawg` / `Char` | You want compact SCDAWG substring locations | Native compact SCDAWG snapshot + operation WAL |
+| `PersistentSuffixAutomaton` / `Char` | You want the suffix-automaton API on disk | Native suffix graph snapshot + operation-segment WAL |
+| `PersistentSuffixTree` / `Char` | You want suffix-tree-compatible handles, frequencies, and locations | Path-compressed suffix tree snapshot + operation-segment WAL |
+| `PersistentScdawg` / `Char` | You want compact SCDAWG substring locations | Native compact SCDAWG snapshot + operation-segment WAL |
 
-Reads traverse immutable snapshots without taking the writer lock. Writes are
-internally synchronized because they rebuild a graph revision and publish it
-copy-on-write.
+Reads traverse immutable snapshots without taking a writer lock. Writes rebuild
+a graph revision, publish the winning copy by CAS, and wait for WAL durability
+before acknowledgement.
 
 ```rust,no_run
 use libdictenstein::persistent_artrie::PersistentScdawgChar;
@@ -196,8 +196,9 @@ libdictenstein = { version = "0.1", features = ["persistent-artrie"] }
 - Use persistent suffix graph variants for durable substring search.
 - Use `PersistentVocabARTrie` only when the value space is the vocabulary id;
   for arbitrary values, use `PersistentARTrieChar<V>`.
-- Do not describe persistent suffix graph writes as lock-free: their reads are
-  snapshot/non-blocking, while writes rebuild and publish a graph revision.
+- Do not describe persistent suffix graph writes as wait-free: their reads are
+  snapshot/non-blocking, while writes rebuild and CAS-publish a graph revision
+  after durable operation logging.
 
 ## Related Documentation
 

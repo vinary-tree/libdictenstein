@@ -16,7 +16,7 @@ Persistent ARTrie byte/char/u64/vocab
 Persistent suffix automaton/tree/SCDAWG
     Dictionary + SubstringDictionary APIs
       -> immutable native graph snapshots
-      -> prepared/commit operation WAL
+      -> prepared/commit operation-segment WAL
       -> CAS copy-on-write graph rebuild/publish
 ```
 
@@ -52,8 +52,9 @@ encoding suffixes as ARTrie keys.
 - `PersistentScdawg` / `PersistentScdawgChar`
 
 Reads are snapshot-based and non-blocking with respect to graph mutation. Writes
-append a prepared operation, publish the rebuilt graph with pointer-identity
-CAS, and append a commit marker before acknowledging the caller. Mapped
+append a prepared operation segment, publish the rebuilt graph with
+pointer-identity CAS, and append a commit segment before acknowledging the
+caller. Recovery also accepts historical monolithic WAL files. Mapped
 `update_or_insert` uses a retry-safe `Fn(&mut V)` updater so CAS conflicts can
 recompute against the newest snapshot without taking a writer lock.
 

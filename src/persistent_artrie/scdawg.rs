@@ -1,11 +1,13 @@
 //! Persistent SCDAWG dictionaries backed by native compact suffix graphs.
 //!
-//! The byte and Unicode variants persist active term records plus a
-//! length-prefixed operation WAL, then rebuild and publish immutable
-//! [`ScdawgCoreInner`] snapshots. Reads traverse the compact SCDAWG graph
-//! without taking a writer lock. Retryable mutations rebuild a compact graph and
-//! publish it with pointer-identity CAS after a prepared WAL record, then append
-//! a commit marker before acknowledging the caller.
+//! The byte and Unicode variants persist active term records plus operation WAL
+//! records, then rebuild and publish immutable [`ScdawgCoreInner`] snapshots.
+//! New writes use atomically-published prepare/commit segment files; recovery
+//! also reads the historical length-prefixed monolithic WAL. Reads traverse the
+//! compact SCDAWG graph without taking a writer lock. Retryable mutations
+//! rebuild a compact graph and publish it with pointer-identity CAS after a
+//! prepared WAL record, then append a commit marker before acknowledging the
+//! caller.
 
 use std::collections::{HashMap, HashSet};
 use std::fmt;
@@ -18,7 +20,6 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use arc_swap::ArcSwap;
-use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 
 use crate::persistent_artrie::block_storage::BlockStorage;
@@ -288,7 +289,6 @@ struct ScdawgWalReplayReport {
 struct NativeScdawgIndex<U: PersistentScdawgUnit, V: DictionaryValue> {
     graph: ArcSwap<NativeScdawgGraph<U, V>>,
     path: Option<PathBuf>,
-    wal_lock: Arc<Mutex<()>>,
     next_op_id: AtomicU64,
     committed_op_id: AtomicU64,
     inflight_publications: AtomicUsize,
@@ -298,6 +298,18 @@ fn wal_path(path: &Path) -> PathBuf {
     let mut wal = path.to_path_buf();
     wal.set_extension("scdawgwal");
     wal
+}
+
+fn wal_segment_dir(path: &Path) -> PathBuf {
+    let mut dir = path.to_path_buf();
+    dir.set_extension("scdawgwal.d");
+    dir
+}
+
+fn wal_segment_dir_from_wal(path: &Path) -> PathBuf {
+    let mut dir = path.to_path_buf();
+    dir.set_extension("scdawgwal.d");
+    dir
 }
 
 fn tmp_snapshot_path(path: &Path) -> PathBuf {
@@ -327,7 +339,6 @@ impl<U: PersistentScdawgUnit, V: DictionaryValue> NativeScdawgIndex<U, V> {
         Self {
             graph: ArcSwap::from_pointee(NativeScdawgGraph::new()),
             path: None,
-            wal_lock: Arc::new(Mutex::new(())),
             next_op_id: AtomicU64::new(1),
             committed_op_id: AtomicU64::new(0),
             inflight_publications: AtomicUsize::new(0),
@@ -341,7 +352,6 @@ impl<U: PersistentScdawgUnit, V: DictionaryValue> NativeScdawgIndex<U, V> {
         Ok(Self {
             graph: ArcSwap::from_pointee(graph),
             path: Some(path.to_path_buf()),
-            wal_lock: Arc::new(Mutex::new(())),
             next_op_id: AtomicU64::new(1),
             committed_op_id: AtomicU64::new(0),
             inflight_publications: AtomicUsize::new(0),
@@ -363,7 +373,6 @@ impl<U: PersistentScdawgUnit, V: DictionaryValue> NativeScdawgIndex<U, V> {
             Self {
                 graph: ArcSwap::from_pointee(graph),
                 path: Some(path.to_path_buf()),
-                wal_lock: Arc::new(Mutex::new(())),
                 next_op_id: AtomicU64::new(max_op_id.saturating_add(1)),
                 committed_op_id: AtomicU64::new(max_op_id),
                 inflight_publications: AtomicUsize::new(0),
@@ -376,12 +385,11 @@ impl<U: PersistentScdawgUnit, V: DictionaryValue> NativeScdawgIndex<U, V> {
         self.graph.load_full()
     }
 
-    fn append_record_locked(&self, record: &NativeScdawgWalRecord<V>) -> Result<()> {
+    fn append_record(&self, record: &NativeScdawgWalRecord<V>) -> Result<()> {
         let Some(path) = self.path.as_ref() else {
             return Ok(());
         };
-        let _wal_guard = self.wal_lock.lock();
-        append_wal_record(&wal_path(path), record)
+        append_wal_segment(&wal_segment_dir(path), record)
     }
 
     fn apply_op(graph: &mut NativeScdawgGraph<U, V>, op: NativeScdawgWalOp<V>) -> bool {
@@ -434,7 +442,7 @@ impl<U: PersistentScdawgUnit, V: DictionaryValue> NativeScdawgIndex<U, V> {
 
         for _ in 0..MAX_CAS_RETRIES {
             let op_id = self.next_op_id.fetch_add(1, Ordering::Relaxed);
-            self.append_record_locked(&NativeScdawgWalRecord::Prepare {
+            self.append_record(&NativeScdawgWalRecord::Prepare {
                 op_id,
                 op: op.clone(),
             })?;
@@ -444,8 +452,7 @@ impl<U: PersistentScdawgUnit, V: DictionaryValue> NativeScdawgIndex<U, V> {
             self.inflight_publications.fetch_add(1, Ordering::SeqCst);
             let previous = self.graph.compare_and_swap(&current, Arc::new(rebuilt));
             if Arc::ptr_eq(&previous, &current) {
-                let commit_result =
-                    self.append_record_locked(&NativeScdawgWalRecord::Commit { op_id });
+                let commit_result = self.append_record(&NativeScdawgWalRecord::Commit { op_id });
                 if commit_result.is_ok() {
                     self.committed_op_id.fetch_max(op_id, Ordering::SeqCst);
                 }
@@ -509,7 +516,7 @@ impl<U: PersistentScdawgUnit, V: DictionaryValue> NativeScdawgIndex<U, V> {
                 .and_then(|record| record.value.clone())
                 .expect("update_or_insert installs a value");
             let op_id = self.next_op_id.fetch_add(1, Ordering::Relaxed);
-            self.append_record_locked(&NativeScdawgWalRecord::Prepare {
+            self.append_record(&NativeScdawgWalRecord::Prepare {
                 op_id,
                 op: NativeScdawgWalOp::SetValue {
                     term: term.to_string(),
@@ -520,8 +527,7 @@ impl<U: PersistentScdawgUnit, V: DictionaryValue> NativeScdawgIndex<U, V> {
             self.inflight_publications.fetch_add(1, Ordering::SeqCst);
             let previous = self.graph.compare_and_swap(&current, Arc::new(rebuilt));
             if Arc::ptr_eq(&previous, &current) {
-                let commit_result =
-                    self.append_record_locked(&NativeScdawgWalRecord::Commit { op_id });
+                let commit_result = self.append_record(&NativeScdawgWalRecord::Commit { op_id });
                 if commit_result.is_ok() {
                     self.committed_op_id.fetch_max(op_id, Ordering::SeqCst);
                 }
@@ -553,6 +559,7 @@ impl<U: PersistentScdawgUnit, V: DictionaryValue> NativeScdawgIndex<U, V> {
                 && self.inflight_publications.load(Ordering::SeqCst) == 0
             {
                 write_snapshot_file::<U, V>(path, graph.as_ref(), committed_after)?;
+                prune_wal_segments(&wal_segment_dir(path), committed_after)?;
                 return Ok(());
             }
             std::thread::yield_now();
@@ -661,30 +668,160 @@ fn truncate_wal(path: &Path) -> Result<()> {
         .open(path)
         .map_err(|error| io_error("truncate SCDAWG WAL", path, error))?;
     file.sync_all()
-        .map_err(|error| io_error("sync SCDAWG WAL", path, error))
+        .map_err(|error| io_error("sync SCDAWG WAL", path, error))?;
+    let segment_dir = wal_segment_dir_from_wal(path);
+    if segment_dir.exists() {
+        fs::remove_dir_all(&segment_dir)
+            .map_err(|error| io_error("clear SCDAWG WAL segment directory", &segment_dir, error))?;
+    }
+    fs::create_dir_all(&segment_dir)
+        .map_err(|error| io_error("create SCDAWG WAL segment directory", &segment_dir, error))
 }
 
-fn append_wal_record<V: DictionaryValue>(
-    path: &Path,
+fn wal_segment_id_and_kind<V: DictionaryValue>(
+    record: &NativeScdawgWalRecord<V>,
+) -> Result<(u64, &'static str)> {
+    match record {
+        NativeScdawgWalRecord::Prepare { op_id, .. } => Ok((*op_id, "prepare")),
+        NativeScdawgWalRecord::Commit { op_id } => Ok((*op_id, "commit")),
+        _ => Err(PersistentARTrieError::internal(
+            "native SCDAWG segment WAL only accepts prepare/commit records".to_string(),
+        )),
+    }
+}
+
+fn append_wal_segment<V: DictionaryValue>(
+    dir: &Path,
     record: &NativeScdawgWalRecord<V>,
 ) -> Result<()> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)
-            .map_err(|error| io_error("create SCDAWG WAL parent directory", parent, error))?;
-    }
+    fs::create_dir_all(dir)
+        .map_err(|error| io_error("create SCDAWG WAL segment directory", dir, error))?;
     let payload = serialize_bytes("serialize native SCDAWG WAL record", record)?;
     let len = payload.len() as u64;
-    let mut file = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)
-        .map_err(|error| io_error("open SCDAWG WAL", path, error))?;
-    file.write_all(&len.to_le_bytes())
-        .map_err(|error| io_error("write SCDAWG WAL record length", path, error))?;
-    file.write_all(&payload)
-        .map_err(|error| io_error("write SCDAWG WAL record", path, error))?;
+    let mut frame = Vec::with_capacity(8 + payload.len());
+    frame.extend_from_slice(&len.to_le_bytes());
+    frame.extend_from_slice(&payload);
+    let (op_id, kind) = wal_segment_id_and_kind(record)?;
+    let final_path = dir.join(format!("{op_id:020}.{kind}.wal"));
+    let tmp_path = dir.join(format!("{op_id:020}.{kind}.{}.tmp", std::process::id()));
+    let _ = fs::remove_file(&tmp_path);
+    let mut file = File::create(&tmp_path)
+        .map_err(|error| io_error("create SCDAWG WAL segment", &tmp_path, error))?;
+    file.write_all(&frame)
+        .map_err(|error| io_error("write SCDAWG WAL segment", &tmp_path, error))?;
     file.sync_all()
-        .map_err(|error| io_error("sync SCDAWG WAL", path, error))
+        .map_err(|error| io_error("sync SCDAWG WAL segment", &tmp_path, error))?;
+    drop(file);
+    fs::rename(&tmp_path, &final_path)
+        .map_err(|error| io_error("publish SCDAWG WAL segment", &final_path, error))?;
+    File::open(dir)
+        .and_then(|dir_file| dir_file.sync_all())
+        .map_err(|error| io_error("sync SCDAWG WAL segment directory", dir, error))
+}
+
+fn prune_wal_segments(dir: &Path, checkpoint_op_id: u64) -> Result<()> {
+    if !dir.exists() {
+        return Ok(());
+    }
+    for entry in fs::read_dir(dir)
+        .map_err(|error| io_error("read SCDAWG WAL segment directory", dir, error))?
+    {
+        let entry = entry
+            .map_err(|error| io_error("read SCDAWG WAL segment directory entry", dir, error))?;
+        let path = entry.path();
+        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        let Some((op_id, _)) = name.split_once('.') else {
+            continue;
+        };
+        let Ok(op_id) = op_id.parse::<u64>() else {
+            continue;
+        };
+        if op_id <= checkpoint_op_id {
+            fs::remove_file(&path).map_err(|error| {
+                io_error("remove checkpointed SCDAWG WAL segment", &path, error)
+            })?;
+        }
+    }
+    File::open(dir)
+        .and_then(|dir_file| dir_file.sync_all())
+        .map_err(|error| io_error("sync pruned SCDAWG WAL segment directory", dir, error))
+}
+
+fn absorb_wal_record<V: DictionaryValue>(
+    record: NativeScdawgWalRecord<V>,
+    report: &mut ScdawgWalReplayReport,
+    prepared: &mut HashMap<u64, NativeScdawgWalOp<V>>,
+    committed: &mut HashSet<u64>,
+    legacy_records: &mut Vec<NativeScdawgWalOp<V>>,
+) {
+    match record {
+        NativeScdawgWalRecord::Insert { term, value } => {
+            legacy_records.push(NativeScdawgWalOp::Insert { term, value });
+        }
+        NativeScdawgWalRecord::Remove { term } => {
+            legacy_records.push(NativeScdawgWalOp::Remove { term });
+        }
+        NativeScdawgWalRecord::SetValue { term, value } => {
+            legacy_records.push(NativeScdawgWalOp::SetValue { term, value });
+        }
+        NativeScdawgWalRecord::Clear => legacy_records.push(NativeScdawgWalOp::Clear),
+        NativeScdawgWalRecord::Compact => legacy_records.push(NativeScdawgWalOp::Compact),
+        NativeScdawgWalRecord::Prepare { op_id, op } => {
+            report.max_op_id = report.max_op_id.max(op_id);
+            prepared.insert(op_id, op);
+        }
+        NativeScdawgWalRecord::Commit { op_id } => {
+            report.max_op_id = report.max_op_id.max(op_id);
+            committed.insert(op_id);
+        }
+    }
+    report.replayed += 1;
+}
+
+fn replay_wal_segments<V: DictionaryValue>(
+    dir: &Path,
+    report: &mut ScdawgWalReplayReport,
+    prepared: &mut HashMap<u64, NativeScdawgWalOp<V>>,
+    committed: &mut HashSet<u64>,
+    legacy_records: &mut Vec<NativeScdawgWalOp<V>>,
+) -> Result<()> {
+    if !dir.exists() {
+        return Ok(());
+    }
+    let mut files = Vec::new();
+    for entry in fs::read_dir(dir)
+        .map_err(|error| io_error("read SCDAWG WAL segment directory", dir, error))?
+    {
+        let entry = entry
+            .map_err(|error| io_error("read SCDAWG WAL segment directory entry", dir, error))?;
+        let path = entry.path();
+        if path.extension().and_then(|extension| extension.to_str()) == Some("wal") {
+            files.push(path);
+        }
+    }
+    files.sort();
+    for path in files {
+        let mut file =
+            File::open(&path).map_err(|error| io_error("open SCDAWG WAL segment", &path, error))?;
+        let mut len_buf = [0u8; 8];
+        file.read_exact(&mut len_buf)
+            .map_err(|error| io_error("read SCDAWG WAL segment length", &path, error))?;
+        let len = u64::from_le_bytes(len_buf);
+        if len > MAX_WAL_RECORD_BYTES {
+            return Err(PersistentARTrieError::corrupted(format!(
+                "native SCDAWG WAL segment is too large: {len} bytes"
+            )));
+        }
+        let mut payload = vec![0u8; len as usize];
+        file.read_exact(&mut payload)
+            .map_err(|error| io_error("read SCDAWG WAL segment payload", &path, error))?;
+        let record: NativeScdawgWalRecord<V> =
+            deserialize_bytes("deserialize native SCDAWG WAL segment", &payload)?;
+        absorb_wal_record(record, report, prepared, committed, legacy_records);
+    }
+    Ok(())
 }
 
 fn replay_wal<V: DictionaryValue>(
@@ -693,59 +830,53 @@ fn replay_wal<V: DictionaryValue>(
     checkpoint_op_id: u64,
     folds_legacy_wal: bool,
 ) -> Result<ScdawgWalReplayReport> {
-    if !path.exists() {
-        return Ok(ScdawgWalReplayReport::default());
-    }
-    let mut file =
-        File::open(path).map_err(|error| io_error("open SCDAWG WAL for replay", path, error))?;
     let mut report = ScdawgWalReplayReport::default();
     let mut prepared = HashMap::new();
     let mut committed = HashSet::new();
     let mut legacy_records = Vec::new();
-    loop {
-        let mut len_buf = [0u8; 8];
-        match file.read_exact(&mut len_buf) {
-            Ok(()) => {}
-            Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => break,
-            Err(error) => return Err(io_error("read SCDAWG WAL record length", path, error)),
+
+    if path.exists() {
+        let mut file = File::open(path)
+            .map_err(|error| io_error("open SCDAWG WAL for replay", path, error))?;
+        loop {
+            let mut len_buf = [0u8; 8];
+            match file.read_exact(&mut len_buf) {
+                Ok(()) => {}
+                Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => break,
+                Err(error) => return Err(io_error("read SCDAWG WAL record length", path, error)),
+            }
+            let len = u64::from_le_bytes(len_buf);
+            if len > MAX_WAL_RECORD_BYTES {
+                return Err(PersistentARTrieError::corrupted(format!(
+                    "native SCDAWG WAL record is too large: {len} bytes"
+                )));
+            }
+            let mut payload = vec![0u8; len as usize];
+            match file.read_exact(&mut payload) {
+                Ok(()) => {}
+                Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => break,
+                Err(error) => return Err(io_error("read SCDAWG WAL record payload", path, error)),
+            }
+            let record: NativeScdawgWalRecord<V> =
+                deserialize_bytes("deserialize native SCDAWG WAL record", &payload)?;
+            absorb_wal_record(
+                record,
+                &mut report,
+                &mut prepared,
+                &mut committed,
+                &mut legacy_records,
+            );
         }
-        let len = u64::from_le_bytes(len_buf);
-        if len > MAX_WAL_RECORD_BYTES {
-            return Err(PersistentARTrieError::corrupted(format!(
-                "native SCDAWG WAL record is too large: {len} bytes"
-            )));
-        }
-        let mut payload = vec![0u8; len as usize];
-        match file.read_exact(&mut payload) {
-            Ok(()) => {}
-            Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => break,
-            Err(error) => return Err(io_error("read SCDAWG WAL record payload", path, error)),
-        }
-        let record: NativeScdawgWalRecord<V> =
-            deserialize_bytes("deserialize native SCDAWG WAL record", &payload)?;
-        match record {
-            NativeScdawgWalRecord::Insert { term, value } => {
-                legacy_records.push(NativeScdawgWalOp::Insert { term, value });
-            }
-            NativeScdawgWalRecord::Remove { term } => {
-                legacy_records.push(NativeScdawgWalOp::Remove { term });
-            }
-            NativeScdawgWalRecord::SetValue { term, value } => {
-                legacy_records.push(NativeScdawgWalOp::SetValue { term, value });
-            }
-            NativeScdawgWalRecord::Clear => legacy_records.push(NativeScdawgWalOp::Clear),
-            NativeScdawgWalRecord::Compact => legacy_records.push(NativeScdawgWalOp::Compact),
-            NativeScdawgWalRecord::Prepare { op_id, op } => {
-                report.max_op_id = report.max_op_id.max(op_id);
-                prepared.insert(op_id, op);
-            }
-            NativeScdawgWalRecord::Commit { op_id } => {
-                report.max_op_id = report.max_op_id.max(op_id);
-                committed.insert(op_id);
-            }
-        }
-        report.replayed += 1;
     }
+
+    replay_wal_segments(
+        &wal_segment_dir_from_wal(path),
+        &mut report,
+        &mut prepared,
+        &mut committed,
+        &mut legacy_records,
+    )?;
+
     if !folds_legacy_wal {
         for op in legacy_records {
             apply_wal_op(records, op);

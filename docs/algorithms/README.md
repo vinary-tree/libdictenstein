@@ -280,9 +280,9 @@ lock-free overlay, write-ahead logging, and CX checkpoint images over `mmap`
 
 Durable substring indexes: `PersistentSuffixAutomaton`, `PersistentSuffixTree`,
 and `PersistentScdawg`, each with byte and `Char` variants. These persist
-native suffix graph snapshots plus operation WALs. Reads traverse immutable
-snapshots without taking the writer lock; writes rebuild and publish a new graph
-revision copy-on-write.
+native suffix graph snapshots plus operation-segment WALs. Reads traverse
+immutable snapshots without taking a writer lock; writes rebuild a candidate
+graph revision and CAS-publish the winning copy.
 
 ## Decision Guide
 

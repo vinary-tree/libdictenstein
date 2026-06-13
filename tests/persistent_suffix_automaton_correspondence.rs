@@ -12,6 +12,7 @@ use libdictenstein::suffix_automaton::{SuffixAutomaton, SuffixAutomatonChar};
 use libdictenstein::{Dictionary, MappedDictionary, MutableMappedDictionary, SyncStrategy};
 use serde::{Deserialize, Serialize};
 use std::fs;
+use std::path::{Path, PathBuf};
 use tempfile::tempdir;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -21,6 +22,23 @@ struct Metadata {
 }
 
 impl libdictenstein::value::DictionaryValue for Metadata {}
+
+fn segment_dir(path: &Path, extension: &str) -> PathBuf {
+    let mut dir = path.to_path_buf();
+    dir.set_extension(extension);
+    dir
+}
+
+fn count_segment_wal_files(dir: &Path) -> usize {
+    if !dir.exists() {
+        return 0;
+    }
+    fs::read_dir(dir)
+        .expect("read segment dir")
+        .filter_map(Result::ok)
+        .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "wal"))
+        .count()
+}
 
 fn assert_byte_contains_matches(texts: &[&str], probes: &[&str]) {
     let volatile = SuffixAutomaton::<()>::from_texts(texts);
@@ -248,6 +266,43 @@ fn mapped_values_survive_compaction_and_reopen() {
     );
     assert!(reopened.contains("c"));
     assert!(!reopened.contains("remove"));
+}
+
+#[test]
+fn byte_segment_wal_prunes_checkpointed_records_and_replays_tail() {
+    let dir = tempdir().expect("temp dir");
+    let path = dir.path().join("persistent_suffix_segment_tail.psa");
+    let segments = segment_dir(&path, "suffixwal.d");
+
+    {
+        let dict = PersistentSuffixAutomaton::<i32>::create(&path).expect("create byte suffix");
+        assert!(dict.insert_with_value("alpha", 1));
+        assert!(dict.insert_with_value("beta", 2));
+        assert!(
+            count_segment_wal_files(&segments) >= 4,
+            "prepare/commit segment files should exist before checkpoint"
+        );
+
+        dict.checkpoint()
+            .expect("checkpoint prunes covered segments");
+        assert_eq!(
+            count_segment_wal_files(&segments),
+            0,
+            "checkpointed suffix WAL segments should be pruned"
+        );
+
+        assert!(dict.insert_with_value("gamma", 3));
+        assert!(
+            count_segment_wal_files(&segments) >= 2,
+            "post-checkpoint tail should remain for replay"
+        );
+    }
+
+    let reopened = PersistentSuffixAutomaton::<i32>::open(&path).expect("reopen segment tail");
+    assert_eq!(reopened.get_value("alpha"), Some(1));
+    assert_eq!(reopened.get_value("beta"), Some(2));
+    assert_eq!(reopened.get_value("gamma"), Some(3));
+    assert!(reopened.contains("amm"));
 }
 
 #[test]

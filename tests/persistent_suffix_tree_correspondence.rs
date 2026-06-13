@@ -12,10 +12,29 @@ use libdictenstein::persistent_artrie::{
 };
 use libdictenstein::{Dictionary, MappedDictionary, SubstringDictionary, SyncStrategy};
 use proptest::prelude::*;
+use std::fs;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Barrier};
 use std::thread;
 use tempfile::tempdir;
+
+fn segment_dir(path: &Path, extension: &str) -> PathBuf {
+    let mut dir = path.to_path_buf();
+    dir.set_extension(extension);
+    dir
+}
+
+fn count_segment_wal_files(dir: &Path) -> usize {
+    if !dir.exists() {
+        return 0;
+    }
+    fs::read_dir(dir)
+        .expect("read segment dir")
+        .filter_map(Result::ok)
+        .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "wal"))
+        .count()
+}
 
 fn sorted_locations(mut locations: Vec<(String, usize)>) -> Vec<(String, usize)> {
     locations.sort();
@@ -184,6 +203,46 @@ fn byte_suffix_tree_replays_native_wal_without_automaton_snapshot() {
     assert!(!reopened.contains("banana"));
     assert_eq!(reopened.get_value("ana"), Some(3));
     assert_eq!(reopened.locations("ana"), vec![("bandana".to_string(), 4)]);
+}
+
+#[test]
+fn byte_suffix_tree_segment_wal_prunes_checkpointed_records_and_replays_tail() {
+    let dir = tempdir().expect("temp dir");
+    let path = dir
+        .path()
+        .join("persistent_suffix_tree_segment_tail.pstree");
+    let segments = segment_dir(&path, "streewal.d");
+
+    {
+        let tree = PersistentSuffixTree::<i32>::create(&path).expect("create suffix tree");
+        assert!(tree.insert_with_value("alpha-tree", 1));
+        assert!(tree.insert_with_value("beta-tree", 2));
+        assert!(
+            count_segment_wal_files(&segments) >= 4,
+            "prepare/commit segment files should exist before checkpoint"
+        );
+
+        tree.checkpoint()
+            .expect("checkpoint prunes covered segments");
+        assert_eq!(
+            count_segment_wal_files(&segments),
+            0,
+            "checkpointed suffix-tree WAL segments should be pruned"
+        );
+
+        assert!(tree.insert_with_value("gamma-tree", 3));
+        assert!(
+            count_segment_wal_files(&segments) >= 2,
+            "post-checkpoint tail should remain for replay"
+        );
+    }
+
+    let reopened = PersistentSuffixTree::<i32>::open(&path).expect("reopen segment tail");
+    assert_eq!(reopened.get_value("alpha-tree"), Some(1));
+    assert_eq!(reopened.get_value("beta-tree"), Some(2));
+    assert_eq!(reopened.get_value("gamma-tree"), Some(3));
+    assert!(reopened.contains("tree"));
+    assert!(reopened.contains_substring("gamma"));
 }
 
 #[test]

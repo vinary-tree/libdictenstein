@@ -314,10 +314,10 @@ impl WalWriter {
         let lsn = self.append(record)?;
         self.sync()?;
 
+        let mut file = self.file.lock().expect("WAL lock poisoned");
         let mut header = self.header.lock().expect("header lock poisoned");
         header.checkpoint_lsn = checkpoint_lsn;
 
-        let mut file = self.file.lock().expect("WAL lock poisoned");
         file.seek(SeekFrom::Start(0))?;
         file.write_all(&header.to_bytes())?;
         file.flush()?;
@@ -339,15 +339,15 @@ impl WalWriter {
     /// Persisted in the header (fsync) so it survives reopen + carries across
     /// rotate/truncate. Set at checkpoint time (DG2) to the max `commit_seq`
     /// subsumed by the checkpoint, so a post-checkpoint op out-ranks every
-    /// pre-checkpoint survivor. Mirrors [`Self::checkpoint`]'s header→file lock order.
+    /// pre-checkpoint survivor. Mirrors [`Self::checkpoint`]'s file→header lock order.
     pub fn set_commit_seq_floor(&self, floor: u64) -> Result<(), WalError> {
+        let mut file = self.file.lock().expect("WAL lock poisoned");
         let mut header = self.header.lock().expect("header lock poisoned");
         if floor <= header.commit_seq_floor {
             return Ok(()); // monotone: never lower the floor
         }
         header.commit_seq_floor = floor;
 
-        let mut file = self.file.lock().expect("WAL lock poisoned");
         file.seek(SeekFrom::Start(0))?;
         file.write_all(&header.to_bytes())?;
         file.flush()?;
@@ -417,6 +417,7 @@ impl WalWriter {
                     .to_string(),
             ));
         }
+        let mut file = self.file.lock().expect("WAL lock poisoned");
         let mut header = self.header.lock().expect("header lock poisoned");
         if header.rank_regime == RankRegime::Overlay as u8 {
             return Ok(()); // already Overlay
@@ -424,7 +425,6 @@ impl WalWriter {
         header.magic = WalHeader::MAGIC_OVERLAY;
         header.rank_regime = RankRegime::Overlay as u8;
 
-        let mut file = self.file.lock().expect("WAL lock poisoned");
         file.seek(SeekFrom::Start(0))?;
         file.write_all(&header.to_bytes())?;
         file.flush()?;
@@ -448,7 +448,9 @@ impl WalWriter {
     /// already-Overlay header. Returns [`WalError::InvalidRegimeStamp`] if the file carries
     /// records.
     pub fn set_overlay_regime_records_empty(&self) -> Result<(), WalError> {
-        if !self.records_empty_on_disk() {
+        let mut file = self.file.lock().expect("WAL lock poisoned");
+        file.flush()?;
+        if file.get_ref().metadata()?.len() != WalHeader::SIZE as u64 {
             return Err(WalError::InvalidRegimeStamp(
                 "set_overlay_regime_records_empty on a WAL that carries records on disk; \
                  the non-empty Owned→Overlay transition requires a rotation"
@@ -462,7 +464,6 @@ impl WalWriter {
         header.magic = WalHeader::MAGIC_OVERLAY;
         header.rank_regime = RankRegime::Overlay as u8;
 
-        let mut file = self.file.lock().expect("WAL lock poisoned");
         file.seek(SeekFrom::Start(0))?;
         file.write_all(&header.to_bytes())?;
         file.flush()?;
@@ -487,6 +488,7 @@ impl WalWriter {
                     .to_string(),
             ));
         }
+        let mut file = self.file.lock().expect("WAL lock poisoned");
         let mut header = self.header.lock().expect("header lock poisoned");
         if header.rank_regime == RankRegime::Owned as u8 {
             return Ok(()); // already Owned
@@ -494,7 +496,6 @@ impl WalWriter {
         header.magic = WalHeader::MAGIC;
         header.rank_regime = RankRegime::Owned as u8;
 
-        let mut file = self.file.lock().expect("WAL lock poisoned");
         file.seek(SeekFrom::Start(0))?;
         file.write_all(&header.to_bytes())?;
         file.flush()?;
@@ -741,12 +742,12 @@ impl WalWriter {
         // been asserted, so stamping Overlay is unambiguous (no Owned records to
         // mis-interpret under the Overlay drop rule).
         let carried_floor = {
+            let mut file = self.file.lock().expect("WAL lock poisoned");
             let mut header = self.header.lock().expect("header lock poisoned");
             header.magic = WalHeader::MAGIC_OVERLAY;
             header.rank_regime = RankRegime::Overlay as u8;
             // S2b: re-assert the carried floor on the same in-memory header.
             let floor = header.commit_seq_floor;
-            let mut file = self.file.lock().expect("WAL lock poisoned");
             file.seek(SeekFrom::Start(0))?;
             file.write_all(&header.to_bytes())?;
             file.flush()?;

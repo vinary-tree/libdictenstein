@@ -4,9 +4,28 @@ use libdictenstein::persistent_artrie::{PersistentScdawg, PersistentScdawgChar};
 use libdictenstein::scdawg::{Scdawg, ScdawgChar};
 use libdictenstein::{Dictionary, MappedDictionary, SubstringDictionary, SyncStrategy};
 use proptest::prelude::*;
+use std::fs;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Barrier};
 use std::thread;
 use tempfile::tempdir;
+
+fn segment_dir(path: &Path, extension: &str) -> PathBuf {
+    let mut dir = path.to_path_buf();
+    dir.set_extension(extension);
+    dir
+}
+
+fn count_segment_wal_files(dir: &Path) -> usize {
+    if !dir.exists() {
+        return 0;
+    }
+    fs::read_dir(dir)
+        .expect("read segment dir")
+        .filter_map(Result::ok)
+        .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "wal"))
+        .count()
+}
 
 fn sorted_locations(mut locations: Vec<(String, usize)>) -> Vec<(String, usize)> {
     locations.sort();
@@ -122,6 +141,44 @@ fn byte_native_scdawg_wal_replays_uncheckpointed_operations() {
     assert!(!reopened.contains("banana"));
     assert_eq!(reopened.get_value("bandana"), Some(16));
     assert!(reopened.contains_substring("dana"));
+}
+
+#[test]
+fn byte_scdawg_segment_wal_prunes_checkpointed_records_and_replays_tail() {
+    let dir = tempdir().expect("temp dir");
+    let path = dir.path().join("persistent_scdawg_segment_tail.scdawg");
+    let segments = segment_dir(&path, "scdawgwal.d");
+
+    {
+        let dict = PersistentScdawg::<i32>::create(&path).expect("create persistent scdawg");
+        assert!(dict.insert_with_value("alpha-graph", 1));
+        assert!(dict.insert_with_value("beta-graph", 2));
+        assert!(
+            count_segment_wal_files(&segments) >= 4,
+            "prepare/commit segment files should exist before checkpoint"
+        );
+
+        dict.checkpoint()
+            .expect("checkpoint prunes covered segments");
+        assert_eq!(
+            count_segment_wal_files(&segments),
+            0,
+            "checkpointed SCDAWG WAL segments should be pruned"
+        );
+
+        assert!(dict.insert_with_value("gamma-graph", 3));
+        assert!(
+            count_segment_wal_files(&segments) >= 2,
+            "post-checkpoint tail should remain for replay"
+        );
+    }
+
+    let reopened = PersistentScdawg::<i32>::open(&path).expect("reopen segment tail");
+    assert_eq!(reopened.get_value("alpha-graph"), Some(1));
+    assert_eq!(reopened.get_value("beta-graph"), Some(2));
+    assert_eq!(reopened.get_value("gamma-graph"), Some(3));
+    assert!(reopened.contains("gamma-graph"));
+    assert!(reopened.contains_substring("graph"));
 }
 
 #[test]

@@ -3,10 +3,12 @@
 //! These types provide the persistent counterparts to the byte and Unicode
 //! suffix automaton APIs without encoding suffixes as namespaced
 //! `PersistentARTrie` keys. The durable representation is a native suffix graph
-//! snapshot plus a length-prefixed operation WAL. Readers traverse immutable
-//! graph snapshots. Retryable mutations publish copy-on-write graph revisions
-//! with pointer-identity CAS after appending a prepared WAL record, then append
-//! a commit marker before acknowledging the caller.
+//! snapshot plus operation WAL records. New writes use one atomically-published
+//! segment file per prepare/commit record; recovery also reads the historical
+//! length-prefixed monolithic WAL format. Readers traverse immutable graph
+//! snapshots. Retryable mutations publish copy-on-write graph revisions with
+//! pointer-identity CAS after appending a prepared WAL record, then append a
+//! commit marker before acknowledging the caller.
 
 use std::collections::{HashMap, HashSet};
 use std::fmt;
@@ -19,7 +21,6 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use arc_swap::ArcSwap;
-use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 
 use crate::persistent_artrie::block_storage::BlockStorage;
@@ -599,7 +600,6 @@ struct SuffixWalReplayReport {
 pub struct NativeSuffixIndex<U: PersistentSuffixUnit, V: DictionaryValue> {
     graph: ArcSwap<NativeSuffixGraph<U, V>>,
     path: Option<PathBuf>,
-    wal_lock: Arc<Mutex<()>>,
     next_op_id: AtomicU64,
     committed_op_id: AtomicU64,
     inflight_publications: AtomicUsize,
@@ -609,6 +609,18 @@ fn wal_path(path: &Path) -> PathBuf {
     let mut wal = path.to_path_buf();
     wal.set_extension("suffixwal");
     wal
+}
+
+fn wal_segment_dir(path: &Path) -> PathBuf {
+    let mut dir = path.to_path_buf();
+    dir.set_extension("suffixwal.d");
+    dir
+}
+
+fn wal_segment_dir_from_wal(path: &Path) -> PathBuf {
+    let mut dir = path.to_path_buf();
+    dir.set_extension("suffixwal.d");
+    dir
 }
 
 fn tmp_snapshot_path(path: &Path) -> PathBuf {
@@ -638,7 +650,6 @@ impl<U: PersistentSuffixUnit, V: DictionaryValue> NativeSuffixIndex<U, V> {
         Self {
             graph: ArcSwap::from_pointee(NativeSuffixGraph::new()),
             path: None,
-            wal_lock: Arc::new(Mutex::new(())),
             next_op_id: AtomicU64::new(1),
             committed_op_id: AtomicU64::new(0),
             inflight_publications: AtomicUsize::new(0),
@@ -652,7 +663,6 @@ impl<U: PersistentSuffixUnit, V: DictionaryValue> NativeSuffixIndex<U, V> {
         Ok(Self {
             graph: ArcSwap::from_pointee(graph),
             path: Some(path.to_path_buf()),
-            wal_lock: Arc::new(Mutex::new(())),
             next_op_id: AtomicU64::new(1),
             committed_op_id: AtomicU64::new(0),
             inflight_publications: AtomicUsize::new(0),
@@ -673,7 +683,6 @@ impl<U: PersistentSuffixUnit, V: DictionaryValue> NativeSuffixIndex<U, V> {
             Self {
                 graph: ArcSwap::from_pointee(replay_graph),
                 path: Some(path.to_path_buf()),
-                wal_lock: Arc::new(Mutex::new(())),
                 next_op_id: AtomicU64::new(max_op_id.saturating_add(1)),
                 committed_op_id: AtomicU64::new(max_op_id),
                 inflight_publications: AtomicUsize::new(0),
@@ -686,12 +695,11 @@ impl<U: PersistentSuffixUnit, V: DictionaryValue> NativeSuffixIndex<U, V> {
         self.graph.load_full()
     }
 
-    fn append_record_locked(&self, record: &NativeSuffixWalRecord<V>) -> Result<()> {
+    fn append_record(&self, record: &NativeSuffixWalRecord<V>) -> Result<()> {
         let Some(path) = self.path.as_ref() else {
             return Ok(());
         };
-        let _wal_guard = self.wal_lock.lock();
-        append_wal_record(&wal_path(path), record)
+        append_wal_segment(&wal_segment_dir(path), record)
     }
 
     fn apply_op(graph: &mut NativeSuffixGraph<U, V>, op: NativeSuffixWalOp<V>) -> bool {
@@ -725,7 +733,7 @@ impl<U: PersistentSuffixUnit, V: DictionaryValue> NativeSuffixIndex<U, V> {
 
         for _ in 0..MAX_CAS_RETRIES {
             let op_id = self.next_op_id.fetch_add(1, Ordering::Relaxed);
-            self.append_record_locked(&NativeSuffixWalRecord::Prepare {
+            self.append_record(&NativeSuffixWalRecord::Prepare {
                 op_id,
                 op: op.clone(),
             })?;
@@ -735,8 +743,7 @@ impl<U: PersistentSuffixUnit, V: DictionaryValue> NativeSuffixIndex<U, V> {
             self.inflight_publications.fetch_add(1, Ordering::SeqCst);
             let previous = self.graph.compare_and_swap(&current, Arc::new(next));
             if Arc::ptr_eq(&previous, &current) {
-                let commit_result =
-                    self.append_record_locked(&NativeSuffixWalRecord::Commit { op_id });
+                let commit_result = self.append_record(&NativeSuffixWalRecord::Commit { op_id });
                 if commit_result.is_ok() {
                     self.committed_op_id.fetch_max(op_id, Ordering::SeqCst);
                 }
@@ -795,7 +802,7 @@ impl<U: PersistentSuffixUnit, V: DictionaryValue> NativeSuffixIndex<U, V> {
             let mut next = (*current).clone();
             let (was_new, value) = next.update_or_insert(text, default_value.clone(), &update_fn);
             let op_id = self.next_op_id.fetch_add(1, Ordering::Relaxed);
-            self.append_record_locked(&NativeSuffixWalRecord::Prepare {
+            self.append_record(&NativeSuffixWalRecord::Prepare {
                 op_id,
                 op: NativeSuffixWalOp::SetValue {
                     text: text.to_string(),
@@ -805,8 +812,7 @@ impl<U: PersistentSuffixUnit, V: DictionaryValue> NativeSuffixIndex<U, V> {
             self.inflight_publications.fetch_add(1, Ordering::SeqCst);
             let previous = self.graph.compare_and_swap(&current, Arc::new(next));
             if Arc::ptr_eq(&previous, &current) {
-                let commit_result =
-                    self.append_record_locked(&NativeSuffixWalRecord::Commit { op_id });
+                let commit_result = self.append_record(&NativeSuffixWalRecord::Commit { op_id });
                 if commit_result.is_ok() {
                     self.committed_op_id.fetch_max(op_id, Ordering::SeqCst);
                 }
@@ -838,6 +844,7 @@ impl<U: PersistentSuffixUnit, V: DictionaryValue> NativeSuffixIndex<U, V> {
                 && self.inflight_publications.load(Ordering::SeqCst) == 0
             {
                 write_snapshot_file::<U, V>(path, graph, committed_after)?;
+                prune_wal_segments(&wal_segment_dir(path), committed_after)?;
                 return Ok(());
             }
             std::thread::yield_now();
@@ -983,30 +990,160 @@ fn truncate_wal(path: &Path) -> Result<()> {
         .open(path)
         .map_err(|error| io_error("truncate suffix WAL", path, error))?;
     file.sync_all()
-        .map_err(|error| io_error("sync suffix WAL", path, error))
+        .map_err(|error| io_error("sync suffix WAL", path, error))?;
+    let segment_dir = wal_segment_dir_from_wal(path);
+    if segment_dir.exists() {
+        fs::remove_dir_all(&segment_dir)
+            .map_err(|error| io_error("clear suffix WAL segment directory", &segment_dir, error))?;
+    }
+    fs::create_dir_all(&segment_dir)
+        .map_err(|error| io_error("create suffix WAL segment directory", &segment_dir, error))
 }
 
-fn append_wal_record<V: DictionaryValue>(
-    path: &Path,
+fn wal_segment_id_and_kind<V: DictionaryValue>(
+    record: &NativeSuffixWalRecord<V>,
+) -> Result<(u64, &'static str)> {
+    match record {
+        NativeSuffixWalRecord::Prepare { op_id, .. } => Ok((*op_id, "prepare")),
+        NativeSuffixWalRecord::Commit { op_id } => Ok((*op_id, "commit")),
+        _ => Err(PersistentARTrieError::internal(
+            "native suffix segment WAL only accepts prepare/commit records".to_string(),
+        )),
+    }
+}
+
+fn append_wal_segment<V: DictionaryValue>(
+    dir: &Path,
     record: &NativeSuffixWalRecord<V>,
 ) -> Result<()> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)
-            .map_err(|error| io_error("create suffix WAL parent directory", parent, error))?;
-    }
+    fs::create_dir_all(dir)
+        .map_err(|error| io_error("create suffix WAL segment directory", dir, error))?;
     let payload = serialize_bytes("serialize native suffix WAL record", record)?;
     let len = payload.len() as u64;
-    let mut file = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)
-        .map_err(|error| io_error("open suffix WAL", path, error))?;
-    file.write_all(&len.to_le_bytes())
-        .map_err(|error| io_error("write suffix WAL record length", path, error))?;
-    file.write_all(&payload)
-        .map_err(|error| io_error("write suffix WAL record", path, error))?;
+    let mut frame = Vec::with_capacity(8 + payload.len());
+    frame.extend_from_slice(&len.to_le_bytes());
+    frame.extend_from_slice(&payload);
+    let (op_id, kind) = wal_segment_id_and_kind(record)?;
+    let final_path = dir.join(format!("{op_id:020}.{kind}.wal"));
+    let tmp_path = dir.join(format!("{op_id:020}.{kind}.{}.tmp", std::process::id()));
+    let _ = fs::remove_file(&tmp_path);
+    let mut file = File::create(&tmp_path)
+        .map_err(|error| io_error("create suffix WAL segment", &tmp_path, error))?;
+    file.write_all(&frame)
+        .map_err(|error| io_error("write suffix WAL segment", &tmp_path, error))?;
     file.sync_all()
-        .map_err(|error| io_error("sync suffix WAL", path, error))
+        .map_err(|error| io_error("sync suffix WAL segment", &tmp_path, error))?;
+    drop(file);
+    fs::rename(&tmp_path, &final_path)
+        .map_err(|error| io_error("publish suffix WAL segment", &final_path, error))?;
+    File::open(dir)
+        .and_then(|dir_file| dir_file.sync_all())
+        .map_err(|error| io_error("sync suffix WAL segment directory", dir, error))
+}
+
+fn prune_wal_segments(dir: &Path, checkpoint_op_id: u64) -> Result<()> {
+    if !dir.exists() {
+        return Ok(());
+    }
+    for entry in fs::read_dir(dir)
+        .map_err(|error| io_error("read suffix WAL segment directory", dir, error))?
+    {
+        let entry = entry
+            .map_err(|error| io_error("read suffix WAL segment directory entry", dir, error))?;
+        let path = entry.path();
+        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        let Some((op_id, _)) = name.split_once('.') else {
+            continue;
+        };
+        let Ok(op_id) = op_id.parse::<u64>() else {
+            continue;
+        };
+        if op_id <= checkpoint_op_id {
+            fs::remove_file(&path).map_err(|error| {
+                io_error("remove checkpointed suffix WAL segment", &path, error)
+            })?;
+        }
+    }
+    File::open(dir)
+        .and_then(|dir_file| dir_file.sync_all())
+        .map_err(|error| io_error("sync pruned suffix WAL segment directory", dir, error))
+}
+
+fn absorb_wal_record<V: DictionaryValue>(
+    record: NativeSuffixWalRecord<V>,
+    report: &mut SuffixWalReplayReport,
+    prepared: &mut HashMap<u64, NativeSuffixWalOp<V>>,
+    committed: &mut HashSet<u64>,
+    legacy_records: &mut Vec<NativeSuffixWalOp<V>>,
+) {
+    match record {
+        NativeSuffixWalRecord::Insert { text, value } => {
+            legacy_records.push(NativeSuffixWalOp::Insert { text, value })
+        }
+        NativeSuffixWalRecord::Remove { text } => {
+            legacy_records.push(NativeSuffixWalOp::Remove { text });
+        }
+        NativeSuffixWalRecord::SetValue { text, value } => {
+            legacy_records.push(NativeSuffixWalOp::SetValue { text, value });
+        }
+        NativeSuffixWalRecord::Clear => legacy_records.push(NativeSuffixWalOp::Clear),
+        NativeSuffixWalRecord::Compact => legacy_records.push(NativeSuffixWalOp::Compact),
+        NativeSuffixWalRecord::Prepare { op_id, op } => {
+            report.max_op_id = report.max_op_id.max(op_id);
+            prepared.insert(op_id, op);
+        }
+        NativeSuffixWalRecord::Commit { op_id } => {
+            report.max_op_id = report.max_op_id.max(op_id);
+            committed.insert(op_id);
+        }
+    }
+    report.replayed += 1;
+}
+
+fn replay_wal_segments<V: DictionaryValue>(
+    dir: &Path,
+    report: &mut SuffixWalReplayReport,
+    prepared: &mut HashMap<u64, NativeSuffixWalOp<V>>,
+    committed: &mut HashSet<u64>,
+    legacy_records: &mut Vec<NativeSuffixWalOp<V>>,
+) -> Result<()> {
+    if !dir.exists() {
+        return Ok(());
+    }
+    let mut files = Vec::new();
+    for entry in fs::read_dir(dir)
+        .map_err(|error| io_error("read suffix WAL segment directory", dir, error))?
+    {
+        let entry = entry
+            .map_err(|error| io_error("read suffix WAL segment directory entry", dir, error))?;
+        let path = entry.path();
+        if path.extension().and_then(|extension| extension.to_str()) == Some("wal") {
+            files.push(path);
+        }
+    }
+    files.sort();
+    for path in files {
+        let mut file =
+            File::open(&path).map_err(|error| io_error("open suffix WAL segment", &path, error))?;
+        let mut len_buf = [0u8; 8];
+        file.read_exact(&mut len_buf)
+            .map_err(|error| io_error("read suffix WAL segment length", &path, error))?;
+        let len = u64::from_le_bytes(len_buf);
+        if len > MAX_WAL_RECORD_BYTES {
+            return Err(PersistentARTrieError::corrupted(format!(
+                "native suffix WAL segment is too large: {len} bytes"
+            )));
+        }
+        let mut payload = vec![0u8; len as usize];
+        file.read_exact(&mut payload)
+            .map_err(|error| io_error("read suffix WAL segment payload", &path, error))?;
+        let record: NativeSuffixWalRecord<V> =
+            deserialize_bytes("deserialize native suffix WAL segment", &payload)?;
+        absorb_wal_record(record, report, prepared, committed, legacy_records);
+    }
+    Ok(())
 }
 
 fn replay_wal<U: PersistentSuffixUnit, V: DictionaryValue>(
@@ -1015,59 +1152,53 @@ fn replay_wal<U: PersistentSuffixUnit, V: DictionaryValue>(
     checkpoint_op_id: u64,
     folds_legacy_wal: bool,
 ) -> Result<SuffixWalReplayReport> {
-    if !path.exists() {
-        return Ok(SuffixWalReplayReport::default());
-    }
-    let mut file =
-        File::open(path).map_err(|error| io_error("open suffix WAL for replay", path, error))?;
     let mut report = SuffixWalReplayReport::default();
     let mut prepared = HashMap::new();
     let mut committed = HashSet::new();
     let mut legacy_records = Vec::new();
-    loop {
-        let mut len_buf = [0u8; 8];
-        match file.read_exact(&mut len_buf) {
-            Ok(()) => {}
-            Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => break,
-            Err(error) => return Err(io_error("read suffix WAL record length", path, error)),
+
+    if path.exists() {
+        let mut file = File::open(path)
+            .map_err(|error| io_error("open suffix WAL for replay", path, error))?;
+        loop {
+            let mut len_buf = [0u8; 8];
+            match file.read_exact(&mut len_buf) {
+                Ok(()) => {}
+                Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => break,
+                Err(error) => return Err(io_error("read suffix WAL record length", path, error)),
+            }
+            let len = u64::from_le_bytes(len_buf);
+            if len > MAX_WAL_RECORD_BYTES {
+                return Err(PersistentARTrieError::corrupted(format!(
+                    "native suffix WAL record is too large: {len} bytes"
+                )));
+            }
+            let mut payload = vec![0u8; len as usize];
+            match file.read_exact(&mut payload) {
+                Ok(()) => {}
+                Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => break,
+                Err(error) => return Err(io_error("read suffix WAL record payload", path, error)),
+            }
+            let record: NativeSuffixWalRecord<V> =
+                deserialize_bytes("deserialize native suffix WAL record", &payload)?;
+            absorb_wal_record(
+                record,
+                &mut report,
+                &mut prepared,
+                &mut committed,
+                &mut legacy_records,
+            );
         }
-        let len = u64::from_le_bytes(len_buf);
-        if len > MAX_WAL_RECORD_BYTES {
-            return Err(PersistentARTrieError::corrupted(format!(
-                "native suffix WAL record is too large: {len} bytes"
-            )));
-        }
-        let mut payload = vec![0u8; len as usize];
-        match file.read_exact(&mut payload) {
-            Ok(()) => {}
-            Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => break,
-            Err(error) => return Err(io_error("read suffix WAL record payload", path, error)),
-        }
-        let record: NativeSuffixWalRecord<V> =
-            deserialize_bytes("deserialize native suffix WAL record", &payload)?;
-        match record {
-            NativeSuffixWalRecord::Insert { text, value } => {
-                legacy_records.push(NativeSuffixWalOp::Insert { text, value })
-            }
-            NativeSuffixWalRecord::Remove { text } => {
-                legacy_records.push(NativeSuffixWalOp::Remove { text });
-            }
-            NativeSuffixWalRecord::SetValue { text, value } => {
-                legacy_records.push(NativeSuffixWalOp::SetValue { text, value });
-            }
-            NativeSuffixWalRecord::Clear => legacy_records.push(NativeSuffixWalOp::Clear),
-            NativeSuffixWalRecord::Compact => legacy_records.push(NativeSuffixWalOp::Compact),
-            NativeSuffixWalRecord::Prepare { op_id, op } => {
-                report.max_op_id = report.max_op_id.max(op_id);
-                prepared.insert(op_id, op);
-            }
-            NativeSuffixWalRecord::Commit { op_id } => {
-                report.max_op_id = report.max_op_id.max(op_id);
-                committed.insert(op_id);
-            }
-        }
-        report.replayed += 1;
     }
+
+    replay_wal_segments(
+        &wal_segment_dir_from_wal(path),
+        &mut report,
+        &mut prepared,
+        &mut committed,
+        &mut legacy_records,
+    )?;
+
     if !folds_legacy_wal {
         for op in legacy_records {
             NativeSuffixIndex::<U, V>::apply_op(graph, op);

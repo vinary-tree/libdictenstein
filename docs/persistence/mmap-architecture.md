@@ -11,7 +11,7 @@ This document describes the current persistent storage architecture used by the
 | `PersistentARTrie` / `PersistentARTrieChar` | Lock-free overlay nodes over `ByteKey` / `CharKey` | CX checkpoint image + WAL | WAL-before-CAS lock-free publication |
 | `PersistentARTrieU64Compact` | Lock-free overlay nodes over native `U64Key` | u64 CX checkpoint image + shared WAL records | WAL-before-CAS lock-free publication |
 | `PersistentVocabARTrie` | Lock-free char overlay at `V = u64` + reverse map | Dense char overlay checkpoint + WAL | WAL-before-CAS lock-free publication |
-| `PersistentSuffixAutomaton` / `PersistentSuffixTree` / `PersistentScdawg` | Immutable native suffix graph snapshot | Native graph snapshot + length-prefixed operation WAL | Serialized rebuild, copy-on-write publish |
+| `PersistentSuffixAutomaton` / `PersistentSuffixTree` / `PersistentScdawg` | Immutable native suffix graph snapshot | Native graph snapshot + operation-segment WAL, with legacy monolithic WAL replay | Rebuild candidate graph, CAS publish winner |
 
 The older owned-tree/native-bincode snapshot paths are not the live
 representation for the ARTrie family. The u64 ARTrie in particular no longer
@@ -89,11 +89,12 @@ substring graph records:
 - `PersistentScdawg` stores a compact SCDAWG graph with bidirectional substring
   metadata.
 
-Each byte/char pair stores active source or term records, appends operation WAL
-records, rebuilds a new graph revision for writes, and publishes it
-copy-on-write. Reads traverse immutable graph snapshots without taking the
-writer lock, but the write path is intentionally serialized around graph
-rebuild/publish.
+Each byte/char pair stores active source or term records, appends prepared and
+commit operation segment records, rebuilds a candidate graph revision for
+writes, and publishes the winning revision by CAS. Recovery also accepts the
+historical monolithic operation WAL. Reads traverse immutable graph snapshots
+without taking a writer lock; writers may retry on CAS contention and still wait
+for WAL durability before acknowledgement.
 
 ## Storage Backends
 

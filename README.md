@@ -307,7 +307,7 @@ Tree height drops from `O(∣key∣)` to `O(∣key∣ / s̄)` for mean compresse
 - **`PersistentARTrie` / `PersistentARTrieChar`** use `ByteKey` / `CharKey`, shared overlay nodes, WAL records, and CX checkpoint images.
 - **`PersistentARTrieU64Compact`** is the default native `u64` sequence-key profile. It stores one `u64` edge per transition, writes shared WAL records, and checkpoints through the CX compressor with a prefix-4 budget. **`PersistentARTrieU64Prefix3Compat`** opens or benchmarks prefix-3 CX images explicitly.
 - **`PersistentVocabARTrie`** is a durable `term -> u64` and `u64 -> term` vocabulary. Forward lookup walks the lock-free char overlay; reverse lookup uses an in-memory map rebuilt from checkpoint/WAL recovery.
-- **`PersistentSuffixAutomaton` / `PersistentSuffixTree` / `PersistentScdawg`** and their `Char` variants persist native substring graphs plus length-prefixed operation WALs. Reads traverse immutable snapshots without taking the writer lock; writes rebuild and publish a new graph copy.
+- **`PersistentSuffixAutomaton` / `PersistentSuffixTree` / `PersistentScdawg`** and their `Char` variants persist native substring graphs plus atomically published operation-segment WALs. Recovery also reads the historical monolithic WAL format. Reads traverse immutable snapshots; writes rebuild a candidate graph and publish the winning copy by CAS.
 
 ### Durable writes: the Order-A protocol
 
