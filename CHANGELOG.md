@@ -185,7 +185,7 @@ Date format is ISO-8601 (YYYY-MM-DD).
   aware; both needed; neither subsumes the other).
 - **`ARTrieAtomicOps`** trait body commented out per CLAUDE.md (no impl
   sites; signatures conflicted with `ARTrie`'s own methods). Empty
-  `#[deprecated]` stub kept for back-compat.
+  `#[deprecated]` compatibility shim kept for back-compat.
 - **`EvictableARTrie::{enable,disable,force}_eviction`** changed from
   `&mut self` to `&self` (3 impl sites updated). The `&mut self` bound
   was performative — impls already mutate through interior write guards.
@@ -215,10 +215,10 @@ Date format is ISO-8601 (YYYY-MM-DD).
   `tests/serialization_value_roundtrip.rs` covers DynamicDawg/DAT byte
   variants, char variants, and a regression-guard for the legacy
   drop-values behavior.
-- **`SharedVocabARTrie` no-op stubs were made visible as an interim
-  hardening step.** At this point in the history, unsupported methods emitted
-  `log::warn!` instead of silently discarding non-default arguments. This was
-  later superseded by the Unreleased persistent-vocab change above:
+- **`SharedVocabARTrie` warning-only methods were made visible as a
+  historical hardening step.** At this point in the history, unsupported
+  methods emitted `log::warn!` instead of silently discarding non-default
+  arguments. This was later superseded by the Unreleased persistent-vocab change above:
   `insert_with_value`, `update_or_insert`, and `union_with` now perform real
   index-aware writes and are pinned by `tests/vocab_trait_honesty.rs`.
 - **`FilterableValue::Atom`** associated type added; `Vec<T>` / `HashSet<T>`
