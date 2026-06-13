@@ -8,6 +8,14 @@ Date format is ISO-8601 (YYYY-MM-DD).
 
 ### Changed
 
+- **`DynamicDawgU64` compaction/minimization now publish real rebuilt graphs.**
+  The u64 DAWG no longer clears the compaction flag as a no-op: `compact()` and
+  `minimize()` snapshot visible final sequences, rebuild a compact graph,
+  intern equivalent non-final valueless suffix subgraphs, and atomically publish
+  the rebuilt root edge list. Reads remain wait-free; compaction briefly gates
+  writers during publication to avoid losing concurrent writes. Regression
+  tests cover dead-branch removal, value preservation, empty-sequence values,
+  and concurrent writer/compactor interleavings.
 - **Persistent suffix graph write publication moved to prepared/commit CAS for
   retryable mutations.** `PersistentSuffixAutomaton{,Char}`,
   `PersistentSuffixTree{,Char}`, and `PersistentScdawg{,Char}` now append a

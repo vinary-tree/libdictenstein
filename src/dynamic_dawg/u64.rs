@@ -54,7 +54,9 @@
 //! # Thread Safety
 //!
 //! - **Reads**: Wait-free - multiple readers never block
-//! - **Writes**: Lock-free - at least one writer always makes progress
+//! - **Writes**: Lock-free during normal insert/remove/update operations; explicit
+//!   compaction is an exclusive maintenance publication so it can safely replace
+//!   dead subgraphs without losing a concurrent write.
 //! - **Memory**: Arc-based with automatic reclamation via arc-swap
 
 use super::u64_zipper::DynamicDawgU64Zipper;
@@ -62,6 +64,8 @@ use crate::value::DictionaryValue;
 use crate::{Dictionary, DictionaryNode, SyncStrategy};
 use arc_swap::{ArcSwap, ArcSwapOption};
 use smallvec::SmallVec;
+use std::collections::{HashMap, HashSet};
+use std::hash::{Hash, Hasher};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 
@@ -229,6 +233,10 @@ pub struct DynamicDawgU64<V: DictionaryValue = ()> {
     term_count: AtomicUsize,
     /// Whether compaction is recommended
     needs_compaction: AtomicBool,
+    /// Number of writers currently mutating the lock-free graph.
+    active_writers: AtomicUsize,
+    /// Exclusive maintenance gate used only by `compact` / `minimize`.
+    compaction_active: AtomicBool,
 }
 
 impl<V: DictionaryValue> Clone for DynamicDawgU64<V> {
@@ -238,7 +246,45 @@ impl<V: DictionaryValue> Clone for DynamicDawgU64<V> {
             root: Arc::new(self.deep_clone_node(&self.root)),
             term_count: AtomicUsize::new(self.term_count.load(Ordering::Relaxed)),
             needs_compaction: AtomicBool::new(self.needs_compaction.load(Ordering::Relaxed)),
+            active_writers: AtomicUsize::new(0),
+            compaction_active: AtomicBool::new(false),
         }
+    }
+}
+
+struct WriteGuard<'a, V: DictionaryValue> {
+    dawg: &'a DynamicDawgU64<V>,
+}
+
+impl<V: DictionaryValue> Drop for WriteGuard<'_, V> {
+    fn drop(&mut self) {
+        self.dawg.active_writers.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+struct BuildNode<V: DictionaryValue> {
+    is_final: bool,
+    value: Option<V>,
+    edges: Vec<(u64, usize)>,
+}
+
+#[derive(Clone, Eq)]
+struct U64MergeSignature {
+    is_final: bool,
+    edges: Vec<(u64, usize)>,
+}
+
+impl PartialEq for U64MergeSignature {
+    fn eq(&self, other: &Self) -> bool {
+        self.is_final == other.is_final && self.edges == other.edges
+    }
+}
+
+impl Hash for U64MergeSignature {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.is_final.hash(state);
+        self.edges.hash(state);
     }
 }
 
@@ -297,6 +343,40 @@ impl<V: DictionaryValue> DynamicDawgU64<V> {
             root: Arc::new(DawgNodeU64::new(false)),
             term_count: AtomicUsize::new(0),
             needs_compaction: AtomicBool::new(false),
+            active_writers: AtomicUsize::new(0),
+            compaction_active: AtomicBool::new(false),
+        }
+    }
+
+    fn begin_write(&self) -> WriteGuard<'_, V> {
+        loop {
+            while self.compaction_active.load(Ordering::Acquire) {
+                std::hint::spin_loop();
+                std::thread::yield_now();
+            }
+
+            self.active_writers.fetch_add(1, Ordering::AcqRel);
+            if !self.compaction_active.load(Ordering::Acquire) {
+                return WriteGuard { dawg: self };
+            }
+            self.active_writers.fetch_sub(1, Ordering::AcqRel);
+        }
+    }
+
+    fn acquire_compaction(&self) -> bool {
+        self.compaction_active
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+    }
+
+    fn release_compaction(&self) {
+        self.compaction_active.store(false, Ordering::Release);
+    }
+
+    fn wait_for_writers_to_quiesce(&self) {
+        while self.active_writers.load(Ordering::Acquire) != 0 {
+            std::hint::spin_loop();
+            std::thread::yield_now();
         }
     }
 
@@ -310,16 +390,21 @@ impl<V: DictionaryValue> DynamicDawgU64<V> {
 
     /// Create a new empty dynamic DAWG with custom auto-minimize threshold.
     ///
-    /// Note: Auto-minimization is not yet implemented in the lock-free version.
-    /// This constructor is provided for API compatibility.
+    /// The u64 lock-free variant keeps explicit maintenance as the publication
+    /// boundary: callers invoke [`compact`](Self::compact) or
+    /// [`minimize`](Self::minimize) when they want to rebuild dead paths. The
+    /// threshold parameter is accepted so generic DAWG builders can share this
+    /// constructor across byte, char, and u64 variants.
     pub fn with_auto_minimize_threshold(_threshold: f32) -> Self {
         Self::new()
     }
 
     /// Create a new empty dynamic DAWG with full configuration.
     ///
-    /// Note: Bloom filter and auto-minimization are not yet implemented
-    /// in the lock-free version. This constructor is provided for API compatibility.
+    /// The u64 lock-free variant performs exact wait-free traversals and does
+    /// not install a Bloom filter. The configuration parameters are accepted
+    /// for API compatibility with generic DAWG construction code; explicit
+    /// compaction remains the maintenance mechanism.
     pub fn with_config(
         _auto_minimize_threshold: f32,
         _bloom_filter_capacity: Option<usize>,
@@ -402,18 +487,20 @@ impl<V: DictionaryValue> DynamicDawgU64<V> {
         self.remove_sequence(&sequence)
     }
 
-    /// Compact the DAWG (placeholder - not fully implemented for lock-free).
+    /// Compact the DAWG by rebuilding a canonical graph from currently visible
+    /// final sequences.
     ///
-    /// In the lock-free version, this extracts all terms and rebuilds.
+    /// Reads remain wait-free while compaction builds the replacement graph.
+    /// Publication briefly gates writers so the rebuilt root cannot overwrite a
+    /// concurrent insert/remove/update that started on the old graph.
     pub fn compact(&self) -> usize {
-        // For now, just clear the needs_compaction flag
-        self.needs_compaction.store(false, Ordering::Relaxed);
-        0
+        self.rebuild_from_visible_entries()
     }
 
-    /// Minimize the DAWG (placeholder - not fully implemented for lock-free).
+    /// Minimize the DAWG by rebuilding and interning equivalent valueless
+    /// suffix subgraphs.
     pub fn minimize(&self) -> usize {
-        0
+        self.rebuild_from_visible_entries()
     }
 
     /// Batch insert multiple terms.
@@ -454,16 +541,7 @@ impl<V: DictionaryValue> DynamicDawgU64<V> {
 
     /// Get the number of nodes in the DAWG.
     pub fn node_count(&self) -> usize {
-        self.count_nodes_recursive(&self.root)
-    }
-
-    fn count_nodes_recursive(&self, node: &Arc<DawgNodeU64<V>>) -> usize {
-        let edges = node.edges.load();
-        let mut count = 1;
-        for (_, child) in edges.edges.iter() {
-            count += self.count_nodes_recursive(child);
-        }
-        count
+        self.count_unique_nodes()
     }
 
     /// Check if compaction is recommended.
@@ -493,6 +571,7 @@ impl<V: DictionaryValue> DynamicDawgU64<V> {
     /// This method uses CAS loops to atomically update edge lists. At least one
     /// concurrent writer always makes progress, preventing livelock.
     pub fn insert_sequence(&self, sequence: &[u64]) -> bool {
+        let _write = self.begin_write();
         if sequence.is_empty() {
             // Mark root as final
             if self
@@ -559,6 +638,7 @@ impl<V: DictionaryValue> DynamicDawgU64<V> {
 
     /// Insert a sequence with an associated value.
     pub fn insert_sequence_with_value(&self, sequence: &[u64], value: V) -> bool {
+        let _write = self.begin_write();
         if sequence.is_empty() {
             // Mark root as final with value
             if self
@@ -639,6 +719,7 @@ impl<V: DictionaryValue> DynamicDawgU64<V> {
     where
         F: Fn(&mut V),
     {
+        let _write = self.begin_write();
         // Navigate to the node, creating path if needed, without overwriting an
         // existing value before the update function can observe it.
         if sequence.is_empty() {
@@ -757,6 +838,7 @@ impl<V: DictionaryValue> DynamicDawgU64<V> {
     /// Note: This only unmarks the node as final. The node structure remains
     /// for potential future use. Call `compact()` to reclaim unused nodes.
     pub fn remove_sequence(&self, sequence: &[u64]) -> bool {
+        let _write = self.begin_write();
         if sequence.is_empty() {
             if self
                 .root
@@ -861,6 +943,160 @@ impl<V: DictionaryValue> DynamicDawgU64<V> {
     /// Iterate over all terms with their values.
     pub fn iter_with_values(&self) -> impl Iterator<Item = (Vec<u64>, V)> + '_ {
         DawgIteratorWithValues::new(self)
+    }
+
+    fn rebuild_from_visible_entries(&self) -> usize {
+        if !self.acquire_compaction() {
+            return 0;
+        }
+
+        self.wait_for_writers_to_quiesce();
+
+        let old_node_count = self.count_unique_nodes();
+        let entries = self.collect_visible_entries();
+        let new_root = Self::build_minimized_root(&entries);
+        let new_node_count = Self::count_unique_nodes_from(&new_root);
+
+        let new_edges = new_root.edges.load_full();
+        self.root.edges.store(new_edges);
+
+        let new_value = new_root.value.load_full();
+        self.root.value.store(new_value);
+        self.root
+            .is_final
+            .store(new_root.is_final.load(Ordering::Acquire), Ordering::Release);
+
+        self.term_count.store(entries.len(), Ordering::Release);
+        self.needs_compaction.store(false, Ordering::Release);
+        self.release_compaction();
+
+        old_node_count.saturating_sub(new_node_count)
+    }
+
+    fn collect_visible_entries(&self) -> Vec<(Vec<u64>, Option<V>)> {
+        let mut entries = Vec::new();
+        let mut path = Vec::new();
+        Self::collect_visible_entries_from(&self.root, &mut path, &mut entries);
+        entries
+    }
+
+    fn collect_visible_entries_from(
+        node: &Arc<DawgNodeU64<V>>,
+        path: &mut Vec<u64>,
+        entries: &mut Vec<(Vec<u64>, Option<V>)>,
+    ) {
+        if node.is_final.load(Ordering::Acquire) {
+            let value = node
+                .value
+                .load_full()
+                .as_ref()
+                .map(|value| (**value).clone());
+            entries.push((path.clone(), value));
+        }
+
+        let edges = node.edges.load_full();
+        for (label, child) in edges.edges.iter() {
+            path.push(*label);
+            Self::collect_visible_entries_from(child, path, entries);
+            path.pop();
+        }
+    }
+
+    fn build_minimized_root(entries: &[(Vec<u64>, Option<V>)]) -> Arc<DawgNodeU64<V>> {
+        let mut nodes = vec![BuildNode::<V>::default()];
+        let mut sorted_entries = entries.to_vec();
+        sorted_entries.sort_by(|(left, _), (right, _)| left.cmp(right));
+
+        for (sequence, value) in sorted_entries {
+            let mut node_idx = 0usize;
+            for label in sequence {
+                let next = match nodes[node_idx]
+                    .edges
+                    .binary_search_by_key(&label, |(edge_label, _)| *edge_label)
+                {
+                    Ok(pos) => nodes[node_idx].edges[pos].1,
+                    Err(pos) => {
+                        let new_idx = nodes.len();
+                        nodes.push(BuildNode::default());
+                        nodes[node_idx].edges.insert(pos, (label, new_idx));
+                        new_idx
+                    }
+                };
+                node_idx = next;
+            }
+            nodes[node_idx].is_final = true;
+            nodes[node_idx].value = value;
+        }
+
+        let mut interned: HashMap<U64MergeSignature, Arc<DawgNodeU64<V>>> = HashMap::new();
+        Self::intern_build_node(0, &nodes, &mut interned, true)
+    }
+
+    fn intern_build_node(
+        idx: usize,
+        nodes: &[BuildNode<V>],
+        interned: &mut HashMap<U64MergeSignature, Arc<DawgNodeU64<V>>>,
+        is_root: bool,
+    ) -> Arc<DawgNodeU64<V>> {
+        let build = &nodes[idx];
+        let mut edges = SmallVec::<[(u64, Arc<DawgNodeU64<V>>); 4]>::new();
+        let mut signature_edges = Vec::with_capacity(build.edges.len());
+
+        for (label, child_idx) in &build.edges {
+            let child = Self::intern_build_node(*child_idx, nodes, interned, false);
+            signature_edges.push((*label, Arc::as_ptr(&child) as usize));
+            edges.push((*label, child));
+        }
+
+        if !is_root && !build.is_final && build.value.is_none() {
+            let signature = U64MergeSignature {
+                is_final: build.is_final,
+                edges: signature_edges,
+            };
+            if let Some(existing) = interned.get(&signature) {
+                return existing.clone();
+            }
+
+            let node = Arc::new(DawgNodeU64 {
+                edges: ArcSwap::from_pointee(EdgeList { edges }),
+                is_final: AtomicBool::new(build.is_final),
+                value: ArcSwapOption::empty(),
+            });
+            interned.insert(signature, node.clone());
+            return node;
+        }
+
+        Arc::new(DawgNodeU64 {
+            edges: ArcSwap::from_pointee(EdgeList { edges }),
+            is_final: AtomicBool::new(build.is_final),
+            value: match build.value.clone() {
+                Some(value) => ArcSwapOption::from_pointee(Some(value)),
+                None => ArcSwapOption::empty(),
+            },
+        })
+    }
+
+    fn count_unique_nodes(&self) -> usize {
+        Self::count_unique_nodes_from(&self.root)
+    }
+
+    fn count_unique_nodes_from(root: &Arc<DawgNodeU64<V>>) -> usize {
+        let mut visited = HashSet::new();
+        Self::count_unique_nodes_dfs(root, &mut visited)
+    }
+
+    fn count_unique_nodes_dfs(node: &Arc<DawgNodeU64<V>>, visited: &mut HashSet<usize>) -> usize {
+        let ptr = Arc::as_ptr(node) as usize;
+        if !visited.insert(ptr) {
+            return 0;
+        }
+
+        let mut count = 1;
+        let edges = node.edges.load_full();
+        for (_, child) in edges.edges.iter() {
+            count += Self::count_unique_nodes_dfs(child, visited);
+        }
+        count
     }
 }
 
@@ -1115,6 +1351,96 @@ mod tests {
         assert_eq!(dawg.term_count(), 1);
 
         assert!(!dawg.remove_sequence(&[1, 2, 3])); // Already removed
+    }
+
+    #[test]
+    fn test_compact_rebuilds_without_removed_branches() {
+        let dawg: DynamicDawgU64<()> = DynamicDawgU64::new();
+        assert!(dawg.insert_sequence(&[1, 2, 3]));
+        assert!(dawg.insert_sequence(&[1, 2, 4]));
+        assert!(dawg.insert_sequence(&[9, 9, 9]));
+
+        let before_remove = dawg.node_count();
+        assert!(dawg.remove_sequence(&[9, 9, 9]));
+        assert!(dawg.needs_compaction());
+        assert_eq!(dawg.node_count(), before_remove);
+
+        let removed = dawg.compact();
+        assert!(
+            removed > 0,
+            "compaction should remove the dead [9,9,9] branch"
+        );
+        assert!(!dawg.needs_compaction());
+        assert!(dawg.contains_sequence(&[1, 2, 3]));
+        assert!(dawg.contains_sequence(&[1, 2, 4]));
+        assert!(!dawg.contains_sequence(&[9, 9, 9]));
+        assert_eq!(dawg.term_count(), 2);
+    }
+
+    #[test]
+    fn test_minimize_preserves_values_and_empty_sequence() {
+        let dawg: DynamicDawgU64<i64> = DynamicDawgU64::new();
+        assert!(dawg.insert_sequence_with_value(&[], 7));
+        assert!(dawg.insert_sequence_with_value(&[1, 2, 3], 123));
+        assert!(dawg.insert_sequence_with_value(&[4, 2, 3], 456));
+        assert!(dawg.insert_sequence(&[8, 8, 8]));
+        assert!(dawg.remove_sequence(&[8, 8, 8]));
+
+        let removed = dawg.minimize();
+        assert!(
+            removed > 0,
+            "minimize should publish a rebuilt compact graph"
+        );
+        assert_eq!(dawg.get_sequence_value(&[]), Some(7));
+        assert_eq!(dawg.get_sequence_value(&[1, 2, 3]), Some(123));
+        assert_eq!(dawg.get_sequence_value(&[4, 2, 3]), Some(456));
+        assert!(!dawg.contains_sequence(&[8, 8, 8]));
+        assert_eq!(dawg.term_count(), 3);
+    }
+
+    #[test]
+    fn test_compact_does_not_lose_concurrent_writes() {
+        use std::sync::Arc as StdArc;
+        use std::thread;
+
+        let dawg = StdArc::new(DynamicDawgU64::<()>::new());
+        for i in 0..128u64 {
+            assert!(dawg.insert_sequence(&[i, i + 1, i + 2]));
+        }
+        for i in 0..64u64 {
+            assert!(dawg.remove_sequence(&[i, i + 1, i + 2]));
+        }
+
+        let writer = {
+            let dawg = dawg.clone();
+            thread::spawn(move || {
+                for i in 128..256u64 {
+                    dawg.insert_sequence(&[i, i + 1, i + 2]);
+                }
+            })
+        };
+        let compactor = {
+            let dawg = dawg.clone();
+            thread::spawn(move || {
+                let _ = dawg.compact();
+            })
+        };
+
+        writer.join().expect("writer should not panic");
+        compactor.join().expect("compactor should not panic");
+
+        for i in 64..256u64 {
+            assert!(
+                dawg.contains_sequence(&[i, i + 1, i + 2]),
+                "sequence inserted before/during compaction was lost: {i}"
+            );
+        }
+        for i in 0..64u64 {
+            assert!(
+                !dawg.contains_sequence(&[i, i + 1, i + 2]),
+                "removed sequence resurrected after compaction: {i}"
+            );
+        }
     }
 
     #[test]
