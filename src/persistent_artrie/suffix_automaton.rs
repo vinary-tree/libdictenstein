@@ -4,7 +4,10 @@
 //! suffix automaton APIs without encoding suffixes as namespaced
 //! `PersistentARTrie` keys. The durable representation is a native suffix graph
 //! snapshot plus a length-prefixed operation WAL. Readers traverse immutable
-//! graph snapshots; writers publish copy-on-write graph revisions.
+//! graph snapshots. Retryable mutations publish copy-on-write graph revisions
+//! with pointer-identity CAS after appending a prepared WAL record, then append
+//! a commit marker before acknowledging the caller; `update_or_insert` remains
+//! serialized because its `FnOnce` updater is not retry-safe.
 
 use std::collections::{HashMap, HashSet};
 use std::fmt;
@@ -12,6 +15,7 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -32,9 +36,11 @@ use crate::{
 
 const BYTE_MAGIC: [u8; 8] = *b"PSUFU8N1";
 const CHAR_MAGIC: [u8; 8] = *b"PSUFCHR1";
-const SNAPSHOT_VERSION: u32 = 2;
+const SNAPSHOT_VERSION: u32 = 3;
+const COMPACT_SNAPSHOT_VERSION: u32 = 2;
 const LEGACY_GRAPH_SNAPSHOT_VERSION: u32 = 1;
 const MAX_WAL_RECORD_BYTES: u64 = 64 * 1024 * 1024;
+const MAX_CAS_RETRIES: usize = 64;
 
 pub trait PersistentSuffixUnit:
     CharUnit + Serialize + serde::de::DeserializeOwned + fmt::Debug + Send + Sync
@@ -522,6 +528,39 @@ struct NativeSuffixCompactSnapshot<U: PersistentSuffixUnit, V: DictionaryValue> 
     sources: Vec<SourceRecord<V>>,
     explicit_values: Vec<(Vec<U>, V)>,
     needs_compaction: bool,
+    checkpoint_op_id: u64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(bound(
+    serialize = "U: serde::Serialize, V: serde::Serialize",
+    deserialize = "U: serde::de::DeserializeOwned, V: serde::de::DeserializeOwned"
+))]
+struct NativeSuffixCompactSnapshotV2<U: PersistentSuffixUnit, V: DictionaryValue> {
+    magic: [u8; 8],
+    version: u32,
+    sources: Vec<SourceRecord<V>>,
+    explicit_values: Vec<(Vec<U>, V)>,
+    needs_compaction: bool,
+}
+
+struct LoadedSuffixSnapshot<U: PersistentSuffixUnit, V: DictionaryValue> {
+    graph: NativeSuffixGraph<U, V>,
+    checkpoint_op_id: u64,
+    folds_legacy_wal: bool,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(bound(
+    serialize = "V: serde::Serialize",
+    deserialize = "V: serde::de::DeserializeOwned"
+))]
+enum NativeSuffixWalOp<V: DictionaryValue> {
+    Insert { text: String, value: Option<V> },
+    Remove { text: String },
+    SetValue { text: String, value: V },
+    Clear,
+    Compact,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -530,11 +569,32 @@ struct NativeSuffixCompactSnapshot<U: PersistentSuffixUnit, V: DictionaryValue> 
     deserialize = "V: serde::de::DeserializeOwned"
 ))]
 enum NativeSuffixWalRecord<V: DictionaryValue> {
-    Insert { text: String, value: Option<V> },
-    Remove { text: String },
-    SetValue { text: String, value: V },
+    Insert {
+        text: String,
+        value: Option<V>,
+    },
+    Remove {
+        text: String,
+    },
+    SetValue {
+        text: String,
+        value: V,
+    },
     Clear,
     Compact,
+    Prepare {
+        op_id: u64,
+        op: NativeSuffixWalOp<V>,
+    },
+    Commit {
+        op_id: u64,
+    },
+}
+
+#[derive(Debug, Default)]
+struct SuffixWalReplayReport {
+    replayed: u64,
+    max_op_id: u64,
 }
 
 pub struct NativeSuffixIndex<U: PersistentSuffixUnit, V: DictionaryValue> {
@@ -542,6 +602,9 @@ pub struct NativeSuffixIndex<U: PersistentSuffixUnit, V: DictionaryValue> {
     path: Option<PathBuf>,
     write_lock: Arc<Mutex<()>>,
     wal_lock: Arc<Mutex<()>>,
+    next_op_id: AtomicU64,
+    committed_op_id: AtomicU64,
+    inflight_publications: AtomicUsize,
 }
 
 fn wal_path(path: &Path) -> PathBuf {
@@ -579,33 +642,48 @@ impl<U: PersistentSuffixUnit, V: DictionaryValue> NativeSuffixIndex<U, V> {
             path: None,
             write_lock: Arc::new(Mutex::new(())),
             wal_lock: Arc::new(Mutex::new(())),
+            next_op_id: AtomicU64::new(1),
+            committed_op_id: AtomicU64::new(0),
+            inflight_publications: AtomicUsize::new(0),
         }
     }
 
     fn create(path: &Path) -> Result<Self> {
         let graph = NativeSuffixGraph::new();
-        write_snapshot_file::<U, V>(path, graph.clone())?;
+        write_snapshot_file::<U, V>(path, graph.clone(), 0)?;
         truncate_wal(&wal_path(path))?;
         Ok(Self {
             graph: ArcSwap::from_pointee(graph),
             path: Some(path.to_path_buf()),
             write_lock: Arc::new(Mutex::new(())),
             wal_lock: Arc::new(Mutex::new(())),
+            next_op_id: AtomicU64::new(1),
+            committed_op_id: AtomicU64::new(0),
+            inflight_publications: AtomicUsize::new(0),
         })
     }
 
     fn open(path: &Path) -> Result<(Self, u64)> {
-        let graph = read_snapshot_file::<U, V>(path)?;
-        let mut replay_graph = graph.clone();
-        let replayed = replay_wal::<U, V>(&mut replay_graph, &wal_path(path))?;
+        let loaded = read_snapshot_file::<U, V>(path)?;
+        let mut replay_graph = loaded.graph.clone();
+        let report = replay_wal::<U, V>(
+            &mut replay_graph,
+            &wal_path(path),
+            loaded.checkpoint_op_id,
+            loaded.folds_legacy_wal,
+        )?;
+        let max_op_id = loaded.checkpoint_op_id.max(report.max_op_id);
         Ok((
             Self {
                 graph: ArcSwap::from_pointee(replay_graph),
                 path: Some(path.to_path_buf()),
                 write_lock: Arc::new(Mutex::new(())),
                 wal_lock: Arc::new(Mutex::new(())),
+                next_op_id: AtomicU64::new(max_op_id.saturating_add(1)),
+                committed_op_id: AtomicU64::new(max_op_id),
+                inflight_publications: AtomicUsize::new(0),
             },
-            replayed,
+            report.replayed,
         ))
     }
 
@@ -621,48 +699,84 @@ impl<U: PersistentSuffixUnit, V: DictionaryValue> NativeSuffixIndex<U, V> {
         append_wal_record(&wal_path(path), record)
     }
 
-    fn mutate<R, F>(&self, record: Option<NativeSuffixWalRecord<V>>, mutate: F) -> Result<R>
-    where
-        F: FnOnce(&mut NativeSuffixGraph<U, V>) -> R,
-    {
-        let _write_guard = self.write_lock.lock();
-        let current = self.graph.load_full();
-        let mut next = (*current).clone();
-        let result = mutate(&mut next);
-        if let Some(record) = record {
-            self.append_record_locked(&record)?;
+    fn apply_op(graph: &mut NativeSuffixGraph<U, V>, op: NativeSuffixWalOp<V>) -> bool {
+        match op {
+            NativeSuffixWalOp::Insert { text, value } => graph.insert_source(&text, value),
+            NativeSuffixWalOp::Remove { text } => graph.remove_source(&text),
+            NativeSuffixWalOp::SetValue { text, value } => {
+                graph.set_value(&text, value);
+                true
+            }
+            NativeSuffixWalOp::Clear => {
+                graph.clear();
+                true
+            }
+            NativeSuffixWalOp::Compact => graph.compact() > 0,
         }
-        self.graph.store(Arc::new(next));
-        Ok(result)
+    }
+
+    fn mutate_retryable(&self, op: NativeSuffixWalOp<V>) -> Result<bool> {
+        if self.path.is_none() {
+            loop {
+                let current = self.graph.load_full();
+                let mut next = (*current).clone();
+                let result = Self::apply_op(&mut next, op.clone());
+                let previous = self.graph.compare_and_swap(&current, Arc::new(next));
+                if Arc::ptr_eq(&previous, &current) {
+                    return Ok(result);
+                }
+            }
+        }
+
+        for _ in 0..MAX_CAS_RETRIES {
+            let op_id = self.next_op_id.fetch_add(1, Ordering::Relaxed);
+            self.append_record_locked(&NativeSuffixWalRecord::Prepare {
+                op_id,
+                op: op.clone(),
+            })?;
+            let current = self.graph.load_full();
+            let mut next = (*current).clone();
+            let result = Self::apply_op(&mut next, op.clone());
+            self.inflight_publications.fetch_add(1, Ordering::SeqCst);
+            let previous = self.graph.compare_and_swap(&current, Arc::new(next));
+            if Arc::ptr_eq(&previous, &current) {
+                let commit_result =
+                    self.append_record_locked(&NativeSuffixWalRecord::Commit { op_id });
+                if commit_result.is_ok() {
+                    self.committed_op_id.fetch_max(op_id, Ordering::SeqCst);
+                }
+                self.inflight_publications.fetch_sub(1, Ordering::SeqCst);
+                commit_result?;
+                return Ok(result);
+            }
+            self.inflight_publications.fetch_sub(1, Ordering::SeqCst);
+        }
+
+        Err(PersistentARTrieError::internal(format!(
+            "native suffix automaton CAS failed after {MAX_CAS_RETRIES} retries"
+        )))
     }
 
     fn insert(&self, text: &str, value: Option<V>) -> Result<bool> {
-        self.mutate(
-            Some(NativeSuffixWalRecord::Insert {
-                text: text.to_string(),
-                value: value.clone(),
-            }),
-            |graph| graph.insert_source(text, value),
-        )
+        self.mutate_retryable(NativeSuffixWalOp::Insert {
+            text: text.to_string(),
+            value,
+        })
     }
 
     fn remove(&self, text: &str) -> Result<bool> {
-        self.mutate(
-            Some(NativeSuffixWalRecord::Remove {
-                text: text.to_string(),
-            }),
-            |graph| graph.remove_source(text),
-        )
+        self.mutate_retryable(NativeSuffixWalOp::Remove {
+            text: text.to_string(),
+        })
     }
 
     fn clear(&self) -> Result<()> {
-        self.mutate(Some(NativeSuffixWalRecord::Clear), |graph| graph.clear())
+        self.mutate_retryable(NativeSuffixWalOp::Clear).map(|_| ())
     }
 
     fn compact(&self) -> Result<usize> {
-        self.mutate(Some(NativeSuffixWalRecord::Compact), |graph| {
-            graph.compact()
-        })
+        self.mutate_retryable(NativeSuffixWalOp::Compact)
+            .map(|changed| usize::from(changed))
     }
 
     fn update_or_insert<F>(&self, text: &str, default_value: V, update_fn: F) -> Result<bool>
@@ -673,11 +787,22 @@ impl<U: PersistentSuffixUnit, V: DictionaryValue> NativeSuffixIndex<U, V> {
         let current = self.graph.load_full();
         let mut next = (*current).clone();
         let (was_new, value) = next.update_or_insert(text, default_value, update_fn);
-        self.append_record_locked(&NativeSuffixWalRecord::SetValue {
-            text: text.to_string(),
-            value,
+        let op_id = self.next_op_id.fetch_add(1, Ordering::Relaxed);
+        self.append_record_locked(&NativeSuffixWalRecord::Prepare {
+            op_id,
+            op: NativeSuffixWalOp::SetValue {
+                text: text.to_string(),
+                value,
+            },
         })?;
+        self.inflight_publications.fetch_add(1, Ordering::SeqCst);
         self.graph.store(Arc::new(next));
+        let commit_result = self.append_record_locked(&NativeSuffixWalRecord::Commit { op_id });
+        if commit_result.is_ok() {
+            self.committed_op_id.fetch_max(op_id, Ordering::SeqCst);
+        }
+        self.inflight_publications.fetch_sub(1, Ordering::SeqCst);
+        commit_result?;
         Ok(was_new)
     }
 
@@ -685,17 +810,33 @@ impl<U: PersistentSuffixUnit, V: DictionaryValue> NativeSuffixIndex<U, V> {
         let Some(path) = self.path.as_ref() else {
             return Ok(());
         };
-        let _write_guard = self.write_lock.lock();
-        let _wal_guard = self.wal_lock.lock();
-        let graph = (*self.graph.load_full()).clone();
-        write_snapshot_file::<U, V>(path, graph)?;
-        truncate_wal(&wal_path(path))
+        for _ in 0..MAX_CAS_RETRIES {
+            if self.inflight_publications.load(Ordering::SeqCst) != 0 {
+                std::thread::yield_now();
+                continue;
+            }
+            let committed_before = self.committed_op_id.load(Ordering::SeqCst);
+            let graph = (*self.graph.load_full()).clone();
+            let committed_after = self.committed_op_id.load(Ordering::SeqCst);
+            if committed_before == committed_after
+                && self.inflight_publications.load(Ordering::SeqCst) == 0
+            {
+                write_snapshot_file::<U, V>(path, graph, committed_after)?;
+                return Ok(());
+            }
+            std::thread::yield_now();
+        }
+        log::debug!(
+            "native suffix automaton checkpoint skipped after {MAX_CAS_RETRIES} unstable attempts"
+        );
+        Ok(())
     }
 }
 
 fn write_snapshot_file<U: PersistentSuffixUnit, V: DictionaryValue>(
     path: &Path,
     graph: NativeSuffixGraph<U, V>,
+    checkpoint_op_id: u64,
 ) -> Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
@@ -709,6 +850,7 @@ fn write_snapshot_file<U: PersistentSuffixUnit, V: DictionaryValue>(
         sources: graph.sources,
         explicit_values,
         needs_compaction: graph.needs_compaction,
+        checkpoint_op_id,
     };
     let bytes = serialize_bytes("serialize native suffix snapshot", &snapshot)?;
     let tmp = tmp_snapshot_path(path);
@@ -725,7 +867,7 @@ fn write_snapshot_file<U: PersistentSuffixUnit, V: DictionaryValue>(
 
 fn read_snapshot_file<U: PersistentSuffixUnit, V: DictionaryValue>(
     path: &Path,
-) -> Result<NativeSuffixGraph<U, V>> {
+) -> Result<LoadedSuffixSnapshot<U, V>> {
     let mut bytes = Vec::new();
     File::open(path)
         .map_err(|error| io_error("open suffix snapshot", path, error))?
@@ -757,11 +899,29 @@ fn read_snapshot_file<U: PersistentSuffixUnit, V: DictionaryValue>(
             let snapshot: NativeSuffixCompactSnapshot<U, V> =
                 deserialize_bytes("deserialize native suffix compact snapshot", &bytes)?;
             let explicit_values = snapshot.explicit_values.into_iter().collect();
-            Ok(NativeSuffixGraph::from_compact_snapshot(
-                snapshot.sources,
-                explicit_values,
-                snapshot.needs_compaction,
-            ))
+            Ok(LoadedSuffixSnapshot {
+                graph: NativeSuffixGraph::from_compact_snapshot(
+                    snapshot.sources,
+                    explicit_values,
+                    snapshot.needs_compaction,
+                ),
+                checkpoint_op_id: snapshot.checkpoint_op_id,
+                folds_legacy_wal: true,
+            })
+        }
+        COMPACT_SNAPSHOT_VERSION => {
+            let snapshot: NativeSuffixCompactSnapshotV2<U, V> =
+                deserialize_bytes("deserialize native suffix compact snapshot v2", &bytes)?;
+            let explicit_values = snapshot.explicit_values.into_iter().collect();
+            Ok(LoadedSuffixSnapshot {
+                graph: NativeSuffixGraph::from_compact_snapshot(
+                    snapshot.sources,
+                    explicit_values,
+                    snapshot.needs_compaction,
+                ),
+                checkpoint_op_id: 0,
+                folds_legacy_wal: false,
+            })
         }
         LEGACY_GRAPH_SNAPSHOT_VERSION => read_legacy_snapshot(&bytes),
         found => Err(PersistentARTrieError::UnsupportedVersion {
@@ -773,7 +933,7 @@ fn read_snapshot_file<U: PersistentSuffixUnit, V: DictionaryValue>(
 
 fn read_legacy_snapshot<U: PersistentSuffixUnit, V: DictionaryValue>(
     bytes: &[u8],
-) -> Result<NativeSuffixGraph<U, V>> {
+) -> Result<LoadedSuffixSnapshot<U, V>> {
     let legacy: NativeSuffixGraphSnapshot<U, V> = bincode_compat::deserialize(bytes)
         .map_err(|error| codec_error("legacy suffix snapshot", error))?;
     if legacy.magic != U::MAGIC {
@@ -788,7 +948,11 @@ fn read_legacy_snapshot<U: PersistentSuffixUnit, V: DictionaryValue>(
             found: legacy.version,
         });
     }
-    Ok(legacy.graph)
+    Ok(LoadedSuffixSnapshot {
+        graph: legacy.graph,
+        checkpoint_op_id: 0,
+        folds_legacy_wal: false,
+    })
 }
 
 fn truncate_wal(path: &Path) -> Result<()> {
@@ -832,13 +996,18 @@ fn append_wal_record<V: DictionaryValue>(
 fn replay_wal<U: PersistentSuffixUnit, V: DictionaryValue>(
     graph: &mut NativeSuffixGraph<U, V>,
     path: &Path,
-) -> Result<u64> {
+    checkpoint_op_id: u64,
+    folds_legacy_wal: bool,
+) -> Result<SuffixWalReplayReport> {
     if !path.exists() {
-        return Ok(0);
+        return Ok(SuffixWalReplayReport::default());
     }
     let mut file =
         File::open(path).map_err(|error| io_error("open suffix WAL for replay", path, error))?;
-    let mut replayed = 0;
+    let mut report = SuffixWalReplayReport::default();
+    let mut prepared = HashMap::new();
+    let mut committed = HashSet::new();
+    let mut legacy_records = Vec::new();
     loop {
         let mut len_buf = [0u8; 8];
         match file.read_exact(&mut len_buf) {
@@ -862,22 +1031,42 @@ fn replay_wal<U: PersistentSuffixUnit, V: DictionaryValue>(
             deserialize_bytes("deserialize native suffix WAL record", &payload)?;
         match record {
             NativeSuffixWalRecord::Insert { text, value } => {
-                graph.insert_source(&text, value);
+                legacy_records.push(NativeSuffixWalOp::Insert { text, value })
             }
             NativeSuffixWalRecord::Remove { text } => {
-                graph.remove_source(&text);
+                legacy_records.push(NativeSuffixWalOp::Remove { text });
             }
             NativeSuffixWalRecord::SetValue { text, value } => {
-                graph.set_value(&text, value);
+                legacy_records.push(NativeSuffixWalOp::SetValue { text, value });
             }
-            NativeSuffixWalRecord::Clear => graph.clear(),
-            NativeSuffixWalRecord::Compact => {
-                graph.compact();
+            NativeSuffixWalRecord::Clear => legacy_records.push(NativeSuffixWalOp::Clear),
+            NativeSuffixWalRecord::Compact => legacy_records.push(NativeSuffixWalOp::Compact),
+            NativeSuffixWalRecord::Prepare { op_id, op } => {
+                report.max_op_id = report.max_op_id.max(op_id);
+                prepared.insert(op_id, op);
+            }
+            NativeSuffixWalRecord::Commit { op_id } => {
+                report.max_op_id = report.max_op_id.max(op_id);
+                committed.insert(op_id);
             }
         }
-        replayed += 1;
+        report.replayed += 1;
     }
-    Ok(replayed)
+    if !folds_legacy_wal {
+        for op in legacy_records {
+            NativeSuffixIndex::<U, V>::apply_op(graph, op);
+        }
+    }
+    let mut committed_ops: Vec<_> = committed
+        .into_iter()
+        .filter(|op_id| *op_id > checkpoint_op_id)
+        .filter_map(|op_id| prepared.remove(&op_id).map(|op| (op_id, op)))
+        .collect();
+    committed_ops.sort_by_key(|(op_id, _)| *op_id);
+    for (_, op) in committed_ops {
+        NativeSuffixIndex::<U, V>::apply_op(graph, op);
+    }
+    Ok(report)
 }
 
 /// Byte/u8 persistent suffix automaton compatible dictionary.

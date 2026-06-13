@@ -108,6 +108,7 @@ fn byte_native_scdawg_wal_replays_uncheckpointed_operations() {
         assert!(dict.insert("bandana"));
         assert!(dict.remove("banana"));
         assert!(!dict.update_or_insert("bandana", 10, |value| *value += 1));
+        assert!(!dict.update_or_insert("bandana", 0, |value| *value += 5));
         // Intentionally skip checkpoint so reopen must replay the native SCDAWG WAL.
     }
 
@@ -117,7 +118,7 @@ fn byte_native_scdawg_wal_replays_uncheckpointed_operations() {
     assert_eq!(reopened.term_count(), 1);
     assert!(reopened.contains("bandana"));
     assert!(!reopened.contains("banana"));
-    assert_eq!(reopened.get_value("bandana"), Some(11));
+    assert_eq!(reopened.get_value("bandana"), Some(16));
     assert!(reopened.contains_substring("dana"));
 }
 

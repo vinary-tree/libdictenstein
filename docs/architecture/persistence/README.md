@@ -16,8 +16,8 @@ Persistent ARTrie byte/char/u64/vocab
 Persistent suffix automaton/tree/SCDAWG
     Dictionary + SubstringDictionary APIs
       -> immutable native graph snapshots
-      -> length-prefixed operation WAL
-      -> copy-on-write graph rebuild/publish
+      -> prepared/commit operation WAL
+      -> CAS copy-on-write graph rebuild/publish
 ```
 
 ## ARTrie Family
@@ -52,8 +52,11 @@ encoding suffixes as ARTrie keys.
 - `PersistentScdawg` / `PersistentScdawgChar`
 
 Reads are snapshot-based and non-blocking with respect to graph mutation. Writes
-are serialized because a mutation rebuilds a graph revision and publishes it
-copy-on-write.
+that can be retried (`insert`, `insert_with_value`, `remove`, `clear`,
+`compact`) append a prepared operation, publish the rebuilt graph with
+pointer-identity CAS, and append a commit marker before acknowledging the
+caller. `update_or_insert` is still serialized because its `FnOnce` updater is
+not retry-safe.
 
 ## Durability Model
 
@@ -63,8 +66,11 @@ The persistent APIs distinguish visibility from durability:
   visible before they are durable.
 - Checkpoints fold the published state into a dense image.
 - Recovery loads the checkpoint and replays retained WAL records.
-- Suffix graph variants append operation records and rebuild the native graph on
-  recovery or mutation.
+- Suffix graph checkpoints retain WAL records and skip operations at or below
+  the checkpoint operation watermark; recovery ignores prepared records without
+  commit markers. Under continuous writer churn, a suffix graph checkpoint may
+  skip image publication and rely on retained WAL replay instead of blocking
+  writers.
 
 Do not describe the current u64 ARTrie as using the old native bincode
 snapshot/WAL path. That implementation was removed from source; benchmark

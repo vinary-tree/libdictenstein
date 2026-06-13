@@ -3,15 +3,18 @@
 //! The byte and Unicode variants persist active term records plus a
 //! length-prefixed operation WAL, then rebuild and publish immutable
 //! [`ScdawgCoreInner`] snapshots. Reads traverse the compact SCDAWG graph
-//! without taking the writer lock; writers rebuild a new compact graph and
-//! publish it copy-on-write.
+//! without taking a writer lock. Retryable mutations rebuild a compact graph and
+//! publish it with pointer-identity CAS after a prepared WAL record, then append
+//! a commit marker before acknowledging the caller; `update_or_insert` remains
+//! serialized because its `FnOnce` updater is not retry-safe.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -34,8 +37,10 @@ use crate::{
 
 const BYTE_MAGIC: [u8; 8] = *b"PSCDAWG8";
 const CHAR_MAGIC: [u8; 8] = *b"PSCDAWGC";
-const SNAPSHOT_VERSION: u32 = 1;
+const SNAPSHOT_VERSION: u32 = 2;
+const LEGACY_SNAPSHOT_VERSION: u32 = 1;
 const MAX_WAL_RECORD_BYTES: u64 = 64 * 1024 * 1024;
+const MAX_CAS_RETRIES: usize = 64;
 
 trait PersistentScdawgUnit:
     CharUnit + Serialize + serde::de::DeserializeOwned + fmt::Debug + Send + Sync
@@ -212,6 +217,39 @@ struct NativeScdawgSnapshot<V: DictionaryValue> {
     version: u32,
     records: Vec<ScdawgTermRecord<V>>,
     needs_compaction: bool,
+    checkpoint_op_id: u64,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(bound(
+    serialize = "V: serde::Serialize",
+    deserialize = "V: serde::de::DeserializeOwned"
+))]
+struct NativeScdawgSnapshotV1<V: DictionaryValue> {
+    magic: [u8; 8],
+    version: u32,
+    records: Vec<ScdawgTermRecord<V>>,
+    needs_compaction: bool,
+}
+
+struct LoadedScdawgSnapshot<V: DictionaryValue> {
+    records: Vec<ScdawgTermRecord<V>>,
+    needs_compaction: bool,
+    checkpoint_op_id: u64,
+    folds_legacy_wal: bool,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(bound(
+    serialize = "V: serde::Serialize",
+    deserialize = "V: serde::de::DeserializeOwned"
+))]
+enum NativeScdawgWalOp<V: DictionaryValue> {
+    Insert { term: String, value: Option<V> },
+    Remove { term: String },
+    SetValue { term: String, value: V },
+    Clear,
+    Compact,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -220,11 +258,32 @@ struct NativeScdawgSnapshot<V: DictionaryValue> {
     deserialize = "V: serde::de::DeserializeOwned"
 ))]
 enum NativeScdawgWalRecord<V: DictionaryValue> {
-    Insert { term: String, value: Option<V> },
-    Remove { term: String },
-    SetValue { term: String, value: V },
+    Insert {
+        term: String,
+        value: Option<V>,
+    },
+    Remove {
+        term: String,
+    },
+    SetValue {
+        term: String,
+        value: V,
+    },
     Clear,
     Compact,
+    Prepare {
+        op_id: u64,
+        op: NativeScdawgWalOp<V>,
+    },
+    Commit {
+        op_id: u64,
+    },
+}
+
+#[derive(Debug, Default)]
+struct ScdawgWalReplayReport {
+    replayed: u64,
+    max_op_id: u64,
 }
 
 struct NativeScdawgIndex<U: PersistentScdawgUnit, V: DictionaryValue> {
@@ -232,6 +291,9 @@ struct NativeScdawgIndex<U: PersistentScdawgUnit, V: DictionaryValue> {
     path: Option<PathBuf>,
     write_lock: Arc<Mutex<()>>,
     wal_lock: Arc<Mutex<()>>,
+    next_op_id: AtomicU64,
+    committed_op_id: AtomicU64,
+    inflight_publications: AtomicUsize,
 }
 
 fn wal_path(path: &Path) -> PathBuf {
@@ -269,33 +331,49 @@ impl<U: PersistentScdawgUnit, V: DictionaryValue> NativeScdawgIndex<U, V> {
             path: None,
             write_lock: Arc::new(Mutex::new(())),
             wal_lock: Arc::new(Mutex::new(())),
+            next_op_id: AtomicU64::new(1),
+            committed_op_id: AtomicU64::new(0),
+            inflight_publications: AtomicUsize::new(0),
         }
     }
 
     fn create(path: &Path) -> Result<Self> {
         let graph = NativeScdawgGraph::new();
-        write_snapshot_file::<U, V>(path, &graph)?;
+        write_snapshot_file::<U, V>(path, &graph, 0)?;
         truncate_wal(&wal_path(path))?;
         Ok(Self {
             graph: ArcSwap::from_pointee(graph),
             path: Some(path.to_path_buf()),
             write_lock: Arc::new(Mutex::new(())),
             wal_lock: Arc::new(Mutex::new(())),
+            next_op_id: AtomicU64::new(1),
+            committed_op_id: AtomicU64::new(0),
+            inflight_publications: AtomicUsize::new(0),
         })
     }
 
     fn open(path: &Path) -> Result<(Self, u64)> {
-        let mut records = read_snapshot_records::<U, V>(path)?;
-        let replayed = replay_wal::<V>(&mut records, &wal_path(path))?;
-        let graph = NativeScdawgGraph::from_records(records, false);
+        let loaded = read_snapshot_records::<U, V>(path)?;
+        let mut records = loaded.records;
+        let report = replay_wal::<V>(
+            &mut records,
+            &wal_path(path),
+            loaded.checkpoint_op_id,
+            loaded.folds_legacy_wal,
+        )?;
+        let max_op_id = loaded.checkpoint_op_id.max(report.max_op_id);
+        let graph = NativeScdawgGraph::from_records(records, loaded.needs_compaction);
         Ok((
             Self {
                 graph: ArcSwap::from_pointee(graph),
                 path: Some(path.to_path_buf()),
                 write_lock: Arc::new(Mutex::new(())),
                 wal_lock: Arc::new(Mutex::new(())),
+                next_op_id: AtomicU64::new(max_op_id.saturating_add(1)),
+                committed_op_id: AtomicU64::new(max_op_id),
+                inflight_publications: AtomicUsize::new(0),
             },
-            replayed,
+            report.replayed,
         ))
     }
 
@@ -311,50 +389,103 @@ impl<U: PersistentScdawgUnit, V: DictionaryValue> NativeScdawgIndex<U, V> {
         append_wal_record(&wal_path(path), record)
     }
 
-    fn mutate<R, F>(&self, record: Option<NativeScdawgWalRecord<V>>, mutate: F) -> Result<R>
-    where
-        F: FnOnce(&mut NativeScdawgGraph<U, V>) -> R,
-    {
-        let _write_guard = self.write_lock.lock();
-        let current = self.graph.load_full();
-        let mut next: NativeScdawgGraph<U, V> =
-            NativeScdawgGraph::from_records(current.records.clone(), current.needs_compaction);
-        let result = mutate(&mut next);
-        if let Some(record) = record {
-            self.append_record_locked(&record)?;
+    fn apply_op(graph: &mut NativeScdawgGraph<U, V>, op: NativeScdawgWalOp<V>) -> bool {
+        match op {
+            NativeScdawgWalOp::Insert { term, value } => graph.insert_record(&term, value),
+            NativeScdawgWalOp::Remove { term } => graph.remove_record(&term),
+            NativeScdawgWalOp::SetValue { term, value } => {
+                if let Some(record) = graph
+                    .records
+                    .iter_mut()
+                    .find(|record| record.active && record.term == term)
+                {
+                    record.value = Some(value);
+                } else {
+                    graph.records.push(ScdawgTermRecord {
+                        term,
+                        value: Some(value),
+                        active: true,
+                    });
+                }
+                true
+            }
+            NativeScdawgWalOp::Clear => {
+                graph.clear();
+                true
+            }
+            NativeScdawgWalOp::Compact => graph.compact() > 0,
         }
-        let rebuilt = NativeScdawgGraph::from_records(next.records, next.needs_compaction);
-        self.graph.store(Arc::new(rebuilt));
-        Ok(result)
+    }
+
+    fn rebuild_from_current(&self) -> (Arc<NativeScdawgGraph<U, V>>, NativeScdawgGraph<U, V>) {
+        let current = self.graph.load_full();
+        let next =
+            NativeScdawgGraph::from_records(current.records.clone(), current.needs_compaction);
+        (current, next)
+    }
+
+    fn mutate_retryable(&self, op: NativeScdawgWalOp<V>) -> Result<bool> {
+        if self.path.is_none() {
+            loop {
+                let (current, mut next) = self.rebuild_from_current();
+                let result = Self::apply_op(&mut next, op.clone());
+                let rebuilt = NativeScdawgGraph::from_records(next.records, next.needs_compaction);
+                let previous = self.graph.compare_and_swap(&current, Arc::new(rebuilt));
+                if Arc::ptr_eq(&previous, &current) {
+                    return Ok(result);
+                }
+            }
+        }
+
+        for _ in 0..MAX_CAS_RETRIES {
+            let op_id = self.next_op_id.fetch_add(1, Ordering::Relaxed);
+            self.append_record_locked(&NativeScdawgWalRecord::Prepare {
+                op_id,
+                op: op.clone(),
+            })?;
+            let (current, mut next) = self.rebuild_from_current();
+            let result = Self::apply_op(&mut next, op.clone());
+            let rebuilt = NativeScdawgGraph::from_records(next.records, next.needs_compaction);
+            self.inflight_publications.fetch_add(1, Ordering::SeqCst);
+            let previous = self.graph.compare_and_swap(&current, Arc::new(rebuilt));
+            if Arc::ptr_eq(&previous, &current) {
+                let commit_result =
+                    self.append_record_locked(&NativeScdawgWalRecord::Commit { op_id });
+                if commit_result.is_ok() {
+                    self.committed_op_id.fetch_max(op_id, Ordering::SeqCst);
+                }
+                self.inflight_publications.fetch_sub(1, Ordering::SeqCst);
+                commit_result?;
+                return Ok(result);
+            }
+            self.inflight_publications.fetch_sub(1, Ordering::SeqCst);
+        }
+
+        Err(PersistentARTrieError::internal(format!(
+            "native SCDAWG CAS failed after {MAX_CAS_RETRIES} retries"
+        )))
     }
 
     fn insert(&self, term: &str, value: Option<V>) -> Result<bool> {
-        self.mutate(
-            Some(NativeScdawgWalRecord::Insert {
-                term: term.to_string(),
-                value: value.clone(),
-            }),
-            |graph| graph.insert_record(term, value),
-        )
+        self.mutate_retryable(NativeScdawgWalOp::Insert {
+            term: term.to_string(),
+            value,
+        })
     }
 
     fn remove(&self, term: &str) -> Result<bool> {
-        self.mutate(
-            Some(NativeScdawgWalRecord::Remove {
-                term: term.to_string(),
-            }),
-            |graph| graph.remove_record(term),
-        )
+        self.mutate_retryable(NativeScdawgWalOp::Remove {
+            term: term.to_string(),
+        })
     }
 
     fn clear(&self) -> Result<()> {
-        self.mutate(Some(NativeScdawgWalRecord::Clear), |graph| graph.clear())
+        self.mutate_retryable(NativeScdawgWalOp::Clear).map(|_| ())
     }
 
     fn compact(&self) -> Result<usize> {
-        self.mutate(Some(NativeScdawgWalRecord::Compact), |graph| {
-            graph.compact()
-        })
+        self.mutate_retryable(NativeScdawgWalOp::Compact)
+            .map(|changed| usize::from(changed))
     }
 
     fn update_or_insert<F>(&self, term: &str, default_value: V, update_fn: F) -> Result<bool>
@@ -372,12 +503,23 @@ impl<U: PersistentScdawgUnit, V: DictionaryValue> NativeScdawgIndex<U, V> {
             .find(|record| record.active && record.term == term)
             .and_then(|record| record.value.clone())
             .expect("update_or_insert installs a value");
-        self.append_record_locked(&NativeScdawgWalRecord::SetValue {
-            term: term.to_string(),
-            value,
+        let op_id = self.next_op_id.fetch_add(1, Ordering::Relaxed);
+        self.append_record_locked(&NativeScdawgWalRecord::Prepare {
+            op_id,
+            op: NativeScdawgWalOp::SetValue {
+                term: term.to_string(),
+                value,
+            },
         })?;
         let rebuilt = NativeScdawgGraph::from_records(next.records, next.needs_compaction);
+        self.inflight_publications.fetch_add(1, Ordering::SeqCst);
         self.graph.store(Arc::new(rebuilt));
+        let commit_result = self.append_record_locked(&NativeScdawgWalRecord::Commit { op_id });
+        if commit_result.is_ok() {
+            self.committed_op_id.fetch_max(op_id, Ordering::SeqCst);
+        }
+        self.inflight_publications.fetch_sub(1, Ordering::SeqCst);
+        commit_result?;
         Ok(was_new)
     }
 
@@ -385,17 +527,31 @@ impl<U: PersistentScdawgUnit, V: DictionaryValue> NativeScdawgIndex<U, V> {
         let Some(path) = self.path.as_ref() else {
             return Ok(());
         };
-        let _write_guard = self.write_lock.lock();
-        let _wal_guard = self.wal_lock.lock();
-        let graph = self.graph.load_full();
-        write_snapshot_file::<U, V>(path, graph.as_ref())?;
-        truncate_wal(&wal_path(path))
+        for _ in 0..MAX_CAS_RETRIES {
+            if self.inflight_publications.load(Ordering::SeqCst) != 0 {
+                std::thread::yield_now();
+                continue;
+            }
+            let committed_before = self.committed_op_id.load(Ordering::SeqCst);
+            let graph = self.graph.load_full();
+            let committed_after = self.committed_op_id.load(Ordering::SeqCst);
+            if committed_before == committed_after
+                && self.inflight_publications.load(Ordering::SeqCst) == 0
+            {
+                write_snapshot_file::<U, V>(path, graph.as_ref(), committed_after)?;
+                return Ok(());
+            }
+            std::thread::yield_now();
+        }
+        log::debug!("native SCDAWG checkpoint skipped after {MAX_CAS_RETRIES} unstable attempts");
+        Ok(())
     }
 }
 
 fn write_snapshot_file<U: PersistentScdawgUnit, V: DictionaryValue>(
     path: &Path,
     graph: &NativeScdawgGraph<U, V>,
+    checkpoint_op_id: u64,
 ) -> Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
@@ -407,6 +563,7 @@ fn write_snapshot_file<U: PersistentScdawgUnit, V: DictionaryValue>(
         version: SNAPSHOT_VERSION,
         records: graph.compact_records(),
         needs_compaction: false,
+        checkpoint_op_id,
     };
     let bytes = serialize_bytes("serialize native SCDAWG snapshot", &snapshot)?;
     let tmp = tmp_snapshot_path(path);
@@ -423,27 +580,59 @@ fn write_snapshot_file<U: PersistentScdawgUnit, V: DictionaryValue>(
 
 fn read_snapshot_records<U: PersistentScdawgUnit, V: DictionaryValue>(
     path: &Path,
-) -> Result<Vec<ScdawgTermRecord<V>>> {
+) -> Result<LoadedScdawgSnapshot<V>> {
     let mut bytes = Vec::new();
     File::open(path)
         .map_err(|error| io_error("open SCDAWG snapshot", path, error))?
         .read_to_end(&mut bytes)
         .map_err(|error| io_error("read SCDAWG snapshot", path, error))?;
-    let snapshot: NativeScdawgSnapshot<V> =
-        deserialize_bytes("deserialize native SCDAWG snapshot", &bytes)?;
-    if snapshot.magic != U::MAGIC {
+
+    if bytes.len() < 12 {
+        return Err(PersistentARTrieError::corrupted(format!(
+            "native SCDAWG snapshot is too short: {} bytes",
+            bytes.len()
+        )));
+    }
+    let magic: [u8; 8] = bytes[0..8]
+        .try_into()
+        .expect("slice length checked for SCDAWG snapshot magic");
+    if magic != U::MAGIC {
         return Err(PersistentARTrieError::InvalidMagic {
             expected: u64::from_le_bytes(U::MAGIC),
-            found: u64::from_le_bytes(snapshot.magic),
+            found: u64::from_le_bytes(magic),
         });
     }
-    if snapshot.version > SNAPSHOT_VERSION {
-        return Err(PersistentARTrieError::UnsupportedVersion {
+    let version = u32::from_le_bytes(
+        bytes[8..12]
+            .try_into()
+            .expect("slice length checked for SCDAWG snapshot version"),
+    );
+    match version {
+        SNAPSHOT_VERSION => {
+            let snapshot: NativeScdawgSnapshot<V> =
+                deserialize_bytes("deserialize native SCDAWG snapshot", &bytes)?;
+            Ok(LoadedScdawgSnapshot {
+                records: snapshot.records,
+                needs_compaction: snapshot.needs_compaction,
+                checkpoint_op_id: snapshot.checkpoint_op_id,
+                folds_legacy_wal: true,
+            })
+        }
+        LEGACY_SNAPSHOT_VERSION => {
+            let snapshot: NativeScdawgSnapshotV1<V> =
+                deserialize_bytes("deserialize native SCDAWG snapshot v1", &bytes)?;
+            Ok(LoadedScdawgSnapshot {
+                records: snapshot.records,
+                needs_compaction: snapshot.needs_compaction,
+                checkpoint_op_id: 0,
+                folds_legacy_wal: false,
+            })
+        }
+        found => Err(PersistentARTrieError::UnsupportedVersion {
             max_supported: SNAPSHOT_VERSION,
-            found: snapshot.version,
-        });
+            found,
+        }),
     }
-    Ok(snapshot.records)
 }
 
 fn truncate_wal(path: &Path) -> Result<()> {
@@ -487,13 +676,18 @@ fn append_wal_record<V: DictionaryValue>(
 fn replay_wal<V: DictionaryValue>(
     records: &mut Vec<ScdawgTermRecord<V>>,
     path: &Path,
-) -> Result<u64> {
+    checkpoint_op_id: u64,
+    folds_legacy_wal: bool,
+) -> Result<ScdawgWalReplayReport> {
     if !path.exists() {
-        return Ok(0);
+        return Ok(ScdawgWalReplayReport::default());
     }
     let mut file =
         File::open(path).map_err(|error| io_error("open SCDAWG WAL for replay", path, error))?;
-    let mut replayed = 0;
+    let mut report = ScdawgWalReplayReport::default();
+    let mut prepared = HashMap::new();
+    let mut committed = HashSet::new();
+    let mut legacy_records = Vec::new();
     loop {
         let mut len_buf = [0u8; 8];
         match file.read_exact(&mut len_buf) {
@@ -515,18 +709,52 @@ fn replay_wal<V: DictionaryValue>(
         }
         let record: NativeScdawgWalRecord<V> =
             deserialize_bytes("deserialize native SCDAWG WAL record", &payload)?;
-        apply_wal_record(records, record);
-        replayed += 1;
+        match record {
+            NativeScdawgWalRecord::Insert { term, value } => {
+                legacy_records.push(NativeScdawgWalOp::Insert { term, value });
+            }
+            NativeScdawgWalRecord::Remove { term } => {
+                legacy_records.push(NativeScdawgWalOp::Remove { term });
+            }
+            NativeScdawgWalRecord::SetValue { term, value } => {
+                legacy_records.push(NativeScdawgWalOp::SetValue { term, value });
+            }
+            NativeScdawgWalRecord::Clear => legacy_records.push(NativeScdawgWalOp::Clear),
+            NativeScdawgWalRecord::Compact => legacy_records.push(NativeScdawgWalOp::Compact),
+            NativeScdawgWalRecord::Prepare { op_id, op } => {
+                report.max_op_id = report.max_op_id.max(op_id);
+                prepared.insert(op_id, op);
+            }
+            NativeScdawgWalRecord::Commit { op_id } => {
+                report.max_op_id = report.max_op_id.max(op_id);
+                committed.insert(op_id);
+            }
+        }
+        report.replayed += 1;
     }
-    Ok(replayed)
+    if !folds_legacy_wal {
+        for op in legacy_records {
+            apply_wal_op(records, op);
+        }
+    }
+    let mut committed_ops: Vec<_> = committed
+        .into_iter()
+        .filter(|op_id| *op_id > checkpoint_op_id)
+        .filter_map(|op_id| prepared.remove(&op_id).map(|op| (op_id, op)))
+        .collect();
+    committed_ops.sort_by_key(|(op_id, _)| *op_id);
+    for (_, op) in committed_ops {
+        apply_wal_op(records, op);
+    }
+    Ok(report)
 }
 
-fn apply_wal_record<V: DictionaryValue>(
+fn apply_wal_op<V: DictionaryValue>(
     records: &mut Vec<ScdawgTermRecord<V>>,
-    record: NativeScdawgWalRecord<V>,
+    record: NativeScdawgWalOp<V>,
 ) {
     match record {
-        NativeScdawgWalRecord::Insert { term, value } => {
+        NativeScdawgWalOp::Insert { term, value } => {
             if let Some(existing) = records
                 .iter_mut()
                 .find(|record| record.active && record.term == term)
@@ -542,7 +770,7 @@ fn apply_wal_record<V: DictionaryValue>(
                 });
             }
         }
-        NativeScdawgWalRecord::Remove { term } => {
+        NativeScdawgWalOp::Remove { term } => {
             if let Some(existing) = records
                 .iter_mut()
                 .find(|record| record.active && record.term == term)
@@ -550,7 +778,7 @@ fn apply_wal_record<V: DictionaryValue>(
                 existing.active = false;
             }
         }
-        NativeScdawgWalRecord::SetValue { term, value } => {
+        NativeScdawgWalOp::SetValue { term, value } => {
             if let Some(existing) = records
                 .iter_mut()
                 .find(|record| record.active && record.term == term)
@@ -564,8 +792,8 @@ fn apply_wal_record<V: DictionaryValue>(
                 });
             }
         }
-        NativeScdawgWalRecord::Clear => records.clear(),
-        NativeScdawgWalRecord::Compact => records.retain(|record| record.active),
+        NativeScdawgWalOp::Clear => records.clear(),
+        NativeScdawgWalOp::Compact => records.retain(|record| record.active),
     }
 }
 

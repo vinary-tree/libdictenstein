@@ -332,7 +332,7 @@ fn suffix_snapshot_version(path: &std::path::Path) -> u32 {
 }
 
 #[test]
-fn byte_checkpoint_uses_compact_v2_snapshot_records() {
+fn byte_checkpoint_uses_compact_v3_snapshot_records() {
     let dir = tempdir().expect("temp dir");
     let path = dir.path().join("persistent_suffix_byte_compact.psuf");
     let texts: Vec<String> = (0..48)
@@ -348,7 +348,7 @@ fn byte_checkpoint_uses_compact_v2_snapshot_records() {
         dict.checkpoint().expect("checkpoint compact byte suffix");
     }
 
-    assert_eq!(suffix_snapshot_version(&path), 2);
+    assert_eq!(suffix_snapshot_version(&path), 3);
     let bytes = fs::metadata(&path).expect("snapshot metadata").len();
     assert!(
         bytes < 12_000,
@@ -363,7 +363,7 @@ fn byte_checkpoint_uses_compact_v2_snapshot_records() {
 }
 
 #[test]
-fn char_checkpoint_uses_compact_v2_snapshot_records() {
+fn char_checkpoint_uses_compact_v3_snapshot_records() {
     let dir = tempdir().expect("temp dir");
     let path = dir.path().join("persistent_suffix_char_compact.psufc");
     let texts: Vec<String> = (0..32)
@@ -379,7 +379,7 @@ fn char_checkpoint_uses_compact_v2_snapshot_records() {
         dict.checkpoint().expect("checkpoint compact char suffix");
     }
 
-    assert_eq!(suffix_snapshot_version(&path), 2);
+    assert_eq!(suffix_snapshot_version(&path), 3);
     let bytes = fs::metadata(&path).expect("snapshot metadata").len();
     assert!(
         bytes < 16_000,

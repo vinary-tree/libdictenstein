@@ -177,7 +177,7 @@ fn byte_suffix_tree_replays_native_wal_without_automaton_snapshot() {
     let (reopened, report) =
         PersistentSuffixTree::<i32>::open_with_recovery(&path).expect("recover suffix tree");
     assert!(matches!(report.mode, RecoveryMode::RebuildFromWal));
-    assert_eq!(report.records_replayed, 4);
+    assert_eq!(report.records_replayed, 8);
     assert_eq!(reopened.string_count(), 1);
     assert_eq!(reopened.active_texts(), vec!["bandana".to_string()]);
     assert!(reopened.contains("dana"));

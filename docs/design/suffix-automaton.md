@@ -38,9 +38,20 @@ left/right extension support.
 ## Concurrency
 
 Reads traverse immutable snapshots and do not take the writer lock. Writes are
-serialized because each mutation rebuilds and publishes a graph revision. This
-is intentionally different from the persistent ARTrie overlay family, whose
-write publication is lock-free CAS.
+split by retryability:
+
+- `insert`, `insert_with_value`, `remove`, `clear`, and `compact` append a
+  prepared WAL operation, publish a rebuilt immutable graph revision with
+  pointer-identity CAS, then append a commit marker before acknowledging the
+  caller. CAS losers leave uncommitted prepared records that recovery ignores.
+- `update_or_insert` remains serialized because the public updater is an
+  `FnOnce`; it cannot be safely replayed after a CAS conflict without changing
+  the API contract.
+- Checkpoints retain the active WAL and record the committed operation
+  watermark in the native snapshot, so concurrent writers are not truncated out
+  from under a checkpoint. If writers keep the graph unstable across the bounded
+  capture window, checkpoint returns without publishing a new image; retained
+  WAL replay still preserves all committed operations.
 
 ## API Shape
 
@@ -95,6 +106,7 @@ locations, and byte/char variants. Benchmarks live in
 `benches/persistent_suffix_native_benchmarks.rs`; fixed-sample mode prints raw
 samples suitable for pgmcp/Welch analysis.
 
-Do not use this document to claim lock-free suffix graph writes. The read path is
-snapshot/non-blocking; the write path is serialized around graph rebuild and
-copy-on-write publication.
+Do not claim full lock-free coverage for every suffix graph write until the
+`update_or_insert` API has a retryable updater form. The read path is
+snapshot/non-blocking, and retryable writes use CAS publication with
+prepared/commit WAL recovery.
