@@ -86,22 +86,6 @@ impl<V: DictionaryValue> PersistentARTrie<V, IoUringDiskManager> {
                 )
             })?;
         let wal_writer = Arc::new(wal_writer);
-        let segment_set = wal_writer
-            .collect_wal_segments(&WalConfig::default())
-            .unwrap_or_default();
-        let (segment_checkpoint_lsn, segment_commit_seq_gen) =
-            AsyncWalWriter::segment_replay_bounds(&segment_set);
-        let next_lsn = next_lsn.max(wal_writer.current_lsn());
-        let checkpoint_lsn = checkpoint_lsn
-            .map(|lsn| lsn.max(segment_checkpoint_lsn))
-            .or(Some(segment_checkpoint_lsn))
-            .map(|lsn| {
-                lsn.max(
-                    WalReader::read_header(&wal_path)
-                        .map(|h| h.checkpoint_lsn)
-                        .unwrap_or(0),
-                )
-            });
 
         let arena_manager = ArenaManager::with_buffer_manager(Arc::clone(&buffer_manager));
         let arena_manager = Arc::new(RwLock::new(arena_manager));
@@ -236,6 +220,22 @@ impl<V: DictionaryValue> PersistentARTrie<V, IoUringDiskManager> {
                 )
             })?;
         let wal_writer = Arc::new(wal_writer);
+        let segment_set = wal_writer
+            .collect_wal_segments(&WalConfig::default())
+            .unwrap_or_default();
+        let (segment_checkpoint_lsn, segment_commit_seq_gen) =
+            AsyncWalWriter::segment_replay_bounds(&segment_set);
+        let next_lsn = next_lsn.max(wal_writer.current_lsn());
+        let checkpoint_lsn = checkpoint_lsn
+            .map(|lsn| lsn.max(segment_checkpoint_lsn))
+            .or(Some(segment_checkpoint_lsn))
+            .map(|lsn| {
+                lsn.max(
+                    WalReader::read_header(&wal_path)
+                        .map(|h| h.checkpoint_lsn)
+                        .unwrap_or(0),
+                )
+            });
 
         // M2b — Order-A durable-overlay recovery seeding (mirrors mmap `open`):
         // watermark base = recovered durable WAL frontier (`next_lsn - 1`),

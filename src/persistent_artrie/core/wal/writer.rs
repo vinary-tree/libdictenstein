@@ -256,22 +256,6 @@ impl WalWriter {
         Ok(lsn)
     }
 
-    /// Append a record using an LSN that was reserved before the write.
-    #[cfg(feature = "group-commit")]
-    pub(crate) fn append_with_lsn(&self, lsn: Lsn, record: WalRecord) -> Result<Lsn, WalError> {
-        let current = self.current_lsn();
-        if lsn != current {
-            return Err(WalError::CorruptedRecord(format!(
-                "reserved LSN {} does not match next WAL LSN {}",
-                lsn, current
-            )));
-        }
-
-        self.next_lsn.fetch_add(1, Ordering::AcqRel);
-        self.write_record_at_lsn(lsn, record)?;
-        Ok(lsn)
-    }
-
     fn write_record_at_lsn(&self, lsn: Lsn, record: WalRecord) -> Result<(), WalError> {
         let buf = Self::encode_record_frame(lsn, record);
 
