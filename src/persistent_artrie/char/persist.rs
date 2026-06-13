@@ -2055,7 +2055,7 @@ mod immutable_eviction_checkpoint_correspondence {
     //!   counters are CAPTURE-only — see the soak module — so this is a membership
     //!   trie).
     //!
-    //! The trie handle is `SharedCharARTrie<()>` (= `Arc<RwLock<PersistentARTrieChar>>`)
+    //! The trie handle is `SharedCharARTrie<()>` (= `Arc<PersistentARTrieChar>`)
     //! so the `EvictableARTrie` enable/force-eviction/observe surface is reachable;
     //! the `&self` lock-free + new-publisher methods are called through the
     //! read/write guards. Scratch is real disk (`target/test-tmp`), never `/tmp`

@@ -3,7 +3,6 @@
 //! These tests verify thread-safety of the PersistentARTrie implementation:
 //! - Multiple concurrent readers
 //! - Single writer with multiple readers
-//! - Concurrent transducer queries
 //! - Reader during checkpoint operations
 //!
 //! # Architecture Notes
@@ -625,19 +624,6 @@ fn test_sync_from_multiple_threads() {
 
     let errors = sync_errors.load(Ordering::SeqCst);
     assert_eq!(errors, 0, "All sync calls should succeed");
-}
-
-// =============================================================================
-// Test: Transducer Queries (if available)
-// =============================================================================
-
-// Note: Concurrent transducer tests require the transducer module.
-// This is a placeholder for when that integration is needed.
-#[test]
-#[ignore = "Transducer concurrent tests require transducer module integration"]
-fn test_concurrent_transducer_queries() {
-    // TODO: Add transducer concurrent query tests when needed
-    // This would test multiple threads querying with Levenshtein automata
 }
 
 // =============================================================================

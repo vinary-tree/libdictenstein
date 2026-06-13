@@ -11,7 +11,7 @@ use std::sync::atomic::Ordering as AtomicOrdering;
 
 use crate::persistent_artrie::core::key_encoding::ByteKey;
 use crate::value::DictionaryValue;
-use crate::{Dictionary, MappedDictionary, SyncStrategy};
+use crate::{Dictionary, MappedDictionary, MutableMappedDictionary, SyncStrategy};
 
 use super::block_storage::BlockStorage;
 use super::dict_impl::PersistentARTrie;
@@ -65,6 +65,52 @@ impl<V: DictionaryValue, S: BlockStorage> MappedDictionary for PersistentARTrie<
         // overlay, incl. the empty-term owned exception), NOT `get_value_impl`
         // directly (which reads the empty owned tree under the flip).
         self.get_value_bytes(term.as_bytes())
+    }
+}
+
+impl<V: DictionaryValue, S: BlockStorage> MutableMappedDictionary for PersistentARTrie<V, S> {
+    fn insert_with_value(&self, term: &str, value: Self::Value) -> bool {
+        PersistentARTrie::insert_with_value(self, term, value)
+    }
+
+    fn union_with<F>(&self, other: &Self, merge_fn: F) -> usize
+    where
+        F: Fn(&Self::Value, &Self::Value) -> Self::Value,
+        Self::Value: Clone,
+    {
+        let entries = match other.iter_prefix_with_values_and_arena(b"") {
+            Ok(Some(terms)) => terms
+                .into_iter()
+                .map(|term| (term.term, term.value))
+                .collect(),
+            Ok(None) => return 0,
+            Err(error) => {
+                log::warn!("PersistentARTrie::union_with source iteration failed: {error}");
+                return 0;
+            }
+        };
+        self.merge_entries_overlay(entries, merge_fn)
+            .unwrap_or_else(|error| {
+                log::warn!("PersistentARTrie::union_with merge failed: {error}");
+                0
+            })
+    }
+
+    fn update_or_insert<F>(&self, term: &str, default_value: Self::Value, update_fn: F) -> bool
+    where
+        F: FnOnce(&mut Self::Value),
+    {
+        if let Some(existing) = self.get_value(term) {
+            let mut value = existing;
+            update_fn(&mut value);
+            PersistentARTrie::upsert(self, term, value).unwrap_or_else(|error| {
+                log::warn!("PersistentARTrie::update_or_insert update failed: {error}");
+                false
+            });
+            false
+        } else {
+            PersistentARTrie::insert_with_value(self, term, default_value)
+        }
     }
 }
 

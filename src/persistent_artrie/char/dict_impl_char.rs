@@ -196,7 +196,8 @@ pub(super) const ROOT_TYPE_EMPTY: u8 = 0;
 pub(super) const ROOT_TYPE_NODE: u8 = 1;
 
 // Note: Default implementation is in mod.rs on PersistentARTrieChar directly
-// Note: SharedCharARTrie is now a type alias in mod.rs: `pub type SharedCharARTrie<V> = Arc<RwLock<PersistentARTrieChar<V>>>;`
+// Note: SharedCharARTrie is now a type alias in mod.rs:
+// `pub type SharedCharARTrie<V> = Arc<PersistentARTrieChar<V>>;`
 // Note: SharedCharTrie is a deprecated alias for SharedCharARTrie
 
 #[cfg(test)]

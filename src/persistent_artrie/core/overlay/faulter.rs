@@ -29,9 +29,10 @@
 //! (`evict_overlay_nodes`, `#[cfg(feature = "bench-internals")]`/test-only). char
 //! has that eviction driver + the production read/write fault-in; byte has neither
 //! (its routed overlay is always fully `Child::InMem`). The faulter is supplied on
-//! the paths where eviction is possible (the `Shared*ARTrie` walks, which hold the
-//! trie behind an `Arc<RwLock<..>>`); the inherent `root(&self)` walks pass `None`
-//! (eviction is impossible on an owned trie, so no OnDisk child can appear). A
+//! the paths where eviction is possible (the `Shared*ARTrie` walks, which hold
+//! the trie behind an `Arc<..>` and can call the faulting loader); the inherent
+//! `root(&self)` walks pass `None` (eviction is impossible on an owned trie, so
+//! no OnDisk child can appear). A
 //! `None` faulter degrades an (unreachable) OnDisk slot to "no transition" — never
 //! a fabricated term, never UB — exactly as the production point-read degrades when
 //! fault-in is unavailable.

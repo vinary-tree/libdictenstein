@@ -4,16 +4,17 @@
 //! the `Dictionary` and `MappedDictionary` traits for integration with the
 //! Levenshtein automata transducer.
 //!
-//! # In-Memory vs Disk-Backed
+//! # Storage
 //!
-//! This implementation currently provides an in-memory version suitable for
-//! development and testing. The disk-backed version with memory-mapped I/O
-//! will be added in a future phase.
+//! This implementation supports both in-memory construction and disk-backed
+//! operation through memory-mapped storage, WAL replay, and CX checkpoints.
 //!
 //! # Thread Safety
 //!
-//! The dictionary uses `Arc<RwLock>` for thread-safe concurrent access.
-//! Read operations can proceed in parallel, while writes are serialized.
+//! Shared byte tries use `SharedARTrie = Arc<PersistentARTrie<_>>`. Reads walk
+//! immutable overlay snapshots without a global mutation lock; writes publish
+//! replacement overlay roots via CAS, with dedicated internal locks only for
+//! checkpoint, merge, and storage-manager coordination.
 
 use crate::sync_compat::RwLock;
 use log::warn;
@@ -276,8 +277,9 @@ pub(super) fn resolve_child_for_mutation_with_bm<S: BlockStorage>(
 ///
 /// # Thread Safety
 ///
-/// `PersistentARTrie` itself is not thread-safe. For concurrent access, wrap it in
-/// `Arc<RwLock<PersistentARTrie<V>>>` or use the [`SharedARTrie`] type alias.
+/// `PersistentARTrie` is `Send + Sync` when its value and storage types are,
+/// and `SharedARTrie` is the public shared handle (`Arc<PersistentARTrie<_>>`)
+/// for concurrent access.
 ///
 /// # Example
 ///
@@ -435,8 +437,9 @@ pub struct PersistentARTrie<V: DictionaryValue = (), S: BlockStorage = MmapDiskM
 
 /// Thread-safe wrapper for `PersistentARTrie`.
 ///
-/// This type alias provides the same thread-safety model as the previous
-/// `PersistentARTrie` implementation (which internally used `Arc<RwLock<...>>`).
+/// This type alias is the collapsed shared handle used by the public APIs:
+/// `Arc<PersistentARTrie<_>>` with transparent `.read()` / `.write()`
+/// compatibility guards.
 ///
 // `PrefixTermWithArena` and `PrefixTermWithValueAndArena` were relocated to
 // `super::prefix_term`; re-exported here under their original paths.
@@ -775,7 +778,7 @@ mod tests {
     }
 
     // Note: test_clone was removed because PersistentARTrie no longer implements Clone
-    // after the flattening refactor. For shared access, use SharedARTrie (Arc<RwLock<...>>).
+    // after the flattening refactor. For shared access, use SharedARTrie (Arc<_>).
 
     mod persistent_tests {
         use super::*;

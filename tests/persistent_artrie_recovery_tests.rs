@@ -2041,6 +2041,8 @@ mod phase_22_merge_operations {
 
     use libdictenstein::persistent_artrie::char::PersistentARTrieChar;
     use libdictenstein::persistent_artrie::char::SharedCharARTrie;
+    use libdictenstein::persistent_artrie::PersistentARTrie;
+    use libdictenstein::MutableMappedDictionary;
 
     use tempfile::tempdir;
 
@@ -2646,14 +2648,151 @@ mod phase_22_merge_operations {
 
     // =========================================================================
     // PersistentARTrie (byte-based) MutableMappedDictionary tests
-    // Note: These tests require methods that are not yet implemented.
-    // See Task #2: Update ARTrie trait with common methods.
     // =========================================================================
 
-    // TODO: Implement these tests once union_with, update_or_insert are added
-    // #[test] fn test_persistent_artrie_mutable_mapped_dictionary() { ... }
-    // #[test] fn test_persistent_artrie_union_with() { ... }
-    // #[test] fn test_persistent_artrie_update_or_insert() { ... }
+    #[test]
+    fn test_persistent_artrie_mutable_mapped_dictionary_trait_persists() {
+        let dir = tempdir().expect("create temp dir");
+        let path = dir.path().join("byte_mutable_trait.part");
+
+        {
+            let trie = PersistentARTrie::<i64>::create(&path).expect("create trie");
+            assert!(MutableMappedDictionary::insert_with_value(
+                &trie, "alpha", 1
+            ));
+            assert!(!MutableMappedDictionary::insert_with_value(
+                &trie, "alpha", 5
+            ));
+            assert!(MutableMappedDictionary::insert_with_value(&trie, "beta", 2));
+
+            assert_eq!(
+                libdictenstein::MappedDictionary::get_value(&trie, "alpha"),
+                Some(5)
+            );
+            assert_eq!(
+                libdictenstein::MappedDictionary::get_value(&trie, "beta"),
+                Some(2)
+            );
+            trie.sync().expect("sync trie");
+        }
+
+        let (reopened, _report) =
+            PersistentARTrie::<i64>::open_with_recovery(&path).expect("reopen trie");
+        assert_eq!(
+            libdictenstein::MappedDictionary::get_value(&reopened, "alpha"),
+            Some(5)
+        );
+        assert_eq!(
+            libdictenstein::MappedDictionary::get_value(&reopened, "beta"),
+            Some(2)
+        );
+    }
+
+    #[test]
+    fn test_persistent_artrie_union_with_trait_merges_and_persists() {
+        let dir = tempdir().expect("create temp dir");
+        let left_path = dir.path().join("byte_union_left.part");
+        let right_path = dir.path().join("byte_union_right.part");
+
+        {
+            let left = PersistentARTrie::<i64>::create(&left_path).expect("create left");
+            let right = PersistentARTrie::<i64>::create(&right_path).expect("create right");
+
+            assert!(MutableMappedDictionary::insert_with_value(
+                &left, "apple", 10
+            ));
+            assert!(MutableMappedDictionary::insert_with_value(
+                &left, "banana", 20
+            ));
+            assert!(MutableMappedDictionary::insert_with_value(
+                &right, "apple", 3
+            ));
+            assert!(MutableMappedDictionary::insert_with_value(
+                &right, "cherry", 7
+            ));
+
+            let processed =
+                MutableMappedDictionary::union_with(&left, &right, |left, right| left + right);
+            assert_eq!(processed, 2);
+            assert_eq!(
+                libdictenstein::MappedDictionary::get_value(&left, "apple"),
+                Some(13)
+            );
+            assert_eq!(
+                libdictenstein::MappedDictionary::get_value(&left, "banana"),
+                Some(20)
+            );
+            assert_eq!(
+                libdictenstein::MappedDictionary::get_value(&left, "cherry"),
+                Some(7)
+            );
+            left.sync().expect("sync left");
+        }
+
+        let (reopened, _report) =
+            PersistentARTrie::<i64>::open_with_recovery(&left_path).expect("reopen left");
+        assert_eq!(
+            libdictenstein::MappedDictionary::get_value(&reopened, "apple"),
+            Some(13)
+        );
+        assert_eq!(
+            libdictenstein::MappedDictionary::get_value(&reopened, "banana"),
+            Some(20)
+        );
+        assert_eq!(
+            libdictenstein::MappedDictionary::get_value(&reopened, "cherry"),
+            Some(7)
+        );
+    }
+
+    #[test]
+    fn test_persistent_artrie_update_or_insert_trait_updates_and_persists() {
+        let dir = tempdir().expect("create temp dir");
+        let path = dir.path().join("byte_update_or_insert.part");
+
+        {
+            let trie = PersistentARTrie::<i64>::create(&path).expect("create trie");
+            assert!(MutableMappedDictionary::update_or_insert(
+                &trie,
+                "counter",
+                1,
+                |value| *value += 100,
+            ));
+            assert!(!MutableMappedDictionary::update_or_insert(
+                &trie,
+                "counter",
+                999,
+                |value| *value += 4,
+            ));
+            assert!(MutableMappedDictionary::update_or_insert(
+                &trie,
+                "other",
+                8,
+                |value| *value += 1,
+            ));
+
+            assert_eq!(
+                libdictenstein::MappedDictionary::get_value(&trie, "counter"),
+                Some(5)
+            );
+            assert_eq!(
+                libdictenstein::MappedDictionary::get_value(&trie, "other"),
+                Some(8)
+            );
+            trie.sync().expect("sync trie");
+        }
+
+        let (reopened, _report) =
+            PersistentARTrie::<i64>::open_with_recovery(&path).expect("reopen trie");
+        assert_eq!(
+            libdictenstein::MappedDictionary::get_value(&reopened, "counter"),
+            Some(5)
+        );
+        assert_eq!(
+            libdictenstein::MappedDictionary::get_value(&reopened, "other"),
+            Some(8)
+        );
+    }
 }
 
 // ===========================================================================

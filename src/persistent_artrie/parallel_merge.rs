@@ -23,9 +23,9 @@ use crate::value::DictionaryValue;
 ///
 /// These methods require the `parallel-merge` feature and use rayon for
 /// parallel processing. They are implemented as an extension trait because
-/// `SharedARTrie` is a type alias for `Arc<RwLock<PersistentARTrie<V>>>`,
-/// and Rust doesn't allow inherent `impl` blocks on type aliases that resolve
-/// to external types.
+/// `SharedARTrie` is a type alias for `Arc<PersistentARTrie<V>>`, and Rust
+/// doesn't allow inherent `impl` blocks on type aliases that resolve to
+/// external types.
 ///
 /// # Usage
 ///

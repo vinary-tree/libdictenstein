@@ -358,8 +358,7 @@ use crate::{
 /// only operations needing mutual exclusion take dedicated inner locks
 /// (`checkpoint_lock`, the wrapped `root` `RwLock`, the `eviction_coordinator`
 /// `Mutex`, `merge_lock`) — never the handle. A backward-compatible
-/// `.read()`/`.write()` API is preserved by
-/// [`SharedTrieAccess`](crate::persistent_artrie::core::shared_access::SharedTrieAccess)
+/// `.read()`/`.write()` API is preserved by [`SharedTrieAccess`]
 /// (both return a transparent guard that derefs to `&T`; no lock).
 pub type SharedCharARTrie<V, S = crate::persistent_artrie::disk_manager::MmapDiskManager> =
     Arc<PersistentARTrieChar<V, S>>;
@@ -408,8 +407,10 @@ impl<V: DictionaryValue, S: crate::persistent_artrie::block_storage::BlockStorag
 ///
 /// # Thread Safety
 ///
-/// This type provides interior mutability via RwLock. For concurrent access,
-/// use `SharedCharTrie<V>` which is `Arc<RwLock<PersistentARTrieChar<V>>>`.
+/// This type is `Send + Sync` when its value and storage types are. For
+/// concurrent access, use `SharedCharARTrie<V>` / `SharedCharTrie<V>`, both
+/// aliases for `Arc<PersistentARTrieChar<V>>` with transparent `.read()` /
+/// `.write()` compatibility guards.
 pub struct PersistentARTrieChar<V: DictionaryValue = (), S: crate::persistent_artrie::block_storage::BlockStorage = crate::persistent_artrie::disk_manager::MmapDiskManager> {
     /// Number of terms (atomic for lock-free access)
     pub(crate) len: AtomicUsize,
@@ -1633,8 +1634,8 @@ impl<V: DictionaryValue, S: crate::persistent_artrie::block_storage::BlockStorag
     /// existing `bench-internals` feature). Constructs and installs an
     /// [`EvictionCoordinator`] directly on this bare `PersistentARTrieChar` so the
     /// `lockfree_flip_benchmark` `--eviction` TREATMENT arm — which holds the trie
-    /// as a bare `Arc<PersistentARTrieChar>` (the lock-free path needs only `&self`),
-    /// NOT a `SharedCharARTrie<_>` (`Arc<RwLock<…>>`) — can run eviction-ON
+    /// as a bare `Arc<PersistentARTrieChar>` (the lock-free path needs only `&self`)
+    /// — can run eviction-ON
     /// checkpoints (`bench_immutable_checkpoint_with_eviction`). The
     /// `bench_immutable_checkpoint*` methods are `PersistentARTrieChar` methods, so
     /// the TREATMENT trie cannot be a `SharedCharARTrie`; this enabler is the

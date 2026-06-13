@@ -400,8 +400,7 @@ pub use dict_impl::SharedARTrieParallelExt;
 /// the only operations that still need mutual exclusion take dedicated inner locks
 /// (`checkpoint_lock`, the wrapped `root` `RwLock` for the dormant owned path, the
 /// `eviction_coordinator` `Mutex`, `merge_lock`) — never the handle. A
-/// backward-compatible `.read()`/`.write()` API is preserved by
-/// [`SharedTrieAccess`](crate::persistent_artrie::core::shared_access::SharedTrieAccess)
+/// backward-compatible `.read()`/`.write()` API is preserved by [`SharedTrieAccess`]
 /// (both return a transparent guard that derefs to `&T`; there is no lock), so the
 /// ~270 historical call sites and the `liblevenshtein-rust` sibling compile
 /// unchanged against the collapsed type.

@@ -29,19 +29,18 @@ use crate::zipper::{DictZipper, ValuedDictZipper};
 /// # Design
 ///
 /// The zipper stores:
-/// - `inner`: Shared reference to the trie inner structure (Arc<RwLock>)
+/// - `trie`: Shared reference to the trie (`Arc<PersistentARTrie<_>>`)
 /// - `path`: Current path from root to focus
-/// - `state`: Current navigation state (root, bucket, or ART node)
+/// - `state`: Current overlay navigation state derived from that path
 ///
-/// Operations use a lock-per-operation pattern, acquiring a read lock only for
-/// the duration of each operation to maximize concurrency.
+/// Operations load immutable overlay snapshots and do not take a global
+/// mutation lock on the read path.
 ///
 /// # Thread Safety
 ///
-/// Each operation acquires a read lock, performs the operation, and releases it.
-/// This allows:
+/// Overlay snapshots are immutable and reference-counted. This allows:
 /// - Multiple concurrent readers (navigating different zippers)
-/// - Exclusive write access for modifications (insert/remove)
+/// - Concurrent lock-free writers publishing replacement roots
 ///
 /// # Examples
 ///
@@ -89,17 +88,17 @@ impl<V: DictionaryValue> PersistentARTrieZipper<V> {
     /// use libdictenstein::persistent_artrie::{PersistentARTrie, SharedARTrie};
     /// use libdictenstein::persistent_artrie::zipper::PersistentARTrieZipper;
     /// use std::sync::Arc;
-    /// use parking_lot::RwLock;
     ///
     /// let dict: PersistentARTrie<()> = PersistentARTrie::new();
-    /// let shared: SharedARTrie<()> = Arc::new(RwLock::new(dict));
+    /// let shared: SharedARTrie<()> = Arc::new(dict);
     /// let zipper = PersistentARTrieZipper::new(shared);
     /// ```
     /// Create a new zipper from a shared trie reference.
     ///
     /// The zipper provides read-only navigation through the trie.
-    /// For thread-safe concurrent access, wrap the trie in `SharedARTrie`
-    /// (i.e., `Arc<RwLock<PersistentARTrie<V>>>`).
+    /// For thread-safe concurrent access, use `SharedARTrie`
+    /// (i.e., `Arc<PersistentARTrie<V>>` with transparent `.read()`/`.write()`
+    /// compatibility guards).
     ///
     /// **L3.2:** overlay-backed — `has_path`/`is_final_at_path`/`get_children_at_path` navigate
     /// the lock-free overlay (the production rep), so the zipper sees the live dictionary on every
@@ -209,10 +208,7 @@ impl<V: DictionaryValue> ValuedDictZipper for PersistentARTrieZipper<V> {
     type Value = V;
 
     fn value(&self) -> Option<Self::Value> {
-        // Value retrieval is not implemented because internal storage uses Vec<u8>
-        // while the trait requires V. To implement this, DictionaryValue would need
-        // serialization bounds (e.g., serde) to convert between V and Vec<u8>.
-        None
+        self.trie.get_value_bytes(&self.path)
     }
 }
 
@@ -273,6 +269,26 @@ mod tests {
         let children: Vec<_> = zipper.children().collect();
         assert_eq!(children.len(), 1);
         assert_eq!(children[0].0, b'c');
+    }
+
+    #[test]
+    fn test_valued_zipper_reads_current_overlay_value() {
+        let dict: PersistentARTrie<i32> = PersistentARTrie::new();
+        dict.insert_with_value("cat", 42);
+        dict.insert_with_value("car", 7);
+
+        let zipper = make_zipper(dict);
+        assert_eq!(zipper.value(), None);
+
+        let c = zipper.descend(b'c').expect("should have 'c'");
+        assert_eq!(c.value(), None);
+
+        let a = c.descend(b'a').expect("should have 'a'");
+        let t = a.descend(b't').expect("should have 't'");
+        let r = a.descend(b'r').expect("should have 'r'");
+
+        assert_eq!(t.value(), Some(42));
+        assert_eq!(r.value(), Some(7));
     }
 
     #[test]

@@ -1,8 +1,8 @@
 //! **F4 — the lock-collapse compat shim.**
 //!
-//! Phase F collapses `SharedARTrie<V> = Arc<RwLock<PersistentARTrie<V>>>` and
-//! `SharedCharARTrie<V,S> = Arc<RwLock<PersistentARTrieChar<V,S>>>` down to a bare
-//! `Arc<…>` (the outer `RwLock` is deleted), so overlay reads AND writes are fully
+//! Phase F collapsed `SharedARTrie<V>` and `SharedCharARTrie<V,S>` down to bare
+//! `Arc<PersistentARTrie<...>>` / `Arc<PersistentARTrieChar<...>>` handles (the
+//! outer `RwLock` is deleted), so overlay reads AND writes are fully
 //! lock-free — every live write target is the overlay (a lock-free CAS root), and
 //! the only operations that still need *any* mutual exclusion (concurrent
 //! checkpoints, the dormant owned path, eviction) take their own dedicated inner
@@ -15,8 +15,8 @@
 //! cross-repo `liblevenshtein-rust` sibling (a path-dependency this change MUST
 //! NOT edit). Rewriting every site is both a large blast radius and a back-compat
 //! hazard. Instead, this module supplies a backward-compatible `.read()` /
-//! `.write()` API on the collapsed `Arc<T>` handle via the [`SharedTrieAccess`]
-//! extension trait: both return a transparent [`TrieAccessGuard`] that simply
+//! `.write()` API on the collapsed `Arc<T>` handle via the `SharedTrieAccess`
+//! extension trait: both return a transparent `TrieAccessGuard` that simply
 //! `Deref`s to `&T`. **There is no lock** — both `read()` and `write()` hand back a
 //! shared `&T`, and every method the guard forwards to is now `&self` (the
 //! mutators route to lock-free CAS internally). So an existing
@@ -24,7 +24,7 @@
 //! derefs to `&T`, and `g.insert(term)` auto-refs the now-`&self` `insert`.
 //!
 //! ## Guard semantics
-//! [`TrieAccessGuard`] is `Deref`-only (no `DerefMut`) because there is no `&mut T`
+//! `TrieAccessGuard` is `Deref`-only (no `DerefMut`) because there is no `&mut T`
 //! to hand out — the whole point of the collapse is that no caller holds the trie
 //! exclusively. Any residual site that genuinely needed `&mut T` through the old
 //! write guard (there was exactly one per variant: the `enable_eviction`
@@ -161,7 +161,7 @@ pub trait SharedTrieAccess {
 
 impl<'a, T: ?Sized> TrieAccessGuard<'a, T> {
     /// Construct a guard from a shared borrow (the variant modules' impls call
-    /// this). Separate from [`Self::new`] only to be reachable from the byte/char
+    /// this). It is reachable from the byte/char
     /// `SharedTrieAccess` impls; both are crate-internal.
     #[inline]
     pub fn from_ref(inner: &'a T) -> Self {
