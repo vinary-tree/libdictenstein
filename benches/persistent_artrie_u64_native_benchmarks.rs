@@ -374,15 +374,18 @@ fn time_lookup_sample(arm: Arm, sequences: &[Vec<u64>], queries: &[Vec<u64>]) ->
 fn parallel_native_sample(readers: usize, sequences: &[Vec<u64>]) -> Duration {
     let trie = Arc::new(build_native(&sequences[..PARALLEL_KEYS / 2]));
     let stop = Arc::new(AtomicBool::new(false));
-    let barrier = Arc::new(Barrier::new(readers + 2));
+    let ready = Arc::new(Barrier::new(readers + 2));
+    let start_gate = Arc::new(Barrier::new(readers + 2));
 
     let mut handles = Vec::with_capacity(readers);
     for reader in 0..readers {
         let trie = Arc::clone(&trie);
-        let barrier = Arc::clone(&barrier);
+        let ready = Arc::clone(&ready);
+        let start_gate = Arc::clone(&start_gate);
         let keys = sequences.to_vec();
         handles.push(thread::spawn(move || {
-            barrier.wait();
+            ready.wait();
+            start_gate.wait();
             let mut hits = 0usize;
             for op in 0..OPS_PER_READER {
                 let index = op.wrapping_mul(2_654_435_761).wrapping_add(reader * 17) % keys.len();
@@ -396,11 +399,13 @@ fn parallel_native_sample(readers: usize, sequences: &[Vec<u64>]) -> Duration {
 
     let writer = {
         let trie = Arc::clone(&trie);
-        let barrier = Arc::clone(&barrier);
+        let ready = Arc::clone(&ready);
+        let start_gate = Arc::clone(&start_gate);
         let stop = Arc::clone(&stop);
         let keys = sequences.to_vec();
         thread::spawn(move || {
-            barrier.wait();
+            ready.wait();
+            start_gate.wait();
             let mut writes = 0usize;
             while !stop.load(Ordering::Relaxed) && writes < WRITES_PER_SAMPLE {
                 let index = (PARALLEL_KEYS / 2) + (writes % (PARALLEL_KEYS / 2));
@@ -411,8 +416,9 @@ fn parallel_native_sample(readers: usize, sequences: &[Vec<u64>]) -> Duration {
         })
     };
 
-    barrier.wait();
+    ready.wait();
     let start = Instant::now();
+    start_gate.wait();
     for handle in handles {
         let _ = handle.join();
     }
@@ -425,15 +431,18 @@ fn parallel_native_sample(readers: usize, sequences: &[Vec<u64>]) -> Duration {
 fn parallel_encoded_sample(readers: usize, sequences: &[Vec<u64>]) -> Duration {
     let trie = Arc::new(build_encoded(&sequences[..PARALLEL_KEYS / 2]));
     let stop = Arc::new(AtomicBool::new(false));
-    let barrier = Arc::new(Barrier::new(readers + 2));
+    let ready = Arc::new(Barrier::new(readers + 2));
+    let start_gate = Arc::new(Barrier::new(readers + 2));
 
     let mut handles = Vec::with_capacity(readers);
     for reader in 0..readers {
         let trie = Arc::clone(&trie);
-        let barrier = Arc::clone(&barrier);
+        let ready = Arc::clone(&ready);
+        let start_gate = Arc::clone(&start_gate);
         let keys = sequences.to_vec();
         handles.push(thread::spawn(move || {
-            barrier.wait();
+            ready.wait();
+            start_gate.wait();
             let mut hits = 0usize;
             for op in 0..OPS_PER_READER {
                 let index = op.wrapping_mul(2_654_435_761).wrapping_add(reader * 17) % keys.len();
@@ -447,11 +456,13 @@ fn parallel_encoded_sample(readers: usize, sequences: &[Vec<u64>]) -> Duration {
 
     let writer = {
         let trie = Arc::clone(&trie);
-        let barrier = Arc::clone(&barrier);
+        let ready = Arc::clone(&ready);
+        let start_gate = Arc::clone(&start_gate);
         let stop = Arc::clone(&stop);
         let keys = sequences.to_vec();
         thread::spawn(move || {
-            barrier.wait();
+            ready.wait();
+            start_gate.wait();
             let mut writes = 0usize;
             while !stop.load(Ordering::Relaxed) && writes < WRITES_PER_SAMPLE {
                 let index = (PARALLEL_KEYS / 2) + (writes % (PARALLEL_KEYS / 2));
@@ -462,8 +473,9 @@ fn parallel_encoded_sample(readers: usize, sequences: &[Vec<u64>]) -> Duration {
         })
     };
 
-    barrier.wait();
+    ready.wait();
     let start = Instant::now();
+    start_gate.wait();
     for handle in handles {
         let _ = handle.join();
     }

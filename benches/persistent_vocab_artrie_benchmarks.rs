@@ -500,15 +500,18 @@ fn parallel_read_write_sample(readers: usize, terms: &[String]) -> Duration {
     let (_dir, vocab) = create_vocab(&terms[..FIXED_PARALLEL_KEYS / 2]);
     let vocab = Arc::new(vocab);
     let stop = Arc::new(AtomicBool::new(false));
-    let barrier = Arc::new(Barrier::new(readers + 2));
+    let ready = Arc::new(Barrier::new(readers + 2));
+    let start_gate = Arc::new(Barrier::new(readers + 2));
 
     let mut handles = Vec::with_capacity(readers);
     for reader in 0..readers {
         let vocab = Arc::clone(&vocab);
-        let barrier = Arc::clone(&barrier);
+        let ready = Arc::clone(&ready);
+        let start_gate = Arc::clone(&start_gate);
         let keys = terms.to_vec();
         handles.push(thread::spawn(move || {
-            barrier.wait();
+            ready.wait();
+            start_gate.wait();
             let mut hits = 0usize;
             for op in 0..FIXED_OPS_PER_READER {
                 let index = op.wrapping_mul(2_654_435_761).wrapping_add(reader * 17) % keys.len();
@@ -522,11 +525,13 @@ fn parallel_read_write_sample(readers: usize, terms: &[String]) -> Duration {
 
     let writer = {
         let vocab = Arc::clone(&vocab);
-        let barrier = Arc::clone(&barrier);
+        let ready = Arc::clone(&ready);
+        let start_gate = Arc::clone(&start_gate);
         let stop = Arc::clone(&stop);
         let keys = terms.to_vec();
         thread::spawn(move || {
-            barrier.wait();
+            ready.wait();
+            start_gate.wait();
             let mut writes = 0usize;
             while !stop.load(Ordering::Relaxed) && writes < FIXED_WRITES_PER_SAMPLE {
                 let index = (FIXED_PARALLEL_KEYS / 2) + (writes % (FIXED_PARALLEL_KEYS / 2));
@@ -537,8 +542,9 @@ fn parallel_read_write_sample(readers: usize, terms: &[String]) -> Duration {
         })
     };
 
-    barrier.wait();
+    ready.wait();
     let start = Instant::now();
+    start_gate.wait();
     for handle in handles {
         let _ = handle.join();
     }
