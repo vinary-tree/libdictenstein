@@ -39,6 +39,13 @@ Date format is ISO-8601 (YYYY-MM-DD).
 
 ### Added
 
+- **Persistent suffix graph benchmark coverage widened.** The native suffix
+  benchmark harness now emits distinct byte/char parallel read/write controls
+  and treatments for persistent suffix automaton, suffix tree, and SCDAWG
+  variants, instead of reusing the byte suffix-automaton control path for
+  suffix-tree and SCDAWG comparisons. pgmcp experiments `56`-`61` are reserved
+  for these hypotheses; fixed-sample measurements are intentionally deferred
+  until they can be run without known host-load bias.
 - **Persistent native-key documentation refresh.** README, backend guide,
   persistence architecture docs, and persistent suffix-index design docs now
   describe the current `persistent-artrie` implementation set:

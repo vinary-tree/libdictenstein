@@ -772,8 +772,20 @@ fn checkpoint_legacy_char_bytes(texts: &[String]) -> u64 {
     directory_bytes(dir.path())
 }
 
-fn time_parallel_native_byte(texts: &[String], queries: &[String]) -> Duration {
-    let dict = Arc::new(build_native_byte_suffix(&texts[..texts.len() / 2]));
+fn time_parallel_dictionary<T, Build, Read, Write>(
+    texts: &[String],
+    queries: &[String],
+    build: Build,
+    read: Read,
+    write: Write,
+) -> Duration
+where
+    T: Send + Sync + 'static,
+    Build: Fn(&[String]) -> T,
+    Read: Fn(&T, &str) -> bool + Copy + Send + Sync + 'static,
+    Write: Fn(&T, &str) + Copy + Send + Sync + 'static,
+{
+    let dict = Arc::new(build(&texts[..texts.len() / 2]));
     let stop = Arc::new(AtomicBool::new(false));
     let barrier = Arc::new(Barrier::new(PARALLEL_READERS + 2));
     let mut handles = Vec::with_capacity(PARALLEL_READERS);
@@ -788,7 +800,7 @@ fn time_parallel_native_byte(texts: &[String], queries: &[String]) -> Duration {
             for op in 0..OPS_PER_READER {
                 let index =
                     op.wrapping_mul(2_654_435_761).wrapping_add(reader * 17) % queries.len();
-                if !dict.match_positions(&queries[index]).is_empty() {
+                if read(&dict, &queries[index]) {
                     hits += 1;
                 }
             }
@@ -806,7 +818,7 @@ fn time_parallel_native_byte(texts: &[String], queries: &[String]) -> Duration {
             let mut writes = 0usize;
             while !stop.load(Ordering::Relaxed) && writes < WRITES_PER_SAMPLE {
                 let index = texts.len() / 2 + writes % (texts.len() / 2);
-                dict.insert(&texts[index]);
+                write(&dict, &texts[index]);
                 writes += 1;
             }
             black_box(writes)
@@ -822,110 +834,118 @@ fn time_parallel_native_byte(texts: &[String], queries: &[String]) -> Duration {
     stop.store(true, Ordering::Relaxed);
     let _ = writer.join();
     elapsed
+}
+
+fn time_parallel_native_byte(texts: &[String], queries: &[String]) -> Duration {
+    time_parallel_dictionary(
+        texts,
+        queries,
+        build_native_byte_suffix,
+        |dict, query| !dict.match_positions(query).is_empty(),
+        |dict, text| {
+            dict.insert(text);
+        },
+    )
+}
+
+fn time_parallel_native_char(texts: &[String], queries: &[String]) -> Duration {
+    time_parallel_dictionary(
+        texts,
+        queries,
+        build_native_char_suffix,
+        |dict, query| !dict.match_positions(query).is_empty(),
+        |dict, text| {
+            dict.insert(text);
+        },
+    )
 }
 
 fn time_parallel_native_byte_suffix_tree(texts: &[String], queries: &[String]) -> Duration {
-    let dict = Arc::new(build_native_byte_suffix_tree(&texts[..texts.len() / 2]));
-    let stop = Arc::new(AtomicBool::new(false));
-    let barrier = Arc::new(Barrier::new(PARALLEL_READERS + 2));
-    let mut handles = Vec::with_capacity(PARALLEL_READERS);
+    time_parallel_dictionary(
+        texts,
+        queries,
+        build_native_byte_suffix_tree,
+        |dict, query| !dict.locations(query).is_empty(),
+        |dict, text| {
+            dict.insert(text);
+        },
+    )
+}
 
-    for reader in 0..PARALLEL_READERS {
-        let dict = Arc::clone(&dict);
-        let barrier = Arc::clone(&barrier);
-        let queries = queries.to_vec();
-        handles.push(thread::spawn(move || {
-            barrier.wait();
-            let mut hits = 0usize;
-            for op in 0..OPS_PER_READER {
-                let index =
-                    op.wrapping_mul(2_654_435_761).wrapping_add(reader * 17) % queries.len();
-                if !dict.locations(&queries[index]).is_empty() {
-                    hits += 1;
-                }
-            }
-            black_box(hits)
-        }));
-    }
+fn time_parallel_native_char_suffix_tree(texts: &[String], queries: &[String]) -> Duration {
+    time_parallel_dictionary(
+        texts,
+        queries,
+        build_native_char_suffix_tree,
+        |dict, query| !dict.locations(query).is_empty(),
+        |dict, text| {
+            dict.insert(text);
+        },
+    )
+}
 
-    let writer = {
-        let dict = Arc::clone(&dict);
-        let barrier = Arc::clone(&barrier);
-        let stop = Arc::clone(&stop);
-        let texts = texts.to_vec();
-        thread::spawn(move || {
-            barrier.wait();
-            let mut writes = 0usize;
-            while !stop.load(Ordering::Relaxed) && writes < WRITES_PER_SAMPLE {
-                let index = texts.len() / 2 + writes % (texts.len() / 2);
-                dict.insert(&texts[index]);
-                writes += 1;
-            }
-            black_box(writes)
-        })
-    };
+fn time_parallel_native_byte_scdawg(texts: &[String], queries: &[String]) -> Duration {
+    time_parallel_dictionary(
+        texts,
+        queries,
+        build_native_byte_scdawg,
+        |dict, query| !dict.locations(query).is_empty(),
+        |dict, text| {
+            dict.insert(text);
+        },
+    )
+}
 
-    barrier.wait();
-    let start = Instant::now();
-    for handle in handles {
-        let _ = handle.join();
-    }
-    let elapsed = start.elapsed();
-    stop.store(true, Ordering::Relaxed);
-    let _ = writer.join();
-    elapsed
+fn time_parallel_native_char_scdawg(texts: &[String], queries: &[String]) -> Duration {
+    time_parallel_dictionary(
+        texts,
+        queries,
+        build_native_char_scdawg,
+        |dict, query| !dict.locations(query).is_empty(),
+        |dict, text| {
+            dict.insert(text);
+        },
+    )
 }
 
 fn time_parallel_legacy_byte(texts: &[String], queries: &[String]) -> Duration {
-    let dict = Arc::new(build_legacy_byte(&texts[..texts.len() / 2]));
-    let stop = Arc::new(AtomicBool::new(false));
-    let barrier = Arc::new(Barrier::new(PARALLEL_READERS + 2));
-    let mut handles = Vec::with_capacity(PARALLEL_READERS);
+    time_parallel_dictionary(
+        texts,
+        queries,
+        build_legacy_byte,
+        |dict, query| !dict.match_positions(query).is_empty(),
+        |dict, text| dict.insert(text),
+    )
+}
 
-    for reader in 0..PARALLEL_READERS {
-        let dict = Arc::clone(&dict);
-        let barrier = Arc::clone(&barrier);
-        let queries = queries.to_vec();
-        handles.push(thread::spawn(move || {
-            barrier.wait();
-            let mut hits = 0usize;
-            for op in 0..OPS_PER_READER {
-                let index =
-                    op.wrapping_mul(2_654_435_761).wrapping_add(reader * 17) % queries.len();
-                if !dict.match_positions(&queries[index]).is_empty() {
-                    hits += 1;
-                }
-            }
-            black_box(hits)
-        }));
-    }
+fn time_parallel_legacy_char(texts: &[String], queries: &[String]) -> Duration {
+    time_parallel_dictionary(
+        texts,
+        queries,
+        build_legacy_char,
+        |dict, query| !dict.match_positions(query).is_empty(),
+        |dict, text| dict.insert(text),
+    )
+}
 
-    let writer = {
-        let dict = Arc::clone(&dict);
-        let barrier = Arc::clone(&barrier);
-        let stop = Arc::clone(&stop);
-        let texts = texts.to_vec();
-        thread::spawn(move || {
-            barrier.wait();
-            let mut writes = 0usize;
-            while !stop.load(Ordering::Relaxed) && writes < WRITES_PER_SAMPLE {
-                let index = texts.len() / 2 + writes % (texts.len() / 2);
-                dict.insert(&texts[index]);
-                writes += 1;
-            }
-            black_box(writes)
-        })
-    };
+fn time_parallel_legacy_byte_locations(texts: &[String], queries: &[String]) -> Duration {
+    time_parallel_dictionary(
+        texts,
+        queries,
+        build_legacy_byte,
+        |dict, query| !dict.locations(query).is_empty(),
+        |dict, text| dict.insert(text),
+    )
+}
 
-    barrier.wait();
-    let start = Instant::now();
-    for handle in handles {
-        let _ = handle.join();
-    }
-    let elapsed = start.elapsed();
-    stop.store(true, Ordering::Relaxed);
-    let _ = writer.join();
-    elapsed
+fn time_parallel_legacy_char_locations(texts: &[String], queries: &[String]) -> Duration {
+    time_parallel_dictionary(
+        texts,
+        queries,
+        build_legacy_char,
+        |dict, query| !dict.locations(query).is_empty(),
+        |dict, text| dict.insert(text),
+    )
 }
 
 fn print_sample_line(metric: &str, arm: &str, unit: &str, samples: &[f64]) {
@@ -1075,16 +1095,52 @@ fn run_fixed_samples() {
         },
         QUERY_COUNT as f64,
     );
-    let parallel_control = collect_samples(
+    let suffix_byte_parallel_control = collect_samples(
         || time_parallel_legacy_byte(&byte_texts, &byte_queries),
         (PARALLEL_READERS * OPS_PER_READER) as f64,
     );
-    let parallel_treatment = collect_samples(
+    let suffix_byte_parallel_treatment = collect_samples(
         || time_parallel_native_byte(&byte_texts, &byte_queries),
+        (PARALLEL_READERS * OPS_PER_READER) as f64,
+    );
+    let suffix_char_parallel_control = collect_samples(
+        || time_parallel_legacy_char(&char_texts, &char_queries),
+        (PARALLEL_READERS * OPS_PER_READER) as f64,
+    );
+    let suffix_char_parallel_treatment = collect_samples(
+        || time_parallel_native_char(&char_texts, &char_queries),
+        (PARALLEL_READERS * OPS_PER_READER) as f64,
+    );
+    let suffix_tree_byte_parallel_control = collect_samples(
+        || time_parallel_legacy_byte_locations(&byte_texts, &byte_queries),
         (PARALLEL_READERS * OPS_PER_READER) as f64,
     );
     let suffix_tree_parallel_treatment = collect_samples(
         || time_parallel_native_byte_suffix_tree(&byte_texts, &byte_queries),
+        (PARALLEL_READERS * OPS_PER_READER) as f64,
+    );
+    let suffix_tree_char_parallel_control = collect_samples(
+        || time_parallel_legacy_char_locations(&char_texts, &char_queries),
+        (PARALLEL_READERS * OPS_PER_READER) as f64,
+    );
+    let suffix_tree_char_parallel_treatment = collect_samples(
+        || time_parallel_native_char_suffix_tree(&char_texts, &char_queries),
+        (PARALLEL_READERS * OPS_PER_READER) as f64,
+    );
+    let scdawg_byte_parallel_control = collect_samples(
+        || time_parallel_legacy_byte_locations(&byte_texts, &byte_queries),
+        (PARALLEL_READERS * OPS_PER_READER) as f64,
+    );
+    let scdawg_byte_parallel_treatment = collect_samples(
+        || time_parallel_native_byte_scdawg(&byte_texts, &byte_queries),
+        (PARALLEL_READERS * OPS_PER_READER) as f64,
+    );
+    let scdawg_char_parallel_control = collect_samples(
+        || time_parallel_legacy_char_locations(&char_texts, &char_queries),
+        (PARALLEL_READERS * OPS_PER_READER) as f64,
+    );
+    let scdawg_char_parallel_treatment = collect_samples(
+        || time_parallel_native_char_scdawg(&char_texts, &char_queries),
         (PARALLEL_READERS * OPS_PER_READER) as f64,
     );
     let suffix_byte_disk_control = collect_scalar_samples(|round| {
@@ -1224,25 +1280,73 @@ fn run_fixed_samples() {
         "suffix_byte_parallel_read_write_ns_per_read",
         "control_encoded_suffix_artrie",
         "ns/read",
-        &parallel_control,
+        &suffix_byte_parallel_control,
     );
     print_sample_line(
         "suffix_byte_parallel_read_write_ns_per_read",
         "treatment_native_suffix_graph",
         "ns/read",
-        &parallel_treatment,
+        &suffix_byte_parallel_treatment,
+    );
+    print_sample_line(
+        "suffix_char_parallel_read_write_ns_per_read",
+        "control_encoded_suffix_artrie_char",
+        "ns/read",
+        &suffix_char_parallel_control,
+    );
+    print_sample_line(
+        "suffix_char_parallel_read_write_ns_per_read",
+        "treatment_native_suffix_graph_char",
+        "ns/read",
+        &suffix_char_parallel_treatment,
     );
     print_sample_line(
         "suffix_tree_byte_parallel_read_write_ns_per_read",
         "control_encoded_suffix_tree_artrie",
         "ns/read",
-        &parallel_control,
+        &suffix_tree_byte_parallel_control,
     );
     print_sample_line(
         "suffix_tree_byte_parallel_read_write_ns_per_read",
         "treatment_native_suffix_tree_graph",
         "ns/read",
         &suffix_tree_parallel_treatment,
+    );
+    print_sample_line(
+        "suffix_tree_char_parallel_read_write_ns_per_read",
+        "control_encoded_suffix_tree_artrie_char",
+        "ns/read",
+        &suffix_tree_char_parallel_control,
+    );
+    print_sample_line(
+        "suffix_tree_char_parallel_read_write_ns_per_read",
+        "treatment_native_suffix_tree_graph_char",
+        "ns/read",
+        &suffix_tree_char_parallel_treatment,
+    );
+    print_sample_line(
+        "scdawg_byte_parallel_read_write_ns_per_read",
+        "control_encoded_scdawg_artrie",
+        "ns/read",
+        &scdawg_byte_parallel_control,
+    );
+    print_sample_line(
+        "scdawg_byte_parallel_read_write_ns_per_read",
+        "treatment_native_scdawg_graph",
+        "ns/read",
+        &scdawg_byte_parallel_treatment,
+    );
+    print_sample_line(
+        "scdawg_char_parallel_read_write_ns_per_read",
+        "control_encoded_scdawg_artrie_char",
+        "ns/read",
+        &scdawg_char_parallel_control,
+    );
+    print_sample_line(
+        "scdawg_char_parallel_read_write_ns_per_read",
+        "treatment_native_scdawg_graph_char",
+        "ns/read",
+        &scdawg_char_parallel_treatment,
     );
     print_sample_line(
         "suffix_byte_checkpoint_disk_bytes",
@@ -1404,14 +1508,16 @@ fn bench_suffix_tree_lookup(c: &mut Criterion) {
 
 fn bench_parallel(c: &mut Criterion) {
     let byte_texts = ascii_texts(TEXT_COUNT, TEXT_LEN);
+    let char_texts = unicode_texts(TEXT_COUNT, TEXT_LEN);
     let byte_queries = byte_queries(&byte_texts, QUERY_COUNT, QUERY_LEN);
+    let char_queries = char_queries(&char_texts, QUERY_COUNT, QUERY_LEN);
     let mut group = c.benchmark_group("persistent_suffix_native_parallel_reads_writes");
     group.sample_size(10);
     group.measurement_time(Duration::from_secs(4));
     group.throughput(Throughput::Elements(
         (PARALLEL_READERS * OPS_PER_READER) as u64,
     ));
-    group.bench_function("control_encoded_byte", |b| {
+    group.bench_function("suffix_control_encoded_byte", |b| {
         b.iter_custom(|iters| {
             let mut total = Duration::ZERO;
             for _ in 0..iters {
@@ -1420,7 +1526,7 @@ fn bench_parallel(c: &mut Criterion) {
             total
         });
     });
-    group.bench_function("treatment_native_byte", |b| {
+    group.bench_function("suffix_treatment_native_byte", |b| {
         b.iter_custom(|iters| {
             let mut total = Duration::ZERO;
             for _ in 0..iters {
@@ -1429,11 +1535,92 @@ fn bench_parallel(c: &mut Criterion) {
             total
         });
     });
-    group.bench_function("treatment_native_suffix_tree_byte", |b| {
+    group.bench_function("suffix_control_encoded_char", |b| {
+        b.iter_custom(|iters| {
+            let mut total = Duration::ZERO;
+            for _ in 0..iters {
+                total += time_parallel_legacy_char(&char_texts, &char_queries);
+            }
+            total
+        });
+    });
+    group.bench_function("suffix_treatment_native_char", |b| {
+        b.iter_custom(|iters| {
+            let mut total = Duration::ZERO;
+            for _ in 0..iters {
+                total += time_parallel_native_char(&char_texts, &char_queries);
+            }
+            total
+        });
+    });
+    group.bench_function("suffix_tree_control_encoded_byte", |b| {
+        b.iter_custom(|iters| {
+            let mut total = Duration::ZERO;
+            for _ in 0..iters {
+                total += time_parallel_legacy_byte_locations(&byte_texts, &byte_queries);
+            }
+            total
+        });
+    });
+    group.bench_function("suffix_tree_treatment_native_byte", |b| {
         b.iter_custom(|iters| {
             let mut total = Duration::ZERO;
             for _ in 0..iters {
                 total += time_parallel_native_byte_suffix_tree(&byte_texts, &byte_queries);
+            }
+            total
+        });
+    });
+    group.bench_function("suffix_tree_control_encoded_char", |b| {
+        b.iter_custom(|iters| {
+            let mut total = Duration::ZERO;
+            for _ in 0..iters {
+                total += time_parallel_legacy_char_locations(&char_texts, &char_queries);
+            }
+            total
+        });
+    });
+    group.bench_function("suffix_tree_treatment_native_char", |b| {
+        b.iter_custom(|iters| {
+            let mut total = Duration::ZERO;
+            for _ in 0..iters {
+                total += time_parallel_native_char_suffix_tree(&char_texts, &char_queries);
+            }
+            total
+        });
+    });
+    group.bench_function("scdawg_control_encoded_byte", |b| {
+        b.iter_custom(|iters| {
+            let mut total = Duration::ZERO;
+            for _ in 0..iters {
+                total += time_parallel_legacy_byte_locations(&byte_texts, &byte_queries);
+            }
+            total
+        });
+    });
+    group.bench_function("scdawg_treatment_native_byte", |b| {
+        b.iter_custom(|iters| {
+            let mut total = Duration::ZERO;
+            for _ in 0..iters {
+                total += time_parallel_native_byte_scdawg(&byte_texts, &byte_queries);
+            }
+            total
+        });
+    });
+    group.bench_function("scdawg_control_encoded_char", |b| {
+        b.iter_custom(|iters| {
+            let mut total = Duration::ZERO;
+            for _ in 0..iters {
+                total += time_parallel_legacy_char_locations(&char_texts, &char_queries);
+            }
+            total
+        });
+    });
+    group.bench_function("scdawg_treatment_native_char", |b| {
+        b.iter_custom(|iters| {
+            let mut total = Duration::ZERO;
+            for _ in 0..iters {
+                total += time_parallel_native_char_scdawg(&char_texts, &char_queries);
             }
             total
         });
