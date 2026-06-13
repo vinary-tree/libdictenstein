@@ -18,6 +18,11 @@ Date format is ISO-8601 (YYYY-MM-DD).
   remapping an existing index. Focused trait-honesty tests now pin requested
   index insertion, index-conflict rejection, union index preservation, and
   existing-index immutability.
+- **`PersistentVocabARTrie::sync_to_disk_async` now advances `synced_lsn`.**
+  The completed-handle sync path now records the LSN returned by the WAL sync,
+  matching `sync()` / `rotate_wal()` durability accounting. Vocab sync tests
+  assert that repeated syncs advance the public synced frontier after later WAL
+  writes.
 - **`DynamicDawgU64` compaction/minimization now publish real rebuilt graphs.**
   The u64 DAWG no longer clears the compaction flag as a no-op: `compact()` and
   `minimize()` snapshot visible final sequences, rebuild a compact graph,

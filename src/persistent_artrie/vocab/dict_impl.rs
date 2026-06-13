@@ -776,12 +776,18 @@ mod tests {
 
         // Insert some data
         vocab.write().insert("hello").expect("insert term failed");
+        let tail_before_sync = vocab.read().current_lsn().saturating_sub(1);
 
         // Start async sync
         let handle = vocab
             .read()
             .sync_to_disk_async()
             .expect("Failed to start async sync");
+        let synced_after = vocab.read().synced_lsn();
+        assert!(
+            synced_after.unwrap_or(0) >= tail_before_sync,
+            "sync_to_disk_async should cover the acknowledged WAL tail"
+        );
 
         // Reads continue during sync
         assert!(vocab.read().contains("hello"));
@@ -809,14 +815,17 @@ mod tests {
         let handle1 = vocab
             .sync_to_disk_async()
             .expect("Failed to start first async sync");
+        let synced_after_first = vocab.synced_lsn();
 
         // Add more data
         vocab.insert("world").expect("insert term failed");
+        let tail_after_world = vocab.current_lsn().saturating_sub(1);
 
         // Start second sync (independent of first)
         let handle2 = vocab
             .sync_to_disk_async()
             .expect("Failed to start second async sync");
+        let synced_after_second = vocab.synced_lsn();
 
         // Wait for both handles
         handle1.wait().expect("First sync failed");
@@ -825,6 +834,14 @@ mod tests {
         // Both should complete successfully
         assert!(handle1.is_synced());
         assert!(handle2.is_synced());
+        assert!(
+            synced_after_second >= synced_after_first,
+            "synced_lsn should be monotonic across repeated syncs"
+        );
+        assert!(
+            synced_after_second.unwrap_or(0) >= tail_after_world,
+            "second sync should cover the WAL tail after the later insert"
+        );
     }
 
     #[test]
@@ -867,10 +884,21 @@ mod tests {
 
         let vocab = PersistentVocabARTrie::create(&path).expect("Failed to create vocab");
         vocab.insert("hello").expect("insert term failed");
-        // sync_to_disk is a no-op for now (dirty arenas flushed)
+        // sync_to_disk durably flushes the WAL; checkpoint publishes the overlay image.
         vocab.sync_to_disk().expect("First sync failed");
+        let synced_after_first = vocab.synced_lsn();
         vocab.insert("world").expect("insert term failed");
+        let tail_after_world = vocab.current_lsn().saturating_sub(1);
         vocab.sync_to_disk().expect("Second sync failed");
+        let synced_after_second = vocab.synced_lsn();
+        assert!(
+            synced_after_second >= synced_after_first,
+            "sync_to_disk should maintain a monotonic synced_lsn frontier"
+        );
+        assert!(
+            synced_after_second.unwrap_or(0) >= tail_after_world,
+            "second sync_to_disk should cover the later WAL tail"
+        );
 
         // Data should still be accessible in the same session
         assert!(vocab.contains("hello"), "Missing 'hello' after sync");

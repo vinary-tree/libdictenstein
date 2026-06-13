@@ -178,13 +178,14 @@ impl<S: BlockStorage> super::dict_impl::PersistentVocabARTrie<S> {
     /// image is only published by `checkpoint()`). Returns an already-completed handle.
     pub fn sync_to_disk_async(&self) -> Result<VocabSyncHandle> {
         if let Some(ref wal) = self.wal_writer {
-            wal.sync().map_err(|e| {
+            let lsn = wal.sync().map_err(|e| {
                 PersistentARTrieError::io_error(
                     "sync WAL",
                     "WAL",
                     std::io::Error::new(std::io::ErrorKind::Other, e.to_string()),
                 )
             })?;
+            self.synced_lsn.fetch_max(lsn, Ordering::AcqRel);
         }
         Ok(VocabSyncHandle::already_synced())
     }
