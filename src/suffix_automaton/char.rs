@@ -371,7 +371,7 @@ impl<V: DictionaryValue> SuffixAutomatonChar<V> {
     /// ```
     pub fn insert(&self, text: &str) -> bool {
         let mut inner = self.inner.write();
-        let string_id = inner.string_count;
+        let string_id = inner.source_texts.len();
 
         // Store source text for serialization
         inner.source_texts.push(text.to_string());
@@ -418,37 +418,45 @@ impl<V: DictionaryValue> SuffixAutomatonChar<V> {
     pub fn remove(&self, text: &str) -> bool {
         let mut inner = self.inner.write();
 
-        // Navigate to end state for this text
-        let mut state = 0;
-        for ch in text.chars() {
-            match inner.nodes[state].find_edge(ch) {
-                Some(next) => state = next,
-                None => return false, // String not present
+        // Remove one active source record matching this exact text. Source IDs
+        // are stable `source_texts` indices, so duplicate texts are removed one
+        // insertion at a time without renumbering later sources.
+        let mut remove_location: Option<(usize, usize, usize)> = None;
+        for (state_id, positions) in &inner.positions {
+            for (position_index, (source_id, end)) in positions.iter().enumerate() {
+                if *end == text.len()
+                    && inner
+                        .source_texts
+                        .get(*source_id)
+                        .map(|source| source == text)
+                        .unwrap_or(false)
+                    && remove_location
+                        .map(|(best_source_id, _, _)| *source_id < best_source_id)
+                        .unwrap_or(true)
+                {
+                    remove_location = Some((*source_id, *state_id, position_index));
+                }
             }
         }
 
-        // Check if this text's end position is recorded at this state
-        let removed = if let Some(positions) = inner.positions.get_mut(&state) {
-            let original_len = positions.len();
-            positions.retain(|(_, end)| *end != text.len());
-            positions.len() < original_len
+        let removed_state = remove_location.map(|(_, state, _)| state);
+        let removed = if let Some((_, state, index)) = remove_location {
+            if let Some(positions) = inner.positions.get_mut(&state) {
+                positions.remove(index);
+                true
+            } else {
+                false
+            }
         } else {
             false
         };
 
         if removed {
-            // Remove from source_texts (mark as empty string to preserve indices)
-            // We can't actually remove without reindexing, so we'll handle this in compact()
-            // For now, we'll just track removal via positions metadata
+            // Source text slots stay stable; position metadata is the active set.
+            let should_remove = removed_state
+                .and_then(|state| inner.positions.get(&state).map(|v| (state, v.is_empty())));
 
-            // Check if we need to remove the state from positions map
-            let should_remove = inner
-                .positions
-                .get(&state)
-                .map(|v| v.is_empty())
-                .unwrap_or(false);
-
-            if should_remove {
+            if let Some((state, true)) = should_remove {
                 // Note: We keep is_final=true because this state still represents
                 // a valid substring (possibly from other indexed strings).
                 // Only remove from positions map.
@@ -456,7 +464,7 @@ impl<V: DictionaryValue> SuffixAutomatonChar<V> {
             }
 
             inner.needs_compaction = true;
-            inner.string_count -= 1;
+            inner.string_count = inner.string_count.saturating_sub(1);
             true
         } else {
             false
@@ -607,10 +615,6 @@ impl<V: DictionaryValue> SuffixAutomatonChar<V> {
     /// Returns a list of (string_id, end_position) tuples indicating where
     /// the substring appears in the indexed texts.
     ///
-    /// **Note**: Currently only returns positions if the substring matches
-    /// at the end of an indexed string. Full position tracking for all
-    /// substrings is a future enhancement.
-    ///
     /// # Examples
     ///
     /// ```rust
@@ -619,13 +623,15 @@ impl<V: DictionaryValue> SuffixAutomatonChar<V> {
     /// let docs = vec!["testing", "test"];
     /// let dict = SuffixAutomatonChar::<()>::from_texts(docs);
     ///
-    /// // Note: Position tracking is currently limited to final states
-    /// // This is a placeholder for future enhancement
     /// let positions = dict.match_positions("test");
-    /// // positions will contain entries for strings ending exactly with "test"
+    /// assert_eq!(positions, vec![(0, 4), (1, 4)]);
     /// ```
     pub fn match_positions(&self, substring: &str) -> Vec<(usize, usize)> {
         let inner = self.inner.read();
+
+        if substring.is_empty() {
+            return Vec::new();
+        }
 
         // Navigate to the state for this substring
         let mut state = 0;
@@ -636,19 +642,30 @@ impl<V: DictionaryValue> SuffixAutomatonChar<V> {
             }
         }
 
-        // Collect positions from this state and all reachable final states
-        // via epsilon-like transitions (suffix links and forward edges)
-        let mut result = Vec::new();
-
-        // Add positions directly associated with this state
-        if let Some(positions) = inner.positions.get(&state) {
-            result.extend(positions.iter().copied());
+        let mut active_sources = vec![false; inner.source_texts.len()];
+        for positions in inner.positions.values() {
+            for (source_id, _) in positions {
+                if let Some(active) = active_sources.get_mut(*source_id) {
+                    *active = true;
+                }
+            }
         }
 
-        // For a more complete implementation, we would need to traverse
-        // all states reachable from here to find all occurrences.
-        // This is left as a future enhancement for full position tracking.
+        let mut result = Vec::new();
+        for (source_id, source) in inner.source_texts.iter().enumerate() {
+            if !active_sources.get(source_id).copied().unwrap_or(false) {
+                continue;
+            }
 
+            for (start, _) in source.char_indices() {
+                if source[start..].starts_with(substring) {
+                    result.push((source_id, start + substring.len()));
+                }
+            }
+        }
+
+        result.sort_unstable();
+        result.dedup();
         result
     }
 
@@ -724,6 +741,25 @@ impl<V: DictionaryValue> SuffixAutomatonChar<V> {
             // Node exists but no value - set the default value
             inner.nodes[state].value = Some(default_value);
             inner.nodes[state].is_final = true;
+            if !inner.positions.get(&state).is_some_and(|positions| {
+                positions.iter().any(|(source_id, end)| {
+                    *end == term.len()
+                        && inner
+                            .source_texts
+                            .get(*source_id)
+                            .map(|source| source == term)
+                            .unwrap_or(false)
+                })
+            }) {
+                let string_id = inner.source_texts.len();
+                inner.source_texts.push(term.to_string());
+                inner
+                    .positions
+                    .entry(state)
+                    .or_default()
+                    .push((string_id, term.len()));
+                inner.string_count += 1;
+            }
             true
         }
     }
@@ -745,8 +781,14 @@ impl<V: DictionaryValue> SuffixAutomatonChar<V> {
         inner.nodes[final_state].value = Some(value);
 
         // Track the new string
-        inner.string_count += 1;
+        let string_id = inner.source_texts.len();
         inner.source_texts.push(term.to_string());
+        inner
+            .positions
+            .entry(final_state)
+            .or_default()
+            .push((string_id, term.len()));
+        inner.string_count += 1;
 
         // Reset last_state for future insertions
         inner.last_state = 0;
@@ -1225,22 +1267,53 @@ mod tests {
 
     #[test]
     fn test_match_positions() {
-        // Position tracking currently works for strings that end at final states
-        let docs = vec!["hello", "world"];
+        let docs = vec!["aé日a", "café"];
         let dict = SuffixAutomatonChar::<()>::from_texts(docs);
 
-        // "hello" and "world" are complete strings, so they end at final states
-        let positions_hello = dict.match_positions("hello");
-        assert!(!positions_hello.is_empty());
-        assert_eq!(positions_hello[0].0, 0); // Document 0
+        assert_eq!(dict.match_positions("é日"), vec![(0, 6)]);
+        assert_eq!(dict.match_positions("日"), vec![(0, 6)]);
+        assert_eq!(dict.match_positions("é"), vec![(0, 3), (1, 5)]);
+        assert_eq!(dict.match_positions("a"), vec![(0, 1), (0, 7), (1, 2)]);
+        assert_eq!(
+            dict.match_positions("missing"),
+            Vec::<(usize, usize)>::new()
+        );
 
-        let positions_world = dict.match_positions("world");
-        assert!(!positions_world.is_empty());
-        assert_eq!(positions_world[0].0, 1); // Document 1
+        assert!(dict.remove("aé日a"));
+        assert_eq!(dict.match_positions("é"), vec![(1, 5)]);
 
-        // Suffixes also work (they reach the same final states)
-        let positions_ello = dict.match_positions("ello");
-        assert!(!positions_ello.is_empty());
+        dict.compact();
+        assert_eq!(dict.match_positions("é"), vec![(1, 5)]);
+    }
+
+    #[test]
+    fn test_match_positions_duplicate_sources_removed_one_at_a_time() {
+        let dict = SuffixAutomatonChar::<()>::from_texts(["aba", "aba", "ababa"]);
+
+        assert_eq!(
+            dict.match_positions("aba"),
+            vec![(0, 3), (1, 3), (2, 3), (2, 5)]
+        );
+
+        assert!(dict.remove("aba"));
+        assert_eq!(dict.match_positions("aba"), vec![(1, 3), (2, 3), (2, 5)]);
+
+        assert!(dict.remove("aba"));
+        assert_eq!(dict.match_positions("aba"), vec![(2, 3), (2, 5)]);
+        assert!(!dict.remove("aba"));
+    }
+
+    #[test]
+    fn test_match_positions_for_valued_and_existing_substring_inserts() {
+        let dict = SuffixAutomatonChar::<i32>::new();
+        assert!(dict.insert_with_value("東京カフェ東京", 11));
+        assert_eq!(dict.match_positions("東京"), vec![(0, 6), (0, 21)]);
+        assert!(dict.remove("東京カフェ東京"));
+        assert_eq!(dict.match_positions("東京"), Vec::<(usize, usize)>::new());
+
+        assert!(dict.insert("aé日a"));
+        assert!(dict.update_or_insert("é日", 7, |value| *value += 1));
+        assert_eq!(dict.match_positions("é日"), vec![(1, 6), (2, 5)]);
     }
 
     #[test]
