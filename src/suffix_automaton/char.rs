@@ -693,7 +693,7 @@ impl<V: DictionaryValue> SuffixAutomatonChar<V> {
     /// ```
     pub fn update_or_insert<F>(&self, term: &str, default_value: V, update_fn: F) -> bool
     where
-        F: FnOnce(&mut V),
+        F: Fn(&mut V),
     {
         let mut inner = self.inner.write();
 
@@ -1057,7 +1057,7 @@ impl<V: DictionaryValue> MutableMappedDictionary for SuffixAutomatonChar<V> {
 
     fn update_or_insert<F>(&self, term: &str, default_value: Self::Value, update_fn: F) -> bool
     where
-        F: FnOnce(&mut Self::Value),
+        F: Fn(&mut Self::Value),
     {
         SuffixAutomatonChar::update_or_insert(self, term, default_value, update_fn)
     }
@@ -1087,7 +1087,7 @@ impl<V: DictionaryValue> MutableMappedDictionary for SuffixAutomatonChar<V> {
                 };
                 // Use update_or_insert to ensure value is set correctly
                 let new_value_clone = new_value.clone();
-                self.update_or_insert(&term, new_value, move |v| *v = new_value_clone);
+                self.update_or_insert(&term, new_value, move |v| *v = new_value_clone.clone());
             }
         }
         processed

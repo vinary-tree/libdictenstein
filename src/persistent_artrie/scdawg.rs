@@ -5,8 +5,7 @@
 //! [`ScdawgCoreInner`] snapshots. Reads traverse the compact SCDAWG graph
 //! without taking a writer lock. Retryable mutations rebuild a compact graph and
 //! publish it with pointer-identity CAS after a prepared WAL record, then append
-//! a commit marker before acknowledging the caller; `update_or_insert` remains
-//! serialized because its `FnOnce` updater is not retry-safe.
+//! a commit marker before acknowledging the caller.
 
 use std::collections::{HashMap, HashSet};
 use std::fmt;
@@ -173,7 +172,7 @@ impl<U: PersistentScdawgUnit, V: DictionaryValue> NativeScdawgGraph<U, V> {
 
     fn update_or_insert<F>(&mut self, term: &str, default_value: V, update_fn: F) -> bool
     where
-        F: FnOnce(&mut V),
+        F: Fn(&mut V),
     {
         if let Some(record) = self
             .records
@@ -289,7 +288,6 @@ struct ScdawgWalReplayReport {
 struct NativeScdawgIndex<U: PersistentScdawgUnit, V: DictionaryValue> {
     graph: ArcSwap<NativeScdawgGraph<U, V>>,
     path: Option<PathBuf>,
-    write_lock: Arc<Mutex<()>>,
     wal_lock: Arc<Mutex<()>>,
     next_op_id: AtomicU64,
     committed_op_id: AtomicU64,
@@ -329,7 +327,6 @@ impl<U: PersistentScdawgUnit, V: DictionaryValue> NativeScdawgIndex<U, V> {
         Self {
             graph: ArcSwap::from_pointee(NativeScdawgGraph::new()),
             path: None,
-            write_lock: Arc::new(Mutex::new(())),
             wal_lock: Arc::new(Mutex::new(())),
             next_op_id: AtomicU64::new(1),
             committed_op_id: AtomicU64::new(0),
@@ -344,7 +341,6 @@ impl<U: PersistentScdawgUnit, V: DictionaryValue> NativeScdawgIndex<U, V> {
         Ok(Self {
             graph: ArcSwap::from_pointee(graph),
             path: Some(path.to_path_buf()),
-            write_lock: Arc::new(Mutex::new(())),
             wal_lock: Arc::new(Mutex::new(())),
             next_op_id: AtomicU64::new(1),
             committed_op_id: AtomicU64::new(0),
@@ -367,7 +363,6 @@ impl<U: PersistentScdawgUnit, V: DictionaryValue> NativeScdawgIndex<U, V> {
             Self {
                 graph: ArcSwap::from_pointee(graph),
                 path: Some(path.to_path_buf()),
-                write_lock: Arc::new(Mutex::new(())),
                 wal_lock: Arc::new(Mutex::new(())),
                 next_op_id: AtomicU64::new(max_op_id.saturating_add(1)),
                 committed_op_id: AtomicU64::new(max_op_id),
@@ -490,37 +485,56 @@ impl<U: PersistentScdawgUnit, V: DictionaryValue> NativeScdawgIndex<U, V> {
 
     fn update_or_insert<F>(&self, term: &str, default_value: V, update_fn: F) -> Result<bool>
     where
-        F: FnOnce(&mut V),
+        F: Fn(&mut V),
     {
-        let _write_guard = self.write_lock.lock();
-        let current = self.graph.load_full();
-        let mut next: NativeScdawgGraph<U, V> =
-            NativeScdawgGraph::from_records(current.records.clone(), current.needs_compaction);
-        let was_new = next.update_or_insert(term, default_value, update_fn);
-        let value = next
-            .records
-            .iter()
-            .find(|record| record.active && record.term == term)
-            .and_then(|record| record.value.clone())
-            .expect("update_or_insert installs a value");
-        let op_id = self.next_op_id.fetch_add(1, Ordering::Relaxed);
-        self.append_record_locked(&NativeScdawgWalRecord::Prepare {
-            op_id,
-            op: NativeScdawgWalOp::SetValue {
-                term: term.to_string(),
-                value,
-            },
-        })?;
-        let rebuilt = NativeScdawgGraph::from_records(next.records, next.needs_compaction);
-        self.inflight_publications.fetch_add(1, Ordering::SeqCst);
-        self.graph.store(Arc::new(rebuilt));
-        let commit_result = self.append_record_locked(&NativeScdawgWalRecord::Commit { op_id });
-        if commit_result.is_ok() {
-            self.committed_op_id.fetch_max(op_id, Ordering::SeqCst);
+        if self.path.is_none() {
+            loop {
+                let (current, mut next) = self.rebuild_from_current();
+                let was_new = next.update_or_insert(term, default_value.clone(), &update_fn);
+                let rebuilt = NativeScdawgGraph::from_records(next.records, next.needs_compaction);
+                let previous = self.graph.compare_and_swap(&current, Arc::new(rebuilt));
+                if Arc::ptr_eq(&previous, &current) {
+                    return Ok(was_new);
+                }
+            }
         }
-        self.inflight_publications.fetch_sub(1, Ordering::SeqCst);
-        commit_result?;
-        Ok(was_new)
+
+        for _ in 0..MAX_CAS_RETRIES {
+            let (current, mut next) = self.rebuild_from_current();
+            let was_new = next.update_or_insert(term, default_value.clone(), &update_fn);
+            let value = next
+                .records
+                .iter()
+                .find(|record| record.active && record.term == term)
+                .and_then(|record| record.value.clone())
+                .expect("update_or_insert installs a value");
+            let op_id = self.next_op_id.fetch_add(1, Ordering::Relaxed);
+            self.append_record_locked(&NativeScdawgWalRecord::Prepare {
+                op_id,
+                op: NativeScdawgWalOp::SetValue {
+                    term: term.to_string(),
+                    value,
+                },
+            })?;
+            let rebuilt = NativeScdawgGraph::from_records(next.records, next.needs_compaction);
+            self.inflight_publications.fetch_add(1, Ordering::SeqCst);
+            let previous = self.graph.compare_and_swap(&current, Arc::new(rebuilt));
+            if Arc::ptr_eq(&previous, &current) {
+                let commit_result =
+                    self.append_record_locked(&NativeScdawgWalRecord::Commit { op_id });
+                if commit_result.is_ok() {
+                    self.committed_op_id.fetch_max(op_id, Ordering::SeqCst);
+                }
+                self.inflight_publications.fetch_sub(1, Ordering::SeqCst);
+                commit_result?;
+                return Ok(was_new);
+            }
+            self.inflight_publications.fetch_sub(1, Ordering::SeqCst);
+        }
+
+        Err(PersistentARTrieError::internal(format!(
+            "native SCDAWG value update CAS failed after {MAX_CAS_RETRIES} retries"
+        )))
     }
 
     fn checkpoint(&self) -> Result<()> {
@@ -967,7 +981,7 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentScdawg<V, S> {
 
     pub fn update_or_insert<F>(&self, term: &str, default_value: V, update_fn: F) -> bool
     where
-        F: FnOnce(&mut V),
+        F: Fn(&mut V),
     {
         self.index
             .update_or_insert(term, default_value, update_fn)
@@ -1172,7 +1186,7 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentScdawgChar<V, S> {
 
     pub fn update_or_insert<F>(&self, term: &str, default_value: V, update_fn: F) -> bool
     where
-        F: FnOnce(&mut V),
+        F: Fn(&mut V),
     {
         self.index
             .update_or_insert(term, default_value, update_fn)
@@ -1445,7 +1459,7 @@ impl<V: DictionaryValue, S: BlockStorage> MutableMappedDictionary for Persistent
 
     fn update_or_insert<F>(&self, term: &str, default_value: Self::Value, update_fn: F) -> bool
     where
-        F: FnOnce(&mut Self::Value),
+        F: Fn(&mut Self::Value),
     {
         PersistentScdawg::update_or_insert(self, term, default_value, update_fn)
     }
@@ -1543,7 +1557,7 @@ impl<V: DictionaryValue, S: BlockStorage> MutableMappedDictionary for Persistent
 
     fn update_or_insert<F>(&self, term: &str, default_value: Self::Value, update_fn: F) -> bool
     where
-        F: FnOnce(&mut Self::Value),
+        F: Fn(&mut Self::Value),
     {
         PersistentScdawgChar::update_or_insert(self, term, default_value, update_fn)
     }

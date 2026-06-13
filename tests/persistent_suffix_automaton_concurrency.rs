@@ -1,8 +1,8 @@
 //! Concurrency coverage for persistent suffix automata.
 //!
 //! These tests exercise public shared-reference behavior over immutable native
-//! suffix-graph snapshots: readers load snapshots without taking the writer
-//! lock while writers serialize rebuild-and-publish operations.
+//! suffix-graph snapshots: readers load snapshots without taking a writer lock,
+//! and writers publish rebuilt graph revisions with CAS.
 
 #![cfg(feature = "persistent-artrie")]
 
@@ -114,6 +114,41 @@ fn byte_concurrent_writers_readers_and_checkpoint_survive_reopen() {
         assert!(reopened.contains(&term), "missing {term:?}");
         assert_eq!(reopened.get_value(&term), Some(value), "value for {term:?}");
     }
+}
+
+#[test]
+fn byte_concurrent_update_or_insert_retries_without_lost_increments() {
+    let dir = scratch_dir("persistent-suffix-byte-update-cas");
+    let path = dir.path().join("byte_suffix_update.art");
+    let dict = Arc::new(PersistentSuffixAutomaton::<i32>::create(&path).expect("create"));
+    assert!(dict.insert_with_value("counter", 0));
+
+    const WRITERS: usize = 6;
+    const INCREMENTS: usize = 32;
+    let barrier = Arc::new(Barrier::new(WRITERS));
+    let mut handles = Vec::new();
+    for _ in 0..WRITERS {
+        let dict = Arc::clone(&dict);
+        let barrier = Arc::clone(&barrier);
+        handles.push(thread::spawn(move || {
+            barrier.wait();
+            for _ in 0..INCREMENTS {
+                assert!(!dict.update_or_insert("counter", 0, |value| *value += 1));
+            }
+        }));
+    }
+    for handle in handles {
+        handle.join().expect("update thread");
+    }
+
+    let expected = (WRITERS * INCREMENTS) as i32;
+    assert_eq!(dict.get_value("counter"), Some(expected));
+    dict.checkpoint().expect("checkpoint counter");
+    dict.close();
+    drop(dict);
+
+    let reopened = PersistentSuffixAutomaton::<i32>::open(&path).expect("reopen counter");
+    assert_eq!(reopened.get_value("counter"), Some(expected));
 }
 
 #[test]

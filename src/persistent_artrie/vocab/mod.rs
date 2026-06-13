@@ -265,7 +265,7 @@ impl MutableMappedDictionary for PersistentVocabARTrie {
 
     fn update_or_insert<F>(&self, term: &str, _default_value: Self::Value, _update_fn: F) -> bool
     where
-        F: FnOnce(&mut Self::Value),
+        F: Fn(&mut Self::Value),
     {
         log::warn!(
             "PersistentVocabARTrie::update_or_insert({term:?}, _, _) is a no-op \
@@ -404,7 +404,7 @@ impl MutableMappedDictionary for SharedVocabARTrie {
 
     fn update_or_insert<F>(&self, term: &str, _default_value: Self::Value, _update_fn: F) -> bool
     where
-        F: FnOnce(&mut Self::Value),
+        F: Fn(&mut Self::Value),
     {
         log::warn!(
             "SharedVocabARTrie::update_or_insert({term:?}, _, _) discards \

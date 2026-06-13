@@ -18,8 +18,9 @@ Date format is ISO-8601 (YYYY-MM-DD).
   operation watermark so recovery skips checkpoint-folded operations and ignores
   uncommitted CAS-loser prepares. Under continuous writer churn, checkpoint may
   skip image publication rather than blocking writers; retained WAL replay
-  remains authoritative. `update_or_insert` remains serialized because its
-  `FnOnce` updater cannot be safely retried after CAS conflicts.
+  remains authoritative. The mapped update contract now uses a retry-safe
+  `Fn(&mut V)` updater so `update_or_insert` can join the same CAS publication
+  path without a writer lock.
 - **`PersistentARTrieU64Compact` durability aligned with the byte/char
   Order-A overlay path.** Native u64 now uses the shared WAL overlay regime,
   appends `CommitRank` after the winning CAS publication, seeds and advances
@@ -64,9 +65,9 @@ Date format is ISO-8601 (YYYY-MM-DD).
   `PersistentARTrie{,Char}`, `PersistentARTrieU64Compact`,
   `PersistentARTrieU64Prefix3Compat`, `PersistentVocabARTrie`, and native
   persistent suffix automaton/tree/SCDAWG variants. The docs distinguish ARTrie
-  overlay publication from suffix graph prepared/commit CAS publication and its
-  remaining serialized `update_or_insert` path, and summarize the appended u64
-  benchmark artifacts (`111`, `112`) without replacing historical ledger data.
+  overlay publication from suffix graph prepared/commit CAS publication and
+  summarize the appended u64 benchmark artifacts (`111`, `112`) without
+  replacing historical ledger data.
 - **Zero-plumbing, MORK-facing dictionaries** (`pathmap::snapshot`):
   `PathMapSnapshot` / `PathMapRef` (and `…Char` variants) wrap a **borrowed** or
   `𝒪(1)`-snapshotted `PathMap` so a caller that already holds one (e.g. MORK's

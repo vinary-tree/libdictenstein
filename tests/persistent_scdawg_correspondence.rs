@@ -4,6 +4,8 @@ use libdictenstein::persistent_artrie::{PersistentScdawg, PersistentScdawgChar};
 use libdictenstein::scdawg::{Scdawg, ScdawgChar};
 use libdictenstein::{Dictionary, MappedDictionary, SubstringDictionary, SyncStrategy};
 use proptest::prelude::*;
+use std::sync::{Arc, Barrier};
+use std::thread;
 use tempfile::tempdir;
 
 fn sorted_locations(mut locations: Vec<(String, usize)>) -> Vec<(String, usize)> {
@@ -160,6 +162,41 @@ fn byte_values_duplicates_removal_compaction_and_reopen() {
     assert!(reopened.contains("bandana"));
     assert!(!reopened.contains("banana"));
     assert!(reopened.contains_substring("dana"));
+}
+
+#[test]
+fn byte_scdawg_concurrent_update_or_insert_retries_without_lost_increments() {
+    let dir = tempdir().expect("temp dir");
+    let path = dir.path().join("persistent_scdawg_update.art");
+    let dict = Arc::new(PersistentScdawg::<i32>::create(&path).expect("create scdawg"));
+    assert!(dict.insert_with_value("counter", 0));
+
+    const WRITERS: usize = 6;
+    const INCREMENTS: usize = 32;
+    let barrier = Arc::new(Barrier::new(WRITERS));
+    let mut handles = Vec::new();
+    for _ in 0..WRITERS {
+        let dict = Arc::clone(&dict);
+        let barrier = Arc::clone(&barrier);
+        handles.push(thread::spawn(move || {
+            barrier.wait();
+            for _ in 0..INCREMENTS {
+                assert!(!dict.update_or_insert("counter", 0, |value| *value += 1));
+            }
+        }));
+    }
+    for handle in handles {
+        handle.join().expect("update thread");
+    }
+
+    let expected = (WRITERS * INCREMENTS) as i32;
+    assert_eq!(dict.get_value("counter"), Some(expected));
+    dict.checkpoint().expect("checkpoint counter");
+    dict.close();
+    drop(dict);
+
+    let reopened = PersistentScdawg::<i32>::open(&path).expect("reopen scdawg");
+    assert_eq!(reopened.get_value("counter"), Some(expected));
 }
 
 #[test]

@@ -1032,7 +1032,7 @@ impl<V: DictionaryValue, S: BlockStorage, const PREFIX: usize> PersistentARTrieU
         update_fn: F,
     ) -> bool
     where
-        F: FnOnce(&mut V),
+        F: Fn(&mut V),
     {
         if let Some(mut value) = self.get_sequence_value(sequence) {
             update_fn(&mut value);
@@ -1314,7 +1314,7 @@ impl<V: DictionaryValue, S: BlockStorage, const PREFIX: usize> MutableMappedDict
 
     fn update_or_insert<F>(&self, term: &str, default_value: Self::Value, update_fn: F) -> bool
     where
-        F: FnOnce(&mut Self::Value),
+        F: Fn(&mut Self::Value),
     {
         let sequence = <u64 as CharUnit>::from_str(term);
         self.update_or_insert_sequence(&sequence, default_value, update_fn)

@@ -382,7 +382,7 @@ impl<V: DictionaryValue> DynamicDawgU64<V> {
     /// Update an existing term's value in place, or insert with default value.
     pub fn update_or_insert<F>(&self, term: &str, default_value: V, update_fn: F) -> bool
     where
-        F: FnOnce(&mut V),
+        F: Fn(&mut V),
     {
         let sequence: Vec<u64> = crate::CharUnit::from_str(term);
         self.update_or_insert_sequence(&sequence, default_value, update_fn)
@@ -637,7 +637,7 @@ impl<V: DictionaryValue> DynamicDawgU64<V> {
         update_fn: F,
     ) -> bool
     where
-        F: FnOnce(&mut V),
+        F: Fn(&mut V),
     {
         // Navigate to the node, creating path if needed, without overwriting an
         // existing value before the update function can observe it.

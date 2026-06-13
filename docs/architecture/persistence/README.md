@@ -52,11 +52,10 @@ encoding suffixes as ARTrie keys.
 - `PersistentScdawg` / `PersistentScdawgChar`
 
 Reads are snapshot-based and non-blocking with respect to graph mutation. Writes
-that can be retried (`insert`, `insert_with_value`, `remove`, `clear`,
-`compact`) append a prepared operation, publish the rebuilt graph with
-pointer-identity CAS, and append a commit marker before acknowledging the
-caller. `update_or_insert` is still serialized because its `FnOnce` updater is
-not retry-safe.
+append a prepared operation, publish the rebuilt graph with pointer-identity
+CAS, and append a commit marker before acknowledging the caller. Mapped
+`update_or_insert` uses a retry-safe `Fn(&mut V)` updater so CAS conflicts can
+recompute against the newest snapshot without taking a writer lock.
 
 ## Durability Model
 

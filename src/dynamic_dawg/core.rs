@@ -402,7 +402,7 @@ impl<U: CharUnit, V: DictionaryValue> DawgCore<U, V> {
     /// Returns `true` if a new term was inserted, `false` if existing was updated.
     pub fn update_or_insert_units<F>(&mut self, units: &[U], default_value: V, update_fn: F) -> bool
     where
-        F: FnOnce(&mut V),
+        F: Fn(&mut V),
     {
         let mut node_idx = 0;
         let mut path: Vec<(usize, U, usize)> = Vec::new();

@@ -345,6 +345,41 @@ fn byte_parallel_readers_writers_and_checkpoint_reopen() {
     );
 }
 
+#[test]
+fn byte_suffix_tree_concurrent_update_or_insert_retries_without_lost_increments() {
+    let dir = tempdir().expect("temp dir");
+    let path = dir.path().join("persistent_suffix_tree_update.art");
+    let tree = Arc::new(PersistentSuffixTree::<i32>::create(&path).expect("create suffix tree"));
+    assert!(tree.insert_with_value("counter", 0));
+
+    const WRITERS: usize = 6;
+    const INCREMENTS: usize = 32;
+    let barrier = Arc::new(Barrier::new(WRITERS));
+    let mut handles = Vec::new();
+    for _ in 0..WRITERS {
+        let tree = Arc::clone(&tree);
+        let barrier = Arc::clone(&barrier);
+        handles.push(thread::spawn(move || {
+            barrier.wait();
+            for _ in 0..INCREMENTS {
+                assert!(!tree.update_or_insert("counter", 0, |value| *value += 1));
+            }
+        }));
+    }
+    for handle in handles {
+        handle.join().expect("update thread");
+    }
+
+    let expected = (WRITERS * INCREMENTS) as i32;
+    assert_eq!(tree.get_value("counter"), Some(expected));
+    tree.checkpoint().expect("checkpoint counter");
+    tree.close();
+    drop(tree);
+
+    let reopened = PersistentSuffixTree::<i32>::open(&path).expect("reopen suffix tree");
+    assert_eq!(reopened.get_value("counter"), Some(expected));
+}
+
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(64))]
 

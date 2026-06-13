@@ -312,7 +312,7 @@ impl<V: DictionaryValue> PathMapDictionary<V> {
     /// ```
     pub fn update_or_insert<F>(&self, term: &str, default_value: V, update_fn: F) -> bool
     where
-        F: FnOnce(&mut V),
+        F: Fn(&mut V),
     {
         let bytes = term.as_bytes();
         let mut map = self.map.write();
@@ -457,7 +457,7 @@ impl<V: DictionaryValue> crate::MutableMappedDictionary for PathMapDictionary<V>
 
     fn update_or_insert<F>(&self, term: &str, default_value: Self::Value, update_fn: F) -> bool
     where
-        F: FnOnce(&mut Self::Value),
+        F: Fn(&mut Self::Value),
     {
         PathMapDictionary::update_or_insert(self, term, default_value, update_fn)
     }

@@ -499,14 +499,16 @@ pub trait MutableMappedDictionary: MappedDictionary {
     ///
     /// * `term` - The term to update or insert
     /// * `default_value` - The value to use if the term doesn't exist
-    /// * `update_fn` - Function to apply to the existing value if the term exists
+    /// * `update_fn` - Retry-safe function to apply to the existing value if the
+    ///   term exists. Implementations with lock-free publication may invoke this
+    ///   function more than once after CAS conflicts.
     ///
     /// # Returns
     ///
     /// `true` if this was a new term (inserted with default), `false` if an existing term was updated.
     fn update_or_insert<F>(&self, term: &str, default_value: Self::Value, update_fn: F) -> bool
     where
-        F: FnOnce(&mut Self::Value);
+        F: Fn(&mut Self::Value);
 }
 
 /// Prelude module for convenient imports.

@@ -5,8 +5,7 @@
 //! path-compressed suffix-tree snapshots. Reads traverse the currently loaded
 //! graph without taking a writer lock. Retryable mutations construct a new graph
 //! and publish it with pointer-identity CAS after a prepared WAL record, then
-//! append a commit marker before acknowledging the caller; `update_or_insert`
-//! remains serialized because its `FnOnce` updater is not retry-safe.
+//! append a commit marker before acknowledging the caller.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt;
@@ -303,7 +302,7 @@ impl<U: PersistentSuffixTreeUnit, V: DictionaryValue> NativeSuffixTreeGraph<U, V
 
     fn update_or_insert<F>(&mut self, text: &str, default_value: V, update_fn: F) -> (bool, V)
     where
-        F: FnOnce(&mut V),
+        F: Fn(&mut V),
     {
         let units = U::term_units(text);
         if let Some(mut value) = self.get_value_units(&units) {
@@ -735,7 +734,6 @@ struct SuffixTreeWalReplayReport {
 struct NativeSuffixTreeIndex<U: PersistentSuffixTreeUnit, V: DictionaryValue> {
     graph: ArcSwap<NativeSuffixTreeGraph<U, V>>,
     path: Option<PathBuf>,
-    write_lock: Arc<Mutex<()>>,
     wal_lock: Arc<Mutex<()>>,
     next_op_id: AtomicU64,
     committed_op_id: AtomicU64,
@@ -775,7 +773,6 @@ impl<U: PersistentSuffixTreeUnit, V: DictionaryValue> NativeSuffixTreeIndex<U, V
         Self {
             graph: ArcSwap::from_pointee(NativeSuffixTreeGraph::new()),
             path: None,
-            write_lock: Arc::new(Mutex::new(())),
             wal_lock: Arc::new(Mutex::new(())),
             next_op_id: AtomicU64::new(1),
             committed_op_id: AtomicU64::new(0),
@@ -790,7 +787,6 @@ impl<U: PersistentSuffixTreeUnit, V: DictionaryValue> NativeSuffixTreeIndex<U, V
         Ok(Self {
             graph: ArcSwap::from_pointee(graph),
             path: Some(path.to_path_buf()),
-            write_lock: Arc::new(Mutex::new(())),
             wal_lock: Arc::new(Mutex::new(())),
             next_op_id: AtomicU64::new(1),
             committed_op_id: AtomicU64::new(0),
@@ -812,7 +808,6 @@ impl<U: PersistentSuffixTreeUnit, V: DictionaryValue> NativeSuffixTreeIndex<U, V
             Self {
                 graph: ArcSwap::from_pointee(graph),
                 path: Some(path.to_path_buf()),
-                write_lock: Arc::new(Mutex::new(())),
                 wal_lock: Arc::new(Mutex::new(())),
                 next_op_id: AtomicU64::new(max_op_id.saturating_add(1)),
                 committed_op_id: AtomicU64::new(max_op_id),
@@ -917,29 +912,50 @@ impl<U: PersistentSuffixTreeUnit, V: DictionaryValue> NativeSuffixTreeIndex<U, V
 
     fn update_or_insert<F>(&self, text: &str, default_value: V, update_fn: F) -> Result<bool>
     where
-        F: FnOnce(&mut V),
+        F: Fn(&mut V),
     {
-        let _write_guard = self.write_lock.lock();
-        let current = self.graph.load_full();
-        let mut next = (*current).clone();
-        let (was_new, value) = next.update_or_insert(text, default_value, update_fn);
-        let op_id = self.next_op_id.fetch_add(1, Ordering::Relaxed);
-        self.append_record_locked(&NativeSuffixTreeWalRecord::Prepare {
-            op_id,
-            op: NativeSuffixTreeWalOp::SetValue {
-                text: text.to_string(),
-                value,
-            },
-        })?;
-        self.inflight_publications.fetch_add(1, Ordering::SeqCst);
-        self.graph.store(Arc::new(next));
-        let commit_result = self.append_record_locked(&NativeSuffixTreeWalRecord::Commit { op_id });
-        if commit_result.is_ok() {
-            self.committed_op_id.fetch_max(op_id, Ordering::SeqCst);
+        if self.path.is_none() {
+            loop {
+                let current = self.graph.load_full();
+                let mut next = (*current).clone();
+                let (was_new, _) = next.update_or_insert(text, default_value.clone(), &update_fn);
+                let previous = self.graph.compare_and_swap(&current, Arc::new(next));
+                if Arc::ptr_eq(&previous, &current) {
+                    return Ok(was_new);
+                }
+            }
         }
-        self.inflight_publications.fetch_sub(1, Ordering::SeqCst);
-        commit_result?;
-        Ok(was_new)
+
+        for _ in 0..MAX_CAS_RETRIES {
+            let current = self.graph.load_full();
+            let mut next = (*current).clone();
+            let (was_new, value) = next.update_or_insert(text, default_value.clone(), &update_fn);
+            let op_id = self.next_op_id.fetch_add(1, Ordering::Relaxed);
+            self.append_record_locked(&NativeSuffixTreeWalRecord::Prepare {
+                op_id,
+                op: NativeSuffixTreeWalOp::SetValue {
+                    text: text.to_string(),
+                    value,
+                },
+            })?;
+            self.inflight_publications.fetch_add(1, Ordering::SeqCst);
+            let previous = self.graph.compare_and_swap(&current, Arc::new(next));
+            if Arc::ptr_eq(&previous, &current) {
+                let commit_result =
+                    self.append_record_locked(&NativeSuffixTreeWalRecord::Commit { op_id });
+                if commit_result.is_ok() {
+                    self.committed_op_id.fetch_max(op_id, Ordering::SeqCst);
+                }
+                self.inflight_publications.fetch_sub(1, Ordering::SeqCst);
+                commit_result?;
+                return Ok(was_new);
+            }
+            self.inflight_publications.fetch_sub(1, Ordering::SeqCst);
+        }
+
+        Err(PersistentARTrieError::internal(format!(
+            "native suffix tree value update CAS failed after {MAX_CAS_RETRIES} retries"
+        )))
     }
 
     fn checkpoint(&self) -> Result<()> {
@@ -1343,7 +1359,7 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentSuffixTree<V, S> {
 
     pub fn update_or_insert<F>(&self, term: &str, default_value: V, update_fn: F) -> bool
     where
-        F: FnOnce(&mut V),
+        F: Fn(&mut V),
     {
         self.index
             .update_or_insert(term, default_value, update_fn)
@@ -1585,7 +1601,7 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentSuffixTreeChar<V, S> {
 
     pub fn update_or_insert<F>(&self, term: &str, default_value: V, update_fn: F) -> bool
     where
-        F: FnOnce(&mut V),
+        F: Fn(&mut V),
     {
         self.index
             .update_or_insert(term, default_value, update_fn)
@@ -1890,7 +1906,7 @@ impl<V: DictionaryValue, S: BlockStorage> MutableMappedDictionary for Persistent
 
     fn update_or_insert<F>(&self, term: &str, default_value: Self::Value, update_fn: F) -> bool
     where
-        F: FnOnce(&mut Self::Value),
+        F: Fn(&mut Self::Value),
     {
         PersistentSuffixTree::update_or_insert(self, term, default_value, update_fn)
     }
@@ -1987,7 +2003,7 @@ impl<V: DictionaryValue, S: BlockStorage> MutableMappedDictionary
 
     fn update_or_insert<F>(&self, term: &str, default_value: Self::Value, update_fn: F) -> bool
     where
-        F: FnOnce(&mut Self::Value),
+        F: Fn(&mut Self::Value),
     {
         PersistentSuffixTreeChar::update_or_insert(self, term, default_value, update_fn)
     }

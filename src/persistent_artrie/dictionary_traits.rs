@@ -98,7 +98,7 @@ impl<V: DictionaryValue, S: BlockStorage> MutableMappedDictionary for Persistent
 
     fn update_or_insert<F>(&self, term: &str, default_value: Self::Value, update_fn: F) -> bool
     where
-        F: FnOnce(&mut Self::Value),
+        F: Fn(&mut Self::Value),
     {
         if let Some(existing) = self.get_value(term) {
             let mut value = existing;

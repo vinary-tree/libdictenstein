@@ -40,13 +40,13 @@ left/right extension support.
 Reads traverse immutable snapshots and do not take the writer lock. Writes are
 split by retryability:
 
-- `insert`, `insert_with_value`, `remove`, `clear`, and `compact` append a
-  prepared WAL operation, publish a rebuilt immutable graph revision with
-  pointer-identity CAS, then append a commit marker before acknowledging the
-  caller. CAS losers leave uncommitted prepared records that recovery ignores.
-- `update_or_insert` remains serialized because the public updater is an
-  `FnOnce`; it cannot be safely replayed after a CAS conflict without changing
-  the API contract.
+- `insert`, `insert_with_value`, `remove`, `clear`, `compact`, and
+  `update_or_insert` append a prepared WAL operation, publish a rebuilt
+  immutable graph revision with pointer-identity CAS, then append a commit
+  marker before acknowledging the caller. CAS losers leave uncommitted prepared
+  records that recovery ignores.
+- `update_or_insert` uses a retry-safe `Fn(&mut V)` updater so CAS conflicts
+  recompute against the newest graph snapshot rather than serializing writes.
 - Checkpoints retain the active WAL and record the committed operation
   watermark in the native snapshot, so concurrent writers are not truncated out
   from under a checkpoint. If writers keep the graph unstable across the bounded
@@ -106,7 +106,7 @@ locations, and byte/char variants. Benchmarks live in
 `benches/persistent_suffix_native_benchmarks.rs`; fixed-sample mode prints raw
 samples suitable for pgmcp/Welch analysis.
 
-Do not claim full lock-free coverage for every suffix graph write until the
-`update_or_insert` API has a retryable updater form. The read path is
-snapshot/non-blocking, and retryable writes use CAS publication with
-prepared/commit WAL recovery.
+The read path is snapshot/non-blocking, and suffix graph writes use CAS
+publication with prepared/commit WAL recovery. Checkpoint image publication is
+best-effort under continuous writer churn because retained WAL replay remains
+the authoritative durability path.
