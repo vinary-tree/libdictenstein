@@ -586,9 +586,9 @@ impl<K: KeyEncoding, V: Clone> OverlayNode<K, V> {
     /// and drops the value (mirroring an owned remove, which discards the value).
     /// The child store and prefix are **RETAINED**: removing a term that is a
     /// proper prefix of a longer term must keep the longer term reachable
-    /// (removing "cat" must keep "cats"). Subtree compaction is a future
-    /// optimization, out of scope here — exactly as owned remove also leaves the
-    /// (now non-final) node in place.
+    /// (removing "cat" must keep "cats"). Subtree compaction is deliberately not
+    /// part of this node primitive; owned remove also leaves the now non-final node
+    /// in place.
     ///
     /// # Why a fresh copy, never an in-place clear (design §3.5)
     ///

@@ -160,8 +160,8 @@ impl<V: DictionaryValue, S: BlockStorage> LockFreeOverlay<CharKey, V, S>
     // char IDENTICAL. The char seam impl is REMOVED. The prior char Err-arm fell back
     // to the non-faulting `find_leaf_lockfree`; `find_leaf_faulting` is infallible in
     // practice (it returns `Ok` on every branch, doing its own liveness walk on
-    // exhaustion), so that arm was unreachable — behavior is byte-for-byte preserved.
-    // Regression still pinned by tests/overlay_eviction_arbitrary_v_bug46.rs.
+    // exhaustion), so removing the old fallback preserves behavior byte-for-byte.
+    // Regression remains pinned by tests/overlay_eviction_arbitrary_v_bug46.rs.
 
     fn claim_commit_seq(&self) -> u64 {
         // Empty-string support: the per-iteration commit generation — the SAME

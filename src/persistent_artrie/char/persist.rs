@@ -349,9 +349,9 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     /// by `next_lsn` and asserts `next_lsn` is unchanged since capture — both of
     /// which are INCOMPATIBLE with concurrent lock-free writers (writers bump the
     /// WAL frontier mid-checkpoint, which is the entire reason the committed
-    /// watermark exists). Destructive watermark-bounded WAL *truncation* is the
-    /// owner-gated IRREVERSIBLE flip, out of scope here. So this helper does the
-    /// SAFE, REVERSIBLE subset:
+    /// watermark exists). Destructive watermark-bounded WAL *truncation* belongs
+    /// to the separate owner-gated irreversible migration; this helper implements
+    /// the safe reversible publication contract:
     ///
     ///   1. publish the descriptor + fsync the data file (the on-disk image
     ///      advances and is verified durable);
@@ -599,8 +599,9 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
                     }
                 })?;
             }
-            // Deliberately NO rotate_to_archive: destructive watermark-bounded WAL
-            // truncation is the owner-gated IRREVERSIBLE flip, out of scope here.
+            // Deliberately no rotate_to_archive: this retaining-WAL checkpoint
+            // leaves destructive watermark-bounded WAL truncation to the separate
+            // owner-gated irreversible migration.
         }
 
         // (4) RESIDENT-BUDGET TAIL (Phase 7.5 — GO-LIVE). The registry is published
@@ -1947,9 +1948,9 @@ mod multi_writer_checkpointer_soak {
     /// the WAL tail (`lsn > watermark`) would replay that delta a SECOND time →
     /// inflated count (the exact bug an earlier draft hit: c0 = 115 vs 60).
     /// Idempotent membership inserts tolerate the overlap; commutative-but-not-
-    /// idempotent deltas do not. Trimming the image to ≤ watermark is the
-    /// per-node-LSN closure the IRREVERSIBLE Phase-E flip adds (out of scope). So
-    /// here the checkpointer still exercises the dangerous concurrent
+    /// idempotent deltas do not. Trimming the image to ≤ watermark requires the
+    /// per-node-LSN closure from the separate irreversible Phase-E migration. Here
+    /// the checkpointer still exercises the dangerous concurrent
     /// `capture_snapshot_immutable` path (its capture-ordering watermark/root load +
     /// the snapshot-LSN `debug_assert!` + the overlay walk under live CAS), which is
     /// the thing being hardened, while durability rests on pure WAL replay — keeping
