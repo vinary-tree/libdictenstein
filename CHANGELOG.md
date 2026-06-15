@@ -4,7 +4,9 @@ All notable changes to libdictenstein are recorded here.
 
 Date format is ISO-8601 (YYYY-MM-DD).
 
-## Unreleased
+## [Unreleased]
+
+## [0.2.0] - 2026-06-15
 
 ### Changed
 
