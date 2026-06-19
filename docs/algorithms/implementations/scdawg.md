@@ -26,9 +26,9 @@ inputs.
 
 Two variants are provided:
 
-- [`Scdawg<V>`](../../../src/scdawg.rs) — byte-keyed, suitable for ASCII or
+- [`Scdawg<V>`](../../../src/scdawg/ascii.rs) — byte-keyed, suitable for ASCII or
   binary inputs.
-- [`ScdawgChar<V>`](../../../src/scdawg_char.rs) — character-keyed,
+- [`ScdawgChar<V>`](../../../src/scdawg/char.rs) — character-keyed,
   Unicode-aware (each transition consumes one Rust `char`).
 
 ### Key Advantages
@@ -192,7 +192,7 @@ assert!(dict.contains("pattern search"));   // substring spanning multiple words
 
 ```rust,no_run
 use libdictenstein::prelude::*;
-use libdictenstein::scdawg_char::ScdawgChar;
+use libdictenstein::scdawg::ScdawgChar;
 
 let dict: ScdawgChar<()> = ScdawgChar::from_terms(vec!["café", "naïve", "日本語"]);
 assert!(dict.contains("café"));

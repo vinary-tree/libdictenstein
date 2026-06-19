@@ -1,6 +1,6 @@
 # Dictionary Layer
 
-**Navigation**: [← Back to Algorithms](../README.md) | [Next Layer: Automata →](../02-levenshtein-automata/README.md)
+**Navigation**: [↑ Documentation index](../README.md) · [Theory →](../theory/) · [Architecture →](../architecture/) · [Query half: liblevenshtein →](https://github.com/universal-automata/liblevenshtein-rust)
 
 ## Overview
 
@@ -96,7 +96,7 @@ pub trait MappedDictionary: Dictionary {
 
 **Performance Impact**: Filtering during traversal provides **10-100x speedup** compared to post-filtering.
 
-See [Value Storage](../09-value-storage/README.md) for detailed documentation.
+See [Serialization & values](serialization.md) for detailed documentation.
 
 ### 4. Character Units
 
@@ -149,7 +149,7 @@ dict.insert("analysis");  // Supports runtime insertions
 **Best for**: Multi-language applications with proper Unicode handling
 
 ```rust
-use libdictenstein::double_array_trie_char::DoubleArrayTrieChar;
+use libdictenstein::double_array_trie::DoubleArrayTrieChar;
 
 let mut dict = DoubleArrayTrieChar::from_terms(vec![
     "café", "naïve", "中文", "🎉"
@@ -190,7 +190,7 @@ dict.remove("old_term");  // ✅ Supports removal
 **Best for**: Unicode applications with full dynamic updates
 
 ```rust
-use libdictenstein::dynamic_dawg_char::DynamicDawgChar;
+use libdictenstein::dynamic_dawg::DynamicDawgChar;
 
 let dict = DynamicDawgChar::from_terms(vec!["café", "中文"]);
 dict.insert("新しい");  // ✅ Unicode + thread-safe
@@ -325,16 +325,22 @@ for durable substring search choose the persistent suffix graph family.
 
 ## Performance Benchmarks
 
-Based on 10,000-word dictionary:
+> **Provenance.** The figures below are *indicative relative orderings* on a
+> 10,000-word dictionary — not a current measurement. For reproducible numbers,
+> see the benchmarking ledgers under [`../benchmarks/`](../benchmarks/) and
+> [`../experiments/`](../experiments/), produced by the [`benches/`](../../benches/)
+> suite. The qualitative ranking — `DoubleArrayTrie` fastest and most compact;
+> `DynamicDawg` trades raw speed for runtime mutability and suffix-sharing — is
+> stable and well-supported.
 
 ### Construction Time
 
 ```
 DoubleArrayTrie:     3.2ms
-DoubleArrayTrieChar: 3.4ms  (+6%)
-PathMapDictionary:   3.5ms  (+9%)
-DynamicDawg:         4.1ms  (+28%)
-DynamicDawg:      7.2ms  (+125%)
+DoubleArrayTrieChar: 3.4ms   (+6%)
+PathMapDictionary:   3.5ms   (+9%)
+DynamicDawg:         4.1ms   (+28%)
+DynamicDawgChar:     7.2ms   (+125%)
 ```
 
 ### Exact Match (single term)
@@ -342,7 +348,7 @@ DynamicDawg:      7.2ms  (+125%)
 ```
 DoubleArrayTrie:     6.6µs
 DoubleArrayTrieChar: 6.9µs  (+5%)
-DynamicDawg:      19.8µs (+200%)
+DynamicDawg:         19.8µs (+200%)
 PathMapDictionary:   71.1µs (+977%)
 ```
 
@@ -351,7 +357,7 @@ PathMapDictionary:   71.1µs (+977%)
 ```
 DoubleArrayTrie:     0.22µs per check
 DoubleArrayTrieChar: 0.23µs (+5%)
-DynamicDawg:      6.7µs  (+2945%)
+DynamicDawg:         6.7µs  (+2945%)
 PathMapDictionary:   132µs  (+59900%)
 ```
 
@@ -360,7 +366,7 @@ PathMapDictionary:   132µs  (+59900%)
 ```
 DoubleArrayTrie:     16.3µs
 DoubleArrayTrieChar: 17.1µs  (+5%)
-DynamicDawg:      2,150µs (+13100%)
+DynamicDawg:         2,150µs (+13100%)
 PathMapDictionary:   5,919µs (+36200%)
 ```
 
@@ -373,8 +379,8 @@ PathMapDictionary:   5,919µs (+36200%)
 ```
 DoubleArrayTrie:     8 bytes/state
 DoubleArrayTrieChar: 12 bytes/state (char labels = 4x u8)
-DynamicDawg:      16 bytes/state
-DynamicDawg:         24 bytes/state (Arc overhead)
+DynamicDawg:         16 bytes/state
+DynamicDawgChar:     24 bytes/state (char labels + Arc)
 PathMapDictionary:   32 bytes/state (HashMap overhead)
 SuffixAutomaton:     48 bytes/state (suffix links)
 ```
@@ -416,7 +422,7 @@ fn autocomplete(query: &str, max_distance: usize) -> Vec<String> {
 **Recommendation**: `DoubleArrayTrieChar`
 
 ```rust
-use libdictenstein::double_array_trie_char::DoubleArrayTrieChar;
+use libdictenstein::double_array_trie::DoubleArrayTrieChar;
 
 let dict = DoubleArrayTrieChar::from_terms(vec![
     // English
@@ -472,7 +478,7 @@ let dict = DoubleArrayTrie::from_terms_with_values(vec![
 let results = query_with_filter(&dict, "temp", 2, |scope| *scope == 42);
 ```
 
-**Why**: Value filtering during traversal is dramatically faster. See [Value Storage](../09-value-storage/README.md).
+**Why**: Value filtering during traversal is dramatically faster. See [Serialization & values](serialization.md).
 
 ### 5. Document Search (Substring Matching)
 
@@ -565,7 +571,7 @@ let results: Vec<String> = automaton.query(&dict).collect();
 
 The automaton traverses the dictionary graph using `DictionaryNode::transition()` to explore only paths within the distance threshold.
 
-See [Automata Layer](../02-levenshtein-automata/README.md) for details.
+See [Automata Layer](https://github.com/universal-automata/liblevenshtein-rust) for details.
 
 ## Thread Safety
 
@@ -659,14 +665,14 @@ let bytes = std::fs::read("dict.bin")?;
 let dict: DoubleArrayTrie = bincode::deserialize(&bytes)?;
 ```
 
-See [Serialization Guide](../08-serialization/README.md) for details.
+See [Serialization Guide](serialization.md) for details.
 
 ## Related Documentation
 
-- [Value Storage](../09-value-storage/README.md) - Term-to-value mappings
-- [Automata Layer](../02-levenshtein-automata/README.md) - Levenshtein automata that query dictionaries
-- [Zipper Navigation](../06-zipper-navigation/README.md) - Hierarchical navigation pattern
-- [Performance Guide](../performance/README.md) - Detailed benchmarks and optimization tips
+- [Serialization & values](serialization.md) - Term-to-value mappings
+- [Automata Layer](https://github.com/universal-automata/liblevenshtein-rust) - Levenshtein automata that query dictionaries
+- [Zipper Navigation](zippers.md) - Hierarchical navigation pattern
+- [Performance Guide](../theory/disk-tries/07-benchmark-results.md) - Detailed benchmarks and optimization tips
 
 ## Academic References
 
@@ -705,9 +711,9 @@ See [Serialization Guide](../08-serialization/README.md) for details.
 
 - **Deep Dive**: Read the [DoubleArrayTrie Implementation Guide](implementations/double-array-trie.md)
 - **Unicode**: Learn about [DoubleArrayTrieChar](implementations/double-array-trie-char.md)
-- **Values**: Explore [Value Storage](../09-value-storage/README.md)
-- **Query**: Understand [Levenshtein Automata](../02-levenshtein-automata/README.md)
+- **Values**: Explore [Serialization & values](serialization.md)
+- **Query**: Understand [Levenshtein Automata](https://github.com/universal-automata/liblevenshtein-rust)
 
 ---
 
-**Navigation**: [← Back to Algorithms](../README.md) | [Next Layer: Automata →](../02-levenshtein-automata/README.md)
+**Navigation**: [↑ Documentation index](../README.md) · [Theory →](../theory/) · [Architecture →](../architecture/) · [Query half: liblevenshtein →](https://github.com/universal-automata/liblevenshtein-rust)

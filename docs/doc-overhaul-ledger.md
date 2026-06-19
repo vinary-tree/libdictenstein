@@ -31,8 +31,21 @@ Mermaid available locally but excluded from the gate (Chromium not byte-reproduc
 
 ---
 
-## Phase 1 — Fix docs/algorithms/ rot  ☐
-_(32 stale `*_char::` paths · 35 dead `../0X-*` links · mangled benchmark table)_
+## Phase 1 — Fix docs/algorithms/ rot  ☑
+
+| Item | Action | Status | Verification |
+|------|--------|--------|--------------|
+| Stale `*_char::` module paths (32) | `dynamic_dawg_char::`→`dynamic_dawg::` etc. across README + 3 impl docs (verified vs `prelude`) | ☑ | grep → 0 |
+| Dead `../0X-*` liblevenshtein-tree links (35) | levenshtein-automata + contextual-completion → companion-crate GitHub URL; value-storage/serialization → `serialization.md`; zipper-navigation → `zippers.md`; performance → `theory/disk-tries/07`; home nav → `docs/README.md` | ☑ | grep `../0X` → 0 |
+| Stale `src/scdawg(_char).rs` refs | → `src/scdawg/{ascii,char}.rs` | ☑ | grep → 0 |
+| Pre-existing broken `pathmap-dictionary-char.md` link | → `src/pathmap/char.rs` (no dedicated doc exists) | ☑ | link-check clean |
+| Mangled benchmark table | de-dup `DynamicDawg` rows → relabel `DynamicDawgChar`; column alignment; **provenance caveat** pointing to reproducible ledgers | ☑ | visual + table consistent |
+| `docs/README.md` (new) | Foundational documentation index (taxonomy table + reading order); resolves the home-nav links. (Phase 7 adds the reading-order diagram post-reorg.) | ☑ | written |
+| nav headers (algorithms/README) | liblevenshtein "Back/Next Layer" cruft → libdictenstein index/theory/architecture nav | ☑ | — |
+
+**Result**: only remaining unresolved links in `docs/algorithms/` are forward
+references to `serialization.md` (15) and `zippers.md` (5), created in Phase 5.
+These md files are not `include_str!` doctests, so grep verification is the gate.
 
 ## Phase 2 — Front door + diagrams  ☐
 ## Phase 3 — Theory + algorithms refresh + diagrams  ☐

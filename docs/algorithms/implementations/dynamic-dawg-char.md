@@ -84,7 +84,7 @@ Fuzzy search "cafe" (distance 1):
 **Example: Multi-language Spell Checker**
 
 ```rust
-use libdictenstein::dynamic_dawg_char::DynamicDawgChar;
+use libdictenstein::dynamic_dawg::DynamicDawgChar;
 use liblevenshtein::levenshtein::Algorithm;
 use liblevenshtein::levenshtein_automaton::LevenshteinAutomaton;
 
@@ -187,7 +187,7 @@ struct DawgNodeChar<V: DictionaryValue> {
 `DynamicDawgChar` uses `Arc<RwLock<...>>` internally, making `.clone()` a **shallow copy** that shares all underlying data structures between clones. The clone behavior is **identical** to `DynamicDawg` - only the edge label types differ (char vs u8).
 
 ```rust
-use libdictenstein::dynamic_dawg_char::DynamicDawgChar;
+use libdictenstein::dynamic_dawg::DynamicDawgChar;
 
 let dict1 = DynamicDawgChar::from_iter(vec!["café", "naïve"]);
 let dict2 = dict1.clone();  // O(1) - only increments Arc refcount
@@ -391,7 +391,7 @@ Where n = number of terms, m = average **character** count (not bytes!)
 Create an empty dictionary for incremental Unicode text:
 
 ```rust
-use libdictenstein::dynamic_dawg_char::DynamicDawgChar;
+use libdictenstein::dynamic_dawg::DynamicDawgChar;
 
 // Create empty dictionary
 let dict: DynamicDawgChar = DynamicDawgChar::new();
@@ -417,7 +417,7 @@ valued_dict.insert_with_value("résumé", 200);
 Build from any iterator over Unicode strings:
 
 ```rust
-use libdictenstein::dynamic_dawg_char::DynamicDawgChar;
+use libdictenstein::dynamic_dawg::DynamicDawgChar;
 
 // Multilingual terms
 let terms = vec!["hello", "مرحبا", "こんにちは", "привет"];
@@ -499,7 +499,7 @@ dict.insert("こんにちは"); // 5 characters (15 bytes UTF-8)
 Unicode-aware term frequencies or context IDs:
 
 ```rust
-use libdictenstein::dynamic_dawg_char::DynamicDawgChar;
+use libdictenstein::dynamic_dawg::DynamicDawgChar;
 
 type ContextId = u32;
 
@@ -604,7 +604,7 @@ let dicts: Vec<DynamicDawgChar<Vec<u32>>> = documents
 // Merge using union_with (see Union Operations section)
 ```
 
-→ See [Parallel Workspace Indexing](../../07-contextual-completion/patterns/parallel-workspace-indexing.md) for complete pattern (works with both variants).
+→ See [Parallel Workspace Indexing](https://github.com/universal-automata/liblevenshtein-rust) for complete pattern (works with both variants).
 
 ### When to Use Character-Level
 
@@ -640,7 +640,7 @@ All accessor methods operate on **character boundaries** (Unicode code points), 
 ### Quick Reference
 
 ```rust
-use libdictenstein::dynamic_dawg_char::DynamicDawgChar;
+use libdictenstein::dynamic_dawg::DynamicDawgChar;
 
 let dict = DynamicDawgChar::from_terms(vec!["café", "naïve", "中文", "🎉"]);
 
@@ -839,7 +839,7 @@ where
 Merge term frequencies across dictionaries with Unicode text:
 
 ```rust
-use libdictenstein::dynamic_dawg_char::DynamicDawgChar;
+use libdictenstein::dynamic_dawg::DynamicDawgChar;
 use libdictenstein::MutableMappedDictionary;
 
 // French dictionary: word frequencies
@@ -871,7 +871,7 @@ assert_eq!(processed, 2); // Processed 2 terms from dict2
 Demonstrates correct handling of 4-byte Unicode characters:
 
 ```rust
-use libdictenstein::dynamic_dawg_char::DynamicDawgChar;
+use libdictenstein::dynamic_dawg::DynamicDawgChar;
 use libdictenstein::MutableMappedDictionary;
 
 // Dictionary 1: emoji usage counts
@@ -899,7 +899,7 @@ assert_eq!(dict1.get_value("rocket🚀"), Some(7));
 Proper handling of East Asian characters:
 
 ```rust
-use libdictenstein::dynamic_dawg_char::DynamicDawgChar;
+use libdictenstein::dynamic_dawg::DynamicDawgChar;
 use libdictenstein::MutableMappedDictionary;
 
 // Japanese dictionary
@@ -927,7 +927,7 @@ assert_eq!(dict1.get_value("大阪"), Some(6));
 Demonstrates proper handling of combining characters vs precomposed:
 
 ```rust
-use libdictenstein::dynamic_dawg_char::DynamicDawgChar;
+use libdictenstein::dynamic_dawg::DynamicDawgChar;
 use libdictenstein::MutableMappedDictionary;
 
 let dict1: DynamicDawgChar<Vec<String>> = DynamicDawgChar::new();
@@ -965,7 +965,7 @@ where
 
 **Example with Unicode**:
 ```rust
-use libdictenstein::dynamic_dawg_char::DynamicDawgChar;
+use libdictenstein::dynamic_dawg::DynamicDawgChar;
 use libdictenstein::MutableMappedDictionary;
 
 let dict1: DynamicDawgChar<&str> = DynamicDawgChar::new();
@@ -1092,7 +1092,7 @@ Benefit: Correct Unicode distance calculations
 ### When to Use Union Operations
 
 ✅ **Use `union_with()` when:**
-- **Parallel workspace indexing**: Merging per-document Unicode dictionaries built in parallel (→ [Parallel Workspace Pattern](../../07-contextual-completion/patterns/parallel-workspace-indexing.md))
+- **Parallel workspace indexing**: Merging per-document Unicode dictionaries built in parallel (→ [Parallel Workspace Pattern](https://github.com/universal-automata/liblevenshtein-rust))
 - Merging multilingual dictionaries (internationalized applications)
 - Aggregating statistics from Unicode text (emoji usage, CJK text analysis)
 - Combining user-specific and system internationalized dictionaries
@@ -1140,7 +1140,7 @@ dict.insert_with_value(&term, value);
 ### Example 1: Basic Unicode Dictionary
 
 ```rust
-use libdictenstein::dynamic_dawg_char::DynamicDawgChar;
+use libdictenstein::dynamic_dawg::DynamicDawgChar;
 
 let dict = DynamicDawgChar::new();
 
@@ -1163,7 +1163,7 @@ assert!(!dict.contains("café"));
 ### Example 2: Multi-Language User Dictionary
 
 ```rust
-use libdictenstein::dynamic_dawg_char::DynamicDawgChar;
+use libdictenstein::dynamic_dawg::DynamicDawgChar;
 
 // Create user's personal dictionary
 let user_dict = DynamicDawgChar::new();
@@ -1186,7 +1186,7 @@ assert_eq!(user_dict.len(), Some(5));
 ### Example 3: With Values (Language Codes)
 
 ```rust
-use libdictenstein::dynamic_dawg_char::DynamicDawgChar;
+use libdictenstein::dynamic_dawg::DynamicDawgChar;
 use libdictenstein::MappedDictionary;
 
 let dict: DynamicDawgChar<&str> = DynamicDawgChar::new();
@@ -1210,7 +1210,7 @@ assert_eq!(dict.get_value("hola"), None);
 ### Example 4: Fuzzy Matching with Unicode
 
 ```rust
-use libdictenstein::dynamic_dawg_char::DynamicDawgChar;
+use libdictenstein::dynamic_dawg::DynamicDawgChar;
 use liblevenshtein::levenshtein::Algorithm;
 use liblevenshtein::levenshtein_automaton::LevenshteinAutomaton;
 
@@ -1237,7 +1237,7 @@ println!("{:?}", results);
 ### Example 5: Emoji Support
 
 ```rust
-use libdictenstein::dynamic_dawg_char::DynamicDawgChar;
+use libdictenstein::dynamic_dawg::DynamicDawgChar;
 
 let dict = DynamicDawgChar::new();
 
@@ -1263,7 +1263,7 @@ println!("Matches: {}", results.len());
 ### Example 6: CJK Text
 
 ```rust
-use libdictenstein::dynamic_dawg_char::DynamicDawgChar;
+use libdictenstein::dynamic_dawg::DynamicDawgChar;
 
 let dict = DynamicDawgChar::new();
 
@@ -1291,7 +1291,7 @@ println!("{:?}", results);
 ### Example 7: Thread-Safe Updates
 
 ```rust
-use libdictenstein::dynamic_dawg_char::DynamicDawgChar;
+use libdictenstein::dynamic_dawg::DynamicDawgChar;
 use std::sync::Arc;
 use std::thread;
 
@@ -1325,7 +1325,7 @@ assert!(dict.contains("مرحبا"));
 ### Example 8: Compaction with Unicode
 
 ```rust
-use libdictenstein::dynamic_dawg_char::DynamicDawgChar;
+use libdictenstein::dynamic_dawg::DynamicDawgChar;
 
 let dict = DynamicDawgChar::from_terms(vec![
     "café", "cafétéria", "naïve", "résumé", "déjà"
@@ -1468,7 +1468,7 @@ Unicode correctness     ❌             ✅                 Priceless!
 - [Dictionary Layer](../README.md) - Overview of all dictionary types
 - [DynamicDawg](dynamic-dawg.md) - Byte-level variant
 - [DoubleArrayTrieChar](double-array-trie-char.md) - Faster static alternative
-- [Value Storage](../../09-value-storage/README.md) - Using values with DynamicDawgChar
+- [Value Storage](../serialization.md) - Using values with DynamicDawgChar
 
 ## References
 
@@ -1498,7 +1498,7 @@ Unicode correctness     ❌             ✅                 Priceless!
 
 - **Byte-Level**: Compare with [DynamicDawg](dynamic-dawg.md)
 - **Static Alternative**: Explore [DoubleArrayTrieChar](double-array-trie-char.md)
-- **Values**: Learn about [Value Storage](../../09-value-storage/README.md)
+- **Values**: Learn about [Value Storage](../serialization.md)
 - **Unicode Handling**: Read [DoubleArrayTrieChar Unicode Guide](double-array-trie-char.md#unicode-fundamentals)
 
 ---

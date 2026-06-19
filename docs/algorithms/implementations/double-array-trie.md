@@ -408,7 +408,7 @@ let results: Vec<String> = automaton.query(&dict).collect();
 
 **Performance**: ~16.3µs for distance 2, 10,000-term dictionary
 
-See [Levenshtein Automata](../../02-levenshtein-automata/README.md) for details.
+See [Levenshtein Automata](https://github.com/universal-automata/liblevenshtein-rust) for details.
 
 ### Edge Iteration
 
@@ -497,7 +497,7 @@ let results: Vec<String> = automaton.query(&dict).collect();
 
 **Performance**: 10-100x faster than post-filtering when filters are selective.
 
-See [Value Storage Guide](../../09-value-storage/README.md) for comprehensive documentation.
+See [Value Storage Guide](../serialization.md) for comprehensive documentation.
 
 ## Usage Examples
 
@@ -901,7 +901,7 @@ let path = z2.path();
 assert_eq!(path, b"testing");
 ```
 
-See [Zipper Navigation](../../06-zipper-navigation/README.md) for details.
+See [Zipper Navigation](../zippers.md) for details.
 
 ### Integration with External Systems
 
@@ -1024,9 +1024,9 @@ let dict: DoubleArrayTrie = bincode::deserialize(&mmap).unwrap();
 
 - **Unicode Support**: Learn about [DoubleArrayTrieChar](double-array-trie-char.md)
 - **Dynamic Updates**: Explore [DynamicDawg](dynamic-dawg.md)
-- **Value Storage**: Read the [Value Storage Guide](../../09-value-storage/README.md)
-- **Fuzzy Matching**: Understand [Levenshtein Automata](../../02-levenshtein-automata/README.md)
-- **Navigation**: Try [Zipper Pattern](../../06-zipper-navigation/README.md)
+- **Value Storage**: Read the [Value Storage Guide](../serialization.md)
+- **Fuzzy Matching**: Understand [Levenshtein Automata](https://github.com/universal-automata/liblevenshtein-rust)
+- **Navigation**: Try [Zipper Pattern](../zippers.md)
 
 ---
 

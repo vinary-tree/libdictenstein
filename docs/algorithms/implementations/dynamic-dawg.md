@@ -768,7 +768,7 @@ let dicts: Vec<DynamicDawg<Vec<u32>>> = documents
 // Full pattern documented in Contextual Completion guide
 ```
 
-→ See [Parallel Workspace Indexing](../../07-contextual-completion/patterns/parallel-workspace-indexing.md) for complete pattern with ~150× speedup.
+→ See [Parallel Workspace Indexing](https://github.com/universal-automata/liblevenshtein-rust) for complete pattern with ~150× speedup.
 
 ## Accessor Methods
 
@@ -1582,7 +1582,7 @@ No heap allocations during traversal (Vec reused)
 ### When to Use Union Operations
 
 ✅ **Use `union_with()` when:**
-- **Parallel workspace indexing**: Merging per-document dictionaries built in parallel (→ [Parallel Workspace Pattern](../../07-contextual-completion/patterns/parallel-workspace-indexing.md))
+- **Parallel workspace indexing**: Merging per-document dictionaries built in parallel (→ [Parallel Workspace Pattern](https://github.com/universal-automata/liblevenshtein-rust))
 - Merging user-specific and system dictionaries
 - Aggregating statistics from multiple sources (word counts, frequencies)
 - Combining hierarchical categories or tags
@@ -1887,7 +1887,7 @@ Compaction time:      ~8ms for 10K terms
 - [Dictionary Layer](../README.md) - Overview of all dictionary types
 - [DynamicDawgChar](dynamic-dawg-char.md) - Unicode variant
 - [DoubleArrayTrie](double-array-trie.md) - Faster alternative for static/append-only
-- [Value Storage](../../09-value-storage/README.md) - Using values with DynamicDawg
+- [Value Storage](../serialization.md) - Using values with DynamicDawg
 
 ## References
 
@@ -1919,7 +1919,7 @@ Compaction time:      ~8ms for 10K terms
 
 - **Unicode**: Learn about [DynamicDawgChar](dynamic-dawg-char.md)
 - **Performance**: Compare with [DoubleArrayTrie](double-array-trie.md)
-- **Values**: Explore [Value Storage](../../09-value-storage/README.md)
+- **Values**: Explore [Value Storage](../serialization.md)
 
 ---
 

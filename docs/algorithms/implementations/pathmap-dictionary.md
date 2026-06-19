@@ -620,7 +620,7 @@ let dicts: Vec<PathMapDictionary<Vec<u32>>> = documents
 // Merge using union_with (see Union Operations section)
 ```
 
-→ See [Parallel Workspace Indexing](../../07-contextual-completion/patterns/parallel-workspace-indexing.md) for complete pattern.
+→ See [Parallel Workspace Indexing](https://github.com/universal-automata/liblevenshtein-rust) for complete pattern.
 
 ### Comparison with Other Dictionaries
 
@@ -1070,7 +1070,7 @@ Trade-off: PathMap offers structural sharing and immutability
 ### When to Use Union Operations
 
 ✅ **Use `union_with()` when:**
-- **Parallel workspace indexing**: Merging per-document dictionaries built in parallel (→ [Parallel Workspace Pattern](../../07-contextual-completion/patterns/parallel-workspace-indexing.md))
+- **Parallel workspace indexing**: Merging per-document dictionaries built in parallel (→ [Parallel Workspace Pattern](https://github.com/universal-automata/liblevenshtein-rust))
 - Merging configuration layers with override semantics
 - Combining statistics where structural sharing is beneficial
 - Building composite lookup tables from multiple sources
@@ -1446,8 +1446,8 @@ Consider switching to specialized dictionaries when:
 - [Dictionary Layer](../README.md) - Overview of all dictionary types
 - [DoubleArrayTrie](double-array-trie.md) - Faster alternative
 - [DynamicDawg](dynamic-dawg.md) - Faster dynamic alternative
-- [PathMapDictionaryChar](pathmap-dictionary-char.md) - Unicode variant
-- [Value Storage](../../09-value-storage/README.md) - Using values
+- [PathMapDictionaryChar](../../../src/pathmap/char.rs) - Unicode variant
+- [Value Storage](../serialization.md) - Using values
 
 ## References
 
@@ -1480,8 +1480,8 @@ Consider switching to specialized dictionaries when:
 
 - **Performance**: Compare with [DoubleArrayTrie](double-array-trie.md)
 - **Dynamic**: Explore [DynamicDawg](dynamic-dawg.md)
-- **Unicode**: Check [PathMapDictionaryChar](pathmap-dictionary-char.md)
-- **Values**: Learn about [Value Storage](../../09-value-storage/README.md)
+- **Unicode**: Check [PathMapDictionaryChar](../../../src/pathmap/char.rs)
+- **Values**: Learn about [Value Storage](../serialization.md)
 
 ---
 
