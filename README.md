@@ -26,7 +26,7 @@ It is the companion to **[liblevenshtein](https://github.com/universal-automata/
 - **A lock-free, crash-durable persistent ARTrie family** — disk-backed (`mmap` or `io_uring`), write-ahead-logged, with native byte, Unicode, vocabulary, and `u64` sequence profiles.
 - **Native persistent substring indexes** — suffix automaton, suffix-tree-compatible, and SCDAWG variants for byte and Unicode corpora.
 - **Set algebra over dictionaries** — union / intersection / difference / prefix *zippers* compose any two backends lazily.
-- **Formally verified core** — 67 Rocq files (0 axioms, 0 admits), 52 TLA⁺ models, and a CI-gated `unsafe` contract inventory (see [Formal verification](#formal-verification)).
+- **Formally verified core** — 69 Rocq files (0 axioms, 0 admits), 55 TLA⁺ models, and a CI-gated `unsafe` contract inventory (see [Formal verification](#formal-verification)).
 
 ---
 
@@ -201,7 +201,7 @@ A **DAWG** (Directed Acyclic Word Graph) is a trie that *also* merges identical 
 
 Two nodes are mergeable **iff** they have the same *right language*
 
-> **Rᵤ** = { strings spelled out on paths from `u` to any final state }.
+> **`Rᵤ`** = the set of strings spelled out on paths from `u` to any final state.
 
 Comparing right-languages directly is expensive, so libdictenstein hashes them. Each node folds a 64-bit [`FxHash`](src/node_signature.rs) of its `is_final` flag and its **sorted** edges, bottom-up:
 
@@ -313,6 +313,10 @@ Tree height drops from `O(∣key∣)` to `O(∣key∣ / s̄)` for mean compresse
 
 The byte/char persistent ARTrie and vocabulary implementations are **lock-free** (readers and writers never block on a global mutation lock) yet **crash-durable** (an acknowledged write survives power loss). The reconciling invariant is `acknowledged ⟹ durable`, enforced by a strict, non-negotiable ordering ([`durable_write.rs`](src/persistent_artrie/core/overlay/durable_write.rs)):
 
+<img src="docs/diagrams/durable-write-sequence.svg" alt="Order-A durable write sequence: append+fsync the WAL record before publishing via the overlay root CAS, then advance the committed watermark" width="760"/>
+
+In precise form:
+
 ```text
 durable_insert(term, value):                  # requires durability ∈ { Immediate, GroupCommit }
   ① lsn  ← WAL.append_durable( Insert{term, value} )   #  fsync FIRST — before any visibility
@@ -360,8 +364,8 @@ The persistent ARTrie carries an unusually strong correctness budget. All figure
 
 | Tool | Scope | Status |
 |---|---|---|
-| **Rocq (Coq)** | functional correctness + refinement of the trie to an abstract map ADT | **66** `.v` files, **1,283** propositions (theorem/lemma/corollary), **0 `Admitted`, 0 `Axiom`, 0 `Parameter`** — fully constructive (every obligation closed by `Qed.`/`Defined.`) |
-| **TLA⁺ / TLC** | concurrency & crash-recovery safety/liveness | **52** specification modules — e.g. `LockFreeARTrieLinearizability`, `CrashRecovery`, `PersistentSuffixAutomaton`, `PublicDurabilityPolicy`; the composed model explores multi-million-state spaces (PART ≈ 4.2 M distinct states) |
+| **Rocq (Coq)** | functional correctness + refinement of the trie to an abstract map ADT | **69** `.v` files, **1,301** propositions (theorem/lemma/corollary), **0 `Admitted`, 0 `Axiom`, 0 `Parameter`** — fully constructive (every obligation closed by `Qed.`/`Defined.`) |
+| **TLA⁺ / TLC** | concurrency & crash-recovery safety/liveness | **55** specification modules — e.g. `LockFreeARTrieLinearizability`, `CrashRecovery`, `PersistentSuffixAutomaton`, `PublicDurabilityPolicy`; the composed model explores multi-million-state spaces (PART ≈ 4.2 M distinct states) |
 | **loom** | exhaustive interleaving of the lock-free CAS paths | root-CAS, overlay value/index CAS, counter-merge, EBR |
 | **`unsafe` inventory** | every `unsafe` site bound to a reviewed contract + coverage class | **43** inventory rows / **31** contracts, CI-gated by `scripts/verify-unsafe-boundary-inventory.sh` (set-equality — no silent drift) |
 
@@ -398,7 +402,7 @@ Notable dated performance and storage changes are recorded in
 | Persistent-ARTrie mmap architecture              | [`docs/persistence/mmap-architecture.md`](docs/persistence/mmap-architecture.md) |
 | Eviction design                                  | [`docs/eviction/`](docs/eviction/)                                               |
 | Proof scope, results, gap ledger                 | [`formal-verification/`](formal-verification/)                                   |
-| Diagram sources (PlantUML)                       | [`docs/diagrams/`](docs/diagrams/)                                               |
+| Diagram sources & rendering (PlantUML · D2 · Graphviz · bytefield · gnuplot) | [`docs/diagrams/`](docs/diagrams/README.md)                          |
 | Changelog                                        | [`CHANGELOG.md`](CHANGELOG.md)                                                   |
 
 ---

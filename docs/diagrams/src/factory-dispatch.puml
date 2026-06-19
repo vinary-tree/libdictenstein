@@ -1,0 +1,52 @@
+@startuml factory-dispatch
+' ============================================================================
+' DictionaryFactory dispatch — one call constructs any in-memory backend behind
+' a uniform handle.  Source of truth: src/factory.rs (DictionaryBackend enum,
+' DictionaryContainer, DictionaryFactory::create / ::empty).
+' Color key:  green = always-on in-memory backend
+'             amber = feature `pathmap-backend`
+'             grey  = the factory + uniform container handle
+' ============================================================================
+skinparam backgroundColor #FFFFFF
+skinparam defaultFontName "DejaVu Sans"
+skinparam shadowing false
+skinparam ArrowColor #37474F
+skinparam rectangleBorderColor #37474F
+skinparam packageBorderColor #90A4AE
+skinparam packageBackgroundColor #FAFAFA
+
+title DictionaryFactory — one call, any backend, one handle
+
+rectangle "DictionaryFactory::create(\n  backend: **DictionaryBackend**,\n  terms)\n  · ::empty(backend)" as F #ECEFF1
+
+package "DictionaryBackend (the 11 in-memory variants)" {
+  package "byte (u8)  ·  char (UTF-8)  ·  u64" as fam {
+    rectangle "DoubleArrayTrie\nDoubleArrayTrieChar" as DAT #C8E6C9
+    rectangle "DynamicDawg\nDynamicDawgChar\nDynamicDawgU64" as DAWG #C8E6C9
+    rectangle "SuffixAutomaton\nSuffixAutomatonChar" as SA #C8E6C9
+    rectangle "Scdawg\nScdawgChar" as SC #C8E6C9
+    rectangle "PathMapDictionary\nPathMapDictionaryChar" as PM #FFF59D
+  }
+}
+
+rectangle "DictionaryContainer\n(uniform handle)\n+contains(term)\n+len() · +backend()" as C #ECEFF1
+
+F --> DAT
+F --> DAWG
+F --> SA
+F --> SC
+F --> PM
+DAT --> C
+DAWG --> C
+SA --> C
+SC --> C
+PM --> C
+C ..> F : implements **Dictionary**\n(swap backends, same call sites)
+
+legend right
+| Color | Family |
+|<#C8E6C9>| in-memory (always on) — 9 variants |
+|<#FFF59D>| feature `pathmap-backend` — 2 variants |
+|<#ECEFF1>| factory + uniform container |
+endlegend
+@enduml

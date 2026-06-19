@@ -1,0 +1,60 @@
+@startuml durable-write-sequence
+' ============================================================================
+' Order-A durable write — "log before publish".
+' Source of truth: src/persistent_artrie/core/overlay/durable_write.rs (the
+' DurableOverlayWrite Template-Method skeleton) + lockfree_cas.rs.
+' Color key:  green = lock-free in-memory visibility (the overlay)
+'             blue  = durable on-disk WAL (append + fsync)
+'             amber = the committed durability frontier (watermark + commit-rank)
+' ============================================================================
+skinparam backgroundColor #FFFFFF
+skinparam defaultFontName "DejaVu Sans"
+skinparam shadowing false
+skinparam sequenceArrowColor #37474F
+skinparam sequenceLifeLineBorderColor #90A4AE
+skinparam sequenceGroupBorderColor #F9A825
+skinparam sequenceGroupBackgroundColor #FFFDE7
+skinparam noteBackgroundColor #ECEFF1
+skinparam noteBorderColor #90A4AE
+skinparam participantBorderColor #37474F
+
+title Order-A durable write — "log before publish" (acknowledged ⟹ durable AND visible)
+
+participant "Client" as C
+participant "Lock-free overlay\n(atomic root)" as O #C8E6C9
+participant "WAL\nappend + fsync" as W #BBDEFB
+participant "Committed watermark\n+ commit-rank" as M #FFE0B2
+
+C -> O : insert(key, value)
+activate O
+note right of O #C8E6C9 : **Step 0 — present-hoist**\n**NON-FAULTING** membership read on the\nhot path (never holds the buffer-manager\nlock → avoids the lock-ordering deadlock)
+O -> O : build copy-on-write node path
+
+== Step 1 — durability gate:  append the WAL record DURABLE, *before* any visibility ==
+O -> W : append_durable(WalRecord)\nImmediate fsync  |  GroupCommit batch
+activate W
+W --> O : Lsn(data)  —  record is now **durable**
+deactivate W
+note over O, W : Order B (CAS-then-log) is **rejected** — it could expose a\nvisible-but-not-durable write. The single append covers every\nCAS retry (re-appending would burn LSNs + hole the watermark).
+
+== Step 2 — publish:  the visibility point = the linearization point ==
+loop until the root CAS wins
+  O -> O : root CAS publish (winner linearizes here)
+end
+
+== Step 3 — commit-rank, then advance the committed watermark ==
+O -> W : append CommitRank (durable)
+activate W
+W --> O : Lsn(rank)
+deactivate W
+O -> M : mark_committed(data_lsn)\nmark_committed(rank_lsn)
+activate M
+note right of M #FFE0B2 : the committed contiguous prefix advances to\ncover BOTH LSNs — the ONLY safe checkpoint_lsn\nunder out-of-order lock-free commit (TLC-verified)
+M --> O : watermark advanced
+deactivate M
+
+O --> C : Ack  —  the write is now **durable AND visible**
+deactivate O
+
+note across #FFF9C4 : **Crash semantics.** A write is acknowledged *iff* its record is in the WAL:\nfsync'd ⇒ replayed on recovery · not fsync'd ⇒ was never acknowledged.
+@enduml

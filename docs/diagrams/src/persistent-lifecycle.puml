@@ -1,0 +1,51 @@
+@startuml persistent-lifecycle
+' ============================================================================
+' Persistent ARTrie file lifecycle — create → serve → checkpoint → close →
+' reopen/recover, including the crash path. Source of truth:
+' src/persistent_artrie/{mmap_ctor,io_uring_ctor}.rs (create/open),
+' core/overlay/{durable_write,checkpoint}.rs, core/recovery.rs.
+' Color key:  green = in-memory serving   blue = durable on-disk action
+'             amber = recovery   red = crash
+' ============================================================================
+skinparam backgroundColor #FFFFFF
+skinparam defaultFontName "DejaVu Sans"
+skinparam shadowing false
+skinparam ArrowColor #37474F
+skinparam state {
+  BorderColor #37474F
+  FontName "DejaVu Sans"
+}
+
+title Persistent ARTrie — file lifecycle
+
+[*] --> Created : create(path)\n(fresh WAL + empty overlay)
+
+Created --> Serving
+state Serving #C8E6C9 {
+  [*] --> Ready
+  Ready --> Ready : get / contains\n(lock-free overlay read)
+  Ready --> Ready : insert / upsert / remove\n(Order-A: WAL append+fsync → root CAS)
+}
+
+Serving --> Checkpointed : checkpoint()
+state Checkpointed #BBDEFB : dense CX image written;\nWAL truncated to the\ncommitted watermark
+Checkpointed --> Serving : resume
+
+Serving --> Closed : drop / close (clean)
+state Closed #ECEFF1
+Serving --> Crashed : power loss / kill
+state Crashed #FFCDD2
+
+Closed --> Recovering : reopen(path)
+Crashed --> Recovering : reopen(path)
+state Recovering #FFE0B2 : load checkpoint image,\nthen replay durable WAL tail\n(LSN ≥ checkpoint_lsn)
+Recovering --> Serving : acknowledged writes restored\n(un-acked writes were never durable)
+
+legend right
+| Color | Phase |
+|<#C8E6C9>| in-memory serving |
+|<#BBDEFB>| durable on-disk action |
+|<#FFE0B2>| recovery |
+|<#FFCDD2>| crash |
+endlegend
+@enduml

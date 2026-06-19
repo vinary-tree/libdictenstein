@@ -26,6 +26,13 @@ expanded into bytes.
 
 ## In-Memory Backends
 
+All in-memory backends are constructed through one call,
+[`DictionaryFactory::create`](../../src/factory.rs) (or `::empty`), which selects a
+backend by the [`DictionaryBackend`](../../src/factory.rs) enum and returns a uniform
+`DictionaryContainer` handle — so call sites can swap backends without changing code:
+
+<img src="../diagrams/factory-dispatch.svg" alt="DictionaryFactory dispatches a DictionaryBackend variant to one of 11 in-memory backends, all wrapped behind a uniform DictionaryContainer handle" width="720"/>
+
 ### DoubleArrayTrie / DoubleArrayTrieChar
 
 Double-array tries pack the trie into BASE/CHECK arrays. They are the default
@@ -90,6 +97,14 @@ query it through libdictenstein traits without copying.
 Enable the `persistent-artrie` feature for disk-backed dictionaries. Persistent
 backends expose `create`, `open`, `open_with_recovery`, and `checkpoint` APIs
 because file lifecycle and recovery are part of their contract.
+
+<img src="../diagrams/persistent-lifecycle.svg" alt="Persistent ARTrie lifecycle: create, serve (lock-free reads + Order-A durable writes), checkpoint, close or crash, then reopen and recover from the checkpoint image plus the durable WAL tail" width="640"/>
+
+The same lifecycle holds for every persistent family (ARTrie, vocabulary, and the
+native suffix graphs): a clean `close` and a `crash` both recover through
+`open`/`open_with_recovery`, which loads the last checkpoint image and replays the
+durable WAL tail — acknowledged writes survive, un-acknowledged writes were never
+durable.
 
 ### PersistentARTrie / PersistentARTrieChar
 

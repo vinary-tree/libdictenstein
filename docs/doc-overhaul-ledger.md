@@ -47,7 +47,22 @@ Mermaid available locally but excluded from the gate (Chromium not byte-reproduc
 references to `serialization.md` (15) and `zippers.md` (5), created in Phase 5.
 These md files are not `include_str!` doctests, so grep verification is the gate.
 
-## Phase 2 — Front door + diagrams  ☐
+## Phase 2 — Front door + diagrams  ☑
+
+| Item | Action | Status | Verification |
+|------|--------|--------|--------------|
+| README counts | `67→69` Rocq `.v`, `52→55` TLA⁺ (headline + formal table + module count); props `1,283→1,301`; verified 0 real Admitted/Axiom/Parameter | ☑ | `find … -name '*.v'`=69; `*.tla`=55; props grep=1301 |
+| README math | bare `Rᵤ` → backtick-wrapped `` `Rᵤ` `` | ☑ | — |
+| README doc-map | "Diagram sources (PlantUML)" → "…(PlantUML · D2 · Graphviz · bytefield · gnuplot)" → `docs/diagrams/README.md` | ☑ | — |
+| Diagram #17 durable-write **sequence** (PlantUML) | authored from `durable_write.rs` Order-A header; embedded in README "Order-A protocol" section | ☑ | render clean 1220×933; embed resolves |
+| `src/lib.rs` Architecture | new `# Architecture` section + trait diagram embed (raw-GitHub URL, master); intra-doc links use plain code for feature-gated `ARTrie`/`KeyEncoding` | ☑ | `cargo doc --all-features -D warnings` → exit 0 |
+| Diagram #1 trait class diagram (PlantUML) | `traits.svg` — read/mutation/persistent families + assoc-type edges | ☑ | render clean 1841×665 |
+| Diagram #4 factory dispatch (PlantUML) | `factory-dispatch.svg`; embedded in user-guide In-Memory section | ☑ | render clean; embed resolves |
+| Persistent file-lifecycle (PlantUML state) | `persistent-lifecycle.svg`; embedded in user-guide Persistent section | ☑ | render clean 839×882; embed resolves |
+
+**Note**: git remote IS present (`github.com/vinary-tree/libdictenstein`, also in
+Cargo.toml) — the memory "local-only (no git remote)" is stale; raw-GitHub `master`
+URLs are the correct rustdoc embed mechanism for docs.rs.
 ## Phase 3 — Theory + algorithms refresh + diagrams  ☐
 ## Phase 4 — Persistence, eviction, formal-verification + diagrams  ☐
 ## Phase 5 — New conceptual docs  ☐

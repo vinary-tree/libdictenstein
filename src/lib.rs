@@ -7,6 +7,22 @@
 //! lives in the companion crate [`liblevenshtein`](https://github.com/universal-automata/liblevenshtein-rust),
 //! which walks any type implementing [`Dictionary`]. This crate contains no fuzzy-matching code itself.
 //!
+//! # Architecture
+//!
+//! Every backend implements a small, layered set of traits. **Read** traits
+//! ([`Dictionary`], [`MappedDictionary`], [`BijectiveDictionary`]) handle query and
+//! traversal; **mutation** traits ([`MutableDictionary`], [`CompactableDictionary`])
+//! add `insert` / `remove` / `compact`; the **persistent** `ARTrie` traits add a
+//! lock-free compare-and-swap publish path plus checkpointing. The [`CharUnit`]
+//! (edge label) and `KeyEncoding` (persistent key) abstractions let one
+//! implementation serve `u8`, `char`, and `u64` alphabets from a single code path.
+//!
+//! <img src="https://raw.githubusercontent.com/vinary-tree/libdictenstein/master/docs/diagrams/traits.svg" alt="libdictenstein trait layer: read, mutation, and persistent trait families with their associated-type bounds" width="820"/>
+//!
+//! See the [documentation index](https://github.com/vinary-tree/libdictenstein/blob/master/docs/README.md)
+//! for theory, per-backend algorithm walkthroughs, persistence architecture, and the
+//! formal-verification corpus.
+//!
 //! # Choosing a Dictionary Backend
 //!
 //! ## In-memory backends

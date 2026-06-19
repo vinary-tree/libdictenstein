@@ -1,0 +1,94 @@
+@startuml traits
+' ============================================================================
+' libdictenstein trait layer — the thin abstraction every backend implements.
+' Source of truth: src/lib.rs (Dictionary, DictionaryNode, MappedDictionary,
+' MutableDictionary, CompactableDictionary, MutableMappedDictionary),
+' src/bijective.rs (BijectiveDictionary), src/artrie_trait.rs (ARTrie,
+' EvictableARTrie), src/char_unit.rs (CharUnit), src/value.rs (DictionaryValue),
+' and core/key_encoding.rs (KeyEncoding).
+' Color key:  green = read traits   orange = mutation traits
+'             blue  = persistent (ARTrie) traits   grey = unit / value bounds
+' ============================================================================
+skinparam backgroundColor #FFFFFF
+skinparam defaultFontName "DejaVu Sans"
+skinparam shadowing false
+skinparam ArrowColor #37474F
+skinparam classBorderColor #37474F
+skinparam classFontStyle bold
+skinparam classAttributeFontStyle plain
+
+title libdictenstein trait layer
+
+interface Dictionary <<read>> #C8E6C9 {
+  type Node : DictionaryNode
+  +root() : Node
+  +contains(term) : bool
+  +len() : Option<usize>
+}
+interface DictionaryNode <<read>> #C8E6C9 {
+  type Unit : CharUnit
+  +is_final() : bool
+  +transition(Unit) : Option<Self>
+  +edges() : Iterator<(Unit, Self)>
+}
+interface MappedDictionary <<read>> #C8E6C9 {
+  type Value : DictionaryValue
+  +get_value(term) : Option<Value>
+  +contains_with_value(term, pred) : bool
+}
+interface BijectiveDictionary <<read>> #C8E6C9 {
+  +get_term(id) : Option<Cow<str>>
+  +get_id(term) : Option<u64>
+}
+
+interface MutableDictionary <<mutate>> #FFE0B2 {
+  +insert(term)
+  +remove(term) : bool
+}
+interface MutableMappedDictionary <<mutate>> #FFE0B2 {
+  +insert_with_value(term, value)
+}
+interface CompactableDictionary <<mutate>> #FFE0B2 {
+  +compact()  ' minimize / suffix-share
+}
+
+interface ARTrie <<persistent>> #BBDEFB {
+  +compare_and_swap(path, old, new)
+  +checkpoint() / +reopen()
+}
+interface EvictableARTrie <<persistent>> #BBDEFB {
+  +evict_node_at_path(path)
+}
+
+interface CharUnit <<unit>> #ECEFF1 {
+  edge label:  u8 | char | u64
+}
+interface KeyEncoding <<unit>> #ECEFF1 {
+  persistent key:  ByteKey | CharKey | U64Key
+}
+interface DictionaryValue <<value>> #ECEFF1 {
+  Clone + Default + Send + Sync + 'static
+}
+
+' --- supertrait (inheritance) edges ---
+Dictionary <|-- MappedDictionary
+Dictionary <|-- MutableDictionary
+MappedDictionary <|-- BijectiveDictionary
+MappedDictionary <|-- MutableMappedDictionary
+MutableDictionary <|-- CompactableDictionary
+ARTrie <|-- EvictableARTrie
+
+' --- associated-type dependencies ---
+Dictionary ..> DictionaryNode : "Node ="
+DictionaryNode ..> CharUnit : "Unit ="
+MappedDictionary ..> DictionaryValue : "Value ="
+ARTrie ..> KeyEncoding : "K ="
+
+legend right
+| Color | Trait family |
+|<#C8E6C9>| read (query / traverse) |
+|<#FFE0B2>| mutation (insert / remove / compact) |
+|<#BBDEFB>| persistent ARTrie (CAS + checkpoint) |
+|<#ECEFF1>| unit / value bounds |
+endlegend
+@enduml
