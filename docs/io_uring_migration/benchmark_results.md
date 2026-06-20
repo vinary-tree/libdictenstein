@@ -105,6 +105,10 @@ or batch-flush workloads that also need durability without the page-cache gap.
 | mean | ~49 us | ~84 us | 1.7x slower |
 | ops/s | ~20,600 | ~11,900 | 0.58x |
 
+<img src="../benchmarks/artifacts/iouring-vs-mmap-latency.svg" alt="Clustered bar chart (microseconds) comparing mmap versus io_uring single-block latency for Read p50/p99 and Write p50/p99. mmap (amber) is lower in every group (Read 32/90, Write 44/120 us) than io_uring (blue: Read 61/210, Write 74/225 us)." width="680"/>
+
+*Figure: Single-block random read/write latency, mmap versus io_uring, from the two Phase 3 head-to-head tables above (io_uring_migration/benchmark_results.md, 2026-02-20). Values are the ledger's "summary report averages" (recorded with a leading ~); mmap leads per-operation latency by 1.7-2.3x.*
+
 ### Sync Latency
 
 | Metric | mmap | io_uring | Ratio |
@@ -134,6 +138,10 @@ or batch-flush workloads that also need durability without the page-cache gap.
 | Criterion time | 3.04 ms | 2.15 ms | 3.84 ms |
 | Throughput | 21.0 Kelem/s | 29.8 Kelem/s | 16.7 Kelem/s |
 | vs mmap | 1.0x | **1.41x faster** | 0.79x |
+
+<img src="../benchmarks/artifacts/iouring-batch-read.svg" alt="Bar chart of batch read throughput in Kelem/s for 64 blocks. mmap sequential (amber) 21.0; io_uring batch SQE (blue) 29.8 — the fastest; io_uring sequential (grey) 16.7 — the slowest." width="600"/>
+
+*Figure: Batch read (64 x 256 KB blocks) throughput by I/O strategy, from the Batch Read table above (io_uring_migration/benchmark_results.md Phase 3, 2026-02-20). SQE batching makes io_uring 1.41x faster than mmap — the one workload where io_uring's amortization wins.*
 
 ### WAL fsync Comparison
 

@@ -1,0 +1,22 @@
+# Aggregate write throughput (ops/sec) CONTROL (Arc<RwLock> owned tree) vs
+# TREATMENT (lock-free overlay + immutable-snapshot checkpoint), K=30 rounds/arm.
+# SOURCE: docs/experiments/lockfree-flip-benchmark-ledger.md (run date 2026-06-02,
+#   git HEAD 549957a). Means transcribed verbatim from the three RESULTS blocks:
+#
+#   eviction-OFF  variant A disjoint : CONTROL 4,560.6  TREATMENT 18,791.9 (+312.05%)
+#   eviction-OFF  variant B contended: CONTROL 5,799.6  TREATMENT 15,486.1 (+167.02%)
+#   eviction-ON   variant A disjoint : CONTROL 2,720.1  TREATMENT 17,234.8 (+533.61%)
+#   eviction-ON   variant B contended: CONTROL 3,799.2  TREATMENT 15,204.5 (+300.20%)
+#   eviction-ON+REAL-reclaim disjoint : CONTROL 1,986.9 TREATMENT 14,969.7 (+653.42%)
+#   eviction-ON+REAL-reclaim contended: CONTROL 2,439.1 TREATMENT 14,806.0 (+507.0%)
+#
+# All Immediate durability (identical per-op fsync both arms). Every regime's
+# §8 verdict = BRANCH 1 PROCEED (TREATMENT wins). NO re-run, NO interpolation.
+#
+# regime_label                         control_ops  treatment_ops  pct_label
+"eviction-OFF\ndisjoint"           4560.6    18791.9   "+312%"
+"eviction-OFF\ncontended"          5799.6    15486.1   "+167%"
+"eviction-ON\ndisjoint"            2720.1    17234.8   "+534%"
+"eviction-ON\ncontended"           3799.2    15204.5   "+300%"
+"evict+reclaim\ndisjoint"          1986.9    14969.7   "+653%"
+"evict+reclaim\ncontended"         2439.1    14806.0   "+507%"

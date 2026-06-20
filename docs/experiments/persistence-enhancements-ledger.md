@@ -80,6 +80,10 @@ echo 3 | sudo tee /proc/sys/vm/drop_caches && sync
 
 **Key Observation:** PersistentARTrie construction throughput **scales well** (19.3 Melem/s at 5K) and outperforms DynamicDawg (2x faster) and DoubleArrayTrie (30x faster at 5K).
 
+<img src="../benchmarks/artifacts/persistence-construction-throughput.svg" alt="Line chart of construction throughput in Melem/s versus dictionary size (log x axis: 100, 500, 1000, 5000 terms) for three backends. PersistentARTrie (blue) rises from 9.6 to 19.3 Melem/s; DynamicDawg (amber) stays around 9-10.6; DoubleArrayTrie (green) stays near 1.1-1.4 and dips to 0.64 at 5K." width="640"/>
+
+*Figure: Construction throughput versus size, from the Experiment 0 baseline table above (persistence-enhancements-ledger.md, 2026-01-15). PersistentARTrie scales up to 19.3 Melem/s while the DAT construction path stays under ~1.5 Melem/s.*
+
 #### Lookup Benchmarks (Per-query: µs, Throughput: Melem/s)
 | Size | PersistentARTrie | DynamicDawg | DoubleArrayTrie |
 |------|------------------|-------------|-----------------|
@@ -771,6 +775,10 @@ Created `src/persistent_artrie/per_node_log.rs` with:
 - At 1% dirty ratio: **100x speedup**
 - At 5% dirty ratio: **20x speedup**
 - At 10% dirty ratio: **10x speedup**
+
+<img src="../benchmarks/artifacts/pernode-recovery-speedup.svg" alt="Clustered bar chart (log y axis, microseconds) comparing recovery time of Global WAL versus Per-Node logging across five workloads. Global WAL (grey) sits at 173-180 us for 10K ops and ~1.7 ms for 100K ops regardless of dirty ratio; Per-Node (blue) drops to 1.74-85 us as the dirty ratio falls, annotated with the recorded speedups 103x, 20x, 10x, 100x, 21x." width="700"/>
+
+*Figure: Recovery time, Global WAL versus per-node redo logging, from the "Recovery Simulation" table above (persistence-enhancements-ledger.md Experiment 5, 2026-01-15). Speedup labels are the ledger's recorded factors; recovery becomes O(dirty nodes) rather than O(total ops).*
 
 #### Zero-Allocation Size Query
 | Method | Time | Speedup |

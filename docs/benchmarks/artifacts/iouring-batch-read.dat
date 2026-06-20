@@ -1,0 +1,12 @@
+# Batch read (64 blocks) throughput (Kelem/s) by I/O strategy.
+# SOURCE: docs/io_uring_migration/benchmark_results.md
+#   "Phase 3: Head-to-Head Comparison" -> "Batch Read (64 blocks)" table
+#   ("Throughput" row): mmap sequential 21.0, io_uring batch SQE 29.8,
+#   io_uring sequential 16.7 (Kelem/s). io_uring batch is "1.41x faster" vs mmap
+#   per that table. 256 KB blocks, Samsung 990 PRO NVMe, 2026-02-20.
+# NO re-run, NO interpolation.
+#
+# index  strategy_label              throughput_kelems  color_id
+0   "mmap\n(sequential)"            21.0   1
+1   "io_uring\n(batch SQE)"         29.8   2
+2   "io_uring\n(sequential)"        16.7   3

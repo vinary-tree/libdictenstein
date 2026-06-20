@@ -1,0 +1,14 @@
+# Recovery time (microseconds) Global WAL vs Per-Node logging, by scenario.
+# SOURCE: docs/experiments/persistence-enhancements-ledger.md
+#   Experiment 5: Per-Node Logging (2026-01-15), section
+#   "Recovery Simulation: Global WAL vs Per-Node (Critical Metric)" (lines 762-768).
+# Columns 2,3 are wall time in microseconds (transcribed verbatim); column 4 is
+# the ledger's recorded speedup factor for the row's label on the x axis.
+# NO re-run, NO interpolation.
+#
+# index  scenario_label                     global_wal_us  pernode_us  speedup
+0   "10K ops\n1% dirty"     179.78   1.74    103
+1   "10K ops\n5% dirty"     173.13   8.64    20
+2   "10K ops\n10% dirty"    172.96   17.24   10
+3   "100K ops\n1% dirty"    1730.0   17.33   100
+4   "100K ops\n5% dirty"    1760.0   85.42   21

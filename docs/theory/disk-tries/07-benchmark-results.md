@@ -93,6 +93,10 @@ scales sub-linearly because WAL replay is dominated by sequential record decode,
 which the checkpoint shrinks but does not eliminate. The headline consequence is
 benign: a 1000-term dictionary is back online in under `1 ms`.
 
+<img src="../../benchmarks/artifacts/disktrie-durable-throughput.svg" alt="Line chart of throughput in Melem/s versus dictionary size (100, 500, 1000 terms) for two durable operations. create+insert+sync (blue) rises 1.26, 1.99, 2.98 Melem/s; recovery (grey) rises 0.836, 1.12, 1.49 Melem/s. Both climb as fixed costs amortize over more entries." width="640"/>
+
+*Figure: Durable-path throughput versus size, transcribed from the "Create + Insert + Sync" and "Recovery Time" snapshot tables above (07-benchmark-results.md, 2024-12-27 initial durability bring-up). Throughput rises with size because the per-run fixed cost (file create, header, arena bootstrap) amortizes over more inserts.*
+
 #### Checkpoint
 
 | Dictionary Size | Time | Throughput |
@@ -190,6 +194,10 @@ section points at the canonical record and explains how to read it.
 The exact figures, `p`-values, and raw samples are in
 [06-persistent-artrie-design § Empirical Status](06-persistent-artrie-design.md#empirical-status)
 and its linked experiment ledger.
+
+<img src="../../benchmarks/artifacts/u64-native-vs-byte-latency.svg" alt="Clustered bar chart (nanoseconds) of read-path latency, byte-encoded u64 (grey control) versus native prefix-4 u64 key (blue treatment), for two metrics. Lookup: 455.4 vs 357.2 ns/query (p=2.82e-35). Parallel read with one writer: 204.3 vs 148.3 ns/read (p=4.42e-9). Native is lower in both." width="640"/>
+
+*Figure: Registered `u64` comparison — native prefix-4 keys versus the byte-encoded control — for the two latency metrics from the linked ledger ([persistent-u64-watermark-commitrank-2026-06-13.md](../../experiments/persistent-u64-watermark-commitrank-2026-06-13.md), registered pgmcp experiments 53/54). Both gaps were accepted by Welch's t-test; keeping the 64-bit label native (instead of eight byte transitions) keeps paths shallow and lowers read latency.*
 
 ## Provenance and Reproducibility
 

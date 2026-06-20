@@ -1,0 +1,12 @@
+# Durable-path throughput (Melem/s) vs dictionary size: create+insert+sync and recovery.
+# SOURCE: docs/theory/disk-tries/07-benchmark-results.md
+#   "Snapshot: 2024-12-27 (initial durability bring-up)" ->
+#     "Create + Insert + Sync" table (Throughput col): 100 -> 1.26, 500 -> 1.99, 1000 -> 2.98 M elem/s
+#     "Recovery Time" table (Throughput col):          100 -> 0.836, 500 -> 1.12, 1000 -> 1.49 M elem/s
+#   (M elements/sec; recovery 836 K = 0.836 M.) Single-writer, redo-only recovery
+#   snapshot, Samsung 990 PRO NVMe. NO re-run, NO interpolation.
+#
+# size  create_insert_sync_Melems  recovery_Melems
+100     1.26     0.836
+500     1.99     1.12
+1000    2.98     1.49

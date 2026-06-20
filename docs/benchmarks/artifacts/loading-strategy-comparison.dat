@@ -1,0 +1,15 @@
+# Open time (milliseconds) for 1,000,000 terms, by loading strategy.
+# SOURCE: docs/experiments/loading-optimization-ledger.md
+#   "Summary Table" (Results for 1M terms), open_time (ms) column:
+#     Baseline (Eager) 8,349.5 ; Lazy Loading 169.6 ;
+#     Depth-Limited (d=5) 181.3 ; Parallel (threads=0) 5,532.
+#   (Cross-checks the per-experiment tables: Exp0 eager 8,349.5; Exp1 lazy 169.6;
+#    Exp2 depth=5 181.3; Exp3 parallel threads=0 5.53 s = 5,532 ms.)
+# Decision per ledger: Lazy = ACCEPT; Depth-Limited + Parallel = REJECT.
+# NO re-run, NO interpolation.
+#
+# index  strategy_label             open_ms   color_id   decision
+0   "Eager\n(baseline)"        8349.5   3   "baseline"
+1   "Parallel\n(threads=0)"    5532.0   1   "REJECT"
+2   "Depth-limited\n(d=5)"     181.3    1   "REJECT"
+3   "Lazy\n(accepted)"         169.6    2   "ACCEPT"

@@ -1,0 +1,14 @@
+# Open time (milliseconds) Eager baseline vs Lazy, by dataset size.
+# SOURCE: docs/experiments/loading-optimization-ledger.md
+#   Experiment 1: Lazy Loading (2026-01-10), the per-size "open_time_ms" rows
+#   in the Baseline-vs-Lazy tables:
+#     1,000 terms:    Baseline 6.01   Lazy 0.705   (-88.3%)
+#     100,000 terms:  Baseline 718.4  Lazy 32.0    (-95.5%)
+#     1,000,000 terms:Baseline 8349.5 Lazy 169.6   (-98.0%)
+# Column 4 is the ledger's recorded percent reduction for that size.
+# NO re-run, NO interpolation.
+#
+# index  size_label   eager_ms   lazy_ms   pct_reduction
+0   "1K"     6.01     0.705   "-88%"
+1   "100K"   718.4    32.0    "-95%"
+2   "1M"     8349.5   169.6   "-98%"

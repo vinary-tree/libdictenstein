@@ -138,6 +138,10 @@ Lazy loading will significantly reduce open_time_ms (expecting >50% reduction) b
 | bulk_lookup_ms | 1.69 ± 0.008 | 0.99 ± 0.007 | **-41.4%** |
 | memory_mb | ~3,386 | ~1,467 | **-56.7%** |
 
+<img src="../benchmarks/artifacts/loading-open-time-before-after.svg" alt="Clustered bar chart (log y axis, milliseconds) of open time, Eager baseline versus Lazy, at three dataset sizes. Eager (grey) rises 6.01, 718.4, 8349.5 ms; Lazy (green) stays 0.705, 32.0, 169.6 ms, annotated with the recorded reductions -88%, -95%, -98%." width="700"/>
+
+*Figure: Open time, eager baseline versus lazy loading, from the per-size open_time_ms rows of Experiment 1 above (loading-optimization-ledger.md, 2026-01-10). Lazy loading cuts open time by 88-98% across all sizes.*
+
 ### Statistical Analysis (1M terms - primary metric: open_time)
 
 **Welch's t-test:**
@@ -393,6 +397,10 @@ Results for 1M terms:
 | 1. Lazy Loading | **169.6** | **178.0** | **0.99** | **~1,467** | **ACCEPT** |
 | 2. Depth-Limited (d=5) | 181.3 | 208.8 | 1.04 | ~1,500 | **REJECT** |
 | 3. Parallel (threads=0) | 5,532 | 5,830 | N/A | ~3,386 | **REJECT** |
+
+<img src="../benchmarks/artifacts/loading-strategy-comparison.svg" alt="Bar chart (log y axis, milliseconds) of open time for 1M terms across four loading strategies. Eager baseline (grey) 8349.5 ms; Parallel threads=0 (red, REJECT) 5532 ms; Depth-limited d=5 (red, REJECT) 181.3 ms; Lazy (green, ACCEPT) 169.6 ms — the fastest." width="700"/>
+
+*Figure: Open time for 1,000,000 terms across the four loading strategies, from the Summary Table above (loading-optimization-ledger.md, 2026-01-10). Lazy (green) is the accepted default; depth-limited and parallel (red) were rejected for being no better than, or far worse than, lazy.*
 
 **Key Improvements from Lazy Loading:**
 - Open time: 49x faster (8.35s → 170ms)

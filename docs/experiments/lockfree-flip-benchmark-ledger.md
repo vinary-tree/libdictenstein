@@ -324,6 +324,10 @@ No production source change beyond the already-present reversible `bench-interna
 - **Cohen's d = 25.03** (pooled) — vastly exceeds the pre-registered d≥0.8 floor.
 - **Mann–Whitney U = 900.0, p = 3.02e-11** (complete separation; corroborates Welch).
 
+<img src="../benchmarks/artifacts/lockfree-flip-throughput.svg" alt="Clustered bar chart of write throughput in ops/sec, CONTROL (Arc<RwLock> owned tree, red) versus TREATMENT (lock-free overlay, blue), across six regime-and-variant pairs. TREATMENT is 3-6.5x higher in every pair: eviction-OFF disjoint 4561 vs 18792 (+312%), eviction-OFF contended 5800 vs 15486 (+167%), eviction-ON disjoint 2720 vs 17235 (+534%), eviction-ON contended 3799 vs 15205 (+300%), evict+reclaim disjoint 1987 vs 14970 (+653%), evict+reclaim contended 2439 vs 14806 (+507%)." width="860"/>
+
+*Figure: Aggregate write throughput, CONTROL versus TREATMENT, across all three measured runs (this eviction-OFF RESULTS block, the eviction-ON §E RESULTS block below, and the §F real-reclamation RESULTS block below; lockfree-flip-benchmark-ledger.md, 2026-06-02, HEAD 549957a, K=30/arm, Immediate durability). Every regime's §8 verdict was BRANCH 1 PROCEED.*
+
 ### Secondary descriptive vetoes
 - **S1 — checkpoint pause.** FROZEN S1 = the **writer-observable** stall (§6: "measured AT THE WRITER as the
   upper tail of per-op write latency during checkpoint windows"; §1: "writer-observable stall"). Writer-observed

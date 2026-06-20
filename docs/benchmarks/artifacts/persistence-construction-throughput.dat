@@ -1,0 +1,12 @@
+# Construction throughput (Melem/s) vs dictionary size, by backend.
+# SOURCE: docs/experiments/persistence-enhancements-ledger.md
+#   Experiment 0: Baseline (date 2026-01-15), section
+#   "Construction Benchmarks (Throughput: Melem/s)" (the table at lines 74-79).
+# Numbers transcribed VERBATIM from that table (Melem/s value parenthesised
+# beside each timing). NO re-run, NO interpolation.
+#
+# size  PersistentARTrie  DynamicDawg  DoubleArrayTrie   (all Melem/s)
+100     9.6               10.5         1.14
+500     14.8              8.9          1.09
+1000    17.1              10.6         1.43
+5000    19.3              10.0         0.639

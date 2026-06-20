@@ -1,0 +1,14 @@
+# Read-path latency (nanoseconds) byte-encoded u64 vs native prefix-4 u64 key.
+# SOURCE: docs/experiments/persistent-u64-watermark-commitrank-2026-06-13.md
+#   "Results" table (Control vs Treatment), both accepted by Welch's t-test:
+#     Lookup latency:        control 455.352 ns/query  treatment 357.248 ns/query
+#                            (p = 2.82e-35, Cohen's d = -3.87)
+#     Parallel read latency: control 204.304 ns/read   treatment 148.347 ns/read
+#       (one writer)         (p = 4.42e-9,  Cohen's d = -1.24)
+# Control = byte-encoded u64 (eight transitions/label); Treatment = native
+# prefix-4 U64Key (shallow paths). Registered pgmcp experiments 53/54, artifact
+# 132. NO re-run, NO interpolation.
+#
+# metric_label                 byte_encoded_ns  native_prefix4_ns  pval_label
+"Lookup\n(ns/query)"       455.352   357.248   "p=2.82e-35"
+"Parallel read\n(ns/read)" 204.304   148.347   "p=4.42e-9"

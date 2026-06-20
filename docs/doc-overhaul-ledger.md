@@ -117,5 +117,30 @@ invented); vocab lives in `src/persistent_artrie/vocab/` (not `persistent_vocab_
 
 **Milestone**: ✅ **ZERO broken relative links across the entire `docs/` +
 `formal-verification/` tree**. 43 diagrams idempotent.
-## Phase 6 — Benchmark plots  ☐
+## Phase 6 — Benchmark plots  ☑
+
+Subagent extracted ONLY recorded numbers (no re-runs, no fabrication); every `.dat`
+header cites its source ledger + table.
+
+| Chart | Source ledger | Type |
+|-------|---------------|------|
+| persistence-construction-throughput | persistence-enhancements Exp 0 | line, throughput-vs-size ×3 backends |
+| pernode-recovery-speedup | persistence-enhancements Exp 5 | log-y clustered bars |
+| iouring-vs-mmap-latency | io_uring_migration Phase 3 | clustered bars (p50/p99) |
+| iouring-batch-read | io_uring_migration Phase 3 | bars |
+| loading-strategy-comparison | loading-optimization summary | log-y bars (accept/reject) |
+| loading-open-time-before-after | loading-optimization Exp 1 | log-y clustered bars |
+| lockfree-flip-throughput | lockfree-flip-benchmark | clustered bars (%-gain) |
+| disktrie-durable-throughput | disk-tries/07 snapshot | line ×2 series |
+| u64-native-vs-byte-latency | persistent-u64 …2026-06-13 | clustered bars |
+
+- gnuplot pipeline: added `<desc>Produced by GNUPLOT …</desc>` version-stripping for
+  byte-stable output (versionleak=0 across all 9).
+- **Script robustness fix**: hardened the d2 `d2-layout:` grep with `|| true` — a d2
+  source without the directive returned exit 1 and aborted the whole render under
+  `set -o pipefail`. Full render now completes end-to-end (exit 0, 52 artifacts).
+
+**Result**: 52 committed artifacts (43 diagrams + 9 plots), ALL idempotent; embedded
+into 5 ledgers; 0 broken chart embeds. `docs/benchmarks/artifacts/` (was empty) now
+holds the `.dat` + `.gp` sources + rendered SVGs.
 ## Phase 7 — Reorganization + top-level index  ☐

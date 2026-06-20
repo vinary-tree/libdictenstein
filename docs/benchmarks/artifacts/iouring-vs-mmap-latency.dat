@@ -1,0 +1,15 @@
+# Single-block I/O latency (microseconds) mmap vs io_uring, by percentile.
+# SOURCE: docs/io_uring_migration/benchmark_results.md
+#   "Phase 3: Head-to-Head Comparison" ->
+#     "Block-Level Random Read (1024 blocks, summary report averages)" and
+#     "Block-Level Random Write (1024 blocks, summary report averages)".
+# Read  p50/p99: mmap ~32/~90 us, io_uring ~61/~210 us.
+# Write p50/p99: mmap ~44/~120 us, io_uring ~74/~225 us.
+# These are the ledger's "summary report averages" (recorded with ~). 256 KB
+# blocks, Samsung 990 PRO NVMe, 2026-02-20. NO re-run, NO interpolation.
+#
+# metric_label      mmap_us  iouring_us
+"Read p50"      32   61
+"Read p99"      90   210
+"Write p50"     44   74
+"Write p99"     120  225

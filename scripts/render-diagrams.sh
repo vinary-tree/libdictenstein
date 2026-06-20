@@ -125,7 +125,9 @@ render_one() {  # $1=source path
       # `# d2-layout: elk` (elk supports nested container→descendant edges that
       # dagre rejects); default is dagre.
       local layout
-      layout="$(grep -oE 'd2-layout:[[:space:]]*[a-z]+' "$src" | head -1 | sed -E 's/.*:[[:space:]]*//')"
+      # `|| true`: a source without the directive makes grep exit 1, which would
+      # otherwise abort under `set -o pipefail`. Default to dagre when absent.
+      layout="$(grep -oE 'd2-layout:[[:space:]]*[a-z]+' "$src" 2>/dev/null | head -1 | sed -E 's/.*:[[:space:]]*//' || true)"
       layout="${layout:-${D2_LAYOUT:-dagre}}"
       D2_LAYOUT="$layout" "$D2_CMD" --pad 16 "$src" "$out"
       ;;
@@ -153,11 +155,15 @@ render_one() {  # $1=source path
   rendered=$((rendered + 1))
 }
 
-render_plot() {  # $1=gnuplot script (self-contained: sets terminal+output)
+render_plot() {  # $1=gnuplot script (self-contained: sets terminal svg + output <name>.svg)
   local gp="$1"
   have "$GNUPLOT_CMD" || { missing_tool gnuplot; return; }
   echo "  gnuplot   $gp"
   ( cd "$(dirname "$gp")" && "$GNUPLOT_CMD" "$(basename "$gp")" )
+  # Normalize the volatile "Produced by GNUPLOT <version>" desc so the committed
+  # SVG is byte-stable across gnuplot versions (keeps the CI freshness diff stable).
+  local out_svg="${gp%.gp}.svg"
+  [[ -f "$out_svg" ]] && sed -i -E 's#<desc>Produced by GNUPLOT[^<]*</desc>#<desc>gnuplot</desc>#' "$out_svg"
   rendered=$((rendered + 1))
 }
 
