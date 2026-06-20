@@ -1,0 +1,48 @@
+@startuml node-state
+' ============================================================================
+' Adaptive node grow/shrink for the byte-ART node family (PersistentARTrie).
+' A node holds exactly one tier at a time and migrates between tiers as its
+' child count crosses the capacity thresholds 4 / 16 / 48:
+'   insert-overflow  grows  Node4 -> Node16 -> Node48 -> Node256
+'   remove-underflow shrinks Node256 -> Node48 -> Node16 -> Node4
+' Source of truth: src/persistent_artrie/nodes/ (grow_to_* / shrink_to_*).
+'
+' Color key:
+'   green (#C8E6C9) = small / cheap tiers (Node4, Node16)
+'   blue  (#BBDEFB) = large / dense tiers (Node48, Node256)
+' ============================================================================
+skinparam backgroundColor #FFFFFF
+skinparam defaultFontName "DejaVu Sans"
+skinparam ArrowColor #37474F
+skinparam state {
+  BorderColor #37474F
+  FontName "DejaVu Sans"
+}
+title Adaptive node grow / shrink — byte ART (thresholds 4 / 16 / 48)
+
+state "Node4\n<=4 children\nlinear scan" as N4 #C8E6C9
+state "Node16\n5..16 children\nSSE SIMD" as N16 #C8E6C9
+state "Node48\n17..48 children\nindexed" as N48 #BBDEFB
+state "Node256\n49..256 children\ndirect array" as N256 #BBDEFB
+
+[*] --> N4 : new inner node
+
+' --- grow on insert-overflow (cross a capacity threshold) ---
+N4  -[#2E7D32]-> N16  : insert 5th child\n(overflow > 4)
+N16 -[#2E7D32]-> N48  : insert 17th child\n(overflow > 16)
+N48 -[#1565C0]-> N256 : insert 49th child\n(overflow > 48)
+
+' --- shrink on remove-underflow (drop below the lower tier's capacity) ---
+N256 -[#C62828,dashed]-> N48 : remove\n(underflow <= 48)
+N48  -[#C62828,dashed]-> N16 : remove\n(underflow <= 16)
+N16  -[#C62828,dashed]-> N4  : remove\n(underflow <= 4)
+
+note right of N256
+  Grow copies the old tier's
+  (key, child) pairs into the
+  wider tier, then frees the old.
+  Shrink is the mirror image.
+  Char nodes stop at CharBucket
+  (no Node256); see node-layouts.
+end note
+@enduml

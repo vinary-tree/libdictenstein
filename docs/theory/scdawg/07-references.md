@@ -10,6 +10,7 @@ This document provides an annotated bibliography of the key papers that define a
 > Blumer, A., Blumer, J., Haussler, D., McConnell, R., & Ehrenfeucht, A. (1987).
 > "Complete Inverted Files for Efficient Text Retrieval and Analysis."
 > *Journal of the ACM*, 34(3), 578-595.
+> DOI: [10.1145/28869.28873](https://doi.org/10.1145/28869.28873)
 
 **Key Contributions**:
 - Defines the **Symmetric Compact DAWG** (SCDAWG), also called C2S
@@ -37,6 +38,7 @@ C2S = (V, E_R, E_L) where V = P(S)
 > Blumer, A., Blumer, J., Haussler, D., Ehrenfeucht, A., Chen, M.-T., & Seiferas, J. (1985).
 > "The Smallest Automaton Recognizing the Subwords of a Text."
 > *Theoretical Computer Science*, 40, 31-55.
+> DOI: [10.1016/0304-3975(85)90157-4](https://doi.org/10.1016/0304-3975(85)90157-4)
 
 **Key Contributions**:
 - Defines the **suffix automaton** (DAWG) as the minimal DFA for substrings
@@ -56,12 +58,38 @@ Two strings x, y belong to the same equivalence class iff end-pos(x) = end-pos(y
 
 ---
 
+### Crochemore (1986) - Transducers and Repetitions
+
+**Full Citation**:
+> Crochemore, M. (1986).
+> "Transducers and Repetitions."
+> *Theoretical Computer Science*, 45, 63-86.
+> DOI: [10.1016/0304-3975(86)90041-1](https://doi.org/10.1016/0304-3975(86)90041-1)
+
+**Key Contributions**:
+- Develops the **factor (subword) transducer** view of the suffix automaton and its
+  `endpos`-based equivalence, independently of Blumer et al. (1985)
+- Gives a linear-time construction and uses it to locate **repetitions** (maximal
+  repeats) in a text — the structural property later exposed by the SCDAWG's
+  `freq` / `locations` features
+- Establishes the suffix-link / `endpos`-refinement machinery reused throughout
+  the compact-DAWG and SCDAWG literature
+
+**Used In This Implementation**:
+- Background justification for the equivalence-class and suffix-link foundations
+  (Chapter [02-suffix-automaton](02-suffix-automaton.md))
+- Maximal-repeat / repetition reasoning behind `find_maximal_repeats`
+  (Chapter [06-operations](06-operations.md))
+
+---
+
 ### Inenaga et al. (2001) - On-line SCDAWG Construction
 
 **Full Citation**:
 > Inenaga, S., Hoshino, H., Shinohara, A., Takeda, M., & Arikawa, S. (2001).
 > "On-Line Construction of Symmetric Compact Directed Acyclic Word Graphs."
 > *Proceedings of the 8th International Symposium on String Processing and Information Retrieval (SPIRE)*, 96-110.
+> DOI: [10.1109/SPIRE.2001.989743](https://doi.org/10.1109/SPIRE.2001.989743)
 
 **Key Contributions**:
 - **On-line O(n) algorithm** for SCDAWG construction
@@ -88,6 +116,7 @@ in CDAWG(w^rev), enabling O(n) SCDAWG construction.
 > Inenaga, S., Hoshino, H., Shinohara, A., Takeda, M., Arikawa, S., Mauri, G., & Pavesi, G. (2005).
 > "On-line construction of compact directed acyclic word graphs."
 > *Discrete Applied Mathematics*, 146(2), 156-179.
+> DOI: [10.1016/j.dam.2004.04.012](https://doi.org/10.1016/j.dam.2004.04.012)
 
 **Key Contributions**:
 - Detailed **on-line O(n) CDAWG construction** algorithm
@@ -122,11 +151,12 @@ update(c):
 **Full Citation**:
 > Crochemore, M., & Vérin, R. (1997).
 > "Direct Construction of Compact Directed Acyclic Word Graphs."
-> *Proceedings of the 8th Annual Symposium on Combinatorial Pattern Matching (CPM)*, 116-129.
+> *Combinatorial Pattern Matching (CPM 1997)*, Lecture Notes in Computer Science, vol. 1264, 116-129. Springer.
+> DOI: [10.1007/3-540-63220-4_55](https://doi.org/10.1007/3-540-63220-4_55)
 
 **Key Contributions**:
 - **Direct CDAWG construction** without intermediate DAWG
-- Proves CDAWG has at most n+1 nodes and 2n-2 edges
+- Proves CDAWG has at most `n + 1` nodes and `2n − 2` edges
 - Connection between CDAWG and suffix tree
 
 **Used In This Implementation**:
@@ -202,16 +232,18 @@ update(c):
 ## Relationship Between Papers
 
 ```
-    Blumer et al. (1985)          Weiner (1973)
-    Suffix Automaton               Suffix Tree
-         │                              │
-         ▼                              ▼
-    ┌────────────────────────────────────────┐
-    │                                        │
-    │   Crochemore & Vérin (1997)           │
-    │   Direct CDAWG Construction            │
-    │                                        │
-    └────────────────────────────────────────┘
+    Blumer et al. (1985)   Crochemore (1986)      Weiner (1973)
+    Suffix Automaton       Factor Transducer      Suffix Tree
+    (endpos classes)       (repetitions)          (suffix links)
+         │                       │                     │
+         └───────────┬───────────┘                     │
+                     ▼                                  ▼
+    ┌────────────────────────────────────────────────────────┐
+    │                                                        │
+    │   Crochemore & Vérin (1997)                           │
+    │   Direct CDAWG Construction                            │
+    │                                                        │
+    └────────────────────────────────────────────────────────┘
                       │
                       ▼
     ┌────────────────────────────────────────┐
@@ -250,9 +282,10 @@ update(c):
 |-------|----------|
 | Blumer (1987) | SCDAWG definition, IS features, prime subwords |
 | Blumer (1985) | Equivalence class theory, suffix links |
+| Crochemore (1986) | Factor-transducer foundations, repetition/maximal-repeat reasoning |
 | Inenaga (2001) | Sext link insight, left extension construction |
 | Inenaga (2005) | On-line CDAWG algorithm, multi-string support |
-| Crochemore (1997) | Space bounds, compaction understanding |
+| Crochemore & Vérin (1997) | Space bounds, compaction understanding |
 | Gerdjikov (2013) | WallBreaker requirements, validation |
 
 ### Our Hybrid Approach

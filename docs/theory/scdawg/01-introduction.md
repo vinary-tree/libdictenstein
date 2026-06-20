@@ -16,7 +16,7 @@ For each word w in dictionary:
             Report match
 ```
 
-**Complexity**: O(N × m) where N = total characters in dictionary, m = query length
+**Complexity**: `O(N × m)` where `N` = total characters in the dictionary, `m` = query length.
 
 For our 88,000-word dictionary (~800,000 total characters), searching for a 5-character query performs ~4 million character comparisons. This is unacceptable for interactive applications.
 
@@ -26,8 +26,8 @@ We want a data structure that answers substring queries in time proportional to 
 
 | Approach | Query Time | Space |
 |----------|------------|-------|
-| Naive scan | O(N × m) | O(N) |
-| Build index once, query many | **O(m)** | O(N) |
+| Naive scan | `O(N × m)` | `O(N)` |
+| Build index once, query many | **`O(m)`** | `O(N)` |
 
 The SCDAWG achieves this by precomputing all possible substrings into a graph structure where:
 - Each node represents an equivalence class of substrings
@@ -36,7 +36,7 @@ The SCDAWG achieves this by precomputing all possible substrings into a graph st
 
 ## Why "Bidirectional"?
 
-Many applications need more than simple substring existence. The **WallBreaker algorithm** (Gerdjikov et al., 2013) for fuzzy dictionary matching requires:
+Many applications need more than simple substring existence. The **WallBreaker algorithm** (Gerdjikov et al. 2013; see [07-references](07-references.md)) for fuzzy dictionary matching requires:
 
 1. **(1a) Substring check**: Is V a substring of some dictionary word?
 2. **(1b) Right extension**: Given V is a substring, navigate to V·σ (append character)
@@ -58,12 +58,21 @@ Suffix Trie (1960s)
     ↓ compact non-branching paths
 Suffix Tree (1973, Weiner; 1976, McCreight)
     ↓ share common suffixes
-Suffix Automaton / DAWG (1983, Blumer et al.)
+Suffix Automaton / DAWG (1985, Blumer et al.)
     ↓ compact non-branching paths
 CDAWG (1997, Crochemore & Vérin)
     ↓ add left extension edges
 SCDAWG (1987, Blumer et al.; 2001, Inenaga et al.)
 ```
+
+The load-bearing references on this path, with verified DOIs, are: the suffix
+automaton / DAWG (Blumer et al. 1985, [10.1016/0304-3975(85)90157-4](https://doi.org/10.1016/0304-3975(85)90157-4);
+factor-transducer view, Crochemore 1986, [10.1016/0304-3975(86)90041-1](https://doi.org/10.1016/0304-3975(86)90041-1)),
+the CDAWG (Crochemore & Vérin 1997, [10.1007/3-540-63220-4_55](https://doi.org/10.1007/3-540-63220-4_55)),
+and the SCDAWG (Blumer et al. 1987, [10.1145/28869.28873](https://doi.org/10.1145/28869.28873);
+on-line construction, Inenaga et al. 2001, [10.1109/SPIRE.2001.989743](https://doi.org/10.1109/SPIRE.2001.989743)).
+Weiner (1973) and McCreight (1976) are listed author-year in
+[07-references](07-references.md). Full citations for every work appear there.
 
 ### Suffix Trie
 
@@ -86,7 +95,7 @@ Suffixes: "abab$", "bab$", "ab$", "b$", "$"
         $
 ```
 
-**Problem**: O(n²) space for n-length input. The string "aaa...a" (n copies of 'a') requires n + (n-1) + ... + 1 = O(n²) nodes.
+**Problem**: `O(n²)` space for an `n`-length input. The string "aaa...a" (`n` copies of 'a') requires `n + (n−1) + … + 1 = O(n²)` nodes.
 
 ### Suffix Tree
 
@@ -104,7 +113,7 @@ Input: "abab$"
               $
 ```
 
-**Improvement**: O(n) nodes and edges by storing edge labels as (start, end) pairs into the original string.
+**Improvement**: `O(n)` nodes and edges by storing edge labels as `(start, end)` pairs into the original string.
 
 **Problem**: Doesn't share common substrings between different suffixes. The substrings "ab" appearing in "abab$" at positions 0 and 2 lead to separate tree locations.
 
@@ -120,9 +129,9 @@ Input: "abab"
           `----- a ----'
 ```
 
-Key insight: states represent **equivalence classes** of substrings sharing the same set of ending positions.
+Key insight: states represent **equivalence classes** of substrings sharing the same set of ending positions (`endpos` sets).
 
-**Space**: At most 2n-1 states, 3n-4 edges for n-length input.
+**Space**: At most `2n − 1` states, `3n − 4` edges for an `n`-length input.
 
 ### CDAWG
 
@@ -133,7 +142,7 @@ Non-branching chain: (A) --x--> (B) --y--> (C)
 Compacted to: (A) --xy--> (C)
 ```
 
-**Space**: At most n+1 states, 2n-2 edges.
+**Space**: At most `n + 1` states, `2n − 2` edges.
 
 ### SCDAWG
 
@@ -146,7 +155,7 @@ Left extension:  "ab" --c--> "cab"  (prepend 'c')
 
 This enables bidirectional navigation required by algorithms like WallBreaker.
 
-**Space**: At most n+1 states, 4n-4 edges (doubled due to left edges).
+**Space**: At most `n + 1` states, `4n − 4` edges (doubled due to left edges).
 
 ## Our Running Example: "abcabcab"
 

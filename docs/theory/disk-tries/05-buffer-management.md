@@ -1,6 +1,6 @@
 # Buffer Management
 
-This document covers the storage layer components that enable efficient disk-based trie operations: the buffer manager (page cache), write-ahead logging (WAL), and crash recovery. These components form the foundation for durability and performance in our Persistent ARTrie.
+This document covers the storage layer components that enable efficient disk-based trie operations: the buffer manager (page cache), the **write-ahead log (WAL)** — a durable, append-only record of intended changes written *before* the corresponding data pages, so a crash can be repaired by replaying the log — and crash recovery. These components form the foundation for durability and performance in our Persistent ARTrie. Two acronyms recur: **LSN** (Log Sequence Number, a monotonically increasing identifier stamped on each log record and on the page it last modified) and **ARIES** (Algorithms for Recovery and Isolation Exploiting Semantics; Mohan et al. 1992, [doi:10.1145/128765.128770](https://doi.org/10.1145/128765.128770)), the canonical WAL-based recovery protocol.
 
 ## Table of Contents
 
@@ -201,7 +201,7 @@ impl LRUReplacer {
 
 ### Clock Algorithm Alternative
 
-For better performance, the CLOCK algorithm approximates LRU with lower overhead:
+For better performance, the **CLOCK** algorithm (also called *second-chance*) approximates **LRU** (Least Recently Used) eviction with far lower bookkeeping: it sweeps a circular array of per-frame reference bits like a clock hand, giving any recently-touched frame a "second chance" before evicting it.
 
 ```rust
 pub struct ClockReplacer {
@@ -469,9 +469,7 @@ impl GroupCommit {
 
 ### ARIES Recovery Protocol
 
-ARIES (Algorithms for Recovery and Isolation Exploiting Semantics) is the standard recovery algorithm:
-
-**Three phases:**
+ARIES (defined above) is the standard WAL-based recovery algorithm. It proceeds in three phases:
 1. **Analysis**: Scan log to determine state at crash
 2. **Redo**: Replay all changes since last checkpoint
 3. **Undo**: Rollback incomplete transactions
@@ -517,7 +515,7 @@ fn apply_redo(page: &mut PageGuard, record: &LogRecord) {
 
 ### Page LSN
 
-Each page stores the LSN of the last log record that modified it:
+Each page stores the `LSN` of the last log record that modified it. Comparing a record's `LSN` against the page's stored `LSN` is what makes redo **idempotent**: a change is reapplied only when `page_lsn < record.lsn`, so replaying the log twice is harmless.
 
 ```rust
 #[repr(C)]
@@ -667,7 +665,7 @@ The final document brings these components together in our Persistent ARTrie des
 
 1. Graefe, G. (2012). "A Survey of B-Tree Locking Techniques." *ACM TODS*.
 
-2. Mohan, C., Haderle, D., Lindsay, B., Pirahesh, H., & Schwarz, P. (1992). "ARIES: A Transaction Recovery Method Supporting Fine-Granularity Locking and Partial Rollbacks Using Write-Ahead Logging." *ACM TODS*.
+2. Mohan, C., Haderle, D., Lindsay, B., Pirahesh, H., & Schwarz, P. (1992). "ARIES: A Transaction Recovery Method Supporting Fine-Granularity Locking and Partial Rollbacks Using Write-Ahead Logging." *ACM TODS*, 17(1), 94-162. [doi:10.1145/128765.128770](https://doi.org/10.1145/128765.128770)
 
 3. O'Neil, E. J., O'Neil, P. E., & Weikum, G. (1993). "The LRU-K Page Replacement Algorithm for Database Disk Buffering." *SIGMOD*.
 

@@ -19,7 +19,11 @@
 
 ## Overview
 
-`DynamicDawg` is a **Directed Acyclic Word Graph** that supports **runtime insertions and deletions** while maintaining thread-safe access. Unlike static DAWG implementations, DynamicDawg allows the dictionary to evolve during application lifetime.
+`DynamicDawg` is a **DAWG** (*Directed Acyclic Word Graph* — the minimal acyclic
+deterministic automaton recognizing a finite set of strings, sharing both
+prefixes *and* suffixes) that supports **runtime insertions and deletions** while
+maintaining thread-safe access. Unlike static DAWG implementations, `DynamicDawg`
+allows the dictionary to evolve during the application lifetime.
 
 ### Key Advantages
 
@@ -46,7 +50,11 @@
 
 ### What is a DAWG?
 
-A **Directed Acyclic Word Graph** is a compressed trie that shares common suffixes, not just prefixes.
+A **Directed Acyclic Word Graph** is a compressed trie that shares common suffixes, not just prefixes. The DAWG was introduced by Blumer et al. (1985), "The smallest automaton recognizing the subwords of a text" ([10.1016/0304-3975(85)90157-4](https://doi.org/10.1016/0304-3975(85)90157-4)); the minimal acyclic FSA construction this backend follows is due to Daciuk et al. (2000), "Incremental construction of minimal acyclic finite-state automata" ([10.1162/089120100561601](https://doi.org/10.1162/089120100561601)).
+
+The figure below contrasts a plain trie (prefix sharing only) with the minimized DAWG (prefix **and** suffix sharing) for the term set `{ cats, bats }` — the shared suffix `ats✓` is stored once:
+
+<img src="../../diagrams/dawg-suffix-sharing.svg" alt="A DAWG shares suffixes too: a trie with 8 nodes for { cats, bats } collapses to a 5-node DAWG by merging the shared 'ats' suffix into a single path." width="640"/>
 
 **Example**: Terms ["car", "card", "cart", "star", "start"]
 
@@ -124,7 +132,7 @@ fn insert(&self, term: &str) {
 }
 ```
 
-**Complexity**: O(m) where m = term length
+**Complexity**: `O(m)` where m = term length
 
 ### Deletion Algorithm
 
@@ -167,7 +175,7 @@ fn remove(&self, term: &str) -> bool {
 }
 ```
 
-**Complexity**: O(m)
+**Complexity**: `O(m)`
 
 ### Compaction
 
@@ -192,7 +200,7 @@ pub fn compact(&self) {
 }
 ```
 
-**Complexity**: O(n) where n = total nodes
+**Complexity**: `O(n)` where n = total nodes
 
 **When to compact**:
 - After many deletions (10%+ of dictionary removed)
@@ -459,10 +467,10 @@ let writer = {
 
 **Key Takeaways:**
 1. 🔗 `.clone()` creates a **shallow copy** - all clones share the same data
-2. 🚀 **O(1)** time and space - just increments atomic reference count
+2. 🚀 **`O(1)`** time and space - just increments atomic reference count
 3. 🔄 **Mutations are visible** across all clones (by design)
 4. 🔒 **Thread-safe** through RwLock (multiple readers, single writer)
-5. 📊 For **independence**, use serialization or rebuild from terms (O(n) cost)
+5. 📊 For **independence**, use serialization or rebuild from terms (`O(n)` cost)
 
 ### Optimizations
 
@@ -506,6 +514,26 @@ if let Some(&existing_idx) = suffix_cache.get(&signature) {
 
 **Impact**: 20-40% space reduction
 
+#### Minimization via signature hashing
+
+Full minimization (`minimize_incremental`, source
+[`src/dynamic_dawg/core.rs`](../../../src/dynamic_dawg/core.rs)) folds a 64-bit
+`FxHash` signature for every node — `FxHash(is_final, sorted[(label, child_signature)])`,
+defined in [`src/node_signature.rs`](../../../src/node_signature.rs) — in a
+**bottom-up, deepest-first** pass, so a node's signature already incorporates its
+children's. Two nodes with equal signatures are *merge candidates*. Because a
+64-bit hash can collide (the birthday paradox), the equal-signature branch is
+guarded by an explicit `nodes_structurally_equal` check before the parent edge is
+redirected to the surviving canonical node and the duplicate is discarded —
+without that guard a single collision would fuse two distinct right languages and
+silently corrupt the DAWG.
+
+<img src="../../diagrams/dawg-minimization.svg" alt="Flowchart of DAWG minimization: a bottom-up post-order signature fold computes FxHash(is_final, sorted child edges) per node; nodes are classified leaves-first against a canonical table keyed by signature; an equal-signature hit is gated by a structural-equality check that either merges (redirect parent edge, discard duplicate) or, on a 64-bit hash collision, registers the node as a distinct canonical; finally all edges are redirected to canonicals and unreachable nodes are compacted." width="760"/>
+
+The merge step gives the suffix sharing visualized in the
+[suffix-sharing figure](#what-is-a-dawg) above; running it eagerly during insert
+is what keeps `DynamicDawg` near-minimal between explicit `compact()` calls.
+
 #### 3. Bloom Filter
 
 Fast negative lookup rejection:
@@ -540,7 +568,7 @@ if nodes.len() > last_minimized * auto_minimize_threshold {
 }
 ```
 
-**Impact**: Amortizes O(n) cost over many insertions
+**Impact**: Amortizes `O(n)` cost over many insertions
 
 ## Construction Methods
 
@@ -578,7 +606,7 @@ valued_dict.insert_with_value("world", 200);
 ```
 
 **Characteristics:**
-- **Time**: O(1) - Allocates minimal structure
+- **Time**: `O(1)` - Allocates minimal structure
 - **Memory**: ~48 bytes (Arc + RwLock + empty DynamicDawgInner)
 - **Use case**: Real-time incremental updates, streaming input
 
@@ -613,7 +641,7 @@ let dict = DynamicDawg::from_iter(lines);
 ```
 
 **Characteristics:**
-- **Time**: O(n·m) where n=terms, m=avg length
+- **Time**: `O(n·m)` where n=terms, m=avg length
 - **Memory**: Linear with term count (~250KB for 10K terms)
 - **Optimization**: Pre-sorting terms improves cache locality
 
@@ -801,7 +829,7 @@ pub fn contains(&self, term: &str) -> bool
 ```
 
 **Performance**:
-- **Complexity**: O(m) where m is term length
+- **Complexity**: `O(m)` where m is term length
 - **Optimizations**: Bloom filter for fast negative lookups (~100× faster rejection)
 - **Lock contention**: Read lock (shared access)
 
@@ -871,7 +899,7 @@ where
 - `None` if term doesn't exist or has no value
 
 **Performance**:
-- **Complexity**: O(m) where m is term length
+- **Complexity**: `O(m)` where m is term length
 - **Lock contention**: Read lock (shared access)
 
 **Example**:
@@ -927,7 +955,7 @@ fn is_empty(&self) -> bool      // Dictionary trait
 - `is_empty()`: `true` if no terms, `false` otherwise
 
 **Performance**:
-- **Complexity**: O(1) - stored counter
+- **Complexity**: `O(1)` - stored counter
 - **Lock contention**: Read lock (shared access)
 
 **Example**:
@@ -961,7 +989,7 @@ pub fn term_count(&self) -> usize
 ```
 
 **Performance**:
-- **Complexity**: O(1) - stored counter
+- **Complexity**: `O(1)` - stored counter
 - **Lock contention**: Read lock (shared access)
 
 **Example**:
@@ -996,7 +1024,7 @@ pub fn node_count(&self) -> usize
 **Returns**: Total number of DAWG nodes (including non-final nodes)
 
 **Performance**:
-- **Complexity**: O(1) - stored counter
+- **Complexity**: `O(1)` - stored counter
 - **Lock contention**: Read lock (shared access)
 
 **Example**:
@@ -1054,7 +1082,7 @@ pub fn needs_compaction(&self) -> bool
 - `false` if structure is minimal or only insertions occurred
 
 **Performance**:
-- **Complexity**: O(1) - flag check
+- **Complexity**: `O(1)` - flag check
 - **Lock contention**: Read lock (shared access)
 
 **Example**:
@@ -1088,7 +1116,7 @@ if dict.needs_compaction() {
 ```
 
 **Performance Guidance**:
-- Compaction is O(n) where n = total characters
+- Compaction is `O(n)` where n = total characters
 - Compact periodically, not after every deletion
 - Typical trigger: After removing >10% of terms
 
@@ -1106,7 +1134,7 @@ fn root(&self) -> DynamicDawgNode // From Dictionary trait
 **Returns**: Node at root of DAWG (entry point for traversal)
 
 **Performance**:
-- **Complexity**: O(1)
+- **Complexity**: `O(1)`
 - **Lock contention**: Read lock acquired per node operation
 
 **Example**:
@@ -1285,7 +1313,7 @@ The `union_with()` and `union_replace()` methods enable **merging two DynamicDaw
 **Key Characteristics**:
 - 🔒 **Thread-safe**: Operations use RwLock for concurrent access
 - 💾 **DAWG-preserving**: Maintains minimization through `insert_with_value()`
-- ⚡ **Efficient**: O(n·m) traversal with minimal memory overhead
+- ⚡ **Efficient**: `O(n·m)` traversal with minimal memory overhead
 - 🎯 **Flexible**: Custom merge functions for value conflicts
 
 ### union_with() - Merge with Custom Logic
@@ -1317,10 +1345,10 @@ where
 5. Repeat until stack empty
 
 **Complexity**:
-- **Time**: O(n·m) where n = terms in `other`, m = average term length
-  - O(n·m) for DFS traversal
-  - O(m) per term for `insert_with_value()`
-- **Space**: O(d) where d = maximum trie depth (typically < 50)
+- **Time**: `O(n·m)` where n = terms in `other`, m = average term length
+  - `O(n·m)` for DFS traversal
+  - `O(m)` per term for `insert_with_value()`
+- **Space**: `O(d)` where d = maximum trie depth (typically < 50)
   - DFS stack size proportional to deepest path
   - Constant additional memory
 
@@ -1533,7 +1561,7 @@ fn union_with<F>(&self, other: &Self, merge_fn: F) -> usize {
 
 **Why Iterative DFS?**
 - ✅ **No stack overflow**: Handles very deep tries (e.g., long terms)
-- ✅ **Memory efficient**: O(d) space vs O(n) for recursion
+- ✅ **Memory efficient**: `O(d)` space vs `O(n)` for recursion
 - ✅ **Consistent ordering**: Reversed edges ensure predictable traversal
 - ✅ **Debuggable**: Explicit stack state visible at each step
 

@@ -1,0 +1,78 @@
+// ============================================================================
+// SCDAWG structure for the running example  w = "abcabcab".
+//
+// Nodes are the PRIME SUBWORDS (longest representatives of each equivalence
+// class) — exactly the CDAWG node set:
+//     v0 = ε            v1 = ab           v2 = abca         v3 = abcab
+//     v4 = abcabc       v5 = abcabca      v6 = abcabcab
+//
+// The CDAWG / suffix automaton supplies the SOLID forward (right-extension)
+// transitions  x --σ…--> imps(xσ).  The SCDAWG adds the dashed coloured
+// LEFT-EXTENSION (symmetric) edges  x ⤙σ…⤙ imps(σx), enabling bidirectional
+// search: from a matched factor you may grow it to the RIGHT (append) or to
+// the LEFT (prepend) in O(|label|) per step.
+//
+// Color key (house palette):
+//   green  #C8E6C9  in-memory automaton nodes (prime subwords)
+//   blue   #BBDEFB  decorates the LEFT-extension (symmetric) edges
+//   grey   #ECEFF1  the source ε / infrastructure
+//   dark slate #37474F  forward (right-extension) transitions + borders
+// ============================================================================
+digraph scdawg_structure {
+    rankdir=LR;
+    bgcolor="#FFFFFF";
+    fontname="DejaVu Sans";
+    labelloc="t";
+    label="SCDAWG for \"abcabcab\" — solid = right-extension (CDAWG), dashed blue = left-extension (symmetric)";
+
+    node [shape=ellipse, style="filled", fillcolor="#C8E6C9",
+          color="#37474F", fontname="DejaVu Sans", fontcolor="#212121",
+          penwidth=1.4];
+    edge [color="#37474F", fontname="DejaVu Sans", fontcolor="#37474F",
+          penwidth=1.4];
+
+    // --- nodes (prime subwords) ------------------------------------------
+    v0 [label="v0\nε", fillcolor="#ECEFF1", shape=doublecircle];
+    v1 [label="v1\nab"];
+    v2 [label="v2\nabca"];
+    v3 [label="v3\nabcab"];
+    v4 [label="v4\nabcabc"];
+    v5 [label="v5\nabcabca"];
+    v6 [label="v6\nabcabcab", shape=doublecircle];
+
+    // --- RIGHT-extension (forward) transitions: x --label--> imps(xσ) ----
+    // solid dark-slate edges = the CDAWG.
+    v0 -> v1 [label="ab"];
+    v0 -> v3 [label="abcab"];
+    v1 -> v2 [label="ca"];
+    v2 -> v3 [label="b"];
+    v3 -> v4 [label="c"];
+    v4 -> v5 [label="a"];
+    v5 -> v6 [label="b"];
+
+    // --- LEFT-extension (symmetric) edges: x ⤙label⤙ imps(σx) ------------
+    // dashed blue edges, constraint=false so they don't fight the forward
+    // left-to-right ranking.  These are the edges the plain CDAWG lacks.
+    edge [color="#1565C0", fontcolor="#1565C0", style="dashed",
+          arrowhead="vee", constraint=false, penwidth=1.6];
+    v1 -> v2 [label="c·  (→ cabca)"];
+    v2 -> v3 [label="b·  (→ bcab…)"];
+    v3 -> v4 [label="c·"];
+    v4 -> v5 [label="a·"];
+    v5 -> v6 [label="b·"];
+    v0 -> v1 [label="a· / b·"];
+
+    // --- rendered legend --------------------------------------------------
+    { rank=sink;
+      legend [shape=note, style="filled", fillcolor="#FFF9C4",
+              color="#FBC02D", fontsize=10, fontcolor="#212121",
+              label=<
+<TABLE BORDER="0" CELLBORDER="0" CELLSPACING="1">
+<TR><TD ALIGN="LEFT"><B>Legend</B></TD></TR>
+<TR><TD ALIGN="LEFT"><FONT COLOR="#37474F">━━▶ right extension δ (CDAWG, append)</FONT></TD></TR>
+<TR><TD ALIGN="LEFT"><FONT COLOR="#1565C0">- -▶ left extension (symmetric, prepend)</FONT></TD></TR>
+<TR><TD ALIGN="LEFT">⬡ green node = prime subword (state)</TD></TR>
+<TR><TD ALIGN="LEFT">◎ double = source ε / sink (whole word)</TD></TR>
+</TABLE>>];
+    }
+}

@@ -16,7 +16,7 @@ This document introduces the foundational concepts needed to understand disk-bas
 
 ### Definition
 
-A **trie** (from "retrieval," pronounced either "try" or "tree") is a tree-based data structure for storing strings where each edge is labeled with a character (or more generally, a symbol from an alphabet). The path from the root to any node spells out a prefix of the stored strings.
+A **trie** (from "retrieval," pronounced either "try" or "tree"; introduced by Fredkin 1960, [doi:10.1145/367390.367400](https://doi.org/10.1145/367390.367400)) is a tree-based data structure for storing strings where each edge is labeled with a character (or more generally, a symbol from an alphabet). The path from the root to any node spells out a prefix of the stored strings.
 
 ```
               root
@@ -37,9 +37,9 @@ A **trie** (from "retrieval," pronounced either "try" or "tree") is a tree-based
 
 ### Formal Definition
 
-A trie T over alphabet Σ is a rooted tree where:
+A trie `T` over alphabet `Σ` is a rooted tree where:
 
-1. Each edge is labeled with a symbol σ ∈ Σ
+1. Each edge is labeled with a symbol `σ ∈ Σ`
 2. No two edges from the same node have the same label
 3. Each node may be marked as "final" to indicate a stored string ends there
 4. The string represented by a node is the concatenation of edge labels on the path from root to that node
@@ -47,23 +47,23 @@ A trie T over alphabet Σ is a rooted tree where:
 ### Properties
 
 **Time Complexity:**
-- Lookup: O(m) where m is the length of the query string
-- Insert: O(m)
-- Delete: O(m)
-- Prefix search: O(m + k) where k is the number of matches
+- Lookup: `O(m)` where `m` is the length of the query string
+- Insert: `O(m)`
+- Delete: `O(m)`
+- Prefix search: `O(m + k)` where `k` is the number of matches
 
 **Space Complexity:**
-- Worst case: O(n × m × |Σ|) where n is the number of strings and |Σ| is alphabet size
-- In practice: Much better due to prefix sharing
+- Worst case: `O(n × m × ∣Σ∣)` where `n` is the number of strings and `∣Σ∣` is the alphabet size
+- In practice: much better due to prefix sharing
 
 ### Comparison with Other String Structures
 
 | Structure | Lookup | Insert | Space | Notes |
 |-----------|--------|--------|-------|-------|
-| Sorted Array | O(m log n) | O(n) | O(N) | Binary search, N = total chars |
-| Hash Table | O(m) expected | O(m) | O(N) | No prefix queries, hash collisions |
-| Trie | O(m) | O(m) | Variable | Prefix queries, deterministic |
-| BST of strings | O(m log n) | O(m log n) | O(N) | Balanced variants |
+| Sorted Array | `O(m log n)` | `O(n)` | `O(N)` | Binary search, `N` = total chars |
+| Hash Table | `O(m)` expected | `O(m)` | `O(N)` | No prefix queries, hash collisions |
+| Trie | `O(m)` | `O(m)` | Variable | Prefix queries, deterministic |
+| BST of strings | `O(m log n)` | `O(m log n)` | `O(N)` | Balanced variants |
 
 The key advantage of tries is that lookup time depends only on query length, not the number of stored strings.
 
@@ -75,7 +75,7 @@ Several trie variants optimize for specific use cases:
 
 ### Standard Trie
 
-The basic trie as described above. Each node has up to |Σ| children, stored in some collection (array, hash map, linked list).
+The basic trie as described above. Each node has up to `∣Σ∣` children, stored in some collection (array, hash map, linked list).
 
 **Alphabet array representation:**
 ```
@@ -89,7 +89,7 @@ This wastes space when nodes have few children.
 
 ### Patricia Trie (Radix Tree)
 
-A **Patricia trie** (Practical Algorithm to Retrieve Information Coded in Alphanumeric) compresses chains of single-child nodes by storing edge labels as strings rather than single characters.
+A **Patricia trie** (Practical Algorithm To Retrieve Information Coded In Alphanumeric; Morrison 1968, [doi:10.1145/321479.321481](https://doi.org/10.1145/321479.321481)) compresses chains of single-child nodes by storing edge labels as strings rather than single characters.
 
 ```
 Standard Trie:          Patricia Trie:
@@ -132,7 +132,7 @@ Initial (bucket):       After burst:
 
 ### DAWG (Directed Acyclic Word Graph)
 
-A **DAWG** shares suffixes in addition to prefixes, creating a DAG rather than a tree. This minimizes space but complicates some operations.
+A **DAWG** — also called the *directed acyclic word graph* or minimal acyclic finite-state automaton (Blumer et al. 1985, [doi:10.1016/0304-3975(85)90157-4](https://doi.org/10.1016/0304-3975(85)90157-4); minimized incrementally by Daciuk et al. 2000, [doi:10.1162/089120100561601](https://doi.org/10.1162/089120100561601)) — shares suffixes in addition to prefixes, creating a DAG rather than a tree. This minimizes space but complicates some operations.
 
 ### Succinct Tries
 
@@ -159,9 +159,9 @@ When data exceeds RAM, we must consider the cost of disk I/O. The **external mem
 
 ### Cost Measure
 
-In this model, we count the number of **I/O operations** (block transfers between disk and memory), not CPU operations. Each I/O transfers one block of B bytes.
+In this model, we count the number of **I/O operations** (block transfers between disk and memory), not CPU operations. Each I/O transfers one block of `B` bytes.
 
-**Key insight:** Reading 1 byte costs the same as reading B bytes, because disk access has high latency but good throughput. We must read/write in blocks.
+**Key insight:** reading 1 byte costs the same as reading `B` bytes, because disk access has high latency but good throughput. We must read/write in blocks.
 
 ### Disk I/O Characteristics
 
@@ -196,13 +196,13 @@ B-trees exemplify disk-optimized design:
         [A-C][E-G][I-L][N-S][U-W][Y-Z]
 ```
 
-- **High fanout**: Each node has O(B) children, reducing tree height
-- **Height**: O(log_B N), so only O(log_B N) I/Os per operation
-- **Node size = block size**: Each node read/write is one I/O
+- **High fanout**: each node has `O(B)` children, reducing tree height
+- **Height**: `O(log_B N)`, so only `O(log_B N)` I/Os per operation
+- **Node size = block size**: each node read/write is one I/O
 
-For N = 1 billion items and B = 4KB pages holding 400 keys:
-- B-tree height: log₄₀₀(10⁹) ≈ 4 levels
-- Binary tree height: log₂(10⁹) ≈ 30 levels
+For `N = 1` billion items and `B = 4 KB` pages holding 400 keys:
+- B-tree height: `log₄₀₀(10⁹) ≈ 4` levels
+- Binary tree height: `log₂(10⁹) ≈ 30` levels
 
 ---
 
@@ -219,12 +219,12 @@ Naively persisting a standard trie to disk performs poorly:
 
 ### Example: Naive Trie Persistence
 
-Consider looking up "international" (13 characters) in a naive disk trie:
+Consider looking up `"international"` (13 characters) in a naive disk trie:
 - Standard trie: 13 pointer traversals
 - If each node is a separate disk read: 13 I/Os!
 
 Compare to a B-tree with fanout 256:
-- Height ≈ 3-4 for most dictionaries
+- Height `≈ 3–4` for most dictionaries
 - Only 3-4 I/Os per lookup
 
 ### Design Goals for Disk Tries
@@ -284,10 +284,10 @@ When comparing disk tries, measure:
 
 This foundation establishes the core concepts:
 
-1. **Tries** provide O(m) lookup independent of dictionary size
+1. **Tries** provide `O(m)` lookup independent of dictionary size
 2. **External memory model** counts I/Os, not CPU operations
 3. **Disk-efficient design** requires high fanout, block packing, and minimizing height
-4. **B-trees** show how to achieve O(log_B N) I/Os; our goal is similar for tries
+4. **B-trees** show how to achieve `O(log_B N)` I/Os; our goal is similar for tries
 
 The following documents explore specific solutions:
 - [02-b-trie](02-b-trie.md): Bucket-based approach from the B-tree world
@@ -295,8 +295,8 @@ The following documents explore specific solutions:
 
 ## References
 
-1. Fredkin, E. (1960). "Trie Memory". *Communications of the ACM*.
-2. Morrison, D. R. (1968). "PATRICIA—Practical Algorithm To Retrieve Information Coded in Alphanumeric". *JACM*.
+1. Fredkin, E. (1960). "Trie Memory". *Communications of the ACM*, 3(9), 490-499. [doi:10.1145/367390.367400](https://doi.org/10.1145/367390.367400)
+2. Morrison, D. R. (1968). "PATRICIA—Practical Algorithm To Retrieve Information Coded In Alphanumeric". *Journal of the ACM*, 15(4), 514-534. [doi:10.1145/321479.321481](https://doi.org/10.1145/321479.321481)
 3. Heinz, S., Zobel, J., & Williams, H. E. (2002). "Burst Tries: A Fast, Efficient Data Structure for String Keys". *ACM TOIS*.
 4. Aggarwal, A. & Vitter, J. S. (1988). "The Input/Output Complexity of Sorting and Related Problems". *CACM*.
 5. Bayer, R. & McCreight, E. (1972). "Organization and Maintenance of Large Ordered Indexes". *Acta Informatica*.

@@ -45,7 +45,7 @@
 
 ### The Double-Array Algorithm
 
-The double-array trie algorithm, invented by Jun-ichi Aoe in 1989, represents a trie using two parallel arrays: **BASE** and **CHECK**.
+The **double-array trie** (**DAT**) algorithm, invented by Jun-ichi Aoe in 1989 ([10.1109/32.31365](https://doi.org/10.1109/32.31365)), represents a trie using two parallel arrays: **BASE** (the per-state base offset into the arrays) and **CHECK** (the parent-state guard that validates a transition). The compact-static refinement this crate's read-mostly layout draws on is due to Yata et al. (2007), "A compact static double-array keeping character codes" ([10.1016/j.ipm.2006.04.004](https://doi.org/10.1016/j.ipm.2006.04.004)).
 
 #### Traditional Trie Problems
 
@@ -74,7 +74,7 @@ CHECK[t] = s       (verify that state t came from state s)
 ```
 
 **Advantages**:
-1. Constant-time transitions: O(1)
+1. Constant-time transitions: `O(1)`
 2. Sequential memory layout: cache-friendly
 3. Predictable access patterns: CPU prefetcher-friendly
 4. Compact representation: ~8 bytes per state
@@ -330,12 +330,12 @@ impl<V: DictionaryValue> DoubleArrayTrieBuilder<V> {
 
 ### Complexity Analysis
 
-- **Time**: O(N × L × M) where:
+- **Time**: `O(N × L × M)` where:
   - N = number of terms
   - L = average term length
   - M = average branching factor (~2-3 for natural language)
 
-- **Space**: O(S) where S = number of states
+- **Space**: `O(S)` where S = number of states
   - Typically S ≈ 0.5N to 2N depending on prefix sharing
 
 ### Optimization: Sorted Insertion
@@ -381,7 +381,7 @@ fn contains(&self, term: &str) -> bool {
 }
 ```
 
-**Complexity**: O(L) where L = term length
+**Complexity**: `O(L)` where L = term length
 
 **Performance**: ~6.6µs for 10,000-term dictionary
 
@@ -401,7 +401,7 @@ let results: Vec<String> = automaton.query(&dict).collect();
 // Returns: ["test"] (transposition distance = 1)
 ```
 
-**Complexity**: O(L × D × B) where:
+**Complexity**: `O(L × D × B)` where:
 - L = query length
 - D = max distance
 - B = average branching factor
@@ -764,8 +764,8 @@ Dictionary Size  │  Construction  │  Query Time  │  Memory
 ```
 
 **Observations**:
-- Construction: O(N log N) due to sorting
-- Query: O(L) - independent of dictionary size!
+- Construction: `O(N log N)` due to sorting
+- Query: `O(L)` - independent of dictionary size!
 - Memory: Linear with term count
 
 ### CPU Cache Impact

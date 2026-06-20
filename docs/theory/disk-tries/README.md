@@ -18,6 +18,7 @@ The documents are numbered to indicate the recommended reading order:
 | [04-persistent-art](04-persistent-art.md) | Disk persistence with pointer swizzling | 01, 03 |
 | [05-buffer-management](05-buffer-management.md) | Page cache, WAL, and crash recovery | 01 |
 | [06-persistent-artrie-design](06-persistent-artrie-design.md) | Our hybrid PART design | All previous |
+| [07-benchmark-results](07-benchmark-results.md) | Measured throughput, recovery, and checkpoint costs | 06 |
 
 ## Reading Paths
 
@@ -60,12 +61,12 @@ For the Persistent ARTrie design:
 
 | Operation | Time Complexity | Disk I/Os |
 |-----------|-----------------|-----------|
-| Exact lookup | O(m) | 2-4 (typical) |
-| Insert | O(m + log B) amortized | 2-4 + 1 write |
-| Prefix search | O(m + k) | Depends on k |
-| Levenshtein (d=1,2) | O(n·m·d²) | Varies with pruning |
+| Exact lookup | `O(m)` | 2-4 (typical) |
+| Insert | `O(m + log B)` amortized | 2-4 + 1 write |
+| Prefix search | `O(m + k)` | Depends on `k` |
+| Levenshtein (`d = 1, 2`) | `O(n·m·d²)` | Varies with pruning |
 
-Where: m = term length, B = bucket size (~100-500), k = result count
+Where: `m` = term length, `B` = bucket size (`~100–500`), `k` = result count
 
 ## References
 
@@ -77,7 +78,7 @@ Primary sources underlying this documentation:
 
 2. **The Adaptive Radix Tree: ARTful Indexing for Main-Memory Databases**
    Leis, V., Kemper, A., & Neumann, T. (2013). *ICDE*.
-   [PDF](https://db.in.tum.de/~leis/papers/ART.pdf)
+   [DOI: 10.1109/ICDE.2013.6544812](https://doi.org/10.1109/ICDE.2013.6544812) · [PDF](https://db.in.tum.de/~leis/papers/ART.pdf)
 
 3. **Persistent Storage of Adaptive Radix Trees in DuckDB**
    DuckDB Team (2022).

@@ -1,0 +1,91 @@
+@startuml dawg-minimization
+' ============================================================================
+' DAWG minimization via 64-bit signature hashing (FxHash).
+' Source of truth: src/node_signature.rs (NodeSignature::compute) and
+' src/dynamic_dawg/core.rs (compute_signatures_dfs / minimize_incremental /
+' nodes_structurally_equal).
+'
+' The algorithm is bottom-up (post-order DFS = deepest-first). Each node folds a
+' 64-bit signature  FxHash(is_final, sorted[(label, child_signature)]).  Nodes
+' that hash equal are MERGE CANDIDATES; because a 64-bit hash can collide
+' (birthday paradox), the equal-signature branch is guarded by an explicit
+' structural-equality check before the parent edge is redirected and the new
+' node discarded.
+'
+' Color key (mirrors docs/diagrams/README.md house style):
+'   green  #C8E6C9 = signature computation (the bottom-up fold, in-memory)
+'   blue   #BBDEFB = the registry / canonical-table lookup + decision
+'   amber  #FFF59D = the collision guard (structural equality) — the safety net
+'   red    #FFCDD2 = collision detected → do NOT merge (register as distinct)
+'   neutral #ECEFF1 = terminal / edge-rewrite bookkeeping
+' ============================================================================
+skinparam backgroundColor #FFFFFF
+skinparam defaultFontName "DejaVu Sans"
+skinparam shadowing false
+skinparam ArrowColor #37474F
+skinparam ActivityBorderColor #37474F
+skinparam ActivityDiamondBorderColor #37474F
+skinparam NoteBackgroundColor #F1F1F1
+skinparam NoteBorderColor #37474F
+
+title DAWG minimization — signature hashing with a 64-bit-collision guard
+
+start
+
+partition "1 · Bottom-up signature fold  (compute_signatures_dfs, post-order)" #C8E6C9 {
+  :Post-order DFS over the node graph\n(children first ⇒ deepest nodes finalize first);
+  :For each node, once its children carry final\nsignatures, fold its own signature\n`sig = FxHash(is_final, sorted[(label, child_sig)])`\n(edges sorted by label ⇒ order-independent);
+}
+
+partition "2 · Classify nodes  (minimize_incremental, reverse / leaves-first order)" #BBDEFB {
+  while (more nodes to classify?\n(reverse index order, leaves first)) is (yes)
+    :Take the next node and its signature `sig`;
+    if (signature `sig` already\nin the canonical table?) then (yes — bucket exists)
+      :Scan the bucket's **live** canonical nodes\n(skip any already merged: keep only `node_mapping[c] == c`);
+      if (a live canonical with\nan equal signature found?) then (candidate)
+
+        partition "Collision guard  (nodes_structurally_equal)" #FFF59D {
+          if (`nodes_structurally_equal(node, canonical)`?\nsame is_final · no value · same labels ·\nchildren map to same canonicals) then (structurally equal)
+            #C8E6C9:**MERGE** — redirect the parent edge to the\ncanonical node; record `node_mapping[node] = canonical`;\ndiscard the duplicate;
+            note right #F1F1F1
+              The right languages are provably identical:
+              same accept flag and the same set of
+              (label → already-canonical child) edges.
+              Safe to share — this is the space win.
+            end note
+          else (**64-bit hash collision**)
+            #FFCDD2:Equal hash but **different structure** —\ndo NOT merge; register `node` as a\n*new* canonical in the same bucket;
+            note right #FFCDD2
+              Without this branch a birthday-paradox
+              collision would fuse two distinct right
+              languages and silently corrupt the DAWG.
+            end note
+          endif
+        }
+
+      else (no live match)
+        #BBDEFB:Append `node` to the bucket as a new canonical;
+      endif
+    else (no — first of its kind)
+      #BBDEFB:Insert a fresh bucket `sig → [node]`;\nmark `node` canonical;
+    endif
+  endwhile (no — all nodes classified)
+}
+
+partition "3 · Rewrite & compact" #ECEFF1 {
+  :Redirect **every** edge target through `node_mapping`\n(`target = node_mapping[target]`);
+  :Drop nodes no longer reachable from the root\n(`find_reachable_nodes` → `compact_with_reachable`);
+  :Clear the suffix cache; recompute ref-counts;
+}
+
+stop
+
+legend right
+| Color | Stage |
+|<#C8E6C9>| signature fold (bottom-up, in-memory) |
+|<#BBDEFB>| canonical-table lookup + decision |
+|<#FFF59D>| structural-equality collision guard |
+|<#FFCDD2>| 64-bit collision → keep distinct |
+|<#ECEFF1>| edge rewrite + compaction |
+endlegend
+@enduml

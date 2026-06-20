@@ -704,7 +704,7 @@ See [Serialization Guide](serialization.md) for details.
 
 5. **Schulz, K. U., & Mihov, S. (2002)**. "Fast String Correction with Levenshtein Automata"
    - *International Journal on Document Analysis and Recognition*, 5(1), 67-85
-   - 📄 [Available via ResearchGate](https://www.researchgate.net/)
+   - DOI: [10.1007/s10032-002-0082-8](https://doi.org/10.1007/s10032-002-0082-8)
    - Core algorithm for fuzzy matching with tries
 
 ## Next Steps

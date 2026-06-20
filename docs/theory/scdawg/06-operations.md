@@ -1,6 +1,6 @@
 # SCDAWG Operations
 
-This document covers the operations supported by the SCDAWG, including substring search, bidirectional pattern extension, and Inverted File (IS) features from Blumer et al. (1987).
+This document covers the operations supported by the SCDAWG, including substring search, bidirectional pattern extension, and Inverted File (IS) features from Blumer et al. (1987, [10.1145/28869.28873](https://doi.org/10.1145/28869.28873)).
 
 ## Substring Search
 
@@ -48,9 +48,9 @@ fn contains_substring(pattern: &[Char]) -> bool {
 
 ### Complexity
 
-**Time**: O(|pattern|) - each character is examined once.
+**Time**: `O(∣pattern∣)` — each character is examined once.
 
-**Space**: O(1) additional space beyond the SCDAWG itself.
+**Space**: `O(1)` additional space beyond the SCDAWG itself.
 
 ### Finding the Representative Node
 
@@ -203,7 +203,7 @@ fn left_extensions(handle: &SubstringHandle) -> impl Iterator<Item = (Char, Subs
 
 ## Inverted File (IS) Features
 
-Blumer et al. (1987) describe the SCDAWG as supporting **Inverted File** (IS) features, which provide document-level information about substrings.
+Blumer et al. (1987, [10.1145/28869.28873](https://doi.org/10.1145/28869.28873)) describe the SCDAWG as supporting **Inverted File** (IS) features, which provide document-level information about substrings.
 
 ### Frequency: freq(x)
 
@@ -318,7 +318,7 @@ fn locations_with_terms(handle: &SubstringHandle) -> Vec<OccurrenceInfo> {
 
 ## WallBreaker Integration
 
-The SCDAWG satisfies all requirements from Gerdjikov et al. (2013):
+The SCDAWG satisfies all requirements from Gerdjikov et al. (2013; see [07-references](07-references.md)):
 
 ### Requirement (1a): Substring Check
 
@@ -330,7 +330,7 @@ impl WallBreakerSupport for Scdawg {
 }
 ```
 
-**Complexity**: O(|v|)
+**Complexity**: `O(∣v∣)`
 
 ### Requirement (1b): Right Extension
 
@@ -346,7 +346,7 @@ impl WallBreakerSupport for Scdawg {
 }
 ```
 
-**Complexity**: O(1) for single extension, O(|Σ|) for enumeration
+**Complexity**: `O(1)` for a single extension, `O(∣Σ∣)` for enumeration
 
 ### Requirement (1c): Left Extension
 
@@ -362,7 +362,7 @@ impl WallBreakerSupport for Scdawg {
 }
 ```
 
-**Complexity**: O(1) for single extension, O(|Σ|) for enumeration
+**Complexity**: `O(1)` for a single extension, `O(∣Σ∣)` for enumeration
 
 ## Traversal Patterns
 
@@ -397,8 +397,10 @@ fn enumerate_all_substrings<F: FnMut(&[Char])>(callback: &mut F) {
 ### Finding Maximal Repeats
 
 A **maximal repeat** is a string that:
-1. Occurs more than once
-2. Cannot be extended left or right without reducing frequency
+1. Occurs more than once.
+2. Cannot be extended left or right without reducing frequency (i.e. it is both *left-diverse* and *right-diverse*).
+
+Locating such repetitions is the classical application of the factor transducer (Crochemore 1986, [10.1016/0304-3975(86)90041-1](https://doi.org/10.1016/0304-3975(86)90041-1)); the SCDAWG exposes the same information directly because left-diversity is visible through its left-extension (`sext_edges`) degree and right-diversity through its right-extension degree.
 
 ```
 fn find_maximal_repeats() -> Vec<(String, usize)> {
@@ -500,6 +502,6 @@ impl Iterator for LocationIterator<'_> {
 | `freq(h)` | Count occurrences | O(1) cached, O(n) uncached |
 | `locations(h)` | List all positions | O(occ) where occ = output size |
 
-**Key insight**: The SCDAWG provides O(|pattern|) substring search with O(1) bidirectional extension, making it ideal for algorithms like WallBreaker that need to grow patterns in both directions.
+**Key insight**: The SCDAWG provides `O(∣pattern∣)` substring search with `O(1)` bidirectional extension, making it ideal for algorithms like WallBreaker that need to grow patterns in both directions.
 
 **Next**: [07-references](07-references.md) - Annotated bibliography of source papers

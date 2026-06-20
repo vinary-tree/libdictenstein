@@ -1,17 +1,17 @@
 # Symmetric Compact Directed Acyclic Word Graph (SCDAWG)
 
-This documentation provides a comprehensive, pedagogical treatment of the **Symmetric Compact DAWG** (SCDAWG), a data structure that enables O(|pattern|) substring searching with bidirectional navigation capabilities.
+This documentation provides a comprehensive, pedagogical treatment of the **Symmetric Compact DAWG** (SCDAWG), a data structure that enables `O(∣pattern∣)` substring searching with bidirectional navigation capabilities.
 
 ## Overview
 
 The SCDAWG, also known as **C2S** (Compact Symmetric), is the most space-efficient index structure that supports:
 
-1. **Substring search** in O(|pattern|) time
-2. **Right extension**: given a pattern V, navigate to V followed by character σ
-3. **Left extension**: given a pattern V, navigate to character σ followed by V
+1. **Substring search** in `O(∣pattern∣)` time
+2. **Right extension**: given a pattern `V`, navigate to `V` followed by character `σ`
+3. **Left extension**: given a pattern `V`, navigate to character `σ` followed by `V`
 4. **Occurrence enumeration**: find all positions where a pattern occurs
 
-These capabilities make the SCDAWG ideal for applications like the **WallBreaker** algorithm (Gerdjikov et al., 2013), which requires bidirectional pattern growth during dictionary-based fuzzy string matching.
+These capabilities make the SCDAWG ideal for applications like the **WallBreaker** algorithm (Gerdjikov et al. 2013; see [07-references](07-references.md)), which requires bidirectional pattern growth during dictionary-based fuzzy string matching.
 
 ## Document Structure
 
@@ -37,28 +37,28 @@ Index:  0 1 2 3 4 5 6 7
 ```
 
 Key properties of this example:
-- Length |w| = 8
-- Alphabet Σ = {a, b, c}
-- Contains repeated patterns: "ab" (3x), "abc" (2x), "bc" (2x), "cab" (2x)
+- Length `∣w∣ = 8`
+- Alphabet `Σ = {a, b, c}`
+- Contains repeated patterns: "ab" (3×), "abc" (2×), "bc" (2×), "cab" (2×)
 - No unique end marker in raw form (added during construction)
 
 ## Complexity Summary
 
 | Structure | States | Transitions | Space | Query Time |
 |-----------|--------|-------------|-------|------------|
-| Suffix Trie | O(n²) | O(n²) | O(n²) | O(m) |
-| Suffix Tree | O(n) | O(n) | O(n) | O(m) |
-| Suffix Automaton (DAWG) | ≤ 2n-1 | ≤ 3n-4 | O(n) | O(m) |
-| CDAWG | ≤ n+1 | ≤ 2n-2 | O(n) | O(m) |
-| **SCDAWG** | ≤ n+1 | ≤ 4n-4 | O(n) | O(m) |
+| Suffix Trie | `O(n²)` | `O(n²)` | `O(n²)` | `O(m)` |
+| Suffix Tree | `O(n)` | `O(n)` | `O(n)` | `O(m)` |
+| Suffix Automaton (DAWG) | `≤ 2n − 1` | `≤ 3n − 4` | `O(n)` | `O(m)` |
+| CDAWG | `≤ n + 1` | `≤ 2n − 2` | `O(n)` | `O(m)` |
+| **SCDAWG** | `≤ n + 1` | `≤ 4n − 4` | `O(n)` | `O(m)` |
 
-Where n = |w| (text length) and m = |pattern| (query length).
+Where `n = ∣w∣` (text length) and `m = ∣pattern∣` (query length).
 
 ## Key Concepts at a Glance
 
 ### Equivalence Classes
 
-Strings belong to the same equivalence class if they share the same **end-position set**:
+Strings belong to the same equivalence class if they share the same **end-position set** (`endpos`) — the set of positions at which the factor ends in `w`:
 
 ```
 end-pos("ab") = {2, 5, 8}  (positions after "ab")
@@ -69,7 +69,7 @@ Since "ab" and "cab" have different end-positions, they are in different classes
 
 ### Suffix Links
 
-Suffix links connect each state to its **longest proper suffix** that forms a distinct equivalence class:
+A **suffix link** connects each state to its **longest proper suffix** that forms a distinct equivalence class (one `endpos`-level up):
 
 ```
 State "abc" --suffix-link--> State "bc" --suffix-link--> State "c"
@@ -115,16 +115,16 @@ No prior knowledge of suffix structures is required.
 
 The key papers that define and construct the SCDAWG are:
 
-1. **Blumer et al. (1987)** - "Complete Inverted Files for Efficient Text Retrieval and Analysis"
+1. **Blumer et al. (1987)** — "Complete Inverted Files for Efficient Text Retrieval and Analysis." DOI: [10.1145/28869.28873](https://doi.org/10.1145/28869.28873)
    - Defines the SCDAWG structure (C2S)
-   - Introduces IS (Inverted File) features: freq(), locations()
+   - Introduces IS (Inverted File) features: `freq()`, `locations()`
 
-2. **Inenaga et al. (2001)** - "On-Line Construction of Symmetric Compact Directed Acyclic Word Graphs"
-   - On-line O(n) construction algorithm
-   - Key insight: sext links = edges of CDAWG(w^rev)
+2. **Inenaga et al. (2001)** — "On-Line Construction of Symmetric Compact Directed Acyclic Word Graphs." DOI: [10.1109/SPIRE.2001.989743](https://doi.org/10.1109/SPIRE.2001.989743)
+   - On-line `O(n)` construction algorithm
+   - Key insight: sext links = edges of `CDAWG(wʳᵉᵛ)`
 
-3. **Inenaga et al. (2005)** - "On-line construction of compact directed acyclic word graphs"
-   - On-line O(n) CDAWG construction
+3. **Inenaga et al. (2005)** — "On-line construction of compact directed acyclic word graphs." DOI: [10.1016/j.dam.2004.04.012](https://doi.org/10.1016/j.dam.2004.04.012)
+   - On-line `O(n)` CDAWG construction
    - Multi-string support with unique end markers
 
 See [07-references](07-references.md) for the complete annotated bibliography.

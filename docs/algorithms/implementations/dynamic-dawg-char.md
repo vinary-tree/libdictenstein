@@ -19,7 +19,16 @@
 
 ## Overview
 
-`DynamicDawgChar` is a character-level variant of `DynamicDawg` designed for **correct Unicode handling** with **full dynamic update support**. While the byte-level variant treats text as sequences of bytes, the character-level variant operates on Unicode code points, providing accurate Levenshtein distances for multi-byte characters.
+`DynamicDawgChar` is a character-level variant of `DynamicDawg` — a **DAWG**
+(*Directed Acyclic Word Graph*: the minimal acyclic deterministic automaton over
+a finite string set, sharing prefixes *and* suffixes; see Blumer et al. 1985,
+[10.1016/0304-3975(85)90157-4](https://doi.org/10.1016/0304-3975(85)90157-4), and
+the incremental-minimization construction of Daciuk et al. 2000,
+[10.1162/089120100561601](https://doi.org/10.1162/089120100561601)) — designed for
+**correct Unicode handling** with **full dynamic update support**. While the
+byte-level variant treats text as sequences of bytes, the character-level variant
+operates on Unicode code points, providing accurate Levenshtein distances for
+multi-byte characters.
 
 ### Key Advantages
 
@@ -214,7 +223,7 @@ assert_eq!(dict2.len(), Some(3));  // Same count
 
 #### Unicode Considerations
 
-Clone behavior is **independent of Unicode complexity**. Whether working with ASCII, multi-byte characters, emoji, or combining diacritics, the clone operation remains O(1):
+Clone behavior is **independent of Unicode complexity**. Whether working with ASCII, multi-byte characters, emoji, or combining diacritics, the clone operation remains `O(1)`:
 
 ```rust
 // Simple ASCII
@@ -366,7 +375,7 @@ let writer = {
 
 **Key Takeaways:**
 1. 🔗 Clone behavior is **identical** to byte-level DynamicDawg
-2. 🚀 **O(1)** regardless of Unicode complexity (ASCII, CJK, emoji, etc.)
+2. 🚀 **`O(1)`** regardless of Unicode complexity (ASCII, CJK, emoji, etc.)
 3. 🔄 **Mutations visible** across all clones for all character types
 4. 🌍 **Unicode-safe** thread synchronization through RwLock
 5. 📊 For **independence**, use serialization or rebuild (same as byte-level)
@@ -408,7 +417,7 @@ valued_dict.insert_with_value("résumé", 200);
 ```
 
 **Characteristics:**
-- **Time**: O(1) - Same as byte-level variant
+- **Time**: `O(1)` - Same as byte-level variant
 - **Memory**: ~48 bytes initial allocation
 - **Unicode handling**: Automatic - no normalization needed
 
@@ -790,7 +799,7 @@ The `union_with()` and `union_replace()` methods enable **merging two DynamicDaw
 - 🔒 **Thread-safe**: Operations use RwLock for concurrent access
 - 💾 **DAWG-preserving**: Maintains minimization through `insert_with_value()`
 - 🌐 **Unicode-correct**: Operates on `char` (Unicode code points), not bytes
-- ⚡ **Efficient**: O(n·m) traversal with minimal memory overhead
+- ⚡ **Efficient**: `O(n·m)` traversal with minimal memory overhead
 - 🎯 **Flexible**: Custom merge functions for value conflicts
 
 ### union_with() - Merge with Custom Logic
@@ -827,10 +836,10 @@ where
 - Result: Proper handling of multi-byte Unicode sequences (emoji, diacritics, etc.)
 
 **Complexity**:
-- **Time**: O(n·m) where n = terms in `other`, m = average term length **in characters**
-  - O(n·m) for DFS traversal
-  - O(m) per term for `insert_with_value()`
-- **Space**: O(d) where d = maximum trie depth (characters, not bytes)
+- **Time**: `O(n·m)` where n = terms in `other`, m = average term length **in characters**
+  - `O(n·m)` for DFS traversal
+  - `O(m)` per term for `insert_with_value()`
+- **Space**: `O(d)` where d = maximum trie depth (characters, not bytes)
   - DFS stack size proportional to deepest path
   - Constant additional memory
 
@@ -1476,6 +1485,7 @@ Unicode correctness     ❌             ✅                 Priceless!
 
 1. **Schulz, K. U., & Mihov, S. (2002)**. "Fast String Correction with Levenshtein Automata"
    - *International Journal on Document Analysis and Recognition*, 5(1), 67-85
+   - DOI: [10.1007/s10032-002-0082-8](https://doi.org/10.1007/s10032-002-0082-8)
    - 📄 Discusses character-level vs byte-level matching
 
 2. **Unicode Consortium**. *The Unicode Standard, Version 15.0*

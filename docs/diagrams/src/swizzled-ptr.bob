@@ -1,0 +1,41 @@
+# =============================================================================
+# SwizzledPtr — the 64-bit atomic STATE word + a separate provenance pointer.
+# Source of truth: src/persistent_artrie/core/swizzled_ptr.rs.
+#
+# The state word's MSB (bit 63) discriminates the class:
+#   MSB = 1  -> memory / transitional: the LIVE pointer lives in a SEPARATE
+#              `memory_ptr: AtomicPtr` slot (so Rust pointer provenance is
+#              preserved; an address is never packed into the integer).
+#   MSB = 0  -> on-disk reference, packed as block_id + location + flags.
+#
+# When MSB = 0 the low 63 bits pack:
+#   bits 62..40 (23)  block_id   (<= 8M-1)
+#   bits 39..18 (22)  location   (byte offset for raw refs; arena slot id for
+#                                 arena-backed byte nodes)
+#   bits 17..0  (18)  flags, including the NodeType discriminant
+#
+# Color key (rendered by the wrapper):
+#   blue = on-disk reference fields   ·   green = the live in-memory pointer slot
+# =============================================================================
+
+  SwizzledPtr.state : AtomicU64   (MSB on the left)
+
+   63        62 ............. 40   39 ............ 18   17 ........... 0
+  +----+ +----------------------+ +------------------+ +----------------+
+  |MSB | |   block_id  (23b)    | |  location (22b)  | |  flags  (18b)  |
+  |swz | |   <= 8M - 1          | |  offset / slot   | |  incl NodeType |
+  +----+ +----------------------+ +------------------+ +----------------+
+    |                  on-disk reference encoding (active when MSB = 0)
+    |
+    | MSB = 1  => state word holds NO address; read the live pointer here:
+    v
+  SwizzledPtr.memory_ptr : AtomicPtr<()>
+  +-----------------------------------------------+
+  | *mut ()  -> live in-memory node (provenance)  |   (null while on disk)
+  +-----------------------------------------------+
+
+  state == 0                  : null (neither on disk nor in memory)
+  state == 1<<63              : MEMORY (live ptr is in memory_ptr)
+  state == (1<<63) | 1        : INSTALLING (a swizzle is publishing memory_ptr)
+  state == (1<<63) | 2        : EVICTING  (an unswizzle is clearing memory_ptr)
+  state MSB = 0, state != 0   : on-disk reference (decode block_id/location/flags)

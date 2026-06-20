@@ -63,7 +63,21 @@ These md files are not `include_str!` doctests, so grep verification is the gate
 **Note**: git remote IS present (`github.com/vinary-tree/libdictenstein`, also in
 Cargo.toml) — the memory "local-only (no git remote)" is stale; raw-GitHub `master`
 URLs are the correct rustdoc embed mechanism for docs.rs.
-## Phase 3 — Theory + algorithms refresh + diagrams  ☐
+## Phase 3 — Theory + algorithms refresh + diagrams  ☑
+
+Executed via 3 parallel cluster subagents (disk-tries, scdawg, algorithms/impl),
+each owning its docs end-to-end; parent provided exact source-derived layouts,
+rendered + verified all diagrams.
+
+| Item | Action | Status | Verification |
+|------|--------|--------|--------------|
+| Svgbob wired into pipeline | `.bob` branch in `render-diagrams.sh` (+ headless-`DISPLAY` fix for JVM renderers), CI `cargo install svgbob_cli@0.7.6`, README row | ☑ | all `.bob` render 648×7xx |
+| 10 new diagrams | node-header (bytefield, parent) + node-layouts/path-compression/swizzled-ptr/burst-trie (Svgbob) + node-state/swizzled-ptr-states/clone-on-split/dawg-minimization (PlantUML) + scdawg-structure/suffix-links (Graphviz) | ☑ | 19/19 idempotent; 0 render-error markers |
+| Inline DOIs | added across the body of **15** theory files from the README's Crossref-verified list (was ~0 inline) | ☑ | `grep doi.org` = 15 files |
+| Backtick prose math | `O(·)`, `∣q∣`, `Σ`, `≤ 2·∣T∣−1` etc. wrapped in sentences across disk-tries + scdawg + algorithms (fences left as-is) | ☑ | sampled; balanced fences |
+| Thin docs filled | `implementations/scdawg.md` 240→314 (real `SubstringDictionary` API verified), `bijective.md`→285 (corrected data-model), `disk-tries/07-benchmark-results.md` 125→238 (metric defs + intuition + provenance) | ☑ | API symbols verified vs `src/scdawg/`, `src/bijective/` |
+| Diagram embeds | byte-layout/path-compression/burst-trie/node-state into disk-tries 02-04; clone-on-split/suffix-links/scdawg-structure into scdawg 02/04; dawg-min + dawg-suffix-sharing into dynamic-dawg.md | ☑ | 0 broken embeds; 0 broken links (excl. Phase-5 forward-refs) |
+| Corrections found | inline-prefix cap corrected to crate-real 12 B (byte)/6 `u32` (char); Crochemore 1986 added where load-bearing; DAWG year 1983→1985 | ☑ | vs `nodes/mod.rs` MAX_PREFIX_LEN |
 ## Phase 4 — Persistence, eviction, formal-verification + diagrams  ☐
 ## Phase 5 — New conceptual docs  ☐
 ## Phase 6 — Benchmark plots  ☐

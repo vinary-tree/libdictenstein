@@ -17,7 +17,7 @@
 
 ## Overview
 
-`DoubleArrayTrieChar` is a character-level variant of `DoubleArrayTrie` designed for **correct Unicode handling**. While the byte-level variant treats text as sequences of bytes (UTF-8 encoding units), the character-level variant operates on Unicode code points, providing accurate Levenshtein distances for multi-byte characters.
+`DoubleArrayTrieChar` is a character-level variant of `DoubleArrayTrie` (the **DAT** — *double-array trie*; see [the byte-variant guide](double-array-trie.md#theory) for the **BASE**/**CHECK** array theory and the Aoe 1989 / Yata 2007 references) designed for **correct Unicode handling**. While the byte-level variant treats text as sequences of bytes (UTF-8 encoding units), the character-level variant operates on Unicode code points, providing accurate Levenshtein distances for multi-byte characters.
 
 ### Key Advantages
 
@@ -836,6 +836,7 @@ let han_dict = DoubleArrayTrieChar::from_terms(by_script[&Script::Han]);
 
 8. **Schulz, K. U., & Mihov, S. (2002)**. "Fast String Correction with Levenshtein Automata"
    - *International Journal on Document Analysis and Recognition*, 5(1), 67-85
+   - DOI: [10.1007/s10032-002-0082-8](https://doi.org/10.1007/s10032-002-0082-8)
    - Discusses character-level vs byte-level matching
 
 ## Next Steps

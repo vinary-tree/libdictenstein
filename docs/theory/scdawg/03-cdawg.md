@@ -4,7 +4,7 @@ The **Compact DAWG** (CDAWG), also called the **Compact Suffix Automaton**, redu
 
 ## Motivation for Compaction
 
-The suffix automaton has up to 3n-4 transitions for a string of length n. Many of these transitions form linear chains with no branching:
+The suffix automaton has up to `3n − 4` transitions for a string of length `n`. Many of these transitions form linear chains with no branching:
 
 ```
 Before compaction:
@@ -26,7 +26,7 @@ Not all edges can be compacted. We distinguish:
 
 ### Primary Edges
 
-An edge from state [x] to [xa] is **primary** if xa is the **longest** string in class [xa].
+An edge from state `[x]` to `[xa]` is **primary** if `xa` is the **longest** string in class `[xa]`.
 
 **Definition (Primary Edge)**:
 ```
@@ -37,7 +37,7 @@ Primary edges represent the "canonical" path to reach a state.
 
 ### Secondary Edges
 
-An edge is **secondary** if it leads to a state where xa is NOT the longest string:
+An edge is **secondary** if it leads to a state where `xa` is NOT the longest string:
 
 **Definition (Secondary Edge)**:
 ```
@@ -64,7 +64,7 @@ The edge from q₁ labeled 'b' is primary because "ab" = "ab" = longest(q₂).
 
 *Proof*: The longest string in each class is unique and has a unique predecessor.
 
-**Lemma 2**: Primary edges form a spanning tree of the DAWG rooted at q₀.
+**Lemma 2**: Primary edges form a spanning tree of the DAWG rooted at `q₀`.
 
 This spanning tree corresponds to the **suffix tree** of the string!
 
@@ -79,7 +79,7 @@ A state [x] is kept in the CDAWG if and only if:
 3. It is an **accepting state**: represents a suffix of w, OR
 4. It is a **merge point**: has multiple incoming edges (primary + secondaries)
 
-Equivalently, a state is **removed** if it has exactly one incoming edge (primary) and exactly one outgoing edge.
+Equivalently, a state is **removed** if it has exactly one incoming edge (primary) and exactly one outgoing edge (`in-degree = out-degree = 1`).
 
 **Definition (CDAWG States)**:
 ```
@@ -186,19 +186,19 @@ Alternatively, secondary edges can store their own (start, end) pair directly.
 
 ## Complexity Analysis
 
-**Theorem 1** (Crochemore & Vérin, 1997):
-For a string w of length n:
-- CDAWG(w) has at most **n + 1 nodes**
-- CDAWG(w) has at most **2n - 2 edges**
+**Theorem 1** (Crochemore & Vérin 1997, [10.1007/3-540-63220-4_55](https://doi.org/10.1007/3-540-63220-4_55)):
+For a string `w` of length `n`:
+- `CDAWG(w)` has at most **`n + 1` nodes**.
+- `CDAWG(w)` has at most **`2n − 2` edges**.
 
-Compare to DAWG's 2n-1 nodes and 3n-4 edges.
+Compare to the DAWG's `2n − 1` nodes and `3n − 4` edges.
 
 **Proof sketch**:
-- Each CDAWG node corresponds to a branching point in the suffix tree
-- The suffix tree of w has exactly n leaves (one per suffix)
-- A tree with n leaves has at most n-1 internal nodes
-- Adding root: at most n nodes for internal structure
-- Each edge in CDAWG corresponds to an edge in suffix tree: at most 2n-2
+- Each CDAWG node corresponds to a branching point in the suffix tree.
+- The suffix tree of `w` has exactly `n` leaves (one per suffix).
+- A tree with `n` leaves has at most `n − 1` internal nodes.
+- Adding the root yields at most `n` nodes for the internal structure, hence `≤ n + 1` overall.
+- Each edge in the CDAWG corresponds to an edge in the suffix tree: at most `2n − 2`.
 
 ## Source and Sink
 
@@ -241,7 +241,7 @@ In practice, q₀ is always kept (it's the source), so suffix links usually poin
 
 A key property used in on-line construction:
 
-**Definition (LRS)**: For a string w, the **longest repeating suffix** is the longest suffix of w that occurs more than once in w.
+**Definition (LRS)**: For a string `w`, the **longest repeating suffix** is the longest suffix of `w` that occurs more than once in `w`.
 
 **Theorem 2**: In CDAWG(w), the node containing LRS(w) is exactly where:
 - Suffix links from the sink node lead
@@ -255,8 +255,8 @@ The CDAWG and suffix tree are closely related:
 
 | Property | Suffix Tree | CDAWG |
 |----------|-------------|-------|
-| Node count | ≤ 2n | ≤ n+1 |
-| Edge count | ≤ 2n | ≤ 2n-2 |
+| Node count | `≤ 2n` | `≤ n + 1` |
+| Edge count | `≤ 2n` | `≤ 2n − 2` |
 | Edge labels | Substrings | Substrings |
 | Suffix links | Yes | Yes |
 | Factors recognized | All suffixes | All substrings |
@@ -285,9 +285,9 @@ For bidirectional traversal, we need the **Symmetric** Compact DAWG (SCDAWG), co
 |---------|------------|
 | Primary edge | Edge where target's longest = source's longest + label |
 | Secondary edge | Edge jumping into equivalence class at shorter string |
-| Compaction | Remove states with in-degree = out-degree = 1 |
-| CDAWG node count | At most n+1 |
-| CDAWG edge count | At most 2n-2 |
+| Compaction | Remove states with `in-degree = out-degree = 1` |
+| CDAWG node count | At most `n + 1` |
+| CDAWG edge count | At most `2n − 2` |
 | Source | Node for empty string |
 | Sink | Node for complete string |
 

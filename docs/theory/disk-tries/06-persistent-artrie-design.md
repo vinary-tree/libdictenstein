@@ -3,6 +3,18 @@
 This document describes the current persistent ARTrie design used by
 libdictenstein. It supersedes the older hybrid owned-tree/B-trie proposal.
 
+Three crate-specific terms recur below. **WAL** (write-ahead log) is the durable,
+append-only record of changes written before they become visible (see
+[05-buffer-management](05-buffer-management.md)). **CAS** (compare-and-swap) is the
+single atomic instruction used to publish a new overlay root without a global
+mutation lock (see the `SwizzledPtr` lifecycle in
+[04-persistent-art](04-persistent-art.md)). **CX** is this crate's path-compressing
+overlay↔dense checkpoint codec, which serializes the live overlay into a compact
+on-disk image. The persistent ARTrie is *version-persistent* in the sense of
+Driscoll et al. 1989 ([doi:10.1016/0022-0000(89)90034-2](https://doi.org/10.1016/0022-0000(89)90034-2)):
+published overlay nodes are immutable, so a mutation path-copies rather than
+overwrites.
+
 ## Design Goals
 
 | Goal | Current mechanism |

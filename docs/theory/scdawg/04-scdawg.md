@@ -1,6 +1,6 @@
 # Symmetric Compact DAWG (SCDAWG) Theory
 
-The **Symmetric Compact DAWG** (SCDAWG), also called **C2S** (Compact Symmetric), extends the CDAWG with **left extension edges**, enabling bidirectional pattern navigation. This document covers the theoretical foundations of the SCDAWG as defined by Blumer et al. (1987).
+The **Symmetric Compact DAWG** (SCDAWG), also called **C2S** (Compact Symmetric), extends the CDAWG with **left extension edges**, enabling bidirectional pattern navigation. This document covers the theoretical foundations of the SCDAWG as defined by Blumer et al. (1987, [10.1145/28869.28873](https://doi.org/10.1145/28869.28873)).
 
 ## Motivation: Bidirectional Search
 
@@ -16,7 +16,7 @@ Given pattern V, navigate to σ·V (prepend character σ)
 
 ### WallBreaker Example
 
-The WallBreaker algorithm (Gerdjikov et al., 2013) for fuzzy dictionary matching requires:
+The WallBreaker algorithm (Gerdjikov et al. 2013; see [07-references](07-references.md)) for fuzzy dictionary matching requires:
 
 1. **Substring check**: Is V a substring of some dictionary word?
 2. **Right extension**: From V, reach V·σ
@@ -26,9 +26,11 @@ Without left extension, WallBreaker cannot efficiently grow pattern matches towa
 
 ## Left Context and Right Context
 
+The two contexts below are sometimes called the **right language** and **left language** of a factor — the sets of words that may legally follow it (append) or precede it (prepend) inside `w`. Right contexts drive standard (right-extension) navigation; left contexts are what the SCDAWG additionally indexes, over the alphabet `Σ`.
+
 ### Right Context (Review)
 
-The **right context** of factor x is the set of strings that can follow x:
+The **right context** (right language) of factor `x` is the set of strings that can follow `x`:
 
 **Definition**:
 ```
@@ -42,7 +44,7 @@ right-context₁(x) = {a ∈ Σ : xa ∈ F(w)}
 
 ### Left Context
 
-The **left context** of factor x is the set of strings that can precede x:
+The **left context** (left language) of factor `x` is the set of strings that can precede `x`:
 
 **Definition**:
 ```
@@ -87,15 +89,15 @@ In other words, imps(x) is the longest string that occurs exactly where x occurs
 
 ### Properties of Implications
 
-**Lemma 1**: imps(x) is unique and well-defined.
+**Lemma 1**: `imps(x)` is unique and well-defined.
 
-**Lemma 2**: end-pos(x) = end-pos(imps(x))
+**Lemma 2**: `end-pos(x) = end-pos(imps(x))`
 
-*Proof*: By definition, imps(x) occurs exactly where x occurs, so they have identical end-positions.
+*Proof*: By definition, `imps(x)` occurs exactly where `x` occurs, so they have identical end-positions (`endpos` sets).
 
-**Lemma 3**: |imps(x)| ≥ |x|
+**Lemma 3**: `∣imps(x)∣ ≥ ∣x∣`
 
-*Proof*: imps(x) contains x (γxβ ⊇ x).
+*Proof*: `imps(x)` contains `x` (`γxβ ⊇ x`).
 
 ### Example: Implications for "abcabcab"
 
@@ -116,7 +118,7 @@ In other words, imps(x) is the longest string that occurs exactly where x occurs
 
 ### Prime Subwords
 
-A factor x is a **prime subword** (or simply **prime**) if it equals its own implication:
+A factor `x` is a **prime subword** (or simply **prime**) if it equals its own implication — equivalently, it is the *longest* representative of its equivalence class and cannot be extended on either side without changing its `endpos` set:
 
 **Definition (Prime Subword)**:
 ```
@@ -133,13 +135,13 @@ P(w) = {x ∈ F(w) : x is prime} = {imps(y) : y ∈ F(w)}
 **Lemma 4**: The prime subwords are exactly the **longest representatives** of equivalence classes in the CDAWG.
 
 *Proof*:
-- If x = longest([x]), then no extension of x shares the same end-positions
-- Therefore γ = β = ε in the implication
-- So imps(x) = x, making x prime
+- If `x = longest([x])`, then no extension of `x` shares the same end-positions.
+- Therefore `γ = β = ε` in the implication.
+- So `imps(x) = x`, making `x` prime.
 
-**Lemma 5**: |P(w)| ≤ |w| + 1 (same bound as CDAWG nodes)
+**Lemma 5**: `∣P(w)∣ ≤ ∣w∣ + 1` (same bound as CDAWG nodes).
 
-**Lemma 6**: For any factor x, imps(x) ∈ P(w)
+**Lemma 6**: For any factor `x`, `imps(x) ∈ P(w)`.
 
 ### Prime Subwords for "abcabcab"
 
@@ -214,8 +216,12 @@ For a prime subword P, its edges form:
 ```
 
 Each prime subword has:
-- Right edges for each valid right extension character
-- Left edges for each valid left extension character
+- Right edges for each valid right extension character.
+- Left edges for each valid left extension character.
+
+The figure below renders the full SCDAWG for the running example `abcabcab`. Solid dark edges are the CDAWG's right-extension transitions; the dashed blue edges are the **symmetric left-extension edges** the SCDAWG adds. Together they let a matched factor be grown to the right (append) or to the left (prepend) in `O(∣label∣)` per step — the bidirectional capability the plain CDAWG lacks.
+
+<img src="../../diagrams/scdawg-structure.svg" alt="SCDAWG for abcabcab over the prime-subword nodes v0=ε through v6=abcabcab. Solid dark-slate edges are right-extension (CDAWG) transitions labelled by their substrings; dashed blue edges are the symmetric left-extension edges that distinguish the SCDAWG, enabling prepend navigation and thus bidirectional search." width="860"/>
 
 ## The Symmetry Property
 
@@ -230,9 +236,9 @@ Where w^rev is the reversal of w.
 
 ### Sext Links = CDAWG(w^rev) Edges
 
-**Definition (Sext Link)**: The **shortest extension link** (sext link) from node x is the edge in CDAWG(w^rev) that corresponds to x.
+**Definition (Sext Link)**: The **shortest extension link** (sext link) from node `x` is the edge in `CDAWG(wʳᵉᵛ)` that corresponds to `x`, where `wʳᵉᵛ` denotes the reversal of `w`.
 
-**Theorem 2** (Inenaga et al., 2001):
+**Theorem 2** (Inenaga et al. 2001, [10.1109/SPIRE.2001.989743](https://doi.org/10.1109/SPIRE.2001.989743)):
 ```
 Left extension edges of CDAWG(w) = Edges of CDAWG(w^rev) (with reversed direction)
 ```
@@ -250,12 +256,12 @@ This symmetry means:
 
 ### Reversed Suffix Links
 
-**Lemma 7**: If slink(x) = y in the CDAWG, then there exists a left extension edge from y to x.
+**Lemma 7**: If `slink(x) = y` in the CDAWG, then there exists a left extension edge from `y` to `x`.
 
 *Proof sketch*:
-- slink(x) = y means y is a suffix of x
-- x = αy for some non-empty α
-- The first character of α provides the left extension from y to x
+- `slink(x) = y` means `y` is a suffix of `x`.
+- `x = α·y` for some non-empty `α`.
+- The first character of `α` provides the left extension from `y` to `x`.
 
 ### Building Left Extensions from Suffix Links
 
@@ -347,12 +353,12 @@ SCDAWG for "abcabcab":
 
 ## Complexity Analysis
 
-**Theorem 3** (Blumer et al., 1987):
-For string w of length n:
-- SCDAWG(w) has at most **n + 1 nodes**
-- SCDAWG(w) has at most **4n - 4 edges** (2n-2 right + 2n-2 left)
+**Theorem 3** (Blumer et al. 1987, [10.1145/28869.28873](https://doi.org/10.1145/28869.28873)):
+For string `w` of length `n`:
+- `SCDAWG(w)` has at most **`n + 1` nodes**.
+- `SCDAWG(w)` has at most **`4n − 4` edges** (`2n − 2` right + `2n − 2` left).
 
-Space is O(n), same as CDAWG but with doubled edge count.
+Space is `O(n)`, same as the CDAWG but with a doubled edge count.
 
 ## Comparison: Left Extension vs Backward Edges
 
@@ -388,7 +394,7 @@ Backward edges traverse the same strings in reverse. Left extensions navigate to
 
 ## WallBreaker Requirements Satisfied
 
-The SCDAWG satisfies all WallBreaker requirements from Gerdjikov et al. (2013):
+The SCDAWG satisfies all WallBreaker requirements from Gerdjikov et al. (2013, see [07-references](07-references.md)):
 
 | Requirement | Operation | SCDAWG Support |
 |-------------|-----------|----------------|
@@ -396,7 +402,7 @@ The SCDAWG satisfies all WallBreaker requirements from Gerdjikov et al. (2013):
 | **(1b)** | Right extend V → V·σ | Follow right extension edge labeled with σ |
 | **(1c)** | Left extend V → σ·V | Follow left extension edge labeled with σ |
 
-All operations complete in O(|label|) time, where label is the edge label length.
+All operations complete in `O(∣label∣)` time, where `label` is the edge-label length.
 
 ## Summary
 

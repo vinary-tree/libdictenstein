@@ -1,0 +1,46 @@
+@startuml swizzled-ptr-states
+' ============================================================================
+' SwizzledPtr lifecycle — the four states of the atomic `state` word and the
+' atomic-CAS transitions between them.
+' Source of truth: src/persistent_artrie/core/swizzled_ptr.rs
+'   MEMORY_STATE            = 1<<63
+'   INSTALLING_MEMORY_STATE = (1<<63) | 1     (swizzle in progress)
+'   EVICTING_MEMORY_STATE   = (1<<63) | 2     (unswizzle in progress)
+'   on-disk reference       : MSB = 0, value != 0
+' Every edge is a single compare_exchange on `state` (lock-free); the loser of a
+' race simply observes the winner's final state.
+'
+' Color key:
+'   blue  (#BBDEFB) = on-disk reference (MSB = 0)
+'   amber (#FFF59D) = transitional (a thread owns publication / removal)
+'   green (#C8E6C9) = live in-memory pointer (MSB set, memory_ptr populated)
+' ============================================================================
+skinparam backgroundColor #FFFFFF
+skinparam defaultFontName "DejaVu Sans"
+skinparam ArrowColor #37474F
+skinparam state {
+  BorderColor #37474F
+  FontName "DejaVu Sans"
+}
+title SwizzledPtr swizzle lifecycle (atomic CAS on the state word)
+
+state "Disk reference\nMSB = 0\nblock_id + location + flags" as Disk #BBDEFB
+state "Installing\nstate = (1<<63) | 1\nthread owns memory_ptr publish" as Install #FFF59D
+state "Memory\nstate = 1<<63\nmemory_ptr -> live node" as Mem #C8E6C9
+state "Evicting\nstate = (1<<63) | 2\nthread owns memory_ptr clear" as Evict #FFF59D
+
+[*] --> Disk : on_disk(block_id, location, type)
+
+Disk -[#2E7D32]-> Install : swizzle(ptr)\nCAS disk -> (MSB|1)
+Install -[#2E7D32]-> Mem : store memory_ptr\nthen store MSB
+Mem -[#C62828]-> Evict : unswizzle(block_id, location, type)\nCAS MSB -> (MSB|2)
+Evict -[#C62828]-> Disk : clear memory_ptr\nthen store disk encoding
+
+note bottom of Mem
+  Fast read path: once in Memory the child
+  pointer is followed with native speed; no
+  buffer-manager lookup. Eviction reverses the
+  cycle to reclaim RAM, leaving the durable
+  disk encoding behind.
+end note
+@enduml

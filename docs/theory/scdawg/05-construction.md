@@ -1,14 +1,14 @@
 # On-line SCDAWG Construction
 
-This document describes the on-line O(n) algorithm for constructing the SCDAWG, based on Inenaga et al. (2001, 2005). The algorithm processes characters left-to-right, enabling dynamic updates as strings are added.
+This document describes the on-line `O(n)` algorithm for constructing the SCDAWG, based on Inenaga et al. (2001, [10.1109/SPIRE.2001.989743](https://doi.org/10.1109/SPIRE.2001.989743); 2005, [10.1016/j.dam.2004.04.012](https://doi.org/10.1016/j.dam.2004.04.012)). The algorithm processes characters left-to-right, enabling dynamic updates as strings are added.
 
 ## Overview
 
 The construction combines:
-1. **Inenaga et al. (2005)**: On-line CDAWG construction
-2. **Inenaga et al. (2001)**: Sext link maintenance for left extensions
+1. **Inenaga et al. (2005)** — on-line CDAWG construction.
+2. **Inenaga et al. (2001)** — sext-link maintenance for left extensions.
 
-Key insight from Inenaga (2001): **Sext links of CDAWG(w) equal edges of CDAWG(w^rev)**. This means left extension edges can be maintained incrementally during construction, without building a separate reversed automaton.
+Key insight from Inenaga (2001): **the sext links of `CDAWG(w)` equal the edges of `CDAWG(wʳᵉᵛ)`** (the CDAWG of the reversed string). This means left extension edges can be maintained incrementally during construction, without building a separate reversed automaton.
 
 ## Data Structures
 
@@ -24,9 +24,9 @@ struct ReferencePair {
 }
 ```
 
-**Explicit**: When start > end, the reference is at the node itself.
+**Explicit**: When `start > end`, the reference is at the node itself.
 
-**Implicit**: When start ≤ end, the reference is within the edge starting at `node` with first character `text[start]`.
+**Implicit**: When `start ≤ end`, the reference is within the edge starting at `node` with first character `text[start]`.
 
 ### Node Structure
 
@@ -276,11 +276,11 @@ fn separate_node(node: NodeId) {
 
 ## Sext Link Maintenance
 
-The key innovation from Inenaga et al. (2001) is maintaining sext links (left extension edges) during construction.
+The key innovation from Inenaga et al. (2001, [10.1109/SPIRE.2001.989743](https://doi.org/10.1109/SPIRE.2001.989743)) is maintaining sext links (left extension edges) during construction.
 
 ### Sext Link Property
 
-**Theorem**: sext_link(x) in CDAWG(w) equals the edge (y, x) in CDAWG(w^rev).
+**Theorem** (Inenaga et al. 2001): `sext_link(x)` in `CDAWG(w)` equals the edge `(y, x)` in `CDAWG(wʳᵉᵛ)`.
 
 ### Updating Sext Links
 
@@ -396,17 +396,17 @@ edge.end = OpenEnd::Fixed(current_position);
 
 ## Complexity Analysis
 
-**Theorem** (Inenaga et al., 2005):
-The on-line CDAWG construction runs in O(n) time and space.
+**Theorem** (Inenaga et al. 2005, [10.1016/j.dam.2004.04.012](https://doi.org/10.1016/j.dam.2004.04.012)):
+The on-line CDAWG construction runs in `O(n)` time and space.
 
 **Proof sketch**:
-1. Each character is processed once
-2. Amortized O(1) operations per character via suffix link traversal
-3. At most O(n) nodes and edges created total
-4. Canonize operations traverse at most O(n) total edge length
+1. Each character is processed once.
+2. Amortized `O(1)` operations per character via suffix-link traversal.
+3. At most `O(n)` nodes and edges are created in total.
+4. `canonize` operations traverse at most `O(n)` total edge length.
 
 **SCDAWG Extension**:
-Adding sext links adds O(1) work per suffix link, maintaining O(n) complexity.
+Adding sext links costs `O(1)` work per suffix link, so the overall bound remains `O(n)`.
 
 ## Worked Example: "abcabcab"
 

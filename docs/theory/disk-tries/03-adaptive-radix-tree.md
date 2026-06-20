@@ -1,6 +1,8 @@
 # The Adaptive Radix Tree (ART)
 
-This document presents the Adaptive Radix Tree (ART), an in-memory trie structure that adapts its node representation based on the number of children. ART achieves both excellent space efficiency and lookup performance, making it an ideal foundation for our persistent trie design.
+This document presents the **Adaptive Radix Tree (ART)** — an in-memory trie whose nodes change their internal representation according to how many children they hold — introduced by Leis, Kemper, and Neumann (2013, [doi:10.1109/ICDE.2013.6544812](https://doi.org/10.1109/ICDE.2013.6544812)). ART achieves both excellent space efficiency and lookup performance, making it an ideal foundation for our persistent trie design.
+
+Throughout, **SIMD** (Single Instruction, Multiple Data) denotes CPU vector instructions that apply one operation to several lanes of a register in parallel; ART uses SIMD to compare many child keys at once. We write key length as `m` (bytes), alphabet as `Σ`, and alphabet size as `∣Σ∣`.
 
 ## Table of Contents
 
@@ -53,7 +55,7 @@ Sparse node (3 children):       Dense node (200 children):
 └─────────────────────┘        └─────────────────────────┘
 ```
 
-This adaptivity provides near-optimal space for any fanout distribution while maintaining the O(1) child lookup that makes radix trees fast.
+This adaptivity provides near-optimal space for any fanout distribution while maintaining the `O(1)` child lookup that makes radix trees fast.
 
 ---
 
@@ -61,14 +63,14 @@ This adaptivity provides near-optimal space for any fanout distribution while ma
 
 ### Definition
 
-A radix tree with span s processes keys s bits at a time. For span-8 (byte keys), each node has at most 256 children, and a key of m bytes requires at most m levels to reach a leaf.
+A radix tree with span `s` processes keys `s` bits at a time. For span-8 (byte keys), each node has at most 256 children, and a key of `m` bytes requires at most `m` levels to reach a leaf.
 
 ### Comparison with Comparison-Based Trees
 
 | Aspect | Radix Tree | Comparison Tree (B-tree) |
 |--------|------------|--------------------------|
-| Key comparison | Never compares keys | O(log n) comparisons |
-| Height | O(m) where m = key length | O(log n) |
+| Key comparison | Never compares keys | `O(log n)` comparisons |
+| Height | `O(m)` where `m` = key length | `O(log n)` |
 | Cache behavior | One cacheline per level | Multiple per node |
 | SIMD potential | High (byte matching) | Limited |
 | Space efficiency | Variable | Generally good |
@@ -105,7 +107,17 @@ ART uses span-8 for shallow trees but avoids the 256-pointer waste through adapt
 
 ## Adaptive Node Types
 
-ART defines four node types, each optimized for a different fanout range:
+ART defines four node types, each optimized for a different fanout range. Every type carries the same fixed 16-byte `NodeHeader` (node identity, mutable child counter and flags, alignment padding, and an optimistic-lock version counter); the figure below shows that shared header, and the one after it shows the four storage bodies side by side.
+
+<img src="../../diagrams/node-header.svg" alt="The 16-byte NodeHeader common to every ART node: node_type and prefix_len (identity), flags and num_children (mutable counters), alignment padding, and a u64 optimistic-lock version counter." width="640"/>
+
+*Figure: the 16-byte `NodeHeader` carried by Node4, Node16, Node48, and Node256 alike.*
+
+<img src="../../diagrams/node-layouts.svg" alt="The four byte-ART node storage layouts side by side: Node4 (keys[4] + children[4], linear scan), Node16 (keys[16] + children[16], SSE 16-way SIMD compare), Node48 (index[256] mapping byte to slot + children[48], indexed lookup), and Node256 (children[256] direct array)." width="860"/>
+
+*Figure: byte-ART node bodies and their search methods. The character variants (`PersistentARTrieChar`, `u32` keys) parallel these but diverge in three ways — `CharNode16` compares 8 `u32` lanes with AVX2 (`_mm256_cmpeq_epi32`) instead of 16 `u8` lanes with SSE, `CharNode48` uses binary search over sorted `u32` keys instead of a 256-byte index, `CharBucket` is a HashMap-like container, and there is **no** `CharNode256` (a direct `u32`-indexed array would need 4 GB).*
+
+The four types are detailed below.
 
 ### Node4 (1-4 children)
 
@@ -192,7 +204,7 @@ fn find_child_node16_simd(node: &Node16, key: u8) -> Option<&Node> {
 
 ### Node48 (17-48 children)
 
-Uses an index array for O(1) lookup without storing 256 pointers.
+Uses an index array for `O(1)` lookup without storing 256 pointers.
 
 **Structure:**
 ```
@@ -224,9 +236,9 @@ fn find_child_node48(node: &Node48, key: u8) -> Option<&Node> {
 ```
 
 **Space analysis:**
-- 256-byte index array + 48 × 8-byte pointers = 640 bytes
-- Full Node256 would need 256 × 8 = 2048 bytes
-- Savings: ~69% for nodes with 17-48 children
+- 256-byte index array + `48 × 8` = 384 bytes of pointers ⇒ 640 bytes total
+- A full Node256 would need `256 × 8 = 2048` bytes
+- Savings: `~69%` for nodes with 17-48 children
 
 ### Node256 (49-256 children)
 
@@ -273,16 +285,15 @@ fn find_child_node256(node: &Node256, key: u8) -> Option<&Node> {
 
 ## Path Compression
 
-Path compression eliminates chains of single-child nodes, reducing tree height and improving lookup speed.
+Path compression eliminates chains of single-child nodes, reducing tree height and improving lookup speed. The figure contrasts the uncompressed unary chain with the single inline-prefix node ART stores instead.
+
+<img src="../../diagrams/path-compression.svg" alt="Before and after path compression for the term metamorphosis: a 14-node unary chain (one node per byte) collapses into a single final node carrying an inline 12-byte partial prefix, turning up to 14 page faults into 1." width="720"/>
+
+*Figure: path compression for `"metamorphosis"`. Collapsing the unary chain turns up to 14 page faults (one per node) into one read. In this crate the byte variant stores up to **12 inline prefix bytes** per node (`MAX_PREFIX_LEN = 12`); the first 8 are compared pessimistically during descent and any remainder is verified at the leaf. A run longer than the inline cap is split into `⌈len / 13⌉` such nodes rather than degenerating back into a per-byte chain.*
 
 ### The Problem with Uncompressed Tries
 
-Consider storing only the key "metamorphosis":
-```
-Uncompressed:
-root → m → e → t → a → m → o → r → p → h → o → s → i → s*
-(14 nodes for one string!)
-```
+Consider storing only the key `"metamorphosis"`. Uncompressed, the trie is a chain of 14 single-child nodes — one per byte — even though there is no branching to justify them.
 
 ### Pessimistic vs. Optimistic Path Compression
 
@@ -313,7 +324,7 @@ ART supports two strategies:
 
 ### Hybrid Approach
 
-ART uses a hybrid: store up to 8 bytes of the compressed path. For longer compressions, verify at the leaf.
+ART uses a hybrid: store a bounded inline prefix and, for longer compressions, verify the tail at the leaf. The original paper inlines 8 bytes; this crate inlines up to 12 (`MAX_PREFIX_LEN = 12` for byte nodes, 6 `u32` characters for char nodes) and still compares only the first 8 pessimistically during descent.
 
 ```rust
 fn check_prefix(node: &Node, key: &[u8], depth: usize) -> PrefixMatch {
@@ -447,6 +458,12 @@ fn insert(root: &mut Node, key: &[u8], value: Value) -> Option<Value> {
 
 ### Node Growth (Expand)
 
+A node holds exactly one tier at a time and migrates between tiers as its child count crosses the capacity thresholds 4 / 16 / 48. The state diagram shows the full grow/shrink cycle.
+
+<img src="../../diagrams/node-state.svg" alt="State diagram of adaptive node grow and shrink: Node4 grows to Node16 on the 5th child, Node16 to Node48 on the 17th, Node48 to Node256 on the 49th; removals shrink Node256 to Node48 (underflow under 48), Node48 to Node16 (under 16), and Node16 to Node4 (under 4)." width="620"/>
+
+*Figure: adaptive grow (solid, insert-overflow) and shrink (dashed, remove-underflow) across the byte-ART tiers. Char nodes follow the same thresholds but stop at `CharBucket` instead of growing a `Node256`.*
+
 When a node exceeds its capacity, it transforms to the next larger type:
 
 ```rust
@@ -473,9 +490,9 @@ fn add_child(node: &mut Node, key: u8, child: Node) {
 **Growth complexity:**
 | Transition | Copy Cost | Frequency |
 |------------|-----------|-----------|
-| Node4 → Node16 | O(1) | Common |
-| Node16 → Node48 | O(1) | Less common |
-| Node48 → Node256 | O(48) | Rare |
+| Node4 → Node16 | `O(1)` | Common |
+| Node16 → Node48 | `O(1)` | Less common |
+| Node48 → Node256 | `O(48)` | Rare |
 
 ### Node Shrink (Contract)
 
@@ -506,7 +523,7 @@ fn remove_child(node: &mut Node, key: u8) {
 
 ## SIMD Optimization
 
-Node16's key lookup is the primary beneficiary of SIMD instructions.
+Node16's key lookup is the primary beneficiary of SIMD instructions. **SSE4.1** (Streaming SIMD Extensions 4.1) operates on 128-bit vectors — 16 lanes of `u8` — and **AVX2** (Advanced Vector Extensions 2) on 256-bit vectors — 32 lanes of `u8` or 8 lanes of `u32`. The byte Node16 uses SSE to test all 16 keys in one instruction; the char `CharNode16` uses AVX2 to test 8 `u32` keys at once.
 
 ### SSE4.1 Implementation
 
@@ -616,10 +633,10 @@ ART is competitive with hash tables for point lookups while supporting ordered o
 
 | Operation | Cache Lines Touched | Branch Predictions |
 |-----------|---------------------|-------------------|
-| Node4 lookup | 1 | O(1) |
-| Node16 lookup (SIMD) | 1 | O(1) |
-| Node48 lookup | 2 | O(1) |
-| Node256 lookup | 1 | O(1) |
+| Node4 lookup | 1 | `O(1)` |
+| Node16 lookup (SIMD) | 1 | `O(1)` |
+| Node48 lookup | 2 | `O(1)` |
+| Node256 lookup | 1 | `O(1)` |
 
 All node types have excellent cache behavior, typically requiring just 1-2 cache line reads.
 
@@ -641,8 +658,8 @@ This matches natural language patterns where certain character transitions are r
 ### 2. SIMD is Worth the Complexity
 
 Node16 with SIMD lookup provides:
-- 5× speedup over linear scan
-- Better than binary search for ≤16 elements
+- `~5×` speedup over linear scan
+- Better than binary search for `≤16` elements
 - Critical for inner loop performance
 
 For persistent storage, we'll ensure Node16 keys are 16-byte aligned in page layouts.
@@ -650,11 +667,11 @@ For persistent storage, we'll ensure Node16 keys are 16-byte aligned in page lay
 ### 3. Path Compression is Essential
 
 Without path compression:
-- Height = key length (many I/Os for disk-based)
+- Height `=` key length (many I/Os for disk-based)
 - Many single-child nodes waste space
 
 With compression:
-- Height ≈ number of branching points
+- Height `≈` number of branching points
 - Dramatic reduction for string keys with shared prefixes
 
 ### 4. Node Type Field Enables Polymorphism
@@ -684,7 +701,7 @@ In ART, leaves often store single values. For disk-based storage, we'll use B-tr
 The Adaptive Radix Tree provides:
 
 1. **Adaptive structure**: Four node types optimize for actual fanout
-2. **O(m) lookup**: Performance independent of tree size
+2. **`O(m)` lookup**: Performance independent of tree size
 3. **Path compression**: Reduces height for common prefix sharing
 4. **SIMD acceleration**: Node16 uses parallel byte comparison
 5. **Cache efficiency**: Most operations touch 1-2 cache lines
@@ -695,7 +712,7 @@ These properties make ART an excellent foundation for our Persistent ARTrie desi
 
 ## References
 
-1. Leis, V., Kemper, A., & Neumann, T. (2013). "The Adaptive Radix Tree: ARTful Indexing for Main-Memory Databases." *ICDE*. [PDF](https://db.in.tum.de/~leis/papers/ART.pdf)
+1. Leis, V., Kemper, A., & Neumann, T. (2013). "The Adaptive Radix Tree: ARTful Indexing for Main-Memory Databases." *ICDE*. [doi:10.1109/ICDE.2013.6544812](https://doi.org/10.1109/ICDE.2013.6544812) · [PDF](https://db.in.tum.de/~leis/papers/ART.pdf)
 
 2. Binna, R., Zangerle, E., Pichl, M., Specht, G., & Leis, V. (2018). "HOT: A Height Optimized Trie Index for Main-Memory Database Systems." *SIGMOD*.
 

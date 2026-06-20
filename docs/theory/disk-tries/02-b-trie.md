@@ -1,6 +1,6 @@
 # B-trie: Disk-Based Burst Trie
 
-This document presents the B-trie data structure from Askitis & Zobel (2009), a disk-based adaptation of the burst trie that achieves 5-50% better performance than B+-trees for string indexing.
+This document presents the **B-trie** data structure from Askitis & Zobel (2009, [doi:10.1007/s00778-008-0094-1](https://doi.org/10.1007/s00778-008-0094-1)) — a disk-based adaptation of the *burst trie* that achieves `5–50%` better performance than B+-trees for string indexing. Throughout, `Σ` is the alphabet, `∣Σ∣` its size, `m` a string's length, `b` the number of strings per bucket, and `h` the trie height.
 
 ## Table of Contents
 
@@ -35,13 +35,19 @@ Standard Array Trie:              Burst Trie:
 
 ### Bursting Heuristics
 
-When a bucket becomes full (or frequently accessed), it **bursts**:
+When a bucket becomes full (or frequently accessed), it **bursts**: a trie node replaces the bucket and the strings are redistributed into smaller child buckets keyed by their leading character. The figure shows one burst event.
 
-1. Create a new trie node with up to |Σ| child pointers (128 for ASCII)
-2. Distribute strings from the bucket into up to |Σ| new buckets based on their leading character
-3. Remove the leading character from each string (it's now encoded in the trie edge)
+<img src="../../diagrams/burst-trie.svg" alt="Before and after a burst: a single bucket holding car, cat, cup, cab crosses its threshold and bursts into a trie node with edges 'a' and 'u' leading to two smaller child buckets that store only the suffixes, because the leading bytes are now encoded by the path." width="560"/>
 
-**Problem for disk**: Bursting creates up to 128 new buckets, each requiring a separate disk block. This wastes space and causes excessive random I/O during the burst operation.
+*Figure: a burst event (Askitis & Zobel). The leading byte moves into the trie edge, so the child buckets store only suffixes — packing more strings per page and shortening comparisons.*
+
+In detail, a burst:
+
+1. Creates a new trie node with up to `∣Σ∣` child pointers (128 for ASCII)
+2. Distributes strings from the bucket into up to `∣Σ∣` new buckets based on their leading character
+3. Removes the leading character from each string (it is now encoded in the trie edge)
+
+**Problem for disk**: bursting can create up to 128 new buckets, each requiring a separate disk block. This wastes space and causes excessive random I/O during the burst operation — the very problem the B-trie's binary *split* (below) is designed to avoid.
 
 ---
 
@@ -51,10 +57,10 @@ The B-trie adapts the burst trie for disk by introducing a **controlled splittin
 
 ### Key Insight
 
-Instead of bursting into |Σ| buckets, the B-trie **splits** a bucket into exactly two new buckets, similar to B-tree node splitting. This:
+Instead of bursting into `∣Σ∣` buckets, the B-trie **splits** a bucket into exactly two new buckets, similar to B-tree node splitting. This:
 - Minimizes disk space waste
 - Avoids the random I/O of creating many buckets
-- Maintains B-tree-like space utilization (~69% average)
+- Maintains B-tree-like space utilization (`~69%` average)
 
 ### Structure Components
 
@@ -88,17 +94,17 @@ Instead of bursting into |Σ| buckets, the B-trie **splits** a bucket into exact
 
 ### Formal Definition
 
-A B-trie over alphabet Σ is a directed acyclic graph where:
+A B-trie over alphabet `Σ` is a directed acyclic graph where:
 
-1. **Node N** = set of pointers {p_c | c ∈ Σ}, one per character
-2. **Route R** = chain N₁ →c₁ N₂ →c₂ ... →c_m B terminating at bucket B
-3. **Sequence s(R)** = string c₁c₂...c_m represented by route R
+1. **Node `N`** = set of pointers `{p_c ∣ c ∈ Σ}`, one per character
+2. **Route `R`** = chain `N₁ →c₁ N₂ →c₂ … →c_m B` terminating at bucket `B`
+3. **Sequence `s(R)`** = string `c₁c₂…c_m` represented by route `R`
 
 Buckets come in two types:
-- **Pure bucket** B^P(h) = {t | s = h·t ∈ V} — single route, prefix h removed
-- **Hybrid bucket** B^H(h,l,u) = {c·t | s = h·c·t ∈ V, c ∈ [l,u]} — multiple routes
+- **Pure bucket** `B^P(h) = {t ∣ s = h·t ∈ V}` — single route, prefix `h` removed
+- **Hybrid bucket** `B^H(h,l,u) = {c·t ∣ s = h·c·t ∈ V, c ∈ [l,u]}` — multiple routes
 
-Where V is the vocabulary (set of all stored strings) and [l,u] is the character range.
+Where `V` is the vocabulary (set of all stored strings) and `[l,u]` is the character range.
 
 ---
 
@@ -162,10 +168,10 @@ The B-trie maintains these invariants:
 
 1. There is only a single route to each pure bucket
 2. There is only a single route from root to any trie node
-3. For pure bucket B^P(h), the route sequence s(R) = h
-4. For hybrid bucket B^H(h,l,u), the route sequence s(R) = h·c where c ∈ [l,u]
-5. In a hybrid bucket, l ≠ u (otherwise it would be pure)
-6. All pointers in range [l,u] of parent trie point to the same hybrid bucket
+3. For pure bucket `B^P(h)`, the route sequence `s(R) = h`
+4. For hybrid bucket `B^H(h,l,u)`, the route sequence `s(R) = h·c` where `c ∈ [l,u]`
+5. In a hybrid bucket, `l ≠ u` (otherwise it would be pure)
+6. All pointers in range `[l,u]` of the parent trie point to the same hybrid bucket
 
 ---
 
@@ -342,7 +348,7 @@ function search(query Q):
     return hash_table.search(original_query)
 ```
 
-**Complexity**: O(m) trie traversals + O(log b) binary search, where m = string length, b = strings per bucket.
+**Complexity**: `O(m)` trie traversals + `O(log b)` binary search, where `m` = string length and `b` = strings per bucket.
 
 ### Insert
 
@@ -458,7 +464,7 @@ Pointer encoding:
 ```
 
 **Design rationale:**
-- String pointers kept sorted for O(log b) binary search
+- String pointers kept sorted for `O(log b)` binary search
 - String data stored in insertion order (fast append)
 - Initial allocation: 128 pointers, grow as needed
 - 1KB oversize region when loaded into memory (delays splits)
@@ -492,18 +498,18 @@ Compared against standard B+-tree, prefix B+-tree, and Berkeley DB B+-tree:
 
 | Operation | Trie Traversal | Binary Search | Disk I/Os |
 |-----------|----------------|---------------|-----------|
-| Lookup | O(m) | O(log b) | O(h) + 1 |
-| Insert | O(m) | O(log b) | O(h) + 1 write |
-| Delete | O(m) | O(log b) | O(h) + 1 write |
+| Lookup | `O(m)` | `O(log b)` | `O(h) + 1` |
+| Insert | `O(m)` | `O(log b)` | `O(h) + 1` write |
+| Delete | `O(m)` | `O(log b)` | `O(h) + 1` write |
 
 Where:
-- m = string length
-- b = strings per bucket (~100-500)
-- h = trie height (depends on data, typically 3-5 for text)
+- `m` = string length
+- `b` = strings per bucket (`~100–500`)
+- `h` = trie height (depends on data, typically 3-5 for text)
 
 ### Why B-trie Outperforms B+-tree
 
-1. **No binary search of index**: Trie traversal uses character as array index (O(1) per level)
+1. **No binary search of index**: Trie traversal uses character as array index (`O(1)` per level)
 2. **Smaller index nodes**: 512-byte trie nodes vs 8KB B+-tree nodes → better cache utilization
 3. **Prefix elimination**: Strings in buckets have prefixes removed → more strings per bucket
 4. **Implicit cost-adaptivity**: Frequent strings often consumed by trie → no disk access
@@ -524,7 +530,7 @@ The B-trie paper provides key insights for our Persistent ARTrie design:
 ### What to Adopt
 
 1. **Bucket-based leaf storage**: Store multiple strings per disk page
-2. **Controlled splitting**: Split into two children, not |Σ| children
+2. **Controlled splitting**: Split into two children, not `∣Σ∣` children
 3. **Pure/hybrid distinction**: Track whether prefix is consumed
 4. **Lazy deletion**: Don't physically delete, reuse addresses
 5. **Distribution ratio**: Use ~0.75 threshold for split point selection
@@ -555,14 +561,14 @@ The B-trie demonstrates that trie-based structures can outperform B-trees for st
 2. **Pure/hybrid distinction** enables prefix elimination in buckets
 3. **Character-indexed access** eliminates binary search in index traversal
 4. **Index buffering** masks the cost of unbalanced trie structure
-5. **5-50% improvement** over B+-trees in practice
+5. **`5–50%` improvement** over B+-trees in practice
 
-The key innovation is recognizing that burst trie's "burst into |Σ| buckets" is inappropriate for disk, and replacing it with B-tree-style binary splitting while maintaining trie properties.
+The key innovation is recognizing that the burst trie's "burst into `∣Σ∣` buckets" is inappropriate for disk, and replacing it with B-tree-style binary splitting while maintaining trie properties.
 
 ---
 
 ## References
 
-1. Askitis, N. & Zobel, J. (2009). "B-tries for disk-based string management." *The VLDB Journal*, 18(1), 157-179.
+1. Askitis, N. & Zobel, J. (2009). "B-tries for disk-based string management." *The VLDB Journal*, 18(1), 157-179. [doi:10.1007/s00778-008-0094-1](https://doi.org/10.1007/s00778-008-0094-1)
 2. Heinz, S., Zobel, J., & Williams, H.E. (2002). "Burst tries: A fast, efficient data structure for string keys." *ACM TOIS*, 20(2), 192-223.
 3. Bayer, R. & Unterauer, K. (1977). "Prefix B-trees." *ACM TODS*, 2(1), 11-26.

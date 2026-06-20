@@ -38,6 +38,7 @@ Benchmark **plots** follow the same idea but live next to their data:
 | `.d2` | [D2](https://d2lang.com/) | `d2` | modern **layered architecture** diagrams, clean orthogonal routing |
 | `.dot` / `.gv` | [Graphviz](https://graphviz.org/) (`dot`) | `graphviz` | large **node-edge graphs** (dependency graphs, dense automata) |
 | `.bytefield` | [bytefield-svg](https://bytefield-svg.deepsymmetry.org/) | `bytefield-svg` | **byte / record / bitfield** layouts (WAL records, node headers) |
+| `.bob` | [Svgbob](https://github.com/ivanceras/svgbob) | `svgbob` | **ASCII-art schematics** (node-storage layouts, before/after trees, bit fields) |
 | `.gp` | [gnuplot](http://www.gnuplot.info/) | `gnuplot` | **benchmark plots** (bars, lines, threshold bands) |
 
 `.bytefield` sources are written in bytefield-svg's Clojure-flavored DSL; `.gp`

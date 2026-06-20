@@ -1,0 +1,100 @@
+@startuml clone-on-split
+' ============================================================================
+' Suffix-automaton ONLINE extend(c): the clone-on-split step.
+'
+' This is the single costly step of Blumer et al.'s online DAWG construction
+' and is exactly what keeps the state count at most  2·|T| - 1.  We walk the
+' suffix-link chain from the previous last state `last`, adding c-transitions,
+' until we reach a state `p` that already has a c-transition to some state `q`.
+' Two cases then arise:
+'   (A) len(q) = len(p) + 1   → q is "solid"; just set slink(cur) = q.
+'   (B) len(q) > len(p) + 1   → q is reached by a NON-solid edge; CLONE q as
+'                               q', copy its transitions + suffix link, set
+'                               len(q') = len(p)+1, then rewire the affected
+'                               c-edges (along the slink chain from p) and the
+'                               suffix links of q and cur to point at q'.
+'
+' Color key (house palette):
+'   green  #C8E6C9  in-memory work (new/cloned states live in RAM)
+'   blue   #BBDEFB  the decisive branch test (len(q) vs len(p)+1)
+'   grey   #ECEFF1  infrastructure / setup / terminal steps
+'   dashed arrows in the legend denote SUFFIX LINKS (slink); solid = transitions
+' ============================================================================
+skinparam backgroundColor #FFFFFF
+skinparam defaultFontName "DejaVu Sans"
+skinparam ArrowColor #37474F
+skinparam shadowing false
+skinparam ActivityBorderColor #37474F
+skinparam ActivityDiamondBorderColor #37474F
+skinparam NoteBackgroundColor #FFF9C4
+skinparam NoteBorderColor #FBC02D
+
+title Online suffix-automaton **extend(c)** — the clone-on-split step\n(running example: feeding the next char of "abcabcab")
+
+start
+
+partition "Setup (grey = infrastructure)" #ECEFF1 {
+  :create new state **cur**;\nlen(cur) = len(last) + 1;
+  :p := last;
+}
+
+partition "Walk the suffix-link chain (green = in-memory)" #C8E6C9 {
+  while (p ≠ NULL **and** p has no c-edge?) is (true)
+    :add transition  p --c--> cur;
+    :p := slink(p)   (follow dashed suffix link);
+  endwhile (false)
+}
+
+if (p = NULL?) then (yes — root reached)
+  partition "Root case (grey)" #ECEFF1 {
+    :slink(cur) := root;
+  }
+else (no — p has c-edge)
+  :q := delta(p, c);
+  partition "Branch test (blue = decision)" #BBDEFB {
+    if (len(q) = len(p) + 1 ?) then (yes — solid edge, CASE A)
+      :slink(cur) := q;
+      note right
+        **Case A — no clone.**
+        q is already the right length;
+        a single suffix link suffices.
+        Cheap: O(1).
+      end note
+    else (no — non-solid edge, CASE B)
+      partition "CLONE-ON-SPLIT (green = new in-memory state)" #C8E6C9 {
+        :create clone **q'**;
+        :copy ALL transitions of q into q';
+        :slink(q') := slink(q);
+        :len(q') := len(p) + 1;
+        repeat
+          :rewire  p --c--> q'   (was p --c--> q);
+          :p := slink(p);
+        repeat while (p ≠ NULL **and** delta(p,c) = q?) is (true)
+        ->false;
+        :slink(q)  := q';
+        :slink(cur) := q';
+        note right
+          **Case B — the costly step.**
+          One clone caps the total state
+          count at  ≤ 2·|T| − 1  and the
+          transition count at  ≤ 3·|T| − 4.
+        end note
+      }
+    endif
+  }
+endif
+
+partition "Finalize (grey)" #ECEFF1 {
+  :last := cur;
+}
+stop
+
+legend right
+  | Symbol | Meaning |
+  | solid arrow | δ transition (labelled by a character) |
+  | dashed arrow | slink (suffix link) — drops the shortest factor |
+  | **cur** | the newly created last state for this step |
+  | **q'** | clone of q with len(q') = len(p)+1 |
+endlegend
+
+@enduml

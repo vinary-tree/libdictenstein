@@ -18,17 +18,29 @@
 ## Overview
 
 `BijectiveMap<V>` is a bidirectional map enforcing a 1:1 correspondence
-between string terms and arbitrary hashable values. It supports both
-forward lookup (`term → value`) and reverse lookup (`value → term`) in
-amortized O(1) time.
+(a *bijection*) between string terms and arbitrary hashable values. It supports
+both **forward lookup** (`term → value`) and **reverse lookup** (`value → term`).
+The forward direction is a Unicode-aware
+[`DynamicDawgChar<V>`](dynamic-dawg-char.md) — the same DAWG backend the vocab
+tries use — so forward lookup is `O(∣term∣)` and benefits from the DAWG's
+prefix/suffix sharing; the reverse direction is a hash map, giving amortized
+`O(1)` `value → term`.
+
+> **Why a DAWG for the forward side?** The forward map is conceptually a small
+> term dictionary, and reusing `DynamicDawgChar<V>` keeps `BijectiveMap`
+> consistent with the vocab-trie family (it is the in-memory analogue of
+> [`PersistentVocabARTrie`](../../persistence/mmap-architecture.md)) while
+> retaining correct Unicode edit-distance behavior if a caller later walks it
+> with a Levenshtein automaton.
 
 ### Key Properties
 
-- 🔁 **Strict 1:1**: Inserting a duplicate term or value panics (by
-  default) to preserve the invariant; `try_insert` returns
-  `Result<(), InsertError>` for non-panicking callers.
-- 🔒 **Thread-safe**: `RwLock`-based concurrency; multiple readers may
-  proceed in parallel.
+- 🔁 **Strict 1:1**: inserting a duplicate term or value panics (by default) to
+  preserve the invariant; `try_insert` returns `Result<(), InsertError>` for
+  non-panicking callers.
+- 🔒 **Thread-safe**: the reverse map is guarded by an `RwLock` and the forward
+  `DynamicDawgChar` is internally synchronized, so multiple readers proceed in
+  parallel.
 - 🧮 **Generic value type**: any `V: Eq + Hash + DictionaryValue` works.
 - ⚙️ **Bijection trait**: implements
   [`BijectiveDictionary`](../../../src/bijective/mod.rs), shared with
@@ -56,19 +68,21 @@ Insertion attempts that would violate this invariant either panic
 ## Data Structure
 
 ```rust,ignore
-pub struct BijectiveMap<V> {
-    forward: BijectiveForward<V>,                // wraps an internal hash map: term → value
-    reverse: RwLock<HashMap<V, String>>,         // value → term
+pub struct BijectiveMap<V: DictionaryValue + Eq + Hash> {
+    forward: DynamicDawgChar<V>,             // term → value (a DAWG)
+    reverse: Arc<RwLock<HashMap<V, String>>>, // value → term
 }
 ```
 
-The forward map is itself a thread-safe hash map (currently built on
-parking_lot's `RwLock<HashMap>`). The reverse map mirrors the same data
-keyed by value.
+The forward map is a `DynamicDawgChar<V>` — a thread-safe, Unicode-aware DAWG
+that shares prefixes and suffixes across terms. The reverse map mirrors the same
+pairs keyed by value, behind an `Arc<RwLock<…>>` so clones share it cheaply (and
+a clone deep-copies the snapshot under the read guard).
 
-Both maps are append-only — the public API has no `remove` method. This
-keeps the invariant trivially satisfiable and means lookups don't need to
-worry about stale entries.
+Both directions are append-only — the public API has no `remove` method. This
+keeps the bijection invariant trivially satisfiable and means lookups never have
+to reason about stale entries. `contains_term` and `contains_value` probe the
+forward DAWG and the reverse map respectively.
 
 ## API
 
@@ -90,6 +104,12 @@ Inherent:
 - `BijectiveMap::get_term(&self, value: &V) -> Option<String>` — returns
   a freshly-cloned `String` (no borrow concerns).
 - `BijectiveMap::contains_term`, `BijectiveMap::contains_value`.
+- `BijectiveMap::len() -> usize` / `is_empty() -> bool` — `O(1)` pair count
+  (the reverse map's length). (The `Dictionary` trait surfaces it as
+  `len() -> Option<usize>`; the `BijectiveDictionary` trait as `n()`.)
+- `BijectiveMap::iter()`, `terms()`, `values()` — iterate pairs / keys / values.
+- `BijectiveMap::forward() -> &DynamicDawgChar<V>` — borrow the underlying
+  forward DAWG (e.g. to walk it with a Levenshtein automaton).
 
 ## Cow Return Type
 
@@ -134,11 +154,11 @@ assert_eq!(got.as_deref(), Some("alpha"));
 
 `BijectiveMap` is thread-safe under the standard reader-writer contract:
 
-- `get_value` / `get_term` / `contains_term` / `contains_value` /
-  `bijection_len` acquire **read** guards. Multiple readers proceed in
-  parallel.
-- `insert` / `try_insert` acquire **write** guards on both the forward
-  and reverse maps (in fixed order to avoid deadlock).
+- `get_value` / `get_term` / `contains_term` / `contains_value` / `len` acquire
+  **read** access (the reverse `RwLock` read guard and/or the forward DAWG's
+  internal read path). Multiple readers proceed in parallel.
+- `insert` / `try_insert` acquire **write** access on both the forward DAWG and
+  the reverse map (in a fixed order to avoid deadlock).
 
 The reverse map's `Cow::Owned(String)` return type means the read guard
 on `reverse` is dropped before the function returns — callers cannot
@@ -149,10 +169,11 @@ hold a reference into the map while inserts proceed.
 | Feature | `BijectiveMap<V>` | `PersistentVocabARTrie` |
 |---|---|---|
 | Value type | any `V: Eq + Hash + DictionaryValue` | `u64` (auto-assigned) |
-| Backing store | in-memory HashMap | disk-backed ARTrie |
+| Backing store | in-memory DAWG (forward) + HashMap (reverse) | disk-backed ARTrie |
 | User-supplied values | yes (via `insert(term, value)`) | no (`insert_with_value` is a no-op, see A4) |
 | Persistence | none (in-memory only) | mmap + WAL |
-| Cost of reverse lookup | O(1) avg | O(depth of trie) — reconstructed |
+| Cost of forward lookup | `O(∣term∣)` (DAWG descent) | `O(∣term∣)` (trie descent) |
+| Cost of reverse lookup | `O(1)` avg (hash) | `O(depth of trie)` — reconstructed |
 | Remove support | none (append-only) | none (append-only) |
 
 Use `BijectiveMap` for in-memory mappings with user-controlled values.
@@ -219,17 +240,22 @@ assert!(matches!(
 
 ## Performance Analysis
 
+Let `N` be the number of pairs and `∣term∣` the term length in code points:
+
 | Operation | Time (avg) | Time (worst) |
 |---|---|---|
-| `insert` / `try_insert` | O(1) hash + write lock | O(n) on rehash |
-| `get_value` | O(1) hash + read lock | O(n) on collision |
-| `get_term` | O(1) hash + read lock + 1 `String` clone | O(n + \|term\|) |
-| `contains_term` / `contains_value` | O(1) hash | O(n) on collision |
-| `bijection_len` | O(1) | O(1) |
+| `insert` / `try_insert` | `O(∣term∣)` forward + `O(1)` reverse | `O(N)` on reverse-map rehash |
+| `get_value` | `O(∣term∣)` forward DAWG descent | `O(∣term∣)` |
+| `get_term` | `O(1)` reverse hash + 1 `String` clone | `O(N + ∣term∣)` on collision |
+| `contains_term` | `O(∣term∣)` forward | `O(∣term∣)` |
+| `contains_value` | `O(1)` reverse hash | `O(N)` on collision |
+| `len` / `n` | `O(1)` (reverse-map length) | `O(1)` |
 
-Memory: roughly `2 × (sizeof(String) + sizeof(V)) × N` where N is the
-number of pairs. The hash map storage is duplicated for fast bidirectional
-lookup; there is no shared underlying tree.
+Memory: roughly `(forward DAWG size) + (sizeof(V) + sizeof(String)) × N` for the
+reverse map. The forward side is a DAWG (so terms with shared prefixes/suffixes
+cost sub-linearly), while the reverse map keeps one owned `String` per value for
+`O(1)` `value → term` lookup. Forward and reverse are *separate* structures —
+the reverse direction is not derived from the DAWG on the fly.
 
 ## When to Use
 
@@ -241,5 +267,19 @@ language tag tables).
 ❌ When you need disk-backed persistence → use `PersistentVocabARTrie`.
 ❌ When you need to remove entries → no impl supports this; redesign
 your data flow.
-❌ When you need ordered iteration → `BijectiveMap` uses a `HashMap`
-and offers no ordering guarantee.
+❌ When you need ordered iteration → `BijectiveMap`'s reverse side is a
+`HashMap`, so `values()` / `get_term` offer no ordering guarantee.
+
+## Related Documentation
+
+- [Dictionary Layer](../README.md) — overview of all dictionary backends.
+- [DynamicDawgChar](dynamic-dawg-char.md) — the Unicode DAWG that backs the
+  forward (`term → value`) direction.
+- [PersistentVocabARTrie / mmap architecture](../../persistence/mmap-architecture.md)
+  — the durable, auto-`u64`-assigning vocabulary trie `BijectiveMap` is the
+  in-memory analogue of.
+- [Serialization & values](../serialization.md) — how `V` round-trips.
+
+---
+
+**Navigation**: [← Dictionary Layer](../README.md) | [DynamicDawgChar](dynamic-dawg-char.md) | [Algorithms Home](../../README.md)

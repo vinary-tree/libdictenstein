@@ -1,8 +1,42 @@
 # PersistentARTrie Benchmark Results
 
-## Date: 2024-12-27
+This document frames the measured behaviour of the `PersistentARTrie` family: what
+each number means, *how* it was obtained, and *why* it comes out the way it does.
+It is the empirical companion to the design in
+[06-persistent-artrie-design](06-persistent-artrie-design.md). The figures in the
+tables below are a **dated snapshot**; the canonical, regenerable record lives in
+the ledgers linked under [Provenance and Reproducibility](#provenance-and-reproducibility).
+No number here is invented for this document — each is transcribed from a recorded
+run, with its provenance noted.
 
-## Test Environment
+> **Reading note.** Two eras of measurement appear here. The
+> [§ Snapshot](#snapshot-2024-12-27-initial-durability-bring-up) tables are the
+> *initial durability bring-up* (single-writer, redo-only recovery). The
+> [§ Current registered experiments](#current-registered-experiments) section
+> points at the *current* statistically-tested runs (the `u64` compact profile with
+> the committed-watermark / `CommitRank` durability discipline) recorded in pgmcp.
+> Where the two disagree, the registered experiments supersede the snapshot.
+
+## Metrics: definitions
+
+Before the numbers, the vocabulary. Each metric answers a different question.
+
+| Metric | Unit | What it measures | Why it matters |
+|--------|------|------------------|----------------|
+| **Throughput** | elements/sec | Work completed per unit time (`elements ÷ wall_time`) | Headline capacity for bulk build / bulk query |
+| **Latency** (`p50`, `p99`, `p99.9`) | ns or µs/op | The 50th / 99th / 99.9th percentile of per-operation time | Tail latency, not the average, governs interactive responsiveness |
+| **Recovery time** | µs or ms | Wall time to reconstruct a usable trie after reopen (checkpoint load + WAL replay) | Bounds restart / failover downtime |
+| **Checkpoint time** | µs | Wall time to capture a durable checkpoint marker | Determines how cheaply durability points can be taken |
+| **Checkpoint density** | bytes/entry | On-disk checkpoint size divided by entry count | Storage cost and, indirectly, recovery I/O |
+| **Write amplification** | ratio | Bytes written to storage ÷ logical bytes inserted | The durability tax: WAL + checkpoint overhead over the raw data |
+
+`p50`/`p99` notation: `pN` is the value below which `N%` of samples fall. A low
+`p50` with a high `p99` signals a long tail (e.g. an occasional fault-in or fsync),
+which a mean would hide — hence we report percentiles, not just averages.
+
+## Snapshot: 2024-12-27 (initial durability bring-up)
+
+### Test Environment
 
 - **Platform**: Linux 6.18.2-arch2-1
 - **CPU**: Intel Xeon E5-2699 v3 @ 2.30GHz (36 cores, 72 threads with HT)
@@ -12,27 +46,16 @@
 - **Rust**: rustc 1.87.0 (nightly)
 - **Optimization**: `--release` profile with LTO
 
-## Implementation Status
-
-All planned phases completed:
-
-| Phase | Description | Status |
-|-------|-------------|--------|
-| 7.1 | Add storage fields to PersistentARTrieInner | Complete |
-| 7.2 | Add open() and create() constructors with recovery | Complete |
-| 7.3 | Implement lazy SwizzledPtr resolution in lookup | Complete |
-| 7.4 | Implement node serialization on insert | Complete |
-| 7.5 | Wire prefetcher for DFS traversal | Complete |
-| 8.1-8.4 | Integrate WAL with operations | Complete |
-| 9.1-9.2 | Implement startup recovery | Complete |
-| 10.1-10.4 | Complete ART node operations (fix TODOs) | Complete |
-| 11 | Performance benchmarking | Complete |
-
-## Benchmark Results
+> The current hardware reference used for newer runs is recorded at
+> `~/.claude/hardware-specifications.md`; cite that file rather than copying its
+> contents, so the two never drift.
 
 ### Disk I/O Performance
 
-Measured using Criterion.rs with 10 samples per benchmark:
+Measured using [Criterion.rs](https://github.com/bheisler/criterion.rs) with 10
+samples per benchmark. Criterion repeats each benchmark many times within a sample
+and reports a robust estimate, which is why microsecond-scale figures are stable
+despite OS noise.
 
 #### Create + Insert + Sync
 
@@ -42,7 +65,15 @@ Measured using Criterion.rs with 10 samples per benchmark:
 | 500 terms | 251.4 µs | 1.99 M elements/sec |
 | 1000 terms | 335.1 µs | 2.98 M elements/sec |
 
-**Analysis**: Insert throughput increases with dictionary size due to amortized allocation overhead. At 1000 terms, the dictionary achieves approximately 3 million insertions per second with full durability (sync to disk).
+**What this is.** End-to-end cost of creating a fresh trie, inserting `n` terms, and
+`sync`-ing every insert to disk (full durability — each insert is recoverable).
+
+**Why throughput *rises* with size.** This looks backwards until you account for
+fixed costs. Each run pays a constant overhead — file creation, header write, arena
+bootstrap — that is amortised over more inserts as `n` grows. Per-insert marginal
+cost is roughly flat, so dividing out the fixed cost makes the *average* rate climb
+from `~1.26 M/s` at 100 terms toward `~2.98 M/s` at 1000. The number to extrapolate
+is the marginal rate at the largest size, not the small-`n` averages.
 
 #### Recovery Time
 
@@ -52,7 +83,15 @@ Measured using Criterion.rs with 10 samples per benchmark:
 | 500 terms | 447.9 µs | 1.12 M elements/sec |
 | 1000 terms | 673.1 µs | 1.49 M elements/sec |
 
-**Analysis**: Recovery is approximately 1.5-2x slower than initial creation, which is expected due to WAL replay overhead. Recovery throughput scales sub-linearly with dictionary size.
+**What this is.** Time to reopen the file and rebuild a queryable trie: load the
+last checkpoint, then replay the WAL tail not covered by it.
+
+**Why it is `~1.5–2×` slower than the initial build.** Recovery does strictly more
+work per entry than insertion: it must read and decode each WAL record *and* rebuild
+the in-memory overlay, where the original build only did the latter. Throughput
+scales sub-linearly because WAL replay is dominated by sequential record decode,
+which the checkpoint shrinks but does not eliminate. The headline consequence is
+benign: a 1000-term dictionary is back online in under `1 ms`.
 
 #### Checkpoint
 
@@ -62,11 +101,21 @@ Measured using Criterion.rs with 10 samples per benchmark:
 | 500 terms | 1.72 µs | 290.6 M elements/sec |
 | 1000 terms | 1.70 µs | 588.0 M elements/sec |
 
-**Analysis**: Checkpoint is nearly constant time (~1.7 µs) regardless of dictionary size, as it only marks a point in the WAL rather than copying data.
+**What this is.** Cost of taking a checkpoint *marker*.
+
+**Why it is essentially constant (`~1.7 µs`) regardless of size.** A checkpoint here
+records a safe `checkpoint_lsn` watermark rather than copying the data; its cost does
+not depend on entry count, so the apparent "throughput" grows linearly only because
+the denominator (entries) grows while the numerator (time) does not. The practical
+reading: checkpoints are `O(1)` enough to be taken frequently, keeping the WAL replay
+tail — and therefore recovery time — short. (Full checkpoint *capture* that
+serializes the overlay into a dense CX image is a separate, size-dependent cost; see
+the registered experiments below for its measured density.)
 
 ### In-Memory Performance Comparison
 
-Additional benchmarks comparing PersistentARTrie against other dictionary types:
+These runs disable disk sync to isolate the structural overhead of the persistent
+representation from the cost of durability.
 
 #### Construction (in-memory, no disk sync)
 
@@ -76,7 +125,11 @@ Additional benchmarks comparing PersistentARTrie against other dictionary types:
 | DynamicDawg | ~20 µs | ~200 µs | ~1.2 ms |
 | DoubleArrayTrie | ~15 µs | ~180 µs | ~1.0 ms |
 
-**Analysis**: PersistentARTrie is approximately 2-2.5x slower than in-memory-only structures due to WAL logging overhead, which is expected for durability guarantees.
+**Why PersistentARTrie is `~2–2.5×` slower here.** Even with sync off, the persistent
+path still maintains WAL records and the immutable overlay's path-copy discipline,
+which the pure in-memory `DynamicDawg`/`DoubleArrayTrie` skip entirely. This is the
+structural price of being *able* to become durable — the gap narrows once amortised
+over larger builds, mirroring the fixed-cost story above.
 
 #### Exact Lookup (100 queries)
 
@@ -86,40 +139,100 @@ Additional benchmarks comparing PersistentARTrie against other dictionary types:
 | DynamicDawg | ~12 µs | ~14 µs | ~18 µs |
 | DoubleArrayTrie | ~8 µs | ~10 µs | ~12 µs |
 
-**Analysis**: Lookup performance is comparable across dictionary types, with PersistentARTrie showing ~20-30% overhead due to lock acquisition.
+**Why lookup stays competitive.** Reads follow swizzled child pointers at native
+speed once a node is in memory (see [04-persistent-art](04-persistent-art.md)); the
+residual `~20–30%` overhead versus the leanest in-memory structure came from
+synchronization on the read path in this snapshot. Critically, lookup time grows only
+weakly with dictionary size — the `O(m)` (query-length-bound) property of the trie
+holds across the persistent representation.
 
-## Key Findings
+### Key Findings (snapshot)
 
-1. **Durability vs Performance Trade-off**: PersistentARTrie achieves ~3M inserts/sec with full durability, suitable for high-throughput applications requiring crash recovery.
+1. **Durability vs. performance trade-off.** `~3 M` inserts/sec *with* full durability
+   makes the structure suitable for high-throughput workloads that also need crash
+   recovery, at a measured `~2–2.5×` build-time tax over non-durable structures.
+2. **Sub-millisecond recovery.** A 1000-term dictionary recovers in under `1 ms`,
+   enabling fast restarts.
+3. **Near-`O(1)` checkpoints.** Checkpoint markers cost `~1.7 µs` independent of size,
+   so they can be taken often to bound recovery work.
+4. **Competitive lookup.** Despite persistence, point-lookup latency stays within
+   `~20–30%` of the leanest in-memory backend and remains query-length-bound.
 
-2. **Sub-millisecond Recovery**: Recovery of 1000-term dictionaries completes in under 1ms, enabling fast restarts.
-
-3. **Constant-time Checkpoints**: Checkpoint operations are O(1), allowing frequent checkpoint markers without performance impact.
-
-4. **Competitive Lookup**: Despite persistence overhead, lookup performance remains competitive with in-memory structures.
-
-## Test Coverage
-
-All 219 tests pass, including:
-- 6 new recursive ART node operation tests
-- Existing unit tests for all modules
-- Integration tests for persistence and recovery
+### Test coverage at the time of this snapshot
 
 ```
 test result: ok. 219 passed; 0 failed; 197 ignored; 0 measured; 0 filtered out
 ```
 
-## Known Limitations
+> This 219-test figure is the 2024-12-27 snapshot. The suite has grown by orders of
+> magnitude since (see `docs/benchmarks/` and the crate's CHANGELOG); treat the line
+> above as a historical artifact, not the current count.
 
-1. **Value Serialization**: The `DictionaryValue` trait does not include serialization bounds, so values cannot be persisted to disk. Values are stored as `Vec<u8>` internally but cannot be converted back to generic `V` without adding `serde` bounds.
+## Current registered experiments
 
-2. **DiskRef Resolution**: Lazy loading from disk (`ChildNode::DiskRef`) is implemented but not fully tested under memory pressure scenarios.
+The design document records the *current*, statistically-tested results for the
+`u64` compact profile under the committed-watermark / `CommitRank` durability
+discipline. Rather than duplicate (and risk drifting from) those numbers, this
+section points at the canonical record and explains how to read it.
 
-3. **Group Commit**: The `GroupCommit` mechanism exists but is not integrated into the main insert path.
+- **Headline comparison.** Native prefix-4 `u64` keys versus byte-encoded `u64`
+  control, measured for lookup latency, parallel-reader-plus-writer read latency,
+  and checkpoint density, each accepted by a Welch's t-test at the stated `p`-value.
+- **Why a t-test.** Microbenchmarks are noisy; **Welch's t-test** (a two-sample test
+  that does *not* assume equal variances) decides whether an observed gap between two
+  configurations is real or sampling noise. A small `p` (e.g. `p = 2.82e-35`) means
+  the improvement is overwhelmingly unlikely to be chance.
+- **Why native `u64` keys win.** Encoding a 64-bit label as eight byte transitions
+  deepens every path eightfold; keeping the label native (`U64Key`) keeps paths
+  shallow, which shows up as both lower lookup latency and a denser checkpoint
+  (fewer nodes to serialize).
 
-## Future Work
+The exact figures, `p`-values, and raw samples are in
+[06-persistent-artrie-design § Empirical Status](06-persistent-artrie-design.md#empirical-status)
+and its linked experiment ledger.
 
-1. Add `serde` bounds to `DictionaryValue` for full value persistence
-2. Implement memory pressure-based eviction in BufferManager
-3. Add group commit batching for high-throughput scenarios
-4. Benchmark with larger dictionaries (100K+ terms)
+## Provenance and Reproducibility
+
+Every number above is traceable to a recorded artifact. Prefer these sources over the
+transcribed tables when precision matters — they are regenerated by the benchmark
+harness, whereas this page is a curated summary.
+
+- **Registered experiment ledger (current `u64` runs):**
+  [`../../experiments/persistent-u64-watermark-commitrank-2026-06-13.md`](../../experiments/persistent-u64-watermark-commitrank-2026-06-13.md)
+  — raw samples for the watermark / `CommitRank` lookup, parallel-read, and
+  checkpoint-density experiments, cross-referenced to pgmcp experiments `53`–`55`
+  with artifact `132`.
+- **Persistence enhancements ledger:**
+  [`../../experiments/persistence-enhancements-ledger.md`](../../experiments/persistence-enhancements-ledger.md)
+  — the scientific-method log behind the durability work.
+- **Loading-optimization ledger:**
+  [`../../experiments/loading-optimization-ledger.md`](../../experiments/loading-optimization-ledger.md)
+  — recovery / load-path measurements.
+- **Lock-free flip benchmark ledger:**
+  [`../../experiments/lockfree-flip-benchmark-ledger.md`](../../experiments/lockfree-flip-benchmark-ledger.md)
+  — the read-path concurrency runs (raw contended/disjoint CSVs and RSS traces live
+  beside it).
+- **Benchmark artifacts and plots:**
+  [`../../benchmarks/`](../../benchmarks/) and its
+  [`artifacts/`](../../benchmarks/artifacts/) subdirectory — the gnuplot `.gp`
+  sources and recorded output behind the figures.
+
+### How to regenerate
+
+The persistent-ARTrie benchmarks are Criterion benches gated behind the
+`persistent-artrie` feature (and, for internal-detail benches, `bench-internals`).
+Per the project conventions, benchmarks must be registered in `Cargo.toml` before
+they can run, results should be pinned to fixed CPU cores at maximum frequency for
+stability, and full output should be tee'd to a file so a run is captured once rather
+than repeated. Consult the ledgers above for the exact invocation used for each
+recorded run; they record the command line alongside the samples so a result can be
+reproduced verbatim.
+
+## Related material
+
+- [06-persistent-artrie-design](06-persistent-artrie-design.md) — the design these
+  numbers measure, including the current registered `u64` results.
+- [05-buffer-management](05-buffer-management.md) — WAL, checkpointing, and recovery
+  mechanics that the recovery/checkpoint metrics exercise.
+- [04-persistent-art](04-persistent-art.md) — pointer swizzling, which underlies the
+  competitive lookup latency.

@@ -55,7 +55,7 @@ Note: We use 1-indexed end positions (positions 1 through |w|) to match standard
 | abcab | 0, 3 | {5, 8} |
 | abcabcab | 0 | {8} |
 
-**Key Observation**: Factors "b" and "ab" have the same end-position set {2, 5, 8}. Similarly, "c", "bc", and "abc" share {3, 6}.
+**Key Observation**: Factors "b" and "ab" have the same end-position set `{2, 5, 8}`. Similarly, "c", "bc", and "abc" share `{3, 6}`. Distinct-length factors thus collapse into one state precisely when their `endpos` sets coincide.
 
 ## Equivalence Classes
 
@@ -68,11 +68,11 @@ Two factors are **equivalent** if and only if they have the same end-position se
 x ≡ y  ⟺  end-pos(x) = end-pos(y)
 ```
 
-This is indeed an equivalence relation (reflexive, symmetric, transitive), partitioning F(w) into equivalence classes.
+This is indeed an equivalence relation (reflexive, symmetric, transitive), partitioning `F(w)` into equivalence classes.
 
-**Theorem 1**: The number of equivalence classes is at most 2|w| - 1.
+**Theorem 1** (Blumer et al. 1985, [10.1016/0304-3975(85)90157-4](https://doi.org/10.1016/0304-3975(85)90157-4)): The number of equivalence classes is at most `2·∣w∣ − 1`.
 
-*Proof sketch*: Each new character can create at most 2 new equivalence classes (one for the new suffix, possibly one from splitting an existing class).
+*Proof sketch*: Each new character can create at most 2 new equivalence classes — one for the new suffix, and possibly one more when an existing class is **split** (the clone-on-split step illustrated below). This per-character budget of 2 is exactly what yields the `≤ 2·∣w∣ − 1` bound on the state count.
 
 ### Equivalence Classes for "abcabcab"
 
@@ -90,15 +90,15 @@ Grouping factors by their end-position sets:
 | q₇ | {7} | {cabca, bcabca, abcabca} | 3 |
 | q₈ | {8} | {cabcab, bcabcab, abcabcab} | 3 |
 
-**Total**: 9 equivalence classes for a string of length 8 (≤ 2×8-1 = 15).
+**Total**: 9 equivalence classes for a string of length 8 (`≤ 2×8 − 1 = 15`).
 
 ### Class Structure
 
 Each equivalence class [x] has important structural properties:
 
-**Lemma 1 (Suffix Chain)**: If x ≡ y and |x| < |y|, then x is a suffix of y.
+**Lemma 1 (Suffix Chain)**: If `x ≡ y` and `∣x∣ < ∣y∣`, then `x` is a suffix of `y`.
 
-*Proof*: Since end-pos(x) = end-pos(y), every occurrence of y ends where some occurrence of x ends. Since y is longer, y must contain x as a suffix.
+*Proof*: Since `end-pos(x) = end-pos(y)`, every occurrence of `y` ends where some occurrence of `x` ends. Since `y` is longer, `y` must contain `x` as a suffix.
 
 **Corollary**: Each equivalence class forms a **suffix chain** - a sequence of strings where each is a suffix of the next:
 ```
@@ -209,14 +209,14 @@ Where `-` indicates no transition (character doesn't extend any factor in that c
 
 ### Definition
 
-The **suffix link** of a state [x] points to the state of its longest proper suffix that forms a different equivalence class:
+The **suffix link** `slink([x])` of a state `[x]` points to the state of its longest proper suffix that forms a *different* equivalence class. Intuitively, a suffix link "drops" the shortest factor of a class and lands in the class one `endpos`-level up:
 
 **Definition (Suffix Link)**:
 ```
 slink([x]) = [y] where y is the longest proper suffix of longest(x) such that [y] ≠ [x]
 ```
 
-Equivalently: slink([x]) = [z] where z has length |shortest(x)| - 1.
+Equivalently: `slink([x]) = [z]` where `z` has length `∣shortest(x)∣ − 1`.
 
 ### Intuition
 
@@ -231,19 +231,11 @@ For state q₄ = {ca, bca, abca}, shortest = "ca":
 
 ### Suffix Link Tree
 
-Suffix links form a **tree** rooted at q₀:
+Because every suffix link strictly shortens the shortest representative, the links are acyclic and converge on `q₀`; they therefore form a **tree** rooted at `q₀`. The figure below overlays that suffix-link tree (dashed blue) on the automaton's transitions (solid) for the running example `abcabcab`. Reversing the suffix links — i.e. reading the tree top-down — recovers, for any matched factor, every state whose factors end where it ends, which is precisely what powers substring and occurrence (`endpos`) queries.
 
-```
-                    q₀
-                 /  |  \
-               q₁  q₂  q₃
-                |   |
-               q₄  q₅
-                |   |
-               q₆  q₆  (Note: q₅ and q₆ both link to appropriate states)
-```
+<img src="../../diagrams/suffix-links.svg" alt="Suffix automaton of abcabcab with the suffix-link tree overlaid: solid dark edges are δ transitions labelled by characters; dashed blue edges are suffix links from each state to its parent, all converging on the root q0. endpos sets grow as the tree is climbed toward q0." width="820"/>
 
-Actually, let's trace the suffix links properly:
+Tracing the suffix links explicitly for `abcabcab`:
 
 | State | Shortest | Suffix of length |shortest|-1 | Suffix Link Target |
 |-------|----------|----------------------------------|-------------------|
@@ -258,22 +250,22 @@ Actually, let's trace the suffix links properly:
 
 ### Properties of Suffix Links
 
-**Lemma 2**: Following suffix links from any state eventually reaches q₀.
+**Lemma 2**: Following suffix links from any state eventually reaches `q₀`.
 
-**Lemma 3**: For states [x] and [y] with slink([x]) = [y]:
+**Lemma 3**: For states `[x]` and `[y]` with `slink([x]) = [y]`:
 ```
 end-pos(x) ⊂ end-pos(y)  (strict subset)
 ```
 
-*Proof*: Shorter strings have (weakly) more occurrences. Since [y] represents shorter strings than [x], and they're different classes, the inclusion must be strict.
+*Proof*: Shorter strings have (weakly) more occurrences. Since `[y]` represents shorter strings than `[x]`, and they are different classes, the inclusion must be strict.
 
-**Lemma 4**: The suffix link tree has depth at most |w|.
+**Lemma 4**: The suffix link tree has depth at most `∣w∣`.
 
-*Proof*: Each suffix link reduces the shortest representative's length by at least 1.
+*Proof*: Each suffix link reduces the shortest representative's length by at least 1, so a root-to-leaf path can have at most `∣w∣` edges.
 
 ## Right Contexts
 
-The **right context** of a factor x is the set of characters that can follow x:
+The **right context** of a factor `x` is the set of characters that can follow `x`:
 
 **Definition (Right Context)**:
 ```
@@ -282,22 +274,26 @@ right-context(x) = {a ∈ Σ : xa ∈ F(w)}
 
 **Key Property**: All strings in an equivalence class have the **same** right context.
 
-*Proof*: If end-pos(x) = end-pos(y), then x and y can be extended by exactly the same characters (those that appear after their shared ending positions).
+*Proof*: If `end-pos(x) = end-pos(y)`, then `x` and `y` can be extended by exactly the same characters (those that appear after their shared ending positions over the alphabet `Σ`).
 
 This property is what makes the suffix automaton deterministic: the next state depends only on the current equivalence class, not which specific string led to it.
 
 ## Construction Complexity
 
-**Theorem 2** (Blumer et al., 1985): The suffix automaton of a string w can be constructed in O(|w|) time and space.
+**Theorem 2** (Blumer et al. 1985, [10.1016/0304-3975(85)90157-4](https://doi.org/10.1016/0304-3975(85)90157-4)): The suffix automaton of a string `w` can be constructed in `O(∣w∣)` time and space.
 
-The construction algorithm:
-1. Process characters left-to-right
-2. For each new character, create at most 2 new states
-3. Update transitions and suffix links incrementally
+The construction algorithm is **online** (left-to-right):
+1. Process characters left-to-right.
+2. For each new character `c`, walk the suffix-link chain from the previous last state, adding `c`-transitions, and create at most 2 new states.
+3. Update transitions and suffix links incrementally.
+
+The single non-trivial step is **clone-on-split**: when the suffix-link walk reaches a state `p` whose existing `c`-edge leads to a state `q` reached by a *non-solid* edge (`len(q) > len(p) + 1`), the algorithm clones `q` as `q′`, copies its transitions and suffix link, sets `len(q′) = len(p) + 1`, and rewires the affected `c`-edges and suffix links. This is exactly the per-character "second state" of the budget in Theorem 1, and capping it at one clone per step is what keeps the totals at `≤ 2·∣w∣ − 1` states and `≤ 3·∣w∣ − 4` transitions.
+
+<img src="../../diagrams/clone-on-split.svg" alt="Activity diagram of the online suffix-automaton extend(c) routine: create the new last state cur, walk the suffix-link chain adding c-edges, then branch on whether len(q) equals len(p)+1 (Case A, set the suffix link directly) or is larger (Case B, the costly clone-on-split that copies q's transitions into a clone q', sets len(q')=len(p)+1, and rewires the affected c-edges and suffix links)." width="780"/>
 
 The resulting automaton has:
-- At most 2|w| - 1 states
-- At most 3|w| - 4 transitions
+- At most `2·∣w∣ − 1` states.
+- At most `3·∣w∣ − 4` transitions.
 
 ## What's Missing?
 

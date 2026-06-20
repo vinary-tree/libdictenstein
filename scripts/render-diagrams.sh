@@ -36,6 +36,12 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 
+# This script only renders headlessly. A stale/unreachable DISPLAY (e.g. a dead
+# X11-forwarding socket) makes the JVM-based renderers (PlantUML) abort with an
+# AWTError; unset it and force AWT headless so rendering never needs a display.
+unset DISPLAY
+export JAVA_TOOL_OPTIONS="${JAVA_TOOL_OPTIONS:-} -Djava.awt.headless=true"
+
 SRC_DIR="docs/diagrams/src"
 OUT_DIR="docs/diagrams"
 BENCH_DIR="docs/benchmarks/artifacts"
@@ -70,6 +76,7 @@ MMDC_CMD="${MMDC:-mmdc}"
 D2_CMD="${D2:-d2}"
 DOT_CMD="${DOT:-dot}"
 GNUPLOT_CMD="${GNUPLOT:-gnuplot}"
+SVGBOB_CMD="${SVGBOB:-svgbob_cli}"
 BYTEFIELD_CMD="$(resolve_node_tool BYTEFIELD_SVG bytefield-svg bytefield-svg)"
 
 # Optional puppeteer config so mmdc runs headless-Chromium under CI sandboxes.
@@ -127,6 +134,11 @@ render_one() {  # $1=source path
       # shellcheck disable=SC2086
       $BYTEFIELD_CMD -s "$src" -o "$out"
       ;;
+    bob)
+      have "$SVGBOB_CMD" || { missing_tool svgbob_cli; return; }
+      echo "  svgbob    $src → $out"
+      "$SVGBOB_CMD" "$src" -o "$out" --font-family "DejaVu Sans" --background "white"
+      ;;
     *)
       echo "  ? no renderer for .$ext ($src) — skipping" >&2
       return
@@ -157,7 +169,7 @@ else
   # All diagram sources.
   if [[ -d "$SRC_DIR" ]]; then
     shopt -s nullglob
-    for src in "$SRC_DIR"/*.{puml,mmd,d2,dot,gv,bytefield}; do
+    for src in "$SRC_DIR"/*.{puml,mmd,d2,dot,gv,bytefield,bob}; do
       render_one "$src"
     done
     shopt -u nullglob

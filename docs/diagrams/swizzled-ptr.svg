@@ -1,0 +1,542 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="664" height="672" class="svgbob">
+  <style>.svgbob line, .svgbob path, .svgbob circle, .svgbob rect, .svgbob polygon {
+  stroke: black;
+  stroke-width: 2;
+  stroke-opacity: 1;
+  fill-opacity: 1;
+  stroke-linecap: round;
+  stroke-linejoin: miter;
+}
+
+.svgbob text {
+  white-space: pre;
+  fill: black;
+  font-family: DejaVu Sans;
+  font-size: 14px;
+}
+
+.svgbob rect.backdrop {
+  stroke: none;
+  fill: white;
+}
+
+.svgbob .broken {
+  stroke-dasharray: 8;
+}
+
+.svgbob .filled {
+  fill: black;
+}
+
+.svgbob .bg_filled {
+  fill: white;
+  stroke-width: 1;
+}
+
+.svgbob .nofill {
+  fill: white;
+}
+
+.svgbob .end_marked_arrow {
+  marker-end: url(#arrow);
+}
+
+.svgbob .start_marked_arrow {
+  marker-start: url(#arrow);
+}
+
+.svgbob .end_marked_diamond {
+  marker-end: url(#diamond);
+}
+
+.svgbob .start_marked_diamond {
+  marker-start: url(#diamond);
+}
+
+.svgbob .end_marked_circle {
+  marker-end: url(#circle);
+}
+
+.svgbob .start_marked_circle {
+  marker-start: url(#circle);
+}
+
+.svgbob .end_marked_open_circle {
+  marker-end: url(#open_circle);
+}
+
+.svgbob .start_marked_open_circle {
+  marker-start: url(#open_circle);
+}
+
+.svgbob .end_marked_big_open_circle {
+  marker-end: url(#big_open_circle);
+}
+
+.svgbob .start_marked_big_open_circle {
+  marker-start: url(#big_open_circle);
+}
+
+</style>
+  <defs>
+    <marker id="arrow" viewBox="-2 -2 8 8" refX="4" refY="2" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <polygon points="0,0 0,4 4,2 0,0"></polygon>
+    </marker>
+    <marker id="diamond" viewBox="-2 -2 8 8" refX="4" refY="2" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <polygon points="0,2 2,0 4,2 2,4 0,2"></polygon>
+    </marker>
+    <marker id="circle" viewBox="0 0 8 8" refX="4" refY="4" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <circle cx="4" cy="4" r="2" class="filled"></circle>
+    </marker>
+    <marker id="open_circle" viewBox="0 0 8 8" refX="4" refY="4" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <circle cx="4" cy="4" r="2" class="bg_filled"></circle>
+    </marker>
+    <marker id="big_open_circle" viewBox="0 0 8 8" refX="4" refY="4" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <circle cx="4" cy="4" r="3" class="bg_filled"></circle>
+    </marker>
+  </defs>
+  <rect class="backdrop" x="0" y="0" width="664" height="672"></rect>
+  <rect x="20" y="376" width="40" height="48" class="solid nofill" rx="0"></rect>
+  <text x="26" y="396" >MSB</text>
+  <text x="26" y="412" >swz</text>
+  <rect x="20" y="520" width="384" height="32" class="solid nofill" rx="0"></rect>
+  <circle cx="80" cy="536" r="4" class="nofill"></circle>
+  <text x="34" y="540" >*mut</text>
+  <line x1="104" y1="536" x2="112" y2="536" class="solid"></line>
+  <polygon points="112,532 120,536 112,540" class="filled"></polygon>
+  <text x="130" y="540" >live</text>
+  <text x="170" y="540" >in</text>
+  <line x1="184" y1="536" x2="192" y2="536" class="solid"></line>
+  <text x="194" y="540" >memory</text>
+  <text x="250" y="540" >node</text>
+  <path d="M 296,528 A 16,16 0,0,0 296,544" class="nofill"></path>
+  <text x="298" y="540" >provenance</text>
+  <path d="M 376,528 A 16,16 0,0,1 376,544" class="nofill"></path>
+  <rect x="76" y="376" width="184" height="48" class="solid nofill" rx="0"></rect>
+  <text x="106" y="396" >block</text>
+  <line x1="144" y1="400" x2="152" y2="400" class="solid"></line>
+  <text x="154" y="396" >id</text>
+  <text x="106" y="412" >&lt;</text>
+  <line x1="112" y1="406" x2="120" y2="406" class="solid"></line>
+  <line x1="112" y1="410" x2="120" y2="410" class="solid"></line>
+  <text x="130" y="412" >8M</text>
+  <line x1="152" y1="408" x2="160" y2="408" class="solid"></line>
+  <text x="170" y="412" >1</text>
+  <path d="M 192,384 A 16,16 0,0,0 192,400" class="nofill"></path>
+  <text x="194" y="396" >23b</text>
+  <path d="M 216,384 A 16,16 0,0,1 216,400" class="nofill"></path>
+  <rect x="276" y="376" width="152" height="48" class="solid nofill" rx="0"></rect>
+  <text x="298" y="396" >location</text>
+  <text x="298" y="412" >offset</text>
+  <line x1="360" y1="400" x2="352" y2="416" class="solid"></line>
+  <path d="M 376,384 A 16,16 0,0,0 376,400" class="nofill"></path>
+  <text x="378" y="396" >22b</text>
+  <path d="M 400,384 A 16,16 0,0,1 400,400" class="nofill"></path>
+  <text x="370" y="412" >slot</text>
+  <rect x="444" y="376" width="136" height="48" class="solid nofill" rx="0"></rect>
+  <text x="466" y="396" >flags</text>
+  <path d="M 528,384 A 16,16 0,0,0 528,400" class="nofill"></path>
+  <text x="530" y="396" >18b</text>
+  <path d="M 552,384 A 16,16 0,0,1 552,400" class="nofill"></path>
+  <text x="466" y="412" >incl</text>
+  <text x="506" y="412" >NodeType</text>
+  <rect x="0" y="4" width="8" height="8" class="solid filled" rx="0"></rect>
+  <line x1="4" y1="12" x2="4" y2="20" class="solid"></line>
+  <rect x="0" y="20" width="8" height="8" class="solid filled" rx="0"></rect>
+  <line x1="4" y1="28" x2="4" y2="36" class="solid"></line>
+  <rect x="0" y="36" width="8" height="8" class="solid filled" rx="0"></rect>
+  <line x1="4" y1="44" x2="4" y2="52" class="solid"></line>
+  <rect x="0" y="52" width="8" height="8" class="solid filled" rx="0"></rect>
+  <line x1="4" y1="60" x2="4" y2="68" class="solid"></line>
+  <rect x="0" y="68" width="8" height="8" class="solid filled" rx="0"></rect>
+  <line x1="4" y1="76" x2="4" y2="84" class="solid"></line>
+  <rect x="0" y="84" width="8" height="8" class="solid filled" rx="0"></rect>
+  <line x1="4" y1="92" x2="4" y2="100" class="solid"></line>
+  <rect x="0" y="100" width="8" height="8" class="solid filled" rx="0"></rect>
+  <line x1="4" y1="108" x2="4" y2="116" class="solid"></line>
+  <rect x="0" y="116" width="8" height="8" class="solid filled" rx="0"></rect>
+  <line x1="4" y1="124" x2="4" y2="132" class="solid"></line>
+  <rect x="0" y="132" width="8" height="8" class="solid filled" rx="0"></rect>
+  <line x1="4" y1="140" x2="4" y2="148" class="solid"></line>
+  <rect x="0" y="148" width="8" height="8" class="solid filled" rx="0"></rect>
+  <line x1="4" y1="156" x2="4" y2="164" class="solid"></line>
+  <rect x="0" y="164" width="8" height="8" class="solid filled" rx="0"></rect>
+  <line x1="4" y1="172" x2="4" y2="180" class="solid"></line>
+  <rect x="0" y="180" width="8" height="8" class="solid filled" rx="0"></rect>
+  <line x1="4" y1="188" x2="4" y2="196" class="solid"></line>
+  <rect x="0" y="196" width="8" height="8" class="solid filled" rx="0"></rect>
+  <line x1="4" y1="204" x2="4" y2="212" class="solid"></line>
+  <rect x="0" y="212" width="8" height="8" class="solid filled" rx="0"></rect>
+  <line x1="4" y1="220" x2="4" y2="228" class="solid"></line>
+  <rect x="0" y="228" width="8" height="8" class="solid filled" rx="0"></rect>
+  <line x1="4" y1="236" x2="4" y2="244" class="solid"></line>
+  <rect x="0" y="244" width="8" height="8" class="solid filled" rx="0"></rect>
+  <line x1="4" y1="252" x2="4" y2="260" class="solid"></line>
+  <rect x="0" y="260" width="8" height="8" class="solid filled" rx="0"></rect>
+  <line x1="4" y1="268" x2="4" y2="276" class="solid"></line>
+  <rect x="0" y="276" width="8" height="8" class="solid filled" rx="0"></rect>
+  <line x1="4" y1="284" x2="4" y2="292" class="solid"></line>
+  <rect x="0" y="292" width="8" height="8" class="solid filled" rx="0"></rect>
+  <line x1="16" y1="6" x2="632" y2="6" class="solid"></line>
+  <line x1="16" y1="10" x2="632" y2="10" class="solid"></line>
+  <text x="18" y="28" >SwizzledPtr</text>
+  <line x1="112" y1="24" x2="120" y2="24" class="solid"></line>
+  <text x="130" y="28" >the</text>
+  <text x="162" y="28" >64</text>
+  <line x1="176" y1="24" x2="184" y2="24" class="solid"></line>
+  <text x="186" y="28" >bit</text>
+  <text x="218" y="28" >atomic</text>
+  <text x="274" y="28" >STATE</text>
+  <text x="322" y="28" >w</text>
+  <line x1="330" y1="28" x2="332" y2="24" class="solid end_marked_open_circle"></line>
+  <text x="338" y="28" >rd</text>
+  <text x="362" y="28" >+</text>
+  <text x="378" y="28" >a</text>
+  <text x="394" y="28" >separate</text>
+  <text x="466" y="28" >provenance</text>
+  <text x="554" y="28" >pointer.</text>
+  <text x="18" y="44" >Source</text>
+  <text x="74" y="44" >of</text>
+  <text x="98" y="44" >truth:</text>
+  <text x="154" y="44" >src</text>
+  <line x1="184" y1="32" x2="176" y2="48" class="solid"></line>
+  <text x="186" y="44" >persistent</text>
+  <line x1="264" y1="48" x2="272" y2="48" class="solid"></line>
+  <text x="274" y="44" >artrie</text>
+  <line x1="328" y1="32" x2="320" y2="48" class="solid"></line>
+  <text x="330" y="44" >core</text>
+  <line x1="368" y1="32" x2="360" y2="48" class="solid"></line>
+  <text x="370" y="44" >swizzled</text>
+  <line x1="432" y1="48" x2="440" y2="48" class="solid"></line>
+  <text x="442" y="44" >ptr.rs.</text>
+  <text x="18" y="76" >The</text>
+  <text x="50" y="76" >state</text>
+  <text x="34" y="92" >MSB</text>
+  <line x1="64" y1="86" x2="72" y2="86" class="solid"></line>
+  <line x1="64" y1="90" x2="72" y2="90" class="solid"></line>
+  <text x="82" y="92" >1</text>
+  <text x="98" y="76" >word&#39;s</text>
+  <text x="154" y="76" >MSB</text>
+  <text x="194" y="76" >bit</text>
+  <text x="226" y="76" >63</text>
+  <path d="M 240,64 A 16,16 0,0,1 240,80" class="nofill"></path>
+  <text x="258" y="76" >discriminates</text>
+  <text x="370" y="76" >the</text>
+  <text x="402" y="76" >class:</text>
+  <line x1="104" y1="88" x2="112" y2="88" class="solid"></line>
+  <polygon points="112,84 120,88 112,92" class="filled"></polygon>
+  <text x="130" y="92" >memory</text>
+  <text x="202" y="92" >transitional:</text>
+  <text x="314" y="92" >the</text>
+  <text x="346" y="92" >LIVE</text>
+  <text x="386" y="92" >pointer</text>
+  <text x="450" y="92" >lives</text>
+  <text x="498" y="92" >in</text>
+  <text x="522" y="92" >a</text>
+  <text x="538" y="92" >SEPARATE</text>
+  <text x="122" y="108" >`memory</text>
+  <line x1="176" y1="112" x2="184" y2="112" class="solid"></line>
+  <text x="186" y="108" >ptr:</text>
+  <text x="226" y="108" >AtomicPtr`</text>
+  <text x="314" y="108" >slot</text>
+  <path d="M 360,96 A 16,16 0,0,0 360,112" class="nofill"></path>
+  <text x="362" y="108" >so</text>
+  <text x="386" y="108" >Rust</text>
+  <text x="426" y="108" >pointer</text>
+  <text x="490" y="108" >provenance</text>
+  <text x="578" y="108" >is</text>
+  <text x="122" y="124" >preserved;</text>
+  <text x="210" y="124" >an</text>
+  <text x="234" y="124" >address</text>
+  <text x="298" y="124" >is</text>
+  <text x="322" y="124" >never</text>
+  <text x="370" y="124" >packed</text>
+  <text x="426" y="124" >into</text>
+  <text x="466" y="124" >the</text>
+  <text x="498" y="124" >integer</text>
+  <path d="M 552,112 A 16,16 0,0,1 552,128" class="nofill"></path>
+  <text x="562" y="124" >.</text>
+  <line x1="104" y1="136" x2="112" y2="136" class="solid"></line>
+  <polygon points="112,132 120,136 112,140" class="filled"></polygon>
+  <text x="130" y="140" >on</text>
+  <line x1="144" y1="136" x2="152" y2="136" class="solid"></line>
+  <text x="154" y="140" >disk</text>
+  <text x="194" y="140" >reference,</text>
+  <text x="282" y="140" >packed</text>
+  <text x="338" y="140" >as</text>
+  <text x="362" y="140" >block</text>
+  <line x1="400" y1="144" x2="408" y2="144" class="solid"></line>
+  <text x="410" y="140" >id</text>
+  <text x="434" y="140" >+</text>
+  <text x="450" y="140" >location</text>
+  <text x="522" y="140" >+</text>
+  <text x="538" y="140" >flags.</text>
+  <text x="34" y="140" >MSB</text>
+  <line x1="64" y1="134" x2="72" y2="134" class="solid"></line>
+  <line x1="64" y1="138" x2="72" y2="138" class="solid"></line>
+  <text x="82" y="140" >0</text>
+  <text x="18" y="172" >When</text>
+  <text x="58" y="172" >MSB</text>
+  <line x1="88" y1="166" x2="96" y2="166" class="solid"></line>
+  <line x1="88" y1="170" x2="96" y2="170" class="solid"></line>
+  <text x="106" y="172" >0</text>
+  <text x="122" y="172" >the</text>
+  <text x="154" y="172" >low</text>
+  <text x="186" y="172" >63</text>
+  <text x="210" y="172" >bits</text>
+  <text x="34" y="188" >bits</text>
+  <text x="74" y="188" >62..40</text>
+  <text x="138" y="188" >23</text>
+  <text x="178" y="188" >block</text>
+  <line x1="216" y1="192" x2="224" y2="192" class="solid"></line>
+  <text x="226" y="188" >id</text>
+  <text x="34" y="204" >bits</text>
+  <text x="74" y="204" >39..18</text>
+  <text x="138" y="204" >22</text>
+  <text x="178" y="204" >location</text>
+  <text x="250" y="172" >pack:</text>
+  <text x="274" y="188" >&lt;</text>
+  <line x1="280" y1="182" x2="288" y2="182" class="solid"></line>
+  <line x1="280" y1="186" x2="288" y2="186" class="solid"></line>
+  <text x="298" y="188" >8M</text>
+  <line x1="312" y1="184" x2="320" y2="184" class="solid"></line>
+  <text x="322" y="188" >1</text>
+  <path d="M 328,176 A 16,16 0,0,1 328,192" class="nofill"></path>
+  <text x="274" y="204" >byte</text>
+  <text x="314" y="204" >offset</text>
+  <text x="370" y="204" >for</text>
+  <text x="402" y="204" >raw</text>
+  <text x="434" y="204" >refs;</text>
+  <text x="274" y="220" >arena</text>
+  <line x1="312" y1="216" x2="320" y2="216" class="solid"></line>
+  <text x="322" y="220" >backed</text>
+  <text x="378" y="220" >byte</text>
+  <text x="418" y="220" >nodes</text>
+  <path d="M 456,208 A 16,16 0,0,1 456,224" class="nofill"></path>
+  <text x="234" y="236" >including</text>
+  <text x="314" y="236" >the</text>
+  <text x="346" y="236" >NodeType</text>
+  <text x="418" y="236" >discriminant</text>
+  <text x="482" y="204" >arena</text>
+  <text x="530" y="204" >slot</text>
+  <text x="570" y="204" >id</text>
+  <text x="594" y="204" >for</text>
+  <text x="34" y="236" >bits</text>
+  <text x="74" y="236" >17..0</text>
+  <path d="M 136,224 A 16,16 0,0,0 136,240" class="nofill"></path>
+  <text x="138" y="236" >18</text>
+  <path d="M 152,224 A 16,16 0,0,1 152,240" class="nofill"></path>
+  <text x="178" y="236" >flags,</text>
+  <text x="18" y="268" >Color</text>
+  <text x="66" y="268" >key</text>
+  <path d="M 104,256 A 16,16 0,0,0 104,272" class="nofill"></path>
+  <text x="106" y="268" >rendered</text>
+  <text x="178" y="268" >by</text>
+  <text x="202" y="268" >the</text>
+  <text x="234" y="268" >wrapper</text>
+  <path d="M 288,256 A 16,16 0,0,1 288,272" class="nofill"></path>
+  <text x="298" y="268" >:</text>
+  <text x="34" y="284" >blue</text>
+  <line x1="72" y1="278" x2="80" y2="278" class="solid"></line>
+  <line x1="72" y1="282" x2="80" y2="282" class="solid"></line>
+  <text x="90" y="284" >on</text>
+  <line x1="104" y1="280" x2="112" y2="280" class="solid"></line>
+  <text x="114" y="284" >disk</text>
+  <text x="154" y="284" >reference</text>
+  <text x="234" y="284" >fields</text>
+  <text x="306" y="284" >·</text>
+  <text x="338" y="284" >green</text>
+  <line x1="384" y1="278" x2="392" y2="278" class="solid"></line>
+  <line x1="384" y1="282" x2="392" y2="282" class="solid"></line>
+  <text x="402" y="284" >the</text>
+  <text x="434" y="284" >live</text>
+  <text x="474" y="284" >in</text>
+  <line x1="488" y1="280" x2="496" y2="280" class="solid"></line>
+  <text x="498" y="284" >memory</text>
+  <text x="554" y="284" >pointer</text>
+  <text x="618" y="284" >slot</text>
+  <line x1="16" y1="294" x2="632" y2="294" class="solid"></line>
+  <line x1="16" y1="298" x2="632" y2="298" class="solid"></line>
+  <text x="18" y="332" >SwizzledPtr.state</text>
+  <text x="162" y="332" >:</text>
+  <text x="178" y="332" >AtomicU64</text>
+  <path d="M 280,320 A 16,16 0,0,0 280,336" class="nofill"></path>
+  <text x="282" y="332" >MSB</text>
+  <text x="314" y="332" >on</text>
+  <text x="338" y="332" >the</text>
+  <text x="370" y="332" >left</text>
+  <path d="M 400,320 A 16,16 0,0,1 400,336" class="nofill"></path>
+  <text x="26" y="364" >63</text>
+  <line x1="36" y1="432" x2="36" y2="484" class="solid"></line>
+  <polygon points="32,484 40,484 36,496" class="filled"></polygon>
+  <text x="18" y="508" >SwizzledPtr.memory</text>
+  <line x1="160" y1="512" x2="168" y2="512" class="solid"></line>
+  <text x="170" y="508" >ptr</text>
+  <text x="202" y="508" >:</text>
+  <text x="218" y="508" >AtomicPtr&lt;</text>
+  <text x="314" y="508" >&gt;</text>
+  <text x="106" y="364" >62</text>
+  <text x="130" y="364" >.............</text>
+  <text x="242" y="364" >40</text>
+  <text x="282" y="364" >39</text>
+  <text x="306" y="364" >............</text>
+  <text x="410" y="364" >18</text>
+  <text x="450" y="364" >17</text>
+  <text x="474" y="364" >...........</text>
+  <text x="570" y="364" >0</text>
+  <text x="186" y="444" >on</text>
+  <line x1="200" y1="440" x2="208" y2="440" class="solid"></line>
+  <text x="210" y="444" >disk</text>
+  <text x="250" y="444" >reference</text>
+  <text x="330" y="444" >encoding</text>
+  <path d="M 408,432 A 16,16 0,0,0 408,448" class="nofill"></path>
+  <text x="410" y="444" >active</text>
+  <text x="466" y="444" >when</text>
+  <text x="506" y="444" >MSB</text>
+  <line x1="536" y1="438" x2="544" y2="438" class="solid"></line>
+  <line x1="536" y1="442" x2="544" y2="442" class="solid"></line>
+  <text x="554" y="444" >0</text>
+  <path d="M 560,432 A 16,16 0,0,1 560,448" class="nofill"></path>
+  <text x="50" y="476" >MSB</text>
+  <line x1="80" y1="470" x2="88" y2="470" class="solid"></line>
+  <line x1="80" y1="474" x2="88" y2="474" class="solid"></line>
+  <text x="98" y="476" >1</text>
+  <line x1="120" y1="470" x2="128" y2="470" class="solid"></line>
+  <line x1="120" y1="474" x2="128" y2="474" class="solid"></line>
+  <text x="130" y="476" >&gt;</text>
+  <text x="146" y="476" >state</text>
+  <text x="194" y="476" >word</text>
+  <text x="234" y="476" >holds</text>
+  <text x="282" y="476" >NO</text>
+  <text x="306" y="476" >address;</text>
+  <text x="378" y="476" >read</text>
+  <text x="418" y="476" >the</text>
+  <text x="450" y="476" >live</text>
+  <text x="490" y="476" >pointer</text>
+  <text x="554" y="476" >here:</text>
+  <path d="M 440,528 A 16,16 0,0,0 440,544" class="nofill"></path>
+  <text x="442" y="540" >null</text>
+  <text x="482" y="540" >while</text>
+  <text x="530" y="540" >on</text>
+  <text x="554" y="540" >disk</text>
+  <path d="M 584,528 A 16,16 0,0,1 584,544" class="nofill"></path>
+  <text x="18" y="588" >state</text>
+  <text x="18" y="604" >state</text>
+  <text x="18" y="620" >state</text>
+  <text x="18" y="636" >state</text>
+  <text x="18" y="652" >state</text>
+  <line x1="64" y1="582" x2="80" y2="582" class="solid"></line>
+  <line x1="64" y1="586" x2="80" y2="586" class="solid"></line>
+  <text x="90" y="588" >0</text>
+  <line x1="64" y1="598" x2="80" y2="598" class="solid"></line>
+  <line x1="64" y1="602" x2="80" y2="602" class="solid"></line>
+  <text x="90" y="604" >1</text>
+  <polygon points="104,596 96,600 104,604" class="filled"></polygon>
+  <text x="106" y="604" >&lt;63</text>
+  <line x1="64" y1="614" x2="80" y2="614" class="solid"></line>
+  <line x1="64" y1="618" x2="80" y2="618" class="solid"></line>
+  <text x="98" y="620" >1</text>
+  <polygon points="112,612 104,616 112,620" class="filled"></polygon>
+  <text x="114" y="620" >&lt;63</text>
+  <line x1="156" y1="608" x2="156" y2="640" class="solid"></line>
+  <text x="170" y="620" >1</text>
+  <line x1="64" y1="630" x2="80" y2="630" class="solid"></line>
+  <line x1="64" y1="634" x2="80" y2="634" class="solid"></line>
+  <text x="98" y="636" >1</text>
+  <polygon points="112,628 104,632 112,636" class="filled"></polygon>
+  <text x="114" y="636" >&lt;63</text>
+  <text x="170" y="636" >2</text>
+  <text x="66" y="652" >MSB</text>
+  <line x1="96" y1="646" x2="104" y2="646" class="solid"></line>
+  <line x1="96" y1="650" x2="104" y2="650" class="solid"></line>
+  <text x="114" y="652" >0,</text>
+  <text x="138" y="652" >state</text>
+  <line x1="244" y1="576" x2="244" y2="656" class="broken"></line>
+  <text x="258" y="588" >null</text>
+  <path d="M 304,576 A 16,16 0,0,0 304,592" class="nofill"></path>
+  <text x="306" y="588" >neither</text>
+  <text x="370" y="588" >on</text>
+  <text x="394" y="588" >disk</text>
+  <text x="434" y="588" >nor</text>
+  <text x="466" y="588" >in</text>
+  <text x="490" y="588" >memory</text>
+  <path d="M 536,576 A 16,16 0,0,1 536,592" class="nofill"></path>
+  <text x="258" y="604" >MEMORY</text>
+  <path d="M 320,592 A 16,16 0,0,0 320,608" class="nofill"></path>
+  <text x="322" y="604" >live</text>
+  <text x="362" y="604" >ptr</text>
+  <text x="394" y="604" >is</text>
+  <text x="418" y="604" >in</text>
+  <text x="442" y="604" >memory</text>
+  <line x1="488" y1="608" x2="496" y2="608" class="solid"></line>
+  <text x="498" y="604" >ptr</text>
+  <path d="M 520,592 A 16,16 0,0,1 520,608" class="nofill"></path>
+  <text x="258" y="620" >INSTALLING</text>
+  <path d="M 352,608 A 16,16 0,0,0 352,624" class="nofill"></path>
+  <text x="354" y="620" >a</text>
+  <text x="370" y="620" >swizzle</text>
+  <text x="434" y="620" >is</text>
+  <text x="458" y="620" >publishing</text>
+  <text x="546" y="620" >memory</text>
+  <line x1="592" y1="624" x2="600" y2="624" class="solid"></line>
+  <text x="602" y="620" >ptr</text>
+  <text x="258" y="636" >EVICTING</text>
+  <path d="M 344,624 A 16,16 0,0,0 344,640" class="nofill"></path>
+  <text x="346" y="636" >an</text>
+  <text x="370" y="636" >unswizzle</text>
+  <text x="450" y="636" >is</text>
+  <text x="474" y="636" >clearing</text>
+  <text x="546" y="636" >memory</text>
+  <line x1="592" y1="640" x2="600" y2="640" class="solid"></line>
+  <text x="602" y="636" >ptr</text>
+  <text x="258" y="652" >on</text>
+  <line x1="272" y1="648" x2="280" y2="648" class="solid"></line>
+  <text x="282" y="652" >disk</text>
+  <text x="322" y="652" >reference</text>
+  <path d="M 408,640 A 16,16 0,0,0 408,656" class="nofill"></path>
+  <text x="410" y="652" >decode</text>
+  <text x="466" y="652" >block</text>
+  <line x1="504" y1="656" x2="512" y2="656" class="solid"></line>
+  <text x="514" y="652" >id</text>
+  <line x1="536" y1="640" x2="528" y2="656" class="solid"></line>
+  <text x="538" y="652" >location</text>
+  <line x1="608" y1="640" x2="600" y2="656" class="solid"></line>
+  <text x="610" y="652" >flags</text>
+  <path d="M 648,640 A 16,16 0,0,1 648,656" class="nofill"></path>
+  <text x="186" y="652" >!</text>
+  <line x1="192" y1="646" x2="200" y2="646" class="solid"></line>
+  <line x1="192" y1="650" x2="200" y2="650" class="solid"></line>
+  <text x="210" y="652" >0</text>
+  <g>
+    <path d="M 192,64 A 16,16 0,0,0 192,80" class="nofill"></path>
+    <line x1="192" y1="80" x2="184" y2="96" class="solid"></line>
+  </g>
+  <g>
+    <path d="M 136,176 A 16,16 0,0,0 136,192" class="nofill"></path>
+    <path d="M 136,192 A 16,16 0,0,0 136,208" class="nofill"></path>
+  </g>
+  <g>
+    <path d="M 152,176 A 16,16 0,0,1 152,192" class="nofill"></path>
+    <path d="M 152,192 A 16,16 0,0,1 152,208" class="nofill"></path>
+  </g>
+  <g>
+    <path d="M 272,176 A 16,16 0,0,0 272,192" class="nofill"></path>
+    <path d="M 272,192 A 16,16 0,0,0 272,208" class="nofill"></path>
+  </g>
+  <g>
+    <path d="M 304,496 A 16,16 0,0,0 304,512" class="nofill"></path>
+    <path d="M 304,496 A 16,16 0,0,1 304,512" class="nofill"></path>
+  </g>
+  <g>
+    <path d="M 96,608 A 16,16 0,0,0 96,624" class="nofill"></path>
+    <path d="M 96,624 A 16,16 0,0,0 96,640" class="nofill"></path>
+  </g>
+  <g>
+    <path d="M 136,608 A 16,16 0,0,1 136,624" class="nofill"></path>
+    <path d="M 136,624 A 16,16 0,0,1 136,640" class="nofill"></path>
+  </g>
+  <g>
+    <path d="M 624,608 A 16,16 0,0,1 624,624" class="nofill"></path>
+    <path d="M 624,624 A 16,16 0,0,1 624,640" class="nofill"></path>
+  </g>
+</svg>

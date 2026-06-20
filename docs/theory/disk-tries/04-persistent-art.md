@@ -70,38 +70,28 @@ Problems:
 
 ## Pointer Swizzling
 
-Pointer swizzling provides an elegant solution: use a single 64-bit value that can represent either a memory pointer or a disk location.
+Pointer swizzling — the term is due to the object-database literature for converting a persistent identifier into a direct in-memory pointer the first time it is followed — provides an elegant solution: a single 64-bit atomic **state word** that represents either a live in-memory node or an on-disk reference.
 
 ### The Swizzled Pointer Design
 
-```
-┌────────────────────────────────────────────────────────────────┐
-│ SwizzledPtr (64 bits)                                          │
-├────────────────────────────────────────────────────────────────┤
-│ Bit 63 (MSB): Swizzle flag                                     │
-│   1 = Memory pointer (remaining 63 bits are address)           │
-│   0 = Disk reference (page_id + offset encoding)               │
-├────────────────────────────────────────────────────────────────┤
-│ When MSB = 1 (in-memory):                                      │
-│   Bits 62-0: Memory pointer (mask off MSB to get address)      │
-├────────────────────────────────────────────────────────────────┤
-│ When MSB = 0 (on-disk):                                        │
-│   Option A: Bits 62-0 = raw file offset                        │
-│   Option B: Bits 62-40 = page_id, Bits 39-0 = offset in page   │
-│   Option C: Bits 62-24 = block_id, Bits 23-0 = offset in block │
-└────────────────────────────────────────────────────────────────┘
-```
+This crate's `SwizzledPtr` (source of truth: `src/persistent_artrie/core/swizzled_ptr.rs`) keeps the discriminant and the on-disk encoding in an `AtomicU64` state word, and keeps the *live* pointer in a **separate** `AtomicPtr` slot so that Rust pointer provenance is never destroyed by packing an address into an integer. The bit layout below is exact.
+
+<img src="../../diagrams/swizzled-ptr.svg" alt="Bit layout of the 64-bit SwizzledPtr state word, MSB on the left: bit 63 is the swizzle flag (1 = memory/transitional, 0 = on-disk); when the MSB is 0 the on-disk encoding packs block_id in bits 62 to 40 (23 bits), a location field in bits 39 to 18 (22 bits), and flags including the node type in bits 17 to 0 (18 bits). A separate memory_ptr AtomicPtr slot holds the live pointer when the MSB is set." width="760"/>
+
+*Figure: the `SwizzledPtr` state word plus its companion `memory_ptr` slot. When the MSB is `0` the word is an on-disk reference: bits `62..40` (23 bits) are the `block_id` (`≤ 8M − 1`), bits `39..18` (22 bits) are a `location` field (a byte offset for raw references, or an arena slot id for arena-backed byte nodes), and bits `17..0` (18 bits) are flags that include the `NodeType`. When the MSB is `1` the word carries no address at all — the live pointer is read from the separate `memory_ptr: AtomicPtr` slot.*
 
 ### Why the MSB Works
 
 On modern 64-bit systems:
-- Virtual addresses use at most 48 bits (AMD64) or 52 bits (Intel 5-level)
-- User-space addresses typically have bit 63 = 0
-- Kernel addresses have bit 63 = 1, but we don't store kernel pointers
+- Virtual addresses use at most 48 bits (AMD64) or 52 bits (Intel 5-level paging)
+- User-space addresses typically have bit `63 = 0`
+- Kernel addresses have bit `63 = 1`, but we never store kernel pointers
 
-Thus, setting bit 63 = 1 for valid heap pointers creates a distinguishable encoding.
+So the MSB is free to act as the swizzle discriminant. Note that, unlike the textbook "stash the address in the low 63 bits" trick, this implementation never packs the address into the state word — it sets the MSB purely as a flag and reads the real pointer from `memory_ptr`, which preserves provenance and keeps `block_id`/`location`/`flags` available for the on-disk case.
 
 ### Rust Implementation
+
+The following sketch is **illustrative**: it packs the address into the low bits and uses a 40/24 split to keep the example self-contained. The shipping `SwizzledPtr` differs in two ways already described above — it stores the live pointer in a separate `memory_ptr` slot (preserving provenance) and uses the exact 23/22/18-bit on-disk split `(block_id, location, flags)`. Treat this snippet as a conceptual model of the atomic CAS protocol, not the literal field layout.
 
 ```rust
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -175,6 +165,12 @@ impl SwizzledPtr {
 ```
 
 ### Atomic Swizzling for Concurrency
+
+The state word moves through four states over its lifetime — an on-disk reference, two short transitional states while a single thread publishes or clears the `memory_ptr` slot, and the stable in-memory state — with every edge a single lock-free compare-and-swap.
+
+<img src="../../diagrams/swizzled-ptr-states.svg" alt="State diagram of the SwizzledPtr lifecycle: Disk reference (MSB 0) transitions via swizzle CAS to Installing (state = MSB|1), then to Memory (state = MSB), then via unswizzle CAS to Evicting (state = MSB|2), then back to Disk reference. Disk-reference is colored blue, the in-memory state green, the transitional states amber." width="700"/>
+
+*Figure: the swizzle lifecycle. `Installing` (`state = (1<<63) | 1`) and `Evicting` (`state = (1<<63) | 2`) are the transitional states that let exactly one thread own publication or removal of `memory_ptr`; readers that lose the race simply observe the winner's final state. The reverse path (`Memory → Evicting → Disk reference`) is how eviction reclaims RAM while leaving the durable on-disk encoding behind.*
 
 The `compare_exchange` ensures only one thread successfully swizzles a pointer:
 
@@ -489,7 +485,7 @@ fn concurrent_lookup(&self, key: &[u8]) -> Option<&Value> {
 
 For insert/delete with concurrent readers:
 
-**Option 1: Copy-on-write**
+**Option 1: Copy-on-write** — the *path-copying* form of making a data structure persistent in the sense of Driscoll et al. (1989, [doi:10.1016/0022-0000(89)90034-2](https://doi.org/10.1016/0022-0000(89)90034-2)): a mutation clones only the affected node (and, transitively, its ancestors), leaving the old version intact for in-flight readers.
 ```
 1. Create modified copy of node
 2. Atomically swap parent's child pointer
@@ -504,7 +500,7 @@ For insert/delete with concurrent readers:
 4. Readers retry if version changed mid-read
 ```
 
-**Option 3: Epoch-based reclamation**
+**Option 3: Epoch-based reclamation (EBR)** — a deferred-reclamation scheme in which time is divided into *epochs*; memory unlinked in one epoch is only physically freed once every thread has advanced past it, guaranteeing no reader still holds a reference.
 ```
 1. Readers register in current epoch
 2. Writers defer frees to "safe" epoch
@@ -607,10 +603,12 @@ The next document covers buffer management: the page cache, LRU eviction, and cr
 
 1. DuckDB Team. (2022). "Persistent Storage of Adaptive Radix Trees in DuckDB." [Blog Post](https://duckdb.org/2022/07/27/art-storage)
 
-2. Luo, X., Luo, L., Zheng, W., & Kuo, T. W. (2023). "SMART: A High-Performance Adaptive Radix Tree for Disaggregated Memory." *OSDI*. [PDF](https://www.usenix.org/system/files/osdi23-luo.pdf)
+2. Driscoll, J. R., Sarnak, N., Sleator, D. D., & Tarjan, R. E. (1989). "Making Data Structures Persistent." *Journal of Computer and System Sciences*, 38(1), 86-124. [doi:10.1016/0022-0000(89)90034-2](https://doi.org/10.1016/0022-0000(89)90034-2)
 
-3. Graefe, G. (2011). "Modern B-Tree Techniques." *Foundations and Trends in Databases*.
+3. Luo, X., Luo, L., Zheng, W., & Kuo, T. W. (2023). "SMART: A High-Performance Adaptive Radix Tree for Disaggregated Memory." *OSDI*. [PDF](https://www.usenix.org/system/files/osdi23-luo.pdf)
 
-4. Leis, V., Haubenschild, M., Kemper, A., & Neumann, T. (2018). "LeanStore: In-Memory Data Management Beyond Main Memory." *ICDE*.
+4. Graefe, G. (2011). "Modern B-Tree Techniques." *Foundations and Trends in Databases*.
 
-5. Neumann, T. & Leis, V. (2020). "Umbra: A Disk-Based System with In-Memory Performance." *CIDR*.
+5. Leis, V., Haubenschild, M., Kemper, A., & Neumann, T. (2018). "LeanStore: In-Memory Data Management Beyond Main Memory." *ICDE*.
+
+6. Neumann, T. & Leis, V. (2020). "Umbra: A Disk-Based System with In-Memory Performance." *CIDR*.

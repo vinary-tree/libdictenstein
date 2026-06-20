@@ -1,6 +1,6 @@
 # Scdawg Implementation
 
-**Navigation**: [← Dictionary Layer](../README.md) | [SuffixAutomaton](suffix-automaton.md) | [Algorithms Home](../../README.md)
+**Navigation**: [← Dictionary Layer](../README.md) | [SuffixAutomaton](suffix-automaton.md) | [SCDAWG theory →](../../theory/scdawg/) | [Algorithms Home](../../README.md)
 
 ## Table of Contents
 
@@ -17,76 +17,106 @@
 
 ## Overview
 
-`Scdawg` (Symmetric Compact DAWG / Compact Suffix DAWG) is a substring-search
-data structure that represents **all suffixes** of a set of input strings in
-a minimal acyclic graph. Unlike `SuffixAutomaton`, which is constructed
-on-line and supports per-character insertion, `Scdawg` is built batch-mode
-from a complete set of input texts and is more memory-compact for static
-inputs.
+`Scdawg` (**SCDAWG** — *Symmetric Compact Directed Acyclic Word Graph*, also
+called the **CDAWG** — *Compact DAWG*) is a substring-search data structure that
+indexes **every substring** of a set of input strings in a minimal acyclic
+graph. A **DAWG** (*Directed Acyclic Word Graph*) is the minimal acyclic
+deterministic automaton recognizing a finite set of strings — it shares both
+prefixes *and* suffixes. The *suffix* DAWG additionally recognizes every
+substring (because every substring is a prefix of some suffix), and the
+*compact* refinement contracts each non-branching chain of states into a single
+edge labelled with the whole factor, so the graph stays linear in the input
+size.
+
+Unlike [`SuffixAutomaton`](suffix-automaton.md), which is constructed on-line
+and supports per-character insertion, `Scdawg` is built batch-mode from a
+complete set of input texts and is more memory-compact for static inputs.
 
 Two variants are provided:
 
-- [`Scdawg<V>`](../../../src/scdawg/ascii.rs) — byte-keyed, suitable for ASCII or
-  binary inputs.
-- [`ScdawgChar<V>`](../../../src/scdawg/char.rs) — character-keyed,
-  Unicode-aware (each transition consumes one Rust `char`).
+- [`Scdawg<V>`](../../../src/scdawg/ascii.rs) — byte-keyed (`u8` labels), suitable
+  for ASCII or binary inputs.
+- [`ScdawgChar<V>`](../../../src/scdawg/char.rs) — character-keyed (`char` /
+  32-bit labels), Unicode-aware (each transition consumes one Rust `char`).
+
+Both live under the shared core [`src/scdawg/core/`](../../../src/scdawg/core/)
+(node + inner state machine), with the byte/char shells in `ascii.rs` / `char.rs`.
 
 ### Key Advantages
 
-- 🔍 **Substring recognition**: Any path from any state represents a
-  substring of the indexed corpus.
-- 📦 **Compact**: Asymptotically tighter than a generic suffix automaton
-  because state merging is performed eagerly during batch construction.
-- ⚡ **Find operations**: O(|pattern|) lookup time.
-- 🌐 **Unicode (char variant)**: Correct multi-byte handling.
+- 🔍 **Substring recognition**: any path from any state spells a substring of
+  the indexed corpus, so `contains_substring(p)` answers in `O(∣p∣)`.
+- 📦 **Compact**: asymptotically tighter than a generic suffix automaton because
+  state merging and edge contraction are performed eagerly during batch
+  construction (`≤ n` branching states for an input of total length `n`, versus
+  the suffix automaton's `≤ 2n−1` states).
+- ⚡ **IS-features**: the *index structure* operations of Blumer et al. (1987) —
+  `freq` (occurrence count) and `locations` (every start position) — run in
+  `O(∣p∣ + k)` for `k` occurrences.
+- 🌐 **Unicode (char variant)**: correct multi-byte handling at the code-point
+  level.
 
 ### When to Use
 
 ✅ **Use Scdawg when:**
+
 - The full text corpus is known at construction time (no later inserts).
 - Memory is constrained but substring lookups must remain fast.
-- You need `find()` / `match_positions()` / `count_substring()` operations
-  that the basic `Dictionary` trait doesn't expose.
+- You need `find()` / `freq()` / `locations()` / `find_exact_substring()`
+  operations that the basic `Dictionary` trait doesn't expose.
 
 ⚠️ **Consider alternatives when:**
+
 - You need to add new texts at runtime → use
-  [`SuffixAutomaton`](suffix-automaton.md), which supports on-line
-  construction.
+  [`SuffixAutomaton`](suffix-automaton.md), which supports on-line construction.
 - You only need exact whole-word lookup (no substring search) → use
-  [`DoubleArrayTrie`](double-array-trie.md) for read-mostly or
+  [`DoubleArrayTrie`](double-array-trie.md) for read-mostly, or
   [`DynamicDawg`](dynamic-dawg.md) for dynamic.
 
 ## Theory: Compact Suffix DAWG
 
-Blumer et al. (1987) introduced the compact suffix DAWG ("Symmetric Compact
-DAWG", or simply SCDAWG) as a refinement of the suffix automaton with two
-properties:
+The DAWG was introduced by Blumer et al. (1985) — "The smallest automaton
+recognizing the subwords of a text"
+([10.1016/0304-3975(85)90157-4](https://doi.org/10.1016/0304-3975(85)90157-4))
+— as the minimal automaton recognizing all factors (substrings) of a text.
+Blumer et al. (1987), "Complete inverted files for efficient text retrieval and
+analysis", refined it into the **compact** form (the CDAWG / SCDAWG) and defined
+the *IS-features* (`freq` / `locations`) that `Scdawg` exposes. Inenaga et al.
+(2005), "On-line construction of symmetric compact directed acyclic word graphs"
+([10.1016/j.dam.2004.04.012](https://doi.org/10.1016/j.dam.2004.04.012)), gave
+the symmetric on-line construction this implementation follows.
 
-1. **Right extensions are unique**: For each state q and each character c,
-   there is at most one outgoing transition q → q' on c. (Same as a normal
-   DFA.)
-2. **Left extensions are factored**: Every set of states sharing the same
-   set of right-context characters is merged into a single state. This is
-   the "compact" refinement — it eliminates redundancy that the basic
-   suffix automaton retains for on-line constructibility.
+The structure has two defining properties:
 
-The resulting graph has at most n states for an input of length n (Blumer
-et al. 1987, Theorem 4.1), giving a strict memory bound smaller than the
-suffix automaton's 2n-1.
+1. **Right extensions are deterministic**: for each state `q` and each label
+   `c`, there is at most one outgoing transition `q → q'` on `c` (as in any DFA).
+2. **Non-branching chains are contracted**: a maximal run of states each with a
+   single in-edge and single out-edge is collapsed into one edge carrying the
+   whole factor. This is the "compact" refinement — it removes the redundancy a
+   plain suffix automaton keeps for on-line constructibility.
+
+The resulting graph has at most `n` branching states for an input of total
+length `n`, a strict improvement over the suffix automaton's `≤ 2n−1` states.
 
 ### Endpos equivalence
 
-Like the basic suffix automaton, SCDAWG states group substrings by ending
-positions ("endpos"). Two substrings end at the same set of positions in
-the original text ⇔ they belong to the same state. SCDAWG additionally
-merges states whose endpos sets satisfy a Blumer–Blumer "compactness"
-relation, eliminating states that would otherwise be redundant after batch
-construction.
+A deeper treatment lives under [SCDAWG theory →](../../theory/scdawg/); the
+essentials:
+
+> **endpos** (*ending-position set*) of a substring `x` is the set of positions
+> at which an occurrence of `x` ends in the indexed text.
+
+Like the basic suffix automaton, the SCDAWG groups substrings by their `endpos`
+sets: two substrings end at the same set of positions ⇔ they share a state.
+The compact refinement additionally contracts chains of states whose `endpos`
+sets are identical except for the implied offset, eliminating states that would
+otherwise be redundant after batch construction.
 
 ## Data Structure
 
-`Scdawg<V>` wraps an internal `ScdawgInner` inside an `Arc<RwLock<…>>` for
-thread-safe access:
+`Scdawg<V>` wraps an internal `ScdawgInner<V>` (from
+[`src/scdawg/core/inner.rs`](../../../src/scdawg/core/inner.rs)) inside an
+`Arc<RwLock<…>>` for thread-safe shared access:
 
 ```rust,ignore
 pub struct Scdawg<V: DictionaryValue = ()> {
@@ -94,42 +124,43 @@ pub struct Scdawg<V: DictionaryValue = ()> {
 }
 ```
 
-`ScdawgInner` holds:
+`ScdawgInner<V>` holds the state array plus the metadata the IS-features need.
+Each node (`ScdawgNode<V>`) carries:
 
-- `nodes: Vec<ScdawgNode<V>>` — the state array (each state has its edges,
-  is_final flag, optional value, and left-edge metadata).
-- `term_count: usize` — number of distinct terms indexed.
-- `string_count: usize` — number of distinct source texts (substring
-  matching is offered against this aggregate).
+- `forward_edges` — standard CDAWG edges that append characters.
+- `suffix_link` — the longest proper suffix in a *different* `endpos` class.
+- `left_edges` — left-extension edges (prepending characters), derived from the
+  suffix links by `compute_left_edges()`; these make the graph *symmetric* and
+  power `locations()`.
+- `length` — the maximum length of strings in this equivalence class.
+- `is_final` flag and optional value `V`.
 
-The char variant `ScdawgChar<V>` has the same shape with `char`-keyed
-edges (`ScdawgCharNode<V>` storing `Vec<(char, usize)>` edge tuples).
+The char variant `ScdawgChar<V>` has the same shape with `char`-keyed edges.
 
 ## Construction
 
 ### Batch (recommended)
 
 ```rust,no_run
-use libdictenstein::prelude::*;
-use libdictenstein::scdawg::Scdawg;
+use libdictenstein::prelude::*;          // brings Scdawg, Dictionary, …
+use libdictenstein::SubstringDictionary; // not in the prelude
 
-let dict: Scdawg<()> = Scdawg::from_terms(vec!["apple", "apply", "application"]);
+let dict: Scdawg<()> = Scdawg::from_terms(["apple", "apply", "application"]);
 assert!(dict.contains("apple"));
-assert!(dict.contains("appli"));   // substring of "application"
+assert!(dict.contains_substring("appli"));   // substring of "application"
 ```
 
-`from_terms` collects all terms first (so the inner allocator can size the
-node array), inserts each, then runs `compute_left_edges()` to finalize the
-left-edge metadata used by `find()`.
+`from_terms` collects all terms first (so the inner allocator can size the node
+array via `with_capacity`), inserts each, then runs `compute_left_edges()` once
+to finalize the left-edge metadata used by `find()` / `locations()`.
 
 ### Value-bearing
 
 ```rust,no_run
 use libdictenstein::prelude::*;
-use libdictenstein::scdawg::Scdawg;
 
 let dict: Scdawg<u32> =
-    Scdawg::from_terms_with_values(vec![("alpha", 1), ("beta", 2)]);
+    Scdawg::from_terms_with_values([("alpha", 1u32), ("beta", 2)]);
 assert_eq!(dict.get_value("alpha"), Some(1));
 assert_eq!(dict.get_value("beta"), Some(2));
 ```
@@ -139,22 +170,45 @@ Value preservation through serialization round-trips works via
 
 ### Incremental (NOT recommended)
 
-`Scdawg::insert(&self, term)` exists for protocol completeness but rebuilds
-the left-edge index every call, making batch insertion via `from_terms`
+`Scdawg::insert(&self, term)` exists for protocol completeness but re-runs
+`compute_left_edges()` on every call, making batch insertion via `from_terms`
 strictly faster. The char variant has the same characteristic.
 
 ## Substring Operations
 
-The IS-features of Blumer et al. 1987 are exposed via inherent methods:
+The IS-features of Blumer et al. (1987) are exposed via inherent methods and the
+[`SubstringDictionary`](../../../src/substring.rs) trait. Let `p` be the query
+pattern and `k` the number of occurrences:
 
-- `find(pattern) -> Option<NodeHandle>` — locate the state representing a
-  substring; returns `None` if the substring isn't present.
-- `count_substring(pattern) -> usize` — number of occurrences across the
-  indexed corpus.
-- `match_positions(pattern) -> Vec<(string_id, offset)>` — every
-  start-position of `pattern` in the original texts.
+| Method | Returns | Semantics |
+|---|---|---|
+| `contains_substring(p)` | `bool` | is `p` a substring of any indexed term? |
+| `find(p)` | `Option<ScdawgNodeHandle<V>>` | the state representing `p`, or `None` |
+| `freq(p)` | `usize` | total occurrence count across the corpus |
+| `freq_at(handle)` | `usize` | occurrence count for a state already located via `find` |
+| `locations(p)` | `Vec<(String, usize)>` | `(term, start-position)` for every occurrence |
+| `find_exact_substring(p)` | `Vec<SubstringMatch<Node>>` | rich matches (term, position, length, end-node) |
 
-These operations all run in `O(|pattern|)` time.
+`contains_substring`, `find`, and `freq` run in `O(∣p∣)`; `locations` /
+`find_exact_substring` run in `O(∣p∣ + k)` because they additionally enumerate
+the `k` hits. Use `find` once and then `freq_at` / `locations_at` to amortize the
+`O(∣p∣)` descent across repeated queries against the same state.
+
+```rust,no_run
+use libdictenstein::scdawg::Scdawg;
+use libdictenstein::SubstringDictionary;
+
+let dict: Scdawg<()> = Scdawg::from_terms(["abab", "bab"]);
+
+assert!(dict.contains_substring("ab"));
+assert_eq!(dict.freq("ab"), 3);              // 2 in "abab" + 1 in "bab"
+let locs = dict.locations("ab");             // (term, start) per occurrence
+assert_eq!(locs.len(), 3);
+
+// find_exact_substring returns the matched term + position + length:
+let matches = dict.find_exact_substring("ab");
+assert_eq!(matches.len(), 3);
+```
 
 ## Byte vs. Char Variants
 
@@ -162,13 +216,14 @@ These operations all run in `O(|pattern|)` time.
 |---|---|---|
 | Edge label type | `u8` | `char` (32-bit) |
 | Edge count per state | up to 256 | unbounded (Unicode) |
-| Memory per state | smaller | larger (per-edge tuple is `(char, usize)`) |
-| Unicode correctness | per-byte only | per-codepoint |
-| Best for | ASCII text, binary keys | Multilingual text |
+| Memory per state | smaller | larger (per-edge tuple is wider) |
+| Unicode correctness | per-byte only | per-code-point |
+| Position units in `locations` | byte offsets | character offsets |
+| Best for | ASCII text, binary keys | multilingual text |
 
-Both variants share the same trait surface (`Dictionary`,
-`MappedDictionary`, `SubstringDictionary`). Test parity is maintained via
-the value-roundtrip integration tests.
+Both variants implement the same trait surface (`Dictionary`,
+`MappedDictionary`, `SubstringDictionary`). Test parity is maintained via the
+value-roundtrip integration tests.
 
 ## Usage Examples
 
@@ -177,15 +232,16 @@ the value-roundtrip integration tests.
 ```rust,no_run
 use libdictenstein::prelude::*;
 use libdictenstein::scdawg::Scdawg;
+use libdictenstein::SubstringDictionary;
 
-let docs = vec![
+let docs = [
     "Levenshtein automata for approximate matching",
     "Suffix trees and suffix arrays for pattern search",
 ];
 let dict: Scdawg<()> = Scdawg::from_terms(docs);
 
-assert!(dict.contains("approximate"));
-assert!(dict.contains("pattern search"));   // substring spanning multiple words
+assert!(dict.contains_substring("approximate"));
+assert!(dict.contains_substring("pattern search"));   // spans a word boundary
 ```
 
 ### Char variant with Unicode
@@ -193,32 +249,37 @@ assert!(dict.contains("pattern search"));   // substring spanning multiple words
 ```rust,no_run
 use libdictenstein::prelude::*;
 use libdictenstein::scdawg::ScdawgChar;
+use libdictenstein::SubstringDictionary;
 
-let dict: ScdawgChar<()> = ScdawgChar::from_terms(vec!["café", "naïve", "日本語"]);
-assert!(dict.contains("café"));
-assert!(dict.contains("ï"));   // substring (single codepoint)
+let dict: ScdawgChar<()> = ScdawgChar::from_terms(["café", "naïve", "日本語"]);
+assert!(dict.contains_substring("café"));
+assert!(dict.contains_substring("ï"));   // single code-point substring
 ```
 
-### With Levenshtein automaton
+### With a Levenshtein automaton
 
-`Scdawg` implements `Dictionary` + `MappedDictionaryNode`, so wrap it in
+`Scdawg` implements `Dictionary`, so wrap it in
 [liblevenshtein](https://github.com/universal-automata/liblevenshtein-rust)'s
-`Transducer` for fuzzy substring search.
+`LevenshteinAutomaton` for fuzzy substring search — the automaton walks the
+SCDAWG via `DictionaryNode::transition`, exactly as it would any other backend.
 
 ## Performance Analysis
 
-For an input corpus of total length n:
+For an input corpus of total length `n` and a query pattern of length `∣p∣`
+with `k` occurrences:
 
 | Operation | Time | Space |
 |---|---|---|
-| `from_terms` (batch build) | O(n) amortized | O(n) states |
-| `contains(s)` / `find(s)` | O(\|s\|) | O(1) extra |
-| `match_positions(s)` | O(\|s\| + k) where k is hit count | O(k) returned |
-| `count_substring(s)` | O(\|s\|) | O(1) |
+| `from_terms` (batch build) | `O(n)` amortized | `O(n)` states |
+| `contains_substring(p)` / `find(p)` | `O(∣p∣)` | `O(1)` extra |
+| `freq(p)` | `O(∣p∣ + k)` | `O(1)` |
+| `locations(p)` / `find_exact_substring(p)` | `O(∣p∣ + k)` | `O(k)` returned |
 
-Memory: typically 1.5-1.8× smaller than `SuffixAutomaton` for the same
-input corpus, since SCDAWG merges left-redundant states that the
-constructible-online suffix automaton keeps separate.
+Memory is smaller than `SuffixAutomaton` for the same corpus, since the compact
+form contracts the non-branching chains the constructible-online suffix
+automaton keeps separate. Treat the exact ratio as workload-dependent; the
+benchmarking ledgers under [`../../benchmarks/`](../../benchmarks/) carry
+reproducible numbers.
 
 ## When to Use
 
@@ -231,10 +292,23 @@ constructible-online suffix automaton keeps separate.
 
 ## References
 
-- Blumer, A., Blumer, J., Haussler, D., McConnell, R., & Ehrenfeucht, A.
-  (1987). *Complete inverted files for efficient text retrieval and
-  analysis*. Journal of the ACM, 34(3), 578-595. — defines the SCDAWG and
-  the IS-features (`find` / `match_positions` / `count_substring`).
-- Crochemore, M., & Vérin, R. (1997). *Direct construction of compact
-  directed acyclic word graphs*. Combinatorial Pattern Matching, 116-129.
-  — algorithmic walk-through of batch construction.
+- **Blumer, A., Blumer, J., Ehrenfeucht, A., Haussler, D., & McConnell, R. M.
+  (1985)**. "The smallest automaton recognizing the subwords of a text".
+  *Theoretical Computer Science*, 40, 31–55.
+  DOI: [10.1016/0304-3975(85)90157-4](https://doi.org/10.1016/0304-3975(85)90157-4).
+  — defines the DAWG.
+- **Blumer, A., Blumer, J., Haussler, D., McConnell, R., & Ehrenfeucht, A.
+  (1987)**. "Complete inverted files for efficient text retrieval and analysis".
+  *Journal of the ACM*, 34(3), 578–595.
+  DOI: [10.1145/28869.28873](https://doi.org/10.1145/28869.28873).
+  — defines the compact suffix DAWG and the IS-features
+  (`find` / `freq` / `locations`).
+- **Inenaga, S., Hoshino, H., Shinohara, A., Takeda, M., & Arikawa, S. (2005)**.
+  "On-line construction of symmetric compact directed acyclic word graphs".
+  *Discrete Applied Mathematics*, 146(2), 156–179.
+  DOI: [10.1016/j.dam.2004.04.012](https://doi.org/10.1016/j.dam.2004.04.012).
+  — the symmetric on-line construction this backend follows.
+- **Crochemore, M. (1986)**. "Transducers and repetitions".
+  *Theoretical Computer Science*, 45(1), 63–86.
+  DOI: [10.1016/0304-3975(86)90041-1](https://doi.org/10.1016/0304-3975(86)90041-1).
+  — the online suffix-automaton construction the SCDAWG specializes.

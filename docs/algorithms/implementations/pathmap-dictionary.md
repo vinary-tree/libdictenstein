@@ -95,7 +95,7 @@ New tree (after adding "team"):
 Nodes marked "Shared" are reused, not copied
 ```
 
-**Memory**: Only O(m) new nodes for m-character insert
+**Memory**: Only `O(m)` new nodes for m-character insert
 
 ## PathMap Library
 
@@ -443,11 +443,11 @@ let writer = {
 
 **Key Takeaways:**
 1. 🔗 `.clone()` creates **shallow copy** with two Arc increments (map + count)
-2. 🚀 **O(1)** time and space - just atomic reference counting
+2. 🚀 **`O(1)`** time and space - just atomic reference counting
 3. 🔄 **Mutations visible** across all clones (Arc-based sharing)
 4. 🌳 **Structural sharing** is separate (PathMap's persistent trie optimization)
 5. 🔒 **Thread-safe** with dual RwLocks for flexible granularity
-6. 📊 For **independence**, use serialization or rebuild from terms (O(n) cost)
+6. 📊 For **independence**, use serialization or rebuild from terms (`O(n)` cost)
 
 ## Construction Methods
 
@@ -463,7 +463,7 @@ PathMapDictionary provides constructors optimized for simple use cases and rapid
 
 Where n = number of terms, m = dictionary size (grows with insertions)
 
-**Note**: PathMapDictionary uses `insert()` internally which is O(log m), making bulk construction O(n·log m) vs O(n·m) for DAWG variants.
+**Note**: PathMapDictionary uses `insert()` internally which is `O(log m)`, making bulk construction `O(n·log m)` vs `O(n·m)` for DAWG variants.
 
 ### Empty Dictionary
 
@@ -486,7 +486,7 @@ valued_dict.insert_with_value("banana", 200);
 ```
 
 **Characteristics:**
-- **Time**: O(1) - Minimal initialization
+- **Time**: `O(1)` - Minimal initialization
 - **Memory**: ~80 bytes (two Arc pointers + empty PathMap + term count)
 - **Simplicity**: Easiest to use, minimal boilerplate
 
@@ -513,7 +513,7 @@ let dict = PathMapDictionary::from_terms(term_set);
 ```
 
 **Characteristics:**
-- **Time**: O(n·log m) where m grows from 0 to n
+- **Time**: `O(n·log m)` where m grows from 0 to n
 - **Memory**: ~32 bytes per node (HashMap-based)
 - **Structural sharing**: Minimal (PathMap not optimized for bulk insert)
 
@@ -842,10 +842,10 @@ where
 5. Update `self.term_count` for new entries
 
 **Complexity**:
-- **Time**: O(n·log m) where n = terms in `other`, m = terms in `self`
-  - O(n) for iteration over `other`
-  - O(log m) per PathMap insertion/lookup
-- **Space**: O(log m) for PathMap tree height (structural sharing reduces actual allocation)
+- **Time**: `O(n·log m)` where n = terms in `other`, m = terms in `self`
+  - `O(n)` for iteration over `other`
+  - `O(log m)` per PathMap insertion/lookup
+- **Space**: `O(log m)` for PathMap tree height (structural sharing reduces actual allocation)
 
 ### Why Iteration Instead of PathMap's join()?
 
@@ -1112,7 +1112,7 @@ dict1.union_with(&dict2, |a, b| a + b);
 **Benefits**:
 - 💾 **Memory efficient**: Only delta nodes allocated
 - 🔒 **Safe snapshots**: Old version still accessible
-- 🚀 **Fast clones**: O(1) shallow copy of Arc
+- 🚀 **Fast clones**: `O(1)` shallow copy of Arc
 
 **Caveats**:
 - Lock contention on write during union

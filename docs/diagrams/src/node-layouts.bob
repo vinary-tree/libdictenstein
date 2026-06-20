@@ -1,0 +1,47 @@
+# =============================================================================
+# Byte-ART adaptive node storage layouts (PersistentARTrie, u8 keys).
+# Source of truth: src/persistent_artrie/nodes/{node4,node16,node48,node256}.rs.
+# The four inner-node tiers, side by side, each labelled with its child-search
+# method and its child-count capacity. A node GROWS to the next tier on
+# insert-overflow and SHRINKS on remove-underflow (see node-state.svg).
+#
+# Color key (rendered by the wrapper; this ASCII source is monochrome):
+#   blue  = persistent / disk-backed node bodies (this whole family)
+#   grey  = the 16-byte fixed NodeHeader carried by every tier (node-header.svg)
+#
+# Char variants (PersistentARTrieChar, u32 keys) differ and have NO Node256 —
+# see the caption beneath the rendered figure.
+# =============================================================================
+
+   Node4  (<=4 children)            Node16  (5..16 children)
+  +----------------------+         +----------------------------+
+  | NodeHeader (16 B)    |         | NodeHeader (16 B)          |
+  +----------------------+         +----------------------------+
+  | keys[4]   : u8 x 4   |         | keys[16]  : u8 x 16        |
+  | +--+--+--+--+        |         | (sorted, 16-byte aligned)  |
+  | |k0|k1|k2|k3|        |         | +--+--+--+--   --+--+      |
+  | +--+--+--+--+        |         | |k0|k1|k2|.. ..|kF|        |
+  +----------------------+         | +--+--+--+--   --+--+      |
+  | children[4] : ptr x4 |         +----------------------------+
+  | +--+--+--+--+        |         | children[16] : ptr x 16    |
+  | |c0|c1|c2|c3|        |         +----------------------------+
+  | +--+--+--+--+        |          search: SSE _mm_cmpeq_epi8
+  +----------------------+          16-way SIMD byte compare
+   search: linear scan
+   (<=4 compares, ~1 line)
+
+
+   Node48  (17..48 children)        Node256  (49..256 children)
+  +----------------------------+   +----------------------------+
+  | NodeHeader (16 B)          |   | NodeHeader (16 B)          |
+  +----------------------------+   +----------------------------+
+  | index[256] : u8            |   | children[256] : ptr        |
+  | byte -> slot (255 = empty) |   | direct, byte = array index |
+  | +---+---+--   --+---+      |   | +---+---+--   --+---+      |
+  | | . |17 |.. ..| . |        |   | |c00|c01|.. ..|cFF|        |
+  | +---+---+--   --+---+      |   | +---+---+--   --+---+      |
+  +----------------------------+   +----------------------------+
+  | children[48] : ptr x 48    |    search: O(1) direct index
+  +----------------------------+    children[byte], 1 load
+   search: 2 loads, no compare
+   index[byte] -> children[slot]
