@@ -669,10 +669,20 @@ See [Serialization Guide](serialization.md) for details.
 
 ## Related Documentation
 
-- [Serialization & values](serialization.md) - Term-to-value mappings
-- [Automata Layer](https://github.com/universal-automata/liblevenshtein-rust) - Levenshtein automata that query dictionaries
-- [Zipper Navigation](zippers.md) - Hierarchical navigation pattern
-- [Performance Guide](../theory/disk-tries/07-benchmark-results.md) - Detailed benchmarks and optimization tips
+### Conceptual deep-dives (this layer)
+
+- [Zippers](zippers.md) - Lazy set-algebra over dictionaries: union / intersection / difference / prefix zippers that compose any two backends without materializing the result.
+- [Serialization & values](serialization.md) - bincode / JSON / plaintext / protobuf codecs and the value-preserving variants that carry each term's associated value across the round trip.
+- [Persistent suffix graphs](persistent-suffix-graphs.md) - The durable substring-index family (`PersistentSuffixAutomaton` / `PersistentSuffixTree` / `PersistentScdawg`): snapshot + operation-segment WAL with CAS-published graph revisions.
+- [Native `u64` & CX](native-u64-and-cx.md) - The native 64-bit sequence / time-series profile of the persistent ARTrie and the CX compact snapshot format it checkpoints through.
+- [Vocabulary trie](vocab-trie.md) - `PersistentVocabARTrie`: a durable, lock-free term ↔ `u64` id bijection (durable forward map, recovery-rebuilt reverse map).
+
+### Cross-cutting (other sections)
+
+- [Core abstractions](../architecture/abstractions.md) - `CharUnit` + `KeyEncoding`: how one generic implementation serves bytes, Unicode, and `u64` alphabets ("three alphabets, one code path").
+- [WAL on-disk format](../persistence/wal-format.md) - The byte-level write-ahead-log codec behind the durable backends: file header, record frame, record types, and the Order-A write ordering.
+- [Performance Guide](../theory/disk-tries/07-benchmark-results.md) - Detailed benchmarks and optimization tips.
+- [Automata Layer](https://github.com/universal-automata/liblevenshtein-rust) - Levenshtein automata that query dictionaries (the fuzzy-matching query half).
 
 ## Academic References
 

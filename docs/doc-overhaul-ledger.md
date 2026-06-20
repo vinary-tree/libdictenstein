@@ -143,4 +143,35 @@ header cites its source ledger + table.
 **Result**: 52 committed artifacts (43 diagrams + 9 plots), ALL idempotent; embedded
 into 5 ledgers; 0 broken chart embeds. `docs/benchmarks/artifacts/` (was empty) now
 holds the `.dat` + `.gp` sources + rendered SVGs.
-## Phase 7 — Reorganization + top-level index  ☐
+## Phase 7 — Reorganization + top-level index  ☑
+
+| Item | Action | Status | Verification |
+|------|--------|--------|--------------|
+| `docs/design/` reorg | 13 durable design refs kept at top; **61 historical logs `git mv`'d** into `docs/design/history/` (11 campaign subdirs: slice3, durable-commit-seq, s5-flip, f7-eviction, redteam, phase-f-g5, bug-fixes, byte-flip, cx-codec, counter-u64, vocab + 3 root singletons) | ☑ | all renames (history preserved); 13/61 counts exact |
+| `docs/design/README.md` + `history/README.md` | durable-ref index table + preserved-campaign-ledger index | ☑ | created |
+| Inbound links | verified: ZERO markdown-link references to moved files existed (only inline-code mentions) — no fixes needed | ☑ | whole-tree link check = 0 |
+| `docs/README.md` enrich | 7 new conceptual docs wired into the map; reading-order diagram embedded | ☑ | links resolve |
+| `docs/algorithms/README.md` | "Related Documentation" links the 5 new sibling docs + abstractions + wal-format | ☑ | no `*_char::`/`../0X` reintroduced |
+| `docs-reading-order.dot` (Graphviz) | colored documentation reading-path graph (4 tracks) | ☑ | renders 3679×676 |
+
+**Result**: 53 committed artifacts (44 diagrams + 9 plots), all idempotent; ZERO
+broken links across `docs/` + `formal-verification/` + `README.md` + `CHANGELOG.md`.
+
+---
+
+## Final tally
+
+- **53 rendered, committed, idempotent diagram artifacts** (44 diagrams-as-code +
+  9 benchmark plots) — was 4 hand-PlantUML'd; **22 ASCII-art files** upgraded.
+- **Tooling**: `scripts/render-diagrams.sh` (PlantUML/Mermaid/D2/Graphviz/bytefield/
+  Svgbob/gnuplot, version-normalized for byte-stable output) + CI `diagrams`
+  freshness gate (pinned tool versions).
+- **8 new conceptual docs** (zippers, serialization, abstractions, wal-format,
+  persistent-suffix-graphs, native-u64-and-cx, vocab-trie, docs/README index).
+- **Guideline conformance** across theory/algorithms/persistence/eviction/formal:
+  inline DOIs (Crossref-verified), backtick math, terms-defined-before-use,
+  literate pseudocode, thin docs filled.
+- **Correctness fixes found**: 32 stale `*_char::` paths + 35 dead links; formal
+  counts reconciled (69 `.v` / 1,301 props / 55 TLA⁺ / 65 `.cfg` / 43+31 unsafe);
+  inline-prefix cap (12 B / 6 `u32`); mangled benchmark table.
+- **ZERO broken links** tree-wide; `cargo doc --all-features -D warnings` clean.

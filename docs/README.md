@@ -21,9 +21,9 @@ data-structure foundations) → **algorithms** (per-backend implementation and u
 | Area | Path | What's there |
 |------|------|--------------|
 | 🧮 **Theory** | [`theory/`](theory/) | Data-structure foundations: [disk-tries](theory/disk-tries/) (trie → B-trie → ART → persistent ART → buffer management) and [SCDAWG](theory/scdawg/) (suffix automaton → CDAWG → symmetric compact DAWG). Paper-grounded, with proofs. |
-| ⚙️ **Algorithms** | [`algorithms/`](algorithms/) | The dictionary-layer trait API and a per-backend deep-dive for each implementation ([`implementations/`](algorithms/implementations/)). |
-| 🏗️ **Architecture** | [`architecture/`](architecture/) | Cross-cutting system design, starting with the [persistence family overview](architecture/persistence/README.md). |
-| 💾 **Persistence** | [`persistence/`](persistence/) | The on-disk storage design ([mmap architecture](persistence/mmap-architecture.md), group-commit trade-offs). |
+| ⚙️ **Algorithms** | [`algorithms/`](algorithms/) | The dictionary-layer trait API and a per-backend deep-dive for each implementation ([`implementations/`](algorithms/implementations/)). Conceptual guides: [zippers](algorithms/zippers.md) (lazy set-algebra), [serialization](algorithms/serialization.md) (bincode/JSON/plaintext/protobuf + value-preserving), [persistent suffix graphs](algorithms/persistent-suffix-graphs.md) (durable substring indexes), [native `u64` + CX](algorithms/native-u64-and-cx.md) (`u64`-sequence profile + compact snapshot), and the [vocab trie](algorithms/vocab-trie.md) (term ↔ `u64` bijection). |
+| 🏗️ **Architecture** | [`architecture/`](architecture/) | Cross-cutting system design: the core [abstractions](architecture/abstractions.md) (`CharUnit` + `KeyEncoding` — one code path, three alphabets) and the [persistence family overview](architecture/persistence/README.md). |
+| 💾 **Persistence** | [`persistence/`](persistence/) | The on-disk storage design: [mmap architecture](persistence/mmap-architecture.md), the [WAL on-disk format](persistence/wal-format.md), and group-commit trade-offs. |
 | ♻️ **Eviction** | [`eviction/`](eviction/) | The memory-pressure eviction subsystem for the persistent ARTrie. |
 | 🔌 **Integration** | [`integration/`](integration/) | Backend integrations (e.g. [PathMap](integration/pathmap/README.md)). |
 | 📊 **Benchmarks** | [`benchmarks/`](benchmarks/) | Scientific-method benchmarking ledgers and artifacts. |
@@ -35,6 +35,14 @@ data-structure foundations) → **algorithms** (per-backend implementation and u
 ---
 
 ## Suggested reading order
+
+The map below renders the reading paths as a graph: follow an edge from its tail
+to its head. The green spine is the on-ramp (crate `README` → trait layer →
+per-backend guide); from there you branch into the grey **theory** track, the
+blue **persistence / systems** track, and finally the amber **formal
+verification** track.
+
+<img src="diagrams/docs-reading-order.svg" alt="Documentation reading-order map: a left-to-right directed graph of the docs grouped into four colored tracks. Green getting-started spine runs crate README → backend selector → user-guide/backends → algorithms/README (trait layer) → algorithms/implementations (per-backend), which branches to zippers and serialization. Teal 'go deeper' edges cross from the trait layer and per-backend guides into the grey theory track (architecture/abstractions, theory/disk-tries, theory/scdawg) and the blue persistence track (architecture/persistence + mmap-architecture), which fans out to native-u64-and-cx, vocab-trie, persistent-suffix-graphs, the WAL format reference, and eviction. The persistence track finally points into the amber formal-verification track (Rocq theorems, TLA+ models, unsafe-contract inventory)." width="100%"/>
 
 1. **Pick a backend** — root [`README.md`](../README.md#backend-selector) selector +
    [`user-guide/backends.md`](user-guide/backends.md).

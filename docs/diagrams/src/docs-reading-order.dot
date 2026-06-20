@@ -1,0 +1,178 @@
+// ============================================================================
+// docs-reading-order.dot — the documentation reading-path / prerequisite map.
+//
+// Visualizes the "Suggested reading order" in docs/README.md as a directed
+// graph: every NODE is a doc (or doc section) and every EDGE is the recommended
+// reading order / prerequisite flow ("read the tail before the head"). New
+// readers enter top-left at the crate README and follow the green spine through
+// the trait layer; the blue, grey, and amber clusters are the depth tracks they
+// branch into once they have picked a backend.
+//
+// Layout: left-to-right (rankdir=LR). Nodes are grouped into colored clusters
+// by track so the four reading paths stay glanceable:
+//   1. Getting started / usage  (green)  — README, backend selector, user guide,
+//                                           the trait layer, per-backend guides.
+//   2. Theory                   (grey)   — the paper-grounded disk-trie + SCDAWG
+//                                           foundations and core abstractions.
+//   3. Persistence / systems    (blue)   — the durable on-disk ARTrie + suffix
+//                                           graphs, WAL format, eviction.
+//   4. Formal / verification    (amber)  — the Rocq + TLA⁺ proofs and the
+//                                           unsafe-contract inventory.
+//
+// Color key (extends the house palette — docs/diagrams/README.md):
+//   green  #C8E6C9  getting-started / usage   (entry spine: README → traits → backends)
+//   grey   #ECEFF1  theory                    (disk-tries, SCDAWG, abstractions)
+//   blue   #BBDEFB  persistence / systems      (durable ARTrie, suffix graphs, WAL, eviction)
+//   amber  #FFF59D  formal / verification      (Rocq, TLA⁺, unsafe contracts)
+//   dark slate #37474F  reading-order edges + node borders
+//   teal   #00897B  cross-track "go deeper" edges (usage → theory/persistence)
+// Cluster fills are a paler tint of each track color so the nodes stay readable.
+// ============================================================================
+digraph docs_reading_order {
+    rankdir=LR;            // new readers enter at the left, depth grows rightward
+    bgcolor="#FFFFFF";
+    fontname="DejaVu Sans";
+    labelloc="t";
+    fontsize=16;
+    fontcolor="#212121";
+    label=<<B>libdictenstein documentation — suggested reading order</B><BR/><FONT POINT-SIZE="11">follow an edge tail&#8594;head; the green spine is the on-ramp, then branch into theory (grey), persistence (blue), and verification (amber)</FONT>>;
+    nodesep=0.45;
+    ranksep=0.95;
+    newrank=true;
+    compound=true;        // allow edges to/from cluster boundaries
+
+    node [shape=box, style="filled,rounded", color="#37474F",
+          fontname="DejaVu Sans", fontcolor="#212121", penwidth=1.6,
+          margin="0.20,0.12"];
+    edge [color="#37474F", fontname="DejaVu Sans", fontcolor="#37474F",
+          penwidth=1.6, arrowsize=0.9];
+
+    // === 1. Getting started / usage (green spine) ==========================
+    subgraph cluster_usage {
+        label=<<B>1 · Getting started / usage</B>>;
+        labeljust="l";
+        fontsize=12;
+        fontcolor="#1B5E20";
+        style="filled,rounded";
+        fillcolor="#E8F5E9";
+        color="#66BB6A";
+        penwidth=1.4;
+        margin=14;
+
+        readme    [label="Crate README\n(overview)", fillcolor="#C8E6C9"];
+        selector  [label="Backend selector\n(README §backend-selector)", fillcolor="#C8E6C9"];
+        guide     [label="user-guide/\nbackends.md", fillcolor="#C8E6C9"];
+        traits    [label="algorithms/README.md\n(trait layer:\nDictionary · MappedDictionary)", fillcolor="#C8E6C9"];
+        backends  [label="algorithms/implementations/\n(per-backend deep dives:\nDAT · DAWG · suffix automaton)", fillcolor="#C8E6C9"];
+        zippers   [label="algorithms/zippers.md\n(lazy set-algebra)", fillcolor="#C8E6C9"];
+        serial    [label="algorithms/serialization.md\n(serialize + values)", fillcolor="#C8E6C9"];
+    }
+
+    // === 2. Theory (grey) ==================================================
+    subgraph cluster_theory {
+        label=<<B>2 · Theory (paper-grounded)</B>>;
+        labeljust="l";
+        fontsize=12;
+        fontcolor="#37474F";
+        style="filled,rounded";
+        fillcolor="#FAFAFA";
+        color="#B0BEC5";
+        penwidth=1.4;
+        margin=14;
+
+        abstractions [label="architecture/abstractions.md\n(CharUnit · KeyEncoding:\none code path, three alphabets)", fillcolor="#ECEFF1"];
+        disktries    [label="theory/disk-tries/\n(trie → B-trie → ART\n→ persistent ART → buffers)", fillcolor="#ECEFF1"];
+        scdawg       [label="theory/scdawg/\n(suffix automaton → CDAWG\n→ symmetric compact DAWG)", fillcolor="#ECEFF1"];
+    }
+
+    // === 3. Persistence / systems (blue) ===================================
+    subgraph cluster_persistence {
+        label=<<B>3 · Persistence / systems</B>>;
+        labeljust="l";
+        fontsize=12;
+        fontcolor="#0D47A1";
+        style="filled,rounded";
+        fillcolor="#E3F2FD";
+        color="#42A5F5";
+        penwidth=1.4;
+        margin=14;
+
+        persist_arch [label="architecture/persistence/\n+ persistence/mmap-architecture.md\n(durability stack)", fillcolor="#BBDEFB"];
+        u64cx        [label="algorithms/native-u64-and-cx.md\n(u64 keys + CX snapshot)", fillcolor="#BBDEFB"];
+        vocab        [label="algorithms/vocab-trie.md\n(term ↔ u64 bijection)", fillcolor="#BBDEFB"];
+        suffixgraph  [label="algorithms/persistent-suffix-graphs.md\n(durable substring indexes)", fillcolor="#BBDEFB"];
+        walfmt       [label="persistence/wal-format.md\n(on-disk WAL codec)", fillcolor="#BBDEFB"];
+        eviction     [label="eviction/\n(memory-pressure reclamation)", fillcolor="#BBDEFB"];
+    }
+
+    // === 4. Formal / verification (amber) ==================================
+    subgraph cluster_formal {
+        label=<<B>4 · Formal verification</B>>;
+        labeljust="l";
+        fontsize=12;
+        fontcolor="#E65100";
+        style="filled,rounded";
+        fillcolor="#FFFDE7";
+        color="#FBC02D";
+        penwidth=1.4;
+        margin=14;
+
+        formal [label="formal-verification/\n(Rocq theorems · TLA⁺ models\n· unsafe-contract inventory)", fillcolor="#FFF59D"];
+    }
+
+    // === reading-order edges (green spine) =================================
+    readme   -> selector  [label="pick a backend"];
+    selector -> guide;
+    guide    -> traits    [label="understand the\ntrait layer"];
+    traits   -> backends  [label="go deep on\nyour backend"];
+    backends -> zippers   [label="compose"];
+    backends -> serial    [label="persist in-mem"];
+
+    // === cross-track: usage → theory (teal "go deeper") ====================
+    edge [color="#00897B", fontcolor="#00695C", penwidth=1.5, style="solid"];
+    traits   -> abstractions [label="the unit\nabstractions"];
+    backends -> disktries    [ltail=cluster_usage, lhead=cluster_theory,
+                               label="theory back-link"];
+    backends -> scdawg       [label="substring\ntheory"];
+
+    // === cross-track: usage/theory → persistence (teal) ====================
+    backends     -> persist_arch [label="need\ndurability"];
+    disktries    -> persist_arch [label="foundations\nfor the system"];
+
+    // === reading-order edges inside persistence (dark slate) ==============
+    edge [color="#37474F", fontcolor="#37474F", penwidth=1.6, style="solid"];
+    persist_arch -> u64cx;
+    persist_arch -> vocab;
+    persist_arch -> suffixgraph;
+    u64cx        -> vocab        [style="dashed", label="ids reuse\nu64 keys"];
+    scdawg       -> suffixgraph  [color="#00897B", fontcolor="#00695C",
+                                  label="durable\nmirror"];
+    persist_arch -> walfmt       [label="format\nreference"];
+    persist_arch -> eviction     [label="memory\npressure"];
+
+    // === persistence → formal (trust it) ==================================
+    walfmt   -> formal [label="trust the\ndurability claims"];
+    eviction -> formal [style="dashed", label="EBR proof"];
+
+    // === rendered legend ===================================================
+    subgraph cluster_legend {
+        label="";
+        color="#FBC02D";
+        style="filled,rounded";
+        fillcolor="#FFF9C4";
+        penwidth=1.2;
+        margin=8;
+
+        legend [shape=note, style="filled", fillcolor="#FFF9C4",
+                color="#FBC02D", fontsize=10, fontcolor="#212121",
+                label=<
+<TABLE BORDER="0" CELLBORDER="0" CELLSPACING="1">
+<TR><TD ALIGN="LEFT"><B>Reading-order map &#8212; legend</B></TD></TR>
+<TR><TD ALIGN="LEFT"><FONT COLOR="#37474F">&#9472;&#9472;&#9654; recommended next read (prerequisite flow)</FONT></TD></TR>
+<TR><TD ALIGN="LEFT"><FONT COLOR="#00897B">&#9472;&#9472;&#9654; "go deeper" branch into another track</FONT></TD></TR>
+<TR><TD ALIGN="LEFT"><FONT COLOR="#37474F">- -&#9654; optional / supporting link</FONT></TD></TR>
+<TR><TD ALIGN="LEFT"><FONT COLOR="#2E7D32">&#9632;</FONT> green = getting started / usage &#183; <FONT COLOR="#607D8B">&#9632;</FONT> grey = theory</TD></TR>
+<TR><TD ALIGN="LEFT"><FONT COLOR="#1565C0">&#9632;</FONT> blue = persistence / systems &#183; <FONT COLOR="#F9A825">&#9632;</FONT> amber = formal / verification</TD></TR>
+</TABLE>>];
+    }
+}
