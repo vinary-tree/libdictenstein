@@ -1,0 +1,140 @@
+# d2-layout: elk
+# =============================================================================
+# zipper-composition.d2 — how set-algebra combinators NEST over base cursors.
+#
+# A combinator zipper (union / intersection / difference / …) does not own a
+# tree; it WRAPS one or more operand zippers and forwards navigation lazily.
+# Because every combinator both *implements* `DictZipper` and *operates on*
+# `DictZipper`, combinators compose recursively: a combinator's operand may be a
+# backend cursor OR another combinator. This figure shows one such tower —
+# Intersection( Union(DAT-A, DAT-B), Difference(DAT-C, DAT-D) ) — to make the
+# recursion concrete. Arrows are the LAZY PULL of terms: a parent asks its child
+# for `descend` / `children` / `is_final` only as the consumer advances; no
+# operand is ever fully materialized.
+# Source of truth: src/zipper.rs (DictZipper), src/{union,intersection,
+# difference}_zipper.rs.
+#
+# Color key (house palette — docs/diagrams/README.md):
+#   green  #C8E6C9  in-memory backend cursors (the leaf DictZippers)
+#   amber  #FFF59D  set-algebra combinator zippers (lazy, own no storage)
+#   blue   #BBDEFB  the consumer (DFS iterator / automaton pull)
+#   grey   #ECEFF1 / #37474F  infrastructure / borders / arrows
+# =============================================================================
+
+vars: {
+  d2-config: {
+    layout-engine: elk
+  }
+}
+
+direction: down
+
+title: |md
+  # Zipper composition — set-algebra combinators nest over base cursors
+  *each combinator implements `DictZipper` and pulls from its operand cursors lazily*
+| {
+  near: top-center
+  style.font-size: 19
+  style.font-color: "#212121"
+}
+
+# --- The consumer that drives the lazy pull ---------------------------------
+consumer: "Consumer\nIntersectionIterator (DFS)  ·  or a Levenshtein pull" {
+  style: {
+    fill: "#BBDEFB"
+    stroke: "#1565C0"
+    font-color: "#0D47A1"
+    stroke-width: 2
+    bold: true
+  }
+}
+
+# --- Top combinator: INTERSECTION wraps two sub-zippers ----------------------
+isect: "IntersectionZipper<Z, LatticeMeet>\nis_final = ALL operands final  ·  descend = ALL can descend\nchildren = ∩ of operands' labels  ·  value = meet-merge" {
+  style: {
+    fill: "#FFF59D"
+    stroke: "#F9A825"
+    font-color: "#5D4037"
+    stroke-width: 2
+    bold: true
+  }
+
+  # --- Sub-combinator 1: UNION over two backend cursors ---------------------
+  uni: "UnionZipper<Z, FirstWins>\nis_final = ANY final  ·  descend = ANY can descend\nchildren = ∪ of labels  ·  value = FirstWins" {
+    style: {
+      fill: "#FFFDE7"
+      stroke: "#F9A825"
+      font-color: "#5D4037"
+      stroke-width: 2
+    }
+    dat_a: "DoubleArrayTrieZipper\n(backend A)" {
+      style.fill: "#C8E6C9"
+      style.stroke: "#2E7D32"
+      style.font-color: "#1B5E20"
+    }
+    dat_b: "DoubleArrayTrieZipper\n(backend B)" {
+      style.fill: "#C8E6C9"
+      style.stroke: "#2E7D32"
+      style.font-color: "#1B5E20"
+    }
+  }
+
+  # --- Sub-combinator 2: DIFFERENCE over two backend cursors ----------------
+  diff: "DifferenceZipper<Z>\nis_final = left final AND NOT right final\ndescend = follow LEFT (right tags along)" {
+    style: {
+      fill: "#FFFDE7"
+      stroke: "#F9A825"
+      font-color: "#5D4037"
+      stroke-width: 2
+    }
+    dat_c: "DoubleArrayTrieZipper\n(left C)" {
+      style.fill: "#C8E6C9"
+      style.stroke: "#2E7D32"
+      style.font-color: "#1B5E20"
+    }
+    dat_d: "DoubleArrayTrieZipper\n(right D)" {
+      style.fill: "#C8E6C9"
+      style.stroke: "#2E7D32"
+      style.font-color: "#1B5E20"
+    }
+  }
+}
+
+# --- Lazy-pull edges: consumer -> top -> sub-combinators -> leaves -----------
+consumer -> isect: "next() pulls\ndescend / children / is_final" {
+  style.stroke: "#1565C0"
+  style.stroke-width: 3
+  style.bold: true
+}
+
+isect.uni -> isect.uni.dat_a: "pull (lazy)" {
+  style.stroke: "#37474F"
+  style.stroke-width: 2
+}
+isect.uni -> isect.uni.dat_b: "pull (lazy)" {
+  style.stroke: "#37474F"
+  style.stroke-width: 2
+}
+isect.diff -> isect.diff.dat_c: "pull LEFT" {
+  style.stroke: "#37474F"
+  style.stroke-width: 2
+}
+isect.diff -> isect.diff.dat_d: "pull RIGHT\n(exclusion check)" {
+  style.stroke: "#37474F"
+  style.stroke-width: 2
+  style.stroke-dash: 3
+}
+
+# --- Legend ------------------------------------------------------------------
+legend: |md
+  **Color key** ·
+  🟦 blue = consumer driving the pull ·
+  🟨 amber = set-algebra combinator (lazy, owns no storage) ·
+  🟩 green = in-memory backend cursor (leaf `DictZipper`) ·
+  ⬜ grey = arrows / borders.
+  Every combinator is itself a `DictZipper`, so operands may be backends **or** further combinators.
+| {
+  near: bottom-center
+  style.font-size: 13
+  style.font-color: "#37474F"
+}

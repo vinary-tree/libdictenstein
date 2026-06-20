@@ -1,0 +1,74 @@
+@startuml vocab-recovery
+' ============================================================================
+' PersistentVocabARTrie reopen — the FORWARD char overlay (term → id) is the
+' durable source of truth (checkpoint image + WAL tail); the REVERSE map
+' (id → term) is NOT separately persisted — it is REBUILT by scanning the
+' recovered forward entries.
+'
+' Source of truth:
+'   src/persistent_artrie/vocab/mmap_ctor.rs / io_uring_ctor.rs (open_with_recovery)
+'     → reestablish_overlay_from_image(header.root_ptr)
+'     → replay_wal_into_overlay_rank_aware(wal_path, checkpoint_lsn)
+'   src/persistent_artrie/vocab/dict_impl.rs (reverse_term_map: DashMap<u64,String>,
+'     "derived inverse of the forward overlay … rebuilt from the image on reopen")
+'   src/persistent_artrie/vocab/types.rs (VocabTrieFileHeader: magic "VOCB", v2)
+'
+' Color key:  blue  #BBDEFB = durable on-disk read (header / image / WAL tail)
+'             green #C8E6C9 = in-memory forward overlay (lock-free, the live rep)
+'             amber #FFE0B2 = control / reverse-map rebuild (derived accelerator)
+'             grey  #ECEFF1 = terminal / note
+' ============================================================================
+skinparam backgroundColor #FFFFFF
+skinparam defaultFontName "DejaVu Sans"
+skinparam shadowing false
+skinparam ArrowColor #37474F
+skinparam ArrowFontName "DejaVu Sans"
+skinparam activity {
+  BorderColor #37474F
+  FontName "DejaVu Sans"
+  DiamondBorderColor #F9A825
+  DiamondBackgroundColor #FFE0B2
+}
+
+title PersistentVocabARTrie reopen — forward overlay is durable,\nreverse id→term map is derived on recovery
+
+start
+
+#BBDEFB:**open_with_recovery(path)**\nread VocabTrieFileHeader (magic "VOCB");
+if (version == V2 overlay format?) then (no)
+  #FFCDD2:**fail-closed** — legacy v1 owned\nformat is no longer loadable\n(rebuild with the overlay format);
+  kill
+else (yes — durable forward path)
+endif
+
+#BBDEFB:decode **root_ptr**, **checkpoint_lsn**,\n**entry_count**, **start/next index** from the header;
+
+partition "FORWARD overlay  (durable — the source of truth)" {
+  #C8E6C9:**reestablish_overlay_from_image(root_ptr)**\nload the dense char-overlay checkpoint image\ninto the lock-free overlay (value at each leaf = u64 id);
+  #BBDEFB:**replay_wal_into_overlay_rank_aware(checkpoint_lsn)**\nfold the durable WAL tail (LSN > checkpoint_lsn)\nrank-aware, stopping at the first torn frame;
+  #C8E6C9:forward map ready — `get_index(term)` walks\nthe overlay in `O(|term|)`;
+}
+
+note right #ECEFF1
+  Only the FORWARD direction is written to disk.
+  The image stores term → id; the WAL stores the
+  durable insert tail. Nothing on disk stores id → term.
+end note
+
+partition "REVERSE map  (derived — rebuilt, never persisted)" {
+  #FFE0B2:allocate the `reverse_term_map: DashMap<u64, String>`\n(non-blocking, sharded);
+  #FFE0B2:**scan the recovered forward entries**\nfor each (term, id) leaf in the overlay\n→ reverse_term_map.insert(id, term);
+  #FFE0B2:reverse map ready — `get_term(id)` is now an\n`O(1)` sharded lookup into the rebuilt inverse;
+}
+
+#C8E6C9:**resume serving**\nforward + reverse lookups both answer the\ncommitted-visible bijection at checkpoint+tail time;
+stop
+
+legend right
+| Color | Role |
+|<#BBDEFB>| durable on-disk read |
+|<#C8E6C9>| forward overlay (durable, live) |
+|<#FFE0B2>| reverse map (derived on recovery) |
+|<#FFCDD2>| rejected (legacy format) |
+endlegend
+@enduml

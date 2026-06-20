@@ -843,7 +843,7 @@ fn store_pattern(pathmap: &PathMap, agent_id: &str, pattern: &ErrorPattern) {
 }
 ```
 
-**See**: [Dialogue Context Layer](../../mettail/dialogue/README.md) for usage details.
+**See**: **Dialogue Context Layer** (MeTTaIL project) for usage details.
 
 ---
 
@@ -987,17 +987,17 @@ pathmap = { path = "../../PathMap" }
 
 ### Core Integration
 
-- [MORK Integration Overview](../mork/README.md) - Full MORK integration architecture
-- [FuzzySource Implementation](../mork/fuzzy_source.md) - Phase A details
+- **MORK Integration Overview** (MORK project) - Full MORK integration architecture
+- **FuzzySource Implementation** (MORK project) - Phase A details
 - [PathMap Book](https://github.com/your-org/PathMap/pathmap-book/) - PathMap documentation
 - [Zipper Pattern](https://en.wikipedia.org/wiki/Zipper_(data_structure)) - Theoretical background
 
 ### Extended Architecture
 
-- [Dialogue Context Layer](../../mettail/dialogue/README.md) - Turn history and coreference resolution
-- [Agent Learning Layer](../../mettail/agent-learning/README.md) - Feedback patterns and user preferences
-- [LLM Integration](../../mettail/llm-integration/README.md) - Context injection using PathMap
-- [Correction WFST Architecture](../../mettail/correction-wfst/01-architecture-overview.md) - Full three-tier architecture overview
+- **Dialogue Context Layer** (MeTTaIL project) - Turn history and coreference resolution
+- **Agent Learning Layer** (MeTTaIL project) - Feedback patterns and user preferences
+- **LLM Integration** (MeTTaIL project) - Context injection using PathMap
+- **Correction WFST Architecture** (MeTTaIL project) - Full three-tier architecture overview
 
 ---
 
@@ -1062,7 +1062,7 @@ src/wfst/                 # PROPOSED - Future Implementation
 | Composition | FuzzyMultiMap with automaton pruning | General WFST × WFST |
 | Primary Type | `PhoneticNormalizedDictionary` | `WeightedTransducer` |
 
-See [WFST Composition](../mork/wfst_composition.md) for the full proposal.
+See **WFST Composition** (MORK project) for the full proposal.
 
 ---
 

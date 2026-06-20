@@ -94,6 +94,28 @@ over disjoint files; parent authored the WAL byte layouts + rendered/verified al
 | D2 layout fix | added per-file `# d2-layout: elk` directive support (concentric trust-zones need elk, not dagre) | ☑ | unsafe-trust-zones renders 2689×1357 |
 
 **Result**: 37 diagrams total, all idempotent, 0 render-error markers, 0 broken embeds/links.
-## Phase 5 — New conceptual docs  ☐
+## Phase 5 — New conceptual docs  ☑
+
+Executed via 3 parallel subagents over disjoint new docs; each verified APIs
+against source and corrected the parent's stale path pointers.
+
+| New doc | Content | Diagrams | Lines |
+|---------|---------|----------|------:|
+| `algorithms/zippers.md` | lazy set-algebra (7 combinators) + lattice/semilattice value-merge; **resolves the Phase-1 forward-ref** | zipper-composition (D2/elk), zipper-lattice (PlantUML Hasse), zipper-cursor (state) | 549 |
+| `algorithms/serialization.md` | bincode/JSON/plaintext/protobuf/compression; terms-only vs value-preserving `*_with_values`; bincode-1→2 byte-compat; **resolves the Phase-1 forward-ref** | — | 345 |
+| `architecture/abstractions.md` | `CharUnit{u8,char,u64}` + `KeyEncoding{ByteKey,CharKey,U64Key}`, one-code-path-three-alphabets | units-keys (D2/elk) | 250 |
+| `algorithms/persistent-suffix-graphs.md` | snapshot + op-segment WAL + CAS-rebuild-publish for the 3 persistent substring families; Inenaga DOI | suffix-graph-publish (sequence) | 364 |
+| `algorithms/native-u64-and-cx.md` | native-u64 profile + CX prefix-3/4 compact snapshot (`AR64CX01`) | — | 299 |
+| `algorithms/vocab-trie.md` | durable `term↔u64` bijection; forward overlay (durable) vs reverse map (rebuilt-on-recovery) | vocab-recovery (PlantUML) | 274 |
+
+Subagent corrections (verified vs source): `semiring_lattice.rs` does not exist
+(Lattice trait is in the sibling `llattice` crate — documented accurately, not
+invented); vocab lives in `src/persistent_artrie/vocab/` (not `persistent_vocab_artrie/`).
+
+**Also fixed**: 8 pre-existing cross-project dead links in
+`integration/pathmap/README.md` (MORK/MeTTaIL) → plain-text project references.
+
+**Milestone**: ✅ **ZERO broken relative links across the entire `docs/` +
+`formal-verification/` tree**. 43 diagrams idempotent.
 ## Phase 6 — Benchmark plots  ☐
 ## Phase 7 — Reorganization + top-level index  ☐

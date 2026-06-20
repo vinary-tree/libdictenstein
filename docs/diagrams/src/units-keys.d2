@@ -1,0 +1,188 @@
+# =============================================================================
+# d2-layout: elk
+# units-keys.d2 — the two unit/key abstractions fanning INTO the shared,
+#                 generic backends that consume them ("three alphabets,
+#                 one code path").
+#
+# Source of truth:
+#   src/char_unit.rs                              (CharUnit + u8/char/u64 impls)
+#   src/persistent_artrie/core/key_encoding.rs    (KeyEncoding + ByteKey/CharKey/U64Key)
+#   src/persistent_artrie/core/overlay/{node,atomic_ptr,dict_node}.rs
+#                                                 (the generic OverlayNode<K,V> etc.)
+#
+# A trait fans OUT to its concrete unit/key impls (one node per alphabet); each
+# impl set then fans IN to the SINGLE generic implementation that is monomorphized
+# once per alphabet. The grey column = the traits + their concrete impls (the
+# "alphabets"); the colored column = the generic consumers (the "one code path").
+#
+# Color key (house palette — docs/diagrams/README.md):
+#   grey   #ECEFF1 / #37474F  unit/key TRAITS + their concrete impls (the alphabets)
+#   green  #C8E6C9  in-memory generic consumers (CharUnit-driven node trait)
+#   blue   #BBDEFB  persistent / disk-backed generic consumers (KeyEncoding-driven overlay)
+#   white  #FFFFFF  background
+# (elk layout: container→descendant edges route the fan-in cleanly.)
+# =============================================================================
+
+direction: right
+
+title: |md
+  # Two abstractions, every alphabet — *one generic implementation per consumer*
+  *`CharUnit` types the in-memory edge label · `KeyEncoding` types the persistent-trie key · both are monomorphized once per alphabet, never re-implemented*
+| {
+  near: top-center
+  style.font-size: 18
+  style.font-color: "#212121"
+}
+
+# ---------------------------------------------------------------------------
+# Column A — CharUnit: the in-memory edge-label unit (src/char_unit.rs)
+# ---------------------------------------------------------------------------
+charunit: "CharUnit  —  in-memory edge label\nsrc/char_unit.rs" {
+  style: {
+    fill: "#ECEFF1"
+    stroke: "#37474F"
+    font-color: "#212121"
+    stroke-width: 2
+    bold: true
+  }
+  u8: "u8\nbytes · ASCII/Latin-1 · 1 B/edge" {
+    style.fill: "#FAFAFA"
+    style.stroke: "#607D8B"
+    style.font-color: "#263238"
+  }
+  ch: "char\nUnicode scalar · 4 B/edge" {
+    style.fill: "#FAFAFA"
+    style.stroke: "#607D8B"
+    style.font-color: "#263238"
+  }
+  u64a: "u64\ntoken / time-series label · 8 B/edge" {
+    style.fill: "#FAFAFA"
+    style.stroke: "#607D8B"
+    style.font-color: "#263238"
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Column B — KeyEncoding: the persistent-trie key model (core/key_encoding.rs)
+# ---------------------------------------------------------------------------
+keyencoding: "KeyEncoding  —  persistent-trie key\ncore/key_encoding.rs" {
+  style: {
+    fill: "#ECEFF1"
+    stroke: "#37474F"
+    font-color: "#212121"
+    stroke-width: 2
+    bold: true
+  }
+  bytekey: "ByteKey\nUnit = u8 · Token = u8 · KEY_BYTES = 1" {
+    style.fill: "#FAFAFA"
+    style.stroke: "#607D8B"
+    style.font-color: "#263238"
+  }
+  charkey: "CharKey\nUnit = u32 · Token = char · KEY_BYTES = 4" {
+    style.fill: "#FAFAFA"
+    style.stroke: "#607D8B"
+    style.font-color: "#263238"
+  }
+  u64key: "U64Key<PREFIX>\nUnit = u64 · Token = u64 · KEY_BYTES = 8" {
+    style.fill: "#FAFAFA"
+    style.stroke: "#607D8B"
+    style.font-color: "#263238"
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Column C — the GENERIC consumers (one implementation, monomorphized per alphabet)
+# ---------------------------------------------------------------------------
+
+# In-memory family: every node type is generic over `Unit: CharUnit`.
+node_generic: "Generic in-memory node\nDictionaryNode { type Unit: CharUnit }" {
+  style: {
+    fill: "#C8E6C9"
+    stroke: "#2E7D32"
+    font-color: "#1B5E20"
+    stroke-width: 2
+    bold: true
+  }
+  inmem: "DAT · DynamicDawg · SuffixAutomaton · Scdawg\n+ their *Char / U64 siblings\n(same code, monomorphized per Unit)" {
+    style.fill: "#E8F5E9"
+    style.stroke: "#2E7D32"
+    style.font-color: "#1B5E20"
+  }
+}
+
+# Persistent family: the lock-free overlay is generic over `K: KeyEncoding, V`.
+overlay_generic: "Generic persistent overlay  —  core/overlay/\nOverlayNode<K: KeyEncoding, V>" {
+  style: {
+    fill: "#BBDEFB"
+    stroke: "#1565C0"
+    font-color: "#0D47A1"
+    stroke-width: 2
+    bold: true
+  }
+  node: "OverlayNode<K, V>\nimmutable copy-on-write · ChildStore<K::Unit, Child<K,V>>" {
+    style.fill: "#E3F2FD"
+    style.stroke: "#1565C0"
+    style.font-color: "#0D47A1"
+  }
+  ptr: "AtomicNodePtr<K, V>\nlock-free arc-swap root" {
+    style.fill: "#E3F2FD"
+    style.stroke: "#1565C0"
+    style.font-color: "#0D47A1"
+  }
+  handle: "OverlayDictionaryNode<K, V>\nUnit = K::Token (public) · stores K::Unit (compact)" {
+    style.fill: "#E3F2FD"
+    style.stroke: "#1565C0"
+    style.font-color: "#0D47A1"
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Fan-in edges: each alphabet's concrete impl feeds the SAME generic consumer.
+# (container→descendant edges — require the elk layout engine.)
+# ---------------------------------------------------------------------------
+charunit.u8 -> node_generic.inmem: "Unit = u8" {
+  style.stroke: "#2E7D32"
+  style.stroke-width: 2
+}
+charunit.ch -> node_generic.inmem: "Unit = char" {
+  style.stroke: "#2E7D32"
+  style.stroke-width: 2
+}
+charunit.u64a -> node_generic.inmem: "Unit = u64" {
+  style.stroke: "#2E7D32"
+  style.stroke-width: 2
+}
+
+keyencoding.bytekey -> overlay_generic.node: "K = ByteKey" {
+  style.stroke: "#1565C0"
+  style.stroke-width: 2
+}
+keyencoding.charkey -> overlay_generic.node: "K = CharKey" {
+  style.stroke: "#1565C0"
+  style.stroke-width: 2
+}
+keyencoding.u64key -> overlay_generic.node: "K = U64Key" {
+  style.stroke: "#1565C0"
+  style.stroke-width: 2
+}
+
+# KeyEncoding's public Token is itself a CharUnit — the seam that lets the
+# persistent handle present each variant's natural public unit.
+keyencoding -> charunit: "K::Token : CharUnit" {
+  style.stroke: "#607D8B"
+  style.stroke-width: 2
+  style.stroke-dash: 4
+  style.font-color: "#37474F"
+}
+
+# ---------------------------------------------------------------------------
+legend: |md
+  **Color key** ·
+  ⬜ grey = unit/key *traits* + their concrete impls (the alphabets: `u8` · `char` · `u64`) ·
+  🟩 green = generic *in-memory* consumers driven by `CharUnit` ·
+  🟦 blue = generic *persistent* overlay consumers driven by `KeyEncoding`
+| {
+  near: bottom-center
+  style.font-size: 13
+  style.font-color: "#37474F"
+}

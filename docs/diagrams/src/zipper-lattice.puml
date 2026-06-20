@@ -1,0 +1,77 @@
+@startuml zipper-lattice
+' ============================================================================
+' zipper-lattice.puml — the value-merge lattice (Hasse diagram).
+'
+' When the SAME term appears in two operands of a combinator, the two values
+' must be reconciled into one. The combinators reconcile via a
+' `ValueMergeStrategy`; for value types that form a `Lattice` (the `llattice`
+' crate: join = least upper bound, meet = greatest lower bound) the two
+' canonical strategies are:
+'     LatticeJoin  ->  existing.join(&new)   (∪ / max / OR)   — climbs UP   the lattice
+'     LatticeMeet  ->  existing.meet(&new)   (∩ / min / AND)  — descends DOWN the lattice
+' Non-lattice strategies (FirstWins default for union, LastWins) just pick a
+' side and are shown for contrast.
+'
+' This Hasse diagram draws the partial order for HashSet<{a,b,c}> ordered by ⊆
+' (the prototypical bounded-below lattice): edges go LOW -> HIGH (subset below
+' superset). join climbs to the least common UPPER bound; meet descends to the
+' greatest common LOWER bound. ⊥ = ∅ is the bottom; for this finite universe the
+' top ⊤ = {a,b,c} (an unbounded element type has no ⊤).
+' Source of truth: union_zipper/lattice.rs + merge_strategies.rs; llattice/src/lib.rs.
+'
+' Color key:
+'   green  (#C8E6C9) = lattice elements (candidate merged values, in-memory)
+'   amber  (#FFF59D) = JOIN result of the worked example {a}⊔{b,c} = {a,b,c}
+'   blue   (#BBDEFB) = MEET result of the worked example {a,b}⊓{b,c} = {b}
+'   grey   (#ECEFF1 / #37474F) = bottom ⊥ / borders / order edges
+' ============================================================================
+skinparam backgroundColor #FFFFFF
+skinparam defaultFontName "DejaVu Sans"
+skinparam ArrowColor #37474F
+skinparam shadowing false
+skinparam rectangle {
+  BorderColor #37474F
+  FontName "DejaVu Sans"
+}
+
+title Value-merge lattice — 𝒫({a,b,c}) ordered by ⊆ (join = ∪ climbs up · meet = ∩ descends down)
+
+' --- Lattice elements (levels low -> high) ----------------------------------
+rectangle "⊤ = {a, b, c}\n(JOIN of {a} and {b,c})" as TOP #FFF59D
+rectangle "{a, b}" as AB #C8E6C9
+rectangle "{a, c}" as AC #C8E6C9
+rectangle "{b, c}" as BC #C8E6C9
+rectangle "{a}" as A #C8E6C9
+rectangle "{b}\n(MEET of {a,b} and {b,c})" as B #BBDEFB
+rectangle "{c}" as C #C8E6C9
+rectangle "⊥ = ∅\n(bottom · meet of disjoint sets)" as BOT #ECEFF1
+
+' --- Cover relations (Hasse edges): lower ⊆ upper, drawn upward -------------
+BOT -up-> A
+BOT -up-> B
+BOT -up-> C
+A  -up-> AB
+A  -up-> AC
+B  -up-> AB
+B  -up-> BC
+C  -up-> AC
+C  -up-> BC
+AB -up-> TOP
+AC -up-> TOP
+BC -up-> TOP
+
+' --- Worked-example merge arrows (the two strategies in action) --------------
+A  -[#F9A825,thickness=3]-> TOP : "LatticeJoin\n{a} ⊔ {b,c} = {a,b,c}"
+BC -[#F9A825,thickness=3]-> TOP
+AB -[#1565C0,thickness=3,dashed]-> B : "LatticeMeet\n{a,b} ⊓ {b,c} = {b}"
+BC -[#1565C0,thickness=3,dashed]-> B
+
+legend bottom
+  |= Strategy |= Operation |= Direction |= Example {a},{b,c} / {a,b},{b,c} |
+  |<#FFF59D> LatticeJoin | existing.join(&new)  (∪ / max / OR)  | climbs UP to least upper bound | {a,b,c} |
+  |<#BBDEFB> LatticeMeet | existing.meet(&new)  (∩ / min / AND)  | descends DOWN to greatest lower bound | {b} |
+  |<#C8E6C9> FirstWins (union default) | keep `existing` | n/a — picks left operand | (whichever came first) |
+  |<#C8E6C9> LastWins | take `new` | n/a — picks right operand | (whichever came last) |
+  Laws (lawful lattice): idempotent · commutative · associative · absorptive.
+endlegend
+@enduml

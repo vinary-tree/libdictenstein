@@ -1,0 +1,88 @@
+@startuml zipper-cursor
+' ============================================================================
+' zipper-cursor.puml — the dual-cursor "synchronize-and-emit" state machine
+' that drives a binary set-algebra combinator (intersection shown).
+'
+' A combinator keeps one operand cursor per dictionary (left L, right R). It
+' advances them IN LOCKSTEP: every `descend(label)` / `children()` is forwarded
+' to BOTH cursors over the SAME label, so they always sit at the same path. The
+' EMIT decision is the only place the combinators differ — it is the predicate
+' over (L.is_final, R.is_final):
+'     INTERSECTION  : emit iff  L_final AND R_final
+'     UNION         : emit iff  L_final OR  R_final
+'     DIFFERENCE    : emit iff  L_final AND NOT R_final
+'     SYM-DIFFERENCE: emit iff  exactly one final
+'     VALUE-DIFF    : emit iff  L_final AND R_final AND L.value != R.value
+' This diagram traces the iterator's DFS: descend a shared child, test the emit
+' predicate, then ascend (pop) and try the next sibling. INTERSECTION's
+' `descend` also PRUNES — if either cursor cannot take the label, the whole
+' subtree is skipped (no point descending where the sets cannot agree).
+' Source of truth: src/intersection_zipper.rs (descend / children / is_final /
+' IntersectionIterator::next); the emit predicates above per combinator file.
+'
+' Color key:
+'   green  (#C8E6C9) = both cursors live & aligned (the productive state)
+'   amber  (#FFF59D) = synchronize / advance work (descend · sibling · ascend)
+'   blue   (#BBDEFB) = EMIT — a term is yielded to the consumer
+'   grey   (#ECEFF1 / #37474F) = prune / exhausted / borders / transitions
+' ============================================================================
+skinparam backgroundColor #FFFFFF
+skinparam defaultFontName "DejaVu Sans"
+skinparam ArrowColor #37474F
+skinparam shadowing false
+skinparam state {
+  BorderColor #37474F
+  FontName "DejaVu Sans"
+  AttributeFontName "DejaVu Sans"
+}
+
+title Dual-cursor advance — intersection synchronizes L and R, emits only where BOTH agree
+
+[*] --> Aligned : new(vec![L, R])\nboth cursors at root, path = []
+
+state "Aligned\nL and R sit at the SAME path\n(both Some — operands still agree)" as Aligned #C8E6C9
+
+state "TestEmit\nevaluate the combinator predicate\nINTERSECTION: L.is_final() && R.is_final()" as TestEmit #FFF59D
+
+state "Emit\nyield (path, zipper) to consumer\nvalue = strategy.merge(L.value, R.value)" as Emit #BBDEFB
+
+state "Descend\nlabel ∈ children(L) ∩ children(R)\ndescend(label) on BOTH cursors" as Descend #FFF59D
+
+state "Sibling / Ascend\npop DFS frame · advance to next\nshared child of the parent" as Ascend #FFF59D
+
+state "Prune\nL or R cannot take label →\nsubtree cannot intersect: SKIP" as Prune #ECEFF1
+
+state "Exhausted\nDFS stack empty —\nno more aligned children" as Done #ECEFF1
+
+Aligned --> TestEmit : visit node
+
+TestEmit -[#1565C0,thickness=2]-> Emit : predicate TRUE\n(both final)
+TestEmit --> Descend : predicate FALSE\n(continue traversal)
+Emit -[#1565C0]-> Descend : after yield,\nkeep traversing subtree
+
+Descend -[#2E7D32,thickness=2]-> Aligned : both descended\n(label in BOTH) → realign
+Descend -[#C62828,dashed]-> Prune : label missing in L or R
+Prune --> Ascend : drop subtree
+
+Aligned --> Ascend : no more children here
+Ascend --> Aligned : next sibling exists\n(re-descend shared label)
+Ascend --> Done : DFS stack empty
+
+Done --> [*]
+
+note right of Descend
+  LOCKSTEP rule: a label is followed only if it is
+  present in BOTH cursors' children (set ∩). UNION
+  follows a label present in EITHER (set ∪) and never
+  takes the Prune edge — it keeps a cursor as `None`
+  where that operand lacks the path.
+end note
+
+note right of Emit
+  Only the EMIT predicate changes per combinator;
+  the descend / ascend / sibling machinery is shared.
+  DIFFERENCE follows LEFT's children (right tags along
+  for the exclusion test); INTERSECTION & VALUE-DIFF
+  follow the ∩; UNION & SYM-DIFFERENCE follow the ∪.
+end note
+@enduml

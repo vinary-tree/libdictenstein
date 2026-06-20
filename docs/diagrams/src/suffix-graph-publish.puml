@@ -1,0 +1,89 @@
+@startuml suffix-graph-publish
+' ============================================================================
+' Persistent suffix-graph write — "rebuild a candidate off to the side, log the
+' operation segment durably, then publish by pointer-identity CAS".
+' Concurrent readers keep traversing the OLD immutable snapshot until the swap.
+'
+' Source of truth: src/persistent_artrie/suffix_automaton.rs
+'   (NativeSuffixIndex::mutate_retryable — Prepare → CoW clone → apply_op →
+'    ArcSwap::compare_and_swap (Arc::ptr_eq) → Commit; MAX_CAS_RETRIES = 64).
+'   The identical shape backs suffix_tree.rs and scdawg.rs.
+'
+' Color key:  green #C8E6C9 = in-memory immutable graph snapshot (reader-visible)
+'             blue  #BBDEFB = durable on-disk operation-segment WAL (append + fsync)
+'             amber #FFE0B2 = control / linearization (the pointer-identity CAS)
+'             grey  #ECEFF1 = note / infrastructure
+' ============================================================================
+skinparam backgroundColor #FFFFFF
+skinparam defaultFontName "DejaVu Sans"
+skinparam shadowing false
+skinparam sequenceArrowColor #37474F
+skinparam sequenceLifeLineBorderColor #90A4AE
+skinparam sequenceGroupBorderColor #F9A825
+skinparam sequenceGroupBackgroundColor #FFFDE7
+skinparam noteBackgroundColor #ECEFF1
+skinparam noteBorderColor #90A4AE
+skinparam participantBorderColor #37474F
+
+title Persistent suffix graph — copy-on-write rebuild, log, then CAS-publish\n(reads never block; acknowledged ⟹ durable AND visible)
+
+actor "Writer" as WR
+actor "Reader\n(concurrent)" as RD
+participant "Snapshot (old)\nArc<NativeSuffixGraph>\nimmutable" as OLD #C8E6C9
+participant "Candidate (new)\nrebuilt copy" as NEW #C8E6C9
+participant "Operation-segment WAL\nappend + fsync" as WAL #BBDEFB
+participant "ArcSwap root\n(linearization point)" as ROOT #FFE0B2
+
+note over OLD, ROOT #ECEFF1 : `ArcSwap` holds the current root. Readers `load_full()`\nan immutable `Arc` snapshot and traverse it lock-free.
+
+== Concurrent reads observe the committed snapshot — no writer lock ==
+RD -> ROOT : load_full()
+activate ROOT
+ROOT --> RD : Arc(Snapshot old)
+deactivate ROOT
+RD -> OLD : match_positions(q) / contains_substring(q)
+activate OLD
+OLD --> RD : results from the OLD graph
+deactivate OLD
+
+== Step 1 — durability gate: append the Prepare record DURABLE, before any visibility ==
+WR -> WAL : append Prepare{ op_id, op }\n(one segment file, fsync)
+activate WAL
+WAL --> WR : Lsn — Prepare is now **durable**
+deactivate WAL
+note right of WR #ECEFF1 : op_id = next_op_id.fetch_add(1).\nLog-before-publish: a candidate is never\nmade visible before its op is durable.
+
+== Step 2 — rebuild the candidate off to the side (copy-on-write) ==
+WR -> OLD : clone the current snapshot
+activate OLD
+OLD --> NEW : deep copy (candidate revision)
+deactivate OLD
+WR -> NEW : apply_op(op)\n(insert_source / remove_source / set_value / compact)
+activate NEW
+NEW --> WR : candidate graph ready
+deactivate NEW
+note over OLD, NEW #ECEFF1 : Readers still see **Snapshot (old)** — the candidate\nis private to this writer until the CAS publishes it.
+
+== Step 3 — publish: pointer-identity CAS (the linearization point) ==
+loop until the root CAS wins (≤ MAX_CAS_RETRIES = 64)
+  WR -> ROOT : compare_and_swap(old, Arc(new))
+  activate ROOT
+  alt Arc::ptr_eq(previous, old)  —  WIN
+    ROOT --> WR : published — NEW is now the live snapshot
+    deactivate ROOT
+  else lost a race — another writer swapped first
+    ROOT --> WR : retry: reload root, rebuild on the newer base
+  end
+end
+
+== Step 4 — commit marker, then acknowledge ==
+WR -> WAL : append Commit{ op_id } (fsync)
+activate WAL
+WAL --> WR : Lsn — committed_op_id.fetch_max(op_id)
+deactivate WAL
+WR -> WR : Ack — write is **durable AND visible**
+
+note over OLD #ECEFF1 : The old snapshot is reclaimed once the last reader\nholding its `Arc` drops it (reference-counted; no reader is ever interrupted).
+
+note across #FFF9C4 : **Crash semantics.** On reopen the checkpoint image is loaded, then the durable\nWAL tail is replayed: Prepare records whose matching Commit is durable are applied in\nop_id order; un-committed Prepares are dropped. Recovery also folds the historical\nlength-prefixed monolithic WAL format when present.
+@enduml
