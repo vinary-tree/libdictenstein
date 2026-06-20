@@ -4,15 +4,80 @@ This directory contains formal verification specifications and proofs for the Pe
 
 ## Overview
 
-The verification uses a two-pronged approach:
+The verification uses a two-pronged approach that pairs *model checking* (to
+exhaustively explore concurrency and crash interleavings) with *theorem proving*
+(to establish functional correctness for all inputs):
 
-1. **TLA+ (Model Checking)**: Verifies concurrent safety, crash recovery, and linearizability via state space exploration
-2. **Rocq/Coq (Theorem Proving)**: Proves functional correctness, node transitions, and refinement to abstract map ADT
+1. **TLA⁺ (Model Checking)** — verifies concurrent safety, crash recovery, and
+   linearizability via finite-state exploration. **TLA⁺** (Temporal Logic of
+   Actions⁺) is Leslie Lamport's specification language for concurrent and
+   distributed systems; **TLC** is its explicit-state model checker (it
+   enumerates every reachable state of a *bounded* instance and reports any
+   invariant or temporal-property violation); **SANY** is the TLA⁺
+   syntax/semantic analyzer that type-checks a specification before TLC runs.
+   *Linearizability* is the correctness condition that every concurrent
+   operation appears to take effect atomically at a single instant between its
+   call and return, consistent with real-time order.
+2. **Rocq/Coq (Theorem Proving)** — proves functional correctness, node
+   transitions, and *refinement* of the trie to an abstract map ADT. **Rocq**
+   (formerly Coq) is an interactive theorem prover based on the Calculus of
+   Inductive Constructions; every proposition is closed by a machine-checked
+   `Qed.` (or `Defined.` for a transparent definition), with **no** `Admitted`
+   placeholders, `Axiom`s, or uninstantiated `Parameter`s. *Refinement* means
+   the concrete implementation's observable behavior is a permitted behavior of
+   the abstract specification (the `MapSpec` ADT) — i.e. the implementation
+   *correctly implements* the spec.
+
+The two prongs are tied to the running Rust code by an **executable
+correspondence harness** (`scripts/verify-formal-correspondence.sh`), and by the
+dynamic-analysis tools **Loom** (an exhaustive permutation tester for `C11`
+atomic/lock-free Rust code) and **Miri** (an interpreter for Rust's mid-level IR
+that detects undefined behavior, including strict-pointer-provenance
+violations). The `unsafe` surface is held to an **EBR** (Epoch-Based
+Reclamation) discipline — readers pin an epoch so memory is freed only after no
+reader can still observe it (no use-after-free).
+
+At a glance, the corpus comprises:
+
+| Artifact class | Tool | Count | Headline guarantee |
+|----------------|------|------:|--------------------|
+| Rocq `.v` proof files | Rocq/Coq theorem proving | **69** | functional correctness + Map-ADT refinement |
+| Rocq propositions (`Theorem`+`Lemma`+`Corollary`+`Proposition`) | Rocq/Coq | **1,301** | all closed by `Qed.`/`Defined.`; **0** `Admitted` / **0** `Axiom` / **0** `Parameter` |
+| TLA⁺ modules (`.tla`) | TLA⁺ / TLC / SANY | **55** | concurrency safety, crash-recovery, linearizability (with **65** `.cfg` TLC configs) |
+| `unsafe` inventory rows | CI set-equality gate | **43** | every `unsafe` site mapped to a reviewed contract |
+| `unsafe` safety contracts | CI set-equality gate | **31** | each contract tied to a coverage class + evidence |
+
+> The two-pronged split is illustrated in
+> [Proof-artifact map](#proof-artifact-map) below; the spec↔Rust mapping is
+> summarized in [Correspondence matrix](#correspondence-matrix); and the trust
+> boundary for `unsafe` is in [`UNSAFE_BOUNDARY.md`](UNSAFE_BOUNDARY.md).
 
 The current repo-wide coverage and remaining formalization candidates are
 tracked in [`GAP_LEDGER.md`](GAP_LEDGER.md). As of the 2026-06-12 audit, the
 only non-ARTrie stale model found in the refactor was the PathMap snapshot/ref
 surface, now covered by `rocq/Spec/PathMapSnapshotSpec.v`.
+
+<a name="proof-artifact-map"></a>
+### Proof-artifact map
+
+The figure below shows how the two prongs divide responsibility: TLA⁺/TLC
+covers the *temporal* obligations (concurrency + crash-recovery safety and
+liveness), while Rocq covers the *functional* obligations (per-operation
+correctness and ADT refinement). Representative artifacts and the headline
+property each establishes are named under each prong.
+
+<img src="../docs/diagrams/proof-artifact-map.svg" alt="Two-pronged proof-artifact map: TLA+/TLC model-checking (LockFreeARTrieLinearizability, CrashRecovery, DurabilityFrontier) establishing linearizability, no-lost-writes, and crash-recovery completeness, versus Rocq theorem-proving (MapRefinement, ARTrieSpec, DictionaryLawSpec) establishing functional correctness, Map-ADT refinement, and no-use-after-free." width="900"/>
+
+<a name="correspondence-matrix"></a>
+### Correspondence matrix (representative excerpt)
+
+Each Rust module is held to one or more coverage classes — a Rocq spec, a TLA⁺
+model, Loom/Miri dynamic checks, and/or an executable correspondence test. The
+matrix below is a glanceable excerpt of the full
+[spec↔Rust table](#relationship-to-implementation) (it shows ~10 representative
+rows, not all of them).
+
+<img src="../docs/diagrams/correspondence-matrix.svg" alt="Representative coverage matrix: rows are Rust modules (lock-free CAS, char/vocab overlay, WAL+recovery, swizzled pointer, buffer manager, arena, DynamicDawg, serialization), columns are coverage classes (Rocq spec, TLA+ model, Loom/Miri, correspondence test); filled green cells mark covered intersections." width="820"/>
 
 ## Directory Structure
 
@@ -60,8 +125,9 @@ formal-verification/
 │   ├── PART.cfg               # TLC configuration (no crash)
 │   └── PART_crash.cfg         # TLC configuration (with crash)
 │
-└── rocq/                      # Rocq/Coq proofs (67 .v files, 26,555 LOC,
-    │                            1,292 theorem/lemma/corollary propositions,
+└── rocq/                      # Rocq/Coq proofs (69 .v files, 26,767 LOC,
+    │                            1,301 theorem/lemma/corollary propositions
+    │                            = 992 Theorem + 301 Lemma + 8 Corollary,
     │                            0 Admitted / 0 Axiom / 0 Parameter)
     ├── Makefile               # Build system
     ├── Spec/                  # Specifications
@@ -234,6 +300,14 @@ tlc -workers 1 -config HotStuffConsensus.cfg HotStuffConsensus.tla
 
 ### End-to-End Correspondence Check
 
+The harness ties the proofs and models to the running Rust code. Its default
+body runs four checks in series (Rust correspondence tests, the Rocq `make`
+build, TLA⁺ SANY parsing, and the `unsafe`-inventory set-equality gate); three
+further stages are env-gated side branches (`RUN_TLC`, `RUN_MIRI`,
+`RUN_IO_URING`), each its own CI job. The flow is:
+
+<img src="../docs/diagrams/verification-ci-flow.svg" alt="Activity flow of scripts/verify-formal-correspondence.sh: a default body running Rust correspondence tests, then the Rocq make build, then TLA+ SANY parse, then the unsafe-inventory set-equality gate (each fail-closed), followed by three env-gated side branches RUN_MIRI, RUN_IO_URING, and RUN_TLC, converging on an all-green outcome." width="760"/>
+
 Run the CI-practical proof/model/source alignment harness from the repository
 root:
 
@@ -318,7 +392,11 @@ RUN_MIRI=1 RUN_IO_URING=1 FORMAL_MIRI_TOOLCHAIN=nightly scripts/verify-formal-co
    `shrink_type_appropriate_with_lower_bound` in
    `Invariants/TransitionInvariants.v`
 5. **Map Refinement**: ARTrie correctly implements Map ADT
-   — see `WFARTrieMapImpl` Instance in `Proofs/MapRefinement.v`
+   — see `WFARTrieMapImpl` Instance in `Proofs/MapRefinement.v`. The refinement
+   tower (abstract `MapSpec` ⟸ `ARTrieSpec`/`MapRefinement` ⟸ the concrete
+   persistent ARTrie) is:
+
+   <img src="../docs/diagrams/refinement-tower.svg" alt="Layered refinement tower: abstract MapSpec ADT at the top is refined by the ARTrieSpec plus MapRefinement layer (WFARTrieMapImpl instance), which is implemented by the concrete persistent ART in Rust; downward arrows read 'is refined by' / 'is implemented by' and an upward dashed arrow reads 'refines / implements', witnessed by a machine-checked Qed." width="640"/>
 6. **Public Dictionary Laws**: exact membership, mapped lookup/domain
    preservation, set-zippers, mutation traces, and bijective forward/reverse
    maps satisfy the backend-neutral public law spec
@@ -459,9 +537,15 @@ make check-Model/Key
 
 ### Proof Status
 
-As of 2026-06-11: all modules **Complete** — 0 `Admitted` / 0 `Axiom` /
-0 `Parameter` across the 66 .v files (verified by grep, see
-[VERIFICATION_RESULTS.md](VERIFICATION_RESULTS.md) for the per-file tally).
+As of 2026-06-12: all modules **Complete** — 0 `Admitted` / 0 `Axiom` /
+0 `Parameter` across the **69** `.v` files (verified by grep, see
+[VERIFICATION_RESULTS.md](VERIFICATION_RESULTS.md) for the per-file tally). The
+aggregate is **1,301** propositions = 992 `Theorem` + 301 `Lemma` +
+8 `Corollary` + 0 `Proposition`. The status table below lists the
+longest-standing modules; the live tree additionally carries the overlay
+codec/reestablish, eviction-registry, char-node-layout, persistent-SCDAWG,
+persistent-suffix-automaton, prefix-chunking, U64, and worker-lifecycle specs
+introduced in the L-campaign and eviction work.
 
 | Module | Status | Description |
 |--------|--------|-------------|
@@ -525,9 +609,12 @@ As of 2026-06-11: all modules **Complete** — 0 `Admitted` / 0 `Axiom` /
 | Proofs/HotStuffSafety.v | Complete | Replicated committed logs replay over prefix-compatible states |
 | Proofs/ProofCarryingExtraction.v | Complete | Proof-carrying trace checker correctness and invalid-step rejection |
 
+<a name="relationship-to-implementation"></a>
 ## Relationship to Implementation
 
-The formal specifications model the key components of the Rust implementation:
+The formal specifications model the key components of the Rust implementation.
+This full spec↔Rust correspondence table is the authoritative source for the
+[correspondence matrix excerpt](#correspondence-matrix) above:
 
 | Specification | Rust Source |
 |---------------|-------------|

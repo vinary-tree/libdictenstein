@@ -1,6 +1,22 @@
 # Eviction Strategy for Persistent ARTrie
 
-This document describes the memory pressure-driven eviction system for the persistent ARTrie data structure.
+This document describes the memory pressure-driven eviction system for the persistent ARTrie (Adaptive Radix Trie) data structure: **what** each component is, **how** the pieces cooperate to reclaim RAM, and **why** the design is safe under lock-free concurrent reads.
+
+### What eviction is, in one paragraph
+
+The persistent ARTrie keeps hot dictionary entries resident in memory for native-speed reads, but a dictionary can be far larger than RAM. *Eviction* is the mechanism that bounds the resident set: when the operating system reports memory pressure, a background thread converts the coldest in-memory nodes back into compact on-disk references (`DiskRef`), freeing their RAM. The node's bytes are not lost — they were already written to disk at the last checkpoint, so a future access simply faults the node back in. The hard part is doing this **without blocking readers and without freeing memory a concurrent reader could still be dereferencing**; that safety property is delivered by *epoch-based reclamation* (EBR), defined below.
+
+### Glossary (terms used throughout)
+
+| Term | Definition |
+|------|------------|
+| **EBR** — epoch-based reclamation | A safe-memory-reclamation scheme. Readers announce they are active by entering a global *epoch*; a reclaimer that wants to free a node advances the epoch and then waits until every reader from the old epoch has departed before freeing, so no reader can hold a dangling pointer. Implemented by `EpochManager` in `core/concurrency.rs`. |
+| **Quiescence** | The condition in which no reader from the pre-eviction epoch is still active (`active_readers == 0` after an `advance()`). Reaching quiescence is the precondition for freeing an evicted node. |
+| **LRU** — least recently used | The selection policy that ranks nodes by *coldness* (a recency-and-frequency score) so the coldest nodes are evicted first and hot nodes stay resident. Implemented by `LruRegistry` in `core/eviction/lru_tracker.rs`. |
+| **Urgency** | How aggressively a single eviction pass should run, derived from the memory-pressure level. The `EvictionUrgency` enum has three rungs — `Moderate`, `Urgent`, `Emergency` — that scale the batch size (`×1`/`×2`/`×4`). |
+| **Swizzle / unswizzle** | A *swizzled* child pointer points at a live in-memory node (fast path); an *unswizzled* pointer is a compact `DiskRef` naming a `block_id` + location on disk. *Swizzling* faults a node in (disk → memory); *unswizzling* is the atomic swap eviction performs (memory → disk). Implemented by `SwizzledPtr` in `core/swizzled_ptr.rs`. |
+| **Pin / unpin** | A buffer-pool *frame* is *pinned* while a lease (read or write) is held on it; a pinned frame may not be evicted from the pool. *Unpinning* releases the lease. |
+| **Checkpoint** | The durable write of the trie to disk that (re)populates the `DiskLocationRegistry`. Only nodes registered by the most recent checkpoint are eligible for eviction. |
 
 ## Table of Contents
 
@@ -50,86 +66,17 @@ The eviction system implements SQLite-style bounded memory operation:
 
 ## Architecture
 
-### High-Level System Diagram
+**What.** Four cooperating components, all owned by `PersistentARTrie<V>`: a `MemoryPressureMonitor` that watches the OS, an `EvictionCoordinator` that queues and serializes work, a background *eviction thread* that performs the reclamation, and two indices — the `LruRegistry` (which nodes are cold) and the `DiskLocationRegistry` (which nodes have a current disk image and may therefore be evicted).
 
-```
-+-----------------------------------------------------------------------+
-|                         PersistentARTrie<V>                           |
-+-----------------------------------------------------------------------+
-|                                                                       |
-|  +-------------------------+    +----------------------------------+  |
-|  | MemoryPressureMonitor   |    |         LruRegistry              |  |
-|  | (background thread)     |    | (DashMap<hash, AccessTracker>)   |  |
-|  +------------+------------+    +----------------------------------+  |
-|               |                              ^                        |
-|               | Low/Critical pressure        | touch_hash()           |
-|               v                              |                        |
-|  +------------+------------+                 |                        |
-|  |  EvictionCoordinator    +-----------------+                        |
-|  |  (request queue, state) |                                          |
-|  +------------+------------+                                          |
-|               |                                                       |
-|               | Processes eviction requests                           |
-|               v                                                       |
-|  +------------+------------+                                          |
-|  |   Eviction Thread       |                                          |
-|  |   (background)          |                                          |
-|  +------------+------------+                                          |
-|               |                                                       |
-|               +---> 1. Wait for epoch quiescence (EpochManager)       |
-|               |                                                       |
-|               +---> 2. Select cold nodes (DiskLocationRegistry + LRU) |
-|               |                                                       |
-|               +---> 3. Atomically swap ArtNode -> DiskRef             |
-|                                                                       |
-+-----------------------------------------------------------------------+
-```
+**How.** The data flows in one direction: the monitor detects pressure and fires a callback; the callback maps the pressure *level* to an `EvictionUrgency` and enqueues a request; the eviction thread dequeues it, waits for epoch quiescence, asks the registries for the coldest evictable nodes, atomically unswizzles each (`ChildNode → DiskRef`), and records statistics. The figure below traces that path end-to-end; the urgency bands are colored amber → red by severity.
 
-### Component Interaction Flow
+<img src="../diagrams/eviction-pipeline.svg" alt="Eviction pipeline: pressure band to urgency to queue to async thread to quiescence to LRU select to unswizzle" width="980"/>
 
-```
-                    Memory Pressure Detected
-                            |
-                            v
-        +-------------------+-------------------+
-        |     MemoryPressureMonitor             |
-        |  (monitors system memory via sysinfo) |
-        +-------------------+-------------------+
-                            |
-                            | Callback with MemoryPressureLevel
-                            v
-        +-------------------+-------------------+
-        |      EvictionCoordinator              |
-        |  request_eviction(urgency)            |
-        +-------------------+-------------------+
-                            |
-                            | Queues EvictionRequest
-                            v
-        +-------------------+-------------------+
-        |       Eviction Thread                 |
-        | (artrie-eviction background thread)   |
-        +-------------------+-------------------+
-                            |
-            +---------------+---------------+
-            |               |               |
-            v               v               v
-      +---------+    +------------+   +-------------+
-      | Cooldown|    |   Epoch    |   |   Select    |
-      |  Check  |    | Quiescence |   | Cold Nodes  |
-      +---------+    +------------+   +-------------+
-                            |
-                            v
-        +-------------------+-------------------+
-        |        Eviction Callback              |
-        |  (Replace ArtNode with DiskRef)       |
-        +-------------------+-------------------+
-                            |
-                            v
-        +-------------------+-------------------+
-        |     Update Statistics                 |
-        |  (nodes_evicted, bytes_freed, etc.)   |
-        +---------------------------------------+
-```
+*Figure 1 — The node-eviction pipeline. `MemoryPressureMonitor` classifies available RAM into `Normal`/`Low`/`Critical`; `request_eviction` maps `Low ⇒ Moderate` and `Critical ⇒ Emergency` (`Normal` is a no-op); the async `artrie-eviction` thread runs `cooldown → wait_for_quiescence → select_for_eviction (LRU) → atomic unswizzle → record stats`, after which the cold node lives on disk as a `DiskRef` and is re-faulted on next access.*
+
+**Why this shape.** Detection, policy, and mechanism are separated so each can be tuned independently: the monitor's thresholds bound *when* eviction starts, the LRU policy decides *what* leaves first, and the epoch machinery makes the *mechanism* safe. Making the eviction thread asynchronous (rather than evicting inline after each checkpoint, the way naïve bounded caches do) keeps client `insert`/`lookup`/`iterate` latency off the eviction critical path.
+
+> **Note — `MemoryPressureLevel` vs `EvictionUrgency`.** They are distinct enums. `MemoryPressureLevel` (`Normal`, `Low`, `Critical`) describes the *system*; `EvictionUrgency` (`Moderate`, `Urgent`, `Emergency`) describes *how hard a pass works*. The monitor callback in `coordinator.rs` performs the mapping: `Normal ⇒` no request, `Low ⇒ Moderate`, `Critical ⇒ Emergency`. (The `Urgent` rung exists for callers that invoke `request_eviction(EvictionUrgency::Urgent)` directly.)
 
 ---
 
@@ -152,7 +99,7 @@ Configuration structure controlling eviction behavior.
 | `enable_memory_pressure_monitor` | `bool` | `true` | Auto-start memory pressure monitoring |
 | `memory_pressure_config` | `Option<MemoryPressureConfig>` | `None` | Custom memory pressure thresholds |
 
-**Source:** `src/persistent_artrie/eviction/config.rs:24-110`
+**Source:** `src/persistent_artrie/core/eviction/config.rs` (`EvictionConfig`)
 
 ### EvictionCoordinator
 
@@ -163,8 +110,7 @@ pub struct EvictionCoordinator {
     config: EvictionConfig,
     epoch_manager: Arc<EpochManager>,
     lru_registry: Arc<LruRegistry>,
-    request_queue: Mutex<VecDeque<EvictionRequest>>,
-    request_condvar: Condvar,
+    request_queue: Mutex<VecDeque<EvictionRequest>>, // polled by the Weak-driven worker; no condvar
     shutdown: AtomicBool,
     eviction_thread: Mutex<Option<JoinHandle<()>>>,
     stats: Arc<EvictionStatsAtomic>,
@@ -174,6 +120,8 @@ pub struct EvictionCoordinator {
     memory_monitor: RwLock<Option<Arc<MemoryPressureMonitor>>>,
 }
 ```
+
+The worker thread holds only a `Weak<EvictionCoordinator>` and polls `request_queue` (≈`100 ms`), so the coordinator can be dropped promptly by its owning trie — the earlier `Condvar`-based design was removed because pinning a strong `Arc` in the worker leaked one OS thread per trie instance.
 
 **Key Methods:**
 
@@ -189,7 +137,7 @@ pub struct EvictionCoordinator {
 | `invalidate_registry()` | Mark registry invalid on write operations |
 | `shutdown()` | Stop eviction thread and memory monitor |
 
-**Source:** `src/persistent_artrie/eviction/coordinator.rs:53-78`
+**Source:** `src/persistent_artrie/core/eviction/coordinator.rs` (`EvictionCoordinator`)
 
 ### LruRegistry
 
@@ -217,7 +165,7 @@ pub struct LruRegistry {
 
 **Memory Overhead:** ~32 bytes per tracked node (8 bytes hash + 16 bytes tracker + 8 bytes DashMap overhead)
 
-**Source:** `src/persistent_artrie/eviction/lru_tracker.rs:148-321`
+**Source:** `src/persistent_artrie/core/eviction/lru_tracker.rs` (`LruRegistry`)
 
 ### AccessTracker
 
@@ -238,7 +186,7 @@ coldness = (now - last_access) / max(access_count, 1)
 
 Higher coldness scores indicate nodes that should be evicted first (older, less frequently accessed).
 
-**Source:** `src/persistent_artrie/eviction/lru_tracker.rs:22-109`
+**Source:** `src/persistent_artrie/core/eviction/lru_tracker.rs` (`AccessTracker`)
 
 ### DiskLocationRegistry
 
@@ -275,7 +223,7 @@ pub struct DiskLocationRegistry {
 
 **Memory Overhead:** ~50 bytes per node (path + 8 bytes ptr + 8 bytes size + 8 bytes depth + overhead)
 
-**Source:** `src/persistent_artrie/eviction/disk_registry.rs:79-401`
+**Source:** `src/persistent_artrie/core/eviction/disk_registry.rs` (`DiskLocationRegistry`)
 
 ### EpochManager
 
@@ -299,7 +247,7 @@ pub struct EpochManager {
 | `wait_for_quiescence(timeout, poll)` | Wait for readers to drain |
 | `try_quiescence()` | Non-blocking quiescence attempt |
 
-**Source:** `src/persistent_artrie/concurrency.rs:233-362`
+**Source:** `src/persistent_artrie/core/concurrency.rs` (`EpochManager`)
 
 ---
 
@@ -307,39 +255,14 @@ pub struct EpochManager {
 
 ### Eviction Trigger to Completion
 
-```
-+------------------+
-| Memory Pressure  |  (MemoryPressureLevel::Low or Critical)
-+--------+---------+
-         |
-         v
-+--------+---------+
-| request_eviction |  Maps pressure level to EvictionUrgency
-| (urgency)        |
-+--------+---------+
-         |
-         v
-+--------+---------+
-|  Request Queue   |  VecDeque<EvictionRequest>
-|  (condvar wake)  |  Higher urgency merges with pending request
-+--------+---------+
-         |
-         v
-+--------+---------+
-| Eviction Thread  |  Wakes on condvar notification
-|    (loop)        |
-+--------+---------+
-         |
-         +---> Cooldown Check (skip if too recent)
-         |
-         +---> Epoch Quiescence (advance epoch, wait for readers)
-         |
-         +---> Select Cold Nodes (DiskLocationRegistry + LruRegistry)
-         |
-         +---> Invoke Callback (replace ArtNode with DiskRef)
-         |
-         +---> Update Statistics (record eviction metrics)
-```
+The end-to-end trigger-to-completion path is **Figure 1** above. In prose, the steps the async `artrie-eviction` thread performs per request are:
+
+1. **Dequeue.** `MemoryPressureLevel::Low`/`Critical` ⇒ `request_eviction(urgency)` pushes (or urgency-merges) an `EvictionRequest` onto the coordinator's `VecDeque`. The worker does **not** sleep on a condvar — it holds only a `Weak<EvictionCoordinator>`, upgrades once per iteration, and polls `try_pop_request` roughly every `100 ms`, dropping the strong reference before sleeping. (This `Weak`-driven poll replaced an earlier condvar design that leaked one OS thread per trie by keeping the coordinator alive; see `eviction_loop` in `core/eviction/coordinator.rs`.)
+2. **Cooldown check.** Skip (and `record_skip`) if the request is older than `5 s` or arrives inside the cooldown window.
+3. **Epoch quiescence.** `advance()` the epoch, then `wait_for_quiescence()`; on timeout, `record_quiescence_timeout` and skip the cycle.
+4. **Select cold nodes.** Ask the `DiskLocationRegistry` for the coldest evictable candidates, scored by the `LruRegistry` (see the algorithm below).
+5. **Unswizzle.** Invoke the callback, which atomically swaps each selected `ChildNode → DiskRef`.
+6. **Record statistics.** `record_eviction(nodes, bytes, duration_ms)`.
 
 ### Node Selection Algorithm
 
@@ -391,30 +314,17 @@ DiskLocationRegistry.select_for_eviction(target_bytes, lru, min_depth, max_count
 
 ## Concurrency & Safety
 
-### Epoch-Based Reclamation
+### Epoch-Based Reclamation (EBR)
 
-```
-         Reader 1        Global Epoch        Eviction Thread
-            |                 |                    |
-            |  enter_read()   |                    |
-            +-------->--------+ epoch=5            |
-            |                 |                    |
-            |                 |   advance()        |
-            |                 +<-------------------+
-            |                 | epoch=6            |
-            |                 |                    |
-            |                 |  wait for readers  |
-            |                 +<-------------------+
-            |                 |                    |
-            |  exit_read()    |                    |
-            +-------->--------+                    |
-            |                 |                    |
-            |                 | no readers         |
-            |                 +----------->--------+
-            |                 |       (safe to evict)
-```
+**What.** EBR is the safe-memory-reclamation discipline that lets the eviction thread free a node while lock-free readers run concurrently, with no use-after-free. **How.** A reader brackets its traversal with `EpochManager::enter_read()` / `exit_read()`; the eviction thread calls `advance()` to open an epoch boundary, then `wait_for_quiescence()` to block until `active_readers` drains to zero, and only *then* performs the `unswizzle` swap and frees the old allocation. **Why.** Once a node pointer has been *swizzled* it is followed at native speed with no lock and no buffer-manager lookup; the only way to reclaim that node safely is to prove no reader can still hold the raw pointer — which is exactly what quiescence proves.
 
-**Guarantee:** Nodes are only evicted after all readers from the pre-eviction epoch have completed their operations.
+<img src="../diagrams/epoch-reclamation.svg" alt="Epoch-based reclamation sequence: eviction defers the free until every old-epoch reader departs, then swaps and frees" width="900"/>
+
+*Figure 2 — Epoch-based reclamation. `Reader A` pins epoch 5 and may hold a raw `*const Node` into the victim. The eviction thread `advance()`s to epoch 6 and, seeing `A` still active, **defers** the free. After `A` calls `exit_read()` and quiescence is reached, the thread `unswizzle`s the victim (`ChildNode → DiskRef`) and frees it. `Reader B`, which entered after the boundary, observes the already-published `DiskRef` and faults the node back in — it never touches freed memory.*
+
+**Guarantee:** a node is freed only after **all** readers from the pre-eviction epoch have completed. The ordering is `advance → wait for quiescence → swap → free`.
+
+**Memory-ordering note.** `enter_read`/`exit_read` use `SeqCst` on the `active_readers` counter, and the reclaimer's `has_active_readers()` check is also `SeqCst`. This is the StoreLoad barrier EBR requires: it guarantees that if the reclaimer's scan fails to observe a reader, that reader is guaranteed to observe the reclaimer's unlink (and re-fault a fresh node) rather than dereference a freed one. `AcqRel`/`Acquire` alone would permit the StoreLoad reordering and would **not** be sufficient (see the rationale comments on `EpochManager::enter_read` in `core/concurrency.rs`).
 
 ### Thread Safety Primitives
 
@@ -424,15 +334,27 @@ DiskLocationRegistry.select_for_eviction(target_bytes, lru, min_depth, max_count
 | `AccessTracker` fields | `AtomicU64` | Lock-free timestamp/count updates |
 | `EpochManager.global_epoch` | `AtomicU64` | Lock-free epoch advancement |
 | `EpochManager.active_readers` | `AtomicUsize` | Lock-free reader counting |
-| `EvictionCoordinator.request_queue` | `Mutex + Condvar` | Thread-safe request queueing |
+| `EvictionCoordinator.request_queue` | `Mutex` | Thread-safe request queueing (drained by the `Weak`-driven poll loop; no condvar) |
 | `EvictionCoordinator.disk_registry` | `RwLock` | Concurrent registry access |
+
+### The Buffer-Pool Layer Underneath (Page Lifecycle)
+
+Node eviction (above) reclaims *trie nodes*; beneath it, the block-storage **buffer pool** manages fixed-size *pages* (256 KB frames) and is what physically reads a node in (*fault-in*) and writes a dirty node out (*flush*). Understanding the page lifecycle clarifies the `DiskRef → fault-in → resident` round-trip that eviction reverses.
+
+**What.** A buffer-pool `Frame` (`core/buffer_manager.rs`) carries a `block_id`, a `lease_state` (a read-pin count or the exclusive `WRITE_LEASE`), a `dirty` flag, and a `reference_bit` for the CLOCK replacement algorithm. There is no single `enum PageState`; a page's condition is the product of `{resident, on-disk} × {clean, dirty} × {pinned, unpinned}`. **How.** `load_page`/`pin_page_data` fault a page in; `pin_read`/`pin_write` pin it; `mark_dirty` flags a write; `flush_page`/`flush_all` write it back and `clear_dirty`; and `get_free_frame` reuses an unpinned, unreferenced frame as a CLOCK victim. **Why.** Two invariants make this safe and are visible in the figure: a page is **never** a CLOCK victim while *pinned*, and a *dirty* page may **not** be flushed while a `WRITE_LEASE` is held (a dirty victim is written back before its frame is reused, so no acknowledged bytes are lost).
+
+<img src="../diagrams/buffer-page-lifecycle.svg" alt="Buffer-pool page lifecycle: fault-in, pin/unpin, clean/dirty, flush, and CLOCK eviction" width="900"/>
+
+*Figure 3 — Buffer-pool page (frame) lifecycle. A page faults in from disk into a free frame, then cycles through `Clean ⇄ Dirty` (on write under a `WRITE_LEASE`) and `Pinned ⇄ Unpinned` (on lease acquire/release). A clean, unpinned frame whose `reference_bit` is clear is reused in place by the CLOCK algorithm; a dirty victim is written back (`clear_dirty`) first. In-memory states are green; the on-disk-only state is blue; fault-in / write-back I/O is amber.*
+
+> This page-level CLOCK eviction (reclaiming a *frame* in the fixed buffer pool) is **distinct** from the node-level eviction subsystem documented above (reclaiming a cold *node*'s RAM via EBR + `DiskRef` swap). They operate at different layers and compose: node eviction turns a hot `ChildNode` into a `DiskRef`; a later access re-faults it through this buffer pool.
 
 ### Non-Blocking Guarantees
 
 | Operation | Blocking Behavior |
 |-----------|-------------------|
 | `touch_node()` | Non-blocking (atomic DashMap ops) |
-| `request_eviction()` | Non-blocking (mutex + condvar) |
+| `request_eviction()` | Non-blocking (brief `request_queue` mutex; no condvar) |
 | `lookup()` / `contains()` | Non-blocking (epoch enter/exit) |
 | `insert()` | Non-blocking (invalidates registry) |
 | Actual eviction | Happens in background thread only |
@@ -739,13 +661,19 @@ println!("Quiescence timeouts: {}", stats.quiescence_timeouts);
 
 ## Source Files
 
-| File | Lines | Content |
-|------|-------|---------|
-| `src/persistent_artrie/eviction/mod.rs` | 1-63 | Module structure, public exports |
-| `src/persistent_artrie/eviction/config.rs` | 1-483 | `EvictionConfig`, `EvictionUrgency`, `EvictionStats` |
-| `src/persistent_artrie/eviction/coordinator.rs` | 1-707 | `EvictionCoordinator` implementation |
-| `src/persistent_artrie/eviction/lru_tracker.rs` | 1-494 | `LruRegistry`, `AccessTracker` |
-| `src/persistent_artrie/eviction/disk_registry.rs` | 1-582 | `DiskLocationRegistry`, `EvictableNode` |
-| `src/persistent_artrie/concurrency.rs` | 233-362 | `EpochManager` |
-| `src/artrie_trait.rs` | 513-584 | `EvictableARTrie` trait definition |
-| `src/persistent_artrie/dict_impl.rs` | 6060-6202 | `EvictableARTrie` implementation |
+The eviction subsystem lives under the unit-agnostic `core/` of the persistent ARTrie crate (`src/persistent_artrie/core/`).
+
+| File | Content |
+|------|---------|
+| `src/persistent_artrie/core/eviction/mod.rs` | Module structure, public exports (`EvictionConfig`, `EvictionCoordinator`, `DiskLocationRegistry`, `LruRegistry`, `AccessTracker`) |
+| `src/persistent_artrie/core/eviction/config.rs` | `EvictionConfig` (incl. `resident_budget_bytes`), `EvictionUrgency` (`Moderate`/`Urgent`/`Emergency`), `EvictionStats`, `EvictionStatsAtomic` |
+| `src/persistent_artrie/core/eviction/coordinator.rs` | `EvictionCoordinator` — request queue, `Weak`-driven async eviction loop, cooldown/quiescence, byte+char+resident-budget eviction arities |
+| `src/persistent_artrie/core/eviction/lru_tracker.rs` | `LruRegistry`, `AccessTracker`, FNV-1a path hashing, coldness scoring |
+| `src/persistent_artrie/core/eviction/disk_registry.rs` | `DiskLocationRegistry`, `EvictableNode`/`EvictableCharNode`, `select_for_eviction`, resident-estimate helpers |
+| `src/persistent_artrie/core/memory_monitor.rs` | `MemoryPressureMonitor`, `MemoryPressureLevel` (`Normal`/`Low`/`Critical`), `MemoryPressureConfig`, `sysinfo`/PSI-based detection |
+| `src/persistent_artrie/core/concurrency.rs` | `EpochManager` (EBR: `enter_read`/`exit_read`/`advance`/`wait_for_quiescence`) and `EpochGuard` |
+| `src/persistent_artrie/core/swizzled_ptr.rs` | `SwizzledPtr` — atomic `swizzle`/`unswizzle`, `DiskLocation`, `NodeType` |
+| `src/persistent_artrie/core/buffer_manager.rs` | Buffer-pool `Frame` lifecycle (pin/unpin, mark-dirty, flush, CLOCK eviction) |
+| `src/artrie_trait.rs` | `EvictableARTrie` trait definition (`enable_eviction`, `force_eviction`, `eviction_stats`, `touch_node`) |
+
+> The byte/char/vocab `EvictableARTrie` *implementations* are wired through each variant's Phase-6 eviction sub-modules (e.g. `src/persistent_artrie/*/eviction*.rs` and the `atomic_ops`/`persist` sub-modules), which adapt the shared `core/eviction` machinery to that variant's node type.

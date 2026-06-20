@@ -1,0 +1,99 @@
+@startuml eviction-pipeline
+' ============================================================================
+' Node-eviction pipeline — memory pressure → queued request → async eviction
+' thread → epoch-quiescence wait → LRU cold-node select → atomic unswizzle.
+'
+' Source of truth:
+'   src/persistent_artrie/core/memory_monitor.rs  (MemoryPressureMonitor;
+'     Normal >30% / Low 10–30% / Critical <10% available, debounced),
+'   src/persistent_artrie/core/eviction/coordinator.rs  (request_eviction maps
+'     the pressure LEVEL → EvictionUrgency, the eviction_loop: cooldown →
+'     wait_for_quiescence → perform_eviction → record stats),
+'   src/persistent_artrie/core/eviction/disk_registry.rs  (select_for_eviction:
+'     filter depth ≥ min_eviction_depth, score by LRU coldness, take coldest),
+'   src/persistent_artrie/core/eviction/lru_tracker.rs   (coldness scoring), and
+'   src/persistent_artrie/core/swizzled_ptr.rs           (unswizzle = the swap).
+'   Level→urgency map (coordinator.rs):  Normal ⇒ no-op · Low ⇒ Moderate ·
+'   Critical ⇒ Emergency.  Urgency scales batch_size (×1/×2/×4).
+'
+' Rendered as a FLAT state machine (no composite-state wrappers): PlantUML is
+' robust for flat colored states + colored cross edges, whereas composite states
+' with cross-boundary edges to colored top-level states mis-parse here. The five
+' pipeline stages are marked by the comment banners below.
+'
+' Color key (urgency by severity, amber → red):
+'   green (#C8E6C9) = Normal pressure — full caching, eviction idle
+'   amber (#FFE0B2) = Low pressure / Moderate urgency — proactive eviction
+'   red   (#FFCDD2) = Critical pressure / Emergency urgency — evict aggressively
+'   grey  (#ECEFF1) = coordinator plumbing (queue, async thread, stats)
+'   blue  (#BBDEFB) = the durable on-disk outcome (cold node is now a DiskRef)
+' ============================================================================
+skinparam backgroundColor #FFFFFF
+skinparam defaultFontName "DejaVu Sans"
+skinparam shadowing false
+skinparam ArrowColor #37474F
+skinparam StateBorderColor #37474F
+skinparam StateFontName "DejaVu Sans"
+
+title Eviction pipeline — pressure band → urgency → queue → async thread → quiescence → LRU select → unswizzle
+
+' ===== Stage 1: memory-pressure bands (MemoryPressureMonitor) =====
+state "Normal\n>30% available\n(full caching)" as Normal #C8E6C9
+state "Low\n10–30% available" as Low #FFE0B2
+state "Critical\n<10% available" as Critical #FFCDD2
+
+[*] --> Normal
+Normal --> Low : available < low_memory_threshold
+Low --> Critical : available < critical_memory_threshold
+Critical --> Low : memory recovers
+Low --> Normal : memory recovers
+
+' ===== Stage 2: pressure level → eviction urgency (request_eviction) =====
+Normal --> Idle : Normal ⇒ no action
+state "Eviction idle\n(no request queued)" as Idle #C8E6C9
+Low -[#EF6C00]-> Queue : Low ⇒ request_eviction(Moderate)
+Critical -[#C62828]-> Queue : Critical ⇒ request_eviction(Emergency)
+
+' ===== Stage 3: coordinator request queue =====
+state "EvictionCoordinator queue\nVecDeque<EvictionRequest>" as Queue #ECEFF1 : higher urgency MERGES with the\npending request (no duplicate cycles)
+Queue --> Cooldown : async \"artrie-eviction\" thread\npolls try_pop_request (≈100 ms)
+
+' ===== Stage 4: the async eviction-thread loop =====
+state "Cooldown check" as Cooldown #ECEFF1 : skip if too recent or > 5 s stale\n(record_skip)
+state "Wait for epoch quiescence" as Quiesce #FFE0B2 : advance() → wait_for_quiescence\n(EBR — see epoch-reclamation)
+state "Select cold nodes (LRU)" as Select #FFE0B2 : DiskLocationRegistry.select_for_eviction:\nkeep depth ≥ min_eviction_depth,\nscore by LRU coldness, take coldest\nup to batch_size × urgency multiplier
+state "Atomic unswizzle\nChildNode → DiskRef" as Swap #FFE0B2 : callback CAS-swaps each cold node;\nroot stays in memory (path non-empty)
+state "Record stats" as Stats #ECEFF1 : nodes_evicted · bytes_freed ·\neviction_cycles · last_eviction_duration_ms
+state "Skip cycle\n(no eviction this pass)" as Skip #ECEFF1
+
+Cooldown --> Quiesce : within cooldown window
+Cooldown --> Skip : too recent → record_skip
+Quiesce --> Select : readers drained (quiescent)
+Quiesce --> Skip : timeout → record_quiescence_timeout
+Select --> Swap : non-empty cold set
+Select --> Skip : registry invalid / empty → (0, 0)
+Swap --> Stats : nodes_evicted, bytes_freed
+Stats --> Idle : cycle complete (await next request)
+Skip --> Idle : await next request
+Idle --> Cooldown : next request dequeued
+
+' ===== Stage 5: durable outcome =====
+Swap -[#1565C0]-> Evicted : RAM reclaimed after EBR free
+state "Cold node now on disk\n(DiskRef → block_id + location)" as Evicted #BBDEFB : re-faulted on next access\n(lazy load via BufferManager)
+
+note bottom of Stats #ECEFF1
+  The eviction thread NEVER blocks client inserts/lookups: it runs in the
+  background, holds only a Weak<Coordinator>, and only evicts nodes whose disk
+  image is current — a write invalidates the DiskLocationRegistry until the next
+  checkpoint re-publishes it.
+end note
+
+legend right
+| Color | Urgency / severity |
+|<#C8E6C9>| Normal — full caching, eviction idle |
+|<#FFE0B2>| Low → Moderate — proactive eviction |
+|<#FFCDD2>| Critical → Emergency — aggressive eviction |
+|<#ECEFF1>| coordinator plumbing |
+|<#BBDEFB>| durable on-disk outcome |
+endlegend
+@enduml

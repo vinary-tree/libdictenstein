@@ -1,0 +1,81 @@
+@startuml cas-walk
+' ============================================================================
+' Lock-free CAS-walk publish — descend (find leaf / build spine / resolve-or-
+' fault), two-phase try_set_final publish, retry on CAS failure. The single
+' durable WAL append (Order-A step 1) happens BEFORE this walk and already
+' covers every retry — the walk is NEVER re-appended.
+' Source of truth:
+'   src/persistent_artrie/core/overlay/cas_walk.rs   (find_leaf / create_spine /
+'                                                     build_value_spine / resolve_or_fault)
+'   src/persistent_artrie/core/overlay/durable_write.rs (Order-A skeleton, claim_generation)
+' EBR = epoch-based reclamation (a superseded node is freed only after every
+'       reader that could hold it has left its epoch).
+' Color key:  green #C8E6C9 = lock-free in-memory step (overlay)
+'             blue  #BBDEFB = durable on-disk resolve (fault an evicted child in)
+'             amber #FFE0B2 = the commit point / frontier (root CAS, watermark)
+'             red   #FFCDD2 = CAS lost — retry (no re-append)
+'             grey  #ECEFF1 = terminal
+' ============================================================================
+skinparam backgroundColor #FFFFFF
+skinparam defaultFontName "DejaVu Sans"
+skinparam shadowing false
+skinparam ArrowColor #37474F
+skinparam ArrowFontName "DejaVu Sans"
+skinparam activity {
+  BorderColor #37474F
+  FontName "DejaVu Sans"
+  DiamondBorderColor #F9A825
+  DiamondBackgroundColor #FFE0B2
+}
+
+title Lock-free CAS-walk publish — the Order-A visibility step (single-LP)
+
+start
+note right #ECEFF1
+  Precondition (Order-A step 1, NOT shown here):
+  the data WalRecord was already appended + fsync'd
+  DURABLE. That single append covers every retry of
+  this loop — it is never re-appended (re-appending
+  would burn LSNs and punch a hole in the watermark).
+end note
+
+#FFE0B2:**claim_generation** = next durable global commit_seq\n(restart-seeded — NEVER the walk's root.version());
+repeat :load the current **root** (atomic snapshot);
+
+  partition "descend  (non-faulting on the membership hot path)" {
+    #C8E6C9:**find leaf** — walk edges for the key,\nresolving each spine edge;
+    if (next spine edge is an evicted\n**OnDisk** child?) then (yes)
+      #BBDEFB:**resolve_or_fault** — fault the child in from disk\n(rich ChildResolution: InMem · Faulted · IoFailed ·\nNull · Missing → per-variant mapping);
+    else (no — in memory)
+    endif
+    #C8E6C9:**build the spine** (create_spine / build_value_spine)\n— copy-on-write the path for the key suffix\n(leaf shape per mode: non-final / as_final / valued);
+  }
+
+  if (two-phase publish — does this\nvariant CAS a NON-final spine first?) then (non-durable: yes)
+    #C8E6C9:CAS the non-final spine into place;
+    #FFE0B2:**try_set_final** — the single arbiter flips the\nshared leaf to final (the ONE linearization point);
+  else (durable single-phase)
+    #FFE0B2:**root CAS** publishes a fresh **as_final** leaf\n(the ONE linearization point — sole commit);
+  endif
+
+backward :#FFCDD2:**CAS lost** — a concurrent writer moved the root.\nRe-load the root and retry. The WAL append is\nNOT repeated; claim_generation is re-claimed.;
+repeat while (did the publish CAS / try_set_final win?) is (no — conflict) not (yes — published)
+
+#C8E6C9:the new leaf is now **visible** to lock-free readers\n(the committed generation = the claimed commit_seq);
+note right #FFE0B2
+  Order-A tail (next, in durable_write.rs): append a
+  durable CommitRank for (data_lsn, term, generation),
+  then mark_committed both LSNs so the committed
+  watermark — the only safe checkpoint_lsn — advances.
+  The superseded root is reclaimed under EBR.
+end note
+stop
+
+legend right
+| Color | Step |
+|<#C8E6C9>| lock-free in-memory |
+|<#BBDEFB>| durable on-disk resolve |
+|<#FFE0B2>| commit point / frontier |
+|<#FFCDD2>| CAS lost — retry |
+endlegend
+@enduml

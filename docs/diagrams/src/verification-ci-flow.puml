@@ -1,0 +1,90 @@
+@startuml verification-ci-flow
+' ============================================================================
+' verification-ci-flow — what the formal-correspondence harness runs.
+'
+' scripts/verify-formal-correspondence.sh is the single CI-practical entry
+' point. Its DEFAULT (always-on) body runs four checks in series; three further
+' stages are ENV-GATED, each its own (independently-scheduled) CI job in
+' .github/workflows/ci.yml. They are grouped in one partition below for
+' readability — in CI they run as separate, parallel jobs, not in sequence:
+'   * formal-correspondence  — default body (no env flags)         [every push]
+'   * formal-miri            — RUN_MIRI=1                            [every push]
+'   * formal-io-uring        — RUN_IO_URING=1                        [every push]
+'   * formal-tlc             — RUN_TLC=1        [schedule / workflow_dispatch only]
+'
+' Grounded in formal-verification/README.md ("End-to-End Correspondence Check")
+' and .github/workflows/ci.yml.
+'
+' Color key (verification palette — task spec):
+'   green #C8E6C9 = Rocq theorem-proving stage
+'   blue  #BBDEFB = TLA+/TLC model-checking stage
+'   amber #FFE0B2 = CI gate / control (harness entry, unsafe set-equality gate)
+'   red   #FFCDD2 = a failing outcome (fail-closed)
+'   grey  #ECEFF1 = Rust correspondence tests / terminal
+' ============================================================================
+skinparam backgroundColor #FFFFFF
+skinparam defaultFontName "DejaVu Sans"
+skinparam shadowing false
+skinparam ArrowColor #37474F
+skinparam ArrowFontName "DejaVu Sans"
+skinparam activity {
+  BorderColor #37474F
+  FontName "DejaVu Sans"
+  DiamondBorderColor #EF6C00
+  DiamondBackgroundColor #FFE0B2
+}
+
+title Formal-correspondence harness — scripts/verify-formal-correspondence.sh
+
+start
+#FFE0B2:**verify-formal-correspondence.sh**\n(CI-practical entry point);
+
+partition "Default body — always run (job: formal-correspondence)" {
+  #ECEFF1:**Rust correspondence tests**\ncargo test trace tests:\nBTreeMap/reference vs trie, WAL crash-prefix,\nlock-free histories, dictionary laws;
+  if (all trace tests pass?) then (yes)
+  else (no)
+    #FFCDD2:**fail closed** — code diverged from a spec;
+    stop
+  endif
+
+  #C8E6C9:**Rocq proof build** — `cd rocq && make`\n(69 .v / 1,301 props; rejects any\nAdmitted / Axiom / Parameter);
+  if (make succeeds, 0 escape hatches?) then (yes)
+  else (no)
+    #FFCDD2:**fail closed** — a proof broke;
+    stop
+  endif
+
+  #BBDEFB:**TLA⁺ SANY parse** — tla2sany on the focused\n.tla models (syntax + semantic check, no TLC);
+  if (all 55 modules parse?) then (yes)
+  else (no)
+    #FFCDD2:**fail closed** — a spec is malformed;
+    stop
+  endif
+
+  #FFE0B2:**unsafe-inventory set-equality gate**\nverify-unsafe-boundary-inventory.sh:\nlive src/**/*.rs `unsafe`  ≡  UNSAFE_INVENTORY.tsv (43)\n→ every tag in UNSAFE_CONTRACTS.tsv (31) w/ valid coverage+status;
+  if (inventory ≡ live, contracts valid?) then (yes)
+  else (no)
+    #FFCDD2:**fail closed** — undocumented / drifted `unsafe`;
+    stop
+  endif
+}
+
+' --- Env-gated optional stages (each its own CI job; run in parallel in CI) --
+partition "Optional env-gated stages — each a separate CI job, run independently" {
+  #BBDEFB:**RUN_MIRI=1**  (job: formal-miri)\n**Miri** under FORMAL_MIRI_TOOLCHAIN=nightly —\nstrict-provenance UB checks: raw child ownership,\nswizzled extraction, SwizzledPtr state transitions,\nbuffer-fixed lifetime;
+  #BBDEFB:**RUN_IO_URING=1**  (job: formal-io-uring)\n**io_uring storage checks** (Linux host):\nrange rejection, fixed-buffer registration lifetime,\nSQE/CQE completion lifecycle;
+  #BBDEFB:**RUN_TLC=1**  (job: formal-tlc — schedule / dispatch only)\n**TLC model checking** of the bounded models —\nexhaustive reachable-state enumeration,\n0 invariant/temporal violations;
+}
+
+#C8E6C9:**all green** — proofs, models, code, and the\n`unsafe` boundary agree;
+stop
+
+legend right
+| Color | Stage |
+|<#ECEFF1>| Rust correspondence tests |
+|<#C8E6C9>| Rocq theorem proving |
+|<#BBDEFB>| TLA⁺ / TLC model checking |
+|<#FFE0B2>| CI gate / control |
+|<#FFCDD2>| fail-closed outcome |
+endlegend
+@enduml

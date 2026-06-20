@@ -121,7 +121,13 @@ render_one() {  # $1=source path
     d2)
       have "$D2_CMD" || { missing_tool d2; return; }
       echo "  d2        $src → $out"
-      D2_LAYOUT="${D2_LAYOUT:-dagre}" "$D2_CMD" --pad 16 "$src" "$out"
+      # A source may pick its layout engine with a top-of-file directive
+      # `# d2-layout: elk` (elk supports nested container→descendant edges that
+      # dagre rejects); default is dagre.
+      local layout
+      layout="$(grep -oE 'd2-layout:[[:space:]]*[a-z]+' "$src" | head -1 | sed -E 's/.*:[[:space:]]*//')"
+      layout="${layout:-${D2_LAYOUT:-dagre}}"
+      D2_LAYOUT="$layout" "$D2_CMD" --pad 16 "$src" "$out"
       ;;
     dot|gv)
       have "$DOT_CMD" || { missing_tool dot; return; }

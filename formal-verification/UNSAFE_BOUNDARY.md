@@ -1,11 +1,33 @@
 # Unsafe Boundary Verification Notes
 
-Updated: 2026-06-01
+Updated: 2026-06-12
 
 This document records the current Rust implementation boundary that is not
 covered by Rocq extraction or TLC state exploration. The goal is to keep every
-unsafe primitive tied to an explicit coverage class, an executable
+`unsafe` primitive tied to an explicit coverage class, an executable
 correspondence check or bounded model, and any explicit abstraction boundary.
+
+**Terms used below** (fuller definitions in [`README.md`](README.md)):
+**Rocq** — interactive theorem prover; proofs close by `Qed.`. **TLA⁺ / TLC** —
+Lamport's temporal specification language and its explicit-state model checker
+(enumerates every reachable state of a *bounded* instance). **Loom** —
+exhaustive interleaving tester for lock-free Rust under the `C11` memory model.
+**Miri** — Rust mid-level-IR interpreter that detects undefined behavior,
+including strict-pointer-provenance violations. *Linearizability* — each
+concurrent operation appears atomic at a single instant within its call/return
+interval. **EBR** — epoch-based reclamation: memory is freed only after no
+pinned reader can still observe it (no use-after-free). A **coverage class** is
+the kind of evidence backing a contract (`rocq`, `tla`, `loom`, `miri`,
+`correspondence`, `compile-time`, `unit`, or `trusted-boundary`).
+
+The `unsafe` surface is pinned by **43** inventory rows
+([`UNSAFE_INVENTORY.tsv`](UNSAFE_INVENTORY.tsv)) and **31** safety contracts
+([`UNSAFE_CONTRACTS.tsv`](UNSAFE_CONTRACTS.tsv)), both CI-gated by
+`scripts/verify-unsafe-boundary-inventory.sh` (set-equality: no `unsafe` site
+without a reviewed contract, and no orphan contract tag). The trust zones are
+illustrated below.
+
+<img src="../docs/diagrams/unsafe-trust-zones.svg" alt="Concentric unsafe trust-zone diagram: a trusted base (kernel, filesystem, io_uring) at the center, surrounded by a ring of unsafe primitives (swizzled pointer, atomic node CAS, optimistic cell, raw child pointers, io_uring fixed buffers, Send/Sync impls) each tagged with its coverage class (rocq/tla/loom/miri/correspondence), surrounded by the safe public API outer ring." width="780"/>
 
 ## Boundary Map
 

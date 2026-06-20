@@ -1,0 +1,73 @@
+@startuml rank-regime-replay
+' ============================================================================
+' RankRegime replay drop-rule — the SAFETY-CRITICAL decision a recovering
+' reader makes for EVERY WAL record, keyed on the file/segment's rank_regime
+' (header byte 28) and whether the record carries a durable CommitRank.
+' Source of truth:
+'   src/persistent_artrie/core/wal/header.rs   (RankRegime { Owned=0, Overlay=1 })
+'   src/persistent_artrie/core/recovery.rs     (reconcile_lww / generation_of /
+'                                               the `RankRegime::Overlay => continue` drop)
+' Color key:  amber #FFE0B2 = control / regime decision (frontier)
+'             green #C8E6C9 = KEEP — the record contributes to recovered state
+'             red   #FFCDD2 = DROP — the record is a two-append orphan, discarded
+'             grey  #ECEFF1 = terminal / infrastructure
+' ============================================================================
+skinparam backgroundColor #FFFFFF
+skinparam defaultFontName "DejaVu Sans"
+skinparam shadowing false
+skinparam ArrowColor #37474F
+skinparam ArrowFontName "DejaVu Sans"
+skinparam activity {
+  BorderColor #37474F
+  FontName "DejaVu Sans"
+  DiamondBorderColor #F9A825
+  DiamondBackgroundColor #FFE0B2
+}
+
+title RankRegime replay drop-rule — applied per record, generation_of(lsn) = rank.unwrap_or(lsn)
+
+start
+:read next durable WAL record\n(lsn, record);
+
+if (does this record carry a\ndurable **CommitRank**?) then (yes — RANKED)
+  #C8E6C9:**KEEP** (generation = its CommitRank generation)\nthe op committed: its visibility CAS won AND\nthe rank was durably bound before the ack;
+  note right #C8E6C9
+    A ranked record is KEPT regardless of regime.
+    Recovery stamps generation_of(lsn) = rank, and
+    reconciles per term by MAX (generation, lsn) so
+    LSN-ordered replay == CAS-order committed state.
+  end note
+else (no — UNRANKED)
+  if (header **rank_regime** of this\nfile/segment?) then (Owned = 0)
+    #C8E6C9:**KEEP** in LSN order\n(generation = lsn);
+    note right #C8E6C9
+      Owned / legacy / base / vocab producer:
+      NO record is ever ranked, so every unranked
+      record is a confirmed in-order append.
+      generation_of(lsn) = lsn → stable LSN replay
+      (byte-for-byte the pre-fix behavior).
+    end note
+  else (Overlay = 1)
+    #FFCDD2:**DROP** — `continue` (skip the record)\nit is a **two-append orphan**;
+    note right #FFCDD2
+      Overlay producer: every CONFIRMED op carries a
+      CommitRank. An unranked record is the gap between
+      the data append and the (never-written) rank — a
+      crash landed in the two-append window, so the op
+      was NEVER acknowledged. Keeping it would RESURRECT
+      a write that no caller ever saw succeed.
+      THIS IS THE SAFETY-CRITICAL RULE.
+    end note
+  endif
+endif
+
+:emit the kept op (or nothing for a dropped /\nno-op record) into the (generation, lsn) merge;
+stop
+
+legend right
+| Color | Outcome |
+|<#FFE0B2>| regime decision |
+|<#C8E6C9>| KEEP (recovered) |
+|<#FFCDD2>| DROP (orphan) |
+endlegend
+@enduml

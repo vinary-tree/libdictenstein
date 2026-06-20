@@ -1,0 +1,83 @@
+// ============================================================================
+// layering-invariant.dot — the persistent-ARTrie module layering invariant.
+//
+// Source of truth: src/persistent_artrie/{core,nodes,char,vocab}/ plus the byte
+// variant code under src/persistent_artrie/ itself. The invariant is documented
+// AND grep-verified:
+//
+//   * `core/` has ZERO `use` of the byte / char / vocab variants.
+//   * the byte variant has ZERO `use` of char / vocab.
+//
+// So every ALLOWED `use` edge points DOWNWARD onto the shared foundation
+// (`core` + `nodes`); there is NO upward edge from `core` into any variant.
+// The dashed red edges below are the FORBIDDEN directions the grep asserts are
+// empty — drawn (crossed-out) only to make the prohibition explicit.
+//
+// Color key (house palette — docs/diagrams/README.md):
+//   grey   #ECEFF1  shared foundation (core, nodes) — the infrastructure
+//   green  #C8E6C9  the byte variant (PersistentARTrie, u8 keys)
+//   blue   #BBDEFB  the char variant (PersistentARTrieChar, u32 keys)
+//   amber  #FFF59D  the vocab variant (PersistentVocabARTrie, builds on char)
+//   dark slate #37474F  allowed `use` edges + borders
+//   red    #C62828  the FORBIDDEN (asserted-empty) upward edges
+// ============================================================================
+digraph layering_invariant {
+    rankdir=BT;            // foundation at the bottom, variants above
+    bgcolor="#FFFFFF";
+    fontname="DejaVu Sans";
+    labelloc="t";
+    fontsize=16;
+    fontcolor="#212121";
+    label="persistent-ARTrie module layering — every `use` points DOWN onto the shared foundation\n(core has zero use of any variant; byte has zero use of char/vocab — grep-verified)";
+    nodesep=0.6;
+    ranksep=1.0;
+
+    node [shape=box, style="filled,rounded", color="#37474F",
+          fontname="DejaVu Sans", fontcolor="#212121", penwidth=1.6, margin="0.20,0.12"];
+    edge [color="#37474F", fontname="DejaVu Sans", fontcolor="#37474F", penwidth=1.6];
+
+    // --- shared foundation (bottom rank) ---------------------------------
+    core  [label="core/\nKeyEncoding · overlay · wal\nbuffer/disk manager · arena", fillcolor="#ECEFF1"];
+    nodes [label="nodes/\nNode4/16/48/256 · CharBucket\nadaptive edge tiers", fillcolor="#ECEFF1"];
+
+    { rank=same; core; nodes; }
+
+    // --- variants (upper ranks) ------------------------------------------
+    byte  [label="persistent_artrie  (byte)\nPersistentARTrie · ByteKey (u8)", fillcolor="#C8E6C9"];
+    chr   [label="char/\nPersistentARTrieChar · CharKey (u32)", fillcolor="#BBDEFB"];
+    vocab [label="vocab/\nPersistentVocabARTrie\n(term <-> u64, builds on char)", fillcolor="#FFF59D"];
+
+    // --- ALLOWED `use` edges: everything depends DOWN onto core + nodes ---
+    byte  -> core  [label="use"];
+    byte  -> nodes [label="use"];
+    chr   -> core  [label="use"];
+    chr   -> nodes [label="use"];
+    vocab -> core  [label="use"];
+    vocab -> chr   [label="builds on char"];
+
+    // --- FORBIDDEN edges (the invariant asserts these are EMPTY) ----------
+    // Drawn dashed-red with a no-entry tail to make the prohibition explicit;
+    // grep over the source returns nothing for any of these directions.
+    edge [color="#C62828", fontcolor="#C62828", style="dashed",
+          arrowhead="none", arrowtail="odiamond", dir="both", penwidth=1.4,
+          constraint=false];
+    core  -> byte  [label="✗ core never uses a variant"];
+    core  -> chr   [label="✗"];
+    core  -> vocab [label="✗"];
+    byte  -> chr   [label="✗ byte never uses char/vocab"];
+    byte  -> vocab [label="✗"];
+
+    // --- rendered legend --------------------------------------------------
+    { rank=sink;
+      legend [shape=note, style="filled", fillcolor="#FFF9C4",
+              color="#FBC02D", fontsize=10, fontcolor="#212121",
+              label=<
+<TABLE BORDER="0" CELLBORDER="0" CELLSPACING="1">
+<TR><TD ALIGN="LEFT"><B>Legend</B></TD></TR>
+<TR><TD ALIGN="LEFT"><FONT COLOR="#37474F">&#9472;&#9472;&#9654; allowed `use` (points down onto the foundation)</FONT></TD></TR>
+<TR><TD ALIGN="LEFT"><FONT COLOR="#C62828">- -&#9671; FORBIDDEN (grep-verified empty — the invariant)</FONT></TD></TR>
+<TR><TD ALIGN="LEFT"><FONT COLOR="#607D8B">grey = shared foundation (core, nodes)</FONT></TD></TR>
+<TR><TD ALIGN="LEFT">green = byte &#183; blue = char &#183; amber = vocab</TD></TR>
+</TABLE>>];
+    }
+}

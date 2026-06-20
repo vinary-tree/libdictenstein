@@ -4,8 +4,25 @@ Updated: 2026-06-12
 
 This ledger records the current proof/modeling boundary for the formal
 verification artifacts. "Closed" means the repository now contains a checked
-Rocq proof or a TLC-checked bounded model. "Scoped" means the claim is
+**Rocq** proof or a **TLC**-checked bounded model. "Scoped" means the claim is
 intentionally narrower than the production system.
+
+**Terms used below** (see [`README.md`](README.md) for fuller definitions):
+**Rocq** — interactive theorem prover (formerly Coq); every proposition closes
+by a machine-checked `Qed.`. **TLA⁺** — Lamport's temporal specification
+language; **TLC** is its explicit-state model checker (it enumerates every
+reachable state of a *bounded* instance); **SANY** is its syntax/semantic
+analyzer. **Loom** — exhaustive interleaving tester for lock-free Rust.
+**Miri** — Rust mid-level-IR interpreter that detects undefined behavior.
+*Linearizability* — each concurrent operation appears atomic at one instant
+within its call/return interval. *Refinement* — the implementation's behavior
+is a permitted behavior of its abstract specification. **EBR** — epoch-based
+reclamation, which frees memory only after no pinned reader can still observe
+it.
+
+**Current aggregate (verified 2026-06-12):** 69 Rocq `.v` files / 1,301
+propositions (0 `Admitted` / 0 `Axiom` / 0 `Parameter`); 55 TLA⁺ modules / 65
+`.cfg` TLC configs; 43 `unsafe` inventory rows + 31 contracts.
 
 ## Rest-of-Repo Verification Audit
 

@@ -1,0 +1,131 @@
+# =============================================================================
+# mmap-vs-iouring.d2 — the two BlockStorage backends, side by side.
+#
+# Both implement the SAME `BlockStorage` trait behind the persistent-ARTrie API
+# (core/disk_manager.rs = MmapDiskManager, core/io_uring_disk_manager.rs =
+# IoUringDiskManager). They differ in HOW they reach the NVMe device and in WHICH
+# workload each wins. Source of the finding: docs/io_uring_migration/.
+#
+# Headline finding (measured): mmap wins SINGLE-block I/O because the kernel page
+# cache absorbs it; io_uring + O_DIRECT wins BATCH I/O and true (fsync-grade)
+# durability because it submits many requests with one syscall and bypasses the
+# page cache.
+#
+# Color key (house palette — docs/diagrams/README.md):
+#   blue   #BBDEFB  persistent / disk-backed backends (both managers, NVMe)
+#   green  #C8E6C9  the workload each backend WINS (the recommendation)
+#   amber  #FFF59D  the durability characteristic
+#   grey   #F1F1F1 / #37474F  shared trait / device / borders
+# =============================================================================
+
+direction: down
+
+title: |md
+  # `MmapDiskManager`  vs  `IoUringDiskManager` + O_DIRECT
+  *one `BlockStorage` trait · two paths to the device · different workload winners*
+| {
+  near: top-center
+  style.font-size: 19
+  style.font-color: "#212121"
+}
+
+trait: "BlockStorage trait  (the shared seam — chosen by type param / feature gate)" {
+  style: {
+    fill: "#F1F1F1"
+    stroke: "#37474F"
+    font-color: "#212121"
+    stroke-width: 2
+    bold: true
+  }
+}
+
+# --- LEFT: MmapDiskManager ---------------------------------------------------
+mmap: "MmapDiskManager  —  DEFAULT" {
+  style: {
+    fill: "#BBDEFB"
+    stroke: "#1565C0"
+    font-color: "#0D47A1"
+    stroke-width: 2
+    bold: true
+  }
+  how: "mmap(2) + page cache\nmsync marks pages dirty;\nthe kernel orders writeback" {
+    style.fill: "#E3F2FD"
+    style.stroke: "#1565C0"
+    style.font-color: "#0D47A1"
+  }
+  durab: "Durability: msync ≠ fsync\nrelies on kernel page-cache writeback" {
+    style.fill: "#FFFDE7"
+    style.stroke: "#F9A825"
+    style.font-color: "#5D4037"
+  }
+  wins: "✔ WINS single-block I/O\n(page cache absorbs the fault;\nsync is ~µs because no fsync)" {
+    style.fill: "#C8E6C9"
+    style.stroke: "#2E7D32"
+    style.font-color: "#1B5E20"
+    style.bold: true
+  }
+}
+
+# --- RIGHT: IoUringDiskManager ----------------------------------------------
+iouring: "IoUringDiskManager + O_DIRECT  —  feature io-uring-backend" {
+  style: {
+    fill: "#BBDEFB"
+    stroke: "#1565C0"
+    font-color: "#0D47A1"
+    stroke-width: 2
+    bold: true
+  }
+  how: "io_uring SQ/CQ rings + O_DIRECT\nbatch submit many requests in ONE\nsyscall · bypasses the page cache" {
+    style.fill: "#E3F2FD"
+    style.stroke: "#1565C0"
+    style.font-color: "#0D47A1"
+  }
+  durab: "Durability: O_DIRECT → device\ntrue (fsync-grade) durability,\nno page-cache write-back gap" {
+    style.fill: "#FFFDE7"
+    style.stroke: "#F9A825"
+    style.font-color: "#5D4037"
+  }
+  wins: "✔ WINS batch I/O + true durability\n(one submit drains many blocks;\nAlignedBlock pool: +116% batch read)" {
+    style.fill: "#C8E6C9"
+    style.stroke: "#2E7D32"
+    style.font-color: "#1B5E20"
+    style.bold: true
+  }
+}
+
+# --- Shared device -----------------------------------------------------------
+nvme: "NVMe SSD  (256 KB block size)" {
+  style: {
+    fill: "#F1F1F1"
+    stroke: "#607D8B"
+    font-color: "#263238"
+    stroke-width: 2
+  }
+}
+
+trait -> mmap: "default" {
+  style.stroke: "#1565C0"
+  style.stroke-width: 2
+}
+trait -> iouring: "feature-gated" {
+  style.stroke: "#1565C0"
+  style.stroke-width: 2
+}
+mmap -> nvme: "page-cache writeback" {
+  style.stroke: "#37474F"
+  style.stroke-width: 2
+}
+iouring -> nvme: "O_DIRECT (batched)" {
+  style.stroke: "#37474F"
+  style.stroke-width: 2
+}
+
+legend: |md
+  **Rule of thumb** · choose **mmap** for cached, single-block, latency-sensitive serving ·
+  choose **io_uring + O_DIRECT** for eviction-heavy / batch flush and when you need
+  device-level durability without the page-cache writeback gap.
+| {
+  near: bottom-center
+  style.font-size: 13
+  style.font-color: "#37474F"
+}

@@ -1,5 +1,25 @@
 # io_uring vs mmap Benchmark Results
 
+These results compare the two `BlockStorage` backends behind the
+`persistent-artrie` feature: `MmapDiskManager` (memory-mapped file I/O, the
+default) and `IoUringDiskManager` (Linux `io_uring` submission/completion rings
+with files opened `O_DIRECT`, gated by `io-uring-backend`). Both implement the
+same trait and present the same persistent-dictionary APIs, so the question is
+purely *which backend wins which workload* — and the answer is workload-shaped
+rather than one-sided.
+
+<img src="../diagrams/mmap-vs-iouring.svg" alt="Side-by-side comparison of the two BlockStorage backends. MmapDiskManager (default): mmap + page cache, msync ≠ fsync, wins single-block I/O. IoUringDiskManager + O_DIRECT (feature io-uring-backend): batched submission bypassing the page cache, device-level durability, wins batch I/O and true durability. Both target the same NVMe SSD at a 256 KB block size." width="100%"/>
+
+**Headline finding.** *mmap wins single-block I/O* — the kernel page cache
+absorbs the fault, and `msync` only marks pages dirty (it is **not** an `fsync`),
+so cached single-block latency and sync are cheap. *`io_uring` + `O_DIRECT` wins
+batch I/O and true durability* — one submission drains many requests with a
+single syscall and the transfer bypasses the page cache, so there is no
+write-back gap for device-level durability. The per-phase numbers below quantify
+exactly where each backend leads; the rule of thumb is to keep the mmap default
+for cached, latency-sensitive serving and reach for `io_uring` for eviction-heavy
+or batch-flush workloads that also need durability without the page-cache gap.
+
 ## Test Environment
 
 | Component | Specification |

@@ -1,0 +1,74 @@
+@startuml recovery-flow
+' ============================================================================
+' Crash-recovery flow — open → load checkpoint image → scan the durable WAL
+' tail from checkpoint_lsn → reconcile per term by max commit-generation →
+' rebuild the overlay → resume serving. The acked-vs-unacked fork is explicit.
+' Source of truth:
+'   src/persistent_artrie/core/recovery.rs  (redo-only ARIES recovery,
+'                                            reconcile_lww, generation_of)
+'   src/persistent_artrie/core/wal/header.rs (checkpoint_lsn, rank_regime, magic)
+'   src/persistent_artrie/{mmap_ctor,io_uring_ctor}.rs  (open path)
+' ARIES — Mohan et al. 1992, doi:10.1145/128765.128770 (redo-only here).
+' Color key:  blue  #BBDEFB = durable on-disk read (header / image / WAL tail)
+'             amber #FFE0B2 = control / reconcile decision (frontier)
+'             green #C8E6C9 = in-memory rebuild / serving
+'             red   #FFCDD2 = a write that was NEVER durable (dropped)
+'             grey  #ECEFF1 = terminal
+' ============================================================================
+skinparam backgroundColor #FFFFFF
+skinparam defaultFontName "DejaVu Sans"
+skinparam shadowing false
+skinparam ArrowColor #37474F
+skinparam ArrowFontName "DejaVu Sans"
+skinparam activity {
+  BorderColor #37474F
+  FontName "DejaVu Sans"
+  DiamondBorderColor #F9A825
+  DiamondBackgroundColor #FFE0B2
+}
+
+title Crash recovery — redo-only WAL replay from the last checkpoint
+
+start
+#BBDEFB:**open(path)**\nread the 64-byte WAL header;
+if (magic + version accepted?\n(dual-magic { "PARTWAL\0", "PARTWALO" },\nversion ∈ [MIN_SUPPORTED, VERSION])) then (no)
+  #FFCDD2:**fail-closed** — refuse the file\n(corrupt magic / too-new version);
+  stop
+else (yes)
+endif
+
+#FFE0B2:decode **checkpoint_lsn**, **commit_seq_floor**,\n**rank_regime** from the header;
+#BBDEFB:**load the last checkpoint image**\n(dense CX snapshot ⇒ the base in-memory trie);
+note right #BBDEFB
+  Everything with LSN ≤ checkpoint_lsn is already
+  folded into the image (the checkpoint truncated
+  the WAL to the committed watermark), so replay
+  only needs the durable tail past checkpoint_lsn.
+end note
+
+#BBDEFB:**scan the durable WAL tail**\nrecords with LSN > checkpoint_lsn,\nstopping at the first torn / un-fsync'd frame\n(CRC mismatch or short read ⇒ end of durable prefix);
+
+partition "reconcile_lww  (per-term, max commit-generation)" {
+  #FFE0B2:**Pass 1** — collect CommitRank records into\nrank[data_lsn] = generation;
+  #FFE0B2:**Pass 2** — stamp each data record\ngeneration_of(lsn) = rank.get(lsn).unwrap_or(lsn),\napplying the RankRegime drop-rule\n(Overlay + unranked ⇒ DROP orphan);
+  #FFE0B2:**sort** all surviving ops by (generation, lsn)\n= CAS / commit-visibility order;
+}
+
+if (per term, was the last writer's record\nfsync'd before the crash?) then (yes — acknowledged)
+  #C8E6C9:**restore** the term to its last committed value\n(redo the winning op);
+else (no — un-acked / orphan)
+  #FFCDD2:**drop** — the write was never durable,\nno caller ever saw it succeed;
+endif
+
+#C8E6C9:**rebuild the lock-free overlay**\nby applying the (generation, lsn)-ordered winners;
+#C8E6C9:**resume serving**\n(state == committed-visible membership at crash time);
+stop
+
+legend right
+| Color | Phase |
+|<#BBDEFB>| durable on-disk read |
+|<#FFE0B2>| control / reconcile |
+|<#C8E6C9>| in-memory rebuild / serve |
+|<#FFCDD2>| never-durable (dropped) |
+endlegend
+@enduml

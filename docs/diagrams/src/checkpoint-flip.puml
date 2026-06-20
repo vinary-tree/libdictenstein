@@ -1,0 +1,81 @@
+@startuml checkpoint-flip
+' ============================================================================
+' Checkpoint flip — fold the LIVE lock-free overlay into a dense CX image and
+' advance the committed-watermark checkpoint_lsn, all under the checkpoint lock.
+' Source of truth: src/persistent_artrie/core/overlay/{checkpoint,flip}.rs
+' (OverlayCheckpoint::checkpoint_route_split) + core/committed_watermark.rs.
+'
+' The RES-4 total-loss guard: a checkpoint must capture the OVERLAY (the live
+' write target), never an empty / again-evicted tree. Since L3.3 deleted the
+' owned tree, route_overlay() is universally true; the guard is the
+' debug_assert!(route_overlay()) on entry — modelled here as a guarded
+' transition that refuses to publish a degenerate (empty) capture.
+'
+' Color key (house palette — docs/diagrams/README.md):
+'   green  #C8E6C9  serving from the live lock-free overlay (in-memory)
+'   amber  #FFF59D  control: the checkpoint lock + watermark advance
+'   blue   #BBDEFB  durable on-disk action (write the dense CX image)
+'   red    #FFCDD2  the RES-4 total-loss guard (refuse a degenerate capture)
+' ============================================================================
+skinparam backgroundColor #FFFFFF
+skinparam defaultFontName "DejaVu Sans"
+skinparam shadowing false
+skinparam ArrowColor #37474F
+skinparam state {
+  BorderColor #37474F
+  FontName "DejaVu Sans"
+}
+
+title Checkpoint flip — capture live overlay -> publish dense CX image -> advance checkpoint_lsn
+
+[*] --> Serving
+
+state "Serving (steady state)" as Serving #C8E6C9 {
+  [*] --> LiveOverlay
+  LiveOverlay : reads traverse the published root
+  LiveOverlay : writes = Order-A (WAL append+fsync -> root CAS)
+}
+
+Serving --> AcquireLock : checkpoint() requested
+state "Acquire checkpoint lock (CK)" as AcquireLock #FFF59D
+AcquireLock : serializes concurrent checkpoints
+AcquireLock : read committed watermark (Acquire) BEFORE the root load
+
+AcquireLock --> Capture : lock held
+state "Capture the LIVE representation" as Capture #C8E6C9
+Capture : walk the immutable overlay root
+Capture : -> freshly-allocated arena slots (frozen snapshot)
+Capture : snapshot is a subset of the committed-durable prefix
+
+' --- RES-4 total-loss guard: refuse to publish a degenerate / empty capture --
+Capture --> RES4Guard
+state "RES-4 total-loss guard" as RES4Guard #FFCDD2
+RES4Guard : debug_assert!(route_overlay())
+RES4Guard : the overlay IS the live write target
+
+RES4Guard --> Capture : [empty / again-evicted capture]\nrefuse — would lose every term on reopen
+RES4Guard --> PublishImage : [overlay is the live target]\nproceed
+
+state "Publish dense CX image" as PublishImage #BBDEFB
+PublishImage : serialize snapshot -> on-disk CX image
+PublishImage : RETAIN the WAL (Checkpoint record, no double-count)
+PublishImage : eviction-on -> publish-after-verify into the registry
+
+PublishImage --> AdvanceWatermark
+state "Advance the checkpoint watermark" as AdvanceWatermark #FFF59D
+AdvanceWatermark : record checkpoint_lsn = committed watermark
+AdvanceWatermark : raise the commit_seq floor (safe reclaim bound)
+
+AdvanceWatermark --> ReleaseLock
+state "Release checkpoint lock" as ReleaseLock #FFF59D
+
+ReleaseLock --> Serving : resume serving\n(reads never blocked on the overlay)
+
+legend right
+  | Color | Phase |
+  |<#C8E6C9>| serving / live overlay (in-memory) |
+  |<#FFF59D>| control: checkpoint lock + watermark |
+  |<#BBDEFB>| durable on-disk action (CX image) |
+  |<#FFCDD2>| RES-4 total-loss guard |
+endlegend
+@enduml

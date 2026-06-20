@@ -2,9 +2,95 @@
 
 ## Summary
 
-This document records the results of formal verification efforts for the Persistent Adaptive Radix Trie (PART) implementation in libdictenstein.
+This document records the results of formal verification efforts for the
+Persistent Adaptive Radix Trie (PART) implementation in libdictenstein.
 
-**Date:** 2026-01-20 (Updated: 2026-01-24 — TOCTOU Race Condition Fixes; 2026-05-20 — All `Admitted`/`Axiom` obligations eliminated across Model + Invariants + Spec, see commit `b7630ad` "Prove ARTrie Rocq map correctness" and `efe1943` "proofs(rocq): eliminate Admitted/Axiom obligations across Model + Invariants + Spec"; 2026-05-22 — checked structural contracts, bounded Byzantine storage and HotStuff-style quorum models, proof-carrying replay boundary, expanded TLA+ focused models, and Rust correspondence harness; 2026-05-23 — end-to-end WAL crash-prefix matrix, transaction replay correspondence, mmap block-storage synchronization, storage syscall outcome fail-closed durability boundary, byte lock-free ARTrie linearizability, indexed char/vocab lock-free overlay linearizability, durability-frontier/reclamation safety, raw pointer ownership boundary checks, vocab persistence/eviction ownership, io_uring fixed-buffer ownership and registration contracts, io_uring SQE/CQE lifecycle checking, public dictionary law conformance, DynamicDawg mutation/compaction preservation, double-array trie construction/traversal correctness, zipper/query-language conformance, substring candidate correctness, SCDAWG occurrence construction correctness, fuzzy candidate coverage, public serialization roundtrip correctness, and feature-gated protobuf/compression codec correspondence; 2026-05-24 — expanded Miri-gated unsafe-boundary targets for swizzled raw extraction, vocab reopen node-map/parent-chain rebuild, vocab eviction query liveness, BufferManager fixed-buffer lifetime, persistent cursor/batched/grouped/parallel merge equivalence, persistent char prefix semantics, valued set-combinator merge semantics for union/intersection zippers, Bloom filter no-false-negative lookup rejection, and arena reservation/dirty-slot persistence correspondence; 2026-05-25 — persistent deduplicating-arena cache soundness, root descriptor/reopen refinement, persistent lazy mutation atomicity for no-WAL-on-error/no-op behavior and replay after successful lazy writes, persistent WAL write-atomicity for serialization/WAL failures, atomic writes, document commits, and checked transaction increments, checkpoint/WAL retention safety for corruption rebuilds from archive/pending/active segments, dirty checkpoint publication safety for dirty-slot retry and descriptor-before-truncation reopen, WAL segment lifecycle safety for LSN-ordered archive handling and monotonic rotation/reopen, recovery planner durable-prefix safety for corrupt WAL suffixes, recovery replay completeness for all mutating WAL variants/no-WAL replay/corrupt archive and invalid-arithmetic prefixes, byte persistent compaction rewrite/finalization recovery, persistent vocabulary WAL atomicity/bijection fixes, persistent vocabulary checkpoint/sidecar publication fixes, concurrent checkpoint publication fixes, public concurrent vocabulary linearizability, char/vocab rewrite checkpoint dirty-state fixes, epoch checkpoint recovery correspondence, persistent char bulk-mutation durable-prefix/checked-RMW correspondence, persistent transaction increment recovery correspondence, lock-free counter merge atomicity correspondence, shared persistent public-API concurrency correspondence with a byte `SharedARTrie::checkpoint` lock-publication fix, and public durability acknowledgement policy correspondence with byte/char/vocab full-policy sync fixes; 2026-05-26 — strengthened ordered `AsyncWalGroupCommit` model, added `PersistentPublicWalLifecycleSpec.v`, added byte/char/vocab public open/replay and group-commit correspondence tests, added default/all-features compile gates to the formal harness, and added end-to-end persistent trace refinement across checkpoint, compaction rewrite, crash/reopen, and vocab bijection behavior; 2026-06-01 — added BufferManager page-lease and TraversalContext cached-page pinning coverage, added reverse-index mmap/remap publication coverage, and refreshed unsafe inventory/contract evidence for newly documented unsafe operations; 2026-06-11 — added PathMap TrieRef snapshot/ref Rocq laws, PathMap snapshot correspondence/thread-safety checks, and refreshed moved-module formal mappings)
+**Originally written:** 2026-01-20. **Last reconciled:** 2026-06-12.
+
+As of the live tree the corpus is **69** Rocq `.v` files (**1,301**
+propositions = 992 `Theorem` + 301 `Lemma` + 8 `Corollary` + 0 `Proposition`,
+all `Qed.`/`Defined.`-closed, **0** `Admitted` / **0** `Axiom` / **0**
+`Parameter`) and **55** TLA⁺ modules with **65** `.cfg` TLC configurations. The
+`unsafe` surface is pinned by **43** inventory rows and **31** safety contracts,
+both CI-gated by `scripts/verify-unsafe-boundary-inventory.sh` (set-equality).
+
+### Change history
+
+Newest first. Each entry is a dated milestone; the per-module tables below carry
+the detailed proof/state-count data captured at each step.
+
+- **2026-06-12** — Count reconciliation: aggregate Rocq/TLA⁺/`unsafe` totals
+  brought into agreement with the live tree (69 `.v` / 1,301 props / 55 `.tla`
+  / 65 `.cfg` / 43+31 `unsafe`). The per-module snapshot tables retain the
+  data captured at their respective dates and now undercount the live tree by
+  the modules added since (overlay codec/reestablish, eviction-registry,
+  char-node-layout, persistent-SCDAWG, persistent-suffix-automaton,
+  prefix-chunking, U64, worker-lifecycle, and the read-traversal / dictionary-
+  node-reopen / epoch-reclamation specs).
+- **2026-06-11** — Added PathMap `TrieRef` snapshot/ref Rocq laws, PathMap
+  snapshot correspondence/thread-safety checks, and refreshed moved-module
+  formal mappings.
+- **2026-06-01** — Added BufferManager page-lease and `TraversalContext`
+  cached-page pinning coverage, added reverse-index mmap/remap publication
+  coverage, and refreshed `unsafe` inventory/contract evidence for newly
+  documented `unsafe` operations.
+- **2026-05-26** — Strengthened the ordered `AsyncWalGroupCommit` model, added
+  `PersistentPublicWalLifecycleSpec.v`, added byte/char/vocab public
+  open/replay and group-commit correspondence tests, added default/all-features
+  compile gates to the formal harness, and added end-to-end persistent trace
+  refinement across checkpoint, compaction rewrite, crash/reopen, and vocab
+  bijection behavior.
+- **2026-05-25** — Persistent deduplicating-arena cache soundness; root
+  descriptor/reopen refinement; persistent lazy mutation atomicity
+  (no-WAL-on-error/no-op behavior, replay after successful lazy writes);
+  persistent WAL write-atomicity (serialization/WAL failures, atomic writes,
+  document commits, checked transaction increments); checkpoint/WAL retention
+  safety (corruption rebuilds from archive/pending/active segments); dirty
+  checkpoint publication safety (dirty-slot retry, descriptor-before-truncation
+  reopen); WAL segment lifecycle safety (LSN-ordered archive handling,
+  monotonic rotation/reopen); recovery planner durable-prefix safety (corrupt
+  WAL suffixes); recovery replay completeness (all mutating WAL variants,
+  no-WAL replay, corrupt-archive and invalid-arithmetic prefixes); byte
+  persistent compaction rewrite/finalization recovery; persistent vocabulary
+  WAL atomicity/bijection fixes; persistent vocabulary checkpoint/sidecar
+  publication fixes; concurrent checkpoint publication fixes; public concurrent
+  vocabulary linearizability; char/vocab rewrite checkpoint dirty-state fixes;
+  epoch checkpoint recovery correspondence; persistent char bulk-mutation
+  durable-prefix/checked-RMW correspondence; persistent transaction increment
+  recovery correspondence; lock-free counter merge atomicity correspondence;
+  shared persistent public-API concurrency correspondence (with a byte
+  `SharedARTrie::checkpoint` lock-publication fix); and public durability
+  acknowledgement policy correspondence (with byte/char/vocab full-policy sync
+  fixes).
+- **2026-05-24** — Expanded Miri-gated `unsafe`-boundary targets for swizzled
+  raw extraction, vocab reopen node-map/parent-chain rebuild, vocab eviction
+  query liveness, and BufferManager fixed-buffer lifetime; persistent
+  cursor/batched/grouped/parallel merge equivalence; persistent char prefix
+  semantics; valued set-combinator merge semantics for union/intersection
+  zippers; Bloom filter no-false-negative lookup rejection; and arena
+  reservation/dirty-slot persistence correspondence.
+- **2026-05-23** — End-to-end WAL crash-prefix matrix; transaction replay
+  correspondence; mmap block-storage synchronization; storage syscall outcome
+  fail-closed durability boundary; byte lock-free ARTrie linearizability;
+  indexed char/vocab lock-free overlay linearizability; durability-frontier/
+  reclamation safety; raw pointer ownership boundary checks; vocab
+  persistence/eviction ownership; io_uring fixed-buffer ownership and
+  registration contracts; io_uring SQE/CQE lifecycle checking; public
+  dictionary law conformance; DynamicDawg mutation/compaction preservation;
+  double-array trie construction/traversal correctness; zipper/query-language
+  conformance; substring candidate correctness; SCDAWG occurrence construction
+  correctness; fuzzy candidate coverage; public serialization roundtrip
+  correctness; and feature-gated protobuf/compression codec correspondence.
+- **2026-05-22** — Checked structural contracts; bounded Byzantine storage and
+  HotStuff-style quorum models; proof-carrying replay boundary; expanded TLA⁺
+  focused models; and the Rust correspondence harness.
+- **2026-05-20** — All `Admitted`/`Axiom` obligations eliminated across Model +
+  Invariants + Spec (commits `b7630ad` "Prove ARTrie Rocq map correctness" and
+  `efe1943` "proofs(rocq): eliminate Admitted/Axiom obligations across Model +
+  Invariants + Spec").
+- **2026-01-24** — TOCTOU race-condition fixes (see the filesystem-safety
+  section).
+- **2026-01-20** — Initial verification results recorded.
 
 ---
 
@@ -51,7 +137,15 @@ This document records the results of formal verification efforts for the Persist
 | ByzantineStorage.tla | ~70 | TLC passed |
 | HotStuffConsensus.tla | ~91 | TLC passed |
 
-**Total TLA+ LOC:** 10,413
+**Snapshot table total (these rows):** 10,413 TLA⁺ LOC. **Live tree:** **55**
+TLA⁺ modules totalling **12,583** LOC with **65** `.cfg` TLC configurations
+(verified 2026-06-12). The rows above are the long-standing, individually
+LOC-audited modules; the live tree additionally carries the lock-free overlay
+durable-replay/value-CAS/remove-CAS/eviction-CAS family, durable-checkpoint and
+eviction-registry-publication models, char-node-v2-layout, persistent-SCDAWG /
+suffix-automaton / suffix-tree, public read-snapshot / dictionary-node
+traversal, and concurrent-checkpoint-serialization models introduced in the
+L-campaign and eviction work. SANY parses all 55.
 
 ### Model Checking Configuration
 
@@ -345,9 +439,16 @@ also passed on 2026-05-23 with 8 storage correspondence tests.
 
 ### Modules Compiled
 
-All 66 `.v` files compile end-to-end with Rocq 9.1.0. Every theorem is closed
-by `Qed.` — **0 `Axiom`, 0 `Admitted`, 0 `Parameter`** across the tree
-(verified 2026-06-11).
+All **69** `.v` files compile end-to-end with Rocq 9.1.0. Every proposition is
+closed by `Qed.` (or `Defined.` for a transparent definition) — **0 `Axiom`,
+0 `Admitted`, 0 `Parameter`** across the tree (verified 2026-06-12 by
+`grep -rnE '^\s*(Axiom|Parameter|Admitted)\b' formal-verification --include='*.v'`,
+which returns nothing; the only word-mentions are comments asserting their
+absence).
+
+> The per-module table that follows is a dated snapshot covering **66** of the
+> **69** files (it was last LOC-audited 2026-06-11). The three uncounted files
+> are later additions; the headline aggregate **1,301** below is the live total.
 
 The prior 15-module core compiled with Rocq 9.1.0 (~72 s wall clock under
 `make -j1`). Every theorem is closed by `Qed.` — **0 `Axiom`, 0 `Admitted`, 0
@@ -413,10 +514,15 @@ The prior 15-module core compiled with Rocq 9.1.0 (~72 s wall clock under
 | Proofs/HotStuffSafety.v | 46 | 2 | 0 | 2 | Complete |
 | Proofs/ProofCarryingExtraction.v | 80 | 3 | 0 | 3 | Complete |
 
-**Total Rocq LOC:** 26,329 (66 modules)
-**Aggregate proof tally:** 974 `Theorem` + 301 `Lemma` + 8 `Corollary`
-= 1,283 theorem/lemma/corollary propositions, all closed
-(`Qed.`/`Defined.`; no escape hatches).
+**Snapshot table total (66 modules listed above):** 26,329 Rocq LOC; 974
+`Theorem` + 301 `Lemma` + 8 `Corollary` = 1,283 propositions.
+
+**Live tree total (all 69 `.v` files, verified 2026-06-12):** **26,767** Rocq
+LOC; **992** `Theorem` + **301** `Lemma` + **8** `Corollary` + **0**
+`Proposition` = **1,301** propositions, all closed (`Qed.`/`Defined.`; no escape
+hatches — 0 `Admitted` / 0 `Axiom` / 0 `Parameter`). The 18-proposition delta
+(+18 `Theorem`) over the snapshot is the three files not yet folded into the
+per-module table above.
 
 ### Compilation Command
 ```bash
@@ -459,9 +565,9 @@ obligations were resolved as follows:
 
 ### Proven Theorems (selected highlights)
 
-A non-exhaustive sample of the 1,283 theorem/lemma/corollary propositions. See per-module file for
-the complete list; see [README.md](README.md) for module-by-module module-status
-table.
+A non-exhaustive sample of the **1,301** theorem/lemma/corollary propositions.
+See each per-module file for the complete list, and
+[README.md](README.md) for the module-by-module status table.
 
 - `key_equality_decidable` - Key equality is decidable
 - `lt_proof_irrelevance` (Key.v:20) - Replaces the former `Axiom proof_irrelevance`
@@ -1239,7 +1345,7 @@ The combination of model checking (for concurrent/crash scenarios) and theorem p
   the unsafe inventory gate rejects contract rows without valid coverage/status
   metadata
 
-As of 2026-06-01 the Rocq tree has **zero outstanding `Admitted`/`Axiom`/`Parameter` obligations**: all theorem/lemma/corollary propositions across the proof modules close by `Qed.` (or `Defined.` for transparent definitions). Scoped abstraction boundaries are tracked in `GAP_LEDGER.md`; the current boundary is production Byzantine networking/liveness, certified Rust/LLVM compilation, kernel io_uring/syscall internals below the modeled outcome boundary, gzip/prost internals, cross-language protobuf implementations, optimal/minimal automata size, arena-locality/throughput optimality, Bloom false-positive rates/hash-quality guarantees, arbitrary semiring `times` as meet for arbitrary semirings, and upstream Levenshtein transducer correctness, not unchecked structural-preservation, DynamicDawg mutation/compaction, DynamicDawgU64 sequence semantics, Bloom filter no-false-negative rejection, double-array-trie traversal, traversal-language, public read traversal, valued set-combinator merge, persistent merge equivalence, persistent char prefix semantics, persistent char bulk-mutation recovery, persistent relative encoding, arena reservation/dirty-slot persistence, persistent deduplicating-arena soundness, root descriptor/reopen fallback, persistent lazy mutation atomicity, persistent WAL write-atomicity, persistent transaction increment recovery, lock-free counter merge atomicity, shared persistent public API concurrency, public durability acknowledgement, persistent vocab WAL atomicity, persistent vocab checkpoint publication, concurrent checkpoint publication, checkpoint/WAL retention safety, dirty checkpoint publication safety, WAL segment lifecycle safety, recovery planner durable-prefix safety, recovery replay completeness, persistent compaction rewrite safety, char/vocab rewrite checkpoint safety, SCDAWG occurrence construction, substring-candidate, fuzzy-candidate, storage syscall outcome, BufferManager page-lease/cached-page pinning, vocab reverse-map reconstruction, io_uring fixed-buffer/SQE-CQE lifecycle, or public serialization proof gaps.
+As of 2026-06-12 the Rocq tree has **zero outstanding `Admitted`/`Axiom`/`Parameter` obligations** across all **69** `.v` files: all **1,301** theorem/lemma/corollary propositions across the proof modules close by `Qed.` (or `Defined.` for transparent definitions). Scoped abstraction boundaries are tracked in `GAP_LEDGER.md`; the current boundary is production Byzantine networking/liveness, certified Rust/LLVM compilation, kernel io_uring/syscall internals below the modeled outcome boundary, gzip/prost internals, cross-language protobuf implementations, optimal/minimal automata size, arena-locality/throughput optimality, Bloom false-positive rates/hash-quality guarantees, arbitrary semiring `times` as meet for arbitrary semirings, and upstream Levenshtein transducer correctness, not unchecked structural-preservation, DynamicDawg mutation/compaction, DynamicDawgU64 sequence semantics, Bloom filter no-false-negative rejection, double-array-trie traversal, traversal-language, public read traversal, valued set-combinator merge, persistent merge equivalence, persistent char prefix semantics, persistent char bulk-mutation recovery, persistent relative encoding, arena reservation/dirty-slot persistence, persistent deduplicating-arena soundness, root descriptor/reopen fallback, persistent lazy mutation atomicity, persistent WAL write-atomicity, persistent transaction increment recovery, lock-free counter merge atomicity, shared persistent public API concurrency, public durability acknowledgement, persistent vocab WAL atomicity, persistent vocab checkpoint publication, concurrent checkpoint publication, checkpoint/WAL retention safety, dirty checkpoint publication safety, WAL segment lifecycle safety, recovery planner durable-prefix safety, recovery replay completeness, persistent compaction rewrite safety, char/vocab rewrite checkpoint safety, SCDAWG occurrence construction, substring-candidate, fuzzy-candidate, storage syscall outcome, BufferManager page-lease/cached-page pinning, vocab reverse-map reconstruction, io_uring fixed-buffer/SQE-CQE lifecycle, or public serialization proof gaps.
 
 ---
 

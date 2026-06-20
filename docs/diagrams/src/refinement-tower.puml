@@ -1,0 +1,66 @@
+@startuml refinement-tower
+' ============================================================================
+' refinement-tower — the ADT refinement stack the Rocq proofs establish.
+'
+' libdictenstein proves the persistent ART REFINES an abstract map ADT. The
+' tower reads TOP-DOWN as "is refined by / is implemented by", BOTTOM-UP as
+' "refines / implements":
+'   ┌ abstract MapSpec (the Map ADT: lookup/insert/delete laws)
+'   ├ ARTrieSpec.v + Proofs/MapRefinement.v  — the refinement layer
+'   └ concrete Persistent ART (Rust)         — the implementation
+' The middle layer's `WFARTrieMapImpl` instance is the machine-checked witness
+' that the concrete trie's observable behavior is a behavior MapSpec permits.
+'
+' Grounded in formal-verification/README.md (Key Theorems #1-#5; "Map
+' Refinement: ARTrie correctly implements Map ADT") and VERIFICATION_RESULTS.md
+' (Proofs/MapRefinement.v — 3 Qed'd theorems incl. WFARTrieMapImpl).
+'
+' Color key (verification palette — task spec):
+'   green #C8E6C9 = Rocq-proved layers (abstract spec + refinement witness)
+'   grey  #ECEFF1 = the concrete Rust implementation under the spec
+'   amber #FFE0B2 = the proof obligations / refinement relation labels
+' ============================================================================
+skinparam backgroundColor #FFFFFF
+skinparam defaultFontName "DejaVu Sans"
+skinparam shadowing false
+skinparam ArrowColor #37474F
+skinparam ArrowFontName "DejaVu Sans"
+skinparam rectangle {
+  BorderColor #37474F
+  FontName "DejaVu Sans"
+}
+
+title Refinement tower — the persistent ART refines an abstract Map ADT (Rocq-proved)
+
+' --- Layer 1 (top): the abstract specification (ADT) ------------------------
+rectangle "**① Abstract MapSpec**  (the Map ADT)\nSpec/MapSpec.v — keys ⇀ values with the\nlookup / insert / delete equational laws\n(lookup_empty, insert_lookup_same, …)" as MapSpec #C8E6C9
+
+' --- Layer 2 (middle): the refinement layer ---------------------------------
+rectangle "**② Refinement layer**\nSpec/ARTrieSpec.v — interpret_trie, trie_insert,\ntrie_delete + correctness theorems\n(trie_insert_correct, trie_delete_correct)\nProofs/MapRefinement.v — WFARTrie +\n**WFARTrieMapImpl** instance (3 Qed-closed theorems)" as Refine #C8E6C9
+
+' --- Layer 3 (bottom): the concrete implementation --------------------------
+rectangle "**③ Concrete Persistent ART**  (Rust)\nsrc/persistent_artrie{,_char,_vocab}/\nNode4/16/48/256 · path compression · lock-free overlay\n· WAL · arena — the artifact callers run" as Impl #ECEFF1
+
+' --- Refinement relation arrows (top-down = refined/implemented by) ---------
+MapSpec -[#EF6C00]-> Refine : **is refined by**\n(every concrete behavior is\na behavior MapSpec permits)
+Refine -[#EF6C00]-> Impl : **is implemented by**\n(interpret_trie maps the concrete\ntrie onto the abstract map)
+
+' --- The upward witness (bottom-up = refines/implements) --------------------
+Impl -[#2E7D32,dashed]-> MapSpec : **refines / implements**\n(witnessed by WFARTrieMapImpl,\nmachine-checked Qed.)
+
+note right of Refine #FFE0B2
+  The refinement is **proved**, not assumed:
+  WFARTrieMapImpl discharges the Map-ADT
+  obligations via canonical_lookup_correct
+  plus the upsert/delete map laws under the
+  entries_of_trie_complete hypothesis.
+  No Admitted / Axiom / Parameter.
+end note
+
+legend right
+| Color | Layer |
+|<#C8E6C9>| Rocq-proved (abstract spec + refinement witness) |
+|<#ECEFF1>| concrete Rust implementation |
+|<#FFE0B2>| refinement relation / proof obligations |
+endlegend
+@enduml

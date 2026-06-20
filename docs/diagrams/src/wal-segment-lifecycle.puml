@@ -1,0 +1,70 @@
+@startuml wal-segment-lifecycle
+' ============================================================================
+' WAL segment lifecycle — active → pending → rotated/truncated, and how a
+' checkpoint advances checkpoint_lsn + truncates the WAL to the committed
+' watermark while carrying commit_seq_floor across the rotation.
+' Source of truth:
+'   src/persistent_artrie/core/wal/pending_segment.rs  (PendingSegment carrier)
+'   src/persistent_artrie/core/wal/header.rs           (checkpoint_lsn, commit_seq_floor)
+'   src/persistent_artrie/core/wal.rs / wal_managed.rs (rotate / truncate)
+'   src/persistent_artrie/core/overlay/durable_write.rs (committed watermark)
+' Color key:  green #C8E6C9 = in-memory serving (appends land here)
+'             blue  #BBDEFB = durable on-disk action (fsync / truncate / image)
+'             amber #FFE0B2 = control / frontier (checkpoint, watermark, floor)
+'             grey  #ECEFF1 = retired / infrastructure state
+' ============================================================================
+skinparam backgroundColor #FFFFFF
+skinparam defaultFontName "DejaVu Sans"
+skinparam shadowing false
+skinparam ArrowColor #37474F
+skinparam state {
+  BorderColor #37474F
+  FontName "DejaVu Sans"
+}
+
+title WAL segment lifecycle — append · rotate · checkpoint · truncate
+
+[*] --> Active : create() / open()\n(fresh active segment,\ncommit_seq_floor seeded from header)
+
+state Active #C8E6C9 : the writable segment\n• accepts record appends (LSN n, n+1, …)\n• each durable op: append + fsync, then root CAS\n• tracks next_lsn + the committed watermark
+Active --> Active : append(WalRecord)\nLSN assigned, frame written
+
+' --- background rotation path (async writer) -----------------------------
+Active --> Pending : rotate\n(segment full / size threshold)
+state Pending #FFE0B2 : PendingSegment\n• rotated away from the active writer\n• lsn_range = (first_lsn, last_lsn)\n• still awaits its background fsync
+Pending --> Rotated : background fsync completes\n(records in this range are durable)
+state Rotated #BBDEFB : durable, read-only segment\n(replayable on recovery)
+
+note right of Pending #FFE0B2
+  commit_seq_floor is CARRIED across the
+  rotation: a fresh segment inherits the
+  floor so post-rotation ops still out-rank
+  pre-rotation survivors.
+end note
+
+' --- checkpoint path -----------------------------------------------------
+Active --> Checkpointing : checkpoint()
+state Checkpointing #BBDEFB {
+  [*] --> WriteImage
+  WriteImage : write the dense CX checkpoint image\n(durable point-in-time snapshot)
+  WriteImage --> StampHeader
+  StampHeader : header.checkpoint_lsn := committed watermark\n(largest L with every LSN ≤ L committed —\nthe ONLY safe checkpoint_lsn)\nheader.commit_seq_floor := max committed commit_seq
+  StampHeader --> Truncate
+  Truncate : truncate the WAL to checkpoint_lsn\n(records ≤ checkpoint_lsn are now subsumed\nby the image and reclaimed)
+  Truncate --> [*]
+}
+Checkpointing --> Active : resume\n(new active tail begins just past checkpoint_lsn,\ncommit_seq_floor carried forward)
+
+' --- shutdown ------------------------------------------------------------
+Active --> Closed : drop() / close() (clean)
+state Closed #ECEFF1 : segments flushed;\nheader's checkpoint_lsn + floor persisted
+Closed --> [*]
+
+legend right
+| Color | Meaning |
+|<#C8E6C9>| in-memory serving (appends) |
+|<#FFE0B2>| control / frontier (checkpoint · watermark · floor) |
+|<#BBDEFB>| durable on-disk action |
+|<#ECEFF1>| retired / infrastructure |
+endlegend
+@enduml

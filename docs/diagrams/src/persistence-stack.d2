@@ -1,0 +1,214 @@
+# =============================================================================
+# persistence-stack.d2 — the PersistentARTrie durability stack, layer by layer.
+#
+# Source of truth (module layout): src/persistent_artrie/core/ and its
+# overlay/ + wal/ subtrees. Each container below names the real module(s) that
+# implement that layer. A WRITE travels DOWN the stack (it must reach a durable
+# WAL record before the overlay publishes it); a READ traverses ONLY the
+# lock-free overlay (it never descends into WAL / buffer / disk on the hot path).
+#
+# Color key (house palette — docs/diagrams/README.md):
+#   green  #C8E6C9  in-memory / live representation (the lock-free overlay)
+#   blue   #BBDEFB  persistent / disk-backed layers (WAL store, disk managers, arena)
+#   amber  #FFF59D  durability control (WAL append+fsync, watermark, checkpoint)
+#   grey   #F1F1F1 / #37474F  infrastructure (buffer manager, dirty tracker) / borders
+# =============================================================================
+
+vars: {
+  d2-config: {
+    layout-engine: elk
+  }
+}
+
+direction: down
+
+title: |md
+  # PersistentARTrie — lock-free durable persistence stack
+  *writes descend through the WAL before publishing · reads traverse only the overlay*
+| {
+  near: top-center
+  style.font-size: 19
+  style.font-color: "#212121"
+}
+
+# --- Layer 1: Client API -----------------------------------------------------
+api: "① Client API" {
+  style: {
+    fill: "#F1F1F1"
+    stroke: "#37474F"
+    font-color: "#212121"
+    stroke-width: 2
+    bold: true
+  }
+  surface: "PersistentARTrie · …Char · …U64Compact · PersistentVocabARTrie\ninsert_with_value · upsert · sequence insert · get · iter_prefix" {
+    style.fill: "#FAFAFA"
+    style.stroke: "#90A4AE"
+    style.font-color: "#212121"
+  }
+}
+
+# --- Layer 2: Lock-free overlay (the live representation) --------------------
+overlay: "② Lock-free overlay  —  core/overlay/  (the LIVE representation)" {
+  style: {
+    fill: "#C8E6C9"
+    stroke: "#2E7D32"
+    font-color: "#1B5E20"
+    stroke-width: 2
+    bold: true
+  }
+  flip: "flip.rs\ninstall overlay · atomic root" {
+    style.fill: "#E8F5E9"
+    style.stroke: "#2E7D32"
+    style.font-color: "#1B5E20"
+  }
+  cas_walk: "cas_walk.rs\ncopy-on-write path · child/root CAS" {
+    style.fill: "#E8F5E9"
+    style.stroke: "#2E7D32"
+    style.font-color: "#1B5E20"
+  }
+  durable_write: "durable_write.rs\nOrder-A write skeleton" {
+    style.fill: "#E8F5E9"
+    style.stroke: "#2E7D32"
+    style.font-color: "#1B5E20"
+  }
+  checkpoint: "checkpoint.rs\ncapture live · publish CX image" {
+    style.fill: "#E8F5E9"
+    style.stroke: "#2E7D32"
+    style.font-color: "#1B5E20"
+  }
+}
+
+# --- Layer 3: WAL + durability ----------------------------------------------
+durability: "③ WAL + durability  —  core/wal/ · core/durability.rs · core/committed_watermark.rs" {
+  style: {
+    fill: "#FFF59D"
+    stroke: "#F9A825"
+    font-color: "#5D4037"
+    stroke-width: 2
+    bold: true
+  }
+  wal: "core/wal/\nappend + fsync · reader · codec · writer" {
+    style.fill: "#FFFDE7"
+    style.stroke: "#F9A825"
+    style.font-color: "#5D4037"
+  }
+  policy: "durability.rs\nDurabilityPolicy (Immediate | GroupCommit)" {
+    style.fill: "#FFFDE7"
+    style.stroke: "#F9A825"
+    style.font-color: "#5D4037"
+  }
+  watermark: "committed_watermark.rs\nsafe checkpoint_lsn · commit-rank floor" {
+    style.fill: "#FFFDE7"
+    style.stroke: "#F9A825"
+    style.font-color: "#5D4037"
+  }
+}
+
+# --- Layer 4: Buffer manager (infrastructure) -------------------------------
+buffer: "④ Buffer manager  —  core/buffer_manager.rs · core/dirty_tracker.rs" {
+  style: {
+    fill: "#F1F1F1"
+    stroke: "#607D8B"
+    font-color: "#263238"
+    stroke-width: 2
+    bold: true
+  }
+  bm: "buffer_manager.rs\nframe pool · fault-in · flush_dirty" {
+    style.fill: "#FAFAFA"
+    style.stroke: "#607D8B"
+    style.font-color: "#263238"
+  }
+  dirty: "dirty_tracker.rs\ndirty-page set · batched flush" {
+    style.fill: "#FAFAFA"
+    style.stroke: "#607D8B"
+    style.font-color: "#263238"
+  }
+}
+
+# --- Layer 5: Disk manager (pluggable backend) ------------------------------
+disk: "⑤ Disk manager  —  core/{disk_manager · io_uring_disk_manager}.rs" {
+  style: {
+    fill: "#BBDEFB"
+    stroke: "#1565C0"
+    font-color: "#0D47A1"
+    stroke-width: 2
+    bold: true
+  }
+  mmap: "MmapDiskManager  (DEFAULT)\npage-cache · best for single-block I/O" {
+    style.fill: "#E3F2FD"
+    style.stroke: "#1565C0"
+    style.font-color: "#0D47A1"
+  }
+  iouring: "IoUringDiskManager  (feature io-uring-backend)\nO_DIRECT · batched async · true durability" {
+    style.fill: "#E3F2FD"
+    style.stroke: "#1565C0"
+    style.font-color: "#0D47A1"
+  }
+}
+
+# --- Layer 6: Arena / block storage -----------------------------------------
+arena: "⑥ Arena · block storage  —  core/{arena_slot · block_storage · swizzled_ptr}.rs" {
+  style: {
+    fill: "#BBDEFB"
+    stroke: "#1565C0"
+    font-color: "#0D47A1"
+    stroke-width: 2
+    bold: true
+  }
+  slots: "arena_slot.rs · block_storage.rs\n256 KB blocks · swizzled pointers" {
+    style.fill: "#E3F2FD"
+    style.stroke: "#1565C0"
+    style.font-color: "#0D47A1"
+  }
+}
+
+# --- Data-flow: a WRITE descends the stack (down arrows, amber = durable gate)
+api -> overlay: "1 · write enters overlay" {
+  style.stroke: "#37474F"
+  style.stroke-width: 2
+}
+overlay -> durability: "2 · append + fsync WAL\n(BEFORE publish)" {
+  style.stroke: "#F9A825"
+  style.stroke-width: 3
+  style.bold: true
+}
+durability -> buffer: "3 · stage dirty pages" {
+  style.stroke: "#37474F"
+  style.stroke-width: 2
+}
+buffer -> disk: "4 · write / flush blocks" {
+  style.stroke: "#1565C0"
+  style.stroke-width: 2
+}
+disk -> arena: "5 · place in arena slots" {
+  style.stroke: "#1565C0"
+  style.stroke-width: 2
+}
+
+# --- The READ path: client traverses ONLY the published overlay root --------
+api -> overlay: "READ · traverse published root\n(no WAL / disk on hot path)" {
+  style.stroke: "#2E7D32"
+  style.stroke-width: 3
+  style.stroke-dash: 4
+  style.bold: true
+}
+
+# --- Reopen / recovery: rebuild the overlay from image + WAL tail -----------
+arena -> overlay: "REOPEN · load CX image + replay WAL tail\n→ rebuild overlay" {
+  style.stroke: "#1565C0"
+  style.stroke-width: 2
+  style.stroke-dash: 3
+}
+
+# --- Legend ------------------------------------------------------------------
+legend: |md
+  **Color key** ·
+  🟩 green = lock-free overlay (live, in-memory) ·
+  🟨 amber = durability control (WAL append+fsync · watermark) ·
+  🟦 blue = disk-backed (WAL store · disk manager · arena) ·
+  ⬜ grey = infrastructure (buffer manager · dirty tracker)
+| {
+  near: bottom-center
+  style.font-size: 13
+  style.font-color: "#37474F"
+}

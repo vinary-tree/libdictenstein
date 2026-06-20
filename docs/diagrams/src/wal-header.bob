@@ -1,0 +1,19 @@
+# =============================================================================
+# WAL file header — the 64-byte prefix of every PersistentARTrie WAL file.
+# Source of truth: src/persistent_artrie/core/wal/header.rs (WalHeader, SIZE=64).
+# Color key (rendered monochrome; this ASCII source): identity / control / LSNs /
+# reserved are distinguished by label. 29 bytes used, 35 reserved.
+# =============================================================================
+
+  WAL file header  -  64 bytes total  (29 used, 35 reserved)
+
+  byte 0        8      12                20                28 29            64
+      +---------+------+-----------------+-----------------+--+-------------+
+      | magic   | ver  | checkpoint_lsn  | commit_seq_floor|rr|  reserved   |
+      | [u8;8]  | u32  |     u64         |      u64        |u8|   [u8;35]   |
+      +---------+------+-----------------+-----------------+--+-------------+
+        :                                                  :
+        :  "PARTWAL\0" = Owned regime                      :
+        :  "PARTWALO"  = Overlay regime (dual-magic        rr = rank_regime
+        :                tripwire; old binaries fail-close)      Owned = 0
+        '- version: u32 LE, current = 2, min readable = 1         Overlay = 1

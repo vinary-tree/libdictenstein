@@ -1,0 +1,132 @@
+// ============================================================================
+// correspondence-matrix.dot — representative spec<->Rust coverage matrix.
+//
+// A glanceable EXCERPT (~10 representative rows, NOT all ~70) of the full
+// spec<->Rust correspondence table in formal-verification/README.md
+// ("Relationship to Implementation"). Rows are Rust modules; columns are the
+// four coverage classes a module can carry:
+//   * Rocq spec        — a machine-checked .v law for the module
+//   * TLA+ model       — a TLC-checked bounded model of the module's protocol
+//   * Loom / Miri      — dynamic interleaving / undefined-behavior checks
+//   * Correspondence   — an executable Rust trace test vs a reference
+// A FILLED green cell = covered by that class; a hollow grey cell = not that
+// class (the obligation is met by the other filled cells in the row).
+//
+// Color key (verification palette — task spec):
+//   green #C8E6C9  covered (cell filled) — the cell's class applies
+//   blue  #BBDEFB  column header: model-checked class
+//   grey  #ECEFF1  not-this-class cell / row+corner framing
+//   dark slate #37474F  borders / text
+// ============================================================================
+digraph correspondence_matrix {
+    rankdir=TB;
+    bgcolor="#FFFFFF";
+    fontname="DejaVu Sans";
+    labelloc="t";
+    fontsize=16;
+    fontcolor="#212121";
+    label=<<B>libdictenstein — representative spec↔Rust coverage matrix</B><BR/><FONT POINT-SIZE="11">a glanceable excerpt of ~10 of the ~70 rows in the full correspondence table · green = covered by that coverage class</FONT>>;
+
+    node [shape=plaintext, fontname="DejaVu Sans"];
+
+    matrix [label=<
+<TABLE BORDER="0" CELLBORDER="1" CELLSPACING="0" CELLPADDING="7" COLOR="#37474F">
+  <TR>
+    <TD BGCOLOR="#ECEFF1" ALIGN="LEFT"><B>Rust module  ·  spec / model</B></TD>
+    <TD BGCOLOR="#C8E6C9"><B>Rocq<BR/>spec</B></TD>
+    <TD BGCOLOR="#BBDEFB"><B>TLA⁺<BR/>model</B></TD>
+    <TD BGCOLOR="#BBDEFB"><B>Loom /<BR/>Miri</B></TD>
+    <TD BGCOLOR="#FFE0B2"><B>Corresp.<BR/>test</B></TD>
+  </TR>
+
+  <TR>
+    <TD BGCOLOR="#ECEFF1" ALIGN="LEFT">lockfree_cas  ·  <FONT FACE="monospace">LockFreeARTrieLinearizability</FONT></TD>
+    <TD BGCOLOR="#C8E6C9">✓</TD>
+    <TD BGCOLOR="#C8E6C9">✓</TD>
+    <TD BGCOLOR="#C8E6C9">✓</TD>
+    <TD BGCOLOR="#C8E6C9">✓</TD>
+  </TR>
+  <TR>
+    <TD BGCOLOR="#ECEFF1" ALIGN="LEFT">char/vocab lock-free overlay  ·  <FONT FACE="monospace">LockFreeIndexedOverlay</FONT></TD>
+    <TD BGCOLOR="#C8E6C9">✓</TD>
+    <TD BGCOLOR="#C8E6C9">✓</TD>
+    <TD BGCOLOR="#C8E6C9">✓</TD>
+    <TD BGCOLOR="#C8E6C9">✓</TD>
+  </TR>
+  <TR>
+    <TD BGCOLOR="#ECEFF1" ALIGN="LEFT">core/recovery + wal  ·  <FONT FACE="monospace">CrashRecovery</FONT></TD>
+    <TD BGCOLOR="#C8E6C9">✓</TD>
+    <TD BGCOLOR="#C8E6C9">✓</TD>
+    <TD BGCOLOR="#ECEFF1"> </TD>
+    <TD BGCOLOR="#C8E6C9">✓</TD>
+  </TR>
+  <TR>
+    <TD BGCOLOR="#ECEFF1" ALIGN="LEFT">core/swizzled_ptr  ·  <FONT FACE="monospace">PointerOwnership</FONT></TD>
+    <TD BGCOLOR="#ECEFF1"> </TD>
+    <TD BGCOLOR="#C8E6C9">✓</TD>
+    <TD BGCOLOR="#C8E6C9">✓</TD>
+    <TD BGCOLOR="#C8E6C9">✓</TD>
+  </TR>
+  <TR>
+    <TD BGCOLOR="#ECEFF1" ALIGN="LEFT">core/buffer_manager  ·  <FONT FACE="monospace">BufferPageLease</FONT></TD>
+    <TD BGCOLOR="#ECEFF1"> </TD>
+    <TD BGCOLOR="#C8E6C9">✓</TD>
+    <TD BGCOLOR="#ECEFF1"> </TD>
+    <TD BGCOLOR="#C8E6C9">✓</TD>
+  </TR>
+  <TR>
+    <TD BGCOLOR="#ECEFF1" ALIGN="LEFT">core/group_commit + version_gc  ·  <FONT FACE="monospace">DurabilityFrontier</FONT></TD>
+    <TD BGCOLOR="#ECEFF1"> </TD>
+    <TD BGCOLOR="#C8E6C9">✓</TD>
+    <TD BGCOLOR="#C8E6C9">✓</TD>
+    <TD BGCOLOR="#C8E6C9">✓</TD>
+  </TR>
+  <TR>
+    <TD BGCOLOR="#ECEFF1" ALIGN="LEFT">char eviction / EBR  ·  <FONT FACE="monospace">EvictionWalkEBR</FONT></TD>
+    <TD BGCOLOR="#C8E6C9">✓</TD>
+    <TD BGCOLOR="#C8E6C9">✓</TD>
+    <TD BGCOLOR="#C8E6C9">✓</TD>
+    <TD BGCOLOR="#C8E6C9">✓</TD>
+  </TR>
+  <TR>
+    <TD BGCOLOR="#ECEFF1" ALIGN="LEFT">arena_manager  ·  <FONT FACE="monospace">ArenaReservationSpec</FONT></TD>
+    <TD BGCOLOR="#C8E6C9">✓</TD>
+    <TD BGCOLOR="#ECEFF1"> </TD>
+    <TD BGCOLOR="#ECEFF1"> </TD>
+    <TD BGCOLOR="#C8E6C9">✓</TD>
+  </TR>
+  <TR>
+    <TD BGCOLOR="#ECEFF1" ALIGN="LEFT">dynamic_dawg  ·  <FONT FACE="monospace">DynamicDawgMutationSpec</FONT></TD>
+    <TD BGCOLOR="#C8E6C9">✓</TD>
+    <TD BGCOLOR="#ECEFF1"> </TD>
+    <TD BGCOLOR="#ECEFF1"> </TD>
+    <TD BGCOLOR="#C8E6C9">✓</TD>
+  </TR>
+  <TR>
+    <TD BGCOLOR="#ECEFF1" ALIGN="LEFT">serialization codecs  ·  <FONT FACE="monospace">SerializationRoundtripSpec</FONT></TD>
+    <TD BGCOLOR="#C8E6C9">✓</TD>
+    <TD BGCOLOR="#ECEFF1"> </TD>
+    <TD BGCOLOR="#ECEFF1"> </TD>
+    <TD BGCOLOR="#C8E6C9">✓</TD>
+  </TR>
+  <TR>
+    <TD BGCOLOR="#ECEFF1" ALIGN="LEFT">io_uring_disk_manager  ·  <FONT FACE="monospace">IoUringSqeCqeLifecycle</FONT></TD>
+    <TD BGCOLOR="#ECEFF1"> </TD>
+    <TD BGCOLOR="#C8E6C9">✓</TD>
+    <TD BGCOLOR="#C8E6C9">✓</TD>
+    <TD BGCOLOR="#C8E6C9">✓</TD>
+  </TR>
+</TABLE>>];
+
+    // --- rendered legend -----------------------------------------------------
+    legend [label=<
+<TABLE BORDER="0" CELLBORDER="0" CELLSPACING="2" CELLPADDING="3">
+  <TR><TD ALIGN="LEFT"><B>Legend</B></TD></TR>
+  <TR><TD BGCOLOR="#C8E6C9">&#10003;</TD><TD ALIGN="LEFT">covered by this coverage class</TD></TR>
+  <TR><TD BGCOLOR="#ECEFF1">&#160;&#160;</TD><TD ALIGN="LEFT">not this class (obligation met by other cells in the row)</TD></TR>
+  <TR><TD BGCOLOR="#BBDEFB">&#160;&#160;</TD><TD ALIGN="LEFT">model-checked column · </TD></TR>
+  <TR><TD ALIGN="LEFT" COLSPAN="2"><FONT POINT-SIZE="10">Representative excerpt — full table: formal-verification/README.md</FONT></TD></TR>
+</TABLE>>];
+
+    matrix -> legend [style=invis];
+}

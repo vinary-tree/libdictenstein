@@ -78,7 +78,22 @@ rendered + verified all diagrams.
 | Thin docs filled | `implementations/scdawg.md` 240→314 (real `SubstringDictionary` API verified), `bijective.md`→285 (corrected data-model), `disk-tries/07-benchmark-results.md` 125→238 (metric defs + intuition + provenance) | ☑ | API symbols verified vs `src/scdawg/`, `src/bijective/` |
 | Diagram embeds | byte-layout/path-compression/burst-trie/node-state into disk-tries 02-04; clone-on-split/suffix-links/scdawg-structure into scdawg 02/04; dawg-min + dawg-suffix-sharing into dynamic-dawg.md | ☑ | 0 broken embeds; 0 broken links (excl. Phase-5 forward-refs) |
 | Corrections found | inline-prefix cap corrected to crate-real 12 B (byte)/6 `u32` (char); Crochemore 1986 added where load-bearing; DAWG year 1983→1985 | ☑ | vs `nodes/mod.rs` MAX_PREFIX_LEN |
-## Phase 4 — Persistence, eviction, formal-verification + diagrams  ☐
+## Phase 4 — Persistence, eviction, formal-verification + diagrams  ☑
+
+Executed via 4 parallel subagents (WAL-format, persistence-arch, eviction, formal)
+over disjoint files; parent authored the WAL byte layouts + rendered/verified all.
+
+| Item | Action | Status | Verification |
+|------|--------|--------|--------------|
+| WAL byte layouts | `wal-header.bob` (64 B header) + `wal-record.bob` (17 B frame + 15 type codes), Svgbob (bytefield can't span rows) — exact offsets from `wal/{header,codec}.rs` | ☑ | render 656×320 / 672×400 |
+| `docs/persistence/wal-format.md` (NEW) | full on-disk codec doc: header/record figures, 15-type table, dual-magic+version tripwire, RankRegime drop-rule, Order-A, recovery, CAS-walk; Mohan DOI | ☑ | 376 lines; embeds resolve |
+| WAL/write/recovery diagrams | `wal-segment-lifecycle`, `rank-regime-replay`, `recovery-flow`, `cas-walk` (PlantUML) | ☑ | render clean |
+| Persistence architecture | `mmap-architecture.md` + `architecture/persistence/README.md` prose; `persistence-stack.d2`, `mmap-vs-iouring.d2`, `checkpoint-flip.puml`, `layering-invariant.dot`; Driscoll+Mohan DOIs | ☑ | embeds resolve; io_uring tables untouched |
+| Eviction | `eviction/README.md` glossary + what/how/why; `buffer-page-lifecycle`, `epoch-reclamation` (sequence), `eviction-pipeline` (PlantUML); corrected stale `core/eviction/` paths + Pressure-vs-Urgency conflation | ☑ | renders clean |
+| Formal-verification | reconciled counts to 69 `.v` / 1,301 props / 55 TLA⁺ / 65 `.cfg` / 43+31 unsafe (0 Admitted/Axiom/Parameter) across 4 files; restructured VERIFICATION_RESULTS change-log into bulleted history (snapshot-vs-live totals labeled); F1–F5 diagrams | ☑ | no contradicting stale counts; snapshot clearly framed |
+| D2 layout fix | added per-file `# d2-layout: elk` directive support (concentric trust-zones need elk, not dagre) | ☑ | unsafe-trust-zones renders 2689×1357 |
+
+**Result**: 37 diagrams total, all idempotent, 0 render-error markers, 0 broken embeds/links.
 ## Phase 5 — New conceptual docs  ☐
 ## Phase 6 — Benchmark plots  ☐
 ## Phase 7 — Reorganization + top-level index  ☐

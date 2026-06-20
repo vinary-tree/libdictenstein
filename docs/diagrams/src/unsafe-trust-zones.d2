@@ -1,0 +1,148 @@
+# =============================================================================
+# d2-layout: elk
+# unsafe-trust-zones.d2 — the libdictenstein unsafe trust boundary, as zones.
+#
+# Three nested trust zones (concentric in intent; nested containers in D2):
+#   ① TRUSTED BASE   — kernel / filesystem / io_uring: assumed correct (TCB).
+#   ② UNSAFE RING    — the reviewed `unsafe` primitives that bridge the base to
+#                       safe Rust; EACH is tagged with its coverage class
+#                       (rocq / tla / loom / miri / correspondence).
+#   ③ SAFE PUBLIC API— everything callers touch; no `unsafe` escapes outward.
+# A safe-API call descends INTO the unsafe ring, which descends INTO the
+# trusted base; nothing in the base reaches back out unmediated.
+#
+# Grounded in formal-verification/UNSAFE_BOUNDARY.md (Boundary Map + Safety
+# Contract Matrix): 43 inventory rows + 31 contracts, CI-gated by
+# scripts/verify-unsafe-boundary-inventory.sh (set-equality).
+#
+# Color key (verification palette — task spec):
+#   red   #FFCDD2  the UNSAFE primitives ring (critical surface) + base risk
+#   green #C8E6C9  coverage-class tag rocq / loom / miri / correspondence (proved/checked)
+#   blue  #BBDEFB  coverage-class tag tla (model-checked)
+#   grey  #ECEFF1  the trusted base (kernel/fs/io_uring) — assumed, not proved
+#   amber #FFE0B2  the CI set-equality gate that pins the ring
+# =============================================================================
+
+vars: {
+  d2-config: {
+    layout-engine: elk
+  }
+}
+
+direction: down
+
+title: |md
+  # libdictenstein — `unsafe` trust zones
+  *safe API ⊃ reviewed `unsafe` primitives (each coverage-tagged) ⊃ trusted base · 43 inventory rows + 31 contracts, CI set-equality gated*
+| {
+  near: top-center
+  style.font-size: 18
+  style.font-color: "#212121"
+}
+
+# --- Zone ③ (outermost): the safe public API --------------------------------
+safe: "③ SAFE PUBLIC API  —  no `unsafe` escapes to callers" {
+  style: {
+    fill: "#C8E6C9"
+    stroke: "#2E7D32"
+    font-color: "#1B5E20"
+    stroke-width: 2
+    bold: true
+  }
+  api: "PersistentARTrie · …Char · …Vocab\ninsert · get · iter_prefix · checkpoint · sync · reopen" {
+    style.fill: "#E8F5E9"
+    style.stroke: "#2E7D32"
+    style.font-color: "#1B5E20"
+  }
+
+  # --- Zone ② (middle): the reviewed unsafe primitives ----------------------
+  unsafe_ring: "② `unsafe` PRIMITIVES  —  each tagged with its coverage class" {
+    style: {
+      fill: "#FFCDD2"
+      stroke: "#C62828"
+      font-color: "#B71C1C"
+      stroke-width: 2
+      bold: true
+    }
+
+    swiz: "SwizzledPtr\n(disk⇄memory pointer)" {
+      style.fill: "#FFEBEE"; style.stroke: "#C62828"; style.font-color: "#B71C1C"
+      cov: "tla · miri · correspondence" { style.fill: "#BBDEFB"; style.stroke: "#1565C0"; style.font-color: "#0D47A1" }
+    }
+    atomic: "atomic_ptr\n(CAS Arc node slot)" {
+      style.fill: "#FFEBEE"; style.stroke: "#C62828"; style.font-color: "#B71C1C"
+      cov: "tla · loom · correspondence" { style.fill: "#BBDEFB"; style.stroke: "#1565C0"; style.font-color: "#0D47A1" }
+    }
+    optc: "OptimisticCell\n(RwLock-guarded data)" {
+      style.fill: "#FFEBEE"; style.stroke: "#C62828"; style.font-color: "#B71C1C"
+      cov: "correspondence · unit" { style.fill: "#C8E6C9"; style.stroke: "#2E7D32"; style.font-color: "#1B5E20" }
+    }
+    rawchild: "raw char child ptr +\nvocab reverse-map" {
+      style.fill: "#FFEBEE"; style.stroke: "#C62828"; style.font-color: "#B71C1C"
+      cov: "tla · miri · correspondence" { style.fill: "#BBDEFB"; style.stroke: "#1565C0"; style.font-color: "#0D47A1" }
+    }
+    fixedbuf: "io_uring fixed buffers\n(register / in-flight)" {
+      style.fill: "#FFEBEE"; style.stroke: "#C62828"; style.font-color: "#B71C1C"
+      cov: "tla · correspondence" { style.fill: "#BBDEFB"; style.stroke: "#1565C0"; style.font-color: "#0D47A1" }
+    }
+    sendsync: "unsafe Send / Sync impls\n(SCDAWG · vocab handles)" {
+      style.fill: "#FFEBEE"; style.stroke: "#C62828"; style.font-color: "#B71C1C"
+      cov: "compile-time · correspondence" { style.fill: "#C8E6C9"; style.stroke: "#2E7D32"; style.font-color: "#1B5E20" }
+    }
+
+    # --- Zone ① (innermost): the trusted base -------------------------------
+    base: "① TRUSTED BASE (TCB)  —  assumed correct, not proved" {
+      style: {
+        fill: "#ECEFF1"
+        stroke: "#546E7A"
+        font-color: "#263238"
+        stroke-width: 2
+        bold: true
+      }
+      kernel: "Linux kernel\nscheduler · syscalls" { style.fill: "#F5F5F5"; style.stroke: "#546E7A"; style.font-color: "#263238" }
+      fs: "filesystem\nPOSIX semantics" { style.fill: "#F5F5F5"; style.stroke: "#546E7A"; style.font-color: "#263238" }
+      iouring: "io_uring\nSQ/CQ rings" { style.fill: "#F5F5F5"; style.stroke: "#546E7A"; style.font-color: "#263238" }
+    }
+  }
+}
+
+# --- The CI gate that pins the ring (outside the zones, acts on them) --------
+gate: "CI set-equality gate — scripts/verify-unsafe-boundary-inventory.sh\nlive src/**/*.rs `unsafe` sites  ≡  UNSAFE_INVENTORY.tsv (43)  →  UNSAFE_CONTRACTS.tsv (31)" {
+  style: {
+    fill: "#FFE0B2"
+    stroke: "#EF6C00"
+    font-color: "#E65100"
+    stroke-width: 2
+    bold: true
+  }
+}
+
+# --- Edges: descent across zones + the gate ---------------------------------
+safe.api -> safe.unsafe_ring: "a safe call descends into\nthe reviewed `unsafe` ring" {
+  style.stroke: "#2E7D32"
+  style.stroke-width: 2
+}
+safe.unsafe_ring -> safe.unsafe_ring.base: "`unsafe` bridges down\nto the trusted base" {
+  style.stroke: "#C62828"
+  style.stroke-width: 2
+}
+gate -> safe.unsafe_ring: "pins every `unsafe` site\nto a reviewed contract" {
+  style.stroke: "#EF6C00"
+  style.stroke-width: 3
+  style.stroke-dash: 3
+  style.bold: true
+}
+
+# --- Legend ------------------------------------------------------------------
+legend: |md
+  **Color key** ·
+  🟥 red = `unsafe` primitive ring (critical) ·
+  🟦 blue = coverage tag *tla* (model-checked) ·
+  🟩 green = coverage tag *rocq/loom/miri/correspondence/compile-time* ·
+  ⬜ grey = trusted base (assumed) ·
+  🟧 amber = CI set-equality gate
+| {
+  near: bottom-center
+  style.font-size: 12
+  style.font-color: "#37474F"
+}

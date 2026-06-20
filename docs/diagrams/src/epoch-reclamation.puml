@@ -1,0 +1,105 @@
+@startuml epoch-reclamation
+' ============================================================================
+' Epoch-Based Reclamation (EBR) — why a cold node can be reclaimed during
+' eviction WITHOUT a use-after-free under lock-free reads.
+'
+' Source of truth:
+'   src/persistent_artrie/core/concurrency.rs (EpochManager:
+'     enter_read / exit_read / advance / has_active_readers /
+'     wait_for_quiescence — note the SeqCst StoreLoad fence rationale),
+'   src/persistent_artrie/core/eviction/coordinator.rs (wait_for_quiescence
+'     then the unswizzle callback), and
+'   src/persistent_artrie/core/swizzled_ptr.rs (unswizzle = the atomic swap).
+'
+' THE GUARANTEE: the eviction thread advances the epoch, then HOLDS the free
+' until every reader that could still hold a raw pointer into the victim has
+' departed (quiescence). A reader that arrives AFTER the boundary either
+' re-faults the node from disk or follows the already-published DiskRef, so it
+' never dereferences freed memory.
+'
+' Color key:
+'   green (#C8E6C9) = reader inside an epoch (may hold a live raw node pointer)
+'   amber (#FFE0B2) = eviction-thread control (advance · wait · select)
+'   red   (#FFCDD2) = the reclamation point (free) — only safe after quiescence
+'   blue  (#BBDEFB) = the durable on-disk side (DiskRef the victim leaves behind)
+'   grey  (#ECEFF1) = the shared EBR counters (global_epoch, active_readers)
+' ============================================================================
+skinparam backgroundColor #FFFFFF
+skinparam defaultFontName "DejaVu Sans"
+skinparam shadowing false
+skinparam sequenceArrowColor #37474F
+skinparam sequenceLifeLineBorderColor #90A4AE
+skinparam sequenceGroupBorderColor #F9A825
+skinparam sequenceGroupBackgroundColor #FFFDE7
+skinparam noteBackgroundColor #ECEFF1
+skinparam noteBorderColor #90A4AE
+skinparam participantBorderColor #37474F
+
+title Epoch-based reclamation — defer the free until old-epoch readers depart (no use-after-free)
+
+participant "Reader A\n(old epoch)" as RA #C8E6C9
+participant "Reader B\n(arrives later)" as RB #C8E6C9
+participant "EBR counters\nglobal_epoch · active_readers" as E #ECEFF1
+participant "Eviction thread" as EV #FFE0B2
+participant "Victim node\n→ DiskRef" as N #BBDEFB
+
+== Reader A enters and pins the current epoch ==
+RA -> E : enter_read()\nactive_readers.fetch_add(1, **SeqCst**)
+activate RA
+E --> RA : epoch = 5 (Acquire load)
+note right of RA #C8E6C9
+  A now follows a **swizzled** child pointer at
+  native speed and may hold a raw `*const Node`
+  into the victim. The SeqCst pin publishes
+  BEFORE any pointer A subsequently loads.
+end note
+
+== Eviction thread opens an epoch boundary ==
+EV -> E : advance()\nglobal_epoch 5 → 6
+activate EV
+EV -> E : has_active_readers()? (**SeqCst** load)
+note over EV, E #FFE0B2
+  wait_for_quiescence: the SeqCst load pairs with A's
+  SeqCst pin (StoreLoad fence). If the scan misses A,
+  A is guaranteed to observe the unlink and re-fault —
+  AcqRel alone would NOT close this gap.
+end note
+E --> EV : **true** — Reader A still active
+note right of EV #FFE0B2 : DEFER the free.\nSlow path: block on the quiescence condvar\n(bounded by quiescence_timeout).
+
+... Reader A is still walking the victim subtree ...
+
+== Reader A finishes and leaves the epoch ==
+RA -> E : exit_read()\nactive_readers.fetch_sub(1, **SeqCst**)
+note left of RA #C8E6C9 : A's pointer accesses are globally ordered\nBEFORE this un-pin, so a reclaimer that now\nsees the count hit 0 knows A is done.
+deactivate RA
+E -> EV : last reader left → condvar.notify_all()
+E --> EV : has_active_readers() == **false** → quiescence reached
+
+== Quiescent: now the swap + free are safe ==
+EV -> N : unswizzle(block_id, location, type)\natomic CAS: ChildNode → DiskRef
+activate N
+N --> EV : Ok(old_ptr) — the in-memory node is unlinked
+hnote over N #FFCDD2 : **free(old_ptr)** — reclaim the RAM.\nNo live reader can still reach it.
+deactivate N
+deactivate EV
+
+== A reader that arrives AFTER the boundary is always safe ==
+RB -> E : enter_read()  → epoch = 6
+activate RB
+RB -> N : follow child pointer
+note right of RB #BBDEFB
+  B observes the **already-published DiskRef** (the swap
+  preceded the free) and faults the node back in from
+  disk — it never touches the freed allocation.
+end note
+RB -> E : exit_read()
+deactivate RB
+
+note across #FFF9C4
+  EBR in one line: **advance → wait for quiescence → swap → free.**
+  The free is delayed until no thread from the pre-boundary epoch can hold a
+  pointer to the victim, which is exactly what lets eviction run concurrently
+  with lock-free, lock-free-fast readers.
+end note
+@enduml
