@@ -11,6 +11,7 @@ pub mod ascii;
 pub mod char;
 pub mod char_zipper;
 pub mod core;
+pub(crate) mod lockfree;
 pub mod u64;
 pub mod u64_zipper;
 pub mod zipper;

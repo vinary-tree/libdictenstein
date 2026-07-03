@@ -7,6 +7,7 @@
 pub mod ascii;
 pub mod char;
 pub mod core;
+pub(crate) mod lockfree;
 
 pub use ascii::{Scdawg, ScdawgNodeHandle};
 pub use char::{ScdawgChar, ScdawgCharNodeHandle};

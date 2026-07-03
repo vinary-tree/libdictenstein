@@ -9,6 +9,8 @@
 
 use super::{Lsn, WalError};
 
+const RECORD_HEADER_SIZE: usize = 17;
+
 /// WAL record types.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
@@ -257,9 +259,54 @@ impl WalRecord {
         }
     }
 
+    fn payload_len(&self) -> usize {
+        match self {
+            WalRecord::Insert { term, value } => {
+                4 + term.len() + 1 + value.as_ref().map_or(0, |v| 4 + v.len())
+            }
+            WalRecord::Remove { term } => 4 + term.len(),
+            WalRecord::Checkpoint { .. } => 16,
+            WalRecord::BeginTx { .. } | WalRecord::CommitTx { .. } | WalRecord::AbortTx { .. } => 8,
+            WalRecord::Increment { term, .. } => 4 + term.len() + 8 + 8,
+            WalRecord::Upsert { term, value } => 4 + term.len() + 4 + value.len(),
+            WalRecord::CompareAndSwap {
+                term,
+                expected,
+                new_value,
+                ..
+            } => {
+                4 + term.len()
+                    + 1
+                    + expected.as_ref().map_or(0, |exp| 4 + exp.len())
+                    + 4
+                    + new_value.len()
+                    + 1
+            }
+            WalRecord::BatchInsert { entries } => {
+                4 + entries
+                    .iter()
+                    .map(|(term, value)| {
+                        4 + term.len() + 1 + value.as_ref().map_or(0, |v| 4 + v.len())
+                    })
+                    .sum::<usize>()
+            }
+            WalRecord::BatchIncrement { entries } => {
+                4 + entries
+                    .iter()
+                    .map(|(term, _)| 4 + term.len() + 8)
+                    .sum::<usize>()
+            }
+            WalRecord::VersionUpdate { .. } => 32,
+            WalRecord::VersionDurable { .. } => 12,
+            WalRecord::VersionGc { version_ids } => 4 + version_ids.len() * 8,
+            WalRecord::CommitRank { term, .. } => 8 + 4 + term.len() + 8,
+        }
+    }
+
     /// Serialize the record payload to bytes.
     pub fn serialize_payload(&self) -> Vec<u8> {
-        let mut buf = Vec::new();
+        let expected_len = self.payload_len();
+        let mut buf = Vec::with_capacity(expected_len);
 
         match self {
             WalRecord::Insert { term, value } => {
@@ -383,6 +430,7 @@ impl WalRecord {
             }
         }
 
+        debug_assert_eq!(buf.len(), expected_len);
         buf
     }
 
@@ -390,9 +438,7 @@ impl WalRecord {
     ///
     /// This is used by group commit for batch size tracking.
     pub fn serialized_size(&self) -> usize {
-        // Header: CRC32 (4) + Length (4) + LSN (8) + Type (1) = 17 bytes
-        const RECORD_HEADER_SIZE: usize = 17;
-        RECORD_HEADER_SIZE + self.serialize_payload().len()
+        RECORD_HEADER_SIZE + self.payload_len()
     }
 
     /// Deserialize a record from type and payload.
@@ -816,6 +862,88 @@ mod commit_rank_codec_tests {
         p.extend_from_slice(&5u64.to_le_bytes());
         p.extend_from_slice(&100u32.to_le_bytes());
         assert!(WalRecord::deserialize(WalRecordType::CommitRank, &p).is_err());
+    }
+
+    #[test]
+    fn payload_len_matches_serialized_payload_for_all_variants() {
+        let records = vec![
+            WalRecord::Insert {
+                term: b"alpha".to_vec(),
+                value: Some(b"one".to_vec()),
+            },
+            WalRecord::Insert {
+                term: b"alpha".to_vec(),
+                value: None,
+            },
+            WalRecord::Remove {
+                term: b"alpha".to_vec(),
+            },
+            WalRecord::Checkpoint {
+                checkpoint_lsn: 10,
+                timestamp: 20,
+            },
+            WalRecord::BeginTx { tx_id: 1 },
+            WalRecord::CommitTx { tx_id: 1 },
+            WalRecord::AbortTx { tx_id: 1 },
+            WalRecord::Increment {
+                term: b"counter".to_vec(),
+                delta: -3,
+                result: 7,
+            },
+            WalRecord::Upsert {
+                term: b"key".to_vec(),
+                value: b"value".to_vec(),
+            },
+            WalRecord::CompareAndSwap {
+                term: b"key".to_vec(),
+                expected: Some(b"old".to_vec()),
+                new_value: b"new".to_vec(),
+                success: true,
+            },
+            WalRecord::CompareAndSwap {
+                term: b"key".to_vec(),
+                expected: None,
+                new_value: b"new".to_vec(),
+                success: false,
+            },
+            WalRecord::BatchInsert {
+                entries: vec![
+                    (b"a".to_vec(), None),
+                    (b"b".to_vec(), Some(b"bee".to_vec())),
+                ],
+            },
+            WalRecord::BatchIncrement {
+                entries: vec![(b"a".to_vec(), 1), (b"b".to_vec(), -2)],
+            },
+            WalRecord::VersionUpdate {
+                version_id: 1,
+                root_ptr: 2,
+                node_count: 3,
+                timestamp: 4,
+            },
+            WalRecord::VersionDurable {
+                version_id: 1,
+                checksum: 0xABCD,
+            },
+            WalRecord::VersionGc {
+                version_ids: vec![1, 2, 3],
+            },
+            WalRecord::CommitRank {
+                data_lsn: 99,
+                term: b"ranked".to_vec(),
+                generation: 100,
+            },
+        ];
+
+        for record in records {
+            let payload = record.serialize_payload();
+            assert_eq!(payload.len(), record.payload_len(), "{record:?}");
+            assert_eq!(
+                record.serialized_size(),
+                RECORD_HEADER_SIZE + record.payload_len(),
+                "{record:?}"
+            );
+        }
     }
 
     /// **Back-compat byte-stability (design §3.4):** adding `CommitRank` MUST NOT

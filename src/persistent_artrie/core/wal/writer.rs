@@ -7,7 +7,6 @@
 
 use std::collections::BTreeSet;
 use std::fs::{self, File, OpenOptions};
-use std::hint::spin_loop;
 use std::io::{self, BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 use std::os::unix::fs::FileExt;
 use std::path::{Path, PathBuf};
@@ -16,6 +15,7 @@ use std::sync::Arc;
 use std::sync::Mutex;
 
 use super::{crc32, Lsn, RankRegime, WalConfig, WalError, WalHeader, WalReader, WalRecord};
+use crate::nonblocking::CasBackoff;
 
 static ARCHIVE_SEGMENT_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -315,7 +315,7 @@ impl WalWriter {
     }
 
     fn wait_for_segment_durable_lsn(&self, lsn: Lsn) -> Result<(), WalError> {
-        let mut spins = 0u32;
+        let mut backoff = CasBackoff::new();
         loop {
             if self.segment_durable_lsn.load(Ordering::Acquire) >= lsn {
                 return Ok(());
@@ -327,12 +327,7 @@ impl WalWriter {
                      earlier reserved LSN {failed} failed to publish"
                 )));
             }
-            if spins < 64 {
-                spins += 1;
-                spin_loop();
-            } else {
-                std::thread::yield_now();
-            }
+            backoff.snooze();
         }
     }
 

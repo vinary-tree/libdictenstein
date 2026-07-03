@@ -437,7 +437,9 @@ impl GroupCommitCoordinator {
                             adaptive_clone,
                         );
                     })
-                    .expect("failed to spawn commit thread"),
+                    .map_err(|e| {
+                        PersistentARTrieError::io_error("spawn commit thread", "thread", e)
+                    })?,
             )
         } else {
             None

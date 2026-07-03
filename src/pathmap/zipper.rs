@@ -16,8 +16,6 @@ use pathmap::PathMap;
 use std::marker::PhantomData;
 use std::sync::Arc;
 
-use crate::sync_compat::RwLock;
-
 /// Zipper for PathMap-backed dictionaries, generic over the [`TrieRefLike`]
 /// focus handle `R`.
 ///
@@ -96,23 +94,8 @@ impl<V: DictionaryValue, R: TrieRefLike<V>> TrieRefZipper<V, R> {
 impl<V: DictionaryValue> PathMapZipper<V> {
     /// Create a root zipper over an `𝒪(1)` copy-on-write snapshot of `dict`.
     pub fn new_from_dict(dict: &PathMapDictionary<V>) -> Self {
-        Self::from_parts(
-            trie_ref_root(dict.map.read().clone()),
-            Arc::from(Vec::new()),
-        )
-    }
-
-    /// Create a root zipper over an `𝒪(1)` snapshot of the locked map.
-    pub fn new(map: Arc<RwLock<PathMap<V>>>) -> Self {
-        Self::from_parts(trie_ref_root(map.read().clone()), Arc::from(Vec::new()))
-    }
-
-    /// Create a zipper positioned at `path`, over an `𝒪(1)` snapshot of the
-    /// locked map. A non-existent `path` yields a zipper whose focus reports no
-    /// value and no children (rather than an error).
-    pub fn at_path(map: Arc<RwLock<PathMap<V>>>, path: Vec<u8>) -> Self {
-        let focus = trie_ref_root(map.read().clone()).descend_bytes(&path);
-        Self::from_parts(focus, Arc::from(path))
+        let state = dict.load_state();
+        Self::from_parts(trie_ref_root(state.map.clone()), Arc::from(Vec::new()))
     }
 
     /// Create a root zipper from an owned `PathMap` (consumes it).

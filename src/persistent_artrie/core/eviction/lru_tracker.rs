@@ -132,6 +132,22 @@ fn hash_path_std<T: Hash>(path: &[T]) -> u64 {
     hasher.finish()
 }
 
+fn retain_coldest_entries(entries: &mut Vec<(u64, u64)>, n: usize) {
+    if n == 0 {
+        entries.clear();
+        return;
+    }
+
+    let retain_len = n.min(entries.len());
+    if retain_len < entries.len() / 4 {
+        entries.select_nth_unstable_by_key(retain_len - 1, |(_h, score)| std::cmp::Reverse(*score));
+        entries.truncate(retain_len);
+    }
+
+    entries.sort_unstable_by_key(|(_h, score)| std::cmp::Reverse(*score));
+    entries.truncate(retain_len);
+}
+
 /// Registry for node access tracking.
 ///
 /// Maps node path hashes to access trackers. This is an alternative to
@@ -280,17 +296,7 @@ impl LruRegistry {
             .map(|entry| (*entry.key(), entry.value().coldness_score(now)))
             .collect();
 
-        // Partial sort for efficiency when n << len
-        let len = entries.len();
-        if n < len / 4 {
-            entries.select_nth_unstable_by_key(n.min(len.saturating_sub(1)), |(_h, score)| {
-                std::cmp::Reverse(*score)
-            });
-            entries.truncate(n);
-        } else {
-            entries.sort_unstable_by_key(|(_h, score)| std::cmp::Reverse(*score));
-            entries.truncate(n);
-        }
+        retain_coldest_entries(&mut entries, n);
 
         entries.into_iter().map(|(h, _)| h).collect()
     }
@@ -442,6 +448,24 @@ mod tests {
         // The coldest hashes should be cold1 and cold2, not hot
         let hot_hash = hash_path(b"hot");
         assert!(!coldest.contains(&hot_hash));
+    }
+
+    #[test]
+    fn test_retain_coldest_entries_sorts_partial_selection_prefix() {
+        let mut entries: Vec<_> = (0..32).map(|i| (i, i)).collect();
+
+        retain_coldest_entries(&mut entries, 4);
+
+        assert_eq!(entries, vec![(31, 31), (30, 30), (29, 29), (28, 28)]);
+    }
+
+    #[test]
+    fn test_retain_coldest_entries_handles_zero_limit() {
+        let mut entries = vec![(1, 10), (2, 20), (3, 30)];
+
+        retain_coldest_entries(&mut entries, 0);
+
+        assert!(entries.is_empty());
     }
 
     #[test]

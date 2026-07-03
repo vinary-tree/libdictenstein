@@ -2,17 +2,17 @@
 //!
 //! This module is the foundation of the TrieRef-based PathMap integration. It
 //! replaces the historical *path-replay* adapters — which re-walked the trie
-//! from the root under a fresh read lock on **every** operation — with thin
+//! from the root on **every** operation — with thin
 //! value-type handles over PathMap's own [`TrieRefOwned`] / [`TrieRefBorrowed`]
 //! node references.
 //!
 //! # Why TrieRef
 //!
-//! The previous `PathMapNode` stored `{ Arc<RwLock<PathMap>>, Arc<Vec<u8>> path }`
-//! and, for each `is_final` / `transition` / `edges` / `value` call, acquired a
-//! read lock and called `read_zipper_at_path(path)`, descending the **entire**
-//! path from the root again. Walking a term of length `n` therefore cost
-//! `𝒪(n²)` byte-steps plus `n` lock round-trips, and `edges()` additionally
+//! The previous `PathMapNode` stored a live map handle plus a byte path and,
+//! for each `is_final` / `transition` / `edges` / `value` call, called
+//! `read_zipper_at_path(path)`, descending the **entire** path from the root
+//! again. Walking a term of length `n` therefore cost `𝒪(n²)` byte-steps, and
+//! `edges()` additionally
 //! scanned all 256 possible child bytes and re-validated each survivor with yet
 //! another lock + root replay.
 //!
@@ -50,6 +50,24 @@ use pathmap::zipper::{
 };
 use pathmap::PathMap;
 use std::marker::PhantomData;
+
+/// Atomically published mutable PathMap dictionary state.
+///
+/// Bundling the trie root and exact term count in one immutable snapshot keeps
+/// readers wait-free and prevents torn `(map, len)` observations during CAS
+/// retries by writers.
+#[derive(Clone, Debug)]
+pub(crate) struct PathMapState<V: DictionaryValue> {
+    pub(crate) map: PathMap<V>,
+    pub(crate) len: usize,
+}
+
+impl<V: DictionaryValue> PathMapState<V> {
+    #[inline]
+    pub(crate) fn new(map: PathMap<V>, len: usize) -> Self {
+        Self { map, len }
+    }
+}
 
 mod sealed {
     /// Seals [`super::TrieRefLike`] so it can only ever be implemented for the

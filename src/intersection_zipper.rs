@@ -332,30 +332,26 @@ impl<Z: DictZipper, S: Clone + Send + Sync> DictZipper for IntersectionZipper<Z,
         // For intersection: only include children that ALL dictionaries have.
         // First, collect labels present in ALL active zippers.
 
-        // Get labels from each active zipper
-        let label_sets: Vec<HashSet<Z::Unit>> = self
+        // Get labels from each active zipper. Sorting by set size lets the
+        // membership probe start from the sparsest branch.
+        let mut label_sets: Vec<HashSet<Z::Unit>> = self
             .zippers
             .iter()
             .filter_map(|z| z.as_ref())
             .map(|z| z.children().map(|(label, _)| label).collect())
             .collect();
+        label_sets.sort_unstable_by_key(HashSet::len);
 
         // Find intersection of all label sets
-        let common_labels: Vec<Z::Unit> = if label_sets.is_empty() {
-            Vec::new()
-        } else if label_sets.len() == 1 {
-            label_sets[0].iter().copied().collect()
-        } else {
-            // Intersect all sets
-            let mut result = label_sets[0].clone();
-            for set in label_sets.iter().skip(1) {
-                result = result.intersection(set).copied().collect();
-            }
-            let mut labels: Vec<_> = result.into_iter().collect();
-            // Sort for deterministic ordering
-            labels.sort_by(|a, b| format!("{:?}", a).cmp(&format!("{:?}", b)));
-            labels
+        let mut common_labels: Vec<Z::Unit> = match label_sets.split_first() {
+            None => Vec::new(),
+            Some((smallest, rest)) => smallest
+                .iter()
+                .copied()
+                .filter(|label| rest.iter().all(|set| set.contains(label)))
+                .collect(),
         };
+        common_labels.sort_unstable();
 
         // Create child zippers for each common label
         let self_clone = self.clone();

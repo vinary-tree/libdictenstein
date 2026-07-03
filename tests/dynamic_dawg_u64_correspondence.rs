@@ -15,6 +15,9 @@ use libdictenstein::{CharUnit, DictZipper, Dictionary, DictionaryNode, ValuedDic
 use proptest::prelude::*;
 use proptest::test_runner::TestCaseError;
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Barrier};
+use std::thread;
 
 #[derive(Debug, Clone)]
 enum SequenceOp {
@@ -303,6 +306,91 @@ fn update_or_insert_preserves_existing_value_before_update() {
     assert!(dict.insert_sequence(&[]));
     assert!(!dict.update_or_insert_sequence(&[], 33, |value| *value += 5));
     assert_eq!(dict.get_sequence_value(&[]), Some(33));
+}
+
+#[test]
+fn concurrent_update_or_insert_sequence_retries_without_lost_increments() {
+    fn assert_counter(sequence: Vec<u64>) {
+        const WRITERS: usize = 8;
+        const INCREMENTS: usize = 64;
+
+        let dict = Arc::new(DynamicDawgU64::<i64>::new());
+        assert!(dict.insert_sequence_with_value(&sequence, 0));
+
+        let sequence = Arc::new(sequence);
+        let barrier = Arc::new(Barrier::new(WRITERS));
+        let mut handles = Vec::with_capacity(WRITERS);
+
+        for _ in 0..WRITERS {
+            let dict = Arc::clone(&dict);
+            let sequence = Arc::clone(&sequence);
+            let barrier = Arc::clone(&barrier);
+            handles.push(thread::spawn(move || {
+                barrier.wait();
+                for _ in 0..INCREMENTS {
+                    assert!(!dict.update_or_insert_sequence(&sequence, 0, |value| {
+                        *value += 1;
+                    }));
+                }
+            }));
+        }
+
+        for handle in handles {
+            handle.join().expect("update thread");
+        }
+
+        assert_eq!(
+            dict.get_sequence_value(&sequence),
+            Some((WRITERS * INCREMENTS) as i64)
+        );
+    }
+
+    assert_counter(vec![10, 20, 30]);
+    assert_counter(Vec::new());
+}
+
+#[test]
+fn concurrent_first_update_or_insert_sequence_has_one_insert_winner() {
+    fn assert_counter(sequence: Vec<u64>) {
+        const WRITERS: usize = 8;
+        const INCREMENTS: usize = 64;
+
+        let dict = Arc::new(DynamicDawgU64::<i64>::new());
+        let sequence = Arc::new(sequence);
+        let barrier = Arc::new(Barrier::new(WRITERS));
+        let insert_winners = Arc::new(AtomicUsize::new(0));
+        let mut handles = Vec::with_capacity(WRITERS);
+
+        for _ in 0..WRITERS {
+            let dict = Arc::clone(&dict);
+            let sequence = Arc::clone(&sequence);
+            let barrier = Arc::clone(&barrier);
+            let insert_winners = Arc::clone(&insert_winners);
+            handles.push(thread::spawn(move || {
+                barrier.wait();
+                for _ in 0..INCREMENTS {
+                    if dict.update_or_insert_sequence(&sequence, 0, |value| {
+                        *value += 1;
+                    }) {
+                        insert_winners.fetch_add(1, Ordering::Relaxed);
+                    }
+                }
+            }));
+        }
+
+        for handle in handles {
+            handle.join().expect("update thread");
+        }
+
+        assert_eq!(insert_winners.load(Ordering::Relaxed), 1);
+        assert_eq!(
+            dict.get_sequence_value(&sequence),
+            Some((WRITERS * INCREMENTS - 1) as i64)
+        );
+    }
+
+    assert_counter(vec![10, 20, 30]);
+    assert_counter(Vec::new());
 }
 
 #[test]

@@ -14,9 +14,10 @@ use crate::CharUnit;
 
 /// Internal state of the suffix automaton.
 ///
-/// This is wrapped in `Arc<RwLock<...>>` to provide thread-safe concurrent
-/// access with dynamic mutation support.
-#[derive(Debug)]
+/// This is published through an atomic snapshot handle by the byte and char
+/// frontends so traversals can hold a stable, wait-free view while writers
+/// prepare and publish cloned graph revisions.
+#[derive(Debug, Clone)]
 #[cfg_attr(
     feature = "serialization",
     derive(serde::Serialize, serde::Deserialize)

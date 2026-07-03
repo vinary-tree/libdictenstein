@@ -358,12 +358,9 @@ impl<Z: DictZipper, S: Clone + Send + Sync> DictZipper for UnionZipper<Z, S> {
             .flat_map(|z| z.children().map(|(label, _)| label))
             .collect();
 
-        // Remove duplicates and sort for deterministic ordering
-        labels.sort_by(|a, b| {
-            // Use Debug trait for comparison since CharUnit doesn't require Ord
-            // This works for u8, char, and u64 which all have natural ordering
-            format!("{:?}", a).cmp(&format!("{:?}", b))
-        });
+        // Remove duplicates and sort for deterministic ordering. `CharUnit`
+        // guarantees `Ord`, so this avoids per-comparison debug string allocation.
+        labels.sort_unstable();
         labels.dedup();
 
         // Create child zippers for each unique label

@@ -85,7 +85,7 @@ use super::compact_encoding::{
 use super::arena_manager::ArenaSlot;
 
 use super::relative_encoding::{
-    encode_child_pointer, encode_sequential_siblings, try_decode_children,
+    encode_child_pointer, encode_sequential_siblings, encoded_size, try_decode_children,
     try_decode_sequential_siblings, RelativeEncodingError, SerializationContext,
 };
 
@@ -991,7 +991,7 @@ fn reconstruct_node_from_decoded(decoded: DecodedCompactNode) -> Result<CharNode
 /// # Returns
 /// Vector of ArenaSlots for all non-null children (sorted by key for determinism)
 pub fn collect_char_child_slots(node: &CharNode) -> Vec<ArenaSlot> {
-    let mut slots = Vec::new();
+    let mut slots = Vec::with_capacity(node.header().num_children as usize);
 
     match node {
         CharNode::N4(n) => {
@@ -1023,7 +1023,8 @@ pub fn collect_char_child_slots(node: &CharNode) -> Vec<ArenaSlot> {
         }
         CharNode::Bucket(n) => {
             // Sort by key for deterministic serialization
-            let mut entries: Vec<_> = n.entries.iter().collect();
+            let mut entries = Vec::with_capacity(n.entries.len());
+            entries.extend(n.entries.iter());
             entries.sort_by_key(|&(k, _)| *k);
             for (_, child) in entries {
                 if !child.is_null() {
@@ -1036,6 +1037,19 @@ pub fn collect_char_child_slots(node: &CharNode) -> Vec<ArenaSlot> {
     }
 
     slots
+}
+
+fn encoded_char_children_size(ctx: &SerializationContext, child_slots: &[ArenaSlot]) -> usize {
+    if ctx.use_sequential {
+        ctx.first_child_slot
+            .map(|first_child| encoded_size(ctx.parent_slot, first_child))
+            .unwrap_or(0)
+    } else {
+        child_slots
+            .iter()
+            .map(|&slot| encoded_size(ctx.parent_slot, slot))
+            .sum()
+    }
 }
 
 /// Convert a SwizzledPtr to a char ArenaSlot
@@ -1072,7 +1086,6 @@ fn char_node_data_size_v2(
         };
         let first_slot_size = if first_child.arena_id == ctx.parent_slot.arena_id {
             // Same arena: relative offset uses varint
-            use super::relative_encoding::encoded_size;
             encoded_size(ctx.parent_slot, first_child)
         } else {
             // Cross arena: full 9-byte encoding
@@ -1087,11 +1100,7 @@ fn char_node_data_size_v2(
         }
     } else {
         // Relative mode: encode each child pointer individually
-        let mut children_size = 0;
-        for slot in child_slots {
-            use super::relative_encoding::encoded_size;
-            children_size += encoded_size(ctx.parent_slot, *slot);
-        }
+        let children_size = encoded_char_children_size(ctx, child_slots);
 
         match node {
             CharNode::N4(_) => 4 * 4 + children_size + 8, // 4 keys + children + value_ptr
@@ -1206,7 +1215,7 @@ pub fn serialize_char_node_v2<W: Write>(
     }
 
     // Encode children based on context
-    let mut children_buf = Vec::new();
+    let mut children_buf = Vec::with_capacity(encoded_char_children_size(ctx, &child_slots));
 
     if ctx.use_sequential {
         let Some(first_child) = ctx.first_child_slot else {

@@ -3,6 +3,7 @@
 //! This module maps node paths to their disk locations (SwizzledPtr) after checkpoint.
 //! Only nodes in the registry can be evicted, as they have valid disk representations.
 
+use std::cmp::Reverse;
 use std::collections::HashMap;
 
 use super::lru_tracker::LruRegistry;
@@ -359,8 +360,7 @@ impl DiskLocationRegistry {
             })
             .collect();
 
-        // Sort by coldness (coldest first)
-        candidates.sort_unstable_by_key(|(_, _, coldness)| std::cmp::Reverse(*coldness));
+        retain_coldest_prefix(&mut candidates, max_count, |(_, _, coldness)| *coldness);
 
         // Select until target bytes reached or max count
         let mut result = Vec::with_capacity(max_count.min(candidates.len()));
@@ -406,7 +406,7 @@ impl DiskLocationRegistry {
             })
             .collect();
 
-        candidates.sort_unstable_by_key(|(_, _, coldness)| std::cmp::Reverse(*coldness));
+        retain_coldest_prefix(&mut candidates, max_count, |(_, _, coldness)| *coldness);
 
         let mut result = Vec::with_capacity(max_count.min(candidates.len()));
         let mut total_bytes = 0;
@@ -445,6 +445,24 @@ impl DiskLocationRegistry {
             .map(|n| n.size_bytes + STRUCT_OVERHEAD_CHAR)
             .sum()
     }
+}
+
+fn retain_coldest_prefix<T, F>(candidates: &mut Vec<T>, max_count: usize, mut coldness: F)
+where
+    F: FnMut(&T) -> u64,
+{
+    let limit = max_count.min(candidates.len());
+    if limit == 0 {
+        candidates.clear();
+        return;
+    }
+
+    if limit < candidates.len() / 4 {
+        candidates.select_nth_unstable_by_key(limit - 1, |item| Reverse(coldness(item)));
+        candidates.truncate(limit);
+    }
+
+    candidates.sort_unstable_by_key(|item| Reverse(coldness(item)));
 }
 
 impl Default for DiskLocationRegistry {
@@ -602,6 +620,66 @@ mod tests {
 
         let total_bytes: usize = selected.iter().map(|(_, n)| n.size_bytes).sum();
         assert!(total_bytes >= 500 || selected.len() >= 5);
+    }
+
+    #[test]
+    fn select_for_eviction_respects_small_cap_without_full_result() {
+        let mut registry = DiskLocationRegistry::new();
+        let lru = LruRegistry::new();
+
+        for i in 0..32 {
+            let path = format!("node{i:02}");
+            registry.register(
+                path.clone().into_bytes(),
+                make_disk_ptr(1, i * 16),
+                100,
+                1,
+                NodeType::Node16,
+            );
+            for _ in 0..i {
+                lru.touch(path.as_bytes());
+            }
+        }
+
+        let selected = registry.select_for_eviction(10_000, &lru, 1, 3, 0);
+        assert_eq!(selected.len(), 3);
+
+        let selected_paths: Vec<_> = selected
+            .into_iter()
+            .map(|(_, node)| String::from_utf8(node.path).expect("test path utf8"))
+            .collect();
+
+        for path in selected_paths {
+            assert_ne!(path, "node31", "hottest node must not be selected");
+        }
+    }
+
+    #[test]
+    fn select_char_for_eviction_respects_small_cap_without_full_result() {
+        let mut registry = DiskLocationRegistry::new();
+        let lru = LruRegistry::new();
+
+        for i in 0..32 {
+            let path = vec!['節', char::from_u32('a' as u32 + i).expect("ascii char")];
+            registry.register_char(
+                path.clone(),
+                make_disk_ptr(1, i * 16),
+                100,
+                1,
+                NodeType::CharNode16,
+            );
+            for _ in 0..i {
+                lru.touch_hash(super::super::lru_tracker::hash_char_path(&path));
+            }
+        }
+
+        let selected = registry.select_char_for_eviction(10_000, &lru, 1, 3, 0);
+        assert_eq!(selected.len(), 3);
+
+        let hottest = vec!['節', char::from_u32('a' as u32 + 31).expect("ascii char")];
+        for (_, node) in selected {
+            assert_ne!(node.path, hottest, "hottest char node must not be selected");
+        }
     }
 
     #[test]

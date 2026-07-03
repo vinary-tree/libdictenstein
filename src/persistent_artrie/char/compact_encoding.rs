@@ -349,6 +349,7 @@ pub fn read_n_values_from_slice(
 
 /// Write N values with the specified byte width to a Vec
 pub fn write_n_values_to_vec(values: &[u64], width: u8, out: &mut Vec<u8>) {
+    out.reserve(values.len() * width as usize);
     for &value in values {
         write_fixed_width_to_vec(value, width, out);
     }

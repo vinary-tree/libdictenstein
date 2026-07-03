@@ -17,7 +17,7 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
     ///
     /// Returns an iterator yielding terms as `Vec<u8>` in lexicographic order.
     pub fn iter(&self) -> TermIterator<V> {
-        let mut terms: Vec<_> = self
+        let terms: Vec<_> = self
             .iter_prefix_with_arena(b"")
             .ok()
             .flatten()
@@ -25,7 +25,6 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
             .into_iter()
             .map(|entry| entry.term)
             .collect();
-        terms.sort();
         TermIterator::from_terms(terms)
     }
 
@@ -49,7 +48,7 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
         // DROPPED term-only members on a mixed valued/value-less trie (the
         // data-loss-in-observation F7's converter exposed when an Owned mixed-usage file
         // now reopens INTO the overlay).
-        let mut entries: Vec<(Vec<u8>, Option<V>)> = self
+        let entries: Vec<(Vec<u8>, Option<V>)> = self
             .iter_prefix_with_arena(b"")
             .ok()
             .flatten()
@@ -62,7 +61,6 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
                 (entry.term, value)
             })
             .collect();
-        entries.sort_by(|left, right| left.0.cmp(&right.0));
         TermValueIterator::from_terms(entries)
     }
 
@@ -85,8 +83,7 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
 
     /// Direct prefix iteration implementation (non-zipper based).
     fn iter_prefix_direct(&self, prefix: &[u8]) -> Option<impl Iterator<Item = Vec<u8>> + '_> {
-        let mut terms = self.iter_prefix_with_arena(prefix).ok()??;
-        terms.sort_by(|left, right| left.term.cmp(&right.term));
+        let terms = self.iter_prefix_with_arena(prefix).ok()??;
         Some(terms.into_iter().map(|t| t.term))
     }
 
@@ -102,8 +99,60 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
     where
         V: Clone,
     {
-        let mut terms = self.iter_prefix_with_values_and_arena(prefix).ok()??;
-        terms.sort_by(|left, right| left.term.cmp(&right.term));
+        let terms = self.iter_prefix_with_values_and_arena(prefix).ok()??;
         Some(terms.into_iter().map(|t| (t.term, t.value)))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn scratch(prefix: &str) -> tempfile::TempDir {
+        std::fs::create_dir_all("target/test-tmp").expect("create target/test-tmp");
+        tempfile::Builder::new()
+            .prefix(prefix)
+            .tempdir_in("target/test-tmp")
+            .expect("scratch tempdir under target/test-tmp")
+    }
+
+    #[test]
+    fn public_iter_uses_overlay_lexicographic_order_without_resort() {
+        let dir = scratch("byte-public-iter-order-");
+        let dict: PersistentARTrie<()> =
+            PersistentARTrie::create(dir.path().join("dict.part")).expect("create trie");
+        for term in ["z", "aa", "a", "ab", "b", ""] {
+            dict.insert(term);
+        }
+
+        let terms: Vec<String> = dict.iter_strings().collect();
+
+        assert_eq!(terms, vec!["", "a", "aa", "ab", "b", "z"]);
+    }
+
+    #[test]
+    fn public_iter_with_values_preserves_overlay_lexicographic_order() {
+        let dir = scratch("byte-public-iter-values-order-");
+        let dict: PersistentARTrie<u64> =
+            PersistentARTrie::create(dir.path().join("dict.part")).expect("create trie");
+        for (term, value) in [("z", 6), ("aa", 3), ("a", 2), ("ab", 4), ("b", 5)] {
+            dict.insert_with_value(term, value);
+        }
+
+        let entries: Vec<_> = dict
+            .iter_with_values()
+            .map(|(term, value)| (String::from_utf8(term).expect("utf8"), value))
+            .collect();
+
+        assert_eq!(
+            entries,
+            vec![
+                ("a".to_string(), Some(2)),
+                ("aa".to_string(), Some(3)),
+                ("ab".to_string(), Some(4)),
+                ("b".to_string(), Some(5)),
+                ("z".to_string(), Some(6)),
+            ]
+        );
     }
 }

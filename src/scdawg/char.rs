@@ -45,8 +45,8 @@
 
 use std::sync::Arc;
 
+use super::lockfree::LockFreeScdawg;
 use crate::substring::{BidirectionalDictionaryNode, SubstringDictionary, SubstringMatch};
-use crate::sync_compat::RwLock;
 use crate::value::DictionaryValue;
 use crate::{Dictionary, DictionaryNode};
 
@@ -91,7 +91,7 @@ type ScdawgCharInner<V = ()> = super::core::ScdawgCoreInner<char, V>;
 /// Uses `char` for edge labels to support Unicode text.
 #[derive(Clone, Debug)]
 pub struct ScdawgChar<V: DictionaryValue = ()> {
-    inner: Arc<RwLock<ScdawgCharInner<V>>>,
+    inner: LockFreeScdawg<char, V>,
 }
 
 impl<V: DictionaryValue> Default for ScdawgChar<V> {
@@ -101,11 +101,16 @@ impl<V: DictionaryValue> Default for ScdawgChar<V> {
 }
 
 impl<V: DictionaryValue> ScdawgChar<V> {
+    #[inline]
+    fn from_inner(inner: ScdawgCharInner<V>) -> Self {
+        Self {
+            inner: LockFreeScdawg::from_inner(inner),
+        }
+    }
+
     /// Create a new empty Unicode-aware SCDAWG.
     pub fn new() -> Self {
-        Self {
-            inner: Arc::new(RwLock::new(ScdawgCharInner::new())),
-        }
+        Self::from_inner(ScdawgCharInner::new())
     }
 
     /// Create from an iterator of terms.
@@ -119,18 +124,12 @@ impl<V: DictionaryValue> ScdawgChar<V> {
         let term_count = terms_vec.len();
         let total_chars: usize = terms_vec.iter().map(|s| s.as_ref().chars().count()).sum();
 
-        let inner = ScdawgCharInner::with_capacity(term_count, total_chars);
-        let scdawg = Self {
-            inner: Arc::new(RwLock::new(inner)),
-        };
-        {
-            let mut inner = scdawg.inner.write();
-            for term in terms_vec {
-                inner.insert(term.as_ref());
-            }
-            inner.compute_left_edges();
+        let mut inner = ScdawgCharInner::with_capacity(term_count, total_chars);
+        for term in terms_vec {
+            inner.insert(term.as_ref());
         }
-        scdawg
+        inner.compute_left_edges();
+        Self::from_inner(inner)
     }
 
     /// Create from an iterator of (term, value) pairs.
@@ -139,53 +138,61 @@ impl<V: DictionaryValue> ScdawgChar<V> {
         I: IntoIterator<Item = (S, V)>,
         S: AsRef<str>,
     {
-        let scdawg = ScdawgChar::new();
-        for (term, value) in terms {
-            scdawg.insert_with_value(term.as_ref(), value);
+        let entries: Vec<(String, V)> = terms
+            .into_iter()
+            .map(|(term, value)| (term.as_ref().to_string(), value))
+            .collect();
+        let total_chars: usize = entries.iter().map(|(term, _)| term.chars().count()).sum();
+        let mut inner = ScdawgCharInner::with_capacity(entries.len(), total_chars);
+        for (term, value) in entries {
+            inner.insert_with_value(&term, value);
         }
-        scdawg
+        inner.compute_left_edges();
+        Self::from_inner(inner)
     }
 
     /// Insert a term.
     pub fn insert(&self, term: &str) -> bool {
-        let mut inner = self.inner.write();
-        let result = inner.insert(term);
-        if result {
-            inner.compute_left_edges();
-        }
-        result
+        self.inner.mutate(|inner| {
+            let result = inner.insert(term);
+            if result {
+                inner.compute_left_edges();
+            }
+            (result, result)
+        })
     }
 
     /// Insert a term with a value.
     pub fn insert_with_value(&self, term: &str, value: V) -> bool {
-        let mut inner = self.inner.write();
-        let result = inner.insert_with_value(term, value);
-        if result {
-            inner.compute_left_edges();
-        }
-        result
+        self.inner.mutate(|inner| {
+            let result = inner.insert_with_value(term, value.clone());
+            if result {
+                inner.compute_left_edges();
+            }
+            (result, true)
+        })
     }
 
     /// Check if a substring exists in any term.
     pub fn contains_substring(&self, pattern: &str) -> bool {
-        let inner = self.inner.read();
+        let inner = self.inner.load();
         inner.contains_substring(pattern)
     }
 
     /// Iterate over all terms.
     pub fn iter(&self) -> impl Iterator<Item = String> {
-        let inner = self.inner.read();
+        let inner = self.inner.load();
         inner.terms.clone().into_iter()
     }
 
     /// Get the number of terms in the SCDAWG.
     pub fn term_count(&self) -> usize {
-        self.inner.read().term_count()
+        self.inner.load().term_count()
     }
 
     /// Get the number of nodes in the SCDAWG.
     pub fn node_count(&self) -> usize {
-        self.inner.read().nodes.len()
+        self.inner.load().nodes.len()
     }
 
     /// Get the value associated with a term.
@@ -193,7 +200,7 @@ impl<V: DictionaryValue> ScdawgChar<V> {
     where
         V: Clone,
     {
-        let inner = self.inner.read();
+        let inner = self.inner.load();
         if let Some(value) = inner.term_values.get(term) {
             return Some(value.clone());
         }
@@ -220,11 +227,11 @@ impl<V: DictionaryValue> ScdawgChar<V> {
     ///
     /// This is the `find(x)` operation from Blumer et al. (1987).
     pub fn find(&self, pattern: &str) -> Option<ScdawgCharNodeHandle<V>> {
-        let inner = self.inner.read();
+        let inner = self.inner.load();
         inner
             .find_substring_fast(pattern)
             .map(|node_idx| ScdawgCharNodeHandle {
-                inner: Arc::clone(&self.inner),
+                inner: Arc::clone(&inner),
                 node_idx,
             })
     }
@@ -233,15 +240,14 @@ impl<V: DictionaryValue> ScdawgChar<V> {
     ///
     /// This is the `freq(x)` operation from Blumer et al. (1987).
     pub fn freq(&self, pattern: &str) -> usize {
-        let inner = self.inner.read();
+        let inner = self.inner.load();
         inner.frequency(pattern)
     }
 
     /// Get the frequency at a specific SCDAWG node handle.
     pub fn freq_at(&self, handle: &ScdawgCharNodeHandle<V>) -> usize {
-        let inner = self.inner.read();
         let mut count = 0;
-        inner.count_occurrences(handle.node_idx, &mut count);
+        handle.inner.count_occurrences(handle.node_idx, &mut count);
         count
     }
 
@@ -250,7 +256,7 @@ impl<V: DictionaryValue> ScdawgChar<V> {
     /// This is the `locations(x)` operation from Blumer et al. (1987).
     /// Returns (term, start_position) pairs where position is in characters.
     pub fn locations(&self, pattern: &str) -> Vec<(String, usize)> {
-        let inner = self.inner.read();
+        let inner = self.inner.load();
         inner.find_exact_substring(pattern)
     }
 
@@ -260,9 +266,10 @@ impl<V: DictionaryValue> ScdawgChar<V> {
         handle: &ScdawgCharNodeHandle<V>,
         pattern_len: usize,
     ) -> Vec<(String, usize)> {
-        let inner = self.inner.read();
-        let mut results = Vec::new();
-        inner.collect_term_positions(handle.node_idx, pattern_len, &mut results);
+        let mut results = Vec::with_capacity(handle.inner.nodes[handle.node_idx].term_ends.len());
+        handle
+            .inner
+            .collect_term_positions(handle.node_idx, pattern_len, &mut results);
         results
     }
 }
@@ -275,22 +282,22 @@ impl<V: DictionaryValue> Dictionary for ScdawgChar<V> {
     type Node = ScdawgCharNodeHandle<V>;
 
     fn len(&self) -> Option<usize> {
-        Some(self.inner.read().term_count())
+        Some(self.inner.load().term_count())
     }
 
     fn contains(&self, term: &str) -> bool {
-        self.inner.read().contains(term)
+        self.inner.load().contains(term)
     }
 
     fn root(&self) -> Self::Node {
         ScdawgCharNodeHandle {
-            inner: Arc::clone(&self.inner),
+            inner: self.inner.load(),
             node_idx: 0,
         }
     }
 
     fn sync_strategy(&self) -> crate::SyncStrategy {
-        crate::SyncStrategy::ExternalSync
+        crate::SyncStrategy::InternalSync
     }
 }
 
@@ -309,7 +316,7 @@ impl<V: DictionaryValue> crate::MappedDictionary for ScdawgChar<V> {
 /// Handle to a node in the Unicode-aware SCDAWG.
 #[derive(Clone)]
 pub struct ScdawgCharNodeHandle<V: DictionaryValue = ()> {
-    inner: Arc<RwLock<ScdawgCharInner<V>>>,
+    inner: Arc<ScdawgCharInner<V>>,
     node_idx: usize,
 }
 
@@ -325,13 +332,17 @@ impl<V: DictionaryValue> DictionaryNode for ScdawgCharNodeHandle<V> {
     type Unit = char;
 
     fn is_final(&self) -> bool {
-        let inner = self.inner.read();
-        inner.nodes[self.node_idx].is_final
+        self.inner
+            .nodes
+            .get(self.node_idx)
+            .map(|node| node.is_final)
+            .unwrap_or(false)
     }
 
     fn transition(&self, label: char) -> Option<Self> {
-        let inner = self.inner.read();
-        inner.nodes[self.node_idx]
+        self.inner
+            .nodes
+            .get(self.node_idx)?
             .get_edge(label)
             .map(|idx| ScdawgCharNodeHandle {
                 inner: Arc::clone(&self.inner),
@@ -340,15 +351,20 @@ impl<V: DictionaryValue> DictionaryNode for ScdawgCharNodeHandle<V> {
     }
 
     fn edges(&self) -> Box<dyn Iterator<Item = (char, Self)> + '_> {
-        let inner = self.inner.read();
-        let edges: Vec<_> = inner.nodes[self.node_idx]
-            .forward_edges
-            .iter()
-            .map(|&(label, idx)| {
+        let edges = self
+            .inner
+            .nodes
+            .get(self.node_idx)
+            .map(|node| node.forward_edges.clone())
+            .unwrap_or_default();
+        let inner = Arc::clone(&self.inner);
+        let edges: Vec<_> = edges
+            .into_iter()
+            .map(|(label, idx)| {
                 (
                     label,
                     ScdawgCharNodeHandle {
-                        inner: Arc::clone(&self.inner),
+                        inner: Arc::clone(&inner),
                         node_idx: idx,
                     },
                 )
@@ -358,8 +374,13 @@ impl<V: DictionaryValue> DictionaryNode for ScdawgCharNodeHandle<V> {
     }
 
     fn edge_count(&self) -> Option<usize> {
-        let inner = self.inner.read();
-        Some(inner.nodes[self.node_idx].forward_edges.len())
+        Some(
+            self.inner
+                .nodes
+                .get(self.node_idx)
+                .map(|node| node.forward_edges.len())
+                .unwrap_or(0),
+        )
     }
 }
 
@@ -372,8 +393,7 @@ unsafe impl<V: DictionaryValue> Sync for ScdawgCharNodeHandle<V> {}
 
 impl<V: DictionaryValue> BidirectionalDictionaryNode for ScdawgCharNodeHandle<V> {
     fn parent(&self) -> Option<Self> {
-        let inner = self.inner.read();
-        let node = &inner.nodes[self.node_idx];
+        let node = self.inner.nodes.get(self.node_idx)?;
         if node.parent == NIL {
             None
         } else {
@@ -385,8 +405,7 @@ impl<V: DictionaryValue> BidirectionalDictionaryNode for ScdawgCharNodeHandle<V>
     }
 
     fn parent_label(&self) -> Option<char> {
-        let inner = self.inner.read();
-        let node = &inner.nodes[self.node_idx];
+        let node = self.inner.nodes.get(self.node_idx)?;
         if node.parent == NIL {
             None
         } else {
@@ -395,15 +414,20 @@ impl<V: DictionaryValue> BidirectionalDictionaryNode for ScdawgCharNodeHandle<V>
     }
 
     fn reverse_edges(&self) -> Box<dyn Iterator<Item = (char, Self)> + '_> {
-        let inner = self.inner.read();
-        let edges: Vec<_> = inner.nodes[self.node_idx]
-            .left_edges
-            .iter()
-            .map(|&(label, idx)| {
+        let edges = self
+            .inner
+            .nodes
+            .get(self.node_idx)
+            .map(|node| node.left_edges.clone())
+            .unwrap_or_default();
+        let inner = Arc::clone(&self.inner);
+        let edges: Vec<_> = edges
+            .into_iter()
+            .map(|(label, idx)| {
                 (
                     label,
                     ScdawgCharNodeHandle {
-                        inner: Arc::clone(&self.inner),
+                        inner: Arc::clone(&inner),
                         node_idx: idx,
                     },
                 )
@@ -413,10 +437,12 @@ impl<V: DictionaryValue> BidirectionalDictionaryNode for ScdawgCharNodeHandle<V>
     }
 
     fn reverse_transition(&self, label: char) -> Vec<Self> {
-        let inner = self.inner.read();
-        inner.nodes[self.node_idx]
-            .left_edges
-            .iter()
+        self.inner
+            .nodes
+            .get(self.node_idx)
+            .map(|node| node.left_edges.iter())
+            .into_iter()
+            .flatten()
             .filter(|(l, _)| *l == label)
             .map(|(_, idx)| ScdawgCharNodeHandle {
                 inner: Arc::clone(&self.inner),
@@ -426,8 +452,11 @@ impl<V: DictionaryValue> BidirectionalDictionaryNode for ScdawgCharNodeHandle<V>
     }
 
     fn depth(&self) -> usize {
-        let inner = self.inner.read();
-        inner.nodes[self.node_idx].depth
+        self.inner
+            .nodes
+            .get(self.node_idx)
+            .map(|node| node.depth)
+            .unwrap_or(0)
     }
 }
 
@@ -437,7 +466,7 @@ impl<V: DictionaryValue> BidirectionalDictionaryNode for ScdawgCharNodeHandle<V>
 
 impl<V: DictionaryValue> SubstringDictionary for ScdawgChar<V> {
     fn find_exact_substring(&self, pattern: &str) -> Vec<SubstringMatch<Self::Node>> {
-        let inner = self.inner.read();
+        let inner = self.inner.load();
         let occurrences = inner.find_exact_substring(pattern);
         let pattern_len = pattern.chars().count();
 
@@ -454,7 +483,7 @@ impl<V: DictionaryValue> SubstringDictionary for ScdawgChar<V> {
 
                 SubstringMatch::new(
                     ScdawgCharNodeHandle {
-                        inner: Arc::clone(&self.inner),
+                        inner: Arc::clone(&inner),
                         node_idx,
                     },
                     term,

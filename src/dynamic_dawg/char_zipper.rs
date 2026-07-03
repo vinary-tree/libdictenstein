@@ -1,12 +1,12 @@
 //! Dynamic DAWG character-level zipper implementation.
 //!
 //! This module provides a zipper implementation for DynamicDawgChar that uses
-//! node-index-based navigation with lock-per-operation pattern for thread safety.
+//! Arc-based node references for lock-free navigation.
 //! Unlike DynamicDawgZipper which operates on bytes, this operates on Unicode
 //! characters for correct multi-byte UTF-8 handling.
 
-use super::char::{DynamicDawgChar, DynamicDawgCharInner};
-use crate::sync_compat::RwLock;
+use super::char::DynamicDawgChar;
+use super::lockfree::LockFreeDawgNode;
 use crate::value::DictionaryValue;
 use crate::zipper::{DictZipper, ValuedDictZipper};
 use std::sync::Arc;
@@ -14,30 +14,25 @@ use std::sync::Arc;
 /// Zipper for Dynamic DAWG character-level dictionaries.
 ///
 /// `DynamicDawgCharZipper` provides efficient navigation through Dynamic DAWG structures
-/// using a node-index-based approach with thread-safe concurrent access. This variant
+/// using lock-free node handles with thread-safe concurrent access. This variant
 /// operates on `char` units instead of `u8` bytes, providing correct Unicode semantics.
 ///
 /// # Design
 ///
 /// The zipper stores:
-/// - `inner`: Shared reference to the DAWG inner structure (Arc<RwLock>)
-/// - `node`: Current node index in the DAWG
+/// - `node`: Shared reference to the current node
 /// - `path`: Path from root to current position (Vec<char>)
 ///
-/// Operations use a lock-per-operation pattern, acquiring a read lock only for
-/// the duration of each operation to maximize concurrency.
+/// Operations use atomic edge snapshots and never take a dictionary lock.
 ///
 /// # Thread Safety
 ///
-/// Each operation acquires a read lock, performs the operation, and releases it.
-/// This allows:
-/// - Multiple concurrent readers (navigating different zippers)
-/// - Exclusive write access for modifications (insert/remove)
+/// Multiple zippers can navigate while writers publish new edge snapshots.
 ///
 /// # Performance
 ///
-/// - Node-index-based: No path storage overhead
-/// - Lock-per-operation: Minimal lock contention
+/// - Wait-free reads: no lock acquisition on navigation
+/// - Arc-based: direct node handles without index indirection
 /// - Lightweight Clone: Just Arc clone + usize copy + path clone
 ///
 /// # Unicode Support
@@ -71,11 +66,8 @@ use std::sync::Arc;
 /// ```
 #[derive(Clone)]
 pub struct DynamicDawgCharZipper<V: DictionaryValue = ()> {
-    /// Shared reference to DAWG inner structure
-    inner: Arc<RwLock<DynamicDawgCharInner<V>>>,
-
-    /// Current node index (0 is root)
-    node: usize,
+    /// Current DAWG node.
+    node: Arc<LockFreeDawgNode<char, V>>,
 
     /// Path from root to current position
     path: Vec<char>,
@@ -99,17 +91,20 @@ impl<V: DictionaryValue> DynamicDawgCharZipper<V> {
     /// ```
     pub fn new_from_dict(dict: &DynamicDawgChar<V>) -> Self {
         DynamicDawgCharZipper {
-            inner: dict.inner.clone(),
-            node: 0, // Root is always node 0 in DynamicDawgChar
+            node: dict.inner.root_arc(),
             path: Vec::new(),
         }
     }
 
-    /// Get the current node index.
+    /// Get a stable identifier for the current node.
     ///
     /// Useful for debugging or advanced use cases.
     pub fn node(&self) -> usize {
-        self.node
+        if self.path.is_empty() {
+            0
+        } else {
+            Arc::as_ptr(&self.node) as usize
+        }
     }
 }
 
@@ -117,34 +112,19 @@ impl<V: DictionaryValue> DictZipper for DynamicDawgCharZipper<V> {
     type Unit = char;
 
     fn is_final(&self) -> bool {
-        let inner = self.inner.read();
-        if self.node < inner.nodes.len() {
-            inner.nodes[self.node].is_final
-        } else {
-            false
-        }
+        self.node.is_final()
     }
 
     fn descend(&self, label: Self::Unit) -> Option<Self> {
-        let inner = self.inner.read();
-        if self.node >= inner.nodes.len() {
-            return None;
-        }
-
-        // Find the edge with the given label
-        for (edge_label, target_node) in &inner.nodes[self.node].edges {
-            if *edge_label == label {
-                let mut new_path = self.path.clone();
-                new_path.push(label);
-                return Some(DynamicDawgCharZipper {
-                    inner: self.inner.clone(),
-                    node: *target_node,
-                    path: new_path,
-                });
+        let edges = self.node.edges.load();
+        edges.find(label).map(|child| {
+            let mut new_path = self.path.clone();
+            new_path.push(label);
+            DynamicDawgCharZipper {
+                node: child.clone(),
+                path: new_path,
             }
-        }
-
-        None
+        })
     }
 
     fn path(&self) -> Vec<Self::Unit> {
@@ -152,27 +132,16 @@ impl<V: DictionaryValue> DictZipper for DynamicDawgCharZipper<V> {
     }
 
     fn children(&self) -> impl Iterator<Item = (Self::Unit, Self)> {
-        // Collect edges to avoid holding lock during iteration
-        let edges: Vec<(char, usize)> = {
-            let inner = self.inner.read();
-            if self.node < inner.nodes.len() {
-                inner.nodes[self.node].edges.iter().copied().collect()
-            } else {
-                Vec::new()
-            }
-        };
-
-        // Create iterator from collected edges
-        let inner = self.inner.clone();
+        let edges = self.node.edges.load();
+        let edge_vec: Vec<_> = edges.edges.iter().cloned().collect();
         let base_path = self.path.clone();
-        edges.into_iter().map(move |(label, target)| {
+        edge_vec.into_iter().map(move |(label, child)| {
             let mut new_path = base_path.clone();
             new_path.push(label);
             (
                 label,
                 DynamicDawgCharZipper {
-                    inner: inner.clone(),
-                    node: target,
+                    node: child,
                     path: new_path,
                 },
             )
@@ -184,12 +153,7 @@ impl<V: DictionaryValue> ValuedDictZipper for DynamicDawgCharZipper<V> {
     type Value = V;
 
     fn value(&self) -> Option<Self::Value> {
-        let inner = self.inner.read();
-        if self.node < inner.nodes.len() && inner.nodes[self.node].is_final {
-            inner.nodes[self.node].value.clone()
-        } else {
-            None
-        }
+        self.node.value()
     }
 }
 

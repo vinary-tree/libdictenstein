@@ -37,7 +37,7 @@ use super::scdawg::char::ScdawgChar;
 use super::scdawg::Scdawg;
 use super::suffix_automaton::char::SuffixAutomatonChar;
 use super::suffix_automaton::SuffixAutomaton;
-use super::Dictionary;
+use super::{Dictionary, SyncStrategy};
 
 /// Dictionary backend types.
 ///
@@ -71,6 +71,175 @@ pub enum DictionaryBackend {
     Scdawg,
     /// Compact Suffix DAWG, character (Unicode) variant.
     ScdawgChar,
+}
+
+/// Edge-label unit used by a backend.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BackendKeyUnit {
+    /// Raw UTF-8 bytes (`u8`).
+    Byte,
+    /// Unicode scalar values (`char`).
+    Char,
+    /// Native 64-bit labels.
+    U64,
+}
+
+/// Query semantics exposed by a backend.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BackendQuerySemantics {
+    /// Terms are matched from the root as complete dictionary entries.
+    ExactTerm,
+    /// Indexed text can be matched from suffix states as substrings.
+    Substring,
+}
+
+/// In-place update support exposed by the constructed backend.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BackendUpdateMode {
+    /// The built dictionary is immutable; rebuild to change terms.
+    Immutable,
+    /// Terms can be inserted but not removed through the public backend API.
+    InsertOnly,
+    /// Terms can be inserted and removed.
+    InsertRemove,
+}
+
+/// Machine-readable backend characteristics for selection and benchmarking.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BackendCapabilities {
+    /// Edge-label unit used by traversal.
+    pub key_unit: BackendKeyUnit,
+    /// Exact-term or substring semantics.
+    pub query: BackendQuerySemantics,
+    /// In-place update support.
+    pub updates: BackendUpdateMode,
+    /// Synchronization strategy advertised by the backend family.
+    pub sync_strategy: SyncStrategy,
+    /// Reads do not block on process-local locks.
+    pub lock_free_reads: bool,
+    /// Mutations do not block on process-local locks.
+    pub lock_free_writes: bool,
+}
+
+impl BackendCapabilities {
+    /// Returns true for Unicode scalar-value backends.
+    pub fn is_unicode(self) -> bool {
+        self.key_unit == BackendKeyUnit::Char
+    }
+
+    /// Returns true when the backend supports substring search semantics.
+    pub fn supports_substring_search(self) -> bool {
+        self.query == BackendQuerySemantics::Substring
+    }
+
+    /// Returns true when the backend supports removal through its public API.
+    pub fn supports_removal(self) -> bool {
+        self.updates == BackendUpdateMode::InsertRemove
+    }
+
+    /// Returns true when reads and supported writes are both lock-free.
+    pub fn is_fully_lock_free_for_supported_operations(self) -> bool {
+        self.lock_free_reads
+            && (self.updates == BackendUpdateMode::Immutable || self.lock_free_writes)
+    }
+}
+
+impl DictionaryBackend {
+    /// Machine-readable backend characteristics.
+    pub fn capabilities(self) -> BackendCapabilities {
+        match self {
+            #[cfg(feature = "pathmap-backend")]
+            DictionaryBackend::PathMap => BackendCapabilities {
+                key_unit: BackendKeyUnit::Byte,
+                query: BackendQuerySemantics::ExactTerm,
+                updates: BackendUpdateMode::InsertRemove,
+                sync_strategy: SyncStrategy::InternalSync,
+                lock_free_reads: true,
+                lock_free_writes: true,
+            },
+            #[cfg(feature = "pathmap-backend")]
+            DictionaryBackend::PathMapChar => BackendCapabilities {
+                key_unit: BackendKeyUnit::Char,
+                query: BackendQuerySemantics::ExactTerm,
+                updates: BackendUpdateMode::InsertRemove,
+                sync_strategy: SyncStrategy::InternalSync,
+                lock_free_reads: true,
+                lock_free_writes: true,
+            },
+            DictionaryBackend::DoubleArrayTrie => BackendCapabilities {
+                key_unit: BackendKeyUnit::Byte,
+                query: BackendQuerySemantics::ExactTerm,
+                updates: BackendUpdateMode::Immutable,
+                sync_strategy: SyncStrategy::Persistent,
+                lock_free_reads: true,
+                lock_free_writes: false,
+            },
+            DictionaryBackend::DoubleArrayTrieChar => BackendCapabilities {
+                key_unit: BackendKeyUnit::Char,
+                query: BackendQuerySemantics::ExactTerm,
+                updates: BackendUpdateMode::Immutable,
+                sync_strategy: SyncStrategy::Persistent,
+                lock_free_reads: true,
+                lock_free_writes: false,
+            },
+            DictionaryBackend::DynamicDawg => BackendCapabilities {
+                key_unit: BackendKeyUnit::Byte,
+                query: BackendQuerySemantics::ExactTerm,
+                updates: BackendUpdateMode::InsertRemove,
+                sync_strategy: SyncStrategy::InternalSync,
+                lock_free_reads: true,
+                lock_free_writes: true,
+            },
+            DictionaryBackend::DynamicDawgChar => BackendCapabilities {
+                key_unit: BackendKeyUnit::Char,
+                query: BackendQuerySemantics::ExactTerm,
+                updates: BackendUpdateMode::InsertRemove,
+                sync_strategy: SyncStrategy::InternalSync,
+                lock_free_reads: true,
+                lock_free_writes: true,
+            },
+            DictionaryBackend::DynamicDawgU64 => BackendCapabilities {
+                key_unit: BackendKeyUnit::U64,
+                query: BackendQuerySemantics::ExactTerm,
+                updates: BackendUpdateMode::InsertRemove,
+                sync_strategy: SyncStrategy::InternalSync,
+                lock_free_reads: true,
+                lock_free_writes: true,
+            },
+            DictionaryBackend::SuffixAutomaton => BackendCapabilities {
+                key_unit: BackendKeyUnit::Byte,
+                query: BackendQuerySemantics::Substring,
+                updates: BackendUpdateMode::InsertRemove,
+                sync_strategy: SyncStrategy::InternalSync,
+                lock_free_reads: true,
+                lock_free_writes: true,
+            },
+            DictionaryBackend::SuffixAutomatonChar => BackendCapabilities {
+                key_unit: BackendKeyUnit::Char,
+                query: BackendQuerySemantics::Substring,
+                updates: BackendUpdateMode::InsertRemove,
+                sync_strategy: SyncStrategy::InternalSync,
+                lock_free_reads: true,
+                lock_free_writes: true,
+            },
+            DictionaryBackend::Scdawg => BackendCapabilities {
+                key_unit: BackendKeyUnit::Byte,
+                query: BackendQuerySemantics::Substring,
+                updates: BackendUpdateMode::InsertOnly,
+                sync_strategy: SyncStrategy::InternalSync,
+                lock_free_reads: true,
+                lock_free_writes: true,
+            },
+            DictionaryBackend::ScdawgChar => BackendCapabilities {
+                key_unit: BackendKeyUnit::Char,
+                query: BackendQuerySemantics::Substring,
+                updates: BackendUpdateMode::InsertOnly,
+                sync_strategy: SyncStrategy::InternalSync,
+                lock_free_reads: true,
+                lock_free_writes: true,
+            },
+        }
+    }
 }
 
 impl std::fmt::Display for DictionaryBackend {
@@ -304,6 +473,11 @@ impl DictionaryFactory {
         ]
     }
 
+    /// Machine-readable characteristics for a backend.
+    pub fn backend_capabilities(backend: DictionaryBackend) -> BackendCapabilities {
+        backend.capabilities()
+    }
+
     /// Description of a backend's characteristics.
     pub fn backend_description(backend: DictionaryBackend) -> &'static str {
         match backend {
@@ -444,6 +618,59 @@ mod tests {
             let desc = DictionaryFactory::backend_description(backend);
             assert!(!desc.is_empty(), "{backend} has empty description");
         }
+    }
+
+    #[test]
+    fn test_backend_capabilities_cover_selection_axes() {
+        for backend in DictionaryFactory::available_backends() {
+            let caps = DictionaryFactory::backend_capabilities(backend);
+            assert_eq!(caps, backend.capabilities(), "{backend}");
+            assert!(
+                caps.is_fully_lock_free_for_supported_operations(),
+                "{backend} should be lock-free for advertised operations"
+            );
+
+            match backend {
+                DictionaryBackend::DoubleArrayTrie | DictionaryBackend::DoubleArrayTrieChar => {
+                    assert_eq!(caps.updates, BackendUpdateMode::Immutable, "{backend}");
+                    assert_eq!(caps.sync_strategy, SyncStrategy::Persistent, "{backend}");
+                }
+                DictionaryBackend::SuffixAutomaton
+                | DictionaryBackend::SuffixAutomatonChar
+                | DictionaryBackend::Scdawg
+                | DictionaryBackend::ScdawgChar => {
+                    assert!(
+                        caps.supports_substring_search(),
+                        "{backend} should advertise substring semantics"
+                    );
+                }
+                _ => {
+                    assert!(
+                        !caps.supports_substring_search(),
+                        "{backend} should advertise exact-term semantics"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_backend_capability_key_units() {
+        assert_eq!(
+            DictionaryBackend::DynamicDawg.capabilities().key_unit,
+            BackendKeyUnit::Byte
+        );
+        assert_eq!(
+            DictionaryBackend::DynamicDawgChar.capabilities().key_unit,
+            BackendKeyUnit::Char
+        );
+        assert!(DictionaryBackend::DynamicDawgChar
+            .capabilities()
+            .is_unicode());
+        assert_eq!(
+            DictionaryBackend::DynamicDawgU64.capabilities().key_unit,
+            BackendKeyUnit::U64
+        );
     }
 
     #[test]

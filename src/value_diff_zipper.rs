@@ -344,7 +344,7 @@ where
         // Intersection of children
         let common_labels: Vec<Z::Unit> = {
             let mut labels: Vec<_> = left_labels.intersection(&right_labels).copied().collect();
-            labels.sort_by(|a, b| format!("{:?}", a).cmp(&format!("{:?}", b)));
+            labels.sort_unstable();
             labels
         };
 

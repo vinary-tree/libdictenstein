@@ -338,6 +338,8 @@ pub struct IoUringDiskManager {
     file_size: AtomicU64,
     /// In-memory block count for lock-free CAS allocation.
     block_count: AtomicU32,
+    /// Serializes physical file extension so concurrent allocators cannot truncate newer blocks.
+    resize_lock: Mutex<()>,
     /// Path to the file.
     path: String,
     /// Write-back cache for sub-block I/O coalescing.
@@ -361,6 +363,7 @@ pub struct IoUringDiskManager {
 // SAFETY: IoUringDiskManager is Send + Sync because:
 // - File is Send + Sync
 // - All mutable state is behind atomic ops or Mutex
+// - file extension is serialized by resize_lock
 // - io_uring ring_pool is behind per-ring Mutexes
 // - block_cache is behind Mutex
 // - aligned_block_pool is behind Mutex
@@ -447,6 +450,7 @@ impl IoUringDiskManager {
             ring_pool,
             file_size: AtomicU64::new(file_size),
             block_count: AtomicU32::new(block_count),
+            resize_lock: Mutex::new(()),
             path: path_str,
             block_cache: Mutex::new(HashMap::new()),
             buffers_registered: AtomicBool::new(false),
@@ -506,6 +510,7 @@ impl IoUringDiskManager {
             ring_pool,
             file_size: AtomicU64::new(file_size),
             block_count: AtomicU32::new(block_count),
+            resize_lock: Mutex::new(()),
             path: path_str,
             block_cache: Mutex::new(HashMap::new()),
             buffers_registered: AtomicBool::new(false),
@@ -574,6 +579,7 @@ impl IoUringDiskManager {
             ring_pool,
             file_size: AtomicU64::new(file_size),
             block_count: AtomicU32::new(block_count),
+            resize_lock: Mutex::new(()),
             path: path_str,
             block_cache: Mutex::new(HashMap::new()),
             buffers_registered: AtomicBool::new(false),
@@ -1098,9 +1104,13 @@ impl IoUringDiskManager {
         let mut cache = self.block_cache.lock();
         if let Some(cached) = cache.get_mut(&0) {
             const BLOCK_COUNT_OFFSET: usize = 24;
-            cached.data.data[BLOCK_COUNT_OFFSET..BLOCK_COUNT_OFFSET + 4]
-                .copy_from_slice(&count.to_le_bytes());
-            cached.dirty = true;
+            let mut current = [0u8; 4];
+            current.copy_from_slice(&cached.data.data[BLOCK_COUNT_OFFSET..BLOCK_COUNT_OFFSET + 4]);
+            if count > u32::from_le_bytes(current) {
+                cached.data.data[BLOCK_COUNT_OFFSET..BLOCK_COUNT_OFFSET + 4]
+                    .copy_from_slice(&count.to_le_bytes());
+                cached.dirty = true;
+            }
         }
         // If block 0 is not cached, skip - it will be written on next header update
     }
@@ -1392,64 +1402,51 @@ impl BlockStorage for IoUringDiskManager {
                 Ordering::Acquire,
             ) {
                 Ok(_) => {
-                    // Winner: extend file via ftruncate (no mmap to remap!)
-                    let current_actual_size = self
-                        .file
-                        .metadata()
-                        .map_err(|e| PersistentARTrieError::IoError {
-                            operation: "get file metadata before extend".to_string(),
-                            path: self.path.clone(),
-                            source: e,
-                        })?
-                        .len();
-
-                    if new_file_size > current_actual_size {
-                        self.file.set_len(new_file_size).map_err(|e| {
-                            PersistentARTrieError::IoError {
-                                operation: "extend file".to_string(),
+                    {
+                        let _resize = self.resize_lock.lock();
+                        let current_actual_size = self
+                            .file
+                            .metadata()
+                            .map_err(|e| PersistentARTrieError::IoError {
+                                operation: "get file metadata before extend".to_string(),
                                 path: self.path.clone(),
                                 source: e,
-                            }
-                        })?;
+                            })?
+                            .len();
 
-                        // Pre-allocate storage to avoid holes (best-effort).
-                        // fallocate prevents sparse regions that could cause ENOSPC later.
-                        #[cfg(target_os = "linux")]
-                        {
-                            let ret = unsafe {
-                                libc::fallocate(
-                                    self.fd,
-                                    0, // default mode: allocate
-                                    current_actual_size as i64,
-                                    (new_file_size - current_actual_size) as i64,
-                                )
-                            };
-                            if ret != 0 {
-                                // fallocate failed - ftruncate already extended the file.
-                                // Acceptable: the file may have holes, but I/O will still work.
-                                log::debug!(
-                                    "fallocate failed (errno={}), continuing with sparse file",
-                                    std::io::Error::last_os_error()
-                                );
+                        if new_file_size > current_actual_size {
+                            self.file.set_len(new_file_size).map_err(|e| {
+                                PersistentARTrieError::IoError {
+                                    operation: "extend file".to_string(),
+                                    path: self.path.clone(),
+                                    source: e,
+                                }
+                            })?;
+
+                            // Pre-allocate storage to avoid holes (best-effort).
+                            // fallocate prevents sparse regions that could cause ENOSPC later.
+                            #[cfg(target_os = "linux")]
+                            {
+                                let ret = unsafe {
+                                    libc::fallocate(
+                                        self.fd,
+                                        0, // default mode: allocate
+                                        current_actual_size as i64,
+                                        (new_file_size - current_actual_size) as i64,
+                                    )
+                                };
+                                if ret != 0 {
+                                    // fallocate failed - ftruncate already extended the file.
+                                    // Acceptable: the file may have holes, but I/O will still work.
+                                    log::debug!(
+                                        "fallocate failed (errno={}), continuing with sparse file",
+                                        std::io::Error::last_os_error()
+                                    );
+                                }
                             }
                         }
-                    }
 
-                    // Update file_size atomically (monotonic increase via CAS)
-                    loop {
-                        let current = self.file_size.load(Ordering::Acquire);
-                        if new_file_size <= current {
-                            break;
-                        }
-                        match self.file_size.compare_exchange(
-                            current,
-                            new_file_size,
-                            Ordering::AcqRel,
-                            Ordering::Acquire,
-                        ) {
-                            Ok(_) => break,
-                            Err(_) => continue,
-                        }
+                        self.file_size.fetch_max(new_file_size, Ordering::AcqRel);
                     }
 
                     // Update on-disk header block count (best-effort through cache)

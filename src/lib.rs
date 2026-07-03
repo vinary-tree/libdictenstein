@@ -90,6 +90,7 @@ pub mod char_unit;
 pub mod factory;
 pub mod iterator;
 pub mod node_signature;
+mod nonblocking;
 pub mod substring;
 pub mod sync_compat;
 pub mod value;

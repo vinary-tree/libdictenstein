@@ -65,7 +65,7 @@ use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use crossbeam_channel::{bounded, Receiver, Sender};
+use crossbeam_channel::{bounded, Receiver, Sender, TrySendError};
 use dashmap::DashMap;
 use parking_lot::RwLock;
 
@@ -217,7 +217,7 @@ impl VersionGcRegistry {
             (None, None)
         };
 
-        let registry = Arc::new(Self {
+        let mut registry = Arc::new(Self {
             active_readers: DashMap::new(),
             gc_candidates: RwLock::new(VecDeque::new()),
             config: config.clone(),
@@ -232,14 +232,24 @@ impl VersionGcRegistry {
         if let Some(rx) = worker_rx {
             let registry_clone = Arc::clone(&registry);
             let interval = config.gc_interval;
-            let handle = thread::Builder::new()
+            match thread::Builder::new()
                 .name("version-gc".to_string())
                 .spawn(move || {
                     Self::gc_worker_loop(registry_clone, rx, interval);
-                })
-                .expect("Failed to spawn GC worker thread");
-
-            *registry.worker_handle.write() = Some(handle);
+                }) {
+                Ok(handle) => {
+                    *registry.worker_handle.write() = Some(handle);
+                }
+                Err(error) => {
+                    if let Some(inner) = Arc::get_mut(&mut registry) {
+                        inner.worker_tx = None;
+                    }
+                    log::warn!(
+                        "Failed to spawn version GC worker; falling back to synchronous GC: {}",
+                        error
+                    );
+                }
+            }
         }
 
         registry
@@ -335,7 +345,15 @@ impl VersionGcRegistry {
 
         if let Some(ref tx) = self.worker_tx {
             // Send to background worker
-            let _ = tx.try_send(GcMessage::AddCandidate(candidate));
+            match tx.try_send(GcMessage::AddCandidate(candidate)) {
+                Ok(()) => return,
+                Err(TrySendError::Full(GcMessage::AddCandidate(candidate)))
+                | Err(TrySendError::Disconnected(GcMessage::AddCandidate(candidate))) => {
+                    let mut candidates = self.gc_candidates.write();
+                    candidates.push_back(candidate);
+                }
+                Err(TrySendError::Full(_)) | Err(TrySendError::Disconnected(_)) => {}
+            }
         } else {
             // Add directly
             let mut candidates = self.gc_candidates.write();
@@ -354,10 +372,12 @@ impl VersionGcRegistry {
     /// Trigger a GC cycle (asynchronous if background worker is running).
     pub fn trigger_gc(&self) {
         if let Some(ref tx) = self.worker_tx {
-            let _ = tx.try_send(GcMessage::RunCycle);
-        } else {
-            self.run_gc_cycle_internal();
+            if tx.try_send(GcMessage::RunCycle).is_ok() {
+                return;
+            }
         }
+
+        self.run_gc_cycle_internal();
     }
 
     /// Run a GC cycle and return versions that were collected.
@@ -389,11 +409,14 @@ impl VersionGcRegistry {
             return Vec::new();
         }
 
-        let mut collected = Vec::new();
         let now = Instant::now();
         let grace_period = self.config.grace_period;
         let max_gc = self.config.max_gc_per_cycle;
         let min_retain = self.config.min_retained_versions;
+        let mut collected = Vec::new();
+        let mut versions_skipped = 0u64;
+        let mut bytes_reclaimed = 0u64;
+        let pending_candidates;
 
         {
             let mut candidates = self.gc_candidates.write();
@@ -406,9 +429,11 @@ impl VersionGcRegistry {
 
             // Calculate how many we can GC while respecting retention
             let max_gc_for_retention = total_candidates - min_retain;
+            let collect_budget = max_gc.min(max_gc_for_retention);
+            collected.reserve(collect_budget);
 
             // Process candidates from oldest to newest
-            let mut remaining = VecDeque::new();
+            let mut remaining = VecDeque::with_capacity(total_candidates);
             let mut gc_count = 0;
 
             while let Some(candidate) = candidates.pop_front() {
@@ -433,25 +458,20 @@ impl VersionGcRegistry {
                 // Check for active readers
                 if self.has_readers(candidate.version_id) {
                     remaining.push_back(candidate);
-                    let mut stats = self.stats.write();
-                    stats.versions_skipped += 1;
+                    versions_skipped = versions_skipped.saturating_add(1);
                     continue;
                 }
 
                 // This version can be collected
                 collected.push(candidate.version_id);
                 gc_count += 1;
-
-                // Update stats
-                {
-                    let mut stats = self.stats.write();
-                    stats.versions_collected += 1;
-                    // Estimate bytes reclaimed (rough: 200 bytes per node)
-                    stats.bytes_reclaimed += candidate.node_count * 200;
-                }
+                // Estimate bytes reclaimed (rough: 200 bytes per node)
+                bytes_reclaimed =
+                    bytes_reclaimed.saturating_add(candidate.node_count.saturating_mul(200));
             }
 
             // Put remaining candidates back
+            pending_candidates = remaining.len();
             *candidates = remaining;
         }
 
@@ -462,8 +482,13 @@ impl VersionGcRegistry {
         {
             let mut stats = self.stats.write();
             stats.cycles_run += 1;
+            stats.versions_collected = stats
+                .versions_collected
+                .saturating_add(u64::try_from(collected.len()).unwrap_or(u64::MAX));
+            stats.versions_skipped = stats.versions_skipped.saturating_add(versions_skipped);
+            stats.bytes_reclaimed = stats.bytes_reclaimed.saturating_add(bytes_reclaimed);
             stats.last_cycle_duration = start.elapsed();
-            stats.pending_candidates = self.gc_candidates.read().len();
+            stats.pending_candidates = pending_candidates;
             stats.versions_with_readers = self.active_readers.len();
         }
 

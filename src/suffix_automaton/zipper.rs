@@ -1,41 +1,36 @@
 //! Suffix automaton zipper implementation.
 //!
 //! This module provides a zipper implementation for SuffixAutomaton that uses
-//! state-index-based navigation with lock-per-operation pattern for thread safety.
+//! state-index-based navigation over one immutable automaton snapshot.
 
 use super::ascii::{SuffixAutomaton, SuffixAutomatonInner};
 use crate::value::DictionaryValue;
 use crate::zipper::{DictZipper, ValuedDictZipper};
 use std::sync::Arc;
 
-use crate::sync_compat::RwLock;
-
 /// Zipper for Suffix Automaton dictionaries.
 ///
 /// `SuffixAutomatonZipper` provides efficient navigation through Suffix Automaton structures
-/// using a state-index-based approach with thread-safe concurrent access.
+/// using a state-index-based approach over a stable snapshot.
 ///
 /// # Design
 ///
 /// The zipper stores:
-/// - `inner`: Shared reference to the automaton inner structure (Arc<RwLock>)
+/// - `inner`: Shared immutable automaton snapshot
 /// - `state_id`: Current state index in the automaton
 /// - `path`: Path from root to current position
 ///
-/// Operations use a lock-per-operation pattern, acquiring a read lock only for
-/// the duration of each operation to maximize concurrency.
+/// Operations read from the captured snapshot and never wait on writers.
 ///
 /// # Thread Safety
 ///
-/// Each operation acquires a read lock, performs the operation, and releases it.
-/// This allows:
-/// - Multiple concurrent readers (navigating different zippers)
-/// - Exclusive write access for modifications (insert/remove)
+/// Zippers are immutable snapshot cursors. Later dictionary mutations are not
+/// observed by an existing zipper.
 ///
 /// # Performance
 ///
 /// - State-index-based: No path storage overhead
-/// - Lock-per-operation: Minimal lock contention
+/// - Snapshot-per-zipper: no synchronization on traversal
 /// - Lightweight Clone: Just Arc clone + usize copy
 ///
 /// # Suffix Automaton Semantics
@@ -70,8 +65,8 @@ use crate::sync_compat::RwLock;
 /// ```
 #[derive(Clone)]
 pub struct SuffixAutomatonZipper<V: DictionaryValue = ()> {
-    /// Shared reference to automaton inner structure
-    inner: Arc<RwLock<SuffixAutomatonInner<V>>>,
+    /// Shared immutable automaton snapshot.
+    inner: Arc<SuffixAutomatonInner<V>>,
 
     /// Current state index (0 is root)
     state_id: usize,
@@ -98,7 +93,7 @@ impl<V: DictionaryValue> SuffixAutomatonZipper<V> {
     /// ```
     pub fn new_from_dict(dict: &SuffixAutomaton<V>) -> Self {
         SuffixAutomatonZipper {
-            inner: dict.inner.clone(),
+            inner: dict.inner.load(),
             state_id: 0, // Root is always state 0
             path: Vec::new(),
         }
@@ -116,27 +111,21 @@ impl<V: DictionaryValue> DictZipper for SuffixAutomatonZipper<V> {
     type Unit = u8;
 
     fn is_final(&self) -> bool {
-        let inner = self.inner.read();
-        if self.state_id < inner.nodes.len() {
-            inner.nodes[self.state_id].is_final
-        } else {
-            false
-        }
+        self.inner
+            .nodes
+            .get(self.state_id)
+            .map(|node| node.is_final)
+            .unwrap_or(false)
     }
 
     fn descend(&self, label: Self::Unit) -> Option<Self> {
-        let inner = self.inner.read();
-        if self.state_id >= inner.nodes.len() {
-            return None;
-        }
-
         // Find the edge with the given label
-        for (edge_label, target_state) in &inner.nodes[self.state_id].edges {
+        for (edge_label, target_state) in &self.inner.nodes.get(self.state_id)?.edges {
             if *edge_label == label {
                 let mut new_path = self.path.clone();
                 new_path.push(label);
                 return Some(SuffixAutomatonZipper {
-                    inner: self.inner.clone(),
+                    inner: Arc::clone(&self.inner),
                     state_id: *target_state,
                     path: new_path,
                 });
@@ -151,18 +140,15 @@ impl<V: DictionaryValue> DictZipper for SuffixAutomatonZipper<V> {
     }
 
     fn children(&self) -> impl Iterator<Item = (Self::Unit, Self)> {
-        // Collect edges to avoid holding lock during iteration
-        let edges: Vec<(u8, usize)> = {
-            let inner = self.inner.read();
-            if self.state_id < inner.nodes.len() {
-                inner.nodes[self.state_id].edges.clone()
-            } else {
-                Vec::new()
-            }
-        };
+        let edges = self
+            .inner
+            .nodes
+            .get(self.state_id)
+            .map(|node| node.edges.clone())
+            .unwrap_or_default();
 
         // Create iterator from collected edges
-        let inner = self.inner.clone();
+        let inner = Arc::clone(&self.inner);
         let base_path = self.path.clone();
         edges.into_iter().map(move |(label, target)| {
             let mut new_path = base_path.clone();
@@ -183,12 +169,13 @@ impl<V: DictionaryValue> ValuedDictZipper for SuffixAutomatonZipper<V> {
     type Value = V;
 
     fn value(&self) -> Option<Self::Value> {
-        let inner = self.inner.read();
-        if self.state_id < inner.nodes.len() && inner.nodes[self.state_id].is_final {
-            inner.nodes[self.state_id].value.clone()
-        } else {
-            None
-        }
+        self.inner.nodes.get(self.state_id).and_then(|node| {
+            if node.is_final {
+                node.value.clone()
+            } else {
+                None
+            }
+        })
     }
 }
 

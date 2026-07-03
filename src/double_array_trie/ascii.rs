@@ -328,7 +328,7 @@ impl<V: DictionaryValue> DoubleArrayTrieBuilder<V> {
         if self.check[next_state] >= 0 {
             // Conflict! Need to find a new BASE that accommodates ALL children
             // Collect all existing children of this state
-            let mut all_bytes = Vec::new();
+            let mut all_bytes = Vec::with_capacity(257);
             let old_base = self.base[state];
 
             // Find existing transitions

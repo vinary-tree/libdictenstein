@@ -82,8 +82,8 @@ fn ensure_reachable_acyclic(
         Ok(())
     }
 
-    let mut visiting = HashSet::new();
-    let mut visited = HashSet::new();
+    let mut visiting = HashSet::with_capacity(adjacency.len());
+    let mut visited = HashSet::with_capacity(adjacency.len());
     visit(root_id, adjacency, &mut visiting, &mut visited)
 }
 
@@ -128,7 +128,12 @@ fn terms_from_adjacency(
 
 #[cfg(feature = "protobuf")]
 fn encode_dat_terms(terms: &[String]) -> Result<Vec<u8>, SerializationError> {
-    let mut encoded = Vec::new();
+    let encoded_len = DAT_TERMS_MAGIC.len()
+        + terms
+            .iter()
+            .map(|term| 4 + term.as_bytes().len())
+            .sum::<usize>();
+    let mut encoded = Vec::with_capacity(encoded_len);
     encoded.extend_from_slice(DAT_TERMS_MAGIC);
     for term in terms {
         let term_bytes = term.as_bytes();
@@ -142,9 +147,11 @@ fn encode_dat_terms(terms: &[String]) -> Result<Vec<u8>, SerializationError> {
 
 #[cfg(feature = "protobuf")]
 fn decode_dat_terms(edge_data: &[u8], term_count: u64) -> Result<Vec<String>, SerializationError> {
+    let term_capacity = usize::try_from(term_count)
+        .map_err(|_| dictionary_error("DAT protobuf term_count does not fit usize"))?;
     let terms = if edge_data.starts_with(DAT_TERMS_MAGIC) {
         let mut offset = DAT_TERMS_MAGIC.len();
-        let mut terms = Vec::new();
+        let mut terms = Vec::with_capacity(term_capacity);
 
         while offset < edge_data.len() {
             let Some(length_bytes) = edge_data.get(offset..offset + 4) else {
@@ -172,11 +179,11 @@ fn decode_dat_terms(edge_data: &[u8], term_count: u64) -> Result<Vec<String>, Se
     } else {
         let terms_str = std::str::from_utf8(edge_data)
             .map_err(|_| dictionary_error("legacy DAT protobuf terms are not valid UTF-8"))?;
-        terms_str
-            .lines()
-            .filter(|s| !s.is_empty())
-            .map(|s| s.to_string())
-            .collect()
+        let mut terms = Vec::with_capacity(term_capacity);
+        for term in terms_str.lines().filter(|s| !s.is_empty()) {
+            terms.push(term.to_string());
+        }
+        terms
     };
 
     validate_term_count(term_count, terms.len(), "DAT protobuf")?;
@@ -297,7 +304,7 @@ impl DictionarySerializer for ProtobufSerializer {
         use prost::Message;
 
         let proto_dict = Self::extract_graph(dict);
-        let mut buf = Vec::new();
+        let mut buf = Vec::with_capacity(proto_dict.encoded_len());
         proto_dict.encode(&mut buf).map_err(|e| {
             SerializationError::Io(std::io::Error::new(std::io::ErrorKind::Other, e))
         })?;
@@ -486,7 +493,7 @@ impl DictionarySerializer for OptimizedProtobufSerializer {
         use prost::Message;
 
         let proto_dict = Self::extract_graph_v2(dict);
-        let mut buf = Vec::new();
+        let mut buf = Vec::with_capacity(proto_dict.encoded_len());
         proto_dict.encode(&mut buf).map_err(|e| {
             SerializationError::Io(std::io::Error::new(std::io::ErrorKind::Other, e))
         })?;
@@ -602,7 +609,7 @@ impl SuffixAutomatonProtobufSerializer {
             string_count: string_count as u64,
         };
 
-        let mut buf = Vec::new();
+        let mut buf = Vec::with_capacity(proto_suffix.encoded_len());
         proto_suffix.encode(&mut buf).map_err(|e| {
             SerializationError::Io(std::io::Error::new(std::io::ErrorKind::Other, e))
         })?;
@@ -685,7 +692,7 @@ impl DatProtobufSerializer {
             rebuild_threshold: 0.2,
         };
 
-        let mut buf = Vec::new();
+        let mut buf = Vec::with_capacity(proto_dat.encoded_len());
         proto_dat.encode(&mut buf).map_err(|e| {
             SerializationError::Io(std::io::Error::new(std::io::ErrorKind::Other, e))
         })?;

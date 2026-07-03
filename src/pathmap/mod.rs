@@ -1,6 +1,6 @@
 //! PathMap-backed dictionary family (feature `pathmap-backend`).
 //!
-//! - [`ascii`] — byte-level (`u8`) [`PathMapDictionary`] (mutable, `RwLock`-guarded).
+//! - [`ascii`] — byte-level (`u8`) [`PathMapDictionary`] (mutable, atomic snapshot).
 //! - [`char`] — Unicode (`char`) [`PathMapDictionaryChar`].
 //! - [`zipper`] — [`PathMapZipper`] navigator.
 //! - [`core`] — the lock-free `TrieRef` substrate ([`TrieRefLike`], [`TrieRefNode`],

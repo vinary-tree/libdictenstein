@@ -417,6 +417,13 @@ pub fn try_encoded_size(parent: ArenaSlot, child: ArenaSlot) -> RelativeEncoding
 /// # Returns
 /// Total number of bytes written
 pub fn encode_children(parent: ArenaSlot, children: &[ArenaSlot], out: &mut Vec<u8>) -> usize {
+    out.reserve(
+        children
+            .iter()
+            .map(|&child| encoded_size(parent, child))
+            .sum(),
+    );
+
     let mut total = 0;
     for &child in children {
         total += encode_child_pointer(parent, child, out);
@@ -430,6 +437,11 @@ pub fn try_encode_children(
     children: &[ArenaSlot],
     out: &mut Vec<u8>,
 ) -> RelativeEncodingResult<usize> {
+    let reserved = children.iter().try_fold(0usize, |total, &child| {
+        try_encoded_size(parent, child).map(|size| total + size)
+    })?;
+    out.reserve(reserved);
+
     let mut total = 0;
     for &child in children {
         total += try_encode_child_pointer(parent, child, out)?;
@@ -492,6 +504,7 @@ pub fn encode_sequential_siblings(
     first_child: ArenaSlot,
     out: &mut Vec<u8>,
 ) -> usize {
+    out.reserve(encoded_size(parent, first_child));
     // Encode the first child slot using relative or full encoding
     encode_child_pointer(parent, first_child, out)
 }
@@ -502,6 +515,7 @@ pub fn try_encode_sequential_siblings(
     first_child: ArenaSlot,
     out: &mut Vec<u8>,
 ) -> RelativeEncodingResult<usize> {
+    out.reserve(try_encoded_size(parent, first_child)?);
     try_encode_child_pointer(parent, first_child, out)
 }
 
@@ -659,6 +673,27 @@ mod tests {
         assert_eq!(decoded[0], children[0]);
         assert_eq!(decoded[1], children[1]);
         assert_eq!(decoded[2], children[2]);
+    }
+
+    #[test]
+    fn test_encode_children_reserves_exact_additional_capacity() {
+        let parent = ArenaSlot::new(0, 100);
+        let children = vec![
+            ArenaSlot::new(0, 99),
+            ArenaSlot::new(0, 60),
+            ArenaSlot::new(1, 10),
+        ];
+        let expected = children
+            .iter()
+            .map(|&child| encoded_size(parent, child))
+            .sum::<usize>();
+
+        let mut buf = Vec::new();
+        let written = encode_children(parent, &children, &mut buf);
+
+        assert_eq!(written, expected);
+        assert_eq!(buf.len(), expected);
+        assert!(buf.capacity() >= expected);
     }
 
     #[test]

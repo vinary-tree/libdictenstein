@@ -1,27 +1,28 @@
 //! PathMap-backed dictionary implementation.
 
-use super::core::{trie_ref_root, TrieRefNode};
+use super::core::{trie_ref_root, PathMapState, TrieRefNode};
 use super::snapshot::PathMapSnapshot;
 use super::zipper::PathMapZipper;
 use crate::iterator::DictionaryIterator;
+use crate::nonblocking::CasBackoff;
 use crate::value::DictionaryValue;
 use crate::{Dictionary, MappedDictionary, SyncStrategy};
+use arc_swap::ArcSwap;
 // NOTE: Serialization support (DictionaryFromTerms impl) is provided in liblevenshtein
 // since the trait lives there.
 use pathmap::zipper::TrieRefOwned;
 use pathmap::PathMap;
+use std::fmt;
 use std::sync::Arc;
-
-use crate::sync_compat::RwLock;
 
 /// PathMap-backed dictionary for approximate string matching.
 ///
 /// This implementation uses PathMap as the underlying trie structure,
 /// providing efficient memory usage through structural sharing.
 ///
-/// The dictionary uses `RwLock` for interior mutability, allowing:
-/// - Multiple concurrent readers (queries)
-/// - Exclusive write access for modifications (insert/remove)
+/// The dictionary publishes immutable PathMap snapshots through an atomic
+/// pointer. Readers clone one snapshot and never block; writers clone the
+/// current persistent root, mutate the clone, and publish it with CAS.
 ///
 /// # Generic Values
 ///
@@ -41,22 +42,44 @@ use crate::sync_compat::RwLock;
 /// // Dictionary with scope IDs
 /// let dict_with_scopes: PathMapDictionary<u32> = PathMapDictionary::new();
 /// ```
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct PathMapDictionary<V: DictionaryValue = ()> {
-    pub(crate) map: Arc<RwLock<PathMap<V>>>,
-    term_count: Arc<RwLock<usize>>,
+    pub(crate) state: Arc<ArcSwap<PathMapState<V>>>,
+}
+
+impl<V: DictionaryValue> fmt::Debug for PathMapDictionary<V> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PathMapDictionary")
+            .field("term_count", &self.term_count())
+            .finish()
+    }
 }
 
 impl<V: DictionaryValue> PathMapDictionary<V> {
+    #[inline]
+    fn from_state(map: PathMap<V>, len: usize) -> Self {
+        Self {
+            state: Arc::new(ArcSwap::from_pointee(PathMapState::new(map, len))),
+        }
+    }
+
+    #[inline]
+    pub(crate) fn load_state(&self) -> Arc<PathMapState<V>> {
+        self.state.load_full()
+    }
+
+    #[inline]
+    fn compare_store_state(&self, current: &Arc<PathMapState<V>>, next: PathMapState<V>) -> bool {
+        let previous = self.state.compare_and_swap(current, Arc::new(next));
+        Arc::ptr_eq(&previous, current)
+    }
+
     /// Create a new empty dictionary
     pub fn new() -> Self
     where
         V: Default,
     {
-        Self {
-            map: Arc::new(RwLock::new(PathMap::new())),
-            term_count: Arc::new(RwLock::new(0)),
-        }
+        Self::from_state(PathMap::new(), 0)
     }
 
     /// Create a dictionary from an iterator of terms with a default value
@@ -76,10 +99,7 @@ impl<V: DictionaryValue> PathMapDictionary<V> {
             }
         }
 
-        Self {
-            map: Arc::new(RwLock::new(map)),
-            term_count: Arc::new(RwLock::new(count)),
-        }
+        Self::from_state(map, count)
     }
 
     /// Create a dictionary from an iterator of (term, value) pairs
@@ -98,10 +118,7 @@ impl<V: DictionaryValue> PathMapDictionary<V> {
             }
         }
 
-        Self {
-            map: Arc::new(RwLock::new(map)),
-            term_count: Arc::new(RwLock::new(count)),
-        }
+        Self::from_state(map, count)
     }
 
     /// Insert a term with a default value into the dictionary
@@ -110,11 +127,8 @@ impl<V: DictionaryValue> PathMapDictionary<V> {
     ///
     /// # Thread Safety
     ///
-    /// This method acquires a write lock, blocking concurrent reads and writes.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the lock is poisoned (another thread panicked while holding the lock).
+    /// Writers publish a cloned PathMap root with CAS. Readers observe either
+    /// the old or new snapshot without waiting.
     pub fn insert(&self, term: &str) -> bool
     where
         V: Default,
@@ -129,21 +143,22 @@ impl<V: DictionaryValue> PathMapDictionary<V> {
     ///
     /// # Thread Safety
     ///
-    /// This method acquires a write lock, blocking concurrent reads and writes.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the lock is poisoned (another thread panicked while holding the lock).
+    /// Writers publish a cloned PathMap root with CAS. Readers observe either
+    /// the old or new snapshot without waiting.
     pub fn insert_with_value(&self, term: &str, value: V) -> bool {
         let bytes = term.as_bytes();
-        let mut map = self.map.write();
-        let mut count = self.term_count.write();
+        let mut backoff = CasBackoff::new();
+        loop {
+            let current = self.load_state();
+            let mut next_map = current.map.clone();
+            let inserted = next_map.insert(bytes, value.clone()).is_none();
+            let next_len = current.len + usize::from(inserted);
 
-        if map.insert(bytes, value).is_none() {
-            *count += 1;
-            true
-        } else {
-            false
+            if self.compare_store_state(&current, PathMapState::new(next_map, next_len)) {
+                return inserted;
+            }
+
+            backoff.snooze();
         }
     }
 
@@ -153,21 +168,24 @@ impl<V: DictionaryValue> PathMapDictionary<V> {
     ///
     /// # Thread Safety
     ///
-    /// This method acquires a write lock, blocking concurrent reads and writes.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the lock is poisoned.
+    /// Removal publishes a cloned PathMap root with CAS and never blocks
+    /// readers.
     pub fn remove(&self, term: &str) -> bool {
         let bytes = term.as_bytes();
-        let mut map = self.map.write();
-        let mut count = self.term_count.write();
+        let mut backoff = CasBackoff::new();
+        loop {
+            let current = self.load_state();
+            let mut next_map = current.map.clone();
+            if next_map.remove_val_at(bytes, true).is_none() {
+                return false;
+            }
+            let next_len = current.len.saturating_sub(1);
 
-        if map.remove_val_at(bytes, true).is_some() {
-            *count = count.saturating_sub(1);
-            true
-        } else {
-            false
+            if self.compare_store_state(&current, PathMapState::new(next_map, next_len)) {
+                return true;
+            }
+
+            backoff.snooze();
         }
     }
 
@@ -175,45 +193,41 @@ impl<V: DictionaryValue> PathMapDictionary<V> {
     ///
     /// # Thread Safety
     ///
-    /// This method acquires a write lock, blocking concurrent reads and writes.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the lock is poisoned.
+    /// Clear atomically publishes an empty snapshot.
     pub fn clear(&self) {
-        let mut map = self.map.write();
-        let mut count = self.term_count.write();
+        let mut backoff = CasBackoff::new();
+        loop {
+            let current = self.load_state();
+            if current.len == 0 {
+                return;
+            }
 
-        *map = PathMap::new();
-        *count = 0;
+            if self.compare_store_state(&current, PathMapState::new(PathMap::new(), 0)) {
+                return;
+            }
+
+            backoff.snooze();
+        }
     }
 
     /// Get the current number of terms in the dictionary
     ///
     /// # Thread Safety
     ///
-    /// This method acquires a read lock.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the lock is poisoned.
+    /// This method atomically loads the current snapshot.
     pub fn term_count(&self) -> usize {
-        *self.term_count.read()
+        self.load_state().len
     }
 
     /// Serialize to PathMap's native .paths format
     ///
     /// # Thread Safety
     ///
-    /// This method acquires a read lock.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the lock is poisoned.
+    /// Serialization reads one stable snapshot.
     pub fn serialize_paths<W: std::io::Write>(&self, writer: &mut W) -> std::io::Result<()> {
         use pathmap::paths_serialization::serialize_paths;
-        let map = self.map.read();
-        serialize_paths(map.read_zipper(), writer)?;
+        let state = self.load_state();
+        serialize_paths(state.map.read_zipper(), writer)?;
         Ok(())
     }
 
@@ -240,10 +254,7 @@ impl<V: DictionaryValue> PathMapDictionary<V> {
             count
         };
 
-        Ok(Self {
-            map: Arc::new(RwLock::new(map)),
-            term_count: Arc::new(RwLock::new(count)),
-        })
+        Ok(Self::from_state(map, count))
     }
 
     /// Get the value associated with a term
@@ -252,15 +263,11 @@ impl<V: DictionaryValue> PathMapDictionary<V> {
     ///
     /// # Thread Safety
     ///
-    /// This method acquires a read lock.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the lock is poisoned.
+    /// This method atomically loads one snapshot and performs a read-only lookup.
     pub fn get_value(&self, term: &str) -> Option<V> {
         let bytes = term.as_bytes();
-        let map = self.map.read();
-        map.get_val_at(bytes).cloned()
+        let state = self.load_state();
+        state.map.get_val_at(bytes).cloned()
     }
 
     /// Update an existing term's value in place, or insert a new term with a default value.
@@ -278,11 +285,9 @@ impl<V: DictionaryValue> PathMapDictionary<V> {
     ///
     /// # Thread Safety
     ///
-    /// This method acquires a write lock, blocking concurrent reads and writes.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the lock is poisoned.
+    /// The update is applied to a cloned value in a cloned PathMap root and
+    /// published with CAS. The closure may be re-run if a competing writer wins
+    /// the race first.
     ///
     /// # Example
     ///
@@ -315,19 +320,21 @@ impl<V: DictionaryValue> PathMapDictionary<V> {
         F: Fn(&mut V),
     {
         let bytes = term.as_bytes();
-        let mut map = self.map.write();
-        let mut count = self.term_count.write();
+        let mut backoff = CasBackoff::new();
+        loop {
+            let current = self.load_state();
+            let mut next_map = current.map.clone();
+            let existed = next_map.get_val_at(bytes).is_some();
+            let value = next_map.get_val_or_set_mut_at(bytes, default_value.clone());
+            update_fn(value);
+            let next_len = current.len + usize::from(!existed);
 
-        // Check if term exists
-        let existed = map.get_val_at(bytes).is_some();
-        // Get mutable reference, creating with default if needed
-        let value = map.get_val_or_set_mut_at(bytes, default_value);
-        update_fn(value);
+            if self.compare_store_state(&current, PathMapState::new(next_map, next_len)) {
+                return !existed;
+            }
 
-        if !existed {
-            *count += 1;
+            backoff.snooze();
         }
-        !existed
     }
 
     /// Iterate over all `(term, value)` pairs as raw byte vectors.
@@ -384,7 +391,8 @@ impl<V: DictionaryValue> PathMapDictionary<V> {
     /// term count is captured so the snapshot reports an exact
     /// [`Dictionary::len`](crate::Dictionary::len).
     pub fn snapshot(&self) -> PathMapSnapshot<V> {
-        PathMapSnapshot::from_map(self.map.read().clone()).with_len(self.term_count())
+        let state = self.load_state();
+        PathMapSnapshot::from_map(state.map.clone()).with_len(state.len)
     }
 }
 
@@ -410,10 +418,9 @@ impl<V: DictionaryValue> Dictionary for PathMapDictionary<V> {
     #[inline]
     fn root(&self) -> Self::Node {
         // 𝒪(1) copy-on-write snapshot (a root refcount bump); queries then run
-        // lock-free over a consistent view, replacing the former
-        // lock-per-operation, path-replay node.
-        let snapshot = self.map.read().clone();
-        TrieRefNode::new(trie_ref_root(snapshot))
+        // lock-free over a consistent view.
+        let state = self.load_state();
+        TrieRefNode::new(trie_ref_root(state.map.clone()))
     }
 
     #[inline]
@@ -423,12 +430,7 @@ impl<V: DictionaryValue> Dictionary for PathMapDictionary<V> {
 
     #[inline]
     fn sync_strategy(&self) -> SyncStrategy {
-        // PathMap uses Arc for structural sharing and UnsafeCell for mutations.
-        // Current analysis: requires external sync for safety.
-        //
-        // Future: If PathMap's UnsafeCell usage is proven thread-safe,
-        // this could return SyncStrategy::InternalSync or ::Persistent
-        SyncStrategy::ExternalSync
+        SyncStrategy::InternalSync
     }
 }
 
@@ -467,28 +469,31 @@ impl<V: DictionaryValue> crate::MutableMappedDictionary for PathMapDictionary<V>
         F: Fn(&Self::Value, &Self::Value) -> Self::Value,
         Self::Value: Clone,
     {
-        let other_map = other.map.read();
-        let mut self_map = self.map.write();
-        let mut self_term_count = self.term_count.write();
+        let other_state = other.load_state();
+        let processed = other_state.len;
 
-        let mut processed = 0;
+        let mut backoff = CasBackoff::new();
+        loop {
+            let current = self.load_state();
+            let mut next_map = current.map.clone();
+            let mut next_len = current.len;
 
-        // Iterate over all entries in other
-        for (key_bytes, other_value) in other_map.iter() {
-            processed += 1;
-
-            if let Some(self_value) = self_map.get(&key_bytes) {
-                // Key exists: merge the values
-                let merged = merge_fn(self_value, other_value);
-                self_map.insert(&key_bytes, merged);
-            } else {
-                // Key doesn't exist: insert from other
-                self_map.insert(&key_bytes, other_value.clone());
-                *self_term_count += 1;
+            for (key_bytes, other_value) in other_state.map.iter() {
+                if let Some(self_value) = next_map.get(&key_bytes) {
+                    let merged = merge_fn(self_value, other_value);
+                    next_map.insert(&key_bytes, merged);
+                } else {
+                    next_map.insert(&key_bytes, other_value.clone());
+                    next_len += 1;
+                }
             }
-        }
 
-        processed
+            if self.compare_store_state(&current, PathMapState::new(next_map, next_len)) {
+                return processed;
+            }
+
+            backoff.snooze();
+        }
     }
 }
 

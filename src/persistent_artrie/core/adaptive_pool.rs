@@ -341,22 +341,22 @@ pub struct AdaptivePoolController<S: BlockStorage + 'static = MmapDiskManager> {
     memory_monitor: Arc<MemoryPressureMonitor>,
 
     /// Current pool size.
-    current_size: AtomicUsize,
+    current_size: Arc<AtomicUsize>,
 
     /// Number of adjustments made.
-    adjustments: AtomicU64,
+    adjustments: Arc<AtomicU64>,
 
     /// Number of grow operations.
-    grows: AtomicU64,
+    grows: Arc<AtomicU64>,
 
     /// Number of shrink operations.
-    shrinks: AtomicU64,
+    shrinks: Arc<AtomicU64>,
 
     /// Last recorded hit rate.
-    last_hit_rate: RwLock<f64>,
+    last_hit_rate: Arc<RwLock<f64>>,
 
     /// Last recorded pressure level.
-    last_pressure: RwLock<MemoryPressureLevel>,
+    last_pressure: Arc<RwLock<MemoryPressureLevel>>,
 
     /// Controller thread handle.
     controller_thread: Option<JoinHandle<()>>,
@@ -386,12 +386,12 @@ impl<S: BlockStorage + 'static> AdaptivePoolController<S> {
             buffer_manager,
             cache_stats,
             memory_monitor,
-            current_size: AtomicUsize::new(initial_size),
-            adjustments: AtomicU64::new(0),
-            grows: AtomicU64::new(0),
-            shrinks: AtomicU64::new(0),
-            last_hit_rate: RwLock::new(1.0),
-            last_pressure: RwLock::new(MemoryPressureLevel::Normal),
+            current_size: Arc::new(AtomicUsize::new(initial_size)),
+            adjustments: Arc::new(AtomicU64::new(0)),
+            grows: Arc::new(AtomicU64::new(0)),
+            shrinks: Arc::new(AtomicU64::new(0)),
+            last_hit_rate: Arc::new(RwLock::new(1.0)),
+            last_pressure: Arc::new(RwLock::new(MemoryPressureLevel::Normal)),
             controller_thread: None,
             shutdown: Arc::new(AtomicBool::new(false)),
         }
@@ -404,41 +404,49 @@ impl<S: BlockStorage + 'static> AdaptivePoolController<S> {
         if !self.config.enabled {
             return;
         }
+        if self.controller_thread.is_some() {
+            return;
+        }
+        self.shutdown.store(false, Ordering::Release);
 
         let config = self.config.clone();
         let buffer_manager = Arc::clone(&self.buffer_manager);
         let cache_stats = Arc::clone(&self.cache_stats);
         let memory_monitor = Arc::clone(&self.memory_monitor);
-        let current_size = Arc::new(AtomicUsize::new(self.current_size.load(Ordering::Relaxed)));
-        let adjustments = Arc::new(AtomicU64::new(0));
-        let grows = Arc::new(AtomicU64::new(0));
-        let shrinks = Arc::new(AtomicU64::new(0));
         let shutdown = Arc::clone(&self.shutdown);
 
         // Clone Arcs for stats updates
-        let current_size_clone = Arc::clone(&current_size);
-        let adjustments_clone = Arc::clone(&adjustments);
-        let grows_clone = Arc::clone(&grows);
-        let shrinks_clone = Arc::clone(&shrinks);
+        let current_size = Arc::clone(&self.current_size);
+        let adjustments = Arc::clone(&self.adjustments);
+        let grows = Arc::clone(&self.grows);
+        let shrinks = Arc::clone(&self.shrinks);
+        let last_hit_rate = Arc::clone(&self.last_hit_rate);
+        let last_pressure = Arc::clone(&self.last_pressure);
 
-        self.controller_thread = Some(
-            thread::Builder::new()
-                .name("artrie-adaptive-pool".to_string())
-                .spawn(move || {
-                    Self::control_loop(
-                        config,
-                        buffer_manager,
-                        cache_stats,
-                        memory_monitor,
-                        current_size_clone,
-                        adjustments_clone,
-                        grows_clone,
-                        shrinks_clone,
-                        shutdown,
-                    );
-                })
-                .expect("failed to spawn adaptive pool controller thread"),
-        );
+        match thread::Builder::new()
+            .name("artrie-adaptive-pool".to_string())
+            .spawn(move || {
+                Self::control_loop(
+                    config,
+                    buffer_manager,
+                    cache_stats,
+                    memory_monitor,
+                    current_size,
+                    adjustments,
+                    grows,
+                    shrinks,
+                    last_hit_rate,
+                    last_pressure,
+                    shutdown,
+                );
+            }) {
+            Ok(handle) => {
+                self.controller_thread = Some(handle);
+            }
+            Err(error) => {
+                log::warn!("Failed to spawn adaptive pool controller thread: {}", error);
+            }
+        }
     }
 
     /// Get current pool size.
@@ -484,6 +492,8 @@ impl<S: BlockStorage + 'static> AdaptivePoolController<S> {
         adjustments: Arc<AtomicU64>,
         grows: Arc<AtomicU64>,
         shrinks: Arc<AtomicU64>,
+        last_hit_rate: Arc<RwLock<f64>>,
+        last_pressure: Arc<RwLock<MemoryPressureLevel>>,
         shutdown: Arc<AtomicBool>,
     ) {
         let mut pid = PidController::new(config.kp, config.ki, config.kd);
@@ -504,6 +514,8 @@ impl<S: BlockStorage + 'static> AdaptivePoolController<S> {
             let (hit_rate, hits, misses) = cache_stats.get_and_reset();
             let memory_stats = memory_monitor.current_stats();
             let pressure = memory_monitor.current_level();
+            *last_hit_rate.write() = hit_rate;
+            *last_pressure.write() = pressure;
 
             // Calculate time delta
             let now = Instant::now();
@@ -589,7 +601,11 @@ impl<S: BlockStorage + 'static> Drop for AdaptivePoolController<S> {
 
 #[cfg(test)]
 mod tests {
+    use super::super::disk_manager::DiskManager;
+    use super::super::memory_monitor::MemoryPressureConfig;
     use super::*;
+    use std::sync::Arc;
+    use tempfile::tempdir;
 
     #[test]
     fn test_cache_stats_new() {
@@ -711,6 +727,54 @@ mod tests {
         assert_eq!(config.max_growth_step, 16);
         assert_eq!(config.max_shrink_step, 8);
         assert!(config.enabled);
+    }
+
+    #[test]
+    fn test_adaptive_controller_publishes_background_stats() {
+        let dir = tempdir().expect("create temp dir");
+        let path = dir.path().join("adaptive-pool.dat");
+        let disk_manager = DiskManager::create(&path).expect("create disk manager");
+        let buffer_manager = Arc::new(BufferManager::new_with_max_capacity(disk_manager, 2, 4));
+        let cache_stats = Arc::new(CacheStats::new());
+        let memory_monitor = Arc::new(
+            MemoryPressureMonitor::start(
+                MemoryPressureConfig {
+                    enabled: false,
+                    ..MemoryPressureConfig::default()
+                },
+                |_, _| {},
+            )
+            .expect("create disabled memory monitor"),
+        );
+
+        for _ in 0..8 {
+            cache_stats.record_miss();
+        }
+
+        let mut controller = AdaptivePoolController::new(
+            AdaptivePoolConfig {
+                min_pool_size: 1,
+                max_pool_size: 4,
+                adjustment_interval: Duration::from_millis(1),
+                max_growth_step: 1,
+                max_shrink_step: 1,
+                target_hit_rate: 0.95,
+                min_hit_rate_for_growth: 0.90,
+                ..AdaptivePoolConfig::default()
+            },
+            buffer_manager,
+            cache_stats,
+            memory_monitor,
+        );
+
+        controller.start();
+        thread::sleep(Duration::from_millis(20));
+        controller.stop();
+
+        let stats = controller.stats();
+        assert!(stats.adjustments >= 1);
+        assert!(stats.grows >= 1);
+        assert!(stats.current_size > 2);
     }
 
     // =========================================================================

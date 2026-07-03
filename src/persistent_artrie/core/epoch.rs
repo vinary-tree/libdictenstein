@@ -501,7 +501,7 @@ impl CheckpointManager {
 
         // Start background checkpoint thread if configured
         if manager.config.background_checkpoint {
-            manager.start_checkpoint_thread();
+            manager.start_checkpoint_thread()?;
         }
 
         Ok(manager)
@@ -909,19 +909,24 @@ impl CheckpointManager {
         Ok(())
     }
 
-    fn start_checkpoint_thread(&self) {
+    fn start_checkpoint_thread(&self) -> Result<()> {
         let signal = Arc::clone(&self.checkpoint_signal);
         let shutdown = Arc::clone(&self.shutdown);
         let epoch_duration = self.config.epoch_duration;
+        let mut checkpoint_thread = self
+            .checkpoint_thread
+            .lock()
+            .map_err(|_| PersistentARTrieError::internal("checkpoint thread lock poisoned"))?;
 
         let handle = thread::Builder::new()
             .name("artrie-epoch-checkpoint".to_string())
             .spawn(move || {
                 Self::checkpoint_loop(signal, shutdown, epoch_duration);
             })
-            .expect("failed to spawn checkpoint thread");
+            .map_err(|e| PersistentARTrieError::io_error("spawn checkpoint thread", "thread", e))?;
 
-        *self.checkpoint_thread.lock().expect("lock") = Some(handle);
+        *checkpoint_thread = Some(handle);
+        Ok(())
     }
 
     fn checkpoint_loop(

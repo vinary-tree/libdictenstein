@@ -26,6 +26,9 @@ use serde::{Deserialize, Serialize};
 use crate::persistent_artrie::block_storage::BlockStorage;
 use crate::persistent_artrie::disk_manager::MmapDiskManager;
 use crate::persistent_artrie::error::{PersistentARTrieError, Result};
+use crate::persistent_artrie::suffix_array::{
+    sorted_byte_suffix_starts, sorted_char_boundary_suffix_starts,
+};
 use crate::persistent_artrie::RecoveryReport;
 use crate::serialization::bincode_compat;
 use crate::value::DictionaryValue;
@@ -60,10 +63,7 @@ impl PersistentSuffixUnit for u8 {
     const MAGIC: [u8; 8] = BYTE_MAGIC;
 
     fn suffix_starts(text: &str) -> Vec<usize> {
-        let bytes = text.as_bytes();
-        let mut starts: Vec<usize> = (0..bytes.len()).collect();
-        starts.sort_by(|left, right| bytes[*left..].cmp(&bytes[*right..]));
-        starts
+        sorted_byte_suffix_starts(text.as_bytes())
     }
 
     fn suffix_units(text: &str, start_byte: usize) -> Vec<Self> {
@@ -75,9 +75,7 @@ impl PersistentSuffixUnit for char {
     const MAGIC: [u8; 8] = CHAR_MAGIC;
 
     fn suffix_starts(text: &str) -> Vec<usize> {
-        let mut starts: Vec<usize> = text.char_indices().map(|(idx, _)| idx).collect();
-        starts.sort_by(|left, right| text[*left..].cmp(&text[*right..]));
-        starts
+        sorted_char_boundary_suffix_starts(text)
     }
 
     fn suffix_units(text: &str, start_byte: usize) -> Vec<Self> {

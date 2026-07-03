@@ -12,7 +12,7 @@
 //! - Suffix caching for memory reduction (20-40% savings)
 //! - Incremental minimization via [`NodeSignature`](crate::node_signature::NodeSignature)
 //! - Optional Bloom filter for negative lookup rejection
-//! - Thread-safe interior mutability via `Arc<RwLock<...>>`
+//! - Serialization-compatible state used by the lock-free public wrappers
 //!
 //! Concrete types like `DynamicDawg` are thin wrappers that provide type-specific
 //! string conversion and iteration.
@@ -24,6 +24,8 @@ use crate::CharUnit;
 use rustc_hash::FxHashMap;
 use smallvec::SmallVec;
 use std::collections::HashMap;
+
+const ADAPTIVE_LINEAR_EDGE_LIMIT: usize = 16;
 
 /// Generic DAWG node that can use any character unit type for edge labels.
 ///
@@ -74,6 +76,34 @@ impl<U: CharUnit, V: DictionaryValue> DawgNode<U, V> {
             ref_count: 0,
             value,
         }
+    }
+
+    #[inline]
+    pub(crate) fn edge_target(&self, label: U) -> Option<usize> {
+        if self.edges.len() < ADAPTIVE_LINEAR_EDGE_LIMIT {
+            self.edges
+                .iter()
+                .find(|(edge_label, _)| *edge_label == label)
+                .map(|(_, target)| *target)
+        } else {
+            self.edges
+                .binary_search_by_key(&label, |(edge_label, _)| *edge_label)
+                .ok()
+                .map(|idx| self.edges[idx].1)
+        }
+    }
+
+    #[inline]
+    pub(crate) fn edge_position(&self, label: U) -> Result<usize, usize> {
+        self.edges
+            .binary_search_by_key(&label, |(edge_label, _)| *edge_label)
+    }
+
+    #[inline]
+    pub(crate) fn edge_position_to(&self, label: U, target: usize) -> Option<usize> {
+        self.edge_position(label)
+            .ok()
+            .filter(|&idx| self.edges[idx].1 == target)
     }
 }
 
@@ -179,15 +209,10 @@ impl<U: CharUnit, V: DictionaryValue> DawgCore<U, V> {
     pub fn insert_units(&mut self, units: &[U]) -> bool {
         // Navigate to insertion point, creating nodes as needed
         let mut node_idx = 0;
-        let mut path: Vec<(usize, U, usize)> = Vec::new();
+        let mut path: Vec<(usize, U, usize)> = Vec::with_capacity(units.len());
 
         for &unit in units {
-            if let Some(&child_idx) = self.nodes[node_idx]
-                .edges
-                .iter()
-                .find(|(u, _)| *u == unit)
-                .map(|(_, idx)| idx)
-            {
+            if let Some(child_idx) = self.nodes[node_idx].edge_target(unit) {
                 // Edge exists, follow it
                 path.push((node_idx, unit, child_idx));
                 node_idx = child_idx;
@@ -237,15 +262,10 @@ impl<U: CharUnit, V: DictionaryValue> DawgCore<U, V> {
     /// (in which case the value is updated).
     pub fn insert_units_with_value(&mut self, units: &[U], value: V) -> bool {
         let mut node_idx = 0;
-        let mut path: Vec<(usize, U, usize)> = Vec::new();
+        let mut path: Vec<(usize, U, usize)> = Vec::with_capacity(units.len());
 
         for &unit in units {
-            if let Some(&child_idx) = self.nodes[node_idx]
-                .edges
-                .iter()
-                .find(|(u, _)| *u == unit)
-                .map(|(_, idx)| idx)
-            {
+            if let Some(child_idx) = self.nodes[node_idx].edge_target(unit) {
                 path.push((node_idx, unit, child_idx));
                 node_idx = child_idx;
             } else {
@@ -308,13 +328,8 @@ impl<U: CharUnit, V: DictionaryValue> DawgCore<U, V> {
         let mut node_idx = 0;
 
         for &unit in units {
-            match self.nodes[node_idx]
-                .edges
-                .iter()
-                .find(|(u, _)| *u == unit)
-                .map(|(_, idx)| idx)
-            {
-                Some(&child_idx) => node_idx = child_idx,
+            match self.nodes[node_idx].edge_target(unit) {
+                Some(child_idx) => node_idx = child_idx,
                 None => return false,
             }
         }
@@ -327,13 +342,8 @@ impl<U: CharUnit, V: DictionaryValue> DawgCore<U, V> {
         let mut node_idx = 0;
 
         for &unit in units {
-            match self.nodes[node_idx]
-                .edges
-                .iter()
-                .find(|(u, _)| *u == unit)
-                .map(|(_, idx)| idx)
-            {
-                Some(&child_idx) => node_idx = child_idx,
+            match self.nodes[node_idx].edge_target(unit) {
+                Some(child_idx) => node_idx = child_idx,
                 None => return None,
             }
         }
@@ -351,15 +361,10 @@ impl<U: CharUnit, V: DictionaryValue> DawgCore<U, V> {
     pub fn remove_units(&mut self, units: &[U]) -> bool {
         // Navigate to the term
         let mut node_idx = 0;
-        let mut path: Vec<(usize, U, usize)> = Vec::new(); // (parent, label, child)
+        let mut path: Vec<(usize, U, usize)> = Vec::with_capacity(units.len());
 
         for &unit in units {
-            if let Some(&child_idx) = self.nodes[node_idx]
-                .edges
-                .iter()
-                .find(|(u, _)| *u == unit)
-                .map(|(_, idx)| idx)
-            {
+            if let Some(child_idx) = self.nodes[node_idx].edge_target(unit) {
                 path.push((node_idx, unit, child_idx));
                 node_idx = child_idx;
             } else {
@@ -405,15 +410,10 @@ impl<U: CharUnit, V: DictionaryValue> DawgCore<U, V> {
         F: Fn(&mut V),
     {
         let mut node_idx = 0;
-        let mut path: Vec<(usize, U, usize)> = Vec::new();
+        let mut path: Vec<(usize, U, usize)> = Vec::with_capacity(units.len());
 
         for &unit in units {
-            if let Some(&child_idx) = self.nodes[node_idx]
-                .edges
-                .iter()
-                .find(|(u, _)| *u == unit)
-                .map(|(_, idx)| idx)
-            {
+            if let Some(child_idx) = self.nodes[node_idx].edge_target(unit) {
                 path.push((node_idx, unit, child_idx));
                 node_idx = child_idx;
             } else {
@@ -514,7 +514,7 @@ impl<U: CharUnit, V: DictionaryValue> DawgCore<U, V> {
 
         // Re-insert sorted terms for deterministic prefix sharing.
         let mut sorted_entries = entries;
-        sorted_entries.sort_by(|(left, _), (right, _)| left.cmp(right));
+        sorted_entries.sort_unstable_by(|(left, _), (right, _)| left.cmp(right));
 
         for (term, value) in &sorted_entries {
             self.insert_direct_with_value(term, value.clone());
@@ -539,7 +539,8 @@ impl<U: CharUnit, V: DictionaryValue> DawgCore<U, V> {
         let signatures = self.compute_signatures();
 
         // Step 2: Build equivalence classes
-        let mut sig_to_canonical: HashMap<NodeSignature, Vec<usize>> = HashMap::new();
+        let mut sig_to_canonical: HashMap<NodeSignature, Vec<usize>> =
+            HashMap::with_capacity(signatures.len());
         let mut node_mapping: Vec<usize> = (0..self.nodes.len()).collect();
 
         // Process nodes in reverse order (leaves first)
@@ -596,7 +597,7 @@ impl<U: CharUnit, V: DictionaryValue> DawgCore<U, V> {
     #[inline]
     pub(crate) fn insert_edge_sorted(&mut self, node_idx: usize, label: U, target_idx: usize) {
         let edges = &mut self.nodes[node_idx].edges;
-        match edges.binary_search_by_key(&label, |(l, _)| *l) {
+        match edges.binary_search_by_key(&label, |(edge_label, _)| *edge_label) {
             Ok(pos) => {
                 edges[pos] = (label, target_idx);
             }
@@ -612,10 +613,7 @@ impl<U: CharUnit, V: DictionaryValue> DawgCore<U, V> {
 
         for (_, label, _) in path {
             let child_idx = self.nodes[parent_idx]
-                .edges
-                .iter()
-                .find(|(edge_label, _)| edge_label == label)
-                .map(|(_, target)| *target)
+                .edge_target(*label)
                 .expect("path labels must exist while making path unique");
             let unique_child = self.ensure_unique_child(parent_idx, *label, child_idx);
             unique_path.push((parent_idx, *label, unique_child));
@@ -643,9 +641,7 @@ impl<U: CharUnit, V: DictionaryValue> DawgCore<U, V> {
 
         self.nodes[child_idx].ref_count -= 1;
         let edge_pos = self.nodes[parent_idx]
-            .edges
-            .iter()
-            .position(|(edge_label, target)| *edge_label == label && *target == child_idx)
+            .edge_position_to(label, child_idx)
             .expect("path edge must exist while cloning shared DAWG node");
         self.nodes[parent_idx].edges[edge_pos].1 = new_idx;
 
@@ -662,11 +658,13 @@ impl<U: CharUnit, V: DictionaryValue> DawgCore<U, V> {
         }
 
         self.nodes[0].ref_count = 1;
-        let targets: Vec<usize> = self
-            .nodes
-            .iter()
-            .flat_map(|node| node.edges.iter().map(|(_, target)| *target))
-            .collect();
+        let target_count: usize = self.nodes.iter().map(|node| node.edges.len()).sum();
+        let mut targets = Vec::with_capacity(target_count);
+        targets.extend(
+            self.nodes
+                .iter()
+                .flat_map(|node| node.edges.iter().map(|(_, target)| *target)),
+        );
 
         for target in targets {
             if let Some(node) = self.nodes.get_mut(target) {
@@ -761,7 +759,7 @@ impl<U: CharUnit, V: DictionaryValue> DawgCore<U, V> {
 
     /// Find all nodes reachable from root.
     pub(crate) fn find_reachable_nodes(&self) -> Vec<usize> {
-        let mut reachable = Vec::new();
+        let mut reachable = Vec::with_capacity(self.nodes.len());
         let mut visited = vec![false; self.nodes.len()];
         self.find_reachable_dfs(0, &mut visited);
 
@@ -808,8 +806,8 @@ impl<U: CharUnit, V: DictionaryValue> DawgCore<U, V> {
     }
 
     pub(crate) fn extract_all_entries(&self) -> Vec<(Vec<U>, Option<V>)> {
-        let mut entries = Vec::new();
-        let mut current_term = Vec::new();
+        let mut entries = Vec::with_capacity(self.term_count);
+        let mut current_term = Vec::with_capacity(32);
         self.dfs_collect_entries(0, &mut current_term, &mut entries);
         entries
     }
@@ -838,17 +836,12 @@ impl<U: CharUnit, V: DictionaryValue> DawgCore<U, V> {
         let mut node_idx = 0;
 
         for &unit in units {
-            if let Some(&child_idx) = self.nodes[node_idx]
-                .edges
-                .iter()
-                .find(|(u, _)| *u == unit)
-                .map(|(_, idx)| idx)
-            {
+            if let Some(child_idx) = self.nodes[node_idx].edge_target(unit) {
                 node_idx = child_idx;
             } else {
                 let new_idx = self.nodes.len();
                 self.nodes.push(DawgNode::new(false));
-                self.nodes[node_idx].edges.push((unit, new_idx));
+                self.insert_edge_sorted(node_idx, unit, new_idx);
                 node_idx = new_idx;
             }
         }
@@ -968,5 +961,22 @@ mod tests {
         assert!(core.contains_units(b"test"));
         assert!(core.contains_units(b"tested"));
         assert!(!core.contains_units(b"testing"));
+    }
+
+    #[test]
+    fn test_insert_direct_preserves_sorted_edge_lookup_invariant() {
+        let mut core: DawgCore<u8, ()> = DawgCore::new();
+
+        core.insert_direct_with_value(b"z", None);
+        core.insert_direct_with_value(b"a", None);
+
+        assert!(core.contains_units(b"a"));
+        assert!(core.contains_units(b"z"));
+        let root_edges: Vec<_> = core.nodes[0]
+            .edges
+            .iter()
+            .map(|(label, _)| *label)
+            .collect();
+        assert_eq!(root_edges, vec![b'a', b'z']);
     }
 }

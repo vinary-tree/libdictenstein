@@ -23,7 +23,10 @@ use crate::value::DictionaryValue;
 use crate::CharUnit;
 
 /// Inner mutable state of the SCDAWG, generic over the edge-label type.
-#[derive(Debug)]
+///
+/// Public byte/char wrappers publish cloned revisions of this state through an
+/// atomic snapshot handle so readers can hold stable, wait-free traversals.
+#[derive(Debug, Clone)]
 pub struct ScdawgCoreInner<U: CharUnit, V: DictionaryValue> {
     /// All nodes. Index 0 is always root.
     pub nodes: Vec<ScdawgNode<U, V>>,
@@ -281,7 +284,7 @@ impl<U: CharUnit, V: DictionaryValue> ScdawgCoreInner<U, V> {
         };
 
         let pattern_len = U::from_str(pattern).len();
-        let mut results = Vec::new();
+        let mut results = Vec::with_capacity(self.nodes[end_node].term_ends.len());
         self.collect_term_positions(end_node, pattern_len, &mut results);
         results
     }

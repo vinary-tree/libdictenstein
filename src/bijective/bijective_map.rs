@@ -15,9 +15,10 @@
 
 use crate::bijective::BijectiveDictionary;
 use crate::dynamic_dawg::char::DynamicDawgChar;
-use crate::sync_compat::RwLock;
+use crate::nonblocking::CasBackoff;
 use crate::value::DictionaryValue;
 use crate::{Dictionary, MappedDictionary};
+use arc_swap::ArcSwap;
 use std::collections::HashMap;
 use std::hash::Hash;
 use std::sync::Arc;
@@ -41,7 +42,7 @@ use std::sync::Arc;
 ///
 /// `BijectiveMap` is fully thread-safe:
 /// - Forward lookups use the thread-safe `DynamicDawgChar` backend
-/// - Reverse lookups use `Arc<RwLock<HashMap<V, String>>>`
+/// - Reverse lookups load an atomically published `HashMap` snapshot
 ///
 /// # Examples
 ///
@@ -65,14 +66,14 @@ pub struct BijectiveMap<V: DictionaryValue + Eq + Hash> {
     forward: DynamicDawgChar<V>,
 
     /// Reverse mapping: value → term
-    reverse: Arc<RwLock<HashMap<V, String>>>,
+    reverse: Arc<ArcSwap<HashMap<V, String>>>,
 }
 
 impl<V: DictionaryValue + Eq + Hash> Clone for BijectiveMap<V> {
     fn clone(&self) -> Self {
         Self {
             forward: self.forward.clone(),
-            reverse: Arc::new(RwLock::new(self.reverse.read().clone())),
+            reverse: Arc::new(ArcSwap::from_pointee((*self.reverse.load_full()).clone())),
         }
     }
 }
@@ -97,7 +98,7 @@ impl<V: DictionaryValue + Eq + Hash> BijectiveMap<V> {
     pub fn new() -> Self {
         Self {
             forward: DynamicDawgChar::new(),
-            reverse: Arc::new(RwLock::new(HashMap::new())),
+            reverse: Arc::new(ArcSwap::from_pointee(HashMap::new())),
         }
     }
 
@@ -116,8 +117,46 @@ impl<V: DictionaryValue + Eq + Hash> BijectiveMap<V> {
     pub fn with_capacity(capacity: usize) -> Self {
         Self {
             forward: DynamicDawgChar::new(),
-            reverse: Arc::new(RwLock::new(HashMap::with_capacity(capacity))),
+            reverse: Arc::new(ArcSwap::from_pointee(HashMap::with_capacity(capacity))),
         }
+    }
+
+    #[inline]
+    fn reverse_snapshot(&self) -> Arc<HashMap<V, String>> {
+        self.reverse.load_full()
+    }
+
+    fn mutate_reverse<R, F>(&self, mut f: F) -> R
+    where
+        F: FnMut(&mut HashMap<V, String>) -> (R, bool),
+    {
+        let mut backoff = CasBackoff::new();
+        loop {
+            let current = self.reverse_snapshot();
+            let mut next = (*current).clone();
+            let (result, changed) = f(&mut next);
+
+            if !changed {
+                return result;
+            }
+
+            let previous = self.reverse.compare_and_swap(&current, Arc::new(next));
+            if Arc::ptr_eq(&previous, &current) {
+                return result;
+            }
+
+            backoff.snooze();
+        }
+    }
+
+    fn rollback_reverse_insert(&self, value: &V, term: &str) {
+        self.mutate_reverse(|reverse| {
+            let should_remove = reverse.get(value).is_some_and(|existing| existing == term);
+            if should_remove {
+                reverse.remove(value);
+            }
+            ((), should_remove)
+        });
     }
 
     /// Build a bijective map from an iterator of (term, value) pairs.
@@ -193,28 +232,17 @@ impl<V: DictionaryValue + Eq + Hash> BijectiveMap<V> {
     /// bimap.insert("uno", 1);  // Panics: duplicate value
     /// ```
     pub fn insert(&self, term: &str, value: V) {
-        // Check for duplicate term
-        if self.forward.get_value(term).is_some() {
-            panic!(
-                "BijectiveMap::insert: duplicate term '{}' violates bijection invariant",
-                term
-            );
-        }
-
-        // Check for duplicate value
-        {
-            let reverse = self.reverse.read();
-            if reverse.contains_key(&value) {
+        match self.try_insert(term, value) {
+            Ok(()) => {}
+            Err(InsertError::DuplicateTerm) => {
+                panic!(
+                    "BijectiveMap::insert: duplicate term '{}' violates bijection invariant",
+                    term
+                );
+            }
+            Err(InsertError::DuplicateValue) => {
                 panic!("BijectiveMap::insert: duplicate value violates bijection invariant");
             }
-        }
-
-        // Insert into both mappings
-        self.forward.insert_with_value(term, value.clone());
-
-        {
-            let mut reverse = self.reverse.write();
-            reverse.insert(value, term.to_string());
         }
     }
 
@@ -241,25 +269,25 @@ impl<V: DictionaryValue + Eq + Hash> BijectiveMap<V> {
     /// assert_eq!(bimap.try_insert("uno", 1), Err(InsertError::DuplicateValue));
     /// ```
     pub fn try_insert(&self, term: &str, value: V) -> Result<(), InsertError> {
-        // Check for duplicate term
         if self.forward.get_value(term).is_some() {
             return Err(InsertError::DuplicateTerm);
         }
 
-        // Check for duplicate value
-        {
-            let reverse = self.reverse.read();
+        let term_string = term.to_string();
+        let reverse_result = self.mutate_reverse(|reverse| {
             if reverse.contains_key(&value) {
-                return Err(InsertError::DuplicateValue);
+                (Err(InsertError::DuplicateValue), false)
+            } else {
+                reverse.insert(value.clone(), term_string.clone());
+                (Ok(()), true)
             }
-        }
+        });
 
-        // Insert into both mappings
-        self.forward.insert_with_value(term, value.clone());
+        reverse_result?;
 
-        {
-            let mut reverse = self.reverse.write();
-            reverse.insert(value, term.to_string());
+        if !self.forward.insert_with_value(term, value.clone()) {
+            self.rollback_reverse_insert(&value, term);
+            return Err(InsertError::DuplicateTerm);
         }
 
         Ok(())
@@ -310,7 +338,7 @@ impl<V: DictionaryValue + Eq + Hash> BijectiveMap<V> {
     /// ```
     #[inline]
     pub fn get_term(&self, value: &V) -> Option<String> {
-        self.reverse.read().get(value).cloned()
+        self.reverse_snapshot().get(value).cloned()
     }
 
     /// Check if a term exists in the map.
@@ -346,7 +374,7 @@ impl<V: DictionaryValue + Eq + Hash> BijectiveMap<V> {
     /// ```
     #[inline]
     pub fn contains_value(&self, value: &V) -> bool {
-        self.reverse.read().contains_key(value)
+        self.reverse_snapshot().contains_key(value)
     }
 
     /// Get the number of term-value pairs in the map.
@@ -365,7 +393,7 @@ impl<V: DictionaryValue + Eq + Hash> BijectiveMap<V> {
     /// ```
     #[inline]
     pub fn len(&self) -> usize {
-        self.reverse.read().len()
+        self.reverse_snapshot().len()
     }
 
     /// Check if the map is empty.
@@ -383,7 +411,7 @@ impl<V: DictionaryValue + Eq + Hash> BijectiveMap<V> {
     /// ```
     #[inline]
     pub fn is_empty(&self) -> bool {
-        self.reverse.read().is_empty()
+        self.reverse_snapshot().is_empty()
     }
 
     /// Iterate over all (term, value) pairs.
@@ -403,8 +431,7 @@ impl<V: DictionaryValue + Eq + Hash> BijectiveMap<V> {
     /// }
     /// ```
     pub fn iter(&self) -> impl Iterator<Item = (String, V)> + '_ {
-        // Clone the data to avoid lifetime issues with the lock guard
-        let reverse = self.reverse.read();
+        let reverse = self.reverse_snapshot();
         reverse
             .iter()
             .map(|(v, t)| (t.clone(), v.clone()))
@@ -426,7 +453,7 @@ impl<V: DictionaryValue + Eq + Hash> BijectiveMap<V> {
     /// assert!(terms.contains(&"b".to_string()));
     /// ```
     pub fn terms(&self) -> impl Iterator<Item = String> + '_ {
-        let reverse = self.reverse.read();
+        let reverse = self.reverse_snapshot();
         reverse.values().cloned().collect::<Vec<_>>().into_iter()
     }
 
@@ -444,7 +471,7 @@ impl<V: DictionaryValue + Eq + Hash> BijectiveMap<V> {
     /// assert!(values.contains(&2));
     /// ```
     pub fn values(&self) -> impl Iterator<Item = V> + '_ {
-        let reverse = self.reverse.read();
+        let reverse = self.reverse_snapshot();
         reverse.keys().cloned().collect::<Vec<_>>().into_iter()
     }
 
@@ -500,7 +527,7 @@ impl<V: DictionaryValue + Eq + Hash> Dictionary for BijectiveMap<V> {
     }
 
     fn len(&self) -> Option<usize> {
-        Some(self.reverse.read().len())
+        Some(self.reverse_snapshot().len())
     }
 }
 
@@ -529,13 +556,7 @@ impl<V: DictionaryValue + Eq + Hash> MappedDictionary for BijectiveMap<V> {
 
 impl<V: DictionaryValue + Eq + Hash> BijectiveDictionary for BijectiveMap<V> {
     fn get_term(&self, value: &Self::Value) -> Option<std::borrow::Cow<'_, str>> {
-        // Acquire the read guard, look up, clone the String into a Cow::Owned.
-        // The clone is necessary because the read guard cannot escape this
-        // function's stack frame and `Cow::Borrowed(&str)` would require a
-        // borrow tied to `self`, not to the guard. The previous unsafe
-        // pointer-dereference shortcut was unsound under concurrent inserts
-        // (HashMap rehashing invalidates element pointers).
-        let reverse = self.reverse.read();
+        let reverse = self.reverse_snapshot();
         reverse
             .get(value)
             .map(|s| std::borrow::Cow::Owned(s.clone()))

@@ -129,8 +129,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::sync_compat::RwLock;
-
+use super::lockfree::LockFreeSuffixAutomaton;
 use super::zipper::SuffixAutomatonZipper;
 use crate::iterator::{DictionaryIterator, DictionaryTermIterator};
 use crate::value::DictionaryValue;
@@ -152,8 +151,7 @@ pub(crate) type SuffixNode<V = ()> = super::core::SuffixNode<u8, V>;
 
 /// Internal state of the suffix automaton.
 ///
-/// This is wrapped in Arc<RwLock<...>> to provide thread-safe concurrent access
-/// with dynamic mutation support.
+/// This is published through an atomic snapshot handle in [`SuffixAutomaton`].
 // C3 algorithmic dedup: byte-for-byte-identical local
 // `SuffixAutomatonInner<V>` struct + 2-method impl block (`new`,
 // `extend`) replaced with a type alias to the generic
@@ -194,8 +192,9 @@ mod _legacy_extend_byte {
 ///
 /// # Thread Safety
 ///
-/// Uses `Arc<RwLock<...>>` for safe concurrent access with dynamic updates.
-/// Multiple readers can query simultaneously, with exclusive access for writes.
+/// Uses atomic snapshot publication for dynamic updates. Readers traverse a
+/// stable `Arc` snapshot without waiting; writers prepare a cloned graph and
+/// publish it with CAS.
 ///
 /// # Construction
 ///
@@ -229,10 +228,52 @@ mod _legacy_extend_byte {
 /// returned here implements the traversal traits the transducer needs.
 #[derive(Clone, Debug)]
 pub struct SuffixAutomaton<V: DictionaryValue = ()> {
-    pub(crate) inner: Arc<RwLock<SuffixAutomatonInner<V>>>,
+    pub(crate) inner: LockFreeSuffixAutomaton<u8, V>,
 }
 
 impl<V: DictionaryValue> SuffixAutomaton<V> {
+    #[inline]
+    fn from_inner(inner: SuffixAutomatonInner<V>) -> Self {
+        Self {
+            inner: LockFreeSuffixAutomaton::from_inner(inner),
+        }
+    }
+
+    fn insert_text_into_inner(inner: &mut SuffixAutomatonInner<V>, text: &str, value: Option<V>) {
+        inner.last_state = 0;
+        let string_id = inner.source_texts.len();
+        inner.source_texts.push(text.to_string());
+
+        for byte in text.bytes() {
+            inner.extend(byte);
+        }
+
+        let last_state = inner.last_state;
+        if let Some(value) = value {
+            inner.nodes[last_state].value = Some(value);
+        }
+        inner
+            .positions
+            .entry(last_state)
+            .or_default()
+            .push((string_id, text.len()));
+        inner.string_count += 1;
+        inner.last_state = 0;
+    }
+
+    fn find_term_state(inner: &SuffixAutomatonInner<V>, term: &str) -> Option<usize> {
+        let mut state = 0;
+        for &byte in term.as_bytes() {
+            state = inner.nodes.get(state)?.find_edge(byte)?;
+        }
+        Some(state)
+    }
+
+    fn value_from_inner(inner: &SuffixAutomatonInner<V>, term: &str) -> Option<V> {
+        let state = Self::find_term_state(inner, term)?;
+        inner.nodes.get(state).and_then(|node| node.value.clone())
+    }
+
     /// Create an empty suffix automaton.
     ///
     /// # Examples
@@ -245,20 +286,18 @@ impl<V: DictionaryValue> SuffixAutomaton<V> {
     /// dict.insert("world");
     /// ```
     pub fn new() -> Self {
-        Self {
-            inner: Arc::new(RwLock::new(SuffixAutomatonInner::new())),
-        }
+        Self::from_inner(SuffixAutomatonInner::new())
     }
 
     /// Get the number of states in the automaton (for debugging).
     pub fn state_count(&self) -> usize {
-        self.inner.read().nodes.len()
+        self.inner.load().nodes.len()
     }
 
     /// Debug: print automaton structure (for development).
     #[allow(dead_code)]
     pub fn debug_print(&self) {
-        let inner = self.inner.read();
+        let inner = self.inner.load();
         println!("Suffix Automaton with {} states:", inner.nodes.len());
         for (idx, node) in inner.nodes.iter().enumerate() {
             println!(
@@ -288,9 +327,9 @@ impl<V: DictionaryValue> SuffixAutomaton<V> {
     /// let dict = SuffixAutomaton::<()>::from_text(code);
     /// ```
     pub fn from_text(text: &str) -> Self {
-        let dict = Self::new();
-        dict.insert(text);
-        dict
+        let mut inner = SuffixAutomatonInner::new();
+        Self::insert_text_into_inner(&mut inner, text, None);
+        Self::from_inner(inner)
     }
 
     /// Build from multiple texts.
@@ -314,11 +353,11 @@ impl<V: DictionaryValue> SuffixAutomaton<V> {
         I: IntoIterator<Item = S>,
         S: AsRef<str>,
     {
-        let dict = Self::new();
+        let mut inner = SuffixAutomatonInner::new();
         for text in texts {
-            dict.insert(text.as_ref());
+            Self::insert_text_into_inner(&mut inner, text.as_ref(), None);
         }
-        dict
+        Self::from_inner(inner)
     }
 
     /// Insert a text string.
@@ -334,32 +373,10 @@ impl<V: DictionaryValue> SuffixAutomaton<V> {
     /// dict.insert("testing insertion");
     /// ```
     pub fn insert(&self, text: &str) -> bool {
-        let mut inner = self.inner.write();
-        let string_id = inner.source_texts.len();
-
-        // Store source text for serialization
-        inner.source_texts.push(text.to_string());
-
-        // Extend automaton with each character
-        for ch in text.bytes() {
-            inner.extend(ch);
-        }
-
-        // Record position metadata for the end-of-string state
-        // Note: is_final is already set to true during extend()
-        let last_state = inner.last_state;
-        inner
-            .positions
-            .entry(last_state)
-            .or_default()
-            .push((string_id, text.len()));
-
-        inner.string_count += 1;
-
-        // Reset to root for next insertion (generalized automaton)
-        inner.last_state = 0;
-
-        true
+        self.inner.mutate(|inner| {
+            Self::insert_text_into_inner(inner, text, None);
+            (true, true)
+        })
     }
 
     /// Remove a text string.
@@ -380,59 +397,58 @@ impl<V: DictionaryValue> SuffixAutomaton<V> {
     /// assert!(!dict.remove("test string")); // Already removed
     /// ```
     pub fn remove(&self, text: &str) -> bool {
-        let mut inner = self.inner.write();
-
-        // Remove one active source record matching this exact text. Source IDs
-        // are stable `source_texts` indices, so duplicate texts are removed one
-        // insertion at a time without renumbering later sources.
-        let mut remove_location: Option<(usize, usize, usize)> = None;
-        for (state_id, positions) in &inner.positions {
-            for (position_index, (source_id, end)) in positions.iter().enumerate() {
-                if *end == text.len()
-                    && inner
-                        .source_texts
-                        .get(*source_id)
-                        .map(|source| source == text)
-                        .unwrap_or(false)
-                    && remove_location
-                        .map(|(best_source_id, _, _)| *source_id < best_source_id)
-                        .unwrap_or(true)
-                {
-                    remove_location = Some((*source_id, *state_id, position_index));
+        self.inner.mutate(|inner| {
+            // Remove one active source record matching this exact text. Source IDs
+            // are stable `source_texts` indices, so duplicate texts are removed one
+            // insertion at a time without renumbering later sources.
+            let mut remove_location: Option<(usize, usize, usize)> = None;
+            for (state_id, positions) in &inner.positions {
+                for (position_index, (source_id, end)) in positions.iter().enumerate() {
+                    if *end == text.len()
+                        && inner
+                            .source_texts
+                            .get(*source_id)
+                            .map(|source| source == text)
+                            .unwrap_or(false)
+                        && remove_location
+                            .map(|(best_source_id, _, _)| *source_id < best_source_id)
+                            .unwrap_or(true)
+                    {
+                        remove_location = Some((*source_id, *state_id, position_index));
+                    }
                 }
             }
-        }
 
-        let removed_state = remove_location.map(|(_, state, _)| state);
-        let removed = if let Some((_, state, index)) = remove_location {
-            if let Some(positions) = inner.positions.get_mut(&state) {
-                positions.remove(index);
-                true
+            let removed_state = remove_location.map(|(_, state, _)| state);
+            let removed = if let Some((_, state, index)) = remove_location {
+                if let Some(positions) = inner.positions.get_mut(&state) {
+                    positions.remove(index);
+                    true
+                } else {
+                    false
+                }
             } else {
                 false
+            };
+
+            if removed {
+                // Source text slots stay stable; position metadata is the active set.
+                let should_remove = removed_state
+                    .and_then(|state| inner.positions.get(&state).map(|v| (state, v.is_empty())));
+
+                if let Some((state, true)) = should_remove {
+                    // Note: We keep is_final=true because this state still represents
+                    // a valid substring (possibly from other indexed strings).
+                    // Only remove from positions map.
+                    inner.positions.remove(&state);
+                }
+
+                inner.needs_compaction = true;
+                inner.string_count = inner.string_count.saturating_sub(1);
             }
-        } else {
-            false
-        };
 
-        if removed {
-            // Source text slots stay stable; position metadata is the active set.
-            let should_remove = removed_state
-                .and_then(|state| inner.positions.get(&state).map(|v| (state, v.is_empty())));
-
-            if let Some((state, true)) = should_remove {
-                // Note: We keep is_final=true because this state still represents
-                // a valid substring (possibly from other indexed strings).
-                // Only remove from positions map.
-                inner.positions.remove(&state);
-            }
-
-            inner.needs_compaction = true;
-            inner.string_count = inner.string_count.saturating_sub(1);
-            true
-        } else {
-            false
-        }
+            (removed, removed)
+        })
     }
 
     /// Clear all indexed text.
@@ -450,8 +466,14 @@ impl<V: DictionaryValue> SuffixAutomaton<V> {
     /// assert_eq!(dict.string_count(), 0);
     /// ```
     pub fn clear(&self) {
-        let mut inner = self.inner.write();
-        *inner = SuffixAutomatonInner::new();
+        self.inner.mutate(|inner| {
+            if inner.string_count == 0 && inner.nodes.len() == 1 {
+                ((), false)
+            } else {
+                *inner = SuffixAutomatonInner::new();
+                ((), true)
+            }
+        });
     }
 
     /// Compact internal structure (garbage collection).
@@ -479,60 +501,65 @@ impl<V: DictionaryValue> SuffixAutomaton<V> {
     /// }
     /// ```
     pub fn compact(&self) {
-        let mut inner = self.inner.write();
-
-        if !inner.needs_compaction {
-            return;
-        }
-
-        // Mark-and-sweep garbage collection
-        let mut reachable = vec![false; inner.nodes.len()];
-        let mut stack = vec![0]; // Start from root
-
-        while let Some(state) = stack.pop() {
-            if reachable[state] {
-                continue;
+        self.inner.mutate(|inner| {
+            if !inner.needs_compaction {
+                return ((), false);
             }
-            reachable[state] = true;
 
-            for &(_, target) in &inner.nodes[state].edges {
-                stack.push(target);
+            // Mark-and-sweep garbage collection
+            let mut reachable = vec![false; inner.nodes.len()];
+            let mut stack = vec![0]; // Start from root
+
+            while let Some(state) = stack.pop() {
+                if reachable[state] {
+                    continue;
+                }
+                reachable[state] = true;
+
+                for &(_, target) in &inner.nodes[state].edges {
+                    stack.push(target);
+                }
             }
-        }
 
-        // Build new node vector with only reachable states
-        let mut new_nodes = Vec::new();
-        let mut old_to_new = vec![0; inner.nodes.len()];
+            // Build new node vector with only reachable states
+            let reachable_count = reachable
+                .iter()
+                .filter(|&&is_reachable| is_reachable)
+                .count();
+            let mut new_nodes = Vec::with_capacity(reachable_count);
+            let mut old_to_new = vec![0; inner.nodes.len()];
 
-        for (old_idx, node) in inner.nodes.iter().enumerate() {
-            if reachable[old_idx] {
-                old_to_new[old_idx] = new_nodes.len();
-                new_nodes.push(node.clone());
+            for (old_idx, node) in inner.nodes.iter().enumerate() {
+                if reachable[old_idx] {
+                    old_to_new[old_idx] = new_nodes.len();
+                    new_nodes.push(node.clone());
+                }
             }
-        }
 
-        // Remap all state indices
-        for node in &mut new_nodes {
-            for edge in &mut node.edges {
-                edge.1 = old_to_new[edge.1];
+            // Remap all state indices
+            for node in &mut new_nodes {
+                for edge in &mut node.edges {
+                    edge.1 = old_to_new[edge.1];
+                }
+                if let Some(link) = node.suffix_link {
+                    node.suffix_link = Some(old_to_new[link]);
+                }
             }
-            if let Some(link) = node.suffix_link {
-                node.suffix_link = Some(old_to_new[link]);
-            }
-        }
 
-        // Update positions map
-        let mut new_positions = HashMap::new();
-        for (old_state, positions) in inner.positions.drain() {
-            if reachable[old_state] {
-                new_positions.insert(old_to_new[old_state], positions);
+            // Update positions map
+            let mut new_positions = HashMap::with_capacity(inner.positions.len());
+            for (old_state, positions) in inner.positions.drain() {
+                if reachable[old_state] {
+                    new_positions.insert(old_to_new[old_state], positions);
+                }
             }
-        }
 
-        inner.nodes = new_nodes;
-        inner.positions = new_positions;
-        inner.last_state = 0;
-        inner.needs_compaction = false;
+            inner.nodes = new_nodes;
+            inner.positions = new_positions;
+            inner.last_state = 0;
+            inner.needs_compaction = false;
+            ((), true)
+        });
     }
 
     /// Get the number of indexed strings.
@@ -549,7 +576,7 @@ impl<V: DictionaryValue> SuffixAutomaton<V> {
     /// assert_eq!(dict.string_count(), 1);
     /// ```
     pub fn string_count(&self) -> usize {
-        self.inner.read().string_count
+        self.inner.load().string_count
     }
 
     /// Check if compaction is recommended.
@@ -571,7 +598,7 @@ impl<V: DictionaryValue> SuffixAutomaton<V> {
     /// }
     /// ```
     pub fn needs_compaction(&self) -> bool {
-        self.inner.read().needs_compaction
+        self.inner.load().needs_compaction
     }
 
     /// Get match positions for a substring.
@@ -591,7 +618,7 @@ impl<V: DictionaryValue> SuffixAutomaton<V> {
     /// assert_eq!(positions, vec![(0, 4), (1, 4)]);
     /// ```
     pub fn match_positions(&self, substring: &str) -> Vec<(usize, usize)> {
-        let inner = self.inner.read();
+        let inner = self.inner.load();
 
         if substring.is_empty() {
             return Vec::new();
@@ -680,88 +707,53 @@ impl<V: DictionaryValue> SuffixAutomaton<V> {
     where
         F: Fn(&mut V),
     {
-        let mut inner = self.inner.write();
+        self.inner.mutate(|inner| {
+            let Some(state) = Self::find_term_state(inner, term) else {
+                Self::insert_text_into_inner(inner, term, Some(default_value.clone()));
+                return (true, true);
+            };
 
-        // Try to navigate to the term
-        let mut state = 0;
-        for &byte in term.as_bytes() {
-            match inner.nodes[state].find_edge(byte) {
-                Some(next) => state = next,
-                None => {
-                    // Term doesn't exist - need to insert it
-                    drop(inner);
-                    return self.insert_with_value_internal(term, default_value);
+            if inner.nodes[state].value.is_some() {
+                update_fn(
+                    inner.nodes[state]
+                        .value
+                        .as_mut()
+                        .expect("value.is_some() checked one line above"),
+                );
+                (false, true)
+            } else {
+                inner.nodes[state].value = Some(default_value.clone());
+                inner.nodes[state].is_final = true;
+                if !inner.positions.get(&state).is_some_and(|positions| {
+                    positions.iter().any(|(source_id, end)| {
+                        *end == term.len()
+                            && inner
+                                .source_texts
+                                .get(*source_id)
+                                .map(|source| source == term)
+                                .unwrap_or(false)
+                    })
+                }) {
+                    let string_id = inner.source_texts.len();
+                    inner.source_texts.push(term.to_string());
+                    inner
+                        .positions
+                        .entry(state)
+                        .or_default()
+                        .push((string_id, term.len()));
+                    inner.string_count += 1;
                 }
+                (true, true)
             }
-        }
-
-        // Term exists - check if it has a value
-        if inner.nodes[state].value.is_some() {
-            // Update existing value (guard above proves Some).
-            update_fn(
-                inner.nodes[state]
-                    .value
-                    .as_mut()
-                    .expect("value.is_some() checked one line above"),
-            );
-            false
-        } else {
-            // Node exists but no value - set the default value
-            inner.nodes[state].value = Some(default_value);
-            inner.nodes[state].is_final = true;
-            if !inner.positions.get(&state).is_some_and(|positions| {
-                positions.iter().any(|(source_id, end)| {
-                    *end == term.len()
-                        && inner
-                            .source_texts
-                            .get(*source_id)
-                            .map(|source| source == term)
-                            .unwrap_or(false)
-                })
-            }) {
-                let string_id = inner.source_texts.len();
-                inner.source_texts.push(term.to_string());
-                inner
-                    .positions
-                    .entry(state)
-                    .or_default()
-                    .push((string_id, term.len()));
-                inner.string_count += 1;
-            }
-            true
-        }
+        })
     }
 
-    /// Internal helper for insert_with_value to avoid deadlock in update_or_insert.
+    /// Internal helper for insert_with_value.
     fn insert_with_value_internal(&self, term: &str, value: V) -> bool {
-        let mut inner = self.inner.write();
-
-        // Reset to root for new string
-        inner.last_state = 0;
-
-        // Extend with all characters
-        for &byte in term.as_bytes() {
-            inner.extend(byte);
-        }
-
-        // Set the value at the final state
-        let final_state = inner.last_state;
-        inner.nodes[final_state].value = Some(value);
-
-        // Track the new string
-        let string_id = inner.source_texts.len();
-        inner.source_texts.push(term.to_string());
-        inner
-            .positions
-            .entry(final_state)
-            .or_default()
-            .push((string_id, term.len()));
-        inner.string_count += 1;
-
-        // Reset last_state for future insertions
-        inner.last_state = 0;
-
-        true
+        self.inner.mutate(|inner| {
+            Self::insert_text_into_inner(inner, term, Some(value.clone()));
+            (true, true)
+        })
     }
 
     /// Get the original source texts used to build this automaton.
@@ -782,7 +774,7 @@ impl<V: DictionaryValue> SuffixAutomaton<V> {
     /// assert_eq!(sources.len(), 2);
     /// ```
     pub fn source_texts(&self) -> Vec<String> {
-        let inner = self.inner.read();
+        let inner = self.inner.load();
         inner.source_texts.clone()
     }
 
@@ -878,8 +870,7 @@ impl<V: DictionaryValue + serde::Serialize> serde::Serialize for SuffixAutomaton
     where
         S: serde::Serializer,
     {
-        // Extract the inner data by acquiring read lock
-        let inner = self.inner.read();
+        let inner = self.inner.load();
         inner.serialize(serializer)
     }
 }
@@ -896,7 +887,7 @@ impl<'de, V: DictionaryValue + serde::Deserialize<'de>> serde::Deserialize<'de>
     {
         let inner = SuffixAutomatonInner::deserialize(deserializer)?;
         Ok(SuffixAutomaton {
-            inner: Arc::new(RwLock::new(inner)),
+            inner: LockFreeSuffixAutomaton::from_inner(inner),
         })
     }
 }
@@ -911,7 +902,7 @@ impl<'de, V: DictionaryValue> serde::Deserialize<'de> for SuffixAutomaton<V> {
     {
         let inner = SuffixAutomatonInner::deserialize(deserializer)?;
         Ok(SuffixAutomaton {
-            inner: Arc::new(RwLock::new(inner)),
+            inner: LockFreeSuffixAutomaton::from_inner(inner),
         })
     }
 }
@@ -922,8 +913,8 @@ impl<'de, V: DictionaryValue> serde::Deserialize<'de> for SuffixAutomaton<V> {
 /// `Transducer` and query infrastructure.
 #[derive(Clone, Debug)]
 pub struct SuffixNodeHandle<V: DictionaryValue = ()> {
-    /// Reference to the automaton (for traversal).
-    automaton: Arc<RwLock<SuffixAutomatonInner<V>>>,
+    /// Stable automaton snapshot for traversal.
+    automaton: Arc<SuffixAutomatonInner<V>>,
 
     /// Current state index.
     state_id: usize,
@@ -933,13 +924,17 @@ impl<V: DictionaryValue> DictionaryNode for SuffixNodeHandle<V> {
     type Unit = u8;
 
     fn is_final(&self) -> bool {
-        let inner = self.automaton.read();
-        inner.nodes[self.state_id].is_final
+        self.automaton
+            .nodes
+            .get(self.state_id)
+            .map(|node| node.is_final)
+            .unwrap_or(false)
     }
 
     fn transition(&self, label: u8) -> Option<Self> {
-        let inner = self.automaton.read();
-        inner.nodes[self.state_id]
+        self.automaton
+            .nodes
+            .get(self.state_id)?
             .find_edge(label)
             .map(|target| Self {
                 automaton: Arc::clone(&self.automaton),
@@ -948,10 +943,12 @@ impl<V: DictionaryValue> DictionaryNode for SuffixNodeHandle<V> {
     }
 
     fn edges(&self) -> Box<dyn Iterator<Item = (u8, Self)> + '_> {
-        // Clone edges to avoid holding lock during iteration
-        let inner = self.automaton.read();
-        let edges = inner.nodes[self.state_id].edges.clone();
-        drop(inner);
+        let edges = self
+            .automaton
+            .nodes
+            .get(self.state_id)
+            .map(|node| node.edges.clone())
+            .unwrap_or_default();
 
         Box::new(edges.into_iter().map(move |(label, target)| {
             (
@@ -965,13 +962,20 @@ impl<V: DictionaryValue> DictionaryNode for SuffixNodeHandle<V> {
     }
 
     fn has_edge(&self, label: u8) -> bool {
-        let inner = self.automaton.read();
-        inner.nodes[self.state_id].find_edge(label).is_some()
+        self.automaton
+            .nodes
+            .get(self.state_id)
+            .is_some_and(|node| node.find_edge(label).is_some())
     }
 
     fn edge_count(&self) -> Option<usize> {
-        let inner = self.automaton.read();
-        Some(inner.nodes[self.state_id].edges.len())
+        Some(
+            self.automaton
+                .nodes
+                .get(self.state_id)
+                .map(|node| node.edges.len())
+                .unwrap_or(0),
+        )
     }
 }
 
@@ -980,7 +984,7 @@ impl<V: DictionaryValue> Dictionary for SuffixAutomaton<V> {
 
     fn root(&self) -> Self::Node {
         SuffixNodeHandle {
-            automaton: Arc::clone(&self.inner),
+            automaton: self.inner.load(),
             state_id: 0,
         }
     }
@@ -1003,7 +1007,7 @@ impl<V: DictionaryValue> Dictionary for SuffixAutomaton<V> {
     }
 
     fn sync_strategy(&self) -> SyncStrategy {
-        SyncStrategy::ExternalSync // Uses RwLock
+        SyncStrategy::InternalSync
     }
 
     fn is_suffix_based(&self) -> bool {
@@ -1024,8 +1028,7 @@ impl<V: DictionaryValue> MappedDictionaryNode for SuffixNodeHandle<V> {
     type Value = V;
 
     fn value(&self) -> Option<Self::Value> {
-        let inner = self.automaton.read();
-        inner
+        self.automaton
             .nodes
             .get(self.state_id)
             .and_then(|node| node.value.clone())
@@ -1036,17 +1039,8 @@ impl<V: DictionaryValue> MappedDictionary for SuffixAutomaton<V> {
     type Value = V;
 
     fn get_value(&self, term: &str) -> Option<Self::Value> {
-        // Navigate to the term
-        let mut node = self.root();
-        for byte in term.as_bytes() {
-            match node.transition(*byte) {
-                Some(next) => node = next,
-                None => return None,
-            }
-        }
-
-        // Return value if the node has one
-        node.value()
+        let inner = self.inner.load();
+        Self::value_from_inner(&inner, term)
     }
 
     fn contains_with_value<F>(&self, term: &str, predicate: F) -> bool
@@ -1286,7 +1280,7 @@ mod tests {
         // Test Dictionary trait methods
         assert_eq!(dict.len(), Some(1));
         assert!(!dict.is_empty());
-        assert_eq!(dict.sync_strategy(), SyncStrategy::ExternalSync);
+        assert_eq!(dict.sync_strategy(), SyncStrategy::InternalSync);
 
         // Test node traversal
         let root = dict.root();

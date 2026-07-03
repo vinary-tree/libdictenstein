@@ -17,6 +17,7 @@
 //! Memory usage is proportional to the number of children. For typical use cases
 //! with 49-256 children, this is comparable to a byte-level Node256.
 
+use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 
 use super::{AddChildError, CharArtNode, CharCompressedPrefix, CharNodeHeader};
@@ -115,14 +116,14 @@ impl CharArtNode for CharBucket {
     }
 
     fn add_child(&mut self, key: u32, child: SwizzledPtr) -> Result<(), AddChildError> {
-        // Check for duplicate
-        if self.entries.contains_key(&key) {
-            return Err(AddChildError::KeyExists);
+        match self.entries.entry(key) {
+            Entry::Occupied(_) => Err(AddChildError::KeyExists),
+            Entry::Vacant(entry) => {
+                entry.insert(child);
+                self.header.num_children += 1;
+                Ok(())
+            }
         }
-
-        self.entries.insert(key, child);
-        self.header.num_children += 1;
-        Ok(())
     }
 
     fn remove_child(&mut self, key: u32) -> Option<SwizzledPtr> {

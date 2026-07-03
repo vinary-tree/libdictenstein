@@ -9,6 +9,7 @@ pub mod ascii;
 pub mod char;
 pub mod char_zipper;
 pub mod core;
+pub(crate) mod lockfree;
 pub mod zipper;
 
 pub use ascii::{SuffixAutomaton, SuffixNodeHandle};

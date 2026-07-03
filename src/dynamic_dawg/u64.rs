@@ -7,20 +7,16 @@
 //! # Architectural divergence from `DawgCore<U, V>`
 //!
 //! Unlike [`DynamicDawg<V>`](super::ascii::DynamicDawg) and
-//! [`DynamicDawgChar<V>`](super::char::DynamicDawgChar) — both
-//! of which (as of C1a/C1b in 2026-05-21) alias their inner state to the
-//! shared generic [`DawgCore<U, V>`](super::core::DawgCore) —
-//! `DynamicDawgU64<V>` deliberately does NOT unify with `DawgCore`. The
-//! divergence is fundamental, not cosmetic:
+//! [`DynamicDawgChar<V>`](super::char::DynamicDawgChar), which use the
+//! unit-generic lock-free node core introduced for byte/char labels,
+//! `DynamicDawgU64<V>` keeps its original u64-specialized implementation.
+//! The divergence is now mostly representation-specific:
 //!
-//! - **Node storage**: `DawgCore<U, V>` uses
-//!   `Vec<DawgNode<U, V>>` indexed by `usize` slot, mutated under an
-//!   outer `Arc<RwLock<…>>`. `DynamicDawgU64<V>` uses
+//! - **Node storage**: `DynamicDawgU64<V>` uses
 //!   `Vec<Arc<DawgNodeU64<V>>>` with per-node `ArcSwap<EdgeList<V>>` for
 //!   lock-free copy-on-write edge mutation.
-//! - **Concurrency model**: `DawgCore` is reader-writer-locked (one writer
-//!   blocks all readers). `DynamicDawgU64` is fully lock-free for reads
-//!   and uses CAS retries for writes.
+//! - **Concurrency model**: the byte, char, and u64 dynamic DAWG variants all
+//!   provide wait-free reads and CAS-based writes.
 //! - **Memory cost**: `DynamicDawgU64`'s `Arc`-per-node and atomic-pointer-
 //!   per-edge-list cost ~2-3x the per-node footprint of `DawgCore`. The
 //!   trade-off is wait-free reads, which `DawgCore` cannot offer.
@@ -60,6 +56,7 @@
 //! - **Memory**: Arc-based with automatic reclamation via arc-swap
 
 use super::u64_zipper::DynamicDawgU64Zipper;
+use crate::nonblocking::CasBackoff;
 use crate::value::DictionaryValue;
 use crate::{Dictionary, DictionaryNode, SyncStrategy};
 use arc_swap::{ArcSwap, ArcSwapOption};
@@ -68,6 +65,8 @@ use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
+
+const EDGE_LINEAR_SCAN_LIMIT: usize = 16;
 
 /// Immutable edge list that can be atomically swapped.
 ///
@@ -88,27 +87,26 @@ impl<V: DictionaryValue> EdgeList<V> {
     /// Find a child node by label.
     #[inline]
     pub(crate) fn find(&self, label: u64) -> Option<&Arc<DawgNodeU64<V>>> {
-        self.edges
-            .iter()
-            .find(|(l, _)| *l == label)
-            .map(|(_, node)| node)
+        if self.edges.len() < EDGE_LINEAR_SCAN_LIMIT {
+            self.edges
+                .iter()
+                .find(|(edge_label, _)| *edge_label == label)
+                .map(|(_, node)| node)
+        } else {
+            self.edges
+                .binary_search_by_key(&label, |(edge_label, _)| *edge_label)
+                .ok()
+                .map(|idx| &self.edges[idx].1)
+        }
     }
 
     /// Insert an edge in sorted order, returning a new EdgeList.
     fn with_edge(&self, label: u64, node: Arc<DawgNodeU64<V>>) -> Self {
         let mut new_edges = self.edges.clone();
 
-        // Find insertion position to maintain sorted order
-        let pos = new_edges
-            .iter()
-            .position(|(l, _)| *l >= label)
-            .unwrap_or(new_edges.len());
-
-        // Check if edge already exists (shouldn't happen in normal use)
-        if pos < new_edges.len() && new_edges[pos].0 == label {
-            new_edges[pos] = (label, node);
-        } else {
-            new_edges.insert(pos, (label, node));
+        match new_edges.binary_search_by_key(&label, |(edge_label, _)| *edge_label) {
+            Ok(pos) => new_edges[pos] = (label, node),
+            Err(pos) => new_edges.insert(pos, (label, node)),
         }
 
         EdgeList { edges: new_edges }
@@ -117,12 +115,10 @@ impl<V: DictionaryValue> EdgeList<V> {
     /// Remove an edge by label, returning a new EdgeList.
     #[allow(dead_code)]
     fn without_edge(&self, label: u64) -> Self {
-        let new_edges: SmallVec<_> = self
-            .edges
-            .iter()
-            .filter(|(l, _)| *l != label)
-            .cloned()
-            .collect();
+        let mut new_edges = self.edges.clone();
+        if let Ok(pos) = new_edges.binary_search_by_key(&label, |(edge_label, _)| *edge_label) {
+            new_edges.remove(pos);
+        }
         EdgeList { edges: new_edges }
     }
 }
@@ -203,7 +199,7 @@ impl<V: DictionaryValue> DawgNodeU64<V> {
 ///
 /// - Insertion: O(m) where m is term length (amortized, with CAS retries)
 /// - Lookup: O(m) - wait-free
-/// - Space: Higher than RwLock version due to Arc overhead per node
+/// - Space: Higher than the compact mutable core due to Arc overhead per node
 ///
 /// # Examples
 ///
@@ -349,10 +345,10 @@ impl<V: DictionaryValue> DynamicDawgU64<V> {
     }
 
     fn begin_write(&self) -> WriteGuard<'_, V> {
+        let mut backoff = CasBackoff::new();
         loop {
             while self.compaction_active.load(Ordering::Acquire) {
-                std::hint::spin_loop();
-                std::thread::yield_now();
+                backoff.snooze();
             }
 
             self.active_writers.fetch_add(1, Ordering::AcqRel);
@@ -360,6 +356,7 @@ impl<V: DictionaryValue> DynamicDawgU64<V> {
                 return WriteGuard { dawg: self };
             }
             self.active_writers.fetch_sub(1, Ordering::AcqRel);
+            backoff.snooze();
         }
     }
 
@@ -374,9 +371,85 @@ impl<V: DictionaryValue> DynamicDawgU64<V> {
     }
 
     fn wait_for_writers_to_quiesce(&self) {
+        let mut backoff = CasBackoff::new();
         while self.active_writers.load(Ordering::Acquire) != 0 {
-            std::hint::spin_loop();
-            std::thread::yield_now();
+            backoff.snooze();
+        }
+    }
+
+    fn update_value_cas<F>(node: &Arc<DawgNodeU64<V>>, default_value: &V, update_fn: &F)
+    where
+        F: Fn(&mut V),
+    {
+        let mut backoff = CasBackoff::new();
+        loop {
+            let current = node.value.load_full();
+            let new_value = if let Some(value) = current.as_ref() {
+                let mut updated = (**value).clone();
+                update_fn(&mut updated);
+                updated
+            } else {
+                default_value.clone()
+            };
+
+            if Self::compare_store_value(node, current, Some(Arc::new(new_value))) {
+                return;
+            }
+            backoff.snooze();
+        }
+    }
+
+    fn update_or_insert_terminal<F>(
+        &self,
+        terminal: &Arc<DawgNodeU64<V>>,
+        default_value: &V,
+        update_fn: &F,
+    ) -> bool
+    where
+        F: Fn(&mut V),
+    {
+        let mut backoff = CasBackoff::new();
+        loop {
+            if terminal.is_final.load(Ordering::Acquire) {
+                Self::update_value_cas(terminal, default_value, update_fn);
+                return false;
+            }
+
+            if Self::compare_store_value(terminal, None, Some(Arc::new(default_value.clone()))) {
+                if terminal
+                    .is_final
+                    .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+                    .is_ok()
+                {
+                    self.term_count.fetch_add(1, Ordering::Relaxed);
+                    return true;
+                }
+
+                Self::update_value_cas(terminal, default_value, update_fn);
+                return false;
+            }
+
+            backoff.snooze();
+        }
+    }
+
+    fn compare_store_value(
+        node: &DawgNodeU64<V>,
+        expected: Option<Arc<V>>,
+        new_value: Option<Arc<V>>,
+    ) -> bool {
+        match expected {
+            Some(expected) => {
+                let previous = node.value.compare_and_swap(&expected, new_value);
+                previous
+                    .as_ref()
+                    .is_some_and(|actual| Arc::ptr_eq(actual, &expected))
+            }
+            None => {
+                let expected_none = None::<Arc<V>>;
+                let previous = node.value.compare_and_swap(&expected_none, new_value);
+                previous.as_ref().is_none()
+            }
         }
     }
 
@@ -591,6 +664,7 @@ impl<V: DictionaryValue> DynamicDawgU64<V> {
         for (i, &label) in sequence.iter().enumerate() {
             let is_last = i == sequence.len() - 1;
 
+            let mut backoff = CasBackoff::new();
             loop {
                 let edges = current.edges.load();
 
@@ -629,6 +703,7 @@ impl<V: DictionaryValue> DynamicDawgU64<V> {
                         break;
                     }
                     // CAS failed - another thread modified edges, retry
+                    backoff.snooze();
                 }
             }
         }
@@ -641,13 +716,13 @@ impl<V: DictionaryValue> DynamicDawgU64<V> {
         let _write = self.begin_write();
         if sequence.is_empty() {
             // Mark root as final with value
+            self.root.value.store(Some(Arc::new(value.clone())));
             if self
                 .root
                 .is_final
                 .compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed)
                 .is_ok()
             {
-                self.root.value.store(Some(Arc::new(value)));
                 self.term_count.fetch_add(1, Ordering::Relaxed);
                 return true;
             }
@@ -661,18 +736,19 @@ impl<V: DictionaryValue> DynamicDawgU64<V> {
         for (i, &label) in sequence.iter().enumerate() {
             let is_last = i == sequence.len() - 1;
 
+            let mut backoff = CasBackoff::new();
             loop {
                 let edges = current.edges.load();
 
                 if let Some(child) = edges.find(label) {
                     if is_last {
                         // Mark child as final with value
+                        child.value.store(Some(Arc::new(value.clone())));
                         if child
                             .is_final
                             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed)
                             .is_ok()
                         {
-                            child.value.store(Some(Arc::new(value)));
                             self.term_count.fetch_add(1, Ordering::Relaxed);
                             return true;
                         }
@@ -702,6 +778,7 @@ impl<V: DictionaryValue> DynamicDawgU64<V> {
                         current = new_node;
                         break;
                     }
+                    backoff.snooze();
                 }
             }
         }
@@ -723,28 +800,13 @@ impl<V: DictionaryValue> DynamicDawgU64<V> {
         // Navigate to the node, creating path if needed, without overwriting an
         // existing value before the update function can observe it.
         if sequence.is_empty() {
-            if self.root.is_final.load(Ordering::Acquire) {
-                let current_val = self.root.value.load();
-                let new_value = if let Some(val) = &*current_val {
-                    let mut new_value = (**val).clone();
-                    update_fn(&mut new_value);
-                    new_value
-                } else {
-                    default_value
-                };
-                self.root.value.store(Some(Arc::new(new_value)));
-                return false;
-            }
-
-            self.root.value.store(Some(Arc::new(default_value)));
-            self.root.is_final.store(true, Ordering::Release);
-            self.term_count.fetch_add(1, Ordering::Relaxed);
-            return true;
+            return self.update_or_insert_terminal(&self.root, &default_value, &update_fn);
         }
 
         let mut current: Arc<DawgNodeU64<V>> = self.root.clone();
 
         for &label in sequence {
+            let mut backoff = CasBackoff::new();
             loop {
                 let edges = current.edges.load();
 
@@ -761,29 +823,11 @@ impl<V: DictionaryValue> DynamicDawgU64<V> {
                     current = new_node;
                     break;
                 }
+                backoff.snooze();
             }
         }
 
-        if current
-            .is_final
-            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed)
-            .is_ok()
-        {
-            current.value.store(Some(Arc::new(default_value)));
-            self.term_count.fetch_add(1, Ordering::Relaxed);
-            return true;
-        }
-
-        let current_val = current.value.load();
-        let new_value = if let Some(val) = &*current_val {
-            let mut new_value = (**val).clone();
-            update_fn(&mut new_value);
-            new_value
-        } else {
-            default_value
-        };
-        current.value.store(Some(Arc::new(new_value)));
-        false
+        self.update_or_insert_terminal(&current, &default_value, &update_fn)
     }
 
     /// Get the value for a sequence.
@@ -846,7 +890,8 @@ impl<V: DictionaryValue> DynamicDawgU64<V> {
                 .compare_exchange(true, false, Ordering::AcqRel, Ordering::Relaxed)
                 .is_ok()
             {
-                self.root.value.store(None);
+                let previous_value = self.root.value.load_full();
+                let _ = Self::compare_store_value(&self.root, previous_value, None);
                 self.term_count.fetch_sub(1, Ordering::Relaxed);
                 self.needs_compaction.store(true, Ordering::Relaxed);
                 return true;
@@ -874,7 +919,8 @@ impl<V: DictionaryValue> DynamicDawgU64<V> {
             .compare_exchange(true, false, Ordering::AcqRel, Ordering::Relaxed)
             .is_ok()
         {
-            current.value.store(None);
+            let previous_value = current.value.load_full();
+            let _ = Self::compare_store_value(&current, previous_value, None);
             self.term_count.fetch_sub(1, Ordering::Relaxed);
             self.needs_compaction.store(true, Ordering::Relaxed);
             return true;
@@ -974,7 +1020,7 @@ impl<V: DictionaryValue> DynamicDawgU64<V> {
     }
 
     fn collect_visible_entries(&self) -> Vec<(Vec<u64>, Option<V>)> {
-        let mut entries = Vec::new();
+        let mut entries = Vec::with_capacity(self.term_count());
         let mut path = Vec::new();
         Self::collect_visible_entries_from(&self.root, &mut path, &mut entries);
         entries
@@ -1003,9 +1049,11 @@ impl<V: DictionaryValue> DynamicDawgU64<V> {
     }
 
     fn build_minimized_root(entries: &[(Vec<u64>, Option<V>)]) -> Arc<DawgNodeU64<V>> {
-        let mut nodes = vec![BuildNode::<V>::default()];
+        let max_trie_nodes = 1 + entries.iter().map(|(units, _)| units.len()).sum::<usize>();
+        let mut nodes = Vec::with_capacity(max_trie_nodes);
+        nodes.push(BuildNode::<V>::default());
         let mut sorted_entries = entries.to_vec();
-        sorted_entries.sort_by(|(left, _), (right, _)| left.cmp(right));
+        sorted_entries.sort_unstable_by(|(left, _), (right, _)| left.cmp(right));
 
         for (sequence, value) in sorted_entries {
             let mut node_idx = 0usize;
@@ -1028,7 +1076,8 @@ impl<V: DictionaryValue> DynamicDawgU64<V> {
             nodes[node_idx].value = value;
         }
 
-        let mut interned: HashMap<U64MergeSignature, Arc<DawgNodeU64<V>>> = HashMap::new();
+        let mut interned: HashMap<U64MergeSignature, Arc<DawgNodeU64<V>>> =
+            HashMap::with_capacity(nodes.len());
         Self::intern_build_node(0, &nodes, &mut interned, true)
     }
 

@@ -114,7 +114,7 @@ impl SegmentSyncManager {
         // gone or `running` is cleared, releasing the strong ref before sleeping.
         let idle_ms = manager.config.idle_check_interval_ms;
         let weak = Arc::downgrade(&manager);
-        let handle = thread::Builder::new()
+        match thread::Builder::new()
             .name("wal-sync".to_string())
             .spawn(move || {
                 loop {
@@ -128,13 +128,21 @@ impl SegmentSyncManager {
                         thread::sleep(Duration::from_millis(idle_ms));
                     }
                 }
-            })
-            .expect("Failed to spawn WAL sync thread");
-
-        *manager
-            .sync_thread
-            .lock()
-            .expect("sync_thread lock poisoned") = Some(handle);
+            }) {
+            Ok(handle) => {
+                *manager
+                    .sync_thread
+                    .lock()
+                    .expect("sync_thread lock poisoned") = Some(handle);
+            }
+            Err(error) => {
+                manager.running.store(false, Ordering::Release);
+                log::error!(
+                    "Failed to spawn WAL sync thread; async WAL waiters will report failure: {}",
+                    error
+                );
+            }
+        }
 
         manager
     }

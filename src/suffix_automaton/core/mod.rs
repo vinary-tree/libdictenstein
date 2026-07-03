@@ -12,7 +12,7 @@
 //! variants share the node-shape and node-API entirely.
 //!
 //! The larger [`SuffixAutomatonInner<V>`] (each variant's mutable state
-//! machine wrapped in an `Arc<RwLock<…>>`) and the on-line `extend()`
+//! machine published through an atomic snapshot handle) and the on-line `extend()`
 //! construction algorithm stay per-variant for now — see
 //! `docs/benchmarks/c3-suffix-automaton-core-handoff.md` for the full
 //! generification plan.

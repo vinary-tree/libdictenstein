@@ -1,8 +1,7 @@
 //! Character-level Dynamic DAWG with online modifications and Unicode support.
 //!
-//! This implementation supports incremental updates while maintaining
-//! "near-minimal" structure. Perfect minimality can be restored via
-//! explicit compaction.
+//! This implementation supports incremental updates on a lock-free node graph.
+//! Perfect minimality can be restored via explicit compaction.
 //!
 //! Unlike the byte-level `DynamicDawg`, this variant operates on Unicode
 //! scalar values (`char`), providing correct character-level Levenshtein
@@ -15,12 +14,10 @@
 //! - **Correctness**: Proper Unicode semantics (e.g., "" → "¡" = distance 1, not 2)
 
 use super::char_zipper::DynamicDawgCharZipper;
+use super::lockfree::{LockFreeDawg, LockFreeDawgNode};
 use crate::iterator::DictionaryIterator;
-use crate::sync_compat::RwLock;
 use crate::value::DictionaryValue;
 use crate::{Dictionary, DictionaryNode, SyncStrategy};
-use rustc_hash::FxHashMap;
-use smallvec::SmallVec;
 use std::sync::Arc;
 
 /// A dynamic DAWG that supports online insertions and deletions.
@@ -33,14 +30,14 @@ use std::sync::Arc;
 ///
 /// # Minimality Trade-offs
 ///
-/// - **After insertion**: Structure remains minimal (new nodes are shared)
+/// - **After insertion**: Structure remains near-minimal
 /// - **After deletion**: May become non-minimal (orphaned branches)
 /// - **Solution**: Call `compact()` periodically to restore minimality
 ///
 /// # Thread Safety
 ///
-/// Uses `Arc<RwLock<...>>` for interior mutability. Safe for concurrent
-/// reads, exclusive writes.
+/// Uses atomic edge-list publication. Reads are wait-free; normal writes use
+/// CAS loops and do not block readers.
 ///
 /// # Performance
 ///
@@ -62,31 +59,13 @@ use std::sync::Arc;
 /// ```
 #[derive(Clone, Debug)]
 pub struct DynamicDawgChar<V: DictionaryValue = ()> {
-    pub(crate) inner: Arc<RwLock<DynamicDawgCharInner<V>>>,
+    pub(crate) inner: Arc<DynamicDawgCharInner<V>>,
 }
 
-// C1b algorithmic dedup (char DAWG): mirror of the byte path —
-// the local `DynamicDawgCharInner<V>` struct + impl block was
-// byte-for-byte identical to `super::core::DawgCore<char, V>`.
-// Replace with a type alias so all algorithmic methods live on the
-// canonical generic core.
-pub(crate) type DynamicDawgCharInner<V = ()> = super::core::DawgCore<char, V>;
-
-// C1 step (DAWG char variant): byte-for-byte-identical local
-// `BloomFilter` is replaced with `crate::bloom_filter::BloomFilter`.
-// Node signatures now live entirely in the canonical generic DAWG core.
-use crate::bloom_filter::BloomFilter;
-
-// C1 step (DAWG char variant): byte-for-byte-identical local
-// `DawgNodeChar<V>` struct + 2-method impl block replaced with a type
-// alias to the generic `super::core::DawgNode<char, V>`. Derives
-// + serde attrs live on the canonical struct, inherited by the alias.
-pub(crate) type DawgNodeChar<V = ()> = super::core::DawgNode<char, V>;
-
-// Local `impl BloomFilter` removed — canonical type at
-// `crate::bloom_filter` provides equivalent inherent methods (new,
-// insert, might_contain, clear). Inherent impls on foreign types are
-// not allowed in Rust, so this block had to go.
+// The public char DAWG now uses the unit-generic lock-free core. The
+// indexed `DawgCore<char, V>` remains as the serialization compatibility
+// shape so existing encoded dictionaries can still round-trip.
+pub(crate) type DynamicDawgCharInner<V = ()> = LockFreeDawg<char, V>;
 
 impl<V: DictionaryValue> DynamicDawgChar<V> {
     /// Create a new empty dynamic DAWG.
@@ -137,34 +116,26 @@ impl<V: DictionaryValue> DynamicDawgChar<V> {
     ///
     /// # Parameters
     ///
-    /// - `auto_minimize_threshold`: Bloat ratio to trigger minimization. Use `f32::INFINITY` to disable.
-    /// - `bloom_filter_capacity`: Optional Bloom filter capacity for negative lookup optimization.
-    ///   Use `Some(expected_size)` to enable, `None` to disable.
+    /// - `auto_minimize_threshold`: Accepted for API compatibility. Explicit
+    ///   `compact()` / `minimize()` are the lock-free maintenance boundary.
+    /// - `bloom_filter_capacity`: Accepted for API compatibility. The lock-free
+    ///   implementation performs exact wait-free traversals.
     ///
     /// # Example
     ///
     /// ```text
-    /// // With Bloom filter for 10000 expected terms
+    /// // Configuration arguments are accepted for API compatibility
     /// let dawg: DynamicDawgChar<()> = DynamicDawgChar::with_config(f32::INFINITY, Some(10000));
     ///
-    /// // Without Bloom filter
+    /// // Explicit maintenance remains available
     /// let dawg: DynamicDawgChar<()> = DynamicDawgChar::with_config(1.5, None);
     /// ```
     pub fn with_config(auto_minimize_threshold: f32, bloom_filter_capacity: Option<usize>) -> Self {
-        let nodes = vec![DawgNodeChar::new(false)]; // Root at index 0
-
-        let bloom_filter = bloom_filter_capacity.map(BloomFilter::new);
-
         DynamicDawgChar {
-            inner: Arc::new(RwLock::new(DynamicDawgCharInner {
-                nodes,
-                term_count: 0,
-                needs_compaction: false,
-                suffix_cache: FxHashMap::default(),
-                last_minimized_node_count: 1, // Start with root node
+            inner: Arc::new(DynamicDawgCharInner::with_config(
                 auto_minimize_threshold,
-                bloom_filter,
-            })),
+                bloom_filter_capacity,
+            )),
         }
     }
 
@@ -242,13 +213,8 @@ impl<V: DictionaryValue> DynamicDawgChar<V> {
     ///
     /// Insertions maintain minimality by sharing suffixes with existing nodes.
     pub fn insert(&self, term: &str) -> bool {
-        let mut inner = self.inner.write();
         let chars: Vec<char> = term.chars().collect();
-        let inserted = inner.insert_units(&chars);
-        if inserted {
-            inner.bloom_insert(term);
-        }
-        inserted
+        self.inner.insert_units(&chars)
     }
 
     /// Insert a term with an associated value.
@@ -265,13 +231,8 @@ impl<V: DictionaryValue> DynamicDawgChar<V> {
     /// assert_eq!(dict.get_value("hello"), Some(43));
     /// ```
     pub fn insert_with_value(&self, term: &str, value: V) -> bool {
-        let mut inner = self.inner.write();
         let chars: Vec<char> = term.chars().collect();
-        let inserted = inner.insert_units_with_value(&chars, value);
-        if inserted {
-            inner.bloom_insert(term);
-        }
-        inserted
+        self.inner.insert_units_with_value(&chars, value)
     }
 
     /// Update an existing term's value in place, or insert a new term with a default value.
@@ -308,13 +269,9 @@ impl<V: DictionaryValue> DynamicDawgChar<V> {
     where
         F: Fn(&mut V),
     {
-        let mut inner = self.inner.write();
         let chars: Vec<char> = term.chars().collect();
-        let inserted = inner.update_or_insert_units(&chars, default_value, update_fn);
-        if inserted {
-            inner.bloom_insert(term);
-        }
-        inserted
+        self.inner
+            .update_or_insert_units(&chars, default_value, update_fn)
     }
 
     /// Get the value associated with a term.
@@ -330,29 +287,8 @@ impl<V: DictionaryValue> DynamicDawgChar<V> {
     /// assert_eq!(dict.get_value("unknown"), None);
     /// ```
     pub fn get_value(&self, term: &str) -> Option<V> {
-        let inner = self.inner.read();
         let chars: Vec<char> = term.chars().collect();
-        let mut node_idx = 0;
-
-        // Navigate to the term
-        for &ch in &chars {
-            match inner.nodes[node_idx]
-                .edges
-                .iter()
-                .find(|(c, _)| *c == ch)
-                .map(|(_, idx)| idx)
-            {
-                Some(&child_idx) => node_idx = child_idx,
-                None => return None,
-            }
-        }
-
-        // Check if final and return value
-        if inner.nodes[node_idx].is_final {
-            inner.nodes[node_idx].value.clone()
-        } else {
-            None
-        }
+        self.inner.get_units_value(&chars)
     }
 
     /// Remove a term from the DAWG.
@@ -364,9 +300,8 @@ impl<V: DictionaryValue> DynamicDawgChar<V> {
     /// Deletions may leave the DAWG non-minimal. Call `compact()` to restore
     /// minimality by removing unreachable nodes.
     pub fn remove(&self, term: &str) -> bool {
-        let mut inner = self.inner.write();
         let chars: Vec<char> = term.chars().collect();
-        inner.remove_units(&chars)
+        self.inner.remove_units(&chars)
     }
 
     /// Compact the DAWG to restore perfect minimality.
@@ -390,8 +325,7 @@ impl<V: DictionaryValue> DynamicDawgChar<V> {
     ///
     /// Returns the number of nodes removed.
     pub fn compact(&self) -> usize {
-        let mut inner = self.inner.write();
-        inner.compact()
+        self.inner.compact()
     }
 
     /// Minimize the DAWG using incremental suffix merging.
@@ -420,8 +354,7 @@ impl<V: DictionaryValue> DynamicDawgChar<V> {
     ///
     /// Returns the number of nodes merged.
     pub fn minimize(&self) -> usize {
-        let mut inner = self.inner.write();
-        inner.minimize_incremental()
+        self.inner.minimize()
     }
 
     /// Batch insert multiple terms, then compact.
@@ -479,12 +412,12 @@ impl<V: DictionaryValue> DynamicDawgChar<V> {
 
     /// Get the number of terms in the DAWG.
     pub fn term_count(&self) -> usize {
-        self.inner.read().term_count
+        self.inner.term_count()
     }
 
     /// Get the number of nodes in the DAWG.
     pub fn node_count(&self) -> usize {
-        self.inner.read().nodes.len()
+        self.inner.node_count()
     }
 
     /// Check if compaction is recommended.
@@ -492,43 +425,17 @@ impl<V: DictionaryValue> DynamicDawgChar<V> {
     /// Returns `true` if deletions have occurred and compaction would
     /// likely reduce memory usage.
     pub fn needs_compaction(&self) -> bool {
-        self.inner.read().needs_compaction
+        self.inner.needs_compaction()
     }
 
     /// Check if a term is in the DAWG.
     ///
-    /// This method is optimized with a Bloom filter (if enabled) for fast negative lookup rejection.
+    /// This is an exact wait-free traversal.
     pub fn contains(&self, term: &str) -> bool {
-        let inner = self.inner.read();
-
-        // Fast path: Bloom filter check (if enabled)
-        if let Some(ref bloom) = inner.bloom_filter {
-            if !bloom.might_contain(term) {
-                return false; // Definitely not in DAWG
-            }
-            // Might be in DAWG, need full check
-        }
-
-        // Full check: traverse DAWG
-        drop(inner); // Release lock before traversal
-        let mut node = self.root();
-        for ch in term.chars() {
-            if let Some(next_node) = node.transition(ch) {
-                node = next_node;
-            } else {
-                return false;
-            }
-        }
-        node.is_final()
+        let chars: Vec<char> = term.chars().collect();
+        self.inner.contains_units(&chars)
     }
 }
-
-// C1b algorithmic dedup: the original ~460-LOC impl<V> DynamicDawgCharInner<V>
-// block lived here. All algorithmic methods (check_and_auto_minimize,
-// insert_edge_sorted, minimize_incremental, plus signature/reachability
-// helpers) now live on the canonical generic
-// super::core::DawgCore<U, V> shared with the byte DAWG variant.
-// Original code preserved in git history.
 
 impl<V: DictionaryValue> DynamicDawgChar<V> {
     /// Iterate over all `(term, value)` pairs as character vectors.
@@ -601,9 +508,7 @@ impl<V: DictionaryValue + serde::Serialize> serde::Serialize for DynamicDawgChar
     where
         S: serde::Serializer,
     {
-        // Extract the inner data by acquiring read lock
-        let inner = self.inner.read();
-        inner.serialize(serializer)
+        self.inner.to_core().serialize(serializer)
     }
 }
 
@@ -617,9 +522,9 @@ impl<'de, V: DictionaryValue + serde::Deserialize<'de>> serde::Deserialize<'de>
     where
         D: serde::Deserializer<'de>,
     {
-        let inner = DynamicDawgCharInner::deserialize(deserializer)?;
+        let inner = super::core::DawgCore::<char, V>::deserialize(deserializer)?;
         Ok(DynamicDawgChar {
-            inner: Arc::new(RwLock::new(inner)),
+            inner: Arc::new(DynamicDawgCharInner::from_core(inner)),
         })
     }
 }
@@ -632,9 +537,9 @@ impl<'de, V: DictionaryValue> serde::Deserialize<'de> for DynamicDawgChar<V> {
     where
         D: serde::Deserializer<'de>,
     {
-        let inner = DynamicDawgCharInner::deserialize(deserializer)?;
+        let inner = super::core::DawgCore::<char, V>::deserialize(deserializer)?;
         Ok(DynamicDawgChar {
-            inner: Arc::new(RwLock::new(inner)),
+            inner: Arc::new(DynamicDawgCharInner::from_core(inner)),
         })
     }
 }
@@ -643,14 +548,8 @@ impl<V: DictionaryValue> Dictionary for DynamicDawgChar<V> {
     type Node = DynamicDawgCharNode<V>;
 
     fn root(&self) -> Self::Node {
-        // Phase 1.2: Load cached data with single lock acquisition
-        let inner = self.inner.read();
-        let node = &inner.nodes[0];
         DynamicDawgCharNode {
-            dawg: Arc::clone(&self.inner),
-            node_idx: 0,
-            is_final: node.is_final,
-            edges: node.edges.clone(),
+            node: self.inner.root_arc(),
         }
     }
 
@@ -659,95 +558,46 @@ impl<V: DictionaryValue> Dictionary for DynamicDawgChar<V> {
     }
 
     fn sync_strategy(&self) -> SyncStrategy {
-        SyncStrategy::ExternalSync
+        SyncStrategy::InternalSync
     }
 }
 
 /// Node handle for dynamic DAWG traversal.
-///
-/// Phase 1.2: Caches is_final and edges to avoid lock acquisition on hot paths.
-/// This eliminates locks from is_final() and edge_count(), and drastically
-/// reduces locks in transition() (only for successful transitions).
 #[derive(Clone)]
 pub struct DynamicDawgCharNode<V: DictionaryValue = ()> {
-    dawg: Arc<RwLock<DynamicDawgCharInner<V>>>,
-    node_idx: usize,
-    // Phase 1.2: Cached data
-    is_final: bool,
-    edges: SmallVec<[(char, usize); 4]>,
+    node: Arc<LockFreeDawgNode<char, V>>,
 }
 
 impl<V: DictionaryValue> DictionaryNode for DynamicDawgCharNode<V> {
     type Unit = char;
 
-    // Phase 1.2: Use cached data - no lock needed
     fn is_final(&self) -> bool {
-        self.is_final
+        self.node.is_final()
     }
 
     fn transition(&self, label: char) -> Option<Self> {
-        // Phase 1.2: Use cached edges for lookup - no lock needed
-        // Adaptive: use linear search for small edge counts, binary for large
-        // Empirical testing shows crossover at 16-20 edges
-        let child_idx = if self.edges.len() < 16 {
-            // Linear search - cache-friendly for small counts
-            self.edges
-                .iter()
-                .find(|(c, _)| *c == label)
-                .map(|(_, idx)| *idx)
-        } else {
-            // Binary search - efficient for large edge counts
-            self.edges
-                .binary_search_by_key(&label, |(c, _)| *c)
-                .ok()
-                .map(|i| self.edges[i].1)
-        }?;
-
-        // Phase 1.2: Only acquire lock to load child node's cached data
-        let inner = self.dawg.read();
-        let child_node = &inner.nodes[child_idx];
-        Some(DynamicDawgCharNode {
-            dawg: Arc::clone(&self.dawg),
-            node_idx: child_idx,
-            is_final: child_node.is_final,
-            edges: child_node.edges.clone(),
+        let edges = self.node.edges.load();
+        edges.find(label).map(|child| DynamicDawgCharNode {
+            node: child.clone(),
         })
     }
 
     fn edges(&self) -> Box<dyn Iterator<Item = (char, Self)> + '_> {
-        // Phase 1.2: Batch load child nodes with single lock acquisition
-        let inner = self.dawg.read();
-        let child_data: Vec<_> = self
+        let edges = self.node.edges.load();
+        let edge_vec: Vec<_> = edges
             .edges
             .iter()
-            .map(|(ch, idx)| {
-                let child_node = &inner.nodes[*idx];
-                (*ch, *idx, child_node.is_final, child_node.edges.clone())
-            })
+            .map(|(ch, child)| (*ch, child.clone()))
             .collect();
-        drop(inner);
-
-        let dawg = Arc::clone(&self.dawg);
         Box::new(
-            child_data
+            edge_vec
                 .into_iter()
-                .map(move |(ch, idx, is_final, edges)| {
-                    (
-                        ch,
-                        DynamicDawgCharNode {
-                            dawg: Arc::clone(&dawg),
-                            node_idx: idx,
-                            is_final,
-                            edges,
-                        },
-                    )
-                }),
+                .map(|(ch, child)| (ch, DynamicDawgCharNode { node: child })),
         )
     }
 
-    // Phase 1.2: Use cached data - no lock needed
     fn edge_count(&self) -> Option<usize> {
-        Some(self.edges.len())
+        Some(self.node.edges.load().edges.len())
     }
 }
 
@@ -761,12 +611,7 @@ impl<V: DictionaryValue> MappedDictionaryNode for DynamicDawgCharNode<V> {
     type Value = V;
 
     fn value(&self) -> Option<Self::Value> {
-        // Need to lock to get the value
-        let inner = self.dawg.read();
-        inner
-            .nodes
-            .get(self.node_idx)
-            .and_then(|node| node.value.clone())
+        self.node.value()
     }
 }
 
@@ -847,32 +692,12 @@ impl<V: DictionaryValue> crate::MutableMappedDictionary for DynamicDawgChar<V> {
         F: Fn(&Self::Value, &Self::Value) -> Self::Value,
         Self::Value: Clone,
     {
-        // Snapshot `other`'s final terms under its read lock, then DROP that lock BEFORE
-        // merging into `self` — never holding `other.inner.read()` while
-        // `self.insert_with_value` takes `self.inner.write()`. Holding both is an AB/BA
-        // cross-instance deadlock: `A.union_with(&B)` ‖ `B.union_with(&A)` each hold the
-        // OTHER's read lock and then wait on their OWN write lock (red-team R4-1). Mirrors
-        // the persistent vocab/char `union_with` snapshot-then-release pattern.
-        let entries: Vec<(String, Option<Self::Value>)> = {
-            let other_inner = other.inner.read();
-            let mut out = Vec::new();
-            // DFS traversal to extract all final terms (with their optional value).
-            let mut stack: Vec<(usize, Vec<char>)> = vec![(0, Vec::new())];
-            while let Some((node_idx, path)) = stack.pop() {
-                let node = &other_inner.nodes[node_idx];
-                if node.is_final {
-                    let term: String = path.iter().collect();
-                    out.push((term, node.value.clone()));
-                }
-                // Push children onto stack (in reverse for consistent ordering)
-                for &(label, target_idx) in node.edges.iter().rev() {
-                    let mut child_path = path.clone();
-                    child_path.push(label);
-                    stack.push((target_idx, child_path));
-                }
-            }
-            out
-        }; // `other_inner` read lock released here — no two locks held at once
+        let entries: Vec<(String, Option<Self::Value>)> = other
+            .inner
+            .collect_visible_entries()
+            .into_iter()
+            .map(|(path, value)| (path.iter().collect(), value))
+            .collect();
 
         let mut processed = 0;
         for (term, other_value) in entries {

@@ -220,6 +220,7 @@ pub mod public_iter;
 
 // Persistent SuffixAutomaton-compatible byte/char variants built on native
 // suffix graph snapshots, operation WAL replay, and copy-on-write publication.
+pub(crate) mod suffix_array;
 pub mod suffix_automaton;
 
 // Persistent SCDAWG-compatible byte/char variants built on the persistent suffix

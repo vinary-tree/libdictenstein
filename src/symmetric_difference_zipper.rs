@@ -258,8 +258,9 @@ impl<Z: DictZipper> DictZipper for SymmetricDifferenceZipper<Z> {
             .flat_map(|z| z.children().map(|(label, _)| label))
             .collect();
 
-        // Remove duplicates and sort for deterministic ordering
-        labels.sort_by(|a, b| format!("{:?}", a).cmp(&format!("{:?}", b)));
+        // Remove duplicates and sort for deterministic ordering. `CharUnit`
+        // guarantees `Ord`, so this avoids per-comparison debug string allocation.
+        labels.sort_unstable();
         labels.dedup();
 
         // Create child zippers for each unique label

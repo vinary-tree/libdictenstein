@@ -634,7 +634,7 @@ pub mod v2 {
     ///
     /// Returns only valid child slots (filters out null and in-memory pointers).
     pub fn collect_child_slots(node: &Node) -> Vec<ArenaSlot> {
-        let mut slots = Vec::new();
+        let mut slots = Vec::with_capacity(node.header().num_children as usize);
         match node {
             Node::N4(n) => {
                 for i in 0..n.header.num_children as usize {
@@ -672,7 +672,7 @@ pub mod v2 {
     ///
     /// Returns (ArenaSlot, NodeType) pairs for valid child pointers.
     pub fn collect_child_slots_and_types(node: &Node) -> Vec<(ArenaSlot, NodeType)> {
-        let mut result = Vec::new();
+        let mut result = Vec::with_capacity(node.header().num_children as usize);
         match node {
             Node::N4(n) => {
                 for i in 0..n.header.num_children as usize {
@@ -718,6 +718,91 @@ pub mod v2 {
         result
     }
 
+    fn collect_child_raws(node: &Node) -> Vec<u64> {
+        let mut result = Vec::with_capacity(node.header().num_children as usize);
+        match node {
+            Node::N4(n) => {
+                for i in 0..n.header.num_children as usize {
+                    result.push(n.children[i].to_raw());
+                }
+            }
+            Node::N16(n) => {
+                for i in 0..n.header.num_children as usize {
+                    result.push(n.children[i].to_raw());
+                }
+            }
+            Node::N48(n) => {
+                for child in &n.children {
+                    if !child.is_null() {
+                        result.push(child.to_raw());
+                    }
+                }
+            }
+            Node::N256(n) => {
+                for child in &n.children {
+                    if !child.is_null() {
+                        result.push(child.to_raw());
+                    }
+                }
+            }
+        }
+        result
+    }
+
+    fn encoded_children_size(
+        ctx: &SerializationContext,
+        child_slots: &[ArenaSlot],
+        fixed_child_count: usize,
+    ) -> usize {
+        if ctx.use_sequential {
+            ctx.first_child_slot
+                .map(|first_child| {
+                    super::super::relative_encoding::encoded_size(ctx.parent_slot, first_child)
+                })
+                .unwrap_or(0)
+        } else if ctx.use_relative {
+            child_slots
+                .iter()
+                .map(|&child| super::super::relative_encoding::encoded_size(ctx.parent_slot, child))
+                .sum()
+        } else {
+            fixed_child_count * 8
+        }
+    }
+
+    fn validate_v2_serialization_context(
+        node: &Node,
+        ctx: &SerializationContext,
+        child_slots: &[ArenaSlot],
+    ) -> Result<()> {
+        let declared_children = node.header().num_children as usize;
+        if ctx.use_relative && child_slots.len() != declared_children {
+            return Err(PersistentARTrieError::corrupted(format!(
+                "byte v2 serialization saw {} disk children but header declares {}",
+                child_slots.len(),
+                declared_children
+            )));
+        }
+        if ctx.use_sequential {
+            if !ctx.use_relative {
+                return Err(PersistentARTrieError::corrupted(
+                    "byte v2 sequential serialization requires relative encoding",
+                ));
+            }
+            if declared_children == 0 {
+                return Err(PersistentARTrieError::corrupted(
+                    "byte v2 sequential serialization requires at least one child",
+                ));
+            }
+            if ctx.first_child_slot.is_none() {
+                return Err(PersistentARTrieError::corrupted(
+                    "byte v2 sequential serialization missing first child slot",
+                ));
+            }
+        }
+        Ok(())
+    }
+
     /// Estimate the serialized size with relative encoding
     pub fn estimate_serialized_size_v2(node: &Node, ctx: &SerializationContext) -> usize {
         let header_size = SERIALIZED_HEADER_SIZE;
@@ -731,20 +816,13 @@ pub mod v2 {
 
         let (children_size, node_types_size) = if ctx.use_sequential {
             // Sequential: just first_child reference + count is in header
-            let encoded_size = if let Some(first_child) = ctx.first_child_slot {
-                super::super::relative_encoding::encoded_size(ctx.parent_slot, first_child)
-            } else {
-                0
-            };
+            let encoded_size = encoded_children_size(ctx, &[], 0);
             // Add 1 byte per child for node type
             (encoded_size, num_children)
         } else if ctx.use_relative {
             // Relative: sum of encoded sizes for each child
             let child_slots = collect_child_slots(node);
-            let encoded_size: usize = child_slots
-                .iter()
-                .map(|&child| super::super::relative_encoding::encoded_size(ctx.parent_slot, child))
-                .sum();
+            let encoded_size = encoded_children_size(ctx, &child_slots, 0);
             // Add 1 byte per child for node type
             (encoded_size, num_children)
         } else {
@@ -764,21 +842,40 @@ pub mod v2 {
 
     /// Serialize a node with relative encoding to a byte vector
     pub fn serialize_node_v2(node: &Node, ctx: &SerializationContext) -> Result<Vec<u8>> {
-        let estimated_size = estimate_serialized_size_v2(node, ctx);
-        let mut buffer = Vec::with_capacity(estimated_size);
-
         // Collect child slots and their node types (needed for type preservation)
-        let child_slots_and_types = collect_child_slots_and_types(node);
-        let child_slots: Vec<ArenaSlot> = child_slots_and_types.iter().map(|(s, _)| *s).collect();
+        let uses_encoded_children = ctx.use_relative || ctx.use_sequential;
+        let child_slots_and_types = if uses_encoded_children {
+            collect_child_slots_and_types(node)
+        } else {
+            Vec::new()
+        };
+        let child_slots: Vec<ArenaSlot> = child_slots_and_types
+            .iter()
+            .map(|(slot, _)| *slot)
+            .collect();
+        validate_v2_serialization_context(node, ctx, &child_slots)?;
+        let fixed_child_raws = if uses_encoded_children {
+            Vec::new()
+        } else {
+            collect_child_raws(node)
+        };
 
         // Encode children with relative offsets
-        let mut children_buf = Vec::new();
+        let mut children_buf = Vec::with_capacity(encoded_children_size(
+            ctx,
+            &child_slots,
+            fixed_child_raws.len(),
+        ));
         if ctx.use_sequential {
             if let Some(first_child) = ctx.first_child_slot {
                 encode_sequential_siblings(ctx.parent_slot, first_child, &mut children_buf);
             }
-        } else {
+        } else if ctx.use_relative {
             encode_children(ctx.parent_slot, &child_slots, &mut children_buf);
+        } else {
+            for raw in &fixed_child_raws {
+                children_buf.extend_from_slice(&raw.to_le_bytes());
+            }
         }
 
         // Calculate data size (keys + encoded children + node types)
@@ -794,12 +891,13 @@ pub mod v2 {
             Node::N256(_) => 32,
         };
         // Add 1 byte per child for node type when using relative/sequential encoding
-        let node_types_size = if ctx.use_sequential || !child_slots.is_empty() {
+        let node_types_size = if uses_encoded_children {
             child_slots_and_types.len()
         } else {
             0
         };
         let data_size = prefix_size + keys_size + children_buf.len() + node_types_size;
+        let mut buffer = Vec::with_capacity(SERIALIZED_HEADER_SIZE + data_size);
 
         // Build header
         let header = SerializedNodeHeader::from_node_header_v2(
@@ -1023,6 +1121,32 @@ pub mod v2 {
         Ok(Node::N16(Box::new(node)))
     }
 
+    fn collect_node48_used_slots(index: &[u8; 256], num_children: usize) -> Result<Vec<u8>> {
+        let mut seen_slots = 0u64;
+        let mut used_slots = Vec::with_capacity(num_children.min(48));
+
+        for &slot in index {
+            if slot == NO_CHILD {
+                continue;
+            }
+            if slot as usize >= 48 {
+                return Err(PersistentARTrieError::corrupted(format!(
+                    "node48 index references invalid child slot {}",
+                    slot
+                )));
+            }
+
+            let bit = 1u64 << slot;
+            if seen_slots & bit == 0 {
+                seen_slots |= bit;
+                used_slots.push(slot);
+            }
+        }
+
+        used_slots.sort_unstable();
+        Ok(used_slots)
+    }
+
     fn deserialize_node48_v2(
         header: &SerializedNodeHeader,
         prefix: CompressedPrefix,
@@ -1041,14 +1165,7 @@ pub mod v2 {
         // Build a sorted list of used slots from the index array.
         // During serialization, children are collected in slot order (0..48),
         // so we must place them back at their original slot positions.
-        let mut used_slots: Vec<u8> = Vec::with_capacity(num_children);
-        for key in 0..256usize {
-            let slot = node.index[key];
-            if slot != NO_CHILD && !used_slots.contains(&slot) {
-                used_slots.push(slot);
-            }
-        }
-        used_slots.sort_unstable();
+        let used_slots = collect_node48_used_slots(&node.index, num_children)?;
 
         // Decode children based on encoding mode
         if header.uses_sequential_siblings() {
@@ -1088,6 +1205,13 @@ pub mod v2 {
         } else {
             // Fixed 8-byte pointers (node type is in the pointer itself)
             for i in 0..num_children {
+                if i >= used_slots.len() {
+                    return Err(PersistentARTrieError::corrupted(format!(
+                        "node48 fixed child count {} exceeds index entries {}",
+                        num_children,
+                        used_slots.len()
+                    )));
+                }
                 let actual_slot = used_slots[i] as usize;
                 let offset = 256 + i * 8;
                 let raw = u64::from_le_bytes(data[offset..offset + 8].try_into().unwrap());
@@ -1451,6 +1575,118 @@ mod tests {
             let restored = from_bytes(&bytes).expect("deserialize");
             assert_eq!(restored.header().num_children, 0);
         }
+    }
+
+    #[test]
+    fn test_v2_fixed_encoding_roundtrip_uses_fixed_child_words() {
+        let parent = ArenaSlot::new(7, 100);
+        let child_a = SwizzledPtr::on_disk(3, 11, NodeType::Node16);
+        let child_b = SwizzledPtr::on_disk(4, 22, NodeType::Node48);
+        let child_a_raw = child_a.to_raw();
+        let child_b_raw = child_b.to_raw();
+
+        let mut node4 = Node4::new();
+        node4.add_child(b'a', child_a).expect("add child a");
+        node4.add_child(b'b', child_b).expect("add child b");
+        let node = Node::N4(Box::new(node4));
+
+        let mut ctx = SerializationContext::new(parent);
+        ctx.use_relative = false;
+        ctx.use_sequential = false;
+        ctx.first_child_slot = None;
+
+        let bytes = serialize_node_v2(&node, &ctx).expect("serialize fixed v2");
+        let header_arr: [u8; SERIALIZED_HEADER_SIZE] = bytes[..SERIALIZED_HEADER_SIZE]
+            .try_into()
+            .expect("header slice should be 16 bytes");
+        let header = SerializedNodeHeader::from_bytes(&header_arr);
+
+        assert!(!header.uses_relative_offsets());
+        assert!(!header.uses_sequential_siblings());
+        assert_eq!(header.data_size as usize, 4 + 2 * 8);
+        assert_eq!(bytes.len(), SERIALIZED_HEADER_SIZE + 4 + 2 * 8);
+
+        let restored =
+            deserialize_node_v2(&bytes, &DeserializationContext::new(parent)).expect("deserialize");
+        assert_eq!(restored.header().num_children, 2);
+        assert_eq!(
+            restored.find_child(b'a').expect("child a").to_raw(),
+            child_a_raw
+        );
+        assert_eq!(
+            restored.find_child(b'b').expect("child b").to_raw(),
+            child_b_raw
+        );
+    }
+
+    #[test]
+    fn test_v2_rejects_sequential_without_relative_encoding() {
+        let parent = ArenaSlot::new(0, 10);
+        let first_child = ArenaSlot::new(0, 11);
+        let mut node4 = Node4::new();
+        node4
+            .add_child(
+                b'a',
+                SwizzledPtr::from_arena_slot(first_child, NodeType::Node4),
+            )
+            .expect("add child");
+        let node = Node::N4(Box::new(node4));
+        let ctx = SerializationContext {
+            parent_slot: parent,
+            use_relative: false,
+            use_sequential: true,
+            first_child_slot: Some(first_child),
+        };
+
+        assert!(serialize_node_v2(&node, &ctx).is_err());
+    }
+
+    #[test]
+    fn test_v2_node48_rejects_invalid_index_slot_without_panic() {
+        let parent = ArenaSlot::new(0, 100);
+        let mut node48 = Node48::new();
+        node48
+            .add_child(
+                7,
+                SwizzledPtr::from_arena_slot(ArenaSlot::new(0, 101), NodeType::Node4),
+            )
+            .expect("add child");
+        let node = Node::N48(Box::new(node48));
+
+        let mut bytes =
+            serialize_node_v2(&node, &SerializationContext::new(parent)).expect("serialize node48");
+        bytes[SERIALIZED_HEADER_SIZE + 7] = 50;
+
+        assert!(matches!(
+            deserialize_node_v2(&bytes, &DeserializationContext::new(parent)),
+            Err(PersistentARTrieError::CorruptedFile { .. })
+        ));
+    }
+
+    #[test]
+    fn test_v2_node48_fixed_count_mismatch_returns_error() {
+        let parent = ArenaSlot::new(0, 100);
+        let mut node48 = Node48::new();
+        node48
+            .add_child(7, SwizzledPtr::on_disk(3, 11, NodeType::Node4))
+            .expect("add child");
+        let node = Node::N48(Box::new(node48));
+        let mut ctx = SerializationContext::new(parent);
+        ctx.use_relative = false;
+        ctx.use_sequential = false;
+
+        let mut bytes = serialize_node_v2(&node, &ctx).expect("serialize fixed node48");
+        let header_arr: [u8; SERIALIZED_HEADER_SIZE] = bytes[..SERIALIZED_HEADER_SIZE]
+            .try_into()
+            .expect("header slice should be 16 bytes");
+        let mut header = SerializedNodeHeader::from_bytes(&header_arr);
+        header.num_children = 2;
+        bytes[..SERIALIZED_HEADER_SIZE].copy_from_slice(&header.to_bytes());
+
+        assert!(matches!(
+            deserialize_node_v2(&bytes, &DeserializationContext::new(parent)),
+            Err(PersistentARTrieError::CorruptedFile { .. })
+        ));
     }
 
     // =========================================================================

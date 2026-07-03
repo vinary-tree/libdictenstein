@@ -16,7 +16,8 @@ const TINY_LIMIT: usize = 4;
 const SMALL_LIMIT: usize = 16;
 const SORTED_LIMIT: usize = 64;
 const BYTE_INDEXED_LIMIT: usize = 48;
-const BYTE_INDEX_SENTINEL: u16 = u16::MAX;
+const BYTE_INDEX48_SENTINEL: u8 = u8::MAX;
+const BYTE_DENSE_SENTINEL: u16 = u16::MAX;
 
 /// Label types supported by [`AdaptiveEdgeStore`].
 pub trait AdaptiveLabel: Copy + Eq + Ord + Hash + Send + Sync + 'static {
@@ -82,7 +83,7 @@ pub(crate) enum AdaptiveEdgeStore<L: AdaptiveLabel, C> {
     },
     /// Byte ART Node48-style index for 17-48 byte labels.
     ByteIndexed48 {
-        index: Box<[u16; 256]>,
+        index: Box<[u8; 256]>,
         entries: Vec<(L, C)>,
     },
     /// Byte ART Node256-style direct index for 49+ byte labels.
@@ -131,10 +132,19 @@ impl<L: AdaptiveLabel, C> AdaptiveEdgeStore<L, C> {
                 .get(&label)
                 .and_then(|&idx| entries.get(idx))
                 .map(|(_, child)| child),
-            Self::ByteIndexed48 { index, entries } | Self::ByteDense256 { index, entries } => {
+            Self::ByteIndexed48 { index, entries } => {
                 let byte = label.as_byte()? as usize;
                 let idx = index[byte];
-                if idx == BYTE_INDEX_SENTINEL {
+                if idx == BYTE_INDEX48_SENTINEL {
+                    None
+                } else {
+                    entries.get(idx as usize).map(|(_, child)| child)
+                }
+            }
+            Self::ByteDense256 { index, entries } => {
+                let byte = label.as_byte()? as usize;
+                let idx = index[byte];
+                if idx == BYTE_DENSE_SENTINEL {
                     None
                 } else {
                     entries.get(idx as usize).map(|(_, child)| child)
@@ -189,7 +199,10 @@ impl<L: AdaptiveLabel, C> AdaptiveEdgeStore<L, C> {
                     + positions.capacity()
                         * (std::mem::size_of::<L>() + std::mem::size_of::<usize>())
             }
-            Self::ByteIndexed48 { entries, .. } | Self::ByteDense256 { entries, .. } => {
+            Self::ByteIndexed48 { entries, .. } => {
+                entries.capacity() * edge_bytes + 256 * std::mem::size_of::<u8>()
+            }
+            Self::ByteDense256 { entries, .. } => {
                 entries.capacity() * edge_bytes + 256 * std::mem::size_of::<u16>()
             }
         }
@@ -240,12 +253,12 @@ impl<L: AdaptiveLabel, C> AdaptiveEdgeStore<L, C> {
             {
                 if len <= BYTE_INDEXED_LIMIT {
                     return Self::ByteIndexed48 {
-                        index: build_byte_index(&entries),
+                        index: build_byte_index48(&entries),
                         entries,
                     };
                 }
                 return Self::ByteDense256 {
-                    index: build_byte_index(&entries),
+                    index: build_byte_dense_index(&entries),
                     entries,
                 };
             }
@@ -262,21 +275,34 @@ impl<L: AdaptiveLabel, C> AdaptiveEdgeStore<L, C> {
 
 impl<L: AdaptiveLabel, C: Clone> AdaptiveEdgeStore<L, C> {
     pub(crate) fn with_edge(&self, label: L, child: C) -> Self {
-        let mut entries = self.entries().to_vec();
+        let entries = self.entries();
         match entries.binary_search_by_key(&label, |(edge, _)| *edge) {
-            Ok(index) => entries[index].1 = child,
-            Err(index) => entries.insert(index, (label, child)),
+            Ok(index) => {
+                let mut next = Vec::with_capacity(entries.len());
+                next.extend_from_slice(&entries[..index]);
+                next.push((label, child));
+                next.extend_from_slice(&entries[index + 1..]);
+                Self::from_sorted_entries(next)
+            }
+            Err(index) => {
+                let mut next = Vec::with_capacity(entries.len() + 1);
+                next.extend_from_slice(&entries[..index]);
+                next.push((label, child));
+                next.extend_from_slice(&entries[index..]);
+                Self::from_sorted_entries(next)
+            }
         }
-        Self::from_sorted_entries(entries)
     }
 
     pub(crate) fn without_edge(&self, label: L) -> Option<Self> {
-        let mut entries = self.entries().to_vec();
+        let entries = self.entries();
         let index = entries
             .binary_search_by_key(&label, |(edge, _)| *edge)
             .ok()?;
-        entries.remove(index);
-        Some(Self::from_sorted_entries(entries))
+        let mut next = Vec::with_capacity(entries.len().saturating_sub(1));
+        next.extend_from_slice(&entries[..index]);
+        next.extend_from_slice(&entries[index + 1..]);
+        Some(Self::from_sorted_entries(next))
     }
 }
 
@@ -351,8 +377,20 @@ fn build_sparse_index<L: AdaptiveLabel, C>(entries: &[(L, C)]) -> FxHashMap<L, u
     positions
 }
 
-fn build_byte_index<L: AdaptiveLabel, C>(entries: &[(L, C)]) -> Box<[u16; 256]> {
-    let mut index = Box::new([BYTE_INDEX_SENTINEL; 256]);
+fn build_byte_index48<L: AdaptiveLabel, C>(entries: &[(L, C)]) -> Box<[u8; 256]> {
+    debug_assert!(entries.len() <= BYTE_INDEXED_LIMIT);
+    let mut index = Box::new([BYTE_INDEX48_SENTINEL; 256]);
+    for (idx, (label, _)) in entries.iter().enumerate() {
+        debug_assert!(idx < BYTE_INDEX48_SENTINEL as usize);
+        if let Some(byte) = label.as_byte() {
+            index[byte as usize] = idx as u8;
+        }
+    }
+    index
+}
+
+fn build_byte_dense_index<L: AdaptiveLabel, C>(entries: &[(L, C)]) -> Box<[u16; 256]> {
+    let mut index = Box::new([BYTE_DENSE_SENTINEL; 256]);
     for (idx, (label, _)) in entries.iter().enumerate() {
         if let Some(byte) = label.as_byte() {
             index[byte as usize] = idx as u16;
@@ -380,6 +418,30 @@ mod tests {
 
         let keys: Vec<_> = store.iter().map(|(&key, _)| key).collect();
         assert_eq!(keys, (0u8..80).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn byte_indexed48_uses_one_byte_positions() {
+        let mut store = AdaptiveEdgeStore::<u8, u16>::new();
+        for key in 0u8..=BYTE_INDEXED_LIMIT as u8 {
+            store = store.with_edge(key, key as u16);
+        }
+
+        match &store {
+            AdaptiveEdgeStore::ByteDense256 { .. } => {}
+            other => panic!("expected dense tier after 49 edges, got {other:?}"),
+        }
+
+        let mut store = AdaptiveEdgeStore::<u8, u16>::new();
+        for key in 0u8..BYTE_INDEXED_LIMIT as u8 {
+            store = store.with_edge(key, key as u16);
+        }
+
+        match &store {
+            AdaptiveEdgeStore::ByteIndexed48 { .. } => {}
+            other => panic!("expected indexed48 tier, got {other:?}"),
+        }
+        assert!(store.memory_usage() < 512 + BYTE_INDEXED_LIMIT * std::mem::size_of::<(u8, u16)>());
     }
 
     #[test]
@@ -419,5 +481,20 @@ mod tests {
         assert_eq!(store.find(42), None);
         let keys: Vec<_> = store.iter().map(|(&key, _)| key).collect();
         assert_eq!(keys, (0..16).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn replacement_preserves_sorted_order_without_len_growth() {
+        let mut store = AdaptiveEdgeStore::<u8, u16>::new();
+        for key in [b'd', b'a', b'c', b'b'] {
+            store = store.with_edge(key, key as u16);
+        }
+
+        store = store.with_edge(b'c', 999);
+
+        assert_eq!(store.len(), 4);
+        assert_eq!(store.find(b'c'), Some(&999));
+        let keys: Vec<_> = store.iter().map(|(&key, _)| key).collect();
+        assert_eq!(keys, vec![b'a', b'b', b'c', b'd']);
     }
 }

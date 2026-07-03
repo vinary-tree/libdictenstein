@@ -23,6 +23,14 @@ fn create_dictionary(size: usize) -> PathMapDictionary {
     PathMapDictionary::from_terms(words)
 }
 
+fn estimated_serialized_capacity(size: usize) -> usize {
+    size.saturating_mul(48).max(1024)
+}
+
+fn serialization_buffer(size: usize) -> Vec<u8> {
+    Vec::with_capacity(estimated_serialized_capacity(size))
+}
+
 /// Benchmark: Bincode serialization performance
 fn bench_bincode_serialize(c: &mut Criterion) {
     let mut group = c.benchmark_group("bincode_serialize");
@@ -33,7 +41,7 @@ fn bench_bincode_serialize(c: &mut Criterion) {
 
         group.bench_with_input(BenchmarkId::from_parameter(size), size, |b, _| {
             b.iter(|| {
-                let mut buffer = Vec::new();
+                let mut buffer = serialization_buffer(*size);
                 BincodeSerializer::serialize(black_box(&dict), &mut buffer)
                     .expect("Serialization failed");
                 black_box(buffer);
@@ -49,7 +57,7 @@ fn bench_bincode_deserialize(c: &mut Criterion) {
 
     for size in [100, 500, 1000, 5000].iter() {
         let dict = create_dictionary(*size);
-        let mut buffer = Vec::new();
+        let mut buffer = serialization_buffer(*size);
         BincodeSerializer::serialize(&dict, &mut buffer).unwrap();
 
         group.throughput(Throughput::Elements(*size as u64));
@@ -75,7 +83,7 @@ fn bench_json_serialize(c: &mut Criterion) {
 
         group.bench_with_input(BenchmarkId::from_parameter(size), size, |b, _| {
             b.iter(|| {
-                let mut buffer = Vec::new();
+                let mut buffer = serialization_buffer(*size);
                 JsonSerializer::serialize(black_box(&dict), &mut buffer)
                     .expect("Serialization failed");
                 black_box(buffer);
@@ -91,7 +99,7 @@ fn bench_json_deserialize(c: &mut Criterion) {
 
     for size in [100, 500, 1000, 5000].iter() {
         let dict = create_dictionary(*size);
-        let mut buffer = Vec::new();
+        let mut buffer = serialization_buffer(*size);
         JsonSerializer::serialize(&dict, &mut buffer).unwrap();
 
         group.throughput(Throughput::Elements(*size as u64));
@@ -118,7 +126,7 @@ fn bench_protobuf_v1_serialize(c: &mut Criterion) {
 
         group.bench_with_input(BenchmarkId::from_parameter(size), size, |b, _| {
             b.iter(|| {
-                let mut buffer = Vec::new();
+                let mut buffer = serialization_buffer(*size);
                 ProtobufSerializer::serialize(black_box(&dict), &mut buffer)
                     .expect("Serialization failed");
                 black_box(buffer);
@@ -135,7 +143,7 @@ fn bench_protobuf_v1_deserialize(c: &mut Criterion) {
 
     for size in [100, 500, 1000, 5000].iter() {
         let dict = create_dictionary(*size);
-        let mut buffer = Vec::new();
+        let mut buffer = serialization_buffer(*size);
         ProtobufSerializer::serialize(&dict, &mut buffer).unwrap();
 
         group.throughput(Throughput::Elements(*size as u64));
@@ -162,7 +170,7 @@ fn bench_protobuf_v2_serialize(c: &mut Criterion) {
 
         group.bench_with_input(BenchmarkId::from_parameter(size), size, |b, _| {
             b.iter(|| {
-                let mut buffer = Vec::new();
+                let mut buffer = serialization_buffer(*size);
                 OptimizedProtobufSerializer::serialize(black_box(&dict), &mut buffer)
                     .expect("Serialization failed");
                 black_box(buffer);
@@ -179,7 +187,7 @@ fn bench_protobuf_v2_deserialize(c: &mut Criterion) {
 
     for size in [100, 500, 1000, 5000].iter() {
         let dict = create_dictionary(*size);
-        let mut buffer = Vec::new();
+        let mut buffer = serialization_buffer(*size);
         OptimizedProtobufSerializer::serialize(&dict, &mut buffer).unwrap();
 
         group.throughput(Throughput::Elements(*size as u64));
@@ -203,7 +211,7 @@ fn bench_format_comparison_serialize(c: &mut Criterion) {
 
     group.bench_function("bincode", |b| {
         b.iter(|| {
-            let mut buffer = Vec::new();
+            let mut buffer = serialization_buffer(1000);
             BincodeSerializer::serialize(black_box(&dict), &mut buffer).unwrap();
             black_box(buffer);
         });
@@ -211,7 +219,7 @@ fn bench_format_comparison_serialize(c: &mut Criterion) {
 
     group.bench_function("json", |b| {
         b.iter(|| {
-            let mut buffer = Vec::new();
+            let mut buffer = serialization_buffer(1000);
             JsonSerializer::serialize(black_box(&dict), &mut buffer).unwrap();
             black_box(buffer);
         });
@@ -220,7 +228,7 @@ fn bench_format_comparison_serialize(c: &mut Criterion) {
     #[cfg(feature = "protobuf")]
     group.bench_function("protobuf_v1", |b| {
         b.iter(|| {
-            let mut buffer = Vec::new();
+            let mut buffer = serialization_buffer(1000);
             ProtobufSerializer::serialize(black_box(&dict), &mut buffer).unwrap();
             black_box(buffer);
         });
@@ -229,7 +237,7 @@ fn bench_format_comparison_serialize(c: &mut Criterion) {
     #[cfg(feature = "protobuf")]
     group.bench_function("protobuf_v2", |b| {
         b.iter(|| {
-            let mut buffer = Vec::new();
+            let mut buffer = serialization_buffer(1000);
             OptimizedProtobufSerializer::serialize(black_box(&dict), &mut buffer).unwrap();
             black_box(buffer);
         });
@@ -244,7 +252,7 @@ fn bench_format_comparison_deserialize(c: &mut Criterion) {
     let mut group = c.benchmark_group("format_comparison_deserialize");
     group.throughput(Throughput::Elements(1000));
 
-    let mut bincode_buffer = Vec::new();
+    let mut bincode_buffer = serialization_buffer(1000);
     BincodeSerializer::serialize(&dict, &mut bincode_buffer).unwrap();
     group.bench_function("bincode", |b| {
         b.iter(|| {
@@ -254,7 +262,7 @@ fn bench_format_comparison_deserialize(c: &mut Criterion) {
         });
     });
 
-    let mut json_buffer = Vec::new();
+    let mut json_buffer = serialization_buffer(1000);
     JsonSerializer::serialize(&dict, &mut json_buffer).unwrap();
     group.bench_function("json", |b| {
         b.iter(|| {
@@ -266,7 +274,7 @@ fn bench_format_comparison_deserialize(c: &mut Criterion) {
 
     #[cfg(feature = "protobuf")]
     {
-        let mut protobuf_v1_buffer = Vec::new();
+        let mut protobuf_v1_buffer = serialization_buffer(1000);
         ProtobufSerializer::serialize(&dict, &mut protobuf_v1_buffer).unwrap();
         group.bench_function("protobuf_v1", |b| {
             b.iter(|| {
@@ -276,7 +284,7 @@ fn bench_format_comparison_deserialize(c: &mut Criterion) {
             });
         });
 
-        let mut protobuf_v2_buffer = Vec::new();
+        let mut protobuf_v2_buffer = serialization_buffer(1000);
         OptimizedProtobufSerializer::serialize(&dict, &mut protobuf_v2_buffer).unwrap();
         group.bench_function("protobuf_v2", |b| {
             b.iter(|| {
@@ -302,7 +310,7 @@ fn bench_gzip_bincode_serialize(c: &mut Criterion) {
 
         group.bench_with_input(BenchmarkId::from_parameter(size), size, |b, _| {
             b.iter(|| {
-                let mut buffer = Vec::new();
+                let mut buffer = serialization_buffer(*size);
                 GzipSerializer::<BincodeSerializer>::serialize(black_box(&dict), &mut buffer)
                     .expect("Serialization failed");
                 black_box(buffer);
@@ -319,7 +327,7 @@ fn bench_gzip_bincode_deserialize(c: &mut Criterion) {
 
     for size in [100, 500, 1000, 5000].iter() {
         let dict = create_dictionary(*size);
-        let mut buffer = Vec::new();
+        let mut buffer = serialization_buffer(*size);
         GzipSerializer::<BincodeSerializer>::serialize(&dict, &mut buffer).unwrap();
 
         group.throughput(Throughput::Elements(*size as u64));
@@ -347,7 +355,7 @@ fn bench_gzip_json_serialize(c: &mut Criterion) {
 
         group.bench_with_input(BenchmarkId::from_parameter(size), size, |b, _| {
             b.iter(|| {
-                let mut buffer = Vec::new();
+                let mut buffer = serialization_buffer(*size);
                 GzipSerializer::<JsonSerializer>::serialize(black_box(&dict), &mut buffer)
                     .expect("Serialization failed");
                 black_box(buffer);
@@ -364,7 +372,7 @@ fn bench_gzip_json_deserialize(c: &mut Criterion) {
 
     for size in [100, 500, 1000, 5000].iter() {
         let dict = create_dictionary(*size);
-        let mut buffer = Vec::new();
+        let mut buffer = serialization_buffer(*size);
         GzipSerializer::<JsonSerializer>::serialize(&dict, &mut buffer).unwrap();
 
         group.throughput(Throughput::Elements(*size as u64));
@@ -391,7 +399,7 @@ fn bench_compression_overhead(c: &mut Criterion) {
     // Bincode without compression
     group.bench_function("bincode_plain", |b| {
         b.iter(|| {
-            let mut buffer = Vec::new();
+            let mut buffer = serialization_buffer(1000);
             BincodeSerializer::serialize(black_box(&dict), &mut buffer).unwrap();
             black_box(buffer);
         });
@@ -400,7 +408,7 @@ fn bench_compression_overhead(c: &mut Criterion) {
     // Bincode with compression
     group.bench_function("bincode_gzip", |b| {
         b.iter(|| {
-            let mut buffer = Vec::new();
+            let mut buffer = serialization_buffer(1000);
             GzipSerializer::<BincodeSerializer>::serialize(black_box(&dict), &mut buffer).unwrap();
             black_box(buffer);
         });
@@ -409,7 +417,7 @@ fn bench_compression_overhead(c: &mut Criterion) {
     // JSON without compression
     group.bench_function("json_plain", |b| {
         b.iter(|| {
-            let mut buffer = Vec::new();
+            let mut buffer = serialization_buffer(1000);
             JsonSerializer::serialize(black_box(&dict), &mut buffer).unwrap();
             black_box(buffer);
         });
@@ -418,7 +426,7 @@ fn bench_compression_overhead(c: &mut Criterion) {
     // JSON with compression
     group.bench_function("json_gzip", |b| {
         b.iter(|| {
-            let mut buffer = Vec::new();
+            let mut buffer = serialization_buffer(1000);
             GzipSerializer::<JsonSerializer>::serialize(black_box(&dict), &mut buffer).unwrap();
             black_box(buffer);
         });
@@ -434,16 +442,16 @@ fn bench_file_size_comparison(c: &mut Criterion) {
     let mut group = c.benchmark_group("file_size");
 
     // Measure sizes without running benchmarks
-    let mut bincode_plain = Vec::new();
+    let mut bincode_plain = serialization_buffer(1000);
     BincodeSerializer::serialize(&dict, &mut bincode_plain).unwrap();
 
-    let mut bincode_gzip = Vec::new();
+    let mut bincode_gzip = serialization_buffer(1000);
     GzipSerializer::<BincodeSerializer>::serialize(&dict, &mut bincode_gzip).unwrap();
 
-    let mut json_plain = Vec::new();
+    let mut json_plain = serialization_buffer(1000);
     JsonSerializer::serialize(&dict, &mut json_plain).unwrap();
 
-    let mut json_gzip = Vec::new();
+    let mut json_gzip = serialization_buffer(1000);
     GzipSerializer::<JsonSerializer>::serialize(&dict, &mut json_gzip).unwrap();
 
     println!("\n=== File Size Comparison (1000 words) ===");

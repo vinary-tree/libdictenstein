@@ -132,6 +132,10 @@ harness = false
 required-features = ["serialization", "pathmap-backend"]
 
 [[bench]]
+name = "volatile_dictionary_benchmarks"
+harness = false
+
+[[bench]]
 name = "persistent_artrie_benchmarks"
 harness = false
 required-features = ["persistent-artrie"]
