@@ -129,9 +129,12 @@ pub use crate::persistent_artrie::eviction::{
 // ============================================================================
 
 use crate::bijective::BijectiveDictionary;
+use crate::persistent_artrie::core::key_encoding::CharKey;
+use crate::persistent_artrie::core::overlay::flip::LockFreeOverlay;
+use crate::persistent_artrie::core::overlay::{OverlayDictionaryNode, OverlayNode};
 use crate::persistent_artrie::error::Result;
 use crate::persistent_artrie::recovery::RecoveryReport;
-use crate::{Dictionary, DictionaryNode, MappedDictionary, MutableMappedDictionary};
+use crate::{Dictionary, MappedDictionary, MutableMappedDictionary};
 use std::path::Path;
 
 // Dictionary trait implementation
@@ -139,9 +142,16 @@ impl Dictionary for PersistentVocabARTrie {
     type Node = VocabTrieNodeRef;
 
     fn root(&self) -> Self::Node {
-        // Get root children info from the trie
-        let children = self.get_root_children();
-        VocabTrieNodeRef::new(false, children, Vec::new())
+        // Overlay-backed root: navigate the lock-free overlay lazily so the returned node
+        // — and EVERY descendant reached via `transition`/`edges` — can descend the FULL
+        // depth of the trie. Mirrors the char trie's inherent `root()`
+        // (`persistent_artrie::char::PersistentARTrieChar::root`). `None` faulter: vocab
+        // never evicts, so every overlay child is `Child::InMem` (no `OnDisk` slot to
+        // fault in — `OverlayFaulter::fault_overlay_slot` returns `None` for vocab).
+        let overlay_root = self
+            .overlay_root_node()
+            .unwrap_or_else(|| Arc::new(OverlayNode::<CharKey, u64>::new()));
+        VocabTrieNodeRef::from_overlay_root(overlay_root, None)
     }
 
     fn contains(&self, term: &str) -> bool {
@@ -153,73 +163,33 @@ impl Dictionary for PersistentVocabARTrie {
     }
 }
 
-/// Node reference for Dictionary trait implementation.
+/// Overlay-backed node handle for the vocab trie's [`Dictionary`] traversal.
 ///
-/// This provides a snapshot-based node reference for navigating the trie
-/// through the Dictionary trait. Note that since PersistentVocabARTrie
-/// requires internal iteration for navigation, this implementation creates
-/// shallow copies of node data rather than holding direct pointers.
+/// Alias of the shared, `Arc`-holding
+/// [`OverlayDictionaryNode<CharKey, u64>`](crate::persistent_artrie::core::overlay::OverlayDictionaryNode)
+/// from the canonical `persistent_artrie::core::overlay` layer — the SAME handle the byte
+/// and char tries expose (byte: `PersistentARTrieNode<V>`; char:
+/// `PersistentARTrieCharNode<V>`). The vocab overlay node IS `PersistentCharNode<u64>` =
+/// `OverlayNode<CharKey, u64>`, so this handle navigates it directly: `is_final` /
+/// `transition` / `edges` read the real overlay node, and each child it hands back keeps
+/// its own `Arc<OverlayNode>` — so a caller can descend the FULL depth of the trie. It
+/// also gains [`MappedDictionaryNode::value`](crate::MappedDictionaryNode) → `Option<u64>`
+/// (the vocabulary index) for free. `Unit = char` (via `CharKey::Token`), preserved
+/// exactly; the type auto-derives `Clone + Send + Sync`.
 ///
-/// For full trie operations, use the PersistentVocabARTrie methods directly.
-#[derive(Clone)]
-pub struct VocabTrieNodeRef {
-    /// Whether this node is final
-    is_final: bool,
-    /// Children of this node (label -> whether child is final)
-    /// This is a snapshot taken at the time of construction
-    children: Vec<(char, bool)>,
-    /// Path from root to this node (for reconstruction)
-    path: Vec<char>,
-}
-
-impl VocabTrieNodeRef {
-    /// Create a new node reference with snapshot data
-    fn new(is_final: bool, children: Vec<(char, bool)>, path: Vec<char>) -> Self {
-        Self {
-            is_final,
-            children,
-            path,
-        }
-    }
-}
-
-impl DictionaryNode for VocabTrieNodeRef {
-    type Unit = char;
-
-    fn is_final(&self) -> bool {
-        self.is_final
-    }
-
-    fn transition(&self, label: char) -> Option<Self> {
-        // Check if we have this child
-        for &(child_label, child_is_final) in &self.children {
-            if child_label == label {
-                // Create a new path with this label appended
-                let mut new_path = self.path.clone();
-                new_path.push(label);
-                // Note: We can't get the child's children without trie access,
-                // so this returns a node with no children info.
-                // For full navigation, use PersistentVocabARTrie methods directly.
-                return Some(VocabTrieNodeRef::new(child_is_final, Vec::new(), new_path));
-            }
-        }
-        None
-    }
-
-    fn edges(&self) -> Box<dyn Iterator<Item = (char, Self)> + '_> {
-        let path = self.path.clone();
-        let edges: Vec<_> = self
-            .children
-            .iter()
-            .map(move |&(label, is_final)| {
-                let mut new_path = path.clone();
-                new_path.push(label);
-                (label, VocabTrieNodeRef::new(is_final, Vec::new(), new_path))
-            })
-            .collect();
-        Box::new(edges.into_iter())
-    }
-}
+/// # History
+///
+/// This SUPERSEDED a former one-level snapshot struct
+/// (`struct VocabTrieNodeRef { is_final: bool, children: Vec<(char, bool)>, path: Vec<char> }`
+/// with a private `new`) whose `transition` / `edges` stamped every returned child with an
+/// EMPTY `children` vector — so navigation died at depth 1 while the snapshot held no
+/// handle to the trie to fetch a child's children. That truncated any generic
+/// `DictionaryNode` walk (liblevenshtein transducers, libgrammstein DFS) to 1-character
+/// terms — the "returns childless nodes" bug reported by libgrammstein. The shared
+/// `OverlayDictionaryNode` holds the child `Arc` and re-resolves children on demand, so
+/// the truncation is gone. The removed struct + its `DictionaryNode` impl are recoverable
+/// via git history.
+pub type VocabTrieNodeRef = OverlayDictionaryNode<CharKey, u64>;
 
 // MappedDictionary trait implementation
 impl MappedDictionary for PersistentVocabARTrie {
@@ -359,9 +329,14 @@ impl Dictionary for SharedVocabARTrie {
     type Node = VocabTrieNodeRef;
 
     fn root(&self) -> Self::Node {
+        // Overlay-backed root (see `PersistentVocabARTrie`'s `Dictionary::root`). The
+        // returned node OWNS the overlay-root `Arc`, so it outlives the transient no-lock
+        // `read()` shim guard (`SharedTrieAccess` hands back `&PersistentVocabARTrie`).
         let guard = self.read();
-        let children = guard.get_root_children();
-        VocabTrieNodeRef::new(false, children, Vec::new())
+        let overlay_root = guard
+            .overlay_root_node()
+            .unwrap_or_else(|| Arc::new(OverlayNode::<CharKey, u64>::new()));
+        VocabTrieNodeRef::from_overlay_root(overlay_root, None)
     }
 
     fn contains(&self, term: &str) -> bool {

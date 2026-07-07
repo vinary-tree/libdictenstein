@@ -12,7 +12,10 @@ use crate::persistent_artrie::block_storage::BlockStorage;
 use crate::persistent_artrie::core::overlay::flip::LockFreeOverlay;
 
 impl<S: BlockStorage> super::dict_impl::PersistentVocabARTrie<S> {
-    /// Children `(label, is_final)` of the overlay root — backs `Dictionary::root`.
+    /// Children `(label, is_final)` of the overlay root — a convenience wrapper over
+    /// `get_children_at_path(&[])`. (`Dictionary::root` no longer routes through here: it
+    /// now returns the `Arc`-holding overlay handle `VocabTrieNodeRef` =
+    /// `OverlayDictionaryNode<CharKey, u64>`, which navigates the overlay lazily.)
     pub fn get_root_children(&self) -> Vec<(char, bool)> {
         self.get_children_at_path(&[])
     }
